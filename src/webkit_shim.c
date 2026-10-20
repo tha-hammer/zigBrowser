@@ -5007,6 +5007,19 @@ static void zb_apply_hw_policy(WebKitSettings *settings) {
                                               : WEBKIT_HARDWARE_ACCELERATION_POLICY_NEVER);
 }
 
+/* S6b2 (chat-drawer plan S6.3): the policies every browsing window gets, hardware acceleration and
+ * media source, for a view created outside this file: the agent's auth window
+ * (src/agent_auth_window.c), which declares it itself, since webkit_shim.h is shared by every
+ * backend. Popups stay off there (it refuses them), so unlike zb_window_new this does not set
+ * javascript_can_open_windows_automatically. */
+void zb_apply_view_policies(WebKitWebView *view) {
+  WebKitSettings *settings = webkit_web_view_get_settings(view);
+  if (settings != NULL) {
+    zb_apply_hw_policy(settings);
+  }
+  zb_apply_media_source(view);
+}
+
 typedef struct {
   guint32 id;
   int policy;

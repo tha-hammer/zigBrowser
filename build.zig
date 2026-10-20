@@ -1346,6 +1346,15 @@ pub fn build(b: *std.Build) void {
         "agent-login-exchange-e2e",
     });
     agent_login_exchange_e2e.addArtifactArg(exe);
+    // S6b2 (rev 16.18.16-16.18.20): the auth window on the fake provider: capture, five A2 cases,
+    // popup, isolation, and the seam refused or ignored (the last with no network).
+    const agent_auth_window_e2e = b.addSystemCommand(&.{
+        "sh",
+        "-c",
+        "python3 tests/e2e/agent_auth_window_test.py --binary \"$1\"",
+        "agent-auth-window-e2e",
+    });
+    agent_auth_window_e2e.addArtifactArg(exe);
     // Rev 16.18.10 (RoseCat 6184): the Secrets window never outlives its parent, and a
     // running sign-in is cancelled exactly once (defence in depth; the gnome-shell crash
     // at the user's part A quit stays open).
@@ -1691,6 +1700,7 @@ pub fn build(b: *std.Build) void {
     if (target.result.os.tag == .linux) test_step.dependOn(&agent_login_races_e2e.step);
     if (target.result.os.tag == .linux) test_step.dependOn(&agent_login_locks_e2e.step);
     if (target.result.os.tag == .linux) test_step.dependOn(&agent_login_exchange_e2e.step);
+    if (target.result.os.tag == .linux) test_step.dependOn(&agent_auth_window_e2e.step);
     if (target.result.os.tag == .linux) test_step.dependOn(&agent_secrets_shutdown_e2e.step);
     if (target.result.os.tag == .linux) test_step.dependOn(&agent_secrets_watch_e2e.step);
     if (target.result.os.tag == .linux) test_step.dependOn(&fake_setup_token_unit.step);
@@ -1996,6 +2006,11 @@ fn configureGtkBackend(module: *std.Build.Module, b: *std.Build) void {
     });
     module.addCSourceFile(.{
         .file = b.path("src/agent_login.c"),
+        .flags = &.{"-std=gnu11"},
+    });
+    // S6b2 (chat-drawer plan rev 16.18.15-16.18.20): the auth window's GTK body.
+    module.addCSourceFile(.{
+        .file = b.path("src/agent_auth_window.c"),
         .flags = &.{"-std=gnu11"},
     });
 

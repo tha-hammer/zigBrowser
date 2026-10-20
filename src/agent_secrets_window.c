@@ -9,6 +9,7 @@
 #include "agent_drawer.h" /* zb_emit_protocol_row */
 #include "agent_helper.h" /* zb_agent_helper_token_removed */
 #include "agent_login.h"   /* Sign in with Claude.ai (S6b1) */
+#include "agent_auth_window.h" /* its auth window (S6b2) */
 #include "agent_secrets.h"
 
 #include <stdio.h>
@@ -461,6 +462,16 @@ static void store_signed_in(const char *token) {
   zb_secrets_service_store_async(secrets.pending, on_service_stored, epoch);
 }
 
+/* The auth window captured this sign-in's callback (S6b2): its `<code>#<state>` goes to the
+ * helper, as a pasted code does. */
+static void on_auth_captured(const char *code, void *unused) {
+  (void)unused;
+  if (zb_login_send_code(code) == 0 && secrets.window != NULL) {
+    set_status_text(TEXT_SIGNING);
+    gtk_widget_set_visible(secrets.code_box, FALSE);
+  }
+}
+
 static void on_login_event(ZbLoginEvent event, const char *detail, void *unused) {
   (void)unused;
   switch (event) {
@@ -473,13 +484,15 @@ static void on_login_event(ZbLoginEvent event, const char *detail, void *unused)
     }
     break;
   case ZB_LOGIN_EV_AUTH_URL:
-    /* The link the user opens in their own browser (S6b2's auth window opens it too). */
+    /* The link the user opens in their own browser, the fallback (S6b1); and the auth window on
+     * the same URL (S6b2, rev 16.18.18), which the app's authorizeUrl already accepted. */
     g_free(secrets.link_url);
     secrets.link_url = g_strdup(detail);
     if (secrets.window != NULL) {
       gtk_label_set_text(GTK_LABEL(secrets.link), secrets.link_url);
       gtk_widget_set_visible(secrets.link_box, TRUE);
     }
+    zb_auth_window_open(detail, secrets.config.e2e_protocol, on_auth_captured, NULL);
     break;
   case ZB_LOGIN_EV_NEED_CODE:
     login_row("need-code");
@@ -489,12 +502,14 @@ static void on_login_event(ZbLoginEvent event, const char *detail, void *unused)
     }
     break;
   case ZB_LOGIN_EV_DONE:
+    zb_auth_window_close();
     secrets.signin_active = 0;
     secrets.signin_store = 1; /* locked until the store answers */
     signin_controls(0, 0);
     store_signed_in(detail);
     break;
   case ZB_LOGIN_EV_ERROR: {
+    zb_auth_window_close();
     char row[32];
     g_snprintf(row, sizeof row, "error-%s", detail != NULL ? detail : "cli");
     secrets.signin_active = 0;
@@ -510,6 +525,7 @@ static void on_login_event(ZbLoginEvent event, const char *detail, void *unused)
     break;
   }
   case ZB_LOGIN_EV_CANCELLED:
+    zb_auth_window_close();
     secrets.signin_active = 0;
     login_row("cancelled");
     signin_controls(0, 0);
@@ -686,6 +702,7 @@ static void on_destroy(GtkWidget *window, gpointer unused) {
   secrets.busy = 0;
   secrets.signin_store = 0;
   zb_login_cancel(); /* closing the window cancels a running sign-in */
+  zb_auth_window_close();
 }
 
 static void on_file_box_mapped(GtkWidget *widget, gpointer unused) {

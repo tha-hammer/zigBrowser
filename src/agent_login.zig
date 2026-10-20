@@ -6,6 +6,7 @@
 const std = @import("std");
 const agent_protocol = @import("agent_protocol.zig");
 const agent_auth = @import("agent_auth.zig");
+const agent_auth_seam = @import("agent_auth_seam.zig");
 const agent_helper = @import("agent_helper.zig");
 const agent_setup = @import("agent_setup.zig");
 
@@ -143,6 +144,58 @@ export fn zb_login_encode(kind: c_int, seq: i64, code: ?[*]const u8, code_len: u
     out[text.len] = '\n';
     out[text.len + 1] = 0;
     return 0;
+}
+
+/// S6b2 (chat-drawer plan rev 16.18.15): the ZIGBROWSER_AGENT_AUTH_TEST decision, for the auth
+/// window's C body, made before the window exists. Returns 0 (unset), 1 (ignored: no
+/// --e2e-protocol), 2 (refused) or 3 (ok: `port`, and `ca` NUL-terminated). For ignored and refused,
+/// `line` holds the stderr line, NUL-terminated (else it is empty).
+export fn zb_auth_seam(e2e: c_int, value: ?[*:0]const u8, port: *u16, ca: [*]u8, ca_cap: usize, line: [*]u8, line_cap: usize) c_int {
+    if (ca_cap == 0 or line_cap == 0) return 2;
+    ca[0] = 0;
+    line[0] = 0;
+    const seam = agent_auth_seam.authTestSeam(e2e != 0, if (value) |v| std.mem.span(v) else null);
+    var buf: [256]u8 = undefined;
+    if (agent_auth_seam.stderrLine(&buf, seam)) |text| {
+        if (text.len + 1 <= line_cap) {
+            @memcpy(line[0..text.len], text);
+            line[text.len] = 0;
+        }
+    }
+    return switch (seam) {
+        .none => 0,
+        .ignored => 1,
+        .refused => 2,
+        .ok => |ok| blk: {
+            if (ok.ca.len + 1 > ca_cap) break :blk 2;
+            @memcpy(ca[0..ok.ca.len], ok.ca);
+            ca[ok.ca.len] = 0;
+            port.* = ok.port;
+            break :blk 3;
+        },
+    };
+}
+
+/// S6b2 (rev 16.18.16-16.18.18): the auth window's decision for one main-frame navigation.
+/// Returns 0 (allow: `out` holds the `https://<host>:443` origin), 1 (capture: `out` holds
+/// `<code>#<state>`) or 2 (block: `out` holds the reason word); `out` is NUL-terminated.
+export fn zb_auth_decide(authorize: [*:0]const u8, nav: [*:0]const u8, captured: c_int, out: [*]u8, cap: usize) c_int {
+    var buf: [agent_auth.max_code_len + 64]u8 = undefined;
+    defer std.crypto.secureZero(u8, &buf); // a captured code passes through here
+    const decision = agent_auth.decideNavigation(std.mem.span(authorize), std.mem.span(nav), captured != 0, &buf);
+    const kind: c_int, const text: []const u8 = switch (decision) {
+        .allow => |origin| .{ 0, origin },
+        .capture => |code| .{ 1, code },
+        .block => |reason| .{ 2, @tagName(reason) },
+    };
+    if (cap == 0) return 2;
+    if (text.len + 1 > cap) {
+        out[0] = 0;
+        return 2;
+    }
+    @memcpy(out[0..text.len], text);
+    out[text.len] = 0;
+    return kind;
 }
 
 test "launch: --command login, the login netd dir, and the CLI seam only with --e2e-protocol" {
