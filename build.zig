@@ -1294,6 +1294,12 @@ pub fn build(b: *std.Build) void {
         "-c",
         "py=$(tools/agent_host_env.sh --check) || exit 1; cd agent/host/tests && env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 ZB_AGENT_HOST_PYTHON=\"$py\" \"$py\" -m unittest -v test_login_reap",
     });
+    // Rev 16.20.27 (Part B's second finding): a real-length code's Enter is its own write.
+    const agent_host_login_paste = b.addSystemCommand(&.{
+        "sh",
+        "-c",
+        "py=$(tools/agent_host_env.sh --check) || exit 1; cd agent/host/tests && env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 ZB_AGENT_HOST_PYTHON=\"$py\" \"$py\" -m unittest -v test_login_paste",
+    });
     // Rev 16.18.9 (S6b1 part B): the CLI's relay proxy; an OAuth error or silence
     // after a code ends the sign-in (error exchange, the 60 s exchange clock).
     const agent_host_login_exchange = b.addSystemCommand(&.{
@@ -1399,6 +1405,14 @@ pub fn build(b: *std.Build) void {
         "agent-login-exchange-e2e",
     });
     agent_login_exchange_e2e.addArtifactArg(exe);
+    // Rev 16.20.27 (Part B's second finding): a real-length code pasted in the Secrets window.
+    const agent_login_paste_e2e = b.addSystemCommand(&.{
+        "sh",
+        "-c",
+        "python3 tests/e2e/agent_login_paste_test.py --binary \"$1\"",
+        "agent-login-paste-e2e",
+    });
+    agent_login_paste_e2e.addArtifactArg(exe);
     // S6b2 (rev 16.18.16-16.18.20): the auth window on the fake provider: capture, five A2 cases,
     // popup, isolation, and the seam refused or ignored (the last with no network).
     const agent_auth_window_e2e = b.addSystemCommand(&.{
@@ -1754,6 +1768,7 @@ pub fn build(b: *std.Build) void {
     if (target.result.os.tag == .linux) test_step.dependOn(&agent_login_races_e2e.step);
     if (target.result.os.tag == .linux) test_step.dependOn(&agent_login_locks_e2e.step);
     if (target.result.os.tag == .linux) test_step.dependOn(&agent_login_exchange_e2e.step);
+    if (target.result.os.tag == .linux) test_step.dependOn(&agent_login_paste_e2e.step);
     if (target.result.os.tag == .linux) test_step.dependOn(&agent_auth_window_e2e.step);
     if (target.result.os.tag == .linux) test_step.dependOn(&agent_secrets_shutdown_e2e.step);
     if (target.result.os.tag == .linux) test_step.dependOn(&agent_secrets_watch_e2e.step);
@@ -1768,6 +1783,7 @@ pub fn build(b: *std.Build) void {
     if (target.result.os.tag == .linux) test_step.dependOn(&agent_host_login.step);
     if (target.result.os.tag == .linux) test_step.dependOn(&agent_host_login_contract.step);
     if (target.result.os.tag == .linux) test_step.dependOn(&agent_host_login_reap.step);
+    if (target.result.os.tag == .linux) test_step.dependOn(&agent_host_login_paste.step);
     if (target.result.os.tag == .linux) test_step.dependOn(&agent_host_login_exchange.step);
     test_step.dependOn(&run_agent_auth_authorize_tests.step);
     test_step.dependOn(&run_agent_login_authorize_tests.step);
@@ -1782,6 +1798,7 @@ pub fn build(b: *std.Build) void {
     if (target.result.os.tag == .linux) agent_auth_step.dependOn(&agent_host_login.step);
     if (target.result.os.tag == .linux) agent_auth_step.dependOn(&agent_host_login_contract.step);
     if (target.result.os.tag == .linux) agent_auth_step.dependOn(&agent_host_login_reap.step);
+    if (target.result.os.tag == .linux) agent_auth_step.dependOn(&agent_host_login_paste.step);
     if (target.result.os.tag == .linux) agent_auth_step.dependOn(&agent_host_login_exchange.step);
     agent_auth_step.dependOn(&run_agent_auth_authorize_tests.step);
     agent_auth_step.dependOn(&run_agent_login_authorize_tests.step);

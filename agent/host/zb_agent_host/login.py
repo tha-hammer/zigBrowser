@@ -55,6 +55,12 @@ if sys.platform != "win32":  # POSIX-only (WS7.5, bead zigBrowser-2p3): the modu
 TOKEN_FD = 4
 TIMEOUT_S = 600
 EXCHANGE_S = 60  # after a typed code: the token, or the prompt again (rev 16.18.9)
+# The Enter after a typed code is its own write (rev 16.20.27, Part B's second finding): the
+# real CLI 2.1.294 reads its terminal raw, and one read holding the Enter and more than about
+# 64 other bytes is a paste whose Enter does not submit (a real code with its 43-character
+# state always is). The Enter goes once the CLI's masked echo shows it took the code in, or
+# after ENTER_FALLBACK_S when no echo comes (a code too short for ECHO).
+ENTER_FALLBACK_S = 1.0
 COLUMNS = 4096
 MAX_CODE = 512
 MAX_URL = 4096
@@ -151,6 +157,7 @@ class Login:
         self.exchange_s = exchange_s
         self.exchange_by = None  # set when a code is typed; cleared when the CLI asks again
         self.typed_at = 0  # the screen offset when the code was written
+        self.enter_by = None  # a code was typed and its Enter is still to be written, by then
         self.echo_at = None  # the end of the CLI's masked echo of it: its answer starts here
         self.screen = bytearray()  # the pty output, escapes removed; zeroed at the end
         self.prompts = 0  # prompts seen
@@ -195,7 +202,13 @@ class Login:
                 exchange_by = self.exchange_by
                 if exchange_by is not None and now >= exchange_by:
                     return self.end("error", code="timeout", message="the Claude CLI did not finish the sign-in")
-                if not select.select([self.master], [], [], min(left, 0.5))[0]:
+                enter_by = self.enter_by
+                if enter_by is not None and now >= enter_by:
+                    with self.lock:
+                        self.enter()  # no echo came: the Enter anyway, still as its own write
+                    continue
+                wait = min(left, 0.5) if enter_by is None else max(0.0, min(left, 0.5, enter_by - now))
+                if not select.select([self.master], [], [], wait)[0]:
                     continue
                 try:
                     n = os.readv(self.master, [chunk])
@@ -242,6 +255,8 @@ class Login:
             echo = ECHO.search(self.screen, self.typed_at)
             if echo:
                 self.echo_at = echo.end()
+        if self.enter_by is not None and self.echo_at is not None:
+            self.enter()  # the CLI took the code in: now its Enter, alone
         if self.exchange_by is not None and self.echo_at is not None:
             reply = bytes(self.screen[self.echo_at:]).replace(b" ", b"")
             if any(word in reply for word in EXCHANGE_FAILED):
@@ -254,7 +269,14 @@ class Login:
             self.typed_at = len(self.screen)
             self.echo_at = None
             self.exchange_by = time.monotonic() + self.exchange_s
-            os.write(self.master, code.encode("ascii") + b"\r")
+            self.enter_by = time.monotonic() + ENTER_FALLBACK_S
+            os.write(self.master, code.encode("ascii"))
+
+    def enter(self):
+        """The typed code's Enter, as its own write (called with the lock held)."""
+        if self.enter_by is not None:
+            self.enter_by = None
+            os.write(self.master, b"\r")
 
     def claim(self):
         """True for exactly one caller: the one whose ending is the sign-in's."""
