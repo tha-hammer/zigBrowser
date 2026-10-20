@@ -18800,3 +18800,136 @@ the obsolete physical-host claim, or name an authorized writable Windows 10
 host and add/run the owner-side production e2e there. This is not a newly found
 implementation defect in the accepted VM chain. Verdict sent to BlueBeaver in
 Agent Mail 6860.
+
+## macOS plan rev 16 census correction (`8a8adf9`)
+
+Reviewed on 2026-10-20 against the current runtime producer, MS5 plan and
+two-tree census implementation.
+
+**Verdict: BLOCKED.** The discoveries behind the revision are correct.
+`setup.py:481-504` generates `zb-claude`, `zb-hook-run`, `zb-net-relay` and the
+per-user runtime manifests during setup, so those are not bundle resources. A
+separate MS5 inventory also avoids weakening MS1's exact browser+shim shape,
+and a macOS dev/staging tree should consistently resolve
+`<exe-dir>/../Frameworks/agent-host`.
+
+Three contract defects remain before the MS5.1c red can be written:
+
+1. Rev 16 adds a superseding section but leaves the authoritative instructions
+   contradictory. Rev 14 still sends a dev tree to Linux's `lib/.../venv`
+   (`plan:1252-1263`), while rev 16 sends it to `Frameworks`. Behavior MS5.1c
+   still requires changing `universal_components.json`, still calls
+   `zb-claude` a bundled resource and still asks the resource oracle to scan
+   the generated scripts/manifests (`:1456-1483`), all contrary to rev 16
+   (`:1394-1428`). Rewrite those operative clauses and mark the old rev-8
+   contract historical; a later prose override is not a single executable
+   contract.
+2. The proposed `zb_agent_host/` resource is not representable by today's
+   inventory. `component_census` and `resource_compat` accept exact resource
+   `path` entries only (`mac_universal_test.py:181-183,219-235`). They cannot
+   prove every file below a directory is present and identical. The plan must
+   require either an exact generated file manifest or a fail-closed recursive
+   resource-glob schema, with missing, extra and differing files all red. It
+   must also pin deterministic `runtime.json` content, including the exact
+   `uv.lock` hash.
+3. The final MS5 census cannot pass while locked dependencies and the Claude
+   CLI are omitted. The lock already names separate arm64 and x86_64
+   `claude-agent-sdk` wheels rather than a universal2 wheel (`uv.lock:151-152`).
+   A preliminary staging sub-slice may remain partial, but final MS5 needs the
+   exact installed dependency/CLI layout, required-role paths, native-code
+   reconciliation/fatness rule and two-tree resource rule. Merely reporting
+   that these production pieces were left out is not a complete census.
+
+**SHOULD:** make the staging tool's verified-package and Sigstore inputs (or
+the build-driver handoff) explicit and pin how it constructs `runtime.json`.
+The proposed one-argument interface does not establish that the Mac stages the
+same artifact whose provenance was verified on Linux.
+
+This was a docs-only review; no build, Mac, browser or display was used. The
+verdict was sent to BlueBeaver in Agent Mail 6865.
+
+## WS0 exact-pin follow-up (`612f587`)
+
+**Verdict: PARTIALLY APPROVED; still BLOCKED before the first watched two-host
+`--probe-only`.** The fail-closed `load_tests` registration closes finding 2
+from `684e32e`: a missing or unloadable live suite now becomes a named failing
+test. The real `AccessCheck` scenarios and on-disk `Get-Acl` cases close
+finding 3: every dangerous right has a distinct positive, an owned directory
+and `C:\Windows` exercise real descriptors, and the unreadable-descriptor
+direction remains fail-safe. A display-scrubbed hostless run passed **84 tests
+with 13 live skips**.
+
+The complete remaining blocking set was sent to AzureRidge in Agent Mail 6867:
+
+1. Pin the actual PowerShell resolution, including `WorkingDirectory`; pin one
+   principal, its `Actions Context`, exact SID, `InteractiveToken`, intended
+   least-privilege run level and a valid enabled state.
+2. Add registered live negatives for every claimed pin. The current suite has
+   missing/hash, `calc.exe`, wrong script and disabled only; it lacks extra
+   action, executable/working-directory substitution, appended arguments,
+   wrong/same-leaf SID, noninteractive context and malformed/extra principal
+   cases.
+3. Make `LockedDesktopLive` check the preparation/trigger results, fresh nonce,
+   console identity, noninteractive state and non-Default/denied desktop, with
+   bounded polling; then record one actual owner-locked PASS. Its current sole
+   `locked == true` assertion can consume stale JSON if the ignored setup call
+   failed.
+4. Reconcile the plan's scheduled-task pin and its stale WTS/LogonUI mechanism
+   text with the exact verifier and `OpenInputDesktop` signal.
+
+After that owner-gated lock proof, the VM must be unlocked before the watched
+two-host run. Handle cleanup in the short-lived probe is a later SHOULD, not a
+first-run blocker.
+
+## MS5 dev-tree runtime location (`744fee2`, `9d55923`)
+
+**`744fee2` APPROVED as the failing-first red; `9d55923` APPROVED as its
+green.** The old pure function necessarily maps the new macOS dev/staging
+cases to Linux's `lib/.../venv` path. The green applies one macOS rule,
+`<exe-dir>/../Frameworks/agent-host` with the framework Python, while retaining
+Linux's existing layout. Bundle, dev/staging, Linux and the non-app
+`Contents/MacOS` case agree, and the module is registered in both the targeted
+and aggregate gates. My display-scrubbed targeted run passed **8/8 steps and
+11/11 tests**.
+
+This approves the pure layout seam only. `app.zig` still uses the Linux-only
+`defaultRuntime` and refuses the remaining macOS setup path; later MS5 wiring
+must consume the OS-aware seam. These commits do not close `8a8adf9`'s plan
+blockers. Verdict sent to BlueBeaver in Agent Mail 6868.
+
+## WS2.0 scope fix-forward (`ab17f09`)
+
+**Verdict: BLOCKED on two stale normative markers.** Rev 2.10 otherwise makes
+the correct and honest scope change: all live WS2.0 evidence is the Win11 VM;
+the read-only/no-install physical file server is withdrawn; and Windows 10
+AF_UNIX remains explicitly unverified unless the user later authorizes a
+separate writable host.
+
+The section heading still labels WS2.0 `[W]` (`plan:935`), which the binding
+legend defines as both Windows hosts (`:49-53`). The WS2 red/green register
+also still says every listed test runs red on both hosts (`:1059-1063`), which
+includes the WS2.0 row. Change the slice label to `[W11]` and exempt that row
+from the table preamble (or add an execution-scope column). The remaining
+“fails on a host” phrase is a NIT that should name the VM or a separately
+authorized production-test host. Verdict sent to BlueBeaver in Agent Mail
+6870.
+
+## macOS plan rev 17 census rewrite (`1b554fc`)
+
+**Verdict: BLOCKED on one remaining exact-manifest entry-type gap.** Rev 17
+otherwise closes all three `8a8adf9` blockers and its SHOULD: the operative
+MS5 text is rewritten in place; the separate inventory and partial/full
+milestones are explicit; `runtime.json` is deterministic; dependencies and
+CLI cannot disappear from a final green; and the `.pkg` handoff is bound by
+the Linux-verified and Mac-rechecked digest before Apple signature/notarization
+checks.
+
+The claimed exact `zb_agent_host/` manifest, however, enumerates and rejects
+only regular files. The existing census/digest paths skip symlinks, and rev
+17's new extra-entry rule repeats “regular file.” A symlink to an outside
+Python canary, FIFO or other special entry can therefore survive unlisted in
+this imported/executed-code directory while the exact-resource check passes.
+Require every entry to be a declared regular file or an implied directory;
+refuse all symlinks and special files via `lstat`, with at least outside-link
+and FIFO mutants. No other finding from Agent Mail 6865 remains open. Verdict
+sent to BlueBeaver in Agent Mail 6871.
