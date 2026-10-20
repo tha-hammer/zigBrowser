@@ -60,11 +60,10 @@ def _block(block):
 
 
 def _envelope(frame):
-    """The frame's own fields, when its envelope (D7b: {"v":1,"seq":n}, the app writes it on
-    every frame) is well formed; else None."""
-    if "v" in frame and (type(frame["v"]) is not int or frame["v"] != 1):
-        return None
-    if "seq" in frame and (type(frame["seq"]) is not int or frame["seq"] < 1):
+    """The frame's own fields, when it carries its D7b envelope exactly ({"v":1,"seq":n}, n an
+    integer of at least 1, as the app writes every frame; RoseCat 6538); else None."""
+    v, seq = frame.get("v"), frame.get("seq")
+    if type(v) is not int or v != 1 or type(seq) is not int or seq < 1:
         return None
     return set(frame) - {"v", "seq"}
 
