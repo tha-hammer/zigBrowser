@@ -732,7 +732,9 @@ requires, listed in one manifest file), and deletes the remote staging under `zb
   - WS0.5 `assert allowed(p) is False` for the generated bad paths plus `assert allowed(r"C:\Users\zbtest\zb\x") is True`.
     Mutant: normalize with a naive `startswith` (no `..`/junction handling) ⇒ the property fails.
   - WS0.6 `assert rc != 0 and "Win11 VM win11-m8 is shut off" in err` (fake `virsh domstate`), the unreachable,
-    host-key and UUID cases likewise. Mutant: treat a UUID mismatch as a warning ⇒ red.
+    host-key and **identity-marker mismatch** cases likewise (rev 2.2: `identity_marker != ZB_WIN11_MARKER` ⇒
+    `wrong host`; the SMBIOS-UUID case is removed, bead zigBrowser-126). Mutant: treat a marker mismatch as a
+    warning ⇒ red.
   - WS0.7 `assert rc != 0 and "zbtest can write to" in err` with a canned `zbtest_write_paths`, and the
     changed-listeners case. Mutant: compare only the pre-run probe ⇒ red.
   - WS0.8 `assert "StrictHostKeyChecking=yes" in recorded_ssh_argv and "2>/dev/null" not in tar_cmd`; a
