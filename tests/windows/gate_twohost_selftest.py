@@ -43,10 +43,15 @@ _SSH_STUB = r"""
 argv="$*"
 case "$argv" in
   *host_probe*|*powershell*|*EncodedCommand*)
-    # The real probe streams host_probe.ps1 over ssh stdin (powershell -Command -). Emulate a probe
-    # consuming that stdin, and record it so the transport test can prove the script was streamed
-    # (not copied as a -File). With no file redirected, stdin is /dev/null -> cat returns at once.
-    [ -n "${ZB_SELFTEST_STDIN_LOG:-}" ] && cat >> "$ZB_SELFTEST_STDIN_LOG"
+    # The real probe streams a script over ssh stdin and runs `$input | Out-String | iex`. Drain stdin
+    # (the streamed script) so the transport test can prove it was streamed, and branch on its content:
+    # the VM session-trigger script contains `schtasks` -> return a RESULT= line; otherwise it is the
+    # host probe -> return the canned JSON. With no file redirected, stdin is /dev/null (empty).
+    body="$(cat)"
+    [ -n "${ZB_SELFTEST_STDIN_LOG:-}" ] && printf '%s' "$body" >> "$ZB_SELFTEST_STDIN_LOG"
+    case "$body" in
+      *schtasks*) printf '%s' "${ZB_SELFTEST_SESSION_RESULT:-RESULT=OK interactive=True locked=False}"; exit 0 ;;
+    esac
     case "$argv" in
       *127.0.0.1*|*zbtext@*) printf '%s' "${ZB_SELFTEST_PROBE_WIN11:-}" ;;
       *100.123.34.15*|*zbtest@*)
@@ -385,7 +390,7 @@ class WS0CompletionReadiness(_TwoHostCase):
             bad = _fs_probe(shares=["C:\\Served"])   # path-only, not {name, path}
             proc = self._run_probe_only(pathlib.Path(t),
                                         {"ZB_SELFTEST_PROBE_WIN10": bad, "ZB_SELFTEST_PROBE_WIN10_POST": bad})
-            self._assert_fail_closed(proc, "{name, path}")
+            self._assert_fail_closed(proc, "share")
 
     def test_vm_console_user_mismatch_fails_closed(self):
         with tempfile.TemporaryDirectory() as t:
@@ -525,7 +530,48 @@ class WS0FieldHardening(_TwoHostCase):
         with tempfile.TemporaryDirectory() as t:
             proc = self._run_probe_only(pathlib.Path(t),
                 {"ZB_SELFTEST_PROBE_WIN10": _fs_probe(sshd_listen=["0.0.0.0"])})
-            self._assert_fail_closed(proc, "wildcard")
+            self._assert_fail_closed(proc, "ListenAddress")
+
+    def test_sshd_wrong_concrete_address_fails_closed(self):
+        # A valid-looking but WRONG tailnet address must fail (exact pin, not just non-wildcard).
+        with tempfile.TemporaryDirectory() as t:
+            proc = self._run_probe_only(pathlib.Path(t),
+                {"ZB_SELFTEST_PROBE_WIN10": _fs_probe(sshd_listen=["192.0.2.44"])})
+            self._assert_fail_closed(proc, "ListenAddress")
+
+    def test_relative_share_path_fails_closed(self):
+        with tempfile.TemporaryDirectory() as t:
+            bad = _fs_probe(shares=[{"name": "docs", "path": "relative\\docs"}])
+            proc = self._run_probe_only(pathlib.Path(t),
+                {"ZB_SELFTEST_PROBE_WIN10": bad, "ZB_SELFTEST_PROBE_WIN10_POST": bad})
+            self._assert_fail_closed(proc, "share")
+
+    def test_duplicate_share_path_fails_closed(self):
+        with tempfile.TemporaryDirectory() as t:
+            bad = _fs_probe(shares=[{"name": "a", "path": "C:\\Served"},
+                                    {"name": "b", "path": "C:\\Served"}])
+            proc = self._run_probe_only(pathlib.Path(t),
+                {"ZB_SELFTEST_PROBE_WIN10": bad, "ZB_SELFTEST_PROBE_WIN10_POST": bad})
+            self._assert_fail_closed(proc, "duplicate")
+
+    def test_vm_nan_free_gb_fails_closed(self):
+        with tempfile.TemporaryDirectory() as t:
+            proc = self._run_probe_only(pathlib.Path(t),
+                {"ZB_SELFTEST_PROBE_WIN11": _vm_probe(free_gb=float("nan"))})
+            self._assert_fail_closed(proc, "free_gb")
+
+    def test_fs_nan_free_gb_fails_closed(self):
+        with tempfile.TemporaryDirectory() as t:
+            proc = self._run_probe_only(pathlib.Path(t),
+                {"ZB_SELFTEST_PROBE_WIN10": _fs_probe(free_gb=float("nan"))})
+            self._assert_fail_closed(proc, "free_gb")
+
+    def test_missing_nonssh_baseline_listener_fails_closed(self):
+        # Only port 22 present is not enough: the full baseline {22,135,139,445,3389} must be there.
+        with tempfile.TemporaryDirectory() as t:
+            proc = self._run_probe_only(pathlib.Path(t),
+                {"ZB_SELFTEST_PROBE_WIN10": _fs_probe(listeners=[22, 135, 139, 445])})  # 3389 gone
+            self._assert_fail_closed(proc, "baseline listeners")
 
     def test_sshd_empty_listen_fails_closed(self):
         with tempfile.TemporaryDirectory() as t:
@@ -592,7 +638,8 @@ class ProbeTransport(_TwoHostCase):
             self.assertNotIn("-File", argv, "probe must not place/run a script FILE on the host")
             self.assertIn("$input", argv, "probe must read the streamed script via $input (Out-String | iex)")
             streamed = stdinlog.read_text() if stdinlog.exists() else ""
-            self.assertIn(script, streamed, "the exact host_probe.ps1 must be streamed over ssh stdin")
+            # The stub captures stdin via $(cat), which strips the trailing newline; compare sans it.
+            self.assertIn(script.rstrip("\n"), streamed, "the exact host_probe.ps1 must be streamed over ssh stdin")
 
     def test_each_host_pins_its_own_known_hosts(self):
         # The VM and the file server have different host keys, so each ssh must pin its OWN known_hosts.
@@ -635,6 +682,37 @@ class ProbeTransport(_TwoHostCase):
             self._assert_fail_closed(proc, "free_gb")
 
 
+class WS0SessionTrigger(_TwoHostCase):
+    def test_gate_triggers_console_task_with_nonce(self):
+        # The gate must write a per-run nonce and trigger the pre-registered console task over SSH.
+        with tempfile.TemporaryDirectory() as t:
+            td = pathlib.Path(t)
+            stdinlog = td / "stdin.log"
+            proc = self._run_probe_only(td, {"ZB_SELFTEST_STDIN_LOG": str(stdinlog)})
+            self.assertEqual(proc.returncode, 0, f"healthy probe must pass\n{proc.stderr}")
+            streamed = stdinlog.read_text() if stdinlog.exists() else ""
+            self.assertIn("schtasks /Run /TN 'zb-session-probe'", streamed,
+                          "gate must trigger the in-console session task")
+            self.assertIn("nonce.txt", streamed, "gate must write a per-run nonce before triggering")
+
+    def test_session_timeout_fails_closed(self):
+        with tempfile.TemporaryDirectory() as t:
+            proc = self._run_probe_only(pathlib.Path(t), {"ZB_SELFTEST_SESSION_RESULT": "RESULT=TIMEOUT"})
+            self._assert_fail_closed(proc, "session helper")
+
+    def test_session_trigger_failed_fails_closed(self):
+        with tempfile.TemporaryDirectory() as t:
+            proc = self._run_probe_only(pathlib.Path(t),
+                {"ZB_SELFTEST_SESSION_RESULT": "RESULT=TRIGGER_FAILED access denied"})
+            self._assert_fail_closed(proc, "session helper")
+
+    def test_session_ok_passes(self):
+        with tempfile.TemporaryDirectory() as t:
+            proc = self._run_probe_only(pathlib.Path(t),
+                {"ZB_SELFTEST_SESSION_RESULT": "RESULT=OK interactive=True locked=False"})
+            self.assertEqual(proc.returncode, 0, f"a nonce-matching session result must pass\n{proc.stderr}")
+
+
 def _strip_ps_comments(src):
     # Heuristic for our own script: drop each line from its first '#' to EOL. host_probe.ps1 uses '#'
     # only for comments (never inside a string literal), so this cleanly separates code from comments.
@@ -654,6 +732,11 @@ _FS_WRITE_PRIMITIVES = [
     r"\bExport-Csv\b", r"\bExport-Clixml\b",
     r"StreamWriter", r"WriteAllText", r"WriteAllBytes", r"AppendAllText", r"AppendAllLines",
     r"\bschtasks\b", r"\bscp\b",
+    # Future persistence mutations the deny list must also kill (RoseCat SHOULD on 0353dfb):
+    r"RunAndSave", r"\.Save\(", r"DefineDynamicModule\([^,)]*,",  # 2-arg = filename (saved) overload
+    r"FileStream", r"File\.Create", r"\.CreateText\(",
+    r"\bCopy-Item\b", r"\bMove-Item\b", r"\bRemove-Item\b", r"\bRename-Item\b", r"\bmkdir\b",
+    r"CreateDirectory", r"\bStart-Transcript\b", r"\bTee-Object\b",
 ]
 
 

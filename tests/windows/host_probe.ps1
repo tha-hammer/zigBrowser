@@ -125,17 +125,22 @@ try {
 # read, so they come from the in-console session helper's session.json. Absent => $null. The VM readiness
 # requires them (GUI host, helper registered post-snapshot); the physical file server runs no GUI and no
 # helper under the read-only rule, so there they are not_applicable (the FS schema does not require them).
+#
+# NONCE CORRELATION: the gate writes a fresh per-run nonce to zb\runs\session\nonce.txt, then triggers the
+# in-console task which writes that same nonce into session.json. We trust interactive/locked ONLY when the
+# session result carries the EXACT nonce the gate wrote (and is fresh). A stale, replayed, or future
+# session.json has a different/absent nonce and is ignored (interactive stays $null => the gate fails
+# closed). On the file server there is no nonce.txt (no session helper), so these stay $null = not_applicable.
 $interactive = $null; $locked = $null
+$expectedNonce = $null
+try { $expectedNonce = (Get-Content -LiteralPath (Join-Path $env:USERPROFILE 'zb\runs\session\nonce.txt') -Raw -ErrorAction Stop).Trim() } catch {}
 try {
   $sj = Join-Path $env:USERPROFILE 'zb\runs\session\session.json'
-  if (Test-Path -LiteralPath $sj) {
+  if ($expectedNonce -and (Test-Path -LiteralPath $sj)) {
     $sess = Get-Content -LiteralPath $sj -Raw -ErrorAction Stop | ConvertFrom-Json
-    # Correlation: only trust a FRESH session result. A stale session.json left from a previous run or
-    # state must never stand in for this run. (A per-run nonce is the stronger form once the gate triggers
-    # the in-console task; freshness within 15 min is the available correlation today.)
     $fresh = $false
     try { $fresh = ([datetime]::Parse($sess.ts).ToUniversalTime() -gt (Get-Date).ToUniversalTime().AddMinutes(-15)) } catch {}
-    if ($fresh) {
+    if ($fresh -and ("$($sess.nonce)" -eq $expectedNonce)) {
       $interactive = $sess.interactive_session
       $locked      = $sess.locked
     }
@@ -160,34 +165,42 @@ try {
   $shares = @($shareList)
   $me = [Security.Principal.WindowsIdentity]::GetCurrent()
   $mySids = @($me.User.Value) + @($me.Groups | ForEach-Object { $_.Value })
-  # Effective-access oracle, computed PER BIT so Deny precedence is exact: OR every Allow ACE's rights for
-  # my SIDs into $allowMask and every Deny ACE's into $denyMask, then effective = allow AND NOT deny (bit
-  # by bit). A path is writable iff any DANGEROUS (content-mutating) bit survives in the effective mask.
-  # This fixes the composite-mask bug where a Deny of one bit (e.g. WriteAttributes) wrongly suppressed an
-  # Allow of a *different* mutating bit (e.g. WriteData). WriteAttributes/WriteExtendedAttributes are NOT
-  # in the dangerous set, so denying/allowing them never flips the verdict. (SMB share-level permissions
-  # are a separate layer and are out of this NTFS calculation.)
-  $R = [System.Security.AccessControl.FileSystemRights]
-  $DANGER = ([int][System.Security.AccessControl.FileSystemRights]::WriteData) `
-      -bor ([int][System.Security.AccessControl.FileSystemRights]::AppendData) `
-      -bor ([int][System.Security.AccessControl.FileSystemRights]::Delete) `
-      -bor ([int][System.Security.AccessControl.FileSystemRights]::DeleteSubdirectoriesAndFiles) `
-      -bor ([int][System.Security.AccessControl.FileSystemRights]::ChangePermissions) `
-      -bor ([int][System.Security.AccessControl.FileSystemRights]::TakeOwnership)
+  # Effective-access oracle using Windows AccessCheck ACE-ORDER semantics, PER dangerous right: walk the
+  # DACL's ACEs in stored order and, for each content-mutating right, the FIRST ACE (for one of my SIDs)
+  # whose mask includes that right decides it — Allow => granted, Deny => denied — exactly as the kernel
+  # resolves access. A path is writable iff ANY dangerous right ends up granted. This is correct in the
+  # unsafe direction RoseCat flagged: an explicit Allow that precedes a later (e.g. inherited) Deny of the
+  # same right is GRANTED, not masked. WriteAttributes/WriteExtendedAttributes are not dangerous rights, so
+  # they never flip the verdict. (SMB share-level permissions are a separate layer, out of this NTFS calc.)
+  $DANGER_BITS = @(
+    [int][System.Security.AccessControl.FileSystemRights]::WriteData,
+    [int][System.Security.AccessControl.FileSystemRights]::AppendData,
+    [int][System.Security.AccessControl.FileSystemRights]::Delete,
+    [int][System.Security.AccessControl.FileSystemRights]::DeleteSubdirectoriesAndFiles,
+    [int][System.Security.AccessControl.FileSystemRights]::ChangePermissions,
+    [int][System.Security.AccessControl.FileSystemRights]::TakeOwnership)
   $w = @()
   foreach ($sh in $shareList) {
     $p = $sh.path
     try {
       $acl = Get-Acl -LiteralPath $p -ErrorAction Stop
-      $allowMask = 0; $denyMask = 0
+      # Ordered ACEs that apply to my token (preserve DACL order).
+      $myAces = @()
       foreach ($ace in $acl.Access) {
         $sid = $null; try { $sid = $ace.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value } catch {}
         if (-not ($sid -and ($mySids -contains $sid))) { continue }
-        if ($ace.AccessControlType -eq [System.Security.AccessControl.AccessControlType]::Allow) { $allowMask = $allowMask -bor [int]$ace.FileSystemRights }
-        elseif ($ace.AccessControlType -eq [System.Security.AccessControl.AccessControlType]::Deny) { $denyMask = $denyMask -bor [int]$ace.FileSystemRights }
+        $myAces += [pscustomobject]@{
+          allow = ($ace.AccessControlType -eq [System.Security.AccessControl.AccessControlType]::Allow)
+          mask  = [int]$ace.FileSystemRights }
       }
-      $effective = $allowMask -band (-bnot $denyMask)
-      if (($effective -band $DANGER) -ne 0) { $w += $p }
+      $writable = $false
+      foreach ($bit in $DANGER_BITS) {
+        foreach ($a in $myAces) {
+          if (($a.mask -band $bit) -ne 0) { if ($a.allow) { $writable = $true }; break }  # first match wins for this right
+        }
+        if ($writable) { break }
+      }
+      if ($writable) { $w += $p }
     } catch { $w += $p }   # cannot read the ACL => treat as possibly writable (fail-safe, never hide)
   }
   $writePaths = @($w | Sort-Object -Unique)

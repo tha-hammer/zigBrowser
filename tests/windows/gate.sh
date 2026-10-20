@@ -142,23 +142,72 @@ probe_host() { # $1=user $2=host $3=port $4=key $5=known_hosts -> prints the hos
   # The probe script is STREAMED over ssh stdin; it is NEVER copied onto the host. This keeps the Win10
   # file server strictly read-only — nothing is written there, not even in zb\ — and needs no host shell
   # reconfiguration (works with the default cmd.exe DefaultShell, so no cmd.exe 8191-char cap applies).
-  # We do NOT use `powershell -Command -`: reading commands from stdin mis-tokenizes a multi-line
-  # here-string (the probe's `Add-Type -MemberDefinition @'...'@` block), which silently drops the rest
-  # of the script (verified on the VM: empty output, exit 0). Instead `$input | Out-String | iex` reads
-  # the WHOLE piped script as one string and runs it, so here-strings and Add-Type parse correctly.
-  # -EncodedCommand is not an option: the base64 (~30 KB) exceeds the default cmd.exe command-line cap.
+  # We do NOT use `powershell -Command -`: reading commands from stdin mis-tokenizes multi-line
+  # constructs and can silently drop the rest of the script (verified on the VM: empty output, exit 0,
+  # on a multi-line block). `$input | Out-String | iex` reads the WHOLE piped script as one string and
+  # runs it, so every multi-line construct parses correctly. -EncodedCommand is not an option either:
+  # the base64 (~30 KB) exceeds the default cmd.exe command-line cap.
   local -a SSH; mapfile -d '' SSH < <(ssh_opts "$4" "$5")
   run_remote "${SSH[@]}" -p "$3" "$1@$2" \
     'powershell -NoProfile -NonInteractive -Command "$input | Out-String | iex"' < "$HERE/host_probe.ps1"
 }
 
+# ---- WS0.1 in-console session helper (VM ONLY) -------------------------------------------
+# A network (SSH) logon cannot read the console's input-desktop lock state, so interactive_session/locked
+# come from session_probe.ps1, which must run IN the console session. The gate writes a fresh per-run
+# NONCE to the VM, triggers the pre-registered console scheduled task (zb-session-probe), and waits for a
+# session.json carrying that exact nonce (bounded timeout). host_probe then trusts interactive/locked only
+# when session.json's nonce matches nonce.txt. This is VM-only: the read-only file server runs no helper,
+# so run_session_probe is never called against it and nothing is written there.
+SESSION_TIMEOUT="${ZB_SESSION_TIMEOUT:-60}"
+run_session_probe() { # $1=user $2=host $3=port $4=key $5=known_hosts $6=nonce -> prints a RESULT= line
+  local -a SSH; mapfile -d '' SSH < <(ssh_opts "$4" "$5")
+  local ps
+  ps=$(cat <<'PS'
+$ErrorActionPreference='Stop'
+$dir = Join-Path $env:USERPROFILE 'zb\runs\session'
+New-Item -ItemType Directory -Force -Path $dir | Out-Null
+Set-Content -LiteralPath (Join-Path $dir 'nonce.txt') -Value '__NONCE__' -NoNewline -Encoding ascii
+Remove-Item -LiteralPath (Join-Path $dir 'session.json') -ErrorAction SilentlyContinue
+try { schtasks /Run /TN 'zb-session-probe' | Out-Null } catch { Write-Output ('RESULT=TRIGGER_FAILED ' + $_.Exception.Message); exit 0 }
+$deadline = (Get-Date).AddSeconds(__TIMEOUT__)
+while ((Get-Date) -lt $deadline) {
+  Start-Sleep -Milliseconds 1500
+  $sj = Join-Path $dir 'session.json'
+  if (Test-Path -LiteralPath $sj) {
+    try {
+      $s = Get-Content -LiteralPath $sj -Raw | ConvertFrom-Json
+      if ("$($s.nonce)" -eq '__NONCE__') { Write-Output ('RESULT=OK interactive=' + $s.interactive_session + ' locked=' + $s.locked); exit 0 }
+    } catch {}
+  }
+}
+Write-Output 'RESULT=TIMEOUT'
+PS
+)
+  ps=${ps//__NONCE__/$6}
+  ps=${ps//__TIMEOUT__/$SESSION_TIMEOUT}
+  run_remote timeout "$((SESSION_TIMEOUT + 25))" "${SSH[@]}" -p "$3" "$1@$2" \
+    'powershell -NoProfile -NonInteractive -Command "$input | Out-String | iex"' <<<"$ps"
+}
+
 validate_probes() { # $1=vm_json $2=fs_pre $3=fs_post ; ALLOW to stdout, fail reason to stderr
-  python3 - "$1" "$2" "$3" "${ZB_WIN11_MARKER:-}" "${ZB_WIN10_USER:-zbtest}" "${ZB_WIN10_MARKER:-}" "${ZB_WIN11_USER:-zbtext}" <<'PY'
-import sys, json
-vm, fs_pre, fs_post, win11_marker, win10_user, win10_marker, win11_user = sys.argv[1:8]
+  python3 - "$1" "$2" "$3" "${ZB_WIN11_MARKER:-}" "${ZB_WIN10_USER:-zbtest}" "${ZB_WIN10_MARKER:-}" "${ZB_WIN11_USER:-zbtext}" "${ZB_WIN10_LISTEN:-${ZB_WIN10_HOST:-}}" <<'PY'
+import sys, json, math, ntpath
+vm, fs_pre, fs_post, win11_marker, win10_user, win10_marker, win11_user, win10_listen = sys.argv[1:9]
 def _build_int(x):
     try: return int(str(x or "0").strip())
     except ValueError: return 0
+def _is_finite_num(x):
+    return isinstance(x, (int, float)) and not isinstance(x, bool) and math.isfinite(x)
+def _is_abs_win_path(p):
+    # Drive-absolute (C:\...), never UNC/relative/drive-relative. Mirrors the WS0.5 path fence.
+    if not isinstance(p, str) or not p.strip(): return False
+    n = ntpath.normpath(p)
+    drive, _ = ntpath.splitdrive(n)
+    return bool(drive) and not drive.startswith("\\\\") and n[len(drive):].startswith("\\")
+# The file server's required baseline listeners (plan WS0.7); overridable for other layouts.
+import os
+_BASELINE = set(int(x) for x in (os.environ.get("ZB_WIN10_BASELINE_PORTS", "22,135,139,445,3389")).split(",") if x.strip())
 def load(s, who):
     try:
         return json.loads(s)
@@ -196,8 +245,8 @@ if not isinstance(v.get("webview2_pv"), str) or not v.get("webview2_pv").strip()
 # VM free-space bar is 10 GB, not 20: the KVM host disk is ~97% full so the VM image cannot grow, and a
 # zigBrowser build plus the WebView2 runtime fit comfortably in ~13 GB (orchestrator decision 2026-10-20;
 # see the plan's WS0 free-space note). The physical file server keeps the 20 GB bar (it has ample disk).
-if not isinstance(v.get("free_gb"), (int, float)) or isinstance(v.get("free_gb"), bool) or v.get("free_gb") < 10:
-    sys.stderr.write("win11: free_gb %r is below 10\n" % v.get("free_gb")); sys.exit(1)
+if not _is_finite_num(v.get("free_gb")) or v.get("free_gb") < 10:
+    sys.stderr.write("win11: free_gb %r is not a finite number >= 10\n" % v.get("free_gb")); sys.exit(1)
 vm_root_expected = "C:\\Users\\%s\\zb" % win11_user
 if not isinstance(v.get("root"), str) or v.get("root").strip().rstrip("\\").lower() != vm_root_expected.lower():
     sys.stderr.write("win11: root %r is not the pinned %r\n" % (v.get("root"), vm_root_expected)); sys.exit(1)
@@ -211,14 +260,24 @@ if not isinstance(v.get("root"), str) or v.get("root").strip().rstrip("\\").lowe
 def _is_port_list(x):
     return isinstance(x, list) and all(isinstance(p, int) and not isinstance(p, bool) and 0 <= p <= 65535 for p in x)
 def _is_share_list(x):
-    # Typed shares: each is {name, path}, both NONEMPTY, so a rename/alias (same path, new share name)
-    # is detected AND an empty-string identity ({name:'',path:''}) cannot masquerade as a real share.
-    return isinstance(x, list) and all(
-        isinstance(s, dict)
-        and isinstance(s.get("name"), str) and s.get("name").strip()
-        and isinstance(s.get("path"), str) and s.get("path").strip() for s in x)
+    # Typed shares: each is {name, path}, name NONEMPTY and path a DRIVE-ABSOLUTE, normalized Windows
+    # path (never relative/UNC — a relative share path is malformed and must not pass). This detects a
+    # rename/alias (same path, new share name) and refuses an empty-string or relative identity.
+    if not isinstance(x, list): return False
+    for s in x:
+        if not (isinstance(s, dict) and isinstance(s.get("name"), str) and s.get("name").strip()): return False
+        if not _is_abs_win_path(s.get("path")): return False
+    return True
+def _no_dup_shares(x, who):
+    # No duplicate share names and no duplicate served paths (an alias of either is a disturbance risk).
+    names = [str(s.get("name")).strip().lower() for s in x]
+    paths = [ntpath.normpath(str(s.get("path"))).lower() for s in x]
+    if len(set(names)) != len(names):
+        sys.stderr.write("file-server (%s): duplicate share name in %s\n" % (who, names)); sys.exit(1)
+    if len(set(paths)) != len(paths):
+        sys.stderr.write("file-server (%s): duplicate served path in %s\n" % (who, paths)); sys.exit(1)
 def _share_key(s):
-    return (s.get("name"), s.get("path"))
+    return (str(s.get("name")).strip().lower(), ntpath.normpath(str(s.get("path"))).lower())
 def require_schema(probe, who):
     # identity: the physical file server is pinned by its SSH host key ALONE (StrictHostKeyChecking=yes +
     # the pinned known_hosts), per the orchestrator's read-only rule — no nonce file is ever written there,
@@ -232,8 +291,9 @@ def require_schema(probe, who):
         sys.stderr.write("file-server (%s): zbtest_write_paths missing or not a list\n" % who); sys.exit(1)
     if not _is_port_list(probe.get("listeners")):
         sys.stderr.write("file-server (%s): listeners missing or not a list of ports\n" % who); sys.exit(1)
-    if 22 not in probe.get("listeners"):
-        sys.stderr.write("file-server (%s): baseline sshd port 22 is not listening\n" % who); sys.exit(1)
+    missing_base = sorted(_BASELINE - set(probe.get("listeners")))
+    if missing_base:
+        sys.stderr.write("file-server (%s): baseline listeners %s are not all present (missing %s)\n" % (who, sorted(_BASELINE), missing_base)); sys.exit(1)
     fw = probe.get("fw_rules_hash")
     if not isinstance(fw, str) or not fw.strip():
         sys.stderr.write("file-server (%s): fw_rules_hash missing or empty\n" % who); sys.exit(1)
@@ -241,7 +301,8 @@ def require_schema(probe, who):
     if probe.get("schema") != 2:
         sys.stderr.write("file-server (%s): probe schema is %r, expected 2\n" % (who, probe.get("schema"))); sys.exit(1)
     if not _is_share_list(probe.get("shares")):
-        sys.stderr.write("file-server (%s): shares missing or not a list of {name, path} objects\n" % who); sys.exit(1)
+        sys.stderr.write("file-server (%s): shares missing, or a share has an empty name or a non-absolute path\n" % who); sys.exit(1)
+    _no_dup_shares(probe.get("shares"), who)
     if str(probe.get("test_user", "")).split("\\")[-1].lower() != win10_user.lower():
         sys.stderr.write("file-server (%s): test_user %r is not %s\n" % (who, probe.get("test_user"), win10_user)); sys.exit(1)
     if probe.get("native_arch") != "x64":
@@ -251,16 +312,17 @@ def require_schema(probe, who):
     fs_root_expected = "C:\\Users\\%s\\zb" % win10_user
     if not isinstance(probe.get("root"), str) or probe.get("root").strip().rstrip("\\").lower() != fs_root_expected.lower():
         sys.stderr.write("file-server (%s): root %r is not the pinned %r\n" % (who, probe.get("root"), fs_root_expected)); sys.exit(1)
-    if not isinstance(probe.get("free_gb"), (int, float)) or isinstance(probe.get("free_gb"), bool) or probe.get("free_gb") < 20:
-        sys.stderr.write("file-server (%s): free_gb %r is below 20\n" % (who, probe.get("free_gb"))); sys.exit(1)
-    # sshd network fence: ListenAddress must be a concrete (tailnet) address, NOT a wildcard/all-interfaces
-    # bind, and AllowUsers must be EXACTLY the test user — enforce the values, not just the list type.
+    if not _is_finite_num(probe.get("free_gb")) or probe.get("free_gb") < 20:
+        sys.stderr.write("file-server (%s): free_gb %r is not a finite number >= 20\n" % (who, probe.get("free_gb"))); sys.exit(1)
+    # sshd network fence: ListenAddress must be EXACTLY the pinned tailnet address (not just a non-wildcard),
+    # and AllowUsers must be EXACTLY the test user — enforce the values, not just the list type.
     sl = probe.get("sshd_listen")
-    if not isinstance(sl, list) or not sl:
-        sys.stderr.write("file-server (%s): sshd_listen missing or empty\n" % who); sys.exit(1)
-    wild = [a for a in sl if str(a).strip() in ("0.0.0.0", "*", "::", "[::]", "::0")]
-    if wild:
-        sys.stderr.write("file-server (%s): sshd ListenAddress binds a wildcard/all-interfaces address %s (must be tailnet-only)\n" % (who, wild)); sys.exit(1)
+    if not isinstance(sl, list) or not sl or not all(isinstance(a, str) and a.strip() for a in sl):
+        sys.stderr.write("file-server (%s): sshd_listen missing, empty, or not a list of nonempty strings\n" % who); sys.exit(1)
+    if not win10_listen.strip():
+        sys.stderr.write("file-server (%s): no expected ListenAddress configured (set ZB_WIN10_LISTEN or ZB_WIN10_HOST)\n" % who); sys.exit(1)
+    if {a.strip() for a in sl} != {win10_listen.strip()}:
+        sys.stderr.write("file-server (%s): sshd ListenAddress %r is not exactly the pinned tailnet address [%s]\n" % (who, sl, win10_listen.strip())); sys.exit(1)
     au = probe.get("sshd_allowusers")
     if not isinstance(au, list):
         sys.stderr.write("file-server (%s): sshd_allowusers missing or not a list\n" % who); sys.exit(1)
@@ -353,6 +415,17 @@ probe_only() { # WS0.6 (VM identity) + WS0.7 (file-server fence) across both hos
   # defaults under win10-fs. ZB_WIN10_KEY still overrides if a separate key is ever issued.
   local fs_key="${ZB_WIN10_KEY:-${ZB_WIN_KEY:-/home/maceo/vms/win11-m8/zb_win_key}}"
   local fs_kh="${ZB_WIN10_KNOWN_HOSTS:-${ZB_WIN_KNOWN_HOSTS:-/home/maceo/vms/win10-fs/known_hosts}}"
+  # WS0.1: trigger the in-console session helper on the VM with a fresh per-run nonce and AWAIT a
+  # nonce-matching session.json (bounded). No manual console step. If it does not return OK, fail closed
+  # before any probe — a VM with no fresh, nonce-correlated session result is not ready.
+  local nonce sres
+  nonce="ws0-$(date -u +%Y%m%dT%H%M%SZ)-$$-${RANDOM}${RANDOM}"
+  sres=$(run_session_probe "${ZB_WIN11_USER:-zbtext}" "$ZB_WIN11_HOST" "${ZB_WIN11_PORT:-2222}" "$vm_key" "$vm_kh" "$nonce")
+  echo "WS0.1: VM session-probe -> $sres" >&2
+  case "$sres" in
+    *RESULT=OK*) : ;;
+    *) echo "NOT RUN: VM in-console session helper did not return a fresh nonce-matching result ($sres)" >&2; return 1 ;;
+  esac
   vm_json=$(probe_host "${ZB_WIN11_USER:-zbtext}" "$ZB_WIN11_HOST" "${ZB_WIN11_PORT:-2222}" "$vm_key" "$vm_kh")
   fs_pre=$(probe_host "${ZB_WIN10_USER:-zbtest}" "$ZB_WIN10_HOST" "${ZB_WIN10_PORT:-22}" "$fs_key" "$fs_kh")
   # A full gate runs the product tests here; --probe-only re-probes to catch any change (WS0.7).

@@ -60,6 +60,12 @@ if ($h -ne [IntPtr]::Zero) {
   $locked = $true
 }
 
+# Per-run nonce: the gate writes it to nonce.txt in $OutDir just before triggering this task; we echo it
+# back into session.json so the gate's probe trusts this result only when the nonce matches (replay/stale
+# protection). Absent nonce => $null (the gate then fails closed — a result with no nonce is not trusted).
+$nonce = $null
+try { $nonce = (Get-Content -LiteralPath (Join-Path $OutDir 'nonce.txt') -Raw -ErrorAction Stop).Trim() } catch {}
+
 $o = [ordered]@{
   schema              = 1
   console_session_id  = $console
@@ -69,6 +75,7 @@ $o = [ordered]@{
   locked              = $locked
   interactive_session = ($inConsole -and -not $locked)
   console_user        = $consoleUser
+  nonce               = $nonce
   ts                  = (Get-Date).ToString('o')
 }
 New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
