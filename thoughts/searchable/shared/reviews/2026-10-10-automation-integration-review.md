@@ -14361,3 +14361,24 @@ must fail a gate before the invariant set lands. This commit does not close
 `dbf74b5`'s eval/navigate/await generation, late-write, failure-mapping or
 beforeunload blockers. No full gate was run because BlackRobin owns the slot.
 Verdict sent in Agent Mail 6279.
+
+### Auth-test seam plan rev 16.18.15 (`4a99a6f`)
+
+**APPROVED.** The provider-test seam now has one app-owned decision before an
+auth window exists: absent, ignored without `--e2e-protocol`, refused with the
+stable reason `shape`, `proxy` or `ca`, or accepted with a parsed loopback port
+and CA path. The exact decimal-port grammar, no-follow regular-file and size
+check, fixed result vocabulary and display-free unit red make the boundary
+testable without constructing GTK/WebKit state. A certificate which passes the
+path checks but cannot be parsed remains a second C-side `ca` refusal when the
+window is created; the implementation must preserve the earlier rule that a
+Zig-side refusal creates no auth window. Verdict sent in Agent Mail 6290.
+
+**S5d advisory.** `agent_prompt_scope_test.py::case_stale_result` is not a
+false red: after rejecting stale `result(1)`, prompt 2 deliberately remains
+active until its still-armed cap timer interrupts it, and only then does queued
+prompt 3 run and end normally. That directly tests the plan's stale-result
+overflow invariant. The plan's later sentence that *each* case lets the new
+prompt end normally is inaccurate for this one case and should distinguish the
+named overflow ending from the ordinary endings. This wording issue does not
+block the red suite; it was sent to BlackRobin in Agent Mail 6290.
