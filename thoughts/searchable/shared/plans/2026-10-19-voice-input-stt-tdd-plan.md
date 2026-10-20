@@ -6,9 +6,10 @@ branch: zb-automation-integration-2026-10-10-11-59
 repository: zigBrowser
 topic: "Voice input (speech-to-text) with whisper.cpp — TDD implementation plan"
 tags: [plan, tdd, voice, stt, whisper.cpp, microphone, agent-drawer, macos, windows, linux, model-management, miniaudio]
-status: plan for review (rev 2.1)
-rev: 2.1
+status: plan for review (rev 2.2)
+rev: 2.2
 last_updated: 2026-10-20
+last_updated_note_2_2: "Rev 2.2 (2026-10-20): macOS paths made as concrete as the Windows ones AND RoseCat's re-review drift cleared. VF §4 is now byte-identical to the TTS plan's §2.4 between explicit VF:BEGIN/VF:END markers (a proposed tools/check_vf_identical.sh asserts diff is empty); the VF privacy oracle allowlists exactly the test's declared FileSink artifact; automated gates are Null/WAV/FileSink only (VS10's live mic moved to the manual win-voice-live check). The §4a contracts are folded into the owning slices as concrete reds: VS4.7 async epoch/cancel/close/restart, VS4.6+VS4.8 the unforgeable capture capability + sandbox negatives, VS5.8 the first-use privacy notice (no capture before Accept / decline / persistence / corrupt re-prompt), VSP.5 upgrade/repair/downgrade/tamper/orphan, VSP.6 the orchestrator-only remote model-transfer, and concrete reds for VS9/VS11. SHOULD: whisper_init_from_buffer_with_params (nondeprecated 1.9.5). macOS entitlement/census deltas are proposed to JadeBeacon, not edited into his plan."
 last_updated_note: "Rev 2.1 (2026-10-20): major revision clearing RoseCat's 9a6973b / 9663333 voice-plan review (NOT APPROVED). The shared subsystems are now specified once in §4 Shared Voice Foundation (VF), byte-identical in the TTS plan: one path set (src/voice/*, src/voice_settings_window.c), one audio API, one owner, one voice.json schema with migration + lock + single writer, verify-through-consumption model loading (whisper_init_from_buffer), the render-to-file/null test-device rule, and a native ZbChild interface (not the Python agent SandboxBackend). The dictation state machine (D4) gains an epoch/session token and stale-result rejection; a headless native permission contract and the VS5/VS8 privacy-notice UI assertions are added; the macOS mic source is bound to the signing/census route; a range-aware insert ABI replaces zb_drawer_set_draft; the medium verify/load race is closed and installer upgrade/repair/downgrade/tamper/orphan tests added; failing-first is made executable for VS0.2/VS9-VS11/VSP; live capture is put behind an unforgeable capability; and remote packaging gets a model-transfer protocol. No user decision is changed; open decisions are sharpened only. Rev 2 (2026-10-19): recorded the user's decisions — bundle the model (O2), Windows launch plan dependency, Windows 10 support; VS2 optional; VSP added."
 primary_research: thoughts/searchable/shared/research/2026-10-19-voice-input-stt.md
 prior_research: /home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/research/2026-10-19-voice-recognition-options.md
@@ -247,7 +248,7 @@ The user decided to bundle the model (0.2.4). There is no first-run download.
   - `ZIGBROWSER_MODEL_DIR` overrides all of these, for tests.
   - The locator takes the executable path, the OS tag and the environment as inputs, so all three layouts are unit-tested on Linux.
 - **First-load check (run time):**
-  - The engine verifies size + SHA-256 against the compiled catalog once per process and then loads **the verified bytes** via `whisper_init_from_buffer` (VF's verify-through-consumption, §4) — it never re-opens the path for the load, so a swap at the verify/use seam cannot reach whisper.
+  - The engine verifies size + SHA-256 against the compiled catalog once per process and then loads **the verified bytes** via `whisper_init_from_buffer_with_params` (VF's verify-through-consumption, §4) — it never re-opens the path for the load, so a swap at the verify/use seam cannot reach whisper.
   - Hashing 0.8 to 1.5 GB takes seconds, not milliseconds; VS1 measures it. It runs on the engine thread while the status shows "Preparing voice…", so the UI never blocks.
   - A cached verify record keyed by `(size, mtime, inode)` is the refactor option if the hash cost hurts.
   - A missing or damaged file disables voice input with "The voice model is missing or damaged. Reinstall zigBrowser." It never loads an unverified file.
@@ -334,14 +335,19 @@ These are three different features, and none of them is drawer dictation:
 
 The plan recommends drawer-only for v1 and lists VW as a later track.
 
-## 4. Shared Voice Foundation (VF) — one slice, one owner (byte-identical in the TTS plan)
+## 4. Shared Voice Foundation (VF) — one slice, one owner
 
-> **This section is the single source of truth for everything the TTS and STT plans share. It is
-> byte-identical in both plans; any change lands in both, in the same commit.** It replaces the
-> conflicting shared definitions the review flagged (TTS review 2/3; STT review 1; `9663333`
-> TTS/STT BLOCKER 1-2). The earlier "named the same, whichever lands first owns it" arrangement is
-> withdrawn — it let the first implementation choose an incompatible ABI. Every slice below that
-> uses a shared piece declares a `depends on VF` edge (§11).
+The bytes between the `VF:BEGIN` and `VF:END` markers below are **byte-identical in the sibling TTS
+plan** (TTS §2.4). They are the single source of truth for everything the two plans share; a change
+lands in both plans in the **same commit**, and `tools/check_vf_identical.sh` (proposed; see §13)
+asserts `diff` of the two marked regions is empty, so the copies cannot drift (RoseCat shared
+BLOCKER 1). Plan-specific notes stay **outside** the markers.
+
+<!-- VF:BEGIN -->
+> **This section is the single source of truth for everything the TTS and STT plans share. The bytes
+> between VF:BEGIN and VF:END are byte-identical in both plans; any change lands in both, in the same
+> commit.** It replaces the conflicting shared definitions the review flagged (shared review 1;
+> `9663333` TTS/STT BLOCKER 1-2).
 
 **Owner and order.** VF is **one slice**, landed **once**, before any consumer slice in either
 plan. It is owned by a single implementing agent (the orchestrator assigns them; it is **not**
@@ -364,10 +370,10 @@ and its "Browser voice" settings section. Every consumer slice in either plan ca
 | `src/voice_mac.m`, `src/voice_win.cpp` | OS permission / usage-string glue (microphone; Personal Voice) |
 
 The TTS plan's former `src/audio.zig`, `src/audio.c`, `src/models.zig`, `src/voice_settings.zig`,
-`src/voice_window.c` are **withdrawn** — TTS uses the paths above (the STT layout is canonical). The
-engine/core files that are **not** shared stay plan-private: TTS `src/speech_text.zig`,
-`speech_chunker.zig`, `speech_queue.zig`, `speech_params.zig`, `speech.h`, `speech_backend.h`,
-`zb-speech`; STT `src/voice/stt_engine.zig`, `whisper_engine.zig`, `dictation.zig`.
+`src/voice_window.c` are **withdrawn** — TTS uses the paths above. The engine/core files that are
+**not** shared stay plan-private: TTS `src/speech_text.zig`, `speech_chunker.zig`,
+`speech_queue.zig`, `speech_params.zig`, `speech.h`, `speech_backend.h`, `zb-speech`; STT
+`src/voice/stt_engine.zig`, `whisper_engine.zig`, `dictation.zig`.
 
 **One audio API.** `AudioSource`/`AudioSink` are vtable interfaces over blocks of f32 samples.
 Capture always delivers **16 kHz mono f32 in [-1,1]**; playback runs at the producer's rate. One
@@ -391,7 +397,7 @@ ends the session with `error device-lost` and never hangs.
 
 **Model integrity pinned through consumption.** The loader verifies size + SHA-256 and then loads
 **the verified bytes**, never a re-opened path:
-- STT: `whisper_init_from_buffer(verified_bytes)` (not `whisper_init_from_file`).
+- STT: `whisper_init_from_buffer_with_params(verified_bytes, params)` (not `whisper_init_from_file`).
 - TTS/ONNX: `OrtCreateSessionFromArray(verified_bytes)` (not a path), or a single OS handle opened
   once, verified, and memory-mapped for the load.
 - A `(size, mtime, inode)` record is a **performance hint only**, never the identity proof.
@@ -402,11 +408,14 @@ ends the session with `error device-lost` and never hangs.
 
 **The test-device rule (automated runs never touch a real device).** Every automated run uses the
 miniaudio **Null** backend, a `WavFileSource`/`SilenceSource`, and a render-to-file **`FileSink`** —
-never Core Audio/WASAPI/PulseAudio/ALSA, and never a "muted real device". A hermetic **write
+never Core Audio/WASAPI/PulseAudio/ALSA, and never a "muted real device". A hermetic **privacy write
 oracle** runs the process in a test-owned temp/mount namespace with a file-open census and asserts
-**no audio-derived bytes are written anywhere** on complete/cancel/error, and every PCM/transcript
-buffer is zeroed (`std.crypto.secureZero`) at session end. Only the orchestrator's user-approved
-`real_audio_check` / `real_screen_check` open a physical device.
+that, on complete/cancel/error, **no audio-derived bytes are written anywhere EXCEPT the one
+`FileSink` artifact path the test explicitly declared** (the oracle allowlists exactly that path, and
+a render-to-file test asserts the artifact exists; every other audio-derived write — temp, log, cwd —
+fails the test). A dictation/no-output test declares **no** `FileSink`, so any audio-derived write
+fails. Every PCM/transcript buffer is zeroed (`std.crypto.secureZero`) at session end. Only the
+orchestrator's user-approved `real_audio_check` / `real_screen_check` open a physical device.
 
 **The native arbitrary-child interface `ZbChild` (NOT the agent `SandboxBackend`).** The production
 `SandboxBackend` is a **Python, agent-home-specific** launch contract
@@ -423,19 +432,20 @@ implemented per OS:
 - Linux reuses bwrap-style confinement where it fits; macOS uses the macOS plan's MS6 Seatbelt
   profile; Windows uses the Windows plan's **WS8.7** no-network `zb-speech` sandbox user + WFP.
 - VF names the interface and ships the Linux impl + reds; each platform slice (M1, W1) implements
-  and live-verifies its own. (STT itself needs no child today — whisper runs in-process — but shares
-  the interface for the TTS engine and for any future out-of-process STT.)
+  and live-verifies its own.
 
 **VF red suite + dependency edges.** VF ships, each red-first on Linux: `voice/audio.zig` +
 `audio_miniaudio.c` (Null + WavFile + FileSink), `voice/models.zig` + `build/voice_model.zig`
 (catalog + verify-through-consumption), `voice/voice_config.zig` (schema + migrate + lock),
 `voice_settings_window.c` (shell + section registry), `voice/consent.zig`, and `ZbChild` (Linux).
-Consumers declaring `depends on VF`: STT VS3, VS1, VS4, VS5, VS6, VS7-VS11, VSP; TTS V2, V3, V3.0,
-V5, C1-C3, M1/M2, W1/W2, CW.
+Consumers declaring `depends on VF` — TTS: V2, V3, V3.0, V5, C1-C3, M1, M2, W1, W2, CW. STT: VS1,
+VS3, VS4, VS5, VS6, VS7, VS8, VS9, VS10, VS11, VSP.
+<!-- VF:END -->
 
-The STT rows that this VF section supersedes — the old "Rows and seams" shared row — keep their
-`--e2e-protocol` gating rule (D6): STT emits `DRAWER voice …` / `VOICE model …`, TTS emits
-`VOICE tts …`.
+**STT-specific notes (outside VF).** STT itself needs no native child today — whisper runs
+in-process — but it shares VF's `ZbChild` interface for the TTS engine and any future out-of-process
+STT. The `--e2e-protocol` rows this section covers (D6): STT emits `DRAWER voice …` / `VOICE model`
+…`, TTS emits `VOICE tts …`.
 
 ## 4a. Review-clearing contracts (rev 2.1)
 
@@ -480,7 +490,7 @@ test in the slice named.
    default artifact; O1 stays the user's decision but is **sharpened** (§5): `q5_0` (539 MB, lowest
    accuracy), `q8_0` (823 MB, near-f16 accuracy, recommended default pending O1), `f16` (1.53 GB,
    reference accuracy, 2× install). The verify/load race is closed by **VF's
-   verify-through-consumption** (`whisper_init_from_buffer` over the verified bytes; no reopen; the
+   verify-through-consumption** (`whisper_init_from_buffer_with_params` over the verified bytes; no reopen; the
    `(size,mtime,inode)` cache is a perf hint only). VSP tests cover not just fresh install but
    **upgrade, repair, downgrade, tamper (swapped/truncated file at the verify/use seam), and orphan
    cleanup** of an old model on upgrade.
@@ -662,7 +672,7 @@ The real-screen script gains these cases. The input guard (drawer plan §7.1) ap
 
 ### 9.2 ClosureMap V-B: the bundled model reaches the engine (rev 2; replaces the download chain)
 
-`cached model file → voice-model-check (build: size + SHA-256 vs catalog) → install step copies to share/zigbrowser/models/stt/ → packaging puts it in the .app / MSI / .deb → installed app starts → first dictation → models.locate (bundled resource dir) → first-load verify (engine thread) → whisper_init_from_buffer over the verified bytes → VOICE model <id> ready row + Voice settings shows "Ready"`
+`cached model file → voice-model-check (build: size + SHA-256 vs catalog) → install step copies to share/zigbrowser/models/stt/ → packaging puts it in the .app / MSI / .deb → installed app starts → first dictation → models.locate (bundled resource dir) → first-load verify (engine thread) → whisper_init_from_buffer_with_params over the verified bytes → VOICE model <id> ready row + Voice settings shows "Ready"`
 
 - BLOCKING: build-to-package-to-run crosses three registration boundaries (build step, packaging script, app start) and one async edge (the engine thread verifying, then an idle back to GTK).
 - SOURCE: the cached model file (the medium file in packaging gates; a small fake model with an injected catalog entry, `ZB_E2E_MODEL_CATALOG`, inert without `--e2e-protocol`, in the per-commit gate).
@@ -894,7 +904,18 @@ If none is chosen, VS2 is dropped. When it is built, O5 (download host) comes ba
 - LEAF for parsing; the run is a Tier-2 integration test.
 - **Files touched:** `src/cli.zig`, `src/app.zig`, `src/voice/dictation.zig`, `tests/e2e/voice_selftest_test.py` (new).
 
-**Gate (VS4):** Linux gate + `voice-core` unit and integration steps. Not a UI slice.
+#### Behavior VS4.7: async lifetime — the epoch rejects every stale callback (clears §4a #1, review #1)
+- **Given / When / Then:** each session carries an epoch `(win, u64)`; `cancel` bumps it and is idempotent (a second cancel is a no-op). A permission, preparing, transcription, queued-result or idle callback whose epoch ≠ the window's current epoch is **dropped before it touches the drawer**. Close/restart joins/drains in a fixed order (stop capture → abort → join worker → `secureZero` → free).
+- 🔴 **Reds (each a mutant that flips it):** a late transcription delivered **after** cancel inserts nothing; a result delivered **after** close targets no drawer and the live-session count stays 0; a **restart during transcription** does not let the old session's result land. Mutant: ignore the epoch on the callback ⇒ a stale insert ⇒ red.
+- **Files touched:** `src/voice/dictation.zig` (epoch, idempotent cancel, join order), `tests/e2e/voice_async_lifetime_test.py` (new).
+
+#### Behavior VS4.8: live capture is unreachable from agent/hook code (clears §4a #8, review #8)
+- **Given / When / Then:** `--voice-selftest` and `--voice-capture-probe` require an **unforgeable inherited capability** — a descriptor/handle the browser passes only to itself — **in addition to** `--e2e-protocol`; without the capability they are usage (exit 2), so a sandboxed agent/hook that re-execs the binary cannot start capture. (Or they are built only into a test-only binary; the plan picks the capability form in the green.)
+- 🔴 **Negative reds from every real sandbox:** from the agent helper's sandbox and from each hook's sandbox, an attempt to invoke a live-capture entry point **fails** — not merely "no frame/tool/socket method names it", but the entry point itself refuses without the capability. Mutant: gate on `--e2e-protocol` alone ⇒ the sandboxed re-exec reaches capture ⇒ red.
+- This slice **owns the sandbox-capture negatives** (they are not left to a summary). The agent-sandbox allowlist (`sandbox.py:51`) is unchanged; the agent never touches audio.
+- **Files touched:** `src/cli.zig` (capability check), `src/app.zig`, `tests/e2e/voice_capture_capability_test.py` (new), reused agent/hook sandbox harnesses.
+
+**Gate (VS4):** Linux gate + `voice-core` unit and integration steps + `voice-async-lifetime` + `voice-capture-capability`. Not a UI slice.
 
 ---
 
@@ -930,6 +951,11 @@ If none is chosen, VS2 is dropped. When it is built, O5 (download host) comes ba
 #### Behavior VS5.7: the agent cannot start dictation
 - **Given / When / Then:** scripted `tool_use` for every registered tool name, plus raw frames of every type, never produce a `voice listening` row. A static census shows no caller of `dictation.start` other than the GTK handlers.
 - LEAF (negative evidence).
+
+#### Behavior VS5.8: the first-use privacy notice gates the first capture (clears §4a #2, review #2)
+- **Given / When / Then:** on the **first** Mic click with no stored consent, the drawer shows the notice ("Dictation runs on this device. Audio is not saved or sent.") with Accept / Not now, and **no audio is captured before Accept** (the capture source is not opened; a census proves zero `AudioSource.start`). Accept persists the consent (`consent.zig` key `stt.first_use`) and starts the session; **Not now** leaves the Mic insensitive and captures nothing. The choice persists across restarts. A **corrupt or missing** consent record **re-prompts** (never silently allows); a settings "reset voice consent" re-prompts. On Windows there is **no OS prompt**, so this app notice is the only gate; on macOS it precedes the TCC prompt (VS8).
+- 🔴 **Reds (mutants):** capture opened before Accept ⇒ the no-capture census fails; a corrupt consent record that silently allows ⇒ red; Not now that still starts a session ⇒ red.
+- **Files touched:** `src/voice/consent.zig` (the `stt.first_use` record + corrupt/reset handling), `src/agent_drawer.c` (the notice UI + the no-capture-before-accept gate), `tests/e2e/voice_consent_test.py` (new), and the headless native permission contract `tests/e2e/voice_permission_contract_test.py` (§4a #2).
 
 **Files touched (VS5):** `src/agent_drawer.c` (Mic button in `build_panel`, `:1234-1251`; handlers; idle insert; Escape precedence; rows), `src/agent_drawer.h`, `src/voice/dictation.zig` (C exports `zb_voice_*`), `src/voice/voice_config.zig`, `src/cli.zig`, `src/app.zig`, `build.zig` (new C/Zig sources in `configureGtkBackend`; new e2e step), `tests/e2e/voice_drawer_test.py` (new), `tests/e2e/agent_common.py` (canary helper reuse), `tests/manual/real_screen_check.py` (cases `drawer-voice-idle`, `drawer-voice-live`).
 - Production callers and registration: `on_mic_clicked` is connected in `build_panel` next to `:1278-1281`; `zb_voice_on_result` runs from a `g_idle_add` scheduled by the engine thread.
@@ -1037,9 +1063,11 @@ Rev 2: no download or consent UI, because the model is bundled (0.2.4).
 **Depends on:** **MS7** (the AppKit drawer; macOS plan `:1183-1258`), VS8. Signed-run claims depend on MS1b.
 
 #### Behaviors
-- **VS9.1-VS9.6** repeat VS5.2-VS5.7 on `src/agent_drawer_mac.m`: an `NSButton` Mic in the composer, the indicator, the insert at the `NSTextView` selection (`insertText:replacementRange:`), never auto-send, Escape precedence, one session per process, agent cannot start.
+- **VS9.1-VS9.6** repeat VS5.2-VS5.7 on `src/agent_drawer_mac.m`: an `NSButton` Mic in the composer, the indicator, the insert at the `NSTextView` selection (`insertText:replacementRange:`, the **range-aware** insert of §4a #4 — cursor insert + selection replace), never auto-send, Escape precedence, one session per process, agent cannot start. **VS9.7** folds in VS5.8's first-use notice + denial UI on AppKit (VS8 is the headless permission layer and does **not** own drawer UI; the Mac denial UI lives here).
 - They are observed through MS7.7's gated `--e2e-protocol` native drawer census, never a production socket read.
 - **Closure:** as VS5, with the TRIGGER being a real `NSEvent` click (MS7's real-screen rules) or the census-driven seam MS7 defines for automated runs. The OBSERVE is MS7's `msg user` census row after the user's Return.
+- 🔴 **Reds (each a mutant, against MS7's census seam):** dictated text that lands outside the selection range (not range-aware) ⇒ red; a result that calls send/Enter ⇒ a `msg user` row before Return ⇒ red; the first-use notice skipped ⇒ capture before Accept ⇒ red. Unregistered until green, then wired into the mac drawer-voice e2e.
+- **Files touched:** `src/agent_drawer_mac.m` (new), `tests/e2e/mac_voice_drawer_test.py` (new).
 
 **Real-hardware check (VS9):** `mac-drawer-voice-live` on both Macs (Intel pending MS1b).
 
@@ -1052,15 +1080,15 @@ Rev 2: no download or consent UI, because the model is bundled (0.2.4).
 **Depends on:** VS0-VS4, and WLP's **WS0** (hosts and the two-host gate) and **WS1** (the build on the VM).
 - Builds run on the Win11 VM `win11-m8` with `-Dtarget=x86_64-windows-msvc` (WS1).
 - Tests run through `tests/windows/gate.sh --phase voice` (WS12.2) on both hosts:
-  - **Recorded-file tests** (WAV seam) run on both hosts.
-  - **Live-microphone tests** run on the **physical Windows 10 machine only**, until a VM capture device is proven (D8).
+  - the **automated gate is recorded-file only** (WAV seam → VF `WavFileSource`; render/verify via FileSink), on both hosts — **no automated gate opens a live microphone** (VF test-device rule).
+  - **Live-microphone** is a **user-approved manual check** (`win-voice-live`, §8.1) on the **physical Windows 10 machine only**; it is not part of `--phase voice`. The Win11 VM `win11-m8` is added to the manual check only after a VM capture device is proven (D8).
 - **Windows 10 support is required** (0.2.5). Every recorded-file behavior runs on both Windows 10 and Windows 11.
 - On the physical machine, which is also a file server, every run follows WLP's file-server isolation rules (`:415-470`): user `zbtest`, under `C:\Users\zbtest\zb\` only, and recorded load windows for CPU-heavy runs such as `voice-bench`.
 
 #### Behavior VS10.1: the engine builds and transcribes on Windows 10 and 11
 - **Given / When / Then:** the WS1 build on the VM produces `zigBrowser.exe`. On both the Win11 VM `win11-m8` and the physical Windows 10 machine, `zigBrowser.exe --voice-selftest wav:jfk.wav --e2e-protocol` prints the known sentence with tiny.en.
 - A CPU without the baseline ISA prints the D3 message and exits cleanly. The test records `cpuid` on both hosts (the VM's virtual CPU flags are unverified).
-- **Files touched:** `build/whisper.zig` (msvc flags), `src/voice/whisper_engine.zig` (loads via `whisper_init_from_buffer` over the verified bytes — VF §4 — so no Windows wide-char path-open is needed for the load), `tests/e2e/win_voice_selftest_test.py` (new).
+- **Files touched:** `build/whisper.zig` (msvc flags), `src/voice/whisper_engine.zig` (loads via `whisper_init_from_buffer_with_params` over the verified bytes — VF §4 — so no Windows wide-char path-open is needed for the load), `tests/e2e/win_voice_selftest_test.py` (new).
 
 #### Behavior VS10.2: WASAPI capture and access failures on Windows 10 and 11
 - **Given / When / Then:**
@@ -1083,10 +1111,11 @@ Rev 2: no download or consent UI, because the model is bundled (0.2.4).
 ### VS11 — Windows drawer dictation [W][U]
 
 **Depends on:** WLP's **WS5** (native Win32 drawer, the drawer-port milestone), its **WS12.1** hook `zb_drawer_set_draft` (must be the range-aware `zb_drawer_insert_text` of §4a #4 — cursor insert + selection replace, not a whole-draft set) (dictated text goes into the draft through it), and VS10. The post-Enter send leg also needs **WS11** (helper and chat).
-- VS11 repeats VS5's behaviors (VS5.2-VS5.7) on the WS5 drawer, observed through that drawer's `--e2e-protocol` census (`DRAWER draft` rows per WS12.1).
-- **Automated, recorded-file (WAV seam):** on both hosts through `gate.sh --phase voice`.
-- **Live microphone:** on the **physical Windows 10 machine only**. The Win11 VM `win11-m8` is added only after D8's VM capture proof passes.
-- Real-hardware case: `win-voice-live` on the physical Windows 10 machine, through WLP's real-screen runner.
+- VS11 repeats VS5's behaviors (VS5.2-VS5.8) on the WS5 drawer, observed through that drawer's `--e2e-protocol` census (`DRAWER draft` rows per WS12.1), using the **range-aware** `zb_drawer_insert_text` (§4a #4).
+- **Automated, recorded-file (WAV seam) only:** on both hosts through `gate.sh --phase voice`. **No automated gate opens a live microphone** (VF test-device rule); live capture is the manual `win-voice-live` check.
+- **Live microphone (manual):** on the **physical Windows 10 machine only**, in `win-voice-live`. The Win11 VM `win11-m8` is added only after D8's VM capture proof passes.
+- 🔴 **Reds (mutants, unregistered until green):** a whole-draft `set_draft` that discards the cursor/selection (not range-aware) ⇒ red; dictation that reaches the send path ⇒ a user message before Enter ⇒ red; the first-use notice skipped on Windows ⇒ capture before Accept ⇒ red.
+- **Files touched:** `src/agent_drawer_win.cpp` (mic control + range-aware insert via WS12.1), `tests/e2e/win_voice_drawer_test.py` (new).
 
 ---
 
@@ -1107,6 +1136,7 @@ Rev 2: no download or consent UI, because the model is bundled (0.2.4).
 
 #### Behavior VSP.2: the .deb carries the model [L][P]
 - **Given / When / Then:** `packaging/linux/build-deb.sh` includes `/usr/share/zigbrowser/models/stt/<file>`. `packaging/linux/gate.sh` (container install) checks its SHA-256 after install, and runs `zigBrowser --voice-selftest wav:jfk.wav --e2e-protocol` under `xvfb-run`, which reports `VOICE model <id> ready`.
+- 🔴 **Red (mutant):** the `.deb` built without the model ⇒ `deb_install_test.py` fails the post-install SHA-256 check and the selftest reports `damaged`; registered in the packaging gate on green.
 - **Files touched:** `packaging/linux/build-deb.sh`, `packaging/linux/control.in` (installed size), `packaging/linux/gate.sh`, `tests/e2e/deb_install_test.py`.
 
 #### Behavior VSP.3: the macOS bundle carries one byte-identical model in both arch trees [M][P]
@@ -1125,8 +1155,23 @@ Rev 2: no download or consent UI, because the model is bundled (0.2.4).
 #### Behavior VSP.4: the MSI carries the model [W][P]
 - **Given / When / Then:** `packaging/windows/zigBrowser.wxs` installs to `INSTALLFOLDER\models\stt\<file>` (WiX id `INSTALLFOLDER`). `packaging/windows/gate.ps1` checks its SHA-256 after a per-user install, runs the recorded-file voice selftest on the Win11 VM `win11-m8` and on the physical Windows 10 machine, and checks that uninstall removes it. WS13.1's census lists the file, and WS13.3's size budget counts it.
 - Also measured and recorded: MSI size and install time. MSI/cabinet size limits at this size are unverified, and this behavior settles them.
+- 🔴 **Red (mutant):** the MSI built without the model (or with a tampered copy) ⇒ `gate.ps1` fails the post-install SHA-256 check and the selftest reports `damaged`; uninstall that leaves the model behind ⇒ the uninstall census fails. Registered on green.
 - **Depends on:** VS10 and WLP's **WS13** (WS13.1 census, WS13.3 size budget; the installer format is WLP's OD-W1).
 - **Files touched:** `packaging/windows/zigBrowser.wxs`, `packaging/windows/build-msi.ps1`, `packaging/windows/gate.ps1`.
+
+#### Behavior VSP.5: installer lifecycle — upgrade, repair, downgrade, tamper, orphan (clears §4a #5, review #5) [P]
+- **Given / When / Then,** per platform installer:
+  - **upgrade** from an older build whose model id changed installs the new model, **removes the orphaned old model** (no two medium files left), and the selftest reports the new `<id> ready`;
+  - **repair/reinstall** over a **tampered** installed model (one byte flipped) restores the pinned bytes; before repair, the running app reports `VOICE model <id> damaged` and the Mic is insensitive (it never loads the tampered file — VF verify-through-consumption);
+  - **downgrade** to a prior build installs that build's pinned model and selftest passes (no stale newer file);
+  - **orphan cleanup** leaves no model under the install root that is not in the current catalog.
+- 🔴 **Mutants:** skip the orphan removal on upgrade ⇒ two models present ⇒ red; load-by-path instead of verify-through-consumption ⇒ the tampered file loads ⇒ red.
+- **Files touched:** `packaging/linux/build-deb.sh`/`postinst`, `packaging/macos/build-dmg.sh`, `packaging/windows/zigBrowser.wxs` (`RemoveFile`/component rules), `tests/e2e/model_lifecycle_test.py` (new; per-platform install→upgrade→repair→downgrade).
+
+#### Behavior VSP.6: the model reaches remote builders by an orchestrator-only transfer (clears §4a #9, review #9) [P]
+- **Given / When / Then:** the Mac and Windows builders obtain the model from a **named remote cache location** by an **orchestrator-only** transfer with a **pre-transfer and post-transfer SHA-256** check against the catalog, **owner-only** permissions on the cached file, a **cleanup** step after the build, and a **package-input manifest** recording the exact file + hash that entered each build. No builder fetches from the network during a gated build; a missing/mismatched cache **fails the gate** (never a silent skip).
+- 🔴 **Mutants:** a post-transfer hash mismatch must fail; a build that proceeds without the manifest entry must fail.
+- **Files touched:** `tools/fetch_voice_model.sh` (remote cache + SHA gate), `tests/mac/gate.sh` / `tests/windows/gate.ps1` (consume the cache + manifest), `packaging/*/model-input-manifest.json` (new).
 
 **Workflow closure (VSP):** ClosureMap V-B (section 9.2). BLOCKING. The OBSERVE is the installed app's own `VOICE model <id> ready` row from `--voice-selftest`, never a direct file read by the test.
 
@@ -1196,6 +1241,8 @@ TTS track consumes it.
 
 ## 13. References
 
+- **`tools/check_vf_identical.sh` (proposed, rev 2.1):** diffs the `VF:BEGIN`..`VF:END` region of this plan against the TTS plan's and exits nonzero if they differ, so the shared foundation cannot drift. A docs-only CI check, not product code.
+- **Sibling + macOS plans:** TTS `2026-10-19-voice-output-tts-tdd-plan.md` (VF §2.4, macOS §D11); macOS `2026-10-14-14-30-macos-launch-tdd-plan.md` (MS1.1/MS1.3/MS5.1c/MS6/MS9).
 - Research: `thoughts/searchable/shared/research/2026-10-19-voice-input-stt.md` (this plan's source; its ClosureMap and the closure adapter scaffold are embedded there).
 - Prior research: `/home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/research/2026-10-19-voice-recognition-options.md`.
 - Drawer plan: conventions (`:1400-1402`, `:1495-1562`, `:2605-2653`), real-hardware rule (§7.1 `:1218-1293`), out of scope (`:1095-1097`).
