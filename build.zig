@@ -1347,6 +1347,15 @@ pub fn build(b: *std.Build) void {
         "agent-tools-acceptance-e2e",
     });
     agent_tools_acceptance_e2e.addArtifactArg(exe);
+    // RoseCat 30b773e: all six tools under the S7.4 scanner, the failed tool's drawer bubble,
+    // the exact forbidden-tool refusals, the S3.11 plant continuation, and the deadline seam.
+    const agent_tools_acceptance2_e2e = b.addSystemCommand(&.{
+        "sh",
+        "-c",
+        "python3 tests/e2e/agent_tools_acceptance2_test.py --binary \"$1\"",
+        "agent-tools-acceptance2-e2e",
+    });
+    agent_tools_acceptance2_e2e.addArtifactArg(exe);
     // Chat drawer S5b (S5.4): one session per window, transcripts in the agent's own home.
     const agent_window_sessions_e2e = b.addSystemCommand(&.{
         "sh",
@@ -2178,6 +2187,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&agent_tools_e2e.step);
     test_step.dependOn(&agent_socket_separation_e2e.step);
     test_step.dependOn(&agent_tools_acceptance_e2e.step);
+    test_step.dependOn(&agent_tools_acceptance2_e2e.step);
     test_step.dependOn(&agent_window_sessions_e2e.step);
     test_step.dependOn(&agent_flood_e2e.step);
     test_step.dependOn(&agent_cap_e2e.step);

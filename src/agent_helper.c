@@ -85,6 +85,8 @@ int zb_agent_config_changed(const char *home);
 #define ZB_OVERFLOW_S 10
 size_t zb_drawer_reply_content_max(void);
 #define ZB_TEXT_AGENT_ERROR "Agent error"
+/* S7.7: a failed browser tool call's drawer bubble is this, then the broker's fixed text. */
+#define ZB_TEXT_TOOL_FAILED "Browser tool failed: "
 
 enum { H_IDLE, H_WAIT_NET, H_WAIT_TOKEN, H_STARTING, H_READY, H_CRASHED, H_UNAVAILABLE, H_STOPPING };
 
@@ -237,6 +239,11 @@ static gboolean on_tool_result(gpointer data) {
    * drops it (its broker was detached on the GTK thread, before this ran). */
   if (w != NULL && w->open && strcmp(w->session, p->session) == 0) {
     write_frame(zb_agent_out_tool_result(p->session, p->id, p->ok, p->body, p->len));
+    if (!p->ok) { /* S7.7: the drawer says so, with the broker's fixed (redacted) text */
+      gchar *text = g_strdup_printf("%s%.*s", ZB_TEXT_TOOL_FAILED, (int)MIN(p->len, 4096), p->body);
+      zb_drawer_agent_message(w->win, "error", text, strlen(text));
+      g_free(text);
+    }
   }
   return G_SOURCE_REMOVE;
 }
