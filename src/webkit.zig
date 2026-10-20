@@ -55,8 +55,18 @@ pub fn applyBackendFlag(comptime os: std.Target.Os.Tag, flag: []const u8, value:
                 c.zb_app_set_hw_policy(policyCode(render_config.parseHwPolicy(value).?));
             }
         },
-        // WS3.2 (AzureRidge): the WebView2 arm.
-        .windows => {},
+        // WS3.2 (AzureRidge): the WebView2 arm. media-source and hardware-acceleration are applied
+        // through the shim's startup setters (the WebView2 created afterward reads them: media-source
+        // off makes install_document_script_and_navigate inject the MSE-hide script); renderer is
+        // refused upstream by backendFlagDecision, so it never reaches here on Windows. The decision
+        // already accepted the value, so parse cannot be null.
+        .windows => {
+            if (std.mem.eql(u8, flag, "media-source")) {
+                c.zb_app_set_media_source(if (media_config.parse(value).? == .on) 1 else 0);
+            } else if (std.mem.eql(u8, flag, "hardware-acceleration")) {
+                c.zb_app_set_hw_policy(policyCode(render_config.parseHwPolicy(value).?));
+            }
+        },
         else => {},
     }
 }

@@ -5,12 +5,13 @@ r"""Live Windows backend-flag arm on the Win11 VM (bead zigBrowser-j76, WS3.2).
 APPLY the accepted ones through the shim's startup setters (`zb_app_set_media_source` / `zb_app_set_hw_policy`),
 exactly as the macOS arm does. This test drives the real exe on the VM and asserts:
 
-  * `--renderer=shm` exits nonzero with the exact message `--renderer=shm is not supported on Windows`
-    (refused by backendFlagDecision before any C call — a WS3.2 contract);
   * `--media-source off` makes `window.MediaSource` undefined in the loaded page (the arm applied the setter,
     so the shim injects its MSE-hide script) — the discriminator: a placeholder `.windows => {}` arm leaves MSE
     present and fails this;
   * `--media-source on` keeps `window.MediaSource` present.
+
+(The renderer refusal reaching stderr on the Windows GUI exe is a separate seam, owned by
+BlueBeaver's `tests/windows/refusal_stderr_live_test.py` per the j76 split.)
 
 The page sets `document.title = 'MSE=' + typeof window.MediaSource`; with `--e2e-protocol` the backend prints a
 `NAV\t<url>\t<title>` row we read. Skips cleanly without ZB_WIN11_HOST / ZB_WIN_EXE. Needs no Linux slot.
@@ -51,20 +52,6 @@ $e = [string](Get-Content $err -Raw -ErrorAction SilentlyContinue); if ($null -e
 [Console]::Out.Write((@{ stdout = $o; stderr = $e } | ConvertTo-Json -Compress))
 """
 
-# VM-side runner for a flag that must REFUSE: the exe exits by itself, so just capture exit + stderr.
-_REFUSE_RUNNER = r"""
-$ErrorActionPreference='SilentlyContinue'
-$dir = $args[0]
-$exe = Join-Path $dir 'zigBrowser.exe'
-$out = Join-Path $dir 'o.txt'; $err = Join-Path $dir 'e.txt'
-Remove-Item $out,$err -ErrorAction SilentlyContinue
-$url = 'file:///' + ((Join-Path $dir 'test.html') -replace '\\','/')
-$p = Start-Process -FilePath $exe -ArgumentList '--renderer=shm',$url `
-     -Wait -PassThru -NoNewWindow -RedirectStandardError $err -RedirectStandardOutput $out
-$e = [string](Get-Content $err -Raw -ErrorAction SilentlyContinue); if ($null -eq $e) { $e = '' }
-[Console]::Out.Write((@{ exit = $p.ExitCode; stderr = $e } | ConvertTo-Json -Compress))
-"""
-
 
 class WinConfigFlags(unittest.TestCase):
     def setUp(self):
@@ -101,14 +88,12 @@ class WinConfigFlags(unittest.TestCase):
         tmp = pathlib.Path(os.environ.get("TMPDIR", "/tmp"))
         html = tmp / f"cfg-{secrets.token_hex(4)}.html"
         e2e = tmp / f"cfge2e-{secrets.token_hex(4)}.ps1"
-        refuse = tmp / f"cfgref-{secrets.token_hex(4)}.ps1"
         html.write_text(_HTML, encoding="utf-8")
         e2e.write_text(_E2E_RUNNER, encoding="utf-8")
-        refuse.write_text(_REFUSE_RUNNER, encoding="utf-8")
         for local, name in ((self.exe, "zigBrowser.exe"), (str(html), "test.html"),
-                            (str(e2e), "e2e.ps1"), (str(refuse), "refuse.ps1")):
+                            (str(e2e), "e2e.ps1")):
             self.assertEqual(self._scp(local, f"{rel}/{name}").returncode, 0, f"scp {name}")
-        return rel, base_win, [html, e2e, refuse]
+        return rel, base_win, [html, e2e]
 
     def _cleanup(self, base_win, locals_):
         self._ssh("cmd", "/c", f"rmdir /s /q {base_win}")
@@ -125,19 +110,6 @@ class WinConfigFlags(unittest.TestCase):
                 if len(parts) >= 3:
                     return parts[2]
         return None
-
-    def test_renderer_shm_is_refused_with_the_exact_message(self):
-        rel, base_win, locals_ = self._stage()
-        try:
-            run = self._ssh("powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
-                            "-File", f"{base_win}\\refuse.ps1", base_win)
-            self.assertEqual(run.returncode, 0, f"runner failed: {run.stdout}\n{run.stderr}")
-            r = json.loads(run.stdout.strip().splitlines()[-1])
-            self.assertNotEqual(r["exit"], 0, f"--renderer=shm must exit nonzero on Windows: {r!r}")
-            self.assertIn("--renderer=shm is not supported on Windows", r["stderr"],
-                          f"exact refusal message required: {r!r}")
-        finally:
-            self._cleanup(base_win, locals_)
 
     def test_media_source_off_disables_media_source(self):
         rel, base_win, locals_ = self._stage()

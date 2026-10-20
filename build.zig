@@ -296,6 +296,11 @@ pub fn build(b: *std.Build) void {
     const windows_screenshot_live = b.addSystemCommand(&.{ "python3", "-I", "tests/windows/screenshot_live_test.py" });
     b.step("windows-screenshot-live", "Live Windows --screenshot PNG capture on the VM (skips without ZB_WIN11_HOST)").dependOn(&windows_screenshot_live.step);
 
+    // j76: the .windows backend-flag arm — --media-source off/on applied via the WebView2 setters,
+    // observed through the page title on the VM. Skips without ZB_WIN11_HOST/ZB_WIN_EXE; needs no slot.
+    const windows_config_flags_live = b.addSystemCommand(&.{ "python3", "-I", "tests/windows/win_config_flags_test.py" });
+    b.step("windows-config-flags-live", "Live Windows backend-flag arm on the VM (skips without ZB_WIN11_HOST)").dependOn(&windows_config_flags_live.step);
+
     // WS2.0: the PRODUCTION transport on the VM — the real browser's directory, AF_UNIX socket and token
     // are owner-only (protected DACLs read back), no TCP listener, and zbother can neither connect nor
     // read the token. Skips cleanly without ZB_WIN11_HOST/ZB_WIN_EXE; needs no slot.
@@ -1968,6 +1973,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&windows_wincontain_resolve_live.step);
     test_step.dependOn(&windows_wincontain_job_live.step);
     test_step.dependOn(&windows_screenshot_live.step);
+    test_step.dependOn(&windows_config_flags_live.step);
     test_step.dependOn(&windows_transport_live.step);
     test_step.dependOn(&windows_refusal_live.step);
     test_step.dependOn(&run_ipc_tests.step);
