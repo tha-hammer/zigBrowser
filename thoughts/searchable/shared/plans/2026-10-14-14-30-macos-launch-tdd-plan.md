@@ -1270,6 +1270,31 @@ The behaviours below stay as written; these are the per-OS contracts their reds 
    rev 8's Intel Xcode 3.9 vs arm Homebrew 3.14 shows a per-host Python cannot pass the two-tree oracle.
    That decision is the user's (no installs on laroncha without it).
 
+   **USER DECISION 2026-10-20 — bundled universal2 Python.** The macOS app bundles the official
+   **python.org CPython 3.12.10 universal2** framework (one fat build for Intel + Apple-chip, so the
+   two-tree `resource_compat`/Mach-O census can pass with ONE runtime at one path). 3.12.10 is the newest
+   3.12.x with a macOS binary installer — 3.12.11+ are security-only (source-only, no `.pkg`).
+   - **Source:** `https://www.python.org/ftp/python/3.12.10/python-3.12.10-macos11.pkg` (43.6 MB, macOS 10.13+).
+     **MD5** `8f4989592c9412e51fcad70273442c22` (python.org release page).
+   - **Acquire (build step, not at runtime):** fetch that exact `.pkg`; **verify** both its **signature**
+     (`pkgutil --check-signature` — the `.pkg` is Developer-ID-signed by the Python Software Foundation) and
+     the **MD5 checksum** above; then unpack its framework files with **`pkgutil --expand-full`**. **NEVER
+     run the installer and NEVER install system-wide on either Mac** (laroncha gets no system install).
+   - **Destination:** the unpacked `Python.framework` goes in **`Contents/Frameworks/agent-host/`** (rev 14),
+     where nested code is signed/notarized (Resources would fail hardened-runtime).
+   - **VERIFIED 2026-10-20 (JadeBeacon):** MD5 matches the real download; `pkgutil --check-signature` →
+     *"signed by a developer certificate issued by Apple for distribution"*, *"Notarization: trusted by the
+     Apple notary service"*, **Developer ID Installer: Python Software Foundation (BMM5U3QVKW)**; `pkgutil
+     --expand-full` succeeds and the `lib-dynload` C extensions are fat (`lipo -info` → `x86_64 arm64`).
+   - **Census path_globs (now pinnable, MS5.1c):** the `--expand-full` payload lives at
+     `Python_Framework.pkg/Payload/Versions/3.12/…`; relocated into the bundle the anchor is
+     `Contents/Frameworks/agent-host/Python.framework/Versions/3.12/`. Key universal2 Mach-O:
+     `…/Versions/3.12/Python` (the framework dylib, `python-runtime` component),
+     `…/Versions/3.12/Resources/Python.app/Contents/MacOS/Python` (the interpreter exe), and
+     `…/Versions/3.12/lib/python3.12/lib-dynload/*.so` (C extensions). MS5.1c (BlueBeaver's half) pins the
+     exact leaf `path_glob`s from the unpack; this decision fixes the version, source, verification and
+     destination they resolve against.
+
 ### Behavior MS5.1: macOS `runAgentSetup` builds the immutable home
 **Given** a macOS build,
 **When** `--agent-setup` runs,
