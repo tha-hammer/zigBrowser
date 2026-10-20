@@ -17,6 +17,7 @@ from zb_agent_host import chat  # noqa: E402
 from zb_agent_host.frames import encode  # noqa: E402
 
 MAX_ID = (1 << 53) - 1
+MAX_SEQ = (1 << 63) - 1  # the app accepts any seq up to a signed 64-bit integer (RoseCat 6314)
 
 
 def fit(session, text, prompt_id):
@@ -26,15 +27,15 @@ def fit(session, text, prompt_id):
 
 
 def line(session, text, prompt_id):
-    """The production frame, at the largest seq the helper can give."""
-    return encode({"v": 1, "seq": 2**53, "type": "assistant_message", "session": session,
+    """The production frame, at the largest seq the app accepts."""
+    return encode({"v": 1, "seq": MAX_SEQ, "type": "assistant_message", "session": session,
                    "prompt_id": prompt_id, "text": text}).encode()
 
 
 class FitTest(unittest.TestCase):
     def test_a_message_that_fits_only_without_the_id_is_cut_to_fit_with_it(self):
         session = "s-99-99"
-        empty = len(encode({"v": 1, "seq": 2**53, "type": "assistant_message", "session": session, "text": ""}).encode())
+        empty = len(encode({"v": 1, "seq": MAX_SEQ, "type": "assistant_message", "session": session, "text": ""}).encode())
         text = "a" * (chat.FRAME_MAX - empty)  # fills the line exactly, without the id
         self.assertLessEqual(len(text.encode()), chat.MESSAGE_TEXT_MAX)
         for prompt_id in (1, MAX_ID):
