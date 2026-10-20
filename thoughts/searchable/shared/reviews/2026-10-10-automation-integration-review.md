@@ -18982,3 +18982,42 @@ that evidence is accepted for the five closed findings and the current
 implementation. Local display-free `py_compile` of all four changed Python
 files, `bash -n tests/mac/ms2a_gate.sh`, and `git diff --check` pass. No Mac,
 browser, socket or display was used locally.
+
+## MS2a no-work-after-quit oracle (`3673da7`)
+
+Reviewed at `3673da7` on 2026-10-20. **Verdict: APPROVED. This closes
+`da7ae1c`, cumulatively closes the MS2a root hold at `26fdfff`, and advances
+the approved push-through to `26fdfff`. The immediate next commit,
+`7d85cd5`, remains the earliest blocked commit.**
+
+`wkwebview_shim.m:1711-1720` increments the new atomic counter at the entry of
+the actual readiness-work block used by `page.url` and `page.title`, rather
+than at the ordinary call site. Consequently any invocation of that block,
+including the exact hostile invocation inserted into the loop-ended branch,
+is observable. The immediate-quit test records the work-event list length
+immediately before issuing its sole hanging-page `page.url` request and
+requires that tail to remain empty after the production drain. It retains the
+separate positive-live-job, exact-zero, cancel-branch and terminal-result
+oracles, so the new counter neither substitutes for nor weakens wake,
+exact-release and cancel-path coverage.
+
+JadeBeacon reports the complete MS2a gate green **16/16 on x86_64 and 16/16
+on arm64**. The exact mutant from `da7ae1c`—invoke `work(host, &result)` in
+the loop-ended branch, discard its result, then complete and emit the ordinary
+cancel count—now emits `zb-work-runs=1` and fails the immediate-quit case;
+reverting it returns the gate to green. This is the missing independent
+no-dispatch observation.
+
+Together with `713d6eb`, `d241286`, `1b477a2`, `e458b91`, `60c4648` and this
+fix-forward, all four MS2a closure buckets recorded after `703b3de` are now
+covered: first-document private-world isolation, timeout/late completion and
+exact string ownership, the implemented ABI/registry inventory, and the
+claim-to-submit plus app-ended lifecycle. Local display-free `py_compile` and
+`git diff --check` pass. No Mac, browser, socket or display was used locally.
+
+The ancestry check is exact: `git rev-list --reverse --ancestry-path
+703b3de..3673da7` starts with `26fdfff`, then `7d85cd5`. The latter is still
+BLOCKED-for-tests by its recorded missing TCP-unreachable, pinned-host-key,
+firewall-hash-only and display-scrub cases, and its later WS0 gate lineage is
+still awaiting complete live readiness closure. Therefore no descendant of
+`26fdfff` belongs in this push-through yet.
