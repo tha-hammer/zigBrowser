@@ -17,7 +17,7 @@ typedef enum {
   ZB_LOGIN_EV_AUTH_URL,  /* detail: the authorize URL (S6b2's auth window) */
   ZB_LOGIN_EV_NEED_CODE, /* the CLI shows its prompt */
   ZB_LOGIN_EV_DONE,      /* detail: the token, valid only during the call; wiped after it */
-  ZB_LOGIN_EV_ERROR,     /* detail: cli, timeout, shape, protocol or network */
+  ZB_LOGIN_EV_ERROR,     /* detail: cli, timeout, shape, protocol, exchange (rev 16.18.9) or network */
   ZB_LOGIN_EV_CANCELLED,
 } ZbLoginEvent;
 
