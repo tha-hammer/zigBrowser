@@ -12723,5 +12723,46 @@ one marker.
 
 `git diff --check c005961^ c005961` passes. No runtime gate was needed for a
 docs-only change. The blockers were sent to BlackRobin as Agent Mail 6128 and
-6130. The
-approved linear push-through boundary remains the already-pushed **`da3028f`**.
+6130. The approved linear push-through boundary remains the already-pushed
+**`da3028f`**.
+
+## Windows WS0 foundation fix-forward (`3097d78`)
+
+### `3097d78` — APPROVED for the `658f86b` code/test blockers
+
+Both blockers are closed:
+
+- `tests/windows/gate.sh:18-21` now unconditionally unsets `DISPLAY`,
+  `WAYLAND_DISPLAY`, and `XAUTHORITY` at entry, before `cd` or any child. The
+  caller-controlled sentinel is gone. The existing test still observes the
+  Python, SSH, and tar child classes, while
+  `test_hostile_sentinel_cannot_defeat_the_scrub` sets the old sentinel plus
+  the display variables and proves the Python child remains display-free
+  (`gate_selftest.py:260-291`). This test is red on the old conditional guard.
+- The real resolver now returns the Windows API's length and path to its shell
+  caller; `resolve_path.sh:63-67` rejects nonnumeric or zero lengths and any
+  length at least the 1,024-character buffer. The direct resolver test pins
+  exit 4/5, and the default-resolver test drives those same production branches
+  through `gate.sh` and requires `DENY` (`gate_selftest.py:366-382,552-576`).
+  Thus the checks are no longer duplicated solely inside an unexecuted remote
+  PowerShell body. The author's four deletion mutants caught the scrub and
+  both length-guard removals.
+
+An independent clean export of exact `3097d78`, under a private Xvfb, passed
+`bash -n` and all **15/15** Windows-gate selftests in **3.393 s**.
+`git diff --check 3097d78^ 3097d78` also passes.
+
+Evidence status remains explicit: the commit message says the full
+`zig build test` ran under the slot, but AzureRidge's later Agent Mail 6131
+says that full registered Linux gate is still queued. The mail is treated as
+authoritative, so cumulative WS0 acceptance remains **HOLD** until that gate is
+reported. The live Windows `GetFinalPathNameByHandle`/junction exercise also
+remains the already-declared [W] evidence item.
+
+**NIT:** the hostile-marker assertion's `DISPLAY=` substring catches both
+`DISPLAY` and `WAYLAND_DISPLAY`, but not `XAUTHORITY`. The exact old bypass is
+caught and the ordinary all-child case covers all three, so this does not block
+the fix; spelling out all three would make the hostile case independently
+complete. Verdict and evidence were sent to AzureRidge as Agent Mail 6132.
+The approved linear push-through boundary remains the already-pushed
+**`da3028f`**.
