@@ -6,8 +6,8 @@ branch: zb-automation-integration-2026-10-10-11-59
 repository: zigBrowser
 topic: "The browser's voice: agent replies spoken aloud, with user-customizable voices — TDD implementation plan"
 tags: [plan, tdd, tts, text-to-speech, voice, agent-drawer, pocket-tts, onnxruntime, macos, windows, linux-dev, voice-cloning, miniaudio]
-status: plan for review (rev 2.7)
-rev: 2.7
+status: plan for review (rev 2.8)
+rev: 2.8
 last_updated: 2026-10-20
 last_updated_note: "Rev 2 records the user's decisions of 2026-10-19: bundled engine first (system voices become a later, secondary option), read-aloud on by default, the STT side bundles whisper medium (installer about 0.8 GB larger), and a separate Windows launch plan as the Windows dependency. Slices re-sequenced: core, test backend, audio layer, bundled engine, then the drawer and Voice window, then Macs, cloning, Windows, and system voices last."
 primary_research: thoughts/searchable/shared/research/2026-10-19-voice-output-tts.md
@@ -25,6 +25,14 @@ windows_dependency: thoughts/searchable/shared/plans/2026-10-19-windows-launch-t
 
 ## Revision history
 
+- **Rev 2.8 (2026-10-20):** clears RoseCat's two exposed wire-execution blockers (6438). (1) **Duplex
+  transport** — VF `ZbChild` now inherits **one full-duplex channel** (POSIX `socketpair` / Windows
+  duplex named pipe) carrying both directions, not an impossible one-way "PCM pipe"; "no second pipe"
+  means no separate enrolment channel. (2) **`seq` semantics pinned** — per-id `u32` starting at 0,
+  strictly +1; a duplicate/gap/reorder fails the stream (`error`/`enroll_error`) and discards the
+  assembled audio (no reorder buffer; the channel is in-order), with a state-machine + golden red and a
+  seq-ignoring mutant. NIT fixed (D9.1 "wire pinned rev 2.8"). VF re-synced byte-identically in the STT
+  plan (rev 2.6). No user decision changed.
 - **Rev 2.7 (2026-10-20):** clears RoseCat's enrollment-wire blocker (6404/6426). One coherent wire:
   **no second pipe** — `enroll_pcm` (type 10) is the only enrolment sample transport, pinned
   `str voice_id | u32 seq | sample_bytes` with offset `k = 4 + voice_id.len + 4`, samples always
@@ -402,7 +410,7 @@ orchestrator's user-approved `real_audio_check` / `real_screen_check` open a phy
 (`agent/host/zb_agent_host/sandbox.py`); the speech engine and the cloning-enrolment helper are
 **native** children the browser spawns, so VF defines its own `ZbChild` platform interface,
 implemented per OS:
-- inherits **exactly** the PCM pipe (enrolment reuses the same pipe via type-10 `enroll_pcm` frames — no second pipe) and nothing else; **no
+- inherits **exactly one full-duplex channel** (a POSIX `socketpair(AF_UNIX, SOCK_STREAM)` / a Windows duplex named pipe) carrying **both** directions, browser↔child; enrolment reuses it (type-10 `enroll_pcm` frames — **no separate enrolment channel**). A one-way anonymous pipe is not enough (the protocol is bidirectional). Nothing else is inherited; **no
   network**; read-only model dir; write only its own scratch; **no audio device** (the browser
   plays/records);
 - parent-death kill (Linux `PR_SET_PDEATHSIG`; macOS kqueue `NOTE_EXIT` or a watchdog; Windows a
@@ -643,7 +651,7 @@ rows.
   minutes after the last one.
 - It runs **Pocket TTS** (DECIDED 4) on the **ONNX Runtime C API**
   (MIT).
-- It streams PCM frames over a pipe with a **versioned framed protocol** (D9.2 below).
+- It streams frames over the full-duplex channel (VF `ZbChild`) with a **versioned framed protocol** (D9.2 below), both directions on the one channel.
 - The browser plays the PCM through VF's `AudioSink`, so first audio comes after the first frame,
   not the whole sentence.
 
@@ -705,9 +713,22 @@ rows.
   windows** and at most **16 pending utterances** (the 17th or the byte past 256 KiB ⇒ refused with a
   `SPEECH … refused queue-full` row); **backpressure** caps in-flight PCM at **2 s** of audio at the
   declared rate; **stalled-child deadlines** — no `ready` within **10 s**, or no `pcm`/`done` within
-  **30 s** of a `speak`, ⇒ kill + `error`. `seq` is a `u32` monotonic per utterance; a gap or a
-  `(utt,epoch)` past a `stop` is dropped. Reds assert each boundary at `limit` (ok) and `limit+1`
+  **30 s** of a `speak`, ⇒ kill + `error`. Reds assert each boundary at `limit` (ok) and `limit+1`
   (refused/killed).
+- **`seq` semantics (pinned rev 2.8; clears TTS review #2).** `seq` is a `u32` that is **per stream and
+  per id**: for each `(utt)` the first `pcm` is `seq = 0` and each subsequent `pcm` is **exactly
+  previous + 1**; for each `(voice_id)` enrolment the first `enroll_pcm` is `seq = 0` and strictly +1
+  thereafter. The receiver tracks the expected next `seq` per id:
+  - **duplicate** (`seq` == last accepted) or **reorder/gap** (`seq` != expected): the stream is
+    **failed** — a speech `pcm` gap ⇒ `error <utt>`; an enrolment `enroll_pcm` gap ⇒ `enroll_error
+    <voice_id>` — and the audio assembled so far is discarded (never silently reassembled). There is no
+    reordering buffer: the channel is in-order (a stream socket), so a gap means corruption.
+  - A `pcm`/`enroll_pcm` after that id's terminal (`done`/`cancel`/`enroll_end`/`enroll_abort`) or past a
+    bumped epoch is dropped.
+  - **Red (state machine, golden):** feed `seq = 0,1,2` (accepted); `0,1,1` (duplicate ⇒ fail); `0,2`
+    (gap ⇒ fail); a `pcm` after `done` (dropped). The shared `speech_wire.zig` + its golden vectors cover
+    the decode; a small `speech_seq` state-machine test covers acceptance. A mutant that ignores `seq`
+    (accepts any) ⇒ the duplicate/gap cases assemble corrupt audio ⇒ red.
 
 **The sandbox**, through VF's native **`ZbChild`** interface (§2.4 — **not** the Python agent
 `SandboxBackend`):
@@ -734,8 +755,8 @@ MS6 Seatbelt profile; on Windows the Windows plan's WS8.7 no-network `zb-speech`
 **A crash** gives `error` for the current utterance and a restart on the next one, with the same
 1/2/4/8 s backoff pattern as the helper (and `ZbChild` reaps the exit status).
 
-**D9.1 Cloning enrolment sub-protocol (rev 2.3; wire pinned rev 2.6).** Enrolment needs the child to
-derive speaker state from live samples. These travel over the **same** versioned pipe as speech —
+**D9.1 Cloning enrolment sub-protocol (rev 2.3; wire pinned rev 2.8).** Enrolment needs the child to
+derive speaker state from live samples. These travel over the **same full-duplex channel** as speech —
 **there is no second pipe** (rev 2.6, RoseCat 6404): `enroll_pcm` (type 10) is the only enrolment
 sample transport.
 - the frames are **wire types 9-14 in the D9.2 shared codec** (exact layouts + golden vectors there):
