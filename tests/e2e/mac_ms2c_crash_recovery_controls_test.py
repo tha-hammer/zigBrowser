@@ -150,9 +150,11 @@ def main() -> int:
                 if p3 and not p3.get("crashed"):
                     break
                 time.sleep(0.05)
-            if p3 and p3.get("crashed"):
+            if p3 is None:
+                failures.append("primary missing from page.list throughout the clicked-Reload recovery poll")
+            elif p3.get("crashed"):
                 failures.append(f"clicked-Reload did not recover (still crashed): {p3!r}")
-            elif p3 and p3.get("title") != "Live":
+            elif p3.get("title") != "Live":
                 failures.append(f"clicked-Reload did not restore the committed page (title {p3.get('title')!r}): {p3!r}")
         except Exception as exc:  # noqa: BLE001
             failures.append(f"unexpected error: {exc}")

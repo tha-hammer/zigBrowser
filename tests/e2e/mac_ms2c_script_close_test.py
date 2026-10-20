@@ -137,19 +137,27 @@ def main() -> int:
                 if popup.get("title") != "HAS_OPENER":
                     failures.append("popup's window.opener was null — popup not built from the WebKit-supplied configuration")
 
-                # Script close: the opener calls popup.close(). The popup must actually close.
-                rpc.raw("page.evaluate", {"expression": "closePopup()"})
+                # Script SELF-close: the popup runs window.close() in its OWN context (it was opened by
+                # window.open, so this is allowed). Not the opener calling popup.close().
+                rpc.raw("page.evaluate", {"window_id": popup_id, "expression": "window.close()"})
                 left = wait_pages(1)
                 if by_q(left, "popup") is not None or popup_id in [w.get("window_id") for w in left]:
-                    failures.append(f"popup still open after script window.close() (no webViewDidClose handler?): {left!r}")
+                    failures.append(f"popup still open after its own window.close() (no webViewDidClose handler?): {left!r}")
                 if [w.get("window_id") for w in left] != ["window-1"]:
-                    failures.append(f"opener did not survive as the sole window after the popup's script close: {left!r}")
+                    failures.append(f"opener did not survive as the sole window after the popup self-closed: {left!r}")
                 # Opener DOM intact and reachable after the popup's script close.
                 r = rpc.raw("dom.getText", {"selector": "css=#t"})
                 if "error" in r:
                     failures.append(f"opener DOM not reachable after the popup closed itself: {r['error']}")
                 elif (r.get("result") or {}).get("text") != "content":
                     failures.append(f"opener DOM changed after the popup closed itself: {r.get('result')!r}")
+
+                # Pin: the PRIMARY's own window.close() is IGNORED (browsers never let script close the main
+                # window; webViewDidClose: refuses the primary).
+                rpc.raw("page.evaluate", {"expression": "window.close()"})
+                still = wait_pages(1)
+                if [w.get("window_id") for w in still] != ["window-1"]:
+                    failures.append(f"primary window.close() was not ignored (primary vanished): {still!r}")
         except Exception as exc:  # noqa: BLE001
             failures.append(f"unexpected error: {exc}")
         finally:
