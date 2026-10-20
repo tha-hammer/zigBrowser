@@ -16389,3 +16389,78 @@ an unmet prerequisite. Once the note and Linux evidence are reviewed,
 `1b58f85` can close cumulatively and the linear audit can advance to the next
 commit. Checklist sent to AzureRidge with BlueBeaver copied in Agent Mail
 6631.
+
+## Review at `72de951`: macOS hold barriers and drawer plan rev 16.20.36
+
+Both exact diffs are whitespace-clean, and both Python e2e modules compile
+with all display variables removed. No Linux full gate was taken; the macOS
+test commit's runtime evidence belongs to the two remote Mac gates, while the
+other commit is documentation only.
+
+### macOS MS2c observed barriers (`c5bd3d1`)
+
+**BLOCKED-for-tests.** The snapshot-OOB half is sound: the stderr signal is
+emitted immediately after the main-queue dispatch claim, before the bounded
+hold, is flushed, and remains inert unless both `--e2e-protocol` and the debug
+environment variable are present. Waiting for that signal replaces the fixed
+sleep with an observation of the intended state.
+
+The sibling-FIFO half has a false barrier. At
+`tests/e2e/mac_ms2c_oob_during_stuck_test.py:135-138`, any JSON-RPC error from
+the 300 ms `#t` probe sets `held=true`. An immediate selector, window, or eval
+failure can therefore start the OOB measurements before the five-second call
+owns the FIFO; that five-second call can subsequently complete slowly enough
+to satisfy the independent end sanity. Require the queue-specific response:
+code `-32009`, message `action_timeout`, and `data.reason` exactly
+`queued_past_deadline`. First proving that `#t` succeeds before starting the
+stuck call would further isolate the barrier. Add an immediate-error mutant or
+fixture that the current predicate accepts and the corrected predicate rejects.
+
+The fixed-sleep SHOULD from `32ecbb6` remains open until that discriminator
+lands. Finding sent to JadeBeacon in Agent Mail 6634.
+
+### Chat-drawer plan rev 16.20.36 (`72de951`)
+
+**APPROVED.** The revision closes both open findings from `6585` and `6606`:
+
+- D9 and the detailed S7b contract agree. `window_info` takes only typed
+  liveness from the bound `page.health` entry, then obtains URL and title from
+  separate `page.url` and `page.title` calls carrying that same window id.
+- Every reply boundary is exhaustive: a genuine error object without a result
+  takes the redacted mapping; a success must have the method-specific typed
+  shape and no error; every other form is the fixed bad-answer failure. The
+  foreign canary, typed-health, URL/title error, missing/wrong title and
+  result-plus-error reds pin the previously unsafe paths, and the happy case
+  parses the exact content keys and types.
+- Publication and detach now share one mutex linearization. Engine work and
+  answer construction happen before the publication lock; under the lock the
+  worker or deadline publisher checks `detached`, claims once, invokes the
+  explicitly nonblocking/non-reentrant posting sink, and returns. The
+  deterministic `before_publish` hold covers the exact old race. The GTK
+  closure owns a state reference and drops after the GTK-thread `closed` flag,
+  so a previously posted answer cannot write into a closed drawer.
+
+The user's S5c long-run acceptance is also recorded accurately. Verdict sent
+to BlackRobin in Agent Mail 6635.
+
+### Provisional linear audit after `1b58f85`
+
+This audit is conditional on AzureRidge's Route-B narrowing note and Linux
+evidence being reviewed and accepted; until then the actual push-through stays
+`f9cb26a`.
+
+With that condition satisfied, the commits from `ae39e2a` through
+**`f69e2e9`** are cumulatively closed: the Secrets sensitivity red was
+corrected by `19876cb`; the S5c cap plans and red were corrected through the
+reviewed reply-cap/S5d chain and the now-user-accepted long-run artifact; and
+the WS0 commits in that span are exactly the Linux-foundation fixes Route B
+would classify, not a claim of `[W]` completion.
+
+The next commit, **`9663333`**, remains the earliest blocked commit. It added
+the three platform/voice plans, and its current TTS successor is still blocked:
+TTS rev 2.8 (`1b679d7`) says already played samples can be discarded after a
+later sequence gap, which is physically impossible. The plan must stop the
+utterance, discard only queued samples, acknowledge irreversible output, and
+add the sink regression. Therefore, once Route B is accepted, the prepared
+next push-through is **`f69e2e9`**, not a later commit; this section does not
+pre-approve the pending Route-B artifact itself.
