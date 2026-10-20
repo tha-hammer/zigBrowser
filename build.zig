@@ -193,6 +193,26 @@ pub fn build(b: *std.Build) void {
             .dependOn(&b.addRunArtifact(ws3_shim_exe).step);
     }
 
+    // WS2.0 (Windows plan rev 2.6): the owner-only seam's DACLs read back from Windows. Windows-target
+    // builds only; run on the Win11 VM by `bash tests/windows/build-on-windows.sh owner-only-test-win`.
+    if (target.result.os.tag == .windows) {
+        const oo_live_module = b.createModule(.{
+            .root_source_file = b.path("tests/windows/owner_only_live_test.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+        });
+        oo_live_module.addImport("owner_only", b.createModule(.{
+            .root_source_file = b.path("src/owner_only.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+        }));
+        oo_live_module.linkSystemLibrary("advapi32", .{});
+        b.step("owner-only-test-win", "WS2.0: the owner-only seam's DACLs, read back on Windows")
+            .dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = oo_live_module })).step);
+    }
+
     // The Claude Agent helper runtime beside the binary (chat-drawer plan
     // D6, rev 15.2): <prefix>/lib/zigbrowser/agent-host.
     const agent_runtime = b.addSystemCommand(&.{ "sh", "tools/install_agent_runtime.sh", b.install_prefix });
