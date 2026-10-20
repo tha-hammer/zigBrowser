@@ -708,7 +708,7 @@ No seam silently returns zero and no config export fakes an error channel it doe
 | `zb_app_set_agent_drawer` / `zb_app_get_agent_drawer` | void / int | MS7 | impl — drawer on/off | mac drawer e2e |
 | `zb_automation_set_script` | void | MS2a | impl — private `WKContentWorld`, before first load | MS2a.2 |
 | `zb_automation_eval_json` | int+out | MS2a | impl | Closure A / MS2a.1 |
-| `zb_automation_navigate` / `_navigate_guarded` / `_reload` | int | MS2a | impl (incl. `beforeunload`) | MS2a.1 |
+| `zb_automation_navigate` / `_navigate_guarded` / `_reload` | int | MS2a | impl — `.fail` navigation + per-WKNavigation success/failure (navigation_failed, no app-exit); `beforeunload` accept/dismiss **deferred to MS2b.2** (no prompt without the `WKUIDelegate`; the port rejects non-`.fail` as unsupported until then) | MS2a.1 |
 | `zb_automation_get_url` / `_get_title` | int+out | MS2a | impl | MS2a.1 |
 | `zb_automation_free` | void | MS2a | impl — allocator paired with every returned C string | allocator-pairing test (MS2a) |
 | `zb_automation_loop_mark` | void | MS2a | impl — ENDED + queued-job cancel + waiter wake on quit | immediate-quit-cancellation test (MS2a) |

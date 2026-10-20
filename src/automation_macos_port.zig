@@ -89,16 +89,16 @@ fn navigate(ptr: *anyopaque, url_text: []const u8, timeout_ms: u64) PortError!vo
 }
 
 fn navigateWithPolicy(ptr: *anyopaque, url_text: []const u8, before_unload: page_port.BeforeUnload, timeout_ms: u64) PortError!void {
+    // beforeunload accept/dismiss require answering a beforeunload PROMPT, which WKWebView only
+    // surfaces through a dialog (WKUIDelegate) handler — that handler lands with the dialog slice
+    // (MS2b.2). Until then only .fail (the engine default, no-prompt) is honoured; accept/dismiss are
+    // rejected as unsupported rather than silently treated as fail (RoseCat 6227.3).
+    if (before_unload != .fail) return error.Unsupported;
     const url_z = try std.heap.c_allocator.dupeZ(u8, url_text);
     defer std.heap.c_allocator.free(url_z);
-    const policy: c_int = switch (before_unload) {
-        .fail => c.ZB_BEFORE_UNLOAD_FAIL,
-        .accept => c.ZB_BEFORE_UNLOAD_ACCEPT,
-        .dismiss => c.ZB_BEFORE_UNLOAD_DISMISS,
-    };
 
     var err: [*c]u8 = null;
-    const rc = c.zb_automation_navigate_guarded(windowOf(ptr), url_z.ptr, policy, clampMs(timeout_ms), &err);
+    const rc = c.zb_automation_navigate_guarded(windowOf(ptr), url_z.ptr, c.ZB_BEFORE_UNLOAD_FAIL, clampMs(timeout_ms), &err);
     c.zb_automation_free(err);
     return mapCode(rc);
 }

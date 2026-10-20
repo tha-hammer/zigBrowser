@@ -35,6 +35,7 @@ set -euo pipefail
 cd "$HOME/zigBrowser"
 python3 tests/e2e/mac_ms2a_routed_test.py --browser zig-out/bin/zigBrowser
 python3 tests/e2e/mac_ms2a_timeout_test.py --browser zig-out/bin/zigBrowser
+python3 tests/e2e/mac_ms2a_nav_failure_test.py --browser zig-out/bin/zigBrowser
 REMOTE
   printf 'PASS\tms2a-leg\t%s\t%s\n' "$host" "$label"
 }

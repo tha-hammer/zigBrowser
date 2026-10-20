@@ -36,10 +36,6 @@ struct ZbWindow {
 
 static ZBAppHost *g_active_app = nil;
 static NSString *zb_auto_script = nil;  // MS2a automation.js (set by zb_automation_set_script)
-// Set once a routed (automation) navigation has run. While active, a load FAILURE never brings the
-// browser down: the current routed navigation reports navigation_failed, and a superseded routed
-// navigation's late failure is ignored. Only a user-initiated load before automation exits the app.
-static atomic_int g_automation_active = 0;
 static void handle_signal(int signo);
 
 static void emit_safe_field(const char *text) {
@@ -264,6 +260,10 @@ static void handle_signal(int signo) {
 // must NOT exit the app (unlike a user-initiated load failure).
 @property(nonatomic, strong) WKNavigation *routedNav;
 @property(nonatomic, assign) int routedOutcome;
+// Set once THIS window has run a routed navigation. Scopes failure suppression per window: a load
+// failure for a superseded routed navigation in this window is ignored (no app-exit), but a
+// user-initiated load failure in a window that never ran automation still exits (RoseCat 6227.2 #4).
+@property(nonatomic, assign) BOOL hadRoutedNav;
 - (instancetype)initWithApp:(ZBAppHost *)app webView:(WKWebView *)webView child:(BOOL)child;
 - (void)loadURI:(NSString *)uri;
 - (void)reloadBypassingCache:(BOOL)bypassCache;
@@ -527,8 +527,9 @@ static void handle_signal(int signo) {
     self.routedOutcome = 2;
     return;
   }
-  // A superseded routed navigation's late failure during automation: do not exit, do not report.
-  if (atomic_load(&g_automation_active)) {
+  // A superseded routed navigation's late failure in a window that HAS run automation: do not exit,
+  // do not report. Scoped per window, so a user-load failure in a non-automated window still exits.
+  if (self.hadRoutedNav) {
     return;
   }
   NSString *uri = [self failingURIForWebView:webView error:error];
@@ -1112,7 +1113,6 @@ int zb_automation_get_title(uint32_t win, unsigned int timeout_ms, char **out_ti
 // older navigation cannot satisfy this wait.
 static int zb_auto_routed_nav(uint32_t win, unsigned int timeout_ms, WKNavigation *(^start)(ZBWindowHost *host)) {
   if ([NSThread isMainThread]) return ZB_AUTO_ERR_INTERNAL;
-  atomic_store(&g_automation_active, 1);
   ZBAutoJob *job = zb_job_new();
   if (job == NULL) return ZB_AUTO_ERR_INTERNAL;
   NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:(double)timeout_ms / 1000.0];
@@ -1124,12 +1124,17 @@ static int zb_auto_routed_nav(uint32_t win, unsigned int timeout_ms, WKNavigatio
     if (!started) {
       if (!zb_job_claim_dispatch(job)) { poll = nil; zb_job_unref(job); return; }  // waiter cancelled first
       if (host == nil) { poll = nil; zb_job_complete(job, ZB_AUTO_ERR_NO_WINDOW, NULL, NULL); zb_job_unref(job); return; }
+      host.hadRoutedNav = YES;  // this window is now under automation (scopes failure suppression)
+      // Submit FIRST; only on a real (non-nil) navigation do we invalidate the watchdog and clear the
+      // settled state. A refused start leaves the old document settled, so a later url/title/eval does
+      // not wait to timeout (RoseCat 6227.2 #3).
+      WKNavigation *nav = start(host);
+      if (nav == nil) { poll = nil; zb_job_complete(job, ZB_AUTO_ERR_NAV_FAILED, NULL, NULL); zb_job_unref(job); return; }
       [host.timeoutTimer invalidate];
       host.timeoutTimer = nil;  // no user-load watchdog on a routed nav -> never self-exits
       host.finishedOrFailed = NO;
       host.routedOutcome = 0;
-      host.routedNav = start(host);
-      if (host.routedNav == nil) { poll = nil; zb_job_complete(job, ZB_AUTO_ERR_NAV_FAILED, NULL, NULL); zb_job_unref(job); return; }
+      host.routedNav = nav;
       started = YES;
       zb_job_inflight(job);  // submission issued: DISPATCHING -> INFLIGHT, release the waiter
       dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(15 * NSEC_PER_MSEC)), dispatch_get_main_queue(), poll);
