@@ -229,6 +229,7 @@ static void stop_nsapp_run_loop(void) {
 @property(nonatomic, copy) NSString *appBase;
 @property(nonatomic, strong) NSMutableArray<ZBWindowHost *> *windows;
 @property(nonatomic, assign) ZBWindowHost *mainWindow;
+@property(nonatomic, assign) uint32_t nextWindowId;  // MS2c: monotonic STABLE window ids, never reused
 - (instancetype)initWithURI:(NSString *)uri printTitle:(BOOL)printTitle e2eProtocol:(BOOL)e2eProtocol;
 - (ZBWindowHost *)createWindowWithWebView:(WKWebView *)webView child:(BOOL)child uri:(NSString *)uri;
 - (void)removeWindow:(ZBWindowHost *)window;
@@ -288,6 +289,7 @@ static void handle_signal(int signo) {
 // unanswered across a tick marks the window unresponsive (unresponsiveSinceUs != 0, incident bumped once
 // per stretch), cleared when a ping replies. Touched only on the main thread (timer + the list ABI's
 // main-queue hop), monotonic microseconds via systemUptime.
+@property(nonatomic, assign) uint32_t windowId;  // MS2c: this window's STABLE id (assigned once, never reused)
 @property(nonatomic, assign) uint32_t openerId;  // MS2c: the window (id) whose page opened this popup; 0 = none
 // MS2c crash parity: the web process ended since the last page load ("crashed"); nil while alive. The
 // window shows a STATIC crash document and keeps its committed URL; it never auto-reloads. Cleared only
@@ -337,6 +339,7 @@ static void handle_signal(int signo) {
   if (host == nil) {
     return nil;
   }
+  host.windowId = ++self.nextWindowId;  // STABLE id, assigned once; the first window (primary) is 1
 
   ZbWindow *c_window = calloc(1, sizeof(ZbWindow));
   if (c_window == NULL) {
@@ -732,8 +735,7 @@ static int64_t zb_now_us(void) { return (int64_t)([[NSProcessInfo processInfo] s
   WKWebView *childView = [[WKWebView alloc] initWithFrame:NSMakeRect(0, 0, 1024, 768)
                                            configuration:configuration];
   ZBWindowHost *child = [self.app createWindowWithWebView:childView child:YES uri:nil];
-  NSUInteger pidx = [self.app.windows indexOfObject:self];  // this window opened the popup
-  if (child != nil && pidx != NSNotFound) child.openerId = (uint32_t)(pidx + 1);
+  if (child != nil) child.openerId = self.windowId;  // this window opened the popup (stable id)
   return child.webView;
 }
 
@@ -1021,8 +1023,12 @@ static int64_t zb_now_us(void) { return (int64_t)([[NSProcessInfo processInfo] s
 static ZBWindowHost *zb_auto_window_for_id(uint32_t win) {
   ZBAppHost *app = g_active_app;
   if (app == nil) return nil;
-  if (win <= 1) return app.mainWindow;  // id 1 (and the 0 "primary" alias) is the main window
-  if (app.windows != nil && (NSUInteger)(win - 1) < app.windows.count) return app.windows[win - 1];
+  if (win == 0) return app.mainWindow;  // the "primary" alias
+  // STABLE id lookup: a window keeps its id for life, so closing one never renumbers the others
+  // (MS2c follow-up). The id is NOT an array index.
+  for (ZBWindowHost *h in app.windows) {
+    if (h.windowId == win) return h;
+  }
   return nil;
 }
 
@@ -1560,13 +1566,13 @@ int zb_automation_list_windows(unsigned int timeout_ms, char **out_json) {
         NSArray<ZBWindowHost *> *hosts = app.windows != nil ? app.windows
                                        : (app.mainWindow != nil ? @[ app.mainWindow ] : @[]);
         [hosts enumerateObjectsUsingBlock:^(ZBWindowHost *h, NSUInteger idx, BOOL *stop) {
-          (void)stop;
+          (void)stop; (void)idx;
           if (h == nil) return;
           NSString *url = h.webView.URL.absoluteString ?: @"";
           NSString *title = h.webView.title ?: @"";
           BOOL responsive = (h.unresponsiveSinceUs == 0);
           int64_t unresp_ms = responsive ? 0 : (zb_now_us() - h.unresponsiveSinceUs) / 1000;
-          NSMutableDictionary *w = [@{ @"id": @(idx + 1),
+          NSMutableDictionary *w = [@{ @"id": @(h.windowId),
                             @"url": url,
                             @"title": title,
                             @"primary": (h == app.mainWindow) ? @YES : @NO,  // @YES/@NO -> JSON true/false (a bare @(int) serializes 0/1)

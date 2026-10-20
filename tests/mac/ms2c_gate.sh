@@ -34,6 +34,7 @@ verify_host() { # $1=host $2=key $3=label
 set -euo pipefail
 cd "$HOME/zigBrowser"
 python3 tests/e2e/mac_ms2c_list_windows_test.py --browser zig-out/bin/zigBrowser
+python3 tests/e2e/mac_ms2c_stable_ids_test.py --browser zig-out/bin/zigBrowser
 python3 tests/e2e/mac_ms2c_health_test.py --browser zig-out/bin/zigBrowser
 python3 tests/e2e/mac_ms2c_close_window_test.py --browser zig-out/bin/zigBrowser
 python3 tests/e2e/mac_ms2c_crash_test.py --browser zig-out/bin/zigBrowser
