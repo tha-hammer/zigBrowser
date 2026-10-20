@@ -6,8 +6,8 @@ branch: zb-automation-integration-2026-10-10-11-59
 repository: zigBrowser
 topic: "macOS launch support for zigBrowser — TDD implementation plan"
 tags: [plan, tdd, macos, wkwebview, appkit, seatbelt, universal-build, automation, drawer, sandbox, launch-critical]
-status: plan for review (rev 16)
-rev: 16
+status: plan for review (rev 17)
+rev: 17
 last_updated: 2026-10-20
 last_updated_by: cc_3 / JadeBeacon
 last_updated_note: "Rev 11 records MS1b GREEN (commit 3421428, option d): the WKWebView ObjC shim is built by the Apple toolchain as a chained-fixups dylib (xcrun clang -dynamiclib, -Wl,-fixup_chains + -undefined dynamic_lookup; -install_name @executable_path/../Frameworks; exe sets rdynamic macOS-only to export the two back-refs zb_ipc_dispatch/zb_policy_decide), so the SIGNED x86_64 binary runs (was SIGSEGV at [ZBAppHost init]; cause = zig 0.16 classic LC_DYLD_INFO_ONLY into signed __DATA_CONST). The MS1 bundle is now {browser + webview-shim dylib}; resource_phase accepts the empty-resources set only for that exact 2-component shape (6002 bypass protection kept). MS1.3 gains release_least_privilege (disable-library-validation forbidden in a release manifest/binary; ad-hoc dev/test only). ms1b_signed_gate.sh is registered as `zig build ms1b-gate`; validated rc 0 on both Macs (x86_64+arm64, ad-hoc+hardened). Linux/Windows build unchanged. (Frontmatter rev was stale at 6 while body sections advanced to rev 10; bumped to 11.) Shim surface confirmed by BlackRobin (6125)."
@@ -152,6 +152,11 @@ primary_research: thoughts/searchable/shared/research/2026-10-14-14-19-macos-lau
   always `<exe>/../Frameworks/agent-host`, a dev tree included. `zb-claude` and the other runtime scripts are
   per-user setup output, never bundle resources. The bundle's own resources are `zb_agent_host/` and
   `runtime.json`. MS5 gets a separate inventory, and a staging tool brings the verified framework in.
+- **Rev 17** (BlueBeaver, 2026-10-20; RoseCat 6865): rev 16's corrections folded into the authoritative text.
+  Item 3, item 8's opening and Behavior MS5.1c are rewritten in place, and the rev 8 and rev 16 notes are marked
+  history. `zb_agent_host/` is an exact generated file manifest (missing, extra or mismatched are each red).
+  `runtime.json` is pinned. The staging tool takes the driver-verified `.pkg`. The final MS5 green stays blocked
+  on the dependency and CLI layout decision.
 
 ## Rev 9 — MS1 empty-resource state made an executable, fail-closed phase contract (RoseCat 5995)
 
@@ -166,6 +171,10 @@ conditional is indistinguishable from deleting the check, so rev 9 replaces it w
 Re-pinned to HEAD `774ce31` (the executable gate + tests are `c53b580`).
 
 ## Rev 8 — MS5 role classification + MS1 resource rule corrected (docs only; RoseCat 5989)
+
+> **History (rev 17):** row 1's `zb-claude` as a bundle `resource`, and MS5's roles going into
+> `universal_components.json`, are **superseded** by Behavior MS5.1c as rewritten in rev 17: `zb-claude` is per-user
+> setup output, and MS5 uses its own inventory. Row 2's MS1 rule still stands.
 
 RoseCat approved the `{browser}` MS1 scope (`build.zig:163-173`) but BLOCKED rev 7 on two
 representation contradictions in how components and resources are typed. Both are fixed in docs.
@@ -1249,18 +1258,18 @@ The behaviours below stay as written; these are the per-OS contracts their reds 
    through the same XDG data subdirectory (MS3.1). No new red.
 2. **Executable path.** A seam `selfExePath()`. Linux keeps `readlink("/proc/self/exe")`; macOS uses
    `_NSGetExecutablePath`, then `realpath`. The cross-check object proves it compiles, and the Macs prove it runs.
-3. **Runtime location** (a pure function, red on Linux):
-   - `agent_setup.runtimeFor(os, exe)`: Linux is unchanged (`<prefix>/lib/zigbrowser/agent-host`).
-   - On macOS an exe at `<X>.app/Contents/MacOS/zigBrowser` maps to **`<X>.app/Contents/Frameworks/agent-host`**:
-     nested code (python, `.so`, `.dylib`) must live where it is signed as code (JadeBeacon, MS9).
-   - A macOS dev tree (`<prefix>/bin/zigBrowser`, not inside an `.app`) keeps the Linux rule.
-   - **The interpreter, pinned** (the user's universal2 decision, 6ea1064; RoseCat 6797): for an app bundle,
-     `runtimeFor` names `<X>.app/Contents/Frameworks/agent-host/Python.framework/Versions/3.12/bin/python3.12`,
-     the python.org framework's fat launcher (`x86_64 arm64`, measured on the Intel Mac). There is **no venv
-     on macOS**: a venv records an absolute home, which breaks when the app moves. The framework's
-     `Resources/Python.app/Contents/MacOS/Python` is what that launcher execs; it is not named directly.
-     A macOS dev tree keeps the Linux `venv/bin/python`. The test asserts both `package_dir` and `python`
-     (`tests/agent_setup_ms5_python_test.zig`).
+3. **Runtime location** (a pure function, red on Linux; rev 16/17):
+   - `agent_setup.runtimeFor(os, exe)`: Linux is unchanged (`<prefix>/lib/zigbrowser/agent-host`, its `venv/bin/python`).
+   - **macOS: always `<exe dir>/../Frameworks/agent-host`.** For an app that is `<X>.app/Contents/MacOS` to
+     `<X>.app/Contents/Frameworks/agent-host`; for a dev or staging tree, `zig-out/bin` to
+     `zig-out/Frameworks/agent-host`. Nested code (python, `.so`, `.dylib`) must live where it is signed as
+     code (JadeBeacon, MS9), and this mirrors the shim (`@executable_path/../Frameworks`) and the `zig-out` tree
+     the census scans. Never under Resources.
+   - **The interpreter** (the user's universal2 decision, 6ea1064; RoseCat 6797): on macOS `runtimeFor` names
+     `<runtime>/Python.framework/Versions/3.12/bin/python3.12`, the python.org framework's fat launcher. There is
+     **no venv on macOS**: a venv records an absolute home, which breaks when the app moves.
+   - Tests: `tests/agent_setup_ms5_test.zig`, `agent_setup_ms5_python_test.zig` and
+     `agent_setup_ms5_devtree_test.zig` assert both `package_dir` and `python` (built in 890d52e and 9d55923).
 4. **Home lock.** `zb_agent_home_lock` (flock) moves, unchanged, out of the GLib-only `agent_host.c` into a
    POSIX-only `src/agent_home_lock.c`, built on both OSes. It is a behaviour-preserving extraction, gated on
    Linux by the existing lock tests.
@@ -1323,10 +1332,8 @@ The behaviours below stay as written; these are the per-OS contracts their reds 
      write all to `fd`, then `zb_keychain_free`. Errors are fixed text, and the token is in no message.
    - A both-arch mac e2e on a disposable keychain: the canary reaches the fd's reader and appears in no env,
      argv or stderr. A mutant that routes it through env fails.
-8. **MS5.1c census.** The exact `path_glob`s for `python-runtime`, `claude-cli` and the `zb-claude` resource sit
-   under `Contents/Frameworks/agent-host/`. They wait on one decision, **which universal2 Python is bundled**:
-   rev 8's Intel Xcode 3.9 vs arm Homebrew 3.14 shows a per-host Python cannot pass the two-tree oracle.
-   That decision is the user's (no installs on laroncha without it).
+8. **MS5.1c census:** Behavior MS5.1c below (rewritten in rev 17) is the authority. The Python decision that
+   pins its framework follows here.
 
    **USER DECISION 2026-10-20 — bundled universal2 Python.** The macOS app bundles the official
    **python.org CPython 3.12.10 universal2** framework (one fat build for Intel + Apple-chip, so the
@@ -1386,7 +1393,7 @@ The behaviours below stay as written; these are the per-OS contracts their reds 
         the bundled tree or matched by a census `path_glob`, the two-tree fat-Mach-O census **fails closed**
         (an x86_64-only Mach-O among universal2 peers); a mutant that includes it, or that globs it, reds.
 
-### Rev 16: the MS5.1c census, corrected (BlueBeaver, 2026-10-20)
+### Rev 16: the MS5.1c census, corrected (BlueBeaver, 2026-10-20). History: folded into item 3 and Behavior MS5.1c in rev 17
 
 Found while pinning the census `path_glob`s. These supersede the conflicting lines of rev 8 (MS5.1c's
 helper-launcher) and rev 14 item 3 (a macOS dev tree).
@@ -1453,34 +1460,64 @@ internal dependency/build trees (`node_modules`, `.venv`, `venv`, `site-packages
 out-of-root linked skill whose target holds a canary string; the test asserts the canary is
 **not present** anywhere in `dist-<n>/`.
 
-### Behavior MS5.1c: the agent runtime joins the universal-components census (rev 7; roles typed in rev 8)
-**Given** MS5 now installs the Python runtime, the Claude CLI and the generated launcher into the
-macOS bundle (so these ship for the first time),
-**When** the universal bundle is assembled,
-**Then** MS5's **red MUST add them to `packaging/macos/universal_components.json` typed by their
-real form** (rev 8, RoseCat 5989):
-- **`python-runtime` and `claude-cli` are native Mach-O** → added as `components` (each by its
-  exact bundle-relative `path_glob`), so the unchanged MS1 census requires each to be a **fat
-  Mach-O**;
-- the **`helper-launcher` is the generated Python shebang wrapper `zb-claude`** (`token.py:100-140`,
-  written at `setup.py:492`, real path `runtime/bin/zb-claude`) — **not a Mach-O**. It is added as
-  a **`resource`**, so the two-tree `resource_compat` oracle requires its bytes **byte-identical
-  across the two per-arch trees** (a `component_census` fat-Mach-O role would never green for a
-  script). The wrapper embeds the python/CLI paths, so it is byte-identical only when MS5 ships one
-  **universal2 runtime at one path**; if the arches differ, the oracle **fails closed** — exactly
-  its purpose. (If a native launcher is ever introduced, re-classify it as a `component` then.)
+### Behavior MS5.1c: the agent runtime joins the universal-components census (rewritten in rev 17)
+*(The rev 7 and rev 8 text that put the roles into `universal_components.json`, and `zb-claude` and the generated
+scripts in as bundle resources, is superseded and kept only in the Rev 8 history section above.)*
 
-MS5's gate MUST run the phase gate `mac_resource_compat.py --milestone MS5` on the x86_64 and arm64
-provisioning trees before `lipo`, over the runtime's non-exec files (`runtime.json`, the generated
-`zb-claude`/`zb-hook-run`/`zb-net-relay` scripts, the `*.json` manifests). This is the **first
-production run of the two-tree oracle** (MS1 runs `--milestone MS1`, which the gate accepts empty;
-MS5 is **not** an empty-allowed milestone, so `resource_phase` fails closed unless MS5 declares a
-nonempty resource set) — so the empty-allowed exception can never leak past MS1. The Intel Xcode-python-3.9 vs arm
-Homebrew-python-3.14 difference is precisely the mismatch it catches. Red-first: with the roles
-added but the runtime still single-arch/mismatched, the Mach-O census (python/CLI) and the resource
-oracle (the scripts/manifests) both go red; green only when every shipped Mach-O is fat and every
-shipped resource is byte-compatible. (MS1's inventory stays `{browser}` with empty `resources`;
-this behavior is where the runtime roles enter — rev 7 deferral, rev 8 typing.)
+**Given** MS5 ships the agent runtime in the bundle at `Frameworks/agent-host` (item 3),
+**When** the universal tree is assembled,
+**Then** a **separate MS5 inventory**, `packaging/macos/universal_components_ms5.json`, drives the census. The MS1
+inventory, `universal_components.json`, stays the exact browser-plus-shim shape the MS1 gate requires. The MS5
+inventory holds:
+- **components (fat Mach-O):** the MS1 two, plus the `python-runtime` pair from rev 15:
+  - `Frameworks/agent-host/Python.framework/Versions/3.12/bin/python3.12`;
+  - `Frameworks/agent-host/Python.framework/Versions/3.12/Python`.
+  The census's whole-tree scan requires every other shipped Mach-O to be fat as well, which is why
+  `Versions/3.12/bin/*-intel64` is never staged.
+- **resources (byte-identical across the two per-arch trees):**
+  - **`Frameworks/agent-host/runtime.json`**: exactly `{"lock_sha256": "<sha256 of agent/host/uv.lock>"}` plus a
+    newline, the bytes `tools/install_agent_runtime.sh` writes. Its digest is pinned against the repo's `uv.lock`.
+  - **`zb_agent_host/` as an exact file manifest:** the inventory lists every regular file under
+    `Frameworks/agent-host/zb_agent_host/`, each by its exact path. The list is generated from
+    `agent/host/zb_agent_host/` (`__pycache__` excluded) by `packaging/macos/ms5_inventory.py`, and a Linux test
+    fails when the committed list differs from the generated one. On each tree the census requires:
+    - every listed file present (a missing one is red);
+    - no unlisted regular file under `zb_agent_host/` (an extra one is red); this is a new check, since the
+      existing oracle checks exact paths only;
+    - each listed file byte-identical across the two trees (a mismatched one is red).
+  - **Not resources:** `zb-claude`, `zb-hook-run`, `zb-net-relay` and `runtime/*.json` are written by `setup.py`
+    into each user's agent home (`setup.py:481-504`), never into the bundle. The MS5 setup e2e proves them, once
+    MS6 lets setup run.
+- **Staging:** `packaging/macos/stage_agent_runtime.sh <pkg> <expected_sha256> <prefix>`.
+  - The Linux driver fetches the `.pkg` and its `.sigstore`, checks SHA-256 against rev 15's pin and the Sigstore
+    identity (`thomas@python.org`, `https://accounts.google.com`), then copies **that same `.pkg`** to the Mac and
+    passes its SHA-256.
+  - On the Mac the tool refuses unless the file's SHA-256 equals the argument **and** rev 15's pin. Then
+    `pkgutil --check-signature` must name `Developer ID Installer: Python Software Foundation (BMM5U3QVKW)` and
+    Apple notarization. Then `pkgutil --expand-full` into a temporary directory: never the installer, never a
+    system path.
+  - It copies `Python_Framework.pkg/Payload` to `<prefix>/Frameworks/agent-host/Python.framework` without
+    `Versions/3.12/bin/*-intel64`, copies `zb_agent_host/` without `__pycache__`, and writes `runtime.json` as above.
+- **The dependency tree and the Claude CLI are NOT DECIDED, and the final MS5 green is blocked on them.**
+  `agent/host/uv.lock` pins `claude-agent-sdk==0.2.165`. Its macOS wheels are **separate arm64 and x86_64
+  wheels** (`uv.lock:151-152`), with no universal2 wheel, and they carry the bundled Claude CLI binary. Before MS5
+  can green, a decision must fix:
+  - their exact production layout under `Frameworks/agent-host`;
+  - the `claude-cli` role path;
+  - the fatness or reconciliation rule: lipo-merging the two arch builds into fat Mach-Os, or per-arch trees
+    chosen at run time;
+  - the two-tree resource rule for their pure-Python files.
+  Until then **only the partial slice MS5.1c-a** may green: the staged framework, `zb_agent_host/` and
+  `runtime.json` under the census. It must say "MS5.1c-a, partial: dependencies and CLI not staged", and it never
+  claims MS5.1/MS5.1c complete or that the bundled helper runs.
+- **Red-first (MS5.1c-a):**
+  - The MS5 census on a tree without staging fails: the components are missing.
+  - The mutants, each red:
+    - copying the `-intel64` launcher (the scan finds a thin Mach-O);
+    - a `.pkg` whose SHA-256 differs (the tool refuses);
+    - a `zb_agent_host` file missing, extra, or different between the two trees;
+    - a `runtime.json` with a different `lock_sha256`.
+  - Both Macs; `mac_resource_compat.py --milestone MS5` runs on the two per-arch trees before `lipo`.
 
 ### Behavior MS5.2: Keychain onboarding (disposable canary in tests)
 **Given** the Secrets flow,
