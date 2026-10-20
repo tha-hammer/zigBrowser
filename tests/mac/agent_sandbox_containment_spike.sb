@@ -1,0 +1,39 @@
+(version 1)
+;; ======================================================================================================
+;; PARTIAL CONTAINMENT SPIKE — NOT the MS6 production security profile. Do NOT wire into the backend.
+;; ZB_SPIKE_PARTIAL
+;; ------------------------------------------------------------------------------------------------------
+;; This profile proves the WRITE / NETWORK / CHILD containment half of MS6 only. It deliberately still grants
+;; broad reads, sysctl-read and mach-lookup so a stand-in helper can launch; those are explicitly NOT the
+;; stated MS6 security capabilities. The production MacSeatbeltBackend (a later increment) MUST refuse any
+;; profile carrying the ZB_SPIKE_PARTIAL marker until these land:
+;;   - deny-default READS with a curated system allowlist (no blanket file-read*);
+;;   - NO process-info / task-port rights and a curated sysctl-read (KERN_PROCARGS2 denied — MS6.1);
+;;   - a tiny curated mach-lookup (no WindowServer, no mDNSResponder);
+;;   - the per-session egress proxy port + MS6.4 traffic-through-proxy; MS6.3 fd-3; MS6.5 orphan cleanup.
+;; Shared SandboxBackend contract (agent/host/zb_agent_host/sandbox.py; plan MS6): the WORKSPACE is
+;; READ-ONLY; only the SCRATCHPAD is writable. A direct workspace write must fail closed (it would bypass
+;; the broker/approval card). Params via -D: SCRATCHPAD (writable), PROTECTED (read-denied).
+;; ======================================================================================================
+(deny default)
+
+(allow process-fork)
+(allow process-exec)
+
+;; PARTIAL: broad reads (spike) so the helper's linker/libraries load; PROTECTED is denied (last-match-wins)
+;; to still prove read containment. The curated deny-default read allowlist is the next MS6 increment.
+(allow file-read*)
+(deny file-read* (subpath (param "PROTECTED")))
+
+;; Writes: ONLY the SCRATCHPAD + the standard character devices. The WORKSPACE (read-only input), the user's
+;; home, the bundle, and any path outside the scratchpad all fail closed.
+(allow file-write*
+  (subpath (param "SCRATCHPAD"))
+  (literal "/dev/null") (literal "/dev/zero") (literal "/dev/dtracehelper") (literal "/dev/tty"))
+
+;; Network: deny-default; only the two loopback bridge ports are reachable. Any other port / host fails
+;; closed (the containment test proves this against a LIVE local listener on a forbidden port).
+(allow network-outbound (remote ip "localhost:51091") (remote ip "localhost:31337"))
+
+(allow sysctl-read)   ;; PARTIAL (spike) — curated sysctl (KERN_PROCARGS2 denial) is MS6.1.
+(allow mach-lookup)   ;; PARTIAL (spike) — tiny curated mach-lookup is the next MS6 increment.

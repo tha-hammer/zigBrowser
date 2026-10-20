@@ -34,7 +34,7 @@ verify_host() { # $1=host $2=key $3=label (the label is the EXPECTED uname -m, a
   local rdir="zb-ms6-$(date +%s)-$$-$RANDOM"
   local rm_rdir="rm -rf \"\$HOME/${rdir:?}\""
   "${SSH[@]}" "$host" "mkdir -p \"\$HOME/${rdir}\"" || { echo "FAIL: mkdir ${rdir} on $host" >&2; return 1; }
-  "${SCP[@]}" tests/mac/agent_sandbox.sb tests/mac/sandbox_containment_test.sh "$host":"${rdir}"/ >/dev/null \
+  "${SCP[@]}" tests/mac/agent_sandbox_containment_spike.sb tests/mac/sandbox_containment_test.sh "$host":"${rdir}"/ >/dev/null \
     || { echo "FAIL: scp MS6 sources to $host" >&2; "${SSH[@]}" "$host" "$rm_rdir" >/dev/null 2>&1 || true; return 1; }
   timeout "$LEG_TIMEOUT" "${SSH[@]}" "$host" "ZB_EXPECT_ARCH='${label}' ZB_RDIR='${rdir}' /bin/bash -s" <<'REMOTE' || { echo "FAIL: MS6 leg on $host timed out/failed" >&2; "${SSH[@]}" "$host" "$rm_rdir" >/dev/null 2>&1 || true; return 1; }
 set -euo pipefail
@@ -45,7 +45,7 @@ if [ "$got" != "$ZB_EXPECT_ARCH" ]; then
   echo "FAIL: arch oracle — uname -m=$got but this leg expected $ZB_EXPECT_ARCH (same machine run twice?)" >&2
   exit 1
 fi
-/bin/sh "$d/sandbox_containment_test.sh" "$d/agent_sandbox.sb"
+/bin/sh "$d/sandbox_containment_test.sh" "$d/agent_sandbox_containment_spike.sb"
 REMOTE
   printf 'PASS\tms6-leg\t%s\t%s\n' "$host" "$label"
 }
