@@ -6,8 +6,8 @@ branch: zb-automation-integration-2026-10-10-11-59
 repository: zigBrowser
 topic: "macOS launch support for zigBrowser — TDD implementation plan"
 tags: [plan, tdd, macos, wkwebview, appkit, seatbelt, universal-build, automation, drawer, sandbox, launch-critical]
-status: plan for review (rev 11)
-rev: 11
+status: plan for review (rev 14)
+rev: 14
 last_updated: 2026-10-20
 last_updated_by: cc_3 / JadeBeacon
 last_updated_note: "Rev 11 records MS1b GREEN (commit 3421428, option d): the WKWebView ObjC shim is built by the Apple toolchain as a chained-fixups dylib (xcrun clang -dynamiclib, -Wl,-fixup_chains + -undefined dynamic_lookup; -install_name @executable_path/../Frameworks; exe sets rdynamic macOS-only to export the two back-refs zb_ipc_dispatch/zb_policy_decide), so the SIGNED x86_64 binary runs (was SIGSEGV at [ZBAppHost init]; cause = zig 0.16 classic LC_DYLD_INFO_ONLY into signed __DATA_CONST). The MS1 bundle is now {browser + webview-shim dylib}; resource_phase accepts the empty-resources set only for that exact 2-component shape (6002 bypass protection kept). MS1.3 gains release_least_privilege (disable-library-validation forbidden in a release manifest/binary; ad-hoc dev/test only). ms1b_signed_gate.sh is registered as `zig build ms1b-gate`; validated rc 0 on both Macs (x86_64+arm64, ad-hoc+hardened). Linux/Windows build unchanged. (Frontmatter rev was stale at 6 while body sections advanced to rev 10; bumped to 11.) Shim surface confirmed by BlackRobin (6125)."
@@ -143,6 +143,11 @@ primary_research: thoughts/searchable/shared/research/2026-10-14-14-19-macos-lau
   the exact default). MS1 is GREEN on both Macs through `tests/mac/gate.sh` (universal fat binary,
   executing-arch readback x86_64 + arm64, MS1.3 entitlements on the signed copy, m9 render/reply/
   load-fail, the `--milestone MS1` resource gate). Cause write-up: `scratchpad/ms1/CRASH_CAUSE.md`.
+- **Rev 14** (BlueBeaver, 2026-10-20): MS5's per-OS contracts for BlueBeaver's half (setup, fd-3 delivery,
+  census), agreed with JadeBeacon (mail 6756): the runtime in `Contents/Frameworks/agent-host`, macOS setup refuses
+  until MS6's Seatbelt backend is accepted, the home lock extracted to POSIX C, posix_spawn plus a process group
+  and kqueue parent watch for dying with the browser, MS5.3 partial until MS6 and MS7, and the census `path_glob`s
+  waiting on the user's universal2-Python decision. Rev 13 is JadeBeacon's MS2a ABI amendment (1df6df0).
 
 ## Rev 9 — MS1 empty-resource state made an executable, fail-closed phase contract (RoseCat 5995)
 
@@ -1221,6 +1226,49 @@ coordinated with BlackRobin), then MS4.4.
 **Goal.** Port provisioning to macOS so the helper/runtime/SAI can be installed, and onboard the
 Claude token into the Keychain. Today `runAgentSetup` refuses non-Linux (`app.zig:41-47`) and uses
 `/proc/self/exe`.
+
+### Rev 14: MS5 contracts, BlueBeaver's half (setup, fd-3 delivery, census)
+
+The behaviours below stay as written; these are the per-OS contracts their reds pin. Agreed with JadeBeacon
+(mail 6756): the runtime location (item 3), item 6 and the Keychain consumer in item 7. Item 4 needs BlackRobin's OK on S3a's
+`agent_host.c`. The partial-green status of items 6 and 7 is RoseCat's call.
+
+1. **Home.** Unchanged: `agent_setup.defaultHomeDir` sits beside the profile, which macOS already resolves
+   through the same XDG data subdirectory (MS3.1). No new red.
+2. **Executable path.** A seam `selfExePath()`. Linux keeps `readlink("/proc/self/exe")`; macOS uses
+   `_NSGetExecutablePath`, then `realpath`. The cross-check object proves it compiles, and the Macs prove it runs.
+3. **Runtime location** (a pure function, red on Linux):
+   - `agent_setup.runtimeFor(os, exe)`: Linux is unchanged (`<prefix>/lib/zigbrowser/agent-host`).
+   - On macOS an exe at `<X>.app/Contents/MacOS/zigBrowser` maps to **`<X>.app/Contents/Frameworks/agent-host`**:
+     nested code (python, `.so`, `.dylib`) must live where it is signed as code (JadeBeacon, MS9).
+   - A macOS dev tree (`<prefix>/bin/zigBrowser`, not inside an `.app`) keeps the Linux rule.
+   - The interpreter's path inside `agent-host` on macOS waits on the universal2-runtime decision (item 8).
+4. **Home lock.** `zb_agent_home_lock` (flock) moves, unchanged, out of the GLib-only `agent_host.c` into a
+   POSIX-only `src/agent_home_lock.c`, built on both OSes. It is a behaviour-preserving extraction, gated on
+   Linux by the existing lock tests.
+5. **Spawn, and dying with the browser.** macOS has no `PR_SET_PDEATHSIG`.
+   - `posix_spawn` plus `waitpid`, with the child leading its own process group, which the browser kills on
+     every exit path.
+   - `setup.py` on Darwin also watches its parent with `select.kqueue` `NOTE_EXIT` and exits if the parent dies.
+   - Mac e2e: kill the browser during setup, and no setup process survives. Linux keeps PDEATHSIG.
+6. **No sandbox, no setup.** `setup.py` sandboxes its probe and `--version` with bwrap on Linux. On macOS that
+   must be the MS6 Seatbelt backend. **Until MS6 is accepted, macOS `--agent-setup` exits 1 with one fixed line
+   and spawns nothing; it never runs unsandboxed.**
+   - The line, exactly: `zigBrowser: agent-setup: the macOS sandbox is not ready; setup will not run unsandboxed`.
+     Any other non-Linux OS keeps today's `zigBrowser: agent-setup: the Claude Agent is Linux-only`.
+   - The gate is a pure decision, `agent_setup.platformGate(os, seatbelt_ready)`, with its red on Linux
+     (`tests/agent_setup_ms5_test.zig`, which also pins item 3).
+   - MS6's green flips `seatbelt_ready`.
+7. **MS5.3, partial until MS6 and MS7.** The macOS helper supervisor belongs to the drawer (MS7) and needs MS6,
+   so the full closure waits for both. Now:
+   - a non-GLib seam, `zb_mac_token_to_fd(fd, service, account)`: `zb_keychain_lookup(NULL, NULL, …)`, then
+     write all to `fd`, then `zb_keychain_free`. Errors are fixed text, and the token is in no message.
+   - A both-arch mac e2e on a disposable keychain: the canary reaches the fd's reader and appears in no env,
+     argv or stderr. A mutant that routes it through env fails.
+8. **MS5.1c census.** The exact `path_glob`s for `python-runtime`, `claude-cli` and the `zb-claude` resource sit
+   under `Contents/Frameworks/agent-host/`. They wait on one decision, **which universal2 Python is bundled**:
+   rev 8's Intel Xcode 3.9 vs arm Homebrew 3.14 shows a per-host Python cannot pass the two-tree oracle.
+   That decision is the user's (no installs on laroncha without it).
 
 ### Behavior MS5.1: macOS `runAgentSetup` builds the immutable home
 **Given** a macOS build,
