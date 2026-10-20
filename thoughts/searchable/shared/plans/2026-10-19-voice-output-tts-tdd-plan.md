@@ -6,9 +6,9 @@ branch: zb-automation-integration-2026-10-10-11-59
 repository: zigBrowser
 topic: "The browser's voice: agent replies spoken aloud, with user-customizable voices — TDD implementation plan"
 tags: [plan, tdd, tts, text-to-speech, voice, agent-drawer, pocket-tts, onnxruntime, macos, windows, linux-dev, voice-cloning, miniaudio]
-status: plan for review (rev 2.2)
-rev: 2.2
-last_updated: 2026-10-19
+status: plan for review (rev 2.3)
+rev: 2.3
+last_updated: 2026-10-20
 last_updated_note: "Rev 2 records the user's decisions of 2026-10-19: bundled engine first (system voices become a later, secondary option), read-aloud on by default, the STT side bundles whisper medium (installer about 0.8 GB larger), and a separate Windows launch plan as the Windows dependency. Slices re-sequenced: core, test backend, audio layer, bundled engine, then the drawer and Voice window, then Macs, cloning, Windows, and system voices last."
 primary_research: thoughts/searchable/shared/research/2026-10-19-voice-output-tts.md
 sibling_plan: the voice-input (speech-to-text) plan, written in parallel by another agent
@@ -25,6 +25,19 @@ windows_dependency: thoughts/searchable/shared/plans/2026-10-19-windows-launch-t
 
 ## Revision history
 
+- **Rev 2.3 (2026-10-20):** major revision clearing RoseCat's `9a6973b` / `9663333` voice-plan
+  review (NOT APPROVED). Changes: a single **Shared Voice Foundation (VF)** section
+  (§2.4, byte-identical in the STT plan) replaces the "named the same, first one wins"
+  arrangement — one path set (`src/voice/*`, `src/voice_settings_window.c`), one audio API, one
+  owner, one `voice.json` schema with migration + lock + single writer, verify-through-consumption
+  model loading, the render-to-file/null test-device rule, and a native `ZbChild` arbitrary-child
+  interface distinct from the Python agent `SandboxBackend`. The feed ABI (D2) gains string/param
+  ownership, exactly-once terminal order and the `reply_capped` path; the engine IPC (D9) gains
+  versioned framing, bounds, backpressure, late-event rejection, reap/deinit, and a bounded
+  **enrolment** sub-protocol (D9.1) for cloning; a **V3.0 Pocket-runtime proof/decision slice**
+  precedes V3; the V3.5↔W1/WS13 packaging cycle is split; SHOULD items folded. No user decision is
+  changed; open decisions are sharpened only. The withdrawn paths `src/audio.*`, `src/models.zig`,
+  `src/voice_settings.zig`, `src/voice_window.c` are replaced by the VF set.
 - **Rev 1:** first plan. System voices first; bundled engine decision-gated; read-aloud off by
   default; Windows drawer "no plan" (superseded).
 - **Rev 2.2:** the Windows launch plan exists (WS0-WS13). Windows steps now cite its milestones
@@ -206,8 +219,9 @@ them against HEAD at the start of each slice. Function names are the stable anch
     (`agent_drawer.zig:244`);
   - `dlopen`: libsecret in `agent_secrets.c`;
   - a separate window: the Secrets window (`agent_secrets_window.c`);
-  - sandboxing a child process: the shared `SandboxBackend` contract (bwrap on Linux;
-    Seatbelt in macOS MS6).
+  - sandboxing a **native** child process: VF's `ZbChild` interface (§2.4) — bwrap-style on Linux,
+    the macOS plan's MS6 Seatbelt profile, the Windows plan's WS8.7 sandbox user — **not** the
+    Python agent `SandboxBackend`.
 - **The drawer, helper and setup are Linux-only** (`configureGtkBackend`, `build.zig:1503`;
   `app.zig:52-54`).
 - **macOS backend** links WebKit, Cocoa and Foundation only (`build.zig:1560`). Other facts:
@@ -257,23 +271,109 @@ Summary:
 
 ### 2.3 Shared with the speech-to-text plan
 
-Named the same in both plans. Whichever plan builds a piece first owns it; the other consumes
-it.
+The shared subsystems (audio layer, model store, `voice.json`, the Voice window, the native child
+sandbox, the permission layer, the test-device rule) are specified **once**, authoritatively, in
+**§2.4 Shared Voice Foundation (VF)** below. §2.4 is byte-identical in the STT plan. The earlier
+"named the same, whichever lands first owns it" arrangement is withdrawn (it let the first
+implementation choose an incompatible ABI and forced the other plan into shared-file rewrites —
+RoseCat `9a6973b`/`9663333`). Every slice in this plan that uses a shared piece declares a
+`depends on VF` edge (§13).
 
-| Piece | What it is | This plan's use | The STT plan's use |
-|---|---|---|---|
-| **`zb_audio`** | miniaudio (public domain or MIT-0) on Core Audio, WASAPI and PulseAudio | playback (V2) | capture; cloning enrolment uses capture too |
-| **The Voice window** | one native window, opened from the drawer header | the **Read aloud** section (V5) | the **Dictation** section |
-| **`<profile>/voice.json`** | the settings store | the `read_aloud` object | the `dictation` object |
-| **macOS prompts and usage strings** | added only when a signed Mac build proves a key is needed | Personal Voice authorization (S4) | the microphone (`NSMicrophoneUsageDescription`, `com.apple.security.device.audio-input`); cloning enrolment uses it too |
-| **The model manager (`zb_models`)** | a pinned SHA-256 per file; the bundled-model install location; optional downloads | the Pocket TTS files, bundled | whisper medium, bundled |
-| **ONNX Runtime** | the inference library | the bundled engine | — |
-| **The audio test rule** | section 7.3 | yes | yes |
+### 2.4 Shared Voice Foundation (VF) — one slice, one owner (byte-identical in the STT plan)
 
-- **`voice.json`:** each plan validates only its own object and keeps the other's bytes
-  unchanged.
-- **ONNX Runtime:** if the STT plan ever uses an ONNX model, it should share this copy.
-  whisper.cpp does not need it.
+> **This section is the single source of truth for everything the TTS and STT plans share. It is
+> byte-identical in both plans; any change lands in both, in the same commit.** It replaces the
+> conflicting shared definitions the review flagged (TTS review 2/3; STT review 1; `9663333`
+> TTS/STT BLOCKER 1-2).
+
+**Owner and order.** VF is **one slice**, landed **once**, before any consumer slice in either
+plan. It is owned by a single implementing agent (the orchestrator assigns them; it is **not**
+split across the two plans). The STT track carries VF (its VS-VF cluster: the old VS3 audio, VS1
+model locator, VS6 window shell, plus the schema/child modules), because those slices were already
+written to land first; the TTS track **consumes** VF and adds only its playback `AudioSink` impl
+and its "Browser voice" settings section. Every consumer slice in either plan carries a
+`depends on VF` edge.
+
+**One path set (canonical — both plans use exactly these).**
+
+| File | Role |
+|---|---|
+| `src/voice/audio.zig` | `AudioSource` (capture) + `AudioSink` (playback) vtables; ring buffer; resample to the consumer's format; `WavFileSource`, `SilenceSource`, `NullSink`, `FileSink` |
+| `src/voice/audio_miniaudio.c` + `third_party/miniaudio/miniaudio.h` | one `ma_context` per process; Core Audio / WASAPI / PulseAudio (PipeWire via pipewire-pulse) / ALSA; the **Null** backend for tests |
+| `src/voice/models.zig` + `build/voice_model.zig` | one catalog `{id,file,source_url,revision,bytes,sha256,license,kind}`; one bundled resource root `…/models/` with `stt/` and `tts/`; build-time SHA-256 check; the verify-through-consumption loader (below) |
+| `src/voice/voice_config.zig` | the **only** writer of `voice.json`: the outer schema, `migrate`, the lock and compare-and-retry (below) |
+| `src/voice_settings_window.c` (GTK; `*_mac.m` / `*_win.cpp` later) | one Voice window; sections register themselves into it |
+| `src/voice/consent.zig` | app-level consent records; keys namespaced `stt.*` / `tts.*` |
+| `src/voice_mac.m`, `src/voice_win.cpp` | OS permission / usage-string glue (microphone; Personal Voice) |
+
+The TTS plan's former `src/audio.zig`, `src/audio.c`, `src/models.zig`, `src/voice_settings.zig`,
+`src/voice_window.c` are **withdrawn** — TTS uses the paths above. The engine/core files that are
+**not** shared stay plan-private: TTS `src/speech_text.zig`, `speech_chunker.zig`,
+`speech_queue.zig`, `speech_params.zig`, `speech.h`, `speech_backend.h`, `zb-speech`; STT
+`src/voice/stt_engine.zig`, `whisper_engine.zig`, `dictation.zig`.
+
+**One audio API.** `AudioSource`/`AudioSink` are vtable interfaces over blocks of f32 samples.
+Capture always delivers **16 kHz mono f32 in [-1,1]**; playback runs at the producer's rate. One
+`ma_context` per process. A capture callback writes a lock-free ring buffer drained on the consumer
+thread; no GTK/AppKit/Win32 call ever runs on an audio thread. Device loss (unplug, route change)
+ends the session with `error device-lost` and never hangs.
+
+**One `voice.json` schema, migration, lock and single writer.**
+- Outer object: `{ "schema": <int>, "read_aloud": { … }, "dictation": { … } }`. `voice/voice_config.zig`
+  is the **only** module that writes the file; both sections call it.
+- A mutation: acquire the OS advisory lock on `voice.json.lock`; read the file + its `schema`; run
+  `migrate(old)->current` if needed; merge **only the caller's own section**; **preserve unknown
+  top-level keys and the sibling section byte-for-byte**; write via `atomic_file.replaceJson`;
+  release the lock. A generation counter + compare-and-retry covers a writer that slipped in before
+  the lock (belt and suspenders).
+- `migrate` is pure and tested vN→vN+1: lossless for known keys, untouched for unknown ones.
+- **Red suite (VF):** two windows (or two processes) open; interleave a `read_aloud` write and a
+  `dictation` write; assert both changes persist, an unknown top-level key survives, and no write
+  is lost (mutant: drop the lock / last-writer-wins ⇒ a lost update ⇒ red). A `schema`-bump fixture
+  proves `migrate` runs and preserves the sibling byte-for-byte.
+
+**Model integrity pinned through consumption.** The loader verifies size + SHA-256 and then loads
+**the verified bytes**, never a re-opened path:
+- STT: `whisper_init_from_buffer(verified_bytes)` (not `whisper_init_from_file`).
+- TTS/ONNX: `OrtCreateSessionFromArray(verified_bytes)` (not a path), or a single OS handle opened
+  once, verified, and memory-mapped for the load.
+- A `(size, mtime, inode)` record is a **performance hint only**, never the identity proof.
+- **Red (VF):** at the verify/use seam, replace or truncate the file after verify and before load;
+  the load must consume the verified bytes/handle, and the swapped file must never reach the engine
+  (mutant: reopen-by-path ⇒ the swapped bytes load ⇒ red). "The bundle is read-only" is an install
+  policy, not an identity proof on the per-user Windows layout or under a test override.
+
+**The test-device rule (automated runs never touch a real device).** Every automated run uses the
+miniaudio **Null** backend, a `WavFileSource`/`SilenceSource`, and a render-to-file **`FileSink`** —
+never Core Audio/WASAPI/PulseAudio/ALSA, and never a "muted real device". A hermetic **write
+oracle** runs the process in a test-owned temp/mount namespace with a file-open census and asserts
+**no audio-derived bytes are written anywhere** on complete/cancel/error, and every PCM/transcript
+buffer is zeroed (`std.crypto.secureZero`) at session end. Only the orchestrator's user-approved
+`real_audio_check` / `real_screen_check` open a physical device (§7.4).
+
+**The native arbitrary-child interface `ZbChild` (NOT the agent `SandboxBackend`).** The production
+`SandboxBackend` is a **Python, agent-home-specific** launch contract
+(`agent/host/zb_agent_host/sandbox.py`); the speech engine and the cloning-enrolment helper are
+**native** children the browser spawns, so VF defines its own `ZbChild` platform interface,
+implemented per OS:
+- inherits **exactly** the PCM pipe (and, for enrolment, the sample pipe) and nothing else; **no
+  network**; read-only model dir; write only its own scratch; **no audio device** (the browser
+  plays/records);
+- parent-death kill (Linux `PR_SET_PDEATHSIG`; macOS kqueue `NOTE_EXIT` or a watchdog; Windows a
+  **Job Object** with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`, create-suspended → assign → resume, per
+  the Windows plan's bead `zigBrowser-d1d`), child reaping, graceful shutdown, and explicit
+  **main-loop ownership** (which thread pumps the pipe);
+- Linux reuses bwrap-style confinement where it fits; macOS uses the macOS plan's MS6 Seatbelt
+  profile; Windows uses the Windows plan's **WS8.7** no-network `zb-speech` sandbox user + WFP.
+- VF names the interface and ships the Linux impl + reds; each platform slice (M1, W1) implements
+  and live-verifies its own.
+
+**VF red suite + dependency edges.** VF ships, each red-first on Linux: `voice/audio.zig` +
+`audio_miniaudio.c` (Null + WavFile + FileSink), `voice/models.zig` + `build/voice_model.zig`
+(catalog + verify-through-consumption), `voice/voice_config.zig` (schema + migrate + lock),
+`voice_settings_window.c` (shell + section registry), `voice/consent.zig`, and `ZbChild` (Linux).
+Consumers declaring `depends on VF`: TTS V2, V3, V3.0, V5, C1-C3, M1/M2, W1/W2, CW; STT VS3, VS1,
+VS4, VS5, VS6, VS7-VS11, VSP.
 
 ## 3. Design
 
@@ -308,6 +408,28 @@ int  zb_speech_is_speaking(unsigned int win);
 - **`set_muted(1)`** stops all speech and stops new automatic reading. It does not change the
   automatic-reading setting, so unmuting resumes reading of the next reply.
 
+**ABI ownership, lifetime and terminal semantics (rev 2.3; clears review #1).**
+- **Borrowed strings.** `text`/`len` passed to `reply_delta`/`reply_message`/`speak_text` are
+  **borrowed for the duration of the call only**; the callee copies any bytes it keeps before
+  returning. The caller (the frame pump) owns and may free/overwrite them after the call. The
+  feed never retains a caller pointer.
+- **`ZbSpeechParams`.** Caller-owned and **copied by value** at `speak`; the backend keeps no
+  pointer into it. Any string it contains (voice id) is copied.
+- **`list_voices` callback data.** The `id/name/lang/kind` pointers are valid **only during the
+  `each(...)` callback**; a consumer that keeps them copies them. `ctx` lifetime is the caller's.
+- **Terminal semantics (exactly-once, ordered).** For each utterance id the backend posts
+  **exactly one** terminal `zb_speech_event` — `done` **xor** `cancelled` **xor** `failed` — and
+  never after the window's epoch was bumped by `stop`. Events for an utterance arrive in order
+  (`started` before its terminal); a late or duplicate terminal for a bumped epoch is dropped by
+  `speech_queue.zig` (the epoch rule, D3). Reds: a double-`done`, a `done` after `cancelled`, and
+  a terminal after `stop` each assert a single honored terminal.
+- **The `reply_capped` path (production-specific).** When a reply is capped (the drawer's
+  `reply_capped` with a `prompt_id`), the frame pump still calls `reply_message` with the capped
+  text and then `reply_end(result)`; the chunker flushes the capped text and speech finishes. The
+  cap is **per prompt_id**: a capped utterance is terminal for that prompt; a later uncapped
+  re-emit (new prompt_id) is a **new** utterance, not a continuation. A red feeds a capped reply
+  then a fresh prompt and asserts two distinct utterances with their own terminals.
+
 ### D3. The speech core (portable Zig, pure, tested on Linux)
 
 | Module | What it does |
@@ -315,7 +437,7 @@ int  zb_speech_is_speaking(unsigned int win);
 | `src/speech_text.zig` | Markdown to speakable text, streaming-safe. See the clean-up rules below. |
 | `src/speech_chunker.zig` | Sentence chunking over deltas. See the chunking rules below. |
 | `src/speech_queue.zig` | One speaker for the whole app. See the queue rules below. |
-| `src/voice_settings.zig` | `voice.json`'s `read_aloud` object: `auto_read` (default **true**), `muted` (default false), `first_run_notice_shown`, `voice`, `rate`, `pitch`, `volume`, `code_policy` (default **`announce_skip`**, see OD5), `pause_for_screen_reader` (default **true**). Load, validate, clamp, save atomically. Unknown keys and the `dictation` object are kept byte-for-byte. |
+| VF `src/voice/voice_config.zig` (`read_aloud` section) | `voice.json`'s `read_aloud` object: `auto_read` (default **true**), `muted` (default false), `first_run_notice_shown`, `voice`, `rate`, `pitch`, `volume`, `code_policy` (default **`announce_skip`**, see OD5), `pause_for_screen_reader` (default **true**). This plan defines the `read_aloud` keys and their validation/clamping; the file's load/migrate/lock/single-writer belongs to **VF** (§2.4), which keeps the `dictation` object and unknown keys byte-for-byte. |
 | `src/speech_params.zig` | Pure mappings from normalized rate (0.5-2.0), pitch (0.5-2.0) and volume (0-1) to each backend's scale (see below). |
 
 **Clean-up rules (`speech_text.zig`).**
@@ -469,10 +591,34 @@ rows.
   minutes after the last one.
 - It runs **Pocket TTS** (DECIDED 4) on the **ONNX Runtime C API**
   (MIT).
-- It streams 16-bit PCM frames over a pipe with a small framed protocol: `hello`, `voice`,
-  `speak <utt>`, `cancel <utt>`, and `pcm <utt> <n>` / `done <utt>` / `error` back.
-- The browser plays the PCM through `zb_audio`, so first audio comes after the first frame,
+- It streams PCM frames over a pipe with a **versioned framed protocol** (D9.2 below).
+- The browser plays the PCM through VF's `AudioSink`, so first audio comes after the first frame,
   not the whole sentence.
+
+**D9.2 Engine protocol and resource bounds (rev 2.3; clears review #6).**
+- **Versioned binary framing.** Every frame is `{magic "ZBSP", u8 version, u8 type, u32 len, bytes}`;
+  `hello` declares `version` and the **sample format** (`s16le` or `f32`, rate, channels); a
+  version/format the browser does not accept fails the handshake and the utterance reports `error`.
+- **Frame types:** browser→child `hello`, `voice <id>`, `speak <utt> <text>`, `cancel <utt>`;
+  child→browser `ready`, `pcm <utt> <seq> <n>`, `done <utt>`, `error <utt> <code>`.
+- **Bounds (each a failing-first red).** A single frame payload has a **maximum** (oversized ⇒
+  `error`, not a crash); `pcm` carries a monotonic `seq` so drops/reorders are detected;
+  **backpressure** — the child blocks writing `pcm` while the browser's `AudioSink` queue is full,
+  so a bounded amount of PCM is ever in flight; a **global queued-text bound** across windows (a
+  further `speak` past the bound is refused with a row, not queued unboundedly); a **late/stale**
+  `pcm`/`done` for a cancelled `(utt,epoch)` is dropped; a **stalled child** (no `ready`/`pcm`
+  within a deadline) is killed and the utterance reports `error`; **manager deinit** drains and
+  frees every pending utterance; **child reap** — the exit status is collected (no zombie) and a
+  crash triggers the 1/2/4/8 s backoff restart.
+
+**The sandbox**, through VF's native **`ZbChild`** interface (§2.4 — **not** the Python agent
+`SandboxBackend`):
+- **no network**;
+- read-only access to the model directory and, for a call that needs it, to that one cloned
+  voice's embedding;
+- write access only to its own scratch directory;
+- no audio devices, because the browser plays the audio;
+- parent-death kill, reaping and main-loop ownership per `ZbChild`.
 
 **The model path (OD2).** The recommended path is to **export ONNX ourselves** from the MIT
 PyTorch code, using the community exports as references. A script
@@ -482,18 +628,29 @@ Alternatives:
 - PocketTTS.cpp, a C++ ONNX Runtime runtime with a C FFI. Its license must be read first.
 - sherpa-onnx's C API. Its TTS build vendors GPL espeak-ng unless the build is patched.
 
-**The sandbox**, through the shared `SandboxBackend` contract:
-- **no network**;
-- read-only access to the model directory and, for a call that needs it, to that one cloned
-  voice's embedding;
-- write access only to its own scratch directory;
-- no audio devices, because the browser plays the audio.
+OD2 is not settled by this plan; **V3.0 (new) proves the chosen route before V3** (§9).
 
-It dies with the browser. On macOS it uses the MS6 Seatbelt backend. On Windows it uses what
-the Windows launch plan provides.
+It dies with the browser, through `ZbChild`'s parent-death kill. On macOS it uses the macOS plan's
+MS6 Seatbelt profile; on Windows the Windows plan's WS8.7 no-network `zb-speech` sandbox user.
 
-**A crash** gives `failed` for the current utterance and a restart on the next one, with the
-same 1/2/4/8 s backoff pattern as the helper.
+**A crash** gives `error` for the current utterance and a restart on the next one, with the same
+1/2/4/8 s backoff pattern as the helper (and `ZbChild` reaps the exit status).
+
+**D9.1 Cloning enrolment sub-protocol (rev 2.3; clears review #5).** Enrolment needs the child to
+derive speaker state from live samples, which the D9.2 frame set alone cannot carry. Add bounded
+enrolment frames over the same versioned pipe, plus a second inherited **sample pipe** (`ZbChild`):
+- browser→child `enroll_begin <id>`, `enroll_pcm <id> <seq> <n>` (16 kHz mono f32), `enroll_end <id>`,
+  `enroll_abort <id>`; child→browser `enroll_ready <id>` (speaker state derived) / `error <id> <code>`.
+- **Bounds:** total enrolment audio is capped (duration, byte count, and sample-count), oversize ⇒
+  `error`; one enrolment at a time; a partial enrolment on crash/cancel writes nothing under
+  `voices/<id>/` (the child's scratch is discarded).
+- **Storage + Windows ACL (refcounted).** The derived speaker state and samples live under
+  `voices/<id>/` (0700 dir, 0600 files on POSIX; on Windows a **private DACL** via
+  `SetNamedSecurityInfoW`, `PROTECTED_DACL`, owner-only, no inherited ACEs). A **grant/revoke
+  refcount** governs the child's read access to one `voices/<id>/`: grant before a `voice <id>` or
+  `enroll_*`, revoke when the last in-flight speak/enrol for that id ends, so **delete waits for
+  in-flight use** (C3). Reds: enrolment byte/duration cap; crash-mid-enrol leaves no bytes; delete
+  during an in-flight speak is deferred then completes; the Windows DACL grants only the owner.
 
 ### D10. Cloning (C1-C3; decided 1)
 
@@ -693,13 +850,18 @@ version.
 - `tests/e2e/audio_common.py` builds this world, and **refuses** with exit 1 if any variable
   would reach the user's session. `audio_common_test.py` proves the refusal.
 
-**Macs.** Tests render to a file, or play with the remote Mac's output muted (the old state is
-restored after).
+Per VF's test-device rule (§2.4), **every automated run uses the miniaudio Null backend or a
+render-to-file `FileSink`; no automated run opens Core Audio, WASAPI, PulseAudio or ALSA, and no
+"muted real device" is used.** The VF write oracle asserts no audio-derived bytes are written and
+every PCM buffer is zeroed.
 
-**Windows hosts.** Tests play to a WASAPI device in a muted session, or to miniaudio's null
-backend. The WS0 runner sets this up. The Windows 10 machine is also a file server, so tests
-there obey the Windows plan's file-server isolation rules (its section on them, and WS0.5,
-WS0.7). Microphone settings change only for the test user `zbtest`, never machine-wide.
+**Macs.** Automated tests render to a file (`FileSink`) or the Null backend. Only the orchestrator's
+`real_audio_check` plays to the Mac's real output (§7.4), with the user.
+
+**Windows hosts.** Automated tests use the Null backend or a `FileSink`. The WS0 runner needs open
+no real device. The Windows 10 machine is also a file server, so tests there obey the Windows plan's
+file-server isolation rules (WS0.5, WS0.7). Microphone/output settings change only for the test user
+`zbtest`, never machine-wide, and only in the orchestrator's user-approved checks.
 
 **The screen-reader tests** start a private AT-SPI bus and set `ScreenReaderEnabled` on it.
 They never start the user's Orca.
@@ -824,14 +986,18 @@ helper's stdout (`fake_host.py`) or further out, never below `on_frame`.
 
 ### Closure D: the bundled engine reaches an audio device   [BLOCKING]
 - **Linux (V3):** with the real `zb-speech` and the real model:
-  - the null sink's monitor has RMS above the threshold between `start` and `end`;
+  - the FileSink/null-sink output is **intelligible** for the reference phrase (the V3.0 golden
+    check), not merely non-silent RMS;
   - first audio comes within the budget (V3.3);
-  - a connect from inside `zb-speech` to `1.1.1.1:443` fails.
-- **Macs (M1):** the same engine renders to a WAV file with audio. With output muted, Core
-  Audio playback runs and ends with `done`.
-- **Windows (W1):** the same on the Windows hosts.
-- **RED-AT-SEAM:** a mutant engine that says `done` without sending PCM fails the RMS or WAV
-  check.
+  - a connect from inside `zb-speech` to a **local canary listener** fails. The test binds a
+    loopback TCP port in the parent, passes its address, and asserts the sandboxed child cannot
+    reach it (no-network, hermetic — no external route to `1.1.1.1`, which could pass or fail for
+    the wrong reason on a disconnected or proxied host).
+- **Macs (M1):** the same engine renders to a WAV file with intelligible audio via `FileSink`
+  (no real device in the automated run).
+- **Windows (W1):** the same on the Windows hosts, via `FileSink`/Null.
+- **RED-AT-SEAM:** a mutant engine that says `done` without sending PCM, and one that renders the
+  wrong phrase, both fail the intelligibility check.
 
 ### Closure E: enrol, speak with, and delete my voice   [BLOCKING]
 - **SOURCE:** a fixture recording of a consenting test speaker, fed as the private
@@ -983,8 +1149,9 @@ change.
   - unknown keys and `dictation` are kept byte-for-byte;
   - writes are atomic.
 - **Property (roundtrip):** `parse(write(s)) == s`.
-- **Files touched:** `src/voice_settings.zig`, `tests/voice_settings_test.zig`. Reuse
-  `atomic_file.replaceJson` and the load shape of `agent_drawer.zig:244-277`.
+- **Files touched:** the `read_aloud` keys + validation in VF `src/voice/voice_config.zig`,
+  `tests/voice_config_read_aloud_test.zig`. The file's load/migrate/lock/single-writer is VF's
+  (§2.4); this slice only adds `read_aloud`'s keys and clamps and declares `depends on VF`.
 
 #### Behavior V0.5: parameter mappings are monotonic, and 1.0 maps to the default
 - **Property (invariant):** each mapping is monotonic and clamped, and 1.0 maps to the
@@ -1065,20 +1232,25 @@ data.
 
 ---
 
-### V2 — The shared audio output layer `zb_audio` (Linux build and test; cross-compiles; shared with the STT plan)
+### V2 — Implement VF's playback `AudioSink` (Linux build and test; cross-compiles; **depends on VF**)
 
-#### Behavior V2.1: PCM played through `zb_audio` reaches the device
-- **Given** the private PulseAudio world,
-- **When** a 1 s 440 Hz tone (16-bit, mono, at the engine's rate) is played through the
-  `--e2e-protocol --audio-selftest` seam,
-- **Then** the monitor shows an FFT peak within 5 Hz of 440 for about 1 s.
+VF (§2.4) owns the audio layer (`src/voice/audio.zig`, `src/voice/audio_miniaudio.c`, one
+`ma_context`). V2 is **not** a second audio library: it implements/extends VF's **`AudioSink`**
+(playback) and proves it, since VF itself may land the capture path first. If VF lands the sink too,
+V2 shrinks to the selftest proof.
+
+#### Behavior V2.1: PCM played through VF's `AudioSink` renders
+- **Given** the test world,
+- **When** a 1 s 440 Hz tone (f32, mono, at the engine's rate) is played through the
+  `--e2e-protocol --audio-selftest` seam into a **`FileSink`** (no real device),
+- **Then** the rendered file shows an FFT peak within 5 Hz of 440 for about 1 s.
 - **Files touched:**
-  - `third_party/miniaudio/miniaudio.h` (vendored, pinned, with its license);
-  - `src/audio.zig`: open, play stream, stop, device-gone;
-  - `src/audio.c`: the single implementation unit;
-  - `build.zig`: all three backends; CoreAudio, AudioToolbox and AudioUnit on macOS;
+  - VF `src/voice/audio.zig`: the `AudioSink` play stream, stop, device-gone (shared);
+  - VF `src/voice/audio_miniaudio.c`: the playback path on the one `ma_context` (shared);
+  - `build.zig`: the macOS CoreAudio/AudioToolbox/AudioUnit link for VF's audio unit;
   - `src/app.zig`: the seam;
-  - `tests/e2e/audio_common.py`, `tests/e2e/audio_common_test.py`, `tests/e2e/audio_out_test.py`.
+  - `tests/e2e/audio_common.py`, `tests/e2e/audio_common_test.py`, `tests/e2e/audio_out_test.py`
+    (FileSink/Null only, per VF's test-device rule).
 
 #### Behavior V2.2: stop drops queued audio within 50 ms; a lost device is reported
 - Stop empties the ring buffer.
@@ -1093,7 +1265,26 @@ data.
 
 ---
 
-### V3 — The bundled engine `zb-speech` on Linux (primary; decided 2; Pocket TTS, decided 4; runtime path OD2)
+### V3.0 — Pocket-runtime proof and OD2 decision (Linux; **gates V3**; clears review #9)
+
+Pocket TTS has **no official C/ONNX runtime** (OD2 is open), yet V3 presumes an ONNX
+implementation. V3.0 proves the chosen route produces **intelligible** audio from a fixed input
+before V3 builds on it, and records the OD2 decision and the model-gate/redistribution terms.
+- **Proof.** Run the candidate route (OD2 (a) our ONNX export + ORT C API, recommended; or (b)/(c))
+  on a **fixed reference phrase** and assert the output is **intelligible**, not merely non-silent:
+  a golden check — either a small offline recognizer transcribes the rendered WAV to the expected
+  phrase (fuzzy match), or a spectral/MFCC correlation against a pinned reference clip exceeds a
+  threshold. RMS/WAV-shape alone is explicitly **not** sufficient (SHOULD: intelligible output).
+- **Decision record.** V3.0 closes OD2 with the measured route (export reproducibility, first-audio
+  latency, licenses actually pulled in) — the user may override. It does **not** change the user's
+  Pocket-TTS choice (DECIDED 4).
+- **Shipping gate ordering.** The model-gate terms (OD7) and redistribution approval must be
+  recorded here, **before** any shipping dependency (V3.5a/V3.5b), not at V3.5 time.
+- Depends on **VF** (`AudioSink`, `models.zig` verify-through-consumption) and V2.
+- 🔴 Red: the intelligibility check fails against a `done`-without-PCM mutant and against a
+  wrong-phrase render; green only when the real route renders the reference phrase intelligibly.
+
+### V3 — The bundled engine `zb-speech` on Linux (primary; decided 2; Pocket TTS, decided 4; runtime path OD2 — closed by V3.0)
 
 #### Behavior V3.1: the model files are found, verified and refused when wrong
 - **Given** the pinned manifest `engine/models/pocket-tts.json`, which records each file's
@@ -1104,17 +1295,19 @@ data.
   - a matching set gives `hello ok <model> <version>`;
   - a wrong hash or a missing file gives `hello error model <file>`;
   - the browser shows "Speech unavailable (model)".
-- **Files touched:** `engine/models/pocket-tts.json`, `src/models.zig` (shared with the STT
-  plan; if it lands first, this behavior only adds the manifest), `tests/models_test.zig`,
+- **Files touched:** `engine/models/pocket-tts.json`, VF `src/voice/models.zig` (shared; this
+  slice only adds the `tts/` catalog entries and uses VF's verify-through-consumption loader —
+  `OrtCreateSessionFromArray` over the verified bytes, §2.4), `tests/models_test.zig`,
   `tools/speech_model_env.sh` (fills the developer cache from the pinned source; network once).
+  Declares `depends on VF`.
 
 #### Behavior V3.2: `zb-speech` synthesizes in its own sandbox with no network (Closure D, Linux)
 - **Given** the model installed,
 - **When** the browser speaks one sentence with the engine backend,
 - **Then**:
   - PCM frames arrive over the pipe;
-  - `zb_audio` plays them into the null sink (RMS check);
-  - from inside the process, a connect to `1.1.1.1:443` fails (a test-only probe flag, honored
+  - VF's `AudioSink` plays them into the Null sink / `FileSink` (intelligibility check, V3.0);
+  - from inside the process, a connect to the **local canary listener** fails (a test-only probe flag, honored
     only with `--e2e-protocol`);
   - it cannot read `<profile>` or the agent home;
   - it exits when the browser is killed.
@@ -1129,7 +1322,15 @@ data.
   - `build.zig`;
   - `tests/e2e/speech_engine_test.py`.
 
-#### Behavior V3.3: first audio within the budget; stop within 250 ms at the sink
+#### Behavior V3.3: first audio within the budget; stop within the two-stage cancellation budget
+
+> **Cancellation budget (rev 2.3; resolves the 200 vs 250 ms inconsistency).** Two named,
+> non-contradictory stages: **control-ack ≤ 200 ms** — the app marks the window stopped, bumps the
+> epoch and stops handing new PCM to the sink (measured at the control/queue); **audible-silence ≤
+> 250 ms** — the sink is silent, allowing ≤ ~50 ms for already-buffered PCM to drain. Both are
+> tunables with these defaults. Tests assert the control row within 200 ms and sink RMS below
+> threshold within 250 ms.
+
 - On the Linux dev machine, first audio comes within 600 ms of the first chunk for a 12-40
   character sentence. The budget is recorded per host, not tuned silently.
 - Cancel drops queued PCM and aborts synthesis.
@@ -1239,8 +1440,10 @@ stop on each control, and hears nothing after mute.
 - **V5.5** The pitch slider is hidden for a voice whose backend lacks pitch.
 - **V5.6** The window is unreachable from pages and the automation socket (the S4.3 shape).
 - **V5.7** The "Dictation" section exists as a placeholder for the STT plan.
-- **Files touched:** `src/voice_window.c`, `src/voice_window.h`, `src/agent_drawer.c` (Voice
-  button), `src/voice_settings.zig`, `tests/e2e/voice_window_test.py`, `build.zig`.
+- **Files touched:** VF `src/voice_settings_window.c` (this plan adds its **"Browser voice"**
+  section via the section registry; VF owns the window shell), `src/agent_drawer.c` (Voice button),
+  the `read_aloud` keys in VF `src/voice/voice_config.zig`, `tests/e2e/voice_window_test.py`,
+  `build.zig`. Declares `depends on VF`.
 - **Real-screen check:** `voice-window`.
 - **Real-audio:** the user hears the preview at the chosen rate.
 
@@ -1291,9 +1494,11 @@ capture added here with the same interface.
 - **C1.3 No other source.** No file picker (OD9), no automation method, no agent tool and no
   page API can start or feed enrolment. A test lists the automation methods and the agent's
   tool names. The window is unreachable from page JavaScript.
-- **Files touched:** `src/voice_window.c` (clone pages), `src/voice_clone.zig` (state machine,
-  storage, consent record), `engine/zb_speech/pocket.zig` (derive the speaker state from the
-  samples), `tests/e2e/voice_clone_test.py`.
+- **Files touched:** VF `src/voice_settings_window.c` (clone pages in the "Browser voice" section),
+  `src/voice_clone.zig` (state machine, storage, consent record; uses VF `AudioSource` capture and
+  the D9.1 enrolment sub-protocol), `engine/zb_speech/pocket.zig` (derive the speaker state from the
+  samples, over D9.1's sample pipe), `tests/e2e/voice_clone_test.py`. **Depends on M2** for the
+  AppKit clone UI on macOS (C1-C3's Mac legs land with M2, not before it — review `9663333` #4).
 - **Real-screen check:** `voice-clone-consent`. The orchestrator also asks the user to try one
   real enrolment.
 
@@ -1537,8 +1742,10 @@ def case_badge_stops_minimized(binary):
 
 | Slice | Comes after |
 |---|---|
-| V0 → V1 → V2 → V3 → V4 → V5 | each the previous one |
-| V3.5 (shipping) | OD7 |
+| **VF (shared foundation)** | nothing; lands first; every consumer below depends on it |
+| V0 → V1 → V2 → **V3.0** → V3 → V4 → V5 | each the previous one; V2 depends on **VF**; **V3.0 proves the Pocket runtime (OD2) before V3** |
+| **V3.5a (package slots + census scaffolding)** | V3 and each platform's packaging slice that reserves the slot (Linux .deb step, macOS **VSP/MS5.1c** resource census, Windows **WS13.1** census). Depends on components *existing*, not on the final runtime |
+| **V3.5b (final packaged-runtime proof)** | V3.5a **and** the platform runtime slices that fill the slots (V3, **M1**, **W1**) **and** OD7 (legal). Its census asserts the real engine/model/UI are present and run |
 | M1 | V3 and MS1; M1.3 also after MS6 |
 | C1 → C2 → C3 | V3 and a capture path |
 | M2 | V4, V5, M1, **MS7 and MS8** |
@@ -1551,13 +1758,15 @@ def case_badge_stops_minimized(binary):
 
 ## 14. Tracking
 
-Beads writes are blocked on this clone: the shared bd database has pending schema migrations,
-and agents must not run `bd migrate` or `bd bootstrap`. When it is reconciled:
+Beads writes are unblocked on this clone (the orchestrator reconciled the shared bd database,
+local-only; still **do not** `bd dolt push` from an agent). When filing:
 - file one epic, "Browser voice (text-to-speech)";
-- give it the children V0-V5, M1, C1-C3, M2, W0-W2 and S1-S4, with the dependencies of
-  section 13;
-- link W1 to WS0, WS1, WS8.7 and WS13, W2 to WS5, WS11 and WS12.1, and CW to W2 and C3;
-- link M2 to MS7 and MS8.
+- give it the children **VF** (shared foundation, landed first), V0-V2, **V3.0**, V3, **V3.5a**,
+  **V3.5b**, V4, V5, M1, C1-C3, M2, W0-W2 and S1-S4, with the dependencies of section 13;
+- every consumer child depends on **VF**;
+- link W1 to WS0, WS1, WS8.7 and WS13's **slot**, W2 to WS5, WS11 and WS12.1, and CW to W2 and C3;
+- link M2 to MS7 and MS8; link V3.5b to V3, M1 and W1 (final packaged-runtime proof);
+- cross-link **VF** and the `ZbChild` Windows leg to the Windows plan's bead `zigBrowser-d1d`.
 
 ## 15. References
 
