@@ -6,9 +6,13 @@
 # LIMITED; the default, so Enabled/RunLevel are omitted = enabled/least-privilege), Actions Context=Author,
 # no WorkingDirectory. (No /RU other-user, no stored password — a self-owned interactive task.)
 $ErrorActionPreference = 'Stop'
+# Task name seam: defaults to the production name; tests pass ZB_TASK_NAME for a disposable copy.
+$taskName = if ($env:ZB_TASK_NAME) { $env:ZB_TASK_NAME } else { 'zb-session-probe' }
 $ps     = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
 $script = Join-Path $env:USERPROFILE 'zb\session_probe.ps1'
 if (-not (Test-Path -LiteralPath $script)) { throw "stage session_probe.ps1 to $script first" }
 $tr = '"' + $ps + '" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' + $script + '"'
-$out = schtasks /Create /TN 'zb-session-probe' /TR $tr /SC ONCE /ST 23:59 /IT /RL LIMITED /F 2>&1
-Write-Output ('CREATE_RC=' + $LASTEXITCODE + ' ' + ($out -join ' '))
+$out = schtasks /Create /TN $taskName /TR $tr /SC ONCE /ST 23:59 /IT /RL LIMITED /F 2>&1
+$rc = $LASTEXITCODE
+Write-Output ('CREATE_RC=' + $rc + ' ' + ($out -join ' '))
+if ($rc -ne 0) { exit 1 }   # provisioning must fail hard when schtasks fails

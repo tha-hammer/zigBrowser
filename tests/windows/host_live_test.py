@@ -141,11 +141,18 @@ Chk 'attacker_cmd'  ($base -replace [regex]::Escape('<Command>'+$ps+'</Command>'
 Chk 'workingdir'    ($base -replace '<Arguments>', '<WorkingDirectory>C:\Temp</WorkingDirectory><Arguments>')
 Chk 'extra_arg'     ($base -replace [regex]::Escape($argsLine), ($argsLine + ' ; calc.exe'))
 Chk 'wrong_sid'     ($base -replace [regex]::Escape($sid), 'S-1-5-21-1-2-3-4444')
-Chk 'name_sid'      ($base -replace [regex]::Escape('<UserId>'+$sid+'</UserId>'), '<UserId>NOPEDOMAIN\nobody</UserId>')
+Chk 'same_leaf'     ($base -replace [regex]::Escape('<UserId>'+$sid+'</UserId>'), '<UserId>NOPEDOMAIN\zbtext</UserId>')
 Chk 'two_principal' ($base -replace '</Principals>', ('<Principal id="P2"><UserId>'+$sid+'</UserId><LogonType>InteractiveToken</LogonType></Principal></Principals>'))
 Chk 'bad_context'   ($base -replace 'Context="Author"', 'Context="Other"')
+Chk 'missing_id'    ($base -replace '<Principal id="Author">', '<Principal>')
+Chk 'missing_context' ($base -replace '<Actions Context="Author">', '<Actions>')
 Chk 'non_interactive' ($base -replace '<LogonType>InteractiveToken</LogonType>', '<LogonType>Password</LogonType>')
 Chk 'highestavail'  ($base -replace '</LogonType>', '</LogonType><RunLevel>HighestAvailable</RunLevel>')
+Chk 'empty_runlevel' ($base -replace '</LogonType>', '</LogonType><RunLevel></RunLevel>')
+Chk 'overquoted_cmd' ($base -replace [regex]::Escape('<Command>'+$ps+'</Command>'), ('<Command>"'+$ps+'"</Command>'))
+Chk 'empty_wd'      ($base -replace '<Arguments>', '<WorkingDirectory></WorkingDirectory><Arguments>')
+Chk 'missing_action' ($base -replace '<Exec>.*?</Exec>', '')
+Chk 'malformed_xml' 'this is <not valid XML'
 Chk 'disabled_false' ($base -replace '<MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>', '<Enabled>false</Enabled><MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>')
 Chk 'enabled_garbage' ($base -replace '<MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>', '<Enabled>garbage</Enabled><MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>')
 '''
@@ -252,6 +259,14 @@ def _sess_sha():
     return hashlib.sha256((REPO / "tests" / "windows" / "session_probe.ps1").read_bytes()).hexdigest()
 
 
+def _run_verify_task(env, task_name, staged, sha):
+    hdr = ("$env:ZB_TASK_NAME='%s'; $env:ZB_STAGED_PATH='%s'; $env:ZB_STAGED_SHA='%s'\n"
+           % (task_name, staged, sha))
+    p = _ssh_run(env, hdr + VERIFY_TASK)
+    m = re.search(r"VERIFY=(\S+)", p.stdout)
+    return m.group(1) if m else ("NO_VERIFY_LINE rc=%d\n%s\n%s" % (p.returncode, p.stdout, p.stderr))
+
+
 @unittest.skipUnless(_vm_env(), "VM env (ZB_WIN11_HOST...) not set; live host test skipped")
 class TaskPinLive(unittest.TestCase):
     """Exercise the REAL verify_task.ps1 (the exact code gate.sh prepends) against real registered tasks."""
@@ -264,14 +279,7 @@ class TaskPinLive(unittest.TestCase):
             _ssh_run(env, "schtasks /Delete /TN %s /F 2>&1 | Out-Null; Write-Output DONE" % cls.TASK)
 
     def _verify(self, task_name, staged_path, staged_sha):
-        env = _vm_env()
-        hdr = ("$env:ZB_TASK_NAME='%s'; $env:ZB_STAGED_PATH='%s'; $env:ZB_STAGED_SHA='%s'\n"
-               % (task_name, staged_path, staged_sha))
-        p = _ssh_run(env, hdr + VERIFY_TASK)
-        self.assertEqual(p.returncode, 0, "verify_task.ps1 ssh failed:\n" + p.stderr)
-        m = re.search(r"VERIFY=(\S+)", p.stdout)
-        self.assertIsNotNone(m, "no VERIFY= line:\n" + p.stdout)
-        return m.group(1)
+        return _run_verify_task(_vm_env(), task_name, staged_path, staged_sha)
 
     def _create_task(self, tr):
         env = _vm_env()
@@ -280,25 +288,23 @@ class TaskPinLive(unittest.TestCase):
                      % (self.TASK, tr))
         self.assertIn("SUCCESS", p.stdout, "task create failed:\n" + p.stdout + p.stderr)
 
-    def _create_canonical_task(self):
-        # A task identical to the real provisioned one (canonical powershell + exact args) so a later mutation
-        # (e.g. /DISABLE) is the ONLY difference the verifier should trip on. Built in PowerShell (Join-Path)
-        # to avoid shell backslash mangling.
+    def _provision_disposable(self):
+        # Exercise the PRODUCTION provisioner (provision_session_task.ps1) under a disposable task name seam,
+        # so the test proves the real provisioner produces exactly the shape the verifier accepts.
         env = _vm_env()
-        ps = (
-            "$ps = Join-Path $env:SystemRoot 'System32\\WindowsPowerShell\\v1.0\\powershell.exe'\n"
-            "$script = Join-Path $env:USERPROFILE 'zb\\session_probe.ps1'\n"
-            "$tr = '\"' + $ps + '\" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File \"' + $script + '\"'\n"
-            "schtasks /Delete /TN %s /F 2>&1 | Out-Null\n"
-            "$o = schtasks /Create /TN %s /TR $tr /SC ONCE /ST 23:59 /IT /RL LIMITED /F 2>&1\n"
-            "Write-Output ('CREATE_RC=' + $LASTEXITCODE + ' ' + ($o -join ' '))\n"
-        ) % (self.TASK, self.TASK)
-        p = _ssh_run(env, ps)
-        self.assertIn("CREATE_RC=0", p.stdout, "canonical task create failed:\n" + p.stdout + p.stderr)
+        script = (REPO / "tests" / "windows" / "provision_session_task.ps1").read_text()
+        p = _ssh_run(env, ("$env:ZB_TASK_NAME='%s'\n" % self.TASK) + script)
+        self.assertIn("CREATE_RC=0", p.stdout, "production provisioner failed:\n" + p.stdout + p.stderr)
 
     def test_real_task_verifies_ok(self):
         env = _vm_env()
         self.assertEqual(self._verify("zb-session-probe", _staged_path(env), _sess_sha()), "OK")
+
+    def test_production_provisioner_produces_accepted_task(self):
+        # The production provisioner's output must pass the production verifier end-to-end.
+        env = _vm_env()
+        self._provision_disposable()
+        self.assertEqual(self._verify(self.TASK, _staged_path(env), _sess_sha()), "OK")
 
     def test_missing_task_rejected(self):
         env = _vm_env()
@@ -307,6 +313,11 @@ class TaskPinLive(unittest.TestCase):
     def test_hash_mismatch_rejected(self):
         env = _vm_env()
         self.assertEqual(self._verify("zb-session-probe", _staged_path(env), "deadbeef"), "TASK_SCRIPT_HASH_MISMATCH")
+
+    def test_missing_staged_script_rejected(self):
+        env = _vm_env()
+        self.assertEqual(self._verify("zb-session-probe", "C:\\Users\\zbtext\\zb\\nope-missing.ps1", _sess_sha()),
+                         "TASK_SCRIPT_MISSING")
 
     def test_hostile_action_rejected(self):
         env = _vm_env()
@@ -320,7 +331,7 @@ class TaskPinLive(unittest.TestCase):
 
     def test_disabled_task_rejected(self):
         env = _vm_env()
-        self._create_canonical_task()   # canonical command+args, so only the disabled state should trip
+        self._provision_disposable()     # production shape, so only the disabled state should trip the verifier
         _ssh_run(env, "schtasks /Change /TN %s /DISABLE 2>&1 | Out-Null; Write-Output DONE" % self.TASK)
         self.assertEqual(self._verify(self.TASK, _staged_path(env), _sess_sha()), "TASK_DISABLED")
 
@@ -347,11 +358,18 @@ class CraftedTaskXmlLive(unittest.TestCase):
             "workingdir": "TASK_ACTION_MISMATCH",
             "extra_arg": "TASK_ACTION_MISMATCH",
             "wrong_sid": "TASK_PRINCIPAL_MISMATCH",
-            "name_sid": "TASK_PRINCIPAL_MISMATCH",
+            "same_leaf": "TASK_PRINCIPAL_MISMATCH",
             "two_principal": "TASK_PRINCIPAL_MISMATCH",
             "bad_context": "TASK_PRINCIPAL_MISMATCH",
+            "missing_id": "TASK_PRINCIPAL_MISMATCH",
+            "missing_context": "TASK_PRINCIPAL_MISMATCH",
             "non_interactive": "TASK_NOT_INTERACTIVE",
             "highestavail": "TASK_RUNLEVEL",
+            "empty_runlevel": "TASK_RUNLEVEL",
+            "overquoted_cmd": "TASK_ACTION_MISMATCH",
+            "empty_wd": "TASK_ACTION_MISMATCH",
+            "missing_action": "TASK_ACTION_COUNT",
+            "malformed_xml": "TASK_MISSING",
             "disabled_false": "TASK_DISABLED",
             "enabled_garbage": "TASK_DISABLED",
         }
@@ -366,30 +384,45 @@ class LockedDesktopLive(unittest.TestCase):
     """Owner-gated: lock the VM console, then run with ZB_EXPECT_LOCKED=1. session_probe must report locked=true.
     Cannot be automated over SSH (a network logon cannot lock the console), so it is skipped by default."""
     def test_locked_console_reports_locked(self):
-        import json
+        import json, uuid
         env = _vm_env()
-        # Fresh nonce, remove any stale session.json, trigger the task, then BOUNDED-poll (not a fixed sleep)
-        # for a session.json carrying THIS nonce. Both SSH calls must succeed; the result must show an
-        # in-console, non-interactive (locked) session on a non-Default/secure input desktop.
-        prep = _ssh_run(env, r"$d=Join-Path $env:USERPROFILE 'zb\runs\session'; New-Item -ItemType Directory -Force -Path $d|Out-Null; "
-                             r"Set-Content -LiteralPath (Join-Path $d 'nonce.txt') -Value 'LOCKCHK' -NoNewline -Encoding ascii; "
-                             r"Remove-Item -LiteralPath (Join-Path $d 'session.json') -EA SilentlyContinue; Write-Output PREPPED")
+        # 1. Verify the REAL task + staged script hash inside this test (do not depend on unittest order).
+        v = _run_verify_task(env, "zb-session-probe", _staged_path(env), _sess_sha())
+        self.assertEqual(v, "OK", "the real zb-session-probe task must verify OK first, got: " + v)
+        # 2. Fresh unpredictable nonce; remove stale output; trigger once; bounded-poll for THIS nonce AND a
+        #    fresh/non-future ts (checked VM-side for robust datetime parsing). Both SSH calls must succeed.
+        nonce = "lock-" + uuid.uuid4().hex
+        prep = _ssh_run(env, (r"$d=Join-Path $env:USERPROFILE 'zb\runs\session'; New-Item -ItemType Directory -Force -Path $d|Out-Null; "
+                              r"Set-Content -LiteralPath (Join-Path $d 'nonce.txt') -Value '%s' -NoNewline -Encoding ascii; "
+                              r"Remove-Item -LiteralPath (Join-Path $d 'session.json') -EA SilentlyContinue; Write-Output PREPPED") % nonce)
         self.assertEqual(prep.returncode, 0, "prep ssh failed:\n" + prep.stderr)
-        self.assertIn("PREPPED", prep.stdout)
-        poll = _ssh_run(env, r"$d=Join-Path $env:USERPROFILE 'zb\runs\session'; schtasks /Run /TN 'zb-session-probe' | Out-Null; "
-                             r"$deadline=(Get-Date).AddSeconds(30); $sj=Join-Path $d 'session.json'; "
-                             r"while((Get-Date) -lt $deadline){ Start-Sleep -Milliseconds 1000; "
-                             r"  if(Test-Path -LiteralPath $sj){ try{ $s=Get-Content -LiteralPath $sj -Raw|ConvertFrom-Json; "
-                             r"    if(\"$($s.nonce)\" -eq 'LOCKCHK'){ Write-Output ($s|ConvertTo-Json -Compress); break } }catch{} } } ")
-        self.assertEqual(poll.returncode, 0, "poll ssh failed:\n" + poll.stderr)
-        out = poll.stdout.strip()
-        self.assertTrue(out, "no nonce-matching session.json appeared within the timeout")
-        d = json.loads(out.splitlines()[-1])
-        self.assertEqual(d.get("nonce"), "LOCKCHK", "session.json must carry this run's nonce")
-        self.assertEqual(d.get("in_console"), True, "the helper must run in the console session")
-        self.assertEqual(d.get("interactive_session"), False, "a locked console is not an active interactive session")
-        self.assertEqual(d.get("locked"), True, "a locked console must report locked=true")
-        self.assertNotEqual(d.get("input_desktop"), "Default", "a locked console's input desktop must not be Default")
+        self.assertIn("PREPPED", prep.stdout, "prep failed:\n" + prep.stdout + prep.stderr)
+        try:
+            poll = _ssh_run(env, (r"$d=Join-Path $env:USERPROFILE 'zb\runs\session'; schtasks /Run /TN 'zb-session-probe' | Out-Null; "
+                                  r"$deadline=(Get-Date).AddSeconds(30); $sj=Join-Path $d 'session.json'; "
+                                  r"while((Get-Date) -lt $deadline){ Start-Sleep -Milliseconds 1000; "
+                                  r"  if(Test-Path -LiteralPath $sj){ try{ $s=Get-Content -LiteralPath $sj -Raw|ConvertFrom-Json; "
+                                  r"    $now=(Get-Date).ToUniversalTime(); $tsu=[datetime]::Parse($s.ts).ToUniversalTime(); "
+                                  r"    if(\"$($s.nonce)\" -eq '%s' -and $tsu -gt $now.AddMinutes(-15) -and $tsu -le $now.AddMinutes(2)){ "
+                                  r"      Write-Output ($s|ConvertTo-Json -Compress); break } }catch{} } } ") % nonce)
+            self.assertEqual(poll.returncode, 0, "poll ssh failed:\n" + poll.stderr)
+            out = poll.stdout.strip()
+            self.assertTrue(out, "no fresh nonce-matching session.json appeared within the timeout")
+            d = json.loads(out.splitlines()[-1])
+            self.assertEqual(d.get("nonce"), nonce, "session.json must carry this run's fresh nonce")
+            self.assertTrue(str(d.get("console_user") or "").strip(), "console_user must be present")
+            self.assertEqual(d.get("console_session_id"), d.get("my_session_id"),
+                             "the helper must run IN the console session (console_session_id == my_session_id)")
+            self.assertEqual(d.get("in_console"), True, "in_console must be true")
+            self.assertEqual(d.get("interactive_session"), False, "a locked console is not an active interactive session")
+            self.assertEqual(d.get("locked"), True, "a locked console must report locked=true")
+            idesk = d.get("input_desktop")
+            self.assertTrue(isinstance(idesk, str) and idesk.strip() and idesk != "Default",
+                            "input_desktop must be a concrete non-Default desktop or the denied sentinel, got: %r" % idesk)
+        finally:
+            _ssh_run(env, r"$d=Join-Path $env:USERPROFILE 'zb\runs\session'; "
+                          r"Remove-Item -LiteralPath (Join-Path $d 'session.json') -EA SilentlyContinue; "
+                          r"Remove-Item -LiteralPath (Join-Path $d 'nonce.txt') -EA SilentlyContinue")
 
 
 if __name__ == "__main__":

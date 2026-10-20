@@ -1,23 +1,22 @@
 #!/usr/bin/env python3
-"""WS0 two-host gate reds (UNREGISTERED) — WS0.6 VM identity + WS0.7 file-server fence.
+"""WS0 two-host gate selftest (GREEN, registered) — WS0.6 VM identity + WS0.7 file-server fence.
 
-These drive `tests/windows/gate.sh --probe-only`, the two-host orchestration that is NOT implemented
-yet (it currently prints "not implemented yet" and exits 2). So every case here is RED today, for the
-right reason: the gate does not yet perform the per-host fail-closed checks, so the expected verdict /
-message never appears. They go green when the two-host `--probe-only` run is built, and each carries the
-mutant that must flip it (run against the green before it is accepted).
+These drive `tests/windows/gate.sh --probe-only`, the implemented two-host readiness gate, and are GREEN.
+It is registered as the `windows-twohost-selftest` step; `load_tests` also registers the live VM suite
+(host_live_test.py), whose cases SKIP when no VM env/lock opt-in is present. Hermetic: drives gate.sh
+against fake `ssh`/`virsh` on PATH that return canned probe JSON — no Windows host, display or live socket.
+Each fail-closed case carries a mutant that flips it if the production guard is removed.
 
-This file is intentionally NOT registered in build.zig (red stays outside gate-registered steps); it is
-registered as the `windows-twohost-selftest` step in the green commit. Hermetic: drives gate.sh against
-fake `ssh`/`virsh` on PATH that return canned probe JSON — no Windows host, display or live socket.
-
-Contract (rev 2.2) the green `--probe-only` must satisfy, per the plan's WS0.6/WS0.7:
-  * both ZB_WIN10_HOST and ZB_WIN11_HOST required (already enforced — fail closed if either missing);
-  * VM (WS0.6): `virsh domstate`==running, TCP reach, pinned host key, probe JSON, and the probe's
-    `identity_marker` == the pinned `ZB_WIN11_MARKER` (missing/empty/wrong => "wrong host");
-  * file server (WS0.7): host_probe pre+post; fail if `groups` has a forbidden group, `zbtest_write_paths`
-    is non-empty ("file-server: zbtest can write to <path>"), `console_user` != the configured user, or
-    `listeners`/`fw_rules_hash` differ between the pre- and post-run probes.
+Contract the `--probe-only` gate enforces (plan WS0.6/WS0.7; the production probe uses Reflection.Emit, not
+Add-Type, and real Win32 AccessCheck for writability):
+  * both ZB_WIN10_HOST and ZB_WIN11_HOST required (fail closed if either missing);
+  * transport: a VM/FS unreachable or host-key refusal (ssh rc!=0, StrictHostKeyChecking=yes, BatchMode=yes,
+    per-host UserKnownHostsFile) fails before any success row; no display var reaches any child;
+  * VM (WS0.6): `virsh domstate`==running; the pinned snapshot is shutoff with a parseable creation time;
+    the in-console session helper returns a fresh nonce-matching result; identity_marker == ZB_WIN11_MARKER;
+    schema 2, x64, interactive/unlocked, exact root/user, free_gb>=10;
+  * file server (WS0.7): host_probe pre+post; fail on a forbidden group, nonempty zbtest_write_paths,
+    console_user != the user, exact sshd ListenAddress/AllowUsers, or a changed listeners/fw_rules_hash/shares.
 
 Run alone:  python3 -I tests/windows/gate_twohost_selftest.py -v
 """
@@ -40,7 +39,16 @@ FS_MARKER = "MARKER-FS-NONCE"
 # the "post" JSON on its second probe call (so WS0.7 can diff pre/post). The fake virsh answers domstate.
 _SSH_STUB = r"""
 [ -n "${ZB_SELFTEST_SSH_LOG:-}" ] && printf 'ARGV: %s\n' "$*" >> "$ZB_SELFTEST_SSH_LOG"
+if [ -n "${ZB_SELFTEST_ENV_LOG:-}" ]; then for v in DISPLAY WAYLAND_DISPLAY XAUTHORITY; do eval "val=\${$v:-}"; [ -n "$val" ] && printf 'ssh %s=%s\n' "$v" "$val" >> "$ZB_SELFTEST_ENV_LOG"; done; fi
 argv="$*"
+# Per-host transport failure injection (unreachable / host-key refusal rc 255): exit nonzero BEFORE any
+# output, so the gate must fail on the rc, not on empty JSON later.
+case "$argv" in
+  *127.0.0.1*|*zbtext@*) [ -n "${ZB_SELFTEST_FAIL_WIN11:-}" ] && exit "${ZB_SELFTEST_FAIL_WIN11}" ;;
+esac
+case "$argv" in
+  *100.123.34.15*|*zbtest@*) [ -n "${ZB_SELFTEST_FAIL_WIN10:-}" ] && exit "${ZB_SELFTEST_FAIL_WIN10}" ;;
+esac
 case "$argv" in
   *host_probe*|*powershell*|*EncodedCommand*)
     # The real probe streams a script over ssh stdin and runs `$input | Out-String | iex`. Drain stdin
@@ -72,6 +80,7 @@ exit 0
 
 _VIRSH_STUB = r"""
 [ -n "${ZB_SELFTEST_VIRSH_LOG:-}" ] && printf 'ARGV: %s\n' "$*" >> "$ZB_SELFTEST_VIRSH_LOG"
+if [ -n "${ZB_SELFTEST_ENV_LOG:-}" ]; then for v in DISPLAY WAYLAND_DISPLAY XAUTHORITY; do eval "val=\${$v:-}"; [ -n "$val" ] && printf 'virsh %s=%s\n' "$v" "$val" >> "$ZB_SELFTEST_ENV_LOG"; done; fi
 case "$1" in
   domstate) echo "${ZB_SELFTEST_VIRSH_STATE:-running}" ;;
   snapshot-list) printf '%s\n' "${ZB_SELFTEST_SNAPSHOTS-pre-4dr-toolchain-2026-10-20}" ;;
@@ -764,6 +773,49 @@ class WS0ZeroWrite(unittest.TestCase):
         self.assertIsNotNone(m, "verify_task.ps1 is missing the ZB_TASKXML_FN extraction markers")
         self.assertIn("function Test-ZbTaskXml", m.group(1), "the marked block must define Test-ZbTaskXml")
         self.assertRegex(src, r"Test-ZbTaskXml \$xmlText \$staged", "verify_task.ps1 must call Test-ZbTaskXml")
+
+
+class WS0TwoHostReds(_TwoHostCase):
+    """The four original 7d85cd5 reds (RoseCat 5e48424 / 6882 A1-A4), hostless and registered."""
+
+    def test_vm_unreachable_fails_closed(self):
+        # A VM ssh/TCP failure (rc 255) must fail the gate before any success row (caught at the session step).
+        with tempfile.TemporaryDirectory() as t:
+            proc = self._run_probe_only(pathlib.Path(t), {"ZB_SELFTEST_FAIL_WIN11": "255"})
+            self._assert_fail_closed(proc, "session helper")
+
+    def test_fs_unreachable_fails_closed(self):
+        # A file-server ssh/TCP failure must fail on the explicit transport rc check, not on empty JSON later.
+        with tempfile.TemporaryDirectory() as t:
+            proc = self._run_probe_only(pathlib.Path(t), {"ZB_SELFTEST_FAIL_WIN10": "1"})
+            self._assert_fail_closed(proc, "transport failed")
+
+    def test_host_key_refusal_fails_closed(self):
+        # StrictHostKeyChecking=yes => ssh rc 255 on a host-key mismatch: fail immediately, no fallback/prompt.
+        with tempfile.TemporaryDirectory() as t:
+            proc = self._run_probe_only(pathlib.Path(t), {"ZB_SELFTEST_FAIL_WIN10": "255"})
+            self._assert_fail_closed(proc, "255")
+
+    def test_fw_rules_hash_changed_fails_closed(self):
+        # A nonempty-but-DIFFERENT pre/post firewall hash must fail (not just a missing field).
+        with tempfile.TemporaryDirectory() as t:
+            proc = self._run_probe_only(pathlib.Path(t),
+                {"ZB_SELFTEST_PROBE_WIN10_POST": _fs_probe(fw_rules_hash="deadbeef00")})
+            self._assert_fail_closed(proc, "firewall")
+
+    def test_no_display_var_reaches_any_child(self):
+        # WS0.3: plant DISPLAY/WAYLAND_DISPLAY/XAUTHORITY; EVERY fake ssh AND virsh child records any it sees.
+        # The gate's entry scrub must leave the env log empty. (Mutant: removing `unset DISPLAY ...` reds this.)
+        with tempfile.TemporaryDirectory() as t:
+            td = pathlib.Path(t)
+            envlog = td / "env.log"
+            proc = self._run_probe_only(td, {
+                "ZB_SELFTEST_ENV_LOG": str(envlog),
+                "DISPLAY": ":0", "WAYLAND_DISPLAY": "wayland-0", "XAUTHORITY": "/home/x/.Xauthority",
+            })
+            self.assertEqual(proc.returncode, 0, f"healthy probe must still pass\n{proc.stderr}")
+            leaked = envlog.read_text() if envlog.exists() else ""
+            self.assertEqual(leaked.strip(), "", f"a display var reached a gate child:\n{leaked}")
 
 
 def load_tests(loader, tests, pattern):

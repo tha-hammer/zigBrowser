@@ -20,24 +20,26 @@ function Test-ZbTaskXml {
   $actionNodes = @($task.Actions.ChildNodes | Where-Object { $_.NodeType -eq 'Element' })
   if ($actionNodes.Count -ne 1 -or $actionNodes[0].LocalName -ne 'Exec') { return 'TASK_ACTION_COUNT' }
   $exec = $actionNodes[0]
-  # Executable pinned to the EXACT canonical System32 PowerShell (no bare name, no attacker path/leaf trick).
+  # Executable pinned to the EXACT canonical System32 PowerShell. Only .Trim() (the whitespace Task Scheduler
+  # may emit) — NOT .Trim('"'): an over-quoted "..."..."" command must NOT normalize to the canonical value.
   $canon = (Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe')
-  $cmd = ([string]$exec.Command).Trim().Trim('"')
+  $cmd = ([string]$exec.Command).Trim()
   if ($cmd.ToLower() -ne $canon.ToLower()) { return 'TASK_ACTION_MISMATCH' }
-  # No WorkingDirectory may redirect the executable/script search (absent is required; our provisioning omits it).
-  $wd = ([string]$exec.WorkingDirectory).Trim()
-  if ($wd -ne '') { return 'TASK_ACTION_MISMATCH' }
+  # No WorkingDirectory NODE may exist (even empty/whitespace) — it could redirect the executable/script search.
+  if ($exec.SelectSingleNode("*[local-name()='WorkingDirectory']")) { return 'TASK_ACTION_MISMATCH' }
   # Arguments must be the EXACT expected tuple (whitespace-normalized), not a substring — extra/hostile args fail.
   $argsNorm = (([string]$exec.Arguments) -replace '\s+', ' ').Trim()
   $expected  = ('-NoProfile -NonInteractive -ExecutionPolicy Bypass -File ' + $staged)
   $expectedQ = ('-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' + $staged + '"')
   if ($argsNorm -ne $expected -and $argsNorm -ne $expectedQ) { return 'TASK_ACTION_MISMATCH' }
-  # EXACTLY one Principal, and the Actions run under it (Actions Context == that Principal's id).
+  # EXACTLY one Principal, and the Actions run under it (Actions Context == that Principal's id). Both the id
+  # and the Context must be NONEMPTY before comparison — two empty strings must not compare equal and pass.
   $prins = @($task.Principals.ChildNodes | Where-Object { $_.NodeType -eq 'Element' -and $_.LocalName -eq 'Principal' })
   if ($prins.Count -ne 1) { return 'TASK_PRINCIPAL_MISMATCH' }
   $prin = $prins[0]
+  $prinId = ([string]$prin.id).Trim()
   $ctx = ([string]$task.Actions.Context).Trim()
-  if ($ctx -ne ([string]$prin.id).Trim()) { return 'TASK_PRINCIPAL_MISMATCH' }
+  if ($prinId -eq '' -or $ctx -eq '' -or $ctx -ne $prinId) { return 'TASK_PRINCIPAL_MISMATCH' }
   # Principal resolved to an EXACT SID (no leaf/username fallback; an unknown principal fails closed).
   $uid = ([string]$prin.UserId).Trim()
   $uidSid = $null
@@ -45,10 +47,10 @@ function Test-ZbTaskXml {
   else { try { $uidSid = ([System.Security.Principal.NTAccount]$uid).Translate([System.Security.Principal.SecurityIdentifier]).Value } catch { $uidSid = $null } }
   if ($uidSid -ne $mySid) { return 'TASK_PRINCIPAL_MISMATCH' }
   if (([string]$prin.LogonType) -ne 'InteractiveToken') { return 'TASK_NOT_INTERACTIVE' }
-  # Least-privilege: RunLevel absent (Task Scheduler omits the default = LeastPrivilege) or explicitly
-  # LeastPrivilege; any other value (e.g. HighestAvailable) fails.
-  $rl = ([string]$prin.RunLevel).Trim()
-  if ($rl -ne '' -and $rl -ne 'LeastPrivilege') { return 'TASK_RUNLEVEL' }
+  # Least-privilege: a RunLevel NODE may be ABSENT (Task Scheduler omits the default = LeastPrivilege); if the
+  # node is PRESENT it must be exactly 'LeastPrivilege' (a present-empty or HighestAvailable value fails).
+  $rlNode = $prin.SelectSingleNode("*[local-name()='RunLevel']")
+  if ($null -ne $rlNode -and ([string]$rlNode.InnerText).Trim() -ne 'LeastPrivilege') { return 'TASK_RUNLEVEL' }
   # Enabled: Task Scheduler omits the element when the task is enabled (the default), so ABSENT = enabled =
   # OK; if the element is PRESENT it must be exactly 'true' — an explicit 'false' or any malformed value fails.
   $enNode = $task.Settings.SelectSingleNode("*[local-name()='Enabled']")

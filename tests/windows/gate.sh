@@ -432,10 +432,17 @@ probe_only() { # WS0.6 (VM identity) + WS0.7 (file-server fence) across both hos
     *RESULT=OK*) : ;;
     *) echo "NOT RUN: VM in-console session helper did not return a fresh nonce-matching result ($sres)" >&2; return 1 ;;
   esac
-  vm_json=$(probe_host "${ZB_WIN11_USER:-zbtext}" "$ZB_WIN11_HOST" "${ZB_WIN11_PORT:-2222}" "$vm_key" "$vm_kh")
-  fs_pre=$(probe_host "${ZB_WIN10_USER:-zbtest}" "$ZB_WIN10_HOST" "${ZB_WIN10_PORT:-22}" "$fs_key" "$fs_kh")
+  # EXPLICIT transport rc checks: an unreachable host or an ssh host-key refusal (StrictHostKeyChecking=yes
+  # => rc 255) must fail the gate HERE, before any success row is accepted — never rely on empty JSON failing
+  # later in validation. (probe_host's rc is ssh's rc.)
+  local rc
+  vm_json=$(probe_host "${ZB_WIN11_USER:-zbtext}" "$ZB_WIN11_HOST" "${ZB_WIN11_PORT:-2222}" "$vm_key" "$vm_kh"); rc=$?
+  [ "$rc" -ne 0 ] && { echo "NOT RUN: Win11 probe transport failed (ssh rc=$rc — unreachable or host-key refusal)" >&2; return 1; }
+  fs_pre=$(probe_host "${ZB_WIN10_USER:-zbtest}" "$ZB_WIN10_HOST" "${ZB_WIN10_PORT:-22}" "$fs_key" "$fs_kh"); rc=$?
+  [ "$rc" -ne 0 ] && { echo "NOT RUN: Win10 probe transport failed (ssh rc=$rc — unreachable or host-key refusal)" >&2; return 1; }
   # A full gate runs the product tests here; --probe-only re-probes to catch any change (WS0.7).
-  fs_post=$(probe_host "${ZB_WIN10_USER:-zbtest}" "$ZB_WIN10_HOST" "${ZB_WIN10_PORT:-22}" "$fs_key" "$fs_kh")
+  fs_post=$(probe_host "${ZB_WIN10_USER:-zbtest}" "$ZB_WIN10_HOST" "${ZB_WIN10_PORT:-22}" "$fs_key" "$fs_kh"); rc=$?
+  [ "$rc" -ne 0 ] && { echo "NOT RUN: Win10 re-probe transport failed (ssh rc=$rc)" >&2; return 1; }
   validate_probes "$vm_json" "$fs_pre" "$fs_post" >/dev/null || return 1
   printf 'WIN11 %s\nWIN10 %s\n' "$vm_json" "$fs_post"
   return 0
