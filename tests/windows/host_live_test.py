@@ -146,6 +146,7 @@ Chk 'two_principal' ($base -replace '</Principals>', ('<Principal id="P2"><UserI
 Chk 'bad_context'   ($base -replace 'Context="Author"', 'Context="Other"')
 Chk 'missing_id'    ($base -replace '<Principal id="Author">', '<Principal>')
 Chk 'missing_context' ($base -replace '<Actions Context="Author">', '<Actions>')
+Chk 'missing_id_and_ctx' (($base -replace '<Principal id="Author">', '<Principal>') -replace '<Actions Context="Author">', '<Actions>')
 Chk 'non_interactive' ($base -replace '<LogonType>InteractiveToken</LogonType>', '<LogonType>Password</LogonType>')
 Chk 'highestavail'  ($base -replace '</LogonType>', '</LogonType><RunLevel>HighestAvailable</RunLevel>')
 Chk 'empty_runlevel' ($base -replace '</LogonType>', '</LogonType><RunLevel></RunLevel>')
@@ -363,6 +364,7 @@ class CraftedTaskXmlLive(unittest.TestCase):
             "bad_context": "TASK_PRINCIPAL_MISMATCH",
             "missing_id": "TASK_PRINCIPAL_MISMATCH",
             "missing_context": "TASK_PRINCIPAL_MISMATCH",
+            "missing_id_and_ctx": "TASK_PRINCIPAL_MISMATCH",
             "non_interactive": "TASK_NOT_INTERACTIVE",
             "highestavail": "TASK_RUNLEVEL",
             "empty_runlevel": "TASK_RUNLEVEL",
