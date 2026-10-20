@@ -2,9 +2,10 @@
 //! 5aea621): `reply_capped`, the helper's frame for "the reply to this prompt has text past
 //! its longest prefix that fits the content bound". Its schema is exactly `session` and
 //! `prompt_id`. The app records each prompt it writes (`Validator.promptSent`); a cap is
-//! accepted only for the session's current prompt, once. A duplicate, a stale id (whenever
-//! it arrives) and an id never sent are rejected with reason `capped`, as is a delta after
-//! the cap; a message after the cap is accepted (the app does not show it over the cap).
+//! accepted only for the session's current prompt, once. A stale id (whenever it arrives)
+//! and an id never sent are rejected with reason `prompt` (S5d's id rule, RoseCat 6286); a
+//! duplicate, a cap before a delta, and a delta after the cap with reason `capped`; a
+//! message after the cap is accepted (the app does not show it over the cap).
 //! The new API and reason are reached by name, so this file compiles before the green.
 const std = @import("std");
 const p = @import("agent_protocol");
@@ -85,10 +86,10 @@ test "a missing or extra field, a non-integer id, or a session never opened is r
 test "a cap before any prompt, and an id never sent, are rejected" {
     var v = try fresh();
     defer v.deinit();
-    try expectRejectedAs(&v, at("1", cap("1")), "capped");
+    try expectRejectedAs(&v, at("1", cap("1")), "prompt"); // S5d id rule first (RoseCat 6286)
     try sent(&v, "s-1-1", 1);
     try expectAccepted(&v, at("1", delta("1")), "assistant_delta");
-    try expectRejectedAs(&v, at("2", cap("2")), "capped");
+    try expectRejectedAs(&v, at("2", cap("2")), "prompt"); // an id never sent: S5d (RoseCat 6286)
     // Rev 16.20.16: an id is 1 to 2^53 - 1, so 0 and 2^53 are schema errors.
     try expectRejectedAs(&v, at("2", cap("0")), "schema");
     try expectRejectedAs(&v, at("2", cap("9007199254740992")), "schema");
@@ -128,9 +129,9 @@ test "a stale cap is rejected whenever it arrives, even after the next reply's f
     try expectAccepted(&v, at("1", delta("1")), "assistant_delta");
     try expectAccepted(&v, at("2", result("1")), "result");
     try sent(&v, "s-1-1", 2);
-    try expectRejectedAs(&v, at("3", cap("1")), "capped");
+    try expectRejectedAs(&v, at("3", cap("1")), "prompt"); // S5d id rule first (RoseCat 6286)
     try expectAccepted(&v, at("3", delta("2")), "assistant_delta");
-    try expectRejectedAs(&v, at("4", cap("1")), "capped");
+    try expectRejectedAs(&v, at("4", cap("1")), "prompt"); // S5d id rule first (RoseCat 6286)
     try expectAccepted(&v, at("4", delta("2")), "assistant_delta");
 }
 
@@ -153,7 +154,7 @@ test "prompts and caps are kept per session" {
     try v.openSession("s-2-1", 2);
     try sent(&v, "s-1-1", 1);
     try expectAccepted(&v, at("1", delta("1")), "assistant_delta");
-    try expectRejectedAs(&v, at("2", "\"type\":\"reply_capped\",\"session\":\"s-2-1\",\"prompt_id\":1"), "capped");
+    try expectRejectedAs(&v, at("2", "\"type\":\"reply_capped\",\"session\":\"s-2-1\",\"prompt_id\":1"), "prompt"); // S5d id rule first (RoseCat 6286)
     try expectAccepted(&v, at("2", cap("1")), "reply_capped");
     try sent(&v, "s-2-1", 1);
     try expectAccepted(&v, at("3", "\"type\":\"assistant_delta\",\"session\":\"s-2-1\",\"prompt_id\":1,\"text\":\"b\""), "assistant_delta");
@@ -165,11 +166,11 @@ test "the active prompt ends at its result, its session error or session_ended: 
     try sent(&v, "s-1-1", 1);
     try expectAccepted(&v, at("1", delta("1")), "assistant_delta");
     try expectAccepted(&v, at("2", result("1")), "result");
-    try expectRejectedAs(&v, at("3", cap("1")), "capped");
+    try expectRejectedAs(&v, at("3", cap("1")), "prompt"); // S5d id rule first (RoseCat 6286)
     try sent(&v, "s-1-1", 2);
     try expectAccepted(&v, at("3", delta("2")), "assistant_delta");
     try expectAccepted(&v, at("4", "\"type\":\"error\",\"session\":\"s-1-1\",\"prompt_id\":2,\"code\":\"sdk\",\"message\":\"x\""), "error");
-    try expectRejectedAs(&v, at("5", cap("2")), "capped");
+    try expectRejectedAs(&v, at("5", cap("2")), "prompt"); // S5d id rule first (RoseCat 6286)
     // A helper-wide error (no session) ends no prompt.
     try sent(&v, "s-1-1", 3);
     try expectAccepted(&v, at("5", delta("3")), "assistant_delta");

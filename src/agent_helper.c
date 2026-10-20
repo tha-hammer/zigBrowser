@@ -44,6 +44,8 @@ const char *zb_agent_frames_reason(int code);
 char *zb_agent_out_hello(void);
 char *zb_agent_out_open_session(unsigned int window, unsigned int k);
 char *zb_agent_out_prompt(const char *session, const char *text, size_t len);
+int zb_agent_out_prompt_status(void); /* why the last one gave no frame: 1 too long, 2 ids spent */
+const char *zb_agent_out_prompt_refusal(void); /* the sentence for that */
 char *zb_agent_out_session(int kind, const char *session);
 char *zb_agent_out_shutdown(void);
 void zb_agent_out_free(char *frame);
@@ -58,7 +60,6 @@ int zb_agent_config_changed(const char *home);
 #define ZB_TEXT_SANDBOX "Agent sandbox unavailable"
 #define ZB_TEXT_LOCKED "Agent unavailable: another zigBrowser is using the agent home"
 #define ZB_TEXT_NO_TOKEN "Add a Claude token in the window that opened" /* S4.1 */
-#define ZB_TEXT_TOO_LONG "Message too long (64 KiB at most)"
 #define ZB_TEXT_REMOVED "The token was removed: the agent stopped" /* S4.2 */
 #define ZB_TEXT_CONFIG "Agent configuration changed: run zigBrowser --agent-setup again" /* S3.10 */
 /* S5.3 (rev 16.14): one fixed sentence per error code; a frame's message is never shown. */
@@ -78,7 +79,7 @@ typedef struct {
   unsigned int k;   /* sessions opened so far in this window */
   char session[48]; /* s-<win>-<k> while open */
   int open, busy;
-  int confirmed; /* the helper answered session_opened */
+  int confirmed; /* the helper answered session_opened: only then is a prompt written (S5d) */
   int checking;  /* a new session's config check runs (its prompt waits in pending) */
   int stopping;  /* Stop sent `interrupt`: the prompt's frames until its result are dropped */
   /* S5.6: the running reply's delta bytes, its overflow timer (0: none), and whether
@@ -253,12 +254,21 @@ static void flush(ZbWin *w) {
     w->confirmed = 0;
     write_frame(zb_agent_out_open_session(w->win, w->k));
   }
+  if (!w->confirmed) {
+    /* S5d (RoseCat 6296): the first prompt waits for session_opened. A helper that cannot
+     * open the session can then only answer with a null prompt_id, which is valid while
+     * the app has written it no prompt. */
+    return;
+  }
   while (w->pending->len > 0 && !w->busy) {
     char *text = g_ptr_array_steal_index(w->pending, 0);
     char *frame = zb_agent_out_prompt(w->session, text, strlen(text));
     g_free(text);
     if (frame == NULL) {
-      zb_drawer_agent_message(w->win, "error", ZB_TEXT_TOO_LONG, strlen(ZB_TEXT_TOO_LONG));
+      /* S5d (RoseCat 6307): a session whose prompt ids are spent (2^53 - 1, never
+       * wrapped) gets no frame; that is an agent error, not a long message. */
+      const char *why = zb_agent_out_prompt_refusal();
+      zb_drawer_agent_message(w->win, "error", why, strlen(why));
       continue;
     }
     write_frame(frame);
@@ -342,6 +352,19 @@ static void on_frame(const ZbAgentFrame *f) {
     if (f->session != NULL && w == NULL) {
       break; /* its window closed: the session's error goes nowhere (RoseCat 5699) */
     }
+    if (w != NULL && w->open && !w->confirmed) {
+      /* The session could not open (S5d): its error ends exactly the prompt that waited
+       * for it; the next one opens a new session. */
+      zb_drawer_agent_message(win, "error", error_text(f->code, f->code_len), strlen(error_text(f->code, f->code_len)));
+      zb_agent_frames_close_session(w->session);
+      w->open = 0;
+      if (w->pending->len > 0) {
+        g_free(g_ptr_array_steal_index(w->pending, 0));
+      }
+      zb_drawer_agent_status(win, "ready", "-");
+      flush(w);
+      break;
+    }
     if (w != NULL && !w->busy) {
       break; /* no prompt runs: a second ending frame of an ended prompt shows nothing (rev 16.15) */
     }
@@ -350,10 +373,6 @@ static void on_frame(const ZbAgentFrame *f) {
       zb_drawer_agent_message(win, "error", text, strlen(text));
     }
     if (w != NULL) { /* a session's error ends its prompt (chat's _prompt) */
-      if (!w->confirmed) { /* it never opened: the next prompt opens a new one */
-        zb_agent_frames_close_session(w->session);
-        w->open = 0;
-      }
       w->busy = 0;
       zb_drawer_agent_status(win, "ready", "-");
       flush(w);
@@ -368,6 +387,7 @@ static void on_frame(const ZbAgentFrame *f) {
   case ZB_FRAME_SESSION_OPENED:
     if (w != NULL) {
       w->confirmed = 1;
+      flush(w); /* its first prompt goes now (S5d) */
     }
     break;
   default: /* tool_call: no tool exists before S7 */

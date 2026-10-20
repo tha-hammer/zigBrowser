@@ -72,11 +72,14 @@ def utf8_pieces(text, limit):
     return pieces
 
 
-def fit_message(session, text):
+def fit_message(session, text, prompt_id=None):
     """`text` as one assistant_message: whole when its line and its text fit the
-    app's caps, else its longest prefix that fits with TRUNCATED after it."""
+    app's caps, else its longest prefix that fits with TRUNCATED after it. The line is
+    the frame as emitted, its prompt_id included (S5d; RoseCat 6307), at the largest seq
+    the app accepts (a signed 64-bit integer; RoseCat 6314)."""
     def fits(candidate):
-        line = encode({"v": 1, "seq": 2**53, "type": "assistant_message", "session": session, "text": candidate})
+        line = encode({"v": 1, "seq": 2**63 - 1, "type": "assistant_message", "session": session,
+                       "prompt_id": prompt_id, "text": candidate})
         return len(line.encode()) <= FRAME_MAX and len(candidate.encode("utf-8", "replace")) <= MESSAGE_TEXT_MAX
     if fits(text):
         return text
@@ -162,7 +165,7 @@ class Session:
             elif isinstance(message, AssistantMessage):
                 flush()
                 text = "".join(b.text for b in message.content if isinstance(b, TextBlock))
-                fitted = fit_message(self.id, text) if text and not capped else None
+                fitted = fit_message(self.id, text, prompt_id) if text and not capped else None
                 # Rev 16.20.13: a completed bubble never shrinks. After the cap nothing more of
                 # the reply is sent, and a streamed message that its frame would cut is left
                 # to its deltas.

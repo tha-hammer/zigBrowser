@@ -101,6 +101,7 @@ pub const Validator = struct {
     /// The app wrote prompt `id` to `session` (S5c-1, rev 16.20.13): it is the session's
     /// current prompt, not capped.
     pub fn promptSent(self: *Validator, session: []const u8, id: i64) !void {
+        if (id < 1 or id > max_prompt_id) return error.InvalidPromptId;
         if (!self.sessions.contains(session)) return error.UnknownSession;
         const slot = try self.prompts.getOrPut(self.gpa, session);
         if (!slot.found_existing) {
@@ -122,9 +123,11 @@ pub const Validator = struct {
         return if (prompt.active) prompt.id else null;
     }
 
-    /// The id the app gives `session`'s next prompt: 1, then one more per prompt written.
-    pub fn nextPromptId(self: *const Validator, session: []const u8) i64 {
-        return if (self.prompts.get(session)) |prompt| prompt.id + 1 else 1;
+    /// The id the app gives `session`'s next prompt: 1, then one more per prompt written;
+    /// none after max_prompt_id (ids never wrap; RoseCat 6307).
+    pub fn nextPromptId(self: *const Validator, session: []const u8) ?i64 {
+        const last = if (self.prompts.get(session)) |prompt| prompt.id else 0;
+        return if (last < max_prompt_id) last + 1 else null;
     }
 
     /// The prompt a valid cap caps: the session's current one, which streamed a delta and
@@ -180,14 +183,16 @@ pub const Validator = struct {
         return .{ .ok = frame };
     }
 
-    /// S5d: a prompt-scoped frame names the session's active prompt. A session's error
-    /// with a null prompt_id is one only while no prompt runs; reply_capped keeps its own
-    /// order (reason `capped`).
+    /// S5d: a prompt-scoped frame names the session's active prompt (reason `prompt`
+    /// otherwise). A session's error with a null prompt_id is one only while no prompt
+    /// runs. reply_capped is checked here too (RoseCat 6286); `capped` then judges only its
+    /// order within the active prompt.
     fn ofActivePrompt(self: *Validator, frame: Frame) bool {
         const session: []const u8, const id: ?i64 = switch (frame) {
             .assistant_delta, .assistant_message => |f| .{ f.session, f.prompt_id },
             .tool_call => |f| .{ f.session, f.prompt_id },
             .result => |f| .{ f.session, f.prompt_id },
+            .reply_capped => |f| .{ f.session, f.prompt_id },
             .@"error" => |f| .{ f.session orelse return true, f.prompt_id },
             else => return true,
         };

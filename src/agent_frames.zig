@@ -4,13 +4,13 @@
 //! main thread only. A frame's strings stay valid until the next validate.
 
 const std = @import("std");
-const protocol = @import("agent_protocol.zig");
+pub const protocol = @import("agent_protocol.zig");
 const helper = @import("agent_helper.zig");
 const config_check = @import("agent_config_check.zig");
 
 const gpa = std.heap.c_allocator;
 
-var validator: ?protocol.Validator = null;
+pub var validator: ?protocol.Validator = null; // pub: the production-path test (S5d)
 var frame_arena: std.heap.ArenaAllocator = .init(gpa);
 var out_seq: u64 = 0;
 var hello_home: ?[]u8 = null;
@@ -38,7 +38,7 @@ pub const CFrame = extern struct {
 };
 
 /// A new helper process: a fresh validator (its seq and sessions) and out seq.
-export fn zb_agent_frames_reset() void {
+pub export fn zb_agent_frames_reset() void {
     if (validator) |*v| v.deinit();
     validator = protocol.Validator.init(gpa);
     _ = frame_arena.reset(.free_all);
@@ -46,7 +46,7 @@ export fn zb_agent_frames_reset() void {
 }
 
 /// The app opened `session` for window `window` (sent `open_session`).
-export fn zb_agent_frames_open_session(session: [*:0]const u8, window: u32) c_int {
+pub export fn zb_agent_frames_open_session(session: [*:0]const u8, window: u32) c_int {
     const v = if (validator) |*v| v else return -1;
     v.openSession(std.mem.span(session), window) catch return -1;
     return 0;
@@ -136,25 +136,57 @@ export fn zb_agent_out_open_session(window: u32, k: u32) ?[*:0]u8 {
     return owned(helper.openSessionFrame(gpa, nextSeq(), window, k));
 }
 
-/// The prompt gets the session's next prompt_id, which becomes its active prompt
-/// (rev 16.20.13 and 16.20.16): its reply_capped must carry that id.
-export fn zb_agent_out_prompt(session: [*:0]const u8, text: [*]const u8, len: usize) ?[*:0]u8 {
+pub const Prompt = union(enum) { frame: []u8, too_long, exhausted };
+
+/// A prompt's frame at `seq`, with the session's next prompt_id, which becomes its active
+/// prompt (rev 16.20.13 and 16.20.16): its frames must carry that id. Once the ids are
+/// spent (RoseCat 6307) or the text is over its cap, no frame and nothing recorded.
+pub fn buildPrompt(v: *protocol.Validator, a: std.mem.Allocator, seq: u64, session: []const u8, text: []const u8) !Prompt {
+    const prompt_id = v.nextPromptId(session) orelse return .exhausted;
+    const built = (try helper.promptFrame(a, seq, session, prompt_id, text)) orelse return .too_long;
+    errdefer a.free(built);
+    try v.promptSent(session, prompt_id);
+    return .{ .frame = built };
+}
+
+/// Why the last zb_agent_out_prompt gave no frame: 0 it gave one, 1 too long, 2 the
+/// session's prompt ids are spent, 3 another failure.
+var last_prompt_status: c_int = 0;
+
+pub export fn zb_agent_out_prompt(session: [*:0]const u8, text: [*]const u8, len: usize) ?[*:0]u8 {
+    last_prompt_status = 3;
     const v = if (validator) |*v| v else return null;
-    const id = std.mem.span(session);
-    const prompt_id = v.nextPromptId(id);
-    if (prompt_id > protocol.max_prompt_id) return null;
-    const built = (helper.promptFrame(gpa, out_seq + 1, id, prompt_id, text[0..len]) catch return null) orelse return null;
-    const frame = owned(built) orelse return null;
-    v.promptSent(id, prompt_id) catch {
-        zb_agent_out_free(frame);
-        return null;
-    };
-    out_seq += 1;
-    return frame;
+    const result = buildPrompt(v, gpa, out_seq + 1, std.mem.span(session), text[0..len]) catch return null;
+    switch (result) {
+        .too_long => {
+            last_prompt_status = 1;
+            return null;
+        },
+        .exhausted => {
+            last_prompt_status = 2;
+            return null;
+        },
+        .frame => |built| {
+            const frame = owned(built) orelse return null;
+            out_seq += 1;
+            last_prompt_status = 0;
+            return frame;
+        },
+    }
+}
+
+pub export fn zb_agent_out_prompt_status() c_int {
+    return last_prompt_status;
+}
+
+/// The sentence the app shows when the last zb_agent_out_prompt gave no frame (RoseCat
+/// 6314: spent ids are an agent error, not a long message).
+pub export fn zb_agent_out_prompt_refusal() [*:0]const u8 {
+    return if (last_prompt_status == 1) "Message too long (64 KiB at most)" else "Agent error";
 }
 
 /// kind: 0 interrupt, 1 end_session.
-export fn zb_agent_out_session(kind: c_int, session: [*:0]const u8) ?[*:0]u8 {
+pub export fn zb_agent_out_session(kind: c_int, session: [*:0]const u8) ?[*:0]u8 {
     const which: helper.SessionFrame = if (kind == 0) .interrupt else .end_session;
     return owned(helper.sessionFrame(gpa, nextSeq(), which, std.mem.span(session)));
 }
@@ -172,6 +204,6 @@ export fn zb_agent_config_changed(home: [*:0]const u8) c_int {
     return @intFromBool(config_check.check(gpa, io, std.mem.span(home)) != .ok);
 }
 
-export fn zb_agent_out_free(frame: ?[*:0]u8) void {
+pub export fn zb_agent_out_free(frame: ?[*:0]u8) void {
     if (frame) |p| gpa.free(std.mem.span(p));
 }

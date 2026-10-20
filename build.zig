@@ -412,6 +412,22 @@ pub fn build(b: *std.Build) void {
     });
     agent_protocol_prompt_tests_module.addImport("agent_protocol", agent_protocol_module);
     const run_agent_protocol_prompt_tests = b.addRunArtifact(b.addTest(.{ .root_module = agent_protocol_prompt_tests_module }));
+    // Chat drawer S5d fix-forward (rev 16.20.18; RoseCat 6286, 6307, 6314): the cap reason
+    // order, prompt-id bounds, and the app's prompt path once a session's ids are spent.
+    var s5d_fix_runs: [4]*std.Build.Step = undefined;
+    const agent_frames_test_module = b.createModule(.{
+        .root_source_file = b.path("src/agent_frames.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    for ([_][]const u8{ "tests/agent_protocol_cap_reason_test.zig", "tests/agent_prompt_id_limit_test.zig", "tests/agent_frames_prompt_test.zig", "tests/agent_frames_out_test.zig" }, 0..) |path, i| {
+        const m = b.createModule(.{ .root_source_file = b.path(path), .target = target, .optimize = optimize, .link_libc = true });
+        if (i < 2) m.addImport("agent_protocol", agent_protocol_module) else m.addImport("agent_frames", agent_frames_test_module);
+        const run = b.addRunArtifact(b.addTest(.{ .root_module = m }));
+        run.skip_foreign_checks = true;
+        s5d_fix_runs[i] = &run.step;
+    }
     run_agent_protocol_tests.skip_foreign_checks = true;
     // Chat drawer S6 (rev 16.18): the one-shot login helper's frames.
     const agent_login_protocol_tests_module = b.createModule(.{
@@ -1014,6 +1030,15 @@ pub fn build(b: *std.Build) void {
         "agent-prompt-scope-e2e",
     });
     agent_prompt_scope_e2e.addArtifactArg(exe);
+    // Chat drawer S5d fix-forward (RoseCat 6296): a session's first prompt waits for its
+    // session_opened, and a failed open ends exactly the prompt that waited.
+    const agent_open_order_e2e = b.addSystemCommand(&.{
+        "sh",
+        "-c",
+        "python3 tests/e2e/agent_open_order_test.py --binary \"$1\"",
+        "agent-open-order-e2e",
+    });
+    agent_open_order_e2e.addArtifactArg(exe);
     // Chat drawer S5b (S5.5, user answer 1): the drawer is on by default; with no agent
     // home Send says the runtime is not set up; stop_browser fails a test a helper ran in.
     const agent_default_on_e2e = b.addSystemCommand(&.{
@@ -1127,6 +1152,13 @@ pub fn build(b: *std.Build) void {
         "sh",
         "-c",
         "py=$(tools/agent_host_env.sh --check) || exit 1; cd agent/host/tests && env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 ZB_AGENT_HOST_PYTHON=\"$py\" \"$py\" -m unittest -v test_chat_prompt_id",
+    });
+    // Chat drawer S5d fix-forward (RoseCat 6307, 6314): a message's frame is sized with its
+    // prompt_id, at the largest seq the app accepts.
+    const agent_host_chat_fit = b.addSystemCommand(&.{
+        "sh",
+        "-c",
+        "py=$(tools/agent_host_env.sh --check) || exit 1; cd agent/host/tests && env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 ZB_AGENT_HOST_PYTHON=\"$py\" \"$py\" -m unittest -v test_chat_fit",
     });
     // Chat drawer S6 (rev 16.18): the one-shot sign-in helper drives the
     // setup-token fake on a pty; the token reaches fd 4 only.
@@ -1612,6 +1644,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_agent_protocol_tests.step);
     test_step.dependOn(&run_agent_protocol_capped_tests.step);
     test_step.dependOn(&run_agent_protocol_prompt_tests.step);
+    for (s5d_fix_runs) |run| test_step.dependOn(run);
     test_step.dependOn(&run_agent_helper_tests.step);
     test_step.dependOn(&run_agent_config_check_tests.step);
     test_step.dependOn(&run_config_schema_tests.step);
@@ -1655,6 +1688,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&agent_flood_e2e.step);
     test_step.dependOn(&agent_cap_e2e.step);
     test_step.dependOn(&agent_prompt_scope_e2e.step);
+    test_step.dependOn(&agent_open_order_e2e.step);
     test_step.dependOn(&agent_default_on_e2e.step);
     test_step.dependOn(&agent_config_check_e2e.step);
     test_step.dependOn(&agent_isolation_e2e.step);
@@ -1671,6 +1705,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&agent_host_chat_flood.step);
     test_step.dependOn(&agent_host_chat_cap.step);
     test_step.dependOn(&agent_host_chat_prompt_id.step);
+    test_step.dependOn(&agent_host_chat_fit.step);
     test_step.dependOn(&agent_host_netd.step);
     test_step.dependOn(&agent_host_relay.step);
     test_step.dependOn(&agent_host_netd_manifest.step);
