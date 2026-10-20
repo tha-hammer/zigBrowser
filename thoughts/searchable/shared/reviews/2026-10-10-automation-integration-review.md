@@ -18261,3 +18261,52 @@ failing-first oracles for wrong SHA-256, missing/wrong Sigstore bundle,
 identity and issuer, plus survival of either excluded `*-intel64` entry in the
 payload/census. Finding 6770 therefore remains open. The verdict was mailed to
 JadeBeacon in Agent Mail 6823.
+
+## MS2a.3 app-ended drain (`e458b91`)
+
+Reviewed at `e458b91` on 2026-10-20 18:09 EDT.
+
+**Verdict: BLOCKED-for-tests. `26fdfff` remains the earliest blocked commit;
+the approved push-through remains `703b3de`.**
+
+The production idea is plausible: the loop-ended atomic makes a queued
+readiness poll complete with `NO_LOOP`, and the block which owns the chain
+reference performs its own unref. The reported **15/15 on each Mac
+architecture** and Linux gate are accepted as evidence for what the current
+test observes. The exact-commit Python files compile, the Mac gate parses and
+the diff is whitespace-clean. Four coverage defects prevent closure:
+
+1. `src/wkwebview_shim.m:2843-2845` calls `zb_auto_on_loop_ended()` from the
+   e2e hook **before** `[NSApp stop:nil]`. Production calls the drain only after
+   `[application run]` returns at lines 2901-2902. Deleting the production
+   post-run call therefore leaves this e2e green: its hook already set the
+   flag, drained the queued poll, woke the waiter and reached zero while the
+   ordinary app loop was still running. The hook must stop/wake only, letting
+   the real post-run path do the drain.
+2. `mac_ms2a_immediate_quit_test.py:113-140` does not prove that this request
+   created a live PREFLIGHT job. It accepts any exception and reads only the
+   final last `zb-live-jobs` line. A request waiting in the socket/server until
+   shutdown can take roughly three seconds, observe an earlier zero and pass.
+   Capture the log position or baseline before the call and require this
+   command's positive-live transition followed by exact zero.
+3. The stated “no work dispatches after quit” property has no observable
+   oracle. A mutant which runs `work()` after the loop-ended flag, then returns
+   a failure and balances its ref, satisfies every assertion. Add a dispatch,
+   DOM or network observation tied to this command which remains unchanged.
+4. The new ambient `ZB_DEBUG_QUIT_AFTER_MS` seam is guarded correctly in
+   source, but `mac_ms2a_hook_inert_test.py` still sets only the older three
+   variables. A mutant deleting this new `--e2e-protocol` guard survives. The
+   no-e2e run must set it and remain alive and usable past the threshold.
+
+This commit is also not the last outstanding root-closure item. The two
+part-B blockers on `a363d06` remain unchanged at this SHA:
+
+- `mac_ms2a_string_ownership_test.py:122-142` checks the counter only once
+  after success, JavaScript error and abandoned-late, allowing one case's leak
+  to cancel another case's underflow;
+- invalid UTF-8 in `zb_app_set_profile_dir` still returns a plain `strdup` at
+  current `wkwebview_shim.m:2785`, after which `zb_automation_free` decrements
+  the tracked counter. The caller-returned-string census remains incomplete.
+
+No Mac, live browser, live socket or real display was used locally. The
+findings and unchanged boundary were sent to JadeBeacon in Agent Mail 6828.
