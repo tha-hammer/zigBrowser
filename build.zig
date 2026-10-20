@@ -168,6 +168,14 @@ pub fn build(b: *std.Build) void {
     // zb_ipc_dispatch / zb_policy_decide. Export the exe's symbols so the dylib's flat-namespace
     // dynamic_lookup resolves them at load. macOS-only — Linux/Windows exe exports are unchanged.
     if (backend == .macos_backend) exe.rdynamic = true;
+    // WS1: the Windows browser is a GUI-subsystem PE, so launching zigBrowser.exe opens no console
+    // window. The GUI subsystem would otherwise default lld's entry to WinMainCRTStartup (needs a
+    // WinMain we do not define), so pin the C-runtime entry mainCRTStartup, which calls our `main`.
+    // Windows-only — the Linux ELF / macOS Mach-O have no PE subsystem and are unchanged.
+    if (target.result.os.tag == .windows) {
+        exe.subsystem = .Windows;
+        exe.entry = .{ .symbol_name = "mainCRTStartup" };
+    }
     exe.step.dependOn(pkg_guard);
     b.installArtifact(exe);
 
