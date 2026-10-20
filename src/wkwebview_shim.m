@@ -291,6 +291,7 @@ static void handle_signal(int signo) {
 // main-queue hop), monotonic microseconds via systemUptime.
 @property(nonatomic, assign) uint32_t windowId;  // MS2c: this window's STABLE id (assigned once, never reused)
 @property(nonatomic, assign) uint32_t openerId;  // MS2c: the window (id) whose page opened this popup; 0 = none
+@property(nonatomic, assign) uint32_t processGroup;  // MS2c: conservative WebContent-process family (= root opener's id); inherited at creation so it survives a middle window closing
 // MS2c crash parity: the web process ended since the last page load ("crashed"); nil while alive. The
 // window shows a STATIC crash document and keeps its committed URL; it never auto-reloads. Cleared only
 // on a real commit (the next successful navigation), not by the crash document's own load.
@@ -340,6 +341,7 @@ static void handle_signal(int signo) {
     return nil;
   }
   host.windowId = ++self.nextWindowId;  // STABLE id, assigned once; the first window (primary) is 1
+  host.processGroup = host.windowId;  // default: its own family root; a popup inherits its opener's group below
 
   ZbWindow *c_window = calloc(1, sizeof(ZbWindow));
   if (c_window == NULL) {
@@ -735,7 +737,10 @@ static int64_t zb_now_us(void) { return (int64_t)([[NSProcessInfo processInfo] s
   WKWebView *childView = [[WKWebView alloc] initWithFrame:NSMakeRect(0, 0, 1024, 768)
                                            configuration:configuration];
   ZBWindowHost *child = [self.app createWindowWithWebView:childView child:YES uri:nil];
-  if (child != nil) child.openerId = self.windowId;  // this window opened the popup (stable id)
+  if (child != nil) {
+    child.openerId = self.windowId;  // this window opened the popup (stable id)
+    child.processGroup = self.processGroup;  // shares the opener's WebContent process family (frozen at creation)
+  }
   return child.webView;
 }
 
@@ -1547,10 +1552,12 @@ int zb_automation_respond_dialog(uint32_t win, int accept, const char *text, uns
 }
 
 // MS2c: every open window as JSON [{id,url,title,primary,opener,dialog_open,responsive,unresponsive_ms,
-// incident,crashed?}], the primary first — the shape automation_macos_port.parseWindows expects. Window id
-// is the STABLE monotonic windowId (never a registry index, never reused; mirrors zb_auto_window_for_id);
-// opener is the stable id of the window that opened this one, and it keeps that value even after the opener
-// closes (never retargeted to a surviving window). Heap-job claim/cancel model, so a timed-out caller
+// loading,process_group,incident,crashed?}], the primary first — the shape automation_macos_port.parseWindows
+// expects. Window id is the STABLE monotonic windowId (never a registry index, never reused; mirrors
+// zb_auto_window_for_id); opener is the stable id of the window that opened this one, kept even after the
+// opener closes (never retargeted to a surviving window). loading is the real per-window WKWebView load
+// state; process_group is the conservative WebContent-process family (the root opener's id, inherited at
+// creation) that recover's at_risk set is built from. Heap-job claim/cancel model, so a timed-out caller
 // builds/leaks nothing (RoseCat 6469 shape). No page script: works with a dialog open.
 int zb_automation_list_windows(unsigned int timeout_ms, char **out_json) {
   if (out_json != NULL) *out_json = NULL;
@@ -1582,6 +1589,8 @@ int zb_automation_list_windows(unsigned int timeout_ms, char **out_json) {
                             @"dialog_open": (h.pendingDialogKind != 0) ? @YES : @NO,
                             @"responsive": responsive ? @YES : @NO,       // MS2c page.health (watchdog)
                             @"unresponsive_ms": @(unresp_ms),
+                            @"loading": (h.webView != nil && h.webView.loading) ? @YES : @NO,  // MS2c: real per-window load state (page.health)
+                            @"process_group": @(h.processGroup),           // MS2c: crash blast-radius family (recover at_risk)
                             @"incident": @(h.incident) } mutableCopy];
           if (h.terminatedReason != nil) w[@"crashed"] = h.terminatedReason;  // MS2c crash parity
           [arr addObject:w];

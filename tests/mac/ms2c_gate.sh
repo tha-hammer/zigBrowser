@@ -37,6 +37,8 @@ python3 tests/e2e/mac_ms2c_list_windows_test.py --browser zig-out/bin/zigBrowser
 python3 tests/e2e/mac_ms2c_stable_ids_test.py --browser zig-out/bin/zigBrowser
 python3 tests/e2e/mac_ms2c_window_fifo_test.py --browser zig-out/bin/zigBrowser
 python3 tests/e2e/mac_ms2c_popup_chain_test.py --browser zig-out/bin/zigBrowser
+python3 tests/e2e/mac_ms2c_loading_test.py --browser zig-out/bin/zigBrowser
+python3 tests/e2e/mac_ms2c_process_group_test.py --browser zig-out/bin/zigBrowser
 python3 tests/e2e/mac_ms2c_health_test.py --browser zig-out/bin/zigBrowser
 python3 tests/e2e/mac_ms2c_close_window_test.py --browser zig-out/bin/zigBrowser
 python3 tests/e2e/mac_ms2c_crash_test.py --browser zig-out/bin/zigBrowser
