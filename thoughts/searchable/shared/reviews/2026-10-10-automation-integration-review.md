@@ -17223,3 +17223,74 @@ display-free run skipped both cases cleanly, and `git diff --check` passes.
 test cover acceptance, enum mapping and setter storage, but the live arm test
 currently observes only media-source. Also replace the fixed six-second VM
 sleep with a bounded wait for the `NAV` row to reduce loaded-host flakiness.
+
+## macOS MS6 Seatbelt containment half (`b34b088`)
+
+**BLOCKED.** The two-architecture runner is fail-closed on a missing arm host,
+checks each executing architecture, uses an exact nonce directory, and proves
+that a spawned child inherits the selected Seatbelt profile. The permissive
+profile mutation is also useful failing-first evidence. Three security
+boundaries are nevertheless wrong or unproved:
+
+1. **BLOCKER — the writable root is inverted.** The profile calls
+   `WORKSPACE` its writable tree and the test requires a create there to
+   succeed (`tests/mac/agent_sandbox.sb:5,10,23-27`;
+   `sandbox_containment_test.sh:5,11,22,38-39`). The shared backend contract
+   makes workspace read-only and scratchpad writable. Direct workspace writes
+   bypass the native broker and approval card. The profile and test need
+   separate `WORKSPACE` and `SCRATCHPAD` parameters, a positive scratchpad
+   create, and helper plus child workspace-denial/leak assertions.
+2. **BLOCKER — this is not yet the stated MS6 profile.** It grants all file
+   reads, all `sysctl-read`, and every `mach-lookup`
+   (`agent_sandbox.sb:20,33-34`). The plan instead requires deny-default
+   reads, no other-process information/task-port capability, and a tiny Mach
+   lookup list excluding WindowServer and mDNSResponder. The unfiltered
+   sysctl grant is specifically on the `KERN_PROCARGS2` token-isolation path.
+   This may be an explicitly unsafe spike intermediate, but an artifact named
+   `agent_sandbox.sb` cannot claim to realize the shared spec or be eligible
+   for production wiring while these hard-gate capabilities are absent.
+3. **BLOCKER-for-tests — the network negative can false-green offline.** A
+   failure to connect to public `1.1.1.1:80` is treated as a Seatbelt denial.
+   Host firewall, routing, or endpoint failure produces the same result.
+   Drive a local forbidden-port listener outside the sandbox so the
+   permissive mutant must connect, and add positive listeners on both 51091
+   and 31337 so removing the allow rule is red.
+
+`bash -n`, `sh -n`, and `git diff --check b34b088^ b34b088` pass. I did not
+rerun the remote Mac gate. Findings were sent to JadeBeacon in Agent Mail
+6729.
+
+## Provisional linear audit after `6e0a1b1`
+
+The pushed boundary is **`7e16f13`**, and `6e0a1b1` remains its first blocked
+successor until the live resolver test is hardened. Once a reviewed
+fix-forward closes both `6e0a1b1` and its regression `e7e0083`, the intervening
+lineage is cumulatively approved through `e7e0083`: `5185e4d`; `4f41929`
+closed by `4717559` and the user's later long-run acceptance; and `3421428`.
+
+The next provisional blocker is **`2cc125c`**. Its WS13.4 prose forbids
+successful uninstall while any sandbox user, profile folder, WFP filter,
+provider, sublayer, or scheduled task survives, but the current red at the
+Windows plan's lines 1889-1890 still observes only users, filters and tasks.
+It needs explicit profile-folder, provider and sublayer censuses and a
+surviving-success mutant for each. This was sent to AzureRidge in Agent Mail
+6731 so the next boundary is ready behind the resolver fix.
+
+## macOS Keychain owner follow-up (`d0ea97b`)
+
+**BLOCKED.** The optional pointer, pointer-taking deinit, and second deinit on
+the same variable correctly close one half of `f6b005b`: one owner is disarmed
+after release. The code and test do not close the stale-copy defect that the
+comments claim to solve. `Token` remains a freely copyable public value; a
+copy made while its pointer is live keeps the same non-null pointer after the
+original is deinitialized, and deinitializing that copy frees the allocation
+again. The new regression never copies a live owner.
+
+The implementation also assigns null only after calling the C free function,
+not with the requested take-and-null-before-free ordering, and calling the
+field “internal” is not an enforced Zig visibility boundary. Fix forward with
+either a genuinely alias-safe shared release handle, or an honest unique-owner
+API: remove the stale-copy safety claim, minimize raw-field exposure, disarm
+before the C call, and pin the never-copy rule across all production callers.
+No production consumer is wired yet, so this can be settled before the API is
+depended upon. Finding sent to JadeBeacon in Agent Mail 6733.
