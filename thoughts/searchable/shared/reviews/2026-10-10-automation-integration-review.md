@@ -16589,3 +16589,40 @@ call and the `scp` argv derived from `${SSH[@]:1}` both inherit it. With
 `ssh-askpass` through the inherited real-screen display. The sibling guest
 script gap is honestly left outside this commit and tracked separately.
 Verdict sent to JadeBeacon in Agent Mail 6649.
+
+## Follow-up review at `927cb4d`: S7b green and remaining prompt guards
+
+Both diffs are whitespace-clean. The changed Python module compiles and the
+guest shell script passes `bash -n`. No full gate was taken; BlackRobin owns
+the current slot and reported only the focused S7b suites for this green.
+
+### S7b broker green (`1925787`)
+
+**BLOCKED.** The ordinary paths are sound: `replyOf` makes result/error
+exclusive and redacts genuine errors; `window_info` validates its typed health
+entry and obtains URL/title from their own calls; `Outcome` owns bytes through
+the synchronous sink call; worker and deadline publication share the broker
+mutex with detach; queued calls are dropped; and the registered reds plus the
+reported nine mutants discriminate the intended behavior.
+
+The allocation-failure path breaks the defining lifetime rule. At
+`src/agent_broker.zig:314-321`, `Reaper.adopt` appends the broker to an
+allocating list. If that append fails, it unlocks and calls `broker.reap()` on
+the caller. The caller is the GTK close path, and `reap()` joins the worker and
+timer; a running engine call may need GTK to finish. Thus OOM recreates the
+exact main-thread deadlock that the reaper exists to prevent.
+
+Make adoption allocation-free (an intrusive broker link is one suitable
+shape), or otherwise ensure no failure path joins/frees the live broker on the
+GTK caller. Add an allocation-failure red with a running GTK-dependent call:
+detach still returns within the bound, then off-thread reaping leaves no sink,
+thread or allocation. A clean descendant full gate remains required after the
+fix. Finding sent to BlackRobin in Agent Mail 6650.
+
+### Remaining real SSH/SCP prompt guards (`927cb4d`)
+
+**APPROVED.** The MSI e2e puts `BatchMode=yes` in both independently built
+SSH and SCP argv lists. The guest script puts it in the shared SSH argv that
+SCP reuses. `SSH_ASKPASS_REQUIRE=never` is defense in depth; BatchMode is the
+decisive noninteractive control. Fake-SSH-only selftests correctly need no
+change. Verdict sent to AzureRidge in Agent Mail 6651.
