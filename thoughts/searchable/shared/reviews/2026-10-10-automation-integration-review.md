@@ -17663,3 +17663,70 @@ rev-13 app-ended cancellation/part-C mechanism and exact result/error string
 ownership part B remain open; therefore `1df6df0` and the root `26fdfff`
 closure stay blocked pending those slices and the final current-SHA
 two-architecture gate.
+
+## S7b real-chain and drawer-only core boundary (`63158b4`, `2209c4a`)
+
+**`63158b4` is BLOCKED-for-tests; `2209c4a` is BLOCKED-for-tests.** The
+production implementation's new security boundary is sound in this source
+review, but the registered tests do not yet prove the binding S7 contracts or
+the exact new reachability boundary.
+
+The production reachability trace found no outside-drawer route into the
+in-process core:
+
+- `app.zig:362-381` installs the isolated automation script and calls
+  `startCore()` for drawer-only, while only explicit `--automation-api` calls
+  `start()`. `automation_server.zig:171-220` keeps socket creation, the 0600
+  token sidecar and the serving thread entirely in private `startSocket()`;
+  `startCore()` creates none of them.
+- The only retained server pointer is the module-private value in
+  `agent_tools.zig:35-42`. Its only production ingress is the C export called
+  for a validator-accepted helper `tool_call` at `agent_helper.c:458-466`.
+  Loaded pages, the automation socket router and the page-world bridge hold no
+  reference to it.
+- The page-world `zbHost` still terminates in `ipc.zig:18-42`, whose complete
+  command set is `ping`, `add`, `echo` and `os.info`. The automation object and
+  its `zbNavigation`/`zbFiles` handlers are installed in
+  `ZB_AUTOMATION_WORLD` (`webkit_shim.c:1883-1918`), not the page world.
+- Broker publication and detach linearize under the same mutex
+  (`agent_broker.zig:166-179,292-300`). The GTK hop owns copies of session,
+  id and body and re-checks the still-open window/session
+  (`agent_helper.c:223-267`), so freeing the per-window `Bound` after detach
+  does not leave a callable context or cross-session result.
+
+The blockers are coverage gaps, not a production bypass found:
+
+1. The authoritative plan assigns S7.4, S7.6, S7.7 and S7.8 to the real-chain
+   `agent_tools_test.py` (`plan:2773-2802,2832-2835,2892`). The committed test
+   executes `get_text`, `screenshot`, one SDK-refused `evaluate`, and the
+   detach `wait_for` (`agent_tools_test.py:135-216,282-318`). It does not run
+   `window_info`, `query` or `get_attribute`; observe PreToolUse/PostToolUse
+   plus both bridge positives and hook API/proxy negatives; drive wrong-auth
+   and missing-selector canaries through telemetry, tool and drawer errors;
+   or script the required `secrets_get`, `cookies_get`, `set_pacing` and
+   `click` refusals with unchanged root-span/page-state oracles. Its line 18
+   claims `cookies_get`, but the only forbidden call at lines 203-214 is
+   `evaluate`.
+2. `agent_socket_separation_test.py:38-59` proves that the selected socket and
+   sidecar paths never appear, but it does not put a hostile page against the
+   core on the new drawer-only path. Existing T1 starts `Browser` with its
+   default `automation=True` and probes generic agent/drawer/broker names
+   (`agent_isolation_test.py:31-54,75-99`), not page-world
+   `__zbAutomation`, the isolated handler names or actual automation-shaped
+   `zbHost` calls. Add a drawer-only top/same-frame/cross-frame/related-popup
+   fixture whose result is observed without the automation socket, and prove
+   those names/methods remain unreachable. The both-flags case should also
+   prove socket JSON-RPC cannot address the agent/drawer/broker surface.
+3. The `window-fixed` real-chain case is defense-in-depth evidence only: the
+   SDK schema rejects the extra property before the broker sees it (owner mail
+   6782), while `agent_tools_test.py:188-199` accepts any error and never
+   asserts the broker's fixed-window text. Keep the broker unit oracle, but do
+   not claim this e2e reaches that defense unless a production-path test can
+   do so.
+
+The owner's focused red/green evidence is sufficient for the basic closure,
+own-window, screenshot and detach increments: red at `4981d66`, then 35/35
+tool checks and 10/10 separation checks at the green, with the detach repeated
+four times. Local `py_compile` for both new e2es and `git diff --check` passed.
+I did not start another build because BlackRobin's full private-Xvfb gate was
+already running. Findings were sent in Agent Mail 6784.
