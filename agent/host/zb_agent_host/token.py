@@ -17,6 +17,7 @@ import threading
 
 from . import sandbox  # the backend owns the inherited token channel (fd + env), one source of truth
 from .files import atomic_write
+from .platforms import posix_only
 
 MIN_TOKEN = 16
 MAX_TOKEN = 512
@@ -135,6 +136,7 @@ def write_wrapper(path, cli, python="/usr/bin/python3", channel=None):
     token socket lands on and the env var that announces it) comes from the backend
     (sandbox.channel(), one source of truth), so a changed backend channel changes
     the descriptor the CLI really inherits; `channel` overrides it for tests."""
+    posix_only("token")  # WS7.5: a POSIX wrapper that execs the CLI
     ch = channel if channel is not None else sandbox.channel()
     return atomic_write(path, WRAPPER.format(python=python, cli=str(cli), limit=MAX_TOKEN,
                                              fd=ch.fd, env=ch.env), 0o700)

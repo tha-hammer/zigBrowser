@@ -1186,12 +1186,14 @@ pub fn build(b: *std.Build) void {
         "-c",
         "py=$(tools/agent_host_env.sh --check) || exit 1; cd agent/host/tests && env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 ZB_AGENT_HOST_PYTHON=\"$py\" \"$py\" -m unittest -v test_authorize_parity",
     });
-    // WS7.5 (bead zigBrowser-2p3; red 56e0bcd): no zb_agent_host module imports a POSIX-only
-    // module at top level, so the package still imports on Windows (a static AST scan).
+    // WS7.5 (bead zigBrowser-2p3; reds 56e0bcd, 1b25a2d, 1f03e76; RoseCat 6324; AzureRidge 6335):
+    // zb_agent_host imports on Windows (the deep import-time scan and a controlled win32 import),
+    // and every command is refused there before its module loads, with each fork/exec seam
+    // failing closed by name.
     const agent_host_win_import = b.addSystemCommand(&.{
         "sh",
         "-c",
-        "cd agent/host/tests && env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 python3 test_windows_import.py",
+        "py=$(tools/agent_host_env.sh --check) || exit 1; cd agent/host/tests && env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 python3 test_windows_import.py && env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 ZB_AGENT_HOST_PYTHON=\"$py\" \"$py\" -m unittest -v test_windows_import_deep test_windows_entry",
     });
     b.step("agent-host-win-import", "Check that no zb_agent_host module imports a POSIX-only module at top level (WS7.5)").dependOn(&agent_host_win_import.step);
     // Chat drawer S3.1/S3.7: the real `zigBrowser --agent-setup` against a

@@ -28,6 +28,16 @@ import os
 import struct
 import sys
 
+
+class NotOnWindows(RuntimeError):
+    """WS7.5 (AzureRidge 6335): this POSIX-only script was reached on Windows (the same error as
+    zb_agent_host.platforms.NotOnWindows; this file runs by path, outside the package)."""
+
+
+def _posix_only():
+    if sys.platform == "win32":
+        raise NotOnWindows("zb_agent_host hook_run: not available on Windows yet")
+
 if sys.platform != "win32":  # POSIX-only (WS7.5, bead zigBrowser-2p3): the module still imports on Windows
     import fcntl
 
@@ -139,6 +149,7 @@ def bwrap_argv(home, env, command, filter_fd=None, bridges=BRIDGES, ports=None):
 
 
 def main(argv):
+    _posix_only()  # WS7.5: fork/exec
     if len(argv) < 2 or argv[0] != "--":
         print("usage: zb-hook-run -- <hook command...>", file=sys.stderr)
         return 2

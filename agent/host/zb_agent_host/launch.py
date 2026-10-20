@@ -29,6 +29,7 @@ import stat
 import sys
 
 from . import options, sandbox, seccomp
+from .platforms import posix_only
 
 EXIT_USAGE = 2
 EXIT_NO_SANDBOX = 3
@@ -77,6 +78,7 @@ def _regular_file(path):
 
 
 def main(argv):
+    posix_only("launch")  # WS7.5: bwrap and execve
     parser = argparse.ArgumentParser(prog="zb_agent_host launch")
     parser.add_argument("--home", required=True)
     parser.add_argument("--python", required=True)

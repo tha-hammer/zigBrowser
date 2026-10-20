@@ -17,7 +17,18 @@ import errno
 import json
 import os
 import signal
+import sys
 import time
+
+
+class NotOnWindows(RuntimeError):
+    """WS7.5 (AzureRidge 6335): this POSIX-only script was reached on Windows (the same error as
+    zb_agent_host.platforms.NotOnWindows; this file runs by path, outside the package)."""
+
+
+def _posix_only():
+    if sys.platform == "win32":
+        raise NotOnWindows("zb_agent_host probe: not available on Windows yet")
 
 PTRACE_TRACEME, PTRACE_ATTACH = 0, 16
 NR_PROCESS_VM_READV, NR_PROCESS_VM_WRITEV = 310, 311
@@ -44,6 +55,7 @@ def _call(fn, *args):
 
 def _in_child(action):
     """Runs action() in a forked child and returns the name it reports."""
+    _posix_only()  # WS7.5: fork/exec
     r, w = os.pipe()
     pid = os.fork()
     if pid == 0:
@@ -60,6 +72,7 @@ def _in_child(action):
 
 
 def _sleeper():
+    _posix_only()  # WS7.5: fork/exec
     pid = os.fork()
     if pid == 0:
         time.sleep(30)

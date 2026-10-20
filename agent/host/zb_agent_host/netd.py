@@ -52,6 +52,16 @@ import sys
 import threading
 import time
 
+
+class NotOnWindows(RuntimeError):
+    """WS7.5 (AzureRidge 6335): this POSIX-only script was reached on Windows (the same error as
+    zb_agent_host.platforms.NotOnWindows; this file runs by path, outside the package)."""
+
+
+def _posix_only():
+    if sys.platform == "win32":
+        raise NotOnWindows("zb_agent_host netd: not available on Windows yet")
+
 EXIT_NO_SANDBOX = 3
 EXIT_USAGE = 2
 
@@ -758,6 +768,7 @@ def serve(sockdir, allow, bridges, resolve, record, hosts, ready_delay=None, cen
 
 
 def main(argv):
+    _posix_only()  # WS7.5: fork/exec
     try:
         opts, allow, resolve = parse_args(argv)
         hosts, ports, from_manifest = network(opts)  # the manifest is read here, before anything exists

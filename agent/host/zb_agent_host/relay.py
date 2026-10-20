@@ -31,6 +31,16 @@ import signal
 import socket
 import sys
 
+
+class NotOnWindows(RuntimeError):
+    """WS7.5 (AzureRidge 6335): this POSIX-only script was reached on Windows (the same error as
+    zb_agent_host.platforms.NotOnWindows; this file runs by path, outside the package)."""
+
+
+def _posix_only():
+    if sys.platform == "win32":
+        raise NotOnWindows("zb_agent_host relay: not available on Windows yet")
+
 BRIDGE_RELAY_FILE = os.path.abspath(__file__)
 
 EXIT_USAGE = 2
@@ -249,6 +259,7 @@ def _close_inherited(keep):
 
 
 def main(argv):
+    _posix_only()  # WS7.5: fork/exec
     parsed = parse(argv)
     if parsed is None:
         return fail("usage: zb-net-relay --egress DIR | --bridges DIR [--ports P1,P2,...] -- COMMAND...")
