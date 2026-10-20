@@ -42,6 +42,8 @@ struct AppState {
   bool e2e_protocol = false;
   int exit_code = ZB_EXIT_SUCCESS;
   bool navigation_completed = false;
+  bool screenshot = false;
+  std::wstring out_path;
 
   ComPtr<ICoreWebView2Environment> environment;
   ComPtr<ICoreWebView2Controller> controller;
@@ -934,6 +936,107 @@ HRESULT install_document_script_and_navigate(AppState *app) {
       script.c_str(), script_handler.Get());
 }
 
+// Writes an IStream's whole content (the in-memory PNG CapturePreview produced) to `path`.
+// Returns true on success; every failure prints its specific reason to stderr so an exit is
+// never silent.
+bool write_stream_to_file(IStream *stream, const std::wstring &path) {
+  if (stream == nullptr) {
+    fprintf(stderr, "zigBrowser: screenshot: null capture stream\n");
+    fflush(stderr);
+    return false;
+  }
+  HGLOBAL hg = nullptr;
+  const HRESULT hr = GetHGlobalFromStream(stream, &hg);
+  if (FAILED(hr) || hg == nullptr) {
+    fprintf(stderr, "zigBrowser: screenshot: GetHGlobalFromStream failed (HRESULT=0x%08lx)\n",
+            static_cast<unsigned long>(hr));
+    fflush(stderr);
+    return false;
+  }
+  const SIZE_T size = GlobalSize(hg);
+  void *data = GlobalLock(hg);
+  if (data == nullptr || size == 0) {
+    fprintf(stderr, "zigBrowser: screenshot: empty capture buffer (%zu bytes)\n",
+            static_cast<size_t>(size));
+    fflush(stderr);
+    if (data != nullptr) {
+      GlobalUnlock(hg);
+    }
+    return false;
+  }
+  HANDLE file = CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
+                            FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (file == INVALID_HANDLE_VALUE) {
+    log_last_error("CreateFileW(screenshot output)");
+    GlobalUnlock(hg);
+    return false;
+  }
+  DWORD written = 0;
+  const BOOL ok = WriteFile(file, data, static_cast<DWORD>(size), &written, nullptr);
+  if (!ok) {
+    log_last_error("WriteFile(screenshot output)");
+  }
+  CloseHandle(file);
+  GlobalUnlock(hg);
+  if (!ok || written != size) {
+    if (ok) {
+      fprintf(stderr, "zigBrowser: screenshot: short write (%lu of %zu bytes)\n", written,
+              static_cast<size_t>(size));
+      fflush(stderr);
+    }
+    return false;
+  }
+  return true;
+}
+
+// The --screenshot path: CapturePreview the loaded page into an in-memory PNG, write it to
+// app->out_path, then quit. Every failure path prints a specific stderr line and returns a
+// precise exit code, so a silent ZB_EXIT_SNAPSHOT_FAILED can never happen again.
+void capture_screenshot(AppState *app) {
+  if (app == nullptr || !app->webview) {
+    fprintf(stderr, "zigBrowser: screenshot: no WebView to capture\n");
+    fflush(stderr);
+    request_quit(app, ZB_EXIT_SNAPSHOT_FAILED);
+    return;
+  }
+  if (app->out_path.empty()) {
+    fprintf(stderr, "zigBrowser: screenshot: no output path\n");
+    fflush(stderr);
+    request_quit(app, ZB_EXIT_WRITE_FAILED);
+    return;
+  }
+  ComPtr<IStream> stream;
+  HRESULT hr = CreateStreamOnHGlobal(nullptr, TRUE, &stream);
+  if (FAILED(hr) || !stream) {
+    fprintf(stderr, "zigBrowser: screenshot: CreateStreamOnHGlobal failed (HRESULT=0x%08lx)\n",
+            static_cast<unsigned long>(hr));
+    fflush(stderr);
+    request_quit(app, ZB_EXIT_SNAPSHOT_FAILED);
+    return;
+  }
+  hr = app->webview->CapturePreview(
+      COREWEBVIEW2_CAPTURE_PREVIEW_IMAGE_FORMAT_PNG, stream.Get(),
+      Callback<ICoreWebView2CapturePreviewCompletedHandler>(
+          [app, stream](HRESULT result) -> HRESULT {
+            if (FAILED(result)) {
+              log_hresult("CapturePreview", result);
+              request_quit(app, ZB_EXIT_SNAPSHOT_FAILED);
+              return S_OK;
+            }
+            if (!write_stream_to_file(stream.Get(), app->out_path)) {
+              request_quit(app, ZB_EXIT_WRITE_FAILED);
+              return S_OK;
+            }
+            request_quit(app, ZB_EXIT_SUCCESS);
+            return S_OK;
+          })
+          .Get());
+  if (FAILED(hr)) {
+    log_hresult("CapturePreview start", hr);
+    request_quit(app, ZB_EXIT_SNAPSHOT_FAILED);
+  }
+}
+
 HRESULT create_controller(AppState *app) {
   if (app == nullptr || !app->environment || app->hwnd == nullptr) {
     return E_FAIL;
@@ -995,6 +1098,9 @@ HRESULT create_controller(AppState *app) {
                       }
 
                       emit_navigation_success(app);
+                      if (app->screenshot) {
+                        capture_screenshot(app);
+                      }
                       return S_OK;
                     })
                     .Get(),
@@ -1072,9 +1178,15 @@ int run_message_loop(AppState *app) {
 
 } // namespace
 
-extern "C" int zb_app_run(const char *uri, int print_title, int e2e_protocol) {
+// The shared core behind both entry points. `screenshot` adds the CapturePreview-on-load path
+// (writes `out_path` then quits); otherwise it is the interactive open. Every early return names
+// its reason on stderr so no exit code is silent.
+static int run_core(const char *uri, int print_title, int e2e_protocol, bool screenshot,
+                    const char *out_path) {
   char version[128] = {0};
   if (!webview2_runtime_version(version, sizeof(version))) {
+    fprintf(stderr, "zigBrowser: WebView2 runtime not found or unreadable\n");
+    fflush(stderr);
     return ZB_EXIT_RUNTIME_MISSING;
   }
 
@@ -1089,6 +1201,10 @@ extern "C" int zb_app_run(const char *uri, int print_title, int e2e_protocol) {
   app.uri = utf8_to_wide(uri);
   app.print_title = print_title != 0;
   app.e2e_protocol = e2e_protocol != 0;
+  app.screenshot = screenshot;
+  if (screenshot && out_path != nullptr) {
+    app.out_path = utf8_to_wide(out_path);
+  }
 
   int rc = ZB_EXIT_SUCCESS;
   if (app.uri.empty() || !create_host_window(&app)) {
@@ -1118,12 +1234,18 @@ extern "C" int zb_app_run(const char *uri, int print_title, int e2e_protocol) {
   return rc;
 }
 
+extern "C" int zb_app_run(const char *uri, int print_title, int e2e_protocol) {
+  return run_core(uri, print_title, e2e_protocol, false, nullptr);
+}
+
 extern "C" int zb_run_screenshot(const char *uri, const char *out_path,
                                   int print_title) {
-  (void)uri;
-  (void)out_path;
-  (void)print_title;
-  return ZB_EXIT_SNAPSHOT_FAILED;
+  if (out_path == nullptr || out_path[0] == '\0') {
+    fprintf(stderr, "zigBrowser: screenshot: no output path given\n");
+    fflush(stderr);
+    return ZB_EXIT_WRITE_FAILED;
+  }
+  return run_core(uri, print_title, 0, true, out_path);
 }
 
 extern "C" void zb_version_line(char *buf, size_t len) {

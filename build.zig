@@ -280,6 +280,11 @@ pub fn build(b: *std.Build) void {
     const windows_wincontain_job_live = b.addSystemCommand(&.{ "python3", "-I", "tests/windows/wincontain_job_live_test.py" });
     b.step("windows-wincontain-job-live", "Live Windows Job Object containment on the VM (skips without ZB_WIN11_HOST)").dependOn(&windows_wincontain_job_live.step);
 
+    // Live Windows --screenshot: zb_run_screenshot must CapturePreview the page to a real, non-blank PNG on
+    // the VM (it was a stub returning EXIT=6). Skips cleanly without ZB_WIN11_HOST/ZB_WIN_EXE; needs no slot.
+    const windows_screenshot_live = b.addSystemCommand(&.{ "python3", "-I", "tests/windows/screenshot_live_test.py" });
+    b.step("windows-screenshot-live", "Live Windows --screenshot PNG capture on the VM (skips without ZB_WIN11_HOST)").dependOn(&windows_screenshot_live.step);
+
     const run_step = b.step("run", "Run zigBrowser");
     const run_cmd = b.addRunArtifact(exe);
     run_cmd.step.dependOn(b.getInstallStep());
@@ -1883,6 +1888,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&windows_wincontain_argv_live.step);
     test_step.dependOn(&windows_wincontain_resolve_live.step);
     test_step.dependOn(&windows_wincontain_job_live.step);
+    test_step.dependOn(&windows_screenshot_live.step);
     test_step.dependOn(&run_ipc_tests.step);
     test_step.dependOn(&run_nav_policy_tests.step);
     test_step.dependOn(&run_agent_drawer_tests.step);
