@@ -1,5 +1,7 @@
 const std = @import("std");
 pub const automation = @import("automation.zig");
+/// S7a: the chat drawer's in-process broker over this core (callInProcess).
+pub const agent_broker = @import("agent_broker.zig");
 const automation_websocket = @import("automation_websocket.zig");
 
 const net = std.Io.net;
@@ -98,6 +100,8 @@ pub const AutomationApiServer = struct {
     persister: automation.pacing_store.Persister = undefined,
     /// page.recover's outstanding incident tokens.
     recover: RecoverState,
+    /// S7.1: the engine and its state are made (startCore); the socket may or may not be.
+    core_started: bool = false,
 
     pub fn init(
         allocator: std.mem.Allocator,
@@ -162,11 +166,10 @@ pub const AutomationApiServer = struct {
         self.persister.attach();
     }
 
-    pub fn start(self: *AutomationApiServer) !void {
-        if (!self.config.enabled) return;
-        if (!net.has_unix_sockets) return error.AddressFamilyUnsupported;
-        if (self.listener != null) return;
-
+    /// S7.1: the automation core without the socket: the engine and its state, for the
+    /// drawer's in-process broker (callInProcess). No socket file, no token sidecar.
+    pub fn startCore(self: *AutomationApiServer) !void {
+        if (self.core_started) return;
         // The engine keeps a pointer to `self.clock`, so it is built here,
         // once the server has reached its final address. Without a page every
         // command answers session_invalid through the engine (ids + span).
@@ -182,7 +185,20 @@ pub const AutomationApiServer = struct {
             self.queue.deinit();
             self.queue = queue_mod.PageCommandQueue.init(self.allocator, self.io);
         }
+        self.core_started = true;
+    }
 
+    /// The core and the socket (`--automation-api`).
+    pub fn start(self: *AutomationApiServer) !void {
+        if (!self.config.enabled) return;
+        if (!net.has_unix_sockets) return error.AddressFamilyUnsupported;
+        if (self.listener != null) return;
+        try self.startCore();
+        try self.startSocket();
+    }
+
+    /// D8: the token sidecar, the listening socket and its serve loop, over a started core.
+    fn startSocket(self: *AutomationApiServer) !void {
         if (self.config.token_file_path.len > 0) {
             if (std.mem.trim(u8, self.config.token, &std.ascii.whitespace).len == 0) return error.EmptyToken;
             try writeTokenFile(self.io, self.config.token_file_path, self.config.token);
@@ -217,6 +233,7 @@ pub const AutomationApiServer = struct {
         }
 
         self.closeConnections();
+        self.core_started = false; // a later start makes a fresh core
 
         if (self.listener) |*listener| {
             listener.deinit(self.io);
@@ -350,9 +367,32 @@ pub const AutomationApiServer = struct {
     }
 
     fn handleRequest(self: *AutomationApiServer, allocator: std.mem.Allocator, payload: []const u8) error{OutOfMemory}![]u8 {
+        return handleRequestWith(allocator, payload, self.config.token, self.core());
+    }
+
+    /// S7.1: `method` with `params_json` (an object, or "" for none), answered as the socket
+    /// answers `{auth, method, params}`: the same routing and checks after auth, with no auth.
+    /// The JSON-RPC response has id 0. Call it after startCore, off the GTK thread.
+    pub fn callInProcess(self: *AutomationApiServer, allocator: std.mem.Allocator, method: []const u8, params_json: []const u8) error{OutOfMemory}![]u8 {
+        if (method.len == 0) return jsonRpcError(allocator, "0", -32600, "Invalid Request", null);
+        const trimmed = std.mem.trim(u8, params_json, &std.ascii.whitespace);
+        var parsed: ?std.json.Parsed(std.json.Value) = if (trimmed.len == 0) null else std.json.parseFromSlice(std.json.Value, allocator, trimmed, .{}) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => return jsonRpcError(allocator, "0", -32602, "Invalid params", null),
+        };
+        defer if (parsed) |*p| p.deinit();
+        const params = paramsJson(allocator, if (parsed) |p| p.value else null) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            error.InvalidParams => return jsonRpcError(allocator, "0", -32602, "Invalid params", null),
+        };
+        defer allocator.free(params);
+        return dispatchParsed(allocator, "0", method, params, self.core());
+    }
+
+    fn core(self: *AutomationApiServer) Core {
         var route = primary_route;
         route.telemetry_sink = self.tee.sink();
-        return handleRequestWith(allocator, payload, self.config.token, &self.engine, &self.queue, &self.social, route, self.config.build_info, .{ .io = self.io, .port = self.config.cookie_port, .stopping = &self.stopping, .fixture_origin = self.config.social_fixture_origin }, &self.recent_traces, &self.x_state, &self.recover);
+        return .{ .engine = &self.engine, .queue = &self.queue, .social = &self.social, .route = route, .build_info = self.config.build_info, .cookies = .{ .io = self.io, .port = self.config.cookie_port, .stopping = &self.stopping, .fixture_origin = self.config.social_fixture_origin }, .recent_traces = &self.recent_traces, .x_state = &self.x_state, .recover = &self.recover };
     }
 };
 
@@ -409,10 +449,8 @@ fn telemetryQuery(
     return std.fmt.allocPrint(allocator, "{{\"jsonrpc\":\"2.0\",\"result\":{s},\"id\":{s}}}", .{ spans_json, id_json });
 }
 
-fn handleRequestWith(
-    allocator: std.mem.Allocator,
-    payload: []const u8,
-    token: []const u8,
+/// What a request is answered with once it has passed the socket's checks.
+const Core = struct {
     engine: *engine_mod.Engine,
     queue: *queue_mod.PageCommandQueue,
     social: *social_routes.SocialState,
@@ -422,7 +460,10 @@ fn handleRequestWith(
     recent_traces: *automation.telemetry.RecentTraceStore,
     x_state: *x_routes.XState,
     recover: *RecoverState,
-) error{OutOfMemory}![]u8 {
+};
+
+/// The socket's path: parse, envelope and auth, then dispatchParsed.
+fn handleRequestWith(allocator: std.mem.Allocator, payload: []const u8, token: []const u8, c: Core) error{OutOfMemory}![]u8 {
     var parsed = std.json.parseFromSlice(std.json.Value, allocator, payload, .{}) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
         else => return jsonRpcError(allocator, "null", -32700, "Parse error", null),
@@ -460,7 +501,13 @@ fn handleRequestWith(
         error.InvalidParams => return jsonRpcError(allocator, id_json, -32602, "Invalid params", null),
     };
     defer allocator.free(params_json);
+    return dispatchParsed(allocator, id_json, method, params_json, c);
+}
 
+/// S7.1: everything after auth, shared by the socket and callInProcess.
+fn dispatchParsed(allocator: std.mem.Allocator, id_json: []const u8, method: []const u8, params_json: []const u8, c: Core) error{OutOfMemory}![]u8 {
+    const engine, const queue, const social, const route, const build_info, const cookies, const recent_traces, const x_state, const recover =
+        .{ c.engine, c.queue, c.social, c.route, c.build_info, c.cookies, c.recent_traces, c.x_state, c.recover };
     if (std.mem.eql(u8, method, "telemetry.query")) {
         return telemetryQuery(allocator, id_json, params_json, recent_traces);
     }

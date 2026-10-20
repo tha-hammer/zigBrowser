@@ -958,6 +958,21 @@ pub fn build(b: *std.Build) void {
     const automation_server_tests = b.addTest(.{ .root_module = automation_server_tests_module });
     const run_automation_server_tests = b.addRunArtifact(automation_server_tests);
     run_automation_server_tests.skip_foreign_checks = true;
+    // Chat drawer S7a (revs 16.20.30, 16.20.32): the core in process (callInProcess) and the
+    // drawer's read-only broker over it.
+    var s7a_runs: [2]*std.Build.Step = undefined;
+    for ([_][]const u8{ "tests/automation_inprocess_test.zig", "tests/agent_broker_test.zig" }, 0..) |path, i| {
+        const s7a_module = b.createModule(.{
+            .root_source_file = b.path(path),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+        });
+        s7a_module.addImport("automation_server", automation_server_module);
+        const s7a_run = b.addRunArtifact(b.addTest(.{ .root_module = s7a_module }));
+        s7a_run.skip_foreign_checks = true;
+        s7a_runs[i] = &s7a_run.step;
+    }
 
     const automation_api_e2e = b.addSystemCommand(&.{
         "sh",
@@ -1928,6 +1943,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_x_tests.step);
     test_step.dependOn(&run_automation_x_tests.step);
     test_step.dependOn(&run_automation_server_tests.step);
+    for (s7a_runs) |run| test_step.dependOn(run);
     test_step.dependOn(&automation_api_e2e.step);
     test_step.dependOn(&automation_core_e2e.step);
     test_step.dependOn(&automation_readiness_e2e.step);
