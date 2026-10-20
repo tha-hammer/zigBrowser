@@ -18650,3 +18650,30 @@ No Windows host, file server, full gate, browser, live socket or display was
 used locally. The official semantics checked during review are Microsoft's
 `AccessCheck` documentation, “How AccessCheck Works,” and “SID Attributes in
 an Access Token.”
+
+## macOS plan rev 15 fix-forward (`059268d`)
+
+Reviewed at `059268d` on 2026-10-20.
+
+**Verdict: APPROVED.** This closes the `b4ec5e9` plan blocker recorded in
+Agent Mail 6823. The authoritative MS5.1c acquisition contract now makes the
+pinned SHA-256, Sigstore identity/issuer verification and Apple package check
+mandatory and fail closed before `pkgutil --expand-full`; MD5 is explicitly
+informational. It also names the Sigstore command/seam and requires red-first
+oracles for a wrong SHA, missing/wrong bundle, identity and issuer, and either
+excluded `*-intel64` entry surviving in the payload or census.
+
+The pinned values were checked independently during review. A fresh download
+of `python-3.12.10-macos11.pkg` produced SHA-256
+`8373e58da4ea146b3eb1c1f9834f19a319440b6b679b06050b1f9ee3237aa8e4` and
+MD5 `8f4989592c9412e51fcad70273442c22`. The adjacent 4,971-byte Sigstore
+bundle contains a Fulcio certificate with SAN `thomas@python.org` and OIDC
+issuer extension `https://accounts.google.com`. Sigstore-python's documented
+default discovery includes `<input>.sigstore`, so the plan's shown command
+does consume the separately downloaded bundle when the two files are adjacent.
+The implementation should still prefer an explicit `--bundle` argument and a
+pinned verifier dependency for reproducibility; that is a non-blocking
+implementation note, not a remaining rev-15 contract defect.
+
+This was a docs-only review. `git diff --check 059268d^..059268d` passed; no
+build, Mac, browser or live display was used.
