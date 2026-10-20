@@ -68,6 +68,16 @@ try {
     } | Sort-Object -Unique)
 } catch {}
 
+# WS0.5/WS0.1: the allowed remote root for this user, and (WS0.7 / file server) the sshd network fence.
+$root = Join-Path $env:USERPROFILE 'zb'
+$sshdListen = @()
+$sshdAllowUsers = @()
+try {
+  $cfg = Get-Content -LiteralPath 'C:\ProgramData\ssh\sshd_config' -ErrorAction Stop
+  $sshdListen = @($cfg | ForEach-Object { if ($_ -match '^\s*ListenAddress\s+(\S+)') { $matches[1] } })
+  $sshdAllowUsers = @($cfg | ForEach-Object { if ($_ -match '^\s*AllowUsers\s+(.+?)\s*$') { $matches[1] } })
+} catch {}
+
 $mySess = 0;  try { [void][Zb.Native]::ProcessIdToSessionId([Zb.Native]::GetCurrentProcessId(), [ref]$mySess) } catch {}
 $console = $null; try { $console = [int][Zb.Native]::WTSGetActiveConsoleSessionId() } catch {}
 
@@ -89,8 +99,11 @@ $o = [ordered]@{
   python_path         = $pyPath
   zig                 = $zig
   free_gb             = $freeGb
+  root                = $root
   groups              = $groups
   listeners           = $listeners
+  sshd_listen         = $sshdListen
+  sshd_allowusers     = $sshdAllowUsers
   console_session_id  = $console
   my_session_id       = $mySess
   interactive_session = $null   # filled by the in-console session helper (snapshot-gated)
