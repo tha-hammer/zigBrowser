@@ -759,7 +759,9 @@ def _sandboxed(ro_paths, command, timeout, env=None, listener=None, census=None)
     """Runs `command` in setup_sandbox with a fresh throwaway home; (stdout, ok). `listener` (macOS R1 only): the
     127.0.0.1 listener setup bound outside the sandbox; the command gets it as `--listen-fd/--listen-port` through
     pass_fds, and the profile permits exactly its port."""
-    scratch = Path(tempfile.mkdtemp(prefix="zb-setup-run-"))
+    # Its REAL path: on macOS /tmp is a symlink to /private/tmp, Seatbelt matches resolved paths, and the profile's one
+    # write grant (SCRATCHPAD), HOME and TMPDIR must name the path writes actually resolve to (e7b7370, both Macs).
+    scratch = Path(os.path.realpath(tempfile.mkdtemp(prefix="zb-setup-run-")))
     run_env = {"PATH": "/usr/bin:/bin", "HOME": str(scratch), "LANG": "C.UTF-8", **(env or {})}
     try:
         if PLATFORM == "darwin":
