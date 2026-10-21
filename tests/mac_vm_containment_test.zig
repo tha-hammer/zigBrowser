@@ -32,3 +32,20 @@ test "gate: OFF proceeds; ON fails CLOSED while the backend is not available" {
 test "gate: OFF proceeds regardless, so the shipping default is never blocked" {
     try std.testing.expectEqual(vm.Gate.proceed, vm.gate(.off, .not_available_yet));
 }
+
+test "gateResolved fails CLOSED on a malformed explicit value (no silent fallback to off)" {
+    // This is the exact decision app.zig's runAgentSetup makes. `onn` is bad_env (value defaults to off); a
+    // security setting must refuse with a diagnostic, not proceed uncontained (RoseCat 7199). A mutant that
+    // ignores bad_env and takes the .off value reds here.
+    const bad = vm.resolve(null, "onn");
+    switch (vm.gateResolved(bad, .not_available_yet)) {
+        .proceed => return error.MalformedFailedOpen,
+        .refuse => |line| try std.testing.expectEqualStrings(vm.invalid_setting_refusal, line),
+    }
+    // a well-formed resolved value still flows through the ordinary gate
+    try std.testing.expectEqual(vm.Gate.proceed, vm.gateResolved(vm.resolve(null, "off"), .not_available_yet));
+    switch (vm.gateResolved(vm.resolve(null, "on"), .not_available_yet)) {
+        .proceed => return error.OnFailedOpen,
+        .refuse => |line| try std.testing.expectEqualStrings(vm.not_available_refusal, line),
+    }
+}

@@ -43,3 +43,13 @@ pub fn gate(setting: Setting, avail: Availability) Gate {
         },
     };
 }
+
+pub const invalid_setting_refusal = "zigBrowser: agent: ZIGBROWSER_AGENT_VM_CONTAINMENT must be 'on' or 'off'";
+
+/// The launch decision from a RESOLVED setting — the exact function the app calls (`app.zig` runAgentSetup). A
+/// malformed explicit value (`bad_env` set) fails CLOSED with a diagnostic (RoseCat 7199): a security setting
+/// must never silently fall back to the default `.off` and run uncontained. Otherwise the ordinary `gate`.
+pub fn gateResolved(r: Resolved, avail: Availability) Gate {
+    if (r.bad_env != null) return .{ .refuse = invalid_setting_refusal };
+    return gate(r.value, avail);
+}

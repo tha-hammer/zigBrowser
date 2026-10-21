@@ -59,8 +59,8 @@ pub fn runWithIo(arena: std.mem.Allocator, io: std.Io, command: cli.Command) err
 fn runAgentSetup(arena: std.mem.Allocator, spec: AgentSetupSpec) errors.BrowserError!u8 {
     // VM containment (MS6.5 stub, the user's decision 2026-10-21): off by default. When a user turns it on, the
     // agent must NOT run until the Apple Virtualization backend exists, so fail closed here before anything else.
-    switch (mac_vm_containment.gate(
-        mac_vm_containment.resolve(null, getenvOwned(arena, mac_vm_containment.env_name)).value,
+    switch (mac_vm_containment.gateResolved(
+        mac_vm_containment.resolve(null, getenvOwned(arena, mac_vm_containment.env_name)),
         mac_vm_containment.availability(),
     )) {
         .proceed => {},
