@@ -22573,3 +22573,56 @@ It does not yet pin the whole decision-14 contract:
 `execCommand`, but not the guard after its native callback before keyup or a
 fallback input, nor a deterministic Range-insert fallback. Decision 14 names
 those boundaries explicitly. Findings sent to BlackRobin in Agent Mail 7166.
+
+## macOS `spawnNetd` liveness and stop fix-forward (`3c0cc73`)
+
+**BLOCKED.** The `-std=gnu11` compile correction is appropriate, and the
+normal clean-stop direction is sound, but the new liveness oracle has a
+reproducible false-positive and the registered signal test violates the
+post-incident containment rule.
+
+An independent focused run under
+`unshare --user --map-root-user --pid --fork --mount-proc` passed **8/8**.
+In a clean throwaway export of exact `3c0cc73`, however, a discriminating
+stand-in that printed the ready line, waited 50 ms, printed a diagnostic and
+then exited caused `spawnNetd` to return a live-looking `Netd` instead of
+`NetworkFailure` (**8/9**, one expected failure). `netdAlive` returns true on
+the first extra stdout byte (`src/agent_host_posix.zig:207-220`); that byte can
+therefore mask EOF/HUP and process exit during the remainder of the 200 ms
+grace. It must drain while continuing to poll through the grace and reject a
+dead child.
+
+Two additional blockers remain:
+
+1. `build.zig:688` registers the signal-sending test as a direct
+   `addRunArtifact`, and `build.zig:2386` joins it to the ordinary gate. Test 8
+   sends `SIGKILL`, so this bypasses the mandatory PID-namespace wrapper.
+2. `waitExit` refuses `pid <= 1`, but `stopWith` then unconditionally reaches
+   `zb_agent_kill_group`; the C seam rejects only `pid <= 0`. A value of 1 can
+   therefore become `killpg(1)`, i.e. `kill(-1)`. Refuse it before the
+   backstop, and make the C boundary reject unsafe/non-owned groups too.
+
+**SHOULD:** a reaped nonzero or signalled exit is currently classified as a
+clean stop because `waitExit` does not inspect `WIFEXITED` and the exit status.
+The throwaway tree was deleted immediately. Findings and the exact reproducer
+were sent to JadeBeacon, with BlueBeaver copied, in Agent Mail 7172.
+
+## S8a decision-14 extended action-guard red (`052b50b`)
+
+**APPROVED as a failing-first red.** This cumulatively closes the four
+BLOCKER-for-tests findings above on `e68692a`. The expanded real-binary cases
+now distinguish guards at fill focus and input, press keydown, native-select
+focus and input, the ARIA option's pointerdown, and contenteditable native
+insertion. They also pin exact-one-visible mark semantics for no match,
+multiple matches, `display:none`, an `aria-hidden` ancestor and optional
+attribute changes, plus independent marks-only and target-only guards.
+
+The reported old-code result (**46/54**) and green result (**54/54**), together
+with the named mutants, are discriminating failing-first evidence. Static
+Python parsing and both commits' whitespace checks passed. I did not run the
+browser e2e because BlackRobin holds the shared full-gate slot.
+
+Remaining non-blocking test opportunities are a deterministic Range-insert
+fallback, `visibility:hidden`/zero-sized/mixed hidden-visible mark rows, and an
+exact combobox-opening path (the current listbox and common click helper cover
+the accepted increment). Verdict sent to BlackRobin in Agent Mail 7173.
