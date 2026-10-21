@@ -88,10 +88,12 @@ class SpawnGroup(unittest.TestCase):
         if sys.platform == "darwin":
             stat = subprocess.run(["/bin/ps", "-o", "stat=", "-p", str(pid)], capture_output=True, text=True).stdout
             return stat.strip() != "" and not stat.strip().startswith("Z")
-        try:  # the child may exit between kill(pid, 0) and the open (RoseCat on 554f36c): that is dead, not an error
+        # The child may exit between kill(pid, 0) and the open (FileNotFoundError, RoseCat on 554f36c), or between the
+        # open and the read (ProcessLookupError, ESRCH: seen in a namespaced test-mac-census run): either is dead.
+        try:
             with open(f"/proc/{pid}/stat") as f:
                 return f.read().rsplit(")", 1)[1].split()[0] != "Z"
-        except FileNotFoundError:
+        except (FileNotFoundError, ProcessLookupError):
             return False
 
     def group_kills(self):
