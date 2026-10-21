@@ -124,16 +124,18 @@ foreach ($g in $id.Groups) {
 $freeGb = $null
 try { $freeGb = [math]::Round([System.IO.DriveInfo]::new('C').AvailableFreeSpace / 1GB, 1) } catch {}
 
-# WS0.7: the listening TCP ports, so the gate can diff pre-run vs post-run (a run must not open a new
-# listener on the file server). Parsed from `netstat` (standard-user-safe; Get-NetTCPConnection goes
-# through CIM/WMI, which is Access-denied for a standard user). All ports, sorted + unique; the gate
-# ignores the ephemeral range (>=49152, which churns) when comparing.
+# WS0.7: the listening TCP endpoints as {port, pid}, so the gate can diff pre-run vs post-run by PID
+# ownership (a run must not open a new listener; benign ephemeral churn by an existing process is tolerated
+# — bead zigBrowser-bdq). Parsed from `netstat -ano` (standard-user-safe; Get-NetTCPConnection is CIM/WMI,
+# Access-denied for a standard user). Column 5 of a `netstat -ano -p TCP` LISTENING row is the owning PID.
 $listeners = @()
 try {
   $listeners = @(& netstat -ano -p TCP 2>$null | ForEach-Object {
       $f = $_ -split '\s+' | Where-Object { $_ -ne '' }
-      if ($f.Count -ge 4 -and $f[0] -eq 'TCP' -and $f[3] -eq 'LISTENING') { [int]($f[1].Split(':')[-1]) }
-    } | Sort-Object -Unique)
+      if ($f.Count -ge 5 -and $f[0] -eq 'TCP' -and $f[3] -eq 'LISTENING') {
+        [pscustomobject]@{ port = [int]($f[1].Split(':')[-1]); pid = [int]$f[4] }
+      }
+    })
 } catch {}
 
 # WS0.5/WS0.1: the allowed remote root for this user, and (WS0.7 / file server) the sshd network fence.

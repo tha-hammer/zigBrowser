@@ -262,8 +262,16 @@ if not isinstance(v.get("root"), str) or v.get("root").strip().rstrip("\\").lowe
 # WS0 is fail CLOSED: before ANY comparison, every file-server field we judge on must be present and
 # well-typed on BOTH probes. Malformed/missing data must be rejected, never silently coerced to a value
 # that compares "undisturbed". A bare `name or []` would let None/""/"bad"/["22"] masquerade as empty.
-def _is_port_list(x):
-    return isinstance(x, list) and all(isinstance(p, int) and not isinstance(p, bool) and 0 <= p <= 65535 for p in x)
+def _is_listener_list(x):
+    # Typed listeners: each is {port, pid} (both ints) so WS0.7 can tell benign ephemeral churn by a known
+    # process from a real disturbance (bead zigBrowser-bdq). A bare int list, None, or strings are rejected.
+    if not isinstance(x, list): return False
+    for l in x:
+        if not isinstance(l, dict): return False
+        p, q = l.get("port"), l.get("pid")
+        if not (isinstance(p, int) and not isinstance(p, bool) and 0 <= p <= 65535): return False
+        if not (isinstance(q, int) and not isinstance(q, bool) and q >= 0): return False
+    return True
 def _is_share_list(x):
     # Typed shares: each is {name, path}, name NONEMPTY and path a DRIVE-ABSOLUTE, normalized Windows
     # path (never relative/UNC — a relative share path is malformed and must not pass). This detects a
@@ -294,8 +302,8 @@ def require_schema(probe, who):
         sys.stderr.write("file-server (%s): console_user missing or empty\n" % who); sys.exit(1)
     if not isinstance(probe.get("zbtest_write_paths"), list):
         sys.stderr.write("file-server (%s): zbtest_write_paths missing or not a list\n" % who); sys.exit(1)
-    if not _is_port_list(probe.get("listeners")):
-        sys.stderr.write("file-server (%s): listeners missing or not a list of ports\n" % who); sys.exit(1)
+    if not _is_listener_list(probe.get("listeners")):
+        sys.stderr.write("file-server (%s): listeners missing or not a list of {port, pid} objects\n" % who); sys.exit(1)
     # No FIXED baseline listener set: the real file server's listeners (135/445/5040/5357, dynamic RPC
     # 49664+, 139, 22, high service ports) vary by host and have no 3389, and the WS0.7 rule is only that
     # the listener set is UNCHANGED pre vs post (checked below). A pinned/overridable baseline here was
@@ -353,13 +361,21 @@ if wp:
 cu = str(a.get("console_user", "")).split("\\")[-1].lower()
 if cu != win10_user.lower():
     sys.stderr.write("file-server: console user is %r, not %s\n" % (a.get("console_user"), win10_user)); sys.exit(1)
-# The FULL listening-port set must be identical pre/post. No range exemption: a persistent listener on a
-# high/"ephemeral" port is still a disturbance (a product service binding 50000 would otherwise slip past).
-# Tolerating genuine OS dynamic-port churn needs ownership/PID identity, tracked as a plan item — not by
-# discarding every high-port signal here. See thoughts/.../2026-10-20-ws07-file-server-field-design.md.
-pre_ports = sorted(a.get("listeners")); post_ports = sorted(b.get("listeners"))
-if pre_ports != post_ports:
-    sys.stderr.write("file-server: listening ports changed %s -> %s\n" % (pre_ports, post_ports)); sys.exit(1)
+# WS0.7 listeners pre/post, by PID-OWNERSHIP (bead zigBrowser-bdq), so genuine OS dynamic-port churn does
+# not false-fail while a real disturbance still does. SERVICE ports (< 49152) are compared as a strict SET
+# — any added/dropped service port is a disturbance. EPHEMERAL ports (>= 49152) may churn, but ONLY among
+# processes that already owned a pre-run listener: a post ephemeral listener owned by a pid with NO pre
+# listener (e.g. a product service that started) is a disturbance. (No blanket high-port exemption — a new
+# process binding a high port still fails. See thoughts/.../2026-10-20-ws07-file-server-field-design.md.)
+EPH = 49152
+pre_svc = sorted(l["port"] for l in a.get("listeners") if l["port"] < EPH)
+post_svc = sorted(l["port"] for l in b.get("listeners") if l["port"] < EPH)
+if pre_svc != post_svc:
+    sys.stderr.write("file-server: service listener ports changed %s -> %s\n" % (pre_svc, post_svc)); sys.exit(1)
+pre_pids = {l["pid"] for l in a.get("listeners")}
+intruders = sorted({(l["port"], l["pid"]) for l in b.get("listeners") if l["port"] >= EPH and l["pid"] not in pre_pids})
+if intruders:
+    sys.stderr.write("file-server: ephemeral listener from a process with no pre-run listener: %s\n" % intruders); sys.exit(1)
 if a.get("fw_rules_hash") != b.get("fw_rules_hash"):
     sys.stderr.write("file-server: firewall rules changed between pre and post\n"); sys.exit(1)
 # WS0.7: the served shares themselves must be undisturbed pre/post (names/root paths), not just writable.

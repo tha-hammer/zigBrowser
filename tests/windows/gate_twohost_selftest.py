@@ -119,7 +119,9 @@ def _fs_probe(**over):
          "native_arch": "x64", "os_build": "19045", "webview2_pv": "155.0.4283.62",
          "groups": [{"sid": "S-1-5-32-545", "name": "BUILTIN\\Users"}],
          "zbtest_write_paths": [], "console_user": "zbtest",
-         "listeners": [22, 135, 139, 445, 3389], "fw_rules_hash": "abc123", "shares": [],
+         "listeners": [{"port": 22, "pid": 4}, {"port": 135, "pid": 900}, {"port": 139, "pid": 4},
+                       {"port": 445, "pid": 4}, {"port": 3389, "pid": 500}],
+         "fw_rules_hash": "abc123", "shares": [],
          "root": "C:\\Users\\zbtest\\zb", "free_gb": 500.0,
          "sshd_listen": ["100.123.34.15"], "sshd_allowusers": ["zbtest"]}
     p.update(over)
@@ -212,19 +214,19 @@ class WS07FileServerFence(_TwoHostCase):
             self._assert_fail_closed(proc, "file-server")
 
     def test_listeners_changed_pre_post_fails_closed(self):
+        # A new SERVICE (< 49152) listener appeared post-run.
         with tempfile.TemporaryDirectory() as t:
-            post = _fs_probe(listeners=[22, 135, 139, 445, 3389, 8080])  # a new SERVICE listener appeared
+            post = _fs_probe(listeners=json.loads(_fs_probe())["listeners"] + [{"port": 8080, "pid": 900}])
             proc = self._run_probe_only(pathlib.Path(t), {"ZB_SELFTEST_PROBE_WIN10_POST": post})
-            self._assert_fail_closed(proc, "file-server")
+            self._assert_fail_closed(proc, "service listener ports changed")
 
-    def test_high_port_listener_change_fails_closed(self):
-        """A persistent NEW listener on a high/"ephemeral" port (50000) is still a disturbance, not churn.
-        There is no range exemption: a product service binding 50000 must not slip past. (Tolerating genuine
-        OS dynamic-port churn needs ownership/PID identity — a tracked plan item, see the WS0.7 field doc.)"""
+    def test_high_port_listener_new_pid_fails_closed(self):
+        """A NEW ephemeral (>= 49152) listener owned by a process with NO pre-run listener is a disturbance
+        (e.g. a product service that started) — no blanket high-port exemption (bead zigBrowser-bdq)."""
         with tempfile.TemporaryDirectory() as t:
-            post = _fs_probe(listeners=[22, 135, 139, 445, 3389, 50000])
+            post = _fs_probe(listeners=json.loads(_fs_probe())["listeners"] + [{"port": 50000, "pid": 1234}])
             proc = self._run_probe_only(pathlib.Path(t), {"ZB_SELFTEST_PROBE_WIN10_POST": post})
-            self._assert_fail_closed(proc, "listening ports changed")
+            self._assert_fail_closed(proc, "no pre-run listener")
 
     # --- fail-closed on malformed/missing probe data (WS0 is fail closed; never coerce to "undisturbed") ---
     def test_listeners_none_fails_closed(self):
@@ -232,10 +234,11 @@ class WS07FileServerFence(_TwoHostCase):
             proc = self._run_probe_only(pathlib.Path(t), {"ZB_SELFTEST_PROBE_WIN10": _fs_probe(listeners=None)})
             self._assert_fail_closed(proc, "file-server")
 
-    def test_listeners_list_of_strings_fails_closed(self):
+    def test_listeners_bare_int_list_fails_closed(self):
+        # The old untyped schema (bare ints) must be rejected now that listeners are {port, pid}.
         with tempfile.TemporaryDirectory() as t:
-            proc = self._run_probe_only(pathlib.Path(t), {"ZB_SELFTEST_PROBE_WIN10": _fs_probe(listeners=["22"])})
-            self._assert_fail_closed(proc, "file-server")
+            proc = self._run_probe_only(pathlib.Path(t), {"ZB_SELFTEST_PROBE_WIN10": _fs_probe(listeners=[22, 135])})
+            self._assert_fail_closed(proc, "{port, pid}")
 
     def test_missing_fw_rules_hash_fails_closed(self):
         with tempfile.TemporaryDirectory() as t:
@@ -816,6 +819,46 @@ class WS0TwoHostReds(_TwoHostCase):
             self.assertEqual(proc.returncode, 0, f"healthy probe must still pass\n{proc.stderr}")
             leaked = envlog.read_text() if envlog.exists() else ""
             self.assertEqual(leaked.strip(), "", f"a display var reached a gate child:\n{leaked}")
+
+
+class WS07ListenerPidChurn(_TwoHostCase):
+    """WS0.7 listener PID-ownership tolerance (bead zigBrowser-bdq): benign ephemeral churn by a process
+    that already owned a pre-run listener is tolerated; a new-pid ephemeral listener or any service-port
+    change still fails (the latter two are covered by the file-server tests above)."""
+    def _base(self):
+        return json.loads(_fs_probe())["listeners"]   # pid 900 owns service port 135
+
+    def test_benign_ephemeral_add_same_pid_tolerated(self):
+        pre = self._base() + [{"port": 49664, "pid": 900}]
+        post = self._base() + [{"port": 49700, "pid": 900}]   # same owner, ephemeral port churned
+        with tempfile.TemporaryDirectory() as t:
+            proc = self._run_probe_only(pathlib.Path(t),
+                {"ZB_SELFTEST_PROBE_WIN10": _fs_probe(listeners=pre),
+                 "ZB_SELFTEST_PROBE_WIN10_POST": _fs_probe(listeners=post)})
+            self.assertEqual(proc.returncode, 0,
+                             f"benign ephemeral churn by a known pid must be tolerated\n{proc.stderr}")
+
+    def test_benign_ephemeral_drop_same_pid_tolerated(self):
+        pre = self._base() + [{"port": 49664, "pid": 900}]
+        post = self._base()   # pid 900 closed its ephemeral endpoint but still owns service 135
+        with tempfile.TemporaryDirectory() as t:
+            proc = self._run_probe_only(pathlib.Path(t),
+                {"ZB_SELFTEST_PROBE_WIN10": _fs_probe(listeners=pre),
+                 "ZB_SELFTEST_PROBE_WIN10_POST": _fs_probe(listeners=post)})
+            self.assertEqual(proc.returncode, 0,
+                             f"a dropped ephemeral port by a known pid must be tolerated\n{proc.stderr}")
+
+    def test_new_pid_ephemeral_fails_closed(self):
+        post = self._base() + [{"port": 50001, "pid": 1234}]   # pid 1234 held no pre-run listener
+        with tempfile.TemporaryDirectory() as t:
+            proc = self._run_probe_only(pathlib.Path(t), {"ZB_SELFTEST_PROBE_WIN10_POST": _fs_probe(listeners=post)})
+            self._assert_fail_closed(proc, "no pre-run listener")
+
+    def test_dropped_service_port_fails_closed(self):
+        post = [l for l in self._base() if l["port"] != 445]   # a service listener disappeared
+        with tempfile.TemporaryDirectory() as t:
+            proc = self._run_probe_only(pathlib.Path(t), {"ZB_SELFTEST_PROBE_WIN10_POST": _fs_probe(listeners=post)})
+            self._assert_fail_closed(proc, "service listener ports changed")
 
 
 def load_tests(loader, tests, pattern):
