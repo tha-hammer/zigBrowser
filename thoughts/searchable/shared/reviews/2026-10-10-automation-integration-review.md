@@ -20990,3 +20990,53 @@ requirements, and makes (B) a hard prerequisite of `seatbelt_ready`, MS6
 completion and any Mac-backend launch consumer. This matches the accepted 7053
 scope call and records the current setup-profile `SIGILL` without treating it
 as acceptance evidence.
+
+## S8a phase-A green (`f290168`)
+
+Reviewed exact production commit `f290168` on 2026-10-20. **Verdict:
+BLOCKED.** The `66ab7db` red is genuinely failing-first; registration is
+present; the check is after FIFO acquisition; the named window, seven acting
+verbs, individual dialog/crash/origin/serial refusals and strict nested
+expectation grammar are covered; and the 7012 test-harness blocker is closed
+with bounded waits plus unconditional release/join. BlackRobin's clean private
+Xvfb gate passed 294/294 steps and 1075/1077 tests, with two skips. Exact diff
+checking also passed.
+
+Three blockers remain:
+
+1. **BLOCKER (post-approval dispatch after cancellation/deadline):**
+   `engine.zig:402-409` computes the remaining command time once, gives that
+   whole value to `checkExpect`/`listWindows`, then gives the unchanged value
+   to the action. It performs no cancellation check between snapshot and
+   dispatch. If Stop/recover cancels while `listWindows` is delayed, a
+   matching snapshot can return and the side effect still dispatch; only
+   afterwards does `executeWith` rewrite the reply to cancelled. If the
+   snapshot consumes all or most of the budget, the action likewise starts
+   after the absolute deadline with a fresh stale timeout. That violates the
+   plan's rule that an over-budget phase starts no later phase. Use one
+   absolute deadline, recheck cancellation after phase A, refuse before any
+   dispatch when no time remains, and pass only the recomputed remainder to
+   the action. Reds must cover cancel-during-held-list, full-budget snapshot
+   and partial-budget timeout propagation, all with zero page operations
+   where dispatch is forbidden.
+2. **BLOCKER (public contract exceeds this implementation):**
+   `docs/how-to-automate.md:841-859` says the action cannot run on a page that
+   changed after approval and invites external clients to rely on it. This
+   commit implements only a registry snapshot. A document may commit between
+   `listWindows` returning and the separate eval/navigation GTK job. The plan
+   assigns the document/element-token in-task guard to later S8a work. Until
+   that lands, keep this wire explicitly internal/experimental or document
+   only its snapshot semantics; do not publish the later atomic guarantee.
+   The later green needs the after-snapshot/before-event mutation red.
+3. **BLOCKER-for-tests (exactly once):** the positive test named “acts once”
+   accepts `ops() >= 1` (`automation_expect_phase_a_test.zig:228-239`), so a
+   duplicate approved click/fill/type/press/select/navigate/reload mutant
+   survives. Assert exactly one expected operation and zero of every
+   unrelated operation for each verb.
+
+**SHOULD-for-tests:** pin error precedence with combined states (dialog over
+crash, crash over origin, origin over serial), and directly table-test
+`originOf` for lowercase scheme/host, explicit port, userinfo removal,
+`file://`, opaque/no-authority `null`, and IPv6. No independent full gate was
+started because BlueBeaver owns the shared slot. Findings mailed to
+BlackRobin in Agent Mail 7061.
