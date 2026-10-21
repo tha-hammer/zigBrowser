@@ -91,6 +91,10 @@
     },
     {
       "role": "agent-host-package",
+      "path": "Frameworks/agent-host/zb_agent_host/proc_darwin.py"
+    },
+    {
+      "role": "agent-host-package",
       "path": "Frameworks/agent-host/zb_agent_host/provision.py"
     },
     {

@@ -28,7 +28,7 @@ import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from . import options, token
+from . import options, proc_darwin, token
 
 PROBE_TIMEOUT_S = 30
 PLATFORM = sys.platform
@@ -105,6 +105,38 @@ def _descendants_running(exe):
     return found
 
 
+def _cli_env_clean(cli, probe_token, canary):
+    """True when no running CLI descendant holds the probe token in its environment.
+
+    Linux (unchanged): /proc/<pid>/environ of each descendant running `cli`; at least one must be read.
+    macOS (BlueBeaver 6977; BlackRobin 6983): no /proc, so proc_darwin's libproc walk and KERN_PROCARGS2. Every CLI
+    descendant must be read and parsed, its environment must hold `canary` (the exact ANTHROPIC_BASE_URL entry the
+    CLI always inherits: an environment the OS hid, as macOS 15.3 does for platform binaries, is never "clean"),
+    and the token must appear nowhere in its buffer, argv included. Anything unreadable is not clean."""
+    exe = os.path.realpath(cli)
+    token_bytes = probe_token.encode()
+    if PLATFORM == "darwin":
+        pids = proc_darwin.descendants_running(exe, os.getpid())
+        if not pids:
+            return False
+        for pid in pids:
+            try:
+                raw, _argv, env = proc_darwin.environ_of(pid)
+            except OSError:
+                return False
+            if canary not in env or token_bytes in raw:
+                return False
+        return True
+    environs = []
+    for pid in _descendants_running(exe):
+        try:
+            with open(f"/proc/{pid}/environ", "rb") as f:
+                environs.append(f.read())
+        except OSError:
+            pass
+    return bool(environs) and all(token_bytes not in e for e in environs)
+
+
 class _ProbeServer:
     """A one-shot loopback Messages API: records the bearer it receives and
     whether any running CLI process holds the probe token in its environment."""
@@ -123,14 +155,8 @@ class _ProbeServer:
                 body = json.loads(self.rfile.read(length) or b"{}")
                 if self.path.split("?", 1)[0] == "/v1/messages" and server.bearer is None:
                     server.bearer = self.headers.get("authorization", "")
-                    environs = []
-                    for pid in _descendants_running(os.path.realpath(cli)):
-                        try:
-                            with open(f"/proc/{pid}/environ", "rb") as f:
-                                environs.append(f.read())
-                        except OSError:
-                            pass
-                    server.cli_env_clean = bool(environs) and all(probe_token.encode() not in e for e in environs)
+                    server.cli_env_clean = _cli_env_clean(cli, probe_token,
+                                                          b"ANTHROPIC_BASE_URL=" + server.url.encode())
                 if not body.get("stream"):
                     self._reply(200, "application/json", json.dumps({"type": "message", "content": []}).encode())
                     return

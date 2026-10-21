@@ -80,7 +80,9 @@ class Darwin(Base):
         self.assertIs(self.verdict({7: ([b"/opt/claude"], [])}), False)
 
     def test_an_environment_without_the_exact_canary_is_not_clean(self):
-        for env in ([b"PATH=/usr/bin"], [b"ANTHROPIC_BASE_URL=http://127.0.0.1:1"], [CANARY + b"/"]):
+        # Exact entry, never a substring (BlackRobin 6998): a longer port with the same prefix, a longer key, a path.
+        for env in ([b"PATH=/usr/bin"], [b"ANTHROPIC_BASE_URL=http://127.0.0.1:1"], [CANARY + b"/"], [CANARY + b"0"],
+                    [b"X" + CANARY]):
             with self.subTest(env=env):
                 self.assertIs(self.verdict({7: ([b"/opt/claude"], env)}), False)
 

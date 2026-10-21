@@ -8,6 +8,7 @@ three OS calls injected; tests/mac/ms5_r1_env_gate.sh drives the real calls on b
   "apple" strings follow it). A buffer too short for argc, an exec path or argv that runs off the end, or a negative
   argc is None: never a guess.
 - environ_of(pid) -> (raw, argv, env), raising OSError when the read fails or the buffer does not parse.
+- importing it loads no library (ctypes.CDLL and find_library run only on the first real call).
 - descendants_running(exe, root): every descendant of `root` (a breadth-first walk of children()) whose path() is
   `exe`; a process that is not a descendant is never listed, and a cycle in a corrupt table never loops.
 
@@ -41,6 +42,19 @@ class Base(unittest.TestCase):
     def setUp(self):
         if proc_darwin is None:
             self.fail("agent/host/zb_agent_host/proc_darwin.py is missing (6977)")
+
+
+class ImportIsInert(Base):
+    def test_importing_loads_no_library(self):
+        # route_probe imports proc_darwin on every platform (BlackRobin 6998): the import itself must load nothing.
+        import ctypes
+        import ctypes.util
+        import importlib
+
+        with mock.patch.object(ctypes, "CDLL", side_effect=AssertionError("CDLL at import")), \
+                mock.patch.object(ctypes.util, "find_library", side_effect=AssertionError("find_library at import")):
+            importlib.reload(proc_darwin)
+        importlib.reload(proc_darwin)
 
 
 class Parse(Base):
