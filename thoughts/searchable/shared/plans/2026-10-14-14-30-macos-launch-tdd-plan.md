@@ -1604,23 +1604,35 @@ error (measured both arches, JadeBeacon 70444e5). `localhost` resolves to **both
 so the generated rule `(allow network-outbound (remote tcp "localhost:<port>"))` unavoidably permits
 `[::1]:<port>` as well as `127.0.0.1:<port>` — Seatbelt cannot express a v4-only grant. Rather than
 leave the gate unmet, the **accepted contract is the `localhost:<port>` grant (loopback TCP, both
-families)**, on the strict condition that the MS6 gate proves the v6 half reaches nothing and the
-rule is otherwise exact. The reachable egress endpoint is therefore `127.0.0.1:<port>` and only that.
+families)**, on the strict condition that **the app OWNS every endpoint the token admits** and the rule
+is otherwise exact. "Nothing listens on `::1` today" is NOT the boundary (RoseCat 7071): a current
+`CONNECT-REFUSED` to `::1` only proves no listener happened to exist; an unrelated local process could
+bind the same numeric port on IPv6 and then sandboxed code could reach it. The hole closes only by
+**durable dual-family ownership** of the port.
 
 The gate MUST prove, both arches:
-1. **netd binds only `127.0.0.1`** — one listening TCP socket, IPv4 loopback, never `::1`
-   (`tests/mac/ms6_netd_darwin_gate.sh`, the `lsof -iTCP -sTCP:LISTEN` assertion).
-2. **a connect to `[::1]:<port>` is REFUSED** — policy permits the v6 loopback, but because (1) binds
-   no v6 listener there is nothing to reach, so the CLI gets `ECONNREFUSED`, never a completed
-   connection (`tests/mac/ms6_4_egress_test.sh`, the `::1` row = `CONNECT-REFUSED`).
-3. **every other port and UDP are DENIED by policy** — a live decoy loopback port, a public IP, UDP at
-   the allowed port, and the IPv4-mapped IPv6 form all `CONNECT-DENIED` (EPERM); the hook profile denies
-   the egress port while keeping its two bridges (`tests/mac/ms6_4_egress_test.sh`).
+1. **The app reserves BOTH families of the port, fail-closed** — the port owner (netd `serve_tcp` for
+   egress; setup `probe_r1` for the R1 listener; BlueBeaver, bead zigBrowser-v9f) binds its
+   `127.0.0.1:<port>` v4 proxy listener AND, for the session/probe lifetime, an `AF_INET6`,
+   `IPV6_V6ONLY=1`, **non-listening, no-reuse** reservation on `[::1]:<same port>`. If either cannot be
+   held (e.g. a pre-planted `::1:<port>` listener → `EADDRINUSE`), it **fails closed**: netd exits 2 with
+   no ready line and the browser treats it as the existing network failure; `probe_r1` returns no R1; the
+   profile is never published. Proven in `tests/mac/ms6_netd_darwin_gate.sh` / `test_netd_darwin` and
+   `tests/mac/ms6_r1_kernel_gate.sh` / `test_setup_darwin_r1` (pre-planted-`::1` fail-closed; second bind
+   EADDRINUSE; reservation lifetime == v4 listener; lsof shows `[::1]:<port>` not-LISTEN + no reuse flags).
+2. **`[::1]:<port>` reaches only the app's reservation** — because (1) holds a non-listening reservation
+   there, a sandbox connect to `[::1]:<port>` gets the app-owned `CONNECT-REFUSED`, never a foreign
+   listener (`tests/mac/ms6_4_egress_test.sh`, the `::1` row). The reachable egress endpoint stays
+   `127.0.0.1:<port>` and only that.
+3. **every OTHER endpoint the token could be mistaken to admit is DENIED by policy** — another v4 port AND
+   another v6 port, UDP v4 AND UDP v6 at the allowed port, the IPv4-mapped IPv6 form, and a public IP all
+   `CONNECT-DENIED` (EPERM, not merely refused); the hook profile denies the egress port while keeping its
+   two bridges (`tests/mac/ms6_4_egress_test.sh`).
 
-If netd ever bound `::1` (breaking (1)), or if a connect to `[::1]:<port>` completed (breaking (2)), or
-if any other port/UDP were permitted (breaking (3)), the contract is violated and MS6's VM fallback
-applies. "Nothing is listening on `::1` today" is NOT the boundary — condition (1) is: netd's v4-only
-bind is what keeps the permitted-but-reachless v6 grant harmless, and the gate pins it.
+If the dual-family reservation cannot be held (breaking (1)), or a connect to `[::1]:<port>` ever reached a
+foreign listener (breaking (2)), or any other port/UDP were policy-permitted (breaking (3)), the contract
+is violated and MS6's VM fallback applies. The durability lives in the app's reservation (1); the Seatbelt
+token merely must admit nothing but the owned endpoints (2, 3).
 
 **Shared capability framing:** the endpoint and policy are the backend's to supply. **Linux**
 implements the capability with a **private network namespace, fixed proxy/bridge ports, and relays**

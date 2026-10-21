@@ -142,9 +142,16 @@ probe cli.sb 1.1.1.1   443      tcp CONNECT-DENIED "cli is DENIED a public IP"
 #    v4-only form (the 127.0.0.1 literal is a parse error), so ::1:<port> TCP is permitted by POLICY — but it is
 #    unreachable (netd and the bridges bind 127.0.0.1 only, so nothing listens on ::1): REFUSED proves the CLI
 #    reaches no v6 endpoint. This is the enforced shape: loopback TCP:<port>, v4-reachable only.
-probe cli.sb 127.0.0.1        "$EGRESS" udp CONNECT-DENIED  "cli is DENIED UDP at the egress port"
+probe cli.sb 127.0.0.1        "$EGRESS" udp CONNECT-DENIED  "cli is DENIED UDP v4 at the egress port"
+probe cli.sb ::1              "$EGRESS" udp CONNECT-DENIED  "cli is DENIED UDP v6 at the egress port"
 probe cli.sb ::ffff:127.0.0.1 "$EGRESS" tcp CONNECT-DENIED  "cli is DENIED IPv4-mapped IPv6 at the egress port"
-probe cli.sb ::1              "$EGRESS" tcp CONNECT-REFUSED "cli reaches no v6 listener at the egress port (loopback-TCP grant, v4-only reachable)"
+probe cli.sb 127.0.0.1        "$DECOY"  tcp CONNECT-DENIED  "cli is DENIED another v4 port (policy, not just refused)"
+probe cli.sb ::1              "$DECOY"  tcp CONNECT-DENIED  "cli is DENIED another v6 port (policy, not just refused)"
+# The ONE permitted-but-reachless endpoint: ::1 at the ALLOWED port. Policy admits loopback TCP (both families;
+# Seatbelt has no v4-only token), so this is not DENIED — but it must reach nothing. Durability is netd's job:
+# netd RESERVES [::1]:<port> (IPV6_V6ONLY, non-listening) and fails startup if it can't, so a squatter can never
+# own it (RoseCat 7071; BlueBeaver bead zigBrowser-v9f, tested in the netd gate). Here, with no listener, REFUSED.
+probe cli.sb ::1              "$EGRESS" tcp CONNECT-REFUSED "cli reaches no v6 listener at the egress port (netd reserves it; v4-only reachable)"
 
 # HOOK profile: the egress port is denied; the bridges still work.
 probe hook.sb 127.0.0.1 "$EGRESS" tcp CONNECT-DENIED "hook is DENIED the egress proxy port"
