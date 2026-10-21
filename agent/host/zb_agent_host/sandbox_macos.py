@@ -29,6 +29,7 @@ land). Pure stdlib, so it unit-tests on Linux; the eventual both-Mac `sandbox-ex
 import contextlib
 import os
 import secrets
+import shutil
 import signal
 import stat
 import tempfile
@@ -282,19 +283,35 @@ def _materialize_profile(profile_text):
     remove it after the spawn has consumed the profile.
     """
     data = profile_text.encode("utf-8")
-    d = tempfile.mkdtemp(prefix="zb-seatbelt-")  # mode 0700, unique per launch
-    path = os.path.join(d, "agent-cli.sb")
-    fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW, 0o600)
+    d = tempfile.mkdtemp(prefix=_PROFILE_DIR_PREFIX)  # mode 0700, unique per launch
     try:
-        if os.write(fd, data) != len(data):
-            raise OSError("short write materializing the Seatbelt profile")
-        os.fchmod(fd, 0o400)
-        st = os.fstat(fd)
-        if not stat.S_ISREG(st.st_mode) or stat.S_IMODE(st.st_mode) != 0o400 or st.st_size != len(data):
-            raise OSError("Seatbelt profile failed its post-write fd check (mode/size/type)")
-    finally:
-        os.close(fd)
+        path = os.path.join(d, "agent-cli.sb")
+        fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW, 0o600)
+        try:
+            if os.write(fd, data) != len(data):
+                raise OSError("short write materializing the Seatbelt profile")
+            os.fchmod(fd, 0o400)
+            st = os.fstat(fd)
+            if not stat.S_ISREG(st.st_mode) or stat.S_IMODE(st.st_mode) != 0o400 or st.st_size != len(data):
+                raise OSError("Seatbelt profile failed its post-write fd check (mode/size/type)")
+        finally:
+            os.close(fd)
+    except BaseException:
+        # Any failure (open/write/chmod/fstat) leaves NO directory or partial artifact behind (RoseCat 6984).
+        _remove_profile_dir(d)
+        raise
     return path
+
+
+_PROFILE_DIR_PREFIX = "zb-seatbelt-"
+
+
+def _remove_profile_dir(d):
+    """Guarded removal of a profile's OWN temp dir: only a `zb-seatbelt-*` directory directly under the
+    system temp dir is ever removed (never an empty/parent/foreign path — feedback_guard_delete_paths)."""
+    if (d and os.path.basename(d).startswith(_PROFILE_DIR_PREFIX)
+            and os.path.dirname(d) == tempfile.gettempdir()):  # exactly where mkdtemp placed it
+        shutil.rmtree(d, ignore_errors=True)
 
 
 # The macOS LaunchSpec is NOT production-consumable yet (RoseCat 6972 #3): the profile grants broad file-read*
@@ -367,9 +384,11 @@ class MacSeatbeltBackend:
         """The CLI/helper launch as a ``sandbox-exec`` prefix + the semantic ``LaunchSpec`` (MS0 rev 6).
 
         Unlike the Linux bwrap argv, the macOS argv runs the command under a generated Seatbelt profile:
-        ``/usr/bin/sandbox-exec -f <home.runtime>/agent-cli.sb -D SCRATCHPAD=<scratch>`` (the caller appends
-        the command; sandbox-exec takes it directly, no ``--``). The profile is :func:`render_profile`'s CLI
-        output, written to the home's runtime each launch; the scratchpad is bound as the literal ``-D`` value
+        ``/usr/bin/sandbox-exec -f <profile> -D SCRATCHPAD=<scratch>`` (the caller appends the command;
+        sandbox-exec takes it directly, no ``--``). ``<profile>`` is :func:`render_profile`'s CLI output
+        written by :func:`_materialize_profile` to a UNIQUE read-only file in its own 0700 temp dir (never the
+        published ``current/runtime``); production goes through the :meth:`launch` LEASE, which owns that dir
+        and removes it after the spawn. The scratchpad is bound as the literal ``-D`` value
         (never interpolated into source). The semantic fields state the backend-neutral meaning: macOS has no
         namespaces (``unshare=()`` — Seatbelt is the isolation), ``network``/``lifetime``/``channel`` are this
         backend's, and ``mounts`` is the enforced write-grant contract (the scratchpad). The Linux-only kwargs
@@ -393,6 +412,20 @@ class MacSeatbeltBackend:
 
     def login_launch_spec(self, home, *, seccomp_fd=None, ro_paths=(), net_dir=None):
         """The one-shot sign-in's launch: :meth:`launch_spec` carrying :meth:`login_network` (egress only, no
-        bridges), which renders the egress-only sign-in profile."""
+        bridges), which renders the egress-only sign-in profile. Production uses :meth:`launch` (the lease)."""
         return self.launch_spec(home, seccomp_fd=seccomp_fd, ro_paths=ro_paths, net_dir=net_dir,
                                 network=self.login_network())
+
+    @contextlib.contextmanager
+    def launch(self, home, *, seccomp_fd=None, ro_paths=(), net_dir=None, network=None):
+        """The production launch LEASE (RoseCat 6984): yields the :class:`sandbox.LaunchSpec` and OWNS the
+        materialized profile's 0700 temp directory, GUARD-removing it after the caller has spawned (so the
+        spawn has consumed the ``-f`` profile). A bare :meth:`launch_spec`/:meth:`login_launch_spec` leaves
+        the dir for the caller; the production chain goes through this lease so nothing leaks. Pass
+        ``network=login_network()`` for the sign-in.
+        """
+        spec = self.launch_spec(home, seccomp_fd=seccomp_fd, ro_paths=ro_paths, net_dir=net_dir, network=network)
+        try:
+            yield spec
+        finally:
+            _remove_profile_dir(os.path.dirname(spec.argv[2]))

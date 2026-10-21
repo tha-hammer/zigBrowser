@@ -128,10 +128,9 @@ class NoUntrustedInterpolation(unittest.TestCase):
         # A path cannot be injected because render_profile does not accept one; it is bound via dparams/-D.
         import inspect
         params = set(inspect.signature(sandbox_macos.render_profile).parameters)
-        self.assertNotIn("scratchpad", params, "render_profile must not take a path (scratchpad is a -D param)")
-        self.assertNotIn("workspace", params, "render_profile must not take a path (workspace is never in source)")
-        self.assertFalse({p for p in params if "path" in p or "dir" in p},
-                         "render_profile must take no path/dir argument — no value is interpolated into source")
+        self.assertEqual(params, {"egress", "bridges", "is_hook", "is_login"},
+                         "render_profile's signature is EXACTLY these — no untrusted path/string channel may be "
+                         "added (RoseCat 6989: a weaker name-filter would let a future `source`/`root`/`home` slip in)")
 
     def test_dparams_validates_absolute_scratchpad(self):
         self.assertEqual(sandbox_macos.dparams(scratchpad="/zb/dist/current/state/scratchpad"),
@@ -431,6 +430,28 @@ class MacSeatbeltBackendLaunchSpec(unittest.TestCase):
         # RoseCat 6972 #3: broad reads mean mounts is not the truthful per-path contract; not wired until
         # read curation flips this.
         self.assertIs(sandbox_macos.LAUNCH_SPEC_CONSUMABLE, False)
+
+    def test_materialize_cleans_up_on_a_failure(self):
+        # RoseCat 6984: an open/write/chmod/fstat failure must leave NO dir or partial artifact behind.
+        base = tempfile.gettempdir()
+        seat = lambda: {n for n in os.listdir(base) if n.startswith("zb-seatbelt-")}
+        before = seat()
+        orig = sandbox_macos.os.fchmod
+        sandbox_macos.os.fchmod = lambda *a, **k: (_ for _ in ()).throw(OSError("injected chmod failure"))
+        try:
+            with self.assertRaises(OSError):
+                sandbox_macos._materialize_profile("(version 1)\n(deny default)\n")
+        finally:
+            sandbox_macos.os.fchmod = orig
+        self.assertEqual(seat() - before, set(), "a failed materialize must leave no zb-seatbelt- directory")
+
+    def test_launch_lease_removes_the_profile_dir_on_exit(self):
+        # RoseCat 6984: the production lease owns the temp dir and removes it after the spawn consumes it.
+        with self.backend.launch(self.home) as spec:
+            d = os.path.dirname(spec.argv[2])
+            self.assertTrue(os.path.isdir(d), "the profile dir exists during the lease")
+            self.assertTrue(os.path.isfile(spec.argv[2]), "the profile file exists during the lease")
+        self.assertFalse(os.path.exists(d), "the lease must remove the profile dir on exit")
 
     def test_login_launch_spec_carries_login_network_and_an_egress_only_profile(self):
         spec = self.backend.login_launch_spec(self.home)
