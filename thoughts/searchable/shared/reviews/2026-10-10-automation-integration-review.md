@@ -21428,3 +21428,106 @@ BlackRobin reported the focused exact-commit automation set green at 32/32
 steps and 375/375 tests; their clean aggregate gate still owned the shared slot
 at review time, so no competing gate was started. Finding mailed in Agent Mail
 7090.
+
+## S8a phase-A stop/deadline collision (`8b1fc54`)
+
+Reviewed exact test-only commit `8b1fc54` on 2026-10-21. **Verdict:
+APPROVED.** It closes the remaining test hold on `04d4499` and `abd043e`.
+The registered fifth case uses a 300 ms verb budget, holds the production
+window read for longer than that budget, cancels through queue shutdown, then
+releases the read with a load-serial mismatch. It requires -32012, no mismatch
+reason and zero page operations.
+
+The apparently surviving inner deadline-first mutant is observationally
+equivalent for ordinary router verbs: after `executeRun`,
+`Engine.executeWith` replaces any non-cancel failure with cancellation while
+the run's cancel flag is set (`engine.zig:352-359`), before root telemetry is
+recorded. The new collision case fails when that production rewrite is
+disabled, proving the exact stop/deadline/refusal collision is reached. This
+equivalence does not apply to external flow handlers, so their separate
+Phase-A collision red remains necessary.
+
+Cumulative verdict: `04d4499`, `abd043e` and `8b1fc54` are **APPROVED**.
+Verdict mailed to BlackRobin in Agent Mail 7096. No aggregate gate was needed
+for the small registered test-only follow-up.
+
+## Darwin dual-family endpoint ownership (`a597309`, `10cfae2`)
+
+Reviewed the exact red and green commits on 2026-10-21. **Verdict: `a597309`
+BLOCKED-for-tests; `10cfae2` is directionally correct production code but the
+commit/range remains BLOCKED.** The implementation binds IPv4 first, then a
+Darwin-only `AF_INET6` socket with `IPV6_V6ONLY=1` to `::1` at the same port,
+without listen or reuse, and holds both through the netd/setup listener
+lifetime. Reservation failure is fail-closed, descriptors are non-inheritable
+and close in `finally`, and Linux behavior is unchanged. The focused red
+reproduced locally with 15 failures in the netd suite and 2/2 failures in the
+setup suite; the green passed 5/5 and 2/2 respectively.
+
+Two blockers remain:
+
+1. **BLOCKER-for-tests (the exact reservation shape is not pinned):** in a
+   clean export of `10cfae2`, removing `IPV6_V6ONLY` from both production
+   paths left both suites fully green. Restoring that option and changing only
+   setup's reservation to `listen(1)` also left its suite green. The tests
+   prove collision/lifetime behavior but do not observe the committed
+   `AF_INET6`, `::1`, `V6ONLY=1`, `SO_ACCEPTCONN=0`, no-reuse,
+   non-inheritable socket shape. Add direct observation of the
+   production-created sockets and mutation-proof both cases.
+2. **BLOCKER (the authoritative contract and integrated test claim the wrong
+   kernel outcome):** the plan and `ms6_4_egress_test.sh` still require
+   `CONNECT-REFUSED` and say nothing listens, while the two-Mac evidence for a
+   bound, non-listening `::1` socket is a timeout/drop. The invariant should be
+   no completed connection (`reaches nothing`), with the supported-host row
+   reporting the observed timeout. Align the plan, shell oracle and netd
+   comment without weakening fail-closed classification.
+
+The R1 Mac driver reconstructs a reservation in test code rather than driving
+production setup's Darwin path. That is acceptable only for this scoped slice;
+MS6.6(B), full production-on-Mac closure and `seatbelt_ready` remain open.
+Findings mailed to BlueBeaver, cc JadeBeacon, in Agent Mail 7097. No aggregate
+gate was started.
+
+## S8a social-flow phases A-C red (`2f8a186`)
+
+Reviewed exact test-only commit `2f8a186` on 2026-10-21. **Verdict:
+BLOCKED-for-tests.** Its existing cases usefully pin Phase-A origin, serial,
+dialog and crash refusals before pacing/input; exact approved/committed URL;
+serial changes before the first mutation and between edits; zero pacing on a
+refusal; and the flow-specific stop/deadline/refusal order. HEAD being 1/10 is
+credible for this intentionally unregistered red. It does not yet cover the
+full contract it claims:
+
+1. **BLOCKER-for-tests (Phase C has no isolated-world document token):** the
+   `Windowed` fake and both superseding-navigation tests model only native
+   `WindowInfo.load_serial` (`automation_expect_flow_test.zig:13-16,327-364`).
+   Plan decision 2 requires Phase C, inside the ticket, to capture both the new
+   serial and `automation.js`'s per-document token. A green that never asks the
+   isolated world for that token would pass. Add a red that changes the token
+   while URL and native serial remain approved and requires -32015 before
+   input. Per-event token guards may remain the later slice; token capture may
+   not.
+2. **BLOCKER-for-tests (Instagram DM is absent):** the test named “message and
+   DM” calls only `linkedin.message` (`:367-380`). The production option
+   allowlists for LinkedIn message and Instagram DM are separate, and neither
+   parent accepts `options` today. Add an actual `instagram.dm` case through
+   its parser.
+3. **BLOCKER-for-tests (the production server/queue edge is bypassed):**
+   `Harness.call` invokes `social_flow_routes.handle` via
+   `Engine.executeExternal` directly (`:221-239`). It never drives
+   `automation_server.handleSocialFlow`, JSON `window_id` extraction,
+   `targetPort`, queue acquisition/recovering or the server's bound-window
+   handoff, although the proposed green changes that server code. Add a
+   registered server-path test with an explicit named window, a held prior
+   ticket proving Phase A occurs after acquisition, -32014 recovering and the
+   no-window case.
+4. **BLOCKER-for-tests (Phase B proves only wrong-URL refusal):** the sole
+   Phase-B case (`:298-313`) kills a wrong navigation target but not a mutant
+   that permits an action, reload or second navigation before Phase C. Add a
+   seam/case that attempts such an operation and requires -32015 with zero
+   page-visible action.
+
+**SHOULD:** complete the distinct social-flow grammar table with non-object
+`expect`, missing/mistyped `origin` and missing/mistyped `load_serial`, through
+both platform option parsers. The current malformed table covers only URL and
+an unknown key. Findings mailed to BlackRobin in Agent Mail 7098. No full gate
+was run for an intentionally red, unregistered test commit.
