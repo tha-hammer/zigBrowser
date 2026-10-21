@@ -104,7 +104,9 @@ class NoUntrustedInterpolation(unittest.TestCase):
     def test_dparams_validates_absolute_scratchpad(self):
         self.assertEqual(sandbox_macos.dparams(scratchpad="/zb/dist/current/state/scratchpad"),
                          {"SCRATCHPAD": "/zb/dist/current/state/scratchpad"})
-        for bad in ("relative/path", "", 'has"quote', None):
+        # RoseCat 6939 #1: the scratchpad is the SOLE write grant, so root / aliases that resolve to root or
+        # elsewhere must be refused, or the write grant widens.
+        for bad in ("relative/path", "", 'has"quote', None, "/", "/tmp/..", "/a/../b", "/tmp/", "/a/./b", "//tmp"):
             with self.assertRaises(ValueError):
                 sandbox_macos.dparams(scratchpad=bad)
 
@@ -134,10 +136,24 @@ class NetworkCapabilityValidated(unittest.TestCase):
                 sandbox_macos.render_profile(egress=EGRESS, bridges=(bad, 31337), is_hook=False)
 
     def test_non_loopback_host_refused(self):
-        for host in ("evil.example", "0.0.0.0", '127.0.0.1"))\n(allow network*'):
+        # RoseCat 6939 #3: the egress host must be EXACTLY 127.0.0.1 — "localhost" (a name) is refused too.
+        for host in ("localhost", "evil.example", "0.0.0.0", '127.0.0.1"))\n(allow network*'):
             with self.assertRaises(ValueError):
                 sandbox_macos.render_profile(egress=sandbox.Endpoint(host, 52346),
                                              bridges=BRIDGES, is_hook=False)
+
+    def test_bridges_must_be_exactly_the_two_canonical_ports(self):
+        # RoseCat 6939 #3: missing, extra, wrong, or duplicate bridges are refused (plan :1581-1593).
+        for bad in ((51091,), (31337,), (51091, 31337, 4444), (51091, 9999), (51091, 51091), (31337, 51091, 31337)):
+            for is_hook, egress in ((False, EGRESS), (True, None)):
+                with self.assertRaises(ValueError):
+                    sandbox_macos.render_profile(egress=egress, bridges=bad, is_hook=is_hook)
+
+    def test_is_hook_must_be_a_bool(self):
+        # RoseCat 6939 #2: a non-bool (0 is falsy -> would wrongly get egress) is refused.
+        for bad in (0, 1, None, "true", "", []):
+            with self.assertRaises(ValueError):
+                sandbox_macos.render_profile(egress=EGRESS, bridges=BRIDGES, is_hook=bad)
 
     def test_duplicate_endpoints_refused(self):
         with self.assertRaises(ValueError):

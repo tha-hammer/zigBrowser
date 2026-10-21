@@ -26,7 +26,12 @@ and the tiny curated mach-lookup are a separate later MS6 increment (do not wire
 land). Pure stdlib, so it unit-tests on Linux; the eventual both-Mac `sandbox-exec` gate still applies.
 """
 
-_LOOPBACK_HOSTS = ("127.0.0.1", "localhost")
+import os
+
+# The egress endpoint's host is EXACTLY the loopback literal (plan :1581-1593) — not "localhost", not a
+# resolvable name. The bridges are EXACTLY the two named loopback ports; missing/extra/wrong is refused.
+_LOOPBACK_HOST = "127.0.0.1"
+CANONICAL_BRIDGES = (51091, 31337)
 _CHAR_DEVICES = ("/dev/null", "/dev/zero", "/dev/dtracehelper", "/dev/tty", "/dev/urandom", "/dev/random")
 # Curated sysctl-read allowlist — never a blanket (allow sysctl-read), which (measured, MS6.1) re-opens
 # another process's kern.procargs2 even with process-info denied.
@@ -56,23 +61,28 @@ def _validate_port(port):
 
 
 def _validate_host(host):
-    if host not in _LOOPBACK_HOSTS:
-        raise ValueError(f"endpoint host must be loopback {_LOOPBACK_HOSTS}, got {host!r}")
+    if host != _LOOPBACK_HOST:
+        raise ValueError(f"endpoint host must be exactly {_LOOPBACK_HOST!r} (not a name like 'localhost'), got {host!r}")
     return host
 
 
 def _endpoints(egress, bridges, is_hook):
     """The validated, de-duplicated loopback endpoints this profile may reach, as 'host:port' strings.
 
-    Raises ValueError on an empty or malformed capability (never widens to all-outbound).
+    Raises ValueError on an empty or malformed capability (never widens to all-outbound): the egress host
+    must be exactly 127.0.0.1 with an integer port 1..65535, and the bridges must be EXACTLY the two
+    canonical ports (missing/extra/wrong refused, plan :1581-1593).
     """
+    if type(is_hook) is not bool:
+        raise ValueError(f"is_hook must be a bool, got {type(is_hook).__name__} {is_hook!r}")
     bridges = tuple(bridges)
     if is_hook and egress is not None:
         raise ValueError("a hook profile must not carry an egress endpoint (rev 16.2 §3c: bridges only)")
     if not is_hook and egress is None:
         raise ValueError("a cli/helper profile must carry an egress endpoint")
-    if not bridges:
-        raise ValueError("empty bridge policy: a profile must name at least the bridge ports (no blanket allow)")
+    if set(bridges) != set(CANONICAL_BRIDGES) or len(bridges) != len(CANONICAL_BRIDGES):
+        raise ValueError(f"bridges must be exactly {CANONICAL_BRIDGES} (missing/extra/wrong/duplicate refused), "
+                         f"got {bridges}")
 
     eps = []
     seen = set()
@@ -87,10 +97,10 @@ def _endpoints(egress, bridges, is_hook):
         eps.append(f"{host}:{port}")
 
     if not is_hook:
-        # egress is an object with .host/.port (sandbox.Endpoint); validated above.
+        # egress is an object with .host/.port (sandbox.Endpoint); validated in add().
         add(getattr(egress, "host"), getattr(egress, "port"))
     for port in bridges:
-        add("127.0.0.1", port)  # the backend's bridges are loopback by contract
+        add(_LOOPBACK_HOST, port)  # the backend's bridges are loopback by contract
     return eps
 
 
@@ -136,8 +146,20 @@ def render_profile(*, egress, bridges, is_hook):
 
 
 def dparams(*, scratchpad):
-    """The validated ``-D`` bindings for a launch. ``scratchpad`` must be a non-empty absolute path (its
-    value is bound literally by sandbox-exec, never parsed as profile source, so it cannot inject a rule)."""
+    """The validated ``-D`` bindings for a launch. ``scratchpad`` must be a **canonical, non-root absolute
+    path**: bound to ``(subpath (param "SCRATCHPAD"))`` it is the only write grant, so the filesystem root
+    or an alias that resolves to it (``/``, ``/tmp/..``, ``/a/../b``, trailing/double slashes) must be
+    refused — otherwise the sole write grant widens (RoseCat 6939 #1). The value is bound literally by
+    sandbox-exec (never parsed as profile source), so it cannot inject a rule. The backend's launch_spec
+    binds the exact ``home.scratchpad`` here, which is the stronger check at the call site."""
     if not isinstance(scratchpad, str) or not scratchpad.startswith("/"):
         raise ValueError(f"SCRATCHPAD must be an absolute path, got {scratchpad!r}")
-    return {SCRATCHPAD_PARAM: scratchpad}
+    if "//" in scratchpad:  # POSIX normpath keeps a leading '//', so reject any double slash explicitly
+        raise ValueError(f"SCRATCHPAD must not contain '//': {scratchpad!r}")
+    norm = os.path.normpath(scratchpad)
+    if norm != scratchpad:
+        raise ValueError(f"SCRATCHPAD must be canonical (no '.'/'..'/trailing or double slash): "
+                         f"{scratchpad!r} normalizes to {norm!r}")
+    if norm == "/" or os.path.dirname(norm) == norm:
+        raise ValueError(f"SCRATCHPAD must not be the filesystem root: {scratchpad!r}")
+    return {SCRATCHPAD_PARAM: norm}
