@@ -24898,3 +24898,109 @@ The startup scan, PID/detail rows and command/cwd bytes need named caps. The
 frontmatter/revision history also still says rev 17 while this section calls
 itself rev 20. Docs-only `git diff --check` passed. Verdict and the direct
 answers to JadeBeacon's two design questions were sent in Agent Mail 7327.
+
+## WS0 final acceptance and root-reporting follow-up (`fd099e3`, `992b124`, `e1e67d4`)
+
+**WS0 / `7d85cd5` is FINAL ACCEPTED. `992b124` and `e1e67d4` are APPROVED
+cumulative fixes. No repeat host run is required for `e1e67d4`.** The valid
+owner-watched evidence is:
+
+- the corrected locked-desktop leg from a clean `fd099e3` export at 14:37,
+  where byte-16 `SessionFlags` discriminated `locked=true`, `session_flags=0`
+  from the earlier unlocked `locked=false`, `session_flags=1`; the earlier
+  byte-12 14:00 result remains withdrawn;
+- the exact clean `992b124` two-host `--probe-only` run, rc 0: Win11 was
+  interactive and unlocked and its snapshot was shut off; Win10 was
+  19045/22H2, reported no `zbtest` write path, reported the obsolete
+  `G:\\Users\\joshu` volume absent, accepted only the exact owner-approved
+  `K:\\` exception, and kept sshd fenced to `100.123.34.15` + `AllowUsers
+  zbtest`.
+
+Win10's observed `root:"F:\\"` did not invalidate that evidence. The plan
+explicitly makes the file server's `root` and `free_gb` non-applicable under
+the zero-write contract; identity and authority are established by the SSH
+host key, account, sshd fence, share/ACL/absence schema and listener/firewall
+checks. `python:null` is likewise expected on the no-install file server: its
+WindowsApps alias is not an installed interpreter. Therefore **do not add a
+Win10 exact-root acceptance pin.**
+
+`e1e67d4` fixes the inaccurate diagnostic at its source: the share loop now
+uses `$shRoot`, so PowerShell's lack of block scope can no longer overwrite
+the top-level `%USERPROFILE%\\zb` `$root`. Its source oracle and VM-gated live
+oracle are correctly scoped. The exact-export focused suite passed **116/116**
+(22 live rows skipped) in a private user/PID namespace; replaying the new test
+against `992b124` fails, so the regression is causal. This reporting-only fix
+does not change any predicate that the watched run accepted.
+
+The leading `fatal: not a git repository` is a **SHOULD-for-harness**: an
+archive has no `.git`, and `cd "$(git rev-parse --show-toplevel)"` becomes a
+successful `cd ""`. The watched wrapper had already `cd`'d to the exact
+archive, so this did not redirect the run, but the gate should resolve its
+root without printing a misleading fatal diagnostic and should fail closed
+when neither an explicit root nor a Git root exists.
+
+With WS0 closed, the newest contiguous approved push-through from the current
+origin `26fdfff` is **`d827780`**. The next commit is `6c3b563`; its code is
+cumulatively repaired by approved `992b124`, but those repairs sit after the
+still-blocked `0e3595c`, so the linear prefix cannot include it yet.
+
+## MS6.5.1 Darwin lifecycle-owner plan rev 21 (`96af9ee`)
+
+**BLOCKED (docs) before its red.** Rev 21 chooses the right high-level
+boundaries—a browser-owned run root, an explicit marker, persisted creation
+provenance, fresh re-census before a user-requested stop, and fail-closed
+errors—but it does not yet make the four `3c39b9f` findings executable:
+
+1. **The marker does not traverse the production spawn topology as written.**
+   Plan `:1732-1741` treats `O_RDONLY` without `O_CLOEXEC` as sufficient for
+   helper → sandbox/CLI → hooks and says the owner's only job is to keep it
+   inherited. On Darwin, however, `zb_agent_spawn_group_io` enables
+   `POSIX_SPAWN_CLOEXEC_DEFAULT` and its public contract says the child holds
+   **exactly fds 0, 1 and 2** (`agent_spawn_posix.c:47-65`,
+   `agent_spawn_posix.h:17-24`). Python subprocesses also close descriptors by
+   default. Name a dedicated non-token descriptor/capability and every real
+   propagation seam—browser→netd, browser→helper, sandbox-exec/CLI relay,
+   nested hook and double-fork—and give each a production-chain red plus a
+   drop-the-pass-fd mutant. Also prove unrelated children do not receive it
+   and that it cannot collide with token fd 3 or the census broker. Merely
+   creating a non-CLOEXEC fd cannot satisfy this contract.
+2. **The owner record is not crash-durable or fully specified.** Lines
+   `1722-1731` say only `0600` and `O_NOFOLLOW`. Define a versioned, bounded,
+   strictly parsed schema and publish/update/remove it with a temp file,
+   `fsync`, atomic rename and parent-directory `fsync`. Add crash cuts before
+   and after directory creation, pinning, record publication and record
+   removal, plus malformed/duplicate/truncated/swapped/symlinked records.
+   Until a record is durably published, its directory can be censused and
+   warned about but never authorize a signal.
+3. **The state machine still lacks terminal filesystem semantics.** `Clean`
+   says `rmdir` even though `run.marker` remains inside; specify the no-follow
+   unlink/order and record update. `Leave them running` says only “release the
+   authority and dismisses”: decide whether the record and directory are
+   retained (which would make the next startup auto-stop a run the user chose
+   to leave) or retired, and how either choice remains safe while the process
+   still holds the marker. Define which window/session “close” owns a run,
+   what happens when the app is SIGKILLed (next-start recovery only), and the
+   exact race outcome for warning actions versus app quit.
+4. **The user setting and bounded error/UI contracts remain incomplete.**
+   `env_switch` plus a flag (`:1758-1769`) is a startup override, not the named
+   app-owned atomic persisted setting requested in `3c39b9f`. Specify its
+   store, precedence, malformed/read failure (no automatic signal), and UI
+   write path. Put explicit caps on persisted records/startup directories and
+   command/cwd bytes, state that no process details enter logs or telemetry,
+   and disable **Stop them now** whenever the fresh authority/census is
+   incomplete rather than acting on “what is known.” Define the no-main-window
+   delivery path and the required real-screen acceptance.
+5. **The gating and TDD text still contradict the safety decision.** Exact
+   commit `96af9ee` still calls the destructive `7fa8906` both-Mac gate GREEN
+   at `:1707-1713`, while `:1770-1775` says destructive Mac signals remain
+   OFF. Supersede that old result explicitly. `seatbelt_ready` proves sandbox
+   launch, not this later signal path: add the named `reaper_ready` gate that
+   keeps production signalling unreachable until its reviewed destructive
+   proof is green. The testing paragraph must name red/green files, functions,
+   exact rows and mutants for marker propagation, durable provenance/crash
+   cuts, every state transition, setting precedence, startup bounds and all
+   three warning actions; a generic child-inherits-marker probe bypasses the
+   production chain.
+
+The frontmatter and revision history also remain at rev 17 and omit revs
+19–21. This is a docs-only review; no Mac or live-browser run was performed.
