@@ -24303,3 +24303,89 @@ included. The run is expected to fail at the deliberate MS6.6(B) placeholder,
 so it cannot claim MS6 completion or set `seatbelt_ready`. This supersedes the
 remote-execution hold in Agent Mail 7250; the explicit GO was sent to
 BlueBeaver in Agent Mail 7282.
+
+The approved entry was subsequently run against exact commit `e68e3b3` on
+both Macs. `case_ms5_spawn_io.py` passed on x86_64 and arm64; the deliberate
+`case_ms6_6b_r1_chain.py` placeholder failed on both, and each aggregate
+correctly failed one case and passed one. The per-run staging trees were gone
+afterward, nothing was installed, and the reaper was not involved. This is the
+expected partial-gate evidence only; it is not MS6 completion and does not make
+`seatbelt_ready` true. Evidence received in Agent Mail 7284.
+
+## Windows publish-lock and parent-symlink follow-up (`fcb217f`)
+
+**BLOCKED; `defb5a2`/`b32f285` remain open.** The exact-export focused suite
+passes 34/34, and this commit closes the prior lock-interleaving half: the
+common lock is now acquired before generation creation and held through the
+checked current swap; GC takes the same bounded lock.
+
+The parent-symlink check is still a time-of-check/time-of-use guard rather than
+a stable directory identity. `zb_no_symlink_path` compares physical and
+logical paths, but publication subsequently fetches, locks, creates, moves and
+swaps through the original pathname. In an exact clean-export adversarial
+probe, a recording `scp` paused after validation; the verified `out` directory
+was renamed aside and replaced by a symlink to an outside directory before the
+transfer resumed. The command returned zero and published under the outside
+directory, not the held original:
+
+```text
+rc=0 outside_published=True held_published=False
+SURVIVED: parent swapped to symlink after validation redirects publication
+```
+
+Hold a stable parent identity from validation through the swap (for example a
+directory fd/cwd with relative no-follow operations plus dev/inode
+revalidation) and add this exact pause/swap/resume red. Findings were sent to
+AzureRidge with BlueBeaver copied in Agent Mail 7288.
+
+## MS6.5 creation-pinned reaper follow-up (`b8eedf2`)
+
+**BLOCKED; the destructive Mac reaper gate remains OFF.** The held-fd pin,
+immediate per-kill `dir_ok` call and complete argument validation are useful
+progress. Exact-export portable evidence is green:
+
+```text
+Build Summary: 10/10 steps succeeded; 7/7 tests passed
+```
+
+Three safety/completeness blockers remain:
+
+1. The Mac driver's negative controls inherit the marker fd. It opens `rfd`
+   before calling `make_holder`; `O_CLOEXEC` does not close a descriptor across
+   `fork`, and those helpers never call `exec`. The child path at
+   `tests/mac/ms6_5_reaper_test.c:34-49` never closes it. Consequently both the
+   `/tmp` decoy and `/` marker-scrubber expose an open fd whose path is under
+   the run directory, so the real classifier matches them. The claimed exact
+   census `{escaper}` is false and the sweep can signal all three helpers.
+2. `agent_run_reaper.c:154` treats a failed per-kill directory revalidation as
+   `continue`, then returns clean success with neither survivor nor overflow.
+   Once cleanup authority becomes invalid, the result is incomplete and must
+   be nonzero/not-clean rather than silently omitting the match. The new test
+   currently pins the unsafe clean result.
+3. No production lifecycle caller exists yet: at this SHA, every caller of
+   `zb_reaper_pin_fd`, `zb_reaper_census` and `zb_reaper_sweep` is in the
+   reaper's tests. The app must open and retain the fd/id when the run directory
+   is created and consume it on app stop/next start before the creation-pinned
+   lifecycle contract is closed.
+
+Before a real-signal Mac rerun, close the marker fd in every negative-control
+child and add a signal-free Mac rename/replacement probe proving that
+`F_GETPATH` on the held descriptor identifies the intended vnode/path and that
+the decoy and scrubber do not classify. Findings were sent to JadeBeacon with
+BlueBeaver copied in Agent Mail 7289.
+
+## Guarded-type count-contract red (`570d674`)
+
+**APPROVED as the unregistered failing-first red; plan rev 16.20.51 is
+APPROVED.** The six tests close the prior oracle gaps: both event and character
+counts are exact; chunk one omits both continuation tokens and later chunks
+carry both; target/document tokens are tested missing, empty and wrong-type;
+bad-token successes add their own usable counts only to `sent_at_least`;
+unusable counts add nothing; and no later chunk runs after the internal error.
+
+The authoritative plan now defines `sent` and `sent_at_least` as mutually
+exclusive exact/lower-bound fields, names SDK propagation and specifies the
+later S8d card wording. The reported 4/6 pass on `52cfb6c` with the two token-
+count cases causally red is adequate failing-first evidence. The green and its
+registration remain to review after BlackRobin's gate. Verdict sent in Agent
+Mail 7290.
