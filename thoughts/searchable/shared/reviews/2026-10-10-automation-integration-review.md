@@ -26332,3 +26332,31 @@ exact archive the new unit suite passed **9/9**, showing the static cases are
 healthy but not the swap. Agent Mail 7421 sent BlueBeaver the blockers and
 reproducer. The owner-approved removal of the already observed Mac leftovers
 is unaffected; this verdict concerns the shipped cleanup implementation.
+
+## Setup sandbox lifetime red (`c545b67`)
+
+**APPROVED as a causal, unregistered lifetime red; the kill primitive still
+requires its own safety reds before the green can be approved.**
+
+From an exact archive the real-process test ran only under
+`unshare --user --map-root-user --pid --fork --mount-proc`, with the namespace
+shell retained as PID 1. It failed exactly **2/2** in 2.005 seconds: the CLI
+and grandchild remained alive after the setup bound, and the named production
+helper did not exist. Leaving the namespace removed the bounded stand-ins.
+Making the test runner itself namespace PID 1 caused the guard to skip safely.
+
+On this host `/proc/1/comm` is `systemd`; the source reads that fixed kernel
+file directly, and an ordinary user cannot rename host PID 1. The test
+therefore cannot reach its signal path on this host outside the private PID
+namespace. The name check is only defense in depth: a future host/container
+whose real PID 1 is a shell could satisfy it. Registration must itself invoke
+the exact private user/PID/mounted-proc namespace and should pass an outer
+PID-namespace inode sentinel so the inner test proves its namespace differs,
+rather than trusting only `comm`.
+
+Before the production green, signal-interposed/namespaced reds must prove
+refusal before any kill for mocked or non-exact-integer PIDs (including bool),
+PID <= 1, self/current process group, a non-child, and a child that is not its
+own group leader. The lifecycle test must also cover a leader that exits while
+a descendant retains the pipes. Agent Mail 7422 sent BlueBeaver this verdict;
+no Mac run of the new kill path is approved yet.
