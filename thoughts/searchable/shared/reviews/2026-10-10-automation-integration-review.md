@@ -25784,3 +25784,75 @@ The exact reviewed armed hard gate is still **NO-GO**: its next execution must
 wait for the production green, registration, the resulting new R1-case digest,
 and review of all three. The detailed contract and verdict were sent to
 BlueBeaver in Agent Mail 7387.
+
+## Windows prerequisite-P real MSVC evidence (`dcd33ae`)
+
+**`dcd33ae` APPROVED as a harness correction. `b292b17` and `6115ac1`
+are cumulatively CLOSED/APPROVED; `52a5aba` remains BLOCKED-for-tests.**
+The commit changes only the two VM-gated harnesses. It fixes the screenshot
+argument order from the usage-error path to the real
+`--screenshot <out> <URL>` grammar and copies a colocated
+`WebView2Loader.dll` when the tested build dynamically imports it. Both are
+necessary and narrowly scoped corrections; `git show --check` is clean.
+
+AzureRidge's owner-approved run built the shipped `x86_64-windows-msvc`
+target with MSVC Build Tools 18, Windows SDK 10.0.26100 and the pinned
+WebView2 SDK 1.0.3967.48. The real executable then supplied the evidence that
+review `4cd6a14` required:
+
+- **WS1.4 / `b292b17`:** an explicitly empty runtime folder returned exit 9,
+  printed exactly `zigBrowser: the Microsoft Edge WebView2 Runtime is not
+  installed` on stderr and did not print it on stdout. The parent production
+  branch returned 9 without that diagnostic, so the exact-output assertion
+  is causal; the harness correction also proves the earlier exit 1 was test
+  argument ordering, not the product branch.
+- **WS1.5 / `6115ac1`:** `--version` reported
+  `WebView2 155.0.4283.62; Windows 10.0.26200; x86_64`, and the harness
+  independently matched the Windows build, Evergreen runtime version and PE
+  machine. This closes the shipped-target/run gap and, together with the
+  already-reviewed fail-closed source pins, proves the line does not rely on
+  the old invented `10.0.0`/`x86_64` defaults.
+- **Screenshot seam / `52a5aba`:** the real executable reached all three
+  forced branches with `--e2e-protocol` and produced their exact diagnostics.
+  That is useful reachability evidence, but it does not satisfy the earlier
+  explicit negative or registration requirements.
+
+**BLOCKER-for-tests (`52a5aba`, AzureRidge).** Add and run on the real VM a
+case that sets `ZB_E2E_FORCE_SCREENSHOT_FAIL` but omits
+`--e2e-protocol`, proving the shipped normal screenshot path remains inert;
+register the VM-gated live branch suite in the appropriate build step. A
+local mutation that removed both production `e2e_protocol` guards still left
+the registered `screenshot_diag_selftest.py` green **7/7**, so the current
+registered source pins cannot kill this privilege-boundary regression. The
+live forced-with-flag suite remains unregistered.
+
+The newest approved contiguous push-through from pushed `207c7dc` is
+**`6115ac1`**. The next commit is `b19b4a3`, a superseded plan revision whose
+cumulative closure occurs later in the chain; the next actionable code/test
+hold is `52a5aba` above. Verdict and exact required follow-up were sent to
+AzureRidge in reply to Agent Mail 7388.
+
+## Darwin route-probe accept fallback (`2c69a0d`)
+
+**BLOCKED.** The production fallback otherwise matches the reviewed contract:
+the exact loopback address is checked before probing; only
+`ENOPROTOOPT` selects nonblocking `accept()`; the original descriptor flags
+are restored and verified; an empty queue is accepted; an early client is
+closed unserved and causes refusal; and all other errors fail closed. The
+focused suite covers those branches and is registered under
+`test-agent-setup-ms5` and the top-level test step. In an exact clean export,
+the MS5 inventory remained exact, and that focused step passed **21/21 build
+steps, 14/14 tests** with the route module itself **18/18**. No path was added
+under `agent/host/zb_agent_host`, so no inventory row changes.
+
+**BLOCKER (`agent/host/zb_agent_host/route_probe.py:19`, BlueBeaver).** The
+green imports POSIX-only `fcntl` at module scope. The already-registered
+Windows boundary rejects that exact shape: an independent run of
+`zig build agent-host-win-import --summary all` failed with
+`{'route_probe.py': [('fcntl', 19)]}` and **1/3 build steps**. Thus the full
+gate is red even though the narrower MS5 step is green. Move the import into
+the `ENOPROTOOPT` fallback (or another import-safe platform guard accepted by
+the existing oracle), retain the current branch tests, and rerun both
+`test-agent-setup-ms5` and `agent-host-win-import` before any Mac hard-gate
+rerun. The fallback's behavior needs no redesign. Verdict sent to BlueBeaver
+in Agent Mail 7391.
