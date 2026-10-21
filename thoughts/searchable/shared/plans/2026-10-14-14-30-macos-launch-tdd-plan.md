@@ -1704,10 +1704,16 @@ above plus per-process Seatbelt port rules**. Either way MS0's launch spec is th
   - **VM containment stub (off by default).** `src/mac_vm_containment.zig`: a planned Apple
     Virtualization-framework seam whose `availability()` reports `.not_available_yet`; when the setting is on,
     launch **fails closed** ("VM containment is not available yet"), never pretending to contain. Landed 2523247.
-  - **Both-Mac gate:** a case in BlueBeaver's one pre-`seatbelt_ready` hard-gate harness — a marker-matching
-    escaper is found and killed; a marker-scrubbing escaper is reported as a residual survivor (pid + command),
-    i.e. the warning payload. **MS6.5 no longer requires defeating the escape**, so it no longer forces the VM
-    backend; the earlier "no survivors / Failure ⇒ VM required" criterion is withdrawn.
+  - **Both-Mac gate (GREEN):** `tests/mac/ms6_5_reaper_gate.sh` (the reaper is C/browser-side, so a standalone C
+    gate like `ms5_kill_group_gate.sh`, not a Python hard-gate-harness case). A detached setsid+double-fork
+    escaper whose cwd is under the run dir is found by the census and SIGKILLed by the guarded sweep; a decoy
+    outside the run dir is neither found nor killed; a marker-scrubbing escaper (chdir "/") is the accepted
+    residual the census cannot see. The dry-run census is verified FIRST — it matches only the escaper, none of
+    the Mac's real processes — before any kill. PASS both-arches (Intel 15.3, arm64 26.7; 094cebd core, 7fa8906
+    sweep). The pure classification core is Linux-unit-tested (`test-agent-run-reaper`). **MS6.5 no longer
+    requires defeating the escape**, so it no longer forces the VM backend; the earlier "no survivors /
+    Failure ⇒ VM required" criterion is withdrawn. Remaining: the drawer survivor-warning UI (MS7) and wiring
+    the census/sweep into the browser's agent-stop and app-start.
 - **MS6.6 (gate, rev 18): R1 under Seatbelt.** setup's R1 probe proves "the CLI takes the token from fd 3 and no
   CLI environment holds it" on macOS, without giving the code under test any introspection.
   - **Topology** (RoseCat 7019; BlueBeaver 7021; JadeBeacon 7023):
