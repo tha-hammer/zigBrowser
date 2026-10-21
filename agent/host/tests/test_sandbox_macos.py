@@ -38,7 +38,7 @@ _DEVICES = ('(literal "/dev/null") (literal "/dev/zero") (literal "/dev/dtracehe
 def reference_profile(*, egress, bridges, is_hook):
     """A frozen, independent re-statement of the expected profile text. A policy change must update this in
     the same commit (the point of a frozen golden); a generator mutant diverges from it."""
-    eps = ([] if is_hook else [f"{egress.host}:{egress.port}"]) + [f"127.0.0.1:{p}" for p in bridges]
+    eps = ([] if is_hook else [f"localhost:{egress.port}"]) + [f"localhost:{p}" for p in bridges]
     net = " ".join(f'(remote ip "{e}")' for e in eps)
     kind = "hook" if is_hook else "cli/helper"
     note = "bridges only (no egress — rev 16.2 §3c)" if is_hook else "egress + bridges"
@@ -178,16 +178,17 @@ class SecurityContent(unittest.TestCase):
             self.assertNotIn("mach-priv-task-port", p)
 
     def test_cli_reaches_egress_and_bridges(self):
+        # Seatbelt's loopback token is 'localhost' (it rejects the 127.0.0.1 literal); the port is the identity.
         p = sandbox_macos.render_profile(egress=EGRESS, bridges=BRIDGES, is_hook=False)
-        self.assertIn(f'(remote ip "127.0.0.1:{EGRESS.port}")', p)
+        self.assertIn(f'(remote ip "localhost:{EGRESS.port}")', p)
         for port in BRIDGES:
-            self.assertIn(f'(remote ip "127.0.0.1:{port}")', p)
+            self.assertIn(f'(remote ip "localhost:{port}")', p)
 
     def test_hook_reaches_bridges_only_never_egress(self):
         p = sandbox_macos.render_profile(egress=None, bridges=BRIDGES, is_hook=True)
         for port in BRIDGES:
-            self.assertIn(f'(remote ip "127.0.0.1:{port}")', p)
-        self.assertNotIn(f'127.0.0.1:{EGRESS.port}', p, "a hook must never reach the egress endpoint")
+            self.assertIn(f'(remote ip "localhost:{port}")', p)
+        self.assertNotIn(f'localhost:{EGRESS.port}', p, "a hook must never reach the egress endpoint")
 
 
 def reference_setup_profile():

@@ -69,11 +69,17 @@ def _validate_host(host):
 
 
 def _endpoints(egress, bridges, is_hook):
-    """The validated, de-duplicated loopback endpoints this profile may reach, as 'host:port' strings.
+    """The validated, de-duplicated loopback endpoints this profile may reach, as Seatbelt host:port strings.
 
     Raises ValueError on an empty or malformed capability (never widens to all-outbound): the egress host
     must be exactly 127.0.0.1 with an integer port 1..65535, and the bridges must be EXACTLY the two
     canonical ports (missing/extra/wrong refused, plan :1581-1593).
+
+    NOTE on the host token: Seatbelt's ``(remote ip ...)`` accepts ONLY ``*`` or ``localhost`` as the host —
+    the IP literal ``127.0.0.1`` is a parse error (measured on both arches). So the INPUT capability is
+    validated as exactly ``127.0.0.1`` (rejecting names/other IPs), and the emitted rule uses Seatbelt's
+    ``localhost`` loopback token with the validated port. (``localhost`` is the loopback; the listeners are on
+    127.0.0.1, and Seatbelt offers no finer host control.)
     """
     if type(is_hook) is not bool:
         raise ValueError(f"is_hook must be a bool, got {type(is_hook).__name__} {is_hook!r}")
@@ -90,19 +96,18 @@ def _endpoints(egress, bridges, is_hook):
     seen = set()
 
     def add(host, port):
-        host = _validate_host(host)
+        _validate_host(host)        # INPUT must be exactly 127.0.0.1 (reject localhost/names/other IPs)
         port = _validate_port(port)
-        key = (host, port)
-        if key in seen:
-            raise ValueError(f"duplicate endpoint {host}:{port}")
-        seen.add(key)
-        eps.append(f"{host}:{port}")
+        if port in seen:            # host is uniformly the loopback, so the port is the identity
+            raise ValueError(f"duplicate loopback port {port}")
+        seen.add(port)
+        eps.append(f"localhost:{port}")  # Seatbelt's only accepted loopback host token
 
     if not is_hook:
         # egress is an object with .host/.port (sandbox.Endpoint); validated in add().
         add(getattr(egress, "host"), getattr(egress, "port"))
     for port in bridges:
-        add(_LOOPBACK_HOST, port)  # the backend's bridges are loopback by contract
+        add(_LOOPBACK_HOST, port)  # the backend's bridges are loopback 127.0.0.1 by contract
     return eps
 
 
