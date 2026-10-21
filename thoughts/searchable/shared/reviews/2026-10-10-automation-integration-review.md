@@ -21769,6 +21769,26 @@ The push-through remains `26fdfff`: this test hold is still open, and the
 earlier `7d85cd5` WS0 chain independently still awaits the orchestrator's two
 watched live runs.
 
+### WS1.1 authoritative-pin oracle (`bd8a7de`)
+
+Reviewed exact commit `bd8a7de` on 2026-10-21. **Verdict: APPROVED; the
+`66e3db9` BLOCKED-for-tests and all remaining review holds on `1794148` are
+CLOSED by `bd8a7de`.** Production now assigns `$ver` only from the exact
+1.0.3967.48 authoritative pin, always passes it to NuGet, and refuses a
+disagreeing explicit override. The registered focused suite passes 8/8.
+
+The prior surviving mutation was repeated in a clean throwaway export:
+changing only the assignment to `$ver = $WebView2PackageVersion` now fails
+`test_setup_ps1_pins_exact_webview2_version` with rc 1 and reports the wrong
+right-hand side. Cumulatively, `1794148`, `adea8ca`, `66e3db9` and `bd8a7de`
+are **APPROVED-for-tests** for the WS1.1 red chain. The release-executable
+census remains intentionally unregistered/red until the actual WS1 build
+green lands; that is slice sequencing, not a hold on this red suite.
+
+The linear push-through still remains `26fdfff`, solely because the earlier
+`7d85cd5` WS0 chain awaits the orchestrator's two watched live runs. The
+provisional next blocker after those runs is no longer `1794148`.
+
 ## macOS POSIX spawner pure core (`31a6a9e`, `2e50d44`)
 
 Reviewed the exact pair on 2026-10-21. **`31a6a9e` APPROVED-for-tests.** In a
