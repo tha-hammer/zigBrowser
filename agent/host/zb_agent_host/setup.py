@@ -763,6 +763,9 @@ def _sandboxed(ro_paths, command, timeout, env=None, listener=None, census=None)
     run_env = {"PATH": "/usr/bin:/bin", "HOME": str(scratch), "LANG": "C.UTF-8", **(env or {})}
     try:
         if PLATFORM == "darwin":
+            # Seatbelt lets the run write only its SCRATCHPAD (this scratch): its temporary files go there too, or
+            # tempfile finds no usable directory (4c0a3db on both Macs). Linux's bwrap gives the run its own /tmp.
+            run_env["TMPDIR"] = str(scratch)
             port, pass_fds = None, ()
             if listener is not None:
                 port, pass_fds = listener.getsockname()[1], (listener.fileno(),)
