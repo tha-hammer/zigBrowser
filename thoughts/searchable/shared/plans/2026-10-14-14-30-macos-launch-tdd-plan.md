@@ -1712,8 +1712,40 @@ above plus per-process Seatbelt port rules**. Either way MS0's launch spec is th
     the Mac's real processes — before any kill. PASS both-arches (Intel 15.3, arm64 26.7; 094cebd core, 7fa8906
     sweep). The pure classification core is Linux-unit-tested (`test-agent-run-reaper`). **MS6.5 no longer
     requires defeating the escape**, so it no longer forces the VM backend; the earlier "no survivors /
-    Failure ⇒ VM required" criterion is withdrawn. Remaining: the drawer survivor-warning UI (MS7) and wiring
-    the census/sweep into the browser's agent-stop and app-start.
+    Failure ⇒ VM required" criterion is withdrawn. The production lifecycle owner and the drawer
+    survivor-warning are specified in **MS6.5.1** below.
+- **MS6.5.1 (the Darwin per-run dir, its lifecycle owner, and the census sweep + warning; rev 20 — orchestrator
+  decision 2026-10-21).** The reaper library (`src/agent_run_reaper.c`) is complete and verified signal-free on
+  both Macs; this is its production owner. **The macOS agent-run path is gated behind `seatbelt_ready` (MS6), so
+  this owner is dormant until a macOS run exists; it is real launch-path code, not a test-only caller.**
+  - **The per-run dir.** At macOS agent-run start the owner creates a per-run directory named by the
+    `agent_net.sockdirPath` grammar — `<runtime_dir>/zigbrowser-agent-<pid>-<16 lowercase hex>` — with one
+    exclusive `mkdir` at mode 0700, opens it `O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC`, and captures `zb_reaper_pin_fd`'s
+    identity. The agent-run's processes (the CLI, the hooks, the loopback netd) are rooted under it (working dir
+    and per-run files), so a detached escaper's cwd/open-file is under it and the reaper's markers catch it. (On
+    macOS netd serves over loopback and makes no egress sockdir, so this run dir is the browser-owned run root,
+    distinct from Linux's netd sockdir.)
+  - **The owner holds the pin for the run's life** in the macOS agent-run state (the Zig host spawner's per-run
+    struct — the macOS counterpart of `agent_host.c`'s `zb_net`), and owns two lifecycle points:
+    - **after every agent STOP** (once netd/CLI/helper are torn down — the browser's quit path and the
+      die-with-browser path both): sweep the run dir via the held fd + pin, surface any survivor to the drawer
+      warning, then `rmdir` the run dir;
+    - **at the next app START**: scan `<runtime_dir>` for leftover `zigbrowser-agent-<pid>-<16hex>` dirs from a
+      prior run the browser was SIGKILLed during (its own cleanup never ran), re-open + `pin_fd` each, sweep it,
+      surface survivors, and remove the emptied dirs. Nothing from a prior run is trusted by name: each is
+      re-validated (grammar + 0700 + this uid + the held-fd pin) before any signal.
+  - **Census-only on the Macs; the destructive sweep stays gated.** Every Mac test/gate for this owner is
+    SIGNAL-FREE (census only — `ms6_5_reaper_census_gate.sh`), proving the owner creates/holds/validates the
+    per-run dir and that census classifies exactly the run's processes (both arches: Intel 15.3, arm64 26.7). The
+    destructive sweep (real SIGKILL) and its real-escape row remain **OFF the Macs** until the signal paths are
+    approved. The owner's sequencing (open+pin at creation → sweep at stop → census+sweep at next start, with the
+    kill intercepted) is proven on Linux under `unshare --user --map-root-user --pid --fork --mount-proc` via the
+    injectable engine (`test-agent-run-reaper-engine`).
+  - **The survivor warning** is the drawer surface specified above — **[Stop them now]** · **[Leave them
+    running]** · **[Show details]** (pids + command + cwd) — driven by the stop-time and start-time census/sweep
+    results, with the default-on **"Automatically stop leftover agent processes"** setting governing the silent
+    pass. The census supplies "show details"; the sweep (when the setting is on and the signal paths are
+    approved) performs the kill.
 - **MS6.6 (gate, rev 18): R1 under Seatbelt.** setup's R1 probe proves "the CLI takes the token from fd 3 and no
   CLI environment holds it" on macOS, without giving the code under test any introspection.
   - **Topology** (RoseCat 7019; BlueBeaver 7021; JadeBeacon 7023):
