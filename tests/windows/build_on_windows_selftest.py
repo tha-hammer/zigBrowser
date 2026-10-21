@@ -410,20 +410,83 @@ class EncodeChecked(_Case):
 
 class AtomicProvenance(_Case):
     """RoseCat cf01d66 (c): the exe and its provenance manifest publish as an ATOMIC PAIR. If the
-    manifest cannot be written, the exe must NOT be published (no orphan artifact). Fault: pre-create
-    the `.sha` path as a directory so the provenance write/publish fails."""
+    provenance cannot be written, nothing is published (no orphan artifact). Fault: pre-create the
+    staging `.part.sha` path as a directory so the provenance write fails before any publish."""
 
     def test_provenance_write_failure_does_not_publish_exe(self):
         def pre(td, out):
             out.parent.mkdir(parents=True, exist_ok=True)
-            (out.parent / (out.name + ".sha")).mkdir()
+            (out.parent / (out.name + ".part.sha")).mkdir()  # $part.sha is where provenance is written first
         with tempfile.TemporaryDirectory() as t:
             td = pathlib.Path(t)
             proc = self._run(td, pre=pre)
             detail = f"\nrc={proc.returncode}\nstdout:\n{proc.stdout}\nstderr:\n{proc.stderr}"
             self.assertNotEqual(proc.returncode, 0, "an unwritable provenance must fail closed" + detail)
             self.assertFalse(proc.out_path.is_file(),
-                             "the exe must NOT be published when its manifest cannot be written" + detail)
+                             "the exe must NOT be published when its provenance cannot be written" + detail)
+            self.assertFalse((proc.out_path.parent / "current").exists(),
+                             "no 'current' may be published when provenance fails" + detail)
+
+
+class AtomicPublish(_Case):
+    """RoseCat 42c797b: the {exe, provenance} publish must be ATOMIC — an interruption can never leave an
+    exe beside the wrong commit SHA. Start with a valid OLD pair, cut the publish just before the atomic
+    'current' swap, and require that the surviving readable pair is MATCHED (here: the old pair stands)."""
+
+    OLD_SHA = "0" * 40
+    OLD_EXE = b"MZoldpe\n"
+
+    def _place_old_pair(self, out):
+        # Mirror the published layout: vers/<old>/{exe,exe.sha}; current -> it; $out/$out.sha symlinks.
+        outdir = out.parent; base = out.name
+        outdir.mkdir(parents=True, exist_ok=True)
+        v = outdir / "vers" / self.OLD_SHA
+        v.mkdir(parents=True)
+        (v / base).write_bytes(self.OLD_EXE)
+        (v / (base + ".sha")).write_text(self.OLD_SHA + "\n")
+        (outdir / "current").symlink_to(pathlib.Path("vers") / self.OLD_SHA)
+        out.symlink_to(pathlib.Path("current") / base)
+        (outdir / (base + ".sha")).symlink_to(pathlib.Path("current") / (base + ".sha"))
+
+    def _read_pair(self, out):
+        try:
+            exe = out.read_bytes()
+        except OSError:
+            exe = None
+        try:
+            sha = (out.parent / (out.name + ".sha")).read_text().strip()
+        except OSError:
+            sha = None
+        return exe, sha
+
+    def test_interrupted_publish_leaves_no_mismatched_pair(self):
+        with tempfile.TemporaryDirectory() as t:
+            td = pathlib.Path(t)
+            proc = self._run(td, {"ZB_SELFTEST_CUT_PUBLISH": "1"}, pre=lambda td, out: self._place_old_pair(out))
+            exe, sha = self._read_pair(proc.out_path)
+            detail = f"\nrc={proc.returncode}\nexe={exe!r}\nsha={sha!r}\n{proc.stdout}\n{proc.stderr}"
+            # The readable pair must be MATCHED: either the old pair or the fully-published new pair,
+            # never old-exe+new-sha or new-exe+old-sha.
+            matched = ((exe == self.OLD_EXE and sha == self.OLD_SHA)
+                       or (exe is not None and exe[:2] == b"MZ" and sha == FAKE_SHA))
+            self.assertTrue(matched, "interrupted publish left a MISMATCHED exe/SHA pair" + detail)
+            # Cut was before the atomic swap, so 'current' never flipped: the OLD pair must stand intact.
+            self.assertEqual((exe, sha), (self.OLD_EXE, self.OLD_SHA),
+                             "a cut before the current-swap must leave the old complete pair" + detail)
+
+
+class StagePrepGatesBuild(_Case):
+    """RoseCat 42c797b (2): if the staging prep fails, the build invocation must NEVER be reached."""
+
+    def test_stage_failure_never_reaches_build(self):
+        with tempfile.TemporaryDirectory() as t:
+            td = pathlib.Path(t)
+            proc = self._run(td, {"ZB_SELFTEST_STAGE_FAIL": "1"})
+            self._fail_closed(proc, "stage failed")
+            ssh_log = self._read(td / "ssh.log")
+            self.assertNotIn("-EncodedCommand", ssh_log,
+                             "the build (EncodedCommand ssh) must not run after a staging-prep failure:\n" + ssh_log)
+            self.assertFalse(proc.out_path.exists(), "a staging-prep failure must publish no artifact")
 
 
 if __name__ == "__main__":

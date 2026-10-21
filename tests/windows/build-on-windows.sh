@@ -132,18 +132,39 @@ if [ -z "$step" ]; then
   if [ ! -s "$part" ] || [ "$(head -c2 "$part" 2>/dev/null)" != "MZ" ]; then
     echo "build-on-windows: fetched artifact is not a PE executable" >&2; rm -f "$part"; exit 3
   fi
-  # Finding (c): publish the artifact and its provenance manifest as an ATOMIC PAIR. Write provenance
-  # beside the validated part and CHECK it; publish the manifest FIRST, then the exe — so the exe never
-  # exists without a correct manifest. Any write failure fails closed and leaves no orphan artifact.
+  # Finding (c) + RoseCat 42c797b: publish the artifact and its provenance as ONE atomic unit. Assemble the
+  # complete {exe, exe.sha} pair in a per-SHA version directory, then expose it through a SINGLE atomic
+  # 'current' symlink swap (a symlink rename is atomic). An interruption therefore can never leave an exe
+  # beside a mismatched SHA: before the swap the old complete pair stands; after it, the new one does. The
+  # stable consumer paths ($out, $out.sha) are symlinks THROUGH current, so they always read a matched pair.
   if ! printf '%s\n' "$sha" > "$part.sha"; then
     echo "build-on-windows: provenance write failed" >&2; rm -f "$part" "$part.sha"; exit 3
   fi
-  if ! mv -fT "$part.sha" "$out.sha"; then
-    echo "build-on-windows: publishing the provenance manifest failed" >&2; rm -f "$part" "$part.sha" "$out.sha"; exit 3
+  outdir=$(dirname "$out"); outbase=$(basename "$out"); verrel="vers/$sha"
+  stagedir="$outdir/.pub.$$"
+  rm -rf "$stagedir"
+  if ! mkdir -p "$stagedir" "$outdir/vers"; then
+    echo "build-on-windows: cannot create the publish staging dir" >&2; rm -rf "$stagedir"; rm -f "$part" "$part.sha"; exit 3
   fi
-  if ! mv -fT "$part" "$out"; then
-    echo "build-on-windows: publishing the artifact failed" >&2; rm -f "$part"; exit 3
+  if ! mv -fT "$part" "$stagedir/$outbase" || ! mv -fT "$part.sha" "$stagedir/$outbase.sha"; then
+    echo "build-on-windows: assembling the version pair failed" >&2; rm -rf "$stagedir"; rm -f "$part" "$part.sha"; exit 3
   fi
+  rm -rf "$outdir/$verrel"
+  if ! mv -fT "$stagedir" "$outdir/$verrel"; then
+    echo "build-on-windows: publishing the version dir failed" >&2; rm -rf "$stagedir"; exit 3
+  fi
+  # Selftest-only interruption point: models a crash AFTER the complete pair exists but BEFORE the atomic
+  # current-swap. NEVER set in production. Proves the swap is the single commit point (the old pair stands).
+  if [ -n "${ZB_SELFTEST_CUT_PUBLISH:-}" ]; then
+    echo "build-on-windows: interrupted before current-swap (selftest)" >&2; exit 42
+  fi
+  # Atomic commit: flip 'current' from the old complete pair to the new one with one symlink rename.
+  if ! { ln -sfn "$verrel" "$outdir/.current.$$" && mv -fT "$outdir/.current.$$" "$outdir/current"; }; then
+    echo "build-on-windows: current-swap failed" >&2; rm -f "$outdir/.current.$$"; exit 3
+  fi
+  # Stable consumer paths resolve THROUGH current (relative symlinks; created idempotently, always matched).
+  ln -sfn "current/$outbase" "$outdir/.o.$$" && mv -fT "$outdir/.o.$$" "$out"
+  ln -sfn "current/$outbase.sha" "$outdir/.os.$$" && mv -fT "$outdir/.os.$$" "$out.sha"
   echo "build-on-windows: fetched $out (commit $sha)"
   echo "build-on-windows: export ZB_WIN_EXE=$out for the WS1.1 census"
 fi
