@@ -1,12 +1,267 @@
-"""MS6.6 (B), R1's production chain on a Mac (plan rev 18, 18.1; RoseCat 7053). NOT WRITTEN YET, deliberately: it
-needs the staged pinned runtime and dependency tree (the MS5 decision), so that the real zb_agent_host.setup can be
-imported and setup.probe_r1 called directly. Until then it fails, so the harness can never report it met.
+"""MS6.6 (B), R1's production chain on a Mac (plan rev 18, 18.1; RoseCat 7053), under the STAGED pinned runtime: the
+staged python3.12 imports the staged zb_agent_host, and the real setup.probe_r1 runs the real chain:
+  setup binds the 127.0.0.1 listener and the census socketpair OUTSIDE Seatbelt
+  -> sandbox-exec with setup's rendered profile (pass_fds = exactly the listener and the census end)
+  -> python -m zb_agent_host probe-r1 (route_probe: adopts the listener, serves the one-shot Messages API, imports the
+     staged claude_agent_sdk) -> the production zb-claude wrapper (token.write_wrapper, as setup.stage writes it)
+  -> a CONTROLLED CLI: a native stand-in compiled here (the census finds the CLI by its executable path), which reads
+     the token from the backend channel's fd and POSTs /v1/messages with "Bearer <token>" to ANTHROPIC_BASE_URL.
+Rows (RoseCat 7053):
+ 1. positive: an honest CLI -> probe_r1 True; the one sandboxed run is /usr/bin/sandbox-exec with pass_fds exactly
+    (listener, census end), the listener on 127.0.0.1:<--listen-port>, the census end an AF_UNIX stream socket, and the
+    profile's only outbound rule (remote tcp "localhost:<that port>"); setup's census ran once, over the exact probe
+    token shape and the canary ANTHROPIC_BASE_URL=http://127.0.0.1:<that port>, and said clean (listener service +
+    census request and reply);
+ 2. planted-token control: a CLI that re-execs itself with the token in its environment -> probe_r1 False; its own
+    positives first (the census ran, and the CLI's real environment, read outside Seatbelt, holds the planted token);
+ 3. forged capability: the planted CLI also writes "clean" into every socket it holds -> still False;
+ 4. timeout/lifecycle: a CLI that never calls (and exits by itself after 90 s) -> probe_r1 False within the probe's
+    bound, no census at all, and afterwards no process running it survives; after every row the listener's port is
+    free again on 127.0.0.1 and ::1.
+Kill safety (RoseCat 7250): this case sends no signal. Its compiler and ps run through the guarded h.spawn_group; the
+only other processes are setup's own (subprocess.run on its own child). The observation spies call through to the
+real functions and are removed after every row."""
+import os
+import re
+import socket
+import subprocess
+import sys
+import time
 
-To keep, when written (RoseCat 7053): the exact pass_fds (listener + census end), the forged-capability negative,
-listener service, the census request and reply, the timeout/lifecycle cases, and the planted-token control, on
-both arches, through the real setup.probe_r1 -> sandbox-exec -> route_probe -> wrapper -> a controlled CLI."""
 NAME = "ms6.6b-r1-chain"
+
+CLI_C = r"""
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <poll.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/socket.h>
+#include <sys/stat.h>
+#include <unistd.h>
+extern char **environ;
+static char tok[700];
+static int read_token(void) {
+  const char *planted = getenv("ZB_PLANTED");
+  if (planted) { snprintf(tok, sizeof tok, "%s", planted); return 0; }
+  const char *v = getenv(CHANNEL_ENV);
+  if (!v) return -1;
+  int fd = atoi(v); size_t n = 0;
+  for (;;) {
+    struct pollfd p = {fd, POLLIN, 0};
+    if (poll(&p, 1, 5000) <= 0) break;
+    ssize_t r = read(fd, tok + n, sizeof tok - 1 - n);
+    if (r <= 0) break;
+    n += (size_t)r;
+    if (n >= sizeof tok - 1) break;
+  }
+  close(fd);
+  while (n && (tok[n - 1] == '\n' || tok[n - 1] == '\r')) n--;
+  tok[n] = 0;
+  return n ? 0 : -1;
+}
+static void forge(void) {
+  for (int fd = 0; fd < 1024; fd++) {
+    struct stat st;
+    if (fstat(fd, &st) == 0 && S_ISSOCK(st.st_mode)) (void)!write(fd, "clean\n", 6);
+  }
+}
+int main(int argc, char **argv) {
+  (void)argc;
+  if (read_token() != 0) return 3;
+  if (MODE_HANG) { sleep(90); return 0; }  /* never calls; ends by itself */
+  if (MODE_PLANT && !getenv("ZB_PLANTED")) {
+    size_t n = 0; while (environ[n]) n++;
+    char **env = calloc(n + 2, sizeof *env);
+    for (size_t i = 0; i < n; i++) env[i] = environ[i];
+    static char kv[760]; snprintf(kv, sizeof kv, "ZB_PLANTED=%s", tok);
+    env[n] = kv; env[n + 1] = NULL;
+    execve(argv[0], argv, env);  /* same executable path: the census must find it, token in its environment */
+    return 4;
+  }
+  if (MODE_FORGE) forge();
+  const char *url = getenv("ANTHROPIC_BASE_URL");
+  if (!url || strncmp(url, "http://127.0.0.1:", 17) != 0) return 5;
+  int port = atoi(url + 17);
+  int s = socket(AF_INET, SOCK_STREAM, 0);
+  struct sockaddr_in a; memset(&a, 0, sizeof a);
+  a.sin_family = AF_INET; a.sin_port = htons((unsigned short)port); a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+  if (s < 0 || connect(s, (struct sockaddr *)&a, sizeof a) != 0) return 6;
+  const char *body = "{\"stream\": false}";
+  char req[1200];
+  int len = snprintf(req, sizeof req,
+                     "POST /v1/messages HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer %s\r\n"
+                     "Content-Type: application/json\r\nContent-Length: %zu\r\nConnection: close\r\n\r\n%s",
+                     tok, strlen(body), body);
+  if (write(s, req, (size_t)len) != len) return 7;
+  char buf[512];
+  for (;;) {  /* hold on until the server answered: setup's census runs while this process lives */
+    struct pollfd p = {s, POLLIN, 0};
+    if (poll(&p, 1, 60000) <= 0) break;
+    if (read(s, buf, sizeof buf) <= 0) break;
+  }
+  close(s);
+  return 0;
+}
+"""
+
+MODES = {"honest": (0, 0, 0), "planted": (1, 0, 0), "forge": (1, 1, 0), "hang": (0, 0, 1)}
+TOKEN_SHAPE = re.compile(rb"zb-probe-[0-9a-f]{48}")
+
+
+def _port_free(port):
+    """No live socket holds `port` on 127.0.0.1 or ::1. SO_REUSEADDR only so the served connection's TIME_WAIT does
+    not count: on Darwin a socket still bound to the exact address (setup's listener or ::1 reservation, which set no
+    reuse flag) refuses the bind anyway."""
+    for family, host in ((socket.AF_INET, "127.0.0.1"), (socket.AF_INET6, "::1")):
+        s = socket.socket(family, socket.SOCK_STREAM)
+        try:
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            if family == socket.AF_INET6:
+                s.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
+            s.bind((host, port))
+        except OSError:
+            return False
+        finally:
+            s.close()
+    return True
+
+
+def _survivors(h, proc_darwin, exe):
+    """Every live pid whose executable path (proc_pidpath, as the census reads it) is `exe`: an orphaned CLI is no
+    longer setup's descendant, so the whole process table is read (ps through the guarded h.spawn_group)."""
+    code, out, _ = h.spawn_group(["/bin/ps", "-axo", "pid="], env={"PATH": "/usr/bin:/bin"}, timeout=20)
+    pids = []
+    for word in out.split():
+        try:
+            if proc_darwin.path(int(word)) == exe:
+                pids.append(int(word))
+        except (OSError, ValueError):
+            pass  # vanished, or not ours to read (our own CLI always is)
+    return code, pids
 
 
 def run(h):
-    h.check(False, "MS6.6 (B) is not written: it waits on the staged pinned tree (MS5 decision)")
+    prefix = h.prefix
+    if not h.check(bool(prefix) and os.path.isdir(os.path.join(prefix or "", "zb_agent_host")),
+                   f"the staged agent-host is present (ZB_HG_PREFIX={prefix!r})"):
+        return
+    if not h.check(bool(h.python) and os.path.realpath(sys.executable) == os.path.realpath(h.python),
+                   f"this case runs under the staged interpreter ({sys.executable} vs {h.python})"):
+        return
+    sys.path.insert(0, prefix)
+    from zb_agent_host import proc_darwin, sandbox, setup, token  # the staged tree's own modules
+    h.check(setup.PLATFORM == "darwin" and str(setup.PACKAGE_DIR) == os.path.realpath(prefix),
+            f"setup is the staged one, on Darwin ({setup.PACKAGE_DIR})")
+
+    channel = sandbox.channel()
+    clis = {}
+    for mode, (plant, forge, hang) in MODES.items():
+        d = os.path.join(h.scratch, f"cli-{mode}")
+        os.mkdir(d, 0o700)
+        src = os.path.join(d, "cli.c")
+        with open(src, "w") as f:
+            f.write(CLI_C)
+        exe = os.path.join(d, "claude")
+        code, _out, err = h.spawn_group(
+            ["/usr/bin/xcrun", "clang", "-std=gnu11", "-Wall", "-Werror", f"-DCHANNEL_ENV=\"{channel.env}\"",
+             f"-DMODE_PLANT={plant}", f"-DMODE_FORGE={forge}", f"-DMODE_HANG={hang}", src, "-o", exe],
+            env={"PATH": "/usr/bin:/bin"}, timeout=120)
+        if not h.check(code == 0 and os.access(exe, os.X_OK), f"the {mode} CLI compiles ({err[-300:]!r})"):
+            return
+        clis[mode] = os.path.realpath(exe)
+
+    real_run, real_census = setup.subprocess.run, proc_darwin.cli_env_clean
+
+    def one(mode):
+        """probe_r1 through the production wrapper in front of the `mode` CLI, observed from outside."""
+        runtime = os.path.join(h.scratch, f"runtime-{mode}")
+        os.makedirs(os.path.join(runtime, "bin"), 0o700)
+        wrapper = os.path.join(runtime, "bin", "zb-claude")
+        token.write_wrapper(wrapper, clis[mode])  # as setup.stage writes it
+        runs, censuses = [], []
+
+        def spy_run(argv, *args, **kw):
+            rec = {"argv": list(argv), "pass_fds": tuple(kw.get("pass_fds", ())), "fds": []}
+            for fd in rec["pass_fds"]:
+                dup = socket.socket(fileno=os.dup(fd))
+                try:
+                    rec["fds"].append((dup.family, dup.type, dup.getsockname()))
+                finally:
+                    dup.close()
+            if "-f" in rec["argv"]:
+                with open(rec["argv"][rec["argv"].index("-f") + 1]) as f:
+                    rec["profile"] = f.read()
+            runs.append(rec)
+            return real_run(argv, *args, **kw)
+
+        def spy_census(exe, root, tok, canary):
+            seen = {"exe": exe, "root": root, "token": tok, "canary": canary, "planted": None}
+            try:
+                for pid in proc_darwin.descendants_running(exe, root):
+                    _raw, _argv, env = proc_darwin.environ_of(pid)
+                    seen["planted"] = any(e.startswith(b"ZB_PLANTED=") and tok in e for e in env)
+            except OSError:
+                pass
+            seen["clean"] = real_census(exe, root, tok, canary)
+            censuses.append(seen)
+            return seen["clean"]
+
+        setup.subprocess.run, proc_darwin.cli_env_clean = spy_run, spy_census
+        started = time.monotonic()
+        try:
+            verdict = setup.probe_r1(wrapper, clis[mode])
+        finally:
+            setup.subprocess.run, proc_darwin.cli_env_clean = real_run, real_census
+        return verdict, time.monotonic() - started, runs, censuses
+
+    # 1. positive
+    verdict, _took, runs, censuses = one("honest")
+    h.check(verdict is True, "positive: an honest CLI through the real chain selects R1")
+    if h.check(len(runs) == 1, f"positive: exactly one sandboxed run ({len(runs)})"):
+        r = runs[0]
+        argv = r["argv"]
+        port = int(argv[argv.index("--listen-port") + 1]) if "--listen-port" in argv else None
+        lfd = int(argv[argv.index("--listen-fd") + 1]) if "--listen-fd" in argv else None
+        cfd = int(argv[argv.index("--census-fd") + 1]) if "--census-fd" in argv else None
+        h.check(argv[0] == "/usr/bin/sandbox-exec", f"positive: the probe runs under sandbox-exec ({argv[0]})")
+        h.check(r["pass_fds"] == (lfd, cfd), f"positive: pass_fds is exactly (listener, census end) {r['pass_fds']}")
+        h.check(len(r["fds"]) == 2 and r["fds"][0][:2] == (socket.AF_INET, socket.SOCK_STREAM)
+                and r["fds"][0][2] == ("127.0.0.1", port), f"positive: the listener is 127.0.0.1:{port} ({r['fds']})")
+        h.check(len(r["fds"]) == 2 and r["fds"][1][:2] == (socket.AF_UNIX, socket.SOCK_STREAM),
+                "positive: the census end is an AF_UNIX stream socket")
+        rules = re.findall(r"\(allow network-outbound[^\n]*", r.get("profile", ""))
+        h.check(rules == [f'(allow network-outbound (remote tcp "localhost:{port}"))'],
+                f"positive: the profile's only outbound rule is that port ({rules})")
+        h.check(len(censuses) == 1 and TOKEN_SHAPE.fullmatch(censuses[0]["token"]) is not None
+                and censuses[0]["canary"] == f"ANTHROPIC_BASE_URL=http://127.0.0.1:{port}".encode()
+                and censuses[0]["exe"] == clis["honest"] and censuses[0]["root"] == os.getpid()
+                and censuses[0]["clean"] is True,
+                f"positive: setup's census ran once, exact request, clean ({censuses})")
+        h.check(port is not None and _port_free(port), f"positive: afterwards {port} is free on 127.0.0.1 and ::1")
+
+    # 2. planted-token control and 3. forged capability: their own positives first
+    for mode in ("planted", "forge"):
+        verdict, _took, runs, censuses = one(mode)
+        h.check(len(censuses) == 1, f"{mode}: the CLI called the server and setup's census ran ({len(censuses)})")
+        h.check(bool(censuses) and censuses[0]["planted"] is True,
+                f"{mode}: the CLI's real environment, read outside Seatbelt, holds the planted token")
+        h.check(bool(censuses) and censuses[0]["clean"] is False, f"{mode}: setup's census says dirty")
+        h.check(verdict is False, f"{mode}: probe_r1 is False (no R1)")
+
+    # 4. timeout and lifecycle
+    verdict, took, runs, censuses = one("hang")
+    h.check(verdict is False, "hang: a CLI that never calls is no R1")
+    h.check(took <= setup.PROBE_TIMEOUT_S + 45, f"hang: probe_r1 ends within its bound ({took:.1f} s)")
+    h.check(censuses == [], "hang: no census without a call")
+    deadline, pids = time.monotonic() + 15, None
+    while time.monotonic() < deadline:
+        code, pids = _survivors(h, proc_darwin, clis["hang"])
+        if code != 0:
+            pids = None
+            break
+        if not pids:
+            break
+        time.sleep(1)
+    h.check(pids == [], f"hang: no process running the hang CLI survives ({pids}; each exits by itself at 90 s)")
