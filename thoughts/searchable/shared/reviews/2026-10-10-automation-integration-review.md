@@ -22957,3 +22957,93 @@ The reported both-Mac 8/8 run and Darwin-only zombie mutant evidence are
 accepted. The cumulative `5bb7986` chain now remains blocked only on the
 already recorded Zig ABI/caller follow-up; this pair adds no new blocker.
 Verdict sent to BlueBeaver, with JadeBeacon copied, in Agent Mail 7194.
+
+## MS6.5 VM-containment stub (`2523247`)
+
+**BLOCKED.** The pure seam is internally consistent and registered: OFF is
+the default, ON maps to the exact `VM containment is not available yet`
+refusal, and the exact-commit targeted step passed:
+
+```text
+test-mac-vm-containment: Build Summary 4/4; 4/4 tests
+```
+
+Two closure defects remain:
+
+1. **BLOCKER — malformed explicit configuration silently disables the
+   security control.** `src/app.zig:62-64` consumes only
+   `resolve(...).value`. `src/env_switch.zig:22-26` maps an unknown value to
+   the default OFF and returns the original string in `bad_env`, but the app
+   discards that field. Thus
+   `ZIGBROWSER_AGENT_VM_CONTAINMENT=onn zigBrowser --agent-setup` proceeds
+   down the uncontained path without even a diagnostic. The module test at
+   `tests/mac_vm_containment_test.zig:12-17` proves that `bad_env` exists; it
+   does not prove that the production consumer handles it. An invalid,
+   explicitly supplied value must be rejected before launch, with an exact
+   diagnostic and regression.
+2. **BLOCKER-for-tests — no real-binary closure.** The commit has only a pure
+   module test. The macOS plan's per-slice rule at `:327-330` and
+   `:1931-1940` requires a real-binary e2e with observed, nonzero assertions.
+   Exercise ON through the real executable and prove the exact nonzero
+   refusal occurs before any setup child/probe starts, with unset/OFF
+   controls. Final MS6 acceptance requires that case on both Macs.
+
+The placement at `src/app.zig:59-71` currently covers the only live Mac agent
+execution, `--agent-setup`; ordinary helper and login configuration still
+return early off Linux (`app.zig:223-224,284-285,337-338`). It is therefore
+acceptable only as today's setup-path stub, not as a reusable all-launch
+gate. Before normal Mac helper/login/chat execution is enabled, the decision
+must be called from their shared launch boundary and each entry path must
+have a zero-child refusal regression.
+
+Verdict sent to JadeBeacon in Agent Mail 7199.
+
+## S8a guarded-type chunk red (`6b22265`)
+
+**BLOCKED-for-tests as the complete decision-15 red; accepted as a useful
+partial red.** The unregistered suite correctly pins the 16/16/8 code-point
+split, valid UTF-8 around non-BMP and multibyte boundaries, prior-plus-current
+event/character accumulation, cancellation between evaluations, a later
+chunk's own error, the no-guard single-evaluation control, guarded
+`delay_ms > 0` refusal, and the live page-timer boundary. Keeping the files
+unregistered is correct while red. The owner's reported evidence is
+consistent with the diff: 6/7 Zig rows and 4/13 e2e assertions fail on the
+decision-14 green.
+
+The red does not yet pin several S8a contracts at plan `:3141-3145` and
+`:3162-3165`:
+
+- **BLOCKER-for-tests — `data.sent.total`.** The helper at
+  `tests/automation_guard_chunks_test.zig:104-111` parses only events and
+  chars; cumulative, cancel and later-error rows at `:159-202` never require
+  the total input code-point count. Add exact totals, including the named
+  19-of-200 cumulative case and the mutant that reports only the failing
+  chunk's 3 characters.
+- **BLOCKER-for-tests — checked accumulation.** There is no near-`u64` limit
+  row proving overflow fails to outcome `unknown`, nor an assertion of
+  lower-bound/unknown metadata for a lost or otherwise unanswerable later
+  evaluation.
+- **BLOCKER-for-tests — one shared deadline.** No row advances the fake clock
+  or observes decreasing per-chunk timeouts, so resetting the full type
+  timeout for every evaluation could pass.
+- **BLOCKER-for-tests — the named `before_chunk` seam.** The port wrapper at
+  `:21-42` flips the cancel flag after an evaluation, which proves a second
+  cancellation check is needed, but does not require the deterministic seam
+  that S8a promises. Pin a hold before chunk 3. The real X-click and
+  synchronous-XHR mid-chunk cases are assigned to S8d at plan `:3148-3157`;
+  they may land later, but remain mandatory for decision-15 end-to-end
+  acceptance.
+
+Verdict sent to BlackRobin in Agent Mail 7200.
+
+## WS0 locked-console evidence after `fcbcb29`
+
+The genuine locked-console diagnostic now reports exactly
+`locked:true`, `wts_lock_ok:true`, `session_flags:0`. That is positive
+mechanism evidence for the WTS implementation reviewed above, but it is **not
+the watched-run acceptance**: `LockedDesktopLive`'s polling command used the
+PowerShell raw-string fragment `\"$($s.nonce)\"`, which throws under
+PowerShell 5.1, and its surrounding `catch {}` swallowed the exception. The
+fix-forward `ac20169` has landed but is not reviewed in this section. WS0 and
+`7d85cd5` remain OPEN until the corrected locked run and the subsequent
+unlocked two-host probe-only run both complete under observation.
