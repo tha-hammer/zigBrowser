@@ -25936,3 +25936,45 @@ path returned `-32015 mark_changed` with `{events:0,chars:0}`, left the
 composer closed and sent nothing; LinkedIn's wrong contact-info owner likewise
 produced no click. The throwaway export was deleted immediately. Verdict sent
 to BlackRobin.
+
+## Windows screenshot seam closure (`023748c`)
+
+**APPROVED; cumulatively closes `52a5aba` and the remaining prerequisite-P
+hold.** The follow-up supplies all three obligations from review `6bea364`:
+
+- `build.zig:312-316` exposes the VM-gated real-executable suite as the named
+  `windows-screenshot-branches-live` step, matching the other opt-in Windows
+  live steps. With `ZB_WIN11_HOST` and `ZB_WIN_EXE` absent it skips cleanly and
+  never contacts a host.
+- `tests/e2e/screenshot_branches_live_test.py:31-48,128-138` sets
+  `ZB_E2E_FORCE_SCREENSHOT_FAIL` for each of the three modes while omitting
+  `--e2e-protocol`, and rejects every forced diagnostic. The same runner's
+  positive half retains `--e2e-protocol` and the exact nonzero diagnostic
+  checks. AzureRidge's real MSVC executable run on win11-m8 passed both cases
+  (**2 tests, 48 s**); the earlier positive run had independently reached all
+  three branches.
+- `tests/windows/screenshot_diag_selftest.py:88-120` pins both privilege
+  guards in production: the environment read stays inside
+  `if (app.e2e_protocol)`, exactly once, and the branch independently requires
+  `app->e2e_protocol`. This directly covers the production checks at
+  `src/webview2_shim.cpp:922` and `:1261-1263`.
+
+Independent exact-archive runs at `023748c`, with all display and VM variables
+scrubbed, were green:
+
+- `zig build windows-screenshot-diag-selftest --summary all`: **3/3 steps,
+  9/9 tests**; and
+- `zig build windows-screenshot-branches-live --summary all`: **3/3 steps,
+  2/2 skipped** off-host as intended.
+
+An independent throwaway mutation removed both production guards. The
+registered source-pin step then failed exactly the two new guard tests
+(**2 failures, rc 1**), closing the mutant that previously survived 7/7. The
+throwaway trees were deleted immediately. `git diff --check` is clean.
+
+The live harness's opening comment still calls itself “UNREGISTERED”; that is
+a documentation NIT only because the build graph now names the opt-in step.
+All commits after pushed `6115ac1` through current review-log HEAD are either
+directly approved or cumulatively closed by later approved follow-ups
+(`817f066`, `eb08c4b`, `4c0a3db`, `e7b7370`, and `cbd254a`). Therefore the
+newest contiguous approved push-through is this review-log commit.
