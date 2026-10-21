@@ -8,6 +8,7 @@ the parsed environment and never treats a hidden environment as clean."""
 
 import ctypes
 import ctypes.util
+import errno
 import os
 import struct
 
@@ -34,7 +35,8 @@ def _oserror(what):
 
 
 def children(pid):
-    """The direct children of `pid` (proc_listchildpids). OSError when the call fails."""
+    """The direct children of `pid` (proc_listchildpids). ProcessLookupError when `pid` has vanished (ESRCH); any
+    other failure is another OSError."""
     _, libproc = _libs()
     for _ in range(4):
         n = libproc.proc_listchildpids(pid, None, 0)
@@ -51,11 +53,14 @@ def children(pid):
 
 
 def path(pid):
-    """The executable path of `pid` (proc_pidpath), or None when it cannot be read."""
+    """The executable path of `pid` (proc_pidpath), or None when `pid` has vanished (ESRCH). Any other failure is an
+    OSError (RoseCat 7011): an unreadable path is never "not the CLI"."""
     _, libproc = _libs()
     buf = ctypes.create_string_buffer(_PATH_MAX)
     if libproc.proc_pidpath(pid, buf, _PATH_MAX) <= 0:
-        return None
+        if ctypes.get_errno() == errno.ESRCH:
+            return None
+        raise _oserror(f"proc_pidpath({pid})")
     return os.fsdecode(buf.value)
 
 
@@ -113,13 +118,15 @@ def environ_of(pid):
 
 
 def descendants_running(exe, root):
-    """Every descendant of `root` whose executable path is `exe` (a breadth-first walk; each pid visited once)."""
+    """Every descendant of `root` whose executable path is `exe` (a breadth-first walk; each pid visited once).
+    Only a vanished process is skipped; a denied child list or an unreadable path raises OSError, so the caller
+    never mistakes an uninspected subtree for an empty one (RoseCat 7011)."""
     found, seen, queue = [], {root}, [root]
     while queue:
         pid = queue.pop(0)
         try:
             kids = children(pid)
-        except OSError:
+        except ProcessLookupError:
             continue
         for kid in kids:
             if kid in seen:

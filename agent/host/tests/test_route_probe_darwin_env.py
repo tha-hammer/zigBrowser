@@ -8,6 +8,8 @@ route_probe._cli_env_clean(cli, probe_token, canary) is the server's check. On D
   that the CLI always inherits: an environment the OS hid (macOS does for platform binaries) or a misparse is
   therefore not clean, never vacuously clean;
 - the token appears nowhere in any of their buffers (argv counts: it is as visible as the environment).
+A denied child listing or an unreadable path anywhere in the walk is not clean either: only a vanished process may
+be skipped (RoseCat 7011).
 On Linux it is unchanged: /proc/<pid>/environ of the descendants running `cli`, and no canary is required.
 The probe server passes exactly that canary and records the verdict as cli_env_clean.
 
@@ -103,6 +105,53 @@ class Darwin(Base):
     def test_one_leaking_cli_among_clean_ones_is_not_clean(self):
         self.assertIs(self.verdict({7: ([b"/opt/claude"], [CANARY]),
                                     8: ([b"/opt/claude"], [CANARY, b"T=" + TOKEN.encode()])}), False)
+
+
+class DarwinWalkFailures(Base):
+    """RoseCat 7011: a clean CLI plus an uninspected subtree or process is never clean. The real walk
+    (proc_darwin.descendants_running) runs over faked children()/path(); environ_of is faked."""
+
+    def verdict(self, tree, paths, envs):
+        mock.patch.object(route_probe, "PLATFORM", "darwin").start()
+        me = os.getpid()
+
+        def children(pid):
+            got = tree.get(me if pid == me else pid, [])
+            if isinstance(got, BaseException):
+                raise got
+            return list(got)
+
+        def path(pid):
+            got = paths.get(pid)
+            if isinstance(got, BaseException):
+                raise got
+            return got
+
+        def environ_of(pid):
+            argv, env = envs[pid]
+            return b"\0".join([b"/opt/claude"] + argv + env), argv, env
+
+        mock.patch.object(proc_darwin, "children", side_effect=children).start()
+        mock.patch.object(proc_darwin, "path", side_effect=path).start()
+        mock.patch.object(proc_darwin, "environ_of", side_effect=environ_of).start()
+        return route_probe._cli_env_clean("/opt/claude", TOKEN, CANARY)
+
+    CLEAN = {7: ([b"/opt/claude"], [CANARY])}
+
+    def test_a_denied_root_listing_is_not_clean(self):
+        self.assertIs(self.verdict({os.getpid(): PermissionError(1, "denied")}, {7: "/opt/claude"}, self.CLEAN), False)
+
+    def test_a_denied_intermediate_listing_beside_a_clean_cli_is_not_clean(self):
+        tree = {os.getpid(): [7, 8], 8: PermissionError(1, "denied")}
+        self.assertIs(self.verdict(tree, {7: "/opt/claude", 8: "/usr/bin/python3"}, self.CLEAN), False)
+
+    def test_an_unreadable_path_beside_a_clean_cli_is_not_clean(self):
+        tree = {os.getpid(): [7, 9]}
+        self.assertIs(self.verdict(tree, {7: "/opt/claude", 9: PermissionError(1, "denied")}, self.CLEAN), False)
+
+    def test_a_vanished_process_beside_a_clean_cli_is_still_clean(self):
+        tree = {os.getpid(): [7, 8, 9], 8: ProcessLookupError(3, "gone")}
+        self.assertIs(self.verdict(tree, {7: "/opt/claude", 8: "/usr/bin/python3", 9: None}, self.CLEAN), True)
 
 
 class LinuxUnchanged(Base):

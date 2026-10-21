@@ -9,11 +9,15 @@ three OS calls injected; tests/mac/ms5_r1_env_gate.sh drives the real calls on b
   argc is None: never a guess.
 - environ_of(pid) -> (raw, argv, env), raising OSError when the read fails or the buffer does not parse.
 - importing it loads no library (ctypes.CDLL and find_library run only on the first real call).
+- children()/path(): a vanished process (ESRCH) is ProcessLookupError / None; any other failure is an OSError
+  (RoseCat 7011).
 - descendants_running(exe, root): every descendant of `root` (a breadth-first walk of children()) whose path() is
-  `exe`; a process that is not a descendant is never listed, and a cycle in a corrupt table never loops.
+  `exe`; a process that is not a descendant is never listed, and a cycle in a corrupt table never loops. Only a
+  vanished process is skipped: a denied child list or an unreadable path raises (RoseCat 7011).
 
 Run like the gate: cd agent/host/tests && python -X dev -m unittest -v test_proc_darwin. Unregistered until the green.
 """
+import errno
 import struct
 import unittest
 from unittest import mock
@@ -122,6 +126,71 @@ class Descendants(Base):
 
     def test_a_cycle_terminates(self):
         self.assertEqual(self.walk({10: [11], 11: [10, 12]}, {12: "/opt/claude"}), [12])
+
+    # RoseCat 7011: only a vanished process (ESRCH) may be skipped; any other failure to list children or read a
+    # path is an error the caller sees, never a silently uninspected subtree.
+    def test_a_denied_child_list_is_an_error_not_a_vanished_subtree(self):
+        for denied in (10, 11):  # the root, and an intermediate child
+            def children(pid, denied=denied):
+                if pid == denied:
+                    raise PermissionError(1, "denied")
+                return {10: [11, 12], 11: [13]}.get(pid, [])
+
+            with self.subTest(denied=denied), mock.patch.object(proc_darwin, "children", side_effect=children), \
+                    mock.patch.object(proc_darwin, "path", side_effect=lambda pid: "/opt/claude"):
+                with self.assertRaises(OSError) as cm:
+                    proc_darwin.descendants_running("/opt/claude", 10)
+                self.assertNotIsInstance(cm.exception, ProcessLookupError)
+
+    def test_an_unreadable_path_is_an_error(self):
+        def path(pid):
+            if pid == 11:
+                raise PermissionError(1, "denied")
+            return "/opt/claude"
+
+        with mock.patch.object(proc_darwin, "children", side_effect=lambda pid: {10: [11, 12]}.get(pid, [])), \
+                mock.patch.object(proc_darwin, "path", side_effect=path):
+            with self.assertRaises(OSError):
+                proc_darwin.descendants_running("/opt/claude", 10)
+
+
+class OsCallErrors(Base):
+    """children() and path() map ESRCH to "vanished" and every other failure to an OSError (RoseCat 7011)."""
+
+    def fake_libproc(self, n, err):
+        class Lib:
+            def proc_listchildpids(self, pid, buf, size):
+                return n
+
+            def proc_pidpath(self, pid, buf, size):
+                return n
+
+        mock.patch.object(proc_darwin, "_libs", return_value=(None, Lib())).start()
+        mock.patch.object(proc_darwin.ctypes, "get_errno", return_value=err).start()
+        self.addCleanup(mock.patch.stopall)
+
+    def test_path_of_a_vanished_process_is_none(self):
+        self.fake_libproc(0, errno.ESRCH)
+        self.assertIsNone(proc_darwin.path(42))
+
+    def test_path_denied_is_an_error(self):
+        for err in (errno.EPERM, errno.EACCES, errno.EINVAL):
+            with self.subTest(err=err):
+                self.fake_libproc(0, err)
+                with self.assertRaises(OSError) as cm:
+                    proc_darwin.path(42)
+                self.assertNotIsInstance(cm.exception, ProcessLookupError)
+
+    def test_children_of_a_vanished_process_is_process_lookup_error(self):
+        self.fake_libproc(-1, errno.ESRCH)
+        with self.assertRaises(ProcessLookupError):
+            proc_darwin.children(42)
+
+    def test_children_denied_is_another_oserror(self):
+        self.fake_libproc(-1, errno.EPERM)
+        with self.assertRaises(OSError) as cm:
+            proc_darwin.children(42)
+        self.assertNotIsInstance(cm.exception, ProcessLookupError)
 
 
 if __name__ == "__main__":

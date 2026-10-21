@@ -110,13 +110,17 @@ def _cli_env_clean(cli, probe_token, canary):
 
     Linux (unchanged): /proc/<pid>/environ of each descendant running `cli`; at least one must be read.
     macOS (BlueBeaver 6977; BlackRobin 6983): no /proc, so proc_darwin's libproc walk and KERN_PROCARGS2. Every CLI
-    descendant must be read and parsed, its environment must hold `canary` (the exact ANTHROPIC_BASE_URL entry the
+    descendant must be found by a walk that inspected every descendant (a denied listing or path is not clean) and
+    must be read and parsed, its environment must hold `canary` (the exact ANTHROPIC_BASE_URL entry the
     CLI always inherits: an environment the OS hid, as macOS 15.3 does for platform binaries, is never "clean"),
     and the token must appear nowhere in its buffer, argv included. Anything unreadable is not clean."""
     exe = os.path.realpath(cli)
     token_bytes = probe_token.encode()
     if PLATFORM == "darwin":
-        pids = proc_darwin.descendants_running(exe, os.getpid())
+        try:
+            pids = proc_darwin.descendants_running(exe, os.getpid())
+        except OSError:  # an uninspected subtree or process (RoseCat 7011)
+            return False
         if not pids:
             return False
         for pid in pids:
