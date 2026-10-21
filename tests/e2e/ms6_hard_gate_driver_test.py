@@ -8,8 +8,7 @@ Macs. These Linux tests pin the driver's fail-closed rules with fake cases, and 
 - Fail closed: a case whose check() failed, a case that raises, a case that made no check() at all, a case file
   without NAME or run, and an empty cases dir are each a FAIL; two cases with the same NAME are a FAIL.
 - Each case gets its own scratch directory (h.scratch), removed afterwards; a case that leaves it unremovable is a FAIL.
-- tests/mac/ms6_hard_gate.sh: with no pinned dependency tree (packaging/macos/agent_runtime_pins.json absent, the
-  MS5 decision pending) it prints "NOT ARMED" and exits 3, touching no Mac.
+- The entry's NOT ARMED refusal, observed with network shims, is in ms6_hard_gate_harness_test (RoseCat 7134).
 
 Run like the gate: cd tests/e2e && python3 -X dev -m unittest -v ms6_hard_gate_driver_test. Unregistered until the green.
 """
@@ -24,7 +23,6 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
 DRIVER = REPO / "tests" / "mac" / "hard_gate" / "hard_gate_driver.py"
-GATE = REPO / "tests" / "mac" / "ms6_hard_gate.sh"
 
 
 class Driver(unittest.TestCase):
@@ -115,19 +113,6 @@ class Driver(unittest.TestCase):
         roots = {Path(l.split("\t", 2)[2]) for l in lines if l.startswith("SCRATCH\t")}
         self.assertEqual(len(roots), 2, lines)
         self.assertTrue(all(not r.exists() for r in roots), roots)
-
-
-class Gate(unittest.TestCase):
-    def test_without_the_pinned_tree_the_gate_is_not_armed(self):
-        if not GATE.is_file():
-            self.fail("tests/mac/ms6_hard_gate.sh is missing (rev 18.1)")
-        self.assertFalse((REPO / "packaging" / "macos" / "agent_runtime_pins.json").exists(),
-                         "this test pins the state before the MS5 decision")
-        p = subprocess.run(["bash", str(GATE)], capture_output=True, text=True, timeout=30, cwd=REPO,
-                           env={"PATH": "/usr/bin:/bin", "LANG": "C.UTF-8", "HOME": os.environ.get("HOME", "/tmp"),
-                                "ZB_MAC_ARM_HOST": "nobody@192.0.2.1"})
-        self.assertEqual(p.returncode, 3, p.stdout + p.stderr)
-        self.assertIn("NOT ARMED", p.stdout + p.stderr)
 
 
 if __name__ == "__main__":

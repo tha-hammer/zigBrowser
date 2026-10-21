@@ -8,12 +8,16 @@ A case is tests/mac/hard_gate/case_<name>.py defining NAME (a non-empty string, 
 - h.scratch: this case's own empty directory, removed (and checked gone) by the driver afterwards;
 - h.check(ok, label): one assertion; a case passes only with at least one check and no failed one;
 - h.spawn_group(argv, env=None, pass_fds=(), timeout=30): runs argv in its own process group, bounded; returns
-  (returncode or None on timeout, stdout, stderr); the whole group is SIGKILLed and reaped on every path, and
-  h.close() (the driver's) reaps any group a case left;
+  (returncode or None on timeout, stdout, stderr). The group is owned EXACTLY once (RoseCat 7134): the leader is
+  waited for WITHOUT being reaped (waitid WNOWAIT), so its zombie keeps the pgid from being reused; then the whole
+  group is SIGKILLed (a child that outlived the leader too), and only then is the leader reaped. h.close() (the
+  driver's) consumes any group not yet consumed and never signals one twice;
 - h.render_profile(**kw) / h.setup_sandbox(...): the production sandbox_macos from the staged tree."""
 import os
 import signal
 import subprocess
+import threading
+import time
 
 
 class Harness:
@@ -36,27 +40,41 @@ class Harness:
     def spawn_group(self, argv, env=None, pass_fds=(), timeout=30):
         proc = subprocess.Popen(argv, env=env, pass_fds=pass_fds, start_new_session=True,
                                 stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        self._groups.append(proc)
+        entry = {"proc": proc, "consumed": False}
+        self._groups.append(entry)
+        chunks = {"out": [], "err": []}
+        readers = [threading.Thread(target=_drain, args=(proc.stdout, chunks["out"]), daemon=True),
+                   threading.Thread(target=_drain, args=(proc.stderr, chunks["err"]), daemon=True)]
+        for t in readers:
+            t.start()
+        exited = False
         try:
-            out, err = proc.communicate(timeout=timeout)
-            code = proc.returncode
-        except subprocess.TimeoutExpired:
-            code, out, err = None, b"", b""
+            deadline = time.monotonic() + timeout
+            while time.monotonic() < deadline:
+                # Wait for the leader to exit WITHOUT reaping it: its zombie keeps the pgid unique until we signal.
+                if os.waitid(os.P_PID, proc.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT) is not None:
+                    exited = True
+                    break
+                time.sleep(0.01)
         finally:
-            self._reap(proc)
-        return code, out, err
+            self._consume(entry)
+            for t in readers:
+                t.join(5)
+            for stream in (proc.stdout, proc.stderr):
+                stream.close()
+        return (proc.returncode if exited else None), b"".join(chunks["out"]), b"".join(chunks["err"])
 
-    def _reap(self, proc):
+    def _consume(self, entry):
+        """Exactly once per group: SIGKILL the group while its leader is still unreaped, then reap the leader."""
+        if entry["consumed"]:
+            return
+        entry["consumed"] = True
+        proc = entry["proc"]
         try:
             os.killpg(proc.pid, signal.SIGKILL)
         except (ProcessLookupError, PermissionError):
             pass
-        if proc.poll() is None:
-            proc.kill()
         proc.wait()
-        for stream in (proc.stdout, proc.stderr):
-            if stream is not None:
-                stream.close()
 
     def _sandbox_macos(self):
         import importlib
@@ -69,5 +87,10 @@ class Harness:
         return self._sandbox_macos().setup_sandbox(*args, **kw)
 
     def close(self):
-        for proc in self._groups:
-            self._reap(proc)
+        for entry in self._groups:
+            self._consume(entry)
+
+
+def _drain(stream, into):
+    for chunk in iter(lambda: stream.read(65536), b""):
+        into.append(chunk)
