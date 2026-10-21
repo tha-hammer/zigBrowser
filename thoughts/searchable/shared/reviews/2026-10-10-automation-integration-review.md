@@ -23526,3 +23526,44 @@ These are follow-on integration requirements, not defects in the literal
 pure API delivered by `094cebd`; the header already says paths are compared as
 given, and no production caller exists in this slice.
 Verdict sent to JadeBeacon with BlueBeaver copied in Agent Mail 7232.
+
+## MS5 strict universal-tree merger boundary red (`8e8d399`)
+
+**APPROVED as the failing-first red; two BLOCKER-for-green items remain.**
+The fixture now gives each distribution a realistic own RECORD and adds the
+requested discriminators for RECORD ownership and path safety, a FIFO refused
+before open, partial-`lipo` cleanup, and mode disagreement on both an
+executable and a byte-identical ordinary file.
+
+In an exact clean export, run inside a private user/PID namespace, the suite is
+genuinely red at the absent production seam:
+
+```text
+Ran 13 tests in 0.004s
+FAILED (failures=13)
+AssertionError: packaging/macos/merge_universal_tree.py is missing
+```
+
+Against the owner's current uncommitted merger draft, the same namespaced
+suite passes all **13/13**, which confirms that the red targets the intended
+seam rather than an unrelated dependency.
+
+Before the green is accepted:
+
+1. `tests/e2e/mac_merge_universal_test.py:205-218` uses `signal.alarm`, while
+   its module header still says “No process, no signal” and documents a plain
+   Python invocation. The mandatory signal-test rule applies even to this safe
+   process-local alarm: register and document the suite under
+   `unshare --user --map-root-user --pid --fork --mount-proc`.
+2. `test_each_record_covers_exactly_its_own_distribution` checks the second
+   distribution's path set exactly, but only spot-checks the first and reduces
+   every row to its path. Compare the **complete regenerated rows** for both
+   distributions: exact owned paths, fresh merged-file SHA-256 and size,
+   exact own `RECORD,,`, and split-SBOM substitution. Otherwise a later
+   distribution retaining stale hashes/sizes, or a multi-RECORD-only omission
+   from the first, can survive while the test claims every RECORD is exact.
+
+**SHOULD:** the differing-RECORD-list case should require the diagnostic to
+name the divergent `pkg/extra.py` row rather than only the RECORD filename.
+The separate rev-20 SBOM contract blocker on `06f1d4b` remains open. Verdict
+sent to BlueBeaver with JadeBeacon copied in Agent Mail 7233.
