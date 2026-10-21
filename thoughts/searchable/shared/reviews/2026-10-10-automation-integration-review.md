@@ -23920,3 +23920,26 @@ The definition “window-1 forever, with no successor” is safe and fail closed
 but BlackRobin identified it as an unconfirmed product choice. Mark it pending
 or cite the user's confirmation before presenting it as decided. Findings were
 sent in Agent Mail 7255; docs checks are clean and no runtime gate applies.
+
+## MS6 hard-gate spawn-I/O signal red (`43dd176`)
+
+**BLOCKED-for-tests; do not run on either Mac.** Interposing both `kill` and
+`killpg`, never forwarding them, and executing the probe only inside a private
+user/PID namespace are the correct safety foundations. The mutant without an
+owned process group makes the two deadline cleanup sites visibly red. The
+oracle can still pass without exercising what it claims:
+
+1. The script accepts any non-timeout exit with zero intercepted signals. A
+   pre-spawn failure or crash therefore prints PASS. Require exact rows proving
+   that each mutant child started as a nonleader and that every intended
+   cleanup branch was reached, plus the expected terminal status/summary.
+2. Only the pipe and duplex-socket deadline cleanups run. The bad-fd/refusal
+   fallback's third raw negative-PID signal is not reached. Inject a spawn
+   result that publishes a nonleader child while violating the expected
+   `EINVAL`, or add an equally causal case; an exact source oracle that no raw
+   `kill(-child, ...)` remains is the minimum fallback.
+
+The green must route all three sites through the guarded ownership helper,
+prove it refuses the nonleader before any signal, and keep every wait/reap
+bounded. Findings were sent to BlueBeaver with JadeBeacon copied in Agent Mail
+7256.
