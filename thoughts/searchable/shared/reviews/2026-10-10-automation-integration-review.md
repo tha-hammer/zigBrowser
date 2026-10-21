@@ -25978,3 +25978,44 @@ All commits after pushed `6115ac1` through current review-log HEAD are either
 directly approved or cumulatively closed by later approved follow-ups
 (`817f066`, `eb08c4b`, `4c0a3db`, `e7b7370`, and `cbd254a`). Therefore the
 newest contiguous approved push-through is this review-log commit.
+
+## Canonical Darwin setup scratch (`3120af5`, `16bad65`)
+
+**`3120af5` APPROVED as a causal red; `16bad65` APPROVED.** The red extends
+the already-registered `test_setup_darwin_tmpdir` module, so the intermediate
+commit intentionally makes the registered setup gate red; the green lands
+immediately after it. Future reds for registered modules should remain in a
+new unregistered file until their green, as BlueBeaver noted in Agent Mail
+7403.
+
+The production change does not widen the writable set. `tempfile.mkdtemp`
+first creates a unique leaf directory (0700 by the Python contract), and
+`os.path.realpath` then resolves only aliases in that already-created path;
+the unique leaf remains the boundary. Both Darwin setup callers pass that
+canonical leaf to `sandbox_macos.setup_sandbox`, whose `dparams` rejects a
+non-absolute, non-canonical or root path and whose profile grants
+`file-write*` only to `(subpath (param "SCRATCHPAD"))` plus the fixed character
+devices. `HOME`, `TMPDIR` and the `SCRATCHPAD` binding all receive the same
+canonical leaf. The two production callers either supply no extra environment
+or only `PYTHONPATH`/`PYTHONDONTWRITEBYTECODE`, so they cannot replace `HOME`;
+Darwin overwrites `TMPDIR` after merging the caller environment. Linux still
+binds and changes directory to that one leaf. Cleanup targets the same
+canonical leaf.
+
+The red's symlinked-temp fixture accurately models `/tmp -> /private/tmp` and
+requires the seam path to be under the real parent, equal to its own realpath,
+and equal to both environment paths. In an exact `3120af5` archive, the
+registered `test-agent-setup-ms5` step failed only that row, showing the old
+`.../tmp/zb-setup-run-*` alias. In an exact `16bad65` archive inside a private
+user/PID namespace:
+
+- `zig build agent-host-win-import --summary all`: **3/3 steps**; and
+- `zig build test-agent-setup-ms5 --summary all`: **22/22 steps, 14/14
+  tests**, with `test_setup_darwin_tmpdir` **4/4**.
+
+The throwaway trees were deleted immediately. The already-recorded defense in
+depth SHOULD remains: `sandbox_macos.dparams` could itself require
+`scratchpad == realpath(scratchpad)`, so any future caller that hands it an
+alias refuses rather than receiving an ineffective grant. That is not a
+blocker for these two current callers, which canonicalize the newly-created
+leaf before the seam.
