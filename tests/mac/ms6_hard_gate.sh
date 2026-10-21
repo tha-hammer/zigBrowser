@@ -11,8 +11,8 @@
 # object, else exit 1 before any network; it is exported (git archive) into the per-run temp tree, and EVERYTHING below
 # reads that export, never the mutable working tree (a shared worktree is routinely dirty). It prints "== hard gate at
 # commit <sha>" and, before any network, "== ship <sha256> <path>" for every shipped seam source, staging tool and
-# zb_agent_host file. RoseCat 7269, all before any network: the running launcher must be byte-identical to the exported
-# tests/mac/ms6_hard_gate.sh (a dirty launcher could certify anything); a symlink or special entry among the shipped
+# zb_agent_host file. RoseCat 7269, all before any network: the launcher runs only from the commit's bytes (THE ENTRY,
+# below; RoseCat 7275); a symlink or special entry among the shipped
 # paths is refused, and the tar's files must be exactly the "== ship" rows; the temporary Sigstore verifier comes only
 # from the committed, hash-locked packaging/macos/sigstore_verifier.txt (its SHA-256 pinned), installed with
 # --require-hashes --no-deps into the per-run venv. ZB_HG_EVIDENCE_DIR (a test seam) receives a copy of src.tar.
@@ -22,14 +22,23 @@
 #   - both hosts are set (the arm64 host is required, no default);
 #   - the case files are exactly the reviewed manifest, each with its pinned SHA-256 (the driver's own check).
 # Then: the pkg (pinned URL) is downloaded and checked against its SHA-256 and Sigstore identity; the two per-arch
-# site-packages trees are built from the lock (packaging/macos/build_site_packages.sh); each leg ships the working
-# tree's staging tools, cases and seam sources (the tar's SHA-256 is printed as the run's identity), stages, and runs
-# the driver with --manifest. The aggregate is PASS only when both legs end "PASS ms6-hard-gate".
+# site-packages trees are built from the lock (packaging/macos/build_site_packages.sh); each leg ships the exported
+# commit's staging tools, cases and seam sources (each file's SHA-256 and the tar's are printed as the run's identity),
+# stages, and runs the driver with --manifest. The aggregate is PASS only when both legs end "PASS ms6-hard-gate".
 # Per-run ~/zb-hardgate-<nonce> on each Mac, deleted by validated find -delete; nothing installed. BatchMode, strict
 # host keys, no askpass.
-# usage: tests/mac/ms6_hard_gate.sh [revision]   (default HEAD)
+# THE ENTRY (RoseCat 7275): a mutable launcher cannot vouch for itself, since its own code runs before any self-check.
+# So this script runs only from the commit's bytes, never as a working-tree file:
+#   bash -c "$(git show <rev>:tests/mac/ms6_hard_gate.sh)" ms6-hard-gate <rev>
+# Run as a file it refuses at once. Run from git, it requires its executing text ($BASH_EXECUTION_STRING) to equal
+# `git show <sha>:tests/mac/ms6_hard_gate.sh` for the resolved commit, else exit 1 before any network.
 set -euo pipefail
-SELF=$(realpath "$0")
+if [ -z "${BASH_EXECUTION_STRING:-}" ]; then
+  printf 'FAIL\tms6-hard-gate\trun the committed launcher, never a working-tree file:\n' >&2
+  echo '  bash -c "$(git show <rev>:tests/mac/ms6_hard_gate.sh)" ms6-hard-gate <rev>' >&2
+  exit 1
+fi
+LAUNCHER=$(printf '%s' "$BASH_EXECUTION_STRING")  # trailing newlines dropped, as $(git show ...) drops them
 
 KEY="${ZB_MAC_KEY:-/home/maceo/vms/mac-m9/zb_mac_key}"
 INTEL_HOST="${ZB_MAC_HOST:-maceojourdan@100.92.212.47}"
@@ -44,13 +53,13 @@ MANIFEST=tests/mac/hard_gate/MANIFEST.json
 fail() { printf 'FAIL\tms6-hard-gate\t%s\n' "$*" >&2; exit 1; }
 REV="${1:-HEAD}"
 SHA=$(git rev-parse --verify --quiet "${REV}^{commit}") || fail "revision $REV is not a commit"
+[ "$(git show "$SHA:tests/mac/ms6_hard_gate.sh")" = "$LAUNCHER" ] \
+  || fail "the running launcher is not the committed tests/mac/ms6_hard_gate.sh at $SHA"
 L=$(mktemp -d "${TMPDIR:-/tmp}/zb-hardgate-drv-XXXXXX")
 trap 'case "$L" in "${TMPDIR:-/tmp}"/zb-hardgate-drv-??????) find "${L:?}" -delete;; esac' EXIT
 mkdir "$L/repo" && git archive "$SHA" | tar -x -C "$L/repo"
 echo "== hard gate at commit $SHA" >&2
 cd "$L/repo"  # from here on, only the exported commit is read
-cmp -s "$SELF" tests/mac/ms6_hard_gate.sh \
-  || fail "this launcher ($SELF) differs from the committed tests/mac/ms6_hard_gate.sh at $SHA: run the committed one"
 if [ ! -f "$PINS" ]; then
   echo "NOT ARMED: the pinned dependency tree is not staged ($PINS is absent)" >&2
   exit 3
