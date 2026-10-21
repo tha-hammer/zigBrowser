@@ -21596,3 +21596,56 @@ early fix-forward chains, no descendant containing those closures can be
 pushed without also containing this unresolved commit. The newly approved
 `04d4499`/`abd043e`/`8b1fc54` phase-A chain is much later and therefore cannot
 advance the linear boundary.
+
+## Correction: WS0 live acceptance is still open
+
+The orchestrator corrected the acceptance record on 2026-10-21. The preceding
+"Linear push audit after WS0 acceptance" section is **SUPERSEDED**: its premise
+that the `7d85cd5` WS0 chain had final live acceptance was false. The condition
+had not yet been met.
+
+**Status: OPEN (AzureRidge/orchestrator live gate).** WS0 still requires both
+watched runs after the user locks the Windows VM:
+
+1. `LockedDesktopLive` with `ZB_EXPECT_LOCKED=1`; and
+2. `gate.sh --probe-only` against both Win11 and Win10.
+
+Until the orchestrator supplies both outputs and they pass, the newest linear
+push-through remains the already-pushed **`26fdfff`**. Commit `1794148` is only
+the *provisional next blocker after WS0 closes*; it is not the current reason
+the range cannot advance.
+
+## MS6.4 real-reservation timeout row (`7a49946`)
+
+Reviewed exact test-only commit `7a49946` on 2026-10-21. **Verdict: APPROVED
+for the integrated `[::1]` endpoint row.** The gate now starts the real
+`netd.py --test-port`, requires its exact ready line, builds the CLI profile
+for that live port, and proves three discriminating observations:
+
+- the IPv4 listener is reachable (`CONNECT-OK`);
+- the same netd-owned, bound but non-listening `[::1]` reservation times out
+  without Seatbelt; and
+- the generated CLI profile reaches the same `[::1]` endpoint only as the
+  same bounded `CONNECT-TIMEOUT`.
+
+Only the exact timeout passes. A completed connection, ordinary refusal from
+a missing reservation, or policy denial fails (`ms6_4_egress_test.sh:154-168,
+201-208`). The reported no-reservation mutant produces `CONNECT-REFUSED` and
+fails on both Macs, while the full MS6 gate passes on x86_64 15.3 and arm64
+26.7. `ms6_gate.sh` now stages the production netd for both legs. Local shell
+syntax and exact-diff checks passed; no remote Mac run was repeated.
+
+This closes the timeout-row hold on the `a597309`/`10cfae2` chain. Cumulatively,
+`a597309`, `10cfae2`, `4deb518`, `e05774f`, and `7a49946` are **APPROVED for
+the durable dual-family endpoint contract**. It also closes finding 3 from
+the `3e027b9` review: the real reservation deterministically exercises the
+probe's deadline outcome rather than accepting refusal/error as equivalent.
+
+**The overall `3e027b9` MS6.4 gate remains BLOCKED-for-tests on its independent
+errno-table finding.** The C selftest emits eleven named rows
+(`ms6_4_connect_probe.c:42-50`), but the shell asserts only nine and still
+omits `ENETDOWN` and `EHOSTDOWN` (`ms6_4_egress_test.sh:43-60`); it also does
+not reject duplicate or unexpected rows. That gap is outside `7a49946`'s
+reservation-row scope and must still be fixed before MS6.4 as a whole is
+declared complete. The endpoint approval likewise does not close MS6.6(B),
+production setup-on-Mac closure, or `seatbelt_ready`.
