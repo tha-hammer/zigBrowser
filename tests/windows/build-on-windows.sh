@@ -132,39 +132,63 @@ if [ -z "$step" ]; then
   if [ ! -s "$part" ] || [ "$(head -c2 "$part" 2>/dev/null)" != "MZ" ]; then
     echo "build-on-windows: fetched artifact is not a PE executable" >&2; rm -f "$part"; exit 3
   fi
-  # Finding (c) + RoseCat 42c797b: publish the artifact and its provenance as ONE atomic unit. Assemble the
-  # complete {exe, exe.sha} pair in a per-SHA version directory, then expose it through a SINGLE atomic
-  # 'current' symlink swap (a symlink rename is atomic). An interruption therefore can never leave an exe
-  # beside a mismatched SHA: before the swap the old complete pair stands; after it, the new one does. The
-  # stable consumer paths ($out, $out.sha) are symlinks THROUGH current, so they always read a matched pair.
+  # RoseCat 9dfc9c7: publish the {exe, provenance} pair atomically with NO two-name step and NO set -e.
+  # The SINGLE consumer surface is $outdir/current/<base> (+ .sha). Each run gets a FRESH IMMUTABLE
+  # generation dir (gen/g-<sha>-<utc>-<pid>, unique even for a same-SHA rerun), the complete pair is moved
+  # in with one rename, and the only live mutation is ONE atomic 'current' symlink swap. Before the swap the
+  # old generation current points at is untouched; after it, the new one. Every ln/mv is checked (the script
+  # runs without set -e), and every recursive delete is guarded (prefix-validated + ${var:?}, never empty).
+  outdir=$(dirname "$out"); outbase=$(basename "$out")
   if ! printf '%s\n' "$sha" > "$part.sha"; then
-    echo "build-on-windows: provenance write failed" >&2; rm -f "$part" "$part.sha"; exit 3
+    echo "build-on-windows: provenance write failed" >&2; rm -f -- "$part" "$part.sha"; exit 3
   fi
-  outdir=$(dirname "$out"); outbase=$(basename "$out"); verrel="vers/$sha"
-  stagedir="$outdir/.pub.$$"
-  rm -rf "$stagedir"
-  if ! mkdir -p "$stagedir" "$outdir/vers"; then
-    echo "build-on-windows: cannot create the publish staging dir" >&2; rm -rf "$stagedir"; rm -f "$part" "$part.sha"; exit 3
+  if ! mkdir -p "$outdir/gen"; then
+    echo "build-on-windows: cannot create the generations dir" >&2; rm -f -- "$part" "$part.sha"; exit 3
+  fi
+  gen="g-${sha}-$(date -u +%Y%m%d%H%M%SZ)-$$"
+  genrel="gen/$gen"; gendir="$outdir/$genrel"; stagedir="$outdir/.pub.$gen"
+  # Guarded cleanup of our OWN unique scratch (prefix-validated, non-empty, must exist).
+  for d in "$stagedir" "$gendir"; do
+    if [ -n "$d" ] && { [[ "$d" == "$outdir"/.pub.g-* ]] || [[ "$d" == "$outdir"/gen/g-* ]]; } && [ -e "$d" ]; then
+      rm -rf -- "${d:?}"
+    fi
+  done
+  if ! mkdir -p "$stagedir"; then
+    echo "build-on-windows: cannot create the staging dir" >&2
+    if [ -n "$stagedir" ] && [[ "$stagedir" == "$outdir"/.pub.g-* ]] && [ -e "$stagedir" ]; then rm -rf -- "${stagedir:?}"; fi
+    rm -f -- "$part" "$part.sha"; exit 3
   fi
   if ! mv -fT "$part" "$stagedir/$outbase" || ! mv -fT "$part.sha" "$stagedir/$outbase.sha"; then
-    echo "build-on-windows: assembling the version pair failed" >&2; rm -rf "$stagedir"; rm -f "$part" "$part.sha"; exit 3
+    echo "build-on-windows: assembling the generation pair failed" >&2
+    if [ -n "$stagedir" ] && [[ "$stagedir" == "$outdir"/.pub.g-* ]] && [ -e "$stagedir" ]; then rm -rf -- "${stagedir:?}"; fi
+    rm -f -- "$part" "$part.sha"; exit 3
   fi
-  rm -rf "$outdir/$verrel"
-  if ! mv -fT "$stagedir" "$outdir/$verrel"; then
-    echo "build-on-windows: publishing the version dir failed" >&2; rm -rf "$stagedir"; exit 3
+  if ! mv -fT "$stagedir" "$gendir"; then
+    echo "build-on-windows: publishing the generation failed" >&2
+    if [ -n "$stagedir" ] && [[ "$stagedir" == "$outdir"/.pub.g-* ]] && [ -e "$stagedir" ]; then rm -rf -- "${stagedir:?}"; fi
+    exit 3
   fi
-  # Selftest-only interruption point: models a crash AFTER the complete pair exists but BEFORE the atomic
-  # current-swap. NEVER set in production. Proves the swap is the single commit point (the old pair stands).
+  # Selftest-only: model a crash AFTER the generation exists but BEFORE the atomic current-swap. NEVER set
+  # in production. The old generation (if any) still owns 'current', so the surface is an intact old pair.
   if [ -n "${ZB_SELFTEST_CUT_PUBLISH:-}" ]; then
     echo "build-on-windows: interrupted before current-swap (selftest)" >&2; exit 42
   fi
-  # Atomic commit: flip 'current' from the old complete pair to the new one with one symlink rename.
-  if ! { ln -sfn "$verrel" "$outdir/.current.$$" && mv -fT "$outdir/.current.$$" "$outdir/current"; }; then
-    echo "build-on-windows: current-swap failed" >&2; rm -f "$outdir/.current.$$"; exit 3
+  # Atomic commit: point 'current' at the new generation with a single symlink rename. Each step checked.
+  if ! ln -sfn "$genrel" "$outdir/.current.$gen"; then
+    echo "build-on-windows: staging the current symlink failed" >&2; rm -f -- "$outdir/.current.$gen"; exit 3
   fi
-  # Stable consumer paths resolve THROUGH current (relative symlinks; created idempotently, always matched).
-  ln -sfn "current/$outbase" "$outdir/.o.$$" && mv -fT "$outdir/.o.$$" "$out"
-  ln -sfn "current/$outbase.sha" "$outdir/.os.$$" && mv -fT "$outdir/.os.$$" "$out.sha"
-  echo "build-on-windows: fetched $out (commit $sha)"
-  echo "build-on-windows: export ZB_WIN_EXE=$out for the WS1.1 census"
+  # The swap is CHECKED (the script runs without set -e): a failed rename must NOT report success.
+  if ! mv -fT "$outdir/.current.$gen" "$outdir/current"; then
+    echo "build-on-windows: current-swap failed" >&2; rm -f -- "$outdir/.current.$gen"; exit 3
+  fi
+  # Post-swap: reap only UNREACHABLE generations — never the one 'current' now points at. Guarded deletes.
+  live=$(readlink "$outdir/current" 2>/dev/null || true)
+  for g in "$outdir"/gen/g-*; do
+    [ -e "$g" ] || continue
+    gname=$(basename "$g")
+    [ "gen/$gname" = "$live" ] && continue
+    if [ -n "$gname" ] && [[ "$g" == "$outdir"/gen/g-* ]]; then rm -rf -- "${g:?}"; fi
+  done
+  echo "build-on-windows: fetched $outdir/current/$outbase (commit $sha)"
+  echo "build-on-windows: export ZB_WIN_EXE=$outdir/current/$outbase for the WS1.1 census"
 fi
