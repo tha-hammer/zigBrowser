@@ -22141,6 +22141,33 @@ report downstream mutants rather than relying only on the common `PLATFORM`
 addition. No full gate was run; the focused exact-SHA test and reproducer are
 display-free.
 
+### Darwin-before-bwrap fix (`951bd4b`)
+
+**APPROVED; this closes the blocker on `8fd0398`.** Exact `951bd4b` passes the
+registered focused suite **10/10** in a clean export with the pinned helper
+interpreter. Independently, overlaying `951bd4b`'s hardened test onto exact
+`8fd0398` reproduces the reported failing-first transition: **seven Darwin
+cases fail**, each because the old code returns bwrap exit 3 instead of usage
+exit 2. The failures cover a valid port, four invalid values, a missing value
+and a duplicate value.
+
+The fix moves `build_session()` and the explicit Darwin fail-closed branch
+ahead of `os.access(args.bwrap, X_OK)`, while leaving the Linux bwrap check
+ahead of its `AgentHome`/seccomp/build/exec path
+(`agent/host/zb_agent_host/launch.py:147-169`). The tests force `os.access`
+false and require it never to be called on every Darwin path; a valid port must
+produce the fixed “macOS launch is not ready” message, while malformed port
+shapes remain usage errors and `execve` is never reached
+(`agent/host/tests/test_launch.py:65-108`). This directly kills the Linux-host
+false green from the prior review.
+
+**NIT / remaining SHOULD:** `test_linux_none_is_a_session_with_no_port` reads
+the five expected attributes as a tuple, but that does not prove they are the
+*only* dataclass fields; a sixth field would survive. Use
+`dataclasses.fields(Session)` for an exact field-name census when the carrier
+next changes. This is not a blocker because the reviewed production dataclass
+currently contains exactly the five intended frozen fields.
+
 ## Windows WS1.4/WS1.5 red fix-forward (`6442bc4`)
 
 **BLOCKED-for-tests; `08bd75a` remains open.** Exact `6442bc4` is test-only and
