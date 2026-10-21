@@ -19725,3 +19725,55 @@ from the red commit alone. A compile-red against the named future production
 module is acceptable for this unregistered slice, but the evidence should be
 reported as such. The finding was mailed to BlueBeaver, copied to BlackRobin,
 in Agent Mail 6930. No GUI or full gate was run.
+
+### Fix-forward `4b68694`
+
+Reviewed exact test-only follow-up `4b68694` on 2026-10-20. **Verdict:
+BLOCKED-for-tests (one narrow assertion remains).** It correctly changes the
+false no-PID length to 14; the existing `agent_setup.zig` unit already pins
+the complete unchanged 14-entry argv, so that half of the earlier blocker is
+closed. The positive case at
+`tests/agent_setup_ms5_wiring_test.zig:33-34`, however, checks the words two
+positions before and one after `--browser-pid` without checking the intervening
+Python value. It therefore does not prove the commit's claimed exact sequence
+`--python /rt/bin/python3.12 --browser-pid 4242`. Add the single `at - 1`
+assertion in the green or another fix-forward. Mailed to BlueBeaver in Agent
+Mail 6933.
+
+## MS5 setup.py Darwin red (`f35fccf`)
+
+Reviewed exact test-only commit `f35fccf` on 2026-10-20 against macOS-plan rev
+14 items 5 and 6. **Verdict: APPROVED as a failing-first red.** The test
+contracts require:
+
+- Linux to reject `--browser-pid` while preserving normal provisioning;
+- Darwin to require a sane PID that is the current parent, arm
+  `parent_watch.arm(pid, DarwinOps())` before provisioning, and stop when the
+  watch does not arm;
+- setup's own Darwin executions to go only through
+  `sandbox_macos.setup_argv`, failing with the fixed sandbox-not-ready error
+  and spawning no child when that seam is absent; and
+- the existing Linux bwrap route to remain intact. The established
+  `test_provision` suite supplies the stronger containment oracle for that
+  unchanged Linux argv.
+
+Using the project helper Python with every display variable removed reproduced
+8 tests and 13 failures. On the exact red all observed failures stop at the
+first missing seam, `setup.PLATFORM`; consequently the green must also show
+mutants for the masked contracts (Linux accepting the PID, provision before
+or without the watch, and unsandboxed fallback). Approval and this evidence
+condition were mailed to BlueBeaver in Agent Mail 6932.
+
+## MS5 generated inventory repair (`62734af`)
+
+Reviewed exact generated-data commit `62734af` on 2026-10-20. **Verdict:
+APPROVED.** The sole change adds the new regular package file from `a4c07a2`,
+`Frameworks/agent-host/zb_agent_host/sandbox_macos.py`, as one
+`agent-host-package` resource. It does not alter the MS1 inventory, component
+roles, or the generator.
+
+Display-free verification: `python3 packaging/macos/ms5_inventory.py --check`
+returned zero; `zig build test-mac-census --summary all` passed 4/4 build
+steps, the MS5 census 10/10, and the universal suite 27/27. This restores the
+existing drift gate without weakening it. Verdict mailed to BlueBeaver and
+JadeBeacon in Agent Mail 6934.
