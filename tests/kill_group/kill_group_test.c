@@ -12,7 +12,9 @@
  * - ECHILD: not our child (no signal);
  * - EPERM: our child, but not the leader of its own group (no signal, not reaped).
  * Its leader check must hold for an exited, unreaped leader whose group still has a live member (macOS getpgid
- * fails with ESRCH on a zombie; measured on both Macs). */
+ * fails with ESRCH on a zombie; measured on both Macs).
+ * If killpg fails while the leader is still alive, it returns that errno at once: never an unbounded wait on a group
+ * it could not signal (RoseCat 7191). A zombie-only group (Darwin's killpg gives EPERM there) is still reaped. */
 #include <errno.h>
 #include <fcntl.h>
 #include <poll.h>
@@ -29,6 +31,8 @@ int zb_agent_kill_group(pid_t pid);
 int zb_agent_spawn_group_io(const char *const *argv, const char *const *envp, int stdin_fd, int stdout_fd,
                             pid_t *out_pid);
 void zb_fake_allow(pid_t pid);
+void zb_fake_deny_allowed(int err);
+int zb_fake_denied(void);
 void zb_fake_reset(void);
 int zb_fake_calls(void);
 int zb_fake_forwarded(void);
@@ -44,6 +48,12 @@ static int failures = 0;
 static void check(int ok, const char *label) {
   printf("  %s %s\n", ok ? "ok  " : "FAIL", label);
   if (!ok) failures++;
+}
+
+static double now_s(void) {
+  struct timespec t;
+  clock_gettime(CLOCK_MONOTONIC, &t);
+  return t.tv_sec + t.tv_nsec / 1e9;
 }
 
 static void sleep_ms(int ms) {
@@ -86,15 +96,28 @@ static void block_until_eof(int fd) {
   while (read(fd, &c, 1) > 0 || errno == EINTR) {}
 }
 
+/* Until stdin EOF, or `ms` at most: a child that ends by itself, so an unbounded wait in the red cannot hang. */
+static void block_until_eof_or(int fd, int ms) {
+  struct pollfd p = {fd, POLLIN, 0};
+  char c;
+  for (int waited = 0; waited < ms; waited += 100) {
+    if (poll(&p, 1, 100) > 0 && read(fd, &c, 1) <= 0) return;
+  }
+}
+
 /* Child modes (argv[1]); stdin and stdout are the test's pipes. */
 static int child_main(const char *mode) {
   if (strcmp(mode, "exit") == 0) return 0;
+  int bounded = strcmp(mode, "leader-3s") == 0;
   pid_t member = fork();
-  if (member == 0) { block_until_eof(0); _exit(0); }  /* same group as the leader; holds stdout too */
+  if (member == 0) {  /* same group as the leader; holds stdout too */
+    if (bounded) block_until_eof_or(0, 3000); else block_until_eof(0);
+    _exit(0);
+  }
   printf("ready %d\n", (int)member);
   fflush(stdout);
   if (strcmp(mode, "zombie-leader") == 0) return 0;  /* the member outlives its leader */
-  block_until_eof(0);
+  if (bounded) block_until_eof_or(0, 3000); else block_until_eof(0);
   return 0;
 }
 
@@ -246,7 +269,33 @@ int main(int argc, char **argv) {
   close(s.in_w);
   close(s.out_r);
 
-  if (failures == 0) { printf("PASS\tkill-group\t7 cases\n"); return 0; }
+  /* 7. killpg fails on our LIVE leader (the fake makes the permitted call fail with EPERM, unsent): the errno comes
+   * back at once, nothing else is tried, and the leader is NOT reaped (it is still running); never a blocking wait.
+   * The group ends by itself after 3 s, so the old blocking code fails on time instead of hanging. */
+  if (spawn(self, "leader-3s", &s) != 0) { printf("FAIL\tkill-group\tspawn leader-3s\n"); return 1; }
+  read_line(s.out_r, line, sizeof line, 5000);
+  zb_fake_reset();
+  zb_fake_allow(s.pid);
+  zb_fake_deny_allowed(EPERM);
+  double t0 = now_s();
+  rc = zb_agent_kill_group(s.pid);
+  double took = now_s() - t0;
+  char m7[300];
+  snprintf(m7, sizeof m7,
+           "killpg fails on a live leader: EPERM returned within 1 s, no other call (rc %d, %.2f s, %d call(s), "
+           "%d denied, %d bad, %d kill())",
+           rc, took, zb_fake_calls(), zb_fake_denied(), zb_fake_bad(), zb_fake_kill_calls());
+  check(rc == EPERM && took < 1.0 && zb_fake_calls() == 1 && zb_fake_denied() == 1 && zb_fake_bad() == 0 &&
+            zb_fake_kill_calls() == 0,
+        m7);
+  int live_st;
+  check(waitpid(s.pid, &live_st, WNOHANG) == 0, "killpg fails on a live leader: it is not reaped (still ours)");
+  close(s.in_w);
+  eof_within(s.out_r, 5000);
+  close(s.out_r);
+  while (waitpid(s.pid, &live_st, 0) < 0 && errno == EINTR) {}
+
+  if (failures == 0) { printf("PASS\tkill-group\t8 cases\n"); return 0; }
   printf("FAIL\tkill-group\t%d failure(s)\n", failures);
   return 1;
 }

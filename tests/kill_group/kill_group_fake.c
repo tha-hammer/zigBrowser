@@ -11,13 +11,17 @@
 #include <sys/types.h>
 
 static pid_t allowed = 0;
-static int calls = 0, forwarded = 0, bad = 0, kill_calls = 0;
+static int deny_allowed_errno = 0; /* nonzero: the allowlisted call itself fails with this errno, unsent */
+static int calls = 0, forwarded = 0, bad = 0, kill_calls = 0, denied = 0;
 static pid_t last_target = 0, first_bad_target = 0;
 static int last_was_pg = 0, first_bad_was_pg = 0, first_bad_sig = 0;
 
 void zb_fake_allow(pid_t pid) { allowed = pid; }
+void zb_fake_deny_allowed(int err) { deny_allowed_errno = err; }
+int zb_fake_denied(void) { return denied; }
 void zb_fake_reset(void) {
-  calls = forwarded = bad = kill_calls = 0;
+  calls = forwarded = bad = kill_calls = denied = 0;
+  deny_allowed_errno = 0;
   last_target = first_bad_target = 0;
   last_was_pg = first_bad_was_pg = first_bad_sig = 0;
   allowed = 0;
@@ -47,6 +51,11 @@ static int hook(int is_pg, pid_t pid, int sig) {
   last_target = pid;
   last_was_pg = is_pg;
   if (!is_pg) kill_calls++;
+  if (allowed > 1 && pid == allowed && sig == SIGKILL && deny_allowed_errno != 0) {
+    denied++;  /* the permitted call fails as the kernel might (RoseCat 7191): nothing is sent */
+    errno = deny_allowed_errno;
+    return -1;
+  }
   if (allowed > 1 && pid == allowed && sig == SIGKILL) {
     forwarded++;
     return is_pg ? real_killpg(pid, sig) : real_kill(pid, sig);
