@@ -80,18 +80,24 @@ int zb_reaper_gather(int (*scan)(void *buf, int bytes), pid_t **out, int *out_n)
 
 /* The decision engine over `pids[0..npids)` against the resolved `dir`. Skips pid <= 1, ourselves, and any pid
  * not of our uid. census (kill_them=0): list matching pids, NO signal. sweep (kill_them=1): re-inspect each
- * match, revalidate the pinned dir (ops->dir_ok) and skip a vanished / reused / wrong-uid / dir-changed pid,
- * then SIGKILL; a killsig errno other than ESRCH is a survivor, ESRCH is gone. `*overflow` is set when a list
- * overflows its cap (never clean). Returns 0, or EINVAL on a contract violation (null ops/callbacks/overflow,
- * null pids with npids > 0, negative npids/caps). */
+ * match, revalidate the pinned dir (ops->dir_ok) and SIGKILL; a killsig errno other than ESRCH is a survivor,
+ * ESRCH is gone. `*overflow` is set when a list overflows its cap (never clean). `*unresolved` (nullable, sweep
+ * only) COUNTS matched candidates of our uid that could NOT be safely acted upon — identity unavailable at the
+ * first inspect, or vanished/reused/changed-identity/changed-uid at the pre-kill inspect. These are NOT proven
+ * gone, so they are reported here DISTINCTLY from both `killed` and `surv` (RoseCat 3ec386e): a caller must never
+ * read kn==0 && sn==0 with unresolved>0 as a clean, empty census. Returns 0, or EINVAL on a contract violation
+ * (null ops/callbacks/overflow, null pids with npids > 0, negative npids/caps). */
 int zb_reaper_engine(const struct zb_reaper_ops *ops, const pid_t *pids, int npids, const char *dir,
-                     int kill_them, int *killed, int kcap, int *kn, int *surv, int scap, int *sn, int *overflow);
+                     int kill_them, int *killed, int kcap, int *kn, int *surv, int scap, int *sn, int *overflow,
+                     int *unresolved);
 
 /* gather (via the injected scan) + the engine. A failed scan maps to a NON-ZERO return, never a clean empty
  * result: EOVERFLOW (incomplete) or EIO (sizing/scan/alloc error), both also setting *overflow; else the
- * engine's result. EINVAL on a null scan/ops/dir/overflow. */
+ * engine's result. `*unresolved` (nullable) is passed through from the engine. EINVAL on a null scan/ops/dir/
+ * overflow. */
 int zb_reaper_run_full(int (*scan)(void *buf, int bytes), const struct zb_reaper_ops *ops, const char *dir,
-                       int kill_them, int *killed, int kcap, int *kn, int *surv, int scap, int *sn, int *overflow);
+                       int kill_them, int *killed, int kcap, int *kn, int *surv, int scap, int *sn, int *overflow,
+                       int *unresolved);
 
 /* MS6.5.1 (plan rev 27, "Clean fixed point"): a bounded census->kill->fresh-census FIXED POINT. One gather+sweep
  * cannot prove a run clean — a marked process can fork AFTER the gather and before its parent is killed, so it is

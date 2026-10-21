@@ -127,7 +127,8 @@ static int engine_gone(const struct zb_reaper_ops *ops, pid_t pid, int grace_ms)
 }
 
 int zb_reaper_engine(const struct zb_reaper_ops *ops, const pid_t *pids, int npids, const char *dir,
-                     int kill_them, int *killed, int kcap, int *kn, int *surv, int scap, int *sn, int *overflow) {
+                     int kill_them, int *killed, int kcap, int *kn, int *surv, int scap, int *sn, int *overflow,
+                     int *unresolved) {
   if (overflow == NULL) return EINVAL; /* truncation must be reportable */
   if (ops == NULL || ops->inspect == NULL || ops->killsig == NULL || ops->dir_ok == NULL) return EINVAL;
   if (dir == NULL) return EINVAL;
@@ -136,6 +137,7 @@ int zb_reaper_engine(const struct zb_reaper_ops *ops, const pid_t *pids, int npi
   *overflow = 0;
   if (kn) *kn = 0;
   if (sn) *sn = 0;
+  if (unresolved) *unresolved = 0;
   const pid_t self = getpid();
   const uid_t myuid = getuid();
   for (int i = 0; i < npids; i++) {
@@ -143,7 +145,13 @@ int zb_reaper_engine(const struct zb_reaper_ops *ops, const pid_t *pids, int npi
     if (pid <= 1 || pid == self) continue; /* never 0/1/self: kill(-1)/kill(0)/suicide */
     struct zb_reaper_id id0;
     ops->inspect(pid, dir, &id0, ops->ctx);
-    if (!id0.matches || !id0.have_bsd || id0.uid != myuid) continue;
+    if (!id0.matches || id0.uid != myuid) continue; /* not a survivor of this run, or not ours: silent */
+    if (!id0.have_bsd) {
+      /* A match of our uid whose identity is UNAVAILABLE. In census it is dropped as before; in a sweep it is a
+       * candidate we cannot safely act on and is NOT proven gone -> report it UNRESOLVED, never clean. */
+      if (kill_them && unresolved) (*unresolved)++;
+      continue;
+    }
     if (!kill_them) {
       collect(surv, scap, sn, overflow, pid);
       continue;
@@ -151,7 +159,12 @@ int zb_reaper_engine(const struct zb_reaper_ops *ops, const pid_t *pids, int npi
     if (pid <= 1 || pid == self) continue; /* belt before the signal */
     struct zb_reaper_id id1;
     ops->inspect(pid, dir, &id1, ops->ctx);
-    if (!id1.matches || id1.uid != myuid || !same_proc(&id0, &id1)) continue; /* vanished/reused/changed */
+    if (!id1.matches || id1.uid != myuid || !same_proc(&id0, &id1)) {
+      /* Matched at id0 but vanished/reused/changed identity or uid at the pre-kill inspect: send NO signal, but
+       * it is NOT proven gone -> UNRESOLVED, so the caller must re-census (or report Survivors), never clean. */
+      if (unresolved) (*unresolved)++;
+      continue;
+    }
     /* The pinned dir changed under us: send NO signal, and the whole run is now unsafe to classify — flag it
      * not-clean (overflow) and STOP, so the caller can never report a clean cleanup (RoseCat 175efb8 #2). */
     if (!ops->dir_ok(ops->ctx)) { *overflow = 1; break; }
@@ -186,18 +199,20 @@ int zb_reaper_gather(int (*scan)(void *buf, int bytes), pid_t **out, int *out_n)
 }
 
 int zb_reaper_run_full(int (*scan)(void *buf, int bytes), const struct zb_reaper_ops *ops, const char *dir,
-                       int kill_them, int *killed, int kcap, int *kn, int *surv, int scap, int *sn, int *overflow) {
+                       int kill_them, int *killed, int kcap, int *kn, int *surv, int scap, int *sn, int *overflow,
+                       int *unresolved) {
   if (scan == NULL || ops == NULL || dir == NULL || overflow == NULL) return EINVAL;
   *overflow = 0;
   if (kn) *kn = 0;
   if (sn) *sn = 0;
+  if (unresolved) *unresolved = 0;
   pid_t *pids = NULL;
   int n = 0;
   const int g = zb_reaper_gather(scan, &pids, &n);
   if (g == EINVAL) return EINVAL;
   if (g == -1) { *overflow = 1; return EOVERFLOW; } /* incomplete scan: not clean */
   if (g == -2) { *overflow = 1; return EIO; }       /* scan failure: not clean */
-  const int rc = zb_reaper_engine(ops, pids, n, dir, kill_them, killed, kcap, kn, surv, scap, sn, overflow);
+  const int rc = zb_reaper_engine(ops, pids, n, dir, kill_them, killed, kcap, kn, surv, scap, sn, overflow, unresolved);
   free(pids);
   return rc;
 }
@@ -211,20 +226,22 @@ int zb_reaper_fixed_point(int (*scan)(void *buf, int bytes), const struct zb_rea
   *passes = 0;
   *overflow = 0;
   /* The bounded census->kill->fresh-census FIXED POINT. Each pass gathers afresh and sweeps; CLEAN is declared
-   * only when a pass matches ZERO pids (kn == 0 && sn == 0) with no overflow — the complete, EMPTY final census.
-   * A pass that killed someone (kn > 0) re-censuses on the next pass, because a marked process may have forked a
-   * child after this pass's gather. Any incomplete/overflow/scan error, or exhausting max_passes, is NOT clean
-   * (the caller keeps the run in Survivors with its authority). */
+   * only when a pass matches ZERO pids (kn == 0 && sn == 0), with NO unresolved matches and no overflow — the
+   * complete, EMPTY final census. A pass that killed someone (kn > 0), left a survivor (sn > 0), or could not
+   * resolve a matched candidate (unresolved > 0 — e.g. its identity flipped at the pre-kill inspect) re-censuses
+   * on the next pass, because a marked process may have forked a child after this pass's gather and an unresolved
+   * match is NOT proven gone. Any incomplete/overflow/scan error, or exhausting max_passes, is NOT clean (the
+   * caller keeps the run in Survivors with its authority). */
   enum { CAP = 256 };
   for (int p = 0; p < max_passes; p++) {
-    int killed[CAP], surv[CAP], kn = 0, sn = 0, ov = 0;
-    const int rc = zb_reaper_run_full(scan, ops, dir, 1, killed, CAP, &kn, surv, CAP, &sn, &ov);
+    int killed[CAP], surv[CAP], kn = 0, sn = 0, ov = 0, unres = 0;
+    const int rc = zb_reaper_run_full(scan, ops, dir, 1, killed, CAP, &kn, surv, CAP, &sn, &ov, &unres);
     (*passes)++;
-    if (rc == EOVERFLOW || rc == EIO) { *overflow = 1; return 0; } /* incomplete/scan error: not clean */
-    if (rc != 0) return rc;                                        /* EINVAL etc: propagate */
-    if (ov) { *overflow = 1; return 0; }                           /* a list overflowed its cap: not clean */
-    if (kn == 0 && sn == 0) { *clean = 1; return 0; }              /* complete EMPTY final census: clean */
-    /* kn > 0 and/or sn > 0: matches remained this pass; re-census on the next pass. */
+    if (rc == EOVERFLOW || rc == EIO) { *overflow = 1; return 0; }        /* incomplete/scan error: not clean */
+    if (rc != 0) return rc;                                              /* EINVAL etc: propagate */
+    if (ov) { *overflow = 1; return 0; }                                 /* a list overflowed its cap: not clean */
+    if (kn == 0 && sn == 0 && unres == 0) { *clean = 1; return 0; }      /* complete EMPTY final census: clean */
+    /* kn>0, sn>0, and/or unres>0: matches or unresolved candidates remained; re-census on the next pass. */
   }
   return 0; /* max_passes exhausted without an empty census: *clean stays 0 (Survivors) */
 }
@@ -298,7 +315,8 @@ static int reaper_public(int run_dir_fd, const struct zb_reaper_dir_id *pinned, 
   if (!zb_reaper_run_dir_ok(dir)) return EINVAL;
   struct reaper_ctx rc = {run_dir_fd, pinned};
   struct zb_reaper_ops ops = {reaper_inspect_real, reaper_killsig_real, reaper_dir_ok_real, &rc};
-  return zb_reaper_run_full(reaper_scan_real, &ops, dir, kill_them, killed, kcap, kn, surv, scap, sn, overflow);
+  return zb_reaper_run_full(reaper_scan_real, &ops, dir, kill_them, killed, kcap, kn, surv, scap, sn, overflow,
+                            NULL); /* unresolved: unused here; the Linux fixed point is the clean-decider */
 }
 
 int zb_reaper_census(int run_dir_fd, const struct zb_reaper_dir_id *pinned, int *out_pids, int cap, int *out_n,
