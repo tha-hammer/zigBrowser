@@ -21935,3 +21935,47 @@ failure suite is also still BLOCKED-for-tests on its exact branch diagnostics.
 AzureRidge should fix forward the census leak and either register/replace the
 old artifact red with the real provenance-bound success test, then close the
 separately recorded exact-diagnostic mutants for `6c771ff`.
+
+## Unified MS6 hard-gate harness red/green (`79f9933`, `3bd5727`)
+
+Reviewed the exact pair on 2026-10-21. Independent clean exports reproduce the
+reported transition: exact `79f9933` fails **6/6** because the driver and entry
+are absent, while exact `3bd5727` passes **6/6** under display-scrubbed
+`python3 -X dev`. The green registers the suite additively in both
+`test-mac-census` and the Linux aggregate. The NOT ARMED entry exits 3 before
+the current script contains any network operation, and the deliberately
+failing MS6.6(B) placeholder prevents the future driver from certifying that
+case. The single-harness topology matches approved rev 18.1.
+
+**`79f9933` is BLOCKED-for-tests and `3bd5727` is BLOCKED.** Two load-bearing
+harness properties are not safe or durably observed:
+
+1. **BLOCKER — process groups are signalled twice.** `Harness.spawn_group`
+   appends the process, then unconditionally calls `_reap` in its `finally`
+   (`tests/mac/hard_gate/harness.py:36-47`). It never removes or marks that
+   entry. `Harness.close` later walks the same list and calls `_reap` again
+   (`:71-73`); `_reap` calls `os.killpg(proc.pid, SIGKILL)` before checking the
+   process state (`:49-56`). After the first `wait`, that numeric process-group
+   id can be reused, so cleanup can kill an unrelated group. A deterministic
+   fake-process check confirms two `killpg` calls. Make ownership consumption
+   idempotent while retaining the required leader-exited/descendant-survives
+   group kill.
+2. **BLOCKER-for-tests — the lifecycle and pre-network claims bypass the
+   suite.** None of the six tests calls `spawn_group`; normal completion,
+   timeout, a leader that exits before a group child, pipe closure, repeated
+   `close`, no survivors and exactly-once signalling are all untested even
+   though this is the seam both security cases will consume. The NOT ARMED
+   test (`ms6_hard_gate_driver_test.py:120-130`) checks only exit 3 and a text
+   substring. It hardcodes the real `/usr/bin:/bin` PATH and overrides only the
+   ARM host, so it neither observes “before any network” nor safely prevents a
+   later guard-regression from reaching the default Intel host. Give it
+   recording/refusing `ssh`/`scp`/network shims, set every host to a canary, and
+   assert zero invocations for both missing-pins and pins-present-but-staging-
+   absent states.
+
+The ordinary driver rules—failed check, raise, no check, missing NAME/run,
+duplicate NAME, empty case set and successful scratch cleanup—are otherwise
+implemented fail closed. This review does not require the MS6.3 or MS6.6(B)
+real cases before the MS5 pins decision; it requires the shared seam they will
+inherit to be safe and mutation-protected first. No full gate was started
+because BlackRobin held the shared slot.
