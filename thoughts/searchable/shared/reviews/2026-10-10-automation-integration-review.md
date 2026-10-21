@@ -25907,3 +25907,32 @@ were green:
 The throwaway trees were deleted immediately. This changes setup production
 code but not either reviewed hard-gate case or its manifest digest. A Mac
 rerun remains under the orchestrator's explicit gate authorization.
+
+## S8a approved-profile owner binding (`cbd254a`)
+
+**APPROVED; cumulatively closes the `6058062` red and review `8b05366`.**
+`guardOpener` now emits one owner mark alongside the approved path and target,
+and still emits nothing for an unapproved run. Instagram's expected normalized
+header text comes from the requested username. LinkedIn's expected
+same-origin contact-info path comes from the approved profile URL's slug,
+never from the page title; the selector remains inside the exactly-one owner
+area. Missing, duplicate or mismatched owner markup therefore produces
+`-32015 mark_changed` inside the same click task, before any input event.
+
+The wire-form `Runner.Mark` matches the router guard schema, and omitting null
+optional fields preserves the intended Instagram text mark. The existing
+recipient test now also requires exactly one opener mark, while the dedicated
+Zig suite pins its selector, value, path and target. Both dedicated tests are
+registered in the top-level gate. The docs accurately label the selectors as
+fixture-proven but live-unverified, so markup drift fails closed rather than
+falling back to path-only behavior.
+
+BlackRobin's clean private-Xvfb gate was green: **359/359 steps**, **1161/1163
+tests passed (2 skipped)**, including owner Zig **2/2**, owner e2e **6/6** and
+the existing recipient guard **26/26**. An independent exact-archive run built
+the browser (**5/5 steps**) and drove the real-binary owner e2e under a private
+Xvfb: **6/6 checks passed**. In particular, Instagram's unchanged wrong-owner
+path returned `-32015 mark_changed` with `{events:0,chars:0}`, left the
+composer closed and sent nothing; LinkedIn's wrong contact-info owner likewise
+produced no click. The throwaway export was deleted immediately. Verdict sent
+to BlackRobin.
