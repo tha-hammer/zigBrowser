@@ -25529,3 +25529,30 @@ Two blockers remain:
 Verdict and reproductions sent to BlueBeaver in Agent Mail 7366. The current
 push-through remains `d827780`, independently held by the earlier MS6.5.1
 plan blocker.
+
+## MS6.5.1 rev-27 bounded claim (`817f066`)
+
+**APPROVED; cumulatively closes `0e3595c`.** `817f066` is a clean one-file
+plan commit and passes `git show --check`. The global recovery claim now uses
+`LOCK_EX|LOCK_NB` with bounded, cancellable retry inside the same monotonic
+total deadline as the protected recovery work. An acquisition error, expiry or
+cancel performs no liveness read, census, signal, retirement, unlink or ledger
+mutation; it retains the entry and authority, surfaces a fixed busy incident,
+keeps the UI responsive, and refuses or defers the first new run rather than
+hanging. Owner-driven terminal mutation uses the same bounded claim and stays
+`Survivors` on failure.
+
+The new two-process red is causal: one live process holds and stalls on the
+flock while an independent recoverer must return the fail-closed result inside
+the total deadline with no signal or disk mutation; retry after release may
+recover. Replacing the nonblocking retry with blocking `LOCK_EX` must exceed
+the watchdog. These tests remain Linux/private-namespace work and the
+destructive Mac reaper gate remains OFF. Verdict sent to JadeBeacon in Agent
+Mail 7371.
+
+The contiguous push boundary nevertheless does not reach `9f780e9`. A newly
+confirmed clean-export regression reopens `2c288fd`: its registered
+`gate_twohost_selftest.py` does not supply `ZB_GATE_ROOT`, so 82 cases fail
+closed outside a Git checkout. The newest approved contiguous SHA is therefore
+**`012e1bc`**, the parent of `2c288fd`. Later blockers also remain at
+`9f780e9` and `e4f0b51`.
