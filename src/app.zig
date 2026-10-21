@@ -4,6 +4,7 @@ const builtin = @import("builtin");
 const agent_drawer = @import("agent_drawer.zig");
 const agent_setup = @import("agent_setup.zig");
 const agent_config = @import("agent_config.zig");
+const mac_vm_containment = @import("mac_vm_containment.zig");
 const agent_net = @import("agent_net.zig");
 const agent_helper = @import("agent_helper.zig");
 const agent_frames = @import("agent_frames.zig");
@@ -56,6 +57,18 @@ pub fn runWithIo(arena: std.mem.Allocator, io: std.Io, command: cli.Command) err
 /// home's owner lock, then runs the helper's `setup` command synchronously
 /// with an explicit environment (agent_setup.zig) and returns its status.
 fn runAgentSetup(arena: std.mem.Allocator, spec: AgentSetupSpec) errors.BrowserError!u8 {
+    // VM containment (MS6.5 stub, the user's decision 2026-10-21): off by default. When a user turns it on, the
+    // agent must NOT run until the Apple Virtualization backend exists, so fail closed here before anything else.
+    switch (mac_vm_containment.gate(
+        mac_vm_containment.resolve(null, getenvOwned(arena, mac_vm_containment.env_name)).value,
+        mac_vm_containment.availability(),
+    )) {
+        .proceed => {},
+        .refuse => |line| {
+            std.debug.print("{s}\n", .{line});
+            return 1;
+        },
+    }
     switch (agent_setup.platformGate(builtin.os.tag, agent_setup.seatbelt_ready)) {
         .run => {},
         .refuse => |line| {

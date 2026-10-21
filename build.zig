@@ -702,6 +702,22 @@ pub fn build(b: *std.Build) void {
         "sh", "-c", "setsid tests/kill_group/run_linux.sh",
     });
     agent_host_posix_spawn_step.dependOn(&kill_group_tests.step);
+    // MS6.5 (the user's decision 2026-10-21): the stubbed macOS VM-containment seam — off by default, reports
+    // "not available yet", and the gate fails closed when on. Pure Linux unit (no OS calls).
+    const mac_vm_containment_module = b.createModule(.{
+        .root_source_file = b.path("tests/mac_vm_containment_test.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    mac_vm_containment_module.addImport("mac_vm_containment", b.createModule(.{
+        .root_source_file = b.path("src/mac_vm_containment.zig"),
+        .target = target,
+        .optimize = optimize,
+    }));
+    const run_mac_vm_containment_tests = b.addRunArtifact(b.addTest(.{ .root_module = mac_vm_containment_module }));
+    run_mac_vm_containment_tests.skip_foreign_checks = true;
+    const mac_vm_containment_step = b.step("test-mac-vm-containment", "the stubbed macOS VM-containment seam");
+    mac_vm_containment_step.dependOn(&run_mac_vm_containment_tests.step);
 
     // Chat drawer S3b: the helper's launch argv and environment, the app's
     // frames, the runtime-lock check and the backoff (src/agent_helper.zig).
@@ -2399,6 +2415,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_agent_net_manifest_tests.step);
     test_step.dependOn(&run_agent_host_posix_tests.step);
     test_step.dependOn(&run_agent_host_posix_spawn_tests.step);
+    test_step.dependOn(&run_mac_vm_containment_tests.step);
     test_step.dependOn(&run_agent_secrets_tests.step);
     test_step.dependOn(&run_agent_secrets_shape_tests.step);
     if (target.result.os.tag == .linux) test_step.dependOn(&run_agent_secrets_dlopen_test.step);
