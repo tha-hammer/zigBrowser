@@ -202,6 +202,27 @@ int zb_reaper_run_full(int (*scan)(void *buf, int bytes), const struct zb_reaper
   return rc;
 }
 
+int zb_reaper_fixed_point(int (*scan)(void *buf, int bytes), const struct zb_reaper_ops *ops, const char *dir,
+                          int max_passes, int *clean, int *passes, int *overflow) {
+  if (scan == NULL || ops == NULL || dir == NULL || clean == NULL || passes == NULL || overflow == NULL)
+    return EINVAL;
+  if (max_passes < 1) return EINVAL;
+  *clean = 0;
+  *passes = 0;
+  *overflow = 0;
+  /* RED STUB — the plan's named "no-recensus mutant": ONE gather+sweep, then declare clean if that single pass
+   * left no survivors. It never re-censuses, so a process that forks after this pass's gather is never seen.
+   * The green implementation replaces this with the bounded census->kill->fresh-census loop. */
+  enum { CAP = 256 };
+  int killed[CAP], surv[CAP], kn = 0, sn = 0;
+  const int rc = zb_reaper_run_full(scan, ops, dir, 1, killed, CAP, &kn, surv, CAP, &sn, overflow);
+  *passes = 1;
+  if (rc == EOVERFLOW || rc == EIO) return 0; /* not clean, overflow already set */
+  if (rc != 0) return rc;
+  *clean = (sn == 0 && *overflow == 0);
+  return 0;
+}
+
 /* ---- macOS production wrappers (libproc + real kill; Mac-only) ---- */
 
 #ifdef __APPLE__

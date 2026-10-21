@@ -93,6 +93,16 @@ int zb_reaper_engine(const struct zb_reaper_ops *ops, const pid_t *pids, int npi
 int zb_reaper_run_full(int (*scan)(void *buf, int bytes), const struct zb_reaper_ops *ops, const char *dir,
                        int kill_them, int *killed, int kcap, int *kn, int *surv, int scap, int *sn, int *overflow);
 
+/* MS6.5.1 (plan rev 27, "Clean fixed point"): a bounded census->kill->fresh-census FIXED POINT. One gather+sweep
+ * cannot prove a run clean — a marked process can fork AFTER the gather and before its parent is killed, so it is
+ * absent from that pass's list. This repeats gather+engine(kill) until a pass that matches ZERO pids with no
+ * overflow (the complete, EMPTY final census), bounded by `max_passes`. Sets *clean=1 ONLY on that empty final
+ * census; a pass-cap hit, or ANY incomplete/overflow/engine error on the way, yields *clean=0 (Survivors) and
+ * never a clean result. *passes = passes performed. Same injected scan/ops as run_full; the kill is the injected
+ * killsig, so the Linux decision proof never sends a real signal. EINVAL on a null argument. */
+int zb_reaper_fixed_point(int (*scan)(void *buf, int bytes), const struct zb_reaper_ops *ops, const char *dir,
+                          int max_passes, int *clean, int *passes, int *overflow);
+
 #ifdef __APPLE__
 /* Production: `run_dir_fd` is the no-follow dir fd the caller opened at run-dir creation and holds for the run;
  * `pinned` is zb_reaper_pin_fd's identity from it. The reaper revalidates the fd (never a pathname), derives the
