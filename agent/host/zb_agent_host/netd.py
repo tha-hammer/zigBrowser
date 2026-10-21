@@ -561,9 +561,11 @@ def parse_args(argv, darwin=False):
     # --allow-host and --bridge-port carry the checked manifest to the sandboxed side.
     multi = {"--test-allow": "allow", "--test-bridge": "bridge", "--test-resolve": "resolve",
              "--allow-host": "host", "--bridge-port": "port"}
+    seen = set()  # every flag given, whatever its value (an empty one included; RoseCat 7033)
     i = 0
     while i < len(argv):
         arg = argv[i]
+        seen.add(arg)
         if arg in single or arg in multi:
             if i + 1 >= len(argv):
                 raise ValueError(f"{arg} needs a value")
@@ -587,11 +589,11 @@ def parse_args(argv, darwin=False):
         else:
             raise ValueError(f"unknown argument {arg!r}")
     if darwin:
-        # macOS: no socket directory, no bwrap, no bridges, no sandboxed side (BlueBeaver 6971).
-        for flag, key in (("--sockdir", "sockdir"), ("--bwrap", "bwrap"), ("--test-bridge", "bridge"),
-                          ("--serve", "serve"), ("--allow-host", "host"), ("--bridge-port", "port"),
-                          ("--no-bridges", "no_bridges")):
-            if opts[key]:
+        # macOS: no socket directory, no bwrap, no bridges, no sandboxed side (BlueBeaver 6971). A flag is refused
+        # when it is present at all, even with an empty value (RoseCat 7033).
+        for flag in ("--sockdir", "--bwrap", "--test-bridge", "--serve", "--allow-host", "--bridge-port",
+                     "--no-bridges"):
+            if flag in seen:
                 raise ValueError(f"{flag} is not used on macOS")
     elif not opts["sockdir"]:
         raise ValueError("--sockdir is required")

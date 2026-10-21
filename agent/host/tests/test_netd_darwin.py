@@ -18,6 +18,7 @@ Run like the gate: cd agent/host/tests && python -X dev -m unittest -v test_netd
 """
 import json
 import os
+import queue
 import re
 import shutil
 import signal
@@ -73,15 +74,24 @@ def _remove_root(root):
 
 
 class DarwinNetd:
-    def __init__(self, tc, *extra):
+    def __init__(self, tc, *extra, launch=LAUNCH):
         self.tc = tc
         self.err = []
-        self.proc = subprocess.Popen([sys.executable, "-c", LAUNCH, "--test-record-connects", *extra],
+        self.lines = queue.Queue()
+        self.proc = subprocess.Popen([sys.executable, "-c", launch, "--test-record-connects", *extra],
                                      stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                      env=child_env(), text=True)
         self.drain = threading.Thread(target=self._drain, daemon=True)
         self.drain.start()
+        # stdout is read by a thread into a queue, so every wait on it has a real deadline (RoseCat 7030).
+        self.reader = threading.Thread(target=self._read_stdout, daemon=True)
+        self.reader.start()
         tc.addCleanup(self.close)
+
+    def _read_stdout(self):
+        for line in self.proc.stdout:
+            self.lines.put(line)
+        self.lines.put(None)  # EOF
 
     def close(self):
         """The normal shutdown first (EOF on stdin, which removes anything netd made); a kill only if that fails."""
@@ -91,19 +101,33 @@ class DarwinNetd:
                 self.proc.wait(timeout=5)
             except (OSError, subprocess.TimeoutExpired):
                 pass
-        reap(self.proc, self.drain)
+        reap(self.proc, self.drain, self.reader)
 
     def _drain(self):
         for line in self.proc.stderr:
             self.err.append(line.rstrip("\n"))
 
-    def ready_port(self):
-        line = self.proc.stdout.readline()
+    def ready_port(self, timeout=10):
+        try:
+            line = self.lines.get(timeout=timeout)
+        except queue.Empty:
+            self.tc.fail(f"no ready line within {timeout} s: {self.err}")
+        line = line or ""
+        self.tc.assertTrue(line.endswith("\n"), f"the ready line is a whole line: {line!r}")
         m = READY.fullmatch(line.rstrip("\n"))
         self.tc.assertIsNotNone(m, f"the ready line is exactly 'netd ready 127.0.0.1:<port>': {line!r} {self.err}")
         port = int(m.group(1))
         self.tc.assertTrue(1 <= port <= 65535)
         return port
+
+    def rest_of_stdout(self, timeout=10):
+        """Everything netd printed after its ready line, up to EOF."""
+        out = []
+        while True:
+            line = self.lines.get(timeout=timeout)
+            if line is None:
+                return "".join(out)
+            out.append(line)
 
     def proxy(self, port):
         s = socket.create_connection(("127.0.0.1", port), timeout=15)
@@ -123,7 +147,7 @@ class ReadyAndListener(unittest.TestCase):
                          "exactly one listening socket, on 127.0.0.1, at the announced port (no bridges)")
         netd.proc.stdin.close()
         self.assertEqual(netd.proc.wait(timeout=10), 0)
-        self.assertEqual(netd.proc.stdout.read(), "", "the ready line is the only stdout line")
+        self.assertEqual(netd.rest_of_stdout(), "", "the ready line is the only stdout line")
 
     def test_eof_closes_the_port(self):
         netd = DarwinNetd(self)
@@ -141,16 +165,29 @@ class ReadyAndListener(unittest.TestCase):
         with self.assertRaises(ConnectionRefusedError):
             socket.create_connection(("127.0.0.1", port), timeout=5).close()
 
+    def test_a_netd_that_stalls_without_a_whole_ready_line_fails_within_the_deadline(self):
+        # The harness itself (RoseCat 7030): a child that prints a ready line without its newline and then hangs
+        # must end the wait as a failure, not block the suite.
+        stall = "import sys, time; sys.stdout.write('netd ready 127.0.0.1:5'); sys.stdout.flush(); time.sleep(60)"
+        netd = DarwinNetd(self, launch=stall)
+        started = time.monotonic()
+        with self.assertRaises(AssertionError):
+            netd.ready_port(timeout=2)
+        self.assertLess(time.monotonic() - started, 5)
+
     def test_linux_only_options_are_refused(self):
-        for option in ("--sockdir", "--bwrap", "--test-bridge"):
+        # Present at all is refused, an empty value included (RoseCat 7033), and so is every sandboxed-side flag.
+        for extra in (["--sockdir", "{root}/s"], ["--sockdir", ""], ["--bwrap", "/usr/bin/bwrap"], ["--bwrap", ""],
+                      ["--test-bridge", "51091=1"], ["--test-bridge", ""], ["--serve"], ["--no-bridges"],
+                      ["--allow-host", "api.anthropic.com"], ["--allow-host", ""], ["--bridge-port", "51091"],
+                      ["--bridge-port", ""]):
             root = Path(tempfile.mkdtemp(prefix="zbn-", dir="/tmp"))
             self.addCleanup(_remove_root, root)
-            extra = {"--sockdir": ["--sockdir", str(root / "s")], "--bwrap": ["--bwrap", "/usr/bin/bwrap"],
-                     "--test-bridge": ["--test-bridge", "51091=1"]}[option]
+            extra = [x.format(root=root) for x in extra]
             with self.subTest(extra=extra):
                 netd = DarwinNetd(self, *extra)
                 self.assertEqual(netd.proc.wait(timeout=10), 2, netd.err)
-                self.assertEqual(netd.proc.stdout.read(), "")
+                self.assertEqual(netd.rest_of_stdout(), "")
                 self.assertFalse((root / "s").exists(), "no socket directory on Darwin")
 
 
@@ -181,18 +218,28 @@ class Egress(unittest.TestCase):
         self.assertEqual(netd.connects(), [])
 
     def test_the_manifest_allowlist_replaces_the_built_in_name(self):
+        # Positive and negative (RoseCat 7030). --test-allow names are allowed whatever the manifest says (the e2e
+        # seam), so a 200 through it cannot prove the manifest was read. netd's census line can: it records the
+        # allowlist's verdict per target before any resolution. The manifest's name resolves (--test-resolve) only
+        # to a TEST-NET address, which vetting refuses to dial, so nothing leaves the host.
         home = Path(tempfile.mkdtemp(prefix="zbn-", dir="/tmp"))
         self.addCleanup(_remove_root, home)
         (home / "net.json").write_text(json.dumps({"egress": {"allow": ["other.zb.invalid"]}, "ports": [51091]}))
         os.chmod(home / "net.json", 0o600)
-        netd = DarwinNetd(self, "--net-manifest", str(home / "net.json"))
+        netd = DarwinNetd(self, "--net-manifest", str(home / "net.json"), "--census",
+                          "--test-resolve", "other.zb.invalid=192.0.2.1")
         port = netd.ready_port()
         self.assertEqual(listening_inet_sockets(netd.proc.pid), [("127.0.0.1", port)],
                          "the manifest's ports are no bridges on Darwin")
-        s = netd.proxy(port)
-        s.sendall(b"CONNECT api.anthropic.com:443 HTTP/1.1\r\n\r\n")
-        self.assertEqual(status_of(response_head(s)), 403)
-        self.assertEqual(netd.connects(), [])
+        for target in ("other.zb.invalid", "api.anthropic.com"):
+            s = netd.proxy(port)
+            s.sendall(f"CONNECT {target}:443 HTTP/1.1\r\n\r\n".encode())
+            self.assertEqual(status_of(response_head(s)), 403)
+        time.sleep(0.3)
+        census = sorted(l.split("netd census ", 1)[1] for l in netd.err if "netd census " in l)
+        self.assertEqual(census, ["api.anthropic.com:443 refused", "other.zb.invalid:443 allowed"],
+                         "the manifest's name is allowed and the built-in name is not")
+        self.assertEqual(netd.connects(), [], "the TEST-NET address is never dialled")
 
 
 if __name__ == "__main__":
