@@ -25320,3 +25320,73 @@ The destructive Mac reaper gate remains OFF. This was a docs-only review; no
 Mac or live-browser run occurred. `git diff --check` is clean. Verdict sent to
 JadeBeacon in Agent Mail 7350. Push-through remains `d827780`; `0e3595c`, now
 represented by cumulative rev 24 `6e1161d`, remains the earliest blocker.
+
+## MS6.5.1 Darwin lifecycle-owner plan rev 25 (`4e17273`)
+
+**BLOCKED (docs), narrowed to one primary safety gap and one atomic-store
+correction.** The orchestrator-directed simplification is sound: deleting the
+per-run `owner.lock` closes all five lease-specific findings from review
+`565e107`. There is no split-inode lease, wrong-directory unlink, lease crash
+cut or child inheritance; PID absent/live-match/reused/unreadable now has one
+consistent fail-closed rule (`macos-launch-tdd-plan.md:1896-1910`). The single
+global ledger `flock` remains a correct cross-process serialization primitive.
+
+1. **BLOCKER — the only cross-process claim begins after signal-producing
+   work.** The globally claimed “whole terminal sequence” is defined as marker
+   unlink → `rmdir` → ledger removal, reached only after the census/kill fixed
+   point (`:1860-1873`). Liveness is read under the flock, but neither the
+   production contract nor the red requires that same acquisition remain held
+   continuously through `Stopping` and every signal. Two startup recoverers
+   can therefore both observe the owner PID absent, independently census and
+   signal the same marked child, and serialize only at `Clean`; the
+   process-local state lock cannot prevent that. The claim must span liveness
+   revalidation → the complete census/kill/fresh-census fixed point → marker
+   unlink → `rmdir` → ledger removal. The causal red must use two independent
+   recoverers and one real marked child and prove exactly one enters the
+   signal-producing fixed point; releasing after liveness or acquiring only at
+   `Clean` must make both enter. The proposed unlink/rmdir-only race
+   (`:1974-1982`) starts too late.
+2. **BLOCKER — crash cut C4 states an impossible single outcome.** The table
+   says a crash “mid temp-write/rename” leaves the old store intact
+   (`:1912-1921`). Before rename that is true; after successful rename but
+   before parent fsync, a process crash observes the complete new file, while
+   power-loss recovery may expose old or new complete state. The contract and
+   red must require old-or-new complete state, never torn, with idempotent
+   recovery for both sides of the rename commit point.
+
+Because C2 treats marker absence as a durable phase bit, the production order
+must also say explicitly: create/open the marker before publishing `active`,
+and publish `active` before spawning any process that receives it. C1 implies
+that order but the normative publication paragraph names only mkdir/open/pin.
+All previous rev-24 findings are otherwise closed. The destructive Mac reaper
+gate remains OFF. Verdict sent to JadeBeacon in Agent Mail 7352. Push-through
+remains `d827780`; `0e3595c`, represented by rev 25 `4e17273`, remains the
+earliest blocker.
+
+## Both-Mac MS5 staged-SDK acceptance (`207c7dc` evidence)
+
+**ACCEPTED; `10cc48a`/`207c7dc` now have their remaining Mac acceptance
+evidence.** BlueBeaver's authorized run executed the launcher from commit
+`207c7dc` and had that launcher export the same commit. Both architecture legs
+passed, followed by **87 universal assertions**, cross-architecture resource
+compatibility and the aggregate gate, exit 0. On each Mac the staged
+`python3.12 -I -B` imported `claude_agent_sdk` from the bundle-relative
+site-packages tree; `sdk_pth.py check` passed; the framework passed
+`codesign --verify --deep --strict`; its `ditto` copy also verified; and a
+one-byte change to the copied `.pth` made verification fail. This causally
+proves the `.pth` is inside the framework seal. Pre/post censuses found no
+matching process or scratch directory, and nothing was installed.
+
+The armed hard gate is authorized on both Macs at **exact commit `4e17273`**,
+using only its committed-launcher entry. An independent byte comparison
+against the reviewed `27a9a62` set found the launcher, manifest, driver,
+harness and both cases identical. The manifest still contains exactly the two
+reviewed cases:
+
+- `case_ms5_spawn_io.py` —
+  `7c739e32fe924877593e15bf232b58be94754c4287b69a7465f2d0371bafcbbb`;
+- `case_ms6_6b_r1_chain.py` —
+  `f58e733c967df13ec6d831bf98dbcf0f9df714e5908aaa03671262261738a986`.
+
+No reaper case is present or authorized. The exact approved invocation and
+cleanup/evidence conditions were sent to BlueBeaver in Agent Mail 7353.
