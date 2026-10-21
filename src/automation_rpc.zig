@@ -447,7 +447,9 @@ test "P2.3 maps AutomationError variants to JSON-RPC reserved application codes 
         .{ .err = .cancelled, .code = -32012, .name = "cancelled" },
         .{ .err = .dialog_open, .code = -32013, .name = "dialog_open" },
         .{ .err = .recovering, .code = -32014, .name = "recovering" },
+        .{ .err = .expectation_mismatch, .code = -32015, .name = "expectation_mismatch" },
     };
+    try testing.expectEqual(@import("automation/error.zig").error_count, cases.len);
 
     for (cases) |case| {
         var router = FakeRouter.init(.{ .automation_error = case.err });
