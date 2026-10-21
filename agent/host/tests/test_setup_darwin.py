@@ -5,8 +5,11 @@ platform injected (`setup.PLATFORM`):
   non-integer, a value <= 1, or a pid that is not our parent is a SetupError before anything runs; otherwise
   `parent_watch.arm(pid, DarwinOps())` runs FIRST, before provisioning, and a watch that does not arm stops setup
   with nothing provisioned.
-- Setup's own sandbox on Darwin is `sandbox_macos.setup_argv(scratch, ro_paths, command)` (JadeBeacon's MS6). Until
-  it exists, setup raises SetupError("the macOS sandbox is not ready") and no child is spawned: never unsandboxed.
+- Setup's own sandbox on Darwin is the context manager `sandbox_macos.setup_sandbox(scratch, ro_paths, command)`
+  (JadeBeacon's MS6, 45bbbff): `_sandboxed` runs the command inside it, and its per-run profile under scratch is
+  gone afterwards. The REAL symbol is driven through setup's own code (pure stdlib, so on Linux). Until it exists,
+  setup raises SetupError("the macOS sandbox is not ready") and no child is spawned: never unsandboxed. On Darwin
+  `setup_sandbox` (the Linux bwrap argv builder) refuses rather than hand back a bwrap argv.
 - Linux is unchanged: no --browser-pid, provisioning runs as before; the Linux setup_sandbox argv is the same.
 
 Run like the gate: cd agent/host/tests && python -m unittest -v test_setup_darwin. Unregistered until the green.
@@ -88,19 +91,40 @@ class SetupSandbox(unittest.TestCase):
 
     def test_darwin_without_the_seatbelt_seam_refuses_and_spawns_nothing(self):
         mock.patch.object(setup, "PLATFORM", "darwin").start()
-        if hasattr(sandbox_macos, "setup_argv"):
-            mock.patch.object(sandbox_macos, "setup_argv", None).start()
+        mock.patch.object(sandbox_macos, "setup_sandbox", None).start()
         with self.assertRaises(setup.SetupError) as cm:
             setup.cli_version("/opt/claude")
         self.assertEqual(str(cm.exception), "the macOS sandbox is not ready")
         self.assertEqual(self.spawned, [], "never unsandboxed: no child at all")
 
-    def test_darwin_uses_sandbox_macos_setup_argv_when_it_exists(self):
+    def test_darwin_runs_through_the_real_sandbox_macos_setup_sandbox(self):
         mock.patch.object(setup, "PLATFORM", "darwin").start()
-        mock.patch.object(sandbox_macos, "setup_argv", lambda scratch, ro, cmd: ["sandbox-exec", str(scratch), *cmd],
-                          create=True).start()
-        argv = setup.setup_sandbox("/tmp/scr", ["/ro"], ["/opt/claude", "--version"])
-        self.assertEqual(argv, ["sandbox-exec", "/tmp/scr", "/opt/claude", "--version"])
+        seen = {}
+
+        def fake_run(argv, **kwargs):
+            # At run time the real per-run profile exists under the scratch that is also HOME and SCRATCHPAD.
+            scratch = kwargs["env"]["HOME"]
+            seen.update(argv=list(argv), scratch=scratch, profile=argv[2],
+                        profile_existed=os.path.isfile(argv[2]), profile_text=open(argv[2]).read())
+            return setup.subprocess.CompletedProcess(argv, 0, stdout="2.1.294 (Claude Code)\n", stderr="")
+
+        mock.patch.object(setup.subprocess, "run", side_effect=fake_run).start()
+        self.assertEqual(setup.cli_version("/opt/claude"), "2.1.294")
+        argv, scratch, profile = seen["argv"], seen["scratch"], seen["profile"]
+        self.assertEqual(argv[:2], ["/usr/bin/sandbox-exec", "-f"])
+        self.assertEqual(os.path.dirname(profile), scratch, "the profile lives under setup's own scratch")
+        self.assertTrue(os.path.basename(profile).startswith(".zb-setup-sandbox-") and profile.endswith(".sb"))
+        self.assertEqual(argv[3:], ["-D", f"SCRATCHPAD={scratch}", "/opt/claude", "--version"])
+        self.assertTrue(seen["profile_existed"])
+        self.assertNotIn("network-outbound", seen["profile_text"].replace("deny network-outbound", ""),
+                         "setup's profile grants no network")
+        self.assertFalse(os.path.exists(profile), "the per-run profile is gone afterwards")
+        self.assertFalse(os.path.exists(scratch), "and so is the scratch")
+
+    def test_darwin_setup_sandbox_refuses_to_build_the_linux_argv(self):
+        mock.patch.object(setup, "PLATFORM", "darwin").start()
+        with self.assertRaises(setup.SetupError):
+            setup.setup_sandbox("/tmp/scr", ["/ro"], ["/opt/claude", "--version"])
 
     def test_linux_setup_sandbox_argv_is_unchanged(self):
         mock.patch.object(setup, "PLATFORM", "linux").start()
