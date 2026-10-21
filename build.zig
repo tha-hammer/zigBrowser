@@ -1132,6 +1132,12 @@ pub fn build(b: *std.Build) void {
     agent_setup_ms5_step.dependOn(&run_agent_setup_ms5_python_tests.step);
     agent_setup_ms5_step.dependOn(&run_agent_setup_ms5_devtree_tests.step);
     agent_setup_ms5_step.dependOn(&run_agent_setup_ms5_wiring_tests.step);
+    // RoseCat 6948: the e2e's guarded group cleanup and unique-setup-child pick (tests/mac/lib_group_cleanup.sh),
+    // pinned locally with stubbed pkill/pgrep/ps (never group 0, empty, malformed or our own; never a decoy child).
+    const mac_group_cleanup = b.addSystemCommand(&.{ "bash", "tests/mac/lib_group_cleanup_test.sh" });
+    mac_group_cleanup.addFileInput(b.path("tests/mac/lib_group_cleanup.sh"));
+    mac_group_cleanup.addFileInput(b.path("tests/mac/lib_group_cleanup_test.sh"));
+    agent_setup_ms5_step.dependOn(&mac_group_cleanup.step);
     // Chat drawer S7a (revs 16.20.30, 16.20.32): the core in process (callInProcess) and the
     // drawer's read-only broker over it; S7b (rev 16.20.36): its reply boundary and detach.
     var s7a_runs: [7]*std.Build.Step = undefined;
@@ -2217,6 +2223,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_agent_setup_ms5_python_tests.step);
     test_step.dependOn(&run_agent_setup_ms5_devtree_tests.step);
     test_step.dependOn(&run_agent_setup_ms5_wiring_tests.step);
+    test_step.dependOn(&mac_group_cleanup.step);
     test_step.dependOn(&run_transport_ws20_tests.step);
     for (s7a_runs) |run| test_step.dependOn(run);
     test_step.dependOn(&automation_api_e2e.step);
