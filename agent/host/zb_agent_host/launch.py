@@ -144,9 +144,8 @@ def main(argv):
     if args.test_ca is not None and not _regular_file(args.test_ca):
         print("zigBrowser: agent: bad ZIGBROWSER_AGENT_NET_TEST_CA", file=sys.stderr)
         return EXIT_USAGE
-    if not os.access(args.bwrap, os.X_OK):
-        print("zigBrowser: agent: sandbox unavailable (bwrap)", file=sys.stderr)
-        return EXIT_NO_SANDBOX
+    # The Session parse + the Darwin fail-closed branch come BEFORE touching bwrap (RoseCat 820a978): a real Mac
+    # has no bwrap, so a valid --egress-port must give the EXIT_USAGE "not ready", never the bwrap EXIT_NO_SANDBOX.
     try:
         session = build_session(args)
     except UsageError as exc:
@@ -157,6 +156,9 @@ def main(argv):
         # dispatch slice (7027/7035) threads it in. Until then the macOS launch refuses, fail closed.
         print("zigBrowser: agent: the macOS launch is not ready", file=sys.stderr)
         return EXIT_USAGE
+    if not os.access(args.bwrap, os.X_OK):
+        print("zigBrowser: agent: sandbox unavailable (bwrap)", file=sys.stderr)
+        return EXIT_NO_SANDBOX
     home = options.AgentHome(session.home)
     fd = seccomp.seccomp_fd()
     try:

@@ -38,9 +38,9 @@ class EgressPortParse(unittest.TestCase):
     def test_linux_none_is_a_session_with_no_port(self):
         with mock.patch.object(launch, "PLATFORM", "linux"):
             s = launch.build_session(_args(egress_port=None))
-        self.assertIsNone(s.egress_port)
-        self.assertEqual((s.home, s.python, s.net_dir, s.command),
-                         ("/tmp/zb-h", "/usr/bin/python3", "/tmp/zb-net", "chat"))
+        # the exact five dataclass fields (RoseCat 820a978 SHOULD)
+        self.assertEqual((s.home, s.python, s.net_dir, s.command, s.egress_port),
+                         ("/tmp/zb-h", "/usr/bin/python3", "/tmp/zb-net", "chat", None))
 
     def test_darwin_parse_table(self):
         with mock.patch.object(launch, "PLATFORM", "darwin"):
@@ -63,24 +63,48 @@ class EgressPortParse(unittest.TestCase):
 
 
 class DarwinRefusesLaunch(unittest.TestCase):
-    def test_darwin_refuses_after_a_good_parse(self):
-        with mock.patch.object(launch, "PLATFORM", "darwin"), \
-                mock.patch.object(launch.os, "execve") as ex:
-            err = io.StringIO()
-            with redirect_stderr(err):
-                rc = launch.main(BASE + ["--egress-port", "3128"])
-        self.assertEqual(rc, launch.EXIT_USAGE)
-        ex.assert_not_called()
-        self.assertIn("macOS launch is not ready", err.getvalue())
+    """On a real Mac there is NO bwrap, so the Darwin fail-closed branch MUST be reached BEFORE os.access(bwrap)
+    (RoseCat 820a978): a valid --egress-port must give EXIT_USAGE 'not ready', never EXIT_NO_SANDBOX(3). Each
+    case forces bwrap absent (os.access -> False) AND asserts bwrap is never consulted on the Darwin path, so
+    the ordering bug in 8fd0398 (bwrap checked first -> exit 3) reds here."""
 
-    def test_darwin_bad_egress_port_refused_before_launch(self):
+    def _run_darwin(self, argv):
+        access = mock.MagicMock(return_value=False)  # bwrap absent, and records any probe
         with mock.patch.object(launch, "PLATFORM", "darwin"), \
+                mock.patch.object(launch.os, "access", access), \
                 mock.patch.object(launch.os, "execve") as ex:
             err = io.StringIO()
             with redirect_stderr(err):
-                rc = launch.main(BASE + ["--egress-port", "0"])
+                rc = launch.main(argv)
+        return rc, err.getvalue(), ex, access
+
+    def test_darwin_valid_port_refuses_not_ready_before_bwrap(self):
+        rc, err, ex, access = self._run_darwin(BASE + ["--egress-port", "3128"])
+        self.assertEqual(rc, launch.EXIT_USAGE)
+        self.assertNotEqual(rc, launch.EXIT_NO_SANDBOX)  # NOT the bwrap refusal
+        self.assertIn("macOS launch is not ready", err)
+        ex.assert_not_called()
+        access.assert_not_called()  # bwrap must never be consulted on the Darwin path
+
+    def test_darwin_invalid_port_is_usage_before_bwrap(self):
+        for bad in ("0", "65536", "0123", "12a"):
+            with self.subTest(bad=bad):
+                rc, _err, ex, access = self._run_darwin(BASE + ["--egress-port", bad])
+                self.assertEqual(rc, launch.EXIT_USAGE)
+                ex.assert_not_called()
+                access.assert_not_called()
+
+    def test_darwin_missing_port_is_usage_before_bwrap(self):
+        rc, _err, ex, access = self._run_darwin(BASE)  # no --egress-port
         self.assertEqual(rc, launch.EXIT_USAGE)
         ex.assert_not_called()
+        access.assert_not_called()
+
+    def test_darwin_duplicate_port_is_usage_before_bwrap(self):
+        rc, _err, ex, access = self._run_darwin(BASE + ["--egress-port", "3128", "--egress-port", "3129"])
+        self.assertEqual(rc, launch.EXIT_USAGE)
+        ex.assert_not_called()
+        access.assert_not_called()
 
     def test_linux_refuses_the_flag_through_main(self):
         with mock.patch.object(launch, "PLATFORM", "linux"), \
