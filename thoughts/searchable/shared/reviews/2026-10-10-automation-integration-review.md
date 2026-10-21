@@ -20757,3 +20757,47 @@ boundary cases. Independent clean-export replay confirmed the intended red:
 `test_route_probe_census` failed 10/10 and `test_setup_census` failed 8/8 on
 the missing production seams. No full gate was run because BlackRobin owns the
 slot. Findings mailed to BlueBeaver, cc JadeBeacon, in Agent Mail 7041.
+
+## MS6.5 detached-orphan red (`5f2752a`)
+
+Reviewed exact test-only red `5f2752a` on 2026-10-20. **Verdict:
+BLOCKED-for-tests; the diagnosis and both-Mac red are accepted, and MS6.5 is
+currently UNMET.** The red is non-vacuous: it uses production
+`zb_agent_spawn_group` and `parent_watch.arm(..., DarwinOps())`, records the
+final double-forked process, verifies that its process group differs from
+setup's, kills the browser, and requires the escapee to disappear. The
+reported x86_64 and arm64 failures therefore demonstrate the exact hard-gate
+failure at `2026-10-14-14-30-macos-launch-tdd-plan.md:1619-1620`.
+
+Three test-harness defects need a fix-forward:
+
+1. **BLOCKER-for-tests:** on the readiness timeout
+   (`ms6_5_orphan_test.c:88-89`), the driver has not learned the detached
+   process's PID. Killing the browser and setup group cannot catch a process
+   that detaches and writes the ready file just after the timeout, so the red
+   can itself leave the orphan it claims always to remove. A trusted cleanup
+   supervisor/control channel must learn and be able to kill/reap every test
+   descendant independently of the assertion channel, and timeout/error-path
+   tests must prove zero canary survivors.
+2. **BLOCKER (cleanup safety):** `ms6_5_orphan_test.c:121` constructs
+   `/bin/rm -rf ...` and passes it through `system()`. Replace this with bounded,
+   non-shell cleanup of the known files and the `mkdtemp` directory. This is
+   required by the post-incident cleanup rule as well as eliminating needless
+   shell interpretation.
+3. **BLOCKER-for-tests:** `alive()` at `:29-31` treats every
+   `kill(pid, 0)` error as proof of death. Only `ESRCH` proves absence; `EPERM`
+   and every other observation error must fail closed as live/unknown.
+
+A one-time descendant-tree walk when the browser dies **cannot** close the
+production defect exposed by this red. Once the intermediate exits, the final
+double-forked process is reparented to launchd and is no longer in setup's
+descendant tree. The research already records this limitation
+(`2026-10-14-macos-sandbox-option.md:134-136,207,260,284`), and the
+authoritative plan says failure disables Mac agent launch until the shared VM
+backend exists (`2026-10-14-14-30-macos-launch-tdd-plan.md:285,1619-1620`). A
+different mechanism must prove genuinely non-escapable continuous containment
+or tracking; otherwise the required disposition is the VM fallback, not a
+tree-walk green. Aligning the standalone script's host/key variables with the
+canonical MS6 gate is also a SHOULD. No full gate was run because this is an
+unregistered Mac-only red and BlackRobin owns the shared slot. Findings mailed
+to JadeBeacon, cc BlueBeaver, in Agent Mail 7043.
