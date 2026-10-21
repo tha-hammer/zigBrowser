@@ -10,6 +10,10 @@
 - run(h) itself, against a FAKE staged zb_agent_host (setup/proc_darwin/sandbox/token written into a temp prefix), runs
   every row (positive/honest, planted, forge, hang) through _released with its own CLI (4e17273 on both Macs: the
   evidence label "positive" was used as the CLI key, KeyError; RoseCat 7358);
+- each row's release gets that row's own CLI: the exact (label, cli) pairs run() hands _released are recorded
+  (RoseCat 7366 #2: an empty fake ps cannot tell a wrong CLI apart);
+- NO emitted check label carries token material (RoseCat 7366 #1: the census record's repr printed the whole probe
+  token, in passing runs too), on a clean run, a dirty honest census and a failing probe;
 - the probe diagnostics are bounded and token-free: _sanitize redacts the probe token (contiguous, in a Bearer header,
   in an env assignment, wrapped into 6-hex pieces, hex-encoded or base64-encoded) before it bounds the text, and a
   failing positive row shows the probe's rc and sanitized stdout/stderr tails.
@@ -191,7 +195,7 @@ class ChainRelease(NoSignals):
         self.assertGreater(seen[-1], -95.0 + self.case.CHAIN_HORIZON_S)
 
 
-TOKEN = "zb-probe-" + "0123456789abcdef" * 3
+TOKEN = "zb-probe-" + "a1b2c3d4e5f6" * 4  # letters among the digits: no port or pid can match a window
 
 FAKE_SETUP = """
 import os, socket, subprocess as _sp, types
@@ -227,7 +231,7 @@ def probe_r1(wrapper, cli):
 
 FAKE_PROC = """
 import os
-TOKEN = b"zb-probe-" + b"0123456789abcdef" * 3
+TOKEN = b"zb-probe-" + b"a1b2c3d4e5f6" * 4
 LAST = {}
 def _mode(exe):
     return os.path.basename(os.path.dirname(exe)).split("-", 1)[1]
@@ -317,11 +321,51 @@ class RunWithAFakeStagedHost(NoSignals):
                 with self.subTest(row=label, check=what):
                     self.assertTrue(any(l.startswith(f"{label}: {what}") for _, l in h.checks), (label, what))
 
+    def fake_setup(self):
+        import importlib
+        if self.prefix not in sys.path:
+            sys.path.insert(0, self.prefix)
+        return importlib.import_module("zb_agent_host.setup")
+
+    def test_each_rows_release_gets_that_rows_own_cli(self):
+        seen = []
+        real = self.case._released
+
+        def record(h, proc_darwin, label, cli, *rest):
+            seen.append((label, cli))
+            return real(h, proc_darwin, label, cli, *rest)
+
+        with mock.patch.object(self.case, "_released", side_effect=record):
+            self.case.run(self.harness())
+        cli = lambda mode: os.path.realpath(os.path.join(self.scratch, f"cli-{mode}", "claude"))  # noqa: E731
+        self.assertEqual(seen, [("positive", cli("honest")), ("planted", cli("planted")), ("forge", cli("forge")),
+                                ("hang", cli("hang"))])
+
+    def test_no_check_label_ever_carries_token_material(self):
+        hexpart = TOKEN[9:]
+        windows = {hexpart[i:i + 6] for i in range(len(hexpart) - 5)}
+        scenarios = {
+            "a clean run": {},
+            "a dirty honest census": {"honest_clean": False},
+            "a failing probe": {"rc": 1, "err": "Authorization: Bearer " + TOKEN + "\n" + TOKEN + "\n"},
+        }
+        for name, result in scenarios.items():
+            with self.subTest(scenario=name):
+                setup = self.fake_setup()
+                setup.RESULT.update({"rc": 0, "out": '{"r1": true}\n', "err": "", "honest_clean": True}, **result)
+                self.scratch = tempfile.mkdtemp(dir=self.tmp, prefix="scratch-")  # each run makes its own dirs
+                h = self.harness()
+                h.checks = []
+                self.case.run(h)
+                self.assertTrue(h.checks)
+                for _ok, label in h.checks:
+                    self.assertNotIn("zb-probe-", label)
+                    leaked = [w for w in windows if w in label]
+                    self.assertEqual(leaked, [], f"token hex in: {label[:300]}")
+
     def test_a_failing_positive_shows_the_probes_rc_and_token_free_tails(self):
         h = self.harness()
-        import importlib
-        sys.path.insert(0, self.prefix)
-        setup = importlib.import_module("zb_agent_host.setup")
+        setup = self.fake_setup()
         noise = "x" * 5000
         setup.RESULT.update(rc=1, honest_clean=False,
                             out=noise + "\nprobe said " + TOKEN + "\n",
