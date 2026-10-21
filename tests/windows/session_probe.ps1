@@ -43,12 +43,15 @@ $WTS_SESSIONINFOEX = 25   # WTSQuerySessionInformation info class returning WTSI
 # and exercises it with locked/unlocked fixtures.
 function Get-ZbLockVerdict {
   param([bool]$WtsOk, [int]$SessionFlags, [bool]$LogonUiInConsole)
+  # FAIL CLOSED: the ONLY definitely-unlocked verdict is the WTS flag explicitly reporting UNLOCK(1).
+  # Anything else — WTS LOCK(0), any other/unknown flag, or no WTS at all — is treated as locked, so an
+  # unreadable signal can never be accepted by gate.sh as an active, unlocked console session.
   if ($WtsOk) {
-    if ($SessionFlags -eq 0) { return $true }    # WTS_SESSIONSTATE_LOCK  -> locked
-    if ($SessionFlags -eq 1) { return $false }   # WTS_SESSIONSTATE_UNLOCK -> unlocked
+    if ($SessionFlags -eq 1) { return $false }   # WTS_SESSIONSTATE_UNLOCK -> unlocked (the only $false)
+    return $true                                 # WTS_SESSIONSTATE_LOCK(0) or any other flag -> locked
   }
-  # WTS flag unavailable/unknown => the secure/lock UI (LogonUI) owning the console session means locked.
-  return [bool]$LogonUiInConsole
+  if ($LogonUiInConsole) { return $true }        # WTS unavailable: the secure/lock UI present -> locked
+  return $true                                   # UNKNOWN (no WTS flag, no LogonUI) -> fail closed: locked
 }
 # <<< ZB_LOCK_FN
 

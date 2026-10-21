@@ -438,16 +438,15 @@ class LockedDesktopLive(unittest.TestCase):
             self.assertEqual(d.get("in_console"), True, "in_console must be true")
             self.assertEqual(d.get("interactive_session"), False, "a locked console is not an active interactive session")
             self.assertEqual(d.get("locked"), True, "a locked console must report locked=true")
-            # The verdict must come from the WTS session-lock flag (WTS_SESSIONSTATE_LOCK == 0), not the
-            # input-desktop name — on win11-m8 input_desktop reads "Default" even when locked, so it is a
-            # diagnostic only. Accept the LogonUI fallback if WTS is somehow unavailable.
-            self.assertTrue(
-                d.get("wts_lock_ok") is True or d.get("logonui_in_console") is True,
-                "the lock verdict needs an authoritative source (WTS flag or LogonUI), got: %r" % d)
-            if d.get("wts_lock_ok") is True:
-                self.assertEqual(d.get("session_flags"), 0,
-                                 "a locked console's WTS SessionFlags must be WTS_SESSIONSTATE_LOCK (0), got: %r"
-                                 % d.get("session_flags"))
+            # RoseCat 88852d9 #2: the WATCHED locked run must require the AUTHORITATIVE WTS signal — a
+            # LogonUI observation must NOT stand in for it here (the LogonUI fallback is tested separately
+            # in LockVerdictFixturesLive). input_desktop reads "Default" even when locked on win11-m8, so
+            # it is a diagnostic only.
+            self.assertIs(d.get("wts_lock_ok"), True,
+                          "the watched locked run requires the WTS flag to be readable (wts_lock_ok=true), got: %r" % d)
+            self.assertEqual(d.get("session_flags"), 0,
+                             "a locked console's WTS SessionFlags must be WTS_SESSIONSTATE_LOCK (0), got: %r"
+                             % d.get("session_flags"))
             idesk = d.get("input_desktop")
             self.assertTrue(isinstance(idesk, str) and idesk.strip(),
                             "input_desktop diagnostic must be present, got: %r" % idesk)
@@ -470,6 +469,7 @@ class LockVerdictFixturesLive(unittest.TestCase):
             '$c=@()',
             '$c += ("L0=" + (Get-ZbLockVerdict -WtsOk $true -SessionFlags 0 -LogonUiInConsole $false))',
             '$c += ("U1=" + (Get-ZbLockVerdict -WtsOk $true -SessionFlags 1 -LogonUiInConsole $false))',
+            '$c += ("OTHER=" + (Get-ZbLockVerdict -WtsOk $true -SessionFlags 4 -LogonUiInConsole $false))',
             '$c += ("FB_ON=" + (Get-ZbLockVerdict -WtsOk $false -SessionFlags -1 -LogonUiInConsole $true))',
             '$c += ("FB_OFF=" + (Get-ZbLockVerdict -WtsOk $false -SessionFlags -1 -LogonUiInConsole $false))',
             '$c -join " "',
@@ -479,8 +479,12 @@ class LockVerdictFixturesLive(unittest.TestCase):
         out = p.stdout
         self.assertIn("L0=True", out, "WTS_SESSIONSTATE_LOCK (0) must map to locked=True; got:\n" + out)
         self.assertIn("U1=False", out, "WTS_SESSIONSTATE_UNLOCK (1) must map to locked=False; got:\n" + out)
+        self.assertIn("OTHER=True", out, "any non-UNLOCK WTS flag must map to locked=True; got:\n" + out)
         self.assertIn("FB_ON=True", out, "LogonUI-in-console fallback must map to locked=True; got:\n" + out)
-        self.assertIn("FB_OFF=False", out, "no-LogonUI fallback must map to locked=False; got:\n" + out)
+        # FAIL CLOSED (RoseCat 88852d9 #1): unknown signal (no WTS, no LogonUI) must be locked=True, NOT False.
+        # A fail-open mutant (`return $false` / `return [bool]$LogonUiInConsole` on this path) makes FB_OFF=False.
+        self.assertIn("FB_OFF=True", out, "unknown signal must FAIL CLOSED to locked=True; got:\n" + out)
+        self.assertNotIn("FB_OFF=False", out, "unknown signal must never read as unlocked (fail open); got:\n" + out)
 
 
 if __name__ == "__main__":

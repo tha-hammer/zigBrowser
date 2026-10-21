@@ -788,11 +788,19 @@ class WS0ZeroWrite(unittest.TestCase):
         self.assertIsNotNone(m, "session_probe.ps1 is missing the ZB_LOCK_FN extraction markers")
         fn = m.group(1)
         self.assertIn("function Get-ZbLockVerdict", fn, "the marked block must define Get-ZbLockVerdict")
-        self.assertRegex(fn, r"-eq 0\s*\)\s*\{\s*return \$true",
-                         "fixture: SessionFlags 0 (WTS_SESSIONSTATE_LOCK) must map to locked=true")
         self.assertRegex(fn, r"-eq 1\s*\)\s*\{\s*return \$false",
                          "fixture: SessionFlags 1 (WTS_SESSIONSTATE_UNLOCK) must map to locked=false")
         self.assertIn("LogonUiInConsole", fn, "the verdict must have a LogonUI-in-console fallback")
+        # FAIL CLOSED (RoseCat 88852d9 #1): the ONLY unlocked verdict is the single WTS UNLOCK(1) case;
+        # the function must never fail open (unknown -> unlocked). Static oracle + the live FB_OFF fixture.
+        returns = re.findall(r"return (\$true|\$false)", fn)
+        self.assertTrue(returns, "Get-ZbLockVerdict must have explicit return verdicts")
+        self.assertEqual(returns.count("$false"), 1,
+                         "exactly one unlocked ($false) path is allowed (WTS UNLOCK(1)); got: %r" % returns)
+        self.assertEqual(returns[-1], "$true",
+                         "the final/default verdict must be locked (fail closed on unknown); got: %r" % returns)
+        self.assertNotRegex(fn, r"return \[bool\]\$LogonUiInConsole",
+                            "must NOT fail open by returning the LogonUI value as the unknown-case verdict")
         self.assertRegex(src, r"WTS_SESSIONINFOEX|WTSSessionInfoEx|\b25\b",
                          "session_probe.ps1 must query WTSINFOEX (WTSSessionInfoEx, info class 25)")
         self.assertRegex(src, r"\$locked\s*=\s*Get-ZbLockVerdict",
