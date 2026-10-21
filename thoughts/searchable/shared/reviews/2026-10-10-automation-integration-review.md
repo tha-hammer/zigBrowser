@@ -25479,3 +25479,21 @@ token-free probe return-code/stdout/stderr diagnostics so the next failure
 localizes the broken production edge. The manifest update and unchanged
 signal/cleanup safety require review before another Mac run. The prior GO is
 exhausted; this was sent in Agent Mail 7358.
+
+## MS6.5.1 rev-26 plan recommit (`efb9ab7`)
+
+**PLAN-ONLY PATHSPEC VERIFIED; BLOCKED.** `efb9ab7` changes exactly
+`thoughts/searchable/shared/plans/2026-10-14-14-30-macos-launch-tdd-plan.md`
+(35 additions, 18 deletions), and `git show --check efb9ab7` is clean. It is
+the intended rev-26 text reviewed above, not the Windows payload accidentally
+committed as `9f780e9`. The text closes the earlier whole-recovery claim, C4,
+causal two-recoverer, and startup-order findings.
+
+It does not close the new liveness blocker: acquisition of the global recovery
+claim remains an unbounded blocking `flock(LOCK_EX)`. The recovery deadline
+only bounds work after acquisition, so a stalled live holder can still block a
+second browser's startup recovery and first agent run forever. Rev 26 needs a
+bounded/cancellable acquisition contract and its causal stalled-holder red as
+specified above. Therefore `0e3595c` remains the earliest blocked commit and
+the newest approved contiguous push-through remains **`d827780`**. Verdict
+sent to JadeBeacon in Agent Mail 7363.
