@@ -158,6 +158,11 @@ primary_research: thoughts/searchable/shared/research/2026-10-14-14-19-macos-lau
   `runtime.json` is pinned. The staging tool takes the driver-verified `.pkg`. The final MS5 green stays blocked
   on the dependency and CLI layout decision. (Fix, RoseCat 6871: every symlink or special entry under
   `zb_agent_host/` is refused, with reds for a symlink to an outside canary and a FIFO.)
+- **Rev 18** (BlueBeaver, 2026-10-21; RoseCat 7019, 7041, 7050, 7053): a new hard gate, **MS6.6, R1 under
+  Seatbelt**, with two named dependencies. **(A)** the census broker (unit) and the kernel-properties gate.
+  **(B)** the real Mac production chain, run on the pinned runtime and dependency tree. (A) green lets the broker
+  land, scoped as incomplete. Only (B) green may count toward `seatbelt_ready`, MS6 completion, or any launch
+  slice that uses the Mac backend.
 
 ## Rev 9 — MS1 empty-resource state made an executable, fail-closed phase contract (RoseCat 5995)
 
@@ -1618,6 +1623,38 @@ above plus per-process Seatbelt port rules**. Either way MS0's launch spec is th
   port, turns the test red**.
 - **MS6.5 (gate):** **no survivors** after `kill -9` of the browser, **including a hook that
   double-forks and `setsid`** — via the kqueue/pipe-EOF launcher. Failure ⇒ VM required.
+- **MS6.6 (gate, rev 18): R1 under Seatbelt.** setup's R1 probe proves "the CLI takes the token from fd 3 and no
+  CLI environment holds it" on macOS, without giving the code under test any introspection.
+  - **Topology** (RoseCat 7019; BlueBeaver 7021; JadeBeacon 7023):
+    - setup pre-binds the probe's one loopback listener outside the sandbox and passes it by `pass_fds`;
+    - setup's profile permits exactly that port (`loopback_port`) and keeps the token-isolation belt (no
+      process-info of others, no `kern.procargs2`);
+    - the process census runs in **setup, outside Seatbelt**, over setup's own descendants
+      (`proc_darwin.cli_env_clean`);
+    - the probe only asks, over a socketpair end it receives as `--census-fd`;
+    - R1 needs both the probe's verdict and setup's own clean census.
+  - **Dependency (A), census broker plus kernel properties:**
+    - the Linux unit reds `61776d9` and `7590369` (exact request and reply, bounded lifecycle, a forged-capability
+      negative through the production wrapper, grammar);
+    - `tests/mac/ms6_r1_kernel_gate.sh` (`cd38735`) on both arches. Inside the real setup profile: the R1 port is
+      reachable, a decoy is denied (Seatbelt errno), and `procargs2`/`pidpath` of live targets are denied
+      (Seatbelt errno). An unsandboxed control shows the same calls succeed. Outside, setup's census finds the
+      canary, and a planted token is dirty, after that run's own positives hold.
+    - **A green in (A) lets the broker implementation land, but scoped and incomplete.** It does not close
+      `61776d9`/`7590369`, MS6 or `seatbelt_ready`, and Mac agent launch stays disabled.
+  - **Dependency (B), the production chain:**
+    - the real Mac `setup.probe_r1 -> sandbox-exec -> route_probe -> the inherited listener and census fds ->
+      the wrapper -> a controlled CLI` e2e, on **both** arches;
+    - run with the **pinned production runtime and dependency tree**; a scratch, unlocked wheel set is not
+      evidence;
+    - it keeps the exact `pass_fds`, the forged-capability negative, listener service, the census request and
+      reply, the timeout/lifecycle cases and the planted-token control.
+    - **(B) is a hard prerequisite of `seatbelt_ready`, MS6 completion, and any launch slice consuming the Mac
+      backend.** It waits on the MS5 dependency and CLI layout decision (rev 17), like the armed
+      `ms5_setup_e2e.sh`.
+  - **Known blocker, as of rev 18:** HEAD's setup profile kills the real interpreter with SIGILL (it denies
+    `process-info-pidinfo self`, `sysctl kern.proc.pid.<self>` and the notification_center shm). The fix is
+    JadeBeacon's, allowing self only. Until it lands, (A) fails before its census assertions.
 
 ### Workflow Closure (MS6.1 — token isolation; the load-bearing security belt)   [BLOCKING]
 - **Chain:** `token stored -> helper reads fd 3 -> MacSeatbeltBackend spawns CLI under profile -> CLI holds token -> hook spawned app-side under its own profile -> hook attempts task_for_pid/KERN_PROCARGS2 -> kernel denies -> hook's recorded result = denied, no canary bytes`
