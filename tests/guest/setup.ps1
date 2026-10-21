@@ -170,8 +170,12 @@ function Install-WebView2Sdk {
     $packages = Join-Path $ToolsRoot "nuget"
     Ensure-Directory -Path $packages
 
-    # Resolve to the pinned version unless an explicit override is passed; NEVER empty (no NuGet "latest").
-    $ver = if ($WebView2PackageVersion) { $WebView2PackageVersion } else { $WebView2PinnedVersion }
+    # The fetch ALWAYS uses the one authoritative pin. An explicit override is accepted only when it equals
+    # the pin, otherwise it is refused — so the version actually fetched can never drift from the pin.
+    if ($WebView2PackageVersion -and ($WebView2PackageVersion -ne $WebView2PinnedVersion)) {
+        throw "WebView2PackageVersion '$WebView2PackageVersion' does not match the pinned $WebView2PinnedVersion"
+    }
+    $ver = $WebView2PinnedVersion
     $installArgs = @(
         "install",
         "Microsoft.Web.WebView2",

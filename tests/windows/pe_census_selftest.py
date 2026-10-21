@@ -151,6 +151,15 @@ class WebView2SdkPin(unittest.TestCase):
                          "setup.ps1 $WebView2PinnedVersion must be exactly %s, got %r" % (WEBVIEW2_SDK_VERSION, pin))
         # -Version must be passed to the NuGet install (so the fetch is pinned, never NuGet's latest).
         self.assertRegex(t, r'"-Version",\s*\$ver', "setup.ps1 must pass -Version to the NuGet install")
+        # The version actually fetched ($ver -> -Version) must be assigned ONLY from the authoritative pin —
+        # never from the override. This reds the mutant `$ver = $WebView2PackageVersion` (a disconnected fetch).
+        ver_rhs = re.findall(r"\$ver\s*=\s*(\S+)", t)
+        self.assertTrue(ver_rhs, "setup.ps1 must assign $ver")
+        self.assertTrue(all(rhs == "$WebView2PinnedVersion" for rhs in ver_rhs),
+                        "$ver must be assigned only from $WebView2PinnedVersion, got %s" % ver_rhs)
+        # A non-pin override must be refused (the fetch cannot silently use a different version).
+        self.assertRegex(t, r'\$WebView2PackageVersion\s*-ne\s*\$WebView2PinnedVersion',
+                         "setup.ps1 must refuse an override that disagrees with the pin")
         # The empty-version -> drop-the-Version-flag fallback (NuGet latest) must be GONE.
         self.assertNotRegex(t, r'if\s*\(\s*\$WebView2PackageVersion\s*\)\s*\{\s*\$installArgs',
                             "setup.ps1 must not drop -Version when the override is empty (no 'latest' fallback)")
