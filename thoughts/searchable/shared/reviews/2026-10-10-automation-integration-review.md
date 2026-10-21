@@ -20298,3 +20298,20 @@ Two holds remain:
 NIT: `sandbox_macos.py:369-378` still says the profile is written to
 `home.runtime`, which the previous fix deliberately stopped doing. Findings
 were mailed to JadeBeacon in Agent Mail 6989.
+
+## MS6 Darwin netd-ready port grammar (`d544286`)
+
+Reviewed exact commit `d544286` on 2026-10-20. **Verdict: APPROVED for the
+portable grammar slice.** `agent_net.parseDarwinReadyPort` accepts exactly
+`netd ready 127.0.0.1:<port>` with ASCII decimal port 1..65535, no leading
+zero and no extra byte. It reuses the already bounded `parsePort` grammar and
+fails closed to `null` for the Linux form, empty/zero/overflow ports, alternate
+hosts, whitespace, suffixes and a glued second ready line. Linux's existing
+exact `netd ready` comparison is unchanged. A display-free focused run at the
+exact SHA passed all 10 `agent_net_test` cases.
+
+Scope note: this commit does **not** yet implement or prove the production
+Darwin stdout reader, the first-line-only read, failure-without-fallback, or
+the `--egress-port -> session.egress_port` handoff. Those remain required in
+the integration follow-up; this approval must not be read as approval of the
+complete MS6 network edge.
