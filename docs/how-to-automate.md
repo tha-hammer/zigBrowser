@@ -878,6 +878,10 @@ the same page task as each event.
   `target_changed` and `data.sent` `{events, chars}`, what was already dispatched and typed. A
   page may still have acted on those events (an editor that inserts text itself), so `sent`
   with any events means the page may have changed. Synthetic input only.
+- A guarded `dom.type` sends its text 16 characters (Unicode code points) at a time, each
+  piece its own step in the page, so the page's own timers and a stop run between pieces;
+  `data.sent` then adds up every piece that was sent. A guard cannot be combined with
+  `delay_ms` (-32602).
 - The acting LinkedIn and Instagram flows (`linkedin.connect`, `follow`,
   `like`, `comment`, `message`; `instagram.follow`, `like`, `comment`, `dm`,
   `story_view`) take `options.expect` too, with one more field, `url`: the one

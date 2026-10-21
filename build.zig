@@ -1106,6 +1106,16 @@ pub fn build(b: *std.Build) void {
     automation_guard_tests_module.addImport("automation", automation_module);
     const run_automation_guard_tests = b.addRunArtifact(b.addTest(.{ .root_module = automation_guard_tests_module }));
     run_automation_guard_tests.skip_foreign_checks = true;
+    // S8a decision 15: a guarded dom.type in 16-code-point chunks.
+    const automation_guard_chunks_tests_module = b.createModule(.{
+        .root_source_file = b.path("tests/automation_guard_chunks_test.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    automation_guard_chunks_tests_module.addImport("automation", automation_module);
+    const run_automation_guard_chunks_tests = b.addRunArtifact(b.addTest(.{ .root_module = automation_guard_chunks_tests_module }));
+    run_automation_guard_chunks_tests.skip_foreign_checks = true;
     // S8a ("S8 in detail" decision 2): an approved flow's phases A to C, and phase B through the runner.
     const automation_expect_flow_tests_module = b.createModule(.{
         .root_source_file = b.path("tests/automation_expect_flow_test.zig"),
@@ -2277,6 +2287,14 @@ pub fn build(b: *std.Build) void {
         "automation-guard-e2e",
     });
     automation_guard_e2e.addArtifactArg(exe);
+    // S8a decision 15: the chunk boundary on the real binary (a page timer runs only between chunks).
+    const automation_guard_chunks_e2e = b.addSystemCommand(&.{
+        "sh",
+        "-c",
+        "python3 tests/e2e/automation_guard_chunks_test.py --binary \"$1\"",
+        "automation-guard-chunks-e2e",
+    });
+    automation_guard_chunks_e2e.addArtifactArg(exe);
     // S8a: each window's committed-load count (load_serial) in page.list and page.health.
     const automation_load_serial_e2e = b.addSystemCommand(&.{
         "sh",
@@ -2599,6 +2617,8 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&automation_windows_e2e.step);
     test_step.dependOn(&run_automation_guard_tests.step);
     test_step.dependOn(&automation_guard_e2e.step);
+    test_step.dependOn(&run_automation_guard_chunks_tests.step);
+    test_step.dependOn(&automation_guard_chunks_e2e.step);
     test_step.dependOn(&automation_load_serial_e2e.step);
     test_step.dependOn(&automation_scroll_e2e.step);
     test_step.dependOn(&automation_native_ports_e2e.step);

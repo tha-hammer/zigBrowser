@@ -573,12 +573,44 @@ pub const Engine = struct {
             if (command.verb == .dom_scroll) return self.runNativeScroll(gpa, command, deadline, run);
             return self.runNative(gpa, command, deadline, run);
         }
+        if (command.verb == .dom_type and command.guard != null and command.text.?.len > 0) return self.typeInChunks(gpa, command, deadline, run);
         if (command.verb == .dom_type and command.text.?.len > 0) {
             if (command.delay_ms) |delay_ms| {
                 if (delay_ms > 0) return self.typeWithDelay(gpa, command, delay_ms, deadline, run);
             }
         }
         return self.runDomUntil(gpa, command, deadline, run);
+    }
+
+    /// S8 decision 15: a guarded dom.type runs `type_chunk_codepoints` code points per automation.js
+    /// evaluation, split at code-point boundaries, so the command's cancellation is seen between
+    /// chunks (runDomUntil checks it before each) and the page's own event loop runs between them.
+    /// One cumulative `data.sent` covers the completed chunks and the one that stopped; a chunk
+    /// that fails without counts of its own reports the completed chunks as a lower bound.
+    fn typeInChunks(self: *Engine, gpa: std.mem.Allocator, command: *const router.ParsedCommand, deadline: u64, run: *Run) error{OutOfMemory}!Outcome {
+        var total = GuardSent{ .events = 0, .chars = 0 };
+        var rest = command.text.?;
+        while (rest.len > 0) {
+            const end = chunkEnd(rest, type_chunk_codepoints);
+            var chunk = command.*;
+            chunk.text = rest[0..end];
+            chunk.chunk = true;
+            var outcome = try self.runDomUntil(gpa, &chunk, deadline, run);
+            switch (outcome) {
+                .failure => return withPriorSent(gpa, outcome, total),
+                .result => |json| {
+                    const sent = resultSent(gpa, json);
+                    outcome.deinit(gpa);
+                    const counts = sent orelse return withPriorSent(gpa, .{ .failure = .{ .code = internal_error_code, .message = "Internal error" } }, total);
+                    total = .{
+                        .events = std.math.add(u64, total.events, counts.events) catch return withPriorSent(gpa, .{ .failure = .{ .code = internal_error_code, .message = "Internal error" } }, total),
+                        .chars = std.math.add(u64, total.chars, counts.chars) catch return withPriorSent(gpa, .{ .failure = .{ .code = internal_error_code, .message = "Internal error" } }, total),
+                    };
+                },
+            }
+            rest = rest[end..];
+        }
+        return okResult(gpa);
     }
 
     /// dom.type with delay_ms: one `type` op per character (UTF-8 code
@@ -1730,6 +1762,63 @@ fn scriptFailure(gpa: std.mem.Allocator, script_result: *const script_command.Sc
 }
 
 pub const GuardSent = struct { events: u64, chars: u64 };
+
+/// S8 decision 15: the code points per evaluation of a guarded dom.type.
+pub const type_chunk_codepoints = 16;
+
+/// The byte length of `text`'s first `max` code points (all of it when shorter); a malformed
+/// byte counts as one, so a chunk never splits inside a well-formed character.
+fn chunkEnd(text: []const u8, max: usize) usize {
+    var index: usize = 0;
+    var count: usize = 0;
+    while (index < text.len and count < max) : (count += 1) {
+        const len = std.unicode.utf8ByteSequenceLength(text[index]) catch 1;
+        index = @min(text.len, index + len);
+    }
+    return index;
+}
+
+/// A chunk's own counts from its success result (`value.sent`).
+fn resultSent(gpa: std.mem.Allocator, json: []const u8) ?GuardSent {
+    const parsed = std.json.parseFromSlice(std.json.Value, gpa, json, .{}) catch return null;
+    defer parsed.deinit();
+    const object = switch (parsed.value) {
+        .object => |o| o,
+        else => return null,
+    };
+    const counts = switch (object.get("sent") orelse return null) {
+        .object => |o| o,
+        else => return null,
+    };
+    return .{ .events = countOf(counts.get("events")) orelse return null, .chars = countOf(counts.get("chars")) orelse return null };
+}
+
+/// A chunk's failure, with the completed chunks' counts added to its own `sent` (or as its
+/// `sent` when it has none, a lower bound). With nothing completed it is returned as it is.
+fn withPriorSent(gpa: std.mem.Allocator, outcome: Outcome, prior: GuardSent) error{OutOfMemory}!Outcome {
+    if (prior.events == 0 and prior.chars == 0) return outcome;
+    var failure = outcome.failure;
+    const old = failure.data_json orelse "{}";
+    const Own = struct { sent: ?GuardSent = null };
+    const own: GuardSent = blk: {
+        const parsed = std.json.parseFromSlice(Own, gpa, old, .{ .ignore_unknown_fields = true }) catch break :blk .{ .events = 0, .chars = 0 };
+        defer parsed.deinit();
+        break :blk parsed.value.sent orelse .{ .events = 0, .chars = 0 };
+    };
+    const counts = try std.fmt.allocPrint(gpa, "\"sent\":{{\"events\":{d},\"chars\":{d}}}", .{ prior.events +| own.events, prior.chars +| own.chars });
+    defer gpa.free(counts);
+    // Data objects are flat but for `sent` (AutomationErrorData): replace it, or add it first.
+    const data_json = if (std.mem.indexOf(u8, old, "\"sent\":{")) |at| blk: {
+        const close = std.mem.indexOfScalarPos(u8, old, at + "\"sent\":{".len, '}') orelse break :blk try gpa.dupe(u8, old);
+        break :blk try std.mem.concat(gpa, u8, &.{ old[0..at], counts, old[close + 1 ..] });
+    } else if (old.len >= 2 and old[0] == '{') blk: {
+        const sep: []const u8 = if (std.mem.trim(u8, old[1 .. old.len - 1], " ").len == 0) "" else ",";
+        break :blk try std.mem.concat(gpa, u8, &.{ "{", counts, sep, old[1..] });
+    } else try std.fmt.allocPrint(gpa, "{{{s}}}", .{counts});
+    if (failure.data_json) |owned| gpa.free(owned);
+    failure.data_json = data_json;
+    return .{ .failure = failure };
+}
 
 /// S8 decision 14: automation.js stopped an action at its guard. -32015 with the reason and the
 /// exact `sent` counts (events dispatched, characters written); a malformed count is not

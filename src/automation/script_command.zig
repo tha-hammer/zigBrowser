@@ -79,6 +79,8 @@ const ScriptCommand = struct {
     focus: ?bool = null,
     /// S8 decision 14: re-checked by automation.js before every page-visible step.
     guard: ?router.Guard = null,
+    /// S8 decision 15: one chunk of a guarded dom.type.
+    chunk: ?bool = null,
     trace_id: []const u8,
     parent_span_id: []const u8,
     command_id: []const u8,
@@ -117,6 +119,7 @@ pub fn buildCommandJson(
         .action = if (locate) |l| l.action else null,
         .focus = if (locate) |l| l.focus else null,
         .guard = if (locate != null) null else command.guard,
+        .chunk = if (command.chunk) true else null,
         .trace_id = ids.trace_id,
         .parent_span_id = ids.parent_span_id,
         .command_id = ids.command_id,

@@ -316,6 +316,10 @@
     if (action === 'fill') synthesizeFill(element, command.value || '');
     if (action === 'type') synthesizeType(element, command.text || '');
     if (action === 'press') synthesizePress(element, command.key, command.modifiers || []);
+    // One chunk of a guarded type (S8 decision 15): the engine adds up each chunk's counts.
+    if (command.chunk === true && currentGuard) {
+      return success({ ok: true, sent: { events: currentGuard.sent.events, chars: currentGuard.sent.chars } }, telemetry);
+    }
     return success({ ok: true }, telemetry);
   }
 

@@ -127,6 +127,9 @@ pub const ParsedCommand = struct {
     expect: ?Expect = null,
     /// S8 decision 14: `options.guard`.
     guard: ?Guard = null,
+    /// Internal (never parsed): one chunk of a guarded dom.type (S8 decision 15); automation.js
+    /// then reports the chunk's own sent counts on success too.
+    chunk: bool = false,
 
     pub fn deinit(self: *ParsedCommand) void {
         self.arena.deinit();
@@ -317,6 +320,8 @@ pub fn parse(
             else => return error.BadArgs,
         }
         if (input == .native or command.humanize) return error.BadArgs;
+        // A guarded type runs in chunks (decision 15); per-character delays are another schedule.
+        if (command.delay_ms) |delay| if (delay > 0) return error.BadArgs;
     }
 
     command.arena = arena;
