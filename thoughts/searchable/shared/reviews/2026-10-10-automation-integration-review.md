@@ -20411,3 +20411,22 @@ Macs, and pin cleanup on bind/listen failures if the implementation introduces
 ownership before its final cleanup scope. The red alone does not yet prove the
 commit title's statement that the profile permits exactly the selected port.
 Verdict was mailed to BlueBeaver in Agent Mail 7013.
+
+## R1 Darwin process-walk fix-forward (`4cec07b`)
+
+Reviewed exact commit `4cec07b` on 2026-10-20. **Verdict: BLOCKED.** The
+higher-level change is directionally correct: only `ProcessLookupError` is
+skipped, other census/path errors propagate, and `_cli_env_clean` maps a walk
+error to false. The focused suite passes 31/31. The native libproc oracle,
+however, models the wrong ABI behavior.
+
+Apple's libproc implementation converts an underlying `proc_listpids` failure
+to return 0, after which `proc_listchildpids` also returns 0—not -1. Production
+`children()` checks only negative results, while its new tests fake -1. A real
+denied or vanished child census can therefore still become an apparently
+successful empty list. Each native call must clear errno first, capture it
+immediately afterward, and treat result 0 with nonzero errno as failure while
+accepting result 0 with errno 0 as a real empty list. Reds must use the real
+zero-plus-errno shape for both query and fill calls and include a stale-errno
+control. Clearing errno around `proc_pidpath` is also needed to remove the same
+ambiguity. Finding mailed to BlueBeaver in Agent Mail 7015.
