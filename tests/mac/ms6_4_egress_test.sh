@@ -49,15 +49,28 @@ mapis() { # <errno-name> <wanted-tag>
     if [ "$got" = "$2" ]; then echo "  ok   selftest $1 -> $got"
     else echo "  FAIL selftest $1 -> ${got:-<none>}, wanted $2"; fails=$((fails+1)); fi
 }
+# The whole classify() table, exactly (RoseCat 7104): every row the probe prints is checked, and the output must be
+# exactly these 11 SELFTEST rows, each once, with nothing else, so a dropped, duplicated or unexpected row is red.
 mapis EPERM CONNECT-DENIED
 mapis EACCES CONNECT-DENIED
 mapis ECONNREFUSED CONNECT-REFUSED
 mapis EHOSTUNREACH CONNECT-REFUSED
+mapis ENETDOWN CONNECT-REFUSED
 mapis ENETUNREACH CONNECT-REFUSED
+mapis EHOSTDOWN CONNECT-REFUSED
 mapis EINVAL CONNECT-ERROR
 mapis ENOMEM CONNECT-ERROR
 mapis EMFILE CONNECT-ERROR
 mapis ETIMEDOUT CONNECT-ERROR
+st_names=$(printf '%s\n' "$ST" | awk '$1=="SELFTEST"{print $2}' | sort)
+st_want=$(printf '%s\n' EPERM EACCES ECONNREFUSED EHOSTUNREACH ENETDOWN ENETUNREACH EHOSTDOWN EINVAL ENOMEM EMFILE ETIMEDOUT | sort)
+st_other=$(printf '%s\n' "$ST" | awk '$1!="SELFTEST"' | grep -c . || true)
+if [ "$st_names" = "$st_want" ] && [ "$st_other" -eq 0 ]; then
+    echo "  ok   selftest: exactly the 11 classify() rows, each once, nothing else"
+else
+    echo "  FAIL selftest: the row set is not exactly the 11 expected rows (got: $(printf '%s' "$st_names" | tr '\n' ' '); other lines: $st_other)"
+    fails=$((fails+1))
+fi
 
 # Listeners: EGRESS (ephemeral) + DECOY (ephemeral) + the two fixed bridges; and one DEAD ephemeral port (bound
 # then closed) for the refused≠denied self-check. Ports written to $TMP/ports as "egress decoy dead".
