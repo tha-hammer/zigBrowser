@@ -25204,3 +25204,61 @@ the shared ledger from the same revision. Three production-safety gaps remain:
 The destructive Mac reaper gate remains OFF. This was a docs-only review; no
 Mac or live-browser run was performed. `git diff --check` is clean. Verdict
 sent to JadeBeacon in Agent Mail 7345.
+
+## Windows prerequisite-P shim (`b292b17`, `6115ac1`, `52a5aba`)
+
+The three commits do not yet establish the claimed green prerequisite.
+
+### `b292b17` — BLOCKED-for-evidence
+
+The implementation itself is correct by inspection: a failed
+`webview2_runtime_version` now writes the exact documented line to stderr,
+flushes it, and returns `ZB_EXIT_RUNTIME_MISSING` 9
+(`webview2_shim.cpp:1240-1247`). The claimed Linux build proof is not a C++
+compile, however. `cross-check-drawer-win` and `cross-check-ws3-win` compile
+Zig COFF objects and pass `webview2_shim.cpp` to
+`tools/check_cross_symbols.py`; that tool reads the source for exported names
+but never compiles it (`build.zig:430-488`). An independent clean-export run
+of the two claimed steps passed **8/8**, confirming the checks work but not the
+claim made for them. `WS14MissingRuntime` remains unregistered and unrun.
+
+Required evidence is a shipped `x86_64-windows-msvc` build and the real-exe
+missing-runtime case: exit 9, the exact line on stderr, and no copy on stdout,
+with causal old/new or mutant evidence. A MinGW smoke compile could add value
+but would not replace that shipped-target/run proof.
+
+### `6115ac1` — BLOCKED
+
+This has the same build/run evidence gap. It also guesses values when its
+introspection APIs fail: OS data begins as `10.0.0`, and architecture begins
+as `x86_64`; a missing or failed `RtlGetVersion`/`IsWow64Process2` call leaves
+those plausible but invented values in the output
+(`webview2_shim.cpp:1327-1359`). That contradicts WS1.5's contract to report
+what actually ran. API lookup and call failures must fail closed or be shown
+explicitly as unavailable, with causal tests. The shipped exe must then run
+`WS15BuildInfo`, including its independent OS-build, WebView2-runtime and PE
+machine comparisons.
+
+### `52a5aba` — BLOCKED
+
+The production guard is inert in a normal shipped run: the environment is
+read only when `app.e2e_protocol` is true, and the forced branch checks that
+bit again (`webview2_shim.cpp:922-944,1260-1263`). It is nevertheless also
+unreachable from the screenshot command it is meant to test:
+
+- `ScreenshotSpec` has no `e2e_protocol` field (`cli.zig:25-37`), and
+  screenshot parsing accepts no such option (`:73-118`);
+- `runScreenshot` has no bit to pass (`app.zig:543-554`);
+- `zb_run_screenshot` hard-codes zero in its call to `run_core`
+  (`webview2_shim.cpp:1301-1308`);
+- the new PowerShell runner supplies `--e2e-protocol` before `--screenshot`,
+  so top-level parsing takes the open-command path and rejects the later
+  `--screenshot` token as usage before WebView2 starts.
+
+Consequently the new unregistered test cannot drive any of its three claimed
+branches. Add a failing-first reproduction of this exact path, carry an
+explicit e2e bit through the screenshot CLI and ABI, add an env-set-without-
+flag negative proving the shipped default remains inert, then register and
+run the real VM branch test. Verdicts sent to AzureRidge and copied to
+BlackRobin in Agent Mail 7347. The push-through remains `d827780`; the earlier
+Mac plan blocker also remains open.
