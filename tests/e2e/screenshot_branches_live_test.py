@@ -88,7 +88,12 @@ class ScreenshotBranchesLive(unittest.TestCase):
         runner = pathlib.Path(os.environ.get("TMPDIR", "/tmp")) / f"zbbr-{secrets.token_hex(4)}.ps1"
         try:
             runner.write_text(_RUNNER, encoding="utf-8")
-            for local, name in ((self.exe, "zigBrowser.exe"), (str(runner), "run.ps1")):
+            pairs = [(self.exe, "zigBrowser.exe"), (str(runner), "run.ps1")]
+            # A dynamic-loader build imports WebView2Loader.dll at load time; ship it beside the exe.
+            loader = pathlib.Path(self.exe).with_name("WebView2Loader.dll")
+            if loader.is_file():
+                pairs.append((str(loader), "WebView2Loader.dll"))
+            for local, name in pairs:
                 r = self._scp(local, f"{rel}/{name}")
                 self.assertEqual(r.returncode, 0, f"scp {name} failed: {r.stderr}")
             for mode, needle in _EXPECT.items():

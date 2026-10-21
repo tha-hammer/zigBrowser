@@ -116,13 +116,16 @@ class WS14MissingRuntime(unittest.TestCase):
         mk = _ssh(f'cmd /c "mkdir {empty}"', timeout=40)
         self.assertEqual(mk.returncode, 0, f"could not create the empty runtime folder: {mk.stderr}")
         try:
+            # The screenshot subcommand grammar is `--screenshot <out.png> <URL>` (the flag leads; the
+            # out path and URL follow). An earlier `<URL> --screenshot <out>` ordering made the CLI exit
+            # with a usage error (1) before the runtime check ever ran.
             if RUNTIME_SEAM == "e2e":
                 # Documented fallback if the seam spike proves the env is ignored (plan:865-866).
                 inner = f'{EXE_REMOTE} --e2e-protocol --webview2-runtime-folder "{empty}" ' \
-                        f'https://example.invalid/ --screenshot {out_png}'
+                        f'--screenshot {out_png} https://example.invalid/'
             else:
                 inner = f'set "WEBVIEW2_BROWSER_EXECUTABLE_FOLDER={empty}" & ' \
-                        f'{EXE_REMOTE} https://example.invalid/ --screenshot {out_png}'
+                        f'{EXE_REMOTE} --screenshot {out_png} https://example.invalid/'
             r = _ssh(f'cmd /c "{inner}"')
             # Exit-code half: exactly 9, not merely nonzero (the "exit 1" mutant is red here).
             self.assertEqual(r.returncode, ZB_EXIT_RUNTIME_MISSING,
