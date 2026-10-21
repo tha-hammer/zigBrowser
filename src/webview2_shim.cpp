@@ -40,6 +40,10 @@ struct AppState {
   std::wstring uri;
   bool print_title = false;
   bool e2e_protocol = false;
+  // WS1/6c771ff: an INERT e2e-only seam to force one screenshot-failure branch (watchdog/navigate/
+  // docscript) so the live branch tests can select each deterministically. Null unless --e2e-protocol AND
+  // ZB_E2E_FORCE_SCREENSHOT_FAIL is set; never consulted in normal runs.
+  const char *force_screenshot_fail = nullptr;
   int exit_code = ZB_EXIT_SUCCESS;
   bool navigation_completed = false;
   bool screenshot = false;
@@ -911,6 +915,28 @@ void navigate(AppState *app) {
     return;
   }
 
+  // WS1/6c771ff inert e2e seam: deterministically drive one failure branch for the live branch tests.
+  // 'navigate'  -> the synchronous Navigate-failure branch; 'docscript' -> the doc-script-failure branch
+  // (same exact diagnostics as the real paths); 'watchdog' -> arm the timer but do NOT navigate, so the
+  // REAL watchdog branch (WM_TIMER) fires after the timeout. Only under --e2e-protocol.
+  if (app->e2e_protocol && app->force_screenshot_fail != nullptr) {
+    const char *f = app->force_screenshot_fail;
+    if (strcmp(f, "navigate") == 0) {
+      screenshot_diag(app, "ICoreWebView2::Navigate failed to start");
+      request_quit(app, ZB_EXIT_WEBVIEW_INIT_FAILED);
+      return;
+    }
+    if (strcmp(f, "docscript") == 0) {
+      screenshot_diag(app, "AddScriptToExecuteOnDocumentCreated failed");
+      request_quit(app, ZB_EXIT_WEBVIEW_INIT_FAILED);
+      return;
+    }
+    if (strcmp(f, "watchdog") == 0) {
+      SetTimer(app->hwnd, kNavigationTimerId, kNavigationTimeoutMs, nullptr);
+      return;  // never navigate: the real WM_TIMER watchdog branch fires after kNavigationTimeoutMs
+    }
+  }
+
   SetTimer(app->hwnd, kNavigationTimerId, kNavigationTimeoutMs, nullptr);
   const HRESULT hr = app->webview->Navigate(app->uri.c_str());
   if (FAILED(hr)) {
@@ -1232,6 +1258,9 @@ static int run_core(const char *uri, int print_title, int e2e_protocol, bool scr
   app.uri = utf8_to_wide(uri);
   app.print_title = print_title != 0;
   app.e2e_protocol = e2e_protocol != 0;
+  if (app.e2e_protocol) {
+    app.force_screenshot_fail = getenv("ZB_E2E_FORCE_SCREENSHOT_FAIL");  // inert e2e branch-selection seam
+  }
   app.screenshot = screenshot;
   if (screenshot && out_path != nullptr) {
     app.out_path = utf8_to_wide(out_path);
