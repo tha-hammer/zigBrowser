@@ -17,8 +17,9 @@ Linux it runs, like every ms6_hard_gate module, inside a PID namespace, with the
 "my own group" is a real pgid above 1, not the namespace's 0):
 unshare --user --map-root-user --pid --fork --mount-proc sh -c 'setsid python3 -X dev -m unittest ...'
 
-Run like the gate: cd tests/e2e && python3 -X dev -m unittest -v ms6_hard_gate_harness_safety_test. Unregistered until
-the green.
+Registered (build.zig: test-mac-census and the Linux test step). Run like the gate, inside a private user+PID namespace:
+cd tests/e2e && unshare --user --map-root-user --pid --fork --mount-proc \\
+  sh -c 'setsid python3 -X dev -m unittest -v ms6_hard_gate_harness_safety_test'
 """
 import os
 import subprocess

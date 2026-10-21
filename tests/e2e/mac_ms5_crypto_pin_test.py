@@ -7,9 +7,12 @@ agent/host/uv.lock must:
 - lock a cryptography 48.0.1 entry whose every resolution marker is a darwin one, carrying a macOS wheel that CPython
   3.12 loads on BOTH chips (a universal2 abi3 wheel, cp3X-abi3 with X <= 12, or abi3 x86_64 and arm64 wheels);
 - keep a separate non-darwin cryptography entry, not 48.0.1: Linux is not dragged onto the Mac pin.
+agent/host/pyproject.toml, the lock's source, must carry that exact constraint too (RoseCat on 15470e4), so deleting
+it while a stale lock still holds the pin cannot pass.
 
 Pure file checks, no network, no process, no signal.
-Run like the gate: cd tests/e2e && python3 -X dev -m unittest -v mac_ms5_crypto_pin_test. Unregistered until the green.
+Registered (build.zig: test-mac-census and the Linux test step).
+Run like the gate: cd tests/e2e && python3 -X dev -m unittest -v mac_ms5_crypto_pin_test.
 """
 import re
 import tomllib
@@ -17,6 +20,7 @@ import unittest
 from pathlib import Path
 
 LOCK = Path(__file__).resolve().parents[2] / "agent" / "host" / "uv.lock"
+PYPROJECT = LOCK.with_name("pyproject.toml")
 PIN = "48.0.1"
 DARWIN = "sys_platform == 'darwin'"
 
@@ -47,6 +51,15 @@ class CryptographyMacPin(unittest.TestCase):
     def test_the_manifest_constrains_cryptography_on_darwin_only(self):
         constraints = self.lock.get("manifest", {}).get("constraints", [])
         self.assertIn({"name": "cryptography", "marker": DARWIN, "specifier": f"=={PIN}"}, constraints)
+
+    def test_the_pyproject_carries_the_darwin_only_constraint(self):
+        with open(PYPROJECT, "rb") as f:
+            project = tomllib.load(f)
+        constraints = project.get("tool", {}).get("uv", {}).get("constraint-dependencies", [])
+        self.assertEqual([c for c in constraints if c.split("=")[0].split(";")[0].strip() == "cryptography"],
+                         [f"cryptography=={PIN}; {DARWIN}"])
+        self.assertNotIn("cryptography", " ".join(project["project"].get("dependencies", [])),
+                         "a constraint, not a direct dependency")
 
     def test_the_48_0_1_entry_resolves_only_on_darwin(self):
         markers = self.mac_entry().get("resolution-markers", [])

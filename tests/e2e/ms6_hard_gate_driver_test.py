@@ -10,7 +10,9 @@ Macs. These Linux tests pin the driver's fail-closed rules with fake cases, and 
 - Each case gets its own scratch directory (h.scratch), removed afterwards; a case that leaves it unremovable is a FAIL.
 - The entry's NOT ARMED refusal, observed with network shims, is in ms6_hard_gate_harness_test (RoseCat 7134).
 
-Run like the gate: cd tests/e2e && python3 -X dev -m unittest -v ms6_hard_gate_driver_test. Unregistered until the green.
+Registered (build.zig: test-mac-census and the Linux test step). Run like the gate, inside a private user+PID namespace:
+cd tests/e2e && unshare --user --map-root-user --pid --fork --mount-proc \\
+  sh -c 'setsid python3 -X dev -m unittest -v ms6_hard_gate_driver_test'
 """
 import os
 import shutil

@@ -16,8 +16,9 @@ the entry's NOT ARMED refusal, observed.
   ARMED", and recording ssh/scp/sftp/curl/nc/rsync shims (first on PATH, canary hosts in every host variable) see no
   call at all.
 
-Run like the gate: cd tests/e2e && python3 -X dev -m unittest -v ms6_hard_gate_harness_test. Unregistered until the
-green.
+Registered (build.zig: test-mac-census and the Linux test step). Run like the gate, inside a private user+PID namespace:
+cd tests/e2e && unshare --user --map-root-user --pid --fork --mount-proc \\
+  sh -c 'setsid python3 -X dev -m unittest -v ms6_hard_gate_harness_test'
 """
 import os
 import select
@@ -87,8 +88,11 @@ class SpawnGroup(unittest.TestCase):
         if sys.platform == "darwin":
             stat = subprocess.run(["/bin/ps", "-o", "stat=", "-p", str(pid)], capture_output=True, text=True).stdout
             return stat.strip() != "" and not stat.strip().startswith("Z")
-        with open(f"/proc/{pid}/stat") as f:
-            return f.read().rsplit(")", 1)[1].split()[0] != "Z"
+        try:  # the child may exit between kill(pid, 0) and the open (RoseCat on 554f36c): that is dead, not an error
+            with open(f"/proc/{pid}/stat") as f:
+                return f.read().rsplit(")", 1)[1].split()[0] != "Z"
+        except FileNotFoundError:
+            return False
 
     def group_kills(self):
         kills = [k for k in self.kills if k[1] == 9]
