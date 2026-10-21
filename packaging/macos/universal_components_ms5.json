@@ -111,6 +111,10 @@
     },
     {
       "role": "agent-host-package",
+      "path": "Frameworks/agent-host/zb_agent_host/sandbox_macos.py"
+    },
+    {
+      "role": "agent-host-package",
       "path": "Frameworks/agent-host/zb_agent_host/seccomp.py"
     },
     {
