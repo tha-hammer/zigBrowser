@@ -148,6 +148,9 @@
             '<section class="_3a9e01"><div class="_77b2c4">' + name + '</div>' +
             '<div class="text-body-medium break-words">Engineer at Example Co</div>' +
             '<span class="text-body-small inline t-black--light break-words">Springfield</span>' +
+            // The owner's contact-info link names the profile's own slug (S8 decision 13 stage 1);
+            // /in/wrongowner/ shows someone else's profile at the unchanged path (RoseCat 8b05366).
+            '<a href="/in/' + (m[1] === 'wrongowner' ? 'mallory' : m[1]) + '/overlay/contact-info/">Contact info</a>' +
             '<div id="actions"></div></section>' +
             '</div></div></div></section></div></div>' +
             '<section id="composer" hidden><div class="msg-form__contenteditable" contenteditable="true"></div>' +

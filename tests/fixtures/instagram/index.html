@@ -197,7 +197,8 @@
           try { ig.storyDecoyNext = Number(sessionStorage.getItem('ig_decoy_next') || '0'); } catch (e) {}
           ig.highlightNext = 0;
           main.innerHTML =
-            '<header><h2>' + m[1] + '</h2><span id="header-actions"></span></header>' +
+            // wrongowner.user (RoseCat 8b05366): someone else's profile at the unchanged path.
+            '<header><h2>' + (m[1] === 'wrongowner.user' ? 'mallory' : m[1]) + '</h2><span id="header-actions"></span></header>' +
             // Highlights: avatars in a section and a carousel "Next".
             '<section class="highlights"><img alt="highlight" src="data:image/gif;base64,R0lGODlhAQABAAAAACw=" width="56" height="56">' +
             '<button aria-label="Next" id="highlight-next">Next</button></section>' +
