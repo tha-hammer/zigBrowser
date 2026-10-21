@@ -23382,3 +23382,105 @@ until the user also defines the two modes and where an unattended card lives.
 **NIT:** decision 12 still cites rev 16.20.45 at `plan:3117`; update it to the
 correcting revision when fixing the contract. Docs-only diff check passed; no
 runtime gate applies. Verdict sent to BlackRobin by Agent Mail.
+
+## MS5.1c universal CLI layout and inventory (`06f1d4b`)
+
+**The code/inventory shape is sound; the SHA is BLOCKED by its bundled rev-20
+plan contract.** The `claude-cli` role appears exactly once at
+`Frameworks/agent-host/site-packages/claude_agent_sdk/_bundled/claude`, which
+is the location `token.bundled_cli()` resolves when that staged package tree is
+on `sys.path`. The generated and committed inventories agree, and the MS1
+inventory remains unchanged.
+
+An exact-commit clean-export run passed all **11/11**
+`mac_ms5_census_test` cases plus `ms5_inventory.py --check`.
+
+**BLOCKER:** rev 20 says only WHEEL Tag lines and RECORD may differ and every
+other per-architecture difference fails (`plan:1522-1527`). The measured trees
+and the immediately following red `9a23166` intentionally preserve two
+different CycloneDX SBOMs as architecture-suffixed files. Fix the authoritative
+plan to name that exception and its RECORD rewrite. Also distinguish
+`mac_resource_compat` over the declared runtime/host-package resources from the
+strict site-packages merge; the former's manifest does not enumerate the whole
+dependency tree.
+
+**SHOULD:** the commit message says the Mac stage gate now requires the CLI,
+but `ms5_stage_gate.sh` is still explicitly the partial framework/host-package
+gate and does not run the component census. The new dependency gate is the
+intended full runtime gate; the plan should name both scopes. **NIT:** the
+generated inventory comment still labels itself plan rev 17. Verdict sent to
+JadeBeacon with BlueBeaver copied in Agent Mail 7229.
+
+## MS5 fat agent-host failing-first suite (`9a23166`)
+
+**BLOCKED-for-tests before the green.** An exact-commit clean-export run is
+genuinely red **7/7** because `merge_universal_tree.py` is absent. The proposed
+gate builds both macOS trees from the frozen, hashed lock; verifies the pinned
+python.org artifact; tests the fat CLI, whole-runtime fatness and relocated
+framework; then runs the staged 3.12.10 with package imports, the exact
+`bundled_cli()` path/version, and a foreign-image census. Its cleanup targets
+are explicit and guarded.
+
+The strict merger needs these additional discriminators:
+
+1. Use two distributions and prove each regenerated RECORD contains exactly
+   its own original path set (with its split-SBOM substitution), never the
+   other distribution. Reject absolute/escaping dot-segment paths, duplicate
+   rows, and a missing or duplicate own-RECORD row; RECORD must never make the
+   merger read outside the stage.
+2. Add a bounded FIFO/special-file case. Reject without opening it; a naive
+   regular-file read otherwise hangs.
+3. Make the injected `lipo` runner fail after writing a partial destination.
+   The error must name the affected path and leave no output.
+4. **SHOULD:** reject permission-mode disagreement between the two inputs,
+   particularly an executable CLI paired with a non-executable peer, instead
+   of silently selecting one architecture's mode.
+
+Verdict sent to BlueBeaver with JadeBeacon copied in Agent Mail 7230.
+
+## WS0 corrected locked-console evidence (`fd099e3`)
+
+The owner-watched replacement run on a genuinely locked Win11 console passed
+`LockedDesktopLive` from a clean `fd099e3` export: **1 test OK in 5.747 s**,
+with staged probe SHA `8a4f7cb0e70b8537` equal to the export. It required
+`wts_lock_ok=true`, `session_flags=0`, and `locked=true`. Together with the
+earlier unlocked observation (`session_flags=1`, `locked=false`), this accepts
+the corrected byte-16 WTS discriminator in both states and replaces the
+invalid byte-12 run.
+
+WS0/`7d85cd5` remains **OPEN** until the user's Win10 host meets or changes the
+19045 policy and the watched unlocked two-host `gate.sh --probe-only` succeeds.
+
+## S8 decision-16 modes and selector table (`1056482`, `02e90e6`, `28a0bb8`)
+
+**`1056482` APPROVED** for the user-decided default, mode definitions,
+main-window card plus notification surface, 120-second expiry, and pause/cancel
+behavior. **`02e90e6` APPROVED** for the complete three-by-three selector table
+and its test matrix. **`28a0bb8` APPROVED** for recording the user's explicit
+confirmation of that table. Cumulatively these close `c46c203`'s contradictory
+selector meanings and its stale decision-12 citation:
+
+| selector | interactive | headless | full automation |
+|---|---|---|---|
+| `yes` | card | card | card |
+| `no` | none | none | none |
+| `conditional` (default) | none | card | card |
+
+**The authoritative decision-16 plan remains BLOCKED on the selector and new
+notification authority boundaries:**
+
+1. Name the sole native Settings control that changes and persists the
+   selector. Besides model/page negatives, require the automation socket and
+   native protocol to reject any selector mutation without changing storage.
+2. Missing storage selects the approved `conditional` default; malformed or
+   unknown storage must fail closed to `yes`, with a corrupt-store red.
+3. The desktop notification must contain fixed generic text only—no URL,
+   selector, message text, page data, token, card id or grant—and its activation
+   cannot approve, deny or mint. At most it focuses/opens the main drawer.
+   Delivery/callback failure leaves the card pending to expire, never dispatches.
+4. If the main window/card surface is absent or closes, fail closed without
+   falling back to a hidden bound drawer or an arbitrary window.
+
+Add canary, forged-notification-activation, socket/protocol, corrupt-store and
+missing-main-window reds. Docs-only diff checks passed; no runtime gate applies.
+Verdict sent to BlackRobin in Agent Mail 7231.
