@@ -2,7 +2,7 @@
 It plays the probe's position: starts the CLI stand-in (the canary, and with argv[5] != "-" that token, in its
 environment) and a sibling, tries the R1 port, the decoy port, and KERN_PROCARGS2 / proc_pidpath of both while
 they are alive, prints one JSON line, then holds its children until its stdin closes or it is killed.
-argv: <sleeper> <r1 port> <decoy port> <canary entry> <token or -> <report|silent>"""
+argv: <sleeper> <r1 port> <decoy port> <canary entry> <token or -> <report|silent> <sibling binary>"""
 import ctypes
 import ctypes.util
 import json
@@ -12,8 +12,8 @@ import subprocess
 import sys
 import time
 
-sleeper, port, decoy, canary, token, mode = (sys.argv[1], int(sys.argv[2]), int(sys.argv[3]), sys.argv[4],
-                                             sys.argv[5], sys.argv[6])
+sleeper, port, decoy, canary, token, mode, sibling_exe = (sys.argv[1], int(sys.argv[2]), int(sys.argv[3]),
+                                                          sys.argv[4], sys.argv[5], sys.argv[6], sys.argv[7])
 key, _, value = canary.partition("=")
 if mode == "silent":  # the harness self-test: alive with live children in its group, never reports
     kids = [subprocess.Popen([sleeper, "120"]) for _ in range(2)]
@@ -23,7 +23,8 @@ env = {"PATH": "/usr/bin:/bin", key: value}
 if token != "-":
     env["ZB_LEAK"] = token
 cli = subprocess.Popen([sleeper, "60"], env=env)
-sibling = subprocess.Popen([sleeper, "60"], env={"PATH": "/usr/bin:/bin"})
+# The sibling runs the same code from ANOTHER path: it is not the CLI, so setup's census must not count it.
+sibling = subprocess.Popen([sibling_exe, "60"], env={"PATH": "/usr/bin:/bin"})
 time.sleep(0.3)
 
 libc = ctypes.CDLL(ctypes.util.find_library("c"), use_errno=True)

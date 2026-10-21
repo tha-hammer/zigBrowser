@@ -17,7 +17,7 @@ Process ownership: every inner runs in its own process group, every read has a l
 whole group is SIGKILLed and reaped on every path; a live-silent inner is a bounded failure with no survivor (the
 harness self-test). Every /tmp/zb-r1k-* scratch is removed under a guard.
 Run by tests/mac/ms6_r1_kernel_gate.sh with sandbox_macos.py, proc_darwin.py and r1_kernel_inner.py next to it.
-argv: <sleeper binary>"""
+argv: <sleeper binary (the CLI stand-in)> <sibling binary (the same code at another path)>"""
 import json
 import os
 import shutil
@@ -122,7 +122,7 @@ def run_inner(sleeper, port, decoy, plant=False, sandboxed=True, mode="report", 
     canary = f"ANTHROPIC_BASE_URL=http://127.0.0.1:{port}"
     # The real interpreter, as setup runs it (/usr/bin/python3 is Apple's xcrun shim).
     cmd = [os.path.realpath(sys.executable), "-I", os.path.join(HERE, "r1_kernel_inner.py"), sleeper, str(port),
-           str(decoy), canary, TOKEN if plant else "-", mode]
+           str(decoy), canary, TOKEN if plant else "-", mode, os.path.realpath(sys.argv[2])]
     env = {"PATH": "/usr/bin:/bin", "HOME": scratch, "LANG": "C", "PYTHONDONTWRITEBYTECODE": "1"}
     inner = None
     try:
@@ -209,7 +209,7 @@ def exact_cleanup(resources, label):
         if ps.returncode not in (0, 1):
             check(False, f"{label}: ps failed for pid {pid} (rc {ps.returncode})")
             continue
-        if ps.stdout.strip() != sleeper:
+        if ps.stdout.strip() not in (sleeper, os.path.realpath(sys.argv[2])):
             continue  # already gone (rc 1, empty) or a reused pid that is not ours: never touched
         try:
             os.kill(pid, signal.SIGKILL)

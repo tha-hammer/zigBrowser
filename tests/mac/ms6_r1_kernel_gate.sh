@@ -62,8 +62,9 @@ trap 'rm -rf "$HOME/${ZB_RDIR:?}"' EXIT
 cd "$d"
 printf '#include <stdlib.h>\n#include <unistd.h>\nint main(int c,char**v){sleep(c>1?atoi(v[1]):30);return 0;}\n' > sleeper.c
 xcrun clang -O1 -o sleeper sleeper.c
+cp sleeper sibling  # the same code at another path: the census matches the CLI by its exact path only
 echo "== $(uname -m) macOS $(sw_vers -productVersion)"
-/usr/bin/python3 -I "$d/r1_kernel_driver.py" "$d/sleeper"
+/usr/bin/python3 -I "$d/r1_kernel_driver.py" "$d/sleeper" "$d/sibling"
 REMOTE
 }
 
