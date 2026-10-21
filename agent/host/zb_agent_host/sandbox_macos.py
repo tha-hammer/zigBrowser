@@ -183,17 +183,16 @@ def render_profile(*, egress, bridges, is_hook, is_login=False):
 def render_setup_profile(*, loopback_port=None):
     """Return the Seatbelt profile text for setup's OWN runs (`cli --version`, the R1 probe).
 
-    UNLIKE the agent CLI/hook profile (`render_profile`), setup must introspect its OWN children for the R1
-    env check: it reads each descendant's `kern.procargs2` (the canary `ANTHROPIC_BASE_URL`) and
-    `proc_pidpath`. So this profile ALLOWS `process-info*` and `sysctl-read` BROADLY — kern.procargs2 is a
-    numeric MIB, not a name, so it cannot be `(sysctl-name ...)`-scoped, and Seatbelt's `(target children)`
-    does not restrict the procargs2 read (measured both arches, 2026-10-20). The agent token-isolation belt
-    (`(deny process-info*)` + curated sysctl) stays ONLY on `render_profile`; it is deliberately ABSENT here.
-    Coarse is acceptable because this profile is applied only to setup's own short, trusted runs.
+    It KEEPS the token-isolation belt (curated `sysctl-read` + explicit `(deny process-info*)`), exactly like
+    the agent CLI/hook profile. The R1 process census does NOT run inside this sandbox: `route_probe`, the SDK,
+    the wrapper and the CLI are all descendants of the same `sandbox-exec`, so granting introspection here would
+    hand the code under test the observer's capability (RoseCat 7019). Instead trusted setup observes its own
+    descendants OUTSIDE Seatbelt over a socketpair and answers the probe (BlueBeaver 7021); this profile denies
+    process-info for both `cli --version` and the R1 run.
 
     Network: with no `loopback_port`, there is NO `(allow network-outbound)` form — deny-default denies every
-    outbound connect (BlueBeaver's contract: "only its own loopback"). With `loopback_port` (the R1 probe's
-    pre-bound 127.0.0.1 port), exactly that one `localhost:<port>` is permitted and nothing else. No value is
+    outbound connect (BlueBeaver's contract: "only its own loopback"). With `loopback_port` (the inherited R1
+    listener's 127.0.0.1 port), exactly that one `localhost:<port>` is permitted and nothing else. No value is
     interpolated: the scratch is bound as the `SCRATCHPAD` `-D` param, and the port is range-validated here.
     """
     net = [";; network: NONE — deny-default denies all outbound (setup reaches only its own loopback)."]
@@ -212,12 +211,11 @@ def render_setup_profile(*, loopback_port=None):
         "(allow file-read*)",  # broad reads (read curation to ro_paths+system is a later MS6 increment)
         _file_write_line(),
         *net,
-        ";; sysctl-read BROAD: setup introspects its OWN children for the R1 env check; kern.procargs2 is a MIB,",
-        ";; not name/target-scopable. The token-isolation deny is only on the agent CLI/hook profiles.",
-        "(allow sysctl-read)",
-        ";; process-info ALLOWED for setup's own children (proc_listchildpids/proc_pidpath for R1). Coarse:",
-        ";; Seatbelt cannot scope kern.procargs2 by target, and this profile is only setup's own short run.",
-        "(allow process-info*)",
+        ";; sysctl-read CURATED (MS6.1): never blanket — a blanket allow re-opens kern.procargs2.",
+        *_sysctl_block(),
+        ";; token isolation (MS6.1): explicit process-info deny — the R1 census runs OUTSIDE this sandbox in",
+        ";; trusted setup (BlueBeaver 7021), so the probed CLI never gets introspection (RoseCat 7019).",
+        "(deny process-info*)",
         "(allow mach-lookup)",  # tiny curated mach-lookup is a separate later MS6 increment
     ]
     return "\n".join(lines) + "\n"

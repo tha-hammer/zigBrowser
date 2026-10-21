@@ -221,10 +221,12 @@ class SecurityContent(unittest.TestCase):
 
 
 def reference_setup_profile(loopback_port=None):
-    """Frozen, independent reference for setup's OWN-run profile. UNLIKE the agent CLI/hook profiles, setup
-    may introspect its own children for the R1 env check, so it ALLOWS process-info + broad sysctl-read (incl.
-    kern.procargs2, a MIB that cannot be name/target-scoped). The token-isolation deny is only on the agent
-    profiles. Network: none, or exactly the one R1 probe loopback port."""
+    """Frozen, independent reference for setup's OWN-run profile. It KEEPS the token-isolation belt (curated
+    `sysctl-read` + explicit `(deny process-info*)`) exactly like the agent CLI/hook profiles — the R1 process
+    census does NOT run inside this sandbox. The probed CLI (route_probe, SDK, wrapper, CLI) are all
+    descendants of the same sandbox-exec, so granting introspection here would hand the code under test the
+    observer's capability (RoseCat 7019). Instead trusted setup observes its own descendants OUTSIDE Seatbelt
+    over a socketpair (BlueBeaver 7021). Network: none, or exactly the one inherited R1 probe loopback port."""
     net = ([";; network: ONLY the R1 probe's pre-bound loopback port.",
             f'(allow network-outbound (remote ip "localhost:{loopback_port}"))']
            if loopback_port is not None
@@ -239,12 +241,20 @@ def reference_setup_profile(loopback_port=None):
         "(allow file-read*)",
         f'(allow file-write* (subpath (param "SCRATCHPAD")) {_DEVICES})',
         *net,
-        ";; sysctl-read BROAD: setup introspects its OWN children for the R1 env check; kern.procargs2 is a MIB,",
-        ";; not name/target-scopable. The token-isolation deny is only on the agent CLI/hook profiles.",
-        "(allow sysctl-read)",
-        ";; process-info ALLOWED for setup's own children (proc_listchildpids/proc_pidpath for R1). Coarse:",
-        ";; Seatbelt cannot scope kern.procargs2 by target, and this profile is only setup's own short run.",
-        "(allow process-info*)",
+        ";; sysctl-read CURATED (MS6.1): never blanket — a blanket allow re-opens kern.procargs2.",
+        '(allow sysctl-read (sysctl-name-prefix "hw.")',
+        '  (sysctl-name-prefix "kern.os")',
+        '  (sysctl-name "kern.ostype")',
+        '  (sysctl-name "kern.osrelease")',
+        '  (sysctl-name "kern.version")',
+        '  (sysctl-name "kern.hostname")',
+        '  (sysctl-name "kern.maxproc")',
+        '  (sysctl-name "kern.argmax")',
+        '  (sysctl-name "kern.ngroups")',
+        '  (sysctl-name "kern.usrstack64"))',
+        ";; token isolation (MS6.1): explicit process-info deny — the R1 census runs OUTSIDE this sandbox in",
+        ";; trusted setup (BlueBeaver 7021), so the probed CLI never gets introspection (RoseCat 7019).",
+        "(deny process-info*)",
         "(allow mach-lookup)",
     ]) + "\n"
 
@@ -266,16 +276,20 @@ class SetupProfile(unittest.TestCase):
         self.assertIn('(allow network-outbound (remote ip "localhost:52999"))', p)
         self.assertEqual(p.count("(allow network-outbound"), 1, "exactly one network allow — the R1 probe port")
 
-    def test_allows_r1_introspection_not_token_isolation(self):
-        # R1's env check runs INSIDE this profile and reads setup's own children, so process-info + broad
-        # sysctl (for kern.procargs2) must be ALLOWED, and the agent token-isolation deny must be ABSENT here.
-        p = sandbox_macos.render_setup_profile()
-        self.assertIn("(allow process-info*)", p)
-        self.assertIn("(allow sysctl-read)", p)
-        self.assertNotIn("(deny process-info*)", p, "the token-isolation deny belongs only to the agent profiles")
-        self.assertIn("(deny default)", p)
-        self.assertIn('(subpath (param "SCRATCHPAD"))', p)
-        self.assertNotIn("mach-priv-task-port", p)
+    def test_keeps_the_token_isolation_belt_even_for_r1(self):
+        # RoseCat 7019: the probed CLI shares this sandbox domain, so it must NOT get introspection. The census
+        # moved to trusted setup OUTSIDE Seatbelt (BlueBeaver 7021); the setup profile denies process-info and
+        # never blanket-allows sysctl, for both `cli --version` and the R1 run, with or without a loopback port.
+        for port in (None, 52999):
+            with self.subTest(loopback_port=port):
+                p = sandbox_macos.render_setup_profile(loopback_port=port)
+                self.assertIn("(deny process-info*)", p, "the token-isolation deny must stay on the setup profile")
+                self.assertNotIn("(allow process-info*)", p, "the probed CLI must never get process introspection")
+                self.assertNotIn("\n(allow sysctl-read)\n", p, "no blanket sysctl — a blanket allow re-opens procargs2")
+                self.assertIn('(allow sysctl-read (sysctl-name-prefix "hw.")', p, "sysctl-read stays curated")
+                self.assertIn("(deny default)", p)
+                self.assertIn('(subpath (param "SCRATCHPAD"))', p)
+                self.assertNotIn("mach-priv-task-port", p)
 
     def test_bad_loopback_port_refused(self):
         for bad in (0, 65536, -1, "80", 1.5, True):
