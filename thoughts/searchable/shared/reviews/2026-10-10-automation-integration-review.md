@@ -19840,3 +19840,229 @@ Two defects prevent running or accepting it:
 `bash -n tests/mac/ms5_setup_e2e.sh` passed. The remote harness was deliberately
 not run because its cleanup is unsafe. Findings were mailed to BlueBeaver in
 Agent Mail 6940.
+
+### Cleanup fix-forward (`add52a6`)
+
+Reviewed exact test fix-forward `add52a6` on 2026-10-20. **Verdict:
+BLOCKED-for-tests; the cleanup and child-selection logic itself closes both
+6940 findings.** `zb_kill_saved_group` refuses a missing file, empty or
+malformed content, 0, 1, and the caller's process group. `zb_setup_child`
+requires exactly one direct child whose command is the setup module and whose
+PGID equals its PID before the caller saves that group. Redirecting the build
+and both browser invocations from `/dev/null` also prevents them from consuming
+the remote script streamed on stdin.
+
+The new 15-case local regression passes, including the no-file/zero/own-group
+and decoy-child cases, and BlueBeaver reports both Macs now return the honest
+NOT-ARMED status 3 without the old group-zero signal. However,
+`tests/mac/lib_group_cleanup_test.sh` is referenced by neither `build.zig` nor
+`tests/mac/gate.sh`; therefore the regression does not run in any maintained
+gate and can silently rot. Register one underlying run in
+`test-agent-setup-ms5` and the aggregate `test` step. This sole remaining hold
+was mailed to BlueBeaver in Agent Mail 6948.
+
+## macOS `--agent-setup` gated wiring (`c78f696`)
+
+Reviewed exact production commit `c78f696` on 2026-10-20. **Verdict: APPROVED
+as unreachable, gate-protected MS5 wiring scaffolding.** This is deliberately
+not acceptance of the armed macOS setup workflow.
+
+- `src/app.zig:59-68` evaluates `platformGate` with the literal-false
+  `agent_setup.seatbelt_ready` before any HOME/runtime lookup, owner lock or
+  spawn. The established real-binary test on both Macs proves the fixed
+  refusal, an untouched temporary HOME and an unrun canary interpreter.
+- Past that future gate, the branch uses the real executable path, the pinned
+  macOS runtime layout, the existing explicit environment and POSIX owner
+  lock, a new process-group leader, the browser PID, and raw wait-status
+  translation. A null PID leaves Linux's 14-entry argv byte-for-byte unchanged;
+  the fixed adjacency oracle now also checks the Python value.
+- The two macOS cross objects require `zb_agent_home_lock`,
+  `zb_agent_spawn_group` and `zb_agent_wait`; the multi-source checker finds
+  those definitions only in the exact C files now compiled into that backend.
+
+From a clean export of `7acacf8`, which contains this commit, private-Xvfb
+`install test-agent-setup-ms5 cross-check` passed **26/26 steps and 14/14
+tests**. The armed path still requires the committed Darwin parent-watch and
+setup-sandbox green, accepted MS6 backend, and both cases of the real two-Mac
+setup lifecycle e2e before anyone flips `seatbelt_ready`. Verdict mailed to
+BlueBeaver in Agent Mail 6948.
+
+### Exact-capability fix-forward (`7acacf8`)
+
+Reviewed exact security fix-forward `7acacf8` on 2026-10-20. **Verdict:
+APPROVED.** It cumulatively closes all three blockers on `463f288`:
+
+- the sole scratchpad write parameter refuses root and lexical normalization
+  aliases, including dot segments, trailing slash and double slash;
+- `is_hook` must be an exact Boolean; and
+- egress must use literal `127.0.0.1`, while the bridge set must be exactly
+  ports 51091 and 31337, with no missing, extra, wrong or duplicate entry.
+
+The exact clean-export `test_sandbox_macos` run passed **18/18**. Independent
+hostile probes confirmed that root, numeric profile kind, localhost egress,
+one bridge and an extra bridge are all refused. The same clean export passed
+the 26/26-step narrow build above.
+
+One security follow-up is a hard prerequisite of production wiring but does
+not block this still-unwired generator: lexical normalization cannot detect a
+canonical-looking symlink to root. The eventual `MacSeatbeltBackend` must bind
+the exact pinned LaunchSpec scratchpad without symlink traversal, and the
+both-Mac kernel gate must include a symlink-to-root mutant. Approval and that
+follow-up were mailed to JadeBeacon in Agent Mail 6949.
+
+### Cleanup regression registration (`2d65b12`)
+
+Reviewed exact commit `2d65b12` on 2026-10-20. **Verdict: APPROVED.** It
+registers one underlying `lib_group_cleanup_test.sh` command in both the named
+`test-agent-setup-ms5` step and aggregate `test`, with the helper and test
+declared as file inputs. This cumulatively closes the test-registration hold
+on `add52a6`.
+
+The exact clean-export focused step, under private Xvfb, passed **11/11 steps
+and 14/14 tests** and printed `PASS lib_group_cleanup (15 cases)`. Verdict was
+mailed to BlueBeaver in Agent Mail 6959.
+
+## MS6 setup profile and generated-profile gate (`45bbbff`, `119089a`, `1c2ec20`)
+
+Reviewed exact commits `45bbbff`, `119089a` and `1c2ec20` on 2026-10-20.
+**Verdict: BLOCKED (`45bbbff`, `119089a`) and BLOCKED-for-tests (`1c2ec20`)
+on one shared R1 execution-boundary defect.**
+
+The CLI/helper generator improvements are sound in isolation. `119089a`
+validates input as literal `127.0.0.1` but emits Seatbelt's required
+`localhost:<port>` syntax; JadeBeacon's both-Mac run proved the production
+generated CLI/hook profiles parse and keep the process-info canary contained.
+The exact Linux unit suite at `45bbbff` passed 24/24. The later Darwin red also
+correctly adopts the context-manager lifetime rather than treating the profile
+as a permanent argv file.
+
+The setup profile itself cannot satisfy its production contract:
+
+- authoritative drawer-plan section 3c.7 (`plan:995-1008`) distinguishes
+  `cli --version`, which needs no network, from the R1 route probe, which starts
+  a one-shot server on the sandbox's `127.0.0.1:<port>` and runs the CLI
+  against it;
+- `sandbox_macos.py:158-183,209-232` uses one profile with no network grant for
+  both operations; and
+- `119089a` proves only that that setup profile parses and runs `/usr/bin/true`,
+  while `1c2ec20` drives only `cli_version` and positively asserts the absence
+  of a network rule.
+
+Unlike Linux bwrap, Seatbelt does not give setup a private loopback namespace;
+the R1 bind/connect is therefore denied and normal setup can never select the
+only approved token route. Before `seatbelt_ready` changes, split the setup
+capability by operation: version remains network-free; R1 pre-binds or chooses
+one exact loopback port without a reuse race, permits only that endpoint, and
+drives the real `probe_r1`/`route_probe` chain on both Macs while a separate
+host-loopback decoy stays unreachable. Also harden the temporary profile open
+with exclusive/no-follow 0600 creation, write-all and fsync; cover collision,
+symlink and exception cleanup. Findings were mailed to JadeBeacon and
+BlueBeaver in Agent Mail 6958.
+
+## WS0.7 listener-churn red and green (`c4d4561`, `59e5fac`, `2af0d7a`)
+
+Reviewed this exact chain on 2026-10-20. **Verdict: BLOCKED.** The test mechanics
+are deterministic: the exact red produced its intended one failure and three
+passes, and the exact `2af0d7a` hostless suite passed **98 tests with 17 live
+skips**. `59e5fac` itself only deletes the unregistered red and has no
+independent green value.
+
+The proposed rule is not yet an approved contract and its implementation is
+internally inconsistent:
+
+- authoritative Windows-plan WS0.7 (`plan:767-775`) still requires the
+  listener set to stay unchanged; the field-design document labels this an
+  owner/RoseCat-approved future proposal (`design:58-79`);
+- that proposal and `c4d4561:8-11` permit only post-only additions by a known
+  PID and state that a dropped listener fails, but the red's alleged benign
+  case replaces 49664 with 49700 and the green explicitly accepts arbitrary
+  ephemeral drops; and
+- PID alone is not stable ownership across the interval. A recycled PID
+  inherits the exemption, while any pre-existing listener owner can add any
+  number of high ports.
+
+The Windows plan must first name one rule for additions, drops and replacements.
+The schema then needs a stable owner identity obtainable by the standard-user
+probe (at least PID plus process creation time, failing closed when it is not
+available), with reds for reuse, drop-only, one-to-many, replacement and a
+port swap between two pre-existing owners. Service ports remain invariant.
+Findings were mailed to AzureRidge in Agent Mail 6960.
+
+## S8a GTK `load_serial` red (`63efe1b`)
+
+Reviewed exact test-only commit `63efe1b` on 2026-10-20. **Verdict: APPROVED as
+a failing-first red.** It drives the real binary and socket paths for
+`page.list`, out-of-band `page.health`, navigation, reload, same-document
+history/hash changes and a popup; it does not substitute a fake PagePort. On a
+clean exact export under private Xvfb, the binary built successfully and the
+test reproduced **9 checks, 5 failed**, all serials still zero.
+
+NIT before green: the plan's first-load invariant is `>= 1`, while the popup
+assertion requires exactly 1. Use the same lower-bound invariant unless a
+no-about:blank/no-redirect rule is intentionally part of this fixture. Verdict
+was mailed to BlackRobin in Agent Mail 6963.
+
+## Chat drawer S8 approval design, rev 16.20.40 (`61dc66d`)
+
+Reviewed exact docs commit `61dc66d` on 2026-10-20. **Verdict: BLOCKED.** It
+closes rev 16.20.39's recipient-stage and stale-authoritative-text findings:
+the profile owner is checked before an opener, the thread header before text or
+Send, all DOM account markers are exactly-one visible matches, and D7b plus
+the outcome/state tables now agree. It also correctly recognizes that page
+handlers execute synchronously inside `dispatchEvent`. Two boundary errors
+remain:
+
+1. Guarding before `editableInsert` is still check-then-act. Production
+   `automation.js:977-980` dispatches `beforeinput`, then at `:982-998` performs
+   `execCommand` or range insertion. An untrusted `beforeinput` handler can
+   change the recipient/account/target between those points. Require a second
+   guard after `beforeinput` returns and before insertion, plus a
+   contenteditable red that changes the recipient and proves zero characters
+   are inserted.
+2. `engine.External.cancel` is native Zig state and cannot be read from inside
+   one synchronous JavaScript evaluation. A Stop arriving during a long
+   `dom.type` cannot affect the proposed per-event JS guard; the entire action
+   can finish before control returns. Either split/chunk the action across
+   event-loop/eval boundaries under the ticket and check native cancel between
+   chunks, or explicitly make one action uninterruptible and specify that
+   outcome. A real held-long-type test, not only a scripted engine, must prove
+   any promised mid-action cancellation.
+
+Findings were mailed to BlackRobin in Agent Mail 6964.
+
+## MS6 backend capability scaffold (`871dc2d`)
+
+Reviewed exact security-sensitive commit `871dc2d` on 2026-10-20. **Verdict:
+APPROVED, scoped to an unwired first-increment scaffold.** The exact unit suite
+passed 30/30. The class validates the per-session port and returns the exact
+loopback endpoint, bridge-only hook policy, fd-3 announcing channel and
+SIGKILL/parent-race lifetime values. Its lazy import preserves the standalone
+generator gate.
+
+This is not yet a complete `SandboxBackend` or MS6 approval: it deliberately
+has no `launch_spec`, immutable `network` with upstream allowlist,
+`login_network`, `login_launch_spec` or `egress_dir`, and no production
+consumer. The next increment must carry the values through the real LaunchSpec,
+profile, proxy and spawn consumers. The R1 setup blocker above remains a hard
+prerequisite of `seatbelt_ready`. Scoped verdict was mailed to JadeBeacon in
+Agent Mail 6965.
+
+## Darwin setup integration and registration (`bacd4d6`, `2ac3508`)
+
+Reviewed exact commits `bacd4d6` and `2ac3508` on 2026-10-20.
+
+- **`bacd4d6`: APPROVED, scoped to fail-closed Darwin integration.** It validates
+  and arms the actual parent first, refuses the option on Linux, uses the real
+  setup context-manager lifetime on Darwin, and never falls back to bwrap or an
+  unsandboxed child. The known R1 denial is safe while the launch gate remains
+  false: route selection occurs before atomic publication. It is still a hard
+  prerequisite to fix R1 before arming.
+- **`2ac3508`: BLOCKED-for-tests.** The test is registered only in aggregate
+  `test`, not the named `test-agent-setup-ms5` milestone step. The exact focused
+  run passed 9/9 setup and 6/6 parent-watch cases but emitted an actual
+  `ResourceWarning` at `test_setup_darwin.py:108`: `open(argv[2]).read()` leaves
+  the profile handle unclosed, and the registered command does not elevate
+  ResourceWarning to an error. Use a context-managed read, run with
+  `-W error::ResourceWarning`, and attach the same command to the focused step.
+
+Verdicts were mailed to BlueBeaver in Agent Mail 6966.
