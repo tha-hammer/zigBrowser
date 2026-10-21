@@ -7,6 +7,11 @@
 # never arms ms5_setup_e2e.sh; the app stays fail closed. Passing it does not by itself set seatbelt_ready (RoseCat
 # 7250 #4): that also needs the completed MS6.3 and MS6.6 (B) cases and a review of the evidence.
 #
+# Provenance (RoseCat 7267): the gate certifies ONE commit. The revision (default HEAD) must resolve to a commit
+# object, else exit 1 before any network; it is exported (git archive) into the per-run temp tree, and EVERYTHING below
+# reads that export, never the mutable working tree (a shared worktree is routinely dirty). It prints "== hard gate at
+# commit <sha>" and, before any network, "== ship <sha256> <path>" for every shipped seam source, staging tool and
+# zb_agent_host file.
 # Before ANY network call (each refusal is exit 1 and names its reason; no pins file at all is NOT ARMED, exit 3):
 #   - the pins are well formed: python_pkg {url, sha256, sigstore_identity, sigstore_issuer} and uv_lock_sha256;
 #   - agent/host/uv.lock still has the pinned SHA-256;
@@ -18,7 +23,7 @@
 # the driver with --manifest. The aggregate is PASS only when both legs end "PASS ms6-hard-gate".
 # Per-run ~/zb-hardgate-<nonce> on each Mac, deleted by validated find -delete; nothing installed. BatchMode, strict
 # host keys, no askpass.
-# usage: tests/mac/ms6_hard_gate.sh
+# usage: tests/mac/ms6_hard_gate.sh [revision]   (default HEAD)
 set -euo pipefail
 
 KEY="${ZB_MAC_KEY:-/home/maceo/vms/mac-m9/zb_mac_key}"
@@ -32,6 +37,13 @@ cd "$(git rev-parse --show-toplevel)"
 PINS=packaging/macos/agent_runtime_pins.json
 MANIFEST=tests/mac/hard_gate/MANIFEST.json
 fail() { printf 'FAIL\tms6-hard-gate\t%s\n' "$*" >&2; exit 1; }
+REV="${1:-HEAD}"
+SHA=$(git rev-parse --verify --quiet "${REV}^{commit}") || fail "revision $REV is not a commit"
+L=$(mktemp -d "${TMPDIR:-/tmp}/zb-hardgate-drv-XXXXXX")
+trap 'case "$L" in "${TMPDIR:-/tmp}"/zb-hardgate-drv-??????) find "${L:?}" -delete;; esac' EXIT
+mkdir "$L/repo" && git archive "$SHA" | tar -x -C "$L/repo"
+echo "== hard gate at commit $SHA" >&2
+cd "$L/repo"  # from here on, only the exported commit is read
 if [ ! -f "$PINS" ]; then
   echo "NOT ARMED: the pinned dependency tree is not staged ($PINS is absent)" >&2
   exit 3
@@ -68,20 +80,26 @@ PY
 ) || fail "manifest: cannot check $MANIFEST"
 [ -z "$problem" ] || fail "manifest: $problem"
 
+# --- what ships, from the export, named before any network ---
+SHIP=(packaging/macos agent/host/zb_agent_host agent/host/uv.lock tests/mac/hard_gate tests/mac/spawn_group_io_test.c
+      src/agent_spawn_posix.c src/agent_spawn_posix.h)
+tar -cf "$L/src.tar" --exclude=__pycache__ "${SHIP[@]}"
+find "${SHIP[@]}" -type f ! -path '*/__pycache__/*' | LC_ALL=C sort | while IFS= read -r f; do
+  echo "== ship $(sha256sum "$f" | cut -c1-64) $f" >&2
+done
+echo "== staged tree identity: commit $SHA, src.tar sha256 $(sha256sum "$L/src.tar" | cut -c1-64)" >&2
+
 # --- network: the pinned pkg, its provenance, the lock-built trees ---
-L=$(mktemp -d "${TMPDIR:-/tmp}/zb-hardgate-drv-XXXXXX")
-trap 'case "$L" in "${TMPDIR:-/tmp}"/zb-hardgate-drv-??????) find "${L:?}" -delete;; esac' EXIT
 curl -fsSL --proto '=https' -o "$L/py.pkg" "$PKG_URL"
 curl -fsSL --proto '=https' -o "$L/py.pkg.sigstore" "$PKG_URL.sigstore"
 [ "$(sha256sum "$L/py.pkg" | cut -c1-64)" = "$PKG_SHA" ] || fail "the pkg's SHA-256 is not its pin"
-python3 -m venv "$L/venv" >/dev/null && "$L/venv/bin/pip" -q install sigstore >/dev/null 2>&1
+# The temporary verifier, in the per-run venv only, at a pinned version (RoseCat 7265); the pkg's own SHA-256 pin
+# remains the independent integrity check.
+python3 -m venv "$L/venv" >/dev/null && "$L/venv/bin/pip" -q install "sigstore==4.5.1" >/dev/null 2>&1
 "$L/venv/bin/python" -m sigstore verify identity --bundle "$L/py.pkg.sigstore" --cert-identity "$SIG_ID" \
   --cert-oidc-issuer "$SIG_ISSUER" "$L/py.pkg" >/dev/null || fail "the pkg's Sigstore identity"
 bash packaging/macos/build_site_packages.sh agent/host "$L/sites" >/dev/null
-tar -cf "$L/src.tar" packaging/macos agent/host/zb_agent_host agent/host/uv.lock tests/mac/hard_gate \
-  tests/mac/spawn_group_io_test.c src/agent_spawn_posix.c src/agent_spawn_posix.h --exclude=__pycache__
 (cd "$L/sites" && tar -cf "$L/sites.tar" site-x86_64 site-aarch64)
-echo "== staged tree identity: src.tar sha256 $(sha256sum "$L/src.tar" | cut -c1-64)" >&2
 
 leg() { # $1=host $2=expected uname -m $3=key
   local host="$1" arch="$2" key="$3" rdir="zb-hardgate-$(date +%s)-$$-$RANDOM"

@@ -221,6 +221,10 @@ class Gate(unittest.TestCase):
             (repo / "packaging" / "macos").mkdir(parents=True)
             (repo / "packaging" / "macos" / "agent_runtime_pins.json").write_text("{}\n")
         subprocess.run(["git", "init", "-q", str(repo)], check=True)
+        # The armed entry certifies a commit (RoseCat 7267): it resolves and exports one before reading anything.
+        subprocess.run(["git", "-C", str(repo), "-c", "user.email=t@t", "-c", "user.name=t", "add", "-A"], check=True)
+        subprocess.run(["git", "-C", str(repo), "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m",
+                        "fixture"], check=True)
         shims, record = repo / "shims", repo / "network-calls"
         shims.mkdir()
         for tool in ("ssh", "scp", "sftp", "curl", "nc", "rsync"):
