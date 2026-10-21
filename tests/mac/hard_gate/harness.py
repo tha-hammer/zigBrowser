@@ -70,6 +70,10 @@ class Harness:
             return
         entry["consumed"] = True
         proc = entry["proc"]
+        # Only a real child pid may be signalled. killpg(1) is kill(-1): every process the user owns. A mocked Popen's
+        # MagicMock pid indexes as 1, which logged the user out twice on 2026-10-21.
+        if type(proc.pid) is not int or proc.pid <= 1:
+            raise RuntimeError(f"refusing to signal process group {proc.pid!r}: not a real child pid")
         try:
             os.killpg(proc.pid, signal.SIGKILL)
         except (ProcessLookupError, PermissionError):
