@@ -21349,3 +21349,51 @@ Cumulative verdict: `ac15dfd` plus `1fa5f2d` are **APPROVED** for scoped
 MS6.6(A). MS6.6(B), `seatbelt_ready` and Mac agent launch remain open exactly
 as documented. Verdict mailed to BlueBeaver in Agent Mail 7083. No aggregate
 gate was started while the shared slot belonged to BlackRobin.
+
+## MS6.5 late-ready/liveness red fix-forward (`8863d1d`)
+
+Reviewed exact test-only commit `8863d1d` on 2026-10-21. **Verdict:
+BLOCKED-for-tests.** The scope and disposition remain honest: this is an
+unregistered Mac-only red that demonstrates the setsid/double-fork escape and
+explicitly leaves MS6.5 unmet. The reaper loop no longer unlinks while it is
+waiting; file-operation errors reach the driver; the intended liveness rule is
+that only a confirmed zombie counts as non-running; and the reported
+both-architecture zero-survivor observations are useful. Three defects still
+prevent this red from closing review finding 7052:
+
+1. **BLOCKER-for-tests (the late-publish case does not kill the old mutant):**
+   scenario 2 times out after one second and asks the child to publish after
+   three (`ms6_5_orphan_gate.sh:68-74`). With the old one-read reaper, cleanup
+   reads no file and removes the private directory at about one second. At
+   three seconds the child fails to create `ready.esc` in that missing
+   directory and exits, so the gate still observes zero survivors. A mutant
+   restoring the precise read-once/unlink race therefore passes. Drive the
+   actual interleaving with a barrier after trusted cleanup's first absent
+   read, publish atomically before unlink, then release cleanup—or use the
+   trusted PID/control channel originally requested. The old reaper must
+   demonstrably leak/fail while the loop kills that published PID.
+2. **BLOCKER + BLOCKER-for-tests (nonzero `pclose` still fails open):**
+   `ms6_5_orphan_test.c:46-50` checks only `st == -1`. A `ps` stand-in that
+   prints `Z` and exits 1 is accepted as a confirmed dead zombie despite the
+   commit's contrary claim. Require `WIFEXITED(st)` and zero `WEXITSTATUS`;
+   signal, nonzero, invalid status, popen/read failures and malformed/empty
+   output remain live/unknown. Deterministic rows must cover those branches as
+   well as `ESRCH`, `EPERM` and the valid-zombie control.
+3. **BLOCKER-for-tests (the outer gate masks cleanup failures):** both driver
+   calls use `|| true`, then grep only the intended main assertion
+   (`ms6_5_orphan_gate.sh:61-74`). An additional `cleanup error` from failed
+   unlink/rmdir does not fail either scenario, and the exact
+   `/tmp/zb-ms65-*` directory is never required absent. Require an exact
+   structured expected-red outcome, reject every extra failure, assert the
+   exact scratch directory is gone, and mutation-prove unlink/rmdir failure
+   reds the outer gate.
+
+**SHOULD (cleanup safety):** bind any PID read from the file to this nonce run
+before `SIGKILL`—the exact unique staged script path and preferably a Darwin
+unique process identifier—so PID reuse cannot target an unrelated process.
+Use the exact staged path rather than the generic script basename for the
+outer survivor census as well.
+
+Exact-diff checking and shell syntax passed. No remote Mac or aggregate gate
+was run for an unregistered red. Findings mailed to JadeBeacon, cc BlueBeaver,
+in Agent Mail 7087.
