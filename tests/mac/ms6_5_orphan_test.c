@@ -3,10 +3,13 @@
  * the stub arms parent_watch and launches a detached "hook" that leaves setup's group (ms6_5_escape_stub.py);
  * the browser is SIGKILLed; the escapee MUST be dead within 2 s. argv: <ms6_5_escape_stub.py> <python3>
  *
- * This is RED today: parent_watch reaps with killpg(setup's pgid), which a setsid'd survivor escapes. It greens
- * when the macOS reap covers the descendant TREE (macOS has no PID namespace, so a group kill is not enough).
- * Kept OUT of the green ms6_gate.sh until then; run via tests/mac/ms6_5_orphan_gate.sh. Any survivor is killed
- * on the way out, so a red run leaves nothing behind (the survivor is detached — reparented to launchd). */
+ * This is RED today: parent_watch reaps with killpg(setup's pgid), which a setsid'd survivor escapes. macOS has
+ * no PID namespace, and the double-fork reparents the survivor to launchd, so it is no longer a descendant of
+ * setup — a descendant-tree walk at the browser's death CANNOT close this (RoseCat 7043; research :134-136,
+ * :207). Closing it needs a truly non-escapable containment with its own threat proof, else the VM fallback is
+ * selected and Mac agent launch stays disabled (plan :285, :1619-1620). Kept OUT of the green ms6_gate.sh; run
+ * via tests/mac/ms6_5_orphan_gate.sh. Every exit path reaps through trusted_reap and the escapee self-exits on a
+ * bounded TTL, so a red run leaves nothing behind (the survivor is detached — reparented to launchd). */
 #include <errno.h>
 #include <signal.h>
 #include <stdio.h>
@@ -28,9 +31,11 @@ static double now(void) {
   return t.tv_sec + t.tv_nsec / 1e9;
 }
 
+/* Fail-closed liveness (RoseCat 7043 #3): only ESRCH proves the process is gone. kill(pid,0)==0 means it
+ * exists (confirm it is not a zombie); any other errno (EPERM/…) is treated as live/unknown, never "dead". */
 static int alive(pid_t pid) {
   if (pid <= 0) return 0;
-  if (kill(pid, 0) != 0) return 0;
+  if (kill(pid, 0) != 0) return (errno != ESRCH);  /* ESRCH -> gone; anything else -> assume live */
   char cmd[64], buf[16] = {0};
   snprintf(cmd, sizeof cmd, "/bin/ps -o stat= -p %d", (int)pid);
   FILE *p = popen(cmd, "r");
@@ -80,6 +85,24 @@ static int wait_ready(const char *ready, char *buf, size_t cap, double secs) {
   return 0;
 }
 
+/* Trusted reap, run on EVERY exit path (RoseCat 7043 #1,#2): learn the detached escapee from <ready> even if
+ * readiness timed out and the test body never parsed it, SIGKILL it, kill anything left in setup's group, then
+ * remove the KNOWN files + dir with no shell. The escapee's bounded self-TTL (ms6_5_escape_stub.py) is the
+ * final guarantee that no branch — timeout or error — can leave an indefinite canary process. */
+static void trusted_reap(const char *dir, const char *ready, pid_t setup) {
+  char buf[64];
+  if (read_file(ready, buf, sizeof buf) > 0) {
+    pid_t e = (pid_t)atoi(buf);
+    if (e > 0) kill(e, SIGKILL);
+  }
+  if (setup > 0) kill(-setup, SIGKILL);
+  char esc[520];
+  unlink(ready);
+  snprintf(esc, sizeof esc, "%s.esc", ready);
+  unlink(esc);
+  rmdir(dir);
+}
+
 int main(int argc, char **argv) {
   if (zb_agent_spawn_group == NULL) {
     printf("FAIL\tms6-5-orphan\tzb_agent_spawn_group is missing (rev 14 item 5)\n");
@@ -91,14 +114,21 @@ int main(int argc, char **argv) {
   char ready[512], buf[64];
   snprintf(ready, sizeof ready, "%s/ready", dir);
 
-  pid_t setup = -1;
+  pid_t setup = -1, escapee = -1, esc_pgid = -1;
   pid_t browser = start_browser(argv[2], argv[1], ready, &setup);
-  if (browser <= 0 || setup <= 0) { fail("the spawn did not start setup"); if (browser > 0) kill(browser, SIGKILL); goto done; }
+  if (browser <= 0 || setup <= 0) {
+    fail("the spawn did not start setup");
+    if (browser > 0) { kill(browser, SIGKILL); waitpid(browser, NULL, 0); }
+    goto finish;
+  }
 
-  if (!wait_ready(ready, buf, sizeof buf, 20)) { fail("the escaping hook never detached"); kill(browser, SIGKILL); goto done; }
-  pid_t escapee = (pid_t)atoi(buf);
-  char *sp = strchr(buf, ' ');
-  pid_t esc_pgid = sp ? (pid_t)atoi(sp + 1) : -1;
+  if (!wait_ready(ready, buf, sizeof buf, 20)) {
+    fail("the escaping hook never detached");
+    kill(browser, SIGKILL); waitpid(browser, NULL, 0);
+    goto finish;  /* trusted_reap still reads a late <ready>; the escapee TTL bounds the rest */
+  }
+  escapee = (pid_t)atoi(buf);
+  { char *sp = strchr(buf, ' '); esc_pgid = sp ? (pid_t)atoi(sp + 1) : -1; }
 
   /* Precondition: the hook really escaped setup's process group (else the test proves nothing). */
   if (escapee <= 0) fail("no escapee pid");
@@ -107,19 +137,14 @@ int main(int argc, char **argv) {
   kill(browser, SIGKILL);
   waitpid(browser, NULL, 0);
 
-  double until = now() + 2.0;
-  while (now() < until && alive(escapee)) usleep(20000);
+  { double until = now() + 2.0;
+    while (now() < until && alive(escapee)) usleep(20000); }
   if (alive(escapee))
-    fail("a setsid+double-fork hook SURVIVED the browser's SIGKILL (killpg cannot reach it; needs a descendant-tree reap)");
+    fail("a setsid+double-fork hook SURVIVED the browser's SIGKILL (killpg cannot reach it; macOS has no PID namespace)");
 
-  /* Cleanup: the escapee is detached (reparented to launchd); kill it + anything left in setup's group. */
-  if (escapee > 0) kill(escapee, SIGKILL);
-  if (setup > 0) kill(-setup, SIGKILL);
-
-done:
-  if (setup > 0) kill(-setup, SIGKILL);
-  { char rm[600]; snprintf(rm, sizeof rm, "/bin/rm -rf '%s'", dir); if (system(rm) != 0) printf("  note: could not remove %s\n", dir); }
+finish:
+  trusted_reap(dir, ready, setup);
   if (failures == 0) { printf("PASS\tms6-5-orphan\tsetsid+double-fork hook reaped\n"); return 0; }
-  printf("FAIL\tms6-5-orphan\t%d failure(s) (EXPECTED RED until the descendant-tree reap lands)\n", failures);
+  printf("FAIL\tms6-5-orphan\t%d failure(s) (EXPECTED RED: killpg cannot reach a launchd-reparented escapee; a tree-walk cannot close this — a non-escapable containment or the VM fallback is required, plan :285/:1619)\n", failures);
   return 1;
 }

@@ -26,14 +26,22 @@ if not parent_watch.arm(browser_pid, parent_watch.DarwinOps()):
     sys.exit(3)  # a failed arm kills the group; unreachable in practice
 
 # The escaping "hook": setsid + double-fork, fully detached from setup's process group.
+# BOUNDED LIFETIME (RoseCat 7043 #1): the survivor self-exits after ESCAPEE_TTL seconds no matter what, so a
+# readiness timeout or an error branch in the driver can never strand an indefinite orphan — the worst case is a
+# process that dies on its own within the TTL. The driver also learns the pid from <ready> and kills it; this is
+# the belt to that suspenders. The 2 s survival window the driver asserts is far inside the TTL.
+ESCAPEE_TTL = 20
+SETUP_TTL = 25  # setup is normally killed by parent_watch on the browser's death; bound it too, just in case.
+
 if os.fork() == 0:
     os.setsid()               # new session + process group (pgid = this pid): leaves setup's group
     if os.fork() == 0:        # double-fork: the survivor is not a session leader and reparents to launchd
         tmp = ready + ".esc"
         with open(tmp, "w") as f:
             f.write("%d %d" % (os.getpid(), os.getpgid(0)))
-        os.rename(tmp, ready)
-        time.sleep(300)
+        os.rename(tmp, ready)  # atomic: the driver reads a complete "<pid> <pgid>"
+        time.sleep(ESCAPEE_TTL)
+        os._exit(0)
     os._exit(0)               # the intermediate exits immediately
-# setup (the group leader) stays alive until parent_watch kills it.
-time.sleep(300)
+# setup (the group leader) stays alive until parent_watch kills it (or the bounded TTL, as a safety net).
+time.sleep(SETUP_TTL)
