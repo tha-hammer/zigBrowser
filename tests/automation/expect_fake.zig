@@ -5,6 +5,7 @@
 const std = @import("std");
 const automation_server = @import("automation_server");
 const page_port = automation_server.automation.page_port;
+const cookie_port = automation_server.automation.cookie_port;
 
 const testing = std.testing;
 const gpa = testing.allocator;
@@ -13,6 +14,8 @@ const gpa = testing.allocator;
 pub const World = struct {
     ports: [2]Page = .{ .{ .id = 1 }, .{ .id = 2 } },
     urls: [2][]const u8 = .{ "file:///fixture/index.html", "https://shop.example/item/7" },
+    /// A navigation's URL, copied (a page shows where it last navigated).
+    url_bufs: [2][256]u8 = undefined,
     load_serials: [2]std.atomic.Value(u64) = .{ .init(3), .init(4) },
     dialog_open: [2]bool = .{ false, false },
     crashed: [2]bool = .{ false, false },
@@ -45,6 +48,10 @@ pub const Page = struct {
     held: std.atomic.Value(bool) = .init(false),
     /// The timeout the last page operation was given (eval, navigate or reload).
     last_timeout_ms: std.atomic.Value(u64) = .init(0),
+
+    /// automation.js's per-document token of this page (op documentToken): "doc-<id>-<n>", a
+    /// new one per navigation.
+    documents: std.atomic.Value(u32) = .init(0),
 
     pub fn ops(self: *const Page) u32 {
         return self.evals.load(.acquire) + self.navigates.load(.acquire) + self.reloads.load(.acquire) + self.natives.load(.acquire);
@@ -79,6 +86,10 @@ pub const Page = struct {
             self.held.store(true, .release);
             testing.io.sleep(.fromMilliseconds(1), .awake) catch {};
         }
+        // The isolated world's document token is a read, not a page operation.
+        if (std.mem.indexOf(u8, arg, "\"op\":\"documentToken\"") != null) {
+            return std.fmt.allocPrint(alloc, "{{\"ok\":true,\"value\":{{\"documentToken\":\"doc-{d}-{d}\"}}}}", .{ self.id, self.documents.load(.acquire) }) catch error.OutOfMemory;
+        }
         _ = self.evals.fetchAdd(1, .acq_rel);
         // Native input first locates its target; answer with a point.
         if (std.mem.indexOf(u8, arg, "\"op\":\"locate\"") != null) {
@@ -86,9 +97,17 @@ pub const Page = struct {
         }
         return alloc.dupe(u8, "{\"ok\":true,\"value\":{\"ok\":true}}");
     }
-    fn navigate(ptr: *anyopaque, _: []const u8, timeout_ms: u64) page_port.PortError!void {
-        from(ptr).last_timeout_ms.store(timeout_ms, .release);
-        _ = from(ptr).navigates.fetchAdd(1, .acq_rel);
+    fn navigate(ptr: *anyopaque, target: []const u8, timeout_ms: u64) page_port.PortError!void {
+        const self = from(ptr);
+        self.last_timeout_ms.store(timeout_ms, .release);
+        _ = self.navigates.fetchAdd(1, .acq_rel);
+        // It commits: the window shows the new page, in a new document.
+        const i = self.id - 1;
+        const n = @min(target.len, self.world.url_bufs[i].len);
+        @memcpy(self.world.url_bufs[i][0..n], target[0..n]);
+        self.world.urls[i] = self.world.url_bufs[i][0..n];
+        _ = self.world.load_serials[i].fetchAdd(1, .acq_rel);
+        _ = self.documents.fetchAdd(1, .acq_rel);
     }
     fn reload(ptr: *anyopaque, timeout_ms: u64) page_port.PortError!void {
         from(ptr).last_timeout_ms.store(timeout_ms, .release);
@@ -151,20 +170,35 @@ pub const Page = struct {
     }
 };
 
+/// A signed-in cookie store for the site flows' session gate (LinkedIn li_at, Instagram sessionid).
+pub const SessionCookies = struct {
+    pub fn port(self: *SessionCookies) cookie_port.CookiePort {
+        return .{ .ptr = self, .vtable = &.{ .getAll = getAll, .set = set, .delete = delete } };
+    }
+    fn getAll(_: *anyopaque, a: std.mem.Allocator, _: ?[]const u8, _: u64) cookie_port.PortError![]u8 {
+        return a.dupe(u8, "[{\"name\":\"li_at\",\"value\":\"v\",\"domain\":\"x\"},{\"name\":\"sessionid\",\"value\":\"v\",\"domain\":\"x\"}]") catch error.OutOfMemory;
+    }
+    fn set(_: *anyopaque, _: []const u8, _: u64) cookie_port.PortError!void {}
+    fn delete(_: *anyopaque, _: []const u8, _: ?[]const u8, _: u64) cookie_port.PortError!void {}
+};
+
 pub const Harness = struct {
     world: World = .{},
+    cookies: SessionCookies = .{},
     server: automation_server.AutomationApiServer,
 
     pub fn start() !*Harness {
         const self = try gpa.create(Harness);
         errdefer gpa.destroy(self);
         self.world = .{};
+        self.cookies = .{};
         self.world.init();
         self.server = try automation_server.AutomationApiServer.init(gpa, testing.io, .{
             .enabled = true,
             .socket_path = "",
             .token = "",
             .page_port = self.world.ports[0].port(),
+            .cookie_port = self.cookies.port(),
             .pacing_state_path = "",
         });
         try self.server.startCore();
