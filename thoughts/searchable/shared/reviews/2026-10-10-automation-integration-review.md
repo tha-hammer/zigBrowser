@@ -25645,3 +25645,55 @@ With `2c288fd` closed, the newest approved contiguous push-through is now
 **`207c7dc`**. The next blocked commit is **`b292b17`**, which still needs the
 shipped MSVC build and a real Windows missing-runtime run; `6115ac1` and
 `52a5aba` retain their separately recorded Windows evidence obligations.
+
+The orchestrator subsequently pushed the approved range through `207c7dc`.
+That is therefore the current pushed boundary; `b292b17` remains the earliest
+blocked commit while the owner arranges the shipped MSVC build and real
+Windows evidence.
+
+## S8a wrong-owner red (`6058062`)
+
+**APPROVED as a causal red.** The Zig test observes the first real profile
+action emitted by each production flow and requires its guard to carry the
+approval-derived owner marker, exact approved path and target identity. The
+LinkedIn row deliberately supplies a different page title while requiring the
+expected contact-info path from the approved profile URL, so a page-derived
+name cannot satisfy the mapping oracle.
+
+The real-binary scenario contains the exact exploit demonstrated in review
+`8b05366`: the Instagram fixture renders `mallory` at the unchanged approved
+`/wrongowner.user/` path and performs no `pushState`. The expected result is
+`-32015 mark_changed` at `click_message_button`, with `{events:0,chars:0}`, the
+composer still closed, and no typed or sent text. The LinkedIn half exercises
+the same owner mark through `dom.click`, while the Zig row pins that the real
+flow emits that exact guard; this split is appropriate because production
+intentionally does not click the still-live-unverified LinkedIn owner action.
+The selectors remain explicitly live-unverified and therefore fail closed.
+
+The red is deliberately unregistered until its green. BlackRobin reported the
+existing fixture consumers green after the fixture-only additions. Verdict
+sent in Agent Mail 7380; the green must register both new tests.
+
+## MS6.5.1 Clean fixed-point red (`eed20af`)
+
+**APPROVED as a causal red.** The generational fake advances only on the
+fill-form scan, matching `zb_reaper_gather`'s size-then-fill API. Its first
+complete census contains the original marked process, its second contains the
+child created after the first gather, and its third is the complete empty
+census. The injected `killsig` only records targets and reports them gone to
+the liveness probe; it cannot reach a real signal.
+
+In an exact clean export, inside a private user/PID namespace, the already
+registered reaper engine and pin steps remained green: **7/7 build steps**, 42
+engine checks and 13 pin checks. Compiling and running the new red directly
+returned rc 1: the deliberately wrong one-pass production stub killed 1001,
+declared clean after one pass, and failed exactly the assertions that 1002 was
+also killed and at least three passes occurred. This causally distinguishes a
+single gather/sweep from the required census -> kill -> fresh-census fixed
+point.
+
+The test remains unregistered, `reaper_ready` remains false, and the
+destructive Mac reaper gate remains OFF. The next green must implement the
+bounded loop, register this test, and retain the fail-closed behavior for a
+scan error, incomplete census, pass-cap exhaustion or other non-clean result.
+Verdict sent to JadeBeacon in Agent Mail 7381.
