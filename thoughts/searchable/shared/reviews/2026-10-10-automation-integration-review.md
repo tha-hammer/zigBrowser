@@ -24468,3 +24468,55 @@ publish and GC), or open a regular lock leaf with `O_CREAT|O_NOFOLLOW`, retain
 that fd and validate its identity. Add this exact mid-fetch symlink race as a
 red. Findings were sent to AzureRidge with BlueBeaver copied in Agent Mail
 7295.
+
+## MS6.6(B) real R1-chain red (`799fc59`)
+
+**BLOCKED-for-tests; NO-GO for either Mac.** The committed manifest value is
+the exact SHA-256 of the case,
+`f3d866d54cf5b2697ebefca1a162df3fe4f28eb7bd3a9a2ea319618150cd325f`,
+but that digest is **not approved for a Mac run**. A corrected case necessarily
+has different bytes and must receive a new reviewed manifest digest.
+
+The overall seam is correct and valuable: the staged interpreter imports the
+staged production modules; the case calls the real `setup.probe_r1`; the outer
+run is observed rather than replaced; the production wrapper fronts four
+native controlled CLIs; and the positive row checks the sandbox executable,
+the exact listener/census `pass_fds`, the profile's sole outbound rule, the
+token/canary/root census arguments and the clean reply. The case itself has no
+direct signal call. Its only explicit child launches use the already-reviewed
+`Harness.spawn_group`, which validates a real owned group leader before
+signalling it. The production timeout's `subprocess.run` owns a real direct
+child, not a mocked pid.
+
+Three coverage/lifecycle blockers remain:
+
+1. **BLOCKER-for-tests (vacuous forged-capability row):**
+   `case_ms6_6b_r1_chain.py:64-68,83,244-251` never observes that the forge
+   branch found or wrote any socket. The token socket is closed at line 59
+   before `forge()` runs; the listener and census sockets are intentionally
+   non-inheritable. Deleting `forge()` or compiling the forge mode as planted
+   only leaves every current assertion unchanged. Add a causal observation and
+   mutant: the row must prove the malicious branch ran and tried every socket
+   it held, while the existing positive control proves the oracle detects a
+   deliberately supplied census socket.
+2. **BLOCKER-for-tests (advertised cleanup is checked only once):** the module
+   contract says the listener port is free after every row, but the only
+   `_port_free` assertion is the honest row at `:242`. Planted, forge and hang
+   do not even recover their run's port. Assert IPv4 and IPv6 release after
+   each row. In particular the timeout row must show that the whole launched
+   route-probe chain, not just its controlled CLI executable, is gone before
+   the case returns; otherwise a red can leave an unowned child on the Mac.
+3. **BLOCKER-for-tests (survivor inspection fails open):** `_survivors` at
+   `:131-142` suppresses every `OSError` from `proc_darwin.path`. An unreadable
+   live hang CLI therefore becomes indistinguishable from a vanished process,
+   even though `proc_darwin.path` deliberately reserves `None` for `ESRCH` and
+   raises other errors. Give the controlled hang process an exact identity
+   that can be inspected fail-closed; any non-vanished read failure must fail
+   the row. Keep all real-signal cleanup behind the reviewed owned-child/group
+   guard.
+
+An exact `799fc59` export passed Python compilation and 50 focused manifest,
+driver, harness, harness-safety and committed-entry tests inside a private
+user/PID namespace (six Darwin-only kqueue rows skipped). Those results verify
+the manifest/runner safety machinery, not the new case's Mac-only behavior.
+No Mac, live browser, real display or network was touched.
