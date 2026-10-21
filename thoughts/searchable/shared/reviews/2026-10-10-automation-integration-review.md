@@ -23696,3 +23696,64 @@ production contracts remain open:
 success with no retry reports `retry_count = 2`. Track retries separately from
 scheduled chunks and pin root telemetry. Verdict sent to BlackRobin in Agent
 Mail 7240.
+
+## MS5 strict universal merge follow-up (`c6df674`, `ca5e46c`, `9d05209`)
+
+**APPROVED cumulatively through `9d05209`.** `c6df674` is an accepted
+failing-first red: it makes the complete per-distribution RECORD rows,
+exactly-one ownership, generated-file modes, named divergent row, and
+namespaced gate registration observable. It was intentionally red in a
+registered module only until the immediately following green.
+
+`ca5e46c` closes the two blockers on `7c4b691`: every merged path must have
+exactly one source RECORD owner; the full regenerated rows are checked with
+new hashes/sizes and split-SBOM substitution; generated files retain their
+input mode; `.lock` is dropped from the staged target; and the SIGALRM-bearing
+suite runs inside a private user/PID namespace. It accidentally removed the
+20 `build.zig` lines registering BlackRobin's decision-15 Zig and real-binary
+tests, so **`ca5e46c` is blocked in isolation**. `9d05209` restores those 20
+lines verbatim; relative to `76cb14a`, its final `build.zig` differs only by
+the intended namespaced merge-suite command/comment. That fix-forward closes
+the stale-base regression.
+
+An exact `9d05209` clean export, with all displays scrubbed, passes
+`zig build test-mac-census --summary all`: **10/10 steps succeeded**, including
+all **16/16** strict-merge tests and the process-group suites in their private
+namespace. The first local attempt accidentally omitted the `cd` into its
+export and is discarded; the corrected exact-export result above is the
+review evidence. The earlier `7c4b691` blockers are CLOSED by the cumulative
+`c6df674`/`ca5e46c`/`9d05209` chain.
+
+## MS6.5 reaper kill-safety follow-up (`021a765`)
+
+**BLOCKED; the Mac reaper gate must not run yet.** The signal-free exact-commit
+Linux check is green (`test-agent-run-reaper`: **4/4 steps, 7/7 tests**), and
+the unsafe driver signals from `7fa8906` are removed. However, all six prior
+findings are not closed:
+
+1. **BLOCKER:** `reaper_listpids` now treats `proc_listallpids`'s result as a
+   count, but after the fifth still-full read it returns `cap` as ordinary
+   complete input (`agent_run_reaper.c:127-141`). That can silently omit later
+   processes. Propagate an incomplete/error result, and deterministically kill
+   both the old extra-division mutant and the final-full mutant.
+2. **BLOCKER:** `zb_reaper_run_dir_ok` accepts only a basename prefix, not the
+   exact `sockdirPath` grammar or an app-owned directory identity
+   (`agent_run_reaper.c:28-49`). It accepts a bare prefix, arbitrary suffixes,
+   and wrong owner/type/mode. Enforce
+   `zigbrowser-agent-<pid>-<16 lowercase hex>` and verify the canonical private
+   directory is owned by this uid, or consume a creation-pinned identity.
+3. **BLOCKER-for-tests:** the uid/start-time/marker recheck and kill return
+   handling are directionally correct, but no causal oracle proves changed
+   identity/marker and vanished PIDs receive no signal, EPERM is a survivor,
+   and ESRCH is gone. Any fake kill must be intercepted before the OS.
+4. **CLOSED in driver shape, pending the safe production oracles above:** the
+   test itself sends no signal, validates setup before publishing a PID,
+   checks `setsid`, cleans by control-pipe EOF, and asserts exact sets.
+5. **BLOCKER:** production app-stop/next-start lifecycle coverage replacing
+   the retired orphan gate is still explicitly absent.
+6. **BLOCKER-for-tests:** result-array overflow is now surfaced, but no
+   small-cap/>cap test proves it, and item 1 remains another unreported
+   truncation path. Overflow/incomplete must never authorize a clean result.
+
+The hold and exact fixes were sent to JadeBeacon with BlueBeaver copied in
+Agent Mail 7244.
