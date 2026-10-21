@@ -112,7 +112,11 @@ static void cloexec(int fd) { fcntl(fd, F_SETFD, FD_CLOEXEC); }
  * left it outside its own group) is only waited for, up to 5 s, and reported if it still runs: never signalled. */
 static void stop_child(pid_t child, const char *label) {
   if (child <= 1) return;
-  if (zb_agent_kill_group(child) == 0) return;  /* killed and reaped */
+  int rc = zb_agent_kill_group(child);
+  /* The evidence row tests/kill_group/spawn_io_no_stray_signal.sh requires for every cleanup branch (RoseCat 7258). */
+  printf("STOP %s child=%d kill_group=%d\n", label, (int)child, rc);
+  fflush(stdout);
+  if (rc == 0) return;  /* killed and reaped */
   double until = now() + 5;
   int st;
   while (now() < until) {
