@@ -24520,3 +24520,88 @@ driver, harness, harness-safety and committed-entry tests inside a private
 user/PID namespace (six Darwin-only kqueue rows skipped). Those results verify
 the manifest/runner safety machinery, not the new case's Mac-only behavior.
 No Mac, live browser, real display or network was touched.
+
+## MS6.5 signal-free rename/replacement probe (`1b05e45`)
+
+**BLOCKED-for-tests; boundary 2 from `94be4e5` remains open and the destructive
+Mac reaper gate remains OFF.** The helper now correctly closes a post-pin held
+fd before detaching, and the production inode comparison is conservative: it
+can add a match only for a cwd whose `(dev, ino)` equals the already pinned run
+directory. The reported Intel observation that `F_GETPATH` follows a held vnode
+across rename is useful. The new row does not, however, exercise the production
+census after that rename.
+
+1. The test renames the held directory from the valid basename
+   `zigbrowser-agent-<pid>-00112233445566ff` to the same name plus `.moved`
+   (`ms6_5_reaper_census_probe.c:102`). That new basename fails
+   `zb_reaper_run_dir_ok`'s exact grammar. Consequently `reaper_public` refuses
+   at `agent_run_reaper.c:280-285` before `proc_listallpids` or any process
+   inspection. The test ignores `zb_reaper_census`'s return value at
+   `ms6_5_reaper_census_probe.c:112`; its initialized empty array then passes
+   both “replacement absent” and “subset of {escaper}”. Rename to another
+   grammar-valid run path (or move a parent while preserving the basename),
+   require `zb_reaper_census(...) == 0` and `ov2 == 0`, and show an old-path
+   mutant classifies the replacement.
+2. The new production inode branch at `agent_run_reaper.c:237-245` has no
+   causal oracle. Before rename the existing path comparison already matches;
+   after rename the reported `PROC_PIDVNODEPATHINFO` failure means the branch
+   is never reached. Deleting the branch leaves all current checks unchanged.
+   Add a real-Mac row/mutant in which the same pinned cwd inode is observable
+   but path spelling alone would not match, or leave this unproven production
+   addition out of the probe-only commit.
+
+After the corrected signal-free row is reviewed, it still needs the promised
+both-architecture result; the current evidence is Intel-only. An exact clean
+export passed the unaffected portable `test-agent-run-reaper` target inside a
+private user/PID namespace: 4/4 build steps and 7/7 tests. No Mac, signal,
+live browser or real display was used.
+
+## S8a decision-13 recipient-guard red (`6ebd915`)
+
+**BLOCKED-for-tests.** The shared fixture changes themselves are compatible:
+BlackRobin's exact clean-export/private-Xvfb rerun passed the three registered
+Zig consumers (14/14, 1/1 and 3/3) and the registered social-flow,
+expect-flow and pacing e2es (13, 4 and 5 PASS rows respectively, each raw exit
+0). The new Zig and Python reds are deliberately unregistered; an exact export
+also passes Zig formatting and Python compilation.
+
+The live red does not pin the decision-13/14 error contract. At
+`automation_recipient_guard_test.py:94,111`, every refused scenario accepts
+only `code == -32015`; `data` is merely printed. A wrong reason, wrong failing
+step, or wrong/missing input accounting therefore survives. The opener
+`pushstate` row must require `path_changed`, its pointerdown event count and no
+click. Wrong, ambiguous and cross-origin thread rows must require the
+recipient-mark failure at the expected step before input. The keydown-swap
+rows must require `mark_changed` at the type step with exactly
+`{events: 1, chars: 0}`. Add causal reason/step/count mutants, as the existing
+guard e2es do. Until then any unrelated `-32015` can false-green all refusal
+rows. Verdict sent to BlackRobin in Agent Mail 7305.
+
+## MS6.6(B) R1-chain red follow-up (`3645c85`)
+
+**BLOCKED; NO-GO on both Macs.** The new manifest digest is exact,
+`c0ccc1c792d41e59c608c40e18ad7b6fe7c189013f6aff87da90d587619cc047`,
+but it is **not approved for a Mac run**. The forge record now causally kills
+the forge-deleted mutant, and release checks are invoked after all four rows.
+Two cleanup defects remain:
+
+1. `proc_darwin.environ_of()` returns byte-string argv entries. The chain
+   inspector compares them with string markers at
+   `case_ms6_6b_r1_chain.py:186`, so the live Python wrapper/probe it is meant
+   to classify raises `TypeError: a bytes-like object is required, not 'str'`.
+   A direct review probe against the committed function reproduced that exact
+   exception. Normalize the comparison and add a causal local oracle/mutant.
+2. `released()` breaks as soon as inspection is unavailable or returns an
+   unreadable live pid (`:275-277`), records a failed check, but enters its
+   bounded self-exit drain only when `alive` is nonempty (`:281`). When the
+   unreadable pid is the hang CLI/probe itself, `alive` is empty and the case
+   can return with an unowned process still running. An unavailable/unreadable
+   scan must also keep boundedly re-inspecting through the row's self-exit
+   horizon and require a final clean, empty scan; it must still never signal
+   that process.
+
+The exact-export manifest, driver, harness, harness-safety and entry suites
+passed **50 tests, 6 Darwin-only skips** inside a private user/PID namespace
+with `setsid`. Those results do not exercise the Mac-only case. No Mac,
+signal, live browser or real display was used. Verdict sent to BlueBeaver in
+Agent Mail 7306.
