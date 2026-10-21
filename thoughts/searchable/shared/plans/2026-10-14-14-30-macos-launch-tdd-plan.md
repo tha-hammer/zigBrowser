@@ -1714,38 +1714,65 @@ above plus per-process Seatbelt port rules**. Either way MS0's launch spec is th
     requires defeating the escape**, so it no longer forces the VM backend; the earlier "no survivors /
     Failure ⇒ VM required" criterion is withdrawn. The production lifecycle owner and the drawer
     survivor-warning are specified in **MS6.5.1** below.
-- **MS6.5.1 (the Darwin per-run dir, its lifecycle owner, and the census sweep + warning; rev 20 — orchestrator
-  decision 2026-10-21).** The reaper library (`src/agent_run_reaper.c`) is complete and verified signal-free on
-  both Macs; this is its production owner. **The macOS agent-run path is gated behind `seatbelt_ready` (MS6), so
-  this owner is dormant until a macOS run exists; it is real launch-path code, not a test-only caller.**
-  - **The per-run dir.** At macOS agent-run start the owner creates a per-run directory named by the
-    `agent_net.sockdirPath` grammar — `<runtime_dir>/zigbrowser-agent-<pid>-<16 lowercase hex>` — with one
-    exclusive `mkdir` at mode 0700, opens it `O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC`, and captures `zb_reaper_pin_fd`'s
-    identity. The agent-run's processes (the CLI, the hooks, the loopback netd) are rooted under it (working dir
-    and per-run files), so a detached escaper's cwd/open-file is under it and the reaper's markers catch it. (On
-    macOS netd serves over loopback and makes no egress sockdir, so this run dir is the browser-owned run root,
-    distinct from Linux's netd sockdir.)
-  - **The owner holds the pin for the run's life** in the macOS agent-run state (the Zig host spawner's per-run
-    struct — the macOS counterpart of `agent_host.c`'s `zb_net`), and owns two lifecycle points:
-    - **after every agent STOP** (once netd/CLI/helper are torn down — the browser's quit path and the
-      die-with-browser path both): sweep the run dir via the held fd + pin, surface any survivor to the drawer
-      warning, then `rmdir` the run dir;
-    - **at the next app START**: scan `<runtime_dir>` for leftover `zigbrowser-agent-<pid>-<16hex>` dirs from a
-      prior run the browser was SIGKILLed during (its own cleanup never ran), re-open + `pin_fd` each, sweep it,
-      surface survivors, and remove the emptied dirs. Nothing from a prior run is trusted by name: each is
-      re-validated (grammar + 0700 + this uid + the held-fd pin) before any signal.
-  - **Census-only on the Macs; the destructive sweep stays gated.** Every Mac test/gate for this owner is
-    SIGNAL-FREE (census only — `ms6_5_reaper_census_gate.sh`), proving the owner creates/holds/validates the
-    per-run dir and that census classifies exactly the run's processes (both arches: Intel 15.3, arm64 26.7). The
-    destructive sweep (real SIGKILL) and its real-escape row remain **OFF the Macs** until the signal paths are
-    approved. The owner's sequencing (open+pin at creation → sweep at stop → census+sweep at next start, with the
-    kill intercepted) is proven on Linux under `unshare --user --map-root-user --pid --fork --mount-proc` via the
-    injectable engine (`test-agent-run-reaper-engine`).
-  - **The survivor warning** is the drawer surface specified above — **[Stop them now]** · **[Leave them
-    running]** · **[Show details]** (pids + command + cwd) — driven by the stop-time and start-time census/sweep
-    results, with the default-on **"Automatically stop leftover agent processes"** setting governing the silent
-    pass. The census supplies "show details"; the sweep (when the setting is on and the signal paths are
-    approved) performs the kill.
+- **MS6.5.1 (the Darwin per-run dir, its run marker, lifecycle owner, and the census sweep + warning; rev 21 —
+  orchestrator + RoseCat 3c39b9f, 2026-10-21).** The reaper library (`src/agent_run_reaper.c`) is complete and
+  verified signal-free on both Macs; this is its **browser-owned** production owner (RoseCat agrees that is the
+  right owner). **The macOS agent-run path is gated behind `seatbelt_ready` (MS6), so the owner is dormant until a
+  macOS run exists; it is real launch-path code, not a test-only caller.**
+  - **The per-run dir, created with recorded provenance (RoseCat 3c39b9f #2).** At run start the owner opens the
+    runtime dir once (`O_DIRECTORY|O_NOFOLLOW`, held), then creates the per-run dir RELATIVE to that held fd —
+    `mkdirat(runtime_fd, "zigbrowser-agent-<pid>-<16 lowercase hex>", 0700)` then `openat(runtime_fd, name,
+    O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC)` — so creation is not subject to a path race, and it RECORDS what it
+    created (the name, the pinned `(dev, ino)` from `zb_reaper_pin_fd`, the pid and start time) in a persisted
+    owner record (`<runtime_dir>/zigbrowser-agent-runs.json`, 0600, written `O_NOFOLLOW`) so a leftover from a
+    crashed PRIOR app session is still recognizable. Grammar + 0700 + this-uid + the held-fd pin are necessary
+    but NOT sufficient to signal: **only a dir with recorded owner provenance is ever swept; an unrecorded
+    grammar-matching dir is censused and WARNED (show details) but NEVER signalled.** (macOS netd serves over
+    loopback and makes no egress sockdir, so this run dir is the browser-owned run root, distinct from Linux's.)
+  - **The run marker — the detection seam that actually travels the chain (RoseCat 3c39b9f #1).** The agent's cwd
+    is the user's workspace and netd keeps only fds 0-2, so NEITHER cwd nor an arbitrary open file reliably marks
+    the run. Instead the owner creates a per-run READ-ONLY marker file `<run-dir>/run.marker` (0400) and opens it
+    `O_RDONLY` **without** `O_CLOEXEC`, so that single fd is inherited down the whole zigBrowser-controlled spawn
+    chain — the helper, across the sandbox exec into the CLI relay, and into the hooks and any hook that
+    double-forks + `setsid`s. netd receives the same marker fd as an explicitly-inherited descriptor
+    (`posix_spawn_file_actions_addinherit_np`, which `zb_agent_spawn_group_io` already uses for fd 2). Because the
+    marker sits under the 0700 run dir, the reaper's EXISTING open-file classifier (`zb_reaper_path_under` over
+    each fd's vnode path) catches any process holding it — no reaper code change; the owner's job is only to
+    create the read-only marker and keep it inherited. A sandboxed process cannot forge it or point it elsewhere.
+  - **The lifecycle owner + an exactly-once state machine (RoseCat 3c39b9f #3).** The macOS agent-run state (the
+    Zig host spawner's per-run struct — the macOS counterpart of `agent_host.c`'s `zb_net`) holds the runtime-dir
+    fd, the run-dir fd + pin, the marker fd, and the run record for the run's life, and owns:
+    `Running -> Stopping` (sweep the run dir ONCE via the held fd + pin + marker, after netd/CLI/helper teardown —
+    both the quit path and the die-with-browser path reach it) `-> Clean` (no survivor: `rmdir` the run dir,
+    release the authority) or `-> Survivors` (some could not be stopped: the authority — the held fd/pin/marker
+    and the record — is KEPT until the incident is RESOLVED, and the drawer warning is raised). From `Survivors`,
+    **[Stop them now]** runs a FRESH census + guarded sweep (never the stale pid list the warning was built from —
+    a pid may have exited and been reused), **[Leave them running]** releases the authority and dismisses,
+    **[Show details]** re-censuses for display only. Stop / quit / close each fire the kill-or-release EXACTLY
+    once (the machine refuses re-entry), so quit racing the warning can neither double-kill nor skip cleanup.
+  - **At the next app START** the owner reads its persisted record and, for each recorded run dir still present
+    (a prior session SIGKILLed before its own cleanup), re-opens + `pin_fd`s it and runs the same `Stopping`
+    transition; leftover grammar dirs NOT in the record are censused + warned, never signalled. This runs on a
+    **startup queue** off the UI thread: it never blocks window creation, it completes before the first NEW agent
+    run may create its dir (so a new run is never mistaken for a leftover), and it surfaces its warning when ready.
+  - **Contracts (RoseCat 3c39b9f #4).**
+    - *Setting:* **"Automatically stop leftover agent processes"**, default ON, resolved by the `env_switch`
+      pattern (`ZIGBROWSER_AGENT_AUTO_STOP_LEFTOVERS` + a flag, like `agent_config.AgentDrawer`). ON ⇒ the silent
+      stop/start sweep kills what it can and warns only on what it could not; OFF ⇒ census only, always warn.
+    - *Error:* every failure fails CLOSED — a failed pin/validation, a `realpath`/`openat` error, or an
+      incomplete census (`EOVERFLOW`/`EIO`, overflow set) yields NO signal and a warning with what IS known;
+      never a broad or wrong kill.
+    - *Details collector:* **[Show details]** gathers `(pid, command, cwd)` by a bounded, signal-free census
+      (`proc_pidpath` + `proc_pidinfo`), capped at the reaper's 512 with the overflow flag surfaced; it never
+      signals.
+    - *Startup queue:* a single run-at-start task, idempotent and bounded, that drains the recorded leftovers
+      before the first new run and reports completion to the drawer.
+  - **Testing.** Mac tests/gates stay **census-only** (`ms6_5_reaper_census_gate.sh`; both arches 18/18) plus a
+    signal-free marker-inheritance probe (a child that inherits the marker fd classifies; one that does not,
+    does not). The destructive sweep (real SIGKILL) and its real-escape row stay **OFF the Macs** until the signal
+    paths are approved. The owner's state machine, the start-time provenance/queue, and the engine sequencing
+    (open+pin → marker-match → sweep-once → re-census-on-Stop, kill intercepted) are proven on Linux under
+    `unshare --user --map-root-user --pid --fork --mount-proc` via the injectable engine.
 - **MS6.6 (gate, rev 18): R1 under Seatbelt.** setup's R1 probe proves "the CLI takes the token from fd 3 and no
   CLI environment holds it" on macOS, without giving the code under test any introspection.
   - **Topology** (RoseCat 7019; BlueBeaver 7021; JadeBeacon 7023):
