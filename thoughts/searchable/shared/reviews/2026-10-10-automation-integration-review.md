@@ -24286,3 +24286,20 @@ browser was touched. NIT: the Python fixture's `git()` helper uses `.strip()`
 where shell command substitution removes trailing newlines only; the current
 committed launcher has no terminal spaces, so this does not affect the result.
 Verdict sent to BlueBeaver in Agent Mail 7281.
+
+## Hard-gate test byte-normalization follow-up (`086c2df`)
+
+**APPROVED.** The fixture now uses `rstrip("\n")`, matching shell command
+substitution's removal of trailing newline bytes while preserving leading
+whitespace and terminal spaces. This closes the non-blocking NIT on the
+committed-launcher tests without changing production. An exact clean-export
+run inside a private user/PID namespace passed the entry suite 19/19. No Mac or
+live browser was touched.
+
+With the committed-launcher hold closed, the exact-manifest ARMED gate is now
+**approved to run on both Macs**. Its manifest remains exactly
+`case_ms5_spawn_io.py` and `case_ms6_6b_r1_chain.py`; the blocked reaper is not
+included. The run is expected to fail at the deliberate MS6.6(B) placeholder,
+so it cannot claim MS6 completion or set `seatbelt_ready`. This supersedes the
+remote-execution hold in Agent Mail 7250; the explicit GO was sent to
+BlueBeaver in Agent Mail 7282.
