@@ -1060,6 +1060,16 @@ pub fn build(b: *std.Build) void {
     automation_expect_flow_seam_tests_module.addImport("automation", automation_module);
     const run_automation_expect_flow_seam_tests = b.addRunArtifact(b.addTest(.{ .root_module = automation_expect_flow_seam_tests_module }));
     run_automation_expect_flow_seam_tests.skip_foreign_checks = true;
+    // RoseCat 7155: before phase C a read is refused too.
+    const automation_expect_flow_prenav_tests_module = b.createModule(.{
+        .root_source_file = b.path("tests/automation_expect_flow_prenav_test.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    automation_expect_flow_prenav_tests_module.addImport("automation", automation_module);
+    const run_automation_expect_flow_prenav_tests = b.addRunArtifact(b.addTest(.{ .root_module = automation_expect_flow_prenav_tests_module }));
+    run_automation_expect_flow_prenav_tests.skip_foreign_checks = true;
 
     const automation_cookie_tests_module = b.createModule(.{
         .root_source_file = b.path("tests/automation_cookie_test.zig"),
@@ -2450,6 +2460,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_automation_expect_deadline_tests.step);
     test_step.dependOn(&run_automation_expect_flow_tests.step);
     test_step.dependOn(&run_automation_expect_flow_seam_tests.step);
+    test_step.dependOn(&run_automation_expect_flow_prenav_tests.step);
     test_step.dependOn(&run_automation_expect_flow_server_tests.step);
     test_step.dependOn(&automation_expect_flow_e2e.step);
     test_step.dependOn(&run_owner_only_tests.step);

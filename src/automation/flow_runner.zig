@@ -143,7 +143,7 @@ pub const Runner = struct {
     }
 
     /// S8 phase B, and phase C's guard before each later action: an approved run navigates only
-    /// to its approved URL, once and before any action, and acts only while the window still
+    /// to its approved URL, once and before any other step, and acts only while the window still
     /// shows the document that navigation committed. True when it refused (the flow stops).
     fn approvalRefuses(self: *Runner, method: []const u8, params_json: []const u8, action: bool) error{OutOfMemory}!bool {
         const approval = self.approval.?;
@@ -155,9 +155,11 @@ pub const Runner = struct {
             }
             return self.approvalStop(try engine_mod.automationFailure(self.gpa, .expectation_mismatch, "unapproved_navigation", self.ext.ids()));
         }
-        if (!action) return false;
+        // Until phase C has captured the approved navigation's document, nothing else runs, not even
+        // a read (RoseCat 7155); after it, reads go on and every action is guarded.
         const serial = approval.load_serial orelse
             return self.approvalStop(try engine_mod.automationFailure(self.gpa, .expectation_mismatch, "unapproved_navigation", self.ext.ids()));
+        if (!action) return false;
         return switch (try self.ext.boundWindow(self.gpa, self.remainingMs())) {
             .refused => |refused| self.approvalStop(refused),
             .window => |window| blk: {
