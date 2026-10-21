@@ -28,6 +28,10 @@
 #include <time.h>
 #include <unistd.h>
 
+/* The guarded production stop: signals only our own child that leads its own group (else EINVAL/ECHILD/EPERM, no
+ * signal), then reaps it (03b2bee, d8f5e76). This test never calls kill() itself (RoseCat 7250 #1). */
+int zb_agent_kill_group(pid_t pid);
+
 /* Weak, so the red fails by behaviour ("missing"), not at link time. */
 extern int zb_agent_spawn_group_io(const char *const *argv, const char *const *envp, int stdin_fd, int stdout_fd,
                                    pid_t *out_pid) __attribute__((weak_import));
@@ -103,6 +107,34 @@ static int read_line(int fd, char *buf, size_t cap, double secs) {
 
 static void cloexec(int fd) { fcntl(fd, F_SETFD, FD_CLOEXEC); }
 
+/* Stops a child of this test that missed its deadline, never by a raw signal: only the guarded
+ * zb_agent_kill_group may signal, and only our own child leading its own group. A child it refuses (a broken spawn
+ * left it outside its own group) is only waited for, up to 5 s, and reported if it still runs: never signalled. */
+static void stop_child(pid_t child, const char *label) {
+  if (child <= 1) return;
+  if (zb_agent_kill_group(child) == 0) return;  /* killed and reaped */
+  double until = now() + 5;
+  int st;
+  while (now() < until) {
+    pid_t w = waitpid(child, &st, WNOHANG);
+    if (w == child || (w < 0 && errno == ECHILD)) return;
+    usleep(20000);
+  }
+  char m[200];
+  snprintf(m, sizeof m, "%s: child %d still runs after the guarded stop (refused or failed); left alone, never "
+           "signalled raw", label, (int)child);
+  fail(m);
+}
+
+/* Waits up to `secs` for our child to exit (reaping it); 1 if it did. */
+static int exited_within(pid_t child, double secs) {
+  double until = now() + secs;
+  int st;
+  pid_t w = 0;
+  while (now() < until && (w = waitpid(child, &st, WNOHANG)) == 0) usleep(20000);
+  return w == child;
+}
+
 /* Reads the child's "FDS ..." and "SCAN <n>" lines: exactly 0 1 2, over a scan that covers the high plant. */
 static void expect_census(int fd, const char *label) {
   char line[512], scan[64], m[700];
@@ -162,7 +194,10 @@ int main(int argc, char **argv) {
     double until = now() + 2;
     while (now() < until && (w = waitpid(child, &status, WNOHANG)) == 0) usleep(20000);
     if (w == child) ok("pipes: closing the parent's stdin end makes the child exit within 2 s");
-    else { fail("pipes: closing the parent's stdin end makes the child exit within 2 s"); kill(-child, SIGKILL); waitpid(child, NULL, 0); }
+    else {
+      fail("pipes: closing the parent's stdin end makes the child exit within 2 s");
+      stop_child(child, "pipes");
+    }
   }
   close(out_p[0]);
 
@@ -178,7 +213,7 @@ int main(int argc, char **argv) {
     fail("inherit: the spawn starts the child");
   } else {
     expect_census(out2[0], "inherit (stdin -1 keeps the parent's stdin)");
-    waitpid(child, NULL, 0);
+    if (!exited_within(child, 5)) stop_child(child, "inherit");
   }
   close(out2[0]);
 
@@ -190,7 +225,10 @@ int main(int argc, char **argv) {
     char m[200];
     snprintf(m, sizeof m, "refusal: stdin_fd %d stdout_fd %d is EINVAL and spawns nothing", bad[i][0], bad[i][1]);
     if (r == EINVAL && child == -1) ok(m);
-    else { fail(m); if (child > 0) { kill(-child, SIGKILL); waitpid(child, NULL, 0); } }
+    else {
+      fail(m);
+      if (child > 0) stop_child(child, "refusal");
+    }
   }
 
   /* 4. same fd: one duplex socket is both stdin and stdout */
@@ -221,8 +259,7 @@ int main(int argc, char **argv) {
     if (w == child) ok("same fd: SHUT_WR on the parent's end makes the child exit within 2 s");
     else {
       fail("same fd: SHUT_WR on the parent's end makes the child exit within 2 s");
-      kill(-child, SIGKILL);
-      waitpid(child, NULL, 0);
+      stop_child(child, "same fd");
     }
   }
   close(sv[0]);
