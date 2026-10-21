@@ -13,6 +13,10 @@
 #   * with the two per-arch site-packages trees (packaging/macos/build_site_packages.sh, from the lock): their strict
 #     universal2 merge (packaging/macos/merge_universal_tree.py) -> agent-host/site-packages, which holds the fat
 #     Claude CLI at claude_agent_sdk/_bundled/claude (token.bundled_cli()'s path); without them the staging is PARTIAL;
+#   * with them, the ONE .pth (packaging/macos/sdk_pth.py install: the committed agent_host_sdk.pth, one relative path
+#     line, as Python.framework/Versions/3.12/lib/python3.12/site-packages/zb_agent_host_sdk.pth): the staged
+#     interpreter, -I included, imports from agent-host/site-packages with no PYTHONPATH (27a9a62); a stray .pth there
+#     or any non-path line is refused;
 #   * the framework relocated (packaging/macos/relocate_python_framework.py): every Mach-O loads @loader_path-relative
 #     paths and is re-signed ad hoc, so the staged python runs from wherever the app is.
 # The merge and the relocation run under the Mac's /usr/bin/python3. Staged into a sibling temporary directory and
@@ -55,6 +59,8 @@ printf '{"lock_sha256": "%s"}\n' "$(shasum -a 256 "$REPO/agent/host/uv.lock" | c
 if [ -n "$SITE_X86" ]; then
   /usr/bin/python3 -I "$REPO/packaging/macos/merge_universal_tree.py" "$SITE_X86" "$SITE_ARM" "$S/site-packages" \
     >/dev/null || die "merging the two site-packages trees failed"
+  /usr/bin/python3 -I -B "$REPO/packaging/macos/sdk_pth.py" install \
+    "$S/Python.framework/Versions/3.12/lib/python3.12/site-packages" "$S" || die "installing the SDK .pth failed"
 fi
 /usr/bin/python3 -I "$REPO/packaging/macos/relocate_python_framework.py" "$S/Python.framework/Versions/3.12" \
   >/dev/null || die "relocating the framework failed"

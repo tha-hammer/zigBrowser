@@ -2187,6 +2187,15 @@ pub fn build(b: *std.Build) void {
         "cd tests/e2e && out=$(env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 python3 -X dev -m unittest -v mac_relocate_test 2>&1); rc=$?; printf '%s\\n' \"$out\"; [ $rc -eq 0 ] || exit $rc; if printf '%s\\n' \"$out\" | grep -q ResourceWarning; then echo 'mac_relocate_test: ResourceWarning' >&2; exit 1; fi",
     });
     mac_census_step.dependOn(&mac_relocate_unit.step);
+    // The staged runtime's one SDK .pth (27a9a62: ModuleNotFoundError claude_agent_sdk on both Macs): the committed line,
+    // every stray/non-path refusal, and a real CPython under -I importing through it. Its Mac half is
+    // tests/mac/ms5_stage_gate.sh. Spawns a venv python, sends no signal; namespaced like its siblings.
+    const mac_sdk_pth_unit = b.addSystemCommand(&.{
+        "sh",
+        "-c",
+        "cd tests/e2e && out=$(env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 unshare --user --map-root-user --pid --fork --mount-proc sh -c 'setsid python3 -X dev -m unittest -v mac_sdk_pth_test' 2>&1); rc=$?; printf '%s\\n' \"$out\"; [ $rc -eq 0 ] || exit $rc; if printf '%s\\n' \"$out\" | grep -q ResourceWarning; then echo 'mac_sdk_pth_test: ResourceWarning' >&2; exit 1; fi",
+    });
+    mac_census_step.dependOn(&mac_sdk_pth_unit.step);
     // MS5 fat agent-host: the strict universal2 merge of the two per-arch site-packages trees (lipo pairs, WHEEL tags,
     // per-arch SBOMs, regenerated RECORDs, every boundary refused). Off-Mac with an injected lipo; the real merge is
     // tests/mac/ms5_deps_gate.sh on both Macs. Its FIFO case arms a SIGALRM on itself (no kill()), so it runs inside
@@ -2620,6 +2629,7 @@ pub fn build(b: *std.Build) void {
     if (target.result.os.tag == .linux) test_step.dependOn(&mac_ms5_census_unit.step);
     if (target.result.os.tag == .linux) test_step.dependOn(&mac_ms5_crypto_pin_unit.step);
     if (target.result.os.tag == .linux) test_step.dependOn(&mac_relocate_unit.step);
+    if (target.result.os.tag == .linux) test_step.dependOn(&mac_sdk_pth_unit.step);
     if (target.result.os.tag == .linux) test_step.dependOn(&mac_merge_universal_unit.step);
     if (target.result.os.tag == .linux) test_step.dependOn(&ms6_hard_gate_driver_unit.step);
     if (target.result.os.tag == .linux) test_step.dependOn(&ms6_hard_gate_manifest_unit.step);

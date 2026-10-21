@@ -12,6 +12,7 @@ from pathlib import Path
 
 AGENT = "Frameworks/agent-host"
 OUT = Path("packaging/macos/universal_components_ms5.json")
+SDK_PTH = "Python.framework/Versions/3.12/lib/python3.12/site-packages/zb_agent_host_sdk.pth"  # sdk_pth.NAME
 
 
 def package_files(repo: Path) -> list[str]:
@@ -32,6 +33,8 @@ def generate(repo: Path) -> dict:
             "site-packages path token.bundled_cli() resolves. The dependency .so's (cffi/pydantic_core/rpds) are",
             "made universal by the strict merge (packaging/macos/merge_universal_tree.py, BlueBeaver); crypto is the",
             "48.0.1 universal2 wheel. The framework is relocated by relocate_python_framework.py (fb437ea).",
+            "sdk-path: the staged runtime's one .pth (packaging/macos/agent_host_sdk.pth via sdk_pth.py), which puts",
+            "agent-host/site-packages on the staged interpreter's sys.path (27a9a62).",
         ],
         "components": [
             {"role": "browser", "path_glob": "bin/zigBrowser"},
@@ -40,7 +43,8 @@ def generate(repo: Path) -> dict:
             {"role": "python-runtime", "path_glob": f"{AGENT}/Python.framework/Versions/3.12/Python"},
             {"role": "claude-cli", "path_glob": f"{AGENT}/site-packages/claude_agent_sdk/_bundled/claude"},
         ],
-        "resources": [{"role": "runtime-lock", "path": f"{AGENT}/runtime.json"}]
+        "resources": [{"role": "runtime-lock", "path": f"{AGENT}/runtime.json"},
+                      {"role": "sdk-path", "path": f"{AGENT}/{SDK_PTH}"}]
         + [{"role": "agent-host-package", "path": f"{AGENT}/{rel}"} for rel in package_files(repo)],
     }
 

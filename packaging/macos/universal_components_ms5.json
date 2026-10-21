@@ -7,7 +7,9 @@
     "the user's decision 2026-10-21: the two arch CLIs are lipo'd into one universal binary at the",
     "site-packages path token.bundled_cli() resolves. The dependency .so's (cffi/pydantic_core/rpds) are",
     "made universal by the strict merge (packaging/macos/merge_universal_tree.py, BlueBeaver); crypto is the",
-    "48.0.1 universal2 wheel. The framework is relocated by relocate_python_framework.py (fb437ea)."
+    "48.0.1 universal2 wheel. The framework is relocated by relocate_python_framework.py (fb437ea).",
+    "sdk-path: the staged runtime's one .pth (packaging/macos/agent_host_sdk.pth via sdk_pth.py), which puts",
+    "agent-host/site-packages on the staged interpreter's sys.path (27a9a62)."
   ],
   "components": [
     {
@@ -35,6 +37,10 @@
     {
       "role": "runtime-lock",
       "path": "Frameworks/agent-host/runtime.json"
+    },
+    {
+      "role": "sdk-path",
+      "path": "Frameworks/agent-host/Python.framework/Versions/3.12/lib/python3.12/site-packages/zb_agent_host_sdk.pth"
     },
     {
       "role": "agent-host-package",

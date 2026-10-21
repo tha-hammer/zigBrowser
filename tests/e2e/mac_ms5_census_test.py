@@ -64,7 +64,9 @@ class Inventory(unittest.TestCase):
         self.assertEqual(cli[0]["path_glob"], f"{AGENT}/site-packages/claude_agent_sdk/_bundled/claude")
         paths = [r["path"] for r in inv["resources"]]
         self.assertEqual(paths[0], f"{AGENT}/runtime.json")
-        self.assertEqual(paths[1:], [f"{AGENT}/{rel}" for rel in repo_package_files()])
+        self.assertEqual(paths[1], f"{AGENT}/Python.framework/Versions/3.12/lib/python3.12/site-packages/"
+                                   "zb_agent_host_sdk.pth")  # the sdk-path .pth (27a9a62; mac_sdk_pth_test)
+        self.assertEqual(paths[2:], [f"{AGENT}/{rel}" for rel in repo_package_files()])
         self.assertTrue(all("__pycache__" not in p for p in paths))
         self.assertGreater(len(paths), 10, "the package's files, not a token list")
 
