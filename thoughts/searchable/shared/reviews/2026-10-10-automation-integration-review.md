@@ -22290,3 +22290,178 @@ used the reported 9/9-per-architecture evidence, syntax/diff checks, a local
 strict C compile and the equal-descriptor reproducer. Before macOS agent launch
 is armed, the corrected Mac gate also needs a durable place in the applicable
 hard-gate sequence rather than relying on a one-time manual invocation.
+
+### macOS grouped-spawn fix-forward (`51780e3`, `1251c29`)
+
+**APPROVED; these commits cumulatively close the blockers on `214b9ad` and
+`06f0e35`.** The new red drives the public same-descriptor contract with one
+end of a real Unix socketpair and reports the old implementation's `EBADF` on
+both Mac architectures. The green queues both `dup2` actions before either
+unique source is closed, so a single duplex descriptor can become both stdin
+and stdout without a closed-source action (`src/agent_spawn_posix.c:48-53`).
+The header states that behavior explicitly.
+
+The exact-FD oracle now raises the soft descriptor limit when necessary,
+plants a second inheritable descriptor at 300, scans beyond it, and requires
+every child census to be exactly `0 1 2`. The reported no-
+`POSIX_SPAWN_CLOEXEC_DEFAULT` mutant exposes both fd 3 and fd 300 on x86_64 and
+arm64. `read_line` polls before each read, making its local deadline real
+rather than relying on the outer SSH timeout (`spawn_group_io_test.c:72-91,
+96-106,117-132`).
+
+Independent Linux validation compiled the production seam with
+`-Wall -Wextra -Werror`, passed one socket descriptor for both streams to
+`/bin/cat`, observed a successful spawn and exact `roundtrip\n` echo, then
+closed the write side and reaped status 0. Shell syntax and exact-diff checks
+also passed. Darwin's exact-FD behavior is accepted from the reported
+four-case gate on both Macs and its discriminating mutants. The manual test
+still needs a durable place in the relevant macOS hard-gate chain before
+launch is armed; that integration task is not a remaining defect in this C
+seam.
+
+## S8a social-flow phases A-C green (`2c95253`)
+
+**BLOCKED on one Phase-B fail-closed gap.** The commit otherwise closes the
+approved red suite well: it registers all three Zig modules plus the real-
+binary fixture e2e; hands `handleSocialFlow`'s selected window into the engine;
+runs Phase A after FIFO acquisition and before the cookie gate, pacing or page
+input; allows only the exact first `page.navigate`; checks the committed URL;
+captures and rechecks the isolated-world per-document token and native
+`load_serial`; refuses malformed expectations; and releases pacing on every
+refusal. The build registration is additive and retains the MS6 harness lines.
+
+The owner's clean private-Xvfb gate was **312/312 steps, 1110/1112 tests (two
+skipped)** with the LinkedIn fixture e2e green. Independently, the focused flow
+suite passed **14/14** and the Runner seam passed **1/1** with the display
+scrubbed. The server test genuinely traverses the production queue/window
+handoff rather than bypassing it, and the live fixture provides the required
+WebKit isolated-world positive complement.
+
+- **BLOCKER — a non-action page step is allowed before Phase C.**
+  `approvalRefuses` handles navigation, then immediately returns false for
+  every method outside `isAction`; only an action consults the still-null
+  `approval.load_serial` (`src/automation/flow_runner.zig:148-160`). An
+  approved Runner can therefore execute `dom.query`, `dom.getText`,
+  `dom.waitFor` or another read before its approved navigation and Phase-C
+  capture. That contradicts authoritative decision 2—"the flow's one approved
+  navigation ... and nothing else"—and the seam test's own "before phase C
+  nothing but the one approved navigation runs" claim. Its table covers an
+  action, reload and wrong/retried/second navigation, but no non-action step
+  (`tests/automation_expect_flow_seam_test.zig:51-74`). While
+  `approval.load_serial == null`, refuse every method except the first exact
+  approved `page.navigate` as `-32015 unapproved_navigation`; add a read or
+  wait row that is red on `2c95253` and green after the fix.
+
+This verdict is scoped to the phases A-C increment. It does not pull the
+later S8a in-task account/recipient/target guards, per-event rechecks,
+cross-document message transition or story-preview removal into this commit.
+Those remain later named work rather than additional blockers on this slice.
+
+## Windows build-driver hardening (`42c797b`)
+
+**BLOCKED; `defb5a2`/`b32f285` remain open.** The checked command encoding is
+correct: with `pipefail`, either encoder failure or an empty result stops before
+the build SSH call, and the new injected `iconv` failure exercises that path.
+Changing the remote preparation separators from a lone `&` to `&&` also fixes
+the concrete masking bug. The focused hermetic suite passes **22/22**, and shell
+syntax, Python compilation and exact-diff checks are clean.
+
+The claimed atomic artifact/provenance publication is still not atomic.
+`tests/windows/build-on-windows.sh:135-145` renames the new manifest over
+`$out.sha`, then separately renames the new executable over `$out`. A crash or
+second-rename failure between those operations leaves either an old executable
+beside the new commit SHA, or a manifest without its executable. The first case
+is especially dangerous because the later census can attribute the old binary
+to the new source commit. `AtomicProvenance` only makes the manifest path
+unwritable before either publish; it neither plants an old valid pair nor cuts
+or fails the second rename, so this mismatch survives the new oracle.
+
+Publish a complete version directory through one directory rename/current
+swap, or establish and test an equivalent invariant in which interruption can
+leave no executable with mismatched provenance. A red must start with an old
+pair, fail/cut the second publication, and reject every surviving mismatched
+pair. **SHOULD-for-tests:** the staging red only inspects the SSH command for a
+lone `&`; force the preparation failure and prove that the build invocation is
+never reached, as the original finding required. Findings were sent to
+AzureRidge in Agent Mail 7159.
+
+Consequently the linear boundary is unchanged: **`26fdfff` remains the pushed
+through SHA and `7d85cd5` remains open pending the two watched WS0 runs.** If
+those runs pass, the earliest blocked descendant is still **`defb5a2`**, not a
+later WS1 slice.
+
+## MS6 durable grouped-spawn case (`be2c256`)
+
+**BLOCKED cumulatively; the case itself is well formed, but it is not yet a
+durable gate under the shipped runtime.** `case_ms5_spawn_io.py` is discovered
+by the hard-gate driver, resolves the staged sources from the repository root,
+compiles and runs in separate bounded groups, and fails closed on missing
+sources, compile/run failure, a missing row, any failure row, or a wrong final
+summary. Its exact 12-row and four-case expectations correctly carry the
+approved `51780e3`/`1251c29` seam oracle into the pre-`seatbelt_ready` sequence.
+
+However, `Harness.spawn_group` waits through `os.waitid(... WNOWAIT)`
+(`tests/mac/hard_gate/harness.py:50-57`). The user-approved bundled runtime is
+python.org CPython **3.12.10 universal2**, while macOS did not expose
+`os.waitid` there until CPython 3.13. The reported evidence used framework
+Python 3.13.2 and 3.14.7, not the runtime the hard gate will stage. Keep the
+3.12 pin, implement the planned `kqueue`/`EVFILT_PROC`/`NOTE_EXIT` observation
+without reaping, preserve group-kill-before-reap and exactly-once ownership,
+and run this case through the real driver on both Macs under the staged 3.12.10
+runtime. Until that lands, `be2c256` does not close the prior durable-gate
+follow-up. Python compilation is clean; no signal-sending test was rerun during
+this review. Verdict sent in Agent Mail 7160.
+
+## Zig netd spawn integration (`21a6f70`, `849f849`)
+
+**`21a6f70` is BLOCKED-for-tests; `849f849` is BLOCKED.** The implemented
+pipe topology, strict ready-port parser, bounded `poll`, malformed/empty/deadline
+failure mapping and C grouped-spawn seam are directionally right. With an
+extra `_GNU_SOURCE` compile definition, the five committed Linux cases pass.
+Three defects prevent acceptance:
+
+1. **BLOCKER — a valid ready line followed by immediate exit is accepted as a
+   live netd.** The red's “stays up” case checks only `pid > 0`
+   (`tests/agent_host_posix_spawn_test.zig:22-28`). Production returns a `Netd`
+   immediately after parsing the port (`src/agent_host_posix.zig:146-148`) and
+   never observes whether that process already exited; the existing
+   `decide(..., netd_exited_early)` helper is not called. Add a stand-in that
+   writes an exact ready line and exits, require `NetworkFailure`, and use a
+   real liveness oracle for the positive.
+2. **BLOCKER — normal stop does not allow the documented EOF cleanup.**
+   `Netd.stop()` closes stdin and immediately calls `zb_agent_kill_group`
+   (`agent_host_posix.zig:90-94`), whose implementation sends `SIGKILL` before
+   waiting. The plan relies on stdin EOF so netd can unlink its sockets and
+   remove its directory; immediate SIGKILL is explicitly the crash path. Wait
+   a bounded interval for clean EOF exit and use group kill only as the
+   backstop; prove both the clean marker/cleanup path and the hung-child path.
+3. **BLOCKER — the registered Linux test target does not compile as written.**
+   `build.zig` adds `agent_spawn_posix.c` with only `-std=c11`. Reproducing that
+   exact compile fails because `killpg` is undeclared; adding `_GNU_SOURCE`
+   makes the same five tests pass. Fix the feature-test macro/header contract
+   and prove the registered target rather than a manually augmented command.
+
+The failure-path tests also need an observable no-child/no-fd-leak assertion;
+merely receiving `NetworkFailure` does not prove the stand-in was reaped. Under
+the post-incident safety rule, every test that actually sends a signal must run
+inside `unshare --user --map-root-user --pid --fork --mount-proc`, and a mocked
+`Popen` must patch both `os.kill` and `os.killpg` to raise. Findings were sent
+to JadeBeacon, with BlackRobin and BlueBeaver copied, in Agent Mail 7161.
+
+## MS6 hard-gate signal guard (`efe2517`)
+
+**BLOCKED-for-tests, although the emergency guard correctly stops the observed
+MagicMock failure.** `_consume` now rejects a non-exact `int` or a PID at most
+one before calling `killpg`. A display-free, no-signal probe with a MagicMock
+process observed the fixed `RuntimeError`, zero `kill`/`killpg` calls, and the
+entry marked consumed. That directly prevents the incident's MagicMock-to-1
+conversion.
+
+The commit contains no failing-first or regression test, so deleting the guard
+would leave the repository gate green. Commit the no-signal test: its mocked
+`Popen` path must patch both `os.kill` and `os.killpg` to raise and assert that
+neither is called. Also reject the current process group and validate the
+`start_new_session=True` invariant before signalling (the child PID must name
+its own group); `pid > 1` alone still lets a fake integer or the harness's own
+group reach `killpg`. Any positive test of the real signal path must run only
+inside the mandated private user/PID namespace.
