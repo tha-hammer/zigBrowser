@@ -22655,3 +22655,39 @@ kqueue route. Diff check is clean.
 **NIT:** the safety module's docstring still says "Unregistered until the
 green" after this commit registers it. Verdict sent to BlueBeaver, with
 BlackRobin copied, in Agent Mail 7180.
+
+## macOS `spawnNetd` second fix-forward (`5bb7986`)
+
+**APPROVED for the liveness drain, clean/unclean result and namespaced test
+registration; BLOCKED cumulatively on the remaining kill-ownership boundary.**
+
+The exact late-diagnostic reproducer now drains all output and continues to
+observe the pipe until EOF or the 200 ms grace, so a diagnostic no longer
+masks exit. `waitExit` now classifies exit 0 separately from a nonzero or
+signalled exit and reaps either without another signal. The registered suite
+is no longer a bare test artifact: the new `test-agent-spawn` system command
+runs it beneath `unshare --user --map-root-user --pid --fork --mount-proc`.
+An independent exact-commit clean-export invocation passed **4/4 steps and
+11/11 tests**; the throwaway tree was deleted immediately.
+
+**BLOCKER — `src/agent_host_posix.zig:115-148` and
+`src/agent_spawn_posix.c:69-75`:** `shouldKillBackstop` proves only `pid > 1`,
+not that the PID names this process's child or that the child leads its own
+group. For an unrelated PID such as 1234, `waitpid` returns `ECHILD`; that is
+collapsed with a confirmed-child timeout to null, after which
+`zb_agent_kill_group(1234)` runs. The new unit test explicitly treats 1234 as
+safe. The C seam still rejects only `pid <= 0`, so it independently permits
+PID 1 and checks neither parentage nor group ownership.
+
+The fix must distinguish `waitpid == 0` (a confirmed live child) from
+`ECHILD`/other errors, signal only the former, and defensively reject
+`pid <= 1` plus a nonleader group at the C boundary. Its refusal test must
+patch signal functions to raise, and every real-signal test must remain in the
+PID namespace.
+
+**SHOULD:** `netdAlive` treats every negative `poll` or `read` result as
+transient and can therefore reach the grace and report alive on a permanent
+error. Only `EINTR` should retry; other errors should fail closed.
+
+This closes all other `3c0cc73` findings. The remaining blocker was sent to
+JadeBeacon and BlueBeaver in Agent Mail 7182.
