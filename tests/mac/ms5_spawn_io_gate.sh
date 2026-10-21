@@ -1,0 +1,58 @@
+#!/usr/bin/env bash
+# BlackRobin 7108 seam 1 gate (JadeBeacon 7143): zb_agent_spawn_group_io on BOTH Macs (tests/mac/spawn_group_io_test.c):
+# the child holds exactly fds 0 1 2 (POSIX_SPAWN_CLOEXEC_DEFAULT drops a planted inheritable fd and every pipe end),
+# leads its own group, round-trips a stdin line, exits on stdin EOF within 2 s; stdin -1 inherits; a stream fd in
+# 0..2 is EINVAL. Per-run ~/zb-spawnio-<nonce>, deleted on exit; nothing installed. BatchMode, strict host keys, no
+# askpass; the arm64 host is required (no default).
+# usage: tests/mac/ms5_spawn_io_gate.sh [commit]   (default: the working tree)
+set -euo pipefail
+
+KEY="${ZB_MAC_KEY:-/home/maceo/vms/mac-m9/zb_mac_key}"
+INTEL_HOST="${ZB_MAC_HOST:-maceojourdan@100.92.212.47}"
+ARM_HOST="${ZB_MAC_ARM_HOST:-}"
+ARM_KEY="${ZB_MAC_ARM_KEY:-$KEY}"
+LEG_TIMEOUT="${ZB_MAC_LEG_TIMEOUT:-240}"
+export SSH_ASKPASS_REQUIRE=never
+
+cd "$(git rev-parse --show-toplevel)"
+if [ -z "$ARM_HOST" ]; then
+  echo "NOT RUN: arm64 host not configured (set ZB_MAC_ARM_HOST=user@host)" >&2
+  exit 1
+fi
+stage=$(mktemp -d "${TMPDIR:-/tmp}/zb-spawnio-XXXXXX")
+trap 'case "$stage" in */zb-spawnio-*) rm -rf -- "${stage:?}";; esac' EXIT
+for f in tests/mac/spawn_group_io_test.c src/agent_spawn_posix.c src/agent_spawn_posix.h; do
+  if [ -n "${1:-}" ]; then git show "$1:$f" > "${stage:?}/$(basename "$f")" 2>/dev/null || rm -f -- "${stage:?}/$(basename "$f")"
+  elif [ -f "$f" ]; then cp "$f" "${stage:?}/"; fi
+done
+
+leg() { # $1=host $2=expected uname -m $3=key
+  local host="$1" arch="$2" key="$3"
+  local SSH=(env -u DISPLAY -u WAYLAND_DISPLAY -u XAUTHORITY ssh -i "$key" -o IdentitiesOnly=yes -o BatchMode=yes
+             -o StrictHostKeyChecking=yes -o ConnectTimeout=15 -o ServerAliveInterval=10)
+  local SCP=(env -u DISPLAY -u WAYLAND_DISPLAY -u XAUTHORITY scp -i "$key" -o IdentitiesOnly=yes -o BatchMode=yes
+             -o StrictHostKeyChecking=yes -o ConnectTimeout=15)
+  local rdir="zb-spawnio-$(date +%s)-$$-$RANDOM"
+  "${SSH[@]}" "$host" "mkdir \"\$HOME/${rdir:?}\"" || { echo "FAIL: mkdir on $host" >&2; return 1; }
+  if ! "${SCP[@]}" "${stage:?}"/* "$host:${rdir}/" >/dev/null; then
+    "${SSH[@]}" "$host" "rm -rf \"\$HOME/${rdir:?}\"" || true
+    echo "FAIL: scp to $host" >&2; return 1
+  fi
+  timeout "$LEG_TIMEOUT" "${SSH[@]}" "$host" "ZB_RDIR='${rdir}' ZB_ARCH='${arch}' /bin/bash -s" <<'REMOTE'
+set -euo pipefail
+d="$HOME/${ZB_RDIR:?}"
+trap 'rm -rf "$HOME/${ZB_RDIR:?}"' EXIT
+[ "$(uname -m)" = "$ZB_ARCH" ] || { echo "FAIL: this leg is $(uname -m), expected $ZB_ARCH" >&2; exit 1; }
+cd "$d"
+srcs=(spawn_group_io_test.c)
+[ -f agent_spawn_posix.c ] && srcs+=(agent_spawn_posix.c)
+xcrun clang -Wall -Wextra -Werror -I "$d" -Wl,-U,_zb_agent_spawn_group_io "${srcs[@]}" -o spawn_io_test
+./spawn_io_test </dev/null
+REMOTE
+}
+
+overall=0
+leg "$INTEL_HOST" x86_64 "$KEY" || { echo "FAIL: x86_64 leg" >&2; overall=1; }
+leg "$ARM_HOST" arm64 "$ARM_KEY" || { echo "FAIL: arm64 leg" >&2; overall=1; }
+[ "$overall" -eq 0 ] && printf 'PASS\tms5-spawn-io-gate\tboth-arches\n'
+exit "$overall"
