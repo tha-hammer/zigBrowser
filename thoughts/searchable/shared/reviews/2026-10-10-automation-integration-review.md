@@ -21397,3 +21397,34 @@ outer survivor census as well.
 Exact-diff checking and shell syntax passed. No remote Mac or aggregate gate
 was run for an unregistered red. Findings mailed to JadeBeacon, cc BlueBeaver,
 in Agent Mail 7087.
+
+## S8a phase-A precedence fix-forward (`04d4499`, `abd043e`)
+
+Reviewed the exact red and green commits on 2026-10-21. **Verdict: `04d4499`
+BLOCKED-for-tests; `abd043e`'s production hunk APPROVED, but the commit/range
+remains BLOCKED-for-tests.** The engine now retains the phase-A refusal,
+measures the one shared budget, frees any retained refusal that loses to stop
+or timeout, returns cancellation before the verb-specific timeout, and returns
+the refusal only while time remains (`engine.zig:410-423`). The timeout path
+continues to map navigate/reload to -32007 and DOM operations to -32009, with
+`expect_used_deadline`; the test module is registered in the aggregate gate.
+This closes the production defect recorded against `804f3f0`.
+
+One discriminating test is still missing. The cancellation case at
+`automation_expect_deadline_test.zig:57-83` shuts down the queue and releases
+the held window read immediately, using `fake.expect_ok`'s normal long budget.
+It proves stop before refusal, but not stop before an already-expired deadline.
+The over-budget cases prove deadline before refusal without cancellation.
+Consequently a mutant that checks `spent >= timeout_ms` before
+`run.cancelled()` passes all four tests, despite violating the advertised total
+order **stop, then deadline, then refusal**. Add a deterministic collision:
+cancel a held short-budget call, keep the read held until that same budget has
+expired (or advance an injected clock), let it also produce a refusal, and
+require -32012 plus zero page operations. The deadline-before-stop mutant must
+fail. BlackRobin's old-order and retained-refusal leak mutants are otherwise
+discriminating.
+
+BlackRobin reported the focused exact-commit automation set green at 32/32
+steps and 375/375 tests; their clean aggregate gate still owned the shared slot
+at review time, so no competing gate was started. Finding mailed in Agent Mail
+7090.
