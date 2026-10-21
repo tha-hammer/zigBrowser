@@ -279,6 +279,14 @@ pub fn build(b: *std.Build) void {
     const windows_pe_census_selftest = b.addSystemCommand(&.{ "python3", "-I", "tests/windows/pe_census_selftest.py" });
     b.step("windows-pe-census-selftest", "Run the WS1.1 PE-census selftest (Linux PE fixtures + WebView2 SDK pin)").dependOn(&windows_pe_census_selftest.step);
 
+    // WS1.3 PNG-census selftest: the PNG non-uniform oracle on Linux-built fixtures (uniform/varied/
+    // filters/truncated/absent) with a mutation oracle. Hermetic.
+    const windows_png_census_selftest = b.addSystemCommand(&.{ "python3", "-I", "tests/windows/png_census_selftest.py" });
+    b.step("windows-png-census-selftest", "Run the WS1.3 PNG-census selftest (Linux PNG fixtures)").dependOn(&windows_png_census_selftest.step);
+    // WS1.3/6c771ff screenshot-diagnostic source pin: each exact screenshot failure line in the shim.
+    const windows_screenshot_diag_selftest = b.addSystemCommand(&.{ "python3", "-I", "tests/windows/screenshot_diag_selftest.py" });
+    b.step("windows-screenshot-diag-selftest", "Pin the exact screenshot failure diagnostics in webview2_shim.cpp").dependOn(&windows_screenshot_diag_selftest.step);
+
     // WS item b (live): join_argv round-trips through the real CommandLineToArgvW on the Win11 VM — the
     // independent argv oracle the Linux reference parser cannot be. Skips cleanly without ZB_WIN11_HOST.
     const windows_wincontain_argv_live = b.addSystemCommand(&.{ "python3", "-I", "tests/windows/wincontain_argv_live_test.py" });
@@ -2262,6 +2270,8 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&windows_twohost_selftest.step);
     test_step.dependOn(&windows_build_selftest.step);
     test_step.dependOn(&windows_pe_census_selftest.step);
+    test_step.dependOn(&windows_png_census_selftest.step);
+    test_step.dependOn(&windows_screenshot_diag_selftest.step);
     test_step.dependOn(&windows_wincontain_argv_live.step);
     test_step.dependOn(&windows_wincontain_resolve_live.step);
     test_step.dependOn(&windows_wincontain_job_live.step);

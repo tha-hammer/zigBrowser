@@ -29,7 +29,8 @@ def _paeth(a, b, c):
 
 
 def census(path):
-    data = open(path, "rb").read()
+    with open(path, "rb") as _f:
+        data = _f.read()
     if data[:8] != _SIG:
         raise ValueError("not a PNG (bad signature)")
     off = 8

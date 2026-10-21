@@ -154,8 +154,11 @@ class ScreenshotLive(unittest.TestCase):
             self.assertEqual(run.returncode, 0, f"runner failed: {run.stdout}\n{run.stderr}")
             result = json.loads(run.stdout.strip().splitlines()[-1])
             self.assertNotEqual(result["exit"], 0, f"a failed navigation must exit nonzero: {result!r}")
-            self.assertTrue(result["stderr"].strip(),
-                            f"a failed screenshot must print a stderr diagnostic (it was silent): {result!r}")
+            # Assert the EXACT NavigationCompleted-failure diagnostic (not merely any nonempty stderr — an
+            # unrelated warning must not false-green it; RoseCat 6c771ff). The source pin for all branches is
+            # tests/windows/screenshot_diag_selftest.py.
+            self.assertIn("zigBrowser: screenshot: navigation failed; the page did not load", result["stderr"],
+                          f"a failed screenshot must print the exact NavigationCompleted diagnostic: {result!r}")
         finally:
             self._ssh("cmd", "/c", f"rmdir /s /q {base_win}")
             try:
