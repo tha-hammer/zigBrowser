@@ -34,19 +34,27 @@ def _oserror(what):
     return OSError(err, f"{what}: {os.strerror(err)}")
 
 
+def _listchildpids(libproc, pid, buf, size):
+    """One proc_listchildpids call. libproc turns a failed __proc_info into a return of 0 with errno set (Apple's
+    libproc.c, proc_listpids; RoseCat 7015), so errno is cleared first and read right after: 0 with errno 0 is a
+    real empty list, and 0 (or less) with errno set is a failure (ESRCH maps to ProcessLookupError)."""
+    ctypes.set_errno(0)
+    n = libproc.proc_listchildpids(pid, buf, size)
+    err = ctypes.get_errno()
+    if n < 0 or (n == 0 and err != 0):
+        raise OSError(err or errno.EIO, f"proc_listchildpids({pid}): {os.strerror(err or errno.EIO)}")
+    return n
+
+
 def children(pid):
     """The direct children of `pid` (proc_listchildpids). ProcessLookupError when `pid` has vanished (ESRCH); any
     other failure is another OSError."""
     _, libproc = _libs()
     for _ in range(4):
-        n = libproc.proc_listchildpids(pid, None, 0)
-        if n < 0:
-            raise _oserror(f"proc_listchildpids({pid})")
+        n = _listchildpids(libproc, pid, None, 0)
         cap = max(n * 2, 16)
         arr = (ctypes.c_int * cap)()
-        got = libproc.proc_listchildpids(pid, arr, ctypes.sizeof(arr))
-        if got < 0:
-            raise _oserror(f"proc_listchildpids({pid})")
+        got = _listchildpids(libproc, pid, arr, ctypes.sizeof(arr))
         if got < cap:
             return [arr[i] for i in range(got) if arr[i] > 0]
     raise OSError(f"proc_listchildpids({pid}): the child list kept growing")
@@ -57,10 +65,12 @@ def path(pid):
     OSError (RoseCat 7011): an unreadable path is never "not the CLI"."""
     _, libproc = _libs()
     buf = ctypes.create_string_buffer(_PATH_MAX)
+    ctypes.set_errno(0)  # no stale errno can decide the verdict (RoseCat 7015)
     if libproc.proc_pidpath(pid, buf, _PATH_MAX) <= 0:
-        if ctypes.get_errno() == errno.ESRCH:
+        err = ctypes.get_errno()
+        if err == errno.ESRCH:
             return None
-        raise _oserror(f"proc_pidpath({pid})")
+        raise OSError(err or errno.EIO, f"proc_pidpath({pid}): {os.strerror(err or errno.EIO)}")
     return os.fsdecode(buf.value)
 
 

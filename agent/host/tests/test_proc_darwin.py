@@ -17,6 +17,7 @@ three OS calls injected; tests/mac/ms5_r1_env_gate.sh drives the real calls on b
 
 Run like the gate: cd agent/host/tests && python -X dev -m unittest -v test_proc_darwin. Unregistered until the green.
 """
+import ctypes
 import errno
 import struct
 import unittest
@@ -155,42 +156,99 @@ class Descendants(Base):
 
 
 class OsCallErrors(Base):
-    """children() and path() map ESRCH to "vanished" and every other failure to an OSError (RoseCat 7011)."""
+    """children() and path() map ESRCH to "vanished" and every other failure to an OSError (RoseCat 7011). The fakes
+    have libproc's real failure shape (RoseCat 7015): a return of 0 with errno set (ctypes' errno, which a CDLL made
+    with use_errno=True swaps in and out around each call), never -1."""
 
-    def fake_libproc(self, n, err):
+    def fake_libproc(self, *calls):
+        """Each call returns the next (result, errno) pair; errno None leaves errno untouched (a call that succeeds
+        sets nothing)."""
+        script = list(calls)
+        seen = []
+
+        def call(pid, buf, size):
+            result, err = script.pop(0)
+            seen.append(buf is None)
+            if err is not None:
+                ctypes.set_errno(err)
+            return result
+
         class Lib:
-            def proc_listchildpids(self, pid, buf, size):
-                return n
-
-            def proc_pidpath(self, pid, buf, size):
-                return n
+            proc_listchildpids = staticmethod(call)
+            proc_pidpath = staticmethod(call)
 
         mock.patch.object(proc_darwin, "_libs", return_value=(None, Lib())).start()
-        mock.patch.object(proc_darwin.ctypes, "get_errno", return_value=err).start()
         self.addCleanup(mock.patch.stopall)
+        self.addCleanup(ctypes.set_errno, 0)
+        return seen
 
     def test_path_of_a_vanished_process_is_none(self):
-        self.fake_libproc(0, errno.ESRCH)
+        self.fake_libproc((0, errno.ESRCH))
         self.assertIsNone(proc_darwin.path(42))
 
     def test_path_denied_is_an_error(self):
         for err in (errno.EPERM, errno.EACCES, errno.EINVAL):
             with self.subTest(err=err):
-                self.fake_libproc(0, err)
+                self.fake_libproc((0, err))
                 with self.assertRaises(OSError) as cm:
                     proc_darwin.path(42)
                 self.assertNotIsInstance(cm.exception, ProcessLookupError)
 
-    def test_children_of_a_vanished_process_is_process_lookup_error(self):
-        self.fake_libproc(-1, errno.ESRCH)
-        with self.assertRaises(ProcessLookupError):
-            proc_darwin.children(42)
-
-    def test_children_denied_is_another_oserror(self):
-        self.fake_libproc(-1, errno.EPERM)
+    def test_path_never_reads_a_stale_errno(self):
+        self.fake_libproc((0, None))
+        ctypes.set_errno(errno.ESRCH)  # left over from an earlier call
         with self.assertRaises(OSError) as cm:
-            proc_darwin.children(42)
-        self.assertNotIsInstance(cm.exception, ProcessLookupError)
+            proc_darwin.path(42)
+        self.assertNotIsInstance(cm.exception, ProcessLookupError, "a stale ESRCH must not mean 'vanished'")
+
+    def test_children_failing_in_the_size_query(self):
+        for err, kind in ((errno.ESRCH, ProcessLookupError), (errno.EPERM, PermissionError)):
+            with self.subTest(err=err):
+                self.fake_libproc((0, err))
+                with self.assertRaises(kind):
+                    proc_darwin.children(42)
+
+    def test_children_failing_in_the_fill_call(self):
+        for err, kind in ((errno.ESRCH, ProcessLookupError), (errno.EPERM, PermissionError)):
+            with self.subTest(err=err):
+                seen = self.fake_libproc((2, None), (0, err))
+                with self.assertRaises(kind):
+                    proc_darwin.children(42)
+                self.assertEqual(seen, [True, False], "the size query, then the fill call")
+
+    def test_a_real_empty_list_after_a_stale_errno_is_empty(self):
+        self.fake_libproc((0, None), (0, None))
+        ctypes.set_errno(errno.ESRCH)  # left over from an earlier call
+        self.assertEqual(proc_darwin.children(42), [])
+
+    def test_children_found(self):
+        def fill(pid, buf, size):
+            if buf is not None:
+                buf[0], buf[1] = 7, 8
+            return 2
+
+        class Lib:
+            proc_listchildpids = staticmethod(fill)
+
+        mock.patch.object(proc_darwin, "_libs", return_value=(None, Lib())).start()
+        self.addCleanup(mock.patch.stopall)
+        self.assertEqual(proc_darwin.children(42), [7, 8])
+
+    def test_errno_left_by_a_successful_call_is_ignored(self):
+        # errno is defined only after a failure: a call that returns children may still leave errno set.
+        def fill(pid, buf, size):
+            ctypes.set_errno(errno.EINVAL)
+            if buf is not None:
+                buf[0] = 7
+            return 1
+
+        class Lib:
+            proc_listchildpids = staticmethod(fill)
+
+        mock.patch.object(proc_darwin, "_libs", return_value=(None, Lib())).start()
+        self.addCleanup(mock.patch.stopall)
+        self.addCleanup(ctypes.set_errno, 0)
+        self.assertEqual(proc_darwin.children(42), [7])
 
 
 if __name__ == "__main__":
