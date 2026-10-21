@@ -19,11 +19,18 @@ absolute, escapes with `..`, holds a `.` segment or repeats, and a missing or re
 FIFO or other non-regular entry is refused without being opened; a failing lipo names its path and leaves no output
 and no work directory; the two inputs' permission bits must agree (an executable CLI against a non-executable peer is
 refused, not resolved by taking one side).
+Ownership and the exact oracle (RoseCat 7233, 7238): every merged file is claimed by exactly one RECORD (a path two
+RECORDs claim, or none, is refused by name); each regenerated RECORD is compared row by row (path, fresh SHA-256 and
+size, its own `<RECORD>,,`, the split SBOM's two names); generated files (WHEEL, split SBOMs, RECORD) keep their
+input's mode; a RECORD-set mismatch names the divergent row.
 
 Pure Python with an injectable runner: these tests never call lipo. The real merge on both Macs is
-tests/mac/ms5_deps_gate.sh. No process, no signal.
+tests/mac/ms5_deps_gate.sh. No process. The FIFO case arms a SIGALRM on this process (a kernel timer, no kill()), so,
+like every signal-receiving test, the gate runs it inside a private user+PID namespace (pinned by
+test_the_gate_runs_this_module_namespaced against build.zig).
 Registered (build.zig: test-mac-census and the Linux test step).
-Run like the gate: cd tests/e2e && python3 -X dev -m unittest -v mac_merge_universal_test.
+Run like the gate: cd tests/e2e && unshare --user --map-root-user --pid --fork --mount-proc \\
+  sh -c 'setsid python3 -X dev -m unittest -v mac_merge_universal_test'
 """
 import base64
 import hashlib
@@ -37,7 +44,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-SCRIPT = Path(__file__).resolve().parents[2] / "packaging" / "macos" / "merge_universal_tree.py"
+REPO = Path(__file__).resolve().parents[2]
+SCRIPT = REPO / "packaging" / "macos" / "merge_universal_tree.py"
 THIN_X86 = bytes.fromhex("cffaedfe07000001")  # MH_MAGIC_64, CPU_TYPE_X86_64 (little-endian)
 THIN_ARM = bytes.fromhex("cffaedfe0c000001")  # MH_MAGIC_64, CPU_TYPE_ARM64
 FAT = bytes.fromhex("cafebabe00000002")       # FAT_MAGIC, 2 slices (big-endian)
@@ -165,18 +173,51 @@ class Merge(unittest.TestCase):
         want.append("pkg-1.0.dist-info/RECORD,,")
         self.assertEqual(sorted(lines), sorted(want))
 
-    def test_each_record_covers_exactly_its_own_distribution(self):
+    def test_each_record_is_exactly_its_own_distribution_row_by_row(self):
         self.package()
         self.second_distribution()
         self.merge()
-        rec = lambda d: sorted(l.split(",")[0] for l in (self.out / d / "RECORD").read_text().splitlines())
-        self.assertEqual(rec("two-2.0.dist-info"),
-                         ["two-2.0.dist-info/METADATA", "two-2.0.dist-info/RECORD", "two/__init__.py"])
-        pkg = rec("pkg-1.0.dist-info")
-        self.assertFalse([p for p in pkg if p.startswith("two")], pkg)
-        self.assertIn("pkg-1.0.dist-info/sboms/pkg.cyclonedx.x86_64.json", pkg)
-        self.assertIn("pkg-1.0.dist-info/sboms/pkg.cyclonedx.arm64.json", pkg)
-        self.assertNotIn("pkg-1.0.dist-info/sboms/pkg.cyclonedx.json", pkg)
+        rows = lambda d: sorted((self.out / d / "RECORD").read_text().splitlines())
+        pkg_paths = ["pkg/__init__.py", "pkg/_core.cpython-312-darwin.so", "pkg/_univ.abi3.so", "sdk/_bundled/claude",
+                     "pkg-1.0.dist-info/METADATA", "pkg-1.0.dist-info/WHEEL",
+                     "pkg-1.0.dist-info/sboms/pkg.cyclonedx.x86_64.json",
+                     "pkg-1.0.dist-info/sboms/pkg.cyclonedx.arm64.json",
+                     "pkg-1.0.dist-info/sboms/same.cyclonedx.json"]
+        self.assertEqual(rows("pkg-1.0.dist-info"),
+                         sorted([record_line(self.out, p) for p in pkg_paths] + ["pkg-1.0.dist-info/RECORD,,"]))
+        two_paths = ["two/__init__.py", "two-2.0.dist-info/METADATA"]
+        self.assertEqual(rows("two-2.0.dist-info"),
+                         sorted([record_line(self.out, p) for p in two_paths] + ["two-2.0.dist-info/RECORD,,"]))
+
+    def test_a_path_claimed_by_two_records_or_by_none_is_refused(self):
+        with self.subTest(case="claimed twice"):
+            self.package()
+            self.second_distribution()
+            self.append_record(b"two/__init__.py,sha256=X,1\n")  # pkg's RECORD claims two's file
+            self.refused("two/__init__.py")
+        with self.subTest(case="claimed by none"):
+            for root in (self.x, self.a, self.out):
+                shutil.rmtree(root, True)
+            self.package()
+            self.both("orphan.txt", b"in no RECORD\n")
+            self.refused("orphan.txt")
+
+    def test_generated_files_keep_their_inputs_mode(self):
+        self.package()
+        for root in (self.x, self.a):
+            for rel in ("pkg-1.0.dist-info/WHEEL", "pkg-1.0.dist-info/sboms/pkg.cyclonedx.json",
+                        "pkg-1.0.dist-info/RECORD"):
+                os.chmod(root / rel, 0o640)
+        self.merge()
+        for rel in ("pkg-1.0.dist-info/WHEEL", "pkg-1.0.dist-info/sboms/pkg.cyclonedx.x86_64.json",
+                    "pkg-1.0.dist-info/sboms/pkg.cyclonedx.arm64.json", "pkg-1.0.dist-info/RECORD"):
+            self.assertEqual(stat.S_IMODE(os.stat(self.out / rel).st_mode), 0o640, rel)
+
+    def test_the_gate_runs_this_module_namespaced(self):
+        build = (REPO / "build.zig").read_text()
+        lines = [l for l in build.splitlines() if "mac_merge_universal_test" in l and "unittest" in l]
+        self.assertEqual(len(lines), 1, lines)
+        self.assertIn("unshare --user --map-root-user --pid --fork --mount-proc sh -c 'setsid python3", lines[0])
 
     def test_record_rows_that_escape_or_repeat_are_refused(self):
         rows = {
@@ -256,7 +297,7 @@ class Merge(unittest.TestCase):
         names = {"only-in-one-tree": "extra.py", "other-text-differs": "pkg/__init__.py",
                  "same-arch-twice": "pkg/_core", "fat-vs-thin": "pkg/_core", "two-different-fat": "pkg/_univ",
                  "wheel-non-tag-line": "pkg-1.0.dist-info/WHEEL", "symlink": "link.py",
-                 "record-paths-differ": "pkg-1.0.dist-info/RECORD", "record-lists-a-missing-file": "pkg/gone.py"}
+                 "record-paths-differ": "pkg/extra.py", "record-lists-a-missing-file": "pkg/gone.py"}
         for case, spoil in cases.items():
             with self.subTest(case=case):
                 for root in (self.x, self.a, self.out):
