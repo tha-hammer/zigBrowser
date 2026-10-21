@@ -20128,3 +20128,41 @@ collision, partial-write and cleanup cases must fail closed. The semantic
 filesystem contract must match the profile before platform dispatch, or this
 increment must remain explicitly non-consumable. Findings and the exact
 cross-session reproduction were mailed to JadeBeacon in Agent Mail 6972.
+
+## Chat drawer S8 approval design, rev 16.20.41 (`ca1b5d6`)
+
+Reviewed exact docs commit `ca1b5d6` on 2026-10-20. **Verdict: BLOCKED.** It
+correctly closes the two conceptual boundaries from `61dc66d`: the expectation
+guard now runs again after a synchronous page callback and before the next
+page-visible write, and native cancellation is observed only between separate
+JavaScript evaluations. Four implementation and test contracts are still
+inconsistent or incomplete:
+
+1. The keydown red contradicts the new guard rule. Plan `:3126` requires the
+   guard after keydown and before the value write, but `:3130` still expects one
+   character and `sent.chars = 1` after a keydown handler changes the recipient.
+   It must expect zero characters, with the dispatched keydown counted as an
+   event, or move the test's change to `input` if one character is intended.
+2. The canceled-`beforeinput` red does not model a Draft.js-style editor. Such
+   a handler may synchronously update its own model or DOM before returning.
+   The new guard can prevent automation's later `execCommand` or range insert,
+   but cannot undo that page-side edit. The plan must test this case and must
+   not call it “nothing sent”: `sent.events` includes the dispatched event even
+   when direct `sent.chars` is zero, and the outcome needs a conservative
+   partial/unknown classification. A simpler handler that only changes the
+   recipient may still prove no direct insert and no `input` event.
+3. The chunk unit at `:3134,3140,3148` is only called “characters.” It must be a
+   named Unicode-code-point limit, matching JavaScript `for...of`
+   (`automation.js:942-955`) and `utf8CountCodepoints`
+   (`flow_steps.zig:337-340`), with a multibyte/non-BMP boundary red.
+4. `data.sent` is per JavaScript evaluation, but the plan does not say how the
+   engine aggregates it over chunks. Require cumulative code-point and event
+   counts from all completed chunks plus the failing chunk. A red should let
+   chunk 1 succeed, change the recipient after three characters of chunk 2,
+   and require 19/total, no later chunk and no Send; the boundary-cancel red
+   remains 32/200.
+
+The existing real hold before chunk 3 proves cancellation between evaluations,
+not arrival during an evaluation. A bounded in-evaluation handler case is a
+SHOULD if the “within one chunk” latency claim is retained. This docs-only
+review ran no code gate. Findings were mailed to BlackRobin in Agent Mail 6976.
