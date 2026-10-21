@@ -209,8 +209,13 @@ int zb_reaper_run_full(int (*scan)(void *buf, int bytes), const struct zb_reaper
 #include <limits.h>
 #include <sys/proc_info.h>
 
+struct reaper_ctx {
+  int fd;
+  const struct zb_reaper_dir_id *pinned;
+};
+
 static void reaper_inspect_real(pid_t pid, const char *dir, struct zb_reaper_id *out, void *ctx) {
-  (void)ctx;
+  const struct reaper_ctx *c = (const struct reaper_ctx *)ctx;
   out->matches = 0;
   out->have_bsd = 0;
   out->uid = (uid_t)-1;
@@ -227,7 +232,18 @@ static void reaper_inspect_real(pid_t pid, const char *dir, struct zb_reaper_id 
   const char *exep = (proc_pidpath(pid, exe, sizeof exe) > 0) ? exe : NULL;
   struct proc_vnodepathinfo vpi;
   const char *cwd = NULL;
-  if (proc_pidinfo(pid, PROC_PIDVNODEPATHINFO, 0, &vpi, sizeof vpi) == (int)sizeof vpi) cwd = vpi.pvi_cdir.vip_path;
+  if (proc_pidinfo(pid, PROC_PIDVNODEPATHINFO, 0, &vpi, sizeof vpi) == (int)sizeof vpi) {
+    cwd = vpi.pvi_cdir.vip_path;
+    /* INODE match (RoseCat 94be4e5): the cwd IS the held run dir by (dev, ino). This is rename-immune — the
+     * inode does not change when the dir is renamed, so a genuine survivor keeps classifying while a
+     * replacement at the old name (a different inode) does not, without relying on path spelling. */
+    if (c != NULL && c->pinned != NULL &&
+        (dev_t)vpi.pvi_cdir.vip_vi.vi_stat.vst_dev == c->pinned->dev &&
+        (ino_t)vpi.pvi_cdir.vip_vi.vi_stat.vst_ino == c->pinned->ino) {
+      out->matches = 1;
+      return;
+    }
+  }
   if (zb_reaper_classify(cwd, exep, NULL, 0, dir)) { out->matches = 1; return; }
 
   int bufsz = proc_pidinfo(pid, PROC_PIDLISTFDS, 0, NULL, 0);
@@ -248,10 +264,6 @@ static void reaper_inspect_real(pid_t pid, const char *dir, struct zb_reaper_id 
 static int reaper_killsig_real(pid_t pid, int sig, void *ctx) { (void)ctx; return kill(pid, sig) == 0 ? 0 : errno; }
 static int reaper_scan_real(void *buf, int bytes) { return proc_listallpids(buf, bytes); }
 
-struct reaper_ctx {
-  int fd;
-  const struct zb_reaper_dir_id *pinned;
-};
 static int reaper_dir_ok_real(void *ctx) {
   const struct reaper_ctx *c = (const struct reaper_ctx *)ctx;
   return zb_reaper_dir_fd_ok(c->fd, c->pinned); /* fstat the HELD fd: no pathname, no symlink follow */
