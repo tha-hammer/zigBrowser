@@ -1597,6 +1597,31 @@ exactly as follows. This replaces rev 5's open design item: the "Unix-socket pro
    bridge positives** (`:51091`, `:31337`); **every MS6.4 denial**; and that **a hook cannot reach
    the proxy** (a hook's attempt to the CLI/helper proxy port is refused by its profile).
 
+#### Endpoint contract (rev 19; orchestrator ruling on 7046, subject to RoseCat)
+
+Seatbelt's `remote` host token accepts only `*` or `localhost`; the IP literal `127.0.0.1` is a parse
+error (measured both arches, JadeBeacon 70444e5). `localhost` resolves to **both** loopback families,
+so the generated rule `(allow network-outbound (remote tcp "localhost:<port>"))` unavoidably permits
+`[::1]:<port>` as well as `127.0.0.1:<port>` — Seatbelt cannot express a v4-only grant. Rather than
+leave the gate unmet, the **accepted contract is the `localhost:<port>` grant (loopback TCP, both
+families)**, on the strict condition that the MS6 gate proves the v6 half reaches nothing and the
+rule is otherwise exact. The reachable egress endpoint is therefore `127.0.0.1:<port>` and only that.
+
+The gate MUST prove, both arches:
+1. **netd binds only `127.0.0.1`** — one listening TCP socket, IPv4 loopback, never `::1`
+   (`tests/mac/ms6_netd_darwin_gate.sh`, the `lsof -iTCP -sTCP:LISTEN` assertion).
+2. **a connect to `[::1]:<port>` is REFUSED** — policy permits the v6 loopback, but because (1) binds
+   no v6 listener there is nothing to reach, so the CLI gets `ECONNREFUSED`, never a completed
+   connection (`tests/mac/ms6_4_egress_test.sh`, the `::1` row = `CONNECT-REFUSED`).
+3. **every other port and UDP are DENIED by policy** — a live decoy loopback port, a public IP, UDP at
+   the allowed port, and the IPv4-mapped IPv6 form all `CONNECT-DENIED` (EPERM); the hook profile denies
+   the egress port while keeping its two bridges (`tests/mac/ms6_4_egress_test.sh`).
+
+If netd ever bound `::1` (breaking (1)), or if a connect to `[::1]:<port>` completed (breaking (2)), or
+if any other port/UDP were permitted (breaking (3)), the contract is violated and MS6's VM fallback
+applies. "Nothing is listening on `::1` today" is NOT the boundary — condition (1) is: netd's v4-only
+bind is what keeps the permitted-but-reachless v6 grant harmless, and the gate pins it.
+
 **Shared capability framing:** the endpoint and policy are the backend's to supply. **Linux**
 implements the capability with a **private network namespace, fixed proxy/bridge ports, and relays**
 (the hook's own netns seals it). **macOS** implements it with the **ephemeral host-loopback proxy

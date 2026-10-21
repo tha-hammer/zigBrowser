@@ -35,6 +35,25 @@ PROBE="$TMP/probe"
 xcrun clang -std=c11 -Wall -Wextra -Werror -o "$PROBE" "$DIR/ms6_4_connect_probe.c" 2>"$TMP/cc.err" || {
     echo "FAIL	ms6-4-egress (probe build failed)"; cat "$TMP/cc.err"; exit 1; }
 
+fails=0
+# 7046 #2: the probe's verdict mapping is deterministic — a syscall/observation failure must map to ERROR,
+# never DENIED/OK; only EPERM/EACCES are DENIED; the unreachable set is REFUSED. `selftest` exercises classify().
+ST=$("$PROBE" selftest 2>&1)
+mapis() { # <errno-name> <wanted-tag>
+    got=$(printf '%s\n' "$ST" | awk -v n="$1" '$1=="SELFTEST"&&$2==n{print $3; exit}')
+    if [ "$got" = "$2" ]; then echo "  ok   selftest $1 -> $got"
+    else echo "  FAIL selftest $1 -> ${got:-<none>}, wanted $2"; fails=$((fails+1)); fi
+}
+mapis EPERM CONNECT-DENIED
+mapis EACCES CONNECT-DENIED
+mapis ECONNREFUSED CONNECT-REFUSED
+mapis EHOSTUNREACH CONNECT-REFUSED
+mapis ENETUNREACH CONNECT-REFUSED
+mapis EINVAL CONNECT-ERROR
+mapis ENOMEM CONNECT-ERROR
+mapis EMFILE CONNECT-ERROR
+mapis ETIMEDOUT CONNECT-ERROR
+
 # Listeners: EGRESS (ephemeral) + DECOY (ephemeral) + the two fixed bridges; and one DEAD ephemeral port (bound
 # then closed) for the refused≠denied self-check. Ports written to $TMP/ports as "egress decoy dead".
 /usr/bin/python3 -I - "$TMP/ports" 51091 31337 <<'PY' &
@@ -79,8 +98,7 @@ with open(os.path.join(out, "hook.sb"), "w") as f:
     f.write(sandbox_macos.render_profile(egress=None, bridges=(51091, 31337), is_hook=True))
 PY
 
-fails=0
-# probe <profile|NONE> <ip> <port> <proto> <want-tag> <label>
+# probe <profile|NONE> <ip> <port> <proto> <want-tag> <label>  (fails is initialized above, with the selftest)
 probe() {
     prof="$1"; ip="$2"; port="$3"; proto="$4"; want="$5"; label="$6"
     if [ "$prof" = NONE ]; then
@@ -99,6 +117,15 @@ probe() {
 # Probe self-check: REFUSED (dead port) and OK (live port) must NOT be reported as DENIED.
 probe NONE 127.0.0.1 "$DEAD"   tcp CONNECT-REFUSED "probe self-check: a dead port is REFUSED, not DENIED"
 probe NONE 127.0.0.1 "$EGRESS" tcp CONNECT-OK      "probe self-check: a live port is OK"
+# Deadline branch (7046 #2): an unsandboxed connect to TEST-NET-1 (RFC 5737, unroutable) neither completes nor is
+# denied; the non-blocking deadline must fire as CONNECT-TIMEOUT, not OK/DENIED. Short 500 ms budget.
+to=$("$PROBE" 192.0.2.1 80 500 tcp 2>&1) || true
+toget=$(printf '%s' "$to" | awk '{print $1; exit}')
+case "$toget" in
+    CONNECT-TIMEOUT) echo "  ok   probe self-check: an unroutable address TIMES OUT (deadline branch)" ;;
+    CONNECT-REFUSED|CONNECT-ERROR) echo "  ok   probe self-check: an unroutable address is $toget (not OK/DENIED — acceptable)" ;;
+    *) echo "  FAIL probe self-check: unroutable 192.0.2.1 -> ${to:-<none>}, wanted TIMEOUT (or REFUSED/ERROR)"; fails=$((fails+1)) ;;
+esac
 
 # CLI profile: egress + both bridges reachable (TCP/IPv4); decoy + public denied.
 probe cli.sb 127.0.0.1 "$EGRESS" tcp CONNECT-OK     "cli reaches the egress port"

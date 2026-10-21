@@ -34,7 +34,23 @@ static int classify(int e, const char *where) {
 }
 
 int main(int argc, char **argv) {
-  if (argc < 3) { fprintf(stderr, "usage: %s <ip> <port> [timeout_ms] [tcp|udp]\n", argv[0]); return 2; }
+  /* Deterministic verdict-mapping self-test (RoseCat 7046 #2): a syscall/observation failure must never be
+   * mapped to DENIED or OK. Prints "SELFTEST <errno-name> <tag...>" for the whole classify() table so the gate
+   * pins EPERM/EACCES -> DENIED, the unreachable set -> REFUSED, and everything else -> ERROR. A mutant that
+   * mislabels any of them (e.g. EINVAL -> DENIED, or dropping EACCES from DENIED) reds here. */
+  if (argc >= 2 && strcmp(argv[1], "selftest") == 0) {
+    struct { const char *name; int e; } tbl[] = {
+        {"EPERM", EPERM}, {"EACCES", EACCES}, {"ECONNREFUSED", ECONNREFUSED}, {"EHOSTUNREACH", EHOSTUNREACH},
+        {"ENETDOWN", ENETDOWN}, {"ENETUNREACH", ENETUNREACH}, {"EHOSTDOWN", EHOSTDOWN}, {"EINVAL", EINVAL},
+        {"ENOMEM", ENOMEM}, {"EMFILE", EMFILE}, {"ETIMEDOUT", ETIMEDOUT},
+    };
+    for (size_t i = 0; i < sizeof tbl / sizeof tbl[0]; i++) {
+      printf("SELFTEST %s ", tbl[i].name);
+      classify(tbl[i].e, "selftest");
+    }
+    return 0;
+  }
+  if (argc < 3) { fprintf(stderr, "usage: %s <ip> <port> [timeout_ms] [tcp|udp] | selftest\n", argv[0]); return 2; }
   const char *ip = argv[1];
   int port = atoi(argv[2]);
   int timeout_ms = (argc > 3) ? atoi(argv[3]) : 1500;
