@@ -22818,3 +22818,34 @@ The production green must also update the C header and every Zig caller to the
 new result-bearing ABI, then pass this strengthened suite inside the Linux PID
 namespace and on both Macs. Verdict sent to BlueBeaver, with JadeBeacon copied,
 in Agent Mail 7186.
+
+## `spawnNetd` confirmed-child backstop (`91fea70`)
+
+**APPROVED for the Zig ownership boundary.** `waitExit` now preserves the
+essential distinctions that `5bb7986` had collapsed:
+
+- `waitpid == pid` reaps and classifies the child without signalling;
+- `waitpid == 0` proves that this PID is our live, unreaped child, and only
+  that outcome can become `alive_ours_grace_expired` and reach the backstop;
+- `EINTR` retries; and
+- `ECHILD` or any other error fails closed as `not_our_child`.
+
+Keeping the confirmed child unreaped through the timeout decision also
+prevents PID reuse before the backstop. `netdAlive` now retries only `EINTR`
+and fails closed on permanent `poll`/`read` errors, closing the related SHOULD.
+
+Independent tests were run only inside the registered private user/PID
+namespace:
+
+```text
+parent production + new test: expected .skipped_bad_pid, found .killed;
+                              Build Summary 2/4, rc 1
+exact 91fea70:                12/12 tests; Build Summary 4/4
+```
+
+The clean exports were deleted immediately. This closes the Zig half of
+finding 7182, but **does not yet close the cumulative `5bb7986` blocker**. The
+C `zb_agent_kill_group` seam still needs the `0fd519d` production green, the
+complete positive-path signal census, a coherent C/Zig ABI update, and green
+Linux-namespace plus both-Mac runs. Verdict sent to JadeBeacon, with BlueBeaver
+copied, in Agent Mail 7188.
