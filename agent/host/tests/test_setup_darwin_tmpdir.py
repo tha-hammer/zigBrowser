@@ -6,12 +6,18 @@ TMPDIR).
 On Linux with the platform injected and the MS6 seam faked (as test_setup_darwin_r1):
 - on Darwin, the R1 probe's run and cli_version's run each get TMPDIR = the scratch the seam was given (the profile's
   one writable SCRATCHPAD), an existing directory while the run runs, and HOME stays that same scratch;
+- the scratch is its REAL path (e7b7370, both Macs: TMPDIR=/tmp/zb-setup-run-… was still unusable: /tmp is a symlink
+  to /private/tmp, Seatbelt matches resolved paths, and sandbox_macos.dparams only normalizes, so the profile's one
+  write grant named a path no write ever resolves to): with tempfile's directory behind a symlink, the seam's scratch,
+  HOME and TMPDIR are all os.path.realpath of it;
 - Linux runs are unchanged (no TMPDIR from setup; bwrap gives them their own /tmp).
 
 Run like the gate: cd agent/host/tests && python -X dev -m unittest -v test_setup_darwin_tmpdir.
 Unregistered until the green.
 """
 import os
+import shutil
+import tempfile
 import unittest
 from unittest import mock
 
@@ -51,6 +57,26 @@ class Darwin(Envs):
         self.assertEqual(env.get("TMPDIR"), str(seam["scratch"]), "TMPDIR is the profile's writable SCRATCHPAD")
         self.assertTrue(env["_tmpdir_exists"], "the directory exists while the probe runs")
         self.assertEqual(env.get("HOME"), str(seam["scratch"]))
+        self.assert_all_closed(made)
+
+    def test_the_scratch_is_its_real_path_behind_a_symlinked_tmp(self):
+        root = tempfile.mkdtemp(prefix="zb-tmpdir-real-")
+        self.addCleanup(shutil.rmtree, root, True)
+        real = os.path.join(root, "private-tmp")
+        os.mkdir(real)
+        link = os.path.join(root, "tmp")
+        os.symlink(real, link)  # as macOS's /tmp -> private/tmp
+        mock.patch.object(tempfile, "tempdir", link).start()
+        self.fake_seam()
+        self.fake_run()
+        envs = self.record_envs()
+        made = self.track_sockets()
+        self.assertIs(setup.probe_r1(r1.WRAPPER, r1.CLI), True)
+        (seam,), (env,) = self.seam, envs
+        scratch = str(seam["scratch"])
+        self.assertTrue(scratch.startswith(real + os.sep), f"the seam gets the resolved scratch, not {scratch}")
+        self.assertEqual(os.path.realpath(scratch), scratch)
+        self.assertEqual((env.get("HOME"), env.get("TMPDIR")), (scratch, scratch))
         self.assert_all_closed(made)
 
     def test_cli_version_runs_with_tmpdir_in_its_writable_scratch(self):
