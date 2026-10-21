@@ -11,3 +11,9 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 include = ["zb_agent_host*"]
+
+[tool.uv]
+# The Mac app bundles ONE universal2 runtime tree (the user's decision): on macOS, cryptography 48.0.1, which ships
+# universal2 abi3 wheels (50.0.2 is arm64-only there). Linux keeps its own resolution. A constraint, not a direct
+# dependency: cryptography arrives via mcp -> pyjwt[crypto].
+constraint-dependencies = ["cryptography==48.0.1; sys_platform == 'darwin'"]
