@@ -25856,3 +25856,25 @@ the existing oracle), retain the current branch tests, and rerun both
 `test-agent-setup-ms5` and `agent-host-win-import` before any Mac hard-gate
 rerun. The fallback's behavior needs no redesign. Verdict sent to BlueBeaver
 in Agent Mail 7391.
+
+## Darwin route-probe import-boundary fix (`4c0a3db`)
+
+**APPROVED; cumulatively closes `2c69a0d`.** The fix is exactly the narrow
+cross-platform correction requested by review `6bea364`: `fcntl` is no longer
+imported at module scope and is loaded only after `SO_ACCEPTCONN` returned
+`ENOPROTOOPT`. The Darwin fault-injection row patches that same module object,
+so the F_GETFL, set-nonblocking and restoration failures remain exercised.
+No production fallback behavior or hard-gate case bytes changed.
+
+Independent exact-archive runs at `4c0a3db`, with display variables scrubbed,
+were green:
+
+- `zig build agent-host-win-import --summary all`: **3/3 steps**; and
+- `zig build test-agent-setup-ms5 --summary all`: **21/21 steps, 14/14
+  tests**, including the route fallback's **18/18** cases.
+
+The throwaway export was deleted immediately after the run. The reviewed R1
+case digest remains `fc1df7b11b2fd229218d4537d4711a9c0992e0e76c54e86eeb432524d994ca78`.
+Any armed Mac rerun still requires the orchestrator's explicit gate release;
+this approval only closes the code and registered-gate blocker. Verdict sent
+to BlueBeaver in Agent Mail 7392's thread.
