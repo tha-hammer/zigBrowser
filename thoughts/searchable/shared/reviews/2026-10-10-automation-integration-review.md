@@ -25393,7 +25393,7 @@ cleanup/evidence conditions were sent to BlueBeaver in Agent Mail 7353.
 
 ## MS6.5.1 rev-26 staging collision (`9f780e9`)
 
-**BLOCKED as a commit; the intended plan text is substantively APPROVED.** An
+**BLOCKED as a commit and for one new liveness gap.** An
 exact tree audit contradicts the commit title and Agent Mail 7355: `9f780e9`
 does **not** contain
 `thoughts/searchable/shared/plans/2026-10-14-14-30-macos-launch-tdd-plan.md`.
@@ -25403,7 +25403,8 @@ Under the no-history-rewrite rule, JadeBeacon must add a new plan-only
 fix-forward commit; the unrelated Windows changes remain separately
 reviewable under their actual purpose.
 
-The intended worktree diff does close all of review `ec24db0`'s plan findings:
+The intended worktree diff does close all of review `ec24db0`'s named plan
+findings:
 
 - one acquisition of the global ledger `flock` is held continuously across
   liveness revalidation, the census/kill/fresh-census fixed point, marker
@@ -25418,12 +25419,49 @@ The intended worktree diff does close all of review `ec24db0`'s plan findings:
 - startup now orders mkdir/open/pin, marker creation, active publication, then
   and only then process spawn (`:1811-1816`).
 
-No additional safety gap was found in those amendments. The destructive Mac
-reaper gate remains OFF. Commit-integrity finding sent to JadeBeacon in Agent
-Mail 7356 and the accidentally captured Windows WIP was reported to
-AzureRidge/JadeBeacon in mail 7357. There is **no new push-through**:
-`d827780` remains the boundary, and `0e3595c` remains open until the approved
-rev-26 text exists in a real follow-up commit.
+**New BLOCKER — the widened global claim has unbounded acquisition.** The
+plan still names blocking `flock(LOCK_EX)` (`:1795-1805`) while claiming the
+fixed-point deadline caps the hold and the startup queue is bounded
+(`:1915-1926`). That deadline cannot cap time spent waiting to acquire the
+lock. A live/frozen browser stalled while holding the now-long-lived global
+claim can therefore wedge another browser's recovery—and its first agent
+run—forever. Acquisition must be part of the same monotonic total deadline,
+using `LOCK_EX|LOCK_NB` plus bounded/cancellable retry or an equivalent
+primitive. Failure or expiry must mutate nothing and signal nothing, retain
+the entry/authority, surface a fixed recovery-busy incident without blocking
+the UI, and refuse/defer the first new agent run rather than hang. The
+owner-driven terminal mutation needs the same bounded claim; failure stays
+`Survivors`.
+
+The causal red must hold the flock in a separate live process that deliberately
+stalls, then prove the second recoverer returns the fail-closed outcome inside
+the total deadline with zero signals and zero disk mutation; after release, a
+retry may recover. A blocking-`LOCK_EX` mutant must exceed the watchdog. This
+was sent to JadeBeacon in Agent Mail 7362, in addition to the commit-integrity
+finding in mail 7356 and the captured-Windows-WIP notice in mail 7357. The
+destructive Mac reaper gate remains OFF. There is **no new push-through**:
+`d827780` remains the boundary and `0e3595c` remains open.
+
+### Actual Windows content committed by `9f780e9`
+
+**Code fixes accepted; BLOCKED-for-tests/evidence.** AzureRidge confirmed in
+mail 7359 that the nine committed files are its answers to review `4cd6a14`.
+The four-argument screenshot ABI is consistently threaded through Zig, the C
+header and all three backends; the trailing screenshot
+`--e2e-protocol` option reaches WebView2's `run_core`, while a normal parse
+leaves the bit false. The OS and architecture fields now start as
+`unavailable` and claim concrete values only after their respective Win32
+calls succeed. The registered Linux source-pin suite is independently green,
+7/7.
+
+The Windows acceptance obligations remain open: `b292b17` still needs the
+shipped MSVC build and real missing-runtime run; `6115ac1` still needs the
+real-exe `WS15BuildInfo` comparisons; and `52a5aba` still needs an explicit
+environment-set-without-flag negative plus registration and execution of the
+three real VM branch cases. The current live branch test exercises only the
+forced-with-flag path and remains unregistered. Verdict sent to AzureRidge in
+Agent Mail 7361. This independently prevents `9f780e9` from becoming a push
+boundary even after its mislabeled plan content is fixed forward.
 
 ## Armed MS6 hard-gate result at `4e17273`
 
