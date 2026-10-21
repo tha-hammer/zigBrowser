@@ -22465,3 +22465,111 @@ neither is called. Also reject the current process group and validate the
 its own group); `pid > 1` alone still lets a fake integer or the harness's own
 group reach `killpg`. Any positive test of the real signal path must run only
 inside the mandated private user/PID namespace.
+
+### Signal-ownership red (`784a2cc`)
+
+**BLOCKED-for-tests.** The new red usefully calls `_consume` itself and pins the
+missing ownership cases: a `MagicMock`, non-exact integers and dangerous scalar
+values, the test's own process group, a real child that is not its group leader,
+and a real group leader that is not the test's child. Around each call into the
+code under test it patches both `os.kill` and `os.killpg` to raise and asserts
+that neither was called. The reported three failures on the pre-green harness
+are therefore safe and discriminate the three ownership holes beyond
+`efe2517`'s exact-int-above-one check.
+
+The red itself nevertheless sends real signals during cleanup:
+`stop_real_child` calls `Popen.kill()`
+(`tests/e2e/ms6_hard_gate_harness_safety_test.py:36-40`), and the intermediate
+Python process calls `p.kill()` on its grandchild (`:83-86`). The mandatory
+post-incident rule requires every signal-sending test to run inside
+`unshare --user --map-root-user --pid --fork --mount-proc`; that containment is
+unavailable on the two Macs where this module is also intended to run. Make
+both fixtures terminate without signals (for example, EOF-controlled children
+and a naturally exited but unreaped grandchild). The eventual green must also
+register the Linux leg through the exact PID-namespace wrapper. Finding sent
+to BlueBeaver in Agent Mail 7168.
+
+## S8a Phase-B read refusal (`8d25436`, `a32fae8`)
+
+**APPROVED.** The red is discriminating: before the approved navigation, and
+again after that navigation fails, each of `dom.query`, `dom.getText`,
+`dom.waitFor`, `page.url` and `page.title` is `-32015`
+`unapproved_navigation` and reaches neither the evaluation nor URL port; after
+Phase C commits, the same reads execute. The green orders the state test before
+the non-action return in `approvalRefuses`
+(`src/automation/flow_runner.zig:143-163`), so only the one approved navigation
+can precede the captured `load_serial`; reads then run normally while actions
+retain the serial/document-token checks. This cumulatively closes the sole
+open blocker on `2c95253`.
+
+The build registration is additive. An independent display-free focused Zig
+run passed **3/3**. No full aggregate gate was needed for this narrow
+fix-forward. Verdict sent to BlackRobin in Agent Mail 7166.
+
+## MS6 hard-gate CPython 3.12 wait (`5e48fab`, `b3fda89`)
+
+**`5e48fab` is BLOCKED-for-tests; `b3fda89` is BLOCKED cumulatively, although
+the production harness change is correct.** The fallback uses kqueue
+`EVFILT_PROC`/`NOTE_EXIT` with `EV_ONESHOT`, respects the caller's deadline,
+does not reap the leader, treats registration `ESRCH` as an already-exited
+owned child, and refuses before `Popen` when neither `os.waitid` nor kqueue is
+available. The reported old-code failures, both-Mac success and three mutants
+discriminate that behavior. The real staged CPython 3.12.10 run remains a
+hard-gate acceptance condition once the pinned tree exists, rather than a
+defect in this implementation.
+
+Two mandatory test-safety defects prevent approval:
+
+1. `build.zig:2055-2059` registers the signal-sending harness module as a
+   direct Python invocation. Ordinary `zig build test` can therefore send
+   `SIGKILL` outside a private PID namespace. The Linux registration must run
+   through `unshare --user --map-root-user --pid --fork --mount-proc` (or a
+   checked wrapper with exactly that boundary).
+2. `counting_killpg` calls `self.exists(pgid)` before it validates the type,
+   lower bound and current-process-group exclusion
+   (`tests/e2e/ms6_hard_gate_harness_test.py:52-60`). On Darwin `exists` calls
+   `os.kill(pid, 0)`, so a fake or mocked PID reaches a kill call before the
+   guard. Validate first, then make the liveness observation.
+
+Inside the mandated namespace, the current harness and driver modules passed
+**19/19**, with **6 kqueue-only skips** on Linux. These findings keep
+`be2c256` cumulatively blocked despite the kqueue implementation itself being
+sound. Verdict sent to BlueBeaver in Agent Mail 7167.
+
+## S8a in-task action guard red (`e68692a`)
+
+**BLOCKED-for-tests.** The unregistered red is strong where it reaches: the
+real binary and production socket/engine/isolated-world chain observe a full
+five-event click, pre-action marker refusal, mutation after `pointerdown`,
+mutation after `keydown`, same-selector target cloning after `input`, a
+contenteditable `beforeinput`, and a Draft.js-style cancelled insertion. It
+pins exact `data.sent` counts, target identity, `-32015`, no retry, engine
+forwarding, and the native/non-acting `-32602` refusals. The reported parent
+run (16 of 21 checks red) is credible failing-first evidence.
+
+It does not yet pin the whole decision-14 contract:
+
+1. **BLOCKER-for-tests — three action families are parser-only.** The e2e
+   exercises only click and type (`automation_guard_test.py:60-111`). A green
+   can omit all guards from fill, press, native select and the ARIA
+   select/option-click branch and still pass. Each needs a callback-induced
+   marker/target change, the stopped event/write sequence and exact sent
+   counts through the real binary.
+2. **BLOCKER-for-tests — no focus callback is observable.** The fixture never
+   mutates state on focus, and `events()` explicitly filters focus
+   (`:38-40`). A green can omit the required post-`focus()` guard and write the
+   value. Add a focus handler that changes a marker and prove no value write
+   follows.
+3. **BLOCKER-for-tests — runtime mark semantics cover only changed text.** No
+   case distinguishes zero matches, multiple matches, a hidden or
+   ancestor-`aria-hidden` match, or a changed attribute. Thus a first-match,
+   text-only implementation can satisfy the suite despite the exact-one-
+   visible and optional-attribute contract.
+4. **BLOCKER-for-tests — both optional guard arms are always present in every
+   positive.** Add marks-only and target-only positive rows so the parser may
+   not incorrectly require both.
+
+**SHOULD-for-tests:** the contenteditable cases prove the guard before
+`execCommand`, but not the guard after its native callback before keyup or a
+fallback input, nor a deterministic Range-insert fallback. Decision 14 names
+those boundaries explicitly. Findings sent to BlackRobin in Agent Mail 7166.
