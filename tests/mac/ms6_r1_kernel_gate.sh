@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# R1 under Seatbelt, the kernel gate (RoseCat 7019 item 2, 7041 #3; BlueBeaver 7021; JadeBeacon 7023): on BOTH Macs,
-# the real setup profile (sandbox_macos.setup_sandbox with loopback_port) around an inner probe stand-in, with setup's
-# census outside (tests/mac/r1_kernel_driver.py). No display, no browser, no install: each leg copies the files into
+# R1 under Seatbelt, the KERNEL-PROPERTIES gate (RoseCat 7019 item 2, 7041 #3, 7050; BlueBeaver 7021, 7051): on BOTH
+# Macs, the real setup profile (sandbox_macos.setup_sandbox with loopback_port) around an inner probe stand-in, with
+# an unsandboxed control and setup's census outside (tests/mac/r1_kernel_driver.py). The production chain is the
+# armed MS5 e2e's job, not this gate's. No display, no browser, no install: each leg copies the files into
 # a per-run nonce dir under $HOME, builds a tiny sleeper with xcrun clang, and deletes that exact dir.
 # Every ssh/scp: BatchMode=yes, strict host keys, no askpass.
 # usage: tests/mac/ms6_r1_kernel_gate.sh [commit]   (default: the working tree)
@@ -9,15 +10,23 @@ set -euo pipefail
 
 KEY="${ZB_MAC_KEY:-/home/maceo/vms/mac-m9/zb_mac_key}"
 INTEL_HOST="${ZB_MAC_HOST:-maceojourdan@100.92.212.47}"
-ARM_HOST="${ZB_MAC_ARM_HOST:-jj@100.119.156.28}"
+ARM_HOST="${ZB_MAC_ARM_HOST:-}"   # no default: the two-arch gate fails closed without it (canonical MS6 handling)
+ARM_KEY="${ZB_MAC_ARM_KEY:-$KEY}"
 LEG_TIMEOUT="${ZB_MAC_LEG_TIMEOUT:-300}"
 export SSH_ASKPASS_REQUIRE=never
 
 cd "$(git rev-parse --show-toplevel)"
-SSH=(env -u DISPLAY -u WAYLAND_DISPLAY -u XAUTHORITY ssh -i "$KEY" -o IdentitiesOnly=yes -o BatchMode=yes
-     -o StrictHostKeyChecking=yes -o ConnectTimeout=15 -o ServerAliveInterval=10)
-SCP=(env -u DISPLAY -u WAYLAND_DISPLAY -u XAUTHORITY scp -i "$KEY" -o IdentitiesOnly=yes -o BatchMode=yes
-     -o StrictHostKeyChecking=yes -o ConnectTimeout=15)
+if [ -z "$ARM_HOST" ]; then
+  echo "NOT RUN: arm64 host not configured (set ZB_MAC_ARM_HOST=user@host)" >&2
+  echo "        the R1 kernel gate is two-arch and cannot pass until it runs on both" >&2
+  exit 1
+fi
+ssh_cmd() { # $1=key
+  SSH=(env -u DISPLAY -u WAYLAND_DISPLAY -u XAUTHORITY ssh -i "$1" -o IdentitiesOnly=yes -o BatchMode=yes
+       -o StrictHostKeyChecking=yes -o ConnectTimeout=15 -o ServerAliveInterval=10)
+  SCP=(env -u DISPLAY -u WAYLAND_DISPLAY -u XAUTHORITY scp -i "$1" -o IdentitiesOnly=yes -o BatchMode=yes
+       -o StrictHostKeyChecking=yes -o ConnectTimeout=15)
+}
 
 stage=$(mktemp -d "${TMPDIR:-/tmp}/zb-r1kmac-XXXXXX")
 trap 'case "$stage" in */zb-r1kmac-*) rm -rf -- "${stage:?}";; esac' EXIT
@@ -31,8 +40,9 @@ pick tests/mac/r1_kernel_inner.py r1_kernel_inner.py
 pick agent/host/zb_agent_host/sandbox_macos.py sandbox_macos.py
 pick agent/host/zb_agent_host/proc_darwin.py proc_darwin.py
 
-leg() { # $1=host $2=expected uname -m
+leg() { # $1=host $2=expected uname -m $3=key
   local host="$1" arch="$2"
+  ssh_cmd "$3"
   local rdir="zb-r1kmac-$(date +%s)-$$-$RANDOM"
   "${SSH[@]}" "$host" "mkdir \"\$HOME/${rdir:?}\"" || { echo "FAIL: mkdir on $host" >&2; return 1; }
   if ! "${SCP[@]}" "$stage"/*.py "$host:${rdir}/" >/dev/null; then
@@ -53,7 +63,7 @@ REMOTE
 }
 
 overall=0
-leg "$INTEL_HOST" x86_64 || { echo "FAIL: x86_64 leg" >&2; overall=1; }
-leg "$ARM_HOST" arm64 || { echo "FAIL: arm64 leg" >&2; overall=1; }
+leg "$INTEL_HOST" x86_64 "$KEY" || { echo "FAIL: x86_64 leg" >&2; overall=1; }
+leg "$ARM_HOST" arm64 "$ARM_KEY" || { echo "FAIL: arm64 leg" >&2; overall=1; }
 [ "$overall" -eq 0 ] && printf 'PASS\tms6-r1-kernel-gate\tboth-arches\n'
 exit "$overall"

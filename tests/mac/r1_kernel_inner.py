@@ -1,7 +1,8 @@
-"""The inside half of tests/mac/r1_kernel_driver.py, run under the real setup Seatbelt profile. It plays the probe:
-starts the CLI stand-in (the canary, and with argv[5] != "-" that token, in its environment) and a sibling, tries
-the R1 port, the decoy port, and KERN_PROCARGS2 / proc_pidpath of both, prints one JSON line, then holds its
-children alive until its stdin closes. argv: <sleeper> <r1 port> <decoy port> <canary entry> <token or ->"""
+"""The inside half of tests/mac/r1_kernel_driver.py (under the real setup profile, or unsandboxed as the control).
+It plays the probe's position: starts the CLI stand-in (the canary, and with argv[5] != "-" that token, in its
+environment) and a sibling, tries the R1 port, the decoy port, and KERN_PROCARGS2 / proc_pidpath of both while
+they are alive, prints one JSON line, then holds its children until its stdin closes or it is killed.
+argv: <sleeper> <r1 port> <decoy port> <canary entry> <token or -> <report|silent>"""
 import ctypes
 import ctypes.util
 import json
@@ -9,14 +10,20 @@ import os
 import socket
 import subprocess
 import sys
+import time
 
-sleeper, port, decoy, canary, token = sys.argv[1], int(sys.argv[2]), int(sys.argv[3]), sys.argv[4], sys.argv[5]
+sleeper, port, decoy, canary, token, mode = (sys.argv[1], int(sys.argv[2]), int(sys.argv[3]), sys.argv[4],
+                                             sys.argv[5], sys.argv[6])
+if mode == "silent":  # the harness self-test: alive, never reports
+    time.sleep(120)
+    sys.exit(0)
 key, _, value = canary.partition("=")
 env = {"PATH": "/usr/bin:/bin", key: value}
 if token != "-":
     env["ZB_LEAK"] = token
 cli = subprocess.Popen([sleeper, "60"], env=env)
 sibling = subprocess.Popen([sleeper, "60"], env={"PATH": "/usr/bin:/bin"})
+time.sleep(0.3)
 
 libc = ctypes.CDLL(ctypes.util.find_library("c"), use_errno=True)
 libproc = ctypes.CDLL("/usr/lib/libproc.dylib", use_errno=True)
@@ -37,6 +44,7 @@ def procargs2(pid):
     if libc.sysctl(mib, 3, None, ctypes.byref(size), None, 0) != 0:
         return f"errno {ctypes.get_errno()}"
     buf = ctypes.create_string_buffer(size.value)
+    ctypes.set_errno(0)
     if libc.sysctl(mib, 3, buf, ctypes.byref(size), None, 0) != 0:
         return f"errno {ctypes.get_errno()}"
     return "ok"
@@ -53,6 +61,7 @@ def pidpath(pid):
 report = {"r1_connect": connect(port), "decoy_connect": connect(decoy),
           "sibling_procargs2": procargs2(sibling.pid), "sibling_pidpath": pidpath(sibling.pid),
           "cli_procargs2": procargs2(cli.pid), "cli_pidpath": pidpath(cli.pid)}
+report["children_alive"] = cli.poll() is None and sibling.poll() is None
 sys.stdout.write(json.dumps(report) + "\n")
 sys.stdout.flush()
 try:
