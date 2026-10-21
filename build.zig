@@ -1962,6 +1962,15 @@ pub fn build(b: *std.Build) void {
         "cd tests/e2e && env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest -v mac_ms5_census_test",
     });
     mac_census_step.dependOn(&mac_ms5_census_unit.step);
+    // Plan rev 18.1: the ONE pre-seatbelt_ready MS6 hard-gate harness (tests/mac/ms6_hard_gate.sh). Off-Mac, its
+    // driver's fail-closed rules (a failed check, a raise, no check, no NAME/run, a duplicate NAME, no cases, a scratch
+    // left behind) and the NOT ARMED entry without the MS5-pinned tree.
+    const ms6_hard_gate_driver_unit = b.addSystemCommand(&.{
+        "sh",
+        "-c",
+        "cd tests/e2e && out=$(env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 python3 -X dev -m unittest -v ms6_hard_gate_driver_test 2>&1); rc=$?; printf '%s\\n' \"$out\"; [ $rc -eq 0 ] || exit $rc; if printf '%s\\n' \"$out\" | grep -q ResourceWarning; then echo 'ms6_hard_gate_driver_test: ResourceWarning' >&2; exit 1; fi",
+    });
+    mac_census_step.dependOn(&ms6_hard_gate_driver_unit.step);
     const agent_host_contract = b.addSystemCommand(&.{
         "sh",
         "-c",
@@ -2292,6 +2301,7 @@ pub fn build(b: *std.Build) void {
     if (target.result.os.tag == .linux) test_step.dependOn(&fake_setup_token_unit.step);
     if (target.result.os.tag == .linux) test_step.dependOn(&mac_census_unit.step);
     if (target.result.os.tag == .linux) test_step.dependOn(&mac_ms5_census_unit.step);
+    if (target.result.os.tag == .linux) test_step.dependOn(&ms6_hard_gate_driver_unit.step);
     test_step.dependOn(&run_agent_login_protocol_tests.step);
     test_step.dependOn(&run_backend_flag_tests.step);
     test_step.dependOn(&run_backend_flag_startup_tests.step);
