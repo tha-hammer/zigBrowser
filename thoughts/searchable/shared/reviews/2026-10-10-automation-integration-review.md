@@ -21136,3 +21136,21 @@ Two cleanup blockers remain in the Mac driver:
 This red remains correctly unregistered and does not claim to close dependency
 (A), MS6 or `seatbelt_ready`. No remote Mac or full Linux gate was run for this
 test-only red.
+
+## Darwin R1 remote-TCP expectation (`6508926`)
+
+Reviewed exact one-file test repair `6508926` on 2026-10-20. **Verdict:
+APPROVED.** Production commit `70444e5` intentionally narrowed the setup
+profile from `(remote ip ...)` to `(remote tcp ...)`, but the registered
+`DarwinRealSeam` assertion still pinned the old spelling. This commit updates
+only that stale expectation and its explanatory docstring. It does not weaken
+the boundary: the test still requires one and only one outbound rule, exact
+TCP transport, `localhost`, and the exact pre-bound listener port; the adjacent
+case still requires no outbound rule at all for `cli_version`.
+
+The failing-first regression is reproduced from clean exports. The parent ran
+**7/8**, failing solely on actual `remote tcp` versus expected `remote ip`;
+`6508926` ran **8/8** under `-X dev`, with no `ResourceWarning`. `build.zig:1605`
+registers this module in `test-agent-setup-ms5` and fails its step on either a
+nonzero result or a `ResourceWarning`. No full gate was necessary for this
+two-line test-only correction.
