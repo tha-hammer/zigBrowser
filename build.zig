@@ -2175,6 +2175,14 @@ pub fn build(b: *std.Build) void {
         "cd tests/e2e && out=$(env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 unshare --user --map-root-user --pid --fork --mount-proc sh -c 'setsid python3 -X dev -m unittest -v ms6_hard_gate_manifest_test' 2>&1); rc=$?; printf '%s\\n' \"$out\"; [ $rc -eq 0 ] || exit $rc; if printf '%s\\n' \"$out\" | grep -q ResourceWarning; then echo 'ms6_hard_gate_manifest_test: ResourceWarning' >&2; exit 1; fi",
     });
     mac_census_step.dependOn(&ms6_hard_gate_manifest_unit.step);
+    // The ARMED hard-gate entry: the MS5 pins, every bad precondition refused before any network, and the pinned pkg
+    // download as its first network call (RoseCat 7250, 9dfc9c7). Recording shims only; no Mac is contacted.
+    const ms6_hard_gate_entry_unit = b.addSystemCommand(&.{
+        "sh",
+        "-c",
+        "cd tests/e2e && out=$(env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 unshare --user --map-root-user --pid --fork --mount-proc sh -c 'setsid python3 -X dev -m unittest -v ms6_hard_gate_entry_test' 2>&1); rc=$?; printf '%s\\n' \"$out\"; [ $rc -eq 0 ] || exit $rc; if printf '%s\\n' \"$out\" | grep -q ResourceWarning; then echo 'ms6_hard_gate_entry_test: ResourceWarning' >&2; exit 1; fi",
+    });
+    mac_census_step.dependOn(&ms6_hard_gate_entry_unit.step);
     // RoseCat 7134: the harness itself. spawn_group owns each process group exactly once (signalled while the leader is
     // unreaped, then reaped), and NOT ARMED touches no network (recording ssh/scp/curl/nc shims, canary hosts).
     const ms6_hard_gate_harness_unit = b.addSystemCommand(&.{
@@ -2549,6 +2557,7 @@ pub fn build(b: *std.Build) void {
     if (target.result.os.tag == .linux) test_step.dependOn(&mac_merge_universal_unit.step);
     if (target.result.os.tag == .linux) test_step.dependOn(&ms6_hard_gate_driver_unit.step);
     if (target.result.os.tag == .linux) test_step.dependOn(&ms6_hard_gate_manifest_unit.step);
+    if (target.result.os.tag == .linux) test_step.dependOn(&ms6_hard_gate_entry_unit.step);
     if (target.result.os.tag == .linux) test_step.dependOn(&ms6_hard_gate_harness_unit.step);
     if (target.result.os.tag == .linux) test_step.dependOn(&ms6_hard_gate_harness_safety_unit.step);
     if (target.result.os.tag == .linux) test_step.dependOn(&kill_group_tests.step);

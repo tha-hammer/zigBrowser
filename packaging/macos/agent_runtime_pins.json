@@ -1,0 +1,9 @@
+{
+  "python_pkg": {
+    "url": "https://www.python.org/ftp/python/3.12.10/python-3.12.10-macos11.pkg",
+    "sha256": "8373e58da4ea146b3eb1c1f9834f19a319440b6b679b06050b1f9ee3237aa8e4",
+    "sigstore_identity": "thomas@python.org",
+    "sigstore_issuer": "https://accounts.google.com"
+  },
+  "uv_lock_sha256": "53cec15b1a760d342d52a5220ef6791bf60f651668e24ba9f4c312e6795cf382"
+}

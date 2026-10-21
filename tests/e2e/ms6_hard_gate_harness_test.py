@@ -12,9 +12,10 @@ the entry's NOT ARMED refusal, observed.
   through kqueue EVFILT_PROC NOTE_EXIT, with the same exactly-once, kill-while-unreaped invariant. Darwin only (Linux
   has no kqueue); tests/mac/ms6_harness_mac_gate.sh runs this module on both Macs and requires no skip.
 - With neither os.waitid nor select.kqueue, spawn_group refuses (RuntimeError) before spawning anything.
-- tests/mac/ms6_hard_gate.sh, NOT ARMED with the pins absent and with pins present but staging absent: exit 3, "NOT
-  ARMED", and recording ssh/scp/sftp/curl/nc/rsync shims (first on PATH, canary hosts in every host variable) see no
-  call at all.
+- tests/mac/ms6_hard_gate.sh: NOT ARMED (exit 3) with the pins absent; with malformed pins (armed since the MS5 pins,
+  RoseCat 7250), exit 1 naming the pins. Either way the recording ssh/scp/sftp/curl/nc/rsync shims (first on PATH,
+  canary hosts in every host variable) see no call at all. tests/e2e/ms6_hard_gate_entry_test.py covers the armed
+  entry's other preconditions and its first network call.
 
 Registered (build.zig: test-mac-census and the Linux test step). Run like the gate, inside a private user+PID namespace:
 cd tests/e2e && unshare --user --map-root-user --pid --fork --mount-proc \\
@@ -238,10 +239,12 @@ class Gate(unittest.TestCase):
         self.assertIn("NOT ARMED", p.stdout + p.stderr)
         self.assertEqual(calls, "", "no ssh/scp/curl/nc, to any host")
 
-    def test_pins_without_staging_is_still_not_armed_and_touches_no_network(self):
+    def test_malformed_pins_are_refused_and_touch_no_network(self):
+        # Armed since the MS5 pins (RoseCat 7250): a pins file is no longer "not armed" but must be well formed; "{}"
+        # is refused before any network (tests/e2e/ms6_hard_gate_entry_test.py covers every precondition).
         p, calls = self.run_gate(with_pins=True)
-        self.assertEqual(p.returncode, 3, p.stdout + p.stderr)
-        self.assertIn("NOT ARMED", p.stdout + p.stderr)
+        self.assertEqual(p.returncode, 1, p.stdout + p.stderr)
+        self.assertIn("pins", p.stdout + p.stderr)
         self.assertEqual(calls, "", "no ssh/scp/curl/nc, to any host")
 
 

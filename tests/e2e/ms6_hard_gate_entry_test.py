@@ -16,7 +16,7 @@ its argv and exits 99) and canary hosts:
 The entry hands the driver --manifest tests/mac/hard_gate/MANIFEST.json, and nothing of MS6.5's survivor sweep.
 seatbelt_ready is not touched by arming (RoseCat 7250 #4): a separate plan decision.
 
-No signal. Unregistered until the green, which registers it inside the namespace like its siblings.
+No signal. Registered (build.zig: test-mac-census and the Linux test step), inside the namespace like its siblings.
 Run like the gate: cd tests/e2e && unshare --user --map-root-user --pid --fork --mount-proc \\
   sh -c 'setsid python3 -X dev -m unittest -v ms6_hard_gate_entry_test'
 """
