@@ -836,11 +836,15 @@ build only, elsewhere -32011 with `data.reason = "unsupported"`):
   the page navigates after the pointer started moving, the command stops
   with -32001 `document_changed` and does not click the new page.
 
-## Approved actions: `options.expect`
+## Approved actions: `options.expect` (experimental)
 
-The chat drawer runs an action you approved with the page state its card
-showed, so the action does not run on a page that changed after you approved
-it. Other clients can use it too:
+`options.expect` is the first part of the chat drawer's approvals, and its
+semantics will grow. Today it is a **snapshot check**, not a guarantee that the
+page cannot change before the action: it compares the window's state once, when
+the command's turn on that window comes, and the page can still navigate or
+change between that check and the action's own page call. Do not rely on it to
+protect an action against a page that changes; later versions add a check in
+the same page task as each event.
 
 ```json
 {"selector": "css=#buy", "window_id": "window-2",
@@ -852,12 +856,16 @@ it. Other clients can use it too:
   `window_id`. `origin` is the window's page origin (scheme, `://`, host and
   any port, lowercase; `file://` for files), and `load_serial` is the
   window's `load_serial` from `page.list`.
-- It is checked when the command's turn on that window comes, before anything
+- The check runs when the command's turn on that window comes, before anything
   is sent to the page: a dialog open is -32013; a crashed window, another
   origin or another `load_serial` is -32015 `expectation_mismatch` with
   `data.reason` `crashed`, `origin_changed` or `load_serial_changed`. Then
-  nothing was sent. Do not retry: approve again.
-- It is synthetic input only: with `input: "native"` or `humanize`, without
+  nothing was sent.
+- The check counts against the command's own deadline: if it used the time
+  up, the command fails with its timeout error (`data.reason`
+  `expect_used_deadline`) and nothing is sent; a stopped command sends nothing
+  either (-32012).
+- Synthetic input only: with `input: "native"` or `humanize`, without
   `window_id`, on any other method, or with any other field, the call is
   -32602 and nothing runs.
 

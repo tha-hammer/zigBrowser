@@ -403,9 +403,20 @@ pub const Engine = struct {
         if (options.queue_wait_ms > 0 and options.queue_wait_ms >= requested_ms) {
             return timeoutWithReason(gpa, timeoutErrorFor(command.verb), "queued_past_deadline", ids, 0);
         }
-        const timeout_ms = requested_ms - options.queue_wait_ms;
+        var timeout_ms = requested_ms - options.queue_wait_ms;
         run.native_timeout_ms = timeout_ms;
-        if (command.expect) |expect| if (try self.checkExpect(gpa, expect, options.window, timeout_ms, run)) |refused| return refused;
+        if (command.expect) |expect| {
+            const checked_from = self.clock.nowMs();
+            if (try self.checkExpect(gpa, expect, options.window, timeout_ms, run)) |refused| return refused;
+            // The check shares the command's one deadline and its cancellation (RoseCat 0c1132b): a
+            // stop that came while it ran, or a check that used up the time, starts no action; the
+            // action gets only what is left.
+            if (run.cancelled()) return automationFailure(gpa, .cancelled, null, ids);
+            const spent = self.clock.nowMs() -| checked_from;
+            if (spent >= timeout_ms) return timeoutWithReason(gpa, timeoutErrorFor(command.verb), "expect_used_deadline", ids, 0);
+            timeout_ms -= spent;
+            run.native_timeout_ms = timeout_ms;
+        }
         return switch (command.verb) {
             .page_url => {
                 const started = self.clock.nowMs();
