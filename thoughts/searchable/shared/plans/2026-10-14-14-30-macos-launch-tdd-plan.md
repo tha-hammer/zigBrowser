@@ -1662,11 +1662,14 @@ above plus per-process Seatbelt port rules**. Either way MS0's launch spec is th
   - **hard gate — the real pinned CLI over the production channel** (MS5-gated): production hands fd 3 a Unix
     **socketpair** endpoint (`token.py`), not a regular file, and the real pinned Claude CLI must consume the
     exact canary via `CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR` under the generated profile, both arches, with
-    a discriminating mutant. This becomes a required case of the **armed MS5 e2e** and waits on the MS5
-    dependency decision (the same gate that keeps `ms5_setup_e2e` NOT ARMED). Whether the CLI reopens
-    `/dev/fd/3` or reads the socket fd directly (`token.py:3-8`) is settled by that measured real-CLI
-    evidence; the contract is amended then if needed. Until that e2e passes, MS6.3's hard gate is unmet and
-    does not contribute to `seatbelt_ready`.
+    a discriminating mutant. This runs as a **case of the unified pre-`seatbelt_ready` hard-gate harness**
+    (shared with MS6.6(B), rev 18.1): the harness imports production `zb_agent_host` from the **staged pinned
+    runtime** and drives the real CLI directly, before `seatbelt_ready`. It is **NOT** a case of the armed
+    `ms5_setup_e2e.sh` (that cannot arm until `seatbelt_ready` — the cycle RoseCat 7120 caught), and it does
+    not weaken the app's fail-closed gate. It waits only on the **MS5 pinned-tree decision**, never on
+    `seatbelt_ready`. Whether the CLI reopens `/dev/fd/3` or reads the socket fd directly (`token.py:3-8`) is
+    settled by that measured real-CLI evidence; the contract is amended then if needed. Until that harness
+    case passes on both arches, MS6.3's hard gate is unmet and does not contribute to `seatbelt_ready`.
 - **MS6.4 (gate, egress mapping pinned — rev 6):** network — the CLI/helper reach egress **only at
   the backend's per-session `127.0.0.1:<port>`** (the generated profile permits only that endpoint);
   both bridges `:51091`/`:31337` carry bytes (positive controls); and the sandbox **fails** to

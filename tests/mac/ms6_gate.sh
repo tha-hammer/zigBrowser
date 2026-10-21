@@ -5,11 +5,6 @@
 # profile and asserts containment (denied file write/read + network fail closed, child contained, allowed
 # workspace write works). sandbox-exec denials are silent EPERM — nothing appears on the Mac's screen.
 # Driven from Linux over Tailscale SSH; fail-closed (arm64 host mandatory, explicit `|| return 1` per step).
-#
-# SCOPE (RoseCat 7120 #2): this is the containment and PROBE gate (MS6.1, MS6.2, MS6.4a and the fd-3 stand-in probe).
-# It is NOT the MS6 hard gate. The real-CLI hard cases (MS6.3 fd-3, MS6.6 (B) R1 chain) run in
-# tests/mac/ms6_hard_gate.sh, which stays NOT ARMED until the MS5 dependency decision pins the tree it stages.
-# seatbelt_ready binds only to the complete gate, never to this one's PASS alone.
 set -euo pipefail
 
 KEY="${ZB_MAC_KEY:-/home/maceo/vms/mac-m9/zb_mac_key}"
@@ -69,7 +64,11 @@ if ! verify_host "$INTEL_HOST" "$KEY" "x86_64"; then echo "FAIL: intel/x86_64 MS
 if ! verify_host "$ARM_HOST" "$ARM_KEY" "arm64"; then echo "FAIL: arm64 MS6 leg" >&2; overall=1; fi
 
 if [ "$overall" -eq 0 ]; then
-  printf 'PASS\tms6-containment-probe-gate\tboth-arches\t(not the MS6 hard gates: MS6.3 and MS6.6(B) are NOT ARMED; seatbelt_ready needs the complete gate)\n'
+  # PARTIAL/PROBE gate (RoseCat 7120 #2): this covers containment, MS6.1 token isolation, the generated
+  # profiles, MS6.4a egress enforcement, and the fd-3 reopen PROBE (a C stand-in, NOT the real CLI). It does
+  # NOT run the MS6.3 or MS6.6(B) real-CLI hard gates — those run in the unified pre-seatbelt_ready harness
+  # (staged pinned runtime), so a green here does NOT mean MS6.3/MS6.6 are met or that seatbelt_ready may flip.
+  printf 'PASS\tms6-gate\tboth-arches (containment + MS6.1/6.2/6.4a + fd-3 PROBE; MS6.3 & MS6.6(B) real-CLI hard gates run in the pre-seatbelt_ready harness)\n'
 else
   echo "MS6 gate: INCOMPLETE or FAILED (see legs above)" >&2
 fi
