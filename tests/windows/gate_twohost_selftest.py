@@ -978,10 +978,16 @@ class WS0ZeroWrite(unittest.TestCase):
         # exact drive-letter root, never a Test-Path that can be false on an access/query failure.
         self.assertIn("[System.IO.DriveInfo]::GetDrives()", src,
                       "absence must come from the DriveInfo drive inventory")
-        self.assertRegex(src, r"\$root\s*-match\s*'\^\[A-Za-z\]:\\\\\$'",
+        self.assertRegex(src, r"\$shRoot\s*-match\s*'\^\[A-Za-z\]:\\\\\$'",
                          "absence must require an exact drive-letter root")
         self.assertNotRegex(src, r"\$driveAbsent\s*=\s*-not\s*\(Test-Path",
                             "absence must NOT be derived from Test-Path (false != absent)")
+        # The emitted top-level 'root' (the allowed remote root) must be USERPROFILE\zb and must NOT be
+        # clobbered by the per-share loop (PowerShell has no block scope; the loop uses $shRoot).
+        self.assertRegex(src, r"\$root\s*=\s*Join-Path\s*\$env:USERPROFILE\s*'zb'",
+                         "the emitted root must be %USERPROFILE%\\zb")
+        self.assertNotRegex(src, r"\$root\s*=\s*\[System\.IO\.Path\]::GetPathRoot",
+                            "the per-share loop must not reassign the top-level $root (use $shRoot)")
 
 
 class WS0TwoHostReds(_TwoHostCase):

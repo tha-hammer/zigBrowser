@@ -258,10 +258,13 @@ try {
   $w = @(); $absent = @(); $exc = @()
   foreach ($sh in $shareList) {
     $p = $sh.path
-    $root = $null; try { $root = [System.IO.Path]::GetPathRoot($p) } catch {}
+    # NOTE: a distinct name ($shRoot) — never reuse the top-level $root (the emitted allowed-remote-root
+    # field); PowerShell has no block scope, so reusing $root here would clobber it with the last share's
+    # drive root (observed live: root reported F:\ instead of %USERPROFILE%\zb).
+    $shRoot = $null; try { $shRoot = [System.IO.Path]::GetPathRoot($p) } catch {}
     $driveAbsent = $false
-    if ($driveInvOk -and $root -and ($root -match '^[A-Za-z]:\\$')) {
-      if (-not $driveRoots.ContainsKey($root.ToUpperInvariant())) { $driveAbsent = $true }
+    if ($driveInvOk -and $shRoot -and ($shRoot -match '^[A-Za-z]:\\$')) {
+      if (-not $driveRoots.ContainsKey($shRoot.ToUpperInvariant())) { $driveAbsent = $true }
     }
     $writable = $false
     if (-not $driveAbsent) {

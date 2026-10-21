@@ -259,6 +259,21 @@ class NonceLive(unittest.TestCase):
         self.assertEqual(inter, True, "matching fresh nonce must be trusted (interactive True)")
         self.assertEqual(lock, False)
 
+    def test_root_is_userprofile_zb_not_a_share_drive(self):
+        # Regression guard: the emitted 'root' (allowed remote root) must be %USERPROFILE%\zb, never a
+        # per-share drive root — the WS0.7 loop must not shadow the top-level $root (observed F:\ live).
+        import json
+        env = _vm_env()
+        up = _ssh_run(env, "Write-Output $env:USERPROFILE")
+        userprofile = up.stdout.strip()
+        self.assertTrue(userprofile, "could not read %USERPROFILE% on the host")
+        p = _ssh_run(env, HOST_PROBE.read_text())
+        self.assertEqual(p.returncode, 0, "probe failed:\n" + p.stderr)
+        d = json.loads(p.stdout.strip())
+        self.assertEqual(d.get("root"), userprofile + r"\zb",
+                         "root must be %USERPROFILE%\\zb, not a per-share drive root (shadowed $root); got %r"
+                         % d.get("root"))
+
     def test_mismatched_nonce_ignored(self):
         inter, _ = self._prep_and_probe("N-EXPECT", "N-OTHER", "0")
         self.assertIsNone(inter, "a session.json with a different nonce must be ignored (null)")
