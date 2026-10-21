@@ -6,11 +6,11 @@ branch: zb-automation-integration-2026-10-10-11-59
 repository: zigBrowser
 topic: "macOS launch support for zigBrowser — TDD implementation plan"
 tags: [plan, tdd, macos, wkwebview, appkit, seatbelt, universal-build, automation, drawer, sandbox, launch-critical]
-status: plan for review (rev 23)
-rev: 23
+status: plan for review (rev 24)
+rev: 24
 last_updated: 2026-10-21
 last_updated_by: cc_3 / JadeBeacon
-last_updated_note: "Rev 23 (2026-10-21): MS6.5.1 answers RoseCat 3118838's three remaining blockers on rev 22 — (1) ONE app-global ledger actor wraps each read-validate-update-write-fsync-rename-dirfsync transaction so a concurrent run can never erase another (barrier reds for publish/publish and publish-or-remove/update); (2) Stopping is a bounded census->kill->fresh-census FIXED POINT reaching Clean only after a complete EMPTY final census (a marked process can fork after the single gather, agent_run_reaper.c:188-202; spawn-during-pass-one red + no-recensus mutant; a cap/deadline/incomplete census is Survivors); (3) reaper_ready is an IMMUTABLE source/build constant like agent_setup.zig:60-73's seatbelt_ready, never the env_switch pattern (env_switch.zig:1-27 is flag/env-driven and a hostile ambient value must not arm signalling; bypass mutant). Plus crash-after-marker/dir-removal-before-ledger-removal recovery (active entry naming no dir is dropped), normal stop/close sweeps off the UI thread under a total deadline, and revs 19-22 added to the revision-history list. Rev 22 (2026-10-21): MS6.5.1 Darwin lifecycle-owner section answers RoseCat 012e1bc (5 blockers) + 3c39b9f/7327 — the run marker is a dedicated non-token reserved descriptor inherited EXPLICITLY at every seam (browser→netd, browser→helper, sandbox-exec/CLI relay, nested hook, double-fork), each with a production-chain red + drop-the-pass-fd mutant and no collision with token fd 3 / egress fd 4 / census broker fd (agent_spawn_posix sets CLOEXEC_DEFAULT, child holds only 0-2); the owner record is a versioned, strictly-parsed, bounded schema published temp+fsync+rename+dir-fsync with named crash cuts and malformed/duplicate/truncated/swapped/symlinked handling (never signal until durably published); the state machine gains Clean unlink(marker,no-follow)→rmdir→record-remove order, [Leave] retires the entry to a terminal `left` state (never swept), window/session close ownership, SIGKILL→next-start-only, exactly-once races, and [Stop them now] DISABLED on an incomplete fresh census; the setting is a named app-owned atomic PERSISTED value with env>persisted>default precedence and a UI write path; a named `reaper_ready` hard gate keeps production signalling unreachable until the reviewed destructive gate passes; the stale 'Both-Mac gate GREEN' claim (7fa8906) is SUPERSEDED. Frontmatter bumped 17→22 (body had advanced through revs 19-22). Earlier: Rev 11 records MS1b GREEN (commit 3421428, option d): the WKWebView ObjC shim is built by the Apple toolchain as a chained-fixups dylib (xcrun clang -dynamiclib, -Wl,-fixup_chains + -undefined dynamic_lookup; -install_name @executable_path/../Frameworks; exe sets rdynamic macOS-only to export the two back-refs zb_ipc_dispatch/zb_policy_decide), so the SIGNED x86_64 binary runs (was SIGSEGV at [ZBAppHost init]; cause = zig 0.16 classic LC_DYLD_INFO_ONLY into signed __DATA_CONST). The MS1 bundle is now {browser + webview-shim dylib}; resource_phase accepts the empty-resources set only for that exact 2-component shape (6002 bypass protection kept). MS1.3 gains release_least_privilege (disable-library-validation forbidden in a release manifest/binary; ad-hoc dev/test only). ms1b_signed_gate.sh is registered as `zig build ms1b-gate`; validated rc 0 on both Macs (x86_64+arm64, ad-hoc+hardened). Linux/Windows build unchanged. (Frontmatter rev was stale at 6 while body sections advanced to rev 10; bumped to 11.) Shim surface confirmed by BlackRobin (6125)."
+last_updated_note: "Rev 24 (2026-10-21): MS6.5.1 answers RoseCat ee626d0's three blockers on rev 23 — (1) the ledger transaction is guarded by an OS-visible cross-process flock on <runtime_dir>/.zigbrowser-agent-runs.lock (held from read through parent-dir fsync, released by process death), not a process-local mutex; two-PROCESS barrier red + remove-the-flock-loses-an-entry mutant. (2) startup recovery never touches a LIVE app's runs: it must take the per-run owner lease (flock on <run-dir>/owner.lock) non-blockingly — acquire FAILS => a live owner holds it => leave untouched; acquire SUCCEEDS + (pid,start) proved dead => recover; live/reused/unreadable liveness fails closed; two-BROWSER red. (3) the Clean teardown crash cut after marker unlink but before rmdir is specified: a provenance-valid empty marker-less dir recovers via openat(run.marker)=>ENOENT, finishes rmdir+entry-remove idempotently, never a permanent incident, never a signal; crash-cut red. Rev 23 (2026-10-21): MS6.5.1 answers RoseCat 3118838's three remaining blockers on rev 22 — (1) ONE app-global ledger actor wraps each read-validate-update-write-fsync-rename-dirfsync transaction so a concurrent run can never erase another (barrier reds for publish/publish and publish-or-remove/update); (2) Stopping is a bounded census->kill->fresh-census FIXED POINT reaching Clean only after a complete EMPTY final census (a marked process can fork after the single gather, agent_run_reaper.c:188-202; spawn-during-pass-one red + no-recensus mutant; a cap/deadline/incomplete census is Survivors); (3) reaper_ready is an IMMUTABLE source/build constant like agent_setup.zig:60-73's seatbelt_ready, never the env_switch pattern (env_switch.zig:1-27 is flag/env-driven and a hostile ambient value must not arm signalling; bypass mutant). Plus crash-after-marker/dir-removal-before-ledger-removal recovery (active entry naming no dir is dropped), normal stop/close sweeps off the UI thread under a total deadline, and revs 19-22 added to the revision-history list. Rev 22 (2026-10-21): MS6.5.1 Darwin lifecycle-owner section answers RoseCat 012e1bc (5 blockers) + 3c39b9f/7327 — the run marker is a dedicated non-token reserved descriptor inherited EXPLICITLY at every seam (browser→netd, browser→helper, sandbox-exec/CLI relay, nested hook, double-fork), each with a production-chain red + drop-the-pass-fd mutant and no collision with token fd 3 / egress fd 4 / census broker fd (agent_spawn_posix sets CLOEXEC_DEFAULT, child holds only 0-2); the owner record is a versioned, strictly-parsed, bounded schema published temp+fsync+rename+dir-fsync with named crash cuts and malformed/duplicate/truncated/swapped/symlinked handling (never signal until durably published); the state machine gains Clean unlink(marker,no-follow)→rmdir→record-remove order, [Leave] retires the entry to a terminal `left` state (never swept), window/session close ownership, SIGKILL→next-start-only, exactly-once races, and [Stop them now] DISABLED on an incomplete fresh census; the setting is a named app-owned atomic PERSISTED value with env>persisted>default precedence and a UI write path; a named `reaper_ready` hard gate keeps production signalling unreachable until the reviewed destructive gate passes; the stale 'Both-Mac gate GREEN' claim (7fa8906) is SUPERSEDED. Frontmatter bumped 17→22 (body had advanced through revs 19-22). Earlier: Rev 11 records MS1b GREEN (commit 3421428, option d): the WKWebView ObjC shim is built by the Apple toolchain as a chained-fixups dylib (xcrun clang -dynamiclib, -Wl,-fixup_chains + -undefined dynamic_lookup; -install_name @executable_path/../Frameworks; exe sets rdynamic macOS-only to export the two back-refs zb_ipc_dispatch/zb_policy_decide), so the SIGNED x86_64 binary runs (was SIGSEGV at [ZBAppHost init]; cause = zig 0.16 classic LC_DYLD_INFO_ONLY into signed __DATA_CONST). The MS1 bundle is now {browser + webview-shim dylib}; resource_phase accepts the empty-resources set only for that exact 2-component shape (6002 bypass protection kept). MS1.3 gains release_least_privilege (disable-library-validation forbidden in a release manifest/binary; ad-hoc dev/test only). ms1b_signed_gate.sh is registered as `zig build ms1b-gate`; validated rc 0 on both Macs (x86_64+arm64, ad-hoc+hardened). Linux/Windows build unchanged. (Frontmatter rev was stale at 6 while body sections advanced to rev 10; bumped to 11.) Shim surface confirmed by BlackRobin (6125)."
 primary_research: thoughts/searchable/shared/research/2026-10-14-14-19-macos-launch-support-surface.md
 ---
 
@@ -190,6 +190,13 @@ primary_research: thoughts/searchable/shared/research/2026-10-14-14-19-macos-lau
   no-recensus mutant); `reaper_ready` becomes an **immutable source/build constant** like `seatbelt_ready`, never
   the env-switch pattern (bypass mutant); plus crash-after-removal recovery (an `active` entry naming no dir is
   dropped), normal stop/close sweeps off the UI thread under a total deadline, and revs 19-22 added here.
+- **Rev 24** (JadeBeacon, 2026-10-21; RoseCat `ee626d0`, mail 7345): the three remaining `ee626d0` gaps closed —
+  (1) the ledger transaction uses an **OS-visible cross-process `flock`** (not a process-local mutex), so two app
+  instances cannot lose an entry (two-process barrier red); (2) **startup recovery excludes a live owner** via a
+  per-run **owner lease** (`owner.lock` flock) plus a proved-dead `(pid,start)` — a held lease or a
+  live/reused/unreadable identity leaves the run untouched and fails closed (two-browser red); (3) the **crash cut
+  after marker unlink, before `rmdir`** gets an `ENOENT`-marker recovery that finishes teardown idempotently,
+  never a permanent incident, never a signal (crash-cut red). Frontmatter to rev 24.
 
 ## Rev 9 — MS1 empty-resource state made an executable, fail-closed phase contract (RoseCat 5995)
 
@@ -1737,8 +1744,8 @@ above plus per-process Seatbelt port rules**. Either way MS0's launch spec is th
     pin are Linux-unit-tested under `unshare`. **MS6.5 no longer requires defeating the escape**, so it no longer
     forces the VM backend; the earlier "no survivors / Failure ⇒ VM required" criterion is withdrawn. The production lifecycle owner and the drawer
     survivor-warning are specified in **MS6.5.1** below.
-- **MS6.5.1 (the Darwin per-run dir, its run marker, lifecycle owner, and the census sweep + warning; rev 23 —
-  orchestrator + RoseCat 3c39b9f / 012e1bc / 3118838, mails 7327/7333/7338, 2026-10-21).** The reaper library (`src/agent_run_reaper.c`) is
+- **MS6.5.1 (the Darwin per-run dir, its run marker, lifecycle owner, and the census sweep + warning; rev 24 —
+  orchestrator + RoseCat 3c39b9f / 012e1bc / 3118838 / ee626d0, mails 7327/7333/7338/7345, 2026-10-21).** The reaper library (`src/agent_run_reaper.c`) is
   complete and verified signal-free on both Macs; this is its **browser-owned** production owner (RoseCat agrees
   that is the right owner). **This signal path is unreachable in production until a named `reaper_ready` hard gate
   passes (see *Gating* below); `seatbelt_ready` is NOT approval of it.** The owner is real launch-path code, not a
@@ -1771,19 +1778,27 @@ above plus per-process Seatbelt port rules**. Either way MS0's launch spec is th
     would have covered are censused + warned, never signalled. The agent runs with its cwd in the user's workspace
     and the Seatbelt profile does not grant write to `runtime_dir`, so **no sandboxed process can write the
     ledger** — it is app-owned.
-    - *One app-global ledger actor — no cross-run lost update (RoseCat 3118838 #1).* All runs share the single
-      `zigbrowser-agent-runs.json`, so per-run locks are NOT enough: two windows could each read revision N and
-      publish different N+1 states, erasing one another. Every mutation therefore goes through **one app-global
-      ledger actor** (a single serialized writer / one process-wide ledger mutex, distinct from the per-run owner
-      lock). The actor runs each mutation as one indivisible transaction: **read-the-current-file →
-      validate/parse → apply this run's delta → write sibling temp (`O_NOFOLLOW|O_CREAT|O_EXCL`) → `fsync` temp →
-      `rename` over the store → `fsync` the parent dir fd**. No read-modify-write ever straddles two runs, so one
-      run's publish/update/remove can never drop another run's entry.
+    - *An OS-visible, cross-process ledger lock — no lost update between app instances (RoseCat ee626d0 #1).*
+      `zigbrowser-agent-runs.json` is a **user-global** recovery ledger that a later — or concurrently running —
+      zigBrowser PROCESS also reads, so a process-local mutex is NOT enough: two app instances would hold two
+      separate mutexes and could each read revision N and publish different N+1 files. The transaction is therefore
+      guarded by an **OS-visible advisory lock** — `flock(LOCK_EX)` on a dedicated lock file
+      (`<runtime_dir>/.zigbrowser-agent-runs.lock`, opened `openat` relative to the pinned runtime-dir fd,
+      `O_CREAT|O_RDWR|O_CLOEXEC|O_NOFOLLOW`) — **held from the read of the current file through the parent-directory
+      `fsync`, and released by process death** (the kernel drops the flock when the holder dies, so a crashed
+      instance never wedges the ledger). Under that lock each mutation is one indivisible transaction:
+      **read-the-current-file → validate/parse → apply this run's delta → write sibling temp
+      (`O_NOFOLLOW|O_CREAT|O_EXCL`) → `fsync` temp → `rename` over the store → `fsync` the parent dir fd → release**.
+      No read-modify-write straddles two runs OR two processes, so no instance's publish/update/remove can drop
+      another's entry. (A process-local serializer still orders mutations within one instance; the flock is what
+      makes it cross-process.)
     Publication happens ONLY after `mkdirat`+`openat`+`pin_fd` all succeed, so the crash cuts are fail-safe: a
     crash before directory creation leaves nothing; between create and publication, an unrecorded dir (censused +
     warned, never signalled); between publication and `Clean` teardown, a recoverable `active` entry the next start
-    re-validates by fstat; **a crash after the marker/dir are removed but before the ledger entry is removed leaves
-    an `active` entry naming no directory — next start finds its `openat` returns `ENOENT`, drops the entry
+    re-validates by fstat and by the liveness/lease rules below; **a crash after the marker is unlinked but before
+    `rmdir` leaves a provenance-valid, empty, marker-less `active` dir** (its `ENOENT`-marker recovery is specified
+    in the `Clean` section); **a crash after marker+dir are removed but before the ledger entry is removed leaves an
+    `active` entry naming no directory — next start finds its `openat` returns `ENOENT`, drops the entry
     (reconcile), and never signals**; a half-written temp is never renamed into place. **Until an entry is durably
     published, its directory can be censused and warned about but never authorizes a signal.**
   - **The run marker — a dedicated non-token capability inherited EXPLICITLY at every seam (RoseCat 012e1bc #1).**
@@ -1824,11 +1839,17 @@ above plus per-process Seatbelt port rules**. Either way MS0's launch spec is th
     dir-level ledger recovery. (This is the exact macOS libproc completeness gap the census probe documents.)
   - **The lifecycle owner + an exactly-once state machine (RoseCat 7327 #3).** The macOS agent-run state (the Zig
     host spawner's per-run struct — the macOS counterpart of `agent_host.c`'s `zb_net`) holds the runtime-dir fd,
-    the authority fd + pin, the marker fd, and the ledger entry for the run's life, and owns:
-    `Running -> Stopping` (sweep the run dir via the authority fd + pin + marker, after netd/CLI/helper teardown —
-    both the quit path and the die-with-browser path reach it) `-> Clean` (proven no survivor) or `-> Survivors`
-    (some could not be stopped). The ledger entry carries an explicit **lifecycle state** — `active`, `left`, or
-    removed — so every terminal choice is durable across a crash.
+    the authority fd + pin, the marker fd, a **per-run owner lease**, and the ledger entry for the run's life, and
+    owns: `Running -> Stopping` (sweep the run dir via the authority fd + pin + marker, after netd/CLI/helper
+    teardown — both the quit path and the die-with-browser path reach it) `-> Clean` (proven no survivor) or
+    `-> Survivors` (some could not be stopped). The ledger entry carries an explicit **lifecycle state** —
+    `active`, `left`, or removed — so every terminal choice is durable across a crash.
+    - *The per-run owner lease — a crash-proof, cross-process "owner still alive" signal.* For its whole life the
+      owner holds an OS-visible `flock(LOCK_EX)` on a per-run lock file (`<run-dir>/owner.lock`, opened relative to
+      the pinned run-dir fd), released only by process death. A DIFFERENT zigBrowser process proves the run's owner
+      is gone by taking that lease non-blockingly: **acquire succeeds ⇒ the owner died (the kernel released it)**;
+      **acquire fails (`EWOULDBLOCK`) ⇒ a live owner still holds it — leave the run untouched**. The lease is immune
+      to PID reuse, so it is the authority for the startup rule below; `(pid, start)` is only corroboration.
     - *A bounded census→kill→fresh-census FIXED POINT — one snapshot cannot prove clean (RoseCat 3118838 #2).* The
       production primitive gathers once and processes only that fixed list (`agent_run_reaper.c:188-202`), but a
       marked process can `fork` AFTER the gather and before its parent is killed, so the child is absent from the
@@ -1841,11 +1862,20 @@ above plus per-process Seatbelt port rules**. Either way MS0's launch spec is th
     - *Which owner reaches `Stopping`.* A run is owned by the **session/window that started it**; closing that
       window (or app quit) triggers that run's `Stopping`. If the run outlives its starting window (detached), the
       app-level owner reaches it on quit. Both paths converge on the single per-run owner lock.
-    - *`Clean` terminal filesystem order.* Only after the empty-and-complete final census ⇒
-      `unlinkat(run_dir_fd, "run.marker", 0)` through the pinned no-follow dir fd, then
-      `unlinkat(runtime_fd, name, AT_REMOVEDIR)` (the empty run dir), then the app-global actor publishes the ledger
-      with that entry **removed** — in that order, so a crash mid-teardown leaves either a recoverable `active`
-      entry, or an `active` entry naming no dir (next start drops it), never a half-state the next start mis-signals.
+    - *`Clean` terminal filesystem order + its crash cuts (RoseCat ee626d0 #3).* Only after the empty-and-complete
+      final census — which first removes the owner.lock and, before unlinking, leaves no process able to re-hold the
+      marker — ⇒ (a) `unlinkat(run_dir_fd, "run.marker", 0)` through the pinned no-follow dir fd, then (b)
+      `unlinkat(runtime_fd, "owner.lock", 0)`, then (c) `unlinkat(runtime_fd, name, AT_REMOVEDIR)` (the empty run
+      dir), then (d) the app-global actor publishes the ledger with that entry **removed** — in that order. The two
+      interior crash cuts are specified, and NEITHER becomes a permanent incident or authorizes a signal:
+      - **after (a) marker unlink, before (c) `rmdir`:** a provenance-valid, `active`, EMPTY, **marker-less** dir
+        remains. Because `Clean` is reached only once the final census is empty, no live process holds the marker,
+        and the marker file is already gone — so recovery re-checks: `openat(run_dir_fd, "run.marker",
+        O_RDONLY|O_NOFOLLOW)` ⇒ **`ENOENT`** means "teardown already past the census, finish it idempotently":
+        complete `rmdir` + remove the entry, **never signal** (the census is empty by construction, and there is no
+        marker to classify any straggler by). It is explicitly NOT a malformed/permanent incident.
+      - **after (c) `rmdir`, before (d) entry removal:** an `active` entry naming no directory; next start's
+        `openat` of the run dir ⇒ `ENOENT` ⇒ drop the entry (reconcile), never signal.
       `run.marker` is never left to make `rmdir` fail.
     - *The authority (fd + pin + marker + ledger entry) is retained until the incident is resolved;* `rmdir` of the
       run dir AND removal of the ledger entry happen ONLY after the fixed-point clean result — any scan error,
@@ -1868,10 +1898,20 @@ above plus per-process Seatbelt port rules**. Either way MS0's launch spec is th
     owner lock), so quit racing a warning action can neither double-kill nor skip cleanup: whichever reaches the
     lock first runs, the other is a no-op. A browser **SIGKILL cannot run any exit callback**, so the kill-by-browser
     case is covered solely by next-start recovery, not by the `Stopping` transition.
-  - **At the next app START** the owner reads the ledger and, for each **`active`** entry whose run dir is still
-    present and whose no-follow reopened `(dev, ino, uid, mode)` matches (a prior session SIGKILLed before its own
-    cleanup), re-opens + `pin_fd`s it and runs the same `Stopping` transition; `left` entries are reconciled only
-    (never swept); grammar dirs with no matching ledger entry, and entries that fail the fstat match, are censused
+  - **At the next app START — never touch another LIVE app's runs (RoseCat ee626d0 #2).** A second zigBrowser
+    instance may be running while A and A's marked children are still live, so a valid `active` entry is NOT by
+    itself a prior-SIGKILL leftover. For each `active` entry whose run dir is present and whose no-follow reopened
+    `(dev, ino, uid, mode)` matches, the recovering process first tries to take that run's **per-run owner lease**
+    (`owner.lock`, non-blocking `flock`):
+    - **lease acquire FAILS (`EWOULDBLOCK`)** ⇒ a live owner (another instance) still holds this run ⇒ **leave it
+      entirely untouched** — never signal, never retire, never rmdir; it is not this instance's to recover.
+    - **lease acquire SUCCEEDS** ⇒ the prior owner died ⇒ this entry is recovery work: re-`pin_fd` and run the same
+      `Stopping` transition (which re-censuses from scratch). As corroboration the entry's `(pid, start)` must be
+      **proved dead** (no live process with that pid, or the pid exists with a DIFFERENT start = reuse); a live
+      matching `(pid, start)`, or any **unreadable/ambiguous liveness result**, **fails closed** — census-only +
+      warn, never signal or retire, even though the lease was free.
+    `left` entries are reconciled only (never swept); grammar dirs with no matching ledger entry, and entries that
+    fail the fstat match, are censused
     + warned, never signalled. This runs on a bounded **startup queue** off the UI thread: it never blocks window
     creation, it completes before the first NEW agent run may create its dir (so a new run is never mistaken for a
     leftover), and because there may be **no main window yet**, it holds its incident on the queue until the drawer
@@ -1922,18 +1962,31 @@ above plus per-process Seatbelt port rules**. Either way MS0's launch spec is th
     - *Atomic ledger (Linux):* red in the same file → green publish helper. Assertions: a crash between temp-write
       and rename leaves the old store intact; the parent dir is fsynced; a half temp is never renamed. Mutant:
       write-in-place instead of temp+rename → a torn read is accepted (must be caught).
-    - *App-global ledger actor — no cross-run lost update (Linux, barrier reds):* red
-      `tests/agent_run_ledger_concurrency_test.c` → green the single-actor transaction. Assertions: interleave two
-      runs' transactions at a barrier — publish/publish, and publish-or-remove/update — and prove BOTH entries
-      survive (one run never erases another), and a crash-after-marker/dir-removal-before-entry-removal leaves an
-      `active` entry whose absent dir is dropped at recovery (never signalled). Mutant: drop the global actor (let
-      each run read-modify-write independently) → a lost update erases a concurrent run's entry (must be caught).
+    - *Cross-process ledger lock — no lost update between app instances (Linux, TWO-PROCESS barrier red):* red
+      `tests/agent_run_ledger_concurrency_test.c` spawns **two independent processes** that interleave at a barrier
+      — publish/publish, and publish-or-remove/update — each taking the `flock` on
+      `.zigbrowser-agent-runs.lock`. Assertions: BOTH entries survive (no instance erases another's). Mutant: remove
+      the inter-process `flock` (process-local mutex only) → the barrier interleaving loses an entry (must be
+      caught). A separate row covers crash-after-marker/dir-removal-before-entry-removal: the `active` entry whose
+      absent dir gives `ENOENT` is dropped at recovery, never signalled.
+    - *Startup recovery excludes a live owner (Linux, TWO-BROWSER red):* red `tests/agent_run_recovery_test.c`
+      models A (holding its `owner.lock` + a live marked child) and B starting fresh. Assertions: B's recovery
+      cannot take A's lease (`EWOULDBLOCK`) ⇒ B neither signals A's child nor retires A's entry; only after A exits
+      (lease released) AND A's `(pid,start)` proves dead does B recover; a live/reused/unreadable liveness result
+      fails closed (census-only, no signal/retire). Mutant: recover on a valid `active` entry WITHOUT the lease
+      check → B signals the other live instance's child (must be caught).
     - *Clean fixed point — one gather cannot prove clean (Linux, injectable engine + a real fork):* red extending
       the engine test with a process that `fork`s AFTER pass-one's gather and before the parent's kill. Assertions:
       `Clean` (and its unlink/rmdir/record-remove) is reached ONLY after a complete, EMPTY final census; a
       cap/deadline/incomplete census holds `Survivors` and keeps the authority; the spawn-during-pass-one child is
       caught by the re-census before any unlink/rmdir. Mutant: no re-census (sweep once on the first gather's list)
       → the forked child survives while its dir is unlinked/rmdir'd (must be caught).
+    - *Clean crash cut after marker unlink, before `rmdir` (Linux):* red that stops teardown between the
+      `run.marker` unlink and the `rmdir`, leaving a provenance-valid, `active`, empty, marker-less dir, then runs
+      recovery. Assertions: recovery sees `openat("run.marker")` ⇒ `ENOENT`, finishes `rmdir` + entry removal
+      idempotently, emits NO signal, and does NOT record a malformed/permanent incident. Mutant: treat the
+      marker-less dir as a fresh grammar leftover (warn-forever / try to re-census for a signal) → a permanent
+      incident appears (must be caught).
     - *Marker propagation — one production-chain red + one drop-the-pass-fd mutant PER SEAM (a generic
       child-inherits-marker probe does NOT satisfy this; it bypasses the production chain).* Reds drive the real
       spawn/relay/hook code, each asserting the downstream process classifies (holds a marker whose vnode is under
