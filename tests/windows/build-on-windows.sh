@@ -42,6 +42,29 @@ ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || { echo "build-on-windows: n
 [ -n "$ROOT" ] && [ -d "$ROOT" ] || { echo "build-on-windows: cannot resolve repo root" >&2; exit 2; }
 cd "$ROOT" || { echo "build-on-windows: cannot cd to repo root $ROOT" >&2; exit 2; }
 
+# ---- GC: a SEPARATE, locked, symlink-safe reaper (RoseCat 3da2862 (3)). Publish is append-only; this is
+# the only place generations are deleted. It never follows a symlinked 'gen', never touches the live target,
+# and leaves a grace window so an in-flight publish's fresh generation is never reaped. Needs no VM/host.
+if [ "${1:-}" = "--gc" ]; then
+  req="${ZB_WIN_EXE:-zig-out/win/current/zigBrowser.exe}"
+  gc_curlink=$(dirname "$req"); gc_outdir=$(dirname "$gc_curlink"); gens="$gc_outdir/gen"
+  if [ -L "$gens" ] || { [ -e "$gens" ] && [ ! -d "$gens" ]; }; then
+    echo "build-on-windows: '$gens' is not a real directory (symlink/other) — refusing GC" >&2; exit 3
+  fi
+  [ -d "$gens" ] || { echo "build-on-windows: no generations to GC" >&2; exit 0; }
+  {
+    if ! flock 9; then echo "build-on-windows: GC lock failed" >&2; exit 3; fi
+    live_base=$(basename "$(readlink "$gc_outdir/current" 2>/dev/null || echo __none__)")
+    while IFS= read -r g; do
+      [ -n "$g" ] || continue
+      gb=$(basename "$g")
+      [ "$gb" = "$live_base" ] && continue
+      if [ -d "$g" ] && [ ! -L "$g" ] && [[ "$g" == "$gens"/g-* ]]; then rm -rf -- "${g:?}"; fi
+    done < <(find "$gens" -mindepth 1 -maxdepth 1 -type d -name 'g-*' -not -newermt '-1 hour' 2>/dev/null)
+  } 9>"$gc_outdir/.publish.lock"
+  exit 0
+fi
+
 host="${ZB_WIN11_HOST:?set ZB_WIN11_HOST (see tests/windows/hosts.env)}"
 port="${ZB_WIN11_PORT:-2222}"
 user="${ZB_WIN11_USER:-zbtext}"
@@ -119,76 +142,69 @@ rc=$?
 # ---- fetch: atomic + validated; provenance recorded (findings 1 & 6) -----------------------------------
 # With no explicit step, fetch the built exe to Linux for the WS1.1 census (export ZB_WIN_EXE to it).
 if [ -z "$step" ]; then
-  out="${ZB_WIN_EXE:-zig-out/win/zigBrowser.exe}"
-  mkdir -p "$(dirname "$out")"
-  part="$out.part"
-  rm -f "$part"
+  # RoseCat 3da2862 (1): ZB_WIN_EXE IS the stable consumer surface and MUST be a <dir>/current/<name> path
+  # (the atomic swap target). Reject the old ambiguous direct-file form so a caller never reads a stale
+  # sibling file that was never published.
+  req="${ZB_WIN_EXE:-zig-out/win/current/zigBrowser.exe}"
+  curlink=$(dirname "$req"); base=$(basename "$req"); outdir=$(dirname "$curlink")
+  if [ "$(basename "$curlink")" != "current" ] || [ -z "$base" ] || [ "$base" = "current" ] || [ "$curlink" = "$req" ]; then
+    echo "build-on-windows: ZB_WIN_EXE must be a <dir>/current/<name> surface path (got '$req'); e.g. zig-out/win/current/zigBrowser.exe" >&2
+    exit 2
+  fi
+  if ! mkdir -p "$outdir"; then echo "build-on-windows: cannot create the publish root '$outdir'" >&2; exit 3; fi
+  part="$outdir/.fetch-$$.part"
+  rm -f -- "$part"
   "${scrub[@]}" timeout "$fetch_to" scp -i "$key" -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
     -o UserKnownHostsFile="$kh" -o BatchMode=yes -o ConnectTimeout=15 -o ConnectionAttempts=3 -P "$port" \
     "$user@$host:$rundir/zig-out/bin/zigBrowser.exe" "$part"
   rc=$?
-  if [ "$rc" -ne 0 ]; then echo "build-on-windows: fetch failed (rc=$rc)" >&2; rm -f "$part"; exit "$rc"; fi
+  if [ "$rc" -ne 0 ]; then echo "build-on-windows: fetch failed (rc=$rc)" >&2; rm -f -- "$part"; exit "$rc"; fi
   # Validate before publishing: non-empty and a real PE (DOS 'MZ' magic). Anything else is a failed build.
   if [ ! -s "$part" ] || [ "$(head -c2 "$part" 2>/dev/null)" != "MZ" ]; then
-    echo "build-on-windows: fetched artifact is not a PE executable" >&2; rm -f "$part"; exit 3
+    echo "build-on-windows: fetched artifact is not a PE executable" >&2; rm -f -- "$part"; exit 3
   fi
-  # RoseCat 9dfc9c7: publish the {exe, provenance} pair atomically with NO two-name step and NO set -e.
-  # The SINGLE consumer surface is $outdir/current/<base> (+ .sha). Each run gets a FRESH IMMUTABLE
-  # generation dir (gen/g-<sha>-<utc>-<pid>, unique even for a same-SHA rerun), the complete pair is moved
-  # in with one rename, and the only live mutation is ONE atomic 'current' symlink swap. Before the swap the
-  # old generation current points at is untouched; after it, the new one. Every ln/mv is checked (the script
-  # runs without set -e), and every recursive delete is guarded (prefix-validated + ${var:?}, never empty).
-  outdir=$(dirname "$out"); outbase=$(basename "$out")
   if ! printf '%s\n' "$sha" > "$part.sha"; then
     echo "build-on-windows: provenance write failed" >&2; rm -f -- "$part" "$part.sha"; exit 3
   fi
-  if ! mkdir -p "$outdir/gen"; then
-    echo "build-on-windows: cannot create the generations dir" >&2; rm -f -- "$part" "$part.sha"; exit 3
-  fi
-  gen="g-${sha}-$(date -u +%Y%m%d%H%M%SZ)-$$"
-  genrel="gen/$gen"; gendir="$outdir/$genrel"; stagedir="$outdir/.pub.$gen"
-  # Guarded cleanup of our OWN unique scratch (prefix-validated, non-empty, must exist).
-  for d in "$stagedir" "$gendir"; do
-    if [ -n "$d" ] && { [[ "$d" == "$outdir"/.pub.g-* ]] || [[ "$d" == "$outdir"/gen/g-* ]]; } && [ -e "$d" ]; then
-      rm -rf -- "${d:?}"
-    fi
-  done
-  if ! mkdir -p "$stagedir"; then
-    echo "build-on-windows: cannot create the staging dir" >&2
-    if [ -n "$stagedir" ] && [[ "$stagedir" == "$outdir"/.pub.g-* ]] && [ -e "$stagedir" ]; then rm -rf -- "${stagedir:?}"; fi
+  # RoseCat 3da2862 (2): the generations dir must be a REAL directory, never a symlink — a symlinked parent
+  # could redirect writes/deletes outside the publish root.
+  gens="$outdir/gen"
+  if [ -L "$gens" ] || { [ -e "$gens" ] && [ ! -d "$gens" ]; }; then
+    echo "build-on-windows: '$gens' is not a real directory (symlink/other) — refusing to publish" >&2
     rm -f -- "$part" "$part.sha"; exit 3
   fi
-  if ! mv -fT "$part" "$stagedir/$outbase" || ! mv -fT "$part.sha" "$stagedir/$outbase.sha"; then
+  if ! mkdir -p "$gens"; then echo "build-on-windows: cannot create '$gens'" >&2; rm -f -- "$part" "$part.sha"; exit 3; fi
+  # RoseCat 3da2862 (3): a GUARANTEED-fresh generation via mktemp -d (O_EXCL — unique even for a same-SHA
+  # rerun in the same second). Publish is APPEND-ONLY: this path NEVER deletes an existing generation, so a
+  # concurrent publisher's candidate (or the live target) can never be destroyed. GC is the separate,
+  # locked, symlink-safe '--gc' operation above.
+  gendir=$(mktemp -d "$gens/g-${sha}-XXXXXXXXXX") || {
+    echo "build-on-windows: could not create a fresh generation dir" >&2; rm -f -- "$part" "$part.sha"; exit 3; }
+  genrel="gen/$(basename "$gendir")"
+  if ! mv -fT "$part" "$gendir/$base" || ! mv -fT "$part.sha" "$gendir/$base.sha"; then
     echo "build-on-windows: assembling the generation pair failed" >&2
-    if [ -n "$stagedir" ] && [[ "$stagedir" == "$outdir"/.pub.g-* ]] && [ -e "$stagedir" ]; then rm -rf -- "${stagedir:?}"; fi
+    if [ -d "$gendir" ] && [ ! -L "$gendir" ] && [[ "$gendir" == "$gens"/g-* ]]; then rm -rf -- "${gendir:?}"; fi
     rm -f -- "$part" "$part.sha"; exit 3
   fi
-  if ! mv -fT "$stagedir" "$gendir"; then
-    echo "build-on-windows: publishing the generation failed" >&2
-    if [ -n "$stagedir" ] && [[ "$stagedir" == "$outdir"/.pub.g-* ]] && [ -e "$stagedir" ]; then rm -rf -- "${stagedir:?}"; fi
-    exit 3
-  fi
-  # Selftest-only: model a crash AFTER the generation exists but BEFORE the atomic current-swap. NEVER set
-  # in production. The old generation (if any) still owns 'current', so the surface is an intact old pair.
+  # Selftest-only: model a crash AFTER the generation exists but BEFORE the atomic swap. NEVER in production.
   if [ -n "${ZB_SELFTEST_CUT_PUBLISH:-}" ]; then
     echo "build-on-windows: interrupted before current-swap (selftest)" >&2; exit 42
   fi
-  # Atomic commit: point 'current' at the new generation with a single symlink rename. Each step checked.
-  if ! ln -sfn "$genrel" "$outdir/.current.$gen"; then
-    echo "build-on-windows: staging the current symlink failed" >&2; rm -f -- "$outdir/.current.$gen"; exit 3
-  fi
-  # The swap is CHECKED (the script runs without set -e): a failed rename must NOT report success.
-  if ! mv -fT "$outdir/.current.$gen" "$outdir/current"; then
-    echo "build-on-windows: current-swap failed" >&2; rm -f -- "$outdir/.current.$gen"; exit 3
-  fi
-  # Post-swap: reap only UNREACHABLE generations — never the one 'current' now points at. Guarded deletes.
-  live=$(readlink "$outdir/current" 2>/dev/null || true)
-  for g in "$outdir"/gen/g-*; do
-    [ -e "$g" ] || continue
-    gname=$(basename "$g")
-    [ "gen/$gname" = "$live" ] && continue
-    if [ -n "$gname" ] && [[ "$g" == "$outdir"/gen/g-* ]]; then rm -rf -- "${g:?}"; fi
-  done
-  echo "build-on-windows: fetched $outdir/current/$outbase (commit $sha)"
-  echo "build-on-windows: export ZB_WIN_EXE=$outdir/current/$outbase for the WS1.1 census"
+  # Atomic commit, serialized against concurrent publishers with flock. The swap is a single CHECKED symlink
+  # rename (the script runs without set -e, so a failed rename must not report success).
+  swap_rc=0
+  {
+    if flock 9; then
+      if ln -sfn "$genrel" "$outdir/.current.$$"; then
+        mv -fT "$outdir/.current.$$" "$outdir/current" || { swap_rc=3; rm -f -- "$outdir/.current.$$"; }
+      else
+        swap_rc=3; rm -f -- "$outdir/.current.$$"
+      fi
+    else
+      swap_rc=3
+    fi
+  } 9>"$outdir/.publish.lock"
+  if [ "$swap_rc" -ne 0 ]; then echo "build-on-windows: current-swap failed" >&2; exit 3; fi
+  echo "build-on-windows: fetched $req (commit $sha)"
+  echo "build-on-windows: export ZB_WIN_EXE=$req for the WS1.1 census"
 fi

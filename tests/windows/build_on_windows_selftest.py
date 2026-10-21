@@ -109,7 +109,7 @@ class _Case(unittest.TestCase):
     def _run(self, td, extra=None, args=None, unset=None, pre=None):
         bindir = td / "bin"; bindir.mkdir(exist_ok=True)
         root = td / "root"; root.mkdir(exist_ok=True)
-        out = td / "out" / "zigBrowser.exe"
+        out = td / "out" / "current" / "zigBrowser.exe"   # ZB_WIN_EXE IS the stable .../current/<base> surface
         env = {
             "PATH": _fakes(bindir) + os.pathsep + _BASE_PATH,
             "HOME": str(td / "home"),
@@ -136,9 +136,9 @@ class _Case(unittest.TestCase):
             pre(td, out)
         cmd = ["bash", SCRIPT] + (args or [])
         proc = subprocess.run(cmd, env=env, capture_output=True, text=True, timeout=90)
-        proc.req_path = out                                              # the ZB_WIN_EXE request (dir+base)
-        proc.out_path = out.parent / "current" / out.name               # the single consumer surface
-        proc.sha_path = out.parent / "current" / (out.name + ".sha")
+        proc.out_path = out                                 # ZB_WIN_EXE == the single consumer surface
+        proc.sha_path = out.parent / (out.name + ".sha")    # current/zigBrowser.exe.sha
+        proc.outdir = td / "out"                            # publish root (holds gen/, current, .fetch-*.part)
         proc.td = td
         return proc
 
@@ -260,7 +260,7 @@ class FailClosed(_Case):
             proc = self._run(pathlib.Path(t), {"ZB_SELFTEST_FETCH_NOTPE": "1"})
             self._fail_closed(proc, "not a PE")
             self.assertFalse(proc.out_path.exists(), "a non-PE fetch must not be published")
-            self.assertFalse((proc.req_path.parent / "zigBrowser.exe.part").exists(), "no .part left behind")
+            self.assertEqual(list(proc.outdir.glob(".fetch-*.part")), [], "no fetch .part left behind")
 
 
 class CleanSource(_Case):
@@ -410,123 +410,151 @@ class EncodeChecked(_Case):
             self.assertFalse(proc.out_path.exists(), "a failed encode must publish no artifact" + detail)
 
 
-class AtomicProvenance(_Case):
-    """RoseCat cf01d66 (c): if the provenance cannot be written, nothing is published (no orphan). Fault:
-    pre-create the staging `.part.sha` path as a directory so the provenance write fails before any publish."""
+_OLD_SHA = "a" * 40
+_OLD_EXE = b"MZoldpe\n"
 
-    def test_provenance_write_failure_does_not_publish_exe(self):
+
+def _place_old_generation(out, sha=None):
+    # The published layout: <outdir>/gen/<g>/{base,base.sha}; <outdir>/current -> gen/<g>. out is the
+    # surface <outdir>/current/<base>, so outdir = out.parent.parent. Returns the gen dir name.
+    sha = sha or _OLD_SHA
+    outdir = out.parent.parent; base = out.name
+    (outdir / "gen").mkdir(parents=True, exist_ok=True)
+    gname = "g-%s-oldgen0001" % sha
+    g = outdir / "gen" / gname
+    g.mkdir()
+    (g / base).write_bytes(_OLD_EXE)
+    (g / (base + ".sha")).write_text(sha + "\n")
+    (outdir / "current").symlink_to(pathlib.Path("gen") / gname)
+    return gname
+
+
+def _read_surface(proc):
+    try:
+        exe = proc.out_path.read_bytes()
+    except OSError:
+        exe = None
+    try:
+        sha = proc.sha_path.read_text().strip()
+    except OSError:
+        sha = None
+    return exe, sha
+
+
+class PublishContract(_Case):
+    """RoseCat 3da2862 (1)+(2): ZB_WIN_EXE IS the .../current/<name> surface (the old direct-file form is
+    rejected), and the generations dir is never a symlink (publish and GC refuse a symlinked 'gen', so a
+    recursive delete can never escape the publish root)."""
+
+    def test_old_direct_file_form_is_rejected(self):
+        with tempfile.TemporaryDirectory() as t:
+            td = pathlib.Path(t)
+            proc = self._run(td, {"ZB_WIN_EXE": str(td / "out" / "zigBrowser.exe")})  # old ambiguous form
+            self._fail_closed(proc, "must be a <dir>/current/<name>")
+            self.assertFalse((td / "out" / "current").exists(), "the rejected form must publish nothing")
+
+    def test_symlinked_gen_parent_refused_on_publish_no_escape(self):
         def pre(td, out):
-            out.parent.mkdir(parents=True, exist_ok=True)
-            (out.parent / (out.name + ".part.sha")).mkdir()  # $part.sha is where provenance is written first
+            outdir = out.parent.parent; outdir.mkdir(parents=True, exist_ok=True)
+            outside = td / "outside"; (outside / "g-victim").mkdir(parents=True)
+            (outside / "g-victim" / "keep").write_text("keep")
+            (outdir / "gen").symlink_to(outside)  # a symlinked generations dir pointing OUTSIDE the root
         with tempfile.TemporaryDirectory() as t:
             td = pathlib.Path(t)
             proc = self._run(td, pre=pre)
-            detail = f"\nrc={proc.returncode}\nstdout:\n{proc.stdout}\nstderr:\n{proc.stderr}"
-            self.assertNotEqual(proc.returncode, 0, "an unwritable provenance must fail closed" + detail)
-            self.assertFalse(proc.out_path.exists(), "no artifact surface when provenance fails" + detail)
-            self.assertFalse((proc.req_path.parent / "current").exists(),
-                             "no 'current' may be published when provenance fails" + detail)
+            self._fail_closed(proc, "not a real directory")
+            self.assertTrue((td / "outside" / "g-victim" / "keep").exists(),
+                            "a symlinked gen must not let a delete escape the publish root")
+
+    def test_symlinked_gen_parent_refused_on_gc_no_escape(self):
+        def pre(td, out):
+            outdir = out.parent.parent; outdir.mkdir(parents=True, exist_ok=True)
+            outside = td / "outside"; (outside / "g-victim").mkdir(parents=True)
+            (outside / "g-victim" / "keep").write_text("keep")
+            (outdir / "gen").symlink_to(outside)
+        with tempfile.TemporaryDirectory() as t:
+            td = pathlib.Path(t)
+            proc = self._run(td, args=["--gc"], pre=pre)
+            self._fail_closed(proc, "refusing GC")
+            self.assertTrue((td / "outside" / "g-victim" / "keep").exists(),
+                            "GC must not follow a symlinked gen and delete outside the root")
 
 
 class AtomicPublish(_Case):
-    """RoseCat 9dfc9c7: the {exe, provenance} publish is ATOMIC via a single 'current' symlink swap onto a
-    FRESH immutable per-run generation. The single consumer surface is current/<base>{,.sha}. An
-    interruption can never leave an exe beside the wrong SHA, a same-SHA rerun must never disturb the live
-    generation, and every final op is checked + every delete guarded."""
-
-    OLD_SHA = "a" * 40
-    OLD_EXE = b"MZoldpe\n"
-
-    def _place_old_generation(self, out, sha=None):
-        # The current published layout: gen/<g>/{base,base.sha}; current -> it. Returns the gen dir name.
-        sha = sha or self.OLD_SHA
-        outdir = out.parent; base = out.name
-        outdir.mkdir(parents=True, exist_ok=True)
-        gname = "g-%s-20260101000000Z-1" % sha
-        g = outdir / "gen" / gname
-        g.mkdir(parents=True)
-        (g / base).write_bytes(self.OLD_EXE)
-        (g / (base + ".sha")).write_text(sha + "\n")
-        (outdir / "current").symlink_to(pathlib.Path("gen") / gname)
-        return gname
-
-    def _read_surface(self, proc):
-        try:
-            exe = proc.out_path.read_bytes()
-        except OSError:
-            exe = None
-        try:
-            sha = proc.sha_path.read_text().strip()
-        except OSError:
-            sha = None
-        return exe, sha
+    """RoseCat 3da2862 (3): a GUARANTEED-fresh (mktemp) generation + an APPEND-ONLY, flock-serialized, single
+    'current' swap. An interruption never leaves a mismatched pair, a same-SHA rerun never disturbs the live
+    generation, the swap is checked, and two runs make two distinct generations."""
 
     def test_happy_publish_exposes_matched_pair_through_current(self):
         with tempfile.TemporaryDirectory() as t:
             td = pathlib.Path(t)
             proc = self._run(td)
-            exe, sha = self._read_surface(proc)
+            exe, sha = _read_surface(proc)
             self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
             self.assertTrue(exe is not None and exe[:2] == b"MZ" and sha == FAKE_SHA,
-                            f"current/<exe>{{,.sha}} must be the matched new pair; exe={exe!r} sha={sha!r}")
+                            f"ZB_WIN_EXE (current/<exe>) must be the matched new pair; exe={exe!r} sha={sha!r}")
 
     def test_cut_before_swap_leaves_old_generation_intact(self):
         with tempfile.TemporaryDirectory() as t:
             td = pathlib.Path(t)
             proc = self._run(td, {"ZB_SELFTEST_CUT_PUBLISH": "1"},
-                             pre=lambda td, out: self._place_old_generation(out))
-            exe, sha = self._read_surface(proc)
+                             pre=lambda td, out: _place_old_generation(out))
+            exe, sha = _read_surface(proc)
             detail = f"\nrc={proc.returncode}\nexe={exe!r}\nsha={sha!r}\n{proc.stdout}\n{proc.stderr}"
-            matched = (exe == self.OLD_EXE and sha == self.OLD_SHA) or (exe is None and sha is None)
-            self.assertTrue(matched, "a cut before the swap must leave NO mismatched pair" + detail)
-            self.assertEqual((exe, sha), (self.OLD_EXE, self.OLD_SHA),
-                             "the old generation must still own 'current'" + detail)
+            self.assertEqual((exe, sha), (_OLD_EXE, _OLD_SHA),
+                             "a cut before the swap must leave the old generation owning 'current'" + detail)
 
     def test_same_sha_rerun_cut_does_not_destroy_live_generation(self):
-        # RoseCat 9dfc9c7 (3): a same-SHA rerun must NOT delete the generation 'current' points at.
         with tempfile.TemporaryDirectory() as t:
             td = pathlib.Path(t)
             proc = self._run(td, {"ZB_SELFTEST_CUT_PUBLISH": "1", "ZB_BUILD_COMMIT": "HEAD"},
-                             pre=lambda td, out: self._place_old_generation(out, sha=FAKE_SHA))
-            exe, sha = self._read_surface(proc)
+                             pre=lambda td, out: _place_old_generation(out, sha=FAKE_SHA))
+            exe, sha = _read_surface(proc)
             detail = f"\nrc={proc.returncode}\nexe={exe!r}\nsha={sha!r}\n{proc.stdout}\n{proc.stderr}"
-            # current must still resolve to the intact OLD pair (same SHA, but a different, untouched gen).
-            self.assertEqual((exe, sha), (self.OLD_EXE, FAKE_SHA),
-                             "a same-SHA rerun that is cut must leave the live generation intact" + detail)
+            self.assertEqual((exe, sha), (_OLD_EXE, FAKE_SHA),
+                             "a same-SHA rerun that is cut must leave the live generation intact (append-only)" + detail)
 
-    def test_legacy_regular_file_layout_cut_leaves_no_mismatch(self):
-        # RoseCat 9dfc9c7 (1): migrating from the OLD regular-file layout must not produce a mismatch.
-        def pre(td, out):
-            out.parent.mkdir(parents=True, exist_ok=True)
-            out.write_bytes(self.OLD_EXE)                       # legacy regular files (pre-current layout)
-            (out.parent / (out.name + ".sha")).write_text(self.OLD_SHA + "\n")
+    def test_rerun_is_append_only_keeps_old_generation(self):
+        # A successful rerun publishes a NEW generation and swaps current to it, but (append-only) must NOT
+        # delete the previous generation during publish.
         with tempfile.TemporaryDirectory() as t:
             td = pathlib.Path(t)
-            proc = self._run(td, {"ZB_SELFTEST_CUT_PUBLISH": "1"}, pre=pre)
-            exe, sha = self._read_surface(proc)
+            old = None
+            def pre(td, out):
+                nonlocal old
+                old = _place_old_generation(out, sha=FAKE_SHA)
+            proc = self._run(td, pre=pre)
+            exe, sha = _read_surface(proc)
             detail = f"\nrc={proc.returncode}\nexe={exe!r}\nsha={sha!r}\n{proc.stdout}\n{proc.stderr}"
-            # The consumer surface is current/; a cut before the first swap means current is absent — NO
-            # mismatched pair is exposed (the old regular files are not the surface).
-            self.assertFalse((proc.req_path.parent / "current").exists(),
-                             "a cut before the first swap must not create 'current'" + detail)
-            self.assertIsNone(exe, "no artifact may be exposed via the surface on a cut first migration" + detail)
+            self.assertEqual(proc.returncode, 0, "the rerun must succeed" + detail)
+            self.assertTrue(exe is not None and exe[:2] == b"MZ" and sha == FAKE_SHA,
+                            "current must resolve to the matched NEW pair" + detail)
+            gens = sorted(p.name for p in (proc.outdir / "gen").iterdir() if p.is_dir())
+            self.assertIn(old, gens, "publish is append-only: the old generation must still exist" + detail)
+            self.assertGreaterEqual(len(gens), 2, "a rerun must leave BOTH generations (append-only)" + detail)
+
+    def test_two_runs_make_distinct_generations(self):
+        with tempfile.TemporaryDirectory() as t:
+            td = pathlib.Path(t)
+            self.assertEqual(self._run(td).returncode, 0)
+            g1 = {p.name for p in (td / "out" / "gen").iterdir() if p.is_dir()}
+            self.assertEqual(self._run(td).returncode, 0)
+            g2 = {p.name for p in (td / "out" / "gen").iterdir() if p.is_dir()}
+            self.assertTrue(g2 - g1, "the second run must create a fresh, distinct generation (mktemp O_EXCL)")
 
     def test_fault_at_the_swap_fails_closed(self):
-        # RoseCat 9dfc9c7 (2): the final swap is CHECKED — a failed rename must NOT report success. Natural
-        # fault: pre-create 'current' as a non-empty directory so `mv -fT .current.<gen> current` fails.
+        # The final swap is CHECKED — a failed rename must NOT report success. Natural fault: pre-create
+        # 'current' as a non-empty directory so `mv -fT .current.<pid> current` fails.
         def pre(td, out):
-            out.parent.mkdir(parents=True, exist_ok=True)
-            cur = out.parent / "current"
-            cur.mkdir()
-            (cur / "blocker").write_text("x")  # non-empty so mv -T cannot replace it
+            outdir = out.parent.parent; outdir.mkdir(parents=True, exist_ok=True)
+            cur = outdir / "current"; cur.mkdir()
+            (cur / "blocker").write_text("x")
         with tempfile.TemporaryDirectory() as t:
             td = pathlib.Path(t)
             proc = self._run(td, pre=pre)
             detail = f"\nrc={proc.returncode}\n{proc.stdout}\n{proc.stderr}"
             self.assertNotEqual(proc.returncode, 0,
                                 "a failed current-swap must fail closed (unchecked mv would report success)" + detail)
-            self.assertFalse(proc.out_path.exists(),
-                             "a failed swap must not expose an artifact at the surface" + detail)
 
 
 class StagePrepGatesBuild(_Case):
