@@ -25116,3 +25116,45 @@ this green yet.
 `UF_HIDDEN` rows. Production rejects all three, but the eleven current tests
 do not causally pin those claims. `git diff --check` is clean. Verdict sent to
 BlueBeaver in Agent Mail 7339.
+
+## Archive-root registered-gate fix (`7bb26ce`)
+
+**APPROVED.** `_GateCase._run_gate` now supplies `ZB_GATE_ROOT=REPO` in its
+minimal child environment, after which per-row overrides still take
+precedence. The dedicated missing-root negative does not use that helper and
+continues to run with the variable absent, so the fix does not bypass the
+production fail-closed path. The explicit-root row now requires the exact
+downstream `NOT RUN: no Windows host configured` diagnostic, proving that the
+gate resolved and entered its real checks rather than merely omitting the root
+error.
+
+An independent exact-`7bb26ce` `git archive` export, with no `.git`, passed
+**18/18** `gate_selftest.py` rows inside a private user/PID namespace with the
+display scrubbed. AzureRidge independently reported the same **18/18** archive
+result and a green private-Xvfb build step in Agent Mail 7341. This
+cumulatively closes `2c288fd`'s BLOCKED-for-tests finding from review 7335.
+`git diff --check` is clean; approval sent in Agent Mail 7342.
+
+## Staged SDK path seal follow-up (`207c7dc`)
+
+**APPROVED-for-code/tests; the both-Mac MS5 stage gate is the remaining
+acceptance evidence for `10cc48a`.** The follow-up closes review 7339's test
+blocker and SHOULD rows:
+
+- after staging, each real Mac leg requires
+  `codesign --verify --deep --strict` over the framework version, verifies a
+  scratch copy, mutates the copy's `.pth` by one byte, and requires the copied
+  seal to fail (`ms5_stage_gate.sh:100-117`). This is causal evidence that the
+  new resource is inside the seal, not merely that the framework is signed;
+- the Linux source oracle requires `.pth` installation before framework
+  relocation/signing (`mac_sdk_pth_test.py:203-210`);
+- direct NUL, FIFO-without-open/block and `UF_HIDDEN` rows now pin the three
+  production refusal claims (`:104-142`).
+
+An independent exact-`207c7dc` clean export passed the SDK module **14/14**.
+`zig build test-mac-census --summary all` then passed **14/14 steps** under a
+private Xvfb. The next authorized acceptance action is the temporary,
+non-installing `tests/mac/ms5_stage_gate.sh 207c7dc` run on both Macs; it must
+pass before `10cc48a` is final-accepted or the armed hard gate relies on the
+fix. No Mac run was performed in this review. `git diff --check` is clean;
+verdict and the bounded next action sent to BlueBeaver in Agent Mail 7343.
