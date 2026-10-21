@@ -11,6 +11,10 @@ Required, together:
     errno while both targets are alive;
  3. control (sacrificial-canary rule): the SAME inner, run WITHOUT the profile, gets all four introspection reads
     and the decoy connect to succeed;
+ 5. the ::1 half (plan rev 19 endpoint contract; bead zigBrowser-v9f): this driver holds the reservation setup holds
+    (::1:<port>, V6ONLY, never listening, no reuse): a second ::1 bind fails, and from inside the profile a connect
+    to [::1]:<port> reaches nothing (macOS drops a SYN at a bound, non-listening socket: a timeout), never a
+    completed connection;
  4. outside: setup's census proc_darwin.cli_env_clean finds the CLI stand-in and its canary (True); in a second run
     with a token planted in the stand-in's environment, whose own positives must hold first, it is False.
 Process ownership: every inner runs in its own process group, every read has a local monotonic deadline, and the
@@ -18,6 +22,7 @@ whole group is SIGKILLed and reaped on every path; a live-silent inner is a boun
 harness self-test). Every /tmp/zb-r1k-* scratch is removed under a guard.
 Run by tests/mac/ms6_r1_kernel_gate.sh with sandbox_macos.py, proc_darwin.py and r1_kernel_inner.py next to it.
 argv: <sleeper binary (the CLI stand-in)> <sibling binary (the same code at another path)>"""
+import errno
 import json
 import os
 import shutil
@@ -262,12 +267,36 @@ def exact_cleanup(resources, label):
     return survivors
 
 
+def reserve_v6(port):
+    """What setup's probe_r1 holds beside its listener (plan rev 19 endpoint contract (1); bead zigBrowser-v9f): an
+    AF_INET6 IPV6_V6ONLY reservation on ::1:<port>, bound, never listening, no reuse flags."""
+    s = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
+    s.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
+    s.bind(("::1", port))
+    return s
+
+
+def v6_bind_errno(port):
+    with socket.socket(socket.AF_INET6, socket.SOCK_STREAM) as s:
+        s.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
+        try:
+            s.bind(("::1", port))
+        except OSError as exc:
+            return exc.errno
+        return 0
+
+
 def main():
     sleeper = os.path.realpath(sys.argv[1])
     r1, _ = listen()
     decoy, decoy_accepted = listen()
     port, decoy_port = r1.getsockname()[1], decoy.getsockname()[1]
+    reservation = reserve_v6(port)
     try:
+        check(v6_bind_errno(port) == errno.EADDRINUSE,
+              "the ::1 reservation holds: a second ::1 bind fails, even with SO_REUSEADDR+SO_REUSEPORT")
         # Harness self-tests, unsandboxed so the inner is certainly alive. A live inner with live children that never
         # reports waits out the whole deadline, fails, and leaves no member of its group and no scratch.
         started = time.monotonic()
@@ -325,6 +354,8 @@ def main():
         if control is not None:
             for row in ("sibling_procargs2", "sibling_pidpath", "cli_procargs2", "cli_pidpath", "decoy_connect"):
                 check(control[row] == "ok", f"control (no profile): {row} succeeds ({control[row]})")
+            check(control["v6_connect"] == "timeout",
+                  f"control (no profile): the reservation alone makes [::1]:<port> unreachable ({control['v6_connect']})")
             check(control["children_alive"] is True, "control: both targets were alive while read")
         decoy_before = len(decoy_accepted)
 
@@ -335,6 +366,12 @@ def main():
         else:
             check(report["children_alive"] is True, "inside: both targets were alive while read")
             check(report["r1_connect"] == "ok", f"inside: the R1 port {port} is reachable ({report['r1_connect']})")
+            # macOS (both arches, measured; the control too) silently drops a SYN that reaches a bound,
+            # non-listening socket, so the reservation makes [::1]:<port> unreachable: a timeout, never a completed
+            # connection to anyone.
+            check(report["v6_connect"] == "timeout",
+                  f"inside: [::1]:{port} reaches nothing (the reservation drops it), never a foreign listener "
+                  f"({report['v6_connect']})")
             check(report["decoy_connect"] == DENIED,
                   f"inside: the decoy port {decoy_port} is denied by Seatbelt ({report['decoy_connect']})")
             for who in ("sibling", "cli"):
@@ -356,6 +393,7 @@ def main():
     finally:
         r1.close()
         decoy.close()
+        reservation.close()
     if failures:
         print(f"FAIL\tms6-r1-kernel\t{len(failures)} failure(s)")
         return 1

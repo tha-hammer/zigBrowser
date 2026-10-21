@@ -554,10 +554,11 @@ def _port(text):
 
 
 def parse_args(argv, darwin=False):
-    opts = {"sockdir": None, "bwrap": None, "manifest": None, "ready_delay": None, "allow": [], "bridge": [], "resolve": [],
+    opts = {"sockdir": None, "bwrap": None, "manifest": None, "ready_delay": None, "test_port": None,
+            "allow": [], "bridge": [], "resolve": [],
             "host": [], "port": [], "record": False, "serve": False, "no_bridges": False, "census": False}
     single = {"--sockdir": "sockdir", "--bwrap": "bwrap", "--net-manifest": "manifest",
-              "--test-ready-delay": "ready_delay"}
+              "--test-ready-delay": "ready_delay", "--test-port": "test_port"}
     # --allow-host and --bridge-port carry the checked manifest to the sandboxed side.
     multi = {"--test-allow": "allow", "--test-bridge": "bridge", "--test-resolve": "resolve",
              "--allow-host": "host", "--bridge-port": "port"}
@@ -565,6 +566,8 @@ def parse_args(argv, darwin=False):
     i = 0
     while i < len(argv):
         arg = argv[i]
+        if arg == "--test-port" and arg in seen:
+            raise ValueError("--test-port is given once")
         seen.add(arg)
         if arg in single or arg in multi:
             if i + 1 >= len(argv):
@@ -595,6 +598,15 @@ def parse_args(argv, darwin=False):
                      "--no-bridges"):
             if flag in seen:
                 raise ValueError(f"{flag} is not used on macOS")
+        if "--test-port" in seen:
+            # The e2e seam (JadeBeacon 7079): bind exactly this 127.0.0.1 port instead of an OS-chosen one, so a
+            # test can plant a ::1 listener at it first. ASCII decimal 1-65535, no sign, leading zero or whitespace.
+            text = opts["test_port"]
+            if not re.fullmatch(r"[1-9][0-9]{0,4}", text, re.ASCII) or int(text) > 65535:
+                raise ValueError(f"--test-port needs a plain port 1-65535: {text!r}")
+            opts["test_port"] = int(text)
+    elif "--test-port" in seen:
+        raise ValueError("--test-port is macOS-only")
     elif not opts["sockdir"]:
         raise ValueError("--sockdir is required")
     if opts["serve"] and opts["manifest"] is not None:
@@ -765,7 +777,7 @@ def serve(sockdir, allow, bridges, resolve, record, hosts, ready_delay=None, cen
     return 0
 
 
-def serve_tcp(allow, resolve, record, hosts, ready_delay=None, census=False):
+def serve_tcp(allow, resolve, record, hosts, ready_delay=None, census=False, port=0):
     """macOS (plan egress mapping item 1; BlueBeaver 6971, JadeBeacon 7004): no private network namespace and no
     Unix-socket proxy for the CLI (5503), so netd itself listens on an OS-selected 127.0.0.1 port, egress only (each
     hook's own profile reaches the bridge ports directly), and holds that listener for its whole life. The ready line
@@ -773,10 +785,21 @@ def serve_tcp(allow, resolve, record, hosts, ready_delay=None, census=False):
     Linux ones. EOF on stdin or SIGTERM/SIGINT closes the listener and exits 0."""
     netd = Netd(None, allow, {}, resolve, record, hosts, census=census)
     listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    reservation = None
     try:
-        listener.bind(("127.0.0.1", 0))
-        listener.listen(64)
-        port = listener.getsockname()[1]
+        try:
+            listener.bind(("127.0.0.1", port))
+            listener.listen(64)
+            port = listener.getsockname()[1]
+            # Seatbelt's (remote tcp "localhost:<port>") also admits ::1:<port> (RoseCat 7071): own it too, for our
+            # whole life. V6ONLY, bound, never listening, no SO_REUSEADDR/SO_REUSEPORT: nobody else can take it,
+            # and a connect there is refused. If it is taken already, refuse; never retry (JadeBeacon 7079).
+            reservation = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
+            reservation.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
+            reservation.bind(("::1", port))
+        except OSError as exc:
+            log(f"netd: cannot hold 127.0.0.1:{port} and ::1:{port}: {exc.strerror or exc}")
+            return EXIT_USAGE
         netd.accept(listener, netd.egress)
         if ready_delay:
             time.sleep(ready_delay / 1000)  # the e2e hold: the listener exists, the line waits
@@ -784,6 +807,8 @@ def serve_tcp(allow, resolve, record, hosts, ready_delay=None, census=False):
     finally:
         netd.stopping.set()
         listener.close()
+        if reservation is not None:
+            reservation.close()
     return 0
 
 
@@ -820,7 +845,8 @@ def main(argv):
     sockdir = opts["sockdir"]
     os.closerange(3, os.sysconf("SC_OPEN_MAX"))  # nothing the browser leaked goes further
     if darwin:
-        return serve_tcp(allow, resolve, opts["record"], hosts, opts["ready_delay"], opts["census"])
+        return serve_tcp(allow, resolve, opts["record"], hosts, opts["ready_delay"], opts["census"],
+                         port=opts["test_port"] or 0)
     if opts["serve"]:
         return serve(sockdir, allow, bridges, resolve, opts["record"], hosts, opts["ready_delay"], opts["census"])
     bwrap = opts["bwrap"] or "/usr/bin/bwrap"

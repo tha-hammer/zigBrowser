@@ -840,7 +840,7 @@ def probe_r1(wrapper, cli):
     True when the CLI took the probe token from fd 3 and no CLI environment held it."""
     runtime = Path(wrapper).parent.parent
     listener = None
-    ours = theirs = census = None
+    ours = theirs = census = reservation = None
     result = {}
     handover = {"lock": threading.Lock(), "owner": "setup", "done": False}
     abandoned = False
@@ -853,6 +853,12 @@ def probe_r1(wrapper, cli):
                 listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                 listener.bind(("127.0.0.1", 0))
                 listener.listen(8)
+                # The profile's (remote tcp "localhost:<port>") also admits ::1:<port> (RoseCat 7071): hold it for the
+                # whole probe, V6ONLY, bound and never listening, no reuse flags, never passed in. Taken already =>
+                # no R1 (refuse, not retry; JadeBeacon 7079).
+                reservation = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
+                reservation.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
+                reservation.bind(("::1", listener.getsockname()[1]))
                 # The census runs here, outside Seatbelt (RoseCat 7019): the probe asks over this socketpair.
                 ours, theirs = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
             except OSError:
@@ -869,6 +875,8 @@ def probe_r1(wrapper, cli):
     finally:
         if listener is not None:
             listener.close()  # setup's copy, on every path
+        if reservation is not None:
+            reservation.close()
         if theirs is not None:
             theirs.close()  # setup's copy of the probe's end
         if ours is not None:

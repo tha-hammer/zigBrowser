@@ -1630,6 +1630,14 @@ pub fn build(b: *std.Build) void {
         "py=$(tools/agent_host_env.sh --check) || exit 1; cd agent/host/tests && out=$(env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 ZB_AGENT_HOST_PYTHON=\"$py\" \"$py\" -X dev -m unittest -v test_setup_census 2>&1); rc=$?; printf '%s\\n' \"$out\"; [ $rc -eq 0 ] || exit $rc; if printf '%s\\n' \"$out\" | grep -q ResourceWarning; then echo 'test_setup_census: ResourceWarning' >&2; exit 1; fi",
     });
     agent_setup_ms5_step.dependOn(&agent_host_setup_census.step);
+    // Durable dual-family ownership (plan contract 6016938; bead zigBrowser-v9f): setup's R1 listener also holds
+    // [::1]:<same port>, non-listening, and fails closed without it.
+    const agent_host_setup_darwin_r1_v6 = b.addSystemCommand(&.{
+        "sh",
+        "-c",
+        "py=$(tools/agent_host_env.sh --check) || exit 1; cd agent/host/tests && out=$(env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 ZB_AGENT_HOST_PYTHON=\"$py\" \"$py\" -X dev -m unittest -v test_setup_darwin_r1_v6 2>&1); rc=$?; printf '%s\\n' \"$out\"; [ $rc -eq 0 ] || exit $rc; if printf '%s\\n' \"$out\" | grep -q ResourceWarning; then echo 'test_setup_darwin_r1_v6: ResourceWarning' >&2; exit 1; fi",
+    });
+    agent_setup_ms5_step.dependOn(&agent_host_setup_darwin_r1_v6.step);
     // Chat drawer S3.1: --agent-setup's provisioning (unit and property
     // tests of the helper's setup command); fails closed without the venv.
     const agent_host_provision_unit = b.addSystemCommand(&.{
@@ -1970,6 +1978,13 @@ pub fn build(b: *std.Build) void {
         "sh",
         "-c",
         "py=$(tools/agent_host_env.sh --check) || exit 1; cd agent/host/tests && out=$(env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 ZB_AGENT_HOST_PYTHON=\"$py\" \"$py\" -X dev -m unittest -v test_netd_darwin 2>&1); rc=$?; printf '%s\\n' \"$out\"; [ $rc -eq 0 ] || exit $rc; if printf '%s\\n' \"$out\" | grep -q ResourceWarning; then echo 'test_netd_darwin: ResourceWarning' >&2; exit 1; fi",
+    });
+    // Durable dual-family ownership (plan contract 6016938; bead zigBrowser-v9f): Darwin netd also holds
+    // [::1]:<its port>, non-listening, and refuses without it; the native run is tests/mac/ms6_netd_darwin_gate.sh.
+    const agent_host_netd_darwin_v6 = b.addSystemCommand(&.{
+        "sh",
+        "-c",
+        "py=$(tools/agent_host_env.sh --check) || exit 1; cd agent/host/tests && out=$(env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 ZB_AGENT_HOST_PYTHON=\"$py\" \"$py\" -X dev -m unittest -v test_netd_darwin_v6 2>&1); rc=$?; printf '%s\\n' \"$out\"; [ $rc -eq 0 ] || exit $rc; if printf '%s\\n' \"$out\" | grep -q ResourceWarning; then echo 'test_netd_darwin_v6: ResourceWarning' >&2; exit 1; fi",
     });
     const agent_host_netd = b.addSystemCommand(&.{
         "sh",
@@ -2384,6 +2399,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&agent_host_setup_darwin_r1.step);
     test_step.dependOn(&agent_host_route_probe_census.step);
     test_step.dependOn(&agent_host_setup_census.step);
+    test_step.dependOn(&agent_host_setup_darwin_r1_v6.step);
     test_step.dependOn(&agent_host_contract.step);
     test_step.dependOn(&agent_host_backend_contract.step);
     test_step.dependOn(&agent_host_sandbox_macos.step);
@@ -2399,6 +2415,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&agent_host_bridge.step);
     test_step.dependOn(&agent_host_netd.step);
     test_step.dependOn(&agent_host_netd_darwin.step);
+    test_step.dependOn(&agent_host_netd_darwin_v6.step);
     test_step.dependOn(&agent_host_relay.step);
     test_step.dependOn(&agent_host_netd_manifest.step);
     test_step.dependOn(&agent_host_netd_login.step);

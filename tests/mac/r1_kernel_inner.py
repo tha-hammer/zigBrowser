@@ -60,7 +60,17 @@ def pidpath(pid):
     return "ok"
 
 
-report = {"r1_connect": connect(port), "decoy_connect": connect(decoy),
+def connect6(p):
+    try:
+        socket.create_connection(("::1", p), timeout=3).close()
+        return "ok"
+    except socket.timeout:
+        return "timeout"
+    except OSError as exc:
+        return f"errno {exc.errno}"
+
+
+report = {"r1_connect": connect(port), "decoy_connect": connect(decoy), "v6_connect": connect6(port),
           "sibling_procargs2": procargs2(sibling.pid), "sibling_pidpath": pidpath(sibling.pid),
           "cli_procargs2": procargs2(cli.pid), "cli_pidpath": pidpath(cli.pid)}
 report["children_alive"] = cli.poll() is None and sibling.poll() is None
