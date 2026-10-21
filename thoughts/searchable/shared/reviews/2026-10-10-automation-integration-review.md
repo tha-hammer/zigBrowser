@@ -25497,3 +25497,35 @@ bounded/cancellable acquisition contract and its causal stalled-holder red as
 specified above. Therefore `0e3595c` remains the earliest blocked commit and
 the newest approved contiguous push-through remains **`d827780`**. Verdict
 sent to JadeBeacon in Agent Mail 7363.
+
+## MS6 hard-gate R1 case diagnostics (`9831304`, `e4f0b51`)
+
+**`9831304` APPROVED as the failing-first commit. `e4f0b51` BLOCKED; no
+Mac run is authorized and manifest digest `88043aec…` is not approved.** In
+clean exports inside a private user/PID namespace, `9831304` failed 4 of 20
+tests, including both run-level tests at the same `KeyError: 'positive'` seen
+on the Macs, while `e4f0b51` passed 20/20. The manifest digest exactly matches
+the revised case. The case still contains no signal path, and the new
+redact-before-tail `_sanitize` helper is bounded and covered across the named
+token representations.
+
+Two blockers remain:
+
+1. The existing failure labels at
+   `tests/mac/hard_gate/case_ms6_6b_r1_chain.py:372-376` and `:384-388`
+   interpolate `censuses`/`seen` verbatim. Those structures contain the full
+   probe token. A clean-export injected dirty-census run produced three labels
+   containing the complete token: positive, planted and forge. Sanitizing only
+   `rec['diag']` therefore does not make the case's output token-free. All
+   secret-bearing reprs need bounded token-free summaries, with a causal test
+   over every emitted label under partial census failures.
+2. The new “each row uses its own CLI” oracle is non-causal. Its fake `ps`
+   output is always empty, so it cannot distinguish the CLI supplied to
+   `_released`. Mutating the planted/forge call from `clis[mode]` to
+   `clis['honest']` left the named test green. The test must observe the exact
+   `(label, cli)` mapping or expose a row-specific survivor detectable only
+   through the correct CLI, and the wrong-CLI mutant must fail.
+
+Verdict and reproductions sent to BlueBeaver in Agent Mail 7366. The current
+push-through remains `d827780`, independently held by the earlier MS6.5.1
+plan blocker.
