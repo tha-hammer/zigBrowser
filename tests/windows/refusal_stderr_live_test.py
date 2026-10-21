@@ -16,7 +16,7 @@ is a plain usage error (`usage:` on stderr, exit 1) that never reaches the refus
 
 Skips cleanly (exit 0) when ZB_WIN11_HOST or ZB_WIN_EXE is unset. All writes stay under C:\Users\<user>\zb\.
 
-Run live:  ZB_WIN11_HOST=127.0.0.1 ZB_WIN_EXE=zig-out/win/zigBrowser.exe \
+Run live:  ZB_WIN11_HOST=127.0.0.1 ZB_WIN_EXE=zig-out/win/current/zigBrowser.exe \
            python3 -I tests/windows/refusal_stderr_live_test.py -v
 """
 import json

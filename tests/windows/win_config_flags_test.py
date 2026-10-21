@@ -16,7 +16,7 @@ BlueBeaver's `tests/windows/refusal_stderr_live_test.py` per the j76 split.)
 The page sets `document.title = 'MSE=' + typeof window.MediaSource`; with `--e2e-protocol` the backend prints a
 `NAV\t<url>\t<title>` row we read. Skips cleanly without ZB_WIN11_HOST / ZB_WIN_EXE. Needs no Linux slot.
 
-Run live:  ZB_WIN11_HOST=127.0.0.1 ZB_WIN_EXE=zig-out/win/zigBrowser.exe \
+Run live:  ZB_WIN11_HOST=127.0.0.1 ZB_WIN_EXE=zig-out/win/current/zigBrowser.exe \
            python3 -I tests/windows/win_config_flags_test.py -v
 """
 import json

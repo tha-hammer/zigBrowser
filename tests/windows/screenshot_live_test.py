@@ -14,7 +14,7 @@ CapturePreview renders offscreen, so this passes in the VM's session-0 SSH (no i
 Skips cleanly (exit 0) when ZB_WIN11_HOST or ZB_WIN_EXE is unset, so the hostless Linux gate stays green.
 Needs no Linux slot — the work runs on the VM. All writes stay under C:\Users\<user>\zb\.
 
-Run live:  ZB_WIN11_HOST=127.0.0.1 ZB_WIN_EXE=zig-out/win/zigBrowser.exe \
+Run live:  ZB_WIN11_HOST=127.0.0.1 ZB_WIN_EXE=zig-out/win/current/zigBrowser.exe \
            python3 -I tests/windows/screenshot_live_test.py -v
 """
 import json

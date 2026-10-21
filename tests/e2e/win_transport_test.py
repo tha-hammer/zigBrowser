@@ -27,7 +27,7 @@ for each account. Skips cleanly (exit 0) when ZB_WIN11_HOST or ZB_WIN_EXE is uns
 gate stays green. Needs no Linux slot; the browser runs on the VM.
 
 Run live:  bash tests/windows/build-on-windows.sh   # fetches zig-out/win/zigBrowser.exe
-           ZB_WIN11_HOST=127.0.0.1 ZB_WIN_EXE=zig-out/win/zigBrowser.exe python3 -I tests/e2e/win_transport_test.py -v
+           ZB_WIN11_HOST=127.0.0.1 ZB_WIN_EXE=zig-out/win/current/zigBrowser.exe python3 -I tests/e2e/win_transport_test.py -v
 """
 import json
 import os
