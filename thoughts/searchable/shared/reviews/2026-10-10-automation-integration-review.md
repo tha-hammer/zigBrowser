@@ -23350,3 +23350,35 @@ part of the separately named dependency/CLI staging work.
 or wrong-shaped framework rather than vacuously succeeding. Neither shape is
 present in the pinned 3.12.10 artifact exercised on both Macs. Verdict sent to
 BlueBeaver, with JadeBeacon copied, in Agent Mail 7219.
+
+## S8 navigation-approval plan rev 16.20.46 (`c46c203`)
+
+**BLOCKED: the correction captures the user's quoted answer but gives the
+selector contradictory semantics.** The removal of origin-change as an
+accepted rule is correct: it is now only an option awaiting the user, and the
+plan correctly prevents decision 16 from being built before headless/full
+automation and the card's presentation surface are defined.
+
+One contract conflict remains in the changed lines:
+
+- D9 says `yes` means a card per action, `no` means never, and `conditional`
+  means only in headless/full automation (`plan:506`).
+- Decision 16 says normal interactive use *never* gets a card
+  (`plan:3209`), but also says `yes` means a card for every navigation and
+  reload (`plan:3211`).
+- While neither special mode exists, it then says `yes` is the only setting
+  that shows a card (`plan:3214`). Such a card could only be in the normal
+  interactive mode that line 3209 forbids.
+
+The author's evidence mail repeats the same conflict as “never normal” and
+“`yes`: always a card.” Before S8b/S8c, record one explicit truth table for
+`yes | no | conditional` × `interactive | headless | full automation` and get
+the unresolved row from the user. If `yes` truly means always, interactive
+must be carded. If interactive is absolutely never carded, `yes` must be
+mode-qualified and `conditional` needs a distinct condition (otherwise those
+two settings are identical). Keep all decision-16 implementation blocked
+until the user also defines the two modes and where an unattended card lives.
+
+**NIT:** decision 12 still cites rev 16.20.45 at `plan:3117`; update it to the
+correcting revision when fixing the contract. Docs-only diff check passed; no
+runtime gate applies. Verdict sent to BlackRobin by Agent Mail.
