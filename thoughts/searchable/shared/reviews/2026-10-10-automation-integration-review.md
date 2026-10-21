@@ -21219,3 +21219,79 @@ Mail 7070.
 kernel process handle. Its safety relies on the existing invariant that each
 gate compiles the sleeper below a unique nonce staging directory; retain that
 invariant.
+
+## R1 census broker green, scoped MS6.6(A) (`ac15dfd`)
+
+Reviewed exact commit `ac15dfd` on 2026-10-21. **Verdict: BLOCKED.** The
+architecture is otherwise correct and deliberately scoped. Setup owns an
+anonymous Unix-stream socketpair outside Seatbelt; the probe adopts only the
+Unix stream end, makes it non-inheritable and asks the census while the CLI is
+alive; the CLI/wrapper production-chain test proves that capability does not
+reach the CLI and has a positive-control leak. Setup's census walks only its
+own descendants and requires an exact executable, at least one matching CLI,
+the exact base-URL canary in every matching environment, and no token bytes in
+argv or environment. R1 needs both the probe result and setup's own clean
+verdict. The timeout, shutdown, abandoned-thread ownership and late-verdict
+paths fail closed without closing a descriptor under a live worker.
+
+The slice also correctly leaves MS6.6(B), `seatbelt_ready` and Mac agent launch
+open. BlueBeaver reports the kernel-properties gate green with **86 rows on
+both Mac architectures**, plus the focused `test-agent-setup-ms5` gate green.
+Locally, the two registered census suites passed **27/27** under `-X dev` with
+the display scrubbed.
+
+One protocol blocker remains:
+
+- **BLOCKER (a malformed multi-request message is accepted as clean):**
+  `_census_serve` stops reading at the first newline and full-matches only
+  `data.split(...)[0]` (`setup.py:805-817`). A valid census line followed by a
+  second request or arbitrary trailing bytes therefore invokes the process
+  census and can answer `clean`, contrary to the committed “one request,
+  exactly” capability protocol. A direct HEAD probe with two valid lines
+  returned `b"clean\n"`, called the verdict once and stored `clean=True`.
+  `test_only_one_request_is_answered` explicitly permits either clean or dirty
+  (`test_setup_census.py:164-168`), so it cannot catch the defect. Red-first,
+  require the two-line and valid-line-plus-junk cases to be dirty without any
+  `cli_env_clean` call. The natural framing is for `_ask_census` to send its
+  one line and `shutdown(SHUT_WR)`, while setup reads the whole bounded message
+  through EOF and full-matches the complete bytes. Preserve the existing
+  partial/silent-peer and abandoned-join bounds.
+
+Finding mailed to BlueBeaver in Agent Mail 7078. No full gate was started;
+BlackRobin held the shared slot.
+
+## MS6.4 endpoint contract rev 19 (`3e027b9`)
+
+Reviewed exact docs/test commit `3e027b9` on 2026-10-21. **Verdict: BLOCKED.**
+The new classifier is fail-closed: only `EPERM`/`EACCES` mean policy denial,
+the named reachability errors mean refusal, and every other syscall outcome is
+an error. The real-profile rows for TCP, UDP, mapped IPv6, decoy ports and hook
+separation remain useful. Three issues prevent approval:
+
+1. **BLOCKER (the IPv6 half is permitted but not owned):** Seatbelt's
+   `localhost:<port>` grant permits `::1:<port>`. Merely observing that netd
+   listens on IPv4 does not prevent an unrelated local process from binding
+   the same numeric IPv6 port and becoming reachable from the sandbox. Netd
+   and the R1 setup listener must durably own a non-listening
+   `AF_INET6`/`IPV6_V6ONLY` reservation on `::1:<same port>`, without reuse
+   flags, for exactly the v4 listener's lifetime. Reservation collision must
+   fail before READY/profile publication; it must never retry into an
+   unverified endpoint. A pre-planted IPv6 listener, second-bind refusal,
+   release-after-exit and lsof/socket-shape rows must discriminate this.
+2. **BLOCKER-for-tests (the claimed full errno table is not asserted):** the C
+   selftest emits eleven rows (`ms6_4_connect_probe.c:42-45`), but the shell
+   oracle asserts only nine (`ms6_4_egress_test.sh:47-55`), omitting
+   `ENETDOWN` and `EHOSTDOWN`. Assert every expected row and reject missing,
+   duplicate and unexpected rows.
+3. **BLOCKER-for-tests (the deadline branch is not proved):** the TEST-NET
+   case is labeled a timeout oracle, but accepts `CONNECT-REFUSED` and
+   `CONNECT-ERROR` as success (`ms6_4_egress_test.sh:120-128`). That is a
+   useful coarse “never OK/DENIED” control, not a discriminating test of the
+   `select` timeout branch. Add a deterministic timeout/observation seam or
+   narrow the claim and keep a real deadline oracle elsewhere.
+
+The orchestrator and owners have agreed to the durable dual-family reservation
+and fail-closed collision rule; `3e027b9` predates that ruling and its plan text
+at lines 1600-1623 must be superseded. Findings mailed to JadeBeacon in Agent
+Mail 7080. No remote Mac or full Linux gate was needed for this docs/test
+review.
