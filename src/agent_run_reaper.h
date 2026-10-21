@@ -83,6 +83,16 @@ struct zb_reaper_dir_id {
 };
 int zb_reaper_dir_id_eq(const struct zb_reaper_dir_id *a, const struct zb_reaper_dir_id *b);
 
+/* Pin the resolved run dir by a NO-FOLLOW dir fd: it must be a directory, this uid's, mode 0700, pass
+ * zb_reaper_run_dir_ok, and the fd and the path must agree on (dev, ino). Returns the held fd (>= 0, the caller
+ * closes it) and fills *id, or -1 on any failure. Portable (open/fstat/stat), so it is unit-tested on Linux with
+ * a real path swap. */
+int zb_reaper_pin_dir(const char *resolved, struct zb_reaper_dir_id *id);
+
+/* Do the held fd and the path still name the pinned dir (same identity, path still that inode)? Run immediately
+ * BEFORE the scan/SIGKILL and again after, so a path swap is caught before any signal (RoseCat 3da2862 #2). */
+int zb_reaper_dir_still_pinned(int fd, const char *resolved, const struct zb_reaper_dir_id *id);
+
 #ifdef __APPLE__
 /* Production: realpath() the run dir and REFUSE unless zb_reaper_run_dir_ok accepts it AND it stats as a dir
  * owned by this uid with mode 0700 (realpath failure = refusal, no fallback); then zb_reaper_gather over

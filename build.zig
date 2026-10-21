@@ -729,6 +729,17 @@ pub fn build(b: *std.Build) void {
     run_reaper_engine_tests.addArtifactArg(reaper_engine_exe);
     const reaper_engine_step = b.step("test-agent-run-reaper-engine", "MS6.5 reaper decision engine (fake ops, kill intercepted)");
     reaper_engine_step.dependOn(&run_reaper_engine_tests.step);
+    // MS6.5 (RoseCat 3da2862 #4): the run-dir pin + path-swap detection, on real Linux directories. Portable
+    // (open O_NOFOLLOW + fstat/stat), no signals.
+    const reaper_pin_module = b.createModule(.{ .target = target, .optimize = optimize, .link_libc = true });
+    reaper_pin_module.addCSourceFile(.{ .file = b.path("src/agent_run_reaper.c"), .flags = &.{"-std=gnu11"} });
+    reaper_pin_module.addCSourceFile(.{ .file = b.path("tests/agent_run_reaper_pin_test.c"), .flags = &.{"-std=gnu11"} });
+    reaper_pin_module.addIncludePath(b.path("src"));
+    const reaper_pin_exe = b.addExecutable(.{ .name = "reaper-pin-test", .root_module = reaper_pin_module });
+    const run_reaper_pin_tests = b.addRunArtifact(reaper_pin_exe);
+    run_reaper_pin_tests.skip_foreign_checks = true;
+    const reaper_pin_step = b.step("test-agent-run-reaper-pin", "MS6.5 run-dir pin + path-swap (Linux, real dirs)");
+    reaper_pin_step.dependOn(&run_reaper_pin_tests.step);
     // MS6.5 (the user's decision 2026-10-21): the stubbed macOS VM-containment seam — off by default, reports
     // "not available yet", and the gate fails closed when on. Pure Linux unit (no OS calls).
     const mac_vm_containment_module = b.createModule(.{
@@ -2525,6 +2536,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_agent_host_posix_spawn_tests.step);
     test_step.dependOn(&run_agent_run_reaper_tests.step);
     if (target.result.os.tag == .linux) test_step.dependOn(&run_reaper_engine_tests.step);
+    if (target.result.os.tag == .linux) test_step.dependOn(&run_reaper_pin_tests.step);
     test_step.dependOn(&run_mac_vm_containment_tests.step);
     test_step.dependOn(&mac_vm_containment_e2e.step);
     test_step.dependOn(&run_agent_secrets_tests.step);

@@ -5,9 +5,11 @@
 #include "agent_run_reaper.h"
 
 #include <errno.h>
+#include <fcntl.h>
 #include <signal.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -98,9 +100,10 @@ static int engine_gone(const struct zb_reaper_ops *ops, pid_t pid, int grace_ms)
 
 int zb_reaper_engine(const struct zb_reaper_ops *ops, const pid_t *pids, int npids, const char *dir,
                      int kill_them, int *killed, int kcap, int *kn, int *surv, int scap, int *sn, int *overflow) {
+  if (overflow == NULL) return EINVAL; /* output contract: a truncation/unrepresentable match MUST be reportable */
+  *overflow = 0;
   if (kn) *kn = 0;
   if (sn) *sn = 0;
-  if (overflow) *overflow = 0;
   const pid_t self = getpid();
   const uid_t myuid = getuid();
   for (int i = 0; i < npids; i++) {
@@ -149,14 +152,15 @@ int zb_reaper_gather(int (*scan)(void *buf, int bytes), pid_t **out, int *out_n)
 
 int zb_reaper_run_full(int (*scan)(void *buf, int bytes), const struct zb_reaper_ops *ops, const char *dir,
                        int kill_them, int *killed, int kcap, int *kn, int *surv, int scap, int *sn, int *overflow) {
-  if (overflow) *overflow = 0;
+  if (overflow == NULL) return EINVAL; /* output contract (RoseCat 3da2862 #3) */
+  *overflow = 0;
   if (kn) *kn = 0;
   if (sn) *sn = 0;
   pid_t *pids = NULL;
   int n = 0;
   const int g = zb_reaper_gather(scan, &pids, &n);
-  if (g == -1) { if (overflow) *overflow = 1; return EOVERFLOW; } /* incomplete scan: not clean */
-  if (g == -2) { if (overflow) *overflow = 1; return EIO; }       /* scan failure: not clean (RoseCat 9dfc9c7 #1) */
+  if (g == -1) { *overflow = 1; return EOVERFLOW; } /* incomplete scan: not clean */
+  if (g == -2) { *overflow = 1; return EIO; }       /* scan failure: not clean (RoseCat 9dfc9c7 #1) */
   const int rc = zb_reaper_engine(ops, pids, n, dir, kill_them, killed, kcap, kn, surv, scap, sn, overflow);
   free(pids);
   return rc;
@@ -164,6 +168,37 @@ int zb_reaper_run_full(int (*scan)(void *buf, int bytes), const struct zb_reaper
 
 int zb_reaper_dir_id_eq(const struct zb_reaper_dir_id *a, const struct zb_reaper_dir_id *b) {
   return a->dev == b->dev && a->ino == b->ino && a->uid == b->uid && a->mode == b->mode;
+}
+
+/* Pin the resolved run dir by a NO-FOLLOW dir fd (RoseCat 9dfc9c7 #2, 3da2862): it must be a directory, this
+ * uid's, mode 0700, pass the grammar, and the fd and the path must agree on (dev, ino) — so a symlink / path
+ * swap between realpath and use is caught. Returns the held fd (>= 0, caller closes) and fills *id, or -1.
+ * Portable (open/fstat/stat only), so it is unit-tested on Linux with a real path swap. */
+int zb_reaper_pin_dir(const char *resolved, struct zb_reaper_dir_id *id) {
+  if (resolved == NULL || id == NULL || !zb_reaper_run_dir_ok(resolved)) return -1;
+  int fd = open(resolved, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+  if (fd < 0) return -1;
+  struct stat f, p;
+  if (fstat(fd, &f) != 0 || stat(resolved, &p) != 0 || !S_ISDIR(f.st_mode) || f.st_uid != getuid() ||
+      (f.st_mode & 0777) != 0700 || f.st_dev != p.st_dev || f.st_ino != p.st_ino) {
+    close(fd);
+    return -1;
+  }
+  id->dev = f.st_dev;
+  id->ino = f.st_ino;
+  id->uid = f.st_uid;
+  id->mode = (unsigned)f.st_mode;
+  return fd;
+}
+
+/* The held fd and the path still agree on the pinned identity? (the no-swap check, run BEFORE and after the
+ * scan). A path swapped to a different inode, or a changed dir identity, returns 0. */
+int zb_reaper_dir_still_pinned(int fd, const char *resolved, const struct zb_reaper_dir_id *id) {
+  struct stat fs, ps;
+  if (fd < 0 || resolved == NULL || id == NULL) return 0;
+  if (fstat(fd, &fs) != 0 || stat(resolved, &ps) != 0) return 0;
+  struct zb_reaper_dir_id now = {fs.st_dev, fs.st_ino, fs.st_uid, (unsigned)fs.st_mode};
+  return zb_reaper_dir_id_eq(&now, id) && ps.st_dev == id->dev && ps.st_ino == id->ino;
 }
 
 /* ---- macOS production wrappers (libproc + real kill; Mac-only) ---- */
@@ -214,50 +249,26 @@ static void reaper_inspect_real(pid_t pid, const char *dir, struct zb_reaper_id 
 static int reaper_killsig_real(pid_t pid, int sig, void *ctx) { (void)ctx; return kill(pid, sig) == 0 ? 0 : errno; }
 static int reaper_scan_real(void *buf, int bytes) { return proc_listallpids(buf, bytes); }
 
-/* Pin the resolved run dir by a NO-FOLLOW dir fd (RoseCat 9dfc9c7 #2): it must be a directory, this uid's, mode
- * 0700, with grammar ok, and the fd and the path must agree on (dev, ino) — so a symlink / path swap between
- * realpath and use is caught. Returns the held fd (>= 0) and fills *id, or -1 on any failure. */
-static int reaper_pin_dir(const char *resolved, struct zb_reaper_dir_id *id) {
-  if (!zb_reaper_run_dir_ok(resolved)) return -1;
-  int fd = open(resolved, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
-  if (fd < 0) return -1;
-  struct stat f, p;
-  if (fstat(fd, &f) != 0 || stat(resolved, &p) != 0 || !S_ISDIR(f.st_mode) || f.st_uid != getuid() ||
-      (f.st_mode & 0777) != 0700 || f.st_dev != p.st_dev || f.st_ino != p.st_ino) {
-    close(fd);
-    return -1;
-  }
-  id->dev = f.st_dev;
-  id->ino = f.st_ino;
-  id->uid = f.st_uid;
-  id->mode = (unsigned)f.st_mode;
-  return fd;
-}
-
-/* The held fd and the path still agree on the pinned identity? (re-validated after the run). */
-static int reaper_dir_still_pinned(int fd, const char *resolved, const struct zb_reaper_dir_id *id) {
-  struct stat fs, ps;
-  if (fstat(fd, &fs) != 0 || stat(resolved, &ps) != 0) return 0;
-  struct zb_reaper_dir_id now = {fs.st_dev, fs.st_ino, fs.st_uid, (unsigned)fs.st_mode};
-  return zb_reaper_dir_id_eq(&now, id) && ps.st_dev == id->dev && ps.st_ino == id->ino;
-}
-
 static int reaper_public(const char *run_dir, int kill_them, int *killed, int kcap, int *kn,
                          int *surv, int scap, int *sn, int *overflow) {
-  if (overflow) *overflow = 0;
+  if (overflow == NULL) return EINVAL; /* output contract: truncation must be reportable (RoseCat 3da2862 #3) */
+  *overflow = 0;
   if (kn) *kn = 0;
   if (sn) *sn = 0;
   if (run_dir == NULL) return EINVAL;
   char resolved[PATH_MAX];
   if (realpath(run_dir, resolved) == NULL) return EINVAL; /* fail closed, no raw-string fallback */
   struct zb_reaper_dir_id id;
-  int fd = reaper_pin_dir(resolved, &id);
+  const int fd = zb_reaper_pin_dir(resolved, &id); /* open + validate the pinned dir BEFORE anything else */
   if (fd < 0) return EINVAL;
+  /* re-check the pathname STILL names the pinned dir immediately BEFORE the scan/inspect/SIGKILL (RoseCat
+   * 3da2862 #2) — not only after. */
+  if (!zb_reaper_dir_still_pinned(fd, resolved, &id)) { close(fd); return EINVAL; }
 
   struct zb_reaper_ops ops = {reaper_inspect_real, reaper_killsig_real, NULL};
   int rc = zb_reaper_run_full(reaper_scan_real, &ops, resolved, kill_them, killed, kcap, kn, surv, scap, sn, overflow);
-  if (!reaper_dir_still_pinned(fd, resolved, &id)) { /* the dir identity changed under us: not a clean result */
-    if (overflow) *overflow = 1;
+  if (!zb_reaper_dir_still_pinned(fd, resolved, &id)) { /* a swap during the run: result is not clean */
+    *overflow = 1;
     if (rc == 0) rc = EINVAL;
   }
   close(fd);

@@ -152,6 +152,12 @@ int main(void) {
   zb_reaper_engine(&ops, (pid_t[]){1000}, 1, "/run/x", 0, NULL, 0, NULL, NULL, 0, NULL, &ov);
   check(ov == 1, "a match with a null output array is flagged overflow (never silently clean)");
 
+  /* the output contract: a null overflow pointer is refused, so truncation can never go unreported */
+  reset();
+  add(1000, 1, 1, me, 5, 5, 0, 1);
+  check(zb_reaper_engine(&ops, (pid_t[]){1000}, 1, "/run/x", 1, killed, 8, &kn, surv, 8, &sn, NULL) == EINVAL,
+        "engine refuses a null overflow pointer (output contract)");
+
   /* run_full: a scan failure/incomplete must map to a NON-ZERO return, never a clean empty result */
   int k2[8], s2[8], kn2, sn2, ov2, r;
   scan_mode = 3;
