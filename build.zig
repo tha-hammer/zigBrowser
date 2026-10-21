@@ -1828,6 +1828,14 @@ pub fn build(b: *std.Build) void {
         "py=$(tools/agent_host_env.sh --check) || exit 1; cd agent/host/tests && out=$(env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 ZB_AGENT_HOST_PYTHON=\"$py\" \"$py\" -X dev -m unittest -v test_route_probe_listen_fd 2>&1); rc=$?; printf '%s\\n' \"$out\"; [ $rc -eq 0 ] || exit $rc; if printf '%s\\n' \"$out\" | grep -q ResourceWarning; then echo 'test_route_probe_listen_fd: ResourceWarning' >&2; exit 1; fi",
     });
     agent_setup_ms5_step.dependOn(&agent_host_route_probe_listen_fd.step);
+    // The probe's listening check where getsockopt(SO_ACCEPTCONN) is ENOPROTOOPT, as on macOS (db1f05b on both Macs):
+    // the non-blocking accept() fallback with exact flag restoration, an early client closed unserved (RoseCat 7387).
+    const agent_host_route_probe_darwin_listen = b.addSystemCommand(&.{
+        "sh",
+        "-c",
+        "py=$(tools/agent_host_env.sh --check) || exit 1; cd agent/host/tests && out=$(env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 ZB_AGENT_HOST_PYTHON=\"$py\" \"$py\" -X dev -m unittest -v test_route_probe_darwin_listen 2>&1); rc=$?; printf '%s\\n' \"$out\"; [ $rc -eq 0 ] || exit $rc; if printf '%s\\n' \"$out\" | grep -q ResourceWarning; then echo 'test_route_probe_darwin_listen: ResourceWarning' >&2; exit 1; fi",
+    });
+    agent_setup_ms5_step.dependOn(&agent_host_route_probe_darwin_listen.step);
     // R1 on macOS, the probe's CLI-environment check (BlueBeaver 6977; BlackRobin 6983): proc_darwin's parser and walk,
     // and route_probe's canary-gated verdict. The real libproc/KERN_PROCARGS2 calls run in tests/mac/ms5_r1_env_gate.sh.
     const agent_host_proc_darwin = b.addSystemCommand(&.{
@@ -2792,6 +2800,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&agent_host_parent_watch.step);
     test_step.dependOn(&agent_host_setup_darwin.step);
     test_step.dependOn(&agent_host_route_probe_listen_fd.step);
+    test_step.dependOn(&agent_host_route_probe_darwin_listen.step);
     test_step.dependOn(&agent_host_proc_darwin.step);
     test_step.dependOn(&agent_host_route_probe_darwin_env.step);
     test_step.dependOn(&agent_host_setup_darwin_r1.step);

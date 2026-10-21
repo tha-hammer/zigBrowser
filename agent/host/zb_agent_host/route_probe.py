@@ -15,6 +15,8 @@ BlackRobin 6975). The probe adopts it only after checking it (adopt_listener) an
 import argparse
 import asyncio
 import contextlib
+import errno
+import fcntl
 import json
 import os
 import re
@@ -44,7 +46,8 @@ class ProbeRefused(Exception):
 def adopt_listener(fd, port):
     """macOS (RoseCat 6958; BlueBeaver 6961; BlackRobin 6975): setup binds 127.0.0.1:<port> outside the sandbox,
     whose profile permits only that port, and hands the listener in as `fd`. Adopt it only when it is an AF_INET
-    SOCK_STREAM socket that is listening on exactly 127.0.0.1:<port>; otherwise close it and raise ProbeRefused."""
+    SOCK_STREAM socket that is listening on exactly 127.0.0.1:<port>; otherwise close it and raise ProbeRefused. The
+    address is checked before the listening state, so nothing probes an off-target socket (RoseCat 7387)."""
     try:
         if not stat.S_ISSOCK(os.fstat(fd).st_mode):
             raise ProbeRefused("the listen fd is not a socket")
@@ -59,10 +62,9 @@ def adopt_listener(fd, port):
     try:
         if sock.family != socket.AF_INET or sock.type != socket.SOCK_STREAM:
             raise ProbeRefused("the listen fd is not an IPv4 stream socket")
-        if not sock.getsockopt(socket.SOL_SOCKET, socket.SO_ACCEPTCONN):
-            raise ProbeRefused("the listen fd is not listening")
         if sock.getsockname() != ("127.0.0.1", port):
             raise ProbeRefused(f"the listen fd is not on 127.0.0.1:{port}")
+        _require_listening(sock)
     except BaseException:
         sock.close()
         raise
@@ -74,6 +76,49 @@ def adopt_listener(fd, port):
         sock.close()
         raise ProbeRefused("the listen fd cannot be made non-inheritable") from None
     return sock
+
+
+def _require_listening(sock):
+    """ProbeRefused unless `sock` is listening. getsockopt(SO_ACCEPTCONN) answers on Linux; Darwin cannot read it
+    (ENOPROTOOPT; db1f05b on both Macs), so there, and only there, a non-blocking accept() decides (RoseCat 7387):
+    an empty queue (EAGAIN) is listening, EINVAL is not, and a connection that is already queued, before the CLI
+    exists, is closed at once, never served, and refuses the listener. The fd's status flags are saved and EXACTLY
+    restored on every path: its open file description is shared with setup's descriptor. Every other error refuses."""
+    try:
+        listening = sock.getsockopt(socket.SOL_SOCKET, socket.SO_ACCEPTCONN)
+    except OSError as exc:
+        if exc.errno != errno.ENOPROTOOPT:
+            raise ProbeRefused(f"the listen fd's listening state is unreadable: {exc.strerror or exc}") from None
+    else:
+        if not listening:
+            raise ProbeRefused("the listen fd is not listening")
+        return
+    fd = sock.fileno()
+    try:
+        old = fcntl.fcntl(fd, fcntl.F_GETFL)
+        fcntl.fcntl(fd, fcntl.F_SETFL, old | os.O_NONBLOCK)
+    except OSError as exc:
+        raise ProbeRefused(f"the listen fd's flags cannot be set: {exc.strerror or exc}") from None
+    why = None
+    try:
+        early, _ = sock.accept()
+    except BlockingIOError:
+        pass  # listening, nothing queued
+    except OSError as exc:
+        why = ("the listen fd is not listening" if exc.errno == errno.EINVAL
+               else f"the listen fd cannot be probed: {exc.strerror or exc}")
+    else:
+        early.close()  # never served
+        why = "an early connection reached the listen fd before the CLI existed (closed, never served)"
+    try:
+        fcntl.fcntl(fd, fcntl.F_SETFL, old)
+        restored = fcntl.fcntl(fd, fcntl.F_GETFL) == old
+    except OSError:
+        restored = False
+    if why is None and not restored:
+        why = "the listen fd's flags could not be restored"
+    if why is not None:
+        raise ProbeRefused(why)
 
 
 def _stream(text):
