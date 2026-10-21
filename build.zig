@@ -1958,6 +1958,14 @@ pub fn build(b: *std.Build) void {
         "automation-windows-e2e",
     });
     automation_windows_e2e.addArtifactArg(exe);
+    // S8a: each window's committed-load count (load_serial) in page.list and page.health.
+    const automation_load_serial_e2e = b.addSystemCommand(&.{
+        "sh",
+        "-c",
+        "python3 tests/e2e/automation_load_serial_test.py --binary \"$1\"",
+        "automation-load-serial-e2e",
+    });
+    automation_load_serial_e2e.addArtifactArg(exe);
 
     // Input verbs (contenteditable type/fill, ...) against the live page.
     const automation_input_e2e = b.addSystemCommand(&.{
@@ -2247,6 +2255,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&social_flows_e2e.step);
     test_step.dependOn(&automation_input_e2e.step);
     test_step.dependOn(&automation_windows_e2e.step);
+    test_step.dependOn(&automation_load_serial_e2e.step);
     test_step.dependOn(&automation_scroll_e2e.step);
     test_step.dependOn(&automation_native_ports_e2e.step);
     test_step.dependOn(&automation_pacing_e2e.step);

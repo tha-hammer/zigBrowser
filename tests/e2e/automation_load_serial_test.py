@@ -60,7 +60,9 @@ def case_counts(binary: Path, tmp: Path, check) -> None:
         check(serials(b)[1] == serials(b)[0], f"page.health still agrees ({serials(b)})")
         b.ev(f"(window.open({url_a!r}), 1)")
         if check(b.wait(lambda: len(b.zb.page.list()["pages"]) == 2, 15), "a popup opened", b):
-            # The popup is listed before its first load commits.
+            # The popup is listed before its first load commits. Exactly 1, not the first
+            # page's lower bound: window.open of a file: URL commits that one document, with
+            # no about:blank and no redirect, so a second count is a double count.
             settle(b, "window-2", 1)
             popup = serials(b, "window-2")[0]
             check(popup == 1 and serials(b)[0] == first + 2,

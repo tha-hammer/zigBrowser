@@ -135,6 +135,10 @@ struct ZbWindow {
   /* The last committed page's URI (GTK thread): the crash page's Reload
    * link goes back to it, as WebKit forgets it when the process dies. */
   char *committed_uri;
+  /* S8a: this window's committed loads (WEBKIT_LOAD_COMMITTED; GTK thread). An approval
+   * binds it, so a navigation between the card and the commit is seen; page.list and
+   * page.health report it as load_serial. */
+  guint64 load_serial;
   /* The crash page (ZB_CRASH_PAGE_*): a dead web process's message in the
    * same view, loaded until its own load finishes, then shown until the
    * next real load commits. GTK thread only. */
@@ -1119,6 +1123,7 @@ static void on_window_load_changed(WebKitWebView *view,
 
   auto_load_event(win, load_event, webkit_web_view_get_uri(view));
   if (load_event == WEBKIT_LOAD_COMMITTED) {
+    win->load_serial++; /* a new document; a same-document change commits nothing */
     win->terminated = NULL; /* a new page in a live web process */
     win->crash_page = ZB_CRASH_PAGE_NONE;
     g_free(win->committed_uri);
@@ -4028,10 +4033,10 @@ static void auto_list_windows(void *ctx) {
           win->unresponsive_since_us != 0 ? (g_get_monotonic_time() - win->unresponsive_since_us) / 1000 : 0;
       g_string_append_printf(out,
                              ",\"responsive\":%s,\"unresponsive_ms\":%" G_GINT64_FORMAT
-                             ",\"incident\":%u,\"process_group\":%u"
+                             ",\"incident\":%u,\"process_group\":%u,\"load_serial\":%" G_GUINT64_FORMAT
                              ",\"loading\":%s,\"dialog_open\":%s,\"crashed\":",
                              win->unresponsive_since_us == 0 ? "true" : "false", unresponsive_ms,
-                             win->incident, win->process_group,
+                             win->incident, win->process_group, win->load_serial,
                              webkit_web_view_is_loading(win->view) ? "true" : "false",
                              (win->dialog != NULL || win->policy_dialog != NULL) ? "true" : "false");
       if (win->terminated != NULL) {
