@@ -25697,3 +25697,36 @@ destructive Mac reaper gate remains OFF. The next green must implement the
 bounded loop, register this test, and retain the fail-closed behavior for a
 scan error, incomplete census, pass-cap exhaustion or other non-clean result.
 Verdict sent to JadeBeacon in Agent Mail 7381.
+
+## Win11 setup detection and bounded provisioning (`e42fb68`)
+
+**Code APPROVED; the requested two-flag live command is NOT approved as
+written.** `Get-WindowsSdkInfo` now checks the current
+`winrt\\EventToken.h` layout first, retains `um\\EventToken.h` as the older
+layout fallback, and still requires `winrt\\wrl.h`. `-SkipOpenSsh` bypasses
+the OpenSSH function before service, capability or firewall access, while
+`-SkipRepoSync` returns before any Git lookup or mutation.
+
+An exact clean-export private-namespace run of the registered source-pin
+module passed **13/13**. Running the same test file with the parent version of
+`setup.ps1` failed four checks. The author's claim that all five were red is a
+minor evidence error: the fifth check preserves the old `um\\` fallback and
+therefore correctly already passed on the parent. This does not weaken the
+four causal checks or block the code.
+
+The exact requested command, `setup.ps1 -SkipOpenSsh -SkipRepoSync`, does not
+mechanically enforce the stated mutation scope. If the otherwise-correct
+read-only toolchain detection unexpectedly returns null, it falls through to
+`winget install Microsoft.VisualStudio.2022.BuildTools`. The existing
+`-SkipToolchainInstall` switch supplies the required fail-closed boundary.
+Agent Mail 7383 therefore authorizes the owner-approved run only on
+`win11-m8`, as `zbtext`, from exact `e42fb68`, with no snapshot, using:
+
+```powershell
+.\tests\guest\setup.ps1 -SkipOpenSsh -SkipRepoSync -SkipToolchainInstall
+```
+
+The acceptable result writes Zig, NuGet/the pinned WebView2 SDK, and their
+user environment values under `%LOCALAPPDATA%`; it must print `C/C++
+toolchain found:`, never the installation branch. The script remains forbidden
+on the Win10 file server.
