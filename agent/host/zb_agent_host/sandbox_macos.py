@@ -71,7 +71,7 @@ def _validate_host(host):
     return host
 
 
-def _endpoints(egress, bridges, is_hook):
+def _endpoints(egress, bridges, is_hook, is_login=False):
     """The validated, de-duplicated loopback endpoints this profile may reach, as Seatbelt host:port strings.
 
     Raises ValueError on an empty or malformed capability (never widens to all-outbound): the egress host
@@ -86,14 +86,9 @@ def _endpoints(egress, bridges, is_hook):
     """
     if type(is_hook) is not bool:
         raise ValueError(f"is_hook must be a bool, got {type(is_hook).__name__} {is_hook!r}")
+    if type(is_login) is not bool:
+        raise ValueError(f"is_login must be a bool, got {type(is_login).__name__} {is_login!r}")
     bridges = tuple(bridges)
-    if is_hook and egress is not None:
-        raise ValueError("a hook profile must not carry an egress endpoint (rev 16.2 §3c: bridges only)")
-    if not is_hook and egress is None:
-        raise ValueError("a cli/helper profile must carry an egress endpoint")
-    if set(bridges) != set(CANONICAL_BRIDGES) or len(bridges) != len(CANONICAL_BRIDGES):
-        raise ValueError(f"bridges must be exactly {CANONICAL_BRIDGES} (missing/extra/wrong/duplicate refused), "
-                         f"got {bridges}")
 
     eps = []
     seen = set()
@@ -105,6 +100,25 @@ def _endpoints(egress, bridges, is_hook):
             raise ValueError(f"duplicate loopback port {port}")
         seen.add(port)
         eps.append(f"localhost:{port}")  # Seatbelt's only accepted loopback host token
+
+    if is_login:
+        # The one-shot sign-in: egress endpoint ONLY, no bridges (setup-token runs no hooks).
+        if is_hook:
+            raise ValueError("a login profile is not a hook")
+        if egress is None:
+            raise ValueError("a login profile must carry an egress endpoint")
+        if bridges:
+            raise ValueError("a login profile has no bridges (the sign-in runs no hooks)")
+        add(getattr(egress, "host"), getattr(egress, "port"))
+        return eps
+
+    if is_hook and egress is not None:
+        raise ValueError("a hook profile must not carry an egress endpoint (rev 16.2 §3c: bridges only)")
+    if not is_hook and egress is None:
+        raise ValueError("a cli/helper profile must carry an egress endpoint")
+    if set(bridges) != set(CANONICAL_BRIDGES) or len(bridges) != len(CANONICAL_BRIDGES):
+        raise ValueError(f"bridges must be exactly {CANONICAL_BRIDGES} (missing/extra/wrong/duplicate refused), "
+                         f"got {bridges}")
 
     if not is_hook:
         # egress is an object with .host/.port (sandbox.Endpoint); validated in add().
@@ -130,18 +144,20 @@ def _file_write_line():
     return f'(allow file-write* (subpath (param "{SCRATCHPAD_PARAM}")) {devices})'
 
 
-def render_profile(*, egress, bridges, is_hook):
-    """Return the Seatbelt profile text for a CLI/helper (``is_hook=False``) or a hook (``is_hook=True``).
+def render_profile(*, egress, bridges, is_hook, is_login=False):
+    """Return the Seatbelt profile text for a CLI/helper (``is_hook=False``), a hook (``is_hook=True``), or the
+    one-shot sign-in (``is_login=True``: egress endpoint only, no bridges).
 
     ``egress`` is a :class:`sandbox.Endpoint` (or None for a hook); ``bridges`` is the tuple of loopback
-    bridge ports. Raises ``ValueError`` on an empty or malformed network capability. The writable scratchpad
-    is NOT an argument — it is bound at launch as the ``SCRATCHPAD`` ``-D`` parameter, so no path is ever
-    interpolated into the source.
+    bridge ports (empty for login). Raises ``ValueError`` on an empty or malformed network capability. The
+    writable scratchpad is NOT an argument — it is bound at launch as the ``SCRATCHPAD`` ``-D`` parameter, so
+    no path is ever interpolated into the source.
     """
-    eps = _endpoints(egress, bridges, is_hook)
+    eps = _endpoints(egress, bridges, is_hook, is_login)
     net = " ".join(f'(remote ip "{e}")' for e in eps)
-    kind = "hook" if is_hook else "cli/helper"
-    net_note = "bridges only (no egress — rev 16.2 §3c)" if is_hook else "egress + bridges"
+    kind = "login" if is_login else ("hook" if is_hook else "cli/helper")
+    net_note = ("egress only (sign-in; no bridges)" if is_login
+                else "bridges only (no egress — rev 16.2 §3c)" if is_hook else "egress + bridges")
 
     lines = [
         "(version 1)",
@@ -365,10 +381,18 @@ class MacSeatbeltBackend:
         net = network if network is not None else self.network()
         scratch = dparams(scratchpad=str(home.scratchpad))[SCRATCHPAD_PARAM]  # validated canonical non-root
         # Materialize the per-launch profile SECURELY (O_EXCL + 0400 + fd check) in its own 0700 dir OUTSIDE
-        # the published dist — never current/runtime, never a shared/reused path (RoseCat 6972 #1/#2).
-        profile_path = _materialize_profile(
-            render_profile(egress=net.egress.endpoint, bridges=net.bridges.ports, is_hook=False))
+        # the published dist — never current/runtime, never a shared/reused path (RoseCat 6972 #1/#2). The
+        # login network carries no bridges, which selects the egress-only sign-in profile.
+        is_login = not net.bridges.ports
+        profile_path = _materialize_profile(render_profile(
+            egress=net.egress.endpoint, bridges=net.bridges.ports, is_hook=False, is_login=is_login))
         argv = ("/usr/bin/sandbox-exec", "-f", profile_path, "-D", f"{SCRATCHPAD_PARAM}={scratch}")
         mounts = (sb.Mount(source=scratch, target=scratch, writable=True),)
         return sb.LaunchSpec(argv=argv, unshare=(), mounts=mounts, workdir=str(home.workspace),
                              seccomp_fd=None, network=net, lifetime=self.lifetime(), channel=self.channel())
+
+    def login_launch_spec(self, home, *, seccomp_fd=None, ro_paths=(), net_dir=None):
+        """The one-shot sign-in's launch: :meth:`launch_spec` carrying :meth:`login_network` (egress only, no
+        bridges), which renders the egress-only sign-in profile."""
+        return self.launch_spec(home, seccomp_fd=seccomp_fd, ro_paths=ro_paths, net_dir=net_dir,
+                                network=self.login_network())
