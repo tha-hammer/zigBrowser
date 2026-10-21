@@ -22726,16 +22726,21 @@ close the separately open security-advisory comparison between 48.0.1 and
 
 ## WS0 WTS lock-state mechanism (`5bef873`)
 
-**BLOCKED for WS0 closure.** The replacement signal is the right one, but its
-failure semantics and watched acceptance still fail open.
+**BLOCKED for WS0 closure. SUPERSEDED LAYOUT FINDING:** the byte-offset
+approval below was withdrawn on 2026-10-21 after a read-only dump of the real
+232-byte `WTSINFOEXW` buffer. The replacement signal is the right one, but the
+implementation reads the wrong field in addition to the failure-semantics and
+watched-acceptance problems recorded here.
 
-The native layout and target-OS mapping are correct. Microsoft's
+The following layout conclusion was **incorrect and is withdrawn**. Microsoft's
 [`WTSINFOEXW`](https://learn.microsoft.com/en-us/windows/win32/api/wtsapi32/ns-wtsapi32-wtsinfoexw)
 wraps a four-byte `Level` before the union, and
 [`WTSINFOEX_LEVEL1_W`](https://learn.microsoft.com/en-us/windows/win32/api/wtsapi32/ns-wtsapi32-wtsinfoex_level1_w)
-places `SessionId`, `SessionState` and `SessionFlags` next. Thus byte 12 is the
-right flags offset, and on the supported Windows 10/11 hosts 0/1 means
-locked/unlocked. Buffer ownership and freeing are also correct. Demoting
+places `SessionId`, `SessionState` and `SessionFlags` next, but the union is
+eight-byte aligned: `Data` starts at byte 8, `SessionId` is at byte 8,
+`SessionState` at byte 12, and `SessionFlags` at byte 16. Reading byte 12
+therefore reads the active session's state (`WTSActive == 0`), not its lock
+flag, and falsely reports both locked and unlocked sessions as locked. Demoting
 `OpenInputDesktop` to a diagnostic matches the user's observed locked console,
 where it incorrectly returned `Default`.
 
@@ -22852,14 +22857,16 @@ copied, in Agent Mail 7188.
 
 ## WS0 WTS fail-closed fix-forward (`fcbcb29`)
 
-**APPROVED to proceed with the owner-watched WS0 reruns.** This closes the
-three functional and authoritative-contract blockers recorded at `88852d9`:
+**APPROVAL WITHDRAWN on 2026-10-21.** This section's byte-12 WTS premise was
+disproved by the real 232-byte buffer layout. It therefore does not close the
+functional blocker recorded at `88852d9`; only the fail-closed policy and
+authoritative-contract wording remain valid parts of this review.
 
-- `UNLOCK(1)` is the only path to `locked=false`; `LOCK(0)`, another flag,
+- `UNLOCK(1)` is intended to be the only path to `locked=false`; `LOCK(0)`, another flag,
   query failure and absent LogonUI all fail closed as locked;
 - `LockedDesktopLive` requires `wts_lock_ok is True` and
-  `session_flags == 0`, so LogonUI can no longer substitute for the actual
-  WTS ABI read; and
+  `session_flags == 0`, but the implementation produced that value from
+  `SessionState`, so this assertion did not discriminate lock state; and
 - plan rev 2.12 replaces `OpenInputDesktop` with WTSINFOEX as the lock-state
   contract and demotes the desktop name to a diagnostic.
 
@@ -23038,10 +23045,11 @@ Verdict sent to BlackRobin in Agent Mail 7200.
 
 ## WS0 locked-console evidence after `fcbcb29`
 
-The genuine locked-console diagnostic now reports exactly
-`locked:true`, `wts_lock_ok:true`, `session_flags:0`. That is positive
-mechanism evidence for the WTS implementation reviewed above, but it is **not
-the watched-run acceptance**: `LockedDesktopLive`'s polling command used the
+The genuine locked-console diagnostic reported exactly
+`locked:true`, `wts_lock_ok:true`, `session_flags:0`. **This is not positive
+mechanism evidence and is withdrawn:** byte 12 was `SessionState`, whose value
+is zero for an active session in either lock state. Independently, it was not
+the watched-run acceptance because `LockedDesktopLive`'s polling command used the
 PowerShell raw-string fragment `\"$($s.nonce)\"`, which throws under
 PowerShell 5.1, and its surrounding `catch {}` swallowed the exception. The
 fix-forward `ac20169` is approved below. WS0 and `7d85cd5` remain OPEN until
@@ -23049,7 +23057,8 @@ the subsequent unlocked two-host probe-only run completes under observation.
 
 ## WS0 locked poll fix and watched WTS run (`ac20169`)
 
-**APPROVED.** `_ssh_run` streams the script to
+**APPROVED only for the polling/transport fix. WTS acceptance withdrawn.**
+`_ssh_run` streams the script to
 `powershell -Command "$input | Out-String | iex"`, so the replacement of the
 raw-string `\"$($s.nonce)\"` fragment with the valid PowerShell expression
 `([string]$s.nonce)` fixes the exact transport/parser failure. The new
@@ -23066,15 +23075,21 @@ python -m py_compile tests/windows/host_live_test.py: clean
 gate_twohost_selftest.py: Ran 100 tests in 2.992s; OK (skipped=18)
 ```
 
-The owner-watched locked-console run is accepted as the real discriminator
-and closes WS0's locked/WTS half. From a clean export with its own `.git`, the
-staged probe SHA `8766b4d26d59635f...` equalled HEAD and
-`LockedDesktopLive` passed 1/1 in 5.656 seconds on the genuinely locked Win11
-console. That row can pass only with `wts_lock_ok=true`, `session_flags=0`
-and `locked=true`.
+The following acceptance is **withdrawn as a false pass**. From a clean export
+with its own `.git`, the staged probe SHA `8766b4d26d59635f...` equalled HEAD
+and `LockedDesktopLive` passed 1/1 in 5.656 seconds on the genuinely locked
+Win11 console, but its `session_flags=0` came from byte 12 (`SessionState`), not
+byte 16 (`SessionFlags`). A read-only unlocked-console dump proved the same
+mistake: the real 232-byte row had `Level=1` at 0, padding at 4, `SessionId=1`
+at 8, `SessionState=0` at 12 and `SessionFlags=1` at 16, while the probe still
+reported locked.
 
-**WS0/`7d85cd5` remains OPEN only for the owner-watched unlocked
-`gate.sh --probe-only` two-host run.**
+**WS0/`7d85cd5` remains OPEN.** Before either watched run counts, the probe
+must read `SessionFlags` at byte 16, validate that `SessionId` at byte 8 equals
+the queried session, fail closed on any short/mismatched/malformed layout, and
+carry a real 232-byte fixture oracle that kills a byte-12 mutant. Then both the
+locked `LockedDesktopLive` run and the unlocked two-host
+`gate.sh --probe-only` run must be repeated under observation.
 
 **SHOULD (test hygiene):** eventually expose the poll builder to a hostless
 test so the always-run suite rejects a reintroduced raw-string backslash quote
@@ -23145,3 +23160,165 @@ The owner's aggregate result (324/324 steps, 1125/1127 tests, two skips) is
 accepted for the covered cases. The temporary adversarial probe and clean
 export were deleted immediately. Verdict sent to BlackRobin in Agent Mail
 7207.
+
+## WS0 snapshot creation time (`60d7c5d`)
+
+**APPROVED.** The gate retains the exact-name `snapshot-info` shutoff-state
+check and now obtains the creation epoch from the exact-name
+`snapshot-dumpxml`, which is where this libvirt host actually exposes it.
+Missing and nonnumeric values fail closed. The fake `virsh` output now matches
+the observed six-field `snapshot-info` layout, and the argv oracle requires
+both queries against the pinned snapshot name.
+
+Independent exact-commit, display-scrubbed evidence:
+
+```text
+gate_twohost_selftest.py: Ran 101 tests in 3.273 s; OK (skipped=18)
+```
+
+The subsequent owner-watched run read `created_epoch=1792489939` from the real
+snapshot XML, providing live confirmation. This approval does not close the
+separate WTS lock-state or Win10-version readiness gates. Verdict sent to
+AzureRidge in Agent Mail 7213.
+
+## Registered macOS-test hygiene (`f3c18ed`)
+
+**APPROVED.** A child disappearing between `kill(pid, 0)` and opening
+`/proc/<pid>/stat` now counts as dead, not as a suite error. The four module
+docstrings match their registered status and give the mandatory PID-namespace
+invocation. The cryptography-pin suite now checks the source
+`pyproject.toml` constraint as well as the generated lock, while intentionally
+leaving Linux on its independent resolution.
+
+Independent exact-commit evidence inside a private user/PID namespace:
+
+```text
+test-mac-census: Build Summary 8/8
+crypto pin: 5/5; harness suites green; six expected Linux kqueue skips
+```
+
+Verdict sent to BlueBeaver in Agent Mail 7214.
+
+## MS5 bundled-framework relocation red (`4c856ae`)
+
+**APPROVED as the failing-first red.** The pure planner contract covers every
+framework-root install ID and dependency, relative rewriting from each
+loader, missing in-tree targets, foreign absolute dependencies, permitted
+system/tokenized paths, and the post-rewrite problem census. The manual
+both-Mac gate adds whole-framework signature verification and runtime image
+provenance both before and after moving the staged runtime. Its cleanup target
+is validated and explicit.
+
+An exact-commit run failed all **8/8** tests because the production relocator
+does not yet exist, as intended. The suite remains unregistered until the
+green. No remote Mac or live user resource was touched. Verdict sent to
+BlueBeaver in Agent Mail 7214.
+
+## VM-containment malformed setting and real-binary test (`bc11052`, `893ac98`)
+
+**`bc11052` APPROVED. `893ac98` BLOCKED-for-tests as closure of finding
+7199 #2.**
+
+The production `runAgentSetup` now consumes the whole resolved security
+setting. An explicitly malformed value therefore fails closed before the
+platform and setup paths, and the pure test exercises that exact production
+decision.
+
+The real-binary test builds and runs, but does not prove its stated zero-child
+boundary. It asserts only a refusal substring and nonzero status. A mutant
+that prints the refusal but omits the `return 1` would continue to the
+intentionally absent `HOME` on Linux (or the still-closed platform gate on
+macOS), fail there, and satisfy the test without proving that the VM gate
+stopped execution. It also has only an unset control, while finding 7199
+required explicit unset and OFF controls.
+
+Add a child/probe canary at the next boundary: ON and malformed must produce
+zero canary observations, while explicit OFF and unset must observably reach
+that boundary. Final MS6 acceptance still requires the real-binary case on
+both Macs.
+
+Independent exact-commit private-Xvfb evidence:
+
+```text
+test-mac-vm-containment: Build Summary 8/8; unit 5/5; current e2e PASS
+```
+
+That green result confirms the current assertions but not the missing
+discriminator. Verdict sent to JadeBeacon in Agent Mail 7215.
+
+## macOS kill-group ABI consumer (`b902e72`)
+
+**APPROVED for the coherent C/Zig ABI and mapping; BLOCKED-for-tests as closure
+of the cumulative `5bb7986` finding.** The extern now returns `c_int`.
+`stopWith` maps zero to `killed` and nonzero to the new `kill_failed` result;
+the already-failed network-start path deliberately discards cleanup status
+rather than changing its fail-closed outcome.
+
+The previously required unexpected-refusal regression is still absent. The
+Zig suite exercises only the real zero-to-`killed` backstop. Route the
+production mapping through an injectable or pure classifier and require a
+nonzero result to become `kill_failed` without claiming success/reap, or use
+an equivalent linked fake. The production disposition must also be explicit:
+`Netd.stop()` currently discards `stopWith`'s reason, so `kill_failed` cannot
+yet reach supervision or a survivor diagnostic.
+
+Independent exact-commit evidence ran inside a private user/PID namespace:
+
+```text
+test-agent-spawn: Build Summary 5/5; spawn 12/12; kill-group 8/8
+```
+
+Verdict sent to JadeBeacon in Agent Mail 7215.
+
+## S8 navigation-approval plan rev 16.20.45 (`e8b7c81`)
+
+**BLOCKED as the authoritative decision-16 contract.** The fixture-only
+account proof and 120-second card decision are recorded correctly. The three
+navigation-setting modes are directionally clear, but two security boundaries
+and one user decision remain incomplete:
+
+1. `conditional` treats equal `engine.originOf` strings as no-card. The
+   production helper serializes `about:`, `data:`, `javascript:` and malformed
+   URLs alike as `"null"`. Opaque origins are not equal merely because they
+   share that serialization; `about:blank` to `javascript:`/`data:` must not
+   bypass the card. Define only valid nonopaque origin equality as no-card,
+   with opaque/malformed and default-port reds. Reload remains its separate
+   case.
+2. "Changed only by the user" names model and page negatives but omits the
+   external automation socket/native protocol. Name the sole app-owned UI
+   gesture that changes this security setting and prove that the model, page,
+   automation socket and every other ingress cannot change it.
+3. `conditional` is still a proposed default awaiting the user. Keep that
+   decision explicitly open and make S8c wait; this revision must not be read
+   as a decided default.
+
+The exact headless/full-automation switches may land in S8c, but they must be
+explicit user-selected native state and fail closed until they exist. Verdict
+sent to BlackRobin in Agent Mail 7216.
+
+## WS0 WTS aligned-layout fix (`fd099e3`)
+
+**APPROVED; the unlocked half is accepted. WS0 remains OPEN.** The production
+parser requires at least 20 bytes and Level 1, verifies that `SessionId` at
+byte 8 equals the queried console session, and reads `SessionFlags` at byte
+16. Every mismatch returns null into the existing fail-closed verdict. The
+registered source oracle forbids a byte-12 read, and the VM-gated 232-byte
+fixture differs only at byte 16, so the old reader fails its unlocked row.
+
+Independent exact-commit, display-scrubbed evidence:
+
+```text
+gate_twohost_selftest.py: Ran 104 tests in 3.275 s; OK (skipped=20)
+host_live_test.py without VM env: Ran 20; OK (skipped=20)
+```
+
+The owner-watched unlocked Win11 run from a clean `fd099e3` export reached
+`RESULT=OK interactive=True locked=False`, which is the real discriminator
+the byte-12 code could not pass. It then refused the Win10 file server because
+build 19041 is below the current 19045 policy floor; that is correct behavior
+pending the user's floor decision, not a WTS regression.
+
+The earlier 14:00 locked run remains invalid. WS0/`7d85cd5` closes only after
+the genuinely locked `LockedDesktopLive` case is repeated on this byte-16 code
+and the user resolves the Win10 19041 policy. Verdict sent to AzureRidge in
+Agent Mail 7212.
