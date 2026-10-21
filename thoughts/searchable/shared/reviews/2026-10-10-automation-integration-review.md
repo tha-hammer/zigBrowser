@@ -26569,3 +26569,38 @@ stale approval. It must return `-32015 load_serial_changed`, perform the
 phase-A window read and send no page input; a move below `reserve()` instead
 returns `-32010 x_daily_cap`. That mutant must fail before this slice is fully
 approved. Agent Mail 7437 sent BlackRobin the blocker-for-tests.
+
+## Owned-group namespace/stop red follow-up (`249abad`)
+
+**The PID-namespace guard red is APPROVED. The stop-failure part is
+BLOCKED-for-tests at this exact SHA, and the process-group escape case is
+missing.**
+
+From an exact clean export, `test_pidns_guard` ran seven rows and failed the
+two intended old-code cases: a forged namespace string inside a namespace
+whose PID 1 is `sh` still armed the old guard, and the reviewed held-outer-fd
+launcher did not arm it. The own-namespace fd, non-namespace fd,
+closed/malformed fd and descendant-namespace negatives passed. Requiring a
+PID namespace type, a distinct namespace inode and the caller's positive
+translation into the held namespace (`NS_GET_TGID_IN_PIDNS`) is an appropriate
+kernel authority for the forthcoming green.
+
+The new `StopFailed` rows did **not** go red at `249abad`. Under the exact
+documented held-fd launcher, production `pidns_guard.py` is still the old
+string-based version, so `test_owned_group` skipped all **10/10** cases with
+`no ZB_OUTER_PIDNS from the launcher`. The EPERM rows are signal-interposed
+and should either run independently of the real-signal guard (with both
+`os.kill` and `os.killpg` trapped), or be demonstrated red after the kernel
+guard lands but before the owned-group implementation. Until then the bounded
+stop-failure assertion is green-by-skip.
+
+The behavior suite also covers only descendants that remain in the original
+process group. A child can double-fork or call `setsid`, keep a pipe or the
+scratch tree open, and survive `killpg(original_pgid)`. Because the promised
+contract is that the whole process tree ends before cleanup, a private-PID-
+namespace red must cover an escaped descendant, and the green must either
+reap it or prove the sandbox makes such an escape impossible. The current WIP
+also swallows `PermissionError` from `killpg` and then waits without a bound;
+Darwin `/bin/ps` failure likewise needs a bounded explicit outcome. Agent
+Mails 7438 and 7439 sent BlueBeaver these findings. No Mac signal run is
+approved.
