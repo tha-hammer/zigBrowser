@@ -1833,6 +1833,14 @@ pub fn build(b: *std.Build) void {
         "-c",
         "py=$(tools/agent_host_env.sh --check) || exit 1; cd agent/host/tests && env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 ZB_AGENT_HOST_PYTHON=\"$py\" \"$py\" -m unittest -v test_backend_contract",
     });
+    // MS6 macOS Seatbelt backend — the profile generator's content rules, unit-tested on Linux (pure
+    // Python; the kernel enforcement is the MS6.1-6.5 Mac gate). Pins the token-isolation belt measured on
+    // both arches: explicit (deny process-info*) + curated sysctl-read, scratchpad-only writes, hook bridges-only.
+    const agent_host_sandbox_macos = b.addSystemCommand(&.{
+        "sh",
+        "-c",
+        "py=$(tools/agent_host_env.sh --check) || exit 1; cd agent/host/tests && env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 ZB_AGENT_HOST_PYTHON=\"$py\" \"$py\" -m unittest -v test_sandbox_macos",
+    });
     // Chat drawer S3n1 (plan rev 16.2 §3c): the host-side network helper and the
     // two relays, driven through their command lines, offline (private fakes on
     // 127.0.0.1 and short /tmp/zbn-* socket directories only).
@@ -2229,6 +2237,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&agent_host_parent_watch.step);
     test_step.dependOn(&agent_host_contract.step);
     test_step.dependOn(&agent_host_backend_contract.step);
+    test_step.dependOn(&agent_host_sandbox_macos.step);
     test_step.dependOn(&agent_host_provision_unit.step);
     test_step.dependOn(&agent_host_chat.step);
     test_step.dependOn(&agent_host_chat_errors.step);
