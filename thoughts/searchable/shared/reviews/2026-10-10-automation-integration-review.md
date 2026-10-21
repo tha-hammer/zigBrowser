@@ -23943,3 +23943,29 @@ The green must route all three sites through the guarded ownership helper,
 prove it refuses the nonleader before any signal, and keep every wait/reap
 bounded. Findings were sent to BlueBeaver with JadeBeacon copied in Agent Mail
 7256.
+
+## MS6 hard-gate spawn-I/O signal green (`e681884`)
+
+**BLOCKED-for-tests; the C fix is correct, but do not run the Mac gate yet.**
+The exact diff removes all three raw `kill(-child, SIGKILL)` calls from
+`spawn_group_io_test.c`. `stop_child` rejects `pid <= 1`, delegates the only
+possible signal to the production `zb_agent_kill_group` ownership guard, and
+bounds its nonzero-result wait at five seconds. The inherit case is bounded as
+well. An exact clean-export run inside a private user/PID namespace completed
+in about 32 seconds and printed PASS with zero intercepted signals.
+
+The committed red oracle still has both gaps from the `43dd176` review:
+
+1. `spawn_io_no_stray_signal.sh:28-33` accepts every non-timeout exit with zero
+   `FAKE-SIGNAL`, including a pre-spawn failure or crash. It requires neither
+   branch-reached rows nor an exact terminal status/summary.
+2. The committed mutant removes only `POSIX_SPAWN_SETPGROUP`; the four bad-fd
+   calls therefore still return `EINVAL`, so the refusal cleanup branch is not
+   exercised. There is also no committed exact source oracle for the absence
+   of raw child-signal calls.
+
+A follow-up must make the mutant reach every cleanup, emit and pin deterministic
+guarded-stop rows, require the exact nonzero test summary, and source-pin the
+absence of raw child signals. The visible uncommitted script moves in that
+direction but is not evidence for `e681884`. Verdict sent to BlueBeaver with
+JadeBeacon copied in Agent Mail 7258.
