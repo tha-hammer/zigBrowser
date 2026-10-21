@@ -10,9 +10,15 @@ packaging/macos/merge_universal_tree.py: merge(x86_64_root, arm64_root, out, run
   (through `run`); any other differing Mach-O pairing (same arch twice, fat vs thin, two different fat files) fails;
 - `*.dist-info/WHEEL`: only `Tag:` lines may differ; the merged WHEEL keeps every line, with both arches' Tag lines;
 - `*.dist-info/sboms/<name>.json` that differ are kept per arch as `<name>.x86_64.json` and `<name>.arm64.json`;
-- `*.dist-info/RECORD` is regenerated from the merged files (sha256 urlsafe-b64 without padding, size; its own line
-  `<path>,,`), every other difference fails naming the path;
+- `*.dist-info/RECORD` is regenerated over the paths the x86_64 RECORD lists (the arm64 one must list the same), a
+  split SBOM becoming its two per-arch names: sha256 urlsafe-b64 without padding and size of the merged file, its own
+  line `<path>,,`; a listed path missing from the merged tree fails; every other difference fails naming the path;
 - `out` must not exist; nothing is left under it when the merge fails.
+Boundaries (RoseCat 7230): each regenerated RECORD covers exactly its own distribution's paths; a RECORD row that is
+absolute, escapes with `..`, holds a `.` segment or repeats, and a missing or repeated own-RECORD row, are refused; a
+FIFO or other non-regular entry is refused without being opened; a failing lipo names its path and leaves no output
+and no work directory; the two inputs' permission bits must agree (an executable CLI against a non-executable peer is
+refused, not resolved by taking one side).
 
 Pure Python with an injectable runner: these tests never call lipo. The real merge on both Macs is
 tests/mac/ms5_deps_gate.sh. No process, no signal.
@@ -20,6 +26,8 @@ Run like the gate: cd tests/e2e && python3 -X dev -m unittest -v mac_merge_unive
 """
 import base64
 import hashlib
+import signal
+import subprocess
 import importlib.util
 import os
 import shutil
@@ -86,11 +94,31 @@ class Merge(unittest.TestCase):
                   b"Wheel-Version: 1.0\nGenerator: x\nRoot-Is-Purelib: false\nTag: cp312-cp312-macosx_11_0_arm64\n")
         self.both("pkg-1.0.dist-info/sboms/pkg.cyclonedx.json", b'{"components": 85}\n', b'{"components": 99}\n')
         self.both("pkg-1.0.dist-info/sboms/same.cyclonedx.json", b'{"same": true}\n')
-        self.both("pkg-1.0.dist-info/RECORD", b"pkg/_core.cpython-312-darwin.so,sha256=AAA,8\nstale,,\n",
-                  b"pkg/_core.cpython-312-darwin.so,sha256=BBB,8\nstale,,\n")
+        listed = sorted(p.relative_to(self.x).as_posix() for p in self.x.rglob("*") if p.is_file())
+        old = "".join(f"{r},sha256=OLD,1\n" for r in listed) + "pkg-1.0.dist-info/RECORD,,\n"
+        self.both("pkg-1.0.dist-info/RECORD", old.encode(), old.replace("OLD", "ARM").encode())
 
-    def merge(self):
-        self.m.merge(str(self.x), str(self.a), str(self.out), run=self.fake_run)
+    def merge(self, run=None):
+        self.m.merge(str(self.x), str(self.a), str(self.out), run=run or self.fake_run)
+
+    def refused(self, needle, run=None):
+        with self.assertRaises(self.m.MergeError) as cm:
+            self.merge(run)
+        self.assertIn(needle, str(cm.exception))
+        self.assertFalse(self.out.exists(), "a failed merge leaves no output")
+        self.assertEqual([p.name for p in self.tmp.iterdir() if p.name.startswith(".merge")], [],
+                         "nor a work directory")
+
+    def second_distribution(self):
+        self.both("two/__init__.py", b"y = 2\n")
+        self.both("two-2.0.dist-info/METADATA", b"Name: two\nVersion: 2.0\n")
+        self.both("two-2.0.dist-info/RECORD", b"two/__init__.py,sha256=OLD,1\ntwo-2.0.dist-info/METADATA,sha256=OLD,1\n"
+                  b"two-2.0.dist-info/RECORD,,\n")
+
+    def append_record(self, row):
+        for root in (self.x, self.a):
+            rec = root / "pkg-1.0.dist-info/RECORD"
+            rec.write_bytes(rec.read_bytes() + row)
 
     def test_identical_files_are_copied_once_with_their_mode(self):
         self.package()
@@ -136,6 +164,76 @@ class Merge(unittest.TestCase):
         want.append("pkg-1.0.dist-info/RECORD,,")
         self.assertEqual(sorted(lines), sorted(want))
 
+    def test_each_record_covers_exactly_its_own_distribution(self):
+        self.package()
+        self.second_distribution()
+        self.merge()
+        rec = lambda d: sorted(l.split(",")[0] for l in (self.out / d / "RECORD").read_text().splitlines())
+        self.assertEqual(rec("two-2.0.dist-info"),
+                         ["two-2.0.dist-info/METADATA", "two-2.0.dist-info/RECORD", "two/__init__.py"])
+        pkg = rec("pkg-1.0.dist-info")
+        self.assertFalse([p for p in pkg if p.startswith("two")], pkg)
+        self.assertIn("pkg-1.0.dist-info/sboms/pkg.cyclonedx.x86_64.json", pkg)
+        self.assertIn("pkg-1.0.dist-info/sboms/pkg.cyclonedx.arm64.json", pkg)
+        self.assertNotIn("pkg-1.0.dist-info/sboms/pkg.cyclonedx.json", pkg)
+
+    def test_record_rows_that_escape_or_repeat_are_refused(self):
+        rows = {
+            "absolute": (b"/etc/hosts,sha256=X,1\n", "/etc/hosts"),
+            "dot-dot": (b"../outside.txt,sha256=X,1\n", "../outside.txt"),
+            "dot-segment": (b"pkg/./__init__.py,sha256=X,1\n", "pkg/./__init__.py"),
+            "repeated": (b"pkg/__init__.py,sha256=X,1\n", "pkg/__init__.py"),
+            "own-row-twice": (b"pkg-1.0.dist-info/RECORD,,\n", "pkg-1.0.dist-info/RECORD"),
+        }
+        for case, (row, needle) in rows.items():
+            with self.subTest(case=case):
+                for root in (self.x, self.a, self.out):
+                    shutil.rmtree(root, True)
+                self.package()
+                (self.tmp / "outside.txt").write_text("never read")
+                self.append_record(row)
+                self.refused(needle)
+
+    def test_a_record_without_its_own_row_is_refused(self):
+        self.package()
+        for root in (self.x, self.a):
+            rec = root / "pkg-1.0.dist-info/RECORD"
+            keep = [l for l in rec.read_text().splitlines() if not l.startswith("pkg-1.0.dist-info/RECORD")]
+            rec.write_text("".join(l + "\n" for l in keep))
+        self.refused("pkg-1.0.dist-info/RECORD")
+
+    def test_a_fifo_is_refused_without_being_opened(self):
+        self.package()
+        for root in (self.x, self.a):
+            os.mkfifo(root / "pkg/pipe")
+
+        def opened_it(*_):
+            raise TimeoutError("the merge opened the FIFO and blocked")
+        previous = signal.signal(signal.SIGALRM, opened_it)
+        signal.alarm(5)  # a kernel timer on this process: no kill() of any pid
+        try:
+            self.refused("pkg/pipe")
+        finally:
+            signal.alarm(0)
+            signal.signal(signal.SIGALRM, previous)
+
+    def test_a_failing_lipo_names_its_path_and_leaves_nothing(self):
+        self.package()
+
+        def failing(argv, **kw):
+            Path(argv[5]).write_bytes(b"partial")  # what a dying lipo can leave behind
+            raise subprocess.CalledProcessError(1, argv, b"", b"lipo: boom")
+        self.refused("pkg/_core.cpython-312-darwin.so", run=failing)
+
+    def test_differing_permission_bits_are_refused(self):
+        for rel in ("sdk/_bundled/claude", "pkg/__init__.py"):
+            with self.subTest(path=rel):
+                for root in (self.x, self.a, self.out):
+                    shutil.rmtree(root, True)
+                self.package()
+                os.chmod(self.a / rel, 0o600 if os.stat(self.x / rel).st_mode & 0o111 else 0o755)
+                self.refused(rel)
+
     def test_every_refusal_names_the_path_and_leaves_nothing(self):
         cases = {
             "only-in-one-tree": lambda: (self.x / "extra.py").write_bytes(b"x"),
@@ -147,10 +245,17 @@ class Merge(unittest.TestCase):
                 b"Wheel-Version: 1.0\nGenerator: y\nRoot-Is-Purelib: false\nTag: cp312-cp312-macosx_11_0_arm64\n"),
             "symlink": lambda: (os.symlink("pkg/__init__.py", self.a / "link.py"),
                                 os.symlink("pkg/__init__.py", self.x / "link.py")),
+            "record-paths-differ": lambda: (self.a / "pkg-1.0.dist-info/RECORD").write_bytes(
+                (self.a / "pkg-1.0.dist-info/RECORD").read_bytes() + b"pkg/extra.py,sha256=X,1\n"),
+            "record-lists-a-missing-file": lambda: [
+                (root / "pkg-1.0.dist-info/RECORD").write_bytes(
+                    (root / "pkg-1.0.dist-info/RECORD").read_bytes() + b"pkg/gone.py,sha256=X,1\n")
+                for root in (self.x, self.a)],
         }
         names = {"only-in-one-tree": "extra.py", "other-text-differs": "pkg/__init__.py",
                  "same-arch-twice": "pkg/_core", "fat-vs-thin": "pkg/_core", "two-different-fat": "pkg/_univ",
-                 "wheel-non-tag-line": "pkg-1.0.dist-info/WHEEL", "symlink": "link.py"}
+                 "wheel-non-tag-line": "pkg-1.0.dist-info/WHEEL", "symlink": "link.py",
+                 "record-paths-differ": "pkg-1.0.dist-info/RECORD", "record-lists-a-missing-file": "pkg/gone.py"}
         for case, spoil in cases.items():
             with self.subTest(case=case):
                 for root in (self.x, self.a, self.out):
