@@ -21087,3 +21087,52 @@ shape should preserve the promised diagnostic. Also make the setup-profile
 sibling probe direct when the pending R1 kernel gate is green; today the real
 kernel sibling oracle directly covers generated CLI and hook profiles, while
 the identical setup rule is pinned by the frozen oracle.
+
+## R1 kernel-properties red fix-forward (`71cca61`)
+
+Reviewed exact test-only commit `71cca61` on 2026-10-20. **Verdict:
+BLOCKED-for-tests.** Most of the `7055` repair is correct. Every ordinary
+driver invocation now asserts both process-group disappearance and exact
+scratch disappearance; only `ESRCH` counts as a gone group; the silent fixture
+has two live children; the unsandboxed and Seatbelt rows remain discriminating;
+the shell deletion targets use nonempty-variable guards; and cleanup failure
+injection covers refused group kill, failed group observation and refused
+scratch deletion. The owner reports that both Macs now pass every harness,
+positive-control and inside-policy row with the measured `EPERM`, and fail
+only at the intended missing `proc_darwin.cli_env_clean` census seam. Exact-SHA
+shell/Python syntax passed locally, and the unregistered census suite is red
+**13/13** at that missing seam as claimed.
+
+The BlackRobin `7060` abandoned-census red is also well formed. It holds the
+census thread inside `sendall` beyond the configurable join bound, requires
+`probe_r1` to refuse despite an already-computed clean verdict, proves setup
+does not close the fd under the live thread, then releases the worker and
+requires the worker to close its own end (`test_setup_census.py:231-270`).
+
+Two cleanup blockers remain in the Mac driver:
+
+1. **BLOCKER (destructive scope):**
+   `r1_kernel_driver.py:187-202` recovers from an injected failure by scanning
+   the whole host and deleting **every** `/tmp/zb-r1k-*` directory. Those names
+   are not owned by this invocation; a concurrent gate or retained failure
+   artifact is a valid match. The process sweep likewise acts by executable
+   pathname rather than handles returned by this failed run. This violates the
+   post-incident exact-target rule. Give the driver a per-run nonce, retain the
+   exact scratch path, pgid and child PIDs for each injection, and clean only
+   those resources. A planted foreign `zb-r1k-*` directory/process must survive
+   the recovery path.
+2. **BLOCKER-for-tests (the fallback is not proved):** the same helper ignores
+   `/bin/ps`'s exit status, sends `SIGKILL` without checking its result, never
+   waits or polls the selected PIDs/groups to disappearance, and asserts only
+   scratch deletion. Removing the process-recovery body altogether leaves the
+   three injected-failure assertions green while the `no_kill` children can
+   live for their 120-second TTL. Add a deterministic oracle that records the
+   exact survivors from the refused-kill case and requires every one gone
+   before the next case/exit; make process enumeration/kill/observation errors
+   fail closed. Also nest scratch cleanup in a `finally` so an unexpected
+   `with_group_kill` exception cannot skip `remove_scratch`
+   (`r1_kernel_driver.py:144-146`).
+
+This red remains correctly unregistered and does not claim to close dependency
+(A), MS6 or `seatbelt_ready`. No remote Mac or full Linux gate was run for this
+test-only red.
