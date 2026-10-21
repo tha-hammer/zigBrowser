@@ -211,6 +211,24 @@ class AskCensus(Base):
         self.assertIs(verdict, True)
         self.assertEqual(got, [f"census {TOKEN} {self.URL}\n".encode()])
 
+    def test_the_probe_half_closes_after_its_one_request(self):
+        # RoseCat 7078: setup reads the whole request through EOF, so the probe sends one line and shuts its side.
+        probe_end, setup_end = self.pair()
+        got = []
+
+        def setup_side():
+            data = b""
+            while chunk := setup_end.recv(512):  # returns b"" only at the probe's EOF
+                data += chunk
+            got.append(data)
+            setup_end.sendall(b"clean\n")
+            setup_end.shutdown(socket.SHUT_WR)
+        t = threading.Thread(target=setup_side, daemon=True)
+        t.start()
+        self.assertIs(route_probe._ask_census(probe_end, TOKEN, self.URL, timeout=3), True)
+        t.join(5)
+        self.assertEqual(got, [f"census {TOKEN} {self.URL}\n".encode()], "exactly one line, then EOF")
+
     def test_every_other_reply_is_not_clean(self):
         for reply in (b"dirty\n", b"", b"clean", b"clean\nclean\n", b"CLEAN\n", b"clean \n", b"cleanx\n"):
             with self.subTest(reply=reply):

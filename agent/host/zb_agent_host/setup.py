@@ -797,18 +797,20 @@ CENSUS_JOIN_S = 5
 def _census_serve(sock, cli, port, result, timeout, handover):
     """Setup's R1 census (RoseCat 7019; BlueBeaver 7021), OUTSIDE Seatbelt: answers the probe's one request
     `census <probe token> http://127.0.0.1:<the listener's port>` with b"clean" or b"dirty" from
-    proc_darwin.cli_env_clean over setup's own descendants, then shuts its side. A malformed, oversized, wrong-port
-    or missing request is never censused and never clean."""
+    proc_darwin.cli_env_clean over setup's own descendants, then shuts its side. The request is everything the probe
+    sends up to its EOF and must full-match that one line: a malformed, oversized, wrong-port or missing request, a
+    second request or any trailing byte is never censused and never clean (RoseCat 7078)."""
     try:
         sock.settimeout(timeout)
+        # The request is the WHOLE stream up to the probe's EOF (it half-closes after its one line), bounded and
+        # full-matched: a second request or any trailing byte is never clean (RoseCat 7078).
         data = b""
-        while b"\n" not in data and len(data) <= CENSUS_REQUEST_MAX:
+        while len(data) <= CENSUS_REQUEST_MAX:
             chunk = sock.recv(CENSUS_REQUEST_MAX + 1)
             if not chunk:
                 break
             data += chunk
-        line = data.split(b"\n", 1)[0] + b"\n" if b"\n" in data else b""
-        m = _CENSUS_REQUEST.fullmatch(line) if len(line) <= CENSUS_REQUEST_MAX else None
+        m = _CENSUS_REQUEST.fullmatch(data) if len(data) <= CENSUS_REQUEST_MAX else None
         clean = False
         if m is not None and int(m.group(3)) == port:
             try:

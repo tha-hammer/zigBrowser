@@ -140,12 +140,14 @@ def adopt_census(fd):
 
 def _ask_census(sock, probe_token, url, timeout=CENSUS_TIMEOUT_S):
     """Asks setup, outside Seatbelt, whether any CLI holds the probe token (RoseCat 7019; BlueBeaver 7021): one line
-    `census <token> <url>`, then setup's whole reply up to EOF. True only for exactly b"clean\n" in time."""
+    `census <token> <url>`, then EOF (RoseCat 7078), then setup's whole reply up to its EOF. True only for exactly
+    b"clean\n" in time."""
     deadline = time.monotonic() + timeout
     reply = b""
     try:
         sock.settimeout(timeout)
         sock.sendall(f"census {probe_token} {url}\n".encode())
+        sock.shutdown(socket.SHUT_WR)  # one request, then EOF: setup matches the whole stream (RoseCat 7078)
         while len(reply) <= CENSUS_REPLY_MAX:
             remaining = deadline - time.monotonic()
             if remaining <= 0:

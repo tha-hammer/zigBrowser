@@ -99,6 +99,7 @@ class Base(unittest.TestCase):
                 with socket.socket(fileno=os.dup(cfd)) as ask:
                     ask.settimeout(10)
                     ask.sendall(f"census zb-probe-{'ab' * 24} http://127.0.0.1:{rec['port']}\n".encode())
+                    ask.shutdown(socket.SHUT_WR)  # one request, then EOF, as route_probe does (RoseCat 7078)
                     reply = b""
                     while chunk := ask.recv(64):
                         reply += chunk

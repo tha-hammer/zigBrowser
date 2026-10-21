@@ -8,8 +8,9 @@ verdict `proc_darwin.cli_env_clean(exe, root, token, canary)` recorded:
 - One request, exactly b"census <zb-probe-[0-9a-f]{48}> http://127.0.0.1:<the listener's port>\\n" (at most 256 bytes),
   is answered with b"clean\\n" or b"dirty\\n", then setup shuts its side. The verdict is
   proc_darwin.cli_env_clean(realpath(cli), getpid(), token, b"ANTHROPIC_BASE_URL=<url>"): setup's own descendants.
-- A malformed, oversized, wrong-port or missing request is "dirty" (or no answer) and the census verdict is never
-  computed for it; a second request is never answered.
+- The request is everything the probe sends up to its EOF (it half-closes after its one line), and it must
+  full-match that one line: a malformed, oversized or wrong-port request, a second request, or any trailing byte is
+  "dirty" (or no answer) and the census verdict is never computed for it (RoseCat 7078).
 - probe_r1 is True only when the probe's verdict is {"r1": true} AND setup's own census said clean: the probe alone
   cannot select R1.
 - Both socketpair ends are closed explicitly on every path, and no census thread outlives probe_r1.
@@ -103,9 +104,11 @@ class Base(unittest.TestCase):
                     "no-newline": f"census {TOKEN} {url}".encode(),
                     "oversized": b"census " + b"a" * 4096 + b"\n",
                     "twice": f"census {TOKEN} {url}\ncensus {TOKEN} {url}\n".encode(),
+                    "junk-after": f"census {TOKEN} {url}\nX".encode(),
                 }
                 if request == "none-but-ask-async":
-                    s.sendall(lines["good"])  # asks, but this probe run ends without waiting for the verdict
+                    s.sendall(lines["good"])  # asks (one line, then EOF), but ends without waiting for the verdict
+                    s.shutdown(socket.SHUT_WR)
                     return setup.subprocess.CompletedProcess(argv, 0, stdout=json.dumps({"r1": verdict}) + "\n",
                                                              stderr="")
                 if request != "none":
@@ -161,11 +164,17 @@ class Broker(Base):
                 self.assertIn(self.runs[0].get("reply"), (b"", b"dirty\n"))
                 self.assertEqual(self.census_calls, [])
 
-    def test_only_one_request_is_answered(self):
-        self.probe(request="twice")
-        setup.probe_r1(WRAPPER, CLI)
-        self.assertIn(self.runs[0]["reply"], (b"clean\n", b"dirty\n"))
-        self.assertEqual(len(self.census_calls), 1)
+    def test_anything_after_the_one_request_is_dirty_and_never_censused(self):
+        # RoseCat 7078: the request is the WHOLE stream up to the probe's EOF and must full-match one line; a second
+        # request or a single trailing byte makes it dirty, and the census verdict is never computed.
+        for request in ("twice", "junk-after"):
+            with self.subTest(request=request):
+                self.runs.clear()
+                self.census_calls.clear()
+                self.probe(request=request)
+                self.assertIs(setup.probe_r1(WRAPPER, CLI), False)
+                self.assertEqual(self.runs[0]["reply"], b"dirty\n")
+                self.assertEqual(self.census_calls, [])
 
     def test_both_ends_are_closed_and_no_census_thread_survives(self):
         for request, verdict in (("good", True), ("none", True), ("oversized", True), ("good", False)):
