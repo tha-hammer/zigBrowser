@@ -10,8 +10,9 @@ outlive the bound by far (each also ends itself after 20 s, so a leak is bounded
 - when it returns, none of the three is alive (gone, or a zombie awaiting the namespace's init);
 - the named helper exists (the hard gate observes it instead of subprocess.run);
 - (plain, no signal: the seam is faked) when the owned group cannot be proven stopped (owned_group.StopFailed),
-  _sandboxed reports no success, names its scratch on stderr, and LEAVES the scratch rather than cleaning up around
-  a possibly live process (RoseCat 7436).
+  _sandboxed reports no success and LEAVES the scratch rather than cleaning up around a possibly live process
+  (RoseCat 7436); its one stderr line is exactly a fixed reason plus the real scratch root, with no descendant name,
+  argv or exception text (RoseCat 7444).
 It sends signals, so it runs ONLY inside a private PID namespace proven by pidns_guard (the launcher passes its
 outer namespace inode in ZB_OUTER_PIDNS) and skips anywhere else.
 Run: cd agent/host/tests && outer=$(readlink /proc/self/ns/pid) && unshare --user --map-root-user --pid --fork \\
@@ -110,7 +111,12 @@ class OwnedGroupBound(unittest.TestCase):
 
 
 class StopFailedLeavesTheScratch(unittest.TestCase):
-    def test_a_stop_failure_leaves_and_names_the_scratch(self):
+    """The diagnostic is ONLY a fixed app-owned reason plus the exact real scratch root (RoseCat 7444): canaries
+    planted in a descendant's file name, in the command argv and in the StopFailed text must not reach stderr."""
+
+    NAME, ARGV, EXC = "ZB-NAME-CANARY-7f3a", "ZB-ARGV-CANARY-91c2", "ZB-EXC-CANARY-5d0e"
+
+    def test_a_stop_failure_leaves_the_scratch_and_names_only_its_root(self):
         try:
             from zb_agent_host import owned_group
         except ImportError:
@@ -122,18 +128,26 @@ class StopFailedLeavesTheScratch(unittest.TestCase):
 
         @contextlib.contextmanager
         def seam(scratch, ro_paths, command, *, loopback_port=None):
-            yield ["/usr/bin/sandbox-exec", *command]
+            yield ["/usr/bin/sandbox-exec", *command, self.ARGV]
+
+        def stuck(argv, **kwargs):  # the run leaves a CLI-named file, then its group cannot be proven stopped
+            open(os.path.join(kwargs["env"]["HOME"], self.NAME), "w").close()
+            raise owned_group.StopFailed(f"{self.EXC} process group 4242 could not be stopped")
 
         mock.patch.object(sandbox_macos, "setup_sandbox", seam).start()
-        mock.patch.object(setup, "run_in_owned_group",
-                          side_effect=owned_group.StopFailed("process group 4242 could not be stopped")).start()
+        mock.patch.object(setup, "run_in_owned_group", side_effect=stuck).start()
         err = io.StringIO()
         with contextlib.redirect_stderr(err):
             self.assertEqual(setup._sandboxed(["/ro"], ["/opt/claude", "--version"], timeout=1), ("", False))
         (left,) = os.listdir(root)
-        self.assertIn(os.path.join(os.path.realpath(root), left), err.getvalue(), "the scratch is named")
-        self.assertIn("could not be stopped", err.getvalue())
-        os.rmdir(os.path.join(root, left))
+        scratch = os.path.join(os.path.realpath(root), left)
+        self.assertEqual(err.getvalue(), "zigBrowser: agent-setup: a sandboxed run could not be proven stopped; "
+                                         f"its scratch is left at {scratch}\n")
+        for canary in (self.NAME, self.ARGV, self.EXC):
+            self.assertNotIn(canary, err.getvalue())
+        self.assertTrue(os.path.exists(os.path.join(scratch, self.NAME)), "the scratch was cleaned up regardless")
+        os.unlink(os.path.join(scratch, self.NAME))
+        os.rmdir(scratch)
         os.rmdir(root)
 
 
