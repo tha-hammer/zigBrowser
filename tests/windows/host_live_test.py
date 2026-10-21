@@ -420,17 +420,28 @@ class LockedDesktopLive(unittest.TestCase):
         self.assertEqual(prep.returncode, 0, "prep ssh failed:\n" + prep.stderr)
         self.assertIn("PREPPED", prep.stdout, "prep failed:\n" + prep.stdout + prep.stderr)
         try:
+            # This script is STREAMED to `powershell -Command "$input | Out-String | iex"` (see _ssh_run),
+            # so it must be PLAIN PowerShell — NO backslash-escaped quotes. The earlier `\"$($s.nonce)\"`
+            # reached PS 5.1 with the backslashes intact, threw a tokenizer error that the bare catch{}
+            # swallowed, and the 30s always expired (the probe itself was correct). Compare via
+            # ([string]$s.nonce), and surface any caught error after the deadline so it can't hide again.
+            # The ts freshness is VM-RELATIVE ($now and $tsu both computed on the VM), which is correct even
+            # though the VM clock reads Eastern wall time with a -07:00 offset (its UTC runs ~3h ahead).
             poll = _ssh_run(env, (r"$d=Join-Path $env:USERPROFILE 'zb\runs\session'; schtasks /Run /TN 'zb-session-probe' | Out-Null; "
-                                  r"$deadline=(Get-Date).AddSeconds(30); $sj=Join-Path $d 'session.json'; "
+                                  r"$deadline=(Get-Date).AddSeconds(30); $sj=Join-Path $d 'session.json'; $matched=$false; $last=''; "
                                   r"while((Get-Date) -lt $deadline){ Start-Sleep -Milliseconds 1000; "
                                   r"  if(Test-Path -LiteralPath $sj){ try{ $s=Get-Content -LiteralPath $sj -Raw|ConvertFrom-Json; "
                                   r"    $now=(Get-Date).ToUniversalTime(); $tsu=[datetime]::Parse($s.ts).ToUniversalTime(); "
-                                  r"    if(\"$($s.nonce)\" -eq '%s' -and $tsu -gt $now.AddMinutes(-15) -and $tsu -le $now.AddMinutes(2)){ "
-                                  r"      Write-Output ($s|ConvertTo-Json -Compress); break } }catch{} } } ") % nonce)
+                                  r"    if(([string]$s.nonce) -eq '%s' -and $tsu -gt $now.AddMinutes(-15) -and $tsu -le $now.AddMinutes(2)){ "
+                                  r"      $matched=$true; Write-Output ($s|ConvertTo-Json -Compress); break } }catch{ $last=$_.Exception.Message } } } "
+                                  r"if(-not $matched){ Write-Output ('NOMATCH last_error=' + $last) }") % nonce)
             self.assertEqual(poll.returncode, 0, "poll ssh failed:\n" + poll.stderr)
             out = poll.stdout.strip()
-            self.assertTrue(out, "no fresh nonce-matching session.json appeared within the timeout")
-            d = json.loads(out.splitlines()[-1])
+            json_lines = [ln for ln in out.splitlines() if ln.lstrip().startswith("{")]
+            self.assertTrue(json_lines,
+                            "no fresh nonce-matching session.json within the timeout; poll said:\n"
+                            + (out or "<empty>") + "\n" + poll.stderr)
+            d = json.loads(json_lines[-1])
             self.assertEqual(d.get("nonce"), nonce, "session.json must carry this run's fresh nonce")
             self.assertTrue(str(d.get("console_user") or "").strip(), "console_user must be present")
             self.assertEqual(d.get("console_session_id"), d.get("my_session_id"),
