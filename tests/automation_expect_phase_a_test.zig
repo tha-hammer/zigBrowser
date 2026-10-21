@@ -20,223 +20,51 @@
 
 const std = @import("std");
 const automation_server = @import("automation_server");
-const page_port = automation_server.automation.page_port;
+const engine = automation_server.automation.engine;
+const fake = @import("automation/expect_fake.zig");
+const Harness = fake.Harness;
+const Reply = fake.Reply;
+const Page = fake.Page;
+const expect_ok = fake.expect_ok;
+const acting = fake.acting;
+const paramsFor = fake.paramsFor;
 
 const testing = std.testing;
 const gpa = testing.allocator;
 
-/// Two windows: 1 the primary fixture page, 2 a shop page. Every port reads the same list.
-const World = struct {
-    ports: [2]Page = .{ .{ .id = 1 }, .{ .id = 2 } },
-    urls: [2][]const u8 = .{ "file:///fixture/index.html", "https://shop.example/item/7" },
-    load_serials: [2]std.atomic.Value(u64) = .{ .init(3), .init(4) },
-    dialog_open: [2]bool = .{ false, false },
-    crashed: [2]bool = .{ false, false },
-    list_calls: std.atomic.Value(u32) = .init(0),
-
-    fn init(self: *World) void {
-        for (&self.ports) |*p| p.world = self;
-    }
-
-    fn ops(self: *const World) u32 {
-        var n: u32 = 0;
-        for (&self.ports) |*p| n += p.ops();
-        return n;
-    }
+/// What one approved run of each acting verb sends to its page: exactly one operation, and
+/// nothing of any other kind (RoseCat 0c1132b #3: a duplicate dispatch must fail).
+const once = [_]struct { evals: u32 = 0, navigates: u32 = 0, reloads: u32 = 0 }{
+    .{ .evals = 1 }, // dom.click
+    .{ .evals = 1 }, // dom.fill
+    .{ .evals = 1 }, // dom.type
+    .{ .evals = 1 }, // dom.press
+    .{ .evals = 1 }, // dom.selectOption
+    .{ .navigates = 1 }, // page.navigate
+    .{ .reloads = 1 }, // page.reload
 };
 
-const Page = struct {
-    id: page_port.WindowId,
-    world: *World = undefined,
-    evals: std.atomic.Value(u32) = .init(0),
-    navigates: std.atomic.Value(u32) = .init(0),
-    reloads: std.atomic.Value(u32) = .init(0),
-    natives: std.atomic.Value(u32) = .init(0),
-    hold: std.atomic.Value(bool) = .init(false),
-    held: std.atomic.Value(bool) = .init(false),
-
-    fn ops(self: *const Page) u32 {
-        return self.evals.load(.acquire) + self.navigates.load(.acquire) + self.reloads.load(.acquire) + self.natives.load(.acquire);
-    }
-
-    fn port(self: *Page) page_port.PagePort {
-        return .{ .ptr = self, .vtable = &vtable };
-    }
-
-    fn from(ptr: *anyopaque) *Page {
-        return @ptrCast(@alignCast(ptr));
-    }
-
-    const vtable = page_port.PagePort.VTable{
-        .evalJson = evalJson,
-        .navigate = navigate,
-        .reload = reload,
-        .url = url,
-        .title = title,
-        .listWindows = listWindows,
-        .forWindow = forWindow,
-        .nativeClick = nativeClick,
-        .nativeKey = nativeKey,
-        .nativeText = nativeText,
-        .nativeMove = nativeMove,
-    };
-
-    fn evalJson(ptr: *anyopaque, alloc: std.mem.Allocator, _: page_port.World, _: []const u8, arg: []const u8, _: u64) page_port.PortError![]u8 {
-        const self = from(ptr);
-        while (self.hold.load(.acquire)) {
-            self.held.store(true, .release);
-            testing.io.sleep(.fromMilliseconds(1), .awake) catch {};
-        }
-        _ = self.evals.fetchAdd(1, .acq_rel);
-        // Native input first locates its target; answer with a point.
-        if (std.mem.indexOf(u8, arg, "\"op\":\"locate\"") != null) {
-            return alloc.dupe(u8, "{\"ok\":true,\"value\":{\"x\":10,\"y\":10,\"document\":\"d1\"}}");
-        }
-        return alloc.dupe(u8, "{\"ok\":true,\"value\":{\"ok\":true}}");
-    }
-    fn navigate(ptr: *anyopaque, _: []const u8, _: u64) page_port.PortError!void {
-        _ = from(ptr).navigates.fetchAdd(1, .acq_rel);
-    }
-    fn reload(ptr: *anyopaque, _: u64) page_port.PortError!void {
-        _ = from(ptr).reloads.fetchAdd(1, .acq_rel);
-    }
-    fn url(ptr: *anyopaque, alloc: std.mem.Allocator, _: u64) page_port.PortError![]u8 {
-        const self = from(ptr);
-        return alloc.dupe(u8, self.world.urls[self.id - 1]);
-    }
-    fn title(_: *anyopaque, alloc: std.mem.Allocator, _: u64) page_port.PortError![]u8 {
-        return alloc.dupe(u8, "Fixture");
-    }
-    fn listWindows(ptr: *anyopaque, alloc: std.mem.Allocator, _: u64) page_port.PortError![]page_port.WindowInfo {
-        const world = from(ptr).world;
-        _ = world.list_calls.fetchAdd(1, .acq_rel);
-        var list: std.ArrayListUnmanaged(page_port.WindowInfo) = .empty;
-        errdefer {
-            for (list.items) |w| {
-                alloc.free(w.url);
-                alloc.free(w.title);
-            }
-            list.deinit(alloc);
-        }
-        for (0..2) |i| {
-            try list.append(alloc, .{
-                .id = @intCast(i + 1),
-                .url = try alloc.dupe(u8, world.urls[i]),
-                .title = try alloc.dupe(u8, "Fixture"),
-                .primary = i == 0,
-                .opener = if (i == 0) null else 1,
-                .terminated = if (world.crashed[i]) .crashed else null,
-                .dialog_open = world.dialog_open[i],
-                .load_serial = world.load_serials[i].load(.acquire),
-            });
-        }
-        return list.toOwnedSlice(alloc);
-    }
-    fn forWindow(ptr: *anyopaque, id: page_port.WindowId) page_port.PortError!page_port.PagePort {
-        const world = from(ptr).world;
-        if (id < 1 or id > world.ports.len) return error.NoPage;
-        return world.ports[id - 1].port();
-    }
-    fn nativeClick(ptr: *anyopaque, _: f64, _: f64, _: ?[]const u8, _: u64) page_port.PortError!void {
-        _ = from(ptr).natives.fetchAdd(1, .acq_rel);
-    }
-    fn nativeMove(ptr: *anyopaque, _: f64, _: f64, _: ?[]const u8, _: u64) page_port.PortError!void {
-        _ = from(ptr).natives.fetchAdd(1, .acq_rel);
-    }
-    fn nativeKey(ptr: *anyopaque, _: []const u8, _: u8, _: ?[]const u8, _: u64) page_port.PortError!void {
-        _ = from(ptr).natives.fetchAdd(1, .acq_rel);
-    }
-    fn nativeText(ptr: *anyopaque, text: []const u8, _: ?[]const u8, _: u64, sent: *usize) page_port.PortError!void {
-        _ = from(ptr).natives.fetchAdd(1, .acq_rel);
-        sent.* = text.len;
-    }
-};
-
-const Harness = struct {
-    world: World = .{},
-    server: automation_server.AutomationApiServer,
-
-    fn start() !*Harness {
-        const self = try gpa.create(Harness);
-        errdefer gpa.destroy(self);
-        self.world = .{};
-        self.world.init();
-        self.server = try automation_server.AutomationApiServer.init(gpa, testing.io, .{
-            .enabled = true,
-            .socket_path = "",
-            .token = "",
-            .page_port = self.world.ports[0].port(),
-            .pacing_state_path = "",
-        });
-        try self.server.startCore();
-        return self;
-    }
-
-    fn deinit(self: *Harness) void {
-        self.server.deinit();
-        gpa.destroy(self);
-    }
-
-    fn call(self: *Harness, method: []const u8, params: []const u8) !Reply {
-        const raw = try self.server.callInProcess(gpa, method, params);
-        defer gpa.free(raw);
-        return Reply.of(raw);
-    }
-};
-
-const Reply = struct {
-    code: ?i64 = null,
-    reason_buf: [48]u8 = undefined,
-    reason_len: usize = 0,
-
-    fn reason(self: *const Reply) []const u8 {
-        return self.reason_buf[0..self.reason_len];
-    }
-
-    fn of(raw: []const u8) !Reply {
-        var parsed = try std.json.parseFromSlice(std.json.Value, gpa, raw, .{});
-        defer parsed.deinit();
-        var out = Reply{};
-        const err = parsed.value.object.get("error") orelse return out;
-        out.code = err.object.get("code").?.integer;
-        if (err.object.get("data")) |data| if (data == .object) if (data.object.get("reason")) |r| if (r == .string) {
-            out.reason_len = @min(r.string.len, out.reason_buf.len);
-            @memcpy(out.reason_buf[0..out.reason_len], r.string[0..out.reason_len]);
-        };
-        return out;
-    }
-};
-
-const expect_ok = "\"options\":{\"expect\":{\"origin\":\"https://shop.example\",\"load_serial\":4}}";
-
-/// The acting verbs, each with a matching expectation on window 2.
-const acting = [_]struct { method: []const u8, args: []const u8 }{
-    .{ .method = "dom.click", .args = "\"selector\":\"css=#buy\"" },
-    .{ .method = "dom.fill", .args = "\"selector\":\"css=#q\",\"value\":\"v\"" },
-    .{ .method = "dom.type", .args = "\"selector\":\"css=#q\",\"text\":\"hi\"" },
-    .{ .method = "dom.press", .args = "\"selector\":\"css=#q\",\"key\":\"Enter\"" },
-    .{ .method = "dom.selectOption", .args = "\"selector\":\"css=#s\",\"value\":\"a\"" },
-    .{ .method = "page.navigate", .args = "\"url\":\"https://shop.example/next\"" },
-    .{ .method = "page.reload", .args = "" },
-};
-
-fn paramsFor(buf: []u8, args: []const u8, window: []const u8, expect: []const u8) ![]const u8 {
-    const sep = if (args.len > 0) "," else "";
-    return std.fmt.bufPrint(buf, "{{{s}{s}\"window_id\":\"{s}\",{s}}}", .{ args, sep, window, expect });
-}
-
-test "phase A: a matching expectation acts once on its own window" {
-    for (acting) |verb| {
+test "phase A: a matching expectation acts exactly once on its own window" {
+    for (acting, once) |verb, want| {
         const h = try Harness.start();
         defer h.deinit();
         var buf: [512]u8 = undefined;
         const reply = try h.call(verb.method, try paramsFor(&buf, verb.args, "window-2", expect_ok));
         try testing.expectEqual(@as(?i64, null), reply.code);
-        try testing.expect(h.world.ports[1].ops() >= 1);
+        const page = &h.world.ports[1];
+        testing.expectEqual(want.evals, page.evals.load(.acquire)) catch |e| return report(verb.method, e);
+        testing.expectEqual(want.navigates, page.navigates.load(.acquire)) catch |e| return report(verb.method, e);
+        testing.expectEqual(want.reloads, page.reloads.load(.acquire)) catch |e| return report(verb.method, e);
+        try testing.expectEqual(@as(u32, 0), page.natives.load(.acquire));
         try testing.expectEqual(@as(u32, 0), h.world.ports[0].ops());
         // The check read the bound window's entry.
         try testing.expect(h.world.list_calls.load(.acquire) >= 1);
     }
+}
+
+fn report(method: []const u8, err: anyerror) anyerror {
+    std.debug.print("{s}: wrong operation count\n", .{method});
+    return err;
 }
 
 const Change = enum { origin, load_serial, dialog, crashed };
@@ -382,5 +210,52 @@ test "phase A: a malformed or misplaced expectation is -32602 and nothing runs" 
             return e;
         };
         try testing.expectEqual(@as(u32, 0), h.world.ops());
+    }
+}
+
+// Two states at once: the first in the plan's order wins (RoseCat 0c1132b SHOULD).
+test "phase A: precedence is dialog, then crashed, then origin, then load_serial" {
+    const cases = [_]struct { dialog: bool = false, crashed: bool = false, origin: bool = false, serial: bool = false, code: i64, reason: []const u8 }{
+        .{ .dialog = true, .crashed = true, .code = -32013, .reason = "" },
+        .{ .crashed = true, .origin = true, .code = -32015, .reason = "crashed" },
+        .{ .origin = true, .serial = true, .code = -32015, .reason = "origin_changed" },
+    };
+    for (cases) |case| {
+        const h = try Harness.start();
+        defer h.deinit();
+        h.world.dialog_open[1] = case.dialog;
+        h.world.crashed[1] = case.crashed;
+        if (case.origin) h.world.urls[1] = "https://other.example/item/7";
+        if (case.serial) h.world.load_serials[1].store(5, .release);
+        var buf: [512]u8 = undefined;
+        const reply = try h.call("dom.click", try paramsFor(&buf, "\"selector\":\"css=#buy\"", "window-2", expect_ok));
+        try testing.expectEqual(@as(?i64, case.code), reply.code);
+        try testing.expectEqualStrings(case.reason, reply.reason());
+        try testing.expectEqual(@as(u32, 0), h.world.ops());
+    }
+}
+
+test "originOf: the origin a card binds" {
+    const cases = [_][2][]const u8{
+        .{ "https://shop.example/item/7?q=1#f", "https://shop.example" },
+        .{ "HTTPS://Shop.Example/Item", "https://shop.example" },
+        .{ "http://127.0.0.1:8123/x", "http://127.0.0.1:8123" },
+        .{ "https://user:pw@shop.example:8443/x", "https://shop.example:8443" },
+        .{ "https://shop.example", "https://shop.example" },
+        .{ "https://shop.example?x", "https://shop.example" },
+        .{ "http://[::1]:8080/p", "http://[::1]:8080" },
+        .{ "file:///fixture/index.html", "file://" },
+        .{ "about:blank", "null" },
+        .{ "data:text/html,hi", "null" },
+        .{ "", "null" },
+        .{ "no-colon", "null" },
+    };
+    for (cases) |case| {
+        const got = try engine.originOf(gpa, case[0]);
+        defer gpa.free(got);
+        testing.expectEqualStrings(case[1], got) catch |e| {
+            std.debug.print("originOf({s})\n", .{case[0]});
+            return e;
+        };
     }
 }
