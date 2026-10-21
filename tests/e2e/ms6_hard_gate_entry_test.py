@@ -19,6 +19,12 @@ THAT commit into its per-run temp tree and reads everything from the export (pin
 the dependency build). It prints "== hard gate at commit <sha>" and, before any network, "== ship <sha256> <path>" for
 the shipped seam sources, staging script and zb_agent_host files, so a dirty or replaced working tree is shown not to
 be what ships. The temporary Sigstore verifier is pinned (RoseCat 7265).
+RoseCat 7269: the running launcher must be byte-identical to the exported one (else exit 1, offline); a symlink or
+other non-regular entry among the shipped paths is refused offline, and the tar's file set equals the "== ship" rows;
+the verifier is installed only from a committed, hash-locked requirements file (--require-hashes --no-deps) whose
+SHA-256 the pins name; the no-installer oracle rejects any command token whose basename is installer or sudo, or an
+installer-named variable. With ZB_HG_EVIDENCE_DIR set (a test seam), the entry copies the exact src.tar it made, before
+any network, so the dirty-worktree row inspects the real bytes.
 seatbelt_ready is not touched by arming (RoseCat 7250 #4): a separate plan decision.
 
 No signal. Registered (build.zig: test-mac-census and the Linux test step), inside the namespace like its siblings.
@@ -29,7 +35,9 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import shutil
+import tarfile
 import subprocess
 import tempfile
 import unittest
@@ -42,6 +50,7 @@ PKG_URL = "https://www.python.org/ftp/python/3.12.10/python-3.12.10-macos11.pkg"
 PKG_SHA = "8373e58da4ea146b3eb1c1f9834f19a319440b6b679b06050b1f9ee3237aa8e4"
 STAGE = REPO / "packaging" / "macos" / "stage_agent_runtime.sh"
 SIGSTORE_PIN = "sigstore==4.5.1"
+VERIFIER_REQS = REPO / "packaging" / "macos" / "sigstore_verifier.txt"
 NET_TOOLS = ("ssh", "scp", "sftp", "curl", "nc", "rsync", "uv")
 
 
@@ -141,17 +150,49 @@ class ArmedEntry(unittest.TestCase):
         self.assertIn(f"== hard gate at commit {self.git('rev-parse', 'HEAD')}", out)
 
     def test_a_dirty_worktree_is_not_what_ships(self):
-        committed = {rel: hashlib.sha256((self.repo / rel).read_bytes()).hexdigest()
-                     for rel in ("src/agent_spawn_posix.c", "packaging/macos/stage_agent_runtime.sh",
-                                 "agent/host/zb_agent_host/netd.py")}
-        for rel in committed:
+        rels = ("src/agent_spawn_posix.c", "packaging/macos/stage_agent_runtime.sh", "agent/host/zb_agent_host/netd.py")
+        committed = {rel: (self.repo / rel).read_bytes() for rel in rels}
+        for rel in rels:
             (self.repo / rel).write_text((self.repo / rel).read_text() + "\n# uncommitted, unreviewed\n")
         for rel in ("tests/mac/hard_gate/case_ms5_spawn_io.py", "agent/host/uv.lock"):  # would fail if read here
             (self.repo / rel).write_text((self.repo / rel).read_text() + "\n# uncommitted\n")
+        evidence = self.repo / "evidence"
+        evidence.mkdir()
+        self.env["ZB_HG_EVIDENCE_DIR"] = str(evidence)
         code, out, calls = self.run_gate()
         self.only_the_pkg_download(code, out, calls)
-        for rel, digest in committed.items():
-            self.assertIn(f"== ship {digest} {rel}", out, "the committed bytes, not the dirty ones, are shipped")
+        with tarfile.open(evidence / "src.tar") as tar:
+            members = {m.name: m for m in tar.getmembers()}
+            for rel, data in committed.items():
+                self.assertEqual(tar.extractfile(members[rel]).read(), data, f"{rel}: the committed bytes ship")
+            files = {n for n, m in members.items() if m.isfile()}
+            self.assertFalse([n for n, m in members.items() if not (m.isfile() or m.isdir())], "only files, dirs")
+            rows = {}
+            for line in out.splitlines():
+                if line.startswith("== ship "):
+                    _, _, digest, path = line.split(" ", 3)
+                    rows[path] = digest
+            self.assertEqual(set(rows), files, "every shipped file is named, and nothing else")
+            for name in files:
+                self.assertEqual(rows[name], hashlib.sha256(tar.extractfile(members[name]).read()).hexdigest(), name)
+
+    def test_a_dirty_launcher_is_refused_offline(self):
+        launcher = self.repo / "tests/mac/ms6_hard_gate.sh"
+        lines = launcher.read_text().splitlines(keepends=True)
+        at = next(i for i, l in enumerate(lines) if l.startswith("set -euo pipefail")) + 1
+        launcher.write_text("".join(lines[:at] + ["echo DIRTY-LAUNCHER >&2\n"] + lines[at:]))
+        self.refused_offline("launcher")
+
+    def test_a_committed_symlink_among_the_shipped_paths_is_refused_offline(self):
+        os.symlink("/etc/passwd", self.repo / "packaging/macos/escape-link")
+        self.commit()
+        self.refused_offline("packaging/macos/escape-link")
+
+    def test_a_verifier_lock_off_its_pin_is_refused_offline(self):
+        reqs = self.repo / "packaging/macos/sigstore_verifier.txt"
+        reqs.write_text(reqs.read_text() + "\n# changed after review\n")
+        self.commit()
+        self.refused_offline("sigstore_verifier.txt")
 
     def test_a_revision_that_is_not_a_commit_is_refused_offline(self):
         self.refused_offline("revision", "no-such-revision")
@@ -175,23 +216,63 @@ class CommittedPins(unittest.TestCase):
         self.assertNotIn("reaper", text.lower())
         self.assertNotIn("seatbelt_ready=", text)
 
-    def test_neither_the_entry_nor_its_staging_installs_anything(self):
-        # RoseCat 7265: the entry test stops at its first curl and cannot watch the remote leg, so pin the commands:
-        # no installer, no sudo, no system prefix; pkgutil only checks a signature or expands into the run dir.
-        for script in (GATE, STAGE):
-            for n, line in enumerate(script.read_text().splitlines(), 1):
-                code = line.split(" #", 1)[0] if not line.lstrip().startswith("#") else ""
-                where = f"{script.name}:{n}: {line.strip()}"
-                self.assertNotRegex(code, r"\bsudo\b", where)
-                self.assertNotRegex(code, r"(^|[\s;&|(])installer(\s|$)", where)
-                self.assertNotRegex(code, r"(^|[\s\"'=])(/Library/|/Applications/|/usr/local/|/opt/|/System/)", where)
-                for use in re.findall(r"pkgutil\s+(--\S+)", code):
-                    self.assertIn(use, ("--check-signature", "--expand-full"), where)
+    def install_problems(self, text, name):
+        """Every command line of `text` that runs installer/sudo (any path, quoting or variable spelling), names a
+        system prefix, or uses pkgutil for anything but a signature check or an expansion."""
+        out = []
+        for n, line in enumerate(text.splitlines(), 1):
+            code = "" if line.lstrip().startswith("#") else line.split(" #", 1)[0]
+            try:
+                tokens = shlex.split(code, posix=True)
+            except ValueError:
+                tokens = code.split()
+            words = [t for tok in tokens for t in re.split(r"[;&|()`]", tok) if t]
+            where = f"{name}:{n}: {line.strip()}"
+            if any(os.path.basename(w) in ("installer", "sudo") for w in words):
+                out.append(where)
+            if re.search(r"\$\{?[A-Za-z_]*(installer|INSTALLER)[A-Za-z_]*", code):
+                out.append(where)
+            if re.search(r"(^|[\s\"'=])(/Library/|/Applications/|/usr/local/|/opt/|/System/)", code):
+                out.append(where)
+            if any(u not in ("--check-signature", "--expand-full") for u in re.findall(r"pkgutil\s+(--\S+)", code)):
+                out.append(where)
+        return out
 
-    def test_the_temporary_sigstore_verifier_is_pinned(self):
+    def test_neither_the_entry_nor_its_staging_installs_anything(self):
+        # RoseCat 7265, 7269: the entry test stops at its first curl and cannot watch the remote leg, so pin the
+        # commands: no installer or sudo (bare, absolute or via a variable), no system prefix; pkgutil only checks a
+        # signature or expands into the run dir.
+        for script in (GATE, STAGE):
+            self.assertEqual(self.install_problems(script.read_text(), script.name), [])
+
+    def test_the_install_oracle_catches_every_spelling(self):
+        for bad in ('/usr/sbin/installer -pkg "$PKG" -target /', 'installer -pkg x -target /',
+                    '"/usr/sbin/installer" x',
+                    'sudo cp a b', '/usr/bin/sudo true', 'x=1; installer -pkg y', '"$INSTALLER" -pkg y',
+                    '${installer_bin} -pkg y', 'cp a /Library/Frameworks/', 'pkgutil --forget org.python'):
+            with self.subTest(line=bad):
+                self.assertEqual(len(self.install_problems(bad, "probe")), 1, bad)
+        ok = 'grep -q "Developer ID Installer: Python Software Foundation (BMM5U3QVKW)" <<<"$sig" || die "x"'
+        self.assertEqual(self.install_problems(ok, "probe"), [], "the PSF signature check is not an install")
+
+    def test_the_temporary_sigstore_verifier_is_hash_locked(self):
         text = GATE.read_text()
-        self.assertIn(SIGSTORE_PIN, text, "the verifier the gate installs into its per-run venv is pinned")
-        self.assertNotRegex(text, r"install\s+sigstore(\s|$)", "never an unpinned sigstore")
+        installs = [l.strip() for l in text.splitlines()
+                    if "pip" in l and " install" in l and not l.lstrip().startswith("#")]
+        self.assertEqual(len(installs), 1, installs)
+        for flag in ("--require-hashes", "--no-deps", "-r", "packaging/macos/sigstore_verifier.txt"):
+            self.assertIn(flag, installs[0])
+        self.assertNotRegex(text, r"install\s+[\"']?sigstore", "never a direct, unlocked sigstore install")
+        self.assertTrue(VERIFIER_REQS.is_file(), "packaging/macos/sigstore_verifier.txt is missing")
+        reqs = [l for l in VERIFIER_REQS.read_text().replace("\\\n", " ").splitlines()
+                if l.strip() and not l.startswith("#")]
+        self.assertIn(SIGSTORE_PIN, " ".join(reqs))
+        for r in reqs:
+            self.assertRegex(r, r"^[A-Za-z0-9._-]+==\S+", r)
+            self.assertIn("--hash=sha256:", r, r)
+        pins = json.loads(PINS.read_text())
+        self.assertEqual(pins["sigstore_verifier"], {"requirements": "packaging/macos/sigstore_verifier.txt",
+                                                     "sha256": hashlib.sha256(VERIFIER_REQS.read_bytes()).hexdigest()})
 
 
 if __name__ == "__main__":
