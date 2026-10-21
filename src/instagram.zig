@@ -44,6 +44,9 @@ pub const selectors = struct {
         flow.visibleTextIs("Post") ++ "]" ++ not_hidden;
     /// Direct message composer.
     pub const dm_input = "css=div[aria-label=\"Message\"][contenteditable=\"true\"]";
+    /// S8 decision 13 stage 1: the profile header's username (the owner). UNVERIFIED live: the
+    /// fixture proves the rule; a page without it fails closed.
+    pub const profile_owner_name = "css=main header h2";
     /// S8 decision 13: the profile link in the header of the DM dialog that holds a message box
     /// (whatever its contenteditable). UNVERIFIED live: the fixture proves the rule.
     pub const dm_thread_header_link = "xpath=//*[@role=\"dialog\"][.//div[@aria-label=\"Message\"][@contenteditable]]//header//a[@href]";
@@ -175,7 +178,7 @@ pub fn dm(gpa: std.mem.Allocator, runner: anytype, s: flow.Site, username: []con
     // S8 decision 13 (approved runs; the guards are no-ops otherwise): the profile, then the thread.
     const recipient = try std.fmt.allocPrint(gpa, "/{s}/", .{username});
     defer gpa.free(recipient);
-    try runner.guardOpener(recipient);
+    try runner.guardOpener(recipient, .{ .selector = selectors.profile_owner_name, .value = username });
     if (!(try click(gpa, runner, selectors.message_button, true))) return null;
     try runner.guardThread(selectors.dm_thread_header_link, recipient);
     if (!(try click(gpa, runner, selectors.dm_input, true))) return null;

@@ -371,11 +371,20 @@ pub const Runner = struct {
     }
 
     /// The latest step succeeded but its answer was unusable.
+    /// A guard mark (router.Guard.Mark's wire form).
+    pub const Mark = struct {
+        selector: []const u8,
+        attribute: ?[]const u8 = null,
+        path: ?bool = null,
+        value: []const u8,
+    };
+
     /// S8 decision 13, stage 1 (approved runs only): every later action requires the page at
-    /// exactly `path` and its own target.
-    pub fn guardOpener(self: *Runner, path: []const u8) error{OutOfMemory}!void {
+    /// exactly `path`, the profile's `owner` mark (from the approval, never from the page;
+    /// RoseCat 8b05366) and its own target.
+    pub fn guardOpener(self: *Runner, path: []const u8, owner: Mark) error{OutOfMemory}!void {
         if (self.approval == null) return;
-        self.setGuard(try std.json.Stringify.valueAlloc(self.gpa, .{ .path = path, .target = true }, .{}));
+        self.setGuard(try std.json.Stringify.valueAlloc(self.gpa, .{ .path = path, .marks = .{owner}, .target = true }, .{ .emit_null_optional_fields = false }));
     }
 
     /// S8 decision 13, stage 2 (approved runs only): every later action requires the one visible

@@ -113,7 +113,9 @@ fn expectOpener(action: Action, path: []const u8) !void {
     const guard = action.guard orelse return error.TestExpectedGuard;
     try testing.expectEqualStrings(path, (guard.get("path") orelse return error.TestExpectedPath).string);
     try testing.expect(guard.get("target").?.bool);
-    if (guard.get("marks")) |marks| try testing.expectEqual(@as(usize, 0), marks.array.items.len);
+    // Stage 1 also binds the profile's owner (one mark; tests/automation_recipient_owner_test.zig
+    // pins which, RoseCat 8b05366).
+    try testing.expectEqual(@as(usize, 1), (guard.get("marks") orelse return error.TestExpectedOwnerMark).array.items.len);
 }
 
 fn expectRecipient(action: Action, path: []const u8) !void {

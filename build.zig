@@ -1209,6 +1209,16 @@ pub fn build(b: *std.Build) void {
     automation_recipient_guard_tests_module.addImport("automation", automation_module);
     const run_automation_recipient_guard_tests = b.addRunArtifact(b.addTest(.{ .root_module = automation_recipient_guard_tests_module }));
     run_automation_recipient_guard_tests.skip_foreign_checks = true;
+    // S8a decision 13 stage 1 (RoseCat 8b05366): the opener binds the profile's owner from the approval.
+    const automation_recipient_owner_tests_module = b.createModule(.{
+        .root_source_file = b.path("tests/automation_recipient_owner_test.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    automation_recipient_owner_tests_module.addImport("automation", automation_module);
+    const run_automation_recipient_owner_tests = b.addRunArtifact(b.addTest(.{ .root_module = automation_recipient_owner_tests_module }));
+    run_automation_recipient_owner_tests.skip_foreign_checks = true;
 
     const automation_cookie_tests_module = b.createModule(.{
         .root_source_file = b.path("tests/automation_cookie_test.zig"),
@@ -1504,6 +1514,14 @@ pub fn build(b: *std.Build) void {
         "automation-recipient-guard-e2e",
     });
     automation_recipient_guard_e2e.addArtifactArg(exe);
+    // S8a decision 13 stage 1: a wrong owner at the unchanged approved path, on the real binary.
+    const automation_recipient_owner_e2e = b.addSystemCommand(&.{
+        "sh",
+        "-c",
+        "python3 tests/e2e/automation_recipient_owner_test.py --binary \"$1\"; rc=$?; if [ \"$rc\" = 77 ]; then exit 0; fi; exit \"$rc\"",
+        "automation-recipient-owner-e2e",
+    });
+    automation_recipient_owner_e2e.addArtifactArg(exe);
 
     // N18: synthetic dom.scroll / dom.hover through the Python SDK; offsets
     // read back in the next command.
@@ -2744,6 +2762,8 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&automation_expect_flow_e2e.step);
     test_step.dependOn(&run_automation_recipient_guard_tests.step);
     test_step.dependOn(&automation_recipient_guard_e2e.step);
+    test_step.dependOn(&run_automation_recipient_owner_tests.step);
+    test_step.dependOn(&automation_recipient_owner_e2e.step);
     test_step.dependOn(&run_owner_only_tests.step);
     test_step.dependOn(&run_agent_setup_ms5_tests.step);
     test_step.dependOn(&run_agent_setup_ms5_python_tests.step);

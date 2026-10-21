@@ -61,7 +61,7 @@ const FakeRunner = struct {
     }
     // S8 decision 13's per-stage guards: no approval here, so none (flow_runner.Runner's are
     // no-ops without one too; tests/automation_recipient_guard_test.zig covers them).
-    pub fn guardOpener(_: *FakeRunner, _: []const u8) error{OutOfMemory}!void {}
+    pub fn guardOpener(_: *FakeRunner, _: []const u8, _: anytype) error{OutOfMemory}!void {}
     pub fn guardThread(_: *FakeRunner, _: []const u8, _: []const u8) error{OutOfMemory}!void {}
     pub fn approvedRecipient(_: *const FakeRunner) ?[]const u8 {
         return null;

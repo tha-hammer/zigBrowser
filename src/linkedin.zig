@@ -72,6 +72,9 @@ pub const selectors = struct {
     /// Messaging.
     pub const message_input = "css=.msg-form__contenteditable[contenteditable=\"true\"]";
     pub const message_send_button = "css=button.msg-form__send-button";
+    /// S8 decision 13 stage 1: the owner area's contact-info link, whose path names the owner's
+    /// slug. UNVERIFIED live: the fixture proves the rule; a page without it fails closed.
+    pub const owner_contact_info_link = "xpath=" ++ owner_container ++ "//a[contains(@href,\"/overlay/contact-info/\")]";
     /// S8 decision 13: the profile link in the header of the thread that holds a message box
     /// (an overlay bubble or the thread page). UNVERIFIED live: the fixture proves the rule.
     pub const message_thread_header_link = "xpath=//*[" ++ classToken("msg-convo-wrapper") ++ " or " ++ classToken("msg-thread") ++ "][.//*[" ++
@@ -373,7 +376,10 @@ pub fn message(gpa: std.mem.Allocator, runner: anytype, s: flow.Site, target: Me
         const name = (try profileName(gpa, runner, s)) orelse return null;
         defer gpa.free(name);
         const area = (try ownerArea(runner, s, .message)) orelse return null;
-        try runner.guardOpener(recipient.?);
+        // The owner, from the approved URL's slug (never from the page's title).
+        const contact_info = try std.fmt.allocPrint(gpa, "{s}overlay/contact-info/", .{recipient.?});
+        defer gpa.free(contact_info);
+        try runner.guardOpener(recipient.?, .{ .selector = selectors.owner_contact_info_link, .attribute = "href", .path = true, .value = contact_info });
         if (!(try clickProfileAction(gpa, runner, area, .message, name))) return null;
     }
     if (recipient) |r| try runner.guardThread(selectors.message_thread_header_link, r);

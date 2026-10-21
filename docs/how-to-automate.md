@@ -903,8 +903,10 @@ the same page task as each event.
   again). A refused flow sends nothing further and counts no action. Not with
   `dry_run`, and the same snapshot caveat applies.
 - An approved `linkedin.message` or `instagram.dm` also checks its recipient
-  inside each step: the Message click needs the page still at the profile's path,
-  and every later step (the message box, the typing, Send) needs the one open
+  inside each step: the Message click needs the page still at the profile's path
+  and showing that profile's owner (the header's username on Instagram, the
+  owner's contact-info link on LinkedIn, both taken from the request, never
+  from the page), and every later step (the message box, the typing, Send) needs the one open
   thread's header link to point at that person. Otherwise it is -32015
   (`path_changed` or `mark_changed`) and nothing more is typed or sent. A
   `linkedin.message` to a `conversationUrl` names no one itself, so its
