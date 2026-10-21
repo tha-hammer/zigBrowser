@@ -20635,3 +20635,37 @@ confirmed all five empty-valued argument forms are refused. No full gate was
 run because BlackRobin held the shared slot. The separately recorded
 macOS-netd containment SHOULD remains a later hardening item. Verdict was
 mailed to BlueBeaver in Agent Mail 7037.
+
+## MS6.3 fd-3 reopen gate (`1cb5d2a`)
+
+Reviewed exact test-only commit `1cb5d2a` on 2026-10-20. **Verdict:
+BLOCKED-for-tests as the MS6.3 hard gate; useful lower-level Seatbelt probe.**
+The new script is wired into both legs of `ms6_gate.sh`, generates the real CLI
+profile, and has a meaningful denial control. Its helper reopens `/dev/fd/3`,
+compares the exact synthetic canary, and the trailing deny rules show that the
+positive depends on the profile's `file-read*` grant. Local clean-export
+checks passed `/bin/sh -n` and compiled the C helper with
+`-std=c11 -Wall -Wextra -Werror`; the unsandboxed helper read its canary.
+
+It does not yet prove the contract named by the plan. MS6.3 requires the
+reopen to work **with the macOS CLI on both arches**
+(`2026-10-14-14-30-macos-launch-tdd-plan.md:1608-1609`), but
+`ms6_3_fd3_reopen_test.sh:29-31,61-63` executes only a C stand-in. It never
+executes the pinned/bundled Claude CLI and never proves that CLI consumes the
+announced `CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR`. More importantly, the
+test supplies fd 3 with shell input redirection from a regular file, whereas
+the production R1 wrapper supplies fd 3 as one end of a Unix socketpair
+(`agent/host/zb_agent_host/token.py:101-130`). A regular-file
+`open("/dev/fd/3")` can pass while the production socket channel or the CLI's
+actual read path fails. The current token contract even records that the CLI
+reads a socket descriptor directly and only reopens a pipe/FIFO
+(`token.py:3-8`), which conflicts with the test's assertion that the macOS CLI
+reopens it.
+
+Keep this probe, but do not call MS6.3 closed until a fix-forward resolves that
+contract with evidence: use the production socketpair channel and the real
+pinned macOS CLI on each architecture (or amend the authoritative plan, with
+measured real-CLI evidence, if Darwin reads the socket directly). The gate
+must prove the exact canary is consumed through fd 3 under the generated
+profile and retain a discriminating denial/mutant. No full gate was run because
+BlackRobin owns the shared slot. Finding mailed to JadeBeacon, cc BlueBeaver.
