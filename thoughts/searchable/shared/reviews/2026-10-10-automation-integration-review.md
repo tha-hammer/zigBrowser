@@ -20505,3 +20505,29 @@ EOF, timeout and setup cancellation. The both-Mac gate must prove the
 inherited listener positive, decoy-port denial, outside observer positive and
 inside sibling-introspection denial. Verdict and these conditions were mailed
 in Agent Mail 7025.
+
+## R1-under-Seatbelt setup-half green (`e2c45a8`)
+
+Reviewed exact commit `e2c45a8` on 2026-10-20 against the approved
+`97823de` red and `0aa5845`. **Verdict: BLOCKED-for-tests; implementation
+otherwise correct for the setup/listener half.** Darwin pre-binds an IPv4
+stream listener on `127.0.0.1:0`, listens before spawn, passes exactly that fd
+and matching fd/port flags, and threads the chosen port through the real
+Seatbelt seam. Setup's copy begins non-inheritable and is closed in a
+`finally`; the already-reviewed probe adoption clears inheritance before the
+SDK/CLI spawn. `cli_version` stays network-free, and Linux retains its bwrap
+path with no fd or Darwin flags. The registered command uses `-X dev` and a
+ResourceWarning sentinel. Independent clean-export replay of the new seven
+cases against parent `0aa5845` failed with three failures and one error; exact
+`e2c45a8` passed 7/7.
+
+The lifecycle red required by the `97823de` review is still incomplete.
+`test_setup_darwin_r1.py:100-149` covers success, subprocess timeout and a
+refusing seam, but not `bind()` or `listen()` failure. Production currently
+puts both inside the cleanup scope (`setup.py:795-806`), yet moving either
+above it or losing the close has no dedicated regression. Add injected bind
+and listen failures that retain the created socket, prove explicit close,
+prove no seam/subprocess execution, and terminate as a bounded setup failure;
+each cleanup mutant must turn red. The outside-census broker and both-Mac
+kernel gate remain separately open. Finding mailed to BlueBeaver in Agent Mail
+7026.
