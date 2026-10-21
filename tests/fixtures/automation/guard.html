@@ -99,5 +99,25 @@
       if (seen === 2) { act(event.target); setAccount(); }
     });
   }
+  // RoseCat on 76cb14a: between two chunks (a timer the first input sets), the target is replaced
+  // by a same-selector clone, or the page is reloaded into a new document with the same marks.
+  if (mode === 'timer-clone') {
+    for (const id of ['msg', 'editor']) {
+      document.getElementById(id).addEventListener('input', once((event) => setTimeout(() => {
+        const old = event.target;
+        const clone = old.cloneNode(false);
+        if ('value' in clone) clone.value = '';
+        window.__orig = old;
+        window.__clone = clone;
+        old.replaceWith(clone);
+      }, 0)));
+    }
+  }
+  // The new document (marked `reloaded`) does not reload again, so it can be read afterwards.
+  if (mode === 'timer-reload' && !new URLSearchParams(location.search).has('reloaded')) {
+    for (const id of ['msg', 'editor']) {
+      document.getElementById(id).addEventListener('input', once(() => setTimeout(() => location.replace(location.href + '&reloaded=1'), 0)));
+    }
+  }
   window.__ready = true;
 </script>
