@@ -19477,3 +19477,97 @@ slice.
 and the exact diff audit passed locally. The Mac execution and mutation
 results are BlueBeaver's Agent Mail 6914 evidence; no Mac, browser, display,
 credential or live site was touched by this review.
+
+## MS6 Seatbelt profile-generator increment (`a4c07a2`)
+
+Reviewed exact commit `a4c07a2` on 2026-10-20 against macOS plan rev 17,
+MS6 and the shared `SandboxBackend` network capability. **Verdict: BLOCKED.**
+The registered Linux suite passes 9/9, and the explicit `process-info*` deny,
+filtered `sysctl-read` forms and hook-without-egress direction agree with the
+measured MS6.1 belt. The renderer is not safe to consume, however:
+
+1. **BLOCKER — generated-profile injection.** `sandbox_macos.py:49-51,68,74,77`
+   interpolates paths and port-like values directly into Seatbelt source,
+   contrary to the plan's required profile-file plus `-D` parameters. A
+   quote/newline in `scratchpad` closes its filter and injects a new allow;
+   `workspace` can escape its `;;` comment with a newline. A local probe using
+   `scratchpad='/safe\")\n(allow file-write*)\n;;'` emitted that allow verbatim.
+   Use named Seatbelt parameters (or a separately proved encoder where a
+   parameter is impossible), reject hostile values, and add quote, slash,
+   backslash, newline and parenthesis reds with a removal mutant.
+2. **BLOCKER — an empty network policy becomes an unfiltered allow.** With
+   `egress=None` and `bridges=()`, line 77 emits exactly
+   `(allow network-outbound )`. A zero-endpoint capability must omit the allow
+   or be refused; it must never broaden to every destination. Cover both CLI
+   and hook empty-policy cases.
+3. **BLOCKER — the rendered capability is not a checked projection of the
+   backend value.** The code ignores `egress.host`, hardcodes `localhost`, and
+   accepts arbitrary bridge values and port ranges. Require the exact loopback
+   host and integer ports 1..65535, with fail-closed tests, so a malformed
+   `LaunchSpec.network` cannot silently render a different policy.
+4. **BLOCKER-for-tests — substring checks are not an independent profile
+   oracle.** They do not reject the hostile input or empty-capability cases and
+   do not establish that the generated profile parses. Add an independent
+   static/profile-parameter oracle now; the required both-Mac `sandbox-exec`
+   enforcement gate remains later.
+
+The broad `file-read*` and blanket `mach-lookup` also do not meet final MS6
+(`plan:1562-1566`). Because no production backend consumes this module yet and
+the source labels that curation a later increment, they are recorded as
+incomplete scope rather than a separate defect in this first increment. The
+renderer must not be wired until deny-default reads and the tiny Mach lookup
+set land.
+
+The narrow test was run with DISPLAY/WAYLAND/XAUTHORITY removed and passed
+9/9; the hostile local render probe then demonstrated findings 1 and 2.
+Verdict and reproducer were mailed to JadeBeacon in Agent Mail 6918. No Mac,
+browser, live resource or full gate was used.
+
+## Chat drawer S8 approval design, rev 16.20.38 (`82c46b2`)
+
+Reviewed exact commit `82c46b2` on 2026-10-20 against the eight findings on
+rev 16.20.37. **Verdict: BLOCKED.** It correctly removes story preview, makes
+expected raw DOM input synthetic-only, replaces cloneable fields with an
+isolated-world element token, binds cards to prompts, defines a
+length-delimited digest, and names per-ingress and forced-race reds. Five
+remaining defects are independent of the three questions awaiting the user:
+
+1. **BLOCKER — a real flow invalidates its own serial.** `plan:3075-3079`
+   binds the card's `load_serial`; `:3086-3089` says the real flow navigates
+   inside its ticket and then checks the expectation before every later
+   mutation. That planned navigation increments the serial, so the flow's
+   subsequent actions mismatch the card. Specify a pre-navigation validation,
+   the sole approved navigation, exact committed URL/origin validation, and a
+   new document serial captured and bound for all later steps. A superseding
+   navigation between arrival and the first edit must refuse with zero input.
+2. **BLOCKER — the per-step flow check is still separate from its event.** A
+   `Runner.run` check before `ext.runCommand` is two async page operations; page
+   script can act between them despite the FIFO ticket. DOM-derived account,
+   recipient and target expectations must be sent with the exact
+   `automation.js` action and checked in its uninterrupted task. For the
+   HttpOnly Instagram identity and native origin/serial state, name a compound
+   PagePort/native operation or a conservative refusal. Add a hold after the
+   check and before the event; the broker's earlier `before_dispatch` hold does
+   not test this seam.
+3. **BLOCKER — consent and terminal outcome are conflated.** `plan:3105` says
+   `pending -> approved` emits the one `approvalend`, while `:3133` needs the
+   same approved job later to end as `changed` or `unknown`. Either that emits
+   two ends or it hides the real result. Separate the consent claim from the
+   single terminal UI outcome, include crash in the pending state machine, and
+   force Approve followed by expectation mismatch and ambiguous timeout.
+4. **BLOCKER — authoritative tool lists still conflict.** D9 and S8.0 at
+   `:501` and `:2985-2986` require ten previews; decisions 7/12 require nine,
+   and S8.5 still names only message and DM as no-preview. The exact tool-list
+   gate cannot satisfy both. Rewrite those rows, D10's old semantic
+   `target_fp`, and the Closure Test's old broker-revalidation mutant to the
+   rev-38 contract.
+5. **BLOCKER — message/DM recipient identity has no production source.** A
+   fixture marker at `:3089` cannot prevent a live wrong-recipient action.
+   Name each production LinkedIn/Instagram selector or source, require a
+   visible exact unique match and fail closed on zero or multiple matches,
+   with sidebar/wrong-person decoys. This is distinct from the pending user
+   decision on account selectors.
+
+The docs diff passes `git diff --check`. Findings were mailed to BlackRobin,
+copied to JadeBeacon, in Agent Mail 6919. No test or live resource was used for
+this docs-only review.
