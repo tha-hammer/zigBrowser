@@ -23044,6 +23044,41 @@ mechanism evidence for the WTS implementation reviewed above, but it is **not
 the watched-run acceptance**: `LockedDesktopLive`'s polling command used the
 PowerShell raw-string fragment `\"$($s.nonce)\"`, which throws under
 PowerShell 5.1, and its surrounding `catch {}` swallowed the exception. The
-fix-forward `ac20169` has landed but is not reviewed in this section. WS0 and
-`7d85cd5` remain OPEN until the corrected locked run and the subsequent
-unlocked two-host probe-only run both complete under observation.
+fix-forward `ac20169` is approved below. WS0 and `7d85cd5` remain OPEN until
+the subsequent unlocked two-host probe-only run completes under observation.
+
+## WS0 locked poll fix and watched WTS run (`ac20169`)
+
+**APPROVED.** `_ssh_run` streams the script to
+`powershell -Command "$input | Out-String | iex"`, so the replacement of the
+raw-string `\"$($s.nonce)\"` fragment with the valid PowerShell expression
+`([string]$s.nonce)` fixes the exact transport/parser failure. The new
+`$matched` and `$last` state also prevents another caught parse/runtime error
+from degrading into an unexplained timeout: on no match, the test emits
+`NOMATCH last_error=...`, and Python includes the complete poll output and
+stderr in its failure. Acceptance still requires the unpredictable nonce and
+VM-relative fresh timestamp before parsing the returned JSON row.
+
+Independent clean-export, display-scrubbed evidence at exact `ac20169`:
+
+```text
+python -m py_compile tests/windows/host_live_test.py: clean
+gate_twohost_selftest.py: Ran 100 tests in 2.992s; OK (skipped=18)
+```
+
+The owner-watched locked-console run is accepted as the real discriminator
+and closes WS0's locked/WTS half. From a clean export with its own `.git`, the
+staged probe SHA `8766b4d26d59635f...` equalled HEAD and
+`LockedDesktopLive` passed 1/1 in 5.656 seconds on the genuinely locked Win11
+console. That row can pass only with `wts_lock_ok=true`, `session_flags=0`
+and `locked=true`.
+
+**WS0/`7d85cd5` remains OPEN only for the owner-watched unlocked
+`gate.sh --probe-only` two-host run.**
+
+**SHOULD (test hygiene):** eventually expose the poll builder to a hostless
+test so the always-run suite rejects a reintroduced raw-string backslash quote
+or silent catch. The current discriminating regression is necessarily
+VM/lock-gated.
+
+Verdict sent to AzureRidge in Agent Mail 7201.
