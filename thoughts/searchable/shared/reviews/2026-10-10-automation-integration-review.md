@@ -20066,3 +20066,65 @@ Reviewed exact commits `bacd4d6` and `2ac3508` on 2026-10-20.
   `-W error::ResourceWarning`, and attach the same command to the focused step.
 
 Verdicts were mailed to BlueBeaver in Agent Mail 6966.
+
+## Darwin setup test fix-forward (`230001c`)
+
+Reviewed exact commit `230001c` on 2026-10-20. **Verdict: APPROVED.** This
+closes both test blockers recorded for `2ac3508`:
+
+- `agent_host_setup_darwin` is now a dependency of the named
+  `test-agent-setup-ms5` step while remaining in the aggregate gate; and
+- the production-profile observation uses `Path.read_text()`, while the build
+  step enables development warnings and rejects any `ResourceWarning` in the
+  captured output. This is appropriate for a warning emitted during finalizer
+  execution, where converting the warning to an exception does not reliably
+  fail the unittest process.
+
+The two added lifecycle pins exercise the production setup seam: malformed
+browser PIDs fail with exit 2 before the watch or provisioning, and a
+`TimeoutExpired` raised inside the real Darwin setup context removes both its
+profile and scratch directory before `_sandboxed` returns failure. An exact
+clean export under private Xvfb passed:
+
+```
+Build Summary: 12/12 steps succeeded; 14/14 tests passed
+```
+
+All 11 `test_setup_darwin` cases and the 15-case group-cleanup suite ran. This
+approves the `2ac3508` registration chain cumulatively through `230001c`; it
+does not change the separate MS6 R1 network-profile blocker on `bacd4d6`.
+
+## MS6 macOS backend launch capability (`9c234e7`)
+
+Reviewed security-sensitive commit `9c234e7` on 2026-10-20. **Verdict:
+BLOCKED.** The backend's immutable `Network` values are correct: chat uses its
+validated per-session loopback endpoint, `EGRESS_ALLOW`, and the two bridge
+ports; login changes only the allowlist and removes the bridges. The exact
+display-scrubbed unit suite passed 34/34. The launch artifact nevertheless
+breaks the home and per-session contracts:
+
+1. `sandbox_macos.py:332-334` writes `agent-cli.sb` under `home.runtime` on
+   every launch. In the production layout, `runtime` is the fixed link to
+   `current/runtime`, inside a published `dist-<n>` that must never be written
+   after publish (drawer plan `:278-286,312`). The unit fixture substitutes a
+   plain writable runtime directory and therefore bypasses this topology.
+2. Every backend/session uses the same pathname. A two-backend reproduction at
+   the exact commit created spec A for port 52346 and spec B for 52347. Both
+   argv values named the same profile; after B, A's file contained 52347 and
+   no 52346. Thus a held LaunchSpec can silently apply another session's proxy
+   policy before `sandbox-exec` consumes it, contrary to the immutable spec and
+   the per-session endpoint contract (macOS plan `:1581-1587`).
+3. The shared `LaunchSpec.mounts` contract says it enumerates every exposed
+   path (`sandbox.py:81-83`), but this spec reports only scratchpad while the
+   applied profile still grants `file-read*` and ignores `ro_paths` and
+   `state_dirs`. The module itself says the renderer must not be wired before
+   read and mach-lookup curation. The semantic spec is therefore not yet a
+   truthful description of the applied policy.
+
+The fix needs a unique, securely created no-follow profile outside the
+immutable published build, an artifact lifetime that lasts through spawn and
+then cleans up, plus production-layout and two-live-spec reds. Symlink,
+collision, partial-write and cleanup cases must fail closed. The semantic
+filesystem contract must match the profile before platform dispatch, or this
+increment must remain explicitly non-consumable. Findings and the exact
+cross-session reproduction were mailed to JadeBeacon in Agent Mail 6972.
