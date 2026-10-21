@@ -26450,3 +26450,81 @@ destructive Mac reaper case remains outside the reviewed hard-gate manifest.
 Calling that state an immutable false constant in these commit messages is a
 NIT—the plan schedules the actual constant/gate later—but no real signal path
 was enabled here.
+
+## Agent fd-held scratch cleanup (`035c146`)
+
+**APPROVED; cumulatively closes the `4801844`/`818ca81` cleanup and diagnostic
+security blockers. The separate owned-process-group lifetime work remains
+open.**
+
+`files.remove_tree` now opens each directory relative to its held parent with
+`O_DIRECTORY|O_NOFOLLOW`, validates ownership with `fstat`, changes mode only
+on the held fd/inode, enumerates by fd, and uses relative unlink/rmdir calls
+(`agent/host/zb_agent_host/files.py:84-149`). A swapped-in symlink is handled
+as a non-directory and unlinked rather than followed. Linux's 0300 fallback
+pins with `O_PATH|O_NOFOLLOW` before using `/proc/self/fd`; macOS uses the
+no-follow `dir_fd` chmod API. If neither mechanism exists, cleanup refuses and
+reports rather than falling back to a path chmod. Reports contain only the
+app-generated root plus fixed stage/errno counts, never a descendant name or
+exception text (`:78-82`, `:150`).
+
+`FifoHandoff` now uses one `mkdir` result to decide ownership, refuses an
+existing symlink or foreign/non-directory path, and applies its mode through
+the no-follow helper (`agent/host/zb_agent_host/token.py:61-84`). Only the
+route probe opts into directory removal; a session handoff retains its empty
+0300 directory as its pre-existing contract requires (`:103-122`).
+
+That distinction repairs a registered regression introduced by `4801844`.
+The P02 contract and its `build.zig` registration both predate that commit;
+at exact `4801844`, its real R1 row fails with `FileNotFoundError` because
+`token-fifo` was removed. The same exact row passes at `035c146`. Thus the
+registered gate was red from `4801844` through the parent of `035c146`, even
+though the original commit did not report it; the fix-forward closes it.
+
+From an exact clean export under private Xvfb, `agent-host-win-import` plus
+`test-agent-setup-ms5` passed Build Summary **26/26 steps; 14/14 tests**. The
+registered cleanup suites passed **15/15**, and the isolated P02 route row
+passed under a private user/PID namespace. `git diff --check` is clean.
+
+SHOULD: run the signal-free cleanup modules on both Macs before using an armed
+hard-gate run as evidence that the observed 0300 leftovers are gone. Linux
+proves the no-follow design and fail-closed fallback, but cannot prove the
+macOS Python/fchmodat capability branch. This does not authorize the pending
+real-signal lifecycle path; group ownership, stop/reap and namespace safety
+remain governed by the `c545b67` review.
+
+## Owned-group kill-safety red (`fb13f88`)
+
+**BLOCKED-for-tests.** The process-lifetime/refusal contracts are causal, but
+the namespace sentinel does not yet prove that real signals are confined to
+the launcher's child PID namespace.
+
+The new refusal table covers mocked and non-exact-integer pids (including
+bool), pid <= 1, self/current process group, a real non-child group leader and
+a child that is not its group leader. Both `os.kill` and `os.killpg` are
+patched to raise if a refusal reaches them. The behavior rows cover a hanging
+leader with a pipe-holding descendant and a leader that exits while its
+descendant retains the pipes; each requires bounded return, the entire group
+gone and the leader reaped. Those are the right red contracts.
+
+Under the documented private user/PID namespace, exact `fb13f88` reproduced
+the intended **9/9 failures in 2.005 seconds**: seven missing-owned-group rows
+and two setup-lifetime rows. All stand-ins are bounded and the run stayed
+inside the namespace.
+
+The blocker is `agent/host/tests/pidns_guard.py:14-26`.
+`ZB_OUTER_PIDNS` is merely an environment string with a `pid:[` prefix; it is
+not proved to name the launcher's actual namespace. A direct host invocation
+can supply a different value. If host/container PID 1 is one of the allowed
+shell names, the function then returns true. A deterministic exact-commit
+probe using current `pid:[current]`, PID 1 `sh`, and outer
+`pid:[forged]` returned `(True, '')`.
+
+Before registration, the launcher must preserve the real outer namespace fd
+and the worker must use a kernel relationship check—such as `NS_GET_PARENT`
+plus dev/inode equality—to prove that the current PID namespace is its child.
+Malformed/closed fds, unsupported calls, mismatch or any ambiguity must
+refuse before spawn or signal. The expected inner parent/PID-1 shape can be
+additional defense, not the authority. A forged-string-plus-shell-PID1 row
+must stay refused, and the registered entry must be the reviewed launcher,
+not the worker directly. Agent Mail 7433 sent BlueBeaver this blocker.
