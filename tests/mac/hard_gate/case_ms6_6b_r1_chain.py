@@ -14,10 +14,17 @@ Rows (RoseCat 7053):
     census request and reply);
  2. planted-token control: a CLI that re-execs itself with the token in its environment -> probe_r1 False; its own
     positives first (the census ran, and the CLI's real environment, read outside Seatbelt, holds the planted token);
- 3. forged capability: the planted CLI also writes "clean" into every socket it holds -> still False;
+ 3. forged capability: the planted CLI first writes "clean" into every socket it holds -> still False. Causal
+    (RoseCat 7300 #1): the forge branch re-execs with ZB_FORGED=<fds scanned>,<sockets>,<written> beside the planted
+    token, read from its real environment outside Seatbelt; the planted CLI is the same source compiled without the
+    forge branch, i.e. the forge-deleted mutant, and the case requires it to carry NO ZB_FORGED;
  4. timeout/lifecycle: a CLI that never calls (and exits by itself after 90 s) -> probe_r1 False within the probe's
-    bound, no census at all, and afterwards no process running it survives; after every row the listener's port is
-    free again on 127.0.0.1 and ::1.
+    bound and no census at all.
+After EVERY row (RoseCat 7300 #2): the listener's port is free again on 127.0.0.1 and ::1, and no part of that row's
+probe chain is alive: no process of ours runs that row's CLI (proc_pidpath) or is a python whose argv names that row's
+runtime or CLI (the sandboxed probe, the wrapper before its exec). The inspection fails closed (RoseCat 7300 #3): a
+failed ps, or any read of one of our processes that fails while it has not vanished, fails the row. A hang survivor is
+then waited out (it ends itself at 90 s), never signalled, so the case leaves no child behind.
 Kill safety (RoseCat 7250): this case sends no signal. Its compiler and ps run through the guarded h.spawn_group; the
 only other processes are setup's own (subprocess.run on its own child). The observation spies call through to the
 real functions and are removed after every row."""
@@ -34,6 +41,7 @@ CLI_C = r"""
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <poll.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -61,26 +69,33 @@ static int read_token(void) {
   tok[n] = 0;
   return n ? 0 : -1;
 }
-static void forge(void) {
+static char forged[64];
+static void forge(void) {  /* the forged capability: "clean" into every socket held; the attempt goes on record */
+  int sockets = 0, written = 0;
+  signal(SIGPIPE, SIG_IGN);  /* a closed peer is an EPIPE here, not this process's end */
   for (int fd = 0; fd < 1024; fd++) {
     struct stat st;
-    if (fstat(fd, &st) == 0 && S_ISSOCK(st.st_mode)) (void)!write(fd, "clean\n", 6);
+    if (fstat(fd, &st) == 0 && S_ISSOCK(st.st_mode)) {
+      sockets++;
+      if (write(fd, "clean\n", 6) == 6) written++;
+    }
   }
+  snprintf(forged, sizeof forged, "ZB_FORGED=1024,%d,%d", sockets, written);
 }
 int main(int argc, char **argv) {
   (void)argc;
   if (read_token() != 0) return 3;
   if (MODE_HANG) { sleep(90); return 0; }  /* never calls; ends by itself */
   if (MODE_PLANT && !getenv("ZB_PLANTED")) {
+    if (MODE_FORGE) forge();  /* before the re-exec, so its record is in the censused environment */
     size_t n = 0; while (environ[n]) n++;
-    char **env = calloc(n + 2, sizeof *env);
+    char **env = calloc(n + 3, sizeof *env);
     for (size_t i = 0; i < n; i++) env[i] = environ[i];
     static char kv[760]; snprintf(kv, sizeof kv, "ZB_PLANTED=%s", tok);
-    env[n] = kv; env[n + 1] = NULL;
+    env[n] = kv; env[n + 1] = forged[0] ? forged : NULL; env[n + 2] = NULL;
     execve(argv[0], argv, env);  /* same executable path: the census must find it, token in its environment */
     return 4;
   }
-  if (MODE_FORGE) forge();
   const char *url = getenv("ANTHROPIC_BASE_URL");
   if (!url || strncmp(url, "http://127.0.0.1:", 17) != 0) return 5;
   int port = atoi(url + 17);
@@ -128,18 +143,49 @@ def _port_free(port):
     return True
 
 
-def _survivors(h, proc_darwin, exe):
-    """Every live pid whose executable path (proc_pidpath, as the census reads it) is `exe`: an orphaned CLI is no
-    longer setup's descendant, so the whole process table is read (ps through the guarded h.spawn_group)."""
-    code, out, _ = h.spawn_group(["/bin/ps", "-axo", "pid="], env={"PATH": "/usr/bin:/bin"}, timeout=20)
-    pids = []
-    for word in out.split():
+def _chain_alive(h, proc_darwin, cli, markers):
+    """(inspected, alive, unreadable) over OUR processes (an orphaned chain member is no longer setup's descendant, so
+    the whole table is read; ps runs through the guarded h.spawn_group). Alive: a process running `cli`
+    (proc_pidpath, as the census reads it), or a python whose argv names one of `markers` (this row's runtime and CLI
+    dirs: the sandboxed probe, the wrapper before its exec). Fails closed (RoseCat 7300 #3): a failed ps is
+    inspected=False, and any read that fails while the pid has not vanished is listed as unreadable. Zombies have
+    exited and run nothing; they are skipped."""
+    code, out, _ = h.spawn_group(["/bin/ps", "-axo", "pid=,uid=,stat="], env={"PATH": "/usr/bin:/bin"}, timeout=20)
+    if code != 0:
+        return False, [], []
+    alive, unreadable = [], []
+    for line in out.decode(errors="replace").splitlines():
+        parts = line.split()
+        if len(parts) != 3 or not parts[0].isdigit() or not parts[1].isdigit():
+            return False, [], [line]
+        pid, uid, stat = int(parts[0]), int(parts[1]), parts[2]
+        if uid != os.getuid() or pid == os.getpid() or stat.startswith("Z"):
+            continue
         try:
-            if proc_darwin.path(int(word)) == exe:
-                pids.append(int(word))
-        except (OSError, ValueError):
-            pass  # vanished, or not ours to read (our own CLI always is)
-    return code, pids
+            exe = proc_darwin.path(pid)
+        except OSError as e:
+            unreadable.append((pid, f"path: {e}"))
+            continue
+        if exe is None:
+            continue  # vanished (ESRCH)
+        if exe == cli:
+            alive.append((pid, exe))
+            continue
+        if not os.path.basename(exe).lower().startswith("python"):
+            continue
+        try:
+            _raw, argv, _env = proc_darwin.environ_of(pid)
+        except OSError as e:
+            try:
+                gone = proc_darwin.path(pid) is None
+            except OSError:
+                gone = False
+            if not gone:
+                unreadable.append((pid, f"procargs: {e}"))
+            continue
+        if any(m in a for a in argv for m in markers):
+            alive.append((pid, exe))
+    return True, alive, unreadable
 
 
 def run(h):
@@ -197,13 +243,14 @@ def run(h):
             return real_run(argv, *args, **kw)
 
         def spy_census(exe, root, tok, canary):
-            seen = {"exe": exe, "root": root, "token": tok, "canary": canary, "planted": None}
+            seen = {"exe": exe, "root": root, "token": tok, "canary": canary, "planted": None, "forged": None}
             try:
                 for pid in proc_darwin.descendants_running(exe, root):
                     _raw, _argv, env = proc_darwin.environ_of(pid)
                     seen["planted"] = any(e.startswith(b"ZB_PLANTED=") and tok in e for e in env)
-            except OSError:
-                pass
+                    seen["forged"] = [e for e in env if e.startswith(b"ZB_FORGED=")]
+            except OSError as e:
+                seen["read_error"] = str(e)  # leaves planted/forged None: their checks then fail
             seen["clean"] = real_census(exe, root, tok, canary)
             censuses.append(seen)
             return seen["clean"]
@@ -214,10 +261,34 @@ def run(h):
             verdict = setup.probe_r1(wrapper, clis[mode])
         finally:
             setup.subprocess.run, proc_darwin.cli_env_clean = real_run, real_census
-        return verdict, time.monotonic() - started, runs, censuses
+        return verdict, time.monotonic() - started, runs, censuses, runtime
+
+    def released(mode, runs, runtime, started_at):
+        """After EVERY row (RoseCat 7300 #2): the port free on both families, and no part of the chain alive within
+        15 s; a survivor is then waited out (it ends itself by 90 s), never signalled, and must be gone too."""
+        argv = runs[0]["argv"] if len(runs) == 1 else []
+        port = int(argv[argv.index("--listen-port") + 1]) if "--listen-port" in argv else None
+        h.check(port is not None and _port_free(port), f"{mode}: afterwards port {port} is free on 127.0.0.1 and ::1")
+        markers = [runtime, os.path.dirname(clis[mode])]
+        deadline = time.monotonic() + 15
+        while True:
+            inspected, alive, unreadable = _chain_alive(h, proc_darwin, clis[mode], markers)
+            if not inspected or unreadable or not alive or time.monotonic() >= deadline:
+                break
+            time.sleep(1)
+        h.check(inspected and not unreadable, f"{mode}: every process of ours was inspected ({unreadable})")
+        h.check(inspected and not alive, f"{mode}: no part of the probe chain is alive ({alive})")
+        if alive:
+            drain = started_at + 100
+            while alive and time.monotonic() < drain:
+                time.sleep(2)
+                inspected, alive, unreadable = _chain_alive(h, proc_darwin, clis[mode], markers)
+            h.check(inspected and not alive and not unreadable,
+                    f"{mode}: the survivors ended by themselves, unsignalled ({alive}, {unreadable})")
 
     # 1. positive
-    verdict, _took, runs, censuses = one("honest")
+    t0 = time.monotonic()
+    verdict, _took, runs, censuses, runtime = one("honest")
     h.check(verdict is True, "positive: an honest CLI through the real chain selects R1")
     if h.check(len(runs) == 1, f"positive: exactly one sandboxed run ({len(runs)})"):
         r = runs[0]
@@ -239,29 +310,32 @@ def run(h):
                 and censuses[0]["exe"] == clis["honest"] and censuses[0]["root"] == os.getpid()
                 and censuses[0]["clean"] is True,
                 f"positive: setup's census ran once, exact request, clean ({censuses})")
-        h.check(port is not None and _port_free(port), f"positive: afterwards {port} is free on 127.0.0.1 and ::1")
+    released("positive", runs, runtime, t0)
 
-    # 2. planted-token control and 3. forged capability: their own positives first
+    # 2. planted-token control and 3. forged capability: their own positives first. The planted CLI is the forge CLI
+    # compiled without its forge branch (the forge-deleted mutant): it must carry no ZB_FORGED (RoseCat 7300 #1).
     for mode in ("planted", "forge"):
-        verdict, _took, runs, censuses = one(mode)
+        t0 = time.monotonic()
+        verdict, _took, runs, censuses, runtime = one(mode)
         h.check(len(censuses) == 1, f"{mode}: the CLI called the server and setup's census ran ({len(censuses)})")
-        h.check(bool(censuses) and censuses[0]["planted"] is True,
-                f"{mode}: the CLI's real environment, read outside Seatbelt, holds the planted token")
-        h.check(bool(censuses) and censuses[0]["clean"] is False, f"{mode}: setup's census says dirty")
+        seen = censuses[0] if censuses else {}
+        h.check(seen.get("planted") is True,
+                f"{mode}: the CLI's real environment, read outside Seatbelt, holds the planted token ({seen})")
+        forged = seen.get("forged")
+        if mode == "forge":
+            h.check(forged is not None and len(forged) == 1 and re.fullmatch(rb"ZB_FORGED=1024,[0-9]+,[0-9]+",
+                                                                             forged[0]) is not None,
+                    f"forge: the forge branch ran, scanned fds 0..1023 and is on record ({forged})")
+        else:
+            h.check(forged == [], f"planted: the forge-deleted mutant carries no forge record ({forged})")
+        h.check(seen.get("clean") is False, f"{mode}: setup's census says dirty")
         h.check(verdict is False, f"{mode}: probe_r1 is False (no R1)")
+        released(mode, runs, runtime, t0)
 
     # 4. timeout and lifecycle
-    verdict, took, runs, censuses = one("hang")
+    t0 = time.monotonic()
+    verdict, took, runs, censuses, runtime = one("hang")
     h.check(verdict is False, "hang: a CLI that never calls is no R1")
     h.check(took <= setup.PROBE_TIMEOUT_S + 45, f"hang: probe_r1 ends within its bound ({took:.1f} s)")
     h.check(censuses == [], "hang: no census without a call")
-    deadline, pids = time.monotonic() + 15, None
-    while time.monotonic() < deadline:
-        code, pids = _survivors(h, proc_darwin, clis["hang"])
-        if code != 0:
-            pids = None
-            break
-        if not pids:
-            break
-        time.sleep(1)
-    h.check(pids == [], f"hang: no process running the hang CLI survives ({pids}; each exits by itself at 90 s)")
+    released("hang", runs, runtime, t0)
