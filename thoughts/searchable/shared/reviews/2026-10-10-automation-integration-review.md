@@ -25730,3 +25730,57 @@ The acceptable result writes Zig, NuGet/the pinned WebView2 SDK, and their
 user environment values under `%LOCALAPPDATA%`; it must print `C/C++
 toolchain found:`, never the installation branch. The script remains forbidden
 on the Win10 file server.
+
+The subsequently authorized live run used exactly the bounded three-switch
+command at `e42fb68` as non-admin `zbtext` on `win11-m8` and exited 0. The
+script found the existing MSVC Build Tools and Windows SDK 10.0.26100.0 through
+the corrected `winrt\EventToken.h` path, skipped both OpenSSH and repo sync,
+and never entered the toolchain-install branch. The read-only post-run audit
+found only user-scope Zig 0.16.0, NuGet, the pinned WebView2 SDK
+1.0.3967.48 and the corresponding HKCU environment values under
+`%LOCALAPPDATA%`. This supplies the Windows runtime evidence that the code
+review deliberately left outstanding; verdict remains **APPROVED**.
+
+## MS6 R1 signed-UID parser (`a78e47d`, `f9e4c45`)
+
+**`a78e47d` APPROVED as a causal red; `f9e4c45` APPROVED.** The case parser
+now full-matches an unsigned PID, signed UID and nonempty status. Thus macOS's
+`nobody=-2` row is a parsed other-user row that is skipped without a proc read,
+while a signed/negative PID, malformed UID, missing field or extra shape still
+makes the census uninspected and fail closed.
+
+Exact clean-export runs with the pinned helper runtime reproduced the red as
+24 tests with exactly the new negative-UID row failing, and the green as
+**24/24 OK**. The revised R1 case hashes to
+`fc1df7b11b2fd229218d4537d4711a9c0992e0e76c54e86eeb432524d994ca78`,
+exactly the value in `tests/mac/hard_gate/MANIFEST.json`. The earlier armed Mac
+run's parser failure is therefore closed. Verdict sent to BlueBeaver in Agent
+Mail 7387.
+
+## Darwin `SO_ACCEPTCONN` route-probe red (`b63ec58`)
+
+**APPROVED as a causal red; the production fix and Mac rerun remain open.**
+The unregistered suite injects `ENOPROTOOPT` only for
+`getsockopt(SOL_SOCKET, SO_ACCEPTCONN)` and repeats the existing listener and
+Darwin-main contract underneath that condition. In an exact clean export with
+the pinned helper runtime, its 11 tests produced exactly **1 failure and 6
+errors**, all from the uncaught `ENOPROTOOPT`: the good-listener path, wrong
+listener shapes that reach the listening check, Darwin refusal, and Darwin
+success all expose the same real-Mac failure rather than a fixture-only error.
+
+The selected green design is a narrow nonblocking `accept()` fallback only for
+`ENOPROTOOPT`; libproc/process-info is rejected because the probe's Seatbelt
+profile intentionally denies that authority. The fallback must first finish
+the existing socket/family/type/exact-loopback-address checks, preserve and
+restore the exact open-file-description flags with `F_GETFL`/`F_SETFL`, treat
+`EAGAIN`/`EWOULDBLOCK` as an empty listening queue, and fail closed on every
+other error or restoration failure. A returned pending connection must be
+closed and the listener refused because no client is valid before the CLI
+exists. Focused green rows must cover flag restoration, bound-but-not-listening,
+pending connection closure, restoration failure, and the no-fallback/lossy-
+restore mutants. Raw `OSError` and traceback output remain forbidden.
+
+The exact reviewed armed hard gate is still **NO-GO**: its next execution must
+wait for the production green, registration, the resulting new R1-case digest,
+and review of all three. The detailed contract and verdict were sent to
+BlueBeaver in Agent Mail 7387.
