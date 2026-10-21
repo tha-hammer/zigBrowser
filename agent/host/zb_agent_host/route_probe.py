@@ -16,7 +16,6 @@ import argparse
 import asyncio
 import contextlib
 import errno
-import fcntl
 import json
 import os
 import re
@@ -93,6 +92,8 @@ def _require_listening(sock):
         if not listening:
             raise ProbeRefused("the listen fd is not listening")
         return
+    import fcntl  # POSIX-only: imported here, never at module scope (the Windows helper boundary; RoseCat 7391)
+
     fd = sock.fileno()
     try:
         old = fcntl.fcntl(fd, fcntl.F_GETFL)

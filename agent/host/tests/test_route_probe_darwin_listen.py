@@ -153,7 +153,7 @@ class AcceptFallback(listen_fd.Base):
 
                 fd, port = listen_fd._listener()
                 self.own(fd)
-                with mock.patch.object(route_probe.fcntl, "fcntl", side_effect=flaky):
+                with mock.patch.object(fcntl, "fcntl", side_effect=flaky):  # route_probe imports fcntl lazily
                     self.refused(fd, port, "listen fd")
 
     def test_the_address_is_checked_before_any_accept(self):
