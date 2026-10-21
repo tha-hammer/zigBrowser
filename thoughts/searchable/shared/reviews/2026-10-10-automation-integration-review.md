@@ -23969,3 +23969,29 @@ guarded-stop rows, require the exact nonzero test summary, and source-pin the
 absence of raw child signals. The visible uncommitted script moves in that
 direction but is not evidence for `e681884`. Verdict sent to BlueBeaver with
 JadeBeacon copied in Agent Mail 7258.
+
+## MS6 hard-gate spawn-I/O oracle closure (`b9d8bc3`, `adfa72d`)
+
+**APPROVED.** These commits cumulatively close the `43dd176`/`e681884`
+BLOCKED-for-tests finding. The red now verifies that both mutations applied,
+forces all four bad-fd calls to publish children, requires exactly six
+`STOP <case> child=<pid> kill_group=1` rows, rejects any wrapped signal call,
+pins exit status 1 plus the final failure-summary row, and source-checks the
+test for a raw child signal. The green emits the evidence row immediately after
+the guarded helper returns; it does not add a signal path or unbounded wait.
+
+Independent clean-export runs, each inside a separate private user/PID
+namespace, gave the expected causal results:
+
+- `b9d8bc3` against `e681884`: exit 1 because the guarded-stop evidence was
+  absent;
+- `adfa72d`: exit 0, six cleanup branches reached, each refused with `EPERM`,
+  zero intercepted signals, and the pinned mutant exit/summary;
+- the `b9d8bc3` source oracle against `43dd176`: exit 1 before execution and all
+  three raw `kill(-child, SIGKILL)` sites named.
+
+The safety hold on running the individual `ms5_spawn_io_gate.sh` or
+`case_ms5_spawn_io` on the Macs is lifted. This is not blanket approval to arm
+the complete MS6 hard gate: its reviewed manifest, pins and staging contracts
+still apply, and the blocked reaper case remains excluded. Verdict sent to
+BlueBeaver with JadeBeacon copied in Agent Mail 7260.
