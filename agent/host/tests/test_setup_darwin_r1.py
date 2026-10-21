@@ -8,6 +8,8 @@ the platform injected (`setup.PLATFORM`) and the MS6 seam faked with JadeBeacon'
 - Setup's copy is not inheritable (only pass_fds hands it on), and setup closes it after the run on every path:
   a verdict, a timeout, the seam refusing.
 - cli_version stays network-free (no loopback_port); Linux probe_r1 is unchanged (bwrap argv, no pass_fds, no flags).
+- Through the real seam (JadeBeacon 0b9527f): the profile in force during the probe has exactly one outbound rule,
+  `(allow network-outbound (remote ip "localhost:<the pre-bound port>"))`, and cli_version's has none.
 
 Run like the gate: cd agent/host/tests && python -X dev -m unittest -v test_setup_darwin_r1. Unregistered until the
 green.
@@ -15,6 +17,7 @@ green.
 import contextlib
 import json
 import os
+import re
 import socket
 import unittest
 from unittest import mock
@@ -143,6 +146,39 @@ class Darwin(Base):
         self.assertIsNone(seam["loopback_port"])
         self.assertNotIn("--listen-fd", seam["command"])
         self.assertEqual(run["pass_fds"], ())
+
+
+class DarwinRealSeam(Base):
+    """Through JadeBeacon's real sandbox_macos.setup_sandbox (0b9527f): the profile in force while the probe runs
+    permits exactly the pre-bound port, and cli_version's permits no network at all."""
+
+    def setUp(self):
+        super().setUp()
+        mock.patch.object(setup, "PLATFORM", "darwin").start()
+        self.profiles = []
+        real_run = self.fake_run
+
+        def capture(argv, **kwargs):
+            with open(argv[2], encoding="utf-8") as f:
+                self.profiles.append(f.read())
+            return run(argv, **kwargs)
+
+        real_run()
+        run = setup.subprocess.run.side_effect
+        mock.patch.object(setup.subprocess, "run", side_effect=capture).start()
+
+    def outbound(self, profile):
+        return re.findall(r"\(allow network-outbound[^\n]*", profile)
+
+    def test_the_probe_runs_under_a_profile_allowing_exactly_its_port(self):
+        self.assertIs(setup.probe_r1(WRAPPER, CLI), True)
+        (run,), (profile,) = self.runs, self.profiles
+        self.assertEqual(self.outbound(profile), [f'(allow network-outbound (remote ip "localhost:{run["port"]}"))'])
+
+    def test_cli_version_runs_under_a_profile_with_no_network(self):
+        setup.cli_version(CLI)
+        (profile,) = self.profiles
+        self.assertEqual(self.outbound(profile), [])
 
 
 class LinuxUnchanged(Base):

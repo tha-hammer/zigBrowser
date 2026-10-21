@@ -1577,6 +1577,14 @@ pub fn build(b: *std.Build) void {
         "py=$(tools/agent_host_env.sh --check) || exit 1; cd agent/host/tests && out=$(env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 ZB_AGENT_HOST_PYTHON=\"$py\" \"$py\" -X dev -m unittest -v test_route_probe_darwin_env 2>&1); rc=$?; printf '%s\\n' \"$out\"; [ $rc -eq 0 ] || exit $rc; if printf '%s\\n' \"$out\" | grep -q ResourceWarning; then echo 'test_route_probe_darwin_env: ResourceWarning' >&2; exit 1; fi",
     });
     agent_setup_ms5_step.dependOn(&agent_host_route_probe_darwin_env.step);
+    // R1 under Seatbelt, setup's half (RoseCat 6958; JadeBeacon 7004): probe_r1 pre-binds 127.0.0.1:0, passes it by
+    // pass_fds, and the setup profile permits exactly that port (through the real sandbox_macos.setup_sandbox).
+    const agent_host_setup_darwin_r1 = b.addSystemCommand(&.{
+        "sh",
+        "-c",
+        "py=$(tools/agent_host_env.sh --check) || exit 1; cd agent/host/tests && out=$(env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 ZB_AGENT_HOST_PYTHON=\"$py\" \"$py\" -X dev -m unittest -v test_setup_darwin_r1 2>&1); rc=$?; printf '%s\\n' \"$out\"; [ $rc -eq 0 ] || exit $rc; if printf '%s\\n' \"$out\" | grep -q ResourceWarning; then echo 'test_setup_darwin_r1: ResourceWarning' >&2; exit 1; fi",
+    });
+    agent_setup_ms5_step.dependOn(&agent_host_setup_darwin_r1.step);
     // Chat drawer S3.1: --agent-setup's provisioning (unit and property
     // tests of the helper's setup command); fails closed without the venv.
     const agent_host_provision_unit = b.addSystemCommand(&.{
@@ -2317,6 +2325,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&agent_host_route_probe_listen_fd.step);
     test_step.dependOn(&agent_host_proc_darwin.step);
     test_step.dependOn(&agent_host_route_probe_darwin_env.step);
+    test_step.dependOn(&agent_host_setup_darwin_r1.step);
     test_step.dependOn(&agent_host_contract.step);
     test_step.dependOn(&agent_host_backend_contract.step);
     test_step.dependOn(&agent_host_sandbox_macos.step);

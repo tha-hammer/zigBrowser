@@ -26,6 +26,7 @@ import re
 import secrets
 import shlex
 import shutil
+import socket
 import stat
 import subprocess
 import sys
@@ -715,14 +716,15 @@ def provision(home, source, source_home, source_path, python, select_token_route
 PLATFORM = sys.platform
 
 
-def _darwin_sandbox(scratch, ro_paths, command):
+def _darwin_sandbox(scratch, ro_paths, command, loopback_port=None):
     """Setup's own sandbox on macOS: MS6's Seatbelt seam, the context manager sandbox_macos.setup_sandbox
     (JadeBeacon, 45bbbff), which yields the sandbox-exec argv and guard-deletes its per-run profile under
-    `scratch`. Until it exists setup refuses: it never runs a command unsandboxed."""
+    `scratch`. Until it exists setup refuses: it never runs a command unsandboxed. `loopback_port` (R1 only) is the
+    one loopback port the profile permits (JadeBeacon 7004); without it the run has no network at all."""
     setup_sandbox_cm = getattr(sandbox_macos, "setup_sandbox", None)
     if setup_sandbox_cm is None:
         raise SetupError("the macOS sandbox is not ready")
-    return setup_sandbox_cm(str(scratch), ro_paths, command)
+    return setup_sandbox_cm(str(scratch), ro_paths, command, loopback_port=loopback_port)
 
 
 def setup_sandbox(scratch, ro_paths, command):
@@ -751,14 +753,21 @@ def setup_sandbox(scratch, ro_paths, command):
     return argv + ["--bind", str(scratch), str(scratch), "--chdir", str(scratch), "--", *map(str, command)]
 
 
-def _sandboxed(ro_paths, command, timeout, env=None):
-    """Runs `command` in setup_sandbox with a fresh throwaway home; (stdout, ok)."""
+def _sandboxed(ro_paths, command, timeout, env=None, listener=None):
+    """Runs `command` in setup_sandbox with a fresh throwaway home; (stdout, ok). `listener` (macOS R1 only): the
+    127.0.0.1 listener setup bound outside the sandbox; the command gets it as `--listen-fd/--listen-port` through
+    pass_fds, and the profile permits exactly its port."""
     scratch = Path(tempfile.mkdtemp(prefix="zb-setup-run-"))
     run_env = {"PATH": "/usr/bin:/bin", "HOME": str(scratch), "LANG": "C.UTF-8", **(env or {})}
     try:
         if PLATFORM == "darwin":
-            with _darwin_sandbox(scratch, ro_paths, command) as argv:
-                done = subprocess.run(argv, capture_output=True, text=True, timeout=timeout, env=run_env)
+            port, pass_fds = None, ()
+            if listener is not None:
+                port, pass_fds = listener.getsockname()[1], (listener.fileno(),)
+                command = [*command, "--listen-fd", str(listener.fileno()), "--listen-port", str(port)]
+            with _darwin_sandbox(scratch, ro_paths, command, port) as argv:
+                done = subprocess.run(argv, capture_output=True, text=True, timeout=timeout, env=run_env,
+                                      pass_fds=pass_fds)
         else:
             done = subprocess.run(setup_sandbox(scratch, ro_paths, command), capture_output=True, text=True,
                                   timeout=timeout, env=run_env)
@@ -780,10 +789,22 @@ def probe_r1(wrapper, cli):
     the SDK, the wrapper and the CLI all live in its private network namespace.
     True when the CLI took the probe token from fd 3 and no CLI environment held it."""
     runtime = Path(wrapper).parent.parent
-    out, ok = _sandboxed([sys.prefix, PACKAGE_DIR, runtime, cli],
-                         [sys.executable, "-m", "zb_agent_host", "probe-r1", "--wrapper", wrapper, "--cli", cli],
-                         timeout=PROBE_TIMEOUT_S + 30,
-                         env={"PYTHONPATH": str(PACKAGE_DIR), "PYTHONDONTWRITEBYTECODE": "1"})
+    listener = None
+    if PLATFORM == "darwin":
+        # macOS has no private network namespace (RoseCat 6958): bind the probe's one loopback port here, outside the
+        # sandbox, and hand it in; the profile permits exactly this port. Not inheritable: only pass_fds passes it.
+        listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        if listener is not None:
+            listener.bind(("127.0.0.1", 0))
+            listener.listen(8)
+        out, ok = _sandboxed([sys.prefix, PACKAGE_DIR, runtime, cli],
+                             [sys.executable, "-m", "zb_agent_host", "probe-r1", "--wrapper", wrapper, "--cli", cli],
+                             timeout=PROBE_TIMEOUT_S + 30,
+                             env={"PYTHONPATH": str(PACKAGE_DIR), "PYTHONDONTWRITEBYTECODE": "1"}, listener=listener)
+    finally:
+        if listener is not None:
+            listener.close()  # setup's copy, on every path
     lines = out.strip().splitlines()
     try:
         return ok and json.loads(lines[-1]) == {"r1": True}
