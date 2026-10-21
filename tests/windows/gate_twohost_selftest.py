@@ -144,6 +144,11 @@ class _TwoHostCase(unittest.TestCase):
     def _run_probe_only(self, td, extra):
         home = td / "home"; home.mkdir(exist_ok=True)
         env = {
+            # gate.sh resolves its repo root from ZB_GATE_ROOT or `git`, failing closed when neither
+            # exists. A pure `git archive` export has no .git, so without this the gate aborts with
+            # "cannot resolve a repo root" and every proceed-path case reds (same cause as 2c288fd/7335;
+            # 7bb26ce carried the same fix into gate_selftest.py). REPO is this export/checkout's root.
+            "ZB_GATE_ROOT": str(REPO),
             "PATH": _fakes(td) + os.pathsep + _BASE_PATH, "HOME": str(home),
             "ZB_WIN11_HOST": "127.0.0.1", "ZB_WIN11_PORT": "2222", "ZB_WIN11_DOMAIN": "win11-m8",
             "ZB_WIN11_USER": "zbtext", "ZB_WIN11_MARKER": VM_MARKER,
