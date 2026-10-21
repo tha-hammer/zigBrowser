@@ -145,13 +145,15 @@ int zb_reaper_engine(const struct zb_reaper_ops *ops, const pid_t *pids, int npi
     if (pid <= 1 || pid == self) continue; /* never 0/1/self: kill(-1)/kill(0)/suicide */
     struct zb_reaper_id id0;
     ops->inspect(pid, dir, &id0, ops->ctx);
-    if (!id0.matches || id0.uid != myuid) continue; /* not a survivor of this run, or not ours: silent */
+    if (!id0.matches) continue; /* not a survivor of this run: silent non-candidate */
     if (!id0.have_bsd) {
-      /* A match of our uid whose identity is UNAVAILABLE. In census it is dropped as before; in a sweep it is a
-       * candidate we cannot safely act on and is NOT proven gone -> report it UNRESOLVED, never clean. */
+      /* A MATCH whose identity is UNAVAILABLE. The real inspector then also reports uid=(uid_t)-1, so this MUST
+       * be classified before the uid check (RoseCat 413e3c5) — the uid is unknowable, so we can prove it neither
+       * foreign nor gone. In census it is dropped as before; in a sweep it is UNRESOLVED, never clean. */
       if (kill_them && unresolved) (*unresolved)++;
       continue;
     }
+    if (id0.uid != myuid) continue; /* a PROVED foreign uid (identity was readable): not ours, silent */
     if (!kill_them) {
       collect(surv, scap, sn, overflow, pid);
       continue;

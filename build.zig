@@ -774,6 +774,20 @@ pub fn build(b: *std.Build) void {
     run_reaper_fc_tests.addArtifactArg(reaper_fc_exe);
     const reaper_fc_step = b.step("test-agent-run-reaper-false-clean", "MS6.5.1 false-Clean race: unresolved match forces another census (fake ops)");
     reaper_fc_step.dependOn(&run_reaper_fc_tests.step);
+    // MS6.5.1 (RoseCat 413e3c5): a matched candidate whose first inspect is unidentifiable (have_bsd=0, uid=-1,
+    // exactly as the production inspector reports a PROC_PIDTBSDINFO failure) must be classified UNRESOLVED before
+    // the uid check, so the fixed point never reads it as an empty census. Fake ops, kill intercepted; user+PID ns.
+    const reaper_uc_module = b.createModule(.{ .target = target, .optimize = optimize, .link_libc = true });
+    reaper_uc_module.addCSourceFile(.{ .file = b.path("src/agent_run_reaper.c"), .flags = &.{"-std=gnu11"} });
+    reaper_uc_module.addCSourceFile(.{ .file = b.path("tests/agent_run_reaper_unreadable_test.c"), .flags = &.{"-std=gnu11"} });
+    reaper_uc_module.addIncludePath(b.path("src"));
+    const reaper_uc_exe = b.addExecutable(.{ .name = "reaper-unreadable-test", .root_module = reaper_uc_module });
+    const run_reaper_uc_tests = b.addSystemCommand(&.{
+        "unshare", "--user", "--map-root-user", "--pid", "--fork", "--mount-proc", "--",
+    });
+    run_reaper_uc_tests.addArtifactArg(reaper_uc_exe);
+    const reaper_uc_step = b.step("test-agent-run-reaper-unreadable", "MS6.5.1 unidentifiable (have_bsd=0, uid=-1) match is unresolved, never Clean (fake ops)");
+    reaper_uc_step.dependOn(&run_reaper_uc_tests.step);
     // MS6.5 (the user's decision 2026-10-21): the stubbed macOS VM-containment seam — off by default, reports
     // "not available yet", and the gate fails closed when on. Pure Linux unit (no OS calls).
     const mac_vm_containment_module = b.createModule(.{
@@ -2696,6 +2710,7 @@ pub fn build(b: *std.Build) void {
     if (target.result.os.tag == .linux) test_step.dependOn(&run_reaper_pin_tests.step);
     if (target.result.os.tag == .linux) test_step.dependOn(&run_reaper_fp_tests.step);
     if (target.result.os.tag == .linux) test_step.dependOn(&run_reaper_fc_tests.step);
+    if (target.result.os.tag == .linux) test_step.dependOn(&run_reaper_uc_tests.step);
     test_step.dependOn(&run_mac_vm_containment_tests.step);
     test_step.dependOn(&mac_vm_containment_e2e.step);
     test_step.dependOn(&run_agent_secrets_tests.step);
