@@ -8,7 +8,11 @@
 #     - the python-runtime components (bin/python3.12, Python) are fat (x86_64 arm64);
 #     - no Versions/3.12/bin/*-intel64 and no other thin Mach-O anywhere under agent-host (whole-tree scan);
 #     - zb_agent_host/ is exact (tests/e2e/mac_ms5_census.py package_problems: no missing/extra/symlink/special);
-#     - runtime.json is exactly the installer's bytes for agent/host/uv.lock.
+#     - runtime.json is exactly the installer's bytes for agent/host/uv.lock;
+#   * each leg returns its declared resources (runtime.json + zb_agent_host/, rooted at the prefix), and the driver
+#     runs the committed production entry point `mac_resource_compat.py --manifest universal_components_ms5.json
+#     --milestone MS5 <x86_64 tree> <arm64 tree>`: every declared resource present and byte-identical across the two
+#     per-arch trees, before any lipo (RoseCat 6909).
 # Usage: bash tests/mac/ms5_stage_gate.sh [commit]   (default HEAD)
 # MS5.1c-a is PARTIAL: dependencies and the Claude CLI are not staged (rev 17). BatchMode, strict host keys.
 set -euo pipefail
@@ -36,7 +40,8 @@ python3 -m venv "$L/venv" >/dev/null && "$L/venv/bin/pip" -q install sigstore >/
 "$L/venv/bin/python" -m sigstore verify identity --bundle "$L/py.pkg.sigstore" --cert-identity thomas@python.org \
   --cert-oidc-issuer https://accounts.google.com "$L/py.pkg" || { echo "FAIL: Sigstore" >&2; exit 1; }
 SHA=$(git rev-parse --verify "${1:-HEAD}^{commit}"); echo "== commit $SHA" >&2
-git archive --format=tar -o "$L/src.tar" "$SHA" packaging/macos tests/e2e/mac_ms5_census.py agent/host/zb_agent_host agent/host/uv.lock
+git archive --format=tar -o "$L/src.tar" "$SHA" packaging/macos tests/e2e/mac_ms5_census.py tests/e2e/mac_universal_test.py tests/e2e/mac_resource_compat.py agent/host/zb_agent_host agent/host/uv.lock
+mkdir "$L/repo" && tar -xf "$L/src.tar" -C "$L/repo"
 
 leg() { # $1=host $2=expected uname -m
   local host="$1" arch="$2" rdir="zb-stage-$(date +%s)-$$-$RANDOM"
@@ -55,7 +60,7 @@ fails=0
 # 1. a tampered pkg is refused and stages nothing
 cp py.pkg bad.pkg && printf 'x' >> bad.pkg
 if bash "$STAGE" "$d/bad.pkg" "$ZB_PIN" "$d/bad-prefix" >/dev/null 2>&1; then echo "  FAIL a tampered pkg was accepted"; fails=$((fails+1)); fi
-[ ! -e "$d/bad-prefix/Frameworks/agent-host" ] || { echo "  FAIL a tampered pkg staged something"; fails=$((fails+1)); }
+[ ! -e "$d/bad-prefix" ] || [ -z "$(ls -A "$d/bad-prefix")" ] || { echo "  FAIL a tampered pkg left something under its prefix: $(cd "$d/bad-prefix" && find . | head -5 | tr '\n' ' ')"; fails=$((fails+1)); }
 # 2. the real pkg stages
 bash "$STAGE" "$d/py.pkg" "$ZB_PIN" "$d/prefix" > stage.log 2>&1 || { tail -5 stage.log; echo "  FAIL staging the real pkg"; exit 1; }
 A="$d/prefix/Frameworks/agent-host"
@@ -79,12 +84,30 @@ rj = c.runtime_json_problem((agent / "runtime.json").read_bytes(), (repo / "agen
 for p in probs + ([rj] if rj else []): print("  FAIL", p)
 sys.exit(1 if probs or rj else 0)
 PY
+# The declared resources go back to the driver for the cross-arch comparison (outside $d, which the trap deletes).
+(cd "$d/prefix" && tar -cf "$HOME/${ZB_RDIR}-res.tar" Frameworks/agent-host/runtime.json Frameworks/agent-host/zb_agent_host)
 if [ "$fails" -eq 0 ]; then printf 'PASS\tms5-stage\t%s\t(MS5.1c-a, partial: dependencies and CLI not staged)\n' "$ZB_ARCH"; else printf 'FAIL\tms5-stage\t%s\t%d\n' "$ZB_ARCH" "$fails"; exit 1; fi
 REMOTE
+  local rc=$?
+  if [ "$rc" -eq 0 ]; then
+    mkdir -p "$L/tree-$arch"
+    "${SCP[@]}" "$host:${rdir}-res.tar" "$L/res-$arch.tar" >/dev/null && tar -xf "$L/res-$arch.tar" -C "$L/tree-$arch" || rc=1
+  fi
+  "${SSH[@]}" "$host" "rm -f \"\$HOME/${rdir:?}-res.tar\"" || true
+  return "$rc"
 }
 
 overall=0
 leg "$INTEL_HOST" x86_64 || { echo "FAIL: x86_64 leg" >&2; overall=1; }
 leg "$ARM_HOST" arm64 || { echo "FAIL: arm64 leg" >&2; overall=1; }
+if [ "$overall" -eq 0 ]; then
+  # The committed production two-tree oracle, over the two per-arch staged trees (before any lipo).
+  if (cd "$L/repo/tests/e2e" && env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 python3 mac_resource_compat.py \
+        --manifest "$L/repo/packaging/macos/universal_components_ms5.json" --milestone MS5 "$L/tree-x86_64" "$L/tree-arm64"); then
+    printf 'PASS\tms5-resource-compat\tx86_64-vs-arm64\n'
+  else
+    echo "FAIL: mac_resource_compat.py --milestone MS5 (the two per-arch trees differ or lack a declared resource)" >&2; overall=1
+  fi
+fi
 [ "$overall" -eq 0 ] && printf 'PASS\tms5-stage-gate\tboth-arches\t(MS5.1c-a, partial)\n'
 exit "$overall"
