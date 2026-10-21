@@ -19571,3 +19571,40 @@ remaining defects are independent of the three questions awaiting the user:
 The docs diff passes `git diff --check`. Findings were mailed to BlackRobin,
 copied to JadeBeacon, in Agent Mail 6919. No test or live resource was used for
 this docs-only review.
+
+## S8a `expectation_mismatch` taxonomy foundation (`d73b0e0`, `eccb383`)
+
+Reviewed exact commits `d73b0e0` and `eccb383` on 2026-10-20 against plan rev
+16.20.38's `-32015 expectation_mismatch` wire contract. This review is scoped
+to the error-taxonomy foundation; it does **not** approve the still-unbuilt
+`options.expect`, ticket-time validation, or approval flow.
+
+- **`d73b0e0` is APPROVED as a genuine failing-first red.** In a throwaway
+  clean export of the red commit, its Zig test failed 0/2 with the named
+  `TestNoExpectationMismatch` failure. It independently fixes the intended
+  ordinal, name, retryability, `fromName`, taxonomy count and both range
+  boundaries. The Python and Node reds likewise assert `-32015` is an
+  `AutomationError` carrying correlation IDs while `-32016` remains a
+  `ProtocolError`.
+- **`eccb383` is BLOCKED-for-tests.** Its production changes are correct:
+  `src/automation/error.zig:25-28,64` appends (and therefore preserves every
+  earlier wire code), names `expectation_mismatch` as `-32015`, and makes it
+  non-retryable; the Python and Node SDK ranges include exactly `-32015`
+  through `-32001`; `-32016` remains outside; and the docs and registered
+  taxonomy unit agree. However,
+  `src/automation_rpc.zig:430-450` still calls its table an all-variant
+  JSON-RPC mapping test while ending at `.recovering/-32014`. The new SDK
+  tests manufacture an RPC error object, so no test currently drives
+  `.expectation_mismatch` through `Connection.handleLine` and proves that the
+  production socket response is `-32015` with message
+  `expectation_mismatch`, `trace_id`, `command_id`, and
+  `automation_error`. Add it to that production-chain table (and preferably
+  bind the case count to `error_count`) before the green is accepted.
+
+The exact diff passes `git diff --check`. With all display variables removed,
+the new Zig test passed 2/2, the existing taxonomy test passed 3/3, and direct
+Python and Node 24 boundary probes passed for all 15 codes plus `-32016`,
+`-32000` and `-32602` negatives. No full gate was taken because another agent
+held the shared slot; BlackRobin's mail 6920 reports the server 55/55, queue
+12/12, install and cross-check green. The blocker and scoped verdict were
+mailed to BlackRobin.
