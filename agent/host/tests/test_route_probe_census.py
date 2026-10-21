@@ -6,7 +6,10 @@ setup passes in. On Linux with the platform injected (`route_probe.PLATFORM`):
 - `--census-fd N` is Darwin-only and required there with --listen-fd/--listen-port: ASCII decimal, no sign, leading
   zero or whitespace, 3 to 2**31-1, given once. Anything else exits 2 with no verdict and runs nothing.
 - adopt_census(fd) adopts only an AF_UNIX SOCK_STREAM socket and makes it non-inheritable (the CLI the SDK spawns
-  must never hold it); anything else is refused (ProbeRefused) and the fd is closed.
+  must never hold it); anything else is refused (ProbeRefused) and the fd is closed. A failing set_inheritable is a
+  refusal too, for the census end and the listener alike (RoseCat 7041).
+- Through the production chain (route_probe.run, the real zb-claude wrapper, a malicious CLI stand-in that lists its
+  descriptors and writes "clean" into every socket it holds), the census end never reaches the wrapper or the CLI.
 - _ask_census(sock, token, url, timeout) sends exactly b"census <token> <url>\\n", then reads setup's whole reply to
   EOF (setup writes its verdict and shuts its side): True only when that reply is exactly b"clean\\n" within the
   deadline; "dirty", trailing bytes, anything else, EOF with nothing, or silence is False.
@@ -21,6 +24,9 @@ import io
 import json
 import os
 import socket
+import stat
+import subprocess
+import tempfile
 import threading
 import time
 import unittest
@@ -29,7 +35,7 @@ from unittest import mock
 
 import support  # noqa: F401  (puts the helper package on sys.path)
 
-from zb_agent_host import proc_darwin, route_probe
+from zb_agent_host import proc_darwin, route_probe, token
 
 TOKEN = "zb-probe-" + "cd" * 24
 
@@ -79,6 +85,101 @@ class AdoptCensus(Base):
                 self.assertTrue(_closed(fd), f"{why}: closed")
 
 
+class AdoptionNeverLeaks(Base):
+    """RoseCat 7041 #1: the census socket is the probe's only authenticator (the CLI knows the probe token), so it
+    must never reach the CLI, and an adoption that cannot make it non-inheritable must refuse, not continue."""
+
+    def test_a_failed_set_inheritable_refuses_and_closes(self):
+        for adopt in ("census", "listener"):
+            with self.subTest(adopt=adopt):
+                if adopt == "census":
+                    a, _b = self.pair()
+                    fd, call = a.detach(), (lambda fd: route_probe.adopt_census(fd))
+                else:
+                    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                    s.bind(("127.0.0.1", 0))
+                    s.listen(1)
+                    port = s.getsockname()[1]
+                    fd, call = s.detach(), (lambda fd, port=port: route_probe.adopt_listener(fd, port))
+                with mock.patch.object(socket.socket, "set_inheritable", side_effect=OSError(22, "EINVAL")):
+                    with self.assertRaises(route_probe.ProbeRefused):
+                        call(fd)
+                self.assertTrue(_closed(fd), "a socket that could not be made non-inheritable is closed")
+
+    def stand_in(self):
+        """The production wrapper (token.write_wrapper) in front of a malicious CLI stand-in; returns (wrapper, cli,
+        records) where records() reads what every stand-in run held."""
+        root = tempfile.mkdtemp(prefix="zb-census-chain-")
+        self.addCleanup(lambda: [os.unlink(os.path.join(root, n)) for n in os.listdir(root)] and None or os.rmdir(root))
+        log = os.path.join(root, "fds.jsonl")
+        cli = os.path.join(root, "claude")
+        # A CLI stand-in that records every descriptor it holds (device, inode) and tries to forge "clean" into
+        # every socket among them; then it exits, so the SDK's turn ends at once.
+        with open(cli, "w") as f:
+            f.write(f"""#!/usr/bin/python3 -I
+import json, os, stat
+seen = []
+for fd in range(0, 1024):
+    try:
+        st = os.fstat(fd)
+    except OSError:
+        continue
+    forged = False
+    if stat.S_ISSOCK(st.st_mode):
+        try:
+            os.write(fd, b"clean\\n")
+            forged = True
+        except OSError:
+            pass
+    seen.append([fd, st.st_dev, st.st_ino, forged])
+with open({log!r}, "a") as out:
+    out.write(json.dumps(seen) + "\\n")
+raise SystemExit(1)
+""")
+        os.chmod(cli, 0o700)
+        wrapper = os.path.join(root, "zb-claude")
+        token.write_wrapper(wrapper, cli)
+
+        def records():
+            with open(log) as f:
+                return [json.loads(line) for line in f]
+        return wrapper, cli, records
+
+    @staticmethod
+    def received(setup_end):
+        setup_end.setblocking(False)
+        try:
+            return setup_end.recv(64)
+        except BlockingIOError:
+            return b""
+
+    def test_the_production_wrapper_and_a_malicious_cli_never_hold_the_census_end(self):
+        wrapper, cli, records = self.stand_in()
+        probe_end, setup_end = self.pair()
+        probe_end.set_inheritable(True)  # as an fd that came through pass_fds is
+        census = route_probe.adopt_census(probe_end.detach())
+        st = os.fstat(census.fileno())
+        census_id = (st.st_dev, st.st_ino)
+        route_probe.run(wrapper, cli, census=census)
+        seen = records()
+        self.assertTrue(seen, "the CLI stand-in ran through the production wrapper")
+        held = {(dev, ino) for record in seen for _fd, dev, ino, _forged in record}
+        self.assertNotIn(census_id, held, "neither the wrapper nor the CLI holds the census end")
+        self.assertNotIn(b"clean", self.received(setup_end), "nothing reached setup's end from the CLI side")
+
+    def test_positive_control_a_stand_in_given_the_census_end_does_report_and_forge(self):
+        # The oracle is not vacuous: hand the end to the same wrapper + stand-in on purpose (pass_fds), and the
+        # stand-in finds it and forges "clean" into it, which setup's end receives.
+        wrapper, cli, records = self.stand_in()
+        probe_end, setup_end = self.pair()
+        st = os.fstat(probe_end.fileno())
+        subprocess.run([cli], pass_fds=(probe_end.fileno(),), timeout=30, check=False)
+        held = {(dev, ino): forged for record in records() for _fd, dev, ino, forged in record}
+        self.assertIn((st.st_dev, st.st_ino), held, "the stand-in reports a census end it holds")
+        self.assertTrue(held[(st.st_dev, st.st_ino)], "and forges into it")
+        self.assertIn(b"clean", self.received(setup_end))
+
+
 class AskCensus(Base):
     URL = "http://127.0.0.1:50123"
 
@@ -119,6 +220,18 @@ class AskCensus(Base):
         verdict, _, elapsed = self.ask(None, timeout=1)
         self.assertIs(verdict, False)
         self.assertLess(elapsed, 3)
+
+    def test_a_partial_reply_from_a_live_peer_is_not_clean_within_the_deadline(self):
+        # RoseCat 7041 #2: setup's end stays open after "cle" (no newline, no EOF): the deadlock shape.
+        probe_end, setup_end = self.pair()
+
+        def setup_side():
+            setup_end.recv(512)
+            setup_end.sendall(b"cle")
+        threading.Thread(target=setup_side, daemon=True).start()
+        started = time.monotonic()
+        self.assertIs(route_probe._ask_census(probe_end, TOKEN, self.URL, timeout=1), False)
+        self.assertLess(time.monotonic() - started, 3)
 
 
 class ServerAsksTheCensus(Base):
@@ -197,7 +310,9 @@ class Main(Base):
         self.assertEqual(self.runs, [(True, True)])
 
     def test_darwin_census_fd_grammar_is_exact(self):
-        bad = ["0", "2", "-3", "+3", "03", " 3", "3 ", "", "2147483648", "x"]
+        # The listener table's spellings (RoseCat 7041 SHOULD), plus a non-number.
+        bad = ["0", "1", "2", "-1", "-3", "+3", "03", " 3", "3 ", "3\n", "2147483648", "9999999999", "9" * 30, "",
+               "\u0663", "x"]
         for value in [None, *bad, "twice"]:
             with self.subTest(value=value):
                 self.runs.clear()

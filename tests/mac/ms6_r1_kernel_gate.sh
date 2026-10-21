@@ -1,0 +1,59 @@
+#!/usr/bin/env bash
+# R1 under Seatbelt, the kernel gate (RoseCat 7019 item 2, 7041 #3; BlueBeaver 7021; JadeBeacon 7023): on BOTH Macs,
+# the real setup profile (sandbox_macos.setup_sandbox with loopback_port) around an inner probe stand-in, with setup's
+# census outside (tests/mac/r1_kernel_driver.py). No display, no browser, no install: each leg copies the files into
+# a per-run nonce dir under $HOME, builds a tiny sleeper with xcrun clang, and deletes that exact dir.
+# Every ssh/scp: BatchMode=yes, strict host keys, no askpass.
+# usage: tests/mac/ms6_r1_kernel_gate.sh [commit]   (default: the working tree)
+set -euo pipefail
+
+KEY="${ZB_MAC_KEY:-/home/maceo/vms/mac-m9/zb_mac_key}"
+INTEL_HOST="${ZB_MAC_HOST:-maceojourdan@100.92.212.47}"
+ARM_HOST="${ZB_MAC_ARM_HOST:-jj@100.119.156.28}"
+LEG_TIMEOUT="${ZB_MAC_LEG_TIMEOUT:-300}"
+export SSH_ASKPASS_REQUIRE=never
+
+cd "$(git rev-parse --show-toplevel)"
+SSH=(env -u DISPLAY -u WAYLAND_DISPLAY -u XAUTHORITY ssh -i "$KEY" -o IdentitiesOnly=yes -o BatchMode=yes
+     -o StrictHostKeyChecking=yes -o ConnectTimeout=15 -o ServerAliveInterval=10)
+SCP=(env -u DISPLAY -u WAYLAND_DISPLAY -u XAUTHORITY scp -i "$KEY" -o IdentitiesOnly=yes -o BatchMode=yes
+     -o StrictHostKeyChecking=yes -o ConnectTimeout=15)
+
+stage=$(mktemp -d "${TMPDIR:-/tmp}/zb-r1kmac-XXXXXX")
+trap 'case "$stage" in */zb-r1kmac-*) rm -rf -- "${stage:?}";; esac' EXIT
+pick() { # $1=path in the repo, $2=name in the stage; a missing file stays missing (the red says so)
+  if [ -n "${COMMIT:-}" ]; then git show "$COMMIT:$1" > "$stage/$2" 2>/dev/null || rm -f "$stage/$2"
+  elif [ -f "$1" ]; then cp "$1" "$stage/$2"; fi
+}
+COMMIT="${1:-}"
+pick tests/mac/r1_kernel_driver.py r1_kernel_driver.py
+pick tests/mac/r1_kernel_inner.py r1_kernel_inner.py
+pick agent/host/zb_agent_host/sandbox_macos.py sandbox_macos.py
+pick agent/host/zb_agent_host/proc_darwin.py proc_darwin.py
+
+leg() { # $1=host $2=expected uname -m
+  local host="$1" arch="$2"
+  local rdir="zb-r1kmac-$(date +%s)-$$-$RANDOM"
+  "${SSH[@]}" "$host" "mkdir \"\$HOME/${rdir:?}\"" || { echo "FAIL: mkdir on $host" >&2; return 1; }
+  if ! "${SCP[@]}" "$stage"/*.py "$host:${rdir}/" >/dev/null; then
+    "${SSH[@]}" "$host" "rm -rf \"\$HOME/${rdir:?}\"" || true
+    echo "FAIL: scp to $host" >&2; return 1
+  fi
+  timeout "$LEG_TIMEOUT" "${SSH[@]}" "$host" "ZB_RDIR='${rdir}' ZB_ARCH='${arch}' /bin/bash -s" <<'REMOTE'
+set -euo pipefail
+d="$HOME/${ZB_RDIR:?}"
+trap 'rm -rf "$HOME/${ZB_RDIR:?}"' EXIT
+[ "$(uname -m)" = "$ZB_ARCH" ] || { echo "FAIL: this leg is $(uname -m), expected $ZB_ARCH" >&2; exit 1; }
+cd "$d"
+printf '#include <stdlib.h>\n#include <unistd.h>\nint main(int c,char**v){sleep(c>1?atoi(v[1]):30);return 0;}\n' > sleeper.c
+xcrun clang -O1 -o sleeper sleeper.c
+echo "== $(uname -m) macOS $(sw_vers -productVersion)"
+/usr/bin/python3 -I "$d/r1_kernel_driver.py" "$d/sleeper"
+REMOTE
+}
+
+overall=0
+leg "$INTEL_HOST" x86_64 || { echo "FAIL: x86_64 leg" >&2; overall=1; }
+leg "$ARM_HOST" arm64 || { echo "FAIL: arm64 leg" >&2; overall=1; }
+[ "$overall" -eq 0 ] && printf 'PASS\tms6-r1-kernel-gate\tboth-arches\n'
+exit "$overall"

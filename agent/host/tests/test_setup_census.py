@@ -13,6 +13,9 @@ verdict `proc_darwin.cli_env_clean(exe, root, token, canary)` recorded:
 - probe_r1 is True only when the probe's verdict is {"r1": true} AND setup's own census said clean: the probe alone
   cannot select R1.
 - Both socketpair ends are closed explicitly on every path, and no census thread outlives probe_r1.
+- Bounded (RoseCat 7041): a live probe-side peer that stays silent or sends a partial request without EOF, a run that
+  times out, and a census verdict that raises each give "no R1" within 5 s, both ends closed, the thread joined; a
+  raising census answers "dirty".
 - Linux is unchanged: no socketpair, no --census-fd.
 
 Run like the gate: cd agent/host/tests && python -X dev -m unittest -v test_setup_census. Unregistered until the
@@ -23,6 +26,7 @@ import json
 import os
 import socket
 import threading
+import time
 import unittest
 from unittest import mock
 
@@ -63,11 +67,22 @@ class Base(unittest.TestCase):
         self.addCleanup(lambda: [s.close() for p in self.pairs for s in p])
         self.runs = []
 
-    def probe(self, request="good", verdict=True):
-        """A fake probe run: asks setup's census like route_probe does, then prints its own verdict."""
+    def probe(self, request="good", verdict=True, hold=False, raises=None):
+        """A fake probe run: asks setup's census like route_probe does, then prints its own verdict. `hold` keeps a
+        live duplicate of the probe's end open after the run (a stray descendant that never answers or closes), so
+        only setup's own bound can end the census; `raises` makes the run itself raise."""
         def run(argv, **kwargs):
             rec = {"argv": list(argv), "pass_fds": tuple(kwargs.get("pass_fds", ()))}
             self.runs.append(rec)
+            if raises is not None:
+                raise raises(argv, kwargs.get("timeout"))
+            if hold and "--census-fd" in argv:
+                held = socket.socket(fileno=os.dup(int(argv[argv.index("--census-fd") + 1])))
+                self.addCleanup(held.close)
+                if request == "partial":
+                    held.sendall(b"census zb-probe-")
+                return setup.subprocess.CompletedProcess(argv, 0, stdout=json.dumps({"r1": verdict}) + "\n",
+                                                         stderr="")
             if "--census-fd" not in argv:
                 return setup.subprocess.CompletedProcess(argv, 0, stdout=json.dumps({"r1": verdict}) + "\n", stderr="")
             cfd = int(argv[argv.index("--census-fd") + 1])
@@ -171,6 +186,40 @@ class Broker(Base):
         for pair in self.pairs:
             self.assertEqual([s.fileno() for s in pair], [-1, -1])
         self.assertEqual(self.census_threads(), [])
+
+
+class Bounded(Base):
+    """RoseCat 7041 #2: a live peer that holds the socket silently or with a partial line, a run that times out,
+    and a census that raises each end as "no R1" within a measured bound, with both ends closed and the broker
+    thread joined."""
+
+    def assert_bounded_no_r1(self, bound=5):
+        started = time.monotonic()
+        self.assertIs(setup.probe_r1(WRAPPER, CLI), False)
+        self.assertLess(time.monotonic() - started, bound, "the census ends within its bound")
+        self.assertEqual(len(self.pairs), 1)
+        self.assertEqual([s.fileno() for s in self.pairs[0]], [-1, -1], "both ends closed explicitly")
+        self.assertEqual(self.census_threads(), [], "the broker thread is joined")
+
+    def test_a_live_silent_peer(self):
+        self.probe(hold=True, request="none")
+        self.assert_bounded_no_r1()
+        self.assertEqual(self.census_calls, [])
+
+    def test_a_live_peer_with_a_partial_request(self):
+        self.probe(hold=True, request="partial")
+        self.assert_bounded_no_r1()
+        self.assertEqual(self.census_calls, [])
+
+    def test_a_run_that_times_out(self):
+        self.probe(raises=setup.subprocess.TimeoutExpired)
+        self.assert_bounded_no_r1()
+
+    def test_a_census_that_raises_answers_dirty(self):
+        mock.patch.object(proc_darwin, "cli_env_clean", side_effect=RuntimeError("boom")).start()
+        self.probe()
+        self.assert_bounded_no_r1()
+        self.assertEqual(self.runs[0]["reply"], b"dirty\n")
 
 
 class LinuxUnchanged(Base):
