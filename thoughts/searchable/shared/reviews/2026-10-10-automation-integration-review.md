@@ -21531,3 +21531,68 @@ full contract it claims:
 both platform option parsers. The current malformed table covers only URL and
 an unknown key. Findings mailed to BlackRobin in Agent Mail 7098. No full gate
 was run for an intentionally red, unregistered test commit.
+
+## Darwin reservation-shape fix (`4deb518`)
+
+Reviewed exact commit `4deb518` on 2026-10-21. **Verdict: APPROVED for the
+production/test half of the `a597309`/`10cfae2` reservation finding.** The
+tests now use two complementary observations. The live netd child's actual fd
+is duplicated with `pidfd_getfd` and must be exactly one bound
+`AF_INET6`/`SOCK_STREAM` socket at `::1:<port>`, `IPV6_V6ONLY=1`,
+`SO_ACCEPTCONN=0`, both reuse flags zero and original-fd close-on-exec. An
+in-process recording socket separately proves that production explicitly
+requested V6ONLY and never requested a reuse option, which Linux's forced
+kernel state on a `::1` bind cannot establish. Setup's recording factory reads
+its actual pre-probe socket with the same shape and confirms the reservation
+is absent from `pass_fds`.
+
+These assertions kill both mutations found in the prior review—removing
+V6ONLY and making setup's reservation listen—plus the reported netd
+listen/reuse/inherit and setup-inherit mutations. Existing collision,
+lifetime, release and fail-closed assertions remain. The netd comment now
+correctly says the bound non-listening Mac socket reaches nothing and times
+out. Local `test_netd_darwin_v6` passed 6/6 and `git diff --check` passed. The
+ambient interpreter lacked `claude_agent_sdk`, so the clean-export owner
+evidence was used for setup's 2/2 rather than treating that environment import
+error as a code failure.
+
+This approval closes the exact-shape BLOCKER-for-tests, but does not alone
+approve the whole range: the authoritative plan and integrated MS6.4 `::1`
+row still had to adopt the measured timeout contract. Verdict mailed to
+BlueBeaver, cc JadeBeacon, in Agent Mail 7100.
+
+## MS6.4 reserved-IPv6 timeout contract (`e05774f`)
+
+Reviewed exact docs commit `e05774f` on 2026-10-21. **Verdict: APPROVED.** The
+authoritative condition now states the security invariant and the measured
+two-Mac result accurately: durable ownership of the bound, non-listening
+`[::1]:<port>` reservation admits no completed connection and no foreign
+listener; on the supported hosts its SYN is dropped and the observation is a
+bounded TIMEOUT, not `CONNECT-REFUSED`. Collision failure, ownership lifetime
+and the separately reachable IPv4 endpoint remain explicit. `git diff
+--check` passed.
+
+The sole remaining hold on the `a597309`/`10cfae2` endpoint chain is
+BlueBeaver's separate integrated `tests/mac/ms6_4_egress_test.sh` `::1` row:
+it must run with the real reservation and require TIMEOUT—never OK or
+REFUSED—through the bounded classifier. Verdict mailed to JadeBeacon, cc
+BlueBeaver, in Agent Mail 7102.
+
+## Linear push audit after WS0 acceptance
+
+Re-audited the ancestry after pushed `26fdfff` on 2026-10-21, taking the
+orchestrator's final acceptance of the complete `7d85cd5` WS0 fix-forward and
+live-gate chain as closure evidence. **There is no new approved contiguous
+push-through SHA; it remains the already-pushed `26fdfff`.**
+
+The earliest still-open commit in the current ancestry is **`1794148`**, the
+WS1.1 PE-census red. Its review blockers remain present at HEAD: there is no
+independent clean/forbidden-import PE fixture and mutation oracle, no
+`pe_census_selftest.py`, and no test pinning/recording the WebView2 SDK
+version. The current red can therefore still fail solely because the release
+exe is absent while defects in its parser/allowlist remain hidden. Because
+`1794148` precedes the later commits that cumulatively close WS0 and other
+early fix-forward chains, no descendant containing those closures can be
+pushed without also containing this unresolved commit. The newly approved
+`04d4499`/`abd043e`/`8b1fc54` phase-A chain is much later and therefore cannot
+advance the linear boundary.
