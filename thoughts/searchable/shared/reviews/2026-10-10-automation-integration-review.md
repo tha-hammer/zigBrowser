@@ -26137,3 +26137,49 @@ fails 2/5; the phase, approval, input-mode and recipient mutants also fail.
 No full gate is required for this unregistered, test-only red. Because the
 author's in-progress full gate began with the older red, the green must rerun
 this stricter module before claiming it. The verdict was mailed to BlackRobin.
+
+## WS0 in-root junction resolver (`aebb07b`)
+
+**BLOCKED (security).** The reported live red/green establishes the narrow
+availability improvement for one exact, static in-root junction, and the new
+Win32 parsing paths appear fail-closed on their explicit error returns. It
+does not establish the required chain/swap boundary, and the implementation
+has a real check/use identity gap.
+
+1. **BLOCKER — an allowed result no longer identifies the original path's
+   object.** `Rt($p)` opens the junction without `FILE_SHARE_DELETE`, reads its
+   mount-point substitute name, then closes that handle in its `finally`
+   (`tests/windows/resolve_path.sh:58`). Windows' sharing contract prevents a
+   rename only while that handle remains open. The code then resolves the
+   captured target after the handle is closed (`:59-60`). If an in-root
+   junction is replaced with an escaping junction in that interval, `Rf($t)`
+   still returns the captured safe target. `allowed_path` checks that target
+   but returns only `ALLOW` for the original `$p`, discarding the canonical
+   target (`tests/windows/gate.sh:101-113`). A later use of `$p` can therefore
+   address the replacement. A second target/identity read would catch the
+   requested mid-resolve race, but it still would not close a post-check swap;
+   the robust boundary is for the consuming operation to use the proved
+   canonical object/path or a pinned handle rather than the original name.
+2. **BLOCKER-for-tests — the new live row does not cover the security paths.**
+   The escape row passes `junction\\System32`
+   (`tests/windows/resolve_live_test.py:87-102`), so
+   `FILE_FLAG_OPEN_REPARSE_POINT` applies to the non-reparse final component;
+   it may DENY only because `FSCTL_GET_REPARSE_POINT` fails, without proving
+   that the new fallback maps an exact escaping junction to its outside
+   target. The only new row is an exact static in-root junction (`:104-121`).
+   Required causal rows are: an exact escaping junction through the fallback;
+   an escaping two-junction chain; a deterministic target swap between read
+   and authorization; and malformed, truncated, unreadable, non-mount-point
+   and unresolved-target reads, all DENY. Mutants should return the junction's
+   own path, accept the first target after a swap, and accept a read failure.
+3. **SHOULD — narrow the availability claim or extend the implementation.**
+   The fallback makes one hop on the final path component. A descendant under
+   an in-root junction and a junction chain therefore still appear to fail
+   closed on this host. That is safe, but it is not the general claim “resolve
+   in-root junctions.”
+
+`git diff --check aebb07b^ aebb07b` is clean. From an exact archive, the
+Linux `gate_selftest.py` passed 18/18, `resolve_live_test.py` skipped without
+the VM as designed, and the shell/Python syntax checks passed. These tests do
+not execute the embedded Win32 resolver. The findings were mailed to
+AzureRidge in Agent Mail 7415.
