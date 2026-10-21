@@ -24694,3 +24694,22 @@ Intel's reported signal-free probe is 18/18. The promised arm64 leg is still an
 evidence follow-up, and production lifecycle ownership of the pinned run fd is
 still absent; neither condition authorizes the destructive reaper gate.
 Verdict sent to JadeBeacon in Agent Mail 7313.
+
+## S8a decision-13 exact refusal oracle (`4705ded`)
+
+**APPROVED as the unregistered failing-first red; this closes the test-oracle
+blocker on `6ebd915`.** The decision-13 production green remains to review.
+
+Every refused Instagram and LinkedIn scenario now compares the complete
+`(code, data.reason, data.step, data.sent)` tuple. The tables distinguish the
+profile opener's `path_changed` after its one dispatched pointerdown, the
+thread-recipient failures before any input, and the header swap after exactly
+one keydown but before a character write. The pre-existing assertions that no
+text or message was committed, plus the pushstate row's no-click assertion,
+remain in place.
+
+The six reported live mutants are causal for the fields this review required:
+wrong reason, early input accounting, wrong guard step, missing path check, raw
+href comparison and missing same-origin validation all fail. The exact commit
+touches only the unregistered e2e red; Python compilation and `diff --check`
+pass. Verdict sent to BlackRobin in Agent Mail 7316.
