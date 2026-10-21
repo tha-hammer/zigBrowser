@@ -868,6 +868,16 @@ the same page task as each event.
 - Synthetic input only: with `input: "native"` or `humanize`, without
   `window_id`, on any other method, or with any other field, the call is
   -32602 and nothing runs.
+- The acting LinkedIn and Instagram flows (`linkedin.connect`, `follow`,
+  `like`, `comment`, `message`; `instagram.follow`, `like`, `comment`, `dm`,
+  `story_view`) take `options.expect` too, with one more field, `url`: the one
+  page the flow is approved to open, exactly. The window is checked before the
+  login check, the pacing pause and any page input; the flow may then navigate
+  only to `url` (else -32015 `unapproved_navigation`), the page it committed
+  must be exactly `url` (else `url_changed`), and before each later action the
+  window must still show that page (`load_serial_changed` if it navigated
+  again). A refused flow sends nothing further and counts no action. Not with
+  `dry_run`, and the same snapshot caveat applies.
 
 ## Import cookies from another browser
 

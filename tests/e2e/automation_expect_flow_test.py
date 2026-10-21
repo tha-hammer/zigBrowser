@@ -18,6 +18,7 @@ import argparse
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -46,6 +47,10 @@ def scenario(zb: ZigBrowser, origin: str, server: social.FixtureServer) -> list[
             "options": {"expect": {"origin": origin, "load_serial": serial, "url": url}},
         })
 
+    # The start page's first load has committed (page.list is answered before it).
+    deadline = time.monotonic() + 15
+    while window_one(zb)["load_serial"] < 1 and time.monotonic() < deadline:
+        time.sleep(0.05)
     serial = window_one(zb)["load_serial"]
     if not isinstance(serial, int) or serial < 1:
         raise AssertionError(f"window-1 load_serial {serial!r}")

@@ -1024,6 +1024,25 @@ pub fn build(b: *std.Build) void {
     const automation_social_tests = b.addTest(.{ .root_module = automation_social_tests_module });
     const run_automation_social_tests = b.addRunArtifact(automation_social_tests);
     run_automation_social_tests.skip_foreign_checks = true;
+    // S8a ("S8 in detail" decision 2): an approved flow's phases A to C, and phase B through the runner.
+    const automation_expect_flow_tests_module = b.createModule(.{
+        .root_source_file = b.path("tests/automation_expect_flow_test.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    automation_expect_flow_tests_module.addImport("automation", automation_module);
+    const run_automation_expect_flow_tests = b.addRunArtifact(b.addTest(.{ .root_module = automation_expect_flow_tests_module }));
+    run_automation_expect_flow_tests.skip_foreign_checks = true;
+    const automation_expect_flow_seam_tests_module = b.createModule(.{
+        .root_source_file = b.path("tests/automation_expect_flow_seam_test.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    automation_expect_flow_seam_tests_module.addImport("automation", automation_module);
+    const run_automation_expect_flow_seam_tests = b.addRunArtifact(b.addTest(.{ .root_module = automation_expect_flow_seam_tests_module }));
+    run_automation_expect_flow_seam_tests.skip_foreign_checks = true;
 
     const automation_cookie_tests_module = b.createModule(.{
         .root_source_file = b.path("tests/automation_cookie_test.zig"),
@@ -1093,6 +1112,16 @@ pub fn build(b: *std.Build) void {
     automation_expect_deadline_tests_module.addImport("automation_server", automation_server_module);
     const run_automation_expect_deadline_tests = b.addRunArtifact(b.addTest(.{ .root_module = automation_expect_deadline_tests_module }));
     run_automation_expect_deadline_tests.skip_foreign_checks = true;
+    // S8a (RoseCat 7098 #3): an approved flow through handleSocialFlow, the queue and the bound window.
+    const automation_expect_flow_server_tests_module = b.createModule(.{
+        .root_source_file = b.path("tests/automation_expect_flow_server_test.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    automation_expect_flow_server_tests_module.addImport("automation_server", automation_server_module);
+    const run_automation_expect_flow_server_tests = b.addRunArtifact(b.addTest(.{ .root_module = automation_expect_flow_server_tests_module }));
+    run_automation_expect_flow_server_tests.skip_foreign_checks = true;
     // WS2.0 (Windows plan rev 2.6): the owner-only seam and where the socket lives.
     const owner_only_tests_module = b.createModule(.{
         .root_source_file = b.path("tests/owner_only_test.zig"),
@@ -1293,6 +1322,14 @@ pub fn build(b: *std.Build) void {
         "social-flows-e2e",
     });
     social_flows_e2e.addArtifactArg(exe);
+    // S8a: an approved flow on the real binary and the LinkedIn fixture (automation.js documentToken).
+    const automation_expect_flow_e2e = b.addSystemCommand(&.{
+        "sh",
+        "-c",
+        "python3 tests/e2e/automation_expect_flow_test.py --binary \"$1\"; rc=$?; if [ \"$rc\" = 77 ]; then exit 0; fi; exit \"$rc\"",
+        "automation-expect-flow-e2e",
+    });
+    automation_expect_flow_e2e.addArtifactArg(exe);
 
     // N18: synthetic dom.scroll / dom.hover through the Python SDK; offsets
     // read back in the next command.
@@ -2393,6 +2430,10 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_automation_expect_phase_a_tests.step);
     test_step.dependOn(&run_automation_expect_budget_tests.step);
     test_step.dependOn(&run_automation_expect_deadline_tests.step);
+    test_step.dependOn(&run_automation_expect_flow_tests.step);
+    test_step.dependOn(&run_automation_expect_flow_seam_tests.step);
+    test_step.dependOn(&run_automation_expect_flow_server_tests.step);
+    test_step.dependOn(&automation_expect_flow_e2e.step);
     test_step.dependOn(&run_owner_only_tests.step);
     test_step.dependOn(&run_agent_setup_ms5_tests.step);
     test_step.dependOn(&run_agent_setup_ms5_python_tests.step);

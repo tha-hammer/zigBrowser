@@ -1437,6 +1437,8 @@ fn handleSocialFlow(
         .build = build_info,
         .port = window_port,
         .no_page_reason = if (target.id != null) "no_window" else null,
+        // S8: an approval (options.expect) binds this window.
+        .window = target.id,
     }, FlowCall{ .state = social, .env = env, .call = call, .params_json = target.params orelse params_json }, FlowCall.run);
     defer outcome.deinit(allocator);
     return switch (outcome) {

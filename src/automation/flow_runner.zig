@@ -23,6 +23,19 @@ pub const StepObserver = struct {
     on_step: *const fn (ctx: *anyopaque, method: []const u8, params_json: []const u8, ok: bool, duration_ms: u64) void,
 };
 
+/// S8 ("S8 in detail" decision 2, phases B and C): an approved real run's navigation and the
+/// document it committed. Phase A (the window as the card showed it) ran before the flow started.
+pub const Approval = struct {
+    /// The one navigation the user approved, exactly.
+    url: []const u8,
+    /// That navigation was dispatched: no other navigation runs after it, even if it failed.
+    navigated: bool = false,
+    /// The window's load_serial once that navigation committed (phase C); null before it.
+    load_serial: ?u64 = null,
+    /// automation.js's token of the document it committed (phase C; owned by the runner).
+    document_token: ?[]u8 = null,
+};
+
 pub const Runner = struct {
     gpa: std.mem.Allocator,
     ext: *engine_mod.External,
@@ -57,6 +70,8 @@ pub const Runner = struct {
     /// the held failure came from elsewhere (the flow's own refusal, an
     /// unusable answer, a platform signal, the budget, a cancellation).
     failed_step: ?u32 = null,
+    /// S8: set for an approved real run; every step is checked against it.
+    approval: ?Approval = null,
 
     pub fn run(self: *Runner, method: []const u8, params_json: []const u8) error{OutOfMemory}!?[]const u8 {
         // No step starts without budget; a waitFor also needs room for the
@@ -66,6 +81,7 @@ pub const Runner = struct {
         const needed: u64 = if (std.mem.eql(u8, method, "dom.waitFor")) engine_mod.wait_for_native_grace_ms else 0;
         if (self.remainingMs() <= needed) return self.deadlineStop();
         const action = isAction(method);
+        if (self.approval != null and try self.approvalRefuses(method, params_json, action)) return null;
         var clamped: ?[]u8 = null;
         defer if (clamped) |c| self.gpa.free(c);
         if (action and (self.scan_due or self.clean_scans == 0)) {
@@ -89,6 +105,7 @@ pub const Runner = struct {
                 // action. After a navigation, scan now.
                 if (action) self.scan_due = true;
                 if (isNavigation(method)) {
+                    if (self.approval != null and !try self.approvalCommitted()) return null;
                     self.scan_due = true;
                     const result = try self.scan();
                     if (result != .detected and self.ext.cancelled()) return self.cancelStop();
@@ -123,6 +140,103 @@ pub const Runner = struct {
                 return null;
             },
         }
+    }
+
+    /// S8 phase B, and phase C's guard before each later action: an approved run navigates only
+    /// to its approved URL, once and before any action, and acts only while the window still
+    /// shows the document that navigation committed. True when it refused (the flow stops).
+    fn approvalRefuses(self: *Runner, method: []const u8, params_json: []const u8, action: bool) error{OutOfMemory}!bool {
+        const approval = self.approval.?;
+        if (isNavigation(method)) {
+            const approved = !approval.navigated and std.mem.eql(u8, method, "page.navigate") and try navigatesTo(self.gpa, params_json, approval.url);
+            if (approved) {
+                self.approval.?.navigated = true;
+                return false;
+            }
+            return self.approvalStop(try engine_mod.automationFailure(self.gpa, .expectation_mismatch, "unapproved_navigation", self.ext.ids()));
+        }
+        if (!action) return false;
+        const serial = approval.load_serial orelse
+            return self.approvalStop(try engine_mod.automationFailure(self.gpa, .expectation_mismatch, "unapproved_navigation", self.ext.ids()));
+        return switch (try self.ext.boundWindow(self.gpa, self.remainingMs())) {
+            .refused => |refused| self.approvalStop(refused),
+            .window => |window| blk: {
+                defer window.deinit(self.gpa);
+                const refused = try engine_mod.windowRefusal(self.gpa, window, .{ .load_serial = serial }, self.ext.ids());
+                if (refused) |r| break :blk self.approvalStop(r);
+                break :blk try self.documentRefuses(approval.document_token.?);
+            },
+        };
+    }
+
+    /// The window still shows the document phase C captured: automation.js's token is the same.
+    /// True when it refused.
+    fn documentRefuses(self: *Runner, captured: []const u8) error{OutOfMemory}!bool {
+        const token = try self.documentToken() orelse
+            return self.approvalStop(try engine_mod.automationFailure(self.gpa, .expectation_mismatch, "document_token_unreadable", self.ext.ids()));
+        defer self.gpa.free(token);
+        if (std.mem.eql(u8, token, captured)) return false;
+        return self.approvalStop(try engine_mod.automationFailure(self.gpa, .expectation_mismatch, "document_token_changed", self.ext.ids()));
+    }
+
+    /// automation.js's token of the current document (op documentToken, in the isolated world),
+    /// owned; null when it could not be read.
+    fn documentToken(self: *Runner) error{OutOfMemory}!?[]u8 {
+        const timeout_ms = @min(scan_timeout_ms, self.remainingMs());
+        if (timeout_ms == 0) return null;
+        const ids = self.ext.ids();
+        const arg = try std.json.Stringify.valueAlloc(self.gpa, .{
+            .op = "documentToken",
+            .trace_id = ids.trace_id,
+            .parent_span_id = ids.parent_span_id,
+            .command_id = ids.command_id,
+        }, .{});
+        defer self.gpa.free(arg);
+        const text = self.ext.evalJson(self.gpa, .automation, script_command.handle_body, arg, timeout_ms) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => return null,
+        };
+        defer self.gpa.free(text);
+        var answer = script_command.parseScriptResult(self.gpa, text) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            error.MalformedScriptResult => return null,
+        };
+        defer answer.deinit();
+        if (!answer.ok) return null;
+        const value = switch (answer.value) {
+            .object => |o| o.get("documentToken") orelse return null,
+            else => return null,
+        };
+        return switch (value) {
+            .string => |t| if (t.len > 0) try self.gpa.dupe(u8, t) else null,
+            else => null,
+        };
+    }
+
+    /// S8 phase C, right after the approved navigation: it committed exactly the approved URL;
+    /// its load_serial is captured for every later action. False when it refused.
+    fn approvalCommitted(self: *Runner) error{OutOfMemory}!bool {
+        const approval = &self.approval.?;
+        switch (try self.ext.boundWindow(self.gpa, self.remainingMs())) {
+            .refused => |refused| return !self.approvalStop(refused),
+            .window => |window| {
+                defer window.deinit(self.gpa);
+                if (try engine_mod.windowRefusal(self.gpa, window, .{ .url = approval.url }, self.ext.ids())) |refused| return !self.approvalStop(refused);
+                const token = try self.documentToken() orelse
+                    return !self.approvalStop(try engine_mod.automationFailure(self.gpa, .expectation_mismatch, "document_token_unreadable", self.ext.ids()));
+                approval.load_serial = window.load_serial;
+                approval.document_token = token;
+                return true;
+            },
+        }
+    }
+
+    /// The approval no longer holds: its refusal is the flow's answer and nothing runs after it.
+    fn approvalStop(self: *Runner, refused: engine_mod.Outcome) bool {
+        self.setFailure(refused);
+        self.failed_step = null;
+        self.expired = true;
+        return true;
     }
 
     /// The command was cancelled (server stop): -32012, and the flow is
@@ -268,6 +382,7 @@ pub const Runner = struct {
     pub fn deinit(self: *Runner) void {
         self.dropResult();
         if (self.failure) |*f| f.deinit(self.gpa);
+        if (self.approval) |a| if (a.document_token) |t| self.gpa.free(t);
     }
 
     /// Hands the recorded failure to the caller. src/x.zig records one for
@@ -384,6 +499,16 @@ fn isAction(method: []const u8) bool {
     const actions = [_][]const u8{ "dom.click", "dom.fill", "dom.type", "dom.press", "dom.selectOption", "dom.setInputFiles", "dom.hover", "dom.scroll" };
     for (actions) |name| if (std.mem.eql(u8, name, method)) return true;
     return false;
+}
+
+/// A page.navigate step's `url` is exactly `url`.
+fn navigatesTo(gpa: std.mem.Allocator, params_json: []const u8, url: []const u8) error{OutOfMemory}!bool {
+    const parsed = std.json.parseFromSlice(struct { url: []const u8 = "" }, gpa, params_json, .{ .ignore_unknown_fields = true }) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return false,
+    };
+    defer parsed.deinit();
+    return std.mem.eql(u8, parsed.value.url, url);
 }
 
 fn isNavigation(method: []const u8) bool {

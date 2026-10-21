@@ -208,6 +208,12 @@ pub const External = struct {
         return windows;
     }
 
+    /// S8: the command's bound window (`window_id`), read from the registry; for a flow's approval
+    /// phases (flow_runner.Approval, social_flow_routes).
+    pub fn boundWindow(self: *External, gpa: std.mem.Allocator, timeout_ms: u64) error{OutOfMemory}!WindowRead {
+        return self.engine.readWindow(gpa, self.options.window, timeout_ms, self.run.ids);
+    }
+
     /// N23: PagePort.closeWindow with an automation.platform.eval child span.
     pub fn closeWindow(self: *External, id: page_port.WindowId, timeout_ms: u64) page_port.PortError!void {
         self.run.native_timeout_ms = timeout_ms;
@@ -488,24 +494,30 @@ pub const Engine = struct {
     /// bound window, read here, inside the run's own FIFO ticket and before any page input. Null
     /// while it still holds; otherwise the refusal, and nothing has reached the page.
     fn checkExpect(self: *Engine, gpa: std.mem.Allocator, expect: router.Expect, window: ?page_port.WindowId, timeout_ms: u64, run: *Run) error{OutOfMemory}!?Outcome {
-        const id = window orelse return try failureWithReason(gpa, invalid_params_code, "Invalid params", "expect_needs_window", run.ids);
-        const windows = self.port.listWindows(gpa, timeout_ms) catch |err| return try portFailure(gpa, err, .action, run.ids);
+        switch (try self.readWindow(gpa, window, timeout_ms, run.ids)) {
+            .refused => |refused| return refused,
+            .window => |bound| {
+                defer bound.deinit(gpa);
+                return windowRefusal(gpa, bound, .{ .origin = expect.origin, .load_serial = expect.load_serial }, run.ids);
+            },
+        }
+    }
+
+    /// S8: the bound window's registry entry, or the refusal when it has none (no window bound,
+    /// the registry unreadable, the window gone).
+    fn readWindow(self: *Engine, gpa: std.mem.Allocator, window: ?page_port.WindowId, timeout_ms: u64, ids: script_command.Ids) error{OutOfMemory}!WindowRead {
+        const id = window orelse return .{ .refused = try failureWithReason(gpa, invalid_params_code, "Invalid params", "expect_needs_window", ids) };
+        const windows = self.port.listWindows(gpa, timeout_ms) catch |err| return .{ .refused = try portFailure(gpa, err, .action, ids) };
         defer page_port.freeWindows(gpa, windows);
         const info = for (windows) |w| {
             if (w.id == id) break w;
-        } else return try automationFailure(gpa, .session_invalid, "no_window", run.ids);
-        if (info.dialog_open) return try automationFailure(gpa, .dialog_open, null, run.ids);
-        const origin = try originOf(gpa, info.url);
-        defer gpa.free(origin);
-        const reason: ?[]const u8 = if (info.terminated != null)
-            "crashed"
-        else if (!std.mem.eql(u8, origin, expect.origin))
-            "origin_changed"
-        else if (info.load_serial != expect.load_serial)
-            "load_serial_changed"
-        else
-            null;
-        return if (reason) |r| try automationFailure(gpa, .expectation_mismatch, r, run.ids) else null;
+        } else return .{ .refused = try automationFailure(gpa, .session_invalid, "no_window", ids) };
+        return .{ .window = .{
+            .url = try gpa.dupe(u8, info.url),
+            .load_serial = info.load_serial,
+            .dialog_open = info.dialog_open,
+            .crashed = info.terminated != null,
+        } };
     }
 
     /// page.screenshot (v3.4): `{data: base64 PNG, width, height}`. A
@@ -1116,6 +1128,44 @@ pub const Engine = struct {
         };
     }
 };
+
+/// S8: what an approval found of its bound window (`url` owned by `gpa`).
+pub const BoundWindow = struct {
+    url: []u8,
+    load_serial: u64,
+    dialog_open: bool,
+    crashed: bool,
+
+    pub fn deinit(self: BoundWindow, gpa: std.mem.Allocator) void {
+        gpa.free(self.url);
+    }
+};
+
+pub const WindowRead = union(enum) { window: BoundWindow, refused: Outcome };
+
+/// S8: what an approval expects of its window; null fields are not compared.
+pub const WindowWant = struct {
+    origin: ?[]const u8 = null,
+    /// The exact URL a flow's approved navigation must have committed (phase C).
+    url: ?[]const u8 = null,
+    load_serial: ?u64 = null,
+};
+
+/// S8 ("S8 in detail" decision 2): the refusal for a window that no longer matches, in one order:
+/// a dialog (-32013), then -32015 `crashed`, `origin_changed`, `url_changed`, `load_serial_changed`.
+/// Null while it matches.
+pub fn windowRefusal(gpa: std.mem.Allocator, window: BoundWindow, want: WindowWant, ids: script_command.Ids) error{OutOfMemory}!?Outcome {
+    if (window.dialog_open) return try automationFailure(gpa, .dialog_open, null, ids);
+    if (window.crashed) return try automationFailure(gpa, .expectation_mismatch, "crashed", ids);
+    if (want.origin) |origin| {
+        const actual = try originOf(gpa, window.url);
+        defer gpa.free(actual);
+        if (!std.mem.eql(u8, actual, origin)) return try automationFailure(gpa, .expectation_mismatch, "origin_changed", ids);
+    }
+    if (want.url) |exact| if (!std.mem.eql(u8, window.url, exact)) return try automationFailure(gpa, .expectation_mismatch, "url_changed", ids);
+    if (want.load_serial) |serial| if (window.load_serial != serial) return try automationFailure(gpa, .expectation_mismatch, "load_serial_changed", ids);
+    return null;
+}
 
 /// S8: a page URL's origin as an approval card shows and binds it: the lowercased scheme, "://",
 /// and the lowercased authority without any userinfo (host and an explicit port, as the URL has

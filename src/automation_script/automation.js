@@ -146,6 +146,9 @@
         return waitFor(command);
       case 'rateLimitScan':
         return rateLimitScan(command);
+      case 'documentToken':
+        // S8 phase C: this world's own token of the current document (a new one per document).
+        return success({ documentToken: inputAck.doc }, []);
       default:
         return failure('unknown_op', command, [], false);
     }

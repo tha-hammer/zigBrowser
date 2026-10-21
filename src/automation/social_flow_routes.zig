@@ -64,6 +64,20 @@ pub const Call = union(enum) {
         };
     }
 
+    /// The flows with a dry run (runDry).
+    fn hasDryRun(self: Call) bool {
+        return switch (self) {
+            .linkedin => |verb| switch (verb) {
+                .connect, .follow, .like, .comment => true,
+                else => false,
+            },
+            .instagram => |verb| switch (verb) {
+                .follow, .like, .comment, .story_view => true,
+                else => false,
+            },
+        };
+    }
+
     /// selfcheck reports on the current page: it needs no session.
     fn needsSession(self: Call) bool {
         return switch (self) {
@@ -176,7 +190,7 @@ fn execute(
     while (keys.next()) |entry| {
         if (!inList(allowedParams(call), entry.key_ptr.*)) return invalidParams();
         // Every allowed param is a string, except the flow's timeout_ms and
-        // options (checked by dryRunOption).
+        // options (checked by flowOptions).
         if (std.mem.eql(u8, entry.key_ptr.*, "timeout_ms") or std.mem.eql(u8, entry.key_ptr.*, "options")) continue;
         if (entry.value_ptr.* != .string) return invalidParams();
     }
@@ -187,8 +201,12 @@ fn execute(
     // 600 s), else the default.
     const explicit_ms = flow.flowTimeoutParam(params.get("timeout_ms")) catch return invalidParams();
     const deadline_ms = started +| flow.flowBudgetMs(default_budget_ms, explicit_ms, null);
-    const dry_run = dryRunOption(params.get("options")) catch return invalidParams();
+    const options = flowOptions(params.get("options")) catch return invalidParams();
+    const dry_run = options.dry_run;
     trace.dry_run = dry_run;
+    // S8: an approval binds a real run of an acting flow to one window; a dry run has no card.
+    if (dry_run and !call.hasDryRun()) return invalidParams();
+    if (options.expect != null and (dry_run or !call.isAction() or ext.options.window == null)) return invalidParams();
 
     // 1. Everything that needs no page, before the gate and pacing.
     validate(gpa, call, s, p) catch |err| switch (err) {
@@ -196,6 +214,26 @@ fn execute(
         error.InvalidParams => return invalidParams(),
     };
     trace.describe(call, s, p);
+
+    // S8 phase A ("S8 in detail" decision 2): the window as the approval card showed it, inside
+    // this ticket and before the gate, the pacing pause or any page input.
+    if (options.expect) |expect| {
+        var found: ?engine_mod.Outcome = switch (try ext.boundWindow(gpa, deadline_ms -| ext.nowMs())) {
+            .refused => |refused| refused,
+            .window => |window| blk: {
+                defer window.deinit(gpa);
+                break :blk try engine_mod.windowRefusal(gpa, window, .{ .origin = expect.origin, .load_serial = expect.load_serial }, ids);
+            },
+        };
+        // As for the verbs (RoseCat db43ca1): a stop, then a check that used up the budget, then
+        // what the check found.
+        if (ext.cancelled() or ext.nowMs() >= deadline_ms) {
+            if (found) |*f| f.deinit(gpa);
+            if (ext.cancelled()) return engine_mod.automationFailure(gpa, .cancelled, null, ids);
+            return engine_mod.automationFailure(gpa, .action_timeout, "expect_used_deadline", ids);
+        }
+        if (found) |f| return f;
+    }
 
     // 2. Login gate before navigation.
     if (call.needsSession()) {
@@ -210,6 +248,7 @@ fn execute(
         .deadline_reason = call.deadlineReason(),
         .observer = trace.observer(),
         .platform = call.namespace(),
+        .approval = if (options.expect) |expect| .{ .url = expect.url } else null,
     };
     defer runner.deinit();
 
@@ -262,24 +301,57 @@ fn takeFailure(gpa: std.mem.Allocator, runner: *flow_runner.Runner, trace: *cons
     return flow_runner.withFailedStep(gpa, outcome, trace.error_step_buf[0..trace.error_step_len]);
 }
 
-/// `options` of a flow request: absent -> false; `{"dry_run": bool}` (no
-/// other key) -> that; anything else is InvalidParams. Only the flows with
-/// a dry run take `options` at all (allowedParams).
-fn dryRunOption(value: ?std.json.Value) error{InvalidParams}!bool {
-    const options = switch (value orelse return false) {
+/// S8: an approval's expectation of a flow's window (strings borrowed from the request).
+const FlowExpect = struct { origin: []const u8, load_serial: u64, url: []const u8 };
+
+const FlowOptions = struct { dry_run: bool = false, expect: ?FlowExpect = null };
+
+/// `options` of a flow request: absent -> nothing; an object of `dry_run: bool` and (S8)
+/// `expect: {origin: non-empty string, load_serial: integer >= 0, url: non-empty string}`, no
+/// other key, else InvalidParams. Only the acting flows take `options` (allowedParams).
+fn flowOptions(value: ?std.json.Value) error{InvalidParams}!FlowOptions {
+    const options = switch (value orelse return .{}) {
         .object => |o| o,
         else => return error.InvalidParams,
     };
-    var dry_run = false;
+    var out = FlowOptions{};
     var keys = options.iterator();
     while (keys.next()) |entry| {
-        if (!std.mem.eql(u8, entry.key_ptr.*, "dry_run")) return error.InvalidParams;
-        dry_run = switch (entry.value_ptr.*) {
-            .bool => |b| b,
-            else => return error.InvalidParams,
-        };
+        const key = entry.key_ptr.*;
+        if (std.mem.eql(u8, key, "dry_run")) {
+            out.dry_run = switch (entry.value_ptr.*) {
+                .bool => |b| b,
+                else => return error.InvalidParams,
+            };
+        } else if (std.mem.eql(u8, key, "expect")) {
+            out.expect = try flowExpect(entry.value_ptr.*);
+        } else return error.InvalidParams;
     }
-    return dry_run;
+    return out;
+}
+
+fn flowExpect(value: std.json.Value) error{InvalidParams}!FlowExpect {
+    const object = switch (value) {
+        .object => |o| o,
+        else => return error.InvalidParams,
+    };
+    var keys = object.iterator();
+    while (keys.next()) |entry| {
+        if (!inList(&.{ "origin", "load_serial", "url" }, entry.key_ptr.*)) return error.InvalidParams;
+    }
+    const text = struct {
+        fn of(o: std.json.ObjectMap, key: []const u8) error{InvalidParams}![]const u8 {
+            return switch (o.get(key) orelse return error.InvalidParams) {
+                .string => |t| if (t.len > 0) t else error.InvalidParams,
+                else => error.InvalidParams,
+            };
+        }
+    };
+    const load_serial: u64 = switch (object.get("load_serial") orelse return error.InvalidParams) {
+        .integer => |n| std.math.cast(u64, n) orelse return error.InvalidParams,
+        else => return error.InvalidParams,
+    };
+    return .{ .origin = try text.of(object, "origin"), .load_serial = load_serial, .url = try text.of(object, "url") };
 }
 
 /// The platform's session cookie must be in the store (never reads or
@@ -320,7 +392,7 @@ fn allowedParams(call: Call) []const []const u8 {
             .visit, .extract => &.{"profileUrl"},
             .follow => &.{ "profileUrl", "options" },
             .connect => &.{ "profileUrl", "note", "timeout_ms", "options" },
-            .message => &.{ "text", "conversationUrl", "profileUrl", "timeout_ms" },
+            .message => &.{ "text", "conversationUrl", "profileUrl", "timeout_ms", "options" },
             .like => &.{ "postUrl", "options" },
             .comment => &.{ "postUrl", "text", "timeout_ms", "options" },
             .search => &.{ "query", "searchType" },
@@ -330,7 +402,7 @@ fn allowedParams(call: Call) []const []const u8 {
             .follow => &.{ "profileUrl", "options" },
             .like => &.{ "postUrl", "options" },
             .comment => &.{ "postUrl", "text", "timeout_ms", "options" },
-            .dm => &.{ "username", "text", "timeout_ms" },
+            .dm => &.{ "username", "text", "timeout_ms", "options" },
             .story_view => &.{ "username", "options" },
             .selfcheck => &.{},
         },
