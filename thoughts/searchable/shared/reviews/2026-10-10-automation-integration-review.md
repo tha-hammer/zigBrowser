@@ -21979,3 +21979,33 @@ implemented fail closed. This review does not require the MS6.3 or MS6.6(B)
 real cases before the MS5 pins decision; it requires the shared seam they will
 inherit to be safe and mutation-protected first. No full gate was started
 because BlackRobin held the shared slot.
+
+### MS6 harness lifecycle and zero-network red (`554f36c`)
+
+**APPROVED as the unregistered failing-first red.** An independent clean export
+of exact `554f36c` reproduces the reported split: **3/7 fail** on the old seam.
+The normal and leader-exited/child-survives cases observe SIGKILL only after the
+leader has already been reaped, and calling `close()` twice produces two extra
+signals. The timeout, 3 MiB output and two NOT ARMED cases already pass, so the
+red is not a blanket missing-file failure.
+
+The signal wrapper records both the group id and whether its leader still has
+a `/proc/<pgid>` entry at the instant of the real `killpg`, then requires one
+SIGKILL while that leader is unreaped. The outliving-child case additionally
+censuses the actual child until it is gone. Together with the timeout, large
+pipe output and repeated-close cases, this directly covers the lifecycle seam
+that `79f9933` omitted.
+
+Both gate cases run a copied entry in a throwaway git repository, prepend
+recording/refusing shims for the planned remote/network tools, replace both
+hosts and both keys with canaries, and require the call log to remain empty.
+They independently cover missing pins and pins present with staging absent.
+That is a durable discriminator for the current shell transport design and
+closes the red-side portion of the zero-network finding.
+
+**SHOULD-for-tests:** `alive()` performs `kill(pid, 0)` and then opens
+`/proc/<pid>/stat` without catching disappearance between those operations
+(`ms6_hard_gate_harness_test.py:53-61`). Treat `FileNotFoundError` as dead to
+avoid a harmless child-exit race making the green flaky. This is noisy/fail-
+closed, not a false-green blocker. The tests remain intentionally unregistered
+until the production green lands; `3bd5727` stays blocked meanwhile.
