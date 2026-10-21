@@ -125,6 +125,33 @@ int main(int argc, char **argv) {
 
 MODES = {"honest": (0, 0, 0), "planted": (1, 0, 0), "forge": (1, 1, 0), "hang": (0, 0, 1)}
 TOKEN_SHAPE = re.compile(rb"zb-probe-[0-9a-f]{48}")
+DIAG_MAX = 600  # characters of each probe stream shown when a row fails
+_REDACT = [re.compile(p) for p in (
+    r"zb-probe-\S*",  # the probe token, whatever follows its prefix
+    r"(?i)bearer\s+\S+",
+    r"sk-ant-\S+",
+    r"(?i)(?:token|authorization|secret|key)\w*\s*[=:]\s*\S+",
+    r"[0-9A-Fa-f]{6,}",  # any hex run: the token's 48 hex, wrapped pieces, a hex encoding of it
+    r"[A-Za-z0-9+_=-]{24,}",  # any long base64-ish run (an encoded token)
+)]
+
+
+def _sanitize(text):
+    """The probe's stdout/stderr made safe to print (RoseCat 7358): every redaction runs BEFORE the text is bounded to
+    its last DIAG_MAX characters, so no cut can expose a token; no run of 6 hex characters, no "zb-probe-" text, no
+    Bearer/assignment value and no long base64-ish run survives; control characters become "?"."""
+    if text is None:
+        return ""
+    if isinstance(text, bytes):
+        text = text.decode("utf-8", "replace")
+    for rx in _REDACT:
+        text = rx.sub("<redacted>", text)
+    text = "".join(c if c == "\n" or c.isprintable() else "?" for c in text)
+    return text[-DIAG_MAX:]
+
+
+def _diag(rec):
+    return rec.get("diag", "no sandboxed run was recorded") if rec else "no sandboxed run was recorded"
 
 
 def _port_free(port):
@@ -221,6 +248,21 @@ def _chain_release(scan, started_at, clock=time.monotonic, sleep=time.sleep):
         sleep(1)
 
 
+def _released(h, proc_darwin, label, cli, runtime, runs, started_at):
+    """After EVERY row (RoseCat 7300 #2): the port free on both families; no inspection fault in any scan (RoseCat
+    7312); no part of the chain alive after CHAIN_GRACE_S; and, waited out unsignalled to the row's horizon, a
+    clean, empty final scan (RoseCat 7306 #2). `label` names the evidence row, `cli` is that row's own CLI (never
+    looked up by the label: 4e17273's KeyError 'positive'; RoseCat 7358)."""
+    argv = runs[0]["argv"] if len(runs) == 1 else []
+    port = int(argv[argv.index("--listen-port") + 1]) if "--listen-port" in argv else None
+    h.check(port is not None and _port_free(port), f"{label}: afterwards port {port} is free on 127.0.0.1 and ::1")
+    markers = [runtime, os.path.dirname(cli)]
+    faults, survivors, last = _chain_release(lambda: _chain_alive(h, proc_darwin, cli, markers), started_at)
+    h.check(faults == [], f"{label}: every scan inspected every process of ours ({faults})")
+    h.check(survivors == [], f"{label}: no part of the probe chain is alive after {CHAIN_GRACE_S} s ({survivors})")
+    h.check(_clean(last), f"{label}: waited out unsignalled, a clean, empty final scan ({last})")
+
+
 def run(h):
     prefix = h.prefix
     if not h.check(bool(prefix) and os.path.isdir(os.path.join(prefix or "", "zb_agent_host")),
@@ -273,7 +315,18 @@ def run(h):
                 with open(rec["argv"][rec["argv"].index("-f") + 1]) as f:
                     rec["profile"] = f.read()
             runs.append(rec)
-            return real_run(argv, *args, **kw)
+            try:
+                done = real_run(argv, *args, **kw)
+            except subprocess.TimeoutExpired as e:
+                rec["diag"] = (f"probe timed out after {e.timeout} s; stdout {_sanitize(e.stdout)!r}; "
+                               f"stderr {_sanitize(e.stderr)!r}")
+                raise
+            except Exception as e:
+                rec["diag"] = f"probe run raised {type(e).__name__}"
+                raise
+            rec["diag"] = (f"probe rc={done.returncode}; stdout {_sanitize(done.stdout)!r}; "
+                           f"stderr {_sanitize(done.stderr)!r}")
+            return done
 
         def spy_census(exe, root, tok, canary):
             seen = {"exe": exe, "root": root, "token": tok, "canary": canary, "planted": None, "forged": None}
@@ -296,23 +349,11 @@ def run(h):
             setup.subprocess.run, proc_darwin.cli_env_clean = real_run, real_census
         return verdict, time.monotonic() - started, runs, censuses, runtime
 
-    def released(mode, runs, runtime, started_at):
-        """After EVERY row (RoseCat 7300 #2): the port free on both families; no inspection fault in any scan (RoseCat
-        7312); no part of the chain alive after CHAIN_GRACE_S; and, waited out unsignalled to the row's horizon, a
-        clean, empty final scan (RoseCat 7306 #2)."""
-        argv = runs[0]["argv"] if len(runs) == 1 else []
-        port = int(argv[argv.index("--listen-port") + 1]) if "--listen-port" in argv else None
-        h.check(port is not None and _port_free(port), f"{mode}: afterwards port {port} is free on 127.0.0.1 and ::1")
-        markers = [runtime, os.path.dirname(clis[mode])]
-        faults, survivors, last = _chain_release(lambda: _chain_alive(h, proc_darwin, clis[mode], markers), started_at)
-        h.check(faults == [], f"{mode}: every scan inspected every process of ours ({faults})")
-        h.check(survivors == [], f"{mode}: no part of the probe chain is alive after {CHAIN_GRACE_S} s ({survivors})")
-        h.check(_clean(last), f"{mode}: waited out unsignalled, a clean, empty final scan ({last})")
-
     # 1. positive
     t0 = time.monotonic()
     verdict, _took, runs, censuses, runtime = one("honest")
-    h.check(verdict is True, "positive: an honest CLI through the real chain selects R1")
+    h.check(verdict is True, "positive: an honest CLI through the real chain selects R1"
+            + ("" if verdict is True else f" ({_diag(runs[0] if runs else None)})"))
     if h.check(len(runs) == 1, f"positive: exactly one sandboxed run ({len(runs)})"):
         r = runs[0]
         argv = r["argv"]
@@ -333,14 +374,15 @@ def run(h):
                 and censuses[0]["exe"] == clis["honest"] and censuses[0]["root"] == os.getpid()
                 and censuses[0]["clean"] is True,
                 f"positive: setup's census ran once, exact request, clean ({censuses})")
-    released("positive", runs, runtime, t0)
+    _released(h, proc_darwin, "positive", clis["honest"], runtime, runs, t0)
 
     # 2. planted-token control and 3. forged capability: their own positives first. The planted CLI is the forge CLI
     # compiled without its forge branch (the forge-deleted mutant): it must carry no ZB_FORGED (RoseCat 7300 #1).
     for mode in ("planted", "forge"):
         t0 = time.monotonic()
         verdict, _took, runs, censuses, runtime = one(mode)
-        h.check(len(censuses) == 1, f"{mode}: the CLI called the server and setup's census ran ({len(censuses)})")
+        h.check(len(censuses) == 1, f"{mode}: the CLI called the server and setup's census ran ({len(censuses)})"
+                + ("" if len(censuses) == 1 else f" ({_diag(runs[0] if runs else None)})"))
         seen = censuses[0] if censuses else {}
         h.check(seen.get("planted") is True,
                 f"{mode}: the CLI's real environment, read outside Seatbelt, holds the planted token ({seen})")
@@ -353,7 +395,7 @@ def run(h):
             h.check(forged == [], f"planted: the forge-deleted mutant carries no forge record ({forged})")
         h.check(seen.get("clean") is False, f"{mode}: setup's census says dirty")
         h.check(verdict is False, f"{mode}: probe_r1 is False (no R1)")
-        released(mode, runs, runtime, t0)
+        _released(h, proc_darwin, mode, clis[mode], runtime, runs, t0)
 
     # 4. timeout and lifecycle
     t0 = time.monotonic()
@@ -361,4 +403,4 @@ def run(h):
     h.check(verdict is False, "hang: a CLI that never calls is no R1")
     h.check(took <= setup.PROBE_TIMEOUT_S + 45, f"hang: probe_r1 ends within its bound ({took:.1f} s)")
     h.check(censuses == [], "hang: no census without a call")
-    released("hang", runs, runtime, t0)
+    _released(h, proc_darwin, "hang", clis["hang"], runtime, runs, t0)
