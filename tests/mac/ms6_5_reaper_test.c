@@ -8,6 +8,7 @@
  * killed by the sweep; a decoy outside the run dir is untouched; a marker-scrubber (cwd "/") is the accepted
  * residual the census cannot see. Run by tests/mac/ms6_5_reaper_gate.sh on both arches. */
 #include "agent_run_reaper.h"
+#include <fcntl.h>
 #include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -65,6 +66,10 @@ int main(void) {
   char run[PATH_MAX]; /* the exact sockdirPath grammar: zigbrowser-agent-<pid>-<16 lowercase hex>, mode 0700 */
   snprintf(run, sizeof run, "%s/zigbrowser-agent-%d-00112233445566ff", parent, (int)getpid());
   if (mkdir(run, 0700) != 0) { printf("FAIL mkdir run\n"); rmdir(parent); return 2; }
+  /* creation-pinned: open + hold the run dir fd for the whole run, and capture its identity now. */
+  int rfd = open(run, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+  struct zb_reaper_dir_id rid;
+  if (rfd < 0 || zb_reaper_pin_fd(rfd, &rid) != 0) { printf("FAIL pin run dir\n"); if (rfd >= 0) close(rfd); rmdir(run); rmdir(parent); return 2; }
 
   pid_t esc = -1, dec = -1, scr = -1;
   int ew = -1, dw = -1, sw = -1;
@@ -78,12 +83,12 @@ int main(void) {
     sleep(1);
 
     int cen[512], cn = 0, ov = 0;
-    zb_reaper_census(run, cen, 512, &cn, &ov);
+    zb_reaper_census(rfd, &rid, cen, 512, &cn, &ov);
     check(cn == 1 && cen[0] == (int)esc, "census is EXACTLY {escaper}");
     check(ov == 0, "census reports no overflow");
 
     int killed[512], surv[512], kn = 0, sn = 0, ov2 = 0;
-    zb_reaper_sweep(run, killed, 512, &kn, surv, 512, &sn, &ov2);
+    zb_reaper_sweep(rfd, &rid, killed, 512, &kn, surv, 512, &sn, &ov2);
     check(kn == 1 && killed[0] == (int)esc, "sweep killed EXACTLY {escaper}");
     check(sn == 0, "sweep reports no survivors");
     check(ov2 == 0, "sweep reports no overflow");
@@ -91,7 +96,7 @@ int main(void) {
     check(!in_list(killed, kn, scr) && !in_list(surv, sn, scr), "sweep did not touch the scrubber");
 
     int cen2[512], cn2 = 0, ov3 = 0; /* the escaper is gone: a re-census finds nothing (no kill0 on a reused pid) */
-    zb_reaper_census(run, cen2, 512, &cn2, &ov3);
+    zb_reaper_census(rfd, &rid, cen2, 512, &cn2, &ov3);
     check(cn2 == 0, "re-census is empty: the escaper is gone");
 
     int st = 0;
@@ -99,6 +104,7 @@ int main(void) {
   }
 
   /* Clean up with NO signal: close every control write end (holders exit on EOF), reap the direct child. */
+  if (rfd >= 0) close(rfd);
   if (ew >= 0) close(ew);
   if (dw >= 0) close(dw);
   if (sw >= 0) close(sw);

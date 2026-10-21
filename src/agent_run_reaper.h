@@ -2,10 +2,11 @@
  * PUBLIC APIs only (no sandbox_check, no private SPI). A detached escaper (double-fork + setsid) is accepted,
  * cleaned up here, and any survivor surfaces a drawer warning. See the plan MS6.5.
  *
- * The kill-safety-critical logic — which pids match, which get a signal, how a full/overflowing scan is
- * reported — is a PORTABLE decision engine over INJECTED primitives (scan/inspect/kill), so it is unit-tested on
- * Linux with fakes and the kill intercepted before the OS (RoseCat a2fd8af/f907e95). The macOS libproc + real
- * kill that back it in production (zb_reaper_census/sweep) are the only part that must run on a Mac. */
+ * Kill-safety (RoseCat a2fd8af/f907e95/3da2862/c09d439): the run dir is pinned at CREATION by a no-follow dir fd
+ * held for the run's life; the reaper revalidates that fd (fstat, never a pathname stat — so no symlink follow)
+ * IMMEDIATELY BEFORE EACH destructive signal; and every input is contract-checked. The decision engine is a
+ * PORTABLE function over injected primitives (scan/inspect/killsig/dir_ok), unit-tested on Linux with the kill
+ * intercepted; only the macOS libproc + real kill wrappers must run on a Mac. */
 #ifndef ZB_AGENT_RUN_REAPER_H
 #define ZB_AGENT_RUN_REAPER_H
 
@@ -18,63 +19,21 @@ extern "C" {
 
 /* ---- pure classification (portable) ---- */
 
-/* 1 iff `path` is `dir` or lies strictly inside it, compared by WHOLE components (`/a/b/x` and `/a/b` are under
- * `/a/b`, but `/a/bc` is not). Trailing slashes on dir ignored. Null/empty path or dir, and dir "/" are refused. */
+/* 1 iff `path` is `dir` or lies strictly inside it, by WHOLE components (`/a/b/x` and `/a/b` are under `/a/b`,
+ * `/a/bc` is not). Trailing slashes on dir ignored. Null/empty path or dir, and dir "/" are refused. */
 int zb_reaper_path_under(const char *path, const char *dir);
 
 /* 1 iff a process with this cwd/exe/`nfds` open-file paths is a survivor of the run rooted at `run_dir`. */
 int zb_reaper_classify(const char *cwd, const char *exe, const char *const *fd_paths, int nfds,
                        const char *run_dir);
 
-/* 1 iff `dir`'s basename is EXACTLY the sockdirPath grammar `zigbrowser-agent-<pid>-<16 lowercase hex>`
- * (RoseCat f907e95 #2), and `dir` is absolute, canonical (no "//", "/./", "/../") and at least two components
- * deep. Rejects "/", "/tmp", "/Users/<user>", "$HOME", a loose prefix, uppercase hex, a wrong-length suffix, and
- * any dir the app did not create. Pure (name only); the sweep ALSO stats the resolved dir for dir-type, this
- * uid's ownership and mode 0700 before trusting it. */
+/* 1 iff `dir`'s basename is EXACTLY the sockdirPath grammar `zigbrowser-agent-<pid>-<16 lowercase hex>` and dir
+ * is absolute, canonical (no "//", "/./", "/../"), at least two components deep. Rejects "/", "/tmp",
+ * "/Users/<user>", "$HOME", a loose prefix, uppercase hex, a wrong-length suffix. Pure (name only). */
 int zb_reaper_run_dir_ok(const char *dir);
 
-/* ---- the injectable decision engine (portable; the Linux kill-safety proof) ---- */
+/* ---- the creation-pinned run-dir identity (fd-based; no pathname stat, so no symlink follow) ---- */
 
-/* A pid's identity for kill-time re-validation. A gather failure leaves matches=0/have_bsd=0 (fail closed). */
-struct zb_reaper_id {
-  int matches;
-  int have_bsd;
-  uid_t uid;
-  uint64_t start_sec;
-  uint64_t start_usec;
-};
-
-/* The primitives the engine drives. Production wires libproc + real kill; tests wire fakes that record and never
- * touch the OS. `killsig` returns 0 on success or the errno (so ESRCH/EPERM are visible without a global). */
-struct zb_reaper_ops {
-  void (*inspect)(pid_t pid, const char *dir, struct zb_reaper_id *out, void *ctx);
-  int (*killsig)(pid_t pid, int sig, void *ctx);
-  void *ctx;
-};
-
-/* Build the pid list via the injected `scan` (proc_listallpids-shaped: fill buf of `bytes`, RETURN THE COUNT of
- * pids — not bytes — or <= 0 on error). Grows + retries when the buffer fills exactly. Returns 0 and fills
- * *out (malloc'd, caller frees) + *out_n; -1 when the buffer stayed full through the retries (INCOMPLETE — the
- * caller must NOT report a clean result); -2 on empty/alloc error (RoseCat f907e95 #1). */
-int zb_reaper_gather(int (*scan)(void *buf, int bytes), pid_t **out, int *out_n);
-
-/* The decision engine over `pids[0..npids)` against the resolved `dir`. Skips pid <= 1, ourselves, and any pid
- * not of our uid. census (kill_them=0): list matching pids, NO signal. sweep (kill_them=1): re-inspect each match
- * immediately before SIGKILL and skip a vanished / reused (changed uid or start time) / no-longer-matching pid;
- * a killsig errno other than ESRCH counts the pid a survivor, ESRCH counts it gone. `*overflow` is set when a
- * list would exceed its cap (truncated — never a clean result). Returns 0. */
-int zb_reaper_engine(const struct zb_reaper_ops *ops, const pid_t *pids, int npids, const char *dir,
-                     int kill_them, int *killed, int kcap, int *kn, int *surv, int scap, int *sn, int *overflow);
-
-/* gather (via the injected scan) + the engine, mapping a failed scan to a NON-ZERO return, never a clean empty
- * result (RoseCat 9dfc9c7 #1): EOVERFLOW when the scan was incomplete, EIO on a scan/alloc error (both also set
- * *overflow), else the engine's 0. The macOS wrappers call this after pinning the run dir; tests drive it with a
- * fake scan + fake ops to prove the wrapper-level causal reds. */
-int zb_reaper_run_full(int (*scan)(void *buf, int bytes), const struct zb_reaper_ops *ops, const char *dir,
-                       int kill_them, int *killed, int kcap, int *kn, int *surv, int scap, int *sn, int *overflow);
-
-/* The creation-pinned run-dir identity (RoseCat 9dfc9c7 #2): compared from a no-follow dir fd's fstat, not a
- * pathname, so a swapped path is caught. */
 struct zb_reaper_dir_id {
   dev_t dev;
   ino_t ino;
@@ -83,25 +42,68 @@ struct zb_reaper_dir_id {
 };
 int zb_reaper_dir_id_eq(const struct zb_reaper_dir_id *a, const struct zb_reaper_dir_id *b);
 
-/* Pin the resolved run dir by a NO-FOLLOW dir fd: it must be a directory, this uid's, mode 0700, pass
- * zb_reaper_run_dir_ok, and the fd and the path must agree on (dev, ino). Returns the held fd (>= 0, the caller
- * closes it) and fills *id, or -1 on any failure. Portable (open/fstat/stat), so it is unit-tested on Linux with
- * a real path swap. */
-int zb_reaper_pin_dir(const char *resolved, struct zb_reaper_dir_id *id);
+/* Capture the pinned identity from a HELD no-follow dir fd (opened once, at run-dir creation, with
+ * O_DIRECTORY|O_NOFOLLOW): fstat it and require a directory, this uid, mode 0700. Returns 0 and fills *out, or
+ * EINVAL. The caller holds the fd for the run's whole life; the reaper never re-opens by name. */
+int zb_reaper_pin_fd(int dir_fd, struct zb_reaper_dir_id *out);
 
-/* Do the held fd and the path still name the pinned dir (same identity, path still that inode)? Run immediately
- * BEFORE the scan/SIGKILL and again after, so a path swap is caught before any signal (RoseCat 3da2862 #2). */
-int zb_reaper_dir_still_pinned(int fd, const char *resolved, const struct zb_reaper_dir_id *id);
+/* 1 iff the HELD fd still fstats to exactly `pinned` (dir, this uid, 0700, same dev/ino). This is the per-kill
+ * revalidation — fstat only, never a pathname stat, so a swapped path or a symlink-to-the-held-inode cannot
+ * fool it (RoseCat c09d439 #2/#3). */
+int zb_reaper_dir_fd_ok(int dir_fd, const struct zb_reaper_dir_id *pinned);
+
+/* ---- the injectable decision engine (portable; the Linux kill-safety proof) ---- */
+
+struct zb_reaper_id {
+  int matches;
+  int have_bsd;
+  uid_t uid;
+  uint64_t start_sec;
+  uint64_t start_usec;
+};
+
+/* Production wires libproc + real kill + the fd revalidation; tests wire fakes that record and never touch the
+ * OS. `killsig` returns 0 or the errno. `dir_ok` is re-checked immediately before EACH SIGKILL; when it returns
+ * 0 the engine sends NO signal (the pinned dir is gone/changed). All three callbacks are required. */
+struct zb_reaper_ops {
+  void (*inspect)(pid_t pid, const char *dir, struct zb_reaper_id *out, void *ctx);
+  int (*killsig)(pid_t pid, int sig, void *ctx);
+  int (*dir_ok)(void *ctx);
+  void *ctx;
+};
+
+/* Build the pid list via the injected `scan` (proc_listallpids-shaped: fill buf of `bytes`, RETURN THE COUNT of
+ * pids — not bytes — or < 0 on error). Returns 0 and fills *out (malloc'd, caller frees) + *out_n (which may be
+ * 0, a proven empty set); -1 when the buffer stayed full through the retries (INCOMPLETE); -2 on a sizing/scan/
+ * allocation error (NOT a clean empty set); EINVAL on a null argument. */
+int zb_reaper_gather(int (*scan)(void *buf, int bytes), pid_t **out, int *out_n);
+
+/* The decision engine over `pids[0..npids)` against the resolved `dir`. Skips pid <= 1, ourselves, and any pid
+ * not of our uid. census (kill_them=0): list matching pids, NO signal. sweep (kill_them=1): re-inspect each
+ * match, revalidate the pinned dir (ops->dir_ok) and skip a vanished / reused / wrong-uid / dir-changed pid,
+ * then SIGKILL; a killsig errno other than ESRCH is a survivor, ESRCH is gone. `*overflow` is set when a list
+ * overflows its cap (never clean). Returns 0, or EINVAL on a contract violation (null ops/callbacks/overflow,
+ * null pids with npids > 0, negative npids/caps). */
+int zb_reaper_engine(const struct zb_reaper_ops *ops, const pid_t *pids, int npids, const char *dir,
+                     int kill_them, int *killed, int kcap, int *kn, int *surv, int scap, int *sn, int *overflow);
+
+/* gather (via the injected scan) + the engine. A failed scan maps to a NON-ZERO return, never a clean empty
+ * result: EOVERFLOW (incomplete) or EIO (sizing/scan/alloc error), both also setting *overflow; else the
+ * engine's result. EINVAL on a null scan/ops/dir/overflow. */
+int zb_reaper_run_full(int (*scan)(void *buf, int bytes), const struct zb_reaper_ops *ops, const char *dir,
+                       int kill_them, int *killed, int kcap, int *kn, int *surv, int scap, int *sn, int *overflow);
 
 #ifdef __APPLE__
-/* Production: realpath() the run dir and REFUSE unless zb_reaper_run_dir_ok accepts it AND it stats as a dir
- * owned by this uid with mode 0700 (realpath failure = refusal, no fallback); then zb_reaper_gather over
- * proc_listallpids and zb_reaper_engine over libproc inspect + real kill. `*out_overflow` is set to 1 when the
- * scan was INCOMPLETE or a list overflowed — the caller must then treat the result as not-clean (warn/retry),
- * never clean. Returns 0, EINVAL (refused run dir), or EOVERFLOW (incomplete scan). */
-int zb_reaper_census(const char *run_dir, int *out_pids, int cap, int *out_n, int *out_overflow);
-int zb_reaper_sweep(const char *run_dir, int *out_killed_pids, int killed_cap, int *out_killed_n,
-                    int *out_survivor_pids, int survivor_cap, int *out_survivor_n, int *out_overflow);
+/* Production: `run_dir_fd` is the no-follow dir fd the caller opened at run-dir creation and holds for the run;
+ * `pinned` is zb_reaper_pin_fd's identity from it. The reaper revalidates the fd (never a pathname), derives the
+ * dir's current path from the fd, and runs the engine (libproc inspect + real kill + per-kill fd revalidation).
+ * `*out_overflow` (required) is set when the scan was incomplete or a list overflowed. Returns 0, EINVAL
+ * (bad fd/pin/args), EOVERFLOW (incomplete scan) or EIO (scan error). */
+int zb_reaper_census(int run_dir_fd, const struct zb_reaper_dir_id *pinned, int *out_pids, int cap, int *out_n,
+                     int *out_overflow);
+int zb_reaper_sweep(int run_dir_fd, const struct zb_reaper_dir_id *pinned, int *out_killed_pids, int killed_cap,
+                    int *out_killed_n, int *out_survivor_pids, int survivor_cap, int *out_survivor_n,
+                    int *out_overflow);
 #endif
 
 #ifdef __cplusplus

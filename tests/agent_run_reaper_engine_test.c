@@ -60,7 +60,11 @@ static int fake_killsig(pid_t pid, int sig, void *ctx) {
 static int sigkills_for(pid_t pid) { int i = find(pid); return i < 0 ? -1 : T[i].sigkills; }
 static int in_list(const int *a, int n, pid_t pid) { for (int i = 0; i < n; i++) if (a[i] == (int)pid) return 1; return 0; }
 
-static void reset(void) { memset(T, 0, sizeof T); TN = 0; }
+/* fake dir_ok: returns 1 for the first `dir_ok_budget` calls, then 0 — models the pinned dir changing mid-run. */
+static int dir_ok_budget;
+static int fake_dir_ok(void *ctx) { (void)ctx; if (dir_ok_budget > 0) { dir_ok_budget--; return 1; } return 0; }
+
+static void reset(void) { memset(T, 0, sizeof T); TN = 0; dir_ok_budget = 1 << 30; }
 static void add(pid_t pid, int m1, int m2, uid_t uid, uint64_t s1, uint64_t s2, int killret, int gone) {
   T[TN].pid = pid; T[TN].matches[0] = m1; T[TN].matches[1] = m2; T[TN].have_bsd = 1;
   T[TN].uid = uid; T[TN].start[0] = s1; T[TN].start[1] = s2; T[TN].killret = killret; T[TN].gone = gone;
@@ -85,7 +89,7 @@ static int fake_scan(void *buf, int bytes) {
 int main(void) {
   const uid_t me = getuid();
   const pid_t self = getpid();
-  struct zb_reaper_ops ops = {fake_inspect, fake_killsig, NULL};
+  struct zb_reaper_ops ops = {fake_inspect, fake_killsig, fake_dir_ok, NULL};
   int killed[8], surv[8], kn, sn, ov;
 
   /* sweep over every oracle at once */
@@ -177,6 +181,46 @@ int main(void) {
   kn2 = sn2 = ov2 = 0;
   r = zb_reaper_run_full(fake_scan, &ops, "/run/x", 1, k2, 8, &kn2, s2, 8, &sn2, &ov2);
   check(r == 0 && in_list(k2, kn2, 2000) && ov2 == 0, "run_full: a normal scan runs the engine (match killed, clean)");
+
+  /* per-kill dir_ok: the pinned dir goes invalid after the first kill -> the rest get NO signal (c09d439 #2) */
+  scan_mode = 0;
+  reset();
+  add(1000, 1, 1, me, 5, 5, 0, 1);
+  add(1001, 1, 1, me, 5, 5, 0, 1);
+  dir_ok_budget = 1; /* only the first kill's revalidation passes */
+  kn = sn = ov = 0;
+  zb_reaper_engine(&ops, (pid_t[]){1000, 1001}, 2, "/run/x", 1, killed, 8, &kn, surv, 8, &sn, &ov);
+  check(sigkills_for(1000) == 1 && in_list(killed, kn, 1000), "per-kill dir_ok: the first match is killed");
+  check(sigkills_for(1001) == 0 && !in_list(killed, kn, 1001) && !in_list(surv, sn, 1001),
+        "per-kill dir_ok: once the dir goes invalid, the next match gets NO signal");
+
+  /* the full input contract: EINVAL, never a crash or a false success */
+  reset();
+  {
+    pid_t one[] = {1000};
+    struct zb_reaper_ops ni = {NULL, fake_killsig, fake_dir_ok, NULL};
+    struct zb_reaper_ops nk = {fake_inspect, NULL, fake_dir_ok, NULL};
+    struct zb_reaper_ops nd = {fake_inspect, fake_killsig, NULL, NULL};
+    check(zb_reaper_engine(NULL, one, 1, "/d", 1, killed, 8, &kn, surv, 8, &sn, &ov) == EINVAL, "engine: null ops");
+    check(zb_reaper_engine(&ni, one, 1, "/d", 1, killed, 8, &kn, surv, 8, &sn, &ov) == EINVAL, "engine: null inspect");
+    check(zb_reaper_engine(&nk, one, 1, "/d", 1, killed, 8, &kn, surv, 8, &sn, &ov) == EINVAL, "engine: null killsig");
+    check(zb_reaper_engine(&nd, one, 1, "/d", 1, killed, 8, &kn, surv, 8, &sn, &ov) == EINVAL, "engine: null dir_ok");
+    check(zb_reaper_engine(&ops, NULL, 1, "/d", 1, killed, 8, &kn, surv, 8, &sn, &ov) == EINVAL, "engine: null pids, npids>0");
+    check(zb_reaper_engine(&ops, one, -1, "/d", 1, killed, 8, &kn, surv, 8, &sn, &ov) == EINVAL, "engine: negative npids");
+    check(zb_reaper_engine(&ops, one, 1, NULL, 1, killed, 8, &kn, surv, 8, &sn, &ov) == EINVAL, "engine: null dir");
+    check(zb_reaper_engine(&ops, one, 1, "/d", 1, killed, -1, &kn, surv, 8, &sn, &ov) == EINVAL, "engine: negative kcap");
+    check(zb_reaper_engine(&ops, one, 1, "/d", 1, killed, 8, &kn, surv, -1, &sn, &ov) == EINVAL, "engine: negative scap");
+    check(zb_reaper_engine(&ops, one, 1, "/d", 1, killed, 8, &kn, surv, 8, &sn, NULL) == EINVAL, "engine: null overflow");
+    pid_t *pp = NULL;
+    int nn = 0;
+    check(zb_reaper_gather(NULL, &pp, &nn) == EINVAL, "gather: null scan");
+    check(zb_reaper_gather(fake_scan, NULL, &nn) == EINVAL, "gather: null out");
+    check(zb_reaper_gather(fake_scan, &pp, NULL) == EINVAL, "gather: null out_n");
+    check(zb_reaper_run_full(NULL, &ops, "/d", 1, killed, 8, &kn, surv, 8, &sn, &ov) == EINVAL, "run_full: null scan");
+    check(zb_reaper_run_full(fake_scan, NULL, "/d", 1, killed, 8, &kn, surv, 8, &sn, &ov) == EINVAL, "run_full: null ops");
+    check(zb_reaper_run_full(fake_scan, &ops, NULL, 1, killed, 8, &kn, surv, 8, &sn, &ov) == EINVAL, "run_full: null dir");
+    check(zb_reaper_run_full(fake_scan, &ops, "/d", 1, killed, 8, &kn, surv, 8, &sn, NULL) == EINVAL, "run_full: null overflow");
+  }
 
   if (failures == 0) { printf("PASS ms6-5-reaper-engine %d checks\n", total); return 0; }
   printf("FAIL ms6-5-reaper-engine %d of %d check(s) failed\n", failures, total);
