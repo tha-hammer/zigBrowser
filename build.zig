@@ -685,8 +685,15 @@ pub fn build(b: *std.Build) void {
     });
     agent_host_posix_spawn_module.addImport("agent_host_posix", agent_host_posix_module);
     agent_host_posix_spawn_module.addCSourceFile(.{ .file = b.path("src/agent_spawn_posix.c"), .flags = &.{"-std=gnu11"} });
-    const run_agent_host_posix_spawn_tests = b.addRunArtifact(b.addTest(.{ .root_module = agent_host_posix_spawn_module }));
-    run_agent_host_posix_spawn_tests.skip_foreign_checks = true;
+    // test 8 sends SIGKILL to netd's OWN group, so the whole suite runs confined to a user+PID namespace per the
+    // kill-safety rule (RoseCat 7172 #2); a plain addRunArtifact would run that signal outside any namespace.
+    const agent_host_posix_spawn_test = b.addTest(.{ .root_module = agent_host_posix_spawn_module });
+    const run_agent_host_posix_spawn_tests = b.addSystemCommand(&.{
+        "unshare", "--user", "--map-root-user", "--pid", "--fork", "--mount-proc", "--",
+    });
+    run_agent_host_posix_spawn_tests.addArtifactArg(agent_host_posix_spawn_test);
+    const agent_host_posix_spawn_step = b.step("test-agent-spawn", "spawnNetd Linux integration tests (namespaced)");
+    agent_host_posix_spawn_step.dependOn(&run_agent_host_posix_spawn_tests.step);
 
     // Chat drawer S3b: the helper's launch argv and environment, the app's
     // frames, the runtime-lock check and the backoff (src/agent_helper.zig).

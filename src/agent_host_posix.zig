@@ -104,31 +104,49 @@ pub const Netd = struct {
     }
 };
 
-/// How netd stopped: a clean exit observed on the stdin-EOF (no signal sent), or the SIGKILL backstop.
-pub const StopResult = enum { clean_exit, killed };
+/// How netd stopped: a clean EOF exit (status 0, no signal), a reaped-but-unclean exit (nonzero/signalled — no
+/// further signal needed, but netd's own EOF cleanup may not have run), the SIGKILL backstop, or a refusal to
+/// signal a bogus pid (a real spawned netd never hits the last).
+pub const StopResult = enum { clean_exit, exited_unclean, killed, skipped_bad_pid };
+
+/// Only a real child pid (> 1) may be signalled: pid 0/1/negative must never reach `killpg`, because `killpg(1)`
+/// is `kill(-1)` — the incident that logged the user out twice (RoseCat 7162/7172). Pure, unit-pinned with zero
+/// kill risk, so the backstop provably sits behind it.
+pub fn shouldKillBackstop(pid: std.c.pid_t) bool {
+    return pid > 1;
+}
+
+const Reaped = enum { clean, unclean };
 
 /// The clean-then-backstop stop (RoseCat 7161 #2): close netd's stdin (EOF -> clean exit), wait up to `grace_ms`
 /// for it to exit, and SIGKILL + reap its group ONLY if it does not. Returns which path was taken, so the clean
 /// path is observable in tests. `zb_agent_kill_group` guards pid <= 0 and kills only netd's OWN process group.
 pub fn stopWith(pid: std.c.pid_t, stdin_fd: c_int, grace_ms: u32) StopResult {
     _ = std.c.close(stdin_fd);
-    if (waitExit(pid, grace_ms)) return .clean_exit;
+    if (!shouldKillBackstop(pid)) return .skipped_bad_pid; // never signal a bogus/non-child pid (kill-safety)
+    if (waitExit(pid, grace_ms)) |reaped| return switch (reaped) {
+        .clean => .clean_exit,
+        .unclean => .exited_unclean,
+    };
     zb_agent_kill_group(pid);
     return .killed;
 }
 
-/// Wait up to `grace_ms` for `pid` to exit, reaping it (non-blocking waitpid poll). True iff a clean exit was
-/// observed and reaped within the grace; false on timeout or a wait error (the caller then kills). Guards pid > 1
-/// so a bogus/non-child pid is never waited on — and never reaches a kill — per the kill-safety rule.
-fn waitExit(pid: std.c.pid_t, grace_ms: u32) bool {
-    if (pid <= 1) return false;
+/// Wait up to `grace_ms` for `pid` to exit, reaping it (non-blocking waitpid poll). `.clean` for a normal exit 0
+/// (netd ran its EOF cleanup), `.unclean` for a reaped nonzero/signalled exit (no further signal needed, but the
+/// cleanup may not have run), or null on timeout or a wait error (the caller then kills). Guards pid > 1.
+fn waitExit(pid: std.c.pid_t, grace_ms: u32) ?Reaped {
+    if (!shouldKillBackstop(pid)) return null;
     const start = nowMs();
     while (true) {
         var status: c_int = 0;
         const r = std.c.waitpid(pid, &status, std.c.W.NOHANG);
-        if (r == pid) return true; // reaped: clean exit observed
-        if (r < 0) return false; // ECHILD/EINVAL: cannot confirm, let the backstop handle it
-        if (nowMs() - start >= grace_ms) return false; // still alive at the grace: needs the backstop
+        if (r == pid) {
+            const s: u32 = @bitCast(status);
+            return if (std.c.W.IFEXITED(s) and std.c.W.EXITSTATUS(s) == 0) .clean else .unclean;
+        }
+        if (r < 0) return null; // ECHILD/EINVAL: cannot confirm, let the backstop handle it
+        if (nowMs() - start >= grace_ms) return null; // still alive at the grace: needs the backstop
         var req: std.c.timespec = .{ .sec = 0, .nsec = 5 * std.time.ns_per_ms };
         var rem: std.c.timespec = undefined;
         _ = std.c.nanosleep(&req, &rem);
@@ -212,12 +230,12 @@ fn netdAlive(fd: c_int, grace_ms: u32) bool {
         const remaining: c_int = @intCast(@as(i64, grace_ms) - elapsed);
         var pfd = [_]std.c.pollfd{.{ .fd = fd, .events = std.posix.POLL.IN, .revents = 0 }};
         const r = std.c.poll(&pfd, 1, remaining);
-        if (r < 0) continue; // transient (EINTR): retry within the grace
-        if (r == 0) return true; // poll timeout: netd holds stdout open, no exit: alive
+        if (r <= 0) continue; // poll timeout/EINTR: re-check the grace at the loop top
         var b: [64]u8 = undefined;
         const n = std.c.read(fd, &b, b.len);
-        if (n == 0) return false; // EOF: netd closed stdout = exited: NOT alive
-        return true; // n > 0 (more output) or n < 0 (transient): netd is alive
+        if (n == 0) return false; // EOF/HUP: netd closed stdout = exited: NOT alive
+        // n > 0 (late output) or n < 0 (EINTR): DRAIN and keep observing — a later EOF within the grace still
+        // means dead, so we must not early-return on extra stdout (RoseCat 7172 #1).
     }
 }
 

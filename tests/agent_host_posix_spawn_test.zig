@@ -71,3 +71,27 @@ test "stop() SIGKILLs the group only after the grace when netd ignores stdin EOF
     const netd = try run("printf 'netd ready 127.0.0.1:50607\\n'; exec sleep 5", 4000);
     try std.testing.expectEqual(spawner.StopResult.killed, spawner.stopWith(netd.pid, netd.stdin_fd, 300));
 }
+
+test "late output after the ready line does not mask an exit within the liveness grace" {
+    // netd prints the ready line, then (after a delay, so it arrives mid-poll) extra output, then EXITS inside
+    // the grace. The liveness oracle must drain the late output and keep observing, not accept on read>0, or a
+    // dead netd slips through (RoseCat 7172 #1).
+    try std.testing.expectError(error.NetworkFailure,
+        run("printf 'netd ready 127.0.0.1:50607\\n'; sleep 0.05; printf 'late diagnostic\\n'; exit 0", 4000));
+}
+
+test "stop() reports a reaped nonzero exit as unclean (no signal, cleanup may not have run)" {
+    // On stdin EOF `cat` exits 0, then the shell exits 3: the leader is reaped without a signal, but not cleanly.
+    const netd = try run("printf 'netd ready 127.0.0.1:50607\\n'; cat; exit 3", 4000);
+    try std.testing.expectEqual(spawner.StopResult.exited_unclean, spawner.stopWith(netd.pid, netd.stdin_fd, 2000));
+}
+
+test "shouldKillBackstop refuses pid 0/1/negative — killpg(1) is kill(-1)" {
+    // Pure guard, zero kill risk: the backstop in stopWith sits behind exactly this (RoseCat 7172 #3). A
+    // behavioural pid==1 test is deliberately NOT written — it would itself risk kill(-1) on any regression.
+    try std.testing.expect(!spawner.shouldKillBackstop(1));
+    try std.testing.expect(!spawner.shouldKillBackstop(0));
+    try std.testing.expect(!spawner.shouldKillBackstop(-1));
+    try std.testing.expect(spawner.shouldKillBackstop(2));
+    try std.testing.expect(spawner.shouldKillBackstop(1234));
+}
