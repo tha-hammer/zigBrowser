@@ -158,6 +158,10 @@ primary_research: thoughts/searchable/shared/research/2026-10-14-14-19-macos-lau
   `runtime.json` is pinned. The staging tool takes the driver-verified `.pkg`. The final MS5 green stays blocked
   on the dependency and CLI layout decision. (Fix, RoseCat 6871: every symlink or special entry under
   `zb_agent_host/` is refused, with reds for a symlink to an outside canary and a FIFO.)
+- **Rev 18.1** (BlueBeaver, 2026-10-21; RoseCat 7120): MS6.6 (B) is a **pre-`seatbelt_ready` harness** that calls the
+  real `setup.probe_r1` directly under the staged pinned runtime. It is not a case of the armed `ms5_setup_e2e.sh`,
+  which refuses to arm until `seatbelt_ready`; that would be a cycle, since (B) gates `seatbelt_ready`. The app stays
+  fail closed. The rev 18 SIGILL blocker is marked resolved (`aa83b5f`).
 - **Rev 18** (BlueBeaver, 2026-10-21; RoseCat 7019, 7041, 7050, 7053): a new hard gate, **MS6.6, R1 under
   Seatbelt**, with two named dependencies. **(A)** the census broker (unit) and the kernel-properties gate.
   **(B)** the real Mac production chain, run on the pinned runtime and dependency tree. (A) green lets the broker
@@ -1695,17 +1699,23 @@ above plus per-process Seatbelt port rules**. Either way MS0's launch spec is th
       `61776d9`/`7590369`, MS6 or `seatbelt_ready`, and Mac agent launch stays disabled.
   - **Dependency (B), the production chain:**
     - the real Mac `setup.probe_r1 -> sandbox-exec -> route_probe -> the inherited listener and census fds ->
-      the wrapper -> a controlled CLI` e2e, on **both** arches;
+      the wrapper -> a controlled CLI` chain, on **both** arches;
+    - **driven by a pre-`seatbelt_ready` hard-gate harness** (rev 18.1; RoseCat 7120): it imports the production
+      `zb_agent_host.setup` from the staged pinned runtime and calls the real `setup.probe_r1` directly. That spawns
+      the generated setup profile, the socketpair and the listener exactly as production does. It does **not** go
+      through the browser, and it is **not** a case of `ms5_setup_e2e.sh`, which refuses to arm until
+      `seatbelt_ready` is true. Requiring that would be a cycle: (B) gates `seatbelt_ready`. The normal app stays
+      fail closed, with `platformGate` unchanged;
     - run with the **pinned production runtime and dependency tree**; a scratch, unlocked wheel set is not
       evidence;
     - it keeps the exact `pass_fds`, the forged-capability negative, listener service, the census request and
       reply, the timeout/lifecycle cases and the planted-token control.
     - **(B) is a hard prerequisite of `seatbelt_ready`, MS6 completion, and any launch slice consuming the Mac
-      backend.** It waits on the MS5 dependency and CLI layout decision (rev 17), like the armed
-      `ms5_setup_e2e.sh`.
-  - **Known blocker, as of rev 18:** HEAD's setup profile kills the real interpreter with SIGILL (it denies
-    `process-info-pidinfo self`, `sysctl kern.proc.pid.<self>` and the notification_center shm). The fix is
-    JadeBeacon's, allowing self only. Until it lands, (A) fails before its census assertions.
+      backend.** It waits only on the MS5 dependency and CLI layout decision (rev 17), which pins the runtime and
+      dependency tree it stages; it does not wait on `seatbelt_ready` or on the armed `ms5_setup_e2e.sh`.
+  - **Resolved (rev 18.1):** the rev 18 blocker, HEAD's setup profile killing the real interpreter with SIGILL, is
+    fixed by JadeBeacon's `aa83b5f`, `(allow process-info* (target self))`. (A) then reached its intended census
+    seam and went green on both Macs (`47199d3`, `ac15dfd`).
 
 ### Workflow Closure (MS6.1 — token isolation; the load-bearing security belt)   [BLOCKING]
 - **Chain:** `token stored -> helper reads fd 3 -> MacSeatbeltBackend spawns CLI under profile -> CLI holds token -> hook spawned app-side under its own profile -> hook attempts task_for_pid/KERN_PROCARGS2 -> kernel denies -> hook's recorded result = denied, no canary bytes`
