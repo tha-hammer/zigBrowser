@@ -22211,3 +22211,82 @@ VM artifact (`:105-124`).
 
 Therefore the watched WS0 runs still gate `7d85cd5`, and **`08bd75a` remains the
 next linear blocker afterward**. No later blocker is promoted yet.
+
+### Windows WS1.4/WS1.5 red correction (`244ebbe`)
+
+**APPROVED; this cumulatively closes the test-quality blocker on `08bd75a`
+through `6442bc4` and `244ebbe`.** The exact diff fixes each open oracle defect:
+the absent-runtime sentence must be in stderr and absent from stdout; the PE is
+fetched from the proven SFTP home-relative `zb/zigBrowser.exe` path; the version
+grammar is numeric components rather than arbitrary dots; the Windows build is
+cross-checked against `OSVersion.Version.Build`; the reported execution
+architecture is cross-checked against the fetched executable's PE machine; and
+the per-run PNG is unique and cleaned up (`tests/windows/ws1_run_test.py:24-26,
+48-52,100-162`).
+
+A clean, display-scrubbed run with `-X dev` and ResourceWarnings fatal compiles
+and collects both cases. Both remain red only at the intended absent-WS1-exe
+precondition; this is an unregistered red for production that has not landed,
+not a claim that the Windows runtime behavior is already green. The plan's
+empty-runtime-folder environment seam also remains explicitly spike-unverified;
+the future VM run must prove that WebView2 honors it or select the documented
+e2e fallback.
+
+Two nonblocking test-hardening items remain for the registered/live slice:
+
+- `EXE_REMOTE` and `EXE_REMOTE_REL` are independent overrides. Derive them from
+  one value or assert coherence so the run cannot execute one binary and census
+  another.
+- The runtime lookup prefers HKLM whenever both HKLM and HKCU Evergreen `pv`
+  values exist. The controlled gate should assert that only the expected key is
+  populated, accept only the loader-selected value, or query through the loader
+  API; registry presence alone does not define precedence.
+
+The linear push-through is still **`26fdfff`** until the orchestrator reports
+both watched WS0 runs for `7d85cd5`. Once that independent condition closes,
+`08bd75a` is no longer the next blocker. The next earliest blocked descendant
+is **`defb5a2`**, still open through `b32f285`: remote staging setup has a
+maskable bare `&`; command construction and encoding are unchecked; and the
+executable is published before an unchecked provenance write rather than as an
+atomic artifact/manifest pair.
+
+## macOS grouped spawn with stdin/stdout (`214b9ad`, `06f0e35`)
+
+**`214b9ad` is BLOCKED-for-tests; `06f0e35` is BLOCKED.** The red is genuinely
+failing-first on both Mac architectures according to the owner's exact-SHA
+evidence, and the green covers the important primary path: a new process-group
+leader, stdin/stdout pipe round-trip, EOF shutdown, inherited `-1` streams,
+Darwin `POSIX_SPAWN_CLOEXEC_DEFAULT`, explicit inheritance of descriptors 0-2,
+and refusal of stream descriptors in 0-2. The existing
+`zb_agent_spawn_group` body is unchanged, and the production source compiles on
+Linux with `-Wall -Wextra -Werror`. Two correctness/coverage defects prevent
+approval:
+
+1. **BLOCKER — an equal source descriptor is closed before its second dup.**
+   The public contract permits any descriptor above 2 for each stream, and the
+   commit explicitly tries to support equality by suppressing the second
+   `addclose`. But the actions are ordered `dup2(fd, 0)`, `close(fd)`, then
+   `dup2(fd, 1)` (`src/agent_spawn_posix.c:48-53`). Compiling the exact seam and
+   passing the same open descriptor for stdin and stdout returns `EBADF` (9),
+   with no child. Enqueue both `dup2` actions before closing each unique source,
+   or explicitly reject equality with `EINVAL` and narrow the header contract;
+   add a discriminating case (a duplex socket is suitable if equality remains
+   supported).
+2. **BLOCKER-for-tests — the “exactly fds 0 1 2” census sees only 0-255.**
+   `child_main` stops at 256 (`tests/mac/spawn_group_io_test.c:37-45`), so a
+   leaked browser socket at a higher descriptor would pass the literal security
+   oracle. Plant one inheritable descriptor at a known high number (for example
+   with `F_DUPFD` at 300) and make the child census cover it. The current low
+   planted descriptor does correctly kill the no-`CLOEXEC_DEFAULT` mutant, but
+   it is not the whole exact-fd claim.
+
+**SHOULD-for-tests:** `read_line(..., secs)` performs a blocking `read`, so its
+10-second argument is not a deadline (`spawn_group_io_test.c:58-74`). Silence
+can hold a leg until the outer 240-second SSH timeout. Poll/select or a
+nonblocking descriptor would give a bounded local failure and useful output.
+
+No aggregate gate was run: this slice is a manual two-Mac gate and the review
+used the reported 9/9-per-architecture evidence, syntax/diff checks, a local
+strict C compile and the equal-descriptor reproducer. Before macOS agent launch
+is armed, the corrected Mac gate also needs a durable place in the applicable
+hard-gate sequence rather than relying on a one-time manual invocation.
