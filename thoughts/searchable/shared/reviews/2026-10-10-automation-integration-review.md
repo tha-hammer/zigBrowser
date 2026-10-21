@@ -20531,3 +20531,82 @@ prove no seam/subprocess execution, and terminate as a bounded setup failure;
 each cleanup mutant must turn red. The outside-census broker and both-Mac
 kernel gate remain separately open. Finding mailed to BlueBeaver in Agent Mail
 7026.
+
+## MS6 launch-profile failure/race table (`5e684fe`)
+
+Reviewed exact test-only commit `5e684fe` on 2026-10-20. **Verdict:
+BLOCKED-for-tests; 7008 #2 remains open.** A clean-export run of
+`test_sandbox_macos` passed 49/49. The new open, short-count, write-error,
+chmod and invalid-stat cases usefully distinguish several cleanup branches,
+and the short-count fake writes the full bytes so the count guard—not the
+size backstop—is what catches it.
+
+Two required adversarial paths are still absent. First,
+`test_sandbox_macos.py:546-560` observes the successful call's flag bits but
+does not pre-plant either a regular `agent-cli.sb` collision or a symlink and
+drive that path through `_materialize_profile`, as 7008 required. The real
+collision must fail closed, and a symlink's external canary target must remain
+unchanged; retain the explicit O_EXCL/O_NOFOLLOW flag assertions as well.
+Second, `:514-523` returns a valid `stat_result` with an invalid mode, but never
+makes `os.fstat` raise. Add that distinct failure row and prove its exact
+directory is removed. The current global before/after census of every
+`zb-seatbelt-*` entry in `/tmp` is also parallel-run sensitive; a controlled
+test-owned materialization directory is preferred. Findings were mailed to
+JadeBeacon in Agent Mail 7031. The separate 7008 #1 production-spawn lease
+remains open as the owner recorded.
+
+## macOS netd red and green (`a1182d2`, `7d0e35e`)
+
+Reviewed exact test red `a1182d2` and security-relevant green `7d0e35e` on
+2026-10-20. **Verdicts: `a1182d2` BLOCKED-for-tests; `7d0e35e` BLOCKED.** An
+independent clean-export replay made the red fail 7/7; exact green passed its
+seven Darwin tests, and the observed shared netd/parser suite stayed green.
+The owner's native driver also passed on both Macs.
+
+The core transport implementation is correct in the reviewed scope.
+`netd.py:766-785` creates an IPv4 socket, binds exactly
+`127.0.0.1:0`, listens before announcing the kernel-selected port, holds that
+one listener until EOF or signal and closes it in `finally`. Connections enter
+the existing `Netd.egress` path: exact CONNECT host membership, matching TLS
+SNI, global-address vetting and the bounded splice. Manifest hosts replace the
+built-in set before they reach `Netd.allowed`; production adds no fallback
+name. The both-Mac lsof result independently supports the loopback-only bind.
+
+Three fix-forwards are required:
+
+1. **BLOCKER:** Darwin's forbidden-option loop at `netd.py:589-595` checks
+   values by truthiness, not option presence. Exact `7d0e35e` accepts both
+   `--sockdir ''` and `--bwrap ''`, contrary to its interface contract. Track
+   presence or reject empty values, with table rows for both.
+2. **BLOCKER-for-tests:** `test_netd_darwin.py:100-105` performs an unbounded
+   `stdout.readline()`. A child that stays alive without a ready line hangs the
+   now-registered gate. Use a finite reader/select deadline and a live-silent
+   child mutant that ends as a test failure and is reaped.
+3. **BLOCKER-for-tests:** the manifest test at `:183-195` proves only that the
+   old built-in host is denied. A Darwin branch that rejects every manifest
+   host passes. Require the replacement host to CONNECT successfully and send
+   its ClientHello byte-for-byte to a private fake, while retaining the old-host
+   refusal.
+
+Running macOS netd itself without Seatbelt matches the plan's current “host
+netd” topology and the proxy exposes only the same exact upstream allowlist, so
+it is recorded as a security-hardening SHOULD rather than a blocker for this
+transport slice. It must remain an explicit follow-up before all of MS6 is
+called complete. Findings were mailed to BlueBeaver in Agent Mail 7030 and
+7033.
+
+## R1 listener-creation failure fix (`5800abe`)
+
+Reviewed exact commit `5800abe` on 2026-10-20. **Verdict: APPROVED.** This
+closes the 7026 test blocker and cumulatively approves `e2c45a8` for its scoped
+setup/listener half. Socket creation, bind and listen now live inside one outer
+ownership scope; any construction `OSError` returns the fail-closed `False`, a
+created socket is closed by the outer `finally`, and neither the Seatbelt seam
+nor a subprocess runs. The catch does not cover `_sandboxed` itself.
+
+Independent clean-export replay of the new test against the parent errored in
+all three injected cases (`socket`, `bind`, `listen`). Exact `5800abe` passed
+the complete `test_setup_darwin_r1` module, 8/8 under `-X dev`, with display
+unset. The retained test socket references make explicit close observable. The
+outside-census broker and both-Mac kernel proof remain a separate slice, not a
+defect in this commit. Verdict was mailed to BlueBeaver in Agent Mail 7029.
