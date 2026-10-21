@@ -248,6 +248,19 @@ int zb_reaper_fixed_point(int (*scan)(void *buf, int bytes), const struct zb_rea
   return 0; /* max_passes exhausted without an empty census: *clean stays 0 (Survivors) */
 }
 
+int zb_reaper_ledger_entry_state(int runtime_fd, const char *basename, const struct zb_reaper_dir_id *rec,
+                                 int active) {
+  if (runtime_fd < 0 || basename == NULL || rec == NULL) return ZB_LEDGER_EINVAL;
+  if (!active) return ZB_LEDGER_NOT_ACTIVE;
+  const int fd = openat(runtime_fd, basename, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+  if (fd < 0) return (errno == ENOENT) ? ZB_LEDGER_GONE : ZB_LEDGER_MISMATCH;
+  close(fd);
+  /* RED STUB — the plan's named "drop the fstat match" mutant: it reopens the basename but NEVER compares the
+   * reopened dir's (dev,ino,uid,mode) to `rec`, so a swapped/replaced dir at the same name is wrongly swept. The
+   * green replaces this with an fstat match (zb_reaper_pin_fd + zb_reaper_dir_id_eq). */
+  return ZB_LEDGER_SWEEP;
+}
+
 /* ---- macOS production wrappers (libproc + real kill; Mac-only) ---- */
 
 #ifdef __APPLE__

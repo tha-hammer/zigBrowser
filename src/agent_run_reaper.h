@@ -109,6 +109,28 @@ int zb_reaper_run_full(int (*scan)(void *buf, int bytes), const struct zb_reaper
 int zb_reaper_fixed_point(int (*scan)(void *buf, int bytes), const struct zb_reaper_ops *ops, const char *dir,
                           int max_passes, int *clean, int *passes, int *overflow);
 
+/* ---- the run ledger: per-entry creation-provenance decision (portable; Linux-testable with real dirs) ---- */
+
+/* The outcome of deciding one recorded ledger entry against the real filesystem. A directory is ever swept ONLY
+ * on ZB_LEDGER_SWEEP; every other outcome is census/quarantine/warn — NEVER a signal (MS6.5.1 provenance). */
+enum {
+  ZB_LEDGER_SWEEP = 1,       /* an ACTIVE entry whose basename reopens to a dir matching `rec` exactly */
+  ZB_LEDGER_GONE = 0,        /* the basename does not exist (ENOENT): nothing to recover, drop the entry */
+  ZB_LEDGER_MISMATCH = -1,   /* reopened a non-dir / symlink, or fstat (dev,ino,uid,mode) != `rec`: NEVER sweep */
+  ZB_LEDGER_NOT_ACTIVE = -2, /* the entry's lifecycle state is not `active` (e.g. `left`/stale): NEVER sweep */
+  ZB_LEDGER_EINVAL = -3      /* a bad argument */
+};
+
+/* Decide one recorded ledger entry against the real filesystem, no-follow and fstat-only (no pathname stat, so
+ * no symlink follow). `runtime_fd`: the held `O_DIRECTORY|O_NOFOLLOW` fd of the app-owned runtime dir. `basename`:
+ * the entry's recorded run-dir basename (reopened RELATIVE to `runtime_fd`). `rec`: the recorded
+ * (dev,ino,uid,mode). `active`: 1 iff the entry's lifecycle state is `active`. The run dir is swept ONLY when an
+ * ACTIVE entry's basename reopens (`openat` `O_DIRECTORY|O_NOFOLLOW`) to a 0700 this-uid dir whose fstat matches
+ * `rec` exactly — a swapped `(dev,ino)`, a symlink, a changed mode/uid, or a non-`active` state is NEVER swept.
+ * Pure decision — it never sends a signal. Returns a ZB_LEDGER_* value. */
+int zb_reaper_ledger_entry_state(int runtime_fd, const char *basename, const struct zb_reaper_dir_id *rec,
+                                 int active);
+
 #ifdef __APPLE__
 /* Production: `run_dir_fd` is the no-follow dir fd the caller opened at run-dir creation and holds for the run;
  * `pinned` is zb_reaper_pin_fd's identity from it. The reaper revalidates the fd (never a pathname), derives the
