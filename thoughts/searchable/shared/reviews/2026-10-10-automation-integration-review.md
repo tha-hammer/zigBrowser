@@ -20842,3 +20842,53 @@ probe with `-std=c11 -Wall -Wextra -Werror`, and passed `sh -n` for both shell
 scripts. The reported both-Mac gate was not independently rerun and no full
 gate was run because BlackRobin owns the shared slot. Findings mailed to
 JadeBeacon, cc BlueBeaver, in Agent Mail 7046.
+
+## R1 census red fix-forward (`7590369`)
+
+Reviewed exact test-only commit `7590369` on 2026-10-20. **Verdict:
+BLOCKED-for-tests; it does not yet close 7041.** The unit additions are useful:
+the production wrapper/CLI census-fd non-leak case has a forged-fd positive;
+failed non-inheritable adoption covers the listener and census socket; and the
+silent/partial peers, `TimeoutExpired`, raising census, exact grammar, endpoint
+closure and broker-thread join cases address the unit-level asks. Exact red
+replay produced the reported 14/14 and 12/12 failures, though all currently
+stop at the common missing production seam. The reported draft-green mutants
+are therefore important evidence for the individual cases.
+
+The both-Mac kernel red still has five blockers:
+
+1. **BLOCKER-for-tests:** it bypasses the production broker chain.
+   `r1_kernel_driver.py:59-82` manually calls `setup_sandbox`, starts an
+   unrelated inner program, and directly calls `proc_darwin.cli_env_clean`.
+   It never drives `setup.probe_r1`, `route_probe`, the wrapper, the inherited
+   listener descriptor, or the census socketpair request/reply. Its R1-port
+   positive is a numeric outbound connect, not adoption and service of setup's
+   inherited listener. The kernel red must drive those real edges and observe
+   the exact `pass_fds`/broker behavior.
+2. **BLOCKER-for-tests:** `r1_kernel_driver.py:71` uses an unbounded
+   `stdout.readline()`. Its cleanup is unreachable when the inner stays alive
+   silently; killing the outer SSH after 300 seconds does not own or reap the
+   inner and its two sleepers. Use a local monotonic deadline, an owned process
+   group, and kill/reap the whole group on every path, with a live-silent test.
+3. **BLOCKER-for-tests:** the security oracles at `:106-109` accept every
+   result other than `"ok"`. Resource exhaustion, an invalid ctypes call,
+   `ESRCH`, or host/TCC policy can therefore satisfy the decoy and process-info
+   rows. Assert the measured Seatbelt denial errno and add unsandboxed positive
+   controls showing the same `procargs2` and `pidpath` calls succeed when the
+   restriction is removed.
+4. **BLOCKER-for-tests:** `:114-115` discards the planted run's inner report.
+   A crashed run can return a false census merely because no matching CLI
+   exists, satisfying the token-negative row. Require that run's connection,
+   process and canary positives before accepting its false verdict.
+5. **BLOCKER (cleanup):** every `run_inner` leaves its `/tmp/zb-r1k-*`
+   scratch directory behind. The remote trap removes only the staged HOME
+   tree. Cleanup must cover every exit. The script should also use the
+   canonical fail-closed `ARM_HOST` plus separate `ARM_KEY` configuration.
+
+The reported Python `SIGILL` under the setup profile is an independent
+production blocker and currently makes the remote red fail before its intended
+assertions. After that profile is fixed, the corrected kernel gate must run on
+both Macs and fail for the intended missing census seam rather than interpreter
+death. Exact-SHA shell syntax and Python compilation passed. No full gate was
+run because BlackRobin owns the slot. Findings mailed to BlueBeaver, cc
+JadeBeacon, in Agent Mail 7050.
