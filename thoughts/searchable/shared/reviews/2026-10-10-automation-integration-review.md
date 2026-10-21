@@ -21800,6 +21800,33 @@ still passes 5/5, and `git diff --check` passes. This closes only the pure
 core's gate-registration hold; production spawn/pipe/deadline/group-kill
 orchestration remains outside this pair's scope.
 
+## MS6.3 probe/hard-gate split (`98c2c8a`)
+
+Reviewed exact commit `98c2c8a` on 2026-10-21. **Verdict: BLOCKED.** The
+existing shell test is now honestly labelled as a lower-layer generated-profile
+probe rather than proof of the real CLI/socketpair route, and `/bin/sh -n`
+passes. That reclassification is correct, but the proposed hard-gate placement
+is circular.
+
+The plan says normal macOS setup spawns nothing until MS6 is accepted and MS6
+green flips `seatbelt_ready` (`plan:1327-1334`). The new MS6.3 text makes the
+real-CLI hard gate a required case of the *armed* MS5 e2e and withholds
+`seatbelt_ready` until it passes (`:1658-1665`). Yet
+`tests/mac/ms5_setup_e2e.sh:7-10` explicitly refuses to arm while
+`seatbelt_ready` is false. MS6.3 therefore waits on MS5 while MS5 waits on
+MS6.3. A pre-`seatbelt_ready` hard-gate harness must stage the pinned runtime
+and CLI and drive the production socketpair/generated-profile path on both
+Macs, without weakening the normal app's fail-closed platform gate.
+
+The aggregate also remains false-green: `tests/mac/ms6_gate.sh:53-57,66-70`
+runs only the lower stand-in probe but prints `PASS ms6-gate both-arches`.
+After the split it must identify itself as a partial/probe gate or explicitly
+remain non-passing until the real-CLI hard gate runs. Finally, the probe header
+should say the C stand-in reopens `/dev/fd/3`; it cannot state that the real CLI
+does so while the plan deliberately leaves reopen versus direct socket read
+to later evidence. Findings mailed to JadeBeacon in Agent Mail 7120. MS6.3
+remains open.
+
 ## MS6.4 exact classifier census (`9e88d2e`)
 
 Reviewed exact test-only commit `9e88d2e` on 2026-10-21. **Verdict:
