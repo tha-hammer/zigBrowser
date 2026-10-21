@@ -22,17 +22,62 @@ directory is bound read-only. `--test-ca` is chat's only and is refused with `lo
 token descriptor (fd 3) passes through untouched. Exit 3 when bwrap is missing
 (the drawer says "Agent sandbox unavailable"), 2 for a bad argument or home."""
 
+from __future__ import annotations
+
 import argparse
 import json
 import os
+import re
 import stat
 import sys
+from dataclasses import dataclass
 
 from . import options, sandbox, seccomp
 from .platforms import posix_only
 
+PLATFORM = sys.platform
 EXIT_USAGE = 2
 EXIT_NO_SANDBOX = 3
+
+
+class UsageError(Exception):
+    """A bad launch argument; main maps it to EXIT_USAGE."""
+
+
+@dataclass(frozen=True)
+class Session:
+    """The per-launch carrier the lease/dispatch slice (7027/7035) will take as `backend.launch(session, ...)`.
+    `egress_port` is the netd loopback port on macOS (from `--egress-port`), and None on Linux."""
+    home: str
+    python: str
+    net_dir: str
+    command: str
+    egress_port: int | None
+
+
+# --egress-port grammar: 1..65535, decimal, no leading zero (the same shape as netd's port / parseDarwinReadyPort).
+_EGRESS_PORT = re.compile(r"[1-9][0-9]{0,4}", re.ASCII)
+
+
+def _egress_port(raw):
+    """`--egress-port`, fail-closed like setup's `--browser-pid`: required on Darwin (given exactly once, decimal
+    1..65535, no leading zero), refused off Darwin. `raw` is argparse's append list (or None). Returns int|None."""
+    if PLATFORM != "darwin":
+        if raw is not None:
+            raise UsageError("--egress-port is macOS-only")
+        return None
+    if raw is None or len(raw) != 1:
+        raise UsageError("--egress-port is required on macOS, given once")
+    value = raw[0]
+    if not _EGRESS_PORT.fullmatch(value) or not (1 <= int(value) <= 65535):
+        raise UsageError("--egress-port must be a decimal 1..65535 with no leading zero")
+    return int(value)
+
+
+def build_session(args):
+    """Validate the per-launch args into the frozen `Session` carrier. Raises `UsageError` on a bad argument."""
+    return Session(home=args.home, python=args.python, net_dir=args.net_dir, command=args.command,
+                   egress_port=_egress_port(args.egress_port))
 TEST_CA = "/run/zb-test-ca.pem"
 # `python -I` ignores PYTHONPATH, so the helper's package (the home's read-only
 # runtime/host copy) is put on sys.path by argument, and the helper's
@@ -87,6 +132,7 @@ def main(argv):
     parser.add_argument("--test-ca")
     parser.add_argument("--command", choices=("chat", "login"), default="chat")
     parser.add_argument("--e2e-claude-cli")
+    parser.add_argument("--egress-port", action="append")  # macOS only (netd's loopback port); refused off Darwin
     args = parser.parse_args(argv)
     if args.e2e_claude_cli is not None and (args.command != "login" or not os.path.isabs(args.e2e_claude_cli)
                                             or not _regular_file(args.e2e_claude_cli)):
@@ -101,11 +147,21 @@ def main(argv):
     if not os.access(args.bwrap, os.X_OK):
         print("zigBrowser: agent: sandbox unavailable (bwrap)", file=sys.stderr)
         return EXIT_NO_SANDBOX
-    home = options.AgentHome(args.home)
+    try:
+        session = build_session(args)
+    except UsageError as exc:
+        print(f"zigBrowser: agent: {exc}", file=sys.stderr)
+        return EXIT_USAGE
+    if PLATFORM == "darwin":
+        # The port parses onto session.egress_port, but nothing reaches MacSeatbeltBackend until the lease/
+        # dispatch slice (7027/7035) threads it in. Until then the macOS launch refuses, fail closed.
+        print("zigBrowser: agent: the macOS launch is not ready", file=sys.stderr)
+        return EXIT_USAGE
+    home = options.AgentHome(session.home)
     fd = seccomp.seccomp_fd()
     try:
-        command = build_argv(home, fd, args.python, net_dir=args.net_dir, bwrap=args.bwrap, test_ca=args.test_ca,
-                             command=args.command, claude_cli=args.e2e_claude_cli)
+        command = build_argv(home, fd, session.python, net_dir=session.net_dir, bwrap=args.bwrap, test_ca=args.test_ca,
+                             command=session.command, claude_cli=args.e2e_claude_cli)
     except (sandbox.SandboxError, OSError, ValueError) as exc:
         print(f"zigBrowser: agent: {exc}", file=sys.stderr)
         return EXIT_USAGE

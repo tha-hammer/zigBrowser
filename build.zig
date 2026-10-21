@@ -1662,6 +1662,13 @@ pub fn build(b: *std.Build) void {
         "py=$(tools/agent_host_env.sh --check) || exit 1; cd agent/host/tests && out=$(env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 ZB_AGENT_HOST_PYTHON=\"$py\" \"$py\" -X dev -m unittest -v test_setup_darwin_r1_v6 2>&1); rc=$?; printf '%s\\n' \"$out\"; [ $rc -eq 0 ] || exit $rc; if printf '%s\\n' \"$out\" | grep -q ResourceWarning; then echo 'test_setup_darwin_r1_v6: ResourceWarning' >&2; exit 1; fi",
     });
     agent_setup_ms5_step.dependOn(&agent_host_setup_darwin_r1_v6.step);
+    // launch.py's --egress-port + Session carrier (BlackRobin 7035/7108 seam 2); Linux-runnable (PLATFORM injected).
+    const agent_host_launch = b.addSystemCommand(&.{
+        "sh",
+        "-c",
+        "py=$(tools/agent_host_env.sh --check) || exit 1; cd agent/host/tests && out=$(env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 ZB_AGENT_HOST_PYTHON=\"$py\" \"$py\" -X dev -m unittest -v test_launch 2>&1); rc=$?; printf '%s\\n' \"$out\"; [ $rc -eq 0 ] || exit $rc; if printf '%s\\n' \"$out\" | grep -q ResourceWarning; then echo 'test_launch: ResourceWarning' >&2; exit 1; fi",
+    });
+    agent_setup_ms5_step.dependOn(&agent_host_launch.step);
     // Chat drawer S3.1: --agent-setup's provisioning (unit and property
     // tests of the helper's setup command); fails closed without the venv.
     const agent_host_provision_unit = b.addSystemCommand(&.{
@@ -2447,6 +2454,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&agent_host_route_probe_census.step);
     test_step.dependOn(&agent_host_setup_census.step);
     test_step.dependOn(&agent_host_setup_darwin_r1_v6.step);
+    test_step.dependOn(&agent_host_launch.step);
     test_step.dependOn(&agent_host_contract.step);
     test_step.dependOn(&agent_host_backend_contract.step);
     test_step.dependOn(&agent_host_sandbox_macos.step);
