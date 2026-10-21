@@ -91,8 +91,18 @@ rj = c.runtime_json_problem((agent / "runtime.json").read_bytes(), (repo / "agen
 for p in probs + ([rj] if rj else []): print("  FAIL", p)
 sys.exit(1 if probs or rj else 0)
 PY
+# 3. the staged interpreter imports the staged SDK under -I with no PYTHONPATH (27a9a62: ModuleNotFoundError on both
+# Macs), from agent-host/site-packages, through exactly the committed .pth and no other (sdk_pth.problems).
+FSITE="$A/Python.framework/Versions/3.12/lib/python3.12/site-packages"
+sdk=$(cd / && env -i PATH=/usr/bin:/bin HOME="$d" "$A/Python.framework/Versions/3.12/bin/python3.12" -I -B -c \
+  'import sys, claude_agent_sdk; print(sys.flags.no_site, claude_agent_sdk.__file__)' 2>&1) || true
+[ "$sdk" = "0 $A/site-packages/claude_agent_sdk/__init__.py" ] \
+  || { echo "  FAIL the staged python3.12 -I does not import the staged SDK: $(printf '%s' "$sdk" | tail -1)"; fails=$((fails+1)); }
+/usr/bin/python3 -I -B repo/packaging/macos/sdk_pth.py check "$FSITE" "$A" \
+  || { echo "  FAIL the staged runtime's .pth is not exactly the committed one"; fails=$((fails+1)); }
 # The declared resources go back to the driver for the cross-arch comparison (outside $d, which the trap deletes).
-(cd "$d/prefix" && tar -cf "$HOME/${ZB_RDIR}-res.tar" Frameworks/agent-host/runtime.json Frameworks/agent-host/zb_agent_host)
+(cd "$d/prefix" && tar -cf "$HOME/${ZB_RDIR}-res.tar" Frameworks/agent-host/runtime.json Frameworks/agent-host/zb_agent_host \
+  Frameworks/agent-host/Python.framework/Versions/3.12/lib/python3.12/site-packages/zb_agent_host_sdk.pth)
 if [ "$fails" -eq 0 ]; then printf 'PASS\tms5-stage\t%s\t(with its locked dependencies and the fat Claude CLI)\n' "$ZB_ARCH"; else printf 'FAIL\tms5-stage\t%s\t%d\n' "$ZB_ARCH" "$fails"; exit 1; fi
 REMOTE
   local rc=$?
