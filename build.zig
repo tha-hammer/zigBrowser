@@ -652,6 +652,17 @@ pub fn build(b: *std.Build) void {
     const run_agent_net_manifest_tests = b.addRunArtifact(b.addTest(.{ .root_module = agent_net_manifest_tests_module }));
     run_agent_net_manifest_tests.skip_foreign_checks = true;
 
+    // MS8 macOS host spawner: the pure fail-closed core (reading netd's ready port + the helper argv +
+    // the lifecycle decision) in src/agent_host_posix.zig (BlackRobin 7035). Inline tests;
+    // @import("agent_net.zig") resolves to src/agent_net.zig by path.
+    const agent_host_posix_tests_module = b.createModule(.{
+        .root_source_file = b.path("src/agent_host_posix.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const run_agent_host_posix_tests = b.addRunArtifact(b.addTest(.{ .root_module = agent_host_posix_tests_module }));
+    run_agent_host_posix_tests.skip_foreign_checks = true;
+
     // Chat drawer S3b: the helper's launch argv and environment, the app's
     // frames, the runtime-lock check and the backoff (src/agent_helper.zig).
     const agent_helper_module = b.createModule(.{
@@ -2255,6 +2266,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_agent_drawer_breaks_tests.step);
     test_step.dependOn(&run_agent_net_tests.step);
     test_step.dependOn(&run_agent_net_manifest_tests.step);
+    test_step.dependOn(&run_agent_host_posix_tests.step);
     test_step.dependOn(&run_agent_secrets_tests.step);
     test_step.dependOn(&run_agent_secrets_shape_tests.step);
     if (target.result.os.tag == .linux) test_step.dependOn(&run_agent_secrets_dlopen_test.step);
