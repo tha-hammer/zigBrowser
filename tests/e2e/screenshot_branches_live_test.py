@@ -5,6 +5,9 @@ diagnostic (pinned statically by tests/windows/screenshot_diag_selftest.py). Nav
 exercised by the real failed navigation in screenshot_live_test.py; this drives the other THREE
 deterministically via the shim's inert `--e2e-protocol` seam (ZB_E2E_FORCE_SCREENSHOT_FAIL):
 
+The screenshot CLI takes `--e2e-protocol` as a TRAILING option (after the out path and URL), mirroring
+--print-title; the shim forwards it into run_core so the seam (which gates on app->e2e_protocol) fires.
+
   * watchdog  -> the navigation watchdog fires: 'zigBrowser: screenshot: navigation timed out before the page loaded'
   * navigate  -> a synchronous Navigate failure:  'zigBrowser: screenshot: ICoreWebView2::Navigate failed to start'
   * docscript -> the document-script failure:     'zigBrowser: screenshot: AddScriptToExecuteOnDocumentCreated failed'
@@ -34,7 +37,7 @@ $shot = Join-Path $dir ('shot-' + $mode + '.png')
 $err = Join-Path $dir ('err-' + $mode + '.txt')
 Remove-Item $shot,$err -ErrorAction SilentlyContinue
 $env:ZB_E2E_FORCE_SCREENSHOT_FAIL = $mode
-$p = Start-Process -FilePath $exe -ArgumentList '--e2e-protocol','--screenshot',$shot,'https://example.invalid/' `
+$p = Start-Process -FilePath $exe -ArgumentList '--screenshot',$shot,'https://example.invalid/','--e2e-protocol' `
      -Wait -PassThru -NoNewWindow -RedirectStandardError $err
 $e = [string](Get-Content $err -Raw -ErrorAction SilentlyContinue); if ($null -eq $e) { $e = '' }
 $r = @{ exit = $p.ExitCode; stderr = $e }

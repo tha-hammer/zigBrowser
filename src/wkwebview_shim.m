@@ -2942,7 +2942,8 @@ int zb_run_open(const char *uri, int print_title) {
   return zb_app_run(uri, print_title, 0);
 }
 
-int zb_run_screenshot(const char *uri, const char *out_path, int print_title) {
+int zb_run_screenshot(const char *uri, const char *out_path, int print_title, int e2e_protocol) {
+  (void)e2e_protocol;  // no forced-failure seam on the WKWebView capture path; the bit is Windows-only
   @autoreleasepool {
     NSString *uri_text = string_from_c(uri);
     NSString *out_text = string_from_c(out_path);

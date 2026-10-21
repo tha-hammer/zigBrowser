@@ -550,7 +550,7 @@ fn runScreenshot(arena: std.mem.Allocator, spec: ScreenshotSpec) errors.BrowserE
     var sink: ScreenshotSink = .{};
     backend_flag.startup(&sink, spec.hw_policy, spec.renderer, spec.media_source) catch return error.Usage;
     const out_z = arena.dupeZ(u8, spec.out) catch return error.WriteFailed;
-    const code = webkit.runScreenshot(valid_uri, out_z, spec.print_title, sink.render, sink.media);
+    const code = webkit.runScreenshot(valid_uri, out_z, spec.print_title, spec.e2e_protocol, sink.render, sink.media);
     return @intCast(code);
 }
 

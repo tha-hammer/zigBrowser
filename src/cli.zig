@@ -32,6 +32,9 @@ pub const Command = union(enum) {
         w: u32 = 1024,
         h: u32 = 768,
         print_title: bool = false,
+        /// --e2e-protocol: same inert automation bit as `open`. Forwarded to the capture ABI so the
+        /// ZB_E2E_FORCE_SCREENSHOT_FAIL branch-selection seam is reachable; false in every normal run.
+        e2e_protocol: bool = false,
         /// Same as `open`: null = built-in default.
         hw_policy: ?render_config.HwPolicy = null,
         renderer: ?render_config.Renderer = null,
@@ -76,6 +79,7 @@ fn parseScreenshotArgs(tokens: []const []const u8) Command {
     if (std.mem.startsWith(u8, tokens[1], "-")) return .usage;
 
     var print_title = false;
+    var e2e_protocol = false;
     var hw_policy: ?render_config.HwPolicy = null;
     var renderer: ?render_config.Renderer = null;
     var media_source: ?media_config.MediaSource = null;
@@ -85,6 +89,11 @@ fn parseScreenshotArgs(tokens: []const []const u8) Command {
         if (std.mem.eql(u8, token, "--print-title")) {
             if (print_title) return .usage;
             print_title = true;
+            continue;
+        }
+        if (std.mem.eql(u8, token, "--e2e-protocol")) {
+            if (e2e_protocol) return .usage;
+            e2e_protocol = true;
             continue;
         }
         if (std.mem.eql(u8, token, "--hardware-acceleration")) {
@@ -112,6 +121,7 @@ fn parseScreenshotArgs(tokens: []const []const u8) Command {
         .out = tokens[1],
         .url = tokens[2],
         .print_title = print_title,
+        .e2e_protocol = e2e_protocol,
         .hw_policy = hw_policy,
         .renderer = renderer,
         .media_source = media_source,
@@ -359,6 +369,22 @@ test "parseArgs --screenshot ... --print-title sets flag" {
 test "parseArgs screenshot output starting with dash is usage" {
     const cmd = parseArgs(&.{ "zigBrowser", "--screenshot", "-bad.png", "https://example.com" });
     try std.testing.expect(cmd == .usage);
+}
+
+// 52a5aba: the forced-failure screenshot branches (ZB_E2E_FORCE_SCREENSHOT_FAIL) gate on the e2e bit,
+// which the screenshot CLI had no way to set — every automation argv was a usage error, so the seam was
+// unreachable. The screenshot subcommand must take `--e2e-protocol` as a trailing option and carry it
+// through to .screenshot.e2e_protocol. Run against HEAD's cli.zig (before this fix) and it REDS:
+// `--e2e-protocol` is an unknown trailing token there, so parseScreenshotArgs returns .usage.
+test "parseArgs --screenshot ... --e2e-protocol sets the e2e bit (seam reachability)" {
+    const cmd = parseArgs(&.{ "zigBrowser", "--screenshot", "out.png", "https://example.com", "--e2e-protocol" });
+    try std.testing.expect(cmd == .screenshot);
+    try std.testing.expect(cmd.screenshot.e2e_protocol);
+    // A normal screenshot leaves the bit off; the forced-failure seam stays inert.
+    const plain = parseArgs(&.{ "zigBrowser", "--screenshot", "out.png", "https://example.com" });
+    try std.testing.expect(!plain.screenshot.e2e_protocol);
+    // Repeating the flag is a usage error, like --print-title.
+    try std.testing.expect(parseArgs(&.{ "zigBrowser", "--screenshot", "out.png", "https://example.com", "--e2e-protocol", "--e2e-protocol" }) == .usage);
 }
 
 test "parseArgs --profile-dir captures the path (with or without automation)" {

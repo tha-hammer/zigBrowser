@@ -5687,7 +5687,8 @@ static int run_screenshot_internal(const char *uri, const char *out_path,
   return rc;
 }
 
-int zb_run_screenshot(const char *uri, const char *out_path, int print_title) {
+int zb_run_screenshot(const char *uri, const char *out_path, int print_title, int e2e_protocol) {
+  (void)e2e_protocol;  /* no forced-failure seam on the GTK capture path; the bit is Windows-only */
   return run_screenshot_internal(uri, out_path, print_title);
 }
 

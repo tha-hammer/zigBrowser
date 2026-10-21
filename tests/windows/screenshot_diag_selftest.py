@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""WS1.3 / 6c771ff screenshot-diagnostic source pin (GREEN, registered, Linux-only, no VM).
+"""WS1.3 / 6c771ff / 52a5aba src/webview2_shim.cpp source pins (GREEN, registered, Linux-only, no VM).
+
+Also pins (RoseCat 4cd6a14): the screenshot e2e-seam forwarding (zb_run_screenshot carries the bit into
+run_core instead of hard-coding 0) and the zb_version_line fail-closed shape (no fabricated OS/arch).
 
 RoseCat 6c771ff: the live screenshot suite reaches only the NavigationCompleted branch, and deleting any
 of the other failure branches' diagnostics (watchdog timeout, synchronous Navigate failure, async
@@ -58,6 +61,54 @@ class ScreenshotDiagSourcePin(unittest.TestCase):
         # The helper that prints the branch reasons must use the exact "zigBrowser: screenshot: %s" format.
         self.assertIn('fprintf(stderr, "zigBrowser: screenshot: %s\\n", reason)', self.src,
                       "screenshot_diag must print the exact 'zigBrowser: screenshot: <reason>' line")
+
+
+class ScreenshotSeamReachableSourcePin(unittest.TestCase):
+    """52a5aba: zb_run_screenshot must FORWARD the e2e bit into run_core, not hard-code 0.
+
+    The ZB_E2E_FORCE_SCREENSHOT_FAIL branch-selection seam gates on app->e2e_protocol. While
+    zb_run_screenshot called run_core(..., 0, true, out_path) the seam could never fire from the
+    screenshot path, so the three forced branches were dead. The C++ runs only on Windows; this pins
+    the forwarding on Linux. Reverting to the hard-coded 0 reds this test. (cli.zig proves the CLI now
+    accepts --e2e-protocol; tests/e2e/screenshot_branches_live_test.py proves the branches on the VM.)
+    """
+
+    def setUp(self):
+        self.src = SHIM.read_text()
+
+    def test_zb_run_screenshot_forwards_the_e2e_bit(self):
+        self.assertIn("return run_core(uri, print_title, e2e_protocol, true, out_path);", self.src,
+                      "zb_run_screenshot must forward e2e_protocol into run_core")
+        self.assertNotIn("return run_core(uri, print_title, 0, true, out_path);", self.src,
+                         "zb_run_screenshot must NOT hard-code the e2e bit to 0 (seam becomes unreachable)")
+        self.assertIn("int print_title, int e2e_protocol)", self.src,
+                      "zb_run_screenshot must take the e2e_protocol parameter")
+
+
+class VersionLineFailClosedSourcePin(unittest.TestCase):
+    """6115ac1 / RoseCat 4cd6a14: zb_version_line must FAIL CLOSED, never invent OS/arch values.
+
+    When RtlGetVersion or IsWow64Process2 can't be resolved or the call fails, the field must read an
+    explicit "unavailable" token — never a fabricated 10.0.0 or a bare x86_64 default. The C++ runs only
+    on Windows; this pins the fail-closed shape on Linux. Reverting either default reds this test.
+    """
+
+    def setUp(self):
+        self.src = SHIM.read_text()
+
+    def test_os_field_fails_closed_to_unavailable(self):
+        self.assertIn('snprintf(os_field, sizeof(os_field), "Windows unavailable")', self.src,
+                      "OS field must fall back to 'Windows unavailable' when RtlGetVersion lookup/call fails")
+
+    def test_arch_defaults_to_unavailable_not_a_fabricated_x86_64(self):
+        # arch starts "unavailable" and is overwritten ONLY inside the successful IsWow64Process2 call.
+        self.assertIn('const char *arch = "unavailable";', self.src,
+                      "arch must default to 'unavailable', set to a concrete value only on IsWow64Process2 success")
+
+    def test_os_field_only_written_on_rtlgetversion_success(self):
+        # The concrete "Windows %lu.%lu.%lu" line must be guarded by a successful RtlGetVersion call.
+        self.assertIn("if (rgv != nullptr && rgv(&vi) == 0) {", self.src,
+                      "the concrete OS build must be written only when RtlGetVersion resolves AND returns 0")
 
 
 if __name__ == "__main__":

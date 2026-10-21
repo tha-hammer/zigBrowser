@@ -1299,13 +1299,15 @@ extern "C" int zb_app_run(const char *uri, int print_title, int e2e_protocol) {
 }
 
 extern "C" int zb_run_screenshot(const char *uri, const char *out_path,
-                                  int print_title) {
+                                  int print_title, int e2e_protocol) {
   if (out_path == nullptr || out_path[0] == '\0') {
     fprintf(stderr, "zigBrowser: screenshot: no output path given\n");
     fflush(stderr);
     return ZB_EXIT_WRITE_FAILED;
   }
-  return run_core(uri, print_title, 0, true, out_path);
+  // 52a5aba fix: forward e2e_protocol (was hard-coded 0) so run_core caches it on the AppState and
+  // the ZB_E2E_FORCE_SCREENSHOT_FAIL seam — which gates on app->e2e_protocol — can actually fire.
+  return run_core(uri, print_title, e2e_protocol, true, out_path);
 }
 
 extern "C" void zb_version_line(char *buf, size_t len) {
@@ -1320,11 +1322,12 @@ extern "C" void zb_version_line(char *buf, size_t len) {
     return;
   }
 
-  // WS1.5: report WHAT ACTUALLY RAN — the WebView2 runtime version, the OS build, and the EXECUTING
-  // architecture. Win32 entry points are resolved via GetProcAddress so the x86_64-windows-gnu cross
-  // compile needs no winternl/Win10-SDK headers. Form: "zigBrowser (WebView2 <ver>; Windows 10.0.<build>;
-  // <arch>)" (tests/windows/ws1_run_test.py WS15BuildInfo pins it).
-  unsigned long os_major = 10, os_minor = 0, os_build = 0;
+  // WS1.5: report WHAT ACTUALLY RAN — the WebView2 runtime version, the OS build and the EXECUTING
+  // architecture. Win32 entry points are resolved via GetProcAddress (no Win10-SDK header dependency).
+  // FAIL CLOSED (RoseCat 4cd6a14): if a lookup or call fails we emit an explicit "unavailable" token —
+  // NEVER an invented default (no fabricated 10.0.0 or x86_64), so the field reflects what was actually
+  // read. Form: "zigBrowser (WebView2 <ver>; Windows 10.0.<build>; <arch>)" (ws1_run_test WS15BuildInfo).
+  char os_field[64];
   {
     struct ZbRtlOsVersionInfoW {
       unsigned long dwOSVersionInfoSize, dwMajorVersion, dwMinorVersion, dwBuildNumber, dwPlatformId;
@@ -1336,32 +1339,32 @@ extern "C" void zb_version_line(char *buf, size_t len) {
     HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
     RtlGetVersion_t rgv =
         ntdll ? reinterpret_cast<RtlGetVersion_t>(GetProcAddress(ntdll, "RtlGetVersion")) : nullptr;
-    if (rgv && rgv(&vi) == 0) {
-      os_major = vi.dwMajorVersion;
-      os_minor = vi.dwMinorVersion;
-      os_build = vi.dwBuildNumber;
+    if (rgv != nullptr && rgv(&vi) == 0) {
+      snprintf(os_field, sizeof(os_field), "Windows %lu.%lu.%lu",
+               vi.dwMajorVersion, vi.dwMinorVersion, vi.dwBuildNumber);
+    } else {
+      snprintf(os_field, sizeof(os_field), "Windows unavailable");  // fail closed, never a fabricated 10.0.0
     }
+    os_field[sizeof(os_field) - 1] = '\0';
   }
 
   // Executing arch from IsWow64Process2: nativeMachine ARM64 while this (x64) process runs => emulation.
-  const char *arch = "x86_64";
+  // Only claim a concrete arch when the call SUCCEEDS; otherwise "unavailable" (never a fabricated x86_64).
+  const char *arch = "unavailable";
   {
     typedef int(__stdcall * IsWow64Process2_t)(HANDLE, unsigned short *, unsigned short *);
     HMODULE k32 = GetModuleHandleW(L"kernel32.dll");
     IsWow64Process2_t iw =
         k32 ? reinterpret_cast<IsWow64Process2_t>(GetProcAddress(k32, "IsWow64Process2")) : nullptr;
-    if (iw) {
+    if (iw != nullptr) {
       unsigned short proc_machine = 0, native_machine = 0;
       if (iw(GetCurrentProcess(), &proc_machine, &native_machine)) {
-        if (native_machine == 0xAA64) {  // IMAGE_FILE_MACHINE_ARM64
-          arch = "x86_64-on-arm64";
-        }
+        arch = (native_machine == 0xAA64) ? "x86_64-on-arm64" : "x86_64";  // ARM64 native => emulated x64
       }
     }
   }
 
-  snprintf(buf, len, "zigBrowser (WebView2 %s; Windows %lu.%lu.%lu; %s)",
-           version, os_major, os_minor, os_build, arch);
+  snprintf(buf, len, "zigBrowser (WebView2 %s; %s; %s)", version, os_field, arch);
   buf[len - 1] = '\0';
 }
 

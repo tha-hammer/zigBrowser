@@ -30,7 +30,10 @@ enum {
 
 int zb_run_open(const char *uri, int print_title);
 int zb_app_run(const char *uri, int print_title, int e2e_protocol);
-int zb_run_screenshot(const char *uri, const char *out_path, int print_title);
+/* e2e_protocol forwards the inert `--e2e-protocol` bit into the capture's run_core so the
+ * ZB_E2E_FORCE_SCREENSHOT_FAIL branch-selection seam is reachable (it gates on e2e_protocol);
+ * 0 in every shipped/normal run. */
+int zb_run_screenshot(const char *uri, const char *out_path, int print_title, int e2e_protocol);
 void zb_version_line(char *buf, size_t len);
 
 void zb_reload(ZbWindow *win, int bypass_cache);
