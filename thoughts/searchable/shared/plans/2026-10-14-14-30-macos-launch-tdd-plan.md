@@ -6,11 +6,11 @@ branch: zb-automation-integration-2026-10-10-11-59
 repository: zigBrowser
 topic: "macOS launch support for zigBrowser — TDD implementation plan"
 tags: [plan, tdd, macos, wkwebview, appkit, seatbelt, universal-build, automation, drawer, sandbox, launch-critical]
-status: plan for review (rev 22)
-rev: 22
+status: plan for review (rev 23)
+rev: 23
 last_updated: 2026-10-21
 last_updated_by: cc_3 / JadeBeacon
-last_updated_note: "Rev 22 (2026-10-21): MS6.5.1 Darwin lifecycle-owner section answers RoseCat 012e1bc (5 blockers) + 3c39b9f/7327 — the run marker is a dedicated non-token reserved descriptor inherited EXPLICITLY at every seam (browser→netd, browser→helper, sandbox-exec/CLI relay, nested hook, double-fork), each with a production-chain red + drop-the-pass-fd mutant and no collision with token fd 3 / egress fd 4 / census broker fd (agent_spawn_posix sets CLOEXEC_DEFAULT, child holds only 0-2); the owner record is a versioned, strictly-parsed, bounded schema published temp+fsync+rename+dir-fsync with named crash cuts and malformed/duplicate/truncated/swapped/symlinked handling (never signal until durably published); the state machine gains Clean unlink(marker,no-follow)→rmdir→record-remove order, [Leave] retires the entry to a terminal `left` state (never swept), window/session close ownership, SIGKILL→next-start-only, exactly-once races, and [Stop them now] DISABLED on an incomplete fresh census; the setting is a named app-owned atomic PERSISTED value with env>persisted>default precedence and a UI write path; a named `reaper_ready` hard gate keeps production signalling unreachable until the reviewed destructive gate passes; the stale 'Both-Mac gate GREEN' claim (7fa8906) is SUPERSEDED. Frontmatter bumped 17→22 (body had advanced through revs 19-22). Earlier: Rev 11 records MS1b GREEN (commit 3421428, option d): the WKWebView ObjC shim is built by the Apple toolchain as a chained-fixups dylib (xcrun clang -dynamiclib, -Wl,-fixup_chains + -undefined dynamic_lookup; -install_name @executable_path/../Frameworks; exe sets rdynamic macOS-only to export the two back-refs zb_ipc_dispatch/zb_policy_decide), so the SIGNED x86_64 binary runs (was SIGSEGV at [ZBAppHost init]; cause = zig 0.16 classic LC_DYLD_INFO_ONLY into signed __DATA_CONST). The MS1 bundle is now {browser + webview-shim dylib}; resource_phase accepts the empty-resources set only for that exact 2-component shape (6002 bypass protection kept). MS1.3 gains release_least_privilege (disable-library-validation forbidden in a release manifest/binary; ad-hoc dev/test only). ms1b_signed_gate.sh is registered as `zig build ms1b-gate`; validated rc 0 on both Macs (x86_64+arm64, ad-hoc+hardened). Linux/Windows build unchanged. (Frontmatter rev was stale at 6 while body sections advanced to rev 10; bumped to 11.) Shim surface confirmed by BlackRobin (6125)."
+last_updated_note: "Rev 23 (2026-10-21): MS6.5.1 answers RoseCat 3118838's three remaining blockers on rev 22 — (1) ONE app-global ledger actor wraps each read-validate-update-write-fsync-rename-dirfsync transaction so a concurrent run can never erase another (barrier reds for publish/publish and publish-or-remove/update); (2) Stopping is a bounded census->kill->fresh-census FIXED POINT reaching Clean only after a complete EMPTY final census (a marked process can fork after the single gather, agent_run_reaper.c:188-202; spawn-during-pass-one red + no-recensus mutant; a cap/deadline/incomplete census is Survivors); (3) reaper_ready is an IMMUTABLE source/build constant like agent_setup.zig:60-73's seatbelt_ready, never the env_switch pattern (env_switch.zig:1-27 is flag/env-driven and a hostile ambient value must not arm signalling; bypass mutant). Plus crash-after-marker/dir-removal-before-ledger-removal recovery (active entry naming no dir is dropped), normal stop/close sweeps off the UI thread under a total deadline, and revs 19-22 added to the revision-history list. Rev 22 (2026-10-21): MS6.5.1 Darwin lifecycle-owner section answers RoseCat 012e1bc (5 blockers) + 3c39b9f/7327 — the run marker is a dedicated non-token reserved descriptor inherited EXPLICITLY at every seam (browser→netd, browser→helper, sandbox-exec/CLI relay, nested hook, double-fork), each with a production-chain red + drop-the-pass-fd mutant and no collision with token fd 3 / egress fd 4 / census broker fd (agent_spawn_posix sets CLOEXEC_DEFAULT, child holds only 0-2); the owner record is a versioned, strictly-parsed, bounded schema published temp+fsync+rename+dir-fsync with named crash cuts and malformed/duplicate/truncated/swapped/symlinked handling (never signal until durably published); the state machine gains Clean unlink(marker,no-follow)→rmdir→record-remove order, [Leave] retires the entry to a terminal `left` state (never swept), window/session close ownership, SIGKILL→next-start-only, exactly-once races, and [Stop them now] DISABLED on an incomplete fresh census; the setting is a named app-owned atomic PERSISTED value with env>persisted>default precedence and a UI write path; a named `reaper_ready` hard gate keeps production signalling unreachable until the reviewed destructive gate passes; the stale 'Both-Mac gate GREEN' claim (7fa8906) is SUPERSEDED. Frontmatter bumped 17→22 (body had advanced through revs 19-22). Earlier: Rev 11 records MS1b GREEN (commit 3421428, option d): the WKWebView ObjC shim is built by the Apple toolchain as a chained-fixups dylib (xcrun clang -dynamiclib, -Wl,-fixup_chains + -undefined dynamic_lookup; -install_name @executable_path/../Frameworks; exe sets rdynamic macOS-only to export the two back-refs zb_ipc_dispatch/zb_policy_decide), so the SIGNED x86_64 binary runs (was SIGSEGV at [ZBAppHost init]; cause = zig 0.16 classic LC_DYLD_INFO_ONLY into signed __DATA_CONST). The MS1 bundle is now {browser + webview-shim dylib}; resource_phase accepts the empty-resources set only for that exact 2-component shape (6002 bypass protection kept). MS1.3 gains release_least_privilege (disable-library-validation forbidden in a release manifest/binary; ad-hoc dev/test only). ms1b_signed_gate.sh is registered as `zig build ms1b-gate`; validated rc 0 on both Macs (x86_64+arm64, ad-hoc+hardened). Linux/Windows build unchanged. (Frontmatter rev was stale at 6 while body sections advanced to rev 10; bumped to 11.) Shim surface confirmed by BlackRobin (6125)."
 primary_research: thoughts/searchable/shared/research/2026-10-14-14-19-macos-launch-support-surface.md
 ---
 
@@ -167,6 +167,29 @@ primary_research: thoughts/searchable/shared/research/2026-10-14-14-19-macos-lau
   **(B)** the real Mac production chain, run on the pinned runtime and dependency tree. (A) green lets the broker
   land, scoped as incomplete. Only (B) green may count toward `seatbelt_ready`, MS6 completion, or any launch
   slice that uses the Mac backend.
+- **Rev 19** (JadeBeacon, 2026-10-21): MS6.5 accept-with-cleanup per the user's decision — public libproc/kill
+  only, stop/start cleanup, survivor warning with [Stop them now]/[Leave them running]/[Show details], VM
+  containment stubbed off by default; the earlier "no survivors / Failure ⇒ VM required" criterion withdrawn.
+- **Rev 20** (JadeBeacon, 2026-10-21): the CLI/dependency-tree decision (the user's lipo universal2 + crypto
+  48.0.1 both chips + python.org framework relocation) folded into MS5.1c.
+- **Rev 21** (JadeBeacon, 2026-10-21; RoseCat 3c39b9f / 7327): first MS6.5.1 Darwin lifecycle-owner section —
+  browser-owned run root, explicit marker, recorded provenance, fresh re-census before a user stop, fail-closed
+  errors. BLOCKED (docs) in `012e1bc` before its red.
+- **Rev 22** (JadeBeacon, 2026-10-21; RoseCat `012e1bc`, mail 7333): MS6.5.1's five `012e1bc` findings made
+  executable — the marker becomes a dedicated non-token reserved descriptor inherited **explicitly at every spawn
+  seam** (browser→netd, browser→helper, sandbox/relay/CLI, nested hook, double-fork), each with a production-chain
+  red + a drop-the-pass-fd mutant, because `zb_agent_spawn_group_io` sets `CLOEXEC_DEFAULT` and the child holds
+  only fds 0-2; the ledger gains a versioned/bounded/strictly-parsed schema published temp+fsync+rename+dir-fsync
+  with named crash cuts; the state machine gains `Clean` unlink/rmdir ordering, `[Leave]`→terminal `left`, exact
+  races; the setting becomes an app-owned atomic persisted value; `reaper_ready` and the superseded GREEN claim
+  land. BLOCKED (docs) in `3118838` before its red (three remaining gaps). Frontmatter brought to rev 22.
+- **Rev 23** (JadeBeacon, 2026-10-21; RoseCat `3118838`, mail 7338): the three remaining `3118838` gaps closed —
+  one **app-global ledger actor** wraps each read-validate-update-write-fsync-rename-dirfsync transaction so a
+  concurrent run can never erase another (barrier reds); `Stopping` becomes a bounded **census→kill→fresh-census
+  fixed point** that reaches `Clean` only after a complete EMPTY final census (spawn-during-pass-one red +
+  no-recensus mutant); `reaper_ready` becomes an **immutable source/build constant** like `seatbelt_ready`, never
+  the env-switch pattern (bypass mutant); plus crash-after-removal recovery (an `active` entry naming no dir is
+  dropped), normal stop/close sweeps off the UI thread under a total deadline, and revs 19-22 added here.
 
 ## Rev 9 — MS1 empty-resource state made an executable, fail-closed phase contract (RoseCat 5995)
 
@@ -1714,8 +1737,8 @@ above plus per-process Seatbelt port rules**. Either way MS0's launch spec is th
     pin are Linux-unit-tested under `unshare`. **MS6.5 no longer requires defeating the escape**, so it no longer
     forces the VM backend; the earlier "no survivors / Failure ⇒ VM required" criterion is withdrawn. The production lifecycle owner and the drawer
     survivor-warning are specified in **MS6.5.1** below.
-- **MS6.5.1 (the Darwin per-run dir, its run marker, lifecycle owner, and the census sweep + warning; rev 22 —
-  orchestrator + RoseCat 3c39b9f / 012e1bc, mails 7327/—, 2026-10-21).** The reaper library (`src/agent_run_reaper.c`) is
+- **MS6.5.1 (the Darwin per-run dir, its run marker, lifecycle owner, and the census sweep + warning; rev 23 —
+  orchestrator + RoseCat 3c39b9f / 012e1bc / 3118838, mails 7327/7333/7338, 2026-10-21).** The reaper library (`src/agent_run_reaper.c`) is
   complete and verified signal-free on both Macs; this is its **browser-owned** production owner (RoseCat agrees
   that is the right owner). **This signal path is unreachable in production until a named `reaper_ready` hard gate
   passes (see *Gating* below); `seatbelt_ready` is NOT approval of it.** The owner is real launch-path code, not a
@@ -1747,13 +1770,22 @@ above plus per-process Seatbelt port rules**. Either way MS0's launch spec is th
     truncated/unparseable file is a **malformed read** → no automatic signal + a fixed warning, and the dirs it
     would have covered are censused + warned, never signalled. The agent runs with its cwd in the user's workspace
     and the Seatbelt profile does not grant write to `runtime_dir`, so **no sandboxed process can write the
-    ledger** — it is app-owned. Every mutation (publish / update-state / remove) is a crash-safe write: a sibling
-    temp (`O_NOFOLLOW|O_CREAT|O_EXCL`), `fsync` it, `rename` it over the store, then `fsync` the parent dir fd.
+    ledger** — it is app-owned.
+    - *One app-global ledger actor — no cross-run lost update (RoseCat 3118838 #1).* All runs share the single
+      `zigbrowser-agent-runs.json`, so per-run locks are NOT enough: two windows could each read revision N and
+      publish different N+1 states, erasing one another. Every mutation therefore goes through **one app-global
+      ledger actor** (a single serialized writer / one process-wide ledger mutex, distinct from the per-run owner
+      lock). The actor runs each mutation as one indivisible transaction: **read-the-current-file →
+      validate/parse → apply this run's delta → write sibling temp (`O_NOFOLLOW|O_CREAT|O_EXCL`) → `fsync` temp →
+      `rename` over the store → `fsync` the parent dir fd**. No read-modify-write ever straddles two runs, so one
+      run's publish/update/remove can never drop another run's entry.
     Publication happens ONLY after `mkdirat`+`openat`+`pin_fd` all succeed, so the crash cuts are fail-safe: a
     crash before directory creation leaves nothing; between create and publication, an unrecorded dir (censused +
     warned, never signalled); between publication and `Clean` teardown, a recoverable `active` entry the next start
-    re-validates by fstat; a half-written temp is never renamed into place. **Until an entry is durably published,
-    its directory can be censused and warned about but never authorizes a signal.**
+    re-validates by fstat; **a crash after the marker/dir are removed but before the ledger entry is removed leaves
+    an `active` entry naming no directory — next start finds its `openat` returns `ENOENT`, drops the entry
+    (reconcile), and never signals**; a half-written temp is never renamed into place. **Until an entry is durably
+    published, its directory can be censused and warned about but never authorizes a signal.**
   - **The run marker — a dedicated non-token capability inherited EXPLICITLY at every seam (RoseCat 012e1bc #1).**
     The agent's cwd is the user's workspace, and a merely non-`O_CLOEXEC` fd is NOT enough: `zb_agent_spawn_group_io`
     enables `POSIX_SPAWN_CLOEXEC_DEFAULT` and its contract is that the child holds **exactly fds 0, 1 and 2**
@@ -1793,27 +1825,39 @@ above plus per-process Seatbelt port rules**. Either way MS0's launch spec is th
   - **The lifecycle owner + an exactly-once state machine (RoseCat 7327 #3).** The macOS agent-run state (the Zig
     host spawner's per-run struct — the macOS counterpart of `agent_host.c`'s `zb_net`) holds the runtime-dir fd,
     the authority fd + pin, the marker fd, and the ledger entry for the run's life, and owns:
-    `Running -> Stopping` (sweep the run dir ONCE via the authority fd + pin + marker, after netd/CLI/helper
-    teardown — both the quit path and the die-with-browser path reach it) `-> Clean` (no survivor) or `-> Survivors`
+    `Running -> Stopping` (sweep the run dir via the authority fd + pin + marker, after netd/CLI/helper teardown —
+    both the quit path and the die-with-browser path reach it) `-> Clean` (proven no survivor) or `-> Survivors`
     (some could not be stopped). The ledger entry carries an explicit **lifecycle state** — `active`, `left`, or
     removed — so every terminal choice is durable across a crash.
+    - *A bounded census→kill→fresh-census FIXED POINT — one snapshot cannot prove clean (RoseCat 3118838 #2).* The
+      production primitive gathers once and processes only that fixed list (`agent_run_reaper.c:188-202`), but a
+      marked process can `fork` AFTER the gather and before its parent is killed, so the child is absent from the
+      list and Unix would still allow unlink/rmdir while it holds the (now-unlinked) marker. `Stopping` is therefore
+      an owner-level **loop**: census → kill the found set → re-census, repeated until a **complete, empty final
+      census** (the fixed point). Only that empty-and-complete final census authorizes `Clean`. A cap on passes, a
+      total deadline, or ANY incomplete/overflowed census on the way is **not** clean → `Survivors`, authority
+      retained. Normal `Stopping` (window-close / quit) runs **off the UI thread under a total deadline**, like the
+      startup sweep; it never blocks window teardown.
     - *Which owner reaches `Stopping`.* A run is owned by the **session/window that started it**; closing that
       window (or app quit) triggers that run's `Stopping`. If the run outlives its starting window (detached), the
       app-level owner reaches it on quit. Both paths converge on the single per-run owner lock.
-    - *`Clean` terminal filesystem order.* No survivor ⇒ `unlinkat(run_dir_fd, "run.marker", 0)` through the pinned
-      no-follow dir fd, then `unlinkat(runtime_fd, name, AT_REMOVEDIR)` (the empty run dir), then publish the ledger
+    - *`Clean` terminal filesystem order.* Only after the empty-and-complete final census ⇒
+      `unlinkat(run_dir_fd, "run.marker", 0)` through the pinned no-follow dir fd, then
+      `unlinkat(runtime_fd, name, AT_REMOVEDIR)` (the empty run dir), then the app-global actor publishes the ledger
       with that entry **removed** — in that order, so a crash mid-teardown leaves either a recoverable `active`
-      entry or nothing, never a half-state the next start mis-signals. `run.marker` is never left to make `rmdir`
-      fail.
+      entry, or an `active` entry naming no dir (next start drops it), never a half-state the next start mis-signals.
+      `run.marker` is never left to make `rmdir` fail.
     - *The authority (fd + pin + marker + ledger entry) is retained until the incident is resolved;* `rmdir` of the
-      run dir AND removal of the ledger entry happen ONLY after a **proved-clean** sweep result — any scan error,
-      overflow, invalid pin, or incompleteness is never "clean" and never authorizes unlink/rmdir/record removal.
+      run dir AND removal of the ledger entry happen ONLY after the fixed-point clean result — any scan error,
+      overflow, invalid pin, cap/deadline hit, or non-empty final census is never "clean" and never authorizes
+      unlink/rmdir/record removal.
     From `Survivors`:
-    - **[Stop them now]** runs a FRESH census + guarded sweep through the retained fd+pin+marker (never the stale
-      pid list the warning was built from — a pid may have exited and been reused); a proved-clean result then runs
-      the `Clean` teardown above. **[Stop them now] is DISABLED** (not "act on what is known") whenever that fresh
-      census is itself incomplete — overflow, `EIO`, or an invalid pin — because a partial census cannot authorize
-      a signal; the warning then offers only [Show details] and [Leave].
+    - **[Stop them now]** runs the FRESH census→kill→fresh-census fixed point through the retained fd+pin+marker
+      (never the stale pid list the warning was built from — a pid may have exited and been reused); only an
+      empty-and-complete final census then runs the `Clean` teardown above. **[Stop them now] is DISABLED** (not
+      "act on what is known") whenever that fresh census is incomplete — overflow, `EIO`, an invalid pin, or a
+      cap/deadline hit — because a partial census cannot authorize a signal; the warning then offers only
+      [Show details] and [Leave].
     - **[Leave them running]** **retires** the run: it transitions the ledger entry to the terminal `left` state
       (NOT removed, NOT `active`) and dismisses the warning. A `left` entry is **never swept** — not this session,
       not at next start — so the app never auto-stops a run the user chose to leave; next start only *reconciles* it
@@ -1856,12 +1900,18 @@ above plus per-process Seatbelt port rules**. Either way MS0's launch spec is th
   - **Bounds (RoseCat 7327 SHOULD).** The startup scan recovers at most a fixed number of dirs per start; the
     details view shows at most a fixed number of pid rows; each `command`/`cwd` string is truncated to a fixed
     byte length. Exceeding any bound surfaces an "and N more" note, never an unbounded read.
-  - **Gating (RoseCat 7327 #5 — the hard gate).** A named `reaper_ready` switch (the `env_switch` pattern,
-    fail-closed default) sits BETWEEN the owner and any real signal: production kill paths are **unreachable** —
-    `zb_reaper_sweep`/`zb_reaper_run_full` are never called with a live `killsig` — until `reaper_ready` is true,
-    and `reaper_ready` is set true only after the reviewed **destructive** Mac reaper gate passes. `seatbelt_ready`
-    gates the agent run; `reaper_ready` separately gates the reaper's signal path. Until then the owner's Mac
-    behavior is census-only (warn, never signal), exactly as the gates below exercise.
+  - **Gating (RoseCat 3118838 #3 — an immutable acceptance constant, NOT an env switch).** Readiness is a
+    source/build acceptance constant, exactly like `agent_setup.zig:60-73`'s `pub const seatbelt_ready = false;` —
+    a new `pub const reaper_ready = false;` flipped to `true` only by a reviewed source edit after the destructive
+    Mac reaper gate passes. It is NOT the `env_switch` pattern (`env_switch.zig:1-27` is flag/environment-driven, so
+    a hostile ambient environment or CLI value could arm it — forbidden here). It sits BETWEEN the owner and any
+    real signal: production kill paths are **unreachable** — `zb_reaper_sweep`/`zb_reaper_run_full` are never called
+    with a live `killsig` — while `reaper_ready` is false. Any test override is **e2e-only and absent from the
+    production build** (a build/source assertion proves production never defines a path that arms signalling from
+    the environment). `seatbelt_ready` gates the agent run; `reaper_ready` separately gates the reaper's signal
+    path, and one does not imply the other. Until it is flipped, the owner's Mac behavior is census-only (warn,
+    never signal), exactly as the gates below exercise. A **bypass mutant** — a build that reads readiness from the
+    environment, or calls a live `killsig` while `reaper_ready` is false — must fail.
   - **Testing — the red matrix.** Mac tests/gates stay **census-only**; the destructive sweep (real SIGKILL) and
     its real-escape row stay **OFF the Macs** until `reaper_ready`'s destructive gate is reviewed and passes.
     - *Provenance (Linux, under `unshare`):* red `tests/agent_run_ledger_test.c` → green `zb_reaper_ledger_*` in
@@ -1872,6 +1922,18 @@ above plus per-process Seatbelt port rules**. Either way MS0's launch spec is th
     - *Atomic ledger (Linux):* red in the same file → green publish helper. Assertions: a crash between temp-write
       and rename leaves the old store intact; the parent dir is fsynced; a half temp is never renamed. Mutant:
       write-in-place instead of temp+rename → a torn read is accepted (must be caught).
+    - *App-global ledger actor — no cross-run lost update (Linux, barrier reds):* red
+      `tests/agent_run_ledger_concurrency_test.c` → green the single-actor transaction. Assertions: interleave two
+      runs' transactions at a barrier — publish/publish, and publish-or-remove/update — and prove BOTH entries
+      survive (one run never erases another), and a crash-after-marker/dir-removal-before-entry-removal leaves an
+      `active` entry whose absent dir is dropped at recovery (never signalled). Mutant: drop the global actor (let
+      each run read-modify-write independently) → a lost update erases a concurrent run's entry (must be caught).
+    - *Clean fixed point — one gather cannot prove clean (Linux, injectable engine + a real fork):* red extending
+      the engine test with a process that `fork`s AFTER pass-one's gather and before the parent's kill. Assertions:
+      `Clean` (and its unlink/rmdir/record-remove) is reached ONLY after a complete, EMPTY final census; a
+      cap/deadline/incomplete census holds `Survivors` and keeps the authority; the spawn-during-pass-one child is
+      caught by the re-census before any unlink/rmdir. Mutant: no re-census (sweep once on the first gather's list)
+      → the forked child survives while its dir is unlinked/rmdir'd (must be caught).
     - *Marker propagation — one production-chain red + one drop-the-pass-fd mutant PER SEAM (a generic
       child-inherits-marker probe does NOT satisfy this; it bypasses the production chain).* Reds drive the real
       spawn/relay/hook code, each asserting the downstream process classifies (holds a marker whose vnode is under
@@ -1898,6 +1960,10 @@ above plus per-process Seatbelt port rules**. Either way MS0's launch spec is th
     - *Setting matrix + startup queue (Linux):* red → green over `env_switch`. Assertions: absent/on sweeps then
       warns; off censuses then warns (zero kill); malformed → no signal + fixed warning; the startup queue is
       idempotent, bounded, drains before the first new run, and queues the incident until a drawer exists.
+    - *`reaper_ready` gate (Linux/source):* red → green the immutable constant. Assertions: with `reaper_ready`
+      false, no owner path reaches a live `killsig` (census-only); a source/build assertion proves production reads
+      readiness from the constant, never from the environment/CLI. Mutants: a build that sources readiness from the
+      environment → caught; a live `killsig` call while `reaper_ready` is false → caught.
     - *The warning is UI* and gets the **user's real-screen acceptance** on the NVIDIA screen (per the per-slice
       real-screen rule), not an Xvfb pass.
 - **MS6.6 (gate, rev 18): R1 under Seatbelt.** setup's R1 probe proves "the CLI takes the token from fd 3 and no
