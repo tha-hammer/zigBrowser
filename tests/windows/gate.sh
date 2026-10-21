@@ -410,22 +410,24 @@ probe_only() { # WS0.6 (VM identity) + WS0.7 (file-server fence) across both hos
   local sinfo sstate screated
   sinfo=$(virsh snapshot-info "$domain" "$want" 2>/dev/null)
   sstate=$(printf '%s\n' "$sinfo" | sed -n 's/^State:[[:space:]]*//p' | tr -d '[:space:]')
-  screated=$(printf '%s\n' "$sinfo" | sed -n 's/^Creation Time:[[:space:]]*//p')
   if [ "$sstate" != "shutoff" ]; then
     echo "NOT RUN: Win11 VM snapshot '$want' was taken in state '${sstate:-unknown}', not shutoff" >&2
     return 1
   fi
+  # The creation time is NOT in snapshot-info on this host (it prints only Name/Domain/Current/State/
+  # Location/Parent); it lives in snapshot-dumpxml as <creationTime>EPOCH</creationTime> (Unix seconds).
+  screated=$(virsh snapshot-dumpxml "$domain" "$want" 2>/dev/null \
+             | sed -n 's/.*<creationTime>\([^<]*\)<\/creationTime>.*/\1/p' | head -n1 | tr -d '[:space:]')
   if [ -z "$screated" ]; then
-    echo "NOT RUN: Win11 VM snapshot '$want' has no Creation Time in virsh snapshot-info (cannot confirm the baseline)" >&2
+    echo "NOT RUN: Win11 VM snapshot '$want' has no <creationTime> in virsh snapshot-dumpxml (cannot confirm the baseline)" >&2
     return 1
   fi
-  # The Creation Time must be a REAL, parseable date — not just nonempty — so a malformed line cannot
-  # pass as baseline evidence.
-  if ! date -d "$screated" >/dev/null 2>&1; then
-    echo "NOT RUN: Win11 VM snapshot '$want' Creation Time '$screated' is not a parseable date" >&2
+  # It must be a REAL numeric epoch — not just nonempty — so a malformed value cannot pass as evidence.
+  if ! printf '%s' "$screated" | grep -Eq '^[0-9]+$'; then
+    echo "NOT RUN: Win11 VM snapshot '$want' <creationTime> '$screated' is not a numeric epoch" >&2
     return 1
   fi
-  echo "WS0.6: Win11 snapshot '$want' state=$sstate created='$screated'" >&2
+  echo "WS0.6: Win11 snapshot '$want' state=$sstate created_epoch=$screated ($(date -d @"$screated" 2>/dev/null))" >&2
   local vm_json fs_pre fs_post
   # Per-host key + known_hosts (new ZB_WIN11_*/ZB_WIN10_* vars; fall back to the legacy single
   # ZB_WIN_* then the on-disk defaults). The VM and the file server pin DIFFERENT host keys.

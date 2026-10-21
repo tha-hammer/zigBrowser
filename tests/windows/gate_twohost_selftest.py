@@ -85,9 +85,19 @@ case "$1" in
   domstate) echo "${ZB_SELFTEST_VIRSH_STATE:-running}" ;;
   snapshot-list) printf '%s\n' "${ZB_SELFTEST_SNAPSHOTS-pre-4dr-toolchain-2026-10-20}" ;;
   snapshot-info)
+    # Real win11-m8 layout: NO 'Creation Time:' line — the date lives ONLY in snapshot-dumpxml.
+    echo "Name:           ${ZB_SELFTEST_SNAPSHOTS-pre-4dr-toolchain-2026-10-20}"
+    echo "Domain:         win11-m8"
+    echo "Current:        yes"
     echo "State:          ${ZB_SELFTEST_SNAPSHOT_STATE:-shutoff}"
-    if [ -n "${ZB_SELFTEST_SNAPSHOT_BADCREATED:-}" ]; then echo "Creation Time:  not-a-real-date"
-    elif [ -z "${ZB_SELFTEST_SNAPSHOT_NOCREATED:-}" ]; then echo "Creation Time:  2026-10-19 08:00:00 -0700"; fi ;;
+    echo "Location:       internal"
+    echo "Parent:         -" ;;
+  snapshot-dumpxml)
+    echo "<domainsnapshot>"
+    if [ -n "${ZB_SELFTEST_SNAPSHOT_BADCREATED:-}" ]; then echo "  <creationTime>not-a-real-epoch</creationTime>"
+    elif [ -z "${ZB_SELFTEST_SNAPSHOT_NOCREATED:-}" ]; then echo "  <creationTime>1792300000</creationTime>"; fi
+    echo "  <state>${ZB_SELFTEST_SNAPSHOT_STATE:-shutoff}</state>"
+    echo "</domainsnapshot>" ;;
   *) : ;;
 esac
 exit 0
@@ -292,7 +302,7 @@ class WS0CompletionReadiness(_TwoHostCase):
             self._assert_fail_closed(proc, "ZB_WIN11_SNAPSHOT is not set")
 
     def test_vm_snapshot_queried_by_exact_name(self):
-        # Argv oracle: the gate must query snapshot-info for the EXACT pinned name, not an arbitrary one.
+        # Argv oracle: the gate queries snapshot-info AND snapshot-dumpxml for the EXACT pinned name.
         with tempfile.TemporaryDirectory() as t:
             td = pathlib.Path(t)
             log = td / "virsh.log"
@@ -300,6 +310,21 @@ class WS0CompletionReadiness(_TwoHostCase):
             text = log.read_text() if log.exists() else ""
             self.assertIn("snapshot-info win11-m8 pre-4dr-toolchain-2026-10-20", text,
                           f"gate must query snapshot-info for the exact pinned name; virsh log:\n{text}")
+            self.assertIn("snapshot-dumpxml win11-m8 pre-4dr-toolchain-2026-10-20", text,
+                          f"gate must read <creationTime> from snapshot-dumpxml for the exact name; virsh log:\n{text}")
+
+    def test_vm_real_snapshot_info_layout_without_creation_time_passes(self):
+        # The real win11-m8 snapshot-info has NO 'Creation Time:' line (date only in snapshot-dumpxml).
+        # With the fake virsh emitting the real layout + a valid <creationTime>, readiness must still pass
+        # (this reproduced the production NOT-RUN and is green after reading dumpxml).
+        with tempfile.TemporaryDirectory() as t:
+            td = pathlib.Path(t)
+            proc = self._run_probe_only(td, {})
+            self.assertEqual(proc.returncode, 0,
+                             f"real snapshot-info layout + valid dumpxml creationTime must pass readiness"
+                             f"\nrc={proc.returncode}\n{proc.stdout}\n{proc.stderr}")
+            self.assertIn("created_epoch=", proc.stderr,
+                          "readiness must report the epoch read from snapshot-dumpxml")
 
     def test_vm_snapshot_not_shutoff_fails_closed(self):
         # The snapshot must have been taken while shut off (the user's rule).
@@ -433,9 +458,10 @@ class WS0CompletionReadiness(_TwoHostCase):
             self._assert_fail_closed(proc, "sshd_allowusers")
 
     def test_vm_snapshot_no_creation_time_fails_closed(self):
+        # snapshot-dumpxml with no <creationTime> => fail closed (cannot confirm the baseline).
         with tempfile.TemporaryDirectory() as t:
             proc = self._run_probe_only(pathlib.Path(t), {"ZB_SELFTEST_SNAPSHOT_NOCREATED": "1"})
-            self._assert_fail_closed(proc, "no Creation Time")
+            self._assert_fail_closed(proc, "no <creationTime>")
 
 
 # --- BatchMode oracle: every ssh/scp invocation must have EFFECTIVE BatchMode=yes ----------
@@ -579,9 +605,10 @@ class WS0FieldHardening(_TwoHostCase):
             self._assert_fail_closed(proc, "AllowUsers")
 
     def test_snapshot_unparseable_creation_time_fails_closed(self):
+        # snapshot-dumpxml <creationTime> that is not a numeric epoch => fail closed.
         with tempfile.TemporaryDirectory() as t:
             proc = self._run_probe_only(pathlib.Path(t), {"ZB_SELFTEST_SNAPSHOT_BADCREATED": "1"})
-            self._assert_fail_closed(proc, "parseable")
+            self._assert_fail_closed(proc, "not a numeric epoch")
 
     def test_sshd_tailnet_allowusers_exact_passes(self):
         # Healthy FS (concrete ListenAddress, AllowUsers exactly zbtest, port 22 up) still passes.
