@@ -233,8 +233,11 @@ class Gate(unittest.TestCase):
         env = {"PATH": f"{shims}:/usr/bin:/bin", "LANG": "C.UTF-8", "HOME": str(repo),
                "ZB_MAC_HOST": "canary-intel@192.0.2.10", "ZB_MAC_ARM_HOST": "canary-arm@192.0.2.11",
                "ZB_MAC_KEY": str(repo / "no-key"), "ZB_MAC_ARM_KEY": str(repo / "no-key")}
-        p = subprocess.run(["bash", str(repo / "tests" / "mac" / "ms6_hard_gate.sh")], capture_output=True,
-                           text=True, timeout=30, cwd=repo, env=env)
+        # The documented entry runs the commit's bytes (RoseCat 7275), never a working-tree file.
+        text = subprocess.run(["git", "-C", str(repo), "show", "HEAD:tests/mac/ms6_hard_gate.sh"], check=True,
+                              capture_output=True, text=True).stdout
+        p = subprocess.run(["bash", "-c", text, "ms6-hard-gate", "HEAD"], capture_output=True, text=True,
+                           timeout=30, cwd=repo, env=env)
         return p, (record.read_text() if record.exists() else "")
 
     def test_without_the_pinned_tree_the_gate_is_not_armed_and_touches_no_network(self):

@@ -19,7 +19,11 @@ THAT commit into its per-run temp tree and reads everything from the export (pin
 the dependency build). It prints "== hard gate at commit <sha>" and, before any network, "== ship <sha256> <path>" for
 the shipped seam sources, staging script and zb_agent_host files, so a dirty or replaced working tree is shown not to
 be what ships. The temporary Sigstore verifier is pinned (RoseCat 7265).
-RoseCat 7269: the running launcher must be byte-identical to the exported one (else exit 1, offline); a symlink or
+RoseCat 7275: a mutable launcher cannot vouch for itself (its own code runs before any self-check), so the ONLY entry
+is the commit's bytes: bash -c "$(git show <rev>:tests/mac/ms6_hard_gate.sh)" ms6-hard-gate <rev>. Run as a file it
+refuses at once; run from git it checks $BASH_EXECUTION_STRING against git show <sha> (else exit 1, offline). A dirty
+working-tree launcher, even one that makes a network call, is never executed by that entry.
+RoseCat 7269: a symlink or
 other non-regular entry among the shipped paths is refused offline, and the tar's file set equals the "== ship" rows;
 the verifier is installed only from a committed, hash-locked requirements file (--require-hashes --no-deps) whose
 SHA-256 the pins name; the no-installer oracle rejects any command token whose basename is installer or sudo, or an
@@ -87,16 +91,18 @@ class ArmedEntry(unittest.TestCase):
         self.git("add", "-A", ".", ":!shims", ":!network-calls")
         self.git("commit", "-q", "--allow-empty", "-m", "fixture")
 
-    def run_gate(self, *args):
-        p = subprocess.run(["bash", str(self.repo / "tests/mac/ms6_hard_gate.sh"), *args], capture_output=True,
-                           text=True, timeout=60, cwd=self.repo, env=self.env)
+    def run_gate(self, rev="HEAD", script=None):
+        """The documented entry: the launcher's bytes from the commit, never from a working-tree file."""
+        text = script if script is not None else self.git("show", f"{rev}:tests/mac/ms6_hard_gate.sh")
+        p = subprocess.run(["bash", "-c", text, "ms6-hard-gate", rev], capture_output=True, text=True, timeout=60,
+                           cwd=self.repo, env=self.env)
         return p.returncode, p.stdout + p.stderr, (self.record.read_text() if self.record.exists() else "")
 
     def pins(self):
         return self.repo / "packaging/macos/agent_runtime_pins.json"
 
-    def refused_offline(self, needle, *args):
-        code, out, calls = self.run_gate(*args)
+    def refused_offline(self, needle, rev="HEAD", script=None):
+        code, out, calls = self.run_gate(rev, script)
         self.assertEqual(code, 1, out)
         self.assertIn(needle, out)
         self.assertEqual(calls, "", "no network call before the preconditions hold")
@@ -176,12 +182,31 @@ class ArmedEntry(unittest.TestCase):
             for name in files:
                 self.assertEqual(rows[name], hashlib.sha256(tar.extractfile(members[name]).read()).hexdigest(), name)
 
-    def test_a_dirty_launcher_is_refused_offline(self):
+    def test_a_dirty_worktree_launcher_is_never_executed(self):
+        # RoseCat 7275's probe: a network call right after `set -euo pipefail` in the uncommitted launcher.
         launcher = self.repo / "tests/mac/ms6_hard_gate.sh"
         lines = launcher.read_text().splitlines(keepends=True)
         at = next(i for i, l in enumerate(lines) if l.startswith("set -euo pipefail")) + 1
-        launcher.write_text("".join(lines[:at] + ["echo DIRTY-LAUNCHER >&2\n"] + lines[at:]))
-        self.refused_offline("launcher")
+        launcher.write_text("".join(lines[:at] + ["curl -fsS https://dirty-launcher.invalid\n"] + lines[at:]))
+        code, out, calls = self.run_gate()
+        self.assertNotIn("dirty-launcher.invalid", calls, "the documented entry never runs the worktree launcher")
+        self.only_the_pkg_download(code, out, calls)
+
+    def test_run_as_a_file_it_refuses_at_once(self):
+        p = subprocess.run(["bash", str(self.repo / "tests/mac/ms6_hard_gate.sh"), "HEAD"], capture_output=True,
+                           text=True, timeout=60, cwd=self.repo, env=self.env)
+        out = p.stdout + p.stderr
+        self.assertEqual(p.returncode, 1, out)
+        self.assertIn("git show", out)
+        self.assertFalse(self.record.exists(), "no network call")
+
+    def test_bytes_that_are_not_the_commits_are_refused_offline(self):
+        committed = self.git("show", "HEAD:tests/mac/ms6_hard_gate.sh")
+        self.refused_offline("launcher", script=committed + "\n# not the committed bytes")
+        older = self.git("rev-parse", "HEAD")
+        (self.repo / "agent/host/zb_agent_host/netd.py").write_text("# a later commit\n")
+        self.commit()
+        self.refused_offline("launcher", rev=older, script=self.git("show", "HEAD:tests/mac/ms6_hard_gate.sh") + " ")
 
     def test_a_committed_symlink_among_the_shipped_paths_is_refused_offline(self):
         os.symlink("/etc/passwd", self.repo / "packaging/macos/escape-link")
@@ -195,8 +220,9 @@ class ArmedEntry(unittest.TestCase):
         self.refused_offline("sigstore_verifier.txt")
 
     def test_a_revision_that_is_not_a_commit_is_refused_offline(self):
-        self.refused_offline("revision", "no-such-revision")
-        self.refused_offline("revision", self.git("rev-parse", "HEAD^{tree}"))
+        launcher = self.git("show", "HEAD:tests/mac/ms6_hard_gate.sh")
+        self.refused_offline("revision", "no-such-revision", launcher)
+        self.refused_offline("revision", self.git("rev-parse", "HEAD^{tree}"), launcher)
 
 
 class CommittedPins(unittest.TestCase):
