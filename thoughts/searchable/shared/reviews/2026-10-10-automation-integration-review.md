@@ -24605,3 +24605,92 @@ passed **50 tests, 6 Darwin-only skips** inside a private user/PID namespace
 with `setsid`. Those results do not exercise the Mac-only case. No Mac,
 signal, live browser or real display was used. Verdict sent to BlueBeaver in
 Agent Mail 7306.
+
+## Windows pinned-directory lock (`4468075`)
+
+**APPROVED; this cumulatively closes the `defb5a2`/`b32f285` publication
+blocker.** Both publish and GC now take `flock` on fd 9 opened read-only on the
+already pinned cwd directory inode (`9<"."`). There is no `.publish.lock` leaf
+left to plant or swap, and the existing immutable-generation/current-swap
+protocol remains intact.
+
+The new race reproducer is causal. Against exact pre-fix `0ca5771`, planting
+`.publish.lock -> victim` while the fake fetch is paused makes the test fail
+and truncates the victim even though the script returns zero. Against
+`4468075`, the same test leaves `precious` untouched and publication succeeds.
+The exact registered selftest, run inside a private user/PID namespace, passes
+35/35 with no `ResourceWarning`; `bash -n` is clean. Both destructive cleanup
+sites retain their bound-variable guards. A NIT remains: a few selftest
+comments still describe the removed lock leaf and should be updated when that
+file is next touched. Verdict sent to AzureRidge in Agent Mail 7309.
+
+## Guarded-type chunk acknowledgement green (`dead117`)
+
+**APPROVED; closes the `52cfb6c`/7280 count-contract finding.** Counts and
+continuation tokens are parsed independently. A successful chunk with missing,
+empty or non-string tokens stops with `-32603`, but its usable counts join the
+completed chunks under `sent_at_least`; unusable or overflowing counts add
+nothing. Both owned token strings are freed on every error path, and subsequent
+chunks bind to the first chunk's target and document tokens.
+
+The registered red covers exact event/character counts, absent/empty/wrong
+tokens, usable versus unusable failing-chunk counts, and no later dispatch.
+BlackRobin's clean private-Xvfb gate passed 351/351 steps and 1149/1151 tests
+(two skipped); all five reported mutants fail. **SHOULD:** add a direct `u64`
+overflow row when the chunk-count suite is next touched, so `addSent`'s
+saturating/refusing boundary has its own causal oracle rather than source
+inspection alone. Verdict sent in Agent Mail 7310.
+
+## MS6.6(B) release follow-up (`dd758d2`, `d48e875`)
+
+**`dd758d2` is BLOCKED-for-tests. `d48e875` is BLOCKED and remains a NO-GO on
+both Macs.** The manifest digest
+`7b6082633f9a4832dcba4b1e27009709eea567cfb71f79795998ee6ff37aea73`
+is not approved.
+
+The red is genuine but incomplete: exact `dd758d2` produces seven errors in
+the 12-test module, including the bytes-argv `TypeError` and absent release
+helper. The green normalizes byte argv correctly, adds a bounded reinspection
+loop, registers the module, and passes both 12/12 locally and the exact
+registered `test-mac-census` target under private Xvfb plus a private user/PID
+namespace. It nevertheless erases a transient inspection failure.
+
+At `case_ms6_6b_r1_chain.py:201-217`, `_chain_release` assigns `first` from
+`_settle(... + 15s)`, rather than from the actual first scan. A direct probe
+shows the violation:
+
+```text
+_chain_release([UNREADABLE, CLEAN]) => ((True, [], []), None)
+```
+
+The row therefore reports a clean first inspection and passes if one failed
+`ps` or unreadable live process is followed one second later by clean. The red
+at `ms6_hard_gate_r1_case_test.py:142-148` hides this because it repeats the bad
+scan 40 times, beyond the grace period. Capture the real first observation;
+permit alive-only processes to settle during the grace period; preserve any
+not-inspected/unreadable observation as sticky row-failure evidence; and still
+drain boundedly to a required final clean scan. Add causal
+`UNREADABLE -> CLEAN` and `NO_PS -> CLEAN` rows. Findings and the Mac no-go
+were sent to BlueBeaver in Agent Mail 7312.
+
+## MS6.5 signal-free census repair (`efd8b1e`)
+
+**APPROVED for the probe/code repair; the destructive Mac reaper gate remains
+OFF.** Renaming the parent now preserves the run directory's exact grammar.
+The row requires census return zero and no overflow, excludes the replacement,
+and demonstrates that an old-path classifier would select the replacement
+while the held fd's `F_GETPATH` does not. This makes the fd pin causal instead
+of accepting an empty census after an early grammar refusal. Removing the
+unproved inode-match branch is correct; the fd-pinned path classifier remains.
+
+The probe contains no signal path. The exact-export portable target passed in
+a private user/PID namespace:
+
+```text
+Build Summary: 4/4 steps succeeded; 7/7 tests passed
+```
+
+Intel's reported signal-free probe is 18/18. The promised arm64 leg is still an
+evidence follow-up, and production lifecycle ownership of the pinned run fd is
+still absent; neither condition authorizes the destructive reaper gate.
+Verdict sent to JadeBeacon in Agent Mail 7313.
