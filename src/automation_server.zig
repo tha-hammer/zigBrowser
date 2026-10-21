@@ -1371,6 +1371,7 @@ fn handleX(
         .route = flow_route,
         .build = build_info,
         .port = window_port,
+        .window = target.id,
         .no_page_reason = if (target.id != null) "no_window" else null,
     }, XCall{ .state = x_state, .verb = verb, .params_json = target.params orelse params_json }, XCall.run);
     defer outcome.deinit(allocator);

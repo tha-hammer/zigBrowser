@@ -1247,6 +1247,16 @@ pub fn build(b: *std.Build) void {
     automation_expect_flow_prenav_tests_module.addImport("automation", automation_module);
     const run_automation_expect_flow_prenav_tests = b.addRunArtifact(b.addTest(.{ .root_module = automation_expect_flow_prenav_tests_module }));
     run_automation_expect_flow_prenav_tests.skip_foreign_checks = true;
+    // S8a decision 2 for the X flows: an approved x.post / x.schedule_post runs phases A to C.
+    const automation_expect_x_flow_tests_module = b.createModule(.{
+        .root_source_file = b.path("tests/automation_expect_x_flow_test.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    automation_expect_x_flow_tests_module.addImport("automation", automation_module);
+    const run_automation_expect_x_flow_tests = b.addRunArtifact(b.addTest(.{ .root_module = automation_expect_x_flow_tests_module }));
+    run_automation_expect_x_flow_tests.skip_foreign_checks = true;
     // S8a decision 13: an approved message or DM checks its recipient in two stages, per step.
     const automation_recipient_guard_tests_module = b.createModule(.{
         .root_source_file = b.path("tests/automation_recipient_guard_test.zig"),
@@ -1346,6 +1356,16 @@ pub fn build(b: *std.Build) void {
     automation_expect_flow_server_tests_module.addImport("automation_server", automation_server_module);
     const run_automation_expect_flow_server_tests = b.addRunArtifact(b.addTest(.{ .root_module = automation_expect_flow_server_tests_module }));
     run_automation_expect_flow_server_tests.skip_foreign_checks = true;
+    // S8a: the server's x.* route hands the bound window to an approved X flow.
+    const automation_expect_x_flow_server_tests_module = b.createModule(.{
+        .root_source_file = b.path("tests/automation_expect_x_flow_server_test.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    automation_expect_x_flow_server_tests_module.addImport("automation_server", automation_server_module);
+    const run_automation_expect_x_flow_server_tests = b.addRunArtifact(b.addTest(.{ .root_module = automation_expect_x_flow_server_tests_module }));
+    run_automation_expect_x_flow_server_tests.skip_foreign_checks = true;
     // WS2.0 (Windows plan rev 2.6): the owner-only seam and where the socket lives.
     const owner_only_tests_module = b.createModule(.{
         .root_source_file = b.path("tests/owner_only_test.zig"),
@@ -1554,6 +1574,14 @@ pub fn build(b: *std.Build) void {
         "automation-expect-flow-e2e",
     });
     automation_expect_flow_e2e.addArtifactArg(exe);
+    // S8a: an approved x.post on the real binary and the X composer fixture.
+    const automation_expect_x_flow_e2e = b.addSystemCommand(&.{
+        "sh",
+        "-c",
+        "python3 tests/e2e/automation_expect_x_flow_test.py --binary \"$1\"; rc=$?; if [ \"$rc\" = 77 ]; then exit 0; fi; exit \"$rc\"",
+        "automation-expect-x-flow-e2e",
+    });
+    automation_expect_x_flow_e2e.addArtifactArg(exe);
     // S8a decision 13: the recipient checks on the real binary and the LinkedIn/Instagram fixtures.
     const automation_recipient_guard_e2e = b.addSystemCommand(&.{
         "sh",
@@ -2825,7 +2853,10 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_automation_expect_flow_seam_tests.step);
     test_step.dependOn(&run_automation_expect_flow_prenav_tests.step);
     test_step.dependOn(&run_automation_expect_flow_server_tests.step);
+    test_step.dependOn(&run_automation_expect_x_flow_server_tests.step);
     test_step.dependOn(&automation_expect_flow_e2e.step);
+    test_step.dependOn(&run_automation_expect_x_flow_tests.step);
+    test_step.dependOn(&automation_expect_x_flow_e2e.step);
     test_step.dependOn(&run_automation_recipient_guard_tests.step);
     test_step.dependOn(&automation_recipient_guard_e2e.step);
     test_step.dependOn(&run_automation_recipient_owner_tests.step);

@@ -177,6 +177,14 @@ pub fn handleWithBudget(
             const compose_url = if (params.get("compose_url")) |_| (stringField(params, "compose_url") orelse return invalidParams()) else x.compose_url;
             const input = inputOptions(params) orelse return invalidParams();
             const dry_run = dryRunOption(params) orelse return invalidParams();
+            // S8 ("S8 in detail" decision 2): an approval binds a real, synthetic run to its bound
+            // window, phase A before the daily cap's reservation or any page input.
+            const expect = expectOption(params) catch return invalidParams();
+            if (expect) |e| {
+                if (dry_run or ext.options.window == null or input.native or input.humanize or e.recipient != null) return invalidParams();
+                if (try flow_runner.phaseA(gpa, ext, e, runner.deadline_ms)) |refused| return refused;
+                runner.approval = .{ .url = e.url };
+            }
             if (dry_run) {
                 // No admission: nothing is reserved, counted or saved, and
                 // the cap does not refuse it (the result reports what is left).
@@ -240,7 +248,7 @@ fn inputOptions(params: std.json.ObjectMap) ?x.Input {
                 .bool => |b| b,
                 else => return null,
             };
-        } else if (!std.mem.eql(u8, entry.key_ptr.*, "dry_run")) return null;
+        } else if (!std.mem.eql(u8, entry.key_ptr.*, "dry_run") and !std.mem.eql(u8, entry.key_ptr.*, "expect")) return null;
     }
     if (input.humanize and !input.native) return null;
     return input;
@@ -257,6 +265,15 @@ fn dryRunOption(params: std.json.ObjectMap) ?bool {
         .bool => |b| b,
         else => null,
     };
+}
+
+/// `options.expect` (flow_runner.parseExpect): absent -> null.
+fn expectOption(params: std.json.ObjectMap) error{InvalidParams}!?flow_runner.Expect {
+    const options = switch (params.get("options") orelse return null) {
+        .object => |o| o,
+        else => return error.InvalidParams,
+    };
+    return try flow_runner.parseExpect(options.get("expect") orelse return null);
 }
 
 fn invalidParams() engine_mod.Outcome {

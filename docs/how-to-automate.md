@@ -902,6 +902,10 @@ the same page task as each event.
   window must still show that page (`load_serial_changed` if it navigated
   again). A refused flow sends nothing further and counts no action. Not with
   `dry_run`, and the same snapshot caveat applies.
+- `x.post` and `x.schedule_post` take the same `options.expect`, with `url`
+  their `compose_url` and a `window_id`; the window is checked before the daily
+  cap counts the post. Not with `dry_run`, `input: "native"` or `humanize`
+  (-32602).
 - An approved `linkedin.message` or `instagram.dm` also checks its recipient
   inside each step: the Message click needs the page still at the profile's path
   and showing that profile's owner (the header's username on Instagram, the

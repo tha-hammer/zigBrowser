@@ -223,23 +223,7 @@ fn execute(
 
     // S8 phase A ("S8 in detail" decision 2): the window as the approval card showed it, inside
     // this ticket and before the gate, the pacing pause or any page input.
-    if (options.expect) |expect| {
-        var found: ?engine_mod.Outcome = switch (try ext.boundWindow(gpa, deadline_ms -| ext.nowMs())) {
-            .refused => |refused| refused,
-            .window => |window| blk: {
-                defer window.deinit(gpa);
-                break :blk try engine_mod.windowRefusal(gpa, window, .{ .origin = expect.origin, .load_serial = expect.load_serial }, ids);
-            },
-        };
-        // As for the verbs (RoseCat db43ca1): a stop, then a check that used up the budget, then
-        // what the check found.
-        if (ext.cancelled() or ext.nowMs() >= deadline_ms) {
-            if (found) |*f| f.deinit(gpa);
-            if (ext.cancelled()) return engine_mod.automationFailure(gpa, .cancelled, null, ids);
-            return engine_mod.automationFailure(gpa, .action_timeout, "expect_used_deadline", ids);
-        }
-        if (found) |f| return f;
-    }
+    if (options.expect) |expect| if (try flow_runner.phaseA(gpa, ext, expect, deadline_ms)) |refused| return refused;
 
     // 2. Login gate before navigation.
     if (call.needsSession()) {
@@ -307,16 +291,7 @@ fn takeFailure(gpa: std.mem.Allocator, runner: *flow_runner.Runner, trace: *cons
     return flow_runner.withFailedStep(gpa, outcome, trace.error_step_buf[0..trace.error_step_len]);
 }
 
-/// S8: an approval's expectation of a flow's window (strings borrowed from the request).
-const FlowExpect = struct {
-    origin: []const u8,
-    load_serial: u64,
-    url: []const u8,
-    /// S8 decision 13: the LinkedIn slug a conversation message's approval names.
-    recipient: ?[]const u8 = null,
-};
-
-const FlowOptions = struct { dry_run: bool = false, expect: ?FlowExpect = null };
+const FlowOptions = struct { dry_run: bool = false, expect: ?flow_runner.Expect = null };
 
 /// `options` of a flow request: absent -> nothing; an object of `dry_run: bool` and (S8)
 /// `expect: {origin: non-empty string, load_serial: integer >= 0, url: non-empty string}`, no
@@ -336,43 +311,10 @@ fn flowOptions(value: ?std.json.Value) error{InvalidParams}!FlowOptions {
                 else => return error.InvalidParams,
             };
         } else if (std.mem.eql(u8, key, "expect")) {
-            out.expect = try flowExpect(entry.value_ptr.*);
+            out.expect = try flow_runner.parseExpect(entry.value_ptr.*);
         } else return error.InvalidParams;
     }
     return out;
-}
-
-fn flowExpect(value: std.json.Value) error{InvalidParams}!FlowExpect {
-    const object = switch (value) {
-        .object => |o| o,
-        else => return error.InvalidParams,
-    };
-    var keys = object.iterator();
-    while (keys.next()) |entry| {
-        if (!inList(&.{ "origin", "load_serial", "url", "recipient" }, entry.key_ptr.*)) return error.InvalidParams;
-    }
-    const text = struct {
-        fn of(o: std.json.ObjectMap, key: []const u8) error{InvalidParams}![]const u8 {
-            return switch (o.get(key) orelse return error.InvalidParams) {
-                .string => |t| if (t.len > 0) t else error.InvalidParams,
-                else => error.InvalidParams,
-            };
-        }
-    };
-    const load_serial: u64 = switch (object.get("load_serial") orelse return error.InvalidParams) {
-        .integer => |n| std.math.cast(u64, n) orelse return error.InvalidParams,
-        else => return error.InvalidParams,
-    };
-    const recipient: ?[]const u8 = if (object.get("recipient") != null) try text.of(object, "recipient") else null;
-    if (recipient) |r| if (!isRecipientSlug(r)) return error.InvalidParams;
-    return .{ .origin = try text.of(object, "origin"), .load_serial = load_serial, .url = try text.of(object, "url"), .recipient = recipient };
-}
-
-/// A LinkedIn profile slug: 1 to 100 of A-Z, a-z, 0-9, `_`, `.`, `%`, `-`.
-fn isRecipientSlug(slug: []const u8) bool {
-    if (slug.len == 0 or slug.len > 100) return false;
-    for (slug) |c| if (!(std.ascii.isAlphanumeric(c) or c == '_' or c == '.' or c == '%' or c == '-')) return false;
-    return true;
 }
 
 /// The platform's session cookie must be in the store (never reads or

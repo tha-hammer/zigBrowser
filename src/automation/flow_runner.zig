@@ -25,6 +25,72 @@ pub const StepObserver = struct {
 
 /// S8 ("S8 in detail" decision 2, phases B and C): an approved real run's navigation and the
 /// document it committed. Phase A (the window as the card showed it) ran before the flow started.
+/// S8: an approval's expectation of a flow's window (strings borrowed from the request).
+pub const Expect = struct {
+    origin: []const u8,
+    load_serial: u64,
+    url: []const u8,
+    /// S8 decision 13: the LinkedIn slug a conversation message's approval names.
+    recipient: ?[]const u8 = null,
+};
+
+/// `expect: {origin: non-empty string, load_serial: integer >= 0, url: non-empty string,
+/// recipient?: a LinkedIn slug}`, no other key, else InvalidParams. Which flows may carry a
+/// recipient is the route's rule.
+pub fn parseExpect(value: std.json.Value) error{InvalidParams}!Expect {
+    const object = switch (value) {
+        .object => |o| o,
+        else => return error.InvalidParams,
+    };
+    var keys = object.iterator();
+    while (keys.next()) |entry| {
+        if (!inList(&.{ "origin", "load_serial", "url", "recipient" }, entry.key_ptr.*)) return error.InvalidParams;
+    }
+    const text = struct {
+        fn of(o: std.json.ObjectMap, key: []const u8) error{InvalidParams}![]const u8 {
+            return switch (o.get(key) orelse return error.InvalidParams) {
+                .string => |t| if (t.len > 0) t else error.InvalidParams,
+                else => error.InvalidParams,
+            };
+        }
+    };
+    const load_serial: u64 = switch (object.get("load_serial") orelse return error.InvalidParams) {
+        .integer => |n| std.math.cast(u64, n) orelse return error.InvalidParams,
+        else => return error.InvalidParams,
+    };
+    const recipient: ?[]const u8 = if (object.get("recipient") != null) try text.of(object, "recipient") else null;
+    if (recipient) |r| if (!isRecipientSlug(r)) return error.InvalidParams;
+    return .{ .origin = try text.of(object, "origin"), .load_serial = load_serial, .url = try text.of(object, "url"), .recipient = recipient };
+}
+
+/// A LinkedIn profile slug: 1 to 100 of A-Z, a-z, 0-9, `_`, `.`, `%`, `-`.
+fn isRecipientSlug(slug: []const u8) bool {
+    if (slug.len == 0 or slug.len > 100) return false;
+    for (slug) |c| if (!(std.ascii.isAlphanumeric(c) or c == '_' or c == '.' or c == '%' or c == '-')) return false;
+    return true;
+}
+
+/// S8 phase A ("S8 in detail" decision 2): the bound window as the approval card showed it (its
+/// origin and load_serial), read inside the flow's own ticket before its session gate, pacing
+/// or any page input. The refusal, or null to go on. As for the verbs (RoseCat db43ca1): a stop,
+/// then a check that used up the budget, then what the check found.
+pub fn phaseA(gpa: std.mem.Allocator, ext: *engine_mod.External, expect: Expect, deadline_ms: u64) error{OutOfMemory}!?engine_mod.Outcome {
+    const ids = ext.ids();
+    var found: ?engine_mod.Outcome = switch (try ext.boundWindow(gpa, deadline_ms -| ext.nowMs())) {
+        .refused => |refused| refused,
+        .window => |window| blk: {
+            defer window.deinit(gpa);
+            break :blk try engine_mod.windowRefusal(gpa, window, .{ .origin = expect.origin, .load_serial = expect.load_serial }, ids);
+        },
+    };
+    if (ext.cancelled() or ext.nowMs() >= deadline_ms) {
+        if (found) |*f| f.deinit(gpa);
+        if (ext.cancelled()) return try engine_mod.automationFailure(gpa, .cancelled, null, ids);
+        return try engine_mod.automationFailure(gpa, .action_timeout, "expect_used_deadline", ids);
+    }
+    return found;
+}
+
 pub const Approval = struct {
     /// The one navigation the user approved, exactly.
     url: []const u8,
@@ -620,4 +686,11 @@ pub fn internalFailure(gpa: std.mem.Allocator, ids: script_command.Ids) error{Ou
         .message = "Unexpected page answer",
         .data_json = try std.json.Stringify.valueAlloc(gpa, Data{ .trace_id = ids.trace_id, .command_id = ids.command_id }, .{}),
     } };
+}
+
+fn inList(list: []const []const u8, item: []const u8) bool {
+    for (list) |entry| {
+        if (std.mem.eql(u8, entry, item)) return true;
+    }
+    return false;
 }
