@@ -283,37 +283,79 @@ test "phase A is inside the ticket: a navigation while the run waits in line is 
     defer h.deinit();
     const second = &h.world.ports[1];
     second.hold.store(true, .release);
+    // Runs before h.deinit on every path, a failed wait included: the hold is cleared and each
+    // thread is joined exactly once (RoseCat 7012).
+    var threads = Threads{ .hold = &second.hold };
+    defer threads.joinAll();
 
-    const Call = struct {
-        fn run(harness: *Harness, method: []const u8, p: []const u8, out: *Reply) void {
-            out.* = harness.call(method, p) catch Reply{ .code = -1 };
-        }
-    };
     // The first command (no expectation) holds window 2's line inside its page call.
     var first_reply: Reply = .{};
-    const first = try std.Thread.spawn(.{}, Call.run, .{ h, "dom.click", "{\"selector\":\"css=#a\",\"window_id\":\"window-2\"}", &first_reply });
-    while (!second.held.load(.acquire)) testing.io.sleep(.fromMilliseconds(1), .awake) catch {};
+    threads.list[0] = try std.Thread.spawn(.{}, Call.run, .{ h, "dom.click", "{\"selector\":\"css=#a\",\"window_id\":\"window-2\"}", &first_reply });
+    try testing.expect(waitUntil(Held{ .page = second }, wait_ms));
 
     // The approved run queues behind it, with the card's serial 4.
     var buf: [512]u8 = undefined;
     const approved = try paramsFor(&buf, "\"selector\":\"css=#buy\"", "window-2", expect_ok);
     var approved_reply: Reply = .{};
-    const queued = try std.Thread.spawn(.{}, Call.run, .{ h, "dom.click", approved, &approved_reply });
-    var waited: u32 = 0;
-    while (h.server.queue.pendingCount("page-2") < 1 and waited < 5000) : (waited += 1) testing.io.sleep(.fromMilliseconds(1), .awake) catch {};
-    try testing.expectEqual(@as(usize, 1), h.server.queue.pendingCount("page-2"));
+    threads.list[1] = try std.Thread.spawn(.{}, Call.run, .{ h, "dom.click", approved, &approved_reply });
+    try testing.expect(waitUntil(Pending{ .harness = h, .page_id = "page-2" }, wait_ms));
 
     // A navigation commits while it waits; then the first command ends.
     h.world.load_serials[1].store(5, .release);
-    second.hold.store(false, .release);
-    first.join();
-    queued.join();
+    threads.joinAll();
 
     try testing.expectEqual(@as(?i64, null), first_reply.code);
     try testing.expectEqual(@as(?i64, -32015), approved_reply.code);
     try testing.expectEqualStrings("load_serial_changed", approved_reply.reason());
     // Only the first command's page call: the approved click sent nothing.
     try testing.expectEqual(@as(u32, 1), second.evals.load(.acquire));
+}
+
+const wait_ms: u32 = 5000;
+
+const Call = struct {
+    fn run(harness: *Harness, method: []const u8, p: []const u8, out: *Reply) void {
+        out.* = harness.call(method, p) catch Reply{ .code = -1 };
+    }
+};
+
+/// The ticket test's threads: `joinAll` clears the hold, then joins each started thread once.
+const Threads = struct {
+    hold: *std.atomic.Value(bool),
+    list: [2]?std.Thread = .{ null, null },
+
+    fn joinAll(self: *Threads) void {
+        self.hold.store(false, .release);
+        for (&self.list) |*slot| if (slot.*) |thread| {
+            thread.join();
+            slot.* = null;
+        };
+    }
+};
+
+const Held = struct {
+    page: *const Page,
+    fn done(self: Held) bool {
+        return self.page.held.load(.acquire);
+    }
+};
+
+const Pending = struct {
+    harness: *Harness,
+    page_id: []const u8,
+    fn done(self: Pending) bool {
+        return self.harness.server.queue.pendingCount(self.page_id) == 1;
+    }
+};
+
+/// Polls `condition.done()` every millisecond for at most `max_ms`.
+fn waitUntil(condition: anytype, max_ms: u32) bool {
+    var waited: u32 = 0;
+    while (!condition.done()) : (waited += 1) {
+        if (waited >= max_ms) return false;
+        testing.io.sleep(.fromMilliseconds(1), .awake) catch {};
+    }
+    return true;
 }
 
 const refused = [_]struct { what: []const u8, method: []const u8, params: []const u8 }{

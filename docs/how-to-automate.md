@@ -836,6 +836,31 @@ build only, elsewhere -32011 with `data.reason = "unsupported"`):
   the page navigates after the pointer started moving, the command stops
   with -32001 `document_changed` and does not click the new page.
 
+## Approved actions: `options.expect`
+
+The chat drawer runs an action you approved with the page state its card
+showed, so the action does not run on a page that changed after you approved
+it. Other clients can use it too:
+
+```json
+{"selector": "css=#buy", "window_id": "window-2",
+ "options": {"expect": {"origin": "https://shop.example", "load_serial": 4}}}
+```
+
+- It is accepted on `dom.click`, `dom.fill`, `dom.type`, `dom.press`,
+  `dom.selectOption`, `page.navigate` and `page.reload`, and needs a
+  `window_id`. `origin` is the window's page origin (scheme, `://`, host and
+  any port, lowercase; `file://` for files), and `load_serial` is the
+  window's `load_serial` from `page.list`.
+- It is checked when the command's turn on that window comes, before anything
+  is sent to the page: a dialog open is -32013; a crashed window, another
+  origin or another `load_serial` is -32015 `expectation_mismatch` with
+  `data.reason` `crashed`, `origin_changed` or `load_serial_changed`. Then
+  nothing was sent. Do not retry: approve again.
+- It is synthetic input only: with `input: "native"` or `humanize`, without
+  `window_id`, on any other method, or with any other field, the call is
+  -32602 and nothing runs.
+
 ## Import cookies from another browser
 
 Use this to bring a logged-in session into zigBrowser.

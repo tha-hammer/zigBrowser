@@ -553,6 +553,8 @@ fn dispatchParsed(allocator: std.mem.Allocator, id_json: []const u8, method: []c
         error.BadArgs => return jsonRpcError(allocator, id_json, -32602, "Invalid params", null),
     };
     defer command.deinit();
+    // S8: an expectation binds one window, so it names it.
+    if (command.expect != null and target.id == null) return jsonRpcError(allocator, id_json, -32602, "Invalid params", null);
 
     // forWindow is a pure handle constructor; when it refuses (no window
     // support, or an id it already knows is gone), the command still runs
@@ -580,6 +582,7 @@ fn dispatchParsed(allocator: std.mem.Allocator, id_json: []const u8, method: []c
         // The handle's first bounded call finds a closed window (in this
         // window's turn, after any page.close queued before it).
         .no_page_reason = if (target.id != null) "no_window" else null,
+        .window = target.id,
     });
     defer outcome.deinit(allocator);
     return switch (outcome) {

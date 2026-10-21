@@ -114,6 +114,8 @@ pub const ExecuteOptions = struct {
     port: ?page_port.PagePort = null,
     /// N23: `data.reason` when that page is gone (PortError.NoPage).
     no_page_reason: ?[]const u8 = null,
+    /// S8: the targeted window's id (`window_id`), which `options.expect` is checked against.
+    window: ?page_port.WindowId = null,
 };
 
 /// Handle given to `executeExternal` bodies: the command's ids plus
@@ -403,6 +405,7 @@ pub const Engine = struct {
         }
         const timeout_ms = requested_ms - options.queue_wait_ms;
         run.native_timeout_ms = timeout_ms;
+        if (command.expect) |expect| if (try self.checkExpect(gpa, expect, options.window, timeout_ms, run)) |refused| return refused;
         return switch (command.verb) {
             .page_url => {
                 const started = self.clock.nowMs();
@@ -463,6 +466,30 @@ pub const Engine = struct {
             .dom_scroll,
             => self.runDom(gpa, command, timeout_ms, run),
         };
+    }
+
+    /// S8 phase A (chat-drawer plan, "S8 in detail" decision 2): the approval card's state of the
+    /// bound window, read here, inside the run's own FIFO ticket and before any page input. Null
+    /// while it still holds; otherwise the refusal, and nothing has reached the page.
+    fn checkExpect(self: *Engine, gpa: std.mem.Allocator, expect: router.Expect, window: ?page_port.WindowId, timeout_ms: u64, run: *Run) error{OutOfMemory}!?Outcome {
+        const id = window orelse return try failureWithReason(gpa, invalid_params_code, "Invalid params", "expect_needs_window", run.ids);
+        const windows = self.port.listWindows(gpa, timeout_ms) catch |err| return try portFailure(gpa, err, .action, run.ids);
+        defer page_port.freeWindows(gpa, windows);
+        const info = for (windows) |w| {
+            if (w.id == id) break w;
+        } else return try automationFailure(gpa, .session_invalid, "no_window", run.ids);
+        if (info.dialog_open) return try automationFailure(gpa, .dialog_open, null, run.ids);
+        const origin = try originOf(gpa, info.url);
+        defer gpa.free(origin);
+        const reason: ?[]const u8 = if (info.terminated != null)
+            "crashed"
+        else if (!std.mem.eql(u8, origin, expect.origin))
+            "origin_changed"
+        else if (info.load_serial != expect.load_serial)
+            "load_serial_changed"
+        else
+            null;
+        return if (reason) |r| try automationFailure(gpa, .expectation_mismatch, r, run.ids) else null;
     }
 
     /// page.screenshot (v3.4): `{data: base64 PNG, width, height}`. A
@@ -1073,6 +1100,23 @@ pub const Engine = struct {
         };
     }
 };
+
+/// S8: a page URL's origin as an approval card shows and binds it: the lowercased scheme, "://",
+/// and the lowercased authority without any userinfo (host and an explicit port, as the URL has
+/// them). `file:` URLs give "file://"; a URL with no authority gives "null". Owned by `gpa`.
+pub fn originOf(gpa: std.mem.Allocator, url: []const u8) error{OutOfMemory}![]u8 {
+    const colon = std.mem.indexOfScalar(u8, url, ':') orelse return gpa.dupe(u8, "null");
+    const scheme = url[0..colon];
+    const rest = url[colon + 1 ..];
+    if (scheme.len == 0 or !std.mem.startsWith(u8, rest, "//")) return gpa.dupe(u8, "null");
+    const after = rest[2..];
+    const end = std.mem.indexOfAny(u8, after, "/?#") orelse after.len;
+    var authority = after[0..end];
+    if (std.mem.lastIndexOfScalar(u8, authority, '@')) |at| authority = authority[at + 1 ..];
+    const out = try std.mem.concat(gpa, u8, &.{ scheme, "://", authority });
+    for (out) |*c| c.* = std.ascii.toLower(c.*);
+    return out;
+}
 
 fn withNoPageReason(ids: script_command.Ids, reason: ?[]const u8) script_command.Ids {
     var out = ids;

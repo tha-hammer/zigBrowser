@@ -47,6 +47,16 @@ pub const Locate = struct {
     focus: bool,
 };
 
+/// S8 phase A (chat-drawer plan, "S8 in detail" decision 2): an approval card's state of the
+/// bound window, checked by the engine inside the run's own FIFO ticket before any page input.
+/// `options.expect` on dom.click, dom.fill, dom.type, dom.press, dom.selectOption, page.navigate
+/// and page.reload only, never with native input or humanize.
+pub const Expect = struct {
+    /// The window's page origin as `engine.originOf` gives it.
+    origin: []const u8,
+    load_serial: u64,
+};
+
 pub const RouteContext = struct {
     page_id: []const u8 = "page-unknown",
     window_id: []const u8 = "window-unknown",
@@ -95,6 +105,8 @@ pub const ParsedCommand = struct {
     /// native click/type/press; the engine owns the schedule.
     humanize: bool = false,
     locate: ?Locate = null,
+    /// S8: `options.expect` (approved runs).
+    expect: ?Expect = null,
 
     pub fn deinit(self: *ParsedCommand) void {
         self.arena.deinit();
@@ -267,6 +279,16 @@ pub fn parse(
     command.humanize = humanizeOption(obj) catch return error.BadArgs;
     // delay_ms is only parsed for dom.type, so check its presence directly.
     if (command.humanize and (input != .native or obj.get("delay_ms") != null)) return error.BadArgs;
+
+    command.expect = try parseExpect(arena_allocator, obj);
+    if (command.expect != null) {
+        switch (verb) {
+            .dom_click, .dom_fill, .dom_type, .dom_press, .dom_select_option, .page_navigate, .page_reload => {},
+            else => return error.BadArgs,
+        }
+        // Only synthetic input is checked in the same task as its event (decision 4).
+        if (input == .native or command.humanize) return error.BadArgs;
+    }
 
     command.arena = arena;
 
@@ -473,6 +495,36 @@ fn applyActionOptions(command: *ParsedCommand, obj: std.json.ObjectMap, strict_d
     command.trial = optionalBool(options_obj, "trial", false) catch return error.BadArgs;
     command.timeout_ms = optionalU64(options_obj, "timeout_ms") catch return error.BadArgs;
     command.input = try parseInputMode(obj);
+}
+
+/// `options.expect`: absent -> null; else exactly `{origin: non-empty string, load_serial:
+/// integer >= 0}`. Anything else is BadArgs. A non-object `options` is left to the verb's own
+/// parse.
+fn parseExpect(arena: std.mem.Allocator, obj: std.json.ObjectMap) error{BadArgs}!?Expect {
+    const options = obj.get("options") orelse return null;
+    const options_obj = switch (options) {
+        .object => |object| object,
+        else => return null,
+    };
+    const value = options_obj.get("expect") orelse return null;
+    const expect_obj = switch (value) {
+        .object => |object| object,
+        else => return error.BadArgs,
+    };
+    var keys = expect_obj.iterator();
+    while (keys.next()) |entry| {
+        const key = entry.key_ptr.*;
+        if (!std.mem.eql(u8, key, "origin") and !std.mem.eql(u8, key, "load_serial")) return error.BadArgs;
+    }
+    const origin = switch (expect_obj.get("origin") orelse return error.BadArgs) {
+        .string => |text| if (text.len > 0) text else return error.BadArgs,
+        else => return error.BadArgs,
+    };
+    const load_serial: u64 = switch (expect_obj.get("load_serial") orelse return error.BadArgs) {
+        .integer => |n| std.math.cast(u64, n) orelse return error.BadArgs,
+        else => return error.BadArgs,
+    };
+    return .{ .origin = arena.dupe(u8, origin) catch return error.BadArgs, .load_serial = load_serial };
 }
 
 /// `options.input`: absent or "synthetic" -> synthetic, "native" -> native,
