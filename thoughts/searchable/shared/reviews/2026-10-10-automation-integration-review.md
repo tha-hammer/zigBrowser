@@ -26056,3 +26056,56 @@ method/verb dispatch and one target-port/window route for both verbs. Likewise,
 one real-binary `x.post` e2e is adequate once direct schedule coverage proves
 the shared route contract. Findings were mailed to BlackRobin in Agent Mail
 7407 before the green commit.
+
+## MS6.5.1 Clean fixed-point green (`19ff604`)
+
+**BLOCKED — a changed or unreadable matching process can produce a false
+Clean result.** The original `eed20af` red is causal for its stable-parent
+case: an independent exact-archive compile and run inside a private user/PID
+namespace exited 1, killed only PID 1001, missed the fork-after-gather child
+1002, and declared clean after one pass. The green replaces that named
+single-pass mutant and registers the new suite in both its named build step
+and the Linux top-level test step.
+
+All four exact-`19ff604` registered reaper steps were independently green from
+a clean export with `DISPLAY` and `WAYLAND_DISPLAY` unset and the entire build
+inside `unshare --user --map-root-user --pid --fork --mount-proc`:
+
+`Build Summary: 13/13 steps succeeded; 7/7 tests passed`
+
+- `test-agent-run-reaper`: 7/7;
+- `test-agent-run-reaper-engine`: 42 checks;
+- `test-agent-run-reaper-pin`: 13 checks; and
+- `test-agent-run-reaper-fixed-point`: 6 checks, including PIDs 1001 and 1002
+  killed before an empty third pass authorizes clean.
+
+That new test covers only a stable parent. The production predicate at
+`src/agent_run_reaper.c:221-226` treats `kn == 0 && sn == 0` as the complete
+empty final census. But `zb_reaper_engine` silently drops an initially matching
+candidate from both lists when its BSD identity is unavailable
+(`src/agent_run_reaper.c:146`) or it vanishes, changes identity or changes uid
+at the pre-kill inspection (`:154`). The fixed-point wrapper therefore cannot
+distinguish “no matches” from “a match became unsafe to signal.”
+
+An independent signal-free injected reproducer, also under the private PID
+namespace, made generation 0 return matching parent PID 1001, changed its
+start time before its second inspection, and made generation 1 contain child
+PID 1002. Exact `19ff604` returned:
+
+`rc=0 clean=1 passes=1 overflow=0 killed_b=0`
+
+It never performed the fresh census and missed the child. The engine must
+surface an initially matched-but-unresolved/changed candidate as uncertainty
+that forces another census; persistent unreadability or exhausting the pass
+cap must remain not-clean. The fixed-point suite must causally cover that
+identity-change/child race, persistent `have_bsd == false`, scan
+`EIO`/`EOVERFLOW`, and pass-cap exhaustion.
+
+Exact `19ff604` has no production `reaper_ready` symbol and no production
+caller of `zb_reaper_fixed_point`; the destructive Mac gate remains excluded
+from the reviewed hard-gate manifest. This commit therefore does **not** arm a
+real signal path, but its commit-message claim that the immutable false
+constant “stays” false is premature: plan rev 27 schedules that constant and
+its bypass mutants as a later red/green. The now-registered fixed-point test's
+header still says `UNREGISTERED`, a NIT. The blocker was mailed to JadeBeacon
+in Agent Mail 7411.
