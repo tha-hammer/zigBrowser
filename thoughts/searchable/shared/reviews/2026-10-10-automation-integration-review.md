@@ -22140,3 +22140,47 @@ The red-side SHOULD also remains: assert the exact five dataclass fields and
 report downstream mutants rather than relying only on the common `PLATFORM`
 addition. No full gate was run; the focused exact-SHA test and reproducer are
 display-free.
+
+## Windows WS1.4/WS1.5 red fix-forward (`6442bc4`)
+
+**BLOCKED-for-tests; `08bd75a` remains open.** Exact `6442bc4` is test-only and
+unregistered. A clean, display-scrubbed run compiles and collects both cases;
+both fail at the intended current precondition that no WS1 executable is staged,
+with ResourceWarnings promoted to errors. It correctly replaces the invented
+`WEBVIEW2_RUNTIME_DISABLED` knob with the plan's guarded, unique empty-browser-
+folder seam; pins exit 9 and the full documented message text; expands the
+version-line grammar to include runtime, OS build and executing architecture;
+and adds a same-executable PE-machine comparison. Those are material advances,
+but three oracle defects remain before the red is fit to register:
+
+1. **BLOCKER-for-tests — the exact diagnostic may come from stdout.** The plan
+   requires the runtime-missing text in `err`, but the test searches
+   `r.stdout + r.stderr` (`tests/windows/ws1_run_test.py:118-122`). A program
+   that prints the message on the wrong channel passes. Require the exact line
+   in stderr; ideally also keep stdout free of this fatal diagnostic.
+2. **BLOCKER-for-tests — the PE fetch uses a non-Windows remote path.** The
+   default executable is `%USERPROFILE%\\zb\\zigBrowser.exe`, but the fetch
+   rewrites it to `/home/<user>/zb/zigBrowser.exe` (`:142-147`). The working
+   Windows OpenSSH tests use paths relative to the account's SFTP home, such as
+   `zb/...`; `/home/<user>` is a Linux assumption and can make a correct build
+   fail before `pe_census` runs. Use the already proven Windows home-relative
+   transport or a separately pinned local artifact whose provenance is the
+   exact remote executable.
+3. **SHOULD-for-tests — “current runtime version” is not independently
+   observed.** `(?P<ver>[\\d.]+)` accepts any dotted text (including malformed
+   dot runs), and nothing compares it with the loader's current runtime result
+   (`:45-49,132-140`). At minimum use a numeric-component grammar. To substantiate
+   the stronger “what actually ran/current runtime” claim, compare against an
+   independent loader query in the VM fixture or narrow the claim to a complete
+   version-line shape. The OS-build value likewise is shape-checked, not
+   independently cross-checked.
+
+The missing-runtime seam remains explicitly spike-unverified by the plan; this
+review does not treat its presence in the red as proof that WebView2 honors it.
+The fallback e2e seam may be selected only after that measured spike and must be
+implemented/tested before use. Also make the output PNG unique and remove it in
+the cleanup path so an unexpected screenshot cannot leave or overwrite a stale
+VM artifact (`:105-124`).
+
+Therefore the watched WS0 runs still gate `7d85cd5`, and **`08bd75a` remains the
+next linear blocker afterward**. No later blocker is promoted yet.
