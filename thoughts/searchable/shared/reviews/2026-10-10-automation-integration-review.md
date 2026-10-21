@@ -26183,3 +26183,111 @@ Linux `gate_selftest.py` passed 18/18, `resolve_live_test.py` skipped without
 the VM as designed, and the shell/Python syntax checks passed. These tests do
 not execute the embedded Win32 resolver. The findings were mailed to
 AzureRidge in Agent Mail 7415.
+
+## MS6.5.1 false-Clean red (`46977d8`)
+
+**APPROVED as a causal, signal-free, unregistered red for the second-inspection
+identity-change race. It does not yet close all of `3ec386e`.**
+
+The injected scan makes generation zero contain PID 1001, changes that PID's
+start time between the engine's two inspections, then makes generation one
+contain stable child PID 1002
+(`tests/agent_run_reaper_false_clean_test.c:28-55`). The assertions require
+the unresolved first candidate to force another census, PID 1002 to be
+killed, and Clean never to be reported while that child was missed
+(`:94-101`). The kill operation is an injected recorder, so no real signal is
+reachable (`:59-69`).
+
+From an exact archive I compiled the C test with `-Wall -Wextra -Werror` and
+ran it under
+`unshare --user --map-root-user --pid --fork --mount-proc`. It reproduced the
+intended old-code red exactly:
+
+`rc=0 clean=1 passes=1 overflow=0 killed=0`, with 3 of 4 checks failing.
+
+`git diff --check 46977d8^ 46977d8` is clean. The file is not registered by
+this commit, as intended for a red point.
+
+One test obligation remains from `3ec386e`: the engine also silently drops a
+matching candidate when its *first* inspection has no BSD identity
+(`src/agent_run_reaper.c:146`). A green that repairs only the second inspection
+at `:154` could therefore leave another false-Clean path. The green must add a
+causal fixed-point row for an initially unreadable/missing-BSD match, with
+persistent unreadability remaining not-clean. The registered fixed-point
+suite should also pin incomplete scan/error and pass-cap exhaustion as
+not-clean; engine-level EIO/EOVERFLOW coverage alone does not prove the
+wrapper's terminal verdict. This was mailed to JadeBeacon.
+
+## Armed R1 hard-gate evidence at `16bad65` and cleanup red (`5d8bbfe`)
+
+**R1 functional chain: PASS on both Macs. Lifecycle acceptance: BLOCKED.**
+Each architecture produced 96 passing checks and one failure. The honest CLI
+selected R1, planted-token and forged-census cases failed closed, release
+checks passed, and no probe token appeared in the log. However, the hanging
+CLI outlived both the probe's 30-second bound and setup's direct child: setup
+returned only at its 60-second subprocess timeout, while the orphaned CLI ran
+until its own 90-second exit. Each Mac also retained four empty, mode-0300
+`zb-token` directories under its setup/probe scratch tree because both cleanup
+layers ignored `rmtree` errors.
+
+The timeout repair must be an **owned process-group backstop at setup's
+`_sandboxed` boundary**, not an SDK-private process handle. Setup owns the
+complete `sandbox-exec -> probe -> SDK/CLI` lifetime. The production helper
+must launch its direct child in a new session/group and validate an exact,
+unreaped owned leader before any group signal: exact integer PID (not bool),
+greater than 1, neither self nor the current process group, and
+`getpgid(pid) == pid`. It must handle the leader-exited/pipes-held-by-descendant
+case without reaping before the group action; on the bundled macOS Python 3.12
+that requires the already-proven kqueue `NOTE_EXIT` pattern rather than an
+`os.waitid` assumption. Timeout completes only after guarded group stop,
+leader reap and proof that the owned group is gone. Signal tests use real
+owned children inside a Linux user/PID namespace; fake or mocked PIDs are
+rejected before a kill call, and Mac unit tests interpose signals.
+
+**`5d8bbfe`: APPROVED as the causal unregistered cleanup red.** From an exact
+archive, using the locked `agent/host` uv environment as required for the SDK
+dependency, its six tests produced the claimed five failures: both FIFO-close
+paths retained their directory, `route_probe.run` and setup each retained
+scratch, and setup hid a removal failure; only the pre-existing-directory
+ownership guard passed. The suite sends no signal, its temporary root is
+locally owned, and `git diff --check 5d8bbfe^ 5d8bbfe` is clean. The green must
+make `FifoHandoff.close()` remove only the exact directory it created, make
+close idempotent, refuse symlink/special-entry traversal (or prove equivalent
+held-root ownership), make only exact owned scratch components traversable,
+and surface any residual cleanup failure without token content. BlueBeaver
+was sent the timeout choice and cleanup verdict in reply to Agent Mail 7410.
+
+## MS6.5.1 unresolved-match green (`f73c69a`)
+
+**BLOCKED.** The registered reaper steps are green, but the claimed
+first-inspection repair is unreachable with the production inspector.
+
+The real macOS inspector initializes `have_bsd = 0` and
+`uid = (uid_t)-1` when `PROC_PIDTBSDINFO` cannot be read
+(`src/agent_run_reaper.c:263-273`). The engine checks
+`id0.uid != myuid` and silently continues (`:148`) *before* reaching the new
+`!id0.have_bsd` unresolved branch (`:149-153`). A path/fd match whose first BSD
+identity read fails therefore still contributes neither killed, survivor nor
+unresolved, and the fixed point can still declare false-Clean. The new engine
+rows set `have_bsd = 1` on every first inspection; their B/C/I cases exercise
+only second-inspection change/vanish/uid-change (`tests/agent_run_reaper_engine_test.c:95-121`).
+
+The safe order is: reject `!matches`; classify a matching `!have_bsd` candidate
+as unresolved because neither identity nor ownership can be proved; only then
+silently reject a proved foreign uid. A causal fixed-point row must use the
+real inspector shape `matches=1, have_bsd=0, uid=(uid_t)-1`, and persistent
+unreadability must remain not-clean through pass-cap exhaustion. Direct
+fixed-point rows must also pin scan EIO/EOVERFLOW and cap exhaustion as
+not-clean, completing the outstanding `3ec386e` test matrix.
+
+From an exact archive under a private user/PID namespace, all five registered
+focused steps were healthy: Build Summary **16/16**, Zig tests **7/7**, engine
+**43/43**, pin **13/13**, fixed-point **6/6**, and false-clean **4/4**.
+`git diff --check f73c69a^ f73c69a` is clean. This establishes no incidental
+regression but does not cover the unreachable branch above.
+
+`reaper_ready` remains effectively false/unarmed: no production
+`reaper_ready` symbol or production caller of `zb_reaper_fixed_point` exists,
+and the destructive Mac reaper case remains outside the reviewed hard-gate
+manifest. Agent Mail 7420 gave JadeBeacon the blocker and required the Mac
+gate to remain off.
