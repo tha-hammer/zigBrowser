@@ -511,19 +511,50 @@ class PublishContract(_Case):
             self.assertTrue((outdir / "current" / "zigBrowser.exe").exists(),
                             "publish must land in the pinned root (g-* direct child)" + detail)
 
-    def test_publish_lock_symlink_refused(self):
-        # RoseCat 94be4e5: a '>' redirect to .publish.lock would follow a planted symlink and truncate the
-        # target. The lock leaf must be refused when it is a symlink.
-        def pre(td, out):
-            outdir = out.parent.parent; outdir.mkdir(parents=True, exist_ok=True)
-            victim = td / "victim.txt"; victim.write_text("precious")
-            (outdir / ".publish.lock").symlink_to(victim)
+    def test_lock_leaf_symlink_planted_mid_fetch_does_not_truncate(self):
+        # RoseCat 705dcf8: the EXACT mid-fetch race. A '.publish.lock' check-then-open is TOCTOU — a symlink
+        # planted AFTER the check (while the fetch is paused) would be followed by a later '>' and truncate
+        # the target. The fix locks the PINNED DIRECTORY INODE (fd 9 = cwd '.'), never a lock leaf, so a
+        # planted '.publish.lock' symlink is never opened and the victim is never truncated.
         with tempfile.TemporaryDirectory() as t:
             td = pathlib.Path(t)
-            proc = self._run(td, pre=pre)
-            self._fail_closed(proc, "'.publish.lock' is a symlink")
-            self.assertEqual((td / "victim.txt").read_text(), "precious",
-                             "a planted lock symlink must not be followed/truncated")
+            bindir = td / "bin"; bindir.mkdir(); _fakes(bindir)
+            (td / "root").mkdir(); (td / "home").mkdir()
+            (td / "key").write_text("x"); (td / "kh").write_text("#")
+            outdir = td / "out"; outdir.mkdir()
+            marker = td / "marker"; marker.mkdir()
+            victim = td / "victim.txt"; victim.write_text("precious")
+            env = {
+                "PATH": str(bindir) + os.pathsep + _BASE_PATH, "HOME": str(td / "home"),
+                "ZB_SELFTEST_ROOT": str(td / "root"),
+                "ZB_WIN11_HOST": "127.0.0.1", "ZB_WIN11_PORT": "2222", "ZB_WIN11_USER": "zbtext",
+                "ZB_WIN_KEY": str(td / "key"), "ZB_WIN_KNOWN_HOSTS": str(td / "kh"),
+                "ZB_WEBVIEW2_INCLUDE": r"C:\wv2\include", "ZB_WEBVIEW2_LIB": r"C:\wv2\lib\x64",
+                "ZB_ZIG": r"C:\tools\zig.exe",
+                "ZB_WIN_EXE": str(outdir / "current" / "zigBrowser.exe"),
+                "ZB_SELFTEST_SCP_PAUSE": str(marker),
+                "DISPLAY": ":99", "WAYLAND_DISPLAY": "wayland-9", "XAUTHORITY": "/tmp/parent.Xauth",
+            }
+            p = subprocess.Popen(["bash", SCRIPT], env=env, stdout=subprocess.PIPE,
+                                 stderr=subprocess.PIPE, text=True)
+            try:
+                started = marker / "scp_started"
+                for _ in range(400):
+                    if started.exists():
+                        break
+                    time.sleep(0.05)
+                self.assertTrue(started.exists(), "the fetch never started")
+                (outdir / ".publish.lock").symlink_to(victim)   # plant the lock symlink MID-FETCH
+                (marker / "scp_go").write_text("go")
+                out, err = p.communicate(timeout=60)
+            finally:
+                if p.poll() is None:
+                    p.kill(); p.communicate()
+            detail = f"\nrc={p.returncode}\nstdout:\n{out}\nstderr:\n{err}"
+            self.assertEqual(victim.read_text(), "precious",
+                             "a lock-leaf symlink planted mid-fetch must not be followed/truncated" + detail)
+            self.assertTrue((outdir / "current" / "zigBrowser.exe").exists(),
+                            "the dir-inode lock lets the publish still succeed" + detail)
 
     def test_parent_symlink_root_refused_on_publish_no_escape(self):
         # RoseCat c09d439 (1): a symlink in a PARENT of the publish root (not just the leaf gen) must also be
@@ -690,10 +721,9 @@ class AtomicPublish(_Case):
             (inflight / "zigBrowser.exe").write_bytes(b"MZinflight\n")
             old = time.time() - 7200                                       # 2h old, so grace alone would reap it
             os.utime(inflight, (old, old))
-            lockpath = outdir / ".publish.lock"; lockpath.touch()
-            lf = open(lockpath, "w")
+            dirfd = os.open(str(outdir), os.O_RDONLY)                       # the lock IS the directory inode
             try:
-                fcntl.flock(lf.fileno(), fcntl.LOCK_EX)                    # a publisher holds the lock
+                fcntl.flock(dirfd, fcntl.LOCK_EX)                          # a publisher holds the dir-inode lock
                 proc = self._run(td, {"ZB_GC_LOCK_WAIT": "1"}, args=["--gc"])
                 detail = f"\nrc={proc.returncode}\n{proc.stdout}\n{proc.stderr}"
                 self.assertNotEqual(proc.returncode, 0,
@@ -701,7 +731,7 @@ class AtomicPublish(_Case):
                 self.assertTrue(inflight.exists(),
                                 "GC must not delete an in-flight generation while a publish holds the lock" + detail)
             finally:
-                fcntl.flock(lf.fileno(), fcntl.LOCK_UN); lf.close()
+                fcntl.flock(dirfd, fcntl.LOCK_UN); os.close(dirfd)
 
 
 class StagePrepGatesBuild(_Case):

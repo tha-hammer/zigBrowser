@@ -79,11 +79,9 @@ if [ "${1:-}" = "--gc" ]; then
   if [ "$(pwd -P)" != "$PWD" ]; then
     echo "build-on-windows: publish root '$gc_outdir' resolves through a symlink — refusing GC" >&2; exit 3
   fi
-  # RoseCat 94be4e5: no persistent 'gen/' hop — generations are g-* directly in the pinned cwd, so there is
-  # no swappable intermediate component. The lock leaf must not be a symlink (a '>' redirect would follow it).
-  if [ -L .publish.lock ]; then
-    echo "build-on-windows: '.publish.lock' is a symlink — refusing GC" >&2; exit 3
-  fi
+  # RoseCat 94be4e5/705dcf8: no persistent 'gen/' hop (generations are g-* directly in the pinned cwd), and
+  # the lock is the PINNED DIRECTORY INODE itself (fd 9 = the cwd `.`), never a `.publish.lock` leaf. A
+  # directory fd cannot be redirected by a planted symlink, so the check-then-open race is gone entirely.
   {
     if ! flock -w "${ZB_GC_LOCK_WAIT:-10}" 9; then
       echo "build-on-windows: GC could not acquire the publish lock (a publish is in progress)" >&2; exit 3
@@ -95,7 +93,7 @@ if [ "${1:-}" = "--gc" ]; then
       [ "$gb" = "$live_base" ] && continue
       if [ -d "$g" ] && [ ! -L "$g" ] && [[ "$g" == ./g-* ]]; then rm -rf -- "${g:?}"; fi
     done < <(find . -mindepth 1 -maxdepth 1 -type d -name 'g-*' -not -newermt '-1 hour' 2>/dev/null)
-  } 9>".publish.lock"
+  } 9<"."
   exit 0
 fi
 
@@ -199,10 +197,6 @@ if [ -z "$step" ]; then
   fi
   # RoseCat 94be4e5: NO persistent 'gen/' hop — generations are g-* directly in the pinned cwd, created
   # fresh by mktemp each run, so there is no post-validation intermediate component an attacker could swap.
-  # The lock leaf must not be a symlink (a '>' redirect would follow it).
-  if [ -L .publish.lock ]; then
-    echo "build-on-windows: '.publish.lock' is a symlink — refusing to publish" >&2; exit 3
-  fi
   part=".fetch-$$.part"
   rm -f -- "$part" "$part.sha"
   "${scrub[@]}" timeout "$fetch_to" scp -i "$key" -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
@@ -217,11 +211,12 @@ if [ -z "$step" ]; then
   if ! printf '%s\n' "$sha" > "$part.sha"; then
     echo "build-on-windows: provenance write failed" >&2; rm -f -- "$part" "$part.sha"; exit 3
   fi
-  # RoseCat c09d439 (2): hold the publish lock from BEFORE generation creation through the checked swap (the
-  # fetch/validate above stays outside it). mktemp -d is an O_EXCL fresh generation; publish is APPEND-ONLY
-  # (it never deletes an existing generation). Because a concurrent --gc takes this SAME lock, it can never
-  # delete this in-flight generation no matter how long this process is suspended. All paths are relative to
-  # the pinned cwd (RoseCat 175efb8).
+  # RoseCat c09d439/705dcf8: hold the lock from BEFORE generation creation through the checked swap (the
+  # fetch/validate above stays outside it). The lock is the PINNED DIRECTORY INODE itself (fd 9 = the cwd
+  # `.`), NOT a `.publish.lock` leaf — a directory fd cannot be redirected by a planted symlink, so there is
+  # no check-then-open race. mktemp -d is an O_EXCL fresh generation; publish is APPEND-ONLY; a concurrent
+  # --gc takes this SAME directory-inode lock, so it can never delete this in-flight generation. All paths
+  # are relative to the pinned cwd (RoseCat 175efb8).
   pub_rc=0
   {
     if ! flock -w "${ZB_PUBLISH_LOCK_WAIT:-60}" 9; then
@@ -241,7 +236,7 @@ if [ -z "$step" ]; then
         pub_rc=3; rm -f -- ".current.$$"
       fi
     fi
-  } 9>".publish.lock"
+  } 9<"."
   rm -f -- "$part" "$part.sha"
   if [ "$pub_rc" -eq 42 ]; then echo "build-on-windows: interrupted before current-swap (selftest)" >&2; exit 42; fi
   if [ "$pub_rc" -ne 0 ]; then echo "build-on-windows: publish failed" >&2; exit 3; fi
