@@ -21295,3 +21295,57 @@ and fail-closed collision rule; `3e027b9` predates that ruling and its plan text
 at lines 1600-1623 must be superseded. Findings mailed to JadeBeacon in Agent
 Mail 7080. No remote Mac or full Linux gate was needed for this docs/test
 review.
+
+## MS6.4 durable endpoint-contract correction (`6016938`)
+
+Reviewed exact docs/test commit `6016938` on 2026-10-21. **Verdict: APPROVED
+for the scoped endpoint-contract correction.** It closes the unsafe plan claim
+identified in 7071: a momentary `ECONNREFUSED` on the Seatbelt-permitted IPv6
+endpoint is not ownership. The authoritative contract now requires the app to
+hold both the listening IPv4 socket and a non-listening, no-reuse
+`AF_INET6`/`IPV6_V6ONLY` reservation on `::1:<same port>` for exactly the
+session/probe lifetime. Collision fails before READY or profile publication;
+the netd and R1 paths each require pre-planted-listener, second-bind, lifetime
+and socket-shape proofs. The added alternate IPv4/IPv6 port and IPv4/IPv6 UDP
+rows correctly distinguish policy denial from ordinary refusal.
+
+This approval is deliberately scoped. BlueBeaver's production reservation and
+its two real gates are still required before MS6.4a is complete. The two
+independent `3e027b9` test findings also remain open: its shell oracle does not
+assert emitted `ENETDOWN`/`EHOSTDOWN` rows, and its TEST-NET case accepts
+non-timeout outcomes and therefore does not discriminate the select-timeout
+branch.
+
+**SHOULD:** update stale shell comments at
+`ms6_4_egress_test.sh:13-14,141-144`; they still say `::1` is denied or merely
+reachless because nothing listens, contradicting the new
+REFUSED-under-owned-reservation contract at :150-154. Until the reservation
+green lands, its comments should describe that half as pending rather than
+present-tense implemented/tested. Exact-diff checks and `sh -n` passed; owner
+reports the new policy rows green on both Macs. Verdict mailed to JadeBeacon
+in Agent Mail 7084.
+
+## R1 exact census framing fix (`1fa5f2d`)
+
+Reviewed exact commit `1fa5f2d` on 2026-10-21. **Verdict: APPROVED.** It closes
+the sole blocker on `ac15dfd`. `_ask_census` now sends one request and
+half-closes its write side; setup reads the complete bounded stream through
+EOF and full-matches all bytes. A second line, one trailing byte, partial
+request, oversize or wrong port is dirty and never reaches
+`cli_env_clean`. The response keeps the existing monotonic deadline, and the
+silent/partial-peer, subprocess-timeout, abandoned-join and descriptor-owner
+teardown paths remain fail-closed.
+
+The new tests do not bypass production framing: the helper fakes now half-close
+like `_ask_census`, trailing input must return exactly `dirty\n` with zero
+census calls, and a dedicated peer observes the one exact request followed by
+EOF. Independently applying only those tests to parent `6016938` produced the
+claimed **three failures**; at `1fa5f2d`, `test_route_probe_census`,
+`test_setup_census` and `test_setup_darwin_r1` passed **36/36** under `-X dev`
+with the display scrubbed. BlueBeaver also reports the registered
+`test-agent-setup-ms5` gate green at 18/18 steps.
+
+Cumulative verdict: `ac15dfd` plus `1fa5f2d` are **APPROVED** for scoped
+MS6.6(A). MS6.6(B), `seatbelt_ready` and Mac agent launch remain open exactly
+as documented. Verdict mailed to BlueBeaver in Agent Mail 7083. No aggregate
+gate was started while the shared slot belonged to BlackRobin.
