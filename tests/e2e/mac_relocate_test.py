@@ -15,10 +15,13 @@ packaging/macos/relocate_python_framework.py plans the rewrite from each Mach-O'
   - @rpath/@loader_path/@executable_path dependencies and system ones are left alone.
 - problems(files, old_root) -> every id or dependency still under /Library/Frameworks/Python.framework, or absolute
   outside /usr/lib/ and /System/ (the static census the Mac gate runs after relocation).
+- parse_otool(output) -> the install names only: fat per-architecture headers and notes like "is an LLVM bit-code
+  file" (config-3.12-darwin/python.o on arm64) are not paths.
 
 Pure, no process, no signal. The real relocation and the runtime proof (every non-system image loaded comes from the
 staged tree, also after the tree is moved) are tests/mac/ms5_relocate_gate.sh on both Macs.
-Run like the gate: cd tests/e2e && python3 -X dev -m unittest -v mac_relocate_test. Unregistered until the green.
+Registered (build.zig: test-mac-census and the Linux test step).
+Run like the gate: cd tests/e2e && python3 -X dev -m unittest -v mac_relocate_test.
 """
 import importlib.util
 import unittest
@@ -104,9 +107,33 @@ class Plan(unittest.TestCase):
     def test_system_and_relative_dependencies_are_left_alone(self):
         files = {"lib/a.dylib": {"id": "@rpath/a.dylib",
                                  "deps": ["@rpath/a.dylib", "@loader_path/b.dylib", "@executable_path/c",
-                                          "/usr/lib/libz.1.dylib", "/System/Library/Frameworks/Foundation.framework/F"]},
+                                          "/usr/lib/libz.1.dylib",
+                                          "/System/Library/Frameworks/Foundation.framework/F"]},
                  "lib/b.dylib": {"id": None, "deps": []}}
         self.assertEqual(self.r.plan(files, OLD), [])
+
+
+class ParseOtool(unittest.TestCase):
+    def test_only_install_names_count_across_fat_slices_and_notes(self):
+        out = (
+            "/x/lib-dynload/_ssl.so (architecture x86_64):\n"
+            f"\t{OLD}/lib/libssl.3.dylib (compatibility version 3.0.0, current version 3.0.0)\n"
+            "\t/usr/lib/libSystem.B.dylib (compatibility version 1.0.0, current version 1311.0.0)\n"
+            "/x/lib-dynload/_ssl.so (architecture arm64):\n"
+            f"\t{OLD}/lib/libssl.3.dylib (compatibility version 3.0.0, current version 3.0.0)\n"
+            "\t@rpath/libz.dylib (compatibility version 1.0.0, current version 1.0.0)\n"
+            "/x/config-3.12-darwin/python.o (architecture arm64): is an LLVM bit-code file\n"
+        )
+        self.assertEqual(load().parse_otool(out),
+                         [f"{OLD}/lib/libssl.3.dylib", "/usr/lib/libSystem.B.dylib", "@rpath/libz.dylib"])
+
+    def test_otool_D_prints_the_id_unindented(self):
+        thin = f"/x/lib/libssl.3.dylib:\n{OLD}/lib/libssl.3.dylib\n"
+        fat = (f"/x/Python (architecture x86_64):\n{OLD}/Python\n"
+               f"/x/Python (architecture arm64):\n{OLD}/Python\n")
+        self.assertEqual(load().parse_otool(thin), [f"{OLD}/lib/libssl.3.dylib"])
+        self.assertEqual(load().parse_otool(fat), [f"{OLD}/Python"])
+        self.assertEqual(load().parse_otool("/x/bin/python3.12:\n"), [], "an executable has no id")
 
 
 class Problems(unittest.TestCase):
