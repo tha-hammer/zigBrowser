@@ -321,3 +321,24 @@ test "flow phase A: a stop comes before a check that also used up the budget and
     try testing.expectEqual(before, h.state.remaining());
 }
 
+test "flow phase C: an unreadable document token at capture or at the recheck sends nothing (RoseCat 7107)" {
+    const Kind = @FieldType(flow_fake.Windowed, "unreadable");
+    for ([_]usize{ 1, 2 }) |ordinal| for ([_]Kind{ .script_failure, .malformed, .empty, .missing }) |kind| {
+        var h: Harness = undefined;
+        h.init(feed);
+        defer h.deinit();
+        h.windows.token_unreadable_at = ordinal;
+        h.windows.unreadable = kind;
+        const before = h.state.remaining();
+        var buf: [512]u8 = undefined;
+        var outcome = try h.call("linkedin.like", try likeParams(&buf, "https://www.linkedin.com", 3, post));
+        defer outcome.deinit(gpa);
+        expectRefused(outcome, -32015, "document_token_unreadable") catch |e| {
+            std.debug.print("read {d}, {s}\n", .{ ordinal, @tagName(kind) });
+            return e;
+        };
+        try testing.expectEqual(ordinal, h.windows.token_reads);
+        try testing.expectEqual(@as(usize, 0), realClicks(&h.fake));
+        try testing.expectEqual(before, h.state.remaining());
+    };
+}

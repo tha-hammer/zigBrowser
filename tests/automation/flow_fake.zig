@@ -53,6 +53,9 @@ pub const Windowed = struct {
     /// The document is replaced right after the first page eval that follows the approved
     /// navigation, with the URL and load_serial left as approved.
     token_bump_after_first_eval_after_nav: bool = false,
+    /// The token read with this 1-based ordinal is unreadable, as `unreadable` says (RoseCat 7107).
+    token_unreadable_at: ?usize = null,
+    unreadable: enum { script_failure, malformed, empty, missing } = .script_failure,
 
     pub fn port(self: *Windowed) page_port.PagePort {
         return .{ .ptr = self, .vtable = &vtable };
@@ -79,6 +82,14 @@ pub const Windowed = struct {
         const self = from(ptr);
         if (hasOp(arg, "documentToken")) {
             self.token_reads += 1;
+            // Only the isolated automation world has the token; the page's own world cannot answer.
+            if (world != .automation) return a.dupe(u8, "{\"ok\":false,\"error\":\"unknown_op\",\"retryable\":false}") catch error.OutOfMemory;
+            if (self.token_unreadable_at) |at| if (at == self.token_reads) return a.dupe(u8, switch (self.unreadable) {
+                .script_failure => "{\"ok\":false,\"error\":\"unknown_op\",\"retryable\":false}",
+                .malformed => "not json",
+                .empty => "{\"ok\":true,\"value\":{\"documentToken\":\"\"}}",
+                .missing => "{\"ok\":true,\"value\":{}}",
+            }) catch error.OutOfMemory;
             return std.fmt.allocPrint(a, "{{\"ok\":true,\"value\":{{\"documentToken\":\"doc-{d}\"}}}}", .{self.token_bumps}) catch error.OutOfMemory;
         }
         const p = self.innerPort();
@@ -248,4 +259,3 @@ pub fn expectRefused(outcome: engine.Outcome, code: i64, reason: []const u8) !vo
         };
     }
 }
-
