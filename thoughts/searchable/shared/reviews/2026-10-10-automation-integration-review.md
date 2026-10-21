@@ -20166,3 +20166,76 @@ The existing real hold before chunk 3 proves cancellation between evaluations,
 not arrival during an evaluation. A bounded in-evaluation handler case is a
 SHOULD if the “within one chunk” latency claim is retained. This docs-only
 review ran no code gate. Findings were mailed to BlackRobin in Agent Mail 6976.
+
+## MS6 unique launch-profile fix-forward (`6d6265e`)
+
+Reviewed exact security-sensitive commit `6d6265e` on 2026-10-20. **Verdict:
+BLOCKED as the closure of `9c234e7`/6972**, although it is safe as an explicitly
+non-consumable scaffold. Profiles are no longer written under
+`current/runtime`; calls receive distinct 0700 directories with O_EXCL,
+O_NOFOLLOW, 0400 files; the two-live-spec port-alias case is closed; and
+`LAUNCH_SPEC_CONSUMABLE = False` honestly defers the broad-read/mach-lookup
+semantic mismatch. An exact clean-export unit run passed 37/37.
+
+The lifecycle and failure requirements from 6972 remain open:
+
+1. `sandbox_macos.py:258-281,349-374` returns only a pathname in `LaunchSpec`.
+   No production object owns the directory, keeps it alive until
+   `sandbox-exec` consumes it, then removes it on success, failure,
+   cancellation or child exit. Only the tests install an external
+   `rmtree` cleanup. A comment that the caller owns it is not an executable
+   lifetime contract.
+2. If `os.open` fails, the new directory remains; if the single `os.write`
+   short-writes, or chmod/fstat fails, both a partial file and its directory
+   remain. These paths fail closed but violate the required cleanup contract.
+3. `test_sandbox_macos.py:339-405` uses a direct `runtime` directory rather
+   than the real fixed link into immutable `current/dist-<n>`. Its collision
+   assertion is a separate `os.open` after success, not a collision or symlink
+   attack driven through `_materialize_profile`; short-write and cleanup cases
+   are also absent.
+
+The fix needs an owned lease/context at the spawn boundary and injected
+open/write/chmod/fstat, collision, symlink, production-layout and cleanup reds.
+The consumable flag must remain false until that and filesystem/mach curation
+land. NIT: the `launch_spec` docstring still says it writes to `home.runtime`.
+Findings were mailed to JadeBeacon in Agent Mail 6984.
+
+## R1 inherited-listener failing-first test (`2605540`)
+
+Reviewed exact test-only commit `2605540` on 2026-10-20. **Verdict:
+BLOCKED-for-tests.** The core red is strong: AF_INET/SOCK_STREAM/SO_ACCEPTCONN,
+the exact loopback address and port, wrong families/types, pipe and closed fd,
+ownership on refusal, serving on the adopted socket, Darwin-only routing, no
+stdout verdict on refusal, and unchanged Linux routing are all represented. An
+exact clean-export run failed 9/9 on the missing production seam as intended;
+the owner's draft-green and five-mutant evidence confirms the assertions become
+discriminating after that seam exists.
+
+The test and commit promise a decimal-only fd greater than 2 and a port in
+1..65535, but the parser table covers only fd `x` and port `0`. Before green it
+must reject fd `0,1,2,-1,+3,03`, whitespace and overlarge values; port
+`-1,+1,01,65536`, whitespace and overlarge values; and duplicate flags. Every
+case must call neither adoption nor run, return 2 and print no verdict. A plain
+`argparse type=int` accepts several of those spellings and would satisfy the
+current red while violating the claimed grammar. The separate Darwin `/proc`
+environment gap remains correctly outside this slice. Finding mailed to
+BlueBeaver in Agent Mail 6985.
+
+## S8a GTK `load_serial` green (`eeee3ae`)
+
+Reviewed exact green `eeee3ae` against red `63efe1b` on 2026-10-20. **Verdict:
+APPROVED.** The counter is per `ZbWindow`, zero-initialized, and both increment
+and snapshot occur on GTK. It advances only at `WEBKIT_LOAD_COMMITTED`, after
+the existing crash-page early-return. The shim emits `guint64`; the GTK port
+parses and forwards `u64`; page.list and out-of-band page.health both traverse
+the real `External.listWindows -> PagePort -> shim` chain. The registered
+real-binary socket e2e drives initial load, navigation, same-document history
+and hash changes, reload, and an independent popup without bypassing that
+chain. The owner's exact clean gate passed 286/286 steps and 1067/1069 tests,
+with two expected skips.
+
+SHOULD-for-tests: a later crash-page case should pin the stated invariant that
+the browser's crash UI does not advance the serial; the present e2e never
+crashes a process, so moving the increment above that guard would survive it.
+This does not block the S8a base green. Verdict was mailed to BlackRobin in
+Agent Mail 6986.
