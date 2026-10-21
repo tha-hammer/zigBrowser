@@ -19777,3 +19777,66 @@ returned zero; `zig build test-mac-census --summary all` passed 4/4 build
 steps, the MS5 census 10/10, and the universal suite 27/27. This restores the
 existing drift gate without weakening it. Verdict mailed to BlueBeaver and
 JadeBeacon in Agent Mail 6934.
+
+## MS6 Seatbelt profile-generator fix-forward (`463f288`)
+
+Reviewed exact commit `463f288` on 2026-10-20 against macOS-plan MS6 and the
+fixed network capability. **Verdict: BLOCKED (security-critical).** Moving the
+writable path out of the Seatbelt source and into a named `-D` parameter closes
+the original source-injection vector, the frozen valid-profile oracle is useful,
+and the isolated unit suite passes 16/16. Three malformed capabilities still
+survive the supposed fail-closed boundary:
+
+1. **BLOCKER — the write grant can name the filesystem root.**
+   `agent/host/zb_agent_host/sandbox_macos.py:138-143` accepts any string that
+   starts with `/`. Both `dparams(scratchpad="/")` and
+   `dparams(scratchpad="/tmp/..")` succeed. Once bound to
+   `(subpath (param "SCRATCHPAD"))`, either can turn the one intended
+   scratchpad write grant into a root write grant. The binding must require a
+   canonical, non-root absolute scratchpad (preferably the expected LaunchSpec
+   scratchpad), with root and dot-segment alias reds.
+2. **BLOCKER — the profile kind is not type-checked.** `:64-105` accepts
+   numeric `0` as `is_hook`, renders the CLI/helper profile, and includes the
+   egress endpoint. Require an exact boolean and cover integer, null and string
+   near-misses.
+3. **BLOCKER — the network policy is not the exact capability.** `:29,58-94`
+   accepts `localhost` for egress, only one bridge, or extra/wrong bridge
+   ports. The authoritative mapping at macOS plan `:1581-1593` is literal
+   `127.0.0.1:<ephemeral>` plus exactly `127.0.0.1:51091` and `:31337`, with a
+   hook receiving exactly the latter two and no egress. Missing, extra, wrong
+   and non-literal forms must all be refused.
+
+Direct display-free probes reproduced all six survivors (`/`, `/tmp/..`,
+numeric `is_hook`, localhost egress, one bridge and an extra bridge). Broad
+`file-read*` and blanket `mach-lookup` remain explicitly unwired later-MS6
+work, not additional findings on this incremental generator. The blockers and
+required reds were mailed to JadeBeacon in Agent Mail 6939.
+
+## MS5 both-Mac setup lifecycle harness (`531ef10`)
+
+Reviewed exact test-only commit `531ef10` on 2026-10-20 against macOS-plan rev
+14 item 5. **Verdict: BLOCKED-for-test-safety/integrity.** The harness is
+honest that it is not armed: it returns 3 while MS6 or the staged runtime is
+absent, and an armed run hard-fails until the check-to-register case exists.
+It also scrubs display variables and uses noninteractive, strict-host-key SSH.
+Two defects prevent running or accepting it:
+
+1. **BLOCKER — the EXIT trap can signal process group zero.**
+   `tests/mac/ms5_setup_e2e.sh:35` substitutes `0` when its PGID file does not
+   exist. That is the ordinary state on both current NOT-ARMED exits. On macOS,
+   `pkill -g 0` denotes the caller's own process group, so the cleanup can kill
+   the remote test shell/group before deletion and can corrupt the claimed
+   exit-3 result. Cleanup must signal only a present, numeric, greater-than-one
+   PGID whose saved setup identity/group invariants have been checked; otherwise
+   it must skip the signal. A local non-live test must exercise early exit and
+   malformed/missing PGID data and prove group zero is never passed.
+2. **BLOCKER-for-oracle — the setup child is selected ambiguously.** `:56`
+   takes the first result of `pgrep -P "$B"`. The census could therefore follow
+   a different direct child while the intended setup process escapes. Require
+   exactly one matching setup child, verify its executable/argv, then require
+   `PGID == PID` before saving or signalling that group. A decoy-child mutant
+   must fail.
+
+`bash -n tests/mac/ms5_setup_e2e.sh` passed. The remote harness was deliberately
+not run because its cleanup is unsafe. Findings were mailed to BlueBeaver in
+Agent Mail 6940.
