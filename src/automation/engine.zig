@@ -597,8 +597,8 @@ pub const Engine = struct {
     /// ambiguous failure the completed chunks are only `data.sent_at_least`.
     fn typeInChunks(self: *Engine, gpa: std.mem.Allocator, command: *const router.ParsedCommand, deadline: u64, run: *Run) error{OutOfMemory}!Outcome {
         var total = GuardSent{ .events = 0, .chars = 0 };
-        var bound: ?ChunkAck = null;
-        defer if (bound) |*ack| ack.deinit(gpa);
+        var bound: ?ChunkTokens = null;
+        defer if (bound) |*tokens| tokens.deinit(gpa);
         var rest = command.text.?;
         while (rest.len > 0) {
             if (bound != null) {
@@ -611,29 +611,28 @@ pub const Engine = struct {
             var chunk = command.*;
             chunk.text = rest[0..end];
             chunk.chunk = true;
-            if (bound) |ack| {
-                chunk.chunk_target = ack.target;
-                chunk.chunk_document = ack.document;
+            if (bound) |tokens| {
+                chunk.chunk_target = tokens.target;
+                chunk.chunk_document = tokens.document;
             }
             run.dispatch_unknown = false;
             var outcome = try self.runDomUntil(gpa, &chunk, deadline, run);
             switch (outcome) {
                 .failure => return withPriorSent(gpa, outcome, total, if (run.dispatch_unknown) .at_least else .exact),
                 .result => |json| {
-                    const parsed = try chunkAck(gpa, json);
+                    const ack = try chunkAck(gpa, json);
                     outcome.deinit(gpa);
-                    var ack = parsed orelse return withPriorSent(gpa, internalError(), total, .at_least);
-                    total = .{
-                        .events = std.math.add(u64, total.events, ack.sent.events) catch {
-                            ack.deinit(gpa);
-                            return withPriorSent(gpa, internalError(), total, .at_least);
-                        },
-                        .chars = std.math.add(u64, total.chars, ack.sent.chars) catch {
-                            ack.deinit(gpa);
-                            return withPriorSent(gpa, internalError(), total, .at_least);
-                        },
-                    };
-                    if (bound == null) bound = ack else ack.deinit(gpa);
+                    // Unusable counts (or a total that overflows) add nothing to what is known.
+                    const sum = if (ack.sent) |counts| addSent(total, counts) else null;
+                    // Without both tokens no later chunk can be bound; this chunk's own counts,
+                    // when usable, join the completed ones as a lower bound.
+                    var tokens = ack.tokens orelse return withPriorSent(gpa, internalError(), sum orelse total, .at_least);
+                    if (sum == null) {
+                        tokens.deinit(gpa);
+                        return withPriorSent(gpa, internalError(), total, .at_least);
+                    }
+                    total = sum.?;
+                    if (bound == null) bound = tokens else tokens.deinit(gpa);
                 },
             }
             rest = rest[end..];
@@ -1816,44 +1815,59 @@ fn chunkEnd(text: []const u8, max: usize) usize {
     return index;
 }
 
-/// A chunk's success result (`value`): its own counts and its target element's and document's
-/// tokens (owned).
-const ChunkAck = struct {
-    sent: GuardSent,
+/// A chunk's target element's and document's tokens (owned).
+const ChunkTokens = struct {
     target: []u8,
     document: []u8,
 
-    fn deinit(self: *ChunkAck, gpa: std.mem.Allocator) void {
+    fn deinit(self: *ChunkTokens, gpa: std.mem.Allocator) void {
         gpa.free(self.target);
         gpa.free(self.document);
     }
 };
 
-/// Null when the result lacks the counts or either token.
-fn chunkAck(gpa: std.mem.Allocator, json: []const u8) error{OutOfMemory}!?ChunkAck {
-    const parsed = std.json.parseFromSlice(std.json.Value, gpa, json, .{}) catch return null;
+/// A chunk's success result (`value`): its own counts, null when unusable, and its tokens, null
+/// when either is missing, empty or not a string.
+const ChunkAck = struct { sent: ?GuardSent, tokens: ?ChunkTokens };
+
+fn addSent(a: GuardSent, b: GuardSent) ?GuardSent {
+    return .{
+        .events = std.math.add(u64, a.events, b.events) catch return null,
+        .chars = std.math.add(u64, a.chars, b.chars) catch return null,
+    };
+}
+
+fn chunkAck(gpa: std.mem.Allocator, json: []const u8) error{OutOfMemory}!ChunkAck {
+    const parsed = std.json.parseFromSlice(std.json.Value, gpa, json, .{}) catch return .{ .sent = null, .tokens = null };
     defer parsed.deinit();
     const object = switch (parsed.value) {
         .object => |o| o,
-        else => return null,
+        else => return .{ .sent = null, .tokens = null },
     };
-    const counts = switch (object.get("sent") orelse return null) {
+    return .{ .sent = sentOf(object.get("sent")), .tokens = try tokensOf(gpa, object) };
+}
+
+fn sentOf(value: ?std.json.Value) ?GuardSent {
+    const counts = switch (value orelse return null) {
         .object => |o| o,
         else => return null,
     };
-    const sent = GuardSent{ .events = countOf(counts.get("events")) orelse return null, .chars = countOf(counts.get("chars")) orelse return null };
-    const target = switch (object.get("target") orelse return null) {
-        .string => |t| t,
-        else => return null,
-    };
-    const document = switch (object.get("document") orelse return null) {
-        .string => |d| d,
-        else => return null,
-    };
-    if (target.len == 0 or document.len == 0) return null;
+    return .{ .events = countOf(counts.get("events")) orelse return null, .chars = countOf(counts.get("chars")) orelse return null };
+}
+
+fn tokensOf(gpa: std.mem.Allocator, object: std.json.ObjectMap) error{OutOfMemory}!?ChunkTokens {
+    const target = nonEmptyString(object.get("target")) orelse return null;
+    const document = nonEmptyString(object.get("document")) orelse return null;
     const owned_target = try gpa.dupe(u8, target);
     errdefer gpa.free(owned_target);
-    return .{ .sent = sent, .target = owned_target, .document = try gpa.dupe(u8, document) };
+    return .{ .target = owned_target, .document = try gpa.dupe(u8, document) };
+}
+
+fn nonEmptyString(value: ?std.json.Value) ?[]const u8 {
+    return switch (value orelse return null) {
+        .string => |s| if (s.len == 0) null else s,
+        else => null,
+    };
 }
 
 fn internalError() Outcome {

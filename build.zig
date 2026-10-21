@@ -1150,6 +1150,16 @@ pub fn build(b: *std.Build) void {
     automation_guard_chunks2_tests_module.addImport("automation", automation_module);
     const run_automation_guard_chunks2_tests = b.addRunArtifact(b.addTest(.{ .root_module = automation_guard_chunks2_tests_module }));
     run_automation_guard_chunks2_tests.skip_foreign_checks = true;
+    // S8a (RoseCat 7280 on 52cfb6c): the exact oracles of a guarded dom.type's chunk contract.
+    const automation_guard_chunks3_tests_module = b.createModule(.{
+        .root_source_file = b.path("tests/automation_guard_chunks3_test.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    automation_guard_chunks3_tests_module.addImport("automation", automation_module);
+    const run_automation_guard_chunks3_tests = b.addRunArtifact(b.addTest(.{ .root_module = automation_guard_chunks3_tests_module }));
+    run_automation_guard_chunks3_tests.skip_foreign_checks = true;
     // S8a (RoseCat on 9295b0b): a selectorless dom.press cannot carry guard.target.
     const automation_guard_press_tests_module = b.createModule(.{
         .root_source_file = b.path("tests/automation_guard_press_test.zig"),
@@ -2701,6 +2711,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_automation_guard_chunks_tests.step);
     test_step.dependOn(&automation_guard_chunks_e2e.step);
     test_step.dependOn(&run_automation_guard_chunks2_tests.step);
+    test_step.dependOn(&run_automation_guard_chunks3_tests.step);
     test_step.dependOn(&automation_guard_chunks2_e2e.step);
     test_step.dependOn(&run_automation_guard_press_tests.step);
     test_step.dependOn(&automation_guard_insert_e2e.step);
