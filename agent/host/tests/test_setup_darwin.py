@@ -18,6 +18,7 @@ import contextlib
 import io
 import os
 import unittest
+from pathlib import Path
 from unittest import mock
 
 import support  # noqa: F401  (puts the helper package on sys.path)
@@ -67,6 +68,19 @@ class Main(unittest.TestCase):
                 self.assertIn("--browser-pid", err)
                 self.assertEqual((self.calls, armed), ([], []), "nothing runs, not even the watch")
 
+    def test_darwin_a_non_integer_browser_pid_is_a_value_error_not_a_traceback(self):
+        # BlackRobin 6952/6956: "12abc" and "" each say "must be an integer" and exit 2.
+        for raw in ("12abc", ""):
+            with self.subTest(raw=raw):
+                self.calls.clear()
+                armed = []
+                code, err = self.run_main("darwin", ["--browser-pid", raw],
+                                          arm=lambda pid, ops: armed.append(pid) or True)
+                self.assertEqual(code, 2, err)
+                self.assertIn("--browser-pid must be an integer", err)
+                self.assertNotIn("Traceback", err)
+                self.assertEqual((self.calls, armed), ([], []))
+
     def test_darwin_arms_the_parent_watch_first(self):
         order = []
         self.calls = order
@@ -105,7 +119,7 @@ class SetupSandbox(unittest.TestCase):
             # At run time the real per-run profile exists under the scratch that is also HOME and SCRATCHPAD.
             scratch = kwargs["env"]["HOME"]
             seen.update(argv=list(argv), scratch=scratch, profile=argv[2],
-                        profile_existed=os.path.isfile(argv[2]), profile_text=open(argv[2]).read())
+                        profile_existed=os.path.isfile(argv[2]), profile_text=Path(argv[2]).read_text())
             return setup.subprocess.CompletedProcess(argv, 0, stdout="2.1.294 (Claude Code)\n", stderr="")
 
         mock.patch.object(setup.subprocess, "run", side_effect=fake_run).start()
@@ -120,6 +134,23 @@ class SetupSandbox(unittest.TestCase):
                          "setup's profile grants no network")
         self.assertFalse(os.path.exists(profile), "the per-run profile is gone afterwards")
         self.assertFalse(os.path.exists(scratch), "and so is the scratch")
+
+    def test_darwin_a_timeout_deletes_the_profile_and_reports_failure(self):
+        # BlackRobin 6956: TimeoutExpired inside the `with` leaves through the context manager's exit, so the
+        # per-run profile and the scratch are gone and _sandboxed reports the failure ("", False).
+        mock.patch.object(setup, "PLATFORM", "darwin").start()
+        seen = {}
+
+        def fake_run(argv, **kwargs):
+            seen.update(profile=argv[2], scratch=kwargs["env"]["HOME"], existed=os.path.isfile(argv[2]))
+            raise setup.subprocess.TimeoutExpired(argv, kwargs["timeout"])
+
+        mock.patch.object(setup.subprocess, "run", side_effect=fake_run).start()
+        self.assertEqual(setup._sandboxed(["/ro"], ["/opt/claude", "--version"], timeout=1), ("", False))
+        self.assertTrue(seen["existed"], "the profile existed while the command ran")
+        self.assertFalse(os.path.exists(seen["profile"]), "the timed-out run's profile is deleted")
+        self.assertFalse(os.path.exists(seen["scratch"]), "and so is the scratch")
+        self.assertEqual(setup.cli_version("/opt/claude"), "unknown", "a timed-out --version reports unknown")
 
     def test_darwin_setup_sandbox_refuses_to_build_the_linux_argv(self):
         mock.patch.object(setup, "PLATFORM", "darwin").start()

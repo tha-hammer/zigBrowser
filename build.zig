@@ -1549,8 +1549,12 @@ pub fn build(b: *std.Build) void {
     const agent_host_setup_darwin = b.addSystemCommand(&.{
         "sh",
         "-c",
-        "py=$(tools/agent_host_env.sh --check) || exit 1; cd agent/host/tests && env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 ZB_AGENT_HOST_PYTHON=\"$py\" \"$py\" -m unittest -v test_setup_darwin",
+        // -X dev shows every ResourceWarning (they fire in finalizers, where -W error cannot fail a test), so the
+        // output is counted: any one fails the step (RoseCat 6966).
+        "py=$(tools/agent_host_env.sh --check) || exit 1; cd agent/host/tests && out=$(env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 ZB_AGENT_HOST_PYTHON=\"$py\" \"$py\" -X dev -m unittest -v test_setup_darwin 2>&1); rc=$?; printf '%s\\n' \"$out\"; [ $rc -eq 0 ] || exit $rc; if printf '%s\\n' \"$out\" | grep -q ResourceWarning; then echo 'test_setup_darwin: ResourceWarning' >&2; exit 1; fi",
     });
+    // RoseCat 6966: also in the focused MS5 setup gate, as 2d65b12 does for the cleanup test.
+    agent_setup_ms5_step.dependOn(&agent_host_setup_darwin.step);
     // Chat drawer S3.1: --agent-setup's provisioning (unit and property
     // tests of the helper's setup command); fails closed without the venv.
     const agent_host_provision_unit = b.addSystemCommand(&.{
