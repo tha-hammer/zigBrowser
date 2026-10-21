@@ -1,4 +1,4 @@
-"""The owned process-group primitive setup's sandboxed runs end their tree with (RoseCat 7418/7422): zb_agent_host.owned_group.
+"""zb_agent_host.owned_group, the owned process group setup's sandboxed runs end their tree with (RoseCat 7418, 7422).
 
 Refusals, each BEFORE any signal (os.kill and os.killpg are patched to fail the test if reached):
 - a pid that is not an exact int > 1: a MagicMock (it indexes as 1: killpg(1) is kill(-1), every process the user
@@ -8,14 +8,20 @@ Refusals, each BEFORE any signal (os.kill and os.killpg are patched to fail the 
 - a real child of this process that does not lead its own process group.
 Behaviour, with real processes:
 - run() returns a quick command's returncode and output;
-- a leader that hangs while a descendant holds the pipes: run() ends at its bound (TimeoutExpired), and neither is alive;
+- a leader that hangs while a descendant holds the pipes: run() ends at its bound (TimeoutExpired), and neither is
+  alive;
 - a leader that EXITS while a descendant still holds the pipes: run() still ends at its bound, the group is stopped
   while the leader is unreaped (its zombie keeps the pgid ours), and the descendant is not alive;
-- after run() returns, its leader is reaped (it is no longer this process's child).
-It signals real processes, so it runs ONLY inside a private PID namespace proven by pidns_guard (the launcher passes
-ZB_OUTER_PIDNS); it skips anywhere else. Every stand-in ends itself within 20 s.
-Run: cd agent/host/tests && outer=$(readlink /proc/self/ns/pid) && unshare --user --map-root-user --pid --fork \\
-  --mount-proc sh -c "setsid env ZB_OUTER_PIDNS=$outer python -X dev -m unittest -v test_owned_group".
+- after run() returns, its leader is reaped (it is no longer this process's child);
+- a descendant that closed the pipes and outlives a leader that exited 0: run() returns the result and the
+  descendant is not alive (the group is stopped on success too);
+Stop failures (RoseCat 7436), each within a bound and explicit, never an unbounded wait or a claimed cleanup:
+- a guarded, valid owned group whose killpg is refused (EPERM): stop_group raises StopFailed within 2 s;
+- run() whose group stop is refused raises StopFailed (carrying the unreaped leader), not a result or a timeout.
+It signals real processes, so it runs ONLY inside a PID namespace that pidns_guard proves, through the kernel, to be
+below the launcher's held one (RoseCat 7433); it skips anywhere else. Every stand-in ends itself within 20 s.
+Run: cd agent/host/tests && sh -c 'exec 9</proc/self/ns/pid; exec unshare --user --map-root-user --pid --fork \\
+  --mount-proc env ZB_OUTER_PIDNS_FD=9 python -X dev -m unittest -v test_owned_group'.
 Unregistered until the green.
 """
 import os
@@ -140,6 +146,48 @@ class Behaviour(Base):
 
     def test_a_leader_that_exits_while_a_descendant_holds_the_pipes_ends_at_the_bound(self):
         self.bounded(self.SPAWN + "sys.exit(0)\n")
+
+
+class SuccessStopsTheGroup(Base):
+    def test_a_descendant_that_closed_the_pipes_is_stopped_with_a_successful_run(self):
+        d = os.path.join(support.TEST_TMP, f"owned-ok-{os.getpid()}-{time.monotonic_ns()}")
+        os.makedirs(d)
+        code = ("import os, subprocess, sys, time\n"
+                "subprocess.Popen([sys.executable, '-c', 'import os, time; open(os.path.join(%r, \"descendant\"), "
+                "\"w\").write(str(os.getpid())); time.sleep(" + str(LIFETIME_S) + ")'], stdout=subprocess.DEVNULL, "
+                "stderr=subprocess.DEVNULL)\n"
+                "while not os.path.exists(os.path.join(%r, 'descendant')): time.sleep(0.05)\n"
+                "print('done')\n")
+        done = owned_group.run(_py(code % (d, d)), env=None, pass_fds=(), timeout=10)
+        self.assertEqual((done.returncode, done.stdout.strip()), (0, "done"))
+        with open(os.path.join(d, "descendant")) as f:
+            self.assertFalse(_alive(int(f.read())), "a descendant outlived a successful run")
+
+
+class StopFailures(Base):
+    def setUp(self):
+        super().setUp()
+        if not hasattr(owned_group, "StopFailed"):
+            self.fail("owned_group.StopFailed is missing (RoseCat 7436)")
+
+    def test_a_refused_killpg_is_an_explicit_bounded_failure(self):
+        child = subprocess.Popen(_py("import time; time.sleep(3)"), start_new_session=True)
+        self.addCleanup(child.wait)
+        mock.patch.object(os, "killpg", side_effect=PermissionError(1, "Operation not permitted")).start()
+        started = time.monotonic()
+        with self.assertRaises(owned_group.StopFailed):
+            owned_group.stop_group(child)
+        self.assertLess(time.monotonic() - started, 2, "an unbounded wait after a refused kill")
+
+    def test_run_reports_a_refused_stop_not_a_result(self):
+        mock.patch.object(os, "killpg", side_effect=PermissionError(1, "Operation not permitted")).start()
+        started = time.monotonic()
+        with self.assertRaises(owned_group.StopFailed) as cm:
+            owned_group.run(_py("import time; time.sleep(3)"), env=None, pass_fds=(), timeout=1)
+        self.assertLess(time.monotonic() - started, 1 + GRACE_S)
+        leader = getattr(cm.exception, "proc", None)
+        self.assertIsNotNone(leader, "StopFailed carries the unreaped leader for its caller")
+        leader.wait(10)
 
 
 if __name__ == "__main__":
