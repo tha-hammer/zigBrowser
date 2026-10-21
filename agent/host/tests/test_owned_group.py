@@ -15,7 +15,10 @@ Behaviour, with real processes:
 - after run() returns, its leader is reaped (it is no longer this process's child);
 - a descendant that closed the pipes and outlives a leader that exited 0: run() returns the result and the
   descendant is not alive (the group is stopped on success too);
-Stop failures (RoseCat 7436), each within a bound and explicit, never an unbounded wait or a claimed cleanup:
+- a descendant that ESCAPES the group (its own new session, RoseCat 7438) and holds the pipes: run() ends at its bound
+  and the escaped descendant is not alive either;
+Stop failures (RoseCat 7436), each within a bound and explicit, never an unbounded wait or a claimed cleanup; these are
+signal-interposed (killpg refuses, os.kill fails the test) and so run without the namespace (RoseCat 7439):
 - a guarded, valid owned group whose killpg is refused (EPERM): stop_group raises StopFailed within 2 s;
 - run() whose group stop is refused raises StopFailed (carrying the unreaped leader), not a result or a timeout.
 It signals real processes, so it runs ONLY inside a PID namespace that pidns_guard proves, through the kernel, to be
@@ -148,36 +151,57 @@ class Behaviour(Base):
         self.bounded(self.SPAWN + "sys.exit(0)\n")
 
 
+class EscapedDescendant(Behaviour):
+    ESCAPE = ("import os, subprocess, sys, time\n"
+              "open(os.path.join(DIR, 'leader'), 'w').write(str(os.getpid()))\n"
+              "d = subprocess.Popen([sys.executable, '-c', 'import os, time; "
+              "open(os.path.join(%r, \"descendant\"), \"w\").write(str(os.getpid())); time.sleep(" + str(LIFETIME_S)
+              + ")' % DIR], start_new_session=True)\n"
+              "while not os.path.exists(os.path.join(DIR, 'descendant')): time.sleep(0.05)\n")
+
+    def test_a_descendant_in_its_own_session_holding_the_pipes_is_gone_at_the_bound(self):
+        self.bounded(self.ESCAPE + f"time.sleep({LIFETIME_S})\n")
+
+    def test_it_is_gone_too_when_the_leader_has_exited(self):
+        self.bounded(self.ESCAPE + "sys.exit(0)\n")
+
+
 class SuccessStopsTheGroup(Base):
     def test_a_descendant_that_closed_the_pipes_is_stopped_with_a_successful_run(self):
         d = os.path.join(support.TEST_TMP, f"owned-ok-{os.getpid()}-{time.monotonic_ns()}")
         os.makedirs(d)
         code = ("import os, subprocess, sys, time\n"
-                "subprocess.Popen([sys.executable, '-c', 'import os, time; open(os.path.join(%r, \"descendant\"), "
-                "\"w\").write(str(os.getpid())); time.sleep(" + str(LIFETIME_S) + ")'], stdout=subprocess.DEVNULL, "
-                "stderr=subprocess.DEVNULL)\n"
-                "while not os.path.exists(os.path.join(%r, 'descendant')): time.sleep(0.05)\n"
+                "DIR = " + repr(d) + "\n"
+                "subprocess.Popen([sys.executable, '-c', 'import os, time; "
+                "open(os.path.join(%r, \"descendant\"), \"w\").write(str(os.getpid())); time.sleep(" + str(LIFETIME_S)
+                + ")' % DIR], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)\n"
+                "while not os.path.exists(os.path.join(DIR, 'descendant')): time.sleep(0.05)\n"
                 "print('done')\n")
-        done = owned_group.run(_py(code % (d, d)), env=None, pass_fds=(), timeout=10)
-        self.assertEqual((done.returncode, done.stdout.strip()), (0, "done"))
+        done = owned_group.run(_py(code), env=None, pass_fds=(), timeout=10)
+        self.assertEqual((done.returncode, done.stdout.strip()), (0, "done"), done.stderr)
         with open(os.path.join(d, "descendant")) as f:
             self.assertFalse(_alive(int(f.read())), "a descendant outlived a successful run")
 
 
-class StopFailures(Base):
+class StopFailures(unittest.TestCase):
+    """Signal-interposed, so they run WITHOUT the namespace (RoseCat 7439): killpg is faked to refuse (EPERM) and any
+    os.kill fails the test; no real signal can be sent. Their stand-ins end themselves in 3 s."""
+
     def setUp(self):
-        super().setUp()
-        if not hasattr(owned_group, "StopFailed"):
+        if owned_group is None or not hasattr(owned_group, "StopFailed"):
             self.fail("owned_group.StopFailed is missing (RoseCat 7436)")
+        self.addCleanup(mock.patch.stopall)
+        mock.patch.object(os, "kill", side_effect=AssertionError("os.kill reached")).start()
 
     def test_a_refused_killpg_is_an_explicit_bounded_failure(self):
         child = subprocess.Popen(_py("import time; time.sleep(3)"), start_new_session=True)
         self.addCleanup(child.wait)
-        mock.patch.object(os, "killpg", side_effect=PermissionError(1, "Operation not permitted")).start()
+        refused = mock.patch.object(os, "killpg", side_effect=PermissionError(1, "Operation not permitted")).start()
         started = time.monotonic()
         with self.assertRaises(owned_group.StopFailed):
             owned_group.stop_group(child)
         self.assertLess(time.monotonic() - started, 2, "an unbounded wait after a refused kill")
+        self.assertEqual(refused.call_count, 1, "the guarded, valid group reached exactly one (refused) killpg")
 
     def test_run_reports_a_refused_stop_not_a_result(self):
         mock.patch.object(os, "killpg", side_effect=PermissionError(1, "Operation not permitted")).start()
