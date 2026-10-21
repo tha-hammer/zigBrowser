@@ -20478,3 +20478,30 @@ errors. Exact `ccac350` passed 20/20 under `python -X dev`. This closes the
 7015 blocker on `4cec07b` and cumulatively closes the earlier `d7114aa`
 process-walk failure-mapping finding. The separate `0b9527f` Seatbelt topology
 block remains open. Verdict mailed to BlueBeaver in Agent Mail 7020.
+
+## MS6 setup-profile isolation fix-forward (`0aa5845`)
+
+Reviewed exact security-sensitive commit `0aa5845` on 2026-10-20. **Verdict:
+APPROVED for JadeBeacon's profile half.** Both setup modes now retain the
+curated sysctl allowlist and explicit `(deny process-info*)`; neither emits the
+blanket grants from `0b9527f`. The optional R1 port remains a type- and
+range-validated integer rendered as the one `localhost:<port>` outbound rule.
+Independent clean-export replay of the new 48-case profile suite failed four
+tests against the parent and passed 48/48 at the fix.
+
+This closes Agent Mail 7019 item 1 at the profile generator, but the commit
+does not itself move any census: it changes only `sandbox_macos.py` and its
+tests. Cumulative `0b9527f` therefore remains blocked until BlueBeaver's
+outside-Seatbelt socketpair/census half and the both-Mac kernel gate close
+item 2.
+
+Security requirement for that half: the endpoint inherited by route_probe
+must immediately become non-inheritable, and a red must prove the real wrapper
+and CLI cannot receive or write it. The CLI already knows the throwaway probe
+token, so that token cannot authenticate `clean`; if the descriptor leaks, a
+malicious CLI can forge the census result. The broker exchange also needs a
+finite bound plus joined and closed ownership on success, malformed input,
+EOF, timeout and setup cancellation. The both-Mac gate must prove the
+inherited listener positive, decoy-port denial, outside observer positive and
+inside sibling-introspection denial. Verdict and these conditions were mailed
+in Agent Mail 7025.
