@@ -44,7 +44,7 @@ def reference_profile(*, egress, bridges, is_hook, is_login=False):
         eps = [f"localhost:{egress.port}"]
     else:
         eps = ([] if is_hook else [f"localhost:{egress.port}"]) + [f"localhost:{p}" for p in bridges]
-    net = " ".join(f'(remote ip "{e}")' for e in eps)
+    net = " ".join(f'(remote tcp "{e}")' for e in eps)
     kind = "login" if is_login else ("hook" if is_hook else "cli/helper")
     note = ("egress only (sign-in; no bridges)" if is_login
             else "bridges only (no egress — rev 16.2 §3c)" if is_hook else "egress + bridges")
@@ -99,7 +99,7 @@ class ProfileEqualsFrozenReference(unittest.TestCase):
 
     def test_login_profile_is_egress_only(self):
         p = sandbox_macos.render_profile(egress=EGRESS, bridges=(), is_hook=False, is_login=True)
-        self.assertIn(f'(remote ip "localhost:{EGRESS.port}")', p)
+        self.assertIn(f'(remote tcp "localhost:{EGRESS.port}")', p)
         for port in BRIDGES:
             self.assertNotIn(f"localhost:{port}", p, "the login profile has NO bridges")
         self.assertIn("(deny process-info*)", p)  # the token-isolation belt still holds
@@ -209,14 +209,14 @@ class SecurityContent(unittest.TestCase):
     def test_cli_reaches_egress_and_bridges(self):
         # Seatbelt's loopback token is 'localhost' (it rejects the 127.0.0.1 literal); the port is the identity.
         p = sandbox_macos.render_profile(egress=EGRESS, bridges=BRIDGES, is_hook=False)
-        self.assertIn(f'(remote ip "localhost:{EGRESS.port}")', p)
+        self.assertIn(f'(remote tcp "localhost:{EGRESS.port}")', p)
         for port in BRIDGES:
-            self.assertIn(f'(remote ip "localhost:{port}")', p)
+            self.assertIn(f'(remote tcp "localhost:{port}")', p)
 
     def test_hook_reaches_bridges_only_never_egress(self):
         p = sandbox_macos.render_profile(egress=None, bridges=BRIDGES, is_hook=True)
         for port in BRIDGES:
-            self.assertIn(f'(remote ip "localhost:{port}")', p)
+            self.assertIn(f'(remote tcp "localhost:{port}")', p)
         self.assertNotIn(f'localhost:{EGRESS.port}', p, "a hook must never reach the egress endpoint")
 
 
@@ -228,7 +228,7 @@ def reference_setup_profile(loopback_port=None):
     observer's capability (RoseCat 7019). Instead trusted setup observes its own descendants OUTSIDE Seatbelt
     over a socketpair (BlueBeaver 7021). Network: none, or exactly the one inherited R1 probe loopback port."""
     net = ([";; network: ONLY the R1 probe's pre-bound loopback port.",
-            f'(allow network-outbound (remote ip "localhost:{loopback_port}"))']
+            f'(allow network-outbound (remote tcp "localhost:{loopback_port}"))']
            if loopback_port is not None
            else [";; network: NONE — deny-default denies all outbound (setup reaches only its own loopback)."])
     return "\n".join([
@@ -273,7 +273,7 @@ class SetupProfile(unittest.TestCase):
 
     def test_loopback_port_is_the_only_outbound(self):
         p = sandbox_macos.render_setup_profile(loopback_port=52999)
-        self.assertIn('(allow network-outbound (remote ip "localhost:52999"))', p)
+        self.assertIn('(allow network-outbound (remote tcp "localhost:52999"))', p)
         self.assertEqual(p.count("(allow network-outbound"), 1, "exactly one network allow — the R1 probe port")
 
     def test_keeps_the_token_isolation_belt_even_for_r1(self):
@@ -326,7 +326,7 @@ class SetupSandboxArgv(unittest.TestCase):
                     body = f.read()
                 self.assertEqual(body, sandbox_macos.render_setup_profile(loopback_port=52999),
                                  "the per-run profile must carry the R1 probe's loopback port")
-                self.assertIn('(allow network-outbound (remote ip "localhost:52999"))', body)
+                self.assertIn('(allow network-outbound (remote tcp "localhost:52999"))', body)
 
     def test_bad_loopback_port_refused(self):
         with tempfile.TemporaryDirectory() as scratch:
@@ -574,7 +574,7 @@ class MacSeatbeltBackendLaunchSpec(unittest.TestCase):
                          "the login launch carries the egress-only login network")
         with open(spec.argv[2], encoding="utf-8") as f:
             profile = f.read()
-        self.assertIn(f'(remote ip "localhost:{self.backend.network().egress.endpoint.port}")', profile)
+        self.assertIn(f'(remote tcp "localhost:{self.backend.network().egress.endpoint.port}")', profile)
         for port in (51091, 31337):
             self.assertNotIn(f"localhost:{port}", profile, "the login profile has no bridges")
 

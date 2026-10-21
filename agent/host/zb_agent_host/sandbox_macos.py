@@ -79,11 +79,14 @@ def _endpoints(egress, bridges, is_hook, is_login=False):
     must be exactly 127.0.0.1 with an integer port 1..65535, and the bridges must be EXACTLY the two
     canonical ports (missing/extra/wrong refused, plan :1581-1593).
 
-    NOTE on the host token: Seatbelt's ``(remote ip ...)`` accepts ONLY ``*`` or ``localhost`` as the host —
-    the IP literal ``127.0.0.1`` is a parse error (measured on both arches). So the INPUT capability is
-    validated as exactly ``127.0.0.1`` (rejecting names/other IPs), and the emitted rule uses Seatbelt's
-    ``localhost`` loopback token with the validated port. (``localhost`` is the loopback; the listeners are on
-    127.0.0.1, and Seatbelt offers no finer host control.)
+    NOTE on the emitted rule (measured both arches, RoseCat 7039): Seatbelt's ``remote`` host token accepts ONLY
+    ``*`` or ``localhost`` — the IP literal ``127.0.0.1`` is a parse error. So the INPUT capability is validated
+    as exactly ``127.0.0.1`` (rejecting names/other IPs), and the rule emits the ``localhost`` loopback token
+    with the validated port. The rule uses ``(remote tcp ...)``, NOT ``(remote ip ...)``: ``remote ip`` also
+    grants UDP at the port (measured leak), while ``remote tcp`` narrows to TCP, matching the pinned contract
+    (plan :1576-1583). ``localhost`` covers BOTH loopback families, so IPv6 ``::1:<port>`` TCP is also permitted
+    by policy; it is unreachable in practice (netd and the bridges bind 127.0.0.1 only, so ``::1`` has no
+    listener), and Seatbelt offers no token to exclude the v6 loopback. The IPv4-mapped form is denied.
     """
     if type(is_hook) is not bool:
         raise ValueError(f"is_hook must be a bool, got {type(is_hook).__name__} {is_hook!r}")
@@ -155,7 +158,7 @@ def render_profile(*, egress, bridges, is_hook, is_login=False):
     no path is ever interpolated into the source.
     """
     eps = _endpoints(egress, bridges, is_hook, is_login)
-    net = " ".join(f'(remote ip "{e}")' for e in eps)
+    net = " ".join(f'(remote tcp "{e}")' for e in eps)
     kind = "login" if is_login else ("hook" if is_hook else "cli/helper")
     net_note = ("egress only (sign-in; no bridges)" if is_login
                 else "bridges only (no egress — rev 16.2 §3c)" if is_hook else "egress + bridges")
@@ -199,7 +202,7 @@ def render_setup_profile(*, loopback_port=None):
     if loopback_port is not None:
         _validate_port(loopback_port)
         net = [";; network: ONLY the R1 probe's pre-bound loopback port.",
-               f'(allow network-outbound (remote ip "localhost:{loopback_port}"))']
+               f'(allow network-outbound (remote tcp "localhost:{loopback_port}"))']
 
     lines = [
         "(version 1)",
