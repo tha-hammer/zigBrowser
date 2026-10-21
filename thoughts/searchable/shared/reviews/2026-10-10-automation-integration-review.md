@@ -20716,3 +20716,44 @@ with `-std=c11 -Wall -Wextra -Werror`. The exact-SHA focused Linux generator
 gate passed: `test-agent-setup-ms5`, 16/16 steps and 14/14 tests. The macOS
 kernel results in the commit message were not independently rerun. No full gate
 was run because BlackRobin owns the shared slot. Findings mailed to JadeBeacon.
+
+## R1 outside-Seatbelt census-broker red (`61776d9`)
+
+Reviewed exact test-only red `61776d9` on 2026-10-20. **Verdict:
+BLOCKED-for-tests.** The proposed topology is correct: trusted setup remains
+outside Seatbelt and inspects only its own descendants; the sandboxed probe
+gets a Unix-stream socketpair capability, sends an exact token-and-URL-bound
+request, and accepts only an exact `clean\n` reply; Darwin no longer needs a
+process-introspection grant and Linux retains its `/proc` path. The valid,
+dirty, malformed, duplicate, shape-refusal, ordinary closure and Linux cases
+are useful.
+
+The red does not yet cover three load-bearing requirements recorded at review
+lines 20498-20506:
+
+1. **Capability non-leakage.** `test_route_probe_census.py:59-67` observes only
+   the descriptor's inheritable bit. The CLI already knows the throwaway probe
+   token, so the socket capability is the only authenticator for `clean`. Add a
+   real production-wrapper spawn-chain red with a malicious CLI stand-in that
+   proves neither wrapper nor CLI can see or write the census descriptor after
+   adoption. Also inject failure of `set_inheritable(False)` and require the
+   probe to close/refuse rather than continue.
+2. **Bounded exchange and complete ownership.** The current `none` case returns
+   and closes its duplicate, while `no-newline` sends EOF. Neither covers a
+   live peer holding the socket open silently or after a partial line—the
+   actual mutual-wait deadlock. Add measured silence and partial-without-EOF
+   cases, subprocess timeout/setup cancellation, and a
+   `proc_darwin.cli_env_clean` exception. Every case must fail closed within a
+   finite bound, explicitly close both ends, and join the broker thread.
+3. **The real-kernel red is absent.** The required both-Mac gate must prove in
+   one production-shaped run: inherited listener positive, decoy-port denial,
+   the outside observer finds the CLI canary, and the inside probe/CLI domain
+   cannot inspect a sibling through `kern.procargs2` or `proc_pidpath`. Adding
+   that only with the green would bypass the failing-first requirement.
+
+As a SHOULD, the census-fd grammar table should match the already-hardened
+listener grammar table, including newline, Unicode-digit, long-decimal and
+boundary cases. Independent clean-export replay confirmed the intended red:
+`test_route_probe_census` failed 10/10 and `test_setup_census` failed 8/8 on
+the missing production seams. No full gate was run because BlackRobin owns the
+slot. Findings mailed to BlueBeaver, cc JadeBeacon, in Agent Mail 7041.
