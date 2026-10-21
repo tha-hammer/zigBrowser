@@ -790,14 +790,17 @@ def probe_r1(wrapper, cli):
     True when the CLI took the probe token from fd 3 and no CLI environment held it."""
     runtime = Path(wrapper).parent.parent
     listener = None
-    if PLATFORM == "darwin":
-        # macOS has no private network namespace (RoseCat 6958): bind the probe's one loopback port here, outside the
-        # sandbox, and hand it in; the profile permits exactly this port. Not inheritable: only pass_fds passes it.
-        listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     try:
-        if listener is not None:
-            listener.bind(("127.0.0.1", 0))
-            listener.listen(8)
+        if PLATFORM == "darwin":
+            # macOS has no private network namespace (RoseCat 6958): bind the probe's one loopback port here, outside
+            # the sandbox, and hand it in; the profile permits exactly this port. Not inheritable: only pass_fds passes
+            # it. Without its listener R1 cannot be proven, so a failure here is "no R1" (fail closed; RoseCat 7026).
+            try:
+                listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                listener.bind(("127.0.0.1", 0))
+                listener.listen(8)
+            except OSError:
+                return False
         out, ok = _sandboxed([sys.prefix, PACKAGE_DIR, runtime, cli],
                              [sys.executable, "-m", "zb_agent_host", "probe-r1", "--wrapper", wrapper, "--cli", cli],
                              timeout=PROBE_TIMEOUT_S + 30,

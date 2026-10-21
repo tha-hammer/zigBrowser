@@ -7,6 +7,8 @@ the platform injected (`setup.PLATFORM`) and the MS6 seam faked with JadeBeacon'
   `--listen-fd <fd> --listen-port <port>`; subprocess.run gets pass_fds=(fd,) and nothing else.
 - Setup's copy is not inheritable (only pass_fds hands it on), and setup closes it after the run on every path:
   a verdict, a timeout, the seam refusing.
+- A listener that cannot be made (socket(), bind() or listen() failing) is "no R1": probe_r1 returns False, nothing
+  enters the seam or runs, and a created socket is closed explicitly (RoseCat 7026).
 - cli_version stays network-free (no loopback_port); Linux probe_r1 is unchanged (bwrap argv, no pass_fds, no flags).
 - Through the real seam (JadeBeacon 0b9527f): the profile in force during the probe has exactly one outbound rule,
   `(allow network-outbound (remote ip "localhost:<the pre-bound port>"))`, and cli_version's has none.
@@ -137,6 +139,57 @@ class Darwin(Base):
             setup.probe_r1(WRAPPER, CLI)
         self.assertEqual(self.runs, [], "nothing runs unsandboxed")
         self.assert_all_closed(made)
+
+    def failing_listener(self, step):
+        """Setup's socket fails at `step` ("socket", "bind" or "listen"); every created socket is kept, so only an
+        explicit close() leaves it closed (RoseCat 7026)."""
+        if not hasattr(setup, "socket"):
+            self.fail("setup does not pre-bind a listener (no socket use; 6961)")
+        made = []
+        real_socket = socket.socket
+
+        class Failing(real_socket):
+            def bind(self, addr):
+                if step == "bind":
+                    raise OSError(98, "Address already in use")
+                return super().bind(addr)
+
+            def listen(self, *args):
+                if step == "listen":
+                    raise OSError(22, "Invalid argument")
+                return super().listen(*args)
+
+        def factory(*args, **kwargs):
+            if "fileno" in kwargs:
+                return real_socket(*args, **kwargs)
+            if step == "socket":
+                raise OSError(24, "Too many open files")
+            s = Failing(*args, **kwargs)
+            made.append(s)
+            return s
+
+        patcher = mock.patch.object(setup.socket, "socket", side_effect=factory)
+        patcher.start()
+        self.addCleanup(lambda: [s.close() for s in made])
+        return made, patcher
+
+    def test_a_listener_that_cannot_be_made_is_no_r1_and_nothing_runs(self):
+        self.fake_seam()
+        self.fake_run()
+        for step in ("socket", "bind", "listen"):
+            with self.subTest(step=step):
+                self.seam.clear()
+                self.runs.clear()
+                made, patcher = self.failing_listener(step)
+                try:
+                    self.assertIs(setup.probe_r1(WRAPPER, CLI), False, "fail closed: no R1 without its listener")
+                    self.assertEqual((self.seam, self.runs), ([], []), "no seam and no run")
+                    if step == "socket":
+                        self.assertEqual(made, [])
+                    else:
+                        self.assert_all_closed(made)
+                finally:
+                    patcher.stop()
 
     def test_cli_version_stays_network_free(self):
         self.fake_seam()
