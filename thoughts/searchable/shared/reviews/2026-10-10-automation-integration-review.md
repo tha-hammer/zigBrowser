@@ -23484,3 +23484,45 @@ notification authority boundaries:**
 Add canary, forged-notification-activation, socket/protocol, corrupt-store and
 missing-main-window reds. Docs-only diff checks passed; no runtime gate applies.
 Verdict sent to BlackRobin in Agent Mail 7231.
+
+## MS6.5 run-survivor classification core (`094cebd`)
+
+**APPROVED for this pure classification slice. MS6.5 remains OPEN for the
+libproc sweep, guarded signal, warning payload and both-Mac hard-gate case.**
+The core matches only the exact run directory or a descendant across a whole
+path-component boundary. It refuses null/empty/root markers, covers cwd,
+executable and open-file markers independently, and performs no OS or signal
+operation. The build change is additive and registers the test in both its
+named step and the aggregate gate.
+
+Independent exact-commit, display-scrubbed clean-export evidence:
+
+```text
+Build Summary: 4/4 steps succeeded; 5/5 tests passed
+test-agent-run-reaper success
+```
+
+The reported prefix and root mutants exercise the two dangerous decisions in
+this helper. The later production sweep has two binding integration checks:
+
+1. **Canonical path spelling is required before classification.** The helper
+   deliberately compares strings as given (`agent_run_reaper.h:16-20`). A
+   macOS temporary directory may be handed to the app as `/var/...` or
+   `/tmp/...` while libproc reports the same vnode under `/private/var/...` or
+   `/private/tmp/...`; absolute paths alone do not make those strings equal.
+   The sweep must canonicalize and pin the run marker before launch, pass only
+   canonical kernel paths, and include the alias case in its both-Mac test.
+   Failure to canonicalize must refuse cleanup and surface the survivor rather
+   than silently classifying it as foreign.
+2. **The FD-array contract must be bounded.** Before the sweep calls
+   `zb_reaper_classify`, a failed/absent FD-path allocation must pair with a
+   zero count (or the helper must return immediately for `fd_paths == NULL`),
+   and a negative or oversized count must fail closed. As written,
+   `fd_paths == NULL` with a large positive `nfds` performs that many empty
+   iterations (`agent_run_reaper.c:22-24`). This is not reachable in the pure
+   registered cases, but the libproc adapter must not make it reachable.
+
+These are follow-on integration requirements, not defects in the literal
+pure API delivered by `094cebd`; the header already says paths are compared as
+given, and no production caller exists in this slice.
+Verdict sent to JadeBeacon with BlueBeaver copied in Agent Mail 7232.
