@@ -24805,3 +24805,96 @@ user/PID namespace. The production R1 case is unchanged: its digest remains
 `f58e733c967df13ec6d831bf98dbcf0f9df714e5908aaa03671262261738a986`
 and matches the manifest. This test-only approval does not lift the existing
 Mac-run hold. Verdict sent to BlueBeaver in Agent Mail 7321.
+
+## WS0.7 exception transport and absent-drive repair (`992b124`)
+
+**APPROVED; closes all four `be655f3` blockers on `6c3b563`. The owner-watched
+two-host `--probe-only` run may use an exact clean export of `992b124`.** Its
+required exception value is exactly:
+
+```sh
+export ZB_WIN10_SHARE_EXCEPTIONS='K:\=exFAT, no ACL possible; owner accepted 2026-10-21'
+```
+
+The record is validated before the first SSH and base64-carried only in the
+Win10 streamed PowerShell prelude; it is never interpolated into the SSH
+command, never sent to Win11, and causes no file-server write. Both pre and
+post schemas require well-formed, unique, served-share `absent_paths` and
+`share_exceptions`; the latter accepts only the exact approved `(K:\, reason)`
+record. The probe now establishes absence from the read-only
+`DriveInfo.GetDrives()` inventory and an exact drive-letter root. An inventory
+failure or a present but inaccessible drive reaches the fail-closed ACL path,
+not the absent result.
+
+The focused current-tree run, with displays scrubbed and inside a private
+user/PID namespace, passed **115/115** tests (**21** live-host rows skipped).
+A disposable replay of the seven new transport, pin, schema and drive-source
+guards against the pre-fix `6c3b563` gate/probe made all seven fail, confirming
+the claimed failing-first boundary. `git diff --check` is clean. The go-ahead
+and exact environment value were sent to AzureRidge in Agent Mail 7326.
+
+## MS6.5.1 Darwin lifecycle-owner plan (`0e3595c`)
+
+**BLOCKED (docs) before its red.** The revision faithfully carries the owner's
+high-level decision—public libproc/`kill` only, cleanup after stop and at next
+start, the three exact survivor-warning choices, an off-by-default fail-closed
+VM stub and no private API. A browser-owned Mac run root is the correct owner,
+rather than making loopback netd imitate Linux's socket directory. The plan's
+production authority and marker topology are not implementation-safe yet:
+
+1. **The marker is not executable through the real process chain.** Plan
+   `:1721-1727` says CLI, hooks and netd are rooted under the run directory by
+   cwd/open files. The Mac `LaunchSpec`, however, fixes the helper/CLI workdir
+   to the user's workspace (`sandbox_macos.py:434`), and the Darwin netd spawn
+   contract keeps exactly fds 0, 1 and 2 (`agent_spawn_posix.h:21-24`). The
+   fd-3 token and hook surfaces are separately exact. Preserve workspace cwd,
+   choose one exact app-private Mac runtime root held through a no-follow
+   parent, and define a distinct read-only marker handle/file—not the browser's
+   authority fd—through netd, helper/CLI and every hook. Each actual production
+   chain needs a census red plus a marker-removal mutant. A process that
+   deliberately scrubs the marker remains the user's accepted residual.
+2. **A fresh startup pin is not creation provenance.** Grammar, 0700, this uid
+   and a newly opened fd prove only the current same-uid directory, not that
+   zigBrowser created it. A planted grammar-valid directory could otherwise
+   authorize signals against an unrelated process. Create via `mkdirat` and
+   no-follow `openat` relative to the held app-private parent, and atomically
+   persist outside the sandbox enough creation identity to re-open and compare
+   the exact basename/dev/inode/uid/mode at the next start. Unrecorded,
+   malformed, duplicate, swapped or symlinked entries may be censused and
+   warned about, but never signalled. Crash cuts must cover creation, pinning
+   and record publication.
+3. **The warning outlives the authority it needs.** Lines 1730-1736 currently
+   warn and then `rmdir`, while lines 1699-1703 say Stop re-runs kill over the
+   listed pids. Removing/closing the marker destroys the later authority, and
+   displayed pids may be reused. A survivor incident must retain the fd, pin,
+   record and run directory until resolution. **Stop them now** performs a
+   fresh guarded census/sweep and never signals the displayed list; Show
+   details is read-only; Leave preserves startup recovery state. Remove the
+   record/directory only after a proved clean result. A browser SIGKILL cannot
+   execute a quit callback: that path is covered only at next start. Specify
+   the exactly-once Stop/quit/window-close state machine.
+4. **The setting, error and UI contracts are incomplete.** Resolve the
+   unconditional sweep at `:1730-1735` versus the setting-controlled sweep at
+   `:1744-1748`: absent/default-on or on sweeps then warns; off censuses then
+   warns; malformed/read failure sends no automatic signal and surfaces a
+   fixed error. Name the app-owned atomic store. The current reaper API returns
+   only pids (`agent_run_reaper.h:102-106`), so add a bounded command/cwd detail
+   collector, unreadable-row behavior and a no-log/no-telemetry rule. Queue a
+   startup incident until the main drawer exists. Scan error, overflow,
+   invalid pin or incomplete details/census is never clean and never
+   authorizes removal.
+5. **The gate text contradicts itself and lacks an executable TDD matrix.**
+   Lines 1707-1713 still call the destructive `7fa8906` both-Mac gate GREEN,
+   while lines 1737-1743 say every owner test is signal-free and destructive
+   signals remain off. Supersede the stale claim. `seatbelt_ready` does not
+   approve this later destructive path; add a named `reaper_ready` equivalent
+   that keeps production signals unreachable until the reviewed destructive
+   gate passes. Name the red/green files and functions, exact assertions and
+   mutants for root/provenance, every process marker, every lifecycle cut, the
+   setting matrix, incident actions and bounded startup scan. The drawer
+   warning also needs the user's real-screen acceptance.
+
+The startup scan, PID/detail rows and command/cwd bytes need named caps. The
+frontmatter/revision history also still says rev 17 while this section calls
+itself rev 20. Docs-only `git diff --check` passed. Verdict and the direct
+answers to JadeBeacon's two design questions were sent in Agent Mail 7327.
