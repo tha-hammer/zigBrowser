@@ -26291,3 +26291,44 @@ regression but does not cover the unreachable branch above.
 and the destructive Mac reaper case remains outside the reviewed hard-gate
 manifest. Agent Mail 7420 gave JadeBeacon the blocker and required the Mac
 gate to remain off.
+
+## Agent scratch-cleanup green (`4801844`)
+
+**BLOCKED (security).** The nine registered cleanup tests pass, but the
+implementation's no-follow claim does not hold against a controlled child.
+
+`files.remove_tree` first calls path-based `lstat(d)` and then separately
+calls path-based `chmod(d, 0700)` (`agent/host/zb_agent_host/files.py:54-59`).
+The sandboxed CLI controls descendant names and, because the independently
+observed timeout bug currently leaves its CLI descendant alive, can replace a
+checked directory with a symlink before `chmod`. The chmod follows the
+replacement link outside the scratch tree.
+
+A deterministic exact-`4801844` probe replaced `child` with a symlink to an
+outside, mode-0300 directory immediately after `lstat(child)` returned. The
+cleanup returned no problem, kept the outside file, but changed the outside
+target to mode **0700**:
+
+`swapped=True outside_mode=0o700 keep=keep problems=[]`
+
+The repair needs a held-fd traversal: no-follow open and pin the exact owned
+scratch root; enumerate relative to held directory fds; no-follow open,
+`fstat` and `fchmod` child-directory fds; and unlink/rmdir relative to their
+pinned parent. No descendant path may be chmodded. The owned process group
+must be stopped and reaped before cleanup; residual churn may make cleanup
+fail and report, but can never widen the writable set.
+
+A second blocker is diagnostic secrecy. `remove_tree` returns arbitrary full
+descendant paths and both callers print them. The CLI knows the credential and
+can create an unremovable entry whose filename contains it. Cleanup reporting
+must name only the generated scratch root plus a fixed stage/count/category,
+never attacker-controlled basenames or arbitrary text; a token-named failing
+entry must leave stderr token-free.
+
+The same fix should replace `FifoHandoff`'s `lexists`-then-`makedirs` ownership
+split with one atomic `mkdir` attempt and refuse a pre-existing symlink or
+non-owned directory. `git diff --check 4801844^ 4801844` is clean. From an
+exact archive the new unit suite passed **9/9**, showing the static cases are
+healthy but not the swap. Agent Mail 7421 sent BlueBeaver the blockers and
+reproducer. The owner-approved removal of the already observed Mac leftovers
+is unaffected; this verdict concerns the shipped cleanup implementation.
