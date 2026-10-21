@@ -14,6 +14,11 @@ its argv and exits 99) and canary hosts:
 - with everything in order, its FIRST network call is the download of exactly the pinned pkg URL (curl), and since the
   shim fails it, it stops there: nothing is staged and no Mac is contacted.
 The entry hands the driver --manifest tests/mac/hard_gate/MANIFEST.json, and nothing of MS6.5's survivor sweep.
+Provenance (RoseCat 7267): the entry takes a revision (default HEAD), refuses a non-commit before any network, exports
+THAT commit into its per-run temp tree and reads everything from the export (pins, lock, manifest, shipped sources,
+the dependency build). It prints "== hard gate at commit <sha>" and, before any network, "== ship <sha256> <path>" for
+the shipped seam sources, staging script and zb_agent_host files, so a dirty or replaced working tree is shown not to
+be what ships. The temporary Sigstore verifier is pinned (RoseCat 7265).
 seatbelt_ready is not touched by arming (RoseCat 7250 #4): a separate plan decision.
 
 No signal. Registered (build.zig: test-mac-census and the Linux test step), inside the namespace like its siblings.
@@ -23,6 +28,7 @@ Run like the gate: cd tests/e2e && unshare --user --map-root-user --pid --fork -
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -34,6 +40,8 @@ GATE = REPO / "tests" / "mac" / "ms6_hard_gate.sh"
 PINS = REPO / "packaging" / "macos" / "agent_runtime_pins.json"
 PKG_URL = "https://www.python.org/ftp/python/3.12.10/python-3.12.10-macos11.pkg"
 PKG_SHA = "8373e58da4ea146b3eb1c1f9834f19a319440b6b679b06050b1f9ee3237aa8e4"
+STAGE = REPO / "packaging" / "macos" / "stage_agent_runtime.sh"
+SIGSTORE_PIN = "sigstore==4.5.1"
 NET_TOOLS = ("ssh", "scp", "sftp", "curl", "nc", "rsync", "uv")
 
 
@@ -41,12 +49,15 @@ class ArmedEntry(unittest.TestCase):
     def setUp(self):
         self.repo = Path(tempfile.mkdtemp(prefix="zb-hardgate-entry-"))
         self.addCleanup(shutil.rmtree, self.repo, True)
-        for rel in ("tests/mac/ms6_hard_gate.sh", "agent/host/uv.lock", "agent/host/pyproject.toml"):
+        for rel in ("tests/mac/ms6_hard_gate.sh", "agent/host/uv.lock", "agent/host/pyproject.toml",
+                    "tests/mac/spawn_group_io_test.c", "src/agent_spawn_posix.c", "src/agent_spawn_posix.h"):
             (self.repo / rel).parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(REPO / rel, self.repo / rel)
         shutil.copytree(REPO / "tests/mac/hard_gate", self.repo / "tests/mac/hard_gate",
                         ignore=shutil.ignore_patterns("__pycache__"))
         shutil.copytree(REPO / "packaging/macos", self.repo / "packaging/macos")
+        shutil.copytree(REPO / "agent/host/zb_agent_host", self.repo / "agent/host/zb_agent_host",
+                        ignore=shutil.ignore_patterns("__pycache__"))
         subprocess.run(["git", "init", "-q", str(self.repo)], check=True)
         self.record = self.repo / "network-calls"
         self.shims = self.repo / "shims"
@@ -57,23 +68,33 @@ class ArmedEntry(unittest.TestCase):
         self.env = {"PATH": f"{self.shims}:/usr/bin:/bin", "LANG": "C.UTF-8", "HOME": str(self.repo),
                     "ZB_MAC_HOST": "canary-intel@192.0.2.10", "ZB_MAC_ARM_HOST": "canary-arm@192.0.2.11",
                     "ZB_MAC_KEY": str(self.repo / "no-key"), "ZB_MAC_ARM_KEY": str(self.repo / "no-key")}
+        self.commit()
 
-    def run_gate(self):
-        p = subprocess.run(["bash", str(self.repo / "tests/mac/ms6_hard_gate.sh")], capture_output=True, text=True,
-                           timeout=60, cwd=self.repo, env=self.env)
+    def git(self, *args):
+        return subprocess.run(["git", "-C", str(self.repo), "-c", "user.email=t@t", "-c", "user.name=t", *args],
+                              check=True, capture_output=True, text=True).stdout.strip()
+
+    def commit(self):
+        self.git("add", "-A", ".", ":!shims", ":!network-calls")
+        self.git("commit", "-q", "--allow-empty", "-m", "fixture")
+
+    def run_gate(self, *args):
+        p = subprocess.run(["bash", str(self.repo / "tests/mac/ms6_hard_gate.sh"), *args], capture_output=True,
+                           text=True, timeout=60, cwd=self.repo, env=self.env)
         return p.returncode, p.stdout + p.stderr, (self.record.read_text() if self.record.exists() else "")
 
     def pins(self):
         return self.repo / "packaging/macos/agent_runtime_pins.json"
 
-    def refused_offline(self, needle):
-        code, out, calls = self.run_gate()
+    def refused_offline(self, needle, *args):
+        code, out, calls = self.run_gate(*args)
         self.assertEqual(code, 1, out)
         self.assertIn(needle, out)
         self.assertEqual(calls, "", "no network call before the preconditions hold")
 
     def test_without_pins_it_is_not_armed(self):
         self.pins().unlink(missing_ok=True)
+        self.commit()
         code, out, calls = self.run_gate()
         self.assertEqual(code, 3, out)
         self.assertIn("NOT ARMED", out)
@@ -83,11 +104,13 @@ class ArmedEntry(unittest.TestCase):
         for text in ("{}\n", "not json", json.dumps({"python_pkg": {"url": PKG_URL}})):
             with self.subTest(pins=text[:20]):
                 self.pins().write_text(text)
+                self.commit()
                 self.refused_offline("pins")
 
     def test_a_lock_that_moved_off_its_pin_is_refused_offline(self):
         lock = self.repo / "agent/host/uv.lock"
         lock.write_bytes(lock.read_bytes() + b"\n# changed after pinning\n")
+        self.commit()
         self.refused_offline("uv.lock")
 
     def test_no_arm64_host_is_refused_offline(self):
@@ -97,19 +120,42 @@ class ArmedEntry(unittest.TestCase):
     def test_an_unreviewed_case_is_refused_offline(self):
         (self.repo / "tests/mac/hard_gate/case_unreviewed.py").write_text(
             "NAME='x'\ndef run(h):\n    h.check(True, '')\n")
+        self.commit()
         self.refused_offline("case_unreviewed.py")
 
     def test_an_edited_case_is_refused_offline(self):
         case = self.repo / "tests/mac/hard_gate/case_ms5_spawn_io.py"
         case.write_text(case.read_text() + "# edited after review\n")
+        self.commit()
         self.refused_offline("case_ms5_spawn_io.py")
+
+    def only_the_pkg_download(self, code, out, calls):
+        self.assertNotEqual(code, 0, out)
+        lines = calls.splitlines()
+        self.assertEqual(len(lines), 1, f"exactly one network call, then stop: {lines}\n{out}")
+        self.assertTrue(lines[0].startswith("curl ") and lines[0].split()[-1] == PKG_URL, lines)
 
     def test_in_order_its_first_network_call_is_the_pinned_pkg_download(self):
         code, out, calls = self.run_gate()
-        self.assertNotEqual(code, 0, out)
-        lines = calls.splitlines()
-        self.assertEqual(len(lines), 1, f"exactly one network call, then stop: {lines}")
-        self.assertTrue(lines[0].startswith("curl ") and lines[0].split()[-1] == PKG_URL, lines)
+        self.only_the_pkg_download(code, out, calls)
+        self.assertIn(f"== hard gate at commit {self.git('rev-parse', 'HEAD')}", out)
+
+    def test_a_dirty_worktree_is_not_what_ships(self):
+        committed = {rel: hashlib.sha256((self.repo / rel).read_bytes()).hexdigest()
+                     for rel in ("src/agent_spawn_posix.c", "packaging/macos/stage_agent_runtime.sh",
+                                 "agent/host/zb_agent_host/netd.py")}
+        for rel in committed:
+            (self.repo / rel).write_text((self.repo / rel).read_text() + "\n# uncommitted, unreviewed\n")
+        for rel in ("tests/mac/hard_gate/case_ms5_spawn_io.py", "agent/host/uv.lock"):  # would fail if read here
+            (self.repo / rel).write_text((self.repo / rel).read_text() + "\n# uncommitted\n")
+        code, out, calls = self.run_gate()
+        self.only_the_pkg_download(code, out, calls)
+        for rel, digest in committed.items():
+            self.assertIn(f"== ship {digest} {rel}", out, "the committed bytes, not the dirty ones, are shipped")
+
+    def test_a_revision_that_is_not_a_commit_is_refused_offline(self):
+        self.refused_offline("revision", "no-such-revision")
+        self.refused_offline("revision", self.git("rev-parse", "HEAD^{tree}"))
 
 
 class CommittedPins(unittest.TestCase):
@@ -128,6 +174,24 @@ class CommittedPins(unittest.TestCase):
         self.assertIn("tests/mac/hard_gate/MANIFEST.json", text)
         self.assertNotIn("reaper", text.lower())
         self.assertNotIn("seatbelt_ready=", text)
+
+    def test_neither_the_entry_nor_its_staging_installs_anything(self):
+        # RoseCat 7265: the entry test stops at its first curl and cannot watch the remote leg, so pin the commands:
+        # no installer, no sudo, no system prefix; pkgutil only checks a signature or expands into the run dir.
+        for script in (GATE, STAGE):
+            for n, line in enumerate(script.read_text().splitlines(), 1):
+                code = line.split(" #", 1)[0] if not line.lstrip().startswith("#") else ""
+                where = f"{script.name}:{n}: {line.strip()}"
+                self.assertNotRegex(code, r"\bsudo\b", where)
+                self.assertNotRegex(code, r"(^|[\s;&|(])installer(\s|$)", where)
+                self.assertNotRegex(code, r"(^|[\s\"'=])(/Library/|/Applications/|/usr/local/|/opt/|/System/)", where)
+                for use in re.findall(r"pkgutil\s+(--\S+)", code):
+                    self.assertIn(use, ("--check-signature", "--expand-full"), where)
+
+    def test_the_temporary_sigstore_verifier_is_pinned(self):
+        text = GATE.read_text()
+        self.assertIn(SIGSTORE_PIN, text, "the verifier the gate installs into its per-run venv is pinned")
+        self.assertNotRegex(text, r"install\s+sigstore(\s|$)", "never an unpinned sigstore")
 
 
 if __name__ == "__main__":
