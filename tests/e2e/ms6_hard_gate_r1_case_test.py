@@ -116,9 +116,10 @@ class ChainAlive(NoSignals):
 
 
 class ChainRelease(NoSignals):
-    def release(self, scans, started_at=0.0):
-        """Feeds `scans` (the last one repeats); the clock only moves by the case's own sleeps."""
-        now = [started_at]
+    def release(self, scans, started_at=0.0, clock_at=None):
+        """Feeds `scans` (the last one repeats); the clock starts at `clock_at` (default: the row's start) and only
+        moves by the case's own sleeps."""
+        now = [started_at if clock_at is None else clock_at]
         seen = []
 
         def scan():
@@ -170,9 +171,12 @@ class ChainRelease(NoSignals):
         self.assertGreaterEqual(seen[-1], 1000.0 + self.case.CHAIN_HORIZON_S - 1)
 
     def test_a_late_row_still_gets_its_full_grace(self):
-        """A row that ran past its horizon (the hang row's probe can take ~90 s) still gets CHAIN_GRACE_S."""
-        faults, survivors, last, seen = self.release([self.SURVIVOR] * 5 + [self.CLEAN], started_at=-95.0)
+        """A row that ran past its horizon (the hang row's probe can take ~90 s) still gets CHAIN_GRACE_S: the row
+        started at t=-95, release starts at t=0, its horizon ends at t=5, and the survivor lives until t=8, inside the
+        grace (RoseCat 7317: an end of started_at + horizon alone returns the survivor at t=5)."""
+        faults, survivors, last, seen = self.release([self.SURVIVOR] * 8 + [self.CLEAN], started_at=-95.0, clock_at=0.0)
         self.assertEqual((faults, survivors, last), ([], [], self.CLEAN))
+        self.assertGreater(seen[-1], -95.0 + self.case.CHAIN_HORIZON_S)
 
 
 if __name__ == "__main__":
