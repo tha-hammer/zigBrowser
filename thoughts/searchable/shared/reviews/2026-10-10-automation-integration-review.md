@@ -26686,3 +26686,28 @@ gate is armed. Linux may use a dedicated per-run child subreaper, but must
 still bind adopted children to that supervised run, revalidate identity, stop
 within a bound and reap. Agent Mail 7443 sent BlueBeaver the verdict and
 policy. No Mac signal run is approved by this red review.
+
+## StopFailed scratch-retention red (`177ee8c`)
+
+**BLOCKED-for-tests.** The row pins the positive behavior—return failure, retain
+the scratch directory, and mention its app-generated root—but does not pin the
+required secrecy boundary around that diagnostic.
+
+At `agent/host/tests/test_setup_sandbox_lifetime.py:123-135`, the fake sandbox
+creates no CLI-controlled descendant and the only output checks are positive
+`assertIn` calls for the root and `"could not be stopped"`. The test would stay
+green if the diagnostic printed the scratch root plus every descendant name,
+the command argv, captured output, or raw attacker-controlled exception text.
+The in-progress implementation also interpolates raw `{exc}`, so this cannot
+be left to the current exception constructors by convention.
+
+The red must plant distinct canaries in a descendant filename, the command
+argv, and the injected `StopFailed` message; require an exact fixed diagnostic
+shape containing only an app-owned reason and the exact realpath scratch root;
+and assert all canaries absent. It should also prove the planted descendant
+still exists, then remove it explicitly as test cleanup. The seam is mocked,
+so this row is signal-free. A direct clean-export run in this review could not
+import the unstaged SDK dependency and is not counted as red evidence; the
+static oracle defect is independently decisive. No full gate was started
+while BlackRobin held the shared slot. Agent Mail 7444 sent BlueBeaver the
+blocker.
