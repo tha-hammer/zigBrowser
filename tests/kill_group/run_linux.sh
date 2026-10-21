@@ -7,8 +7,9 @@
 set -eu
 root="${1:-$(cd "$(dirname "$0")/../.." && pwd)}"
 out=$(mktemp -d "${TMPDIR:-/tmp}/zb-killgroup-XXXXXX")
-trap 'case "$out" in */zb-killgroup-*) rm -rf -- "${out:?}";; esac' EXIT
+# Validated cleanup (RoseCat 7186): only our own mktemp dir, by find -delete, never an unguarded rm -rf.
+trap 'case "$out" in "${TMPDIR:-/tmp}"/zb-killgroup-??????) find "${out:?}" -delete;; esac' EXIT
 cc -std=gnu11 -Wall -Wextra -Werror -I "$root/src" -Wl,--wrap=killpg -Wl,--wrap=kill \
-  "$root/tests/kill_group/kill_group_test.c" "$root/tests/kill_group/kill_group_fake.c" "$root/src/agent_spawn_posix.c" \
-  -o "$out/kill_group_test"
+  "$root/tests/kill_group/kill_group_test.c" "$root/tests/kill_group/kill_group_fake.c" \
+  "$root/src/agent_spawn_posix.c" -o "$out/kill_group_test"
 "$out/kill_group_test" </dev/null

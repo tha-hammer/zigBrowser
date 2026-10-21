@@ -24,7 +24,8 @@ if [ -z "$ARM_HOST" ]; then
   exit 1
 fi
 stage=$(mktemp -d "${TMPDIR:-/tmp}/zb-killgroup-XXXXXX")
-trap 'case "$stage" in */zb-killgroup-*) rm -rf -- "${stage:?}";; esac' EXIT
+# Validated cleanup (RoseCat 7186): only our own mktemp dirs, by find -delete, never an unguarded rm -rf.
+trap 'case "$stage" in "${TMPDIR:-/tmp}"/zb-killgroup-??????) find "${stage:?}" -delete;; esac' EXIT
 for f in tests/kill_group/kill_group_test.c tests/kill_group/kill_group_fake.c src/agent_spawn_posix.c \
          src/agent_spawn_posix.h; do
   if [ -n "${1:-}" ]; then git show "$1:$f" > "${stage:?}/$(basename "$f")"; else cp "$f" "${stage:?}/"; fi
@@ -40,11 +41,13 @@ leg() { # $1=host $2=expected uname -m $3=key
              -o StrictHostKeyChecking=yes -o ConnectTimeout=15 -o ServerAliveInterval=10)
   local rdir="zb-killgroup-$(date +%s)-$$-$RANDOM"
   tar -C "${stage:?}" -cf - . | "${SSH[@]}" "$host" "mkdir \"\$HOME/${rdir:?}\" && tar -xf - -C \"\$HOME/${rdir}\"" \
-    || { "${SSH[@]}" "$host" "rm -rf \"\$HOME/${rdir:?}\"" || true; echo "FAIL: staging on $host" >&2; return 1; }
+    || { "${SSH[@]}" "$host" "d=\"\$HOME/${rdir:?}\"; [ -d \"\$d\" ] && find \"\$d\" -delete" || true
+         echo "FAIL: staging on $host" >&2; return 1; }
   timeout "$LEG_TIMEOUT" "${SSH[@]}" "$host" "ZB_RDIR='${rdir}' ZB_ARCH='${arch}' /bin/bash -s" <<'REMOTE'
 set -euo pipefail
 d="$HOME/${ZB_RDIR:?}"
-trap 'rm -rf "$HOME/${ZB_RDIR:?}"' EXIT
+case "$ZB_RDIR" in zb-killgroup-*) ;; *) echo "FAIL: bad run dir $ZB_RDIR" >&2; exit 1;; esac
+trap 'cd / && find "$HOME/${ZB_RDIR:?}" -delete' EXIT
 [ "$(uname -m)" = "$ZB_ARCH" ] || { echo "FAIL: this leg is $(uname -m), expected $ZB_ARCH" >&2; exit 1; }
 cd "$d"
 CC=(xcrun clang -std=gnu11 -Wall -Wextra -Werror)

@@ -4,7 +4,12 @@
 #include <errno.h>
 #include <signal.h>
 #include <spawn.h>
+#include <stdio.h>
 #include <sys/wait.h>
+#include <unistd.h>
+#ifdef __APPLE__
+#include <sys/sysctl.h>
+#endif
 
 int zb_agent_spawn_group(const char *const *argv, const char *const *envp, pid_t *out_pid) {
   posix_spawnattr_t attr;
@@ -66,12 +71,62 @@ int zb_agent_spawn_group_io(const char *const *argv, const char *const *envp, in
   return err;
 }
 
-void zb_agent_kill_group(pid_t pid) {
-  if (pid <= 0) {
-    return;
+/* `pid`'s parent and process group, an unreaped zombie included; -1 if there is no such process. Darwin reads the
+ * kernel's process table (sysctl kern.proc.pid: getpgid and getsid fail with ESRCH on a zombie there, measured on both
+ * Macs); Linux reads /proc/<pid>/stat. */
+static int parent_and_group(pid_t pid, pid_t *ppid, pid_t *pgid) {
+#ifdef __APPLE__
+  struct kinfo_proc kp;
+  size_t len = sizeof kp;
+  int mib[4] = {CTL_KERN, KERN_PROC, KERN_PROC_PID, (int)pid};
+  if (sysctl(mib, 4, &kp, &len, NULL, 0) != 0 || len != sizeof kp) {
+    return -1;
   }
-  (void)killpg(pid, SIGKILL);
+  *ppid = kp.kp_eproc.e_ppid;
+  *pgid = kp.kp_eproc.e_pgid;
+  return 0;
+#else
+  char path[64], buf[512];
+  snprintf(path, sizeof path, "/proc/%d/stat", (int)pid);
+  FILE *f = fopen(path, "re");
+  if (f == NULL) {
+    return -1;
+  }
+  size_t n = fread(buf, 1, sizeof buf - 1, f);
+  fclose(f);
+  buf[n] = 0;
+  char *close_paren = NULL;
+  for (char *p = buf; *p; p++) {
+    if (*p == ')') close_paren = p;  /* the command name may itself hold ')' */
+  }
+  int pp = 0, pg = 0;
+  if (close_paren == NULL || sscanf(close_paren + 1, " %*c %d %d", &pp, &pg) != 2) {
+    return -1;
+  }
+  *ppid = (pid_t)pp;
+  *pgid = (pid_t)pg;
+  return 0;
+#endif
+}
+
+int zb_agent_kill_group(pid_t pid) {
+  /* killpg(1) is kill(-1): every process the user owns (the 2026-10-21 logouts). Never 0, 1, a negative pid, us,
+   * or our own group. */
+  if (pid <= 1 || pid == getpid() || pid == getpgrp()) {
+    return EINVAL;
+  }
+  /* Only our own child, alive or an unreaped zombie (its pid cannot be reused until we reap it), that leads its
+   * own group (zb_agent_spawn_group's POSIX_SPAWN_SETPGROUP). Anything else is never signalled. */
+  pid_t ppid = 0, pgid = 0;
+  if (parent_and_group(pid, &ppid, &pgid) != 0 || ppid != getpid()) {
+    return ECHILD;
+  }
+  if (pgid != pid) {
+    return EPERM;
+  }
+  (void)killpg(pid, SIGKILL); /* EPERM for a zombie-only group on Darwin: nothing left to signal */
   (void)zb_agent_wait(pid);
+  return 0;
 }
 
 int zb_agent_wait(pid_t pid) {

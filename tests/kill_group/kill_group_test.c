@@ -32,8 +32,13 @@ void zb_fake_allow(pid_t pid);
 void zb_fake_reset(void);
 int zb_fake_calls(void);
 int zb_fake_forwarded(void);
+int zb_fake_bad(void);
+int zb_fake_kill_calls(void);
 pid_t zb_fake_last_target(void);
 int zb_fake_last_was_pg(void);
+pid_t zb_fake_first_bad_target(void);
+int zb_fake_first_bad_was_pg(void);
+int zb_fake_first_bad_sig(void);
 
 static int failures = 0;
 static void check(int ok, const char *label) {
@@ -114,6 +119,20 @@ static int reaped(pid_t pid) {
   return waitpid(pid, &st, WNOHANG) < 0 && errno == ECHILD;
 }
 
+/* The whole signal census of one positive call: exactly one killpg(pid, SIGKILL), forwarded; no refused call; no
+ * kill() at all (RoseCat 7186). */
+static void exactly_one_killpg(pid_t pid, int rc, const char *label) {
+  char m[400];
+  snprintf(m, sizeof m,
+           "%s: returns 0 after exactly one killpg(leader, SIGKILL) (rc %d; %d call(s), %d forwarded, %d bad, "
+           "%d kill(); first bad: %s(%d, %d))",
+           label, rc, zb_fake_calls(), zb_fake_forwarded(), zb_fake_bad(), zb_fake_kill_calls(),
+           zb_fake_first_bad_was_pg() ? "killpg" : "kill", (int)zb_fake_first_bad_target(), zb_fake_first_bad_sig());
+  check(rc == 0 && zb_fake_calls() == 1 && zb_fake_forwarded() == 1 && zb_fake_bad() == 0 &&
+            zb_fake_kill_calls() == 0 && zb_fake_last_was_pg() && zb_fake_last_target() == pid,
+        m);
+}
+
 static void refused(pid_t pid, int want, const char *label) {
   zb_fake_reset();
   int rc = zb_agent_kill_group(pid);
@@ -130,18 +149,21 @@ int main(int argc, char **argv) {
   char self[1024];
   if (realpath(argv[0], self) == NULL) { printf("FAIL\tkill-group\trealpath\n"); return 1; }
 
-  /* 0. The canary: prove the fake intercepts the code under test before any case can reach a wrong pid. A child
-   * leader of ours whose stdin is already closed (so it exits by itself) is passed WITHOUT an allowlist entry: the
-   * code under test signals it (old and new code both), and that call must land in the fake. Zero calls means the
-   * --wrap / interposition is not active: stop here, before pid 1 is ever passed. */
+  /* 0. The canary: prove the fake intercepts the code under test before any case can reach a wrong pid. A LIVE
+   * leader of ours, allowlisted, is passed: old and new code both killpg it, and that call must land in the fake
+   * (which forwards it: the group is ours). Zero calls means the --wrap / interposition is not active: stop here,
+   * before pid 1 is ever passed. */
   {
     struct spawned c;
-    if (spawn(self, "exit", &c) != 0) { printf("FAIL\tkill-group\tspawn canary\n"); return 1; }
-    close(c.in_w);
-    sleep_ms(300);
+    char cl[64];
+    if (spawn(self, "leader", &c) != 0) { printf("FAIL\tkill-group\tspawn canary\n"); return 1; }
+    read_line(c.out_r, cl, sizeof cl, 5000);
     zb_fake_reset();
+    zb_fake_allow(c.pid);
     (void)zb_agent_kill_group(c.pid);
-    int intercepted = zb_fake_calls() >= 1;
+    int intercepted = zb_fake_forwarded() >= 1;
+    close(c.in_w);  /* whatever the code did, stdin EOF ends the group without a signal from us */
+    eof_within(c.out_r, 3000);
     close(c.out_r);
     int cst;
     while (waitpid(c.pid, &cst, WNOHANG) < 0 && errno == EINTR) {}
@@ -159,8 +181,12 @@ int main(int argc, char **argv) {
   refused(getpid(), EINVAL, "our own pid");
   refused(getpgrp(), EINVAL, "our own process group");
 
-  /* 2. a real process that is not our child */
-  refused(getppid(), ECHILD, "our parent (a real pid, not our child)");
+  /* 2. our parent: a real pid that is not our child. Under setsid it may also lead our own group, so either refusal
+   * is right; what matters is that no killpg/kill is made. (The exact ECHILD case is our leader's member, in 4.) */
+  zb_fake_reset();
+  int prc = zb_agent_kill_group(getppid());
+  check((prc == ECHILD || prc == EINVAL) && zb_fake_calls() == 0,
+        "our parent: refused (ECHILD, or EINVAL when it leads our group) and no killpg/kill at all");
 
   /* 3. our live child that does not lead its own group (a plain fork: it is in OUR group) */
   int p[2];
@@ -183,12 +209,14 @@ int main(int argc, char **argv) {
   char line[64];
   if (spawn(self, "leader", &s) != 0) { printf("FAIL\tkill-group\tspawn leader\n"); return 1; }
   read_line(s.out_r, line, sizeof line, 5000);
+  int member = 0;
+  check(sscanf(line, "ready %d", &member) == 1 && member > 1, "our leader reports its member");
+  /* a real, live process that is not our child (our child's child), in a group that is not ours */
+  refused((pid_t)member, ECHILD, "a live process that is not our child (our leader's member)");
   zb_fake_reset();
   zb_fake_allow(s.pid);
   int rc = zb_agent_kill_group(s.pid);
-  check(rc == 0 && zb_fake_forwarded() == 1 && zb_fake_calls() == 1 && zb_fake_last_was_pg() &&
-            zb_fake_last_target() == s.pid,
-        "our leader: exactly one killpg(leader, SIGKILL), returns 0");
+  exactly_one_killpg(s.pid, rc, "our leader with a live member");
   check(eof_within(s.out_r, 3000), "our leader: the whole group is gone (the member too)");
   check(reaped(s.pid), "our leader: reaped");
   close(s.in_w);
@@ -201,8 +229,7 @@ int main(int argc, char **argv) {
   zb_fake_reset();
   zb_fake_allow(s.pid);
   rc = zb_agent_kill_group(s.pid);
-  check(rc == 0 && zb_fake_forwarded() == 1 && zb_fake_last_was_pg() && zb_fake_last_target() == s.pid,
-        "zombie leader with a live member: killpg(leader) still sent, returns 0");
+  exactly_one_killpg(s.pid, rc, "zombie leader with a live member");
   check(eof_within(s.out_r, 3000), "zombie leader: the surviving member is gone");
   check(reaped(s.pid), "zombie leader: reaped");
   close(s.in_w);
@@ -214,11 +241,12 @@ int main(int argc, char **argv) {
   zb_fake_reset();
   zb_fake_allow(s.pid);
   rc = zb_agent_kill_group(s.pid);
-  check(rc == 0 && reaped(s.pid), "an exited leader alone: returns 0 and is reaped");
+  exactly_one_killpg(s.pid, rc, "an exited leader alone");
+  check(reaped(s.pid), "an exited leader alone: reaped");
   close(s.in_w);
   close(s.out_r);
 
-  if (failures == 0) { printf("PASS\tkill-group\t6 cases\n"); return 0; }
+  if (failures == 0) { printf("PASS\tkill-group\t7 cases\n"); return 0; }
   printf("FAIL\tkill-group\t%d failure(s)\n", failures);
   return 1;
 }

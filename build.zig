@@ -694,6 +694,14 @@ pub fn build(b: *std.Build) void {
     run_agent_host_posix_spawn_tests.addArtifactArg(agent_host_posix_spawn_test);
     const agent_host_posix_spawn_step = b.step("test-agent-spawn", "spawnNetd Linux integration tests (namespaced)");
     agent_host_posix_spawn_step.dependOn(&run_agent_host_posix_spawn_tests.step);
+    // zb_agent_kill_group signals only our own child's own group (RoseCat 7172, 7182; the 2026-10-21 logouts). The C
+    // test routes every killpg/kill of src/agent_spawn_posix.c to a fake by -Wl,--wrap, and still runs only inside a
+    // private user+PID namespace, as its own group leader (setsid). Its both-Mac gate is tests/mac/ms5_kill_group_gate.sh.
+    const kill_group_tests = b.addSystemCommand(&.{
+        "unshare", "--user", "--map-root-user", "--pid", "--fork", "--mount-proc", "--",
+        "sh", "-c", "setsid tests/kill_group/run_linux.sh",
+    });
+    agent_host_posix_spawn_step.dependOn(&kill_group_tests.step);
 
     // Chat drawer S3b: the helper's launch argv and environment, the app's
     // frames, the runtime-lock check and the backoff (src/agent_helper.zig).
@@ -2420,6 +2428,7 @@ pub fn build(b: *std.Build) void {
     if (target.result.os.tag == .linux) test_step.dependOn(&ms6_hard_gate_driver_unit.step);
     if (target.result.os.tag == .linux) test_step.dependOn(&ms6_hard_gate_harness_unit.step);
     if (target.result.os.tag == .linux) test_step.dependOn(&ms6_hard_gate_harness_safety_unit.step);
+    if (target.result.os.tag == .linux) test_step.dependOn(&kill_group_tests.step);
     test_step.dependOn(&run_agent_login_protocol_tests.step);
     test_step.dependOn(&run_backend_flag_tests.step);
     test_step.dependOn(&run_backend_flag_startup_tests.step);
