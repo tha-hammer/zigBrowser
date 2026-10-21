@@ -1918,6 +1918,14 @@ pub fn build(b: *std.Build) void {
     // Chat drawer S3n1 (plan rev 16.2 §3c): the host-side network helper and the
     // two relays, driven through their command lines, offline (private fakes on
     // 127.0.0.1 and short /tmp/zbn-* socket directories only).
+    // macOS netd (BlueBeaver 6971; JadeBeacon 7004): a host-loopback TCP egress proxy on an OS-selected port, announced
+    // as `netd ready 127.0.0.1:<port>`; netd's real main() with PLATFORM "darwin". The native run on both Macs is
+    // tests/mac/ms6_netd_darwin_gate.sh.
+    const agent_host_netd_darwin = b.addSystemCommand(&.{
+        "sh",
+        "-c",
+        "py=$(tools/agent_host_env.sh --check) || exit 1; cd agent/host/tests && out=$(env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 ZB_AGENT_HOST_PYTHON=\"$py\" \"$py\" -X dev -m unittest -v test_netd_darwin 2>&1); rc=$?; printf '%s\\n' \"$out\"; [ $rc -eq 0 ] || exit $rc; if printf '%s\\n' \"$out\" | grep -q ResourceWarning; then echo 'test_netd_darwin: ResourceWarning' >&2; exit 1; fi",
+    });
     const agent_host_netd = b.addSystemCommand(&.{
         "sh",
         "-c",
@@ -2340,6 +2348,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&agent_host_chat_redact.step);
     test_step.dependOn(&agent_host_bridge.step);
     test_step.dependOn(&agent_host_netd.step);
+    test_step.dependOn(&agent_host_netd_darwin.step);
     test_step.dependOn(&agent_host_relay.step);
     test_step.dependOn(&agent_host_netd_manifest.step);
     test_step.dependOn(&agent_host_netd_login.step);

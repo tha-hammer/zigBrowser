@@ -64,6 +64,7 @@ def _posix_only():
 
 EXIT_NO_SANDBOX = 3
 EXIT_USAGE = 2
+PLATFORM = sys.platform
 
 API_HOST = "api.anthropic.com"
 BRIDGE_PORTS = (51091, 31337)
@@ -481,7 +482,10 @@ class Netd:
         sock.bind(path)
         sock.listen(64)
         self.listeners.append((sock, path))
+        self.accept(sock, handler, *extra)
 
+    def accept(self, sock, handler, *extra):
+        """One thread per connection on a listening socket of ours, until stop."""
         def accept_loop():
             while not self.stopping.is_set():
                 try:
@@ -549,7 +553,7 @@ def _port(text):
     return port
 
 
-def parse_args(argv):
+def parse_args(argv, darwin=False):
     opts = {"sockdir": None, "bwrap": None, "manifest": None, "ready_delay": None, "allow": [], "bridge": [], "resolve": [],
             "host": [], "port": [], "record": False, "serve": False, "no_bridges": False, "census": False}
     single = {"--sockdir": "sockdir", "--bwrap": "bwrap", "--net-manifest": "manifest",
@@ -582,7 +586,14 @@ def parse_args(argv):
             i += 1
         else:
             raise ValueError(f"unknown argument {arg!r}")
-    if not opts["sockdir"]:
+    if darwin:
+        # macOS: no socket directory, no bwrap, no bridges, no sandboxed side (BlueBeaver 6971).
+        for flag, key in (("--sockdir", "sockdir"), ("--bwrap", "bwrap"), ("--test-bridge", "bridge"),
+                          ("--serve", "serve"), ("--allow-host", "host"), ("--bridge-port", "port"),
+                          ("--no-bridges", "no_bridges")):
+            if opts[key]:
+                raise ValueError(f"{flag} is not used on macOS")
+    elif not opts["sockdir"]:
         raise ValueError("--sockdir is required")
     if opts["serve"] and opts["manifest"] is not None:
         raise ValueError("--net-manifest is read before the sandbox")
@@ -747,6 +758,35 @@ def serve(sockdir, allow, bridges, resolve, record, hosts, ready_delay=None, cen
     netd.start()
     if ready_delay:
         time.sleep(ready_delay / 1000)  # the e2e hold: the sockets exist, the line waits
+    _ready_then_wait("netd ready")
+    netd.stop()
+    return 0
+
+
+def serve_tcp(allow, resolve, record, hosts, ready_delay=None, census=False):
+    """macOS (plan egress mapping item 1; BlueBeaver 6971, JadeBeacon 7004): no private network namespace and no
+    Unix-socket proxy for the CLI (5503), so netd itself listens on an OS-selected 127.0.0.1 port, egress only (each
+    hook's own profile reaches the bridge ports directly), and holds that listener for its whole life. The ready line
+    names it: exactly `netd ready 127.0.0.1:<port>` (agent_net.parseDarwinReadyPort). The proxy rules are the
+    Linux ones. EOF on stdin or SIGTERM/SIGINT closes the listener and exits 0."""
+    netd = Netd(None, allow, {}, resolve, record, hosts, census=census)
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(64)
+        port = listener.getsockname()[1]
+        netd.accept(listener, netd.egress)
+        if ready_delay:
+            time.sleep(ready_delay / 1000)  # the e2e hold: the listener exists, the line waits
+        _ready_then_wait(f"netd ready 127.0.0.1:{port}")
+    finally:
+        netd.stopping.set()
+        listener.close()
+    return 0
+
+
+def _ready_then_wait(line):
+    """Prints the one ready line, then returns on EOF on stdin, SIGTERM or SIGINT."""
     done = threading.Event()
     signal.signal(signal.SIGTERM, lambda *_: done.set())
     signal.signal(signal.SIGINT, lambda *_: done.set())
@@ -759,25 +799,26 @@ def serve(sockdir, allow, bridges, resolve, record, hosts, ready_delay=None, cen
             pass
         done.set()
     threading.Thread(target=stdin_watch, daemon=True).start()
-    sys.stdout.write("netd ready\n")
+    sys.stdout.write(line + "\n")
     sys.stdout.flush()
     while not done.wait(0.5):
         pass
-    netd.stop()
-    return 0
 
 
 def main(argv):
     _posix_only()  # WS7.5: fork/exec
+    darwin = PLATFORM == "darwin"
     try:
-        opts, allow, resolve = parse_args(argv)
+        opts, allow, resolve = parse_args(argv, darwin=darwin)
         hosts, ports, from_manifest = network(opts)  # the manifest is read here, before anything exists
-        bridges = bridge_targets(ports, opts["bridge"])
+        bridges = {} if darwin else bridge_targets(ports, opts["bridge"])
     except ValueError as exc:
         log(f"netd: {exc}")
         return EXIT_USAGE
     sockdir = opts["sockdir"]
     os.closerange(3, os.sysconf("SC_OPEN_MAX"))  # nothing the browser leaked goes further
+    if darwin:
+        return serve_tcp(allow, resolve, opts["record"], hosts, opts["ready_delay"], opts["census"])
     if opts["serve"]:
         return serve(sockdir, allow, bridges, resolve, opts["record"], hosts, opts["ready_delay"], opts["census"])
     bwrap = opts["bwrap"] or "/usr/bin/bwrap"
