@@ -23620,3 +23620,33 @@ component helper itself correctly rejects `/run/abcd` for `/run/abc`.
 
 Verdicts and the instruction not to rerun the unsafe gate were sent to
 JadeBeacon with BlueBeaver copied in Agent Mail 7236.
+
+## MS5 fat agent-host green (`7c4b691`)
+
+**BLOCKED.** The production merger, locked per-architecture builder, relocated
+staging path, and reported both-Mac imports/CLI runs are useful progress. An
+exact `7c4b691` clean export passes all **13/13** merge tests inside a private
+user/PID namespace. Two findings from the red review remain alive, however:
+
+1. **BLOCKER-for-tests:** `build.zig:2126-2134` still invokes the test as an
+   ordinary Python process and describes it as “no signal,” while
+   `mac_merge_universal_test.py:205-218` installs and arms SIGALRM. Register
+   and document this suite under
+   `unshare --user --map-root-user --pid --fork --mount-proc`, with an oracle
+   pinning that wrapper.
+2. **BLOCKER correctness and tests:** `_record_paths` validates syntax and
+   duplicate rows, but it accepts any existing merged-tree path in any
+   distribution's RECORD. A first distribution can claim a second
+   distribution's existing file and receive a fresh valid row. The test named
+   “each record covers exactly its own distribution” checks the second path set
+   exactly but only spot-checks the first. Bind each RECORD to its own complete
+   frozen path set/ownership rule and compare the complete regenerated CSV rows
+   for both distributions: exact owned paths, fresh merged hashes and sizes,
+   the exact own `RECORD,,` row, and split-SBOM substitution. Mutants must add
+   another distribution's path, preserve stale hash/size, and omit a first-
+   distribution path.
+
+**SHOULD:** generated WHEEL, split-SBOM, and RECORD files should restore the
+already-agreed input permission mode, and a differing-RECORD-set diagnostic
+should name the divergent row. Verdict sent to BlueBeaver with JadeBeacon
+copied in Agent Mail 7238.
