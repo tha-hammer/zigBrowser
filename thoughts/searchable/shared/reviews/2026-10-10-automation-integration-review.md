@@ -25158,3 +25158,49 @@ non-installing `tests/mac/ms5_stage_gate.sh 207c7dc` run on both Macs; it must
 pass before `10cc48a` is final-accepted or the armed hard gate relies on the
 fix. No Mac run was performed in this review. `git diff --check` is clean;
 verdict and the bounded next action sent to BlueBeaver in Agent Mail 7343.
+
+## MS6.5.1 Darwin lifecycle-owner plan rev 23 (`b19b4a3`)
+
+**BLOCKED (docs) before its red.** Rev 23 closes two of the three prior
+`3118838` blockers and the in-process form of the third. The bounded
+census→kill→fresh-census loop now reaches `Clean` only after a complete,
+empty final census; cap, deadline and incomplete/overflow outcomes retain
+`Survivors` and the authority (`macos-launch-tdd-plan.md:1832-1859`). The
+`reaper_ready` gate is now an immutable production source/build constant,
+independent of `seatbelt_ready`, with no environment or CLI arming route and
+with explicit bypass mutants (`:1903-1916`). A serialized read/modify/write
+transaction also correctly prevents two runs in one process from replacing
+the shared ledger from the same revision. Three production-safety gaps remain:
+
+1. **BLOCKER — the ledger transaction owner is process-local.** The plan
+   explicitly selects “one process-wide ledger mutex” (`:1774-1781`), but
+   `<runtime_dir>/zigbrowser-agent-runs.json` is a user-global recovery ledger
+   that a later—and potentially concurrently running—zigBrowser process must
+   read. Two application processes therefore have two mutexes and can still
+   read revision N and publish different N+1 files. The transaction needs an
+   OS-visible lock rooted under the pinned runtime-directory fd, held from the
+   read through parent-directory fsync and released by process death. The red
+   must interleave two independent processes for publish/publish and
+   publish-or-remove/update; removing the inter-process lock must lose an
+   entry.
+2. **BLOCKER — startup recovery does not exclude another live app owner.** The
+   startup paragraph treats each valid `active` entry as a prior-SIGKILL
+   leftover and enters `Stopping` (`:1871-1878`). With two browser instances,
+   that can target the other live instance's marked children. A live matching
+   owner must be left untouched; only a proved-dead pid+start identity (or a
+   failed-to-acquire per-run owner lease) may become recovery work. PID reuse
+   or an unreadable liveness result must fail closed. Add a two-browser red in
+   which B starts while A and A's marked child remain live; B may neither
+   signal nor retire A's entry.
+3. **BLOCKER — one teardown crash cut remains undefined.** The plan covers a
+   crash after both marker and directory removal but before ledger removal
+   (`:1782-1788`), while `Clean` actually performs marker unlink, directory
+   removal and ledger removal as three distinct operations (`:1844-1849`). A
+   crash after marker unlink but before `rmdir` leaves a provenance-valid,
+   `active`, empty directory with no marker. Specify the recovery/`ENOENT`
+   contract and add that exact crash-cut red; it must neither become a
+   permanent malformed incident nor authorize a process signal.
+
+The destructive Mac reaper gate remains OFF. This was a docs-only review; no
+Mac or live-browser run was performed. `git diff --check` is clean. Verdict
+sent to JadeBeacon in Agent Mail 7345.
