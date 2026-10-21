@@ -22929,3 +22929,31 @@ unbounded blocking reap. Preserve the benign ESRCH zombie-only behavior, but
 propagate other signal errors or use a bounded reap path.
 
 Verdict sent to BlueBeaver, with JadeBeacon copied, in Agent Mail 7191.
+
+## Kill-group failed-signal boundedness (`a646a96`, `d8f5e76`)
+
+**`a646a96` APPROVED as failing-first red; `d8f5e76` APPROVED as green.**
+This closes the unbounded-wait SHOULD from the `03b2bee` review.
+
+The green captures `killpg`'s errno immediately, then re-reads the still
+unreaped leader. A live leader returns that error without being reaped, so a
+signal failure cannot enter `zb_agent_wait` and block indefinitely. A
+zombie-only group is reaped and returns success, preserving the Darwin case
+where `killpg` reports EPERM after the group has disappeared. The leader stays
+unreaped during this decision, preventing PID reuse.
+
+The new fake can deny the one otherwise permitted signal. Its regression
+requires a return in under one second, exactly one denied `killpg`, no bad or
+fallback signal, and proof that the live leader remains waitable by its owner.
+Independent evidence, inside the mandatory private user/PID namespace:
+
+```text
+a646a96: row took 3.00 s, returned 0 and reaped the leader;
+          2 failures; Build Summary 3/5, rc 1
+d8f5e76: kill-group 8/8; spawn 12/12; Build Summary 5/5
+```
+
+The reported both-Mac 8/8 run and Darwin-only zombie mutant evidence are
+accepted. The cumulative `5bb7986` chain now remains blocked only on the
+already recorded Zig ABI/caller follow-up; this pair adds no new blocker.
+Verdict sent to BlueBeaver, with JadeBeacon copied, in Agent Mail 7194.
