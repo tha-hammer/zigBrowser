@@ -11,9 +11,12 @@ A case is tests/mac/hard_gate/case_<name>.py defining NAME (a non-empty string, 
   (returncode or None on timeout, stdout, stderr). The group is owned EXACTLY once (RoseCat 7134): the leader is
   waited for WITHOUT being reaped (waitid WNOWAIT), so its zombie keeps the pgid from being reused; then the whole
   group is SIGKILLed (a child that outlived the leader too), and only then is the leader reaped. h.close() (the
-  driver's) consumes any group not yet consumed and never signals one twice;
+  driver's) consumes any group not yet consumed and never signals one twice. Without os.waitid (the bundled CPython
+  3.12 on macOS: it arrived there in 3.13; bead zigBrowser-a2t) the leader is awaited through kqueue EVFILT_PROC
+  NOTE_EXIT, which never reaps either; with neither, spawn_group refuses before spawning anything;
 - h.render_profile(**kw) / h.setup_sandbox(...): the production sandbox_macos from the staged tree."""
 import os
+import select
 import signal
 import subprocess
 import threading
@@ -38,6 +41,9 @@ class Harness:
         return bool(ok)
 
     def spawn_group(self, argv, env=None, pass_fds=(), timeout=30):
+        if not hasattr(os, "waitid") and not hasattr(select, "kqueue"):
+            raise RuntimeError("no way to await a process group leader without reaping it: neither os.waitid nor "
+                               "select.kqueue")
         proc = subprocess.Popen(argv, env=env, pass_fds=pass_fds, start_new_session=True,
                                 stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         entry = {"proc": proc, "consumed": False}
@@ -49,13 +55,8 @@ class Harness:
             t.start()
         exited = False
         try:
-            deadline = time.monotonic() + timeout
-            while time.monotonic() < deadline:
-                # Wait for the leader to exit WITHOUT reaping it: its zombie keeps the pgid unique until we signal.
-                if os.waitid(os.P_PID, proc.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT) is not None:
-                    exited = True
-                    break
-                time.sleep(0.01)
+            # Wait for the leader to exit WITHOUT reaping it: its zombie keeps the pgid unique until we signal.
+            exited = _await_unreaped(proc.pid, time.monotonic() + timeout)
         finally:
             self._consume(entry)
             for t in readers:
@@ -93,6 +94,34 @@ class Harness:
     def close(self):
         for entry in self._groups:
             self._consume(entry)
+
+
+def _await_unreaped(pid, deadline):
+    """True once our child `pid` has exited, False at the deadline; it is never reaped here."""
+    if hasattr(os, "waitid"):
+        while time.monotonic() < deadline:
+            if os.waitid(os.P_PID, pid, os.WEXITED | os.WNOHANG | os.WNOWAIT) is not None:
+                return True
+            time.sleep(0.01)
+        return False
+    # macOS without os.waitid: kqueue NOTE_EXIT. It fires at once for a child that is already a zombie (measured on
+    # both Macs), and an unreaped child of ours cannot vanish, so ESRCH at registration also means it has exited.
+    kq = select.kqueue()
+    try:
+        ev = select.kevent(pid, filter=select.KQ_FILTER_PROC, flags=select.KQ_EV_ADD | select.KQ_EV_ONESHOT,
+                           fflags=select.KQ_NOTE_EXIT)
+        try:
+            kq.control([ev], 0, 0)
+        except ProcessLookupError:
+            return True
+        while True:
+            left = deadline - time.monotonic()
+            if left <= 0:
+                return False
+            if kq.control(None, 1, left):
+                return True
+    finally:
+        kq.close()
 
 
 def _drain(stream, into):
