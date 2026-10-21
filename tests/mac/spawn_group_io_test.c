@@ -52,7 +52,7 @@ static int child_main(int echo) {
     bound = (int)rl.rlim_cur;
   for (int fd = 0; fd < bound; fd++) {
     if (fcntl(fd, F_GETFD) != -1) {
-      char n[8];
+      char n[16];
       snprintf(n, sizeof n, " %d", fd);
       strncat(fds, n, sizeof fds - strlen(fds) - 1);
     }
@@ -60,6 +60,13 @@ static int child_main(int echo) {
   printf("%s\nSCAN %d\nPGLEADER %d\n", fds, bound, getpgrp() == getpid());
   fflush(stdout);
   if (!echo) return 0;
+  if (getenv("ZB_SPAWN_IO_CHILD_HANG") != NULL) {
+    /* Test knob (tests/kill_group/spawn_io_no_stray_signal.sh): ignore stdin EOF and linger 30 s, so the parent's
+     * failure path ("the child did not exit") is really taken (it outlasts the 10 s echo read and the 2 s exit
+     * deadline). Never set by the Mac gates. */
+    sleep(30);
+    return 0;
+  }
   char line[256];
   if (fgets(line, sizeof line, stdin) != NULL) {
     printf("ECHO %s", line);
@@ -115,7 +122,8 @@ int main(int argc, char **argv) {
   }
   char self[1024];
   if (realpath(argv[0], self) == NULL) { printf("FAIL\tms5-spawn-io\trealpath\n"); return 1; }
-  const char *envp[] = {"PATH=/usr/bin:/bin", "LANG=C", NULL};
+  const char *envp[] = {"PATH=/usr/bin:/bin", "LANG=C",
+                        getenv("ZB_SPAWN_IO_CHILD_HANG") != NULL ? "ZB_SPAWN_IO_CHILD_HANG=1" : NULL, NULL};
 
   /* Raise the soft fd limit above the high plant (the child inherits it, so its census reaches it). */
   struct rlimit rl;
