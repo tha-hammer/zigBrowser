@@ -19,6 +19,7 @@ Run:  cd agent/host/tests && python3 -m unittest -v test_sandbox_macos
 """
 import os
 import signal
+import stat
 import sys
 import tempfile
 import unittest
@@ -345,14 +346,20 @@ class MacSeatbeltBackendLaunchSpec(unittest.TestCase):
             (root / d).mkdir(parents=True, exist_ok=True)
         self.backend = sandbox_macos.MacSeatbeltBackend(egress_port=52346)
 
+    def _profile_dir(self, spec):
+        d = os.path.dirname(spec.argv[2])
+        self.addCleanup(lambda: __import__("shutil").rmtree(d, ignore_errors=True))
+        return d
+
     def test_launch_spec_argv_and_semantic_fields(self):
         spec = self.backend.launch_spec(self.home)
+        self._profile_dir(spec)
         scratch = os.path.normpath(str(self.home.scratchpad))
-        profile_path = os.path.join(str(self.home.runtime), "agent-cli.sb")
-        self.assertEqual(list(spec.argv),
-                         ["/usr/bin/sandbox-exec", "-f", profile_path, "-D", f"SCRATCHPAD={scratch}"],
+        self.assertEqual(spec.argv[0:2], ("/usr/bin/sandbox-exec", "-f"))
+        self.assertEqual(spec.argv[3:], ("-D", f"SCRATCHPAD={scratch}"),
                          "the argv is the sandbox-exec prefix (-f the generated profile, -D the scratchpad)")
-        # the profile file was written and is exactly render_profile's CLI output
+        profile_path = spec.argv[2]
+        self.assertEqual(os.path.basename(profile_path), "agent-cli.sb")
         with open(profile_path, encoding="utf-8") as f:
             self.assertEqual(f.read(), sandbox_macos.render_profile(
                 egress=self.backend.network().egress.endpoint, bridges=(51091, 31337), is_hook=False))
@@ -365,6 +372,37 @@ class MacSeatbeltBackendLaunchSpec(unittest.TestCase):
         self.assertEqual(spec.channel, self.backend.channel())
         self.assertEqual([tuple(m) for m in spec.mounts], [(scratch, scratch, True)],
                          "the enforced write-grant contract is the scratchpad (read curation is a later increment)")
+
+    def test_profile_is_outside_the_published_runtime_read_only_in_a_0700_dir(self):
+        # RoseCat 6972 #1: never write current/runtime (the published immutable dist).
+        spec = self.backend.launch_spec(self.home)
+        d = self._profile_dir(spec)
+        profile_path = spec.argv[2]
+        self.assertNotEqual(os.path.dirname(profile_path), str(self.home.runtime),
+                            "the profile must NOT be written inside the published current/runtime")
+        self.assertFalse(profile_path.startswith(str(self.home.runtime) + os.sep))
+        self.assertEqual(stat.S_IMODE(os.stat(profile_path).st_mode), 0o400, "the profile must be read-only")
+        self.assertEqual(stat.S_IMODE(os.stat(d).st_mode), 0o700, "the profile's dir must be 0700")
+        # exclusive creation: the path already exists, so re-creating it O_EXCL fails
+        with self.assertRaises(FileExistsError):
+            os.close(os.open(profile_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY))
+
+    def test_two_sessions_never_alias_one_profile(self):
+        # RoseCat 6972 #2: a per-session port must not be overwritten under a shared path.
+        a = sandbox_macos.MacSeatbeltBackend(egress_port=52346).launch_spec(self.home)
+        self._profile_dir(a)
+        b = sandbox_macos.MacSeatbeltBackend(egress_port=52347).launch_spec(self.home)
+        self._profile_dir(b)
+        self.assertNotEqual(a.argv[2], b.argv[2], "two live LaunchSpecs must never share a profile path")
+        with open(a.argv[2], encoding="utf-8") as f:
+            atext = f.read()
+        self.assertIn("localhost:52346", atext, "A's profile still carries A's port after B was created")
+        self.assertNotIn("localhost:52347", atext, "B's port must not bleed into A's profile")
+
+    def test_launch_spec_is_not_production_consumable_yet(self):
+        # RoseCat 6972 #3: broad reads mean mounts is not the truthful per-path contract; not wired until
+        # read curation flips this.
+        self.assertIs(sandbox_macos.LAUNCH_SPEC_CONSUMABLE, False)
 
 
 if __name__ == "__main__":

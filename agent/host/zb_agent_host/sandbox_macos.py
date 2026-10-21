@@ -30,6 +30,8 @@ import contextlib
 import os
 import secrets
 import signal
+import stat
+import tempfile
 
 # The egress endpoint's host is EXACTLY the loopback literal (plan :1581-1593) — not "localhost", not a
 # resolvable name. The bridges are EXACTLY the two named loopback ports; missing/extra/wrong is refused.
@@ -253,6 +255,39 @@ def _sb():
     return sandbox
 
 
+def _materialize_profile(profile_text):
+    """Write ``profile_text`` to a UNIQUE, exclusively-created, read-only file in its OWN 0700 directory,
+    OUTSIDE the published immutable dist (never ``current/runtime``), and return its path.
+
+    Security (RoseCat 6972): the published dist is never written; every launch gets its own path (two live
+    LaunchSpecs can never alias one profile / one session's port); and the file is tamper/symlink-resistant —
+    created with ``O_CREAT|O_EXCL|O_NOFOLLOW`` in a fresh 0700 dir, made ``0400`` read-only, then VERIFIED
+    through the fd (`fstat`: a regular file, mode 0400, exact size). The caller owns the directory's lifetime:
+    remove it after the spawn has consumed the profile.
+    """
+    data = profile_text.encode("utf-8")
+    d = tempfile.mkdtemp(prefix="zb-seatbelt-")  # mode 0700, unique per launch
+    path = os.path.join(d, "agent-cli.sb")
+    fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW, 0o600)
+    try:
+        if os.write(fd, data) != len(data):
+            raise OSError("short write materializing the Seatbelt profile")
+        os.fchmod(fd, 0o400)
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode) or stat.S_IMODE(st.st_mode) != 0o400 or st.st_size != len(data):
+            raise OSError("Seatbelt profile failed its post-write fd check (mode/size/type)")
+    finally:
+        os.close(fd)
+    return path
+
+
+# The macOS LaunchSpec is NOT production-consumable yet (RoseCat 6972 #3): the profile grants broad file-read*
+# and a blanket mach-lookup, so LaunchSpec.mounts cannot be the truthful per-path filesystem contract. The
+# platform dispatch must not wire this until the deny-default read / tiny mach-lookup curation lands and this
+# flag is flipped (together with per-path read mounts).
+LAUNCH_SPEC_CONSUMABLE = False
+
+
 class MacSeatbeltBackend:
     """macOS Seatbelt realization of the MS0 ``SandboxBackend`` seam (MS6).
 
@@ -329,9 +364,10 @@ class MacSeatbeltBackend:
         sb = _sb()
         net = network if network is not None else self.network()
         scratch = dparams(scratchpad=str(home.scratchpad))[SCRATCHPAD_PARAM]  # validated canonical non-root
-        profile_path = os.path.join(str(home.runtime), "agent-cli.sb")
-        with open(profile_path, "w", encoding="utf-8") as f:
-            f.write(render_profile(egress=net.egress.endpoint, bridges=net.bridges.ports, is_hook=False))
+        # Materialize the per-launch profile SECURELY (O_EXCL + 0400 + fd check) in its own 0700 dir OUTSIDE
+        # the published dist — never current/runtime, never a shared/reused path (RoseCat 6972 #1/#2).
+        profile_path = _materialize_profile(
+            render_profile(egress=net.egress.endpoint, bridges=net.bridges.ports, is_hook=False))
         argv = ("/usr/bin/sandbox-exec", "-f", profile_path, "-D", f"{SCRATCHPAD_PARAM}={scratch}")
         mounts = (sb.Mount(source=scratch, target=scratch, writable=True),)
         return sb.LaunchSpec(argv=argv, unshare=(), mounts=mounts, workdir=str(home.workspace),
