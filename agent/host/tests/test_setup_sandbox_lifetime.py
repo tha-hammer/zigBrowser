@@ -8,7 +8,10 @@ With REAL processes, on Linux with the platform injected and the MS6 seam faked 
 outlive the bound by far (each also ends itself after 20 s, so a leak is bounded):
 - probe_r1 returns no R1 within the bound plus a small grace, not when the last pipe holder exits;
 - when it returns, none of the three is alive (gone, or a zombie awaiting the namespace's init);
-- the named helper exists (the hard gate observes it instead of subprocess.run).
+- the named helper exists (the hard gate observes it instead of subprocess.run);
+- (plain, no signal: the seam is faked) when the owned group cannot be proven stopped (owned_group.StopFailed),
+  _sandboxed reports no success, names its scratch on stderr, and LEAVES the scratch rather than cleaning up around
+  a possibly live process (RoseCat 7436).
 It sends signals, so it runs ONLY inside a private PID namespace proven by pidns_guard (the launcher passes its
 outer namespace inode in ZB_OUTER_PIDNS) and skips anywhere else.
 Run: cd agent/host/tests && outer=$(readlink /proc/self/ns/pid) && unshare --user --map-root-user --pid --fork \\
@@ -16,6 +19,7 @@ Run: cd agent/host/tests && outer=$(readlink /proc/self/ns/pid) && unshare --use
 Unregistered until the green.
 """
 import contextlib
+import io
 import os
 import sys
 import tempfile
@@ -103,6 +107,34 @@ class OwnedGroupBound(unittest.TestCase):
     def test_the_named_helper_exists(self):
         self.assertTrue(callable(getattr(setup, "run_in_owned_group", None)),
                         "setup.run_in_owned_group (RoseCat 7418's named seam) is missing")
+
+
+class StopFailedLeavesTheScratch(unittest.TestCase):
+    def test_a_stop_failure_leaves_and_names_the_scratch(self):
+        try:
+            from zb_agent_host import owned_group
+        except ImportError:
+            self.fail("zb_agent_host.owned_group is missing")
+        self.addCleanup(mock.patch.stopall)
+        root = tempfile.mkdtemp(prefix="zb-stopfailed-")
+        mock.patch.object(tempfile, "tempdir", root).start()
+        mock.patch.object(setup, "PLATFORM", "darwin").start()
+
+        @contextlib.contextmanager
+        def seam(scratch, ro_paths, command, *, loopback_port=None):
+            yield ["/usr/bin/sandbox-exec", *command]
+
+        mock.patch.object(sandbox_macos, "setup_sandbox", seam).start()
+        mock.patch.object(setup, "run_in_owned_group",
+                          side_effect=owned_group.StopFailed("process group 4242 could not be stopped")).start()
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            self.assertEqual(setup._sandboxed(["/ro"], ["/opt/claude", "--version"], timeout=1), ("", False))
+        (left,) = os.listdir(root)
+        self.assertIn(os.path.join(os.path.realpath(root), left), err.getvalue(), "the scratch is named")
+        self.assertIn("could not be stopped", err.getvalue())
+        os.rmdir(os.path.join(root, left))
+        os.rmdir(root)
 
 
 if __name__ == "__main__":
