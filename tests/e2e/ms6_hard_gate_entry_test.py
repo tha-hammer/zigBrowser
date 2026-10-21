@@ -85,7 +85,7 @@ class ArmedEntry(unittest.TestCase):
 
     def git(self, *args):
         return subprocess.run(["git", "-C", str(self.repo), "-c", "user.email=t@t", "-c", "user.name=t", *args],
-                              check=True, capture_output=True, text=True).stdout.strip()
+                              check=True, capture_output=True, text=True).stdout.rstrip("\n")  # as $(...) does
 
     def commit(self):
         self.git("add", "-A", ".", ":!shims", ":!network-calls")
