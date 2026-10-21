@@ -96,34 +96,39 @@ int main(void) {
     check(!in_list(cen, cn, scr), "the scrubber (cwd /) does NOT classify");
     check(ov == 0, "census reports no overflow");
 
-    /* RENAME/REPLACEMENT (RoseCat 94be4e5 boundary 2): move the held dir aside and plant a replacement at the
-     * OLD name, with a process whose cwd is that replacement. Classification must stay tied to the HELD inode
-     * (F_GETPATH follows it to the new path), and the replacement process must NOT classify. */
-    snprintf(moved, sizeof moved, "%s.moved", run);
-    check(rename(run, moved) == 0, "rename the held run dir aside");
-    check(mkdir(run, 0700) == 0, "plant a replacement dir at the old name");
-    /* the replacement process is spawned AFTER the pin, so it must not inherit rfd (close_fd = rfd). */
+    /* RENAME/REPLACEMENT (RoseCat 94be4e5 / b0b625e): rename the PARENT so the run dir keeps its grammar-valid
+     * basename (its F_GETPATH stays a valid run-dir name, so census RUNS — not refused), then plant a
+     * replacement at the OLD full path with a process whose cwd is that replacement. The reaper stays tied to
+     * the HELD inode via the fd; the replacement at the old name must NOT classify. */
+    snprintf(moved, sizeof moved, "%s.moved", parent); /* the moved PARENT */
+    char held_run[PATH_MAX], fp2[PATH_MAX], rp2[PATH_MAX], old_rp[PATH_MAX];
+    snprintf(held_run, sizeof held_run, "%s/zigbrowser-agent-%d-00112233445566ff", moved, (int)getpid());
+    check(rename(parent, moved) == 0, "rename the PARENT aside (the run dir keeps its grammar-valid basename)");
+    check(fcntl(rfd, F_GETPATH, fp2) == 0 && realpath(held_run, rp2) != NULL && strcmp(fp2, rp2) == 0,
+          "F_GETPATH follows the held inode to its new path");
+    check(zb_reaper_run_dir_ok(fp2) == 1, "the held fd's path still passes the run-dir grammar (census will RUN)");
+    check(mkdir(parent, 0700) == 0 && mkdir(run, 0700) == 0, "re-create the OLD full path as a replacement");
     check(make_holder(run, 1, rfd, &rep, &rw) == 0, "spawn a process whose cwd is the REPLACEMENT (old name)");
     sleep(1);
-    char fp2[PATH_MAX], rp2[PATH_MAX];
-    check(fcntl(rfd, F_GETPATH, fp2) == 0 && realpath(moved, rp2) != NULL && strcmp(fp2, rp2) == 0,
-          "F_GETPATH follows the held inode to its NEW path after the rename");
     int cen2[512], cn2 = 0, ov2 = 0;
-    zb_reaper_census(rfd, &rid, cen2, 512, &cn2, &ov2);
-    printf("after rename, census matched %d:", cn2);
+    int r2 = zb_reaper_census(rfd, &rid, cen2, 512, &cn2, &ov2);
+    printf("after rename, census rc=%d matched %d:", r2, cn2);
     for (int i = 0; i < cn2; i++) printf(" %d", cen2[i]);
     printf(" (escaper=%d replacement=%d)\n", esc, rep);
-    /* SAFETY (the property that matters): after a rename + a replacement at the old name, the reaper never
-     * targets the replacement; the post-rename census is a SUBSET of {escaper} (the held run only). A survivor
-     * whose cwd dir was renamed out from under it becomes un-inspectable via libproc (PROC_PIDVNODEPATHINFO
-     * returns nothing for it), so it may DROP from the census — a completeness gap, NOT a safety hole, and the
-     * app never renames its own run dir mid-cleanup. */
+    check(r2 == 0, "census RUNS after the rename (returns 0, not refused)");
+    check(ov2 == 0, "census reports no overflow after the rename");
     check(!in_list(cen2, cn2, rep), "the REPLACEMENT-dir process does NOT classify (tied to the held run, not the old name)");
     int only_escaper = 1;
     for (int i = 0; i < cn2; i++) if (cen2[i] != (int)esc) only_escaper = 0;
     check(only_escaper, "the post-rename census is a SUBSET of {escaper}: never the replacement or any other pid");
     if (!in_list(cen2, cn2, esc))
-      printf("  note: the renamed-out survivor dropped (macOS libproc limit; completeness, not safety)\n");
+      printf("  note: the renamed-out survivor dropped (macOS libproc PROC_PIDVNODEPATHINFO limit; completeness, not safety)\n");
+    /* OLD-PATH MUTANT: a classifier pinned to the OLD path WOULD match the replacement; the held fd's path
+     * (F_GETPATH) does not — so the fd-pin, not the name, is what ties classification to the held run. */
+    check(realpath(run, old_rp) != NULL, "resolve the replacement's (old) path");
+    check(zb_reaper_classify(old_rp, NULL, NULL, 0, old_rp) == 1, "mutant: an OLD-PATH run_dir classifies the replacement");
+    check(zb_reaper_classify(old_rp, NULL, NULL, 0, fp2) == 0,
+          "the held-fd path (F_GETPATH) does NOT classify the replacement — the fd-pin is load-bearing");
   }
 
   if (rfd >= 0) close(rfd);
@@ -132,9 +137,14 @@ int main(void) {
   if (sw >= 0) close(sw);
   if (rw >= 0) close(rw);
   if (dec > 1) waitpid(dec, NULL, 0);
-  rmdir(run);                      /* the replacement dir (or the original, if the rename case did not run) */
-  if (moved[0] != '\0') rmdir(moved); /* the moved (held) dir, now its holder exits on the control-pipe EOF */
-  rmdir(parent);
+  rmdir(run);    /* the replacement at the old full path (or the original run, if the rename case did not run) */
+  rmdir(parent); /* the re-created old parent (or the original parent) */
+  if (moved[0] != '\0') {          /* the rename case ran: also remove the held run + the moved parent */
+    char hr[PATH_MAX];
+    snprintf(hr, sizeof hr, "%s/zigbrowser-agent-%d-00112233445566ff", moved, (int)getpid());
+    rmdir(hr);
+    rmdir(moved);
+  }
   if (setup && failures == 0) { printf("PASS ms6-5-reaper-census %d checks\n", total); return 0; }
   printf("FAIL ms6-5-reaper-census %d of %d check(s) failed%s\n", failures, total, setup ? "" : " (setup)");
   return 1;
