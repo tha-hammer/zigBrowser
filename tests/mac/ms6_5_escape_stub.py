@@ -1,7 +1,10 @@
 """MS6.5 (plan :1619) escape stand-in — like watch_stub.py, but its descendant tries to ESCAPE setup's process
 group with setsid() + a double-fork, exactly as a hostile hook would to outlive `kill -9` of the browser.
 
-argv: <browser_pid> <ready_file>
+argv: <browser_pid> <ready_file> [publish_delay_s]
+`publish_delay_s` (default 0) makes the escapee wait that long BEFORE publishing its pid to <ready>, so a test
+can drive the "late ready" race (the driver's readiness wait times out before the escapee publishes, and only
+the driver's trusted_reap can then reap it) — RoseCat 7052 #1.
 Arms zb_agent_host.parent_watch (real DarwinOps), then launches a detached "hook": the hook forks, the child
 calls setsid() (a NEW session + process group, so it is no longer in setup's group), forks AGAIN and the
 intermediate exits (so the survivor is not even a session leader and is reparented to launchd). The final
@@ -21,6 +24,7 @@ from zb_agent_host import parent_watch  # noqa: E402
 
 browser_pid = int(sys.argv[1])
 ready = sys.argv[2]
+publish_delay = float(sys.argv[3]) if len(sys.argv) > 3 else 0.0
 
 if not parent_watch.arm(browser_pid, parent_watch.DarwinOps()):
     sys.exit(3)  # a failed arm kills the group; unreachable in practice
@@ -36,6 +40,8 @@ SETUP_TTL = 25  # setup is normally killed by parent_watch on the browser's deat
 if os.fork() == 0:
     os.setsid()               # new session + process group (pgid = this pid): leaves setup's group
     if os.fork() == 0:        # double-fork: the survivor is not a session leader and reparents to launchd
+        if publish_delay > 0:
+            time.sleep(publish_delay)  # late-ready race: publish after the driver's readiness window
         tmp = ready + ".esc"
         with open(tmp, "w") as f:
             f.write("%d %d" % (os.getpid(), os.getpgid(0)))

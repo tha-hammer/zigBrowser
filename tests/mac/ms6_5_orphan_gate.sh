@@ -53,17 +53,38 @@ trap 'rm -rf "$HOME/${ZB_RDIR:?}"' EXIT
 cd "$d"
 srcs=(ms6_5_orphan_test.c)
 [ -f agent_spawn_posix.c ] && srcs+=(agent_spawn_posix.c)
-xcrun clang -Wall -I "$d" -Wl,-U,_zb_agent_spawn_group "${srcs[@]}" -o ms6_5_orphan_test
-./ms6_5_orphan_test "$d/ms6_5_escape_stub.py" /usr/bin/python3
+xcrun clang -Wall -I "$d" -Wl,-U,_zb_agent_spawn_group "${srcs[@]}" -o ms6_5_orphan_test || { echo "FAIL: build"; exit 1; }
+
+# zero matching processes anywhere for this user (RoseCat 7052 #1: assert immediately after the driver returns)
+survivors() { ps -axo pid=,command= | grep -F 'ms6_5_escape_stub.py' | grep -v grep || true; }
+
+# Scenario 1 — the gap: the escapee survives the browser's SIGKILL (MS6.5 UNMET). The driver exits non-zero with
+# the SURVIVED assertion; cleanup must still leave zero survivors.
+./ms6_5_orphan_test "$d/ms6_5_escape_stub.py" /usr/bin/python3 > o1 2>&1 || true
+sed 's/^/  main| /' o1
+grep -q "SURVIVED the browser" o1 || { echo "FAIL: scenario 1 did not reach the intended SURVIVED assertion"; exit 1; }
+s1="$(survivors)"; [ -z "$s1" ] || { echo "FAIL: survivors after scenario 1:"; echo "$s1"; exit 1; }
+
+# Scenario 2 — the deterministic late-publish race: readiness window 1 s, the escapee publishes at 3 s, so the
+# driver body times out BEFORE learning the pid and only trusted_reap can reap it. Cleanup must leave zero.
+./ms6_5_orphan_test "$d/ms6_5_escape_stub.py" /usr/bin/python3 1 3 > o2 2>&1 || true
+sed 's/^/  late| /' o2
+grep -q "never detached in the readiness window" o2 || { echo "FAIL: scenario 2 did not exercise the late-publish timeout"; exit 1; }
+grep -q "still alive after trusted_reap" o2 && { echo "FAIL: scenario 2 left an escapee alive after trusted_reap"; exit 1; }
+s2="$(survivors)"; [ -z "$s2" ] || { echo "FAIL: survivors after scenario 2 (the late-publish race leaked):"; echo "$s2"; exit 1; }
+
+echo "ms6-5 $(uname -m): GAP CONFIRMED (escapee survives the kill — MS6.5 UNMET) and cleanup left ZERO survivors in both scenarios"
 REMOTE
 }
 
 overall=0
-leg "$INTEL_HOST" x86_64 "$KEY" || { echo "note: x86_64 leg failed (EXPECTED RED today)" >&2; overall=1; }
-leg "$ARM_HOST" arm64 "$ARM_KEY" || { echo "note: arm64 leg failed (EXPECTED RED today)" >&2; overall=1; }
+leg "$INTEL_HOST" x86_64 "$KEY" || { echo "FAIL: x86_64 leg (cleanup/hygiene or gap-shape problem — see above)" >&2; overall=1; }
+leg "$ARM_HOST" arm64 "$ARM_KEY" || { echo "FAIL: arm64 leg (cleanup/hygiene or gap-shape problem — see above)" >&2; overall=1; }
 if [ "$overall" -eq 0 ]; then
-  printf 'PASS\tms6-5-orphan-gate\tboth-arches\n'
+  printf 'PASS\tms6-5-orphan-gate\tboth-arches (gap demonstrated + cleanup clean)\n'
+  echo "NOTE: MS6.5 itself remains UNMET — the escapee survives the kill. This gate only proves the gap is real and" >&2
+  echo "      the harness leaves no survivors. Closing MS6.5 needs the containment decision (sandbox_check SPI vs VM)." >&2
 else
-  echo "ms6-5-orphan-gate: RED (expected until a non-escapable containment lands — a tree-walk cannot close it, RoseCat 7043; else VM fallback, plan :285)" >&2
+  echo "ms6-5-orphan-gate: a leg FAILED its hygiene/gap assertions (NOT the expected-unmet state) — see above" >&2
 fi
 exit "$overall"
