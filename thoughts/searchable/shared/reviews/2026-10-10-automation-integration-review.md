@@ -25556,3 +25556,92 @@ confirmed clean-export regression reopens `2c288fd`: its registered
 closed outside a Git checkout. The newest approved contiguous SHA is therefore
 **`012e1bc`**, the parent of `2c288fd`. Later blockers also remain at
 `9f780e9` and `e4f0b51`.
+
+## S8a decision-13 recipient guard (`6ebd915`, `4705ded`, `fe89046`)
+
+**`6ebd915` and `4705ded` APPROVED as causal reds for the checks they
+contain. `fe89046` BLOCKED on the omitted wrong-owner case.** The implementation
+correctly adds the exact-path and same-origin link-path guard forms, injects the
+current stage's owned guard into every approved action, requires a bounded
+LinkedIn conversation recipient slug, and scopes the thread-header selectors
+to the open thread that contains the composer. An exact clean-export build and
+real-binary private-Xvfb run passed the registered fixture scenario **26/26**:
+path changes, wrong/ambiguous/other-origin threads, a header changed during
+keydown, and the named decoys all have the pinned `-32015`/reason/step/sent
+contract.
+
+The remaining gap is stage 1's owner identity. The authoritative plan at
+`thoughts/searchable/shared/plans/2026-10-13-claude-agent-chat-drawer-tdd-plan.md:3118-3123`
+requires the profile owner to be checked before the opener and explicitly
+names a wrong profile header at the unchanged approved page as a red. But
+`src/automation/flow_runner.zig:373-379` builds only `{path,target}`;
+`src/automation_script/automation.js:155-172` consequently checks only the
+current pathname and the already-resolved target; and
+`src/instagram.zig:175-180` supplies no approval-derived owner mark. LinkedIn
+derives its name from the page's current title, not from the approval, so that
+does not bind the owner either. The E2E at
+`tests/e2e/automation_recipient_guard_test.py:106-121` covers `pushState`, but
+not wrong content at the same URL.
+
+A clean-export mutation demonstrated the consequence on the real chain: for
+the `pushstate.user` fixture row, rendering `<h2>mallory</h2>` at the unchanged
+approved `/pushstate.user/` path and removing only the `pushState` handler made
+the flow succeed, type `Hi there`, and click Send. The three refusal assertions
+failed with a null error code and result `{"action":"dm","text":"Hi there"}`.
+The fix-forward must bind an approval-derived owner marker in the same in-task
+guard for both profile-target flows and add this unchanged-path wrong-owner
+real-binary row. Deriving the expected owner from the page under test would not
+close it. Verdict sent to BlackRobin in Agent Mail 7376.
+
+The full gate BlackRobin reported for `fe89046` is not a green acceptance gate:
+its two Windows step failures are the independently reproduced
+`gate_twohost_selftest` archive-root regression. That baseline is fixed later
+by `eb08c4b`, but the wrong-owner blocker above independently keeps `fe89046`
+open.
+
+## MS6 R1 case label and row-oracle follow-up (`ba71d3d`, `db1f05b`)
+
+**Both APPROVED; review 7366's two findings are closed.** In exact clean
+exports inside a private user/PID namespace, `ba71d3d` ran 22 tests and failed
+the two clean/dirty positive-census label cases because the old production
+label contained the full `zb-probe-...` token. Exact `db1f05b` passed
+**22/22**. The exact per-row oracle now observes the call-through sequence
+`positive -> cli-honest`, `planted -> cli-planted`, `forge -> cli-forge`, and
+`hang -> cli-hang`, so the previously surviving wrong-CLI mutation is causal.
+
+`_census_view` replaces the token with `token_shape_ok`, sanitizes
+`read_error`, and retains only fixture-controlled non-secret fields. The raw
+forge record is independently constrained to `ZB_FORGED=1024,<n>,<n>`. The
+case still has no signal path. The committed case hashes to
+`42c4f3812d0c39c9cc2e22aef487e20a455626be46cd9c288779ff29472a6d17`,
+exactly the revised manifest entry. That digest is approved for the exact
+reviewed two-case armed manifest; Mac execution remains subject to the
+orchestrator's slot coordination. Verdict sent to BlueBeaver in Agent Mail
+7375.
+
+## Windows archive-root fix-forward (`eb08c4b`)
+
+**APPROVED; cumulatively closes `2c288fd`'s registered clean-export
+regression.** The five-line change puts `ZB_GATE_ROOT=str(REPO)` into
+`gate_twohost_selftest.py`'s fresh child environment, matching the already
+reviewed `gate_selftest.py` repair. Exact clean-export reproduction inside a
+private user/PID namespace gave:
+
+- parent `db1f05b`: **116 tests, 82 failures, 22 skipped**, all proceeding
+  cases stopped at `cannot resolve a repo root`;
+- `eb08c4b`: **116 tests OK, 22 skipped**; and
+- both registered `gate.sh` selftests at `eb08c4b`: `gate_selftest.py`
+  **18/18 OK**, then the two-host suite **116 OK (22 skipped)**.
+
+A static registration audit found only those two Windows *selftests* invoke
+`tests/windows/gate.sh`; both now carry the explicit root in fresh
+environments. Registered `resolve_live_test.py` also invokes the gate, but is a
+live suite: without VM variables it skips before that call, and with them it
+inherits the caller's environment. Supplying `ZB_GATE_ROOT` there is a
+robustness SHOULD for live archive runs, not a blocker on this hermetic
+selftest repair. Verdict sent to AzureRidge in Agent Mail 7374.
+
+With `2c288fd` closed, the newest approved contiguous push-through is now
+**`207c7dc`**. The next blocked commit is **`b292b17`**, which still needs the
+shipped MSVC build and a real Windows missing-runtime run; `6115ac1` and
+`52a5aba` retain their separately recorded Windows evidence obligations.
