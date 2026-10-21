@@ -325,8 +325,35 @@
           }, 800);
         } else if ((m = path.match(/^\/messaging\/thread\/([^/]+)\/$/))) {
           li.page = 'conversation:' + m[1];
-          main.innerHTML = '<div class="msg-form__contenteditable" contenteditable="true"></div><button class="msg-form__send-button">Send</button>';
-          var convText = editor(main.querySelector('[contenteditable]'));
+          // S8 decision 13 (recipient modes, by thread id): the thread's header links carol unless
+          // the mode says otherwise; decoys link someone else (in decoyswrong, carol while the
+          // header does not).
+          var id = m[1];
+          var who = id === 'wrong' || id === 'decoyswrong' ? 'mallory' : 'carol';
+          // decoys links its header absolutely (same origin); otherorigin links carol's path on
+          // another origin.
+          var href = id === 'decoys' ? location.origin + '/in/' + who + '/' :
+            id === 'otherorigin' ? 'https://elsewhere.invalid/in/' + who + '/' : '/in/' + who + '/';
+          var decoy = id === 'decoyswrong' ? 'carol' : 'mallory';
+          var decoys = id === 'decoys' || id === 'decoyswrong';
+          var thread = function (editable) {
+            return '<div class="msg-thread"><header><a href="' + href + '">' + who + '</a></header>' +
+              (decoys ? '<header style="display:none"><a href="/in/' + decoy + '/">' + decoy + '</a></header>' +
+                '<div class="msg-s-message-list"><p>Have you met <a href="/in/' + decoy + '/">' + decoy + '</a>?</p></div>' : '') +
+              '<div class="msg-form__contenteditable" contenteditable="' + editable + '"></div>' +
+              (editable === 'true' ? '<button class="msg-form__send-button">Send</button>' : '') + '</div>';
+          };
+          main.innerHTML = thread('true') + (id === 'two' ? thread('false') : '') +
+            (decoys ? '<aside class="msg-conversations-container"><a href="/in/' + decoy + '/">' + decoy + '</a></aside>' : '');
+          if (id === 'keydown') {
+            var swapped = false;
+            main.addEventListener('keydown', function () {
+              if (swapped) return;
+              swapped = true;
+              main.querySelector('header a').setAttribute('href', '/in/mallory/');
+            }, true);
+          }
+          var convText = editor(main.querySelector('[contenteditable="true"]'));
           main.querySelector('button').addEventListener('click', function () {
             li.sent.push(convText()); li.result = { action: 'message', text: convText() };
           });

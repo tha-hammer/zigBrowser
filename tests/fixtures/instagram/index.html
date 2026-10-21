@@ -172,6 +172,26 @@
           area.addEventListener('keydown', function () { ig.events.push('keydown:comment'); });
           document.getElementById('post').addEventListener('click', function () { ig.result = { action: 'comment', text: area.value }; });
         } else if ((m = path.match(/^\/([A-Za-z0-9._]+)\/$/))) {
+          // The DM composer: a dialog whose header links the person it is with.
+          var dmThread = function (user) {
+            var who = user === 'wrongthread.user' || user === 'decoyswrong.user' ? 'mallory' : user;
+            // decoys.user links its header absolutely (same origin); otherorigin.user links the
+            // approved path on another origin.
+            var href = user === 'decoys.user' ? location.origin + '/' + who + '/' :
+              user === 'otherorigin.user' ? 'https://elsewhere.invalid/' + who + '/' : '/' + who + '/';
+            var decoy = user === 'decoyswrong.user' ? user : 'mallory';
+            var decoys = user === 'decoys.user' || user === 'decoyswrong.user';
+            var thread = function (editable, id) {
+              return '<div role="dialog"' + id + ' hidden><header><a href="' + href + '">' + who + '</a></header>' +
+                (decoys ? '<header style="display:none"><a href="/' + decoy + '/">' + decoy + '</a></header>' +
+                  '<div class="messages"><p>Have you met <a href="/' + decoy + '/">' + decoy + '</a>?</p></div>' : '') +
+                '<div aria-label="Message" contenteditable="' + editable + '"></div>' +
+                (id ? '<div role="button" id="send"><svg width="12" height="12"><title>Paper plane icon</title></svg>Send</div>' : '') + '</div>';
+            };
+            return thread('true', ' id="dm"') +
+              (user === 'twothreads.user' ? thread('false', '').replace(' hidden', '') : '') +
+              (decoys ? '<aside class="inbox"><a href="/' + decoy + '/">' + decoy + '</a></aside>' : '');
+          };
           ig.page = 'profile:' + m[1];
           try { ig.storyFrames = JSON.parse(sessionStorage.getItem('ig_story_frames') || 'null'); } catch (e) {}
           try { ig.storyDecoyNext = Number(sessionStorage.getItem('ig_decoy_next') || '0'); } catch (e) {}
@@ -185,11 +205,27 @@
             '<aside><button>Follow</button></aside>' +
             // The profile grid: images in a section, like a story frame's.
             '<section class="grid"><img alt="post" src="data:image/gif;base64,R0lGODlhAQABAAAAACw=" width="100" height="100"></section>' +
-            '<div id="dm" hidden><div aria-label="Message" contenteditable="true"></div><div role="button" id="send"><svg width="12" height="12"><title>Paper plane icon</title></svg>Send</div></div>' +
+            dmThread(m[1]) +
             // A share sheet with its own Send, outside the DM composer: never
             // the DM's (audit 7c9d68a).
             '<div id="share-sheet"><span>Share this profile</span><div role="button" id="share-send">Send</div></div>';
           document.getElementById('highlight-next').addEventListener('click', function () { ig.highlightNext += 1; });
+          // S8 decision 13 (recipient modes, by username): the thread's header names the approved
+          // person unless the mode says otherwise; decoys name someone else (or, in
+          // decoyswrong.user, the approved person while the header does not).
+          if (m[1] === 'pushstate.user') {
+            document.addEventListener('pointerdown', function (e) {
+              if (e.target.closest && e.target.closest('#message')) history.pushState({}, '', '/mallory/');
+            }, true);
+          }
+          if (m[1] === 'keydownswap.user') {
+            var swapped = false;
+            document.addEventListener('keydown', function (e) {
+              if (swapped || !e.target.closest || !e.target.closest('#dm')) return;
+              swapped = true;
+              document.querySelector('#dm header a').setAttribute('href', '/mallory/');
+            }, true);
+          }
           var dm = document.getElementById('dm');
           var box = dm.querySelector('[contenteditable]');
           document.getElementById('send').addEventListener('click', function () { ig.result = { action: 'dm', text: box.textContent }; });

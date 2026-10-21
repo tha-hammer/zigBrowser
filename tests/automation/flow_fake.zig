@@ -93,7 +93,13 @@ pub const Windowed = struct {
             return std.fmt.allocPrint(a, "{{\"ok\":true,\"value\":{{\"documentToken\":\"doc-{d}\"}}}}", .{self.token_bumps}) catch error.OutOfMemory;
         }
         const p = self.innerPort();
-        const answer = try p.vtable.evalJson(p.ptr, a, world, body, arg, timeout_ms);
+        var answer = try p.vtable.evalJson(p.ptr, a, world, body, arg, timeout_ms);
+        // A chunk of a guarded dom.type (S8 decision 15) succeeds as automation.js answers one:
+        // its own counts and its target's and document's tokens.
+        if (std.mem.indexOf(u8, arg, "\"chunk\":true") != null and std.mem.indexOf(u8, answer, "\"ok\":true") != null) {
+            a.free(answer);
+            answer = std.fmt.allocPrint(a, "{{\"ok\":true,\"value\":{{\"ok\":true,\"sent\":{{\"events\":0,\"chars\":0}},\"target\":\"zb-1\",\"document\":\"doc-{d}\"}}}}", .{self.token_bumps}) catch return error.OutOfMemory;
+        }
         if (self.token_bump_after_first_eval_after_nav and self.inner.navigate_calls.items.len > 0 and std.mem.indexOf(u8, arg, "rateLimitScan") == null) {
             self.token_bump_after_first_eval_after_nav = false;
             self.token_bumps += 1;
@@ -193,6 +199,8 @@ pub const Harness = struct {
     window: ?page_port.WindowId = 1,
     /// The command's cancel flag (a server stop).
     cancel: std.atomic.Value(bool) = .init(false),
+    /// flow_steps.Site.unverified_actions (tests only): LinkedIn's profile Message click runs.
+    unverified_actions: bool = false,
 
     pub fn init(self: *Harness, start_url: []const u8) void {
         self.fake = fakes.FakePagePort.init(gpa);
@@ -206,6 +214,7 @@ pub const Harness = struct {
         self.cookies = .{};
         self.window = 1;
         self.cancel = .init(false);
+        self.unverified_actions = false;
     }
 
     pub fn deinit(self: *Harness) void {
@@ -226,7 +235,7 @@ pub const Harness = struct {
         const flow_call = social_flow_routes.callFromMethod(method).?;
         return self.engine.executeExternal(gpa, method, flow_call.namespace(), .{ .window = self.window, .cancel = &self.cancel }, Call{
             .state = &self.state,
-            .env = .{ .cookies = self.cookies.port() },
+            .env = .{ .cookies = self.cookies.port(), .unverified_actions = self.unverified_actions },
             .call = flow_call,
             .params = params,
         }, Call.run);
