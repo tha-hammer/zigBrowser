@@ -25031,3 +25031,88 @@ the exact downstream no-host failure, not merely absence of the root error.
 
 The throwaway tree was deleted immediately; no VM or live host was touched.
 Finding sent to AzureRidge in Agent Mail 7335.
+
+## MS6.5.1 Darwin lifecycle-owner plan rev 22 (`56391f8`)
+
+**BLOCKED (docs) before its red.** Rev 22 substantially closes the five
+original `012e1bc` findings. The marker now crosses each real production seam
+explicitly rather than relying on inheritance by accident
+(`macos-launch-tdd-plan.md:1757-1792`); the ledger has a strict, bounded,
+versioned and crash-durable representation (`:1743-1756`); the terminal
+choices, persisted setting, bounded details and no-main-window delivery are
+specified (`:1793-1858`); the stale destructive Mac pass is explicitly
+superseded (`:1707-1715`); and the red matrix names production-chain tests and
+mutants (`:1865-1902`). Three implementation-critical gaps remain:
+
+1. **BLOCKER — the shared ledger has no cross-run transaction owner.** Atomic
+   replacement prevents a torn JSON file, but it does not prevent lost
+   updates. The plan gives each run its own owner lock (`:1793-1825`) while all
+   runs replace the one `zigbrowser-agent-runs.json` (`:1743-1755`). Two
+   windows can both read revision N, then publish different N+1 states and
+   erase one another. Name one app-global ledger actor/lock and keep each
+   read-validate-update-write-fsync-rename-parent-fsync transaction under it.
+   Add barrier reds for publish/publish and publish-or-remove/update
+   interleavings; one run must never erase another.
+2. **BLOCKER — one process snapshot cannot prove the run clean.** The teardown
+   at `:1803-1815` may unlink the marker, rmdir the directory and remove the
+   ledger after one “proved-clean” sweep. The current production primitive,
+   however, gathers once and processes only that fixed list
+   (`agent_run_reaper.c:188-202`). A marked process can fork after gather but
+   before its parent is killed; the child is absent from that list, and Unix
+   still permits unlink/rmdir while it holds the now-unlinked marker. Require
+   a bounded census→kill→fresh-census fixed point, and authorize `Clean` only
+   after a complete, empty final census. A cap, deadline or incomplete scan is
+   `Survivors` and retains authority. Add a causal spawn-during-pass-one red
+   and a no-recensus mutant.
+3. **BLOCKER — `reaper_ready` cannot be an environment switch.** Lines
+   `:1859-1864` promise that real signals are unreachable until the reviewed
+   destructive gate passes, yet call the control an `env_switch` pattern.
+   `env_switch.zig:1-27` is explicitly flag/environment-controlled. Make
+   readiness an immutable source/build acceptance constant, like
+   `agent_setup.zig:60-73`'s `seatbelt_ready`; any test override must be
+   e2e-only and absent from production. A hostile ambient environment/CLI
+   value must not arm signalling, and a bypass mutant must fail.
+
+Before green, the plan should also define recovery for a crash after the
+marker/directory removal but before ledger removal (`:1803-1806`, which can
+leave an `active` entry naming no directory), put normal stop/window-close
+sweeps off the UI thread behind a total deadline, and add revs 19–22 to the
+actual revision-history list. The destructive Mac reaper gate remains OFF.
+`git diff --check` is clean. Verdict sent to JadeBeacon in Agent Mail 7338.
+
+## Staged SDK path file (`4843c26`, `10cc48a`)
+
+**`4843c26` APPROVED as the causal red. `10cc48a` production behavior
+APPROVED, but BLOCKED-for-tests and Mac acceptance.** The production path is
+narrow and fail-closed:
+
+- `agent_host_sdk.pth` is exactly one relative, newline-terminated path into
+  the bundle;
+- `sdk_pth.py:27-100` rejects escaping/non-path bytes, other `.pth` files,
+  wrong type, hidden state and wrong bytes, reads with `O_NOFOLLOW`, and
+  creates with `O_EXCL|O_NOFOLLOW`;
+- `python -I` leaves site processing enabled (`no_site == 0`), so the staged
+  interpreter and setup sandbox do process this prefix-owned `.pth` without
+  `PYTHONPATH`;
+- the inventory declares the file as `sdk-path`, so cross-arch resource
+  equality covers its bytes.
+
+The exact clean-export focused run passed the new unit module **11/11** and
+`zig build test-mac-census --summary all` passed **14/14 steps**. Production
+also happens to install before relocation (`stage_agent_runtime.sh:59-66`),
+and relocation signs the framework version last
+(`relocate_python_framework.py:115-122`).
+
+The test does not prove the owner's required **covered-by-re-sign** property.
+`ms5_stage_gate.sh:94-105` checks the import and exact `.pth` bytes, but never
+verifies the final framework resource seal. Moving `sdk_pth install` after
+relocation/signing would therefore preserve every committed assertion. Add a
+real Mac post-stage `codesign --verify --deep --strict` assertion over the
+framework version and a causal post-sign-write/order mutant that invalidates
+that seal, then pass the stage gate on both Macs. There has been no Mac run of
+this green yet.
+
+**SHOULD-for-tests:** add direct NUL, target FIFO/special-file and
+`UF_HIDDEN` rows. Production rejects all three, but the eleven current tests
+do not causally pin those claims. `git diff --check` is clean. Verdict sent to
+BlueBeaver in Agent Mail 7339.
