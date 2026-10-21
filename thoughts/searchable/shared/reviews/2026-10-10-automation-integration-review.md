@@ -22849,3 +22849,83 @@ C `zb_agent_kill_group` seam still needs the `0fd519d` production green, the
 complete positive-path signal census, a coherent C/Zig ABI update, and green
 Linux-namespace plus both-Mac runs. Verdict sent to JadeBeacon, with BlueBeaver
 copied, in Agent Mail 7188.
+
+## WS0 WTS fail-closed fix-forward (`fcbcb29`)
+
+**APPROVED to proceed with the owner-watched WS0 reruns.** This closes the
+three functional and authoritative-contract blockers recorded at `88852d9`:
+
+- `UNLOCK(1)` is the only path to `locked=false`; `LOCK(0)`, another flag,
+  query failure and absent LogonUI all fail closed as locked;
+- `LockedDesktopLive` requires `wts_lock_ok is True` and
+  `session_flags == 0`, so LogonUI can no longer substitute for the actual
+  WTS ABI read; and
+- plan rev 2.12 replaces `OpenInputDesktop` with WTSINFOEX as the lock-state
+  contract and demotes the desktop name to a diagnostic.
+
+The normal unlocked gate need not duplicate the two WTS fields in its reduced
+host object: its fresh, nonce- and staged-SHA-correlated `locked == false`
+result is itself an end-to-end proof of a successful WTS read with flag 1,
+because the fixed verdict has no other false path.
+
+Independent exact-commit, display-free result:
+
+```text
+gate_twohost_selftest.py: Ran 100 tests in 3.029s; OK (skipped=18)
+```
+
+**WS0/`7d85cd5` remains OPEN on live acceptance.** The changed
+`session_probe.ps1` must first be restaged so its pinned SHA agrees. Then the
+user/orchestrator must run, in order: the genuinely locked console case with
+`ZB_EXPECT_LOCKED=1` (WTS 0), unlock the VM, and the normal two-host
+`gate.sh --probe-only` run (accepted WTS 1).
+
+**SHOULD:** `tests/windows/host_probe.ps1:172-178` and
+`tests/windows/gate.sh:156-159` still describe the verdict as input-desktop
+state. Update those comments. Plan and code should also call LogonUI
+corroborating/diagnostic evidence rather than a behavioral fallback: once WTS
+is unavailable, both LogonUI-present and LogonUI-absent cases deliberately map
+to locked.
+
+Verdict sent to AzureRidge in Agent Mail 7192.
+
+## C kill-group ownership green (`03b2bee`)
+
+**APPROVED for the C boundary and strengthened `0fd519d` suite; cumulative
+`5bb7986` closure remains BLOCKED on the Zig ABI follow-up.**
+
+Before signalling, the C seam now rejects pid <= 1, self/own group,
+non-children, and child nonleaders. Linux reads `/proc/<pid>/stat`; Darwin uses
+`kern.proc.pid`, retaining parent/group evidence for an unreaped zombie where
+`getpgid` is unavailable. In the intended single-owner path the unreaped child
+also prevents PID reuse across observation and signal.
+
+The fake now records the complete signal census. All three positive paths
+require exactly one forwarded `killpg(pid, SIGKILL)`, no refused/extra call and
+no `kill()` fallback; negative paths require no call. Cleanup uses validated
+`find ... -delete`, and Linux registration is inside a private user/PID
+namespace.
+
+Independent exact-commit evidence:
+
+```text
+test-agent-spawn: Build Summary 5/5; spawn 12/12; kill-group 7/7
+cross-check:      Build Summary 13/13, including both macOS architectures
+```
+
+The reported both-Mac 7/7 result and parent/leader/stray-signal/zombie mutants
+are accepted.
+
+**BLOCKER — `src/agent_host_posix.zig:88,141,233`:** the C header now returns
+`int`, but Zig still declares the function `void` and both callers discard the
+refusal result. Ignoring a return register happens to be ABI-tolerable on these
+targets, but the cross-language interface is incoherent and the promised
+reason-bearing contract never reaches production supervision. Change the
+extern to `c_int`, explicitly handle 0 versus EINVAL/ECHILD/EPERM at both call
+sites, and regression-test an unexpected refusal.
+
+**SHOULD:** a `killpg` error for a live child currently falls through to an
+unbounded blocking reap. Preserve the benign ESRCH zombie-only behavior, but
+propagate other signal errors or use a bounded reap path.
+
+Verdict sent to BlueBeaver, with JadeBeacon copied, in Agent Mail 7191.
