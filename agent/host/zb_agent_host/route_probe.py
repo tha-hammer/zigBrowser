@@ -25,12 +25,15 @@ import stat
 import sys
 import tempfile
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from . import options, proc_darwin, token
 
 PROBE_TIMEOUT_S = 30
+CENSUS_TIMEOUT_S = 10
+CENSUS_REPLY_MAX = 64
 PLATFORM = sys.platform
 
 
@@ -64,8 +67,12 @@ def adopt_listener(fd, port):
         sock.close()
         raise
     # It arrived through pass_fds, so it is inheritable here; the CLI under test, which the SDK spawns, must never
-    # hold the probe server's listener (BlackRobin 6983).
-    sock.set_inheritable(False)
+    # hold the probe server's listener (BlackRobin 6983). One that cannot be made so is refused (RoseCat 7041).
+    try:
+        sock.set_inheritable(False)
+    except OSError:
+        sock.close()
+        raise ProbeRefused("the listen fd cannot be made non-inheritable") from None
     return sock
 
 
@@ -105,32 +112,64 @@ def _descendants_running(exe):
     return found
 
 
+def adopt_census(fd):
+    """macOS (BlueBeaver 7021): setup's end of the census socketpair, passed in as `fd`. Adopted only when it is an
+    AF_UNIX SOCK_STREAM socket, then made non-inheritable (the CLI the SDK spawns must never hold it); otherwise it is
+    closed and ProbeRefused is raised."""
+    try:
+        if not stat.S_ISSOCK(os.fstat(fd).st_mode):
+            raise ProbeRefused("the census fd is not a socket")
+        sock = socket.socket(fileno=fd)
+    except OSError as exc:
+        with contextlib.suppress(OSError):
+            os.close(fd)
+        raise ProbeRefused(f"the census fd is unusable: {exc.strerror or exc}") from None
+    except ProbeRefused:
+        os.close(fd)
+        raise
+    if sock.family != socket.AF_UNIX or sock.type != socket.SOCK_STREAM:
+        sock.close()
+        raise ProbeRefused("the census fd is not a Unix stream socket")
+    try:
+        sock.set_inheritable(False)
+    except OSError:  # never continue with a capability the CLI could inherit (RoseCat 7041)
+        sock.close()
+        raise ProbeRefused("the census fd cannot be made non-inheritable") from None
+    return sock
+
+
+def _ask_census(sock, probe_token, url, timeout=CENSUS_TIMEOUT_S):
+    """Asks setup, outside Seatbelt, whether any CLI holds the probe token (RoseCat 7019; BlueBeaver 7021): one line
+    `census <token> <url>`, then setup's whole reply up to EOF. True only for exactly b"clean\n" in time."""
+    deadline = time.monotonic() + timeout
+    reply = b""
+    try:
+        sock.settimeout(timeout)
+        sock.sendall(f"census {probe_token} {url}\n".encode())
+        while len(reply) <= CENSUS_REPLY_MAX:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return False
+            sock.settimeout(remaining)
+            chunk = sock.recv(CENSUS_REPLY_MAX + 1)
+            if not chunk:
+                break
+            reply += chunk
+    except OSError:
+        return False
+    return reply == b"clean\n"
+
+
 def _cli_env_clean(cli, probe_token, canary):
     """True when no running CLI descendant holds the probe token in its environment.
 
     Linux (unchanged): /proc/<pid>/environ of each descendant running `cli`; at least one must be read.
-    macOS (BlueBeaver 6977; BlackRobin 6983): no /proc, so proc_darwin's libproc walk and KERN_PROCARGS2. Every CLI
-    descendant must be found by a walk that inspected every descendant (a denied listing or path is not clean) and
-    must be read and parsed, its environment must hold `canary` (the exact ANTHROPIC_BASE_URL entry the
-    CLI always inherits: an environment the OS hid, as macOS 15.3 does for platform binaries, is never "clean"),
-    and the token must appear nowhere in its buffer, argv included. Anything unreadable is not clean."""
+    macOS: the probe never inspects processes (it shares Seatbelt with the CLI it tests, whose profile denies
+    process-info; RoseCat 7019): the server asks setup's census instead (_ask_census), so here it is never clean."""
+    if PLATFORM == "darwin":
+        return False
     exe = os.path.realpath(cli)
     token_bytes = probe_token.encode()
-    if PLATFORM == "darwin":
-        try:
-            pids = proc_darwin.descendants_running(exe, os.getpid())
-        except OSError:  # an uninspected subtree or process (RoseCat 7011)
-            return False
-        if not pids:
-            return False
-        for pid in pids:
-            try:
-                raw, _argv, env = proc_darwin.environ_of(pid)
-            except OSError:
-                return False
-            if canary not in env or token_bytes in raw:
-                return False
-        return True
     environs = []
     for pid in _descendants_running(exe):
         try:
@@ -145,7 +184,7 @@ class _ProbeServer:
     """A one-shot loopback Messages API: records the bearer it receives and
     whether any running CLI process holds the probe token in its environment."""
 
-    def __init__(self, probe_token, cli, listener=None):
+    def __init__(self, probe_token, cli, listener=None, census=None):
         self.bearer = None
         self.cli_env_clean = None
         server = self
@@ -159,8 +198,11 @@ class _ProbeServer:
                 body = json.loads(self.rfile.read(length) or b"{}")
                 if self.path.split("?", 1)[0] == "/v1/messages" and server.bearer is None:
                     server.bearer = self.headers.get("authorization", "")
-                    server.cli_env_clean = _cli_env_clean(cli, probe_token,
-                                                          b"ANTHROPIC_BASE_URL=" + server.url.encode())
+                    if PLATFORM == "darwin":  # setup's census, outside Seatbelt (BlueBeaver 7021)
+                        server.cli_env_clean = census is not None and _ask_census(census, probe_token, server.url)
+                    else:
+                        server.cli_env_clean = _cli_env_clean(cli, probe_token,
+                                                              b"ANTHROPIC_BASE_URL=" + server.url.encode())
                 if not body.get("stream"):
                     self._reply(200, "application/json", json.dumps({"type": "message", "content": []}).encode())
                     return
@@ -198,7 +240,7 @@ class _ProbeServer:
         self.httpd.server_close()
 
 
-def run(wrapper, cli, listener=None):
+def run(wrapper, cli, listener=None, census=None):
     """One turn through the real wrapper, FIFO and socket hand-off, with a
     random probe token, against the probe server on this namespace's own
     loopback. Runs with a throwaway HOME and config (no SAI, no hooks). True
@@ -206,7 +248,7 @@ def run(wrapper, cli, listener=None):
     from claude_agent_sdk import query
 
     probe_token = "zb-probe-" + secrets.token_hex(24)
-    server = _ProbeServer(probe_token, cli, listener)
+    server = _ProbeServer(probe_token, cli, listener, census=census)
     scratch = Path(tempfile.mkdtemp(prefix="zb-route-probe-"))
     try:
         home = options.AgentHome(scratch / "home")
@@ -229,6 +271,8 @@ def run(wrapper, cli, listener=None):
         return server.bearer == f"Bearer {probe_token}" and server.cli_env_clean is True
     finally:
         server.close()
+        if census is not None:
+            census.close()
         shutil.rmtree(scratch, ignore_errors=True)
 
 
@@ -238,21 +282,36 @@ def main(argv):
     parser.add_argument("--cli", required=True)
     parser.add_argument("--listen-fd", action="append")
     parser.add_argument("--listen-port", action="append")
+    parser.add_argument("--census-fd", action="append")
     args = parser.parse_args(argv)
     if PLATFORM != "darwin":
-        if args.listen_fd is not None or args.listen_port is not None:
-            print("zb_agent_host probe-r1: --listen-fd/--listen-port are macOS-only", file=sys.stderr)
+        if args.listen_fd is not None or args.listen_port is not None or args.census_fd is not None:
+            print("zb_agent_host probe-r1: --listen-fd/--listen-port/--census-fd are macOS-only", file=sys.stderr)
             return 2
         print(json.dumps({"r1": run(Path(args.wrapper), args.cli)}), flush=True)
         return 0
+    listener = None
     try:
         fd, port = _listen_args(args.listen_fd, args.listen_port)
+        census_fd = _fd_arg(args.census_fd, "--census-fd")
         listener = adopt_listener(fd, port)
+        census = adopt_census(census_fd)
     except ProbeRefused as exc:
+        if listener is not None:
+            listener.close()
         print(f"zb_agent_host probe-r1: {exc}", file=sys.stderr)
         return 2
-    print(json.dumps({"r1": run(Path(args.wrapper), args.cli, listener)}), flush=True)
+    print(json.dumps({"r1": run(Path(args.wrapper), args.cli, listener, census)}), flush=True)
     return 0
+
+
+def _fd_arg(raw, flag):
+    """A required macOS fd flag, given once: ASCII decimal, no sign, leading zero or whitespace, 3 to 2**31-1."""
+    if raw is None or len(raw) != 1:
+        raise ProbeRefused(f"{flag} is required on macOS, once")
+    if not _DECIMAL.fullmatch(raw[0]) or not 2 < int(raw[0]) < 2**31:
+        raise ProbeRefused(f"{flag} must be a plain decimal fd, 3 to 2**31-1")
+    return int(raw[0])
 
 
 _DECIMAL = re.compile(r"[1-9][0-9]{0,9}", re.ASCII)

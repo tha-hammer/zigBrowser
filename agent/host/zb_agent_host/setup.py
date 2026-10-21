@@ -18,6 +18,7 @@ history, todos, shell snapshots, the user's MEMORY/ (the agent starts empty).
 """
 
 import argparse
+import contextlib
 import datetime
 import hashlib
 import json
@@ -31,10 +32,11 @@ import stat
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from pathlib import Path
 
-from . import hook_run, options, parent_watch, relay, sandbox, sandbox_macos, token
+from . import hook_run, options, parent_watch, proc_darwin, relay, sandbox, sandbox_macos, token
 from . import provision as runtime_provision
 from .files import atomic_write, write_all
 
@@ -753,7 +755,7 @@ def setup_sandbox(scratch, ro_paths, command):
     return argv + ["--bind", str(scratch), str(scratch), "--chdir", str(scratch), "--", *map(str, command)]
 
 
-def _sandboxed(ro_paths, command, timeout, env=None, listener=None):
+def _sandboxed(ro_paths, command, timeout, env=None, listener=None, census=None):
     """Runs `command` in setup_sandbox with a fresh throwaway home; (stdout, ok). `listener` (macOS R1 only): the
     127.0.0.1 listener setup bound outside the sandbox; the command gets it as `--listen-fd/--listen-port` through
     pass_fds, and the profile permits exactly its port."""
@@ -765,6 +767,9 @@ def _sandboxed(ro_paths, command, timeout, env=None, listener=None):
             if listener is not None:
                 port, pass_fds = listener.getsockname()[1], (listener.fileno(),)
                 command = [*command, "--listen-fd", str(listener.fileno()), "--listen-port", str(port)]
+            if census is not None:  # the probe's end of setup's census socketpair (BlueBeaver 7021)
+                pass_fds = (*pass_fds, census.fileno())
+                command = [*command, "--census-fd", str(census.fileno())]
             with _darwin_sandbox(scratch, ro_paths, command, port) as argv:
                 done = subprocess.run(argv, capture_output=True, text=True, timeout=timeout, env=run_env,
                                       pass_fds=pass_fds)
@@ -784,12 +789,59 @@ def cli_version(cli):
     return (out.strip().split() or ["unknown"])[0]
 
 
+_CENSUS_REQUEST = re.compile(rb"census (zb-probe-[0-9a-f]{48}) (http://127\.0\.0\.1:([1-9][0-9]{0,4}))\n")
+CENSUS_REQUEST_MAX = 256
+CENSUS_JOIN_S = 5
+
+
+def _census_serve(sock, cli, port, result, timeout, handover):
+    """Setup's R1 census (RoseCat 7019; BlueBeaver 7021), OUTSIDE Seatbelt: answers the probe's one request
+    `census <probe token> http://127.0.0.1:<the listener's port>` with b"clean" or b"dirty" from
+    proc_darwin.cli_env_clean over setup's own descendants, then shuts its side. A malformed, oversized, wrong-port
+    or missing request is never censused and never clean."""
+    try:
+        sock.settimeout(timeout)
+        data = b""
+        while b"\n" not in data and len(data) <= CENSUS_REQUEST_MAX:
+            chunk = sock.recv(CENSUS_REQUEST_MAX + 1)
+            if not chunk:
+                break
+            data += chunk
+        line = data.split(b"\n", 1)[0] + b"\n" if b"\n" in data else b""
+        m = _CENSUS_REQUEST.fullmatch(line) if len(line) <= CENSUS_REQUEST_MAX else None
+        clean = False
+        if m is not None and int(m.group(3)) == port:
+            try:
+                clean = proc_darwin.cli_env_clean(os.path.realpath(cli), os.getpid(), m.group(1),
+                                                  b"ANTHROPIC_BASE_URL=" + m.group(2)) is True
+            except Exception:  # noqa: BLE001 - a census that fails is never clean (RoseCat 7041)
+                clean = False
+            result["clean"] = clean
+        if data:
+            sock.sendall(b"clean\n" if clean else b"dirty\n")
+        sock.shutdown(socket.SHUT_WR)
+    except OSError:
+        pass
+    finally:
+        # setup closes our end itself, unless it gave up waiting for us (its join timed out): then the end is
+        # ours to close, so it is never closed under a live thread and never leaked (BlackRobin 7060).
+        with handover["lock"]:
+            handover["done"] = True
+            mine = handover["owner"] == "census"
+        if mine:
+            sock.close()
+
+
 def probe_r1(wrapper, cli):
     """The R1 probe (route_probe), whole inside one setup sandbox: the probe server,
     the SDK, the wrapper and the CLI all live in its private network namespace.
     True when the CLI took the probe token from fd 3 and no CLI environment held it."""
     runtime = Path(wrapper).parent.parent
     listener = None
+    ours = theirs = census = None
+    result = {}
+    handover = {"lock": threading.Lock(), "owner": "setup", "done": False}
+    abandoned = False
     try:
         if PLATFORM == "darwin":
             # macOS has no private network namespace (RoseCat 6958): bind the probe's one loopback port here, outside
@@ -799,16 +851,42 @@ def probe_r1(wrapper, cli):
                 listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                 listener.bind(("127.0.0.1", 0))
                 listener.listen(8)
+                # The census runs here, outside Seatbelt (RoseCat 7019): the probe asks over this socketpair.
+                ours, theirs = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
             except OSError:
                 return False
+            census = threading.Thread(target=_census_serve, name="zb-r1-census", daemon=True,
+                                      args=(ours, cli, listener.getsockname()[1], result, PROBE_TIMEOUT_S + 30,
+                                            handover))
+            census.start()
         out, ok = _sandboxed([sys.prefix, PACKAGE_DIR, runtime, cli],
                              [sys.executable, "-m", "zb_agent_host", "probe-r1", "--wrapper", wrapper, "--cli", cli],
                              timeout=PROBE_TIMEOUT_S + 30,
-                             env={"PYTHONPATH": str(PACKAGE_DIR), "PYTHONDONTWRITEBYTECODE": "1"}, listener=listener)
+                             env={"PYTHONPATH": str(PACKAGE_DIR), "PYTHONDONTWRITEBYTECODE": "1"}, listener=listener,
+                             census=theirs)
     finally:
         if listener is not None:
             listener.close()  # setup's copy, on every path
+        if theirs is not None:
+            theirs.close()  # setup's copy of the probe's end
+        if ours is not None:
+            # The run is over: a stray holder of the probe's end must not keep the census waiting (RoseCat 7041).
+            # shutdown() wakes a recv() blocked in the census thread; then it is joined and our end closed.
+            with contextlib.suppress(OSError):
+                ours.shutdown(socket.SHUT_RDWR)
+        if census is not None:
+            census.join(CENSUS_JOIN_S)
+            with handover["lock"]:
+                abandoned = not handover["done"]
+                if abandoned:
+                    handover["owner"] = "census"  # still running: it closes its end when it finishes
+        if ours is not None and not abandoned:
+            ours.close()
+    if abandoned:
+        return False  # a census nobody waited for decides nothing (BlackRobin 7060)
     lines = out.strip().splitlines()
+    if PLATFORM == "darwin" and result.get("clean") is not True:
+        return False  # setup's own census must have said clean: the probe alone cannot select R1
     try:
         return ok and json.loads(lines[-1]) == {"r1": True}
     except (IndexError, ValueError):

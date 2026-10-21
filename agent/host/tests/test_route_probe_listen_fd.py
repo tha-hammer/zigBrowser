@@ -147,15 +147,25 @@ class Main(Base):
         super().setUp()
         self.runs = []
 
-        def fake_run(wrapper, cli, listener=None):
+        def fake_run(wrapper, cli, listener=None, census=None):
             self.runs.append((str(wrapper), cli, None if listener is None else listener.getsockname()))
             if listener is not None:
                 listener.close()
+            if census is not None:  # adopted, then closed here: the test no longer owns that fd number
+                fd = census.fileno()
+                census.close()
+                if fd in self.fds:
+                    self.fds.remove(fd)
             return True
 
         mock.patch.object(route_probe, "run", side_effect=fake_run).start()
 
     def main(self, platform, extra=()):
+        if platform == "darwin" and "--census-fd" not in extra:
+            # A valid census end (BlueBeaver 7021), so these cases test only the listener flags.
+            a, b = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
+            self.addCleanup(b.close)
+            extra = [*extra, "--census-fd", str(self.own(a.detach()))]
         mock.patch.object(route_probe, "PLATFORM", platform).start()
         out, err = io.StringIO(), io.StringIO()
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):

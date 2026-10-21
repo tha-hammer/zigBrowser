@@ -1,8 +1,10 @@
-"""R1 on macOS, the probe's verdict that no CLI environment holds the token (BlueBeaver 6977; RoseCat 6958), on Linux
-with the platform injected (`route_probe.PLATFORM`) and zb_agent_host.proc_darwin's calls faked:
+"""R1's verdict that no CLI environment holds the token (BlueBeaver 6977; RoseCat 6958), on Linux with
+zb_agent_host.proc_darwin's calls faked.
 
-route_probe._cli_env_clean(cli, probe_token, canary) is the server's check. On Darwin it is True only when
-- at least one descendant of the probe runs `cli` (proc_darwin.descendants_running(realpath(cli), getpid()));
+On macOS the verdict is setup's census, proc_darwin.cli_env_clean(exe, root, token, canary), run OUTSIDE Seatbelt
+over setup's own descendants (RoseCat 7019; BlueBeaver 7021); the probe asks it over a socketpair
+(test_route_probe_census / test_setup_census) and never walks processes itself. It is True only when
+- at least one descendant of `root` runs `exe` (proc_darwin.descendants_running(exe, root));
 - every one's KERN_PROCARGS2 reads and parses (proc_darwin.environ_of): a failed read is not clean;
 - every one's parsed environment holds the canary, the exact entry "ANTHROPIC_BASE_URL=<the probe server's url>"
   that the CLI always inherits: an environment the OS hid (macOS does for platform binaries) or a misparse is
@@ -10,11 +12,10 @@ route_probe._cli_env_clean(cli, probe_token, canary) is the server's check. On D
 - the token appears nowhere in any of their buffers (argv counts: it is as visible as the environment).
 A denied child listing or an unreadable path anywhere in the walk is not clean either: only a vanished process may
 be skipped (RoseCat 7011).
-On Linux it is unchanged: /proc/<pid>/environ of the descendants running `cli`, and no canary is required.
-The probe server passes exactly that canary and records the verdict as cli_env_clean.
+On Linux the probe's own route_probe._cli_env_clean is unchanged: /proc/<pid>/environ of the descendants running
+`cli`, and no canary is required. The Linux probe server passes the canary and records the verdict.
 
 Run like the gate: cd agent/host/tests && python -X dev -m unittest -v test_route_probe_darwin_env.
-Unregistered until the green.
 """
 import json
 import os
@@ -68,7 +69,7 @@ class Darwin(Base):
 
         mock.patch.object(proc_darwin, "descendants_running", side_effect=descendants).start()
         mock.patch.object(proc_darwin, "environ_of", side_effect=environ_of).start()
-        result = route_probe._cli_env_clean(cli, TOKEN, CANARY)
+        result = proc_darwin.cli_env_clean(os.path.realpath(cli), os.getpid(), TOKEN.encode(), CANARY)
         self.assertEqual(walked, [(os.path.realpath(cli), os.getpid())])
         return result
 
@@ -134,7 +135,7 @@ class DarwinWalkFailures(Base):
         mock.patch.object(proc_darwin, "children", side_effect=children).start()
         mock.patch.object(proc_darwin, "path", side_effect=path).start()
         mock.patch.object(proc_darwin, "environ_of", side_effect=environ_of).start()
-        return route_probe._cli_env_clean("/opt/claude", TOKEN, CANARY)
+        return proc_darwin.cli_env_clean("/opt/claude", os.getpid(), TOKEN.encode(), CANARY)
 
     CLEAN = {7: ([b"/opt/claude"], [CANARY])}
 

@@ -26,7 +26,7 @@ from unittest import mock
 
 import support  # noqa: F401  (puts the helper package on sys.path)
 
-from zb_agent_host import sandbox_macos, setup
+from zb_agent_host import proc_darwin, sandbox_macos, setup
 
 WRAPPER = "/rt/runtime/bin/zb-claude"
 CLI = "/opt/claude"
@@ -47,6 +47,8 @@ class Base(unittest.TestCase):
         self.addCleanup(mock.patch.stopall)
         self.seam = []
         self.runs = []
+        # Setup's census (BlueBeaver 7021) is pinned by test_setup_census; here it says clean.
+        mock.patch.object(proc_darwin, "cli_env_clean", return_value=True).start()
 
     def fake_seam(self, refuse=False):
         @contextlib.contextmanager
@@ -91,6 +93,16 @@ class Base(unittest.TestCase):
                 with probe:
                     rec.update(family=probe.family, kind=probe.type, name=probe.getsockname(),
                                listening=bool(probe.getsockopt(socket.SOL_SOCKET, socket.SO_ACCEPTCONN)))
+            if "--census-fd" in argv and outcome != "timeout":  # ask setup's census, as route_probe does
+                cfd = int(argv[argv.index("--census-fd") + 1])
+                rec["census_fd"] = cfd
+                with socket.socket(fileno=os.dup(cfd)) as ask:
+                    ask.settimeout(10)
+                    ask.sendall(f"census zb-probe-{'ab' * 24} http://127.0.0.1:{rec['port']}\n".encode())
+                    reply = b""
+                    while chunk := ask.recv(64):
+                        reply += chunk
+                    rec["census_reply"] = reply
             self.runs.append(rec)
             if outcome == "timeout":
                 raise setup.subprocess.TimeoutExpired(argv, kwargs.get("timeout"))
@@ -113,9 +125,12 @@ class Darwin(Base):
         self.assertIn("--listen-fd", run["argv"], "setup hands the probe no pre-bound listener (6961)")
         port, fd = run["port"], run["fd"]
         self.assertEqual(seam["loopback_port"], port, "the profile permits exactly the pre-bound port")
-        self.assertEqual(seam["command"][-4:], ["--listen-fd", str(fd), "--listen-port", str(port)])
+        self.assertEqual(seam["command"][-6:], ["--listen-fd", str(fd), "--listen-port", str(port),
+                                                 "--census-fd", str(run["census_fd"])])
         self.assertEqual(seam["command"][:4][1:3], ["-m", "zb_agent_host"])
-        self.assertEqual(run["pass_fds"], (fd,), "only the listener is passed")
+        self.assertEqual(sorted(run["pass_fds"]), sorted((fd, run["census_fd"])),
+                         "only the listener and the census end are passed (BlueBeaver 7021)")
+        self.assertEqual(run["census_reply"], b"clean\n")
         self.assertEqual((run["family"], run["kind"], run["name"], run["listening"]),
                          (socket.AF_INET, socket.SOCK_STREAM, ("127.0.0.1", port), True))
         self.assertFalse(run["inheritable"], "setup's copy is not inheritable; pass_fds alone hands it on")

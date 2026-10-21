@@ -127,6 +127,28 @@ def environ_of(pid):
     return (raw, *parsed)
 
 
+def cli_env_clean(exe, root, token, canary):
+    """Setup's R1 census verdict (RoseCat 7019; BlueBeaver 7021): run by setup OUTSIDE Seatbelt over its own
+    descendants (`root`), never by the probe or the CLI it tests. True only when at least one descendant runs `exe`,
+    the walk inspected every descendant (a denied listing or path is not clean; RoseCat 7011), and each CLI's
+    KERN_PROCARGS2 reads and parses, holds the exact `canary` entry in its environment (an environment the OS hid is
+    never "clean"), and holds the `token` bytes nowhere, argv included."""
+    try:
+        pids = descendants_running(exe, root)
+    except OSError:
+        return False
+    if not pids:
+        return False
+    for pid in pids:
+        try:
+            raw, _argv, env = environ_of(pid)
+        except OSError:
+            return False
+        if canary not in env or token in raw:
+            return False
+    return True
+
+
 def descendants_running(exe, root):
     """Every descendant of `root` whose executable path is `exe` (a breadth-first walk; each pid visited once).
     Only a vanished process is skipped; a denied child list or an unreadable path raises OSError, so the caller
