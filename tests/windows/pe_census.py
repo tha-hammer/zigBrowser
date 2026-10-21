@@ -34,7 +34,8 @@ _REDIST_PREFIX = ("vcruntime", "msvcp", "msvcr", "concrt")
 
 
 def census(path):
-    data = open(path, "rb").read()
+    with open(path, "rb") as _f:
+        data = _f.read()
     if data[:2] != b"MZ":
         raise ValueError("not a PE image (missing MZ)")
     e_lfanew = struct.unpack_from("<I", data, 0x3C)[0]
@@ -87,15 +88,27 @@ def census(path):
                 if d not in _ALLOWED_EXACT
                 and not d.startswith(_ALLOWED_PREFIX)
                 and d not in forbidden]
+    machine_ok = machine == IMAGE_FILE_MACHINE_AMD64
+    # A single verdict string: "OK" or the first disqualifying reason (machine, then a forbidden
+    # redistributable, then an unlisted import). Consumed by pe_census_selftest.py.
+    if not machine_ok:
+        verdict = "FAIL: machine 0x%x" % machine
+    elif forbidden:
+        verdict = "FAIL: " + forbidden[0]
+    elif unlisted:
+        verdict = "FAIL: " + unlisted[0]
+    else:
+        verdict = "OK"
     return {
         "machine": machine,
-        "machine_ok": machine == IMAGE_FILE_MACHINE_AMD64,
+        "machine_ok": machine_ok,
         "pe32plus": pe32plus,
         "subsystem": subsystem,
         "subsystem_name": _SUBSYS.get(subsystem, str(subsystem)),
         "imports": imports_l,
         "forbidden_imports": forbidden,
         "unlisted_imports": unlisted,
+        "verdict": verdict,
     }
 
 
