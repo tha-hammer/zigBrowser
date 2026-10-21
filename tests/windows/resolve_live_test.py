@@ -7,15 +7,23 @@ regression drives `gate.sh --allowed-path` with any ambient `ZB_RESOLVE_CMD` **s
 6726), so the default resolver (resolve_path.sh) runs real `ssh` + `GetFinalPathNameByHandle` on the
 VM and a stray override can never stand in for it:
 
-  * an existing in-root path must ALLOW   (OLD RED: the uint32 bug made this DENY; NEW GREEN: ALLOW)
-  * an escaping junction must DENY        (resolves to C:\\Windows). Its setup is PROVEN first — the
-    junction must exist and its reparse target must actually point at C:\\Windows — so a DENY can
-    never be a vacuous fail-closed on a path that was never created (RoseCat 6726).
-  * a legitimate IN-ROOT junction must ALLOW (bead zigBrowser-q92). OLD RED: CreateFile-follow returns
-    ERROR_CANT_RESOLVE_FILENAME for any directory junction on this build, so resolve_path.sh exited 3
-    and the gate DENYed even an in-root junction. NEW GREEN: the resolver reads the junction's reparse
-    target (FSCTL_GET_REPARSE_POINT) and resolves THAT, so an in-root target ALLOWs while an escape
-    still DENYs (case above). Its setup is proven first (the reparse target must point inside the root).
+The resolver FAILS CLOSED on ANY reparse point in the path (bead zigBrowser-q92, RoseCat security
+block of 60f0d5e): ALLOWing a junction would reopen a swap/chain TOCTOU — the gate authorizes the
+resolved NAME, not a pinned handle, so a junction ALLOWed now could be repointed outside before the
+name is used. In-root junctions are not needed for launch, so every junction DENYs and the swap case
+is moot (no junction is ever ALLOWed). The cases below cover a plain path, an escaping final-component
+junction, an in-root junction, a descendant THROUGH an in-root junction, and a two-junction chain; each
+junction setup is PROVEN first (it exists AND its reparse target is read), so a DENY can never be a
+vacuous fail-closed on a path that was never created (RoseCat 6726):
+
+  * an existing in-root NON-reparse path must ALLOW  (real dir / real sub-path)
+  * an escaping junction (-> C:\\Windows) must DENY            (final-component reparse)
+  * a legitimate in-root junction (-> {root}\\live) must DENY  (reparse; fail-closed, not resolved)
+  * a descendant through an in-root junction (junction\\sub) must DENY   (mid-path reparse)
+  * a two-junction chain (-> the in-root junction) must DENY            (reparse)
+
+MUTANT the production walk removes to confirm these are causal: dropping the reparse check makes the
+in-root junction ALLOW, reddening rows 3-5.
 
 Skips cleanly when the VM is not configured.
 
@@ -61,6 +69,18 @@ def _gate_verdict(path):
     return (p.stdout or "").strip(), p
 
 
+def _make_junction(link, target):
+    """Create link -> target as a directory junction and PROVE it took: the link must be a reparse
+    point whose target is `target` (so a later DENY is never a vacuous fail-closed on a missing path,
+    RoseCat 6726). Returns (ok, detail)."""
+    mk = _remote(rf'cmd /c "rmdir {link} 2>nul & mklink /J {link} {target}"')
+    rb = _remote(rf"fsutil reparsepoint query {link}")
+    ok = rb.returncode == 0 and target.upper() in rb.stdout.upper()
+    detail = (f"{link!r} -> {target!r}: mklink rc={mk.returncode}, readback rc={rb.returncode}\n"
+              f"--- mklink ---\n{mk.stdout}{mk.stderr}\n--- readback ---\n{rb.stdout}{rb.stderr}")
+    return ok, detail
+
+
 def main():
     host = os.environ.get("ZB_WIN11_HOST")
     user = os.environ.get("ZB_GUEST_USER")
@@ -69,58 +89,64 @@ def main():
         return 0
 
     root = rf"C:\Users\{user}\zb"
-    in_root = rf"{root}\live"           # a real STRICT sub-path (the root itself is DENYed by design)
-    junction = rf"{root}\zb_live_linkout"
-    in_junction = rf"{root}\zb_live_linkin"   # an in-root junction -> {root}\live (bead zigBrowser-q92)
+    live = rf"{root}\live"                 # a real in-root dir
+    live_sub = rf"{live}\sub"              # a real in-root sub-path
+    escape = rf"{root}\zb_live_linkout"    # junction -> C:\Windows  (final-component escape)
+    inj = rf"{root}\zb_live_linkin"        # junction -> {root}\live  (legit in-root target)
+    chain = rf"{root}\zb_live_chain"       # junction -> {inj}        (junction to a junction)
     asserts = 0
 
+    def expect(path, want, label):
+        out, p = _gate_verdict(path)
+        if out != want:
+            print(f"FAIL [{label}]: resolver on {path!r} => {out!r} (want {want})\n--- gate stderr ---\n{p.stderr}")
+            return False
+        return True
+
     try:
-        # (1) existing in-root sub-path -> ALLOW. Old red: the uint32 bug made the resolver fail => DENY.
-        _remote(r'cmd /c "if not exist %USERPROFILE%\zb\live mkdir %USERPROFILE%\zb\live"')
-        out, p = _gate_verdict(in_root)
-        if out != "ALLOW":
-            print(f"FAIL: production resolver on in-root {in_root!r} => {out!r} (want ALLOW)\n"
-                  f"--- gate stderr ---\n{p.stderr}")
+        _remote(rf'cmd /c "mkdir {live_sub} 2>nul"')   # creates {root}\live and {root}\live\sub
+
+        # (1) a real in-root path (no reparse anywhere) -> ALLOW.
+        if not expect(live_sub, "ALLOW", "in-root real sub-path"):
             return 1
         asserts += 1
 
-        # (2) escaping junction (-> C:\Windows) must DENY. PROVE the setup first, so a DENY can never
-        # be a vacuous fail-closed on a missing path (RoseCat 6726): the junction must exist AND its
-        # reparse target must actually point OUTSIDE the root, at C:\Windows.
-        mk = _remote(rf'cmd /c "rmdir {junction} 2>nul & mklink /J {junction} C:\Windows"')
-        rb = _remote(rf"fsutil reparsepoint query {junction}")
-        if rb.returncode != 0 or "C:\\WINDOWS" not in rb.stdout.upper():
-            print(f"FAIL: escaping-junction setup did not take — {junction!r} is not a reparse point to "
-                  f"C:\\Windows (mklink rc={mk.returncode}, readback rc={rb.returncode}).\n"
-                  f"--- mklink ---\n{mk.stdout}{mk.stderr}\n--- readback ---\n{rb.stdout}{rb.stderr}")
+        # (2) escaping junction (final component) -> DENY. Setup proven (target is C:\Windows).
+        ok, d = _make_junction(escape, r"C:\Windows")
+        if not ok:
+            print(f"FAIL: escaping-junction setup did not take\n{d}")
             return 1
-        out, p = _gate_verdict(junction + r"\System32")
-        if out != "DENY":
-            print(f"FAIL: production resolver on escaping junction {junction!r} => {out!r} (want DENY)\n"
-                  f"--- gate stderr ---\n{p.stderr}")
+        if not expect(escape, "DENY", "escaping junction (final component)"):
             return 1
         asserts += 1
 
-        # (3) legitimate IN-ROOT junction (-> {root}\live) must ALLOW (bead zigBrowser-q92). PROVE the
-        # setup first: the junction must exist AND its reparse target must point INSIDE the root — so an
-        # ALLOW is real, not a vacuous pass on a missing path. OLD RED: the resolver failed closed (exit
-        # 3) on any junction, so the gate DENYed this in-root junction.
-        mk = _remote(rf'cmd /c "rmdir {in_junction} 2>nul & mklink /J {in_junction} {in_root}"')
-        rb = _remote(rf"fsutil reparsepoint query {in_junction}")
-        want = rf"{root}\live".upper()
-        if rb.returncode != 0 or want not in rb.stdout.upper():
-            print(f"FAIL: in-root-junction setup did not take — {in_junction!r} is not a reparse point to "
-                  f"{in_root!r} (mklink rc={mk.returncode}, readback rc={rb.returncode}).\n"
-                  f"--- mklink ---\n{mk.stdout}{mk.stderr}\n--- readback ---\n{rb.stdout}{rb.stderr}")
+        # (3) legitimate IN-ROOT junction -> DENY. In-root junctions are not supported for launch and
+        # ALLOWing one would reopen a swap TOCTOU (gate authorizes the name, not a pinned handle), so the
+        # resolver fails closed on ANY reparse point. Setup proven (target is inside the root).
+        ok, d = _make_junction(inj, live)
+        if not ok:
+            print(f"FAIL: in-root-junction setup did not take\n{d}")
             return 1
-        out, p = _gate_verdict(in_junction)
-        if out != "ALLOW":
-            print(f"FAIL: production resolver on in-root junction {in_junction!r} => {out!r} (want ALLOW)\n"
-                  f"--- gate stderr ---\n{p.stderr}")
+        if not expect(inj, "DENY", "in-root junction"):
+            return 1
+        asserts += 1
+
+        # (4) descendant THROUGH an in-root junction ({inj}\sub) -> DENY (mid-path reparse component).
+        if not expect(rf"{inj}\sub", "DENY", "descendant through in-root junction"):
+            return 1
+        asserts += 1
+
+        # (5) two-junction chain ({chain} -> {inj}) -> DENY (reparse). Setup proven.
+        ok, d = _make_junction(chain, inj)
+        if not ok:
+            print(f"FAIL: chain-junction setup did not take\n{d}")
+            return 1
+        if not expect(chain, "DENY", "two-junction chain"):
             return 1
         asserts += 1
     finally:
-        _remote(rf'cmd /c "rmdir {junction} 2>nul & rmdir {in_junction} 2>nul & rmdir %USERPROFILE%\zb\live 2>nul"')
+        _remote(rf'cmd /c "rmdir {chain} 2>nul & rmdir {escape} 2>nul & rmdir {inj} 2>nul & '
+                rf'rmdir /s /q {live} 2>nul"')
 
     print(f"PASS live resolver regression ASSERTS {asserts}")
     return 0

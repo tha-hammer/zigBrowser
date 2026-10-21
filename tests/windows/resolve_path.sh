@@ -13,14 +13,14 @@
 #
 # The selftest replaces this via ZB_RESOLVE_CMD; this real implementation resolves on the Windows
 # host over SSH. Live-verified on win11-m8: a normal in-root path resolves to itself; C:\Windows
-# resolves to itself. CreateFile opens with dwDesiredAccess 0 (GetFinalPathNameByHandle needs only
-# the handle) FOLLOWING reparse points. The RESULT is never the junction's own OPEN_REPARSE_POINT
-# path (that would mask an escape). On this build CreateFile-follow returns ERROR_CANT_RESOLVE_FILENAME
-# (gle 448) for ANY directory junction, so when the direct follow fails we read the junction's reparse
-# target (FSCTL_GET_REPARSE_POINT, mount-point substitute name) and resolve THAT, following: an in-root
-# junction then resolves to its in-root target (gate ALLOW) and an escaping junction to its real
-# outside target (gate DENY via the string fence) — never masked (bead zigBrowser-q92). A target that
-# still cannot be resolved, or a non-junction reparse point, fails closed via exit 3 -> gate DENY.
+# resolves to itself. SECURITY: the resolver FAILS CLOSED on ANY reparse point in the path — it walks
+# every existing ancestor component (GetFileAttributesW, which does not follow links) and exits 3
+# (gate DENY) if any is a reparse point (directory junction or symlink). In-root junctions are not
+# needed for launch, and ALLOWing one would reopen a swap/chain TOCTOU: the gate authorizes the
+# resolved NAME, not a pinned handle/object, so a junction ALLOWed now could be repointed outside
+# before the name is used (RoseCat, bead zigBrowser-q92). With no reparse point present, CreateFile +
+# GetFinalPathNameByHandle returns the canonical path for the string fence; a path that cannot be
+# opened fails closed via exit 3.
 set -uo pipefail
 p="${1:?usage: resolve_path.sh <windows-path>}"
 
@@ -49,17 +49,21 @@ Add-Type -Namespace Zb -Name P -MemberDefinition @'
 public static extern System.IntPtr CreateFile(string n,uint a,uint s,System.IntPtr sa,uint c,uint f,System.IntPtr t);
 [DllImport("kernel32.dll",SetLastError=true,CharSet=CharSet.Unicode)]
 public static extern uint GetFinalPathNameByHandle(System.IntPtr h,System.Text.StringBuilder o,uint n,uint fl);
-[DllImport("kernel32.dll",SetLastError=true)]
-public static extern bool DeviceIoControl(System.IntPtr h,uint c,System.IntPtr i,uint isz,byte[] o,uint osz,out uint r,System.IntPtr v);
+[DllImport("kernel32.dll",SetLastError=true,CharSet=CharSet.Unicode)]
+public static extern uint GetFileAttributesW(string n);
 [DllImport("kernel32.dll")] public static extern bool CloseHandle(System.IntPtr h);
 '@
-$B=0x02000000;$R=0x00200000;$F=0x000900A8;$M=0xA0000003L
-function Rf($x){$h=[Zb.P]::CreateFile($x,0,3,[IntPtr]::Zero,3,$B,[IntPtr]::Zero);if($h -eq [IntPtr](-1)){return $null};try{$s=New-Object Text.StringBuilder 1024;$n=[Zb.P]::GetFinalPathNameByHandle($h,$s,1024,0);if($n -eq 0 -or $n -ge 1024){return $null};$s.ToString()}finally{[void][Zb.P]::CloseHandle($h)}}
-function Rt($x){$h=[Zb.P]::CreateFile($x,0,3,[IntPtr]::Zero,3,($B -bor $R),[IntPtr]::Zero);if($h -eq [IntPtr](-1)){return $null};try{$b=New-Object byte[] 16384;$r=0;if(-not [Zb.P]::DeviceIoControl($h,$F,[IntPtr]::Zero,0,$b,$b.Length,[ref]$r,[IntPtr]::Zero)){return $null};if($r -lt 16){return $null};if([BitConverter]::ToUInt32($b,0) -ne $M){return $null};$o=[BitConverter]::ToUInt16($b,8);$l=[BitConverter]::ToUInt16($b,10);if($l -eq 0 -or (16+$o+$l) -gt $r){return $null};$nm=[Text.Encoding]::Unicode.GetString($b,16+$o,$l);if($nm.StartsWith('\??\')){$nm=$nm.Substring(4)};$nm}finally{[void][Zb.P]::CloseHandle($h)}}
-$res=Rf $p
-if($null -eq $res){$t=Rt $p;if($null -eq $t){exit 3};$res=Rf $t;if($null -eq $res){exit 3}}
-[Console]::Out.WriteLine($res.Length)
-[Console]::Out.WriteLine($res)
+$B=0x02000000;$RP=0x400;$INV=[uint32]::MaxValue
+foreach($seg in ($p -split '\\')){
+  if($seg -eq ''){continue}
+  if($acc -eq $null -or $acc -eq ''){$acc=$seg}else{$acc=$acc+'\'+$seg}
+  $probe=$acc;if($probe -match '^[A-Za-z]:$'){$probe=$probe+'\'}
+  $a=[Zb.P]::GetFileAttributesW($probe)
+  if($a -ne $INV -and ($a -band $RP) -ne 0){exit 3}
+}
+$h=[Zb.P]::CreateFile($p,0,3,[IntPtr]::Zero,3,$B,[IntPtr]::Zero)
+if($h -eq [IntPtr](-1)){exit 3}
+try{$s=New-Object Text.StringBuilder 1024;$n=[Zb.P]::GetFinalPathNameByHandle($h,$s,1024,0);if($n -eq 0 -or $n -ge 1024){exit 3};[Console]::Out.WriteLine($s.Length);[Console]::Out.WriteLine($s.ToString())}finally{[void][Zb.P]::CloseHandle($h)}
 PSEOF
 PS="${PS//__PB64__/$pb64}"
 
