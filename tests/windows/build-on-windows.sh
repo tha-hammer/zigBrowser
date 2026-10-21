@@ -90,7 +90,7 @@ echo "build-on-windows: staging CLEAN tree of $sha to $user@$host:$remote_rundir
 # ("Invalid argument"), and it is docs, never a build input. Everything the build needs stays in the archive.
 "${scrub[@]}" git archive --format=tar "$sha" -- . ':(exclude)thoughts' \
   | "${scrub[@]}" timeout "$stage_to" ssh "${SSH[@]}" -p "$port" "$user@$host" \
-      "cmd /c \"if exist %USERPROFILE%\\$remote_rundir rmdir /s /q %USERPROFILE%\\$remote_rundir\" & cmd /c \"mkdir %USERPROFILE%\\$remote_rundir\" & cd $remote_rundir && tar -x -f -"
+      "cmd /c \"if exist %USERPROFILE%\\$remote_rundir rmdir /s /q %USERPROFILE%\\$remote_rundir\" && cmd /c \"mkdir %USERPROFILE%\\$remote_rundir\" && cd $remote_rundir && tar -x -f -"
 rc_arch=${PIPESTATUS[0]} rc_stage=${PIPESTATUS[1]}
 [ "$rc_arch" -eq 0 ] || { echo "build-on-windows: git archive failed (rc=$rc_arch)" >&2; exit "$rc_arch"; }
 [ "$rc_stage" -eq 0 ] || { echo "build-on-windows: stage failed (rc=$rc_stage)" >&2; exit "$rc_stage"; }
@@ -104,7 +104,12 @@ Set-Location -LiteralPath (Join-Path \$env:USERPROFILE '$remote_rundir')
 exit \$LASTEXITCODE
 PS
 )
-enc=$(printf '%s' "$build_ps" | iconv -f UTF-8 -t UTF-16LE | base64 -w0)
+# Finding (b): the encode must be CHECKED — pipefail surfaces an iconv/base64 failure in the command
+# substitution, and an empty result is rejected, so a failed/partial encode can never be sent as an
+# (empty) -EncodedCommand that the remote would run as a no-op "successful" build.
+if ! enc=$(printf '%s' "$build_ps" | iconv -f UTF-8 -t UTF-16LE | base64 -w0) || [ -z "$enc" ]; then
+  echo "build-on-windows: failed to construct/encode the build command" >&2; exit 2
+fi
 echo "build-on-windows: zig build $step -Doptimize=$mode (target x86_64-windows-msvc) on $sha" >&2
 "${scrub[@]}" timeout "$build_to" ssh "${SSH[@]}" -p "$port" "$user@$host" \
   "powershell -NoProfile -NonInteractive -EncodedCommand $enc"
@@ -127,8 +132,18 @@ if [ -z "$step" ]; then
   if [ ! -s "$part" ] || [ "$(head -c2 "$part" 2>/dev/null)" != "MZ" ]; then
     echo "build-on-windows: fetched artifact is not a PE executable" >&2; rm -f "$part"; exit 3
   fi
-  mv -f "$part" "$out"
-  printf '%s\n' "$sha" > "$out.sha"            # provenance: the census artifact's exact source commit
+  # Finding (c): publish the artifact and its provenance manifest as an ATOMIC PAIR. Write provenance
+  # beside the validated part and CHECK it; publish the manifest FIRST, then the exe — so the exe never
+  # exists without a correct manifest. Any write failure fails closed and leaves no orphan artifact.
+  if ! printf '%s\n' "$sha" > "$part.sha"; then
+    echo "build-on-windows: provenance write failed" >&2; rm -f "$part" "$part.sha"; exit 3
+  fi
+  if ! mv -fT "$part.sha" "$out.sha"; then
+    echo "build-on-windows: publishing the provenance manifest failed" >&2; rm -f "$part" "$part.sha" "$out.sha"; exit 3
+  fi
+  if ! mv -fT "$part" "$out"; then
+    echo "build-on-windows: publishing the artifact failed" >&2; rm -f "$part"; exit 3
+  fi
   echo "build-on-windows: fetched $out (commit $sha)"
   echo "build-on-windows: export ZB_WIN_EXE=$out for the WS1.1 census"
 fi

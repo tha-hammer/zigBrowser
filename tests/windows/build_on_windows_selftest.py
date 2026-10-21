@@ -73,6 +73,12 @@ cat >/dev/null 2>&1
 exit 0
 """
 
+# A fake iconv that fails on demand (to exercise the CHECKED build-command encode), else passes through.
+_ICONV_FAKE = r"""
+[ -n "${ZB_SELFTEST_ICONV_FAIL:-}" ] && exit 5
+exec /usr/bin/iconv "$@"
+"""
+
 _SCP_STUB = r"""
 if [ -n "${ZB_SELFTEST_SCP_LOG:-}" ]; then
   printf 'ARGV: %s\n' "$*" >> "$ZB_SELFTEST_SCP_LOG"
@@ -95,11 +101,12 @@ def _fakes(bindir):
     _write(bindir / "ssh", _SSH_STUB)
     _write(bindir / "scp", _SCP_STUB)
     _write(bindir / "timeout", _TIMEOUT_STUB)
+    _write(bindir / "iconv", _ICONV_FAKE)
     return str(bindir)
 
 
 class _Case(unittest.TestCase):
-    def _run(self, td, extra=None, args=None, unset=None):
+    def _run(self, td, extra=None, args=None, unset=None, pre=None):
         bindir = td / "bin"; bindir.mkdir(exist_ok=True)
         root = td / "root"; root.mkdir(exist_ok=True)
         out = td / "out" / "zigBrowser.exe"
@@ -125,6 +132,8 @@ class _Case(unittest.TestCase):
             env.update(extra)
         for k in (unset or []):
             env.pop(k, None)
+        if pre:
+            pre(td, out)
         cmd = ["bash", SCRIPT] + (args or [])
         proc = subprocess.run(cmd, env=env, capture_output=True, text=True, timeout=90)
         proc.out_path = out
@@ -146,6 +155,13 @@ class _Case(unittest.TestCase):
                     return base64.b64decode(tok).decode("utf-16-le")
                 except Exception:
                     return ""
+        return ""
+
+    def _stage_cmd(self, td):
+        """The ssh ARGV line that carries the remote staging command (the one running tar -x)."""
+        for ln in self._read(td / "ssh.log").splitlines():
+            if ln.startswith("ARGV:") and "tar -x" in ln:
+                return ln
         return ""
 
     def _fail_closed(self, proc, needle):
@@ -360,6 +376,54 @@ class SshHygiene(_Case):
         # Mirror: `yes` then `no` is effectively YES (first wins) — OpenSSH treats it safe.
         invs, bad = _batchmode_violations("ARGV: -i k -o BatchMode=yes -o BatchMode=no host cmd\n")
         self.assertEqual(bad, [], "effective BatchMode=yes (first wins) must be accepted")
+
+
+class StagingFailClosed(_Case):
+    """RoseCat cf01d66 (a): the remote dir setup must chain rmdir -> mkdir -> cd -> tar fail-closed with
+    && , never a maskable bare & that lets a failed mkdir be hidden by tar's exit status."""
+
+    def test_staging_chains_fail_closed_not_masking_amp(self):
+        with tempfile.TemporaryDirectory() as t:
+            td = pathlib.Path(t)
+            self._run(td)
+            stage = self._stage_cmd(td)
+            self.assertTrue(stage, "no staging ssh invocation captured")
+            self.assertIn("rmdir", stage, "stage must re-create the per-SHA dir")
+            self.assertIn("mkdir", stage, "stage must create the run dir")
+            self.assertNotRegex(
+                stage, r"(?<!&) & (?!&)",
+                "staging must chain rmdir/mkdir/cd/tar fail-closed with && , never a maskable bare &")
+
+
+class EncodeChecked(_Case):
+    """RoseCat cf01d66 (b): if the UTF-16LE/base64 encode of the build command fails (or yields empty),
+    the build must NOT be sent and no artifact may be published."""
+
+    def test_encode_failure_fails_closed_and_publishes_nothing(self):
+        with tempfile.TemporaryDirectory() as t:
+            td = pathlib.Path(t)
+            proc = self._run(td, {"ZB_SELFTEST_ICONV_FAIL": "1"})
+            detail = f"\nrc={proc.returncode}\nstdout:\n{proc.stdout}\nstderr:\n{proc.stderr}"
+            self.assertNotEqual(proc.returncode, 0, "a failed command-encoding must fail closed" + detail)
+            self.assertFalse(proc.out_path.exists(), "a failed encode must publish no artifact" + detail)
+
+
+class AtomicProvenance(_Case):
+    """RoseCat cf01d66 (c): the exe and its provenance manifest publish as an ATOMIC PAIR. If the
+    manifest cannot be written, the exe must NOT be published (no orphan artifact). Fault: pre-create
+    the `.sha` path as a directory so the provenance write/publish fails."""
+
+    def test_provenance_write_failure_does_not_publish_exe(self):
+        def pre(td, out):
+            out.parent.mkdir(parents=True, exist_ok=True)
+            (out.parent / (out.name + ".sha")).mkdir()
+        with tempfile.TemporaryDirectory() as t:
+            td = pathlib.Path(t)
+            proc = self._run(td, pre=pre)
+            detail = f"\nrc={proc.returncode}\nstdout:\n{proc.stdout}\nstderr:\n{proc.stderr}"
+            self.assertNotEqual(proc.returncode, 0, "an unwritable provenance must fail closed" + detail)
+            self.assertFalse(proc.out_path.is_file(),
+                             "the exe must NOT be published when its manifest cannot be written" + detail)
 
 
 if __name__ == "__main__":
