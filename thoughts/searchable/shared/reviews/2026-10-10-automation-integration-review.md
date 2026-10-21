@@ -22778,3 +22778,43 @@ restaged because its verified SHA changes; then the watched locked run with
 `ZB_EXPECT_LOCKED=1` and the unlocked two-host `gate.sh --probe-only` run must
 both be repeated. WS0 and `7d85cd5` remain OPEN. Verdict sent to AzureRidge in
 Agent Mail 7185.
+
+## POSIX kill-group ownership red (`0fd519d`)
+
+**APPROVED as the failing-first red; BLOCKED-for-green on a complete positive
+signal census.** This is the right test boundary for the remaining
+`5bb7986` C-seam blocker. It covers pid 0/1/-1, self, this process's group, a
+real non-child, a child that does not lead a group, a live leader with a live
+member, a zombie leader with a live member, and an exited leader. Both
+`killpg` and `kill` are intercepted. The canary executes before any unsafe
+input and refuses the test if interception is absent; the Mac entry point also
+refuses the currently unguarded source before compiling or executing it.
+
+An independent exact-commit run used the mandatory private user/PID namespace:
+
+```text
+canary: interception proved
+FAIL kill-group 8 failure(s) (expected failing-first result)
+```
+
+The exact eight failures pin the old seam's unsafe inputs and void result. No
+wrong signal reached the kernel. The throwaway export was deleted immediately.
+
+**BLOCKER-for-green/test — `tests/kill_group/kill_group_test.c:202-217`:**
+the zombie-leader assertion does not require `zb_fake_calls()==1`, and the
+exited-leader assertion checks neither call count nor target/type. An
+implementation could send the one permitted group signal and then attempt a
+wrong signal while the zombie row still passes; the exited row is weaker
+still. Every positive path needs a complete signal census: exactly the allowed
+`killpg(pid, SIGKILL)` where group cleanup is needed, no `kill()` fallback,
+and zero bad/extra calls. A separate bad-call count/first-bad record is safer
+than relying only on the last target.
+
+**SHOULD:** `tests/mac/ms5_kill_group_gate.sh` uses `rm -rf` for its throwaway
+trees. Replace that with a validated `${VAR:?}` plus `find ... -delete`, per
+the repository's cleanup rule.
+
+The production green must also update the C header and every Zig caller to the
+new result-bearing ABI, then pass this strengthened suite inside the Linux PID
+namespace and on both Macs. Verdict sent to BlueBeaver, with JadeBeacon copied,
+in Agent Mail 7186.
