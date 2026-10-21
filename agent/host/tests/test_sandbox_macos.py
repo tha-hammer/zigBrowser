@@ -481,19 +481,83 @@ class MacSeatbeltBackendLaunchSpec(unittest.TestCase):
         # read curation flips this.
         self.assertIs(sandbox_macos.LAUNCH_SPEC_CONSUMABLE, False)
 
-    def test_materialize_cleans_up_on_a_failure(self):
-        # RoseCat 6984: an open/write/chmod/fstat failure must leave NO dir or partial artifact behind.
+    def _inject_once(self, name, fail):
+        """Replace ``os.<name>`` so only the FIRST call runs ``fail(real, *a, **k)`` and every later call
+        delegates to the real function. Scoping the failure to the one materialize call keeps it out of
+        ``shutil.rmtree``'s own os.open/os.fstat during the cleanup we are trying to observe."""
+        real = getattr(sandbox_macos.os, name)
+        state = {"fired": False}
+
+        def wrapper(*a, **k):
+            if not state["fired"]:
+                state["fired"] = True
+                return fail(real, *a, **k)
+            return real(*a, **k)
+
+        setattr(sandbox_macos.os, name, wrapper)
+        self.addCleanup(lambda: setattr(sandbox_macos.os, name, real))
+
+    def test_materialize_fails_closed_at_every_branch(self):
+        # RoseCat 6984 + 7008 #2: a failure at ANY distinct branch (open, short write, write raising, chmod, the
+        # post-write fd check) must raise AND leave NO zb-seatbelt- dir or partial artifact behind — one case per
+        # branch, so a mutant that drops the cleanup (or weakens one branch) reds here, not just on chmod.
         base = tempfile.gettempdir()
         seat = lambda: {n for n in os.listdir(base) if n.startswith("zb-seatbelt-")}
-        before = seat()
-        orig = sandbox_macos.os.fchmod
-        sandbox_macos.os.fchmod = lambda *a, **k: (_ for _ in ()).throw(OSError("injected chmod failure"))
-        try:
-            with self.assertRaises(OSError):
-                sandbox_macos._materialize_profile("(version 1)\n(deny default)\n")
-        finally:
-            sandbox_macos.os.fchmod = orig
-        self.assertEqual(seat() - before, set(), "a failed materialize must leave no zb-seatbelt- directory")
+
+        def raiser(real, *a, **k):
+            raise OSError("injected")
+
+        def short_write(real, fd, data, *a, **k):
+            real(fd, data)        # write ALL the bytes for real, so the size backstop (fstat) would pass and
+            return len(data) - 1  # ONLY the short-write guard can catch this short RETURN count (isolates it)
+
+        def bad_fstat(real, fd, *a, **k):
+            r = real(fd)
+            return os.stat_result((0,) + tuple(r)[1:])  # st_mode 0 -> not a regular file; a real, rmtree-safe result
+
+        branches = {
+            "open": ("open", raiser),            # pre-fd: open() itself fails
+            "short-write": ("write", short_write),
+            "write-raises": ("write", raiser),
+            "chmod": ("fchmod", raiser),         # fchmod() fails after the write
+            "fd-check": ("fstat", bad_fstat),    # fstat() reports a non-regular file
+        }
+        for label, (name, fail) in branches.items():
+            with self.subTest(branch=label):
+                before = seat()
+                real = getattr(sandbox_macos.os, name)
+                state = {"fired": False}
+
+                def wrapper(*a, _real=real, _state=state, _fail=fail, **k):
+                    if not _state["fired"]:
+                        _state["fired"] = True
+                        return _fail(_real, *a, **k)
+                    return _real(*a, **k)
+
+                setattr(sandbox_macos.os, name, wrapper)
+                try:
+                    with self.assertRaises(OSError):
+                        sandbox_macos._materialize_profile("(version 1)\n(deny default)\n")
+                finally:
+                    setattr(sandbox_macos.os, name, real)
+                self.assertEqual(seat() - before, set(),
+                                 f"a {label} failure must leave no zb-seatbelt- directory")
+
+    def test_materialize_open_is_exclusive_and_nofollow(self):
+        # RoseCat 7008 #2 (symlink/collision defense): the create MUST be O_CREAT|O_EXCL|O_NOFOLLOW, so a
+        # pre-planted path or a symlink at the target can never be opened/followed. Dropping either flag reds here.
+        captured = {}
+
+        def spy(real, path, flags, *a, **k):
+            captured["flags"] = flags
+            return real(path, flags, *a, **k)
+
+        self._inject_once("open", spy)
+        path = sandbox_macos._materialize_profile("(version 1)\n(deny default)\n")
+        self.addCleanup(lambda: sandbox_macos._remove_profile_dir(os.path.dirname(path)))
+        self.assertTrue(captured["flags"] & os.O_CREAT, "O_CREAT")
+        self.assertTrue(captured["flags"] & os.O_EXCL, "O_EXCL — a pre-existing path must fail, never be reused")
+        self.assertTrue(captured["flags"] & os.O_NOFOLLOW, "O_NOFOLLOW — a symlink at the target must never follow")
 
     def test_launch_lease_removes_the_profile_dir_on_exit(self):
         # RoseCat 6984: the production lease owns the temp dir and removes it after the spawn consumes it.
