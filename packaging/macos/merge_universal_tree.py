@@ -17,6 +17,9 @@ Boundaries (RoseCat 7230): every entry is lstat()ed first, so a symlink, FIFO or
 without being opened; the two sides' permission bits must agree; a RECORD row must be a plain relative path (no
 leading "/", no empty, "." or ".." segment) listed once, with exactly one row for the RECORD itself; a failing lipo
 is reported with its path. No RECORD row is ever read outside the merged tree.
+Ownership (RoseCat 7233, 7238): every merged file is claimed by exactly one RECORD; a path two RECORDs claim (one
+distribution claiming another's file), or no RECORD claims, is refused by name. Generated files (WHEEL, split SBOMs,
+RECORD) keep their input's mode, and a RECORD-set mismatch names its divergent row.
 
 usage: merge_universal_tree.py <x86_64 tree> <arm64 tree> <out>   (runs on the Mac, under /usr/bin/python3 3.9)"""
 import base64
@@ -154,19 +157,36 @@ def merge(x86_root, arm_root, out, run=subprocess.run):
             elif dist and parts[-1] == "WHEEL" and len(parts) == 2:
                 with open(dest, "wb") as f:
                     f.write(_merge_wheel(rel, dx, da))
+                shutil.copymode(px, dest)
             elif dist and len(parts) >= 3 and parts[1] == "sboms" and rel.endswith(".json"):
                 for name, data in zip(_sbom_names(rel), (dx, da)):
                     with open(os.path.join(stage, name), "wb") as f:
                         f.write(data)
+                    shutil.copymode(px, os.path.join(stage, name))
                 split[rel] = _sbom_names(rel)
             else:
                 raise MergeError(f"{rel}: differs between the two arches")
+        listed_by = {}
         for rel in records:
             with open(fx[rel][0], "rb") as f:
                 listed = _record_paths(rel, f.read())
             with open(fa[rel][0], "rb") as f:
-                if sorted(_record_paths(rel, f.read())) != sorted(listed):
-                    raise MergeError(f"{rel}: the two RECORDs list different paths")
+                other = _record_paths(rel, f.read())
+            odd = sorted(set(listed) ^ set(other))
+            if odd:
+                raise MergeError(f"{rel}: the two RECORDs differ in row {odd[0]!r}")
+            listed_by[rel] = listed
+        owner = {}
+        for rel in records:
+            for path in listed_by[rel]:
+                if path in owner:
+                    raise MergeError(f"{path}: claimed by both {owner[path]} and {rel}")
+                owner[path] = rel
+        unclaimed = sorted(p for p in fx if p not in owner)
+        if unclaimed:
+            raise MergeError(f"{unclaimed[0]}: claimed by no RECORD")
+        for rel in records:
+            listed = listed_by[rel]
             lines = []
             for path in listed:
                 if path == rel:
@@ -178,6 +198,7 @@ def merge(x86_root, arm_root, out, run=subprocess.run):
                     lines.append(_record_line(stage, name))
             with open(os.path.join(stage, rel), "w") as f:
                 f.write("\n".join(lines) + "\n")
+            shutil.copymode(fx[rel][0], os.path.join(stage, rel))
         os.rename(stage, out)
     finally:
         shutil.rmtree(work, ignore_errors=True)

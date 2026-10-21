@@ -15,5 +15,7 @@ uv export --project "$host" --frozen --no-emit-project --format requirements-txt
 for plat in x86_64 aarch64; do
   uv pip install --quiet --target "$out/site-$plat" --python-platform "$plat-apple-darwin" --python-version 3.12 \
     --only-binary :all: --require-hashes --no-deps -r "$out/requirements-macos.txt"
+  # uv's own lock file for the target dir: not part of any distribution (no RECORD claims it), never staged
+  rm -f -- "$out/site-$plat/.lock"
 done
 echo "built $out/site-x86_64 and $out/site-aarch64"
