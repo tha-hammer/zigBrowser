@@ -26360,3 +26360,93 @@ PID <= 1, self/current process group, a non-child, and a child that is not its
 own group leader. The lifecycle test must also cover a leader that exits while
 a descendant retains the pipes. Agent Mail 7422 sent BlueBeaver this verdict;
 no Mac run of the new kill path is approved yet.
+
+## Agent scratch-cleanup fd/secrecy red (`818ca81`)
+
+**APPROVED as a causal, unregistered red.** It directly captures both security
+blockers on `4801844`; it does not approve a cleanup implementation.
+
+From an exact archive, the five-test module produced the expected **four
+failures**. Its controlled replacement of a checked 0700 or 0300 child with a
+symlink caused the old path-based cleanup to chmod the outside directory; a
+token-shaped descendant appeared in the old diagnostic; and a pre-existing
+symlink at the FIFO directory was accepted. The real-directory control passed.
+No signal is reachable in this suite, and `git diff --check 818ca81^ 818ca81`
+is clean.
+
+The green still needs an fd-pinned, no-follow relative walker, diagnostics
+that contain no attacker-controlled descendant name, and atomic FIFO-directory
+ownership. The process group must be proved gone before cleanup begins. If the
+implementation opens the victim before the test's current `stat` injection,
+the test seam should move to just after the no-follow `open` returns the held
+victim fd, so the path replacement remains causally covered. This verdict was
+mailed to BlueBeaver.
+
+## WS0 fail-on-any-reparse fix (`9dbad76`)
+
+**BLOCKED (security); `aebb07b` remains the earliest linear blocker and the
+push-through remains `63ed27f`.** The change denies every reparse attribute it
+successfully observes, and AzureRidge's five-row Win11 evidence shows the
+static real path, final junction, in-root junction, descendant and two-junction
+chain behavior. From an exact archive the Linux gate selftest passed **18/18**,
+and the shell and Python syntax checks passed. That is not sufficient for a
+security fence whose consumer later reopens the original name.
+
+1. `GetFileAttributesW` returning `INVALID_FILE_ATTRIBUTES` is silently ignored
+   (`tests/windows/resolve_path.sh:61-62`). A missing, unreadable or raced
+   component can therefore fall through, contrary to the stated rule that any
+   read failure denies.
+2. The walk and final `CreateFile` are observations only. The handle is closed
+   before `gate.sh` consumes the original path, and `gate.sh` discards the
+   canonical result in favor of an `ALLOW` verdict. Replacing a plain ancestor
+   with a junction after the check therefore retains the same name-based TOCTOU
+   as the earlier design. Sampling every component does not bind the later use
+   to the object that was authorized.
+3. The reported old/new mutant changes more than the walk. A deterministic row
+   must separately force an invalid attribute/read, a component replacement
+   during resolution, and a replacement between authorization and use; each
+   must deny or make the consuming operation use a pinned object/capability.
+
+The safe boundary is a consuming operation performed while no-delete handles
+pin the proved components/object, or a handle/capability handed to that
+consumer. Without that binding this code must not be described as a security
+fence. Agent Mail 7426 sent AzureRidge the blockers.
+
+## MS6.5.1 first-inspection false-Clean closure (`cd11abb`, `64a7849`, `c085b1d`)
+
+**`cd11abb`: APPROVED causal, signal-free red. `64a7849`: production fix
+APPROVED, but BLOCKED-for-tests at that exact SHA. `c085b1d`: APPROVED and
+closes the test hold. Cumulatively, the `f73c69a`/`413e3c5` false-Clean blocker
+is CLOSED through `c085b1d`.**
+
+The red uses the production-faithful first inspection
+`matches=1, have_bsd=0, uid=(uid_t)-1`, persists it through the pass cap, and
+intercepts all signals. Against the old order it reproduced
+`rc=0 clean=1 passes=1 overflow=0 signals=0`, failing two of four checks.
+
+`64a7849` now rejects a non-match first, classifies a matching identity that
+cannot be read as unresolved, and only then excludes a *proved* foreign uid
+(`src/agent_run_reaper.c:148-156`). Thus the real inspector's uid sentinel can
+no longer bypass the unresolved count. The registered unreadable row holds the
+candidate through four passes, never signals it and never reports Clean. The
+fixed-point suite also directly pins scan `EIO` and pass-cap exhaustion.
+
+At exact `64a7849`, however, deleting `EOVERFLOW` from the fixed-point terminal
+condition left every focused test green: **13/13 steps succeeded**. The commit
+message's incomplete-scan claim therefore was not yet backed by a direct
+fixed-point row. `c085b1d` adds a persistently-full scan whose gather returns
+`EOVERFLOW`; under the same mutation it fails with `rc=75` and the focused step
+exits 1.
+
+From a clean exact-`c085b1d` export under private Xvfb and the tests' private
+user/PID namespaces, all six registered reaper steps passed: Build Summary
+**19/19 steps; 7/7 Zig tests**, plus engine **43/43**, pin **13/13**,
+fixed-point **6/6**, identity-flip **4/4**, and first-unreadable **4/4**. The
+`EOVERFLOW`-only mutant was killed. Both commits pass `git diff --check`.
+
+The destructive Mac path remains unarmed: there is still no production
+`reaper_ready` symbol or production caller of the fixed-point routine, and the
+destructive Mac reaper case remains outside the reviewed hard-gate manifest.
+Calling that state an immutable false constant in these commit messages is a
+NIT—the plan schedules the actual constant/gate later—but no real signal path
+was enabled here.
