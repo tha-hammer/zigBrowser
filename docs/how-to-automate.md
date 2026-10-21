@@ -868,6 +868,16 @@ the same page task as each event.
 - Synthetic input only: with `input: "native"` or `humanize`, without
   `window_id`, on any other method, or with any other field, the call is
   -32602 and nothing runs.
+- `options.guard = {marks: [{selector, attribute?, value}], target: true}` (up to 8 marks, at
+  least one check) on `dom.click`, `dom.fill`, `dom.type`, `dom.press` and `dom.selectOption`
+  is checked inside the page, before every event the command sends, every focus, every value
+  write and every insert: each mark's selector must still match exactly one visible element
+  whose text (or `attribute`) is `value`, and `target: true` requires the command's own
+  selector to still resolve to the same element. A page handler that changes one of them stops
+  the command before its next step: -32015 with `data.reason` `mark_changed` or
+  `target_changed` and `data.sent` `{events, chars}`, what was already dispatched and typed. A
+  page may still have acted on those events (an editor that inserts text itself), so `sent`
+  with any events means the page may have changed. Synthetic input only.
 - The acting LinkedIn and Instagram flows (`linkedin.connect`, `follow`,
   `like`, `comment`, `message`; `instagram.follow`, `like`, `comment`, `dm`,
   `story_view`) take `options.expect` too, with one more field, `url`: the one

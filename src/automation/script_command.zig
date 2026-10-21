@@ -77,6 +77,8 @@ const ScriptCommand = struct {
     /// `locate` op only: the action whose checks apply, and whether to focus.
     action: ?[]const u8 = null,
     focus: ?bool = null,
+    /// S8 decision 14: re-checked by automation.js before every page-visible step.
+    guard: ?router.Guard = null,
     trace_id: []const u8,
     parent_span_id: []const u8,
     command_id: []const u8,
@@ -114,6 +116,7 @@ pub fn buildCommandJson(
         .timeout_ms = timeout_ms orelse command.timeout_ms,
         .action = if (locate) |l| l.action else null,
         .focus = if (locate) |l| l.focus else null,
+        .guard = if (locate != null) null else command.guard,
         .trace_id = ids.trace_id,
         .parent_span_id = ids.parent_span_id,
         .command_id = ids.command_id,

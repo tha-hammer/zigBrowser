@@ -57,6 +57,24 @@ pub const Expect = struct {
     load_serial: u64,
 };
 
+/// S8 decision 14: what automation.js re-checks before every page-visible step of an action
+/// (each event, focus, value write and insert), in the action's own task. `options.guard` on
+/// dom.click, dom.fill, dom.type, dom.press and dom.selectOption, synthetic input only.
+pub const Guard = struct {
+    pub const Mark = struct {
+        /// An automation selector that must match exactly one visible element.
+        selector: []const u8,
+        /// The attribute compared; null: the element's normalized text.
+        attribute: ?[]const u8 = null,
+        value: []const u8,
+    };
+    marks: []const Mark = &.{},
+    /// The action's own selector still resolves, strictly, to the same element.
+    target: bool = false,
+};
+
+pub const max_guard_marks = 8;
+
 pub const RouteContext = struct {
     page_id: []const u8 = "page-unknown",
     window_id: []const u8 = "window-unknown",
@@ -107,6 +125,8 @@ pub const ParsedCommand = struct {
     locate: ?Locate = null,
     /// S8: `options.expect` (approved runs).
     expect: ?Expect = null,
+    /// S8 decision 14: `options.guard`.
+    guard: ?Guard = null,
 
     pub fn deinit(self: *ParsedCommand) void {
         self.arena.deinit();
@@ -287,6 +307,15 @@ pub fn parse(
             else => return error.BadArgs,
         }
         // Only synthetic input is checked in the same task as its event (decision 4).
+        if (input == .native or command.humanize) return error.BadArgs;
+    }
+
+    command.guard = try parseGuard(arena_allocator, obj);
+    if (command.guard != null) {
+        switch (verb) {
+            .dom_click, .dom_fill, .dom_type, .dom_press, .dom_select_option => {},
+            else => return error.BadArgs,
+        }
         if (input == .native or command.humanize) return error.BadArgs;
     }
 
@@ -525,6 +554,72 @@ fn parseExpect(arena: std.mem.Allocator, obj: std.json.ObjectMap) error{BadArgs}
         else => return error.BadArgs,
     };
     return .{ .origin = arena.dupe(u8, origin) catch return error.BadArgs, .load_serial = load_serial };
+}
+
+/// `options.guard`: absent -> null; else `{marks?: [{selector, attribute?, value}] (1..8),
+/// target?: bool}` with at least one check, no other key; anything else is BadArgs.
+fn parseGuard(arena: std.mem.Allocator, obj: std.json.ObjectMap) error{BadArgs}!?Guard {
+    const options = obj.get("options") orelse return null;
+    const options_obj = switch (options) {
+        .object => |object| object,
+        else => return null,
+    };
+    const value = options_obj.get("guard") orelse return null;
+    const guard_obj = switch (value) {
+        .object => |object| object,
+        else => return error.BadArgs,
+    };
+    var guard = Guard{};
+    var keys = guard_obj.iterator();
+    while (keys.next()) |entry| {
+        const key = entry.key_ptr.*;
+        if (std.mem.eql(u8, key, "target")) {
+            guard.target = switch (entry.value_ptr.*) {
+                .bool => |b| b,
+                else => return error.BadArgs,
+            };
+        } else if (std.mem.eql(u8, key, "marks")) {
+            const items = switch (entry.value_ptr.*) {
+                .array => |a| a.items,
+                else => return error.BadArgs,
+            };
+            if (items.len == 0 or items.len > max_guard_marks) return error.BadArgs;
+            const marks = arena.alloc(Guard.Mark, items.len) catch return error.BadArgs;
+            for (items, marks) |item, *mark| mark.* = try parseMark(arena, item);
+            guard.marks = marks;
+        } else return error.BadArgs;
+    }
+    if (guard.marks.len == 0 and !guard.target) return error.BadArgs;
+    return guard;
+}
+
+fn parseMark(arena: std.mem.Allocator, value: std.json.Value) error{BadArgs}!Guard.Mark {
+    const object = switch (value) {
+        .object => |o| o,
+        else => return error.BadArgs,
+    };
+    var keys = object.iterator();
+    while (keys.next()) |entry| {
+        const key = entry.key_ptr.*;
+        if (!std.mem.eql(u8, key, "selector") and !std.mem.eql(u8, key, "attribute") and !std.mem.eql(u8, key, "value")) return error.BadArgs;
+    }
+    const selector = switch (object.get("selector") orelse return error.BadArgs) {
+        .string => |s| if (s.len > 0) s else return error.BadArgs,
+        else => return error.BadArgs,
+    };
+    const attribute: ?[]const u8 = if (object.get("attribute")) |a| switch (a) {
+        .string => |s| if (s.len > 0) s else return error.BadArgs,
+        else => return error.BadArgs,
+    } else null;
+    const text = switch (object.get("value") orelse return error.BadArgs) {
+        .string => |s| s,
+        else => return error.BadArgs,
+    };
+    return .{
+        .selector = arena.dupe(u8, selector) catch return error.BadArgs,
+        .attribute = if (attribute) |a| arena.dupe(u8, a) catch return error.BadArgs else null,
+        .value = arena.dupe(u8, text) catch return error.BadArgs,
+    };
 }
 
 /// `options.input`: absent or "synthetic" -> synthetic, "native" -> native,

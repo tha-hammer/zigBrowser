@@ -1072,6 +1072,16 @@ pub fn build(b: *std.Build) void {
     const automation_social_tests = b.addTest(.{ .root_module = automation_social_tests_module });
     const run_automation_social_tests = b.addRunArtifact(automation_social_tests);
     run_automation_social_tests.skip_foreign_checks = true;
+    // S8a decision 14: options.guard, its grammar and the engine's hand-off and mapping.
+    const automation_guard_tests_module = b.createModule(.{
+        .root_source_file = b.path("tests/automation_guard_test.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    automation_guard_tests_module.addImport("automation", automation_module);
+    const run_automation_guard_tests = b.addRunArtifact(b.addTest(.{ .root_module = automation_guard_tests_module }));
+    run_automation_guard_tests.skip_foreign_checks = true;
     // S8a ("S8 in detail" decision 2): an approved flow's phases A to C, and phase B through the runner.
     const automation_expect_flow_tests_module = b.createModule(.{
         .root_source_file = b.path("tests/automation_expect_flow_test.zig"),
@@ -2217,6 +2227,14 @@ pub fn build(b: *std.Build) void {
         "automation-windows-e2e",
     });
     automation_windows_e2e.addArtifactArg(exe);
+    // S8a decision 14: automation.js's per-event guard against page handlers, on the real binary.
+    const automation_guard_e2e = b.addSystemCommand(&.{
+        "sh",
+        "-c",
+        "python3 tests/e2e/automation_guard_test.py --binary \"$1\"",
+        "automation-guard-e2e",
+    });
+    automation_guard_e2e.addArtifactArg(exe);
     // S8a: each window's committed-load count (load_serial) in page.list and page.health.
     const automation_load_serial_e2e = b.addSystemCommand(&.{
         "sh",
@@ -2533,6 +2551,8 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&social_flows_e2e.step);
     test_step.dependOn(&automation_input_e2e.step);
     test_step.dependOn(&automation_windows_e2e.step);
+    test_step.dependOn(&run_automation_guard_tests.step);
+    test_step.dependOn(&automation_guard_e2e.step);
     test_step.dependOn(&automation_load_serial_e2e.step);
     test_step.dependOn(&automation_scroll_e2e.step);
     test_step.dependOn(&automation_native_ports_e2e.step);

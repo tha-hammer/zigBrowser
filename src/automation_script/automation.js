@@ -114,7 +114,110 @@
     if (!command || typeof command !== 'object') {
       return failure('malformed_command', {}, [], true);
     }
+    startGuard(command);
+    try {
+      return runOp(command);
+    } catch (error) {
+      if (error instanceof GuardStop) return guardStopResponse(error.message);
+      throw error;
+    } finally {
+      currentGuard = null;
+    }
+  }
 
+  // S8 decision 14 (chat-drawer plan): options.guard, re-checked before every page-visible step
+  // of the command's action (each dispatched event, focus(), value write and insert), so a page
+  // handler that changes a mark or the target stops the action before its next step. Page script
+  // runs only inside those steps; between them this world is uninterrupted.
+  let currentGuard = null;
+
+  class GuardStop extends Error {}
+
+  function startGuard(command) {
+    const spec = command.guard;
+    currentGuard = spec && typeof spec === 'object'
+      ? { spec, selector: command.selector, element: null, sent: { events: 0, chars: 0 } }
+      : null;
+  }
+
+  // The action's resolved target (the `target` check compares against it).
+  function guardTarget(element) {
+    if (currentGuard) currentGuard.element = element;
+  }
+
+  function gate() {
+    const guard = currentGuard;
+    if (!guard) return;
+    const reason = guardFailure(guard);
+    if (reason) throw new GuardStop(reason);
+  }
+
+  function guardFailure(guard) {
+    for (const mark of guard.spec.marks || []) {
+      const found = visibleOnly(resolveText(mark.selector));
+      if (found === null || found.length !== 1) return 'mark_changed';
+      const element = found[0];
+      const actual = typeof mark.attribute === 'string'
+        ? element.getAttribute(mark.attribute)
+        : normalizeText(element.textContent || '');
+      if (actual !== mark.value) return 'mark_changed';
+    }
+    if (guard.spec.target === true) {
+      const found = resolveText(guard.selector);
+      if (!guard.element || !guard.element.isConnected || found === null || found.length !== 1 || found[0] !== guard.element) {
+        return 'target_changed';
+      }
+    }
+    return null;
+  }
+
+  // The elements a selector string resolves to, or null when it does not parse or throws.
+  function resolveText(selector) {
+    const parsed = parseSelector(selector);
+    if (!parsed.ok) return null;
+    try {
+      return resolveSelector(parsed.kind, parsed.body);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function visibleOnly(elements) {
+    if (elements === null) return null;
+    return elements.filter((element) => isElementVisibleEnough(element) &&
+      !(element.closest && element.closest('[aria-hidden="true"]')));
+  }
+
+  function guardStopResponse(reason) {
+    const sent = currentGuard ? { events: currentGuard.sent.events, chars: currentGuard.sent.chars } : { events: 0, chars: 0 };
+    return { ok: false, error: 'expectation_mismatch', retryable: false, data: { reason, sent }, telemetry: [] };
+  }
+
+  // A page-visible event, guarded and counted.
+  function fire(target, event) {
+    gate();
+    const proceed = target.dispatchEvent(event);
+    if (currentGuard) currentGuard.sent.events += 1;
+    return proceed;
+  }
+
+  function guardedFocus(element) {
+    gate();
+    element.focus();
+  }
+
+  // `count` characters this world itself wrote or inserted.
+  function wrote(count) {
+    if (currentGuard) currentGuard.sent.chars += count;
+  }
+
+  function codePoints(text) {
+    let count = 0;
+    for (const _ of text) count += 1;
+    return count;
+  }
+
+  function runOp(command) {
     switch (command.op) {
       case 'query':
         return query(command);
@@ -183,6 +286,7 @@
     if (resolved.elements.length === 0) return failure('no_match', command, resolved.telemetry, true);
 
     const element = resolved.elements[0];
+    guardTarget(element);
     const options = command.options || {};
     const force = options.force === true || command.force === true;
     const trial = options.trial === true || command.trial === true;
@@ -296,6 +400,7 @@
     }
     const doc = globalScope.document;
     const target = deepActiveElement(doc) || doc.body || doc.documentElement;
+    guardTarget(target);
     synthesizePress(target, command.key, command.modifiers || []);
     return success({ ok: true }, []);
   }
@@ -314,6 +419,7 @@
     if (resolved.elements.length === 0) return failure('no_match', command, resolved.telemetry, true);
 
     const element = resolved.elements[0];
+    guardTarget(element);
     const telemetry = resolved.telemetry.slice();
     // The receives-events check hit-tests the element's centre, which fails
     // for anything outside the viewport: bring the control into view first.
@@ -436,12 +542,13 @@
     // :disabled also covers options inside a disabled <optgroup>.
     if (option.matches(':disabled')) return optionDisabled(telemetry);
 
-    select.focus();
+    guardedFocus(select);
     // Select this exact option: assigning select.value would pick the first
     // option with the same value when values repeat.
+    gate();
     for (const candidate of options) candidate.selected = candidate === option;
-    select.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
-    select.dispatchEvent(new Event('change', { bubbles: true }));
+    fire(select, new Event('input', { bubbles: true, composed: true }));
+    fire(select, new Event('change', { bubbles: true }));
     return success({ value: option.value }, telemetry);
   }
 
@@ -567,7 +674,7 @@
 
   function synthesizePress(target, key, modifiers) {
     // Focus first, so every key event (modifiers included) reaches a focused target.
-    if (target !== deepActiveElement(target.ownerDocument) && typeof target.focus === 'function') target.focus();
+    if (target !== deepActiveElement(target.ownerDocument) && typeof target.focus === 'function') guardedFocus(target);
 
     const flags = { shiftKey: false, ctrlKey: false, altKey: false, metaKey: false };
     const held = [];
@@ -576,17 +683,17 @@
       if (!modifier || held.includes(name)) continue;
       flags[modifier.flag] = true;
       held.push(name);
-      target.dispatchEvent(keyboardEvent('keydown', name, keyDescriptor(name), Object.assign({}, flags), true));
+      fire(target, keyboardEvent('keydown', name, keyDescriptor(name), Object.assign({}, flags), true));
     }
 
     const descriptor = keyDescriptor(key);
-    const proceed = target.dispatchEvent(keyboardEvent('keydown', key, descriptor, Object.assign({}, flags), true));
+    const proceed = fire(target, keyboardEvent('keydown', key, descriptor, Object.assign({}, flags), true));
     const noCommand = !flags.ctrlKey && !flags.metaKey && !flags.altKey;
     const printable = key.length === 1 && noCommand;
     // keypress follows an uncancelled keydown for character keys and Enter,
     // and its own cancellation suppresses the default action too.
     if (proceed && (printable || (key === 'Enter' && noCommand))) {
-      const pressOk = target.dispatchEvent(keyboardEvent('keypress', key, descriptor, Object.assign({}, flags), true));
+      const pressOk = fire(target, keyboardEvent('keypress', key, descriptor, Object.assign({}, flags), true));
       if (pressOk && printable) insertPrintable(target, key);
       if (pressOk && !printable) runKeyDefault(target, key, flags);
     } else if (proceed) {
@@ -594,11 +701,11 @@
     }
     // keyup goes to whatever holds focus now (Tab may have moved it).
     const upTarget = deepActiveElement(target.ownerDocument) || target;
-    upTarget.dispatchEvent(keyboardEvent('keyup', key, descriptor, Object.assign({}, flags), true));
+    fire(upTarget, keyboardEvent('keyup', key, descriptor, Object.assign({}, flags), true));
 
     for (const name of held.reverse()) {
       flags[MODIFIER_KEYS[name].flag] = false;
-      upTarget.dispatchEvent(keyboardEvent('keyup', name, keyDescriptor(name), Object.assign({}, flags), true));
+      fire(upTarget, keyboardEvent('keyup', name, keyDescriptor(name), Object.assign({}, flags), true));
     }
   }
 
@@ -618,11 +725,12 @@
     if (!caretField && !APPEND_INPUT_TYPES.includes(type)) return;
     if (target.readOnly || isDisabled(target)) return;
 
-    const proceed = target.dispatchEvent(new InputEvent('beforeinput', {
+    const proceed = fire(target, new InputEvent('beforeinput', {
       bubbles: true, cancelable: true, composed: true, inputType: 'insertText', data: char
     }));
     if (!proceed) return;
 
+    gate();
     const value = target.value || '';
     if (caretField && typeof target.selectionStart === 'number') {
       const start = target.selectionStart;
@@ -632,7 +740,8 @@
     } else {
       target.value = value + char;
     }
-    target.dispatchEvent(new InputEvent('input', { bubbles: true, composed: true, inputType: 'insertText', data: char }));
+    wrote(codePoints(char));
+    fire(target, new InputEvent('input', { bubbles: true, composed: true, inputType: 'insertText', data: char }));
   }
 
   // Browser default actions for the non-printable keys dom.press supports.
@@ -662,12 +771,16 @@
         (tag === 'input' && (type === 'submit' || type === 'image'));
     });
     if (defaultButton) {
-      if (!isDisabled(defaultButton)) defaultButton.click();
+      if (!isDisabled(defaultButton)) {
+        gate();
+        defaultButton.click();
+      }
       return;
     }
     const blocking = controls.filter((el) => el.tagName.toLowerCase() === 'input' &&
       BLOCKING_INPUT_TYPES.includes((el.type || 'text').toLowerCase()));
     if (blocking.length !== 1) return;
+    gate();
     if (typeof form.requestSubmit === 'function') form.requestSubmit();
     else form.submit();
   }
@@ -689,7 +802,7 @@
     const next = index < 0
       ? order[direction > 0 ? 0 : order.length - 1]
       : order[(index + direction + order.length) % order.length];
-    next.focus();
+    guardedFocus(next);
   }
 
   function waitFor(command) {
@@ -921,40 +1034,44 @@
 
   function synthesizeClick(element) {
     for (const type of ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click']) {
-      element.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, composed: true, view: globalScope }));
+      fire(element, new MouseEvent(type, { bubbles: true, cancelable: true, composed: true, view: globalScope }));
     }
   }
 
   function synthesizeFill(element, value) {
     if (element.isContentEditable) {
-      element.focus();
+      guardedFocus(element);
       selectContents(element, false);
       editableInsert(element, value, value === '' ? 'deleteContentBackward' : 'insertText');
       return;
     }
-    element.focus();
+    guardedFocus(element);
+    gate();
     element.value = value;
-    element.dispatchEvent(new InputEvent('input', { bubbles: true, composed: true, inputType: 'insertText', data: value }));
-    element.dispatchEvent(new Event('change', { bubbles: true }));
+    wrote(codePoints(value));
+    fire(element, new InputEvent('input', { bubbles: true, composed: true, inputType: 'insertText', data: value }));
+    fire(element, new Event('change', { bubbles: true }));
   }
 
   function synthesizeType(element, text) {
     if (element.isContentEditable) {
-      element.focus();
+      guardedFocus(element);
       selectContents(element, true);
       for (const char of text) {
-        element.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, cancelable: true, composed: true, key: char }));
+        fire(element, new KeyboardEvent('keydown', { bubbles: true, cancelable: true, composed: true, key: char }));
         editableInsert(element, char, 'insertText');
-        element.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true, composed: true, key: char }));
+        fire(element, new KeyboardEvent('keyup', { bubbles: true, composed: true, key: char }));
       }
       return;
     }
-    element.focus();
+    guardedFocus(element);
     for (const char of text) {
-      element.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, composed: true, key: char }));
+      fire(element, new KeyboardEvent('keydown', { bubbles: true, composed: true, key: char }));
+      gate();
       element.value = (element.value || '') + char;
-      element.dispatchEvent(new InputEvent('input', { bubbles: true, composed: true, inputType: 'insertText', data: char }));
-      element.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true, composed: true, key: char }));
+      wrote(codePoints(char));
+      fire(element, new InputEvent('input', { bubbles: true, composed: true, inputType: 'insertText', data: char }));
+      fire(element, new KeyboardEvent('keyup', { bubbles: true, composed: true, key: char }));
     }
   }
 
@@ -977,11 +1094,13 @@
   function editableInsert(element, text, inputType) {
     const doc = element.ownerDocument;
     const data = inputType === 'insertText' ? text : null;
-    const proceed = element.dispatchEvent(new InputEvent('beforeinput', {
+    const proceed = fire(element, new InputEvent('beforeinput', {
       bubbles: true, cancelable: true, composed: true, inputType, data
     }));
     if (!proceed) return;
 
+    // The page's beforeinput handler has run: check again before the insert itself.
+    gate();
     let nativeInput = false;
     const sawInput = () => { nativeInput = true; };
     element.addEventListener('input', sawInput, true);
@@ -997,8 +1116,9 @@
     }
 
     if (!done) rangeInsert(element, text);
+    if (inputType === 'insertText') wrote(codePoints(text));
     if (!done || !nativeInput) {
-      element.dispatchEvent(new InputEvent('input', { bubbles: true, composed: true, inputType, data }));
+      fire(element, new InputEvent('input', { bubbles: true, composed: true, inputType, data }));
     }
   }
 

@@ -1433,6 +1433,8 @@ const AutomationErrorData = struct {
     attempts: ?u32 = null,
     /// Native dom.type that stopped early: code points already typed.
     sent_chars: ?usize = null,
+    /// S8 decision 14: a guard stop's exact counts, from automation.js.
+    sent: ?GuardSent = null,
     trace_id: []const u8,
     command_id: []const u8,
 };
@@ -1723,7 +1725,45 @@ fn scriptFailure(gpa: std.mem.Allocator, script_result: *const script_command.Sc
     const automation_error = errors.fromName(error_name) catch {
         return .{ .failure = .{ .code = internal_error_code, .message = "Internal error" } };
     };
+    if (automation_error == .expectation_mismatch) return guardStop(gpa, script_result, ids);
     return automationFailure(gpa, automation_error, script_result.reason, ids);
+}
+
+pub const GuardSent = struct { events: u64, chars: u64 };
+
+/// S8 decision 14: automation.js stopped an action at its guard. -32015 with the reason and the
+/// exact `sent` counts (events dispatched, characters written); a malformed count is not
+/// reported as zero: the stop then carries no `sent`.
+fn guardStop(gpa: std.mem.Allocator, script_result: *const script_command.ScriptResult, ids: script_command.Ids) error{OutOfMemory}!Outcome {
+    const sent: ?GuardSent = blk: {
+        const data = script_result.data orelse break :blk null;
+        const object = switch (data) {
+            .object => |o| o,
+            else => break :blk null,
+        };
+        const counts = switch (object.get("sent") orelse break :blk null) {
+            .object => |o| o,
+            else => break :blk null,
+        };
+        const events = countOf(counts.get("events")) orelse break :blk null;
+        const chars = countOf(counts.get("chars")) orelse break :blk null;
+        break :blk .{ .events = events, .chars = chars };
+    };
+    const data = AutomationErrorData{ .reason = script_result.reason, .sent = sent, .trace_id = ids.trace_id, .command_id = ids.command_id };
+    return .{ .failure = .{
+        .code = errors.downstreamCode(.expectation_mismatch),
+        .message = errors.name(.expectation_mismatch),
+        .data_json = try std.json.Stringify.valueAlloc(gpa, data, .{ .emit_null_optional_fields = false }),
+    } };
+}
+
+fn countOf(value: ?std.json.Value) ?u64 {
+    return switch (value orelse return null) {
+        .integer => |n| std.math.cast(u64, n),
+        // Script results keep numbers as text (script_command.parseScriptResult).
+        .number_string => |text| std.fmt.parseInt(u64, text, 10) catch null,
+        else => null,
+    };
 }
 
 /// `{"name":<exception class>}` only; never the exception message.
