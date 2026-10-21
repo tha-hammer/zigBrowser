@@ -6,8 +6,11 @@ on Linux with the platform injected (`route_probe.PLATFORM`):
 - The probe adopts fd N only after checking it: AF_INET, SOCK_STREAM, listening (SO_ACCEPTCONN), and getsockname()
   == ("127.0.0.1", P). Anything else is refused, each for its own reason ("IPv4 stream", "not listening",
   "127.0.0.1:<P>", "not a socket"): the fd is closed, exit 2, nothing on stdout, so R1 fails closed.
-- The probe server then serves on that socket (it binds nothing of its own).
-- Off Darwin both flags are refused and nothing runs; on Darwin both are required. Linux is otherwise unchanged.
+- The adopted listener is made non-inheritable: the CLI the SDK spawns must never hold it (BlackRobin 6983).
+- The probe server then serves on that socket (it binds nothing of its own), with server_name/server_port set as
+  HTTPServer.server_bind would set them.
+- Off Darwin both flags are refused and nothing runs; on Darwin both are required, each exactly once, decimal with no
+  sign, leading zero or whitespace, fd > 2 and port 1-65535 (RoseCat 6985). Linux is otherwise unchanged.
 
 Run like the gate: cd agent/host/tests && python -X dev -m unittest -v test_route_probe_listen_fd.
 Unregistered until the green.
@@ -35,8 +38,10 @@ def _closed(fd):
 
 
 def _listener(family=socket.AF_INET, kind=socket.SOCK_STREAM, addr=("127.0.0.1", 0), listen=True):
-    """A raw fd the test owns (detached, so no socket object closes it a second time) and its port."""
+    """A raw fd the test owns (detached, so no socket object closes it a second time) and its port. Inheritable,
+    as an fd that came in through pass_fds is."""
     s = socket.socket(family, kind)
+    s.set_inheritable(True)
     s.bind(addr)
     if listen:
         s.listen(4)
@@ -74,6 +79,7 @@ class AdoptListener(Base):
         self.fds.remove(fd)  # the socket owns it now
         self.assertEqual(sock.fileno(), fd)
         self.assertEqual(sock.getsockname(), ("127.0.0.1", port))
+        self.assertFalse(os.get_inheritable(fd), "the CLI the SDK spawns must never inherit the listener (6983)")
 
     def assert_refused(self, fd, port, why, reason):
         with self.assertRaises(route_probe.ProbeRefused, msg=why) as cm:
@@ -124,6 +130,10 @@ class ProbeServerOnTheAdoptedSocket(Base):
         server = route_probe._ProbeServer("zb-probe-x", "/nonexistent-cli", listener=sock)
         self.addCleanup(server.close)
         self.assertEqual(server.url, f"http://127.0.0.1:{port}")
+        own = route_probe._ProbeServer("zb-probe-y", "/nonexistent-cli")
+        self.addCleanup(own.close)
+        self.assertEqual((server.httpd.server_name, server.httpd.server_port), (own.httpd.server_name, port),
+                         "server_name/server_port as server_bind would set them (6983)")
         req = urllib.request.Request(f"http://127.0.0.1:{port}/v1/messages", data=b"{}", method="POST",
                                      headers={"content-type": "application/json", "authorization": "Bearer b"})
         with urllib.request.urlopen(req, timeout=10) as resp:
@@ -177,6 +187,26 @@ class Main(Base):
                 code, out, err = self.main("darwin", extra)
                 self.assertEqual((code, out), (2, ""), err)
                 self.assertEqual(self.runs, [])
+
+    def test_darwin_flag_grammar_is_exact(self):
+        # RoseCat 6985: decimal only, no sign, no leading zero, no whitespace, fd > 2, port 1-65535, each flag once.
+        # Every bad spelling exits 2 with no verdict and reaches neither adopt_listener nor run.
+        adopted = []
+        mock.patch.object(route_probe, "adopt_listener", side_effect=lambda fd, port: adopted.append(fd)).start()
+        big = "9" * 30
+        bad_fds = ["0", "1", "2", "-1", "+3", "03", " 3", "3 ", "3\n", "2147483648", "9999999999", big, "", "\u0663"]
+        bad_ports = ["0", "-1", "+1", "01", "65536", " 80", "80 ", big, "", "\u0668\u0660"]
+        cases = [["--listen-fd", fd, "--listen-port", "8080"] for fd in bad_fds]
+        cases += [["--listen-fd", "3", "--listen-port", port] for port in bad_ports]
+        cases += [["--listen-fd", "3", "--listen-fd", "4", "--listen-port", "8080"],
+                  ["--listen-fd", "3", "--listen-port", "8080", "--listen-port", "8081"]]
+        for extra in cases:
+            with self.subTest(extra=extra):
+                adopted.clear()
+                self.runs.clear()
+                code, out, err = self.main("darwin", extra)
+                self.assertEqual((code, out), (2, ""), err)
+                self.assertEqual((adopted, self.runs), ([], []))
 
     def test_darwin_refuses_a_wrong_listener_and_prints_no_verdict(self):
         fd, port = _listener(addr=("0.0.0.0", 0))
