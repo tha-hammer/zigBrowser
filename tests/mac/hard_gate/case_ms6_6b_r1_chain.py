@@ -23,8 +23,9 @@ Rows (RoseCat 7053):
 After EVERY row (RoseCat 7300 #2): the listener's port is free again on 127.0.0.1 and ::1, and no part of that row's
 probe chain is alive: no process of ours runs that row's CLI (proc_pidpath) or is a python whose argv names that row's
 runtime or CLI (the sandboxed probe, the wrapper before its exec). The inspection fails closed (RoseCat 7300 #3): a
-failed ps, or any read of one of our processes that fails while it has not vanished, fails the row. A hang survivor is
-then waited out (it ends itself at 90 s), never signalled, so the case leaves no child behind.
+failed ps, or any read of one of our processes that fails while it has not vanished, fails the row. Any such scan (a
+survivor, an unreadable pid, a failed ps) is then re-inspected until clean or the row's horizon (every controlled CLI
+ends itself by 90 s), never signalled, and the final scan must be clean (RoseCat 7306).
 Kill safety (RoseCat 7250): this case sends no signal. Its compiler and ps run through the guarded h.spawn_group; the
 only other processes are setup's own (subprocess.run on its own child). The observation spies call through to the
 real functions and are removed after every row."""
@@ -183,9 +184,37 @@ def _chain_alive(h, proc_darwin, cli, markers):
             if not gone:
                 unreadable.append((pid, f"procargs: {e}"))
             continue
-        if any(m in a for a in argv for m in markers):
+        if any(os.fsencode(m) in a for a in argv for m in markers):  # environ_of's argv is list[bytes] (7306 #1)
             alive.append((pid, exe))
     return True, alive, unreadable
+
+
+CHAIN_GRACE_S = 15  # a finished row's chain is gone within this
+CHAIN_HORIZON_S = 100  # from the row's start: every controlled CLI has ended itself by then (the hang CLI at 90 s)
+
+
+def _clean(scan):
+    inspected, alive, unreadable = scan
+    return inspected and not alive and not unreadable
+
+
+def _settle(scan, deadline, clock, sleep):
+    """Re-inspects once a second until a clean, empty scan or `deadline`; the last scan."""
+    while True:
+        result = scan()
+        if _clean(result) or clock() >= deadline:
+            return result
+        sleep(1)
+
+
+def _chain_release(scan, started_at, clock=time.monotonic, sleep=time.sleep):
+    """(first, last). `first`: the scan within CHAIN_GRACE_S. When it is not clean (a survivor, an unreadable pid or a
+    failed ps alike; RoseCat 7306 #2), the chain is waited out, never signalled: `last` is the scan once clean or at
+    the row's self-exit horizon. `last` is None when `first` was clean."""
+    first = _settle(scan, clock() + CHAIN_GRACE_S, clock, sleep)
+    if _clean(first):
+        return first, None
+    return first, _settle(scan, started_at + CHAIN_HORIZON_S, clock, sleep)
 
 
 def run(h):
@@ -265,26 +294,18 @@ def run(h):
 
     def released(mode, runs, runtime, started_at):
         """After EVERY row (RoseCat 7300 #2): the port free on both families, and no part of the chain alive within
-        15 s; a survivor is then waited out (it ends itself by 90 s), never signalled, and must be gone too."""
+        CHAIN_GRACE_S; any non-clean scan is then waited out to the row's horizon, never signalled, and the final
+        scan must be clean and empty (RoseCat 7306 #2)."""
         argv = runs[0]["argv"] if len(runs) == 1 else []
         port = int(argv[argv.index("--listen-port") + 1]) if "--listen-port" in argv else None
         h.check(port is not None and _port_free(port), f"{mode}: afterwards port {port} is free on 127.0.0.1 and ::1")
         markers = [runtime, os.path.dirname(clis[mode])]
-        deadline = time.monotonic() + 15
-        while True:
-            inspected, alive, unreadable = _chain_alive(h, proc_darwin, clis[mode], markers)
-            if not inspected or unreadable or not alive or time.monotonic() >= deadline:
-                break
-            time.sleep(1)
+        first, last = _chain_release(lambda: _chain_alive(h, proc_darwin, clis[mode], markers), started_at)
+        inspected, alive, unreadable = first
         h.check(inspected and not unreadable, f"{mode}: every process of ours was inspected ({unreadable})")
         h.check(inspected and not alive, f"{mode}: no part of the probe chain is alive ({alive})")
-        if alive:
-            drain = started_at + 100
-            while alive and time.monotonic() < drain:
-                time.sleep(2)
-                inspected, alive, unreadable = _chain_alive(h, proc_darwin, clis[mode], markers)
-            h.check(inspected and not alive and not unreadable,
-                    f"{mode}: the survivors ended by themselves, unsignalled ({alive}, {unreadable})")
+        if last is not None:
+            h.check(_clean(last), f"{mode}: waited out unsignalled, a clean, empty final scan ({last})")
 
     # 1. positive
     t0 = time.monotonic()
