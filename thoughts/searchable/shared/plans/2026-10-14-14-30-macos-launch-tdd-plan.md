@@ -1511,18 +1511,26 @@ inventory holds:
     system path.
   - It copies `Python_Framework.pkg/Payload` to `<prefix>/Frameworks/agent-host/Python.framework` without
     `Versions/3.12/bin/*-intel64`, copies `zb_agent_host/` without `__pycache__`, and writes `runtime.json` as above.
-- **The dependency tree and the Claude CLI are NOT DECIDED, and the final MS5 green is blocked on them.**
-  `agent/host/uv.lock` pins `claude-agent-sdk==0.2.165`. Its macOS wheels are **separate arm64 and x86_64
-  wheels** (`uv.lock:151-152`), with no universal2 wheel, and they carry the bundled Claude CLI binary. Before MS5
-  can green, a decision must fix:
-  - their exact production layout under `Frameworks/agent-host`;
-  - the `claude-cli` role path;
-  - the fatness or reconciliation rule: lipo-merging the two arch builds into fat Mach-Os, or per-arch trees
-    chosen at run time;
-  - the two-tree resource rule for their pure-Python files.
-  Until then **only the partial slice MS5.1c-a** may green: the staged framework, `zb_agent_host/` and
-  `runtime.json` under the census. It must say "MS5.1c-a, partial: dependencies and CLI not staged", and it never
-  claims MS5.1/MS5.1c complete or that the bundled helper runs.
+- **The dependency tree and the Claude CLI: DECIDED (rev 20, the user's decision 2026-10-21).** `agent/host/uv.lock`
+  pins `claude-agent-sdk==0.2.165` with **separate arm64 and x86_64 macOS wheels** (`uv.lock:151-152`) that carry
+  the bundled Claude CLI; cryptography is repinned to **48.0.1** (universal2) for Darwin (309acf7, 15470e4). The
+  chosen layout is **(a), one fat tree**:
+  - **Layout under `Frameworks/agent-host`:** the merged `site-packages`, so the CLI lands at
+    `Frameworks/agent-host/site-packages/claude_agent_sdk/_bundled/claude` — exactly where `token.bundled_cli()`
+    resolves it. The `claude-cli` inventory role pins that path (`packaging/macos/ms5_inventory.py`); the census
+    mutants are a missing, single-arch/thin, wrong-location and wrong-depth CLI.
+  - **Fatness / reconciliation:** two per-arch `site-packages` trees are built from the lock on Linux, then a
+    strict merge (`packaging/macos/merge_universal_tree.py`, BlueBeaver) makes the one fat tree — each path in
+    both trees, byte-identical copied once, thin+thin `lipo`'d (`_bundled/claude`, the cffi/pydantic_core/rpds
+    `.so`s), an already-universal2 file (cryptography's) byte-identical, only WHEEL `Tag:` and a regenerated
+    RECORD may differ, anything else fails named. `mac_resource_compat.py --milestone MS5` runs on the two
+    per-arch trees **before** the merge.
+  - **Framework relocation:** `packaging/macos/relocate_python_framework.py` (fb437ea) rewrites install names to
+    `@loader_path`, requires an empty census, then an inside-out ad-hoc re-sign; the Developer-ID re-sign waits
+    for the user's cert.
+  The partial slice **MS5.1c-a** (framework + `zb_agent_host/` + `runtime.json` only) was the placeholder until
+  this decision; the full MS5.1c census now also requires the staged dependencies and the universal CLI, so the
+  staging (BlueBeaver) is the green that completes it.
 - **Red-first (MS5.1c-a):**
   - The MS5 census on a tree without staging fails: the components are missing.
   - The mutants, each red:

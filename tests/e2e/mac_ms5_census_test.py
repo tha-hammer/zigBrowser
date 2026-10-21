@@ -52,7 +52,16 @@ class Inventory(unittest.TestCase):
         globs = [c["path_glob"] for c in inv["components"]]
         self.assertEqual(globs, ["bin/zigBrowser", "Frameworks/libwkwebview_shim.dylib",
                                  f"{AGENT}/Python.framework/Versions/3.12/bin/python3.12",
-                                 f"{AGENT}/Python.framework/Versions/3.12/Python"])
+                                 f"{AGENT}/Python.framework/Versions/3.12/Python",
+                                 f"{AGENT}/site-packages/claude_agent_sdk/_bundled/claude"])
+
+    def test_the_claude_cli_role_is_the_universal_binary_at_the_runtime_path(self):
+        # layout (a), the user's decision 2026-10-21: the two arch CLIs are lipo'd into one universal Mach-O that
+        # lands exactly where token.bundled_cli() resolves it inside the single fat tree (BlueBeaver 7197).
+        inv = ms5_inventory.generate(REPO)
+        cli = [c for c in inv["components"] if c["role"] == "claude-cli"]
+        self.assertEqual(len(cli), 1, "exactly one claude-cli fat Mach-O component")
+        self.assertEqual(cli[0]["path_glob"], f"{AGENT}/site-packages/claude_agent_sdk/_bundled/claude")
         paths = [r["path"] for r in inv["resources"]]
         self.assertEqual(paths[0], f"{AGENT}/runtime.json")
         self.assertEqual(paths[1:], [f"{AGENT}/{rel}" for rel in repo_package_files()])
