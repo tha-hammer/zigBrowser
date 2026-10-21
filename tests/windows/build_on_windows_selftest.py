@@ -423,18 +423,22 @@ _OLD_EXE = b"MZoldpe\n"
 
 
 def _place_old_generation(out, sha=None):
-    # The published layout: <outdir>/gen/<g>/{base,base.sha}; <outdir>/current -> gen/<g>. out is the
-    # surface <outdir>/current/<base>, so outdir = out.parent.parent. Returns the gen dir name.
+    # Published layout (no gen/ hop): <outdir>/g-<g>/{base,base.sha} directly in the root; current -> g-<g>.
+    # out is the surface <outdir>/current/<base>, so outdir = out.parent.parent. Returns the gen dir name.
     sha = sha or _OLD_SHA
     outdir = out.parent.parent; base = out.name
-    (outdir / "gen").mkdir(parents=True, exist_ok=True)
+    outdir.mkdir(parents=True, exist_ok=True)
     gname = "g-%s-oldgen0001" % sha
-    g = outdir / "gen" / gname
+    g = outdir / gname
     g.mkdir()
     (g / base).write_bytes(_OLD_EXE)
     (g / (base + ".sha")).write_text(sha + "\n")
-    (outdir / "current").symlink_to(pathlib.Path("gen") / gname)
+    (outdir / "current").symlink_to(gname)
     return gname
+
+
+def _gens_in(outdir):
+    return sorted(p.name for p in outdir.iterdir() if p.is_dir() and p.name.startswith("g-"))
 
 
 def _read_surface(proc):
@@ -450,9 +454,10 @@ def _read_surface(proc):
 
 
 class PublishContract(_Case):
-    """RoseCat 3da2862 (1)+(2): ZB_WIN_EXE IS the .../current/<name> surface (the old direct-file form is
-    rejected), and the generations dir is never a symlink (publish and GC refuse a symlinked 'gen', so a
-    recursive delete can never escape the publish root)."""
+    """ZB_WIN_EXE IS the .../current/<name> surface (old direct-file form rejected); the publish root is
+    refused if ANY path component is a symlink; there is no persistent 'gen/' hop (g-* are direct children
+    of the pinned cwd) so a mid-fetch 'gen' swap cannot escape; and the .publish.lock leaf is refused if it
+    is a symlink. (RoseCat 3da2862 / c09d439 / 175efb8 / 94be4e5.)"""
 
     def test_old_direct_file_form_is_rejected(self):
         with tempfile.TemporaryDirectory() as t:
@@ -461,31 +466,64 @@ class PublishContract(_Case):
             self._fail_closed(proc, "must be a <dir>/current/<name>")
             self.assertFalse((td / "out" / "current").exists(), "the rejected form must publish nothing")
 
-    def test_symlinked_gen_parent_refused_on_publish_no_escape(self):
+    def test_gen_swapped_to_symlink_during_fetch_cannot_escape(self):
+        # RoseCat 94be4e5: the second TOCTOU, one level down. There is no persistent 'gen/' hop anymore —
+        # generations are g-* created fresh (mktemp) directly in the pinned cwd. Even if an attacker plants
+        # 'out/gen' as a symlink to a real 'outside' dir mid-fetch, the publish must ignore it and land in the
+        # pinned cwd; nothing may be written under 'outside'. (A gen/-hop mutant creates outside/g-*.)
+        with tempfile.TemporaryDirectory() as t:
+            td = pathlib.Path(t)
+            bindir = td / "bin"; bindir.mkdir(); _fakes(bindir)
+            (td / "root").mkdir(); (td / "home").mkdir()
+            (td / "key").write_text("x"); (td / "kh").write_text("#")
+            outdir = td / "out"; outdir.mkdir()
+            marker = td / "marker"; marker.mkdir()
+            outside = td / "outside"; outside.mkdir()
+            env = {
+                "PATH": str(bindir) + os.pathsep + _BASE_PATH, "HOME": str(td / "home"),
+                "ZB_SELFTEST_ROOT": str(td / "root"),
+                "ZB_WIN11_HOST": "127.0.0.1", "ZB_WIN11_PORT": "2222", "ZB_WIN11_USER": "zbtext",
+                "ZB_WIN_KEY": str(td / "key"), "ZB_WIN_KNOWN_HOSTS": str(td / "kh"),
+                "ZB_WEBVIEW2_INCLUDE": r"C:\wv2\include", "ZB_WEBVIEW2_LIB": r"C:\wv2\lib\x64",
+                "ZB_ZIG": r"C:\tools\zig.exe",
+                "ZB_WIN_EXE": str(outdir / "current" / "zigBrowser.exe"),
+                "ZB_SELFTEST_SCP_PAUSE": str(marker),
+                "DISPLAY": ":99", "WAYLAND_DISPLAY": "wayland-9", "XAUTHORITY": "/tmp/parent.Xauth",
+            }
+            p = subprocess.Popen(["bash", SCRIPT], env=env, stdout=subprocess.PIPE,
+                                 stderr=subprocess.PIPE, text=True)
+            try:
+                started = marker / "scp_started"
+                for _ in range(400):
+                    if started.exists():
+                        break
+                    time.sleep(0.05)
+                self.assertTrue(started.exists(), "the fetch never started")
+                os.symlink(outside, outdir / "gen")   # plant a 'gen' symlink mid-fetch
+                (marker / "scp_go").write_text("go")
+                out, err = p.communicate(timeout=60)
+            finally:
+                if p.poll() is None:
+                    p.kill(); p.communicate()
+            detail = f"\nrc={p.returncode}\nstdout:\n{out}\nstderr:\n{err}"
+            self.assertEqual(list(outside.iterdir()), [],
+                             "nothing may be published under a planted 'gen' symlink" + detail)
+            self.assertTrue((outdir / "current" / "zigBrowser.exe").exists(),
+                            "publish must land in the pinned root (g-* direct child)" + detail)
+
+    def test_publish_lock_symlink_refused(self):
+        # RoseCat 94be4e5: a '>' redirect to .publish.lock would follow a planted symlink and truncate the
+        # target. The lock leaf must be refused when it is a symlink.
         def pre(td, out):
             outdir = out.parent.parent; outdir.mkdir(parents=True, exist_ok=True)
-            outside = td / "outside"; (outside / "g-victim").mkdir(parents=True)
-            (outside / "g-victim" / "keep").write_text("keep")
-            (outdir / "gen").symlink_to(outside)  # a symlinked generations dir pointing OUTSIDE the root
+            victim = td / "victim.txt"; victim.write_text("precious")
+            (outdir / ".publish.lock").symlink_to(victim)
         with tempfile.TemporaryDirectory() as t:
             td = pathlib.Path(t)
             proc = self._run(td, pre=pre)
-            self._fail_closed(proc, "not a real directory")
-            self.assertTrue((td / "outside" / "g-victim" / "keep").exists(),
-                            "a symlinked gen must not let a delete escape the publish root")
-
-    def test_symlinked_gen_parent_refused_on_gc_no_escape(self):
-        def pre(td, out):
-            outdir = out.parent.parent; outdir.mkdir(parents=True, exist_ok=True)
-            outside = td / "outside"; (outside / "g-victim").mkdir(parents=True)
-            (outside / "g-victim" / "keep").write_text("keep")
-            (outdir / "gen").symlink_to(outside)
-        with tempfile.TemporaryDirectory() as t:
-            td = pathlib.Path(t)
-            proc = self._run(td, args=["--gc"], pre=pre)
-            self._fail_closed(proc, "refusing GC")
-            self.assertTrue((td / "outside" / "g-victim" / "keep").exists(),
-                            "GC must not follow a symlinked gen and delete outside the root")
+            self._fail_closed(proc, "'.publish.lock' is a symlink")
+            self.assertEqual((td / "victim.txt").read_text(), "precious",
+                             "a planted lock symlink must not be followed/truncated")
 
     def test_parent_symlink_root_refused_on_publish_no_escape(self):
         # RoseCat c09d439 (1): a symlink in a PARENT of the publish root (not just the leaf gen) must also be
@@ -609,7 +647,7 @@ class AtomicPublish(_Case):
             self.assertEqual(proc.returncode, 0, "the rerun must succeed" + detail)
             self.assertTrue(exe is not None and exe[:2] == b"MZ" and sha == FAKE_SHA,
                             "current must resolve to the matched NEW pair" + detail)
-            gens = sorted(p.name for p in (proc.outdir / "gen").iterdir() if p.is_dir())
+            gens = _gens_in(proc.outdir)
             self.assertIn(old, gens, "publish is append-only: the old generation must still exist" + detail)
             self.assertGreaterEqual(len(gens), 2, "a rerun must leave BOTH generations (append-only)" + detail)
 
@@ -617,9 +655,9 @@ class AtomicPublish(_Case):
         with tempfile.TemporaryDirectory() as t:
             td = pathlib.Path(t)
             self.assertEqual(self._run(td).returncode, 0)
-            g1 = {p.name for p in (td / "out" / "gen").iterdir() if p.is_dir()}
+            g1 = set(_gens_in(td / "out"))
             self.assertEqual(self._run(td).returncode, 0)
-            g2 = {p.name for p in (td / "out" / "gen").iterdir() if p.is_dir()}
+            g2 = set(_gens_in(td / "out"))
             self.assertTrue(g2 - g1, "the second run must create a fresh, distinct generation (mktemp O_EXCL)")
 
     def test_fault_at_the_swap_fails_closed(self):
@@ -647,7 +685,7 @@ class AtomicPublish(_Case):
             out = td / "out" / "current" / "zigBrowser.exe"
             outdir = td / "out"; outdir.mkdir(parents=True)
             _place_old_generation(out, sha=FAKE_SHA)                       # a live generation + current
-            inflight = outdir / "gen" / ("g-%s-inflight0" % FAKE_SHA)      # a non-current generation
+            inflight = outdir / ("g-%s-inflight0" % FAKE_SHA)             # a non-current generation
             inflight.mkdir()
             (inflight / "zigBrowser.exe").write_bytes(b"MZinflight\n")
             old = time.time() - 7200                                       # 2h old, so grace alone would reap it

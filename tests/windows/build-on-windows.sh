@@ -79,10 +79,11 @@ if [ "${1:-}" = "--gc" ]; then
   if [ "$(pwd -P)" != "$PWD" ]; then
     echo "build-on-windows: publish root '$gc_outdir' resolves through a symlink — refusing GC" >&2; exit 3
   fi
-  if [ -L gen ] || { [ -e gen ] && [ ! -d gen ]; }; then
-    echo "build-on-windows: 'gen' is not a real directory (symlink/other) — refusing GC" >&2; exit 3
+  # RoseCat 94be4e5: no persistent 'gen/' hop — generations are g-* directly in the pinned cwd, so there is
+  # no swappable intermediate component. The lock leaf must not be a symlink (a '>' redirect would follow it).
+  if [ -L .publish.lock ]; then
+    echo "build-on-windows: '.publish.lock' is a symlink — refusing GC" >&2; exit 3
   fi
-  [ -d gen ] || { echo "build-on-windows: no generations to GC" >&2; exit 0; }
   {
     if ! flock -w "${ZB_GC_LOCK_WAIT:-10}" 9; then
       echo "build-on-windows: GC could not acquire the publish lock (a publish is in progress)" >&2; exit 3
@@ -92,8 +93,8 @@ if [ "${1:-}" = "--gc" ]; then
       [ -n "$g" ] || continue
       gb=$(basename "$g")
       [ "$gb" = "$live_base" ] && continue
-      if [ -d "$g" ] && [ ! -L "$g" ] && [[ "$g" == gen/g-* ]]; then rm -rf -- "${g:?}"; fi
-    done < <(find gen -mindepth 1 -maxdepth 1 -type d -name 'g-*' -not -newermt '-1 hour' 2>/dev/null)
+      if [ -d "$g" ] && [ ! -L "$g" ] && [[ "$g" == ./g-* ]]; then rm -rf -- "${g:?}"; fi
+    done < <(find . -mindepth 1 -maxdepth 1 -type d -name 'g-*' -not -newermt '-1 hour' 2>/dev/null)
   } 9>".publish.lock"
   exit 0
 fi
@@ -196,10 +197,12 @@ if [ -z "$step" ]; then
   if [ "$(pwd -P)" != "$PWD" ]; then
     echo "build-on-windows: publish root '$outdir' resolves through a symlink — refusing to publish" >&2; exit 3
   fi
-  if [ -L gen ] || { [ -e gen ] && [ ! -d gen ]; }; then
-    echo "build-on-windows: 'gen' is not a real directory (symlink/other) — refusing to publish" >&2; exit 3
+  # RoseCat 94be4e5: NO persistent 'gen/' hop — generations are g-* directly in the pinned cwd, created
+  # fresh by mktemp each run, so there is no post-validation intermediate component an attacker could swap.
+  # The lock leaf must not be a symlink (a '>' redirect would follow it).
+  if [ -L .publish.lock ]; then
+    echo "build-on-windows: '.publish.lock' is a symlink — refusing to publish" >&2; exit 3
   fi
-  if ! mkdir -p gen; then echo "build-on-windows: cannot create 'gen'" >&2; exit 3; fi
   part=".fetch-$$.part"
   rm -f -- "$part" "$part.sha"
   "${scrub[@]}" timeout "$fetch_to" scp -i "$key" -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
@@ -224,12 +227,12 @@ if [ -z "$step" ]; then
     if ! flock -w "${ZB_PUBLISH_LOCK_WAIT:-60}" 9; then
       pub_rc=3
     else
-      gendir=$(mktemp -d "gen/g-${sha}-XXXXXXXXXX") || gendir=""
+      gendir=$(mktemp -d "g-${sha}-XXXXXXXXXX") || gendir=""
       if [ -z "$gendir" ]; then
         pub_rc=3
       elif ! mv -fT "$part" "$gendir/$base" || ! mv -fT "$part.sha" "$gendir/$base.sha"; then
         pub_rc=3
-        if [ -d "$gendir" ] && [ ! -L "$gendir" ] && [[ "$gendir" == gen/g-* ]]; then rm -rf -- "${gendir:?}"; fi
+        if [ -d "$gendir" ] && [ ! -L "$gendir" ] && [[ "$gendir" == g-* ]]; then rm -rf -- "${gendir:?}"; fi
       elif [ -n "${ZB_SELFTEST_CUT_PUBLISH:-}" ]; then
         pub_rc=42   # selftest: crash after the generation exists but before the swap (gen left; current intact)
       elif ! ln -sfn "$gendir" ".current.$$"; then
