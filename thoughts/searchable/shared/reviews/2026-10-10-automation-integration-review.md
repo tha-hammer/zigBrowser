@@ -20315,3 +20315,82 @@ Darwin stdout reader, the first-line-only read, failure-without-fallback, or
 the `--egress-port -> session.egress_port` handoff. Those remain required in
 the integration follow-up; this approval must not be read as approval of the
 complete MS6 network edge.
+
+## MS6 launch-profile lease follow-up (`8ccf2d3`)
+
+Reviewed exact security-sensitive commit `8ccf2d3` on 2026-10-20. **Verdict:
+BLOCKED cumulatively.** The exact `render_profile` signature oracle is restored;
+materialization now removes its directory on the exercised chmod failure; the
+new context manager removes its profile after exit; and the focused suite
+passes 43/43. Two closure defects remain:
+
+1. `sandbox.SandboxBackend` still exposes only bare `launch_spec()` and
+   `login_launch_spec()` methods. `MacSeatbeltBackend.launch()` is not part of
+   that protocol and has no non-test caller, while both protocol methods still
+   return a spec whose directory needs out-of-band cleanup. With
+   `LAUNCH_SPEC_CONSUMABLE = False` this remains an unwired, fail-closed
+   scaffold, but the commit's claim that production uses the lease is false.
+   Ownership must live on the shared spawn boundary—including login—and the
+   generic dispatch must be pinned using it before the consumable flag flips.
+2. The requested failure/race red table is incomplete. The only injected
+   failure is `fchmod`; there is no red for the pre-fd/open failure, short
+   write, fstat failure, or collision/symlink driven through
+   `_materialize_profile`. Those distinct branches must be pinned before the
+   security lifecycle is considered closed.
+
+Findings were mailed to JadeBeacon in Agent Mail 7008.
+
+## Chat drawer S8 approval design, rev 16.20.43 (`3e3a157`)
+
+Reviewed exact docs commit `3e3a157` on 2026-10-20. **Verdict: APPROVED.**
+It closes both findings from `049b7d1`: the 19th-character observation is now
+out of process, through a synchronous same-origin request that holds the Web
+process inside chunk 2; the test clicks Stop only after the server observes
+that request and releases it only after an e2e-only GTK row proves the broker
+set the cancel flag. The next evaluation boundary can therefore assert exactly
+32 code points, no Send, one hold and `partial`, with a removed cancel check and
+a release-before-Stop control as discriminating mutants. The false global
+8000-character bound is also gone; checked overflow remains `unknown`.
+
+Implementation note: the control should wait for its 200-character/done state
+before any later Stop click, so that it cannot turn into a scheduling race.
+Verdict was mailed to BlackRobin in Agent Mail 7009.
+
+## R1 macOS CLI-environment census (`6054789`, `d7114aa`)
+
+Reviewed exact commits `6054789` and `d7114aa` on 2026-10-20. **Verdicts:
+`6054789` APPROVED red; `d7114aa` BLOCKED.** The red is discriminating, the
+focused Linux suite passes 21/21 after the green, and the owner's real libproc
+and KERN_PROCARGS2 driver passed five cases on both Macs. The parser, exact
+canary entry, raw-buffer token check, inert import, registration and unchanged
+Linux path are sound. Apple libproc's implementation also confirms that
+`proc_listchildpids` returns a PID count, so the allocation uses the right
+units.
+
+The Darwin discovery is not actually fail-closed. `descendants_running`
+silently skips every `children(pid)` `OSError`, and `path(pid)` collapses every
+`proc_pidpath` failure to `None`. Because `_cli_env_clean` needs only one
+discovered clean CLI, a clean CLI plus a live denied/unreadable subtree or
+child can return true while another CLI was never inspected. Only an actual
+vanish (`ESRCH`/`ProcessLookupError`) may be skipped; permission and other
+enumeration/path failures must make the verdict false. Reds must cover a denied
+intermediate enumeration and an unreadable child path alongside another clean
+CLI. Finding mailed to BlueBeaver in Agent Mail 7011.
+
+## S8a phase-A red and plan pin (`66ab7db`, `7053694`)
+
+Reviewed exact commits `66ab7db` and `7053694` on 2026-10-20. **Verdicts:
+`7053694` APPROVED; `66ab7db` BLOCKED-for-tests.** The plan now pins the
+explicit-window wire and exact dialog, recovering, crash, origin, serial and
+invalid-parameter errors. The red otherwise has strong production-chain
+coverage: `callInProcess` reaches the real router, queue and engine; all seven
+acting verbs target the named window; four state changes produce zero input;
+and the forced FIFO case proves the check occurs after ticket acquisition.
+
+The FIFO case is not failure-safe. Its first `second.held` wait has no deadline,
+and a failed pending-count assertion returns without releasing the hold or
+joining either spawned thread before `Harness.deinit`. Every wait needs a
+finite deadline and unconditional cleanup must release and join each thread
+exactly once on every error path. A failure-path mutant must terminate as a
+test failure, not hang or race teardown. Findings mailed to BlackRobin in
+Agent Mail 7012.
