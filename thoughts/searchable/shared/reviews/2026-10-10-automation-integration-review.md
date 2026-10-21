@@ -26019,3 +26019,40 @@ depth SHOULD remains: `sandbox_macos.dparams` could itself require
 alias refuses rather than receiving an ineffective grant. That is not a
 blocker for these two current callers, which canonicalize the newly-created
 leaf before the seam.
+
+## S8a X-flow approval red (`30331a8`)
+
+**BLOCKED-for-tests.** The three new suites are unregistered, so this red does
+not break the shared gate. BlackRobin reports the intended pre-green results
+against `8a4545b`: six of seven direct Zig tests fail (the generic invalid-row
+test passes because old code rejects every `expect`), all three server tests
+fail, and the real-binary e2e fails at its first approved post with `-32602`.
+`git diff --check 30331a8^ 30331a8` is clean. The post rows drive the real
+`engine.executeExternal -> x_routes.handle` path, the server row proves the
+common `handleX` path binds window 2 without touching window 1, and the local
+fixture e2e exercises the socket and Python SDK without a live site.
+
+Two causal gaps prevent approval:
+
+1. `tests/automation_expect_x_flow_test.zig:175-185` is the only
+   `x.schedule_post` expectation row. It requires merely a successful result
+   and two token reads. An implementation that accepts `expect` for the
+   scheduled verb but omits one or all of phases A-C—or returns success without
+   scheduling—can still pass it. Table both X verbs through at least one
+   refusal from each phase (stale serial, unapproved navigation, and a changed
+   committed document/serial or URL), and make the scheduled happy row prove
+   the approved navigation, committing page input, cap decrement and phase
+   reads just as the post row does.
+2. The phase-C rows at
+   `tests/automation_expect_x_flow_test.zig:145-172` assert the reason and zero
+   clicks, but not the stated pacing contract. Capture the pre-call remaining
+   count and require it unchanged, preferably with `in_flight == 0`, after the
+   committed-URL, serial and document-token refusals. The older generic failed
+   post test proves the existing defer path, not that every new expectation
+   exit preserves that path.
+
+The server suite need not duplicate `x.schedule_post`: `handleX` has one
+method/verb dispatch and one target-port/window route for both verbs. Likewise,
+one real-binary `x.post` e2e is adequate once direct schedule coverage proves
+the shared route contract. Findings were mailed to BlackRobin in Agent Mail
+7407 before the green commit.
