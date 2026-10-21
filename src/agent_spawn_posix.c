@@ -45,11 +45,11 @@ int zb_agent_spawn_group_io(const char *const *argv, const char *const *envp, in
 #endif
   err = posix_spawnattr_setflags(&attr, flags);
   if (err == 0) err = posix_spawnattr_setpgroup(&attr, 0);
-  /* Each stream: dup2 the given end onto it (both ends are above 2, so neither dup2 clobbers the other's source),
-   * then close the original; or, for -1, keep the caller's own stream. */
-  if (err == 0) err = stdin_fd >= 0 ? posix_spawn_file_actions_adddup2(&acts, stdin_fd, 0) : 0;
+  /* Both dup2s first (both ends are above 2, so neither clobbers the other's source), then close each distinct
+   * original once: one duplex fd may be both streams (RoseCat 7150). For -1, keep the caller's own stream. */
+  if (err == 0 && stdin_fd >= 0) err = posix_spawn_file_actions_adddup2(&acts, stdin_fd, 0);
+  if (err == 0 && stdout_fd >= 0) err = posix_spawn_file_actions_adddup2(&acts, stdout_fd, 1);
   if (err == 0 && stdin_fd >= 0) err = posix_spawn_file_actions_addclose(&acts, stdin_fd);
-  if (err == 0) err = stdout_fd >= 0 ? posix_spawn_file_actions_adddup2(&acts, stdout_fd, 1) : 0;
   if (err == 0 && stdout_fd >= 0 && stdout_fd != stdin_fd) err = posix_spawn_file_actions_addclose(&acts, stdout_fd);
 #ifdef POSIX_SPAWN_CLOEXEC_DEFAULT
   /* Under CLOEXEC_DEFAULT an inherited stream must be named too, or it is closed: stderr always, and stdin or
