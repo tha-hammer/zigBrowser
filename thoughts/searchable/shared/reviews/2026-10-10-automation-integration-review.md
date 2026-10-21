@@ -22626,3 +22626,32 @@ Remaining non-blocking test opportunities are a deterministic Range-insert
 fallback, `visibility:hidden`/zero-sized/mixed hidden-visible mark rows, and an
 exact combobox-opening path (the current listbox and common click helper cover
 the accepted increment). Verdict sent to BlackRobin in Agent Mail 7173.
+
+## MS6 hard-gate signal-safety green (`eb074d3`)
+
+**APPROVED.** This cumulatively closes the open findings on `5e48fab`,
+`b3fda89`, `be2c256` and `784a2cc`.
+
+Before any signal, `Harness._consume` now requires an exact integer PID above
+1, excludes this process group, and requires `(ppid, pgid) == (os.getpid(),
+pid)` while the child is still unreaped. That rejects mocked and special PIDs,
+a child in this process's group, and a real but unrelated group leader. The
+unreaped leader prevents PID/PGID reuse between the ownership observation and
+`killpg`. Linux reads the correct ppid/pgrp fields from `/proc/<pid>/stat`;
+Darwin uses absolute `/bin/ps` and fails closed.
+
+All three Linux build registrations now run under the exact private user/PID
+namespace wrapper. The safety fixtures terminate by EOF and patch both
+`os.kill` and `os.killpg` to raise, so no fake PID can signal. The harness
+test's `counting_killpg` validates before its Darwin `kill(pid, 0)` liveness
+observation.
+
+An independent exact-commit focused run using the registered non-`exec`
+`sh -c 'setsid ...'` shape passed **24 tests**, with the six expected
+Linux-only kqueue skips. The reported two-Mac gate passed **19 tests, none
+skipped, 0 ResourceWarning** on each architecture, covering the CPython 3.12
+kqueue route. Diff check is clean.
+
+**NIT:** the safety module's docstring still says "Unregistered until the
+green" after this commit registers it. Verdict sent to BlueBeaver, with
+BlackRobin copied, in Agent Mail 7180.
