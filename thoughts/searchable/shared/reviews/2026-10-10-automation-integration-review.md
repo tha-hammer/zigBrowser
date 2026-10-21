@@ -24713,3 +24713,81 @@ wrong reason, early input accounting, wrong guard step, missing path check, raw
 href comparison and missing same-origin validation all fail. The exact commit
 touches only the unregistered e2e red; Python compilation and `diff --check`
 pass. Verdict sent to BlackRobin in Agent Mail 7316.
+
+## MS6.6(B) sticky release evidence (`47d31f0`, `ebd4673`)
+
+**`47d31f0` is APPROVED as the failing-first red. `ebd4673` is APPROVED and
+closes 7312.** The reviewed R1 case digest is
+`f58e733c967df13ec6d831bf98dbcf0f9df714e5908aaa03671262261738a986`,
+and the manifest contains that exact value. Per the orchestrator's hold, this
+does not authorize a Mac run yet.
+
+The implementation records every failed inspection or unreadable live process
+in a sticky `faults` list, even if a later scan is clean. A survivor that ends
+inside the grace period is accepted; one still observed after grace is retained
+as failure evidence. Every non-clean path nevertheless continues bounded,
+signal-free reinspection until clean or the deadline, and the caller separately
+requires no faults, no post-grace survivors and a clean final scan.
+
+The exact red runs 16 tests with eight causal errors against the old two-value
+helper. The exact green export, under a private Xvfb and private user/PID
+namespace, passed all 16 release tests plus the manifest, entry, harness and
+kill-safety suites:
+
+```text
+Build Summary: 13/13 steps succeeded
+```
+
+**SHOULD-for-tests:** `test_a_late_row_still_gets_its_full_grace` is not causal
+for the `max(grace, started_at + horizon)` branch. With `started_at=-95`, its
+survivor scans occur at times 0 through 4 and CLEAN at time 5, so an old
+`end=started_at+horizon` mutant also returns clean. Keep the survivor for at
+least one scan past time 5 and then clean; the old-end mutant must fail while
+the full-grace implementation waits it out. Verdict and Mac hold sent to
+BlueBeaver in Agent Mail 7317.
+
+## WS0.7 absent-volume and owner-exception path (`6c3b563`)
+
+**BLOCKED; do not start the watched WS0 two-host rerun.** The direction is
+right: a share that is writable in either pre or post now fails, absent-volume
+and excepted rows are reported, and the exact helper truth table preserves
+ordinary ACL/read failures as writable. The exact clean export passed the
+registered Linux-only gate in a private Xvfb and private user/PID namespace:
+
+```text
+Ran 109 tests in 3.405s
+OK (skipped=21)
+Build Summary: 3/3 steps succeeded
+```
+
+Four blockers remain:
+
+1. `gate.sh`'s `probe_host` still streams only `host_probe.ps1` through SSH.
+   Setting `ZB_WIN10_SHARE_EXCEPTIONS` in the local gate environment changes
+   the local SSH client's environment; it is not an environment variable in
+   the remote PowerShell process. There is no `SetEnv` transport or matching
+   server-side `AcceptEnv` contract. The fake SSH returns canned JSON and never
+   executes the streamed probe, so the 109 tests do not expose this. The exact
+   record must be encoded and installed by a safe PowerShell prelude on the
+   Win10 probe only, without shell interpolation.
+2. The owner approved exactly `K:\` with the written exFAT rationale, but the
+   parser accepts an arbitrary ambient newline list, silently ignores malformed
+   entries, permits empty reasons, and overwrites duplicates. That would let a
+   caller weaken WS0 for another path such as `C:\`. Commit or strictly pin the
+   one owner record and reject missing, extra, duplicate and malformed input.
+3. The schema does not require or validate `absent_paths` or
+   `share_exceptions`; `get(...) or []` turns missing or malformed evidence
+   into a pass. Validate both pre and post: normalized drive-absolute unique
+   share-member paths, exact exception object keys, nonempty reason, and exact
+   equality to the approved K record. Add negative schema and an actual
+   transport oracle proving remote PowerShell received the decoded value.
+4. `Test-Path $root == false` is treated as proof that a volume is absent, but
+   the same result can represent an inaccessible root or a query failure. Use a
+   read-only drive inventory (or a factored equivalent) and fail closed unless
+   absence is positively established. Cover present-but-inaccessible and query
+   failure separately from a genuinely absent drive.
+
+The expected live result after repair is that the obsolete `G:\Users\joshu`
+share is reported as absent and only the exact `K:\` record is logged as the
+owner exception. Findings and the rerun hold were sent to AzureRidge in Agent
+Mail 7320.
