@@ -22009,3 +22009,70 @@ closes the red-side portion of the zero-network finding.
 avoid a harmless child-exit race making the green flaky. This is noisy/fail-
 closed, not a false-green blocker. The tests remain intentionally unregistered
 until the production green lands; `3bd5727` stays blocked meanwhile.
+
+### MS6 harness lifecycle green (`5ee7c1f`)
+
+**APPROVED.** Exact `5ee7c1f` passes the registered harness lifecycle suite
+**7/7** and the driver suite **5/5** in a clean, display-scrubbed export under
+`python3 -X dev`. The new implementation waits for the leader with
+`waitid(..., WNOWAIT)`, so the leader remains an unreaped zombie and protects
+the process-group id; it then sends one group `SIGKILL`, reaps the leader, joins
+both pipe readers and closes the pipes (`tests/mac/hard_gate/harness.py:43-77`).
+Each owned entry is marked consumed before cleanup, so the driver's later
+`close()` calls cannot signal the same numeric group again (`:61-73,90-92`).
+
+The former weak NOT ARMED assertion was removed from the driver suite. The
+registered replacement tests both missing-pins and pins-present/staging-absent
+states with refusing, recording `ssh`, `scp`, `sftp`, `curl`, `nc` and `rsync`
+shims and canary values for both hosts and keys; both require zero invocations
+(`tests/e2e/ms6_hard_gate_harness_test.py:100-139`). The suite also observes
+normal output, timeout, an outliving child, 3 MiB of output, the unreaped-leader
+condition at the real signal and repeated `close()` (`:47-98`). The six reported
+mutants independently remove exactly-once consumption, reorder reap before
+kill, kill only the leader, remove the deadline, reach SSH before the guard, or
+let pins alone arm the gate; each is killed by this suite.
+
+This cumulatively closes the two blockers on `3bd5727`; the original
+`79f9933`/`3bd5727` hard-gate harness chain is approved through `554f36c` and
+`5ee7c1f`. The earlier `/proc` disappearance SHOULD is non-blocking and remains
+advisory; it cannot false-green the cleanup invariant.
+
+## Windows WS1.3 census and screenshot diagnostics (`026e9cf`)
+
+Reviewed exact `026e9cf` on 2026-10-21. In a clean display-scrubbed export,
+with `ResourceWarning` promoted to an error, the newly registered PNG-census
+selftest passes **5/5** and the screenshot-diagnostic source-pin selftest passes
+**3/3**.
+
+**`026e9cf` is APPROVED for the `2cdcb7a` closure.** `png_census.census()` now
+closes its input deterministically. The registered independent fixtures cover
+uniform versus varied content, every PNG filter 0 through 4, a non-PNG,
+truncated IDAT and an absent file (`tests/windows/png_census_selftest.py`). The
+old caller-supplied-artifact file is reduced to the intentionally unregistered
+WS1.3 release-executable red. Its provenance gap is supplied by the already
+reviewed real success path in `f2212e1`/`8f36ee7`, which launches the VM binary,
+requires exit zero, fetches that run's PNG and subjects it to the non-uniform
+oracle. Thus **`2cdcb7a` is cumulatively CLOSED**.
+
+**`026e9cf` is PARTIAL for `6c771ff`; `6c771ff` remains BLOCKED-for-tests.**
+The live failed-navigation check now requires the exact
+`zigBrowser: screenshot: navigation failed; the page did not load` line, and
+the registered Linux source pin prevents textual drift or deletion of every
+named diagnostic. But a source-string census is not runtime branch selection:
+the watchdog, synchronous `Navigate` failure and asynchronous document-script
+completion failure can still become unreachable or emit from the wrong path
+while this test remains green. The commit itself correctly identifies the
+deterministic VM-side runtime seams as follow-up work; those must execute each
+branch and assert its exact exit/diagnostic before the original blocker closes.
+
+### Linear boundary after the watched WS0 runs
+
+The push-through remains **`26fdfff`** until the orchestrator reports both
+watched WS0 live runs for `7d85cd5`; this review does not infer that acceptance.
+Once WS0 closes, `026e9cf` removes `2cdcb7a` as the next blocker. The earliest
+still-blocked descendant is then **`08bd75a`**, before `6c771ff`: its missing-
+runtime red still uses the invented `WEBVIEW2_RUNTIME_DISABLED` path instead of
+the planned guarded empty-runtime-folder seam, accepts a generic diagnostic,
+and its build-info oracle still lacks exact current version, OS build, executing
+architecture and PE-architecture agreement. Runtime diagnostic branch selection
+for `6c771ff` remains a later blocker even after `08bd75a` is fixed.
