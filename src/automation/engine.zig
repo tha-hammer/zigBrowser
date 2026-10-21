@@ -407,13 +407,18 @@ pub const Engine = struct {
         run.native_timeout_ms = timeout_ms;
         if (command.expect) |expect| {
             const checked_from = self.clock.nowMs();
-            if (try self.checkExpect(gpa, expect, options.window, timeout_ms, run)) |refused| return refused;
-            // The check shares the command's one deadline and its cancellation (RoseCat 0c1132b): a
-            // stop that came while it ran, or a check that used up the time, starts no action; the
-            // action gets only what is left.
-            if (run.cancelled()) return automationFailure(gpa, .cancelled, null, ids);
+            var refused = try self.checkExpect(gpa, expect, options.window, timeout_ms, run);
+            // The check shares the command's one deadline and its cancellation (RoseCat 0c1132b,
+            // db43ca1), in this order: a stop that came while it ran, then a check that used up
+            // the time, then what it found. Only a check that matched with time left starts the
+            // action, and the action gets only what is left.
             const spent = self.clock.nowMs() -| checked_from;
-            if (spent >= timeout_ms) return timeoutWithReason(gpa, timeoutErrorFor(command.verb), "expect_used_deadline", ids, 0);
+            if (run.cancelled() or spent >= timeout_ms) {
+                if (refused) |*found| found.deinit(gpa);
+                if (run.cancelled()) return automationFailure(gpa, .cancelled, null, ids);
+                return timeoutWithReason(gpa, timeoutErrorFor(command.verb), "expect_used_deadline", ids, 0);
+            }
+            if (refused) |found| return found;
             timeout_ms -= spent;
             run.native_timeout_ms = timeout_ms;
         }

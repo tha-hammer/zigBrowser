@@ -1059,6 +1059,16 @@ pub fn build(b: *std.Build) void {
     automation_expect_budget_tests_module.addImport("automation_server", automation_server_module);
     const run_automation_expect_budget_tests = b.addRunArtifact(b.addTest(.{ .root_module = automation_expect_budget_tests_module }));
     run_automation_expect_budget_tests.skip_foreign_checks = true;
+    // RoseCat db43ca1: phase A's deadline comes before what the check found.
+    const automation_expect_deadline_tests_module = b.createModule(.{
+        .root_source_file = b.path("tests/automation_expect_deadline_test.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    automation_expect_deadline_tests_module.addImport("automation_server", automation_server_module);
+    const run_automation_expect_deadline_tests = b.addRunArtifact(b.addTest(.{ .root_module = automation_expect_deadline_tests_module }));
+    run_automation_expect_deadline_tests.skip_foreign_checks = true;
     // WS2.0 (Windows plan rev 2.6): the owner-only seam and where the socket lives.
     const owner_only_tests_module = b.createModule(.{
         .root_source_file = b.path("tests/owner_only_test.zig"),
@@ -2313,6 +2323,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_automation_server_tests.step);
     test_step.dependOn(&run_automation_expect_phase_a_tests.step);
     test_step.dependOn(&run_automation_expect_budget_tests.step);
+    test_step.dependOn(&run_automation_expect_deadline_tests.step);
     test_step.dependOn(&run_owner_only_tests.step);
     test_step.dependOn(&run_agent_setup_ms5_tests.step);
     test_step.dependOn(&run_agent_setup_ms5_python_tests.step);
