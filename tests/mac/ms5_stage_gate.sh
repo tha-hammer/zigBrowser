@@ -100,6 +100,20 @@ sdk=$(cd / && env -i PATH=/usr/bin:/bin HOME="$d" "$A/Python.framework/Versions/
   || { echo "  FAIL the staged python3.12 -I does not import the staged SDK: $(printf '%s' "$sdk" | tail -1)"; fails=$((fails+1)); }
 /usr/bin/python3 -I -B repo/packaging/macos/sdk_pth.py check "$FSITE" "$A" \
   || { echo "  FAIL the staged runtime's .pth is not exactly the committed one"; fails=$((fails+1)); }
+# 4. the .pth is inside the framework version's seal (RoseCat 7339): the staged version verifies --deep --strict, and
+# a post-sign write to the .pth of a scratch copy breaks that copy's seal (so a .pth written after the relocation's
+# signing, or a seal that left lib/ out, would be red here).
+FV="$A/Python.framework/Versions/3.12"
+codesign --verify --deep --strict "$FV" 2>"$d/seal.err" \
+  || { echo "  FAIL codesign --verify --deep --strict on the staged framework version: $(tail -1 "$d/seal.err")"; fails=$((fails+1)); }
+mkdir "$d/seal-copy" && ditto "$A/Python.framework" "$d/seal-copy/Python.framework"
+CV="$d/seal-copy/Python.framework/Versions/3.12"
+codesign --verify --deep --strict "$CV" 2>/dev/null \
+  || { echo "  FAIL the scratch copy of the framework does not verify before the write"; fails=$((fails+1)); }
+printf '\n' >> "$CV/lib/python3.12/site-packages/zb_agent_host_sdk.pth"
+if codesign --verify --deep --strict "$CV" 2>/dev/null; then
+  echo "  FAIL a post-sign write to the .pth leaves the framework seal valid (the .pth is not sealed)"; fails=$((fails+1))
+fi
 # The declared resources go back to the driver for the cross-arch comparison (outside $d, which the trap deletes).
 (cd "$d/prefix" && tar -cf "$HOME/${ZB_RDIR}-res.tar" Frameworks/agent-host/runtime.json Frameworks/agent-host/zb_agent_host \
   Frameworks/agent-host/Python.framework/Versions/3.12/lib/python3.12/site-packages/zb_agent_host_sdk.pth)

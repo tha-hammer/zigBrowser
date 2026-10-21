@@ -22,12 +22,17 @@ site-packages as zb_agent_host_sdk.pth:
 No process is signalled. Run like the gate: cd tests/e2e && python3 -X dev -m unittest -v mac_sdk_pth_test.
 Unregistered until the green.
 """
+import os
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
+import threading
+import types
 import unittest
 from pathlib import Path
+from unittest import mock
 
 REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / "packaging" / "macos"))
@@ -99,6 +104,7 @@ class Problems(Base):
             "a comment": "# ../../../../../../site-packages\n",
             "no newline": "../../../../../../site-packages",
             "a CR": "../../../../../../site-packages\r\n",
+            "a NUL": "../../../../../../site\0-packages\n",
             "leaving the bundle": "../../../../../../../site-packages\n",
             "another dir in the bundle": "../../../../../../zb_agent_host\n",
             "empty": "",
@@ -107,6 +113,35 @@ class Problems(Base):
             with self.subTest(line=label):
                 (self.site / NAME).write_text(text)
                 self.assertProblem(label)
+
+    def test_a_fifo_target_is_a_problem_and_never_opened(self):
+        os.mkfifo(self.site / NAME)
+        done = []
+        t = threading.Thread(target=lambda: done.append(sdk_pth.problems(self.site, self.agent)), daemon=True)
+        t.start()
+        t.join(5)
+        opened = not done
+        if opened:  # it blocked opening the FIFO: unblock it so the thread ends, then fail
+            fd = os.open(self.site / NAME, os.O_WRONLY | os.O_NONBLOCK)
+            os.close(fd)
+            t.join(10)
+        self.assertFalse(opened, "problems() opened the FIFO (it blocked)")
+        self.assertTrue(done[0], "a FIFO must be a problem")
+
+    def test_a_hidden_flagged_pth_is_a_problem(self):
+        """site skips a .pth flagged UF_HIDDEN on macOS; Linux cannot set the flag, so lstat reports it."""
+        self.install_exact()
+        real = os.lstat
+
+        def flagged(path, *a, **kw):
+            st = real(path, *a, **kw)
+            if os.path.basename(path) == NAME:
+                return types.SimpleNamespace(st_mode=st.st_mode, st_flags=stat.UF_HIDDEN)
+            return st
+
+        with mock.patch.object(sdk_pth.os, "lstat", side_effect=flagged):
+            self.assertProblem("a UF_HIDDEN-flagged .pth")
+        self.assertEqual(sdk_pth.problems(self.site, self.agent), [], "the same file unflagged is clean")
 
     def test_a_symlinked_pth_is_a_problem(self):
         real = self.tmp / "elsewhere.pth"
@@ -163,6 +198,17 @@ class IsolatedInterpreter(Base):
                 self.assertEqual(no_site, "0", "-I must keep site processing")
                 self.assertEqual(Path(path).resolve(),
                                  (agent / "site-packages/claude_agent_sdk/__init__.py").resolve())
+
+
+class StagingOrder(unittest.TestCase):
+    def test_staging_installs_the_pth_before_the_relocations_signing(self):
+        """relocate_python_framework.py signs the framework version last (RoseCat 7339): a .pth written after it is
+        outside the seal. The Mac half (tests/mac/ms5_stage_gate.sh) verifies the seal and a post-sign write."""
+        sh = (REPO / "packaging" / "macos" / "stage_agent_runtime.sh").read_text()
+        install = sh.find('"$REPO/packaging/macos/sdk_pth.py" install')
+        relocate = sh.find('"$REPO/packaging/macos/relocate_python_framework.py"')
+        self.assertGreater(install, 0, "staging never installs the .pth")
+        self.assertGreater(relocate, install, "the .pth must be installed before the relocation signs")
 
 
 class Inventory(unittest.TestCase):
