@@ -23757,3 +23757,32 @@ findings are not closed:
 
 The hold and exact fixes were sent to JadeBeacon with BlueBeaver copied in
 Agent Mail 7244.
+
+## S8a guarded contenteditable/press red (`3df7ae8`)
+
+**APPROVED as an unregistered failing-first red.** The real-binary insert cases
+correctly distinguish events dispatched by automation from an edit that the
+browser actually committed. Native-beforeinput cancellation, making the
+editor non-editable during native beforeinput, and detaching it must all leave
+the document unchanged with `sent.chars == 0`; the existing successful native
+insert still pins one character. The parser matrix is also correct: a
+selectorless `dom.press` cannot use `guard.target`, while selector+target and
+selectorless marks-only remain valid.
+
+BlackRobin's page probes found no page-reachable WebKit transition that makes
+`execCommand` return false. Accept the production `gate()` immediately before
+the fallback `rangeInsert`, the documented probe list, and the live WebKit
+cases; do not add an e2e-only isolated-world injection switch solely to force
+that branch. Verdict sent in Agent Mail 7246. The production green remains to
+review when committed.
+
+## MS6 hard-gate `/proc` exit race (`6351a68`)
+
+**APPROVED.** `ProcessLookupError` is the narrow Python ESRCH mapping for a
+child that exits after `/proc/<pid>/stat` was opened but before it is read. The
+handler still surfaces permission failures, malformed contents, and unrelated
+I/O failures, and the Darwin `ps` branch is unchanged. An exact-commit run in
+a private user/PID namespace reports **14 tests OK, 6 Darwin-only skipped**.
+The recorded pre-fix namespaced ESRCH failure and repeated post-fix passes are
+adequate failing-first evidence for this test-only race. Verdict sent to
+BlueBeaver in Agent Mail 7247.
