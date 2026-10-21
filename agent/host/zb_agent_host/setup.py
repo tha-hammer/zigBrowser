@@ -33,7 +33,7 @@ import tempfile
 import time
 from pathlib import Path
 
-from . import hook_run, options, relay, sandbox, token
+from . import hook_run, options, parent_watch, relay, sandbox, sandbox_macos, token
 from . import provision as runtime_provision
 from .files import atomic_write, write_all
 
@@ -711,6 +711,20 @@ def provision(home, source, source_home, source_path, python, select_token_route
 
 # --- the token route (D11, S3.7) ---------------------------------------------
 
+# The platform the Darwin branches key on (macOS plan rev 14 items 5-6); a module value so tests inject it.
+PLATFORM = sys.platform
+
+
+def _darwin_sandbox(scratch, ro_paths, command):
+    """Setup's own sandbox on macOS: MS6's Seatbelt seam, the context manager sandbox_macos.setup_sandbox
+    (JadeBeacon, 45bbbff), which yields the sandbox-exec argv and guard-deletes its per-run profile under
+    `scratch`. Until it exists setup refuses: it never runs a command unsandboxed."""
+    setup_sandbox_cm = getattr(sandbox_macos, "setup_sandbox", None)
+    if setup_sandbox_cm is None:
+        raise SetupError("the macOS sandbox is not ready")
+    return setup_sandbox_cm(str(scratch), ro_paths, command)
+
+
 def setup_sandbox(scratch, ro_paths, command):
     """One of setup's own executions (`cli --version`, the R1 probe) in the same kind
     of sandbox as the helper (plan rev 16.1, §3c.7), never under `--dev-bind / /`:
@@ -720,7 +734,10 @@ def setup_sandbox(scratch, ro_paths, command):
     XDG_RUNTIME_DIR, user home or repository is in its view. The death chain is
     the helper's (RoseCat 5347): this process dies with the browser, bwrap with
     it (--die-with-parent), and with bwrap's first child the kernel kills every
-    process in the namespace, whatever the CLI started."""
+    process in the namespace, whatever the CLI started. Linux only: on macOS `_sandboxed` runs through
+    `_darwin_sandbox`, and this refuses rather than hand back a bwrap argv there."""
+    if PLATFORM == "darwin":
+        raise SetupError("the macOS sandbox is not ready")
     argv = [sandbox.BWRAP, "--unshare-net", "--unshare-pid", "--unshare-ipc", "--unshare-uts",
             "--die-with-parent", "--new-session", "--proc", "/proc", "--dev", "/dev",
             "--tmpfs", "/tmp", "--tmpfs", "/run", "--ro-bind", "/usr", "/usr"]
@@ -737,10 +754,14 @@ def setup_sandbox(scratch, ro_paths, command):
 def _sandboxed(ro_paths, command, timeout, env=None):
     """Runs `command` in setup_sandbox with a fresh throwaway home; (stdout, ok)."""
     scratch = Path(tempfile.mkdtemp(prefix="zb-setup-run-"))
+    run_env = {"PATH": "/usr/bin:/bin", "HOME": str(scratch), "LANG": "C.UTF-8", **(env or {})}
     try:
-        done = subprocess.run(setup_sandbox(scratch, ro_paths, command), capture_output=True, text=True,
-                              timeout=timeout, env={"PATH": "/usr/bin:/bin", "HOME": str(scratch),
-                                                    "LANG": "C.UTF-8", **(env or {})})
+        if PLATFORM == "darwin":
+            with _darwin_sandbox(scratch, ro_paths, command) as argv:
+                done = subprocess.run(argv, capture_output=True, text=True, timeout=timeout, env=run_env)
+        else:
+            done = subprocess.run(setup_sandbox(scratch, ro_paths, command), capture_output=True, text=True,
+                                  timeout=timeout, env=run_env)
         return done.stdout, done.returncode == 0
     except (OSError, subprocess.SubprocessError):
         return "", False
@@ -781,6 +802,28 @@ def select_route(runtime, cli, probe):
     atomic_write(runtime / "token-route.json", json.dumps(record), 0o600)
 
 
+def arm_parent_watch(raw_pid):
+    """macOS plan rev 14 item 5: before anything else on Darwin, arm the kqueue watch on the browser, which
+    SIGKILLs setup's whole process group if the browser dies (parent_watch). `--browser-pid` fails closed:
+    refused off Darwin; on Darwin required, an integer > 1, and our actual parent."""
+    if PLATFORM != "darwin":
+        if raw_pid is not None:
+            raise SetupError("--browser-pid is macOS-only")
+        return
+    if raw_pid is None:
+        raise SetupError("--browser-pid is required on macOS")
+    try:
+        pid = int(raw_pid, 10)
+    except ValueError:
+        raise SetupError("--browser-pid must be an integer") from None
+    if pid <= 1:
+        raise SetupError("--browser-pid must be greater than 1")
+    if os.getppid() != pid:
+        raise SetupError("--browser-pid is not this process's parent")
+    if not parent_watch.arm(pid, parent_watch.DarwinOps()):
+        raise SetupError("the browser watch did not arm")
+
+
 def main(argv):
     parser = argparse.ArgumentParser(prog="zb_agent_host setup")
     parser.add_argument("--home", required=True)
@@ -790,7 +833,13 @@ def main(argv):
     parser.add_argument("--python", required=True)
     parser.add_argument("--e2e-claude-cli")
     parser.add_argument("--e2e-pause-at", choices=PAUSE_CUTS)
+    parser.add_argument("--browser-pid")
     args = parser.parse_args(argv)
+    try:
+        arm_parent_watch(args.browser_pid)  # first: nothing runs before the watch on macOS
+    except SetupError as exc:
+        print(f"zigBrowser: agent-setup: {exc}", file=sys.stderr)
+        return 2
     global _PAUSE_AT
     _PAUSE_AT = args.e2e_pause_at
     try:
