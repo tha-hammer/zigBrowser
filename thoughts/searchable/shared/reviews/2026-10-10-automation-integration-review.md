@@ -21154,3 +21154,68 @@ The failing-first regression is reproduced from clean exports. The parent ran
 registers this module in `test-agent-setup-ms5` and fails its step on either a
 nonzero result or a `ResourceWarning`. No full gate was necessary for this
 two-line test-only correction.
+
+## S8a phase-A deadline/cancellation fix-forward (`17ac9e3`, `804f3f0`)
+
+Reviewed the exact red and green commits on 2026-10-20. **Verdict:
+`17ac9e3` APPROVED; `804f3f0` BLOCKED.** The red is discriminating on its
+parent as reported (0/4), is registered only by the green, and closes the
+earlier test defects: cancellation while `listWindows` is held covers all
+seven acting verbs and requires zero page operations; every thread has an
+unconditional release/join; the positive table requires exactly one expected
+operation plus zero unrelated, native and other-window operations; and the
+combined-state precedence and twelve-row `originOf` tables close the earlier
+SHOULD. The green correctly rechecks cancellation after a matching snapshot,
+refuses a matching snapshot that consumed the budget, passes the observed
+remainder to click and navigate, and reduces the public description to the
+snapshot semantics actually implemented. BlackRobin's focused automation
+suite passed 31/31 steps and 371/371 tests, with seven discriminating mutants.
+
+One public deadline edge remains:
+
+1. **BLOCKER (an over-deadline refusal bypasses the deadline):**
+   `engine.zig:410` returns a dialog/crash/origin/serial refusal directly from
+   `checkExpect`; the elapsed-time test at :415-416 runs only when the snapshot
+   matched. Thus a window read that consumes the whole command budget but also
+   finds a mismatch returns that mismatch rather than the timeout and
+   `expect_used_deadline` reason promised by
+   `docs/how-to-automate.md:863-867`. Collect the snapshot outcome, recheck
+   cancellation, apply the one deadline, and return the mismatch only while
+   budget remains; alternatively the docs and a pinned precedence contract
+   would have to be narrowed explicitly.
+2. **BLOCKER-for-tests:** the 300/400 full-budget case asserts only -32009,
+   not `data.reason == "expect_used_deadline"`, and no case combines an
+   over-budget snapshot with a refusal. Pin that reason and the deadline versus
+   mismatch precedence. A navigate/reload row should also pin -32007 plus the
+   same reason on this new path.
+
+BlackRobin's exact-`804f3f0` clean private-Xvfb aggregate gate was still
+running at review time, and no competing gate was started. Findings mailed in
+Agent Mail 7069.
+
+## R1 kernel-properties exact cleanup (`f8936bf`)
+
+Reviewed exact test-only commit `f8936bf` on 2026-10-20. **Verdict: APPROVED.**
+It closes both cleanup blockers on `71cca61`. Recovery now retains only the
+invocation's exact scratch path, pgid/Popen and two reported child PIDs; the
+host-wide process scan and deletion of every `/tmp/zb-r1k-*` are gone. A PID
+is touched only while `/bin/ps` still identifies the unique sleeper compiled
+inside this gate's nonce remote directory. A planted foreign matching scratch
+directory and a foreign process running that same sleeper must remain alive
+through all four recovery cases.
+
+The refused-kill case now proves that two children genuinely survived the
+first cleanup, kills both, waits each to ESRCH and waits the exact process
+group to ESRCH before continuing. Enumeration, kill and observation failures
+are hard failures. Scratch removal is nested under `finally`, and an injected
+`RuntimeError` from the first group kill proves that cleanup cannot skip it.
+BlueBeaver reports 78 passing harness/control/inside rows on both Macs, with
+the suite remaining red only at the intended absent-census seam. This remains
+an unregistered Mac-only red and does not close dependency (A), MS6 or
+`seatbelt_ready`; no Linux aggregate gate was needed. Verdict mailed in Agent
+Mail 7070.
+
+**NIT:** executable pathname is a practical PID-reuse discriminator, not a
+kernel process handle. Its safety relies on the existing invariant that each
+gate compiles the sleeper below a unique nonce staging directory; retain that
+invariant.
