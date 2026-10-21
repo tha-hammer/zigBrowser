@@ -72,9 +72,13 @@ int zb_reaper_run_dir_ok(const char *dir) {
 /* ---- the injectable decision engine (portable) ---- */
 
 static void collect(int *arr, int cap, int *nn, int *overflow, pid_t pid) {
-  if (arr == NULL || nn == NULL) return;
-  if (*nn < cap) { arr[(*nn)++] = (int)pid; return; }
-  if (overflow) *overflow = 1; /* truncated -> never a clean result (RoseCat f907e95 #6) */
+  /* A match with nowhere to go (null array/count) or past the cap is UNREPRESENTABLE: flag overflow so the
+   * result is never counted clean (RoseCat f907e95 #6, 9dfc9c7 #4). */
+  if (arr == NULL || nn == NULL || *nn >= cap) {
+    if (overflow) *overflow = 1;
+    return;
+  }
+  arr[(*nn)++] = (int)pid;
 }
 
 static int same_proc(const struct zb_reaper_id *a, const struct zb_reaper_id *b) {
@@ -125,26 +129,47 @@ int zb_reaper_engine(const struct zb_reaper_ops *ops, const pid_t *pids, int npi
 }
 
 int zb_reaper_gather(int (*scan)(void *buf, int bytes), pid_t **out, int *out_n) {
-  int cap = scan(NULL, 0); /* an estimated COUNT */
-  if (cap <= 0) return -2;
+  const int est = scan(NULL, 0); /* an estimated COUNT */
+  if (est < 0) return -2;        /* sizing error: NOT a proven-empty set */
+  int cap = est;
   pid_t *pids = NULL;
   for (int attempt = 0; attempt < 5; attempt++) {
     cap += 64; /* slack for pids spawned during the scan */
     pid_t *grown = (pid_t *)realloc(pids, (size_t)cap * sizeof(pid_t));
-    if (grown == NULL) { free(pids); return -2; }
+    if (grown == NULL) { free(pids); return -2; } /* allocation failure: NOT clean */
     pids = grown;
     const int n = scan(pids, cap * (int)sizeof(pid_t)); /* the COUNT of pids filled, NOT bytes */
-    if (n <= 0) { free(pids); return -2; }
-    if (n < cap) { *out = pids; *out_n = n; return 0; } /* buffer not full: we have them all */
+    if (n < 0) { free(pids); return -2; }               /* scan error: NOT clean */
+    if (n < cap) { *out = pids; *out_n = n; return 0; } /* buffer not full: complete (n == 0 is a proven empty set) */
     /* n >= cap: the buffer filled exactly and may be truncated -> grow and retry */
   }
   free(pids);
   return -1; /* still full after the retries: INCOMPLETE, never report a clean result */
 }
 
+int zb_reaper_run_full(int (*scan)(void *buf, int bytes), const struct zb_reaper_ops *ops, const char *dir,
+                       int kill_them, int *killed, int kcap, int *kn, int *surv, int scap, int *sn, int *overflow) {
+  if (overflow) *overflow = 0;
+  if (kn) *kn = 0;
+  if (sn) *sn = 0;
+  pid_t *pids = NULL;
+  int n = 0;
+  const int g = zb_reaper_gather(scan, &pids, &n);
+  if (g == -1) { if (overflow) *overflow = 1; return EOVERFLOW; } /* incomplete scan: not clean */
+  if (g == -2) { if (overflow) *overflow = 1; return EIO; }       /* scan failure: not clean (RoseCat 9dfc9c7 #1) */
+  const int rc = zb_reaper_engine(ops, pids, n, dir, kill_them, killed, kcap, kn, surv, scap, sn, overflow);
+  free(pids);
+  return rc;
+}
+
+int zb_reaper_dir_id_eq(const struct zb_reaper_dir_id *a, const struct zb_reaper_dir_id *b) {
+  return a->dev == b->dev && a->ino == b->ino && a->uid == b->uid && a->mode == b->mode;
+}
+
 /* ---- macOS production wrappers (libproc + real kill; Mac-only) ---- */
 
 #ifdef __APPLE__
+#include <fcntl.h>
 #include <libproc.h>
 #include <limits.h>
 #include <sys/proc_info.h>
@@ -189,12 +214,32 @@ static void reaper_inspect_real(pid_t pid, const char *dir, struct zb_reaper_id 
 static int reaper_killsig_real(pid_t pid, int sig, void *ctx) { (void)ctx; return kill(pid, sig) == 0 ? 0 : errno; }
 static int reaper_scan_real(void *buf, int bytes) { return proc_listallpids(buf, bytes); }
 
-/* The resolved run dir must be an app-owned private directory, not just a well-named one (RoseCat f907e95 #2). */
-static int reaper_run_dir_trusted(const char *resolved) {
-  if (!zb_reaper_run_dir_ok(resolved)) return 0;
-  struct stat st;
-  if (stat(resolved, &st) != 0) return 0;
-  return S_ISDIR(st.st_mode) && st.st_uid == getuid() && (st.st_mode & 0777) == 0700;
+/* Pin the resolved run dir by a NO-FOLLOW dir fd (RoseCat 9dfc9c7 #2): it must be a directory, this uid's, mode
+ * 0700, with grammar ok, and the fd and the path must agree on (dev, ino) — so a symlink / path swap between
+ * realpath and use is caught. Returns the held fd (>= 0) and fills *id, or -1 on any failure. */
+static int reaper_pin_dir(const char *resolved, struct zb_reaper_dir_id *id) {
+  if (!zb_reaper_run_dir_ok(resolved)) return -1;
+  int fd = open(resolved, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+  if (fd < 0) return -1;
+  struct stat f, p;
+  if (fstat(fd, &f) != 0 || stat(resolved, &p) != 0 || !S_ISDIR(f.st_mode) || f.st_uid != getuid() ||
+      (f.st_mode & 0777) != 0700 || f.st_dev != p.st_dev || f.st_ino != p.st_ino) {
+    close(fd);
+    return -1;
+  }
+  id->dev = f.st_dev;
+  id->ino = f.st_ino;
+  id->uid = f.st_uid;
+  id->mode = (unsigned)f.st_mode;
+  return fd;
+}
+
+/* The held fd and the path still agree on the pinned identity? (re-validated after the run). */
+static int reaper_dir_still_pinned(int fd, const char *resolved, const struct zb_reaper_dir_id *id) {
+  struct stat fs, ps;
+  if (fstat(fd, &fs) != 0 || stat(resolved, &ps) != 0) return 0;
+  struct zb_reaper_dir_id now = {fs.st_dev, fs.st_ino, fs.st_uid, (unsigned)fs.st_mode};
+  return zb_reaper_dir_id_eq(&now, id) && ps.st_dev == id->dev && ps.st_ino == id->ino;
 }
 
 static int reaper_public(const char *run_dir, int kill_them, int *killed, int kcap, int *kn,
@@ -205,16 +250,17 @@ static int reaper_public(const char *run_dir, int kill_them, int *killed, int kc
   if (run_dir == NULL) return EINVAL;
   char resolved[PATH_MAX];
   if (realpath(run_dir, resolved) == NULL) return EINVAL; /* fail closed, no raw-string fallback */
-  if (!reaper_run_dir_trusted(resolved)) return EINVAL;
+  struct zb_reaper_dir_id id;
+  int fd = reaper_pin_dir(resolved, &id);
+  if (fd < 0) return EINVAL;
 
-  pid_t *pids = NULL;
-  int n = 0;
-  const int g = zb_reaper_gather(reaper_scan_real, &pids, &n);
-  if (g == -1) { if (overflow) *overflow = 1; return EOVERFLOW; } /* INCOMPLETE scan: never clean */
-  if (g < 0) return 0;                                           /* empty / error */
   struct zb_reaper_ops ops = {reaper_inspect_real, reaper_killsig_real, NULL};
-  const int rc = zb_reaper_engine(&ops, pids, n, resolved, kill_them, killed, kcap, kn, surv, scap, sn, overflow);
-  free(pids);
+  int rc = zb_reaper_run_full(reaper_scan_real, &ops, resolved, kill_them, killed, kcap, kn, surv, scap, sn, overflow);
+  if (!reaper_dir_still_pinned(fd, resolved, &id)) { /* the dir identity changed under us: not a clean result */
+    if (overflow) *overflow = 1;
+    if (rc == 0) rc = EINVAL;
+  }
+  close(fd);
   return rc;
 }
 

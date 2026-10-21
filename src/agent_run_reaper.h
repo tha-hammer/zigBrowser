@@ -66,6 +66,23 @@ int zb_reaper_gather(int (*scan)(void *buf, int bytes), pid_t **out, int *out_n)
 int zb_reaper_engine(const struct zb_reaper_ops *ops, const pid_t *pids, int npids, const char *dir,
                      int kill_them, int *killed, int kcap, int *kn, int *surv, int scap, int *sn, int *overflow);
 
+/* gather (via the injected scan) + the engine, mapping a failed scan to a NON-ZERO return, never a clean empty
+ * result (RoseCat 9dfc9c7 #1): EOVERFLOW when the scan was incomplete, EIO on a scan/alloc error (both also set
+ * *overflow), else the engine's 0. The macOS wrappers call this after pinning the run dir; tests drive it with a
+ * fake scan + fake ops to prove the wrapper-level causal reds. */
+int zb_reaper_run_full(int (*scan)(void *buf, int bytes), const struct zb_reaper_ops *ops, const char *dir,
+                       int kill_them, int *killed, int kcap, int *kn, int *surv, int scap, int *sn, int *overflow);
+
+/* The creation-pinned run-dir identity (RoseCat 9dfc9c7 #2): compared from a no-follow dir fd's fstat, not a
+ * pathname, so a swapped path is caught. */
+struct zb_reaper_dir_id {
+  dev_t dev;
+  ino_t ino;
+  uid_t uid;
+  unsigned mode;
+};
+int zb_reaper_dir_id_eq(const struct zb_reaper_dir_id *a, const struct zb_reaper_dir_id *b);
+
 #ifdef __APPLE__
 /* Production: realpath() the run dir and REFUSE unless zb_reaper_run_dir_ok accepts it AND it stats as a dir
  * owned by this uid with mode 0700 (realpath failure = refusal, no fallback); then zb_reaper_gather over

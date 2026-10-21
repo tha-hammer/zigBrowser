@@ -13,7 +13,8 @@
 #include <unistd.h>
 
 static int failures = 0;
-static void check(int ok, const char *msg) { printf("  %s %s\n", ok ? "ok" : "FAIL", msg); if (!ok) failures++; }
+static int total = 0;
+static void check(int ok, const char *msg) { total++; printf("  %s %s\n", ok ? "ok" : "FAIL", msg); if (!ok) failures++; }
 
 /* ---- fake process table + intercepted kill (engine) ---- */
 #define MAXP 24
@@ -22,6 +23,7 @@ static struct fp {
   int matches[2];   /* match result on the 1st (scan) and 2nd (pre-kill) inspect */
   int have_bsd;
   uid_t uid;
+  uid_t uid2;       /* uid reported on the 2nd inspect (0 = same as uid): models a reused pid */
   uint64_t start[2];
   int killret;      /* errno fake_killsig returns for SIGKILL (0 = sent) */
   int gone;         /* after a SIGKILL, does sig-0 report ESRCH? */
@@ -41,7 +43,7 @@ static void fake_inspect(pid_t pid, const char *dir, struct zb_reaper_id *out, v
   T[i].inspect_calls++;
   out->matches = T[i].matches[call];
   out->have_bsd = T[i].have_bsd;
-  out->uid = T[i].uid;
+  out->uid = (call == 1 && T[i].uid2 != 0) ? T[i].uid2 : T[i].uid;
   out->start_sec = T[i].start[call];
   out->start_usec = 0;
 }
@@ -66,10 +68,11 @@ static void add(pid_t pid, int m1, int m2, uid_t uid, uint64_t s1, uint64_t s2, 
 }
 
 /* ---- fake scan (gather) ---- */
-static int scan_mode; /* 0 = fill `scan_fill`; 1 = always full; 2 = empty */
+static int scan_mode; /* 0 = fill `scan_fill`; 1 = always full; 2 = empty; 3 = error */
 static int scan_fill;
 static int fake_scan(void *buf, int bytes) {
-  if (buf == NULL) return 16; /* estimate */
+  if (scan_mode == 3) return -1; /* sizing/scan error */
+  if (buf == NULL) return 16;    /* estimate */
   int capn = bytes / (int)sizeof(pid_t);
   if (scan_mode == 2) return 0;
   pid_t *p = (pid_t *)buf;
@@ -90,22 +93,25 @@ int main(void) {
   add(1000, 1, 1, me, 5, 5, 0, 1);          /* A: stable match -> killed */
   add(1001, 1, 1, me, 5, 9, 0, 1);          /* B: changed start time -> skip */
   add(1002, 1, 0, me, 5, 5, 0, 1);          /* C: vanished on re-inspect -> skip */
-  add(1003, 1, 1, me + 1, 5, 5, 0, 1);      /* D: wrong uid -> skip */
-  add(1004, 1, 1, me, 5, 5, EPERM, 1);      /* E: EPERM -> survivor */
-  add(1005, 1, 1, me, 5, 5, ESRCH, 1);      /* F: ESRCH on SIGKILL -> gone/killed */
+  add(1003, 1, 1, me + 1, 5, 5, 0, 1);      /* D: wrong uid on both inspects -> skip */
+  add(1004, 1, 1, me, 5, 5, EPERM, 1);      /* E: EPERM -> survivor, exactly one signal */
+  add(1005, 1, 1, me, 5, 5, ESRCH, 1);      /* F: ESRCH on SIGKILL -> gone, exactly one signal */
   add(1, 1, 1, me, 5, 5, 0, 1);             /* G: pid 1 -> never signalled */
   add(self, 1, 1, me, 5, 5, 0, 1);          /* H: ourselves -> never signalled */
+  add(1006, 1, 1, me, 5, 5, 0, 1);          /* I: uid CHANGES between inspects (reused pid) -> skip */
+  T[find(1006)].uid2 = me + 1;
   kn = sn = ov = 0;
-  zb_reaper_engine(&ops, (pid_t[]){1000, 1001, 1002, 1003, 1004, 1005, 1, self}, 8, "/run/x", 1,
+  zb_reaper_engine(&ops, (pid_t[]){1000, 1001, 1002, 1003, 1004, 1005, 1, self, 1006}, 9, "/run/x", 1,
                    killed, 8, &kn, surv, 8, &sn, &ov);
-  check(in_list(killed, kn, 1000) && sigkills_for(1000) == 1, "A stable match is killed");
-  check(!in_list(killed, kn, 1001) && !in_list(surv, sn, 1001) && sigkills_for(1001) == 0, "B changed identity: no signal");
+  check(in_list(killed, kn, 1000) && sigkills_for(1000) == 1, "A stable match is killed (one signal)");
+  check(!in_list(killed, kn, 1001) && !in_list(surv, sn, 1001) && sigkills_for(1001) == 0, "B changed start time: no signal");
   check(!in_list(killed, kn, 1002) && sigkills_for(1002) == 0, "C vanished: no signal");
   check(!in_list(killed, kn, 1003) && sigkills_for(1003) == 0, "D wrong uid: no signal");
-  check(in_list(surv, sn, 1004) && !in_list(killed, kn, 1004), "E EPERM: survivor (killed attempted, not gone)");
-  check(in_list(killed, kn, 1005), "F ESRCH on SIGKILL: counted gone");
+  check(in_list(surv, sn, 1004) && !in_list(killed, kn, 1004) && sigkills_for(1004) == 1, "E EPERM: survivor, EXACTLY one signal");
+  check(in_list(killed, kn, 1005) && sigkills_for(1005) == 1, "F ESRCH on SIGKILL: gone, EXACTLY one signal");
   check(sigkills_for(1) == 0, "G pid 1 is never signalled");
   check(sigkills_for(self) == 0, "H self is never signalled");
+  check(!in_list(killed, kn, 1006) && !in_list(surv, sn, 1006) && sigkills_for(1006) == 0, "I changed uid between inspects: no signal");
   check(ov == 0, "no overflow for this set");
 
   /* census sends NO signal */
@@ -133,10 +139,40 @@ int main(void) {
   free(pids);
   scan_mode = 1; pids = NULL; gn = 0;
   check(zb_reaper_gather(fake_scan, &pids, &gn) == -1, "gather reports a persistently-full buffer as INCOMPLETE");
-  scan_mode = 2; pids = NULL; gn = 0;
-  check(zb_reaper_gather(fake_scan, &pids, &gn) == -2, "gather reports an empty scan");
+  scan_mode = 2; scan_fill = 0; pids = NULL; gn = 0;
+  check(zb_reaper_gather(fake_scan, &pids, &gn) == 0 && gn == 0, "gather treats a successful zero-pid scan as a proven empty set");
+  free(pids);
+  scan_mode = 3; pids = NULL; gn = 0;
+  check(zb_reaper_gather(fake_scan, &pids, &gn) == -2, "gather reports a scan error (NOT a clean empty set)");
 
-  if (failures == 0) { printf("PASS ms6-5-reaper-engine %d checks\n", 14); return 0; }
-  printf("FAIL ms6-5-reaper-engine %d check(s) failed\n", failures);
+  /* collect with no output array: an unrepresentable match must flag overflow, never silently drop */
+  reset();
+  add(1000, 1, 1, me, 5, 5, 0, 1);
+  ov = 0;
+  zb_reaper_engine(&ops, (pid_t[]){1000}, 1, "/run/x", 0, NULL, 0, NULL, NULL, 0, NULL, &ov);
+  check(ov == 1, "a match with a null output array is flagged overflow (never silently clean)");
+
+  /* run_full: a scan failure/incomplete must map to a NON-ZERO return, never a clean empty result */
+  int k2[8], s2[8], kn2, sn2, ov2, r;
+  scan_mode = 3;
+  reset();
+  kn2 = sn2 = ov2 = 0;
+  r = zb_reaper_run_full(fake_scan, &ops, "/run/x", 1, k2, 8, &kn2, s2, 8, &sn2, &ov2);
+  check(r == EIO && ov2 == 1, "run_full: a scan error returns EIO + overflow (not clean empty)");
+  scan_mode = 1;
+  reset();
+  kn2 = sn2 = ov2 = 0;
+  r = zb_reaper_run_full(fake_scan, &ops, "/run/x", 1, k2, 8, &kn2, s2, 8, &sn2, &ov2);
+  check(r == EOVERFLOW && ov2 == 1, "run_full: an incomplete scan returns EOVERFLOW + overflow");
+  scan_mode = 0;
+  scan_fill = 1;
+  reset();
+  add(2000, 1, 1, me, 5, 5, 0, 1); /* the pid fake_scan fills (2000) is a stable match */
+  kn2 = sn2 = ov2 = 0;
+  r = zb_reaper_run_full(fake_scan, &ops, "/run/x", 1, k2, 8, &kn2, s2, 8, &sn2, &ov2);
+  check(r == 0 && in_list(k2, kn2, 2000) && ov2 == 0, "run_full: a normal scan runs the engine (match killed, clean)");
+
+  if (failures == 0) { printf("PASS ms6-5-reaper-engine %d checks\n", total); return 0; }
+  printf("FAIL ms6-5-reaper-engine %d of %d check(s) failed\n", failures, total);
   return 1;
 }
