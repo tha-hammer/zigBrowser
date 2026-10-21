@@ -67,26 +67,34 @@ if [ "${1:-}" = "--gc" ]; then
   if ! zb_surface_ok "$req"; then
     echo "build-on-windows: ZB_WIN_EXE must be a <dir>/current/<name> path for --gc (got '$req')" >&2; exit 2
   fi
-  gc_curlink=$(dirname "$req"); gc_outdir=$(dirname "$gc_curlink"); gens="$gc_outdir/gen"
+  gc_curlink=$(dirname "$req"); gc_outdir=$(dirname "$gc_curlink")
   if ! zb_no_symlink_path "$gc_outdir"; then
     echo "build-on-windows: publish root '$gc_outdir' has a symlink component — refusing GC" >&2; exit 3
   fi
-  if [ -L "$gens" ] || { [ -e "$gens" ] && [ ! -d "$gens" ]; }; then
-    echo "build-on-windows: '$gens' is not a real directory (symlink/other) — refusing GC" >&2; exit 3
+  [ -d "$gc_outdir" ] || { echo "build-on-windows: no generations to GC" >&2; exit 0; }
+  # RoseCat 175efb8: PIN the directory identity — cd into the verified root and operate ONLY on relative
+  # paths, so a later rename/symlink swap of the pathname cannot redirect the reaper. Confirm the entered
+  # cwd resolves with no symlink component.
+  cd "$gc_outdir" || { echo "build-on-windows: cannot enter publish root for GC" >&2; exit 3; }
+  if [ "$(pwd -P)" != "$PWD" ]; then
+    echo "build-on-windows: publish root '$gc_outdir' resolves through a symlink — refusing GC" >&2; exit 3
   fi
-  [ -d "$gens" ] || { echo "build-on-windows: no generations to GC" >&2; exit 0; }
+  if [ -L gen ] || { [ -e gen ] && [ ! -d gen ]; }; then
+    echo "build-on-windows: 'gen' is not a real directory (symlink/other) — refusing GC" >&2; exit 3
+  fi
+  [ -d gen ] || { echo "build-on-windows: no generations to GC" >&2; exit 0; }
   {
     if ! flock -w "${ZB_GC_LOCK_WAIT:-10}" 9; then
       echo "build-on-windows: GC could not acquire the publish lock (a publish is in progress)" >&2; exit 3
     fi
-    live_base=$(basename "$(readlink "$gc_outdir/current" 2>/dev/null || echo __none__)")
+    live_base=$(basename "$(readlink current 2>/dev/null || echo __none__)")
     while IFS= read -r g; do
       [ -n "$g" ] || continue
       gb=$(basename "$g")
       [ "$gb" = "$live_base" ] && continue
-      if [ -d "$g" ] && [ ! -L "$g" ] && [[ "$g" == "$gens"/g-* ]]; then rm -rf -- "${g:?}"; fi
-    done < <(find "$gens" -mindepth 1 -maxdepth 1 -type d -name 'g-*' -not -newermt '-1 hour' 2>/dev/null)
-  } 9>"$gc_outdir/.publish.lock"
+      if [ -d "$g" ] && [ ! -L "$g" ] && [[ "$g" == gen/g-* ]]; then rm -rf -- "${g:?}"; fi
+    done < <(find gen -mindepth 1 -maxdepth 1 -type d -name 'g-*' -not -newermt '-1 hour' 2>/dev/null)
+  } 9>".publish.lock"
   exit 0
 fi
 
@@ -180,15 +188,19 @@ if [ -z "$step" ]; then
     echo "build-on-windows: publish root '$outdir' has a symlink component — refusing to publish" >&2; exit 3
   fi
   if ! mkdir -p "$outdir"; then echo "build-on-windows: cannot create the publish root '$outdir'" >&2; exit 3; fi
-  if ! zb_no_symlink_path "$outdir"; then   # re-check after mkdir, in case a component was a symlink
-    echo "build-on-windows: publish root '$outdir' has a symlink component — refusing to publish" >&2; exit 3
+  # RoseCat 175efb8: PIN the directory identity — the earlier checks are TOCTOU, so cd INTO the verified
+  # root and perform EVERY subsequent write/move/swap/fetch on RELATIVE paths. Once entered, the cwd is a
+  # held reference to that inode; a later rename or symlink-swap of the pathname cannot redirect any of our
+  # relative operations. Confirm the entered cwd resolves with no symlink component.
+  if ! cd "$outdir"; then echo "build-on-windows: cannot enter the publish root '$outdir'" >&2; exit 3; fi
+  if [ "$(pwd -P)" != "$PWD" ]; then
+    echo "build-on-windows: publish root '$outdir' resolves through a symlink — refusing to publish" >&2; exit 3
   fi
-  gens="$outdir/gen"
-  if [ -L "$gens" ] || { [ -e "$gens" ] && [ ! -d "$gens" ]; }; then
-    echo "build-on-windows: '$gens' is not a real directory (symlink/other) — refusing to publish" >&2; exit 3
+  if [ -L gen ] || { [ -e gen ] && [ ! -d gen ]; }; then
+    echo "build-on-windows: 'gen' is not a real directory (symlink/other) — refusing to publish" >&2; exit 3
   fi
-  if ! mkdir -p "$gens"; then echo "build-on-windows: cannot create '$gens'" >&2; exit 3; fi
-  part="$outdir/.fetch-$$.part"
+  if ! mkdir -p gen; then echo "build-on-windows: cannot create 'gen'" >&2; exit 3; fi
+  part=".fetch-$$.part"
   rm -f -- "$part" "$part.sha"
   "${scrub[@]}" timeout "$fetch_to" scp -i "$key" -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
     -o UserKnownHostsFile="$kh" -o BatchMode=yes -o ConnectTimeout=15 -o ConnectionAttempts=3 -P "$port" \
@@ -205,28 +217,28 @@ if [ -z "$step" ]; then
   # RoseCat c09d439 (2): hold the publish lock from BEFORE generation creation through the checked swap (the
   # fetch/validate above stays outside it). mktemp -d is an O_EXCL fresh generation; publish is APPEND-ONLY
   # (it never deletes an existing generation). Because a concurrent --gc takes this SAME lock, it can never
-  # delete this in-flight generation no matter how long this process is suspended — ownership comes from the
-  # lock, not a wall-clock grace window.
+  # delete this in-flight generation no matter how long this process is suspended. All paths are relative to
+  # the pinned cwd (RoseCat 175efb8).
   pub_rc=0
   {
     if ! flock -w "${ZB_PUBLISH_LOCK_WAIT:-60}" 9; then
       pub_rc=3
     else
-      gendir=$(mktemp -d "$gens/g-${sha}-XXXXXXXXXX") || gendir=""
+      gendir=$(mktemp -d "gen/g-${sha}-XXXXXXXXXX") || gendir=""
       if [ -z "$gendir" ]; then
         pub_rc=3
       elif ! mv -fT "$part" "$gendir/$base" || ! mv -fT "$part.sha" "$gendir/$base.sha"; then
         pub_rc=3
-        if [ -d "$gendir" ] && [ ! -L "$gendir" ] && [[ "$gendir" == "$gens"/g-* ]]; then rm -rf -- "${gendir:?}"; fi
+        if [ -d "$gendir" ] && [ ! -L "$gendir" ] && [[ "$gendir" == gen/g-* ]]; then rm -rf -- "${gendir:?}"; fi
       elif [ -n "${ZB_SELFTEST_CUT_PUBLISH:-}" ]; then
         pub_rc=42   # selftest: crash after the generation exists but before the swap (gen left; current intact)
-      elif ! ln -sfn "gen/$(basename "$gendir")" "$outdir/.current.$$"; then
-        pub_rc=3; rm -f -- "$outdir/.current.$$"
-      elif ! mv -fT "$outdir/.current.$$" "$outdir/current"; then
-        pub_rc=3; rm -f -- "$outdir/.current.$$"
+      elif ! ln -sfn "$gendir" ".current.$$"; then
+        pub_rc=3; rm -f -- ".current.$$"
+      elif ! mv -fT ".current.$$" "current"; then
+        pub_rc=3; rm -f -- ".current.$$"
       fi
     fi
-  } 9>"$outdir/.publish.lock"
+  } 9>".publish.lock"
   rm -f -- "$part" "$part.sha"
   if [ "$pub_rc" -eq 42 ]; then echo "build-on-windows: interrupted before current-swap (selftest)" >&2; exit 42; fi
   if [ "$pub_rc" -ne 0 ]; then echo "build-on-windows: publish failed" >&2; exit 3; fi

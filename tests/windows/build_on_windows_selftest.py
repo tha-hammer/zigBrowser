@@ -87,6 +87,12 @@ if [ -n "${ZB_SELFTEST_SCP_LOG:-}" ]; then
   printf 'ENV DISPLAY=[%s] WAYLAND=[%s] XAUTH=[%s]\n' "${DISPLAY:-}" "${WAYLAND_DISPLAY:-}" "${XAUTHORITY:-}" >> "$ZB_SELFTEST_SCP_LOG"
 fi
 [ -n "${ZB_SELFTEST_FETCH_FAIL:-}" ] && exit 13
+# TOCTOU probe hook: announce the fetch has started, then wait for a go-signal, so the test can rename/
+# symlink-swap a parent WHILE the fetch is paused. The marker dir is an absolute path (cwd-independent).
+if [ -n "${ZB_SELFTEST_SCP_PAUSE:-}" ]; then
+  : > "$ZB_SELFTEST_SCP_PAUSE/scp_started"
+  i=0; while [ ! -e "$ZB_SELFTEST_SCP_PAUSE/scp_go" ] && [ "$i" -lt 200 ]; do sleep 0.05; i=$((i+1)); done
+fi
 dest="${@: -1}"
 if [ -n "${ZB_SELFTEST_FETCH_NOTPE:-}" ]; then printf 'XXnotpe' > "$dest"; else printf 'MZfakepe' > "$dest"; fi
 exit 0
@@ -506,6 +512,52 @@ class PublishContract(_Case):
             self._fail_closed(proc, "symlink component")
             self.assertTrue((td / "outside" / "gen" / "g-victim" / "keep").exists(),
                             "GC on a parent-symlinked root must delete nothing outside it")
+
+    def test_parent_swapped_to_symlink_during_fetch_cannot_escape(self):
+        # RoseCat 175efb8: the static path check is TOCTOU. Pause the fetch, rename the real root to
+        # 'out-held' and replace 'out' with a symlink to 'outside', then resume. Because the publish pins the
+        # directory by cd-ing into it and uses relative paths, the publish must land in the pinned real dir
+        # (now 'out-held') and NOTHING may be written under the swapped-in 'outside'.
+        with tempfile.TemporaryDirectory() as t:
+            td = pathlib.Path(t)
+            bindir = td / "bin"; bindir.mkdir()
+            _fakes(bindir)
+            (td / "root").mkdir(); (td / "home").mkdir()
+            (td / "key").write_text("x"); (td / "kh").write_text("#")
+            outdir = td / "out"; marker = td / "marker"; marker.mkdir()
+            outside = td / "outside"; outside.mkdir()   # a real writable dir the attacker redirects to
+            env = {
+                "PATH": str(bindir) + os.pathsep + _BASE_PATH, "HOME": str(td / "home"),
+                "ZB_SELFTEST_ROOT": str(td / "root"),
+                "ZB_WIN11_HOST": "127.0.0.1", "ZB_WIN11_PORT": "2222", "ZB_WIN11_USER": "zbtext",
+                "ZB_WIN_KEY": str(td / "key"), "ZB_WIN_KNOWN_HOSTS": str(td / "kh"),
+                "ZB_WEBVIEW2_INCLUDE": r"C:\wv2\include", "ZB_WEBVIEW2_LIB": r"C:\wv2\lib\x64",
+                "ZB_ZIG": r"C:\tools\zig.exe",
+                "ZB_WIN_EXE": str(outdir / "current" / "zigBrowser.exe"),
+                "ZB_SELFTEST_SCP_PAUSE": str(marker),
+                "DISPLAY": ":99", "WAYLAND_DISPLAY": "wayland-9", "XAUTHORITY": "/tmp/parent.Xauth",
+            }
+            p = subprocess.Popen(["bash", SCRIPT], env=env, stdout=subprocess.PIPE,
+                                 stderr=subprocess.PIPE, text=True)
+            try:
+                started = marker / "scp_started"
+                for _ in range(400):
+                    if started.exists():
+                        break
+                    time.sleep(0.05)
+                self.assertTrue(started.exists(), "the fetch never started")
+                os.rename(outdir, td / "out-held")           # the pinned real dir is renamed away
+                os.symlink(outside, outdir)                  # 'out' now resolves to 'outside'
+                (marker / "scp_go").write_text("go")
+                out, err = p.communicate(timeout=60)
+            finally:
+                if p.poll() is None:
+                    p.kill(); p.communicate()
+            detail = f"\nrc={p.returncode}\nstdout:\n{out}\nstderr:\n{err}"
+            self.assertFalse((outside / "current").exists(),
+                             "publish escaped to the swapped-in symlink target" + detail)
+            self.assertTrue((td / "out-held" / "current" / "zigBrowser.exe").exists(),
+                            "publish must land in the pinned original directory" + detail)
 
 
 class AtomicPublish(_Case):
