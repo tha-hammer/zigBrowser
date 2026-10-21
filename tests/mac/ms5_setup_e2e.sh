@@ -30,15 +30,17 @@ leg() { # $1=host $2=expected uname -m
   local host="$1" arch="$2" rdir="zb-ms5e2e-$(date +%s)-$$-$RANDOM"
   "${SSH[@]}" "$host" "mkdir \"\$HOME/${rdir:?}\"" || { echo "FAIL: mkdir on $host" >&2; return 1; }
   "${SCP[@]}" "$TAR" "$host:${rdir}/src.tar" >/dev/null || { "${SSH[@]}" "$host" "rm -rf \"\$HOME/${rdir:?}\""; return 1; }
-  timeout "$LEG_TIMEOUT" "${SSH[@]}" "$host" "ZB_RDIR='${rdir}' ZB_ARCH='${arch}' /bin/bash -s" <<'REMOTE'
+  # The guarded cleanup and child pick (tests/mac/lib_group_cleanup.sh, tested locally by lib_group_cleanup_test.sh)
+  # travel with the remote body on stdin.
+  { cat tests/mac/lib_group_cleanup.sh; cat <<'REMOTE'; } | timeout "$LEG_TIMEOUT" "${SSH[@]}" "$host" "ZB_RDIR='${rdir}' ZB_ARCH='${arch}' /bin/bash -s"
 set -euo pipefail
-d="$HOME/${ZB_RDIR:?}"; trap 'pkill -KILL -g "$(cat "$d/pgid" 2>/dev/null || echo 0)" 2>/dev/null || true; rm -rf "$HOME/${ZB_RDIR:?}"' EXIT
+d="$HOME/${ZB_RDIR:?}"; trap 'zb_kill_saved_group "$d/pgid" >/dev/null; rm -rf "$HOME/${ZB_RDIR:?}"' EXIT
 [ "$(uname -m)" = "$ZB_ARCH" ] || { echo "FAIL: leg is $(uname -m), expected $ZB_ARCH" >&2; exit 1; }
 cd "$d" && tar -xf src.tar
-"$HOME/.local/bin/zig" build install > build.log 2>&1 || { tail -20 build.log; echo "FAIL: build" >&2; exit 1; }
+"$HOME/.local/bin/zig" build install < /dev/null > build.log 2>&1 || { tail -20 build.log; echo "FAIL: build" >&2; exit 1; }
 home="$d/home"; mkdir "$home"
 set +e
-env -i PATH=/usr/bin:/bin HOME="$home" LANG=C ./zig-out/bin/zigBrowser --agent-setup > out.txt 2> err.txt
+env -i PATH=/usr/bin:/bin HOME="$home" LANG=C ./zig-out/bin/zigBrowser --agent-setup < /dev/null > out.txt 2> err.txt
 set -e
 if grep -q "the macOS sandbox is not ready" err.txt; then
   printf 'NOT ARMED\tms5-setup-e2e\t%s\tMS6 not landed (agent_setup.seatbelt_ready is false)\n' "$ZB_ARCH"; exit 3
@@ -49,15 +51,13 @@ fi
 # Armed. (a) SIGKILL the browser while setup is paused at swap:before, then census setup's process group.
 mkdir -p "$d/sai" && printf '{}\n' > "$d/sai/settings.json"
 env -i PATH=/usr/bin:/bin HOME="$home" LANG=C ZIGBROWSER_AGENT_SETUP_PAUSE=swap:before \
-  ./zig-out/bin/zigBrowser --agent-setup --e2e-protocol --sai-source "$d/sai" > out2.txt 2> err2.txt &
+  ./zig-out/bin/zigBrowser --agent-setup --e2e-protocol --sai-source "$d/sai" < /dev/null > out2.txt 2> err2.txt &
 B=$!
 for _ in $(seq 1 600); do grep -q "SETUP	paused	swap:before" out2.txt 2>/dev/null && break; sleep 0.5; done
 grep -q "SETUP	paused	swap:before" out2.txt || { kill -KILL "$B" 2>/dev/null; tail -5 err2.txt; echo "FAIL: setup never paused" >&2; exit 1; }
-S=$(pgrep -P "$B" | head -1)
-[ -n "$S" ] || { kill -KILL "$B"; echo "FAIL: no setup child" >&2; exit 1; }
-PG=$(ps -o pgid= -p "$S" | tr -d ' '); echo "$PG" > "$d/pgid"
+S=$(zb_setup_child "$B") || { kill -KILL "$B"; echo "FAIL: no unique setup child leading its own group" >&2; exit 1; }
+PG=$S; echo "$PG" > "$d/pgid"   # saved only after zb_setup_child proved it: one child, the setup command, PGID == PID
 fails=0
-[ "$PG" = "$S" ] || { echo "  FAIL setup ($S) does not lead its own group ($PG)"; fails=$((fails+1)); }
 [ "$(ps -o pgid= -p "$B" | tr -d ' ')" != "$PG" ] || { echo "  FAIL the browser is in setup's group"; fails=$((fails+1)); }
 kill -KILL "$B"; wait "$B" 2>/dev/null || true
 live=1
