@@ -880,8 +880,13 @@ the same page task as each event.
   with any events means the page may have changed. Synthetic input only.
 - A guarded `dom.type` sends its text 16 characters (Unicode code points) at a time, each
   piece its own step in the page, so the page's own timers and a stop run between pieces;
-  `data.sent` then adds up every piece that was sent. A guard cannot be combined with
-  `delay_ms` (-32602).
+  `data.sent` then adds up every piece that was sent. The pieces are one action: every piece
+  after the first types only into the first piece's element, in the first piece's document
+  (else -32015 `target_changed` or `document_changed`), and none starts once the command's
+  timeout has passed (-32009 `type_chunk_deadline`). When a later piece fails in a way that
+  leaves unknown what it sent (the page call failed or timed out, or the script threw),
+  `data.sent` is not given: `data.sent_at_least` counts the pieces that completed. A guard
+  cannot be combined with `delay_ms`, 0 included (-32602).
 - The acting LinkedIn and Instagram flows (`linkedin.connect`, `follow`,
   `like`, `comment`, `message`; `instagram.follow`, `like`, `comment`, `dm`,
   `story_view`) take `options.expect` too, with one more field, `url`: the one

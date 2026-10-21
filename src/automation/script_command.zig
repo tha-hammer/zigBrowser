@@ -81,6 +81,9 @@ const ScriptCommand = struct {
     guard: ?router.Guard = null,
     /// S8 decision 15: one chunk of a guarded dom.type.
     chunk: ?bool = null,
+    /// Chunk 1's target element and document tokens, on every later chunk.
+    chunk_target: ?[]const u8 = null,
+    chunk_document: ?[]const u8 = null,
     trace_id: []const u8,
     parent_span_id: []const u8,
     command_id: []const u8,
@@ -120,6 +123,8 @@ pub fn buildCommandJson(
         .focus = if (locate) |l| l.focus else null,
         .guard = if (locate != null) null else command.guard,
         .chunk = if (command.chunk) true else null,
+        .chunk_target = command.chunk_target,
+        .chunk_document = command.chunk_document,
         .trace_id = ids.trace_id,
         .parent_span_id = ids.parent_span_id,
         .command_id = ids.command_id,

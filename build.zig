@@ -1140,6 +1140,16 @@ pub fn build(b: *std.Build) void {
     automation_guard_chunks_tests_module.addImport("automation", automation_module);
     const run_automation_guard_chunks_tests = b.addRunArtifact(b.addTest(.{ .root_module = automation_guard_chunks_tests_module }));
     run_automation_guard_chunks_tests.skip_foreign_checks = true;
+    // S8a (RoseCat on 76cb14a): the chunks of a guarded dom.type are one action.
+    const automation_guard_chunks2_tests_module = b.createModule(.{
+        .root_source_file = b.path("tests/automation_guard_chunks2_test.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    automation_guard_chunks2_tests_module.addImport("automation", automation_module);
+    const run_automation_guard_chunks2_tests = b.addRunArtifact(b.addTest(.{ .root_module = automation_guard_chunks2_tests_module }));
+    run_automation_guard_chunks2_tests.skip_foreign_checks = true;
     // S8a (RoseCat on 9295b0b): a selectorless dom.press cannot carry guard.target.
     const automation_guard_press_tests_module = b.createModule(.{
         .root_source_file = b.path("tests/automation_guard_press_test.zig"),
@@ -2346,6 +2356,14 @@ pub fn build(b: *std.Build) void {
         "automation-guard-chunks-e2e",
     });
     automation_guard_chunks_e2e.addArtifactArg(exe);
+    // S8a (RoseCat on 76cb14a): a same-selector clone or a new document between chunks stops the type.
+    const automation_guard_chunks2_e2e = b.addSystemCommand(&.{
+        "sh",
+        "-c",
+        "python3 tests/e2e/automation_guard_chunks2_test.py --binary \"$1\"",
+        "automation-guard-chunks2-e2e",
+    });
+    automation_guard_chunks2_e2e.addArtifactArg(exe);
     // S8a (RoseCat on 9295b0b): a guarded contenteditable insert counts only what was inserted.
     const automation_guard_insert_e2e = b.addSystemCommand(&.{
         "sh",
@@ -2682,6 +2700,8 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&automation_guard_e2e.step);
     test_step.dependOn(&run_automation_guard_chunks_tests.step);
     test_step.dependOn(&automation_guard_chunks_e2e.step);
+    test_step.dependOn(&run_automation_guard_chunks2_tests.step);
+    test_step.dependOn(&automation_guard_chunks2_e2e.step);
     test_step.dependOn(&run_automation_guard_press_tests.step);
     test_step.dependOn(&automation_guard_insert_e2e.step);
     test_step.dependOn(&automation_load_serial_e2e.step);

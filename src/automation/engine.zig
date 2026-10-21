@@ -309,6 +309,11 @@ const Run = struct {
     ended_on_bare_port_timeout: bool = false,
     /// Monotonic across the whole command (retries and per-character ops).
     attempts: u32 = 0,
+    /// Chunks of a guarded dom.type after the first: attempts, but not retries.
+    extra_chunks: u32 = 0,
+    /// Set when runDomUntil's failure may have come after the script acted (the page call
+    /// failed, the answer was malformed, or the script threw), so what it sent is unknown.
+    dispatch_unknown: bool = false,
     /// selector.match_count from the script's latest selector.resolve span.
     match_count_buf: [16]u8 = undefined,
     match_count_len: usize = 0,
@@ -585,27 +590,50 @@ pub const Engine = struct {
     /// S8 decision 15: a guarded dom.type runs `type_chunk_codepoints` code points per automation.js
     /// evaluation, split at code-point boundaries, so the command's cancellation is seen between
     /// chunks (runDomUntil checks it before each) and the page's own event loop runs between them.
-    /// One cumulative `data.sent` covers the completed chunks and the one that stopped; a chunk
-    /// that fails without counts of its own reports the completed chunks as a lower bound.
+    /// The chunks are one action (RoseCat on 76cb14a): chunk 1 returns its target element's and
+    /// its document's tokens, every later chunk carries both, and none starts at or after the
+    /// deadline. One cumulative `data.sent` covers the completed chunks and the one that stopped
+    /// when that one is known to have sent nothing more or reports its own counts; after an
+    /// ambiguous failure the completed chunks are only `data.sent_at_least`.
     fn typeInChunks(self: *Engine, gpa: std.mem.Allocator, command: *const router.ParsedCommand, deadline: u64, run: *Run) error{OutOfMemory}!Outcome {
         var total = GuardSent{ .events = 0, .chars = 0 };
+        var bound: ?ChunkAck = null;
+        defer if (bound) |*ack| ack.deinit(gpa);
         var rest = command.text.?;
         while (rest.len > 0) {
+            if (bound != null) {
+                if (self.clock.nowMs() >= deadline) {
+                    return withPriorSent(gpa, try timeoutWithReason(gpa, .action_timeout, "type_chunk_deadline", run.ids, run.attempts), total, .exact);
+                }
+                run.extra_chunks += 1;
+            }
             const end = chunkEnd(rest, type_chunk_codepoints);
             var chunk = command.*;
             chunk.text = rest[0..end];
             chunk.chunk = true;
+            if (bound) |ack| {
+                chunk.chunk_target = ack.target;
+                chunk.chunk_document = ack.document;
+            }
+            run.dispatch_unknown = false;
             var outcome = try self.runDomUntil(gpa, &chunk, deadline, run);
             switch (outcome) {
-                .failure => return withPriorSent(gpa, outcome, total),
+                .failure => return withPriorSent(gpa, outcome, total, if (run.dispatch_unknown) .at_least else .exact),
                 .result => |json| {
-                    const sent = resultSent(gpa, json);
+                    const parsed = try chunkAck(gpa, json);
                     outcome.deinit(gpa);
-                    const counts = sent orelse return withPriorSent(gpa, .{ .failure = .{ .code = internal_error_code, .message = "Internal error" } }, total);
+                    var ack = parsed orelse return withPriorSent(gpa, internalError(), total, .at_least);
                     total = .{
-                        .events = std.math.add(u64, total.events, counts.events) catch return withPriorSent(gpa, .{ .failure = .{ .code = internal_error_code, .message = "Internal error" } }, total),
-                        .chars = std.math.add(u64, total.chars, counts.chars) catch return withPriorSent(gpa, .{ .failure = .{ .code = internal_error_code, .message = "Internal error" } }, total),
+                        .events = std.math.add(u64, total.events, ack.sent.events) catch {
+                            ack.deinit(gpa);
+                            return withPriorSent(gpa, internalError(), total, .at_least);
+                        },
+                        .chars = std.math.add(u64, total.chars, ack.sent.chars) catch {
+                            ack.deinit(gpa);
+                            return withPriorSent(gpa, internalError(), total, .at_least);
+                        },
                     };
+                    if (bound == null) bound = ack else ack.deinit(gpa);
                 },
             }
             rest = rest[end..];
@@ -689,9 +717,13 @@ pub const Engine = struct {
                     // A page call cut short by the command deadline after
                     // earlier retryable failures: that evidence is the
                     // answer. (A Timeout before the deadline stays one.)
-                    if (last.recorded and self.clock.nowMs() >= deadline) return deadlineFailure(gpa, &last, ids, run.attempts);
+                    if (last.recorded and self.clock.nowMs() >= deadline) {
+                        run.dispatch_unknown = true;
+                        return deadlineFailure(gpa, &last, ids, run.attempts);
+                    }
                     run.ended_on_bare_port_timeout = true;
                 }
+                run.dispatch_unknown = true;
                 return portFailure(gpa, err, .action, ids);
             };
             defer gpa.free(text);
@@ -699,7 +731,10 @@ pub const Engine = struct {
 
             var script_result = script_command.parseScriptResult(gpa, text) catch |err| switch (err) {
                 error.OutOfMemory => return error.OutOfMemory,
-                error.MalformedScriptResult => return malformedResult(),
+                error.MalformedScriptResult => {
+                    run.dispatch_unknown = true;
+                    return malformedResult();
+                },
             };
             defer script_result.deinit();
             forwardScriptSpans(run, &script_result);
@@ -708,7 +743,10 @@ pub const Engine = struct {
             if (script_result.ok) {
                 return .{ .result = try std.json.Stringify.valueAlloc(gpa, script_result.value, .{}) };
             }
-            if (!shouldRetry(&script_result, is_wait)) return scriptFailure(gpa, &script_result, ids);
+            if (!shouldRetry(&script_result, is_wait)) {
+                if (std.mem.eql(u8, script_result.error_name.?, script_command.script_exception)) run.dispatch_unknown = true;
+                return scriptFailure(gpa, &script_result, ids);
+            }
             last.record(&script_result);
 
             const now = self.clock.nowMs();
@@ -1301,7 +1339,7 @@ fn recordRoot(facts: RootFacts, options: ExecuteOptions, run: *const Run, outcom
         .timeout_ms = facts.timeout_ms,
         .queue_wait_ms = options.queue_wait_ms,
         .duration_ms = duration_ms,
-        .retry_count = run.attempts -| 1,
+        .retry_count = run.attempts -| 1 -| run.extra_chunks,
         .result_status = if (outcome.* == .result) "ok" else "error",
         .automation_error = automation_error,
     }) catch {};
@@ -1778,8 +1816,21 @@ fn chunkEnd(text: []const u8, max: usize) usize {
     return index;
 }
 
-/// A chunk's own counts from its success result (`value.sent`).
-fn resultSent(gpa: std.mem.Allocator, json: []const u8) ?GuardSent {
+/// A chunk's success result (`value`): its own counts and its target element's and document's
+/// tokens (owned).
+const ChunkAck = struct {
+    sent: GuardSent,
+    target: []u8,
+    document: []u8,
+
+    fn deinit(self: *ChunkAck, gpa: std.mem.Allocator) void {
+        gpa.free(self.target);
+        gpa.free(self.document);
+    }
+};
+
+/// Null when the result lacks the counts or either token.
+fn chunkAck(gpa: std.mem.Allocator, json: []const u8) error{OutOfMemory}!?ChunkAck {
     const parsed = std.json.parseFromSlice(std.json.Value, gpa, json, .{}) catch return null;
     defer parsed.deinit();
     const object = switch (parsed.value) {
@@ -1790,26 +1841,53 @@ fn resultSent(gpa: std.mem.Allocator, json: []const u8) ?GuardSent {
         .object => |o| o,
         else => return null,
     };
-    return .{ .events = countOf(counts.get("events")) orelse return null, .chars = countOf(counts.get("chars")) orelse return null };
+    const sent = GuardSent{ .events = countOf(counts.get("events")) orelse return null, .chars = countOf(counts.get("chars")) orelse return null };
+    const target = switch (object.get("target") orelse return null) {
+        .string => |t| t,
+        else => return null,
+    };
+    const document = switch (object.get("document") orelse return null) {
+        .string => |d| d,
+        else => return null,
+    };
+    if (target.len == 0 or document.len == 0) return null;
+    const owned_target = try gpa.dupe(u8, target);
+    errdefer gpa.free(owned_target);
+    return .{ .sent = sent, .target = owned_target, .document = try gpa.dupe(u8, document) };
 }
 
-/// A chunk's failure, with the completed chunks' counts added to its own `sent` (or as its
-/// `sent` when it has none, a lower bound). With nothing completed it is returned as it is.
-fn withPriorSent(gpa: std.mem.Allocator, outcome: Outcome, prior: GuardSent) error{OutOfMemory}!Outcome {
+fn internalError() Outcome {
+    return .{ .failure = .{ .code = internal_error_code, .message = "Internal error" } };
+}
+
+/// How the completed chunks' counts join a later chunk's failure.
+const PriorSent = enum {
+    /// The failing chunk sent nothing more, or reports its own counts: one exact `sent`.
+    exact,
+    /// The failing chunk may have acted: the completed chunks are only `sent_at_least`.
+    at_least,
+};
+
+/// A chunk's failure, with the completed chunks' counts: added to its own `sent` (or as its
+/// `sent` when it has none) when exact, else as `sent_at_least`. With nothing completed it is
+/// returned as it is.
+fn withPriorSent(gpa: std.mem.Allocator, outcome: Outcome, prior: GuardSent, mode: PriorSent) error{OutOfMemory}!Outcome {
     if (prior.events == 0 and prior.chars == 0) return outcome;
     var failure = outcome.failure;
     const old = failure.data_json orelse "{}";
     const Own = struct { sent: ?GuardSent = null };
-    const own: GuardSent = blk: {
+    const own: GuardSent = if (mode == .at_least) .{ .events = 0, .chars = 0 } else blk: {
         const parsed = std.json.parseFromSlice(Own, gpa, old, .{ .ignore_unknown_fields = true }) catch break :blk .{ .events = 0, .chars = 0 };
         defer parsed.deinit();
         break :blk parsed.value.sent orelse .{ .events = 0, .chars = 0 };
     };
-    const counts = try std.fmt.allocPrint(gpa, "\"sent\":{{\"events\":{d},\"chars\":{d}}}", .{ prior.events +| own.events, prior.chars +| own.chars });
+    const key = if (mode == .exact) "\"sent\":{" else "\"sent_at_least\":{";
+    const counts = try std.fmt.allocPrint(gpa, "{s}\"events\":{d},\"chars\":{d}}}", .{ key, prior.events +| own.events, prior.chars +| own.chars });
     defer gpa.free(counts);
     // Data objects are flat but for `sent` (AutomationErrorData): replace it, or add it first.
-    const data_json = if (std.mem.indexOf(u8, old, "\"sent\":{")) |at| blk: {
-        const close = std.mem.indexOfScalarPos(u8, old, at + "\"sent\":{".len, '}') orelse break :blk try gpa.dupe(u8, old);
+    const data_json = if (mode == .exact and std.mem.indexOf(u8, old, key) != null) blk: {
+        const at = std.mem.indexOf(u8, old, key).?;
+        const close = std.mem.indexOfScalarPos(u8, old, at + key.len, '}') orelse break :blk try gpa.dupe(u8, old);
         break :blk try std.mem.concat(gpa, u8, &.{ old[0..at], counts, old[close + 1 ..] });
     } else if (old.len >= 2 and old[0] == '{') blk: {
         const sep: []const u8 = if (std.mem.trim(u8, old[1 .. old.len - 1], " ").len == 0) "" else ",";

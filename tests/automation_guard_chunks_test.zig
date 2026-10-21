@@ -97,8 +97,9 @@ const Harness = struct {
     }
 };
 
+/// A chunk's success: its own counts and its target's and document's tokens.
 fn ok(comptime events: u64, comptime chars: u64) fakes.EvalReply {
-    return .{ .json = std.fmt.comptimePrint("{{\"ok\":true,\"value\":{{\"ok\":true,\"sent\":{{\"events\":{d},\"chars\":{d}}}}},\"telemetry\":[]}}", .{ events, chars }) };
+    return .{ .json = std.fmt.comptimePrint("{{\"ok\":true,\"value\":{{\"ok\":true,\"sent\":{{\"events\":{d},\"chars\":{d}}},\"target\":\"t-1\",\"document\":\"d-1\"}},\"telemetry\":[]}}", .{ events, chars }) };
 }
 
 fn sentOf(outcome: engine.Outcome) !struct { events: i64, chars: i64 } {
@@ -187,7 +188,7 @@ test "a stop between chunks: -32012 with what the completed chunks sent, no late
     try testing.expectEqual(@as(usize, 1), h.port.inner.eval_calls.items.len);
 }
 
-test "a later chunk that fails otherwise keeps its error and reports the completed chunks as a lower bound" {
+test "a later chunk the script refuses before acting keeps its error and reports the completed chunks exactly" {
     var h: Harness = undefined;
     h.init();
     defer h.deinit();
@@ -216,6 +217,4 @@ test "without a guard, dom.type is one evaluation of the whole text" {
 
 test "a guard with a per-character delay_ms is BadArgs (a guarded type has its own chunk schedule)" {
     try testing.expectError(error.BadArgs, router.parse(gpa, "dom.type", "{\"selector\":\"css=#msg\",\"text\":\"hi\",\"delay_ms\":5,\"options\":{\"guard\":" ++ guard ++ "}}", .{}));
-    var command = try router.parse(gpa, "dom.type", "{\"selector\":\"css=#msg\",\"text\":\"hi\",\"delay_ms\":0,\"options\":{\"guard\":" ++ guard ++ "}}", .{});
-    command.deinit();
 }

@@ -287,6 +287,12 @@
 
     const element = resolved.elements[0];
     guardTarget(element);
+    // A later chunk of a guarded type acts only on chunk 1's element in chunk 1's document
+    // (RoseCat on 76cb14a): a same-selector clone, or a new document, stops it before any event.
+    if (command.chunk === true && currentGuard && typeof command.chunk_document === 'string') {
+      if (command.chunk_document !== inputAck.doc) throw new GuardStop('document_changed');
+      if (command.chunk_target !== elementIds.get(element)) throw new GuardStop('target_changed');
+    }
     const options = command.options || {};
     const force = options.force === true || command.force === true;
     const trial = options.trial === true || command.trial === true;
@@ -318,7 +324,12 @@
     if (action === 'press') synthesizePress(element, command.key, command.modifiers || []);
     // One chunk of a guarded type (S8 decision 15): the engine adds up each chunk's counts.
     if (command.chunk === true && currentGuard) {
-      return success({ ok: true, sent: { events: currentGuard.sent.events, chars: currentGuard.sent.chars } }, telemetry);
+      return success({
+        ok: true,
+        sent: { events: currentGuard.sent.events, chars: currentGuard.sent.chars },
+        target: elementId(element),
+        document: inputAck.doc
+      }, telemetry);
     }
     return success({ ok: true }, telemetry);
   }

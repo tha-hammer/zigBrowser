@@ -130,6 +130,10 @@ pub const ParsedCommand = struct {
     /// Internal (never parsed): one chunk of a guarded dom.type (S8 decision 15); automation.js
     /// then reports the chunk's own sent counts on success too.
     chunk: bool = false,
+    /// Internal: on every chunk after the first, chunk 1's target element token and document
+    /// token (RoseCat on 76cb14a); automation.js types only into that element of that document.
+    chunk_target: ?[]const u8 = null,
+    chunk_document: ?[]const u8 = null,
 
     pub fn deinit(self: *ParsedCommand) void {
         self.arena.deinit();
@@ -322,8 +326,9 @@ pub fn parse(
         if (input == .native or command.humanize) return error.BadArgs;
         // A selectorless press has no target of its own to re-resolve (RoseCat on 9295b0b).
         if (verb == .dom_press and command.selector == null and command.guard.?.target) return error.BadArgs;
-        // A guarded type runs in chunks (decision 15); per-character delays are another schedule.
-        if (command.delay_ms) |delay| if (delay > 0) return error.BadArgs;
+        // A guarded type runs in chunks (decision 15); per-character delays are another schedule,
+        // so any delay_ms is refused, 0 included (as humanize does; RoseCat on 76cb14a).
+        if (command.delay_ms != null) return error.BadArgs;
     }
 
     command.arena = arena;
