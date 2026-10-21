@@ -2,7 +2,8 @@
 # MS6.4 (plan :1610, :1576-1583) — the GENERATED profiles enforce the egress endpoint policy under real
 # sandbox-exec, both arches.
 #
-#   $1 = a directory holding sandbox_macos.py (the production generator) + ms6_4_connect_probe.c.
+#   $1 = a directory holding sandbox_macos.py (the production generator), netd.py (the production egress proxy)
+#        and ms6_4_connect_probe.c.
 #
 # The SandboxBackend egress capability (rev 6) pins a TCP 127.0.0.1:<egress_port> plus the two canonical bridges
 # :51091/:31337; a HOOK gets the bridges but CANNOT reach the egress port. This gate proves the GENERATED
@@ -20,11 +21,15 @@ set -eu
 DIR="${1:?usage: ms6_4_egress_test.sh <dir-with-sandbox_macos.py-and-probe>}"
 [ -f "$DIR/sandbox_macos.py" ] || { echo "FAIL	ms6-4-egress (sandbox_macos.py not found in $DIR)"; exit 1; }
 [ -f "$DIR/ms6_4_connect_probe.c" ] || { echo "FAIL	ms6-4-egress (probe source not found in $DIR)"; exit 1; }
+[ -f "$DIR/netd.py" ] || { echo "FAIL	ms6-4-egress (netd.py not found in $DIR)"; exit 1; }
 
 TMP=$(mktemp -d /tmp/zb-ms64.XXXXXX)
 LPID=""
+NPID=""
 cleanup() {
     [ -n "$LPID" ] && { kill "$LPID" 2>/dev/null || true; wait "$LPID" 2>/dev/null || true; }
+    # the netd holder: on TERM it closes netd's stdin (netd's own clean exit) and reaps it
+    [ -n "$NPID" ] && { kill "$NPID" 2>/dev/null || true; wait "$NPID" 2>/dev/null || true; }
     # guarded delete (never an empty/parent path — shared-worktree rule): only our own mktemp dir
     case "$TMP" in /tmp/zb-ms64.*) find "${TMP:?}" -mindepth 0 -delete 2>/dev/null || rm -rf "${TMP:?}" ;; esac
 }
@@ -98,6 +103,54 @@ with open(os.path.join(out, "hook.sb"), "w") as f:
     f.write(sandbox_macos.render_profile(egress=None, bridges=(51091, 31337), is_hook=True))
 PY
 
+# The REAL netd (contract (1); BlueBeaver bead zigBrowser-v9f): started with the --test-port seam on a port free on
+# both families, so it holds its 127.0.0.1 listener AND its [::1] reservation (V6ONLY, bound, never listening) for
+# the rows below. The holder keeps netd's stdin open; on TERM it closes it (netd's normal exit) and reaps netd.
+/usr/bin/python3 -I - "$DIR" "$TMP/netd" <<'PY' &
+import os, signal, socket, subprocess, sys, time
+d, out = sys.argv[1], sys.argv[2]
+def free_both():
+    for _ in range(50):
+        with socket.socket(socket.AF_INET) as s:
+            s.bind(("127.0.0.1", 0)); port = s.getsockname()[1]
+        try:
+            with socket.socket(socket.AF_INET6) as s6:
+                s6.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1); s6.bind(("::1", port))
+        except OSError:
+            continue
+        return port
+    raise SystemExit("no port free on both families")
+port = free_both()
+netd = subprocess.Popen(["/usr/bin/python3", "-I", os.path.join(d, "netd.py"), "--test-port", str(port)],
+                        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+def stop(*_):
+    netd.stdin.close(); netd.wait(10); sys.exit(0)
+signal.signal(signal.SIGTERM, stop)
+line = netd.stdout.readline().strip()
+with open(out + ".tmp", "w") as f:
+    f.write("%d %s\n" % (port, line.replace(" ", "_")))
+os.rename(out + ".tmp", out)
+while netd.poll() is None:
+    time.sleep(0.5)
+PY
+NPID=$!
+i=0
+while [ ! -s "$TMP/netd" ] && [ "$i" -lt 100 ]; do i=$((i+1)); sleep 0.1; done
+[ -s "$TMP/netd" ] || { echo "FAIL	ms6-4-egress (the real netd did not report)"; exit 1; }
+read NETD_PORT NETD_LINE < "$TMP/netd"
+[ "$NETD_LINE" = "netd_ready_127.0.0.1:$NETD_PORT" ] || {
+    echo "FAIL	ms6-4-egress (netd --test-port $NETD_PORT did not come ready: ${NETD_LINE:-<none>})"; exit 1; }
+echo "real netd up: 127.0.0.1:$NETD_PORT (+ its [::1]:$NETD_PORT reservation)"
+/usr/bin/python3 -I - "$DIR" "$TMP" "$NETD_PORT" <<'PY' || { echo "FAIL	ms6-4-egress (netd profile generation failed)"; exit 1; }
+import os, sys, types
+d, out, port = sys.argv[1], sys.argv[2], int(sys.argv[3])
+sys.path.insert(0, d)
+import sandbox_macos
+with open(os.path.join(out, "cli-netd.sb"), "w") as f:
+    f.write(sandbox_macos.render_profile(egress=types.SimpleNamespace(host="127.0.0.1", port=port),
+                                         bridges=(51091, 31337), is_hook=False))
+PY
+
 # probe <profile|NONE> <ip> <port> <proto> <want-tag> <label>  (fails is initialized above, with the selftest)
 probe() {
     prof="$1"; ip="$2"; port="$3"; proto="$4"; want="$5"; label="$6"
@@ -138,20 +191,21 @@ probe cli.sb 1.1.1.1   443      tcp CONNECT-DENIED "cli is DENIED a public IP"
 #  - UDP is DENIED: the rule is (remote tcp ...), so UDP at the port is refused by policy (EPERM). A mutant
 #    back to (remote ip ...) re-opens UDP and reds this line.
 #  - IPv4-mapped IPv6 is DENIED.
-#  - IPv6 ::1 TCP is REFUSED, not DENIED: Seatbelt's "localhost" token covers BOTH loopback families and has no
-#    v4-only form (the 127.0.0.1 literal is a parse error), so ::1:<port> TCP is permitted by POLICY — but it is
-#    unreachable (netd and the bridges bind 127.0.0.1 only, so nothing listens on ::1): REFUSED proves the CLI
-#    reaches no v6 endpoint. This is the enforced shape: loopback TCP:<port>, v4-reachable only.
+#  - IPv6 ::1 TCP at the allowed port is permitted by POLICY (Seatbelt's "localhost" token covers both loopback
+#    families and has no v4-only form), so it must reach NOTHING: see the real-netd rows below.
 probe cli.sb 127.0.0.1        "$EGRESS" udp CONNECT-DENIED  "cli is DENIED UDP v4 at the egress port"
 probe cli.sb ::1              "$EGRESS" udp CONNECT-DENIED  "cli is DENIED UDP v6 at the egress port"
 probe cli.sb ::ffff:127.0.0.1 "$EGRESS" tcp CONNECT-DENIED  "cli is DENIED IPv4-mapped IPv6 at the egress port"
 probe cli.sb 127.0.0.1        "$DECOY"  tcp CONNECT-DENIED  "cli is DENIED another v4 port (policy, not just refused)"
 probe cli.sb ::1              "$DECOY"  tcp CONNECT-DENIED  "cli is DENIED another v6 port (policy, not just refused)"
-# The ONE permitted-but-reachless endpoint: ::1 at the ALLOWED port. Policy admits loopback TCP (both families;
-# Seatbelt has no v4-only token), so this is not DENIED — but it must reach nothing. Durability is netd's job:
-# netd RESERVES [::1]:<port> (IPV6_V6ONLY, non-listening) and fails startup if it can't, so a squatter can never
-# own it (RoseCat 7071; BlueBeaver bead zigBrowser-v9f, tested in the netd gate). Here, with no listener, REFUSED.
-probe cli.sb ::1              "$EGRESS" tcp CONNECT-REFUSED "cli reaches no v6 listener at the egress port (netd reserves it; v4-only reachable)"
+# The ONE permitted-but-reachless endpoint: [::1] at the ALLOWED port, with the REAL netd holding it (plan contract
+# (1)-(2), e05774f; RoseCat 7097). Policy admits it, so it is not DENIED; netd's reservation is bound and never
+# listening, and macOS DROPS a SYN at such a socket, so the connect never completes: exactly CONNECT-TIMEOUT.
+# Fail-closed classification: CONNECT-OK (a completed connection: a foreign listener) and CONNECT-REFUSED (nothing
+# holds ::1: the reservation is missing) are both violations; so is DENIED (the policy changed under us).
+probe cli-netd.sb 127.0.0.1 "$NETD_PORT" tcp CONNECT-OK      "cli reaches the real netd's egress listener (positive control)"
+probe NONE        ::1       "$NETD_PORT" tcp CONNECT-TIMEOUT "unsandboxed: netd's [::1] reservation alone drops the SYN (the timeout is the reservation, not Seatbelt)"
+probe cli-netd.sb ::1       "$NETD_PORT" tcp CONNECT-TIMEOUT "cli's [::1]:<egress port> reaches nothing: netd's reservation holds it (contract (2))"
 
 # HOOK profile: the egress port is denied; the bridges still work.
 probe hook.sb 127.0.0.1 "$EGRESS" tcp CONNECT-DENIED "hook is DENIED the egress proxy port"

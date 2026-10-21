@@ -38,7 +38,7 @@ verify_host() { # $1=host $2=key $3=label (the label is the EXPECTED uname -m, a
     tests/mac/agent_sandbox_ms6_1_token_isolation.sb tests/mac/ms6_1_token_isolation_test.sh tests/mac/ms6_1_procinfo_probe.c \
     tests/mac/ms6_generated_profile_test.sh tests/mac/ms6_3_fd3_reopen_test.sh tests/mac/ms6_3_fd3_reopen.c \
     tests/mac/ms6_4_egress_test.sh tests/mac/ms6_4_connect_probe.c \
-    agent/host/zb_agent_host/sandbox_macos.py \
+    agent/host/zb_agent_host/sandbox_macos.py agent/host/zb_agent_host/netd.py \
     "$host":"${rdir}"/ >/dev/null \
     || { echo "FAIL: scp MS6 sources to $host" >&2; "${SSH[@]}" "$host" "$rm_rdir" >/dev/null 2>&1 || true; return 1; }
   timeout "$LEG_TIMEOUT" "${SSH[@]}" "$host" "ZB_EXPECT_ARCH='${label}' ZB_RDIR='${rdir}' /bin/bash -s" <<'REMOTE' || { echo "FAIL: MS6 leg on $host timed out/failed" >&2; "${SSH[@]}" "$host" "$rm_rdir" >/dev/null 2>&1 || true; return 1; }
