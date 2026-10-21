@@ -1209,13 +1209,16 @@ int run_message_loop(AppState *app) {
 // The shared core behind both entry points. `screenshot` adds the CapturePreview-on-load path
 // (writes `out_path` then quits); otherwise it is the interactive open. In screenshot mode every
 // navigation, timeout, start and capture failure names its reason on stderr (screenshot_diag /
-// capture_screenshot). The runtime-missing path below is left to WS1.4 (its pinned message and
-// red/mutants are a separate, still-outstanding slice), so it is intentionally not claimed here.
+// capture_screenshot). WS1.4: the runtime-missing path prints the documented, pinned diagnostic and exits
+// ZB_EXIT_RUNTIME_MISSING (9); tests/windows/ws1_run_test.py WS14MissingRuntime asserts the exact text.
 static int run_core(const char *uri, int print_title, int e2e_protocol, bool screenshot,
                     const char *out_path) {
   char version[128] = {0};
   if (!webview2_runtime_version(version, sizeof(version))) {
-    return ZB_EXIT_RUNTIME_MISSING; // WS1.4: pinned runtime-missing message + reds are a separate slice
+    // WS1.4 pinned message (exact, on STDERR — never stdout), then exit 9.
+    fprintf(stderr, "zigBrowser: the Microsoft Edge WebView2 Runtime is not installed\n");
+    fflush(stderr);
+    return ZB_EXIT_RUNTIME_MISSING;
   }
 
   const HRESULT com_hr = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
