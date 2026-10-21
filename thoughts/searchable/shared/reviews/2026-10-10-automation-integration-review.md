@@ -20801,3 +20801,44 @@ tree-walk green. Aligning the standalone script's host/key variables with the
 canonical MS6 gate is also a SHOULD. No full gate was run because this is an
 unregistered Mac-only red and BlackRobin owns the shared slot. Findings mailed
 to JadeBeacon, cc BlueBeaver, in Agent Mail 7043.
+
+## MS6.4a TCP endpoint fix-forward (`70444e5`)
+
+Reviewed exact security-critical commit `70444e5` on 2026-10-20. **Verdict:
+BLOCKED; it closes the UDP leak and cleanup defect but does not close
+`65f6afe`/7039.** Changing the renderer from `(remote ip ...)` to
+`(remote tcp ...)` correctly denies UDP. The probe now classifies only
+`EPERM`/`EACCES` as a policy denial, distinguishes ordinary refusal and
+observation errors, checks both `fcntl` calls and `getsockopt`, and retries
+`select` after `EINTR`. The guarded temp deletion and listener `wait` also
+close the cleanup finding.
+
+Two blockers remain:
+
+1. **BLOCKER:** the generated capability is still wider than the authoritative
+   contract. The plan pins TCP `127.0.0.1:<port>` and says only that endpoint
+   is permitted (`2026-10-14-14-30-macos-launch-tdd-plan.md:1576-1583,
+   1610-1615`). The renderer now expressly records that Seatbelt's
+   `localhost` token also permits TCP `::1:<port>`
+   (`sandbox_macos.py:83-90,161,205`). The test expects `CONNECT-REFUSED` for
+   that address (`ms6_4_egress_test.sh:114-120`), which proves that policy
+   allowed the attempt and no listener happened to exist; it does not prove
+   the file's claims at `:7-16` that the profile enforces IPv4-only shape or
+   denies IPv6. Another host process can bind the IPv6 endpoint, and the same
+   widening affects the hook's two bridge ports. Enforce the pinned v4-only
+   capability, or obtain an explicit user-approved plan change and ensure
+   every allowed v4/v6 endpoint is the same app-owned capability with live
+   positive controls on both families. A present-time refusal is not a durable
+   security boundary.
+2. **BLOCKER-for-tests:** the previous deterministic error-branch requirement
+   remains open. The implementation handles `fcntl`, non-`EINTR` `select`,
+   `getsockopt`, and `EINTR`/deadline paths, but the tests force none of them.
+   The new self-check covers only ordinary `CONNECT-OK` and
+   `ECONNREFUSED`. Add fault seams or an equivalent probe self-test so a mutant
+   mapping each observation error to DENIED/OK turns red.
+
+Independent exact-SHA checks passed `test_sandbox_macos` 49/49, compiled the C
+probe with `-std=c11 -Wall -Wextra -Werror`, and passed `sh -n` for both shell
+scripts. The reported both-Mac gate was not independently rerun and no full
+gate was run because BlackRobin owns the shared slot. Findings mailed to
+JadeBeacon, cc BlueBeaver, in Agent Mail 7046.
