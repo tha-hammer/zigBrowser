@@ -24136,3 +24136,89 @@ The dirty-source test must inspect or capture the actual `src.tar`, not merely
 find three expected digest lines: printing export hashes while packaging other
 bytes currently survives that assertion. Findings and reproductions were sent
 to BlueBeaver with JadeBeacon copied in Agent Mail 7269.
+
+## MS6.5 reaper pin follow-up (`ec9a896`)
+
+**BLOCKED; the Mac reaper gate remains OFF.** Exact-export, signal-free runs in
+a private user/PID namespace passed the engine's 22 checks and the new pin
+test's 7 checks. The commit usefully refuses a null overflow pointer and tests
+an ordinary replacement directory, but the destructive boundary is still not
+safe:
+
+1. `agent_run_reaper.c:259-269` opens the directory when census/sweep begins,
+   not when the app creates the run directory. It therefore remains an
+   invocation-time pin rather than the lifecycle-held creation identity claimed
+   by the header.
+2. Lines 264-270 check the pathname once before the entire scan and again only
+   after it. A swap after the first check and before any `killsig` at line 123
+   can still classify and signal a process under the replacement tree. The
+   injected engine needs a no-follow identity revalidation immediately before
+   every destructive signal, with a forced in-run swap proving zero signals.
+3. `zb_reaper_dir_still_pinned` uses following `stat` at line 199. An exact
+   safe-temp probe renamed the held directory aside and replaced its pathname
+   with a symlink back to that same inode: following `stat` reported the exact
+   held dev/inode while `lstat` reported a symlink. The current guard accepts
+   that replacement. Use `fstatat(..., AT_SYMLINK_NOFOLLOW)` or `lstat`, require
+   a directory, and reject it.
+4. The output contract fix covers only null `overflow`. Null operations or
+   callbacks, positive `npids` with null pids, null scan/output pointers and
+   negative counts/capacities are not validated; several crash or admit an
+   invalid success. The full engine/gather/run-full/public EINVAL table from the
+   prior review remains required.
+
+The header still misstates empty gather as `-2` and omits EIO from the public
+return list. Findings were sent to JadeBeacon, copying BlueBeaver, in Agent Mail
+7271.
+
+## MS6 hard-gate provenance follow-up (`e9290ed`, `ac5e9bf`)
+
+`e9290ed` is **APPROVED as failing-first for the tar/symlink, install-oracle and
+verifier-lock rows, but BLOCKED-for-tests on launcher provenance**. `ac5e9bf` is
+**BLOCKED** by that remaining launcher boundary; do not run the armed gate on
+either Mac. Exact private-PID-namespace runs produced the expected red at
+`e9290ed` (three failures and two errors) and 17/17 green at `ac5e9bf`.
+
+Three prior findings are closed: special/symlink entries are refused and the
+real tar is exactly censused; the absolute `/usr/sbin/installer` form and the
+listed variants are caught; and the temporary Sigstore environment is a
+committed full hash lock, pinned from the export and installed with
+`--require-hashes --no-deps`.
+
+The launcher still authenticates itself only at `ms6_hard_gate.sh:52-53`, after
+the mutable script has already executed lines 31-51. The committed red inserts
+only an inert `echo`, which reaches that comparison. A causal added row that
+instead inserts `curl https://dirty-launcher.invalid` immediately after
+`set -euo pipefail` fails on `ac5e9bf`: the recording curl shim runs and exits
+99 before `cmp`, with no launcher refusal. A mutable script cannot establish
+its own provenance after beginning execution. The real entry must execute the
+launcher bytes obtained directly from the named commit/export (or define an
+equivalent trusted external bootstrap), and the causal network-before-refusal
+row must be green. The comment at lines 25-26 also still says the working tree
+is shipped although the named export is shipped. Verdict sent in Agent Mail
+7275.
+
+## Windows atomic-publish follow-up (`d482510`)
+
+**BLOCKED; `defb5a2`/`b32f285` remain open.** The exact-export focused suite is
+green 31/31 and the commit closes the consumer-surface mismatch and weak
+generation naming. Its GC remains unsafe across parent symlinks and its
+concurrency rule rests on a time heuristic:
+
+1. `build-on-windows.sh:49-64` rejects only a symlink at the final `gen`
+   component. In an exact safe-temp reproduction, `out` was a symlink to an
+   outside tree containing an old `gen/g-victim/keep`; running `--gc` with
+   `ZB_WIN_EXE=<tmp>/out/current/zigBrowser.exe` exited zero and deleted the
+   outside sentinel. Pin/no-follow every publish-root component, and apply the
+   `<dir>/current/<name>` grammar to the GC path before deriving any delete
+   target.
+2. Publish creates and fills `gendir` before acquiring `.publish.lock` at lines
+   181-206. GC holds that lock but deletes every non-live generation older than
+   one hour. A publisher suspended past the grace period can have its candidate
+   removed, then swap `current` to the nonexistent target. Hold the common lock
+   from before generation creation/assembly through swap, or add an equivalent
+   causally pinned active-generation protocol, and test the interleaving rather
+   than relying on wall time.
+
+The separate-GC and append-only-publish direction is otherwise sound. No VM was
+touched. Findings were sent to AzureRidge, copying BlueBeaver, in Agent Mail
+7277.
