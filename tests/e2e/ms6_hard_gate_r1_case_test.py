@@ -7,13 +7,25 @@
   sticky fault, kept even when a later scan is clean (RoseCat 7312); a survivor still alive after CHAIN_GRACE_S is a
   survivor; either way the chain is re-inspected (never signalled) until a clean, empty scan or the row's self-exit
   horizon, and `last` is that final scan.
-No process is started and no signal is sent: h.spawn_group and proc_darwin are fakes, the clock is fake, and os.kill /
-os.killpg are patched to raise.
+- run(h) itself, against a FAKE staged zb_agent_host (setup/proc_darwin/sandbox/token written into a temp prefix), runs
+  every row (positive/honest, planted, forge, hang) through _released with its own CLI (4e17273 on both Macs: the
+  evidence label "positive" was used as the CLI key, KeyError; RoseCat 7358);
+- the probe diagnostics are bounded and token-free: _sanitize redacts the probe token (contiguous, in a Bearer header,
+  in an env assignment, wrapped into 6-hex pieces, hex-encoded or base64-encoded) before it bounds the text, and a
+  failing positive row shows the probe's rc and sanitized stdout/stderr tails.
+No process is started and no signal is sent: h.spawn_group, setup's subprocess.run and proc_darwin are fakes, the
+clock is fake, and os.kill / os.killpg are patched to raise.
 Run like the gate: cd tests/e2e && unshare --user --map-root-user --pid --fork --mount-proc \\
   sh -c 'setsid python3 -X dev -m unittest -v ms6_hard_gate_r1_case_test'
 """
+import base64
 import importlib.util
 import os
+import re
+import shutil
+import sys
+import tempfile
+import textwrap
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -177,6 +189,182 @@ class ChainRelease(NoSignals):
         faults, survivors, last, seen = self.release([self.SURVIVOR] * 8 + [self.CLEAN], started_at=-95.0, clock_at=0.0)
         self.assertEqual((faults, survivors, last), ([], [], self.CLEAN))
         self.assertGreater(seen[-1], -95.0 + self.case.CHAIN_HORIZON_S)
+
+
+TOKEN = "zb-probe-" + "0123456789abcdef" * 3
+
+FAKE_SETUP = """
+import os, socket, subprocess as _sp, types
+from pathlib import Path
+from . import proc_darwin
+PLATFORM = "darwin"
+PACKAGE_DIR = Path(__file__).resolve().parent.parent
+PROBE_TIMEOUT_S = 30
+RESULT = {"rc": 0, "out": '{"r1": true}\\n', "err": "", "honest_clean": True}
+subprocess = types.SimpleNamespace(
+    run=lambda argv, *a, **kw: _sp.CompletedProcess(argv, RESULT["rc"], RESULT["out"], RESULT["err"]),
+    TimeoutExpired=_sp.TimeoutExpired)
+def probe_r1(wrapper, cli):
+    mode = os.path.basename(os.path.dirname(cli)).split("-", 1)[1]
+    listener = socket.socket(); listener.bind(("127.0.0.1", 0)); listener.listen(1)
+    ours, theirs = socket.socketpair()
+    port = listener.getsockname()[1]
+    profile = Path(wrapper).parent / "setup.sb"
+    profile.write_text('(allow network-outbound (remote tcp "localhost:%d"))\\n' % port)
+    try:
+        argv = ["/usr/bin/sandbox-exec", "-f", str(profile), "-D", "SCRATCHPAD=/s", "py", "-m", "zb_agent_host",
+                "probe-r1", "--wrapper", wrapper, "--cli", cli, "--listen-fd", str(listener.fileno()),
+                "--listen-port", str(port), "--census-fd", str(theirs.fileno())]
+        done = subprocess.run(argv, capture_output=True, text=True, timeout=60, env={},
+                              pass_fds=(listener.fileno(), theirs.fileno()))
+        if mode == "hang" or done.returncode != 0:
+            return False
+        canary = ("ANTHROPIC_BASE_URL=http://127.0.0.1:%d" % port).encode()
+        return proc_darwin.cli_env_clean(os.path.realpath(cli), os.getpid(), proc_darwin.TOKEN, canary) is True
+    finally:
+        listener.close(); ours.close(); theirs.close()
+"""
+
+FAKE_PROC = """
+import os
+TOKEN = b"zb-probe-" + b"0123456789abcdef" * 3
+LAST = {}
+def _mode(exe):
+    return os.path.basename(os.path.dirname(exe)).split("-", 1)[1]
+def descendants_running(exe, root):
+    LAST["mode"] = _mode(exe)
+    return [4242]
+def environ_of(pid):
+    env = [b"ANTHROPIC_BASE_URL=http://127.0.0.1:1"]
+    if LAST["mode"] in ("planted", "forge"):
+        env.append(b"ZB_PLANTED=" + TOKEN)
+    if LAST["mode"] == "forge":
+        env.append(b"ZB_FORGED=1024,0,0")
+    return b"raw", [b"claude"], env
+def cli_env_clean(exe, root, token, canary):
+    from . import setup
+    return _mode(exe) == "honest" and setup.RESULT["honest_clean"]
+def path(pid):
+    return None
+"""
+
+
+class RunWithAFakeStagedHost(NoSignals):
+    """run(h) end to end on Linux: the staged modules are fakes in a temp prefix; nothing is spawned."""
+
+    def setUp(self):
+        super().setUp()
+        self.tmp = tempfile.mkdtemp(prefix="zb-hg-r1-run-")
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.prefix = os.path.join(self.tmp, "agent-host")
+        pkg = os.path.join(self.prefix, "zb_agent_host")
+        os.makedirs(pkg)
+        files = {
+            "__init__.py": "",
+            "setup.py": FAKE_SETUP,
+            "proc_darwin.py": FAKE_PROC,
+            "sandbox.py": "import types\ndef channel():\n"
+                          "    return types.SimpleNamespace(fd=3, env='CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR')\n",
+            "token.py": "def write_wrapper(path, cli, python='/usr/bin/python3'):\n"
+                        "    with open(path, 'w') as f:\n"
+                        "        f.write('#!%s -I\\n# %s\\n' % (python, cli))\n",
+        }
+        for name, text in files.items():
+            with open(os.path.join(pkg, name), "w") as f:
+                f.write(textwrap.dedent(text))
+        self.scratch = os.path.join(self.tmp, "scratch")
+        os.mkdir(self.scratch)
+        self.addCleanup(self.forget)
+        self.forget()
+
+    def forget(self):
+        for name in [m for m in sys.modules if m == "zb_agent_host" or m.startswith("zb_agent_host.")]:
+            del sys.modules[name]
+        while self.prefix in sys.path:
+            sys.path.remove(self.prefix)
+
+    def harness(self):
+        test = self
+
+        class H:
+            scratch, prefix, python, cli = test.scratch, test.prefix, sys.executable, None
+            checks = []
+
+            def check(self, ok, label):
+                self.checks.append((bool(ok), label))
+                return bool(ok)
+
+            def spawn_group(self, argv, env=None, pass_fds=(), timeout=30):
+                if argv[:2] == ["/usr/bin/xcrun", "clang"]:
+                    out = argv[argv.index("-o") + 1]
+                    with open(out, "w") as f:
+                        f.write("#!/bin/sh\n")
+                    os.chmod(out, 0o700)
+                    return 0, b"", b""
+                assert argv == ["/bin/ps", "-axo", "pid=,uid=,stat="], argv
+                return 0, b"", b""
+
+        return H()
+
+    def test_every_row_runs_and_is_released_with_its_own_cli(self):
+        h = self.harness()
+        self.case.run(h)  # a raise (4e17273's KeyError: 'positive') fails the test
+        failed = [label for ok, label in h.checks if not ok]
+        self.assertEqual(failed, [], "a consistent fake staged host passes every row")
+        for label in ("positive", "planted", "forge", "hang"):
+            for what in ("afterwards port", "every scan inspected", "no part of the probe chain",
+                         "waited out unsignalled"):
+                with self.subTest(row=label, check=what):
+                    self.assertTrue(any(l.startswith(f"{label}: {what}") for _, l in h.checks), (label, what))
+
+    def test_a_failing_positive_shows_the_probes_rc_and_token_free_tails(self):
+        h = self.harness()
+        import importlib
+        sys.path.insert(0, self.prefix)
+        setup = importlib.import_module("zb_agent_host.setup")
+        noise = "x" * 5000
+        setup.RESULT.update(rc=1, honest_clean=False,
+                            out=noise + "\nprobe said " + TOKEN + "\n",
+                            err=noise + "\nTraceback ...\nAuthorization: Bearer " + TOKEN + "\n"
+                                "ModuleNotFoundError: No module named 'claude_agent_sdk'\n")
+        self.case.run(h)
+        line = next(l for ok, l in h.checks if l.startswith("positive: an honest CLI"))
+        self.assertIn("rc=1", line)
+        self.assertIn("ModuleNotFoundError: No module named 'claude_agent_sdk'", line)
+        self.assertNotIn(TOKEN[9:], line)
+        self.assertIsNone(re.search(r"[0-9a-f]{6,}", line.split("rc=1", 1)[1]), line)
+        self.assertLess(len(line), 2 * self.case.DIAG_MAX + 400, "bounded")
+
+
+class Sanitize(NoSignals):
+    HEX = TOKEN[9:]
+
+    def assertTokenFree(self, out):
+        self.assertNotIn(self.HEX, out)
+        for i in range(0, len(self.HEX) - 5):
+            self.assertNotIn(self.HEX[i:i + 6], out, "no 6 consecutive token hex characters survive")
+        self.assertNotIn("zb-probe-", out)
+
+    def test_every_form_of_the_token_is_redacted(self):
+        forms = {
+            "contiguous": f"token {TOKEN} end",
+            "bearer": f"Authorization: Bearer {TOKEN}",
+            "env": f"CLAUDE_CODE_OAUTH_TOKEN={self.HEX}",
+            "wrapped into 6-hex pieces": "\n".join(self.HEX[i:i + 6] for i in range(0, 48, 6)),
+            "hex-encoded": TOKEN.encode().hex(),
+            "base64": base64.b64encode(TOKEN.encode()).decode(),
+            "bytes": TOKEN.encode(),
+            "straddling the tail cut": TOKEN + "y" * (self.case.DIAG_MAX - 30),  # the bound cuts inside it
+        }
+        for label, text in forms.items():
+            with self.subTest(form=label):
+                self.assertTokenFree(self.case._sanitize(text))
+
+    def test_it_is_bounded_and_keeps_plain_diagnostics(self):
+        out = self.case._sanitize("z" * 10000 + "\nModuleNotFoundError: No module named 'claude_agent_sdk'\n")
+        self.assertLessEqual(len(out), self.case.DIAG_MAX)
+        self.assertIn("ModuleNotFoundError: No module named 'claude_agent_sdk'", out)
+        self.assertEqual(self.case._sanitize(None), "")
 
 
 if __name__ == "__main__":
