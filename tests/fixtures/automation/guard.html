@@ -72,5 +72,12 @@
     // The editor's own input event, fired by the browser's native insert.
     document.getElementById('editor').addEventListener('input', once(swapRecipient));
   }
+  if (mode === 'timer-recipient') {
+    // Page script that runs only between two of automation's evaluations, never inside one: a
+    // timer set by the first input event (decision 15's chunk boundary).
+    for (const id of ['msg', 'editor']) {
+      document.getElementById(id).addEventListener('input', once(() => setTimeout(swapRecipient, 0)));
+    }
+  }
   window.__ready = true;
 </script>
