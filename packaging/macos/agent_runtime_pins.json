@@ -5,5 +5,9 @@
     "sigstore_identity": "thomas@python.org",
     "sigstore_issuer": "https://accounts.google.com"
   },
-  "uv_lock_sha256": "53cec15b1a760d342d52a5220ef6791bf60f651668e24ba9f4c312e6795cf382"
+  "uv_lock_sha256": "53cec15b1a760d342d52a5220ef6791bf60f651668e24ba9f4c312e6795cf382",
+  "sigstore_verifier": {
+    "requirements": "packaging/macos/sigstore_verifier.txt",
+    "sha256": "e7f68e0f78760465c68821b15296ed072d62bfa881252425be438689982411d1"
+  }
 }

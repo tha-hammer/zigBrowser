@@ -11,7 +11,11 @@
 # object, else exit 1 before any network; it is exported (git archive) into the per-run temp tree, and EVERYTHING below
 # reads that export, never the mutable working tree (a shared worktree is routinely dirty). It prints "== hard gate at
 # commit <sha>" and, before any network, "== ship <sha256> <path>" for every shipped seam source, staging tool and
-# zb_agent_host file.
+# zb_agent_host file. RoseCat 7269, all before any network: the running launcher must be byte-identical to the exported
+# tests/mac/ms6_hard_gate.sh (a dirty launcher could certify anything); a symlink or special entry among the shipped
+# paths is refused, and the tar's files must be exactly the "== ship" rows; the temporary Sigstore verifier comes only
+# from the committed, hash-locked packaging/macos/sigstore_verifier.txt (its SHA-256 pinned), installed with
+# --require-hashes --no-deps into the per-run venv. ZB_HG_EVIDENCE_DIR (a test seam) receives a copy of src.tar.
 # Before ANY network call (each refusal is exit 1 and names its reason; no pins file at all is NOT ARMED, exit 3):
 #   - the pins are well formed: python_pkg {url, sha256, sigstore_identity, sigstore_issuer} and uv_lock_sha256;
 #   - agent/host/uv.lock still has the pinned SHA-256;
@@ -25,6 +29,7 @@
 # host keys, no askpass.
 # usage: tests/mac/ms6_hard_gate.sh [revision]   (default HEAD)
 set -euo pipefail
+SELF=$(realpath "$0")
 
 KEY="${ZB_MAC_KEY:-/home/maceo/vms/mac-m9/zb_mac_key}"
 INTEL_HOST="${ZB_MAC_HOST:-maceojourdan@100.92.212.47}"
@@ -44,6 +49,8 @@ trap 'case "$L" in "${TMPDIR:-/tmp}"/zb-hardgate-drv-??????) find "${L:?}" -dele
 mkdir "$L/repo" && git archive "$SHA" | tar -x -C "$L/repo"
 echo "== hard gate at commit $SHA" >&2
 cd "$L/repo"  # from here on, only the exported commit is read
+cmp -s "$SELF" tests/mac/ms6_hard_gate.sh \
+  || fail "this launcher ($SELF) differs from the committed tests/mac/ms6_hard_gate.sh at $SHA: run the committed one"
 if [ ! -f "$PINS" ]; then
   echo "NOT ARMED: the pinned dependency tree is not staged ($PINS is absent)" >&2
   exit 3
@@ -60,13 +67,19 @@ try:
     assert re.fullmatch(r"[0-9a-f]{64}", pkg["sha256"]), "sha256"
     assert re.fullmatch(r"[0-9a-f]{64}", pins["uv_lock_sha256"]), "uv_lock_sha256"
     assert pkg["sigstore_identity"] and pkg["sigstore_issuer"].startswith("https://"), "sigstore"
+    ver = pins["sigstore_verifier"]
+    assert ver["requirements"] == "packaging/macos/sigstore_verifier.txt", "sigstore_verifier.requirements"
+    assert re.fullmatch(r"[0-9a-f]{64}", ver["sha256"]), "sigstore_verifier.sha256"
 except Exception as exc:
     print(f"malformed: {exc!r}", file=sys.stderr)
     sys.exit(1)
-print(pkg["url"], pkg["sha256"], pkg["sigstore_identity"], pkg["sigstore_issuer"], pins["uv_lock_sha256"])
+print(pkg["url"], pkg["sha256"], pkg["sigstore_identity"], pkg["sigstore_issuer"], pins["uv_lock_sha256"],
+      ver["requirements"], ver["sha256"])
 PY
 ) || fail "pins: $PINS is malformed"
-read -r PKG_URL PKG_SHA SIG_ID SIG_ISSUER LOCK_SHA <<<"$pinned"
+read -r PKG_URL PKG_SHA SIG_ID SIG_ISSUER LOCK_SHA VERIFIER_REQS VERIFIER_SHA <<<"$pinned"
+[ "$(sha256sum "$VERIFIER_REQS" | cut -c1-64)" = "$VERIFIER_SHA" ] \
+  || fail "$VERIFIER_REQS no longer matches its pinned SHA-256 ($PINS): re-pin after review"
 [ "$(sha256sum agent/host/uv.lock | cut -c1-64)" = "$LOCK_SHA" ] \
   || fail "agent/host/uv.lock no longer matches its pinned SHA-256 ($PINS): re-pin after review"
 [ -n "$ARM_HOST" ] || fail "no arm64 host (set ZB_MAC_ARM_HOST=user@host); the gate needs both Macs"
@@ -83,19 +96,25 @@ PY
 # --- what ships, from the export, named before any network ---
 SHIP=(packaging/macos agent/host/zb_agent_host agent/host/uv.lock tests/mac/hard_gate tests/mac/spawn_group_io_test.c
       src/agent_spawn_posix.c src/agent_spawn_posix.h)
+odd=$(find "${SHIP[@]}" ! -type f ! -type d | LC_ALL=C sort | tr '\n' ' ')
+[ -z "$odd" ] || fail "a shipped path holds a symlink or special entry (refused): $odd"
 tar -cf "$L/src.tar" --exclude=__pycache__ "${SHIP[@]}"
-find "${SHIP[@]}" -type f ! -path '*/__pycache__/*' | LC_ALL=C sort | while IFS= read -r f; do
-  echo "== ship $(sha256sum "$f" | cut -c1-64) $f" >&2
-done
+find "${SHIP[@]}" -type f ! -path '*/__pycache__/*' | LC_ALL=C sort > "$L/ship.list"
+[ "$(tar -tf "$L/src.tar" | grep -v '/$' | LC_ALL=C sort)" = "$(cat "$L/ship.list")" ] \
+  || fail "the shipped tar's files are not exactly the named ones"
+while IFS= read -r f; do echo "== ship $(sha256sum "$f" | cut -c1-64) $f" >&2; done < "$L/ship.list"
+if [ -n "${ZB_HG_EVIDENCE_DIR:-}" ] && [ -d "$ZB_HG_EVIDENCE_DIR" ]; then cp "$L/src.tar" "$ZB_HG_EVIDENCE_DIR/"; fi
 echo "== staged tree identity: commit $SHA, src.tar sha256 $(sha256sum "$L/src.tar" | cut -c1-64)" >&2
 
 # --- network: the pinned pkg, its provenance, the lock-built trees ---
 curl -fsSL --proto '=https' -o "$L/py.pkg" "$PKG_URL"
 curl -fsSL --proto '=https' -o "$L/py.pkg.sigstore" "$PKG_URL.sigstore"
 [ "$(sha256sum "$L/py.pkg" | cut -c1-64)" = "$PKG_SHA" ] || fail "the pkg's SHA-256 is not its pin"
-# The temporary verifier, in the per-run venv only, at a pinned version (RoseCat 7265); the pkg's own SHA-256 pin
-# remains the independent integrity check.
-python3 -m venv "$L/venv" >/dev/null && "$L/venv/bin/pip" -q install "sigstore==4.5.1" >/dev/null 2>&1
+# The temporary verifier, in the per-run venv only, from the committed hash lock (RoseCat 7265, 7269); the pkg's own
+# SHA-256 pin remains the independent integrity check.
+python3 -m venv "$L/venv" >/dev/null \
+  && "$L/venv/bin/pip" -q install --require-hashes --no-deps -r packaging/macos/sigstore_verifier.txt >/dev/null 2>&1 \
+  || fail "the hash-locked Sigstore verifier did not install"
 "$L/venv/bin/python" -m sigstore verify identity --bundle "$L/py.pkg.sigstore" --cert-identity "$SIG_ID" \
   --cert-oidc-issuer "$SIG_ISSUER" "$L/py.pkg" >/dev/null || fail "the pkg's Sigstore identity"
 bash packaging/macos/build_site_packages.sh agent/host "$L/sites" >/dev/null
