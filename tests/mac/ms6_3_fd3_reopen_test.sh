@@ -3,12 +3,16 @@
 #
 #   $1 = a directory holding sandbox_macos.py (the production generator) + ms6_3_fd3_reopen.c.
 #
-# The macOS CLI reads its OAuth token by REOPENING "/dev/fd/3" (not read(3) on the inherited fd); that open() must
-# pass the Seatbelt profile's file-read check. This PROBE proves ONLY that the generated profile permits/denies
-# the reopen — it uses a C stand-in over a REGULAR FILE, does NOT run the real pinned CLI, and does NOT exercise
-# production's Unix-socketpair fd-3 channel. The MS6.3 HARD GATE (real CLI consuming the canary via
-# CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR over the socketpair under the generated profile, both arches) is a
-# required case of the armed MS5 e2e, gated on the MS5 dependency decision. This probe proves:
+# A C STAND-IN (ms6_3_fd3_reopen.c), NOT the real CLI, performs an `open("/dev/fd/3")` over a REGULAR FILE and
+# checks that open passes the Seatbelt profile's file-read check. This PROBE proves ONLY that the generated
+# profile permits/denies that reopen; it does NOT run the real pinned CLI and does NOT exercise production's
+# Unix-socketpair fd-3 channel. Whether the real macOS CLI actually reopens `/dev/fd/3` or reads the inherited
+# socket descriptor directly is UNSETTLED here (token.py:3-8) and is settled only by the hard gate's real-CLI
+# evidence. The MS6.3 HARD GATE (real pinned CLI consuming the canary via CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR
+# over the production socketpair under the generated profile, both arches, discriminating mutant) runs as a case
+# of the UNIFIED pre-seatbelt_ready harness (shared with MS6.6(B); imports production zb_agent_host from the
+# staged pinned runtime, gated on the MS5 pinned-tree decision) — NOT this probe, and NOT the armed MS5 e2e
+# (which cannot arm while seatbelt_ready is false; RoseCat 7120). This probe proves:
 #   - unsandboxed, the reopen reads the token (the fd plumbing + helper are sound — not a vacuous pass);
 #   - under the GENERATED cli profile (broad file-read*), the reopen reads the exact token;
 #   - under a deny-read-of-the-token profile (everything needed to exec the helper, but NOT read the token dir),
@@ -88,4 +92,6 @@ echo "$dout" | grep -q "FD3-REOPEN-FAILED" || {
     echo "FAIL	ms6-3-vacuity (no verdict from the deny profile — did it parse?)"; exit 1; }
 echo "deny-token profile: fd-3 reopen DENIED (the gate is not vacuous)"
 
-echo "PASS	ms6-3-fd3-reopen"
+# PROBE, not the hard gate: a green here means only that the generated profile permits/denies the C stand-in's
+# /dev/fd/3 reopen. MS6.3's real-CLI hard gate is a case of the unified pre-seatbelt_ready harness (RoseCat 7120).
+echo "PASS	ms6-3-fd3-reopen-PROBE (partial; MS6.3 real-CLI hard gate pending the MS5-gated harness)"
