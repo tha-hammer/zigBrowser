@@ -79,5 +79,25 @@
       document.getElementById(id).addEventListener('input', once(() => setTimeout(swapRecipient, 0)));
     }
   }
+  // RoseCat's 9295b0b probe: the first beforeinput is automation's own; the second is the
+  // browser's native one, fired inside execCommand.
+  if (mode === 'native-beforeinput-cancel') {
+    let seen = 0;
+    document.getElementById('editor').addEventListener('beforeinput', (event) => {
+      seen += 1;
+      if (seen === 2) { event.preventDefault(); setAccount(); }
+    });
+  }
+  // Inside the native beforeinput: the editor stops being editable, or leaves the page. WebKit
+  // still runs its edit command, inserts nothing, and (non-editable) still fires input.
+  for (const [name, act] of [['native-beforeinput-noneditable', (el) => { el.contentEditable = 'false'; }],
+                             ['native-beforeinput-detach', (el) => { el.remove(); }]]) {
+    if (mode !== name) continue;
+    let seen = 0;
+    document.getElementById('editor').addEventListener('beforeinput', (event) => {
+      seen += 1;
+      if (seen === 2) { act(event.target); setAccount(); }
+    });
+  }
   window.__ready = true;
 </script>
