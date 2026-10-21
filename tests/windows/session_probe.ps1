@@ -55,6 +55,22 @@ function Get-ZbLockVerdict {
 }
 # <<< ZB_LOCK_FN
 
+# >>> ZB_WTS_FN — parse WTSINFOEX_LEVEL1.SessionFlags from the raw WTSQuerySessionInformation(WTSSessionInfoEx)
+# buffer. The WTSINFOEXW union is 8-byte aligned (WTSINFOEX_LEVEL1_W begins with LARGE_INTEGER times), so the
+# Level-1 data starts at offset 8, NOT 4: SessionId@8, SessionState@12, SessionFlags@16. Reading @12 (the old
+# bug) returns SessionState (0 = WTSActive for any live session), so it reported LOCK in both states — a
+# live byte dump on win11-m8 showed 232 bytes, Level@0=1, SessionId@8=1, SessionState@12=0, SessionFlags@16=1
+# (UNLOCK). Returns the SessionFlags int, or $null (fail closed) when the buffer is short, Level != 1, or the
+# SessionId at @8 does not equal the queried console session — an unexpected layout must never read as a flag.
+function Get-ZbWtsSessionFlags {
+  param([byte[]]$Bytes, [int]$QueriedSession)
+  if ($null -eq $Bytes -or $Bytes.Length -lt 20) { return $null }
+  if ([System.BitConverter]::ToInt32($Bytes, 0) -ne 1) { return $null }     # Level must be 1
+  if ([System.BitConverter]::ToInt32($Bytes, 8) -ne $QueriedSession) { return $null }  # SessionId@8 layout check
+  return [System.BitConverter]::ToInt32($Bytes, 16)                         # SessionFlags@16
+}
+# <<< ZB_WTS_FN
+
 $console = [int][Zb.Sess]::WTSGetActiveConsoleSessionId()
 $mine = 0; [void][Zb.Sess]::ProcessIdToSessionId([Zb.Sess]::GetCurrentProcessId(), [ref]$mine)
 $inConsole = ($mine -eq $console -and $console -ge 0)
@@ -84,19 +100,18 @@ if ($h -ne [IntPtr]::Zero) {
   $deskName = '<secure-desktop-or-denied>'
 }
 
-# Authoritative lock signal: WTSINFOEX_LEVEL1.SessionFlags for the console session.
+# Authoritative lock signal: WTSINFOEX_LEVEL1.SessionFlags for the console session. Copy the native buffer
+# to managed bytes and parse it via Get-ZbWtsSessionFlags (8-byte-aligned layout; SessionFlags@16).
 $wtsOk = $false
 $sessionFlags = -1
 $pb = [IntPtr]::Zero; $pbn = 0
 if ([Zb.Sess]::WTSQuerySessionInformationW([IntPtr]::Zero, [uint32]$console, $WTS_SESSIONINFOEX, [ref]$pb, [ref]$pbn)) {
   try {
-    if ($pb -ne [IntPtr]::Zero -and $pbn -ge 16) {
-      $level = [System.Runtime.InteropServices.Marshal]::ReadInt32($pb, 0)
-      if ($level -eq 1) {
-        # WTSINFOEX_LEVEL1 after the DWORD Level tag: SessionId(+4), SessionState(+8), SessionFlags(+12).
-        $sessionFlags = [System.Runtime.InteropServices.Marshal]::ReadInt32($pb, 12)
-        $wtsOk = $true
-      }
+    if ($pb -ne [IntPtr]::Zero -and $pbn -ge 20) {
+      $buf = New-Object byte[] ([int]$pbn)
+      [System.Runtime.InteropServices.Marshal]::Copy($pb, $buf, 0, [int]$pbn)
+      $sf = Get-ZbWtsSessionFlags -Bytes $buf -QueriedSession $console
+      if ($null -ne $sf) { $sessionFlags = [int]$sf; $wtsOk = $true }
     }
   } finally { [Zb.Sess]::WTSFreeMemory($pb) }
 }

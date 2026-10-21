@@ -63,6 +63,13 @@ def _extract_lock_fn():
     return m.group(1)
 
 
+def _extract_wts_fn():
+    m = re.search(r"# >>> ZB_WTS_FN.*?\n(.*?)\n# <<< ZB_WTS_FN", SESSION_PROBE.read_text(), re.S)
+    if not m:
+        raise AssertionError("ZB_WTS_FN markers not found in session_probe.ps1")
+    return m.group(1)
+
+
 VERIFY_TASK_FILE = REPO / "tests" / "windows" / "verify_task.ps1"
 
 
@@ -496,6 +503,47 @@ class LockVerdictFixturesLive(unittest.TestCase):
         # A fail-open mutant (`return $false` / `return [bool]$LogonUiInConsole` on this path) makes FB_OFF=False.
         self.assertIn("FB_OFF=True", out, "unknown signal must FAIL CLOSED to locked=True; got:\n" + out)
         self.assertNotIn("FB_OFF=False", out, "unknown signal must never read as unlocked (fail open); got:\n" + out)
+
+
+@unittest.skipUnless(_vm_env(), "VM env not set")
+class LiveWtsFlagLayout(unittest.TestCase):
+    """Execute the extracted Get-ZbWtsSessionFlags on the VM against REAL 232-byte WTSINFOEX buffers.
+    The union is 8-byte aligned (SessionId@8, SessionState@12, SessionFlags@16). Both fixtures set
+    SessionState@12=0 (WTSActive) and differ ONLY at SessionFlags@16, so a byte-12 reader (the original
+    bug) returns 0 for both and FAILS the unlocked case — that is the regression guard RoseCat asked for."""
+
+    def _parse(self, env, fn, sid, flag16, *, sid_at8=None, length=232, state12=0):
+        sid8 = sid if sid_at8 is None else sid_at8
+        script = fn + "\n" + "\n".join([
+            "$b = New-Object byte[] %d" % length,
+            "if ($b.Length -ge 4)  { [BitConverter]::GetBytes([int]1).CopyTo($b,0) }",          # Level=1@0
+            "if ($b.Length -ge 12) { [BitConverter]::GetBytes([int]%d).CopyTo($b,8) }" % sid8,   # SessionId@8
+            "if ($b.Length -ge 16) { [BitConverter]::GetBytes([int]%d).CopyTo($b,12) }" % state12,  # SessionState@12
+            "if ($b.Length -ge 20) { [BitConverter]::GetBytes([int]%d).CopyTo($b,16) }" % flag16,   # SessionFlags@16
+            "$r = Get-ZbWtsSessionFlags -Bytes $b -QueriedSession %d" % sid,
+            "if ($null -eq $r) { Write-Output 'RESULT=NULL' } else { Write-Output ('RESULT=' + $r) }",
+        ])
+        p = _ssh_run(env, script)
+        self.assertEqual(p.returncode, 0, "ssh/powershell failed:\n" + p.stderr + "\n" + p.stdout)
+        return p.stdout
+
+    def test_session_flags_read_from_offset_16(self):
+        env = _vm_env(); fn = _extract_wts_fn()
+        # unlocked: flags@16=1 while state@12=0 -> must read 1 (a byte-12 reader would wrongly read 0 here)
+        self.assertIn("RESULT=1", self._parse(env, fn, 1, 1),
+                      "SessionFlags@16=1 (UNLOCK) with SessionState@12=0 must read 1, not 0 (byte-12 bug)")
+        # locked: flags@16=0, state@12=0 -> reads 0
+        self.assertIn("RESULT=0", self._parse(env, fn, 1, 0),
+                      "SessionFlags@16=0 (LOCK) must read 0")
+
+    def test_layout_check_and_short_buffer_fail_closed(self):
+        env = _vm_env(); fn = _extract_wts_fn()
+        # SessionId@8 mismatch -> $null (fail closed, unexpected layout)
+        self.assertIn("RESULT=NULL", self._parse(env, fn, 1, 1, sid_at8=7),
+                      "a SessionId@8 that does not match the queried session must fail closed")
+        # too-short buffer -> $null
+        self.assertIn("RESULT=NULL", self._parse(env, fn, 1, 1, length=12),
+                      "a buffer shorter than 20 bytes must fail closed")
 
 
 if __name__ == "__main__":

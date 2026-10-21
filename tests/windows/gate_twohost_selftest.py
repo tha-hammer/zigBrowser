@@ -835,6 +835,28 @@ class WS0ZeroWrite(unittest.TestCase):
         self.assertNotRegex(src, r"\$locked\s*=\s*\(\$deskName\s*-ne\s*'Default'\)",
                             "the locked verdict must NOT be derived from the input-desktop name")
 
+    def test_session_probe_wts_flag_offset_is_16_not_12(self):
+        # RoseCat live byte dump (win11-m8, 2026-10-21): WTSINFOEXW's union is 8-byte aligned, so
+        # SessionId@8, SessionState@12, SessionFlags@16. Reading @12 returns SessionState (0 for any active
+        # session) => locked in BOTH states (the 14:00 pass was false). The parse lives in ZB_WTS_FN and
+        # MUST read SessionFlags at offset 16, layout-check SessionId at offset 8, and fail closed ($null).
+        import re
+        src = (REPO / "tests" / "windows" / "session_probe.ps1").read_text()
+        m = re.search(r"# >>> ZB_WTS_FN.*?\n(.*?)\n# <<< ZB_WTS_FN", src, re.S)
+        self.assertIsNotNone(m, "session_probe.ps1 is missing the ZB_WTS_FN extraction markers")
+        fn = m.group(1)
+        self.assertIn("function Get-ZbWtsSessionFlags", fn, "the marked block must define Get-ZbWtsSessionFlags")
+        self.assertRegex(fn, r"ToInt32\(\$Bytes,\s*16\)", "SessionFlags must be read at offset 16 (8-byte-aligned union)")
+        self.assertRegex(fn, r"ToInt32\(\$Bytes,\s*8\)\s*-ne\s*\$QueriedSession",
+                         "must layout-check SessionId at offset 8 against the queried session")
+        self.assertNotRegex(fn, r"ToInt32\(\$Bytes,\s*12\)",
+                            "must NOT read the flag at offset 12 (that is SessionState, 0 for any active session)")
+        self.assertIn("return $null", fn, "must fail closed ($null) on a short buffer / wrong Level / SessionId mismatch")
+        self.assertRegex(src, r"Get-ZbWtsSessionFlags\s+-Bytes",
+                         "session_probe.ps1 must parse the WTS buffer via Get-ZbWtsSessionFlags")
+        self.assertNotRegex(src, r"Marshal\]::ReadInt32\(\$pb,\s*12\)",
+                            "the probe body must not read SessionFlags from native offset 12")
+
 
 class WS0TwoHostReds(_TwoHostCase):
     """The four original 7d85cd5 reds (RoseCat 5e48424 / 6882 A1-A4), hostless and registered."""
