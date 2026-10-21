@@ -20394,3 +20394,20 @@ finite deadline and unconditional cleanup must release and join each thread
 exactly once on every error path. A failure-path mutant must terminate as a
 test failure, not hang or race teardown. Findings mailed to BlackRobin in
 Agent Mail 7012.
+
+## R1-under-Seatbelt setup-half red (`97823de`)
+
+Reviewed exact test-only commit `97823de` on 2026-10-20. **Verdict: APPROVED
+as the scoped, unregistered setup-half red.** Through the agreed fake Seatbelt
+seam it pins a Darwin-only AF_INET listener bound and listening on
+127.0.0.1:0, the selected port passed both to the seam and the probe flags,
+exactly one `pass_fds` descriptor, a non-inheritable parent copy, explicit
+close after success, timeout and seam refusal, a network-free `cli_version`,
+and unchanged Linux routing.
+
+The green still must drive the real `setup_sandbox(..., loopback_port=)` and
+inspect the generated profile, run allowed-port and denied-decoy cases on both
+Macs, and pin cleanup on bind/listen failures if the implementation introduces
+ownership before its final cleanup scope. The red alone does not yet prove the
+commit title's statement that the profile permits exactly the selected port.
+Verdict was mailed to BlueBeaver in Agent Mail 7013.
