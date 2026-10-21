@@ -22076,3 +22076,30 @@ the planned guarded empty-runtime-folder seam, accepts a generic diagnostic,
 and its build-info oracle still lacks exact current version, OS build, executing
 architecture and PE-architecture agreement. Runtime diagnostic branch selection
 for `6c771ff` remains a later blocker even after `08bd75a` is fixed.
+
+## macOS launch egress-port / Session red (`a0c568d`)
+
+**APPROVED as the unregistered failing-first red.** The exact commit adds only
+`agent/host/tests/test_launch.py`; neither `build.zig` nor production code is
+touched, and no build step references the module. In a clean export run with
+the project's pinned helper interpreter, all eight named tests are collected
+and fail on the deliberately absent `launch.PLATFORM` seam. Thus the red is
+caused by the missing launch contract rather than a missing fixture or binary.
+
+The cases pin the intended small boundary: `--egress-port` is refused off
+Darwin; it is required exactly once on Darwin; only canonical ASCII decimal
+1..65535 without whitespace or a leading zero is accepted; the result enters a
+frozen `Session(home, python, net_dir, command, egress_port)` carrier; and a
+well-formed Darwin invocation still fails closed before `execve` until the
+lease/dispatch slice exists (`agent/host/tests/test_launch.py:32-95`). This is
+consistent with the earlier `d544286` review's still-open handoff and does not
+prematurely make the macOS backend consumable.
+
+**SHOULD for the green:** register this module using the pinned helper Python,
+show the eight cases green, and report discriminating mutations for at least
+Darwin-required, off-Darwin-refused, duplicate/range grammar, frozen carrier
+and the post-parse fail-closed branch. The current red reaches the same first
+missing `PLATFORM` attribute in every case; that is sufficient for the initial
+red, but the green evidence must establish that the downstream assertions have
+independent teeth. An exact `dataclasses.fields(Session)` assertion would also
+better pin the claimed five-field carrier than property reads alone.
