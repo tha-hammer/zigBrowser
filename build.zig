@@ -718,6 +718,16 @@ pub fn build(b: *std.Build) void {
     run_mac_vm_containment_tests.skip_foreign_checks = true;
     const mac_vm_containment_step = b.step("test-mac-vm-containment", "the stubbed macOS VM-containment seam");
     mac_vm_containment_step.dependOn(&run_mac_vm_containment_tests.step);
+    // RoseCat 7199 #2 — real-binary closure: the built binary run as --agent-setup fails closed before any
+    // setup child when the VM setting is on/malformed, and passes when unset. Host-neutral; also run on both Macs.
+    const mac_vm_containment_e2e = b.addSystemCommand(&.{
+        "sh",
+        "-c",
+        "python3 tests/e2e/mac_vm_containment_e2e.py --binary \"$1\"",
+        "mac-vm-containment-e2e",
+    });
+    mac_vm_containment_e2e.addArtifactArg(exe);
+    mac_vm_containment_step.dependOn(&mac_vm_containment_e2e.step);
 
     // Chat drawer S3b: the helper's launch argv and environment, the app's
     // frames, the runtime-lock check and the backoff (src/agent_helper.zig).
@@ -2434,6 +2444,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_agent_host_posix_tests.step);
     test_step.dependOn(&run_agent_host_posix_spawn_tests.step);
     test_step.dependOn(&run_mac_vm_containment_tests.step);
+    test_step.dependOn(&mac_vm_containment_e2e.step);
     test_step.dependOn(&run_agent_secrets_tests.step);
     test_step.dependOn(&run_agent_secrets_shape_tests.step);
     if (target.result.os.tag == .linux) test_step.dependOn(&run_agent_secrets_dlopen_test.step);
