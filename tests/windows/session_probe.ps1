@@ -10,13 +10,12 @@
 # nonce and reads the session.json it writes (nonce + ts correlated). session.json/nonce.txt are VM
 # writes, post-snapshot. Nothing of this runs against the read-only file server.
 #
-# Lock detection uses the input desktop: in an unlocked interactive session the input desktop is
-# "Default"; when locked, the secure desktop is active and OpenInputDesktop is denied (or returns a
-# non-Default name). This is a standard-user-safe signal — no WMI, no privileged session queries.
-#
-# LIVE-VERIFIED (unlocked): on win11-m8 the triggered task writes session.json with
-# interactive_session=True, locked=False, in the console session (session 2). The LOCKED case
-# (secure desktop => locked=True) still needs a live confirmation before the lock signal is trusted.
+# Lock detection uses the WTS session-lock flag: WTSQuerySessionInformation(WTSSessionInfoEx) returns
+# WTSINFOEX_LEVEL1.SessionFlags, where WTS_SESSIONSTATE_LOCK(0)=locked, WTS_SESSIONSTATE_UNLOCK(1)=unlocked;
+# with a LogonUI-in-console fallback. This is standard-user-safe (no WMI, no privileged session queries).
+# input_desktop (OpenInputDesktop) is kept only as a DIAGNOSTIC — on the win11-m8 LOCKED VM console it
+# returned "Default" (observed 2026-10-21), so it is NOT trusted for the lock verdict (the earlier
+# OpenInputDesktop-only signal mis-reported a locked console as unlocked).
 param([string]$OutDir = "$env:USERPROFILE\zb\runs\session")
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
@@ -34,6 +33,24 @@ Add-Type -Namespace Zb -Name Sess -MemberDefinition @'
 
 $DESKTOP_READOBJECTS = 0x0001
 $UOI_NAME = 2
+$WTS_SESSIONINFOEX = 25   # WTSQuerySessionInformation info class returning WTSINFOEX
+
+# >>> ZB_LOCK_FN — the lock VERDICT as a PURE function of the WTS session-lock flag, with a
+# LogonUI-in-console fallback. On Win8+/10/11 WTSINFOEX_LEVEL1.SessionFlags is
+# WTS_SESSIONSTATE_LOCK(0)=locked, WTS_SESSIONSTATE_UNLOCK(1)=unlocked. OpenInputDesktop is NOT the
+# verdict: on the win11-m8 LOCKED VM console it still returned "Default" (observed 2026-10-21), so it is
+# kept only as a diagnostic field. host_live_test.py extracts this function VERBATIM between these markers
+# and exercises it with locked/unlocked fixtures.
+function Get-ZbLockVerdict {
+  param([bool]$WtsOk, [int]$SessionFlags, [bool]$LogonUiInConsole)
+  if ($WtsOk) {
+    if ($SessionFlags -eq 0) { return $true }    # WTS_SESSIONSTATE_LOCK  -> locked
+    if ($SessionFlags -eq 1) { return $false }   # WTS_SESSIONSTATE_UNLOCK -> unlocked
+  }
+  # WTS flag unavailable/unknown => the secure/lock UI (LogonUI) owning the console session means locked.
+  return [bool]$LogonUiInConsole
+}
+# <<< ZB_LOCK_FN
 
 $console = [int][Zb.Sess]::WTSGetActiveConsoleSessionId()
 $mine = 0; [void][Zb.Sess]::ProcessIdToSessionId([Zb.Sess]::GetCurrentProcessId(), [ref]$mine)
@@ -50,8 +67,9 @@ try {
 } catch {}
 if ($consoleUser) { $consoleUser = $consoleUser.Trim() }
 
+# input_desktop stays as a DIAGNOSTIC only — it is unreliable for lock state on a VM console (win11-m8
+# returns "Default" even when locked); the authoritative verdict is the WTS session-lock flag below.
 $deskName = $null
-$locked = $true
 $h = [Zb.Sess]::OpenInputDesktop($DESKTOP_READOBJECTS, $false, $DESKTOP_READOBJECTS)
 if ($h -ne [IntPtr]::Zero) {
   $sb = New-Object System.Text.StringBuilder 256
@@ -59,11 +77,34 @@ if ($h -ne [IntPtr]::Zero) {
   [void][Zb.Sess]::GetUserObjectInformation($h, $UOI_NAME, $sb, $sb.Capacity, [ref]$len)
   $deskName = $sb.ToString()
   [void][Zb.Sess]::CloseDesktop($h)
-  $locked = ($deskName -ne 'Default')
 } else {
   $deskName = '<secure-desktop-or-denied>'
-  $locked = $true
 }
+
+# Authoritative lock signal: WTSINFOEX_LEVEL1.SessionFlags for the console session.
+$wtsOk = $false
+$sessionFlags = -1
+$pb = [IntPtr]::Zero; $pbn = 0
+if ([Zb.Sess]::WTSQuerySessionInformationW([IntPtr]::Zero, [uint32]$console, $WTS_SESSIONINFOEX, [ref]$pb, [ref]$pbn)) {
+  try {
+    if ($pb -ne [IntPtr]::Zero -and $pbn -ge 16) {
+      $level = [System.Runtime.InteropServices.Marshal]::ReadInt32($pb, 0)
+      if ($level -eq 1) {
+        # WTSINFOEX_LEVEL1 after the DWORD Level tag: SessionId(+4), SessionState(+8), SessionFlags(+12).
+        $sessionFlags = [System.Runtime.InteropServices.Marshal]::ReadInt32($pb, 12)
+        $wtsOk = $true
+      }
+    }
+  } finally { [Zb.Sess]::WTSFreeMemory($pb) }
+}
+
+# Fallback signal: does LogonUI (the lock/secure-desktop UI) own the console session?
+$logonUiInConsole = $false
+try {
+  $logonUiInConsole = [bool](Get-Process LogonUI -ErrorAction SilentlyContinue | Where-Object { $_.SessionId -eq $console })
+} catch {}
+
+$locked = Get-ZbLockVerdict -WtsOk $wtsOk -SessionFlags $sessionFlags -LogonUiInConsole $logonUiInConsole
 
 # Per-run nonce: the gate writes it to nonce.txt in $OutDir just before triggering this task; we echo it
 # back into session.json so the gate's probe trusts this result only when the nonce matches (replay/stale
@@ -77,6 +118,9 @@ $o = [ordered]@{
   my_session_id       = $mine
   in_console          = $inConsole
   input_desktop       = $deskName
+  session_flags       = $sessionFlags
+  wts_lock_ok         = $wtsOk
+  logonui_in_console  = $logonUiInConsole
   locked              = $locked
   interactive_session = ($inConsole -and -not $locked)
   console_user        = $consoleUser

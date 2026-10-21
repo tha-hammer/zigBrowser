@@ -777,6 +777,29 @@ class WS0ZeroWrite(unittest.TestCase):
         self.assertIn("function Test-ZbTaskXml", m.group(1), "the marked block must define Test-ZbTaskXml")
         self.assertRegex(src, r"Test-ZbTaskXml \$xmlText \$staged", "verify_task.ps1 must call Test-ZbTaskXml")
 
+    def test_session_probe_lock_verdict_uses_wts_flag(self):
+        # RoseCat/orchestrator mechanism B (win11-m8, 2026-10-21): OpenInputDesktop returned "Default" on a
+        # genuinely LOCKED console, so the probe mis-reported locked=false. The lock VERDICT must now come
+        # from the WTS session-lock flag (WTS_SESSIONSTATE_LOCK(0)=locked / UNLOCK(1)=unlocked) via a pure,
+        # extractable Get-ZbLockVerdict with a LogonUI fallback; host_live_test.py exercises it with fixtures.
+        import re
+        src = (REPO / "tests" / "windows" / "session_probe.ps1").read_text()
+        m = re.search(r"# >>> ZB_LOCK_FN.*?\n(.*?)\n# <<< ZB_LOCK_FN", src, re.S)
+        self.assertIsNotNone(m, "session_probe.ps1 is missing the ZB_LOCK_FN extraction markers")
+        fn = m.group(1)
+        self.assertIn("function Get-ZbLockVerdict", fn, "the marked block must define Get-ZbLockVerdict")
+        self.assertRegex(fn, r"-eq 0\s*\)\s*\{\s*return \$true",
+                         "fixture: SessionFlags 0 (WTS_SESSIONSTATE_LOCK) must map to locked=true")
+        self.assertRegex(fn, r"-eq 1\s*\)\s*\{\s*return \$false",
+                         "fixture: SessionFlags 1 (WTS_SESSIONSTATE_UNLOCK) must map to locked=false")
+        self.assertIn("LogonUiInConsole", fn, "the verdict must have a LogonUI-in-console fallback")
+        self.assertRegex(src, r"WTS_SESSIONINFOEX|WTSSessionInfoEx|\b25\b",
+                         "session_probe.ps1 must query WTSINFOEX (WTSSessionInfoEx, info class 25)")
+        self.assertRegex(src, r"\$locked\s*=\s*Get-ZbLockVerdict",
+                         "the locked verdict must be produced by Get-ZbLockVerdict")
+        self.assertNotRegex(src, r"\$locked\s*=\s*\(\$deskName\s*-ne\s*'Default'\)",
+                            "the locked verdict must NOT be derived from the input-desktop name")
+
 
 class WS0TwoHostReds(_TwoHostCase):
     """The four original 7d85cd5 reds (RoseCat 5e48424 / 6882 A1-A4), hostless and registered."""

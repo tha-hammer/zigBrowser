@@ -53,6 +53,16 @@ def _extract_acl_fn():
     return m.group(1)
 
 
+SESSION_PROBE = REPO / "tests" / "windows" / "session_probe.ps1"
+
+
+def _extract_lock_fn():
+    m = re.search(r"# >>> ZB_LOCK_FN.*?\n(.*?)\n# <<< ZB_LOCK_FN", SESSION_PROBE.read_text(), re.S)
+    if not m:
+        raise AssertionError("ZB_LOCK_FN markers not found in session_probe.ps1")
+    return m.group(1)
+
+
 VERIFY_TASK_FILE = REPO / "tests" / "windows" / "verify_task.ps1"
 
 
@@ -428,13 +438,49 @@ class LockedDesktopLive(unittest.TestCase):
             self.assertEqual(d.get("in_console"), True, "in_console must be true")
             self.assertEqual(d.get("interactive_session"), False, "a locked console is not an active interactive session")
             self.assertEqual(d.get("locked"), True, "a locked console must report locked=true")
+            # The verdict must come from the WTS session-lock flag (WTS_SESSIONSTATE_LOCK == 0), not the
+            # input-desktop name — on win11-m8 input_desktop reads "Default" even when locked, so it is a
+            # diagnostic only. Accept the LogonUI fallback if WTS is somehow unavailable.
+            self.assertTrue(
+                d.get("wts_lock_ok") is True or d.get("logonui_in_console") is True,
+                "the lock verdict needs an authoritative source (WTS flag or LogonUI), got: %r" % d)
+            if d.get("wts_lock_ok") is True:
+                self.assertEqual(d.get("session_flags"), 0,
+                                 "a locked console's WTS SessionFlags must be WTS_SESSIONSTATE_LOCK (0), got: %r"
+                                 % d.get("session_flags"))
             idesk = d.get("input_desktop")
-            self.assertTrue(isinstance(idesk, str) and idesk.strip() and idesk != "Default",
-                            "input_desktop must be a concrete non-Default desktop or the denied sentinel, got: %r" % idesk)
+            self.assertTrue(isinstance(idesk, str) and idesk.strip(),
+                            "input_desktop diagnostic must be present, got: %r" % idesk)
         finally:
             _ssh_run(env, r"$d=Join-Path $env:USERPROFILE 'zb\runs\session'; "
                           r"Remove-Item -LiteralPath (Join-Path $d 'session.json') -EA SilentlyContinue; "
                           r"Remove-Item -LiteralPath (Join-Path $d 'nonce.txt') -EA SilentlyContinue")
+
+
+@unittest.skipUnless(_vm_env(), "VM env not set")
+class LockVerdictFixturesLive(unittest.TestCase):
+    """Execute the extracted Get-ZbLockVerdict on the VM with locked/unlocked fixtures. It is a PURE
+    function (no actual lock needed), so this runs regardless of the console's real state and pins the
+    WTS_SESSIONSTATE_LOCK(0)=locked / WTS_SESSIONSTATE_UNLOCK(1)=unlocked mapping plus the LogonUI fallback."""
+
+    def test_lock_verdict_maps_locked_and_unlocked_fixtures(self):
+        env = _vm_env()
+        fn = _extract_lock_fn()
+        script = fn + "\n" + "\n".join([
+            '$c=@()',
+            '$c += ("L0=" + (Get-ZbLockVerdict -WtsOk $true -SessionFlags 0 -LogonUiInConsole $false))',
+            '$c += ("U1=" + (Get-ZbLockVerdict -WtsOk $true -SessionFlags 1 -LogonUiInConsole $false))',
+            '$c += ("FB_ON=" + (Get-ZbLockVerdict -WtsOk $false -SessionFlags -1 -LogonUiInConsole $true))',
+            '$c += ("FB_OFF=" + (Get-ZbLockVerdict -WtsOk $false -SessionFlags -1 -LogonUiInConsole $false))',
+            '$c -join " "',
+        ])
+        p = _ssh_run(env, script)
+        self.assertEqual(p.returncode, 0, "ssh/powershell failed:\n" + p.stderr + "\n" + p.stdout)
+        out = p.stdout
+        self.assertIn("L0=True", out, "WTS_SESSIONSTATE_LOCK (0) must map to locked=True; got:\n" + out)
+        self.assertIn("U1=False", out, "WTS_SESSIONSTATE_UNLOCK (1) must map to locked=False; got:\n" + out)
+        self.assertIn("FB_ON=True", out, "LogonUI-in-console fallback must map to locked=True; got:\n" + out)
+        self.assertIn("FB_OFF=False", out, "no-LogonUI fallback must map to locked=False; got:\n" + out)
 
 
 if __name__ == "__main__":
