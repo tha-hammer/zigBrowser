@@ -6,7 +6,8 @@ param(
     [string]$ZigUrl = "",
     [string]$WebView2PackageVersion = "",
     [switch]$SkipToolchainInstall,
-    [switch]$SkipRepoSync
+    [switch]$SkipRepoSync,
+    [switch]$SkipOpenSsh
 )
 
 Set-StrictMode -Version Latest
@@ -71,7 +72,15 @@ function Get-WebView2RuntimeVersion {
 function Enable-OpenSshServer {
     Write-Step "Ensuring OpenSSH Server is installed and running"
     if (-not (Test-Admin)) {
-        throw "setup.ps1 must run from an elevated PowerShell session to enable OpenSSH Server"
+        # Installing the capability / service / firewall rule needs elevation, but a non-admin user
+        # (e.g. zbtext on win11-m8) can still proceed when sshd is already configured and running —
+        # skip cleanly instead of aborting the whole provisioning run.
+        $svc = Get-Service -Name sshd -ErrorAction SilentlyContinue
+        if ($svc -and $svc.Status -eq "Running") {
+            Write-Warning "Not elevated, but sshd is already installed and running; skipping OpenSSH Server setup."
+            return
+        }
+        throw "setup.ps1 must run from an elevated PowerShell session to enable OpenSSH Server (or pass -SkipOpenSsh if sshd is already configured elsewhere)"
     }
 
     $capabilityName = "OpenSSH.Server~~~~0.0.1.0"
@@ -300,10 +309,20 @@ function Get-WindowsSdkInfo {
                 Descending = $true
             }
         foreach ($version in $versions) {
-            $eventToken = Join-Path $version.FullName "um\EventToken.h"
             $winrtInclude = Join-Path $version.FullName "winrt"
             $wrl = Join-Path $winrtInclude "wrl.h"
-            if ((Test-Path -LiteralPath $eventToken) -and (Test-Path -LiteralPath $wrl)) {
+            # EventToken.h ships under winrt\ on current Win11 SDKs (10.0.22621 / 26100); older SDK
+            # layouts placed it under um\. Prefer winrt\, fall back to um\, so an already-installed
+            # toolchain is detected rather than triggering a winget reinstall (which fails non-admin).
+            $eventTokenWinrt = Join-Path $winrtInclude "EventToken.h"
+            $eventTokenUm = Join-Path $version.FullName "um\EventToken.h"
+            $eventToken = $null
+            if (Test-Path -LiteralPath $eventTokenWinrt) {
+                $eventToken = $eventTokenWinrt
+            } elseif (Test-Path -LiteralPath $eventTokenUm) {
+                $eventToken = $eventTokenUm
+            }
+            if ($eventToken -and (Test-Path -LiteralPath $wrl)) {
                 return [pscustomobject]@{
                     Root = $root
                     Version = $version.Name
@@ -380,7 +399,7 @@ function Install-CppToolchain {
 
     $installed = Test-CppToolchain
     if (-not $installed) {
-        throw "Build Tools install completed, but MSVC VC tools plus a Windows SDK with um\EventToken.h and winrt\wrl.h were not detected. Open a new PowerShell or verify Visual Studio Build Tools installation."
+        throw "Build Tools install completed, but MSVC VC tools plus a Windows SDK with EventToken.h (winrt\ or um\) and winrt\wrl.h were not detected. Open a new PowerShell or verify Visual Studio Build Tools installation."
     }
     Set-WinrtIncludeEnvironment -Sdk $installed.Sdk
     Write-Host "C/C++ toolchain installed: $($installed.Summary)"
@@ -415,7 +434,11 @@ function Sync-Repo {
     & $git.Source clone $RepoUrl $RepoPath
 }
 
-Enable-OpenSshServer
+if ($SkipOpenSsh) {
+    Write-Step "Skipping OpenSSH Server setup by request (-SkipOpenSsh)"
+} else {
+    Enable-OpenSshServer
+}
 $zig = Install-Zig
 $webview2 = Install-WebView2Sdk
 $toolchain = Install-CppToolchain

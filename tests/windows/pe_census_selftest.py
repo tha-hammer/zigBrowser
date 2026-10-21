@@ -180,5 +180,50 @@ class WebView2SdkPin(unittest.TestCase):
                         "only the pinned WebView2 SDK %s may appear; found %s" % (WEBVIEW2_SDK_VERSION, sorted(found)))
 
 
+class SetupPs1ToolchainPins(unittest.TestCase):
+    """setup.ps1 toolchain detection on the Win11 VM (win11-m8). The real .ps1 runs only on Windows;
+    these Linux source pins guard two detection bugs found live (zbtext, non-admin, MSVC+SDK already
+    installed):
+
+      1. EventToken.h ships under Include\\<ver>\\winrt\\ on current Win11 SDKs (10.0.22621/26100), not
+         um\\. Get-WindowsSdkInfo must probe winrt\\ first (um\\ fallback), or it wrongly reports the
+         toolchain missing and retries winget — which fails for a non-admin user.
+      2. The OpenSSH step must not hard-fail for a non-admin when sshd is already running, and the run
+         must be skippable with -SkipOpenSsh. Otherwise Enable-OpenSshServer throws before anything else.
+    """
+
+    SETUP = REPO / "tests" / "guest" / "setup.ps1"
+
+    def setUp(self):
+        self.assertTrue(self.SETUP.exists(), "tests/guest/setup.ps1 must exist")
+        self.t = self.SETUP.read_text()
+
+    def test_eventtoken_probed_in_winrt_first(self):
+        # winrt\EventToken.h is the primary location; built via Join-Path on the computed $winrtInclude.
+        self.assertRegex(
+            self.t, r'Join-Path\s+\$winrtInclude\s+"EventToken\.h"',
+            "Get-WindowsSdkInfo must look for EventToken.h under winrt\\ (Join-Path $winrtInclude \"EventToken.h\")")
+
+    def test_eventtoken_um_kept_as_fallback(self):
+        self.assertIn(r'um\EventToken.h', self.t,
+                      "um\\EventToken.h must remain as a fallback for older SDK layouts")
+
+    def test_skip_open_ssh_switch_exists(self):
+        self.assertRegex(self.t, r'\[switch\]\$SkipOpenSsh',
+                         "setup.ps1 must expose a -SkipOpenSsh switch")
+
+    def test_open_ssh_is_guarded_by_the_skip_switch(self):
+        self.assertRegex(self.t, r'if\s*\(\s*\$SkipOpenSsh\s*\)',
+                         "the OpenSSH step must be guarded by if ($SkipOpenSsh)")
+
+    def test_non_admin_skips_cleanly_when_sshd_already_running(self):
+        # In the non-admin branch, a running sshd must skip cleanly (return) instead of throwing.
+        self.assertRegex(
+            self.t, r'Get-Service\s+-Name\s+sshd\s+-ErrorAction\s+SilentlyContinue',
+            "Enable-OpenSshServer must probe the existing sshd service when not elevated")
+        self.assertIn("sshd is already installed and running", self.t,
+                      "Enable-OpenSshServer must skip cleanly (not throw) when non-admin and sshd is running")
+
+
 if __name__ == "__main__":
     unittest.main()
