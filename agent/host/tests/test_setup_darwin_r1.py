@@ -11,7 +11,7 @@ the platform injected (`setup.PLATFORM`) and the MS6 seam faked with JadeBeacon'
   enters the seam or runs, and a created socket is closed explicitly (RoseCat 7026).
 - cli_version stays network-free (no loopback_port); Linux probe_r1 is unchanged (bwrap argv, no pass_fds, no flags).
 - Through the real seam (JadeBeacon 0b9527f): the profile in force during the probe has exactly one outbound rule,
-  `(allow network-outbound (remote ip "localhost:<the pre-bound port>"))`, and cli_version's has none.
+  `(allow network-outbound (remote tcp "localhost:<the pre-bound port>"))` (the tcp form since JadeBeacon 70444e5), and cli_version's has none.
 
 Run like the gate: cd agent/host/tests && python -X dev -m unittest -v test_setup_darwin_r1. Unregistered until the
 green.
@@ -226,7 +226,7 @@ class DarwinRealSeam(Base):
     def test_the_probe_runs_under_a_profile_allowing_exactly_its_port(self):
         self.assertIs(setup.probe_r1(WRAPPER, CLI), True)
         (run,), (profile,) = self.runs, self.profiles
-        self.assertEqual(self.outbound(profile), [f'(allow network-outbound (remote ip "localhost:{run["port"]}"))'])
+        self.assertEqual(self.outbound(profile), [f'(allow network-outbound (remote tcp "localhost:{run["port"]}"))'])
 
     def test_cli_version_runs_under_a_profile_with_no_network(self):
         setup.cli_version(CLI)
