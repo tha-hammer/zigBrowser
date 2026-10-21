@@ -176,8 +176,10 @@ def render_profile(*, egress, bridges, is_hook, is_login=False):
         f"(allow network-outbound {net})",
         ";; sysctl-read CURATED (MS6.1): never blanket — a blanket allow re-opens kern.procargs2.",
         *_sysctl_block(),
-        ";; token isolation (MS6.1): explicit process-info deny; the task port is never granted.",
+        ";; token isolation (MS6.1): deny cross-process introspection (the task port is never granted); self is",
+        ";; allowed so the runtime introspects itself at startup (code signature / exec path) without SIGILL (7045).",
         "(deny process-info*)",
+        "(allow process-info* (target self))",
         "(allow mach-lookup)",  # tiny curated mach-lookup is a separate later MS6 increment
     ]
     return "\n".join(lines) + "\n"
@@ -216,9 +218,11 @@ def render_setup_profile(*, loopback_port=None):
         *net,
         ";; sysctl-read CURATED (MS6.1): never blanket — a blanket allow re-opens kern.procargs2.",
         *_sysctl_block(),
-        ";; token isolation (MS6.1): explicit process-info deny — the R1 census runs OUTSIDE this sandbox in",
-        ";; trusted setup (BlueBeaver 7021), so the probed CLI never gets introspection (RoseCat 7019).",
+        ";; token isolation (MS6.1): deny cross-process introspection — the R1 census runs OUTSIDE this sandbox in",
+        ";; trusted setup (BlueBeaver 7021), so the probed CLI never reads a SIBLING (RoseCat 7019); self is allowed",
+        ";; so Python/the runtime introspects itself at startup without SIGILL (7045).",
         "(deny process-info*)",
+        "(allow process-info* (target self))",
         "(allow mach-lookup)",  # tiny curated mach-lookup is a separate later MS6 increment
     ]
     return "\n".join(lines) + "\n"

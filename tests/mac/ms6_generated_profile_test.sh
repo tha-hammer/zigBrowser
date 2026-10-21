@@ -70,4 +70,17 @@ done
     echo "FAIL	ms6-generated-setup (the generated setup profile did not parse/run)"; exit 1; }
 echo "generated setup: parses + runs"
 
+# 7045 regression guard: the real runtime (Python) must START under EVERY generated profile. (deny process-info*)
+# alone SIGILLs Python at startup (self code-signature / exec-path introspection); (allow process-info* (target
+# self)) fixes it while cross-process introspection stays denied (proven CONTAINED above). A regression that drops
+# the self-allow reds here with exit 132 (SIGILL).
+for prof in setup cli hook; do
+    out=$(/usr/bin/sandbox-exec -f "$TMP/$prof.sb" -D SCRATCHPAD="$SCRATCH" /usr/bin/python3 -c 'print("PYOK")' 2>&1)
+    rc=$?
+    if [ "$out" != "PYOK" ]; then
+        echo "FAIL	ms6-generated-$prof-python (the real runtime did not start under the generated profile — 7045 SIGILL? rc=$rc out=${out:-<none>})"; exit 1
+    fi
+    echo "generated $prof: python runtime starts (no 7045 SIGILL)"
+done
+
 echo "PASS	ms6-generated-profiles"

@@ -70,8 +70,10 @@ def reference_profile(*, egress, bridges, is_hook, is_login=False):
         '  (sysctl-name "kern.argmax")',
         '  (sysctl-name "kern.ngroups")',
         '  (sysctl-name "kern.usrstack64"))',
-        ";; token isolation (MS6.1): explicit process-info deny; the task port is never granted.",
+        ";; token isolation (MS6.1): deny cross-process introspection (the task port is never granted); self is",
+        ";; allowed so the runtime introspects itself at startup (code signature / exec path) without SIGILL (7045).",
         "(deny process-info*)",
+        "(allow process-info* (target self))",
         "(allow mach-lookup)",
     ]) + "\n"
 
@@ -252,9 +254,11 @@ def reference_setup_profile(loopback_port=None):
         '  (sysctl-name "kern.argmax")',
         '  (sysctl-name "kern.ngroups")',
         '  (sysctl-name "kern.usrstack64"))',
-        ";; token isolation (MS6.1): explicit process-info deny — the R1 census runs OUTSIDE this sandbox in",
-        ";; trusted setup (BlueBeaver 7021), so the probed CLI never gets introspection (RoseCat 7019).",
+        ";; token isolation (MS6.1): deny cross-process introspection — the R1 census runs OUTSIDE this sandbox in",
+        ";; trusted setup (BlueBeaver 7021), so the probed CLI never reads a SIBLING (RoseCat 7019); self is allowed",
+        ";; so Python/the runtime introspects itself at startup without SIGILL (7045).",
         "(deny process-info*)",
+        "(allow process-info* (target self))",
         "(allow mach-lookup)",
     ]) + "\n"
 
