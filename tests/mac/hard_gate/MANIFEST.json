@@ -1,0 +1,17 @@
+{
+  "_comment": [
+    "The MS6 hard gate's reviewed cases (RoseCat 7250 #2): hard_gate_driver.py --manifest runs exactly",
+    "these files with exactly these SHA-256s, or nothing. Adding or editing a case needs a kill-safety",
+    "review and a new entry here. MS6.5's survivor sweep stays outside (RoseCat 7250 #3, 7244)."
+  ],
+  "cases": [
+    {
+      "file": "case_ms5_spawn_io.py",
+      "sha256": "7c739e32fe924877593e15bf232b58be94754c4287b69a7465f2d0371bafcbbb"
+    },
+    {
+      "file": "case_ms6_6b_r1_chain.py",
+      "sha256": "5e97b135af810b00d097ca349faf80b856a10e44c573691142ac39408a0f0906"
+    }
+  ]
+}

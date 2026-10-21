@@ -1,13 +1,20 @@
 """The MS6 hard-gate driver (plan rev 18.1): runs every tests/mac/hard_gate/case_*.py under the staged runtime.
 
-usage: hard_gate_driver.py <cases dir>
+usage: hard_gate_driver.py [--manifest <MANIFEST.json>] <cases dir>
+
+With --manifest (the armed tests/mac/ms6_hard_gate.sh always passes tests/mac/hard_gate/MANIFEST.json; RoseCat 7250
+#2): BEFORE importing anything, the dir's case_*.py files must be exactly the manifest's reviewed set, each with its
+pinned SHA-256. An unreviewed extra case, a missing or edited one, or a malformed manifest is "FAIL\tms6-hard-gate\t
+manifest: ..." and no case is imported at all: an unreviewed case never runs on a real person's Mac.
 
 For each case_*.py (sorted) it loads the module, gives run(h) a fresh Harness and its own scratch directory, and
 prints "SCRATCH\\t<NAME>\\t<path>", the case's own check lines, then "PASS\\t<NAME>" or "FAIL\\t<label>\\t<why>". The
 last line is "PASS\\tms6-hard-gate\\t<n> cases" (exit 0) or "FAIL\\tms6-hard-gate\\t<why>" (exit 1). Fail closed: a
 failed check, a raise, no check at all, a missing NAME or run, a duplicate NAME, a scratch left behind, and an empty
 cases dir are each a FAIL."""
+import hashlib
 import importlib.util
+import json
 import os
 import re
 import shutil
@@ -28,11 +35,53 @@ def load(path):
     return module
 
 
+CASE_FILE = r"case_[A-Za-z0-9_]+\.py"
+
+
+def manifest_problem(manifest_path, cases_dir, files):
+    """None when the dir's case files are exactly the manifest's reviewed set with their pinned SHA-256s."""
+    try:
+        with open(manifest_path) as f:
+            cases = json.load(f)["cases"]
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        return f"cannot read {manifest_path}: {exc!r}"
+    if not isinstance(cases, list) or not cases:
+        return "no reviewed cases listed"
+    pinned = {}
+    for entry in cases:
+        name = entry.get("file") if isinstance(entry, dict) else None
+        digest = entry.get("sha256") if isinstance(entry, dict) else None
+        if not isinstance(name, str) or not re.fullmatch(CASE_FILE, name):
+            return f"entry {entry!r} does not name a case_*.py file"
+        if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
+            return f"entry for {name} has no valid sha256"
+        if name in pinned:
+            return f"{name} is listed twice"
+        pinned[name] = digest
+    for name in sorted(set(files) - set(pinned)):
+        return f"{name} is not a reviewed case (refused, not imported)"
+    for name in sorted(set(pinned) - set(files)):
+        return f"the reviewed case {name} is missing"
+    for name in sorted(files):
+        with open(os.path.join(cases_dir, name), "rb") as f:
+            if hashlib.sha256(f.read()).hexdigest() != pinned[name]:
+                return f"{name} differs from its reviewed version (sha256)"
+    return None
+
+
 def main(argv):
+    manifest = None
+    if argv[:1] == ["--manifest"] and len(argv) >= 2:
+        manifest, argv = argv[1], argv[2:]
     if len(argv) != 1 or not os.path.isdir(argv[0]):
-        print("FAIL\tms6-hard-gate\tusage: hard_gate_driver.py <cases dir>")
+        print("FAIL\tms6-hard-gate\tusage: hard_gate_driver.py [--manifest <MANIFEST.json>] <cases dir>")
         return 1
-    files = sorted(f for f in os.listdir(argv[0]) if re.fullmatch(r"case_[A-Za-z0-9_]+\.py", f))
+    files = sorted(f for f in os.listdir(argv[0]) if re.fullmatch(CASE_FILE, f))
+    if manifest is not None:
+        problem = manifest_problem(manifest, argv[0], files)
+        if problem:
+            print(f"FAIL\tms6-hard-gate\tmanifest: {problem}")
+            return 1
     if not files:
         print("FAIL\tms6-hard-gate\tno cases")
         return 1

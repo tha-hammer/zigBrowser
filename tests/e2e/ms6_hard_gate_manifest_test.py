@@ -12,7 +12,8 @@ The committed tests/mac/hard_gate/MANIFEST.json lists exactly the reviewed set, 
 case_ms6_6b_r1_chain.py, with their current hashes; nothing of the MS6.5 reaper is in the cases dir or the manifest
 (RoseCat 7250 #3, 7244).
 
-No process signal: the fake cases only check(True). Registered (green) inside the namespace like the driver suite.
+No process signal: the fake cases only check(True).
+Registered (build.zig: test-mac-census and the Linux test step), inside the namespace.
 Run like the gate: cd tests/e2e && unshare --user --map-root-user --pid --fork --mount-proc \\
   sh -c 'setsid python3 -X dev -m unittest -v ms6_hard_gate_manifest_test'
 """
