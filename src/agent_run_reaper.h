@@ -1,51 +1,77 @@
 /* MS6.5 (rev 19, the user's decision 2026-10-21): best-effort cleanup of an agent run's leftover processes with
- * PUBLIC APIs only (no sandbox_check, no private SPI). A detached escaper (double-fork + setsid) is no longer a
- * hard gate; it is accepted, cleaned up here, and any survivor surfaces a drawer warning. See the plan MS6.5.
+ * PUBLIC APIs only (no sandbox_check, no private SPI). A detached escaper (double-fork + setsid) is accepted,
+ * cleaned up here, and any survivor surfaces a drawer warning. See the plan MS6.5.
  *
- * A process is a "run survivor" when its cwd, its executable, or one of its open files is under that run's own
- * directory (the per-run sockdir / home; agent_net.sockdirPath). The classification below is the kill-safety
- * heart: it is pure and portable, so it is unit-tested on Linux; the macOS libproc scan + the guarded kill that
- * drive it (zb_reaper_sweep) are exercised by the both-Mac hard-gate case. */
+ * The kill-safety-critical logic — which pids match, which get a signal, how a full/overflowing scan is
+ * reported — is a PORTABLE decision engine over INJECTED primitives (scan/inspect/kill), so it is unit-tested on
+ * Linux with fakes and the kill intercepted before the OS (RoseCat a2fd8af/f907e95). The macOS libproc + real
+ * kill that back it in production (zb_reaper_census/sweep) are the only part that must run on a Mac. */
 #ifndef ZB_AGENT_RUN_REAPER_H
 #define ZB_AGENT_RUN_REAPER_H
+
+#include <stdint.h>
+#include <sys/types.h>
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-/* 1 iff `path` is `dir` itself or lies strictly inside it, compared by WHOLE path components: `/run/abc/x` and
- * `/run/abc` are under `/run/abc`, but `/run/abcdef` is NOT. Trailing slashes on `dir` are ignored. Refuses a
- * null/empty path or dir, and refuses `dir` == "/" (root is never a run marker — it would match everything).
- * Both are compared as given; the caller passes the absolute, kernel-reported paths and the run dir. */
+/* ---- pure classification (portable) ---- */
+
+/* 1 iff `path` is `dir` or lies strictly inside it, compared by WHOLE components (`/a/b/x` and `/a/b` are under
+ * `/a/b`, but `/a/bc` is not). Trailing slashes on dir ignored. Null/empty path or dir, and dir "/" are refused. */
 int zb_reaper_path_under(const char *path, const char *dir);
 
-/* 1 iff a process with this `cwd`, `exe` and `nfds` open-file paths is a survivor of the run rooted at `run_dir`
- * (any one under it). Any of cwd/exe may be NULL (unknown). Pure; the marker set the plan fixes. */
+/* 1 iff a process with this cwd/exe/`nfds` open-file paths is a survivor of the run rooted at `run_dir`. */
 int zb_reaper_classify(const char *cwd, const char *exe, const char *const *fd_paths, int nfds,
                        const char *run_dir);
 
-/* 1 iff `dir` is acceptable as a sweep's run dir: an app-owned, per-run marker, NOT a broad ancestor whose
- * children are the user's real processes (RoseCat a2fd8af #2). Requires an ABSOLUTE, CANONICAL path (no "//",
- * "/./", "/../"), at least two path components, and a LAST component beginning "zigbrowser-agent-" — the format
- * agent_net.sockdirPath creates. So "/", "/tmp", "/Users/<user>", "$HOME", a relative or non-canonical path, and
- * any dir the app did not create are all rejected. Pure, so it is unit-tested on Linux. The sweep realpath()s the
- * dir first and this runs on the RESOLVED path; realpath failing is itself a refusal, with no raw-string fallback. */
+/* 1 iff `dir`'s basename is EXACTLY the sockdirPath grammar `zigbrowser-agent-<pid>-<16 lowercase hex>`
+ * (RoseCat f907e95 #2), and `dir` is absolute, canonical (no "//", "/./", "/../") and at least two components
+ * deep. Rejects "/", "/tmp", "/Users/<user>", "$HOME", a loose prefix, uppercase hex, a wrong-length suffix, and
+ * any dir the app did not create. Pure (name only); the sweep ALSO stats the resolved dir for dir-type, this
+ * uid's ownership and mode 0700 before trusting it. */
 int zb_reaper_run_dir_ok(const char *dir);
 
+/* ---- the injectable decision engine (portable; the Linux kill-safety proof) ---- */
+
+/* A pid's identity for kill-time re-validation. A gather failure leaves matches=0/have_bsd=0 (fail closed). */
+struct zb_reaper_id {
+  int matches;
+  int have_bsd;
+  uid_t uid;
+  uint64_t start_sec;
+  uint64_t start_usec;
+};
+
+/* The primitives the engine drives. Production wires libproc + real kill; tests wire fakes that record and never
+ * touch the OS. `killsig` returns 0 on success or the errno (so ESRCH/EPERM are visible without a global). */
+struct zb_reaper_ops {
+  void (*inspect)(pid_t pid, const char *dir, struct zb_reaper_id *out, void *ctx);
+  int (*killsig)(pid_t pid, int sig, void *ctx);
+  void *ctx;
+};
+
+/* Build the pid list via the injected `scan` (proc_listallpids-shaped: fill buf of `bytes`, RETURN THE COUNT of
+ * pids — not bytes — or <= 0 on error). Grows + retries when the buffer fills exactly. Returns 0 and fills
+ * *out (malloc'd, caller frees) + *out_n; -1 when the buffer stayed full through the retries (INCOMPLETE — the
+ * caller must NOT report a clean result); -2 on empty/alloc error (RoseCat f907e95 #1). */
+int zb_reaper_gather(int (*scan)(void *buf, int bytes), pid_t **out, int *out_n);
+
+/* The decision engine over `pids[0..npids)` against the resolved `dir`. Skips pid <= 1, ourselves, and any pid
+ * not of our uid. census (kill_them=0): list matching pids, NO signal. sweep (kill_them=1): re-inspect each match
+ * immediately before SIGKILL and skip a vanished / reused (changed uid or start time) / no-longer-matching pid;
+ * a killsig errno other than ESRCH counts the pid a survivor, ESRCH counts it gone. `*overflow` is set when a
+ * list would exceed its cap (truncated — never a clean result). Returns 0. */
+int zb_reaper_engine(const struct zb_reaper_ops *ops, const pid_t *pids, int npids, const char *dir,
+                     int kill_them, int *killed, int kcap, int *kn, int *surv, int scap, int *sn, int *overflow);
+
 #ifdef __APPLE__
-/* macOS libproc, no private SPI. Both realpath() the run dir and REFUSE unless zb_reaper_run_dir_ok accepts the
- * resolved path (realpath failure = refusal, no fallback), then enumerate every process (proc_listallpids,
- * count-returning, grown + retried if the buffer filled) and gather each one's cwd/exe/open-file vnode paths plus
- * its uid and start time. Both skip pid <= 1, ourselves, and any pid not of our uid: a signal is never
- * kill(-1)/kill(0)/suicide and never reaches another user's process. `*out_overflow` is set to 1 when more
- * survivors matched than the cap (the lists are then truncated, not silently complete).
- *
- * zb_reaper_census: REPORT ONLY — the survivor pids, NO signal (the warning's "show details" and a safe dry run).
- *
- * zb_reaper_sweep: the census, then SIGKILL each survivor only after RE-gathering its markers, uid AND start time
- * immediately before the signal — a vanished pid, a changed identity (reused pid) or a changed marker is skipped,
- * never killed. kill()'s return is checked (ESRCH = already gone). out_killed = gone within a short grace;
- * out_survivors = matched but still alive after it. Returns 0, or an errno (EINVAL = refused run dir). */
+/* Production: realpath() the run dir and REFUSE unless zb_reaper_run_dir_ok accepts it AND it stats as a dir
+ * owned by this uid with mode 0700 (realpath failure = refusal, no fallback); then zb_reaper_gather over
+ * proc_listallpids and zb_reaper_engine over libproc inspect + real kill. `*out_overflow` is set to 1 when the
+ * scan was INCOMPLETE or a list overflowed — the caller must then treat the result as not-clean (warn/retry),
+ * never clean. Returns 0, EINVAL (refused run dir), or EOVERFLOW (incomplete scan). */
 int zb_reaper_census(const char *run_dir, int *out_pids, int cap, int *out_n, int *out_overflow);
 int zb_reaper_sweep(const char *run_dir, int *out_killed_pids, int killed_cap, int *out_killed_n,
                     int *out_survivor_pids, int survivor_cap, int *out_survivor_n, int *out_overflow);

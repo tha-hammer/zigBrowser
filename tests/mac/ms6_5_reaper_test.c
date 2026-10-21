@@ -62,8 +62,8 @@ static int make_holder(const char *dir, int detached, pid_t *pid, int *ctrl_w) {
 int main(void) {
   char parent[] = "/tmp/zb-reaper-gate-XXXXXX";
   if (mkdtemp(parent) == NULL) { printf("FAIL mkdtemp\n"); return 2; }
-  char run[PATH_MAX];
-  snprintf(run, sizeof run, "%s/zigbrowser-agent-%d-t", parent, (int)getpid()); /* app-signature run dir */
+  char run[PATH_MAX]; /* the exact sockdirPath grammar: zigbrowser-agent-<pid>-<16 lowercase hex>, mode 0700 */
+  snprintf(run, sizeof run, "%s/zigbrowser-agent-%d-00112233445566ff", parent, (int)getpid());
   if (mkdir(run, 0700) != 0) { printf("FAIL mkdir run\n"); rmdir(parent); return 2; }
 
   pid_t esc = -1, dec = -1, scr = -1;

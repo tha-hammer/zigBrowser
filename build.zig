@@ -716,6 +716,19 @@ pub fn build(b: *std.Build) void {
     run_agent_run_reaper_tests.skip_foreign_checks = true;
     const agent_run_reaper_step = b.step("test-agent-run-reaper", "MS6.5 run-survivor classification core");
     agent_run_reaper_step.dependOn(&run_agent_run_reaper_tests.step);
+    // MS6.5 (RoseCat f907e95): the reaper's decision engine + gather, proven on Linux with the kill INTERCEPTED
+    // before the OS via fake ops (no real signal). C executable, run inside a user+PID namespace per the rule.
+    const reaper_engine_module = b.createModule(.{ .target = target, .optimize = optimize, .link_libc = true });
+    reaper_engine_module.addCSourceFile(.{ .file = b.path("src/agent_run_reaper.c"), .flags = &.{"-std=gnu11"} });
+    reaper_engine_module.addCSourceFile(.{ .file = b.path("tests/agent_run_reaper_engine_test.c"), .flags = &.{"-std=gnu11"} });
+    reaper_engine_module.addIncludePath(b.path("src"));
+    const reaper_engine_exe = b.addExecutable(.{ .name = "reaper-engine-test", .root_module = reaper_engine_module });
+    const run_reaper_engine_tests = b.addSystemCommand(&.{
+        "unshare", "--user", "--map-root-user", "--pid", "--fork", "--mount-proc", "--",
+    });
+    run_reaper_engine_tests.addArtifactArg(reaper_engine_exe);
+    const reaper_engine_step = b.step("test-agent-run-reaper-engine", "MS6.5 reaper decision engine (fake ops, kill intercepted)");
+    reaper_engine_step.dependOn(&run_reaper_engine_tests.step);
     // MS6.5 (the user's decision 2026-10-21): the stubbed macOS VM-containment seam — off by default, reports
     // "not available yet", and the gate fails closed when on. Pure Linux unit (no OS calls).
     const mac_vm_containment_module = b.createModule(.{
@@ -2495,6 +2508,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_agent_host_posix_tests.step);
     test_step.dependOn(&run_agent_host_posix_spawn_tests.step);
     test_step.dependOn(&run_agent_run_reaper_tests.step);
+    if (target.result.os.tag == .linux) test_step.dependOn(&run_reaper_engine_tests.step);
     test_step.dependOn(&run_mac_vm_containment_tests.step);
     test_step.dependOn(&mac_vm_containment_e2e.step);
     test_step.dependOn(&run_agent_secrets_tests.step);
