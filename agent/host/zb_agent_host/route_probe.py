@@ -5,14 +5,24 @@ namespace's 127.0.0.1 and the SDK and the CLI talk to it there, in plain HTTP.
 No netd, relay, proxy, TLS name or test CA is involved: the probe tests only the
 token's fd 3 path. It prints one JSON line, {"r1": true|false}, and exits 0; the
 sandbox's death chain (setup helper, bwrap --die-with-parent, its PID namespace)
-takes the CLI and anything it started with it."""
+takes the CLI and anything it started with it.
+
+macOS has no private network namespace, so setup's Seatbelt profile permits exactly one loopback port: setup binds
+127.0.0.1:<port> outside the sandbox and hands the listener in, `--listen-fd N --listen-port P` (RoseCat 6958;
+BlackRobin 6975). The probe adopts it only after checking it (adopt_listener) and serves on it; anything else exits
+2 with no verdict, so R1 fails closed. Off Darwin both flags are refused."""
 
 import argparse
 import asyncio
+import contextlib
 import json
 import os
+import re
 import secrets
 import shutil
+import socket
+import stat
+import sys
 import tempfile
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -21,6 +31,42 @@ from pathlib import Path
 from . import options, token
 
 PROBE_TIMEOUT_S = 30
+PLATFORM = sys.platform
+
+
+class ProbeRefused(Exception):
+    """The listening socket setup handed in is not the one loopback listener it promised."""
+
+
+def adopt_listener(fd, port):
+    """macOS (RoseCat 6958; BlueBeaver 6961; BlackRobin 6975): setup binds 127.0.0.1:<port> outside the sandbox,
+    whose profile permits only that port, and hands the listener in as `fd`. Adopt it only when it is an AF_INET
+    SOCK_STREAM socket that is listening on exactly 127.0.0.1:<port>; otherwise close it and raise ProbeRefused."""
+    try:
+        if not stat.S_ISSOCK(os.fstat(fd).st_mode):
+            raise ProbeRefused("the listen fd is not a socket")
+        sock = socket.socket(fileno=fd)
+    except OSError as exc:
+        with contextlib.suppress(OSError):
+            os.close(fd)
+        raise ProbeRefused(f"the listen fd is unusable: {exc.strerror or exc}") from None
+    except ProbeRefused:
+        os.close(fd)
+        raise
+    try:
+        if sock.family != socket.AF_INET or sock.type != socket.SOCK_STREAM:
+            raise ProbeRefused("the listen fd is not an IPv4 stream socket")
+        if not sock.getsockopt(socket.SOL_SOCKET, socket.SO_ACCEPTCONN):
+            raise ProbeRefused("the listen fd is not listening")
+        if sock.getsockname() != ("127.0.0.1", port):
+            raise ProbeRefused(f"the listen fd is not on 127.0.0.1:{port}")
+    except BaseException:
+        sock.close()
+        raise
+    # It arrived through pass_fds, so it is inheritable here; the CLI under test, which the SDK spawns, must never
+    # hold the probe server's listener (BlackRobin 6983).
+    sock.set_inheritable(False)
+    return sock
 
 
 def _stream(text):
@@ -63,7 +109,7 @@ class _ProbeServer:
     """A one-shot loopback Messages API: records the bearer it receives and
     whether any running CLI process holds the probe token in its environment."""
 
-    def __init__(self, probe_token, cli):
+    def __init__(self, probe_token, cli, listener=None):
         self.bearer = None
         self.cli_env_clean = None
         server = self
@@ -103,7 +149,16 @@ class _ProbeServer:
                 self.end_headers()
                 self.wfile.write(data)
 
-        self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        if listener is None:
+            self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        else:  # macOS: serve on the listener setup handed in; bind nothing of our own
+            self.httpd = ThreadingHTTPServer(listener.getsockname(), Handler, bind_and_activate=False)
+            self.httpd.socket.close()
+            self.httpd.socket = listener
+            self.httpd.server_address = listener.getsockname()
+            # What HTTPServer.server_bind would set, so both paths behave the same (BlackRobin 6983).
+            self.httpd.server_name = socket.getfqdn(self.httpd.server_address[0])
+            self.httpd.server_port = self.httpd.server_address[1]
         self.httpd.daemon_threads = True
         threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
         self.url = f"http://127.0.0.1:{self.httpd.server_address[1]}"
@@ -113,7 +168,7 @@ class _ProbeServer:
         self.httpd.server_close()
 
 
-def run(wrapper, cli):
+def run(wrapper, cli, listener=None):
     """One turn through the real wrapper, FIFO and socket hand-off, with a
     random probe token, against the probe server on this namespace's own
     loopback. Runs with a throwaway HOME and config (no SAI, no hooks). True
@@ -121,7 +176,7 @@ def run(wrapper, cli):
     from claude_agent_sdk import query
 
     probe_token = "zb-probe-" + secrets.token_hex(24)
-    server = _ProbeServer(probe_token, cli)
+    server = _ProbeServer(probe_token, cli, listener)
     scratch = Path(tempfile.mkdtemp(prefix="zb-route-probe-"))
     try:
         home = options.AgentHome(scratch / "home")
@@ -151,6 +206,39 @@ def main(argv):
     parser = argparse.ArgumentParser(prog="zb_agent_host probe-r1")
     parser.add_argument("--wrapper", required=True)
     parser.add_argument("--cli", required=True)
+    parser.add_argument("--listen-fd", action="append")
+    parser.add_argument("--listen-port", action="append")
     args = parser.parse_args(argv)
-    print(json.dumps({"r1": run(Path(args.wrapper), args.cli)}), flush=True)
+    if PLATFORM != "darwin":
+        if args.listen_fd is not None or args.listen_port is not None:
+            print("zb_agent_host probe-r1: --listen-fd/--listen-port are macOS-only", file=sys.stderr)
+            return 2
+        print(json.dumps({"r1": run(Path(args.wrapper), args.cli)}), flush=True)
+        return 0
+    try:
+        fd, port = _listen_args(args.listen_fd, args.listen_port)
+        listener = adopt_listener(fd, port)
+    except ProbeRefused as exc:
+        print(f"zb_agent_host probe-r1: {exc}", file=sys.stderr)
+        return 2
+    print(json.dumps({"r1": run(Path(args.wrapper), args.cli, listener)}), flush=True)
     return 0
+
+
+_DECIMAL = re.compile(r"[1-9][0-9]{0,9}", re.ASCII)
+
+
+def _listen_args(raw_fds, raw_ports):
+    """Both flags are required on macOS, each exactly once (RoseCat 6985): ASCII decimal with no sign, leading zero
+    or whitespace; the fd above 2 and below 2**31, the port 1-65535."""
+    if raw_fds is None or raw_ports is None:
+        raise ProbeRefused("--listen-fd and --listen-port are required on macOS")
+    if len(raw_fds) != 1 or len(raw_ports) != 1:
+        raise ProbeRefused("--listen-fd and --listen-port are each given once")
+    raw_fd, raw_port = raw_fds[0], raw_ports[0]
+    if not (_DECIMAL.fullmatch(raw_fd) and _DECIMAL.fullmatch(raw_port)):
+        raise ProbeRefused("--listen-fd and --listen-port must be plain decimal integers")
+    fd, port = int(raw_fd), int(raw_port)
+    if not 2 < fd < 2**31 or not 1 <= port <= 65535:
+        raise ProbeRefused("--listen-fd must be 3 to 2**31-1 and --listen-port 1-65535")
+    return fd, port
