@@ -1285,11 +1285,54 @@ extern "C" void zb_version_line(char *buf, size_t len) {
   }
 
   char version[128] = {0};
-  if (webview2_runtime_version(version, sizeof(version))) {
-    snprintf(buf, len, "zigBrowser (WebView2 %s)", version);
-  } else {
+  if (!webview2_runtime_version(version, sizeof(version))) {
     snprintf(buf, len, "zigBrowser (WebView2 unavailable)");
+    buf[len - 1] = '\0';
+    return;
   }
+
+  // WS1.5: report WHAT ACTUALLY RAN — the WebView2 runtime version, the OS build, and the EXECUTING
+  // architecture. Win32 entry points are resolved via GetProcAddress so the x86_64-windows-gnu cross
+  // compile needs no winternl/Win10-SDK headers. Form: "zigBrowser (WebView2 <ver>; Windows 10.0.<build>;
+  // <arch>)" (tests/windows/ws1_run_test.py WS15BuildInfo pins it).
+  unsigned long os_major = 10, os_minor = 0, os_build = 0;
+  {
+    struct ZbRtlOsVersionInfoW {
+      unsigned long dwOSVersionInfoSize, dwMajorVersion, dwMinorVersion, dwBuildNumber, dwPlatformId;
+      wchar_t szCSDVersion[128];
+    } vi;
+    memset(&vi, 0, sizeof(vi));
+    vi.dwOSVersionInfoSize = sizeof(vi);
+    typedef long(__stdcall * RtlGetVersion_t)(ZbRtlOsVersionInfoW *);
+    HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
+    RtlGetVersion_t rgv =
+        ntdll ? reinterpret_cast<RtlGetVersion_t>(GetProcAddress(ntdll, "RtlGetVersion")) : nullptr;
+    if (rgv && rgv(&vi) == 0) {
+      os_major = vi.dwMajorVersion;
+      os_minor = vi.dwMinorVersion;
+      os_build = vi.dwBuildNumber;
+    }
+  }
+
+  // Executing arch from IsWow64Process2: nativeMachine ARM64 while this (x64) process runs => emulation.
+  const char *arch = "x86_64";
+  {
+    typedef int(__stdcall * IsWow64Process2_t)(HANDLE, unsigned short *, unsigned short *);
+    HMODULE k32 = GetModuleHandleW(L"kernel32.dll");
+    IsWow64Process2_t iw =
+        k32 ? reinterpret_cast<IsWow64Process2_t>(GetProcAddress(k32, "IsWow64Process2")) : nullptr;
+    if (iw) {
+      unsigned short proc_machine = 0, native_machine = 0;
+      if (iw(GetCurrentProcess(), &proc_machine, &native_machine)) {
+        if (native_machine == 0xAA64) {  // IMAGE_FILE_MACHINE_ARM64
+          arch = "x86_64-on-arm64";
+        }
+      }
+    }
+  }
+
+  snprintf(buf, len, "zigBrowser (WebView2 %s; Windows %lu.%lu.%lu; %s)",
+           version, os_major, os_minor, os_build, arch);
   buf[len - 1] = '\0';
 }
 
