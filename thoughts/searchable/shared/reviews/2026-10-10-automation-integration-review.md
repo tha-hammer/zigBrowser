@@ -21040,3 +21040,50 @@ crash, crash over origin, origin over serial), and directly table-test
 `file://`, opaque/no-authority `null`, and IPv6. No independent full gate was
 started because BlueBeaver owns the shared slot. Findings mailed to
 BlackRobin in Agent Mail 7061.
+
+## macOS Seatbelt self-introspection exception (`aa83b5f`)
+
+Reviewed exact security-critical commit `aa83b5f` on 2026-10-20. **Verdict:
+APPROVED.** The production generator keeps the blanket
+`(deny process-info*)` and adds only
+`(allow process-info* (target self))` to the CLI/helper, hook, login and setup
+profiles (`sandbox_macos.py:179-183,221-226`). This does **not** grant one
+sandboxed process access to a sibling, parent, child or another process in the
+same sandbox. `self` is the process performing the operation; a forked hook
+therefore gets introspection of that hook itself, not of the token-bearing CLI.
+
+This conclusion has three independent anchors:
+
+- Chromium's real Seatbelt unit test uses deny-`process-info*` plus a
+  self-scoped `process-info-pidinfo` allow, proves the query for `getpid()`
+  succeeds, then proves the otherwise identical query for `getppid()` fails
+  with `EPERM`: <https://chromium.googlesource.com/chromium/src/+/refs/tags/132.0.6834.70/sandbox/mac/seatbelt_unittest.cc#114>.
+- WebKit's production WebProcess profile first denies `process-info*`, then
+  restores its needed operations with `(target self)`, confirming that this is
+  the platform's intended self-only filter shape:
+  <https://github.com/WebKit/WebKit/blob/main/Source/WebKit/WebProcess/com.apple.WebProcess.sb.in#L2504-L2514>.
+- The repo's both-Mac generated-profile gate uses the exact emitted CLI and
+  hook profiles against a live sacrificial sibling. The unsandboxed control
+  must expose the canary, while both sandboxed probes must report `CONTAINED`
+  (`ms6_generated_profile_test.sh:45-66`). JadeBeacon reports that this stayed
+  green on Intel and arm64 after the exception, while Python changed from
+  exit 132 under the bare deny to exit 0 under all three generated profiles.
+
+The setup and ordinary generators are pinned byte-for-byte by their frozen
+references, including both the blanket deny and exact self filter
+(`test_sandbox_macos.py:202-209,225-296`). A clean-export Linux run of the
+registered unit module passed **49/49** under `-X dev`; exact-SHA shell syntax
+and Python compilation also passed. The Mac runtime-start addition is
+discriminating: dropping the self exception makes the actual Python launch
+exit 132 on both architectures. No full Linux gate was needed for this
+three-file Mac-policy fix; the owner reports the complete `ms6_gate.sh` green
+on both Mac architectures.
+
+**SHOULD-for-tests:** `ms6_generated_profile_test.sh:78-81` tries to capture
+the failed Python exit code after a command substitution, but `set -e` exits
+at the assignment before `rc=$?` and the named `FAIL` row. The regression
+still fails closed, so this does not weaken the oracle, but an `if out=$(...);`
+shape should preserve the promised diagnostic. Also make the setup-profile
+sibling probe direct when the pending R1 kernel gate is green; today the real
+kernel sibling oracle directly covers generated CLI and hook profiles, while
+the identical setup rule is pinned by the frozen oracle.
