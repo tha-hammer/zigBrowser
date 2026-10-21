@@ -23,6 +23,15 @@ const agent_net = @import("agent_net.zig");
 /// The browser's wait for netd's `netd ready …` line, matching the Linux ready wait.
 pub const ready_wait_ms: u32 = 10_000;
 
+/// After the ready line, how long the browser confirms netd is still ALIVE before starting the helper (RoseCat
+/// 7161 #1). netd holds its stdout open for its whole life, so a stdout EOF within this window means netd exited
+/// and the ready line is stale. Only a quiet-but-live netd pays the full grace; a dead one is caught at once.
+pub const liveness_grace_ms: u32 = 200;
+
+/// On a clean stop (stdin EOF), how long the browser waits for netd to exit on its own — unlinking its egress
+/// sockets/dir — before the SIGKILL backstop (RoseCat 7161 #2).
+pub const stop_grace_ms: u32 = 2_000;
+
 /// The exact flag the `launch` helper parses on Darwin (BlackRobin 7035, Q2): required on Darwin, refused off
 /// it, decimal 1..65535 with no leading zero — the same grammar as netd's port and `parseDarwinReadyPort`.
 pub const egress_port_flag = "--egress-port";
@@ -87,12 +96,44 @@ pub const Netd = struct {
     pid: std.c.pid_t,
     stdin_fd: c_int, // the browser holds netd's stdin WRITE end open for netd's whole life
 
-    /// Stop netd: close its stdin (EOF -> netd exits), then SIGKILL + reap the group as a backstop.
+    /// Stop netd: close its stdin (EOF -> netd exits CLEANLY, unlinking its egress sockets/dir), wait up to
+    /// `stop_grace_ms` for that clean exit, and SIGKILL + reap the group ONLY as a backstop if it does not exit
+    /// in time (RoseCat 7161 #2). A clean exit is reaped with NO signal.
     pub fn stop(self: Netd) void {
-        _ = std.c.close(self.stdin_fd);
-        zb_agent_kill_group(self.pid);
+        _ = stopWith(self.pid, self.stdin_fd, stop_grace_ms);
     }
 };
+
+/// How netd stopped: a clean exit observed on the stdin-EOF (no signal sent), or the SIGKILL backstop.
+pub const StopResult = enum { clean_exit, killed };
+
+/// The clean-then-backstop stop (RoseCat 7161 #2): close netd's stdin (EOF -> clean exit), wait up to `grace_ms`
+/// for it to exit, and SIGKILL + reap its group ONLY if it does not. Returns which path was taken, so the clean
+/// path is observable in tests. `zb_agent_kill_group` guards pid <= 0 and kills only netd's OWN process group.
+pub fn stopWith(pid: std.c.pid_t, stdin_fd: c_int, grace_ms: u32) StopResult {
+    _ = std.c.close(stdin_fd);
+    if (waitExit(pid, grace_ms)) return .clean_exit;
+    zb_agent_kill_group(pid);
+    return .killed;
+}
+
+/// Wait up to `grace_ms` for `pid` to exit, reaping it (non-blocking waitpid poll). True iff a clean exit was
+/// observed and reaped within the grace; false on timeout or a wait error (the caller then kills). Guards pid > 1
+/// so a bogus/non-child pid is never waited on — and never reaches a kill — per the kill-safety rule.
+fn waitExit(pid: std.c.pid_t, grace_ms: u32) bool {
+    if (pid <= 1) return false;
+    const start = nowMs();
+    while (true) {
+        var status: c_int = 0;
+        const r = std.c.waitpid(pid, &status, std.c.W.NOHANG);
+        if (r == pid) return true; // reaped: clean exit observed
+        if (r < 0) return false; // ECHILD/EINVAL: cannot confirm, let the backstop handle it
+        if (nowMs() - start >= grace_ms) return false; // still alive at the grace: needs the backstop
+        var req: std.c.timespec = .{ .sec = 0, .nsec = 5 * std.time.ns_per_ms };
+        var rem: std.c.timespec = undefined;
+        _ = std.c.nanosleep(&req, &rem);
+    }
+}
 
 fn toCArgv(a: std.mem.Allocator, items: []const []const u8) ![*:null]const ?[*:0]const u8 {
     const arr = try a.allocSentinel(?[*:0]const u8, items.len, null);
@@ -144,12 +185,40 @@ pub fn spawnNetd(a: std.mem.Allocator, argv: []const []const u8, envp: []const [
     }
 
     const port = readFirstPort(outp[0], deadline_ms);
+    // Liveness oracle (RoseCat 7161 #1): a netd that printed a valid ready line but has since exited — its stdout
+    // EOFs within the grace — is NOT a live netd; `decide` turns that into the network failure, no fallback port.
+    const netd_exited_early = if (port != null) !netdAlive(outp[0], liveness_grace_ms) else false;
     _ = std.c.close(outp[0]); // done with netd's stdout either way
-    if (port) |p| return Netd{ .port = p, .pid = pid, .stdin_fd = inp[1] };
-    // Failure: no fallback port. Close stdin (EOF) and SIGKILL + reap the group.
-    _ = std.c.close(inp[1]);
-    zb_agent_kill_group(pid);
-    return error.NetworkFailure;
+    switch (decide(port, false, netd_exited_early)) {
+        .start_helper => return Netd{ .port = port.?, .pid = pid, .stdin_fd = inp[1] },
+        .network_failure => {
+            // No fallback port. Close stdin (EOF) and SIGKILL + reap the group.
+            _ = std.c.close(inp[1]);
+            zb_agent_kill_group(pid);
+            return error.NetworkFailure;
+        },
+    }
+}
+
+/// Post-ready liveness oracle (RoseCat 7161 #1): is netd still running after its ready line? netd holds its
+/// stdout open for its whole life, so within `grace_ms`: a stdout EOF (read returns 0) means netd has exited ->
+/// NOT alive; a poll timeout (open and quiet) or more output (read > 0) means alive. Only the quiet-alive case
+/// pays the full grace; a dead netd is caught as soon as its EOF is readable.
+fn netdAlive(fd: c_int, grace_ms: u32) bool {
+    const start = nowMs();
+    while (true) {
+        const elapsed = nowMs() - start;
+        if (elapsed >= grace_ms) return true; // still open and quiet within the grace: alive
+        const remaining: c_int = @intCast(@as(i64, grace_ms) - elapsed);
+        var pfd = [_]std.c.pollfd{.{ .fd = fd, .events = std.posix.POLL.IN, .revents = 0 }};
+        const r = std.c.poll(&pfd, 1, remaining);
+        if (r < 0) continue; // transient (EINTR): retry within the grace
+        if (r == 0) return true; // poll timeout: netd holds stdout open, no exit: alive
+        var b: [64]u8 = undefined;
+        const n = std.c.read(fd, &b, b.len);
+        if (n == 0) return false; // EOF: netd closed stdout = exited: NOT alive
+        return true; // n > 0 (more output) or n < 0 (transient): netd is alive
+    }
 }
 
 /// Read netd's first stdout line within the deadline and parse its port; null on deadline, EOF (netd exited

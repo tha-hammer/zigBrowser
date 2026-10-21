@@ -684,7 +684,7 @@ pub fn build(b: *std.Build) void {
         .link_libc = true,
     });
     agent_host_posix_spawn_module.addImport("agent_host_posix", agent_host_posix_module);
-    agent_host_posix_spawn_module.addCSourceFile(.{ .file = b.path("src/agent_spawn_posix.c"), .flags = &.{"-std=c11"} });
+    agent_host_posix_spawn_module.addCSourceFile(.{ .file = b.path("src/agent_spawn_posix.c"), .flags = &.{"-std=gnu11"} });
     const run_agent_host_posix_spawn_tests = b.addRunArtifact(b.addTest(.{ .root_module = agent_host_posix_spawn_module }));
     run_agent_host_posix_spawn_tests.skip_foreign_checks = true;
 
