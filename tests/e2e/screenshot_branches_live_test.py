@@ -29,15 +29,19 @@ import subprocess
 import unittest
 
 # The watchdog branch waits for the navigation timeout (kNavigationTimeoutMs = 15 s); give it headroom.
+# $args: <dir> <mode> <e2e>. e2e='1' passes --e2e-protocol (arms the seam); e2e='0' omits it, so the
+# env var alone must NOT fire any forced branch — the shipped normal screenshot path stays inert.
 _RUNNER = r"""
 $ErrorActionPreference='SilentlyContinue'
-$dir = $args[0]; $mode = $args[1]
+$dir = $args[0]; $mode = $args[1]; $e2e = $args[2]
 $exe = Join-Path $dir 'zigBrowser.exe'
-$shot = Join-Path $dir ('shot-' + $mode + '.png')
-$err = Join-Path $dir ('err-' + $mode + '.txt')
+$shot = Join-Path $dir ('shot-' + $mode + '-' + $e2e + '.png')
+$err = Join-Path $dir ('err-' + $mode + '-' + $e2e + '.txt')
 Remove-Item $shot,$err -ErrorAction SilentlyContinue
 $env:ZB_E2E_FORCE_SCREENSHOT_FAIL = $mode
-$p = Start-Process -FilePath $exe -ArgumentList '--screenshot',$shot,'https://example.invalid/','--e2e-protocol' `
+$argList = @('--screenshot',$shot,'https://example.invalid/')
+if ($e2e -eq '1') { $argList += '--e2e-protocol' }
+$p = Start-Process -FilePath $exe -ArgumentList $argList `
      -Wait -PassThru -NoNewWindow -RedirectStandardError $err
 $e = [string](Get-Content $err -Raw -ErrorAction SilentlyContinue); if ($null -eq $e) { $e = '' }
 $r = @{ exit = $p.ExitCode; stderr = $e }
@@ -79,13 +83,16 @@ class ScreenshotBranchesLive(unittest.TestCase):
                 "-o", "ConnectionAttempts=3", "-P", self.port, local, f"{self.user}@{self.host}:{remote}"]
         return subprocess.run(self._scrub(*base), capture_output=True, text=True, timeout=120)
 
-    def test_each_forced_branch_exits_nonzero_with_its_exact_diagnostic(self):
+    def _run_modes(self, e2e):
+        """Stage exe + loader + runner in a fresh VM dir and run every mode with the given e2e flag
+        ('1' arms --e2e-protocol, '0' omits it). Returns {mode: result-dict} and cleans up."""
         import json
-        rel = f"zb/branches-{os.getpid()}-{secrets.token_hex(4)}"
+        rel = f"zb/branches-{os.getpid()}-{secrets.token_hex(4)}-{e2e}"
         base_win = f"%USERPROFILE%\\{rel}".replace("/", "\\")
         mk = self._ssh("cmd", "/c", f"mkdir {base_win}")
         self.assertEqual(mk.returncode, 0, f"mkdir failed: {mk.stderr}")
         runner = pathlib.Path(os.environ.get("TMPDIR", "/tmp")) / f"zbbr-{secrets.token_hex(4)}.ps1"
+        results = {}
         try:
             runner.write_text(_RUNNER, encoding="utf-8")
             pairs = [(self.exe, "zigBrowser.exe"), (str(runner), "run.ps1")]
@@ -96,21 +103,39 @@ class ScreenshotBranchesLive(unittest.TestCase):
             for local, name in pairs:
                 r = self._scp(local, f"{rel}/{name}")
                 self.assertEqual(r.returncode, 0, f"scp {name} failed: {r.stderr}")
-            for mode, needle in _EXPECT.items():
+            for mode in _EXPECT:
                 run = self._ssh("powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
-                                "-File", f"{base_win}\\run.ps1", base_win, mode, timeout=120)
-                self.assertEqual(run.returncode, 0, f"[{mode}] runner failed: {run.stdout}\n{run.stderr}")
-                result = json.loads(run.stdout.strip().splitlines()[-1])
-                self.assertNotEqual(result["exit"], 0,
-                                    f"[{mode}] forced failure must exit nonzero: {result!r}")
-                self.assertIn(needle, result["stderr"],
-                              f"[{mode}] must print the exact branch diagnostic {needle!r}: {result!r}")
+                                "-File", f"{base_win}\\run.ps1", base_win, mode, e2e, timeout=120)
+                self.assertEqual(run.returncode, 0, f"[{mode}/{e2e}] runner failed: {run.stdout}\n{run.stderr}")
+                results[mode] = json.loads(run.stdout.strip().splitlines()[-1])
         finally:
             self._ssh("cmd", "/c", f"rmdir /s /q {base_win}")
             try:
                 runner.unlink()
             except OSError:
                 pass
+        return results
+
+    def test_each_forced_branch_exits_nonzero_with_its_exact_diagnostic(self):
+        results = self._run_modes("1")
+        for mode, needle in _EXPECT.items():
+            result = results[mode]
+            self.assertNotEqual(result["exit"], 0,
+                                f"[{mode}] forced failure must exit nonzero: {result!r}")
+            self.assertIn(needle, result["stderr"],
+                          f"[{mode}] must print the exact branch diagnostic {needle!r}: {result!r}")
+
+    def test_env_without_e2e_flag_keeps_the_seam_inert(self):
+        # 52a5aba (RoseCat 6bea364): with ZB_E2E_FORCE_SCREENSHOT_FAIL set but WITHOUT --e2e-protocol,
+        # the shipped normal screenshot path must stay inert — NONE of the forced diagnostics may appear
+        # (the real navigation to example.invalid fails on its own; that is not the forced branch). If a
+        # mutant drops the production e2e_protocol guards, a forced diagnostic leaks here and this reds.
+        results = self._run_modes("0")
+        for mode, needle in _EXPECT.items():
+            result = results[mode]
+            self.assertNotIn(needle, result["stderr"],
+                             f"[{mode}] the forced diagnostic {needle!r} must NOT appear without "
+                             f"--e2e-protocol (seam must stay inert): {result!r}")
 
 
 if __name__ == "__main__":

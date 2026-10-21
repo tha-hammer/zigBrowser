@@ -85,6 +85,41 @@ class ScreenshotSeamReachableSourcePin(unittest.TestCase):
                       "zb_run_screenshot must take the e2e_protocol parameter")
 
 
+class SeamInertnessGuardPins(unittest.TestCase):
+    """52a5aba (RoseCat 6bea364): the forced-failure seam must stay INERT in a shipped run — it may only
+    fire under --e2e-protocol. Two production guards enforce that, and BOTH must be pinned or a mutant
+    that removes them (making ZB_E2E_FORCE_SCREENSHOT_FAIL fire with no --e2e-protocol) survives:
+
+      G1  the env is read ONLY under e2e_protocol:  if (app.e2e_protocol) { app.force_screenshot_fail = getenv(...) }
+      G2  the branch rechecks e2e_protocol:          if (app->e2e_protocol && app->force_screenshot_fail != nullptr)
+
+    RoseCat mutated both away and the prior pins stayed 7/7; these two regexes red on either removal.
+    The live VM negative (ZB_E2E_FORCE_SCREENSHOT_FAIL set WITHOUT --e2e-protocol stays inert) is the
+    runtime counterpart in tests/e2e/screenshot_branches_live_test.py.
+    """
+
+    def setUp(self):
+        self.src = SHIM.read_text()
+
+    def test_env_is_read_only_under_e2e_protocol(self):
+        # G1: the getenv must be wrapped by `if (app.e2e_protocol) {`. Removing the wrapper reds this.
+        self.assertRegex(
+            self.src,
+            r'if\s*\(\s*app\.e2e_protocol\s*\)\s*\{\s*\n\s*app\.force_screenshot_fail\s*=\s*getenv\(\s*"ZB_E2E_FORCE_SCREENSHOT_FAIL"\s*\)\s*;',
+            "the ZB_E2E_FORCE_SCREENSHOT_FAIL getenv must be read ONLY inside `if (app.e2e_protocol)`")
+        # And it must be read exactly once — no second, unguarded getenv of the same var.
+        self.assertEqual(
+            self.src.count('getenv("ZB_E2E_FORCE_SCREENSHOT_FAIL")'), 1,
+            "ZB_E2E_FORCE_SCREENSHOT_FAIL must be read exactly once (the single guarded read)")
+
+    def test_branch_rechecks_e2e_protocol(self):
+        # G2: the forced-failure branch must AND in app->e2e_protocol. Removing it reds this.
+        self.assertRegex(
+            self.src,
+            r'if\s*\(\s*app->e2e_protocol\s*&&\s*app->force_screenshot_fail\s*!=\s*nullptr\s*\)',
+            "the forced-failure branch must gate on `app->e2e_protocol && app->force_screenshot_fail != nullptr`")
+
+
 class VersionLineFailClosedSourcePin(unittest.TestCase):
     """6115ac1 / RoseCat 4cd6a14: zb_version_line must FAIL CLOSED, never invent OS/arch values.
 

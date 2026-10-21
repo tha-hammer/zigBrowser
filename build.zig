@@ -309,6 +309,12 @@ pub fn build(b: *std.Build) void {
     const windows_screenshot_live = b.addSystemCommand(&.{ "python3", "-I", "tests/windows/screenshot_live_test.py" });
     b.step("windows-screenshot-live", "Live Windows --screenshot PNG capture on the VM (skips without ZB_WIN11_HOST)").dependOn(&windows_screenshot_live.step);
 
+    // 52a5aba: the forced screenshot-failure branches (ZB_E2E_FORCE_SCREENSHOT_FAIL) on the VM — each
+    // branch fires only under --e2e-protocol (positive), and the seam stays INERT without the flag
+    // (negative). Skips cleanly without ZB_WIN11_HOST/ZB_WIN_EXE; needs no slot.
+    const windows_screenshot_branches_live = b.addSystemCommand(&.{ "python3", "-I", "tests/e2e/screenshot_branches_live_test.py" });
+    b.step("windows-screenshot-branches-live", "Live Windows forced screenshot-failure branches + inert-without-flag on the VM (skips without ZB_WIN11_HOST)").dependOn(&windows_screenshot_branches_live.step);
+
     // j76: the .windows backend-flag arm — --media-source off/on applied via the WebView2 setters,
     // observed through the page title on the VM. Skips without ZB_WIN11_HOST/ZB_WIN_EXE; needs no slot.
     const windows_config_flags_live = b.addSystemCommand(&.{ "python3", "-I", "tests/windows/win_config_flags_test.py" });
