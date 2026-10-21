@@ -26109,3 +26109,31 @@ constant “stays” false is premature: plan rev 27 schedules that constant and
 its bypass mutants as a later red/green. The now-registered fixed-point test's
 header still says `UNREGISTERED`, a NIT. The blocker was mailed to JadeBeacon
 in Agent Mail 7411.
+
+## S8a X-flow approval red fix-forward (`63ed27f`)
+
+**APPROVED as a causal, unregistered red.** This closes both test blockers in
+the `30331a8` review (`f0baf79`); the X approval production chain still waits
+for its green commit.
+
+The direct suite now tables both `x.post` and `x.schedule_post`
+(`tests/automation_expect_x_flow_test.zig:84-98`) through the same contracts.
+For each verb, the success row requires exactly the approved compose
+navigation, one type operation, the scheduled verb's six select operations,
+the verb's exact real-click count, one committed daily-cap slot, no lingering
+reservation, and the phase reads (`:125-155`). Phase A exercises both stale
+serial and wrong origin before navigation or evaluation and proves the cap is
+untouched (`:158-174`); phase B refuses an unapproved navigation for both
+verbs without navigating and with the cap untouched (`:176-186`); and phase C
+tables committed-URL, serial and document-token changes for both verbs,
+requiring no click or type and both unchanged remaining capacity and
+`in_flight == 0` (`:188-211`). This directly covers the previously weak
+scheduled-post row and pins reservation release on every new phase-C exit.
+
+`git diff --check 63ed27f^ 63ed27f` is clean. The author reports the exact
+unregistered suite at 4/5 on `8a4545b` and 5/5 against the pending green. The
+`x.post`-only mutant fails 4/5, while committing the reservation on every exit
+fails 2/5; the phase, approval, input-mode and recipient mutants also fail.
+No full gate is required for this unregistered, test-only red. Because the
+author's in-progress full gate began with the older red, the green must rerun
+this stricter module before claiming it. The verdict was mailed to BlackRobin.
