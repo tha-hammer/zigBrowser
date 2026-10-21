@@ -25262,3 +25262,61 @@ flag negative proving the shipped default remains inert, then register and
 run the real VM branch test. Verdicts sent to AzureRidge and copied to
 BlackRobin in Agent Mail 7347. The push-through remains `d827780`; the earlier
 Mac plan blocker also remains open.
+
+## MS6.5.1 Darwin lifecycle-owner plan rev 24 (`6e1161d`)
+
+**BLOCKED (docs) before its red.** Rev 24 correctly closes the original
+cross-process ledger lost-update gap: the global store now has an OS-visible
+`flock` opened relative to the pinned runtime-directory fd, held across the
+entire read/validate/update/temp/fsync/rename/parent-fsync transaction and
+released by process death (`macos-launch-tdd-plan.md:1781-1794`). Its two-
+process barrier cases and remove-the-flock mutant are the right causal proof.
+The new per-run owner lease and terminal cleanup remain unsafe or internally
+inconsistent in five ways:
+
+1. **BLOCKER — unlinking a locked path creates two lease identities.** The
+   owner still holds a flock on the old `owner.lock` inode when step (b)
+   unlinks its pathname (`:1865-1869`). Before `rmdir`, another process can
+   create a new file at that pathname and acquire an independent flock; a
+   waiter that opened the old path before unlink can later acquire the
+   unlinked inode. The global ledger lock currently covers only ledger
+   read/modify/write, not this terminal filesystem sequence. Lease claim,
+   marker cleanup, directory removal and ledger removal need one
+   cross-process claim—for example the global lock held across the entire
+   sequence, or a durable `cleaning` state—and a two-recoverer race with a
+   drop-coordination mutant.
+2. **BLOCKER — the specified unlink targets the wrong directory.** The lease
+   file is `<run-dir>/owner.lock`, but `:1868` says
+   `unlinkat(runtime_fd, "owner.lock", 0)`. That targets
+   `<runtime_dir>/owner.lock`, leaves the real lease file behind and makes the
+   following `rmdir` fail. It must use the pinned `run_dir_fd`. The preceding
+   sentence also says the lease is removed first while the enumerated steps
+   put marker removal first.
+3. **BLOCKER — the new lease creates two crash cuts, but the red covers only
+   a synthesized third state.** A crash after marker unlink but before lease
+   unlink leaves a marker-less but **nonempty** directory. A crash after lease
+   unlink but before `rmdir` leaves an empty directory and opens the split-
+   inode race above. The proposed test instead says the first interval is
+   empty (`:1984-1989`). Both exact cuts need separate idempotent, signal-free
+   recovery rows.
+4. **BLOCKER — lease creation and inheritance are not closed.** Publication
+   is still authorized after mkdir/open/pin, without requiring creation and
+   exclusive acquisition of `owner.lock` first (`:1795-1803`). The plan must
+   require `O_CLOEXEC|O_NOFOLLOW`, app-only ownership with no explicit child
+   inheritance, acquisition before publishing `active`, and release of a
+   recovery-acquired lease on every fail-closed branch. A browser-death test
+   with a marked surviving child must prove the lease dies with the browser,
+   rather than leaking into the child. Lock/open failures other than the
+   explicit held-lock result must fail closed.
+5. **BLOCKER — PID reuse has opposite rules in the same plan.** The production
+   paragraph calls a different start time “proved dead” and permits recovery
+   (`:1908-1912`), while the red matrix and rev summary say reused PID fails
+   closed (`:1972-1976`), as required by review `ee626d0`. The authoritative
+   path must select the fail-closed rule and test it causally.
+
+The marker-`ENOENT` recovery can be valid only after a corrected lease
+transaction makes that missing marker an unambiguous durable teardown phase.
+The destructive Mac reaper gate remains OFF. This was a docs-only review; no
+Mac or live-browser run occurred. `git diff --check` is clean. Verdict sent to
+JadeBeacon in Agent Mail 7350. Push-through remains `d827780`; `0e3595c`, now
+represented by cumulative rev 24 `6e1161d`, remains the earliest blocker.
