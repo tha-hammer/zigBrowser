@@ -93,6 +93,19 @@ fn parsePort(text: []const u8) error{BadNetTest}!u16 {
     return @intCast(value);
 }
 
+/// Darwin-only (MS6; BlackRobin 6975): the ephemeral egress port the browser learns from netd's FIRST stdout
+/// line. The line must be EXACTLY `netd ready 127.0.0.1:<port>` where `<port>` is 1..65535 with no leading
+/// zero and no trailing byte (the same grammar as parsePort). Returns the port, or null for any other shape
+/// — a missing port, 0, a leading zero, out of range, a trailing byte, a different host, a glued-on second
+/// line, or a prefix mismatch — which the caller treats as the existing network failure (no fallback port).
+/// Linux keeps the bare `netd ready` (its exact strcmp in agent_host.c is unchanged).
+pub const darwin_ready_prefix = "netd ready 127.0.0.1:";
+
+pub fn parseDarwinReadyPort(line: []const u8) ?u16 {
+    if (!std.mem.startsWith(u8, line, darwin_ready_prefix)) return null;
+    return parsePort(line[darwin_ready_prefix.len..]) catch return null;
+}
+
 /// netd's argv (§3c.2, BlueBeaver 5466): the runtime's netd.py run as a script
 /// (standard library only, so -I needs no PYTHONPATH and -S no site), then the
 /// backend's network manifest (MS0, BlueBeaver 5755) when there is an agent

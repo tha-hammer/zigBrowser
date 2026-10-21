@@ -151,3 +151,27 @@ fn expectArgv(want: []const []const u8, got: []const []const u8) !void {
     try std.testing.expectEqual(want.len, got.len);
     for (want, got) |w, g| try std.testing.expectEqualStrings(w, g);
 }
+
+test "Darwin netd-ready port: exactly 'netd ready 127.0.0.1:<port>' yields the port; every other shape rejects" {
+    // MS6 (BlackRobin 6975): on Darwin the browser learns the ephemeral egress port from netd's first
+    // stdout line. Linux keeps the bare 'netd ready' (handled by the exact strcmp in agent_host.c), so this
+    // grammar is Darwin-only.
+    try std.testing.expectEqual(@as(?u16, 52346), net.parseDarwinReadyPort("netd ready 127.0.0.1:52346"));
+    try std.testing.expectEqual(@as(?u16, 1), net.parseDarwinReadyPort("netd ready 127.0.0.1:1"));
+    try std.testing.expectEqual(@as(?u16, 65535), net.parseDarwinReadyPort("netd ready 127.0.0.1:65535"));
+    const bad = [_][]const u8{
+        "netd ready", // the Linux form: no port
+        "netd ready 127.0.0.1:", // empty port
+        "netd ready 127.0.0.1:0", // zero
+        "netd ready 127.0.0.1:01", // leading zero
+        "netd ready 127.0.0.1:65536", // out of range
+        "netd ready 127.0.0.1:123456", // more than 5 digits
+        "netd ready 127.0.0.1:52346 ", // trailing byte
+        "netd ready 127.0.0.1:52346x", // trailing byte
+        "netd ready 0.0.0.0:80", // a different host
+        "netd ready 127.0.0.1:52346\nnetd ready 127.0.0.1:1", // a glued-on second ready line
+        " netd ready 127.0.0.1:80", // leading space
+        "xnetd ready 127.0.0.1:80", // prefix mismatch
+    };
+    for (bad) |line| try std.testing.expectEqual(@as(?u16, null), net.parseDarwinReadyPort(line));
+}
