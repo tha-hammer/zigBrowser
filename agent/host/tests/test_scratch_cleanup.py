@@ -8,7 +8,10 @@ which cannot list it and says nothing; Linux's bwrap tmpfs had hidden it).
 - route_probe.run leaves nothing of its zb-route-probe-* scratch behind (Linux path, the SDK's query faked);
 - setup's sandboxed runs leave nothing of their zb-setup-run-* scratch behind, even when the run left 0300
   directories in it (empty, and holding a file);
-- a removal that still fails is reported on stderr with its path, never hidden.
+- a removal that still fails is reported on stderr with its path, never hidden;
+- files.remove_tree never opens or removes anything through a symlink: an outside 0300 directory a link in the tree
+  points at keeps its mode and its contents; a FIFO in the tree is unlinked, never opened (RoseCat 7418);
+- FifoHandoff.close() is idempotent: a second close changes nothing and raises nothing (RoseCat 7418).
 
 Precondition: an unprivileged owner cannot list a 0300 directory. Under a user namespace mapped to root
 (CAP_DAC_OVERRIDE) that is false and the leak cannot show, so the cases skip there. Sends no signal.
@@ -21,13 +24,14 @@ import os
 import shutil
 import stat
 import tempfile
+import threading
 import unittest
 from unittest import mock
 
 import support  # noqa: F401  (puts the helper package on sys.path)
 import test_setup_darwin_r1 as r1
 
-from zb_agent_host import route_probe, setup, token
+from zb_agent_host import files, route_probe, setup, token
 
 
 def _dac_bites(root):
@@ -83,6 +87,14 @@ class FifoHandoffClose(Base):
         h.close()
         self.assertFalse(os.path.lexists(d))
 
+    def test_close_twice_is_harmless(self):
+        d = os.path.join(self.root, "zb-token")
+        h = token.FifoHandoff(d, "zb-probe-x")
+        h.close()
+        h.close()
+        self.assertFalse(os.path.lexists(d))
+        self.assertEqual(self.entries(), [])
+
     def test_a_directory_it_did_not_create_is_left_alone(self):
         d = os.path.join(self.root, "shared")
         os.mkdir(d, 0o700)
@@ -92,6 +104,39 @@ class FifoHandoffClose(Base):
         h.close()
         os.chmod(d, 0o700)
         self.assertEqual(os.listdir(d), ["keep"])
+
+
+class RemoveTree(Base):
+    def test_a_symlink_in_the_tree_is_removed_as_a_link_never_followed(self):
+        outside = os.path.join(self.root, "outside")
+        os.mkdir(outside, 0o700)
+        open(os.path.join(outside, "keep"), "w").close()
+        os.chmod(outside, 0o300)
+        tree = os.path.join(self.root, "tree")
+        os.mkdir(tree, 0o700)
+        os.symlink(outside, os.path.join(tree, "link"))
+        self.assertEqual(files.remove_tree(tree), [])
+        self.assertFalse(os.path.lexists(tree))
+        self.assertEqual(stat.S_IMODE(os.stat(outside).st_mode), 0o300, "the link's target was chmodded")
+        os.chmod(outside, 0o700)
+        self.assertEqual(os.listdir(outside), ["keep"])
+
+
+    def test_a_fifo_in_the_tree_is_unlinked_never_opened(self):
+        tree = os.path.join(self.root, "tree")
+        os.mkdir(tree, 0o700)
+        os.mkfifo(os.path.join(tree, "pipe"))
+        os.chmod(tree, 0o300)
+        done = []
+        t = threading.Thread(target=lambda: done.append(files.remove_tree(tree)), daemon=True)
+        t.start()
+        t.join(5)
+        if not done:  # it blocked opening the FIFO: release it, then fail
+            fd = os.open(os.path.join(tree, "pipe"), os.O_WRONLY | os.O_NONBLOCK)
+            os.close(fd)
+            t.join(5)
+        self.assertEqual(done, [[]], "remove_tree opened the FIFO or left something")
+        self.assertFalse(os.path.lexists(tree))
 
 
 class RouteProbeRun(Base):

@@ -1918,6 +1918,14 @@ pub fn build(b: *std.Build) void {
         "py=$(tools/agent_host_env.sh --check) || exit 1; cd agent/host/tests && out=$(env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 ZB_AGENT_HOST_PYTHON=\"$py\" \"$py\" -X dev -m unittest -v test_setup_darwin_tmpdir 2>&1); rc=$?; printf '%s\\n' \"$out\"; [ $rc -eq 0 ] || exit $rc; if printf '%s\\n' \"$out\" | grep -q ResourceWarning; then echo 'test_setup_darwin_tmpdir: ResourceWarning' >&2; exit 1; fi",
     });
     agent_setup_ms5_step.dependOn(&agent_host_setup_darwin_tmpdir.step);
+    // Setup's and the probe's throwaway trees are removed, a 0300 FIFO directory included, and a failed removal is
+    // reported (16bad65 left such trees on both Macs). Plain like its siblings: a root-mapped namespace would hide it.
+    const agent_host_scratch_cleanup = b.addSystemCommand(&.{
+        "sh",
+        "-c",
+        "py=$(tools/agent_host_env.sh --check) || exit 1; cd agent/host/tests && out=$(env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 ZB_AGENT_HOST_PYTHON=\"$py\" \"$py\" -X dev -m unittest -v test_scratch_cleanup 2>&1); rc=$?; printf '%s\\n' \"$out\"; [ $rc -eq 0 ] || exit $rc; if printf '%s\\n' \"$out\" | grep -q ResourceWarning; then echo 'test_scratch_cleanup: ResourceWarning' >&2; exit 1; fi",
+    });
+    agent_setup_ms5_step.dependOn(&agent_host_scratch_cleanup.step);
     // R1's census broker (RoseCat 7019; BlueBeaver 7021): setup runs the Darwin process census outside Seatbelt, the
     // probe asks over a socketpair (--census-fd). The kernel-properties half is tests/mac/ms6_r1_kernel_gate.sh (plan
     // MS6.6 (A)); the Mac production chain is MS6.6 (B).
@@ -2869,6 +2877,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&agent_host_route_probe_darwin_env.step);
     test_step.dependOn(&agent_host_setup_darwin_r1.step);
     test_step.dependOn(&agent_host_setup_darwin_tmpdir.step);
+    test_step.dependOn(&agent_host_scratch_cleanup.step);
     test_step.dependOn(&agent_host_route_probe_census.step);
     test_step.dependOn(&agent_host_setup_census.step);
     test_step.dependOn(&agent_host_setup_darwin_r1_v6.step);

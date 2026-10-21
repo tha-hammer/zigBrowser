@@ -20,7 +20,6 @@ import json
 import os
 import re
 import secrets
-import shutil
 import socket
 import stat
 import sys
@@ -30,7 +29,7 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from . import options, proc_darwin, token
+from . import files, options, proc_darwin, token
 
 PROBE_TIMEOUT_S = 30
 CENSUS_TIMEOUT_S = 10
@@ -321,7 +320,8 @@ def run(wrapper, cli, listener=None, census=None):
         server.close()
         if census is not None:
             census.close()
-        shutil.rmtree(scratch, ignore_errors=True)
+        for problem in files.remove_tree(scratch):
+            print(f"zb_agent_host probe-r1: could not remove {problem}", file=sys.stderr)
 
 
 def main(argv):

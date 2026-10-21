@@ -59,6 +59,7 @@ class FifoHandoff:
 
     def __init__(self, directory, value):
         self.directory = str(directory)
+        self._made_directory = not os.path.lexists(self.directory)  # only a directory it made is its to remove
         os.makedirs(self.directory, mode=0o300, exist_ok=True)
         os.chmod(self.directory, 0o300)
         self.path = os.path.join(self.directory, secrets.token_hex(16))
@@ -96,6 +97,11 @@ class FifoHandoff:
         except FileNotFoundError:
             pass
         self._value = b""
+        if self._made_directory:  # empty now; rmdir needs no read on a 0300 directory (16bad65's leftovers)
+            try:
+                os.rmdir(self.directory)
+            except OSError:
+                pass  # the caller's tree removal reports what is left
 
 
 WRAPPER = '''#!{python} -I

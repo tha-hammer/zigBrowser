@@ -38,7 +38,7 @@ from pathlib import Path
 
 from . import hook_run, options, parent_watch, proc_darwin, relay, sandbox, sandbox_macos, token
 from . import provision as runtime_provision
-from .files import atomic_write, write_all
+from .files import atomic_write, remove_tree, write_all
 
 # settings.json keys removed at any depth (D6), and the widening permissions.
 REMOVED_KEYS = ("mcpServers", "enabledMcpjsonServers", "enableAllProjectMcpServers", "enabledPlugins",
@@ -785,7 +785,8 @@ def _sandboxed(ro_paths, command, timeout, env=None, listener=None, census=None)
     except (OSError, subprocess.SubprocessError):
         return "", False
     finally:
-        shutil.rmtree(scratch, ignore_errors=True)
+        for problem in remove_tree(scratch):
+            print(f"zigBrowser: agent-setup: could not remove {problem}", file=sys.stderr)
 
 
 def cli_version(cli):
