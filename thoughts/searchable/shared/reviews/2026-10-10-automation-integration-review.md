@@ -26528,3 +26528,44 @@ refuse before spawn or signal. The expected inner parent/PID-1 shape can be
 additional defense, not the authority. A forged-string-plus-shell-PID1 row
 must stay refused, and the registered entry must be the reviewed launcher,
 not the worker directly. Agent Mail 7433 sent BlueBeaver this blocker.
+
+## S8a X-flow phases A–C (`02de728`)
+
+**Production code APPROVED; BLOCKED-for-tests because the phase-A-before-cap
+ordering is not causally pinned.**
+
+Both `x.post` and `x.schedule_post` now parse the same strict shared
+expectation as the social flows. The code rejects approvals on dry runs,
+unbound windows, native/humanized input and recipient-bearing X requests;
+checks the bound window's origin and serial in phase A; admits only the exact
+approved `compose_url` in phase B; then captures the committed serial and
+isolated-world document token in phase C. Later actions run through the
+runner's existing serial/token checks. The server also supplies
+`target.id` as `External.window`, so the phase reads and the action port name
+the same window (`src/automation_server.zig:1354`). The shared parser and
+phase-A extraction are a semantic move from `social_flow_routes.zig`; the
+LinkedIn/Instagram path remains on the same functions.
+
+The committed reds `30331a8` and `63ed27f` cover both X verbs, their positive
+input, phase-A origin/serial refusals, phase-B URL refusal, phase-C URL,
+serial and document changes, the invalid combinations, and the production
+server's named-window route. The real-binary e2e drives the socket, SDK,
+server, engine, page and fixture for `x.post`. BlackRobin reports a clean
+private-Xvfb gate of **366/366 steps; 1171/1173 tests (2 skipped)** and a
+current-HEAD rerun of the stricter Zig suite at **5/5**. I did not start a
+second heavy run while BlackRobin held the shared gate slot.
+
+The remaining test defect is at
+`tests/automation_expect_x_flow_test.zig:158-173`. It asserts that a refused
+phase A leaves `remaining()` and `in_flight` unchanged, but observes them only
+after the call returns. A mutant that moves phase A below `state.reserve()`
+still passes: the existing defer releases the temporary reservation before
+those assertions. Thus the exact ordering promised at
+`src/automation/x_routes.zig:180-194` is presently inferred from the code,
+not protected by a red.
+
+The minimal causal row, for both verbs, is to exhaust the X cap and submit a
+stale approval. It must return `-32015 load_serial_changed`, perform the
+phase-A window read and send no page input; a move below `reserve()` instead
+returns `-32010 x_daily_cap`. That mutant must fail before this slice is fully
+approved. Agent Mail 7437 sent BlackRobin the blocker-for-tests.
