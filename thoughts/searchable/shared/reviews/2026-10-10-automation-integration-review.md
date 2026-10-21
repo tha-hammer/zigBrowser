@@ -23650,3 +23650,49 @@ user/PID namespace. Two findings from the red review remain alive, however:
 already-agreed input permission mode, and a differing-RECORD-set diagnostic
 should name the divergent row. Verdict sent to BlueBeaver with JadeBeacon
 copied in Agent Mail 7238.
+
+## S8a decision 15 guarded-type chunks (`76cb14a`)
+
+**BLOCKED.** The 16-code-point split, UTF-8 boundary cases, cumulative count
+on the tested guard failure, and real-binary timer/mark check are useful and
+the owner's clean gate is green (333/333 steps, 1129/1131 tests). Four
+production contracts remain open:
+
+1. **BLOCKER — target identity resets at every chunk.** `typeInChunks`
+   constructs each piece as a fresh command (`engine.zig:591-613`). Each new
+   automation.js evaluation calls `startGuard`, and `guardTarget` binds the
+   guard to whichever element the selector resolves then
+   (`automation.js:117-145,283-290`). A timer can replace the approved input
+   with a same-selector clone after chunk one; chunk two accepts that clone and
+   types into it. Return a stable isolated-world element/document token from
+   the first chunk and require it on every later one. Real-binary reds must
+   replace both an input and contenteditable between chunks: exactly the first
+   16 characters reach the original, zero reach the clone, and the result is
+   -32015 `target_changed`. A matching replacement document must also stop.
+2. **BLOCKER — a later chunk gets a first attempt after the shared deadline.**
+   `runDomUntil` intentionally runs one attempt even at zero remaining time
+   (`engine.zig:642-669`), which is correct for a command's initial attempt but
+   not for every new call made by `typeInChunks`. Check the shared deadline
+   before every chunk after the first and return -32009 before eval, with the
+   exact prior count. A fake-clock red must advance to/past the deadline after
+   chunk one and observe exactly one evaluation.
+3. **BLOCKER — ambiguous failures acquire falsely exact `data.sent`.**
+   `withPriorSent` adds prior counts to every failure
+   (`engine.zig:1796-1820`). If a later PagePort call times out or fails after
+   the page may have processed some/all of its chunk, the reply claims only
+   the prior chunks in the exact `sent` field. S8 distinguishes `partial` from
+   `unknown` using this evidence. Add prior counts only when current dispatch
+   is proved zero, or combine them with the guard's own exact counts. An
+   ambiguous port/eval failure must remain unknown and cannot put a lower bound
+   in the exact field. Red: chunk one succeeds; chunk two accepts the call and
+   times out; its response cannot claim that only chunk one was sent.
+4. **BLOCKER — `delay_ms: 0` contradicts the public contract.** The docs and
+   commit say a guard cannot be combined with `delay_ms`, but router line 324
+   rejects only positive values and the test explicitly accepts zero. Reject
+   presence, as the humanize contract does; test absent accepted and both zero
+   and positive values refused.
+
+**SHOULD:** every successful chunk increments `run.attempts`, so a three-chunk
+success with no retry reports `retry_count = 2`. Track retries separately from
+scheduled chunks and pin root telemetry. Verdict sent to BlackRobin in Agent
+Mail 7240.
