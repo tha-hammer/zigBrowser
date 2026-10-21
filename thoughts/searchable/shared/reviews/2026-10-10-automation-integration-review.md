@@ -22723,3 +22723,58 @@ This approval implements the user's compatibility decision. It does **not**
 close the separately open security-advisory comparison between 48.0.1 and
 50.0.2. Verdict sent to BlueBeaver, with JadeBeacon copied, in Agent Mail
 7183.
+
+## WS0 WTS lock-state mechanism (`5bef873`)
+
+**BLOCKED for WS0 closure.** The replacement signal is the right one, but its
+failure semantics and watched acceptance still fail open.
+
+The native layout and target-OS mapping are correct. Microsoft's
+[`WTSINFOEXW`](https://learn.microsoft.com/en-us/windows/win32/api/wtsapi32/ns-wtsapi32-wtsinfoexw)
+wraps a four-byte `Level` before the union, and
+[`WTSINFOEX_LEVEL1_W`](https://learn.microsoft.com/en-us/windows/win32/api/wtsapi32/ns-wtsapi32-wtsinfoex_level1_w)
+places `SessionId`, `SessionState` and `SessionFlags` next. Thus byte 12 is the
+right flags offset, and on the supported Windows 10/11 hosts 0/1 means
+locked/unlocked. Buffer ownership and freeing are also correct. Demoting
+`OpenInputDesktop` to a diagnostic matches the user's observed locked console,
+where it incorrectly returned `Default`.
+
+**BLOCKER — fail-open unknown state:**
+`tests/windows/session_probe.ps1:44-51` returns `false` when the WTS query
+fails or the flag is unknown and LogonUI is absent. That makes
+`interactive_session=true`. `host_probe.ps1` then propagates only the derived
+`locked`/`interactive_session`, and `gate.sh:235-238` accepts that result. An
+unavailable or unknown authoritative signal must instead remain unknown or be
+treated as locked, so the normal gate refuses it. The current fixture at
+`tests/windows/host_live_test.py:483` explicitly pins the unsafe
+`FB_OFF=False` result; replace it with a fail-closed oracle and mutation.
+
+**BLOCKER-for-tests — the watched lock run can bypass WTS:**
+`tests/windows/host_live_test.py:443-450` accepts a LogonUI observation instead
+of a successful WTS query. The owner-watched locked case can therefore pass if
+the P/Invoke, layout or actual SessionFlags read is broken. WS0 acceptance must
+require `wts_lock_ok is True` and `session_flags == 0` on the genuinely locked
+console. After it is unlocked, the normal watched run must likewise prove that
+the real query returned `wts_lock_ok=true` and `session_flags=1`; the LogonUI
+fallback can be tested independently but cannot substitute for the primary
+mechanism.
+
+**BLOCKER — the authoritative contract is stale:** the Windows plan still
+binds the verdict to `OpenInputDesktop` and explicitly excludes WTS/LogonUI at
+lines 11, 510-514, 713-715 and 725-726. It needs a fix-forward revision that
+names WTSINFOEX, the fail-closed unknown state, diagnostic-only input desktop,
+and both exact watched observations. The old mechanism is also still described
+in `tests/windows/host_probe.ps1:172-178` and `tests/windows/gate.sh:156-159`.
+
+Independent exact-commit, display-free evidence:
+
+```text
+gate_twohost_selftest.py: Ran 100 tests in 3.127s; OK (skipped=18)
+```
+
+The throwaway export was deleted immediately. No VM or live desktop was
+touched. After the blockers are fixed, the exact updated probe must be
+restaged because its verified SHA changes; then the watched locked run with
+`ZB_EXPECT_LOCKED=1` and the unlocked two-host `gate.sh --probe-only` run must
+both be repeated. WS0 and `7d85cd5` remain OPEN. Verdict sent to AzureRidge in
+Agent Mail 7185.
