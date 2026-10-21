@@ -254,11 +254,14 @@ int zb_reaper_ledger_entry_state(int runtime_fd, const char *basename, const str
   if (!active) return ZB_LEDGER_NOT_ACTIVE;
   const int fd = openat(runtime_fd, basename, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
   if (fd < 0) return (errno == ENOENT) ? ZB_LEDGER_GONE : ZB_LEDGER_MISMATCH;
+  /* Reopened no-follow to a real dir. Pin its CURRENT identity (fstat: this uid, 0700, dev/ino) and require it to
+   * equal the record EXACTLY. pin_fd refuses a non-0700 / non-this-uid / non-dir fd, so a changed mode/owner is a
+   * MISMATCH; dir_id_eq then rejects a swapped (dev,ino). No pathname stat, so a symlink can never be followed. */
+  struct zb_reaper_dir_id got;
+  const int pinned = zb_reaper_pin_fd(fd, &got);
   close(fd);
-  /* RED STUB — the plan's named "drop the fstat match" mutant: it reopens the basename but NEVER compares the
-   * reopened dir's (dev,ino,uid,mode) to `rec`, so a swapped/replaced dir at the same name is wrongly swept. The
-   * green replaces this with an fstat match (zb_reaper_pin_fd + zb_reaper_dir_id_eq). */
-  return ZB_LEDGER_SWEEP;
+  if (pinned != 0) return ZB_LEDGER_MISMATCH; /* not a 0700 this-uid dir any more */
+  return zb_reaper_dir_id_eq(&got, rec) ? ZB_LEDGER_SWEEP : ZB_LEDGER_MISMATCH;
 }
 
 /* ---- macOS production wrappers (libproc + real kill; Mac-only) ---- */

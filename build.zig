@@ -788,6 +788,18 @@ pub fn build(b: *std.Build) void {
     run_reaper_uc_tests.addArtifactArg(reaper_uc_exe);
     const reaper_uc_step = b.step("test-agent-run-reaper-unreadable", "MS6.5.1 unidentifiable (have_bsd=0, uid=-1) match is unresolved, never Clean (fake ops)");
     reaper_uc_step.dependOn(&run_reaper_uc_tests.step);
+    // MS6.5.1 (plan "Provenance"): the run ledger's per-entry creation-provenance decision, on REAL Linux dirs
+    // (openat O_NOFOLLOW + fstat) — no signals. A dir is swept ONLY on an exact (dev,ino,uid,mode) match of an
+    // active entry; swapped/symlinked/mode-changed/non-active are census/warn.
+    const reaper_lg_module = b.createModule(.{ .target = target, .optimize = optimize, .link_libc = true });
+    reaper_lg_module.addCSourceFile(.{ .file = b.path("src/agent_run_reaper.c"), .flags = &.{"-std=gnu11"} });
+    reaper_lg_module.addCSourceFile(.{ .file = b.path("tests/agent_run_ledger_test.c"), .flags = &.{"-std=gnu11"} });
+    reaper_lg_module.addIncludePath(b.path("src"));
+    const reaper_lg_exe = b.addExecutable(.{ .name = "reaper-ledger-test", .root_module = reaper_lg_module });
+    const run_reaper_lg_tests = b.addRunArtifact(reaper_lg_exe);
+    run_reaper_lg_tests.skip_foreign_checks = true;
+    const reaper_lg_step = b.step("test-agent-run-reaper-ledger", "MS6.5.1 ledger provenance: swept only on an exact fstat match of an active entry (real dirs)");
+    reaper_lg_step.dependOn(&run_reaper_lg_tests.step);
     // MS6.5 (the user's decision 2026-10-21): the stubbed macOS VM-containment seam — off by default, reports
     // "not available yet", and the gate fails closed when on. Pure Linux unit (no OS calls).
     const mac_vm_containment_module = b.createModule(.{
@@ -2746,6 +2758,7 @@ pub fn build(b: *std.Build) void {
     if (target.result.os.tag == .linux) test_step.dependOn(&run_reaper_fp_tests.step);
     if (target.result.os.tag == .linux) test_step.dependOn(&run_reaper_fc_tests.step);
     if (target.result.os.tag == .linux) test_step.dependOn(&run_reaper_uc_tests.step);
+    if (target.result.os.tag == .linux) test_step.dependOn(&run_reaper_lg_tests.step);
     test_step.dependOn(&run_mac_vm_containment_tests.step);
     test_step.dependOn(&mac_vm_containment_e2e.step);
     test_step.dependOn(&run_agent_secrets_tests.step);
