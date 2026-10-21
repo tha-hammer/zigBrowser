@@ -23567,3 +23567,56 @@ Before the green is accepted:
 name the divergent `pkg/extra.py` row rather than only the RECORD filename.
 The separate rev-20 SBOM contract blocker on `06f1d4b` remains open. Verdict
 sent to BlueBeaver with JadeBeacon copied in Agent Mail 7233.
+
+## MS6.5 libproc sweep and both-Mac gate (`7fa8906`, `5c20710`)
+
+**BLOCKED.** The pure classification helper remains sound and its exact-commit,
+display-scrubbed clean-export check is green (4/4 steps, 5/5 tests), but the
+production sweep and its destructive Mac test are not safe or complete enough
+to accept. The 8/8 reports recorded by `5c20710` are execution evidence, not a
+valid acceptance result, because the test can pass while the sweep examines
+only part of the process table.
+
+1. **BLOCKER — `proc_listallpids` is divided twice.**
+   `src/agent_run_reaper.c:100-101` calls `proc_listallpids` and then divides
+   the result by `sizeof(pid_t)`. Apple's implementation already converts the
+   underlying byte count to a PID-entry count before returning. The loop
+   consequently scans only about one quarter of the returned PID entries.
+   Use the returned count directly, retry within a bound when capacity was
+   filled, and mutation-test both the extra division and the sizing/fill race.
+   Source: <https://github.com/apple-oss-distributions/xnu/blob/main/libsyscall/wrappers/libproc/libproc.c>.
+2. **BLOCKER — deletion authority is not bound to a safe run marker.**
+   `agent_run_reaper.c:87-93` accepts broad markers such as `/tmp` or a user's
+   home and falls back to the unverified caller string when `realpath` fails.
+   Require the canonical, app-owned, unique per-run directory pinned at
+   creation, reject broad ancestors, and fail closed if it cannot be
+   revalidated. A deleted or aliased marker cannot silently fall back.
+3. **BLOCKER — identity and signal outcomes are not proved.** The UID read is
+   before a potentially long marker scan, not immediately before SIGKILL; no
+   process birth identity is pinned. Line 118 also ignores `kill`'s return.
+   Pin and revalidate stable identity plus UID immediately before signalling;
+   treat ESRCH as vanished and surface every other error.
+4. **BLOCKER — the Mac gate can send unsafe signals.**
+   `tests/mac/ms6_5_reaper_test.c:53` can call `kill(-1, 0)` after a failed
+   spawn/read. Cleanup lines 82-83 raw-signal detached numeric PIDs, including
+   an escaper already killed by the sweep and therefore eligible for PID
+   reuse. `setsid()` is unchecked, exact census/sweep sets are not asserted,
+   and timeout can strand 120-second children. Validate every PID before any
+   kill/kill0, use held identity/control channels for cleanup, prove PGID
+   escape, assert exact sets, and clean every exit path. Do not rerun this gate
+   before that fix.
+5. **BLOCKER — retiring the orphan gate drops still-binding coverage.** The
+   deleted gate drove the production spawn/parent-watch lifecycle and a real
+   setsid escape. The accept-with-cleanup decision withdraws the impossible
+   no-survivors assertion, not the requirement that app stop/next start clean
+   a real escaped descendant. Replace that production lifecycle coverage.
+6. **BLOCKER — bounded result arrays silently truncate.** More than 512
+   matches are reported as ordinary success. Return explicit overflow and
+   never let a truncated survivor set authorize a “clean” result.
+
+**SHOULD:** exercise cwd, executable, and open-FD positives through real
+libproc on both Macs, plus failures from both process-list calls. The path
+component helper itself correctly rejects `/run/abcd` for `/run/abc`.
+
+Verdicts and the instruction not to rerun the unsafe gate were sent to
+JadeBeacon with BlueBeaver copied in Agent Mail 7236.
