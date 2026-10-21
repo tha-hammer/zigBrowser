@@ -269,8 +269,30 @@ class MacSeatbeltBackend:
     def __init__(self, egress_port):
         self._egress_port = _validate_port(egress_port)
 
+    def network(self, session=None):
+        """The whole macOS network capability as one immutable ``sandbox.Network`` — the single source the
+        egress endpoint, the allowlist and the bridge policy project from. The egress is the ephemeral
+        host-loopback ``127.0.0.1:<egress_port>``; the allowlist is the backend-owned ``EGRESS_ALLOW``; there
+        is NO relay socket dir (macOS reaches the host-loopback proxy directly), so ``dir`` is None."""
+        sb = _sb()
+        return sb.Network(
+            egress=sb.Egress(sb.Endpoint(_LOOPBACK_HOST, self._egress_port), sb.EGRESS_ALLOW, None),
+            bridges=self.bridge_policy(),
+        )
+
+    def login_network(self):
+        """The one-shot sign-in's network: the same egress endpoint, the login allowlist, and no bridges
+        (setup-token runs no hooks)."""
+        sb = _sb()
+        base = self.network()
+        return sb.Network(egress=base.egress._replace(allow=sb.LOGIN_EGRESS_ALLOW),
+                          bridges=sb.BridgePolicy(ports=(), hooks_get_egress=False))
+
     def egress_endpoint(self, session=None):
-        return _sb().Endpoint(_LOOPBACK_HOST, self._egress_port)
+        return self.network(session).egress.endpoint
+
+    def egress_dir(self):
+        return self.network().egress.dir  # None on macOS (no relay socket dir)
 
     def bridge_policy(self):
         return _sb().BridgePolicy(ports=CANONICAL_BRIDGES, hooks_get_egress=False)
@@ -288,3 +310,29 @@ class MacSeatbeltBackend:
     def channel(self):
         # The CLI's fd-3 token contract is cross-platform; macOS writes the token to fd 3 via zb_mac_token_to_fd.
         return _sb().Channel(fd=3, env="CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR")
+
+    def launch_spec(self, home, *, seccomp_fd=None, ro_paths=(), state_dirs=(), claude_writable=False,
+                    net_dir=None, network=None):
+        """The CLI/helper launch as a ``sandbox-exec`` prefix + the semantic ``LaunchSpec`` (MS0 rev 6).
+
+        Unlike the Linux bwrap argv, the macOS argv runs the command under a generated Seatbelt profile:
+        ``/usr/bin/sandbox-exec -f <home.runtime>/agent-cli.sb -D SCRATCHPAD=<scratch>`` (the caller appends
+        the command; sandbox-exec takes it directly, no ``--``). The profile is :func:`render_profile`'s CLI
+        output, written to the home's runtime each launch; the scratchpad is bound as the literal ``-D`` value
+        (never interpolated into source). The semantic fields state the backend-neutral meaning: macOS has no
+        namespaces (``unshare=()`` — Seatbelt is the isolation), ``network``/``lifetime``/``channel`` are this
+        backend's, and ``mounts`` is the enforced write-grant contract (the scratchpad). The Linux-only kwargs
+        (``seccomp_fd``, ``state_dirs``, ``claude_writable``, ``net_dir``, ``ro_paths``) are accepted for the
+        Protocol and not used here; per-path read mounts (``ro_paths``/``state_dirs``) arrive with the
+        deny-default read-curation increment.
+        """
+        sb = _sb()
+        net = network if network is not None else self.network()
+        scratch = dparams(scratchpad=str(home.scratchpad))[SCRATCHPAD_PARAM]  # validated canonical non-root
+        profile_path = os.path.join(str(home.runtime), "agent-cli.sb")
+        with open(profile_path, "w", encoding="utf-8") as f:
+            f.write(render_profile(egress=net.egress.endpoint, bridges=net.bridges.ports, is_hook=False))
+        argv = ("/usr/bin/sandbox-exec", "-f", profile_path, "-D", f"{SCRATCHPAD_PARAM}={scratch}")
+        mounts = (sb.Mount(source=scratch, target=scratch, writable=True),)
+        return sb.LaunchSpec(argv=argv, unshare=(), mounts=mounts, workdir=str(home.workspace),
+                             seccomp_fd=None, network=net, lifetime=self.lifetime(), channel=self.channel())

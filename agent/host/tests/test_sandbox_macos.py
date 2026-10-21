@@ -27,7 +27,7 @@ from pathlib import Path
 HOST_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(HOST_DIR))
 
-from zb_agent_host import sandbox  # noqa: E402
+from zb_agent_host import options, sandbox  # noqa: E402
 from zb_agent_host import sandbox_macos  # noqa: E402
 
 EGRESS = sandbox.Endpoint("127.0.0.1", 52346)
@@ -309,6 +309,62 @@ class MacSeatbeltBackendCapability(unittest.TestCase):
         for bad in (0, 70000, -1, "8080", 3.0, True):
             with self.assertRaises(ValueError):
                 sandbox_macos.MacSeatbeltBackend(egress_port=bad)
+
+
+class MacSeatbeltBackendNetwork(unittest.TestCase):
+    def _backend(self):
+        return sandbox_macos.MacSeatbeltBackend(egress_port=52346)
+
+    def test_network_is_the_backend_capability(self):
+        net = self._backend().network()
+        self.assertEqual((net.egress.endpoint.host, net.egress.endpoint.port), ("127.0.0.1", 52346))
+        self.assertEqual(net.egress.allow, sandbox.EGRESS_ALLOW, "the egress allowlist is backend-owned")
+        self.assertIsNone(net.egress.dir, "macOS has no relay socket dir — the CLI reaches the proxy directly")
+        self.assertEqual(tuple(net.bridges.ports), (51091, 31337))
+        self.assertFalse(net.bridges.hooks_get_egress)
+
+    def test_egress_endpoint_and_dir_project_from_network(self):
+        b = self._backend()
+        self.assertEqual(b.egress_endpoint(), b.network().egress.endpoint)
+        self.assertIsNone(b.egress_dir())
+
+    def test_login_network_is_egress_only_with_the_login_allowlist(self):
+        ln = self._backend().login_network()
+        self.assertEqual((ln.egress.endpoint.host, ln.egress.endpoint.port), ("127.0.0.1", 52346))
+        self.assertEqual(ln.egress.allow, sandbox.LOGIN_EGRESS_ALLOW, "login uses the login allowlist")
+        self.assertEqual(tuple(ln.bridges.ports), (), "the sign-in runs no hooks: no bridges")
+
+
+class MacSeatbeltBackendLaunchSpec(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        root = Path(self._tmp.name)
+        self.home = options.AgentHome(root)
+        for d in (".claude", "workspace", "scratchpad", "runtime"):
+            (root / d).mkdir(parents=True, exist_ok=True)
+        self.backend = sandbox_macos.MacSeatbeltBackend(egress_port=52346)
+
+    def test_launch_spec_argv_and_semantic_fields(self):
+        spec = self.backend.launch_spec(self.home)
+        scratch = os.path.normpath(str(self.home.scratchpad))
+        profile_path = os.path.join(str(self.home.runtime), "agent-cli.sb")
+        self.assertEqual(list(spec.argv),
+                         ["/usr/bin/sandbox-exec", "-f", profile_path, "-D", f"SCRATCHPAD={scratch}"],
+                         "the argv is the sandbox-exec prefix (-f the generated profile, -D the scratchpad)")
+        # the profile file was written and is exactly render_profile's CLI output
+        with open(profile_path, encoding="utf-8") as f:
+            self.assertEqual(f.read(), sandbox_macos.render_profile(
+                egress=self.backend.network().egress.endpoint, bridges=(51091, 31337), is_hook=False))
+        # the semantic LaunchSpec fields
+        self.assertEqual(tuple(spec.unshare), (), "macOS has no namespaces — Seatbelt is the isolation")
+        self.assertEqual(spec.workdir, str(self.home.workspace))
+        self.assertIsNone(spec.seccomp_fd)
+        self.assertEqual(spec.network, self.backend.network())
+        self.assertEqual(spec.lifetime, self.backend.lifetime())
+        self.assertEqual(spec.channel, self.backend.channel())
+        self.assertEqual([tuple(m) for m in spec.mounts], [(scratch, scratch, True)],
+                         "the enforced write-grant contract is the scratchpad (read curation is a later increment)")
 
 
 if __name__ == "__main__":
