@@ -20,7 +20,18 @@ set -uo pipefail
 # virsh, resolve_path.sh) inherits a display-free environment (WS0.3).
 unset DISPLAY WAYLAND_DISPLAY XAUTHORITY
 
-cd "$(git rev-parse --show-toplevel)" || { echo "gate: not in a git repo" >&2; exit 1; }
+# Resolve the repo root from an EXPLICIT root (ZB_GATE_ROOT) or the Git root, and FAIL CLOSED when neither
+# resolves (RoseCat 012e1bc SHOULD). Note: `cd "$(git rev-parse --show-toplevel)"` is unsafe — from an
+# archive export git prints 'fatal: not a git repository' and the substitution is empty, so `cd ""` is a
+# no-op that returns 0 and the `|| exit` never fires, leaving the gate in the caller's cwd. Validate that
+# the resolved root actually contains this gate before cd-ing.
+gate_root="${ZB_GATE_ROOT:-}"
+[ -z "$gate_root" ] && gate_root="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+if [ -z "$gate_root" ] || [ ! -d "$gate_root" ] || [ ! -f "$gate_root/tests/windows/gate.sh" ]; then
+  echo "gate: cannot resolve a repo root — set ZB_GATE_ROOT to the export/checkout root, or run inside a git repo" >&2
+  exit 1
+fi
+cd "$gate_root" || { echo "gate: cannot enter repo root '$gate_root'" >&2; exit 1; }
 REPO="$PWD"
 HERE="tests/windows"
 

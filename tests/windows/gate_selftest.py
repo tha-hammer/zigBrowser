@@ -576,5 +576,43 @@ class ResolvePathSafetyTests(unittest.TestCase):
         self.assertEqual(pn.stdout.strip(), good, "a normal resolve must print the resolved path")
 
 
+class RootResolutionTests(_GateCase):
+    """RoseCat 012e1bc: the gate must resolve its root from an explicit root or the Git root and FAIL
+    CLOSED when neither exists — never silently `cd ""` and run in the caller's cwd (as an archive export
+    without a .git did)."""
+
+    def test_non_git_cwd_without_explicit_root_fails_closed(self):
+        # cwd is a non-git dir and ZB_WIN* are unset; git rev-parse fails, so the gate must fail closed
+        # with a clear message — not proceed (which the old `cd "$(git rev-parse ...)"` did via `cd ""`).
+        with tempfile.TemporaryDirectory() as t:
+            proc = subprocess.run([str(GATE), "--probe-only"], cwd=t,
+                                  env={"PATH": _BASE_PATH, "HOME": t},
+                                  capture_output=True, text=True, timeout=60)
+            detail = f"\nrc={proc.returncode}\nstdout:\n{proc.stdout}\nstderr:\n{proc.stderr}"
+            self.assertNotEqual(proc.returncode, 0, "a non-git export without ZB_GATE_ROOT must fail closed" + detail)
+            self.assertIn("cannot resolve a repo root", proc.stderr, detail)
+
+    def test_explicit_gate_root_resolves(self):
+        # With ZB_GATE_ROOT set (git not consulted), root resolution succeeds; the gate then fails LATER
+        # for a different reason (no host configured), proving it got past root resolution.
+        with tempfile.TemporaryDirectory() as t:
+            proc = subprocess.run([str(GATE), "--probe-only"], cwd=t,
+                                  env={"PATH": _BASE_PATH, "HOME": t, "ZB_GATE_ROOT": str(REPO)},
+                                  capture_output=True, text=True, timeout=60)
+            detail = f"\nrc={proc.returncode}\nstdout:\n{proc.stdout}\nstderr:\n{proc.stderr}"
+            self.assertNotIn("cannot resolve a repo root", proc.stderr,
+                             "an explicit ZB_GATE_ROOT must resolve the root" + detail)
+
+    def test_explicit_root_without_gate_is_rejected(self):
+        # A ZB_GATE_ROOT that does not contain tests/windows/gate.sh must fail closed (not a blind cd).
+        with tempfile.TemporaryDirectory() as t:
+            proc = subprocess.run([str(GATE), "--probe-only"], cwd=t,
+                                  env={"PATH": _BASE_PATH, "HOME": t, "ZB_GATE_ROOT": t},
+                                  capture_output=True, text=True, timeout=60)
+            detail = f"\nrc={proc.returncode}\nstdout:\n{proc.stdout}\nstderr:\n{proc.stderr}"
+            self.assertNotEqual(proc.returncode, 0, "a root without the gate must fail closed" + detail)
+            self.assertIn("cannot resolve a repo root", proc.stderr, detail)
+
+
 if __name__ == "__main__":
     unittest.main()
