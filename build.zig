@@ -670,6 +670,23 @@ pub fn build(b: *std.Build) void {
     });
     const run_agent_host_posix_tests = b.addRunArtifact(b.addTest(.{ .root_module = agent_host_posix_tests_module }));
     run_agent_host_posix_tests.skip_foreign_checks = true;
+    // MS8 spawner integration (BlackRobin 7035/7108 seam 1+Q1): spawnNetd drives the C zb_agent_spawn_group_io
+    // with a Linux stand-in netd; links src/agent_spawn_posix.c (the real seam). The both-Mac fake-netd e2e is separate.
+    const agent_host_posix_module = b.createModule(.{
+        .root_source_file = b.path("src/agent_host_posix.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const agent_host_posix_spawn_module = b.createModule(.{
+        .root_source_file = b.path("tests/agent_host_posix_spawn_test.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    agent_host_posix_spawn_module.addImport("agent_host_posix", agent_host_posix_module);
+    agent_host_posix_spawn_module.addCSourceFile(.{ .file = b.path("src/agent_spawn_posix.c"), .flags = &.{"-std=c11"} });
+    const run_agent_host_posix_spawn_tests = b.addRunArtifact(b.addTest(.{ .root_module = agent_host_posix_spawn_module }));
+    run_agent_host_posix_spawn_tests.skip_foreign_checks = true;
 
     // Chat drawer S3b: the helper's launch argv and environment, the app's
     // frames, the runtime-lock check and the backoff (src/agent_helper.zig).
@@ -2338,6 +2355,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_agent_net_tests.step);
     test_step.dependOn(&run_agent_net_manifest_tests.step);
     test_step.dependOn(&run_agent_host_posix_tests.step);
+    test_step.dependOn(&run_agent_host_posix_spawn_tests.step);
     test_step.dependOn(&run_agent_secrets_tests.step);
     test_step.dependOn(&run_agent_secrets_shape_tests.step);
     if (target.result.os.tag == .linux) test_step.dependOn(&run_agent_secrets_dlopen_test.step);

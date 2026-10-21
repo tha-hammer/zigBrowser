@@ -67,6 +67,118 @@ pub fn firstLine(buf: []const u8) []const u8 {
     return buf[0..end];
 }
 
+// The C spawn seam (BlueBeaver 06f0e35; BlackRobin 7108 seam 1): the child's stdin/stdout are the given pipe
+// ends (fd -1 inherits; a fd in 0..2 is EINVAL), its own process group, and on Darwin it holds EXACTLY 0,1,2.
+extern fn zb_agent_spawn_group_io(
+    argv: [*:null]const ?[*:0]const u8,
+    envp: [*:null]const ?[*:0]const u8,
+    stdin_fd: c_int,
+    stdout_fd: c_int,
+    out_pid: *std.c.pid_t,
+) c_int;
+extern fn zb_agent_kill_group(pid: std.c.pid_t) void;
+
+pub const SpawnError = error{ NetworkFailure, OutOfMemory };
+
+/// A running netd: its egress port, its pid (its own group), and the stdin write end the browser HOLDS OPEN for
+/// netd's whole life. Closing `stdin_fd` is the clean stop (netd exits on stdin EOF); `kill()` is the hard stop.
+pub const Netd = struct {
+    port: u16,
+    pid: std.c.pid_t,
+    stdin_fd: c_int, // the browser holds netd's stdin WRITE end open for netd's whole life
+
+    /// Stop netd: close its stdin (EOF -> netd exits), then SIGKILL + reap the group as a backstop.
+    pub fn stop(self: Netd) void {
+        _ = std.c.close(self.stdin_fd);
+        zb_agent_kill_group(self.pid);
+    }
+};
+
+fn toCArgv(a: std.mem.Allocator, items: []const []const u8) ![*:null]const ?[*:0]const u8 {
+    const arr = try a.allocSentinel(?[*:0]const u8, items.len, null);
+    for (items, 0..) |s, i| arr[i] = (try a.dupeZ(u8, s)).ptr;
+    return arr.ptr;
+}
+
+// POSIX fcntl fd-flag constants (identical on Linux and macOS), so the pipe ends can be made close-on-exec.
+const F_GETFD: c_int = 1;
+const F_SETFD: c_int = 2;
+const FD_CLOEXEC_: c_int = 1;
+
+/// FD_CLOEXEC on a pipe end so the spawned child never inherits the browser's copy (BlackRobin 7108): the C's
+/// dup2 clears it on the child's own 0/1, and Darwin's CLOEXEC_DEFAULT closes everything else. Best-effort.
+fn setCloexec(fd: c_int) void {
+    const flags = std.c.fcntl(fd, F_GETFD);
+    if (flags < 0) return;
+    _ = std.c.fcntl(fd, F_SETFD, flags | FD_CLOEXEC_);
+}
+
+/// Start netd in its own process group with a stdin pipe held open by the browser and a stdout pipe the browser
+/// reads, learn the ephemeral egress port from netd's FIRST stdout line within `deadline_ms`, and return the
+/// running netd. On ANY failure — the spawn errno, a null/malformed ready line, the deadline passing, or netd
+/// exiting first (stdout EOF) — the group is SIGKILLed and `SpawnError.NetworkFailure` is returned, with NO
+/// fallback port (BlackRobin 7035). `a` is expected to be an arena (the C argv/env dupes live until return).
+pub fn spawnNetd(a: std.mem.Allocator, argv: []const []const u8, envp: []const []const u8, deadline_ms: u32) SpawnError!Netd {
+    const cargv = try toCArgv(a, argv);
+    const cenv = try toCArgv(a, envp);
+
+    // stdin: parent writes [1], child reads [0]; stdout: child writes [1], parent reads [0].
+    var inp: [2]c_int = undefined;
+    var outp: [2]c_int = undefined;
+    if (std.c.pipe(&inp) != 0) return error.NetworkFailure;
+    if (std.c.pipe(&outp) != 0) {
+        _ = std.c.close(inp[0]);
+        _ = std.c.close(inp[1]);
+        return error.NetworkFailure;
+    }
+    for ([_]c_int{ inp[0], inp[1], outp[0], outp[1] }) |fd| setCloexec(fd);
+
+    var pid: std.c.pid_t = -1;
+    const rc = zb_agent_spawn_group_io(cargv, cenv, inp[0], outp[1], &pid);
+    _ = std.c.close(inp[0]); // the child's ends belong to the child now
+    _ = std.c.close(outp[1]);
+    if (rc != 0) {
+        _ = std.c.close(inp[1]);
+        _ = std.c.close(outp[0]);
+        return error.NetworkFailure;
+    }
+
+    const port = readFirstPort(outp[0], deadline_ms);
+    _ = std.c.close(outp[0]); // done with netd's stdout either way
+    if (port) |p| return Netd{ .port = p, .pid = pid, .stdin_fd = inp[1] };
+    // Failure: no fallback port. Close stdin (EOF) and SIGKILL + reap the group.
+    _ = std.c.close(inp[1]);
+    zb_agent_kill_group(pid);
+    return error.NetworkFailure;
+}
+
+/// Read netd's first stdout line within the deadline and parse its port; null on deadline, EOF (netd exited
+/// first), a read error, or a line that is not the exact ready grammar.
+fn nowMs() i64 {
+    var ts: std.c.timespec = undefined;
+    _ = std.c.clock_gettime(.MONOTONIC, &ts);
+    return @as(i64, ts.sec) * 1000 + @divTrunc(@as(i64, ts.nsec), std.time.ns_per_ms);
+}
+
+fn readFirstPort(fd: c_int, deadline_ms: u32) ?u16 {
+    var buf: [256]u8 = undefined;
+    var len: usize = 0;
+    const start = nowMs();
+    while (true) {
+        const elapsed = nowMs() - start;
+        if (elapsed >= deadline_ms) return null;
+        const remaining: c_int = @intCast(@as(i64, deadline_ms) - elapsed);
+        var pfd = [_]std.c.pollfd{.{ .fd = fd, .events = std.posix.POLL.IN, .revents = 0 }};
+        const ready = std.c.poll(&pfd, 1, remaining);
+        if (ready <= 0) return null; // 0 = deadline, <0 = error: fail closed
+        const n = std.c.read(fd, buf[len..].ptr, buf.len - len);
+        if (n <= 0) return readyPort(firstLine(buf[0..len])); // EOF / error: parse what we have
+        len += @intCast(n);
+        if (std.mem.indexOfScalar(u8, buf[0..len], '\n') != null or len == buf.len)
+            return readyPort(firstLine(buf[0..len]));
+    }
+}
+
 test "decide is fail-closed: the helper starts only on a good port, in time, with netd alive" {
     try std.testing.expectEqual(Outcome.start_helper, decide(50607, false, false));
     try std.testing.expectEqual(Outcome.network_failure, decide(null, false, false)); // malformed/absent port
