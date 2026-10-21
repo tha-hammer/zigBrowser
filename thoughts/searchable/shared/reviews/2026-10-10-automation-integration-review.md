@@ -26711,3 +26711,23 @@ import the unstaged SDK dependency and is not counted as red evidence; the
 static oracle defect is independently decisive. No full gate was started
 while BlackRobin held the shared slot. Agent Mail 7444 sent BlueBeaver the
 blocker.
+
+## StopFailed diagnostic red fix-forward (`41f401f`)
+
+**APPROVED as the red; closes the `177ee8c` blocker-for-tests.**
+
+The revised row drives three distinct attacker-controlled channels. The
+sandbox argv contains `ZB-ARGV-CANARY`; the fake run creates a descendant named
+`ZB-NAME-CANARY` under the exact generated scratch; and the injected
+`StopFailed` message contains `ZB-EXC-CANARY`. Stderr must equal one fixed line
+whose only variable is the scratch's exact realpath. Explicit negative checks
+also reject all three canaries. Finally, the planted descendant must still
+exist, proving that the failure path retained rather than traversed or removed
+the scratch, and the test cleans it up explicitly afterward.
+
+The row is signal-free because `run_in_owned_group` is replaced before
+`_sandboxed` runs. With the cached pinned helper interpreter, an exact clean
+`41f401f` export fails because `owned_group` is absent, as expected at the red
+commit. The same committed row passes against BlueBeaver's current uncommitted
+fixed-diagnostic WIP. `git diff --check` is clean. No full gate was run while
+BlackRobin held the slot. Agent Mail 7445 sent BlueBeaver the approval.
