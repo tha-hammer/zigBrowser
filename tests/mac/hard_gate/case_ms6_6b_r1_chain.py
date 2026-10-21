@@ -150,6 +150,17 @@ def _sanitize(text):
     return text[-DIAG_MAX:]
 
 
+def _census_view(seen):
+    """A census record as a label may print it (RoseCat 7366 #1): never the token itself, only whether it had the
+    probe token's exact shape; the rest (exe, root, canary, verdicts, forge record) carries no secret, and a read error
+    goes through _sanitize."""
+    tok = seen.get("token")
+    return {"token_shape_ok": isinstance(tok, bytes) and TOKEN_SHAPE.fullmatch(tok) is not None,
+            "exe": seen.get("exe"), "root": seen.get("root"), "canary": seen.get("canary"),
+            "clean": seen.get("clean"), "planted": seen.get("planted"), "forged": seen.get("forged"),
+            "read_error": _sanitize(seen.get("read_error")) or None}
+
+
 def _diag(rec):
     return rec.get("diag", "no sandboxed run was recorded") if rec else "no sandboxed run was recorded"
 
@@ -373,7 +384,7 @@ def run(h):
                 and censuses[0]["canary"] == f"ANTHROPIC_BASE_URL=http://127.0.0.1:{port}".encode()
                 and censuses[0]["exe"] == clis["honest"] and censuses[0]["root"] == os.getpid()
                 and censuses[0]["clean"] is True,
-                f"positive: setup's census ran once, exact request, clean ({censuses})")
+                f"positive: setup's census ran once, exact request, clean ({[_census_view(c) for c in censuses]})")
     _released(h, proc_darwin, "positive", clis["honest"], runtime, runs, t0)
 
     # 2. planted-token control and 3. forged capability: their own positives first. The planted CLI is the forge CLI
@@ -385,7 +396,8 @@ def run(h):
                 + ("" if len(censuses) == 1 else f" ({_diag(runs[0] if runs else None)})"))
         seen = censuses[0] if censuses else {}
         h.check(seen.get("planted") is True,
-                f"{mode}: the CLI's real environment, read outside Seatbelt, holds the planted token ({seen})")
+                f"{mode}: the CLI's real environment, read outside Seatbelt, holds the planted token "
+                f"({_census_view(seen) if seen else None})")
         forged = seen.get("forged")
         if mode == "forge":
             h.check(forged is not None and len(forged) == 1 and re.fullmatch(rb"ZB_FORGED=1024,[0-9]+,[0-9]+",
