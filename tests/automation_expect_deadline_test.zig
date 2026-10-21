@@ -93,3 +93,35 @@ test "with time left, the check's own refusal stands" {
     try testing.expectEqualStrings("load_serial_changed", reply.reason());
     try testing.expectEqual(@as(u32, 0), h.world.ops());
 }
+
+test "a stop comes before a held check that also outlived the budget and found a change (RoseCat 4d62b4e)" {
+    const h = try Harness.start();
+    defer h.deinit();
+    h.world.load_serials[1].store(5, .release);
+    h.world.list_hold.store(true, .release);
+
+    const Call = struct {
+        fn run(harness: *Harness, out: *Reply) void {
+            out.* = harness.call("dom.click", "{\"selector\":\"css=#buy\",\"window_id\":\"window-2\",\"options\":{\"timeout_ms\":300,\"expect\":{\"origin\":\"https://shop.example\",\"load_serial\":4}}}") catch Reply{ .code = -1 };
+        }
+    };
+    var reply: Reply = .{};
+    var thread: ?std.Thread = try std.Thread.spawn(.{}, Call.run, .{ h, &reply });
+    defer if (thread) |t| {
+        h.world.list_hold.store(false, .release);
+        t.join();
+    };
+    var waited: u32 = 0;
+    while (!h.world.list_held.load(.acquire) and waited < 5000) : (waited += 1) testing.io.sleep(.fromMilliseconds(1), .awake) catch {};
+    try testing.expect(h.world.list_held.load(.acquire));
+    // Held past the call's whole 300 ms budget, then stopped, then released with a mismatch.
+    testing.io.sleep(.fromMilliseconds(400), .awake) catch {};
+    h.server.queue.shutdown();
+    h.world.list_hold.store(false, .release);
+    thread.?.join();
+    thread = null;
+
+    try testing.expectEqual(@as(?i64, -32012), reply.code);
+    try testing.expectEqualStrings("", reply.reason());
+    try testing.expectEqual(@as(u32, 0), h.world.ops());
+}
