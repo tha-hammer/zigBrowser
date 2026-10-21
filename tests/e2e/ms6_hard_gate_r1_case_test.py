@@ -1,7 +1,8 @@
 """The MS6.6 (B) hard-gate case's chain-release inspection, on Linux with fakes only (RoseCat 7306):
 - _chain_alive classifies OUR processes from a canned `ps -axo pid=,uid=,stat=`: a process running the row's CLI, or a
   python whose argv (proc_darwin.environ_of gives list[bytes]) names one of the row's markers, is alive; a failed or
-  unparsable ps is not inspected; a read that fails while the pid has not vanished is unreadable; other users' pids,
+  unparsable ps is not inspected (a negative uid such as nobody's -2 parses; RoseCat/orchestrator after db1f05b); a
+  read that fails while the pid has not vanished is unreadable; other users' pids,
   our own pid and zombies are skipped (never read);
 - _chain_release returns (faults, survivors, last). Every scan that was not inspected or listed an unreadable pid is a
   sticky fault, kept even when a later scan is clean (RoseCat 7312); a survivor still alive after CHAIN_GRACE_S is a
@@ -123,6 +124,18 @@ class ChainAlive(NoSignals):
     def test_a_failed_or_unparsable_ps_is_not_inspected(self):
         self.assertFalse(self.scan([f"99 {ME} S"], FakeProc({99: CLI}), code=1)[0])
         self.assertFalse(self.scan([f"99 {ME} S", "garbage"], FakeProc({99: CLI}))[0])
+
+    def test_a_negative_uid_row_is_parsed_and_skipped(self):
+        """macOS ps prints nobody's uid as -2 (db1f05b on both Macs: '344 -2 Ss', '997 -2 S'); it is another user's
+        row, skipped, never a reason to call the whole table uninspected."""
+        proc = FakeProc({77: CLI})
+        self.assertEqual(self.scan(["344    -2 Ss", f"77 {ME} S"], proc), (True, [(77, CLI)], []))
+        self.assertEqual(proc.reads, [77], "the -2 row is never read")
+
+    def test_a_malformed_pid_or_uid_is_still_not_inspected(self):
+        for row in (f"-5 {ME} S", "77 -x S", "77 - S", f"77 {ME}"):
+            with self.subTest(row=row):
+                self.assertFalse(self.scan([row], FakeProc({77: CLI}))[0])
 
     def test_other_users_our_own_pid_and_zombies_are_never_read(self):
         proc = FakeProc({})
