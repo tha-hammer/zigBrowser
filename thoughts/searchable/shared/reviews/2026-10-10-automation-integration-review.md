@@ -23322,3 +23322,31 @@ The earlier 14:00 locked run remains invalid. WS0/`7d85cd5` closes only after
 the genuinely locked `LockedDesktopLive` case is repeated on this byte-16 code
 and the user resolves the Win10 19041 policy. Verdict sent to AzureRidge in
 Agent Mail 7212.
+
+## MS5 bundled-framework relocation green (`fb437ea`; red `4c856ae`)
+
+**APPROVED.** The production scanner handles the pinned framework's regular
+Mach-O files without following symlinks, parses thin and fat `otool -D/-L`
+output, refuses missing internal targets and foreign absolute dependencies,
+rewrites each load relative to its loader, re-censuses the result, and signs
+inside-out. The green is registered in both `test-mac-census` and the Linux
+aggregate gate.
+
+Independent exact-commit, display-free evidence:
+
+```text
+mac_relocate_test.py: Ran 10 tests; OK
+```
+
+The reported both-Mac gate is accepted: every Mach-O verified, all 77
+`lib-dynload` modules imported with zero foreign images both before and after
+moving the tree, and the partial-relocation and `/usr/local` OpenSSL mutants
+were rejected. This closes the relocation item and the durable staged-3.12
+runtime prerequisite. Wiring relocation into `stage_agent_runtime.sh` remains
+part of the separately named dependency/CLI staging work.
+
+**SHOULD hardening:** add `FAT_MAGIC_64`/`FAT_CIGAM_64`
+(`cafebabf`/`bfbafeca`) to `_is_macho`, and make scan/`--check` refuse an empty
+or wrong-shaped framework rather than vacuously succeeding. Neither shape is
+present in the pinned 3.12.10 artifact exercised on both Macs. Verdict sent to
+BlueBeaver, with JadeBeacon copied, in Agent Mail 7219.
