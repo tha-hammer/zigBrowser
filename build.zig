@@ -274,6 +274,11 @@ pub fn build(b: *std.Build) void {
     const windows_build_selftest = b.addSystemCommand(&.{ "python3", "-I", "tests/windows/build_on_windows_selftest.py" });
     b.step("windows-build-selftest", "Run the Windows build-driver selftest (fake git/ssh/scp/timeout)").dependOn(&windows_build_selftest.step);
 
+    // WS1.1 PE-census selftest: exercises the PE parser + import allowlist on Linux-built PE fixtures
+    // (clean/vcruntime/unlisted/i386) with a mutation oracle, and pins the WebView2 SDK version. Hermetic.
+    const windows_pe_census_selftest = b.addSystemCommand(&.{ "python3", "-I", "tests/windows/pe_census_selftest.py" });
+    b.step("windows-pe-census-selftest", "Run the WS1.1 PE-census selftest (Linux PE fixtures + WebView2 SDK pin)").dependOn(&windows_pe_census_selftest.step);
+
     // WS item b (live): join_argv round-trips through the real CommandLineToArgvW on the Win11 VM — the
     // independent argv oracle the Linux reference parser cannot be. Skips cleanly without ZB_WIN11_HOST.
     const windows_wincontain_argv_live = b.addSystemCommand(&.{ "python3", "-I", "tests/windows/wincontain_argv_live_test.py" });
@@ -2236,6 +2241,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&windows_resolve_live.step);
     test_step.dependOn(&windows_twohost_selftest.step);
     test_step.dependOn(&windows_build_selftest.step);
+    test_step.dependOn(&windows_pe_census_selftest.step);
     test_step.dependOn(&windows_wincontain_argv_live.step);
     test_step.dependOn(&windows_wincontain_resolve_live.step);
     test_step.dependOn(&windows_wincontain_job_live.step);

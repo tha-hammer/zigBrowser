@@ -21649,3 +21649,78 @@ not reject duplicate or unexpected rows. That gap is outside `7a49946`'s
 reservation-row scope and must still be fixed before MS6.4 as a whole is
 declared complete. The endpoint approval likewise does not close MS6.6(B),
 production setup-on-Mac closure, or `seatbelt_ready`.
+
+## S8a flow-phase red fix-forward (`f361dc4`)
+
+Reviewed exact test-only commit `f361dc4` on 2026-10-21. **Verdict:
+BLOCKED-for-tests.** It substantially closes the earlier 7098 coverage gaps:
+
+- `linkedin.message` and `instagram.dm` now traverse their distinct request
+  parsers, and the wrong Instagram user is refused before navigation;
+- the production in-process server route covers `handleSocialFlow`, named
+  window targeting, the per-window FIFO, Phase A after a genuinely pending
+  prior ticket, recovering, a missing binding and a nonexistent window;
+- the Runner seam refuses an action, reload, wrong navigation, retry after a
+  failed approved navigation, and navigation/reload after Phase C, with exact
+  dispatch counts; and
+- the 13-row malformed-expect table runs through four platform/flow shapes,
+  closing the former parser-table SHOULD.
+
+The new document-token case also proves that a changed token with the same URL
+and native serial is -32015 `document_token_changed` before the first real
+click. The matching-path unit requires a Phase-C capture plus a later recheck,
+and the real-binary LinkedIn-fixture test is the appropriate non-bypass
+complement for WebKit and the isolated automation world. All new reds are
+deliberately unregistered at this commit; the owner's evidence is flow 2/13,
+server 1/4 and a compile-red Runner seam, with the pre-existing registered
+phase-A/budget/deadline suite still 18/18.
+
+One security-relevant branch remains uncovered:
+
+- **BLOCKER-for-tests (an unreadable document token can fail open):** both
+  fakes always return a valid nonempty token
+  (`automation/flow_fake.zig:78-83`, `automation/expect_fake.zig:82-92`).
+  There is no red for Phase C failing to capture a token, nor for a token that
+  becomes unreadable at the pre-action recheck. A mutant that accepts a
+  missing, malformed, script-error or empty token therefore survives. Make
+  the fake's reply depend on its token-read ordinal. Require -32015
+  `document_token_unreadable`, zero real input and no pacing consumption for
+  (1) an unreadable capture and (2) a valid capture followed by an unreadable
+  recheck. The registered real-binary positive e2e must also land with the
+  green; it provides the production proof that the op runs in the isolated
+  world, while the fake should preferably reject a non-automation world
+  directly.
+
+`git diff --check` additionally reports blank lines at EOF in
+`automation/flow_fake.zig` and `automation_expect_flow_test.zig` (NIT).
+Python syntax checking of the new e2e passed. No aggregate gate was run for
+unregistered, intentionally red tests. Findings were mailed to BlackRobin in
+Agent Mail 7107. The current uncommitted green also drops the existing
+`test_setup_darwin_r1_v6` and `test_netd_darwin_v6` build registrations; that
+separate in-progress drift was flagged for restoration before commit.
+
+## MS6.4 exact classifier census (`9e88d2e`)
+
+Reviewed exact test-only commit `9e88d2e` on 2026-10-21. **Verdict:
+APPROVED.** The shell oracle now checks all eleven rows emitted by the probe's
+`classify()` selftest, including the formerly omitted `ENETDOWN` and
+`EHOSTDOWN`, against their exact expected tags. Its separately sorted name
+set must equal the expected eleven-name set, so a missing, duplicate or extra
+SELFTEST row fails; every non-SELFTEST diagnostic line also fails
+(`ms6_4_egress_test.sh:43-73`).
+
+The reported failing-first evidence is discriminating: the prior script
+passed a duplicate-EPERM probe, an ENETDOWN-as-DENIED probe and a probe with
+EHOSTDOWN removed; the new script fails all three on the Intel Mac. The real
+probe and the full MS6 gate pass on both x86_64 15.3 and arm64 26.7, with no
+netd or staging residue. Local shell syntax and exact-diff checks passed; the
+remote Mac runs were not repeated.
+
+This closes the final independent finding from the `3e027b9` review. The
+other two findings are cumulatively closed by the durable reservation chain
+through `7a49946`: production owns the IPv6 endpoint, and the real reserved
+endpoint deterministically reaches the probe's bounded timeout branch.
+Therefore **`3e027b9` and its MS6.4 generated-profile endpoint gate are now
+cumulatively APPROVED** through `6016938`, `a597309`, `10cfae2`, `4deb518`,
+`e05774f`, `7a49946`, and `9e88d2e`. This scoped closure does not imply that
+MS6.6(B), the production setup-on-Mac closure, or `seatbelt_ready` is complete.
