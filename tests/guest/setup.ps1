@@ -10,6 +10,11 @@ param(
 )
 
 Set-StrictMode -Version Latest
+
+# WS1.1 (bead zigBrowser-4dr): the ONE authoritative WebView2 SDK version this build pins. The NuGet
+# install consumes it EXACTLY — there is no "latest" fallback. Keep in sync with the registered oracle
+# tests/windows/pe_census_selftest.py (WebView2SdkPin), which fails if this drifts or is emptied.
+$WebView2PinnedVersion = '1.0.3967.48'
 $ErrorActionPreference = "Stop"
 
 function Write-Step {
@@ -165,26 +170,26 @@ function Install-WebView2Sdk {
     $packages = Join-Path $ToolsRoot "nuget"
     Ensure-Directory -Path $packages
 
+    # Resolve to the pinned version unless an explicit override is passed; NEVER empty (no NuGet "latest").
+    $ver = if ($WebView2PackageVersion) { $WebView2PackageVersion } else { $WebView2PinnedVersion }
     $installArgs = @(
         "install",
         "Microsoft.Web.WebView2",
+        "-Version", $ver,
         "-OutputDirectory",
         $packages,
         "-NonInteractive",
         "-Verbosity",
         "quiet"
     )
-    if ($WebView2PackageVersion) {
-        $installArgs += @("-Version", $WebView2PackageVersion)
-    }
     & $nuget @installArgs
 
+    # Select the EXACT pinned package directory, not merely the newest installed one.
     $packageDir = Get-ChildItem -LiteralPath $packages -Directory |
-        Where-Object { $_.Name -like "Microsoft.Web.WebView2*" } |
-        Sort-Object Name -Descending |
+        Where-Object { $_.Name -ieq "Microsoft.Web.WebView2.$ver" } |
         Select-Object -First 1
     if ($null -eq $packageDir) {
-        throw "Microsoft.Web.WebView2 package was not installed under $packages"
+        throw "Microsoft.Web.WebView2.$ver package was not installed under $packages"
     }
 
     $includeDir = Join-Path $packageDir.FullName "build\native\include"

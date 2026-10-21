@@ -93,6 +93,8 @@ def census(path):
     # redistributable, then an unlisted import). Consumed by pe_census_selftest.py.
     if not machine_ok:
         verdict = "FAIL: machine 0x%x" % machine
+    elif not pe32plus:
+        verdict = "FAIL: not PE32+"
     elif forbidden:
         verdict = "FAIL: " + forbidden[0]
     elif unlisted:
@@ -123,7 +125,8 @@ def main(argv):
         return 2
     c = census(args[0])
     print(json.dumps(c, indent=2))
-    if enforce and not (c["machine_ok"] and not c["forbidden_imports"] and not c["unlisted_imports"]):
+    if enforce and not (c["machine_ok"] and c["pe32plus"]
+                        and not c["forbidden_imports"] and not c["unlisted_imports"]):
         return 1
     return 0
 
