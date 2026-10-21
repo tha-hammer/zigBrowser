@@ -2044,10 +2044,12 @@ pub fn build(b: *std.Build) void {
     // Plan rev 18.1: the ONE pre-seatbelt_ready MS6 hard-gate harness (tests/mac/ms6_hard_gate.sh). Off-Mac, its
     // driver's fail-closed rules (a failed check, a raise, no check, no NAME/run, a duplicate NAME, no cases, a scratch
     // left behind) and the NOT ARMED entry without the MS5-pinned tree.
+    // Every ms6_hard_gate module runs inside a private user+PID namespace (RoseCat 7167): the harness sends real SIGKILL to
+    // process groups, and there kill(-1) can reach nothing of the user's. setsid makes the test process lead a real group.
     const ms6_hard_gate_driver_unit = b.addSystemCommand(&.{
         "sh",
         "-c",
-        "cd tests/e2e && out=$(env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 python3 -X dev -m unittest -v ms6_hard_gate_driver_test 2>&1); rc=$?; printf '%s\\n' \"$out\"; [ $rc -eq 0 ] || exit $rc; if printf '%s\\n' \"$out\" | grep -q ResourceWarning; then echo 'ms6_hard_gate_driver_test: ResourceWarning' >&2; exit 1; fi",
+        "cd tests/e2e && out=$(env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 unshare --user --map-root-user --pid --fork --mount-proc sh -c 'setsid python3 -X dev -m unittest -v ms6_hard_gate_driver_test' 2>&1); rc=$?; printf '%s\\n' \"$out\"; [ $rc -eq 0 ] || exit $rc; if printf '%s\\n' \"$out\" | grep -q ResourceWarning; then echo 'ms6_hard_gate_driver_test: ResourceWarning' >&2; exit 1; fi",
     });
     mac_census_step.dependOn(&ms6_hard_gate_driver_unit.step);
     // RoseCat 7134: the harness itself. spawn_group owns each process group exactly once (signalled while the leader is
@@ -2055,9 +2057,17 @@ pub fn build(b: *std.Build) void {
     const ms6_hard_gate_harness_unit = b.addSystemCommand(&.{
         "sh",
         "-c",
-        "cd tests/e2e && out=$(env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 python3 -X dev -m unittest -v ms6_hard_gate_harness_test 2>&1); rc=$?; printf '%s\\n' \"$out\"; [ $rc -eq 0 ] || exit $rc; if printf '%s\\n' \"$out\" | grep -q ResourceWarning; then echo 'ms6_hard_gate_harness_test: ResourceWarning' >&2; exit 1; fi",
+        "cd tests/e2e && out=$(env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 unshare --user --map-root-user --pid --fork --mount-proc sh -c 'setsid python3 -X dev -m unittest -v ms6_hard_gate_harness_test' 2>&1); rc=$?; printf '%s\\n' \"$out\"; [ $rc -eq 0 ] || exit $rc; if printf '%s\\n' \"$out\" | grep -q ResourceWarning; then echo 'ms6_hard_gate_harness_test: ResourceWarning' >&2; exit 1; fi",
     });
     mac_census_step.dependOn(&ms6_hard_gate_harness_unit.step);
+    // The Harness signals only its own child's own group: never a mocked pid, 0/1/-1, our group, a child in our
+    // group, or a group leader that is not our child (the 2026-10-21 logouts; RoseCat on efe2517). No real signal.
+    const ms6_hard_gate_harness_safety_unit = b.addSystemCommand(&.{
+        "sh",
+        "-c",
+        "cd tests/e2e && out=$(env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 unshare --user --map-root-user --pid --fork --mount-proc sh -c 'setsid python3 -X dev -m unittest -v ms6_hard_gate_harness_safety_test' 2>&1); rc=$?; printf '%s\\n' \"$out\"; [ $rc -eq 0 ] || exit $rc; if printf '%s\\n' \"$out\" | grep -q ResourceWarning; then echo 'ms6_hard_gate_harness_safety_test: ResourceWarning' >&2; exit 1; fi",
+    });
+    mac_census_step.dependOn(&ms6_hard_gate_harness_safety_unit.step);
     const agent_host_contract = b.addSystemCommand(&.{
         "sh",
         "-c",
@@ -2393,6 +2403,7 @@ pub fn build(b: *std.Build) void {
     if (target.result.os.tag == .linux) test_step.dependOn(&mac_ms5_census_unit.step);
     if (target.result.os.tag == .linux) test_step.dependOn(&ms6_hard_gate_driver_unit.step);
     if (target.result.os.tag == .linux) test_step.dependOn(&ms6_hard_gate_harness_unit.step);
+    if (target.result.os.tag == .linux) test_step.dependOn(&ms6_hard_gate_harness_safety_unit.step);
     test_step.dependOn(&run_agent_login_protocol_tests.step);
     test_step.dependOn(&run_backend_flag_tests.step);
     test_step.dependOn(&run_backend_flag_startup_tests.step);

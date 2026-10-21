@@ -52,11 +52,12 @@ class SpawnGroup(unittest.TestCase):
         def counting_killpg(pgid, sig):
             # The leader must still be unreaped when its group is signalled: it exists (alive or zombie), so the
             # pgid cannot have been reused by an unrelated group.
-            self.kills.append((pgid, sig, self.exists(pgid)))
-            # Never pass anything but a real child pgid to the real killpg: killpg(1) is kill(-1), every process of
-            # the user (2026-10-21: a mocked pid logged the user out twice).
+            # Never pass anything but a real child pgid to the real killpg, nor to exists() (kill(pid, 0) on Darwin):
+            # killpg(1) is kill(-1), every process of the user (2026-10-21: a mocked pid logged the user out twice).
+            # So validate first, then observe (RoseCat 7167).
             if type(pgid) is not int or pgid <= 1 or pgid == os.getpgrp():
                 raise AssertionError(f"refusing a real killpg({pgid!r}): not a child's own group")
+            self.kills.append((pgid, sig, self.exists(pgid)))
             return real(pgid, sig)
 
         from unittest import mock

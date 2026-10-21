@@ -13,12 +13,15 @@ A case is tests/mac/hard_gate/case_<name>.py defining NAME (a non-empty string, 
   group is SIGKILLed (a child that outlived the leader too), and only then is the leader reaped. h.close() (the
   driver's) consumes any group not yet consumed and never signals one twice. Without os.waitid (the bundled CPython
   3.12 on macOS: it arrived there in 3.13; bead zigBrowser-a2t) the leader is awaited through kqueue EVFILT_PROC
-  NOTE_EXIT, which never reaps either; with neither, spawn_group refuses before spawning anything;
+  NOTE_EXIT, which never reaps either; with neither, spawn_group refuses before spawning anything. A group is
+  signalled only when its pid is an int above 1, is not our own group, leads its own group and is our child;
+  anything else raises before any signal (the 2026-10-21 logouts; RoseCat on efe2517);
 - h.render_profile(**kw) / h.setup_sandbox(...): the production sandbox_macos from the staged tree."""
 import os
 import select
 import signal
 import subprocess
+import sys
 import threading
 import time
 
@@ -73,8 +76,11 @@ class Harness:
         proc = entry["proc"]
         # Only a real child pid may be signalled. killpg(1) is kill(-1): every process the user owns. A mocked Popen's
         # MagicMock pid indexes as 1, which logged the user out twice on 2026-10-21.
-        if type(proc.pid) is not int or proc.pid <= 1:
+        if type(proc.pid) is not int or proc.pid <= 1 or proc.pid == os.getpgrp():
             raise RuntimeError(f"refusing to signal process group {proc.pid!r}: not a real child pid")
+        # And only our own child that leads its own group (spawn_group's start_new_session=True), alive or unreaped.
+        if _parent_and_group(proc.pid) != (os.getpid(), proc.pid):
+            raise RuntimeError(f"refusing to signal process group {proc.pid!r}: not our child leading its own group")
         try:
             os.killpg(proc.pid, signal.SIGKILL)
         except (ProcessLookupError, PermissionError):
@@ -94,6 +100,21 @@ class Harness:
     def close(self):
         for entry in self._groups:
             self._consume(entry)
+
+
+def _parent_and_group(pid):
+    """(ppid, pgid) of `pid`, an unreaped zombie included, or None: /proc/<pid>/stat on Linux; ps on Darwin, where
+    getpgid and getsid fail with ESRCH on a zombie (measured on both Macs) but ps still reports it."""
+    if sys.platform == "darwin":
+        out = subprocess.run(["/bin/ps", "-o", "ppid=,pgid=", "-p", str(pid)], capture_output=True, text=True,
+                             timeout=10).stdout.split()
+        return (int(out[0]), int(out[1])) if len(out) == 2 else None
+    try:
+        with open(f"/proc/{pid}/stat") as f:
+            fields = f.read().rsplit(")", 1)[1].split()
+    except OSError:
+        return None
+    return int(fields[1]), int(fields[2])
 
 
 def _await_unreaped(pid, deadline):

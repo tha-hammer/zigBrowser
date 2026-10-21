@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# The MS6 hard-gate harness's own tests on BOTH Macs (bead zigBrowser-a2t): tests/e2e/ms6_hard_gate_harness_test.py,
-# run there under the framework python.org interpreter, with -X dev. On Darwin no test may be skipped: the
+# The MS6 hard-gate harness's own tests on BOTH Macs (bead zigBrowser-a2t): tests/e2e/ms6_hard_gate_harness_test.py and
+# ms6_hard_gate_harness_safety_test.py (the Harness signals only its own child's own group; RoseCat on efe2517), run
+# there under the framework python.org interpreter, with -X dev. On Darwin no test may be skipped: the
 # SpawnGroupWithoutWaitid class (os.waitid removed, as on the bundled CPython 3.12, which has none on macOS) must run
 # every SpawnGroup test through kqueue. The run must end in exactly "OK" with the expected count, and no
 # ResourceWarning. Per-run ~/zb-hgmac-<nonce>, deleted on exit; nothing installed. BatchMode, strict host keys, no
@@ -14,7 +15,7 @@ ARM_HOST="${ZB_MAC_ARM_HOST:-}"
 ARM_KEY="${ZB_MAC_ARM_KEY:-$KEY}"
 MAC_PY="${ZB_MAC_PY:-/Library/Frameworks/Python.framework/Versions/Current/bin/python3}"
 LEG_TIMEOUT="${ZB_MAC_LEG_TIMEOUT:-240}"
-EXPECTED_TESTS=14
+EXPECTED_TESTS=19
 export SSH_ASKPASS_REQUIRE=never
 
 cd "$(git rev-parse --show-toplevel)"
@@ -22,8 +23,8 @@ if [ -z "$ARM_HOST" ]; then
   echo "NOT RUN: arm64 host not configured (set ZB_MAC_ARM_HOST=user@host)" >&2
   exit 1
 fi
-FILES=(tests/e2e/ms6_hard_gate_harness_test.py tests/mac/hard_gate/harness.py tests/mac/hard_gate/hard_gate_driver.py
-       tests/mac/ms6_hard_gate.sh)
+FILES=(tests/e2e/ms6_hard_gate_harness_test.py tests/e2e/ms6_hard_gate_harness_safety_test.py
+       tests/mac/hard_gate/harness.py tests/mac/hard_gate/hard_gate_driver.py tests/mac/ms6_hard_gate.sh)
 stage=$(mktemp -d "${TMPDIR:-/tmp}/zb-hgmac-XXXXXX")
 trap 'case "$stage" in */zb-hgmac-*) rm -rf -- "${stage:?}";; esac' EXIT
 for f in "${FILES[@]}"; do
@@ -46,7 +47,8 @@ trap 'rm -rf "$HOME/${ZB_RDIR:?}"' EXIT
 [ "$(uname -m)" = "$ZB_ARCH" ] || { echo "FAIL: this leg is $(uname -m), expected $ZB_ARCH" >&2; exit 1; }
 cd "$d/tests/e2e"
 set +e
-out=$(env -i PATH=/usr/bin:/bin HOME="$HOME" LANG=C.UTF-8 "$ZB_PY" -X dev -m unittest -v ms6_hard_gate_harness_test 2>&1)
+out=$(env -i PATH=/usr/bin:/bin HOME="$HOME" LANG=C.UTF-8 "$ZB_PY" -X dev -m unittest -v ms6_hard_gate_harness_test \
+  ms6_hard_gate_harness_safety_test 2>&1)
 rc=$?
 set -e
 printf '%s\n' "$out" | grep -E "^test_| \.\.\. |^Ran |^OK|^FAILED|Warning|Error" || true
