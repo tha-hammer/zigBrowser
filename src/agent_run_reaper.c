@@ -152,7 +152,9 @@ int zb_reaper_engine(const struct zb_reaper_ops *ops, const pid_t *pids, int npi
     struct zb_reaper_id id1;
     ops->inspect(pid, dir, &id1, ops->ctx);
     if (!id1.matches || id1.uid != myuid || !same_proc(&id0, &id1)) continue; /* vanished/reused/changed */
-    if (!ops->dir_ok(ops->ctx)) continue; /* the pinned dir changed under us: NO signal (RoseCat c09d439 #2) */
+    /* The pinned dir changed under us: send NO signal, and the whole run is now unsafe to classify — flag it
+     * not-clean (overflow) and STOP, so the caller can never report a clean cleanup (RoseCat 175efb8 #2). */
+    if (!ops->dir_ok(ops->ctx)) { *overflow = 1; break; }
     const int e = ops->killsig(pid, SIGKILL, ops->ctx);
     if (e != 0 && e != ESRCH) { /* EPERM etc: NOT killed -> survivor */
       collect(surv, scap, sn, overflow, pid);

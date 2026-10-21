@@ -193,6 +193,7 @@ int main(void) {
   check(sigkills_for(1000) == 1 && in_list(killed, kn, 1000), "per-kill dir_ok: the first match is killed");
   check(sigkills_for(1001) == 0 && !in_list(killed, kn, 1001) && !in_list(surv, sn, 1001),
         "per-kill dir_ok: once the dir goes invalid, the next match gets NO signal");
+  check(ov == 1, "per-kill dir_ok: an invalidated pin flags overflow (the run is NOT clean, RoseCat 175efb8 #2)");
 
   /* the full input contract: EINVAL, never a crash or a false success */
   reset();

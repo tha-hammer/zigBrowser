@@ -66,17 +66,27 @@ int main(void) {
   char run[PATH_MAX]; /* the exact sockdirPath grammar: zigbrowser-agent-<pid>-<16 lowercase hex>, mode 0700 */
   snprintf(run, sizeof run, "%s/zigbrowser-agent-%d-00112233445566ff", parent, (int)getpid());
   if (mkdir(run, 0700) != 0) { printf("FAIL mkdir run\n"); rmdir(parent); return 2; }
-  /* creation-pinned: open + hold the run dir fd for the whole run, and capture its identity now. */
-  int rfd = open(run, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
-  struct zb_reaper_dir_id rid;
-  if (rfd < 0 || zb_reaper_pin_fd(rfd, &rid) != 0) { printf("FAIL pin run dir\n"); if (rfd >= 0) close(rfd); rmdir(run); rmdir(parent); return 2; }
-
+  /* Spawn the helpers BEFORE opening the pinned fd: O_CLOEXEC does not close across a fork that never execs, so
+   * an inherited run-dir fd would make the decoy/scrubber classify via their open-file marker (RoseCat 175efb8
+   * #1). The escaper's marker is its CWD under the run dir, not an fd. */
   pid_t esc = -1, dec = -1, scr = -1;
   int ew = -1, dw = -1, sw = -1;
   int setup = 1;
   if (make_holder(run, 1, &esc, &ew) != 0) { printf("FAIL: spawn escaper\n"); setup = 0; }
   if (setup && make_holder("/tmp", 0, &dec, &dw) != 0) { printf("FAIL: spawn decoy\n"); setup = 0; }
   if (setup && make_holder("/", 1, &scr, &sw) != 0) { printf("FAIL: spawn scrubber\n"); setup = 0; }
+
+  /* creation-pinned: open + hold the run dir fd and capture its identity, AFTER the helpers exist. */
+  int rfd = -1;
+  struct zb_reaper_dir_id rid;
+  if (setup) {
+    rfd = open(run, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+    if (rfd < 0 || zb_reaper_pin_fd(rfd, &rid) != 0) {
+      printf("FAIL pin run dir\n");
+      if (rfd >= 0) { close(rfd); rfd = -1; }
+      setup = 0;
+    }
+  }
 
   if (setup) {
     printf("run=%s escaper=%d decoy=%d scrubber=%d self=%d\n", run, esc, dec, scr, getpid());
