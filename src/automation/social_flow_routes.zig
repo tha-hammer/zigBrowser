@@ -207,6 +207,12 @@ fn execute(
     // S8: an approval binds a real run of an acting flow to one window; a dry run has no card.
     if (dry_run and !call.hasDryRun()) return invalidParams();
     if (options.expect != null and (dry_run or !call.isAction() or ext.options.window == null)) return invalidParams();
+    // S8 decision 13: a conversation message names no one, so its approval names the recipient;
+    // no other approval may.
+    if (options.expect) |expect| {
+        const conversation_message = call == .linkedin and call.linkedin == .message and p.get("conversationUrl") != null;
+        if ((expect.recipient != null) != conversation_message) return invalidParams();
+    }
 
     // 1. Everything that needs no page, before the gate and pacing.
     validate(gpa, call, s, p) catch |err| switch (err) {
@@ -248,7 +254,7 @@ fn execute(
         .deadline_reason = call.deadlineReason(),
         .observer = trace.observer(),
         .platform = call.namespace(),
-        .approval = if (options.expect) |expect| .{ .url = expect.url } else null,
+        .approval = if (options.expect) |expect| .{ .url = expect.url, .recipient = expect.recipient } else null,
     };
     defer runner.deinit();
 
@@ -302,7 +308,13 @@ fn takeFailure(gpa: std.mem.Allocator, runner: *flow_runner.Runner, trace: *cons
 }
 
 /// S8: an approval's expectation of a flow's window (strings borrowed from the request).
-const FlowExpect = struct { origin: []const u8, load_serial: u64, url: []const u8 };
+const FlowExpect = struct {
+    origin: []const u8,
+    load_serial: u64,
+    url: []const u8,
+    /// S8 decision 13: the LinkedIn slug a conversation message's approval names.
+    recipient: ?[]const u8 = null,
+};
 
 const FlowOptions = struct { dry_run: bool = false, expect: ?FlowExpect = null };
 
@@ -337,7 +349,7 @@ fn flowExpect(value: std.json.Value) error{InvalidParams}!FlowExpect {
     };
     var keys = object.iterator();
     while (keys.next()) |entry| {
-        if (!inList(&.{ "origin", "load_serial", "url" }, entry.key_ptr.*)) return error.InvalidParams;
+        if (!inList(&.{ "origin", "load_serial", "url", "recipient" }, entry.key_ptr.*)) return error.InvalidParams;
     }
     const text = struct {
         fn of(o: std.json.ObjectMap, key: []const u8) error{InvalidParams}![]const u8 {
@@ -351,7 +363,16 @@ fn flowExpect(value: std.json.Value) error{InvalidParams}!FlowExpect {
         .integer => |n| std.math.cast(u64, n) orelse return error.InvalidParams,
         else => return error.InvalidParams,
     };
-    return .{ .origin = try text.of(object, "origin"), .load_serial = load_serial, .url = try text.of(object, "url") };
+    const recipient: ?[]const u8 = if (object.get("recipient") != null) try text.of(object, "recipient") else null;
+    if (recipient) |r| if (!isRecipientSlug(r)) return error.InvalidParams;
+    return .{ .origin = try text.of(object, "origin"), .load_serial = load_serial, .url = try text.of(object, "url"), .recipient = recipient };
+}
+
+/// A LinkedIn profile slug: 1 to 100 of A-Z, a-z, 0-9, `_`, `.`, `%`, `-`.
+fn isRecipientSlug(slug: []const u8) bool {
+    if (slug.len == 0 or slug.len > 100) return false;
+    for (slug) |c| if (!(std.ascii.isAlphanumeric(c) or c == '_' or c == '.' or c == '%' or c == '-')) return false;
+    return true;
 }
 
 /// The platform's session cookie must be in the store (never reads or

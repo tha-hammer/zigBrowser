@@ -153,6 +153,8 @@
   }
 
   function guardFailure(guard) {
+    // S8 decision 13: the page the step was approved on (a pushState moves it).
+    if (typeof guard.spec.path === 'string' && document.location.pathname !== guard.spec.path) return 'path_changed';
     for (const mark of guard.spec.marks || []) {
       const found = visibleOnly(resolveText(mark.selector));
       if (found === null || found.length !== 1) return 'mark_changed';
@@ -160,7 +162,7 @@
       const actual = typeof mark.attribute === 'string'
         ? element.getAttribute(mark.attribute)
         : normalizeText(element.textContent || '');
-      if (actual !== mark.value) return 'mark_changed';
+      if (mark.path === true ? urlPathOf(actual) !== mark.value : actual !== mark.value) return 'mark_changed';
     }
     if (guard.spec.target === true) {
       const found = resolveText(guard.selector);
@@ -169,6 +171,17 @@
       }
     }
     return null;
+  }
+
+  // A link's pathname when it resolves to the page's own origin, else null.
+  function urlPathOf(value) {
+    if (typeof value !== 'string') return null;
+    try {
+      const url = new URL(value, document.location.href);
+      return url.origin === document.location.origin ? url.pathname : null;
+    } catch (_) {
+      return null;
+    }
   }
 
   // The elements a selector string resolves to, or null when it does not parse or throws.

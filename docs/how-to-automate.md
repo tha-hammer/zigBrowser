@@ -878,6 +878,11 @@ the same page task as each event.
   `target_changed` and `data.sent` `{events, chars}`, what was already dispatched and typed. A
   page may still have acted on those events (an editor that inserts text itself), so `sent`
   with any events means the page may have changed. Synthetic input only.
+  Two more checks: `guard.path` (a string starting with `/`) requires the page's
+  `location.pathname` to be exactly it (else `path_changed`), and a mark with `path: true`
+  (it needs `attribute`, and a `value` starting with `/`) reads that attribute as a link: it
+  must point to the page's own origin with exactly `value` as its path, query and fragment
+  aside.
 - A guarded `dom.type` sends its text 16 characters (Unicode code points) at a time, each
   piece its own step in the page, so the page's own timers and a stop run between pieces;
   `data.sent` then adds up every piece that was sent. The pieces are one action: every piece
@@ -897,6 +902,14 @@ the same page task as each event.
   window must still show that page (`load_serial_changed` if it navigated
   again). A refused flow sends nothing further and counts no action. Not with
   `dry_run`, and the same snapshot caveat applies.
+- An approved `linkedin.message` or `instagram.dm` also checks its recipient
+  inside each step: the Message click needs the page still at the profile's path,
+  and every later step (the message box, the typing, Send) needs the one open
+  thread's header link to point at that person. Otherwise it is -32015
+  (`path_changed` or `mark_changed`) and nothing more is typed or sent. A
+  `linkedin.message` to a `conversationUrl` names no one itself, so its
+  `expect` must also carry `recipient`, the person's profile slug (`carol` for
+  `/in/carol/`); `recipient` anywhere else is -32602.
 
 ## Import cookies from another browser
 

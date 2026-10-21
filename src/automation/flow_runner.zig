@@ -34,6 +34,8 @@ pub const Approval = struct {
     load_serial: ?u64 = null,
     /// automation.js's token of the document it committed (phase C; owned by the runner).
     document_token: ?[]u8 = null,
+    /// S8 decision 13: the recipient a conversation message's approval names (a LinkedIn slug).
+    recipient: ?[]const u8 = null,
 };
 
 pub const Runner = struct {
@@ -72,6 +74,9 @@ pub const Runner = struct {
     failed_step: ?u32 = null,
     /// S8: set for an approved real run; every step is checked against it.
     approval: ?Approval = null,
+    /// S8 decision 13: the `options.guard` every later action of an approved run carries (owned
+    /// JSON object); set by the flow per stage, never without an approval.
+    guard: ?[]u8 = null,
 
     pub fn run(self: *Runner, method: []const u8, params_json: []const u8) error{OutOfMemory}!?[]const u8 {
         // No step starts without budget; a waitFor also needs room for the
@@ -82,6 +87,15 @@ pub const Runner = struct {
         if (self.remainingMs() <= needed) return self.deadlineStop();
         const action = isAction(method);
         if (self.approval != null and try self.approvalRefuses(method, params_json, action)) return null;
+        var guarded: ?[]u8 = null;
+        defer if (guarded) |g| self.gpa.free(g);
+        if (action) if (self.guard) |guard| {
+            guarded = (try withGuard(self.gpa, params_json, guard)) orelse {
+                try self.malformed();
+                return null;
+            };
+        };
+        const sent_params = guarded orelse params_json;
         var clamped: ?[]u8 = null;
         defer if (clamped) |c| self.gpa.free(c);
         if (action and (self.scan_due or self.clean_scans == 0)) {
@@ -90,12 +104,12 @@ pub const Runner = struct {
             // The scan took time: the action may only start with budget
             // left, and never with the timeout it was built with before.
             if (self.remainingMs() <= needed) return self.deadlineStop();
-            clamped = try clampTimeouts(self.gpa, params_json, self.remainingMs());
+            clamped = try clampTimeouts(self.gpa, sent_params, self.remainingMs());
         }
         const started = self.ext.nowMs();
         const index = self.steps;
         self.steps += 1;
-        const outcome = try self.ext.runCommand(self.gpa, method, clamped orelse params_json);
+        const outcome = try self.ext.runCommand(self.gpa, method, clamped orelse sent_params);
         if (self.observer) |o| o.on_step(o.ctx, method, params_json, outcome == .result, self.ext.nowMs() -| started);
         switch (outcome) {
             .result => |json| {
@@ -357,6 +371,33 @@ pub const Runner = struct {
     }
 
     /// The latest step succeeded but its answer was unusable.
+    /// S8 decision 13, stage 1 (approved runs only): every later action requires the page at
+    /// exactly `path` and its own target.
+    pub fn guardOpener(self: *Runner, path: []const u8) error{OutOfMemory}!void {
+        if (self.approval == null) return;
+        self.setGuard(try std.json.Stringify.valueAlloc(self.gpa, .{ .path = path, .target = true }, .{}));
+    }
+
+    /// S8 decision 13, stage 2 (approved runs only): every later action requires the one visible
+    /// `header_link` (the open thread's header link) to point at exactly `path`, and its own
+    /// target.
+    pub fn guardThread(self: *Runner, header_link: []const u8, path: []const u8) error{OutOfMemory}!void {
+        if (self.approval == null) return;
+        const mark = .{ .selector = header_link, .attribute = "href", .path = true, .value = path };
+        self.setGuard(try std.json.Stringify.valueAlloc(self.gpa, .{ .marks = .{mark}, .target = true }, .{}));
+    }
+
+    /// The recipient an approved conversation message's approval names, else null.
+    pub fn approvedRecipient(self: *const Runner) ?[]const u8 {
+        const approval = self.approval orelse return null;
+        return approval.recipient;
+    }
+
+    fn setGuard(self: *Runner, guard: []u8) void {
+        if (self.guard) |old| self.gpa.free(old);
+        self.guard = guard;
+    }
+
     pub fn malformed(self: *Runner) error{OutOfMemory}!void {
         self.setFailure(try internalFailure(self.gpa, self.ext.ids()));
     }
@@ -382,6 +423,7 @@ pub const Runner = struct {
     }
 
     pub fn deinit(self: *Runner) void {
+        if (self.guard) |g| self.gpa.free(g);
         self.dropResult();
         if (self.failure) |*f| f.deinit(self.gpa);
         if (self.approval) |a| if (a.document_token) |t| self.gpa.free(t);
@@ -466,6 +508,33 @@ pub fn withFailedStep(gpa: std.mem.Allocator, outcome: engine_mod.Outcome, step:
 /// `params_json` with its `timeout_ms` and `options.timeout_ms` lowered to
 /// at most `max_ms`; null when nothing needed lowering (or the params are
 /// not an object).
+/// `params_json` with `options.guard` set to `guard_json` (owned), or null when either is not a
+/// JSON object.
+fn withGuard(gpa: std.mem.Allocator, params_json: []const u8, guard_json: []const u8) error{OutOfMemory}!?[]u8 {
+    var parsed = std.json.parseFromSlice(std.json.Value, gpa, params_json, .{}) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return null,
+    };
+    defer parsed.deinit();
+    const arena = parsed.arena.allocator();
+    const guard = std.json.parseFromSliceLeaky(std.json.Value, arena, guard_json, .{}) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return null,
+    };
+    if (guard != .object) return null;
+    var root = switch (parsed.value) {
+        .object => |*o| o,
+        else => return null,
+    };
+    const options = try root.getOrPut(arena, "options");
+    if (!options.found_existing) options.value_ptr.* = .{ .object = .empty };
+    switch (options.value_ptr.*) {
+        .object => |*o| try o.put(arena, "guard", guard),
+        else => return null,
+    }
+    return try std.json.Stringify.valueAlloc(gpa, parsed.value, .{});
+}
+
 fn clampTimeouts(gpa: std.mem.Allocator, params_json: []const u8, max_ms: u64) error{OutOfMemory}!?[]u8 {
     var parsed = std.json.parseFromSlice(std.json.Value, gpa, params_json, .{}) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,

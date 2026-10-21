@@ -78,6 +78,13 @@ const FakeRunner = struct {
     pub fn notFound(self: *FakeRunner, reason: []const u8) error{OutOfMemory}!void {
         self.not_found = reason;
     }
+    // S8 decision 13's per-stage guards: no approval here, so none (flow_runner.Runner's are
+    // no-ops without one too; tests/automation_recipient_guard_test.zig covers them).
+    pub fn guardOpener(_: *FakeRunner, _: []const u8) error{OutOfMemory}!void {}
+    pub fn guardThread(_: *FakeRunner, _: []const u8, _: []const u8) error{OutOfMemory}!void {}
+    pub fn approvedRecipient(_: *const FakeRunner) ?[]const u8 {
+        return null;
+    }
 
     fn methods(self: *const FakeRunner, buf: [][]const u8) [][]const u8 {
         for (self.steps.items, 0..) |s, i| buf[i] = s.method;

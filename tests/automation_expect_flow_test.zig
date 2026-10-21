@@ -163,10 +163,11 @@ test "flow phase C: a navigation between two edits stops the flow before the nex
     try testing.expectEqual(h.windows.clicks_at_bump, realClicks(&h.fake));
 }
 
+// A conversation approval names its recipient (decision 13, rev 16.20.52).
 test "flow phases: linkedin.message and instagram.dm take an approval through their own parsers (RoseCat 7098 #2)" {
     const conversation = "https://www.linkedin.com/messaging/thread/7/";
     const cases = [_]struct { method: []const u8, start: []const u8, params: []const u8, navigated: []const u8 }{
-        .{ .method = "linkedin.message", .start = feed, .navigated = conversation, .params = "{\"conversationUrl\":\"" ++ conversation ++ "\",\"text\":\"Hi\",\"options\":{\"expect\":{\"origin\":\"https://www.linkedin.com\",\"load_serial\":3,\"url\":\"" ++ conversation ++ "\"}}}" },
+        .{ .method = "linkedin.message", .start = feed, .navigated = conversation, .params = "{\"conversationUrl\":\"" ++ conversation ++ "\",\"text\":\"Hi\",\"options\":{\"expect\":{\"origin\":\"https://www.linkedin.com\",\"load_serial\":3,\"url\":\"" ++ conversation ++ "\",\"recipient\":\"carol\"}}}" },
         .{ .method = "instagram.dm", .start = "https://www.instagram.com/", .navigated = "https://www.instagram.com/ada/", .params = "{\"username\":\"ada\",\"text\":\"Hi\",\"options\":{\"expect\":{\"origin\":\"https://www.instagram.com\",\"load_serial\":3,\"url\":\"https://www.instagram.com/ada/\"}}}" },
     };
     for (cases) |case| {

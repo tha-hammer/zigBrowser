@@ -187,3 +187,21 @@ test "a chunk success with unusable counts adds nothing: the completed chunks on
     try expectCounts(outcome, "sent", null);
     try expectCounts(outcome, "sent_at_least", .{ .events = 48, .chars = 16 });
 }
+
+test "a total that would overflow u64 is not saturated: internal error, the completed chunks as sent_at_least (RoseCat 7310)" {
+    var h: Harness = undefined;
+    h.init();
+    defer h.deinit();
+    h.fake.eval_replies = &.{ ok(18446744073709551615, 16), ok(1, 16), ok(24, 8) };
+    var outcome = try h.typeText(null);
+    defer outcome.deinit(gpa);
+    try testing.expect(outcome == .failure);
+    try testing.expectEqual(@as(i64, -32603), outcome.failure.code);
+    const data = outcome.failure.data_json orelse return error.TestExpectedData;
+    testing.expect(std.mem.indexOf(u8, data, "\"sent_at_least\":{\"events\":18446744073709551615,\"chars\":16}") != null) catch |e| {
+        std.debug.print("data {s}\n", .{data});
+        return e;
+    };
+    try testing.expect(std.mem.indexOf(u8, data, "\"sent\":") == null);
+    try testing.expectEqual(@as(usize, 2), h.fake.eval_calls.items.len);
+}

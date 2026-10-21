@@ -72,6 +72,10 @@ pub const selectors = struct {
     /// Messaging.
     pub const message_input = "css=.msg-form__contenteditable[contenteditable=\"true\"]";
     pub const message_send_button = "css=button.msg-form__send-button";
+    /// S8 decision 13: the profile link in the header of the thread that holds a message box
+    /// (an overlay bubble or the thread page). UNVERIFIED live: the fixture proves the rule.
+    pub const message_thread_header_link = "xpath=//*[" ++ classToken("msg-convo-wrapper") ++ " or " ++ classToken("msg-thread") ++ "][.//*[" ++
+        classToken("msg-form__contenteditable") ++ "]]//header//a[contains(@href,\"/in/\")]";
     /// Posts (the first social bar on a post page is the post's own). The
     /// reaction button's label states the reaction; its text is the count
     /// and it has no aria-pressed. Like = the first reaction button, still
@@ -115,6 +119,11 @@ pub const ProfileAction = enum { connect, follow, message, pending, following };
 /// aria-hidden role=toolbar; the "People you may know" cards sit in
 /// <aside aria-label="Aside"> inside <main>, outside that section. (A page
 /// in another language has no such label: 0 areas, so the flows refuse.)
+/// XPath: the element's class list holds exactly `name`.
+fn classToken(comptime name: []const u8) []const u8 {
+    return "contains(concat(\" \", normalize-space(@class), \" \"), \" " ++ name ++ " \")";
+}
+
 pub const owner_container = "//main//section[@aria-label=\"Primary content\"]";
 
 /// Under no aria-hidden element (the sticky toolbar's clone is aria-hidden).
@@ -353,12 +362,21 @@ pub fn message(gpa: std.mem.Allocator, runner: anytype, s: flow.Site, target: Me
     };
     if (!s.allows(url)) return error.InvalidParams;
     if (!(try openPage(gpa, runner, url))) return null;
+    // S8 decision 13 (approved runs; the guards are no-ops otherwise): the approved recipient's
+    // profile path, from the profile URL or the conversation approval's recipient.
+    const recipient: ?[]u8 = switch (target) {
+        .profile_url => |u| try gpa.dupe(u8, flow.urlPath(u)),
+        .conversation_url => if (runner.approvedRecipient()) |slug| try std.fmt.allocPrint(gpa, "/in/{s}/", .{slug}) else null,
+    };
+    defer if (recipient) |r| gpa.free(r);
     if (target == .profile_url) {
         const name = (try profileName(gpa, runner, s)) orelse return null;
         defer gpa.free(name);
         const area = (try ownerArea(runner, s, .message)) orelse return null;
+        try runner.guardOpener(recipient.?);
         if (!(try clickProfileAction(gpa, runner, area, .message, name))) return null;
     }
+    if (recipient) |r| try runner.guardThread(selectors.message_thread_header_link, r);
     if (!(try typeInto(gpa, runner, selectors.message_input, text))) return null;
     if (!(try click(gpa, runner, selectors.message_send_button, true))) return null;
     return try gpa.dupe(u8, ok_json);

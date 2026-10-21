@@ -67,10 +67,15 @@ pub const Guard = struct {
         /// The attribute compared; null: the element's normalized text.
         attribute: ?[]const u8 = null,
         value: []const u8,
+        /// S8 decision 13: the attribute is a URL; it must resolve, against the page, to the
+        /// page's own origin with exactly `value` as its pathname. Needs `attribute`.
+        path: ?bool = null,
     };
     marks: []const Mark = &.{},
     /// The action's own selector still resolves, strictly, to the same element.
     target: bool = false,
+    /// S8 decision 13: the exact `location.pathname` the step requires.
+    path: ?[]const u8 = null,
 };
 
 pub const max_guard_marks = 8;
@@ -599,9 +604,14 @@ fn parseGuard(arena: std.mem.Allocator, obj: std.json.ObjectMap) error{BadArgs}!
             const marks = arena.alloc(Guard.Mark, items.len) catch return error.BadArgs;
             for (items, marks) |item, *mark| mark.* = try parseMark(arena, item);
             guard.marks = marks;
+        } else if (std.mem.eql(u8, key, "path")) {
+            guard.path = switch (entry.value_ptr.*) {
+                .string => |p| if (isPath(p)) arena.dupe(u8, p) catch return error.BadArgs else return error.BadArgs,
+                else => return error.BadArgs,
+            };
         } else return error.BadArgs;
     }
-    if (guard.marks.len == 0 and !guard.target) return error.BadArgs;
+    if (guard.marks.len == 0 and !guard.target and guard.path == null) return error.BadArgs;
     return guard;
 }
 
@@ -613,8 +623,12 @@ fn parseMark(arena: std.mem.Allocator, value: std.json.Value) error{BadArgs}!Gua
     var keys = object.iterator();
     while (keys.next()) |entry| {
         const key = entry.key_ptr.*;
-        if (!std.mem.eql(u8, key, "selector") and !std.mem.eql(u8, key, "attribute") and !std.mem.eql(u8, key, "value")) return error.BadArgs;
+        if (!std.mem.eql(u8, key, "selector") and !std.mem.eql(u8, key, "attribute") and !std.mem.eql(u8, key, "value") and !std.mem.eql(u8, key, "path")) return error.BadArgs;
     }
+    const path: ?bool = if (object.get("path")) |p| switch (p) {
+        .bool => |b| if (b) true else null,
+        else => return error.BadArgs,
+    } else null;
     const selector = switch (object.get("selector") orelse return error.BadArgs) {
         .string => |s| if (s.len > 0) s else return error.BadArgs,
         else => return error.BadArgs,
@@ -627,11 +641,18 @@ fn parseMark(arena: std.mem.Allocator, value: std.json.Value) error{BadArgs}!Gua
         .string => |s| s,
         else => return error.BadArgs,
     };
+    if (path != null and (attribute == null or !isPath(text))) return error.BadArgs;
     return .{
         .selector = arena.dupe(u8, selector) catch return error.BadArgs,
         .attribute = if (attribute) |a| arena.dupe(u8, a) catch return error.BadArgs else null,
         .value = arena.dupe(u8, text) catch return error.BadArgs,
+        .path = path,
     };
+}
+
+/// A guard path: absolute, non-empty (`/` and more).
+fn isPath(text: []const u8) bool {
+    return text.len > 0 and text[0] == '/';
 }
 
 /// `options.input`: absent or "synthetic" -> synthetic, "native" -> native,

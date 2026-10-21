@@ -44,6 +44,9 @@ pub const selectors = struct {
         flow.visibleTextIs("Post") ++ "]" ++ not_hidden;
     /// Direct message composer.
     pub const dm_input = "css=div[aria-label=\"Message\"][contenteditable=\"true\"]";
+    /// S8 decision 13: the profile link in the header of the DM dialog that holds a message box
+    /// (whatever its contenteditable). UNVERIFIED live: the fixture proves the rule.
+    pub const dm_thread_header_link = "xpath=//*[@role=\"dialog\"][.//div[@aria-label=\"Message\"][@contenteditable]]//header//a[@href]";
     /// Send, by its visible text (an icon's <title> is text too), only
     /// inside the DM box's own container: its parent element, a fixed
     /// boundary that does not depend on finding a Send (walking up to the
@@ -169,7 +172,12 @@ pub fn dm(gpa: std.mem.Allocator, runner: anytype, s: flow.Site, username: []con
     const url = try userUrl(gpa, s.base(), "", username);
     defer gpa.free(url);
     if (!(try openPage(gpa, runner, url))) return null;
+    // S8 decision 13 (approved runs; the guards are no-ops otherwise): the profile, then the thread.
+    const recipient = try std.fmt.allocPrint(gpa, "/{s}/", .{username});
+    defer gpa.free(recipient);
+    try runner.guardOpener(recipient);
     if (!(try click(gpa, runner, selectors.message_button, true))) return null;
+    try runner.guardThread(selectors.dm_thread_header_link, recipient);
     if (!(try click(gpa, runner, selectors.dm_input, true))) return null;
     if (!(try flow.step(gpa, runner, "dom.type", .{ .selector = selectors.dm_input, .text = text, .options = .{ .timeout_ms = flow.budget(runner, flow.typingTimeoutMs(text, false)) } }))) return null;
     if (!(try click(gpa, runner, selectors.dm_send, true))) return null;

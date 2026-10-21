@@ -43,6 +43,16 @@ pub fn waitBudget(runner: anytype, ms: u64) u64 {
 }
 
 /// Runs one command; true if it succeeded.
+/// The path of an absolute URL (`/` when it has none), without its query or fragment.
+pub fn urlPath(url: []const u8) []const u8 {
+    const scheme = std.mem.indexOf(u8, url, "://") orelse return "/";
+    const rest = url[scheme + 3 ..];
+    const start = std.mem.indexOfAny(u8, rest, "/?#") orelse return "/";
+    if (rest[start] != '/') return "/";
+    const path = rest[start..];
+    return path[0 .. std.mem.indexOfAny(u8, path, "?#") orelse path.len];
+}
+
 pub fn step(gpa: std.mem.Allocator, runner: anytype, method: []const u8, params: anytype) Error!bool {
     const json = try std.json.Stringify.valueAlloc(gpa, params, .{ .emit_null_optional_fields = false });
     defer gpa.free(json);
