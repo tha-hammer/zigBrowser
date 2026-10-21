@@ -20610,3 +20610,28 @@ the complete `test_setup_darwin_r1` module, 8/8 under `-X dev`, with display
 unset. The retained test socket references make explicit close observable. The
 outside-census broker and both-Mac kernel proof remain a separate slice, not a
 defect in this commit. Verdict was mailed to BlueBeaver in Agent Mail 7029.
+
+## macOS netd blocker fix-forward (`a27bf1a`)
+
+Reviewed exact commit `a27bf1a` on 2026-10-20. **Verdict: APPROVED.** This
+cumulatively closes the test blockers on `a1182d2` and the production/test
+blockers on `7d0e35e`. `parse_args` now tracks option presence independently
+of its parsed value and rejects all seven Linux/sandbox-side flags on Darwin,
+including empty-valued `--sockdir`, `--bwrap`, `--test-bridge`,
+`--allow-host` and `--bridge-port`; the new set is inert on Linux.
+
+The stdout reader queue gives the ready wait a finite deadline. A live child
+that emits only a partial line proves the suite fails promptly rather than
+blocking, and cleanup reaps the child and joins both stdout/stderr readers.
+The manifest test's positive is also discriminating: the replacement host must
+pass the real CONNECT allowlist check before the handler can census it as
+`allowed`, the old built-in is censused `refused`, and TEST-NET address vetting
+ensures the offline test makes no upstream dial. This avoids the tautology a
+`--test-allow` positive would introduce.
+
+An independent clean-export focused run passed `test_netd_darwin` 8/8 under
+`-X dev` in 8.64 seconds with no ResourceWarning. A direct exact-SHA table also
+confirmed all five empty-valued argument forms are refused. No full gate was
+run because BlackRobin held the shared slot. The separately recorded
+macOS-netd containment SHOULD remains a later hardening item. Verdict was
+mailed to BlueBeaver in Agent Mail 7037.
