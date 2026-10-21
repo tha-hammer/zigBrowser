@@ -16,6 +16,7 @@ import stat
 import threading
 
 from . import sandbox  # the backend owns the inherited token channel (fd + env), one source of truth
+from . import files
 from .files import atomic_write
 from .platforms import posix_only
 
@@ -57,11 +58,28 @@ def read_token(fd):
 class FifoHandoff:
     """One session's R1 FIFO: created with a random 128-bit name, written once, never reused."""
 
-    def __init__(self, directory, value):
+    def __init__(self, directory, value, *, remove_directory=False):
+        """`remove_directory`: close() also removes the directory, if this made it (route_probe's throwaway one); a
+        session's FIFO directory (contract.Route) stays, empty and 0300, for the next session."""
         self.directory = str(directory)
-        self._made_directory = not os.path.lexists(self.directory)  # only a directory it made is its to remove
-        os.makedirs(self.directory, mode=0o300, exist_ok=True)
-        os.chmod(self.directory, 0o300)
+        self._remove_directory = remove_directory
+        parent, name = os.path.split(self.directory.rstrip("/"))
+        os.makedirs(parent or ".", mode=0o700, exist_ok=True)
+        # One mkdir decides ownership (RoseCat 7421): only a directory this made is its to remove. One that already
+        # exists must be this user's real directory; either way its mode is set without following a link.
+        try:
+            os.mkdir(self.directory, 0o300)
+            self._made_directory = True
+        except FileExistsError:
+            st = os.lstat(self.directory)
+            if not stat.S_ISDIR(st.st_mode) or st.st_uid != os.geteuid():
+                raise
+            self._made_directory = False
+        parent_fd = os.open(parent or ".", os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+        try:
+            files.chmod_nofollow(parent_fd, name, 0o300)
+        finally:
+            os.close(parent_fd)
         self.path = os.path.join(self.directory, secrets.token_hex(16))
         os.mkfifo(self.path, 0o600)
         self._value = value.encode()
@@ -97,7 +115,7 @@ class FifoHandoff:
         except FileNotFoundError:
             pass
         self._value = b""
-        if self._made_directory:  # empty now; rmdir needs no read on a 0300 directory (16bad65's leftovers)
+        if self._remove_directory and self._made_directory:  # empty now; rmdir needs no read on a 0300 directory
             try:
                 os.rmdir(self.directory)
             except OSError:

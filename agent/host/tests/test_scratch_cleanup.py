@@ -3,8 +3,9 @@
 token.FifoHandoff makes its directory write+search-only and both removals were shutil.rmtree(..., ignore_errors=True),
 which cannot list it and says nothing; Linux's bwrap tmpfs had hidden it).
 
-- FifoHandoff.close() removes the directory it created (the FIFO unlinked, then the directory), whether or not the
-  wrapper ever opened the FIFO; a directory it did not create is left as it was;
+- FifoHandoff(..., remove_directory=True).close() (route_probe's throwaway one) removes the directory it created (the
+  FIFO unlinked, then the directory), whether or not the wrapper ever opened the FIFO; a directory it did not create
+  is left as it was; by default (a session's FIFO directory, contract.Route) the directory stays, empty and 0300;
 - route_probe.run leaves nothing of its zb-route-probe-* scratch behind (Linux path, the SDK's query faked);
 - setup's sandboxed runs leave nothing of their zb-setup-run-* scratch behind, even when the run left 0300
   directories in it (empty, and holding a file);
@@ -72,14 +73,14 @@ class Base(unittest.TestCase):
 class FifoHandoffClose(Base):
     def test_close_removes_its_directory_when_the_fifo_was_never_opened(self):
         d = os.path.join(self.root, "zb-token")
-        h = token.FifoHandoff(d, "zb-probe-x")
+        h = token.FifoHandoff(d, "zb-probe-x", remove_directory=True)
         self.assertEqual(stat.S_IMODE(os.stat(d).st_mode), 0o300)
         h.close()
         self.assertFalse(os.path.lexists(d), "the 0300 directory outlived close()")
 
     def test_close_removes_its_directory_after_the_wrapper_read_the_token(self):
         d = os.path.join(self.root, "zb-token")
-        h = token.FifoHandoff(d, "zb-probe-x")
+        h = token.FifoHandoff(d, "zb-probe-x", remove_directory=True)
         fd = os.open(h.path, os.O_RDONLY)  # as the wrapper does: open, unlink, read
         os.unlink(h.path)
         with os.fdopen(fd, "rb") as f:
@@ -87,9 +88,17 @@ class FifoHandoffClose(Base):
         h.close()
         self.assertFalse(os.path.lexists(d))
 
+    def test_by_default_a_sessions_fifo_directory_stays_empty_and_0300(self):
+        d = os.path.join(self.root, "token-fifo")
+        h = token.FifoHandoff(d, "zb-probe-x")
+        h.close()
+        self.assertEqual(stat.S_IMODE(os.stat(d).st_mode), 0o300, "test_contract's session FIFO directory")
+        os.chmod(d, 0o700)
+        self.assertEqual(os.listdir(d), [])
+
     def test_close_twice_is_harmless(self):
         d = os.path.join(self.root, "zb-token")
-        h = token.FifoHandoff(d, "zb-probe-x")
+        h = token.FifoHandoff(d, "zb-probe-x", remove_directory=True)
         h.close()
         h.close()
         self.assertFalse(os.path.lexists(d))
@@ -100,7 +109,7 @@ class FifoHandoffClose(Base):
         os.mkdir(d, 0o700)
         keep = os.path.join(d, "keep")
         open(keep, "w").close()
-        h = token.FifoHandoff(d, "zb-probe-x")
+        h = token.FifoHandoff(d, "zb-probe-x", remove_directory=True)
         h.close()
         os.chmod(d, 0o700)
         self.assertEqual(os.listdir(d), ["keep"])

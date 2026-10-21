@@ -301,7 +301,7 @@ def run(wrapper, cli, listener=None, census=None):
         home = options.AgentHome(scratch / "home")
         for sub in (home.claude_dir, home.workspace, home.tmp):
             sub.mkdir(mode=0o700, parents=True, exist_ok=True)
-        handoff = token.FifoHandoff(scratch / "zb-token", probe_token)
+        handoff = token.FifoHandoff(scratch / "zb-token", probe_token, remove_directory=True)
         opts = options.build(home, route_env=handoff.env(), cli_path=str(wrapper), base_url=server.url)
 
         async def turn():

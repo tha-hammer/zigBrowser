@@ -1,9 +1,10 @@
 """Atomic file writes: a fresh O_EXCL temp beside the target, fsync, rename, fsync the directory. And the removal of a
 throwaway tree that may hold write+search-only (0300) directories."""
 
+import errno
 import os
 import secrets
-import shutil
+import stat
 
 
 def write_all(fd, data, write=None):
@@ -41,41 +42,109 @@ def atomic_write(path, data, mode=0o600):
     return path
 
 
+
+_DIR_NOFOLLOW = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+_MAX_DEPTH = 64  # a deeper tree is left and reported, never recursed without bound
+
+
+def chmod_nofollow(dir_fd, name, mode):
+    """chmod `name` (a directory) relative to the held `dir_fd`, never through a symlink: macOS's fchmodat with
+    AT_SYMLINK_NOFOLLOW, or Linux's O_PATH|O_NOFOLLOW pin of the inode changed through /proc/self/fd. Raises OSError
+    when `name` is not a directory now, or when neither way exists (a path chmod would follow a swapped link)."""
+    if os.chmod in os.supports_follow_symlinks:
+        if not stat.S_ISDIR(os.stat(name, dir_fd=dir_fd, follow_symlinks=False).st_mode):
+            raise NotADirectoryError(errno.ENOTDIR, "not a directory")
+        os.chmod(name, mode, dir_fd=dir_fd, follow_symlinks=False)
+        return
+    if not hasattr(os, "O_PATH") or not os.path.isdir("/proc/self/fd"):
+        raise OSError(errno.ENOTSUP, "no way to chmod without following a symlink")
+    fd = os.open(name, os.O_PATH | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=dir_fd)
+    try:
+        if not stat.S_ISDIR(os.fstat(fd).st_mode):
+            raise NotADirectoryError(errno.ENOTDIR, "not a directory")
+        os.chmod(f"/proc/self/fd/{fd}", mode)  # the pinned inode, not a fresh lookup of `name`
+    finally:
+        os.close(fd)
+
+
 def remove_tree(path):
-    """Removes one of our own throwaway trees and returns what could not be removed (empty when it is all gone). A
-    0300 directory (token.FifoHandoff's) cannot be listed even by its owner, so every directory is first opened to
-    0700, top-down, never through a symlink and only when this user owns it (anything else is left closed and
-    reported); special entries are unlinked, never opened; nothing is ignored silently (16bad65 left such trees on
-    both Macs)."""
+    """Removes one of our own throwaway trees, held by file descriptors from its parent down (RoseCat 7421): every
+    directory is opened relative to its held parent with O_DIRECTORY|O_NOFOLLOW, must be this user's (fstat), and
+    only if it cannot be opened (token.FifoHandoff's 0300 directory) is it made 0700 with chmod_nofollow first; every
+    other entry is unlinked relative to its parent, never opened or followed; a swapped-in symlink is unlinked as a
+    link. Returns what is left, as `path` plus fixed stage/errno counts only, never a descendant name or an exception's
+    text (a name inside the tree is chosen by the sandboxed run, which holds a token). Empty when all is gone."""
     path = str(path)
-    problems = []
-    if not os.path.lexists(path):
-        return problems
-    def open_dir(d):
+    counts = {}
+
+    def fail(stage, exc=None):
+        key = f"{stage}: {errno.errorcode.get(getattr(exc, 'errno', None), 'error') if exc is not None else 'refused'}"
+        counts[key] = counts.get(key, 0) + 1
+
+    def open_dir(dir_fd, name):
         try:
-            if os.lstat(d).st_uid != os.geteuid():
-                problems.append(f"{d}: not this user's, left as it is")
-                return
-            os.chmod(d, 0o700)
+            return os.open(name, _DIR_NOFOLLOW, dir_fd=dir_fd)
+        except PermissionError:
+            chmod_nofollow(dir_fd, name, 0o700)
+            return os.open(name, _DIR_NOFOLLOW, dir_fd=dir_fd)
+
+    def remove(dir_fd, name, depth):
+        try:
+            st = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            return
         except OSError as exc:
-            problems.append(f"{d}: {exc.strerror or exc}")
+            fail("stat", exc)
+            return
+        if not stat.S_ISDIR(st.st_mode):
+            try:
+                os.unlink(name, dir_fd=dir_fd)
+            except FileNotFoundError:
+                pass
+            except OSError as exc:
+                fail("unlink", exc)
+            return
+        if depth > _MAX_DEPTH:
+            fail("too deep")
+            return
+        try:
+            fd = open_dir(dir_fd, name)
+        except (NotADirectoryError, FileNotFoundError):
+            return remove(dir_fd, name, depth)  # swapped for a non-directory meanwhile: unlinked as such
+        except OSError as exc:
+            if exc.errno == errno.ELOOP:  # swapped for a symlink: removed as a link, never followed
+                return remove(dir_fd, name, depth)
+            fail("open", exc)
+            return
+        try:
+            st = os.fstat(fd)
+            if st.st_uid != os.geteuid():
+                fail("not this user's")
+                return
+            if stat.S_IMODE(st.st_mode) & 0o700 != 0o700:
+                os.fchmod(fd, 0o700)
+            for entry in list(os.scandir(fd)):
+                remove(fd, entry.name, depth + 1)
+        except OSError as exc:
+            fail("list", exc)
+            return
+        finally:
+            os.close(fd)
+        try:
+            os.rmdir(name, dir_fd=dir_fd)
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            fail("rmdir", exc)
 
-    if os.path.isdir(path) and not os.path.islink(path):
-        open_dir(path)
-        def unwalkable(exc):
-            problems.append(f"{exc.filename}: {exc.strerror}")
-
-        for dirpath, dirnames, _files in os.walk(path, onerror=unwalkable):
-            for d in dirnames:
-                sub = os.path.join(dirpath, d)
-                if os.path.islink(sub):
-                    continue  # removed as a link, never followed
-                open_dir(sub)
-
-    def failed(_func, failed_path, exc):
-        problems.append(f"{failed_path}: {getattr(exc, 'strerror', None) or exc}")
-
-    shutil.rmtree(path, onexc=failed)
-    if os.path.lexists(path) and not problems:
-        problems.append(f"{path}: still present")
-    return problems
+    parent, name = os.path.split(path.rstrip("/"))
+    try:
+        parent_fd = os.open(parent or ".", os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    except OSError as exc:
+        fail("open the parent", exc)
+    else:
+        try:
+            remove(parent_fd, name, 0)
+        finally:
+            os.close(parent_fd)
+    return [f"{path}: {key} x{n}" for key, n in sorted(counts.items())]
