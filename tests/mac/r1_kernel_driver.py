@@ -133,6 +133,8 @@ def run_inner(sleeper, port, decoy, plant=False, sandboxed=True, mode="report", 
                                      env=env, start_new_session=True)
             line = read_line(inner.stdout.fileno(), time.monotonic() + REPORT_DEADLINE_S)
             report = json.loads(line) if line else None
+            if report is not None:
+                PIDS["last"] = report.get("pids", [])
             census = None
             if report is not None and proc_darwin is not None and hasattr(proc_darwin, "cli_env_clean"):
                 census = proc_darwin.cli_env_clean(os.path.realpath(sleeper), os.getpid(), TOKEN.encode(),
@@ -142,8 +144,17 @@ def run_inner(sleeper, port, decoy, plant=False, sandboxed=True, mode="report", 
                 cm.__exit__(None, None, None)
         return report, census
     finally:
-        CLEANUP["group_gone"] = True if inner is None else with_group_kill(inner.pid, inner, killpg, observe)
-        CLEANUP["scratch_gone"] = remove_scratch(scratch, rmtree)
+        # This run's exact resources (RoseCat 7065): the harness cleans up only these, never by a host-wide scan.
+        CLEANUP.clear()
+        CLEANUP.update(scratch=scratch, pgid=None if inner is None else inner.pid, pids=list(PIDS.pop("last", [])),
+                       proc=inner)
+        try:
+            CLEANUP["group_gone"] = True if inner is None else with_group_kill(inner.pid, inner, killpg, observe)
+        except Exception as exc:  # noqa: BLE001 - recorded, never allowed to skip the scratch removal below
+            CLEANUP["group_gone"] = False
+            CLEANUP["kill_error"] = repr(exc)
+        finally:
+            CLEANUP["scratch_gone"] = remove_scratch(scratch, rmtree)
 
 
 def with_group_kill(pgid, proc, killpg=os.killpg, observe=os.killpg):
@@ -176,30 +187,79 @@ def with_group_kill(pgid, proc, killpg=os.killpg, observe=os.killpg):
 
 
 CLEANUP = {}
+PIDS = {}
 
 
 def cleaned(label):
     """Every run, whatever it reported, must leave no group member and no scratch (RoseCat 7055)."""
+    shown = {k: v for k, v in CLEANUP.items() if k != "proc"}
     check(CLEANUP.get("group_gone") is True and CLEANUP.get("scratch_gone") is True,
-          f"{label}: no member of its process group and no scratch left ({CLEANUP})")
+          f"{label}: no member of its process group and no scratch left ({shown})")
 
 
-def leftover_group_and_scratch_cleanup():
-    """After an injected-failure self-test: really kill whatever the injected run left (the sleeper children of its
-    inner, matched by this run's sleeper path) and remove every /tmp/zb-r1k-* we made; fail if anything stays."""
+def exact_cleanup(resources, label):
+    """After an injected-failure self-test, clean up EXACTLY what that run recorded (RoseCat 7065): its children's
+    pids (each checked to still run our sleeper, so a reused pid is never killed), its process group, and its
+    scratch path. Every kill, observation and removal must succeed, and each pid must be gone (ESRCH) within 5 s;
+    anything else is red."""
     sleeper = os.path.realpath(sys.argv[1])
-    out = subprocess.run(["/bin/ps", "-axo", "pid=,comm="], capture_output=True, text=True).stdout
-    for line in out.splitlines():
-        pid, _, comm = line.strip().partition(" ")
-        if comm.strip() == sleeper:
+    survivors = []
+    for pid in resources.get("pids", []):
+        ps = subprocess.run(["/bin/ps", "-o", "comm=", "-p", str(pid)], capture_output=True, text=True)
+        if ps.returncode not in (0, 1):
+            check(False, f"{label}: ps failed for pid {pid} (rc {ps.returncode})")
+            continue
+        if ps.stdout.strip() != sleeper:
+            continue  # already gone (rc 1, empty) or a reused pid that is not ours: never touched
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except ProcessLookupError:
+            continue
+        except OSError as exc:
+            check(False, f"{label}: SIGKILL of survivor {pid} failed ({exc})")
+        survivors.append(pid)
+    # The run's own leader first: killed survivors are its children, and they stay zombies (which still answer
+    # kill(pid, 0)) until their parent is gone and they are re-parented and reaped.
+    pgid, proc = resources.get("pgid"), resources.get("proc")
+    if proc is not None and proc.poll() is None:  # the run's own leader (a raising kill never reached it)
+        try:
+            os.killpg(pgid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        except OSError as exc:
+            check(False, f"{label}: SIGKILL of its own group {pgid} failed ({exc})")
+        proc.kill()
+    if proc is not None:
+        proc.wait()
+        for stream in (proc.stdin, proc.stdout):
             try:
-                os.kill(int(pid), signal.SIGKILL)
+                stream.close()
+            except OSError:
+                pass
+    deadline = time.monotonic() + 5
+    alive = list(survivors)
+    while alive and time.monotonic() < deadline:
+        time.sleep(0.05)
+        still = []
+        for pid in alive:
+            try:
+                os.kill(pid, 0)
+                still.append(pid)
             except ProcessLookupError:
                 pass
-    base = os.path.realpath(tempfile.gettempdir())
-    for name in os.listdir(base):
-        if name.startswith("zb-r1k-"):
-            check(remove_scratch(os.path.join(base, name)), f"harness cleanup: {name} removed")
+            except OSError as exc:
+                check(False, f"{label}: observing survivor {pid} failed ({exc})")
+        alive = still
+    check(not alive, f"{label}: the exact survivors {survivors} are gone (left: {alive})")
+    if pgid is not None:
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and not group_gone(pgid):
+            time.sleep(0.05)
+        check(group_gone(pgid), f"{label}: its process group {pgid} is gone")
+    scratch = resources.get("scratch")
+    if scratch is not None:
+        check(remove_scratch(scratch), f"{label}: its exact scratch {os.path.basename(scratch)} is removed")
+    return survivors
 
 
 def main():
@@ -229,14 +289,34 @@ def main():
         def no_rmtree(path):
             raise PermissionError(13, "injected: rmtree refused")
 
-        for label, kwargs in (("a kill that does not kill", {"killpg": no_kill}),
-                              ("a group observation that errors", {"observe": blind}),
-                              ("a scratch deletion that fails", {"rmtree": no_rmtree})):
-            report, _ = run_inner(sleeper, port, decoy_port, sandboxed=False, mode="report", **kwargs)
-            seen = dict(CLEANUP)
-            key = "scratch_gone" if "rmtree" in kwargs else "group_gone"
-            check(seen.get(key) is False, f"harness: {label} is detected ({seen})")
-            leftover_group_and_scratch_cleanup()
+        def raising_kill(pgid, sig):
+            raise RuntimeError("injected: the group kill itself raises")
+
+        # Foreign resources that look like ours: a matching scratch directory and a process running the same
+        # sleeper, neither made by any injected run. The exact-scope cleanup must leave both alone.
+        foreign_dir = os.path.realpath(tempfile.mkdtemp(prefix="zb-r1k-"))
+        foreign = subprocess.Popen([sleeper, "120"])
+        try:
+            for label, kwargs, key in (("a kill that does not kill", {"killpg": no_kill}, "group_gone"),
+                                       ("a group observation that errors", {"observe": blind}, "group_gone"),
+                                       ("a scratch deletion that fails", {"rmtree": no_rmtree}, "scratch_gone"),
+                                       ("a group kill that raises", {"killpg": raising_kill}, "group_gone")):
+                report, _ = run_inner(sleeper, port, decoy_port, sandboxed=False, mode="report", **kwargs)
+                seen = dict(CLEANUP)
+                shown = {k: v for k, v in seen.items() if k != "proc"}
+                check(report is not None and seen.get(key) is False, f"harness: {label} is detected ({shown})")
+                if "raises" in label:
+                    check(seen.get("scratch_gone") is True,
+                          "harness: a raising group kill still removes the run's scratch (nested finally)")
+                survivors = exact_cleanup(seen, f"harness cleanup after {label}")
+                if label == "a kill that does not kill":
+                    check(len(survivors) == 2, f"harness: the refused kill really left the 2 children ({survivors})")
+            check(os.path.isdir(foreign_dir), "harness: a foreign zb-r1k-* directory survives the exact cleanup")
+            check(foreign.poll() is None, "harness: a foreign process running the same sleeper survives")
+        finally:
+            foreign.kill()
+            foreign.wait()
+            os.rmdir(foreign_dir)
 
 
         control, _ = run_inner(sleeper, port, decoy_port, sandboxed=False)

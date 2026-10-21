@@ -63,6 +63,7 @@ report = {"r1_connect": connect(port), "decoy_connect": connect(decoy),
           "sibling_procargs2": procargs2(sibling.pid), "sibling_pidpath": pidpath(sibling.pid),
           "cli_procargs2": procargs2(cli.pid), "cli_pidpath": pidpath(cli.pid)}
 report["children_alive"] = cli.poll() is None and sibling.poll() is None
+report["pids"] = [cli.pid, sibling.pid]  # this run's exact resources, for the harness's exact-scope cleanup
 sys.stdout.write(json.dumps(report) + "\n")
 sys.stdout.flush()
 try:
