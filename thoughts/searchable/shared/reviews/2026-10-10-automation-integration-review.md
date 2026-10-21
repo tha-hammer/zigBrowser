@@ -26604,3 +26604,46 @@ also swallows `PermissionError` from `killpg` and then waits without a bound;
 Darwin `/bin/ps` failure likewise needs a bounded explicit outcome. Agent
 Mails 7438 and 7439 sent BlueBeaver these findings. No Mac signal run is
 approved.
+
+## MS6.5.1 ledger provenance (`9dcbb29`, `a40ee92`)
+
+**`9dcbb29` APPROVED as the causal red for the named drop-the-fstat-match
+mutant. `a40ee92` is BLOCKED-for-tests and on basename validation before its
+provenance green may be approved.**
+
+At exact `9dcbb29`, the new test and helper are signal-free. A direct strict C
+build/run from a clean export failed exactly the swapped-inode and changed-mode
+rows: **2/9 failed, exit 1**. The earlier six registered reaper steps remained
+green inside a private user/PID namespace: core **7/7**, engine **43/43**, pin
+**13/13**, fixed point **6/6**, identity-flip **4/4**, and unreadable-identity
+**4/4**. The red was unregistered as claimed and both commits pass
+`git diff --check`.
+
+`a40ee92` correctly reopens through the held parent fd with
+`O_DIRECTORY|O_NOFOLLOW`, obtains the current identity with `fstat` through
+`zb_reaper_pin_fd`, requires this uid and 0700, and compares it with the record.
+Its registered focused step passed **4/4 build steps and 9/9 checks** from an
+exact clean export under the private PID namespace. No signal path is present.
+
+Two safety contracts remain unproved:
+
+1. The test at `tests/agent_run_ledger_test.c:61-70` does not independently
+   pin the promised exact `(dev,ino,uid,mode)` comparison. The swapped-dir row
+   changes the inode, while the changed-mode row is rejected by `pin_fd`
+   *before* `zb_reaper_dir_id_eq`. A mutant that compares only recorded
+   `dev+ino` therefore still passes all nine rows. Copy a valid record, alter
+   exactly one of `dev`, `ino`, `uid` and `mode` in four independent rows, and
+   require `MISMATCH`; each field-omission mutant must fail.
+2. `src/agent_run_reaper.c:251-263` passes the alleged basename directly to
+   `openat`. A value such as `.` or one containing `/..` can name the runtime
+   root or a different relative directory and return `SWEEP` when paired with
+   a matching record. The plan requires malformed ledger rows never to cause
+   an automatic signal and fixes the basename grammar to
+   `zigbrowser-agent-<pid>-<16 lowercase hex>`. Enforce that single-component
+   grammar at this decision boundary (or use a mechanically inseparable typed
+   validated-name boundary), with `.`, `..`, absolute, embedded-slash, wrong-
+   prefix/case/length rows. Merely promising that a future parser calls this
+   public `const char *` helper correctly is not a fail-closed boundary.
+
+Agent Mail 7442 sent JadeBeacon both blockers. `reaper_ready` remains unarmed;
+this review authorizes no destructive Mac run.
