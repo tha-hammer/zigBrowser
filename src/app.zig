@@ -22,10 +22,12 @@ const backend_flag = @import("backend_flag.zig");
 const errors = @import("errors.zig");
 const uri = @import("uri.zig");
 const webkit = @import("webkit.zig");
+const self_exe = @import("self_exe.zig");
 
 const c = @cImport({
     @cInclude("webkit_shim.h");
     @cInclude("agent_host.h");
+    @cInclude("agent_spawn_posix.h");
     @cInclude("agent_helper.h");
     @cInclude("agent_login.h");
 });
@@ -61,7 +63,9 @@ fn runAgentSetup(arena: std.mem.Allocator, spec: AgentSetupSpec) errors.BrowserE
             return 1;
         },
     }
-    // The macOS port of the rest (rev 14 items 2, 4, 5) is not wired yet; the gate above refuses there.
+    // macOS (rev 14 items 2-5): reached only once MS6 flips agent_setup.seatbelt_ready (the gate above refuses
+    // until then, before any of this runs).
+    if (comptime builtin.os.tag == .macos) return runAgentSetupMacos(arena, spec);
     if (comptime builtin.os.tag != .linux) return 1;
     const user_home = getenvOwned(arena, "HOME");
     const home = (agent_setup.defaultHomeDir(arena, getenvOwned(arena, "XDG_DATA_HOME"), user_home) catch null) orelse {
@@ -122,6 +126,78 @@ fn runAgentSetup(arena: std.mem.Allocator, spec: AgentSetupSpec) errors.BrowserE
     const envp = toCStrings(arena, setup_run.env) catch return error.WriteFailed;
     const status = c.zb_agent_run_sync(argv.ptr, envp.ptr, c.zb_spawn_policy_linux(setup_run.spawn_delay_ms));
     return if (status < 0) 1 else @intCast(@min(status, 255));
+}
+
+/// macOS `--agent-setup` (macOS plan rev 14 items 2-5), reached only past platformGate (MS6 accepted): the same
+/// home and launch as Linux, with the runtime beside the binary (self_exe + runtimeFor: Frameworks/agent-host),
+/// the POSIX owner lock, and setup started as the leader of its own process group (posix_spawn) with the
+/// browser's pid, so setup.py's kqueue parent watch SIGKILLs the whole group if the browser dies.
+fn runAgentSetupMacos(arena: std.mem.Allocator, spec: AgentSetupSpec) errors.BrowserError!u8 {
+    const user_home = getenvOwned(arena, "HOME");
+    const home = (agent_setup.defaultHomeDir(arena, getenvOwned(arena, "XDG_DATA_HOME"), user_home) catch null) orelse {
+        std.debug.print("zigBrowser: agent-setup: neither XDG_DATA_HOME nor HOME is usable\n", .{});
+        return 1;
+    };
+    var exe_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const exe = self_exe.path(&exe_buf) catch return error.WriteFailed;
+    const runtime = agent_setup.runtimeFor(arena, .macos, exe) catch return error.WriteFailed;
+    const python = getenvOwned(arena, "ZB_AGENT_HOST_PYTHON") orelse runtime.python;
+    const python_z = arena.dupeZ(u8, python) catch return error.WriteFailed;
+    if (std.c.access(python_z.ptr, std.c.X_OK) != 0) {
+        std.debug.print("zigBrowser: agent-setup: agent runtime missing at {s}\n", .{python});
+        return 1;
+    }
+    const source = spec.sai_source orelse
+        (std.fs.path.join(arena, &.{ user_home orelse "", ".claude" }) catch return error.WriteFailed);
+    const setup_run = agent_setup.launch(arena, .{
+        .home = home,
+        .python = python,
+        .package_dir = getenvOwned(arena, "ZB_AGENT_HOST_DIR") orelse runtime.package_dir,
+        .sai_source = source,
+        .source_home = user_home orelse "",
+        .source_path = getenvOwned(arena, "PATH") orelse "/usr/bin:/bin",
+        .e2e_protocol = spec.e2e_protocol,
+        .claude_cli = getenvOwned(arena, agent_setup.claude_cli_env),
+        .lang = getenvOwned(arena, "LANG"),
+        .lc_all = getenvOwned(arena, "LC_ALL"),
+        .setup_pause = getenvOwned(arena, agent_setup.setup_pause_env),
+        .browser_pid = @intCast(std.c.getpid()),
+    }) catch |err| switch (err) {
+        error.RelativeCliPath => {
+            std.debug.print("zigBrowser: {s} must be an absolute path\n", .{agent_setup.claude_cli_env});
+            return 2;
+        },
+        error.BadSourceHome => {
+            std.debug.print("zigBrowser: agent-setup: HOME must be an absolute directory\n", .{});
+            return 2;
+        },
+        error.OutOfMemory => return error.WriteFailed,
+    };
+    if (setup_run.warning) |line| std.debug.print("{s}\n", .{line});
+    const home_z = arena.dupeZ(u8, home) catch return error.WriteFailed;
+    switch (c.zb_agent_home_lock(home_z.ptr)) {
+        0 => {},
+        -2 => {
+            std.debug.print("zigBrowser: agent-setup: another zigBrowser is using the agent home\n", .{});
+            return 1;
+        },
+        else => {
+            std.debug.print("zigBrowser: agent-setup: cannot lock {s}\n", .{home});
+            return 1;
+        },
+    }
+    const argv = toCStrings(arena, setup_run.argv) catch return error.WriteFailed;
+    const envp = toCStrings(arena, setup_run.env) catch return error.WriteFailed;
+    var pid: c.pid_t = -1;
+    if (c.zb_agent_spawn_group(argv.ptr, envp.ptr, &pid) != 0) {
+        std.debug.print("zigBrowser: agent-setup: cannot start the setup helper\n", .{});
+        return 1;
+    }
+    const status = c.zb_agent_wait(pid);
+    if (status < 0) return 1;
+    const s: u32 = @bitCast(status);
+    // WIFEXITED / WEXITSTATUS by hand (the C macros do not translate): a signal death is a failure.
+    return if (s & 0x7f == 0) @intCast((s >> 8) & 0xff) else 1;
 }
 
 /// Chat drawer S3n2 (plan rev 16.2 §3c.2): when the agent home has a published

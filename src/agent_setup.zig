@@ -102,6 +102,10 @@ pub const Inputs = struct {
     spawn_delay: ?[]const u8 = null,
     /// ZIGBROWSER_AGENT_SETUP_PAUSE's value (null: unset).
     setup_pause: ?[]const u8 = null,
+    /// macOS plan rev 14 item 5: the browser's own pid, passed as `--browser-pid` so setup.py's Darwin
+    /// parent watch arms on it (a getppid() captured inside setup could already be launchd's). Null on Linux,
+    /// where PR_SET_PDEATHSIG does the job and the argv stays as it was.
+    browser_pid: ?u32 = null,
 };
 
 pub const Launch = struct {
@@ -127,6 +131,7 @@ pub fn launch(gpa: std.mem.Allocator, in: Inputs) Error!Launch {
         "--source-home",  in.source_home, "--source-path", in.source_path,
         "--python",       in.python,
     });
+    if (in.browser_pid) |pid| try argv.appendSlice(gpa, &.{ "--browser-pid", try std.fmt.allocPrint(gpa, "{d}", .{pid}) });
     var warning: ?[]const u8 = null;
     var spawn_delay_ms: u32 = 0;
     if (in.spawn_delay) |text| {

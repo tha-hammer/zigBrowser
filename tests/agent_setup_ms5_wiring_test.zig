@@ -32,6 +32,7 @@ test "item 5: the browser's pid reaches setup as --browser-pid, right after --py
     try std.testing.expect(at != null);
     try std.testing.expectEqualStrings("4242", run.argv[at.? + 1]);
     try std.testing.expectEqualStrings("--python", run.argv[at.? - 2]);
+    try std.testing.expectEqualStrings("/rt/bin/python3.12", run.argv[at.? - 1]); // the slot right before: --python's value
 }
 
 test "item 5: with no pid the argv is exactly today's (Linux unchanged)" {

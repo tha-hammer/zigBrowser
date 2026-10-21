@@ -382,8 +382,9 @@ pub fn build(b: *std.Build) void {
     const cross_targets = [_]struct { query: std.Target.Query, shim: []const u8 }{
         // The shipped floor (windowsAfUnixFloor), so the object reaches the automation server's start.
         .{ .query = .{ .cpu_arch = .x86_64, .os_tag = .windows, .abi = .gnu, .os_version_min = .{ .windows = .win10_rs4 } }, .shim = "src/webview2_shim.cpp" },
-        .{ .query = .{ .cpu_arch = .aarch64, .os_tag = .macos }, .shim = "src/wkwebview_shim.m" },
-        .{ .query = .{ .cpu_arch = .x86_64, .os_tag = .macos }, .shim = "src/wkwebview_shim.m" },
+        // macOS: the ObjC shim plus the plain C files compiled into the exe (MS5's lock and spawn).
+        .{ .query = .{ .cpu_arch = .aarch64, .os_tag = .macos }, .shim = "src/wkwebview_shim.m:src/agent_home_lock.c:src/agent_spawn_posix.c" },
+        .{ .query = .{ .cpu_arch = .x86_64, .os_tag = .macos }, .shim = "src/wkwebview_shim.m:src/agent_home_lock.c:src/agent_spawn_posix.c" },
     };
     for (cross_targets) |cross| {
         const cross_module = b.createModule(.{
@@ -398,7 +399,7 @@ pub fn build(b: *std.Build) void {
         cross_module.addIncludePath(b.path("src"));
         const cross_object = b.addObject(.{ .name = "zigBrowser-cross", .root_module = cross_module });
         cross_check.addFileArg(cross_object.getEmittedBin());
-        cross_check.addFileArg(b.path(cross.shim));
+        addShimArg(b, cross_check, cross.shim);
 
         const fixture_module = b.createModule(.{
             .root_source_file = b.path("tests/fixtures/cross/missing_symbol.zig"),
@@ -407,7 +408,7 @@ pub fn build(b: *std.Build) void {
         });
         const fixture_object = b.addObject(.{ .name = "cross-fixture", .root_module = fixture_module });
         cross_self_test.addFileArg(fixture_object.getEmittedBin());
-        cross_self_test.addFileArg(b.path(cross.shim));
+        addShimArg(b, cross_self_test, cross.shim);
     }
     const cross_check_step = b.step("cross-check", "Check that Windows/macOS builds need only zb_* symbols their shims define");
     cross_check_step.dependOn(&cross_check.step);
@@ -1106,10 +1107,31 @@ pub fn build(b: *std.Build) void {
     }));
     const run_agent_setup_ms5_devtree_tests = b.addRunArtifact(b.addTest(.{ .root_module = agent_setup_ms5_devtree_module }));
     run_agent_setup_ms5_devtree_tests.skip_foreign_checks = true;
+    // MS5 rev 14 items 2 and 5: --browser-pid in setup's argv, and self_exe.path (libc: readlink / realpath).
+    const agent_setup_ms5_wiring_module = b.createModule(.{
+        .root_source_file = b.path("tests/agent_setup_ms5_wiring_test.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    agent_setup_ms5_wiring_module.addImport("agent_setup", b.createModule(.{
+        .root_source_file = b.path("src/agent_setup.zig"),
+        .target = target,
+        .optimize = optimize,
+    }));
+    agent_setup_ms5_wiring_module.addImport("self_exe", b.createModule(.{
+        .root_source_file = b.path("src/self_exe.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    }));
+    const run_agent_setup_ms5_wiring_tests = b.addRunArtifact(b.addTest(.{ .root_module = agent_setup_ms5_wiring_module }));
+    run_agent_setup_ms5_wiring_tests.skip_foreign_checks = true;
     const agent_setup_ms5_step = b.step("test-agent-setup-ms5", "Run MS5's agent runtime location and setup-gate tests");
     agent_setup_ms5_step.dependOn(&run_agent_setup_ms5_tests.step);
     agent_setup_ms5_step.dependOn(&run_agent_setup_ms5_python_tests.step);
     agent_setup_ms5_step.dependOn(&run_agent_setup_ms5_devtree_tests.step);
+    agent_setup_ms5_step.dependOn(&run_agent_setup_ms5_wiring_tests.step);
     // Chat drawer S7a (revs 16.20.30, 16.20.32): the core in process (callInProcess) and the
     // drawer's read-only broker over it; S7b (rev 16.20.36): its reply boundary and detach.
     var s7a_runs: [7]*std.Build.Step = undefined;
@@ -2194,6 +2216,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_agent_setup_ms5_tests.step);
     test_step.dependOn(&run_agent_setup_ms5_python_tests.step);
     test_step.dependOn(&run_agent_setup_ms5_devtree_tests.step);
+    test_step.dependOn(&run_agent_setup_ms5_wiring_tests.step);
     test_step.dependOn(&run_transport_ws20_tests.step);
     for (s7a_runs) |run| test_step.dependOn(run);
     test_step.dependOn(&automation_api_e2e.step);
@@ -2515,8 +2538,25 @@ fn configureWebView2Backend(module: *std.Build.Module, b: *std.Build, paths: Web
     module.linkSystemLibrary("advapi32", .{ .use_pkg_config = .no });
 }
 
+/// The cross-check's shim argument: one source, or several joined by ':' (macOS: the ObjC shim plus the plain C
+/// files compiled into the exe), passed as absolute paths and each registered as a file input.
+fn addShimArg(b: *std.Build, run: *std.Build.Step.Run, shim: []const u8) void {
+    var parts = std.mem.splitScalar(u8, shim, ':');
+    var joined: std.ArrayList(u8) = .empty;
+    while (parts.next()) |part| {
+        if (joined.items.len > 0) joined.append(b.allocator, ':') catch @panic("OOM");
+        joined.appendSlice(b.allocator, b.pathFromRoot(part)) catch @panic("OOM");
+        run.addFileInput(b.path(part));
+    }
+    run.addArg(joined.items);
+}
+
 fn configureMacosBackend(module: *std.Build.Module, b: *std.Build) void {
     module.addIncludePath(b.path("src"));
+    // macOS plan rev 14 items 4-5 (MS5): the POSIX owner lock and the process-group spawn behind macOS
+    // `--agent-setup` (plain C, compiled into the exe).
+    module.addCSourceFile(.{ .file = b.path("src/agent_home_lock.c"), .flags = &.{"-std=gnu11"} });
+    module.addCSourceFile(.{ .file = b.path("src/agent_spawn_posix.c"), .flags = &.{"-std=gnu11"} });
 
     // MS1b (option d): build the Objective-C shim with the APPLE toolchain (xcrun clang -> ld64) as
     // a separate dylib, NOT compiled into the zig exe. zig 0.16's self-hosted Mach-O linker emits

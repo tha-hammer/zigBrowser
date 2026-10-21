@@ -10,7 +10,7 @@ its real link; this catches it on Linux.
 
 usage: check_cross_symbols.py [--require SYM]... [--require-defined SYM]...
                               [--expect-missing SYM]
-                              <object> <shim source> [<object> <shim> ...]
+                              <object> <shim source[:more sources]> [<object> <shim> ...]
 --require SYM: SYM must be among the symbols the object needs (guards
   against a vacuous pass if the parser or object layout stops exposing
   them).
@@ -190,10 +190,12 @@ def main(argv: list[str]) -> int:
         except (OSError, ValueError, struct.error) as exc:
             print(f"cross-check: {exc}", file=sys.stderr)
             return 2
-        defined = defined_zb_symbols(Path(shim))
+        # One shim source, or several joined by ':' (macOS: the ObjC shim + the plain C files in the exe).
+        defined = set().union(*(defined_zb_symbols(Path(part)) for part in shim.split(":")))
         missing = sorted(needed - defined)
         label = Path(obj).name
-        print(f"cross-check {label}: needs {sorted(needed)} from {Path(shim).name}")
+        shim_names = "+".join(Path(part).name for part in shim.split(":"))
+        print(f"cross-check {label}: needs {sorted(needed)} from {shim_names}")
         absent = [sym for sym in required if sym not in needed]
         if absent:
             failed = True
@@ -210,7 +212,7 @@ def main(argv: list[str]) -> int:
                 print(f"cross-check {label}: self-test expected exactly [{expect_missing!r}] missing, got {missing}", file=sys.stderr)
         elif missing:
             failed = True
-            print(f"cross-check {label}: MISSING in {Path(shim).name}: {missing}", file=sys.stderr)
+            print(f"cross-check {label}: MISSING in {shim_names}: {missing}", file=sys.stderr)
     return 1 if failed else 0
 
 
