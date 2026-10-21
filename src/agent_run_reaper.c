@@ -210,17 +210,23 @@ int zb_reaper_fixed_point(int (*scan)(void *buf, int bytes), const struct zb_rea
   *clean = 0;
   *passes = 0;
   *overflow = 0;
-  /* RED STUB — the plan's named "no-recensus mutant": ONE gather+sweep, then declare clean if that single pass
-   * left no survivors. It never re-censuses, so a process that forks after this pass's gather is never seen.
-   * The green implementation replaces this with the bounded census->kill->fresh-census loop. */
+  /* The bounded census->kill->fresh-census FIXED POINT. Each pass gathers afresh and sweeps; CLEAN is declared
+   * only when a pass matches ZERO pids (kn == 0 && sn == 0) with no overflow — the complete, EMPTY final census.
+   * A pass that killed someone (kn > 0) re-censuses on the next pass, because a marked process may have forked a
+   * child after this pass's gather. Any incomplete/overflow/scan error, or exhausting max_passes, is NOT clean
+   * (the caller keeps the run in Survivors with its authority). */
   enum { CAP = 256 };
-  int killed[CAP], surv[CAP], kn = 0, sn = 0;
-  const int rc = zb_reaper_run_full(scan, ops, dir, 1, killed, CAP, &kn, surv, CAP, &sn, overflow);
-  *passes = 1;
-  if (rc == EOVERFLOW || rc == EIO) return 0; /* not clean, overflow already set */
-  if (rc != 0) return rc;
-  *clean = (sn == 0 && *overflow == 0);
-  return 0;
+  for (int p = 0; p < max_passes; p++) {
+    int killed[CAP], surv[CAP], kn = 0, sn = 0, ov = 0;
+    const int rc = zb_reaper_run_full(scan, ops, dir, 1, killed, CAP, &kn, surv, CAP, &sn, &ov);
+    (*passes)++;
+    if (rc == EOVERFLOW || rc == EIO) { *overflow = 1; return 0; } /* incomplete/scan error: not clean */
+    if (rc != 0) return rc;                                        /* EINVAL etc: propagate */
+    if (ov) { *overflow = 1; return 0; }                           /* a list overflowed its cap: not clean */
+    if (kn == 0 && sn == 0) { *clean = 1; return 0; }              /* complete EMPTY final census: clean */
+    /* kn > 0 and/or sn > 0: matches remained this pass; re-census on the next pass. */
+  }
+  return 0; /* max_passes exhausted without an empty census: *clean stays 0 (Survivors) */
 }
 
 /* ---- macOS production wrappers (libproc + real kill; Mac-only) ---- */

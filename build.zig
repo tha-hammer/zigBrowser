@@ -746,6 +746,20 @@ pub fn build(b: *std.Build) void {
     run_reaper_pin_tests.skip_foreign_checks = true;
     const reaper_pin_step = b.step("test-agent-run-reaper-pin", "MS6.5 run-dir pin + path-swap (Linux, real dirs)");
     reaper_pin_step.dependOn(&run_reaper_pin_tests.step);
+    // MS6.5.1 (plan rev 27, "Clean fixed point"): the bounded census->kill->fresh-census FIXED POINT, proven on
+    // Linux with the kill INTERCEPTED via fake ops (no real signal); a fork-after-gather child must be re-censused
+    // and killed before `clean`. C executable, run inside a user+PID namespace per the rule.
+    const reaper_fp_module = b.createModule(.{ .target = target, .optimize = optimize, .link_libc = true });
+    reaper_fp_module.addCSourceFile(.{ .file = b.path("src/agent_run_reaper.c"), .flags = &.{"-std=gnu11"} });
+    reaper_fp_module.addCSourceFile(.{ .file = b.path("tests/agent_run_reaper_fixed_point_test.c"), .flags = &.{"-std=gnu11"} });
+    reaper_fp_module.addIncludePath(b.path("src"));
+    const reaper_fp_exe = b.addExecutable(.{ .name = "reaper-fixed-point-test", .root_module = reaper_fp_module });
+    const run_reaper_fp_tests = b.addSystemCommand(&.{
+        "unshare", "--user", "--map-root-user", "--pid", "--fork", "--mount-proc", "--",
+    });
+    run_reaper_fp_tests.addArtifactArg(reaper_fp_exe);
+    const reaper_fp_step = b.step("test-agent-run-reaper-fixed-point", "MS6.5.1 census->kill->fresh-census fixed point (fake ops, kill intercepted)");
+    reaper_fp_step.dependOn(&run_reaper_fp_tests.step);
     // MS6.5 (the user's decision 2026-10-21): the stubbed macOS VM-containment seam — off by default, reports
     // "not available yet", and the gate fails closed when on. Pure Linux unit (no OS calls).
     const mac_vm_containment_module = b.createModule(.{
@@ -2658,6 +2672,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_agent_run_reaper_tests.step);
     if (target.result.os.tag == .linux) test_step.dependOn(&run_reaper_engine_tests.step);
     if (target.result.os.tag == .linux) test_step.dependOn(&run_reaper_pin_tests.step);
+    if (target.result.os.tag == .linux) test_step.dependOn(&run_reaper_fp_tests.step);
     test_step.dependOn(&run_mac_vm_containment_tests.step);
     test_step.dependOn(&mac_vm_containment_e2e.step);
     test_step.dependOn(&run_agent_secrets_tests.step);
