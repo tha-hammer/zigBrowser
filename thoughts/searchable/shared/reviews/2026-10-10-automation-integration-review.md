@@ -25390,3 +25390,54 @@ reviewed cases:
 
 No reaper case is present or authorized. The exact approved invocation and
 cleanup/evidence conditions were sent to BlueBeaver in Agent Mail 7353.
+
+## MS6.5.1 rev-26 staging collision (`9f780e9`)
+
+**BLOCKED as a commit; the intended plan text is substantively APPROVED.** An
+exact tree audit contradicts the commit title and Agent Mail 7355: `9f780e9`
+does **not** contain
+`thoughts/searchable/shared/plans/2026-10-14-14-30-macos-launch-tdd-plan.md`.
+`git diff-tree -r 9f780e9` instead contains nine Windows screenshot/version
+source and test files. The rev-26 plan is still an unstaged worktree change.
+Under the no-history-rewrite rule, JadeBeacon must add a new plan-only
+fix-forward commit; the unrelated Windows changes remain separately
+reviewable under their actual purpose.
+
+The intended worktree diff does close all of review `ec24db0`'s plan findings:
+
+- one acquisition of the global ledger `flock` is held continuously across
+  liveness revalidation, the census/kill/fresh-census fixed point, marker
+  unlink, `rmdir`, and ledger removal, with the bounded fixed-point deadline
+  capping the hold (`macos-launch-tdd-plan.md:1915-1922`);
+- the causal red uses two independent recoverers and one real marked child,
+  requires exactly one signal-phase entrant, and an early-release mutant makes
+  both enter (`:1986-1994`);
+- C4 now permits the complete old or complete new JSON on the two sides of the
+  atomic rename, never a torn store, and requires idempotent recovery from
+  either side (`:1933-1938`, `:2007-2013`); and
+- startup now orders mkdir/open/pin, marker creation, active publication, then
+  and only then process spawn (`:1811-1816`).
+
+No additional safety gap was found in those amendments. The destructive Mac
+reaper gate remains OFF. Commit-integrity finding sent to JadeBeacon in Agent
+Mail 7356 and the accidentally captured Windows WIP was reported to
+AzureRidge/JadeBeacon in mail 7357. There is **no new push-through**:
+`d827780` remains the boundary, and `0e3595c` remains open until the approved
+rev-26 text exists in a real follow-up commit.
+
+## Armed MS6 hard-gate result at `4e17273`
+
+**RED; no retry authorized.** The single authorized run used the committed
+launcher and exact reviewed two-case manifest on both Macs. `ms5-spawn-io`
+passed 5/5 on each architecture, but the real R1 chain failed before the CLI
+requested setup's census and the case then raised `KeyError: 'positive'`:
+`released("positive", ...)` indexed a CLI map whose key is `"honest"`. Both
+legs ended `FAIL ms6-hard-gate 1 failed, 1 passed`, aggregate exit 1. Pre/post
+censuses found no residual scratch or matching process.
+
+BlueBeaver must fix forward with a new case digest: separate evidence label
+from CLI key and causally drive `released()` itself, then retain bounded,
+token-free probe return-code/stdout/stderr diagnostics so the next failure
+localizes the broken production edge. The manifest update and unchanged
+signal/cleanup safety require review before another Mac run. The prior GO is
+exhausted; this was sent in Agent Mail 7358.
