@@ -20892,3 +20892,36 @@ both Macs and fail for the intended missing census seam rather than interpreter
 death. Exact-SHA shell syntax and Python compilation passed. No full gate was
 run because BlackRobin owns the slot. Findings mailed to BlueBeaver, cc
 JadeBeacon, in Agent Mail 7050.
+
+## MS6.5 red hardening (`e4540a7`)
+
+Reviewed exact test-only follow-up `e4540a7` on 2026-10-20. **Verdict:
+still BLOCKED-for-tests.** It correctly replaces the shell cleanup, treats
+non-`ESRCH` `kill(pid, 0)` failures as live/unknown, requires the arm64 host,
+supports a separate arm64 key, and corrects every comment and disposition to
+say a post-death descendant walk cannot close the launchd-reparenting escape.
+The test remains red and unregistered, as required while MS6.5 is unmet.
+
+Three cleanup/liveness defects remain:
+
+1. **BLOCKER-for-tests:** `trusted_reap` can miss a late ready-file publish.
+   It reads `ready` once; the escapee can rename `.esc` to `ready` immediately
+   after that read; cleanup then unlinks the file without learning the PID.
+   The process can remain alive for the rest of its 20-second TTL after the
+   test returns. A bounded self-TTL prevents an indefinite orphan but does not
+   prove the promised zero survivors at return. Use a trusted PID/control
+   channel that cannot race the assertion file, or synchronously wait/reap
+   through the bound. Add a deterministic late-publish case and an immediate
+   zero-canary assertion.
+2. **BLOCKER-for-tests:** after `kill(pid, 0)==0` proves the PID exists,
+   `alive()` still reports it dead when `/bin/ps` produces no bytes, exits
+   unsuccessfully, or produces malformed output. Only a confirmed zombie may
+   count as non-running; every `popen`/read/`pclose` anomaly must remain
+   live/unknown. Add deterministic error-path rows.
+3. **BLOCKER (cleanup verification):** `trusted_reap` ignores all `unlink` and
+   `rmdir` results. `ENOENT` may be accepted, but any other failure must fail
+   the test so a leftover directory cannot coexist with a passing cleanup
+   path.
+
+No remote Mac or full gate was rerun because BlackRobin owns the shared slot.
+Findings mailed to JadeBeacon, cc BlueBeaver, in Agent Mail 7052.
