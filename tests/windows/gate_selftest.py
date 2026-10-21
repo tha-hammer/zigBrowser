@@ -175,7 +175,11 @@ def generate_paths(user: str):
 
 class _GateCase(unittest.TestCase):
     def _run_gate(self, env_overrides, bindir, args=None, home=None):
-        env = {"PATH": bindir + os.pathsep + _BASE_PATH, "HOME": home or "/nonexistent-zb-home"}
+        # ZB_GATE_ROOT pins the repo root explicitly so the gate resolves it WITHOUT git — the suite must be
+        # green from a clean git-archive export (no .git), not only from a checkout (RoseCat 7335). An
+        # override can still unset it (the negative no-root test builds its own env instead).
+        env = {"PATH": bindir + os.pathsep + _BASE_PATH, "HOME": home or "/nonexistent-zb-home",
+               "ZB_GATE_ROOT": str(REPO)}
         env.update(env_overrides)
         # Direct invocation: with gate.sh absent this raises FileNotFoundError (the red).
         return subprocess.run(
@@ -592,9 +596,10 @@ class RootResolutionTests(_GateCase):
             self.assertNotEqual(proc.returncode, 0, "a non-git export without ZB_GATE_ROOT must fail closed" + detail)
             self.assertIn("cannot resolve a repo root", proc.stderr, detail)
 
-    def test_explicit_gate_root_resolves(self):
-        # With ZB_GATE_ROOT set (git not consulted), root resolution succeeds; the gate then fails LATER
-        # for a different reason (no host configured), proving it got past root resolution.
+    def test_explicit_gate_root_resolves_then_fails_on_no_host(self):
+        # With ZB_GATE_ROOT set (git not consulted) from a non-git cwd, root resolution succeeds; the gate
+        # then fails LATER for the EXACT downstream reason (no Windows host configured), proving it got past
+        # root resolution and into the real checks.
         with tempfile.TemporaryDirectory() as t:
             proc = subprocess.run([str(GATE), "--probe-only"], cwd=t,
                                   env={"PATH": _BASE_PATH, "HOME": t, "ZB_GATE_ROOT": str(REPO)},
@@ -602,6 +607,9 @@ class RootResolutionTests(_GateCase):
             detail = f"\nrc={proc.returncode}\nstdout:\n{proc.stdout}\nstderr:\n{proc.stderr}"
             self.assertNotIn("cannot resolve a repo root", proc.stderr,
                              "an explicit ZB_GATE_ROOT must resolve the root" + detail)
+            self.assertNotEqual(proc.returncode, 0, "no host configured must still fail" + detail)
+            self.assertIn("NOT RUN: no Windows host configured", proc.stderr,
+                          "resolution must reach the exact downstream no-host failure" + detail)
 
     def test_explicit_root_without_gate_is_rejected(self):
         # A ZB_GATE_ROOT that does not contain tests/windows/gate.sh must fail closed (not a blind cd).
