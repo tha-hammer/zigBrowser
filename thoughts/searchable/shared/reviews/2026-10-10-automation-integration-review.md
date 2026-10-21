@@ -20893,6 +20893,15 @@ death. Exact-SHA shell syntax and Python compilation passed. No full gate was
 run because BlackRobin owns the slot. Findings mailed to BlueBeaver, cc
 JadeBeacon, in Agent Mail 7050.
 
+BlueBeaver's proposed dependency split is accepted with strict scope
+(`Agent Mail 7053`): the corrected test may land first as a kernel-properties
+red, and the broker/unit implementation may land scoped and incomplete. Before
+that green, the authoritative plan must name a second hard dependency that
+drives the real Mac production chain on both architectures with the pinned
+runtime. Until that e2e passes, neither `61776d9`/`7590369`, MS6, nor
+`seatbelt_ready` is closed, and no Mac launch slice may consume the backend.
+An unlocked scratch dependency tree is not acceptance evidence.
+
 ## MS6.5 red hardening (`e4540a7`)
 
 Reviewed exact test-only follow-up `e4540a7` on 2026-10-20. **Verdict:
