@@ -19608,3 +19608,72 @@ Python and Node 24 boundary probes passed for all 15 codes plus `-32016`,
 held the shared slot; BlackRobin's mail 6920 reports the server 55/55, queue
 12/12, install and cross-check green. The blocker and scoped verdict were
 mailed to BlackRobin.
+
+## Chat drawer S8 approval design, rev 16.20.39 (`4a4c6d7`)
+
+Reviewed exact docs commit `4a4c6d7` on 2026-10-20 against the five blockers
+on rev 16.20.38 and the current automation implementation. **Verdict:
+BLOCKED.** The new A/B/C load phases correctly stop comparing the old
+document serial after the approved navigation; the document token binds later
+steps to the new document; the nine-preview count and story-view exclusion now
+agree; and the revision names concrete, fail-closed thread-header recipient
+sources. Four security/contract gaps remain:
+
+1. **BLOCKER — the claimed same-task atomicity ignores synchronous page event
+   handlers.** `plan:3085-3091` says page script cannot interleave with the
+   isolated-world task and checks an expectation once immediately before an
+   action. In production, however, `automation.js:919-955` calls
+   `dispatchEvent` repeatedly: click sends five events, type sends events per
+   character, and fill/select send input then change. Each `dispatchEvent`
+   synchronously runs the untrusted page's handlers before the function
+   continues. A `pointerdown`, `keydown`, `beforeinput` or `input` handler can
+   change the account/recipient or replace state before the later committing
+   event, while the one pre-action check still passes. Define the guarded
+   action primitive so it rechecks the document/account/recipient/target
+   before every low-level event or mutation that follows a page callback, and
+   add reds where a page handler changes each marker during `pointerdown` and
+   during the first typed character. The test must prove no later event or
+   Send occurs; it must report partial input honestly when an earlier event
+   already ran.
+2. **BLOCKER — the recipient source does not exist before every mutation in
+   profile-originated message flows.** `plan:3086-3092,3112-3117` requires the
+   thread-header recipient on every action, but `linkedin.message` first
+   clicks the profile's Message control (`src/linkedin.zig:355-363`) and
+   `instagram.dm` first clicks Message on the profile
+   (`src/instagram.zig:171-175`); those clicks create/open the composer whose
+   thread header contains `message_input`/`dm_input`. Specify staged identity:
+   before opening the composer, bind the exact unique visible profile owner to
+   the approved recipient; after it opens, bind the exact unique visible
+   thread recipient before every text/edit/Send event. Conversation-URL
+   LinkedIn can start at the second stage. Reds need a wrong profile owner
+   before the opener click and a wrong thread owner after it. The blanket
+   `__input == []` assertion must be stage-aware: the latter case may include
+   the approved opener click but must contain no typing or Send. Apply the
+   same exactly-one-visible/non-hidden rule to every DOM account marker, not
+   only the recipient and Instagram nav link.
+3. **BLOCKER — post-approval cancellation has no state/outcome contract.** The
+   prompt rule at `plan:3095` says result, error, Stop and `session_ended`
+   revoke an open card, including a running approved job. The state machine at
+   `:3107-3110` permits `revoked/closed/crashed` only while consent is pending;
+   after `approved`, it lists only run outcomes and tests only mismatch and
+   timeout. Define what Stop, prompt end, session end, window close and crash
+   do after approval but before the first mutation and between flow steps;
+   specify cancellation of the queued/running engine job, whether the terminal
+   row is `revoked`, `closed`, `crashed` or `unknown` after partial input, and
+   force each ordering. Every card still needs exactly one `approvalend` and
+   no dispatch after cancellation wins.
+4. **BLOCKER — the plan's authoritative contracts still disagree.** D10 at
+   `plan:518` omits story-view from “no dry run”; `:522,524-527` still binds
+   cloneable `target_fp` and checks only a flow's committing step; S8.2 at
+   `:3002` labels close/crash `expired`; S8.6 and T5 at `:3020-3025,1434`
+   still specify `target_fp`; map F at `:1419` still has broker-side
+   `revalidate`; and the files-touched list at `:3045` still assigns checks to
+   `flow_steps`/`engine` rather than the action's `automation.js` task. Most
+   importantly, the canonical D7b observation table at `:450-474` contains
+   only `DRAWER approval`; it defines neither `approvalrect`, `approvalstate`
+   nor `approvalend`, even though D7b is the plan's exact row schema. Rewrite
+   these instead of relying on “S8 in detail wins,” and bind the table/count
+   tests to the one canonical contract.
+
+The docs diff passes `git diff --check`. No build, browser, display, live site
+or credential was used. Findings and required reds were mailed to BlackRobin.
