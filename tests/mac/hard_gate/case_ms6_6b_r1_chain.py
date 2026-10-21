@@ -183,6 +183,9 @@ def _port_free(port):
     return True
 
 
+_PS_ROW = re.compile(r"([0-9]+)\s+(-?[0-9]+)\s+(\S+)")  # pid, uid (macOS shows nobody as -2), stat
+
+
 def _chain_alive(h, proc_darwin, cli, markers):
     """(inspected, alive, unreadable) over OUR processes (an orphaned chain member is no longer setup's descendant, so
     the whole table is read; ps runs through the guarded h.spawn_group). Alive: a process running `cli`
@@ -195,10 +198,10 @@ def _chain_alive(h, proc_darwin, cli, markers):
         return False, [], []
     alive, unreadable = [], []
     for line in out.decode(errors="replace").splitlines():
-        parts = line.split()
-        if len(parts) != 3 or not parts[0].isdigit() or not parts[1].isdigit():
+        m = _PS_ROW.fullmatch(line.strip())
+        if m is None:
             return False, [], [line]
-        pid, uid, stat = int(parts[0]), int(parts[1]), parts[2]
+        pid, uid, stat = int(m.group(1)), int(m.group(2)), m.group(3)
         if uid != os.getuid() or pid == os.getpid() or stat.startswith("Z"):
             continue
         try:
