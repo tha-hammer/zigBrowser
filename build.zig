@@ -702,6 +702,20 @@ pub fn build(b: *std.Build) void {
         "sh", "-c", "setsid tests/kill_group/run_linux.sh",
     });
     agent_host_posix_spawn_step.dependOn(&kill_group_tests.step);
+    // MS6.5 (the user's decision 2026-10-21): the run-survivor classification core, src/agent_run_reaper.c.
+    // Pure, no OS calls (the libproc sweep + guarded kill land with the both-Mac case), so a plain run artifact.
+    const agent_run_reaper_module = b.createModule(.{
+        .root_source_file = b.path("tests/agent_run_reaper_test.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    agent_run_reaper_module.addCSourceFile(.{ .file = b.path("src/agent_run_reaper.c"), .flags = &.{"-std=gnu11"} });
+    agent_run_reaper_module.addIncludePath(b.path("src"));
+    const run_agent_run_reaper_tests = b.addRunArtifact(b.addTest(.{ .root_module = agent_run_reaper_module }));
+    run_agent_run_reaper_tests.skip_foreign_checks = true;
+    const agent_run_reaper_step = b.step("test-agent-run-reaper", "MS6.5 run-survivor classification core");
+    agent_run_reaper_step.dependOn(&run_agent_run_reaper_tests.step);
     // MS6.5 (the user's decision 2026-10-21): the stubbed macOS VM-containment seam — off by default, reports
     // "not available yet", and the gate fails closed when on. Pure Linux unit (no OS calls).
     const mac_vm_containment_module = b.createModule(.{
@@ -2452,6 +2466,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_agent_net_manifest_tests.step);
     test_step.dependOn(&run_agent_host_posix_tests.step);
     test_step.dependOn(&run_agent_host_posix_spawn_tests.step);
+    test_step.dependOn(&run_agent_run_reaper_tests.step);
     test_step.dependOn(&run_mac_vm_containment_tests.step);
     test_step.dependOn(&mac_vm_containment_e2e.step);
     test_step.dependOn(&run_agent_secrets_tests.step);
