@@ -6,7 +6,12 @@ the entry's NOT ARMED refusal, observed.
   takes a child that outlived the leader, and only then reaps. close() never signals a group spawn_group already
   reaped. Tests: a normal run (output, one group kill), a timeout (None, bounded, no survivor), a child outliving the
   leader (killed), 3 MB of output (no deadlock), close() twice (no extra signal), and, at the moment of the group
-  kill, the leader is not yet reaped (/proc/<pgid> still exists).
+  kill, the leader is not yet reaped (/proc/<pgid> still exists; on Darwin, kill(pgid, 0) still succeeds).
+- The same tests again with os.waitid REMOVED (bead zigBrowser-a2t): the app bundles python.org CPython 3.12, which
+  has no os.waitid on macOS (it arrived there in 3.13), so spawn_group must wait for the leader without reaping it
+  through kqueue EVFILT_PROC NOTE_EXIT, with the same exactly-once, kill-while-unreaped invariant. Darwin only (Linux
+  has no kqueue); tests/mac/ms6_harness_mac_gate.sh runs this module on both Macs and requires no skip.
+- With neither os.waitid nor select.kqueue, spawn_group refuses (RuntimeError) before spawning anything.
 - tests/mac/ms6_hard_gate.sh, NOT ARMED with the pins absent and with pins present but staging absent: exit 3, "NOT
   ARMED", and recording ssh/scp/sftp/curl/nc/rsync shims (first on PATH, canary hosts in every host variable) see no
   call at all.
@@ -15,6 +20,7 @@ Run like the gate: cd tests/e2e && python3 -X dev -m unittest -v ms6_hard_gate_h
 green.
 """
 import os
+import select
 import shutil
 import subprocess
 import sys
@@ -44,9 +50,13 @@ class SpawnGroup(unittest.TestCase):
         real = os.killpg
 
         def counting_killpg(pgid, sig):
-            # The leader must still be unreaped when its group is signalled: /proc/<pgid> exists (alive or zombie),
-            # so the pgid cannot have been reused by an unrelated group.
-            self.kills.append((pgid, sig, os.path.exists(f"/proc/{pgid}")))
+            # The leader must still be unreaped when its group is signalled: it exists (alive or zombie), so the
+            # pgid cannot have been reused by an unrelated group.
+            self.kills.append((pgid, sig, self.exists(pgid)))
+            # Never pass anything but a real child pgid to the real killpg: killpg(1) is kill(-1), every process of
+            # the user (2026-10-21: a mocked pid logged the user out twice).
+            if type(pgid) is not int or pgid <= 1 or pgid == os.getpgrp():
+                raise AssertionError(f"refusing a real killpg({pgid!r}): not a child's own group")
             return real(pgid, sig)
 
         from unittest import mock
@@ -56,11 +66,26 @@ class SpawnGroup(unittest.TestCase):
         self.h = self.harness.Harness(self.scratch)
 
     @staticmethod
+    def exists(pid):
+        """The process exists, alive or an unreaped zombie (Linux: /proc; Darwin: kill(pid, 0), which succeeds on a
+        zombie there too, measured on both Macs)."""
+        if sys.platform == "darwin":
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                return False
+            return True
+        return os.path.exists(f"/proc/{pid}")
+
+    @staticmethod
     def alive(pid):
         try:
             os.kill(pid, 0)
         except ProcessLookupError:
             return False
+        if sys.platform == "darwin":
+            stat = subprocess.run(["/bin/ps", "-o", "stat=", "-p", str(pid)], capture_output=True, text=True).stdout
+            return stat.strip() != "" and not stat.strip().startswith("Z")
         with open(f"/proc/{pid}/stat") as f:
             return f.read().rsplit(")", 1)[1].split()[0] != "Z"
 
@@ -97,11 +122,79 @@ class SpawnGroup(unittest.TestCase):
         self.assertEqual((code, len(out)), (0, 3000000))
 
     def test_close_never_signals_a_group_spawn_group_already_reaped(self):
-        self.h.spawn_group(["/bin/true"], timeout=10)
+        self.h.spawn_group(["/usr/bin/true"], timeout=10)
         before = list(self.kills)
         self.h.close()
         self.h.close()
         self.assertEqual(self.kills, before, "exactly once: close() leaves an already-reaped group alone")
+
+
+def remove_attr(tc, obj, name):
+    """Hide obj.name for this test (as on an interpreter without it), restored afterwards."""
+    if hasattr(obj, name):
+        saved = getattr(obj, name)
+        delattr(obj, name)
+        tc.addCleanup(setattr, obj, name, saved)
+
+
+def import_harness(tc):
+    sys.path.insert(0, str(DRIVER.parent))
+    tc.addCleanup(sys.path.remove, str(DRIVER.parent))
+    import importlib
+    return importlib.import_module("harness")
+
+
+class SpawnGroupWithoutWaitid(SpawnGroup):
+    """Bead zigBrowser-a2t: every SpawnGroup test again, on the bundled CPython 3.12's macOS surface (no os.waitid).
+    The leader wait goes through kqueue EVFILT_PROC NOTE_EXIT, which never reaps."""
+
+    def setUp(self):
+        if not hasattr(select, "kqueue"):
+            self.skipTest("no kqueue here: the no-waitid path is Darwin's (CPython 3.12 on macOS)")
+        super().setUp()
+        remove_attr(self, os, "waitid")
+        self.kqueues = 0
+        real = select.kqueue
+
+        def counting_kqueue():
+            self.kqueues += 1
+            return real()
+        from unittest import mock
+        patcher = mock.patch.object(select, "kqueue", side_effect=counting_kqueue)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_the_leader_wait_goes_through_kqueue(self):
+        self.assertFalse(hasattr(os, "waitid"))
+        code, out, _ = self.h.spawn_group(["/bin/sh", "-c", "sleep 0.2; echo late"], timeout=10)
+        self.assertEqual((code, out), (0, b"late\n"))
+        self.assertGreaterEqual(self.kqueues, 1, "without os.waitid the leader is awaited through kqueue")
+        self.assertEqual(len(self.group_kills()), 1, self.kills)
+
+
+class SpawnGroupWithNeither(unittest.TestCase):
+    """With neither os.waitid nor select.kqueue there is no way to wait without reaping: refuse before spawning."""
+
+    def test_spawn_group_refuses_before_spawning_anything(self):
+        harness = import_harness(self)
+        remove_attr(self, os, "waitid")
+        remove_attr(self, select, "kqueue")
+        scratch = tempfile.mkdtemp(prefix="zb-hardgate-sg-")
+        self.addCleanup(shutil.rmtree, scratch, True)
+        from unittest import mock
+        # Popen is mocked to RAISE, so no fake process (and no MagicMock pid, which indexes as 1: killpg(1) is kill(-1),
+        # every process of the user) can ever exist here; and no signal may reach the kernel from this test.
+        no_signal = AssertionError("a signal was sent from a test whose Popen is mocked")
+        with mock.patch.object(harness.os, "killpg", side_effect=no_signal) as killpg, \
+                mock.patch.object(harness.os, "kill", side_effect=no_signal) as kill, \
+                mock.patch.object(harness.subprocess, "Popen", side_effect=AssertionError("spawned")) as popen:
+            with self.assertRaises(RuntimeError) as cm:
+                harness.Harness(scratch).spawn_group(["/usr/bin/true"], timeout=5)
+        killpg.assert_not_called()
+        kill.assert_not_called()
+        self.assertIn("waitid", str(cm.exception))
+        self.assertIn("kqueue", str(cm.exception))
+        popen.assert_not_called()
 
 
 class Gate(unittest.TestCase):
