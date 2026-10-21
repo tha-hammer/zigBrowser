@@ -3,8 +3,10 @@
   python whose argv (proc_darwin.environ_of gives list[bytes]) names one of the row's markers, is alive; a failed or
   unparsable ps is not inspected; a read that fails while the pid has not vanished is unreadable; other users' pids,
   our own pid and zombies are skipped (never read);
-- _chain_release re-inspects after a non-clean first scan (a survivor, an unreadable pid, a failed ps) until a clean,
-  empty scan or the row's self-exit horizon, and never only on `alive` (7306 #2).
+- _chain_release returns (faults, survivors, last). Every scan that was not inspected or listed an unreadable pid is a
+  sticky fault, kept even when a later scan is clean (RoseCat 7312); a survivor still alive after CHAIN_GRACE_S is a
+  survivor; either way the chain is re-inspected (never signalled) until a clean, empty scan or the row's self-exit
+  horizon, and `last` is that final scan.
 No process is started and no signal is sent: h.spawn_group and proc_darwin are fakes, the clock is fake, and os.kill /
 os.killpg are patched to raise.
 Run like the gate: cd tests/e2e && unshare --user --map-root-user --pid --fork --mount-proc \\
@@ -127,8 +129,8 @@ class ChainRelease(NoSignals):
         def sleep(s):
             now[0] += s
 
-        first, last = self.case._chain_release(scan, started_at, clock=lambda: now[0], sleep=sleep)
-        return first, last, seen
+        faults, survivors, last = self.case._chain_release(scan, started_at, clock=lambda: now[0], sleep=sleep)
+        return faults, survivors, last, seen
 
     CLEAN = (True, [], [])
     SURVIVOR = (True, [(77, CLI)], [])
@@ -136,22 +138,41 @@ class ChainRelease(NoSignals):
     NO_PS = (False, [], [])
 
     def test_a_clean_first_scan_ends_at_once(self):
-        first, last, seen = self.release([self.CLEAN])
-        self.assertEqual((first, last, len(seen)), (self.CLEAN, None, 1))
+        self.assertEqual(self.release([self.CLEAN])[:3], ([], [], self.CLEAN))
+        self.assertEqual(len(self.release([self.CLEAN])[3]), 1)
 
-    def test_every_non_clean_first_scan_is_drained_to_a_clean_scan(self):
-        for bad in (self.SURVIVOR, self.UNREADABLE, self.NO_PS):
+    def test_a_transient_fault_stays_a_fault_and_the_drain_still_completes(self):
+        for bad in (self.UNREADABLE, self.NO_PS):
             with self.subTest(first=bad):
-                first, last, seen = self.release([bad] * 40 + [self.CLEAN])
-                self.assertEqual(first, bad, "the first scan reports the failure")
-                self.assertEqual(last, self.CLEAN, "re-inspected past the grace period until a clean, empty scan")
-                self.assertGreater(seen[-1], self.case.CHAIN_GRACE_S)
+                faults, survivors, last, seen = self.release([bad, self.CLEAN])
+                self.assertEqual(faults, [bad], "the failed first inspection is kept as row-failure evidence")
+                self.assertEqual((survivors, last, len(seen)), ([], self.CLEAN, 2), "re-inspected to a clean scan")
+
+    def test_a_fault_anywhere_in_the_drain_is_kept(self):
+        faults, _survivors, last, _seen = self.release([self.SURVIVOR, self.SURVIVOR, self.NO_PS, self.CLEAN])
+        self.assertEqual((faults, last), ([self.NO_PS], self.CLEAN))
+
+    def test_a_survivor_that_ends_within_the_grace_is_no_failure(self):
+        faults, survivors, last, seen = self.release([self.SURVIVOR] * 3 + [self.CLEAN])
+        self.assertEqual((faults, survivors, last), ([], [], self.CLEAN))
+        self.assertLess(seen[-1], self.case.CHAIN_GRACE_S)
+
+    def test_a_survivor_past_the_grace_is_a_survivor_and_is_waited_out(self):
+        faults, survivors, last, seen = self.release([self.SURVIVOR] * 40 + [self.CLEAN])
+        self.assertEqual((faults, survivors, last), ([], [(77, CLI)], self.CLEAN))
+        self.assertGreater(seen[-1], self.case.CHAIN_GRACE_S)
 
     def test_the_drain_is_bounded_by_the_rows_horizon(self):
-        first, last, seen = self.release([self.UNREADABLE], started_at=1000.0)
+        faults, _survivors, last, seen = self.release([self.UNREADABLE], started_at=1000.0)
         self.assertEqual(last, self.UNREADABLE)
+        self.assertTrue(faults)
         self.assertLessEqual(seen[-1], 1000.0 + self.case.CHAIN_HORIZON_S)
         self.assertGreaterEqual(seen[-1], 1000.0 + self.case.CHAIN_HORIZON_S - 1)
+
+    def test_a_late_row_still_gets_its_full_grace(self):
+        """A row that ran past its horizon (the hang row's probe can take ~90 s) still gets CHAIN_GRACE_S."""
+        faults, survivors, last, seen = self.release([self.SURVIVOR] * 5 + [self.CLEAN], started_at=-95.0)
+        self.assertEqual((faults, survivors, last), ([], [], self.CLEAN))
 
 
 if __name__ == "__main__":
