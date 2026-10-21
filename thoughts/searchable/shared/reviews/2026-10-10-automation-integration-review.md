@@ -24222,3 +24222,67 @@ concurrency rule rests on a time heuristic:
 The separate-GC and append-only-publish direction is otherwise sound. No VM was
 touched. Findings were sent to AzureRidge, copying BlueBeaver, in Agent Mail
 7277.
+
+## Windows `current/` documentation follow-up (`82e339b`)
+
+**BLOCKED, docs-only.** The commit corrects four live-run command examples to
+the `zig-out/win/current/zigBrowser.exe` surface, but
+`tests/e2e/win_transport_test.py:29` still says that its VM leg fetches
+`zig-out/win/zigBrowser.exe`. That stale sentence immediately precedes the
+correct command and leaves the same consumer contract self-contradictory.
+Verdict sent to AzureRidge in Agent Mail 7279.
+
+## Guarded contenteditable and selectorless press follow-up (`1e0ef65`)
+
+**APPROVED.** The contenteditable path counts a character only after
+`execCommand` reports success, a real input event was observed, the target is
+still connected and its HTML actually changed. A refused `execCommand` gates
+again before the range fallback; cancelled, detached and noneditable paths
+neither fabricate input nor over-report inserted characters. The router also
+rejects `guard.target` on selectorless `dom.press`. The new live and Zig tests
+are registered additively. BlackRobin's combined private-Xvfb gate passed
+343/343 steps and 1143/1145 tests (two skips). Verdict sent in Agent Mail 7280.
+
+## Guarded `dom.type` one-action follow-up (`52cfb6c`)
+
+**BLOCKED-for-tests.** The production direction is sound: later chunks carry
+stable target/document tokens, check the shared deadline before dispatch,
+preserve ambiguous progress as `sent_at_least`, exclude internal chunks from
+retry accounting, and reject `delay_ms` when guarded. Four requested oracles
+remain absent:
+
+1. deadline and ambiguous-failure rows assert only 48 characters, not the
+   exact 48 dispatched events;
+2. the first-call omission row checks only `chunk_target`, not
+   `chunk_document`;
+3. no row covers missing, empty or wrong-type target/document acknowledgements;
+4. `sent_at_least` is documented only in the how-to, not the authoritative
+   plan/schema and SDK-facing error contract.
+
+Verdict sent to BlackRobin in Agent Mail 7280.
+
+## Hard-gate committed-launcher entry (`52939c7`, `b37e1be`)
+
+**APPROVED.** This closes the remaining launcher-provenance blocker on
+`ac5e9bf`. Exact clean-export replay inside a private user/PID namespace gave
+the advertised failing-first result at `52939c7`: the entry suite failed 14
+rows and the harness failed its two Gate rows. At `b37e1be`, the entry passed
+19/19 and the harness passed all 14 Linux rows (six Darwin-only skips).
+
+The supported entry now obtains its shell program directly from the named
+commit:
+
+```sh
+bash -c "$(git show <rev>:tests/mac/ms6_hard_gate.sh)" ms6-hard-gate <rev>
+```
+
+Direct-file execution refuses before setup or network. In committed-text mode,
+the script resolves the revision and compares `BASH_EXECUTION_STRING` with the
+resolved commit's launcher before making its temporary tree, exporting or
+touching the network. The old post-execution `$0`/`cmp` check is gone. The exact
+dirty-working-tree curl probe is never executed, while altered text and a later
+launcher's text paired with an older commit are refused offline. No Mac or live
+browser was touched. NIT: the Python fixture's `git()` helper uses `.strip()`
+where shell command substitution removes trailing newlines only; the current
+committed launcher has no terminal spaces, so this does not affect the result.
+Verdict sent to BlueBeaver in Agent Mail 7281.
