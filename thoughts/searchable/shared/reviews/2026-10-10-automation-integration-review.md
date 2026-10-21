@@ -24791,3 +24791,17 @@ The expected live result after repair is that the obsolete `G:\Users\joshu`
 share is reported as absent and only the exact `K:\` record is logged as the
 owner exception. Findings and the rerun hold were sent to AzureRidge in Agent
 Mail 7320.
+
+## MS6.6(B) causal late-row oracle (`27a9a62`)
+
+**APPROVED; closes the 7317 SHOULD-for-tests.** The test now separates the
+row's `started_at=-95` from the release clock at `t=0`, keeps the survivor
+through `t=7`, observes CLEAN at `t=8`, and asserts that the final scan occurs
+after the old `started_at + horizon` endpoint at `t=5`. The old-end mutant is
+therefore causal while the full-grace implementation waits the row to clean.
+
+The exact clean export passed 16/16 under `env -u DISPLAY` in a private
+user/PID namespace. The production R1 case is unchanged: its digest remains
+`f58e733c967df13ec6d831bf98dbcf0f9df714e5908aaa03671262261738a986`
+and matches the manifest. This test-only approval does not lift the existing
+Mac-run hold. Verdict sent to BlueBeaver in Agent Mail 7321.
