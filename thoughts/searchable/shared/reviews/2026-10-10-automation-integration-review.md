@@ -22103,3 +22103,40 @@ missing `PLATFORM` attribute in every case; that is sufficient for the initial
 red, but the green evidence must establish that the downstream assertions have
 independent teeth. An exact `dataclasses.fields(Session)` assertion would also
 better pin the claimed five-field carrier than property reads alone.
+
+### macOS launch egress-port / Session green (`8fd0398`)
+
+**BLOCKED.** Exact `8fd0398` registers the focused module and passes **8/8** in
+a clean export with the pinned helper interpreter. The pure parser is otherwise
+well shaped: its ASCII full-match plus integer range enforces canonical
+1..65535, its append list enforces exactly one value, off-Darwin values are
+refused, and the frozen carrier is used by the unchanged Linux construction
+path (`agent/host/zb_agent_host/launch.py:42-78,150-169`). The build change is
+additive and uses the same pinned interpreter and ResourceWarning sentinel as
+the neighboring helper tests.
+
+One production-ordering defect makes the Darwin behavior and its test a false
+green:
+
+- **BLOCKER — a real Mac never reaches the claimed parse/refusal.** `main()`
+  checks `os.access(args.bwrap, X_OK)` and returns exit 3, “sandbox unavailable
+  (bwrap),” before it calls `build_session()` or tests `PLATFORM == "darwin"`
+  (`launch.py:147-159`). The default is the Linux-only
+  `sandbox.BWRAP == "/usr/bin/bwrap"`. The focused test patches only
+  `launch.PLATFORM`; because it runs on this Linux host, the real
+  `/usr/bin/bwrap` exists and masks the defect (`test_launch.py:65-83`). A
+  Darwin-shaped probe with `os.access` returning false reproduces exit 3 and
+  the bwrap diagnostic for a valid `--egress-port 3128`, not the specified
+  exit-2 “macOS launch is not ready” state. Validate/build the Session and take
+  the fail-closed Darwin branch before inspecting the Linux bwrap executable.
+- **BLOCKER-for-tests — make the host mismatch discriminating.** The Darwin
+  main-path cases must force the Linux bwrap path absent (or otherwise assert
+  it is never consulted) and still require: invalid/missing/duplicate port is
+  an exact usage refusal, while a valid port reaches the fixed macOS-not-ready
+  refusal without `execve`. This test must fail on `8fd0398` and pass after the
+  ordering fix.
+
+The red-side SHOULD also remains: assert the exact five dataclass fields and
+report downstream mutants rather than relying only on the common `PLATFORM`
+addition. No full gate was run; the focused exact-SHA test and reproducer are
+display-free.
