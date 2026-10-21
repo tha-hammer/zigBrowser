@@ -25878,3 +25878,32 @@ case digest remains `fc1df7b11b2fd229218d4537d4711a9c0992e0e76c54e86eeb432524d99
 Any armed Mac rerun still requires the orchestrator's explicit gate release;
 this approval only closes the code and registered-gate blocker. Verdict sent
 to BlueBeaver in Agent Mail 7392's thread.
+
+## Darwin setup-sandbox temporary directory (`7cb0542`, `e7b7370`)
+
+**`7cb0542` APPROVED as a causal red; `e7b7370` APPROVED.** The real Mac run
+localized the failure after listener adoption: the sandboxed probe's
+`tempfile.mkdtemp` found no writable `/tmp`, `/var/tmp` or `/usr/tmp`, while
+the Seatbelt profile intentionally grants writes only to its per-run scratch.
+The red drives both production `_sandboxed` callers—R1 and `cli --version`—and
+requires `TMPDIR` and `HOME` to name the same existing scratch while the child
+runs. Its Linux row proves setup does not inject `TMPDIR` where bwrap already
+provides a private `/tmp`.
+
+An exact `7cb0542` archive under the pinned helper interpreter produced the
+intended result: **3 tests, exactly 2 Darwin failures** (`TMPDIR` was `None`)
+and the Linux row green. The green sets `TMPDIR` only inside the Darwin branch,
+after merging the controlled caller environment, so no caller value can point
+the sandboxed process outside the sole writable scratch. The new suite is
+registered in both `test-agent-setup-ms5` and the top-level test step.
+
+Independent exact-archive runs at `e7b7370`, with display variables scrubbed,
+were green:
+
+- `zig build agent-host-win-import --summary all`: **3/3 steps**; and
+- `zig build test-agent-setup-ms5 --summary all`: **22/22 steps, 14/14
+  tests**, including the new suite **3/3** and the Darwin R1 suite **8/8**.
+
+The throwaway trees were deleted immediately. This changes setup production
+code but not either reviewed hard-gate case or its manifest digest. A Mac
+rerun remains under the orchestrator's explicit gate authorization.
