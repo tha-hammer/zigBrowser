@@ -18,6 +18,7 @@ diverges from it and reds. It pins the security construction RoseCat 6918 requir
 Run:  cd agent/host/tests && python3 -m unittest -v test_sandbox_macos
 """
 import os
+import signal
 import sys
 import tempfile
 import unittest
@@ -269,6 +270,45 @@ class SetupSandboxArgv(unittest.TestCase):
             with self.assertRaises(ValueError):
                 with sandbox_macos.setup_sandbox(bad, [], ["/x/cli"]):
                     pass
+
+
+class MacSeatbeltBackendCapability(unittest.TestCase):
+    """MS6: MacSeatbeltBackend realizes the SandboxBackend network/lifetime/channel capability surface with
+    the same contract values as LinuxBwrapBackend (macOS-flavored). First increment; launch_spec follows."""
+
+    def _backend(self):
+        return sandbox_macos.MacSeatbeltBackend(egress_port=52346)
+
+    def test_egress_endpoint_is_the_session_loopback_port(self):
+        ep = self._backend().egress_endpoint()
+        self.assertEqual((ep.host, ep.port), ("127.0.0.1", 52346),
+                         "macOS egress is the OS-selected per-session 127.0.0.1:<port>")
+
+    def test_bridge_policy_is_the_two_canonical_ports_no_hook_egress(self):
+        pol = self._backend().bridge_policy()
+        self.assertEqual(tuple(pol.ports), (51091, 31337))
+        self.assertFalse(pol.hooks_get_egress, "hooks never get egress (rev 16.2 §3c)")
+
+    def test_hook_network_is_bridges_only_no_egress(self):
+        hook = self._backend().hook_launch_spec()
+        self.assertEqual(tuple(hook.ports), (51091, 31337))
+        self.assertIsNone(hook.egress, "a hook's network carries no egress")
+
+    def test_lifetime_mirrors_the_macos_spawn_policy(self):
+        lt = self._backend().lifetime()
+        self.assertEqual((lt.die_with_parent, lt.signal, lt.check_parent_race, lt.delay_ms),
+                         (True, signal.SIGKILL, True, 0),
+                         "die-with-browser by SIGKILL with the parent re-check (realized by posix_spawn+kqueue)")
+
+    def test_channel_is_the_fd3_token_contract(self):
+        ch = self._backend().channel()
+        self.assertEqual((ch.fd, ch.env), (3, "CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR"),
+                         "the CLI's fd-3 token contract is cross-platform (macOS: zb_mac_token_to_fd on fd 3)")
+
+    def test_egress_port_is_validated(self):
+        for bad in (0, 70000, -1, "8080", 3.0, True):
+            with self.assertRaises(ValueError):
+                sandbox_macos.MacSeatbeltBackend(egress_port=bad)
 
 
 if __name__ == "__main__":

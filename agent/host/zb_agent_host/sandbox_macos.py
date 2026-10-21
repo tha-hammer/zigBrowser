@@ -29,6 +29,7 @@ land). Pure stdlib, so it unit-tests on Linux; the eventual both-Mac `sandbox-ex
 import contextlib
 import os
 import secrets
+import signal
 
 # The egress endpoint's host is EXACTLY the loopback literal (plan :1581-1593) — not "localhost", not a
 # resolvable name. The bridges are EXACTLY the two named loopback ports; missing/extra/wrong is refused.
@@ -242,3 +243,48 @@ def setup_sandbox(scratch, ro_paths, command):
                 os.unlink(profile_path)
             except OSError:
                 pass
+
+
+def _sb():
+    """Import the shared `sandbox` module lazily, so `render_profile`/`render_setup_profile`/`dparams` stay
+    importable as a standalone file (the Mac gate scp's just this module, with no `zb_agent_host` package).
+    Only the `MacSeatbeltBackend` capability methods — which return the shared `sandbox` value types — pay it."""
+    from zb_agent_host import sandbox
+    return sandbox
+
+
+class MacSeatbeltBackend:
+    """macOS Seatbelt realization of the MS0 ``SandboxBackend`` seam (MS6).
+
+    First increment: the network / lifetime / channel capability surface, stating the SAME contract values as
+    :class:`sandbox.LinuxBwrapBackend` in macOS terms. ``launch_spec`` — the ``sandbox-exec`` prefix built from
+    :func:`render_profile`/:func:`dparams` plus the semantic ``LaunchSpec`` (mounts as Seatbelt rules, the
+    network/lifetime/channel fields) — is a following increment.
+
+    ``egress_port`` is the OS-selected, per-session loopback port netd listens on (the ephemeral host-loopback
+    proxy; plan :1575-1581); the CLI/helper reach ``127.0.0.1:<egress_port>`` and the two canonical bridges, a
+    hook the bridges only.
+    """
+
+    def __init__(self, egress_port):
+        self._egress_port = _validate_port(egress_port)
+
+    def egress_endpoint(self, session=None):
+        return _sb().Endpoint(_LOOPBACK_HOST, self._egress_port)
+
+    def bridge_policy(self):
+        return _sb().BridgePolicy(ports=CANONICAL_BRIDGES, hooks_get_egress=False)
+
+    def hook_launch_spec(self):
+        # macOS has no mounted bridges directory (Linux binds /run/zb-net/bridges); the hook's own Seatbelt
+        # profile permits the loopback bridge ports directly, so bridges_dir is None. Bridges only, no egress.
+        return _sb().HookNetwork(bridges_dir=None, ports=CANONICAL_BRIDGES, egress=None)
+
+    def lifetime(self):
+        # Die with the browser by SIGKILL, with the parent re-check, no extra delay — the same meaning as
+        # Linux; the native macOS realization is BlueBeaver's posix_spawn group + kqueue NOTE_EXIT parent watch.
+        return _sb().Lifetime(die_with_parent=True, signal=signal.SIGKILL, check_parent_race=True, delay_ms=0)
+
+    def channel(self):
+        # The CLI's fd-3 token contract is cross-platform; macOS writes the token to fd 3 via zb_mac_token_to_fd.
+        return _sb().Channel(fd=3, env="CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR")
