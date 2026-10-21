@@ -13,6 +13,8 @@ verdict `proc_darwin.cli_env_clean(exe, root, token, canary)` recorded:
 - probe_r1 is True only when the probe's verdict is {"r1": true} AND setup's own census said clean: the probe alone
   cannot select R1.
 - Both socketpair ends are closed explicitly on every path, and no census thread outlives probe_r1.
+- Abandoned (BlackRobin 7060): a census still running after setup's bounded join (CENSUS_JOIN_S) is no R1; setup does
+  not close its end under the live thread, its late "clean" changes nothing, and the thread closes the end itself.
 - Bounded (RoseCat 7041): a live probe-side peer that stays silent or sends a partial request without EOF, a run that
   times out, and a census verdict that raises each give "no R1" within 5 s, both ends closed, the thread joined; a
   raising census answers "dirty".
@@ -102,6 +104,10 @@ class Base(unittest.TestCase):
                     "oversized": b"census " + b"a" * 4096 + b"\n",
                     "twice": f"census {TOKEN} {url}\ncensus {TOKEN} {url}\n".encode(),
                 }
+                if request == "none-but-ask-async":
+                    s.sendall(lines["good"])  # asks, but this probe run ends without waiting for the verdict
+                    return setup.subprocess.CompletedProcess(argv, 0, stdout=json.dumps({"r1": verdict}) + "\n",
+                                                             stderr="")
                 if request != "none":
                     s.sendall(lines[request])
                     s.shutdown(socket.SHUT_WR)
@@ -220,6 +226,48 @@ class Bounded(Base):
         self.probe()
         self.assert_bounded_no_r1()
         self.assertEqual(self.runs[0]["reply"], b"dirty\n")
+
+
+class AbandonedCensus(Base):
+    """BlackRobin 7060: a census verdict still running when setup's join times out. setup must not close its end
+    under the live thread (the fd number could be reused), must not read a verdict nobody waited for, and the thread
+    closes the end itself when it finishes, so nothing leaks."""
+
+    def test_a_census_still_running_after_the_join_is_no_r1_and_its_late_clean_changes_nothing(self):
+        # Deterministic: the verdict is computed at once (clean, so result["clean"] is already True), but setup's
+        # reply blocks in sendall past the bounded join. Only "abandoned => no R1" keeps that verdict, which nobody
+        # waited for, from selecting R1.
+        if not hasattr(setup, "CENSUS_JOIN_S"):
+            self.fail("setup.CENSUS_JOIN_S (the bounded census join) is missing (7060)")
+        mock.patch.object(setup, "CENSUS_JOIN_S", 0.3).start()
+        release, replying = threading.Event(), threading.Event()
+        self.addCleanup(release.set)
+        real_pair = socket.socketpair
+
+        class StuckReply(socket.socket):
+            def sendall(self, data, *args):
+                replying.set()
+                release.wait(10)
+                return super().sendall(data, *args)
+
+        def pair(*args, **kwargs):
+            a, b = real_pair(*args, **kwargs)  # Base's tracking pair: it already recorded (a, b)
+            ours = StuckReply(fileno=a.detach())
+            self.pairs[-1] = (ours, b)
+            return ours, b
+
+        mock.patch.object(setup.socket, "socketpair", side_effect=pair).start()
+        self.probe(request="none-but-ask-async")
+        self.assertIs(setup.probe_r1(WRAPPER, CLI), False, "a census nobody waited for is no R1")
+        self.assertTrue(replying.is_set(), "the census had its (clean) verdict and was replying")
+        (pair_,) = self.pairs
+        self.assertNotEqual(pair_[0].fileno(), -1, "setup does not close its end under the live census thread")
+        release.set()
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and self.census_threads():
+            time.sleep(0.02)
+        self.assertEqual(self.census_threads(), [], "the census thread ends")
+        self.assertEqual(pair_[0].fileno(), -1, "and closes the end setup left to it")
 
 
 class LinuxUnchanged(Base):

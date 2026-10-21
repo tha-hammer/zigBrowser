@@ -16,6 +16,11 @@ LEG_TIMEOUT="${ZB_MAC_LEG_TIMEOUT:-300}"
 export SSH_ASKPASS_REQUIRE=never
 
 cd "$(git rev-parse --show-toplevel)"
+# Delete-guard oracle (RoseCat 7055): every rm COMMAND in this script (each one, up to its ; | & or end of line)
+# names its target through ${VAR:?}; a guard elsewhere on the same line does not count.
+if grep -v 'delete-guard-oracle' "$0" | grep -o 'rm -[a-z-]*[^;|&]*' | grep -v ':?}'; then  # delete-guard-oracle
+  echo "FAIL: an unguarded rm in $0 (above)" >&2; exit 1  # delete-guard-oracle
+fi  # delete-guard-oracle
 if [ -z "$ARM_HOST" ]; then
   echo "NOT RUN: arm64 host not configured (set ZB_MAC_ARM_HOST=user@host)" >&2
   echo "        the R1 kernel gate is two-arch and cannot pass until it runs on both" >&2
@@ -31,7 +36,7 @@ ssh_cmd() { # $1=key
 stage=$(mktemp -d "${TMPDIR:-/tmp}/zb-r1kmac-XXXXXX")
 trap 'case "$stage" in */zb-r1kmac-*) rm -rf -- "${stage:?}";; esac' EXIT
 pick() { # $1=path in the repo, $2=name in the stage; a missing file stays missing (the red says so)
-  if [ -n "${COMMIT:-}" ]; then git show "$COMMIT:$1" > "$stage/$2" 2>/dev/null || rm -f "$stage/$2"
+  if [ -n "${COMMIT:-}" ]; then git show "$COMMIT:$1" > "${stage:?}/$2" 2>/dev/null || rm -f -- "${stage:?}/$2"
   elif [ -f "$1" ]; then cp "$1" "$stage/$2"; fi
 }
 COMMIT="${1:-}"

@@ -68,19 +68,29 @@ def listen():
     return s, accepted
 
 
-def remove_scratch(path):
+def remove_scratch(path, rmtree=shutil.rmtree):
+    """Removes exactly our /tmp/zb-r1k-* scratch; True only when the path is verifiably absent afterwards. Any error
+    other than ENOENT is a failure (RoseCat 7055), never ignored."""
     real = os.path.realpath(path)
     base = os.path.realpath(tempfile.gettempdir())
-    if os.path.dirname(real) == base and os.path.basename(real).startswith("zb-r1k-") and not os.path.islink(path):
-        shutil.rmtree(real, ignore_errors=True)
-
-
-def group_gone(pgid):
+    if os.path.dirname(real) != base or not os.path.basename(real).startswith("zb-r1k-") or os.path.islink(path):
+        return False
     try:
-        os.killpg(pgid, 0)
+        rmtree(real)
+    except FileNotFoundError:
+        pass
+    except OSError:
+        return False
+    return not os.path.lexists(real)
+
+
+def group_gone(pgid, killpg=os.killpg):
+    """True only when the kernel says no process has this group (ESRCH). EPERM, or anything else, is not gone."""
+    try:
+        killpg(pgid, 0)
     except ProcessLookupError:
         return True
-    except PermissionError:
+    except OSError:
         return False
     return False
 
@@ -103,9 +113,11 @@ def read_line(fd, deadline):
     return buf.split(b"\n", 1)[0].decode()
 
 
-def run_inner(sleeper, port, decoy, plant=False, sandboxed=True, mode="report"):
+def run_inner(sleeper, port, decoy, plant=False, sandboxed=True, mode="report", killpg=os.killpg,
+              observe=os.killpg, rmtree=shutil.rmtree):
     """Runs the inner (sandboxed or as the unsandboxed control) in its own process group; returns (report or None,
-    census verdict or None, pgid gone afterwards)."""
+    census verdict or None). CLEANUP records whether the group and the scratch are verifiably gone afterwards. The
+    killpg/observe/rmtree parameters exist only for the harness's injected-failure self-tests."""
     scratch = os.path.realpath(tempfile.mkdtemp(prefix="zb-r1k-"))
     canary = f"ANTHROPIC_BASE_URL=http://127.0.0.1:{port}"
     # The real interpreter, as setup runs it (/usr/bin/python3 is Apple's xcrun shim).
@@ -130,20 +142,22 @@ def run_inner(sleeper, port, decoy, plant=False, sandboxed=True, mode="report"):
                 cm.__exit__(None, None, None)
         return report, census
     finally:
-        if inner is not None:
-            pgid = inner.pid
-            with_group_kill(pgid, inner)
-        remove_scratch(scratch)
+        CLEANUP["group_gone"] = True if inner is None else with_group_kill(inner.pid, inner, killpg, observe)
+        CLEANUP["scratch_gone"] = remove_scratch(scratch, rmtree)
 
 
-def with_group_kill(pgid, proc):
-    """SIGKILL the inner's whole group and reap. macOS answers killpg with EPERM when the group's only member is an
-    unreaped zombie leader, so: kill the group, kill and reap the leader, then kill the group again."""
+def with_group_kill(pgid, proc, killpg=os.killpg, observe=os.killpg):
+    """SIGKILL the inner's whole group and reap; True only when the group is verifiably gone (ESRCH). macOS answers
+    killpg with EPERM while the group's only member is an unreaped zombie leader, so the leader is killed and reaped
+    and the group killed again; an EPERM that persists after that means a member we cannot kill: not gone."""
+    errors = []
     for _ in range(2):
         try:
-            os.killpg(pgid, signal.SIGKILL)
-        except (ProcessLookupError, PermissionError):
+            killpg(pgid, signal.SIGKILL)
+        except ProcessLookupError:
             pass
+        except OSError as exc:
+            errors.append(exc.errno)
         if proc.poll() is None:
             try:
                 proc.kill()
@@ -156,12 +170,36 @@ def with_group_kill(pgid, proc):
         except OSError:
             pass
     deadline = time.monotonic() + 5
-    while time.monotonic() < deadline and not group_gone(pgid):
+    while time.monotonic() < deadline and not group_gone(pgid, observe):
         time.sleep(0.05)
-    LAST_GROUP["gone"] = group_gone(pgid)
+    return group_gone(pgid, observe)
 
 
-LAST_GROUP = {}
+CLEANUP = {}
+
+
+def cleaned(label):
+    """Every run, whatever it reported, must leave no group member and no scratch (RoseCat 7055)."""
+    check(CLEANUP.get("group_gone") is True and CLEANUP.get("scratch_gone") is True,
+          f"{label}: no member of its process group and no scratch left ({CLEANUP})")
+
+
+def leftover_group_and_scratch_cleanup():
+    """After an injected-failure self-test: really kill whatever the injected run left (the sleeper children of its
+    inner, matched by this run's sleeper path) and remove every /tmp/zb-r1k-* we made; fail if anything stays."""
+    sleeper = os.path.realpath(sys.argv[1])
+    out = subprocess.run(["/bin/ps", "-axo", "pid=,comm="], capture_output=True, text=True).stdout
+    for line in out.splitlines():
+        pid, _, comm = line.strip().partition(" ")
+        if comm.strip() == sleeper:
+            try:
+                os.kill(int(pid), signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+    base = os.path.realpath(tempfile.gettempdir())
+    for name in os.listdir(base):
+        if name.startswith("zb-r1k-"):
+            check(remove_scratch(os.path.join(base, name)), f"harness cleanup: {name} removed")
 
 
 def main():
@@ -170,15 +208,39 @@ def main():
     decoy, decoy_accepted = listen()
     port, decoy_port = r1.getsockname()[1], decoy.getsockname()[1]
     try:
-        # Harness self-test, unsandboxed so the inner is certainly alive: a live inner that never reports waits out the
-        # whole deadline, fails, and leaves no member of its group.
+        # Harness self-tests, unsandboxed so the inner is certainly alive. A live inner with live children that never
+        # reports waits out the whole deadline, fails, and leaves no member of its group and no scratch.
         started = time.monotonic()
         report, _ = run_inner(sleeper, port, decoy_port, sandboxed=False, mode="silent")
         elapsed = time.monotonic() - started
-        check(report is None and REPORT_DEADLINE_S - 1 <= elapsed < REPORT_DEADLINE_S + 10 and LAST_GROUP.get("gone"),
-              f"harness: a live-silent inner fails at the deadline ({elapsed:.1f} s) and its whole group is reaped")
+        check(report is None and REPORT_DEADLINE_S - 1 <= elapsed < REPORT_DEADLINE_S + 10,
+              f"harness: a live-silent inner (with live children) fails at the deadline ({elapsed:.1f} s)")
+        cleaned("harness: the live-silent inner")
+        # Injected failures must be SEEN, never reported as clean: a kill that does not kill (the children live on),
+        # a group observation that errors, a scratch deletion that fails. Each is then really cleaned up.
+        def no_kill(pgid, sig):
+            if sig != 0:
+                raise PermissionError(1, "injected: killpg refused")
+            return os.killpg(pgid, sig)
+
+        def blind(pgid, sig):
+            raise PermissionError(1, "injected: the group cannot be observed")
+
+        def no_rmtree(path):
+            raise PermissionError(13, "injected: rmtree refused")
+
+        for label, kwargs in (("a kill that does not kill", {"killpg": no_kill}),
+                              ("a group observation that errors", {"observe": blind}),
+                              ("a scratch deletion that fails", {"rmtree": no_rmtree})):
+            report, _ = run_inner(sleeper, port, decoy_port, sandboxed=False, mode="report", **kwargs)
+            seen = dict(CLEANUP)
+            key = "scratch_gone" if "rmtree" in kwargs else "group_gone"
+            check(seen.get(key) is False, f"harness: {label} is detected ({seen})")
+            leftover_group_and_scratch_cleanup()
+
 
         control, _ = run_inner(sleeper, port, decoy_port, sandboxed=False)
+        cleaned("control")
         check(control is not None, f"control (no profile): the inner reported ({control})")
         if control is not None:
             for row in ("sibling_procargs2", "sibling_pidpath", "cli_procargs2", "cli_pidpath", "decoy_connect"):
@@ -187,6 +249,7 @@ def main():
         decoy_before = len(decoy_accepted)
 
         report, census = run_inner(sleeper, port, decoy_port)
+        cleaned("inside")
         if report is None:
             check(False, "inside: the inner probe under the setup profile reported (it died or stayed silent)")
         else:
@@ -204,6 +267,7 @@ def main():
             else:
                 check(census is True, f"outside: setup's census finds the CLI stand-in and its canary ({census})")
                 planted_report, planted = run_inner(sleeper, port, decoy_port, plant=True)
+                cleaned("planted run")
                 positives = (planted_report is not None and planted_report["children_alive"] is True
                              and planted_report["r1_connect"] == "ok")
                 check(positives, f"planted run: its own positives hold first ({planted_report})")

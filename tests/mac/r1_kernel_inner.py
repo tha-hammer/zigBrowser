@@ -14,10 +14,11 @@ import time
 
 sleeper, port, decoy, canary, token, mode = (sys.argv[1], int(sys.argv[2]), int(sys.argv[3]), sys.argv[4],
                                              sys.argv[5], sys.argv[6])
-if mode == "silent":  # the harness self-test: alive, never reports
+key, _, value = canary.partition("=")
+if mode == "silent":  # the harness self-test: alive with live children in its group, never reports
+    kids = [subprocess.Popen([sleeper, "120"]) for _ in range(2)]
     time.sleep(120)
     sys.exit(0)
-key, _, value = canary.partition("=")
 env = {"PATH": "/usr/bin:/bin", key: value}
 if token != "-":
     env["ZB_LEAK"] = token
