@@ -21718,6 +21718,53 @@ slice itself is not green or complete yet: these reds, the server/Runner
 modules and the real-binary fixture e2e must be registered with the production
 green, then pass its focused and aggregate gates.
 
+## WS1.1 PE-census fix-forward (`adea8ca`)
+
+Reviewed exact commit `adea8ca` on 2026-10-21. **Verdict: BLOCKED.** The
+independent Linux-built fixtures are good: the registered focused test
+discriminates a clean x64 GUI image, forbidden `vcruntime` and `msvcp`
+imports, an unlisted import and i386. Its focused run passes 6/6, and the
+clean/forbidden/unlisted mutants described by the author exercise the parser
+and allowlist rather than hiding behind the absent release executable.
+
+The commit message is wrong about registration: `adea8ca` does not change
+`build.zig`. The intended selftest registration is nevertheless present at
+HEAD in `build.zig:277-280,2281`; it landed accidentally with review-log
+commit `d5ccae0`. Therefore a separate registration commit is not required
+unless that registration is deliberately moved.
+
+One push-critical contract remains open. `pe_census_selftest.py:129-136`
+claims to prove that the build fetches exactly WebView2 SDK 1.0.3967.48, but
+it scans only `build-in-guest.sh`, `build-on-windows.sh` and `build.zig` and
+finds an old versioned path. The actual provisioning route still defaults
+`WebView2PackageVersion` to empty (`tests/guest/setup.ps1:7`), omits NuGet's
+`-Version` when empty (`:177-180`) and selects the newest installed package
+(`:182-185`). Mutating that route to fetch a different/latest SDK does not
+fail the registered oracle. Fix forward with one authoritative exact version
+consumed by the real fetcher and a mutation proving empty/different fails.
+Also require `pe32plus` in the fixture/CLI contract if WS1.1 continues to
+claim PE32+: it is currently parsed but not enforced. Finding mailed to
+AzureRidge in Agent Mail 7113. `1794148` remains open.
+
+## macOS POSIX spawner pure core (`31a6a9e`, `2e50d44`)
+
+Reviewed the exact pair on 2026-10-21. **`31a6a9e` APPROVED-for-tests.** In a
+throwaway export of that exact commit, `zig test src/agent_host_posix.zig`
+failed all five intended contracts (four assertion failures and the final
+stub's bounds panic), proving that the red was genuine and isolated: the file
+was not imported or registered.
+
+**`2e50d44` APPROVED for the pure core, but BLOCKED-for-tests as a delivered
+slice until its promised gate registration lands.** A display-scrubbed
+targeted run passes 5/5. `readyPort` reuses the exact Darwin ready grammar;
+`decide` starts the helper only for a present port before the deadline while
+netd remains alive; `firstLine` ignores later stdout; and
+`appendEgressPort` copies the argv slice and appends the exact decimal flag.
+This pair intentionally does not implement or prove the production
+spawn/pipe/deadline/group-kill orchestration, and nothing imports the module
+yet. Its approval is therefore scoped to this pure core and must not be read
+as MS8 or the native-spawn path being green.
+
 ## MS6.4 exact classifier census (`9e88d2e`)
 
 Reviewed exact test-only commit `9e88d2e` on 2026-10-21. **Verdict:
