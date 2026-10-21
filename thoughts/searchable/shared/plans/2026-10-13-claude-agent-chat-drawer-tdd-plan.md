@@ -3129,7 +3129,7 @@ This section makes S8 buildable against the code as it stands at 569f64a. Where 
   - a property test: generated (expected, actual) pairs act iff equal field by field;
   - `tests/e2e/automation_expect_test.py` (the fixtures): a same-document account switch, a swapped button, a same-fields clone, and a changed recipient each commit nothing and leave `__input` `[]`; `rate_status` unchanged;
   - a Linux `load_serial` e2e (a navigation increments it; a same-document change does not).
-  - macOS: JadeBeacon runs the same engine tests on both Macs (MS4.1b).
+  - macOS: JadeBeacon runs the expect **e2e** (`tests/e2e/automation_expect_test.py`) on both Macs against the macOS build (MS4.1b); the engine's Zig reds drive a FakePort and stay in the Linux gate (JadeBeacon 6917).
 
 **S8b — grants in the broker (platform-free).**
 - The card (decision 9's owned values), the state machine (decision 11), the phases (decision 1), the prompt binding (decision 8), `before_dispatch` and `before_transition` seams.
@@ -3152,8 +3152,9 @@ This section makes S8 buildable against the code as it stands at 569f64a. Where 
 | Grant, card, revalidation, phases | `agent_broker.zig` (S8b) | none: the broker is platform-free |
 | `load_serial`, crashed, dialog_open | `page.health`/`page.list` | already reported (MS4.1a) |
 | `recovering` | the queue (-32014) | none |
-| `options.expect` checks, the element token | `engine.zig`, `flow_runner.zig`, `automation.js` (S8a) | run S8a's engine tests on both Macs (MS4.1b); the isolated-world `automation.js` and its token `WeakMap` are the same script in WKContentWorld |
-| Account reads | S8a (cookie port for Instagram) | the macOS cookie port already exists (MS3); confirm on both Macs |
+| `options.expect` checks, the element token | `engine.zig`, `flow_runner.zig`, `automation.js` (S8a) | run S8a's expect e2e on both Macs (MS4.1b): the real macOS PagePort delivers the eval result and `automation.js` computes the token in the WKContentWorld isolated world; the engine's FakePort tests are platform-free and stay in the Linux gate |
+| Account reads, Instagram cookie | S8a (`ds_user_id` through the engine's cookie port, phase C) | the macOS cookie port exists (WKHTTPCookieStore, MS3); confirm on both Macs |
+| Account and recipient reads, DOM (LinkedIn slug, X handle, Instagram nav link, the thread headers of decision 13) | S8a (`expect.dom` in `automation.js`) | the macOS PagePort eval plus the isolated-world `automation.js`, the MS4.1b e2e surface; confirm on both Macs, not covered by the cookie port |
 | The card UI and the only minter | Linux: `agent_drawer.c` (S8d) | MS7's `agent_drawer_mac.m`: the same card fields and rows, calling `zb_agent_tools_approve/deny`; Deny mints nothing (MS7.6/7.8) |
 | The helper pipe and `agent_tools` | Linux today (`drawer_core`) | MS8: enable `agent_tools` on macOS with its helper glue |
 
