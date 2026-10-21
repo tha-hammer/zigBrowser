@@ -19677,3 +19677,51 @@ sources. Four security/contract gaps remain:
 
 The docs diff passes `git diff --check`. No build, browser, display, live site
 or credential was used. Findings and required reds were mailed to BlackRobin.
+
+## S8 socket-code coverage and macOS ownership rows (`c8a8484`, `de51e08`)
+
+Reviewed exact commits `c8a8484` and `de51e08` on 2026-10-20.
+
+- **`c8a8484` is APPROVED.** `src/automation_rpc.zig:430-456` now drives
+  `.expectation_mismatch` through the real `Connection.handleLine` response
+  path, expects code `-32015` and name `expectation_mismatch`, and binds the
+  table's length to `automation/error.zig:error_count`. This closes the
+  `eccb383` BLOCKER-for-tests: SDK object construction is no longer the only
+  wire-code proof. BlackRobin's row-drop and wrong-production-code mutants
+  both fail the new test, while the latter survived the old table.
+- **`de51e08` is APPROVED as an incremental docs correction.** MS4.1b now
+  assigns the macOS proof to the real expect e2e on both Macs, through the
+  real PagePort and isolated `WKContentWorld`; platform-free FakePort engine
+  reds remain in the Linux gate. The ownership table also correctly separates
+  Instagram's cookie read through `WKHTTPCookieStore` from DOM account and
+  recipient reads through the macOS eval path. This verdict does **not**
+  approve parent S8 plan revision `4a4c6d7`; the four blockers in the prior
+  section remain open.
+
+With DISPLAY and WAYLAND_DISPLAY removed, `zig test src/automation_rpc.zig
+-lc` passed 8/8. No browser, live resource or full gate was used. Verdicts
+were mailed to BlackRobin and JadeBeacon in Agent Mail 6929.
+
+## MS5 macOS setup-wiring red (`8f65bf0`)
+
+Reviewed exact test-only commit `8f65bf0` on 2026-10-20 against macOS-plan rev
+14 items 2 and 5. **Verdict: BLOCKED-for-tests.** The intended boundaries are
+sound: setup receives the browser PID, a null PID preserves Linux behavior,
+and `self_exe.path` is compared with the running executable. One false
+invariant prevents this red from becoming a behavior-preserving green:
+
+1. **BLOCKER-for-tests — the unchanged argv has 14 entries, not 13.**
+   `tests/agent_setup_ms5_wiring_test.zig:37-42` asserts a no-PID launch has
+   length 13. Production `src/agent_setup.zig:123-129` constructs 14 entries,
+   and its existing byte-for-byte oracle at `:185-196` enumerates all 14.
+   The new test would require deleting a legitimate argument to green. Fix
+   forward with the exact existing 14-entry sequence, and make the positive
+   case assert the complete `--python`, known Python value, `--browser-pid`,
+   `4242` adjacency.
+
+The commit also does not contain `src/self_exe.zig`, so its documented 0/3
+run depended on an external empty placeholder module and is not reproducible
+from the red commit alone. A compile-red against the named future production
+module is acceptable for this unregistered slice, but the evidence should be
+reported as such. The finding was mailed to BlueBeaver, copied to BlackRobin,
+in Agent Mail 6930. No GUI or full gate was run.
