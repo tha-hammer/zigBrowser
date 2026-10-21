@@ -20669,3 +20669,50 @@ measured real-CLI evidence, if Darwin reads the socket directly). The gate
 must prove the exact canary is consumed through fd 3 under the generated
 profile and retain a discriminating denial/mutant. No full gate was run because
 BlackRobin owns the shared slot. Finding mailed to JadeBeacon, cc BlueBeaver.
+
+## MS6.4a generated-profile endpoint gate (`65f6afe`)
+
+Reviewed exact test-only commit `65f6afe` on 2026-10-20. **Verdict:
+BLOCKED-for-tests; the IPv4/TCP matrix is a useful partial proof, but it is not
+yet a fail-closed proof of the pinned endpoint policy.** The test uses the
+production profile generator under real `sandbox-exec` on both architectures.
+Its allowed egress and two bridge controls, live denied loopback decoy, public
+denial, and same-port CLI-allowed/hook-denied comparison are discriminating;
+in particular, a blanket deny cannot satisfy the bridge positives and a
+blanket allow cannot satisfy either live denial. The explicit split leaves
+production proxy traversal and the rest of MS6.4 correctly open as MS6.4b.
+
+Three fix-forwards are required before this security gate is approved:
+
+1. **BLOCKER-for-tests: the probe can mislabel ordinary failures as a policy
+   denial.** `ms6_4_connect_probe.c:37-38` calls every `socket()` failure
+   `CONNECT-DENIED`, not only `EPERM`/`EACCES`; `:62-64` does the same for every
+   `select()` error, including `EINTR`; `:46-47` ignores both `fcntl` results;
+   and `:66-70` ignores `getsockopt` failure and then treats the initialized
+   zero as `CONNECT-OK`. That contradicts the helper's stated four-way oracle
+   and permits resource exhaustion, interruption, or an observation error to
+   satisfy a security assertion. Check every syscall. Only actual
+   `EPERM`/`EACCES` may produce `CONNECT-DENIED`; every other observation error
+   must produce a distinct failing verdict. Add red rows/mutants for those
+   branches.
+2. **BLOCKER-for-tests: the probe does not establish the exact capability it
+   claims.** The plan pins a TCP `127.0.0.1:<port>` hop
+   (`2026-10-14-14-30-macos-launch-tdd-plan.md:1576-1583`), but the generated
+   rule is `network-outbound (remote ip "localhost:<port>")` with no socket
+   type (`sandbox_macos.py:157-173`), and the probe tries only IPv4/TCP
+   (`ms6_4_connect_probe.c:37-44`). On both Macs, add live denials for IPv6
+   loopback (including the mapped form where supported) and UDP at the allowed
+   numeric port. If Seatbelt's `localhost` token or rule shape grants either,
+   the renderer/design must be narrowed or the authoritative contract must be
+   reopened; an IPv4/TCP-only test cannot support “only that endpoint.”
+3. **BLOCKER (cleanup safety rule):** `ms6_4_egress_test.sh:23` recursively
+   deletes `"$TMP"` without the mandatory `${TMP:?}` guard introduced after
+   the shared-worktree deletion incident. Use the guarded cleanup convention
+   (prefer `find "${TMP:?}" -delete`) and reap the killed listener with `wait`
+   so a completed gate leaves no live child.
+
+Independent clean-export checks passed shell syntax and compiled the C probe
+with `-std=c11 -Wall -Wextra -Werror`. The exact-SHA focused Linux generator
+gate passed: `test-agent-setup-ms5`, 16/16 steps and 14/14 tests. The macOS
+kernel results in the commit message were not independently rerun. No full gate
+was run because BlackRobin owns the shared slot. Findings mailed to JadeBeacon.
