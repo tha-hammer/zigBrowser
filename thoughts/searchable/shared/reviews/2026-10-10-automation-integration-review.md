@@ -23082,3 +23082,66 @@ or silent catch. The current discriminating regression is necessarily
 VM/lock-gated.
 
 Verdict sent to AzureRidge in Agent Mail 7201.
+
+## S8a per-event guard green (`9295b0b`; reds `e68692a`, `052b50b`)
+
+**BLOCKED.** The grammar, script-command hand-off, isolated-world guard and
+nonretryable `-32015` mapping are wired through the production chain. The
+registered real-binary e2e does not bypass it: it calls the socket and drives
+router → engine → PagePort → injected `automation.js`. Its main cases cover
+the click, fill, type, press, native-select and ARIA-select branches, focus
+callbacks, exact visible-mark cardinality, target identity, Draft-style
+cancelled `beforeinput`, and exact event/character counts.
+
+Independent exact-commit focused evidence under a private Xvfb:
+
+```text
+zig build: Build Summary 5/5
+automation_guard_test.py: 54 checks, 0 failed
+```
+
+An additional adversarial contenteditable probe exposed a missing boundary:
+
+```json
+{"code":-32015,
+ "data":{"reason":"mark_changed","sent":{"chars":1,"events":2}},
+ "events":["focus:editor","keydown:editor","beforeinput:editor","beforeinput:editor"],
+ "text":""}
+```
+
+The handler ignores automation's first synthetic `beforeinput`; on WebKit's
+second/native `beforeinput` from `execCommand`, it changes the account mark,
+cancels the event, and inserts nothing. The editor is therefore empty, but
+`automation.js:1118-1121` unconditionally executes
+`wrote(codePoints(text))`, claiming one browser-written character. This
+violates plan `:3130-3131`, where chars count only a write or insert that
+actually happened, and can falsely turn a no-write stop into a partial-input
+outcome.
+
+**BLOCKER — distinguish all three `execCommand` outcomes and pin them red:**
+
+1. A cancelled native `beforeinput` that changes the guard leaves the editor
+   empty and must return `sent={events:2,chars:0}`.
+2. When `execCommand` runs page code and then returns false,
+   `automation.js:1118` must re-check the guard before its fallback
+   `rangeInsert`; otherwise the fallback insert can cross a changed approval
+   boundary. Use a narrowly e2e-gated seam if WebKit cannot select that branch
+   deterministically.
+3. Preserve the existing successful-native-insert row proving that an actual
+   inserted character still reports chars=1.
+
+Moving `wrote` alone is insufficient: the fix must distinguish successful
+native insertion, cancelled native input and a guarded fallback insertion.
+
+**SHOULD — selectorless `dom.press` with `guard.target=true`.** The router
+accepts press without a selector (`router.zig:203-210`) and independently
+accepts target guard (`:313-320`). `automation.js:398-405` captures the active
+element, but `guardFailure` at `:165-168` attempts to re-resolve the absent
+selector and always returns `target_changed`. Either reject this combination
+as `-32602` or define target stability as the captured active element; add a
+regression. It currently fails closed, so this is not the security blocker.
+
+The owner's aggregate result (324/324 steps, 1125/1127 tests, two skips) is
+accepted for the covered cases. The temporary adversarial probe and clean
+export were deleted immediately. Verdict sent to BlackRobin in Agent Mail
+7207.
