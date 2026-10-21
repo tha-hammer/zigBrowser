@@ -85,7 +85,11 @@ extern fn zb_agent_spawn_group_io(
     stdout_fd: c_int,
     out_pid: *std.c.pid_t,
 ) c_int;
-extern fn zb_agent_kill_group(pid: std.c.pid_t) void;
+// Returns 0 when the group was killed + reaped (or a zombie-only group reaped); a nonzero errno when nothing was
+// signalled — EINVAL (pid <= 1 / our pid / our group), ECHILD (not our child), EPERM (not its group's leader) —
+// or when killpg failed on a still-live leader (BlueBeaver d8f5e76; RoseCat 7172/7182). It does all the
+// ownership/group checks itself, so it is safe to call with any pid.
+extern fn zb_agent_kill_group(pid: std.c.pid_t) c_int;
 
 pub const SpawnError = error{ NetworkFailure, OutOfMemory };
 
@@ -104,11 +108,12 @@ pub const Netd = struct {
     }
 };
 
-/// How netd stopped: a clean EOF exit (status 0, no signal), a reaped-but-unclean exit (nonzero/signalled — no
-/// further signal needed, but netd's own EOF cleanup may not have run), the SIGKILL backstop, or a refusal to
-/// signal because ownership was unproven — a bad pid, or `waitpid` said the pid is not our child (a real spawned
-/// netd never hits the last).
-pub const StopResult = enum { clean_exit, exited_unclean, killed, skipped_bad_pid };
+/// How netd stopped: a clean EOF exit (status 0, no signal); a reaped-but-unclean exit (nonzero/signalled — no
+/// further signal needed, but netd's own EOF cleanup may not have run); the SIGKILL backstop killed + reaped its
+/// group; the backstop ran but `zb_agent_kill_group` returned nonzero so the group was NOT reaped by us (a race
+/// to exit, or killpg failed on a live leader); or a refusal to signal because ownership was unproven — a bad
+/// pid, or `waitpid` said the pid is not our child (a real spawned netd never hits the last two).
+pub const StopResult = enum { clean_exit, exited_unclean, killed, kill_failed, skipped_bad_pid };
 
 /// Only a real child pid (> 1) may be signalled: pid 0/1/negative must never reach `killpg`, because `killpg(1)`
 /// is `kill(-1)` — the incident that logged the user out twice (RoseCat 7162/7172). Pure, unit-pinned with zero
@@ -128,9 +133,10 @@ fn cErrno() c_int {
 
 const EINTR_: c_int = @intFromEnum(std.c.E.INTR);
 
-/// The clean-then-backstop stop (RoseCat 7161 #2): close netd's stdin (EOF -> clean exit), wait up to `grace_ms`
-/// for it to exit, and SIGKILL + reap its group ONLY if it does not. Returns which path was taken, so the clean
-/// path is observable in tests. `zb_agent_kill_group` guards pid <= 0 and kills only netd's OWN process group.
+/// The clean-then-backstop stop (RoseCat 7161 #2, 7182): close netd's stdin (EOF -> clean exit), wait up to
+/// `grace_ms` for it to exit, and SIGKILL + reap its group ONLY if it does not. Returns which path was taken, so
+/// each is observable in tests. `zb_agent_kill_group` itself re-verifies ownership and group leadership and does
+/// its own kill-safety (EINVAL/ECHILD/EPERM), so this layer's `waitExit` ownership proof is belt-and-suspenders.
 pub fn stopWith(pid: std.c.pid_t, stdin_fd: c_int, grace_ms: u32) StopResult {
     _ = std.c.close(stdin_fd);
     return switch (waitExit(pid, grace_ms)) {
@@ -138,8 +144,9 @@ pub fn stopWith(pid: std.c.pid_t, stdin_fd: c_int, grace_ms: u32) StopResult {
         .exited_unclean => .exited_unclean,
         .not_our_child => .skipped_bad_pid, // bad pid OR ECHILD: ownership unproven -> never signal (kill-safety)
         .alive_ours_grace_expired => blk: {
-            zb_agent_kill_group(pid); // a CONFIRMED-ours live child that will not exit -> kill its OWN group
-            break :blk .killed;
+            // a CONFIRMED-ours live child that will not exit -> kill its OWN group; 0 = killed + reaped, a
+            // nonzero errno (raced exit, or killpg failed on a live leader) = NOT reaped by us (BlueBeaver d8f5e76).
+            break :blk if (zb_agent_kill_group(pid) == 0) .killed else .kill_failed;
         },
     };
 }
@@ -228,9 +235,10 @@ pub fn spawnNetd(a: std.mem.Allocator, argv: []const []const u8, envp: []const [
     switch (decide(port, false, netd_exited_early)) {
         .start_helper => return Netd{ .port = port.?, .pid = pid, .stdin_fd = inp[1] },
         .network_failure => {
-            // No fallback port. Close stdin (EOF) and SIGKILL + reap the group.
+            // No fallback port. Close stdin (EOF) and SIGKILL + reap the group. Best-effort: the return (0, or an
+            // errno if netd already exited / is not ours) is irrelevant — we fail closed regardless.
             _ = std.c.close(inp[1]);
-            zb_agent_kill_group(pid);
+            _ = zb_agent_kill_group(pid);
             return error.NetworkFailure;
         },
     }
