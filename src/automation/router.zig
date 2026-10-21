@@ -320,6 +320,8 @@ pub fn parse(
             else => return error.BadArgs,
         }
         if (input == .native or command.humanize) return error.BadArgs;
+        // A selectorless press has no target of its own to re-resolve (RoseCat on 9295b0b).
+        if (verb == .dom_press and command.selector == null and command.guard.?.target) return error.BadArgs;
         // A guarded type runs in chunks (decision 15); per-character delays are another schedule.
         if (command.delay_ms) |delay| if (delay > 0) return error.BadArgs;
     }

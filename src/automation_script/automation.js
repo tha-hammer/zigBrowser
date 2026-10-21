@@ -1108,6 +1108,7 @@
     let nativeInput = false;
     const sawInput = () => { nativeInput = true; };
     element.addEventListener('input', sawInput, true);
+    const before = element.innerHTML;
     let done = false;
     try {
       done = inputType === 'insertText'
@@ -1119,11 +1120,21 @@
       element.removeEventListener('input', sawInput, true);
     }
 
-    if (!done) rangeInsert(element, text);
-    if (inputType === 'insertText') wrote(codePoints(text));
-    if (!done || !nativeInput) {
-      fire(element, new InputEvent('input', { bubbles: true, composed: true, inputType, data }));
+    // The browser's edit happened only when its own input event fired AND the editor, still in the
+    // page, changed: a page handler can cancel the native beforeinput, or make the editor
+    // non-editable or remove it inside it (WebKit then still fires input but inserts nothing).
+    // Otherwise nothing is counted or announced (RoseCat on 9295b0b).
+    if (done && nativeInput && element.isConnected && element.innerHTML !== before) {
+      if (inputType === 'insertText') wrote(codePoints(text));
+      return;
     }
+    if (done) return;
+    // execCommand was unavailable or refused, possibly after page code ran inside it: check
+    // again before inserting ourselves.
+    gate();
+    rangeInsert(element, text);
+    if (inputType === 'insertText') wrote(codePoints(text));
+    fire(element, new InputEvent('input', { bubbles: true, composed: true, inputType, data }));
   }
 
   function rangeInsert(element, text) {
