@@ -24096,3 +24096,43 @@ directory and API contracts:
 The header also still says `gather` returns -2 for an empty scan and omits EIO
 from the public result list. Findings were sent to JadeBeacon with BlueBeaver
 copied in Agent Mail 7266.
+
+## MS6 immutable-export follow-up (`25bfe81`, `81ca05c`)
+
+**BLOCKED; keep the armed hard gate off both Macs.** The committed direction is
+causal for several parts: exact clean exports inside a private user/PID
+namespace produced the advertised four red failures at `25bfe81` and 13/13
+green at `81ca05c`. The gate resolves its requested revision to a commit,
+exports it, reads the pins/lock/cases/source selection from that export and
+names the commit before its first network call. No Mac run occurred. Four
+boundaries remain open:
+
+1. **The launcher itself is mutable.** `ms6_hard_gate.sh:36-46` exports the
+   commit, but the shell code that continues orchestrating the run is still the
+   caller worktree's script. In an exact throwaway fixture, adding an
+   uncommitted `DIRTY-LAUNCHER` line after the fixture commit executed that line
+   and reached the pinned curl (`rc=99`, marker present). Re-exec the exported
+   script with a guarded one-shot marker, or compare the executing script
+   byte-for-byte with the exported one and refuse offline. Add the causal red.
+2. **The no-installer oracle misses absolute paths.** Lines 185-189 of the test
+   reject a bare `installer` token but not `/usr/sbin/installer`. Appending
+   `/usr/sbin/installer -pkg "$PKG" -target /` to the stage script left the
+   committed oracle green. Reject any executed token whose basename is
+   `installer`, including absolute/variable forms, with that exact mutant.
+   Production remains install-free; this is a test blocker.
+3. **The shipped-file census excludes symlinks.** The tar at gate lines 84-86
+   archives every entry below the shipped directories, while lines 87-89 name
+   only `find -type f`. A committed `packaging/macos/escape-link -> /etc/passwd`
+   was present in `src.tar`, reached the pkg curl and had no evidence row.
+   Refuse all symlink/special members before network, or type/name every tar
+   member and prove exact equality between the tar and evidence set.
+4. **The verifier dependency closure is not pinned.** `pip install
+   sigstore==4.5.1` fixes only the top-level distribution; pip still resolves
+   and executes unhashed transitive packages. Use a reviewed, hash-locked
+   verifier requirements set with `--require-hashes` or an equivalently
+   immutable verifier artifact, and test the complete install command/lock.
+
+The dirty-source test must inspect or capture the actual `src.tar`, not merely
+find three expected digest lines: printing export hashes while packaging other
+bytes currently survives that assertion. Findings and reproductions were sent
+to BlueBeaver with JadeBeacon copied in Agent Mail 7269.
