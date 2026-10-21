@@ -2,8 +2,9 @@
 # BlackRobin 7108 seam 1 gate (JadeBeacon 7143): zb_agent_spawn_group_io on BOTH Macs (tests/mac/spawn_group_io_test.c):
 # the child holds exactly fds 0 1 2 (POSIX_SPAWN_CLOEXEC_DEFAULT drops a planted inheritable fd and every pipe end),
 # leads its own group, round-trips a stdin line, exits on stdin EOF within 2 s; stdin -1 inherits; a stream fd in
-# 0..2 is EINVAL. Per-run ~/zb-spawnio-<nonce>, deleted on exit; nothing installed. BatchMode, strict host keys, no
-# askpass; the arm64 host is required (no default).
+# 0..2 is EINVAL; one duplex socket may be both streams; the census reaches past fd 300 (RoseCat 7150). Per-run
+# ~/zb-spawnio-<nonce>, deleted on exit; nothing installed. BatchMode, strict host keys, no askpass; the arm64 host
+# is required (no default).
 # usage: tests/mac/ms5_spawn_io_gate.sh [commit]   (default: the working tree)
 set -euo pipefail
 
