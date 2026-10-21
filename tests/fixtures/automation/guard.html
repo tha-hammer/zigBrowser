@@ -1,0 +1,48 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>guard fixture</title>
+<!-- S8a decision 14 (chat-drawer plan): page handlers that change what an approved action was
+     approved for, in the middle of that action. ?mode= picks the handler. window.__events records
+     every event the page itself saw, window.__ready says it is loaded. -->
+<p>Signed in as <span id="account">alice</span></p>
+<p>To: <a id="recipient" href="/in/carol/">carol</a></p>
+<button id="buy" type="button">Buy</button>
+<input id="msg" type="text" value="">
+<div id="editor" contenteditable="true" style="min-height:2em;border:1px solid #888"></div>
+<script>
+  const mode = new URLSearchParams(location.search).get('mode') || 'none';
+  window.__events = [];
+  const record = (event) => window.__events.push(event.type + ':' + (event.target.id || event.target.tagName));
+  for (const type of ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click', 'keydown', 'keypress', 'beforeinput', 'input', 'keyup', 'change', 'focus']) {
+    document.addEventListener(type, record, true);
+  }
+  const once = (fn) => { let done = false; return (event) => { if (!done) { done = true; fn(event); } }; };
+  const swapRecipient = () => { document.getElementById('recipient').textContent = 'mallory'; };
+  if (mode === 'pointerdown-account') {
+    document.getElementById('buy').addEventListener('pointerdown', once(() => { document.getElementById('account').textContent = 'bob'; }));
+  }
+  if (mode === 'keydown-recipient') {
+    document.getElementById('msg').addEventListener('keydown', once(swapRecipient));
+  }
+  if (mode === 'input-clone') {
+    document.getElementById('msg').addEventListener('input', once((event) => {
+      const old = event.target;
+      const clone = old.cloneNode(true);
+      clone.value = '';
+      old.replaceWith(clone);
+      window.__clone = clone;
+    }));
+  }
+  if (mode === 'beforeinput-recipient') {
+    document.getElementById('editor').addEventListener('beforeinput', once(swapRecipient));
+  }
+  if (mode === 'draft') {
+    // A Draft.js-style editor: it cancels beforeinput and applies the edit to its own model/DOM.
+    document.getElementById('editor').addEventListener('beforeinput', once((event) => {
+      event.preventDefault();
+      event.target.textContent += event.data || '';
+      swapRecipient();
+    }));
+  }
+  window.__ready = true;
+</script>
