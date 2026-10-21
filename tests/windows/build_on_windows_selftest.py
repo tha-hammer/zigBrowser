@@ -18,11 +18,13 @@ Point ZB_SELFTEST_SCRIPT at an alternate script to prove these red against the p
 Run alone:  python3 -I tests/windows/build_on_windows_selftest.py -v
 """
 import base64
+import fcntl
 import os
 import pathlib
 import shutil
 import subprocess
 import tempfile
+import time
 import unittest
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
@@ -479,6 +481,32 @@ class PublishContract(_Case):
             self.assertTrue((td / "outside" / "g-victim" / "keep").exists(),
                             "GC must not follow a symlinked gen and delete outside the root")
 
+    def test_parent_symlink_root_refused_on_publish_no_escape(self):
+        # RoseCat c09d439 (1): a symlink in a PARENT of the publish root (not just the leaf gen) must also be
+        # refused, so a delete/write can never escape the intended root.
+        def pre(td, out):
+            outside = td / "outside"; (outside / "gen" / "g-victim").mkdir(parents=True)
+            (outside / "gen" / "g-victim" / "keep").write_text("keep")
+            (td / "out").symlink_to(outside)              # the publish ROOT itself is a symlink
+        with tempfile.TemporaryDirectory() as t:
+            td = pathlib.Path(t)
+            proc = self._run(td, pre=pre)
+            self._fail_closed(proc, "symlink component")
+            self.assertTrue((td / "outside" / "gen" / "g-victim" / "keep").exists(),
+                            "a parent-symlinked publish root must not let a write/delete escape")
+
+    def test_parent_symlink_root_refused_on_gc_no_escape(self):
+        def pre(td, out):
+            outside = td / "outside"; (outside / "gen" / "g-victim").mkdir(parents=True)
+            (outside / "gen" / "g-victim" / "keep").write_text("keep")
+            (td / "out").symlink_to(outside)
+        with tempfile.TemporaryDirectory() as t:
+            td = pathlib.Path(t)
+            proc = self._run(td, args=["--gc"], pre=pre)
+            self._fail_closed(proc, "symlink component")
+            self.assertTrue((td / "outside" / "gen" / "g-victim" / "keep").exists(),
+                            "GC on a parent-symlinked root must delete nothing outside it")
+
 
 class AtomicPublish(_Case):
     """RoseCat 3da2862 (3): a GUARANTEED-fresh (mktemp) generation + an APPEND-ONLY, flock-serialized, single
@@ -555,6 +583,35 @@ class AtomicPublish(_Case):
             detail = f"\nrc={proc.returncode}\n{proc.stdout}\n{proc.stderr}"
             self.assertNotEqual(proc.returncode, 0,
                                 "a failed current-swap must fail closed (unchecked mv would report success)" + detail)
+
+    def test_gc_cannot_interleave_with_a_held_publish_lock(self):
+        # RoseCat c09d439 (2): correctness is the LOCK, not a wall-clock grace. A publisher holds
+        # .publish.lock from before generation creation through the swap; GC takes the SAME lock, so while a
+        # publish is in progress GC must NOT be able to delete an in-flight (non-current) generation — even an
+        # old one. Hold the lock, place an OLD non-current generation, run --gc: it must fail closed and
+        # delete nothing. (A GC that ignored the lock would reap the old non-current generation.)
+        with tempfile.TemporaryDirectory() as t:
+            td = pathlib.Path(t)
+            out = td / "out" / "current" / "zigBrowser.exe"
+            outdir = td / "out"; outdir.mkdir(parents=True)
+            _place_old_generation(out, sha=FAKE_SHA)                       # a live generation + current
+            inflight = outdir / "gen" / ("g-%s-inflight0" % FAKE_SHA)      # a non-current generation
+            inflight.mkdir()
+            (inflight / "zigBrowser.exe").write_bytes(b"MZinflight\n")
+            old = time.time() - 7200                                       # 2h old, so grace alone would reap it
+            os.utime(inflight, (old, old))
+            lockpath = outdir / ".publish.lock"; lockpath.touch()
+            lf = open(lockpath, "w")
+            try:
+                fcntl.flock(lf.fileno(), fcntl.LOCK_EX)                    # a publisher holds the lock
+                proc = self._run(td, {"ZB_GC_LOCK_WAIT": "1"}, args=["--gc"])
+                detail = f"\nrc={proc.returncode}\n{proc.stdout}\n{proc.stderr}"
+                self.assertNotEqual(proc.returncode, 0,
+                                    "GC must fail closed when it cannot take the publish lock" + detail)
+                self.assertTrue(inflight.exists(),
+                                "GC must not delete an in-flight generation while a publish holds the lock" + detail)
+            finally:
+                fcntl.flock(lf.fileno(), fcntl.LOCK_UN); lf.close()
 
 
 class StagePrepGatesBuild(_Case):

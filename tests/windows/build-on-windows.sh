@@ -42,18 +42,43 @@ ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || { echo "build-on-windows: n
 [ -n "$ROOT" ] && [ -d "$ROOT" ] || { echo "build-on-windows: cannot resolve repo root" >&2; exit 2; }
 cd "$ROOT" || { echo "build-on-windows: cannot cd to repo root $ROOT" >&2; exit 2; }
 
-# ---- GC: a SEPARATE, locked, symlink-safe reaper (RoseCat 3da2862 (3)). Publish is append-only; this is
-# the only place generations are deleted. It never follows a symlinked 'gen', never touches the live target,
-# and leaves a grace window so an in-flight publish's fresh generation is never reaped. Needs no VM/host.
+# RoseCat c09d439 (1): refuse any path with a SYMLINK in ANY component (not just the leaf), so a parent
+# symlink can never redirect a write or a recursive delete outside the intended root. Logical (no-follow)
+# and physical (follow-all) resolutions must be identical.
+zb_no_symlink_path() {
+  local p="$1" phys logi
+  phys=$(realpath -m -- "$p" 2>/dev/null) || return 1
+  logi=$(realpath -m -s -- "$p" 2>/dev/null) || return 1
+  [ -n "$phys" ] && [ "$phys" = "$logi" ]
+}
+# The <dir>/current/<name> surface grammar, shared by publish and --gc.
+zb_surface_ok() {  # $1=req
+  local req="$1" cl base
+  cl=$(dirname "$req"); base=$(basename "$req")
+  [ "$(basename "$cl")" = "current" ] && [ -n "$base" ] && [ "$base" != "current" ] && [ "$cl" != "$req" ]
+}
+
+# ---- GC: a SEPARATE, locked, symlink-safe reaper (RoseCat 3da2862/ c09d439). Publish is append-only; this
+# is the only place generations are deleted. It enforces the same surface grammar, refuses ANY symlinked
+# path component, takes the publish lock (bounded wait, so it can never interleave with a live publish), and
+# never touches the live target. Needs no VM/host.
 if [ "${1:-}" = "--gc" ]; then
   req="${ZB_WIN_EXE:-zig-out/win/current/zigBrowser.exe}"
+  if ! zb_surface_ok "$req"; then
+    echo "build-on-windows: ZB_WIN_EXE must be a <dir>/current/<name> path for --gc (got '$req')" >&2; exit 2
+  fi
   gc_curlink=$(dirname "$req"); gc_outdir=$(dirname "$gc_curlink"); gens="$gc_outdir/gen"
+  if ! zb_no_symlink_path "$gc_outdir"; then
+    echo "build-on-windows: publish root '$gc_outdir' has a symlink component — refusing GC" >&2; exit 3
+  fi
   if [ -L "$gens" ] || { [ -e "$gens" ] && [ ! -d "$gens" ]; }; then
     echo "build-on-windows: '$gens' is not a real directory (symlink/other) — refusing GC" >&2; exit 3
   fi
   [ -d "$gens" ] || { echo "build-on-windows: no generations to GC" >&2; exit 0; }
   {
-    if ! flock 9; then echo "build-on-windows: GC lock failed" >&2; exit 3; fi
+    if ! flock -w "${ZB_GC_LOCK_WAIT:-10}" 9; then
+      echo "build-on-windows: GC could not acquire the publish lock (a publish is in progress)" >&2; exit 3
+    fi
     live_base=$(basename "$(readlink "$gc_outdir/current" 2>/dev/null || echo __none__)")
     while IFS= read -r g; do
       [ -n "$g" ] || continue
@@ -142,18 +167,29 @@ rc=$?
 # ---- fetch: atomic + validated; provenance recorded (findings 1 & 6) -----------------------------------
 # With no explicit step, fetch the built exe to Linux for the WS1.1 census (export ZB_WIN_EXE to it).
 if [ -z "$step" ]; then
-  # RoseCat 3da2862 (1): ZB_WIN_EXE IS the stable consumer surface and MUST be a <dir>/current/<name> path
-  # (the atomic swap target). Reject the old ambiguous direct-file form so a caller never reads a stale
-  # sibling file that was never published.
+  # RoseCat 3da2862/c09d439 (1): ZB_WIN_EXE IS the stable consumer surface and MUST be a <dir>/current/<name>
+  # path. Reject the old ambiguous direct-file form, and refuse ANY symlink component of the publish root so
+  # a parent symlink can never redirect a write or delete outside it — all BEFORE writing anything.
   req="${ZB_WIN_EXE:-zig-out/win/current/zigBrowser.exe}"
-  curlink=$(dirname "$req"); base=$(basename "$req"); outdir=$(dirname "$curlink")
-  if [ "$(basename "$curlink")" != "current" ] || [ -z "$base" ] || [ "$base" = "current" ] || [ "$curlink" = "$req" ]; then
+  if ! zb_surface_ok "$req"; then
     echo "build-on-windows: ZB_WIN_EXE must be a <dir>/current/<name> surface path (got '$req'); e.g. zig-out/win/current/zigBrowser.exe" >&2
     exit 2
   fi
+  curlink=$(dirname "$req"); base=$(basename "$req"); outdir=$(dirname "$curlink")
+  if ! zb_no_symlink_path "$outdir"; then
+    echo "build-on-windows: publish root '$outdir' has a symlink component — refusing to publish" >&2; exit 3
+  fi
   if ! mkdir -p "$outdir"; then echo "build-on-windows: cannot create the publish root '$outdir'" >&2; exit 3; fi
+  if ! zb_no_symlink_path "$outdir"; then   # re-check after mkdir, in case a component was a symlink
+    echo "build-on-windows: publish root '$outdir' has a symlink component — refusing to publish" >&2; exit 3
+  fi
+  gens="$outdir/gen"
+  if [ -L "$gens" ] || { [ -e "$gens" ] && [ ! -d "$gens" ]; }; then
+    echo "build-on-windows: '$gens' is not a real directory (symlink/other) — refusing to publish" >&2; exit 3
+  fi
+  if ! mkdir -p "$gens"; then echo "build-on-windows: cannot create '$gens'" >&2; exit 3; fi
   part="$outdir/.fetch-$$.part"
-  rm -f -- "$part"
+  rm -f -- "$part" "$part.sha"
   "${scrub[@]}" timeout "$fetch_to" scp -i "$key" -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
     -o UserKnownHostsFile="$kh" -o BatchMode=yes -o ConnectTimeout=15 -o ConnectionAttempts=3 -P "$port" \
     "$user@$host:$rundir/zig-out/bin/zigBrowser.exe" "$part"
@@ -166,45 +202,34 @@ if [ -z "$step" ]; then
   if ! printf '%s\n' "$sha" > "$part.sha"; then
     echo "build-on-windows: provenance write failed" >&2; rm -f -- "$part" "$part.sha"; exit 3
   fi
-  # RoseCat 3da2862 (2): the generations dir must be a REAL directory, never a symlink — a symlinked parent
-  # could redirect writes/deletes outside the publish root.
-  gens="$outdir/gen"
-  if [ -L "$gens" ] || { [ -e "$gens" ] && [ ! -d "$gens" ]; }; then
-    echo "build-on-windows: '$gens' is not a real directory (symlink/other) — refusing to publish" >&2
-    rm -f -- "$part" "$part.sha"; exit 3
-  fi
-  if ! mkdir -p "$gens"; then echo "build-on-windows: cannot create '$gens'" >&2; rm -f -- "$part" "$part.sha"; exit 3; fi
-  # RoseCat 3da2862 (3): a GUARANTEED-fresh generation via mktemp -d (O_EXCL — unique even for a same-SHA
-  # rerun in the same second). Publish is APPEND-ONLY: this path NEVER deletes an existing generation, so a
-  # concurrent publisher's candidate (or the live target) can never be destroyed. GC is the separate,
-  # locked, symlink-safe '--gc' operation above.
-  gendir=$(mktemp -d "$gens/g-${sha}-XXXXXXXXXX") || {
-    echo "build-on-windows: could not create a fresh generation dir" >&2; rm -f -- "$part" "$part.sha"; exit 3; }
-  genrel="gen/$(basename "$gendir")"
-  if ! mv -fT "$part" "$gendir/$base" || ! mv -fT "$part.sha" "$gendir/$base.sha"; then
-    echo "build-on-windows: assembling the generation pair failed" >&2
-    if [ -d "$gendir" ] && [ ! -L "$gendir" ] && [[ "$gendir" == "$gens"/g-* ]]; then rm -rf -- "${gendir:?}"; fi
-    rm -f -- "$part" "$part.sha"; exit 3
-  fi
-  # Selftest-only: model a crash AFTER the generation exists but BEFORE the atomic swap. NEVER in production.
-  if [ -n "${ZB_SELFTEST_CUT_PUBLISH:-}" ]; then
-    echo "build-on-windows: interrupted before current-swap (selftest)" >&2; exit 42
-  fi
-  # Atomic commit, serialized against concurrent publishers with flock. The swap is a single CHECKED symlink
-  # rename (the script runs without set -e, so a failed rename must not report success).
-  swap_rc=0
+  # RoseCat c09d439 (2): hold the publish lock from BEFORE generation creation through the checked swap (the
+  # fetch/validate above stays outside it). mktemp -d is an O_EXCL fresh generation; publish is APPEND-ONLY
+  # (it never deletes an existing generation). Because a concurrent --gc takes this SAME lock, it can never
+  # delete this in-flight generation no matter how long this process is suspended — ownership comes from the
+  # lock, not a wall-clock grace window.
+  pub_rc=0
   {
-    if flock 9; then
-      if ln -sfn "$genrel" "$outdir/.current.$$"; then
-        mv -fT "$outdir/.current.$$" "$outdir/current" || { swap_rc=3; rm -f -- "$outdir/.current.$$"; }
-      else
-        swap_rc=3; rm -f -- "$outdir/.current.$$"
-      fi
+    if ! flock -w "${ZB_PUBLISH_LOCK_WAIT:-60}" 9; then
+      pub_rc=3
     else
-      swap_rc=3
+      gendir=$(mktemp -d "$gens/g-${sha}-XXXXXXXXXX") || gendir=""
+      if [ -z "$gendir" ]; then
+        pub_rc=3
+      elif ! mv -fT "$part" "$gendir/$base" || ! mv -fT "$part.sha" "$gendir/$base.sha"; then
+        pub_rc=3
+        if [ -d "$gendir" ] && [ ! -L "$gendir" ] && [[ "$gendir" == "$gens"/g-* ]]; then rm -rf -- "${gendir:?}"; fi
+      elif [ -n "${ZB_SELFTEST_CUT_PUBLISH:-}" ]; then
+        pub_rc=42   # selftest: crash after the generation exists but before the swap (gen left; current intact)
+      elif ! ln -sfn "gen/$(basename "$gendir")" "$outdir/.current.$$"; then
+        pub_rc=3; rm -f -- "$outdir/.current.$$"
+      elif ! mv -fT "$outdir/.current.$$" "$outdir/current"; then
+        pub_rc=3; rm -f -- "$outdir/.current.$$"
+      fi
     fi
   } 9>"$outdir/.publish.lock"
-  if [ "$swap_rc" -ne 0 ]; then echo "build-on-windows: current-swap failed" >&2; exit 3; fi
+  rm -f -- "$part" "$part.sha"
+  if [ "$pub_rc" -eq 42 ]; then echo "build-on-windows: interrupted before current-swap (selftest)" >&2; exit 42; fi
+  if [ "$pub_rc" -ne 0 ]; then echo "build-on-windows: publish failed" >&2; exit 3; fi
   echo "build-on-windows: fetched $req (commit $sha)"
   echo "build-on-windows: export ZB_WIN_EXE=$req for the WS1.1 census"
 fi
