@@ -22,6 +22,10 @@ pub const AutomationError = enum {
     /// -32014: page.recover is ending and reloading this window's web
     /// process; the command was not run.
     recovering,
+    /// -32015: an approved action's expectation (origin, load_serial, account,
+    /// recipient or the element's token) no longer held inside its own ticket, so
+    /// nothing was sent (chat-drawer plan S8). A new approval is needed, never a retry.
+    expectation_mismatch,
 };
 
 pub const error_count = @typeInfo(AutomationError).@"enum".fields.len;
@@ -57,6 +61,7 @@ pub fn isRetryable(err: AutomationError) bool {
         .cancelled,
         .dialog_open,
         .recovering,
+        .expectation_mismatch,
         => false,
     };
 }

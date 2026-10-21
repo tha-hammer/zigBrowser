@@ -928,6 +928,10 @@ pub fn build(b: *std.Build) void {
     automation_error_tests_module.addImport("automation", automation_module);
     const automation_error_tests = b.addTest(.{ .root_module = automation_error_tests_module });
     const run_automation_error_tests = b.addRunArtifact(automation_error_tests);
+    // S8a: -32015 expectation_mismatch (chat-drawer plan rev 16.20.38).
+    const automation_error_expect_module = b.createModule(.{ .root_source_file = b.path("tests/automation_error_expect_test.zig"), .target = target, .optimize = optimize, .link_libc = true });
+    automation_error_expect_module.addImport("automation", automation_module);
+    const run_automation_error_expect_tests = b.addRunArtifact(b.addTest(.{ .root_module = automation_error_expect_module }));
     run_automation_error_tests.skip_foreign_checks = true;
 
     const automation_router_tests_module = b.createModule(.{
@@ -2175,6 +2179,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_config_schema_tests.step);
     test_step.dependOn(&run_automation_smoke_tests.step);
     test_step.dependOn(&run_automation_error_tests.step);
+    test_step.dependOn(&run_automation_error_expect_tests.step);
     test_step.dependOn(&run_automation_router_tests.step);
     test_step.dependOn(&run_automation_engine_tests.step);
     test_step.dependOn(&run_automation_retry_tests.step);

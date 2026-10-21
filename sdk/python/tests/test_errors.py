@@ -61,6 +61,7 @@ ERROR_CODE_MAP = {
     -32012: "cancelled",
     -32013: "dialog_open",
     -32014: "recovering",
+    -32015: "expectation_mismatch",
 }
 
 

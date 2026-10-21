@@ -24,6 +24,7 @@ test "AutomationError exposes stable names, downstream codes, and retryability" 
         .{ .err = .cancelled, .name = "cancelled", .code = -32012, .retryable = false },
         .{ .err = .dialog_open, .name = "dialog_open", .code = -32013, .retryable = false },
         .{ .err = .recovering, .name = "recovering", .code = -32014, .retryable = false },
+        .{ .err = .expectation_mismatch, .name = "expectation_mismatch", .code = -32015, .retryable = false },
     };
 
     try std.testing.expectEqual(cases.len, automation_error.error_count);
@@ -35,14 +36,15 @@ test "AutomationError exposes stable names, downstream codes, and retryability" 
     }
 }
 
-test "isAutomationCode covers exactly -32001 through the last variant (-32014 recovering)" {
+test "isAutomationCode covers exactly -32001 through the last variant (-32015 expectation_mismatch)" {
     try std.testing.expect(automation_error.isAutomationCode(-32001));
     try std.testing.expect(automation_error.isAutomationCode(-32012));
     try std.testing.expect(automation_error.isAutomationCode(-32013));
     try std.testing.expect(automation_error.isAutomationCode(-32014));
+    try std.testing.expect(automation_error.isAutomationCode(-32015));
     try std.testing.expect(automation_error.isAutomationCode(automation_error.downstreamCode(@enumFromInt(automation_error.error_count - 1))));
     try std.testing.expect(!automation_error.isAutomationCode(-32000));
-    try std.testing.expect(!automation_error.isAutomationCode(-32015));
+    try std.testing.expect(!automation_error.isAutomationCode(-32016));
     try std.testing.expect(!automation_error.isAutomationCode(-32602));
     try std.testing.expect(!automation_error.isAutomationCode(-32603));
 }

@@ -899,8 +899,9 @@ channel sends one notification, `automation.ready`.
 | -32012 | cancelled | The browser stopped, or `page.recover` ended the window's web process, while the command was queued or running |
 | -32013 | dialog_open | A page dialog (alert, confirm, prompt, or beforeunload "Leave site?") is open on the window and blocks the command; see [Dialogs](#dialogs) |
 | -32014 | recovering | `page.recover` is ending and reloading this window's web process; try again when it answers. See [Recovering a frozen page](#recovering-a-frozen-page-pagerecover) |
+| -32015 | expectation_mismatch | An approved action's expectation (`options.expect`: the window's origin or load, the account, the recipient, or the element) no longer held when it ran, so nothing was sent. Not retryable: it needs a new approval. Used by the chat drawer's approvals. |
 
-Errors -32001 to -32014 carry `data.trace_id` and `data.command_id`; the SDKs
+Errors -32001 to -32015 carry `data.trace_id` and `data.command_id`; the SDKs
 raise them as `AutomationError` with those fields.
 
 ## Result
