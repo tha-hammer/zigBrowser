@@ -128,7 +128,7 @@ def _fs_probe(**over):
     p = {"schema": 2, "test_user": "file_server_win\\zbtest", "identity_marker": FS_MARKER,
          "native_arch": "x64", "os_build": "19045", "webview2_pv": "155.0.4283.62",
          "groups": [{"sid": "S-1-5-32-545", "name": "BUILTIN\\Users"}],
-         "zbtest_write_paths": [], "console_user": "zbtest",
+         "zbtest_write_paths": [], "absent_paths": [], "share_exceptions": [], "console_user": "zbtest",
          "listeners": [{"port": 22, "pid": 4}, {"port": 135, "pid": 900}, {"port": 139, "pid": 4},
                        {"port": 445, "pid": 4}, {"port": 3389, "pid": 500}],
          "fw_rules_hash": "abc123", "shares": [],
@@ -216,6 +216,40 @@ class WS07FileServerFence(_TwoHostCase):
             bad = _fs_probe(zbtest_write_paths=["C:\\Shares\\public"])
             proc = self._run_probe_only(pathlib.Path(t), {"ZB_SELFTEST_PROBE_WIN10": bad})
             self._assert_fail_closed(proc, "zbtest can write to")
+
+    def test_absent_volume_share_path_passes_and_is_logged(self):
+        # Owner decision 2026-10-21: a share path whose volume/root is ABSENT is NOT writable — it is
+        # reported separately and the gate still passes (it will fail only if it later exists and is writable).
+        with tempfile.TemporaryDirectory() as t:
+            fs = _fs_probe(absent_paths=["G:\\Users\\joshu"])
+            proc = self._run_probe_only(pathlib.Path(t),
+                                        {"ZB_SELFTEST_PROBE_WIN10": fs, "ZB_SELFTEST_PROBE_WIN10_POST": fs})
+            self.assertEqual(proc.returncode, 0, f"an absent-volume share must not fail the gate\n{proc.stderr}")
+            self.assertIn("ABSENT volume", proc.stdout + proc.stderr,
+                          "the gate must print the absent-volume share path")
+
+    def test_post_writable_served_path_fails_closed(self):
+        # A share that becomes writable in the POST probe (e.g. an absent volume that later exists) must fail,
+        # not just the pre probe.
+        with tempfile.TemporaryDirectory() as t:
+            pre = _fs_probe()
+            post = _fs_probe(zbtest_write_paths=["G:\\Users\\joshu"])
+            proc = self._run_probe_only(pathlib.Path(t),
+                                        {"ZB_SELFTEST_PROBE_WIN10": pre, "ZB_SELFTEST_PROBE_WIN10_POST": post})
+            self._assert_fail_closed(proc, "zbtest can write to")
+
+    def test_excepted_writable_share_passes_and_is_logged(self):
+        # An exact-match owner exception (e.g. K:\ exFAT, no ACL) is classified 'excepted' by the probe, so
+        # zbtest_write_paths stays empty and the gate passes — and it prints the excepted path + reason.
+        with tempfile.TemporaryDirectory() as t:
+            reason = "exFAT, no ACL possible; owner accepted 2026-10-21"
+            fs = _fs_probe(share_exceptions=[{"path": "K:\\", "reason": reason}])
+            proc = self._run_probe_only(pathlib.Path(t),
+                                        {"ZB_SELFTEST_PROBE_WIN10": fs, "ZB_SELFTEST_PROBE_WIN10_POST": fs})
+            self.assertEqual(proc.returncode, 0, f"an excepted writable share must pass\n{proc.stderr}")
+            out = proc.stdout + proc.stderr
+            self.assertIn("excepted writable share K:\\", out, "the gate must print the excepted path")
+            self.assertIn(reason, out, "the gate must print the exception reason")
 
     def test_console_user_not_test_user_fails_closed(self):
         with tempfile.TemporaryDirectory() as t:
@@ -856,6 +890,27 @@ class WS0ZeroWrite(unittest.TestCase):
                          "session_probe.ps1 must parse the WTS buffer via Get-ZbWtsSessionFlags")
         self.assertNotRegex(src, r"Marshal\]::ReadInt32\(\$pb,\s*12\)",
                             "the probe body must not read SessionFlags from native offset 12")
+
+    def test_share_verdict_fn_and_emitted_fields(self):
+        # Owner decision 2026-10-21 (WS0.7): host_probe classifies each served share via the pure
+        # ZB_SHARE_FN — an ABSENT volume is 'absent' (not writable), an exact-match owner exception is
+        # 'excepted', any other writable path is 'write'. host_probe parses ZB_WIN10_SHARE_EXCEPTIONS and
+        # emits absent_paths + share_exceptions.
+        import re
+        src = (REPO / "tests" / "windows" / "host_probe.ps1").read_text()
+        m = re.search(r"# >>> ZB_SHARE_FN.*?\n(.*?)\n# <<< ZB_SHARE_FN", src, re.S)
+        self.assertIsNotNone(m, "host_probe.ps1 is missing the ZB_SHARE_FN extraction markers")
+        fn = m.group(1)
+        self.assertIn("function Get-ZbShareVerdict", fn, "the marked block must define Get-ZbShareVerdict")
+        self.assertRegex(fn, r"DriveAbsent\b.*return 'absent'",
+                         "an absent volume must map to 'absent' (checked first)")
+        self.assertRegex(fn, r"Excepted\b.*return 'excepted'", "a writable excepted path must map to 'excepted'")
+        self.assertRegex(fn, r"return 'write'", "a writable non-excepted path must map to 'write'")
+        self.assertRegex(fn, r"return 'clean'", "a non-writable path must map to 'clean'")
+        self.assertIn("ZB_WIN10_SHARE_EXCEPTIONS", src, "host_probe must read the owner exception list")
+        self.assertRegex(src, r"absent_paths\s*=\s*\$absentPaths", "host_probe must emit absent_paths")
+        self.assertRegex(src, r"share_exceptions\s*=\s*\$shareExceptions", "host_probe must emit share_exceptions")
+        self.assertRegex(src, r"Get-ZbShareVerdict\s+-DriveAbsent", "host_probe must classify via Get-ZbShareVerdict")
 
 
 class WS0TwoHostReds(_TwoHostCase):

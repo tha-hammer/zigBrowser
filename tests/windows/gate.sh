@@ -355,9 +355,18 @@ names = {str(g.get("name", "")).split("\\")[-1].strip().lower() for g in a.get("
 bad = sorted(names & FORBIDDEN)
 if bad:
     sys.stderr.write("file-server: zbtest is in a forbidden group: %s\n" % bad); sys.exit(1)
-wp = a.get("zbtest_write_paths")
-if wp:
-    sys.stderr.write("file-server: zbtest can write to %s\n" % wp[0]); sys.exit(1)
+# WS0.7 (owner decision 2026-10-21): a writable served path fails in EITHER the pre or the post probe, so
+# an absent-volume share that LATER exists and is writable is still caught. Absent-volume paths and the
+# owner's exact-match exceptions are printed (never silently passed); a writable path NOT excepted fails.
+for who2, probe2 in (("pre", a), ("post", b)):
+    for p in (probe2.get("absent_paths") or []):
+        sys.stderr.write("file-server (%s): NOTE share path on an ABSENT volume (not writable now): %s\n" % (who2, p))
+    for ex in (probe2.get("share_exceptions") or []):
+        sys.stderr.write("file-server (%s): NOTE excepted writable share %s — %s\n"
+                         % (who2, ex.get("path"), ex.get("reason")))
+    wpx = probe2.get("zbtest_write_paths")
+    if wpx:
+        sys.stderr.write("file-server (%s): zbtest can write to %s\n" % (who2, wpx[0])); sys.exit(1)
 cu = str(a.get("console_user", "")).split("\\")[-1].lower()
 if cu != win10_user.lower():
     sys.stderr.write("file-server: console user is %r, not %s\n" % (a.get("console_user"), win10_user)); sys.exit(1)

@@ -46,6 +46,13 @@ def _ssh_run(env, ps_text, timeout=120):
     return subprocess.run(cmd, input=ps_text, capture_output=True, text=True, timeout=timeout)
 
 
+def _extract_share_fn():
+    m = re.search(r"# >>> ZB_SHARE_FN.*?\n(.*?)\n# <<< ZB_SHARE_FN", HOST_PROBE.read_text(), re.S)
+    if not m:
+        raise AssertionError("ZB_SHARE_FN markers not found in host_probe.ps1")
+    return m.group(1)
+
+
 def _extract_acl_fn():
     m = re.search(r"# >>> ZB_ACL_FN.*?\n(.*?)\n# <<< ZB_ACL_FN", HOST_PROBE.read_text(), re.S)
     if not m:
@@ -472,6 +479,32 @@ class LockedDesktopLive(unittest.TestCase):
             _ssh_run(env, r"$d=Join-Path $env:USERPROFILE 'zb\runs\session'; "
                           r"Remove-Item -LiteralPath (Join-Path $d 'session.json') -EA SilentlyContinue; "
                           r"Remove-Item -LiteralPath (Join-Path $d 'nonce.txt') -EA SilentlyContinue")
+
+
+@unittest.skipUnless(_vm_env(), "VM env not set")
+class ShareVerdictFixturesLive(unittest.TestCase):
+    """Execute the extracted Get-ZbShareVerdict on the VM with the four WS0.7 fixtures (pure function;
+    no shares needed). Pins absent -> 'absent', writable+excepted -> 'excepted', writable -> 'write',
+    otherwise -> 'clean' (owner decision 2026-10-21)."""
+
+    def test_share_verdict_maps_fixtures(self):
+        env = _vm_env()
+        fn = _extract_share_fn()
+        script = fn + "\n" + "\n".join([
+            '$c=@()',
+            "$c += ('ABSENT=' + (Get-ZbShareVerdict -DriveAbsent $true -Writable $true -Excepted $false))",
+            "$c += ('EXCEPT=' + (Get-ZbShareVerdict -DriveAbsent $false -Writable $true -Excepted $true))",
+            "$c += ('WRITE=' + (Get-ZbShareVerdict -DriveAbsent $false -Writable $true -Excepted $false))",
+            "$c += ('CLEAN=' + (Get-ZbShareVerdict -DriveAbsent $false -Writable $false -Excepted $true))",
+            '$c -join " "',
+        ])
+        p = _ssh_run(env, script)
+        self.assertEqual(p.returncode, 0, "ssh/powershell failed:\n" + p.stderr + "\n" + p.stdout)
+        out = p.stdout
+        self.assertIn("ABSENT=absent", out, "an absent volume must map to 'absent' even when Writable; got:\n" + out)
+        self.assertIn("EXCEPT=excepted", out, "a writable excepted path must map to 'excepted'; got:\n" + out)
+        self.assertIn("WRITE=write", out, "a writable non-excepted path must map to 'write'; got:\n" + out)
+        self.assertIn("CLEAN=clean", out, "a non-writable path must map to 'clean'; got:\n" + out)
 
 
 @unittest.skipUnless(_vm_env(), "VM env not set")

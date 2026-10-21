@@ -79,6 +79,20 @@ function Get-ZbWritable {
   } catch { return $true } finally { $M::FreeHGlobal($gm);$M::FreeHGlobal($psb);$M::FreeHGlobal($psl);$M::FreeHGlobal($ga);$M::FreeHGlobal($st) }
 }
 # <<< ZB_ACL_FN
+
+# >>> ZB_SHARE_FN — the PURE WS0.7 verdict for ONE served share path, given three booleans the caller
+# derives with real IO (owner decision 2026-10-21, RoseCat WS0.7 exception): a path whose volume/root is
+# ABSENT (the drive letter does not exist) is 'absent' (reported separately, never silently 'write'); a
+# WRITABLE path on the exact-match owner exception list is 'excepted' (printed with its reason); any other
+# writable path is 'write' (fails the gate); otherwise 'clean'. Fail-closed writability (unreadable ACL /
+# no AccessCheck) is passed in as $Writable=$true by the caller, so it still lands in 'write' unless excepted.
+function Get-ZbShareVerdict {
+  param([bool]$DriveAbsent, [bool]$Writable, [bool]$Excepted)
+  if ($DriveAbsent) { return 'absent' }
+  if ($Writable) { if ($Excepted) { return 'excepted' } else { return 'write' } }
+  return 'clean'
+}
+# <<< ZB_SHARE_FN
 $ZbAcCtx = Initialize-ZbAccessCheck   # per-run AccessCheck context (impersonation token); $null => fail closed
 
 function Get-NativeArch {
@@ -204,7 +218,7 @@ try {
 # `net share` / Get-SmbShare need elevation and fail as a standard user), and which of them the test
 # user can WRITE (must be []). Owner rule (b): pure read-only as the test user. If the shares cannot be
 # enumerated at all (registry unreadable), BOTH stay $null so the gate fails closed — never a silent [].
-$shares = $null; $writePaths = $null
+$shares = $null; $writePaths = $null; $absentPaths = @(); $shareExceptions = @()
 try {
   $sp = Get-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Services\LanmanServer\Shares' -ErrorAction Stop
   # Typed shares: {name, path} so a rename/alias (same path, new share name) is detectable pre/post.
@@ -216,17 +230,48 @@ try {
     if ($sharePath) { $shareList += [pscustomobject]@{ name = $prop.Name; path = $sharePath } }
   }
   $shares = @($shareList)
+  # Owner exception list (decision 2026-10-21): ZB_WIN10_SHARE_EXCEPTIONS is newline-separated
+  # "path=reason" entries, EXACT path match only. A writable path on the list is 'excepted' (logged with
+  # its reason); a writable path NOT on the list still fails.
+  $except = @{}
+  if ($env:ZB_WIN10_SHARE_EXCEPTIONS) {
+    foreach ($line in ($env:ZB_WIN10_SHARE_EXCEPTIONS -split "`r?`n")) {
+      $line = $line.Trim(); if (-not $line) { continue }
+      $eq = $line.IndexOf('='); if ($eq -lt 1) { continue }
+      $ep = $line.Substring(0, $eq).Trim(); $er = $line.Substring($eq + 1).Trim()
+      if ($ep) { $except[$ep] = $er }
+    }
+  }
   # Which served paths the test user can WRITE, via Get-ZbWritable (real Win32 AccessCheck; see above).
-  # Unreadable ACL or no AccessCheck context => fail-safe (treated writable, never hidden).
-  $w = @()
+  # Unreadable ACL or no AccessCheck context => fail-safe (treated writable, never hidden). A path whose
+  # drive/root is ABSENT is classified 'absent' (reported separately), never silently writable.
+  $w = @(); $absent = @(); $exc = @()
   foreach ($sh in $shareList) {
     $p = $sh.path
-    try {
-      $acl = Get-Acl -LiteralPath $p -ErrorAction Stop
-      if (Get-ZbWritable $acl $ZbAcCtx) { $w += $p }
-    } catch { $w += $p }
+    $root = $null; try { $root = [System.IO.Path]::GetPathRoot($p) } catch {}
+    $driveAbsent = $false
+    if ($root) { try { $driveAbsent = -not (Test-Path -LiteralPath $root) } catch { $driveAbsent = $false } }
+    $writable = $false
+    if (-not $driveAbsent) {
+      try {
+        $acl = Get-Acl -LiteralPath $p -ErrorAction Stop
+        $writable = [bool](Get-ZbWritable $acl $ZbAcCtx)
+      } catch {
+        # a drive that disappeared surfaces here too — re-classify as absent; any OTHER failure fails closed.
+        if ($root) { try { if (-not (Test-Path -LiteralPath $root)) { $driveAbsent = $true } } catch {} }
+        if (-not $driveAbsent) { $writable = $true }
+      }
+    }
+    switch (Get-ZbShareVerdict -DriveAbsent $driveAbsent -Writable $writable -Excepted ($except.ContainsKey($p))) {
+      'absent'   { $absent += $p }
+      'excepted' { $exc += [pscustomobject]@{ path = $p; reason = $except[$p] } }
+      'write'    { $w += $p }
+      default    { }
+    }
   }
   $writePaths = @($w | Sort-Object -Unique)
+  $absentPaths = @($absent | Sort-Object -Unique)
+  $shareExceptions = @($exc)
 } catch {}
 
 # WS0.7: a fingerprint of the firewall rule set so a run that opens a hole is caught (pre vs post).
@@ -263,6 +308,8 @@ $o = [ordered]@{
   groups              = $groups
   shares              = $shares
   zbtest_write_paths  = $writePaths
+  absent_paths        = $absentPaths
+  share_exceptions    = $shareExceptions
   listeners           = $listeners
   fw_rules_hash       = $fwHash
   sshd_listen         = $sshdListen
