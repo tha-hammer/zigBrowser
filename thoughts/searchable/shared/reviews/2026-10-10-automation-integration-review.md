@@ -21746,6 +21746,29 @@ Also require `pe32plus` in the fixture/CLI contract if WS1.1 continues to
 claim PE32+: it is currently parsed but not enforced. Finding mailed to
 AzureRidge in Agent Mail 7113. `1794148` remains open.
 
+### WS1.1 production-pin fix-forward (`66e3db9`)
+
+Reviewed exact commit `66e3db9` on 2026-10-21. **Verdict:
+BLOCKED-for-tests; `1794148` remains open.** The production default now passes
+an explicit version to NuGet and selects the exact package directory, and the
+PE census and fixture correctly reject PE32 rather than PE32+. The registered
+focused suite passes 8/8.
+
+The SDK oracle still does not prove that the real fetcher's `$ver` consumes
+the declared pin. In a clean throwaway export, changing only the assignment
+from the pin/override conditional to `$ver = $WebView2PackageVersion` left all
+8 tests green (mutant rc 0). With the default empty parameter this disconnects
+the real fetch from the pin while preserving every string/regex the test
+checks. The code also calls the value the one authoritative exact pin while
+still accepting any explicit version override. Fix forward by removing or
+strictly validating the override and adding an oracle that fails when the
+chosen fetch version is disconnected from the authoritative pin. Finding
+mailed to AzureRidge in Agent Mail 7118.
+
+The push-through remains `26fdfff`: this test hold is still open, and the
+earlier `7d85cd5` WS0 chain independently still awaits the orchestrator's two
+watched live runs.
+
 ## macOS POSIX spawner pure core (`31a6a9e`, `2e50d44`)
 
 Reviewed the exact pair on 2026-10-21. **`31a6a9e` APPROVED-for-tests.** In a
