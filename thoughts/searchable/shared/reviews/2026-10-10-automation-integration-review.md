@@ -23995,3 +23995,104 @@ The safety hold on running the individual `ms5_spawn_io_gate.sh` or
 the complete MS6 hard gate: its reviewed manifest, pins and staging contracts
 still apply, and the blocked reaper case remains excluded. Verdict sent to
 BlueBeaver with JadeBeacon copied in Agent Mail 7260.
+
+## Windows atomic-publish follow-up (`a260d51`)
+
+**BLOCKED; `defb5a2`/`b32f285` remain open.** The focused selftest is green
+(28/28), but exact throwaway probes found three production failures:
+
+1. The script accepts the documented/requested `ZB_WIN_EXE=/x/zigBrowser.exe`
+   but publishes only `/x/current/zigBrowser.exe`. A clean run returned zero
+   with the requested path absent. In the legacy migration case, the old
+   regular file at the requested path remains stale. Changing the consumer
+   surface without changing all consumers is not atomic publication.
+2. Cleanup validates only a lexical `gen/g-*` prefix. If `gen` is a symlink to
+   another directory, the recursive delete follows it. A clean throwaway probe
+   made `out/gen` point at an outside tree and showed the script deleting both
+   `g-victim/keep` and its sentinel. `${var:?}` does not make a symlinked parent
+   safe; pin/no-follow every parent before deletion.
+3. `g-<sha>-<second>-<pid>` is not a guaranteed fresh generation, and inline
+   post-swap GC is not serialized. A concurrent run can observe another run's
+   generation as stale and remove it after that other run publishes it. Use an
+   exclusive random generation and either omit inline GC or serialize it with a
+   real lock and revalidate `current` under that lock.
+
+The existing tests seed only ordinary directories and the new surface, so none
+of these defects is causal. Verdict and reproductions were sent to AzureRidge
+with BlueBeaver copied in Agent Mail 7262.
+
+## MS6 exact reviewed-case manifest (`15ea7fc`, `6d46e1b`)
+
+**APPROVED.** The red and green establish an exact hard-gate case set before
+any module import: missing, extra, edited, malformed, duplicate and wrong-hash
+cases fail closed. `MANIFEST.json` independently hashes exactly
+`case_ms5_spawn_io.py` and `case_ms6_6b_r1_chain.py`; the reaper is excluded.
+The suite is registered inside a private user/PID namespace. Exact-export runs
+gave the expected red at `15ea7fc` and 7/7 green at `6d46e1b`. This approves the
+manifest mechanism and these two case names only; it does not itself arm the
+entry or approve another Mac case. Verdict sent to BlueBeaver with JadeBeacon
+copied in Agent Mail 7263.
+
+## Armed MS6 hard-gate entry (`3d74820`, `1a830c2`)
+
+**BLOCKED; do not run the armed entry on either Mac yet.** The red is causal
+for the implemented preconditions: an exact export of `3d74820` failed its nine
+tests with the advertised ten failures, while `1a830c2` passed 9/9 inside a
+private user/PID namespace. Pins schema, stale lock, missing arm host, an extra
+case and an edited reviewed case all refuse before the first network call; the
+first permitted call is the pinned CPython package URL.
+
+The user's no-install condition is satisfied by the current code. The driver
+downloads into its local per-run `mktemp` tree; each Mac receives the package
+only at `$HOME/zb-hardgate-<nonce>/py.pkg`; `stage_agent_runtime.sh` checks the
+package and calls `pkgutil --expand-full` into that run's
+`prefix/Frameworks/.agent-host-stage-*`, then renames within the run. Neither
+script invokes `installer`, `sudo`, or a system prefix. The evidence for these
+commits was Linux-only: the entry test stopped at a recording `curl` shim, so
+the armed entry staged nothing and ran no case on either Mac. The separately
+approved spawn-I/O case was re-run on both Macs only after its own safety hold
+was lifted; it passed 12/12 per arch.
+
+The blocking provenance gap is that `ms6_hard_gate.sh` packages `uv.lock`, the
+staging tools, `zb_agent_host` and the C seam sources from the mutable working
+tree. Only the two case files are manifest-pinned. Printing `src.tar`'s digest
+does not tie those bytes to a reviewed commit, so a PASS could certify
+uncommitted production code. Resolve a named commit, export it into the local
+per-run tree, and perform all validation/build/tar selection from that export.
+Add reds for a nonexistent/non-commit revision and dirty replacements of a C
+seam, the staging script and the Python package. The current no-install path,
+exact manifest, reaper exclusion and no-`seatbelt_ready` behavior must remain.
+The unpinned temporary `pip install sigstore` verifier and the lack of a direct
+no-`installer` regression oracle are SHOULDs. The provisional approval was
+corrected in Agent Mail 7267 after BlueBeaver raised the working-tree issue.
+
+## MS6.5 reaper follow-up (`354bf54`)
+
+**BLOCKED; the Mac reaper gate remains OFF.** The exact-export portable test is
+green (21/21 inside a private user/PID namespace). The commit closes the
+scan-error/incomplete-result mapping and adds causal changed-UID and exactly-one
+SIGKILL EPERM/ESRCH coverage. It also marks a null-output omission as overflow
+when an overflow pointer is supplied. It does not close the destructive path's
+directory and API contracts:
+
+1. `agent_run_reaper.c:250-255` resolves and opens the directory only when
+   census/sweep begins. That is invocation-time pinning, not the lifecycle's
+   creation-pinned app-owned directory. The header's “creation-pinned” claim is
+   therefore false; the commit message itself leaves the lifecycle fd open.
+2. Lines 257-262 run scan/inspect/SIGKILL before checking that the pathname still
+   names the held inode. A same-uid rename/replacement can therefore make the
+   string classifier match processes under a replacement tree and signal them
+   before the eventual EINVAL. Retain the creation-time fd/id, revalidate it
+   with no-follow metadata immediately before every destructive signal, and add
+   a forced path-swap red proving zero signals.
+3. `collect` can report an unrepresentable match only when `overflow` is
+   non-null. The public wrappers accept null result/count/overflow pointers and
+   bad capacities, so callers can still suppress matches and receive success.
+   Validate the full output/ops/PID contract and return EINVAL for invalid
+   arguments.
+4. No committed test exercises `reaper_pin_dir`, a path swap, or even
+   `zb_reaper_dir_id_eq`; all 21 rows are portable engine/gather tests.
+
+The header also still says `gather` returns -2 for an empty scan and omits EIO
+from the public result list. Findings were sent to JadeBeacon with BlueBeaver
+copied in Agent Mail 7266.
