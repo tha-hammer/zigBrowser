@@ -39,7 +39,8 @@ test "item 5: with no pid the argv is exactly today's (Linux unchanged)" {
     defer arena.deinit();
     const run = try launchWith(arena.allocator(), null);
     for (run.argv) |a| try std.testing.expect(!std.mem.eql(u8, a, "--browser-pid"));
-    try std.testing.expectEqual(@as(usize, 13), run.argv.len);
+    // python -m zb_agent_host setup + five --flag value pairs: 14, the argv pinned by agent_setup.zig's own test.
+    try std.testing.expectEqual(@as(usize, 14), run.argv.len);
 }
 
 test "item 2: self_exe.path is the running binary's real path (Linux: /proc/self/exe)" {
