@@ -21699,6 +21699,25 @@ Agent Mail 7107. The current uncommitted green also drops the existing
 `test_setup_darwin_r1_v6` and `test_netd_darwin_v6` build registrations; that
 separate in-progress drift was flagged for restoration before commit.
 
+### S8a unreadable-token red fix-forward (`9042b9e`)
+
+Reviewed exact test-only commit `9042b9e` on 2026-10-21. **Verdict:
+APPROVED-for-tests; it closes the sole hold on `f361dc4`.** The fake now
+refuses to expose a token outside the automation world and can make a selected
+1-based token read return a script failure, malformed JSON, an empty token or
+a missing field. The table exercises every form at read 1 (Phase-C capture)
+and read 2 (the pre-action recheck), requiring -32015
+`document_token_unreadable`, the exact read count, zero real clicks and an
+unchanged pacing balance. Thus fail-open capture, fail-open recheck and
+page-world mutations are all discriminated. The prior EOF whitespace NIT is
+also fixed and `git diff --check` passes.
+
+Cumulatively, `f361dc4` plus `9042b9e` are **APPROVED as the S8a flow-phase
+red suite** and close findings 7098 #1-#4 plus its parser-table SHOULD. The
+slice itself is not green or complete yet: these reds, the server/Runner
+modules and the real-binary fixture e2e must be registered with the production
+green, then pass its focused and aggregate gates.
+
 ## MS6.4 exact classifier census (`9e88d2e`)
 
 Reviewed exact test-only commit `9e88d2e` on 2026-10-21. **Verdict:
