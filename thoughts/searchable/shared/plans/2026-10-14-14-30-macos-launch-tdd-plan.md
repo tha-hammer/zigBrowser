@@ -1650,7 +1650,19 @@ above plus per-process Seatbelt port rules**. Either way MS0's launch spec is th
 - **MS6.2 (gate):** custom `sandbox-exec` profile is **accepted** on both arches' OS versions
   (disposition 3; failure selects VM).
 - **MS6.3 (gate):** the **fd-3 reopen** (`/dev/fd/3`) works with the macOS CLI on **both** arches
-  (disposition 2).
+  (disposition 2). **Split (RoseCat 7038, mirroring the MS6.6 split in 7053):**
+  - **lower layer — the Seatbelt fd-3-reopen probe** (`tests/mac/ms6_3_fd3_reopen_test.sh`, both arches,
+    green): the generated CLI profile PERMITS `open("/dev/fd/3")` (a C stand-in does exactly that reopen),
+    and a profile denying the token's dir DENIES it, so the pass is the `file-read*` grant's doing. This
+    does NOT run the real CLI and does NOT prove the production channel.
+  - **hard gate — the real pinned CLI over the production channel** (MS5-gated): production hands fd 3 a Unix
+    **socketpair** endpoint (`token.py`), not a regular file, and the real pinned Claude CLI must consume the
+    exact canary via `CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR` under the generated profile, both arches, with
+    a discriminating mutant. This becomes a required case of the **armed MS5 e2e** and waits on the MS5
+    dependency decision (the same gate that keeps `ms5_setup_e2e` NOT ARMED). Whether the CLI reopens
+    `/dev/fd/3` or reads the socket fd directly (`token.py:3-8`) is settled by that measured real-CLI
+    evidence; the contract is amended then if needed. Until that e2e passes, MS6.3's hard gate is unmet and
+    does not contribute to `seatbelt_ready`.
 - **MS6.4 (gate, egress mapping pinned — rev 6):** network — the CLI/helper reach egress **only at
   the backend's per-session `127.0.0.1:<port>`** (the generated profile permits only that endpoint);
   both bridges `:51091`/`:31337` carry bytes (positive controls); and the sandbox **fails** to

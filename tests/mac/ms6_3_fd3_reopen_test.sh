@@ -1,12 +1,16 @@
 #!/bin/sh
-# MS6.3 (plan :1608) — the fd-3 reopen (`open("/dev/fd/3")`) works UNDER THE GENERATED CLI PROFILE on both arches.
+# Seatbelt fd-3-reopen PROBE — the LOWER layer of MS6.3 (plan split, RoseCat 7038). NOT the MS6.3 hard gate.
 #
 #   $1 = a directory holding sandbox_macos.py (the production generator) + ms6_3_fd3_reopen.c.
 #
 # The macOS CLI reads its OAuth token by REOPENING "/dev/fd/3" (not read(3) on the inherited fd); that open() must
-# pass the Seatbelt profile's file-read check. This gate proves:
+# pass the Seatbelt profile's file-read check. This PROBE proves ONLY that the generated profile permits/denies
+# the reopen — it uses a C stand-in over a REGULAR FILE, does NOT run the real pinned CLI, and does NOT exercise
+# production's Unix-socketpair fd-3 channel. The MS6.3 HARD GATE (real CLI consuming the canary via
+# CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR over the socketpair under the generated profile, both arches) is a
+# required case of the armed MS5 e2e, gated on the MS5 dependency decision. This probe proves:
 #   - unsandboxed, the reopen reads the token (the fd plumbing + helper are sound — not a vacuous pass);
-#   - under the GENERATED cli profile (broad file-read*), the reopen reads the exact token  <-- the MS6.3 hard gate;
+#   - under the GENERATED cli profile (broad file-read*), the reopen reads the exact token;
 #   - under a deny-read-of-the-token profile (everything needed to exec the helper, but NOT read the token dir),
 #     the reopen is DENIED — so the cli-profile success is the file-read grant's doing, not a /dev/fd exemption.
 # sandbox-exec denials are silent EPERM; nothing appears on the Mac's screen.
