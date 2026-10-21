@@ -21872,3 +21872,66 @@ Therefore **`3e027b9` and its MS6.4 generated-profile endpoint gate are now
 cumulatively APPROVED** through `6016938`, `a597309`, `10cfae2`, `4deb518`,
 `e05774f`, `7a49946`, and `9e88d2e`. This scoped closure does not imply that
 MS6.6(B), the production setup-on-Mac closure, or `seatbelt_ready` is complete.
+
+## MS6 pre-`seatbelt_ready` plan and gate-scope closure (`80d1473`, `1028a65`, `03802e7`, `d6b2660`, `2277282`, `689c586`)
+
+Reviewed the exact cumulative chain at `689c586` on 2026-10-21. Shell syntax
+and whitespace checks pass. These are contract and probe-label changes; no
+Mac, live browser or full gate was run.
+
+- **`80d1473` APPROVED.** Rev 18.1 breaks the MS6.6(B) cycle without weakening
+  the product gate: the pre-`seatbelt_ready` harness imports the staged pinned
+  production `zb_agent_host.setup` and directly calls the real `probe_r1`,
+  while normal browser setup still refuses until `seatbelt_ready`. It keeps the
+  generated profile, listener/socketpair, census, lifecycle, forged-capability
+  negative and planted-token controls, and waits only on the pinned MS5 tree.
+  This approves the plan shape; MS6.6(B) remains open until that harness exists
+  and passes on both Macs.
+- **`1028a65` APPROVED.** The lower probe now says exactly what it proves: a C
+  stand-in opens `/dev/fd/3` over a regular file. It explicitly leaves the real
+  CLI's reopen-versus-direct-read behavior to the socketpair hard gate, and its
+  PASS row is labelled partial/probe.
+- **`03802e7` APPROVED.** It correctly renamed the aggregate row to
+  `ms6-containment-probe-gate` and put the incomplete-hard-gate warning in the
+  file header. No repository consumer parses the former PASS token. A later
+  stale-base overwrite is assessed separately below and restored at HEAD.
+- **`d6b2660` plan-text half APPROVED; its script half is BLOCKED.** The plan
+  correctly moves MS6.3's real pinned-CLI/socketpair case into the same unified
+  pre-`seatbelt_ready` harness as MS6.6(B). But this stale-base edit overwrites
+  `03802e7`'s clearer header and row, reintroduces the broad `PASS ms6-gate`
+  label, and accidentally changes the script from 0755 to 0644. Its parenthetical
+  qualifier is useful but does not preserve the requested unambiguous aggregate
+  identity.
+- **`2277282` APPROVED only for restoring 0755.** It closes the mode regression,
+  not the overwritten scope/header regression.
+- **`689c586` APPROVED; it closes the remaining script regression.** Current
+  `tests/mac/ms6_gate.sh` is byte-for-byte the `03802e7` version and remains
+  executable: the top-level scope header is restored, and the only PASS identity
+  is `ms6-containment-probe-gate` with the two hard gates explicitly NOT ARMED.
+
+Thus all three findings on `98c2c8a` are **CLOSED cumulatively**: the cycle is
+gone, the aggregate is explicitly partial/probe, and the stand-in is no longer
+described as the real CLI. `98c2c8a` is APPROVED as the lower-probe /
+future-hard-gate split through this chain. The still-unimplemented unified hard
+gate, MS6.3, MS6.6(B), MS6 as a whole and the `seatbelt_ready` flip remain open
+regardless.
+
+## Provisional linear blocker after WS0 live acceptance
+
+The current push-through remains **`26fdfff`** while `7d85cd5` awaits the two
+orchestrator-watched WS0 live runs. Assuming those runs pass and close the WS0
+chain, the next earliest explicitly unresolved commit is **`2cdcb7a`**
+(`WS1.3 PNG screenshot census`, AzureRidge).
+
+Its later production success-path replacement (`f2212e1` plus `8f36ee7`) does
+run the real VM binary, require exit zero and fetch a run-scoped nonuniform PNG,
+so the planted-artifact portion of the old finding has a credible replacement.
+The original committed census nevertheless remains an unregistered,
+caller-supplied-artifact red and still leaks each opened PNG file. A local
+display-scrubbed run with `PYTHONWARNINGS=error::ResourceWarning` visibly emits
+the unclosed-file warnings and fails its absent-artifact case. No review entry
+has cumulatively closed `2cdcb7a`, and the later `6c771ff` Windows screenshot
+failure suite is also still BLOCKED-for-tests on its exact branch diagnostics.
+AzureRidge should fix forward the census leak and either register/replace the
+old artifact red with the real provenance-bound success test, then close the
+separately recorded exact-diagnostic mutants for `6c771ff`.
