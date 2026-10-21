@@ -71,10 +71,10 @@ int zb_agent_spawn_group_io(const char *const *argv, const char *const *envp, in
   return err;
 }
 
-/* `pid`'s parent and process group, an unreaped zombie included; -1 if there is no such process. Darwin reads the
- * kernel's process table (sysctl kern.proc.pid: getpgid and getsid fail with ESRCH on a zombie there, measured on both
- * Macs); Linux reads /proc/<pid>/stat. */
-static int parent_and_group(pid_t pid, pid_t *ppid, pid_t *pgid) {
+/* `pid`'s parent, process group and whether it is a zombie, an unreaped zombie included; -1 if there is no such
+ * process. Darwin reads the kernel's process table (sysctl kern.proc.pid: getpgid and getsid fail with ESRCH on a
+ * zombie there, measured on both Macs); Linux reads /proc/<pid>/stat. */
+static int parent_and_group(pid_t pid, pid_t *ppid, pid_t *pgid, int *zombie) {
 #ifdef __APPLE__
   struct kinfo_proc kp;
   size_t len = sizeof kp;
@@ -84,6 +84,7 @@ static int parent_and_group(pid_t pid, pid_t *ppid, pid_t *pgid) {
   }
   *ppid = kp.kp_eproc.e_ppid;
   *pgid = kp.kp_eproc.e_pgid;
+  *zombie = kp.kp_proc.p_stat == SZOMB;
   return 0;
 #else
   char path[64], buf[512];
@@ -99,12 +100,14 @@ static int parent_and_group(pid_t pid, pid_t *ppid, pid_t *pgid) {
   for (char *p = buf; *p; p++) {
     if (*p == ')') close_paren = p;  /* the command name may itself hold ')' */
   }
+  char state = 0;
   int pp = 0, pg = 0;
-  if (close_paren == NULL || sscanf(close_paren + 1, " %*c %d %d", &pp, &pg) != 2) {
+  if (close_paren == NULL || sscanf(close_paren + 1, " %c %d %d", &state, &pp, &pg) != 3) {
     return -1;
   }
   *ppid = (pid_t)pp;
   *pgid = (pid_t)pg;
+  *zombie = state == 'Z';
   return 0;
 #endif
 }
@@ -118,13 +121,21 @@ int zb_agent_kill_group(pid_t pid) {
   /* Only our own child, alive or an unreaped zombie (its pid cannot be reused until we reap it), that leads its
    * own group (zb_agent_spawn_group's POSIX_SPAWN_SETPGROUP). Anything else is never signalled. */
   pid_t ppid = 0, pgid = 0;
-  if (parent_and_group(pid, &ppid, &pgid) != 0 || ppid != getpid()) {
+  int zombie = 0;
+  if (parent_and_group(pid, &ppid, &pgid, &zombie) != 0 || ppid != getpid()) {
     return ECHILD;
   }
   if (pgid != pid) {
     return EPERM;
   }
-  (void)killpg(pid, SIGKILL); /* EPERM for a zombie-only group on Darwin: nothing left to signal */
+  if (killpg(pid, SIGKILL) != 0) {
+    /* Darwin's killpg gives EPERM for a zombie-only group: nothing left to signal, so reap it. A LIVE leader we could
+     * not signal is never waited for (that wait could block forever, RoseCat 7191): its errno comes back unreaped. */
+    int err = errno;
+    if (parent_and_group(pid, &ppid, &pgid, &zombie) != 0 || !zombie) {
+      return err;
+    }
+  }
   (void)zb_agent_wait(pid);
   return 0;
 }

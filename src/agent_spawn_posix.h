@@ -27,7 +27,9 @@ int zb_agent_spawn_group_io(const char *const *argv, const char *const *envp, in
 /* SIGKILL the whole group led by `pid`, then reap `pid`; 0 when done. Only our own child (alive or an unreaped
  * zombie) that leads its own group is ever signalled (RoseCat 7172, 7182; killpg(1) is kill(-1)):
  * EINVAL for pid <= 1, our own pid or our own group; ECHILD when `pid` is not our child; EPERM when it is our child
- * but not its group's leader. None of these sends a signal or reaps. */
+ * but not its group's leader. None of these sends a signal or reaps. If killpg itself fails while the leader is still
+ * alive, its errno is returned at once and the leader is not reaped (never an unbounded wait); a zombie-only group
+ * (Darwin's killpg gives EPERM) is reaped and 0 returned. */
 int zb_agent_kill_group(pid_t pid);
 
 /* Wait for `pid` (EINTR retried): its exit status as waitpid reports it, or -1. */
