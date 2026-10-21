@@ -25,20 +25,22 @@ static void check(int ok, const char *m) { total++; printf("  %s %s\n", ok ? "ok
 static const pid_t *g_gens[4]; /* generational scan: each gen is one pid, or NULL for an empty gen */
 static int g_ngens;
 static int g_gen;
-static pid_t g_persist;  /* when > 0: every gather returns exactly {g_persist} (no advance) */
-static int g_scan_error; /* when set: the scan reports an error -> gather -2 */
-static pid_t g_eperm;    /* this pid's SIGKILL returns EPERM (an un-killable survivor) */
+static pid_t g_persist;    /* when > 0: every gather returns exactly {g_persist} (no advance) */
+static int g_scan_error;   /* when set: the scan reports an error -> gather -2 -> run_full EIO */
+static int g_overflow_scan; /* when set: the fill always reports the buffer full -> gather -1 -> run_full EOVERFLOW */
+static pid_t g_eperm;      /* this pid's SIGKILL returns EPERM (an un-killable survivor) */
 
 static pid_t g_killed[64];
 static int g_killed_n;
 
 static void reset(void) {
-  g_ngens = 0; g_gen = 0; g_persist = 0; g_scan_error = 0; g_eperm = 0; g_killed_n = 0;
+  g_ngens = 0; g_gen = 0; g_persist = 0; g_scan_error = 0; g_overflow_scan = 0; g_eperm = 0; g_killed_n = 0;
   for (int i = 0; i < 4; i++) g_gens[i] = NULL;
 }
 
 static int fake_scan(void *buf, int bytes) {
   if (g_scan_error) return -1; /* sizing and fill both error -> gather returns -2 */
+  if (g_overflow_scan) return (buf == NULL) ? 1000 : (bytes / (int)sizeof(pid_t)); /* fill == cap -> always full */
   pid_t pid = 0;
   if (g_persist > 0) {
     pid = g_persist; /* every gather sees the same pid; no advance */
@@ -105,7 +107,15 @@ int main(void) {
   clean = passes = overflow = -1;
   rc = zb_reaper_fixed_point(fake_scan, &ops, dir, 8, &clean, &passes, &overflow);
   printf("S3 rc=%d clean=%d passes=%d overflow=%d\n", rc, clean, passes, overflow);
-  check(rc == 0 && overflow == 1 && clean == 0, "S3: a scan error is NOT clean (overflow set, Survivors)");
+  check(rc == 0 && overflow == 1 && clean == 0, "S3: a scan error (EIO) is NOT clean (overflow set, Survivors)");
+
+  /* S3b: an incomplete scan (persistently-full buffer) -> run_full EOVERFLOW -> NOT a clean empty set */
+  reset();
+  g_overflow_scan = 1;
+  clean = passes = overflow = -1;
+  rc = zb_reaper_fixed_point(fake_scan, &ops, dir, 8, &clean, &passes, &overflow);
+  printf("S3b rc=%d clean=%d passes=%d overflow=%d\n", rc, clean, passes, overflow);
+  check(rc == 0 && overflow == 1 && clean == 0, "S3b: an incomplete scan (EOVERFLOW) is NOT clean (overflow set, Survivors)");
 
   /* S4: a persistent un-killable survivor (EPERM) -> max-pass exhaustion is not Clean */
   reset();
