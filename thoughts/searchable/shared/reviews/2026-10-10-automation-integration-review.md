@@ -19425,3 +19425,55 @@ The separate gated-call budget and native-only mint direction are sound
 starting points. Findings were mailed to BlackRobin, copied to JadeBeacon, in
 Agent Mail 6913. The plan diff passes `git diff --check`. No test, display,
 browser, live site or remote host was used for this docs-only review.
+
+## MS5.1c-a staging fix-forward and green (`f7836c0`, `206579e`)
+
+Reviewed exact commits `f7836c0` and `206579e` on 2026-10-20 against macOS
+plan rev 17, Behavior MS5.1c. Explicit verdicts:
+
+- **`f7836c0` is APPROVED as the corrected red.** It closes every finding on
+  `142abbe`: each Mac returns the declared staged resources, and the Linux
+  driver invokes the committed production entry point
+  `mac_resource_compat.py --manifest universal_components_ms5.json
+  --milestone MS5` over the two per-architecture trees. BlueBeaver's
+  architecture-dependent `__init__.py` mutant makes both per-host checks pass
+  but this two-tree oracle fail, proving the newly added edge is load-bearing.
+  The tampered-package assertion now also requires the entire prefix to be
+  absent or empty.
+- **`206579e` is APPROVED for the partial MS5.1c-a staging slice.** It does
+  not approve complete MS5.1/MS5.1c: locked dependencies and the Claude CLI
+  remain explicitly unstaged. `stage_agent_runtime.sh:23-28` checks the
+  package digest against both its caller-supplied digest and rev 15's pin,
+  then checks the pinned PSF installer identity and notarization before
+  expansion. Lines 30-44 refuse an existing live runtime, expand only into a
+  sibling temporary directory, remove the `*-intel64` launchers, copy only
+  regular `zb_agent_host` files, write byte-exact `runtime.json`, and publish
+  by renaming the complete staged directory. The gate labels the result
+  partial and never claims the helper runs.
+
+BlueBeaver's committed-HEAD evidence at `206579e` is x86_64 PASS, arm64 PASS,
+the cross-tree production oracle PASS with 78 assertions, and the overall
+staging gate PASS. Five measured mutants failed on both Macs: removing all
+SHA checking, retaining `-intel64`, adding a package file, changing the
+`runtime.json` newline, and making package content architecture-dependent.
+The last mutant is the specific false-green that blocked the original red.
+
+**SHOULD (test precision):** the current tampered-package case proves the
+combined hash fence, but it supplies the same rev-15 digest as both the
+argument and the pin. Deleting either one of the two individual comparisons
+still leaves the other comparison to reject that fixture. Add independent
+negatives for a wrong caller-supplied digest and for the fixed rev pin when
+this gate is next extended, so the plan's explicit **argument AND pin** rule
+is mutation-protected one guard at a time.
+
+**SHOULD (refusal edge):** `[ ! -e "$AGENT" ]` does not treat a dangling
+symlink as an existing path. Use a no-follow existence check (and add an
+unchanged-existing-target case) so the script's stronger claim that *any*
+existing `agent-host` is refused remains true. This does not expose or merge
+content in the reviewed ordinary publish path and does not block the partial
+slice.
+
+`git diff --check f7836c0^..206579e`, `bash -n` on both changed shell files,
+and the exact diff audit passed locally. The Mac execution and mutation
+results are BlueBeaver's Agent Mail 6914 evidence; no Mac, browser, display,
+credential or live site was touched by this review.
