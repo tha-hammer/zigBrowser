@@ -9,10 +9,11 @@ outlive the bound by far (each also ends itself after 20 s, so a leak is bounded
 - probe_r1 returns no R1 within the bound plus a small grace, not when the last pipe holder exits;
 - when it returns, none of the three is alive (gone, or a zombie awaiting the namespace's init);
 - the named helper exists (the hard gate observes it instead of subprocess.run).
-It sends signals, so it runs ONLY inside a private PID namespace (unshare --user --map-root-user --pid --fork
---mount-proc) and skips anywhere else.
-Run: cd agent/host/tests && unshare --user --map-root-user --pid --fork --mount-proc \\
-  sh -c 'setsid python -X dev -m unittest -v test_setup_sandbox_lifetime'. Unregistered until the green.
+It sends signals, so it runs ONLY inside a private PID namespace proven by pidns_guard (the launcher passes its
+outer namespace inode in ZB_OUTER_PIDNS) and skips anywhere else.
+Run: cd agent/host/tests && outer=$(readlink /proc/self/ns/pid) && unshare --user --map-root-user --pid --fork \\
+  --mount-proc sh -c "setsid env ZB_OUTER_PIDNS=$outer python -X dev -m unittest -v test_setup_sandbox_lifetime".
+Unregistered until the green.
 """
 import contextlib
 import os
@@ -23,6 +24,7 @@ import time
 import unittest
 from unittest import mock
 
+import pidns_guard
 import support  # noqa: F401  (puts the helper package on sys.path)
 
 from zb_agent_host import proc_darwin, sandbox_macos, setup
@@ -48,16 +50,6 @@ CLI = textwrap.dedent('''
 ''')
 
 
-def _in_private_pid_namespace():
-    """Inside `unshare --pid --fork --mount-proc`, pid 1 is the shell or unshare that started us, never the host's init
-    (with --mount-proc, NSpid lists only the inner pid, so it cannot tell)."""
-    try:
-        with open("/proc/1/comm") as f:
-            return f.read().strip() in {"sh", "dash", "bash", "unshare"}
-    except OSError:
-        return False
-
-
 def _alive(pid):
     """Alive = /proc/<pid> exists and is not a zombie (no signal is sent to find out)."""
     try:
@@ -69,8 +61,9 @@ def _alive(pid):
 
 class OwnedGroupBound(unittest.TestCase):
     def setUp(self):
-        if not _in_private_pid_namespace():
-            self.skipTest("signals real processes: runs only inside a private PID namespace")
+        ok, why = pidns_guard.private_pid_namespace()  # RoseCat 7422: the launcher's namespace-inode sentinel
+        if not ok:
+            self.skipTest(f"signals real processes: {why}")
         self.addCleanup(mock.patch.stopall)
         self.dir = tempfile.mkdtemp(prefix="zb-lifetime-")
         mock.patch.object(setup, "PLATFORM", "darwin").start()
