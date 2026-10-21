@@ -41,6 +41,31 @@ from zigbrowser.errors import ZigBrowserError  # noqa: E402
 
 TEXT = "Hi there"
 
+# Decision 14's error contract per refusal (RoseCat 7305): (code, data.reason, data.step, data.sent).
+# Stage 1 stops after the pointerdown it dispatched; the thread's mark fails before the input's
+# first event; a header changed on the first keydown stops after that one event, no character.
+NONE = {"events": 0, "chars": 0}
+KEYDOWN = {"events": 1, "chars": 0}
+IG_REFUSED = {
+    "pushstate.user": (-32015, "path_changed", "click_message_button", {"events": 1, "chars": 0}),
+    "wrongthread.user": (-32015, "mark_changed", "click_dm_input", NONE),
+    "keydownswap.user": (-32015, "mark_changed", "type_dm_input", KEYDOWN),
+    "decoyswrong.user": (-32015, "mark_changed", "click_dm_input", NONE),
+    "twothreads.user": (-32015, "mark_changed", "click_dm_input", NONE),
+    "otherorigin.user": (-32015, "mark_changed", "click_dm_input", NONE),
+}
+LI_REFUSED = {
+    "wrong": (-32015, "mark_changed", "click_message_input", NONE),
+    "keydown": (-32015, "mark_changed", "type_message_input", KEYDOWN),
+    "decoyswrong": (-32015, "mark_changed", "click_message_input", NONE),
+    "two": (-32015, "mark_changed", "click_message_input", NONE),
+    "otherorigin": (-32015, "mark_changed", "click_message_input", NONE),
+}
+
+
+def contract(code, data: dict) -> tuple:
+    return (code, data.get("reason"), data.get("step"), data.get("sent"))
+
 
 def window_one(zb: ZigBrowser) -> dict:
     return next(p for p in zb.page.list()["pages"] if p["window_id"] == "window-1")
@@ -78,9 +103,8 @@ def scenario(zb: ZigBrowser, origin: str) -> list[str]:
         time.sleep(0.05)
     ev = lambda expr: zb.page.evaluate(expr)["result"]  # noqa: E731
 
-    for user, sends in (("decoys.user", True), ("pushstate.user", False), ("wrongthread.user", False),
-                        ("keydownswap.user", False), ("decoyswrong.user", False), ("twothreads.user", False),
-                        ("otherorigin.user", False)):
+    for user in ("decoys.user", *IG_REFUSED):
+        sends = user not in IG_REFUSED
         url = f"{origin}/{user}/"
         code, data = attempt(zb, "instagram.dm", {
             "username": user, "text": TEXT, "window_id": "window-1",
@@ -91,13 +115,13 @@ def scenario(zb: ZigBrowser, origin: str) -> list[str]:
         if sends:
             check(code is None and result == {"action": "dm", "text": TEXT}, f"instagram {user}: sent once ({code}, {data}, {result})")
         else:
-            check(code == -32015, f"instagram {user}: -32015 ({code}, {data})")
+            check(contract(code, data) == IG_REFUSED[user], f"instagram {user}: {IG_REFUSED[user]} ({code}, {data})")
             check(result is None and typed == "", f"instagram {user}: nothing typed or sent ({result!r}, {typed!r})")
         if user == "pushstate.user":
             check(ev("document.getElementById('dm').hidden") is True, "instagram pushstate.user: the Message click never happened")
 
-    for thread, sends in (("ok", True), ("decoys", True), ("wrong", False), ("keydown", False), ("decoyswrong", False), ("two", False),
-                          ("otherorigin", False)):
+    for thread in ("ok", "decoys", *LI_REFUSED):
+        sends = thread not in LI_REFUSED
         url = f"{origin}/messaging/thread/{thread}/"
         code, data = attempt(zb, "linkedin.message", {
             "conversationUrl": url, "text": TEXT, "window_id": "window-1",
@@ -108,7 +132,7 @@ def scenario(zb: ZigBrowser, origin: str) -> list[str]:
         if sends:
             check(code is None and sent == [TEXT], f"linkedin {thread}: sent once ({code}, {data}, {sent})")
         else:
-            check(code == -32015, f"linkedin {thread}: -32015 ({code}, {data})")
+            check(contract(code, data) == LI_REFUSED[thread], f"linkedin {thread}: {LI_REFUSED[thread]} ({code}, {data})")
             typed = ev("(document.querySelector('.msg-form__contenteditable') || {textContent: ''}).textContent")
             check(sent == [] and typed == "", f"linkedin {thread}: nothing typed or sent ({sent!r}, {typed!r})")
 
