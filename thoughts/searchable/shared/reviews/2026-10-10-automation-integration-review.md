@@ -20934,3 +20934,59 @@ Three cleanup/liveness defects remain:
 
 No remote Mac or full gate was rerun because BlackRobin owns the shared slot.
 Findings mailed to JadeBeacon, cc BlueBeaver, in Agent Mail 7052.
+
+## R1 kernel-properties red fix-forward (`cd38735`)
+
+Reviewed exact test-only commit `cd38735` on 2026-10-20. **Verdict:
+BLOCKED-for-tests.** The narrowed kernel-properties scope is honest; the
+two-host/key configuration fails closed; reads now have a monotonic deadline;
+the denial rows require exact measured `EPERM`; an unsandboxed control proves
+the same calls can succeed; targets must still be alive; and the planted run
+has its own report, connection and liveness positives. Exact-SHA `bash -n` and
+Python compilation passed.
+
+Three test/cleanup blockers and one evidence hold remain:
+
+1. **BLOCKER-for-tests:** group cleanup can fail while a real case passes.
+   `r1_kernel_driver.py:139-161` suppresses both `ESRCH` and `EPERM` from
+   `killpg`, stores the final result only in global `LAST_GROUP`, and does not
+   raise when the group remains. Only the silent case checks that global
+   (`:173-179`); the control, sandboxed and planted runs do not. Moreover, the
+   silent fixture sleeps before spawning any children
+   (`r1_kernel_inner.py:17-19`), so it proves leader cleanup rather than whole
+   descendant-group cleanup. Only `ESRCH` may mean gone. Every invocation must
+   fail if its group is not gone, and a live-child case plus injected
+   kill/observation failures must turn red.
+2. **BLOCKER (cleanup verification):** `r1_kernel_driver.py:71-75` uses
+   `shutil.rmtree(..., ignore_errors=True)` and never checks the exact scratch
+   path is absent. A permission, I/O or guard failure can therefore leave
+   `/tmp/zb-r1k-*` while the test passes. Fail on every non-`ENOENT` deletion
+   error, verify absence, and add an injected deletion-failure case.
+3. **BLOCKER (post-incident cleanup rule):**
+   `ms6_r1_kernel_gate.sh:33-35` still executes
+   `rm -f "$stage/$2"`. Every deletion path must use a nonempty-variable guard;
+   use `${stage:?}` and pin it in the script oracle.
+4. **Evidence hold:** the reported both-Mac run still dies at the independent
+   Python `SIGILL`, before the intended missing-census assertion. After the
+   setup-profile fix, both architectures must reach and fail the intended
+   census seam before this red closes 7050.
+
+No full gate or remote rerun was performed: this is an unregistered Mac-only
+red and the shared gate slot belongs elsewhere. Findings mailed to BlueBeaver,
+cc JadeBeacon, in Agent Mail 7055.
+
+## macOS plan rev 18 — MS6.6 dependency split (`8d21933`)
+
+Reviewed exact docs-only commit `8d21933` on 2026-10-20. **Verdict: APPROVED.**
+It correctly makes the census broker plus kernel-properties gate dependency
+(A), expressly allows that implementation to land only as scoped/incomplete,
+and says (A) cannot close `61776d9`/`7590369`, MS6, `seatbelt_ready`, or enable
+Mac agent launch. Dependency (B) is the real
+`setup.probe_r1 -> sandbox-exec -> route_probe -> inherited listener/census
+fds -> wrapper -> controlled CLI` chain on both architectures with the pinned
+production runtime and dependency tree. It preserves the exact descriptor,
+forged-capability, listener, request/reply, timeout/lifecycle and planted-token
+requirements, and makes (B) a hard prerequisite of `seatbelt_ready`, MS6
+completion and any Mac-backend launch consumer. This matches the accepted 7053
+scope call and records the current setup-profile `SIGILL` without treating it
+as acceptance evidence.
