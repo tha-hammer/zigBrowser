@@ -19332,3 +19332,96 @@ blocking MS6.1 token-isolation contract. Explicit verdicts:
 results for `35abc08` came from JadeBeacon's evidence packet (Agent Mail 6904).
 No Mac, browser, live socket, credential or display was used. Findings were
 mailed to BlueBeaver in Agent Mail 6909 and JadeBeacon in Agent Mail 6910.
+
+## WS0 provisioner failure negative and rev 2.11 metadata (`385d452`)
+
+Reviewed exact commit `385d452` on 2026-10-20 against item 1 of the open
+`e76ead9` WS0 checklist. **Verdict: APPROVED.** This closes the remaining
+production-provisioner test gap and the stale plan-front-matter SHOULD; it does
+not by itself close WS0 acceptance.
+
+`host_live_test.py:310-318` executes the actual committed
+`provision_session_task.ps1` through the existing SSH/stdin path, selects an
+illegal task name that makes the real `schtasks /Create` fail, and requires the
+PowerShell process to exit nonzero. `provision_session_task.ps1:15-21` switches
+native-command error handling to `Continue` for that terminal operation,
+captures `$LASTEXITCODE`, emits the result and makes the explicit nonzero guard
+authoritative. AzureRidge's live mutation deleted only
+`if ($rc -ne 0) { exit 1 }`; the process then exited zero and the new test went
+red. The registered suite's positive production-provision-and-verify case
+remains beside it, so a script that merely fails before invoking `schtasks`
+cannot make the complete suite green. The plan's authoritative `status` and
+`rev` fields now both say 2.11 and match `rev_2_11_note`.
+
+Python compilation and `git diff --check 385d452^..385d452` passed. No Windows
+host was contacted. WS0 remains pending only the scheduled final-SHA clean
+export aggregate gate, the owner-watched locked-console PASS followed by
+unlock, and the orchestrator-watched real two-host `--probe-only` PASS with the
+pinned rows and invariants. Verdict mailed to AzureRidge in Agent Mail 6912.
+
+## Chat drawer S8 approval design, rev 16.20.37 (`47e619b`)
+
+Reviewed exact commit `47e619b` on 2026-10-20 against the threat model's
+per-action approval invariant and the existing engine/flow boundaries.
+**Verdict: BLOCKED.** The three questions sent to the user remain open and can
+be decided independently; the findings below are defects in the proposed
+security mechanism, not substitutes for those decisions.
+
+1. **BLOCKER — story preview acts before approval.** Plan lines 3059 and 3088
+   put all ten previews in the no-card set. Current `instagram.zig:311-313`
+   and `:352-399` explicitly say that merely navigating to the story may mark
+   the first frame seen. That is the action this approval protects. The story
+   preview must be removed or made genuinely non-viewing, and a fixture red
+   must show zero view/seen record before Approve.
+2. **BLOCKER — revalidation is not atomic with the real ticket.** Line 3086's
+   health/origin/load/account reads and the subsequent real call are separate
+   `callInProcess` operations. Navigation or an account switch can occur after
+   revalidation and before the real queue ticket. Raw DOM expects only
+   `target_fp`, while navigate/reload have no target. Origin, `load_serial`,
+   applicable account and dialog/crash validity must be checked after the real
+   ticket is acquired and before any mutation. A deterministic hold in this
+   gap must prove navigation/account change gives -32015 and zero input.
+   `dialog_open` is currently read but not compared/refused.
+3. **BLOCKER — the proposed fingerprint is cloneable semantics, not element
+   identity.** Line 3075's tag/id/name/role/accessibility/text/frame fields are
+   all reproducible on a replacement node. The isolated world needs an opaque,
+   page-unforgeable per-element identity or an equivalent identity primitive,
+   with a same-fields-clone red. Native/humanized input also needs a forced
+   replacement after locate/pointer moves but before mouse-down; a check before
+   the native sequence is not atomic with its event.
+4. **BLOCKER — flows protect only their final click after earlier sensitive
+   mutations.** Line 3084 leaves earlier click/fill/type/select steps
+   unguarded. Current post/comment/message/DM/schedule flows type drafts,
+   signal typing or select state before Send/Post, which can disclose content
+   to a changed account/recipient even when the last click is refused. The
+   grant must guard the account/recipient and every sensitive action target
+   before the first and every later mutation in the same flow ticket. Tests
+   must count zero input events, not only zero final fixture commits. The plan
+   must also define the fingerprint source for `linkedin_message` and
+   `instagram_dm`, which have no dry run.
+5. **BLOCKER — Stop/prompt end does not revoke the card.** Line 3099 waits for
+   session end but omits the active prompt ending and Stop. Bind a card/job to
+   `prompt_id`; result, prompt-scoped error, Stop and `session_ended` must
+   revoke it before a newer prompt can run. Force a stale Approve after Stop
+   and after a new prompt and prove no dispatch.
+6. **BLOCKER — the grant digest has no canonical encoding.** Line 3098 names
+   `sha256(tool, ..., normalized_args)` but does not define field framing,
+   JSON/key ordering, Unicode, numbers or absent versus null. Specify a typed,
+   length-delimited/canonical representation and use the same immutable owned
+   values for card display, digest and dispatch. Test delimiter, key-order and
+   Unicode collision cases in addition to random one-field changes.
+7. **BLOCKER-for-tests — the sole-minter statement lacks hostile-ingress
+   proofs.** The named S8c/S8d reds do not directly prove that top page,
+   same/cross-origin iframe, popup `zbHost`, socket client, helper frame/tool
+   arguments and hook output cannot invoke approve/deny or mint a grant. Each
+   ingress refusal needs a real negative and a removal mutant.
+8. **BLOCKER-for-tests — approval state races are not linearized by the named
+   suite.** A sequential second Approve does not cover Approve racing Deny,
+   TTL, detach or prompt end. Deterministic races must yield one terminal
+   `approvalend`, at most one dispatch, and no dispatch unless a still-valid
+   Approve wins.
+
+The separate gated-call budget and native-only mint direction are sound
+starting points. Findings were mailed to BlackRobin, copied to JadeBeacon, in
+Agent Mail 6913. The plan diff passes `git diff --check`. No test, display,
+browser, live site or remote host was used for this docs-only review.
