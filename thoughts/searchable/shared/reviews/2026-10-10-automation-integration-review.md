@@ -22691,3 +22691,35 @@ error. Only `EINTR` should retry; other errors should fail closed.
 
 This closes all other `3c0cc73` findings. The remaining blocker was sent to
 JadeBeacon and BlueBeaver in Agent Mail 7182.
+
+## MS5 Darwin-only `cryptography` pin (`309acf7`, `15470e4`)
+
+**`309acf7` APPROVED as the failing-first red; `15470e4` APPROVED as green.**
+The exact pyproject constraint applies `cryptography==48.0.1` only when
+`sys_platform == 'darwin'`, and the regenerated lock forks the dependency
+accordingly. The Darwin entry includes a `cp311-abi3`
+`macosx_10_9_universal2` wheel, which CPython 3.12 can load on both x86_64 and
+arm64. The non-Darwin entry remains 50.0.2.
+
+Independent exact-commit checks found:
+
+- the red fails all **4/4** checks on its parent lock;
+- the green passes **4/4**;
+- `uv lock --check --offline` succeeds; and
+- the frozen, offline export diff changes exactly one resolved requirement:
+  the unconditional 50.0.2 becomes Darwin 48.0.1 plus non-Darwin 50.0.2.
+  Every other exported Linux requirement is identical.
+
+The check is registered on `test-mac-census` and the Linux aggregate gate,
+and both commit diffs are clean.
+
+**SHOULD-for-tests:** parse `agent/host/pyproject.toml` too, or register an
+offline lock-consistency oracle, so deleting the source constraint while
+leaving a stale lock cannot pass. If "Linux unchanged" is meant as a lasting
+version contract rather than this transition's property, also pin the
+non-Darwin entry to 50.0.2 in the regression.
+
+This approval implements the user's compatibility decision. It does **not**
+close the separately open security-advisory comparison between 48.0.1 and
+50.0.2. Verdict sent to BlueBeaver, with JadeBeacon copied, in Agent Mail
+7183.
