@@ -23786,3 +23786,137 @@ a private user/PID namespace reports **14 tests OK, 6 Darwin-only skipped**.
 The recorded pre-fix namespaced ESRCH failure and repeated post-fix passes are
 adequate failing-first evidence for this test-only race. Verdict sent to
 BlueBeaver in Agent Mail 7247.
+
+## MS6 hard-gate arming ruling (BlueBeaver Agent Mail 7237)
+
+**APPROVED only as a staged, manifest-pinned red; remote Mac execution is not
+yet approved.** The committed MS5 pins may be written now, and the harness may
+stage the pinned runtime and become capable of running an exact reviewed case
+manifest. This does not make `seatbelt_ready` true: the deliberate MS6.6(B)
+placeholder and the MS6.3 real-CLI hard gate must both pass before that state
+can be claimed.
+
+Three constraints bind the arming slice:
+
+1. The case list must be an exact manifest. A missing or extra `case_*.py`
+   refuses the gate; discovery cannot silently make a newly added signal test
+   execute on either real Mac.
+2. `case_ms5_spawn_io.py` cannot run remotely until
+   `tests/mac/spawn_group_io_test.c` replaces its raw negative-PID failure-path
+   signals with the guarded ownership seam and a mutant proves no signal is
+   possible without a confirmed child group.
+3. The blocked MS6.5 reaper case (`7fa8906`/`021a765`) is excluded entirely
+   until its production safety review closes. In particular, it must not run
+   on laroncha, a real person's Mac, merely because the harness is armed.
+
+The conditional ruling was sent to BlueBeaver with JadeBeacon copied in Agent
+Mail 7250.
+
+## Windows build artifact/provenance publish (`cf77160`)
+
+**BLOCKED; `defb5a2`/`b32f285` remain open.** The exact-commit hermetic suite is
+green **24/24**, and the new `current` symlink would atomically switch a pair
+once all consumers already resolve both names through it. The committed red,
+however, seeds only that post-migration shape and misses the actual first
+upgrade from the old regular-file layout.
+
+1. **BLOCKER — first migration is still two-name publication.** After swapping
+   `current`, `build-on-windows.sh:166-167` replaces `$out` and `$out.sha`
+   separately. A fault injected into only the second move after planting the
+   real legacy regular-file pair produced exit **0**, new bytes `MZfakepe`, and
+   the old all-zero SHA: exactly the mismatch this slice is meant to prevent.
+2. **BLOCKER — the final link/move operations are unchecked.** The script
+   deliberately has no `set -e`; either bare `ln && mv` list can fail and a
+   later command still makes the script report success. Making `$out` a
+   directory reproduced exit **0** plus the final success message after `mv`
+   printed that it could not overwrite the directory.
+3. **BLOCKER — a same-SHA rerun removes the active version.** Line 152 deletes
+   `vers/$sha` even when `current` names it. A crash before the replacement
+   rename leaves the published paths dangling. Each run needs a fresh immutable
+   generation; only an unreachable generation may be cleaned after the swap.
+4. The new recursive deletes also violate the team's post-incident cleanup
+   rule: every delete target must be validated and expanded through `${var:?}`.
+
+Add legacy-layout, same-SHA-cut and each-final-operation fault reds. Prefer the
+single `current/<exe>{,.sha}` directory as the authoritative consumer surface;
+two independent compatibility names cannot themselves be switched as one
+filesystem object. Findings and both local reproductions were sent to
+AzureRidge with BlueBeaver copied in Agent Mail 7252.
+
+## MS6.5 injectable reaper engine (`c51a0a2`)
+
+**BLOCKED; do not run the Mac reaper gate.** The portable split is useful and
+the exact clean-export focused gate is green: **7/7 steps**, the Zig core's
+**7/7 tests**, and all 14 printed fake-engine rows. The Mac driver now publishes
+PIDs only after checked setup, sends no cleanup signal itself, and is safe in
+shape. Four production/test blockers remain:
+
+1. `agent_run_reaper.c:212-215` maps `zb_reaper_gather == -2`—process-list
+   estimate/fill failure or allocation failure—to success with empty counts and
+   no overflow. Only a proved complete empty set may be clean; scan failure must
+   return a nonzero/incomplete result, with a wrapper-level causal red.
+2. Exact basename grammar plus `realpath`, uid and 0700 mode does not prove the
+   directory is the app-created marker and is path-TOCTOU. The lifecycle must
+   retain and revalidate the creation-pinned directory identity (for example a
+   held no-follow directory fd and `(dev, ino, uid, mode)`), not trust a
+   same-user directory by pathname alone.
+3. Add changed-uid-between-inspections and explicit exactly-one intercepted
+   signal assertions for EPERM and ESRCH. The current EPERM/ESRCH rows assert
+   only the reported list, so a no-signal shortcut can survive.
+4. `collect()` returns before setting overflow when the result array or count
+   pointer is null. A zero-cap/null-output caller can suppress real matches as
+   a clean empty result. Validate the output contract or mark every
+   unrepresentable match overflow, and test it.
+
+The production app-stop/next-start lifecycle integration and replacement for
+the retired orphan gate also remain open. Bad operation pointers, PID arrays,
+negative counts and negative capacities should be rejected at this destructive
+boundary. Verdict sent to JadeBeacon with BlueBeaver copied in Agent Mail 7253.
+
+## S8a guarded-type chunk identity red (`a709521`)
+
+**BLOCKED-for-tests before the green.** The clone and replacement-document
+WebKit cases target the original identity bug, and the deadline, delay-field
+presence and retry-count directions are correct. The red suite leaves important
+new wire/accounting semantics unobservable:
+
+1. Pin both counters. The deadline must report exact
+   `sent={events:48,chars:16}`; every ambiguous row must omit `sent` and report
+   `sent_at_least={events:48,chars:16}`. Checking only `chars` lets event
+   accounting regress.
+2. The first call must omit both `chunk_target` and `chunk_document`; the red
+   checks only the former.
+3. Missing, empty and wrong-typed target/document acknowledgements from chunk
+   one must fail closed before chunk two, with one fixed error and the correct
+   exact/lower-bound evidence.
+4. `data.sent_at_least` is a new public error-data field. Name its exact schema
+   and UI/SDK meaning in the authoritative plan rather than relying on the
+   prose phrase “a lower bound.” It cannot support an exact “typed N” sentence.
+
+The plan also promises checked-u64 overflow; a dedicated unknown/no-wrap red is
+a SHOULD before green. Replace the live test's fixed post-load sleep with a
+bounded observable predicate when practical. Verdict sent to BlackRobin in
+Agent Mail 7254.
+
+## S8 decision-16 authority revision (`24de849`)
+
+**BLOCKED on the durable selector-store boundary.** The revision otherwise
+closes the authority findings: one native Secrets control, page/model/socket/
+helper negatives, missing=`conditional`, malformed=`yes`, fixed generic and
+buttonless notification text, no approval through notification activation,
+and cancellation rather than fallback when the main surface disappears.
+
+The new `agent-home/settings/navigate_approval` is absent from D6's
+authoritative agent-home tree. Add it as app-owned mutable state outside every
+published build and outside the sandbox. The parent directory must be pinned
+and no-follow, same-uid and 0700; reads require a bounded regular same-uid 0600
+leaf; writes require an exclusive same-directory temp, complete write, file
+fsync, renameat and directory fsync. A validation/read failure selects `yes`;
+a write/durability failure preserves the old value and reports a fixed error.
+Add parent/leaf symlink, owner/mode, oversize/trailing-byte, short-write/fsync/
+rename cuts and a read-during-swap red.
+
+The definition “window-1 forever, with no successor” is safe and fail closed,
+but BlackRobin identified it as an unconfirmed product choice. Mark it pending
+or cite the user's confirmation before presenting it as decided. Findings were
+sent in Agent Mail 7255; docs checks are clean and no runtime gate applies.
