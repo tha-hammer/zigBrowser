@@ -13,8 +13,10 @@
 #     runs the committed production entry point `mac_resource_compat.py --manifest universal_components_ms5.json
 #     --milestone MS5 <x86_64 tree> <arm64 tree>`: every declared resource present and byte-identical across the two
 #     per-arch trees, before any lipo (RoseCat 6909).
-# Usage: bash tests/mac/ms5_stage_gate.sh [commit]   (default HEAD)
-# MS5.1c-a is PARTIAL: dependencies and the Claude CLI are not staged (rev 17). BatchMode, strict host keys.
+# Since the fat agent-host (plan rev 20; JadeBeacon 7206, 06f1d4b): the driver also builds the two per-arch
+# site-packages trees from the lock (packaging/macos/build_site_packages.sh) and each leg stages WITH them, so
+# agent-host/site-packages and its fat Claude CLI are covered by the whole-tree thin-Mach-O scan.
+# Usage: bash tests/mac/ms5_stage_gate.sh [commit]   (default HEAD). BatchMode, strict host keys.
 set -euo pipefail
 
 KEY="${ZB_MAC_KEY:-/home/maceo/vms/mac-m9/zb_mac_key}"
@@ -31,7 +33,8 @@ SSH=(env -u DISPLAY -u WAYLAND_DISPLAY -u XAUTHORITY ssh -i "$KEY" -o Identities
 SCP=(env -u DISPLAY -u WAYLAND_DISPLAY -u XAUTHORITY scp -i "$KEY" -o IdentitiesOnly=yes -o BatchMode=yes
      -o StrictHostKeyChecking=yes -o ConnectTimeout=15)
 
-L=$(mktemp -d "${TMPDIR:-/tmp}/zb-stage-drv-XXXXXX"); trap 'rm -rf -- "${L:?}"' EXIT
+L=$(mktemp -d "${TMPDIR:-/tmp}/zb-stage-drv-XXXXXX")
+trap 'case "$L" in "${TMPDIR:-/tmp}"/zb-stage-drv-??????) find "${L:?}" -delete;; esac' EXIT
 # --- driver: provenance (SHA-256 pin + Sigstore), then the exact bytes go to the Macs ---
 curl -fsSL --proto '=https' -o "$L/py.pkg" "$URL"
 curl -fsSL --proto '=https' -o "$L/py.pkg.sigstore" "$URL.sigstore"
@@ -40,20 +43,24 @@ python3 -m venv "$L/venv" >/dev/null && "$L/venv/bin/pip" -q install sigstore >/
 "$L/venv/bin/python" -m sigstore verify identity --bundle "$L/py.pkg.sigstore" --cert-identity thomas@python.org \
   --cert-oidc-issuer https://accounts.google.com "$L/py.pkg" || { echo "FAIL: Sigstore" >&2; exit 1; }
 SHA=$(git rev-parse --verify "${1:-HEAD}^{commit}"); echo "== commit $SHA" >&2
-git archive --format=tar -o "$L/src.tar" "$SHA" packaging/macos tests/e2e/mac_ms5_census.py tests/e2e/mac_universal_test.py tests/e2e/mac_resource_compat.py agent/host/zb_agent_host agent/host/uv.lock
+git archive --format=tar -o "$L/src.tar" "$SHA" packaging/macos tests/e2e/mac_ms5_census.py tests/e2e/mac_universal_test.py tests/e2e/mac_resource_compat.py agent/host/zb_agent_host agent/host/uv.lock agent/host/pyproject.toml
 mkdir "$L/repo" && tar -xf "$L/src.tar" -C "$L/repo"
+bash "$L/repo/packaging/macos/build_site_packages.sh" "$L/repo/agent/host" "$L/sites" >/dev/null
+(cd "$L/sites" && tar -cf "$L/sites.tar" site-x86_64 site-aarch64)
 
 leg() { # $1=host $2=expected uname -m
   local host="$1" arch="$2" rdir="zb-stage-$(date +%s)-$$-$RANDOM"
   "${SSH[@]}" "$host" "mkdir \"\$HOME/${rdir:?}\"" || { echo "FAIL: mkdir on $host" >&2; return 1; }
-  if ! "${SCP[@]}" "$L/py.pkg" "$L/src.tar" "$host:${rdir}/" >/dev/null; then
-    "${SSH[@]}" "$host" "rm -rf \"\$HOME/${rdir:?}\"" || true; echo "FAIL: scp to $host" >&2; return 1
+  if ! "${SCP[@]}" "$L/py.pkg" "$L/src.tar" "$L/sites.tar" "$host:${rdir}/" >/dev/null; then
+    "${SSH[@]}" "$host" "d=\"\$HOME/${rdir:?}\"; [ -d \"\$d\" ] && find \"\$d\" -delete" || true
+    echo "FAIL: scp to $host" >&2; return 1
   fi
   timeout "$LEG_TIMEOUT" "${SSH[@]}" "$host" "ZB_RDIR='${rdir}' ZB_ARCH='${arch}' ZB_PIN='${PIN}' /bin/bash -s" <<'REMOTE'
 set -euo pipefail
-d="$HOME/${ZB_RDIR:?}"; trap 'rm -rf "$HOME/${ZB_RDIR:?}"' EXIT
+case "$ZB_RDIR" in zb-stage-*) ;; *) echo "FAIL: bad run dir $ZB_RDIR" >&2; exit 1;; esac
+d="$HOME/${ZB_RDIR:?}"; trap 'cd / && find "$HOME/${ZB_RDIR:?}" -delete' EXIT
 [ "$(uname -m)" = "$ZB_ARCH" ] || { echo "FAIL: leg is $(uname -m), expected $ZB_ARCH" >&2; exit 1; }
-cd "$d" && mkdir repo && tar -xf src.tar -C repo
+cd "$d" && mkdir repo && tar -xf src.tar -C repo && tar -xf sites.tar
 STAGE=repo/packaging/macos/stage_agent_runtime.sh
 [ -f "$STAGE" ] || { printf 'FAIL\tms5-stage\t%s\tpackaging/macos/stage_agent_runtime.sh is missing (rev 17)\n' "$ZB_ARCH"; exit 1; }
 fails=0
@@ -62,7 +69,7 @@ cp py.pkg bad.pkg && printf 'x' >> bad.pkg
 if bash "$STAGE" "$d/bad.pkg" "$ZB_PIN" "$d/bad-prefix" >/dev/null 2>&1; then echo "  FAIL a tampered pkg was accepted"; fails=$((fails+1)); fi
 [ ! -e "$d/bad-prefix" ] || [ -z "$(ls -A "$d/bad-prefix")" ] || { echo "  FAIL a tampered pkg left something under its prefix: $(cd "$d/bad-prefix" && find . | head -5 | tr '\n' ' ')"; fails=$((fails+1)); }
 # 2. the real pkg stages
-bash "$STAGE" "$d/py.pkg" "$ZB_PIN" "$d/prefix" > stage.log 2>&1 || { tail -5 stage.log; echo "  FAIL staging the real pkg"; exit 1; }
+bash "$STAGE" "$d/py.pkg" "$ZB_PIN" "$d/prefix" "$d/site-x86_64" "$d/site-aarch64" > stage.log 2>&1 || { tail -5 stage.log; echo "  FAIL staging the real pkg"; exit 1; }
 A="$d/prefix/Frameworks/agent-host"
 for c in Python.framework/Versions/3.12/bin/python3.12 Python.framework/Versions/3.12/Python; do
   [ "$(lipo -archs "$A/$c" 2>/dev/null)" = "x86_64 arm64" ] || { echo "  FAIL $c is not fat"; fails=$((fails+1)); }
@@ -86,7 +93,7 @@ sys.exit(1 if probs or rj else 0)
 PY
 # The declared resources go back to the driver for the cross-arch comparison (outside $d, which the trap deletes).
 (cd "$d/prefix" && tar -cf "$HOME/${ZB_RDIR}-res.tar" Frameworks/agent-host/runtime.json Frameworks/agent-host/zb_agent_host)
-if [ "$fails" -eq 0 ]; then printf 'PASS\tms5-stage\t%s\t(MS5.1c-a, partial: dependencies and CLI not staged)\n' "$ZB_ARCH"; else printf 'FAIL\tms5-stage\t%s\t%d\n' "$ZB_ARCH" "$fails"; exit 1; fi
+if [ "$fails" -eq 0 ]; then printf 'PASS\tms5-stage\t%s\t(with its locked dependencies and the fat Claude CLI)\n' "$ZB_ARCH"; else printf 'FAIL\tms5-stage\t%s\t%d\n' "$ZB_ARCH" "$fails"; exit 1; fi
 REMOTE
   local rc=$?
   if [ "$rc" -eq 0 ]; then
@@ -109,5 +116,5 @@ if [ "$overall" -eq 0 ]; then
     echo "FAIL: mac_resource_compat.py --milestone MS5 (the two per-arch trees differ or lack a declared resource)" >&2; overall=1
   fi
 fi
-[ "$overall" -eq 0 ] && printf 'PASS\tms5-stage-gate\tboth-arches\t(MS5.1c-a, partial)\n'
+[ "$overall" -eq 0 ] && printf 'PASS\tms5-stage-gate\tboth-arches\t(fat agent-host with its dependencies and CLI)\n'
 exit "$overall"

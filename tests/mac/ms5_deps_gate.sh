@@ -39,13 +39,9 @@ trap 'case "$L" in "${TMPDIR:-/tmp}"/zb-deps-drv-??????) find "${L:?}" -delete;;
 SHA=$(git rev-parse --verify "${1:-HEAD}^{commit}"); echo "== commit $SHA" >&2
 git archive --format=tar -o "$L/src.tar" "$SHA" packaging/macos agent/host
 mkdir "$L/repo" && tar -xf "$L/src.tar" -C "$L/repo"
-# --- the two per-arch trees, from the lock only ---
-uv export --project "$L/repo/agent/host" --frozen --no-emit-project --format requirements-txt -o "$L/req.txt" >/dev/null
-for plat in x86_64 aarch64; do
-  uv pip install --quiet --target "$L/site-$plat" --python-platform "$plat-apple-darwin" --python-version 3.12 \
-    --only-binary :all: --require-hashes --no-deps -r "$L/req.txt"
-done
-(cd "$L" && tar -cf sites.tar site-x86_64 site-aarch64)
+# --- the two per-arch trees, from the lock only (exactly the commands above, in the committed builder) ---
+bash "$L/repo/packaging/macos/build_site_packages.sh" "$L/repo/agent/host" "$L/sites" >/dev/null
+(cd "$L/sites" && tar -cf "$L/sites.tar" site-x86_64 site-aarch64)
 # --- the python.org pkg: pin + Sigstore ---
 curl -fsSL --proto '=https' -o "$L/py.pkg" "$URL"
 curl -fsSL --proto '=https' -o "$L/py.pkg.sigstore" "$URL.sigstore"

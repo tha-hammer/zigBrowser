@@ -22,7 +22,8 @@ refused, not resolved by taking one side).
 
 Pure Python with an injectable runner: these tests never call lipo. The real merge on both Macs is
 tests/mac/ms5_deps_gate.sh. No process, no signal.
-Run like the gate: cd tests/e2e && python3 -X dev -m unittest -v mac_merge_universal_test. Unregistered until the green.
+Registered (build.zig: test-mac-census and the Linux test step).
+Run like the gate: cd tests/e2e && python3 -X dev -m unittest -v mac_merge_universal_test.
 """
 import base64
 import hashlib

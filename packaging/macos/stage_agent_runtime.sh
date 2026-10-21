@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Stages the agent runtime into <prefix>/Frameworks/agent-host (macOS plan rev 17, Behavior MS5.1c; MS5.1c-a).
-# Usage: stage_agent_runtime.sh <python-3.12.10-macos11.pkg> <expected_sha256> <prefix>
+# Stages the agent runtime into <prefix>/Frameworks/agent-host (macOS plan rev 17, Behavior MS5.1c; MS5.1c-a; the fat
+# agent-host of plan rev 20, JadeBeacon 7206).
+# Usage: stage_agent_runtime.sh <python-3.12.10-macos11.pkg> <expected_sha256> <prefix> [<site-x86_64> <site-arm64>]
 #   * the pkg's SHA-256 must equal <expected_sha256> AND rev 15's pin (the Linux driver checked the same bytes'
 #     Sigstore identity before handing them over);
 #   * pkgutil --check-signature must name "Developer ID Installer: Python Software Foundation (BMM5U3QVKW)" and
@@ -8,18 +9,28 @@
 #   * pkgutil --expand-full into a temporary directory; the installer is NEVER run, nothing goes to a system path;
 #   * Python_Framework.pkg/Payload -> agent-host/Python.framework, without Versions/3.12/bin/*-intel64;
 #   * agent/host/zb_agent_host/'s regular files (no __pycache__, no symlink) -> agent-host/zb_agent_host/;
-#   * agent-host/runtime.json = '{"lock_sha256": "<sha256 of agent/host/uv.lock>"}\n' (install_agent_runtime.sh's bytes).
-# Staged into a sibling temporary directory and renamed into place; an existing agent-host is refused, never merged.
-# PARTIAL (MS5.1c-a): the locked dependencies and the Claude CLI are not staged until their layout is decided.
+#   * agent-host/runtime.json = '{"lock_sha256": "<sha256 of agent/host/uv.lock>"}\n' (install_agent_runtime.sh's bytes);
+#   * with the two per-arch site-packages trees (packaging/macos/build_site_packages.sh, from the lock): their strict
+#     universal2 merge (packaging/macos/merge_universal_tree.py) -> agent-host/site-packages, which holds the fat
+#     Claude CLI at claude_agent_sdk/_bundled/claude (token.bundled_cli()'s path); without them the staging is PARTIAL;
+#   * the framework relocated (packaging/macos/relocate_python_framework.py): every Mach-O loads @loader_path-relative
+#     paths and is re-signed ad hoc, so the staged python runs from wherever the app is.
+# The merge and the relocation run under the Mac's /usr/bin/python3. Staged into a sibling temporary directory and
+# renamed into place; an existing agent-host is refused, never merged.
 set -euo pipefail
 
 PIN=8373e58da4ea146b3eb1c1f9834f19a319440b6b679b06050b1f9ee3237aa8e4
 PKG="${1:?usage: stage_agent_runtime.sh <pkg> <expected_sha256> <prefix>}"
 WANT="${2:?expected sha256}"
 PREFIX="${3:?prefix}"
+SITE_X86="${4:-}"
+SITE_ARM="${5:-}"
 REPO=$(cd "$(dirname "$0")/../.." && pwd)
 
 die() { echo "stage_agent_runtime: $*" >&2; exit 1; }
+if [ -n "$SITE_X86$SITE_ARM" ]; then
+  [ -d "$SITE_X86" ] && [ -d "$SITE_ARM" ] || die "both per-arch site-packages trees are required, as directories"
+fi
 got=$(shasum -a 256 "$PKG" | cut -c1-64)
 [ "$got" = "$WANT" ] || die "pkg SHA-256 $got is not the expected $WANT"
 [ "$got" = "$PIN" ] || die "pkg SHA-256 $got is not rev 15's pin $PIN"
@@ -31,7 +42,7 @@ AGENT="$PREFIX/Frameworks/agent-host"
 [ ! -e "$AGENT" ] || die "$AGENT already exists (refused: never merged into)"
 mkdir -p "$PREFIX/Frameworks"
 WORK=$(mktemp -d "$PREFIX/Frameworks/.agent-host-stage-XXXXXX")
-trap 'rm -rf "${WORK:?}"' EXIT
+trap 'case "$WORK" in "$PREFIX/Frameworks/.agent-host-stage-"??????) find "${WORK:?}" -delete;; esac' EXIT
 pkgutil --expand-full "$PKG" "$WORK/x" >/dev/null
 S="$WORK/agent-host"; mkdir "$S"
 ditto "$WORK/x/Python_Framework.pkg/Payload" "$S/Python.framework"
@@ -41,5 +52,15 @@ rm -f "$S/Python.framework/Versions/3.12/bin/"*-intel64
   cp "$REPO/agent/host/$rel" "$S/$rel"
 done
 printf '{"lock_sha256": "%s"}\n' "$(shasum -a 256 "$REPO/agent/host/uv.lock" | cut -c1-64)" > "$S/runtime.json"
+if [ -n "$SITE_X86" ]; then
+  /usr/bin/python3 -I "$REPO/packaging/macos/merge_universal_tree.py" "$SITE_X86" "$SITE_ARM" "$S/site-packages" \
+    >/dev/null || die "merging the two site-packages trees failed"
+fi
+/usr/bin/python3 -I "$REPO/packaging/macos/relocate_python_framework.py" "$S/Python.framework/Versions/3.12" \
+  >/dev/null || die "relocating the framework failed"
 mv "$S" "$AGENT"
-echo "staged $AGENT (MS5.1c-a, partial: dependencies and CLI not staged)"
+if [ -n "$SITE_X86" ]; then
+  echo "staged $AGENT (with its locked dependencies and the fat Claude CLI; framework relocated)"
+else
+  echo "staged $AGENT (partial: dependencies and CLI not staged; framework relocated)"
+fi
