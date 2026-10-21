@@ -20239,3 +20239,62 @@ the browser's crash UI does not advance the serial; the present e2e never
 crashes a process, so moving the increment above that guard would survive it.
 This does not block the S8a base green. Verdict was mailed to BlackRobin in
 Agent Mail 6986.
+
+## Chat drawer S8 approval design, rev 16.20.42 (`049b7d1`)
+
+Reviewed exact docs commit `049b7d1` on 2026-10-20. **Verdict: BLOCKED.**
+The revision closes all four substantive findings from `ca1b5d6`: the keydown
+case now records one dispatched event and zero directly written characters;
+a cancelled `beforeinput` that a Draft.js-style handler acted on is
+conservatively `partial`; chunks are explicitly 16 Unicode code points with
+byte- and UTF-16-split mutants; and `data.sent` is cumulative across completed
+and failing chunks, with the 19-of-200 red.
+
+The new in-chunk cancellation case is not yet an implementable deterministic
+e2e oracle. Plan `:3147` says the fixture's input listener synchronously
+busy-waits inside the one WebKit evaluation, while the test clicks Stop "once
+the fixture reports" its third character. A socket evaluation, DOM read,
+paint/pixel observation or other same-window FIFO read cannot complete until
+that evaluation returns, after all 16 characters. The plan must name an
+out-of-process observation channel that reaches the Python test while the Web
+process main thread is still inside the chunk—for example, a fixture beacon
+observed by its HTTP server, or an e2e-only native signal—and mutant evidence
+must prove it discriminates removal of the between-chunk cancel check. An
+inferred sleep against the 100 ms busy-wait is a load-sensitive timing oracle,
+not the stated third-character observation.
+
+SHOULD: plan `:3141` says counter overflow is impossible under an
+8000-character limit. That is only LinkedIn's message limit;
+approval-protected raw `dom.type` has no such router bound. Remove the claim or
+name and enforce the real bound; checked overflow may continue to map to
+`unknown`. Findings were mailed to BlackRobin in Agent Mail 6988.
+
+## MS6 egress-only login launch (`6606d27`)
+
+Reviewed exact security-sensitive commit `6606d27` on 2026-10-20. **Verdict:
+BLOCKED cumulatively.** An exact clean-export unit run passed 41/41. The new
+policy itself is correct: `login_network()` retains the validated per-session
+egress endpoint, switches to `LOGIN_EGRESS_ALLOW`, removes both bridges and
+does not give hooks egress; the generated login profile contains only that one
+loopback endpoint, and `login_launch_spec()` carries the same immutable
+network. Selecting the egress-only shape from an empty bridge set matches the
+shared Linux backend and does not widen Seatbelt.
+
+Two holds remain:
+
+1. The inherited `6d6265e`/6984 blocker still applies. The login method calls
+   the same `launch_spec -> _materialize_profile` path: the returned
+   `LaunchSpec` owns no lease/context for the unique directory, never removes
+   it after `sandbox-exec` consumes it, and open/write/chmod/fstat failures can
+   leak a directory or partial artifact. The production-topology, injected
+   failure and cleanup reds remain absent. `LAUNCH_SPEC_CONSUMABLE = False`
+   keeps this safe as an unwired scaffold, not a production-ready launch.
+2. **BLOCKER-for-tests:** `test_sandbox_macos.py:127-134` weakens the prior
+   exact-signature injection oracle to reject only `scratchpad`, `workspace`,
+   or names containing `path`/`dir`. A future interpolated string parameter
+   named `source`, `root`, `profile` or `home` survives. Assert the exact
+   allowed signature `{egress, bridges, is_hook, is_login}`.
+
+NIT: `sandbox_macos.py:369-378` still says the profile is written to
+`home.runtime`, which the previous fix deliberately stopped doing. Findings
+were mailed to JadeBeacon in Agent Mail 6989.
