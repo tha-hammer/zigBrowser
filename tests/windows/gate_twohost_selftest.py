@@ -20,9 +20,11 @@ Add-Type, and real Win32 AccessCheck for writability):
 
 Run alone:  python3 -I tests/windows/gate_twohost_selftest.py -v
 """
+import base64
 import json
 import os
 import pathlib
+import re
 import shutil
 import subprocess
 import tempfile
@@ -217,11 +219,15 @@ class WS07FileServerFence(_TwoHostCase):
             proc = self._run_probe_only(pathlib.Path(t), {"ZB_SELFTEST_PROBE_WIN10": bad})
             self._assert_fail_closed(proc, "zbtest can write to")
 
+    PIN_REASON = "exFAT, no ACL possible; owner accepted 2026-10-21"
+    PIN_RECORD = "K:\\=" + PIN_REASON
+
     def test_absent_volume_share_path_passes_and_is_logged(self):
-        # Owner decision 2026-10-21: a share path whose volume/root is ABSENT is NOT writable — it is
-        # reported separately and the gate still passes (it will fail only if it later exists and is writable).
+        # Owner decision 2026-10-21: a share path whose volume/root is ABSENT is NOT writable — reported
+        # separately and the gate still passes (it fails only if it later exists and is writable).
         with tempfile.TemporaryDirectory() as t:
-            fs = _fs_probe(absent_paths=["G:\\Users\\joshu"])
+            fs = _fs_probe(shares=[{"name": "josh", "path": "G:\\Users\\joshu"}],
+                           absent_paths=["G:\\Users\\joshu"])
             proc = self._run_probe_only(pathlib.Path(t),
                                         {"ZB_SELFTEST_PROBE_WIN10": fs, "ZB_SELFTEST_PROBE_WIN10_POST": fs})
             self.assertEqual(proc.returncode, 0, f"an absent-volume share must not fail the gate\n{proc.stderr}")
@@ -229,8 +235,7 @@ class WS07FileServerFence(_TwoHostCase):
                           "the gate must print the absent-volume share path")
 
     def test_post_writable_served_path_fails_closed(self):
-        # A share that becomes writable in the POST probe (e.g. an absent volume that later exists) must fail,
-        # not just the pre probe.
+        # A share that becomes writable in the POST probe (e.g. an absent volume that later exists) must fail.
         with tempfile.TemporaryDirectory() as t:
             pre = _fs_probe()
             post = _fs_probe(zbtest_write_paths=["G:\\Users\\joshu"])
@@ -239,17 +244,75 @@ class WS07FileServerFence(_TwoHostCase):
             self._assert_fail_closed(proc, "zbtest can write to")
 
     def test_excepted_writable_share_passes_and_is_logged(self):
-        # An exact-match owner exception (e.g. K:\ exFAT, no ACL) is classified 'excepted' by the probe, so
-        # zbtest_write_paths stays empty and the gate passes — and it prints the excepted path + reason.
+        # The one approved exact-match exception (K:\ exFAT) is 'excepted', so zbtest_write_paths is empty and
+        # the gate passes — printing the excepted path + reason.
         with tempfile.TemporaryDirectory() as t:
-            reason = "exFAT, no ACL possible; owner accepted 2026-10-21"
-            fs = _fs_probe(share_exceptions=[{"path": "K:\\", "reason": reason}])
+            fs = _fs_probe(shares=[{"name": "k", "path": "K:\\"}],
+                           share_exceptions=[{"path": "K:\\", "reason": self.PIN_REASON}])
             proc = self._run_probe_only(pathlib.Path(t),
                                         {"ZB_SELFTEST_PROBE_WIN10": fs, "ZB_SELFTEST_PROBE_WIN10_POST": fs})
-            self.assertEqual(proc.returncode, 0, f"an excepted writable share must pass\n{proc.stderr}")
+            self.assertEqual(proc.returncode, 0, f"the approved excepted share must pass\n{proc.stderr}")
             out = proc.stdout + proc.stderr
             self.assertIn("excepted writable share K:\\", out, "the gate must print the excepted path")
-            self.assertIn(reason, out, "the gate must print the exception reason")
+            self.assertIn(self.PIN_REASON, out, "the gate must print the exception reason")
+
+    def test_exception_env_not_pinned_record_refused(self):
+        # RoseCat be655f3 (2): any ZB_WIN10_SHARE_EXCEPTIONS != the one approved record is refused BEFORE SSH.
+        with tempfile.TemporaryDirectory() as t:
+            proc = self._run_probe_only(pathlib.Path(t),
+                                        {"ZB_WIN10_SHARE_EXCEPTIONS": "C:\\Shares\\public=please trust me"})
+            self._assert_fail_closed(proc, "must equal the one approved record")
+
+    def test_exception_env_pinned_record_is_transported_decoded(self):
+        # RoseCat be655f3 (1): a transport oracle — the approved record must reach the REMOTE PowerShell.
+        # With the pinned env set, the Win10 probe's streamed script must carry a prelude whose base64 decodes
+        # to exactly the pinned record (set into $env:ZB_WIN10_SHARE_EXCEPTIONS); the Win11 probe must not.
+        with tempfile.TemporaryDirectory() as t:
+            td = pathlib.Path(t)
+            stdin_log = td / "stdin.log"
+            fs = _fs_probe(shares=[{"name": "k", "path": "K:\\"}],
+                           share_exceptions=[{"path": "K:\\", "reason": self.PIN_REASON}])
+            proc = self._run_probe_only(td, {
+                "ZB_WIN10_SHARE_EXCEPTIONS": self.PIN_RECORD,
+                "ZB_SELFTEST_PROBE_WIN10": fs, "ZB_SELFTEST_PROBE_WIN10_POST": fs,
+                "ZB_SELFTEST_STDIN_LOG": str(stdin_log),
+            })
+            self.assertEqual(proc.returncode, 0, f"the pinned exception run must pass\n{proc.stderr}")
+            body = stdin_log.read_text() if stdin_log.exists() else ""
+            m = re.findall(r"FromBase64String\('([A-Za-z0-9+/=]+)'\)", body)
+            self.assertTrue(m, "the Win10 probe must carry a base64 exception prelude; streamed:\n" + body)
+            decoded = {base64.b64decode(b).decode("utf-8") for b in m}
+            self.assertIn(self.PIN_RECORD, decoded,
+                          "the decoded prelude must equal the approved record exactly; got %r" % decoded)
+            # The prelude sets the exact env var, and nothing but the approved record is carried.
+            self.assertIn("$env:ZB_WIN10_SHARE_EXCEPTIONS", body, "the prelude must set the remote env var")
+            self.assertEqual(decoded, {self.PIN_RECORD}, "only the approved record may be transported")
+
+    def test_schema_missing_absent_paths_fails_closed(self):
+        with tempfile.TemporaryDirectory() as t:
+            bad = json.loads(_fs_probe()); bad.pop("absent_paths")
+            proc = self._run_probe_only(pathlib.Path(t), {"ZB_SELFTEST_PROBE_WIN10": json.dumps(bad)})
+            self._assert_fail_closed(proc, "absent_paths missing or not a list")
+
+    def test_schema_exception_wrong_keys_fails_closed(self):
+        with tempfile.TemporaryDirectory() as t:
+            bad = _fs_probe(shares=[{"name": "k", "path": "K:\\"}],
+                            share_exceptions=[{"path": "K:\\"}])  # missing 'reason'
+            proc = self._run_probe_only(pathlib.Path(t), {"ZB_SELFTEST_PROBE_WIN10": bad})
+            self._assert_fail_closed(proc, "exactly {path, reason}")
+
+    def test_schema_exception_not_approved_record_fails_closed(self):
+        with tempfile.TemporaryDirectory() as t:
+            bad = _fs_probe(shares=[{"name": "c", "path": "C:\\Shares\\x"}],
+                            share_exceptions=[{"path": "C:\\Shares\\x", "reason": "trust me"}])
+            proc = self._run_probe_only(pathlib.Path(t), {"ZB_SELFTEST_PROBE_WIN10": bad})
+            self._assert_fail_closed(proc, "not the one approved record")
+
+    def test_schema_absent_path_not_a_served_share_fails_closed(self):
+        with tempfile.TemporaryDirectory() as t:
+            bad = _fs_probe(shares=[], absent_paths=["G:\\Users\\joshu"])  # not among shares
+            proc = self._run_probe_only(pathlib.Path(t), {"ZB_SELFTEST_PROBE_WIN10": bad})
+            self._assert_fail_closed(proc, "is not a served share")
 
     def test_console_user_not_test_user_fails_closed(self):
         with tempfile.TemporaryDirectory() as t:
@@ -911,6 +974,14 @@ class WS0ZeroWrite(unittest.TestCase):
         self.assertRegex(src, r"absent_paths\s*=\s*\$absentPaths", "host_probe must emit absent_paths")
         self.assertRegex(src, r"share_exceptions\s*=\s*\$shareExceptions", "host_probe must emit share_exceptions")
         self.assertRegex(src, r"Get-ZbShareVerdict\s+-DriveAbsent", "host_probe must classify via Get-ZbShareVerdict")
+        # RoseCat be655f3 (4): absence is POSITIVELY established from a read-only drive inventory, with an
+        # exact drive-letter root, never a Test-Path that can be false on an access/query failure.
+        self.assertIn("[System.IO.DriveInfo]::GetDrives()", src,
+                      "absence must come from the DriveInfo drive inventory")
+        self.assertRegex(src, r"\$root\s*-match\s*'\^\[A-Za-z\]:\\\\\$'",
+                         "absence must require an exact drive-letter root")
+        self.assertNotRegex(src, r"\$driveAbsent\s*=\s*-not\s*\(Test-Path",
+                            "absence must NOT be derived from Test-Path (false != absent)")
 
 
 class WS0TwoHostReds(_TwoHostCase):

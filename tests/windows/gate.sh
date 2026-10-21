@@ -138,7 +138,7 @@ selftest_stage() {
 }
 
 # ---- WS0.6 + WS0.7 two-host --probe-only -------------------------------------------------
-probe_host() { # $1=user $2=host $3=port $4=key $5=known_hosts -> prints the host's host_probe.ps1 JSON
+probe_host() { # $1=user $2=host $3=port $4=key $5=known_hosts [$6=share_exceptions_record] -> host_probe.ps1 JSON
   # The probe script is STREAMED over ssh stdin; it is NEVER copied onto the host. This keeps the Win10
   # file server strictly read-only — nothing is written there, not even in zb\ — and needs no host shell
   # reconfiguration (works with the default cmd.exe DefaultShell, so no cmd.exe 8191-char cap applies).
@@ -148,8 +148,18 @@ probe_host() { # $1=user $2=host $3=port $4=key $5=known_hosts -> prints the hos
   # runs it, so every multi-line construct parses correctly. -EncodedCommand is not an option either:
   # the base64 (~30 KB) exceeds the default cmd.exe command-line cap.
   local -a SSH; mapfile -d '' SSH < <(ssh_opts "$4" "$5")
-  run_remote "${SSH[@]}" -p "$3" "$1@$2" \
-    'powershell -NoProfile -NonInteractive -Command "$input | Out-String | iex"' < "$HERE/host_probe.ps1"
+  # RoseCat be655f3 (1): the owner exception must reach the REMOTE PowerShell (local `env`/ssh does not
+  # carry it). When a record is given ($6), install it with a SAFE prelude prepended to the streamed probe:
+  # the record is base64(UTF-8)'d and decoded at runtime into $env:ZB_WIN10_SHARE_EXCEPTIONS, so no caller
+  # value is ever interpolated into the ssh command or parsed as a shell/PS metacharacter. Win10 only.
+  local prelude=""
+  if [ -n "${6:-}" ]; then
+    local b64; b64=$(printf '%s' "$6" | base64 -w0)
+    prelude="\$env:ZB_WIN10_SHARE_EXCEPTIONS = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('$b64'))"
+  fi
+  { [ -n "$prelude" ] && printf '%s\n' "$prelude"; cat "$HERE/host_probe.ps1"; } | \
+    run_remote "${SSH[@]}" -p "$3" "$1@$2" \
+    'powershell -NoProfile -NonInteractive -Command "$input | Out-String | iex"'
 }
 
 # ---- WS0.1 in-console session helper (VM ONLY) -------------------------------------------
@@ -198,10 +208,17 @@ PS
     'powershell -NoProfile -NonInteractive -Command "$input | Out-String | iex"' <<<"$ps"
 }
 
+# RoseCat be655f3 (2): the one owner-approved Win10 share exception (single source of truth for the pin
+# check AND the schema validator). Unset ZB_WIN10_SHARE_EXCEPTIONS means no exception.
+ZB_FS_EXC_PINNED='K:\=exFAT, no ACL possible; owner accepted 2026-10-21'
+
 validate_probes() { # $1=vm_json $2=fs_pre $3=fs_post ; ALLOW to stdout, fail reason to stderr
-  python3 - "$1" "$2" "$3" "${ZB_WIN11_MARKER:-}" "${ZB_WIN10_USER:-zbtest}" "${ZB_WIN10_MARKER:-}" "${ZB_WIN11_USER:-zbtext}" "${ZB_WIN10_LISTEN:-${ZB_WIN10_HOST:-}}" <<'PY'
+  python3 - "$1" "$2" "$3" "${ZB_WIN11_MARKER:-}" "${ZB_WIN10_USER:-zbtest}" "${ZB_WIN10_MARKER:-}" "${ZB_WIN11_USER:-zbtext}" "${ZB_WIN10_LISTEN:-${ZB_WIN10_HOST:-}}" "$ZB_FS_EXC_PINNED" <<'PY'
 import sys, json, math, ntpath
-vm, fs_pre, fs_post, win11_marker, win10_user, win10_marker, win11_user, win10_listen = sys.argv[1:9]
+vm, fs_pre, fs_post, win11_marker, win10_user, win10_marker, win11_user, win10_listen, fs_exc_pinned = sys.argv[1:10]
+# The one approved exception as (path, reason); exact match only.
+_pe = fs_exc_pinned.split("=", 1)
+PIN_PATH, PIN_REASON = (_pe[0], _pe[1]) if len(_pe) == 2 else (fs_exc_pinned, "")
 def _build_int(x):
     try: return int(str(x or "0").strip())
     except ValueError: return 0
@@ -302,6 +319,44 @@ def require_schema(probe, who):
         sys.stderr.write("file-server (%s): console_user missing or empty\n" % who); sys.exit(1)
     if not isinstance(probe.get("zbtest_write_paths"), list):
         sys.stderr.write("file-server (%s): zbtest_write_paths missing or not a list\n" % who); sys.exit(1)
+    # WS0.7 (RoseCat be655f3 (3)): absent_paths and share_exceptions MUST be present and well-formed on
+    # BOTH probes — a missing/malformed value must never become an empty pass. Paths are drive-absolute,
+    # unique, and members of the reported shares; each exception is exactly {path, reason} with a nonempty
+    # reason and must equal the one approved record.
+    share_paths = set()
+    for s in (probe.get("shares") or []):
+        if isinstance(s, dict) and s.get("path") is not None:
+            share_paths.add(ntpath.normpath(str(s.get("path"))).lower())
+    ap = probe.get("absent_paths")
+    if not isinstance(ap, list):
+        sys.stderr.write("file-server (%s): absent_paths missing or not a list\n" % who); sys.exit(1)
+    seen_ap = set()
+    for p in ap:
+        if not _is_abs_win_path(p):
+            sys.stderr.write("file-server (%s): absent_paths entry %r is not a drive-absolute path\n" % (who, p)); sys.exit(1)
+        k = ntpath.normpath(str(p)).lower()
+        if k in seen_ap:
+            sys.stderr.write("file-server (%s): duplicate absent_paths entry %r\n" % (who, p)); sys.exit(1)
+        seen_ap.add(k)
+        if k not in share_paths:
+            sys.stderr.write("file-server (%s): absent_paths entry %r is not a served share\n" % (who, p)); sys.exit(1)
+    se = probe.get("share_exceptions")
+    if not isinstance(se, list):
+        sys.stderr.write("file-server (%s): share_exceptions missing or not a list\n" % who); sys.exit(1)
+    seen_se = set()
+    for ex in se:
+        if not isinstance(ex, dict) or set(ex.keys()) != {"path", "reason"}:
+            sys.stderr.write("file-server (%s): share_exceptions entry must be an object with exactly {path, reason}: %r\n" % (who, ex)); sys.exit(1)
+        if not isinstance(ex.get("reason"), str) or not ex["reason"].strip():
+            sys.stderr.write("file-server (%s): share_exceptions entry has an empty reason: %r\n" % (who, ex)); sys.exit(1)
+        k = ntpath.normpath(str(ex.get("path"))).lower()
+        if k in seen_se:
+            sys.stderr.write("file-server (%s): duplicate share_exceptions path %r\n" % (who, ex.get("path"))); sys.exit(1)
+        seen_se.add(k)
+        if k not in share_paths:
+            sys.stderr.write("file-server (%s): excepted path %r is not a served share\n" % (who, ex.get("path"))); sys.exit(1)
+        if (str(ex.get("path")), str(ex.get("reason"))) != (PIN_PATH, PIN_REASON):
+            sys.stderr.write("file-server (%s): share exception %r is not the one approved record (%s=%s)\n" % (who, ex, PIN_PATH, PIN_REASON)); sys.exit(1)
     if not _is_listener_list(probe.get("listeners")):
         sys.stderr.write("file-server (%s): listeners missing or not a list of {port, pid} objects\n" % who); sys.exit(1)
     # No FIXED baseline listener set: the real file server's listeners (135/445/5040/5357, dynamic RPC
@@ -447,6 +502,15 @@ probe_only() { # WS0.6 (VM identity) + WS0.7 (file-server fence) across both hos
   # defaults under win10-fs. ZB_WIN10_KEY still overrides if a separate key is ever issued.
   local fs_key="${ZB_WIN10_KEY:-${ZB_WIN_KEY:-/home/maceo/vms/win11-m8/zb_win_key}}"
   local fs_kh="${ZB_WIN10_KNOWN_HOSTS:-${ZB_WIN_KNOWN_HOSTS:-/home/maceo/vms/win10-fs/known_hosts}}"
+  # RoseCat be655f3 (2): the owner approved exactly ONE share exception. Pin it: ZB_WIN10_SHARE_EXCEPTIONS,
+  # if set, MUST equal this record EXACTLY (no extra/duplicate/other-path/malformed entries) before any SSH;
+  # unset means no exception. Only this record is carried to Win10 (via probe_host's base64 prelude).
+  local fs_exc="${ZB_WIN10_SHARE_EXCEPTIONS:-}"
+  if [ -n "$fs_exc" ] && [ "$fs_exc" != "$ZB_FS_EXC_PINNED" ]; then
+    echo "NOT RUN: ZB_WIN10_SHARE_EXCEPTIONS must equal the one approved record exactly:" >&2
+    echo "         $ZB_FS_EXC_PINNED" >&2
+    return 1
+  fi
   # WS0.1: trigger the in-console session helper on the VM with a fresh per-run nonce and AWAIT a
   # nonce-matching session.json (bounded). No manual console step. If it does not return OK, fail closed
   # before any probe — a VM with no fresh, nonce-correlated session result is not ready.
@@ -465,10 +529,10 @@ probe_only() { # WS0.6 (VM identity) + WS0.7 (file-server fence) across both hos
   local rc
   vm_json=$(probe_host "${ZB_WIN11_USER:-zbtext}" "$ZB_WIN11_HOST" "${ZB_WIN11_PORT:-2222}" "$vm_key" "$vm_kh"); rc=$?
   [ "$rc" -ne 0 ] && { echo "NOT RUN: Win11 probe transport failed (ssh rc=$rc — unreachable or host-key refusal)" >&2; return 1; }
-  fs_pre=$(probe_host "${ZB_WIN10_USER:-zbtest}" "$ZB_WIN10_HOST" "${ZB_WIN10_PORT:-22}" "$fs_key" "$fs_kh"); rc=$?
+  fs_pre=$(probe_host "${ZB_WIN10_USER:-zbtest}" "$ZB_WIN10_HOST" "${ZB_WIN10_PORT:-22}" "$fs_key" "$fs_kh" "$fs_exc"); rc=$?
   [ "$rc" -ne 0 ] && { echo "NOT RUN: Win10 probe transport failed (ssh rc=$rc — unreachable or host-key refusal)" >&2; return 1; }
   # A full gate runs the product tests here; --probe-only re-probes to catch any change (WS0.7).
-  fs_post=$(probe_host "${ZB_WIN10_USER:-zbtest}" "$ZB_WIN10_HOST" "${ZB_WIN10_PORT:-22}" "$fs_key" "$fs_kh"); rc=$?
+  fs_post=$(probe_host "${ZB_WIN10_USER:-zbtest}" "$ZB_WIN10_HOST" "${ZB_WIN10_PORT:-22}" "$fs_key" "$fs_kh" "$fs_exc"); rc=$?
   [ "$rc" -ne 0 ] && { echo "NOT RUN: Win10 re-probe transport failed (ssh rc=$rc)" >&2; return 1; }
   validate_probes "$vm_json" "$fs_pre" "$fs_post" >/dev/null || return 1
   printf 'WIN11 %s\nWIN10 %s\n' "$vm_json" "$fs_post"

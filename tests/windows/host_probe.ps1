@@ -242,25 +242,33 @@ try {
       if ($ep) { $except[$ep] = $er }
     }
   }
+  # RoseCat be655f3 (4): "absent" must be POSITIVELY established from a read-only drive inventory — not a
+  # Test-Path that can be false for an access/query failure. Enumerate the existing filesystem drive roots
+  # once; absence = the path's root is an EXACT drive-letter root (e.g. "K:\") that is NOT in the inventory.
+  # If the inventory cannot be built, or the root is not a drive-letter root, the path is NOT absent (it then
+  # goes through Get-Acl and any failure stays fail-closed = writable). A present-but-inaccessible drive is
+  # still in the inventory, so it is never mis-read as absent.
+  $driveRoots = @{}; $driveInvOk = $false
+  try {
+    foreach ($d in [System.IO.DriveInfo]::GetDrives()) { $driveRoots[$d.Name.ToUpperInvariant()] = $true }
+    $driveInvOk = ($driveRoots.Count -gt 0)
+  } catch { $driveInvOk = $false }
   # Which served paths the test user can WRITE, via Get-ZbWritable (real Win32 AccessCheck; see above).
-  # Unreadable ACL or no AccessCheck context => fail-safe (treated writable, never hidden). A path whose
-  # drive/root is ABSENT is classified 'absent' (reported separately), never silently writable.
+  # Unreadable ACL or no AccessCheck context => fail-safe (treated writable, never hidden).
   $w = @(); $absent = @(); $exc = @()
   foreach ($sh in $shareList) {
     $p = $sh.path
     $root = $null; try { $root = [System.IO.Path]::GetPathRoot($p) } catch {}
     $driveAbsent = $false
-    if ($root) { try { $driveAbsent = -not (Test-Path -LiteralPath $root) } catch { $driveAbsent = $false } }
+    if ($driveInvOk -and $root -and ($root -match '^[A-Za-z]:\\$')) {
+      if (-not $driveRoots.ContainsKey($root.ToUpperInvariant())) { $driveAbsent = $true }
+    }
     $writable = $false
     if (-not $driveAbsent) {
       try {
         $acl = Get-Acl -LiteralPath $p -ErrorAction Stop
         $writable = [bool](Get-ZbWritable $acl $ZbAcCtx)
-      } catch {
-        # a drive that disappeared surfaces here too — re-classify as absent; any OTHER failure fails closed.
-        if ($root) { try { if (-not (Test-Path -LiteralPath $root)) { $driveAbsent = $true } } catch {} }
-        if (-not $driveAbsent) { $writable = $true }
-      }
+      } catch { $writable = $true }   # any Get-Acl failure on a present drive => fail closed (writable)
     }
     switch (Get-ZbShareVerdict -DriveAbsent $driveAbsent -Writable $writable -Excepted ($except.ContainsKey($p))) {
       'absent'   { $absent += $p }
