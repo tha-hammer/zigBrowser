@@ -1606,7 +1606,7 @@ so the generated rule `(allow network-outbound (remote tcp "localhost:<port>"))`
 leave the gate unmet, the **accepted contract is the `localhost:<port>` grant (loopback TCP, both
 families)**, on the strict condition that **the app OWNS every endpoint the token admits** and the rule
 is otherwise exact. "Nothing listens on `::1` today" is NOT the boundary (RoseCat 7071): a current
-`CONNECT-REFUSED` to `::1` only proves no listener happened to exist; an unrelated local process could
+a connect to `::1` failing today only proves no listener happened to exist; an unrelated local process could
 bind the same numeric port on IPv6 and then sandboxed code could reach it. The hole closes only by
 **durable dual-family ownership** of the port.
 
@@ -1620,10 +1620,12 @@ The gate MUST prove, both arches:
    profile is never published. Proven in `tests/mac/ms6_netd_darwin_gate.sh` / `test_netd_darwin` and
    `tests/mac/ms6_r1_kernel_gate.sh` / `test_setup_darwin_r1` (pre-planted-`::1` fail-closed; second bind
    EADDRINUSE; reservation lifetime == v4 listener; lsof shows `[::1]:<port>` not-LISTEN + no reuse flags).
-2. **`[::1]:<port>` reaches only the app's reservation** — because (1) holds a non-listening reservation
-   there, a sandbox connect to `[::1]:<port>` gets the app-owned `CONNECT-REFUSED`, never a foreign
-   listener (`tests/mac/ms6_4_egress_test.sh`, the `::1` row). The reachable egress endpoint stays
-   `127.0.0.1:<port>` and only that.
+2. **`[::1]:<port>` reaches nothing** — because (1) holds a **bound, non-listening** reservation there, a
+   sandbox connect to `[::1]:<port>` has its SYN **dropped** by that socket: it is observed as a **TIMEOUT**,
+   never a completed connection and never a foreign listener. A bound non-listening socket drops the SYN
+   rather than sending a refusal (measured both Macs, RoseCat 9c68cc4), so the row expects the observed
+   timeout, NOT `CONNECT-REFUSED` (`tests/mac/ms6_4_egress_test.sh`, the `::1` row, with the real reservation
+   present via netd's `--test-port` seam). The reachable egress endpoint stays `127.0.0.1:<port>` and only that.
 3. **every OTHER endpoint the token could be mistaken to admit is DENIED by policy** — another v4 port AND
    another v6 port, UDP v4 AND UDP v6 at the allowed port, the IPv4-mapped IPv6 form, and a public IP all
    `CONNECT-DENIED` (EPERM, not merely refused); the hook profile denies the egress port while keeping its
