@@ -24441,3 +24441,30 @@ at operations. The `.publish.lock` leaf also follows a planted symlink through
 shell redirection and needs a fail-closed regular/no-follow contract. Add the
 exact child-swap red before claiming TOCTOU closure. Findings were sent to
 AzureRidge with BlueBeaver copied in Agent Mail 7293.
+
+## Windows direct-generation/no-follow-lock follow-up (`0ca5771`)
+
+**BLOCKED; the push boundary does not advance.** Removing the persistent
+`gen/` component is correct: fresh `g-*` generations now live directly in the
+pinned cwd, so the prior child-directory swap no longer redirects publication.
+The exact-export registered suite passes 35/35 inside a private PID namespace.
+
+The `.publish.lock` protection remains check-then-open. The script checks
+`-L .publish.lock` before the fetch, then later opens it with
+`9>".publish.lock"`. A review-only exact-export test paused the fake scp,
+created `out/.publish.lock -> ../victim.txt` after the check, and resumed. The
+redirection followed the new symlink, truncated the victim from `precious` to
+empty, and the script returned zero with a published artifact:
+
+```text
+FAIL: a lock symlink planted after validation was followed
+victim contents: ""
+rc=0
+```
+
+A preflight symlink check cannot make a later shell redirection no-follow.
+Lock the already pinned cwd inode directly (a held directory fd used by both
+publish and GC), or open a regular lock leaf with `O_CREAT|O_NOFOLLOW`, retain
+that fd and validate its identity. Add this exact mid-fetch symlink race as a
+red. Findings were sent to AzureRidge with BlueBeaver copied in Agent Mail
+7295.
