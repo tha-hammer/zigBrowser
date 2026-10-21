@@ -86,12 +86,26 @@ test "stop() reports a reaped nonzero exit as unclean (no signal, cleanup may no
     try std.testing.expectEqual(spawner.StopResult.exited_unclean, spawner.stopWith(netd.pid, netd.stdin_fd, 2000));
 }
 
-test "shouldKillBackstop refuses pid 0/1/negative — killpg(1) is kill(-1)" {
-    // Pure guard, zero kill risk: the backstop in stopWith sits behind exactly this (RoseCat 7172 #3). A
-    // behavioural pid==1 test is deliberately NOT written — it would itself risk kill(-1) on any regression.
+test "shouldKillBackstop is the numeric floor: pid 0/1/negative never reach waitpid or kill" {
+    // The floor only keeps waitpid from being called with the 0 / -1 (whole-group / any-child) forms and keeps
+    // killpg(1)=kill(-1) impossible. It is NOT the ownership proof — that is waitpid itself (see the ECHILD
+    // test below), so a pid merely clearing the floor is not thereby kill-safe.
     try std.testing.expect(!spawner.shouldKillBackstop(1));
     try std.testing.expect(!spawner.shouldKillBackstop(0));
     try std.testing.expect(!spawner.shouldKillBackstop(-1));
-    try std.testing.expect(spawner.shouldKillBackstop(2));
-    try std.testing.expect(spawner.shouldKillBackstop(1234));
+    try std.testing.expect(spawner.shouldKillBackstop(2)); // a plausible child pid clears the floor
+}
+
+test "stopWith never signals a pid that is not our child (waitpid ECHILD)" {
+    // 999999 (not our child) and our own pid (live, > 1, but cannot be waited on) both give waitpid ECHILD, so
+    // ownership is unproven and the backstop must NOT fire — only .skipped_bad_pid (RoseCat 7182). The previous
+    // code collapsed ECHILD with a real-child timeout and killed the unrelated pid.
+    var p: [2]c_int = undefined;
+    try std.testing.expect(std.c.pipe(&p) == 0);
+    try std.testing.expectEqual(spawner.StopResult.skipped_bad_pid, spawner.stopWith(999999, p[1], 50));
+    _ = std.c.close(p[0]);
+    var q: [2]c_int = undefined;
+    try std.testing.expect(std.c.pipe(&q) == 0);
+    try std.testing.expectEqual(spawner.StopResult.skipped_bad_pid, spawner.stopWith(std.c.getpid(), q[1], 50));
+    _ = std.c.close(q[0]);
 }

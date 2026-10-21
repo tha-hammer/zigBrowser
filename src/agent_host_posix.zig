@@ -106,7 +106,8 @@ pub const Netd = struct {
 
 /// How netd stopped: a clean EOF exit (status 0, no signal), a reaped-but-unclean exit (nonzero/signalled — no
 /// further signal needed, but netd's own EOF cleanup may not have run), the SIGKILL backstop, or a refusal to
-/// signal a bogus pid (a real spawned netd never hits the last).
+/// signal because ownership was unproven — a bad pid, or `waitpid` said the pid is not our child (a real spawned
+/// netd never hits the last).
 pub const StopResult = enum { clean_exit, exited_unclean, killed, skipped_bad_pid };
 
 /// Only a real child pid (> 1) may be signalled: pid 0/1/negative must never reach `killpg`, because `killpg(1)`
@@ -116,40 +117,57 @@ pub fn shouldKillBackstop(pid: std.c.pid_t) bool {
     return pid > 1;
 }
 
-const Reaped = enum { clean, unclean };
+/// The result of waiting on `pid`: reaped clean/unclean (no signal), a CONFIRMED-ours live child that outlasted
+/// the grace (the backstop may kill its group), or ownership we could NOT prove (a bad pid, or `waitpid` said
+/// ECHILD) — which must NEVER be signalled (RoseCat 7182).
+const WaitOutcome = enum { exited_clean, exited_unclean, alive_ours_grace_expired, not_our_child };
+
+fn cErrno() c_int {
+    return std.c._errno().*;
+}
+
+const EINTR_: c_int = @intFromEnum(std.c.E.INTR);
 
 /// The clean-then-backstop stop (RoseCat 7161 #2): close netd's stdin (EOF -> clean exit), wait up to `grace_ms`
 /// for it to exit, and SIGKILL + reap its group ONLY if it does not. Returns which path was taken, so the clean
 /// path is observable in tests. `zb_agent_kill_group` guards pid <= 0 and kills only netd's OWN process group.
 pub fn stopWith(pid: std.c.pid_t, stdin_fd: c_int, grace_ms: u32) StopResult {
     _ = std.c.close(stdin_fd);
-    if (!shouldKillBackstop(pid)) return .skipped_bad_pid; // never signal a bogus/non-child pid (kill-safety)
-    if (waitExit(pid, grace_ms)) |reaped| return switch (reaped) {
-        .clean => .clean_exit,
-        .unclean => .exited_unclean,
+    return switch (waitExit(pid, grace_ms)) {
+        .exited_clean => .clean_exit,
+        .exited_unclean => .exited_unclean,
+        .not_our_child => .skipped_bad_pid, // bad pid OR ECHILD: ownership unproven -> never signal (kill-safety)
+        .alive_ours_grace_expired => blk: {
+            zb_agent_kill_group(pid); // a CONFIRMED-ours live child that will not exit -> kill its OWN group
+            break :blk .killed;
+        },
     };
-    zb_agent_kill_group(pid);
-    return .killed;
 }
 
-/// Wait up to `grace_ms` for `pid` to exit, reaping it (non-blocking waitpid poll). `.clean` for a normal exit 0
-/// (netd ran its EOF cleanup), `.unclean` for a reaped nonzero/signalled exit (no further signal needed, but the
-/// cleanup may not have run), or null on timeout or a wait error (the caller then kills). Guards pid > 1.
-fn waitExit(pid: std.c.pid_t, grace_ms: u32) ?Reaped {
-    if (!shouldKillBackstop(pid)) return null;
+/// Wait up to `grace_ms` for `pid`, reaping it. Ownership is proven by `waitpid(pid, WNOHANG)` ITSELF: it
+/// succeeds only for our own child, so `== pid` (reaped) and `== 0` (still alive) both PROVE ownership, while
+/// ECHILD proves `pid` is NOT our child (RoseCat 7182) — never signalled. pid <= 1 is refused up front so
+/// `waitpid` is never called with the 0 / -1 "whole group / any child" forms. `.exited_clean` means exit 0
+/// (netd ran its EOF cleanup); `.exited_unclean` a reaped nonzero/signalled exit (no further signal needed).
+fn waitExit(pid: std.c.pid_t, grace_ms: u32) WaitOutcome {
+    if (!shouldKillBackstop(pid)) return .not_our_child;
     const start = nowMs();
     while (true) {
         var status: c_int = 0;
         const r = std.c.waitpid(pid, &status, std.c.W.NOHANG);
         if (r == pid) {
             const s: u32 = @bitCast(status);
-            return if (std.c.W.IFEXITED(s) and std.c.W.EXITSTATUS(s) == 0) .clean else .unclean;
+            return if (std.c.W.IFEXITED(s) and std.c.W.EXITSTATUS(s) == 0) .exited_clean else .exited_unclean;
         }
-        if (r < 0) return null; // ECHILD/EINVAL: cannot confirm, let the backstop handle it
-        if (nowMs() - start >= grace_ms) return null; // still alive at the grace: needs the backstop
-        var req: std.c.timespec = .{ .sec = 0, .nsec = 5 * std.time.ns_per_ms };
-        var rem: std.c.timespec = undefined;
-        _ = std.c.nanosleep(&req, &rem);
+        if (r == 0) { // r == 0 proves pid IS our child and is still alive
+            if (nowMs() - start >= grace_ms) return .alive_ours_grace_expired; // our live child outlasted the grace
+            var req: std.c.timespec = .{ .sec = 0, .nsec = 5 * std.time.ns_per_ms };
+            var rem: std.c.timespec = undefined;
+            _ = std.c.nanosleep(&req, &rem);
+            continue;
+        }
+        if (cErrno() == EINTR_) continue; // transient: retry within the grace
+        return .not_our_child; // ECHILD or other error: ownership unproven, do NOT signal
     }
 }
 
@@ -230,12 +248,20 @@ fn netdAlive(fd: c_int, grace_ms: u32) bool {
         const remaining: c_int = @intCast(@as(i64, grace_ms) - elapsed);
         var pfd = [_]std.c.pollfd{.{ .fd = fd, .events = std.posix.POLL.IN, .revents = 0 }};
         const r = std.c.poll(&pfd, 1, remaining);
-        if (r <= 0) continue; // poll timeout/EINTR: re-check the grace at the loop top
+        if (r == 0) continue; // poll timeout: re-check the grace at the loop top
+        if (r < 0) {
+            if (cErrno() == EINTR_) continue; // transient: retry
+            return false; // other poll error: fail closed — cannot confirm liveness (RoseCat 7182 SHOULD)
+        }
         var b: [64]u8 = undefined;
         const n = std.c.read(fd, &b, b.len);
         if (n == 0) return false; // EOF/HUP: netd closed stdout = exited: NOT alive
-        // n > 0 (late output) or n < 0 (EINTR): DRAIN and keep observing — a later EOF within the grace still
-        // means dead, so we must not early-return on extra stdout (RoseCat 7172 #1).
+        if (n < 0) {
+            if (cErrno() == EINTR_) continue; // transient: retry
+            return false; // other read error: fail closed
+        }
+        // n > 0 (late output): DRAIN and keep observing — a later EOF within the grace still means dead, so we
+        // must not early-return on extra stdout (RoseCat 7172 #1).
     }
 }
 
