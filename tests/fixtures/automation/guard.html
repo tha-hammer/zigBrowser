@@ -9,6 +9,11 @@
 <button id="buy" type="button">Buy</button>
 <input id="msg" type="text" value="">
 <div id="editor" contenteditable="true" style="min-height:2em;border:1px solid #888"></div>
+<select id="sel"><option value="a">A</option><option value="b">B</option></select>
+<div id="lb" role="listbox" aria-label="Pick"><div id="opt-x" role="option" data-value="x">X</div><div id="opt-y" role="option" data-value="y">Y</div></div>
+<p><span class="dup">twin</span> <span class="dup">twin</span></p>
+<p id="hiddenmark" style="display:none">alice</p>
+<div aria-hidden="true"><span id="ariahidden-inner">alice</span></div>
 <script>
   const mode = new URLSearchParams(location.search).get('mode') || 'none';
   window.__events = [];
@@ -43,6 +48,29 @@
       event.target.textContent += event.data || '';
       swapRecipient();
     }));
+  }
+  const setAccount = () => { document.getElementById('account').textContent = 'bob'; };
+  if (mode === 'focus-account') {
+    for (const id of ['msg', 'sel']) document.getElementById(id).addEventListener('focus', once(setAccount));
+  }
+  if (mode === 'fill-input-recipient') {
+    document.getElementById('msg').addEventListener('input', once(swapRecipient));
+  }
+  if (mode === 'press-keydown-account') {
+    document.getElementById('msg').addEventListener('keydown', once(setAccount));
+  }
+  if (mode === 'select-input-account') {
+    document.getElementById('sel').addEventListener('input', once(setAccount));
+  }
+  if (mode === 'aria-pointerdown-account') {
+    document.getElementById('opt-y').addEventListener('pointerdown', once(setAccount));
+  }
+  if (mode === 'pointerdown-href') {
+    document.getElementById('buy').addEventListener('pointerdown', once(() => { document.getElementById('recipient').setAttribute('href', '/in/mallory/'); }));
+  }
+  if (mode === 'editor-input-recipient') {
+    // The editor's own input event, fired by the browser's native insert.
+    document.getElementById('editor').addEventListener('input', once(swapRecipient));
   }
   window.__ready = true;
 </script>

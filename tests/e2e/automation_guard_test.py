@@ -110,6 +110,87 @@ def case_guard(binary: Path, tmp: Path, check) -> None:
               f"a Draft.js-style editor: two events, no character of ours ({code}, {data})")
         check(b.ev("document.getElementById('editor').textContent") == "h", "a Draft.js-style editor: the page's own edit holds one character")
 
+        # RoseCat 7166 #2: a focus handler changes a mark; fill and type stop before any write.
+        for method, params in (("dom.fill", {"selector": "css=#msg", "value": "hi"}), ("dom.type", {"selector": "css=#msg", "text": "hi"})):
+            page(b, "focus-account")
+            code, data = refused(b, method, dict(params, options={"guard": guard()}))
+            check((code, data.get("reason"), data.get("sent")) == (-32015, "mark_changed", {"events": 0, "chars": 0}),
+                  f"{method}: a focus handler switches the account: stopped before any write ({code}, {data})")
+            check(b.ev("document.getElementById('msg').value") == "", f"{method}: after the focus handler: nothing written")
+            check(events(b, "msg") == [], f"{method}: after the focus handler: no key or input event ({events(b, 'msg')})")
+
+        # RoseCat 7166 #1: the fill, press, native select and ARIA branches, each mid-action.
+        page(b, "fill-input-recipient")
+        code, data = refused(b, "dom.fill", {"selector": "css=#msg", "value": "hi", "options": {"guard": guard()}})
+        check((code, data.get("reason"), data.get("sent")) == (-32015, "mark_changed", {"events": 1, "chars": 2}),
+              f"fill: input swaps the recipient: no change event ({code}, {data})")
+        check(events(b, "msg") == ["input:msg"], f"fill: input swaps the recipient: input only ({events(b, 'msg')})")
+
+        page(b, "press-keydown-account")
+        code, data = refused(b, "dom.press", {"selector": "css=#msg", "key": "a", "options": {"guard": guard()}})
+        check((code, data.get("reason"), data.get("sent")) == (-32015, "mark_changed", {"events": 1, "chars": 0}),
+              f"press: keydown switches the account: no keypress ({code}, {data})")
+        check(events(b, "msg") == ["keydown:msg"], f"press: keydown only ({events(b, 'msg')})")
+        check(b.ev("document.getElementById('msg').value") == "", "press: nothing written")
+
+        page(b, "focus-account")
+        code, data = refused(b, "dom.selectOption", {"selector": "css=#sel", "value": "b", "options": {"guard": guard()}})
+        check((code, data.get("reason"), data.get("sent")) == (-32015, "mark_changed", {"events": 0, "chars": 0}),
+              f"native select: a focus handler: stopped before selecting ({code}, {data})")
+        check(b.ev("document.getElementById('sel').value") == "a", "native select: still on the first option")
+
+        page(b, "select-input-account")
+        code, data = refused(b, "dom.selectOption", {"selector": "css=#sel", "value": "b", "options": {"guard": guard()}})
+        check((code, data.get("reason"), data.get("sent")) == (-32015, "mark_changed", {"events": 1, "chars": 0}),
+              f"native select: input switches the account: no change event ({code}, {data})")
+        check(events(b, "sel") == ["input:sel"], f"native select: input only ({events(b, 'sel')})")
+
+        page(b, "aria-pointerdown-account")
+        code, data = refused(b, "dom.selectOption", {"selector": "css=#lb", "value": "y", "options": {"guard": guard()}})
+        check((code, data.get("reason"), data.get("sent")) == (-32015, "mark_changed", {"events": 1, "chars": 0}),
+              f"ARIA select: pointerdown on the option switches the account ({code}, {data})")
+        check(events(b, "opt-y") == ["pointerdown:opt-y"], f"ARIA select: the option saw only pointerdown ({events(b, 'opt-y')})")
+
+        # RoseCat 7166 #3: a mark must match exactly one visible element, not under aria-hidden.
+        for what, mark in (("no match", {"selector": "css=#nope", "value": "alice"}),
+                           ("two matches", {"selector": "css=.dup", "value": "twin"}),
+                           ("display:none", {"selector": "css=#hiddenmark", "value": "alice"}),
+                           ("under aria-hidden", {"selector": "css=#ariahidden-inner", "value": "alice"})):
+            page(b, "none")
+            code, data = refused(b, "dom.click", {"selector": "css=#buy", "options": {"guard": guard([mark], target=False)}})
+            check((code, data.get("reason"), data.get("sent")) == (-32015, "mark_changed", {"events": 0, "chars": 0}),
+                  f"a mark with {what}: refused before anything ({code}, {data})")
+            check(events(b, "buy") == [], f"a mark with {what}: the page saw nothing ({events(b, 'buy')})")
+        href = [{"selector": "css=#recipient", "attribute": "href", "value": "/in/carol/"}]
+        page(b, "none")
+        result = b.zb.call("dom.click", {"selector": "css=#buy", "options": {"guard": guard(href, target=False)}})
+        check(result == {"ok": True}, f"an attribute mark that holds: the click is done ({result})")
+        page(b, "pointerdown-href")
+        code, data = refused(b, "dom.click", {"selector": "css=#buy", "options": {"guard": guard(href, target=False)}})
+        check((code, data.get("reason"), data.get("sent")) == (-32015, "mark_changed", {"events": 1, "chars": 0}),
+              f"an attribute mark: pointerdown changes only the href ({code}, {data})")
+
+        # RoseCat 7166 #4: marks alone, and target alone, are each a whole guard.
+        page(b, "none")
+        result = b.zb.call("dom.click", {"selector": "css=#buy", "options": {"guard": {"marks": MARKS}}})
+        check(result == {"ok": True}, f"marks only: the click is done ({result})")
+        page(b, "none")
+        result = b.zb.call("dom.click", {"selector": "css=#buy", "options": {"guard": {"target": True}}})
+        check(result == {"ok": True}, f"target only: the click is done ({result})")
+        page(b, "input-clone")
+        code, data = refused(b, "dom.type", {"selector": "css=#msg", "text": "hi", "options": {"guard": {"target": True}}})
+        check((code, data.get("reason"), data.get("sent")) == (-32015, "target_changed", {"events": 2, "chars": 1}),
+              f"target only: the clone is seen ({code}, {data})")
+
+        # RoseCat 7166 SHOULD: the editor's own input event (from the browser's native insert)
+        # swaps the recipient: the insert happened, nothing after it.
+        page(b, "editor-input-recipient")
+        code, data = refused(b, "dom.type", {"selector": "css=#editor", "text": "hi", "options": {"guard": guard()}})
+        check((code, data.get("reason"), data.get("sent")) == (-32015, "mark_changed", {"events": 2, "chars": 1}),
+              f"the editor's input swaps the recipient: stopped after the insert ({code}, {data})")
+        check(b.ev("document.getElementById('editor').textContent") == "h", "the editor's input: one character, no second")
+        check("keyup:editor" not in events(b, "editor"), f"the editor's input: no keyup ({events(b, 'editor')})")
+
         # The guard is synthetic-only and acting-verbs-only.
         page(b, "none")
         code, _ = refused(b, "dom.click", {"selector": "css=#buy", "options": {"input": "native", "guard": guard()}})
