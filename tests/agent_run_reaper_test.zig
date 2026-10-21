@@ -4,6 +4,7 @@
 const std = @import("std");
 
 extern fn zb_reaper_path_under(path: ?[*:0]const u8, dir: ?[*:0]const u8) c_int;
+extern fn zb_reaper_run_dir_ok(dir: ?[*:0]const u8) c_int;
 extern fn zb_reaper_classify(
     cwd: ?[*:0]const u8,
     exe: ?[*:0]const u8,
@@ -58,4 +59,30 @@ test "classify fails closed on a root/empty run dir" {
     const fds = [_]?[*:0]const u8{"/anything/x"};
     try std.testing.expectEqual(@as(c_int, 0), zb_reaper_classify("/anything", "/anything", &fds, 1, "/"));
     try std.testing.expectEqual(@as(c_int, 0), zb_reaper_classify("/anything", "/anything", &fds, 1, ""));
+}
+
+test "run_dir_ok accepts only an app-owned, canonical, deep per-run marker (RoseCat a2fd8af #2)" {
+    // accepted: the sockdirPath format, under any plausible runtime parent (resolved), with depth >= 2.
+    try std.testing.expectEqual(@as(c_int, 1), zb_reaper_run_dir_ok("/var/folders/qx/T/zigbrowser-agent-123-0011223344556677"));
+    try std.testing.expectEqual(@as(c_int, 1), zb_reaper_run_dir_ok("/private/tmp/zb/zigbrowser-agent-1-ff"));
+    try std.testing.expectEqual(@as(c_int, 1), zb_reaper_run_dir_ok("/Users/bob/Library/Caches/zigbrowser-agent-9-ab"));
+}
+
+test "run_dir_ok rejects broad ancestors, root children, non-canonical and non-app dirs" {
+    // broad ancestors a naive marker would let sweep the user's real processes:
+    try std.testing.expectEqual(@as(c_int, 0), zb_reaper_run_dir_ok("/"));
+    try std.testing.expectEqual(@as(c_int, 0), zb_reaper_run_dir_ok("/tmp"));
+    try std.testing.expectEqual(@as(c_int, 0), zb_reaper_run_dir_ok("/private/tmp"));
+    try std.testing.expectEqual(@as(c_int, 0), zb_reaper_run_dir_ok("/Users"));
+    try std.testing.expectEqual(@as(c_int, 0), zb_reaper_run_dir_ok("/Users/bob"));
+    try std.testing.expectEqual(@as(c_int, 0), zb_reaper_run_dir_ok("/home/bob"));
+    // the right name but no app signature, or the signature without the app's own parent chain:
+    try std.testing.expectEqual(@as(c_int, 0), zb_reaper_run_dir_ok("/var/folders/qx/T/some-other-dir"));
+    try std.testing.expectEqual(@as(c_int, 0), zb_reaper_run_dir_ok("/zigbrowser-agent-1-ff")); // root child (depth < 2)
+    // not absolute / not canonical:
+    try std.testing.expectEqual(@as(c_int, 0), zb_reaper_run_dir_ok("zigbrowser-agent-1-ff"));
+    try std.testing.expectEqual(@as(c_int, 0), zb_reaper_run_dir_ok("/a//zigbrowser-agent-1")); // "//"
+    try std.testing.expectEqual(@as(c_int, 0), zb_reaper_run_dir_ok("/a/./zigbrowser-agent-1")); // "/."
+    try std.testing.expectEqual(@as(c_int, 0), zb_reaper_run_dir_ok("/a/../zigbrowser-agent-1")); // "/.."
+    try std.testing.expectEqual(@as(c_int, 0), zb_reaper_run_dir_ok(null));
 }

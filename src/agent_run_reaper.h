@@ -24,22 +24,31 @@ int zb_reaper_path_under(const char *path, const char *dir);
 int zb_reaper_classify(const char *cwd, const char *exe, const char *const *fd_paths, int nfds,
                        const char *run_dir);
 
+/* 1 iff `dir` is acceptable as a sweep's run dir: an app-owned, per-run marker, NOT a broad ancestor whose
+ * children are the user's real processes (RoseCat a2fd8af #2). Requires an ABSOLUTE, CANONICAL path (no "//",
+ * "/./", "/../"), at least two path components, and a LAST component beginning "zigbrowser-agent-" — the format
+ * agent_net.sockdirPath creates. So "/", "/tmp", "/Users/<user>", "$HOME", a relative or non-canonical path, and
+ * any dir the app did not create are all rejected. Pure, so it is unit-tested on Linux. The sweep realpath()s the
+ * dir first and this runs on the RESOLVED path; realpath failing is itself a refusal, with no raw-string fallback. */
+int zb_reaper_run_dir_ok(const char *dir);
+
 #ifdef __APPLE__
-/* macOS libproc, no private SPI. Both enumerate every process (proc_listallpids) and gather each one's cwd, exe
- * and open-file vnode paths (proc_pidinfo / proc_pidpath / proc_pidfdinfo), classifying with zb_reaper_classify.
- * A refused run_dir ("" or "/") matches nothing. Both skip pid <= 1, ourselves, and any pid not of our uid, so a
- * signal is never kill(-1)/kill(0)/suicide and never reaches another user's process.
+/* macOS libproc, no private SPI. Both realpath() the run dir and REFUSE unless zb_reaper_run_dir_ok accepts the
+ * resolved path (realpath failure = refusal, no fallback), then enumerate every process (proc_listallpids,
+ * count-returning, grown + retried if the buffer filled) and gather each one's cwd/exe/open-file vnode paths plus
+ * its uid and start time. Both skip pid <= 1, ourselves, and any pid not of our uid: a signal is never
+ * kill(-1)/kill(0)/suicide and never reaches another user's process. `*out_overflow` is set to 1 when more
+ * survivors matched than the cap (the lists are then truncated, not silently complete).
  *
- * zb_reaper_census: REPORT ONLY — fill out_pids/out_n with the survivor pids, send NO signal. This is the drawer
- * warning's "show details" source and a safe dry run.
+ * zb_reaper_census: REPORT ONLY — the survivor pids, NO signal (the warning's "show details" and a safe dry run).
  *
- * zb_reaper_sweep: the census, then SIGKILL each survivor — but only after RE-gathering its markers immediately
- * before the signal (a survivor can exit and its pid be reused; a no-longer-matching or vanished pid is skipped,
- * never killed). out_killed = reaped within a short grace; out_survivors = matched but still alive after it.
- * Returns 0, or an errno on a setup failure. */
-int zb_reaper_census(const char *run_dir, int *out_pids, int cap, int *out_n);
+ * zb_reaper_sweep: the census, then SIGKILL each survivor only after RE-gathering its markers, uid AND start time
+ * immediately before the signal — a vanished pid, a changed identity (reused pid) or a changed marker is skipped,
+ * never killed. kill()'s return is checked (ESRCH = already gone). out_killed = gone within a short grace;
+ * out_survivors = matched but still alive after it. Returns 0, or an errno (EINVAL = refused run dir). */
+int zb_reaper_census(const char *run_dir, int *out_pids, int cap, int *out_n, int *out_overflow);
 int zb_reaper_sweep(const char *run_dir, int *out_killed_pids, int killed_cap, int *out_killed_n,
-                    int *out_survivor_pids, int survivor_cap, int *out_survivor_n);
+                    int *out_survivor_pids, int survivor_cap, int *out_survivor_n, int *out_overflow);
 #endif
 
 #ifdef __cplusplus
