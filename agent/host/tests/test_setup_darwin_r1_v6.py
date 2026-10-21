@@ -5,7 +5,9 @@ the whole probe: bound, NOT listening, no SO_REUSEADDR/SO_REUSEPORT, not inherit
 If it cannot be taken, setup refuses ("no R1"; refuse, not retry). On Linux with the platform injected, the seam
 faked with its real signature and setup's census answered clean:
 
-- while the probe runs, a second ::1:<port> bind fails with EADDRINUSE, also with SO_REUSEADDR+SO_REUSEPORT;
+- while the probe runs, a second ::1:<port> bind fails with EADDRINUSE, also with SO_REUSEADDR+SO_REUSEPORT, and the
+  reservation setup itself created is exactly one AF_INET6 SOCK_STREAM socket on [::1]:<port> with IPV6_V6ONLY 1,
+  SO_ACCEPTCONN 0, SO_REUSEADDR 0, SO_REUSEPORT 0, not inheritable (read directly; RoseCat 7097);
 - pass_fds is still exactly the listener and the census end (the reservation never reaches the sandbox);
 - after probe_r1, both 127.0.0.1:<port> and ::1:<port> are free;
 - a ::1 listener already at the port setup's v4 listener gets (forced by the test) makes probe_r1 refuse: False,
@@ -48,12 +50,41 @@ class V6Reservation(Base):
         self.fake_seam()
 
     def test_while_the_probe_runs_v6_is_held_and_after_both_families_are_free(self):
-        held = []
+        held, shapes, made = [], [], []
         self.fake_run()
         inner = setup.subprocess.run.side_effect
+        real_socket = socket.socket
+        recording = [True]
+        requested = []
+
+        class Recording(real_socket):
+            # What setup ASKS for: Linux forces IPV6_V6ONLY on any socket bound to ::1, so only the request shows
+            # that setup sets it (the contract requires it; macOS defaults to 0).
+            def setsockopt(self, *a):
+                requested.append((self.family, a))
+                return super().setsockopt(*a)
+
+        def factory(*args, **kwargs):
+            if "fileno" in kwargs or not recording[0]:
+                return real_socket(*args, **kwargs)
+            s = Recording(*args, **kwargs)
+            made.append(s)  # setup's own sockets, made before the probe runs
+            return s
+
+        mock.patch.object(setup.socket, "socket", side_effect=factory).start()
 
         def run(argv, **kwargs):
+            recording[0] = False
             port = int(argv[argv.index("--listen-port") + 1])
+            # The production-created reservation, read directly (RoseCat 7097).
+            for s in made:
+                if s.family == socket.AF_INET6:
+                    shapes.append({"name": s.getsockname()[:2], "type": s.type,
+                                   "v6only": s.getsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY),
+                                   "acceptconn": s.getsockopt(socket.SOL_SOCKET, socket.SO_ACCEPTCONN),
+                                   "reuseaddr": s.getsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR),
+                                   "reuseport": s.getsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT),
+                                   "inheritable": s.get_inheritable()})
             held.append((port, bind_errno(socket.AF_INET6, ("::1", port)),
                          bind_errno(socket.AF_INET6, ("::1", port), reuse=True)))
             return inner(argv, **kwargs)
@@ -61,6 +92,14 @@ class V6Reservation(Base):
         mock.patch.object(setup.subprocess, "run", side_effect=run).start()
         self.assertIs(setup.probe_r1(WRAPPER, CLI), True)
         ((port, plain, reuse),) = held
+        self.assertEqual(shapes, [{"name": ("::1", port), "type": socket.SOCK_STREAM, "v6only": 1, "acceptconn": 0,
+                                   "reuseaddr": 0, "reuseport": 0, "inheritable": False}],
+                         "exactly one reservation: V6ONLY, never listening, no reuse flags, not inheritable")
+        v6 = [a for family, a in requested if family == socket.AF_INET6]
+        self.assertIn((socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1), v6, "setup explicitly requests IPV6_V6ONLY")
+        self.assertFalse([a for a in v6 if a[:2] in ((socket.SOL_SOCKET, socket.SO_REUSEADDR),
+                                                     (socket.SOL_SOCKET, socket.SO_REUSEPORT))],
+                         f"and never a reuse flag on it ({v6})")
         self.assertEqual((plain, reuse), (errno.EADDRINUSE, errno.EADDRINUSE),
                          "::1:<port> is setup's during the probe, even against SO_REUSEADDR+SO_REUSEPORT")
         (run_rec,) = self.runs

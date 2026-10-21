@@ -10,14 +10,20 @@ launcher):
 - while netd is live, a second bind on ::1:<port> fails with EADDRINUSE, also with SO_REUSEADDR and SO_REUSEPORT
   set (so netd set neither), and the ready line is unchanged;
 - after EOF on stdin, and after SIGTERM, both 127.0.0.1:<port> and ::1:<port> are free again;
+- the live reservation itself (read from netd's own fd with pidfd_getfd; RoseCat 7097) is exactly one AF_INET6
+  SOCK_STREAM socket on [::1]:<port> with IPV6_V6ONLY 1, SO_ACCEPTCONN 0, SO_REUSEADDR 0, SO_REUSEPORT 0, close-on-exec;
 - `--test-port` (the e2e seam; the app passes --test-* only under --e2e-protocol) is Darwin-only and exact: ASCII
   decimal 1-65535, no sign, leading zero or whitespace, given once.
 
 Run like the gate: cd agent/host/tests && python -X dev -m unittest -v test_netd_darwin_v6. Unregistered until the
 green.
 """
+import ctypes
 import errno
+import json
+import os
 import signal
+import tempfile
 import socket
 import subprocess
 import sys
@@ -97,6 +103,86 @@ class V6Reservation(unittest.TestCase):
         self.assertEqual(netd.proc.wait(timeout=10), 0)
         self.assertEqual((bind_errno(socket.AF_INET, ("127.0.0.1", port)), bind_errno(socket.AF_INET6, ("::1", port))),
                          (0, 0))
+
+
+def held_v6_reservations(pid, port):
+    """The live netd's own [::1]:<port> sockets, duplicated into this process with pidfd_getfd (Linux 5.6+) so the
+    production socket's options are read directly (RoseCat 7097): [(socket, close-on-exec), ...]."""
+    libc = ctypes.CDLL(None, use_errno=True)
+    pidfd = libc.syscall(434, pid, 0)  # pidfd_open
+    if pidfd < 0:
+        raise OSError(ctypes.get_errno(), "pidfd_open")
+    found = []
+    try:
+        for name in os.listdir(f"/proc/{pid}/fd"):
+            try:
+                if not os.readlink(f"/proc/{pid}/fd/{name}").startswith("socket:"):
+                    continue
+            except OSError:
+                continue
+            dup = libc.syscall(438, pidfd, int(name), 0)  # pidfd_getfd
+            if dup < 0:
+                raise OSError(ctypes.get_errno(), "pidfd_getfd")
+            s = socket.socket(fileno=dup)
+            if s.family == socket.AF_INET6 and s.getsockname()[:2] == ("::1", port):
+                with open(f"/proc/{pid}/fdinfo/{name}") as f:
+                    flags = int(next(l for l in f if l.startswith("flags:")).split()[1], 8)
+                found.append((s, bool(flags & 0o2000000)))
+            else:
+                s.close()
+    finally:
+        os.close(pidfd)
+    return found
+
+
+@unittest.skipUnless(socket.has_ipv6 and sys.platform == "linux", "reads the live socket with pidfd_getfd")
+class ReservationShape(unittest.TestCase):
+    def test_the_reservation_is_exactly_v6only_bound_non_listening_no_reuse_cloexec(self):
+        # Two views. The kernel's, read from netd's own fd: bound, never listening, no reuse flags, close-on-exec.
+        # And what netd ASKED for, recorded by a socket subclass in netd's process: Linux forces IPV6_V6ONLY on any
+        # socket bound to a specific v6 address such as ::1, so the kernel read alone cannot show that netd sets it
+        # (the contract requires the explicit request; on macOS the default is 0).
+        log = os.path.join(tempfile.mkdtemp(prefix="zbn-v6shape-"), "calls.json")
+        self.addCleanup(lambda: (os.path.exists(log) and os.unlink(log), os.rmdir(os.path.dirname(log))))
+        launch = (
+            "import json, socket, sys\n"
+            "from zb_agent_host import netd\n"
+            "calls = []\n"
+            "class Recording(socket.socket):\n"
+            "    def setsockopt(self, *a):\n"
+            "        calls.append([int(self.family), [int(x) for x in a]])\n"
+            "        return super().setsockopt(*a)\n"
+            "netd.socket.socket = Recording\n"
+            "netd.PLATFORM = 'darwin'\n"
+            "try:\n"
+            "    rc = netd.main(sys.argv[1:])\n"
+            "finally:\n"
+            f"    open({log!r}, 'w').write(json.dumps(calls))\n"
+            "sys.exit(rc)\n")
+        netd = DarwinNetd(self, launch=launch)
+        port = netd.ready_port()
+        held = held_v6_reservations(netd.proc.pid, port)
+        try:
+            self.assertEqual(len(held), 1, "exactly one [::1]:<port> socket")
+            (s, cloexec), = held
+            self.assertEqual(s.type, socket.SOCK_STREAM)
+            self.assertEqual(s.getsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY), 1, "IPV6_V6ONLY")
+            self.assertEqual(s.getsockopt(socket.SOL_SOCKET, socket.SO_ACCEPTCONN), 0, "never listening")
+            self.assertEqual(s.getsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR), 0, "no SO_REUSEADDR")
+            self.assertEqual(s.getsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT), 0, "no SO_REUSEPORT")
+            self.assertTrue(cloexec, "close-on-exec: never inherited")
+        finally:
+            for s, _ in held:
+                s.close()
+        netd.proc.stdin.close()
+        self.assertEqual(netd.proc.wait(timeout=10), 0)
+        with open(log) as f:
+            calls = json.load(f)
+        v6 = [opts for family, opts in calls if family == socket.AF_INET6]
+        self.assertIn([socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1], v6, "netd explicitly requests IPV6_V6ONLY")
+        self.assertFalse([o for o in v6 if o[:2] in ([socket.SOL_SOCKET, socket.SO_REUSEADDR],
+                                                     [socket.SOL_SOCKET, socket.SO_REUSEPORT])],
+                         f"and never a reuse flag on it ({v6})")
 
 
 class TestPortGrammar(unittest.TestCase):

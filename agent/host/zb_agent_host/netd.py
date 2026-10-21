@@ -792,8 +792,9 @@ def serve_tcp(allow, resolve, record, hosts, ready_delay=None, census=False, por
             listener.listen(64)
             port = listener.getsockname()[1]
             # Seatbelt's (remote tcp "localhost:<port>") also admits ::1:<port> (RoseCat 7071): own it too, for our
-            # whole life. V6ONLY, bound, never listening, no SO_REUSEADDR/SO_REUSEPORT: nobody else can take it,
-            # and a connect there is refused. If it is taken already, refuse; never retry (JadeBeacon 7079).
+            # whole life. V6ONLY, bound, never listening, no SO_REUSEADDR/SO_REUSEPORT: nobody else can take it, and
+            # a connect there reaches nothing and never completes (macOS drops the SYN at a bound, non-listening
+            # socket: a timeout). If it is taken already, refuse; never retry (JadeBeacon 7079).
             reservation = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
             reservation.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
             reservation.bind(("::1", port))
