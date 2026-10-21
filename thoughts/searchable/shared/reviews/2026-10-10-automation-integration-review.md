@@ -26647,3 +26647,42 @@ Two safety contracts remain unproved:
 
 Agent Mail 7442 sent JadeBeacon both blockers. `reaper_ready` remains unarmed;
 this review authorizes no destructive Mac run.
+
+## Owned-group kernel guard and escape red (`8ea2543`)
+
+**APPROVED as a red.** It closes the safety defects in the earlier
+`249abad` red; no production signal implementation is approved yet.
+
+The guard now receives a descriptor opened on the launcher's PID namespace
+*before* `unshare`. It requires nsfs to identify it as a PID namespace,
+requires its dev/inode to differ from the worker's namespace, and requires the
+worker's pid to translate into that held namespace with
+`NS_GET_TGID_IN_PIDNS`. A different inode plus a successful translation proves
+that the held namespace is a strict ancestor, so a worker cannot signal a
+process outside its own nested namespace. The pid-1 shape is an additional
+check, not the authority.
+
+From an exact clean export, the signal-free guard suite passed **7/7**: the
+old forged string, own-namespace fd, ordinary/closed/malformed fd, descendant-
+namespace fd and a sh-as-pid-1 forgery all refused, while the reviewed held-fd
+launcher armed. A direct invocation on the host with no held fd also returned
+false. Plain `test_owned_group` then skipped all **13** real-signal cases and
+ran only the two interposed stop-failure cases; both failed as intended because
+`StopFailed` is absent. Thus no host signal was reachable during this review.
+
+The red now also covers a session-escaping pipe holder, both while its leader
+hangs and after the leader exits; a bounded proof that the original process
+group is gone; and explicit bounded `killpg` refusal. These are causal gaps the
+prior red missed. NIT: `EscapedDescendant` inherits `Behaviour`, so three base
+real-signal rows will run twice when registered.
+
+For the requested macOS policy decision, **fail closed**. A process holding a
+run pipe is related but not exclusively owned—the descriptor can be passed—so
+that fact alone must not authorize a per-pid signal. If a guarded group stop
+leaves a pipe holder or cannot prove the group gone, return a bounded explicit
+`StopFailed`, retain scratch/authority, and surface the incident. A later,
+separately reviewed marker/census reaper may handle a proved survivor once its
+gate is armed. Linux may use a dedicated per-run child subreaper, but must
+still bind adopted children to that supervised run, revalidate identity, stop
+within a bound and reap. Agent Mail 7443 sent BlueBeaver the verdict and
+policy. No Mac signal run is approved by this red review.
