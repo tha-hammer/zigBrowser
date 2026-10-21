@@ -20430,3 +20430,51 @@ accepting result 0 with errno 0 as a real empty list. Reds must use the real
 zero-plus-errno shape for both query and fill calls and include a stale-errno
 control. Clearing errno around `proc_pidpath` is also needed to remove the same
 ambiguity. Finding mailed to BlueBeaver in Agent Mail 7015.
+
+## MS6 setup-profile R1 capability (`0b9527f`)
+
+Reviewed exact security-sensitive commit `0b9527f` on 2026-10-20. **Verdict:
+BLOCKED.** The loopback input is range- and type-validated, the renderer emits
+exactly one `localhost:<port>` outbound rule when present and none otherwise,
+and a display-free clean-export profile run passed 48/48. The process-info
+scope, however, is not the boundary the code and commit describe.
+
+`sandbox_macos.py:183-220` unconditionally emits blanket
+`(allow sysctl-read)` and `(allow process-info*)`. That same profile governs
+both `setup.py:772-775`'s `cli --version`, which needs no introspection, and
+`setup.py:778-786`'s whole R1 process tree. In the latter, route_probe, the
+SDK, wrapper and real CLI are all descendants of the same `sandbox-exec`, so
+the probed CLI receives the observer capability too. The owner's both-Mac
+measurement says that capability reads a non-descendant same-user target's
+`kern.procargs2` and `proc_pidpath`; therefore “setup's own children” and
+“trusted run” are intentions, not kernel-enforced scope. A short lifetime is
+not a security boundary. At minimum `cli --version` needs the non-introspection
+profile. The R1 census must run outside the code under test's Seatbelt domain,
+or the CLI must receive a separately enforced inner deny profile with the
+observer outside it.
+
+**BLOCKER-for-tests:** `tests/mac/ms6_generated_profile_test.sh:68-71` only
+parses the no-port setup profile with `/usr/bin/true`; the new Linux tests only
+compare generated text. Before this capability is consumable, a generated
+profile must run on both Macs and prove the inherited R1 listener succeeds,
+a decoy port fails, and the required census succeeds. This is the real-kernel
+green already required after the approved `97823de` red. Findings were mailed
+to JadeBeacon in Agent Mail 7019.
+
+## R1 Darwin libproc ABI fix (`ccac350`)
+
+Reviewed exact commit `ccac350` on 2026-10-20. **Verdict: APPROVED.** The new
+`_listchildpids` wrapper clears ctypes errno before both the size and fill
+calls, reads it immediately after, treats zero plus errno as failure and zero
+plus no errno as a real empty list, and ignores an irrelevant errno after a
+positive result. `path()` now makes the same stale-errno distinction and maps
+a zero-without-errno failure to EIO rather than “vanished.” ESRCH remains the
+only skippable process-disappearance case; every other error propagates into
+the already fail-closed R1 verdict.
+
+Independent clean-export replay overlaid the new registered 20-case test file
+onto the parent implementation: it failed with three assertions and two
+errors. Exact `ccac350` passed 20/20 under `python -X dev`. This closes the
+7015 blocker on `4cec07b` and cumulatively closes the earlier `d7114aa`
+process-walk failure-mapping finding. The separate `0b9527f` Seatbelt topology
+block remains open. Verdict mailed to BlueBeaver in Agent Mail 7020.
