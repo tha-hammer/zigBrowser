@@ -14,10 +14,13 @@
 # The selftest replaces this via ZB_RESOLVE_CMD; this real implementation resolves on the Windows
 # host over SSH. Live-verified on win11-m8: a normal in-root path resolves to itself; C:\Windows
 # resolves to itself. CreateFile opens with dwDesiredAccess 0 (GetFinalPathNameByHandle needs only
-# the handle) FOLLOWING reparse points — never OPEN_REPARSE_POINT, which would return the junction's
-# own in-root path and MASK an escape. A junction that cannot be followed (CreateFile returns
-# ERROR_CANT_RESOLVE_FILENAME / gle 448 on this build) fails closed via exit 3 -> gate DENY, which is
-# safe; resolving a legitimate in-root junction's target is a tracked refinement (see beads).
+# the handle) FOLLOWING reparse points. The RESULT is never the junction's own OPEN_REPARSE_POINT
+# path (that would mask an escape). On this build CreateFile-follow returns ERROR_CANT_RESOLVE_FILENAME
+# (gle 448) for ANY directory junction, so when the direct follow fails we read the junction's reparse
+# target (FSCTL_GET_REPARSE_POINT, mount-point substitute name) and resolve THAT, following: an in-root
+# junction then resolves to its in-root target (gate ALLOW) and an escaping junction to its real
+# outside target (gate DENY via the string fence) — never masked (bead zigBrowser-q92). A target that
+# still cannot be resolved, or a non-junction reparse point, fails closed via exit 3 -> gate DENY.
 set -uo pipefail
 p="${1:?usage: resolve_path.sh <windows-path>}"
 
@@ -42,19 +45,21 @@ read -r -d '' PS <<'PSEOF' || true
 $ErrorActionPreference = 'Stop'
 $p = [System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('__PB64__'))
 Add-Type -Namespace Zb -Name P -MemberDefinition @'
-[DllImport("kernel32.dll", SetLastError=true, CharSet=CharSet.Unicode)]
-public static extern System.IntPtr CreateFile(string n, uint a, uint s, System.IntPtr sa, uint c, uint f, System.IntPtr t);
-[DllImport("kernel32.dll", SetLastError=true, CharSet=CharSet.Unicode)]
-public static extern uint GetFinalPathNameByHandle(System.IntPtr h, System.Text.StringBuilder o, uint n, uint flags);
+[DllImport("kernel32.dll",SetLastError=true,CharSet=CharSet.Unicode)]
+public static extern System.IntPtr CreateFile(string n,uint a,uint s,System.IntPtr sa,uint c,uint f,System.IntPtr t);
+[DllImport("kernel32.dll",SetLastError=true,CharSet=CharSet.Unicode)]
+public static extern uint GetFinalPathNameByHandle(System.IntPtr h,System.Text.StringBuilder o,uint n,uint fl);
+[DllImport("kernel32.dll",SetLastError=true)]
+public static extern bool DeviceIoControl(System.IntPtr h,uint c,System.IntPtr i,uint isz,byte[] o,uint osz,out uint r,System.IntPtr v);
 [DllImport("kernel32.dll")] public static extern bool CloseHandle(System.IntPtr h);
 '@
-$h = [Zb.P]::CreateFile($p, 0, 3, [IntPtr]::Zero, 3, 0x02000000, [IntPtr]::Zero)
-if ($h -eq [IntPtr](-1)) { exit 3 }
-$sb = New-Object System.Text.StringBuilder 1024
-$n = [Zb.P]::GetFinalPathNameByHandle($h, $sb, 1024, 0)
-[void][Zb.P]::CloseHandle($h)
-[Console]::Out.WriteLine($n)
-[Console]::Out.WriteLine($sb.ToString())
+$B=0x02000000;$R=0x00200000;$F=0x000900A8;$M=0xA0000003L
+function Rf($x){$h=[Zb.P]::CreateFile($x,0,3,[IntPtr]::Zero,3,$B,[IntPtr]::Zero);if($h -eq [IntPtr](-1)){return $null};try{$s=New-Object Text.StringBuilder 1024;$n=[Zb.P]::GetFinalPathNameByHandle($h,$s,1024,0);if($n -eq 0 -or $n -ge 1024){return $null};$s.ToString()}finally{[void][Zb.P]::CloseHandle($h)}}
+function Rt($x){$h=[Zb.P]::CreateFile($x,0,3,[IntPtr]::Zero,3,($B -bor $R),[IntPtr]::Zero);if($h -eq [IntPtr](-1)){return $null};try{$b=New-Object byte[] 16384;$r=0;if(-not [Zb.P]::DeviceIoControl($h,$F,[IntPtr]::Zero,0,$b,$b.Length,[ref]$r,[IntPtr]::Zero)){return $null};if($r -lt 16){return $null};if([BitConverter]::ToUInt32($b,0) -ne $M){return $null};$o=[BitConverter]::ToUInt16($b,8);$l=[BitConverter]::ToUInt16($b,10);if($l -eq 0 -or (16+$o+$l) -gt $r){return $null};$nm=[Text.Encoding]::Unicode.GetString($b,16+$o,$l);if($nm.StartsWith('\??\')){$nm=$nm.Substring(4)};$nm}finally{[void][Zb.P]::CloseHandle($h)}}
+$res=Rf $p
+if($null -eq $res){$t=Rt $p;if($null -eq $t){exit 3};$res=Rf $t;if($null -eq $res){exit 3}}
+[Console]::Out.WriteLine($res.Length)
+[Console]::Out.WriteLine($res)
 PSEOF
 PS="${PS//__PB64__/$pb64}"
 
