@@ -25004,3 +25004,30 @@ errors—but it does not yet make the four `3c39b9f` findings executable:
 
 The frontmatter and revision history also remain at rev 17 and omit revs
 19–21. This is a docs-only review; no Mac or live-browser run was performed.
+
+## Windows gate root resolution (`2c288fd`)
+
+**Production behavior APPROVED; commit BLOCKED-for-tests.** `gate.sh:23-35`
+now resolves its root from explicit `ZB_GATE_ROOT` or `git rev-parse`, suppresses
+the expected non-Git diagnostic, validates that the candidate is a directory
+containing `tests/windows/gate.sh`, and refuses when neither source resolves.
+This closes the production half of the `012e1bc` SHOULD.
+
+An exact `git archive 2c288fd` experiment confirmed the future watched-run
+shape: with `ZB_GATE_ROOT=<export>`, direct `gate.sh --probe-only` passed root
+resolution and stopped only at the expected later `NOT RUN: no Windows host
+configured` fence. The three new `RootResolutionTests` also passed **3/3**.
+
+The registered clean-export test chain is red, however. Running the complete
+`tests/windows/gate_selftest.py` from that same archive passed only **5/18**;
+**13 tests failed** before their intended seam. `_GateCase._run_gate()` builds
+a fresh child environment containing PATH/HOME and per-case overrides, so it
+drops any parent `ZB_GATE_ROOT`. Existing rows therefore stop at `cannot
+resolve a repo root`; for example, the partial-tar row observes that tar never
+ran. Add `ZB_GATE_ROOT=str(REPO)` to that base environment while keeping the
+negative no-root test's direct invocation unset, then prove the whole module
+green from a real archive export. Strengthen the explicit-root test to assert
+the exact downstream no-host failure, not merely absence of the root error.
+
+The throwaway tree was deleted immediately; no VM or live host was touched.
+Finding sent to AzureRidge in Agent Mail 7335.
