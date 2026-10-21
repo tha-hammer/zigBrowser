@@ -1543,6 +1543,14 @@ pub fn build(b: *std.Build) void {
         "-c",
         "py=$(tools/agent_host_env.sh --check) || exit 1; cd agent/host/tests && env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 ZB_AGENT_HOST_PYTHON=\"$py\" \"$py\" -m unittest -v test_parent_watch",
     });
+    // macOS plan rev 14 items 5-6 (MS5): setup.py's Darwin branches with the platform injected: --browser-pid fails
+    // closed and arms the parent watch first; setup's sandbox runs through MS6's sandbox_macos.setup_sandbox (the real
+    // symbol, pure stdlib) or refuses.
+    const agent_host_setup_darwin = b.addSystemCommand(&.{
+        "sh",
+        "-c",
+        "py=$(tools/agent_host_env.sh --check) || exit 1; cd agent/host/tests && env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 ZB_AGENT_HOST_PYTHON=\"$py\" \"$py\" -m unittest -v test_setup_darwin",
+    });
     // Chat drawer S3.1: --agent-setup's provisioning (unit and property
     // tests of the helper's setup command); fails closed without the venv.
     const agent_host_provision_unit = b.addSystemCommand(&.{
@@ -2270,6 +2278,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&agent_host_unit.step);
     test_step.dependOn(&agent_host_wincontain.step);
     test_step.dependOn(&agent_host_parent_watch.step);
+    test_step.dependOn(&agent_host_setup_darwin.step);
     test_step.dependOn(&agent_host_contract.step);
     test_step.dependOn(&agent_host_backend_contract.step);
     test_step.dependOn(&agent_host_sandbox_macos.step);
