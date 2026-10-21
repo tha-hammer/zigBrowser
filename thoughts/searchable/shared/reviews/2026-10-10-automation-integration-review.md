@@ -21754,8 +21754,9 @@ failed all five intended contracts (four assertion failures and the final
 stub's bounds panic), proving that the red was genuine and isolated: the file
 was not imported or registered.
 
-**`2e50d44` APPROVED for the pure core, but BLOCKED-for-tests as a delivered
-slice until its promised gate registration lands.** A display-scrubbed
+**Historical verdict at `2e50d44`: APPROVED for the pure core, but
+BLOCKED-for-tests as a delivered slice until its promised gate registration
+lands.** A display-scrubbed
 targeted run passes 5/5. `readyPort` reuses the exact Darwin ready grammar;
 `decide` starts the helper only for a present port before the deadline while
 netd remains alive; `firstLine` ignores later stdout; and
@@ -21764,6 +21765,17 @@ This pair intentionally does not implement or prove the production
 spawn/pipe/deadline/group-kill orchestration, and nothing imports the module
 yet. Its approval is therefore scoped to this pure core and must not be read
 as MS8 or the native-spawn path being green.
+
+### POSIX spawner pure-core registration (`055bbdd`)
+
+Reviewed exact commit `055bbdd` on 2026-10-21. **Verdict: APPROVED; the
+`2e50d44` BLOCKED-for-tests is CLOSED by `055bbdd`.** The commit adds exactly
+12 lines to `build.zig` and deletes nothing: one module rooted at
+`src/agent_host_posix.zig`, one run artifact with foreign execution skipped,
+and an aggregate `test_step` dependency. The display-scrubbed focused test
+still passes 5/5, and `git diff --check` passes. This closes only the pure
+core's gate-registration hold; production spawn/pipe/deadline/group-kill
+orchestration remains outside this pair's scope.
 
 ## MS6.4 exact classifier census (`9e88d2e`)
 
