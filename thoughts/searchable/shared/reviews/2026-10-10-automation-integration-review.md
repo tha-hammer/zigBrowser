@@ -24389,3 +24389,55 @@ later S8d card wording. The reported 4/6 pass on `52cfb6c` with the two token-
 count cases causally red is adequate failing-first evidence. The green and its
 registration remain to review after BlackRobin's gate. Verdict sent in Agent
 Mail 7290.
+
+## MS6.5 reaper fd-leak/not-clean follow-up (`c721b16`)
+
+**APPROVED for the two narrow fixes; the destructive Mac reaper gate remains
+OFF.** The destructive driver's helpers are now spawned before the pin fd is
+opened, so its non-exec fork children cannot inherit that marker. A failed
+per-kill `dir_ok` now stops iteration and marks the result overflow/not-clean
+instead of silently omitting a match. Exact-export tests, with the whole run
+inside a private user/PID namespace, passed:
+
+```text
+Build Summary: 10/10 steps succeeded; 7/7 tests passed
+PASS ms6-5-reaper-engine 42 checks
+PASS ms6-5-reaper-pin 13 checks
+```
+
+The reported signal-free census-only probe also passed 6/6 on each Mac and is
+safe evidence for the ordinary unchanged-path case. It does not authorize the
+destructive gate. Two boundaries remain: no app lifecycle caller yet owns the
+fd/id from run-directory creation through stop/next-start, and the new Mac
+probe never performs the requested rename/replacement case. It must causally
+show that `F_GETPATH` and classification stay tied to the held run while the
+old path is replaced before any real-signal gate runs. Verdict sent to
+JadeBeacon with BlueBeaver copied in Agent Mail 7292.
+
+## Windows pinned-root publication follow-up (`ed252ec`)
+
+**BLOCKED; `defb5a2`/`b32f285` remain open.** Entering the validated publish
+root and using relative paths closes the exact root-parent swap, and the exact-
+export selftest passes all 35 rows inside a private PID namespace. A child
+component remains swappable, however.
+
+`gen` is checked and created at `build-on-windows.sh:199-202`, before the
+fetch. The later `mktemp -d "gen/g-..."` at line 227 follows whatever that
+name resolves to after the fetch. A review-only exact-export red paused the
+fake scp, renamed `out/gen` to `out/gen-held`, replaced it with
+`out/gen -> outside`, then resumed. The command returned zero, created the
+generation outside the pinned root, and published `current` through that
+symlink:
+
+```text
+FAIL: publish escaped through a swapped gen symlink
+rc=0
+build-on-windows: fetched .../out/current/zigBrowser.exe
+```
+
+Eliminate the persistent `gen/` hop by placing immutable `g-*` generations
+directly in the already pinned cwd, or pin every child with no-follow relative-
+at operations. The `.publish.lock` leaf also follows a planted symlink through
+shell redirection and needs a fail-closed regular/no-follow contract. Add the
+exact child-swap red before claiming TOCTOU closure. Findings were sent to
+AzureRidge with BlueBeaver copied in Agent Mail 7293.
