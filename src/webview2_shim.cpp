@@ -86,6 +86,10 @@ struct AppState {
   // WS5.3 e2e-only fold seam (ZIGBROWSER_AGENT_DRAWER_FOLD, exactly "1"): starts the REAL fold animation at
   // mount so the test can observe it. e2e-only.
   bool fold_seam = false;
+  // WS5.3 e2e-only fold-FAILURE causal seam (ZIGBROWSER_AGENT_DRAWER_FOLD_FAIL = "timer"|"move"|"delay"): forces
+  // the matching fail-closed branch so a test can drive it — SetTimer treated as failed, the animated MoveWindow
+  // treated as failed, or the first tick forced past the deadline with no genuine midpoint. Null in normal runs.
+  const char *fold_fail = nullptr;
   // WS5.3 fold (minimize) animation state: a kFoldTimerId-driven transition of the open panel down into the
   // icon over `fold_ms`, each frame from the portable lerp/ease. `fold_mid` captures the real mid-transition
   // frame (read back off the panel HWND); the terminal tick emits the `fold` observation (mid frame +
@@ -946,7 +950,12 @@ static void drawer_fold_start(AppState *app) {
     return;
   }
   RECT cr = {};
-  GetClientRect(app->hwnd, &cr);
+  if (!GetClientRect(app->hwnd, &cr)) {  // fail closed: no fold, the drawer stays open and usable
+    fprintf(stderr, "zigBrowser: agent-drawer fold not started: GetClientRect failed (error %lu)\n",
+            static_cast<unsigned long>(GetLastError()));
+    fflush(stderr);
+    return;
+  }
   const int cw = cr.right - cr.left;
   const int ch = cr.bottom - cr.top;
   zb_drawer_panel_rect(cw, ch, &app->fold_from);  // the open drawer rect (fold start)
@@ -954,8 +963,17 @@ static void drawer_fold_start(AppState *app) {
   app->fold_ms = zb_drawer_anim_ms_from_env(getenv("ZIGBROWSER_AGENT_ANIM_MS"));
   app->fold_start_ms = GetTickCount64();
   app->fold_mid_captured = false;
-  app->folding = true;
-  SetTimer(app->hwnd, kFoldTimerId, 16, nullptr);
+  // Arm the timer FIRST and verify it: a SetTimer failure must not wedge folding=true with no tick to clear it.
+  // The e2e "timer" seam forces this failure branch.
+  const bool force_timer_fail = app->fold_fail != nullptr && strcmp(app->fold_fail, "timer") == 0;
+  const UINT_PTR armed = force_timer_fail ? 0 : SetTimer(app->hwnd, kFoldTimerId, 16, nullptr);
+  if (armed == 0) {
+    fprintf(stderr, "zigBrowser: agent-drawer fold not started: SetTimer failed (error %lu)\n",
+            force_timer_fail ? (unsigned long)ERROR_INVALID_PARAMETER : (unsigned long)GetLastError());
+    fflush(stderr);
+    return;  // fail closed: NOT folding; the open drawer remains usable
+  }
+  app->folding = true;  // only once the timer is genuinely armed
 }
 
 // WS5.2: the "S" icon's window procedure (subclassed over the STATIC). REAL Win32 input: mouse capture + drag,
@@ -1339,32 +1357,61 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam,
     }
     if (app != nullptr && wparam == kFoldTimerId && app->folding) {
       // WS5.3 fold tick: advance t, move the REAL panel HWND to lerp(open, icon, ease(t)), read back the mid
-      // frame off that HWND, and on completion emit the fold row (mid rect + configured duration) once.
+      // frame off that HWND, and on completion emit the fold row once. Every Win32 result is checked and the
+      // branch fails closed into a STABLE state with a fixed diagnostic — a move/read failure never goes on to
+      // emit a successful fold, and a first tick already at/after the deadline is not accepted as a real
+      // midpoint (RoseCat 02c39a4 #3). The e2e "move"/"delay" seams force those branches.
       const ULONGLONG now = GetTickCount64();
       const unsigned int span = app->fold_ms == 0 ? 1u : app->fold_ms;
       double t = static_cast<double>(now - app->fold_start_ms) / static_cast<double>(span);
       if (t < 0.0) t = 0.0;
       if (t > 1.0) t = 1.0;
+      const bool force_delay = app->fold_fail != nullptr && strcmp(app->fold_fail, "delay") == 0;
+      if (force_delay) {
+        t = 1.0;  // simulate a first tick that arrives at/after the deadline — no genuine midpoint observed
+      }
       ZbDrawerGeomRect frame = {};
       zb_drawer_lerp(&app->fold_from, &app->fold_to, zb_drawer_ease(t), &frame);
+      const bool force_move_fail = app->fold_fail != nullptr && strcmp(app->fold_fail, "move") == 0;
       if (app->drawer_panel != nullptr) {
-        MoveWindow(app->drawer_panel, frame.x, frame.y, frame.w, frame.h, TRUE);
+        const bool moved = !force_move_fail && MoveWindow(app->drawer_panel, frame.x, frame.y, frame.w, frame.h, TRUE);
+        if (!moved) {  // fail closed: abort the fold, leave the drawer in its open, usable state, emit no row
+          fprintf(stderr, "zigBrowser: agent-drawer fold aborted: MoveWindow failed (error %lu)\n",
+                  force_move_fail ? (unsigned long)ERROR_INVALID_PARAMETER : (unsigned long)GetLastError());
+          fflush(stderr);
+          KillTimer(hwnd, kFoldTimerId);
+          app->folding = false;
+          resize_controller(app);  // restore the open drawer's docked layout
+          return 0;
+        }
         ShowWindow(app->drawer_panel, SW_SHOWNA);
       }
-      if (!app->fold_mid_captured && t >= 0.5) {
+      // Capture a GENUINE midpoint only strictly before the deadline (t < 1): a delayed first tick that is
+      // already terminal never produces one, so no bogus mid is emitted.
+      if (!app->fold_mid_captured && t >= 0.5 && t < 1.0) {
         if (app->drawer_panel != nullptr) {  // independent read-back of the real panel HWND, mid-transition
           RECT wr = {};
-          GetWindowRect(app->drawer_panel, &wr);
-          POINT tl = {wr.left, wr.top};
-          ScreenToClient(hwnd, &tl);
-          app->fold_mid.x = tl.x;
-          app->fold_mid.y = tl.y;
-          app->fold_mid.w = wr.right - wr.left;
-          app->fold_mid.h = wr.bottom - wr.top;
+          POINT tl = {0, 0};
+          if (GetWindowRect(app->drawer_panel, &wr)) {
+            tl.x = wr.left;
+            tl.y = wr.top;
+            if (ScreenToClient(hwnd, &tl)) {
+              app->fold_mid.x = tl.x;
+              app->fold_mid.y = tl.y;
+              app->fold_mid.w = wr.right - wr.left;
+              app->fold_mid.h = wr.bottom - wr.top;
+              app->fold_mid_captured = true;
+            }
+          }
+          if (!app->fold_mid_captured) {  // a read failure: do not fabricate a midpoint
+            fprintf(stderr, "zigBrowser: agent-drawer fold midpoint read failed (error %lu)\n",
+                    static_cast<unsigned long>(GetLastError()));
+            fflush(stderr);
+          }
         } else {
           app->fold_mid = frame;
+          app->fold_mid_captured = true;
         }
-        app->fold_mid_captured = true;
       }
       if (t >= 1.0) {
         KillTimer(hwnd, kFoldTimerId);
@@ -1373,15 +1420,24 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam,
         if (app->drawer_panel != nullptr) {
           ShowWindow(app->drawer_panel, SW_HIDE);  // terminal folded state: the panel is minimized to the icon
         }
-        char win[16];
-        snprintf(win, sizeof win, "%d", app->win_id);
-        char rect[64];
-        snprintf(rect, sizeof rect, "%d,%d,%d,%d",
-                 app->fold_mid.x, app->fold_mid.y, app->fold_mid.w, app->fold_mid.h);
-        char ms_buf[16];
-        snprintf(ms_buf, sizeof ms_buf, "%u", app->fold_ms);
-        emit_protocol4(app, "DRAWER", win, "fold", rect, ms_buf);
         resize_controller(app);  // re-dock the page now the drawer is folded away
+        if (app->fold_mid_captured) {
+          char win[16];
+          snprintf(win, sizeof win, "%d", app->win_id);
+          char rect[64];
+          snprintf(rect, sizeof rect, "%d,%d,%d,%d",
+                   app->fold_mid.x, app->fold_mid.y, app->fold_mid.w, app->fold_mid.h);
+          char ms_buf[16];
+          snprintf(ms_buf, sizeof ms_buf, "%u", app->fold_ms);
+          emit_protocol4(app, "DRAWER", win, "fold", rect, ms_buf);
+        } else {
+          // Reached the stable folded state, but no genuine midpoint was ever observed (a delayed/degenerate
+          // timer): suppress the fold row rather than claim a midpoint we did not measure. The live oracle,
+          // which waits for `fold`, then fails this run instead of silently accepting it.
+          fprintf(stderr, "zigBrowser: agent-drawer fold completed with no observed midpoint "
+                          "(delayed timer); fold row suppressed\n");
+          fflush(stderr);
+        }
       }
       return 0;
     }
@@ -1804,6 +1860,7 @@ static int run_core(const char *uri, int print_title, int e2e_protocol, bool scr
     app.drag_seam = getenv("ZIGBROWSER_AGENT_DRAWER_DRAG");          // WS5.2 e2e-only synthetic-drag seam
     const char *fold_env = getenv("ZIGBROWSER_AGENT_DRAWER_FOLD");   // WS5.3 e2e-only fold-observation seam
     app.fold_seam = fold_env != nullptr && strcmp(fold_env, "1") == 0;  // accept EXACTLY "1" (RoseCat 05f2549)
+    app.fold_fail = getenv("ZIGBROWSER_AGENT_DRAWER_FOLD_FAIL");     // WS5.3 e2e-only fold fail-closed causal seam
   }
   app.screenshot = screenshot;
   if (screenshot && out_path != nullptr) {

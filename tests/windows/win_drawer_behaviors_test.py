@@ -393,6 +393,18 @@ class WinDrawerBehaviorsOracle(unittest.TestCase):
         with self.assertRaises(AssertionError):  # EMIT-ONLY: the page was not re-docked to the full client area
             check_fold_observed(3100, 3000, 56, 540, 1008, True, True, False)
 
+    def test_check_fold_failclosed_catches_silent_success(self):
+        base = "DRAWER\t1\ttree\thost,page,icon,panel\nDRAWER\t1\ticon\t928,649,56,56\nDRAWER\t1\topen\t0,437,1008,292\n"
+        check_fold_failclosed(base, "zigBrowser: agent-drawer fold not started: SetTimer failed (error 87)\n",
+                              True, "SetTimer failed")
+        with self.assertRaises(AssertionError):  # silent success: a fold row emitted despite the forced failure
+            check_fold_failclosed(base + "DRAWER\t1\tfold\t500,450,500,200\t180\n",
+                                  "SetTimer failed", True, "SetTimer failed")
+        with self.assertRaises(AssertionError):  # no diagnostic on stderr
+            check_fold_failclosed(base, "", True, "SetTimer failed")
+        with self.assertRaises(AssertionError):  # wedged: the held process was not proven terminal
+            check_fold_failclosed(base, "SetTimer failed", False, "SetTimer failed")
+
     def test_check_dpi(self):
         check_dpi(84, True, True)
         with self.assertRaises(AssertionError):
@@ -588,6 +600,15 @@ def check_fold_observed(elapsed_ms, want_ms, icon_w, mid_w, drawer_w,
     assert page_redocked, "the page must be re-docked to the full client area after folding"
 
 
+def check_fold_failclosed(stdout, stderr, proc_gone, want_diag):
+    """A FORCED fold failure must fail closed (RoseCat 02c39a4 #3): NO `fold` row is emitted (no silent success),
+    a fixed diagnostic names the failure on stderr, and the process is still proven terminal (no wedged
+    folding state). A backend that emitted `fold` anyway, or hung, fails."""
+    assert "\tfold\t" not in stdout, "a failed fold must emit NO fold row (no silent success)"
+    assert want_diag in stderr, f"the fixed fold-failure diagnostic {want_diag!r} must be on stderr"
+    assert proc_gone, "the process must still be proven terminal (a timer failure must not wedge folding)"
+
+
 def check_bubble_copy(clipboard_text, bubble_text, link_created, object_created):
     """select-all + WM_COPY puts the EXACT bubble text on the clipboard; the bubble is inert (no link/object)."""
     assert clipboard_text == bubble_text, f"clipboard {clipboard_text!r} != bubble text {bubble_text!r}"
@@ -726,6 +747,25 @@ class WinDrawerBehaviorsLive(_wd.WinDrawerLive):
                                 bool(r["panel_hidden"]), bool(r["icon_visible"]), bool(r["page_redocked"]))
         self._run_drawer(extra_env=self._env(ZIGBROWSER_AGENT_DRAWER_FOLD="1", ZIGBROWSER_AGENT_ANIM_MS="3000",
                                              ZB_SETTLE_KINDS="fold"), body=body)
+
+    def _fold_failclosed(self, mode, want_diag):
+        # WS5.3 (RoseCat 02c39a4 #3): the fold-failure causal seam drives a fail-closed branch. The drawer still
+        # opens (settle on `open`, default), but the forced SetTimer/MoveWindow/delayed-tick failure emits NO
+        # fold row, names a fixed diagnostic on stderr, and leaves the held process proven terminal.
+        def body(r):
+            validate_transcript(r["stdout"], ["tree", "icon", "open"])
+            check_fold_failclosed(r["stdout"], r.get("stderr") or "", bool(r.get("proc_gone")), want_diag)
+        self._run_drawer(extra_env=self._env(ZIGBROWSER_AGENT_DRAWER_FOLD="1",
+                                             ZIGBROWSER_AGENT_DRAWER_FOLD_FAIL=mode), body=body)
+
+    def test_ws5_3_fold_timer_failure_is_fail_closed(self):
+        self._fold_failclosed("timer", "SetTimer failed")
+
+    def test_ws5_3_fold_move_failure_is_fail_closed(self):
+        self._fold_failclosed("move", "MoveWindow failed")
+
+    def test_ws5_3_fold_delayed_tick_emits_no_midpoint(self):
+        self._fold_failclosed("delay", "no observed midpoint")
 
     def test_ws5_4_bubble_copy_and_inert(self):
         # WS5.4 (plan 1575-1577): the harness performs select-all + WM_COPY and reads the clipboard; an RTF
