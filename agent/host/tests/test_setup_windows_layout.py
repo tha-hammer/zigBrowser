@@ -21,8 +21,10 @@ ZB_OUTER_PIDNS_FD=9 python -m unittest test_setup_windows_layout'` with the agen
 
 import json
 import os
+import signal
 import subprocess
 import sys
+import time
 import unittest
 
 import pidns_guard
@@ -60,15 +62,26 @@ def _worker_env():
     return env
 
 
+# The committed cycle-follow mutant: a BOUNDED NON-ALLOCATING follower (fixed memory, no recursion) that follows the
+# symlink cycle forever. A correct cycle-bounding engine must not do this; it cannot exhaust memory.
+MUTANT_BODY = (
+    "fs = %r\n"
+    "p = '/s/loop'\n"
+    "while True:\n"
+    "    p = fs[p][1] + '/loop'  # loop -> /s -> /s/loop -> ...  (a 2-node cycle, no allocation)\n"
+) % (CYCLIC,)
+
+
 def _run_worker(body, deadline_s):
-    """Run `body` in a disposable in-namespace subprocess; return stdout, or None if it exceeded the deadline. On
-    timeout the exit/kill/reap race is explicit: the child may have exited first, so kill tolerates ProcessLookupError
-    and the reap is bounded. Kills are safe because the caller proved a private PID namespace first."""
+    """Run `body` in a disposable in-namespace subprocess; return (stdout-or-None, terminal_returncode). On the
+    deadline the worker is killed and reaped: kill tolerates ProcessLookupError (child already exited) and the reap
+    is bounded. A reap that ITSELF times out is a HARD failure (raises) — never swallowed. The terminal return code
+    is always non-None after a reap. Kills are safe because the caller proved a private PID namespace first."""
     proc = subprocess.Popen([sys.executable, "-c", body], env=_worker_env(),
                             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
     try:
         out, _ = proc.communicate(timeout=deadline_s)
-        return out
+        return out, proc.returncode
     except subprocess.TimeoutExpired:
         try:
             proc.kill()  # namespace-local pid (pidns_guard proved); not a reusable host pid
@@ -76,9 +89,9 @@ def _run_worker(body, deadline_s):
             pass  # the child exited between the timeout and the kill — already gone
         try:
             proc.communicate(timeout=5)  # guaranteed, bounded reap
-        except subprocess.TimeoutExpired:
-            pass
-        return None
+        except subprocess.TimeoutExpired as exc:
+            raise AssertionError("worker could not be reaped within 5s after kill") from exc  # HARD, never swallowed
+        return None, proc.returncode
 
 
 class WindowsCopyRules(unittest.TestCase):
@@ -106,25 +119,30 @@ class CycleIsBounded(unittest.TestCase):
             f"fs = {CYCLIC!r}\n"
             "print(json.dumps(sorted(setup.copy_tree_fs(fs, '/s').keys())))\n"
         )
-        out = _run_worker(body, deadline_s=10.0)
+        out, rc = _run_worker(body, deadline_s=10.0)
         self.assertIsNotNone(out, "copy_tree_fs did not terminate within the deadline on a cyclic filesystem")
+        self.assertEqual(0, rc)  # a clean exit, not a kill
         keys = json.loads(out)
         self.assertNotIn("s/loop", keys)
         self.assertNotIn("s/jloop", keys)
         self.assertIn("s/real.txt", keys)
 
     def test_a_cycle_following_copy_times_out_and_is_reaped(self):
-        # Committed cycle-follow mutant: a BOUNDED NON-ALLOCATING follower (fixed memory, no recursion) that follows
-        # the symlink cycle forever. A correct, cycle-bounding engine must not do this. It cannot exhaust memory; the
-        # worker's deadline + kill bounds it.
-        body = (
-            f"fs = {CYCLIC!r}\n"
-            "p = '/s/loop'\n"
-            "while True:\n"
-            "    p = fs[p][1] + '/loop'  # loop -> /s -> /s/loop -> ...  (a 2-node cycle, no allocation)\n"
-        )
-        out = _run_worker(body, deadline_s=3.0)
-        self.assertIsNone(out, "a cycle-following copy must hang; the worker must catch the timeout and reap it")
+        out, rc = _run_worker(MUTANT_BODY, deadline_s=3.0)
+        self.assertIsNone(out, "a cycle-following copy must hang; the worker must catch the timeout")
+        self.assertIsNotNone(rc, "the killed worker must be reaped (a terminal return code)")
+        self.assertEqual(-signal.SIGKILL, rc)  # reaped after SIGKILL, not left running
+
+    def test_no_reap_leaves_no_terminal_code(self):
+        # Committed no-reap mutant: a harness that kills but does NOT reap leaves proc.returncode None (no terminal
+        # code) -- which would red the SIGKILL assertion above. Prove the distinction, then reap for cleanup.
+        proc = subprocess.Popen([sys.executable, "-c", MUTANT_BODY], env=_worker_env(),
+                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        time.sleep(0.3)  # let it spin
+        proc.kill()
+        self.assertIsNone(proc.returncode, "without a reap there is no terminal return code (the no-reap mutant)")
+        proc.wait()  # the real harness reaps -> a terminal code appears
+        self.assertEqual(-signal.SIGKILL, proc.returncode)
 
 
 if __name__ == "__main__":
