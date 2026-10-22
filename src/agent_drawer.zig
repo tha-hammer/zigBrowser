@@ -165,6 +165,15 @@ pub fn iconSizeFromDpiEnv(text: ?[]const u8) c_int {
     return icon_size;
 }
 
+/// WS5.7: the icon's edge length for a raw per-monitor DPI (what `GetDpiForWindow`
+/// returns; 96 == 100%). This is the PRODUCTION authority — `56 * dpi / 96`, rounded
+/// half-up, so 144 DPI gives 84 px. A non-positive DPI falls back to 96 (unscaled).
+pub fn iconSizeForDpi(dpi: c_int) c_int {
+    const d = if (dpi > 0) dpi else 96;
+    const scaled = @as(f64, @floatFromInt(icon_size)) * @as(f64, @floatFromInt(d)) / 96.0;
+    return @intFromFloat(@floor(scaled + 0.5));
+}
+
 /// WS5.7 exact circular hit-test: a point `dx,dy` from the icon centre is inside
 /// when its distance is at most `radius` — the edge (distance == radius) counts
 /// as inside, a pixel beyond it as outside. Integer math (widened), so the edge
@@ -411,6 +420,7 @@ comptime {
         @export(&zb_drawer_anim_ms, .{ .name = "zb_drawer_anim_ms" });
         @export(&zb_drawer_anim_ms_from_env, .{ .name = "zb_drawer_anim_ms_from_env" });
         @export(&zb_drawer_icon_size_from_dpi_env, .{ .name = "zb_drawer_icon_size_from_dpi_env" });
+        @export(&zb_drawer_icon_size_for_dpi, .{ .name = "zb_drawer_icon_size_for_dpi" });
         @export(&zb_drawer_inside_icon, .{ .name = "zb_drawer_inside_icon" });
     }
 }
@@ -511,9 +521,15 @@ fn zb_drawer_anim_ms_from_env(text: ?[*:0]const u8) callconv(.c) c_uint {
 
 /// WS5.7: the icon's scaled edge length (px) from the `ZIGBROWSER_AGENT_DRAWER_DPI`
 /// env percent (null when unset): 84 at "150", else the unscaled 56. Keeps the
-/// Windows backend free of DPI math.
+/// Windows backend free of DPI math. This is the e2e-seam path only.
 fn zb_drawer_icon_size_from_dpi_env(text: ?[*:0]const u8) callconv(.c) c_int {
     return iconSizeFromDpiEnv(if (text) |t| std.mem.span(t) else null);
+}
+
+/// WS5.7: the icon's edge length (px) for a raw per-monitor DPI — the PRODUCTION
+/// authority (GetDpiForWindow); 84 at 144 DPI, 56 at 96.
+fn zb_drawer_icon_size_for_dpi(dpi: c_int) callconv(.c) c_int {
+    return iconSizeForDpi(dpi);
 }
 
 /// WS5.7 exact circular hit-test: 1 when `dx,dy` from the icon centre is within

@@ -162,6 +162,17 @@ test "iconSizeFromDpiEnv: valid percent scales, else the unscaled 56 (WS5.7)" {
     try expectEqual(@as(c_int, 56), d.iconSizeFromDpiEnv("abc")); // non-numeric -> unscaled
 }
 
+test "iconSizeForDpi: production authority scales 56*dpi/96 half-up (WS5.7)" {
+    try expectEqual(@as(c_int, 56), d.iconSizeForDpi(96));   // 100% baseline
+    try expectEqual(@as(c_int, 84), d.iconSizeForDpi(144));  // 150% -> 84 (the contract case)
+    try expectEqual(@as(c_int, 70), d.iconSizeForDpi(120));  // 125%
+    try expectEqual(@as(c_int, 112), d.iconSizeForDpi(192)); // 200%
+    try expectEqual(@as(c_int, 56), d.iconSizeForDpi(0));    // non-positive -> 96 DPI fallback
+    try expectEqual(@as(c_int, 56), d.iconSizeForDpi(-5));   // negative -> fallback
+    // mutant: ignoring DPI (always 96) disagrees with the real 144-DPI size
+    try std.testing.expect(d.iconSizeForDpi(144) != d.icon_size);
+}
+
 test "insideIcon exact circular hit-test: the edge is inside, beyond is outside (WS5.7)" {
     const r: c_int = 42; // the 84 px icon's radius
     try std.testing.expect(d.insideIcon(0, 0, r));   // centre
