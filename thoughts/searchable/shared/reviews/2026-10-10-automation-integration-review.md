@@ -32663,3 +32663,111 @@ aggregate command removes them before either `_ssh` or `_scp` can run.
 The independent child-HWND ownership/visibility/plain-text finding on
 `6c2077f` also remains open. The exact-commit full gate and Win11 authorization
 therefore remain pending.
+
+## Decision-16 prompt/document binding (`8ba885b`, `c2b4c38`)
+
+**`8ba885b`: APPROVED-for-tests. `c2b4c38`: APPROVED.** The red binds every
+pending card to its `prompt_id`, proves result/error/Stop revoke only that
+prompt, and proves stale or duplicate endings cannot revoke a later prompt.
+The green carries the validated frame id through helper/tools into the broker,
+sets it before the broker lock is released, and has `promptOver` mark exactly
+matching queued/running jobs revoked under that lock. The approval worker
+checks that state both while waiting and again at the dispatch boundary.
+
+The document half is also closed: phase A reads the bound window's
+`url`/`load_serial` from the out-of-band `page.list`, derives the origin with
+the engine's own `originOf`, displays those exact facts on the card, and adds
+them to `options.expect`; missing, crashed or malformed page state fails
+closed before a card. The gated methods admit only navigate `{url}` and reload
+`{}`, so adding `options.expect` does not discard another caller option. The
+engine's `-32015` reason reaches the card as changed/crashed. The settings
+directory and file are opened without following the final symlink and are
+checked for effective-user ownership and safe modes. The author supplied a
+clean private-Xvfb gate of **452/452 steps, 1288/1290 tests (2 skipped)**;
+inspection confirmed the later overlay used for that gate changed only the
+test registrations among this commit's touched paths. This cumulatively
+closes the decision-16 part-4 block on `ebe6529`.
+
+## Windows drawer behavior follow-ups (`0a69741`, `d7f2596`, `5e5d343`, `15cf8a2`)
+
+| Commit | Verdict | Review |
+|---|---|---|
+| `0a69741` | **APPROVED-for-tests** | Fold cases now settle on the terminal `fold` row, independently measure elapsed time and a real in-flight panel width, and require terminal panel-hidden/icon-visible/page-redocked state. The snap, no-move and emit-only mutants are causally rejected. |
+| `d7f2596` | **APPROVED** | The first `KillTimer` failure is real (the cancel is skipped), the retry actually cancels it, and even a second failure clears `folding`, so later `WM_TIMER` ticks do no fold work. `readrect` and `readstc` independently reach the two geometry-read aborts. |
+| `5e5d343` | **APPROVED** | An unreadable icon rectangle returns `HTNOWHERE`, not `HTTRANSPARENT`, so Windows consumes the hit rather than passing it through to page content. The live seam sends a real `WM_NCHITTEST` to the icon centre and requires the fixed diagnostic and clean teardown. |
+| `15cf8a2` | **APPROVED** | The RichEdit bubble is correctly load-bearing: DLL/create failure destroys the already-created minimize/icon/panel controls and returns before mounted/live state or rows. The causal row rejects any leaked direct control. |
+
+These are code/offline approvals, not substitutes for the separately required
+Win11 observations. The exact entry-slice closure is now represented by
+`820dd7b`: in a clean private-Xvfb export its focused gate passed **12/12
+steps, 15/15 Zig tests**, entry **66/66** with exactly 8 live skips, and
+behavior **43/43** with exactly 19 live skips. `820dd7b` is **APPROVED
+offline**, and `9e48f97` is **APPROVED** for removing the unrelated red-only
+decision-16 registrations accidentally captured by `1b5697d`. A bounded
+Win11 entry run is authorized at an exact clean export of `820dd7b` plus that
+fix-forward (therefore `9e48f97` or a separately reviewed descendant): MSVC
+x64 artifact from that SHA, `win11-m8` as `zbtext`, BatchMode and pinned SSH
+identity, writes only under `C:\Users\zbtext\zb`, WSL untouched, no installs,
+born-suspended/owned-Job lifetime, handle/Job teardown only, before/after
+census, and exactly the 8 entry methods. Acceptance still requires all 8/8.
+
+## Concrete run-recovery census matrix (`df91321`)
+
+**BLOCKED; keep the destructive Mac reaper gate unarmed.** Three concrete
+gaps remain:
+
+1. `ReaperWiring.run` discards both `clock` and `deadline_ms` and calls the
+   fixed-point engine without a deadline. The new matrix therefore does not
+   prove the claimed single absolute deadline, and the injected production
+   shape can still inspect or act after expiry.
+2. The unreadable row reaches only the pre-open `openat` failure. It does not
+   causally force the newly added post-open `fstatNlink(fd) == null` branch, so
+   the distinct unreadable-after-open behavior is unproved.
+3. The two-recoverer test forks both workers but has no barrier proving both
+   reached the contested pre-lock window. Scheduler serialization can let an
+   early-unlock mutant pass. A deterministic held-flock/handshake row is
+   required.
+
+The test's real-signal cleanup is guarded by the private-PID-namespace sentinel,
+but that safety does not close the behavioral gaps above.
+
+## Approval-origin negative red (`9f5b24e`)
+
+**APPROVED-for-tests.** The unregistered, sealed red uses the real
+binary/helper and a loopback fake API under private Xvfb/PID/network state. It
+proves main-page script, same-origin iframe, related popup/opener and model
+text cannot approve a card even while the native `zbHost` route itself is
+alive; the card remains waiting with no navigation/model answer until the
+real drawer Deny ends it. The reported IPC-approve mutant fails 15 of 47
+checks. Keep it unregistered until the production green lands.
+
+## Decision-16 selector writer red (`6d3fe1a`, `9e48f97`)
+
+**`6d3fe1a`: APPROVED-for-tests and plan text; production remains red.
+`9e48f97`: APPROVED.** The red requires the Secrets control to be the one
+writer, exact newline values, 0600 store, atomic/no-leftover behavior, and
+fail-closed refusal for symlink, non-directory, wrong-owner and writable
+settings roots. Its e2e exercises yes/no/conditional persistence and a damaged
+store. `9e48f97` correctly removes only the two accidental build registrations
+captured in `1b5697d`; both files again remain deliberately unregistered until
+their green. No selector production acceptance is implied.
+
+## Owner real-screen launch environment (`6de499c`, `86f8cf1`)
+
+**Both APPROVED; the decision-16 owner checklist may run.** The launcher now
+constructs an explicit environment rather than copying the shell: only the
+desktop display/Xauthority/session bus are inherited, while the throwaway
+world, private runtime, fixed locale and fake seams are supplied explicitly.
+Live browser/profile/home/socket variables, other `ZB_*`/`ZIGBROWSER_*`
+seams, Claude/Anthropic credentials, proxies, preload/render variables and
+SSH agent variables cannot survive. The setup helper gets only
+`/usr/bin:/bin` and fixture HOME/cache. Fake API and bridge listeners are
+loopback-only. With display unset, `python3
+tests/manual/test_real_screen_env.py -v` passed **2/2**, including planted
+`SSH_AUTH_SOCK` and `SSH_AGENT_PID`.
+
+The owner run is authorized only from an exact clean export at `86f8cf1` or a
+later separately reviewed SHA, with a throwaway profile and agent home, the
+local fake API, `--media-source off`, and explicit owner consent. It must not
+use the live browser/profile/socket, a real account/token, an external API or
+a live site.
