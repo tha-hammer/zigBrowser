@@ -189,6 +189,9 @@ pub fn build(b: *std.Build) void {
     }
     exe.step.dependOn(pkg_guard);
     b.installArtifact(exe);
+    // R4 (RoseCat 483cdf7; a8a8a37 item 2): the compile-only Mac tier's one build step. It installs the exe (on
+    // macOS with the shim dylib it links) into the prefix and nothing else: no run, test, gate or tool step.
+    b.step("mac-compile-only", "Compile and link the exe (and on macOS its shim dylib) only; runs nothing").dependOn(&b.addInstallArtifact(exe, .{}).step);
 
     // WS3 step 2 (Windows plan, coordination rev 2.4): the seven zb_* the Windows config arm and
     // cookie port need, linked with the WebView2 shim and run on Windows
@@ -3584,6 +3587,13 @@ pub fn build(b: *std.Build) void {
     windows_drawer_lifecycle.addFileInput(b.path("tests/windows/win_drawer_test.py"));
     b.step("windows-drawer-lifecycle", "WS5.5b-2 #3: drawer lifecycle + teardown recording-seam model (driven; bound to the runner)").dependOn(&windows_drawer_lifecycle.step);
     test_step.dependOn(&windows_drawer_lifecycle.step);
+    // R4 (RoseCat a8a8a37 item 5): the compile-only Mac harness's hostless safety selftest: a fake ssh, stubbed
+    // Mac tools, every refusal and failure route; no Mac, network or signal.
+    const mac_compile_only_selftest = b.addSystemCommand(&.{ "bash", "tests/mac/mac_compile_only_selftest.sh" });
+    mac_compile_only_selftest.addFileInput(b.path("tests/mac/mac_compile_only.sh"));
+    mac_compile_only_selftest.addFileInput(b.path("tests/mac/mac_compile_only_selftest.sh"));
+    b.step("test-mac-compile-only", "Run the R4 compile-only Mac harness's hostless safety selftest").dependOn(&mac_compile_only_selftest.step);
+    test_step.dependOn(&mac_compile_only_selftest.step);
     test_step.dependOn(&windows_gate_selftest.step);
     test_step.dependOn(&windows_twohost_selftest.step);
     test_step.dependOn(&windows_build_selftest.step);
