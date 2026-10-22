@@ -76,3 +76,45 @@ Rule 6 status remains **NOT BUILT**: no AppKit card calls the bridge and the mac
 Exact minimum before the green registers row 3: amend the plan to the chosen producible failure; assert one direct production failure-handler observable (for this attachment, exactly one matching `LOAD_FAIL`, or an equivalently direct result); record the current failing red on both Macs under exact-commit plus all-harness-digests approval and orchestrator release; and show that restoring the production `requestExit` makes this row fail. No production mutant exists yet because this is a red-only commit.
 
 **Push-safe implementation SHAs after this queue:** `0d359e6`, `2aa1abb`, and `751be84` (the last only as an unregistered draft). `e818499` is not push-safe pending the exact minimum above.
+
+## 2026-10-22 — Fix-forward, red, and guard queue
+
+All commands below ran from clean `git archive` exports with display and askpass variables unset, private HOME/XDG directories, and user/PID/mount/network namespaces where applicable. No Mac was contacted and no Mac run is approved or released.
+
+### `3b81737` red + `843cf3d` green — 4pa.70 shared-host refusal
+
+**APPROVED; BOTH SHAS ARE SAFE TO PUSH.** Judged only against the first exact minimum recorded at `cd515ce`, this closes the `e818499` block. The authoritative list is `$HOME/.ntm/zb-release/shared-mac-hosts`, accepting one `user@host` or `host` per line with comments. Missing/unreadable list data fails closed; either exact target host is refused before staging or any `ssh`/`scp`; a nonmatching list remains a positive control. The test is registered in `test-mac-reaper-gate-guard` and `zig build test`.
+
+Independent evidence: the exact red selftest exited 1 with six intended failures and four stub calls in each refused row. `zig build test-mac-reaper-gate-guard -j4 --summary all` at `843cf3d` exited 0, 4/4 steps. Deleting the production shared-host refusal made the registered step exit 1 with six failures. Author-reported additional production mutants—allow missing list, compare whole `user@host`, and substring-match hosts—also exited 1. This approval does not authorize the destructive reaper gate on a Mac.
+
+### `ffc0330` + `bbba1b3` — 4pa.55 failed-load reds
+
+**SAFE TO PUSH AS UNREGISTERED RED DRAFTS.** `ffc0330` correctly gives every launch a private HOME and explicit per-run profile. `bbba1b3` completes the test half of the `cd515ce` row-3 minimum: every row waits for a `LOAD_FAIL` matching the intended load and, after a grace period, requires exactly one; row 3 also proves `/attach` was fetched. Both exact commits passed `py_compile` (exit 0), and both fail rather than skip with a missing browser (exit 1).
+
+The attachment is acceptable as a candidate platform failure input, not as an app-policy cancellation. It remains an unregistered and Mac-unproven red until a released Mac run shows that WKWebView produces the matching `LOAD_FAIL`. If it does not, another producible response failure is required. Registration/green still requires the already-recorded both-Mac red, the product fix, and the restore-`requestExit` production mutant.
+
+### `7f8b217` — 4pa.58 native close-button red and hook 14
+
+**SEAM ACCEPTED; SAFE TO PUSH AS AN UNREGISTERED RED DRAFT.** The seam is the plan-named production action: an exact title match, one-shot per host, weakly deferred to the main queue, calls `-[NSWindow performClose:]`. Its environment read is behind `zb_auto_test_hooks_enabled()`. The red checks registry removal, routed `no_window`, job settling, opener/process survival, and the shared destroy-path window count. `py_compile` exited 0 and a missing browser exited 1. Objective-C compilation and behavior remain unproved pending a released both-Mac run.
+
+**The green MUST extend `mac_ms2a_hook_inert_test.py` for hook 14.** Without `--e2e-protocol`, set `ZB_DEBUG_NATIVE_CLOSE_ON_TITLE`, create a popup with the matching title, and prove it remains listed and routable; deleting the `zb_auto_test_hooks_enabled()` guard must fail that row. The positive close-button test supplies the with-e2e half. A green that omits this is blocked under R3 safety and R30.2 T15.
+
+### `461deff` red + `78bcbc9` green — 4pa.63 Darwin guard selftest
+
+**APPROVED SCOPED; BOTH SHAS ARE SAFE TO PUSH.** At `461deff`, `zig build test-darwin-guard-selftest -j4 --summary all` exited 1: all four macOS top/nested probes failed because the expected deliberately unreferenced type error was not found. At `78bcbc9`, the same command exited 0, 8/8 steps, and `zig build test-agent-run-ledger-darwin-build -j4 --summary all` exited 0, 4/4 steps. Restoring the old lazy root made the registered selftest exit 1 on all four macOS probes. Author-reported shallow-recursion, no-function-reference, and injected-ledger-error mutants were also caught.
+
+This is a registered compile tripwire for public non-generic declarations through the same ledger/recovery guard helper. Generic functions are explicitly outside its coverage. It proves neither Darwin runtime behavior nor the generic bodies.
+
+### `6074fba` — 4pa.59/4pa.77 build-on-Mac red
+
+**SAFE TO PUSH ONLY AS AN UNREGISTERED RED DRAFT.** The exact hostless selftest exited 1 with the expected 21 failures against the old script: live working-tree bytes, fixed paths, suppressed archive failure, no pinned hosts, and no cleanup. The run was additionally enclosed in a network namespace; no host was contacted.
+
+The remote-directory oracle is presently too weak for registration: it accepts a `zb-gate-<sha>-<nonce>` token anywhere in any argv, so `/tmp/zb-gate-...` or an unrelated echoed token can pass without proving that extraction, build, and cleanup use the exact fresh directory under remote HOME. Before the green registers this test, tighten it to reject those mutants and prove that staging/extraction, build, and cleanup all name the same exact `$HOME/zb-gate-<sha>-<nonce>` directory. The selftest itself should also remain under network isolation in its registered runner.
+
+### `3164dbf` — plan errata
+
+**PARTIAL; BLOCK; NOT SAFE AS THE AUTHORITATIVE PLAN ERRATUM.** The MS2c.6 correction to `no_window` matches `automation_server.zig`; no `window_gone` result exists. The 4pa.55 row-3 wording does not match production code: `nav_policy.decide(..., .response)` unconditionally returns `.use`, and `decidePolicyForNavigationResponse` therefore calls `WKNavigationResponsePolicyAllow` and returns. Its cancel branch is unreachable for current response inputs. A `Content-Disposition: attachment` may become an undisplayable/download response after the app allows it, but that is not the app response policy refusing or cancelling it.
+
+Exact minimum: retain the attachment as a candidate Mac failure input and the exact-one matching `LOAD_FAIL` criterion, but state that the app policy allows every response; remove the `decidePolicyForNavigationResponse -> cancel` claim/citation and describe any refusal/conversion as WebKit behavior to be established by the Mac red. If the released red produces no matching `LOAD_FAIL`, the row must select a different producible failure. Until that documentation fix-forward lands, the submitted aggregate tip through `3164dbf` is not push-safe as plan-correct. A later unreviewed commit moved the shared-worktree HEAD to `79a70d8`; no verdict on that commit is included here.
+
+**Push-safe SHAs from this queue:** `3b81737`, `843cf3d`, `ffc0330`, `bbba1b3`, `7f8b217`, `461deff`, `78bcbc9`, and `6074fba` with the red-draft/scoped qualifications above. `3164dbf` is blocked. No Mac run is requested or authorized.
