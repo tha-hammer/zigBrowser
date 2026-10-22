@@ -1226,6 +1226,17 @@ class WinDrawerOracle(unittest.TestCase):
         for var in ("ZB_WIN11_HOST", "ZB_WIN_EXE", "ZB_WIN11_PORT", "ZB_WIN11_USER", "ZB_WIN_KEY", "ZB_WIN_KNOWN_HOSTS"):
             self.assertIn(f"-u {var}", bz, f"the gate drawer step must unset {var} so the gate cannot reach the VM")
 
+    def test_windows_seam_parses_via_strict_export_not_atoi(self):
+        # RoseCat 7961: bind the embedded C++ call site. The Zig-only property suite stays green if the shim's
+        # call site is reverted to atoi, so pin here that the WINDOWS seam parses ZIGBROWSER_AGENT_DRAWER_WINDOWS
+        # through the strict Zig export and never calls atoi(...). A revert to `atoi(win_env)` turns this red.
+        shim = (pathlib.Path(__file__).resolve().parents[2] / "src" / "webview2_shim.cpp").read_text(encoding="utf-8")
+        self.assertIn('zb_drawer_window_count_from_env(getenv("ZIGBROWSER_AGENT_DRAWER_WINDOWS"))', shim,
+                      "the WINDOWS seam must parse via the strict Zig export, not inline C")
+        # no atoi CALL anywhere in the shim (the only numeric env parse is this seam); the "never atoi" comment
+        # has no paren, so `atoi(` uniquely marks an actual call a revert would introduce.
+        self.assertNotIn("atoi(", shim, "the shim must not call atoi(...) — strict full-string parsing only")
+
     # --- forced control-create failure oracle (check_mounted_fail, RoseCat 7646) ---
     def _good_fail(self, which):
         return {"error": "", "terminated": True, "job_count_after": 0, "controls": "",
