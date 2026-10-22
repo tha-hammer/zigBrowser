@@ -14,10 +14,14 @@ ARM_KEY="${ZB_MAC_ARM_KEY:-$KEY}"
 
 cd "$(git rev-parse --show-toplevel)"
 
-ssh_opts() { printf '%s\0' ssh -i "$1" -o IdentitiesOnly=yes -o StrictHostKeyChecking=no \
-  -o UserKnownHostsFile=/dev/null -o BatchMode=yes -o ConnectTimeout=15 -o ServerAliveInterval=10; }
-scp_opts() { printf '%s\0' scp -i "$1" -o IdentitiesOnly=yes -o StrictHostKeyChecking=no \
-  -o UserKnownHostsFile=/dev/null -o BatchMode=yes -o ConnectTimeout=15; }
+# Only the pinned Mac host keys are trusted, and no password, askpass or display can be used (SilverRidge 1915e0d;
+# the same options as tests/mac/mac_gate_lib.sh). Hostless selftest: tests/mac/ms5_gate_hostkey_selftest.sh.
+KNOWN_HOSTS="$PWD/tests/mac/known_hosts"
+export SSH_ASKPASS_REQUIRE=never
+ssh_opts() { printf '%s\0' env -u DISPLAY -u WAYLAND_DISPLAY -u XAUTHORITY ssh -i "$1" -o IdentitiesOnly=yes -o BatchMode=yes \
+  -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$KNOWN_HOSTS" -o ConnectTimeout=15 -o ServerAliveInterval=10; }
+scp_opts() { printf '%s\0' env -u DISPLAY -u WAYLAND_DISPLAY -u XAUTHORITY scp -i "$1" -o IdentitiesOnly=yes -o BatchMode=yes \
+  -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$KNOWN_HOSTS" -o ConnectTimeout=15; }
 
 if [ -z "$ARM_HOST" ]; then
   echo "NOT RUN: arm64 host not configured (set ZB_MAC_ARM_HOST=user@host)" >&2

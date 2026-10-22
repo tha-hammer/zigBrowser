@@ -3792,6 +3792,12 @@ pub fn build(b: *std.Build) void {
     }) |input| mac_zig_cache_direct_selftest.addFileInput(b.path(input));
     mac_build_script_step.dependOn(&mac_zig_cache_direct_selftest.step);
     test_step.dependOn(&mac_zig_cache_direct_selftest.step);
+    // ms5_gate.sh reaches the Macs only with the pinned host keys, BatchMode and no display (SilverRidge 1915e0d).
+    const mac_ms5_gate_hostkey_selftest = b.addSystemCommand(&.{ "bash", "tests/mac/ms5_gate_hostkey_selftest.sh" });
+    for ([_][]const u8{ "tests/mac/ms5_gate_hostkey_selftest.sh", "tests/mac/ms5_gate.sh", "tests/mac/known_hosts" }) |input|
+        mac_ms5_gate_hostkey_selftest.addFileInput(b.path(input));
+    mac_build_script_step.dependOn(&mac_ms5_gate_hostkey_selftest.step);
+    test_step.dependOn(&mac_ms5_gate_hostkey_selftest.step);
     test_step.dependOn(&windows_gate_selftest.step);
     test_step.dependOn(&windows_twohost_selftest.step);
     test_step.dependOn(&windows_build_selftest.step);
