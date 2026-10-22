@@ -28279,3 +28279,115 @@ to `probeLiveness`/`recoveryFor`, and require no recovery for each. The full
 production-shaped two-instance recovery transaction from `d3b31cb` item 3 is
 also still open, as JadeBeacon already notes. Thus `afe3920` is not yet
 cumulatively closed.
+
+## Windows WSL2 plan rev 2.15 (`88a4c9b`)
+
+**BLOCKED.** Rev 2.15 adds valuable corrected live evidence: AzureRidge's
+reported rerun used the standard Windows user, explicitly launched uid 1000,
+ran user namespaces and bubblewrap as that uid, moved canaries with ACKs over
+listeners bound exactly to `127.0.0.1:0` and `::1:0`, and demonstrated that a
+second distro can reach the first distro's loopback listener. Those facts close
+the central factual errors in the original spike. They do not make the current
+plan implementation-ready, because the committed spike fails to enforce parts
+of its own evidence and the authoritative plan still contains mutually
+exclusive launch contracts.
+
+### Status of the eight `affd577` findings
+
+| Prior finding | Rev 2.15 status |
+|---|---|
+| 1. root-only non-root/userns inference | **PARTIAL.** Explicit `-u zbagent` + userns/bwrap is now causally observed, but the supposed default-user row is actually the same explicit-user process (`tests/windows/wsl_live_test.py:211-224,310-319`), and group membership is not checked. |
+| 2. permissive `0.0.0.0`/either-address transport | **PARTIAL.** Exact IPv4/IPv6 bind and moved bytes are now observed, but the reverse negative never proves the Windows listener is live and many subprocess return codes are ignored. |
+| 3. circular C1 bootstrap / same-user boundary | **PARTIAL.** The same-user limitation and OAuth/control-capability separation are stated honestly. The exact Win32-handle-to-WSL-fd mechanism and the reverse ephemeral-port report channel remain unspecified and unproven. |
+| 4. C5 cannot serve hook-initiated bridges | **PARTIAL.** A reverse multiplexed relay is described, but its network-namespace placement is impossible as written. |
+| 5. file broker was a placeholder | **MOSTLY CLOSED at plan level.** C2 now names the two components, server-held root capabilities, relative operations, held-handle resolution, bounds, snapshots, atomic copy-back and crash cleanup. Its hardlink refusal still needs a concrete no-shared-inode rule in the red/implementation because a hardlink can make an in-root write mutate an out-of-root name. |
+| 6. setup/update/lifetime lacked crash state | **PARTIAL.** Versioned distros and an atomic current pointer improve the state machine, but destructive retire/terminate remains a census-then-act race with session start. |
+| 7. old Windows-user/WFP path remained normative | **OPEN.** The WSL subsection says it is removed while several other authoritative sections still require it. |
+| 8. Win10 scope contradicted agent-off | **OPEN.** The new owner-decision paragraph says browser-only, while global gates, UI checks, file-server setup and packaging still require agent work on both hosts. |
+
+### Blocking findings
+
+1. **BLOCKER — the discovery spike overclaims fail-closed execution and
+   cleanup.** Its header promises every lifecycle return code is checked, a
+   final census equals baseline and local scratch is cleaned
+   (`tests/windows/wsl_live_test.py:14-19`). In fact teardown ignores every
+   terminate/unregister/delete result and performs no final census
+   (`:140-158`). The staged scripts copied into
+   `C:\Users\zbtext\zb\wsl` are never removed. Probe return codes are captured
+   or discarded without assertions at `:204,213,228-229,247,257,265,269,274,277`.
+   Most importantly, the reverse-connect negative at `:273-280` ignores the
+   Windows listener launch result and never reads its ready/error file; a
+   listener that never started produces the same green “firewall-blocked” row.
+   Make every operation fail closed, prove the Windows listener ready before
+   the negative, remove every staged artifact and assert final distro/import/
+   process/listener census equals baseline. Add mutants for failed launch,
+   failed unregister and a leftover before rerunning live.
+
+2. **BLOCKER — default non-root remains unproven.** The test calls
+   `_run(..., user=NONROOT)` and then labels that process's `id -u` as
+   `DEFAULT_UID` (`wsl_live_test.py:211-224,310-319`). Add a separate no-`-u`
+   invocation after restart and require uid 1000 there, plus an exact group
+   census proving no administrative group. The existing live rerun proves only
+   the explicit-user half.
+
+3. **BLOCKER — C1 still lacks an implementable, proven bootstrap.** The plan
+   says an inherited pipe becomes an agent fd across `wsl.exe`
+   (`windows-launch-tdd-plan.md:1777-1786`) without naming whether it is
+   `wsl.exe` stdin, stdout or another supported handle mapping. Arbitrary
+   inheritable Win32 handles do not automatically become Linux fds. It also
+   does not define how the port selected by the in-distro ephemeral bind gets
+   back to the browser before connect. Specify the exact bidirectional stdio/
+   pipe protocol, closure and timeout rules and prove it live with canaries.
+   The OAuth fd-3 path is separately and correctly still listed as unverified
+   at plan lines 2355-2357; its hard red must remain.
+
+4. **BLOCKER — destructive distro operations have a check/use race.** C3
+   retires an old distro after a live-session census (`plan:1850-1863`) and C4
+   permits `wsl --terminate` after a last-owner census (`:1882-1888`), but no
+   cross-process claim prevents a new session from starting between census and
+   unregister/terminate. Specify one bounded lock/lease shared by session
+   admission, update/retire, recovery and uninstall, held through the
+   destructive action, with crash-cut and concurrent-starter reds.
+
+5. **BLOCKER — C5's namespaces do not compose.** A listener forwarded to
+   Windows must exist in the distro host network namespace. A broker “inside
+   the agent's bwrap tree” cannot simultaneously receive that forwarded
+   connection and appear as `127.0.0.1:51091/31337` to hooks running in their
+   own private network namespaces (`plan:2032-2045`). Name the trusted outer
+   broker/netd component and namespace, the fd/socket/relay capability passed
+   into each hook namespace, and the authentication/port-squat behavior
+   against the measured hostile co-tenant distro. Then drive those exact
+   namespace boundaries in the acceptance red.
+
+6. **BLOCKER — the WSL decision was not reconciled through the full
+   authoritative plan.** Contradictions remain at plan lines 33-46 and 57
+   (every milestone/two-host rule), 165-175 (the agent end state on both
+   platforms), 203-204 (WSL only as a fallback), 226-227 and 265-298
+   (credentials-file, SYSTEM sweeper, sandbox-user/WFP setup/update), 461 and
+   495-510 (WS8 users/WFP on the read-only Win10 file server), 658
+   (pre-WS8 users/filters snapshot), 703-725 (all real e2e on both hosts plus
+   `WindowsSandboxUserBackend`/host netd/WFP), 2232-2245 and 2258-2259
+   (uninstall users/WFP), 2275-2276 and 2290-2292 (WS13 users/WFP and Win10
+   post-uninstall), 2321-2326 (every slice both hosts), 2337-2339 (WS8/WS10/
+   WS11 real-screen on both), and 2382 (physical-machine WS8 UAC). Rewrite the
+   normative text for browser-on-both/agent-on-Win11, WSL setup/uninstall and
+   `WslBackend`; historical alternatives may remain only when unmistakably
+   labelled non-normative.
+
+### Live evidence still required
+
+After the executable oracle is corrected, rerun from a clean export on
+win11-m8 as the standard Windows user and preserve these exact rows: default
+and explicit non-root Linux uid/group/capability checks; exact `127.0.0.1` and
+`::1` canary+ACK with a proven-ready listener; hostile co-tenant reach; the
+WSL-to-Windows negative only after a proven-ready Windows listener; every
+lifecycle return code; and a final distro/process/listener/import-dir and
+staged-file census equal to baseline. Separately add and run the exact
+Windows-stdio/pipe → Linux descriptor + ephemeral-port return probe for C1.
+The reported rev-2.15 rerun does not cover that bootstrap, and its committed
+oracle does not yet validate cleanup, default-user launch or the causal reverse
+negative.
+
+No WS8/WS9 implementation red is authorized by this review. `git diff --check`
+is clean and the spike compiles with `python3 -m py_compile`; those static
+checks do not change the plan verdict.
