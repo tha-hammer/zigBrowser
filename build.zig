@@ -3207,6 +3207,20 @@ pub fn build(b: *std.Build) void {
     const run_drawer_props_tests = b.addRunArtifact(b.addTest(.{ .root_module = drawer_props_module }));
     b.step("drawer-props-test", "WS5: agent_drawer.zig geometry property tests").dependOn(&run_drawer_props_tests.step);
     test_step.dependOn(&run_drawer_props_tests.step);
+    // WS5 (1e5ff2d chain; RoseCat 6af9cf4): register the native Win32 drawer's OFFLINE oracle + model suites so
+    // the red/green chain is causal in the gate — deleting a check or breaking an oracle reds `zig build test`.
+    // The VM-gated live rows (WinDrawerLive / WinDrawerBehaviorsLive) skip without ZB_WIN11_HOST; the pure
+    // oracle/model classes (control-mount success/failure contracts, protocol/transcript validators, the
+    // geometry/fold/DPI model checks and their mutants) run here, stdlib-only, no display, no VM.
+    const win_drawer_oracle = b.addSystemCommand(&.{
+        "sh",
+        "-c",
+        "cd tests/windows && env PYTHONDONTWRITEBYTECODE=1 python3 -m unittest win_drawer_test win_drawer_behaviors_test",
+    });
+    win_drawer_oracle.addFileInput(b.path("tests/windows/win_drawer_test.py"));
+    win_drawer_oracle.addFileInput(b.path("tests/windows/win_drawer_behaviors_test.py"));
+    b.step("win-drawer-oracle-test", "WS5: native Win32 drawer offline oracle + model suites (VM live rows skip)").dependOn(&win_drawer_oracle.step);
+    test_step.dependOn(&win_drawer_oracle.step);
     test_step.dependOn(&windows_gate_selftest.step);
     test_step.dependOn(&windows_twohost_selftest.step);
     test_step.dependOn(&windows_build_selftest.step);
