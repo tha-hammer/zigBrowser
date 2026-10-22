@@ -32288,3 +32288,32 @@ must remain non-completion. Because the green will change the case bytes, no
 Mac rerun is authorized from this red. Review the exact green SHA and all
 three resulting manifest digests before releasing one more bounded two-Mac
 run.
+
+## MS6.3 compact-result-frame green (`77cb21c`)
+
+**APPROVED.** The case now decodes stdout one line at a time as UTF-8 JSON and
+counts completion only for a JSON object with `type == "result"`,
+`subtype == "success"` and `is_error is False`, together with the existing
+zero process status. Error, missing and non-frame result text remain
+non-completion. The causal suite uses the production frame encoder, and its
+green registers the suite in both the Linux aggregate and `test-mac-census`
+under a private user/PID/mount namespace with `--kill-child`.
+
+From an exact clean archive of
+`77cb21ccf6cf74d9cf69963d6b3db2a07549dac0`, independent private-namespace
+runs passed: compact-frame rows **4/4**, fd-3 case **12/12**, manifest **7/7**
+and driver **5/5**. `git diff --check` is clean. The manifest's exact reviewed
+case set and independently recomputed SHA-256 values are:
+
+- `case_ms5_spawn_io.py`:
+  `7c739e32fe924877593e15bf232b58be94754c4287b69a7465f2d0371bafcbbb`
+- `case_ms6_3_fd3_cli.py`:
+  `636b7785c78e023de0bee4160712ccc57dfa7098b3e90bbb6059c6e182d8a1aa`
+- `case_ms6_6b_r1_chain.py`:
+  `7e914a0b04016c05921af2157b5ea1c0aec9eec35bf3823f7cc97a984ea19f76`
+
+One bounded two-Mac hard-gate rerun is authorized at that exact commit through
+the committed launcher and manifest, with exactly those three cases. The run
+must keep displays unset, SSH noninteractive, install nothing, exclude the
+reaper case, and retain the established before/after process and scratch
+censuses plus guarded cleanup.
