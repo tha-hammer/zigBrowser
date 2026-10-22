@@ -36684,3 +36684,34 @@ fail for destructive replacement or a false-empty Keychain result. The
 AppKit shell still separately owes paste/Save/Remove control binding, window
 isolation, compiled dual-arch evidence and the owner-visible MS7 real-screen
 case; they are not prerequisites for approving this portable red.
+
+## WS5.5b-2 bounded Win11 acceptance (`a5745b9`)
+
+**FINAL ACCEPTED; this cumulatively closes the `1b2fe0a` WS5.5b-2 range.**
+The owner-released authority ran from a clean archive of exact commit
+`a5745b960bede264992c5da1ad0efa42d98c4286`, built with MSVC, and the staged
+artifact's provenance file named that same full commit. The four methods named
+in the authorization ran sequentially without retry:
+
+- peak then close: live count **2 -> 0**;
+- close one extra: **2 -> 1 -> 0**;
+- panel partial failure: primary-only **1 -> 0**, no counted extra;
+- icon partial failure: primary-only **1 -> 0**, no counted extra.
+
+Every close reported `NoKillNeeded` only after the leader had exited and the
+bounded owned-Job census had settled at zero. Each method therefore ended with
+zero owned Job members and zero survivors; process and drawer-directory
+censuses were clean before and after. Transport/environment state was scrubbed,
+and no name-based cleanup or broader test set ran. This is the exact live
+authority required by the earlier `f1e9653` minimum and the `a5745b9`
+authorization, so no further WS5.5b-2 Win11 run is required.
+
+**Newest contiguous approved push-through from origin `6f145bc`:
+`e50c5de`.** `1b2fe0a` and its cumulative fix-forward range are now closed,
+and the next commit, `e50c5de`, is already approved as the valid unregistered
+WS6.1(a) failing-first red. The following commit, `b5a08e4`, remains the
+earliest blocker: its production refactor was approved in substance but its
+portable proof remained **BLOCKED-for-tests** until aggregate registration.
+That registration is supplied later by `84a9587` / `bf57707`, after the still
+open `3a8a091` startup-owner slice, so it is not present in a prefix ending at
+`b5a08e4` and cannot be used to skip that linear boundary.
