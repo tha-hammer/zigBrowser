@@ -6,15 +6,21 @@ branch: zb-automation-integration-2026-10-10-11-59
 repository: zigBrowser
 topic: "Windows 10 + Windows 11 launch support for zigBrowser — TDD implementation plan"
 tags: [plan, tdd, windows, win10, win11, webview2, win32, msvc, automation, drawer, credential-manager, sandbox, wfp, netd, msi, authenticode, launch-critical]
-status: "DRAFT — NOT IMPLEMENTATION-APPROVED (rev 2.16); the WS8/WS9 WSL2 topology is a DRAFT only"
-rev: 2.16
+status: "DRAFT — NOT IMPLEMENTATION-APPROVED (rev 2.17); the WS8/WS9 WSL2 topology is a DRAFT only; re-baselined to HEAD e4f705f (code state of c07899f) and amended with every finding of the independent review (19 critical C1-C19 + 23 warnings W1-W23); see 'Review amendments (rev 2.17)'"
+rev: 2.17
+rebaselined_at: e4f705f
+rebaselined_code_state: c07899f
+review_input: thoughts/searchable/shared/plans/2026-10-19-windows-launch-tdd-plan-REVIEW.md
+rev_2_17_note: "Rev 2.17 (2026-10-22; enhance_plan_with_review of the independent review by BlackRobin, bead zigBrowser-4pa.4; amendments tracked as zigBrowser-4pa.31..49). PLAN-ONLY revision: no source, test, build or host file was changed and no command was run against any host. (1) RE-BASELINE: the plan's assumptions are brought to HEAD e4f705f (git diff c07899f..e4f705f is three REVIEW .md files only, so the CODE state is c07899f); the stale 'Current State Analysis' is superseded by a dated 'State at HEAD' table (W2). (2) OD-W4 CONTRACT stated exactly once, normatively, in 'OD-W4 contract (rev 2.17, normative)': WSL2 now / own VM later; the Claude agent, its CLI, bubblewrap and netd run INSIDE our own imported WSL2 distro on Windows 11 ONLY; the agent is OFF on Windows 10; no dedicated users, no AppContainer, no WFP, no Job-Object user isolation, no Windows python.exe or claude.exe for the agent. (3) EVERY review finding is mapped in 'Review amendments (rev 2.17) — traceability' (C1-C19, W1-W23) to a plan location or to an explicit rejection. (4) C1 (Win10 test host) and the C4 order question are OWNER decisions: the plan adopts the review's recommended default (every gate Win11-only; Windows 10 browser launch is UNTESTED until the owner authorizes a writable Win10 host) and marks it 'pending owner ratification'. (5) The WS8/WS9 DRAFT gate is unchanged in force except that it now names the ONE sanctioned blocker-1 live rerun (C17) and the WS8/WS9 proposals now carry concrete numbers/wire formats (still PROPOSALS, not contracts). This revision closes no blocker and approves no security claim."
 rev_2_16_note: "Rev 2.16 (2026-10-21, AzureRidge; RoseCat 9134b8b/7558 + draft-state route 7561). DOCUMENTATION-HONESTY ONLY — this revision does NOT close affd577/9134b8b, does NOT authorize any WS8/WS9 implementation, and approves NO security claim. It marks the WS8/WS9 WSL2 topology a DRAFT: (1) status/rev/WS8/WS9 headings say DRAFT — NOT IMPLEMENTATION-APPROVED; withdrew every 'causal/implementation-ready/grounded/proven' closure claim that exceeds the discovery observations. (2) one authoritative gate before WS8 forbids any WS8/WS9 red/green/production-edit/installer-change/further live-or-destructive WSL run (and WS10/WS11/agent-WS12/WS13 agent work) until a later reviewed revision closes every blocker. (3) the six 9134b8b findings are listed OPEN with exact required closure + the eight-finding status table. (4) measured facts narrowed to what the committed run actually observed (explicit -u zbagent uid/caps/userns/bwrap; exact IPv4/IPv6 canary+ACK; co-tenant reach) with an explicit NOT-proven list (default-user selection, causal reverse firewall denial, fail-closed cleanup/final census, the C1 pipe/fd bootstrap, production bwrap/netd, any product security boundary). (5) wsl_live_test.py marked DISCOVERY-ONLY / DO NOT RERUN until its ignored rc/ready-proof/staged-cleanup/final-census are repaired + reviewed; its header/result are not gate evidence. (6) an authoritative scope banner marks every dedicated-user/WFP/WindowsSandboxUserBackend/host-netd/both-host-agent/Win10-agent statement HISTORICAL and non-normative — present scope = browser on Win10+Win11, agent/WSL on Win11 only, agent OFF on Win10. (7) C1-C5 kept as PROPOSALS/TBD, not contracts, naming the later evidence required; OAuth fd-3 stays a hard-red unverified. Live evidence is required before any later implementation-approved revision."
 rev_2_15_note: "Rev 2.15 (2026-10-21, AzureRidge; RoseCat affd577 — 8 blockers on 770848b/7ca6897). [HISTORICAL — its 'causal'/'implementation-ready' claims were WITHDRAWN in rev 2.16; the topology is a DRAFT.] It aimed to correct the live spike and the WSL2 contracts: (1) the spike now creates a dedicated NON-ROOT Linux uid (zbagent 1000), launches with it, and proves id!=0, no sudo/doas, CapEff=0, 0 setuid, /etc denied, and userns+bwrap AS that user (C6). (2) transport re-probed EXACTLY on 127.0.0.1:0 (and ::1:0) with an ACK + moved canary, IPv4+IPv6, a hostile co-tenant row (a second distro reaches the 127.0.0.1 listener ⇒ auth mandatory), and WSL→Windows + TEST-NET fail-closed with every rc checked; the spike pins distros alive with keepalives, rc-checks the whole lifecycle, asserts final census==baseline, refuses a missing rootfs on an opted-in host, and cleans its local scratch. (3) C1 bootstrap de-circularised: the control capability is delivered on a one-shot inherited pipe at launch (never env/argv/file/TCP), kept DISTINCT from the OAuth fd-3 token; WS8.3 reconciled; same-Windows-user boundary stated plainly (the WSL VM is NOT a boundary against the owning Windows user). (4) C5 reverse relay specified for hook-initiated 51091/31337 (Windows dials in, in-distro broker multiplexes, framing/backpressure/cancellation/lifetime). (5) C2 file broker made concrete (Windows broker + in-distro client, server-held handle capabilities, a real held-handle check-and-use primitive replacing the removed WS0.5 Option B, bounds, immutable snapshot, atomic copy-back, session ownership, crash cleanup). (6) C3 setup/update state machine (versioned distro names + current-pointer commit/rollback, active-session-aware retire, unprivileged reboot-resume with SID binding) + honest uninstall (cannot un-enable global WSL/VMP) + C4 marker-based teardown with detached/double-fork and browser-crash recovery. (7) the old Windows-user/WFP WS9 block, the dependency-graph WFP coupling, and the unverified dedicated-user/CreateProcessWithLogonW/nested-virt-fallback items are REMOVED/reconciled to WSL. (8) Win10 ships BROWSER-ONLY agent-OFF; WS8/WS9/WS11/WS12-agent/WS13-agent-census gate win11-only, reconciled in the OD-W4 scope + the WS10/WS11/WS13 gates. The spike stays UNREGISTERED; WS8/WS9 reds remain gated on RoseCat approval."
-rev_2_14_note: "Rev 2.14 (2026-10-21, AzureRidge; RoseCat 119108c WSL2 re-plan + owner 'WSL done'). The WS8/WS9 WSL2 topology is now grounded in LIVE MEASUREMENTS on win11-m8 (WSL 3.0.3.0, kernel 6.18.54.1, build 26200) by the new `tests/windows/wsl_live_test.py` (standard-user `zbtext`, no admin; Alpine minirootfs 3.21.9 pinned by in-repo SHA-256; imports two distros, probes, tears down with a guarded delete; exit 77 off-host; UNREGISTERED until the WS8/WS9 greens). Measured + folded in: `wsl --import` and the full per-user lifecycle need NO admin; automount-off works (Windows drive unmounted, `/mnt/c` not a mountpoint); appendWindowsPath-false works; interop-off is PARTIAL (the WSLInterop binfmt handler stays registered — WS8.1 must hard-disable it at boot); two distros share ONE utility VM + ONE net namespace (separate mount/PID ns); loopback TCP is one-directional by default — **Windows→WSL works (localhostForwarding), WSL→Windows is firewall-blocked**, so C1/C5 are INVERTED to agent-listens-in-distro / browser-connects-from-Windows; AF_VSOCK creatable by a standard user but host side needs AF_HYPERV (rejected); unprivileged userns + bubblewrap work inside the distro; per-run process-group kill is safe while `wsl --terminate` is distro-wide. The four WS8 contracts (C1-C4) + the new WS9 C5 bridge-topology contract answer 119108c and are re-anchored to this evidence. Still owner-only/elevated: the one-time feature-enable + reboot (the owner did it; benign 'nested virtualization not supported' notice prints, not needed). Added the **WS8/WS9 acceptance matrix (RoseCat 7516's 12 inputs)** as the production-backend closure spec and labelled `wsl_live_test.py` a DISCOVERY SPIKE (security/product claims proven later through `WslBackend`/`LinuxBwrapBackend`); measured that wsl.conf applies via a **per-distro `wsl --terminate`** so no global `wsl --shutdown` is used (pinned forbidden, #10); the spike now takes a baseline/postflight census + refuses name collisions; recorded honestly that the WSL VM is **not** an isolation boundary against the owning Windows user (#3). WS8/WS9 reds remain gated on RoseCat approving this re-plan."
+rev_2_14_note: "[HISTORICAL — C8: the claim 'WSL→Windows is firewall-blocked' below is WITHDRAWN as a measured fact (rev 2.16 / plan 'Loopback TCP directionality'): one reverse attempt failed WITHOUT proving the Windows listener was live, so it is an unproven observation, and the C1/C5 direction is a PROPOSAL.] Rev 2.14 (2026-10-21, AzureRidge; RoseCat 119108c WSL2 re-plan + owner 'WSL done'). The WS8/WS9 WSL2 topology is now grounded in LIVE MEASUREMENTS on win11-m8 (WSL 3.0.3.0, kernel 6.18.54.1, build 26200) by the new `tests/windows/wsl_live_test.py` (standard-user `zbtext`, no admin; Alpine minirootfs 3.21.9 pinned by in-repo SHA-256; imports two distros, probes, tears down with a guarded delete; exit 77 off-host; UNREGISTERED until the WS8/WS9 greens). Measured + folded in: `wsl --import` and the full per-user lifecycle need NO admin; automount-off works (Windows drive unmounted, `/mnt/c` not a mountpoint); appendWindowsPath-false works; interop-off is PARTIAL (the WSLInterop binfmt handler stays registered — WS8.1 must hard-disable it at boot); two distros share ONE utility VM + ONE net namespace (separate mount/PID ns); loopback TCP is one-directional by default — **Windows→WSL works (localhostForwarding), WSL→Windows is firewall-blocked**, so C1/C5 are INVERTED to agent-listens-in-distro / browser-connects-from-Windows; AF_VSOCK creatable by a standard user but host side needs AF_HYPERV (rejected); unprivileged userns + bubblewrap work inside the distro; per-run process-group kill is safe while `wsl --terminate` is distro-wide. The four WS8 contracts (C1-C4) + the new WS9 C5 bridge-topology contract answer 119108c and are re-anchored to this evidence. Still owner-only/elevated: the one-time feature-enable + reboot (the owner did it; benign 'nested virtualization not supported' notice prints, not needed). Added the **WS8/WS9 acceptance matrix (RoseCat 7516's 12 inputs)** as the production-backend closure spec and labelled `wsl_live_test.py` a DISCOVERY SPIKE (security/product claims proven later through `WslBackend`/`LinuxBwrapBackend`); measured that wsl.conf applies via a **per-distro `wsl --terminate`** so no global `wsl --shutdown` is used (pinned forbidden, #10); the spike now takes a baseline/postflight census + refuses name collisions; recorded honestly that the WSL VM is **not** an isolation boundary against the owning Windows user (#3). WS8/WS9 reds remain gated on RoseCat approving this re-plan."
 rev_2_13_note: "Rev 2.13 (2026-10-21, AzureRidge; RoseCat b3d255b-chain). Owner DECISIONS recorded + reconciled throughout: OD-W1 = per-user WiX 3.14 MSI; OD-W3 = NO code signing for launch (DEFERRED, not a launch gate, WS13.6 stays OPEN, nothing may claim signed/distributable); OD-W6 = native Win32 drawer (not WebView2/WinUI); OD-W4 = WSL2 now / own VM later (our own `wsl --import` distro, automount+interop off, appendWindowsPath=false, agent inside it under the existing bubblewrap+netd Linux sandbox, browser<->agent over loopback TCP/hvsocket since AF_UNIX does not cross WSL2, agent OFF + fixed explanation if virt/WSL absent; dedicated-users/AppContainer/WFP DROPPED for launch and marked SUPERSEDED in WS8/WS9; own-small-VM containment is a later MS6.5-stub milestone). WS13 signing reworded deferred/non-gating; the Open-decisions intro + sharpening mark W1/W3/W4/W6 decided (history, not pending); WS5 no longer offers a WebView2 drawer. UNVERIFIED (owner, elevated): reboot need for VMP/WSL; the later shared utility VM; loopback-vs-hvsocket transport + auth; win11-m8 feature-state/nested-virt (read-only non-admin probe: WSL NOT installed, feature/nested-virt queries elevation-refused). No WSL install on the VM until the owner relays OK; WS8/WS9 WSL2 reds only after RoseCat approves the re-plan."
 rev_2_12_note: "Rev 2.12 (2026-10-21, AzureRidge; RoseCat 88852d9). Lock detection no longer uses OpenInputDesktop for the verdict: on the win11-m8 LOCKED VM console OpenInputDesktop returned input desktop 'Default' and the probe mis-reported unlocked. session_probe.ps1 now derives `locked` from the WTS session-lock flag — WTSQuerySessionInformation(WTSSessionInfoEx) -> WTSINFOEX_LEVEL1.SessionFlags (WTS_SESSIONSTATE_LOCK(0)=locked, WTS_SESSIONSTATE_UNLOCK(1)=unlocked), byte offset +12 after the DWORD Level tag — with a LogonUI-in-console fallback, and it FAILS CLOSED: the ONLY unlocked verdict is the WTS flag explicitly reporting UNLOCK(1); any unknown/unreadable signal counts as locked so gate.sh refuses it as an active unlocked session. input_desktop is a DIAGNOSTIC field only. The verdict is a pure extractable Get-ZbLockVerdict (ZB_LOCK_FN markers); the watched LockedDesktopLive requires wts_lock_ok=true and session_flags==0 (LogonUI fallback tested separately in LockVerdictFixturesLive)."
 rev_2_11_note: "Rev 2.11 (2026-10-20, WS0 live-readiness closure, AzureRidge; RoseCat 5e48424/6867/6882/6889). WS0 closure is the two-host readiness `--probe-only` gate ONLY; the no-argument full product gate still exits 'not implemented' and is NOT claimed complete. Win10 file server: read-only/zero-write, host-key-only identity; root and free_gb not_applicable there; no fixed listener baseline (WS0.7 = listeners/firewall-hash/shares unchanged pre vs post); sshd ListenAddress and AllowUsers pinned exactly. VM free-space floor 10 GB; current pinned clean snapshot `pre-4dr-toolchain-2026-10-20`. zbtest_write_paths uses the real Win32 AccessCheck (zero-disk Reflection.Emit) not a hand SID walk; the Win10 probe is streamed on stdin and compiles nothing (no Add-Type/CodeDOM) and writes nothing. The in-console session helper (session_probe.ps1) is an EXTERNALLY provisioned scheduled task (provision_session_task.ps1); gate.sh pin-verifies it with verify_task.ps1 (exact canonical System32 powershell.exe, no WorkingDirectory node, exact argument tuple, one Exec, one Principal with nonempty id == Actions Context, UserId == the exact current-user SID, InteractiveToken, RunLevel absent-or-LeastPrivilege, Enabled absent-or-true, staged-script SHA-256) and only then writes a per-run nonce, triggers it, and awaits a nonce-matching fresh (non-future) session.json. Lock state comes from the WTS session-lock flag (WTSSessionInfoEx -> WTSINFOEX_LEVEL1.SessionFlags; LOCK(0)/UNLOCK(1)) with a LogonUI-in-console fallback and FAILS CLOSED (unknown => locked); the input-desktop name (OpenInputDesktop) is a diagnostic only (see rev_2_12_note). The owner-gated locked-console test (host_live_test.py LockedDesktopLive, ZB_EXPECT_LOCKED) runs with the VM console deliberately locked and is unlocked before the normal two-host run. gate_twohost_selftest.py is registered/green (windows-twohost-selftest) and load_tests also registers host_live_test.py (live cases skip without the VM env/lock opt-in)."
 rev_2_10_note: "Rev 2.10 (2026-10-20, WS2.0 scope, BlueBeaver; RoseCat 6860, 41a296a, 6870 — WS2.0 is labelled [W11], and the register names its exception): WS2.0's live production evidence is the Win11 VM only. Running the browser on the physical Windows 10 file server would mean copying an exe onto it, which the user's rule forbids: that machine is read-only as zbtest, with no writes and no installs (the file-server rule, plan:525,689,712-717). The physical-Win10 leg (the owner-side DACL check and the different-integrity connect) is withdrawn, not deferred under a claim, and Windows 10 AF_UNIX stays unverified. Where Win10 coverage would come from if ever needed: a separate, writable Windows 10 host that the user authorizes (for example a Win10 guest on the libvirt host), running the same tests/e2e/win_transport_test.py with ZB_WIN11_HOST pointed at it. Nothing here claims it."
+rev_2_9_note: "Rev 2.9 (2026-10-20; WS0-completion / Route A, RoseCat 6769) [W5: frontmatter now carries this note; full text in the WS2.0 section body]: snapshot readiness moved from an in-VM probe field to a host-side read-only virsh check; console_user read network-safe; interactive_session/locked VM-only."
+rev_2_8_note: "Rev 2.8 (2026-10-20; WS13.4 uninstall census, RoseCat 6731 / 2cc125c) [W5: frontmatter now carries this note; full text in the WS2.0 section body] [HISTORICAL — the six-kind sandbox-user/WFP census it describes is the DROPPED dedicated-user design; see WS13.4 (rev 2.17, WSL-era uninstall)]."
 rev_2_7_note: "Rev 2.7 (2026-10-20, WS2.0, BlueBeaver; RoseCat 6647, 6668): the Windows automation server never started — std.Io.net enables AF_UNIX on Windows only when the target minimum is win10_rs4 (Windows 10 1803) or later, and the default x86_64-windows-msvc range starts lower, so server.start returned AddressFamilyUnsupported (exit 7) and its whole start path was dead code. build.zig windowsAfUnixFloor now gives every Windows target without an explicit minimum the win10_rs4 floor (the cross-check object uses it too); the newly reachable start path got Windows fixes (wallClockMs via RtlGetSystemTimePrecise, the token file without .fromMode, cookies.import refused on Windows until WS3). The ADR-1 spike no longer compiles on Zig 0.16 and is superseded: the production e2e tests/e2e/win_transport_test.py (red 970969f, green f29e490) is the AF_UNIX proof. Rev 2.6's claim that .fromMode compiles for Windows is withdrawn: it compiled only because the path was unreachable."
 rev_2_6_note: "(fix, RoseCat 6607: the check and the apply name one object, a handle opened without following a link or reparse point; O_PATH + /proc/self/fd on Linux, O_NOFOLLOW + fchmod on macOS, FILE_FLAG_OPEN_REPARSE_POINT + SetSecurityInfo on Windows, the AF_UNIX reparse tag accepted; swap reds; the readback contract is P + only AI/AR + the one ACE) Rev 2.6 (2026-10-20): WS2.0 owned by BlueBeaver (orchestrator; AzureRidge 6591 keeps the VM, host tooling, wincontain and the Job Object). One owner-only seam src/owner_only.zig: restrictToOwner(path, file|dir) — POSIX 0600/0700 with symlinks refused; Windows a PROTECTED DACL with exactly one allow ACE for the current user SID (no SYSTEM/Administrators/Everyone/Users/Authenticated Users, nothing inherited; OICI on a directory), built as SDDL by the pure ownerOnlySddl and applied with SetNamedSecurityInfoW; C form zb_restrict_to_owner for WS3.1. socketBaseDir: Windows %LOCALAPPDATA% only (NoLocalAppData, never /tmp or XDG); planSocketPath returns SocketPathTooLong instead of a cut path. The compile check is not the red (MinGW chmod compiles and sets no DACL); the reds are Linux-provable (owner_only_test, automation_transport_ws20_test) plus the VM e2e win_transport_test.py (zbother negative control after the user creates zbother)."
 rev_2_5_note: "Rev 2.5 (2026-10-20): WS3 flag table made literal from production (RoseCat 6405, 6415). Exact present-flag rows from media_config.parse (on|off), render_config.parseHwPolicy (never|always|webkit — no auto), render_config.parseRenderer (default|shm|mesa-egl, Linux only; refused on macOS/Windows); empty value is an explicit invalid value and is refused. backendFlagDecision decides a PRESENT flag only; absence makes no call and no apply and is resolved by the config defaults (media-source=on, hardware-acceleration=webkit, Linux renderer=shm; no renderer decision on macOS/Windows) via a separate absent-default oracle at the config/app boundary, never value=''. WS3.2's flag-decision property is now the registered, all-OS, anti-drift tests/backend_flag_test.zig (step test-backend-flag, BlueBeaver); the standalone src/ws3_backend_flag_table_test.zig (88e16cd) is removed so one literal oracle cannot drift."
@@ -22,9 +28,9 @@ rev_2_4_note: "Rev 2.4 (2026-10-20): fix-forward of the WS3 coordination section
 rev_2_3_note: "Rev 2.3 (2026-10-20): added the WS3 cross-plan coordination proposal (section 'WS3 cross-plan coordination') — the shared config-flag seam applyBackendFlag(os,flag,value), the CookiePort interface with three backend impls, and the --profile-dir contract: which plan owns what, the pinned shared contracts, and the binding order (BlueBeaver lands the backend-flag seam pre-slice first; WS3 and MS3 add their os-arms in parallel; JadeBeacon adopts the shared name; BlackRobin owns the native setters). Mailed to BlackRobin, BlueBeaver, JadeBeacon and RoseCat. WS3's first Linux-only reds (the flag-decision-table property + the windows cookie-port cross-check) are written unregistered."
 rev_2_2_note: "Rev 2.2 (bead zigBrowser-126): WS0.6 VM identity no longer uses the SMBIOS UUID (a standard user cannot read Win32_ComputerSystemProduct.UUID — WMI Access-denied 0x80041003, wmic absent; verified on win11-m8). Identity = pinned SSH host key + a provisioning marker nonce (ZB_WIN11_MARKER / C:\\Users\\<user>\\zb\\.gate-identity, probe field identity_marker); virsh stays read-only (domstate, snapshot-list). Updated the reach-VM identity section, the WS0.1 probe fields, the fail-closed list and WS0.6."
 rev_2_1_note: "Rev 2.1 (RoseCat 6146): WS8.7 folded into WS8's own gate (WS8.1-WS8.7); WS12 reconciled with the committed TTS Windows cloning leg (CW) and the committed STT live-mic = physical Windows 10 only (VM = WAV seam); WS13.4 uninstall must not report success while any sandbox user / WFP filter / task survives; WS13's final gate depends on every release component + the voice packaging, not merely starting after WS7."
-last_updated: 2026-10-21
-last_updated_by: AzureRidge (rev 2.13 — owner decisions OD-W1/W3/W4/W6 + WSL2 re-plan)
-last_updated_note: "Rev 2.16 (2026-10-21, AzureRidge; RoseCat 9134b8b/7558 + draft-state route 7561): DOCUMENTATION HONESTY ONLY — marked the WS8/WS9 WSL2 topology a DRAFT (NOT implementation-approved), added the authoritative no-WS8/WS9-work gate, listed the six 9134b8b blockers OPEN, narrowed the measured facts to the explicit-user discovery observations with an explicit NOT-proven list, marked wsl_live_test.py DISCOVERY-ONLY/DO-NOT-RERUN, added an authoritative scope banner making every dedicated-user/WFP/both-host-agent statement historical/non-normative, and relabelled C1-C5 as proposals/TBD. Does not close affd577 or approve any implementation/security claim. Rev 2.15 (2026-10-21, AzureRidge; RoseCat affd577): corrected the discovery spike + WSL2 contract DRAFTS from the live run — observed (explicit `-u zbagent` only) uid 1000 + userns/bwrap, exact 127.0.0.1:0/::1:0 ACK+canary, IPv6, a hostile co-tenant row; drafted C1 bootstrap, C5 relay, C2 broker, C3/C4 state machines; began removing the old Windows-user/WFP text and the Win10 agent-OFF scope (completed as non-normative marking in rev 2.16). Rev 2.14 (2026-10-21): folded the LIVE WSL2 measurements on win11-m8 (new `tests/windows/wsl_live_test.py`) into the WS8/WS9 re-plan for RoseCat 119108c — C1/C5 transport INVERTED to agent-listens-in-distro / browser-connects-from-Windows (WSL→Windows is firewall-blocked, Windows→WSL works via localhostForwarding); automount-off and appendWindowsPath-false confirmed working, interop-off partial (binfmt handler hard-disabled at boot); two distros share one utility VM + net namespace; per-run process-group kill proven vs distro-wide `wsl --terminate`; import + full lifecycle need no admin. Rev 2.13 (2026-10-21): recorded the owner's decisions — OD-W1 = per-user WiX 3.14 MSI; OD-W3 = code signing DEFERRED (no signing for launch, WS13.6 open/non-gating, nothing may claim signed/distributable); OD-W4 = WSL2 now (our own `wsl --import` distro under the existing bubblewrap+netd sandbox) with our own VM later; OD-W6 = native Win32 drawer. OD-W2/W5/W7/W8/W9 remain open. (Rev 2 review-pass history: verified file:line anchors at HEAD 032a2c9, added the WS0-WS13 red/green/refactor/closure/real-screen cases, the Win11 VM + file-server design and WS0.6-WS0.8, and reconciled the voice/macOS plans.)"
+last_updated: 2026-10-22
+last_updated_by: "enhance_plan_with_review (rev 2.17 — re-baseline to HEAD e4f705f, OD-W4 contract restated, all 19 criticals + 23 warnings of the independent review amended or explicitly rejected) [W5: previously said 'rev 2.13']"
+last_updated_note: "Rev 2.17 (2026-10-22): see rev_2_17_note and 'Review amendments (rev 2.17)'. Rev 2.16 (2026-10-21, AzureRidge; RoseCat 9134b8b/7558 + draft-state route 7561): DOCUMENTATION HONESTY ONLY — marked the WS8/WS9 WSL2 topology a DRAFT (NOT implementation-approved), added the authoritative no-WS8/WS9-work gate, listed the six 9134b8b blockers OPEN, narrowed the measured facts to the explicit-user discovery observations with an explicit NOT-proven list, marked wsl_live_test.py DISCOVERY-ONLY/DO-NOT-RERUN, added an authoritative scope banner making every dedicated-user/WFP/both-host-agent statement historical/non-normative, and relabelled C1-C5 as proposals/TBD. Does not close affd577 or approve any implementation/security claim. Rev 2.15 (2026-10-21, AzureRidge; RoseCat affd577): corrected the discovery spike + WSL2 contract DRAFTS from the live run — observed (explicit `-u zbagent` only) uid 1000 + userns/bwrap, exact 127.0.0.1:0/::1:0 ACK+canary, IPv6, a hostile co-tenant row; drafted C1 bootstrap, C5 relay, C2 broker, C3/C4 state machines; began removing the old Windows-user/WFP text and the Win10 agent-OFF scope (completed as non-normative marking in rev 2.16). Rev 2.14 (2026-10-21): folded the LIVE WSL2 measurements on win11-m8 (new `tests/windows/wsl_live_test.py`) into the WS8/WS9 re-plan for RoseCat 119108c — C1/C5 transport INVERTED to agent-listens-in-distro / browser-connects-from-Windows (WSL→Windows is firewall-blocked, Windows→WSL works via localhostForwarding); automount-off and appendWindowsPath-false confirmed working, interop-off partial (binfmt handler hard-disabled at boot); two distros share one utility VM + net namespace; per-run process-group kill proven vs distro-wide `wsl --terminate`; import + full lifecycle need no admin. Rev 2.13 (2026-10-21): recorded the owner's decisions — OD-W1 = per-user WiX 3.14 MSI; OD-W3 = code signing DEFERRED (no signing for launch, WS13.6 open/non-gating, nothing may claim signed/distributable); OD-W4 = WSL2 now (our own `wsl --import` distro under the existing bubblewrap+netd sandbox) with our own VM later; OD-W6 = native Win32 drawer. OD-W2/W5/W7/W8/W9 remain open. (Rev 2 review-pass history: verified file:line anchors at HEAD 032a2c9, added the WS0-WS13 red/green/refactor/closure/real-screen cases, the Win11 VM + file-server design and WS0.6-WS0.8, and reconciled the voice/macOS plans.)"
 primary_research: thoughts/searchable/shared/research/2026-10-19-windows-launch-support-surface.md
 counterpart: thoughts/searchable/shared/plans/2026-10-14-14-30-macos-launch-tdd-plan.md
 ---
@@ -48,6 +54,192 @@ counterpart: thoughts/searchable/shared/plans/2026-10-14-14-30-macos-launch-tdd-
 > **must not be rerun** or cited as gate evidence until repaired and reviewed. Accepting this revision is
 > **documentation honesty only**; it closes nothing and approves no security claim.
 
+> ⚠️ **REV 2.17 (2026-10-22) RE-BASELINE + REVIEW AMENDMENTS.** This revision brings the plan to HEAD `e4f705f`
+> (code state `c07899f`), restates the OD-W4 contract exactly (section A below), and maps all 19 critical and 23
+> warning findings of the independent review to amendments (section E). Where an older paragraph elsewhere in this
+> plan disagrees with section A, B, C or D below, **sections A-D win**. Status is still DRAFT / NOT
+> implementation-approved.
+
+## Review amendments (rev 2.17)
+
+### A. OD-W4 contract (rev 2.17, normative) — WSL2, agent on Windows 11 ONLY   [C8, C9, C10, C11, C13]
+
+This block is the one place the owner's OD-W4 decision is stated exactly. Every other mention (Desired End
+State, observable behaviors, NOT-doing, WS6, WS7, WS8-WS13, packaging, gates) is reconciled to it.
+
+1. **Technology.** "WSL2 now, own VM later." The Windows launch agent sandbox is **WSL2 running our OWN minimal
+   distro** imported with `wsl --import` (no Microsoft Store). The distro's `/etc/wsl.conf` sets automount OFF,
+   interop OFF (and the `WSLInterop` binfmt handler hard-disabled at boot) and `appendWindowsPath=false`; we touch
+   **no global `.wslconfig`**. Our own small VM ("VM containment mode", the MS6.5 stub shared with macOS) is a
+   LATER milestone, not WS8.
+2. **Where the agent runs.** The Claude agent, the Claude CLI, bubblewrap and netd all run **INSIDE the imported
+   distro** as a dedicated non-root Linux uid (WS8.4/C6), under our existing Linux sandbox. **No Windows-native
+   agent process exists**: there is no Windows `python.exe`, no Windows `claude.exe`, no Windows-side `zb-claude.exe`
+   launcher, no Windows agent-helper pipe pump and no Job Object around an agent.
+3. **Which hosts.** The **agent runs on Windows 11 ONLY.** On **Windows 10 the agent is OFF** (browser-only): no
+   WSL, no distro, no sandbox, no helper, no agent sign-in, no agent voice; the drawer "S" affordance shows the
+   fixed agent-OFF explanation. WS8, WS9, WS10 (agent OAuth/fd-3 legs), WS11, the agent legs of WS12 and the
+   agent/WSL part of WS13 run and gate on **Win11 only**.
+4. **Fail-closed.** If virtualization or WSL is unavailable, or any mandatory WS8 proof fails, **the agent stays
+   OFF and the app shows a fixed explanation.** There is no dedicated-users, AppContainer, restricted-token or
+   native-Windows fallback.
+5. **DROPPED for launch (history only, non-normative):** dedicated local sandbox users, `CreateProcessWithLogonW` /
+   Secondary Logon, AppContainer/LPAC, WFP filters/providers/sublayers, host-side netd, a `WindowsSandboxUserBackend`,
+   the separate sandbox desktop, and **Job-Object user isolation** (so `wincontain*.py` has no launch role; see D.6).
+6. **Windows-host pieces that SURVIVE** (and only these): the browser; the native Win32 drawer; the Secrets window
+   and Credential Manager store (the token source); the elevated one-time WSL/VMP enable + the unprivileged per-user
+   `wsl --import` setup (C3); the **launcher = `wsl.exe -d <distro> -u <nonroot> …` plus the C1 bootstrap** (the
+   control capability on a one-shot inherited pipe, the OAuth token on a separate inherited fd, never env/argv/file);
+   the Windows-side C2 file broker and the C5 relay endpoints; and `ShellExecuteW` to open the authorize URL.
+7. **Transport / topology** (browser↔agent over loopback TCP, agent listens in the distro, browser connects from
+   Windows) remains a **PROPOSAL**, not a contract, until the WS8/WS9 DRAFT-gate blockers close with live evidence.
+   "WSL→Windows is firewall-blocked" is **withdrawn as a measured fact** (see `rev_2_14_note`, W-withdrawal in C8).
+
+### B. State at HEAD `e4f705f` (code state of `c07899f`) — replaces "Current State Analysis"   [C2, C4, C5, C6, C12, C13, C14, C15, W2]
+
+Re-baselined 2026-10-22 against the live tree (read-only; nothing built or run). `git diff c07899f e4f705f` is three
+`*-REVIEW.md` files, so every code fact below holds at both. The older "Current State Analysis" section is
+**HISTORICAL at pin `032a2c9`**; where it disagrees with this table, this table wins. Corrected stale facts:
+"3 of 73 shim functions" is now **15 of 73** (the shim is 2,591 lines; `webkit_shim.h` is 441 lines); "stub
+`zb_run_screenshot`" is now a real `CapturePreview` (`webview2_shim.cpp:1976-2019`); `automationSocketPath` now
+uses `%LOCALAPPDATA%`; the `0o600` chmod is replaced by `restrictToOwner`.
+
+| Milestone | State at HEAD | Live Win11 evidence | Win10 evidence | Plan consequence |
+|---|---|---|---|---|
+| WS0 gate | **Readiness only** (`gate.sh --probe-only`). No-arg full gate exits 2 "not implemented" (`gate.sh:578-581`); WS0.4 runner NOT hardened; WS0.8 staging not done | probe 992b124 (review 012e1bc) | read-only probe only | WS0 = "readiness-only closed; WS0.4/0.8/0.9 OPEN" (C2, C3) |
+| WS1 | WS1.1, 1.3, 1.4, 1.5 green on the VM (7463139, 8f36ee7, 6c771ff, dcd33ae); **WS1.2 not started**; most WS1 exe tests unregistered | yes | none | WS1.2 precedes WS2a (C3); register WS1 exe tests (W18) |
+| WS2.0 | Done and real (970969f, f29e490, 3cb8722), Win11 only | yes | none (forbidden) | closed; token-only mutant still unrecorded (W19) |
+| WS2a / 2b / 2c | **Zero code**: no `automation_wv2_port.zig`; `app.zig:626-627` wires the GTK ports (`supported = builtin.os.tag == .linux`, `automation_gtk_port.zig:22`) so every page/dom/input/dialog/window command returns -32011 on Windows | none | none | next Windows work (C4) |
+| `automation_platform.zig:79-82` | declares `.webview2 => cdp_input, network supported` **before any spike ran** | — | — | PLACEHOLDER / UNPROVEN until WS2b.1 passes (C5) |
+| WS3 | flag seam real (`backend_flag.zig`, refusal proven on the real exe); cookie port + profile code exist but are **unwired** (no caller at `app.zig:627`); no `win_cookie_test.py`, no `win_profile_persist_test.py`; no default `%LOCALAPPDATA%` profile (`app.zig:513` `spec.profile_dir orelse return null`); profile folder made with default ACLs (`webview2_shim.cpp:2387`); `zb_restrict_to_owner` (`owner_only.zig:243`) has no caller | partial (15fb6ee, 66060b0, e1e9264) | none | WS3.4 wiring slice (C6) |
+| WS4 | not started; the grant TUPLE does not exist in `src/` (`grep target_fp\|normalized_args src` is empty); as-built = approval card (`agent_approval.zig:182` `card_ttl_ms = 120_000`, one-shot Approve), `WindowWant{origin,url,load_serial}` (`automation/engine.zig:1216`), flow `expect{url,recipient}` (`social_flow_routes.zig:209-214`) | none | none | WS4 reconciled to as-built (C7) |
+| WS5 | ~125 commits; offline source/model oracles dominate; only the entry run (b2c4f25, 8/8) and the four lifecycle methods (a5745b9) have an accepted live green; as-built is a `WS_CHILD` STATIC icon, no `agent_drawer_win.cpp`, no `.rc`, no manifest, no approval card, no Send box | b2c4f25, a5745b9 | none | WS5 amended to as-built + open tasks (C14, C15, C16) |
+| WS6 | portable shape + `TokenStore` real (test-only consumer); Windows CredMan store is a skeleton with no caller (`agent_secrets_win.cpp:26-67`, symbol-checked only at `build.zig:564-567`); `tests/windows/agent_secrets_win_logic_test.cpp:11` includes a header that does not exist | none | none | WS6 consumer + route (C13) |
+| WS7 | Python launcher contract green (35-line `launcher.py`: no `wsl.exe`, no `pass_fds`, no fd-3); built 2026-10-22 against the SUPERSEDED native-Windows design (ab86a92, ea8940e, 1a06bb0, b9ff6da); WS7.1/7.2/7.4 unregistered reds, no production functions | none | none | WS7 rewritten for WSL2 (C9) |
+| WS8 / WS9 | DRAFT; no production code; discovery spike only (`wsl_live_test.py`, header still says "NOT RUN") | spike 2026-10-21 | none | blockers 1-6 OPEN (C17) |
+| WS10 / WS11 | not started; specified for the dropped design | — | — | rewritten for WSL2 (C10) |
+| WS12 | WS12.1 hooks + `gate.sh --phase voice` not started | — | — | unchanged |
+| WS13 | not started; MSI unchanged since the pin (`Return="ignore"` at `zigBrowser.wxs:80`; `MediaTemplate EmbedCab="yes"` at `:19`) | — | — | WS13 rewritten (C11, W13) |
+| Dead Job Object code | `wincontain.py` (248) + `wincontain_win32.py` (211) built 2026-10-20 for the dropped design, still registered (`build.zig:293-306`, `:2471-2474`) and listed as macOS bundle components (`packaging/macos/universal_components_ms5.json:155,159`) | — | — | retire (C12, D.6) |
+
+Volume since the pin: Windows path set +16,773 lines in 45 files, of which about 2,200 are production and about
+12,500 test code (about 5.7 : 1); commits per tag WS0 87, WS1 18, WS2 17, WS3 17, WS5 118, WS6 15, WS7 21, WS8 8,
+WS9 6, WS12 1, WS13 2, WS4/WS10/WS11 0 (W23: see D.5).
+
+### C. Owner-decision defaults adopted in this revision (pending owner ratification)   [C1, C4]
+
+- **C1 — Windows 10 test host.** The only Win10 machine is the read-only file server (rev 2.10), so no browser can
+  run there and every "[W] both hosts" gate was unsatisfiable. **Adopted default (the review's recommendation):
+  every gate is Win11-only for now, and the Windows 10 browser launch is stated as "UNTESTED on Windows 10"** until
+  the owner authorizes a writable Win10 host (a separate machine or a libvirt Win10 guest, as already described in
+  the WS2.0 host-scope note). Win10 keeps only the read-only `--probe-only` readiness evidence. Reading rule: wherever
+  this plan says "[W] both hosts", "on both hosts" or "both screens", read **"[W11] the Win11 VM (and the owner's
+  Win11 console)"**, plus "[W10] iff an authorized writable Win10 host exists". The launch claim must say
+  "Windows 11 tested; Windows 10 browser untested". **OWNER: ratify or authorize a Win10 host.**
+- **C4 — order question.** WS3, WS5, WS6, WS7 (about 170 commits) were built before WS2a-c, against the order in
+  "Dependency order". **Adopted default:** the next Windows work is the WS2a.0 and WS2b.1 spikes, then the WS2a port,
+  then wiring the WS3 cookie port/profile (WS3.4) with their e2e; WS4 cannot start before WS2. No further WS5/WS6/WS7
+  feature work is scheduled until WS2a.1 is green, except the amendments in C14-C16 and C9. **OWNER: ratify the order.**
+
+### D. Cross-cutting rules added by the review   [C2, C12, C14, C18, W8, W9, W6, W16, W23]
+
+**D.1 Skip is a failure under a gate (C2).** A registered live step run under a gate with no host configured
+**FAILS (nonzero), never exits 0**. Test exit 77 (skip) is a failure whenever `ZB_WIN_GATE=1`. A registered step may
+only skip cleanly when run standalone by a human (no `ZB_WIN_GATE`), and such a step is then NOT counted as a Windows
+row. The drawer suites must stop force-unsetting the host variables (`build.zig:3549, 3559`) in the gate path.
+Eight registered live steps currently exit 0 when `ZB_WIN11_HOST` is unset (`build.zig:294-334`); each must be changed
+to fail under the gate or be moved out of the aggregate `test` into a `windows-live` aggregate that requires a host.
+
+**D.2 The real per-slice gate command until the product-run mode exists (C2).** `gate.sh` with no argument exits 2.
+Until WS0.9 lands, the per-slice protocol step 5 means exactly: (a) `tests/windows/gate.sh --probe-only` (readiness,
+Win11); (b) for each of the slice's live tests, `ZB_WIN_GATE=1 python3 -I <test>` against the Win11 VM, each required
+to print `ASSERTS <n>` with `n > 0` and to exit 0, with the output pasted in the commit message; a skip or an exit 77
+is recorded as UNCLOSED. Nothing may call a slice closed on a bare `zig build test` green.
+
+**D.3 `--e2e-protocol` contract (W16).** The ~12 `ZIGBROWSER_AGENT_DRAWER_*` e2e seams in the shim
+(`webview2_shim.cpp:2210-2232`: OPEN, FAIL, DRAG, FOLD, FOLD_FAIL, DPI, RTF, DPICHANGE_IGNORE, HITTEST_FAIL, WINDOWS,
+EXTRA_FAIL, EXTRA_CLOSE_ONE), the second window class `zigBrowserDrawerExtra` (`:40, 1481-1495`), WS6.3's
+disposable-credential override and WS1.4's runtime-folder override all hang on the one flag `--e2e-protocol`. Contract:
+(i) the flag is read **only from the process command line at launch** (never from the environment, a page, a socket
+client, a shortcut or a runtime message); (ii) **packaged (MSI) builds refuse it** with a nonzero exit and a fixed
+message, OR the plan records why it is safe — default is refuse; (iii) the full list of seams it unlocks is one
+inventory file `tests/windows/e2e_seams.json`; (iv) WS2's "absent at link time" rule applies to the drawer seams too.
+Reds (unregistered until green): `tests/windows/e2e_protocol_contract_test.py` — packaged-flavor build refuses the flag;
+inventory equals the seams actually read in the shim (mutant: add an undeclared `ZIGBROWSER_*` seam ⇒ red); a page
+`postMessage` and every socket method cannot set it (mutant: honour it from the environment ⇒ red).
+
+**D.4 A behavior closes only on a real-binary row (C14, W23).** Offline oracles (source greps, AST parses, models) are
+**tripwires**, not proof. A behavior is CLOSED only when one accepted run of its live row on the Win11 VM exists, with
+`ASSERTS n>0`, at a named commit. Until then the plan marks it OPEN. **No new offline oracle may be added without a
+paired live row in the same slice.** An AST parse of a Python test file is explicitly not a control-flow proof.
+
+**D.5 Test-to-production budget (W23).** The review measured about 5.7 test lines per production line on Windows with
+the review loop centred on oracle precision. Rule: each slice reports its test:production line ratio in its commit
+message; a slice above 3 : 1 that has no accepted live row is not accepted. Review effort goes to product behavior
+(a real-binary row, a mutant that flips it), not oracle wording.
+
+**D.6 Retirements (C12, W6, W9, W8).** Decided here, executed by their owners as separate commits (this revision edits
+only the plan): (a) **retire** `wincontain.py`, `wincontain_win32.py`, their live steps (`build.zig:293-306`), unit
+tests (`:2471-2474`) and the macOS manifest rows (`universal_components_ms5.json:155,159`) — the Job Object model is
+dropped (OD-W4) and C4 owns teardown inside the distro; none has a production caller; (b) **retire**
+`tests/guest/build-in-guest.sh` (insecure builder: `StrictHostKeyChecking=no` :14, `2>/dev/null` :23, fixed `/tmp`
+tar) in favour of `build-on-windows.sh`; (c) **retire** `src/webview2_config.zig` (`applyWindowsFlag`/`applyProfileDir`
+duplicate the real arm at `webkit.zig:63-70`) and point `ws3_win_cross_root.zig` at the real arm; (d) `gate.sh
+--fence-string` stays a lexical diagnostic only: its test-only hooks `ZB_SELFTEST_RAN_LOG`/`ENV_LOG` move out of
+the production script into the selftest wrapper.
+
+### E. Traceability — every review finding → plan amendment (19 critical + 23 warnings)
+
+Review IDs: C1-C19 are the review's own numbering (bd `zigBrowser-4pa.31..49`). The review's 23 warnings are
+numbered W1-W23 here in review order (Contracts W1-W5, Interfaces W6-W10, Promises W11-W14, Data Models W15, APIs W16,
+Test-Spec W17-W23). **Rejections: none.** Every finding is amended; two (C1, C4-order) are amended with the review's
+recommended default and flagged for owner ratification (section C).
+
+| ID | bd | Finding (short) | Amended in |
+|---|---|---|---|
+| C1 | 4pa.31 | No Win10 browser test host | A.3; C; reading rule in markers table, Why-this-plan, Desired End State, behaviors 1-2, WS0.2, Testing Strategy, Dependency order, per-slice protocol, real-screen table, WS13 gate |
+| C2 | 4pa.32 | No product gate; live steps green with zero Windows rows | D.1, D.2; new **WS0.9**; Testing Strategy fail-closed rules; per-slice gate protocol |
+| C3 | 4pa.33 | WS0.4 runner never hardened; m8 tests skip 77 | WS0 header status; **WS0.4 OPEN list**; WS1.2 before WS2a; Dependency order |
+| C4 | 4pa.34 | WS2a/b/c zero code; built out of order | B; C; Dependency order; WS2 header status |
+| C5 | 4pa.35 | Spikes never run; capability table already claims cdp_input | B; WS2a.0 / WS2b.1 spike files; **WS2b.0 capability honesty** |
+| C6 | 4pa.36 | WS3 cookie/profile unwired | new **WS3.4 wiring slice** |
+| C7 | 4pa.37 | WS4 grant tuple not in code | WS4 rewritten to as-built + **WS4.0** tuple decision |
+| C8 | 4pa.38 | Top-level contract contradicts OD-W4 | A; Desired End State; behaviors 5-7; NOT-doing; `rev_2_14_note` withdrawal |
+| C9 | 4pa.39 | WS7 built vs native-Windows design | A.2/A.6; WS7 rewritten |
+| C10 | 4pa.40 | WS10/WS11 for the dropped design | WS10, WS11 rewritten |
+| C11 | 4pa.41 | WS13 uninstall/gate describe sandbox users/WFP on read-only host | WS13.1, WS13.4, WS13 gate rewritten |
+| C12 | 4pa.42 | 459 lines dead Job Object code registered | D.6(a); rev 2.6 bullet in WS2.0; B table row |
+| C13 | 4pa.43 | WS6 store no consumer / no route to in-distro CLI | WS6 **WS6.4 token route**, WS6.2 consumer |
+| C14 | 4pa.44 | WS5 proven by oracles; live rows never ran | D.4; WS5 **status table** and closure rule |
+| C15 | 4pa.45 | WS5 as-built diverges | WS5 Design rewritten to as-built + **WS5.8-WS5.10 open tasks**; WS12.1 note |
+| C16 | 4pa.46 | WS5.6 isolation offline only | WS5.6 real-binary red |
+| C17 | 4pa.47 | WS8/WS9 not implementable; gate conflicts with blocker 1 | DRAFT gate (sanctioned rerun); WS8.3/8.4/8.5; C1/C4 numbers |
+| C18 | 4pa.48 | Real input domains with no Property | **Property register** at end of Testing Strategy |
+| C19 | 4pa.49 | Boundary values checked, not parsed | WS0.1 typed record; WS6.1 `Token` type |
+| W1 | — | WS0.1 defers `webview2_pv`, WS0.2 doesn't qualify | WS0.2 |
+| W2 | — | Current State stale | B; Current State heading |
+| W3 | — | `runSafety` unused; nullptr target reaches real credential | WS6.3 |
+| W4 | — | hosts.env 19041 vs 19045; INCOMPLETE msg; 15 s TCP step | WS0.2 / WS0.6 gap list |
+| W5 | — | Frontmatter + bd-locked process note | frontmatter; Process note |
+| W6 | — | build-in-guest.sh insecure; SDK paths hardcoded; key var mismatch | D.6(b); WS0.8 |
+| W7 | — | WS0.8 staging not done | WS0.8 open list |
+| W8 | — | `--fence-string` no caller + test hooks | D.6(d); WS0.5 |
+| W9 | — | `webview2_config.zig` duplicate arm | D.6(c); WS3 cross-check |
+| W10 | — | Path/header drift (tests/windows vs tests/e2e) | WS3 / WS5 "Files touched" |
+| W11 | — | WS2 async contract names no numbers; INFINITE wait | WS2 Design deadlines; WS2a.3 |
+| W12 | — | `cross-check-ws3-win` not wired | WS3 cross-plan coordination |
+| W13 | — | Bootstrapper failure swallowed; no cabinet cap | WS13.2, WS13.3 |
+| W14 | — | WS0.4 120 s bound not implemented | WS0.4 OPEN list |
+| W15 | — | WS8/WS9 data models untyped | WS8 C5/C3/C4 typed models |
+| W16 | — | e2e seams uncontracted | D.3 |
+| W17 | — | WS0 mutants only comments; regex zero-write guarantee | WS0 mutant rule |
+| W18 | — | WS1 exe tests unregistered | WS1 registration |
+| W19 | — | WS2.0 token-only mutant unrecorded | WS2.0 |
+| W20 | — | WS3.2 tests don't match plan | WS3.2 |
+| W21 | — | `agent_secrets_win.cpp` gated by compile only | WS6.1 |
+| W22 | — | WS7 reds use toy inputs | WS7 |
+| W23 | — | 5.7:1 test:production, oracle-centred loop | D.4, D.5 |
+
 > **PLAN ONLY.** No implementation and no live runs were done to write it. Agents prepare
 > scripts and run them on the **two Windows hosts over SSH** (a Windows 11 VM and the
 > user's physical Windows 10 machine), **never** on the user's Linux `DISPLAY :0`, live
@@ -59,8 +251,9 @@ counterpart: thoughts/searchable/shared/plans/2026-10-14-14-30-macos-launch-tdd-
 
 The user: "Mac and Windows are the 2 main target systems, Linux is my environment, not the
 primary target for users," and "Plan windows now. I'll have a Win11 VM and windows 10
-physical machine available." So this plan supports **both Windows 10 and Windows 11** and
-gates every milestone on **both** hosts. It is the counterpart of the macOS launch plan and
+physical machine available." So this plan supports **both Windows 10 and Windows 11** as launch targets, but
+(rev 2.17, C1) the only Windows 10 machine is read-only, so **every gate runs on the Win11 VM and the Windows 10
+browser launch is "UNTESTED on Windows 10"** until the owner authorizes a writable Win10 host (see section C). It is the counterpart of the macOS launch plan and
 mirrors its shape: milestones WS0…WS13, a fail-closed two-host gate, a shared sandbox
 backend seam, signing last, and named red tests for every slice. The voice-output (TTS) and
 voice-input (STT) plans have Windows steps that wait on this plan (section **Voice plans**).
@@ -72,14 +265,17 @@ voice-input (STT) plans have Windows steps that wait on this plan (section **Voi
 | **[L]** | Built and tested on Linux. No Windows host, no display (never `DISPLAY`, never Xvfb unless an existing Linux gate already does it under a private Xvfb). |
 | **[W11]** | Needs the Windows 11 VM (the build host: MSVC, Windows SDK, WebView2 SDK). |
 | **[W10]** | Needs the physical Windows 10 machine (run-only host: no toolchain; it receives binaries built on the VM). |
-| **[W]** | Needs **both** Windows hosts in the same gate run. Every Windows milestone gate is [W] unless it says otherwise. |
+| **[W]** | Historically "both Windows hosts in the same gate run". **Rev 2.17 (C1): read as [W11] — the Win11 VM — plus [W10] only if the owner has authorized a writable Win10 host.** The read-only Win10 file server supports only `--probe-only` readiness. Every Windows milestone gate is [W] unless it says otherwise. |
 | **[U]** | UI slice: needs a real-screen check run by the orchestrator with the user. |
 
 ## Current State Analysis
 
-> **Historical at the pin (`git_commit` 032a2c9, 2026-10-19).** This section records the code as it was when
-> the plan was written; later slices changed much of it (WS2.0: rev 2.6/2.7, f29e490). For current behaviour
-> read the WS sections and their rev notes, not these file:line facts.
+> **SUPERSEDED (rev 2.17, W2): read "Review amendments → B. State at HEAD e4f705f" instead.** This section is
+> **HISTORICAL at the pin (`git_commit` 032a2c9, 2026-10-19)**: it records the code as it was when the plan was
+> written. Known-stale statements in it: "3 of 73 shim functions" (now 15), "stub `zb_run_screenshot`" (now
+> `CapturePreview`), "`automationSocketPath` never reads `%LOCALAPPDATA%`" and "chmods `0o600`" (both fixed by WS2.0),
+> `tests/guest/build-in-guest.sh` as the build path (retired, D.6), and every "dedicated user / WFP / job object"
+> sandbox statement (dropped by OD-W4). For current behaviour read section B and the WS sections, not these file:line facts.
 
 ### Key discoveries (research `2026-10-19-windows-launch-support-surface.md`, verified file:line)
 
@@ -180,46 +376,54 @@ voice-input (STT) plans have Windows steps that wait on this plan (section **Voi
 
 ## Desired End State
 
-A Windows 10 (22H2) or Windows 11 user installs an **unsigned per-user** zigBrowser (code signing is
+A Windows 11 user (and, **browser-only and UNTESTED until a writable Win10 host exists (C1)**, a Windows 10 22H2
+user) installs an **unsigned per-user** zigBrowser (code signing is
 DEFERRED — OD-W3 decided no signing for launch; it is not a launch requirement) and can: browse with an
 isolated persistent profile; drive the full automation API (multi-window, freeze and
 recovery, dialogs, popups, native input proven trusted) with the same client contract and
-per-window FIFO semantics as Linux; run site flows behind the same approval grant; use a
+per-window FIFO semantics as Linux; run site flows behind the same approval model; use a
 native drawer (docked panel, movable "S" icon that hides while open, conversation with
 copyable text, "-" fold animation into the icon) isolated from page JavaScript; store the
-Claude token in Credential Manager through a Secrets window; sign in; and run the Claude agent
-**inside an OS-native sandbox** behind the same `SandboxBackend` contract, whose security
-proofs are hard launch gates. Verified by real-binary e2e on **both** hosts and by the user's
-eyes on both screens. Until a code-signing identity exists, every artifact is called an
-**unsigned development build, not a distributable artifact**.
+Claude token in Credential Manager through a Secrets window; sign in; and — **on Windows 11 only** — run the
+Claude agent **inside our own imported WSL2 distro under the existing bubblewrap + netd Linux sandbox** behind the
+same `SandboxBackend` contract (`WslBackend`, section A), whose security proofs are hard launch gates; on Windows 10
+the agent is OFF with a fixed explanation. Verified by real-binary e2e on the **Win11 VM** (a behavior counts only when
+a live row ran — D.4) and by the user's eyes on the Win11 console. Until a code-signing identity exists, every artifact
+is called an **unsigned development build, not a distributable artifact**.
 
 ### Observable behaviors (top level)
 
-1. Given both hosts provisioned, when `tests/windows/gate.sh` runs, then it passes only if both
-   hosts are reachable, on the expected OS builds, with an unlocked interactive test session,
-   a WebView2 runtime, and every test reporting nonzero assertions — and fails in every other
-   case.
-2. Given a release build from the VM, when it runs on both hosts, then a real visible window
+1. Given the Win11 VM provisioned (and the read-only Win10 host probed), when `tests/windows/gate.sh` runs in its
+   product-run mode (WS0.9), then it passes only if the hosts it requires are reachable, on the expected OS builds,
+   with an unlocked interactive test session on the VM, a WebView2 runtime, and every test reporting nonzero
+   assertions with no skip — and fails in every other case. (Until WS0.9 exists the no-argument gate exits 2.)
+2. Given a release build from the VM, when it runs on the Win11 VM (Win10: untested, C1), then a real visible window
    renders the fixture and answers IPC.
 3. Given an authenticated socket client, when it sends any automation command, then the live
    WebView2 page is driven and the result is read back with the Linux contract.
 4. Given the drawer is on, when the user clicks the "S" icon, then a docked drawer opens, the
    icon hides, text is copyable, and "-" folds the drawer into the icon over 180 ms.
-5. Given a token in the Secrets window, when a session starts, then the token reaches only the
-   CLI's token channel and nothing a hook, page, log or environment can read.
-6. Given the agent runs, when a hook or the CLI tries any network other than the allowlisted
-   proxy and the two bridges, then it fails at the kernel.
-7. Given the installer, when a user downloads and runs it on either OS, then it installs per
-   user and an uninstall removes everything it added. (The build is unsigned — signing is deferred,
-   OD-W3 — so no signature-verification is claimed at launch; only "nothing may claim signed/distributable".)
+5. Given a token in the Secrets window, when a Windows 11 agent session starts, then the token reaches only the
+   CLI's own inherited token channel **inside the WSL2 distro** (kept distinct from the control capability, C1) and
+   nothing a hook, page, log or environment can read.
+6. Given the agent runs inside the WSL2 distro on Windows 11, when a hook or the CLI tries any network other than
+   the allowlisted in-distro netd proxy and the two bridges, then it fails — enforced by the in-distro bubblewrap
+   network namespace + netd (NOT a Windows kernel/WFP filter; OD-W4). (Proof is a WS9 hard gate; DRAFT.)
+7. Given the installer, when a user downloads and runs it on Windows 11 (Win10: untested, C1), then it installs per
+   user and an uninstall removes everything it added: the files, shortcuts and HKCU keys, and **only
+   zigBrowser's own WSL distro, import dir and state** — it cannot un-enable global WSL/VMP (WS13.4). (The build is
+   unsigned — signing is deferred, OD-W3 — so no signature-verification is claimed at launch; only "nothing may claim signed/distributable".)
 
 ## What We're NOT Doing
 
 - Not changing Linux GTK behavior or the macOS plan's slices; shared seams are extracted
   behavior-preserving, with the Linux gate staying green.
 - Not shipping Windows on arm64 unless the user decides to (open decision **OD-W5**).
-- Not shipping an AppContainer, Windows Sandbox or Hyper-V backend unless the user picks one
-  (OD-W4); the WSL2 fallback is built **only** if a hard gate of the chosen backend fails.
+- Not shipping an AppContainer, Windows Sandbox, Hyper-V, dedicated-local-users or WFP backend: **OD-W4 is
+  DECIDED — WSL2 IS the launch sandbox, not a fallback** (C8; section A). There is no "build WSL2 only if another
+  backend's gate fails". Our own small VM is a later milestone, not WS8.
+- Not running the agent on Windows 10 (agent OFF there) and not claiming Windows 10 browser test coverage without a
+  writable Win10 host (C1).
 - Not obtaining or paying for a code-signing identity (user action, OD-W3).
 - Not exposing drawer text through a production automation-socket read (observation is the
   `--e2e-protocol` native census or screen capture only, as on Linux and macOS).
@@ -689,13 +893,17 @@ the guest clock, Tailscale/SSH state and Windows Update state, so the gate re-pr
   PowerShell for host probes and interactive-session launch; the Python SDK client over the
   AF_UNIX automation socket.
 - **One runner:** `tests/windows/gate.sh` (new, driven from Linux, mirrors
-  `tests/mac/gate.sh`). It builds on the VM, fetches the exe, pushes it to both hosts, runs each
-  slice's tests on each host, and exits nonzero on any failure. Never `DISPLAY`, never Xvfb.
+  `tests/mac/gate.sh`). It builds on the VM, fetches the exe, pushes it to the hosts a run requires, runs each
+  slice's tests on each such host, and exits nonzero on any failure. Never `DISPLAY`, never Xvfb.
+  **Status at HEAD (C2): only `--probe-only` exists; the no-argument run exits 2 "not implemented". WS0.9 builds the
+  product-run mode; until then use the real per-slice command in D.2.**
 - **Fail-closed rules (WS0.2):** no host configured → `NOT RUN` + exit 1; host unreachable;
   wrong OS build or arch; no active unlocked interactive test session; missing WebView2
   runtime; test exit 77 (skip) → **fail**; a test that does not print `ASSERTS <n>` with
   `n > 0` → **fail**; a GUI test whose launched PID is not in the active console session →
-  **fail**. Rev 2 adds: SSH host key not the pinned one; the Win11 VM's `identity_marker` not the configured
+  **fail**. **Rev 2.17 (C2, D.1): a registered live step run under a gate with no host configured FAILS, it never
+  exits 0; `ZB_WIN_GATE` must exist and be honoured by every live step (today it exists nowhere); skipped rows are
+  never counted as Windows rows.** Rev 2 adds: SSH host key not the pinned one; the Win11 VM's `identity_marker` not the configured
   `ZB_WIN11_MARKER` nonce (rev 2.2 — the SMBIOS UUID is unreadable by a standard user, bead zigBrowser-126);
   the Win11 VM not `running` per `virsh`; the console session owned by someone other than the
   test user; `zbtest` in a forbidden group, or able to write a served path on the file server (WS0.7); a
@@ -719,10 +927,13 @@ the guest clock, Tailscale/SSH state and Windows Update state, so the gate re-pr
   (Credential Manager may not persist over an SSH network logon).
 - **Chat observability:** `--e2e-protocol` native drawer census or capture, never a socket read.
 - **Real-screen (UI slices):** each names its cases; the orchestrator runs them with the user on
-  the Windows 10 machine's monitor and on the VM console; a UI slice is not approved until both
-  pass.
+  the VM console (Win11). **Rev 2.17 (C1/C14):** the Windows 10 monitor leg is dropped until a writable Win10 host
+  exists (the file server cannot run the browser), and `tests/manual/real_screen_check.py` is X11-only today — a
+  Windows capture + foreground-proof backend is a required task before any `win-*` case can be scheduled. A UI slice
+  is not approved until its cases pass on the Win11 console.
 - **Closure tests** are Tier-1 real-binary e2e. A slice is done only when its closure e2e was
-  **observed to execute** with nonzero assertions on both hosts; a skip is UNCLOSED.
+  **observed to execute** with nonzero assertions on the Win11 VM (and on Win10 iff a writable host is authorized);
+  a skip is UNCLOSED (D.1, D.4).
 
 ### What runs where
 
@@ -736,7 +947,25 @@ the guest clock, Tailscale/SSH state and Windows Update state, so the gate re-pr
 | PE import census of the built exe (WS1.1) | yes (on the fetched exe) | — | — |
 | Any real-binary e2e, GUI, socket, sandbox, network, secrets test | — | yes | yes |
 | Real-screen checks | — | yes (console via virt-viewer) | yes (its monitor) |
-| Signing (OD-W3 Artifact Signing via jsign) | yes | or here (signtool) | — |
+| Signing (OD-W3 Artifact Signing via jsign) | **DEFERRED, not built for launch (OD-W3)** | — | — |
+
+> Rev 2.17 (C1): the `[W10]` column is **probe-only** until the owner authorizes a writable Win10 host; "Any
+> real-binary e2e…" rows run on the Win11 VM. WSL2/agent rows are Win11 only (section A).
+
+### Property register (rev 2.17, C18) — behaviors with real input domains
+
+Each behavior below with a real input domain has a Property, or a reasoned skip. Red-first, unregistered until green,
+with a mutant; [L] unless stated.
+
+| Behavior | Property (kind) | Generated domain | Mutant that must flip it |
+|---|---|---|---|
+| WS3.3 cookie JSON | roundtrip: `set(c)` then `getAll` returns `c`; **unknown `sameSite` is REFUSED (-32602), never silently "unset"** | name/value/domain/path/expires/secure/httpOnly × `sameSite ∈ {Strict, Lax, None, absent, junk}` | map unknown `sameSite` to unset ⇒ red |
+| WS4 grant fields | metamorphic: changing any ONE as-built grant field (window id, origin, url/`load_serial`, account/recipient) refuses; identical fields accept exactly once | one-field-at-a-time over generated values | drop one field from the check ⇒ red |
+| WS2c window/popup ids | invariant: ids are unique, never reused after close, stable across recovery | generated open/close/recover sequences | reuse a freed id ⇒ red |
+| WS7.1 pointer swap | model-based: a reader never sees a missing `current` while a writer swaps (in-distro POSIX `rename` property [L]; the Windows-side C3 current-pointer file via `MoveFileExW` as a VM row — see WS7) | interleavings of N readers × M swaps | delete-then-create ⇒ red |
+| WS10.3 error codes | closed-map: every forced failure maps to exactly one of `{cli,timeout,cancelled,shape,protocol}`, equal to Linux | the five failure modes + junk frames | collapse `cancelled` into `cli` ⇒ red |
+| WS13.3 payload sizes | invariant: the cabinet splitter keeps every cabinet `< 2^31` and the byte sum preserved | generated payload-size multisets incl. `2^31-1`, `2^31`, `2^31+1` | cap at `<=` instead of `<` ⇒ red |
+| WS2.0 / WS1 / WS3.2 | existing properties or reasoned skips stand (fixed inputs, nothing to generate over) | — | — |
 
 ## Shared code with macOS and Linux — exact reuse points
 
@@ -755,7 +984,7 @@ the guest clock, Tailscale/SSH state and Windows Update state, so the gate re-pr
 | Drawer logic | `src/agent_drawer.zig` (geometry :14-82, gesture :27, fold :86-103, persistence :244-277) | Exports enabled for `.windows` (today `.linux` only at :338-358) | WS5 widens the gate; logic unchanged |
 | Helper frames + validation | `src/agent_helper.zig:123-153`, `src/agent_protocol.zig` | Unchanged | — |
 | Token shape | `src/agent_secrets.zig:14-19` | Unchanged; split the portable checks from the `std.os.linux` file store | WS6 |
-| Approval grant contract | drawer plan D10 (:507-533), macOS MS4 | Same tuple, 120 s, single-use, `options.expect`, −32015 | Platform-neutral Zig; WS4 only runs it on Windows |
+| Approval grant contract | drawer plan D10 (:507-533), macOS MS4 | **As-built (rev 2.17, C7):** approval card, 120 s (`card_ttl_ms`), one-shot Approve, `WindowWant{origin,url,load_serial}`, flow `expect{url,recipient}`, −32015. The `sha256(tool,…,target_fp,…,normalized_args)` tuple is NOT in `src/` (WS4.0 decision) | Platform-neutral Zig; WS4 only runs it on Windows |
 | Automation server/router/engine/queue/recover/flows | `src/automation_server.zig`, `src/automation/*` | Unchanged; new `PagePort` impl | — |
 | Fallible backend-flag seam | macOS MS3.2 names `applyMacBackendFlag(flag, value) !void` in `src/webkit.zig` (macOS plan :886-912; not landed; a repo-wide search at HEAD finds neither that name nor `applyBackendFlag`) | Land as **one** `applyBackendFlag(os, flag, value) !void` in `src/webkit.zig` used by both | **Naming divergence:** the macOS plan fixes a macOS-only name with no `os` parameter. First of MS3/WS3 to land builds the shared function; the macOS plan's name becomes a thin alias or the plan is amended (flagged, not edited here) |
 | Async-completion ownership contract + ABI-absence rule | macOS MS2 | Same rules: copied inputs, exactly once, no effect after abandon; an unsupported seam is absent at link time | — |
@@ -772,6 +1001,11 @@ before any product test runs. (The physical file server runs no GUI and, under t
 in-console helper, so its interactive-session state is **`not_applicable`** at the WS0 gate: it is
 pinned by its SSH host key and fenced as undisturbed instead. A file-server product test that needs an
 interactive session carries that precondition itself when it runs, not the WS0 readiness gate.)
+
+> **WS0 status at HEAD (rev 2.17; C2, C3, W7, W14): "readiness-only closed".** CLOSED: WS0.1, WS0.2 (readiness),
+> WS0.3, WS0.5 (removed fence), WS0.6, WS0.7 as the `--probe-only` readiness gate (probe 992b124, review 012e1bc).
+> **OPEN: WS0.4 (runner hardening), WS0.8 (transport hygiene), and the new WS0.9 (product-run mode).** The full
+> product gate is "not implemented" (`gate.sh:578-581`).
 
 ### Behavior WS0.1: the host probe reports identity and readiness
 **Given** a provisioned host, **when** `host_probe.ps1` runs over SSH, **then** it prints one JSON
@@ -800,10 +1034,23 @@ proven by the build itself in a later WS, and the file server runs no browser. `
 (not_applicable on the read-only file server — no writes, no `C:\Users\<user>\zb`); the SSH fence
 (exact `ListenAddress` + `AllowUsers`) and the file-server isolation fields remain gate-enforced.
 
+**Typed probe record (rev 2.17, C19).** The probe JSON is **parsed once into a typed record**, not checked field by
+field. Each field has an explicit state `ok(value) | not_applicable | unknown` — today "not_applicable" is JSON `null`,
+the same value as unknown or failed-to-read (`host_probe.ps1:196, 331-332`), so a failed read can masquerade as
+"does not apply". `interactive_session` is **derived** (`in_console AND NOT locked`) in the parser, never stored beside
+`locked` (`session_probe.ps1:142-143` stores both, so they can disagree). One shared JSON schema (pinned `schema`
+integer) is used by the selftest and the gate; the 235-line field-by-field heredoc validation in `gate.sh:215-451` is
+replaced by it. Red (unregistered until green): `assert parse(null_for_unknown).state == "unknown"` and
+`assert parse(stored_interactive_session_true_but_locked_true)` is refused; mutant: parse `null` as `not_applicable`
+on the VM ⇒ red.
+
 ### Behavior WS0.2: the gate fails closed
-**Given** any of: `ZB_WIN10_HOST` or `ZB_WIN11_HOST` unset; a host unreachable; build below OD-W7;
+**Given** any of: `ZB_WIN10_HOST` or `ZB_WIN11_HOST` unset (rev 2.17, C1: `ZB_WIN10_HOST` is required only for the
+`--probe-only` readiness run; the product-run mode of WS0.9 requires `ZB_WIN11_HOST` and a Win10 host only if the owner
+authorized one); a host unreachable; build below OD-W7;
 `native_arch` not `x64`; the **Win11 VM** without an active interactive session, or its session locked
-(`not_applicable` on the read-only file server, which is pinned by its SSH host key); `webview2_pv` empty;
+(`not_applicable` on the read-only file server, which is pinned by its SSH host key); `webview2_pv` empty
+**on the Win11 VM only (rev 2.17, W1: the file server runs no browser, and WS0.1 defers `webview2_pv` there; `gate.sh:265-266` is VM-only — this line now matches the code)**;
 `test_user` not the configured user; a test exiting 77; a test printing no `ASSERTS <n>` or
 `n == 0`, **when** the gate runs, **then** it exits nonzero naming the host and the reason; with
 both hosts healthy and all tests passing, it exits 0.
@@ -820,6 +1067,18 @@ the runner confirms `ProcessIdToSessionId(pid) == WTSGetActiveConsoleSessionId()
 kills its job after at most 120 s, and deletes its scheduled task; the selftest proves a leftover
 task or process fails the run.
 
+**WS0.4 is OPEN at HEAD (rev 2.17; C3, W14).** `tests/e2e/slice2_common.py:492-593` (`run_windows_interactive_until`)
+implements none of the following, cleanup results are ignored, the task runs `/rl highest`, and the runner takes any
+caller `timeout_sec` (`:497`), so the "120 s" bound does not exist. The m8 tests still `return SKIP_EXIT`
+(`m8_render_test.py:322-333`) and `ZB_WIN_GATE` exists nowhere. Required, each a red with a mutant, in this order:
+1. `ProcessIdToSessionId(pid) == WTSGetActiveConsoleSessionId()` and `IsWindowVisible(main_window)` before any capture;
+2. readiness rows instead of fixed sleeps;
+3. a **hard bound of 120 s** the caller cannot raise (clamp, not trust `timeout_sec`) — mutant: pass `timeout_sec=600` ⇒ red;
+4. job cleanup and `schtasks /delete` whose failures **fail the run** (no ignored results), `RunLevel` least privilege
+   (not `/rl highest`) — mutant: ignore the delete rc ⇒ red;
+5. the leftover-task/process selftest (`tasks_left == 0 and procs_left == 0`; a fake host with one leftover ⇒ gate rc != 0);
+6. `ZB_WIN_GATE=1` makes a missing precondition exit 1, not 77 (also WS1.2).
+
 ### Behavior WS0.5: there is NO remote-path authorization fence (removed)
 **Given** the gate, **when** it operates on remote paths, **then** it does so WITHOUT a name-based
 remote-path authorization fence — there is no such boundary, because a name-only check/use design cannot
@@ -829,7 +1088,9 @@ zigBrowser-q92). The reparse-resolving fence (`gate.sh --allowed-path` / `allowe
 verdict for a remote path, and `gate_selftest.py::RemotePathFenceRemovedTests` pins that the fence stays
 removed (no `allowed_path`, no `--allowed-path`, no resolver files).
 
-**A lexical-only shape check remains** as `gate.sh --fence-string`: pure string normalization (strict
+**A lexical-only shape check remains** (rev 2.17, W8: it has no production caller and `gate.sh:69-103` carries test-only
+log hooks `ZB_SELFTEST_RAN_LOG`/`ENV_LOG` — those hooks move into the selftest wrapper, D.6(d); it stays a diagnostic
+only) as `gate.sh --fence-string`: pure string normalization (strict
 sub-path of `C:\Users\<user>\zb`, no `..`, drive-absolute), with NO filesystem access, NO reparse
 resolution, and therefore NO time-of-use race and NO authorization claim. It exists only as the WS0.3
 display-scrub observation point and as a sanity diagnostic; nothing may use it to authorize access.
@@ -864,6 +1125,38 @@ a fixed `/tmp` name), `StrictHostKeyChecking=yes` against `tests/windows/known_h
 the slice needs (`src build.zig build.zig.zon tests tools agent packaging docs/how-to-build.md` as the slice
 requires, listed in one manifest file), and deletes the remote staging under `zb\runs\<id>\` at the end.
 
+**WS0.8 is OPEN at HEAD (rev 2.17; W6, W7, W4).** Not done: there is no `mktemp -d` and no `zb\runs\<id>` dir
+(`gate.sh:127` extracts into the fixed `zb` and nothing cleans it up); `tests/windows/known_hosts` is an empty template
+and the gate defaults to `/home/maceo/vms/...`; `tests/guest/build-in-guest.sh` is still the old insecure builder
+(`StrictHostKeyChecking=no` :14, `2>/dev/null` :23, fixed `/tmp` tar) and is **retired** (D.6(b)), not wrapped;
+`build-on-windows.sh:109-112` hardcodes SDK paths instead of reading the probe; it reads `ZB_WIN_KEY` while the gate
+reads `ZB_WIN11_KEY` (one name, `ZB_WIN11_KEY`); `tests/windows/hosts.env.example:30` says build 19041 where OD-W7
+says 19045 (fix to 19045); the "INCOMPLETE: both hosts are required" message (rev 2.17: now "INCOMPLETE: product-run
+requires the Win11 VM", and the Win10 clause only when a writable host is authorized) and the separate 15 s TCP step
+of WS0.6 are not in `gate.sh`. Each is a red with a mutant (`StrictHostKeyChecking=no` ⇒ red; ignore tar rc ⇒ red;
+fixed `zb` extract dir ⇒ red; unreachable port must fail within 15 s ⇒ red).
+
+**WS0 mutant rule (rev 2.17, W17).** Every mutant named in WS0 is an **executable selftest case that flips a named
+assertion**, not a comment: `gate_twohost_selftest.py` runs the production script with the mutation applied (a
+patched copy in a scratch dir) and asserts the case fails. The Win10 file-server **zero-write guarantee** is proven
+by a behavioral case — a fake `ssh`/`powershell` transcript recorder that fails the run if the probe stream contains
+any write verb (`Set-`, `New-`, `Add-Type`, `Out-File`, redirection) **and** the real read-only probe still passing — not
+by a regex over source text alone (`gate_twohost_selftest.py:864-996` is a tripwire only, D.4).
+
+### Behavior WS0.9 (NEW, rev 2.17; C2): the product-run mode with fail-on-skip
+**Given** `gate.sh` is run with no argument (or `--product`), **when** the Win11 VM is healthy and every phase's live
+tests are run, **then** it exits 0 only if every test exited 0, printed `ASSERTS <n>` with `n > 0`, and none exited 77
+or was skipped; **given** any test exits 77, prints no `ASSERTS`, or the host variables are unset, **then** the gate
+exits nonzero naming the test. It replaces today's exit 2 "two-host run not implemented yet" (`gate.sh:578-581`).
+- 🔴 Red `tests/windows/gate_twohost_selftest.py` case `product_run_fails_on_skip`: a fake host whose test exits 77 ⇒
+  `assert rc != 0 and "skipped" in err`; a fake test with no `ASSERTS` ⇒ `rc != 0`; unset `ZB_WIN11_HOST` ⇒ `rc != 0`
+  and the sentence `no Windows host configured`. Mutants: treat 77 as pass ⇒ red; accept `ASSERTS 0` ⇒ red.
+- 🔴 Red `build.zig` registration check (Python, reads the manifest only): the eight live steps at `build.zig:294-334`
+  and the drawer suites (`:3549, 3559`) must either be absent from the aggregate `test` or fail when `ZB_WIN_GATE=1` and
+  the host is unset — never exit 0 (D.1). Mutant: re-add a clean-skip ⇒ red.
+- 🟢 Green: the product-run mode in `gate.sh` + `ZB_WIN_GATE` handling in the live steps. 🔵 Refactor: one phase list
+  shared by `--probe-only`, `--product` and `--phase voice` (WS12.2). **Closure:** LEAF (gate infrastructure).
+
 - **Property (WS0.5, LEXICAL only):** invariant on the pure string-shape check (`gate.sh
   --fence-string`) — for any generated path string (relative segments, `..`, UNC `\\server\share`,
   drive letters, mixed slashes, junction NAMES as plain strings), the lexical verdict is ALLOW only if
@@ -875,7 +1168,7 @@ requires, listed in one manifest file), and deletes the remote staging under `zb
   generalized `build-in-guest.sh` with SDK paths read from the probe instead of hardcoded),
   `tests/windows/gate_selftest.py` (new, Linux), `tests/e2e/slice2_common.py`
   (`run_windows_interactive_until`: session/visibility checks, time bound, job cleanup),
-  `tests/guest/build-in-guest.sh` (becomes a thin wrapper).
+  `tests/guest/build-in-guest.sh` (rev 2.17, W6: RETIRED per D.6(b), no longer "a thin wrapper").
 - 🔴 **Red** `tests/windows/gate_selftest.py` [L]: runs `gate.sh` against a fake `ssh`/`virsh` on `PATH`
   that replay canned probe JSON. Failing assertion today:
   `assert proc.returncode != 0 and "NOT RUN: no Windows host configured" in proc.stderr and "ZB_WIN10_HOST" in proc.stderr`
@@ -917,7 +1210,8 @@ requires, listed in one manifest file), and deletes the remote staging under `zb
 - **Closure:** LEAF (test infrastructure; no product behavior crosses a seam).
 
 **Gate (WS0):** [L] `windows-gate-selftest` green; then [W] `gate.sh --probe-only` green on both
-hosts after provisioning (the pre/post probe pair of WS0.7 included). Not a UI slice, so no
+hosts after provisioning (the pre/post probe pair of WS0.7 included) — this is the **readiness-only** closure; full
+WS0 closure additionally needs WS0.4, WS0.8 and WS0.9 above. Not a UI slice, so no
 real-screen case; but the first `--probe-only` run on each host is watched by the orchestrator once, to
 confirm that the "interactive session" it reports is the one on the monitor (the only human check this
 slice has).
@@ -936,7 +1230,9 @@ designed, and an import table within an allowlist (system DLLs + `api-ms-win-crt
 `vcruntime*.dll` or `msvcp*.dll` is a failure unless the installer ships it), and records the
 pinned WebView2 SDK version.
 
-### Behavior WS1.2: M8 render, reply channel and load-fail pass on both hosts
+### Behavior WS1.2: M8 render, reply channel and load-fail pass on the Win11 VM (Win10: untested, C1)
+> **Rev 2.17 (C3): WS1.2 is NOT STARTED and now PRECEDES WS2a** (it is the m8 harness every later e2e reuses, and it
+> depends on WS0.4). Its status is "open", not "done with WS1".
 **Given** the exe on each host, **when** the gate runs `m8_render_test.py`,
 `m8_reply_channel_test.py`, `m8_load_fail_test.py` with `ZB_WIN_GATE=1`, **then** each prints
 `PASS` and `ASSERTS n>0` on each host; with `ZB_WIN_GATE=1` a missing precondition exits 1, not 77.
@@ -989,8 +1285,13 @@ the OS build and the **executing** architecture (from `IsWow64Process2`; `x86_64
 - **Real-screen check `win-render`** (orchestrator with the user): the fixture page is visible,
   sharp at 100% and 150% scaling, on the Windows 10 monitor and the VM console.
 - **Closure:** LEAF per behavior (single process, single module, observed through the real exe).
+- **Status and registration at HEAD (rev 2.17; W18):** WS1.1, 1.3, 1.4, 1.5 are green on the Win11 VM (7463139,
+  8f36ee7, 6c771ff, dcd33ae); WS1.2 is open. The exe-level tests `tests/windows/pe_census_test.py`,
+  `png_census_test.py` and `ws1_run_test.py` are **unregistered and not in `gate.sh`** — register them as `gate.sh`
+  WS1 phase rows (and in `build.zig` behind the `windows-live` aggregate, D.1) so a run actually executes them.
+  `screenshot_diag_selftest.py` greps shim text: it is a tripwire only (D.4); the real row is `win_screenshot_test.py`.
 
-**Gate (WS1):** [W] WS1.1-WS1.5 on both hosts + [L] `cross-check` unchanged + `win-render`.
+**Gate (WS1):** [W11] WS1.1-WS1.5 on the Win11 VM (Win10 untested, C1) + [L] `cross-check` unchanged + `win-render`.
 
 ---
 
@@ -998,6 +1299,12 @@ the OS build and the **executing** architecture (from `IsWow64Process2`; `x86_64
 
 **Goal.** The full automation surface on Windows with the same client contract and per-window
 FIFO semantics as Linux, proven by three production chains (the macOS plan's Closures A/B/C).
+
+> **WS2 status at HEAD (rev 2.17; C4, C5): WS2.0 CLOSED (Win11); WS2a, WS2b, WS2c have ZERO code.** There is no
+> `src/automation_wv2_port.zig`; `app.zig:626-627` wires the GTK ports (`supported = builtin.os.tag == .linux`,
+> `automation_gtk_port.zig:22`), so every page, dom, input, dialog and window command returns -32011 on Windows. The
+> shim defines 15 of the 73 ABI functions and none are WS2a-c's. Closures A, B and C have no e2e. **The next Windows
+> work is the WS2a.0 and WS2b.1 spikes, then the WS2a port, then WS3.4 wiring** (section C, Dependency order).
 
 ### Design
 - New `src/automation_wv2_port.zig` implements `PagePort` (gated `os.tag == .windows`), wired in
@@ -1007,6 +1314,15 @@ FIFO semantics as Linux, proven by three production chains (the macOS plan's Clo
   of `auto_queue_on_gtk`/`auto_job_wait`, webkit_shim.c:1692-1812). Async-completion ownership
   contract as macOS MS2: copied inputs, exactly-once completion, a generation guard so nothing
   dispatches after the waiter abandons.
+- **Deadlines, in numbers (rev 2.17, W11).** The cookie marshal's deadline-guarded wait with CAS abandon exists
+  (`webview2_shim.cpp:728-776`) but keeps one **unbounded** `WaitForSingleObject(job->done, INFINITE)` at `:769` (after
+  the `left`-bounded wait at `:762`), and the WS2a.3 `waiter_grace` seam and its test do not exist. Required: every
+  UI-thread marshal has a per-command deadline (**default 10 s, caller-lowerable, never unbounded**); the `page.health`
+  responsiveness probe is bounded at **2 s** and never takes the window's FIFO; a late completion after abandon is
+  bounded by a **`waiter_grace` of 250 ms** after which the shim frees its own copy; **no `INFINITE` wait remains in
+  the marshal** (a completing job's answer is read under the job's own lock, not by waiting forever). Red: a source-free
+  behavioral test that stalls the UI thread and asserts the socket answers `-32015`/timeout within `deadline + grace`
+  (mutant: restore `INFINITE` ⇒ the test hangs ⇒ red at its own 30 s watchdog).
 - **Private world:** the automation script must not run in the page's main world. WebView2 has
   no content-world API; the plan's route is CDP `Page.addScriptToEvaluateOnNewDocument` with
   `worldName` + `Runtime.evaluate` with that context id, through `CallDevToolsProtocolMethod`.
@@ -1066,6 +1382,10 @@ directory, socket and `<socket>.token` have a **protected DACL granting only the
   inherited DACL from `%LOCALAPPDATA%` ⇒ the principals assertion is red (it contains `Administrators`/`SYSTEM`
   inherited ACEs). Rev 2.6 decided those are **not** acceptable; on the VM the base is hostile (Everyone, inheritable),
   and the unrestricted-directory and unrestricted-socket mutants both fail (f29e490).
+  **Rev 2.17 (W19):** the **token-only mutant is NOT recorded** — only the full no-op `restrictToOwner` flips the
+  cross-user test (89c166b). Required before WS2.0 is called fully mutant-proven: run and record the mutant that
+  restricts the directory and socket but leaves the `<socket>.token` file with the inherited DACL (the zbother token read
+  must then succeed ⇒ `win_transport_test.py` red), on the Win11 VM, with the run output in the commit message.
 - **Compile coverage (rev 2.7; replaces the rev 2 "compile check first"):** the `cross-check` step's
   x86_64-windows-gnu object is built at the shipped `win10_rs4` floor, so it compiles the automation server's
   start path, token and socket included. It is a build guard, not the WS2.0 red: the red is the production e2e
@@ -1084,7 +1404,7 @@ directory, socket and `<socket>.token` have a **protected DACL granting only the
   red now censuses and asserts all six kinds, and adds a surviving-success mutant for the profile
   folder, the WFP provider and the WFP sublayer (each: report uninstall success while one survives ⇒ red).
 
-- **Rev 2.6 (WS2.0 owner: BlueBeaver, the orchestrator 2026-10-20; VM, host tooling, wincontain and Job Object stay AzureRidge's).**
+- **Rev 2.6 (WS2.0 owner: BlueBeaver, the orchestrator 2026-10-20; VM and host tooling stay AzureRidge's; ~~wincontain and the Job Object~~ — rev 2.17, C12: `wincontain.py`/`wincontain_win32.py` are RETIRED per D.6(a), the Job Object model being dropped by OD-W4, so that ownership assignment is void).**
   - **The compile check is not the red.** ~~`restrictSocketMode`'s `std.c.chmod` and the token's `.fromMode(0o600)` compile for `x86_64-windows-gnu`~~ **Withdrawn in rev 2.7:** that "compile" proved nothing. Without the `win10_rs4` floor, `server.start` returns `AddressFamilyUnsupported` before `startSocket`, so the token and socket code was never analyzed for Windows. At the floor, `.fromMode` does not exist on Windows (fixed in f29e490). The red is behavioural (the VM e2e below), plus the Linux-provable reds; the cross-check object now uses the floor, so it reaches the server's start.
   - **One seam, `src/owner_only.zig`:** `restrictToOwner(path, kind)`, kind `file` or `dir`.
     - **One object, never the path twice (rev 2.6 fix, RoseCat 6607).** The check and the apply name the same object, so a leaf swapped for a symlink or a junction between them cannot redirect the change:
@@ -1110,8 +1430,10 @@ directory, socket and `<socket>.token` have a **protected DACL granting only the
     - Mutant (the VM): leave the inherited `%LOCALAPPDATA%` DACL, and the principals assertion fails.
 
 ### WS2a: routed commands, private world, readiness   [W]
-- **WS2a.0 (spike, both hosts):** CDP isolated world exists, its globals are invisible to the page,
-  and it survives navigation. Result recorded red→green before WS2a.1.
+- **WS2a.0 (spike, Win11 VM; Win10 untested, C1):** CDP isolated world exists, its globals are invisible to the page,
+  and it survives navigation. Result recorded red→green before WS2a.1. **Rev 2.17 (C5): NOT RUN — no file and no
+  result exist at HEAD.** The spike file is `tests/e2e/win_private_world_spike.py` (named in the WS2 register) and its
+  recorded result lives in the commit message; until then no code may assert the answer (see WS2b.0).
 - **WS2a.1** `page.navigate`, `page.url`, `page.title`, `page.evaluate` over the socket with the
   Linux envelope/auth/errors.
 - **WS2a.2** `dom.*` run in the private world. **Property (metamorphic):** a page that defines
@@ -1124,7 +1446,15 @@ directory, socket and `<socket>.token` have a **protected DACL granting only the
   (today `-32011` because `pagePort()` is null on Windows).
 
 ### WS2b: native input capability spike + dialogs + screenshots + files   [W], [U]
-- **WS2b.1 (spike, both hosts) trusted-event matrix:** `isTrusted` true, focus, click, key, text,
+- **WS2b.0 (NEW, rev 2.17; C5) capability-table honesty.** `src/automation_platform.zig:79-82` already declares
+  `.webview2 => input = .cdp_input, network = .supported` although neither spike (WS2a.0 isolated world, WS2b.1
+  `isTrusted`) has ever run; the plan says that row may change only after WS2b.1 passes. Until then the row is a
+  **PLACEHOLDER / UNPROVEN**: either change it to an `unproven` mode in the owner's slice, or keep it and have this plan
+  and every WS2 gate treat it as unproven (no client or doc may rely on it). Red (unregistered until green):
+  `assert capability_row_is_unproven_until_file_exists("tests/e2e/win_trusted_input_matrix.py result")`; mutant:
+  leave `cdp_input` with no recorded WS2b.1 result ⇒ red. The test `automation_platform.zig:885-886`
+  (`expectEqual(InputMode.cdp_input, webview2.input.mode)`) is a fake-backed tripwire only (D.4), not evidence.
+- **WS2b.1 (spike, Win11 VM; Win10 untested, C1) trusted-event matrix:** (**NOT RUN at HEAD — no file, no result**) `isTrusted` true, focus, click, key, text,
   contenteditable + `beforeinput` cancel honored, scroll, pointer move, navigation during input,
   partial typing, deadline abandonment (no dispatch after the waiter leaves). CDP input is
   **unverified** to produce `isTrusted: true` in WebView2; the capability table
@@ -1187,8 +1517,9 @@ green commit is accepted.
   has no Windows types. Add: no `zb_automation_debug_*` is compiled outside the slice whose e2e drives it
   (`cross-check` plus a link-time absence assertion in `win_abi_absence_test.py`, which fails if an
   undriven debug seam is present).
-- **Closure criteria:** Closures A, B, C below, each observed to execute with nonzero assertions on both
-  hosts. Closure B and C now name their e2e files above.
+- **Closure criteria:** Closures A, B, C below, each observed to execute with nonzero assertions on the Win11 VM
+  (rev 2.17, C1; Win10 only if a writable host is authorized). Closure B and C now name their e2e files above.
+  **At HEAD none of Closures A, B, C has an e2e (C4).**
 - **Real-screen checks (UI parts of WS2):** `win-native-click` (WS2b, as written), plus **`win-popups`**
   (WS2c.1/WS2c.5: the orchestrator watches two popups open as real top-level windows, each closable by its
   close button, and the opener survives) and **`win-crash-page`** (WS2c.4: the static crash document is
@@ -1301,8 +1632,8 @@ green commit is accepted.
   wrapper with one error-mapping table (the `mapCode` analog, automation_gtk_port.zig:337-350);
   the port contains no Windows types (only the C ABI).
 
-**Gate (WS2):** three gates (WS2a, WS2b, WS2c), each [W] on both hosts, plus `win-native-click`,
-`win-popups` and `win-crash-page`.
+**Gate (WS2):** three gates (WS2a, WS2b, WS2c), each [W11] on the Win11 VM (Win10 untested, C1), plus `win-native-click`,
+`win-popups` and `win-crash-page` on the Win11 console. WS2a/b/c are NOT started (see the WS2 status block).
 
 ---
 
@@ -1329,8 +1660,9 @@ New `src/automation_wv2_cookie_port.zig` (gated `.windows`) with the GTK cookie-
   × known and unknown values, the Windows seam's accept/refuse matches the documented table in
   `src/webkit.zig`. [L] as a Zig unit through the seam (no C ABI).
 - **Files touched:** `src/webkit.zig`, `src/app.zig`, `src/webview2_shim.cpp`,
-  `src/automation_wv2_cookie_port.zig` (new), `tests/e2e/win_profile_persist_test.py`,
-  `tests/e2e/win_config_flags_test.py`, `tests/e2e/win_cookie_test.py` (new).
+  `src/automation_wv2_cookie_port.zig` (new), `tests/windows/win_profile_persist_test.py`,
+  `tests/windows/win_config_flags_test.py`, `tests/windows/win_cookie_test.py` (new; rev 2.17, W10: the as-built
+  location is `tests/windows/`, not `tests/e2e/`).
 - 🔴 Red `win_profile_persist_test.py`: `assert not (exe_dir / "zigBrowser.exe.WebView2").exists()`
   (today the default environment creates it).
 - 🔴 Red `win_profile_persist_test.py` (second assertion): `assert rpc("page.evaluate", {"expression":"localStorage.getItem('k')"})["result"] == "v"`
@@ -1359,7 +1691,45 @@ New `src/automation_wv2_cookie_port.zig` (gated `.windows`) with the GTK cookie-
   OBSERVE = `page.evaluate` over the socket). WS3.2 LEAF per flag. WS3.3 BLOCKING (async cookie
   manager boundary; OBSERVE = `document.cookie` through the socket).
 
-**Gate (WS3):** [W] both hosts. Not a UI slice.
+### WS3 status at HEAD and the amendments (rev 2.17; C6, W20, W10, W9, C18)
+
+**Built vs wired.** CLOSED and real: the flag seam (`backend_flag.Decision`, refusal before any C call at
+`webkit.zig:41`, refusal proven on the real exe by the registered `refusal_stderr_live_test.py`). BUILT BUT UNWIRED and
+unproven live: `automation_wv2_cookie_port.zig` (no production caller — `app.zig:627` wires the GTK cookie port; no
+test block; an unknown `sameSite` silently becomes "unset"), `zb_app_set_profile_dir`, and the profile folder. Not
+existing: `tests/windows/win_cookie_test.py`, `tests/windows/win_profile_persist_test.py` (the plan's earlier
+`tests/e2e/…` paths are corrected to `tests/windows/…`, **W10**: the WS3/WS5 tests live in `tests/windows/`, and
+`win_drawer_test.py:3-9`'s stale "UNREGISTERED" header and its `agent_drawer_win.cpp` citation are fixed with WS5).
+
+### Behavior WS3.4 (NEW, rev 2.17; C6): the cookie port and the profile are WIRED and proven live   [BLOCKING]
+**Given** the Win11 VM browser with `--automation-api`, **when** a client calls `cookies.set` then reads
+`document.cookie`, and **when** the browser is relaunched with the same default profile, **then** the cookie and a
+`localStorage` value survive, no `zigBrowser.exe.WebView2` folder exists next to the exe, and the profile folder's DACL
+is owner-only.
+1. **Wire the cookie port:** `buildAutomationConfig` (`app.zig:626-627`) selects `automation_wv2_cookie_port.cookiePort()`
+   when `builtin.os.tag == .windows` (today the GTK port). Red: `win_cookie_test.py` `assert rpc("cookies.set", c)["result"]["ok"] is True and rpc("page.evaluate", {"expression":"document.cookie"})["result"] == "a=1"`; mutant: leave the GTK port wired ⇒ -32011 ⇒ red; a second `CookieManager` of another profile ⇒ red.
+2. **Default profile:** `%LOCALAPPDATA%\zigBrowser\profile\default` when `--profile-dir` is absent (`app.zig:513`
+   `spec.profile_dir orelse return null` today). Red: with no flag, `assert not (exe_dir / "zigBrowser.exe.WebView2").exists()`.
+3. **Owner-only profile folder:** the shim creates `<dir>\WebView2` with default ACLs (`webview2_shim.cpp:2387`
+   `SHCreateDirectoryExW(nullptr, …)`); the plan's own refactor says it must use the WS2.0 helper — call
+   `zb_restrict_to_owner` (`owner_only.zig:243`, currently no caller) on `<dir>\WebView2`. Red: read back the protected
+   single-ACE DACL (same readback contract as WS2.0). Mutant: skip the restrict ⇒ red.
+4. **Relaunch e2e:** `win_profile_persist_test.py` as written in WS3.1 (relaunch ⇒ `localStorage` survives; a second
+   `--profile-dir` sees none of it).
+5. **Registration:** all three tests are registered in the green commit **behind the `windows-live` aggregate with
+   fail-on-skip (D.1)**. WS3.1 and WS3.3 are BLOCKING closures with an e2e only once these pass.
+
+**WS3.2 test alignment (W20).** The as-built tests differ from this plan: they use `--renderer shm` (not `bogus`), read
+media-source from a NAV title (not `page.evaluate` over the socket), have no `--disable-gpu` proof, and neither planned
+mutant was run. Required: `--renderer=bogus` is refused with the exact message (the table row, via the real exe);
+`typeof MediaSource` is read through `page.evaluate` over the authenticated socket (needs WS2a.1); an observable
+`--disable-gpu` proof (the `AdditionalBrowserArguments` actually passed, read via the debug seam or the process command
+line); and BOTH mutants run and recorded (apply-before-validate; swallow-error-exit-0). Until WS2a.1 exists the
+`page.evaluate` half is explicitly OPEN.
+
+**Property:** the cookie-JSON roundtrip incl. `sameSite` domain is in the Property register (C18).
+
+**Gate (WS3):** [W11] the Win11 VM (Win10 untested, C1). Not a UI slice. **Closed today: WS3.2 only. OPEN: WS3.1, WS3.3, WS3.4.**
 
 ---
 
@@ -1469,8 +1839,10 @@ The native shim files are **BlackRobin's alone**; the per-OS **apply** lives in 
   keep a single literal oracle (no duplicated table to drift).
 - **Windows cookie-port cross-check** (`cross-check-ws3-win`, unregistered — a dedicated
   `x86_64-windows-gnu` object from `src/ws3_win_cross_root.zig`): the object compiles and references
-  `automation_wv2_cookie_port.zig`'s `getAll`/`set`/`delete` and `webview2_config.zig`'s
-  `applyWindowsFlag`/`applyProfileDir`, so `check_cross_symbols.py` must find every `zb_*` they need
+  `automation_wv2_cookie_port.zig`'s `getAll`/`set`/`delete` and ~~`webview2_config.zig`'s
+  `applyWindowsFlag`/`applyProfileDir`~~ (rev 2.17, W9: `webview2_config.zig` duplicates the real arm at
+  `webkit.zig:63-70`, is referenced only by `ws3_win_cross_root.zig`, and is RETIRED per D.6(c); the root references the
+  real `webkit.zig` arm instead), so `check_cross_symbols.py` must find every `zb_*` they need
   defined by `src/webview2_shim.cpp`. The step `--require`s **all seven** symbols explicitly —
   `zb_cookies_get_all`, `zb_cookies_add`, `zb_cookies_delete`, `zb_app_set_media_source`,
   `zb_app_set_hw_policy`, `zb_app_set_profile_dir`, `zb_automation_free` (RoseCat 6429: requiring only a
@@ -1481,17 +1853,32 @@ The native shim files are **BlackRobin's alone**; the per-OS **apply** lives in 
   `zb_automation_free` from the port's teardown (a config/ownership op) ⇒ `--require zb_automation_free`
   fails. Green when BlackRobin's `webview2_shim.cpp` defines all seven; then wire the step into
   `cross-check` and `test`.
+  **Rev 2.17 (W12):** the step (`build.zig:580-604`) is green per 15fb6ee **but was never wired into `cross-check` or
+  `test`**, and "red until the shim lands" comments remain in four files, so a dropped symbol would go unseen. Required:
+  add `cross-check-ws3-win` as a dependency of `cross-check` and of the aggregate `test`, delete the four stale
+  comments, and add the mutant (drop `zb_cookies_add` from the Zig cookie path ⇒ the aggregate `test` goes red).
 
 ---
 
 ## WS4: Site flows + approval grant authority on Windows   [W]
 
-**Goal.** The platform-neutral flows and the grant authority behave on Windows exactly as on
-Linux. No new grant code: the tuple
-`sha256(tool, window_id, origin, account, target_fp, load_serial, normalized_args)`, 120 s,
-single-use, pre-dispatch revalidation of origin/`load_serial`/`crashed`/`recovering`,
-`options.expect={account,target_fp}` checked in the same FIFO ticket (−32015), and the T5 mutants
-(navigation, selector-retarget, wrong account, one-field-at-a-time) all refuse.
+**Goal.** The platform-neutral flows and the approval model behave on Windows exactly as on
+Linux. **Rev 2.17 (C7): this section is reconciled to the AS-BUILT model.** The earlier text said "no new grant code:
+the tuple `sha256(tool, window_id, origin, account, target_fp, load_serial, normalized_args)`" — **that tuple does not
+exist in `src/`** (`grep target_fp\|normalized_args src` is empty at HEAD). What IS built and what WS4 tests on Windows:
+- the **approval card** (`src/agent_approval.zig`): `card_ttl_ms = 120_000` (`:182`, expiry at `:275`), one-shot
+  Approve (`:279-286`), minted only by the native card handler;
+- **window binding**: `WindowWant{origin, url, load_serial}` (`automation/engine.zig:1216`) and `windowRefusal`
+  (`:1226`) revalidated pre-dispatch against origin/`load_serial`/`crashed`/`recovering`;
+- **flow `expect{url, recipient}`** (`automation/social_flow_routes.zig:209-214`) checked in the same FIFO ticket (−32015);
+- and the T5-style mutants rewritten to those fields (navigation retarget ⇒ `load_serial`; wrong account/recipient ⇒
+  `expect.recipient`; replay ⇒ the one-shot Approve; expiry ⇒ `card_ttl_ms`).
+
+**WS4.0 (NEW, rev 2.17): the strong grant tuple is a SEPARATE decision, not "already there".** Adding a
+`sha256(tool, window_id, origin, account, target_fp, load_serial, normalized_args)` grant is **new platform-neutral
+work** (it would change Linux and macOS too). It is scheduled only if the owner/reviewers want it; until then no
+Windows test may assert `target_fp` or `normalized_args`. **OWNER: decide (a) keep the as-built card/expect model for
+launch, or (b) schedule the tuple as its own cross-platform slice.** Default adopted: (a).
 
 - **WS4.1** page worlds, iframes, related popups, socket clients, model text and hooks cannot
   approve (negative proofs on Windows).
@@ -1500,10 +1887,10 @@ single-use, pre-dispatch revalidation of origin/`load_serial`/`crashed`/`recover
 - **WS4.3** the login gate reads the session cookie through the WS3 cookie port.
 - 🔴 Red `tests/e2e/win_flow_refusal_test.py`: `assert telemetry_root_spans_after == telemetry_root_spans_before`
   for each forged approval (today `-32011`: no port).
-- **Characterization note (rev 2):** WS2 lands before WS4, so these tests would pass on arrival and a test
-  that never failed proves nothing. Each is therefore proven by **a mutant run on Windows**: (1) skip the
-  pre-dispatch `load_serial` revalidation ⇒ the navigation-retarget test must fail; (2) skip the
-  `options.expect` check ⇒ the wrong-account test must fail with a commit instead of -32015; (3) let a
+- **Characterization note (rev 2; rev 2.17: mutants bound to the AS-BUILT fields, C7):** WS2 lands before WS4, so
+  these tests would pass on arrival and a test that never failed proves nothing. Each is therefore proven by **a mutant
+  run on Windows**: (1) skip the pre-dispatch `load_serial` revalidation (`WindowWant`) ⇒ the navigation-retarget test must fail; (2) skip the
+  `options.expect` check (`{url, recipient}`) ⇒ the wrong-account test must fail with a commit instead of -32015; (3) let a
   popup-world caller approve ⇒ the related-popup test must fail; (4) mint without the single-use mark ⇒ the
   replay test must fail. The first red run is a run **before the WS2 port is wired** (`pagePort()` null ⇒
   `-32011`, as stated), recorded as the red evidence; the mutants prove the assertions after wiring.
@@ -1512,9 +1899,10 @@ single-use, pre-dispatch revalidation of origin/`load_serial`/`crashed`/`recover
   forged-approval helper are shared with `tests/e2e/` Linux flow tests (one helper module, not a copy).
 - **Real-screen check:** none; not a UI slice (the native Approve click is WS11.3's check).
 - **Closure:** BLOCKING for the refusal belts (socket → broker → engine); the positive commit
-  closure is WS11.3 (the only native minter is WS5's card, the only real `tool_use` source is
-  WS11's helper). **Files touched:** tests only, plus any Windows-specific wiring the WS2 port
-  needs. **Gate (WS4):** [W] fixtures only, no live sites. Not a UI slice.
+  closure is WS11.3 (the only native minter is WS5's card — **which does not exist yet on Windows, WS5.8**; the only
+  real `tool_use` source is WS11's helper). **Files touched:** tests only, plus any Windows-specific wiring the WS2 port
+  needs. **Gate (WS4):** [W11] fixtures only, no live sites. Not a UI slice. **WS4 cannot start until WS2a.1 is green
+  (C4).** Grant-field property: see the Property register (C18).
 
 ---
 
@@ -1523,10 +1911,42 @@ single-use, pre-dispatch revalidation of origin/`load_serial`/`crashed`/`recover
 **Goal.** The accepted drawer UX on Windows: bottom dock, movable "S" icon that hides while open,
 conversation with copyable text, "-" fold animation, structural isolation from page JavaScript.
 Not wired to an agent yet (Send shows "Agent not available yet", like Linux S1/S2). OD-W6 is DECIDED:
-**native Win32** — the backend is `src/agent_drawer_win.cpp` (not a WebView2-hosted or WinUI drawer).
+**native Win32** (not a WebView2-hosted or WinUI drawer). **Rev 2.17 (C15): the as-built backend lives in
+`src/webview2_shim.cpp`, not in `src/agent_drawer_win.cpp` (which does not exist) — see the status block below.**
 
-### Design
-- `src/agent_drawer_win.cpp` + `.h` (new), compiled in `configureWebView2Backend`; mounted from
+### WS5 status at HEAD, as-built design, and open tasks (rev 2.17; C14, C15, C16, W10, W23)
+
+**As built (HEAD `c07899f` code):** a docked panel and a `WS_CHILD` **STATIC** "S" icon inside the browser window,
+implemented in `webview2_shim.cpp` (geometry, easing, hit-test and live counts stay in Zig `agent_drawer.zig`; the C++
+only computes the elapsed ratio, `webview2_shim.cpp:1676-1686`); a second window class `zigBrowserDrawerExtra` and ~12
+`ZIGBROWSER_AGENT_DRAWER_*` e2e seams (D.3). **Does not exist:** `src/agent_drawer_win.cpp`, `src/zigBrowser.rc`,
+`packaging/windows/zigBrowser.manifest`; any DPI-awareness manifest or call (`GetDpiForWindow`, `webview2_shim.cpp:922`,
+in a DPI-unaware process normally reads 96, so the 150% path has only an env-seam proof); the owned layered popup with
+`SetWindowRgn`; the approval card; the Send box and "Agent not available yet"; WS12.1's `zb_drawer_set_draft` /
+`zb_drawer_speaker_toggled`. So **WS11.3's "the only native minter is WS5's card" is FALSE today.**
+
+**Decision (the review's "either/or" resolved):** the Design below is the *target*; the as-built child-control drawer is
+accepted as the **interim** implementation, and the differences are explicit open tasks, not silently equivalent:
+- **WS5.8 DPI:** add `packaging/windows/zigBrowser.manifest` (PerMonitorV2, Common Controls v6, `supportedOS` 10/11) +
+  `src/zigBrowser.rc`, embed via `build.zig`; **no 150% acceptance (WS5.7, `win-drawer-dpi`) before this lands.** Red:
+  `assert dpi_for_window == 144 and icon_px == 84` at 150% on the VM.
+- **WS5.9 icon:** replace the `WS_CHILD` STATIC by the owned layered no-activate popup with circular `SetWindowRgn`,
+  or amend the Design to the child control with an explicit statement that it cannot hover above the GPU-composited page.
+- **WS5.10 card + Send:** the native approval card row (only its Approve handler calls the grant minter) and the Send box
+  with "Agent not available yet" as explicit WS5 items (prerequisites of WS11.3 and WS12.1).
+
+**Closure rule (C14, D.4): a drawer behavior closes only on an accepted live row on the Win11 VM.** Status by behavior
+(offline oracles do not count): WS5.1 (entry/dock) CLOSED by the entry run b2c4f25 (8/8); WS5.5 lifecycle CLOSED (four live
+methods at the exact commit a5745b9, count driven by Zig); **WS5.2 drag, WS5.3 fold, WS5.4 copy, WS5.6 isolation (page-JS
+half), WS5.7 DPI: OPEN** — about 116 offline oracle/model tests exist against 27 live rows, and the 19 rows for drag,
+fold, copy, DPI and isolation (`win_drawer_behaviors_test.py:857-1056`) skip in the gate. For each OPEN behavior either
+record one accepted Win11 run of its live row or leave it OPEN. The settle proof (an AST parse of a Python test file) is
+a tripwire, not a control-flow proof. No new offline oracle without a paired live row (D.4). The five `win-drawer-*`
+real-screen cases are scheduled **with the owner**, and `tests/manual/real_screen_check.py` (X11-only) first gains a
+Windows capture + foreground-proof backend (Testing Strategy, real-screen bullet).
+
+### Design (target)
+- `src/agent_drawer_win.cpp` + `.h` (target; **not built**, see status above), compiled in `configureWebView2Backend`; mounted from
   `zb_window_new` when the drawer is on. Geometry, gesture, fold timing/easing and persistence come
   from `src/agent_drawer.zig` (exports widened from `.linux` to `.linux or .windows`).
 - **Dock:** a sibling child panel below the page; the controller's bounds are the client area
@@ -1560,9 +1980,11 @@ Not wired to an agent yet (Send shows "Agent not available yet", like Linux S1/S
 - **Property (WS5.2):** roundtrip — `parse(write(ratios)) == ratios` (reuse the `agent_drawer.zig`
   property) [L]; invariant — `clampRect` keeps the icon fully inside the client area for generated
   window sizes and DPI scales [L].
-- **Files touched:** `src/agent_drawer_win.cpp/.h` (new), `src/agent_drawer.zig` (export gate),
-  `src/webview2_shim.cpp` (mount, bounds), `build.zig` (compile + rc), `src/zigBrowser.rc` (new),
-  `packaging/windows/zigBrowser.manifest` (new), `tests/e2e/win_drawer_test.py` (new),
+- **Files touched (rev 2.17: as-built vs target, C15/W10):** AS BUILT `src/webview2_shim.cpp` (drawer in the shim),
+  `src/agent_drawer.zig` (export gate), `tests/windows/win_drawer_test.py` and `win_drawer_behaviors_test.py` (the
+  as-built location is `tests/windows/`, not `tests/e2e/`; the `win_drawer_test.py:3-9` header is stale — it still says
+  UNREGISTERED and cites `agent_drawer_win.cpp`). TARGET/OPEN (WS5.8-WS5.10): `src/agent_drawer_win.cpp/.h`,
+  `src/zigBrowser.rc`, `packaging/windows/zigBrowser.manifest`, `build.zig` (compile + rc),
   `tests/manual/real_screen_check.py` (Windows capture + foreground proof backend).
 - 🔴 Red `win_drawer_test.py`: `assert "DRAWER\topen" in rows and page_h + panel_h == client_h`
   (today no drawer exists on Windows; `zb_app_set_agent_drawer` is absent at link time, so the red is
@@ -1579,7 +2001,14 @@ Not wired to an agent yet (Send shows "Agent not available yet", like Linux S1/S
     the destroy in the popup close path ⇒ red.
   - WS5.6 `assert census_before == census_after` after `page.evaluate` tries `postMessage`/DOM reach and a
     socket client tries every method name containing `drawer` (all `-32601`/`-32011`). Mutant: expose a
-    `drawer.state` method ⇒ red.
+    `drawer.state` method ⇒ red. **Rev 2.17 (C16): the as-built proof is OFFLINE only** — 4cb740d is a Linux in-process
+    test that three drawer method names return -32601, the page-JavaScript half has no test, the Python row
+    (`win_drawer_behaviors_test.py:321-333`) exercises helpers defined in the test itself, and the live row (`:1018`)
+    never ran. Required: a **real-binary Win11 row** — the real exe with `--automation-api` and the drawer on; from
+    page JS (`page.evaluate`: `postMessage`, `window.chrome.webview`, DOM walk) AND from the authenticated socket (every
+    method containing `drawer`), the `DRAWER` census is unchanged and no drawer window id/DOM node is reachable; it
+    needs WS2a.1 for the `page.evaluate` half (WS5.6 stays OPEN until WS2a.1 exists). Mutant: expose `drawer.state`
+    over the socket ⇒ red; mutant: reply to the page's `chrome.webview` message with drawer state ⇒ red.
   - WS5.7 `assert icon_px == 84 and hit_test_edges_exact` at 150%. Mutant: ignore DPI ⇒ red.
 - 🟢 Green: the Win32 drawer (`agent_drawer_win.cpp/.h`, manifest, `.rc`, the `agent_drawer.zig` export
   widening, the `zb_app_set_agent_drawer`/`_get_agent_drawer`/`zb_drawer_debug_live_count` shim functions).
@@ -1595,7 +2024,9 @@ Not wired to an agent yet (Send shows "Agent not available yet", like Linux S1/S
   zigBrowser window is foreground (`GetForegroundWindow`) before any `SendInput`, and the runner
   fails closed if the capture is unavailable or the desktop is locked.
 
-**Gate (WS5):** [L] Zig properties; [W] `win_drawer_test.py` both hosts; all five real-screen cases.
+**Gate (WS5):** [L] Zig properties; [W11] `win_drawer_test.py` and the live rows of `win_drawer_behaviors_test.py` on the
+Win11 VM under fail-on-skip (D.1; the drawer suites must stop force-unsetting the host vars, `build.zig:3549, 3559`);
+all five real-screen cases on the Win11 console. A behavior counts only when its live row is accepted (D.4).
 
 ---
 
@@ -1608,6 +2039,43 @@ with `CredWriteW` (`CRED_TYPE_GENERIC`, target `zigBrowser/ClaudeAgentToken/defa
 `CredReadW`; Remove deletes it. The "Save to a private file instead" path writes
 `<agent_home>\secrets\claude-token` with a protected owner-only DACL, DPAPI-wrapped
 (`CryptProtectData`, `CRYPTPROTECT_UI_FORBIDDEN`).
+
+**Rev 2.17 amendments to WS6.1 (C19, W21, W3, C13).**
+- **`Token` is parsed once (C19).** `validToken` returns `bool` (`agent_secrets_shape.zig:23`) and is re-checked at
+  `agent_secrets.zig:128,169,345` and `agent_secrets_store.zig:84,103`, while the C ABI `zb_secret_cred_save` accepts any
+  bytes. Required: one `Token` type returned by a single `parseToken(bytes) !Token` (no public constructor), the C ABI
+  and every store take **only** a `Token` (the C wrapper parses at the boundary and refuses otherwise). Red:
+  `assert zb_secret_cred_save(bad_bytes) == ERR_SHAPE and cred_read(target) is None` (mutant: let the C ABI accept raw
+  bytes ⇒ red); the 10k-string shape property (`agent_secrets_shape_test.zig:114`) stays.
+- **The Windows store is tested for its security-relevant constants, not just "compiles" (W21).**
+  `agent_secrets_win.cpp` is gated today only by "compiles and exports four names" (`build.zig:564-567`); dropping
+  `CRYPTPROTECT_UI_FORBIDDEN` (`:75`) or changing the SDDL (`:95`) would pass every registered step. Create the missing
+  `agent_secrets_win_logic.h` (`tests/windows/agent_secrets_win_logic_test.cpp:11` includes it; it does not exist) with
+  the flag/SDDL constants as testable values, and add reds: `assert flags & CRYPTPROTECT_UI_FORBIDDEN`,
+  `assert sddl == owner_only_sddl(current_sid)`, and a live `acl_principals(p) == {current_sid}` on the VM. Mutants:
+  drop the flag ⇒ red; widen the SDDL ⇒ red.
+- **`runSafety` gets a consumer and a non-null target (W3).** `runSafety` (`agent_secrets_store.zig:33-67`) has no
+  consumer, and `agent_secrets_win.cpp:30,43,60` accept `nullptr` (the real production target) and any target string,
+  so a credential test could reach `zigBrowser/ClaudeAgentToken/default`. Required: every Windows credential **test**
+  entry point calls `runSafety` first and refuses a null or non-`zigBrowser-test-*` target; the production default
+  target is selected only when `--e2e-protocol` is absent. Red: a test that passes `nullptr` is refused (mutant: skip
+  `runSafety` ⇒ the test can touch the real target ⇒ red).
+- **Consumer (C13).** `zb_secret_cred_save/read/delete` and `zb_secret_dpapi_protect` are referenced only by symbol
+  checks and `TokenStore` (`agent_secrets_store.zig:71`) only by its own test; no Windows Secrets window exists and no
+  real Win32 run has happened. The consumer is the WS6.2 Secrets window; until it exists WS6.1 is OPEN ("skeleton, no
+  caller"), and a real Win32 CredWrite/Read/Delete run on the Win11 VM inside the interactive-session task is required
+  to close it.
+
+### Behavior WS6.4 (NEW, rev 2.17; C13, A.6): the token's route from the Windows store to the in-distro CLI's fd 3   [BLOCKING; DRAFT — depends on C1]
+The DPAPI private-file fallback (`<agent_home>\secrets\claude-token`, WS6.1) is **unreadable from inside the distro**
+(automount OFF), and nothing previously said how the token reaches the CLI. Route (PROPOSAL, gated by the WS8/WS9 DRAFT
+gate blocker 3): the **Windows browser process** reads the token from Credential Manager (or DPAPI file), starts the
+agent with `wsl.exe -d <distro> -u <nonroot> …` and passes the token on a **dedicated one-shot inherited pipe**
+(distinct from the C1 control-capability pipe), which the in-distro supervisor reads once and hands to the CLI as
+inherited **fd 3** (`CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR`); it never appears in env, argv, a file, the control TCP
+channel, a log or the census. Red (written only after the DRAFT gate closes): `assert canary not in (argv + env +
+files + control_frames + logs)` and `assert cli_fd3_bytes == canary`; mutant: pass it in argv ⇒ red. Windows 10: not
+applicable (agent OFF).
 
 ### Behavior WS6.2: the Secrets window
 A native Win32 window (not a browser window, absent from the window registry and the socket): a
@@ -1645,7 +2113,7 @@ to run. Credential tests run inside the interactive session task.
 - **Real-screen check `win-secrets-window`:** paste, save, remove, and the private-file choice, on
   both screens; the window never shows the token in clear text.
 
-**Gate (WS6):** [W] both hosts + `win-secrets-window`.
+**Gate (WS6):** [W11] the Win11 VM (Win10 untested, C1; the Secrets window exists on Win10 too, but its agent route does not) + `win-secrets-window` on the Win11 console.
 
 ---
 
@@ -1653,36 +2121,54 @@ to run. Credential tests run inside the interactive session task.
 
 **Goal.** `--agent-setup` builds the immutable agent home on Windows (today refused, app.zig:52-55).
 
+> **REV 2.17 REWRITE FOR OD-W4 / WSL2 (C9, W22). WS7 was built on 2026-10-22 against the SUPERSEDED native-Windows
+> agent design** (commits ab86a92, ea8940e, 1a06bb0, b9ff6da, one day after OD-W4, none mentioning WSL;
+> `agent/host/zb_agent_host/launcher.py` is 35 lines with no `wsl.exe` argv, no `pass_fds`, no fd-3 token). Under OD-W4
+> (section A) **the agent home, the Python runtime, the Agent SDK wheel and `claude` live INSIDE the imported distro**:
+> there is **no Windows `python.exe`, no Windows `claude.exe` and no native `zb-claude.exe` launcher**. **Stop further
+> work on the native-Windows WS7.2/WS7.3 reds**; they are retired history. What survives on the Windows host (and is
+> WS7's real scope): the agent-home *layout and copy rules* (now built and verified **in the distro**), the
+> `wsl.exe -d <distro> -u <nonroot>` launcher argv + C1 bootstrap (DRAFT), and the Windows-side C3 current-pointer file.
+> Win11 only; on Windows 10 `--agent-setup` reports "agent not available on this Windows" and exits 0/1 per the fixed
+> explanation, creating nothing. WS7 stays behind the WS8/WS9 DRAFT gate for everything that touches WSL.
+
 ### Behaviors
-- **WS7.1** the home layout `dist-<n>\…` with an atomic `current` switch that needs no privilege:
-  a **directory junction** swapped by create-new-then-`MoveFileExW(MOVEFILE_REPLACE_EXISTING)` of a
-  pointer, or a `current.json` pointer file (whichever the red proves atomic); the executable path
-  comes from `GetModuleFileNameW` (not `/proc/self/exe`, app.zig:130).
-- **WS7.2** the bundled runtime: a pinned x64 Python (python-build-standalone `install_only` or the
-  embeddable zip; decided by the red on both hosts), the pinned Agent SDK wheel with its bundled
-  `claude.exe`, the `zb_agent_host` package.
-- **WS7.3** a **native launcher `zb-claude.exe`** (Zig) replaces the Python `zb-claude` wrapper on
-  Windows: Windows has no `exec` (`os.execv` spawns and exits, which would make the SDK think the CLI
-  ended), and the SDK refuses `.bat`/`.cmd` shims. The launcher sets up the token channel, starts
-  `claude.exe` in the session's job, waits, and returns its exit code.
+- **WS7.1** the home layout `dist-<n>\…` with an atomic `current` switch that needs no privilege. **Rev 2.17:**
+  *inside the distro* this is a POSIX `rename` of a symlink/pointer on the distro's ext4 (testable [L] with real
+  `os.rename` semantics — the model property in the Property register); *on the Windows side* the C3 current-pointer
+  state file (which distro is active) is swapped by create-new-then-`MoveFileExW(MOVEFILE_REPLACE_EXISTING)` and that
+  atomicity **must be proven on the Win11 VM** (W22: the current reds use threads with POSIX `os.rename`, so
+  `MoveFileExW` atomicity, which the plan says the red decides, is untested). The Windows executable path comes from
+  `GetModuleFileNameW` (not `/proc/self/exe`, app.zig:130).
+- **WS7.2 (REWRITTEN, C9)** the bundled runtime is the **distro's** Linux Python + the pinned Agent SDK wheel + the
+  Linux `claude` + the `zb_agent_host` package, installed into the imported rootfs/agent home inside the distro and
+  verified by SHA-256 pins. ~~A pinned Windows x64 Python with the wheel's `claude.exe`~~ is **retired** (no native
+  Windows agent process, section A.2).
+- **WS7.3 (REWRITTEN, C9)** the **launcher is `wsl.exe -d <distro> -u <nonroot> -- <supervisor>`** plus the C1 bootstrap
+  (control capability on a one-shot inherited pipe; OAuth token on a separate inherited fd, WS6.4), implemented in the
+  Windows browser process — **not** a native `zb-claude.exe` that "starts `claude.exe` in the session's job".
+  ~~Windows has no `exec`; the SDK refuses `.bat`/`.cmd`~~ is moot inside the distro (Linux `exec` exists). Red
+  (DRAFT-gated): `assert argv[:5] == ["wsl.exe","-d",DISTRO,"-u",NONROOT] and no_secret_in_argv_env` and `launcher.py`
+  gains the `wsl.exe` argv, `pass_fds` and fd-3 contract.
 - **WS7.4** the SAI copy follows the final "Hook commands only" rule and inherits the S3a
   corrections (da5eb70): dependency trees copied unscanned, links resolving outside an item root
   skipped with **no target bytes** in the home (Windows: symlinks and junctions both), only hook
   command lines validated, no access to the real `%USERPROFILE%\.claude` or repositories.
-- **Files touched:** `agent/host/zb_agent_host/setup.py`, `provision.py`, `files.py` (Windows
-  atomic/ACL helpers), `src/app.zig` (Windows setup path), `src/zb_claude_launcher.zig` (new),
-  `build.zig` (launcher exe), `tests/e2e/win_agent_setup_test.py` (new),
-  `agent/host/tests/test_setup_windows_layout.py` (new, [L] for the pure layout/copy rules with a
-  fake filesystem).
+- **Files touched (rev 2.17):** `agent/host/zb_agent_host/setup.py`, `provision.py`, `files.py` (in-distro layout/copy
+  helpers + the Windows C3 pointer helper), `agent/host/zb_agent_host/launcher.py` (`wsl.exe` argv, `pass_fds`, fd-3),
+  `src/app.zig` (Windows setup path), `tests/windows/win_agent_setup_test.py` (new; the as-built test dir),
+  `agent/host/tests/test_setup_windows_layout.py` (new, [L] for the pure layout/copy rules). ~~`src/zb_claude_launcher.zig`
+  (new), `build.zig` (launcher exe)~~ — **retired (C9)**: no native Windows launcher.
 - 🔴 Red `win_agent_setup_test.py`: `assert rc == 0 and (home / "current").exists()` (today exit 1,
   "the Claude Agent is Linux-only"); and the canary skill target is absent from `dist-<n>`. More reds:
   - WS7.1 `assert reader_never_sees_missing_current` while a second `--agent-setup` swaps `current` in a loop
     (the reader polls 1000 times; mutant: delete-then-create ⇒ a miss ⇒ red).
-  - WS7.2 `assert (home / "current" / "runtime" / "python.exe").exists() and pinned_wheel_sha256 == EXPECTED`
-    (mutant: an unpinned `pip install` ⇒ red).
-  - WS7.3 `agent/host/tests/test_launcher_contract.py` [L] plus `tests/e2e/win_launcher_test.py` [W]:
-    `assert child_exit_code == launcher_exit_code and orphan_count == 0` and `assert argv == [claude_exe, *args]`
-    with no `.bat`/`.cmd` (mutant: launcher returns 0 always ⇒ red).
+  - WS7.2 (rev 2.17) `assert (distro_home / "current" / "runtime" / "bin" / "python3").exists() and pinned_wheel_sha256 == EXPECTED`
+    **run inside the distro** (mutant: an unpinned `pip install` ⇒ red). ~~`python.exe`~~ retired.
+  - WS7.3 (rev 2.17) `agent/host/tests/test_launcher_contract.py` [L]: `assert argv[:5] == ["wsl.exe","-d",D,"-u",U]`, the
+    secret is on `pass_fds`/stdin only, `assert child_exit_code == launcher_exit_code and orphan_count == 0`;
+    ~~`tests/e2e/win_launcher_test.py` with `[claude_exe, *args]`, no `.bat`/`.cmd`~~ retired (mutant: launcher returns 0
+    always ⇒ red). The live `wsl.exe` leg is DRAFT-gated (WS8).
   - WS7.4 `assert canary_target_bytes not in tree_bytes(home)` for a skill symlink and a junction (mutant:
     follow links ⇒ red).
   - WS7.5 (new) `agent/host/tests/test_windows_import.py` [L]: import every `zb_agent_host` module with
@@ -1691,13 +2177,21 @@ to run. Credential tests run inside the interactive session task.
     and `seccomp.py:13` (both `fcntl`), and the POSIX-only `os.fork`/`os.execv` paths (`netd.py:782-793`,
     `relay.py:267`, `launch.py:111`, `token.py:119-129`) must be unreachable on Windows or replaced. Mutant:
     re-add a top-level `import fcntl` ⇒ red.
-- 🟢 Green: `setup.py`/`provision.py`/`files.py` Windows helpers, `zb_claude_launcher.zig`, the Windows path
-  in `app.zig` (`GetModuleFileNameW`, `LOCALAPPDATA`), platform-guarded imports in the Python modules.
-- 🔵 Refactor: one copy-rule engine shared by Linux and Windows; only path/ACL primitives differ.
+- 🟢 Green: `setup.py`/`provision.py`/`files.py` helpers (in-distro layout/copy + Windows pointer), the `launcher.py`
+  `wsl.exe` contract, the Windows path in `app.zig` (`GetModuleFileNameW`, `LOCALAPPDATA`), platform-guarded imports in
+  the Python modules. (~~`zb_claude_launcher.zig`~~ retired.)
+- 🔵 Refactor: one copy-rule engine shared by Linux and the in-distro setup; only the Windows pointer primitive differs.
+- **Toy-input reds are upgraded (W22).** The WS7.1/7.2/7.4 reds that use toy inputs (threads with POSIX `os.rename`,
+  fake bytes, an in-memory filesystem) are tripwires only (D.4); each needs one real row: `MoveFileExW` pointer
+  atomicity on the Win11 VM (a reader polls 1000× while a writer swaps; mutant: delete-then-create ⇒ a miss ⇒ red), the
+  pinned wheel/rootfs bytes verified by SHA-256 against the real artifact, and the junction/symlink copy-skip run on a
+  real NTFS junction on the VM (the in-distro copy-skip on a real ext4 symlink).
 - **Closure:** WS7.1 BLOCKING (setup process → home on disk → helper launch reads it; OBSERVE =
   WS11.1's `ready` frame); WS7.4 LEAF (copy rules).
 
-**Gate (WS7):** [L] layout/copy tests; [W] setup e2e on both hosts. Not a UI slice.
+**Gate (WS7):** [L] layout/copy tests; [W11] setup e2e on the Win11 VM only (agent is Win11-only; Win10 asserts the
+agent-OFF explanation). Not a UI slice. WS7.5 (Windows-importability of the Python modules) is retained only for the
+modules the *Windows host* still imports; the agent modules run in Linux inside the distro.
 
 ---
 
@@ -1709,6 +2203,17 @@ to run. Credential tests run inside the interactive session task.
 > until a later reviewed plan revision closes EVERY blocker below.** The C1-C5 mechanics are
 > **proposals/TBD, not contracts**. Accepting this revision is **documentation honesty only**: it does
 > not close `affd577`, does not authorize implementation, and approves no security claim.
+
+**The ONE sanctioned exception to the "no further live WSL run" rule (rev 2.17, C17).** The gate above forbids any
+further live or destructive WSL run until every blocker closes, but blocker 1 can only be closed by a live rerun of the
+*repaired* spike. That rerun was authorized only in review `ecd290a`, not in the plan, and it then failed before reaching
+the VM on an ssh-config issue (fixed by 6f2188d → 1006b1e → bd92f4a, reviewed 13de146 and 7233d06); the spike header
+(`wsl_live_test.py:3`) still says "NOT RUN". **This plan now states it explicitly: after (a) the six blocker-1 defects are
+fixed in a separate reviewed repair commit AND (b) RoseCat approves the repaired spike, exactly ONE non-destructive-to-others
+live rerun of `tests/windows/wsl_live_test.py` is permitted on win11-m8 (standard user `zbtext`, no admin, the
+app-owned `zb-test-*` names, `-F none`/127.0.0.1 per the WSL ssh note), with a final census equal to baseline.** Any
+second run, any other WSL command, and every WS8/WS9 red/green remains forbidden until a later reviewed revision.
+Before then the spike is not run and its header is corrected from "NOT RUN" only by that rerun's commit.
 
 **The six OPEN blockers from `9134b8b` (each must be closed, with live evidence, in the later revision):**
 1. **OPEN — the spike oracle (`tests/windows/wsl_live_test.py`) is not safe to run.** Current defects (from
@@ -1804,12 +2309,19 @@ or AppContainer fallback (those are dropped for launch, OD-W4).
 - **WS8.2 setup:** one UAC prompt enables the features + imports the distro; idempotent (a second run
   changes nothing); a failed setup leaves no distro and no global WSL/`.wslconfig` change; it records
   whether a reboot was required. If virt/WSL cannot be enabled, setup reports it and the agent stays OFF.
-- **WS8.3 token channels (two, distinct — see C1):** the **control capability** reaches the agent via a
-  one-shot inherited bootstrap fd at launch (never env/argv/file/TCP), and the **OAuth token** reaches the
+- **WS8.3 token channels (TWO, distinct — see C1; rev 2.17 reconciled, C17):** the **control capability** reaches the
+  agent via a one-shot inherited bootstrap fd at launch (never env/argv/file/TCP), and the **OAuth token** reaches the
   CLI via its own inherited fd-3 (`CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR`); neither crosses the control
-  TCP channel, and the two are never conflated.
+  TCP channel, and the two are never conflated. The later "WS8.3 the OAuth token reaches only the CLI channel" bullet
+  in the Behaviors list is the OAuth half of this same item (not a different count): **WS8.3 = two channels throughout.**
+- **WS8.4 non-root identity (RESTORED, rev 2.17, C17 — it was cited at the Unverified-items list and the acceptance matrix
+  but missing from this list):** the agent runs as a dedicated unprivileged Linux uid (C6), never WSL's default root;
+  `wsl.conf [user] default` pinned AND an explicit `-u <nonroot>` at launch; no sudo/doas/admin group, `CapEff=0`, no
+  setuid, no writable rootfs; negatives `mount`, `ptrace`/`process_vm_readv`, host-exe launch, writing system dirs.
+  (Default-user selection and group membership are blocker 2, OPEN.)
 - **WS8.5 no survivors:** terminating the browser tears down the wsl agent tree (the distro's agent
-  processes gone within 1 s); nothing escapes the distro to the Windows host.
+  processes gone **within the C4 bound — a single number, 5 s, proposed below; the earlier "1 s" is withdrawn so WS8.5,
+  C4 and matrix item 9 all say "the bound"**); nothing escapes the distro to the Windows host.
 - **WS8.6 file scope:** workspace ro, scratchpad rw, agent home ro, the host `%USERPROFILE%\.claude`
   unreachable (no `/mnt/c`, interop off).
 - **WS8.7 no-network child (TTS/STT):** the backend can run a no-network command inside the distro
@@ -1903,6 +2415,22 @@ proposal:
   owner-DACL files, inject the bootstrap, or run `wsl -d <app> -u root`; the WSL VM is explicitly **not** an
   isolation boundary against the owning Windows user. The claim is "reachable only with the live-session
   capability," not "owner-only TCP."
+- **Concrete wire format and numbers (rev 2.17, C17, W15) — PROPOSED values, still TBD until the blockers close:**
+
+  | Item | Proposed value |
+  |---|---|
+  | control capability | 32 random bytes (256 bit) per session, never reused |
+  | server nonce | 16 random bytes, fresh per connection |
+  | HMAC | `HMAC-SHA256(capability, server_nonce \|\| client_nonce \|\| "zb-c1-v1")`, 32 bytes; compare constant-time |
+  | frame header | `u32 big-endian length`, then payload; length counts payload only |
+  | max handshake size | 256 bytes total pre-auth (oversize or partial ⇒ drop + close) |
+  | max post-auth frame | 64 KiB; max concurrent streams 16 (C5) |
+  | handshake timeout | 5 s to complete; idle pre-auth connection closed at 5 s |
+  | **Windows-handle → WSL-fd bootstrap** | the launcher creates an anonymous pipe, passes the read end as the child's **stdin** of `wsl.exe` (the only stdio bridge known to cross; the in-distro supervisor reads exactly 32 bytes then closes fd 0) — to be proven live, blocker 3 |
+  | **port-return channel** | the in-distro agent writes one line `ZBPORT <port>\n` (≤ 16 bytes) on **its stdout, which wsl.exe bridges back to the launcher**; the launcher parses it with a 10 s deadline and refuses anything else; the port is never logged or published |
+  | OAuth token channel | a second, separate pipe → inherited fd 3 of the CLI; never on the stdin bootstrap pipe |
+
+  These are *proposals with numbers*, so the blockers are concrete and testable; none is a contract (DRAFT gate).
 - **OAuth-token separation (reconciles WS8.3):** the Anthropic OAuth token is a **separate** credential from
   the control capability. It NEVER crosses the control TCP channel; it reaches only the CLI's own fd-3 token
   channel (`CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR`), delivered by the launcher to the CLI inside the distro
@@ -1996,7 +2524,16 @@ distro.
   released by the OS/lease timeout and the next run completes or rolls back, never leaving a half-retired
   distro); and a stale-lease red (an expired lease must not keep a dead session's distro alive). The exact
   lock primitive (named mutex vs. lease file vs. both) and its timeout are **TBD** pending the implementation
-  revision.
+  revision. **Proposed numbers and typed models (rev 2.17, C17, W15; still PROPOSALS):** primitive = a named Windows
+  mutex `Local\zigbrowser-wsl-<SID>` (exclusive for destructive actions, shared for admission) **plus** a lease file
+  under `C:\Users\<user>\zb\wsl\lease.json`; **lease period 5 s, expiry 15 s (3 missed renewals)**; lock acquire timeout
+  10 s (then refuse, never spin); **"the bound" for teardown = 5 s** (WS8.5, matrix item 9). Typed models:
+  `Lease = { session_id: [16]u8, owner_sid: string, pid: u32, started_ms: u64, renewed_ms: u64, state: enum{admitting, live, retiring, dead} }` (no other states);
+  `CurrentPointer = { schema: u8 = 1, distro_name: string "zigbrowser-<version>-<nonce>", import_dir: string, state: enum{importing, verified, current, retired}, owner_sid: string }`
+  (written by temp-file + flush + atomic `MoveFileExW`); C5 frame = `{ stream_id: u32, op: enum(u8){open=1, data=2, window=3, rst=4, close=5}, len: u32 ≤ 65536, bytes[len] }`
+  with a per-stream receive window of 65536 bytes and ≤ 16 streams; any unknown `op` or `len` over the max ⇒ drop +
+  close. Reds for these types are written only after the DRAFT gate closes (a typed parse test per model; mutant: accept
+  an unknown enum value ⇒ red).
 - **Ownership marker, not a raw pgid (affd577 #6):** every process in the session is tagged with a durable
   **session marker** (a session-id env/credential the supervisor sets, plus a session cgroup/ pgid). Teardown
   and recovery act on the MARKER (reap every process carrying it), so a detached/double-fork/`setsid` child
@@ -2030,8 +2567,9 @@ executable, and writing system dirs.
   `interop.enabled=false` alone leaves it registered — observed in the discovery spike), and bwrap holds inside the distro.
 - **WS8.2** one-admin resumable setup (C3): one prompt, reboot-resume, idempotent, rollback, records whether
   a reboot was needed.
-- **WS8.3** the OAuth token reaches only the CLI channel (C1 separation), never the control channel/env.
-- **WS8.5** per-run teardown kills only this session's agent group (C4), never the shared distro.
+- **WS8.3** (the OAuth half of the two-channel item above) the OAuth token reaches only the CLI channel (C1 separation), never the control channel/env.
+- **WS8.4** (restored, rev 2.17) dedicated non-root uid, default-user selection, no admin group, negatives (C6 / blocker 2).
+- **WS8.5** per-run teardown kills only this session's agent group (C4), never the shared distro, within the C4 bound (5 s).
 - **WS8.6** file scope via the broker (C2): workspace ro, scratch/state rw, host `%USERPROFILE%\.claude`
   unreachable.
 - **WS8.7** no-network child (TTS/STT) inside the distro (netd denies every endpoint; model dir ro).
@@ -2238,19 +2776,29 @@ runs inside the distro and the C5 relay replaces the host-side filters.)*
 
 ---
 
-## WS10: Sign-in on Windows   [W], [U]
+## WS10: Sign-in on Windows   [W11], [U] — DRAFT, blocked on the WS8/WS9 DRAFT gate
 
-- **WS10.1** `claude setup-token` runs under the login launch spec and netd (WS9.4). Linux uses a pty
-  (`login.py:31-38, 128-139`); Windows has no `pty`, so the spike decides between ConPTY (via a small
-  native helper) and plain pipes (if `setup-token` prints the authorize URL without a terminal,
-  **unverified**). The authorize URL is opened in the user's default browser with `ShellExecuteW`
-  only when the user clicks Sign in, and Copy link always works.
-- **WS10.2** the pasted `code#state` reaches the CLI; the token is written to the WS6 store only
-  through the login helper's one-shot channel (fd 4 on Linux; an inherited pipe handle on Windows).
+> **REV 2.17 REWRITE FOR OD-W4 / WSL2 (C10).** WS10 was specified for the dropped native-Windows agent (ConPTY, a
+> Windows `login.py` branch, `agent_login_win.c`). Under OD-W4, **`claude setup-token` runs in Linux inside the distro**
+> under the login launch spec and the in-distro netd, with the Linux `pty` that `login.py` already uses — so there is
+> **no ConPTY helper, no Windows `login.py` branch and no `agent_login_win.c`** (retired). The Windows side's real job
+> is exactly three things: (1) **open the authorize URL** in the user's default browser with `ShellExecuteW` only when
+> the user clicks Sign in (Copy link always works); (2) **carry the pasted `code#state` into the distro over the C1
+> authenticated control channel** (never argv/env/file); (3) **receive the minted token over the login helper's one-shot
+> channel and store it in the WS6 store** (Credential Manager). Win11 only; on Win10 the Sign-in affordance shows the
+> agent-OFF explanation. Everything that touches WSL is behind the WS8/WS9 DRAFT gate.
+
+- **WS10.1** `claude setup-token` runs **in the distro** under the login launch spec and netd (WS9.4) using the Linux pty
+  (`login.py:31-38, 128-139`). The authorize URL frame reaches the Windows side; it is opened in the user's default
+  browser with `ShellExecuteW` only when the user clicks Sign in.
+- **WS10.2** the pasted `code#state` reaches the in-distro CLI over the C1 control channel; the token comes back over
+  the login helper's one-shot channel (fd 4 as on Linux, bridged to a one-shot frame over C1) to the Windows side,
+  which writes it to the WS6 store (`CredWriteW`) and nowhere else.
 - **WS10.3** cancel and timeout end with the same codes as Linux (`cli`, `timeout`, `cancelled`,
-  `shape`, `protocol`; agent_protocol.zig:292-307).
-- **Files touched:** `agent/host/zb_agent_host/login.py` (Windows branch), `src/agent_login_win.c`
-  (new), `tests/e2e/win_login_test.py` (new; fake CLI in e2e).
+  `shape`, `protocol`; agent_protocol.zig:292-307) — the closed map is in the Property register (C18).
+- **Files touched (rev 2.17):** the Windows Secrets-window Sign-in controls (shared with WS6), a thin Windows-side
+  login relay in the browser process, `tests/windows/win_login_test.py` (new; fake CLI in e2e). ~~`login.py` Windows
+  branch, `src/agent_login_win.c`~~ retired (C10).
 - 🔴 Red `win_login_test.py`: `assert frames[-1]["type"] == "done" and cred_read(test_target) == canary`
   (today there is no Windows login helper; `login.py` cannot even be imported on Windows: `fcntl` :28,
   `pty` :31, `termios` :38). More reds, each with a mutant: WS10.1 `assert auth_url_frame.url.startswith("https://") and shell_execute_calls == 0`
@@ -2258,20 +2806,29 @@ runs inside the distro and the C5 relay replaces the host-side filters.)*
   (stdout + stderr + helper_env)` and the token only on the one-shot handle (mutant: pass it in argv ⇒
   red); WS10.3 `assert error_codes == {"cli","timeout","cancelled","shape","protocol"}` for the five forced
   failures, same codes as Linux (`agent_protocol.zig:306`), (mutant: collapse `cancelled` into `cli` ⇒ red).
-- 🟢 Green: `login.py` Windows branch (ConPTY helper or pipes per the spike), `agent_login_win.c`, the
-  Secrets-window Sign-in controls (shared with WS6). 🔵 Refactor: one `LoginSession` state machine used by
-  the Linux and Windows branches; only the process/terminal primitive differs.
+- 🟢 Green (rev 2.17): the Windows-side login relay + the Secrets-window Sign-in controls (shared with WS6); the
+  in-distro login is the existing Linux `login.py`. ~~`login.py` Windows branch (ConPTY), `agent_login_win.c`~~ retired.
+  🔵 Refactor: one `LoginSession` state machine (the Linux one) — no second Windows implementation.
 - **Closure:** BLOCKING (Secrets window → login helper → CLI → store; OBSERVE = the store through
   `CredReadW` + the `SECRETS` census row).
 - **Real-screen check `win-signin`:** Sign in opens the default browser, pasting the code saves the
-  token, on both screens.
+  token, on the Win11 console.
 
-**Gate (WS10):** [W] the browser sign-in UI on both hosts + `win-signin`; the **agent OAuth/fd-3 path is
-win11 only** (Win10 ships agent-OFF, OD-W4 scope), so the agent-token legs run and gate on win11 only.
+**Gate (WS10):** [W11] the Win11 VM + `win-signin` (the whole agent sign-in path is Win11-only: Win10 ships agent-OFF,
+OD-W4 scope; Win10 shows only the agent-OFF explanation). Blocked on the WS8/WS9 DRAFT gate.
 
 ---
 
-## WS11: Agent helper, chat and the approved commit on Windows   [W], [U] — blocked on WS8 + WS9
+## WS11: Agent helper, chat and the approved commit on Windows   [W11], [U] — blocked on WS8 + WS9 (DRAFT gate) + WS5.10 (native card)
+
+> **REV 2.17 REWRITE FOR OD-W4 / WSL2 (C10).** WS11 planned `agent_helper_win.c` with Windows pipes, restart backoff and
+> a "stop ladder via the job". The job model is dropped (OD-W4): **C4 owns teardown** (per-session supervisor, marker
+> reaping, the 5 s bound inside the distro), and the helper/chat engine (`chat.py`, `ClaudeSDKClient`, the Linux
+> `agent_helper`) runs **in the distro**. The Windows side's job is: spawn `wsl.exe -d … -u …` with the C1 bootstrap,
+> pump framed helper frames over the C1 channel into `agent_protocol.zig` validation and the Win32 drawer, restart with
+> the 1/2/4/8 s backoff on supervisor loss, and on exit close the held connection so C4 tears the subtree down. No
+> job-object stop ladder. Win11 only (Win10: agent OFF). **WS11.3's native Approve click requires the WS5.10 card, which
+> does not exist yet** ("the only native minter is WS5's card" is false until WS5.10 lands).
 
 - **WS11.1** the helper starts under the backend, receives the token on its channel, and emits a
   `ready` frame validated by `agent_protocol.zig`.
@@ -2281,10 +2838,11 @@ win11 only** (Win10 ships agent-OFF, OD-W4 scope), so the agent-token legs run a
   native Approve click → grant minted → revalidated → the real flow commits **exactly once** with
   `options.expect` in-ticket. Deny, an expired grant, a navigation retarget or a wrong account
   commits 0.
-- **Files touched:** `src/agent_helper_win.c` (new; the Windows half of `agent_helper.c`: pipes,
-  restart backoff 1/2/4/8 s, stop ladder via the job), `src/app.zig` (wire on Windows),
-  `src/agent_drawer_win.cpp` (Send, bubbles, card), `tests/e2e/win_chat_test.py`,
-  `tests/e2e/win_approved_commit_test.py` (new).
+- **Files touched (rev 2.17):** a Windows-side helper relay (the Windows half of `agent_helper.c`: the `wsl.exe` spawn,
+  the C1-channel frame pump, restart backoff 1/2/4/8 s; ~~stop ladder via the job~~ — teardown is C4's), `src/app.zig`
+  (wire on Windows), the drawer's Send, bubbles and card (WS5.10; in `webview2_shim.cpp` as-built or the target
+  `agent_drawer_win.cpp`), `tests/windows/win_chat_test.py`, `tests/windows/win_approved_commit_test.py` (new; as-built
+  test dir).
 - 🔴 Red `win_chat_test.py`: `assert "DRAWER\tbubble\tassistant\t" + expected in rows`. More reds: WS11.1
   `win_helper_ready_test.py`: `assert ready_frame["type"] == "ready" and token_on_channel == canary and canary not in helper_env`
   (mutant: pass the token in env ⇒ red); WS11.3 `win_approved_commit_test.py`:
@@ -2292,14 +2850,14 @@ win11 only** (Win10 ships agent-OFF, OD-W4 scope), so the agent-token legs run a
   expiry, retarget and wrong account (mutants: Approve handler minting before the click; grant not
   single-use; skipping `options.expect` ⇒ each flips one case); restart: `assert helper_restarts == [1,2,4,8]`
   seconds under repeated kills (mutant: constant 1 s ⇒ red).
-- 🟢 Green: `agent_helper_win.c`, the drawer's Send/bubble/card code, `app.zig` wiring, the stop ladder via
-  the job. 🔵 Refactor: one frame pump shared by the drawer and the e2e census writer; no second
+- 🟢 Green (rev 2.17): the Windows-side helper relay, the drawer's Send/bubble/card code, `app.zig` wiring; teardown via
+  C4 (no job stop ladder). 🔵 Refactor: one frame pump shared by the drawer and the e2e census writer; no second
   protocol-validation path outside `agent_protocol.zig`.
 - **Closure criteria:** WS11.1 BLOCKING (setup → helper → `ready`; OBSERVE = the validated `ready` frame
   and the census row); the two chains below for WS11.2/WS11.3.
 
 ### Workflow Closure (WS11.2 chat)   [BLOCKING]
-- **Chain:** `drawer Send (Win32) -> prompt frame on helper stdin -> chat.py Session -> ClaudeSDKClient -> claude.exe under the backend -> netd -> fake API -> assistant frames on stdout -> agent_protocol.zig validate -> drawer bubble`
+- **Chain:** `drawer Send (Win32) -> prompt frame on helper stdin -> chat.py Session -> ClaudeSDKClient -> the Linux `claude` CLI in the distro under the backend (rev 2.17: no `claude.exe`) -> netd -> fake API -> assistant frames on stdout -> agent_protocol.zig validate -> drawer bubble`
 - **SOURCE:** the prompt + the fake API through netd. **TRIGGER:** the drawer Send handler
   (`highest_new_connector` = the Windows drawer→helper wiring). **DRIVERS:** the helper stdin/stdout
   pump (`chat.py _pump`) + the 50 ms coalescer + the Win32 message loop. **OBSERVE:** the bubble via
@@ -2311,8 +2869,8 @@ win11 only** (Win10 ships agent-OFF, OD-W4 scope), so the agent-token legs run a
   wrong account ⇒ 0; routing `tool_use` over the socket must be impossible.
 
 - **Real-screen checks:** `win-chat-reply` (a streamed reply appears in the drawer, text copyable)
-  and `win-approval-card` (the user clicks Approve and sees one commit; Deny commits nothing), both
-  screens.
+  and `win-approval-card` (the user clicks Approve and sees one commit; Deny commits nothing), on the Win11
+  console (rev 2.17: agent is Win11-only).
 
 **Gate (WS11):** [W] WS11.1-WS11.3 on **win11 only** (WS11 is the agent helper/chat/commit, which needs
 WS8+WS9; Win10 ships agent-OFF per the OD-W4 scope, so WS11 does not run there) + both real-screen cases.
@@ -2349,8 +2907,9 @@ once this plan is accepted (they own the edit; this plan does not edit them).
 | STT **VS11** (drawer dictation) | a mic button and a draft-text API in the Win32 drawer; the physical host with a microphone; real-screen case `win-voice-live` | WS5, WS11 |
 | STT **VSP** (model bundled in every installer) | the MSI slot `<INSTALLDIR>\models\stt\<file>` and the size check (WS13.3 now budgets the **sum** of all bundled payloads, not only the STT model) | WS13.3 |
 
-- **WS12.1** the drawer exposes the two hook points the voice plans call (`zb_drawer_set_draft`,
-  `zb_drawer_speaker_toggled`), stubbed until the voice plans land; 🔴 Red
+- **WS12.1** (**NOT STARTED at HEAD; neither export exists** — C15; depends on the as-built drawer in
+  `webview2_shim.cpp` or the target `agent_drawer_win.cpp`, WS5.9/WS5.10) the drawer exposes the two hook points the
+  voice plans call (`zb_drawer_set_draft`, `zb_drawer_speaker_toggled`), stubbed until the voice plans land; 🔴 Red
   `win_drawer_voice_hooks_test.py`: `assert "DRAWER\tdraft\t" + text in rows` and
   `assert "DRAWER\tspeaker\ton" in rows` after the toggle (today neither export exists). Mutant: make
   `zb_drawer_set_draft` a no-op ⇒ red; a second mutant lets page JavaScript or a socket client call it
@@ -2380,20 +2939,44 @@ once this plan is accepted (they own the edit; this plan does not edit them).
 ## WS13: Packaging, update, uninstall (signing DEFERRED — OD-W3, NOT a launch gate)   [W11] build, [W], [U]
 
 ### Behaviors
-- **WS13.1 the MSI ships every component** the release needs (browser, manifest, launcher, sandbox
-  setup, hook client, Python runtime, `claude.exe`, agent host, models), per user under
-  `%LOCALAPPDATA%\Programs\zigBrowser` (OD-W1); a census lists every PE and fails on an unlisted one.
+- **WS13.1 the MSI ships every component** the release needs, per user under
+  `%LOCALAPPDATA%\Programs\zigBrowser` (OD-W1); a census lists every PE/file and fails on an unlisted one.
+  **Rev 2.17 (C11, OD-W4) component list:** browser, manifest/`.rc` (WS5.8), the drawer, the Secrets/CredMan code, the
+  voice engines/models (voice plans), and — **Win11 build only** — the WSL2 agent payload: the **distro rootfs tarball
+  (pinned SHA-256) and the in-distro agent home/`zb_agent_host`/Linux `claude` as data inside it**, plus the
+  `wsl.exe` launcher/setup code (no separate Windows exe required). **Explicitly NOT shipped under WSL2:** a
+  `zb-agent-sandbox-setup.exe` sandbox-user installer, a Windows Python runtime, a Windows `claude.exe`, a native
+  `zb-claude.exe`, any WFP/sandbox-user component. The census **asserts those are ABSENT**. On a Windows 10 (agent-OFF)
+  build the census asserts the whole WSL2 payload is absent.
 - **WS13.2 WebView2 runtime handling (OD-W8):** the bootstrapper custom action's failure is surfaced
   (not `Return="ignore"` silently): the installer records the result, and the app's WS1.4 check shows
-  the exact message with the standalone-installer link.
-- **WS13.3 size:** the build computes the **sum** of every bundled payload (browser, Python runtime,
-  `claude.exe`, agent host, WebView2 standalone installer if OD-W8 picks it, the STT model, the TTS model and
-  ONNX Runtime) and fails if any cabinet exceeds 2 GB. Known inputs: STT q8_0 823,369,779 bytes (f16 would be
+  the exact message with the standalone-installer link. **Unchanged at HEAD (W13): `Return="ignore"` is still at
+  `zigBrowser.wxs:80`**, so a failed bootstrapper is still swallowed — OPEN.
+- **WS13.3 size:** the build computes the **sum** of every bundled payload (browser, the distro rootfs + agent payload,
+  WebView2 standalone installer if OD-W8 picks it, the STT model, the TTS model and
+  ONNX Runtime) and fails if any cabinet exceeds 2 GB. **Rev 2.17 (W13): `MediaTemplate EmbedCab="yes"`
+  (`zigBrowser.wxs:19`) has no cabinet cap, so the 0.8-1.5 GB speech model plus the rootfs will break the 2 GB limit
+  — the `.wxs` must set `MediaTemplate MaximumUncompressedMediaSize` (split cabinets) before any model is added.**
+  The splitter's size invariant is in the Property register (C18). Known inputs: STT q8_0 823,369,779 bytes (f16 would be
   1,533,763,059, q5_0 539,212,467; STT plan O1 is still open), TTS about 0.1-0.13 GB (unverified), so the
   choice of the STT file moves the total from about 1.0 to 1.7 GB before the Python runtime and `claude.exe`
   are added. The MSI uses split cabinets (`MediaTemplate MaximumUncompressedMediaSize`) and the test asserts the
   number of cabinets and each one's size.
-- **WS13.4 uninstall** removes the files, shortcuts, HKCU keys, and the agent sandbox. *(⚠️ HISTORICAL /
+- **WS13.4 uninstall (NORMATIVE, rev 2.17, C11 — the WSL-era uninstall, Win11 only).** The uninstall removes the files,
+  shortcuts and HKCU keys, and **only zigBrowser's own WSL state: our versioned distro(s) `zigbrowser-<version>-<nonce>`
+  (unregistered), their import dirs, the C3 current-pointer/lease/state files and the staging dirs — and nothing else.**
+  It **never** disables WSL/VMP, removes another distro, touches `.wslconfig`, runs `wsl --shutdown`, or unregisters a
+  distro that still has a live session (it takes the C4 lock exclusively and holds it across the census and the
+  unregister). Because enabling WSL/VMP is a global change that other software may now depend on, the uninstaller
+  **states** that those features are left enabled (C3 "uninstall honesty"). The uninstall must never report success
+  while any zigBrowser distro, import dir, state/lease file or pointer survives. The MSI is `perUser`/`limited`, so the
+  WSL unregister is an unprivileged per-user action (no UAC; `wsl --unregister` of our own distro needs none) run by an
+  immediate custom action or an in-app "Remove agent" step, and the probe is also run in the state where the MSI
+  uninstall finished but a distro survived (the product then shows "finish removing the agent" on next launch).
+  **The post-uninstall probe runs on the Win11 VM only — NOT on the physical Windows 10 machine, which is read-only by
+  rule (C11); on a Win10 (agent-OFF) build the probe asserts there is simply no WSL payload to remove.** The
+  historical sandbox-user/WFP census text below is retained only as history and gates nothing.
+  *(⚠️ HISTORICAL /
   NON-NORMATIVE, OD-W4 — see the scope banner. The sandbox-user/WFP cleanup described in the rest of this
   bullet and its SIX-kinds census below are the DROPPED dedicated-user model. Under WSL2 (C3, DRAFT) uninstall
   removes only zigBrowser's distro/import/state, cannot un-enable global WSL/VMP, and there are no sandbox
@@ -2420,12 +3003,18 @@ once this plan is accepted (they own the edit; this plan does not edit them).
   VM), `Get-AuthenticodeSignature` `Valid` on both hosts, publisher shown in SmartScreen, Smart App
   Control not blocking. **None of this is built or gated for launch.** The ONLY hard rule now: **the
   artifact is an unsigned development build and NOTHING may claim it is "signed" or "distributable".**
-  Status tracked via Agent Mail / plan status (the beads DB is migration-locked).
+  Status tracked via Agent Mail / plan status and the beads epic zigBrowser-4pa (rev 2.17, W5: `bd` is NOT
+  migration-locked — the review filed issues 4pa.31-49 with it).
+- 🔴 **WS13.4 red (NORMATIVE, rev 2.17, C11; replaces the six-kind sandbox/WFP assertion below)** on the Win11 VM:
+  `assert distros_after == [] and import_dirs_after == [] and state_files_after == [] and global_wsl_features_unchanged and other_distros_unchanged and not (uninstall_reported_success and (distros_after or import_dirs_after or state_files_after))`.
+  Mutants, each ⇒ red: leave a distro registered; leave an import dir; leave the lease/pointer file; **disable WSL/VMP
+  (forbidden)**; unregister a co-tenant distro (forbidden); report success while any zigBrowser distro survives; run
+  `wsl --shutdown`.
 - 🔴 More reds (each with a mutant): WS13.1 `assert census.unlisted == [] and census.missing == []`
   (mutant: add an unlisted DLL ⇒ red); WS13.2 `assert install_log.bootstrapper_result is not None and (rc == 0 or app_shows_runtime_message)`
   (mutant: keep `Return="ignore"` and drop the log ⇒ red); WS13.3 `assert all(c.size < 2**31 for c in cabinets)`
-  (mutant: one 2.1 GB payload ⇒ red); WS13.4 `assert users_after == [] and profiles_after == [] and wfp_filters_after == [] and wfp_providers_after == [] and wfp_sublayers_after == [] and tasks_after == [] and not (uninstall_reported_success and (users_after or profiles_after or wfp_filters_after or wfp_providers_after or wfp_sublayers_after or tasks_after))`
-  (the probe censuses all SIX kinds the uninstall normative names in §3 item (d) — sandbox **users**, **profile folders**, WFP **filters**, WFP **providers**, WFP **sublayers** and scheduled **tasks** — "no user, profile folder, filter, provider, sublayer or scheduled task behind"; mutants, each ⇒ red: skip the filter removal; leave a profile folder; leave a WFP provider; leave a WFP sublayer; skip a scheduled task; and report uninstall success while ANY of a user/profile/filter/provider/sublayer/task survives); WS13.5 `assert tampered_update_refused` (mutant: skip the signature
+  (mutant: one 2.1 GB payload ⇒ red); ~~WS13.4 `assert users_after == [] and profiles_after == [] and wfp_filters_after == [] and wfp_providers_after == [] and wfp_sublayers_after == [] and tasks_after == [] and not (uninstall_reported_success and (users_after or profiles_after or wfp_filters_after or wfp_providers_after or wfp_sublayers_after or tasks_after))`
+  (the probe censuses all SIX kinds the uninstall normative names in §3 item (d) — sandbox **users**, **profile folders**, WFP **filters**, WFP **providers**, WFP **sublayers** and scheduled **tasks** — "no user, profile folder, filter, provider, sublayer or scheduled task behind"; mutants, each ⇒ red: skip the filter removal; leave a profile folder; leave a WFP provider; leave a WFP sublayer; skip a scheduled task; and report uninstall success while ANY of a user/profile/filter/provider/sublayer/task survives)~~ (HISTORICAL, dropped design — superseded by the normative WS13.4 red above); WS13.5 `assert tampered_update_refused` (mutant: skip the signature
   check ⇒ red). WS13.6 (signing) is **DEFERRED and not a launch red** — no `sig.Status == "Valid"`
   assertion gates launch; if signing is ever adopted it would add those checks (+ a `HashMismatch`
   negative), but they are explicitly out of the launch gate.
@@ -2441,12 +3030,15 @@ once this plan is accepted (they own the edit; this plan does not edit them).
 - 🔴 Red `msi_install_test.py`: `assert census.unlisted == [] and census.missing == []` (today the
   MSI ships only `zigBrowser.exe` + the bootstrapper). (No signature assertion — signing is deferred,
   OD-W3, and is not a launch red.)
-- **Closure:** LEAF (packaging assertions), except WS13.4 BLOCKING (installer → elevated helper →
-  system state; OBSERVE = the post-uninstall probe of users and WFP filters).
-- **Real-screen check `win-install-smartscreen`:** the user downloads the installer in Edge on each
-  host and records what SmartScreen shows.
+- **Closure:** LEAF (packaging assertions), except WS13.4 BLOCKING (installer → per-user WSL unregister →
+  distro/state; OBSERVE = the post-uninstall probe of distros, import dirs and state files on the Win11 VM).
+- **Real-screen check `win-install-smartscreen`:** the user downloads the installer in Edge on the Win11 console and
+  records what SmartScreen shows (Windows 10: untested, C1).
 
-**Gate (WS13):** [W] the browser MSI install/uninstall/census on both hosts; the **agent/sandbox/WSL
+**Gate (WS13) — rev 2.17 (C11, C1): [W11] only.** The browser MSI install/uninstall/census runs on the Win11 VM; **the
+physical Windows 10 machine is read-only by rule and receives NO install and NO post-uninstall probe** (the earlier
+text that ran the install and the "(users, filters, tasks, folders)" probe there is withdrawn). Original text (history,
+read through the rule above): [W] the browser MSI install/uninstall/census on both hosts; the **agent/sandbox/WSL
 packaging census (distro rootfs, import dir, the sandbox/voice-agent components) is win11 only** — on Win10
 the census asserts those components are ABSENT (agent-OFF build), per the OD-W4 scope. Signing is DEFERRED (OD-W3) and is **NOT part
 of the WS13 launch gate** — the gate asserts only the unsigned MSI's contents/install/uninstall/census,
@@ -2456,15 +3048,26 @@ find each component owner's artifact — browser (WS1), drawer (WS5), setup (WS7
 helper (WS9), sign-in (WS10), agent host/helper (WS11) — **and the voice packaging the voice plans own** (the
 TTS engine + model and the STT engine + model via their VSP/W1 slices); a missing component fails the census,
 so WS13's gate cannot pass until every component owner and the voice-packaging owners have landed. The
-`win-install-smartscreen` case is a UI/real-screen case for both hosts; on the physical machine the install
+`win-install-smartscreen` case is a UI/real-screen case ~~for both hosts; on the physical machine the install
 is by `zbtest` into `C:\Users\zbtest\AppData\Local\Programs\zigBrowser`, and the post-uninstall probe
-(users, filters, tasks, folders) also runs there.
+(users, filters, tasks, folders) also runs there~~ (WITHDRAWN, rev 2.17 C11/C1: the physical Windows 10 machine is
+read-only, so no install and no probe run there).
 
 ---
 
 ## Dependency order
 
-`WS0 → WS1 → WS2.0 → WS2a → WS2b → WS2c → WS3 → WS4`, and in parallel after WS1:
+> **Re-baselined order (rev 2.17; C4, C3, C6; section C default pending owner ratification).** At HEAD the code was
+> built OUT OF ORDER: WS3, WS5, WS6 and WS7 (about 170 commits) landed before WS2a-c, and WS4 cannot start at all. The
+> order from here is: **(1)** finish WS0.4/WS0.8/WS0.9 (the gate and runner) and WS1.2 (the m8 harness every later e2e
+> reuses); **(2)** the **WS2a.0** isolated-world spike and the **WS2b.1** `isTrusted` spike (and WS2b.0 capability
+> honesty); **(3)** the WS2a port (`automation_wv2_port.zig`, Closure A) then WS2b, WS2c; **(4)** **WS3.4** — wire the
+> cookie port and the default/owner-only profile with their e2e; **(5)** WS4 (needs WS2a.1); **(6)** the WS5/WS6
+> amendments (WS5.8-WS5.10, the WS6 consumer); **(7)** WS7-WS11 only after the WS8/WS9 DRAFT gate closes, and WS7/WS10/
+> WS11 rewritten for WSL2 first. **No new WS5/WS6/WS7 feature work until WS2a.1 is green** except the named amendments.
+> Retirements (D.6) are independent and may land any time.
+
+`WS0 → WS1 → WS2.0 → WS2a → WS2b → WS2c → WS3 → WS4`, and in parallel after WS1 (original order, history; superseded by the box above):
 `WS5 (drawer) → WS6 (Secrets) → WS7 (setup) → WS8 (sandbox, hard gates) → WS9 (egress) → WS10
 (sign-in) → WS11 (helper, chat, approved commit; needs WS4 + WS5 + WS8 + WS9)`. (WS8 and WS9 are coupled by
 the WSL2 topology, not WFP: WS8 stands up the distro + the in-distro bubblewrap/netns and the C1/C5 control
@@ -2484,17 +3087,27 @@ runtime distribution); OD-W2 (update) is post-launch. The still-open items are O
 
 1. Mail "taking the gate slot" for gate runs only (trust only "slot FREE" mails). 2. Write the
 slice's red tests in **unregistered** files (not wired into any `build.zig` step or the gate
-phase list); record the red runs on the Windows hosts. 3. Green, and register the tests in the same
-green commit. 4. Refactor (the checklist in each slice). 5. Quiet gate from a clean `git archive
-HEAD` plus the slice's files: the Linux gate under a private Xvfb as it does today, then
-`tests/windows/gate.sh` on both hosts. 6. Commit only the slice's own hunks (the worktree is shared;
+phase list); record the red runs on the Win11 VM. 3. Green, and register the tests in the same
+green commit (live steps behind the `windows-live` aggregate with fail-on-skip, D.1). 4. Refactor (the checklist in each slice). 5. Quiet gate from a clean `git archive
+HEAD` plus the slice's files: the Linux gate under a private Xvfb as it does today, then **the real command in D.2**
+(`gate.sh --probe-only` + `ZB_WIN_GATE=1 python3 -I <test>` per live test with `ASSERTS n>0`, no skip) until WS0.9's
+product-run mode exists, and `tests/windows/gate.sh --product` after (rev 2.17, C2; the earlier "`gate.sh` on both
+hosts" referred to a mode that does not exist — the no-argument gate exits 2). 6. Commit only the slice's own hunks (the worktree is shared;
 never stage another agent's work). 7. Mail RoseCat for review. 8. UI slices: the orchestrator runs
-the named real-screen cases with the user on both screens; not approved until they pass.
+the named real-screen cases with the user on the Win11 console (C1); not approved until they pass.
 **Never** rewrite history: no reset, rebase or amend of committed work, even unpushed; fix forward
 with a new green commit. A slice is done only when its closure e2e was observed to execute with
-nonzero assertions on both hosts.
+nonzero assertions on the Win11 VM (and Win10 iff a writable host is authorized, C1) **and its live row is accepted
+(D.4); a registered live step run with no host FAILS (D.1)**.
 
 ## Real-screen checks (all, by slice)
+
+> **Rev 2.17 (C1, C14):** "both" below reads **"the Win11 console"**; the Windows 10 monitor leg is dropped until an
+> authorized writable Win10 host exists. `tests/manual/real_screen_check.py` is X11-only today, so a Windows capture +
+> foreground-proof backend is a prerequisite for scheduling any `win-*` case. `win-sandbox-uac` is Win11-only
+> (clicked by the owner). The agent cases (`win-sandbox-uac`, `win-signin`, `win-chat-reply`, `win-approval-card`) never
+> run on Win10 (agent OFF). `win-voice-live`/`win-voice-permission` need a microphone host and stay as the voice plans
+> define them (physical Windows 10 is read-only, so they are unscheduled until a writable mic host exists).
 
 | Case | Slice | Where |
 |---|---|---|
@@ -2618,5 +3231,8 @@ voice plans' "being written" sentences; `docs/how-to-build.md:66-67` still says 
 
 ## Process note (beads)
 
-No bead was filed for this plan: the shared bd DB is migration-locked on the remote-backed clone,
-and `bd migrate`/`bootstrap` are not run unilaterally. Status is tracked via Agent Mail and this plan.
+**Corrected in rev 2.17 (W5).** The earlier claim here — that no bead was filed because the shared bd DB is
+migration-locked — is **withdrawn**: `bd` works today and the independent review filed its findings under the epic
+`zigBrowser-4pa` (`4pa.31` through `4pa.49`, discovered-from `4pa.4`; the enhancement task is `4pa.9`). `bd migrate` and
+`bootstrap` are still never run unilaterally on the remote-backed clone. Track status with `bd` (epic `zigBrowser-4pa`)
+and Agent Mail; this plan is the source of the amendments, not the tracker.
