@@ -497,7 +497,7 @@ public static class Z {
     IntPtr c = GetWindow(parent, GW_CHILD);
     while (c != IntPtr.Zero) {
       var cls = new StringBuilder(64); GetClassName(c, cls, 64);
-      if (cls.ToString() == "STATIC") { var t = new StringBuilder(64); GetWindowText(c, t, 64); parts.Add("STATIC:" + t.ToString()); }
+      if (string.Equals(cls.ToString(), "STATIC", StringComparison.OrdinalIgnoreCase)) { var t = new StringBuilder(64); GetWindowText(c, t, 64); parts.Add("STATIC:" + t.ToString()); }
       c = GetWindow(c, GW_HWNDNEXT);
     }
     return String.Join("|", parts.ToArray());
@@ -509,7 +509,7 @@ public static class Z {
     IntPtr c = GetWindow(host, GW_CHILD);
     while (c != IntPtr.Zero) {
       var cls = new StringBuilder(64); GetClassName(c, cls, 64);
-      if (cls.ToString() == "STATIC") {
+      if (string.Equals(cls.ToString(), "STATIC", StringComparison.OrdinalIgnoreCase)) {
         var t = new StringBuilder(64); GetWindowText(c, t, 64);
         if (t.ToString() == "S") {
           RECT r; if (!GetWindowRect(c, out r)) return "";
@@ -528,7 +528,7 @@ public static class Z {
     IntPtr c = GetWindow(host, GW_CHILD);
     while (c != IntPtr.Zero) {
       var cls = new StringBuilder(64); GetClassName(c, cls, 64);
-      if (cls.ToString() == "STATIC") {
+      if (string.Equals(cls.ToString(), "STATIC", StringComparison.OrdinalIgnoreCase)) {
         var t = new StringBuilder(64); GetWindowText(c, t, 64);
         if (t.ToString() == "S") { return IsWindowVisible(c) ? 1 : 0; }
       }
@@ -542,7 +542,7 @@ public static class Z {
     IntPtr c = GetWindow(host, GW_CHILD);
     while (c != IntPtr.Zero) {
       var cls = new StringBuilder(64); GetClassName(c, cls, 64);
-      if (cls.ToString() == "STATIC") { var t = new StringBuilder(64); GetWindowText(c, t, 64); if (t.ToString() == "") return c; }
+      if (string.Equals(cls.ToString(), "STATIC", StringComparison.OrdinalIgnoreCase)) { var t = new StringBuilder(64); GetWindowText(c, t, 64); if (t.ToString() == "") return c; }
       c = GetWindow(c, GW_HWNDNEXT);
     }
     return IntPtr.Zero;
@@ -567,7 +567,7 @@ public static class Z {
     IntPtr c = GetWindow(host, GW_CHILD);
     while (c != IntPtr.Zero) {
       var cls = new StringBuilder(64); GetClassName(c, cls, 64);
-      if (cls.ToString() != "STATIC" && IsWindowVisible(c)) {
+      if (!string.Equals(cls.ToString(), "STATIC", StringComparison.OrdinalIgnoreCase) && IsWindowVisible(c)) {
         RECT r; if (GetWindowRect(c, out r)) { int hgt = r.bottom - r.top; if (hgt > best) best = hgt; }
       }
       c = GetWindow(c, GW_HWNDNEXT);
@@ -588,7 +588,7 @@ public static class Z {
     IntPtr c = GetWindow(host, GW_CHILD);
     while (c != IntPtr.Zero) {
       var cls = new StringBuilder(64); GetClassName(c, cls, 64);
-      if (cls.ToString() == "STATIC") {
+      if (string.Equals(cls.ToString(), "STATIC", StringComparison.OrdinalIgnoreCase)) {
         var t = new StringBuilder(64); GetWindowText(c, t, 64);
         if (t.ToString() == "S") {
           RECT r; if (!GetWindowRect(c, out r)) return -999;
@@ -617,7 +617,7 @@ public static class Z {
     IntPtr c = GetWindow(host, GW_CHILD);
     while (c != IntPtr.Zero) {
       var cls = new StringBuilder(64); GetClassName(c, cls, 64);
-      if (cls.ToString() != "STATIC" && IsWindowVisible(c)) {
+      if (!string.Equals(cls.ToString(), "STATIC", StringComparison.OrdinalIgnoreCase) && IsWindowVisible(c)) {
         RECT r; if (GetWindowRect(c, out r)) { long a = (long)(r.right-r.left) * (r.bottom-r.top); if (a > best) { best = a; found = c; } }
       }
       c = GetWindow(c, GW_HWNDNEXT);
@@ -1242,6 +1242,15 @@ class WinDrawerOracle(unittest.TestCase):
         # option a: the runner records job_count_after via the fail-closed SETTLED read, not a single instant read.
         self.assertIn("JobProcessCountSettled", _RUNNER)
         self.assertNotIn("$res.job_count_after = [Z]::JobProcessCount()", _RUNNER)
+
+    def test_runner_matches_static_class_case_insensitively(self):
+        # GetClassName reports the Win32 built-in control class as "Static", NOT "STATIC" (confirmed by the
+        # 361935b hierarchy diagnostic: the panel/icon/min all enumerate as class 'Static'). The runner's class
+        # checks MUST be case-insensitive, or DirectStatics finds no controls and the native-mount success row
+        # spuriously fails though the drawer mounted correctly.
+        self.assertIn("StringComparison.OrdinalIgnoreCase", _RUNNER)
+        self.assertNotIn('cls.ToString() == "STATIC"', _RUNNER)
+        self.assertNotIn('cls.ToString() != "STATIC"', _RUNNER)
 
     def test_runner_seam_allowlists_match_the_python_modes(self):
         # The runner's PowerShell Decode-Mode allowlists MUST list every FAIL_MODES / FORCE_MODES value (minus
