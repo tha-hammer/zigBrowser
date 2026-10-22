@@ -35231,3 +35231,69 @@ portable card red, ObjC ingress oracle, Zig authority oracle and export gate
 must be registered together. Until the four inventory bypasses close, this
 commit does not authorize a Mac build/click run or change the earlier push
 boundary.
+
+## WS5.5b-2 failed live evidence and clean-quit red (`e01042c`, `096f30e`)
+
+**`e01042c`: BLOCKED-for-final acceptance; `096f30e`: BLOCKED-for-tests. No
+new Win11 run is authorized.** The exact `e01042c` Win11 run is useful causal
+evidence: window 1 emitted `[tree, icon, open, liveclose]`, window 2 emitted
+`[tree, icon, open]`, and both before/after censuses were clean. Thus the
+close-one transition and retire-once ownership path ran, but the terminal
+`live` row never appeared because the owned-Job harness terminated the process
+at its earlier settle point. The fail-fast run did not execute the panel/icon
+failure rows, so it cannot close `1b2fe0a`.
+
+The clean-shutdown direction is correct, and the committed red fails 2/2 on
+`096f30e`, but it does not pin a correct implementation:
+
+1. `PostQuitMessage` alone is wrong for this layout. It exits the message loop
+   without destroying the primary HWND; `run_core` then destroys the remaining
+   extras and emits `live` *before* its later primary `DestroyWindow`, so the
+   observed final count would still be one. The e2e-only WINDOWS path must
+   drive the primary's normal close/`WM_DESTROY` path (for example a posted
+   `WM_CLOSE`) after spawning, so the primary decrement and quit occur before
+   cleanup destroys the extras and emits final zero.
+2. Searching for `ZB_WS55_CLEAN_QUIT` anywhere is not causal. Bind the real
+   call site and order to e2e + drawer + successfully parsed WINDOWS seam,
+   spawn first and primary close second; ordinary/screenshot runs, the extra
+   WndProc, a comment, a wrong gate, quit-before-spawn and a bare
+   `PostQuitMessage` must not satisfy it.
+3. There are four WINDOWS-seam cases: base peak/final, close-one, panel-fail
+   and icon-fail. Require each named case to set exactly
+   `ZB_SETTLE_KINDS=live`; a global count of at least three permits duplicates
+   and leaves the base case settling on `open`.
+4. Seeing `live` does not by itself prove the Job is only a backstop. Those
+   cases must boundedly wait for the held process to exit normally after the
+   row and record that no `TerminateJobObject`/`TerminateProcess` action was
+   needed; retain the owned-Job kill only on timeout/failure. A kill-first
+   mutant must fail.
+
+## MS6.5.1 startup-owner production-seam red (`bce7d09`)
+
+**BLOCKED-for-tests; keep it unregistered, unarmed and signal-free.** Moving
+startup-before-dispatch ordering to a behaviorally driven combinator is the
+right correction, and the distinct clock values close the literal-deadline
+bypass from `0245193`. Three causal gaps remain:
+
+1. The app binding is still two independent substring presences in
+   `runWithIo`. It passes when `runStartupThenDispatch` receives a no-op/wrong
+   hook while `recoverLeftoverAgentRuns` appears in an unrelated dead
+   statement. Bind the hook argument/data flow at the real call site (or drive
+   a production wrapper whose hook is the owner), with wrong-hook and dead
+   decoy mutants.
+2. `SpyOps.clock` is not counted and every construction has the same token.
+   Calling it twice, sampling the first once and passing the second unsampled
+   clock leaves `caps.now == 1` and the token assertion green. Count clock
+   construction, issue a distinct token per construction, require exactly one
+   construction and that first identity at recovery, and add the two-clock
+   mutant.
+3. `methodBody(src, "pub fn recover(")` is not scoped to `RealOps`; an earlier
+   dead/top-level method can carry the core call while `RealOps.recover` does
+   something else. Extract the lexed `RealOps` body and then its named method,
+   with an in-module decoy mutant. The raw-source app-import check also accepts
+   a comment/string decoy and must use a comment-safe import binding.
+
+The absent owner module remains the intended red, but this commit does not
+close `0245193` or the startup-owner range and authorizes no Mac/signal run.
+The newest contiguous approved push-through remains the already-pushed
+`6f145bc`; `1b2fe0a` remains the earliest blocker.
