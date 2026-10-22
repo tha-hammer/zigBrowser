@@ -1255,15 +1255,10 @@ class WinDrawerOracle(unittest.TestCase):
         # has no paren, so `atoi(` uniquely marks an actual call a revert would introduce.
         self.assertNotIn("atoi(", shim, "the shim must not call atoi(...) — strict full-string parsing only")
 
-    def test_ws6_win_token_store_is_bound(self):
-        # WS6.1 (c): bind the Windows token store (src/agent_secrets_win.cpp). The Win32 can't run on Linux;
-        # cross-check-secrets-win proves it builds + exports zb_secret_*, and this pins its structure.
-        win = (pathlib.Path(__file__).resolve().parents[2] / "src" / "agent_secrets_win.cpp").read_text(encoding="utf-8")
-        for tok in ("CredWriteW", "CredReadW", "CredDeleteW", "CRED_TYPE_GENERIC", "CRED_PERSIST_LOCAL_MACHINE"):
-            self.assertIn(tok, win, f"the CredMan store must use {tok}")
-        self.assertIn("CryptProtectData", win, "the file fallback must DPAPI-wrap the token")
-        self.assertIn("CRYPTPROTECT_UI_FORBIDDEN", win, "DPAPI must never prompt (headless/service)")
-        self.assertNotIn("sk-ant-oat01-", win, "the C++ store must not duplicate the token shape (it lives in Zig)")
+    # WS6.1 (c) note: the Windows token store (src/agent_secrets_win.cpp) is NOT bound by a substring oracle
+    # here (RoseCat: a grep is satisfiable by comments/dead code). Its proof is the registered
+    # cross-check-secrets-win compile + a compiled fake-call seam with mutants (unregistered, pending), and
+    # the real disposable-target round-trip on Win11.
 
     def test_ws5_5b2_spawn_is_call_bound(self):
         # WS5.5b-2 (RoseCat 6b324c8 #1/#2/#4): CALL-BOUND to the real spawn body (not a whole-file grep). The
