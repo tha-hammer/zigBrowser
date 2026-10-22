@@ -28529,3 +28529,36 @@ to AzureRidge as Agent Mail 7572. Because `e707d50` does not yet make the
 earlier WS8/WS9 plan range honest, and `85cdc46` is independently blocked
 later in the same linear range, the newest contiguous push-through remains
 the already-pushed `bac895b`.
+
+## MS6.5.1 C2 crash-cut classifier (`3d45cae`, `e738a7d`)
+
+`3d45cae` is **APPROVED as the scoped causal red**. An exact-SHA reviewer run
+compiled the C test directly and produced the intended result: four of five
+rows passed and the marker-less C2 row failed. At `e738a7d`, the registered
+focused build step was green: **4/4 steps, 5/5 rows**.
+
+`e738a7d` is **BLOCKED as the claimed C2 crash-cut green**:
+
+1. **BLOCKER-for-tests / production closure — this tests a classifier, not
+   recovery.** The plan requires the red to stop teardown at C2 and then run
+   recovery (`macOS plan:2032-2038`). No production caller uses
+   `zb_reaper_run_marker_state`; the test observes neither `rmdir` nor ledger
+   removal, zero signal, or an idempotent second pass. Its assertion text says
+   “finish rmdir+remove” without driving either action. Wire the classifier
+   into the held recovery transaction and drive that production chain from
+   the exact marker-unlink crash state.
+2. **BLOCKER — a special marker can wedge or masquerade as a valid run.** The
+   blocking `openat(O_RDONLY|O_NOFOLLOW)` can wait forever on a FIFO, and a
+   directory or other special object is accepted as PRESENT. Use a
+   nonblocking open plus `fstat`, accepting only the exact app-owned regular
+   marker shape; symlink, FIFO, directory, wrong owner/mode and other errors
+   must fail closed under a bounded no-wedge oracle.
+3. **Integration obligation — provenance must precede teardown
+   classification.** TEARDOWN is safe only after the ledger's recorded
+   `(dev,ino,uid,mode)` matches the held run-directory fd. The current helper
+   merely reopens a basename. The production-chain red must catch a swapped
+   or mismatched marker-less directory before any removal.
+
+Thus the new helper is an approved classifier seam, not C2 closure. Findings
+were mailed to JadeBeacon as Agent Mail 7575. `git diff --check` was clean and
+the review sent no signals.
