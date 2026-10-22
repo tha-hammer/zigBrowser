@@ -81,6 +81,15 @@ class M8LiveDriverHostless(unittest.TestCase):
         self.assertNotEqual(p.returncode, 0, f"gated driver with no host must fail: {p.stdout!r} {p.stderr!r}")
         self.assertNotEqual(p.returncode, SKIP_EXIT, "a gated run must never report a skip")
         self.assertIn("no Windows host configured", p.stderr)
+        self.assertIn("ZB_WIN_GATE", p.stderr)
+
+    def test_gated_driver_with_host_but_no_exe_fails_closed(self):
+        env = _env(gate=True)
+        env["ZB_WIN11_HOST"] = "192.0.2.1"  # TEST-NET: never contacted, the exe check comes first
+        p = subprocess.run([sys.executable, "-I", str(DRIVER)], cwd=REPO, env=env,
+                           capture_output=True, text=True, timeout=60)
+        self.assertEqual(p.returncode, 1, f"gated driver without ZB_WIN_EXE must exit 1: {p.stderr!r}")
+        self.assertIn("ZB_WIN_EXE", p.stderr)
 
     def test_standalone_driver_without_host_reports_not_run(self):
         p = _run_driver(gate=False)
@@ -92,14 +101,23 @@ class M8LiveDriverOnHost(unittest.TestCase):
     def test_every_m8_test_passes_with_asserts_on_the_host(self):
         if not os.environ.get("ZB_WIN11_HOST"):
             self.skipTest("ZB_WIN11_HOST unset: the live leg needs an approved, released host run")
-        p = _run_driver(gate=True, keep_hosts=True, timeout=900)
+        p = _run_driver(gate=True, keep_hosts=True, timeout=2400)
         sys.stderr.write(p.stdout + p.stderr)
-        self.assertEqual(p.returncode, 0, "the gated driver must pass on the host")
-        for name in M8_TESTS:
-            stem = name[:-len(".py")]
-            m = re.search(rf"^RESULT\t{re.escape(stem)}\tPASS\tASSERTS (\d+)$", p.stdout, re.M)
-            self.assertIsNotNone(m, f"{stem}: no PASS + ASSERTS result row")
-            self.assertGreater(int(m.group(1)), 0, f"{stem}: ASSERTS must be > 0")
+        labels = ["win11"] + (["win10"] if os.environ.get("ZB_WIN10_HOST") else [])
+        for label in labels:
+            for name in M8_TESTS:
+                stem = name[:-len(".py")]
+                m = re.search(rf"^RESULT\t{label}\t{re.escape(stem)}\tPASS\tASSERTS (\d+)$", p.stdout, re.M)
+                self.assertIsNotNone(m, f"{label} {stem}: no PASS + ASSERTS result row")
+                self.assertGreater(int(m.group(1)), 0, f"{label} {stem}: ASSERTS must be > 0")
+        total = re.findall(r"^ASSERTS (\d+)$", p.stdout, re.M)
+        self.assertTrue(total and int(total[-1]) > 0, "the driver must print a total ASSERTS n > 0")
+        if len(labels) == 2:
+            self.assertEqual(p.returncode, 0, "the gated driver must pass on both hosts")
+        else:
+            # A Win11-only run is never a pass: the both-hosts gate reports it INCOMPLETE (plan WS0.6, WS1.2-W10).
+            self.assertEqual(p.returncode, 1, "a one-host gated run must exit 1")
+            self.assertIn("INCOMPLETE: both hosts are required", p.stderr)
 
 
 if __name__ == "__main__":

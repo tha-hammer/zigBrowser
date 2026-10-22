@@ -29,6 +29,18 @@ def hw_gate_ready() -> tuple[bool, str]:
     return True, "ok"
 
 
+def gate_skip_exit(reason: str) -> int:
+    """A missing precondition: skip (77) when run standalone, FAIL (1) under ZB_WIN_GATE=1 (plan D.1, WS1.2).
+
+    Same contract as slice2_common.gate_skip_exit (GrayHarbor's WS0.9 green); this local copy is replaced by
+    that import once it lands."""
+    eprint(reason)
+    if os.environ.get("ZB_WIN_GATE") == "1":
+        eprint("ZB_WIN_GATE=1: precondition missing; a skip is a failure under the gate")
+        return 1
+    return SKIP_EXIT
+
+
 def default_binary() -> str:
     return "zig-out/bin/zigBrowser.exe" if platform.system() == "Windows" else "zig-out/bin/zigBrowser"
 
@@ -61,13 +73,12 @@ def main() -> int:
 
     enabled, reason = hw_gate_ready()
     if not enabled:
-        eprint(reason)
-        return SKIP_EXIT
+        return gate_skip_exit(reason)
 
     browser = Path(args.binary or default_binary())
     index = Path(args.index)
     if not require_file(browser, "binary") or not require_file(index, "app index"):
-        return SKIP_EXIT
+        return gate_skip_exit("SKIP: the binary or the app index is missing")
 
     env = dict(os.environ)
     eprint("runner=interactive-scheduled-task")
@@ -111,6 +122,7 @@ def main() -> int:
         return code_error
 
     print("PASS\tm8-reply-channel-contract")
+    print("ASSERTS 2")  # the echo success row and the BadArgs error row
     return 0
 
 

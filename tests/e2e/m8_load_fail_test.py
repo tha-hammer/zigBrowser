@@ -81,6 +81,18 @@ class HangingTcpServer:
             threading.Thread(target=hold, args=(conn,), daemon=True).start()
 
 
+def gate_skip_exit(reason: str) -> int:
+    """A missing precondition: skip (77) when run standalone, FAIL (1) under ZB_WIN_GATE=1 (plan D.1, WS1.2).
+
+    Same contract as slice2_common.gate_skip_exit (GrayHarbor's WS0.9 green); this local copy is replaced by
+    that import once it lands."""
+    eprint(reason)
+    if os.environ.get("ZB_WIN_GATE") == "1":
+        eprint("ZB_WIN_GATE=1: precondition missing; a skip is a failure under the gate")
+        return 1
+    return SKIP_EXIT
+
+
 def hw_gate_ready() -> tuple[bool, str]:
     if platform.system() != "Windows":
         return False, "SKIP: M8 is Windows-only"
@@ -136,6 +148,11 @@ def assert_failure_contract(label: str, result: RunResult, uri: str, expected_lo
     load_fail_rows = protocol_rows(result.stdout_lines, "LOAD_FAIL")
 
     if result.returncode in RUNTIME_FAILURE_CODES:
+        if os.environ.get("ZB_WIN_GATE") == "1":
+            # A missing or broken WebView2 runtime proves nothing about load failures: under the gate it fails.
+            print(f"FAIL\t{label}-runtime-failure-under-gate")
+            print_fail_context(label, result)
+            return False
         if load_fail_rows:
             print(f"FAIL\t{label}-runtime-failure-emitted-load-fail")
             print_fail_context(label, result)
@@ -190,19 +207,21 @@ def main() -> int:
 
     enabled, reason = hw_gate_ready()
     if not enabled:
-        eprint(reason)
-        return SKIP_EXIT
+        return gate_skip_exit(reason)
 
     browser = Path(args.binary or default_binary())
     if not require_file(browser, "binary"):
-        return SKIP_EXIT
+        return gate_skip_exit("SKIP: the binary is missing")
 
     ok = True
+    cases = 0
     if args.mode in ("all", "load-fail"):
+        cases += 1
         fail_uri = args.fail_uri or closed_localhost_uri()
         ok = run_case(browser, fail_uri, 5, args.timeout_sec, "m8-load-fail") and ok
 
     if args.mode in ("all", "timeout"):
+        cases += 1
         with HangingTcpServer() as server:
             timeout_uri = f"http://127.0.0.1:{server.port}/"
             ok = run_case(browser, timeout_uri, 8, args.timeout_sec, "m8-load-timeout") and ok
@@ -211,6 +230,9 @@ def main() -> int:
         return 1
 
     print("PASS\tm8-load-fail-contract")
+    if os.environ.get("ZB_WIN_GATE") == "1":
+        # Each gated case passed three checks: the exit code, a 4-field LOAD_FAIL row, its domain/code fields.
+        print(f"ASSERTS {3 * cases}")
     return 0
 
 
