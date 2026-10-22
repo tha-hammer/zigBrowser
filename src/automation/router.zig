@@ -76,6 +76,8 @@ pub const Guard = struct {
     target: bool = false,
     /// S8 decision 13: the exact `location.pathname` the step requires.
     path: ?[]const u8 = null,
+    /// S8 decision 13 (rev 16.20.55): automation.js's token of the document the step must run in.
+    document: ?[]const u8 = null,
 };
 
 pub const max_guard_marks = 8;
@@ -604,6 +606,11 @@ fn parseGuard(arena: std.mem.Allocator, obj: std.json.ObjectMap) error{BadArgs}!
             const marks = arena.alloc(Guard.Mark, items.len) catch return error.BadArgs;
             for (items, marks) |item, *mark| mark.* = try parseMark(arena, item);
             guard.marks = marks;
+        } else if (std.mem.eql(u8, key, "document")) {
+            guard.document = switch (entry.value_ptr.*) {
+                .string => |d| if (d.len > 0) arena.dupe(u8, d) catch return error.BadArgs else return error.BadArgs,
+                else => return error.BadArgs,
+            };
         } else if (std.mem.eql(u8, key, "path")) {
             guard.path = switch (entry.value_ptr.*) {
                 .string => |p| if (isPath(p)) arena.dupe(u8, p) catch return error.BadArgs else return error.BadArgs,
@@ -611,7 +618,7 @@ fn parseGuard(arena: std.mem.Allocator, obj: std.json.ObjectMap) error{BadArgs}!
             };
         } else return error.BadArgs;
     }
-    if (guard.marks.len == 0 and !guard.target and guard.path == null) return error.BadArgs;
+    if (guard.marks.len == 0 and !guard.target and guard.path == null and guard.document == null) return error.BadArgs;
     return guard;
 }
 

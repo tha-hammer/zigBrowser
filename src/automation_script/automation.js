@@ -153,6 +153,8 @@
   }
 
   function guardFailure(guard) {
+    // S8 decision 13 (rev 16.20.55): the document the approved run checked, and no other.
+    if (typeof guard.spec.document === 'string' && guard.spec.document !== inputAck.doc) return 'document_changed';
     // S8 decision 13: the page the step was approved on (a pushState moves it).
     if (typeof guard.spec.path === 'string' && document.location.pathname !== guard.spec.path) return 'path_changed';
     for (const mark of guard.spec.marks || []) {
@@ -264,7 +266,8 @@
         return rateLimitScan(command);
       case 'documentToken':
         // S8 phase C: this world's own token of the current document (a new one per document).
-        return success({ documentToken: inputAck.doc }, []);
+        // `leaving`: a cross-document navigation has started and not ended (S8 decision 13).
+        return success({ documentToken: inputAck.doc, leaving: inputAck.pending !== null }, []);
       default:
         return failure('unknown_op', command, [], false);
     }

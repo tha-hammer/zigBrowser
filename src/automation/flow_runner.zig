@@ -143,6 +143,9 @@ pub const Runner = struct {
     /// S8 decision 13: the `options.guard` every later action of an approved run carries (owned
     /// JSON object); set by the flow per stage, never without an approval.
     guard: ?[]u8 = null,
+    /// S8 decision 13 (rev 16.20.55): the platform's thread path an approved opener armed; the
+    /// next action lets one new document under it get phase C again, then it is spent.
+    thread_path: ?[]const u8 = null,
 
     pub fn run(self: *Runner, method: []const u8, params_json: []const u8) error{OutOfMemory}!?[]const u8 {
         // No step starts without budget; a waitFor also needs room for the
@@ -155,12 +158,15 @@ pub const Runner = struct {
         if (self.approval != null and try self.approvalRefuses(method, params_json, action)) return null;
         var guarded: ?[]u8 = null;
         defer if (guarded) |g| self.gpa.free(g);
-        if (action) if (self.guard) |guard| {
-            guarded = (try withGuard(self.gpa, params_json, guard)) orelse {
+        // Every action of an approved run names the document phase C captured (RoseCat 7504 #2),
+        // with the flow's own guard when it set one.
+        const document: ?[]const u8 = if (self.approval) |a| a.document_token else null;
+        if (action and (self.guard != null or document != null)) {
+            guarded = (try withGuard(self.gpa, params_json, self.guard orelse "{}", document)) orelse {
                 try self.malformed();
                 return null;
             };
-        };
+        }
         const sent_params = guarded orelse params_json;
         var clamped: ?[]u8 = null;
         defer if (clamped) |c| self.gpa.free(c);
@@ -244,6 +250,21 @@ pub const Runner = struct {
             .refused => |refused| self.approvalStop(refused),
             .window => |window| blk: {
                 defer window.deinit(self.gpa);
+                // The opener's one allowance: a document committed since it gets phase C again.
+                const thread_path = self.thread_path;
+                self.thread_path = null;
+                if (thread_path) |prefix| if (window.load_serial != serial) {
+                    if (!try onThread(self.gpa, window.url, approval.url, prefix)) {
+                        break :blk self.approvalStop(try engine_mod.automationFailure(self.gpa, .expectation_mismatch, "thread_url_changed", self.ext.ids()));
+                    }
+                    const token = try self.documentToken() orelse
+                        break :blk self.approvalStop(try engine_mod.automationFailure(self.gpa, .expectation_mismatch, "document_token_unreadable", self.ext.ids()));
+                    if (self.approval.?.document_token) |old| self.gpa.free(old);
+                    self.approval.?.document_token = token;
+                    self.approval.?.load_serial = window.load_serial;
+                    const refused = try engine_mod.windowRefusal(self.gpa, window, .{ .load_serial = window.load_serial }, self.ext.ids());
+                    break :blk if (refused) |r| self.approvalStop(r) else false;
+                };
                 const refused = try engine_mod.windowRefusal(self.gpa, window, .{ .load_serial = serial }, self.ext.ids());
                 if (refused) |r| break :blk self.approvalStop(r);
                 break :blk try self.documentRefuses(approval.document_token.?);
@@ -264,6 +285,15 @@ pub const Runner = struct {
     /// automation.js's token of the current document (op documentToken, in the isolated world),
     /// owned; null when it could not be read.
     fn documentToken(self: *Runner) error{OutOfMemory}!?[]u8 {
+        const state = (try self.readDocument()) orelse return null;
+        return state.token;
+    }
+
+    const DocumentState = struct { token: []u8, leaving: bool };
+
+    /// automation.js's token of the current document and whether a cross-document navigation it
+    /// saw start has not ended (op documentToken); the token owned; null when unreadable.
+    fn readDocument(self: *Runner) error{OutOfMemory}!?DocumentState {
         const timeout_ms = @min(scan_timeout_ms, self.remainingMs());
         if (timeout_ms == 0) return null;
         const ids = self.ext.ids();
@@ -285,14 +315,16 @@ pub const Runner = struct {
         };
         defer answer.deinit();
         if (!answer.ok) return null;
-        const value = switch (answer.value) {
-            .object => |o| o.get("documentToken") orelse return null,
+        const object = switch (answer.value) {
+            .object => |o| o,
             else => return null,
         };
-        return switch (value) {
-            .string => |t| if (t.len > 0) try self.gpa.dupe(u8, t) else null,
-            else => null,
+        const token = switch (object.get("documentToken") orelse return null) {
+            .string => |t| if (t.len > 0) t else return null,
+            else => return null,
         };
+        const leaving = if (object.get("leaving")) |l| (l == .bool and l.bool) else false;
+        return .{ .token = try self.gpa.dupe(u8, token), .leaving = leaving };
     }
 
     /// S8 phase C, right after the approved navigation: it committed exactly the approved URL;
@@ -462,6 +494,36 @@ pub const Runner = struct {
         self.setGuard(try std.json.Stringify.valueAlloc(self.gpa, .{ .marks = .{mark}, .target = true }, .{}));
     }
 
+    /// S8 decision 13 (rev 16.20.55; approved runs only): the opener was clicked. If it started a
+    /// cross-document navigation, wait (within the flow budget) for the window to commit it; the
+    /// next action then lets one new document under `thread_path` get phase C again.
+    pub fn openedThread(self: *Runner, thread_path: []const u8) error{OutOfMemory}!void {
+        const approval = self.approval orelse return;
+        const serial = approval.load_serial orelse return;
+        const state = (try self.readDocument()) orelse return;
+        defer self.gpa.free(state.token);
+        // Only a navigation this click started (RoseCat 7504 #1): automation.js still in the
+        // opener's document says it is leaving, or the read already landed in the new document.
+        const replaced = if (approval.document_token) |captured| !std.mem.eql(u8, captured, state.token) else false;
+        if (!state.leaving and !replaced) return;
+        self.thread_path = thread_path;
+        if (replaced) return;
+        while (self.remainingMs() > 0) {
+            switch (try self.ext.boundWindow(self.gpa, self.remainingMs())) {
+                .refused => |refused| {
+                    var r = refused;
+                    r.deinit(self.gpa);
+                    return;
+                },
+                .window => |window| {
+                    defer window.deinit(self.gpa);
+                    if (window.load_serial != serial) return;
+                },
+            }
+            if (!self.pause(thread_commit_poll_ms)) return;
+        }
+    }
+
     /// The recipient an approved conversation message's approval names, else null.
     pub fn approvedRecipient(self: *const Runner) ?[]const u8 {
         const approval = self.approval orelse return null;
@@ -583,20 +645,38 @@ pub fn withFailedStep(gpa: std.mem.Allocator, outcome: engine_mod.Outcome, step:
 /// `params_json` with its `timeout_ms` and `options.timeout_ms` lowered to
 /// at most `max_ms`; null when nothing needed lowering (or the params are
 /// not an object).
-/// `params_json` with `options.guard` set to `guard_json` (owned), or null when either is not a
-/// JSON object.
-fn withGuard(gpa: std.mem.Allocator, params_json: []const u8, guard_json: []const u8) error{OutOfMemory}!?[]u8 {
+/// How often openedThread re-reads the registry while the opener's navigation commits.
+const thread_commit_poll_ms: u64 = 50;
+
+/// `url` is on `approved`'s origin with a path under `prefix` (the platform's thread path).
+fn onThread(gpa: std.mem.Allocator, url: []const u8, approved: []const u8, prefix: []const u8) error{OutOfMemory}!bool {
+    const origin = try engine_mod.originOf(gpa, url);
+    defer gpa.free(origin);
+    const approved_origin = try engine_mod.originOf(gpa, approved);
+    defer gpa.free(approved_origin);
+    if (!std.mem.eql(u8, origin, approved_origin) or std.mem.eql(u8, origin, "null")) return false;
+    const scheme_end = std.mem.indexOf(u8, url, "://") orelse return false;
+    const rest = url[scheme_end + 3 ..];
+    const start = std.mem.indexOfScalar(u8, rest, '/') orelse return false;
+    return std.mem.startsWith(u8, rest[start..], prefix);
+}
+
+/// `params_json` with `options.guard` set to `guard_json` (owned), plus the captured `document`
+/// when there is one, or null when either is not a JSON object.
+fn withGuard(gpa: std.mem.Allocator, params_json: []const u8, guard_json: []const u8, document: ?[]const u8) error{OutOfMemory}!?[]u8 {
     var parsed = std.json.parseFromSlice(std.json.Value, gpa, params_json, .{}) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
         else => return null,
     };
     defer parsed.deinit();
     const arena = parsed.arena.allocator();
-    const guard = std.json.parseFromSliceLeaky(std.json.Value, arena, guard_json, .{}) catch |err| switch (err) {
+    var guard = std.json.parseFromSliceLeaky(std.json.Value, arena, guard_json, .{}) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
         else => return null,
     };
     if (guard != .object) return null;
+    // The document phase C captured: automation.js refuses the step in any other (rev 16.20.55).
+    if (document) |d| try guard.object.put(arena, "document", .{ .string = d });
     var root = switch (parsed.value) {
         .object => |*o| o,
         else => return null,

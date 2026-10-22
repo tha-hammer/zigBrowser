@@ -1370,6 +1370,17 @@ pub fn build(b: *std.Build) void {
     automation_recipient_owner_tests_module.addImport("automation", automation_module);
     const run_automation_recipient_owner_tests = b.addRunArtifact(b.addTest(.{ .root_module = automation_recipient_owner_tests_module }));
     run_automation_recipient_owner_tests.skip_foreign_checks = true;
+    // S8a decision 13 (rev 16.20.55): a thread that opens as a new page gets phase C again, and every
+    // guarded action names its document.
+    const automation_thread_document_tests_module = b.createModule(.{
+        .root_source_file = b.path("tests/automation_thread_document_test.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    automation_thread_document_tests_module.addImport("automation", automation_module);
+    const run_automation_thread_document_tests = b.addRunArtifact(b.addTest(.{ .root_module = automation_thread_document_tests_module }));
+    run_automation_thread_document_tests.skip_foreign_checks = true;
 
     const automation_cookie_tests_module = b.createModule(.{
         .root_source_file = b.path("tests/automation_cookie_test.zig"),
@@ -1691,6 +1702,14 @@ pub fn build(b: *std.Build) void {
         "automation-recipient-owner-e2e",
     });
     automation_recipient_owner_e2e.addArtifactArg(exe);
+    // S8a decision 13 (rev 16.20.55): the thread page on the real binary and the Instagram fixture.
+    const automation_thread_document_e2e = b.addSystemCommand(&.{
+        "sh",
+        "-c",
+        "python3 tests/e2e/automation_thread_document_test.py --binary \"$1\"; rc=$?; if [ \"$rc\" = 77 ]; then exit 0; fi; exit \"$rc\"",
+        "automation-thread-document-e2e",
+    });
+    automation_thread_document_e2e.addArtifactArg(exe);
 
     // N18: synthetic dom.scroll / dom.hover through the Python SDK; offsets
     // read back in the next command.
@@ -3047,6 +3066,8 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&automation_recipient_guard_e2e.step);
     test_step.dependOn(&run_automation_recipient_owner_tests.step);
     test_step.dependOn(&automation_recipient_owner_e2e.step);
+    test_step.dependOn(&run_automation_thread_document_tests.step);
+    test_step.dependOn(&automation_thread_document_e2e.step);
     test_step.dependOn(&run_owner_only_tests.step);
     test_step.dependOn(&run_agent_setup_ms5_tests.step);
     test_step.dependOn(&run_agent_setup_ms5_python_tests.step);

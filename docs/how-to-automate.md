@@ -915,7 +915,15 @@ the same page task as each event.
   (`path_changed` or `mark_changed`) and nothing more is typed or sent. A
   `linkedin.message` to a `conversationUrl` names no one itself, so its
   `expect` must also carry `recipient`, the person's profile slug (`carol` for
-  `/in/carol/`); `recipient` anywhere else is -32602.
+  `/in/carol/`); `recipient` anywhere else is -32602. If the Message click opens
+  the thread as its own page, the flow waits for it, and that page must be on
+  the same site under the thread path (`/direct/t/`, `/messaging/thread/`), else
+  -32015 `thread_url_changed`; one such page only, and only when the Message
+  click itself started that navigation.
+- Every step of an approved flow is bound to the page that was checked:
+  `guard.document` (automation.js's token for it, on any of `dom.click`,
+  `fill`, `type`, `press`, `selectOption`) makes a step in any other page
+  -32015 `document_changed`.
 
 ## Import cookies from another browser
 

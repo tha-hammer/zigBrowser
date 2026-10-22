@@ -356,6 +356,9 @@ pub fn follow(gpa: std.mem.Allocator, runner: anytype, s: flow.Site, profile_url
 
 pub const MessageTarget = union(enum) { conversation_url: []const u8, profile_url: []const u8 };
 
+/// S8 decision 13: where a messaging thread opened as its own page lives.
+const thread_path = "/messaging/thread/";
+
 /// Sends `text` in an existing conversation, or from a profile's Message
 /// button.
 pub fn message(gpa: std.mem.Allocator, runner: anytype, s: flow.Site, target: MessageTarget, text: []const u8) Error!?[]u8 {
@@ -381,6 +384,8 @@ pub fn message(gpa: std.mem.Allocator, runner: anytype, s: flow.Site, target: Me
         defer gpa.free(contact_info);
         try runner.guardOpener(recipient.?, .{ .selector = selectors.owner_contact_info_link, .attribute = "href", .path = true, .value = contact_info });
         if (!(try clickProfileAction(gpa, runner, area, .message, name))) return null;
+        // The thread may open as its own page (rev 16.20.55): it gets phase C again, once.
+        try runner.openedThread(thread_path);
     }
     if (recipient) |r| try runner.guardThread(selectors.message_thread_header_link, r);
     if (!(try typeInto(gpa, runner, selectors.message_input, text))) return null;

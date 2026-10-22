@@ -169,6 +169,9 @@ pub fn comment(gpa: std.mem.Allocator, runner: anytype, s: flow.Site, post_url: 
     return try gpa.dupe(u8, ok_json);
 }
 
+/// S8 decision 13: where a DM thread opened as its own page lives (UNVERIFIED live).
+const thread_path = "/direct/t/";
+
 /// Opens `username`'s profile, presses Message and sends `text`.
 pub fn dm(gpa: std.mem.Allocator, runner: anytype, s: flow.Site, username: []const u8, text: []const u8) Error!?[]u8 {
     try validateText(text, max_dm_chars);
@@ -180,6 +183,8 @@ pub fn dm(gpa: std.mem.Allocator, runner: anytype, s: flow.Site, username: []con
     defer gpa.free(recipient);
     try runner.guardOpener(recipient, .{ .selector = selectors.profile_owner_name, .value = username });
     if (!(try click(gpa, runner, selectors.message_button, true))) return null;
+    // The thread may open as its own page (rev 16.20.55): it gets phase C again, once.
+    try runner.openedThread(thread_path);
     try runner.guardThread(selectors.dm_thread_header_link, recipient);
     if (!(try click(gpa, runner, selectors.dm_input, true))) return null;
     if (!(try flow.step(gpa, runner, "dom.type", .{ .selector = selectors.dm_input, .text = text, .options = .{ .timeout_ms = flow.budget(runner, flow.typingTimeoutMs(text, false)) } }))) return null;
