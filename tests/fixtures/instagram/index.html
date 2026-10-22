@@ -255,8 +255,23 @@
               document.querySelector('header').insertAdjacentHTML('afterend', '<section class="suggested">' + suggested + '</section>');
               ig.result = { action: 'follow', state: state };
             });
-            document.getElementById('message').addEventListener('click', function () { dm.hidden = false; });
+            // S8 decision 13 (a thread that opens as a new page): crossdoc.user's Message loads
+            // its thread at /direct/t/77/; crossdocwrong.user's loads another profile instead.
+            document.getElementById('message').addEventListener('click', function () {
+              if (m[1] === 'crossdoc.user') location.assign('/direct/t/77/?with=crossdoc.user');
+              else if (m[1] === 'crossdocwrong.user') location.assign('/mallory/');
+              else dm.hidden = false;
+            });
           }, 1500);
+        } else if ((m = path.match(/^\/direct\/t\/([^/]+)\/$/))) {
+          // A DM thread as its own page: the dialog whose header links the person it is with.
+          ig.page = 'thread:' + m[1];
+          var withUser = params.get('with') || 'nobody';
+          main.innerHTML = '<div role="dialog" id="dm"><header><a href="/' + withUser + '/">' + withUser + '</a></header>' +
+            '<div aria-label="Message" contenteditable="true"></div>' +
+            '<div role="button" id="send"><svg width="12" height="12"><title>Paper plane icon</title></svg>Send</div></div>';
+          var threadBox = main.querySelector('[contenteditable]');
+          document.getElementById('send').addEventListener('click', function () { ig.result = { action: 'dm', text: threadBox.textContent }; });
         } else {
           ig.page = 'other';
         }

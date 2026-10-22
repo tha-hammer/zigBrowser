@@ -55,6 +55,14 @@ pub const Windowed = struct {
     token_bump_after_first_eval_after_nav: bool = false,
     /// The token read with this 1-based ordinal is unreadable, as `unreadable` says (RoseCat 7107).
     token_unreadable_at: ?usize = null,
+    /// A cross-document navigation a real click starts (S8 decision 13, a thread that opens as a
+    /// new page): right after the first real click whose command holds `match`, the window
+    /// commits a new document at `url` (a new load_serial and document token). `then` is a second
+    /// such navigation, after the first real click holding its own `match`.
+    click_navigates: ?ClickNav = null,
+    click_navigates_then: ?ClickNav = null,
+    /// The URL the last click navigation committed (shown by the registry).
+    clicked_to: ?[]const u8 = null,
     unreadable: enum { script_failure, malformed, empty, missing } = .script_failure,
 
     pub fn port(self: *Windowed) page_port.PagePort {
@@ -100,6 +108,20 @@ pub const Windowed = struct {
             a.free(answer);
             answer = std.fmt.allocPrint(a, "{{\"ok\":true,\"value\":{{\"ok\":true,\"sent\":{{\"events\":0,\"chars\":0}},\"target\":\"zb-1\",\"document\":\"doc-{d}\"}}}}", .{self.token_bumps}) catch return error.OutOfMemory;
         }
+        const real_click = hasOp(arg, "click") and std.mem.indexOf(u8, arg, "\"trial\":true") == null;
+        if (real_click) {
+            if (self.click_navigates) |nav| {
+                if (std.mem.indexOf(u8, arg, nav.match) != null) {
+                    self.click_navigates = null;
+                    self.commitClickNav(nav.url);
+                }
+            } else if (self.click_navigates_then) |again| {
+                if (std.mem.indexOf(u8, arg, again.match) != null) {
+                    self.click_navigates_then = null;
+                    self.commitClickNav(again.url);
+                }
+            }
+        }
         if (self.token_bump_after_first_eval_after_nav and self.inner.navigate_calls.items.len > 0 and std.mem.indexOf(u8, arg, "rateLimitScan") == null) {
             self.token_bump_after_first_eval_after_nav = false;
             self.token_bumps += 1;
@@ -115,6 +137,12 @@ pub const Windowed = struct {
         }
         return answer;
     }
+    fn commitClickNav(self: *Windowed, to: []const u8) void {
+        self.clicked_to = to;
+        self.bumps += 1;
+        self.token_bumps += 1;
+    }
+
     fn navigate(ptr: *anyopaque, target: []const u8, timeout_ms: u64) page_port.PortError!void {
         const p = from(ptr).innerPort();
         return p.vtable.navigate(p.ptr, target, timeout_ms);
@@ -137,7 +165,7 @@ pub const Windowed = struct {
         if (self.clock) |clock| clock.now_ms += self.list_cost_ms;
         if (self.stop_during_list) |flag| flag.store(true, .release);
         const navigated = self.inner.navigate_calls.items.len;
-        const shown = if (navigated > 0) (self.land_url orelse self.inner.current_url) else self.inner.current_url;
+        const shown = self.clicked_to orelse if (navigated > 0) (self.land_url orelse self.inner.current_url) else self.inner.current_url;
         const list = try a.alloc(page_port.WindowInfo, 1);
         errdefer a.free(list);
         const url_copy = try a.dupe(u8, shown);
@@ -154,6 +182,8 @@ pub const Windowed = struct {
         return list;
     }
 };
+
+pub const ClickNav = struct { match: []const u8, url: []const u8 };
 
 pub fn hasOp(arg: []const u8, op: []const u8) bool {
     var buf: [64]u8 = undefined;
