@@ -264,3 +264,337 @@ test "concrete lease #4 unreadable: an open that fails for a non-shape reason is
         else => return error.ExpectedUnreadable,
     }
 }
+
+// ---- finding #5: the reviewed zb_reaper_fixed_point over the held fd, with an INTERCEPTED (counting) kill -------
+
+const Counters = struct { kills: u32 = 0, gone: bool = false };
+var g_pass: usize = 0; // census pass counter; the per-pass SIZING call (buf==null) advances it. Per-process (fork).
+const SCRIPTED_PID: i32 = 424242; // a marked child; > 1, not us; the kill is intercepted so no real signal
+const DUMMY_PATH: [*:0]const u8 = "/run/zb/zigbrowser-agent-515151-00bb00bb00bb00bb";
+
+// zb_reaper_gather calls scan(NULL,0) for a size estimate, then scan(buf, bytes) to fill. Pass 1 yields the one
+// marked pid; every later pass is empty -> the complete empty final census (clean). The sizing call is the pass
+// boundary, so it advances g_pass.
+fn scanCb(buf: ?*anyopaque, bytes: c_int) callconv(.c) c_int {
+    if (buf == null) { // size-estimate call: starts a new gather pass
+        const p = g_pass;
+        g_pass += 1;
+        return if (p == 0) 1 else 0;
+    }
+    if (g_pass == 1) { // fill call for pass 1
+        if (bytes < @sizeOf(i32)) return 0;
+        const pp: [*]i32 = @ptrCast(@alignCast(buf.?));
+        pp[0] = SCRIPTED_PID;
+        return 1;
+    }
+    return 0; // fill call for a later (empty) pass
+}
+const ESRCH: c_int = @intFromEnum(std.posix.E.SRCH);
+fn inspectCb(pid: recovery.pid_t, dir: [*c]const u8, out: [*c]recovery.ReaperId, ctx: ?*anyopaque) callconv(.c) void {
+    _ = pid;
+    _ = dir;
+    _ = ctx;
+    // A matching survivor of our uid with a stable identity (so the pre-kill re-inspect's same_proc holds).
+    out.* = .{ .matches = 1, .have_bsd = 1, .uid = linux.getuid(), .start_sec = 111, .start_usec = 0 };
+}
+fn killCb(pid: recovery.pid_t, sig: c_int, ctx: ?*anyopaque) callconv(.c) c_int {
+    _ = pid;
+    const o: *recovery.OpsCtx = @ptrCast(@alignCast(ctx.?));
+    const cnt: *Counters = @ptrCast(@alignCast(o.user.?));
+    if (sig == 0) return if (cnt.gone) ESRCH else 0; // engine_gone liveness probe: gone AFTER our kill
+    cnt.kills += 1; // the real SIGKILL -> INTERCEPTED (counted, never actually sent)
+    cnt.gone = true;
+    return 0;
+}
+
+const ReaperWiring = struct {
+    counters: *Counters,
+    pub fn run(self: ReaperWiring, clock: anytype, run_dir_fd: i32, pinned: *const recovery.DirId, deadline_ms: i64) ledger.FixedPoint {
+        _ = clock;
+        _ = deadline_ms;
+        return recovery.runFixedPoint(run_dir_fd, pinned, DUMMY_PATH, 8, scanCb, inspectCb, killCb, self.counters);
+    }
+};
+
+test "concrete lease #5 real census: one marked child is killed (intercepted count==1), fixed point clean -> recovered" {
+    if (!inPrivatePidNamespace()) return error.NotInPrivatePidNamespace;
+    const io = std.testing.io;
+    const gpa = std.testing.allocator;
+    const clock = ledger.RealClock{ .io = io };
+    var td = std.testing.tmpDir(.{});
+    defer td.cleanup();
+
+    const id = try makeRunDir(td.dir, true);
+    try seedFrom(io, td.dir, id);
+    g_pass = 0;
+    var counters = Counters{};
+    const act = ledger.recoverOneUnderLock(io, gpa, td.dir, BASENAME, clock, clock.nowMs() + TOTAL_BUDGET_MS, recovery.ConcreteActuator(ReaperWiring){ .wiring = .{ .counters = &counters } });
+    try std.testing.expectEqual(ledger.RecoveryAction.signalled, act);
+    try std.testing.expectEqual(@as(u32, 1), counters.kills); // ONE marked child entered the real kill phase (observed, not an enum)
+    try std.testing.expectEqual(@as(usize, 0), try entryCount(io, gpa, td.dir));
+    try std.testing.expect(!runDirExists(td.dir));
+}
+
+// ---- compact bounded-reap harness for the forked two-recoverer row (same shapes proven elsewhere) -------------
+
+const WNOHANG: u32 = 1;
+fn writeAll(fd: i32, bytes: []const u8) void {
+    var off: usize = 0;
+    while (off < bytes.len) {
+        const n = linux.write(fd, bytes.ptr + off, bytes.len - off);
+        switch (linux.errno(n)) {
+            .SUCCESS => {
+                if (n == 0) return;
+                off += @intCast(n);
+            },
+            .INTR => {},
+            else => return,
+        }
+    }
+}
+const RealPoll = struct {
+    fd: i32,
+    pub fn pollOnce(self: RealPoll) ledger.PollOutcome {
+        var pfd = [_]linux.pollfd{.{ .fd = self.fd, .events = linux.POLL.IN, .revents = 0 }};
+        const pn = linux.poll(&pfd, 1, 100);
+        return switch (linux.errno(pn)) {
+            .SUCCESS => if (pn > 0 and (pfd[0].revents & (linux.POLL.IN | linux.POLL.HUP | linux.POLL.ERR)) != 0) .ready else .again,
+            .INTR => .eintr,
+            else => .err,
+        };
+    }
+};
+fn readExactWithin(clock: anytype, fd: i32, buf: []u8, deadline_ms: i64) bool {
+    var off: usize = 0;
+    while (off < buf.len) {
+        if (ledger.waitWithinDeadline(clock, deadline_ms, RealPoll{ .fd = fd }) != .ready) return false;
+        const n = linux.read(fd, buf.ptr + off, buf.len - off);
+        switch (linux.errno(n)) {
+            .SUCCESS => {
+                if (n == 0) return false;
+                off += @intCast(n);
+            },
+            .INTR => {},
+            else => return false,
+        }
+    }
+    return true;
+}
+fn closeAndClear(p: *i32) void {
+    if (p.* >= 0) {
+        _ = linux.close(p.*);
+        p.* = -1;
+    }
+}
+const Child = struct { pid: i32 = -1, reaped: bool = false, status: u32 = 0 };
+fn reapWithin(clock: anytype, c: *Child, deadline_ms: i64) bool {
+    if (c.reaped or c.pid <= 1) return c.reaped;
+    while (true) {
+        var st: u32 = 0;
+        const rc = linux.waitpid(c.pid, &st, WNOHANG);
+        switch (linux.errno(rc)) {
+            .INTR => continue,
+            .SUCCESS => if (rc == @as(usize, @intCast(c.pid))) {
+                c.status = st;
+                c.reaped = true;
+                return true;
+            },
+            else => return false,
+        }
+        if (clock.nowMs() >= deadline_ms) break;
+        var ts: linux.timespec = .{ .sec = 0, .nsec = 2_000_000 };
+        _ = linux.nanosleep(&ts, &ts);
+    }
+    _ = linux.kill(c.pid, linux.SIG.KILL);
+    var st: u32 = 0;
+    while (linux.errno(linux.waitpid(c.pid, &st, 0)) == .INTR) {}
+    c.reaped = true;
+    return true;
+}
+fn cleanupKids(kids: []Child) void {
+    for (kids) |*c| {
+        if (c.reaped or c.pid <= 1) continue;
+        _ = linux.kill(c.pid, linux.SIG.KILL);
+        var st: u32 = 0;
+        _ = linux.waitpid(c.pid, &st, WNOHANG);
+    }
+}
+fn terminal0(status: u32) bool {
+    return (status & 0x7f) == 0 and ((status >> 8) & 0xff) == 0;
+}
+
+fn runReaperRecoverer(io: std.Io, dir: std.Io.Dir, deadline_ms: i64, result_fd: i32) noreturn {
+    g_pass = 0;
+    var counters = Counters{};
+    const act = ledger.recoverOneUnderLock(io, std.heap.page_allocator, dir, BASENAME, ledger.RealClock{ .io = io }, deadline_ms, recovery.ConcreteActuator(ReaperWiring){ .wiring = .{ .counters = &counters } });
+    const b = [2]u8{ @intFromEnum(act), @intCast(@min(counters.kills, 255)) };
+    writeAll(result_fd, &b);
+    linux.exit_group(0);
+}
+
+test "concrete lease #5 two recoverers: exactly ONE enters the real kill phase (intercepted count), the other already_gone" {
+    if (!inPrivatePidNamespace()) return error.NotInPrivatePidNamespace;
+    const io = std.testing.io;
+    const gpa = std.testing.allocator;
+    const clock = ledger.RealClock{ .io = io };
+    const terminal = clock.nowMs() + TOTAL_BUDGET_MS;
+    var td = std.testing.tmpDir(.{});
+    defer td.cleanup();
+
+    const id = try makeRunDir(td.dir, true);
+    try seedFrom(io, td.dir, id);
+
+    var p1 = [2]i32{ -1, -1 };
+    var p2 = [2]i32{ -1, -1 };
+    defer for ([_]*i32{ &p1[0], &p1[1], &p2[0], &p2[1] }) |p| closeAndClear(p);
+    var kids = [_]Child{ .{}, .{} };
+    defer cleanupKids(&kids);
+    if (linux.pipe(&p1) != 0) return error.Pipe;
+    if (linux.pipe(&p2) != 0) return error.Pipe;
+
+    const a = linux.fork();
+    if (linux.errno(a) != .SUCCESS) return error.Fork;
+    if (a == 0) {
+        for ([_]i32{ p1[0], p2[0], p2[1] }) |fd| _ = linux.close(fd);
+        runReaperRecoverer(io, td.dir, terminal, p1[1]);
+    }
+    kids[0] = .{ .pid = @intCast(a) };
+    const b = linux.fork();
+    if (linux.errno(b) != .SUCCESS) return error.Fork;
+    if (b == 0) {
+        for ([_]i32{ p1[0], p1[1], p2[0] }) |fd| _ = linux.close(fd);
+        runReaperRecoverer(io, td.dir, terminal, p2[1]);
+    }
+    kids[1] = .{ .pid = @intCast(b) };
+    for ([_]*i32{ &p1[1], &p2[1] }) |p| closeAndClear(p);
+
+    var r1: [2]u8 = undefined;
+    var r2: [2]u8 = undefined;
+    if (!readExactWithin(clock, p1[0], &r1, terminal)) return error.R1Lost;
+    if (!readExactWithin(clock, p2[0], &r2, terminal)) return error.R2Lost;
+    try std.testing.expect(reapWithin(clock, &kids[0], clock.nowMs() + 3000));
+    try std.testing.expect(reapWithin(clock, &kids[1], clock.nowMs() + 3000));
+    try std.testing.expect(terminal0(kids[0].status));
+    try std.testing.expect(terminal0(kids[1].status));
+
+    const sig = @intFromEnum(ledger.RecoveryAction.signalled);
+    const gone = @intFromEnum(ledger.RecoveryAction.already_gone);
+    var n_sig: u32 = 0;
+    var n_gone: u32 = 0;
+    var total_kills: u32 = 0;
+    for ([_][2]u8{ r1, r2 }) |rr| {
+        if (rr[0] == sig) {
+            n_sig += 1;
+            try std.testing.expectEqual(@as(u8, 1), rr[1]); // the signaller killed exactly one marked child
+        }
+        if (rr[0] == gone) {
+            n_gone += 1;
+            try std.testing.expectEqual(@as(u8, 0), rr[1]); // the loser never entered the kill phase
+        }
+        total_kills += rr[1];
+    }
+    try std.testing.expectEqual(@as(u32, 1), n_sig);
+    try std.testing.expectEqual(@as(u32, 1), n_gone);
+    try std.testing.expectEqual(@as(u32, 1), total_kills); // ONE signal phase OBSERVED across both recoverers
+    try std.testing.expectEqual(@as(usize, 0), try entryCount(io, gpa, td.dir));
+}
+
+// A publish ops whose rename FAILS, to exercise the atomic-retirement failure path (the temp is created+synced,
+// then the rename errors, so publishCut's defer removes the temp and the store is left unchanged).
+const FailingPublishOps = struct {
+    pub fn syncFile(_: FailingPublishOps, file: std.Io.File, io: std.Io) !void {
+        _ = file;
+        _ = io;
+    }
+    pub fn rename(_: FailingPublishOps, dir: std.Io.Dir, old_sub: []const u8, new_sub: []const u8, io: std.Io) !void {
+        _ = dir;
+        _ = old_sub;
+        _ = new_sub;
+        _ = io;
+        return error.InjectedPublishFailure;
+    }
+    pub fn syncDir(_: FailingPublishOps, dir: std.Io.Dir, io: std.Io) !void {
+        _ = dir;
+        _ = io;
+    }
+};
+
+test "concrete lease #5 publish-retry: a failed atomic retirement fails closed (entry RETAINED); the retry completes it" {
+    if (!inPrivatePidNamespace()) return error.NotInPrivatePidNamespace;
+    const io = std.testing.io;
+    const gpa = std.testing.allocator;
+    const clock = ledger.RealClock{ .io = io };
+    var td = std.testing.tmpDir(.{});
+    defer td.cleanup();
+
+    const id = try makeRunDir(td.dir, true);
+    try seedFrom(io, td.dir, id);
+
+    // attempt 1: census clean + dir torn down, but the atomic retirement PUBLISH fails -> fail closed, entry kept.
+    g_pass = 0;
+    var c1 = Counters{};
+    const a1 = ledger.recoverOneUnderLockP(io, gpa, td.dir, BASENAME, clock, clock.nowMs() + TOTAL_BUDGET_MS, recovery.ConcreteActuator(ReaperWiring){ .wiring = .{ .counters = &c1 } }, FailingPublishOps{});
+    try std.testing.expectEqual(ledger.RecoveryAction.fail_closed, a1);
+    try std.testing.expectEqual(@as(usize, 1), try entryCount(io, gpa, td.dir)); // RETAINED for retry
+
+    // attempt 2: retry with the real publish. The dir is already torn down, so the retry reconciles (C3) and
+    // completes the retirement -> the entry is finally removed.
+    g_pass = 0;
+    var c2 = Counters{};
+    const a2 = ledger.recoverOneUnderLock(io, gpa, td.dir, BASENAME, clock, clock.nowMs() + TOTAL_BUDGET_MS, recovery.ConcreteActuator(ReaperWiring){ .wiring = .{ .counters = &c2 } });
+    try std.testing.expectEqual(ledger.RecoveryAction.reconciled, a2);
+    try std.testing.expectEqual(@as(usize, 0), try entryCount(io, gpa, td.dir)); // removed only after the retry succeeds
+}
+
+// ---- 30afe68 #1: the check/use-window swap, caught by the post-rmdir held-inode verification -----------------
+
+var g_swap_dirfd: i32 = -1; // the runtime dir fd the window hook swaps within (set per test)
+fn swapHook() void {
+    // Runs AFTER nameMatchesHeld and BEFORE the rmdir (the check/use window): rename the real (held) dir away and
+    // plant an empty same-uid replacement at the same basename, exactly as a concurrent same-uid actor would.
+    _ = linux.renameat(g_swap_dirfd, BASENAME, g_swap_dirfd, BASENAME ++ "-win");
+    _ = linux.mkdirat(g_swap_dirfd, BASENAME, 0o700);
+}
+
+test "concrete lease #1b check/use-window swap: caught by the post-rmdir held-inode verification -> fail closed" {
+    if (!inPrivatePidNamespace()) return error.NotInPrivatePidNamespace;
+    const io = std.testing.io;
+    const gpa = std.testing.allocator;
+    const clock = ledger.RealClock{ .io = io };
+    var td = std.testing.tmpDir(.{});
+    defer td.cleanup();
+
+    const id = try makeRunDir(td.dir, true);
+    try seedFrom(io, td.dir, id);
+    g_swap_dirfd = td.dir.handle;
+    const act = ledger.recoverOneUnderLock(io, gpa, td.dir, BASENAME, clock, clock.nowMs() + TOTAL_BUDGET_MS, recovery.ConcreteActuator(CleanWiring){ .wiring = .{}, .window_hook = &swapHook });
+    // The by-name rmdir removed the swapped-in replacement, but the HELD inode survived (nlink > 0), so the
+    // post-rmdir verification fails the teardown -> recoverOneUnderLock fails closed and does NOT retire the entry.
+    try std.testing.expectEqual(ledger.RecoveryAction.fail_closed, act);
+    try std.testing.expectEqual(@as(usize, 1), try entryCount(io, gpa, td.dir)); // entry RETAINED (real run not proven gone)
+}
+
+test "concrete lease #2b deadline AFTER the re-open/fstat validation (before rmdir): fail closed, dir kept" {
+    if (!inPrivatePidNamespace()) return error.NotInPrivatePidNamespace;
+    const io = std.testing.io;
+    _ = io;
+    var td = std.testing.tmpDir(.{});
+    defer td.cleanup();
+
+    const id = try makeRunDir(td.dir, true);
+    var a = actuator();
+    switch (a.pin(td.dir, entryFor(id))) {
+        .held => |held| {
+            var lease = held;
+            defer lease.deinit();
+            // teardown reads the clock at: (a) top, (b) after the marker unlink, (c) after nameMatchesHeld, just
+            // before the rmdir. expire_at=2 keeps (a),(b) valid and expires (c) -- the check RoseCat 30afe68 #2
+            // requires AFTER the re-open/fstat validation. rmdir must not run.
+            var calls: usize = 0;
+            const r = lease.teardown(StepClock{ .calls = &calls, .expire_at = 2 }, STEP_DEADLINE);
+            try std.testing.expectEqual(ledger.Teardown.failed, r);
+            try std.testing.expect(runDirExists(td.dir)); // rmdir NOT reached -> the real dir is kept
+        },
+        else => return error.ExpectedHeld,
+    }
+}

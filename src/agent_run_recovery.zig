@@ -20,6 +20,22 @@ pub const DirId = c.struct_zb_reaper_dir_id;
 // AT_REMOVEDIR differs by platform (Linux 0x200, Darwin 0x02); define it portably so the macOS build is correct.
 const AT_REMOVEDIR: u32 = if (builtin.os.tag == .linux) 0x200 else 0x02;
 
+/// Portable `fstat` of a held fd, returning its link count, or null if the stat itself fails. Linux uses `statx`
+/// on the fd (AT_EMPTY_PATH); Darwin uses libc `fstat`. Used both to probe readability (null => unreadable) and to
+/// verify a removed directory's inode is gone (nlink == 0).
+fn fstatNlink(fd: i32) ?u64 {
+    if (builtin.os.tag == .linux) {
+        var sx: std.os.linux.Statx = undefined;
+        const AT_EMPTY_PATH: u32 = 0x1000;
+        if (std.os.linux.errno(std.os.linux.statx(fd, "", AT_EMPTY_PATH, std.os.linux.STATX.BASIC_STATS, &sx)) != .SUCCESS) return null;
+        return sx.nlink;
+    } else {
+        var st: std.c.Stat = undefined;
+        if (std.posix.errno(std.c.fstat(fd, &st)) != .SUCCESS) return null;
+        return @intCast(st.nlink);
+    }
+}
+
 /// Pin a run dir's identity via the reviewed C (open O_DIRECTORY|O_NOFOLLOW relative to `dir`, then
 /// `zb_reaper_pin_fd`). Returns the pinned `(dev,ino,uid,mode)` or null. Exposed so a test can seed a ledger entry
 /// that matches exactly what `pin` will provenance-check, without a second `@cImport` of its own.
@@ -49,6 +65,7 @@ pub fn ConcreteLease(comptime Wiring: type) type {
         wiring: Wiring,
         name_buf: [320]u8,
         name_len: usize,
+        window_hook: ?*const fn () void = null, // TEST-ONLY: null in production; a test injects a check/use-window swap
 
         const Self = @This();
 
@@ -76,6 +93,14 @@ pub fn ConcreteLease(comptime Wiring: type) type {
             return c.zb_reaper_dir_id_eq(&id, &self.pinned) != 0;
         }
 
+        /// True iff the HELD run-dir inode is now unlinked (nlink == 0). After a by-name `rmdir`, this proves it
+        /// was OUR inode that went away — not a replacement swapped in during the check/use window (RoseCat
+        /// 30afe68 #1). A stat failure is NOT proven-gone -> false (fail closed).
+        fn heldInodeGone(self: *Self) bool {
+            const nlink = fstatNlink(self.run_dir_fd) orelse return false;
+            return nlink == 0;
+        }
+
         pub fn teardown(self: *Self, clock: anytype, deadline_ms: i64) ledger.Teardown {
             if (clock.nowMs() >= deadline_ms) return .failed; // no destructive mutation past the one absolute deadline
             // (1) marker unlink THROUGH the held run-dir fd (fd-safe: a rename of the dir cannot redirect it);
@@ -88,14 +113,23 @@ pub fn ConcreteLease(comptime Wiring: type) type {
             // Expiry BETWEEN the marker unlink and the rmdir must preserve the C2 state (marker gone, dir kept) and
             // fail closed -- the next recovery finds a marker-less dir and tears it down idempotently.
             if (clock.nowMs() >= deadline_ms) return .failed;
-            // (2) `rmdir` has no fd form, so revalidate the NAME against the held pinned identity IMMEDIATELY before
-            // removal: a rename + empty-replacement at the same basename resolves to a different inode, which we
-            // refuse rather than remove.
+            // Pre-filter: refuse if the name ALREADY resolves to a different inode (an obvious prior swap).
             if (!self.nameMatchesHeld()) return .failed;
+            // TEST-ONLY check/use-window hook (null in production): a test injects a swap HERE, after the pre-filter
+            // and before the rmdir, to prove the post-rmdir held-inode verification below catches it.
+            if (self.window_hook) |h| h();
+            // Recheck the absolute deadline IMMEDIATELY before the destructive rmdir -- after the re-open/fstat of
+            // the pre-filter, which can itself cross the deadline (RoseCat 30afe68 #2).
+            if (clock.nowMs() >= deadline_ms) return .failed;
+            // (2) `rmdir` by name (there is no fd form).
             switch (std.posix.errno(std.posix.system.unlinkat(self.runtime_fd, self.nameZ(), AT_REMOVEDIR))) {
-                .SUCCESS, .NOENT => return .done, // already gone -> idempotent
+                .SUCCESS, .NOENT => {},
                 else => return .failed,
             }
+            // (3) POST-VERIFY via the HELD fd that OUR inode is the one gone. If a swap happened in the check/use
+            // window, the by-name rmdir removed a DIFFERENT inode and ours survives (nlink > 0) -> fail closed, so
+            // the caller NEVER retires an entry whose real run dir is still present (RoseCat 30afe68 #1).
+            return if (self.heldInodeGone()) .done else .failed;
         }
 
         pub fn deinit(self: *Self) void {
@@ -113,6 +147,7 @@ pub fn ConcreteLease(comptime Wiring: type) type {
 pub fn ConcreteActuator(comptime Wiring: type) type {
     return struct {
         wiring: Wiring,
+        window_hook: ?*const fn () void = null, // TEST-ONLY: forwarded to the lease; null in production
         const Self = @This();
         pub const Lease = ConcreteLease(Wiring);
         pub const Pin = union(enum) { held: Lease, gone, mismatch, unreadable };
@@ -120,16 +155,20 @@ pub fn ConcreteActuator(comptime Wiring: type) type {
         pub fn pin(self: Self, dir: std.Io.Dir, entry: ledger.Entry) Pin {
             var nb: [320]u8 = undefined;
             const name = basenameZ(entry, &nb) orelse return .mismatch;
-            // The unreadable/mismatch distinction is carried by the OPEN (RoseCat 671c986 #4): ENOENT -> gone (C3);
-            // a non-dir/symlink at the name -> mismatch; any OTHER open failure (EBADF/EACCES/EIO/EMFILE/...) means
-            // the identity could not be read at all -> unreadable. After a SUCCESSFUL open the fd is readable, so a
-            // nonzero `zb_reaper_pin_fd` is a shape/identity REFUSAL (not a dir / wrong uid / not 0700) -> mismatch,
-            // never conflated with the unreadable case.
+            // The unreadable/mismatch distinction (RoseCat 671c986 #4 / 30afe68 #3): ENOENT -> gone (C3); a
+            // non-dir/symlink at the name -> mismatch; any OTHER open failure -> unreadable. Then, before the
+            // reviewed shape/identity check (whose EINVAL cannot tell fstat-failure from a refusal), probe the
+            // opened fd with a plain fstat: a FAILURE there is unreadable (identity cannot be read); only a
+            // readable fd that `zb_reaper_pin_fd` then refuses is a shape/identity mismatch.
             const fd = std.posix.openatZ(dir.handle, name, .{ .ACCMODE = .RDONLY, .DIRECTORY = true, .NOFOLLOW = true, .CLOEXEC = true }, 0) catch |e| switch (e) {
                 error.FileNotFound => return .gone, // ENOENT -> crash cut C3
                 error.NotDir, error.SymLinkLoop => return .mismatch, // a non-dir / symlink at the name -> never sweep
-                else => return .unreadable, // could not even open/read the identity
+                else => return .unreadable, // could not even open the identity
             };
+            if (fstatNlink(fd) == null) {
+                _ = std.posix.system.close(fd);
+                return .unreadable; // opened, but the identity could not be fstat'd -> unreadable, not mismatch
+            }
             var id: DirId = undefined;
             if (c.zb_reaper_pin_fd(fd, &id) != 0) {
                 _ = std.posix.system.close(fd);
@@ -147,6 +186,7 @@ pub fn ConcreteActuator(comptime Wiring: type) type {
                 .wiring = self.wiring,
                 .name_buf = undefined,
                 .name_len = entry.basename.len,
+                .window_hook = self.window_hook,
             };
             @memcpy(lease.name_buf[0..entry.basename.len], entry.basename);
             return .{ .held = lease };
@@ -154,8 +194,35 @@ pub fn ConcreteActuator(comptime Wiring: type) type {
     };
 }
 
-/// The PRODUCTION census wiring: the reviewed `zb_reaper_fixed_point` over the held fd, with libproc (`scan`) and
-/// the REAL kill. Not reachable until armed; defined here so production and the test share one lease shape. The
-/// `scan`/`ops` function pointers are supplied by the platform layer that owns libproc; this struct only threads
-/// the held fd + pinned id into the real dir-fd revalidation. (Mac-only to actually run; unused on Linux.)
-pub const dummy = {}; // placeholder: the production libproc wiring lands with the Darwin reaper hookup, still unarmed.
+// ---- the reviewed census/kill/fresh-census over the HELD fd (RoseCat 671c986 #5) --------------------------------
+// `runFixedPoint` runs `zb_reaper_fixed_point` with the real `dir_ok` revalidation bound to the HELD run-dir fd +
+// pinned id, so a swapped path can never redirect a kill. The scan/inspect/killsig are INJECTED: production wires
+// libproc + the real kill; tests wire a scripted scan + an INTERCEPTED (counting, never-signalling) kill, which is
+// exactly how the reaper engine is proven on Linux. The `user` ctx is passed to inspect/killsig via `OpsCtx.user`.
+
+pub const ReaperId = c.struct_zb_reaper_id;
+pub const pid_t = c.pid_t;
+pub const ScanFn = *const fn (?*anyopaque, c_int) callconv(.c) c_int;
+pub const InspectFn = *const fn (c.pid_t, [*c]const u8, [*c]ReaperId, ?*anyopaque) callconv(.c) void;
+pub const KillFn = *const fn (c.pid_t, c_int, ?*anyopaque) callconv(.c) c_int;
+
+/// Threaded through the ops `ctx`: the HELD run-dir fd + pinned id for the real `dir_ok`, plus the injected `user`.
+pub const OpsCtx = extern struct { held_fd: c_int, pinned: DirId, user: ?*anyopaque };
+
+fn dirOkThunk(ctx: ?*anyopaque) callconv(.c) c_int {
+    const o: *OpsCtx = @ptrCast(@alignCast(ctx.?));
+    return c.zb_reaper_dir_fd_ok(o.held_fd, &o.pinned); // revalidate the HELD fd immediately before each kill
+}
+
+/// Run the reviewed `zb_reaper_fixed_point` census->kill->fresh-census over the held fd. Clean iff the complete
+/// empty final census; any engine error/overflow -> incomplete; else survivors (never a clean result on doubt).
+pub fn runFixedPoint(run_dir_fd: i32, pinned: *const DirId, dir_path: [*:0]const u8, max_passes: c_int, scan: ScanFn, inspect: InspectFn, killsig: KillFn, user: ?*anyopaque) ledger.FixedPoint {
+    var octx = OpsCtx{ .held_fd = run_dir_fd, .pinned = pinned.*, .user = user };
+    var ops = c.struct_zb_reaper_ops{ .inspect = inspect, .killsig = killsig, .dir_ok = &dirOkThunk, .ctx = &octx };
+    var clean: c_int = 0;
+    var passes: c_int = 0;
+    var overflow: c_int = 0;
+    const rc = c.zb_reaper_fixed_point(scan, &ops, dir_path, max_passes, &clean, &passes, &overflow);
+    if (rc != 0 or overflow != 0) return .incomplete;
+    return if (clean != 0) .clean else .survivors;
+}

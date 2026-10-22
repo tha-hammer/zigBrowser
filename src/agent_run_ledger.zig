@@ -540,7 +540,7 @@ fn indexOfEntry(l: *const Ledger, basename: []const u8) ?usize {
 }
 
 /// Publish the current ledger MINUS `basename` (the atomic retirement), under the caller's held flock.
-fn publishWithout(io: std.Io, dir: std.Io.Dir, sub_path: []const u8, l: *const Ledger, basename: []const u8) !void {
+fn publishWithoutCut(io: std.Io, dir: std.Io.Dir, sub_path: []const u8, l: *const Ledger, basename: []const u8, cut: Cut, ops: anytype) !void {
     var buf: [MAX_ENTRIES]Entry = undefined;
     var n: usize = 0;
     for (l.entries()) |e| {
@@ -548,7 +548,10 @@ fn publishWithout(io: std.Io, dir: std.Io.Dir, sub_path: []const u8, l: *const L
         buf[n] = e;
         n += 1;
     }
-    try publish(io, dir, sub_path, buf[0..n]);
+    try publishCut(io, dir, sub_path, buf[0..n], cut, ops);
+}
+fn publishWithout(io: std.Io, dir: std.Io.Dir, sub_path: []const u8, l: *const Ledger, basename: []const u8) !void {
+    try publishWithoutCut(io, dir, sub_path, l, basename, .none, RealOps{});
 }
 
 /// Recover one recorded entry under the one global ledger flock (bd zigBrowser-3gl; RoseCat b2f474b/62888b1).
@@ -564,6 +567,12 @@ fn publishWithout(io: std.Io, dir: std.Io.Dir, sub_path: []const u8, l: *const L
 ///
 /// NOT ARMED: no production caller passes a destructive actuator, so nothing is signalled in production yet.
 pub fn recoverOneUnderLock(io: std.Io, gpa: std.mem.Allocator, dir: std.Io.Dir, basename: []const u8, clock: anytype, deadline_ms: i64, actuator: anytype) RecoveryAction {
+    return recoverOneUnderLockP(io, gpa, dir, basename, clock, deadline_ms, actuator, RealOps{});
+}
+
+/// As `recoverOneUnderLock`, but with an INJECTABLE publish ops for the atomic retirement (production uses
+/// `RealOps`; a test injects a failing ops to exercise the publish-failure/retry path — RoseCat 9f62ea4 #3).
+pub fn recoverOneUnderLockP(io: std.Io, gpa: std.mem.Allocator, dir: std.Io.Dir, basename: []const u8, clock: anytype, deadline_ms: i64, actuator: anytype, pub_ops: anytype) RecoveryAction {
     const lock_fd = std.posix.openat(dir.handle, LOCK_NAME, .{ .ACCMODE = .RDWR, .CREAT = true, .NOFOLLOW = true, .CLOEXEC = true }, 0o600) catch return .fail_closed;
     switch (acquireWithinDeadline(clock, deadline_ms, 5, FlockAttempt{ .fd = lock_fd })) {
         .acquired => {},
@@ -598,7 +607,7 @@ pub fn recoverOneUnderLock(io: std.Io, gpa: std.mem.Allocator, dir: std.Io.Dir, 
             // Crash cut C3: the entry names no dir (a prior recoverer removed it, then crashed before retiring the
             // entry). Drop the entry idempotently, signal-free -- NOT fail-closed, so it never wedges forever.
             if (clock.nowMs() >= deadline_ms) return .fail_closed; // pre-publish
-            publishWithout(io, dir, "runs.json", &l, basename) catch return .fail_closed;
+            publishWithoutCut(io, dir, "runs.json", &l, basename, .none, pub_ops) catch return .fail_closed;
             return .reconciled;
         },
         .held => |held| {
@@ -614,7 +623,7 @@ pub fn recoverOneUnderLock(io: std.Io, gpa: std.mem.Allocator, dir: std.Io.Dir, 
                 .failed => return .fail_closed, // teardown error -> fail closed, entry retained
             }
             if (clock.nowMs() >= deadline_ms) return .fail_closed; // pre-publish
-            publishWithout(io, dir, "runs.json", &l, basename) catch return .fail_closed; // atomic retirement under the flock
+            publishWithoutCut(io, dir, "runs.json", &l, basename, .none, pub_ops) catch return .fail_closed; // atomic retirement under the flock
             return .signalled;
         },
     }
