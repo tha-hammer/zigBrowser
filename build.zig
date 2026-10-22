@@ -861,6 +861,17 @@ pub fn build(b: *std.Build) void {
     run_ledger_lock_nofollow_tests.skip_foreign_checks = true;
     const ledger_lock_nofollow_step = b.step("test-agent-run-ledger-lock-nofollow", "MS6.5.1 ledger lock O_NOFOLLOW fail-closed (symlink never followed)");
     ledger_lock_nofollow_step.dependOn(&run_ledger_lock_nofollow_tests.step);
+    // MS6.5.1 (RoseCat 7511b79): the ledger is a macOS primitive, so it must cross-compile to Darwin. Build the
+    // module as an object for both macOS arches — every top-level decl in the root file is analyzed, so an API
+    // misuse that only surfaces on Darwin (wrong flag/type/symbol) fails this check. The lock's flock/close/errno
+    // go through std.posix.system (the raw syscall on Linux, libc on Darwin) so they behave the same on Darwin.
+    const ledger_darwin_aarch64_mod = b.createModule(.{ .root_source_file = b.path("src/agent_run_ledger.zig"), .target = b.resolveTargetQuery(.{ .cpu_arch = .aarch64, .os_tag = .macos }), .optimize = optimize });
+    const ledger_darwin_aarch64_obj = b.addObject(.{ .name = "agent_run_ledger_darwin_aarch64", .root_module = ledger_darwin_aarch64_mod });
+    const ledger_darwin_x86_64_mod = b.createModule(.{ .root_source_file = b.path("src/agent_run_ledger.zig"), .target = b.resolveTargetQuery(.{ .cpu_arch = .x86_64, .os_tag = .macos }), .optimize = optimize });
+    const ledger_darwin_x86_64_obj = b.addObject(.{ .name = "agent_run_ledger_darwin_x86_64", .root_module = ledger_darwin_x86_64_mod });
+    const ledger_darwin_step = b.step("test-agent-run-ledger-darwin-build", "MS6.5.1 ledger cross-compiles to Darwin (aarch64 + x86_64 macOS)");
+    ledger_darwin_step.dependOn(&ledger_darwin_aarch64_obj.step);
+    ledger_darwin_step.dependOn(&ledger_darwin_x86_64_obj.step);
     // MS6.5 (the user's decision 2026-10-21): the stubbed macOS VM-containment seam — off by default, reports
     // "not available yet", and the gate fails closed when on. Pure Linux unit (no OS calls).
     const mac_vm_containment_module = b.createModule(.{
@@ -2907,6 +2918,8 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_ledger_publish_tests.step);
     if (target.result.os.tag == .linux) test_step.dependOn(&run_ledger_lock_tests.step);
     if (target.result.os.tag == .linux) test_step.dependOn(&run_ledger_lock_nofollow_tests.step);
+    test_step.dependOn(&ledger_darwin_aarch64_obj.step); // cross-compile guard: ledger must build for Darwin
+    test_step.dependOn(&ledger_darwin_x86_64_obj.step);
     test_step.dependOn(&run_mac_vm_containment_tests.step);
     test_step.dependOn(&mac_vm_containment_e2e.step);
     test_step.dependOn(&run_agent_secrets_tests.step);
