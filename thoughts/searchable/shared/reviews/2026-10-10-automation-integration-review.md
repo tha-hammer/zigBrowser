@@ -28000,3 +28000,49 @@ and `case_ms6_6b_r1_chain.py` SHA-256
 This closes the real-Mac acceptance that the earlier diagnostic run was
 waiting for. It does not approve adding the excluded destructive reaper case,
 changing either case byte, or independently flipping `reaper_ready`.
+
+## MS6.3 real-CLI fd-3 hard-gate red (`9f6f81a`)
+
+**BLOCKED-for-tests.** The three orchestrator calls are reasonable and should
+remain: inspect the live CLI's environment while its fake-API request is in
+flight; pre-create the minimal home and let unexpected writes fail; keep the
+case self-contained so its digest covers all logic. The red also correctly
+requires positive/decoy/no-channel discrimination, the generated Seatbelt
+prefix, the staged `python -m zb_agent_host contract-config` command, an exact
+wrapper target, token-free labels, and a release failure without a case-owned
+signal.
+
+Reviewer exact-export evidence, inside a private user/PID namespace: the
+unregistered suite is red **0/12**, with all twelve errors caused by the
+deliberately absent `case_ms6_3_fd3_cli.py`. No process remained. Three gaps
+must be pinned before this security hard-gate case is allowed into the reviewed
+manifest:
+
+1. **The test does not require the production channel to be a socketpair.**
+   `fake_run` at `tests/e2e/ms6_hard_gate_fd3_cli_case_test.py:179-188` accepts
+   and reads any descriptor with `os.read`; the argv assertion at `:225-229`
+   checks only that exactly one fd was passed. A pipe or regular file mutant
+   would pass, despite MS6.3 explicitly requiring a Unix socketpair endpoint.
+   Require `S_ISSOCK`/`SO_TYPE == SOCK_STREAM` on the handed-off fd and a
+   causal pipe/file mutant.
+2. **The required fd-3 guard may silently skip.** `FdPlacement.place` skips if
+   fd 3 or 9 happens to be occupied (`:332-338`), so the exact regression this
+   row exists to catch can disappear under a different test-runner fd layout.
+   Run the placement oracle in a clean subprocess/helper that deterministically
+   owns/closes the test fds; an occupied ambient fd must not turn this hard-gate
+   assertion into a successful skip.
+3. **The outer handoff is not proven to have no second token route.** The argv
+   equality excludes token bytes, but the environment assertion checks only
+   `PYTHONPATH` and permits arbitrary extra variables (`:229-230`). The fake
+   CLI then derives its bearer solely from `pass_fds[0]`, regardless of what
+   the case put in that environment, so an extra token-bearing env/file-route
+   mutant survives the Linux red even though the later live CLI census might
+   not expose a helper-side duplicate. Assert neither token occurs anywhere in
+   the spawned argv/environment, constrain the helper environment to the
+   production allowlist, and add the duplicate-route mutant. Keep the live
+   `proc_darwin.cli_env_clean` check too; it proves the downstream CLI
+   environment, a different boundary.
+
+The green must register the red, add the third reviewed case to the exact
+manifest, and return the new digest for review. No Mac run is authorized from
+this red. `git diff --check` is clean.
