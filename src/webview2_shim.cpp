@@ -107,6 +107,10 @@ struct AppState {
   // the matching fail-closed branch so a test can drive it — SetTimer treated as failed, the animated MoveWindow
   // treated as failed, or the first tick forced past the deadline with no genuine midpoint. Null in normal runs.
   const char *fold_fail = nullptr;
+  // WS5.7 e2e-only causal seam (ZIGBROWSER_AGENT_DRAWER_HITTEST_FAIL = "1"): forces the icon WM_NCHITTEST
+  // geometry read to be treated as failed, so a test can prove the unreadable-geometry branch REFUSES the hit
+  // (HTNOWHERE) instead of forwarding it to the page. e2e-only.
+  bool hittest_read_fail = false;
   // WS5.3 fold (minimize) animation state: a kFoldTimerId-driven transition of the open panel down into the
   // icon over `fold_ms`, each frame from the portable lerp/ease. `fold_mid` captures the real mid-transition
   // frame (read back off the panel HWND); the terminal tick emits the `fold` observation (mid frame +
@@ -1055,13 +1059,15 @@ static LRESULT CALLBACK icon_subclass_proc(HWND h, UINT msg, WPARAM wparam, LPAR
         // HTCLIENT; the square corners outside the circle are HTTRANSPARENT (not the icon). radius = half the
         // icon's current (DPI-scaled) width. The portable zb_drawer_inside_icon decides — no geometry here.
         RECT wr = {};
-        if (!GetWindowRect(h, &wr)) {
-          // Fail closed (RoseCat 103e549 SHOULD): if we can't read the icon's rect we cannot bound the circle,
-          // so DON'T delegate a square hit region to the prior proc — treat the point as NOT the icon.
-          fprintf(stderr, "zigBrowser: agent-drawer icon hit-test read failed (error %lu); treating as outside\n",
-                  static_cast<unsigned long>(GetLastError()));
+        if (app->hittest_read_fail || !GetWindowRect(h, &wr)) {
+          // Fail closed (RoseCat 00b69e5): if we can't read the icon's rect we cannot bound the circle. HTNOWHERE
+          // — NOT HTTRANSPARENT — so the unbounded hit is REFUSED and CONSUMED here, never forwarded to the page
+          // below (HTTRANSPARENT would continue hit-testing underlying windows and route the click to the page).
+          // The e2e ZIGBROWSER_AGENT_DRAWER_HITTEST_FAIL seam forces this branch.
+          fprintf(stderr, "zigBrowser: agent-drawer icon hit-test read failed (error %lu); refusing the hit\n",
+                  app->hittest_read_fail ? (unsigned long)ERROR_INVALID_PARAMETER : (unsigned long)GetLastError());
           fflush(stderr);
-          return HTTRANSPARENT;
+          return HTNOWHERE;  // consume with no action, no forward to the page
         }
         const int w = wr.right - wr.left;
         const int cx = wr.left + w / 2;
@@ -2003,6 +2009,8 @@ static int run_core(const char *uri, int print_title, int e2e_protocol, bool scr
     app.rtf_seam = getenv("ZIGBROWSER_AGENT_DRAWER_RTF");            // WS5.4 e2e-only inert-bubble literal text
     const char *dpi_ignore = getenv("ZIGBROWSER_AGENT_DRAWER_DPICHANGE_IGNORE");  // WS5.7 e2e-only causal mutant
     app.dpichange_ignore = dpi_ignore != nullptr && strcmp(dpi_ignore, "1") == 0;
+    const char *ht_fail = getenv("ZIGBROWSER_AGENT_DRAWER_HITTEST_FAIL");  // WS5.7 e2e-only hit-test read-fail seam
+    app.hittest_read_fail = ht_fail != nullptr && strcmp(ht_fail, "1") == 0;
   }
   app.screenshot = screenshot;
   if (screenshot && out_path != nullptr) {

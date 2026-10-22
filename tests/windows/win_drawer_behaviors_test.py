@@ -891,6 +891,19 @@ class WinDrawerBehaviorsLive(_wd.WinDrawerLive):
                                              ZB_DPICHANGE="96,144",
                                              ZIGBROWSER_AGENT_DRAWER_DPICHANGE_IGNORE="1"), body=body)
 
+    def test_ws5_7_hittest_read_failure_refuses_the_hit(self):
+        # RoseCat 00b69e5: with the icon's geometry read forced to fail, WM_NCHITTEST must REFUSE the hit with
+        # HTNOWHERE (0) — never HTTRANSPARENT (-1), which would forward the click to the page below. The drawer
+        # stays closed (no open row), the fixed diagnostic appears, and the process tears down cleanly.
+        def body(r):
+            validate_transcript(r["stdout"], ["tree", "icon"])  # closed drawer: no open/drag/fold rows
+            self.assertEqual(int(r["icon_hittest"]), 0,
+                             "unreadable geometry must refuse the hit with HTNOWHERE (0), not forward it (-1)")
+            self.assertIn("hit-test read failed", r.get("stderr") or "", "the fixed diagnostic must appear")
+            self.assertTrue(r["terminated"], "the process must remain usable / tear down cleanly")
+        self._run_drawer(extra_env=self._env(ZIGBROWSER_AGENT_DRAWER_OPEN="0", ZB_SETTLE_KINDS="icon",
+                                             ZIGBROWSER_AGENT_DRAWER_HITTEST_FAIL="1", ZB_HITTEST_PROBE="1"), body=body)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

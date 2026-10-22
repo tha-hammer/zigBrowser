@@ -518,10 +518,30 @@ public static class Z {
     int w = (dpi & 0xFFFF) | ((dpi & 0xFFFF) << 16);
     SendMessageW(host, 0x02E0, (IntPtr)w, IntPtr.Zero);
   }
+  // WS5.7 (RoseCat 00b69e5): send a real WM_NCHITTEST (0x0084) to the "S" icon at its own centre (screen coords
+  // in lparam) and return the result code. Used to prove the unreadable-geometry branch REFUSES the hit with
+  // HTNOWHERE (0), never HTTRANSPARENT (-1, which would forward the click to the page below).
+  public static int IconHitTestAtCenter(IntPtr host) {
+    IntPtr c = GetWindow(host, GW_CHILD);
+    while (c != IntPtr.Zero) {
+      var cls = new StringBuilder(64); GetClassName(c, cls, 64);
+      if (cls.ToString() == "STATIC") {
+        var t = new StringBuilder(64); GetWindowText(c, t, 64);
+        if (t.ToString() == "S") {
+          RECT r; if (!GetWindowRect(c, out r)) return -999;
+          int x = (r.left + r.right) / 2, y = (r.top + r.bottom) / 2;
+          IntPtr res = SendMessageW(c, 0x0084, IntPtr.Zero, (IntPtr)(((y & 0xFFFF) << 16) | (x & 0xFFFF)));
+          return (int)res;
+        }
+      }
+      c = GetWindow(c, GW_HWNDNEXT);
+    }
+    return -998;
+  }
 }
 '@
 
-$res = @{ stdout=''; stderr=''; client_w=0; client_h=0; pid=0; controls=''; icon_rect=''; icon_visible=-1; job_count_before=0; job_count_after=0; window_found=$false; terminated=$false; timed_out=$false; proc_gone=$false; first_stop_failed=$false; cleanup_exhausted=$false; launch_failed=$false; decoded_fail=$failMode; decoded_force=$forceMode; fold_elapsed_ms=0; fold_mid_w=0; panel_hidden=$false; page_redocked=$false; dpi_before_px=0; dpi_after_px=0; error='' }
+$res = @{ stdout=''; stderr=''; client_w=0; client_h=0; pid=0; controls=''; icon_rect=''; icon_visible=-1; job_count_before=0; job_count_after=0; window_found=$false; terminated=$false; timed_out=$false; proc_gone=$false; first_stop_failed=$false; cleanup_exhausted=$false; launch_failed=$false; decoded_fail=$failMode; decoded_force=$forceMode; fold_elapsed_ms=0; fold_mid_w=0; panel_hidden=$false; page_redocked=$false; dpi_before_px=0; dpi_after_px=0; icon_hittest=99999; error='' }
 # e2e-only seams, set in this process so the child inherits them (honoured only under --e2e-protocol).
 $env:ZIGBROWSER_AGENT_DRAWER_OPEN = '1'
 $env:ZIGBROWSER_AGENT_DRAWER_DEMO = 'messages:2'
@@ -602,6 +622,8 @@ try {
       [Z]::SendDpiChanged($h, [int]$parts[1]); Start-Sleep -Milliseconds 80
       $ra = [Z]::IconClientRect($h); if ($ra) { $res.dpi_after_px = [int](($ra -split ',')[2]) }
     }
+    # WS5.7 (RoseCat 00b69e5): probe the icon's WM_NCHITTEST at its centre to prove the refuse-on-unreadable path.
+    if ($env:ZB_HITTEST_PROBE) { $res.icon_hittest = [Z]::IconHitTestAtCenter($h) }
   }
 } catch { $res.error = $_.Exception.Message; $res.launch_failed = (-not $launched) }
 finally {
