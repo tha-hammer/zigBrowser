@@ -30451,3 +30451,77 @@ bash -c "$(git show 24f8d49:tests/mac/ms6_hard_gate.sh)" \
 This authorizes only the already-reviewed hard-gate run on the Intel and
 Apple-Silicon Macs; it does not authorize any additional destructive or
 reaper experiment.
+
+## WS5 lifecycle follow-up (`a94db57`)
+
+**BLOCKED; no Windows VM run is authorized.** The `wait_fail` result contract
+is materially improved: it now requires the preserved first-wait error,
+`proc_gone=true`, and an empty owned Job before it can pass. The assignment
+failure likewise requires both terminal-process and empty-Job evidence, and
+every explicit `CloseHandle` result in the reap/close path is checked. From an
+exact clean `git archive a94db57` export with display variables unset, the
+offline suite passed **34/34** oracle tests and skipped all six live VM cases.
+`git show --check a94db57` is clean.
+
+Two lifecycle gaps from finding 7670 remain:
+
+1. The new `firststop_fail` row does not exercise an unproven first stop.
+   `Teardown` first calls `TerminateJobObject` and then receives
+   `WAIT_OBJECT_0` from the held process at
+   `tests/windows/win_drawer_test.py:307-320`. Only after that proof does it
+   deliberately leave `ProcGone` false. The injected failure then occurs on
+   the first call inside `FinalReap` (`:238-257`), when the process is already
+   known dead; its second iteration merely reproves an already-terminal
+   process. It never drives `KillHeld`'s pre-assignment or pre-resume failure
+   path at `:289-294`, so it cannot establish the promised
+   first-stop-fails/backstop-succeeds behavior. Add a combined forced mode
+   such as assignment failure plus first `ProveTerminal` failure, and require
+   the later independent cleanup to prove the suspended, never-assigned child
+   gone. The test must fail if normal `Teardown` supplies the first terminal
+   proof.
+2. An exhausted `FinalReap` still loses its last authority at script exit.
+   When `ProcGone` remains false, `Close` retains `_hProc` only in the static
+   field while closing the Job (`:322-332`); after JSON is written the
+   PowerShell process exits and Windows closes that retained handle. On an
+   assignment failure the suspended child was never in the Job, so closing
+   the empty Job cannot stop it and the child may outlive the test. On an
+   assigned child, Job-close is a kill action but there is no post-close wait
+   through the still-held process handle. A hard failure report is not an
+   orphan-prevention mechanism. Establish an independently owned backstop
+   (preferably assignment at process creation), or close the Job and then
+   retain/wait the process handle until terminal status is proved; never let
+   the runner process exit with an unproved child. Add a causal cleanup-
+   exhaustion oracle that cannot itself leave a process behind.
+
+The pure result-dictionary rows exercise only `check_*`; because every live
+runner row skipped, they provide no evidence for either embedded C# control
+flow. Fix forward before any VM execution. Agent Mail sent the blockers to
+AzureRidge.
+
+## Decision-16 close-vs-Approve red (`9b9c18e`)
+
+**BLOCKED-for-tests.** The new row reaches the right broker and card surfaces,
+waits until the card is visibly waiting, detaches the bound window's broker,
+then races the main drawer's Approve before requiring a revoked ending, zero
+engine calls and no answer to the closed window. A review-only omission of the
+pending production stop-before-card-outcome guard failed this exact row with
+`expected 0, found 1`, so the row is capable of detecting the target dispatch
+bug.
+
+It does not, however, prove the schedule named in its title and comment. At
+`tests/agent_navigate_card_test.zig:390`, the result of
+`r.cards.approve(id)` is discarded. If the worker observes detach first and
+cancels the card, Approve returns false and the row passes through the already
+covered late-Approve path at `:363-377`; it has not established that Approve
+won before the worker's next look. Change this to an asserted true result and
+keep the race deterministic enough that the assertion cannot flake (a worker
+hold/release seam is preferable if scheduling alone cannot guarantee it).
+
+For evidence, I registered only this otherwise-unregistered test in an exact
+clean `git archive 9b9c18e` export and overlaid BlackRobin's pending part-3
+production changes. The committed row passed once. A review-only stronger
+`try testing.expect(r.cards.approve(id))` then passed **100/100** seeded
+iterations, so the current arrangement appears stable, but that crucial fact
+still is not part of the committed oracle. The exact commit by itself has the
+expected earlier part-3 compile reds (`Ending` and `Cards.deny` are not yet in
+production). `git show --check 9b9c18e` is clean.
