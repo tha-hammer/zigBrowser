@@ -126,6 +126,16 @@ pub fn parseAnimMs(text: []const u8) ?u32 {
     return parseBounded(text, @intCast(anim_ms), max_anim_ms);
 }
 
+/// The effective fold duration from the `ZIGBROWSER_AGENT_ANIM_MS` env value (WS5.3): the parsed override when
+/// valid, else the default `anim_ms` (180). `null` text (env unset) yields the default. Used by the Windows
+/// backend so the C++ keeps no timing logic of its own.
+pub fn animMsFromEnv(text: ?[]const u8) u32 {
+    if (text) |t| {
+        if (parseAnimMs(t)) |ms| return ms;
+    }
+    return @intCast(anim_ms);
+}
+
 pub const max_anim_ms: u32 = 5000;
 
 pub const anim_env_name = "ZIGBROWSER_AGENT_ANIM_MS";
@@ -362,6 +372,7 @@ comptime {
         @export(&zb_drawer_label_text_max, .{ .name = "zb_drawer_label_text_max" });
         @export(&zb_drawer_demo_messages, .{ .name = "zb_drawer_demo_messages" });
         @export(&zb_drawer_anim_ms, .{ .name = "zb_drawer_anim_ms" });
+        @export(&zb_drawer_anim_ms_from_env, .{ .name = "zb_drawer_anim_ms_from_env" });
     }
 }
 
@@ -451,4 +462,10 @@ fn zb_drawer_demo_messages() callconv(.c) c_uint {
 /// stretched it).
 fn zb_drawer_anim_ms() callconv(.c) c_uint {
     return store.anim_ms;
+}
+
+/// The fold duration from the `ZIGBROWSER_AGENT_ANIM_MS` env value (null when unset): the valid override, else
+/// the default 180 (WS5.3). Keeps the Windows backend free of timing math.
+fn zb_drawer_anim_ms_from_env(text: ?[*:0]const u8) callconv(.c) c_uint {
+    return animMsFromEnv(if (text) |t| std.mem.span(t) else null);
 }

@@ -130,3 +130,11 @@ test "anim_ms default in the fold range; override parsed (WS5.3)" {
     try expectEqual(@as(?u32, 3000), d.parseAnimMs("3000"));
     try expectEqual(@as(?u32, null), d.parseAnimMs("nope"));
 }
+
+test "animMsFromEnv: valid override else the default 180 (WS5.3)" {
+    try expectEqual(@as(u32, 3000), d.animMsFromEnv("3000")); // valid override honored
+    try expectEqual(@as(u32, 180), d.animMsFromEnv("nope"));  // invalid -> default (literal 180)
+    try expectEqual(@as(u32, 180), d.animMsFromEnv(""));      // empty -> default
+    try expectEqual(@as(u32, 180), d.animMsFromEnv(null));    // env unset -> default
+    try expectEqual(@as(u32, 180), d.animMsFromEnv("100"));   // below the 180 floor -> default
+}
