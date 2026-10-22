@@ -27456,3 +27456,38 @@ the closing commit `7a30c5c` is after still-blocked Windows-plan commit
 `fff7033`. The newest contiguous approved push-through remains **`bac895b`**;
 `3c3e354` is technically closed only when its later fix-forwards are included,
 and `fff7033` is the next independent blocker that prevents reaching them.
+
+## S8a cross-document thread red (`8a146c4`)
+
+**BLOCKED-for-tests.** The new red exposes the important real-binary failure:
+an opener can begin a cross-document navigation after the runner's old-page
+check, and the next step can retry into an unchecked replacement document.
+The proposed contract—one opener-caused navigation, phase C on the platform's
+thread path, and a per-action document token—is sound. The exact-commit
+compatibility evidence also covers every registered consumer of the changed
+`flow_fake.zig` and Instagram fixture under private Xvfb.
+
+Four gaps let an incomplete security implementation pass:
+
+1. The fake exposes only an immediate click-caused commit, not the
+   `inputAck().leaving` observation. There is no row in which the opener did
+   not report leaving but an unrelated later navigation occurs. A green can
+   therefore arm the one-document allowance after every profile opener and
+   ignore the acknowledgement while passing the suite.
+2. `actionDocuments` inspects only click/fill/type, and the router grammar row
+   uses only `dom.click`. The plan's guarded mutation set is click, fill, type,
+   selector-bearing press, and selectOption; the red must cover all five so
+   document binding cannot be omitted from the latter two or from X flows.
+3. The new-document success row has the correct recipient, while the refusal
+   row uses a non-thread URL. There is no valid thread-path replacement whose
+   header names the wrong recipient, so a green can accidentally discard the
+   stage-2 recipient mark when rebuilding the guard for the new document.
+4. The live e2e reads the replacement document's fresh `window.__ig`; it
+   cannot observe input in the discarded old document, and assigning one
+   result object does not prove Send occurred exactly once. A same-origin
+   durable input/send counter must prove exactly one send in the good case and
+   no post-opener focus/type/send in the refused case.
+
+Add causal rows for those four boundaries before registering the red or
+accepting its green. This test-only commit does not change the current linear
+push-through, already held earlier by `fff7033`.
