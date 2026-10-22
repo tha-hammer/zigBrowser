@@ -151,7 +151,14 @@ fn createAllOrClose(pairs: []const *[2]i32, maker: anytype) !void {
 
 // ---- injectable, bounded, honest child reaping (RoseCat 7749 #2/#3) ------------------------------------------
 
-const Child = struct { pid: i32 = -1, reaped: bool = false, status: u32 = 0 };
+const Child = struct { pid: i32 = -1, reaped: bool = false, status: u32 = 0, ownership_lost: bool = false };
+
+/// A sweep's outcome: a real observed exit status, still owned but timed out, or a hard wait error = LOST OWNERSHIP
+/// (the pid is no longer this process's child and may be reaped/reused). These are distinct so only a timeout — in
+/// which ownership is still proven — may enter the guarded stop path (RoseCat dfaf431).
+const SweepResult = union(enum) { exited: u32, timed_out, wait_error };
+/// A reap's outcome: a real observed status, or fail-closed (a hard wait error with NO signal, or deadline).
+const ReapResult = union(enum) { status: u32, fail_closed };
 
 /// A wait attempt's outcome: a real observed exit status, still running, or a hard wait error (fail closed).
 const WaitOutcome = union(enum) { exited: u32, running, wait_error };
@@ -176,49 +183,68 @@ const RealWaiter = struct {
     }
 };
 
-/// One WNOHANG sweep until the deadline. Returns the REAL observed status, a hard wait error -> null (fail closed,
-/// never a fabricated zero), or timeout -> null.
-fn sweepUntil(clock: anytype, deadline_ms: i64, pid: i32, waiter: anytype) ?u32 {
+/// One WNOHANG sweep until the deadline, with DISTINCT outcomes: a real observed status, a hard wait error (lost
+/// ownership), or a timeout with ownership still proven. Never collapses a wait error into a timeout or a status.
+fn sweepUntil(clock: anytype, deadline_ms: i64, pid: i32, waiter: anytype) SweepResult {
     while (true) {
         switch (waiter.tryWait(pid)) {
-            .exited => |st| return st,
-            .wait_error => return null,
+            .exited => |st| return .{ .exited = st },
+            .wait_error => return .wait_error,
             .running => {},
         }
-        if (clock.nowMs() >= deadline_ms) return null;
+        if (clock.nowMs() >= deadline_ms) return .timed_out;
         waiter.napMs();
     }
 }
 
-/// Reap within the single absolute deadline. A graceful sweep; then a guarded SIGKILL and MORE WNOHANG against the
-/// SAME deadline (never a blocking `waitpid(..,0)`). Returns the real observed status, or null on wait-error/timeout
-/// (fail closed). pid<=1 is refused so a bad pid can never become a kill of the session.
-fn reapWithin(clock: anytype, c: *Child, deadline_ms: i64, waiter: anytype) ?u32 {
-    if (c.reaped) return c.status;
-    if (c.pid <= 1) return null;
-    if (sweepUntil(clock, deadline_ms, c.pid, waiter)) |st| {
-        c.reaped = true;
-        c.status = st;
-        return st;
+/// Reap within the single absolute deadline. A hard wait error means the pid is NO LONGER our child (it may be
+/// reaped/reused): fail CLOSED immediately with NO signal and mark ownership lost — `pid > 1` is not ownership
+/// proof (RoseCat dfaf431). ONLY a timeout, in which ownership is still proven, enters the guarded SIGKILL path,
+/// then MORE WNOHANG against the SAME deadline (never a blocking `waitpid(..,0)`).
+fn reapWithin(clock: anytype, c: *Child, deadline_ms: i64, waiter: anytype) ReapResult {
+    if (c.reaped) return .{ .status = c.status };
+    if (c.pid <= 1) {
+        c.ownership_lost = true; // never a real owned child -> never signal it
+        return .fail_closed;
     }
-    waiter.kill(c.pid);
-    if (sweepUntil(clock, deadline_ms, c.pid, waiter)) |st| {
-        c.reaped = true;
-        c.status = st;
-        return st;
+    switch (sweepUntil(clock, deadline_ms, c.pid, waiter)) {
+        .exited => |st| {
+            c.reaped = true;
+            c.status = st;
+            return .{ .status = st };
+        },
+        .wait_error => {
+            c.ownership_lost = true; // LOST OWNERSHIP -> fail closed with NO signal (pid may be foreign/reused)
+            return .fail_closed;
+        },
+        .timed_out => {}, // ownership still proven -> fall through to the guarded stop
     }
-    return null;
+    waiter.kill(c.pid); // only reached on a proven-owned timeout
+    switch (sweepUntil(clock, deadline_ms, c.pid, waiter)) {
+        .exited => |st| {
+            c.reaped = true;
+            c.status = st;
+            return .{ .status = st };
+        },
+        .wait_error => {
+            c.ownership_lost = true;
+            return .fail_closed;
+        },
+        .timed_out => return .fail_closed, // still not reaped by the deadline -> bounded fail-closed
+    }
 }
 
-/// Unconditional containment backstop: guarded SIGKILL + a SINGLE non-blocking WNOHANG. Whatever is still alive is
-/// left to the private-namespace teardown. Never blocks, never asserts.
-fn cleanupChildren(children: []Child) void {
+/// Containment backstop via an injected killer: a guarded SIGKILL + a SINGLE non-blocking wait. An ownership-lost
+/// child is NEVER signalled here either, so the fallback cannot undo reapWithin's fail-closed decision (dfaf431).
+/// Whatever is still alive is left to the private-namespace teardown. Never blocks, never asserts.
+fn cleanupChildren(children: []Child, waiter: anytype) void {
     for (children) |*c| {
-        if (c.reaped or c.pid <= 1) continue;
-        _ = linux.kill(c.pid, linux.SIG.KILL);
-        var st: u32 = 0;
-        const rc = linux.waitpid(c.pid, &st, WNOHANG);
-        if (linux.errno(rc) == .SUCCESS and rc == @as(usize, @intCast(c.pid))) c.reaped = true;
+        if (c.reaped or c.pid <= 1 or c.ownership_lost) continue;
+        waiter.kill(c.pid);
+        switch (waiter.tryWait(c.pid)) {
+            .exited => c.reaped = true,
+            else => {}, // leave to the namespace backstop
+        }
     }
 }
 
@@ -354,7 +380,7 @@ fn runScenario(early_unlock: bool, mode: Mode) !void {
     var b2res = [2]i32{ -1, -1 }; // R2 -> parent  result
     defer for ([_]*i32{ &b1rd[0], &b1rd[1], &b1go[0], &b1go[1], &b2rd[0], &b2rd[1], &b1res[0], &b1res[1], &b2res[0], &b2res[1] }) |p| closeAndClear(p);
     var children = [_]Child{ .{}, .{} };
-    defer cleanupChildren(&children);
+    defer cleanupChildren(&children, RealWaiter{});
 
     try createAllOrClose(&[_]*[2]i32{ &b1rd, &b1go, &b2rd, &b1res, &b2res }, RealMaker{});
 
@@ -416,8 +442,14 @@ fn runScenario(early_unlock: bool, mode: Mode) !void {
         var r2: [2]u8 = undefined;
         if (!readExactWithin(clock, b1res[0], &r1, terminal)) return error.R1ResultLost;
         if (!readExactWithin(clock, b2res[0], &r2, terminal)) return error.R2ResultLost;
-        const sd0 = reapWithin(clock, &children[0], terminal, RealWaiter{}) orelse return error.R1ReapFailed;
-        const sd1 = reapWithin(clock, &children[1], terminal, RealWaiter{}) orelse return error.R2ReapFailed;
+        const sd0 = switch (reapWithin(clock, &children[0], terminal, RealWaiter{})) {
+            .status => |s| s,
+            .fail_closed => return error.R1ReapFailed,
+        };
+        const sd1 = switch (reapWithin(clock, &children[1], terminal, RealWaiter{})) {
+            .status => |s| s,
+            .fail_closed => return error.R2ReapFailed,
+        };
         try std.testing.expect(terminal0(sd0));
         try std.testing.expect(terminal0(sd1));
         try std.testing.expectEqual(@as(u8, @intFromEnum(ProtoAction.fail_closed)), r1[0]); // R1 fails closed
@@ -438,8 +470,14 @@ fn runScenario(early_unlock: bool, mode: Mode) !void {
     if (!readExactWithin(clock, b1res[0], &r1, terminal)) return error.R1ResultLost;
     if (!readExactWithin(clock, b2res[0], &r2, terminal)) return error.R2ResultLost;
 
-    const st0 = reapWithin(clock, &children[0], terminal, RealWaiter{}) orelse return error.R1ReapFailed;
-    const st1 = reapWithin(clock, &children[1], terminal, RealWaiter{}) orelse return error.R2ReapFailed;
+    const st0 = switch (reapWithin(clock, &children[0], terminal, RealWaiter{})) {
+        .status => |s| s,
+        .fail_closed => return error.R1ReapFailed,
+    };
+    const st1 = switch (reapWithin(clock, &children[1], terminal, RealWaiter{})) {
+        .status => |s| s,
+        .fail_closed => return error.R2ReapFailed,
+    };
     try std.testing.expect(terminal0(st0));
     try std.testing.expect(terminal0(st1));
 
@@ -529,35 +567,61 @@ const ExitOnKillWaiter = struct {
     pub fn napMs(_: ExitOnKillWaiter) void {}
 };
 
-test "reap fails CLOSED on a hard wait error (never a fabricated zero status)" {
+/// A killer that only records the kill (and never observes an exit), for the cleanup-backstop rows.
+const RecordingKiller = struct {
+    killed: *bool,
+    pub fn kill(self: RecordingKiller, pid: i32) void {
+        _ = pid;
+        self.killed.* = true;
+    }
+    pub fn tryWait(_: RecordingKiller, pid: i32) WaitOutcome {
+        _ = pid;
+        return .running;
+    }
+};
+
+test "reap fails CLOSED on a hard wait error with NO signal (ownership lost; never a fabricated zero)" {
     var t: i64 = 0;
     var killed = false;
     var c = Child{ .pid = 4242 }; // fake pid; the injected waiter never touches a real process
     const got = reapWithin(FakeClock{ .t = &t }, &c, 5, WaitErrorWaiter{ .killed = &killed });
-    try std.testing.expect(got == null); // fail closed, NOT @as(?u32, 0)
+    try std.testing.expect(got == .fail_closed); // fail closed, NOT a fabricated zero status
+    try std.testing.expect(!killed); // a lost-ownership pid may be reused/foreign -> it must NEVER be signalled
+    try std.testing.expect(c.ownership_lost);
     try std.testing.expect(!c.reaped);
-    try std.testing.expect(killed); // a guarded SIGKILL was attempted between the two sweeps
 }
 
-test "reap is BOUNDED: a never-exiting wait returns null at the deadline after a guarded kill (no blocking wait)" {
+test "reap is BOUNDED: a never-exiting (still-owned) wait fail-closes at the deadline AFTER a guarded kill" {
     var t: i64 = 0;
     var killed = false;
     var c = Child{ .pid = 4242 };
     const got = reapWithin(FakeClock{ .t = &t }, &c, 6, NeverExitsWaiter{ .killed = &killed });
-    try std.testing.expect(got == null); // bounded by the deadline, never a blocking waitpid(..,0)
+    try std.testing.expect(got == .fail_closed); // bounded by the deadline, never a blocking waitpid(..,0)
+    try std.testing.expect(killed); // ownership proven by the TIMEOUT -> the guarded kill did happen
+    try std.testing.expect(!c.ownership_lost);
     try std.testing.expect(!c.reaped);
-    try std.testing.expect(killed);
 }
 
-test "reap observes a real exit status that only appears AFTER the guarded kill" {
+test "reap observes a real exit status that only appears AFTER the guarded kill (timeout branch)" {
     var t: i64 = 0;
     var killed = false;
     var c = Child{ .pid = 4242 };
     const got = reapWithin(FakeClock{ .t = &t }, &c, 4, ExitOnKillWaiter{ .killed = &killed, .status = 0 });
-    try std.testing.expect(got != null);
-    try std.testing.expectEqual(@as(u32, 0), got.?);
+    try std.testing.expect(got == .status);
+    try std.testing.expectEqual(@as(u32, 0), got.status);
     try std.testing.expect(c.reaped);
     try std.testing.expect(killed);
+}
+
+test "cleanup NEVER signals an ownership-lost child, but DOES signal a still-owned one" {
+    var ka = false;
+    var kb = false;
+    var lost = [_]Child{.{ .pid = 4242, .ownership_lost = true }};
+    var owned = [_]Child{.{ .pid = 4243 }};
+    cleanupChildren(&lost, RecordingKiller{ .killed = &ka });
+    cleanupChildren(&owned, RecordingKiller{ .killed = &kb });
+    try std.testing.expect(!ka); // ownership lost in reapWithin -> the fallback cleanup must NOT undo that with a kill
+    try std.testing.expect(kb); // a still-owned leftover child IS given the guarded SIGKILL
 }
 
 /// Succeeds until the `fail_at`-th call, recording each created fd so the test can prove it was later closed.
