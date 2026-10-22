@@ -276,10 +276,14 @@ int zb_reaper_run_marker_state(int runtime_fd, const char *basename) {
   if (!name_is_sockdir(basename)) return ZB_RUN_MARKER_ERR;
   const int dfd = openat(runtime_fd, basename, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
   if (dfd < 0) return ZB_RUN_MARKER_ERR;
-  /* RED (C2 crash cut): this IGNORES run.marker, so a marker-less teardown dir looks like a real run — the mutant
-   * the plan names (re-census / warn-forever for a signal => a permanent incident). The green opens run.marker
-   * no-follow relative to dfd and maps ENOENT to the durable teardown phase. */
+  /* Open run.marker no-follow RELATIVE to the run dir fd. Present => a real run. ENOENT => the marker was already
+   * unlinked under the flock (C2 durable teardown phase) => finish rmdir+remove, no signal, no permanent
+   * incident. Any other error fails closed. */
+  const int mfd = openat(dfd, "run.marker", O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+  const int e = errno;
   close(dfd);
+  if (mfd < 0) return (e == ENOENT) ? ZB_RUN_MARKER_TEARDOWN : ZB_RUN_MARKER_ERR;
+  close(mfd);
   return ZB_RUN_MARKER_PRESENT;
 }
 

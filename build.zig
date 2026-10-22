@@ -810,6 +810,18 @@ pub fn build(b: *std.Build) void {
     run_reaper_lb_tests.skip_foreign_checks = true;
     const reaper_lb_step = b.step("test-agent-run-reaper-ledger-boundary", "MS6.5.1 ledger boundary: exact 4-field match + single-component grammar (real dirs)");
     reaper_lb_step.dependOn(&run_reaper_lb_tests.step);
+    // MS6.5.1 (crash-cut table C2/C3): a Clean teardown that crashed after unlinkat(run.marker) but before rmdir
+    // leaves a provenance-valid marker-less dir — recognised via run.marker=>ENOENT as the durable teardown phase
+    // (finish rmdir+remove, no signal, no permanent incident); C3 (entry naming no dir) => ZB_LEDGER_GONE. Real dirs.
+    const reaper_cc_module = b.createModule(.{ .target = target, .optimize = optimize, .link_libc = true });
+    reaper_cc_module.addCSourceFile(.{ .file = b.path("src/agent_run_reaper.c"), .flags = &.{"-std=gnu11"} });
+    reaper_cc_module.addCSourceFile(.{ .file = b.path("tests/agent_run_ledger_crashcut_test.c"), .flags = &.{"-std=gnu11"} });
+    reaper_cc_module.addIncludePath(b.path("src"));
+    const reaper_cc_exe = b.addExecutable(.{ .name = "reaper-ledger-crashcut-test", .root_module = reaper_cc_module });
+    const run_reaper_cc_tests = b.addRunArtifact(reaper_cc_exe);
+    run_reaper_cc_tests.skip_foreign_checks = true;
+    const reaper_cc_step = b.step("test-agent-run-reaper-ledger-crashcut", "MS6.5.1 crash cuts C2/C3: marker-less teardown dir + entry naming no dir (real dirs, no signals)");
+    reaper_cc_step.dependOn(&run_reaper_cc_tests.step);
     // MS6.5.1 (plan "versioned/strict/bounded ledger schema"): the ledger parse (pure Zig std.json) — a
     // VERSIONED, STRICTLY typed, BOUNDED schema; an unknown version / over-cap / missing/extra/mistyped field /
     // bad state / duplicate basename / truncated input is rejected, so a malformed ledger never yields entries.
@@ -2958,6 +2970,7 @@ pub fn build(b: *std.Build) void {
     if (target.result.os.tag == .linux) test_step.dependOn(&run_reaper_uc_tests.step);
     if (target.result.os.tag == .linux) test_step.dependOn(&run_reaper_lg_tests.step);
     if (target.result.os.tag == .linux) test_step.dependOn(&run_reaper_lb_tests.step);
+    if (target.result.os.tag == .linux) test_step.dependOn(&run_reaper_cc_tests.step);
     test_step.dependOn(&run_ledger_parse_tests.step);
     test_step.dependOn(&run_ledger_grammar_tests.step);
     test_step.dependOn(&run_ledger_load_tests.step);
