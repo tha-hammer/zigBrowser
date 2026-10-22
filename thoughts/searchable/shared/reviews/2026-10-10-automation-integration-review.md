@@ -36339,6 +36339,9 @@ make explicit the proof boundaries already used for `f1e9653` and `c6b2b32`.
 They are intended to shorten the path to an owner-testable Intel and Apple
 Silicon Mac build without weakening product or safety review.
 
+The owner explicitly confirmed R1-R4 on 2026-10-22. They are adopted review
+rules, not a provisional reviewer convention.
+
 **Priority.** Review order is: (1) the WS5.5b-2 contiguous push blocker and
 its bounded Win11 evidence; (2) the Mac critical path — MS7 AppKit drawer,
 MS7/MS5.2 Keychain Secrets, MS8.2/8.3, and Mac `.app` packaging; (3) all other
@@ -36432,3 +36435,48 @@ as RED/unregistered. If the canonical full gate invokes only `zig build test`
 and not the aggregate `cross-check`, also make the Darwin export runs a direct
 dependency of that gate; the proof itself is already registered and green, so
 neither documentation/aggregation cleanup blocks this slice.
+
+## WS5.5b-2 owned-Job/lifecycle fix-forward (`00a862c`)
+
+**BLOCKED; no Win11 run is authorized yet.** The production runner safety fix
+is sound and closes item 1 of the `f227c3c` finding: a normal/no-kill result now
+requires a real leader handle, `WAIT_OBJECT_0`, and a bounded fail-closed
+settled Job-member count of zero. A missing handle, timeout, unreadable/nonzero
+count, or surviving child takes the explicit terminate/reap failure path. The
+new registered `windows-drawer-lifecycle` step passes **12/12**, and the
+related hostless `win_drawer_test.py` suite passes **84/84** with eight live
+rows skipped.
+
+The remaining blocker is exactly item 2 of the adopted `f1e9653` minimum, and
+therefore R3(d), not a new oracle-strength request. The purported driven seam
+is still a detached Python model: `WinSeam`, `spawn_extras`, `wnddestroy`, and
+`teardown` execute only code defined inside
+`ws5_5b2_lifecycle_seam_test.py`. The only production binding added by this
+commit is `test_production_teardown_is_bound`, which parses the embedded C#
+runner as source text and asserts substrings. The registered step does not
+read, import, compile, or call `src/webview2_shim.cpp` or
+`src/agent_drawer.zig`. Consequently, production can break per-HWND
+registration, partial-control cleanup, retire-once `WM_DESTROY`, or the live
+count transitions while every one of these 12 driven-model rows stays green.
+That is the precise proof-that-cannot-fail condition R1/R3 prohibit.
+
+Close the existing minimum by putting those lifecycle transitions behind a
+shared production decision/seam actually called by the shim (the existing
+portable Zig layer is a natural home) and drive those same bytes from the
+recording test. A narrow call-site source tripwire is sufficient for the C++
+binding; do not add another control-flow parser. Keep this commit's runner
+safety change, registration, and teardown tripwire.
+
+Once that production-bound green lands, the bounded Win11 authority must run
+the four currently separate behavior methods—not three—unless the two
+partial-failure outcomes are first combined into one parameterized method:
+
+1. `WinDrawerBehaviorsLive.test_ws5_5_live_count_peak_then_zero`;
+2. `WinDrawerBehaviorsLive.test_ws5_5b2_closing_one_extra_drops_the_live_count_by_exactly_one`;
+3. `WinDrawerBehaviorsLive.test_ws5_5b2_extra_fail_panel_drives_partial_cleanup`;
+4. `WinDrawerBehaviorsLive.test_ws5_5b2_extra_fail_icon_drives_partial_cleanup`.
+
+That is the run-set reconciliation already required by `f227c3c`: both panel
+and icon partial-failure outcomes must execute. Until the shared production
+seam exists, no exact run commit is named and the cumulative `1b2fe0a` range
+remains blocked despite the already-approved `cd2323c` item-3 tripwire.
