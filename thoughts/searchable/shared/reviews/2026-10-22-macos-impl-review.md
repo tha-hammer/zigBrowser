@@ -232,3 +232,38 @@ No assertion or test was removed or weakened. Existing changes are confined to f
 Independent exact-commit evidence from `cbf58651298b5ee949c175a5fce05b1a29ef8027`: clean-archive `zig build test-mac-build-script test-mac-reaper-gate-guard -j4 --summary all` exited 0 with 7/7 steps and both Mac-build selftests PASS. The callers oracle drove all eight callers and classified 38 gate calls, 23 MS1b calls, eight calls for each MS2a/MS2b/MS2c/MS3/MS4 gate, and six build-DMG calls. `bash -n` and `git diff --check` passed. Independently reproduced mutants all exited 1: shared path plus still-present run token (six C4 failures), echoed token plus shared-path work (two C4 failures), early deletion (30 C6 failures), fake/wrong deleter (15 C6 failures), and a `/tmp`-prefixed work directory (two C4 failures). The recorded shared-home SCP, missing cleanup, and unexpected-host mutants exercise C5, C6, and C2 respectively.
 
 The exact first build-only two-Mac request is technically fit: source commit `cbf58651298b5ee949c175a5fce05b1a29ef8027`, `tests/mac/build-on-mac.sh` SHA-256 `36922e316fa2d866e75da336282dc491e58a76f42a32991f23b6f5681f80fb0b`, and `tests/mac/known_hosts` SHA-256 `15e45024f0e0f9c82743b1095739bf7d8d2c5ab61028255bcae6dc7522595221` independently match the clean archive. This is readiness, **not release**: no Mac may be contacted until the orchestrator explicitly releases that exact request. No Mac was contacted during review.
+
+## 2026-10-22 — 4pa.65/4pa.68/4pa.71 recovery green
+
+### `a2bc627` — caller store, entry PID checks, and registered transaction tests
+
+**BLOCK; NOT SAFE TO PUSH AS THE COMPLETE REV-32 GREEN.** The implemented 4pa.65 and 4pa.68 behavior is correct, and the two tests are genuinely registered. The caller's `sub_path` reaches the load and both retirement publishes; parsing rejects `pid < 2`, a basename/PID mismatch, and PID overflow in the basename. `test-agent-run-recovery-store-pid` and `test-agent-run-ledger-recovery-txn` are attached to the Linux `test` aggregate, and the new transaction launcher preserves the child status.
+
+Exact-commit evidence from a clean archive of `a2bc627ef74588d17b642a6c5537f4e0b8b056c8`, with fd 9 held and an outer private user/PID/mount/proc/network namespace: all 29 `test-agent-run-*` steps exited 0 (`90/90` build steps, `79/79` Zig tests). The new store/PID test passed 3/3, the new registered transaction test passed 6/6, startup passed 17/17, and the manual concrete test passed 29/29. Two older build launchers still mask child status with `; :`; their exact compiled binaries were therefore rerun directly with status preservation and passed 1/1 (busy holder) and 29/29 (concrete recovery).
+
+Independent scratch production mutants were caught: hard-code the authoritative load to `runs.json` (store/PID 2/3, startup 10/17, transaction 3/6); remove low-PID rejection (store/PID 1/3); remove basename/PID equality (store/PID 1/3); and unlock before pin/fixed point (ten consecutive transaction runs each failed 5/6 with two signal phases). The registered green therefore detects the four recorded mutants.
+
+Two authoritative requirements remain missing:
+
+1. Rev-32 I-W3, R30.2 T20, 4pa.71, and dependency-order item 18 require this same green to make `recoverOneUnderLock` and the gated/full startup bypass entries non-public, register the compile-fail caller, and show that a production re-export mutant makes that step fail. At `a2bc627`, `recoverOneUnderLock`, `recoverOneUnderLockP`, `recoverAllAtStartupGated`, `recoverAllAtStartupGatedH`, and `recoverAllAtStartupFull` remain public; no T20 step or re-export mutant exists. The commit message's statement that this is not done does not amend the plan.
+2. Rev 32 requires a **deterministic** exact-result two-recoverer proof. The new test forks the children without a rendezvous and uses only a 300 ms sleep inside the first fixed point to make the second overlap. The early-unlock mutant was observed red in every review run, but a sufficiently late-scheduled second child can still miss that window. Passing repetitions do not make a scheduler-timing oracle deterministic.
+
+The first exact minimum is: close I-W3 using a production module/API structure that exposes only the readiness-bound entry, register T20's compile-fail proof and re-export mutant; and replace the sleep-only race with a barrier/handshake (or register an equivalent deterministic production-transaction proof) that forces both recoverers to the relevant boundary and reliably makes the early-unlock mutant produce two signal phases. A plan erratum may replace the I-W3 requirement, but must land before a green is approved. The correct store/PID behavior and registrations may be retained unchanged.
+
+## 2026-10-22 — Mac harness global-cache HOLD
+
+The orchestrator reports that the released build-only run of exact commit `cbf58651298b5ee949c175a5fce05b1a29ef8027` completed on both Macs with rc 0 and PASS, both per-run directories were removed, and the observed `$HOME` snapshots changed only the home directory's own mtime. That successful build observation stands.
+
+**Effective immediately, every further Mac run through `build-on-mac.sh` or any of its callers is ON HOLD.** New evidence shows the harness gives Zig no `--global-cache-dir`, so Zig may read or write its default `$HOME/.cache/zig` outside the reviewed per-run directory. The prior snapshots did not inspect that tree deeply enough to prove confinement. This is the new P0 `zigBrowser-3ui.5` and an R3 safety finding; it supersedes the earlier statement that this harness was fit for another Mac request.
+
+No later Mac run may be approved until a reviewed fix: confines Zig's global cache to the exact fresh `$HOME/zb-gate-<sha>-<nonce>` directory; adds a registered hostless argv test that structurally binds `--global-cache-dir` to that exact run directory; and records a production mutant deleting the flag or redirecting it outside the run directory, with the registered test failing. The usual exact source commit, SHA-256 of every harness file, and orchestrator release remain additional requirements after this hold is cleared.
+
+## 2026-10-22 — 4pa.76 duplicate Secrets symbol red
+
+### `2470871` — Linux/macOS Secrets headers in one translation unit
+
+**SAFE TO PUSH AS AN UNREGISTERED RED TRIPWIRE.** The commit adds only `tests/secrets_window_headers_test.c`; it changes no product or registered gate. The file includes the real Linux and macOS headers in one translation unit. At exact commit `2470871056fcebdb49602cddf60981056ee4da36`, a syntax-only compile exited 1 at the intended conflict: Linux declares `zb_secrets_window_open(void)` while macOS declares `zb_secrets_window_open(unsigned long long)`. In a clean scratch archive, changing only the macOS declaration to the plan's canonical `zb_secrets_window_mac_show` made the same syntax check exit 0.
+
+This matches 4pa.76 Red 1 and is correctly labelled a tripwire, not behavioral proof. The future green may register it only with the rename. Closing MS7.5 still requires Red 2: the renamed production entry must open/focus the real Secrets window and keep it out of the automation registry, with a no-op production mutant failing on both Macs. That run is additionally blocked by the global-cache HOLD above.
+
+`2470871` is safe in isolation as a red draft, but the current ancestry tip is **not push-safe as a whole** because it contains the blocked `a2bc627` complete-green claim.
