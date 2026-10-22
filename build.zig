@@ -1164,6 +1164,37 @@ pub fn build(b: *std.Build) void {
     const run_agent_secrets_shape_tests = b.addRunArtifact(b.addTest(.{ .root_module = agent_secrets_shape_tests_module }));
     run_agent_secrets_shape_tests.skip_foreign_checks = true;
 
+    // WS6.1 (a): the PORTABLE token shape as its own module, and its [L] property test. agent_secrets.zig
+    // re-exports from this module; here it is exercised directly, proving it needs no std.os.linux.
+    const agent_secrets_shape_module = b.createModule(.{
+        .root_source_file = b.path("src/agent_secrets_shape.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const shape_portable_tests_module = b.createModule(.{
+        .root_source_file = b.path("tests/windows/agent_secrets_shape_portable_test.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    shape_portable_tests_module.addImport("agent_secrets_shape", agent_secrets_shape_module);
+    const run_shape_portable_tests = b.addRunArtifact(b.addTest(.{ .root_module = shape_portable_tests_module }));
+    run_shape_portable_tests.skip_foreign_checks = true;
+
+    // WS6 (b): the portable TokenStore interface + WS6.3 safety refusal, [L] with fakes.
+    const agent_secrets_store_module = b.createModule(.{
+        .root_source_file = b.path("src/agent_secrets_store.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const agent_secrets_store_tests_module = b.createModule(.{
+        .root_source_file = b.path("tests/windows/agent_secrets_store_test.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    agent_secrets_store_tests_module.addImport("agent_secrets_store", agent_secrets_store_module);
+    const run_agent_secrets_store_tests = b.addRunArtifact(b.addTest(.{ .root_module = agent_secrets_store_tests_module }));
+    run_agent_secrets_store_tests.skip_foreign_checks = true;
+
     // Chat drawer S6b1: the login helper's launch argv (src/agent_login.zig).
     const run_agent_login_tests = b.addRunArtifact(b.addTest(.{ .root_module = b.createModule(.{
         .root_source_file = b.path("src/agent_login.zig"),
@@ -3423,6 +3454,8 @@ pub fn build(b: *std.Build) void {
     const agent_secrets_step = b.step("test-agent-secrets", "Run the Claude Agent token store's unit tests");
     agent_secrets_step.dependOn(&run_agent_secrets_tests.step);
     agent_secrets_step.dependOn(&run_agent_secrets_shape_tests.step);
+    agent_secrets_step.dependOn(&run_shape_portable_tests.step);
+    agent_secrets_step.dependOn(&run_agent_secrets_store_tests.step);
     if (target.result.os.tag == .linux) agent_secrets_step.dependOn(&run_agent_secrets_dlopen_test.step);
     if (target.result.os.tag == .linux) agent_secrets_step.dependOn(&run_agent_secrets_clear_fetch_test.step);
     test_step.dependOn(&run_agent_auth_tests.step);
