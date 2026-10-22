@@ -28046,3 +28046,26 @@ manifest:
 The green must register the red, add the third reviewed case to the exact
 manifest, and return the new digest for review. No Mac run is authorized from
 this red. `git diff --check` is clean.
+
+## MS6.5.1 Darwin ledger-lock portability (`08db002`)
+
+**APPROVED.** This closes the Darwin-portability blocker on the ledger-lock
+primitive from `7511b79`/`e2a54ec`. `src/agent_run_ledger.zig:206-224` keeps
+the `O_NOFOLLOW|O_CLOEXEC` `openat`, but now routes `flock`, errno decoding and
+failure-path close through `std.posix.system`/`std.posix.errno`; therefore the
+same bounded `LOCK_EX|LOCK_NB` algorithm selects the platform implementation
+instead of Linux syscall numbers on Darwin. Contention remains `.AGAIN` and
+every other result fails closed.
+
+The new registered cross-build guard at `build.zig:864-874,2912-2924`
+compiles the actual ledger module for both `aarch64-macos` and `x86_64-macos`,
+and the default test step depends on both objects. Reviewer clean-export
+evidence, with display variables removed and the executable lock tests inside
+a private user/PID namespace:
+
+`zig build test-agent-run-ledger-lock test-agent-run-ledger-lock-nofollow test-agent-run-ledger-darwin-build --summary all`
+
+passed **10/10 steps and 3/3 tests**. Both Darwin objects compiled and both
+Linux behavioral lock suites passed. `git diff --check` is clean. This verdict
+is scoped to `08db002`'s portability repair; it does not approve or close the
+later, separately blocked `(pid,start)` recovery red in `97c6215`.
