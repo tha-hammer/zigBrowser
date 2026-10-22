@@ -43,7 +43,9 @@ d="$HOME/${ZB_RDIR:?}"
 trap 'rm -rf "$HOME/${ZB_RDIR:?}"' EXIT
 [ "$(uname -m)" = "$ZB_ARCH" ] || { echo "FAIL: this leg is $(uname -m), expected $ZB_ARCH" >&2; exit 1; }
 cd "$d" && tar -xf src.tar
-"$HOME/.local/bin/zig" build install > build.log 2>&1 || { tail -20 build.log; echo "FAIL: build" >&2; exit 1; }
+# Both zig caches stay inside this run dir, never the owner's ~/.cache/zig (bd 3ui.5).
+ZIG_LOCAL_CACHE_DIR="$d/.zig-cache" ZIG_GLOBAL_CACHE_DIR="$d/.zig-global-cache" \
+  "$HOME/.local/bin/zig" build install --cache-dir "$d/.zig-cache" --global-cache-dir "$d/.zig-global-cache" > build.log 2>&1 || { tail -20 build.log; echo "FAIL: build" >&2; exit 1; }
 home="$d/home"; mkdir "$home"; marker="$d/canary-ran"
 printf '#!/bin/sh\ntouch "%s"\nexit 0\n' "$marker" > "$d/canary-python"; chmod 755 "$d/canary-python"
 set +e

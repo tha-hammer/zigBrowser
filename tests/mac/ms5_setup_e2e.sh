@@ -37,7 +37,9 @@ set -euo pipefail
 d="$HOME/${ZB_RDIR:?}"; trap 'zb_kill_saved_group "$d/pgid" >/dev/null; rm -rf "$HOME/${ZB_RDIR:?}"' EXIT
 [ "$(uname -m)" = "$ZB_ARCH" ] || { echo "FAIL: leg is $(uname -m), expected $ZB_ARCH" >&2; exit 1; }
 cd "$d" && tar -xf src.tar
-"$HOME/.local/bin/zig" build install < /dev/null > build.log 2>&1 || { tail -20 build.log; echo "FAIL: build" >&2; exit 1; }
+# Both zig caches stay inside this run dir, never the owner's ~/.cache/zig (bd 3ui.5).
+ZIG_LOCAL_CACHE_DIR="$d/.zig-cache" ZIG_GLOBAL_CACHE_DIR="$d/.zig-global-cache" \
+  "$HOME/.local/bin/zig" build install --cache-dir "$d/.zig-cache" --global-cache-dir "$d/.zig-global-cache" < /dev/null > build.log 2>&1 || { tail -20 build.log; echo "FAIL: build" >&2; exit 1; }
 home="$d/home"; mkdir "$home"
 set +e
 env -i PATH=/usr/bin:/bin HOME="$home" LANG=C ./zig-out/bin/zigBrowser --agent-setup < /dev/null > out.txt 2> err.txt

@@ -3722,6 +3722,14 @@ pub fn build(b: *std.Build) void {
     }) |input| mac_zig_cache_selftest.addFileInput(b.path(input));
     mac_build_script_step.dependOn(&mac_zig_cache_selftest.step);
     test_step.dependOn(&mac_zig_cache_selftest.step);
+    // The harnesses that run zig on their own keep both zig caches in their run dir too (bd 3ui.5).
+    const mac_zig_cache_direct_selftest = b.addSystemCommand(&.{ "bash", "tests/mac/zig_cache_direct_selftest.sh" });
+    for ([_][]const u8{
+        "tests/mac/zig_cache_direct_selftest.sh", "tests/mac/ms5_setup_refusal_gate.sh", "tests/mac/ms5_setup_e2e.sh",
+        "tests/mac/ms5_gate.sh",                  "tests/mac/lib_group_cleanup.sh",
+    }) |input| mac_zig_cache_direct_selftest.addFileInput(b.path(input));
+    mac_build_script_step.dependOn(&mac_zig_cache_direct_selftest.step);
+    test_step.dependOn(&mac_zig_cache_direct_selftest.step);
     test_step.dependOn(&windows_gate_selftest.step);
     test_step.dependOn(&windows_twohost_selftest.step);
     test_step.dependOn(&windows_build_selftest.step);

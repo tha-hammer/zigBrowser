@@ -59,7 +59,10 @@ xcrun clang -fobjc-arc -Wno-deprecated-declarations -I "$d" \
 # MS5.2 Zig port over the C seam (groundwork; not yet wired into app.zig's switch): compile the seam to an
 # object and run the Zig port's round-trip test against a disposable keychain.
 xcrun clang -c -fobjc-arc -Wno-deprecated-declarations -I "$d" agent_secrets_mac.m -o "$d/asm.o"
-"$HOME/.local/bin/zig" test "$d/agent_secrets_mac.zig" "$d/asm.o" -lc -framework Security -framework Foundation
+# Both zig caches stay inside this run dir, never the owner's ~/.cache/zig (bd 3ui.5).
+ZIG_LOCAL_CACHE_DIR="$d/.zig-cache" ZIG_GLOBAL_CACHE_DIR="$d/.zig-global-cache" \
+  "$HOME/.local/bin/zig" test --cache-dir "$d/.zig-cache" --global-cache-dir "$d/.zig-global-cache" \
+  "$d/agent_secrets_mac.zig" "$d/asm.o" -lc -framework Security -framework Foundation
 printf 'PASS\tms5-keychain-zigport\n'
 REMOTE
   printf 'PASS\tms5-leg\t%s\t%s\n' "$host" "$label"
