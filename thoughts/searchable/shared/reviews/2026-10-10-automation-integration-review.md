@@ -35952,3 +35952,63 @@ reachable top-level sequence rather than any direct-body expression; commit
 wrong-receiver and prior-unconditional-return/raise mutants. Until then,
 `6609074`/`9d9b6c7` remain blocked and this does not move the WS5.5b-2 push
 path.
+
+## MS7.4 + MS7.6/7.8 native-link authority red fix-forward 2 (`aa7e8d9`)
+
+**BLOCKED-for-tests; keep it unregistered and do not run it on a Mac.** This
+does close all three concrete `16449ca` bypasses: the forced-Linux target is
+rejected, a dead/detached Copy item is rejected, and the Objective-C ivar
+reflection route is rejected. The focused pair retains the intended production
+red shape: **15/18 pass**, with only the absent native drawer link, authority
+graph and real drawer failing.
+
+The replacement V8 predicate still does not prove its claimed *live* Edit
+menu. I drove `link_found` against three semantically broken shims; every one
+incorrectly returned an empty finding list:
+
+1. Replace `[NSApplication sharedApplication]` with `nil`. Messaging nil makes
+   both the activation-policy call and `zb_install_edit_menu(application)`
+   ineffective, but the adjacent token pair still satisfies V8.
+2. Keep the exact install pair, then execute `[application setMainMenu:nil]`.
+   The reviewed menu is immediately removed, yet only the installer function
+   and its one call are counted.
+3. Put `return 0;` immediately before the otherwise-exact activation/install
+   pair. Direct brace depth remains correct even though the pair is
+   unreachable.
+
+Bind `application` to the live `[NSApplication sharedApplication]` result,
+prove the pair is reachable in the active autorelease-pool path, and reject any
+subsequent `setMainMenu:` replacement (or bind the complete run-loop sequence).
+Commit the three mutants. Until then, `16449ca`/`5beecc9` remain blocked and no
+Mac execution is authorized.
+
+## S8e part 1 hover/scroll production green (`e099fd1`)
+
+**APPROVED.** This closes the approved `edbdc1b`/`aabe95f` reds. The helper
+offers exactly `hover` and `scroll` between the six read tools and the two
+carded tools, with schemas matching the broker's strict argument grammar.
+`hover` is exactly one non-empty selector; `scroll` is either that selector or
+a non-empty subset of bounded integer `x`/`y` offsets. Extra fields—including
+native-input options, a caller window, approval material and deadline controls—
+are refused before dispatch.
+
+The broker exposes the pair only when the app's S8 seam exists, binds every
+accepted call to the drawer's own window, maps only to `dom.hover` and
+`dom.scroll`, and does not enter the approval/card, page-list or notification
+paths. Their budget remains the ordinary read deadline rather than the carded
+deadline. The committed broker rows cover every selector/mode combination,
+accepted and refused shapes, own-window binding and the absence of every card
+side effect. The registered real-chain case runs below both the bwrap network
+boundary and a kernel-proven private PID namespace before starting the browser.
+
+BlackRobin's clean-export private-Xvfb full gate passed **477/477 steps** and
+**1324/1326 tests** (two skipped). I reran the three helper modules focused:
+**28/28 passed**, including the MCP server's own schema validator and deadline
+rows; `agent-host-win-import` also passed **7/7**. The change is therefore
+individually approved. It lies after the current `1b2fe0a` push blocker and
+does not move the contiguous boundary by itself.
+
+NIT: `Bridge.tools()` still describes only the six reads followed by navigate
+and reload; update that docstring to name hover and scroll when the file is next
+touched. The executable contract and its tests are correct, so this is not a
+blocker.
