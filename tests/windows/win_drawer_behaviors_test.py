@@ -326,13 +326,27 @@ class WinDrawerBehaviorsOracle(unittest.TestCase):
             check_live(2, 1)   # a leaked live drawer must fail
 
     def test_check_isolation(self):
-        check_isolation([-32601, -32011], {"wins": 2}, {"wins": 2})
+        full = {k: -32601 for k in EXPECTED_ISOLATION_PROBES}
+        check_isolation(full, {"wins": 2}, {"wins": 2})
         with self.assertRaises(AssertionError):
-            check_isolation([], {"wins": 2}, {"wins": 2})          # no attempts -> no evidence
+            check_isolation({}, {"wins": 2}, {"wins": 2})                       # no attempts -> no evidence
         with self.assertRaises(AssertionError):
-            check_isolation([0], {"wins": 2}, {"wins": 2})          # a reachable (success) method must fail
+            check_isolation({"socket.drawer.state": -32601}, {"wins": 2}, {"wins": 2})  # a single attempt is not the full set
+        extra = dict(full); extra["socket.drawer.secret"] = -32601
         with self.assertRaises(AssertionError):
-            check_isolation([-32601], {"wins": 2}, {"wins": 3})     # a census change must fail
+            check_isolation(extra, {"wins": 2}, {"wins": 2})                    # an unexpected extra attempt must fail
+        reachable = dict(full); reachable["socket.drawer.state"] = 0
+        with self.assertRaises(AssertionError):
+            check_isolation(reachable, {"wins": 2}, {"wins": 2})                # a reachable (success) method must fail
+        with self.assertRaises(AssertionError):
+            check_isolation(full, {"wins": 2}, {"wins": 3})                     # a census change must fail
+
+    def test_check_fold_override(self):
+        check_fold_override(56, 400, 1008, 3000, 3000)
+        with self.assertRaises(AssertionError):
+            check_fold_override(56, 400, 1008, 180, 3000)   # the override must be honored, not the default
+        with self.assertRaises(AssertionError):
+            check_fold_override(56, 56, 1008, 3000, 3000)   # snap (mid == icon) must fail
 
     def test_check_dpi(self):
         check_dpi(84, True, True)
@@ -343,17 +357,37 @@ class WinDrawerBehaviorsOracle(unittest.TestCase):
         with self.assertRaises(AssertionError):
             check_dpi(84, True, False)     # a pixel beyond the edge counted inside must fail
 
-    def test_strict_behavior_rows_reject_malformed_and_foreign_window(self):
-        good = ("DRAWER\t1\ttree\thost,page,icon,panel\nDRAWER\t1\ticon\t928,649,56,56\n"
+    def test_transcript_exact_sequence_passes(self):
+        good = ("NAV\tfile:///x\tdrawer\n"
+                "DRAWER\t1\ttree\thost,page,icon,panel\nDRAWER\t1\ticon\t928,649,56,56\n"
                 "DRAWER\t1\topen\t0,437,1008,292\nDRAWER\t1\tdrag\t930,649,56,56\n")
-        self.assertEqual(structural_window(good), 1)
-        self.assertEqual(drawer_rows(good, "drag", 1), [("930,649,56,56",)])
-        # a drag row on a FOREIGN window (998) must be rejected when bound to window 1 (b2f474b #3)
-        foreign = good + "DRAWER\t998\tdrag\t930,649,56,56\n"
-        self.assertEqual(drawer_rows(foreign, "drag", 1), [("930,649,56,56",)])
-        # malformed (extra field) and wrong-shape rows are rejected
-        self.assertEqual(drawer_rows("DRAWER\t1\tdrag\t930,649,56,56\tEXTRA\n", "drag", 1), [])
-        self.assertEqual(drawer_rows("DRAWER\t1\tdrag\tnot-a-rect\n", "drag", 1), [])
+        rows = validate_transcript(good, ["tree", "icon", "open", "drag"])
+        self.assertEqual(fields_of(rows, "drag"), ("930,649,56,56",))
+
+    def test_transcript_rejects_each_anomaly_class(self):
+        # (cca6e36 #1) every rejection class must FAIL validate_transcript, not be silently filtered.
+        base = ["tree", "icon", "open", "drag"]
+        struct = ("DRAWER\t1\ttree\thost,page,icon,panel\nDRAWER\t1\ticon\t928,649,56,56\n"
+                  "DRAWER\t1\topen\t0,437,1008,292\n")
+        drag = "DRAWER\t1\tdrag\t930,649,56,56\n"
+        valid = struct + drag  # the exact expected sequence for window 1
+        cases = {
+            # malformed/foreign cases keep the window-1 sequence EXACTLY valid, so ONLY the malformed/foreign
+            # pass can reject them (the sequence pass alone would not) — each guard is independently necessary.
+            "malformed-extra-field": valid + "DRAWER\t1\tdrag\t930,649,56,56\tEXTRA\n",
+            "malformed-bad-rect": valid + "DRAWER\t1\tfold\tnot-a-rect\t180\n",
+            "unknown-kind": valid + "DRAWER\t1\tbogus\tx\n",
+            "foreign-window": valid + "DRAWER\t998\tdrag\t930,649,56,56\n",
+            # these break the window-1 sequence itself:
+            "duplicate-row": struct + drag + drag,
+            "missing-row": struct,                                   # no drag
+            "extra-unexpected": struct + drag + "DRAWER\t1\tlive\t2\t0\n",
+            "out-of-order": ("DRAWER\t1\ticon\t928,649,56,56\nDRAWER\t1\ttree\thost,page,icon,panel\n"
+                             "DRAWER\t1\topen\t0,437,1008,292\n" + drag),
+        }
+        for name, out in cases.items():
+            with self.assertRaises(AssertionError, msg=f"{name} must be rejected"):
+                validate_transcript(out, base)
 
 
 # Exact field schema per BEHAVIOR kind (RoseCat b2f474b #3): a tuple of regexes; a row must have EXACTLY this
@@ -366,36 +400,56 @@ _BEHAVIOR_SCHEMAS = {
 }
 
 
-def structural_window(stdout):
-    """The single window id that emitted the structural tree/icon/open rows (via the strict parse_drawer). A
-    behavior row must bind to THIS window (b2f474b #3). Returns the id, or None if not exactly one."""
-    wins = set()
-    for ln in stdout.splitlines():
-        pd = parse_drawer(ln)
-        if pd and pd[1] in ("tree", "icon", "open"):
-            wins.add(pd[0])
-    return next(iter(wins)) if len(wins) == 1 else None
-
-
-def drawer_rows(stdout, kind, want_win):
-    """STRICT parse of `DRAWER\\t<win>\\t<kind>\\t<fields...>` behavior rows (b2f474b #3): the kind must be known,
-    the field count + each field must match the exact schema, extras/malformed are rejected, and the row must
-    bind to `want_win` (the structural window). parse_drawer ignores unknown kinds, so behavior kinds parse
-    here. Returns the list of field-tuples (for the bound window). A current backend emits none, so the
-    behavior reds are failing-first until the WS5 green emits them."""
-    schema = _BEHAVIOR_SCHEMAS[kind]
-    out = []
-    for ln in stdout.splitlines():
-        parts = ln.rstrip("\r\n").split("\t")
-        if len(parts) < 3 or parts[0] != "DRAWER" or not re.fullmatch(r"[1-9]\d*", parts[1]) or parts[2] != kind:
-            continue
+def classify_drawer_line(line):
+    """Classify one output line: ('ok', win, kind, fields) for a valid structural (tree/icon/open) or behavior
+    (drag/fold/live) DRAWER row; ('malformed', raw) for a line that STARTS with 'DRAWER\\t' but matches no known
+    schema (wrong kind, arity or field shape); ('other', None) for a non-DRAWER line."""
+    s = line.rstrip("\r\n")
+    if not s.startswith("DRAWER\t"):
+        return ("other", None)
+    pd = parse_drawer(s)  # strict structural parse (tree/icon/open)
+    if pd:
+        return ("ok", pd[0], pd[1], pd[2])
+    parts = s.split("\t")
+    if len(parts) >= 4 and re.fullmatch(r"[1-9]\d*", parts[1]) and parts[2] in _BEHAVIOR_SCHEMAS:
+        schema = _BEHAVIOR_SCHEMAS[parts[2]]
         fields = parts[3:]
-        if len(fields) != len(schema) or not all(re.fullmatch(p, f) for p, f in zip(schema, fields)):
-            continue  # malformed / wrong arity -> not a valid behavior row
-        if want_win is not None and int(parts[1]) != want_win:
-            continue  # a row on a different window id is not ours (b2f474b #3)
-        out.append(tuple(fields))
-    return out
+        if len(fields) == len(schema) and all(re.fullmatch(p, f) for p, f in zip(schema, fields)):
+            return ("ok", int(parts[1]), parts[2], tuple(fields))
+    return ("malformed", s)
+
+
+def validate_transcript(stdout, expected_kinds):
+    """STRICT, FAIL-not-filter transcript check (RoseCat cca6e36 #1), as three INDEPENDENT passes so each guard
+    is necessary: (1) any line starting 'DRAWER\\t' that matches no schema raises (malformed); (2) every valid
+    DRAWER row must bind to the SINGLE window of the first row — a foreign window raises; (3) that window's rows,
+    in order, must equal `expected_kinds` exactly — a duplicate, extra, missing or out-of-order row raises.
+    Returns the ordered list of (kind, fields) for the bound window."""
+    parsed = []  # (win, kind, fields)
+    for ln in stdout.splitlines():
+        tag = classify_drawer_line(ln)
+        if tag[0] == "malformed":
+            raise AssertionError(f"malformed DRAWER row: {tag[1]!r}")  # pass 1
+        if tag[0] == "ok":
+            parsed.append((tag[1], tag[2], tag[3]))
+    if not parsed:
+        raise AssertionError("no DRAWER rows emitted")
+    want_win = parsed[0][0]
+    for (win, kind, _f) in parsed:
+        if win != want_win:
+            raise AssertionError(f"foreign-window DRAWER row (win {win} != {want_win}): {kind}")  # pass 2
+    seq = [(k, f) for (w, k, f) in parsed if w == want_win]
+    got = [k for (k, _f) in seq]
+    if got != expected_kinds:
+        raise AssertionError(f"DRAWER kind sequence {got} != expected {expected_kinds}")  # pass 3
+    return seq
+
+
+def fields_of(rows, kind):
+    """The field-tuple of the single row of `kind` in a validated transcript."""
+    hits = [f for (k, f) in rows if k == kind]
+    assert len(hits) == 1, f"expected exactly one {kind} row, got {len(hits)}"
+    return hits[0]
 
 
 # ------------------------------------------------------------------
@@ -428,9 +482,16 @@ def check_click_opens(opened, drag_present):
 
 
 def check_fold(icon_w, mid_w, drawer_w, total_ms):
-    """A mid-fold frame is strictly between the icon and the open drawer width, over the default ~180 ms."""
+    """A mid-fold frame is strictly between the icon and the open drawer width, over the DEFAULT ~180 ms (this
+    case must NOT inject ZIGBROWSER_AGENT_ANIM_MS — it proves the default, RoseCat cca6e36 #2)."""
     assert icon_w < mid_w < drawer_w, f"mid-fold width {mid_w} must be between icon {icon_w} and drawer {drawer_w}"
     assert 150 <= total_ms < 260, f"the default fold duration must be ~180 ms (got {total_ms})"
+
+
+def check_fold_override(icon_w, mid_w, drawer_w, total_ms, want_ms):
+    """A mid-fold frame strictly between icon and drawer, over the OVERRIDDEN duration (ANIM_MS honored)."""
+    assert icon_w < mid_w < drawer_w, f"mid-fold width {mid_w} must be between icon {icon_w} and drawer {drawer_w}"
+    assert total_ms == want_ms, f"the fold duration must honor the override {want_ms} ms (got {total_ms})"
 
 
 def check_bubble_copy(clipboard_text, bubble_text, link_created, object_created):
@@ -446,11 +507,22 @@ def check_live(peak, final):
     assert final == 0, f"the live count must be 0 after every window closes (got {final})"
 
 
-def check_isolation(error_codes, census_before, census_after):
-    """Every page-JS and socket attempt to reach the drawer errors with a method-not-found/denied code, and the
-    drawer census is unchanged across the attempts."""
-    assert error_codes, "the probe must actually attempt to reach the drawer (no attempts == no evidence)"
-    assert all(c in (-32601, -32011) for c in error_codes), f"every drawer reach must be denied: {error_codes}"
+# The EXACT set of drawer-reach attempts the harness must perform (RoseCat cca6e36 #2): two page-JS reaches and
+# every socket method name containing "drawer". The isolation check requires exactly these keys, each denied.
+EXPECTED_ISOLATION_PROBES = frozenset({
+    "js.postMessage", "js.dom",
+    "socket.drawer.state", "socket.drawer.open", "socket.drawer.send",
+})
+
+
+def check_isolation(attempts, census_before, census_after):
+    """`attempts` maps each performed reach to its JSON-RPC result code. Require EXACTLY the named page-JS +
+    socket attempts (no missing, no extras), each denied with -32601/-32011, and an unchanged drawer census
+    (RoseCat cca6e36 #2)."""
+    assert set(attempts) == EXPECTED_ISOLATION_PROBES, \
+        f"the probe must perform exactly the named attempts: got {sorted(attempts)} vs {sorted(EXPECTED_ISOLATION_PROBES)}"
+    for name, code in attempts.items():
+        assert code in (-32601, -32011), f"drawer reach {name!r} must be denied (got {code})"
     assert census_before == census_after, f"census changed across probes: {census_before} -> {census_after}"
 
 
@@ -482,97 +554,105 @@ class WinDrawerBehaviorsLive(_wd.WinDrawerLive):
     test_cleanup_exhaustion_cannot_outlive_runner = None
     test_wait_failure_is_reported = None
 
-    def _structural(self, r):
-        win = structural_window(r["stdout"])
-        self.assertIsNotNone(win, f"exactly one structural drawer window is required: {r['stdout']!r}")
-        rows = [pd for pd in (parse_drawer(ln) for ln in r["stdout"].splitlines()) if pd and pd[0] == win]
-        by_kind = {}
-        for (_w, k, f) in rows:
-            by_kind.setdefault(k, []).append(f)
-        return win, by_kind
+    # Each behavior test disables the demo bubble seed (DEMO='') so the DRAWER transcript for its window is an
+    # EXACT, decoupled sequence that validate_transcript can pin (cca6e36 #1). Bubble/isolation/DPI are MEASURED
+    # via dedicated harness fields over a clean [tree,icon,open] transcript.
+    _NO_DEMO = {"ZIGBROWSER_AGENT_DRAWER_DEMO": ""}
+
+    def _env(self, **extra):
+        e = dict(self._NO_DEMO)
+        e.update(extra)
+        return e
 
     def test_ws5_1_dock_resizes_page(self):
-        # WS5.1 (plan 1550): page bounds + panel bounds = client area, no overlap. Observed from the real
-        # `open` panel row + the client rect the harness reads (holds on the current green — a regression
-        # companion to the entry red in win_drawer_test.py).
+        # WS5.1 (plan 1550): page bounds + panel bounds = client area, no overlap. Exact transcript + client rect.
         def body(r):
-            _win, bk = self._structural(r)
-            self.assertIn("open", bk, f"a DRAWER open row is required to observe the dock: {r['stdout']!r}")
-            _x, py, _w, ph = rect_of(bk["open"][0])
+            rows = validate_transcript(r["stdout"], ["tree", "icon", "open"])
+            _x, py, _w, ph = rect_of([fields_of(rows, "open")[0]])
             self.assertEqual(py + ph, r["client_h"], "page_h + panel_h must equal the client height (no overlap)")
-        self._run_drawer(body=body)
+        self._run_drawer(extra_env=self._env(), body=body)
 
     def test_ws5_2_icon_drag_moves_to_persisted_ratio(self):
         # WS5.2 (plan 1571-1572): a 7 px drag (>6) moves the icon to the persisted-ratio rect, by >= the
         # threshold. The harness MEASURES the icon's after-rect (a window-bound raw `drag` rect), not a status.
         def body(r):
-            win, bk = self._structural(r)
-            self.assertIn("icon", bk, "the icon start rect is required")
-            drags = drawer_rows(r["stdout"], "drag", win)
-            self.assertTrue(drags, "a 7 px drag must emit the icon's measured after-rect")
-            icon_rect = rect_of(bk["icon"][0])
-            after = rect_of(drags[0])
+            rows = validate_transcript(r["stdout"], ["tree", "icon", "open", "drag"])
+            icon_rect = rect_of([fields_of(rows, "icon")[0]])
+            after = rect_of([fields_of(rows, "drag")[0]])
             check_drag(icon_rect, after, r["client_w"], r["client_h"], dx=7, dy=0)
-        self._run_drawer(extra_env={"ZIGBROWSER_AGENT_DRAWER_DRAG": "7,0"}, body=body)
+        self._run_drawer(extra_env=self._env(ZIGBROWSER_AGENT_DRAWER_DRAG="7,0"), body=body)
 
     def test_ws5_2_small_move_from_closed_is_click_that_opens(self):
-        # Start CLOSED; a 5 px move (<=6) is a click that OPENS the drawer and produces no drag (b2f474b #1).
+        # Start CLOSED; a 5 px move (<=6) is a click that OPENS the drawer and produces no drag. The exact
+        # transcript [tree,icon,open] proves the click opened it (open present) and emitted no drag (cca6e36 #1).
         def body(r):
-            win = structural_window(r["stdout"])
-            rows = [pd for pd in (parse_drawer(ln) for ln in r["stdout"].splitlines()) if pd]
-            opened = any(k == "open" for (_w, k, _f) in rows)
-            drag_present = bool(win is not None and drawer_rows(r["stdout"], "drag", win))
+            rows = validate_transcript(r["stdout"], ["tree", "icon", "open"])
+            opened = any(k == "open" for (k, _f) in rows)
+            drag_present = any(k == "drag" for (k, _f) in rows)
             check_click_opens(opened, drag_present)
-        self._run_drawer(extra_env={"ZIGBROWSER_AGENT_DRAWER_OPEN": "0", "ZIGBROWSER_AGENT_DRAWER_DRAG": "5,0"}, body=body)
+        self._run_drawer(extra_env=self._env(ZIGBROWSER_AGENT_DRAWER_OPEN="0", ZIGBROWSER_AGENT_DRAWER_DRAG="5,0"), body=body)
 
-    def test_ws5_3_fold_intermediate_and_default_duration(self):
-        # WS5.3 (plan 1573): a mid-fold rect strictly between the icon and the open drawer width, over ~180 ms.
-        # The harness MEASURES the mid rect + the total duration (raw `fold` row), not a 1-px status.
+    def test_ws5_3_fold_intermediate_default_duration(self):
+        # WS5.3 (plan 1573): a mid-fold rect strictly between the icon and the open drawer width, over the
+        # DEFAULT duration. This case does NOT inject ANIM_MS, so it proves the default (~180 ms), cca6e36 #2.
         def body(r):
-            win, bk = self._structural(r)
-            self.assertTrue("icon" in bk and "open" in bk, "icon + open rects are required")
-            folds = drawer_rows(r["stdout"], "fold", win)
-            self.assertTrue(folds, "a mid-fold capture must emit a raw fold rect + duration")
-            _ix, _iy, iw, _ih = rect_of(bk["icon"][0])
-            _ox, _oy, ow, _oh = rect_of(bk["open"][0])
-            _fx, _fy, fw, _fh = rect_of(folds[0])      # folds[0] = (rect, ms)
-            total_ms = int(folds[0][1])
-            check_fold(iw, fw, ow, total_ms)
-        self._run_drawer(extra_env={"ZIGBROWSER_AGENT_DRAWER_FOLD": "1", "ZIGBROWSER_AGENT_ANIM_MS": "180"}, body=body)
+            rows = validate_transcript(r["stdout"], ["tree", "icon", "open", "fold"])
+            _ix, _iy, iw, _ih = rect_of([fields_of(rows, "icon")[0]])
+            _ox, _oy, ow, _oh = rect_of([fields_of(rows, "open")[0]])
+            fold = fields_of(rows, "fold")      # (rect, ms)
+            _fx, _fy, fw, _fh = rect_of([fold[0]])
+            check_fold(iw, fw, ow, int(fold[1]))
+        self._run_drawer(extra_env=self._env(ZIGBROWSER_AGENT_DRAWER_FOLD="1"), body=body)
+
+    def test_ws5_3_fold_honors_anim_ms_override(self):
+        # The separate override case: ANIM_MS=3000 must be honored (cca6e36 #2).
+        def body(r):
+            rows = validate_transcript(r["stdout"], ["tree", "icon", "open", "fold"])
+            _ix, _iy, iw, _ih = rect_of([fields_of(rows, "icon")[0]])
+            _ox, _oy, ow, _oh = rect_of([fields_of(rows, "open")[0]])
+            fold = fields_of(rows, "fold")
+            _fx, _fy, fw, _fh = rect_of([fold[0]])
+            check_fold_override(iw, fw, ow, int(fold[1]), 3000)
+        self._run_drawer(extra_env=self._env(ZIGBROWSER_AGENT_DRAWER_FOLD="1", ZIGBROWSER_AGENT_ANIM_MS="3000"), body=body)
 
     def test_ws5_4_bubble_copy_and_inert(self):
         # WS5.4 (plan 1575-1577): the harness performs select-all + WM_COPY and reads the clipboard; an RTF
-        # bubble renders its literal text with no link/object. The EXPECTED text is this test's seam input; the
-        # clipboard/link/object are MEASURED by the harness (populated at green-time).
+        # bubble renders its literal text with no link/object. EXPECTED text is this test's seam input; the
+        # clipboard/link/object are MEASURED by the harness over a clean [tree,icon,open] transcript.
         expected = r"{\rtf1 hi}"
         def body(r):
+            validate_transcript(r["stdout"], ["tree", "icon", "open"])
             check_bubble_copy(r.get("clipboard") or "", expected,
                               bool(r.get("bubble_link")), bool(r.get("bubble_object")))
-        self._run_drawer(extra_env={"ZIGBROWSER_AGENT_DRAWER_RTF": expected}, body=body)
+        self._run_drawer(extra_env=self._env(ZIGBROWSER_AGENT_DRAWER_RTF=expected), body=body)
 
     def test_ws5_5_live_count_peak_then_zero(self):
         # WS5.5 (plan 1578): a positive peak live count (windows open) drops to exactly 0 after the popup-close
-        # sequence. The harness MEASURES zb_drawer_debug_live_count at peak and after close.
+        # sequence. The harness MEASURES zb_drawer_debug_live_count into the raw `live` row (peak, final).
         def body(r):
-            check_live(int(r.get("live_peak") or 0), int(r.get("live_final") if r.get("live_final") is not None else -1))
-        self._run_drawer(extra_env={"ZIGBROWSER_AGENT_DRAWER_WINDOWS": "2"}, body=body)
+            rows = validate_transcript(r["stdout"], ["tree", "icon", "open", "live"])
+            peak, final = fields_of(rows, "live")
+            check_live(int(peak), int(final))
+        self._run_drawer(extra_env=self._env(ZIGBROWSER_AGENT_DRAWER_WINDOWS="2"), body=body)
 
     def test_ws5_6_isolation_denied_and_census_unchanged(self):
-        # WS5.6 (plan 1580-1582): the harness performs page-JS and socket reach attempts; each is denied
-        # (-32601/-32011) and the drawer census is unchanged. Measured by the harness, not an `ok` status word.
+        # WS5.6 (plan 1580-1582): the harness performs EXACTLY the named page-JS + socket reach attempts; each is
+        # denied (-32601/-32011) and the drawer census is unchanged. Measured, not an `ok` status word.
         def body(r):
-            check_isolation(r.get("drawer_error_codes") or [],
+            validate_transcript(r["stdout"], ["tree", "icon", "open"])
+            check_isolation(r.get("drawer_reach_attempts") or {},
                             r.get("census_before_probe"), r.get("census_after_probe"))
-        self._run_drawer(extra_env={"ZIGBROWSER_AGENT_DRAWER_PROBE": "1"}, body=body)
+        self._run_drawer(extra_env=self._env(ZIGBROWSER_AGENT_DRAWER_PROBE="1"), body=body)
 
     def test_ws5_7_dpi_scaled_rect_and_hit_test(self):
         # WS5.7 (plan 1583): at 150% the icon is 84 px and the circular hit-test is exact at the edge. The
-        # harness MEASURES the scaled icon size + edge/beyond hit tests, not a `dpi 84` status word.
+        # harness MEASURES the scaled icon size + edge/beyond hit tests over a clean [tree,icon,open] transcript.
         def body(r):
+            validate_transcript(r["stdout"], ["tree", "icon", "open"])
             icon_px = r.get("icon_px")
             self.assertIsNotNone(icon_px, "the harness must measure the scaled icon size")
             check_dpi(int(icon_px), bool(r.get("edge_inside")), bool(r.get("beyond_outside")))
-        self._run_drawer(extra_env={"ZIGBROWSER_AGENT_DRAWER_DPI": "150"}, body=body)
+        self._run_drawer(extra_env=self._env(ZIGBROWSER_AGENT_DRAWER_DPI="150"), body=body)
 
 
 if __name__ == "__main__":
