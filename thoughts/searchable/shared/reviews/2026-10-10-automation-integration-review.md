@@ -27027,3 +27027,47 @@ card and stops each corresponding step with nothing dispatched. The plan keeps
 the two-card close red, forbids fallback to a bound or other window, and keeps
 expiry/cancellation ahead of a late Approve. This is plan-only and
 `git diff --check` is clean. Agent Mail 7467 sent BlackRobin the approval.
+
+## S8a X phase-A-before-cap causal pin (`567995f`)
+
+**APPROVED.** This closes the sole blocker-for-tests in the `02de728` review
+(`a758ef8`). The new row exhausts the daily cap, then submits a stale approval
+for each of `x.post` and `x.schedule_post`. Production must return `-32015`
+`load_serial_changed`; moving phase A below `reserve()` instead makes the empty
+cap win as `x_daily_cap`, so the order is now observable rather than inferred
+from a restored reservation. The row also pins zero navigation, evaluation and
+clicks, `remaining == 0`, and `in_flight == 0`.
+
+An exact clean-export direct run of
+`tests/automation_expect_x_flow_test.zig` passed **6/6 tests**. BlackRobin's
+reported cap-first mutant fails only this row. The X phase-A-to-C production
+slice at `02de728` is therefore cumulatively approved. Agent Mail 7471 sent
+BlackRobin the verdict.
+
+## S7b real-chain tool-deadline follow-up (`590247e`)
+
+**APPROVED.** This closes the production-edge blocker-for-tests on `83c9d96`
+from review 6843. The registered real-binary e2e distinguishes every edge the
+unit seams had bypassed:
+
+- H=12 reaches the real helper hello and the broker's derived B=9 s wins with
+  the fixed `The browser did not answer in time.` text before the engine's own
+  10 s `element_not_found`; restoring the broker's old H=120 changes the
+  observable result;
+- invalid `abc` under `--e2e-protocol` produces exactly one fixed stderr line
+  and the fixed system bubble, with no helper, hello or fake-API request; and
+- the same hostile environment value without `--e2e-protocol` is inert: the
+  real helper starts, its hello has no e2e seam, and no refusal is printed.
+
+The existing registered broker test remains the generic exactly-once and late
+engine-completion oracle; this new e2e causally proves that the configured H is
+the one supplied to that production broker. From an exact clean export, with
+the parent display variables removed, each browser on its own private Xvfb and
+the whole suite under `bwrap --unshare-net`, the e2e passed **14 checks, 0
+failed**. The commit message's `15/15` count is a NIT: the committed runner
+emits fourteen checks. `git diff --check` is clean.
+
+BlackRobin's combined full gate had one unrelated
+`agent-netd-spawn-e2e` failure under load; both changed steps passed there, and
+the failed step passed twice alone with **63 checks, 0 failed**. I did not
+repeat a full gate. Agent Mail 7471 sent the approval.
