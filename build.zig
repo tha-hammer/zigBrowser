@@ -490,6 +490,35 @@ pub fn build(b: *std.Build) void {
         cross_drawer_mac_step.dependOn(&cross_drawer_mac.step);
     }
 
+    // MS8.0 (BlackRobin; BlueBeaver 8072/8088): the approval cards' one authority in the macOS build. Both macOS
+    // objects of the shipped root must DEFINE agent_tools' two minters (the AppKit card's only way to approve or deny,
+    // through agent_drawer.zig's bridge) and the cards' window lifecycle, and leave no zb_* undefined that the macOS
+    // shims do not define (agent_tools' GTK-only C calls must not reach macOS). Pure compile — no SDK, no link.
+    // RED until agent_tools builds for macOS; not in `cross-check` or `test` until the green.
+    const cross_tools_mac_step = b.step("cross-check-agent-tools-mac", "MS8.0: both macOS builds define the approval cards' minters and window lifecycle");
+    for ([_]std.Target.Cpu.Arch{ .aarch64, .x86_64 }) |arch| {
+        const cross_tools_mac_module = b.createModule(.{
+            .root_source_file = b.path("src/main.zig"),
+            .imports = &.{.{ .name = "build_options", .module = site_options_module }},
+            .target = b.resolveTargetQuery(.{ .cpu_arch = arch, .os_tag = .macos }),
+            .optimize = optimize,
+            .link_libc = true,
+        });
+        cross_tools_mac_module.addIncludePath(b.path("src"));
+        const cross_tools_mac_obj = b.addObject(.{ .name = "zigBrowser-cross-agent-tools-mac", .root_module = cross_tools_mac_module });
+        const cross_tools_mac = b.addSystemCommand(&.{
+            "python3",           "tools/check_cross_symbols.py",
+            "--require-defined", "zb_agent_tools_approve",
+            "--require-defined", "zb_agent_tools_deny",
+            "--require-defined", "zb_agent_tools_window_opened",
+            "--require-defined", "zb_agent_tools_window_closed",
+        });
+        cross_tools_mac.addFileInput(b.path("tools/check_cross_symbols.py"));
+        cross_tools_mac.addFileArg(cross_tools_mac_obj.getEmittedBin());
+        addShimArg(b, cross_tools_mac, "src/wkwebview_shim.m:src/agent_home_lock.c:src/agent_spawn_posix.c");
+        cross_tools_mac_step.dependOn(&cross_tools_mac.step);
+    }
+
     // MS7.6 / MS7.8 (RoseCat 8079 / 2796d94): the card's one minter proven on the real Darwin objects, by symbol and
     // relocation (tests/e2e/mac_card_authority_objects_test.py). The shipped executable's own root module, Debug so
     // no inlining hides a call, for both arches. Pure compile — no SDK, no link.
