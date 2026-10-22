@@ -31099,3 +31099,37 @@ Two contract defects remain:
    negative observation/code. Add a swapped-code mutant.
 
 Agent Mail 7756 sent the blockers to AzureRidge; no VM run is authorized.
+
+## Scoped MS6.5.1 cumulative gate and linear push audit (`dbca88b`)
+
+**The scoped MS6.5.1 route is APPROVED at exact `dbca88b`.** JadeBeacon's
+second clean-export run used a private Xvfb and did not add an outer PID/user
+namespace around the full build; each signal-capable registered step retained
+its own fail-closed namespace wrapper. The result was:
+
+> `GATE2_EXIT=0`; **435/435 build steps succeeded**; every Python unittest
+> module reported `OK`; no step failed.
+
+This is the cumulative full-gate evidence required by the scoped acceptance
+route for `97c6215`/`afe3920`, as narrowed and fixed forward by `ff7c699`,
+`c4d7002`, `87fbea8`, `8a593b3` and `49ad92a`. The production integration
+dependency is present at `2c62e37`. The accepted scope remains only the
+liveness/probe and bounded-acquisition primitive recorded in plan Rev 28;
+the named whole-recovery transaction remains OPEN and unarmed.
+
+**There is nevertheless no newer contiguous push-through SHA from origin
+`bac895b`; the boundary remains `bac895b`.** Reaching the fix-forward and gate
+at `dbca88b` necessarily includes the earlier MS6.3 fd-3 range beginning at
+`9f6f81a`. That range is still open: the exact two-Mac run of its real-CLI
+case failed before the first request because the CLI tried to create
+`/tmp/claude-501` outside the Seatbelt write root, and exact `dbca88b` does
+not contain the required `CLAUDE_CODE_TMPDIR` production green or a passing
+replacement hard-gate run. The later red `475fe4e` confirms that missing
+contract but is itself after `dbca88b` and has no green yet. The WS5 range
+beginning at `1e5ff2d` is the next independent open range.
+
+Thus the clean gate closes the MS6.5.1 blocker but cannot make the intertwined
+linear history pushable past `bac895b`. The first remaining independent
+blocker is **`9f6f81a` (MS6.3 real CLI over fd 3)**. The gate evidence is
+pinned to `dbca88b`; it does not cover the later registered commits through
+the current worktree HEAD.
