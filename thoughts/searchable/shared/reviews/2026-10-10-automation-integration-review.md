@@ -34346,3 +34346,67 @@ oracle's one satisfying occurrence is the real wrapper delegation rather than
 a comment or dead helper, and must register the complete red without arming
 `reaper_ready`. This verdict cumulatively closes the five `ecf14be` /
 `a6dc989` test-design findings; it authorizes no Mac run or production signal.
+
+## WS5.6 real-dispatch fix-forward (`4cb740d`)
+
+**APPROVED; this cumulatively closes the `bae075a` / `33bde9a` block.** The
+incorrect `phase1_command_verbs` source boundary is removed. The registered
+automation-inprocess module now calls the production
+`AutomationApiServer.callInProcess -> dispatchParsed` path for
+`drawer.state`, `drawer.open` and `drawer.send`, requiring method-not-found
+`-32601`, the fixed message and no result. A valid `page.url` call through the
+same path supplies the positive routing contrast, and the reported planted
+`drawer.state` route makes the new row fail.
+
+From an exact clean archive, the real automation-inprocess binary passed
+**6/6**, including the new dispatch row. The Windows behavior oracle passed
+**44/44** with its 19 hostless live rows skipped after removal of the false
+registry assertion. No production code or build registration changed: the
+Zig module was already part of the aggregate test gate. This is an offline
+socket-isolation proof and requires no Windows VM run.
+
+## Reaper readiness/startup production green (`09dca89`)
+
+**BLOCKED on source-contract cleanup; the implementation and tests are
+otherwise approved.** The core correctly ships
+`pub const reaper_ready: bool = false`, and the sole matching source occurrence
+of `recoverAllAtStartupFull(reaper_ready,` is the executable wrapper call.
+There is still no app-startup call site. Gate false returns before loader or
+actuator access; gate true loads fail-closed, carries the caller's one absolute
+deadline through `recoverOneUnderLock`, limits the pass to 64 active entries,
+and reports/retains residual and failed entries.
+
+The new focused registered step passed **17/17** from an exact clean archive.
+The pre-existing concrete transaction step also passed **29/29** inside its
+private PID namespace, and both Darwin objects compiled. Registration adds the
+startup step to the Linux aggregate only; it does not arm the gate or create a
+production caller.
+
+The source now contains several materially false security/lifecycle comments,
+including more than the two initially reported:
+
+- `src/agent_run_recovery.zig:3` and `:278` still say there is no
+  `reaper_ready` gate.
+- `src/agent_run_recovery.zig:327-329` calls committed code a “GREEN block to
+  append”.
+- `src/agent_run_ledger.zig:255`, `:485` and `:535` likewise say no gate exists;
+  the section at `:484-485` also calls the transaction unimplemented even
+  though the reviewed transaction/core now exists (only arming and app-startup
+  ownership remain open).
+
+Fix those comments forward so they state the actual boundary: the gate and
+startup core exist, the gate ships false, no app-startup owner calls it, and
+production recovery therefore remains unreachable. No behavioral change or
+new test is required. Until that correction, `09dca89` is not approved as a
+truthful security-critical source artifact.
+
+### Comment-only follow-up (`557473c`)
+
+**APPROVED as a partial comment correction, but it does not close
+`09dca89`.** It accurately fixes the module header and the stale “GREEN block
+to append” banner without changing behavior. The independently stale contract
+at `src/agent_run_recovery.zig:278` still says there is no `reaper_ready` gate,
+and `src/agent_run_ledger.zig:255`, `:484-485` and `:534-535` still make the
+same obsolete no-gate/not-implemented claims. A final comment-only fix-forward
+covering those locations remains required; then this range needs no additional
+behavioral test.
