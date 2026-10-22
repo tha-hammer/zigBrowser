@@ -34696,3 +34696,47 @@ Two parts of the prior contract are still not closed:
 
 Until those are fixed, the portable store is not yet the single safe
 credential boundary advertised by the slice.
+
+## MS7.0/7.1 portable AppKit drawer reds (`e7cac20`, `06d21f3`)
+
+**`e7cac20` is APPROVED as a failing-first, unregistered red.** From an exact
+clean archive, `cross-check-drawer-mac` failed on both aarch64 and x86_64
+objects because all 19 required portable drawer symbols are absent; the
+ordinary undefined-symbol comparison against the macOS shim set remained
+intact. Using the real `src/main.zig` object rather than a drawer-only fixture
+correctly proves the eventual symbols are present in what the application
+actually builds. Keep the step unregistered until the export-gate green.
+
+SHOULD: the source comment says this is “exactly the Windows list”, but the
+inventories intentionally differ: the Mac list adds text/fold/persistence
+helpers and omits Windows DPI/multi-window seam exports. Rename it to the
+AppKit-required inventory and, when AppKit production code lands, bind that
+inventory to the declarations it actually calls so unused exports cannot
+substitute for a missing one.
+
+**`06d21f3` is BLOCKED-for-tests; keep it unregistered.** Its exact focused
+step fails with the intended five absent-member compile errors, and its core
+docking invariants are useful: the page and panel are contiguous, cover the
+content, and the AppKit-origin transform is checked independently at one
+fixed rectangle and round-tripped across normal sizes. Two gaps must close
+before the green:
+
+1. The commit says zero and negative extents are covered, but every open,
+   transform, dock and C-wrapper row skips `h <= 0`; only the closed page row
+   exercises height zero, and no width is negative. Define the fail-closed
+   behavior for zero/non-positive content geometry and test it directly,
+   especially through both C wrappers. At minimum, the transient zero-sized
+   content view must produce only zero/non-negative rectangles and never an
+   out-of-content AppKit frame. Either add justified negative rows or remove
+   the inaccurate negative-coverage claim.
+2. Calling `drawer.zb_drawer_page_rect` and
+   `drawer.zb_drawer_appkit_frame` as Zig declarations does not prove either
+   name is exported from the two macOS application objects. Add both symbols
+   to the reviewed Mac export inventory and make the MS7.1 green depend on
+   the dual-architecture symbol check. Include open values other than exactly
+   `0` and `1` if the C contract is “zero is closed, nonzero is open”, or pin a
+   strict 0/1 refusal contract instead.
+
+The eventual green should register both the geometry properties and the two
+architecture export proof together; a host-only unit pass is insufficient for
+the AppKit ABI boundary.
