@@ -32413,3 +32413,43 @@ input without forwarding it to the page. Add a causal read-failure row proving
 no page input, no drawer open/move, the fixed diagnostic, and a still-usable
 process. The clean cross-check confirms compilation only and does not close
 this behavioral gap.
+
+## MS6.3 fd-3 two-Mac acceptance and linear push audit (`77cb21c`)
+
+**FINAL ACCEPTED on both Mac architectures; the MS6.3 fd-3 range beginning at
+`9f6f81a` is closed through exact `77cb21c`.** The owner-authorized hard gate
+ran once from the committed launcher at
+`77cb21ccf6cf74d9cf69963d6b3db2a07549dac0`, with displays unset,
+`SSH_ASKPASS_REQUIRE=never`, no retry, no reaper case and no install. Its
+pre-network manifest check accepted exactly the three reviewed cases:
+
+- `case_ms5_spawn_io.py`:
+  `7c739e32fe924877593e15bf232b58be94754c4287b69a7465f2d0371bafcbbb`;
+- `case_ms6_3_fd3_cli.py`:
+  `636b7785c78e023de0bee4160712ccc57dfa7098b3e90bbb6059c6e182d8a1aa`;
+- `case_ms6_6b_r1_chain.py`:
+  `7e914a0b04016c05921af2157b5ea1c0aec9eec35bf3823f7cc97a984ea19f76`.
+
+Intel and Apple Silicon each passed all **3/3 cases**; the aggregate terminal
+row was `PASS ms6-hard-gate-gate both-arches`, rc 0. Across both legs the run
+reported **144 ok rows, zero FAIL rows and zero leftovers**. The fd-3 positive
+and decoy turns completed with one successful parsed result, used exactly the
+fd-3 bearer, exposed the row base URL but no token in the CLI environment,
+released their ports and left no survivors or faults. The no-channel row
+returned the fixed `auth` / `no usable token` failure and made neither a
+request nor a canary. Read-only before/after censuses on both Macs and the
+local driver each remained at zero scratch/process artifacts. The Intel-only
+Xcode Python shim cache-denial line is a non-blocking advisory: it did not
+affect the turn, reveal a token or leave state.
+
+**The newest contiguous approved push-through from origin remains
+`bac895b`; no later SHA is yet pushable.** Closing MS6.3 exposes the next
+independent open range already identified in the prior linear audit:
+**`1e5ff2d` (WS5 native Win32 drawer entry)**. Its red/green chain is not yet
+accepted as a complete successful native-control path; the log's latest
+cumulative verdict still leaves the entry/behavior range blocked pending its
+causal registered/live Windows evidence. That commit precedes the separately
+blocked decision-16 production green `ebe6529`, so `ebe6529` is not the first
+linear blocker. Because the MS6.3 acceptance and several earlier fix-forwards
+that make the intertwined range honest occur after `1e5ff2d`, there is no
+intermediate descendant of `bac895b` whose complete ancestry is approved.
