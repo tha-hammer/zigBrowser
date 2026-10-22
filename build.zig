@@ -3555,6 +3555,18 @@ pub fn build(b: *std.Build) void {
     windows_drawer_behaviors.addFileInput(b.path("tests/windows/win_drawer_test.py"));
     b.step("windows-drawer-behaviors", "WS5.1-5.7: drawer behaviour oracle + model suites (VM live rows skip)").dependOn(&windows_drawer_behaviors.step);
     test_step.dependOn(&windows_drawer_behaviors.step);
+
+    // WS5.5b-2 #2 (RoseCat 8150): the AST proof that the four WINDOWS-seam methods settle on the terminal `live`
+    // row. Pure source analysis (no VM); reads win_drawer_behaviors_test.py.
+    const windows_drawer_settle = b.addSystemCommand(&.{
+        "sh",
+        "-c",
+        "PYTHONDONTWRITEBYTECODE=1 python3 -I tests/windows/ws5_5b2_settle_ast_test.py -v",
+    });
+    windows_drawer_settle.addFileInput(b.path("tests/windows/ws5_5b2_settle_ast_test.py"));
+    windows_drawer_settle.addFileInput(b.path("tests/windows/win_drawer_behaviors_test.py"));
+    b.step("windows-drawer-settle", "WS5.5b-2 #2: the four WINDOWS-seam methods settle on the terminal `live` row (AST proof)").dependOn(&windows_drawer_settle.step);
+    test_step.dependOn(&windows_drawer_settle.step);
     test_step.dependOn(&windows_gate_selftest.step);
     test_step.dependOn(&windows_twohost_selftest.step);
     test_step.dependOn(&windows_build_selftest.step);
