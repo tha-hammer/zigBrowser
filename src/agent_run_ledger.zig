@@ -280,26 +280,53 @@ pub fn parseStartTicks(data: []const u8) ?u64 {
     return std.fmt.parseInt(u64, tok, 10) catch null;
 }
 
-/// Read `pid`'s start time from /proc in ONE open, keeping absence distinct from unreadability. Linux only; off
-/// Linux it is `.unreadable` (fail closed) until a Darwin probe lands.
-pub fn readStart(pid: i32) StartRead {
-    if (builtin.os.tag != .linux) return .unreadable;
+/// The LOWER-LEVEL outcome of trying to read /proc/<pid>/stat, before classification. Injectable so the mapping of
+/// each open/read/empty/parse outcome into a StartRead is unit-testable WITHOUT a crafted /proc (RoseCat 83d3a0f
+/// #2 — the production mapping, not just the pure parser, must be driven).
+pub const StatIo = union(enum) {
+    open_absent, // open reported ENOENT/ESRCH: the process is gone (the ONLY absence)
+    open_error, // open reported any other errno (permission/IO/…): unreadable
+    read_error, // opened, but the read failed or returned 0 bytes: unreadable
+    bytes: []const u8, // opened and read n>0 bytes
+};
+
+/// Pure: classify a `StatIo` outcome into a `StartRead`. ONLY `open_absent` is absence; every other failure — a
+/// non-absence open error, a read error, an empty/truncated read, or unparseable bytes — is `.unreadable` (fail
+/// closed), never `.absent`. This is the boundary the production `readStart` and the tests share.
+pub fn startReadFromIo(o: StatIo) StartRead {
+    return switch (o) {
+        .open_absent => .absent,
+        .open_error => .unreadable,
+        .read_error => .unreadable,
+        .bytes => |b| if (parseStartTicks(b)) |t| StartRead{ .ticks = t } else .absent, // RED (83d3a0f #2): unparseable must be .unreadable, not .absent
+    };
+}
+
+/// The real /proc read on Linux -> a `StatIo` outcome (one open). Off Linux -> `.open_error` (fail closed) until a
+/// Darwin probe lands. `buf` holds the stat bytes for the returned `.bytes` slice.
+fn readStatIo(pid: i32, buf: []u8) StatIo {
+    if (builtin.os.tag != .linux) return .open_error;
     const linux = std.os.linux;
     var path_buf: [64]u8 = undefined;
-    const path = std.fmt.bufPrintZ(&path_buf, "/proc/{d}/stat", .{pid}) catch return .unreadable;
+    const path = std.fmt.bufPrintZ(&path_buf, "/proc/{d}/stat", .{pid}) catch return .open_error;
     const rc = linux.openat(linux.AT.FDCWD, path, .{ .ACCMODE = .RDONLY }, 0);
     switch (linux.errno(rc)) {
         .SUCCESS => {},
-        .NOENT, .SRCH => return .absent, // only a proved-absent process is dead
-        else => return .unreadable, // permission/IO/etc -> fail closed
+        .NOENT, .SRCH => return .open_absent, // only a proved-absent process is dead
+        else => return .open_error, // permission/IO/etc -> fail closed
     }
     const fd: i32 = @intCast(rc);
     defer _ = linux.close(fd);
+    const n = linux.read(fd, buf.ptr, buf.len);
+    if (linux.errno(n) != .SUCCESS or n == 0) return .read_error; // read failure or empty -> fail closed
+    return .{ .bytes = buf[0..n] };
+}
+
+/// Read `pid`'s start time from /proc in ONE open, keeping absence distinct from unreadability, through the
+/// injectable `StatIo` boundary. Linux only; off Linux it is `.unreadable` (fail closed).
+pub fn readStart(pid: i32) StartRead {
     var buf: [1024]u8 = undefined;
-    const n = linux.read(fd, &buf, buf.len);
-    if (linux.errno(n) != .SUCCESS or n == 0) return .unreadable; // readable-but-unreadable -> fail closed
-    const ticks = parseStartTicks(buf[0..n]) orelse return .unreadable; // readable but unparseable -> fail closed
-    return .{ .ticks = ticks };
+    return startReadFromIo(readStatIo(pid, &buf));
 }
 
 /// The start time of `pid`, or null if absent/unreadable. Kept for callers that only need the tick value.
