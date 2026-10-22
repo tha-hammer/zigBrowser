@@ -4082,7 +4082,7 @@ const drawer_portable_exports = [_][]const u8{
     "zb_drawer_break_runs",        "zb_drawer_row_text_len",    "zb_drawer_original_offset",
     "zb_drawer_reply_text_max",    "zb_drawer_reply_content_max", "zb_drawer_label_text_max",
     "zb_drawer_inside_icon",       "zb_drawer_page_rect",       "zb_drawer_appkit_frame",
-    "zb_drawer_appkit_shown",      "zb_drawer_appkit_original_offset", "zb_drawer_bubble_is_label",
+    "zb_drawer_appkit_shown",      "zb_drawer_appkit_original_offset", "zb_drawer_bubble_layout_contiguous",
 };
 
 fn addShimArg(b: *std.Build, run: *std.Build.Step.Run, shim: []const u8) void {

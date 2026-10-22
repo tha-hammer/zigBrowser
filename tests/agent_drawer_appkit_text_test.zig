@@ -11,12 +11,14 @@
 //! sequence and every NUL shown as U+FFFD (one replacement per maximal invalid subpart, as std.unicode does). Copy
 //! (appkitOriginalOffset): a UTF-16 offset in the shown text maps to a byte offset in the ORIGINAL, so a selection
 //! copies the original's exact bytes (invalid ones and NULs included) and never a break point or a replacement
-//! character. bubbleIsLabel(len): a label up to label_text_max bytes, past it a read-only text view (the
-//! responsiveness boundary; a 200 KiB reply is a text view).
+//! character. bubbleLayoutContiguous(len) (RoseCat 8075: an explicit amendment of the GTK label/text-view split for
+//! AppKit): every AppKit bubble is one read-only NSTextView subclass, so Ctrl+C reaches the bubble's own copy: (a
+//! selectable NSTextField would copy through the window's shared field editor); label_text_max stays the
+//! responsiveness boundary: a bubble up to it lays out contiguously, past it non-contiguously (a 200 KiB reply).
 //! Rows: the policy on fixed examples (ASCII, astral, invalid, NUL, a long run); properties over seeded random byte
 //! strings (valid UTF-8, no NUL, equal to breakRuns for valid NUL-free input, offset 0 -> 0 and the end -> the
 //! original's end, monotone, a whole selection copies the whole original); 200 KiB unbroken and 200 KiB of words
-//! (whole copy exact, every shown line of an unbroken run at most break_every characters, text-view kind); and the
+//! (whole copy exact, every shown line of an unbroken run at most break_every characters, non-contiguous layout); and the
 //! C exports equal the Zig results.
 //! RED until the green adds them; build step `test-agent-drawer-appkit-text`, not in `test`.
 const std = @import("std");
@@ -116,7 +118,7 @@ test "seeded random bytes: shown is valid UTF-8 without NUL; offsets are monoton
     }
 }
 
-test "200 KiB unbroken and 200 KiB of words: whole copy exact, short lines, a text view" {
+test "200 KiB unbroken and 200 KiB of words: whole copy exact, short lines, non-contiguous layout" {
     const big = 200 * 1024;
     const unbroken = try gpa.alloc(u8, big);
     defer gpa.free(unbroken);
@@ -130,10 +132,10 @@ test "200 KiB unbroken and 200 KiB of words: whole copy exact, short lines, a te
         try std.testing.expectEqualStrings(t, copied(t, 0, try utf16Len(s)));
         var lines = std.mem.splitScalar(u8, s, '\n');
         while (lines.next()) |line| try std.testing.expect(line.len <= drawer.break_every or std.mem.indexOfScalar(u8, line, ' ') != null);
-        try std.testing.expect(!drawer.bubbleIsLabel(t.len));
+        try std.testing.expect(!drawer.bubbleLayoutContiguous(t.len));
     }
-    try std.testing.expect(drawer.bubbleIsLabel(drawer.label_text_max));
-    try std.testing.expect(!drawer.bubbleIsLabel(drawer.label_text_max + 1));
+    try std.testing.expect(drawer.bubbleLayoutContiguous(drawer.label_text_max));
+    try std.testing.expect(!drawer.bubbleLayoutContiguous(drawer.label_text_max + 1));
 }
 
 test "the C exports return exactly the Zig results" {
@@ -150,6 +152,6 @@ test "the C exports return exactly the Zig results" {
         }
     }
     for ([_]usize{ 0, drawer.label_text_max, drawer.label_text_max + 1 }) |n| {
-        try std.testing.expectEqual(@as(c_int, @intFromBool(drawer.bubbleIsLabel(n))), drawer.zb_drawer_bubble_is_label(n));
+        try std.testing.expectEqual(@as(c_int, @intFromBool(drawer.bubbleLayoutContiguous(n))), drawer.zb_drawer_bubble_layout_contiguous(n));
     }
 }

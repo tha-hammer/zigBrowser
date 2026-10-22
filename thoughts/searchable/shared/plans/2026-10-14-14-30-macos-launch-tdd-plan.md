@@ -2178,6 +2178,24 @@ green **or** the VM backend lands behind the shared contract. Not a UI slice. Co
   **MS7.3** `-` folds into the icon's last position (180 ms ease-out); **MS7.4** conversation
   scrolls, input pinned at bottom, bubbles **inert text**; **MS7.5** the Secrets window stores to
   Keychain; **MS7.6** the approval card mints a one-use grant on Approve and nothing on Deny.
+- **MS7.4 amendment (RoseCat 44ca58e; BlueBeaver, 2026-10-22): one bubble control on AppKit.** Every
+  conversation bubble is ONE read-only `NSTextView` subclass (`ZbBubbleView`), not the GTK split (a label up to
+  `label_text_max`, a text view past it). A selectable `NSTextField` copies through the window's shared field
+  editor, so a label kind would need a second copy route through the window delegate
+  (`windowWillReturnFieldEditor:toObject:`), shared with every other field in the window. An `NSTextView` is itself
+  the first responder of its selection, so the bubble's own `copy:` is the one route. It writes the ORIGINAL bytes
+  of the selection (`zb_drawer_appkit_original_offset`). Drag-out, Services and the context menu are closed,
+  because they would carry the shown text.
+  - `label_text_max` stays the responsiveness boundary, as the bubble's LAYOUT: contiguous up to it, non-contiguous
+    past it. The portable seam is `bubbleLayoutContiguous` / `zb_drawer_bubble_layout_contiguous`, replacing
+    `bubbleIsLabel` / `zb_drawer_bubble_is_label`. It is applied on every update, so a streaming bubble that crosses
+    the boundary changes layout in place.
+  - The input is one plain `NSTextView` (rich text, graphics and link detection off).
+  - Cmd+C reaches `copy:` only through an Edit > Copy menu item targeting the first responder. `wkwebview_shim.m`
+    builds no main menu yet, and the MS7.4 green needs one.
+  - The real-Mac clipboard checks on both sides of `label_text_max` stay owner-run real-screen cases.
+  - Oracles: `tests/agent_drawer_appkit_text_test.zig` (portable) and `tests/e2e/mac_drawer_bubble_inert_test.py`
+    (exact source shape).
 - **MS7.7 chat observability (blocker 7):** the chat round-trip and bubble text are asserted via a
   gated **`--e2e-protocol` native drawer census** (the macOS analog of the `DRAWER windows` row) or
   screen capture — **never** a production socket drawer-read API.
