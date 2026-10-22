@@ -32,6 +32,7 @@ namespace {
 constexpr wchar_t kWindowClassName[] = L"zigBrowserWebView2Host";
 constexpr int kWebView2LoadFailDomain = 2;
 constexpr UINT_PTR kNavigationTimerId = 1;
+constexpr UINT_PTR kFoldTimerId = 2;  // WS5.3: drives the drawer's fold (minimize) animation
 constexpr UINT kNavigationTimeoutMs = 15000;
 // WS3: wakes the UI thread to run the queued jobs (the queue, not the message, owns them).
 constexpr UINT WM_ZB_JOB = WM_APP + 1;
@@ -79,10 +80,21 @@ struct AppState {
   // WS5.2 e2e-only drag seam (ZIGBROWSER_AGENT_DRAWER_DRAG = "dx,dy"): DRIVES the real icon input path (posts
   // synthetic mouse messages to the icon's own window procedure), it does not substitute for it. e2e-only.
   const char *drag_seam = nullptr;
-  // WS5.3 e2e-only fold seam (ZIGBROWSER_AGENT_DRAWER_FOLD=1): emits a mid-animation `fold` row (an intermediate
-  // rect strictly between the icon and the open drawer) + the fold duration, so the test can observe the fold
-  // without a capture. e2e-only.
+  // WS5.3 e2e-only fold seam (ZIGBROWSER_AGENT_DRAWER_FOLD, exactly "1"): starts the REAL fold animation at
+  // mount so the test can observe it. e2e-only.
   bool fold_seam = false;
+  // WS5.3 fold (minimize) animation state: a kFoldTimerId-driven transition of the open panel down into the
+  // icon over `fold_ms`, each frame from the portable lerp/ease. `fold_mid` captures the real mid-transition
+  // frame (read back off the panel HWND); the terminal tick emits the `fold` observation (mid frame +
+  // configured `fold_ms`) and leaves the drawer folded (closed, icon shown). The live test times the
+  // wall-clock elapsed itself (RoseCat 05f2549: "measure the default elapsed transition").
+  bool folding = false;
+  ULONGLONG fold_start_ms = 0;
+  unsigned int fold_ms = 180;
+  ZbDrawerGeomRect fold_from = {};
+  ZbDrawerGeomRect fold_to = {};
+  ZbDrawerGeomRect fold_mid = {};
+  bool fold_mid_captured = false;
   // WS5.2 icon position + drag/subclass state. `icon_ratios`/`has_icon_ratios` is the icon's current position
   // as portable ratios (seeded from the persisted profile via zb_drawer_start_ratios, updated on every user
   // move); mount and resize place the real icon HWND from it (not the default). `icon_proc` is the STATIC's
@@ -910,6 +922,27 @@ static void drawer_open_now(AppState *app) {
   resize_controller(app);
 }
 
+// WS5.3: start the real fold (minimize) animation — the open panel transitions down INTO the icon's position
+// over `fold_ms` (ZIGBROWSER_AGENT_ANIM_MS via Zig, else 180 ms), stepped on kFoldTimerId. Each tick moves the
+// REAL panel HWND to lerp(open, icon, ease(t)); the mid frame is read back off that HWND (an independent
+// measurement, not a recomputation). Triggered by the '-' key on the focused icon and by the e2e fold seam.
+static void drawer_fold_start(AppState *app) {
+  if (app == nullptr || app->hwnd == nullptr || !app->drawer_open || app->folding) {
+    return;
+  }
+  RECT cr = {};
+  GetClientRect(app->hwnd, &cr);
+  const int cw = cr.right - cr.left;
+  const int ch = cr.bottom - cr.top;
+  zb_drawer_panel_rect(cw, ch, &app->fold_from);  // the open drawer rect (fold start)
+  zb_drawer_place(app->has_icon_ratios ? &app->icon_ratios : nullptr, cw, ch, &app->fold_to);  // the icon (end)
+  app->fold_ms = zb_drawer_anim_ms_from_env(getenv("ZIGBROWSER_AGENT_ANIM_MS"));
+  app->fold_start_ms = GetTickCount64();
+  app->fold_mid_captured = false;
+  app->folding = true;
+  SetTimer(app->hwnd, kFoldTimerId, 16, nullptr);
+}
+
 // WS5.2: the "S" icon's window procedure (subclassed over the STATIC). REAL Win32 input: mouse capture + drag,
 // and arrow-key moves (16/64 px with Shift), all classified/clamped/moved via the portable zb_drawer_* logic.
 // A drag (> 6 px, zb_drawer_classify) moves the icon to its persisted-ratio position; a click (<= 6 px) opens
@@ -950,6 +983,10 @@ static LRESULT CALLBACK icon_subclass_proc(HWND h, UINT msg, WPARAM wparam, LPAR
       case WM_KEYDOWN: {
         if (wparam == VK_RETURN || wparam == VK_SPACE) {  // Enter/Space on the focused icon opens the drawer
           drawer_open_now(app);
+          return 0;
+        }
+        if (wparam == VK_OEM_MINUS || wparam == VK_SUBTRACT) {  // '-' folds (minimizes) the open drawer
+          drawer_fold_start(app);
           return 0;
         }
         int kx = 0, ky = 0;
@@ -1105,21 +1142,13 @@ void mount_drawer(AppState *app) {
       SendMessageW(app->drawer_icon, WM_LBUTTONUP, 0, MAKELPARAM(cx + dx, cy + dy));
     }
   }
-  // WS5.3 fold seam (e2e-only): a mid-animation frame, strictly between the icon and the open drawer, plus the
-  // fold duration — all from the portable logic (lerp(panel, icon, ease(0.5)); the duration from the
-  // ANIM_MS env via Zig). No timing/geometry math in C++.
-  if (app->fold_seam) {
-    ZbDrawerGeomRect panel = {};
-    zb_drawer_panel_rect(cw, ch, &panel);
-    ZbDrawerGeomRect mid = {};
-    zb_drawer_lerp(&panel, &icon, zb_drawer_ease(0.5), &mid);  // fold the open drawer down into the icon
-    const unsigned int ms = zb_drawer_anim_ms_from_env(getenv("ZIGBROWSER_AGENT_ANIM_MS"));
-    snprintf(rect, sizeof rect, "%d,%d,%d,%d", mid.x, mid.y, mid.w, mid.h);
-    char ms_buf[16];
-    snprintf(ms_buf, sizeof ms_buf, "%u", ms);
-    emit_protocol4(app, "DRAWER", win, "fold", rect, ms_buf);
-  }
   resize_controller(app);  // dock the page / place the icon
+  // WS5.3 fold seam (e2e-only): start the REAL fold animation once the open drawer is docked. drawer_fold_start
+  // runs the kFoldTimerId state machine (lerp(open, icon, ease(t)) per tick on the real panel HWND) and emits
+  // the terminal fold row itself. Only meaningful when the drawer is open (OPEN=1); inert otherwise.
+  if (app->fold_seam) {
+    drawer_fold_start(app);
+  }
 }
 
 void emit_load_fail(AppState *app, COREWEBVIEW2_WEB_ERROR_STATUS status) {
@@ -1239,6 +1268,54 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam,
       emit_load_fail(app, COREWEBVIEW2_WEB_ERROR_STATUS_TIMEOUT);
       screenshot_diag(app, "navigation timed out before the page loaded");
       request_quit(app, ZB_EXIT_TIMEOUT);
+      return 0;
+    }
+    if (app != nullptr && wparam == kFoldTimerId && app->folding) {
+      // WS5.3 fold tick: advance t, move the REAL panel HWND to lerp(open, icon, ease(t)), read back the mid
+      // frame off that HWND, and on completion emit the fold row (mid rect + configured duration) once.
+      const ULONGLONG now = GetTickCount64();
+      const unsigned int span = app->fold_ms == 0 ? 1u : app->fold_ms;
+      double t = static_cast<double>(now - app->fold_start_ms) / static_cast<double>(span);
+      if (t < 0.0) t = 0.0;
+      if (t > 1.0) t = 1.0;
+      ZbDrawerGeomRect frame = {};
+      zb_drawer_lerp(&app->fold_from, &app->fold_to, zb_drawer_ease(t), &frame);
+      if (app->drawer_panel != nullptr) {
+        MoveWindow(app->drawer_panel, frame.x, frame.y, frame.w, frame.h, TRUE);
+        ShowWindow(app->drawer_panel, SW_SHOWNA);
+      }
+      if (!app->fold_mid_captured && t >= 0.5) {
+        if (app->drawer_panel != nullptr) {  // independent read-back of the real panel HWND, mid-transition
+          RECT wr = {};
+          GetWindowRect(app->drawer_panel, &wr);
+          POINT tl = {wr.left, wr.top};
+          ScreenToClient(hwnd, &tl);
+          app->fold_mid.x = tl.x;
+          app->fold_mid.y = tl.y;
+          app->fold_mid.w = wr.right - wr.left;
+          app->fold_mid.h = wr.bottom - wr.top;
+        } else {
+          app->fold_mid = frame;
+        }
+        app->fold_mid_captured = true;
+      }
+      if (t >= 1.0) {
+        KillTimer(hwnd, kFoldTimerId);
+        app->folding = false;
+        app->drawer_open = false;
+        if (app->drawer_panel != nullptr) {
+          ShowWindow(app->drawer_panel, SW_HIDE);  // terminal folded state: the panel is minimized to the icon
+        }
+        char win[16];
+        snprintf(win, sizeof win, "%d", app->win_id);
+        char rect[64];
+        snprintf(rect, sizeof rect, "%d,%d,%d,%d",
+                 app->fold_mid.x, app->fold_mid.y, app->fold_mid.w, app->fold_mid.h);
+        char ms_buf[16];
+        snprintf(ms_buf, sizeof ms_buf, "%u", app->fold_ms);
+        emit_protocol4(app, "DRAWER", win, "fold", rect, ms_buf);
+        resize_controller(app);  // re-dock the page now the drawer is folded away
+      }
       return 0;
     }
     break;
@@ -1658,7 +1735,7 @@ static int run_core(const char *uri, int print_title, int e2e_protocol, bool scr
     app.force_drawer_fail = getenv("ZIGBROWSER_AGENT_DRAWER_FAIL");  // e2e-only control-factory failure seam
     app.drag_seam = getenv("ZIGBROWSER_AGENT_DRAWER_DRAG");          // WS5.2 e2e-only synthetic-drag seam
     const char *fold_env = getenv("ZIGBROWSER_AGENT_DRAWER_FOLD");   // WS5.3 e2e-only fold-observation seam
-    app.fold_seam = fold_env != nullptr && fold_env[0] != '\0';
+    app.fold_seam = fold_env != nullptr && strcmp(fold_env, "1") == 0;  // accept EXACTLY "1" (RoseCat 05f2549)
   }
   app.screenshot = screenshot;
   if (screenshot && out_path != nullptr) {

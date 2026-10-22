@@ -497,7 +497,7 @@ try {
   while ((Get-Date) -lt $deadline) {
     Start-Sleep -Milliseconds 300
     $o = [string](Get-Content $out -Raw -ErrorAction SilentlyContinue)
-    if ($o -and ($o -match "DRAWER`t\d+`t(open|drag)`t")) { $seen = $true; break }  # settle on open OR drag
+    if ($o -and ($o -match "DRAWER`t\d+`t(open|drag|fold)`t")) { $seen = $true; break }  # settle on open/drag/fold
   }
   if (-not $seen) { $res.timed_out = $true }
   $res.job_count_before = [Z]::JobProcessCount()
