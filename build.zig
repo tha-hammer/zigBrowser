@@ -1828,6 +1828,22 @@ pub fn build(b: *std.Build) void {
         "social-flows-e2e",
     });
     social_flows_e2e.addArtifactArg(exe);
+    // MS4.4 (macOS plan): the flows' login gate reads the session cookie through the platform's cookie port and
+    // opens only while it is in the store (f234ad9; RoseCat 7886). Real binary, its own PID namespace, private Xvfb.
+    const ms4_4_login_gate_e2e = b.addSystemCommand(&.{
+        "sh",
+        "-c",
+        "timeout -k 10 600 unshare --map-current-user --pid --fork --kill-child --mount-proc env -u DISPLAY -u WAYLAND_DISPLAY -u XAUTHORITY python3 tests/e2e/ms4_4_login_gate_test.py --binary \"$1\"",
+        "ms4-4-login-gate-e2e",
+    });
+    ms4_4_login_gate_e2e.addArtifactArg(exe);
+    // MS4.4's macOS driver stops the browser's exact process group on SIGTERM/SIGINT/SIGHUP (RoseCat 7886 #1);
+    // a stand-in group, no browser. Our uid, PID namespace.
+    const ms4_4_login_gate_cleanup_unit = b.addSystemCommand(&.{
+        "sh",
+        "-c",
+        "cd tests/e2e && out=$(env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 unshare --map-current-user --pid --fork --kill-child --mount-proc sh -c 'setsid -w python3 -X dev -m unittest -v ms4_4_login_gate_cleanup_test; exit $?' 2>&1); rc=$?; printf '%s\\n' \"$out\"; [ $rc -eq 0 ] || exit $rc; if printf '%s\\n' \"$out\" | grep -q ResourceWarning; then echo 'ms4_4_login_gate_cleanup_test: ResourceWarning' >&2; exit 1; fi",
+    });
     // S8a: an approved flow on the real binary and the LinkedIn fixture (automation.js documentToken).
     const automation_expect_flow_e2e = b.addSystemCommand(&.{
         "sh",
@@ -3418,6 +3434,8 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&x_flows_e2e.step);
     test_step.dependOn(&x_native_e2e.step);
     test_step.dependOn(&social_flows_e2e.step);
+    if (target.result.os.tag == .linux) test_step.dependOn(&ms4_4_login_gate_e2e.step);
+    if (target.result.os.tag == .linux) test_step.dependOn(&ms4_4_login_gate_cleanup_unit.step);
     test_step.dependOn(&automation_input_e2e.step);
     test_step.dependOn(&automation_windows_e2e.step);
     test_step.dependOn(&run_automation_guard_tests.step);

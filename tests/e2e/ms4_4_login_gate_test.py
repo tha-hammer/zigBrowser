@@ -10,15 +10,19 @@ social_flows_test (ZIGBROWSER_SOCIAL_FIXTURE_ORIGIN), driven only through the Py
   request reaches the fixture site;
 - through the port: cookies.set li_at and sessionid (127.0.0.1) and cookies.get_all reads both back;
 - open: linkedin.visit succeeds on the profile page, and instagram.story_view (dry run) reaches its trial click;
-- live: after cookies.delete li_at, linkedin.visit is -32011 logged_out again and reaches the site no more (the
-  gate reads the store on every call; nothing is cached).
+- live: after cookies.delete li_at, linkedin.visit is -32011 logged_out again and reaches the site no more, and after
+  cookies.delete sessionid, instagram.story_view (dry run) is -32011 logged_out with no further /stories/ request (the
+  gate reads the store on every call; nothing is cached; RoseCat 7886 #2).
 Linux: the browser runs under xsession.py on its own private Xvfb only (never a live display), and the test signals
 only its own children, so it runs inside a private namespace:
   timeout -k 10 600 unshare --map-current-user --pid --fork --kill-child --mount-proc \\
     env -u DISPLAY -u WAYLAND_DISPLAY -u XAUTHORITY python3 tests/e2e/ms4_4_login_gate_test.py \\
     --binary zig-out/bin/zigBrowser
-macOS: run as the console user (WKWebView needs the WindowServer); the browser is its own process group, stopped
-with stop_browser_macos. The macOS run is a leg of tests/mac/ms4_gate.sh, only on a release. Unregistered."""
+macOS: run as the console user (WKWebView needs the WindowServer). Every inherited ZB_* / ZIGBROWSER_* seam is
+dropped before the test sets its socket and fixture origin. The browser is the leader of its own process group
+(OwnedGroup): SIGTERM, SIGINT and SIGHUP to the driver (an outer timeout, an ssh drop) stop that exact group while its
+leader is still unreaped, reap the leader, then re-raise (RoseCat 7886 #1; ms4_4_login_gate_cleanup_test proves it
+without a browser). The macOS run is a leg of tests/mac/ms4_gate.sh, only on a release."""
 
 from __future__ import annotations
 
@@ -36,6 +40,7 @@ sys.path.insert(0, str(HERE))
 from social_flows_test import (FixtureServer, INSTAGRAM, LINKEDIN, ZigBrowser, expect_equal,  # noqa: E402
                                expect_error, wait_for_socket)
 from slice2_common import SKIP_EXIT, eprint, isolate_profile_env, require_file, xsession_prefix  # noqa: E402
+from ms4_4_owned_group import OwnedGroup, install_cleanup, without_seams  # noqa: E402
 
 DARWIN = sys.platform == "darwin"
 
@@ -72,6 +77,11 @@ def scenario(zb: ZigBrowser, origin: str, server: FixtureServer) -> list[str]:
     expect_error("live: linkedin.visit after li_at is deleted", lambda: zb.linkedin.visit(profile), -32011,
                  "logged_out")
     expect_equal("live: no further request for the profile", len([p for p in server.paths if "/in/sam/" in p]), before)
+    zb.cookies.delete("sessionid", domain="127.0.0.1")
+    before = len([p for p in server.paths if "/stories/" in p])
+    expect_error("live: instagram.story_view after sessionid is deleted",
+                 lambda: zb.instagram.story_view("sam.example", dry_run=True), -32011, "logged_out")
+    expect_equal("live: no further request for the stories", len([p for p in server.paths if "/stories/" in p]), before)
     passed.append("live")
     return passed
 
@@ -85,24 +95,28 @@ def main() -> int:
     for path, label in ((browser, "binary"), (LINKEDIN, "linkedin fixture"), (INSTAGRAM, "instagram fixture")):
         if not require_file(path, label):
             return SKIP_EXIT
+    group = None
     if DARWIN:
-        from mac_ms2a_routed_test import stop_browser_macos as stop
-        prefix, env = [], dict(os.environ)
+        install_cleanup(lambda: group)
+        prefix, env = [], without_seams(dict(os.environ))
     else:
         from slice2_common import stop_browser as stop
         if os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"):
             eprint("FAIL: a display is inherited; run with DISPLAY and WAYLAND_DISPLAY unset (private Xvfb only)")
             return 1
-        prefix, env = xsession_prefix(True), isolate_profile_env(dict(os.environ))
+        prefix, env = xsession_prefix(True), without_seams(isolate_profile_env(dict(os.environ)))
 
     with FixtureServer() as server, tempfile.TemporaryDirectory(prefix="zb-ms44-") as tmp:
         socket_path = Path(tmp) / "automation.sock"
         env["ZIGBROWSER_SOCKET"] = str(socket_path)
         env["ZIGBROWSER_SOCIAL_FIXTURE_ORIGIN"] = server.origin
         argv = [str(browser), f"{server.origin}/feed/", "--automation-api", "--profile-dir", str(Path(tmp) / "profile")]
-        proc = subprocess.Popen(
-            prefix + argv,
-            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True, env=env, start_new_session=DARWIN)
+        kw = dict(stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True, env=env)
+        if DARWIN:
+            group = OwnedGroup(prefix + argv, **kw)
+            proc = group.proc
+        else:
+            proc = subprocess.Popen(prefix + argv, **kw)
         err: list[str] = []
         threading.Thread(target=lambda: err.extend(proc.stderr), daemon=True).start()
         try:
@@ -116,7 +130,10 @@ def main() -> int:
             eprint(f"stderr={err[-8:]}")
             return 1
         finally:
-            stop(proc)
+            if DARWIN:
+                group.stop()
+            else:
+                stop(proc)
     for name in passed:
         print(f"PASS\t{name}")
     print("PASS\tms4.4-login-gate")
