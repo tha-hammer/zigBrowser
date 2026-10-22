@@ -3,9 +3,10 @@ Refused stop, e.g. Darwin's ps timing out, escaped as Refused and setup removed 
 never proven gone; a cleanup stop failing after an earlier error was swallowed; the selector was built outside the
 post-spawn guard).
 
-Signal-interposed, so these run plain and cannot signal: os.kill always fails the test, and os.killpg is a recorder
-that fails the test for any pid but the run's own leader (it never really signals). The darwin rows force the Darwin
-branch (owned_group's ps reads) on Linux.
+Signal-interposed, so these run plain and cannot signal: os.kill always fails the test, and os.killpg records the pid
+and then ALWAYS raises: AssertionError for any pid but the run's own leader, ProcessLookupError (a handled
+outcome, never a simulated success) for the leader (RoseCat 7454). Each stand-in leader exits by itself and is
+reaped. The darwin rows force the Darwin branch (owned_group's ps reads) on Linux.
 - (a) Darwin ps timing out (None) or malformed: run() raises StopFailed carrying the leader, and killpg is never
   called; setup, given Refused or StopFailed from its seam, retains its scratch with exactly its fixed line;
 - (b) an earlier read OSError followed by a cleanup stop that cannot be proven: StopFailed wins (the earlier error is
@@ -47,10 +48,11 @@ class Interposed(unittest.TestCase):
         mock.patch.object(os, "kill", side_effect=AssertionError("os.kill reached")).start()
         self.killpg_calls = []
 
-        def killpg(pid, sig):
+        def killpg(pid, sig):  # records, then ALWAYS raises: no simulated successful signal (RoseCat 7454)
             self.killpg_calls.append(pid)
             if not self.spawned or pid != self.spawned[-1].pid:
                 raise AssertionError(f"killpg reached a pid that is not the run's leader: {pid}")
+            raise ProcessLookupError(3, "No such process (interposed: nothing was signalled)")
 
         mock.patch.object(os, "killpg", side_effect=killpg).start()
         self.addCleanup(self.reap)

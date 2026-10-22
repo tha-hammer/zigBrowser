@@ -27,9 +27,10 @@ failed ps, or any read of one of our processes that fails while it has not vanis
 scan is clean (RoseCat 7312). Any non-clean scan (a survivor, an unreadable pid, a failed ps) is re-inspected until
 clean or the row's horizon (every controlled CLI ends itself by 90 s), never signalled, and the final scan must be
 clean (RoseCat 7306).
-Kill safety (RoseCat 7250): this case sends no signal. Its compiler and ps run through the guarded h.spawn_group; the
-only other processes are setup's own, run through its named seam setup.run_in_owned_group (owned_group: its own
-child's group, stopped only behind the reviewed guards; fd1bd92). The observation spies call through to the real
+Kill safety (RoseCat 7250, 7454): this case makes no direct signal call. Its compiler and ps run through the guarded
+h.spawn_group. Setup's own runs go through the real production seam setup.run_in_owned_group, which DOES send a
+guarded killpg to its own child's process group at the end of every run (owned_group, behind the reviewed guards;
+fd1bd92, 0ef12ea); that is the production path this case exercises. The observation spies call through to the real
 functions and are removed after every row."""
 import os
 import re
