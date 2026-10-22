@@ -221,19 +221,34 @@ fn dirOkThunk(ctx: ?*anyopaque) callconv(.c) c_int {
 
 /// A real CLOCK_MONOTONIC reader in C-callable form, for the production/generic census now-fn. Per-OS so it builds
 /// on Darwin (Linux raw syscall; Darwin libc), mirroring the ledger's RealClock.
-pub fn realNowMs() callconv(.c) i64 {
-    // A clock read failure at a destructive deadline boundary MUST fail closed, never read an undefined timespec
-    // (RoseCat afdffbf #4): on failure return the saturated value, so the deadline always reads as crossed and no
-    // signal/Clean can follow.
+/// The result of one monotonic clock read: `ok=false` means the syscall failed and the timespec is NOT read.
+pub const ClockRead = struct { ok: bool, sec: i64, nsec: i64 };
+
+/// The deadline-safe mapping from a clock read to ms (RoseCat afdffbf #4): a FAILED read saturates, so the deadline
+/// always reads as crossed and no signal/Clean can follow. This is the exact branch `realNowMs` uses; an injected
+/// failing/succeeding `read` drives both arms causally (the real syscall failure is otherwise unforceable).
+pub fn nowMsFrom(read: *const fn () ClockRead) i64 {
+    const r = read();
+    if (!r.ok) return std.math.maxInt(i64); // clock read failed -> fail closed (deadline crossed)
+    return r.sec * 1000 + @divTrunc(r.nsec, 1_000_000);
+}
+
+/// The real CLOCK_MONOTONIC read; on syscall failure it returns `.ok=false` WITHOUT reading the undefined timespec.
+pub fn realClockRead() ClockRead {
     if (builtin.os.tag == .linux) {
         var ts: std.os.linux.timespec = undefined;
-        if (std.os.linux.clock_gettime(std.os.linux.CLOCK.MONOTONIC, &ts) != 0) return std.math.maxInt(i64);
-        return @as(i64, ts.sec) * 1000 + @divTrunc(@as(i64, ts.nsec), 1_000_000);
+        if (std.os.linux.clock_gettime(std.os.linux.CLOCK.MONOTONIC, &ts) != 0) return .{ .ok = false, .sec = 0, .nsec = 0 };
+        return .{ .ok = true, .sec = @as(i64, ts.sec), .nsec = @as(i64, ts.nsec) };
     } else {
         var ts: std.c.timespec = undefined;
-        if (std.c.clock_gettime(std.c.CLOCK.MONOTONIC, &ts) != 0) return std.math.maxInt(i64);
-        return @as(i64, @intCast(ts.sec)) * 1000 + @divTrunc(@as(i64, @intCast(ts.nsec)), 1_000_000);
+        if (std.c.clock_gettime(std.c.CLOCK.MONOTONIC, &ts) != 0) return .{ .ok = false, .sec = 0, .nsec = 0 };
+        return .{ .ok = true, .sec = @as(i64, @intCast(ts.sec)), .nsec = @as(i64, @intCast(ts.nsec)) };
     }
+}
+
+/// The production monotonic now-fn in C-callable form: the real reader through the fail-closed mapping.
+pub fn realNowMs() callconv(.c) i64 {
+    return nowMsFrom(&realClockRead);
 }
 
 /// Run the reviewed `zb_reaper_fixed_point` census->kill->fresh-census over the held fd. Clean iff the complete
@@ -278,11 +293,18 @@ fn mapProd(rc: c_int, clean: c_int, overflow: c_int) ledger.FixedPoint {
 /// up-front + final pin/deadline revalidation and callback selection are all causally exercised. Production (Darwin)
 /// reaches the same composite through `zb_reaper_prod_recover`, which binds the file-private real callbacks.
 pub fn prodFixedPoint(scan: ScanFn, inspect: InspectFn, killsig: KillFn, run_dir_fd: i32, pinned: *const DirId, now: NowFn, deadline_ms: i64, dir_path: [*:0]const u8, max_passes: c_int) ledger.FixedPoint {
+    return prodFixedPointRc(scan, inspect, killsig, run_dir_fd, pinned, now, deadline_ms, dir_path, max_passes).@"1";
+}
+
+/// As `prodFixedPoint`, but takes an OPTIONAL clock and returns the raw C rc alongside the mapped outcome, so the
+/// null-clock boundary row (RoseCat afdffbf #1) can assert the composite rejects a null deadline capability with
+/// EINVAL before any callback runs.
+pub fn prodFixedPointRc(scan: ScanFn, inspect: InspectFn, killsig: KillFn, run_dir_fd: i32, pinned: *const DirId, now: ?NowFn, deadline_ms: i64, dir_path: [*:0]const u8, max_passes: c_int) struct { c_int, ledger.FixedPoint } {
     var clean: c_int = 0;
     var passes: c_int = 0;
     var overflow: c_int = 0;
     const rc = c.zb_reaper_prod_fixed_point(scan, inspect, killsig, run_dir_fd, pinned, now, deadline_ms, dir_path, max_passes, &clean, &passes, &overflow);
-    return mapProd(rc, clean, overflow);
+    return .{ rc, mapProd(rc, clean, overflow) };
 }
 
 /// The Darwin production census/sweep over the HELD run-dir fd. `max_passes` bounds the fixed point; the real kill

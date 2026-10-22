@@ -113,10 +113,12 @@ int zb_reaper_fixed_point(int (*scan)(void *buf, int bytes), const struct zb_rea
  * It consumes the HELD run-dir fd, its pinned (dev,ino,uid,mode) identity, and ONE absolute monotonic deadline
  * (`now_ms` in ms, read-failure-saturating so a failed clock reads as crossed = fail closed), and runs the reviewed
  * `zb_reaper_fixed_point`. The kill is INJECTED — this NEVER exposes a raw signal primitive. The sockdir grammar,
- * the deadline and the pinned identity are validated BEFORE the engine and the deadline+identity AGAIN before Clean,
- * so an invalid/changed pin or a crossed deadline can never authorize a Clean teardown. 0 with *out_clean set only on
- * the complete, revalidated empty census; EINVAL (bad arg/grammar/pin), EOVERFLOW (crossed deadline / incomplete /
- * overflow), else the engine's nonzero result. */
+ * A NULL now_ms is REJECTED (the deadline capability is mandatory). The sockdir grammar, the deadline, the pinned
+ * identity AND the held fd's current path (captured at entry, so a rename cannot redirect the classifier) are
+ * validated BEFORE each kill and the deadline+identity+path AGAIN before Clean, so a crossed deadline, a changed pin
+ * or a renamed inode can never authorize a signal or a Clean teardown. 0 with *out_clean set only on the complete,
+ * revalidated empty census; EINVAL (bad arg / null clock / grammar / pin / path), EOVERFLOW (crossed deadline /
+ * incomplete / overflow), else the engine's nonzero result. */
 int zb_reaper_prod_fixed_point(int (*scan)(void *buf, int bytes),
                                void (*inspect)(pid_t, const char *, struct zb_reaper_id *, void *),
                                int (*killsig)(pid_t, int, void *), int run_dir_fd,

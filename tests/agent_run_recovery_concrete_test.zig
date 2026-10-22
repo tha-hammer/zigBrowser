@@ -853,6 +853,36 @@ fn killEPERM(pid: recovery.pid_t, sig: c_int, ctx: ?*anyopaque) callconv(.c) c_i
     return EPERM; // the SIGKILL is refused EPERM -> a survivor, never clean
 }
 
+// Mutation-injection clocks (RoseCat afdffbf-followup #2/#3): a controlled side effect fires at the FINAL now()
+// call (n == 1 for an empty census: call 0 is up-front, call 1 is the final recheck), so a change that happens
+// strictly BETWEEN the up-front and final capability checks is exercised. They never cross the deadline (return 0),
+// isolating the pin check (#2) and the path check (#3) from the deadline check.
+var g_mut_fd: i32 = -1; // the held fd whose mode `nowChmodAtFinal` flips (#2)
+var g_mut_dirfd: i32 = -1; // the runtime dir fd `nowSwapAtFinal` renames within (#3)
+var g_now_n: usize = 0;
+fn nowChmodAtFinal() callconv(.c) i64 {
+    const n = g_now_n;
+    g_now_n += 1;
+    if (n == 1 and g_mut_fd >= 0) _ = linux.fchmod(g_mut_fd, 0o755); // identity changes between up-front and FINAL pin
+    return 0;
+}
+fn nowSwapAtFinal() callconv(.c) i64 {
+    const n = g_now_n;
+    g_now_n += 1;
+    if (n == 1 and g_mut_dirfd >= 0) { // rename the held inode away + plant a replacement at the old path
+        _ = linux.renameat(g_mut_dirfd, BASENAME, g_mut_dirfd, BASENAME ++ "-win");
+        _ = linux.mkdirat(g_mut_dirfd, BASENAME, 0o700);
+    }
+    return 0;
+}
+// Injectable clock reads for the fail-closed mapping oracle (#4).
+fn failClock() recovery.ClockRead {
+    return .{ .ok = false, .sec = 999, .nsec = 0 }; // a FAILED read; the sec/nsec must be ignored
+}
+fn okClock() recovery.ClockRead {
+    return .{ .ok = true, .sec = 5, .nsec = 500_000_000 };
+}
+
 // A row's held fd + its matching pin, under a fresh run dir; resets the per-row global counters.
 fn prodFixture(td: *std.testing.TmpDir) !struct { fd: i32, pinned: recovery.DirId } {
     _ = try makeRunDir(td.dir, true);
@@ -862,6 +892,9 @@ fn prodFixture(td: *std.testing.TmpDir) !struct { fd: i32, pinned: recovery.DirI
     g_prod_kills = 0;
     g_prod_gone = false;
     g_now_calls = 0;
+    g_now_n = 0;
+    g_mut_fd = -1;
+    g_mut_dirfd = -1;
     return .{ .fd = fd, .pinned = pinned };
 }
 
@@ -945,4 +978,49 @@ test "afdffbf composite: a dir failing the sockdir grammar fails closed before t
     const fp = recovery.prodFixedPoint(&scanCb, &pInspectMatch, &pKillCount, f.fd, &f.pinned, &nowFar, 1000, "/tmp", 8);
     try std.testing.expect(fp != .clean);
     try std.testing.expectEqual(@as(u32, 0), g_prod_kills);
+}
+
+const EINVAL: c_int = @intFromEnum(std.posix.E.INVAL);
+
+test "afdffbf #1: a NULL clock is rejected before any callback (EINVAL, zero action)" {
+    if (!inPrivatePidNamespace()) return error.NotInPrivatePidNamespace;
+    var td = std.testing.tmpDir(.{});
+    defer td.cleanup();
+    const f = try prodFixture(&td);
+    defer _ = std.posix.system.close(f.fd);
+    // At the composite boundary: a recoverable dead entry would otherwise be signalled, but the mandatory deadline
+    // capability (a non-null clock) is absent -> reject with EINVAL before scan/inspect/kill.
+    const r = recovery.prodFixedPointRc(&scanCb, &pInspectMatch, &pKillCount, f.fd, &f.pinned, null, 1000, DUMMY_PATH, 8);
+    try std.testing.expectEqual(EINVAL, r.@"0");
+    try std.testing.expect(r.@"1" != .clean);
+    try std.testing.expectEqual(@as(u32, 0), g_prod_kills); // no callback ran
+}
+
+test "afdffbf #2: the pinned identity CHANGING at the FINAL check downgrades an empty census from Clean" {
+    if (!inPrivatePidNamespace()) return error.NotInPrivatePidNamespace;
+    var td = std.testing.tmpDir(.{});
+    defer td.cleanup();
+    const f = try prodFixture(&td);
+    defer _ = std.posix.system.close(f.fd);
+    g_mut_fd = f.fd; // nowChmodAtFinal flips the held dir's mode at the final clock call (after the up-front pin check)
+    const fp = recovery.prodFixedPoint(&scanEmpty, &pInspectMatch, &pKillCount, f.fd, &f.pinned, &nowChmodAtFinal, 1000, DUMMY_PATH, 3);
+    try std.testing.expect(fp != .clean); // up-front pin passed; ONLY the FINAL pin recheck catches the mode change
+    try std.testing.expectEqual(@as(u32, 0), g_prod_kills);
+}
+
+test "afdffbf #3: a RENAME of the held inode after capture fails closed before Clean (classifier bound to the fd)" {
+    if (!inPrivatePidNamespace()) return error.NotInPrivatePidNamespace;
+    var td = std.testing.tmpDir(.{});
+    defer td.cleanup();
+    const f = try prodFixture(&td);
+    defer _ = std.posix.system.close(f.fd);
+    g_mut_dirfd = td.dir.handle; // nowSwapAtFinal renames BASENAME away + plants a replacement at the final clock call
+    const fp = recovery.prodFixedPoint(&scanEmpty, &pInspectMatch, &pKillCount, f.fd, &f.pinned, &nowSwapAtFinal, 1000, DUMMY_PATH, 3);
+    try std.testing.expect(fp != .clean); // the held inode's fstat still matches, but its CURRENT path diverged -> fail closed
+    try std.testing.expectEqual(@as(u32, 0), g_prod_kills);
+}
+
+test "afdffbf #4: a FAILED clock read saturates (fail closed) without reading the timespec; a good read maps to ms" {
+    try std.testing.expectEqual(std.math.maxInt(i64), recovery.nowMsFrom(&failClock)); // failure -> deadline crossed
+    try std.testing.expectEqual(@as(i64, 5500), recovery.nowMsFrom(&okClock)); // 5s + 500ms
 }

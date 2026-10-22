@@ -7,6 +7,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <signal.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
@@ -257,50 +258,90 @@ int zb_reaper_fixed_point(int (*scan)(void *buf, int bytes), const struct zb_rea
  * ms whose read failure MUST saturate (so the deadline reads as crossed = fail closed). Returns 0 with *out_clean
  * set only on the complete, revalidated empty census; EINVAL on a bad argument / sockdir grammar / pin; EOVERFLOW on
  * a crossed deadline or an incomplete/overflowed census; else the engine's nonzero result. */
+#define ZB_PROD_PATH_CAP 4096
+
+/* The held fd's CURRENT path, NUL-terminated into buf (>= ZB_PROD_PATH_CAP). Darwin: F_GETPATH on the fd; else the
+ * /proc/self/fd/N readlink. Used to BIND the libproc classifier to the held inode for the whole operation: a rename
+ * of the held dir after the path was captured changes this, so the pre-kill/final check fails closed (RoseCat
+ * afdffbf #3). 1 on success, 0 on failure. */
+static int zb_reaper_fd_cur_path(int fd, char *buf, size_t cap) {
+#ifdef __APPLE__
+  (void)cap; /* F_GETPATH writes a NUL-terminated path up to MAXPATHLEN; the buffer is ZB_PROD_PATH_CAP */
+  return fcntl(fd, F_GETPATH, buf) == 0 ? 1 : 0;
+#else
+  char link[64];
+  snprintf(link, sizeof link, "/proc/self/fd/%d", fd);
+  ssize_t n = readlink(link, buf, cap - 1);
+  if (n < 0 || (size_t)n >= cap) return 0;
+  buf[n] = '\0';
+  return 1;
+#endif
+}
+
+/* MS6.5.1 (RoseCat afdffbf / afdffbf-followup): the ONE capability-enforcing composite over the reviewed fixed
+ * point. It consumes the HELD run-dir fd, its pinned (dev,ino,uid,mode) identity, and ONE absolute monotonic
+ * deadline, and NEVER exposes a raw signal primitive: the kill is INJECTED (production binds the file-private
+ * libproc + real-kill callbacks; the Linux proof binds fakes with the kill intercepted). No new algorithm — the
+ * decision is `zb_reaper_fixed_point`. A null `now_ms` is REJECTED (the deadline capability is mandatory). The
+ * deadline, the pinned identity, AND the held fd's current path (captured at entry, so a rename cannot redirect the
+ * classifier) are revalidated BEFORE each kill AND AGAIN before returning Clean, so a crossed deadline, a changed
+ * pin, or a renamed inode can never authorize a signal or a Clean teardown. Returns 0 with *out_clean set only on
+ * the complete, revalidated empty census; EINVAL on a bad argument / null clock / sockdir grammar / pin / path;
+ * EOVERFLOW on a crossed deadline or an incomplete/overflowed census; else the engine's nonzero result. */
 struct zb_reaper_prod_ctx {
   int run_dir_fd;
   const struct zb_reaper_dir_id *pinned;
   int64_t (*now_ms)(void);
   int64_t deadline_ms;
+  const char *path0; /* the held fd's path captured at entry; every pre-kill/final check must still match it */
 };
 static int zb_reaper_prod_dir_ok(void *ctx) {
   const struct zb_reaper_prod_ctx *c = (const struct zb_reaper_prod_ctx *)ctx;
-  if (c->now_ms != NULL && c->now_ms() >= c->deadline_ms) return 0; /* deadline crossed: the engine sends NO signal */
-  return zb_reaper_dir_fd_ok(c->run_dir_fd, c->pinned);             /* fstat the HELD fd: no pathname, no symlink */
+  if (c->now_ms() >= c->deadline_ms) return 0;                  /* deadline crossed: the engine sends NO signal */
+  if (!zb_reaper_dir_fd_ok(c->run_dir_fd, c->pinned)) return 0; /* fstat the HELD fd: no pathname, no symlink */
+  char cur[ZB_PROD_PATH_CAP];
+  if (!zb_reaper_fd_cur_path(c->run_dir_fd, cur, sizeof cur) || strcmp(cur, c->path0) != 0)
+    return 0; /* the held inode was renamed after capture: the classifier may be stale -> send NO signal */
+  return 1;
 }
 int zb_reaper_prod_fixed_point(int (*scan)(void *buf, int bytes),
                                void (*inspect)(pid_t, const char *, struct zb_reaper_id *, void *),
                                int (*killsig)(pid_t, int, void *), int run_dir_fd,
                                const struct zb_reaper_dir_id *pinned, int64_t (*now_ms)(void), int64_t deadline_ms,
                                const char *dir, int max_passes, int *out_clean, int *out_passes, int *out_overflow) {
-  if (scan == NULL || inspect == NULL || killsig == NULL || pinned == NULL || dir == NULL || out_clean == NULL ||
-      out_overflow == NULL)
-    return EINVAL;
+  if (scan == NULL || inspect == NULL || killsig == NULL || pinned == NULL || now_ms == NULL || dir == NULL ||
+      out_clean == NULL || out_overflow == NULL)
+    return EINVAL; /* a null clock is rejected: the absolute-deadline capability is mandatory (afdffbf #1) */
   *out_clean = 0;
   *out_overflow = 0;
   if (out_passes != NULL) *out_passes = 0;
   if (run_dir_fd < 0 || max_passes < 1) return EINVAL;
-  if (!zb_reaper_run_dir_ok(dir)) return EINVAL;                   /* the sockdir grammar (pure, name only) */
-  if (now_ms != NULL && now_ms() >= deadline_ms) {                /* deadline already crossed up front */
+  if (!zb_reaper_run_dir_ok(dir)) return EINVAL;                /* the sockdir grammar (pure, name only) */
+  if (now_ms() >= deadline_ms) {                               /* deadline already crossed up front */
     *out_overflow = 1;
     return EOVERFLOW;
   }
-  if (!zb_reaper_dir_fd_ok(run_dir_fd, pinned)) return EINVAL;    /* UP-FRONT pin check: a bad pin never acts */
-  struct zb_reaper_prod_ctx pc = {run_dir_fd, pinned, now_ms, deadline_ms};
+  if (!zb_reaper_dir_fd_ok(run_dir_fd, pinned)) return EINVAL;  /* UP-FRONT pin check: a bad pin never acts */
+  char path0[ZB_PROD_PATH_CAP];
+  if (!zb_reaper_fd_cur_path(run_dir_fd, path0, sizeof path0)) return EINVAL; /* capture the held inode's path */
+  struct zb_reaper_prod_ctx pc = {run_dir_fd, pinned, now_ms, deadline_ms, path0};
   struct zb_reaper_ops ops = {inspect, killsig, zb_reaper_prod_dir_ok, &pc};
   int clean = 0, passes = 0, overflow = 0;
   const int rc = zb_reaper_fixed_point(scan, &ops, dir, max_passes, &clean, &passes, &overflow);
   if (out_passes != NULL) *out_passes = passes;
   if (overflow) *out_overflow = 1;
-  if (rc != 0) return rc;                                         /* EINVAL etc: propagate */
-  if (overflow) return EOVERFLOW;                                 /* incomplete/scan error: non-clean */
-  if (!clean) return 0;                                           /* Survivors / max_passes exhausted: non-clean */
-  if (now_ms != NULL && now_ms() >= deadline_ms) {                /* FINAL deadline recheck: crossed during passes */
+  if (rc != 0) return rc;                                      /* EINVAL etc: propagate */
+  if (overflow) return EOVERFLOW;                              /* incomplete/scan error: non-clean */
+  if (!clean) return 0;                                        /* Survivors / max_passes exhausted: non-clean */
+  if (now_ms() >= deadline_ms) {                               /* FINAL deadline recheck: crossed during passes */
     *out_overflow = 1;
     return EOVERFLOW;
   }
-  if (!zb_reaper_dir_fd_ok(run_dir_fd, pinned)) return EINVAL;    /* FINAL pin recheck: changed during passes */
-  *out_clean = 1;                                                 /* complete, revalidated empty census: Clean */
+  if (!zb_reaper_dir_fd_ok(run_dir_fd, pinned)) return EINVAL; /* FINAL pin recheck: identity changed during passes */
+  char curf[ZB_PROD_PATH_CAP];
+  if (!zb_reaper_fd_cur_path(run_dir_fd, curf, sizeof curf) || strcmp(curf, path0) != 0)
+    return EINVAL; /* FINAL path recheck: the held inode was renamed before Clean -> fail closed */
+  *out_clean = 1;                                              /* complete, revalidated empty census: Clean */
   return 0;
 }
 
