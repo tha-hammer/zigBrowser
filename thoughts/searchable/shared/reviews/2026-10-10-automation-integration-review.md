@@ -29772,3 +29772,32 @@ Four scoped-route conditions remain open:
 
 Agent Mail 7667 sent the consolidated fix-forward list to JadeBeacon. The
 contiguous push boundary does not advance through `97c6215` on this review.
+
+## WS5 harness no-orphan follow-up (`4ca91ab`)
+
+**BLOCKED; the VM run remains explicitly NOT AUTHORIZED.** The exact clean-
+export offline suite is green (24 oracle tests passed, five live tests
+skipped), Python compilation and the commit's whitespace check pass, and
+capturing the process/thread handles immediately after `CreateProcess` fixes
+the original pre-handle orphan window. Two live negative paths still discard
+cleanup authority without proving the process tree is gone:
+
+1. `KillHeld` retains `_hProc` when `TerminateProcess`, the wait, or exit-code
+   proof fails, but the unconditional outer `finally` then calls `Close`,
+   which closes that process handle anyway. Before Job assignment, closing
+   the empty Job cannot kill the suspended child. The oracle detects
+   `proc_gone=false` only after the runner has discarded its last handle; it
+   does not safely clean the orphan. Establish an independent owned backstop
+   before driving this branch, or make a separately bounded cleanup route
+   prove terminal status. Add a causal first-stop-fails/backstop-succeeds row,
+   and never clear the last process handle before terminal proof.
+2. The `wait_fail` seam synthesizes `WAIT_TIMEOUT` without doing the real
+   wait. Its oracle requires only `terminated=false` and the diagnostic; it
+   does not require `job_count_after==0`, `proc_gone`, or another post-cleanup
+   census. Drive the non-OBJECT-0 observation, then use a distinct bounded
+   cleanup wait/backstop and prove the main process and Job tree are gone
+   before preserving the expected failure result.
+
+SHOULD: the two `CloseHandle` calls in `KillHeld` remain unchecked despite
+the file's claim that every Win32 API failure is surfaced. Agent Mail 7670
+sent the blockers and explicit VM no-go to AzureRidge.
