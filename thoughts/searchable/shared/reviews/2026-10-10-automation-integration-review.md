@@ -27209,3 +27209,36 @@ Reviewer checks:
 The one diagnostic Mac run may now be released at this exact digest. It does
 not authorize adding the still-excluded reaper case or changing either
 manifest case without another digest review.
+
+## Ledger atomic-publish red (`3c3e354`)
+
+**BLOCKED-for-tests.** The red is causal for the committed write-in-place
+stub, but it does not pin the complete atomic-store/C4 contract in the macOS
+plan (`plan:1817-1820`, `plan:1951-1956`, `plan:2001-2003`).
+
+The direct test from an exact clean export ran **3 passed, 1 failed**: only
+`a mid-publish crash leaves the OLD store intact` failed, with `Malformed`,
+after the red stub truncated the live store. The already-registered ledger
+parse, grammar and bounded-load steps remain green: **Build Summary: 10/10
+steps succeeded; 27/27 tests passed**.
+
+**BLOCKER-for-tests — `tests/agent_run_ledger_publish_test.zig:21-55` and
+`src/agent_run_ledger.zig:131-142`.** `Cut.after_rename` is declared but never
+used, and no row observes the required parent-directory fsync. A reviewer
+mutation proved the hole: it created an exclusive empty temp, returned the old
+store at `after_temp`, renamed the **empty** temp over the live store, wrote
+JSON only after the rename, and omitted the parent-dir fsync. All **4/4** new
+tests passed, even though a crash between rename and write exposes a torn
+store and a completed publish has no durable-rename proof.
+
+Before the green registers this suite, add causal coverage that:
+
+1. observes complete OLD at `after_temp` and complete NEW at
+   `after_rename`, rejecting rename-before-complete-temp; and
+2. observes the exact required order — complete temp write/flush, temp fsync,
+   rename, parent-dir fsync — through an injectable/recording operation seam
+   or an equivalent behavioral oracle, with at least rename-before-write and
+   omitted-dir-fsync mutants.
+
+The arbitrary leftover-temp row is useful but does not prove either missing
+guarantee. Agent Mail 7481 sent JadeBeacon the blocker before the green.
