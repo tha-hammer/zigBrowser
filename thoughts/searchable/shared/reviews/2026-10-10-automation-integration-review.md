@@ -31587,3 +31587,60 @@ compile failure, while `cross-check-drawer-win` still text-scans rather than
 compiles it. From an exact clean export the Python module passed **20 offline
 tests** and skipped **9 live rows**, and the cross-check passed. None of that
 evidence exercises a real fold or C++ compilation.
+
+## Decision-16 navigate/reload app wiring (`ebe6529`)
+
+**BLOCKED.** The commit does wire the two exact helper schemas, selector/mode
+decision, main-drawer card, Deny path, fixed-text desktop notification, and
+main/bound-window cancellation into the real app. I accept BlackRobin's clean
+private-Xvfb gate as valid evidence: **439/439 steps succeeded; 1261/1263 tests
+passed (2 skipped), rc 0**, with the committed 15 paths byte-identical to the
+gated copies. The focused rows and mutants cover the visible placement,
+notification ownership, selector corruption, timeout, and the tested ordering
+where detach happens *before* the worker's next stop check. They do not close
+the following security boundaries now that navigate/reload are reachable from
+the helper:
+
+1. A card is not bound to its prompt. `Job` stores a tool-call id and an
+   optional card id, but no `prompt_id`; `zb_agent_helper_interrupt` only sends
+   interrupt, while prompt `result` and prompt-scoped `error` clear/advance the
+   prompt without detaching its broker. Only `session_ended` calls
+   `zb_agent_tools_window_done`. Thus Stop, an error, or an ordinary prompt end
+   can leave an old card live; a later Approve can still execute its
+   navigate/reload, although the late tool result is then dropped. This violates
+   the authoritative S8 decision 8 (`plan:3101`). Add prompt ownership and
+   revoke-before-next-prompt wiring, with reds where Approve after Stop, result,
+   error, and a newer prompt produces zero engine calls.
+
+2. The approval is not bound to the document it described. `Broker.bound`
+   adds only `window_id`, and the card reads the page origin later on the GTK
+   idle; neither the immutable card nor the dispatched `page.navigate` /
+   `page.reload` params carry the Phase-A `{origin, load_serial}` expectation.
+   A user/page navigation, reload, crash/recovery replacement, or opener
+   replacement while the card waits can therefore make an approval act on a
+   different document. Wire the already-planned `options.expect` values from
+   one canonical preview into the dispatched params, and add causal reds for
+   every S9.3 transition (`plan:3301-3303`) with zero commits.
+
+3. Close-versus-Approve is still racy. `awaitApproval` reads
+   `stopping/detached` under the broker mutex, releases it, and only then reads
+   the card outcome; an Approve plus detach/session end after that stop read can
+   return `approved` and enter `broker.call`. The committed seam proves only
+   detach *before* the stop read (`tests/agent_navigate_card_test.zig:383-405`).
+   Linearize the live-broker check with approval consumption, or re-check it at
+   the dispatch boundary, and add a seam immediately after the stop read that
+   makes detach win while Approve is already visible; the engine count must
+   remain zero.
+
+4. The selector store does not enforce its documented owner rule. The parser
+   checks the final file's kind, mode and no-follow open, but never its uid;
+   `agent_tools.readSelector` also opens the `settings` directory by pathname.
+   The plan explicitly says a wrong owner fails closed to `yes`
+   (`plan:3249-3251`). Add the owner check and a causal wrong-owner row; retain
+   the existing no-follow/mode/exact-content behavior.
+
+The card widgets are also retained forever in the process-global `zb_cards`
+list; removing/freeing terminal cards is a SHOULD for long sessions. Because
+this adds visible card, button, and desktop-notification UI, approval after the
+code blockers close still needs the planned real-screen check on the user's
+NVIDIA display. The current Xvfb-only visual result is not that acceptance.
