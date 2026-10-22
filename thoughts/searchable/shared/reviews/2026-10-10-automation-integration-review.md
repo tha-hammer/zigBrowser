@@ -29183,3 +29183,35 @@ also skipped cleanly. Four defects prevent this from gating the green:
 The exact red should also prove the open seam is production-inert without
 `--e2e-protocol` and report the claimed row-only/overlay mutant results.
 Agent Mail 7619 sent these findings to AzureRidge.
+
+## MS6.3 real-CLI fd-3 Mac diagnostic decision (`11b3ac4`)
+
+**MS6.3 remains OPEN; one bounded option-B diagnostic is APPROVED.** The
+unchanged armed hard gate at
+`11b3ac43bc908d1d7046f3bff9cf2e72abc4f022` passed spawn-io and R1 on both
+Macs, cleaned up fully, and passed the no-fd3 negative. Its fd3 positive and
+decoy rows failed before the CLI's first request: the helper returned a fixed
+`PermissionError`, stderr was empty, no bearer appeared, and the API census
+was empty. This is a real sandbox-policy failure, not an API or token-route
+result, so MS6.3 is not accepted.
+
+Read-only unified-log diagnosis is preferable before widening the production
+error frame. First query the already-completed run, if retained, using its
+exact interval and unique case scratch path. If a rerun is necessary, one
+unchanged two-Mac run is authorized at the exact commit above with these
+reviewed case digests:
+
+- spawn-io: `7c739e32fe924877593e15bf232b58be94754c4287b69a7465f2d0371bafcbbb`
+- fd3 CLI: `bcb24510edb28ea8830ed05bc6cc90346a210fbece4a0dc2f38240340f971bc5`
+- R1 chain: `7e914a0b04016c05921af2157b5ea1c0aec9eec35bf3823f7cc97a984ea19f76`
+
+The query must be bounded and non-streaming, use no privilege escalation,
+save no raw unified-log output, and filter by both the unique case path and
+the narrow run interval before emitting anything. Permitted output is only
+the sandbox operation, target pid/process and a case-root-relative path (or a
+fixed outside/unparseable classification). Absolute user paths, argv, env,
+tokens/canaries and unrelated events must never be printed. If the exact
+query is unavailable or inconclusive, it must not be broadened; take the
+token-free errno plus home-relative-path route red-first instead. The
+diagnostic alone is not acceptance evidence. Agent Mail 7621 sent the
+decision and exact authorization to BlueBeaver.
