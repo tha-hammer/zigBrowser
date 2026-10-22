@@ -96,7 +96,10 @@ def helper_environ(home, inherited):
 
 def cli_env(home, route_env, base_url=None, proxy=None, mcp_tool_timeout_ms=MCP_TOOL_TIMEOUT_MS, ca_file=None,
             max_retries=None):
-    fixed = {**home_env(home), "DISABLE_AUTOUPDATER": "1", "MCP_TOOL_TIMEOUT": str(mcp_tool_timeout_ms)}
+    # CLAUDE_CODE_TMPDIR: where the CLI makes its own per-uid temp dir (claude-<uid>); unset it is /tmp, outside
+    # the macOS profile's only write root, the scratchpad (24f8d49: mkdir /tmp/claude-501 EPERM on both Macs).
+    fixed = {**home_env(home), "DISABLE_AUTOUPDATER": "1", "MCP_TOOL_TIMEOUT": str(mcp_tool_timeout_ms),
+             "CLAUDE_CODE_TMPDIR": str(home.tmp)}
     clash = sorted(set(route_env) & set(fixed))
     if clash:
         raise ValueError(f"route may not set {', '.join(clash)}")
