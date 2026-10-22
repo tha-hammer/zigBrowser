@@ -16,7 +16,7 @@ test "a file larger than MAX_LEDGER_BYTES is TooManyEntries, bounded before pars
     const buf = try std.testing.allocator.alloc(u8, big);
     defer std.testing.allocator.free(buf);
     @memset(buf, ' ');
-    const head = "{\"schema_version\":1,\"runs\":[";
+    const head = "{\"schema_version\":2,\"runs\":[";
     @memcpy(buf[0..head.len], head); // looks like the start of a huge array so a no-limit mutant reads+parses it
 
     try td.dir.writeFile(io, .{ .sub_path = "huge.json", .data = buf });
@@ -28,7 +28,7 @@ test "a valid within-bound ledger loads to its entries" {
     var td = std.testing.tmpDir(.{});
     defer td.cleanup();
     const s =
-        \\{"schema_version":1,"runs":[{"basename":"zigbrowser-agent-1-0011223344556677","dev":10,"ino":20,"uid":0,"mode":16832,"pid":100,"start_sec":5,"start_usec":7,"state":"active"}]}
+        \\{"schema_version":2,"runs":[{"basename":"zigbrowser-agent-1-0011223344556677","dev":10,"ino":20,"uid":0,"mode":16832,"pid":100,"start_kind":"linux_ticks","start_sec":5,"start_usec":7,"state":"active"}]}
     ;
     try td.dir.writeFile(io, .{ .sub_path = "ok.json", .data = s });
     var l = try ledger.load(io, std.testing.allocator, td.dir, "ok.json");

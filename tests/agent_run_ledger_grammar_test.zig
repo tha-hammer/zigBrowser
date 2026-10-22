@@ -8,8 +8,8 @@ const std = @import("std");
 const ledger = @import("agent_run_ledger");
 
 fn one(comptime basename: []const u8) []const u8 {
-    return "{\"schema_version\":1,\"runs\":[{\"basename\":\"" ++ basename ++
-        "\",\"dev\":1,\"ino\":2,\"uid\":0,\"mode\":16832,\"pid\":1,\"start_sec\":0,\"start_usec\":0,\"state\":\"active\"}]}";
+    return "{\"schema_version\":2,\"runs\":[{\"basename\":\"" ++ basename ++
+        "\",\"dev\":1,\"ino\":2,\"uid\":0,\"mode\":16832,\"pid\":1,\"start_kind\":\"linux_ticks\",\"start_sec\":0,\"start_usec\":0,\"state\":\"active\"}]}";
 }
 
 fn expectErr(expected: ledger.ParseError, s: []const u8) !void {
@@ -56,23 +56,23 @@ test "an oversized basename is Malformed" {
 
 test "a duplicate of a VALID basename is DuplicateBasename (not masked by grammar)" {
     const s =
-        \\{"schema_version":1,"runs":[{"basename":"zigbrowser-agent-1-0011223344556677","dev":1,"ino":2,"uid":0,"mode":16832,"pid":1,"start_sec":0,"start_usec":0,"state":"active"},{"basename":"zigbrowser-agent-1-0011223344556677","dev":3,"ino":4,"uid":0,"mode":16832,"pid":2,"start_sec":0,"start_usec":0,"state":"active"}]}
+        \\{"schema_version":2,"runs":[{"basename":"zigbrowser-agent-1-0011223344556677","dev":1,"ino":2,"uid":0,"mode":16832,"pid":1,"start_kind":"linux_ticks","start_sec":0,"start_usec":0,"state":"active"},{"basename":"zigbrowser-agent-1-0011223344556677","dev":3,"ino":4,"uid":0,"mode":16832,"pid":2,"start_kind":"linux_ticks","start_sec":0,"start_usec":0,"state":"active"}]}
     ;
     try expectErr(error.DuplicateBasename, s);
 }
 
 test "a missing top-level field is Malformed" {
     try expectErr(error.Malformed,
-        \\{"schema_version":1}
+        \\{"schema_version":2}
     );
 }
 test "an extra top-level field is Malformed" {
     try expectErr(error.Malformed,
-        \\{"schema_version":1,"runs":[],"junk":1}
+        \\{"schema_version":2,"runs":[],"junk":1}
     );
 }
 test "a duplicate top-level JSON key is Malformed" {
     try expectErr(error.Malformed,
-        \\{"schema_version":1,"schema_version":1,"runs":[]}
+        \\{"schema_version":2,"schema_version":2,"runs":[]}
     );
 }

@@ -8,8 +8,8 @@
 const std = @import("std");
 const ledger = @import("agent_run_ledger");
 
-const A = [_]ledger.Entry{.{ .basename = "zigbrowser-agent-1-00aa00aa00aa00aa", .dev = 10, .ino = 20, .uid = 0, .mode = 16832, .pid = 100, .start_sec = 5, .start_usec = 7, .state = .active }};
-const B = [_]ledger.Entry{.{ .basename = "zigbrowser-agent-2-00bb00bb00bb00bb", .dev = 11, .ino = 21, .uid = 0, .mode = 16832, .pid = 200, .start_sec = 9, .start_usec = 0, .state = .left }};
+const A = [_]ledger.Entry{.{ .basename = "zigbrowser-agent-1-00aa00aa00aa00aa", .dev = 10, .ino = 20, .uid = 0, .mode = 16832, .pid = 100, .start_kind = .linux_ticks, .start_sec = 5, .start_usec = 7, .state = .active }};
+const B = [_]ledger.Entry{.{ .basename = "zigbrowser-agent-2-00bb00bb00bb00bb", .dev = 11, .ino = 21, .uid = 0, .mode = 16832, .pid = 200, .start_kind = .linux_ticks, .start_sec = 9, .start_usec = 0, .state = .left }};
 
 fn expectStore(io: std.Io, dir: std.Io.Dir, sub_path: []const u8, want: []const u8) !void {
     var l = try ledger.load(io, std.testing.allocator, dir, sub_path);

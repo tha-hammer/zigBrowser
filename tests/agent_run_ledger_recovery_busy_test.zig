@@ -16,7 +16,7 @@ const std = @import("std");
 const ledger = @import("agent_run_ledger");
 const linux = std.os.linux;
 
-const SEED = [_]ledger.Entry{.{ .basename = "zigbrowser-agent-7-00aa00aa00aa00aa", .dev = 1, .ino = 2, .uid = 0, .mode = 16832, .pid = 7, .start_sec = 0, .start_usec = 0, .state = .active }};
+const SEED = [_]ledger.Entry{.{ .basename = "zigbrowser-agent-7-00aa00aa00aa00aa", .dev = 1, .ino = 2, .uid = 0, .mode = 16832, .pid = 7, .start_kind = .linux_ticks, .start_sec = 0, .start_usec = 0, .state = .active }};
 
 const OUTER_NS_FD: i32 = 9; // the launcher holds its /proc/self/ns/pid here (exec 9<…) BEFORE unshare
 const NS_GET_NSTYPE: u32 = 0xB703;

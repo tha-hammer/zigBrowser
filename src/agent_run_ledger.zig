@@ -9,7 +9,8 @@ const std = @import("std");
 const builtin = @import("builtin");
 
 /// The only accepted schema version. A different value is a malformed read (never silently upgraded/downgraded).
-pub const SCHEMA_VERSION: u32 = 1;
+/// v2 (2026-10-22) added the platform-tagged owner-start identity (`start_kind`); v1 is no longer accepted.
+pub const SCHEMA_VERSION: u32 = 2;
 /// The bounded cap on recovered entries (RoseCat SHOULD: bound the number of startup dirs).
 pub const MAX_ENTRIES: usize = 256;
 /// The fixed maximum run-dir basename length: "zigbrowser-agent-" (17) + up to 10 pid digits + "-" + 16 hex = 44.
@@ -21,8 +22,14 @@ pub const MAX_LEDGER_BYTES: usize = 64 * 1024;
 
 pub const State = enum { active, left };
 
-/// One recorded run. Every field is required and strictly typed; std.json rejects a missing/extra/mistyped field
-/// and an unknown `state` string.
+/// The PLATFORM that produced the recorded owner-start identity, so a start value is only ever compared against a
+/// live value of the SAME kind (never converted). `linux_ticks`: `/proc/<pid>/stat` field 22 (starttime ticks),
+/// carried in `start_sec` (`start_usec` unused, 0). `darwin_tvsec`: proc_pidinfo PROC_PIDTBSDINFO, carried as
+/// `(start_sec, start_usec)` = `(pbi_start_tvsec, pbi_start_tvusec)`. std.json rejects any other string.
+pub const StartKind = enum { linux_ticks, darwin_tvsec };
+
+/// One recorded run. Every field is required and strictly typed; std.json rejects a missing/extra/mistyped field,
+/// an unknown `state`, and an unknown `start_kind`.
 pub const Entry = struct {
     basename: []const u8,
     dev: u64,
@@ -30,6 +37,7 @@ pub const Entry = struct {
     uid: u32,
     mode: u32,
     pid: i32,
+    start_kind: StartKind,
     start_sec: u64,
     start_usec: u64,
     state: State,
