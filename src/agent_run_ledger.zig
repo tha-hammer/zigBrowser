@@ -127,3 +127,28 @@ pub fn parse(gpa: std.mem.Allocator, bytes: []const u8) ParseError!Ledger {
     }
     return .{ .parsed = parsed };
 }
+
+/// A crash cut for `publishCut`, so a test can stop the atomic publish mid-way and inspect the on-disk store.
+pub const Cut = enum { none, after_temp, after_rename };
+
+/// Atomically publish `entries` as the ledger at `dir`/`sub_path` (RoseCat atomic-publish row): serialize the
+/// versioned doc to a fresh 0600 sibling temp (O_EXCL), fsync it, rename it over the store, then fsync the dir —
+/// so a reader only ever sees the OLD or the NEW complete store (never torn), a returned publish survives a
+/// crash, and a half-written temp never outlives a failed publish. `cut` stops early for the crash-cut tests.
+pub fn publish(io: std.Io, dir: std.Io.Dir, sub_path: []const u8, entries: []const Entry) !void {
+    return publishCut(io, dir, sub_path, entries, .none);
+}
+
+pub fn publishCut(io: std.Io, dir: std.Io.Dir, sub_path: []const u8, entries: []const Entry, cut: Cut) !void {
+    // RED STUB — write-in-place (NO temp/rename): it truncates the live store and writes into it directly, so a
+    // crash mid-write (cut == .after_temp, here "after truncate, before data") leaves the store torn/empty rather
+    // than the old content intact. The green writes a synced temp and renames it over the store.
+    var file = try dir.createFile(io, sub_path, .{ .truncate = true, .permissions = .fromMode(0o600) });
+    defer file.close(io);
+    if (cut == .after_temp) return; // crashed after truncating the live store, before writing -> torn/empty store
+    var buf: [1024]u8 = undefined;
+    var writer = file.writer(io, &buf);
+    try std.json.Stringify.value(.{ .schema_version = SCHEMA_VERSION, .runs = entries }, .{}, &writer.interface);
+    try writer.interface.flush();
+    try file.sync(io);
+}
