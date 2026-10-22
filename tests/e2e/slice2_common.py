@@ -490,14 +490,43 @@ def _run_schtasks(args: list[str]) -> subprocess.CompletedProcess[str]:
     return subprocess.run(args, capture_output=True, text=True, check=False)
 
 
-def _stop_windows_task(task_name: str, pid: int | None) -> None:
-    if pid is not None:
-        _run_schtasks(["taskkill", "/PID", str(pid), "/T", "/F"])
-    _run_schtasks(["schtasks", "/end", "/tn", task_name])
+# The task runs at least privilege (Windows plan WS0.4 item 4): a standard test user cannot request `/rl highest`
+# ("ERROR: Access is denied." at /create on the Win11 VM, review c70c24e), and nothing here needs elevation.
+TASK_RUN_LEVEL = "limited"
 
 
-def _delete_windows_task(task_name: str) -> None:
-    _run_schtasks(["schtasks", "/delete", "/tn", task_name, "/f"])
+def _failed(what: str, proc: subprocess.CompletedProcess[str]) -> str:
+    return f"runner: {what} failed (rc={proc.returncode}): {(proc.stderr or proc.stdout).strip()}"
+
+
+def _stop_windows_task(task_name: str, pid: int | None) -> list[str]:
+    """Ends the task's process tree and the task. Returns a diagnostic per failed step: either can fail for a
+    process that already exited, so these are reported in the result, not judged here (WS0.4 item 5 does)."""
+    steps = [] if pid is None else [("taskkill", ["taskkill", "/PID", str(pid), "/T", "/F"])]
+    steps.append(("schtasks /end", ["schtasks", "/end", "/tn", task_name]))
+    notes = []
+    for what, args in steps:
+        proc = _run_schtasks(args)
+        if proc.returncode != 0:
+            notes.append(_failed(what, proc))
+    return notes
+
+
+def _delete_windows_task(task_name: str) -> str | None:
+    """Deletes the task. A task left behind fails the run (WS0.4 item 4): returns the failure, or None."""
+    proc = _run_schtasks(["schtasks", "/delete", "/tn", task_name, "/f"])
+    return None if proc.returncode == 0 else _failed(f"schtasks /delete /tn {task_name}", proc)
+
+
+def _fail_on_cleanup(matched: bool, result: RunResult, notes: list[str], delete_error: str | None) -> bool:
+    """Adds the cleanup diagnostics to the result; a failed delete makes the run fail. Returns `matched`."""
+    result.stderr_lines.extend(notes)
+    if delete_error is None:
+        return matched
+    result.stderr_lines.append(delete_error)
+    if result.returncode == 0:
+        result.returncode = 1
+    return False
 
 
 def run_windows_interactive_until(
@@ -536,7 +565,7 @@ def run_windows_interactive_until(
             "23:59",
             "/it",
             "/rl",
-            "highest",
+            TASK_RUN_LEVEL,
             "/f",
         ]
     )
@@ -550,13 +579,13 @@ def run_windows_interactive_until(
 
     run = _run_schtasks(["schtasks", "/run", "/tn", task_name])
     if run.returncode != 0:
-        _delete_windows_task(task_name)
-        return False, RunResult(
+        result = RunResult(
             returncode=run.returncode,
             stdout_lines=run.stdout.splitlines(),
             stderr_lines=run.stderr.splitlines(),
             tracked_children=set(),
         )
+        return _fail_on_cleanup(False, result, [], _delete_windows_task(task_name)), result
 
     matched = False
     timed_out = False
@@ -584,11 +613,12 @@ def run_windows_interactive_until(
         else:
             timed_out = True
     finally:
+        stop_notes: list[str] = []
         if returncode is None:
-            _stop_windows_task(task_name, pid)
+            stop_notes = _stop_windows_task(task_name, pid)
             time.sleep(0.2)
             returncode = _read_int_file(exit_path)
-        _delete_windows_task(task_name)
+        delete_error = _delete_windows_task(task_name)
 
     stdout_lines = _read_file_lines(stdout_path)
     stderr_lines = _read_file_lines(stderr_path)
@@ -601,7 +631,7 @@ def run_windows_interactive_until(
         timed_out=timed_out,
         pid=pid,
     )
-    return matched, result
+    return _fail_on_cleanup(matched, result, stop_notes, delete_error), result
 
 
 def run_windows_interactive_cmd_until(
@@ -637,7 +667,7 @@ def run_windows_interactive_cmd_until(
             "23:59",
             "/it",
             "/rl",
-            "highest",
+            TASK_RUN_LEVEL,
             "/f",
         ]
     )
@@ -651,13 +681,13 @@ def run_windows_interactive_cmd_until(
 
     run = _run_schtasks(["schtasks", "/run", "/tn", task_name])
     if run.returncode != 0:
-        _delete_windows_task(task_name)
-        return False, RunResult(
+        result = RunResult(
             returncode=run.returncode,
             stdout_lines=run.stdout.splitlines(),
             stderr_lines=run.stderr.splitlines(),
             tracked_children=set(),
         )
+        return _fail_on_cleanup(False, result, [], _delete_windows_task(task_name)), result
 
     matched = False
     timed_out = False
@@ -679,10 +709,11 @@ def run_windows_interactive_cmd_until(
         else:
             timed_out = True
     finally:
+        stop_notes: list[str] = []
         if not matched and harness_exit_code(stdout_lines) is None:
-            _stop_windows_task(task_name, None)
+            stop_notes = _stop_windows_task(task_name, None)
             time.sleep(0.2)
-        _delete_windows_task(task_name)
+        delete_error = _delete_windows_task(task_name)
 
     stdout_lines = _read_file_lines(stdout_path)
     stderr_lines = _read_file_lines(stderr_path)
@@ -694,7 +725,7 @@ def run_windows_interactive_cmd_until(
         tracked_children=set(),
         timed_out=timed_out,
     )
-    return matched, result
+    return _fail_on_cleanup(matched, result, stop_notes, delete_error), result
 
 
 def run_windows_interactive_to_exit(
