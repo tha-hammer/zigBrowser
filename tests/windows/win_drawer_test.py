@@ -139,18 +139,26 @@ def check_assign_fail(r):
 
 
 def check_assign_firststop_fail(r):
-    """Combined forced mode (RoseCat a94db57 #1): the assignment fails (so the child is suspended and NEVER in
-    the job) AND the FIRST stop proof fails. The pre-assignment recovery's first stop therefore genuinely does
-    not kill a live child; the SEPARATE independent bounded cleanup (after the empty Job is closed) must then
-    actually reap the suspended, never-assigned child and prove it gone. This is the only path that establishes
-    first-stop-fails/backstop-succeeds — Teardown is skipped (launch_failed), so it cannot supply the proof."""
-    assert r.get("launch_failed"), "the child must never have resumed (pre-assignment path), so Teardown is skipped"
-    assert "AssignProcessToJobObject" in (r.get("error") or ""), f"the assign failure must be surfaced; got {r.get('error')!r}"
+    """Combined forced mode (RoseCat a94db57 #1 / c943215): membership verification fails AND the FIRST stop
+    proof fails on the still-suspended child. Teardown is skipped (launch_failed), so the first stop cannot be
+    supplied by Teardown. Because the child was BORN INTO the kill-on-close job, closing the job is the durable
+    backstop: the post-close wait proves the child terminal even though the first held-handle stop failed."""
+    assert r.get("launch_failed"), "the child must never have resumed (pre-resume path), so Teardown is skipped"
+    assert "AssignProcessToJobObject" in (r.get("error") or ""), f"the membership failure must be surfaced; got {r.get('error')!r}"
     assert r.get("first_stop_failed"), "the first stop proof must actually have failed on the live suspended child"
-    assert r.get("proc_gone"), "the independent cleanup must still reap the never-assigned suspended child (proc_gone)"
-    assert r.get("job_count_after") == 0, f"the never-assigned child leaves zero owned job members (got {r.get('job_count_after')})"
+    assert r.get("proc_gone"), "the born-in-job backstop (job close + post-close wait) must prove the child gone"
     rows = [row for row in (parse_drawer(ln) for ln in r.get("stdout", "").splitlines()) if row]
     assert rows == [], f"a process killed before resume must emit NO DRAWER rows; got {rows}"
+
+
+def check_cleanup_exhaustion(r):
+    """Forced cleanup-exhaustion (RoseCat c943215): EVERY TerminateProcess-based reap attempt fails, yet because
+    the child was BORN INTO the kill-on-close job, the job-close backstop + the durable post-close wait still
+    prove it terminal — the child can never outlive the runner. Proves the exhausted held-handle reap is backed
+    by durable OS ownership, not a retained handle closed at script exit."""
+    assert r.get("launch_failed"), "the pre-resume path (Teardown skipped) isolates the cleanup route"
+    assert r.get("cleanup_exhausted"), "the held-handle reap must actually have been exhausted (seam fired)"
+    assert r.get("proc_gone"), "the born-in-job backstop must still prove the child terminal despite exhaustion"
 
 
 def check_wait_fail(r):
@@ -173,7 +181,7 @@ _RUNNER = r"""
 $ErrorActionPreference='Stop'
 $dir = $args[0]
 $failMode = $args[1]    # '', 'panel' or 'icon' — drives the PRODUCTION control-factory failure seam
-$forceMode = $args[2]   # '', 'assign_fail', 'assign_firststop_fail' or 'wait_fail' — HARNESS lifecycle seam
+$forceMode = $args[2]   # '', 'assign_fail', 'assign_firststop_fail', 'cleanup_exhaust' or 'wait_fail' — seam
 if ($forceMode) { $env:ZB_E2E_DRAWER_FORCE = $forceMode }  # read by [Z]::ForceFail at first use
 $exe = Join-Path $dir 'zigBrowser.exe'
 $out = Join-Path $dir 'o.txt'; $err = Join-Path $dir 'e.txt'; $nul = 'NUL'
@@ -190,15 +198,25 @@ public static class Z {
   struct STARTUPINFO { public int cb; public string lpReserved, lpDesktop, lpTitle;
     public int dwX,dwY,dwXSize,dwYSize,dwXCountChars,dwYCountChars,dwFillAttribute,dwFlags;
     public short wShowWindow, cbReserved2; public IntPtr lpReserved2, hStdInput, hStdOutput, hStdError; }
+  [StructLayout(LayoutKind.Sequential, CharSet=CharSet.Unicode)]
+  struct STARTUPINFOEX { public STARTUPINFO si; public IntPtr lpAttributeList; }
   [StructLayout(LayoutKind.Sequential)] struct PROCESS_INFORMATION { public IntPtr hProcess, hThread; public int dwProcessId, dwThreadId; }
   [StructLayout(LayoutKind.Sequential)] struct SECURITY_ATTRIBUTES { public int nLength; public IntPtr lpSD; public int bInherit; }
   [StructLayout(LayoutKind.Sequential)] struct JOBOBJECT_BASIC_LIMIT_INFORMATION { public long per; public long job; public uint flags; public UIntPtr minws; public UIntPtr maxws; public UIntPtr pa; public UIntPtr count; public long sched; }
   [StructLayout(LayoutKind.Sequential)] struct IO_COUNTERS { public ulong r,w,o,rb,wb,ob; }
   [StructLayout(LayoutKind.Sequential)] struct JOBOBJECT_EXTENDED_LIMIT_INFORMATION { public JOBOBJECT_BASIC_LIMIT_INFORMATION basic; public IO_COUNTERS io; public UIntPtr pmem, jmem, ppmem, jpmem; }
 
+  // CreateProcess taking the EXTENDED startup info (STARTUPINFOEX) so the child can be born INTO the job via a
+  // PROC_THREAD_ATTRIBUTE_JOB_LIST attribute — durable OS ownership before the child's first instruction.
   [DllImport("kernel32", SetLastError=true, CharSet=CharSet.Unicode)]
   static extern bool CreateProcess(string app, string cmd, ref SECURITY_ATTRIBUTES pa, ref SECURITY_ATTRIBUTES ta,
-    bool inherit, uint flags, IntPtr env, string cwd, ref STARTUPINFO si, out PROCESS_INFORMATION pi);
+    bool inherit, uint flags, IntPtr env, string cwd, ref STARTUPINFOEX si, out PROCESS_INFORMATION pi);
+  [DllImport("kernel32", SetLastError=true)]
+  static extern bool InitializeProcThreadAttributeList(IntPtr list, int count, int flags, ref IntPtr size);
+  [DllImport("kernel32", SetLastError=true)]
+  static extern bool UpdateProcThreadAttribute(IntPtr list, uint flags, IntPtr attr, IntPtr value, IntPtr size, IntPtr prev, IntPtr ret);
+  [DllImport("kernel32", SetLastError=true)]
+  static extern bool DeleteProcThreadAttributeList(IntPtr list);
   [DllImport("kernel32", SetLastError=true, CharSet=CharSet.Unicode)]
   static extern IntPtr CreateFile(string name, uint access, uint share, ref SECURITY_ATTRIBUTES sa, uint disp, uint flags, IntPtr tmpl);
   [DllImport("kernel32", SetLastError=true)] static extern uint ResumeThread(IntPtr t);
@@ -222,6 +240,8 @@ public static class Z {
   const uint CREATE_SUSPENDED = 0x4, GENERIC_WRITE = 0x40000000, FILE_SHARE_READ = 1, FILE_SHARE_WRITE = 2, CREATE_ALWAYS = 2;
   const uint KILL_ON_CLOSE = 0x2000, GENERIC_READ = 0x80000000, OPEN_EXISTING = 3, STARTF_USESTDHANDLES = 0x100;
   const uint GW_CHILD = 5, GW_HWNDNEXT = 2, WAIT_OBJECT_0 = 0, STILL_ACTIVE = 259;
+  const uint EXTENDED_STARTUPINFO_PRESENT = 0x00080000;
+  static readonly IntPtr PROC_THREAD_ATTRIBUTE_JOB_LIST = (IntPtr)0x0002000D;
   // e2e-only forced-failure seam for the OFFLINE/LIVE failure-branch proofs (inert unless set).
   public static string ForceFail = Environment.GetEnvironmentVariable("ZB_E2E_DRAWER_FORCE");
   static void Fail(string op) { throw new Exception(op + " failed: " + Marshal.GetLastWin32Error()); }
@@ -236,32 +256,38 @@ public static class Z {
     if (h == new IntPtr(-1)) Fail("CreateFile NUL"); return h;
   }
   public static IntPtr Job; static IntPtr _hProc, _hThread; public static int Pid; public static bool ProcGone;
-  public static bool FirstStopFailed; static int _proveCalls;
-  // ONE attempt to prove the held process is terminal. The PROOF is wait + exit-code (TerminateProcess is only
-  // the action — an already-dead process may return false). Does NOT close any handle. The e2e
-  // `assign_firststop_fail` seam forces ONLY the first attempt to fail AND skips the action, so the first stop
-  // genuinely does NOT kill the (still-suspended, never-assigned) child — a separate bounded cleanup route
-  // must actually reap it (RoseCat a94db57 #1).
+  public static bool FirstStopFailed; public static bool CleanupExhausted; static int _proveCalls;
+  // ONE TerminateProcess-based attempt to prove the held process terminal (proof = wait + exit-code;
+  // TerminateProcess is only the action). Does NOT close any handle. The e2e `assign_firststop_fail` seam fails
+  // ONLY the first attempt; `cleanup_exhaust` fails EVERY attempt. Either way the child was born INTO the
+  // kill-on-close job, so the durable backstop (job close + the post-close wait in FinalReap) still proves it.
   static bool ProveTerminal(uint waitMs) {
     if (_hProc == IntPtr.Zero) return true;
     _proveCalls++;
-    if (ForceFail == "assign_firststop_fail" && _proveCalls == 1) { FirstStopFailed = true; return false; }
+    if ((ForceFail == "assign_firststop_fail" && _proveCalls == 1) || ForceFail == "cleanup_exhaust") {
+      FirstStopFailed = true; return false;
+    }
     TerminateProcess(_hProc, 1);                       // best-effort action
     uint w = WaitForSingleObject(_hProc, waitMs);
     uint code = STILL_ACTIVE; bool got = GetExitCodeProcess(_hProc, out code);
     return (w == WAIT_OBJECT_0) && got && (code != STILL_ACTIVE);  // proof: signaled + a real exit code
   }
-  // First stop attempt for the pre-resume recovery paths. Sets ProcGone; NEVER closes/discards the handle (the
-  // bounded cleanup route FinalReap owns the proven close), so an unproven stop can never discard the last
-  // authority over a still-live child.
+  // First stop attempt for the pre-resume recovery paths. Sets ProcGone; NEVER closes/discards the handle.
   static bool KillHeld() { ProcGone = ProveTerminal(8000); return ProcGone; }
-  // The SEPARATE bounded cleanup route (RoseCat 7670 #1): if not yet proven terminal, retry a bounded number
-  // of times; only when PROVEN terminal are the process/thread handles closed+cleared (every CloseHandle is
-  // checked — #3). If it still cannot be proven, the handle is RETAINED (never discarded) and ProcGone stays
-  // false so the caller surfaces a hard failure. Returns ProcGone.
+  // The definitive cleanup, run AFTER CloseJob (RoseCat c943215). The child was born into the kill-on-close
+  // job, so closing the job has asked the OS to kill it. Try the bounded TerminateProcess-based proofs; if they
+  // are exhausted (seam or genuine), fall back to the DURABLE proof: a direct wait on the still-held process
+  // handle, which the job-close kill signals. The child therefore cannot outlive the runner — the OS job owns
+  // it, not a retained handle. Handles are closed only when terminal is PROVEN.
   public static bool FinalReap() {
     if (_hProc == IntPtr.Zero) { ProcGone = true; return true; }
     for (int i = 0; !ProcGone && i < 3; i++) ProcGone = ProveTerminal(8000);
+    if (!ProcGone) {
+      CleanupExhausted = true;  // the TerminateProcess-based reap was exhausted; the job-close backstop stands
+      uint w = WaitForSingleObject(_hProc, 8000);
+      uint code = STILL_ACTIVE; bool got = GetExitCodeProcess(_hProc, out code);
+      ProcGone = (w == WAIT_OBJECT_0) && got && (code != STILL_ACTIVE);  // durable proof via the job-close kill
+    }
     if (ProcGone) {
       bool okT = _hThread == IntPtr.Zero || CloseHandle(_hThread);
       bool okP = CloseHandle(_hProc);
@@ -270,9 +296,10 @@ public static class Z {
     }
     return ProcGone;
   }
-  // Create the job (KILL_ON_JOB_CLOSE), the suspended process with inherited std handles, assign it to the
-  // job (CHECKED) BEFORE it runs, then resume. On any post-create failure the HELD handle is terminated +
-  // waited (no orphan). Any failure throws.
+  // Create the kill-on-close job, then create the child SUSPENDED and BORN INTO that job (STARTUPINFOEX +
+  // PROC_THREAD_ATTRIBUTE_JOB_LIST) so the OS owns it durably before its first instruction, then resume. Durable
+  // ownership means closing the job ALWAYS kills the child; no path can leave it outside the job (RoseCat
+  // c943215). Any failure throws after a best-effort held stop; the finally's CloseJob + FinalReap guarantee it.
   public static void LaunchOwned(string exe, string cmdline, string cwd, string outPath, string errPath) {
     Job = CreateJobObject(IntPtr.Zero, null); if (Job == IntPtr.Zero) Fail("CreateJobObject");
     var eli = new JOBOBJECT_EXTENDED_LIMIT_INFORMATION(); eli.basic.flags = KILL_ON_CLOSE;
@@ -281,24 +308,34 @@ public static class Z {
       if (!SetInformationJobObject(Job, 9, pe, (uint)sz)) Fail("SetInformationJobObject"); }
     finally { Marshal.FreeHGlobal(pe); }
     IntPtr hOut = OpenWrite(outPath), hErr = OpenWrite(errPath), hIn = OpenNul();
-    var si = new STARTUPINFO(); si.cb = Marshal.SizeOf(typeof(STARTUPINFO));
-    si.dwFlags = (int)STARTF_USESTDHANDLES; si.hStdInput = hIn; si.hStdOutput = hOut; si.hStdError = hErr;
+    IntPtr alSize = IntPtr.Zero; InitializeProcThreadAttributeList(IntPtr.Zero, 1, 0, ref alSize);
+    IntPtr attrList = Marshal.AllocHGlobal(alSize);
+    IntPtr jobArr = Marshal.AllocHGlobal(IntPtr.Size); Marshal.WriteIntPtr(jobArr, Job);
+    var six = new STARTUPINFOEX();
+    six.si.cb = Marshal.SizeOf(typeof(STARTUPINFOEX));
+    six.si.dwFlags = (int)STARTF_USESTDHANDLES; six.si.hStdInput = hIn; six.si.hStdOutput = hOut; six.si.hStdError = hErr;
     var pa = new SECURITY_ATTRIBUTES(); pa.nLength = Marshal.SizeOf(typeof(SECURITY_ATTRIBUTES));
     var ta = new SECURITY_ATTRIBUTES(); ta.nLength = Marshal.SizeOf(typeof(SECURITY_ATTRIBUTES));
-    PROCESS_INFORMATION pi;
-    bool ok = CreateProcess(exe, cmdline, ref pa, ref ta, true, CREATE_SUSPENDED, IntPtr.Zero, cwd, ref si, out pi);
-    // Store the process handles IMMEDIATELY (before reacting to any std-handle close failure), so KillHeld can
-    // always reach the created suspended process. On CreateProcess failure there is no process to store.
-    if (ok) { _hProc = pi.hProcess; _hThread = pi.hThread; Pid = pi.dwProcessId; }
-    // Close all three inherited std handles (no short-circuit: close each, then react).
+    PROCESS_INFORMATION pi = new PROCESS_INFORMATION(); bool ok = false;
+    try {
+      if (!InitializeProcThreadAttributeList(attrList, 1, 0, ref alSize)) Fail("InitializeProcThreadAttributeList");
+      if (!UpdateProcThreadAttribute(attrList, 0, PROC_THREAD_ATTRIBUTE_JOB_LIST, jobArr, (IntPtr)IntPtr.Size, IntPtr.Zero, IntPtr.Zero)) Fail("UpdateProcThreadAttribute");
+      six.lpAttributeList = attrList;
+      ok = CreateProcess(exe, cmdline, ref pa, ref ta, true, CREATE_SUSPENDED | EXTENDED_STARTUPINFO_PRESENT, IntPtr.Zero, cwd, ref six, out pi);
+      if (ok) { _hProc = pi.hProcess; _hThread = pi.hThread; Pid = pi.dwProcessId; }
+    } finally {
+      if (attrList != IntPtr.Zero) DeleteProcThreadAttributeList(attrList);
+      Marshal.FreeHGlobal(attrList); Marshal.FreeHGlobal(jobArr);
+    }
     bool cOut = CloseHandle(hOut), cErr = CloseHandle(hErr), cIn = CloseHandle(hIn);
     if (!ok) Fail("CreateProcess");
-    if (!cOut || !cErr || !cIn) { KillHeld(); Fail("CloseHandle(std) (held process terminated; gone=" + ProcGone + ")"); }
-    // Forced assignment failure (e2e seam): the suspended process is outside the job; it MUST be terminated
-    // by the held handle (never a pid) and PROVEN gone (ProcGone).
-    bool assigned = (ForceFail == "assign_fail" || ForceFail == "assign_firststop_fail") ? false : AssignProcessToJobObject(Job, pi.hProcess);
-    if (!assigned) { KillHeld(); throw new Exception("AssignProcessToJobObject failed (held process terminated; gone=" + ProcGone + ")"); }
-    if (ResumeThread(pi.hThread) == 0xFFFFFFFF) { KillHeld(); Fail("ResumeThread (held process terminated; gone=" + ProcGone + ")"); }
+    if (!cOut || !cErr || !cIn) { KillHeld(); Fail("CloseHandle(std) (child born-in-job; gone=" + ProcGone + ")"); }
+    // The child is already a durable member of the kill-on-close job. Verify membership (fail-closed). The e2e
+    // `assign_fail`/`assign_firststop_fail` seams simulate that verification failing to drive the recovery path;
+    // the born-in-job backstop still guarantees no orphan.
+    bool member = (ForceFail == "assign_fail" || ForceFail == "assign_firststop_fail" || ForceFail == "cleanup_exhaust") ? false : (JobProcessCount() >= 1);
+    if (!member) { KillHeld(); throw new Exception("AssignProcessToJobObject membership not verified (born-in-job backstop holds; held stop gone=" + ProcGone + ")"); }
+    if (ResumeThread(pi.hThread) == 0xFFFFFFFF) { KillHeld(); Fail("ResumeThread (child born-in-job; gone=" + ProcGone + ")"); }
   }
   // Number of processes currently owned by the job (the owned-tree census; not a machine-wide name count).
   public static int JobProcessCount() {
@@ -352,7 +389,7 @@ public static class Z {
 }
 '@
 
-$res = @{ stdout=''; stderr=''; client_w=0; client_h=0; pid=0; controls=''; job_count_before=0; job_count_after=0; window_found=$false; terminated=$false; timed_out=$false; proc_gone=$false; first_stop_failed=$false; launch_failed=$false; error='' }
+$res = @{ stdout=''; stderr=''; client_w=0; client_h=0; pid=0; controls=''; job_count_before=0; job_count_after=0; window_found=$false; terminated=$false; timed_out=$false; proc_gone=$false; first_stop_failed=$false; cleanup_exhausted=$false; launch_failed=$false; error='' }
 # e2e-only seams, set in this process so the child inherits them (honoured only under --e2e-protocol).
 $env:ZIGBROWSER_AGENT_DRAWER_OPEN = '1'
 $env:ZIGBROWSER_AGENT_DRAWER_DEMO = 'messages:2'
@@ -398,6 +435,7 @@ finally {
   try { [Z]::FinalReap() | Out-Null } catch { if (-not $res.error) { $res.error = $_.Exception.Message } }
   $res.proc_gone = [Z]::ProcGone
   $res.first_stop_failed = [Z]::FirstStopFailed
+  $res.cleanup_exhausted = [Z]::CleanupExhausted
   if (-not $res.proc_gone -and -not $res.error) { $res.error = 'cleanup exhausted: held child not proven terminal' }
   $res.stdout = [string](Get-Content $out -Raw -ErrorAction SilentlyContinue); if ($null -eq $res.stdout) { $res.stdout = '' }
   $res.stderr = [string](Get-Content $err -Raw -ErrorAction SilentlyContinue); if ($null -eq $res.stderr) { $res.stderr = '' }
@@ -519,10 +557,16 @@ class WinDrawerLive(unittest.TestCase):
         self._run_drawer(force_mode="assign_fail", body=check_assign_fail)
 
     def test_assign_plus_first_stop_failure_reaped_by_independent_cleanup(self):
-        # RoseCat a94db57 #1: assignment fails (child suspended, never in the job) AND the first stop proof
-        # fails, so only the independent bounded cleanup (after the empty Job is closed) can reap the live
-        # suspended child — Teardown is skipped and cannot supply the proof.
+        # RoseCat a94db57 #1 / c943215: membership verify fails AND the first stop proof fails on the suspended
+        # child, so only the born-in-job backstop (job close + post-close wait) can prove it gone — Teardown is
+        # skipped and cannot supply the proof.
         self._run_drawer(force_mode="assign_firststop_fail", body=check_assign_firststop_fail)
+
+    def test_cleanup_exhaustion_cannot_outlive_runner(self):
+        # RoseCat c943215: every held-handle reap attempt is exhausted, yet because the child was BORN INTO the
+        # kill-on-close job, closing the job + the durable post-close wait still prove it terminal. The child
+        # cannot outlive the runner even when the TerminateProcess-based reap fails entirely.
+        self._run_drawer(force_mode="cleanup_exhaust", body=check_cleanup_exhaustion)
 
     def test_wait_failure_is_reported(self):
         # RoseCat 7670 #2: a teardown whose first wait is not WAIT_OBJECT_0 must FAIL (never a silent bounded
@@ -663,35 +707,44 @@ class WinDrawerOracle(unittest.TestCase):
                                "error": "AssignProcessToJobObject failed", "stdout": "DRAWER\t1\topen\t0,437,1008,292\n"})
 
     def test_assign_firststop_fail_good_passes(self):
-        # RoseCat a94db57 #1: assign fails + first stop fails; the independent cleanup reaps the never-assigned
-        # suspended child and leaves zero owned. launch_failed proves Teardown did NOT supply the first proof.
+        # RoseCat a94db57 #1 / c943215: membership verify fails + first stop fails; the born-in-job backstop
+        # (job close + post-close wait) proves the child gone. launch_failed proves Teardown did not supply it.
         check_assign_firststop_fail({"launch_failed": True, "first_stop_failed": True, "proc_gone": True,
-                                     "job_count_after": 0, "error": "AssignProcessToJobObject failed", "stdout": ""})
+                                     "error": "AssignProcessToJobObject membership not verified", "stdout": ""})
 
     def test_assign_firststop_fail_but_not_reaped_rejected(self):
         with self.assertRaises(AssertionError):
             check_assign_firststop_fail({"launch_failed": True, "first_stop_failed": True, "proc_gone": False,
-                                         "job_count_after": 0, "error": "AssignProcessToJobObject failed", "stdout": ""})
+                                         "error": "AssignProcessToJobObject membership not verified", "stdout": ""})
 
     def test_assign_firststop_fail_teardown_supplied_proof_rejected(self):
         # if the run resumed (launch_failed False), Teardown supplied the proof — not the independent cleanup.
         with self.assertRaises(AssertionError):
             check_assign_firststop_fail({"launch_failed": False, "first_stop_failed": True, "proc_gone": True,
-                                         "job_count_after": 0, "error": "AssignProcessToJobObject failed", "stdout": ""})
+                                         "error": "AssignProcessToJobObject membership not verified", "stdout": ""})
 
     def test_assign_firststop_fail_not_actually_exercised_rejected(self):
         # if the first-stop seam never fired, this is not evidence of first-stop-fails/backstop-succeeds.
         with self.assertRaises(AssertionError):
             check_assign_firststop_fail({"launch_failed": True, "first_stop_failed": False, "proc_gone": True,
-                                         "job_count_after": 0, "error": "AssignProcessToJobObject failed", "stdout": ""})
+                                         "error": "AssignProcessToJobObject membership not verified", "stdout": ""})
 
-    def test_cleanup_exhaustion_cannot_leave_process_rejected(self):
-        # RoseCat a94db57 #2: a cleanup-exhausted result (held child not proven terminal) must FAIL, never pass
-        # as clean — the runner may not exit with an unproved child.
+    def test_cleanup_exhaustion_good_passes(self):
+        # RoseCat c943215: every held-handle reap attempt is exhausted, but the born-in-job backstop + durable
+        # post-close wait still prove the child terminal — it cannot outlive the runner.
+        check_cleanup_exhaustion({"launch_failed": True, "cleanup_exhausted": True, "proc_gone": True,
+                                  "error": "AssignProcessToJobObject membership not verified"})
+
+    def test_cleanup_exhaustion_orphan_rejected(self):
+        # the runner must never exit with an unproved child: exhausted AND not proven terminal must FAIL.
         with self.assertRaises(AssertionError):
-            check_assign_firststop_fail({"launch_failed": True, "first_stop_failed": True, "proc_gone": False,
-                                         "job_count_after": 0,
-                                         "error": "cleanup exhausted: held child not proven terminal", "stdout": ""})
+            check_cleanup_exhaustion({"launch_failed": True, "cleanup_exhausted": True, "proc_gone": False,
+                                      "error": "cleanup exhausted: held child not proven terminal"})
+
+    def test_cleanup_exhaustion_not_exercised_rejected(self):
+        with self.assertRaises(AssertionError):
+            check_cleanup_exhaustion({"launch_failed": True, "cleanup_exhausted": False, "proc_gone": True,
+                                      "error": "AssignProcessToJobObject membership not verified"})
 
     def test_wait_fail_good_passes(self):
         check_wait_fail({"terminated": False, "proc_gone": True, "job_count_after": 0,

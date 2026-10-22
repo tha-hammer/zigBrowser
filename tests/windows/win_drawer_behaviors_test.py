@@ -479,6 +479,7 @@ class WinDrawerBehaviorsLive(_wd.WinDrawerLive):
     test_icon_create_failure_leaves_no_drawer = None
     test_assign_failure_terminates_held_process = None
     test_assign_plus_first_stop_failure_reaped_by_independent_cleanup = None
+    test_cleanup_exhaustion_cannot_outlive_runner = None
     test_wait_failure_is_reported = None
 
     def _structural(self, r):
