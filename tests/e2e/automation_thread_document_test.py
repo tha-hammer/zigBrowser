@@ -68,8 +68,15 @@ def scenario(zb: ZigBrowser, origin: str, server) -> list[str]:
     code, data = dm("crossdoc.user")
     check(code is None, f"crossdoc.user: the flow succeeds ({code}, {data})")
     check(ev("location.pathname") == "/direct/t/77/", f"crossdoc.user: it ended on the thread page ({ev('location.pathname')!r})")
-    sent = [r for r in records(server, since) if r.startswith("/__record/send/")]
+    got = records(server, since)
+    sent = [r for r in got if r.startswith("/__record/send/")]
     check(sent == ["/__record/send/direct/t/77/"], f"crossdoc.user: exactly one send, on the thread page ({sent})")
+    # The exact text, typed once (RoseCat dddfbca #3): the box held it at Send, and the thread page
+    # saw one keydown per character.
+    result = ev("window.__ig ? window.__ig.result : null")
+    check(result == {"action": "dm", "text": TEXT}, f"crossdoc.user: Send carried exactly the text ({result})")
+    keys = [r for r in got if r == "/__record/keydown/direct/t/77/"]
+    check(len(keys) == len(TEXT), f"crossdoc.user: typed once, one keydown per character ({len(keys)} for {len(TEXT)})")
 
     since = len(server.paths)
     code, data = dm("crossdocwrong.user")

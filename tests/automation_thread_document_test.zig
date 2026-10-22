@@ -27,6 +27,7 @@ const x_routes = automation.x_routes;
 const engine = automation.engine;
 const page_port = automation.page_port;
 const fakes = @import("automation/fake_page_port.zig");
+const flow_runner = automation.flow_runner;
 const Harness = flow_fake.Harness;
 const realClicks = flow_fake.realClicks;
 const countOps = flow_fake.countOps;
@@ -356,3 +357,69 @@ const XHarness = struct {
         }, Call.run);
     }
 };
+
+test "an opener whose navigation committed before the read (no leaving seen) still gets its allowance (RoseCat dddfbca #2)" {
+    var h: Harness = undefined;
+    initInstagram(&h);
+    defer h.deinit();
+    // The click's navigation commits at once; the read right after it is already in the new
+    // document, where nothing is leaving.
+    h.windows.click_navigates = .{ .match = ig_opener, .url = ig ++ "/direct/t/42/", .leaving = false };
+    try runOk(&h, "instagram.dm", dm_approved);
+    try testing.expectEqual(@as(usize, 3), realClicks(&h.fake));
+    try testing.expectEqual(@as(usize, 1), countOps(&h.fake, "type"));
+}
+
+test "the runner names the captured document on exactly the five mutation verbs, press included (RoseCat dddfbca #1)" {
+    var h: Harness = undefined;
+    h.init(ig ++ "/ada/");
+    defer h.deinit();
+    const Seam = struct {
+        fn run(_: @This(), a: std.mem.Allocator, ext: *engine.External) error{OutOfMemory}!engine.Outcome {
+            var runner = flow_runner.Runner{
+                .gpa = a,
+                .ext = ext,
+                .deadline_ms = ext.nowMs() + 60_000,
+                .deadline_reason = "seam_deadline",
+                // As after phase C: the approved navigation committed doc-0 at load_serial 3.
+                .approval = .{ .url = ig ++ "/ada/", .navigated = true, .load_serial = 3, .document_token = try a.dupe(u8, "doc-0") },
+            };
+            defer runner.deinit();
+            const steps = [_][2][]const u8{
+                .{ "dom.click", "{\"selector\":\"css=#a\"}" },
+                .{ "dom.fill", "{\"selector\":\"css=#a\",\"value\":\"\"}" },
+                .{ "dom.type", "{\"selector\":\"css=#a\",\"text\":\"hi\"}" },
+                .{ "dom.press", "{\"key\":\"Escape\"}" },
+                .{ "dom.selectOption", "{\"selector\":\"css=#s\",\"value\":\"a\"}" },
+            };
+            for (steps) |step| _ = (try runner.run(step[0], step[1])) orelse return runner.takeFailure();
+            return .{ .result = try a.dupe(u8, "{\"ok\":true}") };
+        }
+    };
+    var outcome = try h.engine.executeExternal(gpa, "instagram.dm", "instagram", .{ .window = 1, .cancel = &h.cancel }, Seam{}, Seam.run);
+    defer outcome.deinit(gpa);
+    if (outcome != .result) {
+        std.debug.print("seam: failure {d} {s}\n", .{ outcome.failure.code, outcome.failure.data_json orelse "" });
+        return error.TestUnexpectedResult;
+    }
+    var arena = std.heap.ArenaAllocator.init(gpa);
+    defer arena.deinit();
+    var seen: std.ArrayListUnmanaged([]const u8) = .empty;
+    for (h.fake.eval_calls.items) |call| {
+        const parsed = std.json.parseFromSliceLeaky(std.json.Value, arena.allocator(), call.arg, .{}) catch continue;
+        if (parsed != .object) continue;
+        const op = if (parsed.object.get("op")) |o| (if (o == .string) o.string else continue) else continue;
+        if (!inList(op, &.{ "click", "fill", "type", "press", "selectOption" })) continue;
+        const guard = parsed.object.get("guard") orelse {
+            std.debug.print("{s} has no guard\n", .{op});
+            return error.TestExpectedDocument;
+        };
+        try testing.expectEqualStrings("doc-0", guard.object.get("document").?.string);
+        var known = false;
+        for (seen.items) |o| known = known or std.mem.eql(u8, o, op);
+        if (!known) try seen.append(arena.allocator(), op);
+    }
+    const want = [_][]const u8{ "click", "fill", "type", "press", "selectOption" };
+    try testing.expectEqual(want.len, seen.items.len);
+    for (want, seen.items) |w, got| try testing.expectEqualStrings(w, got);
+}
