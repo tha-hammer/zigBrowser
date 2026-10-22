@@ -35158,3 +35158,34 @@ integration. Three of the four `1d7dbd7` findings are not yet causally closed:
 The close-accounting finding is closed, but this range still does not close
 `3a8a091` or arm startup recovery. It remains behind the earlier `1b2fe0a`
 push blocker.
+
+## WS6.1(c) compiled fake-call red (`02aaf60`)
+
+**BLOCKED-for-tests; keep it unregistered.** This is useful progress beyond
+the removed substring oracle: an exact clean host compile fails at the
+intended missing `agent_secrets_win_logic.h`, and the proposed call table
+would causally observe the happy-path credential save/delete and DPAPI-file
+save/read round trip. It is not yet the complete red required by the earlier
+`b5b7546` verdict:
+
+1. Credential read is never called; delete records neither target nor type;
+   and there are no absent, insufficient-buffer, backend-error or partial
+   output rows. Add save/read/delete success and failure tables and require
+   output/error cleanup. Compare type/persistence to independent Win32 values
+   (or the real adapter), not `r.w_type == kCredTypeGeneric` where a wrong
+   constant and its use can change together.
+2. `file_write(path, owner_only, bytes)` collapses owner-only DACL creation and
+   verification, fresh temp creation, flush, atomic replace and cleanup into
+   one trusted boolean callback. No test invokes fallback remove, an atomic
+   cut, ACL failure, write/flush/rename failure or a plaintext/temporary-file
+   census. Expose and record those orchestration operations (or pair this seam
+   with a compiled real-adapter oracle), and cover read/remove plus every
+   failure cut.
+3. No row proves secret buffers are zeroed after success/failure, or that the
+   production backend is reachable only after the portable `TokenStore`
+   validator. Retain the registered portable shape boundary, add a production
+   binding test, and add causal bypass plus zeroization mutants. The eventual
+   disposable-target MSVC/Win11 CredMan and DPAPI-file run remains mandatory.
+
+The current file can remain as the happy-path foundation, but it does not yet
+close `b5b7546` / `2e5a0fb` and does not affect the earlier push boundary.
