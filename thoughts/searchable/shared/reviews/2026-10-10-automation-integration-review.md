@@ -31133,3 +31133,34 @@ linear history pushable past `bac895b`. The first remaining independent
 blocker is **`9f6f81a` (MS6.3 real CLI over fd 3)**. The gate evidence is
 pinned to `dbca88b`; it does not cover the later registered commits through
 the current worktree HEAD.
+
+## Win32 WS5 forced-row argument transport (`5bfda76`)
+
+**APPROVED as the offline harness fix; one exact-commit three-row Win11 rerun
+is AUTHORIZED.** The old force-only construction could send a blank fail-mode
+positional through SSH, after which PowerShell received the force value in the
+wrong slot. This commit removes that ambiguity at both ends:
+
+- `drawer_runner_args` always emits exactly `[base, fail_slot, force_slot]`,
+  with the nonempty `none` sentinel in either inactive slot;
+- the PowerShell runner requires exactly three script arguments and decodes
+  both slots against finite allowlists, rejecting blank or unknown values;
+- the result echoes both decoded values, and every live seam row checks the
+  echo before applying its lifecycle oracle; and
+- the offline table covers no seam, fail only, force only and both, including
+  the exact formerly broken `[base, none, assign_fail]` case.
+
+The diff is test-only and whitespace-clean. A local display-scrubbed run
+passed **42 offline tests** and skipped the seven VM rows; the commit message's
+“43 oracle pass” count is off by one but does not change the observed test
+set or the verdict.
+
+The previously conditional rerun may therefore proceed from an exact clean
+export of `5bfda76`, on `win11-m8`, for only `assign_fail`,
+`assign_firststop_fail` and `cleanup_exhaust`, retaining the existing pinned
+SSH/known-hosts, unique owned root, born-in-Job teardown, no pid/name kill,
+and stop-on-first-failure rules. Each row must echo its exact decoded force
+mode and an empty decoded fail mode, satisfy its existing branch oracle,
+report `proc_gone=true` and zero remaining Job members/survivors, emit no
+pre-resume `DRAWER` row, and leave no owned directory behind. This approval
+does not accept WS5 until that live evidence passes.
