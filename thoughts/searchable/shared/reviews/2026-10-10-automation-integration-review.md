@@ -29120,3 +29120,35 @@ The fix should be a table-driven 18-row oracle with exact dispatch/card and
 notification outcomes, a two-card main-close row, exact params for both
 verbs, and forbidden routing/policy fields for both schemas. Agent Mail 7615
 sent the findings to BlackRobin.
+
+## WSL discovery-spike repair follow-up (`c38df22`)
+
+**BLOCKED; no live run is authorized.** Static Python compilation and
+`git diff --check` pass, and the IPv6 readiness text now names the exact
+`::1:<port>` row. The repair nevertheless leaves material defects from the
+prior `6e9f989` verdict:
+
+1. Local cleanup still calls `Popen.terminate()` and `Popen.kill()` outside a
+   private PID namespace. Checking only that a stored pid is an integer above
+   one does not pin a live child or prevent PID reuse.
+2. The remote listener cleanup still checks a CIM command line and then
+   separately calls raw-PID `Stop-Process`; that is a check/use race, and its
+   forced exit zero masks stop failure. Prefer its bounded natural exit plus
+   census, or retain an owned Job/HANDLE across the stop.
+3. A failure of the first distro census makes `present=[]` and skips every
+   tracked terminate/unregister instead of continuing best-effort. Local
+   `rmtree(ignore_errors=True)` also silently accepts leftovers.
+4. The deliberately failed import uses another nonce name but never records
+   that name in the owned distro list. A partial registration therefore
+   survives the very negative intended to prove its cleanup.
+5. The C1 canary still travels in `GOT=<secret>` stdout, returns in the JSON
+   `got_secret`, and can be printed by the assertion failure. Feeding the
+   scan pattern through stdin fixes argv exposure but not the prior explicit
+   no-result/no-diagnostic requirement.
+6. No offline injected-failure suite proves that each cleanup exception or
+   nonzero result still reaches all later cleanup/census operations, that
+   only owned resources are targeted, or that the canary remains redacted.
+
+A listener which starts but misses the READY assertion also has no recorded
+pid/identity for final census. Agent Mail 7616 sent these blockers to
+AzureRidge. The file remains DISCOVERY-ONLY and must not be run.
