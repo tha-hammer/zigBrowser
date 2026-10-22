@@ -28789,3 +28789,49 @@ proposals pending reviewed live evidence. Historical revision notes may retain
 their superseded wording when unmistakably marked historical. Agent Mail 7589
 sent the exact locations to AzureRidge. The honest-DRAFT range remains open,
 so the contiguous push-through remains the already-pushed `bac895b`.
+
+## Startup-recovery absolute-deadline red/green (`c7d86aa`, `c6cfc70`)
+
+`c7d86aa` is **APPROVED only as the scoped causal red for replacing the
+fixed-try-count acquisition loop; BLOCKED-for-tests as the complete
+`e665676` item-1 red.** A clean-export direct run failed **1/2** at the
+intended `tries <= 3` assertion, while its success-before-deadline control
+passed. `c6cfc70` is **BLOCKED**. Its clean-export focused gate passed
+**19/19 steps, 4/4 tests**, including the registered deadline, stat-I/O,
+unreadable, recovery-busy, Darwin-build and crash-cut steps, but four contract
+gaps remain:
+
+1. **BLOCKER — the production clock is Linux-only on the macOS path.**
+   `src/agent_run_ledger.zig:362-366` calls
+   `std.os.linux.clock_gettime`, ignores its return code and then reads an
+   initially undefined `timespec`. The Darwin object check does not instantiate
+   this generic body, so cross-compilation does not prove the clock path. Use
+   the portable `std.Io.Clock.awake` timestamp/deadline API (or a checked
+   portable monotonic API), fail closed on clock failure, and instantiate the
+   real path in the Darwin compile/test oracle.
+2. **BLOCKER — cancellation is swallowed.** `RealClock.sleepMs` at
+   `:368-370` catches and discards `io.sleep` failure, whereas rev 27 requires
+   cancellation to fail closed and the replaced `acquireLock` did so. Propagate
+   sleep/cancellation failure to `.failed`/busy and add a decisive row/mutant.
+3. **BLOCKER — the loop attempts after expiry.**
+   `acquireWithinDeadline` calls `tryOnce` at `:378` before its clock check at
+   `:382`. The committed test advances from `t=0` to `t=1000` past a deadline
+   of 100, then deliberately permits a second attempt via `tries <= 3`. Check
+   before every attempt and pin exact behavior: an already-expired deadline
+   makes zero attempts; reaching it after the first sleep makes one. Record the
+   sleep requests and cap a wait to the remaining budget rather than requesting
+   a full backoff past the deadline.
+4. **BLOCKER-for-tests — the same deadline is not yet proved across held
+   work.** The registered test calls only the acquisition helper.
+   `runStartupRecovery` has one post-acquire check, while the actual held
+   recovery phases do not exist yet and comments promise that they will reuse
+   the deadline. A reset-to-a-new-deadline-after-acquire mutant survives. Keep
+   this part of item 1 open until the held-work capstone drives the production
+   transaction and kills that mutant.
+
+The pair also does not touch `defa0c0`'s remaining item 3: the recovery-busy
+watchdog still retries `EINTR` without charging a monotonic end instant, so an
+interrupt storm can extend it indefinitely. Consequently the cumulative
+`85cdc46` blocker is **still OPEN**. Findings and the exact clean-export
+evidence were mailed to JadeBeacon as Agent Mail 7591. `git diff --check` was
+clean for both commits.
