@@ -36040,3 +36040,19 @@ unique anchor inside that fixed callback body, and commit these three
 anchor-plus-sequence mutants. Until then `96df8ea`/`9132e93` and the
 `1b2fe0a` WS5.5b-2 range remain blocked; no additional Win11 run is needed for
 this test-only failure.
+
+## WS5.5b-2 live-settle AST fix-forward 2 (`7223f4b`)
+
+**APPROVED-for-tests; keep the proof unregistered until its registration
+commit.** This closes both `fb2310e` findings. `_run_drawer` and its `_env`
+argument now require the exact `self` receiver, and the direct-body walk
+rejects a call after an unconditional top-level `return` or `raise`. The four
+durable mutants cover the wrong outer receiver, wrong environment receiver and
+both unreachable forms; the prior decoy, nested, duplicate and value mutants
+remain intact. The focused module passes **2/2**.
+
+This approves the corrected oracle, not the cumulative green: the file is not
+in `build.zig`, so `6609074`/`9d9b6c7` do not yet have registered gate proof.
+Register this exact module additively before claiming that range closed. The
+earlier and independent `a3beeb1` controller-oracle blocker also continues to
+hold the `1b2fe0a` WS5.5b-2 range.
