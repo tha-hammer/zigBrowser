@@ -48,10 +48,28 @@ pub const Ledger = struct {
 };
 
 pub fn parse(gpa: std.mem.Allocator, bytes: []const u8) ParseError!Ledger {
-    // RED STUB — intentionally lenient: it ignores unknown fields and skips the version, cap and
-    // duplicate-basename checks. The green makes it strict (ignore_unknown_fields=false), version-pinned,
-    // bounded and duplicate-rejecting.
-    const parsed = std.json.parseFromSlice(Doc, gpa, bytes, .{ .ignore_unknown_fields = true }) catch
-        return error.Malformed;
+    // STRICT: `.{}` keeps ignore_unknown_fields=false, so an extra field, a missing field, a mistyped field, an
+    // unknown `state` and any truncated/unparseable input all error -> Malformed. A JSON object with a duplicate
+    // key also errors here. The version, cap and duplicate-basename checks are explicit below.
+    const parsed = std.json.parseFromSlice(Doc, gpa, bytes, .{}) catch return error.Malformed;
+    if (parsed.value.schema_version != SCHEMA_VERSION) {
+        parsed.deinit();
+        return error.Malformed; // an unknown version is never silently upgraded/downgraded
+    }
+    const runs = parsed.value.runs;
+    if (runs.len > MAX_ENTRIES) {
+        parsed.deinit();
+        return error.TooManyEntries; // bounded: a corrupt/hostile over-long ledger is refused, not truncated
+    }
+    var i: usize = 0;
+    while (i < runs.len) : (i += 1) {
+        var j: usize = i + 1;
+        while (j < runs.len) : (j += 1) {
+            if (std.mem.eql(u8, runs[i].basename, runs[j].basename)) {
+                parsed.deinit();
+                return error.DuplicateBasename; // two entries claiming one run dir: neither is trustworthy
+            }
+        }
+    }
     return .{ .parsed = parsed };
 }

@@ -812,6 +812,16 @@ pub fn build(b: *std.Build) void {
     run_reaper_lb_tests.skip_foreign_checks = true;
     const reaper_lb_step = b.step("test-agent-run-reaper-ledger-boundary", "MS6.5.1 ledger boundary: exact 4-field match + single-component grammar (real dirs)");
     reaper_lb_step.dependOn(&run_reaper_lb_tests.step);
+    // MS6.5.1 (plan "versioned/strict/bounded ledger schema"): the ledger parse (pure Zig std.json) — a
+    // VERSIONED, STRICTLY typed, BOUNDED schema; an unknown version / over-cap / missing/extra/mistyped field /
+    // bad state / duplicate basename / truncated input is rejected, so a malformed ledger never yields entries.
+    const ledger_mod = b.createModule(.{ .root_source_file = b.path("src/agent_run_ledger.zig"), .target = target, .optimize = optimize });
+    const ledger_parse_test_mod = b.createModule(.{ .root_source_file = b.path("tests/agent_run_ledger_parse_test.zig"), .target = target, .optimize = optimize });
+    ledger_parse_test_mod.addImport("agent_run_ledger", ledger_mod);
+    const run_ledger_parse_tests = b.addRunArtifact(b.addTest(.{ .root_module = ledger_parse_test_mod }));
+    run_ledger_parse_tests.skip_foreign_checks = true;
+    const ledger_parse_step = b.step("test-agent-run-ledger-parse", "MS6.5.1 ledger schema parse (versioned/strict/bounded)");
+    ledger_parse_step.dependOn(&run_ledger_parse_tests.step);
     // MS6.5 (the user's decision 2026-10-21): the stubbed macOS VM-containment seam — off by default, reports
     // "not available yet", and the gate fails closed when on. Pure Linux unit (no OS calls).
     const mac_vm_containment_module = b.createModule(.{
@@ -2801,6 +2811,7 @@ pub fn build(b: *std.Build) void {
     if (target.result.os.tag == .linux) test_step.dependOn(&run_reaper_uc_tests.step);
     if (target.result.os.tag == .linux) test_step.dependOn(&run_reaper_lg_tests.step);
     if (target.result.os.tag == .linux) test_step.dependOn(&run_reaper_lb_tests.step);
+    test_step.dependOn(&run_ledger_parse_tests.step);
     test_step.dependOn(&run_mac_vm_containment_tests.step);
     test_step.dependOn(&mac_vm_containment_e2e.step);
     test_step.dependOn(&run_agent_secrets_tests.step);
