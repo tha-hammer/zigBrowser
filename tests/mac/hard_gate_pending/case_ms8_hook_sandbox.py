@@ -39,6 +39,7 @@ fd = os.open(marker, os.O_RDONLY)
 if fd != 5:
     os.dup2(fd, 5)
     os.close(fd)
+os.set_inheritable(5, True)  # also when the open itself returned 5 (PEP 446: not inheritable; RoseCat 7969 #2)
 stray = os.open(stray_path, os.O_RDONLY)
 os.set_inheritable(stray, True)
 argv = [str(stray) if a == "{STRAY}" else a for a in sys.argv[3:]]
@@ -66,14 +67,14 @@ def kind(fd):
         return "closed"
 report = {"env": dict(os.environ), "bridge1": reach("127.0.0.1", b1), "bridge2": reach("127.0.0.1", b2),
           "api": reach("127.0.0.1", api), "public": reach(PUBLIC_HOST, PUBLIC_PORT), "fd5": kind(5),
-          "stray": kind(stray)}
+          "stray": kind(stray), "sid": os.getsid(0)}
 pid = os.fork()
 if pid == 0:
     os.setsid()
     if os.fork() == 0:
         time.sleep(1.0)
         with open(os.path.join(out, "grandchild-" + nonce + ".json"), "w") as f:
-            json.dump({"fd5": kind(5), "own_session": os.getsid(0) != os.getsid(os.getppid())}, f)
+            json.dump({"fd5": kind(5), "sid": os.getsid(0), "pgid": os.getpgid(0)}, f)
         os._exit(0)
     os._exit(0)
 os.waitpid(pid, 0)
@@ -177,7 +178,8 @@ def run(h):
     listeners = []
     try:
         try:
-            listeners = [_Listener(b1), _Listener(b2), _Listener(0)]
+            for port in (b1, b2, 0):
+                listeners.append(_Listener(port))  # each one owned by the finally as soon as it exists (7969 #5)
         except OSError as exc:
             h.check(False, f"the bridge ports {b1} and {b2} are free for this case's listeners ({exc!r})")
             return
@@ -207,14 +209,17 @@ def run(h):
         h.check(report.get("bridge1") == "ok" and report.get("bridge2") == "ok"
                 and nonce.encode() in bridge1.got and nonce.encode() in bridge2.got,
                 f"both bridges are reached ({report.get('bridge1')}, {report.get('bridge2')})")
-        h.check(bool(report) and report.get("api", "ok") != "ok" and api.got == [],
-                f"the API port the profile does not name is not reached ({report.get('api')}, {len(api.got)} accepts)")
-        h.check(bool(report) and report.get("public", "ok") != "ok",
-                f"a public address is not reached ({report.get('public')})")
+        # Seatbelt denies an outbound connect the profile does not name with EPERM (MS6.4); a timeout or an
+        # unreachable network is not that proof (RoseCat 7969 #3).
+        h.check(report.get("api") == "err:1" and api.got == [],
+                f"Seatbelt denies the API port the profile does not name ({report.get('api')}, {len(api.got)} accepts)")
+        h.check(report.get("public") == "err:1", f"Seatbelt denies a public address ({report.get('public')})")
         seen = report.get("env")
+        h.check(isinstance(seen, dict) and not set(seen) & {*PLANTED, "ZB_AGENT_RUN_MARKER_FD"}
+                and not any(v in json.dumps(seen) for v in PLANTED.values()),
+                "no planted name or value and no ZB_AGENT_RUN_MARKER_FD reaches the hook's environment")
         h.check(seen == expected_env, f"the hook's environment is exactly the allowlisted values "
-                                      f"(extra {sorted(set(seen or {}) - set(expected_env))}, "
-                                      f"planted values present {any(v in json.dumps(seen) for v in PLANTED.values())})")
+                                      f"(extra {sorted(set(seen or {}) - set(expected_env))})")
         h.check(report.get("fd5") == "reg" and report.get("stray") == "closed",
                 f"the hook holds the run marker on fd 5 and not the unrelated descriptor "
                 f"({report.get('fd5')}, {report.get('stray')})")
@@ -224,8 +229,11 @@ def run(h):
             grandchild = _read_json(os.path.join(scratchpad, f"grandchild-{nonce}.json"))
             if grandchild is None:
                 time.sleep(0.2)
-        h.check(bool(grandchild) and grandchild.get("fd5") == "reg" and grandchild.get("own_session") is True,
-                f"the detached grandchild (its own session) still holds the run marker on fd 5 ({grandchild})")
+        gc = grandchild or {}
+        h.check(gc.get("fd5") == "reg" and isinstance(gc.get("sid"), int) and gc.get("sid") != report.get("sid")
+                and gc.get("sid") == gc.get("pgid"),
+                f"the detached grandchild, in a session other than the hook's, still holds the run marker on fd 5 "
+                f"({grandchild}; hook sid {report.get('sid')})")
         faults, last, deadline = 0, None, time.monotonic() + HORIZON_S  # its own horizon, at least one scan
         while True:
             inspected, pids = _census(h, nonce)
