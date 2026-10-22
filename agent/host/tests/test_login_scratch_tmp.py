@@ -13,7 +13,10 @@ Login.spawn therefore, before it launches the CLI:
   the effective uid (an os.geteuid seam: the namespace cannot make a foreign uid). A refused object is left exactly
   as it was (a snapshot of the wide tmp, and of a symlinked scratchpad's target, before and after);
 - a scratchpad swapped for a link to elsewhere WHILE the sign-in makes its tmp (an os.mkdir seam that swaps it at
-  that call) redirects nothing: nothing is made under the link's target and the CLI is not launched (RoseCat 7742).
+  that call) redirects nothing: nothing is made under the link's target and the CLI is not launched (RoseCat 7742);
+- a REAL directory (0755, ours) put in place of a just-made scratchpad or tmp between its mkdir and its open (an
+  os.mkdir seam that renames the new one away and makes the replacement) is refused, never repaired: it stays 0755
+  with nothing made in it, and the CLI is not launched (RoseCat 7746's probe).
 subprocess.Popen is a recorder (no process is started), and os.kill / os.killpg are patched to raise; the fake
 process has no pid and has already ended. Run: cd agent/host/tests && unshare --map-current-user --pid --fork \\
   --kill-child --mount-proc sh -c '"$ZB_AGENT_HOST_PYTHON" -X dev -m unittest -v test_login_scratch_tmp; exit $?'
@@ -137,6 +140,35 @@ class LoginScratchTmp(unittest.TestCase):
         before = (os.readlink(self.scratchpad), sorted(os.listdir(target)))
         self.refused("a symlinked scratchpad")
         self.assertEqual((os.readlink(self.scratchpad), sorted(os.listdir(target))), before, "changed on refusal")
+
+    def replaced_at_mkdir(self, component):
+        """An os.mkdir seam: right after the real mkdir of `component`, its new directory is renamed away and a
+        different real directory of ours (0755) takes its name, before the sign-in can open it."""
+        real_mkdir = os.mkdir
+        path = self.scratchpad if component == "scratchpad" else self.dir
+        swapped = []
+
+        def mkdir(name, mode=0o777, *, dir_fd=None):
+            real_mkdir(name, mode, dir_fd=dir_fd)
+            if name == component and not swapped:
+                os.rename(path, path + ".made")
+                real_mkdir(path, 0o755)
+                os.chmod(path, 0o755)
+                swapped.append(os.lstat(path).st_ino)
+        if component == "tmp":
+            os.mkdir(self.scratchpad, 0o700)
+        with mock.patch.object(os, "mkdir", side_effect=mkdir):
+            self.refused(f"a real directory put in place of the just-made {component}")
+        after = os.lstat(path)
+        self.assertEqual(swapped, [after.st_ino], "the seam did not swap")
+        self.assertEqual(stat.S_IMODE(after.st_mode), 0o755, "the replacement was repaired")
+        self.assertEqual(os.listdir(path), [], "something was made in the replacement")
+
+    def test_a_real_directory_replacing_the_new_scratchpad_is_refused_unchanged(self):
+        self.replaced_at_mkdir("scratchpad")
+
+    def test_a_real_directory_replacing_the_new_tmp_is_refused_unchanged(self):
+        self.replaced_at_mkdir("tmp")
 
     def test_a_scratchpad_swapped_while_tmp_is_made_redirects_nothing(self):
         os.mkdir(self.scratchpad, 0o700)
