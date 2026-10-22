@@ -35740,3 +35740,195 @@ Until those rows are causal, the suite does not establish that every linked
 native source/header obeys the no-renaming contract or that the sole Copy item
 keeps a nil target. This commit therefore does not close `382f889` or move the
 contiguous push boundary.
+
+## WS5.5b-2 registered post-controller oracle fix-forward (`c558be3`)
+
+**BLOCKED-for-tests.** The commit does repair the immediate registered-gate
+regression: with both display variables and all Win11 live variables removed,
+`tests/windows/win_drawer_test.py` passes **84/84** with eight hostless skips;
+`drawer-props-test` and `cross-check-drawer-win` also pass. The count-driven
+spawn predicate preserves the partial-window cleanup and
+record-before-increment assertions from the old architecture.
+
+The new controller predicate still counts three token strings across the whole
+`create_controller` function rather than binding their control flow. I drove
+its exact `ctrl_ok` logic against three synthetic mutations; all incorrectly
+returned true:
+
+- the primary `PostMessageW(... WM_CLOSE ...)` made unconditional, with no
+  `after.close_primary` check;
+- the primary close guarded by `app->screenshot` instead of
+  `after.close_primary`;
+- both the decision and spawn placed under `if (false)`, followed by an
+  unconditional close.
+
+Those are material: a false portable decision must leave an ordinary window
+open, and dead decision/spawn tokens cannot prove the post-controller path.
+Extract and bind one live controller-completion sequence whose assigned
+`after` value flows to `spawn_extra_drawer_windows(app, after.spawn_count)` and
+whose close is inside exactly `if (after.close_primary)`. Commit the three
+mutants above (plus the existing wrong-field/order/duplicate rows). Until then,
+`9132e93` is not cumulatively closed, no Win11 rerun is authorized, and the
+push boundary does not move.
+
+## WS5.5b-2 terminal-live settle red/green (`6609074`, `9d9b6c7`)
+
+**Both BLOCKED-for-tests.** The production-side edit in `9d9b6c7` is the
+intended one: each of the four WINDOWS-seam live methods now passes exactly
+`ZB_SETTLE_KINDS="live"` in the `_env` supplied to its real `_run_drawer`
+call. The focused new module is green **2/2** at HEAD.
+
+But `6609074`'s claimed AST proof does not bind that setting to either call.
+`settle_kind_values` walks every descendant node in the method and accepts the
+sole matching keyword regardless of callee, branch, or nested function. I
+drove its exported predicate against four synthetic counterexamples; all four
+incorrectly returned true: an unrelated `decoy(ZB_SETTLE_KINDS="live")`, the
+keyword under `if False`, the keyword in an unused nested function, and the
+keyword on `self.other`, while the actual `_run_drawer(extra_env=self._env())`
+had no settle kind.
+
+Bind the proof to the real, live call shape: the method's one relevant
+`self._run_drawer` must receive `extra_env` from the relevant `self._env`, and
+that environment call must carry the one constant `ZB_SETTLE_KINDS="live"`.
+Reject unrelated calls, dead branches, and nested definitions with durable
+mutants. Until that fix-forward, the pair does not close finding #2 on the
+WS5.5b-2 push path; no Win11 rerun is authorized from it.
+
+## MS6.5.1 startup-owner injectable-seam red (`d8ce021`)
+
+**BLOCKED-for-tests; keep it unregistered, unarmed and signal-free.** Driving
+`StartupHook.run` through an injected recover function and `RealOpsG(SpyCore)`
+through an injected core is a useful improvement over the prior body lexer,
+and the forwarding row checks the ledger name, deadline, clock token and
+actuator token. Four ownership/data-flow gaps remain:
+
+1. The app binding is again a whole-file substring search. An unused function,
+   dead branch or unrelated initializer can contain the exact import and
+   `runStartupThenDispatch(agent_startup_recovery.StartupHook{` tokens while
+   the real `runWithIo` bypasses startup recovery. Scope and drive the actual
+   dispatch boundary rather than accepting an additive exact-token decoy.
+2. The injected-hook row proves a caller-supplied `.recover = &spyRecover` is
+   used, but not that the production/default `StartupHook` recover field is the
+   real `recoverLeftoverAgentRuns`. A no-op default still passes.
+3. `RealOpsG(SpyCore)` proves the generic forwards to its injected core, but the
+   tests do not prove production `RealOps` selects `RealCore`, nor that
+   `RealCore.run` reaches `recoverAllAtStartup`. Its only production row checks
+   the ledger string and actuator type, so a no-op production core can pass.
+4. The two injected result checks compare only `status` and `signalled`.
+   `StartupReport` has seven additional payload fields. A wrapper can rebuild a
+   partial report and discard `scanned`, `left`, `already_gone`, `reconciled`,
+   `fail_closed`, `deferred` or `load_failed` while the rows stay green. Use a
+   fully non-default sentinel and whole-report equality.
+
+The missing `agent_startup_recovery` module remains the intended production
+red, but these rows would not establish the claimed production owner after a
+green. This commit therefore does not close `3dc35cc` or authorize any Mac or
+signal-bearing run.
+
+## MS7.4 + MS7.6/7.8 native-link authority red fix-forward (`16449ca`)
+
+**BLOCKED-for-tests; keep it unregistered and do not run it on a Mac.** The
+focused modules produce the intended production-red shape: **15/18 pass**, and
+the three failures are the absent native drawer link, Zig authority graph and
+real drawer. This fix does close the four specific `5beecc9` findings: it
+requires the production configure call, follows literal angle/quoted project
+includes, rejects raw CR/splice/trigraph forms, and rejects the covered direct
+property/KVC Copy retargets. Three material authority bypasses remain:
+
+1. The build oracle requires `const backend = resolveBackend(target)` but never
+   proves where `target` came from. Prepending
+   `const target = b.resolveTargetQuery(.{ .os_tag = .linux });` to the honest
+   fixture returns an empty finding list, so a shipped macOS build can be
+   forced through another backend while the reviewed resolver and production
+   call remain textually intact. Bind `target` to the production target option
+   source/data flow.
+2. The sole bare Copy statement is not bound to the real Edit menu or a live
+   path. Moving the exact statement under `if (0)`, or calling it on a newly
+   allocated detached `NSMenu`, returns an empty finding list. Require the
+   reviewed live Edit-menu receiver and reject dead/detached constructions.
+3. Retargeting through the Objective-C runtime remains invisible. Both the
+   bubble and card predicates return no finding for
+   `class_getInstanceVariable(..., "_target")` followed by
+   `object_setIvar(...)`. Ban the runtime ivar/reflection routes (or prove their
+   absence on the compiled/link surface) and commit the mutant.
+
+Thus the suite still cannot prove which backend is shipped or that the one
+Copy action remains live and nil-target. It does not close `5beecc9` and
+authorizes no Mac execution.
+
+## WS7.4 bounded-cycle red fix-forward (`1e48000`)
+
+**BLOCKED-for-safety; keep it unregistered and do not run the documented
+command on the host.** Moving both real cycle cases and the cycle-follow mutant
+to a disposable subprocess is the right way to keep an implementation bug
+from wedging the test. Normal completion, nonzero exit and malformed output
+also fail rather than being mistaken for a bounded success.
+
+But this test is not signal-free as its header claims: the timeout branch calls
+`Popen.kill()` (SIGKILL on POSIX) and then `communicate()`. The documented
+launcher is a plain Python invocation, with no kernel-proven private PID
+namespace and no fail-closed namespace sentinel before spawn/signal. The
+committed mutant also sets Python's recursion limit to ten million and is meant
+to grow without bound for three seconds; that is a flood/OOM-shaped test yet
+has no `capped.sh` memory boundary. Its “guaranteed reap” also has no explicit
+handling for the child exiting between `TimeoutExpired` and `kill`.
+
+Run only through a reviewed private-user/PID-namespace launcher, hold and
+compare the outer namespace inode before spawning, refuse on any uncertainty,
+and make the in-test sentinel guard the signal call. Put the recursive mutant
+under the project's memory cap (or replace it with a bounded non-allocating
+cycle follower), and make the exit/kill/reap race explicit. Once those safety
+properties are causal, the worker can serve as the requested cycle oracle.
+No VM or Mac run is involved.
+
+## WS5.5b-2 controller-sequence oracle fix-forward (`96df8ea`)
+
+**BLOCKED-for-tests.** This closes the three exact loose-count counterexamples
+from `c558be3`: an unguarded close, a close under `app->screenshot`, and dead
+decision/spawn followed by an unconditional close now fail. The registered
+offline module is green **84/84** with eight hostless skips.
+
+The replacement still does not establish live control flow. It strips and
+concatenates the whole `create_controller` body, then accepts the contiguous
+text `assign + spawn + guarded_close` anywhere in that body. I drove the exact
+predicate against three additional counterexamples; all incorrectly returned
+true:
+
+- the whole otherwise-correct sequence under `if (false)`;
+- the whole sequence under the wrong outer gate `if (app->screenshot)`; and
+- the whole sequence inside an unused lambda.
+
+The current mutant catches only a dead gate around the first two statements
+with the close outside; moving the complete sequence under that gate restores
+the false green. Bind the sequence as live top-level statements in the real
+controller completion path (or use a compiled/injectable seam), and commit the
+three whole-sequence mutants. Until then, `c558be3` and `9132e93` remain
+blocked and no Win11 rerun is authorized.
+
+## WS7.1 atomic-current pointer red (`ab86a92`)
+
+**BLOCKED-for-tests; keep it unregistered.** A pointer file replaced by one
+atomic rename is a reasonable privilege-free [L] design, and the explicit
+delete/sleep/create mutant is a useful negative control. The thread harness is
+not yet a causal old-or-new atomicity oracle:
+
+1. Exceptions in either thread are not returned to the test. I drove
+   `_reader_writer` with a writer whose first `swap` raises `RuntimeError`; it
+   returned zero misses. A reader raising `PermissionError` likewise returned
+   zero misses. Either implementation failure can therefore produce the
+   required green result after the worker silently dies.
+2. No progress or value invariant is checked. A writer that never publishes,
+   or a `read_current` that always returns a constant non-`None` value, records
+   zero misses. The reader must accept only a complete old or new strict
+   `dist-<n>` pointer whose target exists, and the run must prove both writer
+   progress and observation of multiple committed generations.
+3. The delete/create mutant is scheduling-based. Although it passed in the
+   focused run, there is no barrier proving a read occurs while the pointer is
+   absent; a fast reader may finish before the writer opens the gap. Add a
+   deterministic handshake for the missing-window mutant and propagate all
+   thread failures.
+
+The eventual green also needs fail-closed pointer schema/path tests and a
+Windows [W] row for the selected replace primitive; this portable red alone
+does not prove Windows privilege/replace behavior. No VM run is authorized by
+this commit.
