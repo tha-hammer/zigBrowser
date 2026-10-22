@@ -167,6 +167,24 @@ def extract_csharp_method(src, name):
     raise AssertionError(f"unbalanced braces extracting {name}")
 
 
+def extract_cpp_function(src, name):
+    """Extract a C++ FUNCTION DEFINITION's body (between its outermost braces) by brace matching — the signature
+    is `<ret/qualifiers> <name>(<args>) {`, never a call site (which ends in `;`). Lets the WS5.5b-2 oracle be
+    CALL-BOUND to the real spawn / WndProc bodies instead of grepping the whole file. Raises if not found."""
+    m = re.search(r"[\w:*&<>\s]+\b" + re.escape(name) + r"\s*\([^;{]*\)\s*\{", src)
+    assert m is not None, f"C++ function {name} not found in the shim"
+    start = src.index("{", m.start())
+    depth = 0
+    for j in range(start, len(src)):
+        if src[j] == "{":
+            depth += 1
+        elif src[j] == "}":
+            depth -= 1
+            if depth == 0:
+                return src[start + 1:j]
+    raise AssertionError(f"unbalanced braces extracting {name}")
+
+
 def page_selector_body_is_strict(body):
     """Causal predicate on the embedded [Z]::PageHwnd body (RoseCat ba35dc5). The selector is strict iff it
     selects by the WebView2 widget CLASS, by the launched PID, requires EXACTLY ONE match, and uses NEITHER a
@@ -1237,23 +1255,64 @@ class WinDrawerOracle(unittest.TestCase):
         # has no paren, so `atoi(` uniquely marks an actual call a revert would introduce.
         self.assertNotIn("atoi(", shim, "the shim must not call atoi(...) — strict full-string parsing only")
 
-    def test_wsl_e2e_multiwindow_spawn_is_bound(self):
-        # WS5.5b-2 (RoseCat dffa0c7): bind the production multi-window spawn in the shim. The Win32 behavior
-        # cannot run on Linux, so pin its structure here (cross-compile proves it builds; the behaviors live
-        # oracle proves peak == N on a released VM run). A revert removing the spawn turns this red.
+    def test_ws5_5b2_spawn_is_call_bound(self):
+        # WS5.5b-2 (RoseCat 6b324c8 #1/#2/#4): CALL-BOUND to the real spawn body (not a whole-file grep). The
+        # Win32 runtime can't run on Linux; cross-compile proves it builds and the behaviors live oracle proves
+        # peak==N on a released run. Here: the spawn counts from the portable Zig, checks BOTH controls, destroys
+        # the partial window on failure, and marks the HWND counted BEFORE accounting it, emitting no fake page.
         shim = (pathlib.Path(__file__).resolve().parents[2] / "src" / "webview2_shim.cpp").read_text(encoding="utf-8")
-        # the extra-window count comes from the portable Zig, not inline C
-        self.assertIn("zb_drawer_extra_windows(app->windows_seam)", shim,
-                      "the extra-window count must come from the portable zb_drawer_extra_windows")
-        self.assertIn("int zb_drawer_extra_windows(int", shim, "the shim must declare the extern")
-        # extra windows use a dedicated class (the primary class WM_DESTROY calls PostQuitMessage)
-        self.assertIn("kDrawerExtraClassName", shim, "extra windows need their own non-quitting class")
-        self.assertIn("DefWindowProcW", shim, "the extra class WndProc must be DefWindowProcW (no PostQuitMessage)")
-        # the spawn exists, is e2e-WINDOWS-seam-gated, accounts each mount, and tears down + decrements
-        self.assertIn("void spawn_extra_drawer_windows(AppState", shim, "the spawn function must exist")
-        self.assertIn("spawn_extra_drawer_windows(app);", shim, "the spawn must be wired after the primary mount")
-        self.assertIn("drawer_live_inc();", shim, "each extra mount must be accounted through drawer_live_inc")
-        self.assertIn("e2e_extra_windows", shim, "the extra windows must be tracked for shutdown teardown")
+        # strip // comments before collapsing, so comment prose can't satisfy (or defeat) a call-bound check
+        body = " ".join(re.sub(r"//[^\n]*", "", extract_cpp_function(shim, "spawn_extra_drawer_windows")).split())
+
+        def spawn_ok(b):
+            need = ["zb_drawer_extra_windows(app->windows_seam)", "panel_h == nullptr || icon_h == nullptr",
+                    "DestroyWindow(w)", "SetWindowLongPtrW(w, GWLP_USERDATA, kExtraCounted)", "drawer_live_inc();"]
+            if not all(t in b for t in need):
+                return False
+            # the HWND is marked counted, and the full-structure check runs, BEFORE the live-count increment
+            return (b.index("SetWindowLongPtrW(w, GWLP_USERDATA, kExtraCounted)") < b.index("drawer_live_inc();")
+                    and b.index("panel_h == nullptr || icon_h == nullptr") < b.index("drawer_live_inc();"))
+
+        self.assertTrue(spawn_ok(body), f"spawn must be call-bound: count+both-controls+partial-destroy+count-then-inc; body={body!r}")
+        self.assertNotIn('"host,page,icon,panel"', body, "an extra window has no page — its tree row must not claim one")
+        # causal mutants on the spawn body
+        self.assertFalse(spawn_ok(body.replace("drawer_live_inc();", "", 1)), "inc removed must be caught")
+        self.assertFalse(spawn_ok(body.replace("DestroyWindow(w)", "", 1)), "partial-window cleanup removed must be caught")
+        self.assertFalse(spawn_ok(body.replace("panel_h == nullptr || icon_h == nullptr", "false")),
+                         "dropping the both-controls check must be caught")
+        reordered = body.replace("SetWindowLongPtrW(w, GWLP_USERDATA, kExtraCounted);", "", 1).replace(
+            "drawer_live_inc();", "drawer_live_inc(); SetWindowLongPtrW(w, GWLP_USERDATA, kExtraCounted);", 1)
+        self.assertFalse(spawn_ok(reordered), "counting (inc) before the full-structure mark must be caught")
+        # the close-one-early path destroys ONE extra through the same DestroyWindow route and emits the
+        # intermediate live count (never a manual fetch_sub)
+        self.assertIn("DestroyWindow(one)", body, "close-one must route through DestroyWindow (the WndProc decrements)")
+        self.assertIn('"liveclose"', body, "close-one must emit the intermediate live count row")
+        self.assertNotIn("fetch_sub", body, "the spawn must never decrement manually — the WM_DESTROY path owns it")
+
+    def test_ws5_5b2_extra_wndproc_decrements_once(self):
+        # RoseCat 6b324c8 #4: the extra WndProc owns a per-HWND, exactly-once decrement on the REAL WM_DESTROY
+        # path and never PostQuitMessage; bulk teardown goes through DestroyWindow (same path), not a manual dec.
+        shim = (pathlib.Path(__file__).resolve().parents[2] / "src" / "webview2_shim.cpp").read_text(encoding="utf-8")
+        proc = " ".join(re.sub(r"//[^\n]*", "", extract_cpp_function(shim, "drawer_extra_window_proc")).split())
+
+        def proc_ok(b):
+            return ("WM_DESTROY" in b and "GetWindowLongPtrW(h, GWLP_USERDATA) == kExtraCounted" in b
+                    and "SetWindowLongPtrW(h, GWLP_USERDATA, 0)" in b and "g_drawer_live.fetch_sub(1" in b
+                    and "PostQuitMessage" not in b)
+
+        self.assertTrue(proc_ok(proc), f"the extra WndProc must decrement once per counted HWND; body={proc!r}")
+        # causal mutants
+        self.assertFalse(proc_ok(proc.replace("SetWindowLongPtrW(h, GWLP_USERDATA, 0);", "", 1)),
+                         "dropping the clear = double-decrement on a repeat WM_DESTROY must be caught")
+        self.assertFalse(proc_ok(proc.replace("g_drawer_live.fetch_sub", "g_drawer_live.no_dec", 1)),
+                         "removing the decrement must be caught")
+        self.assertFalse(proc_ok(proc + " PostQuitMessage(0);"), "an extra window must never PostQuitMessage")
+
+        # the shutdown teardown routes through DestroyWindow (the proc decrements), never a manual fetch_sub
+        start = shim.index("for (HWND w : app.e2e_extra_windows)")
+        teardown = " ".join(re.sub(r"//[^\n]*", "", shim[start:shim.index("e2e_extra_windows.clear();", start)]).split())
+        self.assertIn("DestroyWindow(w)", teardown, "teardown must destroy each extra (routing to the WndProc)")
+        self.assertNotIn("fetch_sub", teardown, "teardown must NOT decrement manually — the WM_DESTROY path owns it")
 
     # --- forced control-create failure oracle (check_mounted_fail, RoseCat 7646) ---
     def _good_fail(self, which):

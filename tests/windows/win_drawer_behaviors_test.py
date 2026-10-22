@@ -183,7 +183,7 @@ class WinDrawerBehaviorsOracle(unittest.TestCase):
         # duplicate re-collected here.
         live = [m for m in dir(WinDrawerBehaviorsLive)
                 if m.startswith("test_") and getattr(WinDrawerBehaviorsLive, m) is not None]
-        self.assertEqual(len(live), 19, f"behaviour-live rows must be exactly 19; got {len(live)}: {sorted(live)}")
+        self.assertEqual(len(live), 20, f"behaviour-live rows must be exactly 20; got {len(live)}: {sorted(live)}")
 
     # WS5.1 ---------------------------------------------------------
     def test_ws5_1_dock_no_overlap(self):
@@ -894,6 +894,20 @@ class WinDrawerBehaviorsLive(_wd.WinDrawerLive):
             # merely positive — a serialized run or an unaccounted mount (peak == 1) must fail here.
             check_live_peak_matches(int(peak), int(final), 2)
         self._run_drawer(extra_env=self._env(ZIGBROWSER_AGENT_DRAWER_WINDOWS="2"), body=body)
+
+    def test_ws5_5b2_closing_one_extra_drops_the_live_count_by_exactly_one(self):
+        # WS5.5b-2 (RoseCat 6b324c8 #4): with 2 windows, closing ONE extra early (through DestroyWindow -> the
+        # extra WndProc's WM_DESTROY) drops the live count by EXACTLY one. The shim emits a `liveclose` row
+        # (peak, now) after the single close: peak stays 2 (the running max), now is 1 (primary still live) —
+        # not 0 (double) and not 2 (skipped). The source-body mutants for double-decrement and skipped-destroy
+        # are in win_drawer_test.py WinDrawerOracle.test_ws5_5b2_extra_wndproc_decrements_once.
+        def body(r):
+            m = re.search(r"DRAWER\t\d+\tliveclose\t(\d+)\t(\d+)", r["stdout"])
+            assert m, f"expected a DRAWER liveclose row; stdout={r['stdout']!r}"
+            self.assertEqual((m.group(1), m.group(2)), ("2", "1"),
+                             "closing one of two concurrent drawers must leave peak 2, live 1")
+        self._run_drawer(extra_env=self._env(ZIGBROWSER_AGENT_DRAWER_WINDOWS="2",
+                                             ZIGBROWSER_AGENT_DRAWER_EXTRA_CLOSE_ONE="1"), body=body)
 
     def test_ws5_6_isolation_denied_and_census_unchanged(self):
         # WS5.6 (plan 1580-1582): the harness performs EXACTLY the named page-JS + socket reach attempts; each is

@@ -91,6 +91,11 @@ struct AppState {
   HWND drawer_min = nullptr;  // WS5.3: the visible "-" (minimize/fold) control on the open drawer (top-right)
   HWND drawer_bubble = nullptr;  // WS5.4: the inert message bubble (read-only, plain-text RichEdit) on the panel
   std::vector<HWND> e2e_extra_windows;  // WS5.5b-2: the e2e multi-window spawn's extra drawer windows (torn down at shutdown)
+  // WS5.5b-2 e2e-only seams. extra_fail ("panel"|"icon") forces the matching control CreateWindowExW in an
+  // extra window to fail, so the partial-window cleanup path is driven. extra_close_one closes ONE extra early
+  // and emits an intermediate live count, so a live test sees the count fall by exactly one.
+  const char *extra_fail = nullptr;
+  bool extra_close_one = false;
   // WS5 e2e-only control-factory failure seam (ZIGBROWSER_AGENT_DRAWER_FAIL = "panel"|"icon"): forces a
   // CreateWindowExW failure branch for the test. Null unless --e2e-protocol AND the env is set.
   const char *force_drawer_fail = nullptr;
@@ -1407,6 +1412,35 @@ void mount_drawer(AppState *app) {
 // drawer_live_inc path and emitting its own [tree, icon, open] rows with a distinct window id. They are torn
 // down (and the live count decremented) at shutdown, before the global `live` row, so the final count is 0.
 // e2e-only and seam-gated; ordinary single-window runs never enter here.
+// WS5.5b-2 (RoseCat 6b324c8 #4): the extra windows' own window procedure. It NEVER PostQuitMessage (so one
+// closing does not end the app), and it owns the live-count decrement PER HWND: a window that was counted
+// carries GWLP_USERDATA == 1, and WM_DESTROY decrements EXACTLY ONCE and clears the flag, so a second
+// WM_DESTROY (or a double teardown) cannot decrement twice, and an uncounted partial window never decrements.
+// Both bulk shutdown teardown and an early single close go through DestroyWindow -> this same path.
+constexpr LONG_PTR kExtraCounted = 1;
+LRESULT CALLBACK drawer_extra_window_proc(HWND h, UINT msg, WPARAM wparam, LPARAM lparam) {
+  if (msg == WM_DESTROY) {
+    if (GetWindowLongPtrW(h, GWLP_USERDATA) == kExtraCounted) {
+      SetWindowLongPtrW(h, GWLP_USERDATA, 0);  // per-HWND ownership: decrement once, never again
+      g_drawer_live.fetch_sub(1, std::memory_order_relaxed);
+    }
+  }
+  return DefWindowProcW(h, msg, wparam, lparam);
+}
+
+// Emit one extra window's truthful [tree, icon, open] rows. The extra windows have NO WebView2 page, so the
+// tree row is "host,icon,panel" — it does NOT claim a page that does not exist (RoseCat 6b324c8 #3).
+static void emit_extra_drawer_rows(AppState *app, int wid, ZbDrawerGeomRect panel, int ix, int iy, int icon_px) {
+  char win[16];
+  snprintf(win, sizeof win, "%d", wid);
+  emit_protocol3(app, "DRAWER", win, "tree", "host,icon,panel");
+  char rect[64];
+  snprintf(rect, sizeof rect, "%d,%d,%d,%d", ix, iy, icon_px, icon_px);
+  emit_protocol3(app, "DRAWER", win, "icon", rect);
+  snprintf(rect, sizeof rect, "%d,%d,%d,%d", panel.x, panel.y, panel.w, panel.h);
+  emit_protocol3(app, "DRAWER", win, "open", rect);
+}
+
 void spawn_extra_drawer_windows(AppState *app) {
   if (app == nullptr || !app->e2e_protocol || !app->windows_seam_set || !app->agent_drawer_on ||
       app->hwnd == nullptr) {
@@ -1416,7 +1450,7 @@ void spawn_extra_drawer_windows(AppState *app) {
   if (!extra_class_registered) {
     WNDCLASSEXW wc = {};
     wc.cbSize = sizeof(wc);
-    wc.lpfnWndProc = DefWindowProcW;  // NOT window_proc: destroying an extra window must not PostQuitMessage
+    wc.lpfnWndProc = drawer_extra_window_proc;  // non-quitting; owns the per-HWND decrement
     wc.hInstance = app->instance;
     wc.lpszClassName = kDrawerExtraClassName;
     wc.hCursor = LoadCursorW(static_cast<HINSTANCE>(nullptr), MAKEINTRESOURCEW(32512));
@@ -1428,6 +1462,8 @@ void spawn_extra_drawer_windows(AppState *app) {
     }
     extra_class_registered = true;
   }
+  const bool fail_panel = app->extra_fail != nullptr && strcmp(app->extra_fail, "panel") == 0;
+  const bool fail_icon = app->extra_fail != nullptr && strcmp(app->extra_fail, "icon") == 0;
   const int extra = zb_drawer_extra_windows(app->windows_seam);
   const int icon_px = effective_icon_px(app);
   for (int i = 0; i < extra; i++) {
@@ -1445,22 +1481,40 @@ void spawn_extra_drawer_windows(AppState *app) {
     zb_drawer_panel_rect(cw, ch, &panel);
     const int ix = cw - icon_px - kFoldBtnMargin;
     const int iy = ch - icon_px - kFoldBtnMargin;
-    // Real drawer controls: the docked panel + the "S" icon, so this is a genuine drawer window, not a bare frame.
-    CreateWindowExW(0, L"STATIC", L"", WS_CHILD | WS_VISIBLE, panel.x, panel.y, panel.w, panel.h,
-                    w, nullptr, app->instance, nullptr);
-    CreateWindowExW(0, L"STATIC", L"S", WS_CHILD, ix, iy, icon_px, icon_px, w, nullptr, app->instance, nullptr);
+    // Both real drawer controls: the docked panel + the "S" icon. The e2e extra_fail seam forces either to
+    // fail so the partial-window cleanup path is driven.
+    HWND panel_h = fail_panel ? nullptr
+        : CreateWindowExW(0, L"STATIC", L"", WS_CHILD | WS_VISIBLE, panel.x, panel.y, panel.w, panel.h,
+                          w, nullptr, app->instance, nullptr);
+    HWND icon_h = fail_icon ? nullptr
+        : CreateWindowExW(0, L"STATIC", L"S", WS_CHILD, ix, iy, icon_px, icon_px, w, nullptr, app->instance, nullptr);
+    if (panel_h == nullptr || icon_h == nullptr) {
+      // Partial window: destroy it (never counted, so its WM_DESTROY decrements nothing), emit no rows, count
+      // nothing. DestroyWindow(w) tears down any child control it did manage to create (RoseCat 6b324c8 #2).
+      DestroyWindow(w);
+      continue;
+    }
+    // The FULL structure exists: mark this HWND counted, THEN account it and emit its rows exactly once.
+    SetWindowLongPtrW(w, GWLP_USERDATA, kExtraCounted);
     ShowWindow(w, SW_SHOWNORMAL);
     drawer_live_inc();  // WS5.5: this concurrent drawer raises the running live peak toward N
-    const int wid = app->win_id + i + 1;
-    char win[16];
-    snprintf(win, sizeof win, "%d", wid);
-    emit_protocol3(app, "DRAWER", win, "tree", "host,page,icon,panel");
-    char rect[64];
-    snprintf(rect, sizeof rect, "%d,%d,%d,%d", ix, iy, icon_px, icon_px);
-    emit_protocol3(app, "DRAWER", win, "icon", rect);
-    snprintf(rect, sizeof rect, "%d,%d,%d,%d", panel.x, panel.y, panel.w, panel.h);
-    emit_protocol3(app, "DRAWER", win, "open", rect);
+    emit_extra_drawer_rows(app, app->win_id + i + 1, panel, ix, iy, icon_px);
     app->e2e_extra_windows.push_back(w);
+  }
+  // WS5.5b-2 (#4) close-one-early seam: close a SINGLE counted extra through DestroyWindow (the same path as
+  // bulk teardown), so its WM_DESTROY decrements exactly once, and emit the intermediate live count so a live
+  // test sees the count fall by exactly one. The window is dropped from the teardown list (already destroyed).
+  if (app->extra_close_one && !app->e2e_extra_windows.empty()) {
+    HWND one = app->e2e_extra_windows.back();
+    app->e2e_extra_windows.pop_back();
+    DestroyWindow(one);  // routes through drawer_extra_window_proc -> single decrement
+    char win[16];
+    snprintf(win, sizeof win, "%d", app->win_id);
+    char peak_buf[16];
+    snprintf(peak_buf, sizeof peak_buf, "%d", g_drawer_live_peak.load());
+    char now_buf[16];
+    snprintf(now_buf, sizeof now_buf, "%d", g_drawer_live.load());
+    emit_protocol4(app, "DRAWER", win, "liveclose", peak_buf, now_buf);
   }
 }
 
@@ -2131,6 +2185,11 @@ static int run_core(const char *uri, int print_title, int e2e_protocol, bool scr
     // "2junk", " 2", "+2" or an empty value leave the seam OFF rather than silently enabling a partial run.
     const int n = zb_drawer_window_count_from_env(getenv("ZIGBROWSER_AGENT_DRAWER_WINDOWS"));
     if (n >= 1) { app.windows_seam = n; app.windows_seam_set = true; }
+    // WS5.5b-2 e2e-only seams: force an extra window's panel/icon control to fail (drive partial cleanup), and
+    // close one counted extra early (prove the live count falls by exactly one).
+    app.extra_fail = getenv("ZIGBROWSER_AGENT_DRAWER_EXTRA_FAIL");
+    const char *close_one = getenv("ZIGBROWSER_AGENT_DRAWER_EXTRA_CLOSE_ONE");
+    app.extra_close_one = close_one != nullptr && strcmp(close_one, "1") == 0;
   }
   app.screenshot = screenshot;
   if (screenshot && out_path != nullptr) {
@@ -2156,14 +2215,12 @@ static int run_core(const char *uri, int print_title, int e2e_protocol, bool scr
     loop_end();
   }
 
-  // WS5.5b-2: tear down the e2e extra windows and decrement the live count for each, so the FINAL count is 0
-  // when the global `live` row is emitted (the running PEAK, already at N, is unaffected by these decrements).
-  // The extra class is DefWindowProcW, so DestroyWindow here cannot PostQuitMessage.
+  // WS5.5b-2 (RoseCat 6b324c8 #4): tear down the e2e extra windows through the SAME path as an early close —
+  // DestroyWindow routes WM_DESTROY to drawer_extra_window_proc, which decrements the live count exactly once
+  // per counted HWND (never here). So the FINAL count returns to 0 with no double-decrement, and the running
+  // PEAK (already at N) is unaffected.
   for (HWND w : app.e2e_extra_windows) {
-    if (w != nullptr) {
-      DestroyWindow(w);
-      g_drawer_live.fetch_sub(1, std::memory_order_relaxed);
-    }
+    if (w != nullptr) DestroyWindow(w);
   }
   app.e2e_extra_windows.clear();
 
