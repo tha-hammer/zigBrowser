@@ -716,6 +716,7 @@ class WinDrawerBehaviorsLive(_wd.WinDrawerLive):
     test_native_drawer_mounts_docks_and_emits_census = None
     test_panel_create_failure_leaves_no_drawer = None
     test_icon_create_failure_leaves_no_drawer = None
+    test_bubble_create_failure_leaves_no_drawer = None  # entry-module row (RoseCat 7862 #2); runs in its own module
     test_assign_failure_terminates_held_process = None
     test_assign_plus_first_stop_failure_reaped_by_independent_cleanup = None
     test_cleanup_exhaustion_cannot_outlive_runner = None
