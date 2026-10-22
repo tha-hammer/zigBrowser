@@ -30312,3 +30312,19 @@ clean, and no executable logic changed.
 This correction does not authorize a run of `dbca88b` or current HEAD. The
 sole owner-watched discovery run remains the exact clean export and case bytes
 of `4384fcf` under the conditions recorded above.
+
+## MS6.3 unusable-fd-3 red oracle fix-forward (`740611d`)
+
+**APPROVED as the follow-up red; this closes the test-oracle blocker on
+`2e7f1ee`.** `check()` now decodes every stdout line and compares the complete
+output to exactly one complete protocol object: `v:1`, `seq:1`, `type:error`,
+`session:contract`, `code:auth`, and the fixed `no usable token` message. An
+extra frame, blank/non-JSON output, or any extra object key now fails. The
+stderr-empty, exit-2, no-FIFO and bad-input non-echo assertions remain, and
+the run instructions now name the pinned interpreter resolved by
+`tools/agent_host_env.sh --check`.
+
+From an exact clean export, using that interpreter in a private current-UID
+PID namespace, all four rows fail at the intended absent-frame boundary. The
+suite remains unregistered, so the red does not break HEAD. Its green must
+register the now-complete red only when the production behavior passes.
