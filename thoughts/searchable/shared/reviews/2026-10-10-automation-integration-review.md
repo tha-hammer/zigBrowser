@@ -32807,3 +32807,78 @@ Mac environment should also remove inherited `ZB_*`/`ZIGBROWSER_*` seams
 before adding this test's socket and fixture origin. The Mac leg is fixture
 only and needs no account or credential, but it visibly opens WKWebView on the
 two build Macs, so the existing console-user coordination still applies.
+
+## MS4.4 cleanup and liveness fix-forward (`90a4098`)
+
+**APPROVED.** This cumulatively closes the two code/test findings on
+`f234ad9`. `OwnedGroup` creates the browser as its own process-group leader,
+keeps that leader unreaped while bounded TERM/KILL cleanup can still address
+the group, then reaps it; once an outside wait has reaped it, `stop()` sends no
+signal. SIGTERM, SIGINT and SIGHUP take that same exact-child-owned route and
+re-raise the original signal. The causal unit uses a real leader and
+grandchild, is registered under a private PID namespace, and reviewer rerun
+passed **3/3**. The real-binary Linux row is registered under its own PID
+namespace/private Xvfb, scrubs inherited `ZB_*`/`ZIGBROWSER_*`, and now proves
+that deleting Instagram's `sessionid` returns `logged_out` without another
+story request as well as the equivalent LinkedIn behavior.
+
+This does **not** release a Mac run yet. The Mac gate still needs a separate
+reviewed registration in `tests/mac/ms4_gate.sh`, including its selected
+interpreter/raw-client route, before an exact-commit two-Mac run is authorized.
+
+## Concrete run-recovery census follow-up (`b1eb2f9`)
+
+**BLOCKED; keep it unregistered, unarmed and off the Macs.** The injected
+post-open probe does now causally distinguish an openable, provenance-matching
+directory whose identity read becomes unreadable from a later pin/shape
+mismatch. Two of the three claimed closures remain incomplete:
+
+1. `runFixedPoint` checks the clock only once before entering
+   `zb_reaper_fixed_point`. The C fixed-point loop may then scan, inspect and
+   invoke `killsig` after the absolute deadline. The new row proves only an
+   already-expired entry call. Thread the one deadline through the engine or
+   callback boundary and add a clock-crosses-immediately-before-kill row that
+   returns incomplete with zero post-deadline action.
+2. R1 announces and parks in its kill callback before R2 is forked, but the
+   parent's negative poll has no proof that R2 reached/attempted the contested
+   flock acquisition. Under load an early-unlock mutant can pass because R2
+   was not scheduled during the window. Prefer a parent nonblocking flock
+   attempt that must return `EWOULDBLOCK` while R1 is parked, while retaining
+   the two-recoverer terminal outcomes; at minimum add an R2-start/acquire-
+   attempt barrier before judging the negative window.
+
+## MS5.1b outbound-link Linux half (`5745264`)
+
+**APPROVED-for-scope, BLOCKED-for-tests.** The four fixtures correctly cover
+an outbound nested directory link, file link, dependency-tree link and
+relative link into the source HOME. They also pin the important complement:
+the ordinary file beside the skipped `node_modules` link remains byte-for-byte
+unchanged, including its source-HOME text. Reviewer execution in a private PID
+namespace passed **3/3**.
+
+The claimed whole-home absence census is not fail closed: its `except OSError:
+continue` silently excludes every unreadable or otherwise unopenable filename,
+not only a link. An unreadable regular file holding the canary therefore lets
+the proof pass. `lstat` each entry, skip only the explicitly expected symlink
+case, require the other visited files to be regular and make any open/read
+failure a test failure. Registration and the real macOS setup half remain
+separate required follow-ups; no Mac run is released by this Linux-only red.
+
+## Win32 drawer settled Job census (`460e2ac`)
+
+**APPROVED-for-live-evidence.** Replacing the one instant read with a bounded
+final count is sound for this harness's owned Job: there is no external
+assignment path, so once its membership is zero no remaining member can spawn
+an inherited member. Query failure remains an error/failure. The pure model
+causally covers a departing transient, a persistent survivor and a member that
+appears after the old instant read and persists. Reviewer execution of
+`python3 -I tests/windows/win_drawer_test.py -v` passed **69/69 offline rows**
+with exactly eight live skips.
+
+One bounded eight-row Win11 entry rerun is authorized at exact clean commit
+`460e2ac`, using the previously recorded MSVC/owned-Job conditions: `win11-m8`
+as `zbtext`, BatchMode and pinned identity, no competing WebView2 run, unique
+roots below `C:\\Users\\zbtext\\zb`, born-suspended Job ownership, handle/Job
+teardown only, fail-fast bounded cleanup, and clean before/after censuses with
+zero owned processes and run directories. No install, elevation, WSL change,
+Win10 contact or local-display contact is authorized.
