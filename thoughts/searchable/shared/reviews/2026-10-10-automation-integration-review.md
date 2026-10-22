@@ -27491,3 +27491,59 @@ Four gaps let an incomplete security implementation pass:
 Add causal rows for those four boundaries before registering the red or
 accepting its green. This test-only commit does not change the current linear
 push-through, already held earlier by `fff7033`.
+
+## S8a cross-document red follow-up (`6139ba8`)
+
+**APPROVED as a useful supplementary failing-first red; the cumulative
+`8a146c4` range remains BLOCKED-for-tests.** The Instagram new-thread success
+row now checks that every observed post-opener click/fill/type carries
+`guard.document == "doc-1"`, rather than inferring the replacement document
+from a token-read count. The live fixture also directly requires a mismatched
+nonempty document guard to fail `-32015 document_changed` before any event or
+character. Those are sound additions, and the commit changes only the two
+unregistered test files. An exact archive passed `zig fmt --check` and Python
+bytecode compilation; `git diff --check` is clean.
+
+None of the four causal gaps in the preceding review is closed:
+
+1. the fake still has no `inputAck().leaving` observation and no
+   opener-that-did-not-leave followed by unrelated navigation row;
+2. `actionDocuments` still recognizes only click/fill/type, and the router
+   grammar still exercises only `dom.click`, not selector-bearing press and
+   selectOption across the complete guarded mutation set;
+3. no valid replacement thread path carries a wrong-recipient header; and
+4. the live fixture still resets `window.__ig` on navigation and lacks a
+   durable exactly-once input/send counter spanning the discarded document.
+
+The direct guard row proves the low-level document check but does not prove
+the flow runner arms the navigation allowance only after a positive leaving
+acknowledgement, preserves stage-2 recipient binding, or dispatches exactly
+once across the document replacement.
+
+## Windows decision reconciliation follow-up (`f810a17`)
+
+**BLOCKED (plan consistency); `fff7033` is not yet cumulatively closed.** The
+commit correctly marks OD-W1 and OD-W6 decided in the table and sharpening,
+removes the obsolete WebView2-drawer conditional from WS5, fixes the final
+dependency paragraph, and bumps the visible revision to 2.13. Three explicit
+items from `b3d255b` remain:
+
+1. `2026-10-19-windows-launch-tdd-plan.md:222` still presents Azure Artifact
+   Signing as OD-W3's recommendation instead of the decided **no signing for
+   launch / deferred** outcome. The introductory sentence cannot override a
+   contradictory row in the decision table.
+2. `:2063` still says “OD-W1 may change this” in WS13.4 even though OD-W1 is
+   decided as the per-user MSI. Replace it with the chosen MSI contract (and
+   later revise the old sandbox-removal details under the separate WSL2 plan
+   review).
+3. Frontmatter `:22-24` still says `last_updated: 2026-10-20` and retains the
+   rev-2 note that no decision was chosen, despite the binding 2026-10-21
+   decisions. The revision number alone does not satisfy the requested
+   revision/date reconciliation.
+
+This is docs-only and `git diff --check` is clean. The newest contiguous
+approved push-through remains **`bac895b`**. The earliest linear blocked
+commit remains `3c3e354`: its causal closure is `7a30c5c`, but that closing
+commit cannot enter a contiguous prefix without also including the still-open
+`fff7033` decision reconciliation and the independently blocked `8a146c4`
+test range.
