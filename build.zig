@@ -2861,6 +2861,27 @@ pub fn build(b: *std.Build) void {
         "cd tests/e2e && out=$(env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 unshare --map-current-user --pid --fork --kill-child --mount-proc sh -c 'setsid -w python3 -X dev -m unittest -v ms6_hard_gate_fd3_cli_frames_test; exit $?' 2>&1); rc=$?; printf '%s\\n' \"$out\"; [ $rc -eq 0 ] || exit $rc; if printf '%s\\n' \"$out\" | grep -q ResourceWarning; then echo 'ms6_hard_gate_fd3_cli_frames_test: ResourceWarning' >&2; exit 1; fi",
     });
     mac_census_step.dependOn(&ms6_hard_gate_fd3_cli_frames_unit.step);
+    // MS5.1b (5745264, 7369db8): every outbound link shape is skipped; no target byte in the whole home. Pinned agent-host python, our uid, PID namespace.
+    const ms5_1b_skipped_link_bytes_unit = b.addSystemCommand(&.{
+        "sh",
+        "-c",
+        "py=$(tools/agent_host_env.sh --check) || exit 1; cd agent/host/tests && out=$(env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 ZB_AGENT_HOST_PYTHON=\"$py\" unshare --map-current-user --pid --fork --kill-child --mount-proc sh -c '\"$0\" -X dev -m unittest -v test_ms5_1b_skipped_link_bytes; exit $?' \"$py\" 2>&1); rc=$?; printf '%s\\n' \"$out\"; [ $rc -eq 0 ] || exit $rc; if printf '%s\\n' \"$out\" | grep -q ResourceWarning; then echo 'test_ms5_1b_skipped_link_bytes: ResourceWarning' >&2; exit 1; fi",
+    });
+    mac_census_step.dependOn(&ms5_1b_skipped_link_bytes_unit.step);
+    // MS5.1b's hard-gate case against a fake staged prefix (7b9d499, a501481; RoseCat 7933). Pinned agent-host python, our uid, PID namespace.
+    const ms5_1b_hard_gate_case_unit = b.addSystemCommand(&.{
+        "sh",
+        "-c",
+        "py=$(tools/agent_host_env.sh --check) || exit 1; cd tests/e2e && out=$(env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 ZB_AGENT_HOST_PYTHON=\"$py\" unshare --map-current-user --pid --fork --kill-child --mount-proc sh -c '\"$0\" -X dev -m unittest -v ms5_1b_hard_gate_case_test; exit $?' \"$py\" 2>&1); rc=$?; printf '%s\\n' \"$out\"; [ $rc -eq 0 ] || exit $rc; if printf '%s\\n' \"$out\" | grep -q ResourceWarning; then echo 'ms5_1b_hard_gate_case_test: ResourceWarning' >&2; exit 1; fi",
+    });
+    mac_census_step.dependOn(&ms5_1b_hard_gate_case_unit.step);
+    // MS5.1's S3a-corrections hard-gate case against a fake staged prefix (e019b90, f120854; RoseCat 7934). Pinned agent-host python, our uid, PID namespace.
+    const ms5_1_hard_gate_case_unit = b.addSystemCommand(&.{
+        "sh",
+        "-c",
+        "py=$(tools/agent_host_env.sh --check) || exit 1; cd tests/e2e && out=$(env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 ZB_AGENT_HOST_PYTHON=\"$py\" unshare --map-current-user --pid --fork --kill-child --mount-proc sh -c '\"$0\" -X dev -m unittest -v ms5_1_hard_gate_case_test; exit $?' \"$py\" 2>&1); rc=$?; printf '%s\\n' \"$out\"; [ $rc -eq 0 ] || exit $rc; if printf '%s\\n' \"$out\" | grep -q ResourceWarning; then echo 'ms5_1_hard_gate_case_test: ResourceWarning' >&2; exit 1; fi",
+    });
+    mac_census_step.dependOn(&ms5_1_hard_gate_case_unit.step);
     // The R1 case names which owned-group stop proof failed, as a fixed code only (e567a51 Macs). Fakes only.
     const ms6_hard_gate_r1_reason_unit = b.addSystemCommand(&.{
         "sh",
@@ -3364,6 +3385,9 @@ pub fn build(b: *std.Build) void {
     if (target.result.os.tag == .linux) test_step.dependOn(&ms6_hard_gate_fd3_cli_realpath_unit.step);
     if (target.result.os.tag == .linux) test_step.dependOn(&ms6_hard_gate_fd3_cli_cleanup_unit.step);
     if (target.result.os.tag == .linux) test_step.dependOn(&ms6_hard_gate_fd3_cli_frames_unit.step);
+    if (target.result.os.tag == .linux) test_step.dependOn(&ms5_1b_skipped_link_bytes_unit.step);
+    if (target.result.os.tag == .linux) test_step.dependOn(&ms5_1b_hard_gate_case_unit.step);
+    if (target.result.os.tag == .linux) test_step.dependOn(&ms5_1_hard_gate_case_unit.step);
     if (target.result.os.tag == .linux) test_step.dependOn(&ms6_hard_gate_r1_reason_unit.step);
     if (target.result.os.tag == .linux) test_step.dependOn(&ms6_hard_gate_r1_reason_modes_unit.step);
     if (target.result.os.tag == .linux) test_step.dependOn(&ms6_hard_gate_entry_unit.step);
