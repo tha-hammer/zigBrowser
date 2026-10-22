@@ -15,12 +15,18 @@ zb_agent_host written into a temp prefix:
 - each row's home is exactly setup.stage's layout (.claude, workspace, scratchpad/tmp, runtime/bin with the
   wrapper, state) and nothing more;
 - the case is self-contained: it reads no other case file;
+- the fd-3 endpoint is an AF_UNIX SOCK_STREAM socket (a socketpair end), never a pipe or a file (RoseCat 7537 #1);
+- the token has exactly one route (RoseCat 7537 #3): neither token appears in the run's argv, in its environment, or
+  in any file under the case's scratch at spawn time, and the outer environment is exactly the fixed allowlist
+  (PATH, PYTHONPATH = the staged prefix, PYTHONDONTWRITEBYTECODE); the census still proves the real CLI's own env;
 - the bearer follows fd 3: a host whose CLI sends a cached credential, whatever fd 3 holds, fails the decoy and
   no-channel rows; a CLI that never calls fails the positive row;
 - a CLI still running after a row fails that row's release (never signalled);
 - NO check label carries either token, even when the host echoes both into its output and fails.
 No signal is sent: h.spawn_group is a fake, and os.kill / os.killpg are patched to raise. The only processes started
-are the real /bin/sh runs of the fd-3 placement (FdPlacement), which exit by themselves.
+are FdPlacement's: a fresh python that first closes every fd above 2 (so fds 3 and 9 are free by construction, never
+by the runner's layout; RoseCat 7537 #2), places a socketpair end itself and runs the real /bin/sh placement; all exit
+by themselves.
 Run like the gate: cd tests/e2e && unshare --user --map-root-user --pid --fork --mount-proc \\
   sh -c 'setsid python3 -X dev -m unittest -v ms6_hard_gate_fd3_cli_case_test'
 Unregistered until the green.
@@ -31,7 +37,9 @@ import os
 import shutil
 import sys
 import tempfile
+import json
 import socket
+import stat
 import subprocess
 import textwrap
 import unittest
@@ -181,8 +189,16 @@ class FakeStagedHost(unittest.TestCase):
 
     def fake_run(self, argv, env, pass_fds):
         """The staged chain as the mode says: an honest CLI sends Bearer <what fd 3 held>."""
-        tok = None
+        tok, endpoint = None, None
         if pass_fds:
+            st = os.fstat(pass_fds[0])
+            endpoint = ("file", stat.S_IFMT(st.st_mode))
+            if stat.S_ISSOCK(st.st_mode):
+                dup = socket.socket(fileno=os.dup(pass_fds[0]))
+                try:
+                    endpoint = (dup.family, dup.type)
+                finally:
+                    dup.close()
             chunks = []
             while True:
                 b = os.read(pass_fds[0], 4096)
@@ -190,7 +206,8 @@ class FakeStagedHost(unittest.TestCase):
                     break
                 chunks.append(b)
             tok = b"".join(chunks).decode()
-        self.runs.append({"argv": argv, "env": env, "pass_fds": pass_fds, "token": tok})
+        self.runs.append({"argv": argv, "env": env, "pass_fds": pass_fds, "token": tok, "endpoint": endpoint,
+                          "routes": self.token_routes(argv, env)})
         server = self.staged("route_probe").SERVERS[-1]
         sent = None
         if self.mode == "honest" and tok is not None:
@@ -204,6 +221,24 @@ class FakeStagedHost(unittest.TestCase):
         if server.bearer is None:
             return 1, b"", b"Traceback ...\nOSError: [Errno 9] Bad file descriptor\n"
         return 0, b'{"type": "result", "session": "contract", "subtype": "success", "is_error": false}\n', b""
+
+    def token_routes(self, argv, env):
+        """Where else either token sits at spawn time: argv, the environment, any file under the case's scratch."""
+        found = []
+        for tok in (CANARY, DECOY):
+            if any(tok in a for a in argv):
+                found.append(("argv", tok[-4:]))
+            if any(tok in k or tok in v for k, v in (env or {}).items()):
+                found.append(("env", tok[-4:]))
+            for top, _dirs, files in os.walk(self.scratch):
+                for name in files:
+                    path = os.path.join(top, name)
+                    if os.path.islink(path) or not os.path.isfile(path):
+                        continue
+                    with open(path, "rb") as f:
+                        if tok.encode() in f.read():
+                            found.append(("file", os.path.relpath(path, self.scratch)))
+        return found
 
     def run_case(self):
         h = self.harness()
@@ -244,7 +279,10 @@ class FakeStagedHost(unittest.TestCase):
                     sys.executable, "-m", "zb_agent_host", "contract-config", "--home", home,
                     "--base-url", server.url, "--fifo-dir", f"{home}/scratchpad/token-fifo",
                     "--prompt", self.case.PROMPT])
-                self.assertEqual(run["env"].get("PYTHONPATH"), self.prefix)
+                self.assertEqual(run["env"], {"PATH": "/usr/bin:/bin", "PYTHONPATH": self.prefix,
+                                              "PYTHONDONTWRITEBYTECODE": "1"})
+                self.assertEqual(run["endpoint"], (socket.AF_UNIX, socket.SOCK_STREAM) if channel else None)
+                self.assertEqual(run["routes"], [], "the token has a route besides fd 3")
                 self.assertTrue(home.startswith(self.scratch + os.sep), home)
                 self.assertIn((f"{home}/runtime/bin/zb-claude", self.cli), wrappers)
         self.assertEqual([r["token"] for r in self.runs], [CANARY, DECOY, None])
@@ -322,33 +360,38 @@ class FakeStagedHost(unittest.TestCase):
                         self.assertEqual([w for w in windows if w in label], [], label[:300])
 
 
+PLACEMENT_ORACLE = r"""
+import json, os, socket, subprocess, sys
+place, at = sys.argv[1], int(sys.argv[2])
+os.closerange(3, 1024)  # a deterministic fd table: only 0-2 are open, whatever the runner had
+a, b = socket.socketpair()
+a.sendall(b"tok-xyz")
+a.close()
+if b.fileno() == at:
+    fd = b.detach()
+else:
+    fd = os.dup2(b.fileno(), at)
+    b.close()
+probe = 'for n in 3 9; do if true <&$n 2>/dev/null; then echo "$n open"; else echo "$n closed"; fi; done; cat <&3'
+p = subprocess.run(["/bin/sh", "-c", place, "sh", str(fd), "/bin/sh", "-c", probe], pass_fds=(fd,),
+                   capture_output=True, text=True, timeout=30)
+os.close(fd)
+print(json.dumps([fd, p.returncode, p.stdout]))
+"""
+
+
 class FdPlacement(unittest.TestCase):
-    """PLACE_FD3 under the real /bin/sh: the token end lands on fd 3 and its original number is closed; an end that
-    already is fd 3 stays open (an unguarded `exec 3<&3 3<&-` would close it)."""
+    """PLACE_FD3 under the real /bin/sh, run by a fresh python that controls its own fd table (RoseCat 7537 #2: no
+    skip on ambient fds): the token end lands on fd 3 and its original number is closed; an end that already is fd 3
+    stays open (an unguarded `exec 3<&3 3<&-` would close it)."""
 
     def place(self, at):
-        case = load_case()
-        try:
-            os.fstat(at)
-        except OSError:
-            pass
-        else:
-            self.skipTest(f"fd {at} is in use in this process; it is never taken over")
-        a, b = socket.socketpair()
-        a.sendall(b"tok-xyz")
-        a.close()
-        if b.fileno() == at:
-            fd = b.detach()
-        else:
-            fd = os.dup2(b.fileno(), at)
-            b.close()
-        try:
-            probe = 'for n in 3 9; do if true <&$n 2>/dev/null; then echo "$n open"; else echo "$n closed"; fi; done; cat <&3'
-            p = subprocess.run(["/bin/sh", "-c", case.PLACE_FD3, "sh", str(fd), "/bin/sh", "-c", probe],
-                               pass_fds=(fd,), capture_output=True, text=True, timeout=30)
-        finally:
-            os.close(fd)
-        return p.returncode, p.stdout
+        p = subprocess.run([sys.executable, "-I", "-c", PLACEMENT_ORACLE, load_case().PLACE_FD3, str(at)],
+                           capture_output=True, text=True, timeout=60)
+        self.assertEqual(p.returncode, 0, p.stderr)
+        fd, rc, out = json.loads(p.stdout)
+        self.assertEqual(fd, at, "the oracle placed the end on the requested fd")
+        return rc, out
 
     def test_another_fd_is_moved_to_3_and_closed(self):
         self.assertEqual(self.place(9), (0, "3 open\n9 closed\ntok-xyz"))
