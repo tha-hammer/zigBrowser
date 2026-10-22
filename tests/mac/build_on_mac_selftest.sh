@@ -3,7 +3,11 @@
 # bd zigBrowser-4pa.59 + zigBrowser-4pa.77; owner decision R30.3 #2). The script must:
 #   (1) send `git archive <sha>` (committed bytes only: no untracked file, no dirty working copy);
 #   (2) extract into a fresh per-run remote directory zb-gate-<sha>-<nonce>, from a fresh local tar (never the old
-#       fixed /tmp/zb_worktree_mac.tar), both different on every run;
+#       fixed /tmp/zb_worktree_mac.tar), both different on every run. Structurally (SilverRidge de1751c): the remote
+#       commands of the extraction, the build and the cleanup EACH name the same exact "$HOME/zb-gate-<sha>-<nonce>":
+#         mkdir "$HOME/<dir>" && tar -xf - -C "$HOME/<dir>"   (the call that is handed the tar on stdin)
+#         cd "$HOME/<dir>" && ...zig build ...
+#         cd / && find "$HOME/<dir>" -delete                     (the last call);
 #   (3) print a PASS line holding the 40-hex sha;
 #   (4) exit non-zero when `git archive` fails (errors are no longer hidden);
 #   (5) give every ssh/scp StrictHostKeyChecking=yes, BatchMode=yes, IdentitiesOnly=yes and
@@ -12,8 +16,8 @@
 #   (7) leave no local tar behind; (8) run alone, remove its remote directory at the end.
 # No Mac, no network, no signal: the REAL script runs in a scratch git repo, with a stub `ssh` and `scp` first on PATH
 # that record their argv, stdin and the local files they are handed, and succeed. The whole test runs in a private
-# user+mount namespace whose /tmp is this test's own temporary tree, so nothing (not even the old fixed tar path)
-# touches the host's /tmp.
+# user+mount+network namespace whose /tmp is this test's own temporary tree, so nothing (not even the old fixed tar
+# path) touches the host's /tmp, and no network is reachable.
 # Run: bash tests/mac/build_on_mac_selftest.sh [script path]   (step: zig build test-mac-build-script)
 set -uo pipefail
 
@@ -25,7 +29,7 @@ if [ "${1:-}" != --inner ]; then
   trap 'case "$T" in "$(realpath "${TMPDIR:-/tmp}")"/zb-bom-selftest-??????) rm -rf "${T:?}" ;; esac' EXIT
   cp "$SELF" "$T/self.sh" && cp "$SCRIPT" "$T/build-on-mac.sh" || exit 1
   [ -f "$(dirname "$SCRIPT")/known_hosts" ] && cp "$(dirname "$SCRIPT")/known_hosts" "$T/known_hosts"
-  unshare --user --map-root-user --mount bash -c 'mount --bind "$1" /tmp && exec bash /tmp/self.sh --inner' _ "$T"
+  unshare --user --map-root-user --mount --net bash -c 'mount --bind "$1" /tmp && exec bash /tmp/self.sh --inner' _ "$T"
   exit $?
 fi
 
@@ -82,9 +86,28 @@ run() { # run <label>: runs the real script; sets rc, out, ncalls
   printf -- '--- %s: rc=%s calls=%s\n%s\n' "$1" "$rc" "$ncalls" "$out" | sed 's/^/     /'
 }
 argv() { tr '\0' ' ' < "/tmp/ctl/call.$1"; }   # one call's argv, space-joined
-remote_dirs() { # every zb-gate-<sha>-<nonce> named in any recorded argv, one per line
-  local i
-  for ((i = 0; i < ncalls; i++)); do argv "$i"; echo; done | grep -oE 'zb-gate-[0-9a-f]{40}-[0-9a-f]+' | sort -u
+rcmd() { # the remote command of call $1: its last argv element
+  local -a a
+  mapfile -d '' a < "/tmp/ctl/call.$1"
+  printf '%s' "${a[${#a[@]} - 1]}"
+}
+GATE='zb-gate-[0-9a-f]{40}-[0-9a-f]+'
+EXTRACT_RE="^mkdir \"\\\$HOME/($GATE)\" && tar -xf - -C \"\\\$HOME/($GATE)\"\$"
+run_dir() { # sets RD to the one exact dir an extraction call creates AND fills, XCALL to that call; else RD=""
+  local i c n=0
+  RD= XCALL=
+  for ((i = 0; i < ncalls; i++)); do
+    c=$(rcmd "$i")
+    if [[ "$c" =~ $EXTRACT_RE ]] && [ "${BASH_REMATCH[1]}" = "${BASH_REMATCH[2]}" ]; then
+      RD=${BASH_REMATCH[1]} XCALL=$i n=$((n + 1))
+    fi
+  done
+  [ "$n" -eq 1 ] || RD=
+}
+build_calls() { # how many remote commands are exactly: cd "$HOME/$RD" && <no ; | &>zig build ...
+  local i c n=0 re="^cd \"\\\$HOME/$RD\" && [^;|&]*zig build( |\$)"
+  for ((i = 0; i < ncalls; i++)); do c=$(rcmd "$i"); [[ "$c" =~ $re ]] && n=$((n + 1)); done
+  echo "$n"
 }
 
 # ---- run 1 -------------------------------------------------------------------------------------------------------
@@ -109,12 +132,19 @@ else
   bad "(1) ${#tars[@]} tars were handed over, want exactly 1"
 fi
 
-# (2) a fresh per-run remote dir for this sha, and a fresh local tar
-dirs1=$(remote_dirs)
-if [ "$(grep -c . <<<"$dirs1")" -eq 1 ]; then ok "(2) one remote run dir: $dirs1"
-else bad "(2) remote run dirs named: \"$(tr '\n' ' ' <<<"$dirs1")\", want exactly one zb-gate-<sha>-<nonce>"; fi
-case "$dirs1" in "zb-gate-$SHA-"*) ok "(2) the run dir names the staged sha" ;;
+# (2) a fresh per-run remote dir for this sha, bound structurally to extraction, build and cleanup
+run_dir
+dirs1=$RD
+if [ -n "$RD" ]; then ok "(2) one extraction call: mkdir + tar -C the same \$HOME/$RD"
+else bad "(2) no single call is exactly: mkdir \"\$HOME/<dir>\" && tar -xf - -C \"\$HOME/<dir>\""; fi
+case "$RD" in "zb-gate-$SHA-"*) ok "(2) the run dir names the staged sha" ;;
   *) bad "(2) the run dir does not name the staged sha $SHA" ;; esac
+if [ -n "$RD" ] && [ "${#tars[@]}" -eq 1 ] && [ "${tars[0]}" = "/tmp/ctl/stdin.$XCALL" ]; then
+  ok "(2) the tar was handed to that extraction call"
+else bad "(2) the tar was not handed to the extraction call"; fi
+nb=$(build_calls)
+if [ -n "$RD" ] && [ "$nb" -eq 1 ]; then ok "(2) one build call: cd \"\$HOME/$RD\" && ... zig build"
+else bad "(2) $nb build calls are exactly: cd \"\$HOME/$RD\" && ... zig build, want 1"; fi
 local1=$(cat /tmp/ctl/local.* 2>/dev/null)
 if grep -qx /tmp/zb_worktree_mac.tar <<<"$local1"; then bad "(2) the local tar is the fixed /tmp/zb_worktree_mac.tar"
 else ok "(2) the local tar is not the fixed path"; fi
@@ -150,18 +180,19 @@ fi
 left=$(find /tmp/tmp -mindepth 1 2>/dev/null; ls -d /tmp/zb_worktree_mac.tar 2>/dev/null)   # nothing at all
 if [ -z "$left" ]; then ok "(7) no local tar left behind"; else bad "(7) left behind: $left"; fi
 
-# (8) run alone, the script removes its remote run dir at the end
-if [ -n "$dirs1" ] && [ "$ncalls" -gt 0 ]; then
-  last=$(argv $((ncalls - 1)))
-  case "$last" in *"$dirs1"*-delete*|*"rm -rf"*"$dirs1"*) ok "(8) the last call removes $dirs1" ;;
-    *) bad "(8) the last call does not remove the run dir: $last" ;; esac
+# (8) run alone, the script removes its remote run dir at the end, by its exact path
+if [ -n "$RD" ] && [ "$ncalls" -gt 0 ]; then
+  last=$(rcmd $((ncalls - 1)))
+  if [ "$last" = "cd / && find \"\$HOME/$RD\" -delete" ]; then ok "(8) the last call is: cd / && find \"\$HOME/$RD\" -delete"
+  else bad "(8) the last call is not: cd / && find \"\$HOME/$RD\" -delete (it is: $last)"; fi
 else
   bad "(8) no run dir to remove"
 fi
 
 # ---- run 2: everything per-run must differ -----------------------------------------------------------------------
 run "run 2"
-dirs2=$(remote_dirs)
+run_dir
+dirs2=$RD
 if [ -n "$dirs1" ] && [ -n "$dirs2" ] && [ "$dirs1" != "$dirs2" ]; then ok "(2) run 2 used another run dir"
 else bad "(2) run 2 run dir \"$dirs2\" is not a fresh one (run 1: \"$dirs1\")"; fi
 local2=$(cat /tmp/ctl/local.* 2>/dev/null)
