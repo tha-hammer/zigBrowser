@@ -163,6 +163,11 @@ def icon_px_at(scale, base=ICON_SIZE):
     return int(round(base * scale))
 
 
+def icon_px_for_dpi(dpi, base=ICON_SIZE):
+    """The icon's edge length at a raw per-monitor DPI (96 == 100%): 96->56, 144->84."""
+    return int(round(base * dpi / 96))
+
+
 def inside_icon(dx, dy, radius):
     """Exact circular hit-test: the edge (distance == radius) is inside."""
     return (dx * dx + dy * dy) <= (radius * radius)
@@ -425,6 +430,15 @@ class WinDrawerBehaviorsOracle(unittest.TestCase):
         with self.assertRaises(AssertionError):
             check_dpi(84, True, False)     # a pixel beyond the edge counted inside must fail
 
+    def test_check_dpi_change_requires_resize(self):
+        check_dpi_change(56, 84, 96, 144)   # 96->144 DPI re-sizes the icon 56->84
+        with self.assertRaises(AssertionError):  # ignore mutant: the icon stays 56 after the DPI change
+            check_dpi_change(56, 56, 96, 144)
+        with self.assertRaises(AssertionError):  # resized, but to the wrong size
+            check_dpi_change(56, 80, 96, 144)
+        with self.assertRaises(AssertionError):  # wrong before size (not the pre-change DPI)
+            check_dpi_change(70, 84, 96, 144)
+
     def test_transcript_exact_sequence_passes(self):
         good = ("NAV\tfile:///x\tdrawer\n"
                 "DRAWER\t1\ttree\thost,page,icon,panel\nDRAWER\t1\ticon\t928,649,56,56\n"
@@ -675,6 +689,17 @@ def check_dpi(icon_px, edge_inside, beyond_outside):
     assert beyond_outside, "a pixel just beyond the edge must hit-test outside"
 
 
+def check_dpi_change(before_px, after_px, dpi_before, dpi_after):
+    """WM_DPICHANGED re-sizes the icon to the NEW per-monitor DPI (RoseCat 7a54253 #1): the measured icon width
+    before the change matches dpi_before, after matches dpi_after, and the two differ — so a backend that
+    ignored WM_DPICHANGED (the causal mutant) would leave before == after and fail."""
+    assert before_px == icon_px_for_dpi(dpi_before), \
+        f"the icon must be {icon_px_for_dpi(dpi_before)} px at {dpi_before} DPI before (got {before_px})"
+    assert after_px == icon_px_for_dpi(dpi_after), \
+        f"WM_DPICHANGED must re-size the icon to {icon_px_for_dpi(dpi_after)} px at {dpi_after} DPI (got {after_px})"
+    assert before_px != after_px, "a real DPI change must resize the icon (ignoring WM_DPICHANGED would not)"
+
+
 # ------------------------------------------------------------------
 # LIVE e2e reds (skip without a host). Real observations through the APPROVED suspended+owned-Job harness
 # (WinDrawerLive): each drives the exe with the behavior's e2e seam and applies a PURE check (above) to RAW
@@ -846,6 +871,25 @@ class WinDrawerBehaviorsLive(_wd.WinDrawerLive):
             self.assertIsNotNone(icon_px, "the harness must measure the scaled icon size")
             check_dpi(int(icon_px), bool(r.get("edge_inside")), bool(r.get("beyond_outside")))
         self._run_drawer(extra_env=self._env(ZIGBROWSER_AGENT_DRAWER_DPI="150"), body=body)
+
+    def test_ws5_7_dpichanged_resizes_the_icon(self):
+        # WS5.7 (RoseCat 7a54253 #1): the PRODUCTION WM_DPICHANGED path. The drawer is closed (icon visible +
+        # sized) and NO DPI seam is set (the real-DPI authority is active). The harness drives two real
+        # WM_DPICHANGED messages — 96 then 144 DPI — off the real HWND and measures the icon width after each.
+        def body(r):
+            check_dpi_change(int(r["dpi_before_px"]), int(r["dpi_after_px"]), 96, 144)
+        self._run_drawer(extra_env=self._env(ZIGBROWSER_AGENT_DRAWER_OPEN="0", ZB_SETTLE_KINDS="icon",
+                                             ZB_DPICHANGE="96,144"), body=body)
+
+    def test_ws5_7_dpichange_ignored_does_not_resize(self):
+        # The causal mutant: with the ignore seam, the WM_DPICHANGED handler is a no-op, so both drives leave the
+        # icon unchanged (before == after) — proving the handler is what re-sizes the icon.
+        def body(r):
+            self.assertEqual(int(r["dpi_before_px"]), int(r["dpi_after_px"]),
+                             "ignoring WM_DPICHANGED must leave the icon size unchanged across both drives")
+        self._run_drawer(extra_env=self._env(ZIGBROWSER_AGENT_DRAWER_OPEN="0", ZB_SETTLE_KINDS="icon",
+                                             ZB_DPICHANGE="96,144",
+                                             ZIGBROWSER_AGENT_DRAWER_DPICHANGE_IGNORE="1"), body=body)
 
 
 if __name__ == "__main__":

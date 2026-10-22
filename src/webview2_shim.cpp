@@ -89,6 +89,12 @@ struct AppState {
   // DPI for a deterministic test. PRODUCTION never consults this — it uses GetDpiForWindow. Set only under
   // --e2e-protocol; null otherwise.
   const char *dpi_seam = nullptr;
+  // WS5.7 the window's current per-monitor DPI: seeded from GetDpiForWindow on first use, then kept current by
+  // the WM_DPICHANGED handler. 0 until seeded. This is the production sizing authority.
+  int dpi_current = 0;
+  // WS5.7 e2e-only causal mutant (ZIGBROWSER_AGENT_DRAWER_DPICHANGE_IGNORE = "1"): makes the WM_DPICHANGED
+  // handler do nothing, so a test can prove the handler is what re-sizes the icon on a DPI change. e2e-only.
+  bool dpichange_ignore = false;
   // WS5.3 e2e-only fold seam (ZIGBROWSER_AGENT_DRAWER_FOLD, exactly "1"): starts the REAL fold animation at
   // mount so the test can observe it. e2e-only.
   bool fold_seam = false;
@@ -853,8 +859,11 @@ static int effective_icon_px(AppState *app) {
   if (app->dpi_seam != nullptr && app->dpi_seam[0] != '\0') {
     return zb_drawer_icon_size_from_dpi_env(app->dpi_seam);
   }
-  const UINT dpi = (app->hwnd != nullptr) ? GetDpiForWindow(app->hwnd) : 96;
-  return zb_drawer_icon_size_for_dpi(dpi == 0 ? 96 : static_cast<int>(dpi));
+  if (app->dpi_current <= 0) {  // seed from the window's real per-monitor DPI on first use
+    const UINT dpi = (app->hwnd != nullptr) ? GetDpiForWindow(app->hwnd) : 96;
+    app->dpi_current = (dpi == 0) ? 96 : static_cast<int>(dpi);
+  }
+  return zb_drawer_icon_size_for_dpi(app->dpi_current);  // kept current by the WM_DPICHANGED handler
 }
 
 // WS5: lay out the page (WebView2) and the native drawer within the client area. When the drawer is open the
@@ -1520,6 +1529,20 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam,
       return 0;
     }
     break;
+  case WM_DPICHANGED:
+    // WS5.7: the window moved to a monitor with a different DPI. PRODUCTION re-size path (RoseCat 7a54253 #1):
+    // adopt the new per-monitor DPI from the message and re-size + re-place the icon at it. LOWORD(wparam) is
+    // the new DPI (X == Y for a window). The e2e ignore seam makes this a no-op so a test can prove the handler
+    // is what re-sizes the icon. (A full app would also SetWindowPos to the suggested rect in lparam; the drawer
+    // only owns its icon's size here.)
+    if (app != nullptr && app->drawer_mounted && !app->dpichange_ignore) {
+      const int new_dpi = static_cast<int>(LOWORD(wparam));
+      if (new_dpi > 0) {
+        app->dpi_current = new_dpi;
+        resize_controller(app);  // re-sizes the icon via effective_icon_px at the new DPI
+      }
+    }
+    return 0;
   case WM_DESTROY:
     if (app != nullptr) {
       if (app->drawer_mounted) {
@@ -1940,6 +1963,8 @@ static int run_core(const char *uri, int print_title, int e2e_protocol, bool scr
     app.fold_seam = fold_env != nullptr && strcmp(fold_env, "1") == 0;  // accept EXACTLY "1" (RoseCat 05f2549)
     app.fold_fail = getenv("ZIGBROWSER_AGENT_DRAWER_FOLD_FAIL");     // WS5.3 e2e-only fold fail-closed causal seam
     app.dpi_seam = getenv("ZIGBROWSER_AGENT_DRAWER_DPI");            // WS5.7 e2e-only DPI override (percent)
+    const char *dpi_ignore = getenv("ZIGBROWSER_AGENT_DRAWER_DPICHANGE_IGNORE");  // WS5.7 e2e-only causal mutant
+    app.dpichange_ignore = dpi_ignore != nullptr && strcmp(dpi_ignore, "1") == 0;
   }
   app.screenshot = screenshot;
   if (screenshot && out_path != nullptr) {

@@ -289,6 +289,7 @@ public static class Z {
   [DllImport("user32", SetLastError=true)] static extern bool GetWindowRect(IntPtr h, out RECT r);
   [DllImport("user32", SetLastError=true)] static extern bool ScreenToClient(IntPtr h, ref POINT p);
   [DllImport("user32")] static extern bool IsWindowVisible(IntPtr h);
+  [DllImport("user32", SetLastError=true)] static extern IntPtr SendMessageW(IntPtr h, uint msg, IntPtr w, IntPtr l);
 
   const uint CREATE_SUSPENDED = 0x4, GENERIC_WRITE = 0x40000000, FILE_SHARE_READ = 1, FILE_SHARE_WRITE = 2, CREATE_ALWAYS = 2;
   const uint KILL_ON_CLOSE = 0x2000, GENERIC_READ = 0x80000000, OPEN_EXISTING = 3, STARTF_USESTDHANDLES = 0x100;
@@ -510,10 +511,17 @@ public static class Z {
     }
     return best >= ch - 4;
   }
+  // WS5.7: drive a real WM_DPICHANGED (0x02E0) to the host with a new per-monitor DPI (wparam = MAKEWPARAM(dpi,
+  // dpi)); the drawer's handler adopts it and re-sizes the icon. lparam (the suggested RECT*) is unused by the
+  // drawer, so IntPtr.Zero is fine. This drives the PRODUCTION handler, not a helper.
+  public static void SendDpiChanged(IntPtr host, int dpi) {
+    int w = (dpi & 0xFFFF) | ((dpi & 0xFFFF) << 16);
+    SendMessageW(host, 0x02E0, (IntPtr)w, IntPtr.Zero);
+  }
 }
 '@
 
-$res = @{ stdout=''; stderr=''; client_w=0; client_h=0; pid=0; controls=''; icon_rect=''; icon_visible=-1; job_count_before=0; job_count_after=0; window_found=$false; terminated=$false; timed_out=$false; proc_gone=$false; first_stop_failed=$false; cleanup_exhausted=$false; launch_failed=$false; decoded_fail=$failMode; decoded_force=$forceMode; fold_elapsed_ms=0; fold_mid_w=0; panel_hidden=$false; page_redocked=$false; error='' }
+$res = @{ stdout=''; stderr=''; client_w=0; client_h=0; pid=0; controls=''; icon_rect=''; icon_visible=-1; job_count_before=0; job_count_after=0; window_found=$false; terminated=$false; timed_out=$false; proc_gone=$false; first_stop_failed=$false; cleanup_exhausted=$false; launch_failed=$false; decoded_fail=$failMode; decoded_force=$forceMode; fold_elapsed_ms=0; fold_mid_w=0; panel_hidden=$false; page_redocked=$false; dpi_before_px=0; dpi_after_px=0; error='' }
 # e2e-only seams, set in this process so the child inherits them (honoured only under --e2e-protocol).
 $env:ZIGBROWSER_AGENT_DRAWER_OPEN = '1'
 $env:ZIGBROWSER_AGENT_DRAWER_DEMO = 'messages:2'
@@ -583,6 +591,17 @@ try {
     # re-docked to the full client area, and the icon is visible again (icon_visible, above).
     $res.panel_hidden = (-not [Z]::PanelVisible($h))
     $res.page_redocked = [Z]::PageRedocked($h)
+    # WS5.7 (RoseCat 7a54253 #1): drive two real WM_DPICHANGED messages — "beforeDpi,afterDpi" — and measure the
+    # icon width off the real HWND after each. Driving the before-DPI first makes the baseline deterministic
+    # regardless of the VM monitor's own DPI. The drawer must be closed (icon visible + sized) for this.
+    $dpiChange = $env:ZB_DPICHANGE
+    if ($dpiChange) {
+      $parts = $dpiChange -split ','
+      [Z]::SendDpiChanged($h, [int]$parts[0]); Start-Sleep -Milliseconds 80
+      $rb = [Z]::IconClientRect($h); if ($rb) { $res.dpi_before_px = [int](($rb -split ',')[2]) }
+      [Z]::SendDpiChanged($h, [int]$parts[1]); Start-Sleep -Milliseconds 80
+      $ra = [Z]::IconClientRect($h); if ($ra) { $res.dpi_after_px = [int](($ra -split ',')[2]) }
+    }
   }
 } catch { $res.error = $_.Exception.Message; $res.launch_failed = (-not $launched) }
 finally {
