@@ -263,11 +263,15 @@ class FakeNotifications:
                 self.gio.g_object_unref(conn)
 
     def close(self) -> None:
+        """Stops the server; raises if its thread outlives the stop (RoseCat 7661: an observable
+        teardown, never a silent leftover)."""
         if self._loop is not None:
             self.glib.g_main_loop_quit(self._loop)
         self._thread.join(5)
         if self._conn is not None:
             self.gio.g_dbus_connection_close_sync(self._conn, None, None)
+        if self._thread.is_alive():
+            raise RuntimeError("the fake notification server's thread is still running 5 s after its stop")
 
 
 def _selftest() -> int:

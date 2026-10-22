@@ -2,8 +2,9 @@
 the app over stdout (tool_call) and wait for its answer on stdin (tool_result).
 
 The helper answers on its own before the CLI's MCP_TOOL_TIMEOUT runs out
-(options.TOOL_DEADLINE_S), so a silent browser yields an is_error result rather
-than a CLI-side timeout.
+(options.TOOL_DEADLINE_S; navigate and reload also wait for their card,
+options.CARD_S), so a silent browser yields an is_error result rather than a
+CLI-side timeout.
 
 S7.0 (chat-drawer plan rev 16.20.30): a call names the session's running prompt, which
 `prompt` provides (the app's validator requires it since S5d); with none running nothing
@@ -23,6 +24,7 @@ import uuid
 from claude_agent_sdk import PermissionResultDeny, create_sdk_mcp_server, tool
 
 from .frames import encode
+from .options import CARD_S
 
 SERVER = "zigbrowser"
 RESULT_MAX = 1 << 20  # a tool_result's line, as encode() writes it (section 3)
@@ -52,6 +54,13 @@ READ_TOOLS = (  # S7.5's list (rev 16.20.34): (name, description, input schema)
               "timeout_ms": {"type": "integer", "minimum": 0, "maximum": 10000}}, ["selector"])),
     ("screenshot", "A picture of this window's page.", _schema({})),
 )
+GATED_TOOLS = (  # S8 decision 16: each may wait for the user's card (plan rev 16.20.56)
+    ("navigate", "Opens a URL in this drawer's window. It may wait for the user's approval.",
+     _schema({"url": {"type": "string", "minLength": 1, "description": "The URL to open."}}, ["url"])),
+    ("reload", "Reloads this drawer's window. It may wait for the user's approval.", _schema({})),
+)
+GATED_NAMES = frozenset(name for name, _, _ in GATED_TOOLS)
+TOOLS = READ_TOOLS + GATED_TOOLS
 
 
 def failed(text):
@@ -108,10 +117,11 @@ def checked(frame, size=None):
 
 
 class Bridge:
-    def __init__(self, out, session, deadline_s, prompt):
+    def __init__(self, out, session, deadline_s, prompt, card_s=CARD_S):
         self.out = out
         self.session = session
         self.deadline_s = deadline_s
+        self.card_s = card_s  # a gated call also waits for its card
         self.prompt = prompt  # the running prompt's id, or None
         self._pending = {}  # id -> the waiting call's future
         self._loop = None
@@ -164,15 +174,16 @@ class Bridge:
         self.out.emit("tool_call", session=self.session, prompt_id=prompt_id, id=call_id, tool=tool_name(name),
                       args=args)
         try:
-            answer = await asyncio.wait_for(future, self.deadline_s)
+            answer = await asyncio.wait_for(future, self.deadline_s + (self.card_s if name in GATED_NAMES else 0))
         except asyncio.TimeoutError:
             self._pending.pop(call_id, None)
             return failed("The browser did not answer in time.")
         return failed("the prompt ended") if answer is None else answer
 
     def tools(self):
-        """S7b (rev 16.20.34): S7.5's six read tools; each forwards its name and args."""
-        return [tool(name, description, input_schema)(self._forward(name)) for name, description, input_schema in READ_TOOLS]
+        """S7b (rev 16.20.34): S7.5's six read tools, then decision 16's navigate and reload; each
+        forwards its name and args."""
+        return [tool(name, description, input_schema)(self._forward(name)) for name, description, input_schema in TOOLS]
 
     def _forward(self, name):
         async def handler(args):
@@ -185,7 +196,7 @@ class Bridge:
 
     @staticmethod
     def allowed_tools():
-        return [tool_name(name) for name, _, _ in READ_TOOLS]
+        return [tool_name(name) for name, _, _ in TOOLS]
 
     def echo_server(self):
         """P0's contract tool (the `contract` command only)."""

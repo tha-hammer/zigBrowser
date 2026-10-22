@@ -353,8 +353,8 @@ def case_closure(binary: Path, tmp: Path, check) -> None:
                   "chat has a network namespace of its own")
         check(b.wait(lambda: ("assistant", REPLY) in bubbles(b), 90), f"the fake's reply is shown ({bubbles(b)})", b)
         clis = cli_pids(b.proc.pid)
-        check(any(environ_of(p).get("MCP_TOOL_TIMEOUT") == "130000" for p in clis),
-              f"the session's CLI has MCP_TOOL_TIMEOUT=130000 ({len(clis)} CLI)")
+        check(any(environ_of(p).get("MCP_TOOL_TIMEOUT") == "250000" for p in clis),
+              f"the session's CLI has MCP_TOOL_TIMEOUT=250000 ({len(clis)} CLI)")
         check(any(r["headers"].get("authorization") == f"Bearer {CANARY}" for r in fake.api.messages_requests()),
               "the token reached the fake as a bearer, through relay and netd")
         hello = json.loads((w.agent / "scratchpad" / "helper-hello.json").read_text())

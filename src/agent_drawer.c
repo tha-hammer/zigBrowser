@@ -55,6 +55,15 @@ _Static_assert(sizeof(ZB_TRUNCATED_TEXT) - 1 == 19, "the marker reply_content_ma
  * every later one; netd is never started again in this browser. */
 /* S4.1: no token is stored (or the store did not answer); the Secrets window opens. */
 
+/* agent_tools.zig (S8 decision 16 part 3; GTK thread): the drawer's state and its card's buttons. */
+void zb_agent_tools_drawer_showing(unsigned int win, int shown);
+int zb_agent_tools_approve(guint64 card);
+int zb_agent_tools_deny(guint64 card);
+unsigned int zb_agent_tools_activate(void);
+/* webkit_shim.c (GTK thread). */
+char *zb_window_page_origin(unsigned int id);
+void zb_window_present(unsigned int id);
+
 static gint zb_agent_drawer_enabled = 0;
 static gint zb_drawer_live = 0;
 /* Every attached drawer (GTK thread), for netd's failure, which may come later. */
@@ -1026,6 +1035,7 @@ static void drawer_open(ZbDrawer *d) {
   d->open = 1;
   d->report_open = 1;
   d->stick_bottom = 1;
+  zb_agent_tools_drawer_showing(d->win_id, 1); /* decision 16: interactive, not headless */
   d->scroll_reported[0] = '\0';
   gtk_widget_hide(d->icon);
   gtk_widget_show(d->catcher);
@@ -1112,6 +1122,7 @@ static void drawer_minimize(ZbDrawer *d) {
   if (!d->open || d->tick_id != 0) {
     return;
   }
+  zb_agent_tools_drawer_showing(d->win_id, 0); /* decision 16: from now on, headless */
   d->anim_from = widget_rect(d, d->panel);
   d->anim_rect = d->anim_from;
   d->anim_frames = 0;
@@ -1125,6 +1136,338 @@ static void drawer_minimize(ZbDrawer *d) {
 static void on_minus_clicked(GtkButton *button, gpointer data) {
   (void)button;
   drawer_minimize(data);
+}
+
+/* --- S8 decision 16 part 3: navigate and reload cards (plan rev 16.20.56) ------------------
+ * A card waits only in the main window's drawer. The broker's worker shows it and ends it
+ * (agent_tools.zig); each hops here on an idle. Approve and Deny are the cards' only
+ * native callers. */
+
+typedef struct {
+  guint64 id;
+  guint32 win; /* the main window whose drawer holds it */
+  GtkWidget *buttons, *approve, *deny, *box;
+  int ended;
+} ZbCard;
+
+static GList *zb_cards = NULL; /* GTK thread */
+
+static ZbDrawer *drawer_of(guint32 win) {
+  for (GList *l = zb_drawers; l != NULL; l = l->next) {
+    ZbDrawer *d = l->data;
+    if (d->win_id == win) {
+      return d;
+    }
+  }
+  return NULL;
+}
+
+static ZbCard *card_of(guint64 id) {
+  for (GList *l = zb_cards; l != NULL; l = l->next) {
+    ZbCard *c = l->data;
+    if (c->id == id) {
+      return c;
+    }
+  }
+  return NULL;
+}
+
+static void card_row(ZbDrawer *d, const char *kind, guint64 id, const char *a, const char *b) {
+  char win[16], card[24];
+  g_snprintf(win, sizeof win, "%u", d->win_id);
+  g_snprintf(card, sizeof card, "%" G_GUINT64_FORMAT, id);
+  const char *fields[] = {win, kind, card, a, b};
+  zb_emit_protocol_row(d->e2e, "DRAWER", fields, b != NULL ? 5 : 4);
+}
+
+/* `approvalrect <card> approve|deny <rect>` once per new place, so a test's X click can aim. */
+static gboolean on_card_button_drawn(GtkWidget *widget, cairo_t *cr, gpointer data) {
+  (void)cr;
+  ZbCard *c = data;
+  ZbDrawer *d = drawer_of(c->win);
+  if (d == NULL) {
+    return FALSE;
+  }
+  ZbDrawerRect r = widget_rect(d, widget);
+  ZbDrawerRect *last = g_object_get_data(G_OBJECT(widget), "zb-card-rect");
+  if (last != NULL && memcmp(last, &r, sizeof r) == 0) {
+    return FALSE;
+  }
+  g_object_set_data_full(G_OBJECT(widget), "zb-card-rect", g_memdup2(&r, sizeof r), g_free);
+  char rect[64];
+  root_rect_text(d, &r, rect, sizeof rect);
+  card_row(d, "approvalrect", c->id, widget == c->approve ? "approve" : "deny", rect);
+  return FALSE;
+}
+
+/* The card's buttons give way to its outcome's words. */
+static void card_settle(ZbCard *c, const char *words) {
+  gtk_widget_set_sensitive(c->approve, FALSE);
+  gtk_widget_set_sensitive(c->deny, FALSE);
+  if (words != NULL) {
+    gtk_widget_hide(c->buttons);
+    GtkWidget *label = gtk_label_new(words);
+    gtk_label_set_xalign(GTK_LABEL(label), 0);
+    gtk_container_add(GTK_CONTAINER(c->box), label);
+    gtk_widget_show(label);
+  }
+}
+
+static void on_card_approve(GtkButton *button, gpointer data) {
+  (void)button;
+  ZbCard *c = data;
+  ZbDrawer *d = drawer_of(c->win);
+  if (c->ended || d == NULL || !zb_agent_tools_approve(c->id)) {
+    return;
+  }
+  card_row(d, "approvalstate", c->id, "approved", NULL);
+  card_settle(c, NULL);
+}
+
+static void on_card_deny(GtkButton *button, gpointer data) {
+  (void)button;
+  ZbCard *c = data;
+  if (!c->ended && zb_agent_tools_deny(c->id)) {
+    card_settle(c, NULL); /* its approvalend comes with the broker's ending */
+  }
+}
+
+typedef struct {
+  guint32 main, bound;
+  guint64 id;
+  char *verb, *params, *url;
+  size_t params_len;
+} ZbCardShow;
+
+static gboolean card_show_idle(gpointer data) {
+  ZbCardShow *s = data;
+  ZbDrawer *d = drawer_of(s->main);
+  if (d != NULL) {
+    char *origin = zb_window_page_origin(s->bound);
+    char *digest = g_compute_checksum_for_data(G_CHECKSUM_SHA256, (const guchar *)s->params, s->params_len);
+    char *text = strcmp(s->verb, "navigate") == 0
+                     ? g_strdup_printf("Claude wants to open %s in window %u.", s->url != NULL ? s->url : "", s->bound)
+                     : g_strdup_printf("Claude wants to reload window %u.", s->bound);
+    char win[16], card[24];
+    g_snprintf(win, sizeof win, "%u", d->win_id);
+    g_snprintf(card, sizeof card, "%" G_GUINT64_FORMAT, s->id);
+    const char *fields[] = {win, "approval", card, s->verb, origin != NULL ? origin : "-", "-", digest};
+    zb_emit_protocol_row(d->e2e, "DRAWER", fields, 7);
+
+    ZbCard *c = g_new0(ZbCard, 1);
+    c->id = s->id;
+    c->win = d->win_id;
+    c->box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4);
+    gtk_container_add(GTK_CONTAINER(c->box), bubble_widget(d, "approval", text, strlen(text)));
+    c->buttons = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
+    c->approve = gtk_button_new_with_label("Approve");
+    c->deny = gtk_button_new_with_label("Deny");
+    gtk_container_add(GTK_CONTAINER(c->buttons), c->approve);
+    gtk_container_add(GTK_CONTAINER(c->buttons), c->deny);
+    gtk_container_add(GTK_CONTAINER(c->box), c->buttons);
+    g_signal_connect(c->approve, "clicked", G_CALLBACK(on_card_approve), c);
+    g_signal_connect(c->deny, "clicked", G_CALLBACK(on_card_deny), c);
+    g_signal_connect_after(c->approve, "draw", G_CALLBACK(on_card_button_drawn), c);
+    g_signal_connect_after(c->deny, "draw", G_CALLBACK(on_card_button_drawn), c);
+    gtk_container_add(GTK_CONTAINER(d->list), c->box);
+    gtk_widget_show_all(gtk_widget_get_parent(c->box)); /* its GtkListBoxRow */
+    zb_cards = g_list_prepend(zb_cards, c);
+    bubble_row(d, "approval", text);
+    g_free(text);
+    g_free(digest);
+    g_free(origin);
+  }
+  g_free(s->verb);
+  g_free(s->params);
+  g_free(s->url);
+  g_free(s);
+  return G_SOURCE_REMOVE;
+}
+
+/* Any thread (a broker's worker): card `id` for window `bound`'s call, in window `main`'s drawer. */
+void zb_drawer_card_show(unsigned int main, guint64 id, const char *verb, unsigned int bound, const char *params,
+                         size_t params_len, const char *url) {
+  ZbCardShow *s = g_new0(ZbCardShow, 1);
+  s->main = main;
+  s->bound = bound;
+  s->id = id;
+  s->verb = g_strdup(verb);
+  s->params = g_strndup(params, params_len);
+  s->params_len = params_len;
+  s->url = g_strdup(url);
+  g_idle_add(card_show_idle, s);
+}
+
+typedef struct {
+  guint64 id;
+  char *ending;
+} ZbCardEnd;
+
+static const char *ending_words(const char *ending) {
+  return strcmp(ending, "done") == 0      ? "Done."
+         : strcmp(ending, "failed") == 0  ? "Approved, but the browser could not do it."
+         : strcmp(ending, "denied") == 0  ? "Denied. Nothing was opened."
+         : strcmp(ending, "expired") == 0 ? "Not approved in time. Nothing was opened."
+                                          : "Cancelled: its window closed. Nothing was opened.";
+}
+
+static gboolean card_end_idle(gpointer data) {
+  ZbCardEnd *e = data;
+  ZbCard *c = card_of(e->id);
+  ZbDrawer *d = c != NULL ? drawer_of(c->win) : NULL;
+  if (c != NULL && !c->ended) {
+    c->ended = 1;
+    if (d != NULL) { /* else the main window closed, and the card with it */
+      card_row(d, "approvalend", c->id, e->ending, NULL);
+      card_settle(c, ending_words(e->ending));
+    }
+  }
+  g_free(e->ending);
+  g_free(e);
+  return G_SOURCE_REMOVE;
+}
+
+/* Any thread: card `id`'s one ending (D7b's approvalend outcome). */
+void zb_drawer_card_end(guint64 id, const char *ending) {
+  ZbCardEnd *e = g_new0(ZbCardEnd, 1);
+  e->id = id;
+  e->ending = g_strdup(ending);
+  g_idle_add(card_end_idle, e);
+}
+
+typedef struct {
+  guint32 win;
+  char *text;
+} ZbSystemLine;
+
+static gboolean system_line_idle(gpointer data) {
+  ZbSystemLine *m = data;
+  zb_drawer_agent_message(m->win, "system", m->text, strlen(m->text));
+  g_free(m->text);
+  g_free(m);
+  return G_SOURCE_REMOVE;
+}
+
+/* Any thread: a system line in window `win`'s drawer (the unreadable store). */
+void zb_drawer_post_system(unsigned int win, const char *text, size_t len) {
+  ZbSystemLine *m = g_new0(ZbSystemLine, 1);
+  m->win = win;
+  m->text = g_strndup(text, len);
+  g_idle_add(system_line_idle, m);
+}
+
+/* The desktop notification: org.freedesktop.Notifications on the session bus. It carries only
+ * fixed text and one `default` action; its activation, only by the server that answered our
+ * Notify, presents the main window and opens its drawer, and changes no card. Any failure (no
+ * bus, no server) leaves the card waiting. */
+#define ZB_NOTIFY_NAME "org.freedesktop.Notifications"
+#define ZB_NOTIFY_PATH "/org/freedesktop/Notifications"
+
+static GDBusConnection *zb_notify_bus = NULL;
+static int zb_notify_state = 0;          /* 0 not tried, 1 connecting, 2 connected, 3 failed */
+static GHashTable *zb_notify_owner = NULL; /* our notification id -> the unique name that gave it */
+static GQueue zb_notify_pending = G_QUEUE_INIT; /* (title, body) pairs waiting for the bus */
+
+static void on_notify_action(GDBusConnection *bus, const char *sender, const char *path, const char *iface,
+                             const char *signal, GVariant *params, gpointer data) {
+  (void)bus, (void)path, (void)iface, (void)signal, (void)data;
+  if (!g_variant_is_of_type(params, G_VARIANT_TYPE("(us)"))) {
+    return;
+  }
+  guint32 id = 0;
+  const char *key = NULL;
+  g_variant_get(params, "(u&s)", &id, &key);
+  const char *owner = zb_notify_owner != NULL ? g_hash_table_lookup(zb_notify_owner, GUINT_TO_POINTER(id)) : NULL;
+  if (strcmp(key, "default") != 0 || owner == NULL || sender == NULL || strcmp(owner, sender) != 0) {
+    return;
+  }
+  unsigned int main = zb_agent_tools_activate();
+  ZbDrawer *d = main != 0 ? drawer_of(main) : NULL;
+  if (d == NULL) {
+    return;
+  }
+  zb_window_present(main);
+  drawer_open(d);
+}
+
+static void on_notified(GObject *source, GAsyncResult *result, gpointer data) {
+  (void)data;
+  GDBusMessage *reply = g_dbus_connection_send_message_with_reply_finish(G_DBUS_CONNECTION(source), result, NULL);
+  if (reply == NULL) {
+    return;
+  }
+  GVariant *body = g_dbus_message_get_body(reply);
+  if (g_dbus_message_get_message_type(reply) == G_DBUS_MESSAGE_TYPE_METHOD_RETURN && body != NULL &&
+      g_variant_is_of_type(body, G_VARIANT_TYPE("(u)")) && g_dbus_message_get_sender(reply) != NULL) {
+    guint32 id = 0;
+    g_variant_get(body, "(u)", &id);
+    if (zb_notify_owner == NULL) {
+      zb_notify_owner = g_hash_table_new_full(g_direct_hash, g_direct_equal, NULL, g_free);
+    }
+    g_hash_table_replace(zb_notify_owner, GUINT_TO_POINTER(id), g_strdup(g_dbus_message_get_sender(reply)));
+  }
+  g_object_unref(reply);
+}
+
+static void notify_send(const char *title, const char *body) {
+  GVariantBuilder actions;
+  g_variant_builder_init(&actions, G_VARIANT_TYPE("as"));
+  g_variant_builder_add(&actions, "s", "default");
+  g_variant_builder_add(&actions, "s", "Open zigBrowser");
+  GDBusMessage *call = g_dbus_message_new_method_call(ZB_NOTIFY_NAME, ZB_NOTIFY_PATH, ZB_NOTIFY_NAME, "Notify");
+  g_dbus_message_set_body(call, g_variant_new("(susssasa{sv}i)", "zigBrowser", 0u, "", title, body, &actions, NULL, -1));
+  g_dbus_connection_send_message_with_reply(zb_notify_bus, call, G_DBUS_SEND_MESSAGE_FLAGS_NONE, -1, NULL, NULL,
+                                            on_notified, NULL);
+  g_object_unref(call);
+}
+
+static void notify_flush(void) {
+  while (!g_queue_is_empty(&zb_notify_pending)) {
+    char *title = g_queue_pop_head(&zb_notify_pending);
+    char *body = g_queue_pop_head(&zb_notify_pending);
+    if (zb_notify_state == 2) {
+      notify_send(title, body);
+    }
+    g_free(title);
+    g_free(body);
+  }
+}
+
+static void on_notify_bus(GObject *source, GAsyncResult *result, gpointer data) {
+  (void)source, (void)data;
+  zb_notify_bus = g_bus_get_finish(result, NULL);
+  zb_notify_state = zb_notify_bus != NULL ? 2 : 3;
+  if (zb_notify_bus != NULL) {
+    g_dbus_connection_signal_subscribe(zb_notify_bus, NULL, ZB_NOTIFY_NAME, "ActionInvoked", ZB_NOTIFY_PATH, NULL,
+                                       G_DBUS_SIGNAL_FLAGS_NONE, on_notify_action, NULL, NULL);
+  }
+  notify_flush();
+}
+
+typedef struct {
+  char *title, *body;
+} ZbNotifyText;
+
+static gboolean notify_idle(gpointer data) {
+  ZbNotifyText *n = data;
+  g_queue_push_tail(&zb_notify_pending, n->title);
+  g_queue_push_tail(&zb_notify_pending, n->body);
+  g_free(n);
+  if (zb_notify_state == 0) {
+    zb_notify_state = 1;
+    g_bus_get(G_BUS_TYPE_SESSION, NULL, on_notify_bus, NULL);
+  } else if (zb_notify_state != 1) {
+    notify_flush();
+  }
+  return G_SOURCE_REMOVE;
+}
+
+/* Any thread: one desktop notification for a new card. */
+void zb_drawer_card_notify(const char *title, const char *body) {
+  ZbNotifyText *n = g_new0(ZbNotifyText, 1);
+  n->title = g_strdup(title);
+  n->body = g_strdup(body);
+  g_idle_add(notify_idle, n);
 }
 
 /* Window accelerators, seen before the page: Ctrl+Shift+Space toggles the

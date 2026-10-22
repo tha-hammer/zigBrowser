@@ -100,7 +100,7 @@ pub const card_ttl_ms: u64 = 120_000;
 pub const notification_title = "zigBrowser";
 pub const notification_body = "Claude is waiting for your approval.";
 
-pub const Outcome = enum { waiting, approved, expired, cancelled };
+pub const Outcome = enum { waiting, approved, denied, expired, cancelled };
 
 /// What activating the notification may do: only open the main window's drawer.
 pub const Activation = union(enum) { open_drawer_of: u64, nothing };
@@ -199,6 +199,27 @@ pub const Cards = struct {
         if (card.outcome != .waiting) return false;
         card.outcome = .approved;
         return true;
+    }
+
+    /// Part 3 (rev 16.20.56): the drawer's Deny. Like Approve, it loses at or after the
+    /// deadline and after any other ending.
+    pub fn deny(self: *Cards, id: CardId) bool {
+        self.acquire();
+        defer self.lock.unlock();
+        const card = self.find(id) orelse return false;
+        self.expireIfDue(card, self.clock.now());
+        if (card.outcome != .waiting) return false;
+        card.outcome = .denied;
+        return true;
+    }
+
+    /// A waiting card whose call can no longer run (its window's broker stopped) is cancelled,
+    /// so a late Approve in the main drawer finds it ended.
+    pub fn cancel(self: *Cards, id: CardId) void {
+        self.acquire();
+        defer self.lock.unlock();
+        const card = self.find(id) orelse return;
+        if (card.outcome == .waiting) card.outcome = .cancelled;
     }
 
     pub fn outcome(self: *Cards, id: CardId) ?Outcome {

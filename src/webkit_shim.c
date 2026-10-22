@@ -904,6 +904,10 @@ static void on_window_title_notify(WebKitWebView *view, GParamSpec *pspec,
 
 /* agent_tools.zig (S7b): a window's drawer broker detaches, never a join here. */
 void zb_agent_tools_window_done(unsigned int win);
+/* agent_tools.zig (S8 decision 16 part 3): every window's opening and closing, for the main
+ * window's cards (the first window opened). */
+void zb_agent_tools_window_opened(unsigned int win);
+void zb_agent_tools_window_closed(unsigned int win);
 
 static void on_window_destroy(GtkWidget *widget, gpointer user_data) {
   (void)widget;
@@ -917,6 +921,7 @@ static void on_window_destroy(GtkWidget *widget, gpointer user_data) {
   if (win->drawer != NULL) {
     zb_agent_tools_window_done(win->auto_id);
   }
+  zb_agent_tools_window_closed(win->auto_id); /* the main window's close cancels its cards */
   /* Automation calls in flight on this window end now, as Cancelled
    * ("window destroyed"), before the web process is terminated below
    * (which would otherwise fail them as script errors first). */
@@ -1280,6 +1285,7 @@ ZbWindow *zb_window_new(ZbApp *app, void *native_view) {
   win->is_child = app->n_windows > 0;
   win->auto_id = (guint32)zb_auto_next_id++;
   win->process_group = win->auto_id;
+  zb_agent_tools_window_opened(win->auto_id);
 
   win->context = webkit_web_view_get_context(view);
   if (win->context != NULL) {
@@ -2075,6 +2081,33 @@ static ZbWindow *auto_resolve_window(guint32 requested) {
     }
   }
   return NULL;
+}
+
+/* GTK thread (agent_drawer.c's approval card): the origin of window `id`'s page, newly
+ * allocated ("scheme://host[:port]", or "scheme:" without a host), or NULL. */
+char *zb_window_page_origin(unsigned int id) {
+  ZbWindow *win = auto_resolve_window(id);
+  const char *uri = win != NULL ? webkit_web_view_get_uri(win->view) : NULL;
+  GUri *parsed = uri != NULL ? g_uri_parse(uri, G_URI_FLAGS_NONE, NULL) : NULL;
+  if (parsed == NULL) {
+    return NULL;
+  }
+  const char *scheme = g_uri_get_scheme(parsed);
+  const char *host = g_uri_get_host(parsed);
+  int port = g_uri_get_port(parsed);
+  char *origin = host == NULL || host[0] == '\0' ? g_strdup_printf("%s:", scheme)
+                 : port > 0                      ? g_strdup_printf("%s://%s:%d", scheme, host, port)
+                                                 : g_strdup_printf("%s://%s", scheme, host);
+  g_uri_unref(parsed);
+  return origin;
+}
+
+/* GTK thread: window `id` comes to the front (the approval notification's activation). */
+void zb_window_present(unsigned int id) {
+  ZbWindow *win = auto_resolve_window(id);
+  if (win != NULL && win->gtk_window != NULL) {
+    gtk_window_present(GTK_WINDOW(win->gtk_window));
+  }
 }
 
 /* Test hook: GTK-side page work (evals, loads, captures, file choosers,

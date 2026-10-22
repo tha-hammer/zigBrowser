@@ -228,6 +228,23 @@ class World:
         x._x.XFlush(x._dpy)
         time.sleep(0.3)
 
+    def close_first(self) -> None:
+        """What a window manager's close button does to window 1 (the socket's page.close
+        refuses the primary window): WM_DELETE_WINDOW to its toplevel."""
+        x = self.b.x
+        lib = x._x
+        lib.XInternAtom.restype = ctypes.c_ulong
+        lib.XInternAtom.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_int]
+        lib.XSendEvent.argtypes = [ctypes.c_void_p, ctypes.c_ulong, ctypes.c_int, ctypes.c_long, ctypes.c_void_p]
+        event = life._XEvent()
+        event.xclient.type = 33  # ClientMessage
+        event.xclient.window = self.first_toplevel
+        event.xclient.message_type = lib.XInternAtom(x._dpy, b"WM_PROTOCOLS", 0)
+        event.xclient.format = 32
+        event.xclient.l[0] = lib.XInternAtom(x._dpy, b"WM_DELETE_WINDOW", 0)
+        lib.XSendEvent(x._dpy, self.first_toplevel, 0, 0, ctypes.byref(event))
+        lib.XFlush(x._dpy)
+
     def first_on_top(self) -> bool:
         tops = self.b.x.toplevels()
         return bool(tops) and tops[-1][0] == self.first_toplevel
@@ -496,10 +513,11 @@ def case_main_close(binary: Path, tmp: Path, check) -> None:
             return
         if wait_card(w, check, "main-close", count=2) is None:
             return
-        check(sorted(r.fields[3] for r in w.cards(1)) == sorted([digest(NAVIGATE, 2, url), digest(NAVIGATE, 3, url)]),
+        check(sorted(r.fields[4] for r in w.cards(1)) == sorted([digest(NAVIGATE, 2, url), digest(NAVIGATE, 3, url)]),
               "one card for each window's call, both in window 1's drawer")
         check_notify(w, check, "main-close", 2, url)
-        w.b.zb.call("page.close", {"window_id": "window-1"})
+        w.close_first()
+        check(w.b.wait(lambda: len(w.b.zb.page.list()["pages"]) == 2, 15), "window 1 closed; windows 2 and 3 stay", w.b)
         a, b = w.answer_for("nava", 30), w.answer_for("navb", 30)
         for name, block in (("window 2", a), ("window 3", b)):
             check(block is not None and block.get("is_error") is True and CANCELLED in result_text(block),
@@ -611,7 +629,7 @@ def case_store_yes(binary: Path, tmp: Path, check) -> None:
         if card is None:
             return
         cid = card.fields[0]
-        check(card.fields[3] == digest(NAVIGATE, 1, url), "the card is window 1's own call")
+        check(card.fields[4] == digest(NAVIGATE, 1, url), "the card is window 1's own call")
         check_notify(w, check, "store yes", 1, url)
         time.sleep(1.0)
         check(w.path(1) == "/one.html", "nothing ran before Approve")

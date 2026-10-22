@@ -887,6 +887,10 @@ static void check_config(ZbWin *w) {
 
 /* --- the API ------------------------------------------------------------------ */
 
+/* The agent home, or NULL before configure (agent_tools.zig reads the decision-16 store
+ * under it from a broker's worker). Set once, before the GTK loop, and never changed. */
+const char *zb_agent_helper_home(void) { return zb_helper.home; }
+
 void zb_agent_helper_configure(const char *const *argv, const char *const *envp, const char *home,
                                const char *unavailable, const char *bubble, const char *refusal,
                                int e2e_protocol) {

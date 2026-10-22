@@ -55,9 +55,10 @@ class OptionsBuilder(unittest.TestCase):
         self.assertTrue(set(env) <= set(options.HELPER_ENV_NAMES))
 
     def test_tool_budgets_are_the_reviewed_production_values(self):
-        self.assertEqual(options.MCP_TOOL_TIMEOUT_MS, 130_000)
+        # S8 decision 16 (rev 16.20.56): the CLI waits 10 s past a gated call's 120 s + 120 s card.
+        self.assertEqual(options.MCP_TOOL_TIMEOUT_MS, 250_000)
         self.assertEqual(options.TOOL_DEADLINE_S, 120)
-        self.assertEqual(self.build().env["MCP_TOOL_TIMEOUT"], "130000")
+        self.assertEqual(self.build().env["MCP_TOOL_TIMEOUT"], "250000")
 
     def test_strict_mcp_config_is_always_passed(self):
         self.assertIn("strict-mcp-config", self.build().extra_args)

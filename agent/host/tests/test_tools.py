@@ -1,8 +1,9 @@
 """S7b (chat-drawer plan section 10, S7, rev 16.20.34): the helper's browser tools. A chat
-session's MCP server `zigbrowser` lists exactly S7.5's six read tools, each with its exact
-input schema; `allowed_tools` is exactly their six names; each handler forwards its name and
-args to the Bridge (S7.0); and a session's options install the server, those names and
-`deny_all`, as P0's contract does.
+session's MCP server `zigbrowser` lists S7.5's six read tools, each with its exact input
+schema, and since S8 decision 16 (rev 16.20.56) navigate and reload, whose schemas
+test_tools_navigate.py pins; `allowed_tools` is exactly those eight names; each read handler
+forwards its name and args to the Bridge (S7.0); and a session's options install the server,
+those names and `deny_all`, as P0's contract does.
 
 Pure Python: the real Bridge and session_options, the Bridge's call replaced by a recorder.
 Run the module alone, as the gate does."""
@@ -37,7 +38,8 @@ TOOLS = {
                         "timeout_ms": {"type": "integer", "minimum": 0, "maximum": 10000}}, ["selector"]),
     "screenshot": schema({}),
 }
-NAMES = sorted(f"mcp__zigbrowser__{name}" for name in TOOLS)
+GATED = ("navigate", "reload")  # S8 decision 16: test_tools_navigate.py
+NAMES = sorted(f"mcp__zigbrowser__{name}" for name in [*TOOLS, *GATED])
 
 
 def bridge():
@@ -45,12 +47,13 @@ def bridge():
 
 
 class ToolListTest(unittest.TestCase):
-    def test_the_server_lists_exactly_the_six_read_tools_with_their_schemas(self):
+    def test_the_server_lists_the_six_read_tools_with_their_schemas_and_the_two_gated(self):
         b = bridge()
         tools = b.tools()
-        self.assertEqual(sorted(t.name for t in tools), sorted(TOOLS))
+        self.assertEqual(sorted(t.name for t in tools), sorted([*TOOLS, *GATED]))
         for t in tools:
-            self.assertEqual(t.input_schema, TOOLS[t.name], t.name)
+            if t.name in TOOLS:
+                self.assertEqual(t.input_schema, TOOLS[t.name], t.name)
             self.assertTrue(t.description, t.name)
         server = b.server()
         self.assertEqual((server["type"], server["name"]), ("sdk", "zigbrowser"))
@@ -59,7 +62,7 @@ class ToolListTest(unittest.TestCase):
         """RoseCat 6575: the model is told the selector syntax the engine takes."""
         for t in bridge().tools():
             selector = t.input_schema["properties"].get("selector")
-            if t.name in ("window_info", "screenshot"):
+            if t.name in ("window_info", "screenshot", *GATED):
                 self.assertIsNone(selector, t.name)
                 continue
             self.assertIn("css=", selector.get("description", ""), t.name)
@@ -70,19 +73,20 @@ class ToolListTest(unittest.TestCase):
 
     def test_no_act_tool_is_offered(self):
         names = {t.name for t in bridge().tools()}
-        for act in ("click", "navigate", "hover", "scroll", "type", "fill", "evaluate", "echo", "cookies_get"):
+        for act in ("click", "hover", "scroll", "type", "fill", "evaluate", "echo", "cookies_get"):
             self.assertNotIn(act, names)
 
 
 class ServerListTest(unittest.IsolatedAsyncioTestCase):
-    async def test_the_mcp_servers_own_list_is_exactly_the_six_tools(self):
+    async def test_the_mcp_servers_own_list_is_exactly_the_eight_tools(self):
         """RoseCat 6575: through the server's tools/list path, as the CLI sees it."""
         b = bridge()
         listed = await b.server()["instance"].get_request_handler("tools/list").handler(None, None)
-        self.assertEqual(sorted(t.name for t in listed.tools), sorted(TOOLS))
+        self.assertEqual(sorted(t.name for t in listed.tools), sorted([*TOOLS, *GATED]))
         mine = {t.name: t for t in b.tools()}
         for t in listed.tools:
-            self.assertEqual(t.input_schema, TOOLS[t.name], t.name)
+            if t.name in TOOLS:
+                self.assertEqual(t.input_schema, TOOLS[t.name], t.name)
             self.assertEqual(t.description, mine[t.name].description, t.name)
             self.assertTrue(t.description, t.name)
 
@@ -100,7 +104,7 @@ class ForwardTest(unittest.IsolatedAsyncioTestCase):
         cases = {"window_info": {}, "query": {"selector": "css=li"}, "get_text": {"selector": "css=#greeting"},
                  "get_attribute": {"selector": "css=a", "name": "href"},
                  "wait_for": {"selector": "css=#x", "state": "hidden", "timeout_ms": 250}, "screenshot": {}}
-        for t in b.tools():
+        for t in [t for t in b.tools() if t.name in cases]:
             result = await asyncio.wait_for(t.handler(cases[t.name]), 5)
             self.assertEqual(result, {"content": [{"type": "text", "text": f"answer for {t.name}"}]})
         self.assertEqual(sorted(seen, key=lambda s: s[0]), sorted(cases.items()))

@@ -32,9 +32,13 @@ def relay_proxy_url():
 
 RELAY_PROXY = relay_proxy_url()
 
-# Bounds the CLI's wait for one in-process tool call; the helper answers 10 s earlier.
-MCP_TOOL_TIMEOUT_MS = 130_000
-TOOL_DEADLINE_S = (MCP_TOOL_TIMEOUT_MS - 10_000) / 1000
+# The helper's wait for one in-process tool call (the `ready` frame's tool_deadline_s); a
+# navigate or reload also waits for its card (S8 decision 16, plan rev 16.20.56). The CLI's
+# own bound is 10 s past the longest of them.
+TOOL_DEADLINE_S = 120
+CARD_S = 120
+GATED_DEADLINE_S = TOOL_DEADLINE_S + CARD_S
+MCP_TOOL_TIMEOUT_MS = (GATED_DEADLINE_S + 10) * 1000
 
 
 @dataclass(frozen=True)

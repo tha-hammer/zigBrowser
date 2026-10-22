@@ -1679,8 +1679,8 @@ pub fn build(b: *std.Build) void {
     agent_setup_ms5_step.dependOn(&mac_group_cleanup.step);
     // Chat drawer S7a (revs 16.20.30, 16.20.32): the core in process (callInProcess) and the
     // drawer's read-only broker over it; S7b (rev 16.20.36): its reply boundary and detach.
-    var s7a_runs: [8]*std.Build.Step = undefined;
-    for ([_][]const u8{ "tests/automation_inprocess_test.zig", "tests/agent_broker_test.zig", "tests/agent_broker_window_info_test.zig", "tests/agent_broker_reply_test.zig", "tests/agent_broker_detach_test.zig", "tests/agent_broker_detach_oom_test.zig", "tests/agent_broker_screenshot_test.zig", "tests/agent_broker_navigate_test.zig" }, 0..) |path, i| {
+    var s7a_runs: [9]*std.Build.Step = undefined;
+    for ([_][]const u8{ "tests/automation_inprocess_test.zig", "tests/agent_broker_test.zig", "tests/agent_broker_window_info_test.zig", "tests/agent_broker_reply_test.zig", "tests/agent_broker_detach_test.zig", "tests/agent_broker_detach_oom_test.zig", "tests/agent_broker_screenshot_test.zig", "tests/agent_broker_navigate_test.zig", "tests/agent_navigate_card_test.zig" }, 0..) |path, i| {
         const s7a_module = b.createModule(.{
             .root_source_file = b.path(path),
             .target = target,
@@ -1955,6 +1955,15 @@ pub fn build(b: *std.Build) void {
         "agent-tools-e2e",
     });
     agent_tools_e2e.addArtifactArg(exe);
+    // S8 decision 16 part 3 (rev 16.20.56): navigate and reload cards in the main window's drawer,
+    // the desktop notification (a private bus and a fake server), main and bound window closes.
+    const agent_navigate_approval_e2e = b.addSystemCommand(&.{
+        "sh",
+        "-c",
+        "python3 tests/e2e/agent_navigate_approval_test.py --binary \"$1\"",
+        "agent-navigate-approval-e2e",
+    });
+    agent_navigate_approval_e2e.addArtifactArg(exe);
     const agent_socket_separation_e2e = b.addSystemCommand(&.{
         "sh",
         "-c",
@@ -2365,7 +2374,7 @@ pub fn build(b: *std.Build) void {
     const agent_host_bridge = b.addSystemCommand(&.{
         "sh",
         "-c",
-        "py=$(tools/agent_host_env.sh --check) || exit 1; cd agent/host/tests && env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 ZB_AGENT_HOST_PYTHON=\"$py\" \"$py\" -m unittest -v test_bridge && env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 ZB_AGENT_HOST_PYTHON=\"$py\" \"$py\" -m unittest -v test_bridge_result && env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 ZB_AGENT_HOST_PYTHON=\"$py\" \"$py\" -m unittest -v test_bridge_endings && env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 ZB_AGENT_HOST_PYTHON=\"$py\" \"$py\" -m unittest -v test_bridge_envelope && env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 ZB_AGENT_HOST_PYTHON=\"$py\" \"$py\" -m unittest -v test_tools",
+        "py=$(tools/agent_host_env.sh --check) || exit 1; cd agent/host/tests && env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 ZB_AGENT_HOST_PYTHON=\"$py\" \"$py\" -m unittest -v test_bridge && env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 ZB_AGENT_HOST_PYTHON=\"$py\" \"$py\" -m unittest -v test_bridge_result && env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 ZB_AGENT_HOST_PYTHON=\"$py\" \"$py\" -m unittest -v test_bridge_endings && env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 ZB_AGENT_HOST_PYTHON=\"$py\" \"$py\" -m unittest -v test_bridge_envelope && env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 ZB_AGENT_HOST_PYTHON=\"$py\" \"$py\" -m unittest -v test_tools && env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 ZB_AGENT_HOST_PYTHON=\"$py\" \"$py\" -m unittest -v test_tools_navigate",
     });
     // Chat drawer S6 (rev 16.18): the one-shot sign-in helper drives the
     // setup-token fake on a pty; the token reaches fd 4 only.
@@ -3282,6 +3291,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&agent_drawer_copy_e2e.step);
     test_step.dependOn(&agent_chat_e2e.step);
     test_step.dependOn(&agent_tools_e2e.step);
+    test_step.dependOn(&agent_navigate_approval_e2e.step);
     test_step.dependOn(&agent_socket_separation_e2e.step);
     test_step.dependOn(&agent_tools_acceptance_e2e.step);
     test_step.dependOn(&agent_tools_acceptance2_e2e.step);

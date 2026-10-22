@@ -77,7 +77,24 @@ pub const Approval = struct {
     facts: *const fn (ctx: *anyopaque) approval.RunFacts,
     notify: *const fn (ctx: *anyopaque) void,
     report_unreadable: *const fn (ctx: *anyopaque) void,
+    /// Part 3 (rev 16.20.56): on the worker, once per card, before its notification.
+    show: ?*const fn (ctx: *anyopaque, card: CardView) void = null,
+    /// Part 3: on the worker, exactly once per shown card, with its one ending.
+    ended: ?*const fn (ctx: *anyopaque, id: approval.CardId, ending: Ending) void = null,
 };
+
+/// A card as the app shows it: `params` are the exact bytes the engine gets if it is approved,
+/// valid only during `show`.
+pub const CardView = struct { id: approval.CardId, verb: approval.Verb, window: u32, params: []const u8 };
+/// A shown card's one ending: `done`/`failed` after its approved dispatch answered; `revoked`
+/// when its own window's broker stopped while it waited.
+pub const Ending = enum { done, failed, denied, expired, cancelled, revoked };
+/// S8 decision 16: a navigate or reload whose card the user denied.
+pub const denied_text = "The navigation was denied.";
+
+fn endCard(gate: Approval, id: approval.CardId, ending: Ending) void {
+    if (gate.ended) |ended| ended(gate.ctx, id, ending);
+}
 
 /// S8 decision 16's tools: each one method, gated by the core.
 const gated_tools = [_]struct { name: []const u8, method: []const u8, verb: approval.Verb }{
@@ -166,6 +183,9 @@ pub const Broker = struct {
     timer: ?std.Thread = null,
     engine: ?Engine = null,
     before_publish: ?Hook = null,
+    /// Test seam (RoseCat 304a41b): called on the worker before each look at a waiting card, so a
+    /// red can hold it there. Production sets none.
+    before_card_look: ?Hook = null,
     /// A screenshot's fit; with none, a screenshot is "the screenshot could not be read".
     fit: ?Fit = null,
     /// S8 decision 16 (S8c sets it): with none, navigate and reload are not available.
@@ -450,6 +470,8 @@ const Job = struct {
     answered: std.atomic.Value(bool) = .init(false),
     /// S8 decision 16: set for navigate and reload, which the core may hold for a card.
     verb: ?approval.Verb = null,
+    /// Its approved card, whose ending follows the dispatch's answer.
+    card: ?approval.CardId = null,
 
     fn create(gpa: std.mem.Allocator, id: []const u8, method: []const u8, params: []u8, sink: Sink, deadline_at: i64, window: u32) !*Job {
         const job = try gpa.create(Job);
@@ -472,6 +494,7 @@ const Job = struct {
             defer self.gpa.free(reply);
             break :blk answer(self.gpa, reply);
         };
+        if (self.card) |card| endCard(broker.approval.?, card, if (outcome.result == .content) .done else .failed);
         broker.publish(self, outcome);
     }
 
@@ -479,26 +502,46 @@ const Job = struct {
     /// else the refusal text, with nothing dispatched. The card waits in the main window's drawer
     /// with one desktop notification; the cards' own clock expires it.
     fn awaitApproval(self: *Job, broker: *Broker, verb: approval.Verb) ?[]const u8 {
-        _ = self;
         const gate = broker.approval.?;
         const store = gate.read_selector(gate.ctx);
         if (store.unreadable) gate.report_unreadable(gate.ctx);
         if (!approval.needsCard(verb, store.selector, approval.modeOf(gate.facts(gate.ctx)))) return null;
         const card = gate.cards.present() catch return cancelled_text;
+        if (gate.show) |show| show(gate.ctx, .{ .id = card, .verb = verb, .window = broker.window, .params = self.params });
         gate.notify(gate.ctx);
         const io = broker.server.io;
         while (true) {
-            gate.cards.expireDue();
-            switch (gate.cards.outcome(card) orelse .cancelled) {
-                .waiting => {},
-                .approved => return null,
-                .expired => return not_approved_text,
-                .cancelled => return cancelled_text,
-            }
+            if (broker.before_card_look) |h| h.run(h.ctx);
+            // The stop first (RoseCat 7698): a broker that stopped never dispatches, even when an
+            // Approve won its card after the stop and before this look.
             broker.mutex.lockUncancelable(io);
             const stop = broker.stopping or broker.detached;
             broker.mutex.unlock(io);
-            if (stop) return cancelled_text;
+            if (stop) {
+                gate.cards.cancel(card);
+                endCard(gate, card, .revoked);
+                return cancelled_text;
+            }
+            gate.cards.expireDue();
+            switch (gate.cards.outcome(card) orelse .cancelled) {
+                .waiting => {},
+                .approved => {
+                    self.card = card;
+                    return null;
+                },
+                .denied => {
+                    endCard(gate, card, .denied);
+                    return denied_text;
+                },
+                .expired => {
+                    endCard(gate, card, .expired);
+                    return not_approved_text;
+                },
+                .cancelled => {
+                    endCard(gate, card, .cancelled);
+                    return cancelled_text;
+                },
+            }
             io.sleep(.fromMilliseconds(approval_poll_ms), .awake) catch {};
         }
     }

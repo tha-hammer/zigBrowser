@@ -13,11 +13,17 @@
 //! - A window closed, a session ended, or the helper gone: the broker detaches (never a join
 //!   on the GTK thread) and the app's one Reaper joins and frees it; `stop` (after the GTK
 //!   loop) detaches the rest and joins the Reaper.
-//! Everything here but the sink runs on the GTK thread.
+//! - S8 decision 16 part 3 (plan rev 16.20.56): every window's opening and closing reaches the
+//!   one set of cards, whose main window is the first opened. Each broker gets the approval seam
+//!   (its context is its window id, which outlives the broker); its callbacks run on the
+//!   broker's worker and hop to GTK (agent_drawer.c). The drawer's Approve and Deny reach the
+//!   cards through zb_agent_tools_approve/deny, their only callers.
+//! Everything here but the sink and the approval callbacks runs on the GTK thread.
 const std = @import("std");
 const automation_server = @import("automation_server.zig");
 const broker_mod = @import("agent_broker.zig");
 const agent_frames = @import("agent_frames.zig");
+const approval = broker_mod.approval;
 
 const Server = automation_server.AutomationApiServer;
 const gpa = std.heap.smp_allocator;
@@ -25,6 +31,12 @@ const gpa = std.heap.smp_allocator;
 extern fn zb_agent_helper_post_tool_result(win: c_uint, session: [*:0]const u8, id: [*]const u8, id_len: usize, ok: c_int, body: [*]const u8, len: usize) void;
 extern fn zb_agent_image_fit(png: [*]const u8, len: usize, max_b64: usize, out_b64: *?[*:0]u8, out_mime: *?[*:0]const u8) callconv(.c) c_int;
 extern fn zb_agent_image_free(b64: ?*anyopaque) callconv(.c) void;
+// agent_drawer.c (any thread: each hops to GTK) and agent_helper.c.
+extern fn zb_drawer_card_show(main_win: c_uint, card: u64, verb: [*:0]const u8, bound_win: c_uint, params: [*]const u8, params_len: usize, url: ?[*:0]const u8) void;
+extern fn zb_drawer_card_end(card: u64, ending: [*:0]const u8) void;
+extern fn zb_drawer_card_notify(title: [*:0]const u8, body: [*:0]const u8) void;
+extern fn zb_drawer_post_system(win: c_uint, text: [*]const u8, len: usize) void;
+extern fn zb_agent_helper_home() ?[*:0]const u8;
 
 /// A window's broker and its sink's context: the window and the session it answers.
 const Bound = struct {
@@ -36,10 +48,21 @@ const Bound = struct {
 var server: ?*Server = null;
 var reaper: broker_mod.Reaper = undefined;
 var bound: std.AutoHashMapUnmanaged(c_uint, *Bound) = .empty;
+/// S8 decision 16: the main window's cards, made by `start` (before the first window).
+var cards: approval.Cards = undefined;
+/// Which windows' drawers are showing, mirrored from GTK for the workers' `facts`.
+var showing_lock: std.atomic.Mutex = .unlocked;
+var showing: std.AutoHashMapUnmanaged(c_uint, void) = .empty;
 
 pub fn start(core: *Server) void {
     server = core;
     reaper = .init(gpa);
+    cards = .init(gpa, .{ .ctx = core, .now_ms = nowMs });
+}
+
+fn nowMs(ctx: *anyopaque) u64 {
+    const core: *Server = @ptrCast(@alignCast(ctx));
+    return @intCast(std.Io.Clock.now(.awake, core.io).toMilliseconds());
 }
 
 /// After the GTK loop: every broker detached, then the Reaper joined. The helper's own stop
@@ -50,7 +73,117 @@ pub fn stop() void {
     bound.deinit(gpa);
     bound = .empty;
     reaper.deinit();
+    cards.deinit();
+    showing.deinit(gpa);
+    showing = .empty;
     server = null;
+}
+
+// --- S8 decision 16 part 3: the approval seam (on a broker's worker) ------------------------
+
+/// A broker's approval context is its window id, never a pointer to its Bound: an ending can
+/// come after the window's broker was detached and its Bound freed.
+fn seamFor(win: c_uint) broker_mod.Approval {
+    return .{
+        .ctx = @ptrFromInt(win),
+        .cards = &cards,
+        .read_selector = readSelector,
+        .facts = facts,
+        .notify = notify,
+        .report_unreadable = reportUnreadable,
+        .show = show,
+        .ended = ended,
+    };
+}
+
+fn windowOf(ctx: *anyopaque) c_uint {
+    return @intCast(@intFromPtr(ctx));
+}
+
+/// The store, agent-home/settings/navigate_approval, read for each call.
+fn readSelector(_: *anyopaque) approval.StoreRead {
+    const core = server orelse return .{ .selector = .yes, .unreadable = true };
+    const home = zb_agent_helper_home() orelse return .{ .selector = approval.default_selector };
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const path = std.fmt.bufPrint(&buf, "{s}/settings", .{std.mem.span(home)}) catch return .{ .selector = .yes, .unreadable = true };
+    var dir = std.Io.Dir.cwd().openDir(core.io, path, .{}) catch |err| return switch (err) {
+        error.FileNotFound => .{ .selector = approval.default_selector },
+        else => .{ .selector = .yes, .unreadable = true },
+    };
+    defer dir.close(core.io);
+    return approval.readSelector(core.io, dir, approval.store_name);
+}
+
+/// Every prompt today is one the user typed: full automation has no entry yet.
+fn facts(ctx: *anyopaque) approval.RunFacts {
+    while (!showing_lock.tryLock()) std.atomic.spinLoopHint();
+    defer showing_lock.unlock();
+    return .{ .drawer_showing = showing.contains(windowOf(ctx)), .typed_prompt = true };
+}
+
+fn notify(_: *anyopaque) void {
+    zb_drawer_card_notify(approval.notification_title, approval.notification_body);
+}
+
+fn reportUnreadable(ctx: *anyopaque) void {
+    zb_drawer_post_system(windowOf(ctx), approval.unreadable_line, approval.unreadable_line.len);
+}
+
+fn show(_: *anyopaque, card: broker_mod.CardView) void {
+    const main = cards.mainWindow() orelse return; // closed since: the card is cancelled
+    var parsed = std.json.parseFromSlice(struct { url: ?[]const u8 = null }, gpa, card.params, .{ .ignore_unknown_fields = true }) catch null;
+    defer if (parsed) |*p| p.deinit();
+    const url: ?[:0]u8 = if (parsed) |p| (if (p.value.url) |u| gpa.dupeZ(u8, u) catch null else null) else null;
+    defer if (url) |u| gpa.free(u);
+    zb_drawer_card_show(@intCast(main), card.id, @tagName(card.verb), card.window, card.params.ptr, card.params.len, if (url) |u| u.ptr else null);
+}
+
+fn ended(_: *anyopaque, id: approval.CardId, ending: broker_mod.Ending) void {
+    // `cancelled`: the main window closed, so its drawer is gone (D7b's `closed`).
+    zb_drawer_card_end(id, if (ending == .cancelled) "closed" else @tagName(ending));
+}
+
+/// GTK thread: every window that opens; the first is the main window.
+export fn zb_agent_tools_window_opened(win: c_uint) void {
+    if (server == null) return;
+    cards.windowOpened(win);
+}
+
+/// GTK thread: every window that closes; the main window's close cancels every waiting card.
+export fn zb_agent_tools_window_closed(win: c_uint) void {
+    if (server == null) return;
+    cards.windowClosed(win);
+    zb_agent_tools_drawer_showing(win, 0);
+}
+
+/// GTK thread: window `win`'s drawer opened (1) or began to fold away (0).
+export fn zb_agent_tools_drawer_showing(win: c_uint, shown: c_int) void {
+    if (server == null) return;
+    while (!showing_lock.tryLock()) std.atomic.spinLoopHint();
+    defer showing_lock.unlock();
+    if (shown != 0) showing.put(gpa, win, {}) catch {} else _ = showing.remove(win);
+}
+
+/// GTK thread: the main drawer's Approve button, the only caller. 1 when it won the card.
+export fn zb_agent_tools_approve(card: u64) c_int {
+    if (server == null) return 0;
+    return @intFromBool(cards.approve(card));
+}
+
+/// GTK thread: the main drawer's Deny button, the only caller. 1 when it ended the card.
+export fn zb_agent_tools_deny(card: u64) c_int {
+    if (server == null) return 0;
+    return @intFromBool(cards.deny(card));
+}
+
+/// GTK thread: the desktop notification was activated by its server. The window whose drawer
+/// to open (the main one), or 0; no card changes.
+export fn zb_agent_tools_activate() c_uint {
+    if (server == null) return 0;
+    return switch (cards.activateNotification("")) {
+        .open_drawer_of => |win| @intCast(win),
+        .nothing => 0,
+    };
 }
 
 fn done(ctx: *anyopaque, id: []const u8, result: broker_mod.Result) void {
@@ -83,6 +216,7 @@ fn brokerFor(win: c_uint, session: []const u8) ?*Bound {
         return null;
     };
     b.broker.fit = .{ .fit = zb_agent_image_fit, .free = zb_agent_image_free };
+    b.broker.approval = seamFor(win);
     bound.put(gpa, win, b) catch {
         b.broker.detach(&reaper);
         gpa.destroy(b);
