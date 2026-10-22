@@ -29215,3 +29215,31 @@ query is unavailable or inconclusive, it must not be broadened; take the
 token-free errno plus home-relative-path route red-first instead. The
 diagnostic alone is not acceptance evidence. Agent Mail 7621 sent the
 decision and exact authorization to BlueBeaver.
+
+## Platform-tagged owner-start schema red (`116c086`)
+
+**BLOCKED-for-tests.** The schema-v2 direction is correct: the red accepts
+the two named platform kinds, rejects unknown or missing kinds, and rejects
+v1 instead of silently interpreting it as v2. From an exact clean export of
+`116c086`, the isolated pure test reproduced the intended result: 2/5 pass
+and 3/5 fail (the two known-v2 positives and the v1-refusal row).
+
+The red does not yet pin the safety contract it says the green will build:
+
+1. Both positive rows assert only that one entry parsed. They never assert
+   the stored enum or either start component, so swapped kinds or discarded
+   identity values survive.
+2. There is no same-kind comparison table. A numerically equal Darwin value
+   compared with a Linux-ticks record could still become `live_same`, rather
+   than fail closed, without failing this red.
+3. The parser has no red for the canonical per-kind representation:
+   `linux_ticks` must have `start_usec == 0`, while Darwin microseconds must
+   be below 1,000,000. Accepting impossible representations no longer means
+   recording the platform probe exactly.
+4. The publish/load round trip currently checks only the basename; it must
+   prove that v2 preserves the tag and both identity components.
+
+Add exact field assertions, a swapped-tag mutant, same/different/cross-kind
+liveness rows, malformed per-kind shapes, and an exact v2 publish round trip
+before registering the red with the green. Agent Mail 7624 sent the findings
+to JadeBeacon.
