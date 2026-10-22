@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
 # MS4 gate — site-flow / approval-grant groundwork on macOS (load_serial first) on BOTH Macs (unsigned build).
+# MS4.4 (BlueBeaver; RoseCat 7886/7902): then the flows' login gate through the WKHTTPCookieStore port
+# (tests/e2e/ms4_4_login_gate_test.py: raw RpcClient, local fixtures only, the browser's own process group stopped
+# on exit or on SIGTERM/SIGINT/SIGHUP). Any non-zero exit, a skip (77) included, fails the leg.
 #
 # Builds zigBrowser NATIVELY on each Mac (no -Dtarget) and runs the MS4 e2e there. Like ms2a/b/c,
 # WKWebView needs the WindowServer, so this runs as the console user (no xvfb). Driven from Linux over
@@ -34,6 +37,7 @@ verify_host() { # $1=host $2=key $3=label
 set -euo pipefail
 cd "$HOME/zigBrowser"
 python3 tests/e2e/mac_ms4_load_serial_test.py --browser zig-out/bin/zigBrowser
+python3 tests/e2e/ms4_4_login_gate_test.py --binary zig-out/bin/zigBrowser
 REMOTE
   printf 'PASS\tms4-leg\t%s\t%s\n' "$host" "$label"
 }
