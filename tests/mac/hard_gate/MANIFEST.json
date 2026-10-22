@@ -24,6 +24,10 @@
     {
       "file": "case_ms5_1_s3a_links.py",
       "sha256": "4fe83ada9acd7a8702923ddc35145927df35afcd101b825b4aaa3e08509ecd6f"
+    },
+    {
+      "file": "case_ms8_hook_sandbox.py",
+      "sha256": "896e057ecc001944758521e7356d904dbdc2283e855a8c7a5b92079ddf9e2a69"
     }
   ]
 }

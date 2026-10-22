@@ -2882,6 +2882,14 @@ pub fn build(b: *std.Build) void {
         "py=$(tools/agent_host_env.sh --check) || exit 1; cd tests/e2e && out=$(env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 ZB_AGENT_HOST_PYTHON=\"$py\" unshare --map-current-user --pid --fork --kill-child --mount-proc sh -c '\"$0\" -X dev -m unittest -v ms5_1_hard_gate_case_test; exit $?' \"$py\" 2>&1); rc=$?; printf '%s\\n' \"$out\"; [ $rc -eq 0 ] || exit $rc; if printf '%s\\n' \"$out\" | grep -q ResourceWarning; then echo 'ms5_1_hard_gate_case_test: ResourceWarning' >&2; exit 1; fi",
     });
     mac_census_step.dependOn(&ms5_1_hard_gate_case_unit.step);
+    // The zb-hook-run Darwin hard-gate case against a fake staged prefix (2c1357b..7092544; RoseCat 7973). Pinned
+    // agent-host python, our uid, its own network namespace (the case listens on the real bridge ports) + PID ns.
+    const ms8_hook_sandbox_case_unit = b.addSystemCommand(&.{
+        "sh",
+        "-c",
+        "py=$(tools/agent_host_env.sh --check) || exit 1; cd tests/e2e && out=$(env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 ZB_AGENT_HOST_PYTHON=\"$py\" unshare --map-current-user --keep-caps --net --pid --fork --kill-child --mount-proc sh -c 'ip link set lo up || exit 97; \"$0\" -X dev -m unittest -v ms8_hook_sandbox_case_test; exit $?' \"$py\" 2>&1); rc=$?; printf '%s\\n' \"$out\"; [ $rc -eq 0 ] || exit $rc; if printf '%s\\n' \"$out\" | grep -q ResourceWarning; then echo 'ms8_hook_sandbox_case_test: ResourceWarning' >&2; exit 1; fi",
+    });
+    mac_census_step.dependOn(&ms8_hook_sandbox_case_unit.step);
     // The R1 case names which owned-group stop proof failed, as a fixed code only (e567a51 Macs). Fakes only.
     const ms6_hard_gate_r1_reason_unit = b.addSystemCommand(&.{
         "sh",
@@ -3388,6 +3396,7 @@ pub fn build(b: *std.Build) void {
     if (target.result.os.tag == .linux) test_step.dependOn(&ms5_1b_skipped_link_bytes_unit.step);
     if (target.result.os.tag == .linux) test_step.dependOn(&ms5_1b_hard_gate_case_unit.step);
     if (target.result.os.tag == .linux) test_step.dependOn(&ms5_1_hard_gate_case_unit.step);
+    if (target.result.os.tag == .linux) test_step.dependOn(&ms8_hook_sandbox_case_unit.step);
     if (target.result.os.tag == .linux) test_step.dependOn(&ms6_hard_gate_r1_reason_unit.step);
     if (target.result.os.tag == .linux) test_step.dependOn(&ms6_hard_gate_r1_reason_modes_unit.step);
     if (target.result.os.tag == .linux) test_step.dependOn(&ms6_hard_gate_entry_unit.step);

@@ -9,9 +9,9 @@ tests/mac/hard_gate/hard_gate_driver.py --manifest <MANIFEST.json> <cases dir>:
   then NO case is imported at all (each fake case below writes a sentinel when imported);
 - with an exact match, the cases run as before.
 The committed tests/mac/hard_gate/MANIFEST.json lists exactly the reviewed set, case_ms5_spawn_io.py,
-case_ms6_3_fd3_cli.py, case_ms6_6b_r1_chain.py, case_ms5_1b_skipped_links.py and case_ms5_1_s3a_links.py (RoseCat
-7933/7934), with their current hashes; nothing of the MS6.5 reaper is in the cases dir or the manifest (RoseCat 7250
-#3, 7244).
+case_ms6_3_fd3_cli.py, case_ms6_6b_r1_chain.py, case_ms5_1b_skipped_links.py, case_ms5_1_s3a_links.py
+(RoseCat 7933/7934) and case_ms8_hook_sandbox.py (RoseCat 7973), with their current hashes; nothing of the MS6.5
+reaper is in the cases dir or the manifest (RoseCat 7250 #3, 7244).
 
 No process signal: the fake cases only check(True).
 Registered (build.zig: test-mac-census and the Linux test step), inside the namespace.
@@ -32,7 +32,7 @@ HARD_GATE = REPO / "tests" / "mac" / "hard_gate"
 DRIVER = HARD_GATE / "hard_gate_driver.py"
 MANIFEST = HARD_GATE / "MANIFEST.json"
 REVIEWED = {"case_ms5_spawn_io.py", "case_ms6_3_fd3_cli.py", "case_ms6_6b_r1_chain.py", "case_ms5_1b_skipped_links.py",
-            "case_ms5_1_s3a_links.py"}
+            "case_ms5_1_s3a_links.py", "case_ms8_hook_sandbox.py"}
 
 
 def sha(path):

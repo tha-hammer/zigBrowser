@@ -1,4 +1,4 @@
-"""The zb-hook-run Darwin hard-gate case (tests/mac/hard_gate_pending/case_ms8_hook_sandbox.py), on Linux with fakes
+"""The zb-hook-run Darwin hard-gate case (tests/mac/hard_gate/case_ms8_hook_sandbox.py), on Linux with fakes
 only: the repo's zb_agent_host is the fake staged prefix (its setup.PLATFORM set to "darwin", so the real provision
 writes runtime/hook.sb with the fixed bridges 51091/31337), and h.spawn_group is a fake that plays the sandboxed hook
 instead of running sandbox-exec (Linux has none). The case listens on the real bridge ports, so this runs in a network
@@ -17,11 +17,13 @@ namespace of its own (its loopback up), never against the host's 51091/31337:
 - the launcher keeps fd 5 inheritable even when its own open of the marker returns 5 (fds 3 and 4 taken): run for real
   under /bin/sh with 3 and 4 open, its exec'd checker sees fd 5 as the marker (RoseCat 7969 #2);
 - a listener that fails to bind after others were made leaves none of them open (RoseCat 7969 #5).
-No process is started and no signal is sent (os.kill / os.killpg raise); the fake hook's connections go to the case's
-own listeners on the namespace's loopback. Run under the pinned agent-host python (setup imports the SDK):
+No signal is sent (os.kill / os.killpg raise). The only processes started are the launcher row's /bin/sh and python,
+which exit by themselves; the fake hook's connections go to the case's own listeners on the namespace's loopback.
+Run under the pinned agent-host python (setup imports the SDK):
   cd tests/e2e && unshare --map-current-user --keep-caps --net --pid --fork --kill-child --mount-proc \\
     sh -c 'ip link set lo up && "$ZB_AGENT_HOST_PYTHON" -X dev -m unittest -v ms8_hook_sandbox_case_test; exit $?'
-Unregistered until the green."""
+Registered (build.zig: test-mac-census and the Linux test step), each run in its own network
+namespace."""
 import contextlib
 import importlib.util
 import io
@@ -38,7 +40,7 @@ from pathlib import Path
 from unittest import mock
 
 REPO = Path(__file__).resolve().parents[2]
-CASE = REPO / "tests" / "mac" / "hard_gate_pending" / "case_ms8_hook_sandbox.py"
+CASE = REPO / "tests" / "mac" / "hard_gate" / "case_ms8_hook_sandbox.py"
 VARIANTS = ("bridge refused", "api reached", "env leaked", "marker missing", "grandchild missing", "survivor",
             "ps fails", "exit nonzero", "no setsid", "api timeout", "public unreachable", "marker env leak",
             "allowlist widened")
