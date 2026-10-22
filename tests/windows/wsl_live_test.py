@@ -39,9 +39,14 @@ This commit also closes the three c101b1e follow-up gaps (still NOT run):
   terminate, unregister, in cleanup too), so a planted/pre-existing name is blocked from all of them.
 - (c101b1e #2) `_await_listener_gone` returns a tagged GONE|NOT_OURS result, fails CLOSED on UNREADABLE and
   on any ssh/census error (the CIM query emits a deterministic `GONE`/`UNREADABLE`/`CMD=<cmdline>` token).
-- (c101b1e #3) `_reap_no_signal` is a reaped-or-fail contract: it blocks on `wait()`, raises on timeout, and
-  never returns while the handle may still be alive — and never signals a host pid.
-All three have offline `WslSpikeOracle` rows.
+- (c101b1e #3 / mail 7680 #3) `_reap_no_signal` is a reaped-or-fail contract: SSH carries dead-peer bounds
+  (`ServerAliveInterval=5`/`CountMax=3`) and the reap waits through the FULL known remote bound
+  (`REAP_BOUND_S` = the in-distro `sleep` bound + the dead-peer bound + slack) before raising, so even across
+  a connection failure the local ssh client exits and is reaped; it never returns while the handle may be
+  alive and never signals a host pid. Additionally the LIVE run is refused unless launched inside a private
+  PID-namespace backstop (`unshare --user --map-current-user --pid --fork --kill-child --mount-proc`, which
+  runs the test as PID 1 and sets `ZB_WSL_PIDNS_BACKSTOP=1`); setUpClass fails closed otherwise.
+All of these have offline `WslSpikeOracle` rows.
 
 C1 stdio/pipe-to-fd bootstrap probe (design embodied in `test_wsl_topology`): the Windows parent launches
 `wsl.exe -d <distro> -u zbagent -e python3 c1boot.py` with redirected stdin/stdout; the capability secret is
@@ -80,6 +85,13 @@ ROOTFS = os.environ.get("ZB_WSL_ROOTFS")
 NONROOT = "zbagent"
 ADMIN_GROUPS = {"root", "wheel", "adm", "sudo"}
 
+# Keepalive / reap bounds (c101b1e #3 / mail 7680 #3). The in-distro keepalive `sleep` is bounded; a dead SSH
+# peer is bounded by ServerAlive (interval*countmax ~= 15 s) so the LOCAL ssh client cannot hang forever even
+# across a connection failure; the reap then waits through the FULL known remote bound before failing.
+KEEPALIVE_SLEEP_S = 150
+SSH_DEAD_PEER_S = 15  # ServerAliveInterval=5 * ServerAliveCountMax=3
+REAP_BOUND_S = KEEPALIVE_SLEEP_S + SSH_DEAD_PEER_S + 30  # wait through the remote bound + dead-peer + slack
+
 
 def _scrub(*cmd):
     return ["env", "-u", "DISPLAY", "-u", "WAYLAND_DISPLAY", "-u", "XAUTHORITY", *cmd]
@@ -88,7 +100,8 @@ def _scrub(*cmd):
 def _ssh_base():
     return ["ssh", "-i", KEY, "-o", "IdentitiesOnly=yes", "-o", "StrictHostKeyChecking=yes",
             "-o", f"UserKnownHostsFile={KH}", "-o", "BatchMode=yes", "-o", "ConnectTimeout=25",
-            "-o", "ConnectionAttempts=3", "-p", PORT, f"{USER}@{HOST}"]
+            "-o", "ConnectionAttempts=3", "-o", "ServerAliveInterval=5", "-o", "ServerAliveCountMax=3",
+            "-p", PORT, f"{USER}@{HOST}"]
 
 
 def ssh(*args, timeout=180, stdin_text=None):
@@ -205,6 +218,19 @@ class WslTopologyLive(unittest.TestCase):
             raise unittest.SkipTest("ZB_WIN11_HOST unset — WSL2 live topology spike skipped (offline oracle still runs)")
         if not ROOTFS or not os.path.isfile(ROOTFS):
             raise unittest.SkipTest("ZB_WSL_ROOTFS unset/missing on an opted-in host — point it at the pinned Alpine minirootfs")
+        # (mail 7680 #3) the live run MUST be launched inside a private PID namespace as a local backstop, so any
+        # local child (keepalive ssh, etc.) is reaped with the namespace even if our own teardown fails. The
+        # approved launch wrapper is:
+        #   unshare --user --map-current-user --pid --fork --kill-child --mount-proc \
+        #     env ZB_WSL_PIDNS_BACKSTOP=1 python3 tests/windows/wsl_live_test.py
+        # With --fork --mount-proc the command runs as PID 1 of the new namespace; we require BOTH the marker
+        # (documented intent) AND pid==1 (objective proof) and fail closed otherwise. No raw PID signalling is
+        # ever used; this namespace is only a containment backstop.
+        if os.environ.get("ZB_WSL_PIDNS_BACKSTOP") != "1" or os.getpid() != 1:
+            raise AssertionError(
+                "refusing the live run outside a private PID namespace backstop; launch with: "
+                "unshare --user --map-current-user --pid --fork --kill-child --mount-proc "
+                "env ZB_WSL_PIDNS_BACKSTOP=1 python3 tests/windows/wsl_live_test.py")
         h = hashlib.sha256()
         with open(ROOTFS, "rb") as f:
             for chunk in iter(lambda: f.read(1 << 20), b""):
@@ -297,15 +323,17 @@ class WslTopologyLive(unittest.TestCase):
 
     @staticmethod
     def _reap_no_signal(p):
-        # (c101b1e #3) reaped-or-fail contract, NO signal ever sent to a host pid. The remote `wsl --terminate`
-        # already ended the in-distro `sleep`, so the ssh client reaches EOF and exits. `wait()` returns ONLY
-        # once the child has actually exited (i.e. been reaped); on timeout we do NOT signal it and we RAISE
-        # (its remote `sleep` is itself bounded, so it is a bounded natural exit we surface, never swallow).
+        # (c101b1e #3 / mail 7680 #3) reaped-or-fail contract, NO signal ever sent to a host pid. We wait
+        # through the FULL known remote bound (REAP_BOUND_S = the in-distro `sleep` bound + the SSH dead-peer
+        # bound + slack): `wsl --terminate` normally ends the `sleep` so this returns at once, but even if the
+        # terminate failed or the peer died the keepalive is bounded by the remote `sleep` and by ServerAlive,
+        # so the local ssh client exits within REAP_BOUND_S and `wait()` REAPS it. Only if it is still alive
+        # past that whole bound do we RAISE (surfaced, never swallowed); we never fall back to a signal.
         try:
-            p.wait(timeout=20)  # blocks until the child exits; returning here means it is reaped
+            p.wait(timeout=REAP_BOUND_S)  # blocks until the child exits; returning here means it is reaped
         except subprocess.TimeoutExpired:
-            raise AssertionError("keepalive ssh still alive after remote distro terminate; not reaped "
-                                 "(no signal sent; bounded natural exit pending)")
+            raise AssertionError(f"keepalive ssh still alive after the full remote bound ({REAP_BOUND_S}s); "
+                                 f"not reaped (no signal sent)")
         if p.poll() is None:  # contract: must never return while the handle may still be alive
             raise AssertionError("keepalive ssh wait() returned but handle still reports alive")
 
@@ -350,7 +378,7 @@ class WslTopologyLive(unittest.TestCase):
         return out
 
     def _pin(self, distro):
-        p = ssh_bg("wsl", "-d", distro, "-u", "root", "-e", "/bin/sleep", "150")
+        p = ssh_bg("wsl", "-d", distro, "-u", "root", "-e", "/bin/sleep", str(KEEPALIVE_SLEEP_S))
         self.keepalives.append(p)
         return p
 
@@ -805,7 +833,9 @@ class WslSpikeOracle(unittest.TestCase):
                 self.wait_raises = wait_raises
                 self.alive_after_wait = alive_after_wait
                 self.signalled = []
+                self.wait_timeout = None
             def wait(self, timeout=None):
+                self.wait_timeout = timeout
                 if self.wait_raises:
                     raise subprocess.TimeoutExpired(cmd="ssh", timeout=timeout)
                 return 0
@@ -816,10 +846,12 @@ class WslSpikeOracle(unittest.TestCase):
             def kill(self):
                 self.signalled.append("kill")
         reap = WslTopologyLive._reap_no_signal
-        # reaped cleanly -> returns, no signal sent
+        # reaped cleanly -> returns, no signal sent, and it waited through the FULL known remote bound
         f_ok = _Fake()
         reap(f_ok)
         self.assertEqual(f_ok.signalled, [], "no signal may be sent to a host pid")
+        self.assertGreaterEqual(f_ok.wait_timeout, KEEPALIVE_SLEEP_S,
+                                "the reap must wait through the full known remote bound")
         # still alive at the bound -> raise, still no signal
         f_to = _Fake(wait_raises=True)
         with self.assertRaises(AssertionError):
