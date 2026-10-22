@@ -36715,3 +36715,147 @@ portable proof remained **BLOCKED-for-tests** until aggregate registration.
 That registration is supplied later by `84a9587` / `bf57707`, after the still
 open `3a8a091` startup-owner slice, so it is not present in a prefix ending at
 `b5a08e4` and cannot be used to skip that linear boundary.
+
+## R3 exact-prefix push-safety audit after `e50c5de`
+
+This audit **supersedes only the push-boundary conclusion in the preceding
+section**; it does not change any slice's implementation-acceptance or
+test-completeness verdict. The owner-confirmed R3 separates those two
+questions: a valid, unregistered failing-first test may remain
+`BLOCKED-FOR-TESTS` as a slice artifact without making the repository prefix
+unsafe to publish. A prefix stops only at a known product defect, a safety or
+security risk in usable bytes, a red registered gate, or proof that cannot
+fail for a claim the prefix makes.
+
+I audited the 114 first-parent commits after `e50c5de` through `2dcf84e` at
+their exact final-prefix state. The earlier linear freeze was too strict:
+
+- `b5a08e4`'s aggregate proof and token-store hardening are present later in
+  the same prefix in `84a9587` and `bf57707`. The final prefix has no known red
+  registered gate from that refactor.
+- The `3a8a091`, `caa7999`, `0245193`, `bce7d09`, `e0f3d8e` and `3dc35cc`
+  startup-owner files remain unregistered reds. Their incompleteness still
+  blocks MS6.5.1 startup-owner **closure**, not publication of these inert test
+  bytes.
+- `2b85811` / `84a9587` / `bf57707` supply the registered portable token-store
+  foundation. `2e5a0fb`'s CredMan/DPAPI object is still an unwired skeleton,
+  not a shipped call path; its accidentally swept executable-root recovery
+  imports are removed by `d156ea5`, and `bbcdb29` removes the weak oracle from
+  the aggregate gate. WS6.1(c) remains incomplete, but there is no reachable
+  credential behavior or known red registered step in this prefix.
+- The AppKit card/bubble, WS7, WS5.5b-2 and S8e failing-first files named in
+  the earlier reviews remain valid unregistered reds unless a later green
+  explicitly registers them. Their first-round test-design findings remain
+  open. The safety-sensitive worker/self-check rows in this prefix received
+  their private-PID-namespace fix-forwards before the boundary. The registered
+  production foundations present at the boundary have no outstanding known
+  red step or identified product defect; later real-platform acceptance is
+  still required for their slice/release claims.
+- `2a851b5` is a process-free unregistered red. `24ef54c` is also push-safe at
+  this exact prefix: its deliberately missing onboarding symbol makes the test
+  fail at link time, so its not-yet-safe disposable-Keychain runtime cannot be
+  produced or executed. The prior **do not run on either Mac** ruling remains
+  binding until its three-point safety minimum is fixed.
+
+**Newest contiguous R3 push-safe SHA: `2dcf84e`**
+(`2dcf84ef418d3f638f6720b64f318ee6442ce785`). This is a publication verdict,
+not cumulative acceptance of the parked slices above.
+
+**First genuinely push-unsafe commit: `b9d7a2f`**
+(`b9d7a2f588d4e735ffd2f345722856e5a4ce893f`). Unlike an unregistered red that
+cannot execute, this commit adds a complete reusable remote-Mac harness whose
+current bytes can be invoked. Its existing R4 review found actual safety and
+fail-open defects: broad writable Darwin temp/cache and `/dev` scope,
+`(allow default)` with incomplete execution/network/credential/UI isolation,
+discarded remote-leg status through `... | tee ... || true`, and no sufficient
+signal-free ownership proof for escaped descendants. Its digest was rejected
+and no Mac run was authorized. Those are R3 safety and proof-that-cannot-fail
+conditions in usable operational bytes, so the push-safe prefix stops
+immediately before it. The five-item R4 minimum already recorded above is the
+complete fix requirement; test-design refinements outside that minimum are
+SHOULDs under R2/R3.
+
+## MS8.2a helper-core red fix-forward (`7a04182`)
+
+**APPROVED AS A VALID RED; push-safe under R3, but the MS8.2a part-1 slice is
+not yet complete.** The unregistered test remains process-free and cannot
+compile until the portable core exists. It therefore changes neither shipped
+behavior nor a registered gate.
+
+The commit closes the complete `c5cc3b2` first-round minimum. `Rec.expect`
+asserts exact ordered event lists rather than membership/counts, and the rows
+pin the required lock/check/start/open/prompt/result/Stop/close/crash sequences
+and frame ids. The new two-window path uses distinct sessions and prompts,
+keeps the tool result and lifecycle scoped to their owning window, and injects
+the old prompt's late delta, message, result and prompt-scoped error after the
+new prompt starts. Those frames cannot append to, replace, end or release the
+new prompt, and one window's Stop/close/end cannot affect the other. This is
+the right failing-first contract for the later portable green; no registration
+or platform run is required while it is red.
+
+## R4 compile-only Mac harness fix-forward (`153ebb1`)
+
+**APPROVED; digest `85b46b9b213b3b596e568a36e0981a7645ee6a7478ebd34069a86a499e89a81f`
+is approved for one bounded compile-only run on the Intel and Apple Silicon
+Macs at exact source commit `153ebb1ab6ea4016c3b2b850c99304b736b2603d`.**
+
+The fix-forward closes the five-item `a8a8a37` minimum:
+
+1. All run outputs, HOME/TMPDIR/cache/prefix/export/log bytes are below the
+   unique validated run root. Real Darwin temp/cache writes and broad `/dev`
+   writes are gone; only the root and `/dev/null` are writable. HOME,
+   toolchain/developer paths, tar members and stale roots fail closed.
+2. The dedicated `mac-compile-only` build step installs/links the executable
+   and shim without running them. The Seatbelt profile denies every network
+   operation and non-self signal, sensitive real-home/Keychain reads, UI and
+   credential services, and execution outside the reviewed toolchain/build
+   runner. The live leg must first pass one confined-write positive and eight
+   denial canaries, including product/cache execution, TCP, real-home write
+   and credential/Keychain reads, before compilation begins.
+3. Each architecture uses one SSH pipeline, and acceptance requires both its
+   real zero status and the exact terminal PASS row. The former `|| true`
+   status loss is gone.
+4. Every confined step holds an ownership pipe. The harness waits boundedly
+   for EOF, performs before/after process and run-marker censuses, reports but
+   never signals a survivor, validates root deletion, and refuses stale roots.
+5. The hostless safety suite is registered as `test-mac-compile-only`. I ran
+   both the exact script directly and the registered
+   `zig build test-mac-compile-only -j1` step with DISPLAY, WAYLAND_DISPLAY and
+   XAUTHORITY removed. Both passed all 25 cases, including the 16 per-run
+   denial observations, SSH-status mutant, every forbidden-route mutant,
+   stale/held/escaped ownership cases, HOME/root leaks and build failure.
+   `bash -n` and `git diff --check` also passed.
+
+Run conditions:
+
+- run the committed bytes, not a working-tree file, with the approved digest;
+- unset `ZB_MAC_HOST`, `ZB_MAC_ARM_HOST`, `ZB_MAC_KEY` and
+  `ZB_MAC_ARM_KEY` so the reviewed default Intel/Apple-Silicon endpoints and
+  key are used; use source revision
+  `153ebb1ab6ea4016c3b2b850c99304b736b2603d` exactly;
+- run no other job on either Mac concurrently, install nothing, and do not
+  broaden the source paths, build step, hosts or sandbox profile;
+- accept only zero exit plus the exact final both-arches PASS, native
+  x86_64/arm64 artifact rows, all denial canaries, no survivor, deleted run
+  roots and no new HOME entry; stop on the first failure;
+- if a stale root or survivor is reported, do not signal it or delete it
+  blindly—retain the diagnostic and inspect it before any later cleanup/run.
+
+The exact invocation is:
+
+```sh
+env -u ZB_MAC_HOST -u ZB_MAC_ARM_HOST -u ZB_MAC_KEY -u ZB_MAC_ARM_KEY \
+  ZB_COMPILE_HARNESS_SHA256=85b46b9b213b3b596e568a36e0981a7645ee6a7478ebd34069a86a499e89a81f \
+  bash -c "$(git show 153ebb1:tests/mac/mac_compile_only.sh)" \
+  mac-compile-only 153ebb1ab6ea4016c3b2b850c99304b736b2603d
+```
+
+This is compile/link evidence only. It makes no runtime, UI, Keychain,
+containment or release claim.
+
+With this cumulative repair, `b9d7a2f` no longer stops the final-prefix audit.
+The intervening `5e71d67` and `7a04182` files are valid unregistered reds;
+`a5745b9` has the recorded bounded Win11 acceptance. **Newest contiguous R3
+push-safe SHA from `e50c5de`: `153ebb1`**
+(`153ebb1ab6ea4016c3b2b850c99304b736b2603d`). There is no later commit in the
+current first-parent history, so no next push-unsafe SHA is presently named.
