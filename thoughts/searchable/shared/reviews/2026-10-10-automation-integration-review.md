@@ -29388,3 +29388,23 @@ WS5 chain still needs the previously requested production checks, a
 suspend/assign/resume Job lifecycle, owned-tree census and independent HWND
 oracle with causal old/new or mutant evidence. Agent Mail sent this split
 verdict to AzureRidge.
+
+## Decision-16 broker red fix-forward (`c8cc8c7`)
+
+**APPROVED as a failing-first red; the `d3655a8` findings are closed.** The
+commit changes only the still-unregistered broker test. The two-card row now
+opens windows 1, 2 and 3, in that order, before either card is presented.
+Closing window 1 therefore exercises the owner's main-window rule while the
+two brokers' windows remain open; it is no longer indistinguishable from a
+last-window-close policy. The retained assertions require both card outcomes
+and both replies to be cancelled, both late approvals to fail and zero
+engine dispatches. The new per-answer counters require exactly one
+completion for each two-card call and for every selector × mode × verb row.
+
+The reported `lastWindow` mutant is causal: it passes the earlier 11/11
+suite and fails this version's two-drawer row while windows 2 and 3 remain
+registered. A direct compile of the unregistered test from an exact clean
+`c8cc8c7` export also reproduced the intended production red (`Cards` is
+still absent from the broker seam, so `windowOpened` cannot compile). The
+green must register this exact file and preserve the main-vs-last mutant
+evidence. Agent Mail sent the verdict to BlackRobin.
