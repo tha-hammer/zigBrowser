@@ -56,7 +56,10 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
 SECRETS_STATES = ("empty", "connected-secret-service", "connected-file", "no-keyring", "rejected")
-SECRETS_CONTROLS = ("entry", "save", "remove", "file", "signin", "code", "send-code", "cancel", "copy-link")
+SECRETS_CONTROLS = ("entry", "save", "remove", "file", "signin", "code", "send-code", "cancel", "copy-link",
+                    "navapproval")  # S8 decision 16's Navigation approval drop-down
+# `SECRETS navapproval <value> <ok|unreadable>` and `SECRETS navapproval-refused <value>` (decision 16).
+NAV_APPROVAL_VALUES = ("yes", "no", "conditional")
 # `SECRETS login <state>` (S6b1, rev 16.18.3): the sign-in's state; agent_login_test.py drives it.
 LOGIN_STATES = ("starting", "need-code", "done", "cancelled") + tuple(
     f"error-{w}" for w in ("cli", "timeout", "cancelled", "shape", "protocol", "exchange", "network", "store"))
@@ -78,7 +81,10 @@ SECRETS_TEXTS = ("No token is stored.", "Connected. The token is stored in the s
                  "Signing in...", "Paste the code from the sign-in page.",
                  "Signed in. The token is stored in the system keyring.",
                  "Signed in. The token is stored in a private file.", "That doesn't look like a sign-in code.",
-                 "Sign-in failed.", "Sign-in cancelled.")
+                 "Sign-in failed.", "Sign-in cancelled.",
+                 # The Navigation approval drop-down (S8 decision 16)
+                 "Navigation approval setting is unreadable; asking for every navigation.",
+                 "The navigation approval setting could not be saved.")
 
 
 # The canary's random part: uppercase letters that are not hex, not in any row tag (DRAWER,
@@ -125,6 +131,9 @@ def parse_secrets_row(line: str) -> tuple[str, tuple[str, ...]]:
          (kind == "reason" and len(fields) == 1 and fields[0] in LOGIN_REASONS) or \
          (kind == "sensitive" and len(fields) == 2 and fields[0] in ("entry", "save", "remove", "file", "signin")
           and fields[1] in ("0", "1")) or \
+         (kind == "navapproval" and len(fields) == 2 and fields[0] in NAV_APPROVAL_VALUES
+          and fields[1] in ("ok", "unreadable")) or \
+         (kind == "navapproval-refused" and len(fields) == 1 and fields[0] in NAV_APPROVAL_VALUES) or \
          (kind == "rect" and len(fields) == 2 and fields[0] in SECRETS_CONTROLS
           and re.fullmatch(r"-?\d+,-?\d+,\d+,\d+", fields[1]))
     if not ok:
