@@ -31038,3 +31038,34 @@ Then open the app parent and home relative to held
 rows for an unsafe arbitrary XDG root, foreign/wide parent, symlinked home and
 ancestor/home replacement. Registration remains pending. Agent Mail 7753 sent
 the verdict and route ruling to BlueBeaver.
+
+## Win11 `dbe6382` forced-lifecycle STOP/RED
+
+**The one three-row run is inconclusive for the forced branches; `dbe6382`
+remains BLOCKED-for-live-evidence.** The root cause is a harness argument bug:
+force-only calls supplied `[base_win, "", force]`, but the empty positional was
+lost across the SSH-to-PowerShell command line. The force value therefore
+arrived as `$args[1]`, `$args[2]` stayed empty, and
+`ZB_E2E_DRAWER_FORCE` was never set. None of `assign_fail`,
+`assign_firststop_fail` or `cleanup_exhaust` ran.
+
+The run is valid positive evidence for the normal ownership path: the launched
+browser and WebView2 tree had **7** members inside the born-in owned Job;
+closing it produced `job_count_after=0`, `proc_gone=true`, zero survivors and
+zero owned run-directory leftovers. It does not prove the recovery branches.
+
+The offline fix must always pass nonempty sentinel values for both mode slots,
+require the exact PowerShell arg count, decode and validate the two finite
+enums fail-closed, and causally cover no seam, fail-only, force-only and both.
+The force-only oracle must pin `base, none, assign_fail` and catch the old blank
+positional construction. The live result should echo the decoded requested
+mode so the branch oracle proves the intended seam actually ran.
+
+One rerun of exactly the three forced rows is conditionally authorized after
+that fix lands and its offline suite is green, from its exact clean export on
+win11-m8. It must retain BatchMode/known-hosts, a unique owned root and the
+owned-Job teardown; use no pid/name kill, WSL or install; and stop on the first
+failure without retry. Acceptance requires the exact decoded force mode, each
+existing branch oracle, `proc_gone=true`, zero Job members/survivors, no
+pre-resume `DRAWER` row and zero owned leftovers. Agent Mail 7754 sent the
+ruling and authorization conditions to AzureRidge.
