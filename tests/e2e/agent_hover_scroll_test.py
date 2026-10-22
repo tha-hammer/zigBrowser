@@ -18,12 +18,17 @@ records (read through the socket's page.evaluate, the oracle, never to act):
 - no card in any of them: no `DRAWER approval` row in window 1, no notification;
 - native-refused: `hover` with `options: {input: native}` (it would move the user's own pointer)
   is an error before the browser acts: the CLI's schema refuses it (the broker's own refusal is
-  tests/agent_broker_hover_test.zig), and `#menu` gets no `mouseover`.
+  tests/agent_broker_hover_test.zig), and `#menu` gets no `mouseover`;
+- scroll-empty, scroll-mixed (RoseCat 5a204f3 #1): `scroll {}` and `scroll {selector, y}` are
+  schema errors before the browser acts, and the page does not move; scroll is offered.
 
-Like its siblings it re-execs itself sealed (bwrap: a network namespace of its own), and first
-into a PID namespace of its own, since it launches and stops browsers:
+It launches and stops browsers, and its teardown may signal them (stop_browser's killpg), so it
+runs only in a PID namespace the kernel proves is below its launcher's (RoseCat 5a204f3 #2):
   python3 tests/e2e/agent_hover_scroll_test.py --binary zig-out/bin/zigBrowser
-(it wraps itself in `unshare --user --map-current-user --pid --fork --kill-child --mount-proc`).
+re-execs itself as `sh -c 'exec 9</proc/self/ns/pid; exec bwrap --unshare-net ... -- unshare
+--user --map-root-user --pid --fork --mount-proc sh -c "..." sh env ZB_OUTER_PIDNS_FD=9 python3
+<this> --sealed-child ...'`, and the child checks pidns_guard.private_pid_namespace() before
+any browser starts. `--sealed-child` from a caller without that proof fails closed (exit 1).
 Unregistered until its green."""
 
 from __future__ import annotations
@@ -176,26 +181,66 @@ def case_native_refused(binary: Path, tmp: Path, check) -> None:
         w.close()
 
 
+def scroll_refused(binary: Path, tmp: Path, check, label: str, args: dict) -> None:
+    """A scroll shape the broker refuses is refused by the CLI's schema first: an error, and
+    the page does not move."""
+    w = World(binary, tmp, label, {label: {"name": SCROLL, "input": args}})
+    try:
+        if not check(w.b.wait_page(), "the page loaded", w.b):
+            return
+        block = w.ask(check, label)
+        if block is None:
+            return
+        check(block.get("is_error") is True and "validation" in result_text(block).lower(),
+              f"scroll {args} is refused by its schema ({result_text(block)[:160]!r})")
+        y = w.b.ev("window.scrollY")
+        check(y == 0, f"the page did not move ({y})")
+        tools = {t.get("name") for t in w.fake.api.messages_requests()[0]["body"].get("tools") or []}
+        check(SCROLL in tools, f"scroll is offered ({sorted(tools)})")
+        w.no_card(check, label)
+    finally:
+        w.close()
+
+
+def case_scroll_empty(binary: Path, tmp: Path, check) -> None:
+    scroll_refused(binary, tmp, check, "scroll-empty", {})
+
+
+def case_scroll_mixed(binary: Path, tmp: Path, check) -> None:
+    scroll_refused(binary, tmp, check, "scroll-mixed", {"selector": "css=#bottom", "y": 900})
+
+
 CASES = {
     "hover": case_hover,
     "scroll-offset": case_scroll_offset,
     "scroll-into-view": case_scroll_into_view,
     "native-refused": case_native_refused,
+    "scroll-empty": case_scroll_empty,
+    "scroll-mixed": case_scroll_mixed,
 }
 
 
+# The launcher (RoseCat 5a204f3 #2): a shell holds this PID namespace as fd 9, then bwrap gives
+# a network namespace of its own and unshare a user and PID namespace below the held one. The
+# shell inside stays pid 1, so an orphan is adopted by it, never by the test.
+LAUNCH = ('script=$1; shift; exec 9</proc/self/ns/pid; exec /usr/bin/bwrap --unshare-net --die-with-parent --dev-bind / / --proc /proc -- '
+          'unshare --user --map-root-user --pid --fork --mount-proc sh -c "\\"\\$@\\"; exit \\$?" sh '
+          'env ZB_OUTER_PIDNS_FD=9 "$0" "$script" --sealed-child "$@"')
+
+
 def main() -> int:
-    if "--pid-ns" not in sys.argv and "--sealed-child" not in sys.argv:
-        done = subprocess.run(["unshare", "--user", "--map-current-user", "--pid", "--fork", "--kill-child", "--mount-proc",
-                               sys.executable, str(Path(__file__).resolve()), "--pid-ns", *sys.argv[1:]])
-        return done.returncode
     if "--sealed-child" not in sys.argv:
-        args = [a for a in sys.argv[1:] if a != "--pid-ns"]
-        done = subprocess.run(["/usr/bin/bwrap", "--unshare-net", "--die-with-parent", "--dev-bind", "/", "/",
-                               "--proc", "/proc", "--", sys.executable, str(Path(__file__).resolve()),
-                               "--sealed-child", *args])
-        return done.returncode
+        args = sys.argv[1:]
+        return subprocess.run(["sh", "-c", LAUNCH, sys.executable, str(Path(__file__).resolve()), *args]).returncode
     sys.argv.remove("--sealed-child")
+    # The marker is not proof: the kernel must show this process below the launcher's held
+    # namespace (pidns_guard) before any browser starts, since teardown may signal (killpg).
+    sys.path.insert(0, str(HERE.parents[1] / "agent" / "host" / "tests"))
+    from pidns_guard import private_pid_namespace
+    proven, why = private_pid_namespace()
+    if not proven:
+        print(f"FAIL refusing to start a browser outside a proven private PID namespace: {why}", flush=True)
+        return 1
     from agent_common import run_main
     try:
         return run_main(__doc__, CASES)

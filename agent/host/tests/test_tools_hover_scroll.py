@@ -2,11 +2,17 @@
 `hover` and `scroll`, the two act-on-page tools that need no card.
 
 - The MCP server `zigbrowser` lists S7.5's six read tools, `hover` (exactly `{selector}`) and
-  `scroll` (`{selector}` or `{x?, y?}`, integers in [-100000, 100000]), then decision 16's
-  `navigate` and `reload`; every schema is `additionalProperties: false`, so the CLI refuses a
-  model's `options` (native input would move the user's own pointer), `window_id`, `strict`,
-  `timeout_ms` or `approved` before the browser sees them (the broker refuses them too,
-  tests/agent_broker_hover_test.zig). `allowed_tools` is those ten.
+  `scroll`, then decision 16's `navigate` and `reload`; every schema is
+  `additionalProperties: false`, so the CLI refuses a model's `options` (native input would
+  move the user's own pointer), `window_id`, `strict`, `timeout_ms` or `approved` before the
+  browser sees them (the broker refuses them too, tests/agent_broker_hover_test.zig).
+  `allowed_tools` is those ten.
+- `scroll`'s schema is exactly the broker's contract (RoseCat 5a204f3 #1): `{selector}`, or a
+  non-empty subset of `{x, y}` (integers in [-100000, 100000]), never both: `minProperties: 1`,
+  and `dependentSchemas` makes a present `selector` the only property. (No top-level `oneOf`:
+  the Messages API refuses a tool `input_schema` with a top-level oneOf/anyOf/allOf.) Through
+  the server's own tools/call path, as the CLI reaches it, `{}` and each mixed shape are
+  refused ("Input validation error") with no `tool_call` frame; the accepted shapes forward.
 - Each forwards exactly the model's args as one `tool_call`; the helper adds nothing.
 - Neither waits for a card: each keeps the read deadline (`TOOL_DEADLINE_S`), never the gated
   one (deadline + `CARD_S`).
@@ -19,6 +25,7 @@ import sys
 import time
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -33,7 +40,8 @@ OFFSET = {"type": "integer", "minimum": -100000, "maximum": 100000}
 HOVER = {"type": "object", "properties": {"selector": {"type": "string", "minLength": 1}}, "required": ["selector"],
          "additionalProperties": False}
 SCROLL = {"type": "object", "properties": {"selector": {"type": "string", "minLength": 1}, "x": OFFSET, "y": OFFSET},
-          "required": [], "additionalProperties": False}
+          "required": [], "additionalProperties": False, "minProperties": 1,
+          "dependentSchemas": {"selector": {"maxProperties": 1}}}
 ACT = {"hover": HOVER, "scroll": SCROLL}
 ORDER = [*READ, *ACT, *GATED]
 NAMES = sorted(f"mcp__zigbrowser__{n}" for n in ORDER)
@@ -54,6 +62,7 @@ class ListTest(unittest.TestCase):
             self.assertTrue(tools[name].description, name)
             selector = tools[name].input_schema["properties"]["selector"]
             self.assertIn("css=", selector.get("description", ""), name)
+            self.assertIn("text=", selector.get("description", ""), name)
 
     def test_allowed_tools_are_exactly_the_ten_names(self):
         self.assertEqual(sorted(bridge().allowed_tools()), NAMES)
@@ -74,6 +83,56 @@ class ServerListTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(sorted(got), sorted(ORDER))
         for name, schema in ACT.items():
             self.assertEqual(without_descriptions(got[name]), schema, name)
+
+
+class ServerCallTest(unittest.IsolatedAsyncioTestCase):
+    """The server's own tools/call path (the SDK's argument validation, then the handler), as
+    the CLI reaches it: a refused shape writes no tool_call frame."""
+
+    async def call(self, b, name, args):
+        handler = b.server()["instance"].get_request_handler("tools/call").handler
+        try:
+            return await asyncio.wait_for(handler(None, SimpleNamespace(name=name, arguments=args)), 2)
+        except TimeoutError:
+            self.fail(f"{name} {args} was not refused: it went on to the browser and waited for its answer")
+
+    async def test_scroll_refuses_the_empty_and_the_mixed_shapes_before_any_call(self):
+        out = Out()
+        b = bridge(out)
+        self.assertIn("scroll", [t.name for t in b.tools()])  # the refusals below must be its schema's
+        for args in ({}, {"selector": "css=#bottom", "y": 900}, {"selector": "css=#bottom", "x": 1},
+                     {"selector": "css=#bottom", "x": 1, "y": 2}, {"selector": ""}, {"y": 1.5},
+                     {"y": 100001}, {"y": 900, "options": {"input": "native"}}):
+            result = await self.call(b, "scroll", args)
+            text = "".join(getattr(c, "text", "") for c in result.content)
+            self.assertTrue(result.is_error, (args, text))
+            self.assertIn("Input validation error", text, args)
+        self.assertEqual(out.calls(), [], "a refused shape reached the browser")
+
+    async def test_hover_refuses_an_empty_or_extra_shape_before_any_call(self):
+        out = Out()
+        b = bridge(out)
+        self.assertIn("hover", [t.name for t in b.tools()])
+        for args in ({}, {"selector": ""}, {"selector": "css=#menu", "options": {"input": "native"}},
+                     {"selector": "css=#menu", "y": 1}):
+            result = await self.call(b, "hover", args)
+            self.assertTrue(result.is_error, args)
+        self.assertEqual(out.calls(), [], "a refused shape reached the browser")
+
+    async def test_the_accepted_shapes_reach_the_browser(self):
+        for name, args in (("hover", {"selector": "css=#menu"}), ("scroll", {"selector": "css=#bottom"}),
+                           ("scroll", {"x": 3}), ("scroll", {"y": -900}), ("scroll", {"x": 0, "y": 900})):
+            out = Out()
+            b = bridge(out)
+            task = asyncio.ensure_future(self.call(b, name, args))
+            for _ in range(200):
+                await asyncio.sleep(0)
+                if out.calls():
+                    break
+            calls = out.calls()
+            self.assertEqual([(c["tool"], c["args"]) for c in calls], [(f"mcp__zigbrowser__{name}", args)], args)
+            b.resolve(answer(calls[0]))
+            self.assertFalse((await task).is_error, args)
 
 
 class ForwardTest(unittest.IsolatedAsyncioTestCase):

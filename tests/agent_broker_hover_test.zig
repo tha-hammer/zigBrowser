@@ -13,7 +13,8 @@
 //!   call: both shapes, `{}`, a float, a string number, an out-of-range offset, `options`
 //!   (`input: native` would move the user's own pointer; `humanize`), `strict`, `timeout_ms`,
 //!   `approved`, `grant`, an unknown key, an empty selector. A model's `window_id` is refused
-//!   (as for every tool).
+//!   (as for every tool). A refused call also shows no card, raises no notification and leaves
+//!   no card outcome, with the selector at `yes` (RoseCat 5a204f3).
 //!
 //! On HEAD the broker has no hover or scroll: each call is "tool not available" (the red).
 
@@ -233,10 +234,12 @@ test "every selector x mode: hover and scroll run at once on the drawer's window
     }
 }
 
-test "hover and scroll take exactly their args: anything else is refused with no engine call" {
+test "hover and scroll take exactly their args: anything else is refused with no engine call, card or notification" {
     const r = try Rig.create(true);
     defer r.destroy();
-    r.app.selector = .no;
+    // `yes` (RoseCat 5a204f3 SHOULD): a refusal that wrongly went on to decision 16's gate would
+    // show a card and notify, which the end of this test counts.
+    r.app.selector = .yes;
     const bad = [_][2][]const u8{
         .{ hover_tool, "{}" },
         .{ hover_tool, "{\"selector\":\"\"}" },
@@ -280,4 +283,7 @@ test "hover and scroll take exactly their args: anything else is refused with no
     settle();
     try testing.expectEqual(@as(usize, 0), r.engine.count());
     try testing.expectEqual(@as(usize, 0), r.engine.listCount());
+    try testing.expectEqual(@as(u32, 0), r.app.shown.load(.acquire));
+    try testing.expectEqual(@as(u32, 0), r.app.notifications.load(.acquire));
+    try testing.expectEqual(@as(?approval.Outcome, null), r.cards.outcome(1));
 }
