@@ -370,8 +370,8 @@ pub const PLATFORM_START_KIND: StartKind = if (builtin.os.tag == .linux) .linux_
 /// recorded `kind` that differs from this platform's probe kind is NEVER compared — even if its value is
 /// numerically equal to a live value — and FAILS CLOSED (`.unreadable`). Same kind compares via `readStart`.
 pub fn probeLivenessTagged(pid: i32, kind: StartKind, start_sec: u64, start_usec: u64) Liveness {
-    _ = kind; // RED (0e36742 #4): ignores the recorded kind, so a cross-kind numeric equality wrongly matches
     _ = start_usec; // linux_ticks carries no usec; the darwin (sec,usec) compare lands with a darwin readStart
+    if (kind != PLATFORM_START_KIND) return .unreadable; // cross-kind: never compared, fails closed (no conversion)
     return livenessFromRead(readStart(pid), start_sec);
 }
 
