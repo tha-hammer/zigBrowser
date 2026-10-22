@@ -132,6 +132,25 @@ int main() {
   }
   check(prop_ok, "property: decode(encode(code points)) == UTF-8 over 2000 generated strings");
 
+  // cdp_json_quote: caller text (an eval body, its arg, a script) placed in a CDP request.
+  check(cdp_json_quote("a\"b\\c") == "\"a\\\"b\\\\c\"", "quote escapes quote and backslash");
+  check(cdp_json_quote(std::string("\x01\x1f\n\t", 4)) == "\"\\u0001\\u001f\\n\\t\"", "quote escapes every control character");
+  check(cdp_json_quote("\xC3\xA9\xF0\x9F\x98\x80") == "\"\xC3\xA9\xF0\x9F\x98\x80\"", "quote passes UTF-8 through");
+  check(cdp_json_quote(std::string("a\0b", 3)) == "\"a\\u0000b\"", "quote keeps an embedded NUL as \\u0000");
+  // Property: reading a quoted value back gives the exact bytes, for generated UTF-8 incl. controls.
+  bool quote_ok = true;
+  for (int i = 0; i < 2000 && quote_ok; i++) {
+    std::u32string cps;
+    for (int n = len(rng); n > 0; n--) {
+      cps.push_back(kind(rng) == 0 ? (char32_t)std::uniform_int_distribution<int>(0, 0x7F)(rng)
+                                   : (char32_t)std::uniform_int_distribution<int>(0x80, 0xD7FF)(rng));
+    }
+    std::string lit, text;
+    encode(cps, &lit, &text);
+    quote_ok = str_is("{\"k\":" + cdp_json_quote(text) + "}", {"k"}, text);
+  }
+  check(quote_ok, "property: cdp_json_string(quote(s)) == s over 2000 generated UTF-8 strings");
+
   std::printf("ASSERTS %d\n", passes);
   return failures == 0 ? 0 : 1;
 }

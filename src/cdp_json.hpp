@@ -223,6 +223,33 @@ inline bool locate(const std::string &json, std::initializer_list<const char *> 
 
 }  // namespace cdp_json_detail
 
+// `text` (UTF-8, embedded NULs allowed) as a JSON string literal for a CDP request: quote and backslash
+// escaped, every control character below 0x20 escaped, everything else passed through.
+inline std::string cdp_json_quote(const std::string &text) {
+  static const char hex[] = "0123456789abcdef";
+  std::string out = "\"";
+  for (const char ch : text) {
+    const unsigned char c = static_cast<unsigned char>(ch);
+    switch (c) {
+      case '"': out += "\\\""; break;
+      case '\\': out += "\\\\"; break;
+      case '\n': out += "\\n"; break;
+      case '\r': out += "\\r"; break;
+      case '\t': out += "\\t"; break;
+      default:
+        if (c < 0x20) {
+          out += "\\u00";
+          out += hex[c >> 4];
+          out += hex[c & 0xF];
+        } else {
+          out += ch;
+        }
+    }
+  }
+  out += '"';
+  return out;
+}
+
 // True when `path` names a value (of any type, null included) in a well-formed document.
 inline bool cdp_json_has(const std::string &json, std::initializer_list<const char *> path) {
   size_t at = 0;
