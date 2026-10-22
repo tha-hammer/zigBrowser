@@ -276,14 +276,22 @@ int zb_reaper_run_marker_state(int runtime_fd, const char *basename) {
   if (!name_is_sockdir(basename)) return ZB_RUN_MARKER_ERR;
   const int dfd = openat(runtime_fd, basename, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
   if (dfd < 0) return ZB_RUN_MARKER_ERR;
-  /* Open run.marker no-follow RELATIVE to the run dir fd. Present => a real run. ENOENT => the marker was already
-   * unlinked under the flock (C2 durable teardown phase) => finish rmdir+remove, no signal, no permanent
-   * incident. Any other error fails closed. */
-  const int mfd = openat(dfd, "run.marker", O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+  /* Open run.marker no-follow AND non-blocking RELATIVE to the run dir fd, so a FIFO (or other object that would
+   * block an O_RDONLY open) can never wedge recovery (RoseCat 7575 #2). ENOENT => the marker was already unlinked
+   * under the flock (C2 durable teardown phase) => finish rmdir+remove, no signal, no permanent incident. Any
+   * other open error (ELOOP on a symlink, etc.) fails closed. */
+  const int mfd = openat(dfd, "run.marker", O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC);
   const int e = errno;
   close(dfd);
   if (mfd < 0) return (e == ENOENT) ? ZB_RUN_MARKER_TEARDOWN : ZB_RUN_MARKER_ERR;
+  /* fstat (never a pathname stat) and accept ONLY the exact app-owned marker shape: a REGULAR file, this uid,
+   * mode 0400. A directory, FIFO, socket, device, wrong owner or wrong mode is NOT a valid marker -> fail closed,
+   * so a special object can never masquerade as PRESENT. */
+  struct stat st;
+  const int frc = fstat(mfd, &st);
   close(mfd);
+  if (frc != 0) return ZB_RUN_MARKER_ERR;
+  if (!S_ISREG(st.st_mode) || st.st_uid != getuid() || (st.st_mode & 07777) != 0400) return ZB_RUN_MARKER_ERR;
   return ZB_RUN_MARKER_PRESENT;
 }
 

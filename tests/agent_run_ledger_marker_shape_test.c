@@ -56,6 +56,12 @@ int main(void) {
   if (bd >= 0) { int m = openat(bd, "run.marker", O_CREAT | O_WRONLY | O_NOFOLLOW | O_CLOEXEC, 0644); if (m >= 0) close(m); close(bd); }
   check(zb_reaper_run_marker_state(runtime_fd, badmode) == ZB_RUN_MARKER_ERR, "a wrong-mode (0644) marker -> ERR");
 
+  /* a FIFO at run.marker must fail closed WITHOUT wedging (O_NONBLOCK): a blocking O_RDONLY open would hang here */
+  const char *asfifo = "zigbrowser-agent-5-0000000000000000";
+  int fd5 = make_run_dir(runtime_fd, asfifo);
+  if (fd5 >= 0) { mkfifoat(fd5, "run.marker", 0400); close(fd5); }
+  check(zb_reaper_run_marker_state(runtime_fd, asfifo) == ZB_RUN_MARKER_ERR, "a FIFO at run.marker -> ERR (no wedge, O_NONBLOCK)");
+
   if (failures == 0) { printf("PASS ledger-marker-shape %d checks\n", total); return 0; }
   printf("FAIL ledger-marker-shape %d of %d check(s) failed\n", failures, total);
   return 1;
