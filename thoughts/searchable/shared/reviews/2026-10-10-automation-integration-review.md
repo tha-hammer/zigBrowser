@@ -27642,3 +27642,22 @@ after the independently still-open `8a146c4` S8a red range. Thus a contiguous
 prefix cannot yet reach `7a30c5c`, `a527e72`, or `e853eaa`. The next
 independent implementation blocker is `8a146c4`; `a527e72` remains the later
 WSL2-plan blocker recorded above.
+
+## Windows decided-consistency closure (`ed73bc8`)
+
+**APPROVED.** The one-line fix replaces the stale rev-2
+`last_updated_note` with a rev-2.13 note that names the four binding owner
+decisions: per-user WiX MSI, signing deferred/non-gating, WSL2 now with the
+app-owned VM later, and the native Win32 drawer. It also correctly leaves
+OD-W2/W5/W7/W8/W9 open and preserves the old review-pass material explicitly
+as history rather than as the current update claim.
+
+Together, `a250f97`, `f810a17`, `e853eaa`, and `ed73bc8` cumulatively close
+the consistency findings on `fff7033`. This is docs-only;
+`git diff --check ed73bc8^ ed73bc8` is clean and no runtime gate was required.
+
+The newest contiguous approved push-through nevertheless remains
+**`bac895b`**. The first later commit, `3c3e354`, is closed only by
+`7a30c5c`, and reaching that closure would also include the still-open
+`8a146c4` S8a red range. Therefore `8a146c4` is the next independent blocker;
+the blocked `a527e72` WSL2 re-plan follows it.
