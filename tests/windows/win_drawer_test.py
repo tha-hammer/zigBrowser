@@ -165,6 +165,13 @@ def check_success(r):
     assert pgw == r["client_w"], f"the page must be full client width ({pgw} != {r['client_w']})"
     assert pgh > 0, "the page region above the panel must be nonempty"
     assert pgy + pgh == pany, f"the page bottom ({pgy + pgh}) must meet the panel top ({pany}) — page not behind the panel"
+    # Each selected child HWND must belong to the launched pid and be visible; the bubble must be plain-text, not
+    # just ES_READONLY (RoseCat 7868 #3) — so a stray/stale/hidden child or a rich-text bubble cannot stand in.
+    for who, key in (("panel", "panel_pid"), ("page", "page_pid"), ("bubble", "bubble_pid")):
+        assert int(r.get(key, 0)) == int(r["pid"]), \
+            f"the {who} HWND must belong to the launched pid ({r.get(key)} != {r['pid']})"
+    assert r.get("children_visible") is True, "the panel, page and bubble must all be visible"
+    assert r.get("bubble_plaintext") is True, "the bubble must be in RichEdit PLAIN-TEXT mode (TM_PLAINTEXT)"
 
 
 def check_mounted_fail(r, which):
@@ -571,42 +578,61 @@ public static class Z {
     POINT tl; tl.x = r.left; tl.y = r.top; if (!ScreenToClient(host, ref tl)) return "";
     return tl.x + "," + tl.y + "," + (r.right-r.left) + "," + (r.bottom-r.top);
   }
-  // The page (WebView2) HWND rect in host-client coords: the largest VISIBLE non-STATIC direct child.
-  public static string PageClientRect(IntPtr host) {
-    long best = -1; RECT br = new RECT();
+  // The page (WebView2) HWND: the largest VISIBLE non-STATIC direct child.
+  public static IntPtr PageHwnd(IntPtr host) {
+    long best = -1; IntPtr found = IntPtr.Zero;
     IntPtr c = GetWindow(host, GW_CHILD);
     while (c != IntPtr.Zero) {
       var cls = new StringBuilder(64); GetClassName(c, cls, 64);
       if (cls.ToString() != "STATIC" && IsWindowVisible(c)) {
-        RECT r; if (GetWindowRect(c, out r)) { long a = (long)(r.right-r.left) * (r.bottom-r.top); if (a > best) { best = a; br = r; } }
+        RECT r; if (GetWindowRect(c, out r)) { long a = (long)(r.right-r.left) * (r.bottom-r.top); if (a > best) { best = a; found = c; } }
       }
       c = GetWindow(c, GW_HWNDNEXT);
     }
-    if (best < 0) return "";
+    return found;
+  }
+  public static string PageClientRect(IntPtr host) {
+    IntPtr pg = PageHwnd(host); if (pg == IntPtr.Zero) return "";
+    RECT br; if (!GetWindowRect(pg, out br)) return "";
     POINT tl; tl.x = br.left; tl.y = br.top; if (!ScreenToClient(host, ref tl)) return "";
     return tl.x + "," + tl.y + "," + (br.right-br.left) + "," + (br.bottom-br.top);
   }
-  // Exactly one READ-ONLY RichEdit child UNDER the panel (the conversation surface). ES_READONLY = 0x0800.
-  public static bool BubblePresent(IntPtr host) {
-    IntPtr p = PanelHwnd(host); if (p == IntPtr.Zero) return false;
-    int found = 0;
+  // The READ-ONLY RichEdit child UNDER the panel (the conversation surface); IntPtr.Zero if absent/not read-only.
+  public static IntPtr BubbleHwnd(IntPtr host) {
+    IntPtr p = PanelHwnd(host); if (p == IntPtr.Zero) return IntPtr.Zero;
+    IntPtr found = IntPtr.Zero; int n = 0;
     IntPtr c = GetWindow(p, GW_CHILD);
     while (c != IntPtr.Zero) {
       var cls = new StringBuilder(64); GetClassName(c, cls, 64);
-      if (cls.ToString().IndexOf("RICHEDIT", StringComparison.OrdinalIgnoreCase) >= 0) {
-        if ((GetWindowLongW(c, -16) & 0x800) != 0) found++;   // GWL_STYLE = -16, ES_READONLY = 0x0800
-      }
+      if (cls.ToString().IndexOf("RICHEDIT", StringComparison.OrdinalIgnoreCase) >= 0
+          && (GetWindowLongW(c, -16) & 0x800) != 0) { found = c; n++; }   // GWL_STYLE=-16, ES_READONLY=0x0800
       c = GetWindow(c, GW_HWNDNEXT);
     }
-    return found == 1;
+    return n == 1 ? found : IntPtr.Zero;   // EXACTLY one read-only RichEdit
   }
+  public static bool BubblePresent(IntPtr host) { return BubbleHwnd(host) != IntPtr.Zero; }
   public static int WindowPid(IntPtr h) { uint pid; GetWindowThreadProcessId(h, out pid); return (int)pid; }
+  // RoseCat 7868 #3: each selected child HWND must belong to the launched pid, be visible, and (the bubble) be in
+  // RichEdit PLAIN-TEXT mode. 0 pid for an absent child.
+  public static int PanelPid(IntPtr host) { IntPtr p = PanelHwnd(host); return p == IntPtr.Zero ? 0 : WindowPid(p); }
+  public static int PagePid(IntPtr host) { IntPtr p = PageHwnd(host); return p == IntPtr.Zero ? 0 : WindowPid(p); }
+  public static int BubblePid(IntPtr host) { IntPtr b = BubbleHwnd(host); return b == IntPtr.Zero ? 0 : WindowPid(b); }
+  public static bool ChildrenVisible(IntPtr host) {
+    IntPtr pa = PanelHwnd(host), pg = PageHwnd(host), bu = BubbleHwnd(host);
+    return pa != IntPtr.Zero && IsWindowVisible(pa) && pg != IntPtr.Zero && IsWindowVisible(pg)
+        && bu != IntPtr.Zero && IsWindowVisible(bu);
+  }
+  public static bool BubblePlainText(IntPtr host) {
+    IntPtr b = BubbleHwnd(host); if (b == IntPtr.Zero) return false;
+    // EM_GETTEXTMODE = WM_USER+90 = 0x045A; TM_PLAINTEXT = 1.
+    return (SendMessageW(b, 0x045A, IntPtr.Zero, IntPtr.Zero).ToInt64() & 1) != 0;
+  }
   // The launched child is a member of the owned Job (born suspended into it, not started then assigned).
   public static bool BornInJob() { if (_hProc == IntPtr.Zero || Job == IntPtr.Zero) return false; bool r; return IsProcessInJob(_hProc, Job, out r) && r; }
 }
 '@
 
-$res = @{ stdout=''; stderr=''; client_w=0; client_h=0; pid=0; controls=''; icon_rect=''; icon_visible=-1; job_count_before=0; job_count_after=0; window_found=$false; terminated=$false; timed_out=$false; proc_gone=$false; first_stop_failed=$false; cleanup_exhausted=$false; launch_failed=$false; decoded_fail=$failMode; decoded_force=$forceMode; fold_elapsed_ms=0; fold_mid_w=0; panel_hidden=$false; page_redocked=$false; dpi_before_px=0; dpi_after_px=0; icon_hittest=99999; panel_rect=''; page_rect=''; bubble_present=$false; hwnd_pid=0; born_in_job=$false; error='' }
+$res = @{ stdout=''; stderr=''; client_w=0; client_h=0; pid=0; controls=''; icon_rect=''; icon_visible=-1; job_count_before=0; job_count_after=0; window_found=$false; terminated=$false; timed_out=$false; proc_gone=$false; first_stop_failed=$false; cleanup_exhausted=$false; launch_failed=$false; decoded_fail=$failMode; decoded_force=$forceMode; fold_elapsed_ms=0; fold_mid_w=0; panel_hidden=$false; page_redocked=$false; dpi_before_px=0; dpi_after_px=0; icon_hittest=99999; panel_rect=''; page_rect=''; bubble_present=$false; hwnd_pid=0; born_in_job=$false; panel_pid=0; page_pid=0; bubble_pid=0; children_visible=$false; bubble_plaintext=$false; error='' }
 # e2e-only seams, set in this process so the child inherits them (honoured only under --e2e-protocol).
 $env:ZIGBROWSER_AGENT_DRAWER_OPEN = '1'
 $env:ZIGBROWSER_AGENT_DRAWER_DEMO = 'messages:2'
@@ -684,6 +710,13 @@ try {
     $res.bubble_present = [Z]::BubblePresent($h)
     $res.hwnd_pid = [Z]::WindowPid($h)
     $res.born_in_job = [Z]::BornInJob()
+    # RoseCat 7868 #3: each selected child HWND belongs to the launched pid, is visible, and the bubble is in
+    # RichEdit plain-text mode (not just ES_READONLY).
+    $res.panel_pid = [Z]::PanelPid($h)
+    $res.page_pid = [Z]::PagePid($h)
+    $res.bubble_pid = [Z]::BubblePid($h)
+    $res.children_visible = [Z]::ChildrenVisible($h)
+    $res.bubble_plaintext = [Z]::BubblePlainText($h)
     # WS5.7 (RoseCat 7a54253 #1): drive two real WM_DPICHANGED messages — "beforeDpi,afterDpi" — and measure the
     # icon width off the real HWND after each. Driving the before-DPI first makes the baseline deterministic
     # regardless of the VM monitor's own DPI. The drawer must be closed (icon visible + sized) for this.
@@ -884,6 +917,7 @@ class WinDrawerOracle(unittest.TestCase):
             "error": "", "timed_out": False, "terminated": True, "job_count_after": 0, "job_count_before": 2,
             "window_found": True, "controls": "STATIC:|STATIC:S|STATIC:-", "client_w": 1008, "client_h": 729,
             "pid": 4242, "hwnd_pid": 4242, "born_in_job": True, "bubble_present": True,
+            "panel_pid": 4242, "page_pid": 4242, "bubble_pid": 4242, "children_visible": True, "bubble_plaintext": True,
             "panel_rect": "0,437,1008,292",  # == the emitted open rect (independent HWND read)
             "page_rect": "0,0,1008,437",     # top-left, full width, bottom (437) == panel top (437)
             "stdout": ("DRAWER\t1\ttree\thost,page,icon,panel\n"
@@ -962,6 +996,31 @@ class WinDrawerOracle(unittest.TestCase):
     def test_start_before_job_rejected(self):
         # the browser was started then assigned (a pre-Job window existed), not born suspended into the Job
         self._reject(lambda r: r.update(born_in_job=False))
+
+    def test_wrong_child_pid_rejected(self):
+        # a selected child HWND (here the page) belongs to a different pid than the launched one — a stray window
+        self._reject(lambda r: r.update(page_pid=9998))
+
+    def test_hidden_child_rejected(self):
+        # a selected child HWND is not visible (e.g., a never-shown panel/page/bubble) — must fail
+        self._reject(lambda r: r.update(children_visible=False))
+
+    def test_rich_text_bubble_rejected(self):
+        # the bubble is ES_READONLY but NOT plain-text (RichEdit rich-text mode) — RTF could render markup
+        self._reject(lambda r: r.update(bubble_plaintext=False))
+
+    def test_exactly_eight_live_methods(self):
+        # RoseCat 7862/7868 #2: pin the hostless skip count — WinDrawerLive has EXACTLY the 8 entry live rows.
+        live = [m for m in dir(WinDrawerLive) if m.startswith("test_")]
+        self.assertEqual(len(live), 8, f"WinDrawerLive must have exactly 8 live rows; got {sorted(live)}")
+
+    def test_aggregate_gate_step_scrubs_live_vars(self):
+        # RoseCat 7862/7868 #1: prove the aggregate gate step cannot contact the VM — the registered
+        # windows-drawer-live/behaviors commands must unset EVERY live connection var before python3, so an
+        # inherited ZB_WIN11_HOST/etc. can never reach _ssh/_scp.
+        bz = (pathlib.Path(__file__).resolve().parents[2] / "build.zig").read_text(encoding="utf-8")
+        for var in ("ZB_WIN11_HOST", "ZB_WIN_EXE", "ZB_WIN11_PORT", "ZB_WIN11_USER", "ZB_WIN_KEY", "ZB_WIN_KNOWN_HOSTS"):
+            self.assertIn(f"-u {var}", bz, f"the gate drawer step must unset {var} so the gate cannot reach the VM")
 
     # --- forced control-create failure oracle (check_mounted_fail, RoseCat 7646) ---
     def _good_fail(self, which):

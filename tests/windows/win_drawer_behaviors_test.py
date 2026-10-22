@@ -177,6 +177,14 @@ def inside_icon(dx, dy, radius):
 # OFFLINE oracle (no VM): each behavior's contract + a discriminating mutant.
 # ------------------------------------------------------------------
 class WinDrawerBehaviorsOracle(unittest.TestCase):
+    def test_behaviors_live_count_pinned(self):
+        # RoseCat 7862/7868 #2: pin the hostless skip count. WinDrawerBehaviorsLive owns EXACTLY its 19 behaviour
+        # live rows; the entry module's rows (native/panel/icon/bubble/assign/…) are nullified, so none is a
+        # duplicate re-collected here.
+        live = [m for m in dir(WinDrawerBehaviorsLive)
+                if m.startswith("test_") and getattr(WinDrawerBehaviorsLive, m) is not None]
+        self.assertEqual(len(live), 19, f"behaviour-live rows must be exactly 19; got {len(live)}: {sorted(live)}")
+
     # WS5.1 ---------------------------------------------------------
     def test_ws5_1_dock_no_overlap(self):
         for w, h in ((1008, 729), (1920, 1080), (800, 600)):
