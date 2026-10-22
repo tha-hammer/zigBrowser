@@ -33094,3 +33094,50 @@ MS4.4 row on both architectures, the final both-arches PASS, and exact
 before/after identity censuses showing no process or `zb-ms44-*` tree added by
 the run. Any unsupported `/bin/ps` grammar or census failure must remain a
 loud failure; it is not permission to weaken the fail-closed rule.
+
+## MS4.4 two-Mac acceptance at `fb9e09b`
+
+**ACCEPTED on both supported Mac architectures.** The single released run
+used a pristine archive of exact `fb9e09b12872c074fb45b4e6ca885375fe854d9d`
+with byte-matched gate, login-gate and owned-group files; there was no retry.
+Intel and arm64 each passed load-serial plus `closed`, `through-the-port`,
+`open`, `live`, the final MS4.4 login-gate row and the architecture leg. The
+aggregate ended `PASS ms4-gate both-arches`, rc 0: **14/14 checks**, no FAIL,
+teardown error or census error.
+
+The identity censuses also meet the release condition. Laroncha remained at
+zero zigBrowser, WebKit and `zb-ms44-*` entries. The Intel host retained the
+same explicitly recorded pre-existing process identities before and after and
+had zero `zb-ms44-*` trees; this run added nothing on either Mac. This closes
+MS4.4's real-Mac acceptance for the exact-group EPERM fix.
+
+## Win11 drawer hierarchy diagnostic after `361935b`
+
+**One additional read-only diagnostic launch is AUTHORIZED against the exact
+already-built `361935b` artifact** (SHA-256
+`0fc0cb66a78686857d0df690d92c52b0935077ba98833e33b543b30b48647028`). The
+stderr-only run disproved a control-creation failure: it emitted no failure
+diagnostic, the owned Job held one launched process and settled to zero, and
+the machine/process/run-dir censuses were clean. Together with the earlier
+`open` row and exact-PID host discovery, the remaining question is which HWND
+the harness selected and what its hierarchy contains over time.
+
+Use the same `about:blank --agent-drawer on --e2e-protocol --media-source off`
+argv, fresh unique root below `C:\\Users\\zbtext\\zb`, born-suspended
+kill-on-close Job, fixed short deadline and handle-based teardown. Capture
+stdout and stderr plus snapshots at approximately 2 s and 10 s. Each snapshot
+must enumerate **all** top-level windows owned by the launched pid and every
+descendant of each, recording HWND/parent, owning pid and thread, class, text,
+visibility and rect; do not filter to the first host or only `STATIC` controls.
+Also record the runner's window-station/desktop and, where the public Win32
+read APIs permit it, the selected host thread's desktop identity. Read failure
+must be explicit, not translated to an empty tree.
+
+No keyboard/mouse/window message, navigation, network access beyond the
+existing SSH transport, account, credential, install, elevation, console
+interaction, pid/name kill or retry is authorized. The Job/held handles remain
+the sole teardown authority, with exact before/after process and unique-root
+censuses. Offline source inspection already makes a desktop split unlikely:
+`STARTUPINFO.lpDesktop` is unset, neither side calls a desktop/window-station
+switch API, and the runner already found the exact-pid host through
+`EnumWindows`. The diagnostic must measure rather than assume that conclusion.
