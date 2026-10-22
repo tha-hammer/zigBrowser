@@ -131,19 +131,24 @@ pub fn parse(gpa: std.mem.Allocator, bytes: []const u8) ParseError!Ledger {
 /// A crash cut for `publishCut`, so a test can stop the atomic publish mid-way and inspect the on-disk store.
 pub const Cut = enum { none, after_temp, after_rename };
 
-/// The ordered filesystem steps of an atomic publish. A test injects a `StepLog` to pin the exact order and to
-/// observe the parent-dir fsync (which has no content effect to assert on) — rejecting rename-before-write and
-/// an omitted dir fsync (RoseCat 735c92a).
-pub const Step = enum { temp_written, temp_fsynced, renamed, dir_fsynced };
-pub const StepLog = struct {
-    buf: [8]Step = undefined,
-    n: usize = 0,
-    fn push(self: *StepLog, s: Step) void {
-        if (self.n < self.buf.len) self.buf[self.n] = s;
-        self.n += 1;
+/// The injectable filesystem-operation seam for the atomic publish (RoseCat 1347b70). The publish performs its
+/// durability-critical steps — fsync the temp, rename, fsync the parent dir — THROUGH these methods, so a test's
+/// recording fake observes the ACTUAL calls that go through it (not a self-reported log). Deleting a real call
+/// in production therefore removes both the effect and the observation, so the omitted-dir-fsync mutant fails.
+/// `publish` uses `RealOps`, which does the real work with fsync (NOT fdatasync — matching src/atomic_file.zig).
+pub const RealOps = struct {
+    pub fn syncFile(_: RealOps, file: std.Io.File, io: std.Io) !void {
+        try file.sync(io); // Io.File.sync is fsync (posix.system.fsync), not fdatasync
     }
-    pub fn steps(self: *const StepLog) []const Step {
-        return self.buf[0..@min(self.n, self.buf.len)];
+    pub fn rename(_: RealOps, dir: std.Io.Dir, old_sub: []const u8, new_sub: []const u8, io: std.Io) !void {
+        try dir.rename(old_sub, dir, new_sub, io);
+    }
+    pub fn syncDir(_: RealOps, dir: std.Io.Dir, io: std.Io) !void {
+        // Reopen `.iterate` (O_RDONLY) — the held handle may be O_PATH, which fsync refuses — then fsync it.
+        var dir_ro = try dir.openDir(io, ".", .{ .iterate = true });
+        defer dir_ro.close(io);
+        const dir_fsync: std.Io.File = .{ .handle = dir_ro.handle, .flags = .{ .nonblocking = false } };
+        try dir_fsync.sync(io);
     }
 };
 
@@ -152,10 +157,10 @@ pub const StepLog = struct {
 /// so a reader only ever sees the OLD or the NEW complete store (never torn), a returned publish survives a
 /// crash, and a half-written temp never outlives a failed publish. `cut` stops early for the crash-cut tests.
 pub fn publish(io: std.Io, dir: std.Io.Dir, sub_path: []const u8, entries: []const Entry) !void {
-    return publishCut(io, dir, sub_path, entries, .none, null);
+    return publishCut(io, dir, sub_path, entries, .none, RealOps{});
 }
 
-pub fn publishCut(io: std.Io, dir: std.Io.Dir, sub_path: []const u8, entries: []const Entry, cut: Cut, log: ?*StepLog) !void {
+pub fn publishCut(io: std.Io, dir: std.Io.Dir, sub_path: []const u8, entries: []const Entry, cut: Cut, ops: anytype) !void {
     // Atomic: write a fresh 0600 O_EXCL sibling temp, fsync it, rename it over the store, fsync the dir. Mirrors
     // src/atomic_file.zig but relative to the HELD runtime `dir`. The store is only ever replaced whole, so a
     // reader sees old-or-new (never torn); the temp never outlives a failed publish (defer).
@@ -172,20 +177,11 @@ pub fn publishCut(io: std.Io, dir: std.Io.Dir, sub_path: []const u8, entries: []
         var writer = file.writer(io, &buf);
         try std.json.Stringify.value(.{ .schema_version = SCHEMA_VERSION, .runs = entries }, .{}, &writer.interface);
         try writer.interface.flush();
-        if (log) |l| l.push(.temp_written);
-        try file.sync(io); // fsync the temp before it can be renamed into place
-        if (log) |l| l.push(.temp_fsynced);
+        try ops.syncFile(file, io); // fsync the temp through the seam, before it can be renamed into place
     }
     if (cut == .after_temp) return; // crash before rename: the old store is untouched; the defer removes the temp
-    try dir.rename(tmp, dir, sub_path, io);
+    try ops.rename(dir, tmp, sub_path, io);
     renamed = true;
-    if (log) |l| l.push(.renamed);
     if (cut == .after_rename) return; // crash before the dir fsync: store is the new content, not yet durable
-    // fsync the dir so the rename itself survives a crash. Reopen it `.iterate` (O_RDONLY) first — the held
-    // handle may be O_PATH, which fsync refuses (src/atomic_file.zig notes the same) — then a DIRECT fdatasync
-    // syscall on that handle (the io event loop does not own this fd).
-    var dir_ro = try dir.openDir(io, ".", .{ .iterate = true });
-    defer dir_ro.close(io);
-    try std.posix.fdatasync(dir_ro.handle);
-    if (log) |l| l.push(.dir_fsynced);
+    try ops.syncDir(dir, io); // fsync the dir through the seam, so the rename itself survives a crash
 }

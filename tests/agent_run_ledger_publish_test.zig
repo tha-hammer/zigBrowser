@@ -32,7 +32,7 @@ test "a mid-publish crash leaves the OLD store intact (never torn)" {
     defer td.cleanup();
     try ledger.publish(io, td.dir, "runs.json", &A); // store = A
     // crash while publishing B, before it could atomically replace the store:
-    try ledger.publishCut(io, td.dir, "runs.json", &B, .after_temp, null);
+    try ledger.publishCut(io, td.dir, "runs.json", &B, .after_temp, ledger.RealOps{});
     // the store must still be the OLD, complete A — not a torn/empty/partial file:
     try expectStore(io, td.dir, "runs.json", A[0].basename);
 }
@@ -63,16 +63,40 @@ test "a crash AFTER rename (before dir fsync) leaves the complete NEW store" {
     try ledger.publish(io, td.dir, "runs.json", &A); // store = A
     // rename has happened; the dir fsync has not. The store must be the COMPLETE new B — so the temp MUST have
     // been fully written and synced BEFORE the rename (a rename-before-write would leave an empty/torn store):
-    try ledger.publishCut(io, td.dir, "runs.json", &B, .after_rename, null);
+    try ledger.publishCut(io, td.dir, "runs.json", &B, .after_rename, ledger.RealOps{});
     try expectStore(io, td.dir, "runs.json", B[0].basename);
 }
 
-test "publish performs temp-write, temp-fsync, rename, dir-fsync IN THAT ORDER" {
+// A recording fs-ops fake: it observes the ACTUAL ops that go through it (then delegates to RealOps to do the
+// real work), so an omitted call in production removes both the effect and the observation.
+const Kind = enum { sync_file, rename, sync_dir };
+const Log = struct { buf: [8]Kind = undefined, n: usize = 0 };
+const RecOps = struct {
+    log: *Log,
+    pub fn syncFile(self: RecOps, file: std.Io.File, io: std.Io) !void {
+        self.log.buf[self.log.n] = .sync_file;
+        self.log.n += 1;
+        try (ledger.RealOps{}).syncFile(file, io);
+    }
+    pub fn rename(self: RecOps, dir: std.Io.Dir, old_sub: []const u8, new_sub: []const u8, io: std.Io) !void {
+        self.log.buf[self.log.n] = .rename;
+        self.log.n += 1;
+        try (ledger.RealOps{}).rename(dir, old_sub, new_sub, io);
+    }
+    pub fn syncDir(self: RecOps, dir: std.Io.Dir, io: std.Io) !void {
+        self.log.buf[self.log.n] = .sync_dir;
+        self.log.n += 1;
+        try (ledger.RealOps{}).syncDir(dir, io);
+    }
+};
+
+test "publish routes fsync(temp), rename, fsync(dir) through the ops seam IN THAT ORDER" {
     const io = std.testing.io;
     var td = std.testing.tmpDir(.{});
     defer td.cleanup();
-    var log: ledger.StepLog = .{};
-    try ledger.publishCut(io, td.dir, "runs.json", &A, .none, &log);
-    const expected = [_]ledger.Step{ .temp_written, .temp_fsynced, .renamed, .dir_fsynced };
-    try std.testing.expectEqualSlices(ledger.Step, &expected, log.steps());
+    var log: Log = .{};
+    try ledger.publishCut(io, td.dir, "runs.json", &A, .none, RecOps{ .log = &log });
+    const expected = [_]Kind{ .sync_file, .rename, .sync_dir };
+    try std.testing.expectEqualSlices(Kind, &expected, log.buf[0..log.n]);
+    try expectStore(io, td.dir, "runs.json", A[0].basename); // and it actually produced a loadable store
 }
