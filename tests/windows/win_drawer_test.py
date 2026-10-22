@@ -75,6 +75,24 @@ def decode_mode(arg, allowed):
     return arg
 
 
+def bounded_cleanup(now_fn, sleep_fn, deadline_s, step_fn, poll_s=1.0):
+    """Retry `step_fn(budget)` until it reports success (True) or ONE absolute monotonic deadline passes
+    (RoseCat dfaf431). `budget` is the remaining seconds, so the caller caps each remote op to it — a stalled
+    connection can never renew the budget. Returns True iff `step_fn` succeeded before the deadline; a
+    never-succeeding step fails PROMPTLY at the deadline, not after hours. Injectable clock/step for offline
+    coverage."""
+    end = now_fn() + deadline_s
+    while True:
+        budget = end - now_fn()
+        if budget <= 0:
+            return False
+        if step_fn(budget):
+            return True
+        if end - now_fn() <= 0:
+            return False
+        sleep_fn(min(poll_s, max(0.0, end - now_fn())))
+
+
 def parse_drawer(line):
     """`DRAWER\\t<win>\\t<kind>\\t...` -> (win, kind, fields) with field validation, or None."""
     parts = line.rstrip("\r\n").split("\t")
@@ -493,11 +511,11 @@ class WinDrawerLive(unittest.TestCase):
     def _scrub(self, *cmd):
         return ["env", "-u", "DISPLAY", "-u", "WAYLAND_DISPLAY", "-u", "XAUTHORITY", *cmd]
 
-    def _ssh(self, *args):
+    def _ssh(self, *args, timeout=120):
         base = ["ssh", "-i", self.key, "-o", "IdentitiesOnly=yes", "-o", "StrictHostKeyChecking=yes",
                 "-o", f"UserKnownHostsFile={self.kh}", "-o", "BatchMode=yes", "-o", "ConnectTimeout=15",
                 "-o", "ConnectionAttempts=3", "-p", self.port, f"{self.user}@{self.host}"]
-        return subprocess.run(self._scrub(*base, *args), capture_output=True, text=True, timeout=120)
+        return subprocess.run(self._scrub(*base, *args), capture_output=True, text=True, timeout=timeout)
 
     def _scp(self, local, remote):
         base = ["scp", "-i", self.key, "-o", "IdentitiesOnly=yes", "-o", "StrictHostKeyChecking=yes",
@@ -548,16 +566,19 @@ class WinDrawerLive(unittest.TestCase):
             # without masking a body failure.
             import sys as _sys
             import time as _t
-            # Bounded retry: a just-killed child (esp. a born-suspended one whose image is the scp'd exe) can
-            # hold the exe image lock briefly after its handle closes, so rmdir can transiently fail; retry up to
-            # ~60 s before failing closed (observed release is well within this on win11-m8).
-            gone = False
-            for _ in range(60):
-                self._ssh("cmd", "/c", f"rmdir /s /q {base_win}")
-                if "GONE" in self._ssh("cmd", "/c", f"if exist {base_win} (echo LEFT) else (echo GONE)").stdout:
-                    gone = True
-                    break
-                _t.sleep(1)
+            # Bounded by ONE absolute 60 s deadline (RoseCat dfaf431): a just-killed child (esp. a born-suspended
+            # one whose image is the scp'd exe) can hold the exe image lock briefly after its handle closes, so
+            # rmdir can transiently fail. Each iteration is a SINGLE remote op (rmdir + existence check) capped to
+            # the remaining budget, so a stalled connection can never renew the budget past the deadline.
+            def _rm_step(budget):
+                try:
+                    out = self._ssh("cmd", "/c",
+                                    f"rmdir /s /q {base_win} & if exist {base_win} (echo LEFT) else (echo GONE)",
+                                    timeout=max(1.0, budget)).stdout
+                    return "GONE" in out
+                except subprocess.TimeoutExpired:
+                    return False
+            gone = bounded_cleanup(_t.monotonic, _t.sleep, 60.0, _rm_step)
             for p in (html, runner, env_file):
                 if p is None:
                     continue
@@ -848,6 +869,34 @@ class WinDrawerOracle(unittest.TestCase):
         self.assertIn("unknown/blank seam mode", _RUNNER)
         self.assertIn("decoded_fail=$failMode", _RUNNER)
         self.assertIn("decoded_force=$forceMode", _RUNNER)
+
+    # --- bounded run-dir cleanup oracles (RoseCat dfaf431: one absolute deadline, budget never renews) ---
+    def test_bounded_cleanup_recovers_after_transient(self):
+        # a post-kill image lock lingering PAST the old 20 s window still recovers within the 60 s deadline.
+        clock = [0.0]
+        budgets = []
+        def step(budget):
+            budgets.append(budget)
+            clock[0] += 5.0            # each single remote op takes ~5 s
+            return clock[0] >= 25.0    # the lock releases at ~25 s (beyond the old 20 s bound)
+        ok = bounded_cleanup(lambda: clock[0], lambda s: clock.__setitem__(0, clock[0] + s), 60.0, step, poll_s=1.0)
+        self.assertTrue(ok, "a transient failure beyond 20 s must still recover")
+        self.assertLessEqual(clock[0], 60.0, "recovered within the absolute deadline")
+        self.assertTrue(all(b <= 60.0 for b in budgets), "each op is capped to the remaining budget")
+
+    def test_bounded_cleanup_fails_promptly_and_budget_never_renews(self):
+        clock = [0.0]
+        budgets = []
+        def step(budget):
+            budgets.append(budget)
+            clock[0] += 5.0
+            return False               # never gone
+        ok = bounded_cleanup(lambda: clock[0], lambda s: clock.__setitem__(0, clock[0] + s), 60.0, step, poll_s=1.0)
+        self.assertFalse(ok, "a never-removable dir must fail at the deadline")
+        self.assertLess(clock[0], 75.0, "fails PROMPTLY at ~the deadline, not after hours (the 679bdac bug)")
+        self.assertTrue(all(b <= 60.0 for b in budgets))
+        self.assertTrue(all(budgets[i] >= budgets[i + 1] for i in range(len(budgets) - 1)),
+                        "the budget strictly decreases — one absolute deadline, never renewed per-op")
 
 
 if __name__ == "__main__":
