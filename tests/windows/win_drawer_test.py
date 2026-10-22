@@ -572,9 +572,11 @@ class WinDrawerLive(unittest.TestCase):
             # the remaining budget, so a stalled connection can never renew the budget past the deadline.
             def _rm_step(budget):
                 try:
+                    # budget is always > 0 here (bounded_cleanup only steps with a positive remaining budget),
+                    # so cap the ssh timeout to exactly the remaining budget — never overshoot the deadline.
                     out = self._ssh("cmd", "/c",
                                     f"rmdir /s /q {base_win} & if exist {base_win} (echo LEFT) else (echo GONE)",
-                                    timeout=max(1.0, budget)).stdout
+                                    timeout=budget).stdout
                     return "GONE" in out
                 except subprocess.TimeoutExpired:
                     return False
