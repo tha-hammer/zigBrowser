@@ -10,6 +10,7 @@ branch (owned_group's ps reads) on Linux.
   called; setup, given Refused or StopFailed from its seam, retains its scratch with exactly its fixed line;
 - (b) an earlier read OSError followed by a cleanup stop that cannot be proven: StopFailed wins (the earlier error is
   only its cause), never the bare OSError;
+- a first ownership read refused, the retry proven and the group stopped: still StopFailed caused by the Refused;
 - (c) the selector failing right after the spawn: the leader is still stopped (one killpg, to it) and reaped.
 Every stand-in leader exits by itself at once, so a refused stop leaves nothing running.
 Run: cd agent/host/tests && python -X dev -m unittest -v test_owned_group_failclosed. Unregistered until the green.
@@ -82,8 +83,28 @@ class DarwinPsCannotProve(Interposed):
                 with self.assertRaises(owned_group.StopFailed):
                     owned_group.run(QUICK, timeout=10)
                 self.assertEqual(self.killpg_calls, [])
-                mock.patch.stopall()
-                self.setUp()
+                self.reap()  # each stand-in reaped before the next row
+                self.spawned.clear()
+
+
+class TransientRefusal(Interposed):
+    def test_a_refusal_then_a_proven_stop_is_still_stop_failed(self):
+        """The first ownership read fails, the retry proves it and the group stops: the run still did not complete
+        its stop when asked, so it is StopFailed (caused by the Refused), never a bare Refused."""
+        reads = []
+
+        def ps(args):
+            if args[:1] == ["-o"]:
+                reads.append(args)
+                return None if len(reads) == 1 else [f"{os.getpid()} {self.spawned[-1].pid}"]
+            return []  # -axo: no live member left
+
+        mock.patch.object(owned_group, "sys", types.SimpleNamespace(platform="darwin")).start()
+        mock.patch.object(owned_group, "_ps", side_effect=ps).start()
+        with self.assertRaises(owned_group.StopFailed) as cm:
+            owned_group.run(QUICK, timeout=10)
+        self.assertIsInstance(cm.exception.__cause__, owned_group.Refused)
+        self.assertEqual(self.killpg_calls, [self.spawned[0].pid], "the retry stopped the proven group")
 
 
 class EarlierErrorThenCleanupFailure(Interposed):

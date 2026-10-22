@@ -787,8 +787,8 @@ def _sandboxed(ro_paths, command, timeout, env=None, listener=None, census=None)
             done = subprocess.run(setup_sandbox(scratch, ro_paths, command), capture_output=True, text=True,
                                   timeout=timeout, env=run_env)
         return done.stdout, done.returncode == 0
-    except owned_group.StopFailed:
-        # Its group could not be proven stopped: something it started may still be using the scratch, so it is left
+    except (owned_group.StopFailed, owned_group.Refused):
+        # Its group could not be proven stopped (or proven ours): something it started may still be using the scratch, so it is left
         # where it is, never cleaned up around a live process (RoseCat 7436). The line is fixed text plus the root
         # this made: never the exception, argv, output or anything the run named (RoseCat 7444).
         stop_failed = True

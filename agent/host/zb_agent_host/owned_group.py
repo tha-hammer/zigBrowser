@@ -185,8 +185,9 @@ def run(argv, *, env=None, pass_fds=(), timeout):
     proc = subprocess.Popen(argv, env=env, pass_fds=pass_fds, start_new_session=True, stdin=subprocess.DEVNULL,
                             stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     chunks = {"out": [], "err": []}
-    sel = selectors.DefaultSelector()
-    try:
+    sel = None
+    try:  # everything after the spawn is under this guard: nothing below may leave the group behind (RoseCat 7450)
+        sel = selectors.DefaultSelector()
         sel.register(proc.stdout.fileno(), selectors.EVENT_READ, "out")
         sel.register(proc.stderr.fileno(), selectors.EVENT_READ, "err")
         deadline = time.monotonic() + timeout
@@ -206,15 +207,24 @@ def run(argv, *, env=None, pass_fds=(), timeout):
         if not _read_until(sel, chunks, lambda: time.monotonic() >= stop_end):
             raise StopFailed(f"process group {proc.pid} is stopped, but a process outside it still holds the run's "
                              "output (it left the group; not signalled)", proc)
-    except BaseException:
-        if proc.returncode is None and _parent_and_group(proc.pid) == (os.getpid(), proc.pid):
+    except StopFailed:
+        raise  # already explicit
+    except BaseException as exc:
+        # Any other way out still stops the group first; a stop that cannot be completed or proven WINS over the
+        # earlier error (kept as its cause), and a refusal about our own leader is a stop failure, never a pass:
+        # the caller must not clean up around a group nobody proved gone (RoseCat 7450).
+        if proc.returncode is None:
             try:
-                stop_group(proc)  # an interrupted run still never leaves its group behind
+                stop_group(proc)
             except (Refused, StopFailed):
-                pass
+                raise StopFailed(f"process group {proc.pid} could not be stopped after {type(exc).__name__}",
+                                 proc) from exc
+        if isinstance(exc, Refused):
+            raise StopFailed(f"process group {proc.pid} could not be proven ours", proc) from exc
         raise
     finally:
-        sel.close()
+        if sel is not None:
+            sel.close()
         for stream in (proc.stdout, proc.stderr):
             stream.close()
     out = b"".join(chunks["out"]).decode("utf-8", "replace")
