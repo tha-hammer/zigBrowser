@@ -225,3 +225,13 @@ Common SHA-256 values at all three commits are: `win_private_world_spike.py` `ca
 - **Mutant `98bec286d3644db5d0083f682a628ee4a02ee590`:** its only change deletes `worldName`; accept only exit 1 because `page world cannot see the automation global` fails.
 
 All three use `python3 -I tests/e2e/win_private_world_spike.py` under the previously recorded scrubbed-display, identity, full-commit provenance, pre/post process and cleanup contract. Stop after any unexpected result; do not substitute a main-world fallback.
+
+## WS2b.0 local-profile isolation — `bb13b2d`
+
+**Verdict: APPROVED; exact `bb13b2dcae41e7e699ac0e6efcf86671e3864086` is safe to push.** Only `capabilities_rpc_test.py` changed (SHA-256 `8822adfa672fe56a508bdc107c4b7c36fdf0fd04eb0ac1970afb9802c6078878`). All imports are live; the real binary receives a private HOME, all XDG dirs, and explicit `--profile-dir`, while its socket uses a short mode-private `/tmp` directory. In an exact scratch export inside the required user/PID namespace, `test-wv2-capabilities` exited 0 with `ASSERTS 7`; deleting the `--profile-dir` arguments made the registered step exit 1 on the new profile assertion. No product code changed.
+
+## WS2b.0 Win10 run approval — exact `90d2214`
+
+**Verdict: APPROVED for one bounded, no-retry Win11 build-only step followed by one Win10 capabilities run at exact `90d2214a5553595c8c3df062567d4e36dd38886f`; this is not a release.** The Win11 build must wait for PinkOwl to release that host's slot. Win10 preflight must match `C:\Users\zbtest`, the pinned ED25519 fingerprint `SHA256:AhusOW2s/1hKVAOhriqN38c1Hn8hSiNMBrdbcRGAnF4`, at least 1 GB free, a present WebView2 `pv`, no prior `ws20-*`, and a process baseline; otherwise stop without writes or install/change.
+
+Reviewed SHA-256 values are `win_capabilities_test.py` `24dbf6f8b45dccdd122ca646a9ccaed521dc58da946fb27b2110714e1ac87a57`, borrowed `win_transport_test.py` `309a48cc2009bcecbf0aa9ea3cba545cccae22f740a760c82760154cbf669a03`, `transport_probe.zig` `d17f8f5de9c5e2b9310985120400142918bf442e1b5730b24c8855f1e3f6d1a6`, and `build-on-windows.sh` `1082b5fc44fae026fc4bc98eab411d87f8c3f8f12d8f70dad63e008fcf7ee1b8`. Accept only full build provenance plus Win10 exit 0 and `ASSERTS 6` with the exact token, row, id and params outcomes already accepted on Win11. Post-check must show no staged directory or run-created browser/probe/WebView2 process. Writes are limited to the disposable `C:\Users\zbtest\zb\ws20-*`; no system-wide change or Win10 transport claim is approved.
