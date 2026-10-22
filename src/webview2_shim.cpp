@@ -68,10 +68,19 @@ struct AppState {
   // WS5 e2e-only control-factory failure seam (ZIGBROWSER_AGENT_DRAWER_FAIL = "panel"|"icon"): forces a
   // CreateWindowExW failure branch for the test. Null unless --e2e-protocol AND the env is set.
   const char *force_drawer_fail = nullptr;
-  // WS5.2 e2e-only drag seam (ZIGBROWSER_AGENT_DRAWER_DRAG = "dx,dy"): drives a synthetic icon drag so the
-  // test can observe the gesture outcome. A drag (> 6 px, zb_drawer_classify) moves the icon to its
-  // persisted-ratio rect (emitted as a `drag` row); a click (<= 6 px) opens the drawer. e2e-only.
+  // WS5.2 e2e-only drag seam (ZIGBROWSER_AGENT_DRAWER_DRAG = "dx,dy"): DRIVES the real icon input path (posts
+  // synthetic mouse messages to the icon's own window procedure), it does not substitute for it. e2e-only.
   const char *drag_seam = nullptr;
+  // WS5.2 icon position + drag/subclass state. `icon_ratios`/`has_icon_ratios` is the icon's current position
+  // as portable ratios (seeded from the persisted profile via zb_drawer_start_ratios, updated on every user
+  // move); mount and resize place the real icon HWND from it (not the default). `icon_proc` is the STATIC's
+  // original window procedure (subclassed for mouse drag + arrow keys). Drag state tracks the press origin.
+  ZbDrawerRatios icon_ratios = {};
+  bool has_icon_ratios = false;
+  WNDPROC icon_proc = nullptr;
+  bool icon_dragging = false;
+  int icon_down_x = 0, icon_down_y = 0;
+  ZbDrawerGeomRect icon_down_rect = {};
 };
 
 // The portable drawer geometry (src/agent_drawer.zig, exported for Windows). Rect matches Zig's
@@ -85,6 +94,8 @@ void zb_drawer_clamp(ZbDrawerGeomRect *r, int width, int height);
 void zb_drawer_ratios_of(const ZbDrawerGeomRect *r, int width, int height, ZbDrawerRatios *out);
 int zb_drawer_classify(double dx, double dy);  // 0 = click, 1 = drag
 void zb_drawer_remember(const ZbDrawerRatios *ratios);
+void zb_drawer_key_move(ZbDrawerGeomRect *r, int dx, int dy, int big, int width, int height);
+int zb_drawer_start_ratios(ZbDrawerRatios *out);  // 1 + out set: a persisted position; 0: use the default
 }
 
 // WS5 shim functions (declared in webkit_shim.h), defined here for the Windows backend.
@@ -808,10 +819,113 @@ void resize_controller(AppState *app) {
   }
   if (app->agent_drawer_on && app->drawer_mounted && app->drawer_icon) {
     ZbDrawerGeomRect icon = {};
-    zb_drawer_place(nullptr, cw, ch, &icon);
+    // Place the icon at its stored ratios (the persisted / last-moved position), not always the default (WS5.2
+    // "persists"; RoseCat 1cd82d8 #3).
+    zb_drawer_place(app->has_icon_ratios ? &app->icon_ratios : nullptr, cw, ch, &icon);
     MoveWindow(app->drawer_icon, icon.x, icon.y, icon.w, icon.h, TRUE);
     ShowWindow(app->drawer_icon, SW_SHOW);
   }
+}
+
+// WS5.2: apply a candidate icon rect — clamp it, move the REAL icon HWND, persist the new ratios, and (under
+// --e2e-protocol) emit a `drag` row reflecting the ACTUAL placement. All geometry via the portable zb_drawer_*.
+static void drawer_apply_icon(AppState *app, ZbDrawerGeomRect candidate) {
+  if (app == nullptr || app->drawer_icon == nullptr || app->hwnd == nullptr) {
+    return;
+  }
+  RECT cr = {};
+  GetClientRect(app->hwnd, &cr);
+  const int cw = cr.right - cr.left;
+  const int ch = cr.bottom - cr.top;
+  zb_drawer_clamp(&candidate, cw, ch);
+  // Persist as ratios and place the icon at the PERSISTED-RATIO rect (the position the next window/restart will
+  // restore), then move the real HWND there — so the actual window and the stored ratios agree.
+  zb_drawer_ratios_of(&candidate, cw, ch, &app->icon_ratios);
+  app->has_icon_ratios = true;
+  ZbDrawerGeomRect placed = {};
+  zb_drawer_place(&app->icon_ratios, cw, ch, &placed);
+  MoveWindow(app->drawer_icon, placed.x, placed.y, placed.w, placed.h, TRUE);
+  zb_drawer_remember(&app->icon_ratios);  // the user move persists for new windows / restarts
+  char win[16];
+  snprintf(win, sizeof win, "%d", app->win_id);
+  char rect[64];
+  snprintf(rect, sizeof rect, "%d,%d,%d,%d", placed.x, placed.y, placed.w, placed.h);
+  emit_protocol3(app, "DRAWER", win, "drag", rect);  // supplementary; the test reads the real icon HWND rect
+}
+
+// WS5.2: the "S" icon's window procedure (subclassed over the STATIC). REAL Win32 input: mouse capture + drag,
+// and arrow-key moves (16/64 px with Shift), all classified/clamped/moved via the portable zb_drawer_* logic.
+// A drag (> 6 px, zb_drawer_classify) moves the icon to its persisted-ratio position; a click (<= 6 px) opens
+// the drawer. The e2e drag seam DRIVES this same procedure (it posts real mouse messages), never bypasses it.
+static LRESULT CALLBACK icon_subclass_proc(HWND h, UINT msg, WPARAM wparam, LPARAM lparam) {
+  AppState *app = reinterpret_cast<AppState *>(GetWindowLongPtrW(GetParent(h), GWLP_USERDATA));
+  if (app != nullptr) {
+    switch (msg) {
+      case WM_LBUTTONDOWN: {
+        SetCapture(h);
+        app->icon_dragging = true;
+        app->icon_down_x = static_cast<short>(LOWORD(lparam));
+        app->icon_down_y = static_cast<short>(HIWORD(lparam));
+        RECT cr = {};
+        GetClientRect(app->hwnd, &cr);
+        zb_drawer_place(app->has_icon_ratios ? &app->icon_ratios : nullptr,
+                        cr.right - cr.left, cr.bottom - cr.top, &app->icon_down_rect);
+        return 0;
+      }
+      case WM_LBUTTONUP: {
+        if (app->icon_dragging) {
+          app->icon_dragging = false;
+          ReleaseCapture();
+          const int dx = static_cast<short>(LOWORD(lparam)) - app->icon_down_x;
+          const int dy = static_cast<short>(HIWORD(lparam)) - app->icon_down_y;
+          if (zb_drawer_classify(static_cast<double>(dx), static_cast<double>(dy)) != 0) {  // a drag
+            ZbDrawerGeomRect cand = app->icon_down_rect;
+            cand.x += dx;
+            cand.y += dy;
+            drawer_apply_icon(app, cand);
+          } else if (!app->drawer_open) {  // a click opens the drawer
+            app->drawer_open = true;
+            RECT cr = {};
+            GetClientRect(app->hwnd, &cr);
+            ZbDrawerGeomRect panel = {};
+            zb_drawer_panel_rect(cr.right - cr.left, cr.bottom - cr.top, &panel);
+            char win[16];
+            snprintf(win, sizeof win, "%d", app->win_id);
+            char rect[64];
+            snprintf(rect, sizeof rect, "%d,%d,%d,%d", panel.x, panel.y, panel.w, panel.h);
+            emit_protocol3(app, "DRAWER", win, "open", rect);
+            resize_controller(app);
+          }
+        }
+        return 0;
+      }
+      case WM_KEYDOWN: {
+        int kx = 0, ky = 0;
+        if (wparam == VK_LEFT) kx = -1;
+        else if (wparam == VK_RIGHT) kx = 1;
+        else if (wparam == VK_UP) ky = -1;
+        else if (wparam == VK_DOWN) ky = 1;
+        if (kx != 0 || ky != 0) {
+          RECT cr = {};
+          GetClientRect(app->hwnd, &cr);
+          const int cw = cr.right - cr.left;
+          const int ch = cr.bottom - cr.top;
+          ZbDrawerGeomRect cur = {};
+          zb_drawer_place(app->has_icon_ratios ? &app->icon_ratios : nullptr, cw, ch, &cur);
+          zb_drawer_key_move(&cur, kx, ky, (GetKeyState(VK_SHIFT) < 0) ? 1 : 0, cw, ch);
+          drawer_apply_icon(app, cur);
+          return 0;
+        }
+        break;
+      }
+      default:
+        break;
+    }
+    if (app->icon_proc != nullptr) {
+      return CallWindowProcW(app->icon_proc, h, msg, wparam, lparam);
+    }
+  }
+  return DefWindowProcW(h, msg, wparam, lparam);
 }
 
 // WS5: mount the native Win32 drawer once the window + controller exist. Creates the native panel + "S"
@@ -826,8 +940,13 @@ void mount_drawer(AppState *app) {
   const int cw = cr.right - cr.left;
   const int ch = cr.bottom - cr.top;
 
+  // Seed the icon position from the persisted profile (WS5.2 "persists"): a new window/restart restores the
+  // last user position, else the default. The real HWND is then created + placed at this rect.
+  if (zb_drawer_start_ratios(&app->icon_ratios) != 0) {
+    app->has_icon_ratios = true;
+  }
   ZbDrawerGeomRect icon = {};
-  zb_drawer_place(nullptr, cw, ch, &icon);
+  zb_drawer_place(app->has_icon_ratios ? &app->icon_ratios : nullptr, cw, ch, &icon);
   // e2e-only control-factory failure seam (inert unless --e2e-protocol AND ZIGBROWSER_AGENT_DRAWER_FAIL is
   // "panel"/"icon"): forces the matching CreateWindowExW to be treated as failed, so the failure branches are
   // driveable by a test (RoseCat 7646). Never consulted in normal runs.
@@ -847,7 +966,7 @@ void mount_drawer(AppState *app) {
     return;  // no icon attempt, no mounted/live/rows
   }
   HWND icon_hwnd = fail_icon ? nullptr
-                             : CreateWindowExW(0, L"STATIC", L"S", WS_CHILD | SS_CENTER,
+                             : CreateWindowExW(0, L"STATIC", L"S", WS_CHILD | SS_CENTER | SS_NOTIFY,
                                                icon.x, icon.y, icon.w, icon.h, app->hwnd, nullptr, app->instance, nullptr);
   if (icon_hwnd == nullptr) {
     const unsigned long e = fail_icon ? (unsigned long)ERROR_INVALID_PARAMETER : (unsigned long)GetLastError();
@@ -858,6 +977,9 @@ void mount_drawer(AppState *app) {
   }
   app->drawer_panel = panel_hwnd;
   app->drawer_icon = icon_hwnd;
+  // Subclass the icon so it handles real mouse-drag + arrow-key input through the portable logic (WS5.2).
+  app->icon_proc = reinterpret_cast<WNDPROC>(
+      SetWindowLongPtrW(icon_hwnd, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(icon_subclass_proc)));
   app->drawer_mounted = true;
   g_drawer_live.fetch_add(1, std::memory_order_relaxed);
 
@@ -873,31 +995,19 @@ void mount_drawer(AppState *app) {
     snprintf(rect, sizeof rect, "%d,%d,%d,%d", panel.x, panel.y, panel.w, panel.h);
     emit_protocol3(app, "DRAWER", win, "open", rect);
   }
-  // WS5.2 (e2e-only): a synthetic icon drag. classifyGesture decides click vs drag (6 px threshold); a drag
-  // moves the icon to its PERSISTED-RATIO rect (clamp -> ratios -> place, all portable Zig logic) and emits a
-  // `drag` row; a small move is a click that OPENS the drawer. No geometry math in C++.
+  // WS5.2 drag seam (e2e-only): DRIVE the real icon window procedure with synthetic mouse messages — a press at
+  // the icon centre and a release at centre+(dx,dy) — so the PRODUCTION handler (icon_subclass_proc) classifies,
+  // clamps, moves the real HWND and persists. The seam does not compute or move anything itself. Exact,
+  // fully-consumed, bounded parse: "<int>,<int>" with no trailing garbage, each in [-100000, 100000].
   if (app->drag_seam != nullptr && app->drag_seam[0] != '\0') {
     int dx = 0, dy = 0;
-    if (sscanf(app->drag_seam, "%d,%d", &dx, &dy) == 2) {
-      if (zb_drawer_classify((double)dx, (double)dy) != 0) {  // a drag
-        ZbDrawerGeomRect moved = icon;
-        moved.x += dx;
-        moved.y += dy;
-        zb_drawer_clamp(&moved, cw, ch);
-        ZbDrawerRatios ratios = {};
-        zb_drawer_ratios_of(&moved, cw, ch, &ratios);
-        ZbDrawerGeomRect after = {};
-        zb_drawer_place(&ratios, cw, ch, &after);
-        zb_drawer_remember(&ratios);  // a user move persists for new windows
-        snprintf(rect, sizeof rect, "%d,%d,%d,%d", after.x, after.y, after.w, after.h);
-        emit_protocol3(app, "DRAWER", win, "drag", rect);
-      } else if (!app->drawer_open) {  // a click opens the drawer
-        app->drawer_open = true;
-        ZbDrawerGeomRect panel = {};
-        zb_drawer_panel_rect(cw, ch, &panel);
-        snprintf(rect, sizeof rect, "%d,%d,%d,%d", panel.x, panel.y, panel.w, panel.h);
-        emit_protocol3(app, "DRAWER", win, "open", rect);
-      }
+    char extra = 0;
+    if (sscanf(app->drag_seam, "%d,%d%c", &dx, &dy, &extra) == 2 &&
+        dx >= -100000 && dx <= 100000 && dy >= -100000 && dy <= 100000) {
+      const int cx = icon.w / 2;
+      const int cy = icon.h / 2;
+      SendMessageW(app->drawer_icon, WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(cx, cy));
+      SendMessageW(app->drawer_icon, WM_LBUTTONUP, 0, MAKELPARAM(cx + dx, cy + dy));
     }
   }
   resize_controller(app);  // dock the page / place the icon

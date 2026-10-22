@@ -642,12 +642,14 @@ class WinDrawerBehaviorsLive(_wd.WinDrawerLive):
 
     def test_ws5_2_icon_drag_moves_to_persisted_ratio(self):
         # WS5.2 (plan 1571-1572): a 7 px drag (>6) moves the icon to the persisted-ratio rect, by >= the
-        # threshold. The harness MEASURES the icon's after-rect (a window-bound raw `drag` rect), not a status.
+        # threshold. The acceptance reads the REAL icon HWND rect (r["icon_rect"], measured by GetWindowRect),
+        # NOT the implementation-emitted row (RoseCat 1cd82d8 #1); the `drag` row is supplementary transcript.
         def body(r):
             rows = validate_transcript(r["stdout"], ["tree", "icon", "open", "drag"])
-            icon_rect = rect_of([fields_of(rows, "icon")[0]])
-            after = rect_of([fields_of(rows, "drag")[0]])
-            check_drag(icon_rect, after, r["client_w"], r["client_h"], dx=7, dy=0)
+            icon_start = rect_of([fields_of(rows, "icon")[0]])
+            self.assertTrue(r.get("icon_rect"), "the harness must measure the real icon HWND rect")
+            measured = tuple(int(v) for v in r["icon_rect"].split(","))
+            check_drag(icon_start, measured, r["client_w"], r["client_h"], dx=7, dy=0)
         self._run_drawer(extra_env=self._env(ZIGBROWSER_AGENT_DRAWER_DRAG="7,0"), body=body)
 
     def test_ws5_2_small_move_from_closed_is_click_that_opens(self):

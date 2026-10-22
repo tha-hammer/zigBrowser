@@ -243,6 +243,7 @@ using System.Text;
 using System.Runtime.InteropServices;
 public static class Z {
   [StructLayout(LayoutKind.Sequential)] public struct RECT { public int left, top, right, bottom; }
+  [StructLayout(LayoutKind.Sequential)] public struct POINT { public int x, y; }
   [StructLayout(LayoutKind.Sequential, CharSet=CharSet.Unicode)]
   struct STARTUPINFO { public int cb; public string lpReserved, lpDesktop, lpTitle;
     public int dwX,dwY,dwXSize,dwYSize,dwXCountChars,dwYCountChars,dwFillAttribute,dwFlags;
@@ -285,6 +286,8 @@ public static class Z {
   [DllImport("user32", CharSet=CharSet.Unicode)] static extern int GetWindowText(IntPtr h, StringBuilder s, int n);
   [DllImport("user32", SetLastError=true)] static extern IntPtr GetWindow(IntPtr h, uint cmd);
   [DllImport("user32")] static extern bool GetClientRect(IntPtr h, out RECT r);
+  [DllImport("user32", SetLastError=true)] static extern bool GetWindowRect(IntPtr h, out RECT r);
+  [DllImport("user32", SetLastError=true)] static extern bool ScreenToClient(IntPtr h, ref POINT p);
 
   const uint CREATE_SUSPENDED = 0x4, GENERIC_WRITE = 0x40000000, FILE_SHARE_READ = 1, FILE_SHARE_WRITE = 2, CREATE_ALWAYS = 2;
   const uint KILL_ON_CLOSE = 0x2000, GENERIC_READ = 0x80000000, OPEN_EXISTING = 3, STARTF_USESTDHANDLES = 0x100;
@@ -435,10 +438,29 @@ public static class Z {
     return String.Join("|", parts.ToArray());
   }
   public static bool Client(IntPtr h, out int w, out int ht) { RECT r; bool ok = GetClientRect(h, out r); w = r.right-r.left; ht = r.bottom-r.top; return ok; }
+  // The ACTUAL "S" icon child's rectangle in host-client coords (RoseCat 1cd82d8 #1): read the real HWND, not
+  // an implementation-emitted row. Returns "" if the icon child is absent. Works even while the icon is hidden.
+  public static string IconClientRect(IntPtr host) {
+    IntPtr c = GetWindow(host, GW_CHILD);
+    while (c != IntPtr.Zero) {
+      var cls = new StringBuilder(64); GetClassName(c, cls, 64);
+      if (cls.ToString() == "STATIC") {
+        var t = new StringBuilder(64); GetWindowText(c, t, 64);
+        if (t.ToString() == "S") {
+          RECT r; if (!GetWindowRect(c, out r)) return "";
+          POINT tl; tl.x = r.left; tl.y = r.top;
+          if (!ScreenToClient(host, ref tl)) return "";
+          return tl.x + "," + tl.y + "," + (r.right-r.left) + "," + (r.bottom-r.top);
+        }
+      }
+      c = GetWindow(c, GW_HWNDNEXT);
+    }
+    return "";
+  }
 }
 '@
 
-$res = @{ stdout=''; stderr=''; client_w=0; client_h=0; pid=0; controls=''; job_count_before=0; job_count_after=0; window_found=$false; terminated=$false; timed_out=$false; proc_gone=$false; first_stop_failed=$false; cleanup_exhausted=$false; launch_failed=$false; decoded_fail=$failMode; decoded_force=$forceMode; error='' }
+$res = @{ stdout=''; stderr=''; client_w=0; client_h=0; pid=0; controls=''; icon_rect=''; job_count_before=0; job_count_after=0; window_found=$false; terminated=$false; timed_out=$false; proc_gone=$false; first_stop_failed=$false; cleanup_exhausted=$false; launch_failed=$false; decoded_fail=$failMode; decoded_force=$forceMode; error='' }
 # e2e-only seams, set in this process so the child inherits them (honoured only under --e2e-protocol).
 $env:ZIGBROWSER_AGENT_DRAWER_OPEN = '1'
 $env:ZIGBROWSER_AGENT_DRAWER_DEMO = 'messages:2'
@@ -469,6 +491,7 @@ try {
     $res.window_found = $true
     $w = 0; $ht = 0; if ([Z]::Client($h, [ref]$w, [ref]$ht)) { $res.client_w = $w; $res.client_h = $ht }
     $res.controls = [Z]::DirectStatics($h)   # exact DIRECT STATIC children, "STATIC:<text>|..."
+    $res.icon_rect = [Z]::IconClientRect($h)  # the REAL "S" icon HWND rect in client coords (WS5.2 observation)
   }
 } catch { $res.error = $_.Exception.Message; $res.launch_failed = (-not $launched) }
 finally {
