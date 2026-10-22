@@ -32317,3 +32317,99 @@ the committed launcher and manifest, with exactly those three cases. The run
 must keep displays unset, SSH noninteractive, install nothing, exclude the
 reaper case, and retain the established before/after process and scratch
 censuses plus guarded cleanup.
+
+## Windows WS5.3 fold-failure follow-up (`e666b02`)
+
+**BLOCKED-for-tests; the production improvements are directionally sound.**
+The fold now calls `DwmFlush`, permanently aborts after a midpoint-read
+failure, settles live failure cases on an exact diagnostic, and funnels abort
+and completion through `fold_kill_timer`. Exact clean evidence passed the
+Windows cross-check **5/5** and the behavior module **37/37**, with fifteen
+VM-gated cases skipped.
+
+Two causal gaps remain. The `kill` seam first executes a real successful
+`KillTimer` and only then fabricates failure; it cannot prove what happens when
+the timer actually remains armed, while the caller clears `folding` anyway.
+Exercise a genuine failed cancellation or independently prove no later timer
+tick survives the claimed terminal state. Also, the one `read` seam prevents
+`GetWindowRect`, so it never reaches and independently fails
+`ScreenToClient`; add distinct causal rows/mutants for the two API results.
+No Windows VM or owner-visible run is authorized from this commit.
+
+## Windows WS5.7 raw-DPI tie (`8768f52`)
+
+**APPROVED.** The exact `dpi=102` half tie requires `56*102/96=59.5` to yield
+**60**, distinguishing half-up from floor/truncation. The author reports the
+floor mutant failing that row. An exact clean `drawer-props-test` passed
+**4/4 steps and 15/15 tests**. This closes the test-only hold on `d2804f1`;
+the Windows integration and real-HWND evidence remain separate.
+
+## Windows WS5.7 Win32 DPI integration (`103e549`, `21b0223`)
+
+**APPROVED-for-code; live acceptance remains open.** `103e549` obtains the
+production size from `GetDpiForWindow`, consumes the Zig sizing and circular
+hit-test exports in the actual icon HWND path, keeps the deterministic DPI
+override e2e-only, and pins all exports in the Windows cross-check. `21b0223`
+adds the real `WM_DPICHANGED` resize path plus an ignore mutant and observable
+before/after dimensions. Exact clean cross-checks passed **5/5**; the final
+behavior suite passed **40/40** with seventeen VM-only rows skipped.
+
+This does not yet close WS5.7. The real HWND must still demonstrate the 84 px
+150% rect and exact edge/beyond `WM_NCHITTEST` results, and the production DPI
+transition needs its authorized VM/owner-screen evidence. No such run is
+authorized by these offline approvals alone.
+
+## MS6.5.1 concrete lease follow-up (`15ef927`)
+
+**BLOCKED.** The exact clean manual step passed **7/7** and built both Darwin
+objects, closing the portable-POSIX compile finding. Three claimed safety
+findings remain:
+
+1. `nameMatchesHeld` reopens and validates the basename, closes that fd, and
+   returns before a separate by-name `unlinkat(..., AT_REMOVEDIR)`. A same-uid
+   actor can swap in an empty replacement in this remaining check/use window.
+   The committed mutant swaps before validation and cannot catch it.
+2. The absolute deadline is checked before that re-open/fstat work, not after
+   it. Validation can cross the deadline and the destructive rmdir can still
+   run. Recheck immediately before the destructive operation and causally
+   expire the clock inside validation.
+3. A successful open followed by `zb_reaper_pin_fd` still collapses an
+   `fstat` failure and a shape refusal to `EINVAL`, which Zig always maps to
+   `mismatch`. The 256-byte basename row drives `openat` `ENAMETOOLONG`, but
+   that name violates the production ledger grammar and does not prove a
+   valid entry's post-open unreadable outcome.
+
+The already-admitted real fixed-point/intercepted-action matrix is still a
+later item. Nothing is armed and no destructive Mac run is authorized.
+
+## Windows WS5.4a inert RichEdit bubble (`6774439`)
+
+**APPROVED-for-code; BLOCKED-for-tests.** The control is a native RichEdit
+child of the docked panel, read-only, switched to `TM_PLAINTEXT` while empty,
+with auto-URL detection disabled and literal `WM_SETTEXT` rather than RTF
+streaming. Its e2e seed is inert without `--e2e-protocol`. From an exact clean
+archive, `cross-check-drawer-win` passed **5/5** and the behavior suite passed
+**40/40**, but all seventeen production-control cases—including WS5.4—were
+skipped.
+
+The current bubble tests are model/oracle tests, not causal observations of
+this HWND. WS5.4 still needs the VM-gated control test to select and `WM_COPY`
+the exact text, prove literal RTF and URL text, inspect link formatting and OLE
+object count, and kill RTF-stream/auto-link mutants. The failure contract also
+needs correction: `LoadLibraryW`/bubble creation failure currently logs,
+mounts the drawer and increments live count with a blank conversation panel.
+The message surface is not expendable chrome; fail the mount or render a fixed
+visible unavailable state, with a causal factory-failure row. No VM/user run
+is authorized until that observer and failure contract are reviewed.
+
+## Windows WS5.7 unreadable hit-test follow-up (`00b69e5`)
+
+**BLOCKED.** Returning `HTTRANSPARENT` when `GetWindowRect` fails is not a
+fail-closed refusal: Windows continues hit-testing underlying same-thread
+windows, which can route the click through the floating icon toward the page
+when the icon geometry is unknowable. Normal, measured outside-circle points
+may remain transparent; the unreadable-geometry branch must consume/refuse the
+input without forwarding it to the page. Add a causal read-failure row proving
+no page input, no drawer open/move, the fixed diagnostic, and a still-usable
+process. The clean cross-check confirms compilation only and does not close
+this behavioral gap.
