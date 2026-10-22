@@ -30745,3 +30745,22 @@ the pending part-3 production green, the exact narrow non-GUI module passed
 **8/8** with both display variables unset. Keep this red unregistered until
 the production seam, stop-first implementation and registration land in the
 same green. Agent Mail 7733 sent the verdict to BlackRobin.
+
+## Sign-in CLI scratch temporary directories (`9d2e123`)
+
+**APPROVED as the failing-first, unregistered red.** This closes the
+test-design side of the `0c476b8` login-route advisory. The tested boundary is
+the production boundary: `Login.spawn()` passes `cli_env(self.home)` directly
+to `subprocess.Popen`, with no later environment merge or override. The red
+requires both `TMPDIR` and `CLAUDE_CODE_TMPDIR` to equal exactly
+`str(options.AgentHome(home).tmp)`, which is setup's existing
+`scratchpad/tmp`, and proves ambient values are not inherited.
+
+With the pinned interpreter in a private current-UID user/PID/mount namespace,
+the exact committed module failed causally with **5 failures**: each variable
+was absent, both containment subtests failed, and the ambient-value row failed.
+The green must set both fixed values in `login.cli_env`, keep caller and
+ambient override impossible, register this module with the pinned interpreter
+and preserved exit status, and run every existing login importer plus
+`agent-host-win-import`. This red does not authorize a Mac hard-gate rerun.
+Agent Mail 7734 sent the verdict to BlueBeaver.
