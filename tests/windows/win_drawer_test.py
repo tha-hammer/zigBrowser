@@ -1349,6 +1349,23 @@ class WinDrawerOracle(unittest.TestCase):
                 return False  # the spawn must NOT decide/recompute the count — it receives it as the argument
             return b.index(push) < b.index(inc) and b.index(both_check) < b.index(inc)
 
+        def callback_body(cc):
+            # the completion lambda's OWN body, by matched braces: the first '{' after the handler name to its
+            # matching '}'. Scoping the call to the callback body is the tripwire's "inside the callback"
+            # requirement (RoseCat 59d4ea5) — not a control-flow / statement-order proof.
+            if handler not in cc:
+                return ""
+            ob = cc.index("{", cc.index(handler))
+            depth = 0
+            for j in range(ob, len(cc)):
+                if cc[j] == "{":
+                    depth += 1
+                elif cc[j] == "}":
+                    depth -= 1
+                    if depth == 0:
+                        return cc[ob + 1:j]
+            return ""  # unbalanced -> fail closed
+
         def tripwire_ok(shim_src):
             sq = lx(shim_src).replace(decl, "", 1)       # drop the single extern declaration; count CALLS only
             cc = lx(extract_cpp_function(shim_src, "create_controller"))
@@ -1358,7 +1375,7 @@ class WinDrawerOracle(unittest.TestCase):
                 return False
             if handler not in cc:                        # the completion callback is present
                 return False
-            return decide in cc[cc.index(handler):]      # the one call sits inside that callback
+            return decide in callback_body(cc)           # the sole call sits INSIDE the completion lambda's braces
 
         spawn = lx(extract_cpp_function(shim, "spawn_extra_drawer_windows"))
         self.assertTrue(spawn_ok(spawn), f"spawn must be count-driven, partial-cleanup, record-then-inc, no recompute; spawn={spawn!r}")
@@ -1391,7 +1408,8 @@ class WinDrawerOracle(unittest.TestCase):
 
         self.assertTrue(tripwire_ok(shim_of(callback(DECI + TAIL))), "the real-shaped synthetic passes")
         self.assertFalse(tripwire_ok(shim_of(callback(TAIL))), "removing the callback decision call must be caught")
-        self.assertFalse(tripwire_ok(shim_of(callback(TAIL, before=DECI + " "))), "moving the decision OUTSIDE the callback must be caught")
+        self.assertFalse(tripwire_ok(shim_of(callback(TAIL, before=DECI + " "))), "moving the decision OUTSIDE (before) the callback must be caught")
+        self.assertFalse(tripwire_ok(shim_of(callback(TAIL) + " " + DECI)), "closing the callback with .Get()); then calling in the NEXT statement must be caught")
         self.assertFalse(tripwire_ok(shim_of(callback("const AfterController after = zb_drawer_after_controller(app->screenshot, 0, 0, 0);" + TAIL))), "the wrong app inputs must be caught")
         self.assertFalse(tripwire_ok(shim_of(callback(DECI + TAIL),
                                              spawn_body="void spawn_extra_drawer_windows(AppState* app, int count) { auto a = zb_drawer_after_controller(app->windows_seam, 0, 0, 0); }")),
