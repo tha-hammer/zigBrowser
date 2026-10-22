@@ -7,10 +7,12 @@ Like the chat helper (chat.py: `error` frame, code "auth", message "no usable to
 - fd 3 a socketpair end holding a token of the wrong shape (too short),
 - fd 3 holding a non-ASCII token,
 - fd 3 holding more than the largest token,
-writes exactly ONE frame, `{"type": "error", "session": "contract", "code": "auth", "message": "no usable token"}`,
+writes exactly ONE frame and nothing else on stdout, the whole object being (no extra key)
+`{"v": 1, "seq": 1, "type": "error", "session": "contract", "code": "auth", "message": "no usable token"}`,
 nothing on stderr (no traceback), exits 2, and creates no token FIFO directory: nothing after the read runs. A planted
 token-shaped canary in the bad inputs never appears in its output.
-No signal is sent (subprocess.run with a bound; each run ends by itself); run inside a PID namespace like its siblings:
+No signal is sent (subprocess.run with a bound; each run ends by itself). It needs the pinned agent-host interpreter
+(tools/agent_host_env.sh --check; a bare system python fails earlier, on claude_agent_sdk). Run inside a PID namespace:
   cd agent/host/tests && unshare --map-current-user --pid --fork --kill-child --mount-proc \\
     sh -c 'setsid -w "$ZB_AGENT_HOST_PYTHON" -X dev -m unittest -v test_contract_no_token; exit $?'
 Unregistered until the green."""
@@ -26,6 +28,7 @@ from pathlib import Path
 
 HOST_DIR = Path(__file__).resolve().parents[1]
 CANARY = "ZBCANARY" + "q7x2" * 3  # inside the "too short"/"oversized" inputs, never echoed
+FRAME = {"v": 1, "seq": 1, "type": "error", "session": "contract", "code": "auth", "message": "no usable token"}
 PLACE_FD3 = 'fd=$1; shift; [ "$fd" -eq 3 ] || eval "exec 3<&$fd $fd<&-"; exec "$@"'
 
 
@@ -55,10 +58,9 @@ class NoUsableToken(unittest.TestCase):
 
     def check(self, token_bytes):
         done = self.run_contract(token_bytes)
-        frames = [json.loads(line) for line in done.stdout.splitlines() if line.strip()]
-        self.assertEqual([{k: f.get(k) for k in ("type", "session", "code", "message")} for f in frames],
-                         [{"type": "error", "session": "contract", "code": "auth", "message": "no usable token"}],
-                         done.stdout + done.stderr)
+        frames = [json.loads(line) for line in done.stdout.splitlines()]
+        # The COMPLETE output (RoseCat 7692): one whole protocol object, no extra key (no detail, path or value).
+        self.assertEqual(frames, [FRAME], done.stdout + done.stderr)
         self.assertEqual(done.stderr, "", "a traceback (or anything) on stderr")
         self.assertEqual(done.returncode, 2)
         self.assertFalse(self.fifo_dir.exists(), "something after the token read ran")
