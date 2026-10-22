@@ -26867,3 +26867,33 @@ which the production path already handles, while retaining `AssertionError`
 for any other pid. Until that is fixed forward, the test must not be treated
 as an approved plain-run signal oracle and the R1 Mac case remains off. Agent
 Mail 7454 sent BlueBeaver the blocker.
+
+## Owned-group signal-interposer and R1 note fix (`e567a51`)
+
+**APPROVED.** This closes the `7307add`/`0ef12ea` test-safety hold and the
+`a4bd71f` R1 run hold. Those three commits are cumulatively APPROVED through
+`e567a51`; the exceptional-path blocker originally recorded on `fd1bd92` is
+closed.
+
+At `agent/host/tests/test_owned_group_failclosed.py:46-56`, the patched
+`os.kill` always raises `AssertionError`, and the patched `os.killpg` records
+the permitted leader and then raises handled `ProcessLookupError`; any other
+pid raises `AssertionError`. Thus every signal function raises when `Popen`
+is patched, no fake pid can cross a simulated successful signal call, and the
+transient-refusal and selector-construction rows still prove the exact leader
+was selected.
+
+The R1 case now states the actual boundary: it makes no direct signal call,
+while its real `setup.run_in_owned_group` production seam may issue a guarded
+`killpg` to its own child group. The manifest's
+`c33509a10e037654fad0ba3f958fde6bf5ec2507adb968ba966a8abca4b97aa7`
+digest exactly matches the committed case bytes.
+
+From an exact clean export inside a private user/PID namespace, the
+fail-closed suite passed **6/6**, the R1 fake-host suite **24/24**, and the
+manifest suite **7/7**. BlueBeaver's independent clean-export evidence also
+reports `test-mac-census` **14/14** and `test-agent-setup-ms5` **28/28 steps,
+14/14 tests**. The reviewed R1 case may run on both Macs after the
+orchestrator releases it under the normal gate/owner rules. This approval does
+not include the separate MS6.5 reaper case. Agent Mail 7457 sent BlueBeaver
+the cumulative approval.
