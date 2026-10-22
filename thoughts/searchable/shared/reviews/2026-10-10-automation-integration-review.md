@@ -36480,3 +36480,56 @@ That is the run-set reconciliation already required by `f227c3c`: both panel
 and icon partial-failure outcomes must execute. Until the shared production
 seam exists, no exact run commit is named and the cumulative `1b2fe0a` range
 remains blocked despite the already-approved `cd2323c` item-3 tripwire.
+
+## R4 compile-only Mac harness (`b9d7a2f`)
+
+**BLOCKED; digest not approved and no Mac run is authorized.** The reviewed
+script's SHA-256 is
+`3255389ffc6ef147caeb10fb72f5e7b9094d8dc058cdac519b63897f3a68e860`,
+but that digest identifies the rejected bytes; it is not an authorization.
+The exact-commit archive, archive/blob comparison, member/type checks, native
+architecture checks, artifact hashes, noninteractive SSH settings, and
+run-as-file/digest refusals are useful foundations. `bash -n` passed, and the
+file-entry and wrong-digest paths both refused before contacting either Mac.
+
+The first review's complete R4 minimum is:
+
+1. **Bound writes and trust to the unique run root.** The profile currently
+   permits writes throughout the real Darwin user temp and cache directories
+   and all of `/dev`; its top-level-name census cannot detect modification of
+   an existing entry. Redirect all compiler caches and temporary paths below
+   the validated root, permit only the exact device nodes genuinely needed,
+   reject pre-existing harness-owned roots, and fail closed on every
+   symlink/special/path-validation error.
+2. **Enforce compile/link-only behavior rather than trusting the current
+   default build graph.** `(allow default)` plus one `zigBrowser` exec denial
+   still permits arbitrary executables, signals, UI/WindowServer access,
+   Keychain/credential reads, Unix-domain services, and newly built targets;
+   the IP-only network rules are not a complete egress boundary. Use a
+   dedicated reviewed compile/link-only build step and a sandbox that denies
+   every network family, process signals, UI/Keychain/real-home credential
+   access, and execution outside the reviewed build runner/toolchain. It must
+   also deny execution from every output/product location. No produced app,
+   helper, CLI, hook, test, or other new target may run.
+3. **Preserve the real status of every remote leg.** `leg | tee ... || true`
+   discards the SSH/pipeline result, so a remote `PASS` followed by a failed
+   channel can be accepted. Capture and require the actual first pipeline
+   status as zero as well as the exact terminal `PASS` row; apply the same
+   fail-closed principle to archive transfer and setup.
+4. **Prove cleanup and ownership.** Refuse stale `~/zb-compile-*` roots before
+   starting, establish cleanup ownership immediately when the root is made,
+   and prove the root and all run-owned processes are gone. Matching only an
+   argv substring cannot prove that a detached descendant is absent. R4 does
+   not authorize signals as cleanup, so the harness must prevent escape and
+   fail before compilation when no signal-free ownership proof is possible.
+5. **Commit a repeatable hostless safety selftest.** It must causally cover at
+   least file entry and wrong digest, archive tamper/special members, wrong
+   architecture/Rosetta, `PASS` followed by a nonzero SSH exit, forbidden
+   execution/network/credential/write routes, and cleanup/census failures.
+   Register that proof (or give it an equivalently durable focused gate).
+
+These are enforcement gaps in a reusable live-host harness, so R3 safety and
+proof-that-cannot-fail apply; they are not requests for another source-parser
+arms race. A fix that satisfies this exact minimum may receive one new digest
+review under R4. Until then neither the Intel Mac nor the personal Apple
+Silicon Mac may run this harness.
