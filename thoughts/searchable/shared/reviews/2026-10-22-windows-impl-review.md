@@ -68,3 +68,21 @@ The four proposed green design choices are accepted: one phase list consumed by 
 The green review will require the red cases moved into the plan-named registered steps; no-argument and `--product` execution of the real gate; readiness before any live test; named failure for nonzero, exit 77, reported skip, absent/malformed/zero `ASSERTS`, zero phase rows, and missing hosts; every then-current live command failing hostless under `ZB_WIN_GATE=1` while retaining standalone clean-skip; and the three plan mutants (treat 77 as pass, accept `ASSERTS 0`, restore one gate clean-skip) recorded against registered tests. The commit message must report the test:production ratio. If it exceeds 3:1, D.5 requires an accepted live row before the slice can be accepted.
 
 WS0.9 closure still requires separately approved, bounded exact-commit/harness runs on the Win11 VM and the Win10 box. This red review grants neither host release.
+
+## WS1.2 review — `ec568b6` red and `0f2486b` pre-run harness
+
+**Verdict: APPROVED red and pre-run harness; registration remains pending. APPROVED for one bounded Win11 VM run at exact commit `0f2486b65ee4d1844292fb403a2a82e6c4116107`. VM queue position: 1 (run before WS2b.0).** This is not WS1.2 acceptance or closure, and it does not authorize Win10 or any later source/harness bytes.
+
+I audited every file changed by the two commits for dead imports, wrong-level calls, raw-helper bypasses and generated residue; no R3 defect was found. The raw SSH/SCP operations are appropriate for this Linux-side staging driver and use pinned host keys, `BatchMode=yes`, `IdentitiesOnly=yes`, strict host-key checking and scrubbed display/askpass variables. The three m8 tests still use the known unhardened WS0.4 scheduled-task runner; the driver supplies an outer 600-second subprocess bound, and this approval does not close WS0.4.
+
+In clean exact-commit scratch exports with all display/askpass and host variables unset, `ec568b6e911dd6d642c2d2bef9d03e17258b903c` reproduced five intended failures (three gate skips incorrectly returned 77 and the driver was absent), while `0f2486b` passed all six hostless harness cases with the live leg skipped. The reviewed SHA-256 is:
+
+- `tests/windows/m8_live_test.py`: `b584509022131e74f86d26d3098e6dd4af81a53b087709b1b3e682818db0173c`
+
+The approved run is one bounded session in a scratch shared clone checked out at `0f2486b`, never the shared worktree:
+
+1. With `DISPLAY`, `WAYLAND_DISPLAY`, `XAUTHORITY` and `SSH_ASKPASS` unset, run `ZB_WIN11_HOST=127.0.0.1 ZB_BUILD_COMMIT=0f2486b ZB_BUILD_MODE=ReleaseSafe bash tests/windows/build-on-windows.sh` with **no positional build step**. Verify the fetched executable's `.sha` provenance is the full approved commit.
+2. Run `m8_live_test.py` with `ZB_WIN_GATE=1`, `ZB_WIN11_HOST=127.0.0.1`, `ZB_WIN11_MARKER=zb-win11-m8-ws0-2026-10-20`, and `ZB_WIN_EXE` set to that scratch clone's fetched executable. All three Win11 rows must say PASS with `ASSERTS n>0`; the driver must then exit 1 with `INCOMPLETE: both hosts are required` because Win10 is intentionally absent.
+3. Run `m8_gate_red_test.py` with the same environment. It must accept the honest one-host result and exit 0. Both invocations must record commands and exit codes, report cleanup, leave no `zb_m8_*` scheduled task, and remove/check the remote `C:\Users\zbtext\zb\runs\m8-*` directory.
+
+If the console user is not signed in and unlocked, the run must fail closed without retry and proves no platform behavior. The orchestrator's release and the free VM slot remain required. After the run, WS1.2 is still “green, registration pending” until the plan-named build steps and registered gate case land and receive review.
