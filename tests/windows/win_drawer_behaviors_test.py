@@ -326,7 +326,7 @@ class WinDrawerBehaviorsOracle(unittest.TestCase):
             check_live(2, 1)   # a leaked live drawer must fail
 
     def test_check_isolation(self):
-        full = {k: -32601 for k in EXPECTED_ISOLATION_PROBES}
+        full = dict(EXPECTED_ISOLATION)
         check_isolation(full, {"wins": 2}, {"wins": 2})
         with self.assertRaises(AssertionError):
             check_isolation({}, {"wins": 2}, {"wins": 2})                       # no attempts -> no evidence
@@ -338,8 +338,39 @@ class WinDrawerBehaviorsOracle(unittest.TestCase):
         reachable = dict(full); reachable["socket.drawer.state"] = 0
         with self.assertRaises(AssertionError):
             check_isolation(reachable, {"wins": 2}, {"wins": 2})                # a reachable (success) method must fail
+        # RoseCat d0e7091 #2: a socket drawer.* that denies by POLICY (-32011) means the method EXISTS (exposed)
+        # — the exact-value check must reject it even though -32011 is "a denial".
+        policy_denied = dict(full); policy_denied["socket.drawer.state"] = -32011
+        with self.assertRaises(AssertionError):
+            check_isolation(policy_denied, {"wins": 2}, {"wins": 2})
+        # a swapped JS code must also fail (each probe pins its exact value)
+        swapped = dict(full); swapped["js.dom"] = -32601
+        with self.assertRaises(AssertionError):
+            check_isolation(swapped, {"wins": 2}, {"wins": 2})
         with self.assertRaises(AssertionError):
             check_isolation(full, {"wins": 2}, {"wins": 3})                     # a census change must fail
+
+    def test_validate_multiwindow(self):
+        w1 = ("DRAWER\t1\ttree\thost,page,icon,panel\nDRAWER\t1\ticon\t928,649,56,56\n"
+              "DRAWER\t1\topen\t0,437,1008,292\nDRAWER\t1\tlive\t2\t0\n")
+        w2 = ("DRAWER\t2\ttree\thost,page,icon,panel\nDRAWER\t2\ticon\t928,649,56,56\n"
+              "DRAWER\t2\topen\t0,437,1008,292\n")
+        self.assertEqual(validate_multiwindow_transcript(w1 + w2, 2), ("2", "0"))
+        # RoseCat d0e7091 #1 mutants: a popup with NO drawer (only 1 window) must fail the window count
+        with self.assertRaises(AssertionError):
+            validate_multiwindow_transcript(w1, 2)
+        # a popup-close path leaving live count 1 is caught downstream by check_live
+        peak, final = validate_multiwindow_transcript(
+            w1.replace("\tlive\t2\t0", "\tlive\t2\t1") + w2, 2)
+        with self.assertRaises(AssertionError):
+            check_live(int(peak), int(final))
+        # a foreign/extra window beyond the requested count must fail
+        w3 = "DRAWER\t3\ttree\thost,page,icon,panel\nDRAWER\t3\ticon\t928,649,56,56\nDRAWER\t3\topen\t0,437,1008,292\n"
+        with self.assertRaises(AssertionError):
+            validate_multiwindow_transcript(w1 + w2 + w3, 2)
+        # a popup window missing its drawer sequence must fail
+        with self.assertRaises(AssertionError):
+            validate_multiwindow_transcript(w1 + "DRAWER\t2\ttree\thost,page,icon,panel\n", 2)
 
     def test_check_fold_override(self):
         check_fold_override(56, 400, 1008, 3000, 3000)
@@ -452,6 +483,37 @@ def fields_of(rows, kind):
     return hits[0]
 
 
+def validate_multiwindow_transcript(stdout, n_windows):
+    """STRICT multi-window transcript check for WS5.5 (RoseCat d0e7091 #1): per-window drawers legitimately use
+    DIFFERENT window ids, so the single-window validator cannot apply. Require: no malformed rows; EXACTLY
+    `n_windows` distinct windows; each window an exact ordered `[tree, icon, open]` sequence (no duplicate/extra/
+    out-of-order); and exactly ONE global `live` row (peak, final) owned by the FIRST (lowest-id) window. Returns
+    that live row's (peak, final) fields."""
+    parsed = []  # (win, kind, fields)
+    for ln in stdout.splitlines():
+        tag = classify_drawer_line(ln)
+        if tag[0] == "malformed":
+            raise AssertionError(f"malformed DRAWER row: {tag[1]!r}")
+        if tag[0] == "ok":
+            parsed.append((tag[1], tag[2], tag[3]))
+    by_win = {}
+    for (w, k, f) in parsed:
+        by_win.setdefault(w, []).append((k, f))
+    wins = sorted(by_win)
+    if len(wins) != n_windows:
+        raise AssertionError(f"expected exactly {n_windows} drawer windows, got {wins}")
+    owner = wins[0]  # the live count is a single global observation bound to the first window
+    live = None
+    for w in wins:
+        kinds = [k for (k, _f) in by_win[w]]
+        expected = ["tree", "icon", "open", "live"] if w == owner else ["tree", "icon", "open"]
+        if kinds != expected:
+            raise AssertionError(f"window {w} sequence {kinds} != expected {expected}")
+        if w == owner:
+            live = [f for (k, f) in by_win[w] if k == "live"][0]
+    return live
+
+
 # ------------------------------------------------------------------
 # Pure checks over RAW observations the harness MEASURES (RoseCat b2f474b #1/#2). Each is offline mutant-tested
 # by WinDrawerBehaviorsOracle; the live tests below gather the raw observation and apply the SAME check, so a
@@ -507,22 +569,28 @@ def check_live(peak, final):
     assert final == 0, f"the live count must be 0 after every window closes (got {final})"
 
 
-# The EXACT set of drawer-reach attempts the harness must perform (RoseCat cca6e36 #2): two page-JS reaches and
-# every socket method name containing "drawer". The isolation check requires exactly these keys, each denied.
-EXPECTED_ISOLATION_PROBES = frozenset({
-    "js.postMessage", "js.dom",
-    "socket.drawer.state", "socket.drawer.open", "socket.drawer.send",
-})
+# The EXACT expected result of each drawer-reach attempt (RoseCat d0e7091 #2): a socket `drawer.*` method must
+# be METHOD-NOT-FOUND (-32601) — a policy-denial (-32011) would mean the method EXISTS (exposed), which must
+# fail; each page-JS reach has its own defined unreachable observation. The isolation check requires exactly
+# these keys, each with its EXACT value (not merely "some denial code").
+EXPECTED_ISOLATION = {
+    "js.postMessage": "no-target",   # window.postMessage finds no drawer target window
+    "js.dom": "null",                # querySelector for the drawer root returns null
+    "socket.drawer.state": -32601,   # method not found (not exposed)
+    "socket.drawer.open": -32601,
+    "socket.drawer.send": -32601,
+}
 
 
 def check_isolation(attempts, census_before, census_after):
-    """`attempts` maps each performed reach to its JSON-RPC result code. Require EXACTLY the named page-JS +
-    socket attempts (no missing, no extras), each denied with -32601/-32011, and an unchanged drawer census
-    (RoseCat cca6e36 #2)."""
-    assert set(attempts) == EXPECTED_ISOLATION_PROBES, \
-        f"the probe must perform exactly the named attempts: got {sorted(attempts)} vs {sorted(EXPECTED_ISOLATION_PROBES)}"
-    for name, code in attempts.items():
-        assert code in (-32601, -32011), f"drawer reach {name!r} must be denied (got {code})"
+    """`attempts` maps each performed reach to its measured result. Require EXACTLY the named page-JS + socket
+    attempts (no missing, no extras), each matching its EXACT expected value (socket `drawer.*` must be -32601
+    method-not-found, NOT a -32011 policy-denial which would mean the method is exposed), and an unchanged
+    drawer census (RoseCat d0e7091 #2)."""
+    assert set(attempts) == set(EXPECTED_ISOLATION), \
+        f"the probe must perform exactly the named attempts: got {sorted(attempts)} vs {sorted(EXPECTED_ISOLATION)}"
+    for name, want in EXPECTED_ISOLATION.items():
+        assert attempts[name] == want, f"drawer reach {name!r} must be exactly {want!r} (got {attempts[name]!r})"
     assert census_before == census_after, f"census changed across probes: {census_before} -> {census_after}"
 
 
@@ -627,11 +695,11 @@ class WinDrawerBehaviorsLive(_wd.WinDrawerLive):
         self._run_drawer(extra_env=self._env(ZIGBROWSER_AGENT_DRAWER_RTF=expected), body=body)
 
     def test_ws5_5_live_count_peak_then_zero(self):
-        # WS5.5 (plan 1578): a positive peak live count (windows open) drops to exactly 0 after the popup-close
-        # sequence. The harness MEASURES zb_drawer_debug_live_count into the raw `live` row (peak, final).
+        # WS5.5 (plan 1578): per-window drawers (DIFFERENT window ids) — a positive peak live count drops to
+        # exactly 0 after the popup-close sequence. The MULTI-window validator requires exactly 2 windows, each
+        # an exact [tree,icon,open] sequence, plus one global `live` row on the first window (RoseCat d0e7091 #1).
         def body(r):
-            rows = validate_transcript(r["stdout"], ["tree", "icon", "open", "live"])
-            peak, final = fields_of(rows, "live")
+            peak, final = validate_multiwindow_transcript(r["stdout"], 2)
             check_live(int(peak), int(final))
         self._run_drawer(extra_env=self._env(ZIGBROWSER_AGENT_DRAWER_WINDOWS="2"), body=body)
 
