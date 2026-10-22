@@ -297,6 +297,7 @@ static void handle_signal(int signo) {
 // finishedOrFailed, the timeout timer, or the outcome — otherwise a late stale callback corrupts the
 // navigation now in flight (RoseCat 33b0827: identity-check BEFORE mutating current state).
 @property(nonatomic, strong) WKNavigation *currentNav;
+@property(nonatomic, assign) BOOL nativeCloseFired;  // e2e-only ZB_DEBUG_NATIVE_CLOSE_ON_TITLE: one shot per window
 // MS2b.2 page dialogs. At most one open dialog per window; it is NEVER answered by default — the
 // captured WKUIDelegate completion handler is held until zb_automation_respond_dialog answers it (or the
 // window closes). kind: 0 none, 1 alert, 2 confirm, 3 prompt, 4 beforeunload. Touched only on the main
@@ -440,6 +441,7 @@ static void handle_signal(int signo) {
 @end
 
 static int zb_auto_test_synth_crash(void);  // defined with the other e2e hooks below; used by didFinish
+static const char *zb_auto_test_native_close_title(void);  // e2e hook (defined below); used by the title KVO
 static long zb_auto_test_health_reply_hold_ms(void);  // e2e hook (defined below); used by healthTick
 static BOOL zb_auto_test_health_tick_suspended(void);  // e2e hook (defined below); used by healthTick
 static char *zb_auto_dup_tracked(const char *s);  // part B: strdup + account a caller-returned string (defined below)
@@ -1017,9 +1019,31 @@ static int64_t zb_now_us(void) { return (int64_t)([[NSProcessInfo processInfo] s
 - (void)observeValueForKeyPath:(NSString *)keyPath ofObject:(id)object change:(NSDictionary *)change context:(void *)context {
   if (context == ZBWebViewKVOContext) {
     zb_publish_window_snapshot();  // title/url/loading changed -> refresh page.list/health
+    if ([keyPath isEqualToString:@"title"]) [self zbTestNativeCloseIfTitled];
     return;
   }
   [super observeValueForKeyPath:keyPath ofObject:object change:change context:context];
+}
+
+// e2e-only (ZB_DEBUG_NATIVE_CLOSE_ON_TITLE, 4pa.58 MS2c.6 red): when this window's page title becomes the
+// hook's exact value, print NATIVE_CLOSE <id> and close the NSWindow through -[NSWindow performClose:], the
+// AppKit path a click on its red close button takes. Deferred to the main queue so the window never closes
+// inside this KVO callback. Inert without --e2e-protocol.
+- (void)zbTestNativeCloseIfTitled {
+  const char *want = zb_auto_test_native_close_title();
+  if (want == NULL || self.nativeCloseFired) return;
+  NSString *wantTitle = [NSString stringWithUTF8String:want];
+  if (wantTitle == nil || ![self.webView.title isEqualToString:wantTitle]) return;
+  self.nativeCloseFired = YES;
+  __weak ZBWindowHost *weakSelf = self;
+  dispatch_async(dispatch_get_main_queue(), ^{
+    ZBWindowHost *s = weakSelf;
+    if (s == nil || s.window == nil) return;
+    char id_buf[32];
+    snprintf(id_buf, sizeof(id_buf), "%u", (unsigned)s.windowId);
+    emit_protocol1(s.app.e2eProtocol, "NATIVE_CLOSE", id_buf);
+    [s.window performClose:nil];
+  });
 }
 
 - (void)dealloc {
@@ -1444,6 +1468,15 @@ static int zb_auto_test_synth_crash(void) {
   const char *v = getenv("ZB_DEBUG_SYNTH_CRASH");
   if (v == NULL || v[0] == '0' || v[0] == '\0') return 0;
   return atomic_exchange(&consumed, 1) == 0;  // one-shot: true exactly once
+}
+
+// Test-only (ZB_DEBUG_NATIVE_CLOSE_ON_TITLE, 4pa.58): the page title that makes a window close itself
+// through -[NSWindow performClose:] (see zbTestNativeCloseIfTitled), so a red can drive the native close
+// control without Accessibility/TCC. NULL when unset or without --e2e-protocol. Main thread only.
+static const char *zb_auto_test_native_close_title(void) {
+  if (!zb_auto_test_hooks_enabled()) return NULL;
+  const char *v = getenv("ZB_DEBUG_NATIVE_CLOSE_ON_TITLE");
+  return (v != NULL && v[0] != '\0') ? v : NULL;
 }
 
 // Test-only (ZB_DEBUG_STALE_TOKEN): the native-click documentToken guard reads a fabricated stale token
