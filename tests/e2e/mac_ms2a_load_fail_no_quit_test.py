@@ -17,7 +17,8 @@ Rows (each in a fresh browser, because today the first failure ends the process)
   2 after a ROUTED page.navigate, the page script sets `location` to a dead host: same assertions. This keeps
     RoseCat 38d121a #4: an untagged failure in a window that ran a routed nav is still reported.
   3 after the first finish, a click on a link whose response WebKit cannot display (an attachment): the
-    browser stays alive, page.list answers, and the fixture really served /attach (else the row is vacuous).
+    browser stays alive, page.list answers, the fixture really served /attach, and exactly one LOAD_FAIL
+    row names /attach (the direct observable of handleLoadFailureForWebView; SilverRidge cd515ce minimum).
     Why not the plan's wording: plan row 3 says "a response the policy cancels", but nav_policy.decide
     returns .use for EVERY response (src/nav_policy.zig, `.response => .use`), so no real response is ever
     cancelled and that case cannot be driven through the production policy. An undisplayable response
@@ -131,11 +132,22 @@ class _Browser:
             time.sleep(0.05)
         return False
 
+    def load_fails(self, match) -> int:
+        return sum(1 for r in self.rows("LOAD_FAIL") if len(r) >= 2 and match(r[1]))
+
     def dead_load_fails(self) -> int:
-        return sum(1 for r in self.rows("LOAD_FAIL") if len(r) >= 2 and r[1].startswith(DEAD_URL.rstrip("/")))
+        return self.load_fails(is_dead_url)
 
     def stop(self):
         stop_browser_macos(self.proc)
+
+
+def is_dead_url(u: str) -> bool:
+    return u.startswith(DEAD_URL.rstrip("/"))
+
+
+def is_attach_url(u: str) -> bool:
+    return u.endswith("/attach")
 
 
 def page_list_answers(rpc: RpcClient) -> bool:
@@ -146,19 +158,20 @@ def page_list_answers(rpc: RpcClient) -> bool:
     return "error" not in reply and reply.get("result") is not None
 
 
-def check_alive(label: str, b: _Browser, rpc: RpcClient, failures: list[str], want_dead_fails: int | None):
+def check_alive(label: str, b: _Browser, rpc: RpcClient, failures: list[str], fail_match):
     time.sleep(ALIVE_GRACE_SEC)
+    n = b.load_fails(fail_match)
+    if n != 1:  # the failure must be recorded exactly once (not swallowed, not doubled)
+        failures.append(f"{label}: LOAD_FAIL rows for the failing load = {n}, want 1")
     rc = b.proc.poll()
     if rc is not None:
         failures.append(f"{label}: the browser exited (rc={rc}) after a post-first-finish load failure")
         return
     if not page_list_answers(rpc):
         failures.append(f"{label}: page.list did not answer after the load failure")
-    if want_dead_fails is not None and b.dead_load_fails() != want_dead_fails:
-        failures.append(f"{label}: LOAD_FAIL rows for {DEAD_URL} = {b.dead_load_fails()}, want {want_dead_fails}")
 
 
-def run_row(label: str, browser: Path, fixture, proc_holder: list, timeout_sec: float, act, want_dead_fails):
+def run_row(label: str, browser: Path, fixture, proc_holder: list, timeout_sec: float, act, fail_match):
     failures: list[str] = []
     with tempfile.TemporaryDirectory(prefix="zb-loadfail-") as tmp:
         b = _Browser(browser, f"{fixture.base_url}/a", Path(tmp), proc_holder)
@@ -169,13 +182,10 @@ def run_row(label: str, browser: Path, fixture, proc_holder: list, timeout_sec: 
                 return failures, b
             rpc = RpcClient(b.socket_path, timeout_sec)
             act(rpc, fixture)
-            if want_dead_fails is not None:
-                b.wait_row("LOAD_FAIL", lambda r: len(r) >= 2 and r[1].startswith(DEAD_URL.rstrip("/")), 10.0)
-            else:
-                time.sleep(3.0)  # give the undisplayable response time to fail
-                if "/attach" not in fixture.hits:  # the row is vacuous unless the response was really fetched
-                    failures.append(f"{label}: PRECONDITION the page never requested /attach")
-            check_alive(label, b, rpc, failures, want_dead_fails)
+            b.wait_row("LOAD_FAIL", lambda r: len(r) >= 2 and fail_match(r[1]), 10.0)
+            if fail_match is is_attach_url and "/attach" not in fixture.hits:
+                failures.append(f"{label}: PRECONDITION the page never requested /attach")  # else vacuous
+            check_alive(label, b, rpc, failures, fail_match)
         except Exception as exc:  # noqa: BLE001
             failures.append(f"{label}: unexpected error: {exc!r} (rc={b.proc.poll()})")
         finally:
@@ -243,9 +253,9 @@ def main() -> int:
 
     with _FixtureServer() as fixture:
         for label, act, want in (
-            ("row1-click-dead-link", act_click_dead, 1),
-            ("row2-routed-then-location", act_routed_then_location, 1),
-            ("row3-undisplayable-response", act_click_attachment, None),
+            ("row1-click-dead-link", act_click_dead, is_dead_url),
+            ("row2-routed-then-location", act_routed_then_location, is_dead_url),
+            ("row3-undisplayable-response", act_click_attachment, is_attach_url),
         ):
             f, b = run_row(label, browser, fixture, proc_holder, args.timeout_sec, act, want)
             asserts += 1
