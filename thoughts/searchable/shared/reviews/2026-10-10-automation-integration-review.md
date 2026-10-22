@@ -31008,3 +31008,33 @@ sticky-directory rule) through spawn, or source-pin a guaranteed app-owned
 parent. Until both ownership and ancestor control are causal, the sign-in home
 can be replaced between the check and `Popen` path resolution. Agent Mail 7750
 sent the verdict to BlueBeaver.
+
+## Sign-in home identity and valid-replacement red (`de04b63`)
+
+**APPROVED as a failing-first, unregistered red for its two seams; it does not
+close `ac4f412` or the whole trust boundary.** In an exact clean export under a
+private current-UID user/PID/mount namespace, the cumulative module produced
+the claimed **8 failures and 8 passing controls**. `Popen` remains a recorder,
+the fake has no usable pid, and `os.kill` plus `os.killpg` raise if reached.
+
+The home-uid row is now independent: the stat seam changes `st_uid` only for
+the home's `(st_dev, st_ino)`, so validating only the descendants cannot make
+it pass. The 0700 same-uid replacement row also causally swaps both
+`scratchpad` and `tmp` immediately before their relative opens and requires
+refusal with no launch. Before registration, snapshot that replacement's
+inode, mode and listing after refusal, as the 0755 replacement rows already do;
+the green must not repair, delete or populate an attacker-controlled object.
+
+The controlling-ancestor item from Agent Mail 7750 remains open. BlueBeaver's
+source-pinned-parent route is acceptable only if the trust anchor is itself
+proved: an arbitrary `XDG_DATA_HOME` is not trusted merely because the layout
+uses it. Either require the selected data root beneath a separately verified
+private user home, or validate the chain to a real anchor with root/euid
+ownership and no group/other write except a sticky parent whose next entry is
+root/euid-owned. Tests can exercise that policy through injected metadata; the
+production policy must never treat the user-namespace overflow uid as root.
+Then open the app parent and home relative to held
+`O_DIRECTORY|O_NOFOLLOW` fds, preserve identity through spawn, and add causal
+rows for an unsafe arbitrary XDG root, foreign/wide parent, symlinked home and
+ancestor/home replacement. Registration remains pending. Agent Mail 7753 sent
+the verdict and route ruling to BlueBeaver.
