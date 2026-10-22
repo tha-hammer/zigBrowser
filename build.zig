@@ -170,6 +170,13 @@ pub fn build(b: *std.Build) void {
         .link_libc = true,
     });
     configureBackend(root_module, b, backend, webview2_paths);
+    const exe_ledger_mod = b.createModule(.{ .root_source_file = b.path("src/agent_run_ledger.zig"), .target = target, .optimize = optimize });
+    const exe_recovery_mod = b.createModule(.{ .root_source_file = b.path("src/agent_run_recovery.zig"), .target = target, .optimize = optimize, .link_libc = true });
+    exe_recovery_mod.addImport("agent_run_ledger", exe_ledger_mod);
+    exe_recovery_mod.addIncludePath(b.path("src"));
+    exe_recovery_mod.addCSourceFile(.{ .file = b.path("src/agent_run_reaper.c"), .flags = &.{"-std=gnu11"} });
+    root_module.addImport("agent_run_recovery", exe_recovery_mod);
+    root_module.addImport("agent_run_ledger", exe_ledger_mod);
 
     const exe = b.addExecutable(.{
         .name = "zigBrowser",
@@ -466,6 +473,31 @@ pub fn build(b: *std.Build) void {
     const cross_drawer_win_step = b.step("cross-check-drawer-win", "WS5: the Windows build compiles and exports the portable drawer logic (zb_drawer_*)");
     cross_drawer_win_step.dependOn(&cross_drawer_win.step);
     cross_check_step.dependOn(&cross_drawer_win.step);
+
+    // WS6.1 (c): the Windows Credential Manager / DPAPI token store compiles for x86_64-windows and exports
+    // its zb_secret_* C-ABI functions. A trivial Zig root pulls the C++ in (addCSourceFile); the object retains
+    // every TU symbol, so check_cross_symbols can require them.
+    const secrets_win_cross_module = b.createModule(.{
+        .root_source_file = b.path("src/agent_secrets_win_crosscheck.zig"),
+        .target = b.resolveTargetQuery(.{ .cpu_arch = .x86_64, .os_tag = .windows, .abi = .gnu }),
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    secrets_win_cross_module.addCSourceFile(.{ .file = b.path("src/agent_secrets_win.cpp"), .flags = &.{} });
+    const secrets_win_cross_obj = b.addObject(.{ .name = "zigBrowser-cross-secrets-win", .root_module = secrets_win_cross_module });
+    const secrets_win_cross = b.addSystemCommand(&.{
+        "python3",           "tools/check_cross_symbols.py",
+        "--require-defined", "zb_secret_cred_save",
+        "--require-defined", "zb_secret_cred_read",
+        "--require-defined", "zb_secret_cred_delete",
+        "--require-defined", "zb_secret_dpapi_protect",
+    });
+    secrets_win_cross.addFileInput(b.path("tools/check_cross_symbols.py"));
+    secrets_win_cross.addFileArg(secrets_win_cross_obj.getEmittedBin());
+    secrets_win_cross.addFileArg(b.path("src/agent_secrets_win.cpp"));
+    const secrets_win_cross_step = b.step("cross-check-secrets-win", "WS6.1: the Windows token store compiles and exports zb_secret_* (CredMan/DPAPI)");
+    secrets_win_cross_step.dependOn(&secrets_win_cross.step);
+    cross_check_step.dependOn(&secrets_win_cross.step);
 
     // WS3 .windows arm + WebView2 cookie port (red-first; UNREGISTERED — not in `cross-check`/`test`
     // until green). The x86_64-windows-gnu object compiles, and every zb_* it needs
