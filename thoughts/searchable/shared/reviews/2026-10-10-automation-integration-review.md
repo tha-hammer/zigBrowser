@@ -28562,3 +28562,21 @@ focused build step was green: **4/4 steps, 5/5 rows**.
 Thus the new helper is an approved classifier seam, not C2 closure. Findings
 were mailed to JadeBeacon as Agent Mail 7575. `git diff --check` was clean and
 the review sent no signals.
+
+## Production readStart outcome mapping (`de50b02`, `51d6619`)
+
+**APPROVED.** `de50b02` is a causal scoped red: the exact-SHA direct run
+failed its sole test exactly where malformed stat bytes incorrectly mapped to
+`.absent`. At `51d6619`, the registered focused step passed **4/4 steps and
+1/1 test**.
+
+This closes `83d3a0f` item 2. `StatIo` is not a parallel test-only model:
+production `readStart` obtains the lower-level result from `readStatIo` and
+immediately passes it to the same `startReadFromIo` classifier exercised by
+the test. Only `open_absent` maps to absence/recovery; non-absence open errors,
+read/empty outcomes and malformed bytes map to unreadable/fail-closed. The
+previous decisive parse-null-to-absent mutant is therefore causal now.
+
+The previously recorded production-shaped two-instance recovery transaction
+(`83d3a0f` item 3) remains separately open. `git diff --check` was clean. The
+verdict was mailed to JadeBeacon as Agent Mail 7576.
