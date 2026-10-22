@@ -36262,3 +36262,18 @@ both Darwin objects. This is the approved offline compile/link tripwire. The
 runtime AppKit action/target, minter exclusivity and lifecycle authority remain
 with the compiled two-Mac gate defined by the `c6b2b32` proof-boundary ruling;
 this commit does not claim those runtime properties.
+
+## MS7 AppKit source-tripwire relabel (`3f536a8`)
+
+**APPROVED.** The commit changes only module docstrings and comments; no
+predicate, fixture, assertion, build binding or registration changes. The
+bubble/Edit-menu and card-ingress source checks now accurately call themselves
+offline architecture tripwires and expressly disclaim runtime proof. They name
+`tests/mac/hard_gate/case_ms7_appkit_authority.py` on both Intel and Apple
+Silicon as the authority for the actual compile/link inputs, loaded Objective-C
+metadata and IMP provenance, live nil-target Copy route and exact clipboard
+bytes, real Approve action/target and single grant, negative routes, and the
+absence of GTK-only card calls. This satisfies the relabel condition in the
+`c6b2b32` proof-boundary ruling without weakening the existing offline checks.
+The compiled two-Mac case and result are still required before the cumulative
+MS7.4 / MS7.6-7.8 range can claim runtime acceptance.
