@@ -28,8 +28,9 @@ scan is clean (RoseCat 7312). Any non-clean scan (a survivor, an unreadable pid,
 clean or the row's horizon (every controlled CLI ends itself by 90 s), never signalled, and the final scan must be
 clean (RoseCat 7306).
 Kill safety (RoseCat 7250): this case sends no signal. Its compiler and ps run through the guarded h.spawn_group; the
-only other processes are setup's own (subprocess.run on its own child). The observation spies call through to the
-real functions and are removed after every row."""
+only other processes are setup's own, run through its named seam setup.run_in_owned_group (owned_group: its own
+child's group, stopped only behind the reviewed guards; fd1bd92). The observation spies call through to the real
+functions and are removed after every row."""
 import os
 import re
 import socket
@@ -307,7 +308,7 @@ def run(h):
             return
         clis[mode] = os.path.realpath(exe)
 
-    real_run, real_census = setup.subprocess.run, proc_darwin.cli_env_clean
+    real_run, real_census = setup.run_in_owned_group, proc_darwin.cli_env_clean  # setup's named run seam (fd1bd92)
 
     def one(mode):
         """probe_r1 through the production wrapper in front of the `mode` CLI, observed from outside."""
@@ -355,12 +356,12 @@ def run(h):
             censuses.append(seen)
             return seen["clean"]
 
-        setup.subprocess.run, proc_darwin.cli_env_clean = spy_run, spy_census
+        setup.run_in_owned_group, proc_darwin.cli_env_clean = spy_run, spy_census
         started = time.monotonic()
         try:
             verdict = setup.probe_r1(wrapper, clis[mode])
         finally:
-            setup.subprocess.run, proc_darwin.cli_env_clean = real_run, real_census
+            setup.run_in_owned_group, proc_darwin.cli_env_clean = real_run, real_census
         return verdict, time.monotonic() - started, runs, censuses, runtime
 
     # 1. positive

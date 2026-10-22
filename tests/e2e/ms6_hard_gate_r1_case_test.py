@@ -218,8 +218,12 @@ PLATFORM = "darwin"
 PACKAGE_DIR = Path(__file__).resolve().parent.parent
 PROBE_TIMEOUT_S = 30
 RESULT = {"rc": 0, "out": '{"r1": true}\\n', "err": "", "honest_clean": True}
+def run_in_owned_group(argv, *, env=None, pass_fds=(), timeout):  # setup's named run seam (fd1bd92)
+    return _sp.CompletedProcess(argv, RESULT["rc"], RESULT["out"], RESULT["err"])
+def _no_subprocess_run(*a, **kw):
+    raise AssertionError("setup's Darwin run went through subprocess.run, not run_in_owned_group")
 subprocess = types.SimpleNamespace(
-    run=lambda argv, *a, **kw: _sp.CompletedProcess(argv, RESULT["rc"], RESULT["out"], RESULT["err"]),
+    run=_no_subprocess_run,
     TimeoutExpired=_sp.TimeoutExpired)
 def probe_r1(wrapper, cli):
     mode = os.path.basename(os.path.dirname(cli)).split("-", 1)[1]
@@ -232,7 +236,7 @@ def probe_r1(wrapper, cli):
         argv = ["/usr/bin/sandbox-exec", "-f", str(profile), "-D", "SCRATCHPAD=/s", "py", "-m", "zb_agent_host",
                 "probe-r1", "--wrapper", wrapper, "--cli", cli, "--listen-fd", str(listener.fileno()),
                 "--listen-port", str(port), "--census-fd", str(theirs.fileno())]
-        done = subprocess.run(argv, capture_output=True, text=True, timeout=60, env={},
+        done = run_in_owned_group(argv, timeout=60, env={},
                               pass_fds=(listener.fileno(), theirs.fileno()))
         if mode == "hang" or done.returncode != 0:
             return False
