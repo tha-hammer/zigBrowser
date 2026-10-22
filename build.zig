@@ -468,7 +468,8 @@ pub fn build(b: *std.Build) void {
     cross_check_step.dependOn(&cross_drawer_win.step);
 
     // MS7.0 (macOS plan line 2158): both macOS objects must COMPILE and DEFINE the portable drawer logic (zb_drawer_*)
-    // the AppKit drawer will call, exactly the Windows list, once the export gate in agent_drawer.zig covers .macos.
+    // the AppKit drawer requires (an AppKit-required inventory: each one a call the drawer's .m makes), once the
+    // export gate in agent_drawer.zig covers .macos.
     // Pure compile — no SDK, no link. RED until that gate widens; not in `cross-check` or `test` until the green.
     const cross_drawer_mac_step = b.step("cross-check-drawer-mac", "MS7.0: both macOS builds compile and export the portable drawer logic (zb_drawer_*)");
     for ([_]std.Target.Cpu.Arch{ .aarch64, .x86_64 }) |arch| {
@@ -4028,7 +4029,7 @@ const drawer_portable_exports = [_][]const u8{
     "zb_drawer_ease",              "zb_drawer_anim_ms",         "zb_drawer_anim_ms_from_env",
     "zb_drawer_break_runs",        "zb_drawer_row_text_len",    "zb_drawer_original_offset",
     "zb_drawer_reply_text_max",    "zb_drawer_reply_content_max", "zb_drawer_label_text_max",
-    "zb_drawer_inside_icon",
+    "zb_drawer_inside_icon",       "zb_drawer_page_rect",       "zb_drawer_appkit_frame",
 };
 
 fn addShimArg(b: *std.Build, run: *std.Build.Step.Run, shim: []const u8) void {

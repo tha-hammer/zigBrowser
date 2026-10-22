@@ -4,28 +4,56 @@
 //!   Open: the panel docks full width at the bottom (drawerRect) and the page fills exactly
 //!   the region above it: never under the panel (no overlay over the GPU-composited page),
 //!   and page + panel cover the content with no gap. Closed: the whole content.
-//! - appKitFrame(r, height): the same rect as an AppKit frame (origin bottom-left, y up) in a
-//!   content view `height` tall. It is its own inverse, so the docked panel's frame sits at
-//!   y 0 and the page's frame starts exactly at the panel's height.
-//! - the C exports zb_drawer_page_rect / zb_drawer_appkit_frame return exactly those.
-//! Properties run over a grid of content sizes, including ones below the panel's 220 px
-//! floor, zero and negative.
+//! - appKitFrame(r, width, height): `r` as an AppKit frame (origin bottom-left, y up) in a
+//!   content view `width` x `height`. For a rect inside the content it is a pure flip and its
+//!   own inverse, so the docked panel's frame sits at y 0 and the page's frame starts exactly
+//!   at the panel's height.
+//! - Fail closed on geometry (RoseCat 8052 #1, 4e48f1d): a content area with a non-positive
+//!   width or height (a transient zero-size view, a window being made or collapsed) counts
+//!   as max(0, width) x max(0, height). Through BOTH C wrappers every rectangle is then
+//!   non-negative and inside that content: pageRect is {0, 0, max(0, width), 0} open or
+//!   closed when the height is non-positive, and appKitFrame clamps any rect (off-content,
+//!   negative, or larger than the content) into it before flipping.
+//! - The C exports zb_drawer_page_rect / zb_drawer_appkit_frame return exactly those for
+//!   every size and rect; `open` follows C truth: 0 is closed and any other value (1, 2, -1,
+//!   INT_MAX, INT_MIN) is open (RoseCat 8052 #3).
+//! Properties run over a grid of 10 widths x 13 heights, below the 220 px panel floor, zero
+//! and negative included. That the exports are DEFINED by both macOS app objects is the
+//! dual-arch symbol inventory's job (`cross-check-drawer-mac`, which lists both).
 //! RED until the green adds them; build step `test-agent-drawer-appkit`, not in `test`.
 const std = @import("std");
 const drawer = @import("agent_drawer");
 
 const Rect = drawer.Rect;
 
-const widths = [_]c_int{ 0, 1, 57, 320, 800, 1024, 1440, 2560, 5120 };
+const widths = [_]c_int{ -3, 0, 1, 57, 320, 800, 1024, 1440, 2560, 5120 };
 const heights = [_]c_int{ -5, 0, 1, 100, 219, 220, 314, 315, 600, 768, 900, 1600, 2880 };
+const opens = [_]c_int{ 1, 2, -1, std.math.maxInt(c_int), std.math.minInt(c_int) };
+/// Rects an AppKit caller might pass: in-content, off-content, negative and oversized.
+const probes = [_]Rect{
+    .{ .x = 0, .y = 0, .w = 0, .h = 0 },        .{ .x = 10, .y = 20, .w = 40, .h = 30 },
+    .{ .x = -50, .y = -60, .w = 80, .h = 90 },  .{ .x = 5000, .y = 4000, .w = 56, .h = 56 },
+    .{ .x = 3, .y = 4, .w = -7, .h = -8 },      .{ .x = -1, .y = -1, .w = 100000, .h = 100000 },
+};
+
+/// Inside a max(0,width) x max(0,height) content, every edge non-negative.
+fn inContent(r: Rect, w: c_int, h: c_int) bool {
+    const cw = @max(0, w);
+    const ch = @max(0, h);
+    return r.x >= 0 and r.y >= 0 and r.w >= 0 and r.h >= 0 and r.x + r.w <= cw and r.y + r.h <= ch;
+}
 
 fn bottom(r: Rect) c_int {
     return r.y + r.h;
 }
 
+fn empty(w: c_int, h: c_int) bool {
+    return w <= 0 or h <= 0;
+}
+
 test "open: the page fills exactly the region above the docked panel, full width, no overlap and no gap" {
     for (widths) |w| for (heights) |h| {
-        if (h <= 0) continue;
+        if (empty(w, h)) continue;
         const panel = drawer.drawerRect(w, h);
         const page = drawer.pageRect(w, h, true);
         try std.testing.expectEqual(@as(c_int, 0), page.x);
@@ -39,18 +67,50 @@ test "open: the page fills exactly the region above the docked panel, full width
 
 test "closed: the page is the whole content area" {
     for (widths) |w| for (heights) |h| {
-        if (h < 0) continue;
+        if (empty(w, h)) continue;
         try std.testing.expectEqual(Rect{ .x = 0, .y = 0, .w = w, .h = h }, drawer.pageRect(w, h, false));
     };
 }
 
-test "appKitFrame flips y into a bottom-left origin and is its own inverse" {
-    try std.testing.expectEqual(Rect{ .x = 10, .y = 600 - 20 - 30, .w = 40, .h = 30 }, drawer.appKitFrame(.{ .x = 10, .y = 20, .w = 40, .h = 30 }, 600));
+test "a non-positive content area gives an empty page at the origin, open or closed" {
     for (widths) |w| for (heights) |h| {
-        if (h <= 0) continue;
+        if (!empty(w, h)) continue;
+        const want = Rect{ .x = 0, .y = 0, .w = @max(0, w), .h = 0 };
+        for ([_]bool{ true, false }) |open| {
+            const page = drawer.pageRect(w, h, open);
+            if (h > 0) {
+                // a non-positive width only: the height is still the content's (closed) or the region above
+                // the panel (open); the width is never negative
+                try std.testing.expectEqual(@as(c_int, 0), page.w);
+                try std.testing.expect(page.h >= 0);
+            } else {
+                try std.testing.expectEqual(want, page);
+            }
+            try std.testing.expect(page.w >= 0 and page.h >= 0 and page.x == 0 and page.y == 0);
+        }
+    };
+}
+
+test "every frame is non-negative and inside the content, whatever the rect or the size" {
+    for (widths) |w| for (heights) |h| {
+        var rects = probes ++ [_]Rect{.{ .x = 0, .y = 0, .w = 0, .h = 0 }} ** 2;
+        rects[probes.len] = drawer.drawerRect(w, h);
+        rects[probes.len + 1] = drawer.pageRect(w, h, true);
+        for (rects) |r| {
+            try std.testing.expect(inContent(drawer.appKitFrame(r, w, h), w, h));
+        }
+        for ([_]bool{ true, false }) |open| try std.testing.expect(inContent(drawer.pageRect(w, h, open), w, h));
+    };
+}
+
+test "for a rect inside the content, appKitFrame is a pure y flip and its own inverse" {
+    try std.testing.expectEqual(Rect{ .x = 10, .y = 600 - 20 - 30, .w = 40, .h = 30 }, drawer.appKitFrame(.{ .x = 10, .y = 20, .w = 40, .h = 30 }, 800, 600));
+    for (widths) |w| for (heights) |h| {
+        if (empty(w, h)) continue;
         const r = drawer.defaultRect(w, h);
-        try std.testing.expectEqual(r, drawer.appKitFrame(drawer.appKitFrame(r, h), h));
-        const f = drawer.appKitFrame(r, h);
+        if (!inContent(r, w, h)) continue; // a content smaller than the icon: clamped, not flipped
+        try std.testing.expectEqual(r, drawer.appKitFrame(drawer.appKitFrame(r, w, h), w, h));
+        const f = drawer.appKitFrame(r, w, h);
         try std.testing.expectEqual(r.x, f.x);
         try std.testing.expectEqual(r.w, f.w);
         try std.testing.expectEqual(r.h, f.h);
@@ -59,26 +119,34 @@ test "appKitFrame flips y into a bottom-left origin and is its own inverse" {
 
 test "in AppKit coordinates the panel sits at y 0 and the page starts at the panel's height" {
     for (widths) |w| for (heights) |h| {
-        if (h <= 0) continue;
-        const panel = drawer.appKitFrame(drawer.drawerRect(w, h), h);
-        const page = drawer.appKitFrame(drawer.pageRect(w, h, true), h);
+        if (empty(w, h)) continue;
+        const panel = drawer.appKitFrame(drawer.drawerRect(w, h), w, h);
+        const page = drawer.appKitFrame(drawer.pageRect(w, h, true), w, h);
         try std.testing.expectEqual(@as(c_int, 0), panel.y);
         try std.testing.expectEqual(panel.h, page.y);
         try std.testing.expectEqual(h, page.y + page.h);
     };
 }
 
-test "the C exports return exactly the Zig results" {
+test "the C exports return exactly the Zig results, in content, for every size and rect; any non-zero open is open" {
     for (widths) |w| for (heights) |h| {
-        if (h <= 0) continue;
-        for ([_]c_int{ 0, 1 }) |open| {
-            var out: Rect = undefined;
+        var out: Rect = undefined;
+        drawer.zb_drawer_page_rect(w, h, 0, &out);
+        try std.testing.expectEqual(drawer.pageRect(w, h, false), out);
+        for (opens) |open| {
             drawer.zb_drawer_page_rect(w, h, open, &out);
-            try std.testing.expectEqual(drawer.pageRect(w, h, open != 0), out);
+            try std.testing.expectEqual(drawer.pageRect(w, h, true), out);
         }
-        const r = drawer.drawerRect(w, h);
-        var f: Rect = undefined;
-        drawer.zb_drawer_appkit_frame(&r, h, &f);
-        try std.testing.expectEqual(drawer.appKitFrame(r, h), f);
+        var rects = probes ++ [_]Rect{.{ .x = 0, .y = 0, .w = 0, .h = 0 }} ** 3;
+        rects[probes.len] = drawer.drawerRect(w, h);
+        rects[probes.len + 1] = drawer.pageRect(w, h, true);
+        rects[probes.len + 2] = drawer.pageRect(w, h, false);
+        for (rects) |r| {
+            var f: Rect = undefined;
+            drawer.zb_drawer_appkit_frame(&r, w, h, &f);
+            try std.testing.expectEqual(drawer.appKitFrame(r, w, h), f);
+            try std.testing.expect(inContent(f, w, h));
+        }
+        try std.testing.expect(inContent(out, w, h));
     };
 }
