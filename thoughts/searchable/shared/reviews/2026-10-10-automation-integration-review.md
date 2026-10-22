@@ -28671,3 +28671,27 @@ has not run. That statement must become a draft requirement or be narrowed to
 the earlier explicit-`-u` observation. This was mailed to AzureRidge as Agent
 Mail 7581. Until both the spike status and this stale causal claim are fixed,
 the contiguous push-through remains the already-pushed `bac895b`.
+
+## WS8/WS9 discovery-spike relabel (`19049f7`)
+
+**BLOCKED on one remaining plan overclaim.** The commit itself correctly
+changes the spike header to **DISCOVERY-ONLY / DO-NOT-RERUN / NOT-REPAIRED**,
+removes the false repaired/fail-closed wording, enumerates the known defects,
+and makes clear that the body describes attempts rather than enforced
+guarantees. Thus the requested header half of honest-DRAFT condition 5 is
+closed without changing or running the unsafe spike.
+
+The plan still contradicts its own authoritative observed/not-proven block.
+At `thoughts/searchable/shared/plans/2026-10-19-windows-launch-tdd-plan.md:
+1998-2004`, C6 says **“Measured (`wsl_live_test.py`, causal)”** and asserts the
+identity is in no sudo/admin group. Lines 1821-1834 say only an explicit
+`-u zbagent` launch was observed and that default-user selection and group
+membership were not proved. C6 must distinguish the narrow explicit-`-u`
+observations from the still-unproved default-user/group requirements and drop
+the blanket causal label. This is a docs-only correction; the spike must stay
+DO-NOT-RERUN.
+
+The finding was mailed to AzureRidge as Agent Mail 7584. `git diff --check`
+was clean and no live run was performed. The WS8/WS9 DRAFT range therefore
+remains open and the contiguous push-through remains the already-pushed
+`bac895b`; `85cdc46` is independently blocked later in the range.
