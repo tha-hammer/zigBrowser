@@ -15,7 +15,8 @@ zb_agent_host written into a temp prefix:
 - each row's home is exactly setup.stage's layout (.claude, workspace, scratchpad/tmp, runtime/bin with the
   wrapper, state) and nothing more;
 - the case is self-contained: it reads no other case file;
-- the fd-3 endpoint is an AF_UNIX SOCK_STREAM socket (a socketpair end), never a pipe or a file (RoseCat 7537 #1);
+- the fd-3 endpoint is a socketpair end: an AF_UNIX SOCK_STREAM socket whose own address and peer address are both
+  unnamed, never a pipe, a file, or a client of a filesystem or abstract Unix listener (RoseCat 7537 #1, 7553);
 - the token has exactly one route (RoseCat 7537 #3): neither token appears in the run's argv, in its environment, or
   in any file under the case's scratch at spawn time, and the outer environment is exactly the fixed allowlist
   (PATH, PYTHONPATH = the staged prefix, PYTHONDONTWRITEBYTECODE); the census still proves the real CLI's own env;
@@ -196,7 +197,11 @@ class FakeStagedHost(unittest.TestCase):
             if stat.S_ISSOCK(st.st_mode):
                 dup = socket.socket(fileno=os.dup(pass_fds[0]))
                 try:
-                    endpoint = (dup.family, dup.type)
+                    try:
+                        peer = dup.getpeername()
+                    except OSError as exc:
+                        peer = ("unconnected", exc.errno)
+                    endpoint = (dup.family, dup.type, dup.getsockname(), peer)
                 finally:
                     dup.close()
             chunks = []
@@ -281,7 +286,8 @@ class FakeStagedHost(unittest.TestCase):
                     "--prompt", self.case.PROMPT])
                 self.assertEqual(run["env"], {"PATH": "/usr/bin:/bin", "PYTHONPATH": self.prefix,
                                               "PYTHONDONTWRITEBYTECODE": "1"})
-                self.assertEqual(run["endpoint"], (socket.AF_UNIX, socket.SOCK_STREAM) if channel else None)
+                self.assertEqual(run["endpoint"], (socket.AF_UNIX, socket.SOCK_STREAM, "", "") if channel else None,
+                                 "fd 3 is not an unnamed socketpair end")
                 self.assertEqual(run["routes"], [], "the token has a route besides fd 3")
                 self.assertTrue(home.startswith(self.scratch + os.sep), home)
                 self.assertIn((f"{home}/runtime/bin/zb-claude", self.cli), wrappers)
