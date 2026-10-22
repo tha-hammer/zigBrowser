@@ -166,3 +166,13 @@ From an exact clean archive, `python3 -m py_compile tests/e2e/mac_profile_pacing
 **No Mac run is approved.** Besides the absent exact-commit/harness-digest request and orchestrator release, this file imports `stop_browser_macos`, whose teardown can send `SIGKILL`; the session brief forbids running anything that sends `SIGKILL` on a Mac. Any future run proposal must use a reviewed SIGTERM-only bounded teardown (and include every imported harness digest) before it can be approved.
 
 **Push-safe result:** both `cd1c55f` and `909053e` are safe to push as unregistered drafts, so the committed branch tip is push-safe as a whole. The qualification is substantive: `cd1c55f` cannot be registered as rev-32 Red 1 until the exact minimum above is met. No Mac was contacted.
+
+## 2026-10-22 — 4pa.64 latent-defect plan erratum
+
+### `b182ff3` — defer the options-preservation proof to the first carded DOM write
+
+**APPROVED; SAFE TO PUSH.** The erratum matches the production code. `agent_broker.gated_tools` contains only navigate and reload; only a gated tool assigns `Job.verb` and reaches `awaitApproval`/the card-producing phase A. `gatedArgsOk` admits exactly one non-empty `url` key for navigate and an empty object for reload. Hover and scroll are approval-wired but explicitly cardless. Independently, `router.zig:327-332` accepts `options.guard` only for the five DOM mutation verbs and rejects it for navigate/reload. The replacement of the whole `options` object at `agent_broker.zig:709-714` is real, but no current carded call can arrive with options, and no carded DOM-write entry exists.
+
+The change therefore correctly classifies 4pa.64 as **LATENT** rather than falsely authoring an undrivable red or a dead-code green. It preserves the obligation: the bead stays open, and the first slice that adds a carded DOM-write tool may not register without the driven red, merge fix and restore-the-overwrite production mutant. The dependency-order row is also explicitly deferred. `git diff --check b182ff3^ b182ff3` exited 0; the commit changes only the plan.
+
+Non-blocking **SHOULD**: harmonize the superseded prose at the old status table/paragraphs (notably plan lines 591, 2084 and 2282–2284), which still says raw-DOM cards are presently bound only to origin plus `load_serial`. The new, later authoritative erratum explicitly says no raw-DOM cards exist, so this residue is not an R3 block and does not make `b182ff3` unsafe.
