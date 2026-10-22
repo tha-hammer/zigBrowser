@@ -1,5 +1,6 @@
-"""MS5.1b's macOS half as a hard-gate case (tests/mac/hard_gate/case_ms5_1b_skipped_links.py), on Linux with the
-repo's own zb_agent_host standing in for the staged one.
+"""MS5.1b's macOS half as a hard-gate case, on Linux with the repo's own zb_agent_host standing in for the staged one.
+The case waits in tests/mac/hard_gate_pending/ until its kill-safety review: an unreviewed file in tests/mac/hard_gate/
+would make the armed gate refuse ("not a reviewed case"). On approval it moves there with its MANIFEST.json entry.
 
 The case runs, under the staged interpreter, the real setup.provision (select_token_route=False: no CLI is run) on a
 SAI source it builds itself in its scratch: a skill with a dependency tree (node_modules), and four links that
@@ -19,6 +20,7 @@ Run under the pinned agent-host python (setup imports the SDK), in a private PID
   cd tests/e2e && unshare --map-current-user --pid --fork --kill-child --mount-proc \\
     sh -c '"$ZB_AGENT_HOST_PYTHON" -X dev -m unittest -v ms5_1b_hard_gate_case_test; exit $?'
 Unregistered until the green."""
+import ast
 import contextlib
 import importlib.util
 import io
@@ -33,7 +35,7 @@ from unittest import mock
 
 REPO = Path(__file__).resolve().parents[2]
 HARD_GATE = REPO / "tests" / "mac" / "hard_gate"
-CASE = HARD_GATE / "case_ms5_1b_skipped_links.py"
+CASE = REPO / "tests" / "mac" / "hard_gate_pending" / "case_ms5_1b_skipped_links.py"
 EXPECTED = ("the staged agent-host is present", "this case runs under the staged interpreter",
             "setup provisions the home", "skipped skills/demo/assets", "skipped skills/demo/notes.md",
             "skipped skills/demo/node_modules/evil", "skipped skills/demo/up", "no canary bytes",
@@ -98,8 +100,15 @@ class Ms51bCase(unittest.TestCase):
         self.assertNotEqual(h.failures, [], out)
 
     def test_the_case_is_self_contained(self):
-        source = CASE.read_text()
-        self.assertEqual(re.findall(r"case_ms\w+|_test\b|import test_", source), [])
+        """Its code (the docstring may name its Linux proof) imports no test module and names no other case file."""
+        tree = ast.parse(CASE.read_text())
+        imported = [a.name for n in ast.walk(tree) if isinstance(n, ast.Import) for a in n.names]
+        imported += [n.module or "" for n in ast.walk(tree) if isinstance(n, ast.ImportFrom)]
+        doc = ast.get_docstring(tree, clean=False)
+        strings = [n.value for n in ast.walk(tree) if isinstance(n, ast.Constant) and isinstance(n.value, str)
+                   and n.value != doc]
+        self.assertEqual([m for m in imported if m.endswith("_test") or m.startswith(("test_", "case_"))], [])
+        self.assertEqual([t for t in strings if re.search(r"case_\w+\.py|_test\.py", t)], [])
 
 
 if __name__ == "__main__":
