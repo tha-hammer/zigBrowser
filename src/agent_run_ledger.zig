@@ -224,3 +224,58 @@ pub fn acquireLock(io: std.Io, dir: std.Io.Dir, max_tries: u32, backoff_ms: i64)
     }
 }
 
+
+// ---- (pid, start) owner-liveness recovery (RoseCat recovery row) ----
+
+/// The liveness verdict for a recorded owner `(pid, start)`.
+pub const Liveness = enum { dead, live_same, live_reused, unreadable };
+/// What startup recovery does with an `active` entry, given its owner's liveness.
+pub const Recovery = enum { recover, leave, fail_closed };
+
+/// The recovery decision: a leftover entry is recovery work ONLY when its owner is proved dead; a LIVE matching
+/// owner (another browser instance) is left untouched; PID reuse (live, different start) or an unreadable
+/// liveness result FAILS CLOSED — never signalled, never retired.
+pub fn recoveryFor(l: Liveness) Recovery {
+    _ = l;
+    return .recover; // MUTANT (red): recovers regardless of liveness — green corrects the mapping
+}
+
+/// The process start time (field 22 of /proc/<pid>/stat, clock ticks since boot) on Linux, or null if it cannot
+/// be read/parsed. comm (field 2) may contain spaces and ')', so parse after the LAST ')'.
+pub fn readStartTicks(pid: i32) ?u64 {
+    const linux = std.os.linux;
+    var path_buf: [64]u8 = undefined;
+    const path = std.fmt.bufPrintZ(&path_buf, "/proc/{d}/stat", .{pid}) catch return null;
+    const rc = linux.openat(linux.AT.FDCWD, path, .{ .ACCMODE = .RDONLY }, 0);
+    if (linux.errno(rc) != .SUCCESS) return null;
+    const fd: i32 = @intCast(rc);
+    defer _ = linux.close(fd);
+    var buf: [1024]u8 = undefined;
+    const n = linux.read(fd, &buf, buf.len);
+    if (linux.errno(n) != .SUCCESS or n == 0) return null;
+    const data = buf[0..n];
+    const close_paren = std.mem.lastIndexOfScalar(u8, data, ')') orelse return null;
+    var it = std.mem.tokenizeScalar(u8, data[close_paren + 1 ..], ' ');
+    var i: usize = 0;
+    while (i < 19) : (i += 1) { // skip fields 3..21 (19 tokens); the 20th token is field 22 = starttime
+        _ = it.next() orelse return null;
+    }
+    const tok = it.next() orelse return null;
+    return std.fmt.parseInt(u64, tok, 10) catch null;
+}
+
+/// Linux liveness probe for a recorded owner `(pid, start_ticks)`: the process is gone (dead), present with the
+/// SAME start (live_same), present with a DIFFERENT start = PID reuse (live_reused), or unreadable.
+pub fn probeLiveness(pid: i32, start_ticks: u64) Liveness {
+    const linux = std.os.linux;
+    var path_buf: [64]u8 = undefined;
+    const path = std.fmt.bufPrintZ(&path_buf, "/proc/{d}/stat", .{pid}) catch return .unreadable;
+    const rc = linux.openat(linux.AT.FDCWD, path, .{ .ACCMODE = .RDONLY }, 0);
+    switch (linux.errno(rc)) {
+        .SUCCESS => _ = linux.close(@intCast(rc)),
+        .NOENT, .SRCH => return .dead, // no such process
+        else => return .unreadable,
+    }
+    const now = readStartTicks(pid) orelse return .dead; // vanished between open and read -> gone
+    return if (now == start_ticks) .live_same else .live_reused;
+}
