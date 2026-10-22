@@ -16,6 +16,9 @@ const canary = "sk-ant-oat01-ZBCANARY-0123456789abcdef";
 const FakeStore = struct {
     saved: ?[]const u8 = null,
     save_calls: usize = 0,
+    /// When set, read() reports this many bytes WITHOUT writing them — simulates a misbehaving backend that
+    /// over-reports the length, so TokenStore.read must fail closed with no slice trap.
+    read_len_override: ?usize = null,
 
     fn save(ptr: *anyopaque, token: []const u8) store.StoreError!void {
         const self: *FakeStore = @ptrCast(@alignCast(ptr));
@@ -24,6 +27,7 @@ const FakeStore = struct {
     }
     fn read(ptr: *anyopaque, buf: []u8) store.StoreError!usize {
         const self: *FakeStore = @ptrCast(@alignCast(ptr));
+        if (self.read_len_override) |n| return n; // over-report, write nothing
         const s = self.saved orelse return error.NotFound;
         @memcpy(buf[0..s.len], s);
         return s.len;
@@ -58,18 +62,32 @@ test "TokenStore round-trips a valid token: save -> read -> remove" {
     try std.testing.expectError(error.NotFound, ts.read(&buf));
 }
 
-test "TokenStore.read rejects a planted invalid backend value (central one-rule load contract)" {
+test "TokenStore.read rejects a planted invalid backend value and ZEROES the reported bytes" {
     // A value seeded straight into the backend (bypassing save) that is NOT the setup-token shape must be
-    // rejected on read — Windows preserves the shipped load contract without the backend repeating the rule.
+    // rejected on read AND wiped from the caller's buffer — no planted bytes linger.
+    const planted = "sk-ant-api03-" ++ "a" ** 40; // an API key planted directly into the backend
     var fake = FakeStore{};
-    fake.saved = "sk-ant-api03-" ++ "a" ** 40; // an API key planted directly into the backend
+    fake.saved = planted;
     const ts = fake.iface();
-    var buf: [600]u8 = undefined;
+    var buf: [600]u8 = [_]u8{0xAA} ** 600; // sentinel prefill
     try std.testing.expectError(error.BadShape, ts.read(&buf));
+    // the planted bytes are gone: buf[0..planted.len] is zeroed (not the API key, not the sentinel)
+    for (buf[0..planted.len]) |b| try std.testing.expectEqual(@as(u8, 0), b);
+    try std.testing.expect(std.mem.indexOf(u8, &buf, "sk-ant-api03") == null);
     // a valid value still reads back
     fake.saved = canary;
-    const n = try ts.read(&buf);
-    try std.testing.expectEqualStrings(canary, buf[0..n]);
+    var buf2: [600]u8 = undefined;
+    const n = try ts.read(&buf2);
+    try std.testing.expectEqualStrings(canary, buf2[0..n]);
+}
+
+test "TokenStore.read fails closed on an oversized backend length: no slice trap, buffer zeroed" {
+    var fake = FakeStore{};
+    const ts = fake.iface();
+    var buf: [64]u8 = [_]u8{0xBB} ** 64; // sentinel
+    fake.read_len_override = buf.len + 1; // the backend over-reports; read must not slice buf[0..n]
+    try std.testing.expectError(error.Oversized, ts.read(&buf));
+    for (buf) |b| try std.testing.expectEqual(@as(u8, 0), b); // whole buffer wiped
 }
 
 test "WS6.3 disposable target grammar: prefix + >=8 hex; the bare prefix and near misses are rejected" {
@@ -91,13 +109,23 @@ test "WS6.3 disposable target grammar: prefix + >=8 hex; the bare prefix and nea
     }
 }
 
-test "WS6.3 safety: refuse to run when a non-test zigBrowser/* target exists" {
+test "WS6.3 safety: both halves required — strict disposable proposed AND no production target present" {
+    const good = "zigBrowser-test-deadbeef";
+    // ok: the proposed target is a strict disposable, and no production target exists.
+    try std.testing.expectEqual(store.RunSafety.ok, store.runSafety(good, &.{good}));
+    try std.testing.expectEqual(store.RunSafety.ok, store.runSafety(good, &.{}));
+    // HALF 1 (grammar): a non-disposable proposed target is refused even with a clean environment — dropping
+    // the grammar check would let this forbidden test run.
+    try std.testing.expectEqual(store.RunSafety.refuse_bad_target,
+        store.runSafety("zigBrowser/ClaudeAgentToken/default", &.{}));
+    try std.testing.expectEqual(store.RunSafety.refuse_bad_target, store.runSafety("zigBrowser-test-", &.{})); // bare prefix
+    try std.testing.expectEqual(store.RunSafety.refuse_bad_target, store.runSafety("zigBrowser-test-xyz", &.{})); // non-hex
+    // HALF 2 (environment): a strict disposable proposed target is still refused when ANY production target
+    // exists — dropping the existing-target scan would let this forbidden test run.
     try std.testing.expectEqual(store.RunSafety.refuse_production_target,
-        store.runSafety(&.{"zigBrowser/ClaudeAgentToken/default"}));
+        store.runSafety(good, &.{"zigBrowser/ClaudeAgentToken/default"}));
     try std.testing.expectEqual(store.RunSafety.refuse_production_target,
-        store.runSafety(&.{ "zigBrowser-test-abc123", "zigBrowser/ClaudeAgentToken/default" }));
-    try std.testing.expectEqual(store.RunSafety.ok, store.runSafety(&.{"zigBrowser-test-abc123"}));
-    try std.testing.expectEqual(store.RunSafety.ok, store.runSafety(&.{}));
+        store.runSafety(good, &.{ good, "zigBrowser/ClaudeAgentToken/default" }));
 }
 
 test "target classification: disposable test target vs production target" {

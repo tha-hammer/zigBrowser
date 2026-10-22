@@ -14,12 +14,14 @@ pub const test_target_prefix = "zigBrowser-test-";
 pub const prod_target_prefix = "zigBrowser/";
 
 pub const StoreError = error{
-    /// The token is not the setup-token shape (checked before any backend call).
+    /// The token is not the setup-token shape (checked before any backend call, and on read-back).
     BadShape,
     /// The backend (Credential Manager / Secret Service / file) is unavailable.
     Unavailable,
     /// No token is stored under the target.
     NotFound,
+    /// The backend reported more bytes than the caller's buffer holds: fail closed, never slice past the end.
+    Oversized,
 };
 
 /// The disposable test nonce is lowercase hex, at least this many chars (>= 32 bits), so the bare prefix and
@@ -51,11 +53,13 @@ pub fn isProductionTarget(name: []const u8) bool {
     return std.mem.startsWith(u8, name, prod_target_prefix);
 }
 
-pub const RunSafety = enum { ok, refuse_production_target };
+pub const RunSafety = enum { ok, refuse_bad_target, refuse_production_target };
 
-/// WS6.3: a credential test refuses to run if ANY existing target is a non-test `zigBrowser/*` credential,
-/// so a real user token is never touched. Only the disposable test target is ever safe to use.
-pub fn runSafety(existing_targets: []const []const u8) RunSafety {
+/// WS6.3: a credential test may run only when BOTH halves hold (RoseCat) — (1) the PROPOSED target is a
+/// strict disposable `zigBrowser-test-<hex>` (never a production target), and (2) NO existing target is a
+/// non-test `zigBrowser/*` credential. Dropping either half would let a test touch a real user token.
+pub fn runSafety(proposed: []const u8, existing_targets: []const []const u8) RunSafety {
+    if (!validTestTarget(proposed)) return .refuse_bad_target;
     for (existing_targets) |t| {
         if (isProductionTarget(t)) return .refuse_production_target;
     }
@@ -86,8 +90,21 @@ pub const TokenStore = struct {
     /// Credential Manager) is rejected here with error.BadShape — the Windows store preserves the shipped
     /// load contract (agent_secrets.loadFile refuses a bad-shape file) without the backend repeating the rule.
     pub fn read(self: TokenStore, buf: []u8) StoreError!usize {
-        const n = try self.vtable.read(self.ptr, buf);
-        if (!shape.validToken(buf[0..n])) return error.BadShape;
+        const n = self.vtable.read(self.ptr, buf) catch |e| {
+            std.crypto.secureZero(u8, buf); // never leave backend bytes in the caller's buffer on error
+            return e;
+        };
+        if (n > buf.len) {
+            // A misbehaving backend reported more than the buffer holds: fail closed, with NO `buf[0..n]`
+            // slice trap, and wipe whatever it wrote.
+            std.crypto.secureZero(u8, buf);
+            return error.Oversized;
+        }
+        if (!shape.validToken(buf[0..n])) {
+            // A planted/corrupt backend value: zero the reported bytes so it never lingers, then refuse.
+            std.crypto.secureZero(u8, buf[0..n]);
+            return error.BadShape;
+        }
         return n;
     }
 
