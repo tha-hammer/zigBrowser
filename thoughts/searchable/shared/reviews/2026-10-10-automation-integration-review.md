@@ -31470,3 +31470,65 @@ run is needed for this stricter cap.
 This verdict accepts the WS5 lifecycle harness only. It does not override the
 separate `4140425` WS5.2 production/input/observation blockers or constitute
 overall WS5 acceptance.
+
+## Windows WS5.2 real-input fix-forward (`8988294`)
+
+**BLOCKED; do not run the VM row.** The production direction is materially
+better than `4140425`: the seam now enters the icon procedure, the procedure
+calls `MoveWindow`, and the harness has an independent `GetWindowRect` read.
+The commit nevertheless does not compile as written and still leaves both the
+real-input and persistence acceptance claims unproved.
+
+1. `AppState` embeds `ZbDrawerRatios` and `ZbDrawerGeomRect` by value at
+   `src/webview2_shim.cpp:78,83`, but those types are first declared at
+   `:89-90`. They are not declared by `webkit_shim.h`. C++ therefore reports
+   both as unknown types. The reported `cross-check-drawer-win` result cannot
+   catch this: that step compiles the Zig object and gives the C++ source only
+   to `check_cross_symbols.py` for symbol-text inspection; it never compiles
+   `webview2_shim.cpp` (`build.zig:437-461`). A minimal exact-order C++ probe
+   fails with the same two unknown-type errors. Move the complete type
+   declarations before `AppState`, and add a registered check that compiles
+   the changed Windows shim (or provide a real MSVC-build result) so this
+   failure cannot recur.
+2. Cross-process persistence is still absent. On Windows,
+   `applyProfileDir` returns null (`src/app.zig:496-509`), so
+   `agent_drawer.configure` never sets `store.path`; `zb_drawer_remember`
+   updates only process-global memory and cannot write `agent-drawer.json`.
+   The new start/resize logic restores that in-process value, but a restart
+   resets it. This does not close the prior requirement or the plan's
+   “persists” contract. Wire the Windows profile path and add a two-process
+   oracle that moves the real icon, exits, restarts with the same throwaway
+   profile, and independently measures the restored HWND.
+3. The keyboard path is not user-reachable as mounted. The icon is a `STATIC`
+   with `SS_NOTIFY`, but without `WS_TABSTOP`; mouse-down never calls
+   `SetFocus`. Consequently the subclass's `WM_KEYDOWN` arrow branch is not a
+   usable keyboard route. It also lacks the plan's Enter/Space-to-open
+   behavior. Add the focus/tab semantics and a live key-input row that moves
+   the real HWND by 16/64 px and opens it with Enter/Space.
+4. The drag row can pass without observing the post-drag window. The runner
+   stops waiting on the startup `open` row (`tests/windows/win_drawer_test.py:
+   481-494`), which is emitted and flushed before the seam sends its mouse
+   messages. It may therefore read the HWND before the drag. Moreover the
+   drag case starts open, so the icon is hidden; `SendMessage` directly to
+   that hidden HWND bypasses visibility and hit testing. Start the drag case
+   closed, require the icon to be visible, wait for the supplementary `drag`
+   completion row, and only then measure its rectangle.
+5. Subclass installation and physical movement fail open. The return from
+   `SetWindowLongPtrW` is accepted without the required last-error check, yet
+   the drawer is marked mounted even if the production input route was not
+   installed. `MoveWindow` is also ignored and the ratios/row are committed
+   even if the HWND did not move. Both operations need checked, causal failure
+   rows; a subclass failure must leave no claimed live input path, and a move
+   failure must not persist or report the candidate position.
+6. The seam parser is not safely bounded despite its comment. `%d` has
+   undefined behavior for a value outside `int`, and accepted values up to
+   100000 are then truncated by `MAKELPARAM` to signed 16-bit coordinates
+   before the subclass sees them. Use an overflow-detecting exact parser and
+   bounds representable by the dispatched message, with malformed, overflow
+   and boundary mutants.
+
+From an exact clean export, `cross-check-drawer-win` passed and the two Python
+suites passed **71 offline tests** while skipping **16 live VM rows**. Those
+results prove neither C++ compilation nor the live interaction. No VM run is
+authorized until the compile failure and the observation/input gaps above are
+fixed; the restart test is also required before WS5.2 can be accepted.
