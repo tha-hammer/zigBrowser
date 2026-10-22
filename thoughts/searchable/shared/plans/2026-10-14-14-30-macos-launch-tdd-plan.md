@@ -7,8 +7,8 @@ branch: zb-automation-integration-2026-10-10-11-59
 repository: zigBrowser
 topic: "macOS launch support for zigBrowser — TDD implementation plan"
 tags: [plan, tdd, macos, wkwebview, appkit, seatbelt, universal-build, automation, drawer, sandbox, launch-critical]
-status: living plan, rev 31 - closed the 29 rule-audit gaps (RULE-AUDIT.md, PASS WITH GAPS (29)) on top of rev 30 (exercise-the-code rule + MS0-9 code validation, bd zigBrowser-4pa.12, findings .55-.80); code validated at d0f1841, plan baseline e4f705f
-rev: 31
+status: living plan, rev 32 - closed the 8 PARTLY gaps from the independent re-check (recheck-macos.md) on top of rev 31 (29 rule-audit gaps), rev 30 (exercise-the-code rule + MS0-9 code validation, bd zigBrowser-4pa.12, findings .55-.80); code validated at d0f1841, plan baseline e4f705f
+rev: 32
 rebaselined_to: e4f705f922f2059bb62782db5fdcca288709e3a2
 code_unchanged_since: c07899f (the review's commit; no src/, build.zig, agent/, packaging/ or tests/ change between c07899f and e4f705f)
 review: thoughts/searchable/shared/plans/2026-10-14-14-30-macos-launch-tdd-plan-REVIEW.md (BlueBeaver, Needs Major Revision, 26 critical + 52 warnings)
@@ -20,7 +20,7 @@ primary_research: thoughts/searchable/shared/research/2026-10-14-14-19-macos-lau
 
 # macOS Launch Support for zigBrowser — TDD Implementation Plan
 
-> **LIVING PLAN, rev 31 (rev 29 re-baselined to HEAD `e4f705f`; rev 30 validated against code at `d0f1841`; rev 31 closes the 29 gaps of the independent rule audit, see "Audit gaps closed" at the end).** Rev 30 applies
+> **LIVING PLAN, rev 32 (rev 29 re-baselined to HEAD `e4f705f`; rev 30 validated against code at `d0f1841`; rev 31 closed the 29 rule-audit gaps; rev 32 closed the 8 PARTLY gaps from the independent re-check `recheck-macos.md`, see "Audit gaps closed" at the end).** Rev 30 applies
 > the owner's verification rule (the section "Verification rule: prove it by running it", below) and the MS0-9 code validation;
 > the statuses and proofs in this plan are current as of rev 30. This revision is docs-only. The
 > implementation freeze `zigBrowser-4pa.1` is in force: no product code, tests or build files
@@ -357,7 +357,7 @@ plus `zb_drawer_debug_live_count`. Presence in `src/wkwebview_shim.m` at HEAD (c
 | **MS7 compiled hard gate** | the two-Mac compiled authority gate for the AppKit drawer | `c63020d`: `tests/mac/ms7_appkit_{gate.sh,check.py,case.py,probe.m}`, `tests/e2e/ms7_appkit_gate_test.py` | RED, UNREGISTERED, not run (and cannot pass before MS8; see K6 below) |
 | **MS7.5 (portable half)** | Secrets-window controller logic + C entry header | `5e71d67`: `src/agent_secrets_window_mac.h`, `tests/agent_secrets_window_mac_logic_test.zig` | RED, UNREGISTERED (imports a module that does not exist; Rev 30, `4pa.76`: the entry name `zb_secrets_window_open` clashes with `agent_secrets_window.h:56`); the AppKit window NOT STARTED |
 | **MS8.0** | the approval cards' minters and window lifecycle defined in both macOS builds; the GTK-only tool call stays Linux-only | `29744db` (red `52d8f00`); `build.zig` step `cross-check-agent-tools-mac` (`:504`), in `cross-check`/`test` (`:3923`) | **NOT BUILT** (Rev 30, bd `4pa.75`; was BUILT + REGISTERED): the macOS minters always return 0 (`agent_tools.start` is Linux-only) and nothing calls them; the step is a symbol-presence TRIPWIRE that passes with the inert minter (observed) |
-| **MS8.1 (portable core)** | macOS host spawner pure core + `spawnNetd` integration (`src/agent_host_posix.zig`, `agent_spawn_posix.c`) | `build.zig` `:822-840`, `tests/agent_host_posix_spawn_test.zig` | portable seam BUILT + REGISTERED (12/12 and 8 kill-group cases observed at d0f1841); no production importer of `spawnNetd` (Rev 30); production Mac launch NOT STARTED |
+| **MS8.1 (portable core)** | macOS host spawner pure core + `spawnNetd` integration (`src/agent_host_posix.zig`, `agent_spawn_posix.c`) | `build.zig` `:822-840`, `tests/agent_host_posix_spawn_test.zig` | **NOT BUILT** per R30.0 (Rev 32): the portable seam is driven and registered (12/12 and 8 kill-group cases observed at d0f1841) but has no production importer of `spawnNetd`; production Mac launch NOT STARTED |
 | **MS8.2a** | the portable helper core's chat path driven with recording ports (no GLib, no process) | `2a851b5`, `7a04182`: `tests/agent_helper_core_test.zig` | RED, UNREGISTERED |
 | **MS8.2b** | the POSIX process transport under that core | `tests/agent_helper_posix_test.zig` (untracked in the worktree at HEAD) | RED, uncommitted, UNREGISTERED |
 | **MS8.2c** | macOS production wiring of the core to the AppKit drawer and the broker | named in `tests/agent_helper_core_test.zig:6` | NOT STARTED |
@@ -402,7 +402,7 @@ Status words: **BUILT+REGISTERED** (a production entry point reaches the code an
 | MS4.3 per-write confirmation / dry-run inert | **NOT STARTED on macOS** | no macOS test is evidenced |
 | MS4.4 login gate | BUILT+REGISTERED on **Linux ONLY**; the macOS `WKHTTPCookieStore` path is **BUILT-HANDRUN (UNPROVEN)** (Rev 30, bd `4pa.69`) | `ms4-4-login-gate-e2e` (`build.zig:2047-2053`, attached only for a Linux target, `:3799`) drives the Linux binary and the GTK cookie port; the macOS consumer runs only in hand-run `tests/mac/ms4_gate.sh:40` |
 | MS5.1 setup refusal + `runtimeFor` + parent watch | PARTIAL (refusal + seam; S3a-links hard-gate case `case_ms5_1_s3a_links.py` + registered stand-in unit `ms5_1_hard_gate_case_test`) | `seatbelt_ready = false` (`agent_setup.zig:67`); `parent_watch.arm()` steps 1-4 + `test_parent_watch.py`; macOS `--agent-setup` runs nothing |
-| MS5.1b skipped-link bytes | UNPROVEN (Rev 31 status word; the Linux stand-in unit is BUILT+REGISTERED as a seam only); production macOS setup still refuses, so the behaviour is NOT BUILT | `tests/mac/hard_gate/case_ms5_1b_skipped_links.py` (MANIFEST entry), Linux stand-in unit `ms5_1b_hard_gate_case_test` registered in `test-mac-census`; the staged-Mac run waits on the MS5 pinned tree (UNPROVEN: needs a released Mac run) |
+| MS5.1b skipped-link bytes | UNPROVEN (Rev 31 status word; the Linux stand-in unit is registered but is a seam with no production caller, so **NOT BUILT per R30.0** — Rev 32); production macOS setup still refuses | `tests/mac/hard_gate/case_ms5_1b_skipped_links.py` (MANIFEST entry), Linux stand-in unit `ms5_1b_hard_gate_case_test` registered in `test-mac-census`; the staged-Mac run waits on the MS5 pinned tree (UNPROVEN: needs a released Mac run) |
 | MS5.1c census + staging + merge + relocate | BUILT-HANDRUN (UNPROVEN on the Macs; the pure parts are driven by registered unit tests) | `ms5_*_gate.sh`, `mac_merge_universal_test.py`; emits an `sdk-path` resource the plan did not name (D-W7) |
 | MS5.2 Keychain onboarding | **NOT STARTED / NOT BUILT** (Rev 30: the Keychain files are in no `build.zig` target, `4pa.67`) | only raw store/lookup/clear (`agent_secrets_mac.m`); `configureAgentSecrets` returns on non-Linux (`app.zig:395`); `zb_agent_onboard_token` only in RED `24ef54c` (`keychain_onboard_test.m`, unregistered) |
 | MS5.3 token only to fd 3 | **NOT STARTED / NOT BUILT (seam only; in no build target, `4pa.67`)** | `zb_mac_token_to_fd` has no production caller, is not in `build.zig`, and carries test-only args (I-W2) |
@@ -618,7 +618,7 @@ red commit).
 | T5 | Darwin cross-compile guards for the ledger and recovery (`build.zig:1043-1052`, `:1159-1168`) | A compile that analyses nothing | (a) the ledger/recovery tests run on a Mac; (b) a hostless meta-test step (TO BE ADDED, `test-darwin-guard-selftest`) that builds a deliberate Darwin-only type error through the SAME guard root and expects a non-zero exit; (c) the old guard root fails the meta-test (exit 0); (d) both Macs for the real run | UNPROVEN (tripwire only today) |
 | T6 | `tests/e2e/mac_drawer_card_authority_test.py`, `mac_drawer_bubble_inert_test.py` (~1,945 lines) | Lexers over `src/agent_drawer_mac.m`, a file that does not exist | The compiled two-Mac gate (`ms7_appkit_gate.sh`) drives a real card and a real bubble copy; the two files are deleted (V79-m8) | RETIRED |
 | T7 | `reaper_ready` `indexOf` (`agent_run_recovery_startup_test.zig:184-194`) | Source text | (a) `recoverAllAtStartup`; (b) a runtime hostile-environment test in the registered startup step: set `ZIGBROWSER_REAPER_READY=1`, `ZB_REAPER_READY=1`, argv `--reaper-ready`, assert `actuator_calls == 0`; (c) read readiness from the environment → `actuator_calls > 0`; (d) none (portable) | UNPROVEN |
-| T8 | `seatbelt_ready` constant pin (`expect(!seatbelt_ready)`) | A constant read | (a) `--agent-setup` on the real macOS binary exits 1 with the fixed line (`ms5_setup_refusal_gate.sh`, both Macs, released run); (b) the registered cross-language invariant test renders the REAL profile and asserts `seatbelt_ready ⇒ CURATED ∧ no bare allow` (R29-MS6 D2); (c) flip the constant → the invariant fails; (d) both Macs | UNPROVEN |
+| T8 | `seatbelt_ready` constant pin (`expect(!seatbelt_ready)`) | A constant read | (a) `--agent-setup` on the real macOS binary exits 1 with the fixed line (`ms5_setup_refusal_gate.sh`, both Macs, released run); (b) the registered cross-language invariant test renders the REAL profile and asserts `seatbelt_ready ⇒ CURATED` beside the constant read — the `no bare allow` profile-text assertion is a **TRIPWIRE**, not proof (Rev 32, L3); the closing proof is the Mac kernel-denial rows of T9 (R29-MS6 D2); (c) flip the constant → the invariant fails; (d) both Macs | UNPROVEN |
 | T9 | MS6.7 Linux red `"(allow file-read*)" not in profile` | Text of the generated profile | The Mac rows in `ms6_generated_profile_test.sh`: `cat <canary>` → EPERM, `bootstrap_look_up(windowserver)` → `kr != 0`, `CGEventPost` denied, `screencapture -x` no image, `exec /bin/sh` EPERM; (c) reinstate the bare allow → rows fail; (d) both Macs | NOT STARTED |
 | T10 | I1 `inspect.signature(MacSeatbeltBackend.network) == …` | Reflection over class text | `launch.build_launch(backend, spec)` driven for BOTH backends with the same spec, results compared (MS6.8 red (a)); (c) rename a parameter → fails | NOT STARTED |
 | T11 | I-W6 / I-W7 `nm -gU` export census of the dylib and exe (`rdynamic`) | Symbol listing | m9 render and reply workloads through the signed build drive both back-refs (`zb_policy_decide`, `zb_ipc_dispatch`); (b) `ms1b-gate`; (c) replace `rdynamic` with an export list missing one back-ref → the workload fails to start; (d) both Macs | UNPROVEN |
@@ -1936,7 +1936,7 @@ persistent context (verified by a login→restart→still-logged-in e2e over the
   it **falls back to the default persistent store, shared by all profiles**, printing **one clear stderr
   line** that profile isolation needs macOS 14 and recorded in the capability table (below). Both paths are
   tested on the macOS-15 hosts via an **injectable availability seam** (`ZB_DEBUG_FORCE_PRE_MACOS14`,
-  e2e-gated) so the 13 fallback is reachable, and mutant-proven. Implemented in `ddf29eb`'s successor:
+  e2e-gated) so the 13 fallback is reachable, and mutant-proven **(SUSPECTED — no released Mac run is recorded in this plan; UNPROVEN until one is; Rev 32, G6.5)**. Implemented in `ddf29eb`'s successor:
   `zb_app_set_profile_dir` (wkwebview_shim.m) + `app.zig applyProfileDir` macOS branch;
   `mac_profile_persist_test.py`.
 
@@ -2118,15 +2118,13 @@ digest*.
   hand-run through `tests/mac/ms4_gate.sh` (UNPROVEN until the `ms4-gate` step exists and a released run happens). Assertion:
   `serial_after_commit == serial_before + 1` for a committed load and `serial_after_reload == serial_after_commit + 1`.
   (c) Mutants of the PRODUCTION counter, each of which must fail that assertion: (1) a counter that never increments;
-  (2) a counter that resets to 0 on every commit. The Linux twin's mutants are the ones recorded for C37; the Mac mutants
-  are NOT yet recorded (C38 stays c=y only on the plan's naming, UNPROVEN). (d) Mac twin: both Macs, released run.
+  (2) a counter that resets to 0 on every commit. These mutants are NAMED for the Linux twin (C37) and the Mac twin (C38)
+  but NEITHER is recorded as run in this plan (no cited run); C38's mutant column is `n` (Rev 32), and C37's naming is not a recorded run. (d) Mac twin: both Macs, released run.
 - **MS4 socket separation (Rev 31, G5.7; moved from the historical rev-6 section).** The external automation socket must
   remain unable to reach the broker or the approval authority. Given an authenticated external socket client, when it
   calls `agent.*` or `broker.*` methods, then each returns -32601 (method not found); when it presents a broker grant id as
   the socket `auth`, then it gets -32000 (unauthorized). Exercising proof: (a) entry = the real socket
-  (`handleRequestWith`); (b) Linux: `tests/automation_inprocess_test.zig` (the `agent.tools` -32601 row, `:159`, in the
-  `build.zig:1947` family) and `tests/e2e/agent_tools_acceptance_test.py:30` (step at `build.zig:2310`), driven and
-  registered; macOS: `tests/e2e/mac_ms4_socket_separation_test.py` (TO BE AUTHORED), the same assertions through the macOS
+  (`handleRequestWith`); (b) Linux: the `agent.*`/`broker.*` → -32601 rows are driven and registered (`tests/automation_inprocess_test.zig:159`, `build.zig:1947` family; `tests/e2e/agent_tools_acceptance_test.py:416`, step `build.zig:2310`). The **grant-id-as-`auth` → -32000 case is UNPROVEN** (Rev 32, G5.7): no registered test presents a broker grant id as the socket `auth` (the only -32000 row, `agent_tools_acceptance_test.py:279`, sends an automation-token-shaped wrong auth), so the required red — present a broker grant id as `auth`, assert -32000 — is TO BE AUTHORED on Linux and macOS; macOS: `tests/e2e/mac_ms4_socket_separation_test.py` (TO BE AUTHORED), the same assertions through the macOS
   binary; (c) mutant: register one `agent.*` method on the external router, or accept a grant id as `auth` → the -32601 or
   -32000 row fails; (d) macOS row: both Macs, released run, UNPROVEN until then. MS8 re-asserts it with the real helper.
 - **MS4.1 (macOS half) — in-ticket refusal over the real platform.** Given a card approved for window W at
@@ -2335,8 +2333,7 @@ The behaviours below stay as written; these are the per-OS contracts their reds 
    - Tests: `tests/agent_setup_ms5_test.zig`, `agent_setup_ms5_python_test.zig` and
      `agent_setup_ms5_devtree_test.zig` assert both `package_dir` and `python` (built in 890d52e and 9d55923).
 4. **Home lock.** `zb_agent_home_lock` (flock) moves, unchanged, out of the GLib-only `agent_host.c` into a
-   POSIX-only `src/agent_home_lock.c`, built on both OSes. It is a behaviour-preserving extraction, gated on
-   Linux by the existing lock tests.
+   POSIX-only `src/agent_home_lock.c`, built on both OSes. It is a behaviour-preserving extraction; **no registered test calls `zb_agent_home_lock` on either OS** (Rev 32, G2.3), so it is UNPROVEN — a two-process flock test is the required red (C51).
 5. **Spawn, and dying with the browser** (rev 14 fix, RoseCat 6771). macOS has no `PR_SET_PDEATHSIG`, and a
    SIGKILLed browser runs no exit path, so cleanup cannot rest on the browser.
    - The browser starts setup with `posix_spawn` (`POSIX_SPAWN_SETPGROUP`, pgid 0): the setup child **leads
@@ -2902,7 +2899,7 @@ exactly as follows. This replaces rev 5's open design item: the "Unix-socket pro
 #### Endpoint contract (rev 19; orchestrator ruling on 7046, subject to RoseCat)
 
 Seatbelt's `remote` host token accepts only `*` or `localhost`; the IP literal `127.0.0.1` is a parse
-error (measured both arches, JadeBeacon 70444e5). `localhost` resolves to **both** loopback families,
+error (reported measured both arches in JadeBeacon 70444e5; **SUSPECTED** — not re-observed as a run in this plan, Rev 32). `localhost` resolves to **both** loopback families,
 so the generated rule `(allow network-outbound (remote tcp "localhost:<port>"))` unavoidably permits
 `[::1]:<port>` as well as `127.0.0.1:<port>` — Seatbelt cannot express a v4-only grant. Rather than
 leave the gate unmet, the **accepted contract is the `localhost:<port>` grant (loopback TCP, both
@@ -3003,7 +3000,7 @@ above plus per-process Seatbelt port rules**. Either way MS0's launch spec is th
   - **VM containment stub (off by default).** `src/mac_vm_containment.zig`: a planned Apple
     Virtualization-framework seam whose `availability()` reports `.not_available_yet`; when the setting is on,
     launch **fails closed** ("VM containment is not available yet"), never pretending to contain. Landed 2523247.
-  - **Both-Mac gate status (SUPERSEDED; destructive gate OFF):** the standalone C gate
+  - **Both-Mac gate status (SUPERSEDED; the destructive gate must NOT be run — it is NOT guarded in code, only by `ZB_MAC_ARM_HOST`):** the standalone C gate
     `tests/mac/ms6_5_reaper_gate.sh` (reaper is C/browser-side) that SIGKILLs a detached escaper and spares a
     decoy/scrubber DID pass both arches once at 7fa8906, but that was BEFORE the kill-safety review hardened the
     reaper (fd-based creation pin, per-kill revalidation, recorded provenance). It has NOT been re-run since and
@@ -4062,7 +4059,7 @@ this plan are the 20 tripwires T1-T20 in R30.2. The four rule-9 fields of every 
 ### MS5
 - **MS5.1 [LEAF for the refusal decision; BLOCKING for a running setup] [PARTIAL]** Refusal: `tests/agent_setup_ms5_test.zig` —
   `assert platformGate(.macos, false) == .refuse` with the exact line. Running setup: the hard-gate cases in R29.2.
-- **MS5.1b [BLOCKING — filesystem census of a built home] [UNPROVEN; Linux stand-in unit BUILT+REGISTERED as a seam only, Mac run pending]** `ms5_1b_hard_gate_case_test.py` —
+- **MS5.1b [BLOCKING — filesystem census of a built home] [UNPROVEN; Linux stand-in unit registered but a seam with no production caller = NOT BUILT per R30.0 (Rev 32), Mac run pending]** `ms5_1b_hard_gate_case_test.py` —
   `assert canary_bytes_in_home == 0`; Property: **Skip** — four enumerated link shapes, exhaustive.
 - **MS5.1c [BLOCKING — a two-tree oracle across arches] [BUILT-HANDRUN = UNPROVEN on the Macs; the pure parts are driven by registered unit tests (C56 is UNPROVEN: its step fails as root and skips)]** Red: `mac_universal_census_test.py` /
   `mac_ms5_census_test.py` mutants. **Properties (T2):** (a) `resource_phase(milestone, inventory)` is total and
@@ -4175,7 +4172,7 @@ this plan are the 20 tripwires T1-T20 in R30.2. The four rule-9 fields of every 
 `MS0 (Linux) → MS1 → MS2a → MS2b → MS2c → MS3 → MS4 → MS5 → MS6 (hard gates) → MS7 → MS8 (blocked
 on MS6) → MS9 (blocked on Developer ID)`. **Rev 29 additions to the order:** `MS5.1c → MS1c (convert build-dmg.sh) →
 MS9`; `MS6.7 (curation) and MS6.8 (production launch connector) are part of MS6 and precede MS8.1`; `MS6.5.2` needs
-MS6.8 + MS7; `MS7 AppKit views → MS7.9 → MS8.2c`; MS7.1/7.4 portable seams are landed and driven; MS7.0, the MS7.6/7.8 portable half and MS8.0 are NOT BUILT (Rev 30: R30.1 #1, #5, #6). MS3/MS4/MS5 may proceed in parallel after MS2a; MS7
+MS6.8 + MS7; `MS7 AppKit views → MS7.9 → MS8.2c`; MS7.1/7.4 portable seams are driven (seam tests only, no production caller); MS7.0, the MS7.6/7.8 portable half and MS8.0 are NOT BUILT (Rev 30: R30.1 #1, #5, #6). MS3/MS4/MS5 may proceed in parallel after MS2a; MS7
 needs MS4 (grant) + MS5 (Keychain); MS8 needs MS5 (setup) + MS6 (sandbox) + MS7 (drawer).
 
 ### Rev 31 — dependency order of the 26 Rev-30 fix-forwards (bd `4pa.55` to `4pa.80`; G6.3)
@@ -4242,8 +4239,8 @@ Each is a Linux step with stub `ssh`/`scp`/`lipo`/`codesign`, added to `test` in
 26. **`4pa.61` (R30-MS1): the MS1.3 entitlement probe (`ms1_entitlement_probe.sh`).** Shares the MS9.0 spike (item 25), so it
     runs with it.
 
-All 26 bd ids appear above exactly once (`4pa.59` and `4pa.77` share item 5; `4pa.65`, `4pa.71`, `4pa.68` share item 18;
-`4pa.74` and `4pa.78` share item 23). The Linux-side or hostless reds of items 4-16 can proceed while the owner decides R30.3 (each uses the stated default); their Mac proofs stay UNPROVEN until a released run.
+All 26 bd ids appear above, each ordered once (`4pa.59` and `4pa.77` share item 5; `4pa.65`, `4pa.71`, `4pa.68` share item 18;
+`4pa.74` and `4pa.78` share item 23). `4pa.73` and `4pa.66` are additionally cross-referenced in items 6 and 20 (Rev 32, G6.3 wording). The Linux-side or hostless reds of items 4-16 can proceed while the owner decides R30.3 (each uses the stated default); their Mac proofs stay UNPROVEN until a released run.
 
 **MS1b (the signed x86_64 binary runs) — split out, NOT a universal blocker** (user decision
 "split it out, fix now", over "fix it before MS1"; orchestrator). Its binding edges:
@@ -4252,7 +4249,7 @@ All 26 bd ids appear above exactly once (`4pa.59` and `4pa.77` share item 5; `4p
   documentation claim, or real-screen check that claims a SIGNED binary runs** — no such claim may
   be marked done until Gate(MS1b) is green.
 - **MS2a and every later development slice MAY proceed IN PARALLEL with MS1b, running the UNSIGNED
-  universal build** (MS1 proved the unsigned universal runs on both arches). Those slices **must
+  universal build** (MS1 reports the unsigned universal runs on both arches; **SUSPECTED** — no released run recorded here, Rev 32). Those slices **must
   NOT claim a signed-run result** until MS1b is green; MS1 itself does not prove a signed binary runs.
 
 ## Per-slice gate protocol (all slices)
@@ -4366,7 +4363,7 @@ cell or in the R30 block cited there.
 | C35 | MS3.3 cookie ABI and port | y | n | n | n | no | Zig tests skip off a Mac; e2e hand-run | UNPROVEN |
 | C36 | MS3.3 cookie calls honour `timeout_ms` | n | n | n | n | no | `zb_job_inflight` missing; R30-MS3 `4pa.56` | NOT BUILT |
 | C37 | MS4.1a `load_serial` (Linux twin) | y | y | y | n/a | yes | driven (`build.zig:3348,3812`); mutants (counter never increments / resets on commit) are named in the LIVE R29-MS4 text (Rev 31, G2.2), not only in the historical rev-6 section | BUILT+REGISTERED |
-| C38 | MS4.1a `load_serial` (macOS) | y | n | y | n | no | `ms4_gate.sh` hand-run; mutants named in the live R29-MS4 text (Rev 31, G2.2), not yet run on a Mac | UNPROVEN |
+| C38 | MS4.1a `load_serial` (macOS) | y | n | n | n | no | `ms4_gate.sh` hand-run; mutants named in the live R29-MS4 text (Rev 31, G2.2) but NOT recorded as run (Rev 32: c=n) | UNPROVEN |
 | C39 | MS4.1 in-ticket refusal (engine, Linux) | y | y | y | n/a | yes | driven (`automation_expect_*_test.zig`) | BUILT+REGISTERED |
 | C40 | MS4.1 in-ticket refusal over macOS | n | n | n | n | no | `mac_ms4_refusal_test.py` does not exist | NOT STARTED |
 | C41 | MS4 card single use (`Cards`, Linux) | y | y | y | n/a | yes | driven; the only caller is the GTK drawer | BUILT+REGISTERED |
@@ -4443,7 +4440,7 @@ NOT BUILT (seams with a driven test and no production caller, R30.0; G4.1); C56,
 UNPROVEN (C56 and C102 fail under the plan's standard wrapper and skip, rules 2 and 7; C51 names no test, G2.3); C56, C83 and C86
 left Complete = yes (G2.4, G2.1). The C07 and C74 rows changed field b only (G2.6, G2.5); their status stays UNPROVEN.
 
-## Audit gaps closed (Rev 31; the 29 gaps of `2026-10-14-14-30-macos-launch-tdd-plan-RULE-AUDIT.md`, PASS WITH GAPS (29))
+## Audit gaps closed (Rev 31 closed the 29 `RULE-AUDIT.md` gaps; Rev 32 closed the 8 PARTLY gaps the independent re-check `recheck-macos.md` found — G1/3006, G2.2/C38+2121, G2.3/2339, L3/621, G4.1/360+4178, G5.7/2123-2131, G6.4/405+4065, G6.5/1939+2905+4255+4245)
 
 Section names are used instead of line numbers because the file moved. "Fix" says where the corrected text now sits.
 
