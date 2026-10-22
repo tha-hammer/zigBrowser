@@ -33062,3 +33062,35 @@ while false, explicit startup order and failure reporting, and causal proof
 that adding only the gate or only the caller cannot signal. Flipping the gate,
 registering the destructive test and running a real-kill two-Mac manifest all
 remain later explicit review/release decisions.
+
+## MS4.4 exact-group EPERM census (`fb9e09b`)
+
+**APPROVED; the `473b1c8` blocker is cumulatively closed. One bounded two-Mac
+MS4.4 run is authorized at exact `fb9e09b`.** The production path keeps the
+leader unreaped, runs one fixed-argv `/bin/ps` census with `LC_ALL=C` and a
+five-second bound, and accepts `killpg`'s Darwin EPERM only when that exact
+pgid still contains its leader as a zombie and every listed member is a
+zombie. A timeout, execution error, nonzero exit, malformed row, absent leader
+or any live member fails closed; nothing is reaped before the decision, so the
+pgid cannot be reused underneath it. The no-`waitid` branch no longer uses
+`poll()` before this decision.
+
+The regression is causal. Running the new unsent-EPERM/live-descendant row
+against `fb9e09b^` inside a private user/PID/mount namespace fails in both
+`waitid` modes because the old implementation returns instead of preserving
+the refusal. From an exact clean `fb9e09b` export, the registered cleanup
+module passed **8/8** with `-X dev` in that namespace. Its hostile row ends
+only the leader on SIGTERM, never sends the later group SIGKILL, requires the
+live descendant to remain live, requires `PermissionError`, and proves the
+leader was not reaped. Separate rows cover timeout, nonzero and malformed
+censuses; the positive sent-EPERM row still proves the zombie-only outcome.
+
+The released run must use a pristine `git archive fb9e09b` export and the
+already-reviewed bounded `tests/mac/ms4_gate.sh` procedure once on each Mac,
+with display variables unset, BatchMode/pinned hosts, local fixtures and
+throwaway state only. It may install nothing and touch no account, credential,
+external site or unrelated process. Acceptance requires load-serial and every
+MS4.4 row on both architectures, the final both-arches PASS, and exact
+before/after identity censuses showing no process or `zb-ms44-*` tree added by
+the run. Any unsupported `/bin/ps` grammar or census failure must remain a
+loud failure; it is not permission to weaken the fail-closed rule.
