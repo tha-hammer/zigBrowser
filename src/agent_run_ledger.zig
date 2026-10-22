@@ -508,13 +508,10 @@ fn publishWithout(io: std.Io, dir: std.Io.Dir, sub_path: []const u8, l: *const L
 /// observable signal phase (the production census/kill of the marked children).
 pub fn recoverOneUnderLock(io: std.Io, gpa: std.mem.Allocator, dir: std.Io.Dir, sub_path: []const u8, basename: []const u8, max_tries: u32, backoff_ms: i64, ops: anytype) RecoveryAction {
     var lock = acquireLock(io, dir, max_tries, backoff_ms) catch return .fail_closed;
-    var l = load(io, gpa, dir, sub_path) catch {
-        lock.close(io);
-        return .fail_closed;
-    };
+    defer lock.close(io); // held across the WHOLE recovery: read -> revalidate -> signal phase -> retire -> release
+    var l = load(io, gpa, dir, sub_path) catch return .fail_closed;
     defer l.deinit();
     const idx = indexOfBasename(&l, basename);
-    lock.close(io); // RED (whole-recovery): release right after the READ, not across revalidate+reap+retire
     ops.afterRead();
     if (idx == null) return .already_gone; // a prior recoverer already retired it
     const e = l.entries()[idx.?];
