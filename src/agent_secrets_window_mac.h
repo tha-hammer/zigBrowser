@@ -19,8 +19,9 @@ extern "C" {
 
 /* Open (or focus, if already open) the macOS Keychain Secrets window, owned by the app, non-modal. window_id is the
  * drawer's bound window (for ownership/positioning), or 0 for an app-level window. Returns 0 on success, non-zero if
- * the window could not be shown. AppKit main thread only. */
-int zb_secrets_window_open(unsigned long long window_id);
+ * the window could not be shown. AppKit main thread only. Named apart from the Linux zb_secrets_window_open(void)
+ * (agent_secrets_window.h: is the window open?), which means something else (4pa.76). */
+int zb_secrets_window_mac_show(unsigned long long window_id);
 
 #ifdef __cplusplus
 }

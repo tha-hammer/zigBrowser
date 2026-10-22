@@ -2,7 +2,7 @@
 //! shell). The window has a password field and four buttons — Save, Remove, Sign in, Cancel — each wired to the
 //! Keychain seam. This test drives the controller with an injected spy backend and observes the state transitions,
 //! which backend calls happen (and with what token), and that the status line NEVER contains the token. The real
-//! AppKit shell (NSWindow / NSSecureTextField / NSButton) and the C entry point `zb_secrets_window_open` the drawer
+//! AppKit shell (NSWindow / NSSecureTextField / NSButton) and the C entry point `zb_secrets_window_mac_show` the drawer
 //! calls are checked in the compiled two-Mac gate; this portable layer is the driven logic (RoseCat R1-R4).
 //!
 //! macOS stores ONLY in the Keychain (no file fallback — the Linux file-store option is not offered here). Save

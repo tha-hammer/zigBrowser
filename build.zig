@@ -548,6 +548,18 @@ pub fn build(b: *std.Build) void {
     }
     card_authority_mac_step.dependOn(&card_authority_mac.step);
 
+    // bd zigBrowser-4pa.76 (plan R30-MS7, R30.2 T16): the Linux and macOS Secrets-window headers compile together in
+    // one translation unit, so no two C functions share a name with different meanings. A TRIPWIRE (compiled, never
+    // run), not proof: the macOS entry zb_secrets_window_mac_show is proven only by the MS7.5 compiled Mac gate.
+    // In `test` (Linux: the Linux header needs GTK).
+    const secrets_window_headers_module = b.createModule(.{ .target = target, .optimize = optimize, .link_libc = true });
+    secrets_window_headers_module.addIncludePath(b.path("src"));
+    secrets_window_headers_module.addCSourceFile(.{ .file = b.path("tests/secrets_window_headers_test.c"), .flags = &.{"-std=gnu11"} });
+    secrets_window_headers_module.linkSystemLibrary("gtk+-3.0", .{ .use_pkg_config = .force });
+    const secrets_window_headers_obj = b.addObject(.{ .name = "secrets_window_headers", .root_module = secrets_window_headers_module });
+    const secrets_window_headers_step = b.step("check-secrets-window-headers", "4pa.76: the Linux and macOS Secrets-window headers compile together (tripwire)");
+    secrets_window_headers_step.dependOn(&secrets_window_headers_obj.step);
+
     // WS6.1 (c): the Windows Credential Manager / DPAPI token store compiles for x86_64-windows and exports
     // its zb_secret_* C-ABI functions. A trivial Zig root pulls the C++ in (addCSourceFile); the object retains
     // every TU symbol, so check_cross_symbols can require them.
@@ -3685,6 +3697,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_agent_drawer_breaks_tests.step);
     test_step.dependOn(&run_agent_drawer_appkit_tests.step);
     test_step.dependOn(&run_agent_drawer_card_press_tests.step);
+    if (target.result.os.tag == .linux) test_step.dependOn(&secrets_window_headers_obj.step); // 4pa.76 tripwire
     test_step.dependOn(&run_agent_drawer_appkit_text_tests.step);
     test_step.dependOn(&run_agent_net_tests.step);
     test_step.dependOn(&run_agent_net_manifest_tests.step);
