@@ -145,9 +145,15 @@ def relay_proxy():
 
 def cli_env(home):
     proxy = relay_proxy()
+    # The CLI's temp files and its own per-uid temp dir (claude-<uid>) go to the home's scratchpad tmp, the macOS
+    # sign-in profile's only write root (options.AgentHome.tmp's layout; options itself imports the SDK). Unset,
+    # both fall back to /tmp, which Seatbelt denies (24f8d49: mkdir /tmp/claude-501 EPERM; RoseCat 0c476b8).
+    tmp = os.path.join(home, "scratchpad", "tmp")
     return {
         "HOME": home,
         "CLAUDE_CONFIG_DIR": os.path.join(home, ".claude"),
+        "TMPDIR": tmp,
+        "CLAUDE_CODE_TMPDIR": tmp,
         "PATH": "/usr/bin:/bin",
         "LANG": "C.UTF-8",
         "TERM": "xterm-256color",
