@@ -21,7 +21,19 @@ Login.spawn therefore, before it launches the CLI:
 - the home itself must be ours and writable by no one else (only then can no other uid rename the scratchpad after
   the check, the trust boundary for the window up to and during the CLI's run): a home writable by its group or by
   others is refused, with nothing made in it; so is a home owned by another uid while its children are ours (a
-  stat seam that shows only the home's inode as foreign; RoseCat 7750).
+  stat seam that shows only the home's inode as foreign; RoseCat 7750);
+- the home's path is trusted only through a checked chain from / (RoseCat 7753): every directory above the home is
+  owned by root or by us and writable by no one else, except a sticky one (like /tmp) whose next entry is root's or
+  ours. With a home laid out like production (<data root>/zigbrowser/agent-home): a data root writable by others
+  (an arbitrary unsafe XDG_DATA_HOME), a sticky data root whose app parent is another uid's, an app parent wider
+  than 0755 or another uid's, a symlinked home and a symlinked ancestor are each refused, nothing made and nothing
+  launched; so is a valid-looking app parent swapped in while the path is walked (an os.open seam at its open); a
+  sticky data root holding our own app parent is accepted (a control);
+- the paths the CLI gets must still name the checked directories right before the launch: a home swapped for a
+  valid-looking one (scratchpad and tmp 0700, ours) when the CLI's environment is built (a login.cli_env seam) is
+  refused, launching nothing, and the replacement is left as it is.
+The trust anchor's owner is root (uid 0). In a user namespace real root shows as the overflow uid, so the rows read
+it from / as this run sees it (a test-only seam, login.TRUST_ANCHOR_UID); production trusts only uid 0.
 subprocess.Popen is a recorder (no process is started), and os.kill / os.killpg are patched to raise; the fake
 process has no pid and has already ended. Run: cd agent/host/tests && unshare --map-current-user --pid --fork \\
   --kill-child --mount-proc sh -c '"$ZB_AGENT_HOST_PYTHON" -X dev -m unittest -v test_login_scratch_tmp; exit $?'
@@ -75,6 +87,46 @@ class LoginScratchTmp(unittest.TestCase):
         self.addCleanup(p.stop)
         self.login = login.Login(self.home, "/opt/claude", out=None, token_fd=-1)
         self.addCleanup(self.close_master)
+        p = mock.patch.object(login, "TRUST_ANCHOR_UID", os.stat("/").st_uid, create=True)
+        p.start()
+        self.addCleanup(p.stop)
+
+    def use_home(self, home):
+        self.close_master()
+        self.home = home
+        self.scratchpad = os.path.join(home, "scratchpad")
+        self.dir = os.path.join(self.scratchpad, "tmp")
+        self.login = login.Login(home, "/opt/claude", out=None, token_fd=-1)
+
+    def deep_home(self, data_mode=0o700, parent_mode=0o700):
+        """A fresh home laid out like production, <data root>/zigbrowser/agent-home (0700), made the sign-in's."""
+        data = os.path.join(tempfile.mkdtemp(dir=self.tmp.name), "data")
+        parent = os.path.join(data, "zigbrowser")
+        home = os.path.join(parent, "agent-home")
+        os.makedirs(home, 0o700)
+        os.chmod(home, 0o700)
+        os.chmod(parent, parent_mode)
+        os.chmod(data, data_mode)
+        self.use_home(home)
+        return data, parent, home
+
+    def foreign(self, path):
+        """A seam over os.stat/lstat/fstat that shows only `path`'s inode with another uid; all else as it is."""
+        st0 = os.lstat(path)
+
+        class Foreign:
+            def __init__(self, st):
+                self.st = st
+
+            def __getattr__(self, name):
+                return self.st.st_uid + 1 if name == "st_uid" else getattr(self.st, name)
+
+        def seam(real):
+            def call(*args, **kw):
+                st = real(*args, **kw)
+                return Foreign(st) if (st.st_dev, st.st_ino) == (st0.st_dev, st0.st_ino) else st
+            return call
+        return mock.patch.multiple(os, stat=seam(os.stat), lstat=seam(os.lstat), fstat=seam(os.fstat))
 
     def close_master(self):
         if self.login.master >= 0:
@@ -179,11 +231,13 @@ class LoginScratchTmp(unittest.TestCase):
         for component in ("scratchpad", "tmp"):
             with self.subTest(component=component):
                 path = self.scratchpad if component == "scratchpad" else self.dir
+                parent = os.path.dirname(path)
                 real_open = os.open
                 swapped = []
 
-                def opener(name, flags, mode=0o777, *, dir_fd=None):
-                    if name == component and not swapped:
+                def opener(name, flags, mode=0o777, *, dir_fd=None):  # only `component` itself, not a namesake
+                    if (name == component and not swapped and dir_fd is not None
+                            and os.path.lexists(parent) and os.path.samestat(os.fstat(dir_fd), os.lstat(parent))):
                         os.rename(path, path + f".seen{len(swapped)}")
                         os.mkdir(path, 0o700)
                         os.chmod(path, 0o700)
@@ -192,6 +246,9 @@ class LoginScratchTmp(unittest.TestCase):
                 with mock.patch.object(os, "open", side_effect=opener):
                     self.refused(f"a valid {component} swapped in before its open")
                 self.assertEqual(len(swapped), 1, "the seam did not swap")
+                after = os.lstat(path)  # the replacement is left as it was: not repaired, deleted or written
+                self.assertEqual((after.st_ino, stat.S_IMODE(after.st_mode), os.listdir(path)),
+                                 (swapped[0], 0o700, []), "the replacement was changed")
                 shutil.rmtree(self.scratchpad)
                 if os.path.lexists(self.scratchpad + ".seen0"):
                     shutil.rmtree(self.scratchpad + ".seen0")
@@ -221,23 +278,89 @@ class LoginScratchTmp(unittest.TestCase):
         os.chmod(self.home, 0o700)
 
     def test_a_home_owned_by_another_uid_is_refused_with_nothing_made(self):
-        home = os.lstat(self.home)
-
-        class Foreign:  # the home's stat, but another uid's; every other field as it is
-            def __init__(self, st):
-                self.st = st
-
-            def __getattr__(self, name):
-                return self.st.st_uid + 1 if name == "st_uid" else getattr(self.st, name)
-
-        def seam(real):
-            def call(*args, **kw):
-                st = real(*args, **kw)
-                return Foreign(st) if (st.st_dev, st.st_ino) == (home.st_dev, home.st_ino) else st
-            return call
-        with mock.patch.multiple(os, stat=seam(os.stat), lstat=seam(os.lstat), fstat=seam(os.fstat)):
+        with self.foreign(self.home):
             self.refused("a home owned by another uid")
         self.assertEqual(os.listdir(self.home), [], "something was made in the home")
+
+    def test_an_ancestor_writable_by_others_is_refused_with_nothing_made(self):
+        for mode in (0o777, 0o775, 0o757):
+            with self.subTest(mode=oct(mode)):
+                _, _, home = self.deep_home(data_mode=mode)
+                self.refused(f"a data root of mode {oct(mode)}")
+                self.assertEqual(os.listdir(home), [], "something was made in the home")
+
+    def test_a_sticky_ancestor_is_trusted_only_for_our_own_entry(self):
+        self.deep_home(data_mode=0o1777)  # a control: like /tmp, holding our own app parent
+        self.login.spawn()
+        self.assertEqual((self.seen[0]["scratchpad"], self.seen[0]["tmp"]), (self.VALID, self.VALID))
+        self.seen.clear()
+        _, parent, home = self.deep_home(data_mode=0o1777)
+        with self.foreign(parent):
+            self.refused("a sticky data root whose app parent is another uid's")
+        self.assertEqual(os.listdir(home), [], "something was made in the home")
+
+    def test_a_wide_or_foreign_app_parent_is_refused(self):
+        _, _, home = self.deep_home(parent_mode=0o770)
+        self.refused("an app parent of mode 0770")
+        self.assertEqual(os.listdir(home), [], "something was made in the home")
+        _, parent, home = self.deep_home()
+        with self.foreign(parent):
+            self.refused("an app parent owned by another uid")
+        self.assertEqual(os.listdir(home), [], "something was made in the home")
+
+    def test_a_symlinked_home_is_refused_unchanged(self):
+        _, parent, home = self.deep_home()
+        os.rmdir(home)
+        target = self.elsewhere()
+        os.chmod(target, 0o700)
+        os.symlink(target, home)
+        self.refused("a symlinked home")
+        self.assertEqual((os.readlink(home), os.listdir(target)), (target, []), "changed on refusal")
+
+    def test_a_symlinked_ancestor_is_refused(self):
+        data, _, _ = self.deep_home()
+        os.rename(data, data + ".real")
+        os.symlink(data + ".real", data)
+        self.refused("a symlinked data root")
+        self.assertEqual(os.listdir(os.path.join(data + ".real", "zigbrowser", "agent-home")), [],
+                         "something was made through the link")
+
+    def test_an_ancestor_swapped_while_the_path_is_walked_is_refused_unchanged(self):
+        data, parent, home = self.deep_home()
+        real_open = os.open
+        swapped = []
+
+        def opener(name, flags, mode=0o777, *, dir_fd=None):
+            if (name == "zigbrowser" and not swapped and dir_fd is not None
+                    and os.path.samestat(os.fstat(dir_fd), os.lstat(data))):
+                os.rename(parent, parent + ".seen")
+                os.makedirs(home, 0o700)
+                os.chmod(parent, 0o700)
+                os.chmod(home, 0o700)
+                swapped.append(os.lstat(parent).st_ino)
+            return real_open(name, flags, mode, dir_fd=dir_fd)
+        with mock.patch.object(os, "open", side_effect=opener):
+            self.refused("an app parent swapped in while the path was walked")
+        self.assertEqual(swapped, [os.lstat(parent).st_ino], "the seam did not swap, or the replacement was moved")
+        self.assertEqual((os.listdir(parent), os.listdir(home)), (["agent-home"], []), "the replacement was written")
+
+    def test_a_home_swapped_before_the_launch_is_refused(self):
+        _, _, home = self.deep_home()
+        real_cli_env = login.cli_env
+        swapped = []
+
+        def cli_env(*args, **kw):
+            if not swapped:  # the paths the CLI gets now name a valid-looking home of someone else's choosing
+                os.rename(home, home + ".checked")
+                os.makedirs(os.path.join(home, "scratchpad", "tmp"), 0o700)
+                for d in (home, os.path.join(home, "scratchpad"), os.path.join(home, "scratchpad", "tmp")):
+                    os.chmod(d, 0o700)
+                swapped.append(os.lstat(home).st_ino)
+            return real_cli_env(*args, **kw)
+        with mock.patch.object(login, "cli_env", side_effect=cli_env):
+            self.refused("a home swapped before the launch")
+        self.assertEqual(swapped, [os.lstat(home).st_ino], "the seam did not swap, or the replacement was moved")
+        self.assertEqual(os.listdir(os.path.join(home, "scratchpad", "tmp")), [], "the replacement was written")
 
     def test_a_scratchpad_wider_than_0700_is_refused(self):
         os.makedirs(self.dir, 0o700)
