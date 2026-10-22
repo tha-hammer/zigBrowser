@@ -216,6 +216,57 @@ def extract_cpp_function(src, name):
     raise AssertionError(f"unbalanced braces extracting {name}")
 
 
+def cpp_top_level_statements(body):
+    """The statements at the TOP LEVEL of a comment/string-stripped C++ block body — brace depth 0 AND paren
+    depth 0. A braced block (if/for/bare scope) flushes as ONE statement at its closing brace; a lambda or
+    braced initializer INSIDE a call's parentheses keeps paren depth > 0, so a statement that embeds a lambda
+    stays whole. Lets an oracle require REAL top-level statements, so a sequence hidden under if(false), a
+    runtime gate, or an unused lambda is not mistaken for the live controller path."""
+    stmts, buf, brace, paren = [], [], 0, 0
+    for c in body:
+        buf.append(c)
+        if c == "(":
+            paren += 1
+        elif c == ")":
+            paren -= 1
+        elif c == "{":
+            brace += 1
+        elif c == "}":
+            brace -= 1
+            if brace == 0 and paren == 0:
+                stmts.append("".join(buf).strip())
+                buf = []
+        elif c == ";" and brace == 0 and paren == 0:
+            stmts.append("".join(buf).strip())
+            buf = []
+    return [s for s in stmts if s]
+
+
+def cpp_enclosing_block(stripped, anchor):
+    """The body of the innermost braced block that DIRECTLY contains `anchor` (within comment/string-stripped
+    C++ `stripped`) — used to pin the controller-completion lambda body via a unique anchor statement."""
+    idx = stripped.index(anchor)
+    depth, start = 0, None
+    for j in range(idx - 1, -1, -1):
+        if stripped[j] == "}":
+            depth += 1
+        elif stripped[j] == "{":
+            if depth == 0:
+                start = j
+                break
+            depth -= 1
+    assert start is not None, f"no enclosing block for {anchor!r}"
+    depth = 0
+    for j in range(start, len(stripped)):
+        if stripped[j] == "{":
+            depth += 1
+        elif stripped[j] == "}":
+            depth -= 1
+            if depth == 0:
+                return stripped[start + 1:j]
+    raise AssertionError("unbalanced braces in enclosing block")
+
+
 def page_selector_body_is_strict(body):
     """Causal predicate on the embedded [Z]::PageHwnd body (RoseCat ba35dc5). The selector is strict iff it
     selects by the WebView2 widget CLASS, by the launched PID, requires EXACTLY ONE match, and uses NEITHER a
@@ -1306,7 +1357,6 @@ class WinDrawerOracle(unittest.TestCase):
             return re.sub(r"\s+", "", strip_cpp(s))
 
         spawn = lx(extract_cpp_function(shim, "spawn_extra_drawer_windows"))
-        ctrl = lx(extract_cpp_function(shim, "create_controller"))
 
         loop = lx("for (int i = 0; i < count; i++)")               # count-driven, not a re-decided extra count
         both_check = lx("panel_h == nullptr || icon_h == nullptr")
@@ -1314,15 +1364,14 @@ class WinDrawerOracle(unittest.TestCase):
         push = lx("extra_windows.push_back(ExtraWindow{reinterpret_cast<uintptr_t>(w), 1})")
         inc = lx("drawer_live_inc();")
         pre913 = lx("zb_drawer_extra_windows(app->windows_seam)")   # the pre-9132e93 count decision in the spawn
-        # The controller completion sequence, bound as ONE contiguous ORDERED block (real control flow, not
-        # three loose counts): `after` is assigned from the decision, flows into the count-consuming spawn, then
-        # the primary close sits inside exactly `if (after.close_primary)`. Each statement is also required
-        # exactly once, so an unconditional / wrong-gated / dead-coded / duplicated variant cannot slip through.
-        assign = lx("const AfterController after = zb_drawer_after_controller(app->windows_seam, "
-                    "app->e2e_protocol ? 1 : 0, app->agent_drawer_on ? 1 : 0, app->windows_seam_set ? 1 : 0);")
-        spawn_stmt = lx("spawn_extra_drawer_windows(app, after.spawn_count);")   # consume the returned COUNT
-        guarded_close = lx("if (after.close_primary) { PostMessageW(app->hwnd, WM_CLOSE, 0, 0); }")  # GUARDED primary close
-        seq = assign + spawn_stmt + guarded_close  # contiguous: assign -> spawn -> guarded close, in that order
+        # The controller completion sequence must be LIVE TOP-LEVEL statements of the completion lambda, not a
+        # substring that could sit under if(false), a runtime gate, or an unused lambda (RoseCat 8132). Bind
+        # three CONSECUTIVE top-level statements: `after` assigned from the decision, the count-consuming spawn,
+        # then the primary close inside exactly `if (after.close_primary)`; each exactly once.
+        assign_sq = lx("const AfterController after = zb_drawer_after_controller(app->windows_seam, "
+                       "app->e2e_protocol ? 1 : 0, app->agent_drawer_on ? 1 : 0, app->windows_seam_set ? 1 : 0);")
+        spawn_sq = lx("spawn_extra_drawer_windows(app, after.spawn_count);")   # consume the returned COUNT
+        guarded_sq = lx("if (after.close_primary) { PostMessageW(app->hwnd, WM_CLOSE, 0, 0); }")  # GUARDED primary close
 
         def spawn_ok(b):
             need = [loop, both_check, fail_arm, push, lx("GWLP_USERDATA, reinterpret_cast<LONG_PTR>(app)"), inc]
@@ -1333,15 +1382,19 @@ class WinDrawerOracle(unittest.TestCase):
             # the LIVE app-owned record is pushed, and the both-controls check runs, BEFORE the increment
             return b.index(push) < b.index(inc) and b.index(both_check) < b.index(inc)
 
-        def ctrl_ok(b):
-            # the whole assign->spawn->guarded-close sequence appears once AND each statement appears exactly
-            # once — so an unconditional close, a wrong gate, decision+spawn under a dead gate, a close before
-            # the spawn, or any duplicate all fail (the loose three-count predicate accepted the first three).
-            return (b.count(seq) == 1 and b.count(assign) == 1
-                    and b.count(spawn_stmt) == 1 and b.count(guarded_close) == 1)
+        def seq_top_level(raw_body):
+            # the three statements must be CONSECUTIVE top-level statements (brace/paren depth 0), each once — a
+            # sequence nested under if(false)/a runtime gate/an unused lambda flushes as ONE block statement and
+            # never matches the individual top-level needles.
+            stmts = [lx(s) for s in cpp_top_level_statements(strip_cpp(raw_body))]
+            if stmts.count(assign_sq) != 1 or stmts.count(spawn_sq) != 1 or stmts.count(guarded_sq) != 1:
+                return False
+            i = stmts.index(assign_sq)
+            return i + 2 < len(stmts) and stmts[i + 1] == spawn_sq and stmts[i + 2] == guarded_sq
 
         self.assertTrue(spawn_ok(spawn), f"spawn must be count-driven w/ partial-cleanup + record-then-inc; spawn={spawn!r}")
-        self.assertTrue(ctrl_ok(ctrl), f"controller must decide once, spawn with the count, then close the primary; ctrl={ctrl!r}")
+        lam = cpp_enclosing_block(strip_cpp(extract_cpp_function(shim, "create_controller")), "mount_drawer(app);")
+        self.assertTrue(seq_top_level(lam), f"the controller completion must have assign->spawn->guarded-close as live top-level statements; lam={lam!r}")
 
         # --- spawn-body mutants (synthetic; prove the predicate is not vacuous) ---
         self.assertFalse(spawn_ok(spawn.replace(inc, "", 1)), "a removed increment must be caught")
@@ -1351,28 +1404,31 @@ class WinDrawerOracle(unittest.TestCase):
         self.assertFalse(spawn_ok(spawn.replace(push, "", 1).replace(inc, inc + push, 1)), "recording the live window AFTER the increment must be caught")
         self.assertFalse(spawn_ok(spawn.replace(loop, loop + pre913 + ";", 1)), "the pre-9132e93 shape (count re-decided inside the spawn) must be caught")
 
-        # --- controller mutants (synthetic; the real shape passes, each named defect fails) ---
+        # --- controller mutants (synthetic lambda bodies; the real top-level shape passes, each defect fails) ---
+        anc = "mount_drawer(app);"  # the unique anchor that pins the completion lambda body
         D = ("const AfterController after = zb_drawer_after_controller(app->windows_seam, app->e2e_protocol ? 1 : 0, "
              "app->agent_drawer_on ? 1 : 0, app->windows_seam_set ? 1 : 0);")
         S = "spawn_extra_drawer_windows(app, after.spawn_count);"
         C = "if (after.close_primary) { PostMessageW(app->hwnd, WM_CLOSE, 0, 0); }"
 
-        def synth(*stmts):
-            return lx("HRESULT f(AppState* app) { " + " ".join(stmts) + " }")
+        def lam_body(*stmts):
+            return anc + " " + " ".join(stmts)
 
-        self.assertTrue(ctrl_ok(synth(D, S, C)), "the real controller shape passes")
-        self.assertFalse(ctrl_ok(synth("/* " + D + " */", S, C)), "a commented-out decision call must be caught")
-        self.assertFalse(ctrl_ok(synth(D, S, "/* " + C + " */")), "a commented-out primary close must be caught")
-        self.assertFalse(ctrl_ok(synth(D, D, S, C)), "a duplicate decision call must be caught")
-        self.assertFalse(ctrl_ok(synth(D, S, S, C)), "a duplicate spawn must be caught")
-        self.assertFalse(ctrl_ok(synth(D, S, C, C)), "a duplicate primary close must be caught")
-        self.assertFalse(ctrl_ok(synth(D, "spawn_extra_drawer_windows(app, after.close_primary);", C)), "spawning with the wrong returned field must be caught")
-        self.assertFalse(ctrl_ok(synth(D, C, S)), "closing the primary before the spawn must be caught")
-        self.assertFalse(ctrl_ok(synth(D, S, "if (after.close_primary) { PostMessageW(extra, WM_CLOSE, 0, 0); }")), "closing a non-primary HWND must be caught")
-        # RoseCat 8124: control-flow mutants the loose three-count predicate wrongly accepted
-        self.assertFalse(ctrl_ok(synth(D, S, "PostMessageW(app->hwnd, WM_CLOSE, 0, 0);")), "an UNGUARDED primary close (no after.close_primary) must be caught")
-        self.assertFalse(ctrl_ok(synth(D, S, "if (app->screenshot) { PostMessageW(app->hwnd, WM_CLOSE, 0, 0); }")), "a WRONG-gate close must be caught")
-        self.assertFalse(ctrl_ok(synth("if (false) { " + D + " " + S + " }", "PostMessageW(app->hwnd, WM_CLOSE, 0, 0);")), "decision+spawn under a dead gate with an unconditional close must be caught")
+        self.assertTrue(seq_top_level(lam_body(D, S, C)), "the real top-level sequence passes")
+        self.assertFalse(seq_top_level(lam_body("/* " + D + " */", S, C)), "a commented-out decision call must be caught")
+        self.assertFalse(seq_top_level(lam_body(D, S, "/* " + C + " */")), "a commented-out primary close must be caught")
+        self.assertFalse(seq_top_level(lam_body(D, D, S, C)), "a duplicate decision call must be caught")
+        self.assertFalse(seq_top_level(lam_body(D, S, S, C)), "a duplicate spawn must be caught")
+        self.assertFalse(seq_top_level(lam_body(D, S, C, C)), "a duplicate primary close must be caught")
+        self.assertFalse(seq_top_level(lam_body(D, "spawn_extra_drawer_windows(app, after.close_primary);", C)), "spawning with the wrong returned field must be caught")
+        self.assertFalse(seq_top_level(lam_body(D, C, S)), "closing the primary before the spawn must be caught")
+        self.assertFalse(seq_top_level(lam_body(D, S, "if (after.close_primary) { PostMessageW(extra, WM_CLOSE, 0, 0); }")), "closing a non-primary HWND must be caught")
+        self.assertFalse(seq_top_level(lam_body(D, S, "PostMessageW(app->hwnd, WM_CLOSE, 0, 0);")), "an UNGUARDED primary close must be caught")
+        self.assertFalse(seq_top_level(lam_body(D, S, "if (app->screenshot) { PostMessageW(app->hwnd, WM_CLOSE, 0, 0); }")), "a WRONG-gate close must be caught")
+        # RoseCat 8132: the WHOLE sequence hidden in a dead or nested scope must be caught (not just assign+spawn)
+        self.assertFalse(seq_top_level(lam_body("if (false) { " + D + " " + S + " " + C + " }")), "the whole sequence under if(false) must be caught")
+        self.assertFalse(seq_top_level(lam_body("if (app->screenshot) { " + D + " " + S + " " + C + " }")), "the whole sequence under a runtime gate must be caught")
+        self.assertFalse(seq_top_level(lam_body("auto f = [app]() { " + D + " " + S + " " + C + " };")), "the whole sequence inside an unused lambda must be caught")
 
         # --- the lexer defeats literal/comment decoys; close-one still destroys via the record HWND ---
         self.assertNotIn(fail_arm, lx('const char* s = "DestroyWindow(w); continue;";'), "a string-literal decoy must be stripped by the lexer")
