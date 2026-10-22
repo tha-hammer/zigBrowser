@@ -474,6 +474,28 @@ pub fn build(b: *std.Build) void {
     cross_drawer_win_step.dependOn(&cross_drawer_win.step);
     cross_check_step.dependOn(&cross_drawer_win.step);
 
+    // MS7.0 (macOS plan line 2158): both macOS objects must COMPILE and DEFINE the portable drawer logic (zb_drawer_*)
+    // the AppKit drawer will call, exactly the Windows list, once the export gate in agent_drawer.zig covers .macos.
+    // Pure compile — no SDK, no link. RED until that gate widens; not in `cross-check` or `test` until the green.
+    const cross_drawer_mac_step = b.step("cross-check-drawer-mac", "MS7.0: both macOS builds compile and export the portable drawer logic (zb_drawer_*)");
+    for ([_]std.Target.Cpu.Arch{ .aarch64, .x86_64 }) |arch| {
+        const cross_drawer_mac_module = b.createModule(.{
+            .root_source_file = b.path("src/main.zig"),
+            .imports = &.{.{ .name = "build_options", .module = site_options_module }},
+            .target = b.resolveTargetQuery(.{ .cpu_arch = arch, .os_tag = .macos }),
+            .optimize = optimize,
+            .link_libc = true,
+        });
+        cross_drawer_mac_module.addIncludePath(b.path("src"));
+        const cross_drawer_mac_obj = b.addObject(.{ .name = "zigBrowser-cross-drawer-mac", .root_module = cross_drawer_mac_module });
+        const cross_drawer_mac = b.addSystemCommand(&.{ "python3", "tools/check_cross_symbols.py" });
+        for (drawer_portable_exports) |sym| cross_drawer_mac.addArgs(&.{ "--require-defined", sym });
+        cross_drawer_mac.addFileInput(b.path("tools/check_cross_symbols.py"));
+        cross_drawer_mac.addFileArg(cross_drawer_mac_obj.getEmittedBin());
+        addShimArg(b, cross_drawer_mac, "src/wkwebview_shim.m:src/agent_home_lock.c:src/agent_spawn_posix.c");
+        cross_drawer_mac_step.dependOn(&cross_drawer_mac.step);
+    }
+
     // WS6.1 (c): the Windows Credential Manager / DPAPI token store compiles for x86_64-windows and exports
     // its zb_secret_* C-ABI functions. A trivial Zig root pulls the C++ in (addCSourceFile); the object retains
     // every TU symbol, so check_cross_symbols can require them.
@@ -3987,6 +4009,17 @@ fn configureWebView2Backend(module: *std.Build.Module, b: *std.Build, paths: Web
 
 /// The cross-check's shim argument: one source, or several joined by ':' (macOS: the ObjC shim plus the plain C
 /// files compiled into the exe), passed as absolute paths and each registered as a file input.
+/// MS7.0: the portable drawer logic a native (AppKit) drawer calls; the macOS objects must define each one.
+const drawer_portable_exports = [_][]const u8{
+    "zb_drawer_classify",          "zb_drawer_place",           "zb_drawer_clamp",
+    "zb_drawer_panel_rect",        "zb_drawer_ratios_of",       "zb_drawer_key_move",
+    "zb_drawer_remember",          "zb_drawer_start_ratios",    "zb_drawer_lerp",
+    "zb_drawer_ease",              "zb_drawer_anim_ms",         "zb_drawer_anim_ms_from_env",
+    "zb_drawer_break_runs",        "zb_drawer_row_text_len",    "zb_drawer_original_offset",
+    "zb_drawer_reply_text_max",    "zb_drawer_reply_content_max", "zb_drawer_label_text_max",
+    "zb_drawer_inside_icon",
+};
+
 fn addShimArg(b: *std.Build, run: *std.Build.Step.Run, shim: []const u8) void {
     var parts = std.mem.splitScalar(u8, shim, ':');
     var joined: std.ArrayList(u8) = .empty;
