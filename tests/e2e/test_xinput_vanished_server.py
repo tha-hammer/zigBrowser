@@ -24,9 +24,9 @@ dir lands there) that this test removes; a child that outlives its bound is kill
 its Xvfb, which xsession starts with PR_SET_PDEATHSIG, is gone within XVFB_GONE_S with its X lock and socket: a child
 that hangs on purpose proves it.
 The children stop only their own Xvfb (Popen.terminate on xsession.Display's own child), so run it inside a private
-PID namespace with no display: cd tests/e2e && env -u DISPLAY -u WAYLAND_DISPLAY -u XAUTHORITY unshare --user \\
-  --map-root-user --pid --fork --mount-proc sh -c 'setsid python3 -X dev -m unittest -v test_xinput_vanished_server'
-Unregistered until the green."""
+PID namespace that keeps our own uid, with no display (as its build.zig step does since 3f08afa):
+  cd tests/e2e && env -u DISPLAY -u WAYLAND_DISPLAY -u XAUTHORITY unshare --map-current-user --pid --fork \\
+    --kill-child --mount-proc sh -c 'setsid -w python3 -X dev -m unittest -v test_xinput_vanished_server; exit $?'"""
 
 import os
 import shutil

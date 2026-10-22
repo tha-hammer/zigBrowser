@@ -16,9 +16,9 @@ Xlib's exit(1) printed no summary, which nobody could attribute).
 - the build.zig step agent-netd-spawn-e2e runs its test through run_step.sh, label agent-netd-spawn-e2e, with the
   run_main summary ERE.
 The commands are plain shells; the only signal is one a shell sends itself (kill -TERM $$). Run inside a PID
-namespace like its siblings: cd tests/e2e && env -u DISPLAY unshare --user --map-root-user --pid --fork --mount-proc \\
-  sh -c 'setsid python3 -X dev -m unittest -v test_run_step'
-Unregistered until the green."""
+namespace that keeps our own uid, like its build.zig step since 3f08afa: cd tests/e2e && env -u DISPLAY unshare \\
+  --map-current-user --pid --fork --kill-child --mount-proc \\
+    sh -c 'setsid -w python3 -X dev -m unittest -v test_run_step; exit $?'"""
 
 import re
 import subprocess
