@@ -1,10 +1,21 @@
-r"""WS8/WS9 WSL2 topology — live characterization probes on the Win11 VM (OD-W4).
+r"""WS8/WS9 WSL2 topology — live DISCOVERY SPIKE on the Win11 VM (OD-W4).
 
-UNREGISTERED (live-only; registered once the WS8/WS9 greens land). This is the measured-facts
-harness the owner asked for before committing the WSL2 re-plan: it imports a tiny PINNED Alpine
-minirootfs as the standard user (no admin), configures wsl.conf, and proves each topology fact as
-a row, then tears everything down with a guarded delete. It writes ONLY under
-C:\Users\zbtext\zb\wsl on win11-m8 and never touches the Windows 10 file server.
+This is a discovery spike, NOT the production WS8/WS9 closure. It establishes the topology facts the
+owner asked for before committing the WSL2 re-plan (RoseCat 119108c / 7516). The security and product
+claims (bwrap confinement, control-channel auth, egress, lifetime under concurrency, setup state
+machine, fail-closed) are proven LATER by named red/green tests driving the production `WslBackend` /
+`LinuxBwrapBackend`, not by this script. See the "WS8/WS9 acceptance matrix" in the plan.
+
+UNREGISTERED (live-only). It imports a tiny PINNED Alpine minirootfs as the standard user (no admin),
+configures wsl.conf, proves each topology fact as a row, then tears everything down with a guarded
+delete. It writes ONLY under C:\Users\zbtext\zb\wsl on win11-m8 and never touches the Windows 10 file
+server.
+
+Test hygiene (RoseCat 7516 #1): it takes a baseline distro census, refuses to run if a
+same-named marked distro already exists, uses only app-owned `zb-test-*` names + a per-run dir,
+applies wsl.conf with a PER-DISTRO `wsl --terminate` and NEVER a global `wsl --shutdown` (which would
+hit every distro in the shared utility VM), unregisters only its own marked distros, and asserts the
+final census equals the baseline.
 
 Exit 77 (skip) when ZB_WIN11_HOST is unset so the hostless Linux gate stays green. The rootfs is
 treated as UNTRUSTED data: it is verified against the in-repo pinned SHA-256 below (NOT against a
@@ -121,6 +132,12 @@ class WslTopologyLive(unittest.TestCase):
         cls.base = f"C:\\Users\\{USER}\\zb\\wsl"
         rc, _, _ = ssh("cmd", "/c", f"if not exist {cls.base} mkdir {cls.base}")
         assert rc == 0, "could not create install base dir"
+        # Hygiene (RoseCat 7516 #1): baseline census + collision refusal.
+        _, base_list, _ = ssh("wsl", "-l", "-q")
+        cls.baseline = sorted(x.strip() for x in base_list.replace("\r", "").split("\n") if x.strip())
+        for n in (cls.na, cls.nb):
+            if n in cls.baseline:
+                raise AssertionError(f"collision: marked distro {n} already exists; refusing to run")
         cls.facts = {}
 
     def _stage(self, name, text):
@@ -149,7 +166,7 @@ class WslTopologyLive(unittest.TestCase):
             # --- P2/P3: apply wsl.conf to A, shutdown, authoritative automount/interop/PATH probe ---
             self._stage("conf.sh", "#!/bin/sh\ncat > /etc/wsl.conf <<'C'\n" + WSL_CONF + "C\necho CONF_WRITTEN\n")
             run_in_distro(na, "conf.sh")
-            ssh("wsl", "--shutdown")
+            ssh("wsl", "--terminate", na)  # PER-DISTRO only; never a global `wsl --shutdown` (7516 #1/#10)
             self._stage("auth.sh", _AUTH_SH)
             _, o, _ = run_in_distro(na, "auth.sh")
             a = kv(o)
@@ -233,8 +250,10 @@ class WslTopologyLive(unittest.TestCase):
                     f"(if exist {base}\\zb-test-{r}-a rmdir /s /q {base}\\zb-test-{r}-a) & "
                     f"(if exist {base}\\zb-test-{r}-b rmdir /s /q {base}\\zb-test-{r}-b) & "
                     f"(if exist {tar_remote} del /q {tar_remote})")
-            _, lo, _ = ssh("wsl", "-l", "-v")
-            self.assertIn("no installed distributions", lo, f"teardown must leave no distro: {lo}")
+            _, lo, _ = ssh("wsl", "-l", "-q")
+            final = sorted(x.strip() for x in lo.replace("\r", "").split("\n") if x.strip())
+            self.assertEqual(final, self.baseline,
+                             f"final distro census must equal baseline (no leftovers); baseline={self.baseline} final={final}")
 
 
 # ---- staged probe scripts (streamed to the distro / Windows; never parsed by cmd) ----
