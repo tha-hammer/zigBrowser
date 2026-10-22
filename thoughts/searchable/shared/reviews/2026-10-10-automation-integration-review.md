@@ -31286,3 +31286,41 @@ post-kill failures beyond the old 20-second window can recover while deadline
 exhaustion still fails promptly. Then the exact three-row run may be
 reauthorized with the existing clean-export, pinned SSH/known-hosts,
 unique-root, owned-Job, no pid/name kill and stop-on-first-failure rules.
+
+## Sign-in root-chain and literal-anchor coverage (`b9b58c4`)
+
+**APPROVED-for-tests; the two causal gaps on `5f81c0d` are closed.** The new
+rows independently make `/` appear foreign, group-writable and
+other-writable; separately make an ancestor above the data root foreign or
+wide; and require refusal before any launch or creation. The production-anchor
+row reads the unpatched value before installing the user-namespace seam and
+also parses the module to require exactly one module-level literal-integer
+`TRUST_ANCHOR_UID = 0`. Removing the symbol, dynamically deriving it, skipping
+`/`, or beginning the walk near the data root can no longer satisfy the suite.
+
+An exact clean export passed **26/26** under a private current-UID
+user/PID/mount namespace, with `Popen` recorded and both signal functions
+patched to raise. The test remains unregistered. Cumulative acceptance of the
+sign-in boundary still waits for the pinned-interpreter registrations,
+real-binary sign-in e2es and clean full gate already named in the preceding
+`5f81c0d`/`aec8fc5` review.
+
+## Sign-in immediate-pre-spawn recheck (`6c249f4`)
+
+**BLOCKED-for-tests.** The production ordering is correct: `openpty`, terminal
+sizing, the held home/scratch/tmp identity recheck, then `Popen`, with the
+slave closed in `finally` and the master closed/reset when any pre-spawn step
+fails. The exact cumulative scratch suite passed **26/26** in a private
+namespace.
+
+The committed tests do not causally distinguish this code from the old
+ordering. Their home-swap seam fires in `cli_env`, before both the former
+recheck and the new `openpty`/`ioctl` sequence; moving the recheck back ahead of
+`openpty` still passes. Nor does `refused()` require `master == -1` or prove the
+two newly opened PTY fds are closed—the test cleanup closes a leaked master and
+can hide the regression. Add one late-swap row that swaps the checked path
+during/after terminal setup, after the old recheck point but before `Popen`.
+It must prove zero launches, `master == -1`, and `EBADF` for both recorded PTY
+ends after refusal. Mutants that restore the old recheck placement or omit
+either close must fail that row. Registration and the real-binary/full-gate
+evidence remain cumulative acceptance requirements.
