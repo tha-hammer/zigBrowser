@@ -33,6 +33,16 @@ local signal, no raw-PID stop, and no check/use race remains:
 - A listener that starts but misses READY now still records its PID (winlaunch emits `pid=` on both
   branches), so a not-ready listener is still censused.
 
+This commit also closes the three c101b1e follow-up gaps (still NOT run):
+- (c101b1e #1) the FULL prospective name set (`-a`/`-b`/`-nope`/`-absent`) is reserved and checked against
+  the baseline in setUp BEFORE any import/unregister; `may_destroy()` gates EVERY destructive op (import,
+  terminate, unregister, in cleanup too), so a planted/pre-existing name is blocked from all of them.
+- (c101b1e #2) `_await_listener_gone` returns a tagged GONE|NOT_OURS result, fails CLOSED on UNREADABLE and
+  on any ssh/census error (the CIM query emits a deterministic `GONE`/`UNREADABLE`/`CMD=<cmdline>` token).
+- (c101b1e #3) `_reap_no_signal` is a reaped-or-fail contract: it blocks on `wait()`, raises on timeout, and
+  never returns while the handle may still be alive — and never signals a host pid.
+All three have offline `WslSpikeOracle` rows.
+
 C1 stdio/pipe-to-fd bootstrap probe (design embodied in `test_wsl_topology`): the Windows parent launches
 `wsl.exe -d <distro> -u zbagent -e python3 c1boot.py` with redirected stdin/stdout; the capability secret is
 written to the child's stdin (Windows parent pipe -> wsl.exe stdin -> Linux fd 0), the child binds an
@@ -130,19 +140,43 @@ def plan_distro_cleanup(imported, present):
     return out
 
 
-def classify_listener(pid, cmdline, run_rand):
-    """Identity of a possibly-reused Windows PID (acc13ea #2).
+def reserved_collisions(reserved, baseline):
+    """Prospective owned names (every -a/-b/-nope/-absent name this run will ever touch) that already exist in
+    the baseline. ANY collision must refuse the whole run before a single import or unregister (c101b1e #1).
+    """
+    return [n for n in reserved if n in baseline]
 
-    Returns OURS only when the PID's command line still names THIS run's
-    winlisten.ps1. A reused PID with a different command line is NOT_OURS and is
-    never acted on; an empty command line means the PID is GONE.
+
+def may_destroy(name, reserved, baseline):
+    """A destructive op (import/terminate/unregister) is allowed ONLY for a name this run reserved that was NOT
+    pre-existing in the baseline. A planted/pre-existing name is thereby blocked from every destructive op.
+    """
+    return name in reserved and name not in baseline
+
+
+def classify_listener(pid, census_out, run_rand):
+    """Identity of a possibly-reused Windows PID (acc13ea #2, c101b1e #2).
+
+    Parses the deterministic single-token census (`GONE` / `UNREADABLE` / `CMD=<cmdline>`) into one of:
+      NONE       - no PID was ever recorded;
+      GONE       - the PID is not present now (naturally exited);
+      OURS       - present AND its command line still names THIS run's winlisten.ps1;
+      NOT_OURS   - present but a different command line (a reused PID) - never acted on;
+      UNREADABLE - present but command line unreadable, or any unexpected/empty output -> caller fails closed.
     """
     if pid is None:
         return "NONE"
-    if not cmdline or not cmdline.strip():
+    first = ""
+    for ln in (census_out or "").splitlines():
+        if ln.strip():
+            first = ln.strip()
+            break
+    if first == "GONE":
         return "GONE"
-    marker = "run-%s\\winlisten.ps1" % run_rand
-    return "OURS" if marker in cmdline else "NOT_OURS"
+    if first.startswith("CMD="):
+        marker = "run-%s\\winlisten.ps1" % run_rand
+        return "OURS" if marker in first else "NOT_OURS"
+    return "UNREADABLE"  # explicit UNREADABLE token, empty output, or anything unexpected -> fail closed
 
 
 def run_best_effort(steps, errs):
@@ -187,15 +221,20 @@ class WslTopologyLive(unittest.TestCase):
         self.run_win = f"{self.wsl_root}\\run-{self.rand}"  # for cmd/powershell
         self.na = f"zb-test-{self.rand}-a"
         self.nb = f"zb-test-{self.rand}-b"
+        self.n_nope = f"zb-test-{self.rand}-nope"      # negative-import oracle target
+        self.n_absent = f"zb-test-{self.rand}-absent"  # negative-unregister oracle target
+        # (c101b1e #1) the FULL set of prospective owned names this run may ever touch — reserved and checked
+        # against the baseline BEFORE any import or unregister; every destructive op is gated by may_destroy().
+        self.reserved = [self.na, self.nb, self.n_nope, self.n_absent]
         self.localdir = tempfile.mkdtemp(prefix="wsllive-")
         self.staged = set()
         self.keepalives = []
         self.imported = []
         self.win_listener_pid = None
         self.baseline_distros = census_distros()
-        for n in (self.na, self.nb):
-            if n in self.baseline_distros:
-                raise AssertionError(f"collision: marked distro {n} already exists; refusing to run")
+        collisions = reserved_collisions(self.reserved, self.baseline_distros)
+        if collisions:
+            raise AssertionError(f"collision: reserved distro name(s) {collisions} already exist; refusing to run")
         # Refuse a pre-existing run dir (no shared-name overwrite), then create it.
         rc, out, _ = ssh("cmd", "/c", f"if exist {self.run_win} (echo EXISTS) else (echo NEW)")
         self.assertEqual(rc, 0, "run-dir probe failed")
@@ -215,7 +254,9 @@ class WslTopologyLive(unittest.TestCase):
         # rather than skipping it.
         present = run_best_effort([("list distros", census_distros)], errs)[0]
         must_assert = present is not None
-        targets = plan_distro_cleanup(self.imported, present)
+        # (c101b1e #1) never destroy a name we did not reserve / that pre-existed, even in cleanup.
+        targets = [n for n in plan_distro_cleanup(self.imported, present)
+                   if may_destroy(n, self.reserved, self.baseline_distros)]
 
         steps = []
         # terminate each owned distro FIRST (this kills that distro's in-distro keepalive `sleep`), then
@@ -256,29 +297,39 @@ class WslTopologyLive(unittest.TestCase):
 
     @staticmethod
     def _reap_no_signal(p):
-        # NO terminate()/kill(): the remote `wsl --terminate` already ended the in-distro `sleep`, so the ssh
-        # client reaches EOF and exits. We only reap it; a stuck handle is a bounded natural exit (its remote
-        # `sleep` is itself bounded), recorded here, never force-killed by us.
-        if p.poll() is not None:
-            return
+        # (c101b1e #3) reaped-or-fail contract, NO signal ever sent to a host pid. The remote `wsl --terminate`
+        # already ended the in-distro `sleep`, so the ssh client reaches EOF and exits. `wait()` returns ONLY
+        # once the child has actually exited (i.e. been reaped); on timeout we do NOT signal it and we RAISE
+        # (its remote `sleep` is itself bounded, so it is a bounded natural exit we surface, never swallow).
         try:
-            p.wait(timeout=20)
+            p.wait(timeout=20)  # blocks until the child exits; returning here means it is reaped
         except subprocess.TimeoutExpired:
-            raise AssertionError("keepalive ssh did not exit after remote distro terminate "
-                                 "(bounded natural exit pending; no local kill issued)")
+            raise AssertionError("keepalive ssh still alive after remote distro terminate; not reaped "
+                                 "(no signal sent; bounded natural exit pending)")
+        if p.poll() is None:  # contract: must never return while the handle may still be alive
+            raise AssertionError("keepalive ssh wait() returned but handle still reports alive")
 
     def _await_listener_gone(self):
-        # Bounded wait for the self-exiting Windows listener; census by identity, never a stop (acc13ea #2).
+        # (c101b1e #2) Bounded wait for the self-exiting Windows listener; census by identity, never a stop.
+        # Returns the terminal tag (GONE|NOT_OURS); fails CLOSED on UNREADABLE or an ssh/census error (no
+        # silenced errors), and fails if it is still OURS past the bound. The CIM query emits exactly ONE
+        # deterministic token so classify_listener can tell "gone" from "present-but-unreadable".
         deadline = time.time() + 30
         while time.time() < deadline:
             rc, out, e = ssh("powershell", "-NoProfile", "-Command",
                              f"$p=Get-CimInstance Win32_Process -Filter \"ProcessId={self.win_listener_pid}\" "
-                             f"-ErrorAction SilentlyContinue; if ($p) {{ $p.CommandLine }}")
+                             f"-ErrorAction SilentlyContinue; "
+                             f"if ($p) {{ if ($p.CommandLine) {{ 'CMD=' + $p.CommandLine }} else {{ 'UNREADABLE' }} }} "
+                             f"else {{ 'GONE' }}")
             if rc != 0:
                 raise AssertionError(f"listener identity census failed rc={rc}: {e.strip()}")
-            if classify_listener(self.win_listener_pid, out, self.rand) in ("GONE", "NOT_OURS"):
-                return  # naturally exited, or the PID was reused by an unrelated process (not ours)
-            time.sleep(2)
+            tag = classify_listener(self.win_listener_pid, out, self.rand)
+            if tag in ("GONE", "NOT_OURS"):
+                return tag  # naturally exited, or the PID was reused by an unrelated process (not ours)
+            if tag == "UNREADABLE":
+                raise AssertionError(f"listener pid {self.win_listener_pid} present but command line UNREADABLE "
+                                     f"(failing closed; cannot confirm identity): {out!r}")
+            time.sleep(2)  # still OURS -> natural exit pending
         raise AssertionError(f"windows reverse listener pid {self.win_listener_pid} (identity-matched) "
                              f"survived its natural-exit bound")
 
@@ -303,8 +354,14 @@ class WslTopologyLive(unittest.TestCase):
         self.keepalives.append(p)
         return p
 
+    def _guard_destroy(self, name):
+        # (c101b1e #1) a destructive op is permitted only for a reserved name that was not pre-existing.
+        if not may_destroy(name, self.reserved, self.baseline_distros):
+            raise AssertionError(f"refusing destructive op on non-reserved/pre-existing distro {name!r}")
+
     def _import(self, distro):
         # (b) record ownership BEFORE the attempt, so a partial/failed import is still censused + cleaned.
+        self._guard_destroy(distro)
         if distro not in self.imported:
             self.imported.append(distro)
         rc, o, e = ssh("cmd", "/c",
@@ -316,18 +373,19 @@ class WslTopologyLive(unittest.TestCase):
     # Negative / mutant oracles (cheap; prove the checks fail closed).
     # ------------------------------------------------------------------
     def test_oracle_failed_import_and_unregister_return_nonzero(self):
-        # (acc13ea #4) record BOTH nonce names in the owned list BEFORE the attempts, so a partial
-        # registration from the failed import is censused and cleaned by the postflight.
-        nope = f"zb-test-{self.rand}-nope"
-        absent = f"zb-test-{self.rand}-absent"
+        # (acc13ea #4) the nonce names were reserved + baseline-checked in setUp; record them in the owned list
+        # BEFORE the attempts so a partial registration is censused/cleaned, and gate each destructive op.
+        nope, absent = self.n_nope, self.n_absent
         for n in (nope, absent):
             if n not in self.imported:
                 self.imported.append(n)
+        self._guard_destroy(nope)
         rc, _, _ = ssh("cmd", "/c",
                        f"wsl --import {nope} {self.run_win}\\nope {self.run_win}\\does-not-exist.tar.gz --version 2")
         self.assertNotEqual(rc, 0, "a failed import must return nonzero (oracle)")
         # clean a partial dir if the failed import created one
         ssh("cmd", "/c", f"if exist {self.run_win}\\nope rmdir /s /q {self.run_win}\\nope")
+        self._guard_destroy(absent)
         rc, _, _ = ssh("wsl", "--unregister", absent)
         self.assertNotEqual(rc, 0, "unregistering an absent distro must return nonzero (oracle)")
 
@@ -359,6 +417,7 @@ class WslTopologyLive(unittest.TestCase):
             self.assertIn("SETUP_DONE", o, f"setup {n}: {o}")
             self.assertIn("ADDUSER_RC=0", o)
             self.assertIn("APK_RC=0", o)
+            self._guard_destroy(n)
             rc, _, e = ssh("wsl", "--terminate", n)
             self.assertEqual(rc, 0, f"terminate {n}: {e}")
 
@@ -699,20 +758,76 @@ class WslSpikeOracle(unittest.TestCase):
         self.assertEqual(plan_distro_cleanup(imported, present), ["zb-test-x-a"],
                          "with a good census, only actually-registered owned distros are targeted")
 
-    def test_listener_identity_pid_reuse_is_not_ours(self):
+    def test_listener_identity_tags_all_cases(self):
+        # (c101b1e #2) classify_listener returns one of NONE|GONE|OURS|NOT_OURS|UNREADABLE from the
+        # deterministic single-token census.
         rand = "abcd1"
-        ours = r"powershell ... C:\Users\zbtext\zb\wsl\run-abcd1\winlisten.ps1 0.0.0.0 39002"
-        reused = r"C:\Windows\System32\notepad.exe"
+        ours = r"CMD=powershell ... C:\Users\zbtext\zb\wsl\run-abcd1\winlisten.ps1 0.0.0.0 39002"
+        reused = r"CMD=C:\Windows\System32\notepad.exe"
         self.assertEqual(classify_listener(4242, ours, rand), "OURS")
         self.assertEqual(classify_listener(4242, reused, rand), "NOT_OURS",
                          "a reused PID with a different command line must never be treated as ours")
-        self.assertEqual(classify_listener(4242, "", rand), "GONE")
+        self.assertEqual(classify_listener(4242, "GONE", rand), "GONE")
         self.assertEqual(classify_listener(None, ours, rand), "NONE")
+
+    def test_listener_identity_unreadable_fails_closed(self):
+        # (c101b1e #2) present-but-unreadable, empty, or any unexpected output => UNREADABLE (fail closed).
+        rand = "abcd1"
+        self.assertEqual(classify_listener(4242, "UNREADABLE", rand), "UNREADABLE")
+        self.assertEqual(classify_listener(4242, "", rand), "UNREADABLE")
+        self.assertEqual(classify_listener(4242, "unexpected noise", rand), "UNREADABLE")
 
     def test_listener_identity_rejects_other_run_nonce(self):
         # a concurrent sibling run's winlisten.ps1 must not match our nonce.
-        other = r"... \run-ZZZZZ\winlisten.ps1 0.0.0.0 39002"
+        other = r"CMD=... \run-ZZZZZ\winlisten.ps1 0.0.0.0 39002"
         self.assertEqual(classify_listener(4242, other, "abcd1"), "NOT_OURS")
+
+    def test_planted_name_blocks_every_destructive_op(self):
+        # (c101b1e #1) a prospective name that already exists in the baseline is a collision (refuse the run),
+        # and may_destroy() blocks EVERY destructive op on it; only a reserved, non-pre-existing name is allowed.
+        reserved = ["zb-test-k-a", "zb-test-k-b", "zb-test-k-nope", "zb-test-k-absent"]
+        baseline = ["Ubuntu", "zb-test-k-b"]  # a planted collision on one reserved name
+        self.assertEqual(reserved_collisions(reserved, baseline), ["zb-test-k-b"],
+                         "a planted name colliding with the baseline must be detected before any op")
+        self.assertFalse(may_destroy("zb-test-k-b", reserved, baseline),
+                         "a pre-existing (planted) reserved name must be blocked from every destructive op")
+        self.assertFalse(may_destroy("Ubuntu", reserved, baseline),
+                         "a non-reserved name must never be destroyable")
+        self.assertTrue(may_destroy("zb-test-k-a", reserved, baseline),
+                        "a reserved, non-pre-existing name is the only destroyable case")
+        self.assertEqual(reserved_collisions(reserved, ["Ubuntu"]), [],
+                         "no collision when none of the reserved names pre-exist")
+
+    def test_reap_no_signal_contract(self):
+        # (c101b1e #3) _reap_no_signal never signals a host pid; it reaps-or-fails and never returns alive.
+        class _Fake:
+            def __init__(self, wait_raises=False, alive_after_wait=False):
+                self.wait_raises = wait_raises
+                self.alive_after_wait = alive_after_wait
+                self.signalled = []
+            def wait(self, timeout=None):
+                if self.wait_raises:
+                    raise subprocess.TimeoutExpired(cmd="ssh", timeout=timeout)
+                return 0
+            def poll(self):
+                return None if self.alive_after_wait else 0
+            def terminate(self):
+                self.signalled.append("terminate")
+            def kill(self):
+                self.signalled.append("kill")
+        reap = WslTopologyLive._reap_no_signal
+        # reaped cleanly -> returns, no signal sent
+        f_ok = _Fake()
+        reap(f_ok)
+        self.assertEqual(f_ok.signalled, [], "no signal may be sent to a host pid")
+        # still alive at the bound -> raise, still no signal
+        f_to = _Fake(wait_raises=True)
+        with self.assertRaises(AssertionError):
+            reap(f_to)
+        self.assertEqual(f_to.signalled, [], "a timed-out reap must not fall back to a signal")
+        # wait() returned but handle still alive -> contract violation -> raise
+        with self.assertRaises(AssertionError):
+            reap(_Fake(alive_after_wait=True))
 
     def test_canary_never_in_staged_scripts(self):
         # no staged script template may embed a secret-shaped token; the scan must report zero leaks.
