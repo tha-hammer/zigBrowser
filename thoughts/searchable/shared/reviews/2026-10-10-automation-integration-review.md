@@ -34410,3 +34410,245 @@ and `src/agent_run_ledger.zig:255`, `:484-485` and `:534-535` still make the
 same obsolete no-gate/not-implemented claims. A final comment-only fix-forward
 covering those locations remains required; then this range needs no additional
 behavioral test.
+
+### Final comment-only follow-up (`6f145bc`)
+
+**APPROVED; this cumulatively closes `09dca89` and `557473c`.** The remaining
+comments now describe the reviewed boundary accurately: the transaction and
+startup core exist, `reaper_ready` exists and ships false, no app-startup owner
+calls it, and production recovery therefore remains unreachable. The stale
+no-gate, not-implemented and “GREEN block to append” claims are gone from both
+source files. The commit changes comments only, passes `diff-tree --check`,
+and requires no further behavioral test.
+
+## S8e hover/scroll no-card reds (`edbdc1b`)
+
+**BLOCKED-for-tests.** The increment is correctly isolated to three
+unregistered files and changes no production or gate code. Its main seams are
+well chosen: the helper list/forward/deadline contract; the broker's real
+worker, window binding and injected engine across all selector/mode states;
+and a private-Xvfb real helper/CLI/fake-API chain whose page and notification
+server provide independent hover, scroll and no-card observations. From an
+exact clean archive, the helper module failed **4 tests and errored 3**, and
+the broker module passed the unavailable control and failed its two green
+rows, all because hover/scroll do not exist yet. Both files compile, and the
+failures are at the intended missing-tool seams.
+
+Two blockers must be fixed before the reds are registered or used to drive the
+green:
+
+1. `test_tools_hover_scroll.py:35-36` pins a `scroll` schema with
+   `required: []` and no union constraint. It therefore accepts `{}` and a
+   mixed `{selector, x|y}` at the model/MCP boundary, while the same commit's
+   broker contract explicitly rejects both. Replace it with an exact schema
+   for either `{selector}` or a non-empty subset of `{x,y}`, never both, and
+   add causal helper/server or real-CLI refusal rows for empty and mixed
+   shapes. The red must not bless a schema broader than the broker.
+2. `agent_hover_scroll_test.py:188-198` can enter its signal-capable child by
+   trusting `--pid-ns` / `--sealed-child`, and launches the namespace with
+   `--map-current-user`. Its teardown reaches `stop_browser`, whose bounded
+   fallback sends `killpg`. Before registration, use the required
+   `unshare --user --map-root-user --pid --fork --mount-proc` launcher with a
+   held outer PID-namespace fd, and make the child kernel-prove it is below
+   that namespace (the reviewed `pidns_guard` pattern) before it starts any
+   browser. A caller-supplied marker alone must fail closed. This preserves
+   the real-signal rule established after the logout incidents.
+
+SHOULD: the bad-argument broker row should also require zero card shows,
+notifications and outcomes, rather than only zero engine/page-list calls; and
+the selector-help assertion should retain both `css=` and `text=` grammar as
+the existing read-tool contract does. No live browser, external network or
+real display was used in this review.
+
+## WS5.5b-2 ownership fix-forward (`1b2fe0a`, with `920cb46` / `3564646`)
+
+**`920cb46` remains BLOCKED-for-tests; `3564646` remains BLOCKED; `1b2fe0a`
+is BLOCKED. No Win11 run is authorized.** The fix-forward correctly replaces
+the fake page claim with `host,icon,panel`, checks both child-control handles,
+destroys an uncounted partial host, marks a complete HWND before incrementing,
+and moves the count decrement into a non-quitting per-HWND `WM_DESTROY` path.
+Its offline evidence is green from an exact archive: `win_drawer_test` passed
+**84/84** with eight live skips, `win_drawer_behaviors_test` passed **45/45**
+with twenty live skips, and both `cross-check-drawer-win` and
+`drawer-props-test` passed with the display environment scrubbed.
+
+Three gaps keep the lifecycle proof open:
+
+1. A real close still leaves its HWND in `AppState.e2e_extra_windows`.
+   `drawer_extra_window_proc` clears only `GWLP_USERDATA` and decrements the
+   counter; it has no owner record to remove or mark dead. The new test seam
+   hides that defect by popping the handle *before* `DestroyWindow(one)`.
+   A user/window-driven close therefore retains a stale handle until bulk
+   teardown, where an HWND reuse could target an unrelated later window. Give
+   the WndProc an app-owned per-HWND record and retire it on the real destroy
+   path; bulk teardown must act only on still-live owned records. Drive the
+   early close without pre-removing the record.
+2. The close-one live row checks only a regex for `liveclose 2 1`. It never
+   validates the exact primary/extra transcript or the terminal global
+   `live ... 0` row, although the prior contract explicitly requires closing
+   the rest and observing final zero. Extend the strict multi-window validator
+   for the one intermediate `liveclose` row, then require exact structures,
+   `peak=2`, intermediate live `1`, and terminal live `0`. Causal skipped,
+   double-decrement and missing-final-cleanup mutants must each fail.
+3. Neither test suite ever sets
+   `ZIGBROWSER_AGENT_DRAWER_EXTRA_FAIL=panel|icon`; `git grep` finds those
+   names only in production. Thus the claimed two partial-window failure
+   paths are not driven, and the current source predicate does not bind
+   `DestroyWindow(w); continue;` to that failure arm. Add red-first causal
+   coverage for both failures. The eventual live rows must require only the
+   primary drawer, no extra rows/count, `peak=1`, terminal `0`, and clean
+   owned-Job teardown.
+
+The truthful row and counter changes are retained progress, but this range
+does not yet establish one safe owner/destroy path or the complete live
+failure matrix required by the earlier verdict.
+
+## MS6.5.1 startup-owner integration red (`3a8a091`)
+
+**BLOCKED-for-tests; unregistered, unarmed and signal-free status is
+correct.** An exact clean direct run failed its single row at the intended
+missing import, and the commit changes no production or gate file. The source
+oracle is not yet strong enough for the security boundary it claims:
+
+1. `fnBody` is delimited by the next textual `fn` / `pub fn`, not balanced
+   braces, and none of the searches removes comments or string literals. A
+   comment containing either call token satisfies the row. Extract balanced
+   bodies, strip non-code text, and bind exact qualified call expressions.
+2. A call in only one command branch also passes. Require the owner call
+   exactly once on the intended startup path and before command dispatch (or
+   state and test an explicit command matrix); add branch-only, after-dispatch
+   and duplicate-call mutants.
+3. The row pins none of the call's authority. The green must prove the Darwin
+   compile-time boundary, the app-owned runtime/ledger location, one absolute
+   deadline, and the reviewed concrete actuator. Because Zig evaluates call
+   arguments before entering `recoverAllAtStartup`, the false
+   `reaper_ready` gate must also prevent the owner from opening/pinning the
+   ledger or constructing a live actuator; merely reaching a function whose
+   first line returns disabled is insufficient. Add a causal gate-false
+   zero-filesystem/zero-actuator row around the real owner seam.
+4. The one test stops at the absent import, so the committed red does not
+   demonstrate that removing each of the two call links is independently
+   caught. Split the links into independent rows or commit equivalent causal
+   mutants. Also bind handling of the returned non-ok report (fixed incident
+   or an explicitly named later slice); silently discarding a future
+   fail-closed recovery outcome cannot be the terminal owner contract.
+
+Keep this red unregistered and keep `reaper_ready` false while fixing the
+oracle. No Mac or signal-capable run is authorized.
+
+## MS6 six-case two-Mac acceptance and linear boundary (`e81770d`)
+
+**ACCEPTED on both supported Mac architectures; this closes the failed
+`2e07c7b` hard-gate acceptance.** The owner-released bounded run used an exact
+clean export of `e81770d`. All **6/6** reviewed cases passed on both the Intel
+Mac and laroncha, with **rc 0**, **208 ok rows**, **0 failures**, and all
+**7/7** committed case/manifest digests matching before execution. The
+before/after censuses found **0 project processes and 0 project folders** on
+both hosts. Laroncha's one short-lived system Safari helper disappeared on
+the required recheck and was not a project survivor. This supplies the
+missing real-Mac evidence for the fix-forward range through `e81770d`; no new
+Mac run is required for that range.
+
+**Newest contiguous approved push-through from `7b9d499`: `4cb740d`.** The
+next commit is `09dca89`. Its implementation and registered tests are
+approved, but the exact source state at `09dca89` still contains materially
+false lifecycle comments. `557473c` fixes only part of them; the complete
+comment-only closure is `6f145bc`. Because the independently blocked S8e red
+`edbdc1b` lies between `557473c` and `6f145bc`, a linear prefix cannot include
+the complete comment fix without also including that blocked commit. Thus the
+truthful push boundary stops immediately before `09dca89`, at `4cb740d`.
+
+## WS6 portable token-shape and store foundation (`e50c5de`, `b5a08e4`, `f8087d7`, `2b85811`)
+
+**`e50c5de` is APPROVED as a failing-first red. `b5a08e4` is APPROVED for the
+refactor itself but remains BLOCKED-for-tests cumulatively. `f8087d7` is
+BLOCKED-for-tests, and `2b85811` is BLOCKED.** From exact clean archives, the
+two reds each failed at their intended absent-module boundary, the focused
+`zig build test-agent-secrets -j1` step at `2b85811` was green, and both new
+modules compile for `x86_64-windows-msvc`. The shape split is byte-for-byte in
+substance: `agent_secrets.zig` re-exports the one portable implementation and
+keeps the Linux store unchanged.
+
+Three gaps remain:
+
+1. `TokenStore.read` passes backend bytes through without applying
+   `shape.validToken`. That violates the already shipped one-rule load
+   boundary: the Linux file and Secret Service routes reject a planted
+   non-setup token, and the user's planted-keyring requirement requires the
+   Windows backend to do the same without duplicating validation. Add a red
+   whose fake backend returns a well-shaped-length `sk-ant-api03-...` value;
+   the interface must return `BadShape` and expose no token bytes to its
+   caller. Keep the single validation implementation in
+   `agent_secrets_shape.zig`.
+2. The claimed disposable-target safety accepts the bare
+   `zigBrowser-test-` prefix and does not pin any non-empty/random suffix
+   grammar. Add exact positive and near-miss rows (bare prefix, slash-family,
+   wrong case, embedded production target) and make the proposed-target check
+   part of the safety operation rather than leaving it to a later caller.
+3. `2b85811` wires the two new tests only into the focused
+   `test-agent-secrets` step. The aggregate `test` step still depends only on
+   the old secrets and shape artifacts, so a normal clean-export gate can
+   regress both new modules without noticing. Register both new run artifacts
+   in `test_step` as well, while retaining the focused step. The existing
+   portable tests should also be the registered compile proof for the Windows
+   target, rather than relying solely on an unregistered manual cross-compile
+   claim.
+
+The implementation is useful foundation, but the portable interface is not a
+safe load boundary until item 1 closes, and the advertised gate registration
+is incomplete until item 3 closes.
+
+## WS6.1(c) Windows CredMan/DPAPI source red (`b5b7546`)
+
+**BLOCKED-for-tests; keep it unregistered.** An exact clean run failed all
+three rows because `src/agent_secrets_win.cpp` is absent, so the commit is red
+and does not affect the gate. The proposed oracle is not yet strong enough to
+drive a security-sensitive credential backend:
+
+- substring presence allows comments, declarations or dead branches to
+  satisfy every CredMan and DPAPI row; it does not bind the target, credential
+  type, persistence, blob bytes and exact call result in one executable path;
+- the DPAPI row checks only `CryptProtectData` and the UI flag. It omits
+  `CryptUnprotectData`, owner-only DACL creation/verification, atomic file
+  publication, plaintext absence, read/remove behavior and memory clearing;
+- the “no duplicated shape” row merely bans one literal and does not prove
+  that the backend is reached only through the portable `TokenStore` shape
+  boundary; and
+- the red contains no causal mutants or compile/runtime registration. A
+  source-oracle green alone could therefore bless a nonfunctional skeleton.
+
+Before the production green, add a compiled seam or fake Win32-call table
+that drives save/read/remove and the fallback causally, with mutants for the
+wrong target/type/persistence, plaintext fallback, UI-enabled DPAPI,
+non-owner DACL, missing delete and duplicated/bypassed shape validation. The
+eventual registered Win11 tests must still exercise real disposable CredMan
+and DPAPI-file targets; this Linux red is only their structural precursor.
+
+### Skeleton green (`2e5a0fb`)
+
+**BLOCKED; it does not close `b5b7546`.** From an exact clean archive,
+`cross-check-secrets-win` passed and the folded `WinDrawerOracle` passed
+**85/85** with eight live rows skipped. The object does export the four named
+CredMan/DPAPI symbols. Those facts establish a MinGW compile smoke test, not a
+working token store.
+
+The earlier red's coverage defects remain: the registered oracle is still the
+same substring search, and the implementation is explicitly only a skeleton.
+It has no `CryptUnprotectData`, private-file create/read/atomic-replace/remove
+path, DACL verification, plaintext-absence proof, memory-clearing contract or
+concrete `TokenStore` binding. The cross-check also targets
+`x86_64-windows-gnu`, while the shipped build is MSVC; the eventual runtime
+slice must compile and run the shipped target on Win11 rather than treating
+this smoke check as closure.
+
+There is an additional independent blocker: the commit's `build.zig` hunk at
+the executable root silently adds `agent_run_ledger` and
+`agent_run_recovery` production imports. Those seven lines are unrelated to
+WS6.1(c), are absent from the commit message, and come from the still-blocked
+`3a8a091` startup-owner work. Remove them in a fix-forward (or land them only
+with that reviewed slice); a secrets-store skeleton must not sweep blocked
+recovery wiring into the browser executable.
+
+Keep the skeleton if useful as compile-only foundation, but relabel its claim
+accordingly and add the causal fake-call/Win11 coverage described above before
+calling WS6.1(c) green.
