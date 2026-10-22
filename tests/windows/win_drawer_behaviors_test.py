@@ -276,23 +276,46 @@ class WinDrawerBehaviorsOracle(unittest.TestCase):
                 check_live_peak_matches(peak, final, n)
 
     def test_ws5_5b2_close_one_validator_structure_and_mutants(self):
-        # WS5.5b-2 (RoseCat 5a204f3 #2): the close-one transcript validator — exact structures, peak=2,
-        # intermediate=1, terminal=0 — with the skipped / double-decrement / missing-final-cleanup mutants.
-        def t(peak, intermediate, final):
-            w1 = ("DRAWER\t1\ttree\thost,page,icon,panel\nDRAWER\t1\ticon\t928,649,56,56\n"
-                  "DRAWER\t1\topen\t0,437,1008,292\n")
-            w2 = ("DRAWER\t2\ttree\thost,icon,panel\nDRAWER\t2\ticon\t928,649,56,56\n"
-                  "DRAWER\t2\topen\t0,437,1008,292\n")
-            return w1 + w2 + f"DRAWER\t1\tliveclose\t{peak}\t{intermediate}\n" + f"DRAWER\t1\tlive\t{peak}\t{final}\n"
-        self.assertEqual(validate_close_one_transcript(t(2, 1, 0), 2), (2, 1, 0))
-        with self.assertRaises(AssertionError):  # skipped: no liveclose row
-            validate_close_one_transcript(t(2, 1, 0).replace("DRAWER\t1\tliveclose\t2\t1\n", ""), 2)
-        with self.assertRaises(AssertionError):  # double-decrement: intermediate 0 not 1
-            validate_close_one_transcript(t(2, 0, 0), 2)
-        with self.assertRaises(AssertionError):  # missing final cleanup: terminal 1 not 0
-            validate_close_one_transcript(t(2, 1, 1), 2)
-        with self.assertRaises(AssertionError):  # wrong peak
-            validate_close_one_transcript(t(3, 1, 0), 2)
+        # WS5.5b-2 (RoseCat bdc8202 #1): the close-one validator with a CAUSAL refusal for every corruption.
+        W1T = "DRAWER\t1\ttree\thost,page,icon,panel\n"
+        W1I = "DRAWER\t1\ticon\t928,649,56,56\n"
+        W1O = "DRAWER\t1\topen\t0,437,1008,292\n"
+        W2T = "DRAWER\t2\ttree\thost,icon,panel\n"
+        W2I = "DRAWER\t2\ticon\t928,649,56,56\n"
+        W2O = "DRAWER\t2\topen\t0,437,1008,292\n"
+
+        def good(peak=2, inter=1, final=0):
+            return (W1T + W1I + W1O + W2T + W2I + W2O
+                    + f"DRAWER\t1\tliveclose\t{peak}\t{inter}\n" + f"DRAWER\t1\tlive\t{peak}\t{final}\n")
+
+        self.assertEqual(validate_close_one_transcript(good(), 2), (2, 1, 0))
+        LC = "DRAWER\t1\tliveclose\t2\t1\n"
+        LV = "DRAWER\t1\tlive\t2\t0\n"
+        cases = {
+            "skipped liveclose": good().replace(LC, ""),
+            "double-decrement (intermediate 0)": good(inter=0),
+            "missing final cleanup (final 1)": good(final=1),
+            "wrong peak": good(peak=3),
+            "duplicate row (second open on w1)": W1T + W1I + W1O + W1O + W2T + W2I + W2O + LC + LV,
+            "extra/reordered rows (w2 icon before tree)": W1T + W1I + W1O + W2I + W2T + W2O + LC + LV,
+            "duplicate window id (w1 thrice, no w2)": W1T + W1I + W1O + W1T + W1I + W1O + LC + LV,
+            "missing window id (only w1)": W1T + W1I + W1O + LC + LV,
+            "extra window id (w3 present)": (W1T + W1I + W1O + W2T + W2I + W2O
+                                             + "DRAWER\t3\ttree\thost,icon,panel\nDRAWER\t3\ticon\t1,1,1,1\n"
+                                             + "DRAWER\t3\topen\t0,1,1,1\n" + LC + LV),
+            "non-contiguous id set (1 and 3, not 1,2)": (W1T + W1I + W1O
+                                                         + "DRAWER\t3\ttree\thost,icon,panel\nDRAWER\t3\ticon\t1,1,1,1\n"
+                                                         + "DRAWER\t3\topen\t0,1,1,1\n" + LC + LV),
+            "wrong ownership (liveclose on w2)": W1T + W1I + W1O + W2T + W2I + W2O
+            + "DRAWER\t2\tliveclose\t2\t1\n" + LV,
+            "malformed field (non-digit intermediate)": good().replace(LC, "DRAWER\t1\tliveclose\t2\tx\n"),
+            "missing w2 icon": W1T + W1I + W1O + W2T + W2O + LC + LV,
+            "missing w1 open": W1T + W1I + W2T + W2I + W2O + LC + LV,
+            "trailing DRAWER row after live": good() + "DRAWER\t1\topen\t0,437,1008,292\n",
+        }
+        for name, transcript in cases.items():
+            with self.assertRaises(AssertionError, msg=f"must refuse: {name}"):
+                validate_close_one_transcript(transcript, 2)
 
     # WS5.6 ---------------------------------------------------------
     def test_ws5_6_isolation(self):
@@ -624,8 +647,9 @@ def validate_close_one_transcript(stdout, n_windows):
     for (w, k, f) in parsed:
         by_win.setdefault(w, []).append((k, f))
     wins = sorted(by_win)
-    if len(wins) != n_windows:
-        raise AssertionError(f"expected exactly {n_windows} drawer windows, got {wins}")
+    if wins != list(range(1, n_windows + 1)):
+        # exactly the contiguous id set 1..n — not a short, extra, duplicate or non-contiguous (e.g. 1,3) set
+        raise AssertionError(f"windows must be exactly {list(range(1, n_windows + 1))}, got {wins}")
     owner = wins[0]
     for w in wins:
         kinds = [k for (k, _f) in by_win[w]]

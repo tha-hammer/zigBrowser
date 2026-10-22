@@ -223,3 +223,30 @@ test "extraDrawerWindows is seam-1 clamped to [0, max_windows-1] (WS5.5b-2)" {
     // mutant: a raw `seam` (no -1) would make the 2-window seam spawn 2 extras (peak 3, not 2)
     try std.testing.expect(d.extraDrawerWindows(2) != 2);
 }
+
+test "retireExtraWindow: lookup by hwnd, one live transition, tombstone-before-reuse, exactly one decrement (WS5.5b-2)" {
+    var recs = [_]d.ExtraRecord{ .{ .hwnd = 0x10, .live = 1 }, .{ .hwnd = 0x20, .live = 1 } };
+    // close 0x10: the live record is retired once (caller decrements)
+    try std.testing.expect(d.retireExtraWindow(&recs, 0x10));
+    try std.testing.expectEqual(@as(u8, 0), recs[0].live);
+    try std.testing.expectEqual(@as(u8, 1), recs[1].live); // 0x20 untouched
+    // duplicate close of 0x10: already tombstoned -> no second decrement
+    try std.testing.expect(!d.retireExtraWindow(&recs, 0x10));
+    // an unknown handle -> no decrement
+    try std.testing.expect(!d.retireExtraWindow(&recs, 0x99));
+
+    // handle reuse: the old 0x10 record is tombstoned; a NEW window reuses the handle (a fresh live record).
+    // retire must hit the NEW live record, never the old tombstone, and exactly once.
+    var reuse = [_]d.ExtraRecord{ .{ .hwnd = 0x10, .live = 0 }, .{ .hwnd = 0x10, .live = 1 } };
+    try std.testing.expect(d.retireExtraWindow(&reuse, 0x10));
+    try std.testing.expectEqual(@as(u8, 0), reuse[0].live);
+    try std.testing.expectEqual(@as(u8, 0), reuse[1].live);
+    try std.testing.expect(!d.retireExtraWindow(&reuse, 0x10)); // both tombstoned now
+
+    // exactly ONE decrement across a close + a duplicate close
+    var one = [_]d.ExtraRecord{.{ .hwnd = 0x30, .live = 1 }};
+    var decs: usize = 0;
+    if (d.retireExtraWindow(&one, 0x30)) decs += 1;
+    if (d.retireExtraWindow(&one, 0x30)) decs += 1;
+    try std.testing.expectEqual(@as(usize, 1), decs);
+}

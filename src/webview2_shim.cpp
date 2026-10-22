@@ -14,6 +14,7 @@
 
 #include <ctype.h>
 #include <errno.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -53,12 +54,14 @@ struct ZbDrawerGeomRect { int x, y, w, h; };
 struct ZbDrawerRatios { double x, y; };
 }
 
-// WS5.5b-2 (RoseCat 5a204f3 #1): an APP-OWNED record for each e2e extra drawer window. `live` is retired on
-// the real WM_DESTROY path (drawer_extra_window_proc), so bulk teardown acts only on still-live records and
-// an early close never has to pre-remove the record.
+// WS5.5b-2 (RoseCat 5a204f3/bdc8202): an APP-OWNED record for each e2e extra drawer window. The ownership
+// retire-once logic is the PORTABLE zb_drawer_retire_extra (driven directly by the Zig property test); this
+// struct is its C ABI — a pointer-sized handle + a one-byte live flag (matches agent_drawer.zig ExtraRecord).
+// `live` is retired on the real WM_DESTROY path, so bulk teardown acts only on still-live records and an early
+// close never pre-removes the record.
 struct ExtraWindow {
-  HWND hwnd;
-  bool live;
+  uintptr_t hwnd;
+  unsigned char live;
 };
 
 struct AppState {
@@ -179,6 +182,7 @@ int zb_drawer_icon_size_from_dpi_env(const char *text);    // WS5.7 e2e seam: th
 int zb_drawer_inside_icon(int dx, int dy, int radius);     // WS5.7 exact circular hit-test (1 inside, 0 outside)
 int zb_drawer_window_count_from_env(const char *text);     // WS5.5 e2e seam: strict 1..8, else 0 (seam off)
 int zb_drawer_extra_windows(int seam);                     // WS5.5b-2: extra windows beyond the primary (seam-1)
+int zb_drawer_retire_extra(ExtraWindow *records, size_t count, uintptr_t hwnd);  // WS5.5b-2: retire-once (1 => decrement)
 }
 
 // WS5 shim functions (declared in webkit_shim.h), defined here for the Windows backend.
@@ -1429,14 +1433,11 @@ void mount_drawer(AppState *app) {
 LRESULT CALLBACK drawer_extra_window_proc(HWND h, UINT msg, WPARAM wparam, LPARAM lparam) {
   if (msg == WM_DESTROY) {
     AppState *app = reinterpret_cast<AppState *>(GetWindowLongPtrW(h, GWLP_USERDATA));
-    if (app != nullptr) {
-      for (auto &rec : app->extra_windows) {
-        if (rec.hwnd == h && rec.live) {
-          rec.live = false;  // retire the app-owned record on the real destroy path
-          g_drawer_live.fetch_sub(1, std::memory_order_relaxed);
-          break;
-        }
-      }
+    if (app != nullptr && !app->extra_windows.empty() &&
+        zb_drawer_retire_extra(app->extra_windows.data(), app->extra_windows.size(),
+                               reinterpret_cast<uintptr_t>(h))) {
+      // The portable ownership helper tombstoned exactly one LIVE record for this HWND, so decrement once.
+      g_drawer_live.fetch_sub(1, std::memory_order_relaxed);
     }
   }
   return DefWindowProcW(h, msg, wparam, lparam);
@@ -1511,7 +1512,7 @@ void spawn_extra_drawer_windows(AppState *app) {
     // The FULL structure exists: record this HWND as a LIVE app-owned record and point its GWLP_USERDATA at
     // the AppState, THEN account it and emit its rows exactly once. The record (not a flag) is the counted
     // mark; the WndProc retires it on destroy.
-    app->extra_windows.push_back(ExtraWindow{w, true});
+    app->extra_windows.push_back(ExtraWindow{reinterpret_cast<uintptr_t>(w), 1});
     SetWindowLongPtrW(w, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(app));
     ShowWindow(w, SW_SHOWNORMAL);
     drawer_live_inc();  // WS5.5: this concurrent drawer raises the running live peak toward N
@@ -1523,7 +1524,7 @@ void spawn_extra_drawer_windows(AppState *app) {
   if (app->extra_close_one) {
     for (auto &rec : app->extra_windows) {
       if (rec.live) {
-        DestroyWindow(rec.hwnd);  // routes through drawer_extra_window_proc -> retire record + single decrement
+        DestroyWindow(reinterpret_cast<HWND>(rec.hwnd));  // -> drawer_extra_window_proc retires + single decrement
         break;
       }
     }
@@ -2240,7 +2241,7 @@ static int run_core(const char *uri, int print_title, int e2e_protocol, bool scr
   // already-closed extra (retired by its own WM_DESTROY) is not destroyed or decremented twice. The FINAL
   // count returns to 0 with no double-decrement; the running PEAK (already at N) is unaffected.
   for (auto &rec : app.extra_windows) {
-    if (rec.live) DestroyWindow(rec.hwnd);
+    if (rec.live) DestroyWindow(reinterpret_cast<HWND>(rec.hwnd));
   }
   app.extra_windows.clear();
 

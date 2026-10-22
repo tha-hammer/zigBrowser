@@ -163,6 +163,25 @@ pub fn windowCountFromEnv(text: ?[]const u8) c_int {
     return 0;
 }
 
+/// WS5.5b-2: one e2e extra-window ownership record. C ABI (a pointer-sized handle + a one-byte live flag)
+/// so the Windows shim keeps a std::vector of these and hands the array to the retire helper.
+pub const ExtraRecord = extern struct { hwnd: usize, live: u8 };
+
+/// Retire the record that OWNS `hwnd`: the FIRST record whose hwnd matches AND is still live is tombstoned
+/// (live = 0) and `true` is returned, so the caller decrements the live count EXACTLY once. A duplicate close
+/// (the record already tombstoned), an unknown handle, or a reused handle whose old record is already
+/// tombstoned returns `false` (no decrement). With a reused handle the NEW live record is the first live
+/// match, so exactly it is retired — never the old tombstone (RoseCat bdc8202 #2).
+pub fn retireExtraWindow(records: []ExtraRecord, hwnd: usize) bool {
+    for (records) |*r| {
+        if (r.hwnd == hwnd and r.live != 0) {
+            r.live = 0;
+            return true;
+        }
+    }
+    return false;
+}
+
 /// WS5.5b-2: the number of EXTRA drawer windows the e2e multi-window spawn creates BEYOND the primary window,
 /// for a given WINDOWS seam. The seam is the total window count (1..8 when set, 1 otherwise), so the extra count
 /// is seam-1, clamped to [0, max_windows-1]. The shim loops this many times, so the C++ keeps no count logic.
@@ -453,6 +472,7 @@ comptime {
         @export(&zb_drawer_icon_size_from_dpi_env, .{ .name = "zb_drawer_icon_size_from_dpi_env" });
         @export(&zb_drawer_window_count_from_env, .{ .name = "zb_drawer_window_count_from_env" });
         @export(&zb_drawer_extra_windows, .{ .name = "zb_drawer_extra_windows" });
+        @export(&zb_drawer_retire_extra, .{ .name = "zb_drawer_retire_extra" });
         @export(&zb_drawer_icon_size_for_dpi, .{ .name = "zb_drawer_icon_size_for_dpi" });
         @export(&zb_drawer_inside_icon, .{ .name = "zb_drawer_inside_icon" });
     }
@@ -569,6 +589,13 @@ fn zb_drawer_window_count_from_env(text: ?[*:0]const u8) callconv(.c) c_int {
 /// WS5.5b-2: the extra drawer-window count (seam-1, clamped) the e2e spawn loops over.
 fn zb_drawer_extra_windows(seam: c_int) callconv(.c) c_int {
     return extraDrawerWindows(seam);
+}
+
+/// WS5.5b-2: retire the app-owned record owning `hwnd`; returns 1 iff a live record was tombstoned (the
+/// caller decrements exactly once). The shim's extra WndProc calls this on WM_DESTROY.
+fn zb_drawer_retire_extra(records: ?[*]ExtraRecord, count: usize, hwnd: usize) callconv(.c) c_int {
+    if (records) |ptr| return @intFromBool(retireExtraWindow(ptr[0..count], hwnd));
+    return 0;
 }
 
 /// WS5.7: the icon's edge length (px) for a raw per-monitor DPI — the PRODUCTION

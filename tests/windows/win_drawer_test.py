@@ -167,6 +167,37 @@ def extract_csharp_method(src, name):
     raise AssertionError(f"unbalanced braces extracting {name}")
 
 
+def strip_cpp(src):
+    """Remove C/C++ block comments, line comments, and string/char literals from `src`, so a source-oracle
+    binding can be satisfied only by real executable tokens — never by prose in a comment or text in a literal
+    (RoseCat bdc8202 #2: use a lexer that strips block comments and literals)."""
+    out = []
+    i, n = 0, len(src)
+    while i < n:
+        two = src[i:i + 2]
+        if two == "/*":
+            j = src.find("*/", i + 2)
+            i = n if j < 0 else j + 2
+        elif two == "//":
+            j = src.find("\n", i + 2)
+            i = n if j < 0 else j
+        elif src[i] == '"' or src[i] == "'":
+            q = src[i]
+            i += 1
+            while i < n:
+                if src[i] == "\\":
+                    i += 2
+                    continue
+                if src[i] == q:
+                    i += 1
+                    break
+                i += 1
+        else:
+            out.append(src[i])
+            i += 1
+    return "".join(out)
+
+
 def extract_cpp_function(src, name):
     """Extract a C++ FUNCTION DEFINITION's body (between its outermost braces) by brace matching — the signature
     is `<ret/qualifiers> <name>(<args>) {`, never a call site (which ends in `;`). Lets the WS5.5b-2 oracle be
@@ -1261,71 +1292,68 @@ class WinDrawerOracle(unittest.TestCase):
     # the real disposable-target round-trip on Win11.
 
     def test_ws5_5b2_spawn_is_call_bound(self):
-        # WS5.5b-2 (RoseCat 6b324c8 #1/#2/#4): CALL-BOUND to the real spawn body (not a whole-file grep). The
-        # Win32 runtime can't run on Linux; cross-compile proves it builds and the behaviors live oracle proves
-        # peak==N on a released run. Here: the spawn counts from the portable Zig, checks BOTH controls, destroys
-        # the partial window on failure, and marks the HWND counted BEFORE accounting it, emitting no fake page.
+        # WS5.5b-2 (RoseCat bdc8202 #2): CALL-BOUND to the real spawn body through a LEXER that strips block
+        # comments, line comments and literals — so a decoy in a comment/string can neither satisfy nor defeat
+        # the binding. Binds the failure condition, the partial DestroyWindow, and the terminating continue
+        # structurally; the ownership retire-once logic is driven directly in the Zig property test.
         shim = (pathlib.Path(__file__).resolve().parents[2] / "src" / "webview2_shim.cpp").read_text(encoding="utf-8")
-        # strip // comments before collapsing, so comment prose can't satisfy (or defeat) a call-bound check
-        body = " ".join(re.sub(r"//[^\n]*", "", extract_cpp_function(shim, "spawn_extra_drawer_windows")).split())
-
-        push = "extra_windows.push_back(ExtraWindow{w, true})"
+        body = " ".join(strip_cpp(extract_cpp_function(shim, "spawn_extra_drawer_windows")).split())
+        push = "extra_windows.push_back(ExtraWindow{reinterpret_cast<uintptr_t>(w), 1})"
+        fail_arm = "DestroyWindow(w); continue;"  # partial destroy immediately followed by the terminating continue
 
         def spawn_ok(b):
             need = ["zb_drawer_extra_windows(app->windows_seam)", "panel_h == nullptr || icon_h == nullptr",
-                    "DestroyWindow(w)", push, "GWLP_USERDATA, reinterpret_cast<LONG_PTR>(app)", "drawer_live_inc();"]
+                    fail_arm, push, "GWLP_USERDATA, reinterpret_cast<LONG_PTR>(app)", "drawer_live_inc();"]
             if not all(t in b for t in need):
                 return False
             # the LIVE app-owned record is pushed, and the full-structure check runs, BEFORE the increment
             return (b.index(push) < b.index("drawer_live_inc();")
                     and b.index("panel_h == nullptr || icon_h == nullptr") < b.index("drawer_live_inc();"))
 
-        self.assertTrue(spawn_ok(body), f"spawn must be call-bound: count+both-controls+partial-destroy+record-then-inc; body={body!r}")
-        self.assertNotIn('"host,page,icon,panel"', body, "an extra window has no page — its tree row must not claim one")
+        self.assertTrue(spawn_ok(body), f"spawn must be call-bound: count+check+partial-destroy+continue+record-then-inc; body={body!r}")
         # causal mutants on the spawn body
         self.assertFalse(spawn_ok(body.replace("drawer_live_inc();", "", 1)), "inc removed must be caught")
-        self.assertFalse(spawn_ok(body.replace("DestroyWindow(w)", "", 1)), "partial-window cleanup removed must be caught")
+        self.assertFalse(spawn_ok(body.replace(fail_arm, "DestroyWindow(w);", 1)), "a missing terminating continue must be caught")
+        self.assertFalse(spawn_ok(body.replace(fail_arm, "DestroyWindow(gStale); continue;", 1)), "a wrong-HWND destroy must be caught")
         self.assertFalse(spawn_ok(body.replace("panel_h == nullptr || icon_h == nullptr", "false")),
                          "dropping the both-controls check must be caught")
         reordered = body.replace(push + ";", "", 1).replace(
             "drawer_live_inc();", "drawer_live_inc(); " + push + ";", 1)
         self.assertFalse(spawn_ok(reordered), "recording the live window AFTER the increment must be caught")
-        # the close-one-early path destroys ONE live record via DestroyWindow without pre-removing it
-        self.assertIn("DestroyWindow(rec.hwnd)", body, "close-one must route through DestroyWindow (the WndProc retires the record)")
+        # the lexer defeats decoys: the failure arm hidden in a comment or a string literal does NOT satisfy it
+        self.assertNotIn(fail_arm, " ".join(strip_cpp("f(){ /* " + fail_arm + " */ }").split()),
+                         "a comment decoy must be stripped by the lexer")
+        self.assertNotIn("DestroyWindow", " ".join(strip_cpp('const char* s = "DestroyWindow(w); continue;";').split()),
+                         "a string-literal decoy must be stripped by the lexer")
+        # close-one destroys ONE live record via DestroyWindow without pre-removing it; never a manual decrement
+        self.assertIn("DestroyWindow(reinterpret_cast<HWND>(rec.hwnd))", body,
+                      "close-one/teardown must destroy via the record HWND (routing to the WndProc)")
         self.assertNotIn("pop_back", body, "close-one must NOT pre-remove the record — the WM_DESTROY path retires it")
-        self.assertIn('"liveclose"', body, "close-one must emit the intermediate live count row")
         self.assertNotIn("fetch_sub", body, "the spawn must never decrement manually — the WM_DESTROY path owns it")
 
-    def test_ws5_5b2_extra_wndproc_decrements_once(self):
-        # RoseCat 6b324c8 #4: the extra WndProc owns a per-HWND, exactly-once decrement on the REAL WM_DESTROY
-        # path and never PostQuitMessage; bulk teardown goes through DestroyWindow (same path), not a manual dec.
+    def test_ws5_5b2_extra_wndproc_calls_the_ownership_helper(self):
+        # RoseCat bdc8202 #2: the extra WndProc is a CALL-SITE binding to the production ownership helper
+        # (zb_drawer_retire_extra) — the retire-once / duplicate-close / handle-reuse SEMANTICS are driven
+        # directly in agent_drawer_props_test.zig. Here: on WM_DESTROY it calls the helper over the app's record
+        # array and decrements only when it returns true; never PostQuitMessage. Lexer strips comments/literals.
         shim = (pathlib.Path(__file__).resolve().parents[2] / "src" / "webview2_shim.cpp").read_text(encoding="utf-8")
-        proc = " ".join(re.sub(r"//[^\n]*", "", extract_cpp_function(shim, "drawer_extra_window_proc")).split())
+        proc = " ".join(strip_cpp(extract_cpp_function(shim, "drawer_extra_window_proc")).split())
+        call = "zb_drawer_retire_extra(app->extra_windows.data(), app->extra_windows.size(), reinterpret_cast<uintptr_t>(h))"
 
         def proc_ok(b):
-            # on WM_DESTROY, find THIS HWND's app-owned record and, only if still live, retire it and
-            # decrement exactly once; never PostQuitMessage.
-            return ("WM_DESTROY" in b
-                    and "reinterpret_cast<AppState *>(GetWindowLongPtrW(h, GWLP_USERDATA))" in b
-                    and "rec.hwnd == h && rec.live" in b
-                    and "rec.live = false" in b and "g_drawer_live.fetch_sub(1" in b
-                    and "PostQuitMessage" not in b)
+            return ("WM_DESTROY" in b and call in b and "g_drawer_live.fetch_sub(1" in b and "PostQuitMessage" not in b)
 
-        self.assertTrue(proc_ok(proc), f"the extra WndProc must retire the app-owned record once; body={proc!r}")
-        # causal mutants
-        self.assertFalse(proc_ok(proc.replace("&& rec.live", "", 1)),
-                         "dropping the live guard = decrement a retired record twice must be caught")
-        self.assertFalse(proc_ok(proc.replace("rec.live = false;", "", 1)),
-                         "dropping the retire = the record stays live and decrements again must be caught")
+        self.assertTrue(proc_ok(proc), f"the extra WndProc must call the ownership helper and decrement on true; body={proc!r}")
+        self.assertFalse(proc_ok(proc.replace(call, "false", 1)), "removing the ownership-helper call must be caught")
         self.assertFalse(proc_ok(proc.replace("g_drawer_live.fetch_sub", "g_drawer_live.no_dec", 1)),
                          "removing the decrement must be caught")
         self.assertFalse(proc_ok(proc + " PostQuitMessage(0);"), "an extra window must never PostQuitMessage")
 
-        # the shutdown teardown acts ONLY on live records, through DestroyWindow (the proc decrements), never
+        # the shutdown teardown acts ONLY on live records, through DestroyWindow (the WndProc decrements), never
         # a manual fetch_sub
         start = shim.index("for (auto &rec : app.extra_windows)")
-        teardown = " ".join(re.sub(r"//[^\n]*", "", shim[start:shim.index("extra_windows.clear();", start)]).split())
-        self.assertIn("if (rec.live) DestroyWindow(rec.hwnd)", teardown,
+        teardown = " ".join(strip_cpp(shim[start:shim.index("extra_windows.clear();", start)]).split())
+        self.assertIn("if (rec.live) DestroyWindow(reinterpret_cast<HWND>(rec.hwnd))", teardown,
                       "teardown must destroy ONLY still-live records (routing to the WndProc)")
         self.assertNotIn("fetch_sub", teardown, "teardown must NOT decrement manually — the WM_DESTROY path owns it")
 
