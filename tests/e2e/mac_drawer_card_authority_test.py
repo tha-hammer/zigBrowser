@@ -10,8 +10,10 @@ from the comment-free text with strings kept).
   - configureMacosBackend equals REVIEWED_MACOS_BACKEND, token for token. That is today's function plus the drawer's
     line, so every source, every C flag and the whole clang argv are fixed: no source through a variable, no -Wp
     forwarding, response file or -trigraphs.
-  - configureBackend equals REVIEWED_CONFIGURE_BACKEND, resolveBackend equals REVIEWED_RESOLVE_BACKEND, and
-    configureMacosBackend is called once.
+  - configureBackend, resolveBackend and windowsAfUnixFloor equal their reviewed texts, and configureMacosBackend is
+    called once.
+  - build() declares target exactly once, as `const target = windowsAfUnixFloor(b, b.standardTargetOptions(.{}));`
+    (RoseCat 8129 #1), and the shipped root module's whole createModule equals REVIEWED_ROOT_MODULE.
   - The production call is live (RoseCat 3c0b7b3 #1): build() holds `const backend = resolveBackend(target);` once
     and the one root_module createModule, followed directly by `configureBackend(root_module, b, backend,
     webview2_paths);`, all at build()'s own brace depth (under no if, loop or block).
@@ -29,7 +31,9 @@ from the comment-free text with strings kept).
   are each named exactly twice (the definition and that selector).
 - L4: no alternate ingress in any link source: no dlsym, dlopen, NSSelectorFromString, NSClassFromString,
   objc_msgSend, method_getImplementation, class_replaceMethod, method_exchangeImplementations, sendAction:,
-  performSelector, performClick, setAction: or setTarget:; and the drawer has no WKScriptMessageHandler,
+  performSelector, performClick, setAction: or setTarget:, nor ivar reflection (class_getInstanceVariable,
+  class_copyIvarList, object_setIvar / object_getIvar, object_set/getInstanceVariable, ivar_getOffset), key-value
+  coding (setValue:) or bindings (bind:) (RoseCat 8129 #3); and the drawer has no WKScriptMessageHandler,
   WKUserContentController, addScriptMessageHandler or evaluateJavaScript.
 - Z (RoseCat 8074 / 64e2225; 8079 / 2796d94): the executable's Zig side, where the minters live, is inventoried too,
   fail closed. This is the SECONDARY layer: the primary proof is by symbol and relocation on the real cross-compiled
@@ -73,7 +77,10 @@ REPO = Path(__file__).resolve().parents[2]
 DRAWER = "src/agent_drawer_mac.m"
 INGRESS = ("dlsym", "dlopen", "NSSelectorFromString", "NSClassFromString", "objc_msgSend", "method_getImplementation",
            "class_replaceMethod", "method_exchangeImplementations", "sendAction:", "performSelector", "performClick",
-           "setAction:", "setTarget:")
+           "setAction:", "setTarget:",
+           # RoseCat 8129 #3: reaching a control's target or action through its ivars or bindings
+           "class_getInstanceVariable", "class_copyIvarList", "object_setIvar", "object_getIvar",
+           "object_setInstanceVariable", "object_getInstanceVariable", "ivar_getOffset", "setValue:", "bind:")
 DRAWER_ONLY = ("WKScriptMessageHandler", "WKUserContentController", "addScriptMessageHandler", "evaluateJavaScript")
 CALLS = {"approveClicked:": "zb_drawer_card_press(_card,ZB_CARD_APPROVE,sender==_approve)",
          "denyClicked:": "zb_drawer_card_press(_card,ZB_CARD_DENY,sender==_deny)"}
@@ -137,6 +144,24 @@ REVIEWED_RESOLVE_BACKEND = r'''fn resolveBackend(target: std.Build.ResolvedTarge
     };
 }
 '''
+# RoseCat 8129 #1: where `target` comes from, and the shipped root module, both reviewed exactly.
+REVIEWED_FLOOR = r'''fn windowsAfUnixFloor(b: *std.Build, target: std.Build.ResolvedTarget) std.Build.ResolvedTarget {
+    if (target.result.os.tag != .windows or target.query.os_version_min != null) return target;
+    var query = target.query;
+    query.os_version_min = .{ .windows = .win10_rs4 };
+    return b.resolveTargetQuery(query);
+}
+'''
+REVIEWED_TARGET = "const target = windowsAfUnixFloor(b, b.standardTargetOptions(.{}));"
+REVIEWED_ROOT_MODULE = """const root_module = b.createModule(.{
+        .root_source_file = b.path("src/main.zig"),
+        .imports = &.{
+            .{ .name = "build_options", .module = site_options_module },
+        },
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });"""
 # Every other statement that can add to the shipped executable's link: a member access on root_module, exe or the
 # generated site_options_module (its one import), each a reviewed statement, at most as often as reviewed.
 REVIEWED_MEMBER_USES = Counter({
@@ -171,13 +196,24 @@ def production_call_problems(build_zig):
 
     found = []
     checks = (("const backend = resolveBackend(target);", r"\bconst\s+backend\s*=\s*resolveBackend\(\s*target\s*\)\s*;"),
-              ("const root_module = b.createModule(...)", r"\bconst\s+root_module\s*=\s*b\.createModule\("))
+              ("const root_module = b.createModule(...)", r"\bconst\s+root_module\s*=\s*b\.createModule\("),
+              (REVIEWED_TARGET, r"\bconst\s+target\s*=\s*windowsAfUnixFloor\(\s*b\s*,\s*b\.standardTargetOptions\(\s*\.\{\s*\}\s*\)\s*\)\s*;"))
     for what, pattern in checks:
         hits = [h.start() for h in re.finditer(pattern, body)]
         if len(hits) != 1 or depth_of(hits[0]) != 1:
             found.append(f"B: build() must hold `{what}` exactly once, unconditionally ({len(hits)})")
-    if len(re.findall(r"\b(?:var|const)\s+backend\b", body)) != 1:
-        found.append("B: build() must declare backend exactly once")
+    for name in ("backend", "target"):
+        if len(re.findall(r"\b(?:var|const)\s+" + name + r"\b", body)) != 1:
+            found.append(f"B: build() must declare {name} exactly once")
+    kept = zig_lexical(build_zig, keep_strings=True)[start:end]  # same offsets: blanking keeps lengths
+    mod = re.search(r"\bconst\s+root_module\s*=\s*b\.createModule\(", kept)
+    if mod:
+        i, d = mod.end(), 1
+        while i < len(kept) and d:
+            d += {"(": 1, ")": -1}.get(kept[i], 0)
+            i += 1
+        if shape(kept[mod.start():i] + ";") != shape(REVIEWED_ROOT_MODULE):
+            found.append("B: the shipped root module's createModule differs from REVIEWED_ROOT_MODULE")
     mod = re.search(r"\bconst\s+root_module\s*=\s*b\.createModule\(", body)
     if mod:
         i, d = mod.end(), 1
@@ -196,7 +232,7 @@ def mac_build_problems(build_zig):
     code = zig_lexical(build_zig, keep_strings=True)
     found = []
     for name, want in (("configureMacosBackend", REVIEWED_MACOS_BACKEND), ("configureBackend", REVIEWED_CONFIGURE_BACKEND),
-                       ("resolveBackend", REVIEWED_RESOLVE_BACKEND)):
+                       ("resolveBackend", REVIEWED_RESOLVE_BACKEND), ("windowsAfUnixFloor", REVIEWED_FLOOR)):
         got = re.findall(r"\bfn\s+" + name + r"\s*\(.*?\n}\n", code, re.S)
         if len(got) != 1:
             found.append(f"B: want exactly one fn {name} ({len(got)})")
@@ -221,10 +257,10 @@ def mac_build_problems(build_zig):
 
 
 HONEST_BUILD = """pub fn build(b: *std.Build) void {
+    const target = windowsAfUnixFloor(b, b.standardTargetOptions(.{}));
+    const optimize = b.standardOptimizeOption(.{});
     const backend = resolveBackend(target);
-    const root_module = b.createModule(.{
-        .root_source_file = b.path("src/main.zig"),
-    });
+    """ + REVIEWED_ROOT_MODULE + """
     configureBackend(root_module, b, backend, webview2_paths);
     const exe = b.addExecutable(.{
         .name = "zigBrowser",
@@ -238,7 +274,7 @@ HONEST_BUILD = """pub fn build(b: *std.Build) void {
     });
 }
 
-""" + REVIEWED_RESOLVE_BACKEND + "\n" + REVIEWED_CONFIGURE_BACKEND + "\n" + REVIEWED_MACOS_BACKEND
+""" + REVIEWED_FLOOR + "\n" + REVIEWED_RESOLVE_BACKEND + "\n" + REVIEWED_CONFIGURE_BACKEND + "\n" + REVIEWED_MACOS_BACKEND
 
 
 def macos_build_mutant(old, new, text=None):
@@ -292,6 +328,21 @@ BUILD_MUTANTS = {  # name -> (build.zig, the reason it must fail for); RoseCat 8
                                        "B: build() must hold `const backend = resolveBackend(target);`"),
     "macOS resolved to another backend": (macos_build_mutant("        .macos => .macos_backend,\n", "        .macos => .gtk_backend,\n"),
                                           "B: fn resolveBackend differs"),
+    # RoseCat 8129 #1: the target's provenance
+    "target redeclared for Linux": (macos_build_mutant("    const target = windowsAfUnixFloor(b, b.standardTargetOptions(.{}));\n",
+                                                       "    const target = b.resolveTargetQuery(.{ .os_tag = .linux });\n"),
+                                    "B: build() must hold `const target = windowsAfUnixFloor"),
+    "a second target binding": (macos_build_mutant("    const backend = resolveBackend(target);\n",
+                                                   "    var target2 = target;\n    target2 = b.resolveTargetQuery(.{ .os_tag = .linux });\n"
+                                                   "    const backend = resolveBackend(target2);\n"),
+                                "B: build() must hold `const backend = resolveBackend(target);`"),
+    "the floor rewritten": (macos_build_mutant("    if (target.result.os.tag != .windows or target.query.os_version_min != null) return target;\n",
+                                               "    if (true) return b.resolveTargetQuery(.{ .os_tag = .linux });\n"),
+                            "B: fn windowsAfUnixFloor differs"),
+    "the root module on another target": (macos_build_mutant("        .target = target,\n        .optimize = optimize,\n        .link_libc = true,\n    });\n    configureBackend",
+                                                             "        .target = b.resolveTargetQuery(.{ .os_tag = .linux }),\n        .optimize = optimize,\n"
+                                                             "        .link_libc = true,\n    });\n    configureBackend"),
+                                          "B: the shipped root module's createModule differs"),
     "the macOS backend configured twice": (macos_build_mutant("    exe.step.dependOn(pkg_guard);\n",
                                                         "    exe.step.dependOn(pkg_guard);\n    configureMacosBackend(other, b);\n"),
                                            "B: configureMacosBackend must be called exactly 1 time(s)"),
@@ -665,6 +716,10 @@ MUTANTS = {
     "a programmatic press": drawer_mutant("  return self;\n", "  [_approve performClick:nil];\n  return self;\n"),
     "a script message": drawer_mutant("@end", "- (void)userContentController:(WKUserContentController *)u didReceiveScriptMessage:(id)m {}\n@end"),
     "the shim names the seam": dict(honest(), **{"src/wkwebview_shim.m": "int zb_drawer_card_press(unsigned long long, int, int);\n"}),
+    # RoseCat 8129 #3: a control retargeted through its ivar
+    "an ivar retarget in the drawer": drawer_mutant("  return self;\n", '  object_setIvar(_approve, class_getInstanceVariable([NSButton class], "_target"), nil);\n  return self;\n'),
+    "an ivar retarget in the shim": dict(honest(), **{"src/wkwebview_shim.m": 'static void zb_i(id b, id t) {\n  object_setIvar(b, class_getInstanceVariable(object_getClass(b), "_target"), t);\n}\n'}),
+    "a target binding in the shim": dict(honest(), **{"src/wkwebview_shim.m": 'static void zb_b(id b, id t) {\n  [b bind:@"target" toObject:t withKeyPath:@"self" options:nil];\n}\n'}),
     "the wrong control value": drawer_mutant("#define ZB_CARD_DENY 2", "#define ZB_CARD_DENY 1"),
 }
 

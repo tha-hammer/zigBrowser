@@ -53,6 +53,12 @@ flow; a dead branch, an extra effect, a reorder or a removal changes the shape.
   ZbBubbleView allocation or closed route. An NSTextField may only be a static `[NSTextField labelWithString:@"..."]`,
   optionally assigned to a local (never selectable or editable: those setters are guarded). The NEVER list (markup, NUL-terminated reads, field
   editor routes, swizzling, other pasteboard writers) and RUNTIME_REWRITES appear nowhere.
+- V8 the Edit menu is live (RoseCat 8129 #2): the shim holds exactly one `static void zb_install_edit_menu(NSApplication
+  *application)` equal to REVIEWED_EDIT_MENU (an application-menu slot, then Edit with its one Copy item,
+  `action:@selector(copy:) keyEquivalent:@"c"`, target nil, installed with setMainMenu:). It is named only there and
+  in its one call, which must be the statement right after `[application
+  setActivationPolicy:NSApplicationActivationPolicyRegular];` in zb_app_run's @autoreleasepool block (under no if, loop
+  or block). So Cmd+C reaches the first responder: a bubble's copy:, or the page's. RED until the shim has it.
 - V7 the rest of the link (RoseCat 8101 #2, 8112 #3/#4): every OTHER native source build.zig links on macOS (the
   shim and the C files) and every project header they include (quoted includes under src/, recursively; a missing
   one fails) holds:
@@ -62,9 +68,10 @@ flow; a dead branch, an extra effect, a reorder or a removal changes the shape.
   - no category or class extension on ANY class;
   - no RUNTIME_REWRITES (method exchange or replacement, isa swaps, class creation, lookup by name, sel_registerName);
   - no ZbBubbleView and no NSPasteboard;
-  - no `copy :` selector token (whitespace allowed) except inside at most one exact Edit menu item
-    `[menu addItemWithTitle:@"Copy" action:@selector(copy:) keyEquivalent:@"c"]`, and no setTarget: (its target
-    stays nil, so Cmd+C reaches the first responder).
+  - no `copy :` selector token (whitespace allowed) outside the reviewed zb_install_edit_menu (V8);
+  - no target or action set anywhere (setTarget:, a `.target` / `.action` property, a key-value-coding setter, a
+    binding), and no ivar reflection or message send by hand (class_getInstanceVariable, object_setIvar,
+    ivar_getOffset, objc_msgSend, method_invoke, ...), so the Copy item's target stays nil.
 Self-checking: an honest drawer, header and link pass (the honest shim wires Edit > Copy and uses associated
 objects); names in strings and comments do not count; and each dishonest drawer, header and link fails for its own
 stated rule. Among them are RoseCat 8101's #if 0 and #define NO YES, a digraph, a _Pragma, a -D flag, categories,
@@ -98,18 +105,32 @@ HEADER_DIRECTIVES = ["#ifndef ZB_AGENT_DRAWER_MAC_H", "#define ZB_AGENT_DRAWER_M
 RUNTIME_REWRITES = ("method_exchangeImplementations", "method_setImplementation", "class_replaceMethod",
                     "class_addMethod", "imp_implementationWithBlock", "object_setClass", "objc_allocateClassPair",
                     "objc_registerClassPair", "objc_duplicateClass", "class_setSuperclass", "NSClassFromString",
-                    "NSSelectorFromString", "sel_registerName", "sel_getUid")
+                    "NSSelectorFromString", "sel_registerName", "sel_getUid", "objc_msgSend", "method_invoke",
+                    # RoseCat 8129 #3: reaching an object's ivars (a menu item's _target) by reflection
+                    "class_getInstanceVariable", "class_copyIvarList", "object_setIvar", "object_setIvarWithStrongDefault",
+                    "object_getIvar", "object_setInstanceVariable", "object_getInstanceVariable", "ivar_getOffset")
 # Any category or class extension, on any class (RoseCat 8112 #3: a macro can build the class name, so none at all).
 CATEGORY = re.compile(r"@(?:interface|implementation)\s+\w+\s*\(")
-# The one copy: the rest of the link may name: the Edit menu's Copy item, target nil (RoseCat 8112 #4).
-EDIT_COPY_ITEM = re.compile(r'\[\s*\w+\s+addItemWithTitle\s*:\s*@"Copy"\s+action\s*:\s*@selector\s*\(\s*copy\s*:\s*\)\s+'
-                            r'keyEquivalent\s*:\s*@"c"\s*\]')
-# RoseCat 3c0b7b3 #4: the Copy item is one bare statement (its result is never kept, so nothing can retarget it), and
-# no target or action is set anywhere in the rest of the link: no setter, no property, no key-value coding.
-EDIT_COPY_STATEMENT = re.compile(r"(^|[;{}])(\s*)" + EDIT_COPY_ITEM.pattern + r"\s*;")
+# V8 (RoseCat 8112 #4, 3c0b7b3 #4, 8129 #2): the one copy: the rest of the link may name is the Edit menu's Copy item,
+# and that menu is LIVE: the shim's one reviewed zb_install_edit_menu (an application-menu slot, then Edit with its
+# one Copy item, target nil, installed as the main menu), called once, by the statement right after
+# `[application setActivationPolicy:NSApplicationActivationPolicyRegular];` in zb_app_run's @autoreleasepool.
+SHIM = "src/wkwebview_shim.m"
+REVIEWED_EDIT_MENU = r"""static void zb_install_edit_menu(NSApplication *application) {
+  NSMenu *bar = [[NSMenu alloc] initWithTitle:@""];
+  [bar addItemWithTitle:@"" action:nil keyEquivalent:@""];
+  NSMenuItem *edit = [bar addItemWithTitle:@"Edit" action:nil keyEquivalent:@""];
+  NSMenu *menu = [[NSMenu alloc] initWithTitle:@"Edit"];
+  [menu addItemWithTitle:@"Copy" action:@selector(copy:) keyEquivalent:@"c"];
+  [edit setSubmenu:menu];
+  [application setMainMenu:bar];
+}"""
+EDIT_MENU_SITE = re.compile(r"\[\s*application\s+setActivationPolicy\s*:\s*NSApplicationActivationPolicyRegular\s*\]\s*;"
+                            r"\s*zb_install_edit_menu\s*\(\s*application\s*\)\s*;")
+# No target or action is set anywhere in the rest of the link: no setter, property, key-value coding or binding.
 TARGET_ROUTES = ((re.compile(r"\bsetTarget\s*:"), "setTarget:"), (re.compile(r"\.\s*(?:target|action)\b"), "a target/action property"),
                  (re.compile(r"\b(?:setValue|setValuesForKeysWithDictionary|setNilValueForKey|takeValue)\w*\s*:"),
-                  "a key-value-coding setter"))
+                  "a key-value-coding setter"), (re.compile(r"\bbind\s*:"), "a binding (bind:)"))
 # A macro the rest of the link may define: a name, optionally an integer or a string constant. Nothing a macro
 # expands to can then be an identifier, a selector or a class (RoseCat 8112 #3).
 CONSTANT_MACRO = re.compile(r'[A-Z][A-Z0-9_]*(?:\s+(?:-?\d+[uUlL]*|"(?:[^"\\\n]|\\.)*"))?')
@@ -356,6 +377,43 @@ def native_preprocessing(path, text):
     return found
 
 
+def blank_same(text):
+    """`text` without comments, every string literal's contents blanked to spaces: the offsets of lexical(text,
+    keep_strings=True), so a span found in one cuts the other."""
+    return re.sub(r'"(?:[^"\\\n]|\\.)*"', lambda m: '"' + " " * (len(m.group(0)) - 2) + '"', lexical(text, keep_strings=True))
+
+
+def edit_menu_problems(text):
+    """V8 over the shim -> (violations, the reviewed function's span to exempt from the copy: scan, or None)."""
+    found, span = [], None
+    kept, blank = lexical(text, keep_strings=True), blank_same(text)
+    defs = [m for m in re.finditer(r"\bstatic\s+void\s+zb_install_edit_menu\s*\(", blank)]
+    if len(defs) != 1:
+        found.append(f"V8: want exactly one `static void zb_install_edit_menu(...)` in {SHIM} ({len(defs)})")
+    else:
+        end = block_end(blank, blank.find("{", defs[0].end()))
+        if shape(kept[defs[0].start():end]) == shape(lexical(REVIEWED_EDIT_MENU, keep_strings=True)):
+            span = (defs[0].start(), end)
+        else:
+            found.append("V8: zb_install_edit_menu differs from REVIEWED_EDIT_MENU")
+    if len(re.findall(r"\bzb_install_edit_menu\b", blank)) != 2:
+        found.append("V8: zb_install_edit_menu may be named only by its definition and its one call")
+    runs = [m for m in re.finditer(r"\bint\s+zb_app_run\s*\(", blank) if blank.find(";", m.end()) > blank.find("{", m.end())]
+    sites = list(EDIT_MENU_SITE.finditer(blank))
+    ok = False
+    if len(runs) == 1 and len(sites) == 1:
+        start = blank.find("{", runs[0].end())
+        end = block_end(blank, start)
+        pool = re.match(r"\{\s*@autoreleasepool\s*\{", blank[start:])
+        if pool and start < sites[0].start() < end:
+            between = blank[start + pool.end():sites[0].start()]
+            ok = between.count("{") == between.count("}")  # in the pool's own block: under no if, loop or block
+    if not ok:
+        found.append("V8: the Edit menu must be installed, unconditionally, by the statement right after "
+                     "[application setActivationPolicy:NSApplicationActivationPolicyRegular] in zb_app_run's @autoreleasepool")
+    return found, span
+
+
 def link_problems(build_zig, sources, others, read=None, headers=()):
     """B / V0 / V7 over the macOS link: build.zig's macOS link is exactly the reviewed one (the card oracle's
     mac_build_problems: every source and the whole clang argv fixed), the drawer is in it, and no other linked native
@@ -373,7 +431,8 @@ def link_problems(build_zig, sources, others, read=None, headers=()):
             for name, _ in (includes(where, text)[0] if text else []):
                 if name != "agent_drawer_mac.h" and read("src/" + name) is not None:
                     found.append(f"V0 {where}: <{name}> resolves to src/{name}, not the system header")
-    items = 0
+    if others.get(SHIM) is None:
+        found.append(f"V8: {SHIM} is not in the link")
     for path, text in sorted(others.items()):
         if text is None:
             found.append(f"V7 {path}: missing (included or linked, and unreadable)")
@@ -385,16 +444,17 @@ def link_problems(build_zig, sources, others, read=None, headers=()):
         for word in RUNTIME_REWRITES + ("ZbBubbleView", "NSPasteboard"):
             if re.search(r"\b" + word + r"\b", code):
                 found.append(f"V7 {path}: {word}")
-        kept = lexical(text, keep_strings=True)
-        items += len(EDIT_COPY_STATEMENT.findall(kept))
-        rest = re.sub(r'"(?:[^"\\\n]|\\.)*"', '""', EDIT_COPY_STATEMENT.sub(r"\1", kept))
+        rest = blank_same(text)
+        if path == SHIM:
+            menu, span = edit_menu_problems(text)
+            found += menu
+            if span:
+                rest = rest[:span[0]] + rest[span[1]:]
         if re.search(r"\bcopy\s*:", rest):
-            found.append(f"V7 {path}: copy: other than the Edit menu's Copy item, as one bare statement")
+            found.append(f"V7 {path}: copy: other than the reviewed Edit menu's Copy item")
         for rx, why in TARGET_ROUTES:
             if rx.search(code):
                 found.append(f"V7 {path}: {why} (the Edit menu's Copy item keeps target nil)")
-    if items > 1:
-        found.append(f"V7: more than one Edit menu Copy item ({items})")
     return found
 
 
@@ -597,11 +657,19 @@ OTHERS = {
     "src/wkwebview_shim.m": """#include "webkit_shim.h"
 #import <Cocoa/Cocoa.h>
 #import <objc/runtime.h>
-static void zb_menu(NSMenu *editMenu) {
-  [editMenu addItemWithTitle:@"Copy" action:@selector(copy:) keyEquivalent:@"c"];
-}
+static const char *zb_names[] = {"alpha", """ + '"' + "x" * 600 + '"' + """};
+""" + REVIEWED_EDIT_MENU + """
 static void zb_tag(id window, id value) {
   objc_setAssociatedObject(window, "zb", value, OBJC_ASSOCIATION_RETAIN);
+}
+int zb_app_run(const char *uri, int print_title, int e2e_protocol) {
+  @autoreleasepool {
+    NSApplication *application = [NSApplication sharedApplication];
+    [application setActivationPolicy:NSApplicationActivationPolicyRegular];
+    zb_install_edit_menu(application);
+    [application run];
+  }
+  return 0;
 }
 """,
     "src/agent_home_lock.c": "int zb_agent_home_lock(void) { return 0; }\n",
@@ -759,13 +827,13 @@ LINK_MUTANTS = {  # name -> ((build.zig, {path: text}), the rule it must fail)
                                   "V7 src/webkit_shim2.h: missing"),
     "copy : with spaces in the shim": (link_case(src__wkwebview_shim_dot_m=OTHERS["src/wkwebview_shim.m"]
                                                  + "@implementation ZBWindow\n- (void)copy : (id)sender {\n}\n@end\n"),
-                                       "V7 src/wkwebview_shim.m: copy: other than the Edit menu's Copy item"),
+                                       "V7 src/wkwebview_shim.m: copy: other than the reviewed Edit menu's Copy item"),
     "a Copy item with a target": (link_case(src__wkwebview_shim_dot_m=OTHERS["src/wkwebview_shim.m"]
                                             + "static void zb_t(NSMenuItem *i, id t) {\n  [i setTarget:t];\n}\n"),
                                   "V7 src/wkwebview_shim.m: setTarget:"),
     "a second Copy item": (link_case(src__wkwebview_shim_dot_m=OTHERS["src/wkwebview_shim.m"]
                                      + 'static void zb_m2(NSMenu *m) {\n  [m addItemWithTitle:@"Copy" action:@selector(copy:) keyEquivalent:@"c"];\n}\n'),
-                           "V7: more than one Edit menu Copy item"),
+                           "V7 src/wkwebview_shim.m: copy: other than the reviewed Edit menu's Copy item"),
     # RoseCat 3c0b7b3 #2: includes that reach src/ other than by a quoted literal
     "an <angle> include of a project header": (link_case(
         src__wkwebview_shim_dot_m=OTHERS["src/wkwebview_shim.m"].replace('#include "webkit_shim.h"', "#include <webkit_shim.h>"),
@@ -795,9 +863,9 @@ LINK_MUTANTS = {  # name -> ((build.zig, {path: text}), the rule it must fail)
                              "V7 src/wkwebview_shim.m: a trigraph"),
     # RoseCat 3c0b7b3 #4: the Copy item retargeted
     "the Copy item kept and given a target property": (link_case(src__wkwebview_shim_dot_m=OTHERS["src/wkwebview_shim.m"].replace(
-        '  [editMenu addItemWithTitle:@"Copy" action:@selector(copy:) keyEquivalent:@"c"];\n',
-        '  NSMenuItem *item = [editMenu addItemWithTitle:@"Copy" action:@selector(copy:) keyEquivalent:@"c"];\n  item.target = editMenu;\n')),
-        "V7 src/wkwebview_shim.m: copy: other than the Edit menu's Copy item"),
+        '  [menu addItemWithTitle:@"Copy" action:@selector(copy:) keyEquivalent:@"c"];\n',
+        '  NSMenuItem *item = [menu addItemWithTitle:@"Copy" action:@selector(copy:) keyEquivalent:@"c"];\n  item.target = menu;\n')),
+        "V7 src/wkwebview_shim.m: copy: other than the reviewed Edit menu's Copy item"),
     "a target property anywhere": (link_case(src__wkwebview_shim_dot_m=OTHERS["src/wkwebview_shim.m"]
                                              + "static void zb_t(NSMenu *m, id t) {\n  [m itemAtIndex:0].target = t;\n}\n"),
                                    "V7 src/wkwebview_shim.m: a target/action property"),
@@ -805,9 +873,38 @@ LINK_MUTANTS = {  # name -> ((build.zig, {path: text}), the rule it must fail)
                                                    + 'static void zb_t(NSMenu *m, id t) {\n  [[m itemAtIndex:0] setValue:t forKey:@"target"];\n}\n'),
                                          "V7 src/wkwebview_shim.m: a key-value-coding setter"),
     "the Copy item retargeted inline": (link_case(src__wkwebview_shim_dot_m=OTHERS["src/wkwebview_shim.m"].replace(
-        '  [editMenu addItemWithTitle:@"Copy" action:@selector(copy:) keyEquivalent:@"c"];\n',
-        '  [[editMenu addItemWithTitle:@"Copy" action:@selector(copy:) keyEquivalent:@"c"] setTarget:editMenu];\n')),
-        "V7 src/wkwebview_shim.m: copy: other than the Edit menu's Copy item"),
+        '  [menu addItemWithTitle:@"Copy" action:@selector(copy:) keyEquivalent:@"c"];\n',
+        '  [[menu addItemWithTitle:@"Copy" action:@selector(copy:) keyEquivalent:@"c"] setTarget:menu];\n')),
+        "V7 src/wkwebview_shim.m: copy: other than the reviewed Edit menu's Copy item"),
+    # RoseCat 8129 #2: the Copy item not on the live Edit menu
+    "a Copy statement under if (0) elsewhere": (link_case(src__wkwebview_shim_dot_m=OTHERS["src/wkwebview_shim.m"]
+                                                          + 'static void zb_d(NSMenu *m) {\n  if (0) {\n    [m addItemWithTitle:@"Copy" action:@selector(copy:) keyEquivalent:@"c"];\n  }\n}\n'),
+                                                "V7 src/wkwebview_shim.m: copy: other than the reviewed Edit menu's Copy item"),
+    "a Copy item on a detached menu": (link_case(src__wkwebview_shim_dot_m=OTHERS["src/wkwebview_shim.m"]
+                                                 + 'static void zb_d(void) {\n  NSMenu *m = [[NSMenu alloc] initWithTitle:@"x"];\n'
+                                                   '  [m addItemWithTitle:@"Copy" action:@selector(copy:) keyEquivalent:@"c"];\n}\n'),
+                                       "V7 src/wkwebview_shim.m: copy: other than the reviewed Edit menu's Copy item"),
+    "the Edit menu installed under if (0)": (link_case(src__wkwebview_shim_dot_m=OTHERS["src/wkwebview_shim.m"].replace(
+        "    zb_install_edit_menu(application);\n", "    if (0) {\n      zb_install_edit_menu(application);\n    }\n")),
+        "V8: the Edit menu must be installed, unconditionally"),
+    "the Edit menu never installed": (link_case(src__wkwebview_shim_dot_m=OTHERS["src/wkwebview_shim.m"].replace("    zb_install_edit_menu(application);\n", "")),
+                                      "V8: the Edit menu must be installed"),
+    "the Edit menu installed elsewhere": (link_case(src__wkwebview_shim_dot_m=OTHERS["src/wkwebview_shim.m"].replace("    zb_install_edit_menu(application);\n", "")
+                                                    .replace("static void zb_tag", "static void zb_later(NSApplication *application) {\n"
+                                                             "  zb_install_edit_menu(application);\n}\nstatic void zb_tag")),
+                                         "V8: the Edit menu must be installed"),
+    "the Edit menu's item retitled": (link_case(src__wkwebview_shim_dot_m=OTHERS["src/wkwebview_shim.m"].replace('action:@selector(copy:) keyEquivalent:@"c"', 'action:@selector(copy:) keyEquivalent:@"x"')),
+                                      "V8: zb_install_edit_menu differs"),
+    "a second Edit menu function": (link_case(src__wkwebview_shim_dot_m=OTHERS["src/wkwebview_shim.m"] + REVIEWED_EDIT_MENU.replace("zb_install_edit_menu", "zb_install_edit_menu2") + "\n"),
+                                    "V7 src/wkwebview_shim.m: copy: other than the reviewed Edit menu's Copy item"),
+    # RoseCat 8129 #3: the item retargeted through its ivar, or bound
+    "the Copy item retargeted through its ivar": (link_case(src__wkwebview_shim_dot_m=OTHERS["src/wkwebview_shim.m"]
+                                                            + 'static void zb_i(NSMenu *m, id t) {\n  object_setIvar([m itemAtIndex:0], '
+                                                              'class_getInstanceVariable([NSMenuItem class], "_target"), t);\n}\n'),
+                                                  "V7 src/wkwebview_shim.m: class_getInstanceVariable"),
+    "the Copy item's target bound": (link_case(src__wkwebview_shim_dot_m=OTHERS["src/wkwebview_shim.m"]
+                                               + 'static void zb_b(NSMenu *m, id t) {\n  [[m itemAtIndex:0] bind:@"target" toObject:t withKeyPath:@"self" options:nil];\n}\n'),
+                                     "V7 src/wkwebview_shim.m: a binding (bind:)"),
     "a selector built at run time": (link_case(src__wkwebview_shim_dot_m=OTHERS["src/wkwebview_shim.m"]
                                                + 'static SEL zb_s(void) {\n  return sel_registerName("copy:");\n}\n'),
                                      "V7 src/wkwebview_shim.m: sel_registerName"),
