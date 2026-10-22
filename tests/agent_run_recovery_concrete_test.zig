@@ -42,7 +42,8 @@ fn inPrivatePidNamespace() bool {
 /// A trivial census wiring: a complete, empty final census (no survivors). The real `zb_reaper_fixed_point` engine
 /// with an intercepted kill count lands next; here the point is the concrete provenance + fd-relative teardown.
 const CleanWiring = struct {
-    pub fn run(_: CleanWiring, run_dir_fd: i32, pinned: *const recovery.DirId, deadline_ms: i64) ledger.FixedPoint {
+    pub fn run(_: CleanWiring, clock: anytype, run_dir_fd: i32, pinned: *const recovery.DirId, deadline_ms: i64) ledger.FixedPoint {
+        _ = clock;
         _ = run_dir_fd;
         _ = pinned;
         _ = deadline_ms;
@@ -53,6 +54,19 @@ const Actuator = recovery.ConcreteActuator(CleanWiring);
 fn actuator() Actuator {
     return .{ .wiring = .{} };
 }
+
+/// A clock that returns a valid time for the first `expire_at` reads, then a far-expired time, so a test can place
+/// the deadline crossing at a precise teardown checkpoint.
+const StepClock = struct {
+    calls: *usize,
+    expire_at: usize,
+    pub fn nowMs(self: StepClock) i64 {
+        const n = self.calls.*;
+        self.calls.* += 1;
+        return if (n >= self.expire_at) 1_000_000_000 else 1000;
+    }
+};
+const STEP_DEADLINE: i64 = 2000; // between 1000 (valid) and 1e9 (expired)
 
 const RealId = struct { dev: u64, ino: u64, uid: u32, mode: u32 };
 
@@ -102,6 +116,18 @@ fn runDirExists(dir: std.Io.Dir) bool {
     const fd = std.posix.openatZ(dir.handle, BASENAME, .{ .ACCMODE = .RDONLY, .DIRECTORY = true, .NOFOLLOW = true, .CLOEXEC = true }, 0) catch return false;
     _ = std.posix.system.close(fd);
     return true;
+}
+
+fn markerExists(dir: std.Io.Dir) bool {
+    const d = std.posix.openatZ(dir.handle, BASENAME, .{ .ACCMODE = .RDONLY, .DIRECTORY = true, .NOFOLLOW = true, .CLOEXEC = true }, 0) catch return false;
+    defer _ = std.posix.system.close(d);
+    const m = std.posix.openatZ(d, "run.marker", .{ .ACCMODE = .RDONLY }, 0) catch return false;
+    _ = std.posix.system.close(m);
+    return true;
+}
+
+fn entryFor(id: RealId) ledger.Entry {
+    return .{ .basename = BASENAME, .dev = id.dev, .ino = id.ino, .uid = id.uid, .mode = id.mode, .pid = 2147483645, .start_kind = .linux_ticks, .start_sec = 234567, .start_usec = 0, .state = .active };
 }
 
 test "concrete lease: a dead entry with matching provenance is recovered — marker unlinked, dir rmdir'd, entry retired" {
@@ -168,4 +194,73 @@ test "concrete lease provenance MISMATCH (recorded dev/ino != the real dir) neve
     try std.testing.expectEqual(ledger.RecoveryAction.fail_closed, act);
     try std.testing.expectEqual(@as(usize, 1), try entryCount(io, gpa, td.dir)); // entry RETAINED
     try std.testing.expect(runDirExists(td.dir)); // the mismatched dir is NOT torn down
+}
+
+test "concrete lease #1 rename/replacement race: a swapped-in empty replacement is NOT removed (held-identity revalidation)" {
+    if (!inPrivatePidNamespace()) return error.NotInPrivatePidNamespace;
+    const io = std.testing.io;
+    const clock = ledger.RealClock{ .io = io };
+    var td = std.testing.tmpDir(.{});
+    defer td.cleanup();
+
+    const id = try makeRunDir(td.dir, true);
+    var a = actuator();
+    switch (a.pin(td.dir, entryFor(id))) {
+        .held => |held| {
+            var lease = held;
+            defer lease.deinit();
+            // SWAP after the pin: rename the real (held) dir away, install an EMPTY replacement at the same name.
+            if (linux.errno(linux.renameat(td.dir.handle, BASENAME, td.dir.handle, BASENAME ++ "-moved")) != .SUCCESS) return error.Rename;
+            if (linux.errno(linux.mkdirat(td.dir.handle, BASENAME, 0o700)) != .SUCCESS) return error.Mkdir2;
+            const r = lease.teardown(clock, clock.nowMs() + TOTAL_BUDGET_MS);
+            try std.testing.expectEqual(ledger.Teardown.failed, r); // the name is a DIFFERENT inode now -> refuse
+            try std.testing.expect(runDirExists(td.dir)); // the replacement dir is NOT removed
+        },
+        else => return error.ExpectedHeld,
+    }
+}
+
+test "concrete lease #2 deadline between marker-unlink and rmdir: fail closed, C2 state preserved (marker gone, dir kept)" {
+    if (!inPrivatePidNamespace()) return error.NotInPrivatePidNamespace;
+    const io = std.testing.io;
+    _ = io;
+    var td = std.testing.tmpDir(.{});
+    defer td.cleanup();
+
+    const id = try makeRunDir(td.dir, true);
+    var a = actuator();
+    switch (a.pin(td.dir, entryFor(id))) {
+        .held => |held| {
+            var lease = held;
+            defer lease.deinit();
+            var calls: usize = 0;
+            // expire on the 2nd nowMs read: pre-marker-unlink check passes, the between-check (before rmdir) expires.
+            const r = lease.teardown(StepClock{ .calls = &calls, .expire_at = 1 }, STEP_DEADLINE);
+            try std.testing.expectEqual(ledger.Teardown.failed, r);
+            try std.testing.expect(runDirExists(td.dir)); // rmdir NOT reached -> dir kept
+            try std.testing.expect(!markerExists(td.dir)); // marker WAS unlinked before expiry -> C2 state
+        },
+        else => return error.ExpectedHeld,
+    }
+}
+
+test "concrete lease #4 unreadable: an open that fails for a non-shape reason is .unreadable, distinct from mismatch" {
+    if (!inPrivatePidNamespace()) return error.NotInPrivatePidNamespace;
+    var td = std.testing.tmpDir(.{});
+    defer td.cleanup();
+
+    // A 256-char basename makes openat fail ENAMETOOLONG -> the catch's `else` -> .unreadable (could not even open
+    // to read the identity), NOT mismatch (which is a readable-but-wrong-shape/identity dir) and NOT gone (ENOENT).
+    const long = "z" ** 256;
+    const entry = ledger.Entry{ .basename = long, .dev = 1, .ino = 2, .uid = 0, .mode = 16832, .pid = 2147483645, .start_kind = .linux_ticks, .start_sec = 234567, .start_usec = 0, .state = .active };
+    var a = actuator();
+    switch (a.pin(td.dir, entry)) {
+        .unreadable => {},
+        .held => |held| {
+            var l = held;
+            l.deinit();
+            return error.ExpectedUnreadable;
+        },
+        else => return error.ExpectedUnreadable,
+    }
 }

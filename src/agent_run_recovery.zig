@@ -8,14 +8,17 @@
 //! `zb_reaper_fixed_point` over the HELD fd — production wires libproc + the real kill; tests wire a scripted scan
 //! + an INTERCEPTED (counting, never-signalling) kill, which is how the reaper engine is proven on Linux.
 const std = @import("std");
+const builtin = @import("builtin");
 const ledger = @import("agent_run_ledger");
-const linux = std.os.linux;
 
 const c = @cImport({
     @cInclude("agent_run_reaper.h");
 });
 
 pub const DirId = c.struct_zb_reaper_dir_id;
+
+// AT_REMOVEDIR differs by platform (Linux 0x200, Darwin 0x02); define it portably so the macOS build is correct.
+const AT_REMOVEDIR: u32 = if (builtin.os.tag == .linux) 0x200 else 0x02;
 
 /// Pin a run dir's identity via the reviewed C (open O_DIRECTORY|O_NOFOLLOW relative to `dir`, then
 /// `zb_reaper_pin_fd`). Returns the pinned `(dev,ino,uid,mode)` or null. Exposed so a test can seed a ledger entry
@@ -44,7 +47,7 @@ pub fn ConcreteLease(comptime Wiring: type) type {
         run_dir_fd: i32, // OWNED held run-dir fd (O_DIRECTORY|O_NOFOLLOW); closed in deinit
         pinned: DirId,
         wiring: Wiring,
-        name_buf: [64]u8,
+        name_buf: [320]u8,
         name_len: usize,
 
         const Self = @This();
@@ -55,24 +58,42 @@ pub fn ConcreteLease(comptime Wiring: type) type {
         }
 
         pub fn fixedPoint(self: *Self, clock: anytype, deadline_ms: i64) ledger.FixedPoint {
-            _ = clock;
             // The census/kill runs through the reviewed engine over the HELD fd + pinned id (so a swapped path can
-            // never redirect a kill); the Wiring supplies the scan/inspect/kill (libproc+real kill in production,
-            // scripted + intercepted-count in tests) and the real dir-fd revalidation.
-            return self.wiring.run(self.run_dir_fd, &self.pinned, deadline_ms);
+            // never redirect a kill); the Wiring supplies the clock, scan/inspect/kill (libproc+real kill in
+            // production, scripted + intercepted-count in tests) and the real dir-fd revalidation, all bounded by
+            // the one absolute deadline.
+            return self.wiring.run(clock, self.run_dir_fd, &self.pinned, deadline_ms);
+        }
+
+        /// True iff the basename, reopened O_NOFOLLOW under the pinned parent RIGHT NOW, is the SAME inode the lease
+        /// holds (same pinned (dev,ino,uid,mode)). Defends the by-name `rmdir` against a rename+empty-replacement
+        /// swap, which otherwise resolves to a DIFFERENT inode (RoseCat 671c986 #1). Uses the reviewed C.
+        fn nameMatchesHeld(self: *Self) bool {
+            const fd = std.posix.openatZ(self.runtime_fd, self.nameZ(), .{ .ACCMODE = .RDONLY, .DIRECTORY = true, .NOFOLLOW = true, .CLOEXEC = true }, 0) catch return false;
+            defer _ = std.posix.system.close(fd);
+            var id: DirId = undefined;
+            if (c.zb_reaper_pin_fd(fd, &id) != 0) return false;
+            return c.zb_reaper_dir_id_eq(&id, &self.pinned) != 0;
         }
 
         pub fn teardown(self: *Self, clock: anytype, deadline_ms: i64) ledger.Teardown {
-            _ = clock;
-            _ = deadline_ms;
-            // marker unlink THROUGH the held run-dir fd; ENOENT is idempotent (crash cut C2), not a failure.
-            switch (linux.errno(linux.unlinkat(self.run_dir_fd, "run.marker", 0))) {
+            if (clock.nowMs() >= deadline_ms) return .failed; // no destructive mutation past the one absolute deadline
+            // (1) marker unlink THROUGH the held run-dir fd (fd-safe: a rename of the dir cannot redirect it);
+            // ENOENT is idempotent (crash cut C2), not a failure. `std.posix.system.*` + `std.posix.errno` resolve
+            // to the raw syscall on Linux and libc on Darwin, so this builds and behaves the same on macOS.
+            switch (std.posix.errno(std.posix.system.unlinkat(self.run_dir_fd, "run.marker", 0))) {
                 .SUCCESS, .NOENT => {},
                 else => return .failed,
             }
-            // rmdir the now-empty run dir BY NAME relative to the borrowed pinned parent fd; ENOENT idempotent.
-            switch (linux.errno(linux.unlinkat(self.runtime_fd, self.nameZ(), linux.AT.REMOVEDIR))) {
-                .SUCCESS, .NOENT => return .done,
+            // Expiry BETWEEN the marker unlink and the rmdir must preserve the C2 state (marker gone, dir kept) and
+            // fail closed -- the next recovery finds a marker-less dir and tears it down idempotently.
+            if (clock.nowMs() >= deadline_ms) return .failed;
+            // (2) `rmdir` has no fd form, so revalidate the NAME against the held pinned identity IMMEDIATELY before
+            // removal: a rename + empty-replacement at the same basename resolves to a different inode, which we
+            // refuse rather than remove.
+            if (!self.nameMatchesHeld()) return .failed;
+            switch (std.posix.errno(std.posix.system.unlinkat(self.runtime_fd, self.nameZ(), AT_REMOVEDIR))) {
+                .SUCCESS, .NOENT => return .done, // already gone -> idempotent
                 else => return .failed,
             }
         }
@@ -97,17 +118,22 @@ pub fn ConcreteActuator(comptime Wiring: type) type {
         pub const Pin = union(enum) { held: Lease, gone, mismatch, unreadable };
 
         pub fn pin(self: Self, dir: std.Io.Dir, entry: ledger.Entry) Pin {
-            var nb: [64]u8 = undefined;
+            var nb: [320]u8 = undefined;
             const name = basenameZ(entry, &nb) orelse return .mismatch;
+            // The unreadable/mismatch distinction is carried by the OPEN (RoseCat 671c986 #4): ENOENT -> gone (C3);
+            // a non-dir/symlink at the name -> mismatch; any OTHER open failure (EBADF/EACCES/EIO/EMFILE/...) means
+            // the identity could not be read at all -> unreadable. After a SUCCESSFUL open the fd is readable, so a
+            // nonzero `zb_reaper_pin_fd` is a shape/identity REFUSAL (not a dir / wrong uid / not 0700) -> mismatch,
+            // never conflated with the unreadable case.
             const fd = std.posix.openatZ(dir.handle, name, .{ .ACCMODE = .RDONLY, .DIRECTORY = true, .NOFOLLOW = true, .CLOEXEC = true }, 0) catch |e| switch (e) {
                 error.FileNotFound => return .gone, // ENOENT -> crash cut C3
-                error.NotDir, error.SymLinkLoop => return .mismatch, // a non-dir / symlink replaced it -> never sweep
-                else => return .unreadable,
+                error.NotDir, error.SymLinkLoop => return .mismatch, // a non-dir / symlink at the name -> never sweep
+                else => return .unreadable, // could not even open/read the identity
             };
             var id: DirId = undefined;
             if (c.zb_reaper_pin_fd(fd, &id) != 0) {
                 _ = std.posix.system.close(fd);
-                return .mismatch; // not a dir / wrong uid / not 0700
+                return .mismatch; // readable fd, but not a dir / wrong uid / not 0700 -> shape/identity refusal
             }
             var rec: DirId = .{ .dev = entry.dev, .ino = entry.ino, .uid = entry.uid, .mode = entry.mode };
             if (c.zb_reaper_dir_id_eq(&id, &rec) == 0) {
