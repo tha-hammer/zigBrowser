@@ -115,7 +115,14 @@ def _ssh_opts():
     """The ONE option set shared by foreground ssh, background ssh and scp (RoseCat 33a9bf2). Only the program
     (ssh/scp), the port flag (-p vs -P) and the trailing target differ between callers; every security and bound
     option lives here so all three transports are identical and cannot drift."""
-    return ["-i", KEY,
+    # -F none skips the INHERITED system ssh_config (its systemd ssh_config.d drop-in is rejected inside the
+    # mandated user namespace, where root maps to the overflow uid) and any ~/.ssh/config; GlobalKnownHostsFile
+    # =none drops the system known-hosts. Host trust stays exact via the pinned UserKnownHostsFile +
+    # StrictHostKeyChecking; key selection via IdentitiesOnly + the explicit identity; no prompt via BatchMode;
+    # a dead peer can't hang the client via the connection + ServerAlive bounds.
+    return ["-F", "none",
+            "-i", KEY,
+            "-o", "GlobalKnownHostsFile=none",
             "-o", "IdentitiesOnly=yes",
             "-o", "StrictHostKeyChecking=yes",
             "-o", f"UserKnownHostsFile={KH}",
@@ -981,6 +988,54 @@ class WslSpikeOracle(unittest.TestCase):
             self.skipTest("user namespaces unavailable; the ssh -G proof requires the same namespace as the run")
         rc, cfg, err = ssh_effective_config(_ssh_opts())
         assert_secure_ssh_config(rc, cfg, err)
+
+    def test_shared_ssh_opts_mutants_each_caught(self):
+        # Each mutant removes, substitutes or relaxes ONE security option; the oracle must reject every one —
+        # proving the secure-config assertion is causal, not vacuous. ssh -G only; the VM is never contacted.
+        if not _userns_available():
+            self.skipTest("user namespaces unavailable; the ssh -G proof requires the same namespace as the run")
+
+        def drop_flag(opts, a, b):  # remove a consecutive [a, b] pair
+            out, i = [], 0
+            while i < len(opts):
+                if opts[i] == a and i + 1 < len(opts) and opts[i + 1] == b:
+                    i += 2
+                    continue
+                out.append(opts[i])
+                i += 1
+            return out
+
+        def sub_opt(opts, old, new):  # replace a single -o value token
+            return [new if t == old else t for t in opts]
+
+        base = _ssh_opts()
+        mutants = {
+            "no -F none": drop_flag(base, "-F", "none"),  # system config refusal returns
+            "no GlobalKnownHostsFile=none": drop_flag(base, "-o", "GlobalKnownHostsFile=none"),
+            "relaxed StrictHostKeyChecking": sub_opt(base, "StrictHostKeyChecking=yes", "StrictHostKeyChecking=no"),
+            "no IdentitiesOnly": drop_flag(base, "-o", "IdentitiesOnly=yes"),
+            "no BatchMode": drop_flag(base, "-o", "BatchMode=yes"),
+            "substituted UserKnownHostsFile": sub_opt(base, f"UserKnownHostsFile={KH}",
+                                                      "UserKnownHostsFile=/tmp/zb-bogus-known-hosts"),
+        }
+        for name, opts in mutants.items():
+            rc, cfg, err = ssh_effective_config(opts)
+            with self.assertRaises(AssertionError, msg=f"mutant {name!r} must be rejected by the oracle"):
+                assert_secure_ssh_config(rc, cfg, err)
+
+    def test_one_option_set_shared_by_ssh_and_scp(self):
+        # RoseCat 33a9bf2: ONE constructor shared by foreground ssh, background ssh and scp. ssh/ssh_bg use
+        # _ssh_base (ssh + _ssh_opts + -p); scp uses _ssh_opts + -P. Assert every shared option appears in both
+        # transports, so neither can silently drop a security option.
+        opts = _ssh_opts()
+        ssh_argv = _ssh_base()
+        scp_argv = ["scp", *_ssh_opts(), "-P", PORT, "L", f"{USER}@{HOST}:R"]
+        for i, tok in enumerate(opts):
+            self.assertIn(tok, ssh_argv, f"foreground/bg ssh must carry the shared option {tok!r}")
+            self.assertIn(tok, scp_argv, f"scp must carry the shared option {tok!r}")
+        self.assertIn("-F", opts)
+        self.assertIn("none", opts)
+        self.assertIn("GlobalKnownHostsFile=none", opts)
 
     def test_pidns_backstop_refusals(self):
         # (7687 SHOULD) pin the two namespace refusals + the one pass, as committed coverage.
