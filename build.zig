@@ -916,9 +916,18 @@ pub fn build(b: *std.Build) void {
     // refused/deferred, entry retained, zero signals). Two real processes + a parent watchdog. Linux-gated.
     const ledger_recovery_busy_test_mod = b.createModule(.{ .root_source_file = b.path("tests/agent_run_ledger_recovery_busy_test.zig"), .target = target, .optimize = optimize });
     ledger_recovery_busy_test_mod.addImport("agent_run_ledger", ledger_mod);
-    const run_ledger_recovery_busy_tests = b.addRunArtifact(b.addTest(.{ .root_module = ledger_recovery_busy_test_mod }));
-    run_ledger_recovery_busy_tests.skip_foreign_checks = true;
-    const ledger_recovery_busy_step = b.step("test-agent-run-ledger-recovery-busy", "MS6.5.1 whole-recovery: a stalled live flock holder cannot wedge startup (bounded, fail-closed)");
+    const ledger_recovery_busy_exe = b.addTest(.{ .root_module = ledger_recovery_busy_test_mod });
+    // SAFETY (RoseCat e665676 #2): this test sends SIGKILL to its holder in the wedge path, so it runs ONLY inside
+    // a private PID namespace. The launcher holds its OUTER /proc/self/ns/pid as fd 9 (`exec 9<…`) BEFORE unshare,
+    // so the test's kernel-proof sentinel can prove it is strictly below it; `unshare --fork` makes a shell pid 1
+    // that runs the test (orphans adopt to pid 1, as in production). No signal is reachable outside the namespace.
+    const run_ledger_recovery_busy_tests = b.addSystemCommand(&.{
+        "sh", "-c",
+        "exec 9</proc/self/ns/pid; exec unshare --user --map-root-user --pid --fork --mount-proc sh -c '\"$@\"; :' sh \"$1\"",
+        "sh",
+    });
+    run_ledger_recovery_busy_tests.addArtifactArg(ledger_recovery_busy_exe);
+    const ledger_recovery_busy_step = b.step("test-agent-run-ledger-recovery-busy", "MS6.5.1 whole-recovery: a stalled live flock holder cannot wedge startup (bounded, fail-closed; PID-ns sentinel)");
     ledger_recovery_busy_step.dependOn(&run_ledger_recovery_busy_tests.step);
     // MS6.5 (the user's decision 2026-10-21): the stubbed macOS VM-containment seam — off by default, reports
     // "not available yet", and the gate fails closed when on. Pure Linux unit (no OS calls).
