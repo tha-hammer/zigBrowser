@@ -362,6 +362,19 @@ pub fn probeLiveness(pid: i32, start_ticks: u64) Liveness {
     return livenessFromRead(readStart(pid), start_ticks);
 }
 
+/// The start-identity kind THIS platform's `readStart` produces. A recorded entry of any other kind can never be
+/// compared here (no conversion between kinds).
+pub const PLATFORM_START_KIND: StartKind = if (builtin.os.tag == .linux) .linux_ticks else .darwin_tvsec;
+
+/// Liveness of a recorded owner keyed on its PLATFORM-TAGGED start identity (RoseCat 0e36742 same-kind-only). A
+/// recorded `kind` that differs from this platform's probe kind is NEVER compared — even if its value is
+/// numerically equal to a live value — and FAILS CLOSED (`.unreadable`). Same kind compares via `readStart`.
+pub fn probeLivenessTagged(pid: i32, kind: StartKind, start_sec: u64, start_usec: u64) Liveness {
+    _ = kind; // RED (0e36742 #4): ignores the recorded kind, so a cross-kind numeric equality wrongly matches
+    _ = start_usec; // linux_ticks carries no usec; the darwin (sec,usec) compare lands with a darwin readStart
+    return livenessFromRead(readStart(pid), start_sec);
+}
+
 // ---- whole-recovery startup transaction (RoseCat whole-recovery claim; macOS-plan Rev 25-27) ----
 
 /// Whether the startup-recovery transaction surfaced a fixed incident.
