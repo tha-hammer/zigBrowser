@@ -35669,3 +35669,74 @@ This remains the deliberately narrow portable contract. It does not claim or
 close the later [W] requirement to drive the native Zig `zb-claude.exe`, put
 the real child and descendants in the session Job, and prove no Windows
 orphan. No VM or Mac run is required or authorized by this [L] green.
+
+## WS5.5b-2 post-controller shim binding (`9132e93`)
+
+**BLOCKED-for-tests.** The implementation does make the intended production
+connection: `create_controller` is the sole C++ caller of
+`zb_drawer_after_controller`, passes its returned `spawn_count` exactly once to
+the count-driven extra-window loop, and posts one primary `WM_CLOSE` after that
+spawn when `close_primary` is set. The portable property step and Windows
+cross-compile both pass with `DISPLAY` and `WAYLAND_DISPLAY` removed:
+`drawer-props-test` rc 0 and `cross-check-drawer-win` rc 0.
+
+However, the exact commit makes a **registered** offline gate red. Running the
+registered `tests/windows/win_drawer_test.py` command with all live-VM variables
+removed produces 84 tests with one failure:
+`WinDrawerOracle.test_ws5_5b2_spawn_is_call_bound`. Its committed predicate
+still requires `zb_drawer_extra_windows(app->windows_seam)` inside
+`spawn_extra_drawer_windows`; this slice deliberately moved that decision out
+of the function and replaced it with the `count` argument. Thus the current
+registered test rejects the new production shape, and the commit cannot be an
+approved push-through state.
+
+Fix forward the registered oracle so it causally binds the new architecture:
+the one real controller-completion call to the portable decision, one use of
+its count by the real spawn body, and one primary close after that use. Keep the
+existing partial-window cleanup/record-before-increment assertions. The oracle
+must be red on the pre-`9132e93` shape and green on the new shape, with decoys,
+duplicate calls, wrong returned field, close-before-spawn and wrong-HWND close
+rejected. The later per-method AST-settle and recording-teardown seams remain
+separate findings 2 and 3 as assigned; this verdict does not pull either into
+this commit. No Win11 rerun is authorized from `9132e93`.
+
+## MS7.4 + MS7.6/7.8 native-link authority red (`5beecc9`)
+
+**BLOCKED-for-tests; keep it unregistered and do not run it on a Mac.** In a
+clean exact export, the two focused modules run 18 tests: 15 pass and the three
+expected production-red rows fail because the reviewed macOS drawer link,
+authority graph and real drawer do not yet exist. The newly committed mutants
+do catch the four previously reported shapes. But the replacement oracle still
+has four independent empty-finding classes, reproduced directly against its
+public predicates:
+
+1. `mac_build_problems` treats the reviewed root link statements as upper
+   bounds, not required statements. Removing
+   `configureBackend(root_module, b, backend, webview2_paths)` from
+   `HONEST_BUILD`, or wrapping that unchanged call in
+   `if (backend == .gtk_backend)`, returns `[]`. The exact helper definitions
+   remain present but the shipped macOS executable no longer consumes them.
+   Require the one production call, in its reviewed unconditional position and
+   reaching the shipped root module; a dead reviewed helper is not a link
+   inventory.
+2. The recursive project-header closure recognizes only quoted literal
+   includes. With the reviewed `-I src`, both `#include <webkit_shim.h>` and
+   `#define ZB_HEADER "webkit_shim.h"` / `#include ZB_HEADER` really resolve a
+   project header, yet an unsafe replacement `src/webkit_shim.h` produces no
+   finding. Derive the dependency closure from the compiler/preprocessor or
+   fail closed on every non-system include shape, with both mutants committed.
+3. The preprocessing check bans only backslash-LF. A selector written as
+   `[o co\\\r\npy:s]` is joined by the C preprocessing phase into `copy:` but
+   returns no finding. Normalize and reject CRLF/CR line splices before lexical
+   scanning, with the compiler-spliced selector mutant.
+4. The claimed nil-target binding bans only the `setTarget:` selector. An exact
+   allowed Copy item assigned to a local and followed by either
+   `item.target = target;` or `[item setValue:target forKey:@"target"];` passes
+   both the bubble and card predicates. Bind the allowed item as one complete
+   construction whose target cannot be changed, and cover direct-property and
+   KVC target assignment (or prove the compiled object/selector surface).
+
+Until those rows are causal, the suite does not establish that every linked
+native source/header obeys the no-renaming contract or that the sole Copy item
+keeps a nil target. This commit therefore does not close `382f889` or move the
+contiguous push boundary.
