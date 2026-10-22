@@ -396,8 +396,11 @@ Agents never SSH to a host before the user finishes that host's list. Each item 
    `administrators_authorized_keys` (tests do not log in as an admin).
 3. **Dedicated standard (non-admin) local user `zbtest`.** Every test runs as `zbtest`, only
    under `C:\Users\zbtest\zb\`. Tests never touch existing shares, other drives, other
-   accounts or the owner's profile; the gate refuses any remote path outside that root
-   (WS0.5).
+   accounts or the owner's profile. This root policy is enforced by CONVENTION and review —
+   the gate does NOT enforce it through a remote-path verdict fence (WS0.5: that fence was
+   removed; a name-based check/use boundary cannot close the junction-swap TOCTOU). A future
+   remote file operation needing junction safety uses the held-handle check-and-use milestone
+   (Option B), not a path pre-check.
 4. **Record, before installing anything:** edition (Home/Pro), build (`winver`; must be
    19045 per OD-W7), arch (x64), GPU vendor, ESU state, and **whether the WebView2 runtime is
    already present: read `pv` under `{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}` in **all three** places

@@ -251,7 +251,8 @@ pub fn build(b: *std.Build) void {
     b.step("ms2a-gate", "Run the macOS MS2a routed-command gate (WKWebView port on both Macs)").dependOn(&ms2a_gate.step);
 
     // WS0: the Windows gate's Linux-side selftest drives tests/windows/gate.sh against fake
-    // ssh/virsh/tar on PATH (fail-closed, path fence, display scrub, transport hygiene). Hermetic
+    // ssh/virsh/tar on PATH (fail-closed, lexical path-shape check, display scrub, transport
+    // hygiene). Hermetic
     // — no Windows host, display or live socket. The [W] gate.sh --probe-only runs separately.
     const windows_gate_selftest = b.addSystemCommand(&.{ "python3", "-I", "tests/windows/gate_selftest.py" });
     b.step("windows-gate-selftest", "Run the Windows gate's Linux-side selftest (fake ssh/virsh/tar)").dependOn(&windows_gate_selftest.step);
