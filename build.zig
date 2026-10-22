@@ -170,13 +170,6 @@ pub fn build(b: *std.Build) void {
         .link_libc = true,
     });
     configureBackend(root_module, b, backend, webview2_paths);
-    const exe_ledger_mod = b.createModule(.{ .root_source_file = b.path("src/agent_run_ledger.zig"), .target = target, .optimize = optimize });
-    const exe_recovery_mod = b.createModule(.{ .root_source_file = b.path("src/agent_run_recovery.zig"), .target = target, .optimize = optimize, .link_libc = true });
-    exe_recovery_mod.addImport("agent_run_ledger", exe_ledger_mod);
-    exe_recovery_mod.addIncludePath(b.path("src"));
-    exe_recovery_mod.addCSourceFile(.{ .file = b.path("src/agent_run_reaper.c"), .flags = &.{"-std=gnu11"} });
-    root_module.addImport("agent_run_recovery", exe_recovery_mod);
-    root_module.addImport("agent_run_ledger", exe_ledger_mod);
 
     const exe = b.addExecutable(.{
         .name = "zigBrowser",
