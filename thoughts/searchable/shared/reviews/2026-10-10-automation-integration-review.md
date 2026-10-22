@@ -31773,3 +31773,104 @@ cumulative `aec562b` / `d8e49c0` / `d507ee7` range remains blocked by the
 earlier parser/API-failure, visible-input, and keyboard-reachability findings
 as well as the default-profile and restart-proof gaps above. No WS5.2 VM
 behavior run is authorized on this range yet.
+
+## Windows drawer-property registration (`c14572e`)
+
+**APPROVED.** This closes the narrow `5f2ab9d` registration hold. The new
+`drawer-props-test` compiles the real `src/agent_drawer.zig`, imports it into
+the independent Windows property module, links libc for the atomic-file
+dependency, and is a dependency of the aggregate `test` step. The Windows
+cross-object census now also requires the exact
+`zb_drawer_anim_ms_from_env` export. These additions are scoped and do not
+replace any existing registration.
+
+From an exact clean `git archive c14572e` export with display variables
+removed, the direct property step passed **4/4 build steps and 11/11 tests**,
+and `cross-check-drawer-win` passed **5/5 build steps**, including the real
+x86_64-windows-gnu object compile and export check. Deleting the wrapper or
+export can no longer leave both registered paths green. NIT: update
+`tests/windows/agent_drawer_props_test.zig:1-6`, which still calls itself
+“UNREGISTERED” and documents only the manual command. This approval closes
+the test-registration finding only; it does not approve the separate WS5.2
+native-input range or the `0524517` fold observation.
+
+## MS6.5.1 held-flock transaction green (`85e2888`)
+
+**BLOCKED.** The commit is safe to keep unarmed: there is no production
+caller, no `reaper_ready`, and the reviewed test runs only behind the fd-9
+outer-namespace sentinel in a private user/PID/mount namespace. The narrow
+serialization behavior is real. From an exact clean export, its two
+unregistered tests passed in that namespace, producing one `.signalled`, one
+`.already_gone`, an empty ledger and a retained live-owner entry; the three
+existing registered ledger steps also passed **10/10 build steps and 12/12
+tests**. The flock remains held through the fake action and ledger publish.
+
+It is not yet the claimed capability-carrying whole-recovery green:
+
+1. There is no production `RecoveryLease` or production actuator in this
+   commit. `recoverOneUnderLock` accepts `actuator: anytype`, and the only
+   implementation is a zero-state `FakeLease`; `pin` ignores both the
+   directory and the ledger entry (`txn_test.zig:202-222`). Consequently the
+   test creates no run directory, opens no `O_NOFOLLOW` fd, checks no recorded
+   `(dev,ino,uid,mode)`, performs no fd-relative marker unlink or `rmdir`, and
+   never calls the reviewed C reaper. Comments saying the production lease
+   wraps that C path do not establish it. Land a concrete lease with a private
+   held run-dir fd (and the pinned parent authority needed for `rmdir`) and
+   make every fixed-point/teardown operation consume that capability; retain
+   the fake only as an injected test adapter.
+
+2. The absolute deadline is not authoritative. `acquireWithinDeadline`
+   attempts the lock before checking time, and unlike
+   `acquireRunLockBounded`, this caller does not check the clock after an
+   acquisition. A free lock at an already-expired deadline therefore proceeds
+   into load, liveness, pin, fixed point, teardown and publish. Only
+   `fixedPoint` receives the deadline; load, pin, teardown and publish have no
+   pre/post deadline checks (`agent_run_ledger.zig:554-588`). Add causal rows
+   for an expired free lock and for each held-work boundary, with zero action
+   and disk mutation after expiry. The production fixed-point and teardown
+   must share the same absolute deadline rather than start a new budget.
+
+3. `pin` returns only `?Lease`, conflating a provenance mismatch/unreadable
+   failure with the crash-cut states. In C3, a previous recoverer can have
+   removed the directory and crashed before ledger retirement; this code sees
+   null and retains the entry forever. In C2, the marker was already removed
+   before the crash; a naive `teardown()` fails its unlink instead of finishing
+   `rmdir` and retirement. Use an explicit pinned outcome that distinguishes
+   held lease, proved-gone C3, mismatch and unreadable, and an idempotent
+   teardown outcome that recognizes marker-absent C2. Add the plan's C2/C3
+   rows and publish-failure/retry row; every mismatch or unreadable result
+   remains fail-closed.
+
+4. The test's `.signalled` count is still only the enum returned after a
+   signal-free fake (`txn_test.zig:286-296`), not proof that exactly one
+   recoverer entered the real marked-child signal phase. The acknowledged
+   intercepted real-action count and the early-unlock mutant yielding two
+   observed action entries remain mandatory, together with a real held-fd
+   path-swap mutant. Until those land, keep this test unregistered and the
+   transaction unreachable.
+
+The high-level order—one global flock, authoritative reload, fresh liveness,
+held capability, fixed point, teardown and atomic retirement—is the right
+shape. The next green must make that shape concrete and crash-idempotent rather
+than relying on the current fake. No destructive Mac run or production arming
+is authorized.
+
+## Windows WS5.2 strict drag-seam grammar (`825d5c3`)
+
+**APPROVED-for-code; BLOCKED-for-tests.** `parse_drag_delta` now implements
+the stated ASCII grammar directly: optional `-`, one through four decimal
+digits, exact comma, then the same grammar and end-of-string. It rejects `+`,
+all whitespace positions, missing fields, extra bytes, five-digit inputs and
+values outside `[-8000,8000]`; the accepted range remains safely inside the
+signed coordinates produced by `MAKELPARAM` with the icon-centre offset. The
+old `[-100000,100000]` comment is gone. An exact clean export passed
+`cross-check-drawer-win` (**5/5 steps**).
+
+The parser's reported 16-case probe is still ad hoc rather than committed or
+registered, and `cross-check-drawer-win` does not compile or exercise this C++
+function. Add the promised registered MSVC causal table (accepted boundaries,
+whitespace/plus/shape/overflow near misses, and a permissive-parser mutant)
+before this closes the parser test finding. The outstanding subclass- and
+`MoveWindow`-failure rows, visible event-time input, keyboard-only reachability
+and restart persistence remain separate blockers on the cumulative WS5.2
+range; this code-only approval does not authorize the VM behavior run.
