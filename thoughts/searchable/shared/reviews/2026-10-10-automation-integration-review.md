@@ -33712,3 +33712,75 @@ while the `S` icon is hidden, with a causal negative row for each condition.
 At this commit `ChildrenVisible` covers only panel and bubble, `icon_visible`
 is measured but unused by `check_success`, and minimize visibility is not read.
 Therefore `fb1df73` is not the exact commit for the eight-row Win11 run.
+
+## Win32 open-state native visibility (`b2c4f25`)
+
+**APPROVED. One bounded eight-row Win11 entry run is authorized at exact
+`b2c4f25`.** The live oracle now reads panel, RichEdit bubble, minimize and
+icon visibility independently. Its success condition requires the open panel,
+bubble and `-` control visible while the floating `S` is hidden; absence and
+duplicate-control census checks remain intact. Each of the four visibility
+conditions has its own causal negative row, so no aggregate boolean can hide
+which native control violated the open-state contract.
+
+An exact clean archive passed the module directly (**81 tests, 8 live skips**)
+and passed the private-Xvfb `windows-drawer-live` plus
+`windows-drawer-behaviors` build (**5/5 steps**; the behavior module added
+**43 tests with 19 live skips**). The released run must use the same clean
+commit, stop at its first red row, retain the owned-Job before/after censuses
+and leave zero processes and run-directory entries. An eight-of-eight green
+run can close the native-entry evidence for `1e5ff2d`; the WebView2 page's
+actual pixels remain reserved for the owner-watched real-screen check.
+
+## WS5.5 strict-seam production binding (`edab8ad`)
+
+**APPROVED as scoped causal coverage; it does not complete WS5.5 and does not
+expand the `b2c4f25` VM run.** The new oracle pins the actual C++ call site to
+`zb_drawer_window_count_from_env(getenv("ZIGBROWSER_AGENT_DRAWER_WINDOWS"))`
+and forbids `atoi`, closing the detached-parser gap in `54ed9cf`. An exact
+clean archive passed the Windows drawer module (**82 tests, 8 live skips**).
+
+Before the eventual WS5.5 production green or a VM release, the Windows
+cross-check must also require the exported symbol with
+`--require-defined zb_drawer_window_count_from_env`; that link-time pin is a
+follow-up for the unfinished multi-window slice, not a defect in this source-
+binding commit.
+
+## Darwin hook hard-gate case (`2c1357b`, `08b6b9f`)
+
+**`2c1357b` BLOCKED-for-tests; `08b6b9f` BLOCKED. No manifest digest is
+approved and no Mac run is authorized.** The exact red archive is genuinely
+red: its honest row and all eight dishonest rows fail because the pending case
+does not exist. The exact green archive passes **2/2** under the pinned helper
+Python in a private user/network/PID/mount namespace; the fake patches both
+signal calls to raise. The armed manifest is unchanged, and the pending case
+digest is
+`a6b459a29b497b926b1540b42bdb41044bee9b4ff0febd178a825de14d52b6ef`.
+Those facts keep the work dormant and safe, but five required contracts are
+not yet causally proved:
+
+1. The grandchild's “own session” predicate compares its sid with its
+   reparented launchd/init parent. Because the outer guarded spawn already
+   starts a session, deleting the hook's `setsid()` can still satisfy that
+   predicate. Capture the hook's original sid before forking, require the
+   detached grandchild's sid to differ from it (and preferably equal its own
+   pgid/session-leader identity), and add a no-`setsid` dishonest row.
+2. The launcher makes fd 5 inheritable only as a side effect of `dup2`. If
+   `open(marker)` itself returns 5, Python's non-inheritable default closes it
+   at exec. Set fd 5 inheritable unconditionally and add a causal mutant/oracle.
+3. The unlisted-loopback and public-address checks accept any non-`ok`
+   outcome. A timeout or unreachable route can therefore impersonate a
+   Seatbelt denial. Pin the reviewed denial errno/result for both, retain the
+   unlisted listener's no-accept proof, and reject a wrong-errno mutant.
+4. Forbidden environment absence is derived from the current allowlist, so an
+   accidental allowlist widening can make a planted name or
+   `ZB_AGENT_RUN_MARKER_FD` expected and pass. Assert every planted name/value
+   and the marker name absent independently, including a marker-leak variant.
+5. Listener construction assigns the list only after all three constructors
+   succeed. A failure in the second or third constructor loses the already
+   started listener/thread from `finally`. Append each successful listener to
+   the owned list immediately and cover a later-constructor failure.
+
+The existing bridge, API-listener, exact-environment, marker, stray-fd,
+grandchild, census, ps-failure and nonzero-exit rows remain useful; the red
+must be extended rather than weakened before the pending case can be armed.
