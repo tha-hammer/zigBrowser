@@ -79,6 +79,12 @@ struct AppState {
   int exit_code = ZB_EXIT_SUCCESS;
   bool navigation_completed = false;
   bool screenshot = false;
+  // WS2a.1 (UI thread only): the routed navigate/reload waiting for its own NavigationCompleted (holds a job
+  // reference), its NavigationId once NavigationStarting reports it, and the jobs waiting for the first load.
+  struct Job *nav_job = nullptr;
+  UINT64 nav_id = 0;
+  bool nav_id_known = false;
+  std::vector<std::function<void(AppState *)>> first_load_waiters;
   std::wstring out_path;
 
   ComPtr<ICoreWebView2Environment> environment;
@@ -771,8 +777,8 @@ int job_submit(uint32_t win, unsigned int timeout_ms, std::function<void(Job *, 
     WaitForSingleObject(job->done, INFINITE); // completing now: its answer is being written
   }
   const int code = job->code;
-  if (code == ZB_AUTO_OK && out_json != nullptr && !job->json.empty()) {
-    *out_json = dup_c(job->json);
+  if (code == ZB_AUTO_OK && out_json != nullptr) {
+    *out_json = dup_c(job->json); // "" stays "": an empty answer is still an answer
   }
   if (code != ZB_AUTO_OK && out_err != nullptr && !job->err.empty()) {
     *out_err = dup_c(job->err);
@@ -889,6 +895,73 @@ void finish_evaluate(Job *job, const std::string &json) {
     return job_finish(job, ZB_AUTO_ERR_INTERNAL, {}, "cdp Runtime.evaluate: no string result");
   }
   job_finish(job, ZB_AUTO_OK, value);
+}
+
+// ---- WS2a.1: routed navigation and the first load ----
+
+// UI thread: runs `step` now when the window's first load has finished, else once it has. A job the waiter
+// gave up on meanwhile is finished without running (it leaves the in-flight list). If the first load fails
+// the browser quits, and loop end answers the waiting jobs ZB_AUTO_ERR_NO_LOOP.
+void after_first_load(Job *job, AppState *app, std::function<void(Job *, AppState *)> step) {
+  if (app->navigation_completed) {
+    return step(job, app);
+  }
+  job_hold(job);
+  app->first_load_waiters.push_back([job, step = std::move(step)](AppState *a) {
+    if (InterlockedCompareExchange(&job->state, 0, 0) == kRunning) {
+      step(job, a);
+    } else {
+      job_finish(job, ZB_AUTO_ERR_TIMEOUT);
+    }
+    job_release(job);
+  });
+}
+
+void run_first_load_waiters(AppState *app) {
+  std::vector<std::function<void(AppState *)>> waiters;
+  waiters.swap(app->first_load_waiters);
+  for (auto &waiter : waiters) {
+    waiter(app);
+  }
+}
+
+// UI thread: answers the routed navigation that is waiting, if `id` is its NavigationId.
+void finish_navigation(AppState *app, UINT64 id, BOOL ok, COREWEBVIEW2_WEB_ERROR_STATUS status) {
+  Job *job = app->nav_job;
+  if (job == nullptr || !app->nav_id_known || id != app->nav_id) {
+    return;
+  }
+  app->nav_job = nullptr;
+  if (ok) {
+    job_finish(job, ZB_AUTO_OK);
+  } else {
+    char why[64];
+    snprintf(why, sizeof why, "navigation failed (web error status %d)", static_cast<int>(status));
+    job_finish(job, ZB_AUTO_ERR_NAV_FAILED, {}, why);
+  }
+  job_release(job);
+}
+
+// UI thread: starts a routed navigation (`go` calls Navigate or Reload); the job is answered by its own
+// NavigationCompleted. A routed navigation still waiting is replaced (its caller has given up by now: the
+// server runs one command per window at a time).
+void start_navigation(Job *job, AppState *app, const std::function<HRESULT(ICoreWebView2 *)> &go) {
+  if (Job *old = app->nav_job) {
+    app->nav_job = nullptr;
+    job_finish(old, ZB_AUTO_ERR_CANCELLED);
+    job_release(old);
+  }
+  job_hold(job);
+  app->nav_job = job;
+  app->nav_id_known = false;
+  const HRESULT hr = go(app->webview.Get());
+  if (FAILED(hr) && app->nav_job == job) {
+    app->nav_job = nullptr;
+    char why[64];
+    snprintf(why, sizeof why, "navigation did not start (hr 0x%08lx)", static_cast<unsigned long>(hr));
+    job_finish(job, ZB_AUTO_ERR_NAV_FAILED, {}, why);
+    job_release(job);
+  }
 }
 
 // ---- WS3: the cookie store (the WebView's profile) ----
@@ -2221,8 +2294,18 @@ HRESULT create_controller(AppState *app) {
                       (void)sender;
 
                       BOOL is_success = FALSE;
+                      UINT64 nav_id = 0;
+                      COREWEBVIEW2_WEB_ERROR_STATUS nav_status = COREWEBVIEW2_WEB_ERROR_STATUS_UNKNOWN;
                       if (args != nullptr) {
                         args->get_IsSuccess(&is_success);
+                        args->get_NavigationId(&nav_id);
+                        args->get_WebErrorStatus(&nav_status);
+                      }
+                      // WS2a.1: after the first load, a navigation answers only its routed job (if any): no
+                      // NAV/TITLE rows, and a failed one does not end the browser.
+                      if (app->navigation_completed) {
+                        finish_navigation(app, nav_id, is_success, nav_status);
+                        return S_OK;
                       }
 
                       app->navigation_completed = true;
@@ -2245,10 +2328,27 @@ HRESULT create_controller(AppState *app) {
                       if (app->screenshot) {
                         capture_screenshot(app);
                       }
+                      run_first_load_waiters(app);
                       return S_OK;
                     })
                     .Get(),
                 &nav_token);
+
+            // WS2a.1: the NavigationId of the routed navigation just started (Navigate/Reload raise this
+            // after they return), so its own NavigationCompleted answers it.
+            EventRegistrationToken nav_start_token = {};
+            app->webview->add_NavigationStarting(
+                Callback<ICoreWebView2NavigationStartingEventHandler>(
+                    [app](ICoreWebView2 *sender, ICoreWebView2NavigationStartingEventArgs *args) -> HRESULT {
+                      (void)sender;
+                      if (app->nav_job != nullptr && !app->nav_id_known && args != nullptr &&
+                          SUCCEEDED(args->get_NavigationId(&app->nav_id))) {
+                        app->nav_id_known = true;
+                      }
+                      return S_OK;
+                    })
+                    .Get(),
+                &nav_start_token);
 
             EventRegistrationToken web_message_token = {};
             app->webview->add_WebMessageReceived(
@@ -2605,6 +2705,78 @@ extern "C" int zb_automation_eval_json(uint32_t win, const char *function_body, 
                      });
       },
       out_result, out_err);
+}
+
+// WS2a.1: load `url` (after the window's first load) and answer when that navigation completes. Only
+// ZB_BEFORE_UNLOAD_FAIL: WebView2 beforeunload handling arrives with the dialog slice (WS2b.2); until then
+// ACCEPT/DISMISS are refused. A blocked or failed load is ZB_AUTO_ERR_NAV_FAILED.
+extern "C" int zb_automation_navigate_guarded(uint32_t win, const char *url, int before_unload,
+                                              unsigned int timeout_ms, char **out_err) {
+  if (out_err != nullptr) {
+    *out_err = nullptr;
+  }
+  if (url == nullptr || url[0] == '\0') {
+    return fail_with(out_err, "no url");
+  }
+  if (before_unload != ZB_BEFORE_UNLOAD_FAIL) {
+    return fail_with(out_err, "beforeunload accept/dismiss is not supported on WebView2 yet");
+  }
+  const std::wstring target = utf8_to_wide(url);
+  if (target.empty()) {
+    return fail_with(out_err, "url is not valid UTF-8");
+  }
+  return job_submit(
+      win, timeout_ms,
+      [target](Job *job, AppState *app) {
+        after_first_load(job, app, [target](Job *j, AppState *a) {
+          start_navigation(j, a, [&target](ICoreWebView2 *webview) { return webview->Navigate(target.c_str()); });
+        });
+      },
+      nullptr, out_err);
+}
+
+extern "C" int zb_automation_navigate(uint32_t win, const char *url, unsigned int timeout_ms, char **out_err) {
+  return zb_automation_navigate_guarded(win, url, ZB_BEFORE_UNLOAD_FAIL, timeout_ms, out_err);
+}
+
+extern "C" int zb_automation_reload(uint32_t win, unsigned int timeout_ms, char **out_err) {
+  return job_submit(
+      win, timeout_ms,
+      [](Job *job, AppState *app) {
+        after_first_load(job, app, [](Job *j, AppState *a) {
+          start_navigation(j, a, [](ICoreWebView2 *webview) { return webview->Reload(); });
+        });
+      },
+      nullptr, out_err);
+}
+
+// WS2a.1: the committed URL (ICoreWebView2::get_Source) / document.title, after the first load; "" when none.
+int read_page_string(uint32_t win, unsigned int timeout_ms, char **out, bool title) {
+  return job_submit(
+      win, timeout_ms,
+      [title](Job *job, AppState *app) {
+        after_first_load(job, app, [title](Job *j, AppState *a) {
+          LPWSTR text = nullptr;
+          const HRESULT hr = title ? a->webview->get_DocumentTitle(&text) : a->webview->get_Source(&text);
+          std::string value = SUCCEEDED(hr) && text != nullptr ? wide_to_utf8(text) : std::string();
+          if (text != nullptr) {
+            CoTaskMemFree(text);
+          }
+          if (FAILED(hr)) {
+            return job_finish(j, ZB_AUTO_ERR_INTERNAL, {}, title ? "get_DocumentTitle failed" : "get_Source failed");
+          }
+          job_finish(j, ZB_AUTO_OK, std::move(value));
+        });
+      },
+      out, nullptr);
+}
+
+extern "C" int zb_automation_get_url(uint32_t win, unsigned int timeout_ms, char **out_url) {
+  return read_page_string(win, timeout_ms, out_url, false);
+}
+
+extern "C" int zb_automation_get_title(uint32_t win, unsigned int timeout_ms, char **out_title) {
+  return read_page_string(win, timeout_ms, out_title, true);
 }
 
 extern "C" int zb_cookies_get_all(uint32_t win, const char *url, unsigned int timeout_ms,

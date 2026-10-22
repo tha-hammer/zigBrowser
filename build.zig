@@ -370,6 +370,12 @@ pub fn build(b: *std.Build) void {
     b.step("windows-transport-live", "Live Windows WS2.0 transport: owner-only socket, token and directory on the VM (skips without ZB_WIN11_HOST)").dependOn(&windows_transport_live.step);
     const windows_capabilities_live = b.addSystemCommand(&.{ "python3", "-I", "tests/e2e/win_capabilities_test.py" });
     b.step("windows-capabilities-live", "Live Windows WS2b.0: the capabilities RPC on the real exe reports the webview2 row (skips without ZB_WIN11_HOST)").dependOn(&windows_capabilities_live.step);
+    // WS2a.1 / Closure A: routed page.* commands (evaluate, url, title, navigate) over the real exe's socket drive
+    // the live WebView2 page through automation_wv2_port. Skips without ZB_WIN11_HOST/ZB_WIN_EXE when run by hand;
+    // under ZB_WIN_GATE=1 (windows-live) it fails. Not part of `zig build test`.
+    const windows_routed_live = b.addSystemCommand(&.{ "python3", "-I", "tests/e2e/win_routed_test.py" });
+    windows_routed_live.has_side_effects = true;
+    b.step("windows-routed-live", "Live Windows WS2a.1: routed page.* commands drive the WebView2 page over the socket (skips without ZB_WIN11_HOST)").dependOn(&windows_routed_live.step);
 
     // WS2a.0 spike: the automation script's private CDP world on the VM (tests/e2e/win_private_world_spike.py
     // builds and runs ws2a0-world-spike-win there). Gated (ZB_WIN_GATE=1): with no host or marker it FAILS,

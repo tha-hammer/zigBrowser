@@ -14,6 +14,7 @@ const automation_gtk_cookie_port = @import("automation_gtk_cookie_port.zig");
 const automation_gtk_port = @import("automation_gtk_port.zig");
 const automation_macos_cookie_port = @import("automation_macos_cookie_port.zig");
 const automation_macos_port = @import("automation_macos_port.zig");
+const automation_wv2_port = @import("automation_wv2_port.zig");
 const automation_server = @import("automation_server.zig");
 const automation_transport = @import("automation_transport.zig");
 const cli = @import("cli.zig");
@@ -460,8 +461,12 @@ fn runOpen(arena: std.mem.Allocator, io: std.Io, spec: OpenSpec) errors.BrowserE
     const drawer_core = drawer_on and builtin.os.tag == .linux;
     if (spec.automation_api or drawer_core) {
         // automation.js must be registered before zb_app_run builds the window. macOS uses the
-        // WKWebView port (MS2a); every other target uses the GTK port.
-        if (builtin.os.tag == .macos) automation_macos_port.installScript() else automation_gtk_port.installScript();
+        // WKWebView port (MS2a), Windows the WebView2 port (WS2a.1); Linux uses the GTK port.
+        switch (builtin.os.tag) {
+            .macos => automation_macos_port.installScript(),
+            .windows => automation_wv2_port.installScript(),
+            else => automation_gtk_port.installScript(),
+        }
         const config = buildAutomationConfig(arena, io, spec, profile_dir) catch |err| {
             if (err == error.EmptyTokenFile) std.debug.print("--automation-token-file is empty\n", .{});
             return error.WriteFailed;
@@ -623,7 +628,11 @@ fn buildAutomationConfig(
         .socket_path = socket_path,
         .token = credentials.token,
         .token_file_path = credentials.token_file_path,
-        .page_port = if (builtin.os.tag == .macos) automation_macos_port.pagePort() else automation_gtk_port.pagePort(),
+        .page_port = switch (builtin.os.tag) {
+            .macos => automation_macos_port.pagePort(),
+            .windows => automation_wv2_port.pagePort(),
+            else => automation_gtk_port.pagePort(),
+        },
         .cookie_port = if (builtin.os.tag == .macos) automation_macos_cookie_port.cookiePort() else automation_gtk_cookie_port.cookiePort(),
     };
 }
