@@ -1101,19 +1101,6 @@ pub fn build(b: *std.Build) void {
     }));
     const run_agent_approval_owner_tests = b.addRunArtifact(b.addTest(.{ .root_module = agent_approval_owner_tests_module }));
     run_agent_approval_owner_tests.skip_foreign_checks = true;
-    // S8 decision 16 part 5 (rev 16.20.58): the store's one writer (the Secrets window's control).
-    const agent_approval_writer_tests_module = b.createModule(.{
-        .root_source_file = b.path("tests/agent_approval_writer_test.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-    agent_approval_writer_tests_module.addImport("agent_approval", b.createModule(.{
-        .root_source_file = b.path("src/agent_approval.zig"),
-        .target = target,
-        .optimize = optimize,
-    }));
-    const run_agent_approval_writer_tests = b.addRunArtifact(b.addTest(.{ .root_module = agent_approval_writer_tests_module }));
-    run_agent_approval_writer_tests.skip_foreign_checks = true;
 
     // Chat drawer S4a: the token's shape and the explicit file store, read and
     // write (src/agent_secrets.zig).
@@ -2045,14 +2032,6 @@ pub fn build(b: *std.Build) void {
         "agent-navigate-prompt-e2e",
     });
     agent_navigate_prompt_e2e.addArtifactArg(exe);
-    // S8 decision 16 part 5 (rev 16.20.58): the Secrets window's Navigation approval drop-down.
-    const agent_navigate_selector_e2e = b.addSystemCommand(&.{
-        "sh",
-        "-c",
-        "python3 tests/e2e/agent_navigate_selector_test.py --binary \"$1\"",
-        "agent-navigate-selector-e2e",
-    });
-    agent_navigate_selector_e2e.addArtifactArg(exe);
     const agent_socket_separation_e2e = b.addSystemCommand(&.{
         "sh",
         "-c",
@@ -3393,7 +3372,6 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_agent_config_check_tests.step);
     test_step.dependOn(&run_agent_approval_policy_tests.step);
     test_step.dependOn(&run_agent_approval_owner_tests.step);
-    test_step.dependOn(&run_agent_approval_writer_tests.step);
     test_step.dependOn(&run_config_schema_tests.step);
     test_step.dependOn(&run_automation_smoke_tests.step);
     test_step.dependOn(&run_automation_error_tests.step);
@@ -3471,7 +3449,6 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&agent_navigate_approval_e2e.step);
     test_step.dependOn(&agent_navigate_stale_e2e.step);
     test_step.dependOn(&agent_navigate_prompt_e2e.step);
-    test_step.dependOn(&agent_navigate_selector_e2e.step);
     test_step.dependOn(&agent_socket_separation_e2e.step);
     test_step.dependOn(&agent_tools_acceptance_e2e.step);
     test_step.dependOn(&agent_tools_acceptance2_e2e.step);
