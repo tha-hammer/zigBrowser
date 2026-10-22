@@ -383,6 +383,23 @@ test "a late or duplicate end for prompt 7 once prompt 8 runs: 8's card waits on
     try testing.expectEqualStrings("page.reload", r.engine.method(r.engine.n - 1));
 }
 
+test "a call of no prompt (submit) is untouched by every prompt's end" {
+    const r = try Rig.create();
+    defer r.destroy();
+    var a: Answer = .{};
+    r.submit(navigate_tool, navigate_args, &a);
+    try r.waitCard(1);
+    for ([_]i64{ 0, 1, 7, std.math.maxInt(i64) }) |id| r.b.promptOver(id);
+    settle();
+    try testing.expectEqual(approval.Outcome.waiting, r.cards.outcome(1).?);
+    try testing.expectEqual(@as(usize, 0), r.app.endedCount());
+    try testing.expect(r.cards.approve(1));
+    try a.wait();
+    try testing.expect(a.ok);
+    try r.waitEnded(1);
+    try testing.expectEqual(broker.Ending.done, r.app.endings[0]);
+}
+
 test "Approve won, then prompt 7 ended before the dispatch (held at before_dispatch): revoked, nothing dispatched" {
     const r = try Rig.create();
     defer r.destroy();

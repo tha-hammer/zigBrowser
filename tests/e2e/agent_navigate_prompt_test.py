@@ -16,6 +16,8 @@ scripted helper sends a `tool_call` of mcp__zigbrowser__navigate for the running
   two more results for prompt 1 (a late and a duplicate end, each a rejected frame): prompt
   2's card waits on, its Approve navigates once; prompt 1's card never approves.
 
+Stopping each browser signals its own process group, so the whole test runs in a PID
+namespace of its own (RoseCat 7814), then sealed with bwrap, like agent_navigate_stale_test.py.
 Exit 1 when Xvfb, xauth, bwrap, the venv or the binary is missing. Unregistered until its
 green."""
 
@@ -177,10 +179,16 @@ CASES = {"result": case_result, "error": case_error, "stop": case_stop, "stale-e
 
 
 def main() -> int:
+    if "--pid-ns" not in sys.argv and "--sealed-child" not in sys.argv:
+        # The signals this test sends (each browser's stop) stay inside a PID namespace of its own.
+        done = subprocess.run(["unshare", "--user", "--map-current-user", "--pid", "--fork", "--kill-child", "--mount-proc",
+                               sys.executable, str(Path(__file__).resolve()), "--pid-ns", *sys.argv[1:]])
+        return done.returncode
     if "--sealed-child" not in sys.argv:
+        args = [a for a in sys.argv[1:] if a != "--pid-ns"]
         done = subprocess.run(["/usr/bin/bwrap", "--unshare-net", "--die-with-parent", "--dev-bind", "/", "/",
                                "--proc", "/proc", "--", sys.executable, str(Path(__file__).resolve()),
-                               "--sealed-child", *sys.argv[1:]])
+                               "--sealed-child", *args])
         return done.returncode
     sys.argv.remove("--sealed-child")
     from agent_common import run_main
