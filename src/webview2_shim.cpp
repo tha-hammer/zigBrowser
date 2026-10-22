@@ -33,6 +33,10 @@ using Microsoft::WRL::ComPtr;
 namespace {
 
 constexpr wchar_t kWindowClassName[] = L"zigBrowserWebView2Host";
+// WS5.5b-2: the e2e multi-window spawn's EXTRA drawer windows use this dedicated class. Its WndProc is
+// DefWindowProcW, so WM_DESTROY does NOT PostQuitMessage (the primary class does) — destroying an extra
+// window must never quit the whole process.
+constexpr wchar_t kDrawerExtraClassName[] = L"zigBrowserDrawerExtra";
 constexpr int kWebView2LoadFailDomain = 2;
 constexpr UINT_PTR kNavigationTimerId = 1;
 constexpr UINT_PTR kFoldTimerId = 2;  // WS5.3: drives the drawer's fold (minimize) animation
@@ -86,6 +90,7 @@ struct AppState {
   HWND drawer_icon = nullptr;
   HWND drawer_min = nullptr;  // WS5.3: the visible "-" (minimize/fold) control on the open drawer (top-right)
   HWND drawer_bubble = nullptr;  // WS5.4: the inert message bubble (read-only, plain-text RichEdit) on the panel
+  std::vector<HWND> e2e_extra_windows;  // WS5.5b-2: the e2e multi-window spawn's extra drawer windows (torn down at shutdown)
   // WS5 e2e-only control-factory failure seam (ZIGBROWSER_AGENT_DRAWER_FAIL = "panel"|"icon"): forces a
   // CreateWindowExW failure branch for the test. Null unless --e2e-protocol AND the env is set.
   const char *force_drawer_fail = nullptr;
@@ -160,6 +165,7 @@ int zb_drawer_icon_size_for_dpi(int dpi);                  // WS5.7 production: 
 int zb_drawer_icon_size_from_dpi_env(const char *text);    // WS5.7 e2e seam: the DPI percent env, else 56
 int zb_drawer_inside_icon(int dx, int dy, int radius);     // WS5.7 exact circular hit-test (1 inside, 0 outside)
 int zb_drawer_window_count_from_env(const char *text);     // WS5.5 e2e seam: strict 1..8, else 0 (seam off)
+int zb_drawer_extra_windows(int seam);                     // WS5.5b-2: extra windows beyond the primary (seam-1)
 }
 
 // WS5 shim functions (declared in webkit_shim.h), defined here for the Windows backend.
@@ -1394,6 +1400,70 @@ void mount_drawer(AppState *app) {
   }
 }
 
+// WS5.5b-2 (RoseCat dffa0c7): the e2e multi-window spawn. Under the e2e WINDOWS seam, create the EXTRA drawer
+// windows beyond the primary (the count comes from the portable zb_drawer_extra_windows, so the C++ keeps no
+// count logic) so the live count peaks at N. Each extra is a REAL window with real drawer controls on its own
+// dedicated class (DefWindowProcW — WM_DESTROY must not PostQuitMessage), accounted through the same
+// drawer_live_inc path and emitting its own [tree, icon, open] rows with a distinct window id. They are torn
+// down (and the live count decremented) at shutdown, before the global `live` row, so the final count is 0.
+// e2e-only and seam-gated; ordinary single-window runs never enter here.
+void spawn_extra_drawer_windows(AppState *app) {
+  if (app == nullptr || !app->e2e_protocol || !app->windows_seam_set || !app->agent_drawer_on ||
+      app->hwnd == nullptr) {
+    return;
+  }
+  static bool extra_class_registered = false;
+  if (!extra_class_registered) {
+    WNDCLASSEXW wc = {};
+    wc.cbSize = sizeof(wc);
+    wc.lpfnWndProc = DefWindowProcW;  // NOT window_proc: destroying an extra window must not PostQuitMessage
+    wc.hInstance = app->instance;
+    wc.lpszClassName = kDrawerExtraClassName;
+    wc.hCursor = LoadCursorW(static_cast<HINSTANCE>(nullptr), MAKEINTRESOURCEW(32512));
+    wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
+    const ATOM atom = RegisterClassExW(&wc);
+    if (atom == 0 && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) {
+      log_last_error("RegisterClassExW(drawer-extra)");
+      return;
+    }
+    extra_class_registered = true;
+  }
+  const int extra = zb_drawer_extra_windows(app->windows_seam);
+  const int icon_px = effective_icon_px(app);
+  for (int i = 0; i < extra; i++) {
+    HWND w = CreateWindowExW(0, kDrawerExtraClassName, L"zigBrowser", WS_OVERLAPPEDWINDOW,
+                             CW_USEDEFAULT, CW_USEDEFAULT, 1024, 768, nullptr, nullptr, app->instance, nullptr);
+    if (w == nullptr) {
+      log_last_error("CreateWindowExW(drawer-extra)");
+      continue;  // best-effort: fewer windows -> lower peak -> the live oracle (peak == N) surfaces it
+    }
+    RECT cr;
+    GetClientRect(w, &cr);
+    const int cw = cr.right - cr.left;
+    const int ch = cr.bottom - cr.top;
+    ZbDrawerGeomRect panel = {};
+    zb_drawer_panel_rect(cw, ch, &panel);
+    const int ix = cw - icon_px - kFoldBtnMargin;
+    const int iy = ch - icon_px - kFoldBtnMargin;
+    // Real drawer controls: the docked panel + the "S" icon, so this is a genuine drawer window, not a bare frame.
+    CreateWindowExW(0, L"STATIC", L"", WS_CHILD | WS_VISIBLE, panel.x, panel.y, panel.w, panel.h,
+                    w, nullptr, app->instance, nullptr);
+    CreateWindowExW(0, L"STATIC", L"S", WS_CHILD, ix, iy, icon_px, icon_px, w, nullptr, app->instance, nullptr);
+    ShowWindow(w, SW_SHOWNORMAL);
+    drawer_live_inc();  // WS5.5: this concurrent drawer raises the running live peak toward N
+    const int wid = app->win_id + i + 1;
+    char win[16];
+    snprintf(win, sizeof win, "%d", wid);
+    emit_protocol3(app, "DRAWER", win, "tree", "host,page,icon,panel");
+    char rect[64];
+    snprintf(rect, sizeof rect, "%d,%d,%d,%d", ix, iy, icon_px, icon_px);
+    emit_protocol3(app, "DRAWER", win, "icon", rect);
+    snprintf(rect, sizeof rect, "%d,%d,%d,%d", panel.x, panel.y, panel.w, panel.h);
+    emit_protocol3(app, "DRAWER", win, "open", rect);
+    app->e2e_extra_windows.push_back(w);
+  }
+}
+
 void emit_load_fail(AppState *app, COREWEBVIEW2_WEB_ERROR_STATUS status) {
   char domain_buf[32];
   char code_buf[32];
@@ -1893,6 +1963,7 @@ HRESULT create_controller(AppState *app) {
             resize_controller(app);
             app->controller->put_IsVisible(TRUE);
             mount_drawer(app);  // WS5: mount the native drawer once the page is live (no-op unless on)
+            spawn_extra_drawer_windows(app);  // WS5.5b-2: e2e multi-window spawn so the live count peaks at N
 
             ComPtr<ICoreWebView2Settings> settings;
             if (SUCCEEDED(app->webview->get_Settings(&settings)) && settings) {
@@ -2084,6 +2155,17 @@ static int run_core(const char *uri, int print_title, int e2e_protocol, bool scr
     }
     loop_end();
   }
+
+  // WS5.5b-2: tear down the e2e extra windows and decrement the live count for each, so the FINAL count is 0
+  // when the global `live` row is emitted (the running PEAK, already at N, is unaffected by these decrements).
+  // The extra class is DefWindowProcW, so DestroyWindow here cannot PostQuitMessage.
+  for (HWND w : app.e2e_extra_windows) {
+    if (w != nullptr) {
+      DestroyWindow(w);
+      g_drawer_live.fetch_sub(1, std::memory_order_relaxed);
+    }
+  }
+  app.e2e_extra_windows.clear();
 
   // WS5.5: after the message loop (every window has closed, so the live count is back to 0), emit the global
   // live-count row on window 1 — the PEAK concurrent drawers and the FINAL count. e2e-only, and only under the

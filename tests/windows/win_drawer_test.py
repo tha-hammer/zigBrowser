@@ -1237,6 +1237,24 @@ class WinDrawerOracle(unittest.TestCase):
         # has no paren, so `atoi(` uniquely marks an actual call a revert would introduce.
         self.assertNotIn("atoi(", shim, "the shim must not call atoi(...) — strict full-string parsing only")
 
+    def test_wsl_e2e_multiwindow_spawn_is_bound(self):
+        # WS5.5b-2 (RoseCat dffa0c7): bind the production multi-window spawn in the shim. The Win32 behavior
+        # cannot run on Linux, so pin its structure here (cross-compile proves it builds; the behaviors live
+        # oracle proves peak == N on a released VM run). A revert removing the spawn turns this red.
+        shim = (pathlib.Path(__file__).resolve().parents[2] / "src" / "webview2_shim.cpp").read_text(encoding="utf-8")
+        # the extra-window count comes from the portable Zig, not inline C
+        self.assertIn("zb_drawer_extra_windows(app->windows_seam)", shim,
+                      "the extra-window count must come from the portable zb_drawer_extra_windows")
+        self.assertIn("int zb_drawer_extra_windows(int", shim, "the shim must declare the extern")
+        # extra windows use a dedicated class (the primary class WM_DESTROY calls PostQuitMessage)
+        self.assertIn("kDrawerExtraClassName", shim, "extra windows need their own non-quitting class")
+        self.assertIn("DefWindowProcW", shim, "the extra class WndProc must be DefWindowProcW (no PostQuitMessage)")
+        # the spawn exists, is e2e-WINDOWS-seam-gated, accounts each mount, and tears down + decrements
+        self.assertIn("void spawn_extra_drawer_windows(AppState", shim, "the spawn function must exist")
+        self.assertIn("spawn_extra_drawer_windows(app);", shim, "the spawn must be wired after the primary mount")
+        self.assertIn("drawer_live_inc();", shim, "each extra mount must be accounted through drawer_live_inc")
+        self.assertIn("e2e_extra_windows", shim, "the extra windows must be tracked for shutdown teardown")
+
     # --- forced control-create failure oracle (check_mounted_fail, RoseCat 7646) ---
     def _good_fail(self, which):
         return {"error": "", "terminated": True, "job_count_after": 0, "controls": "",

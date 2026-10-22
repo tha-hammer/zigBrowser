@@ -212,3 +212,14 @@ test "windowCountFromEnv: strict 1..8 decimal, else 0 (NOT atoi) (WS5.5, RoseCat
     // mutant: an atoi-style parse would take "2junk" as 2 (seam ON); the strict parse leaves it OFF (0)
     try std.testing.expect(d.windowCountFromEnv("2junk") != 2);
 }
+
+test "extraDrawerWindows is seam-1 clamped to [0, max_windows-1] (WS5.5b-2)" {
+    try expectEqual(@as(c_int, 0), d.extraDrawerWindows(1)); // the primary window alone -> no extras
+    try expectEqual(@as(c_int, 1), d.extraDrawerWindows(2)); // one popup beyond the primary
+    try expectEqual(@as(c_int, 7), d.extraDrawerWindows(8)); // the 8-window ceiling -> 7 extras
+    try expectEqual(@as(c_int, 0), d.extraDrawerWindows(0)); // unset/below -> treated as 1 -> 0 extras
+    try expectEqual(@as(c_int, 0), d.extraDrawerWindows(-5)); // negative -> clamp to 1 -> 0 extras
+    try expectEqual(@as(c_int, 7), d.extraDrawerWindows(9)); // above the ceiling -> clamp to 8 -> 7 extras
+    // mutant: a raw `seam` (no -1) would make the 2-window seam spawn 2 extras (peak 3, not 2)
+    try std.testing.expect(d.extraDrawerWindows(2) != 2);
+}

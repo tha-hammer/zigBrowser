@@ -163,6 +163,15 @@ pub fn windowCountFromEnv(text: ?[]const u8) c_int {
     return 0;
 }
 
+/// WS5.5b-2: the number of EXTRA drawer windows the e2e multi-window spawn creates BEYOND the primary window,
+/// for a given WINDOWS seam. The seam is the total window count (1..8 when set, 1 otherwise), so the extra count
+/// is seam-1, clamped to [0, max_windows-1]. The shim loops this many times, so the C++ keeps no count logic.
+pub fn extraDrawerWindows(seam: c_int) c_int {
+    const hi: c_int = @intCast(max_windows);
+    const n: c_int = if (seam < 1) 1 else if (seam > hi) hi else seam;
+    return n - 1;
+}
+
 /// WS5.7 (plan 1583): the icon's edge length at a DPI scale percent — the base
 /// size scaled by `scale_pct`/100, rounded half-up. At 150% the 56 px icon is
 /// 84 px. A non-positive `scale_pct` falls back to 100% (unscaled).
@@ -443,6 +452,7 @@ comptime {
         @export(&zb_drawer_anim_ms_from_env, .{ .name = "zb_drawer_anim_ms_from_env" });
         @export(&zb_drawer_icon_size_from_dpi_env, .{ .name = "zb_drawer_icon_size_from_dpi_env" });
         @export(&zb_drawer_window_count_from_env, .{ .name = "zb_drawer_window_count_from_env" });
+        @export(&zb_drawer_extra_windows, .{ .name = "zb_drawer_extra_windows" });
         @export(&zb_drawer_icon_size_for_dpi, .{ .name = "zb_drawer_icon_size_for_dpi" });
         @export(&zb_drawer_inside_icon, .{ .name = "zb_drawer_inside_icon" });
     }
@@ -554,6 +564,11 @@ fn zb_drawer_icon_size_from_dpi_env(text: ?[*:0]const u8) callconv(.c) c_int {
 /// free of parse logic — the C++ enables the seam only when this returns >= 1.
 fn zb_drawer_window_count_from_env(text: ?[*:0]const u8) callconv(.c) c_int {
     return windowCountFromEnv(if (text) |t| std.mem.span(t) else null);
+}
+
+/// WS5.5b-2: the extra drawer-window count (seam-1, clamped) the e2e spawn loops over.
+fn zb_drawer_extra_windows(seam: c_int) callconv(.c) c_int {
+    return extraDrawerWindows(seam);
 }
 
 /// WS5.7: the icon's edge length (px) for a raw per-monitor DPI — the PRODUCTION
