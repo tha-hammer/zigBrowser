@@ -35449,3 +35449,36 @@ absent rather than checking bytes alone. Add a bounded internal symlink and
 junction cycle so the portable walker cannot wedge. The green must bind the
 real `copy_sai` path to this engine and retain a Windows reparse-aware adapter
 gate.
+
+## WS5.5b-2 extracted terminal-live-row red (`918cb09`)
+
+**BLOCKED-for-tests; keep it unregistered, and no Win11 rerun is authorized.**
+Extracting the three named production regions is an improvement, and the
+focused module is red for the intended three missing behaviors (**3/3 expected
+failures**). The new predicates still do not bind the claimed control flow:
+
+1. `controller_ok` only requires the gate text somewhere in `create_controller`
+   and globally orders one close after at least one spawn. It accepts an empty
+   correct gate followed by an unconditional spawn/primary close, the whole
+   pair nested under an additional wrong gate such as `app->screenshot`, and
+   two spawn calls before the close. I ran all three concrete mutants and each
+   returned `True`. Extract the exact successful branch (or drive a production
+   helper), require the full gate to dominate exactly one spawn and exactly one
+   primary close, and add those three mutants.
+2. The four Python methods are extracted, but raw `body.count` treats comments
+   and string literals as executable environment settings. A method whose only
+   `ZB_SETTLE_KINDS="live"` is a comment while its real `_env` selects `open`
+   reports count 1. Inspect the Python AST and require exactly one real keyword
+   assignment at the `_run_drawer` call, with comment/string-decoy and duplicate
+   assignment mutants.
+3. `teardown_ok` checks token presence and lexical order, not the normal-exit
+   versus backstop branches. It returned `True` for an unconditional
+   `TerminateJobObject` after the wait, a zero-millisecond wait, and a normal
+   branch that calls `TerminateProcess` before setting `NoKillNeeded`. Bind the
+   `WAIT_OBJECT_0` result to `NoKillNeeded` and no kill, require a finite positive
+   bounded wait, and bind every Job/process kill to the timeout/failure branch;
+   preferably drive the embedded runner with a recording Win32 seam. Commit
+   those causal mutants as durable rows.
+
+The red therefore does not close `aead88d` or the WS5.5b-2 terminal-row range.
+The contiguous push boundary remains the already-pushed `6f145bc`.
