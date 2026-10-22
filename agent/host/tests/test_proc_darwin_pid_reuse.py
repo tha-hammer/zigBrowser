@@ -8,7 +8,7 @@ is reused by an unrelated process whose child 7 is a clean CLI; a walk that stil
   only with a separate live descendant running the CLI, the only environment read.
 The walk's calls (children, path, environ_of) are faked; os.kill / os.killpg raise.
 Run like the gate: cd agent/host/tests && python -X dev -m unittest -v test_proc_darwin_pid_reuse
-Unregistered until the green."""
+Registered (build.zig: the MS5 agent-setup step), inside a PID namespace."""
 import errno
 import os
 import unittest

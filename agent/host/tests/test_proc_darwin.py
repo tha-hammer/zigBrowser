@@ -126,7 +126,8 @@ class Descendants(Base):
             self.assertEqual(proc_darwin.descendants_running("/opt/claude", 10), [12])
 
     def test_a_cycle_terminates(self):
-        self.assertEqual(self.walk({10: [11], 11: [10, 12]}, {12: "/opt/claude"}), [12])
+        # 11 is live (a pid whose path() is None is gone and never traversed; RoseCat 8010)
+        self.assertEqual(self.walk({10: [11], 11: [10, 12]}, {11: "/usr/bin/python3", 12: "/opt/claude"}), [12])
 
     # RoseCat 7011: only a vanished process (ESRCH) may be skipped; any other failure to list children or read a
     # path is an error the caller sees, never a silently uninspected subtree.

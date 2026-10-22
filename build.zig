@@ -2316,6 +2316,13 @@ pub fn build(b: *std.Build) void {
         "py=$(tools/agent_host_env.sh --check) || exit 1; cd agent/host/tests && out=$(env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 ZB_AGENT_HOST_PYTHON=\"$py\" unshare --map-current-user --pid --fork --kill-child --mount-proc sh -c '\"$0\" -X dev -m unittest -v test_proc_darwin_census_reason; exit $?' \"$py\" 2>&1); rc=$?; printf '%s\\n' \"$out\"; [ $rc -eq 0 ] || exit $rc; if printf '%s\\n' \"$out\" | grep -q ResourceWarning; then echo 'test_proc_darwin_census_reason: ResourceWarning' >&2; exit 1; fi",
     });
     agent_setup_ms5_step.dependOn(&agent_host_proc_darwin_census_reason.step);
+    // A pid the census confirmed gone is never traversed, so a reused pid lends it no children (RoseCat 8010).
+    const agent_host_proc_darwin_pid_reuse = b.addSystemCommand(&.{
+        "sh",
+        "-c",
+        "py=$(tools/agent_host_env.sh --check) || exit 1; cd agent/host/tests && out=$(env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 ZB_AGENT_HOST_PYTHON=\"$py\" unshare --map-current-user --pid --fork --kill-child --mount-proc sh -c '\"$0\" -X dev -m unittest -v test_proc_darwin_pid_reuse; exit $?' \"$py\" 2>&1); rc=$?; printf '%s\\n' \"$out\"; [ $rc -eq 0 ] || exit $rc; if printf '%s\\n' \"$out\" | grep -q ResourceWarning; then echo 'test_proc_darwin_pid_reuse: ResourceWarning' >&2; exit 1; fi",
+    });
+    agent_setup_ms5_step.dependOn(&agent_host_proc_darwin_pid_reuse.step);
     // R1 under Seatbelt, setup's half (RoseCat 6958; JadeBeacon 7004): probe_r1 pre-binds 127.0.0.1:0, passes it by
     // pass_fds, and the setup profile permits exactly that port (through the real sandbox_macos.setup_sandbox).
     const agent_host_setup_darwin_r1 = b.addSystemCommand(&.{

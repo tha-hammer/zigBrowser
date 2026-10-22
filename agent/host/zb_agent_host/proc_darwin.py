@@ -163,7 +163,8 @@ def cli_env_census(exe, root, token, canary):
 def descendants_running(exe, root):
     """Every descendant of `root` whose executable path is `exe` (a breadth-first walk; each pid visited once).
     Only a vanished process is skipped, and only when that is confirmed: ESRCH (children() raises ProcessLookupError,
-    path() returns None), or a failed lookup whose immediate re-probe says ESRCH. A denied child list or an unreadable
+    path() returns None), or a failed lookup whose immediate re-probe says ESRCH. A pid confirmed gone is never
+    queued, so a reused pid never lends the walk its children (RoseCat 8010). A denied child list or an unreadable
     path otherwise raises OSError, so the caller never mistakes an uninspected subtree for an empty one (RoseCat 7011,
     7986)."""
     found, seen, queue = [], {root}, [root]
@@ -189,6 +190,8 @@ def descendants_running(exe, root):
                 if path(kid) is None:  # vanished between children() and path(), confirmed by the re-probe
                     continue
                 raise OSError(f"proc_pidpath({kid}): unreadable") from None
+            if kid_path is None:  # confirmed gone: never traversed, so a reused pid never lends us its children
+                continue
             queue.append(kid)
             if kid_path == exe:
                 found.append(kid)
