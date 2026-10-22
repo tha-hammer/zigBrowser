@@ -9,14 +9,15 @@ The browser is launched exactly as tests/e2e/win_transport_test.py launches it (
 cleanup helpers are borrowed, not copied) on a fixture page A; a second fixture page B is staged beside it. The
 probe's `rpc` command (tests/windows/transport_probe.zig) sends one raw JSON-RPC frame per connection as zbtext.
   * the Linux envelope and auth: no `auth` member -> -32000; a missing `expression` -> -32602;
-  * page.evaluate {"expression": "1+1"} -> result.result == 2, with the request id echoed;
+  * FIRST page-port call: page.evaluate {"expression": "1+1"} -> result.result == 2 (the plan's rule-9 red);
   * page.url / page.title / the DOM heading read page A's real state;
   * page.navigate to page B -> {"ok": true}, then url, title AND the DOM heading are page B's (so a port that
     answers ok without navigating, or echoes a cached url, still fails);
   * a script that throws -> -32603 `script_exception` (the Linux error contract).
 
 RED today: app.zig wires the GTK port on Windows (`supported = os.tag == .linux`), so the engine has no page and
-every page.* command answers -32011. Mutant for the green (plan): return 0 from the shim without doing the work.
+every page.* command answers -32011, so the first page-port assertion (page.evaluate 1+1) fails.
+Mutant for the green (plan): return 0 from the shim without doing the work.
 
 Host selection, as win_transport_test.py: ZB_WIN11_HOST, ZB_WIN_EXE, ZB_WIN11_PORT, ZB_WIN11_USER, ZB_WIN_KEY,
 ZB_WIN_KNOWN_HOSTS. With no host it skips when run by hand and FAILS under ZB_WIN_GATE=1 (plan D.1, rule 7).
@@ -118,18 +119,19 @@ class WinRouted(unittest.TestCase):
         self.assertEqual(self._error_code("page.evaluate", {"expression": "1+1"}, auth=False)["code"], AUTH_FAILED)
         self.assertEqual(self._error_code("page.evaluate", {})["code"], INVALID_PARAMS)
 
+        # The plan's rule-9 red (Closure A), the FIRST page-port call: the result crosses the shim and comes back
+        # typed. Today's null port answers -32011 here. It needs no loaded page, so no readiness wait comes first.
+        reply = self._call("page.evaluate", {"expression": "1+1"})
+        self.assertEqual(reply.get("result"), {"result": 2}, f"page.evaluate 1+1: {reply}")
+
         # Readiness: page A has loaded (bounded; the last reply is the failure detail).
         deadline = time.monotonic() + 30
-        reply = None
         while time.monotonic() < deadline:
             reply = self._call("page.title")
             if reply.get("result") == {"title": "Routed A"}:
                 break
             time.sleep(0.5)
         self.assertEqual(reply.get("result"), {"title": "Routed A"}, f"page A never answered page.title: {reply}")
-
-        # The plan's assertion (Closure A): the result crosses the shim and comes back typed.
-        self.assertEqual(self._result("page.evaluate", {"expression": "1+1"})["result"], 2)
         self.assertEqual(self._result("page.url"), {"url": url_a})
         self.assertEqual(self._result("page.evaluate", {"expression": HEADING})["result"], "A")
 
