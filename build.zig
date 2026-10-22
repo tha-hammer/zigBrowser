@@ -342,6 +342,14 @@ pub fn build(b: *std.Build) void {
     const windows_transport_live = b.addSystemCommand(&.{ "python3", "-I", "tests/e2e/win_transport_test.py" });
     b.step("windows-transport-live", "Live Windows WS2.0 transport: owner-only socket, token and directory on the VM (skips without ZB_WIN11_HOST)").dependOn(&windows_transport_live.step);
 
+    // WS2a.0 spike: the automation script's private CDP world on the VM (tests/e2e/win_private_world_spike.py
+    // builds and runs ws2a0-world-spike-win there). Gated (ZB_WIN_GATE=1): with no host or marker it FAILS,
+    // never skips (plan D.1). Not part of `zig build test`.
+    const windows_private_world_spike_live = b.addSystemCommand(&.{ "python3", "-I", "tests/e2e/win_private_world_spike.py" });
+    windows_private_world_spike_live.setEnvironmentVariable("ZB_WIN_GATE", "1");
+    windows_private_world_spike_live.has_side_effects = true;
+    b.step("windows-private-world-spike-live", "Live WS2a.0 private CDP world spike on the VM (fails without ZB_WIN11_HOST)").dependOn(&windows_private_world_spike_live.step);
+
     // j76 / WS3.2: a refused backend flag reaches the user's stderr on the Windows GUI exe (exactly the
     // refusal line, exit 1, open and --screenshot), and `--renderer=shm` stays a parse error. Skips without
     // ZB_WIN11_HOST/ZB_WIN_EXE; needs no slot.

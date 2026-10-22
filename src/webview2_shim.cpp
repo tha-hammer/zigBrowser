@@ -23,10 +23,12 @@
 #include <atomic>
 #include <deque>
 #include <functional>
+#include <memory>
 #include <vector>
 #include <string>
 
 #include "webkit_shim.h"
+#include "cdp_json.hpp"
 
 using Microsoft::WRL::Callback;
 using Microsoft::WRL::ComPtr;
@@ -777,6 +779,116 @@ int job_submit(uint32_t win, unsigned int timeout_ms, std::function<void(Job *, 
   }
   job_release(job);
   return code;
+}
+
+// ---- WS2a.0: CDP calls on the UI thread (the one CDP wrapper; WS2b's native input builds on it) ----
+
+using CdpDone = std::function<void(int code, std::string text)>;
+using CdpThen = std::function<void(Job *, AppState *, std::string result_json)>;
+
+// The one error table: a CDP answer -> a ZB_AUTO_* code, and its text (the result JSON, or why it failed).
+// An answer that is a CDP error object ({"code":<int>,"message":"..."}) is an error whatever the HRESULT.
+int cdp_error_code(const std::string &method, HRESULT hr, const std::string &json, std::string *text) {
+  long long cdp_code = 0;
+  std::string message;
+  const bool cdp_error = cdp_json_int(json, {"code"}, &cdp_code) && cdp_json_string(json, {"message"}, &message);
+  if (SUCCEEDED(hr) && !cdp_error) {
+    *text = json;
+    return ZB_AUTO_OK;
+  }
+  char buf[96];
+  if (cdp_error) {
+    snprintf(buf, sizeof buf, " (cdp %lld)", cdp_code);
+    *text = "cdp " + method + ": " + message + buf;
+  } else {
+    snprintf(buf, sizeof buf, " failed (hr 0x%08lx)", static_cast<unsigned long>(hr));
+    *text = "cdp " + method + buf;
+  }
+  return ZB_AUTO_ERR_INTERNAL;
+}
+
+// UI thread only. Calls one CDP method on app->webview; never blocks. `done` runs exactly once, on the
+// UI thread: (ZB_AUTO_OK, result JSON) or (ZB_AUTO_ERR_INTERNAL, why).
+void cdp_call(AppState *app, const char *method, const std::string &params_json, CdpDone done) {
+  const std::string name = method != nullptr ? method : "";
+  if (app == nullptr || !app->webview) {
+    return done(ZB_AUTO_ERR_INTERNAL, "cdp " + name + ": no WebView");
+  }
+  const std::wstring wmethod = utf8_to_wide(name.c_str());
+  const std::wstring wparams = utf8_to_wide(params_json.empty() ? "{}" : params_json.c_str());
+  if (wmethod.empty() || wparams.empty()) {
+    return done(ZB_AUTO_ERR_INTERNAL, "cdp " + name + ": method or params are not valid UTF-8");
+  }
+  auto once = std::make_shared<CdpDone>(std::move(done));
+  const HRESULT hr = app->webview->CallDevToolsProtocolMethod(
+      wmethod.c_str(), wparams.c_str(),
+      Callback<ICoreWebView2CallDevToolsProtocolMethodCompletedHandler>(
+          [once, name](HRESULT error, LPCWSTR json_wide) -> HRESULT {
+            std::string text;
+            const int code = cdp_error_code(name, error, wide_to_utf8(json_wide), &text);
+            (*once)(code, std::move(text));
+            return S_OK;
+          })
+          .Get());
+  if (FAILED(hr)) { // no callback will come
+    std::string text;
+    (*once)(cdp_error_code(name, hr, std::string(), &text), std::move(text));
+  }
+}
+
+// One step of a job: holds the job's callback reference across the call. An error finishes the job with
+// the wrapper's code and text; success runs `then` (which chains another step or job_finish), or finishes
+// OK with the result JSON when `then` is empty. A job already answered (abandoned, or loop end) runs no
+// further step.
+void cdp_job_call(Job *job, AppState *app, const char *method, const std::string &params_json,
+                  CdpThen then = nullptr) {
+  job_hold(job);
+  cdp_call(app, method, params_json, [job, app, then = std::move(then)](int code, std::string text) {
+    if (code != ZB_AUTO_OK || !then || InterlockedCompareExchange(&job->state, 0, 0) != kRunning) {
+      return callback_done(job, code, code == ZB_AUTO_OK ? std::move(text) : std::string(),
+                           code == ZB_AUTO_OK ? std::string() : std::move(text));
+    }
+    then(job, app, std::move(text));
+    job_release(job); // this step's reference
+  });
+}
+
+// ---- WS2a.0: the automation script's private world (ZB_AUTOMATION_WORLD) and evals ----
+
+SRWLOCK g_script_lock = SRWLOCK_INIT;
+std::string g_automation_script; // under g_script_lock; set before zb_app_run; empty = no injection
+
+// The body runs as an async function of `arg` (the arg_json STRING); the answer is the returned string
+// verbatim, else its JSON encoding ("null" for undefined), as on GTK.
+std::string eval_expression(const std::string &body, const std::string &arg) {
+  return "(async () => { const __zbR = await (async function (arg) {\n" + body + "\n})(" + cdp_json_quote(arg) +
+         "); if (typeof __zbR === 'string') return __zbR; const __zbJ = JSON.stringify(__zbR); "
+         "return __zbJ === undefined ? 'null' : __zbJ; })()";
+}
+
+std::string evaluate_params(const std::string &expression, bool in_context, long long context_id) {
+  std::string params = "{\"expression\":" + cdp_json_quote(expression) + ",\"awaitPromise\":true,\"returnByValue\":true";
+  if (in_context) {
+    params += ",\"contextId\":" + std::to_string(context_id);
+  }
+  return params + "}";
+}
+
+// Runtime.evaluate's answer -> the job's answer.
+void finish_evaluate(Job *job, const std::string &json) {
+  if (cdp_json_has(json, {"exceptionDetails"})) {
+    std::string why;
+    if (!cdp_json_string(json, {"exceptionDetails", "exception", "description"}, &why) &&
+        !cdp_json_string(json, {"exceptionDetails", "text"}, &why)) {
+      why = "the script threw";
+    }
+    return job_finish(job, ZB_AUTO_ERR_JS, {}, why);
+  }
+  std::string value;
+  if (!cdp_json_string(json, {"result", "value"}, &value)) {
+    return job_finish(job, ZB_AUTO_ERR_INTERNAL, {}, "cdp Runtime.evaluate: no string result");
+  }
+  job_finish(job, ZB_AUTO_OK, value);
 }
 
 // ---- WS3: the cookie store (the WebView's profile) ----
@@ -1907,6 +2019,40 @@ HRESULT install_document_script_and_navigate(AppState *app) {
       script.c_str(), script_handler.Get());
 }
 
+// WS2a.0: the automation script (zb_automation_set_script) goes into its own CDP world, ZB_AUTOMATION_WORLD,
+// at document start, before the first navigation; then the page-world document script and the navigation as
+// before. Without a script nothing changes.
+HRESULT install_automation_world_then_navigate(AppState *app) {
+  AcquireSRWLockShared(&g_script_lock);
+  const std::string script = g_automation_script;
+  ReleaseSRWLockShared(&g_script_lock);
+  if (script.empty()) {
+    return install_document_script_and_navigate(app);
+  }
+  const std::string params =
+      "{\"source\":" + cdp_json_quote(script) + ",\"worldName\":" + cdp_json_quote(ZB_AUTOMATION_WORLD) + "}";
+  cdp_call(app, "Page.enable", "{}", [app, params](int enabled, std::string why) {
+    if (enabled != ZB_AUTO_OK) {
+      fprintf(stderr, "zigBrowser: automation world: %s\n", why.c_str());
+      fflush(stderr);
+      return request_quit(app, ZB_EXIT_WEBVIEW_INIT_FAILED);
+    }
+    cdp_call(app, "Page.addScriptToEvaluateOnNewDocument", params, [app](int code, std::string text) {
+      if (code != ZB_AUTO_OK) {
+        fprintf(stderr, "zigBrowser: automation world: %s\n", text.c_str());
+        fflush(stderr);
+        return request_quit(app, ZB_EXIT_WEBVIEW_INIT_FAILED);
+      }
+      const HRESULT next = install_document_script_and_navigate(app);
+      if (FAILED(next)) {
+        log_hresult("AddScriptToExecuteOnDocumentCreated", next);
+        request_quit(app, ZB_EXIT_WEBVIEW_INIT_FAILED);
+      }
+    });
+  });
+  return S_OK;
+}
+
 // Writes an IStream's whole content (the in-memory PNG CapturePreview produced) to `path`.
 // Returns true on success; every failure prints its specific reason to stderr so an exit is
 // never silent.
@@ -2119,7 +2265,7 @@ HRESULT create_controller(AppState *app) {
 
             drain_jobs(app); // the calls that waited for the WebView
 
-            hr = install_document_script_and_navigate(app);
+            hr = install_automation_world_then_navigate(app);
             if (FAILED(hr)) {
               log_hresult("AddScriptToExecuteOnDocumentCreated", hr);
               request_quit(app, ZB_EXIT_WEBVIEW_INIT_FAILED);
@@ -2409,6 +2555,57 @@ extern "C" void zb_app_set_media_source(int enabled) {
 extern "C" int zb_app_get_media_source(void) { return InterlockedCompareExchange(&g_media_source, 0, 0); }
 
 extern "C" void zb_automation_free(char *p) { free(p); }
+
+extern "C" void zb_automation_set_script(const char *source, size_t len) {
+  std::string copy = source != nullptr ? std::string(source, len) : std::string();
+  AcquireSRWLockExclusive(&g_script_lock);
+  g_automation_script.swap(copy);
+  ReleaseSRWLockExclusive(&g_script_lock);
+}
+
+// WS2a.0: world NULL evaluates in the page's main world; any other world name is the named CDP isolated
+// world of the main frame (Page.createIsolatedWorld returns its context for this document).
+extern "C" int zb_automation_eval_json(uint32_t win, const char *function_body, const char *arg_json,
+                                       const char *world, unsigned int timeout_ms, char **out_result,
+                                       char **out_err) {
+  if (function_body == nullptr) {
+    if (out_result != nullptr) {
+      *out_result = nullptr;
+    }
+    return fail_with(out_err, "no function body");
+  }
+  const std::string expression = eval_expression(function_body, arg_json != nullptr ? arg_json : "null");
+  const bool in_world = world != nullptr;
+  const std::string world_name = in_world ? world : "";
+  return job_submit(
+      win, timeout_ms,
+      [expression, in_world, world_name](Job *job, AppState *app) {
+        auto evaluate = [](Job *j, AppState *, std::string json) { finish_evaluate(j, json); };
+        if (!in_world) {
+          return cdp_job_call(job, app, "Runtime.evaluate", evaluate_params(expression, false, 0), evaluate);
+        }
+        cdp_job_call(job, app, "Page.getFrameTree", "{}",
+                     [expression, world_name, evaluate](Job *j, AppState *a, std::string tree) {
+                       std::string frame;
+                       if (!cdp_json_string(tree, {"frameTree", "frame", "id"}, &frame)) {
+                         return job_finish(j, ZB_AUTO_ERR_INTERNAL, {}, "cdp Page.getFrameTree: no main frame id");
+                       }
+                       const std::string params = "{\"frameId\":" + cdp_json_quote(frame) +
+                                                  ",\"worldName\":" + cdp_json_quote(world_name) + "}";
+                       cdp_job_call(j, a, "Page.createIsolatedWorld", params,
+                                    [expression, evaluate](Job *j2, AppState *a2, std::string made) {
+                                      long long context = 0;
+                                      if (!cdp_json_int(made, {"executionContextId"}, &context)) {
+                                        return job_finish(j2, ZB_AUTO_ERR_INTERNAL, {},
+                                                          "cdp Page.createIsolatedWorld: no executionContextId");
+                                      }
+                                      cdp_job_call(j2, a2, "Runtime.evaluate",
+                                                   evaluate_params(expression, true, context), evaluate);
+                                    });
+                     });
+      },
+      out_result, out_err);
+}
 
 extern "C" int zb_cookies_get_all(uint32_t win, const char *url, unsigned int timeout_ms,
                                   char **out_json, char **out_err) {

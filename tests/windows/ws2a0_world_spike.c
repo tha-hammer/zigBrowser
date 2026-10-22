@@ -162,13 +162,19 @@ int main(int argc, char **argv) {
     return 1;
   }
 
-  if (check(wait_for(NULL, "return document.readyState;", NULL, "complete", 30000), "the fixture loads", index_uri)) {
+  /* about:blank is "complete" too (queued jobs can run before the first navigation), so wait for the
+   * fixture's own title. */
+  if (check(wait_for(NULL, "return document.readyState === 'complete' ? document.title : '';", NULL,
+                     "App Index A", 30000),
+            "the fixture loads", index_uri)) {
     eval_is(ZB_AUTOMATION_WORLD, "return document.title;", NULL, "App Index A",
             "automation world shares the page DOM (title)");
     world_checks("first page");
 
     char why[512];
-    char *nav = eval(NULL, "location.href = arg; return 'navigating';", page_b_uri, why, sizeof why);
+    /* Deferred, so the evaluation answers before the navigation tears its context down. */
+    char *nav = eval(NULL, "setTimeout(() => { location.href = arg; }, 50); return 'navigating';", page_b_uri, why,
+                     sizeof why);
     check(nav != NULL, "page navigates to page-b", nav != NULL ? NULL : why);
     if (nav != NULL) {
       zb_automation_free(nav);
