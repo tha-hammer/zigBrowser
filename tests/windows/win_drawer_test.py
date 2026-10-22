@@ -113,8 +113,17 @@ def check_mounted_fail(r, which):
     assert r["job_count_after"] == 0, f"the owned Job must be empty after teardown (got {r['job_count_after']})"
     rows = [row for row in (parse_drawer(ln) for ln in r["stdout"].splitlines()) if row]
     assert rows == [], f"a forced-{which}-fail mount must emit NO DRAWER rows; got {rows}"
-    assert "STATIC:S" not in (r.get("controls") or ""), f"the drawer 'S' icon control must be absent on a {which} failure; controls={r.get('controls')!r}"
-    assert f"agent-drawer {which} control failed" in (r.get("stderr") or ""), f"the {which}-failure diagnostic must be present in stderr; got {r.get('stderr')!r}"
+    # NO direct drawer controls at all: neither the panel ("STATIC:" empty text) nor the "S" icon
+    # ("STATIC:S"). For an ICON failure this causally proves the already-created panel was DESTROYED — a leaked
+    # (not-destroyed, or failed-DestroyWindow) panel shows up as "STATIC:" and must fail here (RoseCat 7677).
+    statics = [s for s in (r.get("controls") or "").split("|") if s]
+    drawer_controls = [s for s in statics if s in ("STATIC:", "STATIC:S")]
+    assert drawer_controls == [], f"a forced-{which}-fail mount must leave NO drawer controls (panel/icon); got {statics!r}"
+    # The EXACT complete diagnostic (deterministic forced error 87 + "; drawer not mounted"), as a full line,
+    # NOT a truncated substring (RoseCat 7677).
+    expected = f"zigBrowser: agent-drawer {which} control failed (error 87); drawer not mounted"
+    lines = [ln.rstrip("\r") for ln in (r.get("stderr") or "").splitlines()]
+    assert expected in lines, f"the exact {which}-failure diagnostic (forced error 87) must be emitted; got {r.get('stderr')!r}"
 
 
 def check_assign_fail(r):
@@ -521,8 +530,28 @@ class WinDrawerOracle(unittest.TestCase):
         with self.assertRaises(AssertionError):
             check_mounted_fail(r, "icon")
 
+    def test_icon_fail_but_leaked_panel_rejected(self):
+        # RoseCat 7677 survived mutant: an icon failure that LEAKS the panel ("STATIC:", no icon). The panel
+        # must have been destroyed, so a leaked panel must fail.
+        r = self._good_fail("icon"); r["controls"] = "STATIC:"
+        with self.assertRaises(AssertionError):
+            check_mounted_fail(r, "icon")
+
     def test_fail_without_diagnostic_rejected(self):
         r = self._good_fail("panel"); r["stderr"] = ""
+        with self.assertRaises(AssertionError):
+            check_mounted_fail(r, "panel")
+
+    def test_fail_truncated_diagnostic_rejected(self):
+        # RoseCat 7677 survived mutant: a truncated diagnostic (no "(error 87); drawer not mounted") must fail.
+        r = self._good_fail("icon"); r["stderr"] = "zigBrowser: agent-drawer icon control failed\n"
+        with self.assertRaises(AssertionError):
+            check_mounted_fail(r, "icon")
+
+    def test_fail_wrong_error_code_rejected(self):
+        # the pinned diagnostic requires the deterministic forced error 87; a different code must fail.
+        r = self._good_fail("panel")
+        r["stderr"] = "zigBrowser: agent-drawer panel control failed (error 5); drawer not mounted\n"
         with self.assertRaises(AssertionError):
             check_mounted_fail(r, "panel")
 
