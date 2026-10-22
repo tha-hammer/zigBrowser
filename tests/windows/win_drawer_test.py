@@ -93,6 +93,26 @@ def bounded_cleanup(now_fn, sleep_fn, deadline_s, step_fn, poll_s=1.0):
         sleep_fn(min(poll_s, max(0.0, end - now_fn())))
 
 
+def job_count_settled(now_fn, sleep_fn, count_fn, deadline_s, poll_s=0.1):
+    """Bounded, FAIL-CLOSED settled read of the owned-Job member count after teardown (RoseCat / orchestrator
+    option a). The real `job_count_after` live run showed a just-TerminateProcess'd suspended child still
+    enumerated by a single instant read (TerminateProcess is async; the object lingers in the job list a moment
+    before it is reaped). A single instant read therefore both (1) spuriously FAILS on that transient, and (2)
+    can spuriously PASS a member that is not enumerated yet at the instant but appears/persists just after.
+
+    This polls `count_fn` across the WHOLE window and returns the count at the final poll (the settled reading):
+      - a transient member that LEAVES within the window settles to 0 and passes;
+      - a member that PERSISTS, or APPEARS during the window and stays, is still counted at the deadline, so the
+        caller's `== 0` check FAILS — fail closed. A count still above 0 at the deadline is a FAIL.
+    Injectable clock/sleep/count for offline coverage."""
+    end = now_fn() + deadline_s
+    last = count_fn()
+    while now_fn() < end:
+        sleep_fn(min(poll_s, max(0.0, end - now_fn())))
+        last = count_fn()
+    return last
+
+
 def parse_drawer(line):
     """`DRAWER\\t<win>\\t<kind>\\t...` -> (win, kind, fields) with field validation, or None."""
     parts = line.rstrip("\r\n").split("\t")
@@ -429,6 +449,19 @@ public static class Z {
       return Marshal.ReadInt32(buf, 4); // NumberOfProcessIdsInList
     } finally { Marshal.FreeHGlobal(buf); }
   }
+  // FAIL-CLOSED settled read of the owned-job count (orchestrator option a): poll JobProcessCount across the
+  // WHOLE deadline window and return the count at the final poll. A just-TerminateProcess'd member that lingers
+  // settles to 0 and passes; a member that persists OR appears during the window is still counted at the
+  // deadline, so the caller's `== 0` check FAILS. Mirrors job_count_settled() (its offline model).
+  public static int JobProcessCountSettled(int deadlineMs, int pollMs) {
+    var sw = System.Diagnostics.Stopwatch.StartNew();
+    int last = JobProcessCount();
+    while (sw.ElapsedMilliseconds < deadlineMs) {
+      System.Threading.Thread.Sleep(pollMs);
+      last = JobProcessCount();
+    }
+    return last;
+  }
   // Terminate the job and REQUIRE the held process to reach WAIT_OBJECT_0 on the FIRST wait. On a non-OBJECT_0
   // first wait (the `wait_fail` seam) a DISTINCT bounded cleanup route (FinalReap) first PROVES the process +
   // job tree are gone; only THEN is the intentionally-preserved first-wait failure reported (RoseCat 7670 #2).
@@ -740,7 +773,10 @@ finally {
   # assigned child), THEN run the definitive bounded reap through the still-held process handle — so a Job-close
   # kill is proven by a post-close wait, and a never-assigned child is terminated+proven by FinalReap itself.
   # The runner never exits with an unproved child (RoseCat a94db57 #2).
-  try { if ([Z]::Job -ne [IntPtr]::Zero) { $res.job_count_after = [Z]::JobProcessCount() } } catch { if (-not $res.error) { $res.error = $_.Exception.Message } }
+  # FAIL-CLOSED settled read (orchestrator option a): a just-terminated member may linger an instant in the job
+  # list, so wait (bounded) for owned members to leave before recording the count; a count still > 0 at the
+  # deadline is a real survivor and FAILS downstream.
+  try { if ([Z]::Job -ne [IntPtr]::Zero) { $res.job_count_after = [Z]::JobProcessCountSettled(3000, 100) } } catch { if (-not $res.error) { $res.error = $_.Exception.Message } }
   try { [Z]::CloseJob() } catch { if (-not $res.error) { $res.error = $_.Exception.Message } }
   try { [Z]::FinalReap() | Out-Null } catch { if (-not $res.error) { $res.error = $_.Exception.Message } }
   $res.proc_gone = [Z]::ProcGone
@@ -1203,6 +1239,33 @@ class WinDrawerOracle(unittest.TestCase):
         self.assertIn("unknown/blank seam mode", _RUNNER)
         self.assertIn("decoded_fail=$failMode", _RUNNER)
         self.assertIn("decoded_force=$forceMode", _RUNNER)
+        # option a: the runner records job_count_after via the fail-closed SETTLED read, not a single instant read.
+        self.assertIn("JobProcessCountSettled", _RUNNER)
+        self.assertNotIn("$res.job_count_after = [Z]::JobProcessCount()", _RUNNER)
+
+    # --- fail-closed settled owned-job count oracles (orchestrator option a) ---
+    def _run_settled(self, counts, deadline_s=0.4, poll_s=0.1):
+        clock = [0.0]
+        seq = list(counts)
+        def count():
+            return seq.pop(0) if len(seq) > 1 else seq[0]  # hold the last value once exhausted
+        return job_count_settled(lambda: clock[0], lambda s: clock.__setitem__(0, clock[0] + s), count, deadline_s, poll_s)
+
+    def test_settled_transient_terminated_member_passes(self):
+        # the real bug: a just-terminated member lingers one instant, then leaves. Settled read -> 0 (PASS).
+        self.assertEqual(self._run_settled([1, 1, 0, 0, 0]), 0)
+
+    def test_settled_persistent_survivor_fails(self):
+        # a member that never leaves the owned job -> settled read stays > 0 at the deadline -> FAIL (fail closed).
+        self.assertGreater(self._run_settled([1, 1, 1, 1, 1]), 0)
+
+    def test_settled_late_appearing_member_fails_though_instant_read_passes(self):
+        # CAUSAL row: the member is NOT enumerated at the instant (first read 0), so a single instant read
+        # (the old code) PASSES; it appears during the window and persists, so the settled read (new code)
+        # returns > 0 and FAILS. This is exactly the row an instant read would wrongly pass.
+        counts = [0, 0, 1, 1, 1]
+        self.assertEqual(counts[0], 0, "the instant/first read is 0 — the old single read would PASS")
+        self.assertGreater(self._run_settled(counts), 0, "the settled read must FAIL the late-appearing member")
 
     # --- bounded run-dir cleanup oracles (RoseCat dfaf431: one absolute deadline, budget never renews) ---
     def test_bounded_cleanup_recovers_after_transient(self):
