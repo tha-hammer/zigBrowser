@@ -1314,10 +1314,15 @@ class WinDrawerOracle(unittest.TestCase):
         push = lx("extra_windows.push_back(ExtraWindow{reinterpret_cast<uintptr_t>(w), 1})")
         inc = lx("drawer_live_inc();")
         pre913 = lx("zb_drawer_extra_windows(app->windows_seam)")   # the pre-9132e93 count decision in the spawn
-        decide = lx("zb_drawer_after_controller(app->windows_seam, app->e2e_protocol ? 1 : 0, "
-                    "app->agent_drawer_on ? 1 : 0, app->windows_seam_set ? 1 : 0)")
-        spawn_use = lx("spawn_extra_drawer_windows(app, after.spawn_count)")  # consume the returned COUNT
-        close = lx("PostMessageW(app->hwnd, WM_CLOSE, 0, 0)")                 # the PRIMARY close
+        # The controller completion sequence, bound as ONE contiguous ORDERED block (real control flow, not
+        # three loose counts): `after` is assigned from the decision, flows into the count-consuming spawn, then
+        # the primary close sits inside exactly `if (after.close_primary)`. Each statement is also required
+        # exactly once, so an unconditional / wrong-gated / dead-coded / duplicated variant cannot slip through.
+        assign = lx("const AfterController after = zb_drawer_after_controller(app->windows_seam, "
+                    "app->e2e_protocol ? 1 : 0, app->agent_drawer_on ? 1 : 0, app->windows_seam_set ? 1 : 0);")
+        spawn_stmt = lx("spawn_extra_drawer_windows(app, after.spawn_count);")   # consume the returned COUNT
+        guarded_close = lx("if (after.close_primary) { PostMessageW(app->hwnd, WM_CLOSE, 0, 0); }")  # GUARDED primary close
+        seq = assign + spawn_stmt + guarded_close  # contiguous: assign -> spawn -> guarded close, in that order
 
         def spawn_ok(b):
             need = [loop, both_check, fail_arm, push, lx("GWLP_USERDATA, reinterpret_cast<LONG_PTR>(app)"), inc]
@@ -1329,10 +1334,11 @@ class WinDrawerOracle(unittest.TestCase):
             return b.index(push) < b.index(inc) and b.index(both_check) < b.index(inc)
 
         def ctrl_ok(b):
-            # exactly one decision call, exactly one count-consuming spawn, exactly one primary close, spawn first
-            if b.count(decide) != 1 or b.count(spawn_use) != 1 or b.count(close) != 1:
-                return False
-            return b.index(spawn_use) < b.index(close)  # spawn (the peak is reached) BEFORE the primary close
+            # the whole assign->spawn->guarded-close sequence appears once AND each statement appears exactly
+            # once — so an unconditional close, a wrong gate, decision+spawn under a dead gate, a close before
+            # the spawn, or any duplicate all fail (the loose three-count predicate accepted the first three).
+            return (b.count(seq) == 1 and b.count(assign) == 1
+                    and b.count(spawn_stmt) == 1 and b.count(guarded_close) == 1)
 
         self.assertTrue(spawn_ok(spawn), f"spawn must be count-driven w/ partial-cleanup + record-then-inc; spawn={spawn!r}")
         self.assertTrue(ctrl_ok(ctrl), f"controller must decide once, spawn with the count, then close the primary; ctrl={ctrl!r}")
@@ -1363,6 +1369,10 @@ class WinDrawerOracle(unittest.TestCase):
         self.assertFalse(ctrl_ok(synth(D, "spawn_extra_drawer_windows(app, after.close_primary);", C)), "spawning with the wrong returned field must be caught")
         self.assertFalse(ctrl_ok(synth(D, C, S)), "closing the primary before the spawn must be caught")
         self.assertFalse(ctrl_ok(synth(D, S, "if (after.close_primary) { PostMessageW(extra, WM_CLOSE, 0, 0); }")), "closing a non-primary HWND must be caught")
+        # RoseCat 8124: control-flow mutants the loose three-count predicate wrongly accepted
+        self.assertFalse(ctrl_ok(synth(D, S, "PostMessageW(app->hwnd, WM_CLOSE, 0, 0);")), "an UNGUARDED primary close (no after.close_primary) must be caught")
+        self.assertFalse(ctrl_ok(synth(D, S, "if (app->screenshot) { PostMessageW(app->hwnd, WM_CLOSE, 0, 0); }")), "a WRONG-gate close must be caught")
+        self.assertFalse(ctrl_ok(synth("if (false) { " + D + " " + S + " }", "PostMessageW(app->hwnd, WM_CLOSE, 0, 0);")), "decision+spawn under a dead gate with an unconditional close must be caught")
 
         # --- the lexer defeats literal/comment decoys; close-one still destroys via the record HWND ---
         self.assertNotIn(fail_arm, lx('const char* s = "DestroyWindow(w); continue;";'), "a string-literal decoy must be stripped by the lexer")
