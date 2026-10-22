@@ -470,7 +470,7 @@ pub fn build(b: *std.Build) void {
     // MS7.0 (macOS plan line 2158): both macOS objects must COMPILE and DEFINE the portable drawer logic (zb_drawer_*)
     // the AppKit drawer requires (an AppKit-required inventory: each one a call the drawer's .m makes), once the
     // export gate in agent_drawer.zig covers .macos.
-    // Pure compile — no SDK, no link. RED until that gate widens; not in `cross-check` or `test` until the green.
+    // Pure compile — no SDK, no link. In `cross-check`.
     const cross_drawer_mac_step = b.step("cross-check-drawer-mac", "MS7.0: both macOS builds compile and export the portable drawer logic (zb_drawer_*)");
     for ([_]std.Target.Cpu.Arch{ .aarch64, .x86_64 }) |arch| {
         const cross_drawer_mac_module = b.createModule(.{
@@ -488,6 +488,7 @@ pub fn build(b: *std.Build) void {
         cross_drawer_mac.addFileArg(cross_drawer_mac_obj.getEmittedBin());
         addShimArg(b, cross_drawer_mac, "src/wkwebview_shim.m:src/agent_home_lock.c:src/agent_spawn_posix.c");
         cross_drawer_mac_step.dependOn(&cross_drawer_mac.step);
+        cross_check_step.dependOn(&cross_drawer_mac.step);
     }
 
     // MS8.0 (BlackRobin; BlueBeaver 8072/8088): the approval cards' one authority in the macOS build. Both macOS
@@ -732,8 +733,7 @@ pub fn build(b: *std.Build) void {
     const agent_drawer_tests = b.addTest(.{ .root_module = agent_drawer_tests_module });
     const run_agent_drawer_tests = b.addRunArtifact(agent_drawer_tests);
     run_agent_drawer_tests.skip_foreign_checks = true;
-    // MS7.1 (macOS plan line 2158): the AppKit dock geometry (pageRect, appKitFrame) in the portable logic.
-    // RED until agent_drawer.zig has them; not in `test` until the green.
+    // MS7.1 (macOS plan line 2158): the AppKit dock geometry (pageRect, appKitFrame) in the portable logic. In `test`.
     const agent_drawer_appkit_tests_module = b.createModule(.{
         .root_source_file = b.path("tests/agent_drawer_appkit_test.zig"),
         .target = target,
@@ -763,8 +763,8 @@ pub fn build(b: *std.Build) void {
     run_agent_drawer_card_press_tests.skip_foreign_checks = true;
     const agent_drawer_card_press_step = b.step("test-agent-drawer-card-press", "MS7.6/7.8: the AppKit card press, decided in the portable logic");
     agent_drawer_card_press_step.dependOn(&run_agent_drawer_card_press_tests.step);
-    // MS7.4 (RoseCat 8058): the AppKit bubble text (UTF-16 copy map, invalid UTF-8 and NUL policy, the label/text
-    // view boundary) in the portable logic. RED until agent_drawer.zig has it; not in `test` until the green.
+    // MS7.4 (RoseCat 8058; amended 44ca58e/07e55fd): the AppKit bubble text (UTF-16 copy map, invalid UTF-8 and NUL
+    // policy, the contiguous-layout boundary) in the portable logic. In `test`.
     const agent_drawer_appkit_text_tests_module = b.createModule(.{
         .root_source_file = b.path("tests/agent_drawer_appkit_text_test.zig"),
         .target = target,
@@ -3588,6 +3588,8 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_nav_policy_tests.step);
     test_step.dependOn(&run_agent_drawer_tests.step);
     test_step.dependOn(&run_agent_drawer_breaks_tests.step);
+    test_step.dependOn(&run_agent_drawer_appkit_tests.step);
+    test_step.dependOn(&run_agent_drawer_appkit_text_tests.step);
     test_step.dependOn(&run_agent_net_tests.step);
     test_step.dependOn(&run_agent_net_manifest_tests.step);
     test_step.dependOn(&run_agent_host_posix_tests.step);

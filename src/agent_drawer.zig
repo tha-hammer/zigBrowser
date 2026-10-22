@@ -81,6 +81,30 @@ pub fn drawerRect(width: c_int, height: c_int) Rect {
     return .{ .x = 0, .y = height - tall, .w = width, .h = tall };
 }
 
+/// The page's rect (MS7.1): with the drawer open, exactly the region above the docked panel
+/// (drawerRect), never under it, so the GPU-composited page is resized, not overlaid; closed, the
+/// whole content area. A non-positive width or height is an empty area: never a negative size.
+pub fn pageRect(width: c_int, height: c_int, open: bool) Rect {
+    const w = @max(0, width);
+    const h = @max(0, height);
+    if (!open) return .{ .x = 0, .y = 0, .w = w, .h = h };
+    return .{ .x = 0, .y = 0, .w = w, .h = @max(0, drawerRect(width, height).y) };
+}
+
+/// `r` (origin top-left) as an AppKit frame (origin bottom-left, y up) in a `width` x `height`
+/// content view (MS7.1). Fail closed: a non-positive size counts as 0, and `r` is first clamped
+/// into the content, so the frame is never negative or off-content. For a rect inside the
+/// content it is a pure flip and its own inverse.
+pub fn appKitFrame(r: Rect, width: c_int, height: c_int) Rect {
+    const cw = @max(0, width);
+    const ch = @max(0, height);
+    const x = std.math.clamp(r.x, 0, cw);
+    const y = std.math.clamp(r.y, 0, ch);
+    const w = std.math.clamp(r.w, 0, cw - x);
+    const h = std.math.clamp(r.h, 0, ch - y);
+    return .{ .x = x, .y = ch - (y + h), .w = w, .h = h };
+}
+
 /// The minimize animation (D5): `t` in [0,1] from `a` to `b`, each edge
 /// rounded to the nearest pixel.
 pub fn lerpRect(a: Rect, b: Rect, t: f64) Rect {
@@ -338,6 +362,101 @@ pub fn breakRuns(gpa: std.mem.Allocator, text: []const u8) ![]u8 {
     return out.toOwnedSlice(gpa);
 }
 
+/// MS7.4 (AppKit): one character of `text` at `i` as AppKit shows it. A valid UTF-8 character other than NUL is
+/// itself; a NUL or a maximal invalid subpart (Unicode's "U+FFFD substitution of maximal subparts") is one U+FFFD.
+/// `units`: its length in UTF-16 code units (2 for U+10000 and up).
+const AppKitChar = struct { len: usize, units: usize, replaced: bool };
+
+fn appkitCharAt(text: []const u8, i: usize) AppKitChar {
+    const b = text[i];
+    if (b == 0) return .{ .len = 1, .units = 1, .replaced = true };
+    if (b < 0x80) return .{ .len = 1, .units = 1, .replaced = false };
+    const need: usize, const lo: u8, const hi: u8 = switch (b) {
+        0xC2...0xDF => .{ 1, 0x80, 0xBF },
+        0xE0 => .{ 2, 0xA0, 0xBF },
+        0xE1...0xEC, 0xEE, 0xEF => .{ 2, 0x80, 0xBF },
+        0xED => .{ 2, 0x80, 0x9F },
+        0xF0 => .{ 3, 0x90, 0xBF },
+        0xF1...0xF3 => .{ 3, 0x80, 0xBF },
+        0xF4 => .{ 3, 0x80, 0x8F },
+        else => return .{ .len = 1, .units = 1, .replaced = true },
+    };
+    if (i + 1 >= text.len or text[i + 1] < lo or text[i + 1] > hi) return .{ .len = 1, .units = 1, .replaced = true };
+    var k: usize = 2;
+    while (k <= need) : (k += 1) {
+        if (i + k >= text.len or text[i + k] < 0x80 or text[i + k] > 0xBF) return .{ .len = k, .units = 1, .replaced = true };
+    }
+    return .{ .len = k, .units = if (need == 3) 2 else 1, .replaced = false };
+}
+
+/// The end of the unbroken run at `start` and its length in AppKit characters.
+fn appkitRunAt(text: []const u8, start: usize) struct { end: usize, chars: usize } {
+    var end = start;
+    var chars: usize = 0;
+    while (end < text.len and !isSpace(text[end])) : (chars += 1) end += appkitCharAt(text, end).len;
+    return .{ .end = end, .chars = chars };
+}
+
+/// MS7.4: the text an AppKit bubble shows: breakRuns's form, with each NUL and invalid UTF-8 subpart shown as U+FFFD,
+/// so it is always valid UTF-8 without NUL (an exact-length NSString is never nil). Equal to breakRuns for valid,
+/// NUL-free text. Caller frees.
+pub fn appkitShown(gpa: std.mem.Allocator, text: []const u8) ![]u8 {
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(gpa);
+    try out.ensureTotalCapacity(gpa, text.len);
+    var i: usize = 0;
+    while (i < text.len) {
+        if (isSpace(text[i])) {
+            try out.append(gpa, text[i]);
+            i += 1;
+            continue;
+        }
+        const run = appkitRunAt(text, i);
+        var k: usize = 0;
+        while (i < run.end) {
+            const c = appkitCharAt(text, i);
+            try out.appendSlice(gpa, if (c.replaced) "\u{FFFD}" else text[i .. i + c.len]);
+            i += c.len;
+            k += 1;
+            if (run.chars > break_run_min and k % break_every == 0 and i < run.end) try out.appendSlice(gpa, break_point);
+        }
+    }
+    return out.toOwnedSlice(gpa);
+}
+
+/// MS7.4: AppKit Copy's map: the byte offset in the ORIGINAL `text` of the shown text's UTF-16 offset `shown` (an
+/// added break point maps to the offset after the character before it; an offset inside a surrogate pair, after
+/// that character). Past the end: `text.len`.
+pub fn appkitOriginalOffset(text: []const u8, shown: usize) usize {
+    var at: usize = 0; // UTF-16 units of the shown text passed so far
+    var i: usize = 0;
+    while (i < text.len) {
+        if (at >= shown) return i;
+        if (isSpace(text[i])) {
+            at += 1;
+            i += 1;
+            continue;
+        }
+        const run = appkitRunAt(text, i);
+        var k: usize = 0;
+        while (i < run.end) {
+            if (at >= shown) return i;
+            const c = appkitCharAt(text, i);
+            i += c.len;
+            at += c.units;
+            k += 1;
+            if (run.chars > break_run_min and k % break_every == 0 and i < run.end) at += 1;
+        }
+    }
+    return text.len;
+}
+
+/// MS7.4 (RoseCat 8075 / 44ca58e: the AppKit amendment): a bubble of `len` bytes lays out contiguously up to
+/// label_text_max, past it non-contiguously (the responsiveness boundary; every AppKit bubble is one NSTextView).
+pub fn bubbleLayoutContiguous(len: usize) bool {
+    return len <= label_text_max;
+}
+
 /// Copy's map: the byte offset in the original `text` of the shown text's
 /// character offset `shown` (an added break point maps to the offset after the
 /// character before it). Past the end: `text.len`.
@@ -463,7 +582,7 @@ pub fn configure(io: std.Io, gpa: std.mem.Allocator, profile_dir: ?[]const u8, s
 // GTK backend (src/agent_drawer.c) and the Win32 backend (WS5,
 // src/agent_drawer_win.cpp). The logic is identical; only the glue differs.
 comptime {
-    if (builtin.os.tag == .linux or builtin.os.tag == .windows) {
+    if (builtin.os.tag == .linux or builtin.os.tag == .windows or builtin.os.tag == .macos) {
         @export(&zb_drawer_classify, .{ .name = "zb_drawer_classify" });
         @export(&zb_drawer_place, .{ .name = "zb_drawer_place" });
         @export(&zb_drawer_ratios_of, .{ .name = "zb_drawer_ratios_of" });
@@ -490,6 +609,11 @@ comptime {
         @export(&zb_drawer_after_controller, .{ .name = "zb_drawer_after_controller" });
         @export(&zb_drawer_icon_size_for_dpi, .{ .name = "zb_drawer_icon_size_for_dpi" });
         @export(&zb_drawer_inside_icon, .{ .name = "zb_drawer_inside_icon" });
+        @export(&zb_drawer_page_rect, .{ .name = "zb_drawer_page_rect" });
+        @export(&zb_drawer_appkit_frame, .{ .name = "zb_drawer_appkit_frame" });
+        @export(&zb_drawer_appkit_shown, .{ .name = "zb_drawer_appkit_shown" });
+        @export(&zb_drawer_appkit_original_offset, .{ .name = "zb_drawer_appkit_original_offset" });
+        @export(&zb_drawer_bubble_layout_contiguous, .{ .name = "zb_drawer_bubble_layout_contiguous" });
     }
 }
 
@@ -516,6 +640,16 @@ fn zb_drawer_key_move(r: *Rect, dx: c_int, dy: c_int, big: c_int, width: c_int, 
 
 fn zb_drawer_panel_rect(width: c_int, height: c_int, out: *Rect) callconv(.c) void {
     out.* = drawerRect(width, height);
+}
+
+/// MS7.1: the page's rect (pageRect); `open` non-zero: the drawer is open.
+pub fn zb_drawer_page_rect(width: c_int, height: c_int, open: c_int, out: *Rect) callconv(.c) void {
+    out.* = pageRect(width, height, open != 0);
+}
+
+/// MS7.1: `r` as an AppKit frame in a `width` x `height` content view (appKitFrame).
+pub fn zb_drawer_appkit_frame(r: *const Rect, width: c_int, height: c_int, out: *Rect) callconv(.c) void {
+    out.* = appKitFrame(r.*, width, height);
 }
 
 /// 1 and `out` set: new windows start at this position; 0: the default.
@@ -552,6 +686,26 @@ fn zb_drawer_break_runs(text: [*]const u8, len: usize, out_len: *usize) callconv
     const z = std.heap.c_allocator.dupeZ(u8, shown) catch return null;
     out_len.* = shown.len;
     return z.ptr;
+}
+
+/// MS7.4: an AppKit bubble's shown text (appkitShown), valid UTF-8 without NUL, NUL-terminated, from malloc: the
+/// caller frees it with free(). Null when out of memory.
+pub fn zb_drawer_appkit_shown(text: [*]const u8, len: usize, out_len: *usize) callconv(.c) ?[*:0]u8 {
+    const shown = appkitShown(std.heap.c_allocator, text[0..len]) catch return null;
+    defer std.heap.c_allocator.free(shown);
+    const z = std.heap.c_allocator.dupeZ(u8, shown) catch return null;
+    out_len.* = shown.len;
+    return z.ptr;
+}
+
+/// MS7.4: the original byte offset of a UTF-16 offset in the shown text (appkitOriginalOffset).
+pub fn zb_drawer_appkit_original_offset(text: [*]const u8, len: usize, shown: usize) callconv(.c) usize {
+    return appkitOriginalOffset(text[0..len], shown);
+}
+
+/// MS7.4: 1 when a bubble of `len` bytes is a label, 0 when a read-only text view.
+pub fn zb_drawer_bubble_layout_contiguous(len: usize) callconv(.c) c_int {
+    return @intFromBool(bubbleLayoutContiguous(len));
 }
 
 fn zb_drawer_label_text_max() callconv(.c) usize {
