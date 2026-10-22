@@ -30381,3 +30381,73 @@ The second half of 7679 remains open:
 
 Keep the prototype unregistered until bounded poll/read/wait helpers and an
 unconditional, private-namespace-safe child cleanup close those paths.
+
+## WS5 forced-mount oracle follow-up (`24f8d49`)
+
+**APPROVED as the test-only closure of finding 7677; no VM acceptance is
+claimed.** `check_mounted_fail` now rejects both known direct drawer controls,
+including the empty-text `STATIC:` panel that survived an icon-create failure,
+so the icon branch proves that its already-created panel was destroyed. It
+also requires the complete deterministic diagnostic as one line:
+`zigBrowser: agent-drawer {panel|icon} control failed (error 87); drawer not
+mounted`. A truncated line or a different error code no longer passes.
+
+From an exact clean `git archive 24f8d49` export with display variables unset,
+the offline suite passed **27/27** oracle tests and skipped all five VM-only
+cases. `git show --check 24f8d49` is clean. The new leaked-panel, truncated-line
+and wrong-error-code rows exercise the exact former survivors. The existing
+live forced icon case will also fail if `DestroyWindow` leaves the panel in the
+direct-child census; a second production seam solely to force
+`DestroyWindow` itself to fail is not a prerequisite for closing this oracle
+finding.
+
+This verdict does not supersede the separate lifecycle/VM-run requirements on
+the wider WS5 chain. No Windows VM run was made for this review.
+
+## MS6.3 resolved-scratchpad green and hard-gate digest (`8413992`)
+
+**APPROVED cumulatively with `66e674f` and `f3e34ee`; one two-Mac hard-gate
+run is authorized at exact `24f8d49`.** The production fix refuses rather
+than rewrites a scratchpad unless it is an existing directory whose spelling
+equals its real path. Both `launch_spec` and `setup_sandbox` validate that
+boundary before profile materialization or any setup-profile write. The fd-3
+case builds each home beneath `realpath(h.scratch)` and independently checks
+each resulting scratchpad, closing the measured `/tmp` -> `/private/tmp`
+Seatbelt mismatch without widening the write grant.
+
+The original `8413992` build-step wrapper blocker is closed cumulatively:
+`66e674f` preserves each unittest status and places every signal-capable step
+in a current-UID private PID namespace, and `f3e34ee` made the causal wrapper
+selftest bounded and complete. `git diff 8413992..24f8d49` is empty for
+`tests/mac/hard_gate/`, and the only staged host-code change in that interval
+is the separately approved fixed no-token frame in `c38f8fd`.
+
+An exact clean `git archive 24f8d49` export, itself run inside a private
+current-UID PID namespace with display variables unset, passed:
+
+> `Build Summary: 18/18 steps succeeded` (`test-mac-census`)
+
+That includes the complete manifest check, 12/12 fd-3 case tests, both
+resolved-scratch tests, the hard-gate entry and harness/safety suites, and the
+R1 case/reason suites. Hashing the archived case bytes independently produced
+the exact three manifest entries:
+
+- `case_ms5_spawn_io.py`:
+  `7c739e32fe924877593e15bf232b58be94754c4287b69a7465f2d0371bafcbbb`
+- `case_ms6_3_fd3_cli.py`:
+  `5109446ba0d9291cc6e59ed3c8248723fb310f39561149afdb4992c589a853b1`
+- `case_ms6_6b_r1_chain.py`:
+  `7e914a0b04016c05921af2157b5ea1c0aec9eec35bf3823f7cc97a984ea19f76`
+
+The released run must use the committed-launcher entry for exactly
+`24f8d49` and exactly that three-case manifest; no MS6.5 reaper case is in the
+directory or manifest. The command identity is:
+
+```sh
+bash -c "$(git show 24f8d49:tests/mac/ms6_hard_gate.sh)" \
+  ms6-hard-gate 24f8d49
+```
+
+This authorizes only the already-reviewed hard-gate run on the Intel and
+Apple-Silicon Macs; it does not authorize any additional destructive or
+reaper experiment.
