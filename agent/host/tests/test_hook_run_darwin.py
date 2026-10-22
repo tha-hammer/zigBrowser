@@ -102,8 +102,10 @@ class HookRunDarwin(unittest.TestCase):
             marker.write_bytes(b"")
             os.chmod(marker, 0o400)
             src = os.open(marker, os.O_RDONLY)
-            os.dup2(src, fd)
-            os.close(src)
+            if src != fd:  # self-dup safe: dup2(fd, fd) then close(fd) would close the marker (RoseCat 7951)
+                os.dup2(src, fd)
+                os.close(src)
+        os.fstat(fd)  # the marker is open on its number
 
         def restore():
             if saved is None:

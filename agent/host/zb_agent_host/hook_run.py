@@ -25,6 +25,7 @@ Standard library only: it runs before, and outside of, the helper's venv.
 
 import json
 import os
+import stat
 import struct
 import sys
 
@@ -42,6 +43,14 @@ if sys.platform != "win32":  # POSIX-only (WS7.5, bead zigBrowser-2p3): the modu
     import fcntl
 
 BWRAP = "/usr/bin/bwrap"
+# The platform the Darwin branch keys on (design 7929; a module value so tests inject it, like setup.PLATFORM).
+PLATFORM = sys.platform
+SANDBOX_EXEC = "/usr/bin/sandbox-exec"
+# MS6.5.1's run marker: the one descriptor a hook inherits on Darwin besides stdio, at its reserved number (not the
+# token's 3, the egress 4, nor the >= 10 memfd range), named by this variable; it is never passed into the hook's
+# environment.
+RUN_MARKER_ENV = "ZB_AGENT_RUN_MARKER_FD"
+RUN_MARKER_FD = 5
 REFUSED = (
     "CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY",
     "CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR", "ZB_TOKEN_FIFO",
@@ -165,10 +174,73 @@ def main(argv):
     # stdlib-only and cannot import sandbox, so it reads the value, as hook-env.json.
     bridges = resolve_bridges(runtime)
     ports = resolve_ports(runtime)
+    if PLATFORM == "darwin":
+        return _run_darwin(home, runtime, names, argv[1:])
     env = {name: os.environ[name] for name in names if name in os.environ}
     os.closerange(3, os.sysconf("SC_OPEN_MAX"))
     os.execve(BWRAP, bwrap_argv(home, env, argv[1:], filter_fd(), bridges=bridges, ports=ports), env)
     return 127
+
+
+def _run_darwin(home, runtime, names, command):
+    """Darwin (design 7929; RoseCat 7938): the hook runs under Seatbelt with the hook profile setup rendered into
+    runtime/hook.sb (bridges only, no egress), from the same allowlisted environment, holding only stdio and the run
+    marker. Every check comes before any descriptor is closed: a refusal (exit 2) closes nothing and runs nothing."""
+    try:
+        marker = _run_marker()
+        profile = _hook_profile(runtime)
+        scratchpad = _scratchpad(home)
+    except ValueError as exc:
+        print(f"zb-hook-run: {exc}", file=sys.stderr)
+        return 2
+    env = {name: os.environ[name] for name in names if name in os.environ}
+    top = os.sysconf("SC_OPEN_MAX")
+    if marker is None:
+        os.closerange(3, top)
+    else:
+        os.closerange(3, marker)
+        os.closerange(marker + 1, top)
+    os.execve(SANDBOX_EXEC, [SANDBOX_EXEC, "-f", profile, "-D", f"SCRATCHPAD={scratchpad}", *command], env)
+    return 127
+
+
+def _run_marker():
+    """None without ZB_AGENT_RUN_MARKER_FD; RUN_MARKER_FD when the variable names exactly it and it is an open regular
+    file (the read-only run.marker); anything else is refused."""
+    value = os.environ.get(RUN_MARKER_ENV)
+    if value is None:
+        return None
+    if value != str(RUN_MARKER_FD):
+        raise ValueError(f"{RUN_MARKER_ENV} must be {RUN_MARKER_FD}")
+    try:
+        st = os.fstat(RUN_MARKER_FD)
+    except OSError:
+        raise ValueError("the run marker descriptor is not open") from None
+    if not stat.S_ISREG(st.st_mode):
+        raise ValueError("the run marker descriptor is not a regular file")
+    return RUN_MARKER_FD
+
+
+def _hook_profile(runtime):
+    """runtime/hook.sb: a regular file (never followed) of the effective uid, writable by neither group nor others."""
+    path = os.path.join(runtime, "hook.sb")
+    try:
+        st = os.lstat(path)
+    except OSError:
+        raise ValueError("runtime/hook.sb is missing") from None
+    if not stat.S_ISREG(st.st_mode) or st.st_uid != os.geteuid() or st.st_mode & 0o022:
+        raise ValueError("runtime/hook.sb is not a private regular file")
+    return path
+
+
+def _scratchpad(home):
+    """The SCRATCHPAD binding, by sandbox_macos.dparams' rules: a canonical, non-root absolute path of an existing
+    directory that is its own real path (Seatbelt compares resolved paths)."""
+    path = os.path.join(home, "scratchpad")
+    if (not path.startswith("/") or "//" in path or os.path.normpath(path) != path
+            or os.path.dirname(path) == path or not os.path.isdir(path) or os.path.realpath(path) != path):
+        raise ValueError("the scratchpad is not an existing directory that is its own real path")
+    return path
 
 
 def resolve_bridges(runtime):
