@@ -27615,3 +27615,30 @@ No product or test files changed in this docs-only commit, so no runtime gate
 was required. `git diff --check` is clean. Do not start WS8/WS9 reds from this
 revision: the reds would encode unresolved transport, filesystem, lifecycle
 and network choices.
+
+## Windows decided-consistency follow-up (`e853eaa`)
+
+**BLOCKED (one remaining frontmatter contradiction); `fff7033` is not yet
+cumulatively closed.** The commit correctly closes two of the three
+`a9ad6a9` findings: OD-W3's decision-table row now says that launch is
+unsigned and signing is deferred/non-gating, and WS13.4 now binds uninstall
+to the decided per-user MSI rather than saying OD-W1 may change it. It also
+updates `last_updated` and `last_updated_by` to rev 2.13.
+
+The adjacent `last_updated_note` at
+`2026-10-19-windows-launch-tdd-plan.md:24` is still the old rev-2 text and
+still concludes that the plan “sharpened OD-W1..OD-W9 trade-offs without
+choosing.” That is the exact stale frontmatter statement called out in
+`a9ad6a9`, and it now directly contradicts both `last_updated_by: ... rev
+2.13` and the binding decisions above it. Update that field to describe rev
+2.13 (or rename/preserve it explicitly as a historical `rev_2_note`) before
+the decision-consistency chain is approved.
+
+This is docs-only; `git diff --check e853eaa^ e853eaa` is clean and no runtime
+gate was required. The newest contiguous approved push-through remains
+**`bac895b`**. The first commit after it is `3c3e354`; although its ledger
+publish work is cumulatively closed by `7a30c5c`, that closing commit lies
+after the independently still-open `8a146c4` S8a red range. Thus a contiguous
+prefix cannot yet reach `7a30c5c`, `a527e72`, or `e853eaa`. The next
+independent implementation blocker is `8a146c4`; `a527e72` remains the later
+WSL2-plan blocker recorded above.
