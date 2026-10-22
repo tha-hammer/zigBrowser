@@ -1840,7 +1840,8 @@ authenticated automation socket (or the user-visible delegate/close path named i
   FIX-FORWARD (owning slices MS2c and MS3; decision R30.3 #1).**
   - Cause (read): `wkwebview_shim.m:781-790` calls `requestExit:ZB_EXIT_LOAD_FAILED` (closing every window) for every load
     failure that is not a tagged automation navigation. That covers a link the user clicks to a dead host, a page's own
-    `location=`, a response the policy cancels (`decidePolicyForNavigationResponse` → cancel, `:848`) and any policy-opened
+    `location=`, a response the navigation-response policy refuses to show (`decidePolicyForNavigationResponse` → cancel,
+    `:848`; e.g. a `Content-Disposition: attachment` download response) and any policy-opened
     subwindow load. `loadURI:` (`:515-532`) arms a 15 s timer whose expiry also exits (`:629`), and
     `recoverByReplacingWebView` reloads through `loadURI:` (`:753`), so a recovered window on a slow or down server ends the
     session. Linux does not do this: its `on_window_load_failed` (`webkit_shim.c:1065-1106`) records the error and keeps
@@ -1854,7 +1855,9 @@ authenticated automation socket (or the user-visible delegate/close path named i
   - Reds, exact failing assertions today: (1) after the primary window's first finish, a click on a link to a dead host:
     `assert proc.poll() is None and page_list_answers()` (today the process has exited with `ZB_EXIT_LOAD_FAILED`) and
     `assert load_fail_events == 1`; (2) a page script sets `location` to a dead host: the same assertion; (3) a response the
-    policy cancels: the same assertion; (4) `page.recover` on a window whose server stays down for 20 s (longer than the 15 s
+    policy refuses to show (an `attachment` response; erratum 2026-10-22: a literal "policy cancel" cannot be driven from a
+    test, and the reviewer's cd515ce minimum requires exactly one `LOAD_FAIL` row for that load, so the row proves the
+    failure handler ran): the same assertion; (4) `page.recover` on a window whose server stays down for 20 s (longer than the 15 s
     timer): `assert proc.poll() is None` at t = 20 s; (5) the kept contract: the primary window's INITIAL load of a dead host,
     before its first finish, still exits `assert rc == ZB_EXIT_LOAD_FAILED` (flips if the owner picks option B).
   - (c) Mutants, each must fail its row: restore `requestExit` on the post-first-finish failure path → rows 1-3 fail; leave the
@@ -1882,7 +1885,8 @@ authenticated automation socket (or the user-visible delegate/close path named i
     `webViewDidClose:` ran (`:878-888`).
   - Red: `tests/e2e/mac_ms2c_close_button_test.py` (TO BE AUTHORED), step `ms2c-gate` (TO BE ADDED). The e2e-only seam calls
     `-[NSWindow performClose:]`, which goes through the same delegate path as the red button. Assertions: `popup_id not in
-    page_list_ids()`, `routed_command_error == "window_gone"`, `live_jobs() == baseline`. Fails today (the id stays listed).
+    page_list_ids()`, `routed_command_error == "no_window"` (erratum 2026-10-22: the code's window-gone reason is `no_window`,
+    `automation_server.zig`), `live_jobs() == baseline`. Fails today (the id stays listed).
   - Mutant: remove the `windowWillClose:` handler → the id stays listed. Platform: both Macs. Primary-window behaviour waits on
     decision R30.3 #3.
 - **[bd `zigBrowser-4pa.62`, V03-F8, MAJOR] MS2/MS3 runtime is not exercised by `zig build test`; three gates have no build
