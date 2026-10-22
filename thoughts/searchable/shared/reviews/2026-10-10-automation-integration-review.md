@@ -36577,3 +36577,110 @@ name-based process cleanup.
 description that still calls the removed lifecycle half a recording model.
 The exact live MSVC link/run will cover the current commit, so these durability
 and wording cleanups do not block this authorized run.
+
+## MS8.2a portable helper-core chat-path red (`2a851b5`)
+
+**BLOCKED-FOR-TESTS.** The proposed boundary is right: the new file is an
+unregistered, process-free recording-port test for a portable main-thread core,
+and its absent `agent_helper_core` import is a genuine failing-first condition.
+It cannot signal, open a display, or affect the registered gate. The tests also
+cover useful single-window happy paths for delayed `session_opened`, tool
+round-trips, Stop, close, crash and restart.
+
+The red does not yet prove two contracts it explicitly claims:
+
+1. Its order-sensitive rows mostly use unordered `has()`/`count()` checks.
+   Reordering lock after config check, `starting` after network/token work,
+   `prompt_over` after drawer end/ready, `window_done` before `end_session`, or
+   detach/restart events can therefore leave the suite green. Assert the exact
+   relevant event/frame subsequences for the stated chains: lock -> config;
+   starting -> network -> token fetch -> spawn; ready -> hello -> open_session
+   -> session_opened -> prompt -> busy; result -> prompt_over -> end -> ready
+   -> queued prompt; Stop's prompt_over -> one interrupt; close's end_session ->
+   window_done; and crash -> detach -> recheck -> backoff -> fresh start.
+2. The core is per-window and cites S5d prompt correlation, but every live
+   session is hard-coded to window 1 / `s-1-1`, and the Stop row injects stale
+   frames only before the next prompt starts. Add one driven two-window case
+   with distinct session and prompt ids, then after Stop starts a new prompt
+   inject stale delta, message, result and prompt-scoped error for the old id.
+   None may append to, replace, stop or release the new prompt; Stop, close,
+   tool results and session-ending state for one window must not affect the
+   other. Assert the routed `window`, `session`, `prompt_id` and tool id fields,
+   not only the frame type.
+
+Those are R3(d) gaps: the current proof can pass when the claimed ordering or
+correlation is broken. They are the complete first-round minimum for this
+part-1 red. Registration and the portable green remain later steps of the
+slice; no process/platform run is needed for this red.
+
+## MS5.2 Keychain-onboarding red (`24ef54c`)
+
+**BLOCKED-FOR-TESTS; do not rerun it on either Mac yet.** Calling the real
+onboarding seam and reading back through the reviewed Keychain backend is the
+right runtime authority, and the undefined `zb_agent_onboard_token` gives a
+real link-time red. The committed no-validation mutant usefully proves that
+the negative rows reach storage rather than failing incidentally.
+
+The complete first-round minimum is:
+
+1. Make the disposable Keychain genuinely private and owned. The predictable
+   `/tmp/zb-ms5-onboardT-<pid>.keychain` path can be pre-created or replaced on
+   a shared Mac. Create a unique `mkdtemp` directory, reject every
+   symlink/special/pre-existing Keychain target, keep the Keychain inside that
+   directory, and require success from create, unlock and delete. Prove the
+   exact run-owned directory is empty and removed at exit, including every
+   failure path. Never pass `NULL` or otherwise select the login Keychain.
+2. Bind the production onboarding call to the supplied disposable destination
+   with a driven recording-store seam: exactly one store attempt, with the
+   exact non-null path, service, account and validated bytes, and no store on
+   rejection. The real disposable-Keychain round-trip remains the integration
+   proof. This prevents an implementation that writes the disposable item
+   correctly but also touches the default Keychain from passing.
+3. Prove the exact canonical shape rather than one accepted sample and four
+   misses: bodies of 21/22 and 499/500 characters, both allowed punctuation
+   characters, wrong case/prefix, every disallowed character class and embedded
+   whitespace. A rejected or backend-unavailable replacement attempt must
+   leave a previously stored valid token unchanged. Error text must be fixed
+   and contain neither the token nor `sk-ant`.
+
+These are safety and R3(d) issues, not additional platform breadth. Once the
+red owns a private path and can fail for boundary drift/default-Keychain use,
+its green may be registered and run headlessly on both Macs.
+
+## MS7.5 portable Secrets-window red (`5e71d67`)
+
+**BLOCKED-FOR-TESTS.** The portable controller with an injected backend is an
+appropriate R1 authority for Save/Remove decisions, and the one C entry point
+keeps the native window outside page and automation surfaces. The missing
+`agent_secrets_window_mac` module is a valid unregistered red. No AppKit or
+Keychain runtime claim is accepted from this commit alone; those remain with
+the compiled two-Mac and real-screen gates.
+
+The exact first-round minimum is:
+
+1. Match the current product boundary: **Sign in ships disabled on macOS**
+   because `zb_login_start` has no macOS backend. Replace the enabled
+   `signInStart` / `signing_in` row and the header's “wired” claim with a
+   disabled capability/control whose attempted action makes zero login calls
+   and does not change state. The future login-port slice may enable it.
+2. Do not collapse Keychain failure into “no token.” `present() bool` cannot
+   distinguish absent from unavailable/refused. Give the lookup a typed
+   present/absent/unavailable result and a fixed unavailable status; initialization
+   must never report `empty` when the Keychain could not be read.
+3. Drive the approved paste/save semantics and replacement state: surrounding
+   whitespace/newlines are trimmed, internal whitespace is rejected, only a
+   successful store clears the field, and an invalid or failed replacement
+   preserves an already-stored token/`has_token`. Assert exact backend call
+   counts and arguments, including no clear during Save and no login call while
+   disabled.
+4. Pin every status to its exact fixed sentence (including the unavailable
+   state), then scan all observable statuses after real Save/Remove controller
+   transitions for both the full canary and `sk-ant`. The present whole-token
+   substring check alone can pass if a status leaks a prefix or other token
+   fragment.
+
+Those four points cover the product mismatch and proofs that currently cannot
+fail for destructive replacement or a false-empty Keychain result. The
+AppKit shell still separately owes paste/Save/Remove control binding, window
+isolation, compiled dual-arch evidence and the owner-visible MS7 real-screen
+case; they are not prerequisites for approving this portable red.
