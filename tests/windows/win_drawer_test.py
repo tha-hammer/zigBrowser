@@ -175,11 +175,13 @@ def check_success(r):
     # Exactly one read-only (plain-text) RichEdit bubble UNDER the panel — the conversation surface.
     assert r.get("bubble_present") is True, "the panel must host exactly one read-only RichEdit bubble"
     # The emitted `open` rect must EQUAL the independently observed panel HWND rect (row-vs-HWND agreement).
+    assert r.get("panel_rect"), "no panel HWND rect was measured (empty panel_rect)"
     panx, pany, panw, panh = rect_of([r.get("panel_rect", "")])
     assert (panx, pany, panw, panh) == (px, py, pw, ph), \
         f"emitted open rect {(px,py,pw,ph)} != observed panel HWND rect {(panx,pany,panw,panh)}"
     # The page HWND fills the client ABOVE the panel: top-left, full width, nonempty, bottom == panel top (the
     # page is docked beside the panel, not left behind/under it).
+    assert r.get("page_rect"), "no page (WebView2) HWND rect was measured (empty page_rect)"
     pgx, pgy, pgw, pgh = rect_of([r.get("page_rect", "")])
     assert pgx == 0 and pgy == 0, f"the page must sit at the client top-left; got {(pgx, pgy)}"
     assert pgw == r["client_w"], f"the page must be full client width ({pgw} != {r['client_w']})"
@@ -339,6 +341,11 @@ public static class Z {
   [DllImport("user32", SetLastError=true)] static extern bool GetWindowRect(IntPtr h, out RECT r);
   [DllImport("user32", SetLastError=true)] static extern bool ScreenToClient(IntPtr h, ref POINT p);
   [DllImport("user32")] static extern bool IsWindowVisible(IntPtr h);
+  // WS_VISIBLE STYLE bit (GWL_STYLE=-16, WS_VISIBLE=0x10000000): proves ShowWindow(SW_SHOW) was called on THIS
+  // window, independent of the ancestor chain / interactive desktop. IsWindowVisible walks ancestors, so it is
+  // ALWAYS false in the non-interactive sshd session (the host top-level is never WS_VISIBLE there); the style
+  // bit is the headless-correct "is this control shown" signal and still catches a never-shown child.
+  static bool StyleVisible(IntPtr h) { return (GetWindowLongW(h, -16) & 0x10000000) != 0; }
   [DllImport("user32", SetLastError=true)] static extern IntPtr SendMessageW(IntPtr h, uint msg, IntPtr w, IntPtr l);
 
   const uint CREATE_SUSPENDED = 0x4, GENERIC_WRITE = 0x40000000, FILE_SHARE_READ = 1, FILE_SHARE_WRITE = 2, CREATE_ALWAYS = 2;
@@ -530,7 +537,7 @@ public static class Z {
       var cls = new StringBuilder(64); GetClassName(c, cls, 64);
       if (string.Equals(cls.ToString(), "STATIC", StringComparison.OrdinalIgnoreCase)) {
         var t = new StringBuilder(64); GetWindowText(c, t, 64);
-        if (t.ToString() == "S") { return IsWindowVisible(c) ? 1 : 0; }
+        if (t.ToString() == "S") { return StyleVisible(c) ? 1 : 0; }
       }
       c = GetWindow(c, GW_HWNDNEXT);
     }
@@ -551,12 +558,12 @@ public static class Z {
   // frame (a width strictly between the open drawer and the icon). -1 once it is hidden (folded away).
   public static int PanelWidthVisible(IntPtr host) {
     IntPtr p = PanelHwnd(host);
-    if (p == IntPtr.Zero || !IsWindowVisible(p)) return -1;
+    if (p == IntPtr.Zero || !StyleVisible(p)) return -1;
     RECT r; if (!GetWindowRect(p, out r)) return -1;
     return r.right - r.left;
   }
   // The panel visible at all (terminal check: a folded drawer's panel must be hidden).
-  public static bool PanelVisible(IntPtr host) { IntPtr p = PanelHwnd(host); return p != IntPtr.Zero && IsWindowVisible(p); }
+  public static bool PanelVisible(IntPtr host) { IntPtr p = PanelHwnd(host); return p != IntPtr.Zero && StyleVisible(p); }
   // The page re-docked to the full client area after folding: the WebView2 visual (the largest non-STATIC direct
   // child) covers the whole client height again (not client_h - panel_h). True if its height reaches the client
   // bottom within a small tolerance.
@@ -567,7 +574,7 @@ public static class Z {
     IntPtr c = GetWindow(host, GW_CHILD);
     while (c != IntPtr.Zero) {
       var cls = new StringBuilder(64); GetClassName(c, cls, 64);
-      if (!string.Equals(cls.ToString(), "STATIC", StringComparison.OrdinalIgnoreCase) && IsWindowVisible(c)) {
+      if (!string.Equals(cls.ToString(), "STATIC", StringComparison.OrdinalIgnoreCase) && StyleVisible(c)) {
         RECT r; if (GetWindowRect(c, out r)) { int hgt = r.bottom - r.top; if (hgt > best) best = hgt; }
       }
       c = GetWindow(c, GW_HWNDNEXT);
@@ -617,7 +624,7 @@ public static class Z {
     IntPtr c = GetWindow(host, GW_CHILD);
     while (c != IntPtr.Zero) {
       var cls = new StringBuilder(64); GetClassName(c, cls, 64);
-      if (!string.Equals(cls.ToString(), "STATIC", StringComparison.OrdinalIgnoreCase) && IsWindowVisible(c)) {
+      if (!string.Equals(cls.ToString(), "STATIC", StringComparison.OrdinalIgnoreCase) && StyleVisible(c)) {
         RECT r; if (GetWindowRect(c, out r)) { long a = (long)(r.right-r.left) * (r.bottom-r.top); if (a > best) { best = a; found = c; } }
       }
       c = GetWindow(c, GW_HWNDNEXT);
@@ -652,8 +659,8 @@ public static class Z {
   public static int BubblePid(IntPtr host) { IntPtr b = BubbleHwnd(host); return b == IntPtr.Zero ? 0 : WindowPid(b); }
   public static bool ChildrenVisible(IntPtr host) {
     IntPtr pa = PanelHwnd(host), pg = PageHwnd(host), bu = BubbleHwnd(host);
-    return pa != IntPtr.Zero && IsWindowVisible(pa) && pg != IntPtr.Zero && IsWindowVisible(pg)
-        && bu != IntPtr.Zero && IsWindowVisible(bu);
+    return pa != IntPtr.Zero && StyleVisible(pa) && pg != IntPtr.Zero && StyleVisible(pg)
+        && bu != IntPtr.Zero && StyleVisible(bu);
   }
   public static bool BubblePlainText(IntPtr host) {
     IntPtr b = BubbleHwnd(host); if (b == IntPtr.Zero) return false;
