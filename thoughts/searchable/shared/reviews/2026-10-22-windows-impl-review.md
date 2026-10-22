@@ -139,3 +139,51 @@ Any identity, provenance, hash, launch, authentication, transport, assertion-cou
 PinkOwl ran the previously approved exact commit `0f2486b65ee4d1844292fb403a2a82e6c4116107`. The build exited 0 and the fetched executable's `.sha` matched the full commit. `m8_live_test.py` then exited 1: all three intended Win11 rows failed at `schtasks /create` with `ERROR: Access is denied.`, before a task or browser existed, so it correctly printed zero successful assertions. `m8_gate_red_test.py` also exited 1 because only its live case failed; its five hostless cases passed. Cleanup removed the scratch and remote run directories and left no `zb_m8_*` task.
 
 This is a fail-closed harness result. It neither implicates nor validates WS1.2 behavior because the runner never launched the executable. The concrete evidence is that WS0.4's standard-user task-creation path cannot currently establish the interactive runner on this host. The runner's `/rl highest` option is a plausible cause, especially because the provisioned least-privilege task works, but remains a suspicion rather than a proven root cause. The one-run approval at `0f2486b` is consumed; any retry requires the WS0.4 runner issue to be addressed and a fresh exact-commit/harness review and release.
+
+## WS2b.0 Win11 green outcome — `90d2214`
+
+**Verdict: ACCEPTED as the required WS2b.0 Win11 green platform row. Full WS2b.0 acceptance/closure still waits only for registration of `windows-capabilities-live` in the fail-on-skip `windows-live` aggregate and review of that registration.** The honest WebView2 input and network values remain `unproven`; WS2b.1 and `zigBrowser-ong.7` own proving and changing them, not WS2b.0.
+
+FoggyReef used the one approved session at exact `90d2214a5553595c8c3df062567d4e36dd38886f`, after the orchestrator's release, without retry. All four reviewed hashes matched and the pre-run marker was `zb-win11-m8-ws0-2026-10-20`. The exact build exited 0 with full-commit provenance. `win_capabilities_test.py -v` exited 0 with `ASSERTS 6`: missing and wrong tokens returned `-32000`, the authenticated call returned exactly the WebView2 row with both fields `unproven`, the id was echoed, and nonempty params returned `-32602`. The same executable then passed `win_transport_test.py` 2/2.
+
+Post-run evidence is clean: neither user's `ws20-*` directory survived; no `zigBrowser.exe` or `probe.exe` from the run remained; and the six pre-existing console-session WebView2 processes had unchanged start times and were left alone. This closes the platform-run and D.5 portions of the existing R2 minimum. It does not waive the named live-step registration requirement.
+
+## WS2a.0 review — `4af1a3c` through `34f0fa2`, pre-run
+
+**Verdict: APPROVED implementation chain and APPROVED the exact red and green Win11 legs below; HOLD the proposed third, production-mutant leg—and therefore do not treat the requested three-leg session as fully released—until its scratch-only commit has a full SHA recorded before host contact.** Approval cannot cover future source bytes. No substantive code change is requested: the described one-hunk main-world mutant is the plan's correct mutant, but its commit does not yet exist.
+
+The reviewed linear chain is:
+
+- `4af1a3c18b39647925002f27c723039b9a689aab`: honest unregistered Windows spike red. It links a C driver with the real WebView2 shim and calls only the production `zb_automation_set_script`, `zb_automation_eval_json`, `zb_app_run`, and `zb_automation_free` ABI. At this commit the WebView2 shim defines neither required automation symbol, so the accepted red is a Windows link failure naming both unresolved symbols, before any executable runs.
+- `4ec22cdc99e28373601f1d6f39b9e829df0fce1a`: unregistered portable `cdp_json` red. I reproduced its compile failure because `cdp_json.hpp` did not exist.
+- `a63c1d0a6da5fa6ea4c0b5ff711a5100514e5a17`: strict portable CDP-result reader green, registered as `test-cdp-json` and in `zig build test`.
+- `a6e1be099a0dc0f1e5824e93185a9b11d15ea733`: strict request-string quoting green, including every control byte and embedded NUL.
+- `34f0fa2e772b52bc48d99a9e489bc9ae14782e63`: Win11 green candidate. It adds the single CDP wrapper/error mapping, reuses the existing job marshal, installs the script with `Page.addScriptToEvaluateOnNewDocument` plus `worldName`, evaluates the named main-frame world through `Page.createIsolatedWorld`, and registers the fail-on-missing-host standalone step `windows-private-world-spike-live`.
+
+The production chain is at the correct abstraction: one raw `CallDevToolsProtocolMethod` wrapper owns CDP transport and mapping, chained calls reuse `job_hold`/`callback_done`, and the spike enters through the production C ABI rather than calling a test-only seam. I found no wrong-level call, helper bypass, or generated residue. The changed production imports are live. Two test-only includes are dead (`<cstdint>` in `cdp_json_test.cpp` and `<stdlib.h>` in `ws2a0_world_spike.c`); this is nonblocking hygiene under R3 and does not justify changing the reviewed harness before the platform run.
+
+In exact clean archives, `zig build -j4 test-cdp-json --summary all` passed 4/4 steps; the direct C++ test reported `ASSERTS 32`; `windows-private-world-spike-live` failed hostless with exit 1 and the explicit gate precondition; standalone execution exited 77; and `cross-check` passed as a compile-only tripwire. I independently replayed the three portable production mutants: broken surrogate-pair combination, searching a key at the wrong object depth, and emitting raw control characters. Each turned `test-cdp-json` red. The whole slice has about 454 test lines to 478 production lines, below D.5's 3:1 threshold. The Windows mechanism remains unproved until the approved platform legs run.
+
+Reviewed SHA-256 values are:
+
+| Exact commit | File | SHA-256 |
+|---|---|---|
+| `4af1a3c18b39647925002f27c723039b9a689aab` | `tests/e2e/win_private_world_spike.py` | `cabf866020298b0c8dc60e7781e81026a498a9f4a4ec1abd01fae3f7bee4fd0d` |
+| `4af1a3c18b39647925002f27c723039b9a689aab` | `tests/windows/ws2a0_world_spike.c` | `8cfd9cfb8889e093a2ca0c9bc0b1578b092d0f12d4ab3838a4e596ccd0421b03` |
+| `4af1a3c18b39647925002f27c723039b9a689aab` | `tests/windows/build-on-windows.sh` | `1082b5fc44fae026fc4bc98eab411d87f8c3f8f12d8f70dad63e008fcf7ee1b8` |
+| `34f0fa2e772b52bc48d99a9e489bc9ae14782e63` | `tests/e2e/win_private_world_spike.py` | `cabf866020298b0c8dc60e7781e81026a498a9f4a4ec1abd01fae3f7bee4fd0d` |
+| `34f0fa2e772b52bc48d99a9e489bc9ae14782e63` | `tests/windows/ws2a0_world_spike.c` | `7b9189f99e4b01bba30b168d72afd4df90f9a8c278f34adffb5124ab8f532d13` |
+| `34f0fa2e772b52bc48d99a9e489bc9ae14782e63` | `tests/windows/build-on-windows.sh` | `1082b5fc44fae026fc4bc98eab411d87f8c3f8f12d8f70dad63e008fcf7ee1b8` |
+| `34f0fa2e772b52bc48d99a9e489bc9ae14782e63` | `src/webview2_shim.cpp` | `de44ade6a88cf5dc511d13177ac16b36b8afdfb44f933e72c1174e62bcd327b9` |
+| `34f0fa2e772b52bc48d99a9e489bc9ae14782e63` | `src/cdp_json.hpp` | `4afb62ebd6403a6e0d9f69b32acda669b99106d34e963182e8af6db7b04c5473` |
+
+The approved exact legs use separate scratch shared clones, with `DISPLAY`, `WAYLAND_DISPLAY`, `XAUTHORITY`, `SSH_ASKPASS`, and `SSH_ASKPASS_REQUIRE` unset; `ZB_WIN_GATE=1`, `ZB_WIN11_HOST=127.0.0.1`, and marker `zb-win11-m8-ws0-2026-10-20`; no retry; and the full SHA in `ZB_BUILD_COMMIT`:
+
+1. **Red, exact `4af1a3c18b39647925002f27c723039b9a689aab`:** run `python3 -I tests/e2e/win_private_world_spike.py`. Accept only exit 1 from the expected Windows link failure naming unresolved `zb_automation_set_script` and `zb_automation_eval_json`, followed by `ASSERTS 0`. An identity, staging, SDK, compile, timeout, or unrelated link failure is not the red.
+2. **Green, exact `34f0fa2e772b52bc48d99a9e489bc9ae14782e63`:** run the same command. Accept only exit 0 with every required `ok` row, `ASSERTS n>0`, and `PASS\tws2a0-private-world-spike`. The page world must not see the automation global; the named world must see the injected marker and shared DOM but not the page-only global; all properties must hold again after navigation; and the window/executable must close cleanly. If the named world is unusable, stop without a main-world fallback and report the result.
+
+Before either leg, confirm no session-0 spike or zigBrowser process/window exists. After each attempted executable run, confirm the spike and browser exited and report the exact `zb\\build\\run-<full-sha>` directory plus remaining disk space. The existing build driver intentionally retains that bounded staging directory.
+
+The held third leg becomes approvable without another design review when PinkOwl supplies: a full local commit SHA whose parent is exact `34f0fa2e772b52bc48d99a9e489bc9ae14782e63`; a diff containing only deletion of the `worldName` field from `install_automation_world_then_navigate`; and the same three green harness hashes above. Its accepted result is exit 1 because the `page world cannot see the automation global` checks fail. No host run of that commit is approved before the SHA is added to this log.
+
+Even after red, green, and mutant platform evidence pass, WS2a.0 remains “green, aggregate registration pending” until `windows-private-world-spike-live` is included in the fail-on-skip `windows-live` aggregate. The separately named WS2a.0-W10 leg also remains NOT BUILT and is not replaced by this Win11 session.
