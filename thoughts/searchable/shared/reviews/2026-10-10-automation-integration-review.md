@@ -28728,3 +28728,64 @@ states.
 Advisory: both raw `fork` results remain undecoded, so an A-fork failure can
 still block the pre-watchdog ready read. Fail closed on each fork failure in
 the same follow-up. The verdict was mailed to JadeBeacon as Agent Mail 7586.
+
+## WSL discovery-spike repair (`6e9f989`)
+
+**BLOCKED; NOT AUTHORIZED for a live run.** Static Python compilation and the
+off-host exit-77 path passed, but the repair still has destructive cleanup and
+secret-handling gaps:
+
+1. Cleanup is not guaranteed to finish. Most `ssh()` calls in
+   `_cleanup_and_census` can raise `TimeoutExpired` outside a catch and abort
+   all remaining cleanup/census. `p.kill()` errors are swallowed, the killed
+   child is not re-waited, and `rmtree(ignore_errors=True)` accepts leaked
+   local scratch. Each bounded action must be caught and recorded while
+   cleanup continues through the complete final census.
+2. `_import` records ownership only after both rc and English success-text
+   assertions. A partial import, or a successful import with different text,
+   can therefore fail before cleanup owns the distro. Both nonce-derived
+   distro names must be cleanup-owned before the first import attempt; the
+   failed-import negative must also remove/census any partial registration.
+3. The detached Windows listener is later killed by raw PID only. Its natural
+   20-second exit permits PID reuse before cleanup, so `Stop-Process -Force`
+   could kill an unrelated process. The command masks its result with
+   `exit 0`, and the census does not check its own rc. Retain an owned
+   supervisor/job/handle or revalidate a pinned creation identity immediately
+   before stop.
+4. The documented plain-Python run can reach local `Popen.terminate/kill`, in
+   conflict with the mandatory private-PID-namespace rule for signal tests.
+   Remove that signalling through remote-first teardown, or require the held-
+   outer-fd launcher and sentinel before any child/signal is reachable.
+5. The C1 file scan interpolates the secret into the PowerShell command, hence
+   into the ssh/remote argv, directly violating its stated invariant. Failure
+   messages can also print the returned `got_secret`. Scan locally or feed the
+   pattern over stdin, and never echo the secret into result/error text.
+
+The exact IPv6 readiness match also uses the wildcard-address spelling
+`:::$P_V6` rather than the promised `[::1]:port`; prove the live format or
+match loopback exactly. An offline injected-failure suite must show cleanup
+continues after each exception before any live authorization. Findings were
+mailed to AzureRidge as Agent Mail 7588.
+
+## WS8/WS9 stale-claim sweep (`6abddc1`)
+
+**BLOCKED.** C6 is now honest: it limits observations to the explicit
+`-u zbagent` run and keeps default-user selection and group membership
+unproved. Several active, normative sections still contradict the same
+authoritative not-proven statement:
+
+- the OD-W4 table still calls WSL→Windows firewall-blocked and measured;
+- the WS8 transport summary still says the selected direction is the only one
+  that works without an admin firewall rule;
+- the acceptance matrix still converts the failed reverse attempt directly
+  into “firewall-blocked ⇒ C1/C5”;
+- WS9 and C5 repeat the unconditional firewall/only-direction conclusion; and
+- the reverse-relay section says the observation is non-causal, then concludes
+  that hooks cannot dial Windows directly.
+
+Each active occurrence must say only that one reverse attempt failed without
+proving listener readiness; transport direction and direct-dial denial remain
+proposals pending reviewed live evidence. Historical revision notes may retain
+their superseded wording when unmistakably marked historical. Agent Mail 7589
+sent the exact locations to AzureRidge. The honest-DRAFT range remains open,
+so the contiguous push-through remains the already-pushed `bac895b`.
