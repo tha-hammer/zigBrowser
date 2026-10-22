@@ -3,14 +3,20 @@ real setup.provision (route off) builds a home under the real path of the scratc
 runtime/bin/zb-hook-run), and the REAL zb-hook-run runs a stand-in hook under sandbox-exec with that profile:
 - a tiny launcher puts a 0400 run.marker on fd 5 and leaves one unrelated descriptor open (not close-on-exec), then
   execs zb-hook-run with ZB_AGENT_RUN_MARKER_FD=5 and planted token / proxy / API names in its environment;
-- the stand-in hook (the staged python, writing only into the scratchpad) dumps its environment, connects to both
+- the stand-in hook (the staged python, writing only into the scratchpad) dumps its os.environ, connects to both
   bridge ports of runtime/net.json (listeners this case holds), to an "API" listener on a port the profile does not
   name, and to a public address; it reports fd 5 and the unrelated descriptor, then double-forks + setsid; the
-  detached grandchild re-checks fd 5, writes its own report and exits by itself.
+  detached grandchild re-checks fd 5, writes its own report and exits by itself;
+- a second launch runs the same chain with a non-Python reporter as the hook, /usr/bin/env with no arguments, whose
+  stdout is the environment zb-hook-run exec'd, before any CoreFoundation or Python startup can add to it (the failed
+  2e07c7b run: the stand-in's own interpreter added __CF_USER_TEXT_ENCODING, and LC_CTYPE by PEP 538 locale coercion;
+  RoseCat 7986).
 Checks: the staged host and interpreter; setup provisions the home with runtime/hook.sb; both bridge listeners are
 free and both bridges are reached (each listener received this run's nonce); the API listener and the public address
-are not (no accept, the hook saw a failure); the hook's environment is exactly the hook-env.json allowlist's values
-(no planted name or value, no ZB_AGENT_RUN_MARKER_FD); fd 5 is the marker (a regular file) in the hook and in the
+are not (no accept, the hook saw a failure); no planted name or value and no ZB_AGENT_RUN_MARKER_FD reaches the
+Python hook's environment; the reporter exits 0 and its output is one NAME=VALUE line per entry (UTF-8, each name
+once, a final newline) naming exactly the hook-env.json allowlist's names with this case's values, and independently
+no planted name or value and no ZB_AGENT_RUN_MARKER_FD; fd 5 is the marker (a regular file) in the hook and in the
 detached grandchild, and the unrelated descriptor is closed; zb-hook-run exits 0; and a fail-closed ps census finds
 no process naming this run's nonce within the horizon (never signalled: every process here ends by itself).
 Kill safety: this case makes no direct signal call; its runs go through the guarded h.spawn_group. It reads no
@@ -31,6 +37,7 @@ PLANTED = {"CLAUDE_CODE_OAUTH_TOKEN": "zb-ms8-planted-token", "ANTHROPIC_API_KEY
            "HTTPS_PROXY": "http://127.0.0.1:9", "ZB_TOKEN_FIFO": "/nonexistent/fifo"}
 PUBLIC = ("1.1.1.1", 443)
 HORIZON_S = 20.0
+REPORTER = "/usr/bin/env"  # no arguments: one NAME=VALUE line per entry; no CoreFoundation or Python startup
 
 LAUNCH = r"""
 import os, sys
@@ -124,6 +131,30 @@ def _read_json(path):
         return None
 
 
+def _parse_env(out):
+    """The reporter's output as {name: value}, or None unless it is UTF-8, ends with a newline (or is empty), and every
+    line is NAME=VALUE with a non-empty name, each name once. Unambiguous over this case's values, none of which
+    holds a newline."""
+    try:
+        text = out.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+    if text and not text.endswith("\n"):
+        return None
+    env = {}
+    for line in text.split("\n")[:-1] if text else []:
+        name, sep, value = line.partition("=")
+        if not sep or not name or name in env:
+            return None
+        env[name] = value
+    return env
+
+
+def _leaks(env):
+    """True when `env` names a planted name or ZB_AGENT_RUN_MARKER_FD, or holds a planted value anywhere."""
+    return bool(set(env) & {*PLANTED, "ZB_AGENT_RUN_MARKER_FD"}) or any(v in json.dumps(env) for v in PLANTED.values())
+
+
 def _census(h, nonce):
     """(inspected, pids naming `nonce`) from one guarded ps run; a failed or unparsable ps is not inspected."""
     code, out, _err = h.spawn_group(["/bin/ps", "-axo", "pid=,command="], env={"PATH": "/usr/bin:/bin"}, timeout=10)
@@ -215,11 +246,22 @@ def run(h):
                 f"Seatbelt denies the API port the profile does not name ({report.get('api')}, {len(api.got)} accepts)")
         h.check(report.get("public") == "err:1", f"Seatbelt denies a public address ({report.get('public')})")
         seen = report.get("env")
-        h.check(isinstance(seen, dict) and not set(seen) & {*PLANTED, "ZB_AGENT_RUN_MARKER_FD"}
-                and not any(v in json.dumps(seen) for v in PLANTED.values()),
-                "no planted name or value and no ZB_AGENT_RUN_MARKER_FD reaches the hook's environment")
-        h.check(seen == expected_env, f"the hook's environment is exactly the allowlisted values "
-                                      f"(extra {sorted(set(seen or {}) - set(expected_env))})")
+        # Not the exact launch environment: the hook's own interpreter adds names at startup (the reporter row is
+        # that proof); listed as evidence only.
+        h.check(isinstance(seen, dict) and not _leaks(seen),
+                f"no planted name or value and no ZB_AGENT_RUN_MARKER_FD reaches the hook's environment (its "
+                f"interpreter added {sorted(set(seen or {}) - set(expected_env))})")
+        rcode, rout, rerr = h.spawn_group(argv[:argv.index("--") + 1] + [REPORTER], env=env, timeout=60)
+        launched = _parse_env(rout) if rcode == 0 else None
+        got = launched or {}
+        h.check(launched == expected_env,
+                f"the hook's launch environment (reported by {REPORTER} through zb-hook-run) is exactly the "
+                f"allowlisted names and values (rc={rcode}; parsed={launched is not None}; "
+                f"extra {sorted(set(got) - set(expected_env))}; missing {sorted(set(expected_env) - set(got))}; "
+                f"changed {sorted(k for k in expected_env if k in got and got[k] != expected_env[k])}; "
+                f"stderr tail {rerr[-200:]!r})")
+        h.check(launched is not None and not _leaks(launched),
+                "no planted name or value and no ZB_AGENT_RUN_MARKER_FD reaches the hook's launch environment")
         h.check(report.get("fd5") == "reg" and report.get("stray") == "closed",
                 f"the hook holds the run marker on fd 5 and not the unrelated descriptor "
                 f"({report.get('fd5')}, {report.get('stray')})")

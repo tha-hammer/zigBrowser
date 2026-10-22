@@ -17,7 +17,7 @@ CLI descendant is found and fully checked. Every other failure stays a failure:
 - a CLI environment without the exact canary -> canary-missing; the token anywhere in its buffer -> token-found.
 The walk's calls (children, path, environ_of) are faked; os.kill / os.killpg raise (the re-probe is never a signal).
 Run like the gate: cd agent/host/tests && python -X dev -m unittest -v test_proc_darwin_census_reason
-Unregistered until the green."""
+Registered (build.zig: the MS5 agent-setup step), inside a PID namespace."""
 import errno
 import os
 import unittest

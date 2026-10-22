@@ -9,7 +9,7 @@ zb_agent_host written into a temp prefix:
   scratchpad and a prompt; PYTHONPATH is the staged prefix; pass_fds is exactly that one end; the zb-claude wrapper
   is written for h.cli first; the no-channel row runs the same command with no fd 3 and no pass_fds;
 - an honest host passes every row (positive, decoy, no channel), each with its release checks;
-- while the request is served, production's census (proc_darwin.cli_env_clean) runs once per calling row with the
+- while the request is served, production's census (proc_darwin.cli_env_census) runs once per calling row with the
   exact request: the CLI path, this process as the root, that row's token and its server's ANTHROPIC_BASE_URL; a
   dirty census fails the row; the no-channel row makes no request and so no census;
 - each row's home is exactly setup.stage's layout (.claude, workspace, scratchpad/tmp, runtime/bin with the
@@ -122,9 +122,10 @@ FAKE_FILES = {
         ALIVE = {}
         CENSUS = []
         CLEAN = {"v": True}
-        def cli_env_clean(exe, root, token, canary):
+        CENSUS_REASONS = ("ok", "walk-unreadable", "cli-not-found", "env-unreadable", "canary-missing", "token-found")
+        def cli_env_census(exe, root, token, canary):
             CENSUS.append((exe, root, token, canary))
-            return CLEAN["v"]
+            return "ok" if CLEAN["v"] else "token-found"
         def path(pid):
             return ALIVE.get(pid)
         def environ_of(pid):

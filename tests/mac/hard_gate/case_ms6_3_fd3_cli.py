@@ -18,9 +18,11 @@ Rows:
  2. decoy: a different token on fd 3 -> the bearer is exactly that token: it follows fd 3, not a cached credential,
     an environment variable or a keychain item;
  3. no channel: no fd 3 -> rc != 0 and no request at all (the canary never reaches the server).
-In rows 1 and 2, WHILE the CLI's request is being served, production's census (proc_darwin.cli_env_clean over this
-process's descendants, outside Seatbelt) must say clean: at least one descendant runs the CLI, every one's
-environment reads, holds the exact ANTHROPIC_BASE_URL of this row's server, and holds the row's token nowhere.
+In rows 1 and 2, WHILE the CLI's request is being served, production's census (proc_darwin.cli_env_census over this
+process's descendants, outside Seatbelt) must say "ok", and the row records only that fixed reason (RoseCat 7986: a
+census outside CENSUS_REASONS, or one that raises, is recorded as "invalid", never echoed): at least one descendant
+runs the CLI, every one's environment reads, holds the exact ANTHROPIC_BASE_URL of this row's server, and holds the
+row's token nowhere.
 After EVERY row: the server's port is free on 127.0.0.1 and ::1, and no process of ours runs the CLI or is a python
 naming the row's home (waited out to the row's horizon, never signalled; the inspection fails closed).
 Self-contained (the orchestrator, 7514 (c)): the helpers below are this case's own copies of the R1 case's reviewed
@@ -190,14 +192,18 @@ def _unlock_token_fifo_dir(home):
 
 def _with_census(server, proc_darwin, cli, tok, seen):
     """Hooks the server's handler: on the first /v1/messages, BEFORE it is answered (the CLI is waiting on it, so it
-    is alive), production's census runs over this process's descendants, and its verdict is recorded."""
+    is alive), production's census runs over this process's descendants, and its fixed reason is recorded."""
     base = server.httpd.RequestHandlerClass
     canary = b"ANTHROPIC_BASE_URL=" + server.url.encode()
 
     class Census(base):
         def do_POST(self):  # noqa: N802 - http.server API
             if self.path.split("?", 1)[0] == "/v1/messages" and not seen:
-                seen.append(proc_darwin.cli_env_clean(cli, os.getpid(), tok.encode(), canary) is True)
+                try:
+                    reason = proc_darwin.cli_env_census(cli, os.getpid(), tok.encode(), canary)
+                except Exception:  # noqa: BLE001 - its text may hold a pid, a path or the token: never recorded
+                    reason = None
+                seen.append(reason if isinstance(reason, str) and reason in proc_darwin.CENSUS_REASONS else "invalid")
             super().do_POST()
 
     server.httpd.RequestHandlerClass = Census
@@ -265,7 +271,7 @@ def run(h):
         h.check(rc == 0 and _turn_completed(out), f"{label}: the helper's turn completes ({diag(rc, out, err)})")
         h.check(bearer == "Bearer " + tok, f"{label}: the CLI's bearer is exactly the token on fd 3 "
                                            f"(bearer={'none' if bearer is None else 'other'})")
-        h.check(census == [True], f"{label}: during the request the CLI's environment holds this row's base URL and "
+        h.check(census == ["ok"], f"{label}: during the request the CLI's environment holds this row's base URL and "
                                   f"not the token (census={census})")
         released(label, port, home, started)
 

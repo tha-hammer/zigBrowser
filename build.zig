@@ -2306,6 +2306,14 @@ pub fn build(b: *std.Build) void {
         "py=$(tools/agent_host_env.sh --check) || exit 1; cd agent/host/tests && out=$(env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 ZB_AGENT_HOST_PYTHON=\"$py\" \"$py\" -X dev -m unittest -v test_route_probe_darwin_env 2>&1); rc=$?; printf '%s\\n' \"$out\"; [ $rc -eq 0 ] || exit $rc; if printf '%s\\n' \"$out\" | grep -q ResourceWarning; then echo 'test_route_probe_darwin_env: ResourceWarning' >&2; exit 1; fi",
     });
     agent_setup_ms5_step.dependOn(&agent_host_route_probe_darwin_env.step);
+    // The census names WHY it is not clean: one fixed, token-free reason; a vanished child is benign only when
+    // confirmed and another live CLI is fully checked (RoseCat 7986/7995). Faked walk, no signal; namespaced.
+    const agent_host_proc_darwin_census_reason = b.addSystemCommand(&.{
+        "sh",
+        "-c",
+        "py=$(tools/agent_host_env.sh --check) || exit 1; cd agent/host/tests && out=$(env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 ZB_AGENT_HOST_PYTHON=\"$py\" unshare --map-current-user --pid --fork --kill-child --mount-proc sh -c '\"$0\" -X dev -m unittest -v test_proc_darwin_census_reason; exit $?' \"$py\" 2>&1); rc=$?; printf '%s\\n' \"$out\"; [ $rc -eq 0 ] || exit $rc; if printf '%s\\n' \"$out\" | grep -q ResourceWarning; then echo 'test_proc_darwin_census_reason: ResourceWarning' >&2; exit 1; fi",
+    });
+    agent_setup_ms5_step.dependOn(&agent_host_proc_darwin_census_reason.step);
     // R1 under Seatbelt, setup's half (RoseCat 6958; JadeBeacon 7004): probe_r1 pre-binds 127.0.0.1:0, passes it by
     // pass_fds, and the setup profile permits exactly that port (through the real sandbox_macos.setup_sandbox).
     const agent_host_setup_darwin_r1 = b.addSystemCommand(&.{
@@ -2846,6 +2854,13 @@ pub fn build(b: *std.Build) void {
         "cd tests/e2e && out=$(env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 unshare --user --map-root-user --pid --fork --mount-proc sh -c 'setsid python3 -X dev -m unittest -v ms6_hard_gate_fd3_cli_case_test' 2>&1); rc=$?; printf '%s\\n' \"$out\"; [ $rc -eq 0 ] || exit $rc; if printf '%s\\n' \"$out\" | grep -q ResourceWarning; then echo 'ms6_hard_gate_fd3_cli_case_test: ResourceWarning' >&2; exit 1; fi",
     });
     mac_census_step.dependOn(&ms6_hard_gate_fd3_cli_case_unit.step);
+    // The fd3 case records only the census's fixed reason, "invalid" for anything else (RoseCat 7986/7995). Fakes only.
+    const ms6_hard_gate_fd3_census_reason_unit = b.addSystemCommand(&.{
+        "sh",
+        "-c",
+        "cd tests/e2e && out=$(env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 unshare --user --map-root-user --pid --fork --mount-proc sh -c 'setsid python3 -X dev -m unittest -v ms6_hard_gate_fd3_census_reason_test' 2>&1); rc=$?; printf '%s\\n' \"$out\"; [ $rc -eq 0 ] || exit $rc; if printf '%s\\n' \"$out\" | grep -q ResourceWarning; then echo 'ms6_hard_gate_fd3_census_reason_test: ResourceWarning' >&2; exit 1; fi",
+    });
+    mac_census_step.dependOn(&ms6_hard_gate_fd3_census_reason_unit.step);
     // The fd3 case builds every home under the real path of its scratch (11b3ac4; RoseCat 7627). Namespaced.
     const ms6_hard_gate_fd3_cli_realpath_unit = b.addSystemCommand(&.{
         "sh",
@@ -2898,6 +2913,14 @@ pub fn build(b: *std.Build) void {
         "py=$(tools/agent_host_env.sh --check) || exit 1; cd tests/e2e && out=$(env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 ZB_AGENT_HOST_PYTHON=\"$py\" unshare --map-current-user --keep-caps --net --pid --fork --kill-child --mount-proc sh -c 'ip link set lo up || exit 97; \"$0\" -X dev -m unittest -v ms8_hook_sandbox_case_test; exit $?' \"$py\" 2>&1); rc=$?; printf '%s\\n' \"$out\"; [ $rc -eq 0 ] || exit $rc; if printf '%s\\n' \"$out\" | grep -q ResourceWarning; then echo 'ms8_hook_sandbox_case_test: ResourceWarning' >&2; exit 1; fi",
     });
     mac_census_step.dependOn(&ms8_hook_sandbox_case_unit.step);
+    // Its launch-environment row: the real staged zb-hook-run chain reaches /usr/bin/env, whose output must be exactly
+    // the allowlist's names and values (RoseCat 7986). Same namespaces as its sibling (real bridge ports).
+    const ms8_hook_launch_env_case_unit = b.addSystemCommand(&.{
+        "sh",
+        "-c",
+        "py=$(tools/agent_host_env.sh --check) || exit 1; cd tests/e2e && out=$(env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 ZB_AGENT_HOST_PYTHON=\"$py\" unshare --map-current-user --keep-caps --net --pid --fork --kill-child --mount-proc sh -c 'ip link set lo up || exit 97; \"$0\" -X dev -m unittest -v ms8_hook_launch_env_case_test; exit $?' \"$py\" 2>&1); rc=$?; printf '%s\\n' \"$out\"; [ $rc -eq 0 ] || exit $rc; if printf '%s\\n' \"$out\" | grep -q ResourceWarning; then echo 'ms8_hook_launch_env_case_test: ResourceWarning' >&2; exit 1; fi",
+    });
+    mac_census_step.dependOn(&ms8_hook_launch_env_case_unit.step);
     // The R1 case names which owned-group stop proof failed, as a fixed code only (e567a51 Macs). Fakes only.
     const ms6_hard_gate_r1_reason_unit = b.addSystemCommand(&.{
         "sh",

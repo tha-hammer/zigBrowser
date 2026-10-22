@@ -17,7 +17,7 @@ proc_darwin here offers cli_env_census returning a chosen reason:
 No signal is sent: h.spawn_group is a fake, and os.kill / os.killpg are patched to raise.
 Run like the gate: cd tests/e2e && unshare --user --map-root-user --pid --fork --mount-proc \\
   sh -c 'setsid python3 -X dev -m unittest -v ms6_hard_gate_fd3_census_reason_test'
-Unregistered until the green."""
+Registered (build.zig: test-mac-census), inside the namespace."""
 import os
 import re
 import textwrap

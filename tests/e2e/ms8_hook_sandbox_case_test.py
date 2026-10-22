@@ -66,7 +66,16 @@ class FakeHarness:
             if self.mode == "survivor":
                 lines += f"  777 python3 hook.py {self.nonce}\n"
             return 0, lines.encode(), b""
+        if argv[argv.index("--") + 1:] == ["/usr/bin/env"]:  # the launch-environment reporter row
+            return self.reporter(argv, env or {})
         return self.hook(argv, env or {})
+
+    def reporter(self, argv, env):
+        """What zb-hook-run hands /usr/bin/env: the allowlisted names of the launch env, one NAME=VALUE line each.
+        The real chain runs in ms8_hook_launch_env_case_test."""
+        runtime = Path(argv[argv.index("--") - 1]).parent.parent
+        allowed = json.loads((runtime / "hook-env.json").read_text())
+        return 0, "".join(f"{k}={v}\n" for k, v in env.items() if k in allowed).encode(), b""
 
     def hook(self, argv, env):
         hook_args = argv[argv.index("--") + 1:]

@@ -21,7 +21,7 @@ stand-in and env, which exit by themselves. The case listens on the real bridge 
 namespace of its own (its loopback up), as ms8_hook_sandbox_case_test does:
   cd tests/e2e && unshare --map-current-user --keep-caps --net --pid --fork --kill-child --mount-proc \\
     sh -c 'ip link set lo up && "$ZB_AGENT_HOST_PYTHON" -X dev -m unittest -v ms8_hook_launch_env_case_test; exit $?'
-Unregistered until the green."""
+Registered (build.zig: test-mac-census), in its own network and PID namespaces."""
 import json
 import os
 import subprocess

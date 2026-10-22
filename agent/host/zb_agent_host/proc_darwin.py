@@ -16,6 +16,9 @@ _CTL_KERN = 1
 _KERN_PROCARGS2 = 49
 _PATH_MAX = 4096
 _ARGC = struct.Struct("=i")
+# The census's fixed, token-free reasons (RoseCat 7986): a reason never names a pid, path, argv, environment value,
+# the token or exception text, so it can be logged as-is.
+CENSUS_REASONS = ("ok", "walk-unreadable", "cli-not-found", "env-unreadable", "canary-missing", "token-found")
 
 _libc = None
 _libproc = None
@@ -129,42 +132,64 @@ def environ_of(pid):
 
 def cli_env_clean(exe, root, token, canary):
     """Setup's R1 census verdict (RoseCat 7019; BlueBeaver 7021): run by setup OUTSIDE Seatbelt over its own
-    descendants (`root`), never by the probe or the CLI it tests. True only when at least one descendant runs `exe`,
+    descendants (`root`), never by the probe or the CLI it tests. True only when cli_env_census says "ok"."""
+    return cli_env_census(exe, root, token, canary) == "ok"
+
+
+def cli_env_census(exe, root, token, canary):
+    """The census's reason, one of CENSUS_REASONS (RoseCat 7986): "ok" only when at least one descendant runs `exe`,
     the walk inspected every descendant (a denied listing or path is not clean; RoseCat 7011), and each CLI's
-    KERN_PROCARGS2 reads and parses, holds the exact `canary` entry in its environment (an environment the OS hid is
-    never "clean"), and holds the `token` bytes nowhere, argv included."""
+    KERN_PROCARGS2 reads and parses, holds the `token` bytes nowhere, argv included, and holds the exact `canary` entry
+    in its environment (an environment the OS hid is never "clean"). A CLI whose buffer cannot be read is
+    env-unreadable even when it vanished: only the walk may skip a vanished process."""
     try:
         pids = descendants_running(exe, root)
     except OSError:
-        return False
+        return "walk-unreadable"
     if not pids:
-        return False
+        return "cli-not-found"
     for pid in pids:
         try:
             raw, _argv, env = environ_of(pid)
         except OSError:
-            return False
-        if canary not in env or token in raw:
-            return False
-    return True
+            return "env-unreadable"
+        if token in raw:
+            return "token-found"
+        if canary not in env:
+            return "canary-missing"
+    return "ok"
 
 
 def descendants_running(exe, root):
     """Every descendant of `root` whose executable path is `exe` (a breadth-first walk; each pid visited once).
-    Only a vanished process is skipped; a denied child list or an unreadable path raises OSError, so the caller
-    never mistakes an uninspected subtree for an empty one (RoseCat 7011)."""
+    Only a vanished process is skipped, and only when that is confirmed: ESRCH (children() raises ProcessLookupError,
+    path() returns None), or a failed lookup whose immediate re-probe says ESRCH. A denied child list or an unreadable
+    path otherwise raises OSError, so the caller never mistakes an uninspected subtree for an empty one (RoseCat 7011,
+    7986)."""
     found, seen, queue = [], {root}, [root]
     while queue:
         pid = queue.pop(0)
         try:
             kids = children(pid)
         except ProcessLookupError:
+            if pid == root:  # the census root never vanishes: ESRCH on it is a failed walk (RoseCat 7995 #1)
+                raise
             continue
+        except OSError:
+            if pid != root and path(pid) is None:  # the re-probe confirms it vanished; the root never does
+                continue
+            raise
         for kid in kids:
             if kid in seen:
                 continue
             seen.add(kid)
+            try:
+                kid_path = path(kid)
+            except OSError:
+                if path(kid) is None:  # vanished between children() and path(), confirmed by the re-probe
+                    continue
+                raise OSError(f"proc_pidpath({kid}): unreadable") from None
             queue.append(kid)
-            if path(kid) == exe:
+            if kid_path == exe:
                 found.append(kid)
     return found

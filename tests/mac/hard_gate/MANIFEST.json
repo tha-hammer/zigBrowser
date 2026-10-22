@@ -11,7 +11,7 @@
     },
     {
       "file": "case_ms6_3_fd3_cli.py",
-      "sha256": "636b7785c78e023de0bee4160712ccc57dfa7098b3e90bbb6059c6e182d8a1aa"
+      "sha256": "c8533dce13eae7ed19cce2a40988a60282caf2348ee89924aacadfdee663859b"
     },
     {
       "file": "case_ms6_6b_r1_chain.py",
@@ -27,7 +27,7 @@
     },
     {
       "file": "case_ms8_hook_sandbox.py",
-      "sha256": "896e057ecc001944758521e7356d904dbdc2283e855a8c7a5b92079ddf9e2a69"
+      "sha256": "136226a4d93d188622a9244f726360cf3da0b435048be483eb14d224b78051c2"
     }
   ]
 }
