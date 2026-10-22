@@ -229,6 +229,24 @@ pub fn build(b: *std.Build) void {
         ws2a0_run.addFileArg(b.path("tests/fixtures/app/page-b.html"));
         b.step("ws2a0-world-spike-win", "WS2a.0: the automation script's private CDP world on Windows")
             .dependOn(&ws2a0_run.step);
+
+        // WS2b.1 spike (Windows plan rev 2.21): native input through the production zb_native_* ABI must reach
+        // the page as trusted events (tests/windows/ws2b1_input_spike.c, the GTK input fixtures, the real
+        // automation.js for the document guard). Linked like the WS2a.0 spike, with the same drawer object.
+        // Windows-target builds only; run on the Win11 VM by
+        // `bash tests/windows/build-on-windows.sh ws2b1-input-spike-win` (tests/e2e/win_trusted_input_matrix.py).
+        const ws2b1_module = b.createModule(.{ .target = target, .optimize = optimize, .link_libc = true });
+        configureBackend(ws2b1_module, b, backend, webview2_paths);
+        ws2b1_module.addCSourceFile(.{ .file = b.path("tests/windows/ws2b1_input_spike.c"), .flags = &.{"-std=c11"} });
+        ws2b1_module.addObject(ws2a0_drawer);
+        const ws2b1_exe = b.addExecutable(.{ .name = "ws2b1-input-spike", .root_module = ws2b1_module });
+        ws2b1_exe.step.dependOn(pkg_guard);
+        const ws2b1_run = b.addRunArtifact(ws2b1_exe);
+        ws2b1_run.addFileArg(b.path("tests/fixtures/automation/input.html"));
+        ws2b1_run.addFileArg(b.path("tests/fixtures/automation/scroll.html"));
+        ws2b1_run.addFileArg(b.path("src/automation_script/automation.js"));
+        b.step("ws2b1-input-spike-win", "WS2b.1: native input through CDP reaches the page as trusted events on Windows")
+            .dependOn(&ws2b1_run.step);
     }
 
     // WS2.0 (Windows plan rev 2.6): the owner-only seam's DACLs read back from Windows. Windows-target
