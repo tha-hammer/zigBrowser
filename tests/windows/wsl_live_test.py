@@ -165,13 +165,14 @@ def _userns_available():
         return False
 
 
-def ssh_effective_config(opts, host="127.0.0.1", port=None):
+def ssh_effective_config(opts, host="127.0.0.1", port=None, user=None):
     """OpenSSH's EFFECTIVE config for `opts` via `ssh -G`, run INSIDE `unshare --user --map-current-user` (the
     mandated namespace, where root maps to the overflow uid) with a cleared environment. `ssh -G` opens no
-    connection, so the VM is never contacted. Returns (rc, cfg, stderr); `identityfile` collects every value."""
+    connection, so the VM is never contacted. Returns (rc, cfg, stderr); `identityfile` collects every value.
+    `port`/`user` default to the pinned values; a mutant overrides them to prove the oracle catches the change."""
     argv = ["unshare", "--user", "--map-current-user",
             "env", "-i", "PATH=/usr/bin:/bin",
-            "ssh", "-G", *opts, "-p", port or PORT, f"{USER}@{host}"]
+            "ssh", "-G", *opts, "-p", port or PORT, f"{user or USER}@{host}"]
     r = subprocess.run(argv, capture_output=True, text=True, timeout=60)
     cfg = {}
     for ln in (r.stdout or "").splitlines():
@@ -190,6 +191,12 @@ def ssh_effective_config(opts, host="127.0.0.1", port=None):
 def _cfg_on(value):
     # ssh -G normalizes a boolean "yes" to "yes" or "true" depending on the option; treat both as on.
     return str(value).lower() in ("yes", "true")
+
+
+def _ordered_sublist(haystack, needle):
+    """True when `needle` appears as a CONTIGUOUS, in-order run inside `haystack`."""
+    n = len(needle)
+    return n > 0 and any(haystack[i:i + n] == needle for i in range(len(haystack) - n + 1))
 
 
 def assert_secure_ssh_config(rc, cfg, stderr):
@@ -214,6 +221,8 @@ def assert_secure_ssh_config(rc, cfg, stderr):
     assert cfg.get("user") == USER, f"user must be {USER} (got {cfg.get('user')!r})"
     assert cfg.get("connecttimeout") == "25", \
         f"the ConnectTimeout bound must survive (got {cfg.get('connecttimeout')!r})"
+    assert cfg.get("connectionattempts") == "3", \
+        f"ConnectionAttempts must be exactly 3 (got {cfg.get('connectionattempts')!r}; the default 1 or any other value is a regression)"
     assert cfg.get("serveraliveinterval") == "5" and cfg.get("serveralivecountmax") == "3", \
         f"the dead-peer bounds must survive (interval={cfg.get('serveraliveinterval')!r} " \
         f"countmax={cfg.get('serveralivecountmax')!r})"
@@ -990,8 +999,10 @@ class WslSpikeOracle(unittest.TestCase):
         assert_secure_ssh_config(rc, cfg, err)
 
     def test_shared_ssh_opts_mutants_each_caught(self):
-        # Each mutant removes, substitutes or relaxes ONE security option; the oracle must reject every one —
-        # proving the secure-config assertion is causal, not vacuous. ssh -G only; the VM is never contacted.
+        # RoseCat 13de146: each mutant removes, substitutes or relaxes ONE security/bound option (or injects a
+        # proxy); the oracle must reject every one — proving the config assertion is causal across identity,
+        # user, port, ConnectTimeout, ConnectionAttempts, both ServerAlive fields and proxy. ssh -G only; the VM
+        # is never contacted (a ProxyCommand/ProxyJump is NOT executed or resolved by -G).
         if not _userns_available():
             self.skipTest("user namespaces unavailable; the ssh -G proof requires the same namespace as the run")
 
@@ -1005,37 +1016,64 @@ class WslSpikeOracle(unittest.TestCase):
                 i += 1
             return out
 
-        def sub_opt(opts, old, new):  # replace a single -o value token
+        def sub(opts, old, new):  # replace a single token
             return [new if t == old else t for t in opts]
 
         base = _ssh_opts()
-        mutants = {
-            "no -F none": drop_flag(base, "-F", "none"),  # system config refusal returns
-            "no GlobalKnownHostsFile=none": drop_flag(base, "-o", "GlobalKnownHostsFile=none"),
-            "relaxed StrictHostKeyChecking": sub_opt(base, "StrictHostKeyChecking=yes", "StrictHostKeyChecking=no"),
-            "no IdentitiesOnly": drop_flag(base, "-o", "IdentitiesOnly=yes"),
-            "no BatchMode": drop_flag(base, "-o", "BatchMode=yes"),
-            "substituted UserKnownHostsFile": sub_opt(base, f"UserKnownHostsFile={KH}",
-                                                      "UserKnownHostsFile=/tmp/zb-bogus-known-hosts"),
-        }
-        for name, opts in mutants.items():
-            rc, cfg, err = ssh_effective_config(opts)
+        # (name, opts, kwargs) — kwargs override the port/user of ssh -G for the port/user mutants.
+        mutants = [
+            ("no -F none", drop_flag(base, "-F", "none"), {}),                         # system-config refusal returns
+            ("no GlobalKnownHostsFile=none", drop_flag(base, "-o", "GlobalKnownHostsFile=none"), {}),
+            ("relaxed StrictHostKeyChecking", sub(base, "StrictHostKeyChecking=yes", "StrictHostKeyChecking=no"), {}),
+            ("no IdentitiesOnly", drop_flag(base, "-o", "IdentitiesOnly=yes"), {}),
+            ("no BatchMode", drop_flag(base, "-o", "BatchMode=yes"), {}),
+            ("substituted UserKnownHostsFile", sub(base, f"UserKnownHostsFile={KH}",
+                                                   "UserKnownHostsFile=/tmp/zb-bogus-known-hosts"), {}),
+            ("substituted identity", sub(base, KEY, "/tmp/zb-bogus-identity"), {}),     # identityfile != pinned key
+            ("wrong port", base, {"port": "9"}),                                       # effective port != pinned
+            ("wrong user", base, {"user": "mallory"}),                                 # effective user != pinned
+            ("shrunk ConnectTimeout", sub(base, "ConnectTimeout=25", "ConnectTimeout=5"), {}),
+            ("substituted ConnectionAttempts", sub(base, "ConnectionAttempts=3", "ConnectionAttempts=99"), {}),
+            ("dropped ConnectionAttempts", drop_flag(base, "-o", "ConnectionAttempts=3"), {}),  # default 1
+            ("changed ServerAliveInterval", sub(base, "ServerAliveInterval=5", "ServerAliveInterval=1"), {}),
+            ("changed ServerAliveCountMax", sub(base, "ServerAliveCountMax=3", "ServerAliveCountMax=9"), {}),
+            ("injected ProxyCommand", base + ["-o", "ProxyCommand=/bin/true"], {}),
+            ("injected ProxyJump", base + ["-o", "ProxyJump=127.0.0.2"], {}),
+        ]
+        for name, opts, kw in mutants:
+            rc, cfg, err = ssh_effective_config(opts, **kw)
             with self.assertRaises(AssertionError, msg=f"mutant {name!r} must be rejected by the oracle"):
                 assert_secure_ssh_config(rc, cfg, err)
 
-    def test_one_option_set_shared_by_ssh_and_scp(self):
-        # RoseCat 33a9bf2: ONE constructor shared by foreground ssh, background ssh and scp. ssh/ssh_bg use
-        # _ssh_base (ssh + _ssh_opts + -p); scp uses _ssh_opts + -P. Assert every shared option appears in both
-        # transports, so neither can silently drop a security option.
+    def test_every_transport_launches_the_shared_options_in_order(self):
+        # RoseCat 13de146: capture the REAL argv each transport launches (not a hand-built list) by intercepting
+        # the subprocess calls, and prove the shared option set appears CONTIGUOUSLY and in order in foreground
+        # ssh, background ssh and scp — so no transport can silently drop or reorder a security option.
+        from unittest import mock
+        from types import SimpleNamespace
+        captured = []
+
+        def fake_run(argv, *a, **k):
+            captured.append(("run", list(argv)))
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        class FakePopen:
+            def __init__(self, argv, *a, **k):
+                captured.append(("popen", list(argv)))
+
+        with mock.patch.object(subprocess, "run", fake_run), mock.patch.object(subprocess, "Popen", FakePopen):
+            ssh("whoami")          # foreground ssh -> subprocess.run
+            ssh_bg("sleep", "1")   # background ssh -> subprocess.Popen
+            scp("/tmp/a", "b")     # scp           -> subprocess.run
+
         opts = _ssh_opts()
-        ssh_argv = _ssh_base()
-        scp_argv = ["scp", *_ssh_opts(), "-P", PORT, "L", f"{USER}@{HOST}:R"]
-        for i, tok in enumerate(opts):
-            self.assertIn(tok, ssh_argv, f"foreground/bg ssh must carry the shared option {tok!r}")
-            self.assertIn(tok, scp_argv, f"scp must carry the shared option {tok!r}")
-        self.assertIn("-F", opts)
-        self.assertIn("none", opts)
-        self.assertIn("GlobalKnownHostsFile=none", opts)
+        self.assertEqual([k for k, _ in captured], ["run", "popen", "run"],
+                         "exactly foreground ssh (run), background ssh (Popen) and scp (run) must launch")
+        for kind, argv in captured:
+            self.assertTrue(_ordered_sublist(argv, opts),
+                            f"{kind} argv must carry the shared option set contiguously & in order; argv={argv}")
+        self.assertIn("ssh", captured[0][1])
+        self.assertIn("scp", captured[2][1])
 
     def test_pidns_backstop_refusals(self):
         # (7687 SHOULD) pin the two namespace refusals + the one pass, as committed coverage.
