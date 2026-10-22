@@ -33141,3 +33141,29 @@ censuses. Offline source inspection already makes a desktop split unlikely:
 `STARTUPINFO.lpDesktop` is unset, neither side calls a desktop/window-station
 switch API, and the runner already found the exact-pid host through
 `EnumWindows`. The diagnostic must measure rather than assume that conclusion.
+
+## Win11 drawer class-census fix (`f32c8f2`)
+
+**APPROVED; one final bounded eight-row Win11 entry run is authorized at exact
+`f32c8f2`.** The owner-watched hierarchy diagnostic causally resolves the
+previous row-6 failure: at both observations the exact-pid
+`zigBrowserWebView2Host` contained the panel, `S` icon and `-` control as
+class `Static`, with the read-only `RICHEDIT50W` bubble below the panel and the
+WebView2 page hierarchy present. The harness alone compared that Win32 class
+to uppercase `STATIC`, so all seven affected control lookups could incorrectly
+produce an empty census. `f32c8f2` makes only those comparisons ordinal and
+case-insensitive while retaining the canonical uppercase `STATIC:<text>`
+result format consumed by the Python oracle. No drawer/shim code changed.
+
+From an exact clean archive, the offline module passed **71 tests with the
+eight live methods skipped**. Source review confirms all seven former
+`==/!= "STATIC"` branches were converted, and the guard rejects either raw
+comparison. The released run must use a fresh MSVC build of exact `f32c8f2`,
+the same eight fail-fast rows, unique state below
+`C:\\Users\\zbtext\\zb`, `about:blank`, `--agent-drawer on`,
+`--e2e-protocol`, `--media-source off`, the born-suspended owned Job and the
+reviewed handle-only teardown. It may touch no account, live site, credential,
+input device or unrelated process. Record the artifact hash/provenance,
+decoded seam values, all eight results, and exact before/after process and
+run-directory censuses. Stop on the first failure, leave the VM clean and do
+not retry without a new review.
