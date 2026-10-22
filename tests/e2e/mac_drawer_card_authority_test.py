@@ -21,13 +21,26 @@ from the comment-free text with strings kept).
   objc_msgSend, method_getImplementation, class_replaceMethod, method_exchangeImplementations, sendAction:,
   performSelector, performClick, setAction: or setTarget:; and the drawer has no WKScriptMessageHandler,
   WKUserContentController, addScriptMessageHandler or evaluateJavaScript.
+- Z (RoseCat 8074 / 64e2225): the executable's Zig side, where the minters live, is inventoried too, fail closed.
+  The graph is every .zig file reachable from src/main.zig through relative @import (an import of any module other
+  than std, builtin, root and the generated build_options is a violation: unreviewed code). Read lexically (// comments
+  removed, string literals blanked), every occurrence of the identifiers zb_agent_tools_approve, zb_agent_tools_deny,
+  zb_drawer_card_press, approve and deny is located by file and innermost enclosing fn ("-": none), and the census
+  must equal ALLOWED exactly: the two minter definitions (agent_tools.zig, each the only caller of cards.approve /
+  cards.deny), Cards.approve / Cards.deny's definitions (agent_approval.zig), and the reviewed bridge in
+  agent_drawer.zig (its Approver fields, cardPress's two calls, the adapter's .approve/.deny, the extern declarations,
+  one call each in toolsApprove / toolsDeny, and zb_drawer_card_press's definition and its one @export). The minter
+  definitions must be `export fn`, the drawer's declarations `extern fn`, and the bridge's @export name exactly
+  "zb_drawer_card_press". The ObjC rules above stay the narrower authority for native event ingress.
 The real native click (MS7.8's -[NSWindow sendEvent:] Approve/Deny) stays the owner-run real-screen closure.
 Self-checking: an honest fixture passes; names in strings and comments do not count; and each dishonest fixture fails.
 RED until build.zig's macOS link has src/agent_drawer_mac.m with that shape. No process, no signal.
 Run: cd tests/e2e && python3 -X dev -m unittest -v mac_drawer_card_authority_test
 Unregistered until the green."""
+import os
 import re
 import unittest
+from collections import Counter, deque
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
@@ -140,6 +153,99 @@ def problems(sources, files):
     return found
 
 
+def zig_lexical(text):
+    """Zig source without // comments, with "..." and '...' literal contents and \\\\ multiline strings blanked."""
+    out, i, n = [], 0, len(text)
+    while i < n:
+        if text.startswith("//", i):
+            j = text.find("\n", i); i = n if j < 0 else j
+        elif text.startswith("\\\\", i):
+            j = text.find("\n", i); out.append('""'); i = n if j < 0 else j
+        elif text[i] in "\"'":
+            q, j = text[i], i + 1
+            while j < n and text[j] != q and text[j] != "\n":
+                j += 2 if text[j] == "\\" else 1
+            out.append(q + q); i = j + 1
+        else:
+            out.append(text[i]); i += 1
+    return "".join(out)
+
+def graph(read, root="src/main.zig"):
+    seen, q, bad = {}, deque([root]), []
+    while q:
+        f = q.popleft()
+        if f in seen: continue
+        text = read(f)
+        if text is None: bad.append(f"missing {f}"); continue
+        seen[f] = text
+        for imp in re.findall(r'@import\(\s*"([^"]+)"\s*\)', text):
+            if imp.endswith(".zig"):
+                q.append(os.path.normpath(os.path.join(os.path.dirname(f), imp)))
+            elif imp not in ("std", "builtin", "root", "build_options"):
+                bad.append(f"{f} imports the unreviewed module {imp!r}")
+    return seen, bad
+
+def fn_spans(code):
+    spans = []
+    for m in re.finditer(r"\bfn\s+(\w+)\s*\(", code):
+        k = code.find("{", m.end())
+        semi = code.find(";", m.end())
+        if k < 0 or (0 <= semi < k): continue  # a declaration (extern fn ...;)
+        depth, i = 1, k + 1
+        while i < len(code) and depth:
+            depth += {"{": 1, "}": -1}.get(code[i], 0); i += 1
+        spans.append((k, i, m.group(1)))
+    return spans
+
+def where(code, spans, pos):
+    inner = [s for s in spans if s[0] <= pos < s[1]]
+    return min(inner, key=lambda s: s[1] - s[0])[2] if inner else "-"
+
+TOKENS = ("zb_agent_tools_approve", "zb_agent_tools_deny", "zb_drawer_card_press", "approve", "deny")
+
+def census(files):
+    c = Counter()
+    for f, text in files.items():
+        code = zig_lexical(text); spans = fn_spans(code)
+        for tok in TOKENS:
+            for m in re.finditer(r"\b" + tok + r"\b", code):
+                c[(os.path.basename(f), tok, where(code, spans, m.start()))] += 1
+    return c
+
+ALLOWED = Counter({
+    ("agent_approval.zig", "approve", "-"): 1, ("agent_approval.zig", "deny", "-"): 1,
+    ("agent_tools.zig", "zb_agent_tools_approve", "-"): 1, ("agent_tools.zig", "zb_agent_tools_deny", "-"): 1,
+    ("agent_tools.zig", "approve", "zb_agent_tools_approve"): 1, ("agent_tools.zig", "deny", "zb_agent_tools_deny"): 1,
+    ("agent_drawer.zig", "approve", "-"): 1, ("agent_drawer.zig", "deny", "-"): 1,
+    ("agent_drawer.zig", "approve", "cardPress"): 1, ("agent_drawer.zig", "deny", "cardPress"): 1,
+    ("agent_drawer.zig", "approve", "zb_drawer_card_press"): 1, ("agent_drawer.zig", "deny", "zb_drawer_card_press"): 1,
+    ("agent_drawer.zig", "zb_agent_tools_approve", "-"): 1, ("agent_drawer.zig", "zb_agent_tools_deny", "-"): 1,
+    ("agent_drawer.zig", "zb_agent_tools_approve", "toolsApprove"): 1,
+    ("agent_drawer.zig", "zb_agent_tools_deny", "toolsDeny"): 1,
+    ("agent_drawer.zig", "zb_drawer_card_press", "-"): 2,
+})
+
+
+def zig_problems(files, bad):
+    """The Zig graph ({path: text}, import violations) -> the inventory's violations (empty: holds)."""
+    found = list(bad)
+    got = census(files)
+    for key in sorted(set(got) | set(ALLOWED)):
+        if got[key] != ALLOWED[key]:
+            found.append(f"Z: {key} occurs {got[key]} times, want {ALLOWED[key]}")
+    by_name = {os.path.basename(f): t for f, t in files.items()}
+    tools, drawer = zig_lexical(by_name.get("agent_tools.zig", "")), zig_lexical(by_name.get("agent_drawer.zig", ""))
+    for name in ("zb_agent_tools_approve", "zb_agent_tools_deny"):
+        if not re.search(r"\bexport\s+fn\s+" + name + r"\s*\(", tools):
+            found.append(f"Z: {name} must be agent_tools.zig's `export fn`")
+        if not re.search(r"\bextern\s+fn\s+" + name + r"\s*\(", drawer):
+            found.append(f"Z: agent_drawer.zig must declare {name} as `extern fn`")
+    if not re.search(r'@export\(\s*&zb_drawer_card_press\s*,\s*\.\{\s*\.name\s*=\s*"zb_drawer_card_press"\s*\}\s*\)',
+                     by_name.get("agent_drawer.zig", "")):
+        found.append('Z: zb_drawer_card_press must be exported once, under exactly that name')
+    return found
+
+
 HONEST = r'''
 #import <AppKit/AppKit.h>
 #define ZB_CARD_APPROVE 1
@@ -203,12 +309,76 @@ MUTANTS = {
 }
 
 
+Z_FILES = {
+    "src/main.zig": 'const app = @import("app.zig");\n',
+    "src/app.zig": 'const drawer = @import("agent_drawer.zig");\nconst tools = @import("agent_tools.zig");\n',
+    "src/agent_approval.zig": "pub const Cards = struct {\n    pub fn approve(self: *Cards, id: u64) bool { _ = self; _ = id; return true; }\n"
+                              "    pub fn deny(self: *Cards, id: u64) bool { _ = self; _ = id; return true; }\n};\n",
+    "src/agent_tools.zig": 'const approval = @import("agent_approval.zig");\nvar cards: approval.Cards = .{};\n'
+                           "// the main drawer's Approve button, the only caller of zb_agent_tools_approve\n"
+                           "export fn zb_agent_tools_approve(card: u64) c_int { return @intFromBool(cards.approve(card)); }\n"
+                           "export fn zb_agent_tools_deny(card: u64) c_int { return @intFromBool(cards.deny(card)); }\n",
+    "src/agent_drawer.zig": "pub const Approver = struct { ctx: *anyopaque, approve: *const fn (*anyopaque, u64) bool, "
+                            "deny: *const fn (*anyopaque, u64) bool };\n"
+                            "pub fn cardPress(card: u64, control: c_int, own: bool, approver: Approver) c_int {\n"
+                            "    if (!own) return 0;\n    return switch (control) {\n"
+                            "        1 => if (approver.approve(approver.ctx, card)) 1 else 3,\n"
+                            "        2 => if (approver.deny(approver.ctx, card)) 2 else 3,\n        else => 0,\n    };\n}\n"
+                            "extern fn zb_agent_tools_approve(card: u64) c_int;\nextern fn zb_agent_tools_deny(card: u64) c_int;\n"
+                            "fn toolsApprove(_: *anyopaque, card: u64) bool {\n    return zb_agent_tools_approve(card) != 0;\n}\n"
+                            "fn toolsDeny(_: *anyopaque, card: u64) bool {\n    return zb_agent_tools_deny(card) != 0;\n}\n"
+                            "pub fn zb_drawer_card_press(card: u64, control: c_int, own: c_int) callconv(.c) c_int {\n"
+                            "    var unused: u8 = 0;\n"
+                            "    return cardPress(card, control, own != 0, .{ .ctx = &unused, .approve = toolsApprove, .deny = toolsDeny });\n}\n"
+                            'comptime {\n    @export(&zb_drawer_card_press, .{ .name = "zb_drawer_card_press" });\n}\n',
+}
+
+
+def z_graph(files):
+    return graph(lambda f: files.get(f))
+
+
+def z_mutant(path, old, new):
+    assert Z_FILES[path].count(old) == 1, old
+    return dict(Z_FILES, **{path: Z_FILES[path].replace(old, new)})
+
+
+Z_MUTANTS = {
+    "a planted second Zig caller": z_mutant("src/app.zig", "const tools", "extern fn zb_agent_tools_approve(card: u64) c_int;\n"
+                                            "pub fn auto() void { _ = zb_agent_tools_approve(7); }\nconst tools"),
+    "an alias of the minter": z_mutant("src/agent_drawer.zig", "fn toolsDeny", "const mint = zb_agent_tools_approve;\nfn toolsDeny"),
+    "an alias of Cards.approve": z_mutant("src/app.zig", "const tools", 'const f = @import("agent_approval.zig").Cards.approve;\nconst tools'),
+    "a second cards.approve caller": z_mutant("src/agent_tools.zig", "export fn zb_agent_tools_deny",
+                                              "export fn zb_auto(card: u64) c_int { return @intFromBool(cards.approve(card)); }\n"
+                                              "export fn zb_agent_tools_deny"),
+    "Zig calls the bridge": z_mutant("src/app.zig", "const tools", "pub fn k() void { _ = drawer.zb_drawer_card_press(1, 1, 1); }\nconst tools"),
+    "a second export of the bridge": z_mutant("src/agent_drawer.zig", "comptime {\n", 'comptime {\n    @export(&zb_drawer_card_press, .{ .name = "zb_more" });\n'),
+    "the bridge under another name": z_mutant("src/agent_drawer.zig", '.name = "zb_drawer_card_press"', '.name = "zb_press"'),
+    "an unreviewed module": z_mutant("src/app.zig", "const tools", 'const sneaky = @import("sneaky");\nconst tools'),
+    "the minter not exported": z_mutant("src/agent_tools.zig", "export fn zb_agent_tools_approve", "pub fn zb_agent_tools_approve"),
+    "an unreachable drawer": z_mutant("src/app.zig", 'const drawer = @import("agent_drawer.zig");\n', ""),
+}
+
+
 class CardAuthority(unittest.TestCase):
     def test_the_real_macos_link_keeps_the_one_minter(self):
         sources = mac_link_sources((REPO / "build.zig").read_text())
         self.assertIn("src/wkwebview_shim.m", sources, "the link parser found no macOS sources")
         files = {p: (REPO / p).read_text() for p in sources if (REPO / p).exists()}
         self.assertEqual(problems(sources, files), [])
+
+    def test_the_real_zig_graph_keeps_the_one_minter(self):
+        files, bad = graph(lambda f: (REPO / f).read_text() if (REPO / f).exists() else None)
+        self.assertGreater(len(files), 20, "the graph walk found too little of the app")
+        self.assertEqual(zig_problems(files, bad), [])
+
+    def test_the_honest_zig_graph_passes(self):
+        self.assertEqual(zig_problems(*z_graph(Z_FILES)), [])
+
+    def test_each_dishonest_zig_graph_fails(self):
+        for name, files in Z_MUTANTS.items():
+            with self.subTest(mutant=name):
+                self.assertNotEqual(zig_problems(*z_graph(files)), [], name)
 
     def test_the_honest_fixture_passes(self):
         self.assertEqual(problems(LINK, honest()), [])
