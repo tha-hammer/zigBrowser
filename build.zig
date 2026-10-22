@@ -2433,7 +2433,7 @@ pub fn build(b: *std.Build) void {
     const agent_netd_spawn_e2e = b.addSystemCommand(&.{
         "sh",
         "-c",
-        "python3 tests/e2e/agent_netd_spawn_test.py --binary \"$1\"",
+        "sh tests/e2e/run_step.sh agent-netd-spawn-e2e --summary '^[0-9]+ checks, [0-9]+ failed$' -- python3 tests/e2e/agent_netd_spawn_test.py --binary \"$1\"",
         "agent-netd-spawn-e2e",
     });
     agent_netd_spawn_e2e.addArtifactArg(exe);
@@ -2577,6 +2577,20 @@ pub fn build(b: *std.Build) void {
         "sh",
         "-c",
         "cd tests/e2e && env -u DISPLAY -u WAYLAND_DISPLAY -u XAUTHORITY python3 xsession.py --xvfb -- env PYTHONDONTWRITEBYTECODE=1 python3 -m unittest -v test_xinput_errors",
+    });
+    // The X input harness survives its X server going away (agent-netd-spawn-e2e lost a loaded gate to Xlib's
+    // exit(1) in XCloseDisplay after the guardian stopped Xvfb). Each child starts and stops its own private
+    // Xvfb (no DISPLAY inherited); namespaced like its siblings.
+    const xinput_vanished_server = b.addSystemCommand(&.{
+        "sh",
+        "-c",
+        "cd tests/e2e && out=$(env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 unshare --map-current-user --pid --fork --kill-child --mount-proc sh -c 'setsid -w python3 -X dev -m unittest -v test_xinput_vanished_server; exit $?' 2>&1); rc=$?; printf '%s\\n' \"$out\"; [ $rc -eq 0 ] || exit $rc; if printf '%s\\n' \"$out\" | grep -q ResourceWarning; then echo 'test_xinput_vanished_server: ResourceWarning' >&2; exit 1; fi",
+    });
+    // tests/e2e/run_step.sh: a step's output labelled in one block, and why it ended (exit, signal, no summary).
+    const run_step_unit = b.addSystemCommand(&.{
+        "sh",
+        "-c",
+        "cd tests/e2e && out=$(env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 unshare --map-current-user --pid --fork --kill-child --mount-proc sh -c 'setsid -w python3 -X dev -m unittest -v test_run_step; exit $?' 2>&1); rc=$?; printf '%s\\n' \"$out\"; [ $rc -eq 0 ] || exit $rc; if printf '%s\\n' \"$out\" | grep -q ResourceWarning; then echo 'test_run_step: ResourceWarning' >&2; exit 1; fi",
     });
     // Chat drawer S6: the setup-token fake matches the real CLI's capture
     // (tests/fixtures/agent/setup_token_transcript.json) line for line, on a pty.
@@ -3334,6 +3348,8 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&real_screen_input_xvfb.step);
     test_step.dependOn(&real_screen_longrun_xvfb.step);
     test_step.dependOn(&xinput_errors_xvfb.step);
+    test_step.dependOn(&xinput_vanished_server.step);
+    test_step.dependOn(&run_step_unit.step);
     test_step.dependOn(&gate_step_wrappers_unit.step);
     test_step.dependOn(&automation_dialogs_e2e.step);
     test_step.dependOn(&ipc_windows_compile.step);

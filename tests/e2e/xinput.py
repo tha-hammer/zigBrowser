@@ -18,7 +18,16 @@ BadWindow or BadDrawable that a read-only GetProperty (its title) or
 GetGeometry gets is ignored, and the call just fails. Any other X error,
 including BadWindow from a request that changes something (a resize, input,
 the clipboard), still ends the process through Xlib's default handler
-(test_xinput_errors.py; BlackRobin 5773, RoseCat 5786)."""
+(test_xinput_errors.py; BlackRobin 5773, RoseCat 5786).
+
+The X server itself can go away too: a test that SIGKILLs the browser makes
+the xsession.py guardian stop its Xvfb, possibly before the test's own
+Browser.stop() closes this connection. That no longer ends the process
+(Xlib's default IO error handler printed "XIO: fatal IO error" and called
+exit(1): agent-netd-spawn-e2e in a loaded gate). With libX11 1.7+ (a
+per-display IO error exit handler) the display is only marked gone, with
+one stderr line naming it: close() then just frees it, and an input call
+or toplevels() raises XInputError (test_xinput_vanished_server.py)."""
 
 from __future__ import annotations
 
@@ -52,6 +61,25 @@ _X_ERROR_HANDLER = ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_void_p, ctypes.POINTE
 _BAD_WINDOW, _BAD_DRAWABLE = 3, 9  # X.h
 _X_GET_GEOMETRY, _X_GET_PROPERTY = 14, 20  # Xproto.h: the reads toplevels() makes of a listed window
 _handler: list = []  # [our handler, Xlib's previous one]: kept alive while the process runs
+_X_IO_ERROR_HANDLER = ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_void_p)
+_X_IO_ERROR_EXIT_HANDLER = ctypes.CFUNCTYPE(None, ctypes.c_void_p, ctypes.c_void_p)
+_io_handlers: list = []  # [our IO error handler, our IO error exit handler]: kept alive while the process runs
+_gone: set = set()  # Display pointers whose X server went away (until close() frees them)
+_libs: list = []  # [libX11, libXtst], loaded once: argtypes live on the loaded object, so every connection shares it
+
+
+def _libraries():
+    """libX11 and libXtst, once per process. A second CDLL of libX11 has none of the argtypes set on the first, and a
+    Display pointer passed through it is truncated to a C int (the second XInput of a test segfaulted in
+    XSetIOErrorExitHandler)."""
+    if not _libs:
+        x11 = ctypes.util.find_library("X11") or "libX11.so.6"
+        xtst = ctypes.util.find_library("Xtst") or "libXtst.so.6"
+        try:
+            _libs.extend([ctypes.CDLL(x11), ctypes.CDLL(xtst)])
+        except OSError as exc:
+            raise XInputError(f"libX11/libXtst unavailable: {exc}") from exc
+    return _libs
 
 
 def _install_error_handler(x) -> None:
@@ -77,6 +105,38 @@ def _install_error_handler(x) -> None:
     _handler.extend([ours, x.XSetErrorHandler(ours)])
 
 
+def _install_io_error_handlers(x) -> bool:
+    """Once per process: an X server that goes away no longer ends it. The IO error handler is global: it marks the
+    display gone and writes one line naming it (never Xlib's "XIO: fatal IO error"). The exit handler that follows it
+    is per display (XInput.__init__ sets it on its own connection): it only returns, so the Xlib call returns instead
+    of calling exit(1). False when this libX11 has no exit handler (before 1.7): a gone server then ends the process
+    as before."""
+    if not hasattr(x, "XSetIOErrorExitHandler"):
+        return False
+    if _io_handlers:
+        return True
+    x.XSetIOErrorHandler.restype = _X_IO_ERROR_HANDLER
+    x.XSetIOErrorHandler.argtypes = [_X_IO_ERROR_HANDLER]
+    x.XSetIOErrorExitHandler.restype = None
+    x.XSetIOErrorExitHandler.argtypes = [ctypes.c_void_p, _X_IO_ERROR_EXIT_HANDLER, ctypes.c_void_p]
+    x.XDisplayString.restype = ctypes.c_char_p
+    x.XDisplayString.argtypes = [ctypes.c_void_p]
+
+    def on_io_error(dpy):
+        if dpy not in _gone:
+            _gone.add(dpy)
+            name = (x.XDisplayString(dpy) or b"?").decode(errors="replace")
+            os.write(2, f"xinput: X server {name} went away\n".encode())
+        return 0
+
+    def on_exit(dpy, _data):
+        _gone.add(dpy)
+
+    _io_handlers.extend([_X_IO_ERROR_HANDLER(on_io_error), _X_IO_ERROR_EXIT_HANDLER(on_exit)])
+    x.XSetIOErrorHandler(_io_handlers[0])
+    return True
+
+
 class XInputError(RuntimeError):
     pass
 
@@ -97,13 +157,7 @@ def read_display_file(path: str | os.PathLike) -> tuple[str, str]:
 class XInput:
     def __init__(self, display: str, xauth: str) -> None:
         self.display_name, self.xauth = display, xauth
-        x11 = ctypes.util.find_library("X11") or "libX11.so.6"
-        xtst = ctypes.util.find_library("Xtst") or "libXtst.so.6"
-        try:
-            self._x = ctypes.CDLL(x11)
-            self._t = ctypes.CDLL(xtst)
-        except OSError as exc:
-            raise XInputError(f"libX11/libXtst unavailable: {exc}") from exc
+        self._x, self._t = _libraries()
         x, t = self._x, self._t
         x.XOpenDisplay.restype = ctypes.c_void_p
         x.XOpenDisplay.argtypes = [ctypes.c_char_p]
@@ -128,6 +182,7 @@ class XInput:
         t.XTestFakeButtonEvent.argtypes = [ctypes.c_void_p, ctypes.c_uint, ctypes.c_int, ctypes.c_ulong]
         t.XTestFakeKeyEvent.argtypes = [ctypes.c_void_p, ctypes.c_uint, ctypes.c_int, ctypes.c_ulong]
         _install_error_handler(x)
+        survives_io_errors = _install_io_error_handlers(x)
         previous = os.environ.get("XAUTHORITY")
         os.environ["XAUTHORITY"] = xauth
         try:
@@ -139,6 +194,8 @@ class XInput:
                 os.environ["XAUTHORITY"] = previous
         if not self._dpy:
             raise XInputError(f"cannot open display {display}")
+        if survives_io_errors:
+            x.XSetIOErrorExitHandler(self._dpy, _io_handlers[1], None)
 
     @classmethod
     def from_display_file(cls, path: str | os.PathLike) -> "XInput":
@@ -146,7 +203,8 @@ class XInput:
 
     def close(self) -> None:
         if self._dpy:
-            self._x.XCloseDisplay(self._dpy)
+            self._x.XCloseDisplay(self._dpy)  # only frees a display whose server went away
+            _gone.discard(self._dpy)  # the pointer may come back for a new display
             self._dpy = None
 
     def __enter__(self) -> "XInput":
@@ -157,6 +215,11 @@ class XInput:
 
     def _sync(self) -> None:
         self._x.XSync(self._dpy, 0)
+        self._check_server()
+
+    def _check_server(self) -> None:
+        if self._dpy in _gone:
+            raise XInputError(f"the X server {self.display_name} went away")
 
     # --- pointer ---------------------------------------------------------
     def move(self, x: int, y: int) -> None:
@@ -206,6 +269,7 @@ class XInput:
                 raise XInputError(f"unknown key {name!r}")
         code = self._x.XKeysymToKeycode(self._dpy, keysym)
         if code == 0:
+            self._sync()  # a server that went away has no keycodes either: say that instead
             raise XInputError(f"no keycode for {name!r}")
         return code
 
@@ -232,6 +296,7 @@ class XInput:
         count = ctypes.c_uint()
         if not self._x.XQueryTree(self._dpy, root, ctypes.byref(root_ret), ctypes.byref(parent),
                                   ctypes.byref(children), ctypes.byref(count)):
+            self._check_server()
             return []
         found = []
         try:

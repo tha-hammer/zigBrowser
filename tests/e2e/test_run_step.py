@@ -8,8 +8,9 @@ Xlib's exit(1) printed no summary, which nobody could attribute).
 - every line the command printed, stdout and stderr together and in order, is printed after it ends, each prefixed
   "[<label>] ", in one block;
 - exit 0: nothing more, and run_step.sh exits 0;
-- otherwise one reason line, then the command's own status: "<label>: exit <n>", or "<label>: killed by signal <n>"
-  for a status above 128;
+- otherwise one reason line, then the command's own status: "<label>: exit <n>", or for a status above 128
+  "<label>: status <n> (signal-style: 128+<s>)": a shell sees only the status, so an explicit `exit 143` and a SIGTERM
+  read the same and neither is called a signal (RoseCat 7573);
 - with --summary, a command whose last line does not match the ERE also gets "<label>: no summary line (the process
   ended mid-run); last line: <it>", even when it exited 0 (and then run_step.sh exits 1);
 - the build.zig step agent-netd-spawn-e2e runs its test through run_step.sh, label agent-netd-spawn-e2e, with the
@@ -51,15 +52,22 @@ class RunStep(unittest.TestCase):
         self.assertIn("netd: no summary line (the process ended mid-run); last line: "
                       "XIO:  fatal IO error 0 (Success) on X server", lines)
 
-    def test_a_signal_is_named(self):
+    def test_a_signal_is_a_signal_style_status(self):
         done = step("echo 'ok   one'; kill -TERM $$")
         self.assertEqual(done.returncode, 143)
-        self.assertIn("netd: killed by signal 15", done.stdout.splitlines())
+        self.assertIn("netd: status 143 (signal-style: 128+15)", done.stdout.splitlines())
+
+    def test_an_explicit_exit_143_reads_the_same_and_is_not_called_a_signal(self):
+        done = step("echo '1 checks, 0 failed'; exit 143")
+        self.assertEqual(done.returncode, 143)
+        self.assertEqual(done.stdout.splitlines()[-1], "netd: status 143 (signal-style: 128+15)")
+        self.assertNotIn("killed", done.stdout)
 
     def test_a_clean_exit_without_its_summary_still_fails(self):
         done = step("echo 'ok   one'")
         self.assertEqual(done.returncode, 1)
-        self.assertIn("netd: no summary line (the process ended mid-run); last line: ok   one", done.stdout.splitlines())
+        self.assertIn("netd: no summary line (the process ended mid-run); last line: ok   one",
+                      done.stdout.splitlines())
 
     def test_a_failing_run_with_its_summary_names_only_the_status(self):
         done = step("echo 'FAIL two'; echo '2 checks, 1 failed'; exit 1")
