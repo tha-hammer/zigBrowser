@@ -36012,3 +36012,31 @@ NIT: `Bridge.tools()` still describes only the six reads followed by navigate
 and reload; update that docstring to name hover and scroll when the file is next
 touched. The executable contract and its tests are correct, so this is not a
 blocker.
+
+## WS5.5b-2 live-top-level oracle fix-forward (`a3beeb1`)
+
+**BLOCKED-for-tests.** The committed module is green **84/84** with eight
+hostless skips, and the three new synthetic rows do reject a nested sequence
+when `mount_drawer(app)` remains outside that nested scope. They do not bind
+the sequence to the real controller-completion callback.
+
+`cpp_enclosing_block(..., "mount_drawer(app);")` deliberately selects the
+*innermost* block containing the first textual anchor. If the anchor moves with
+the assign/spawn/close sequence, that nested block becomes the block under
+test, and its contents are again top-level relative to that block. I drove the
+committed predicate against three mutations of the real `create_controller`
+body:
+
+- move `mount_drawer(app)` and the whole sequence under `if (false)`;
+- move them under `if (app->screenshot)`; and
+- move them into an unused `auto unused = [app]() { ... };` lambda.
+
+All three semantically broken bodies returned **accepted = true**; production
+also returned true. Thus the fix does not close the same dead/wrong-gate/lambda
+authority gap when the unproved anchor moves with the code. Bind the body to
+the actual `CreateCoreWebView2ControllerCompletedHandler` callback (including
+its callback argument/assignment and reachable success path), require the
+unique anchor inside that fixed callback body, and commit these three
+anchor-plus-sequence mutants. Until then `96df8ea`/`9132e93` and the
+`1b2fe0a` WS5.5b-2 range remain blocked; no additional Win11 run is needed for
+this test-only failure.
