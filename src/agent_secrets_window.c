@@ -667,7 +667,15 @@ static void nav_note(const char *text) {
   secrets_row("text", text, NULL);
 }
 
-/* The drop-down shows the store, as each opening of the window finds it. */
+/* The drop-down's own selection, read back from the control (RoseCat 7fcfadf). */
+static const char *nav_selected(void) {
+  int active = gtk_combo_box_get_active(GTK_COMBO_BOX(secrets.nav));
+  return active >= 0 && active <= 2 ? nav_values[active] : "yes";
+}
+
+/* The drop-down shows the store (a fresh, fail-closed read), as each opening of the window
+ * finds it and after a refused write; setting it writes nothing. Its row names the selection
+ * read back from the control. */
 static void show_navapproval(void) {
   int unreadable = 0;
   int value = zb_agent_navapproval_read(secrets.agent_home != NULL ? secrets.agent_home : "", &unreadable);
@@ -679,7 +687,7 @@ static void show_navapproval(void) {
   gtk_combo_box_set_active(GTK_COMBO_BOX(secrets.nav), value);
   secrets.nav_showing = 0;
   nav_note(unreadable ? TEXT_NAV_UNREADABLE : NULL);
-  secrets_row("navapproval", nav_values[value], unreadable ? "unreadable" : "ok");
+  secrets_row("navapproval", nav_selected(), unreadable ? "unreadable" : "ok");
 }
 
 /* The user chose a value: the control's one write. */
@@ -690,12 +698,15 @@ static void on_nav_changed(GtkComboBox *box, gpointer unused) {
     return;
   }
   if (zb_agent_navapproval_write(secrets.agent_home != NULL ? secrets.agent_home : "", value) != 0) {
-    nav_note(TEXT_NAV_REFUSED);
+    /* Refused (plan rev 16.20.58): the drop-down shows the stored value again, and the
+     * refusal stays the window's last line. */
     secrets_row("navapproval-refused", nav_values[value], NULL);
+    show_navapproval();
+    nav_note(TEXT_NAV_REFUSED);
     return;
   }
   nav_note(NULL);
-  secrets_row("navapproval", nav_values[value], "ok");
+  secrets_row("navapproval", nav_selected(), "ok");
 }
 
 static gboolean report_rects(gpointer unused) {

@@ -2072,6 +2072,14 @@ pub fn build(b: *std.Build) void {
         "agent-navigate-selector-e2e",
     });
     agent_navigate_selector_e2e.addArtifactArg(exe);
+    // RoseCat 7fcfadf: a refused write shows the stored value again, read back from the control.
+    const agent_navigate_selector_refused_e2e = b.addSystemCommand(&.{
+        "sh",
+        "-c",
+        "python3 tests/e2e/agent_navigate_selector_refused_test.py --binary \"$1\"",
+        "agent-navigate-selector-refused-e2e",
+    });
+    agent_navigate_selector_refused_e2e.addArtifactArg(exe);
     // RoseCat d3985c9: the real-screen fake-API cases launch from an explicit allowlist (non-live).
     const real_screen_env_unit = b.addSystemCommand(&.{
         "sh",
@@ -3534,6 +3542,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&agent_navigate_stale_e2e.step);
     test_step.dependOn(&agent_navigate_prompt_e2e.step);
     test_step.dependOn(&agent_navigate_selector_e2e.step);
+    test_step.dependOn(&agent_navigate_selector_refused_e2e.step);
     test_step.dependOn(&real_screen_env_unit.step);
     test_step.dependOn(&agent_socket_separation_e2e.step);
     test_step.dependOn(&agent_tools_acceptance_e2e.step);

@@ -10,7 +10,8 @@ Alt+N, and changed with Home, Down and End, as a keyboard user does. Its rows:
 - `SECRETS navapproval <yes|no|conditional> <ok|unreadable>` when the window shows the store
   (each time it opens) and after each value the control wrote;
 - `SECRETS navapproval-refused <value>` when a write was refused, with the status line
-  "The navigation approval setting could not be saved.";
+  "The navigation approval setting could not be saved.", then a `navapproval` row for the
+  stored value the drop-down shows again (RoseCat 7fcfadf);
 - `SECRETS rect navapproval <x,y,w,h>`.
 
 Cases:
@@ -167,8 +168,8 @@ def case_refused(binary: Path, tmp: Path, check) -> None:
         check(w.b.wait(lambda: nav_rows(w)[-1:] == [("navapproval", "yes", "unreadable")], 10),
               f"a symlinked settings directory shows Yes, unreadable ({nav_rows(w)})", w.b)
         choose(w, "Down")  # from Yes, the value an unreadable store shows, to No
-        check(w.b.wait(lambda: nav_rows(w)[-1:] == [("navapproval-refused", "no")], 10),
-              f"No is refused ({nav_rows(w)[-2:]})", w.b)
+        check(w.b.wait(lambda: nav_rows(w)[-2:] == [("navapproval-refused", "no"), ("navapproval", "yes", "unreadable")], 10),
+              f"No is refused, and the drop-down shows the stored value again ({nav_rows(w)[-2:]})", w.b)
         check(w.b.wait(lambda: REFUSED in texts(w), 10), f"and the window says so ({texts(w)[-2:]})", w.b)
         check((elsewhere / "navigate_approval").read_bytes() == b"no\n" and settings.is_symlink(),
               "nothing was written through the link, and it is still a link")
