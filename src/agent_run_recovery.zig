@@ -1,6 +1,6 @@
 //! MS6.5.1 whole-recovery blocker bd zigBrowser-3gl, finding RoseCat 9f62ea4 #1/#4: the CONCRETE, capability-
-//! carrying `RecoveryLease` + actuator for `ledger.recoverOneUnderLock`. NOT ARMED — no production caller wires
-//! this in, and there is still no `reaper_ready` gate. It wraps the already-reviewed reaper/provenance C path
+//! carrying `RecoveryLease` + actuator for `ledger.recoverOneUnderLock`. NOT ARMED — the `reaper_ready` gate ships
+//! false and no production app-startup owner calls `recoverAllAtStartup` yet. It wraps the already-reviewed reaper/provenance C path
 //! (`src/agent_run_reaper.c`): provenance is `zb_reaper_pin_fd` + `zb_reaper_dir_id_eq` on a freshly reopened
 //! `O_DIRECTORY|O_NOFOLLOW` run-dir fd; the lease RETAINS that fd (and borrows the pinned runtime-parent fd for
 //! `rmdir`), so the provenance check and the destructive teardown cannot be separated by a path swap. The
@@ -324,9 +324,9 @@ pub fn darwinCensus(run_dir_fd: i32, pinned: *const DirId, deadline_ms: i64, max
     return .incomplete; // unreachable off Darwin
 }
 
-// ---- MS6.5.1 reaper_ready arming gate + startup-recovery CORE (bd zigBrowser-3gl) — GREEN block to append to
-// src/agent_run_recovery.zig. UNARMED (reaper_ready default false). SCOPE: startup-recovery CORE; a real app-startup
-// owner calling recoverAllAtStartup is an OPEN integration blocker, not this slice. ----
+// ---- MS6.5.1 reaper_ready arming gate + startup-recovery CORE (bd zigBrowser-3gl). UNARMED (reaper_ready default
+// false). SCOPE: startup-recovery CORE; a real app-startup owner calling recoverAllAtStartup is an OPEN integration
+// blocker, not this slice. ----
 
 /// IMMUTABLE arming gate: a literal source constant, default FALSE. Readiness is bound SOLELY to this constant — no
 /// environment variable, command-line argument or build flag can arm it. Flipping it is a reviewed SOURCE edit.
