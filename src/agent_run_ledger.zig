@@ -398,13 +398,11 @@ pub const PollOutcome = enum { ready, again, eintr, err };
 /// `.timed_out`.
 pub fn waitWithinDeadline(clock: anytype, deadline_ms: i64, poll: anytype) WaitResult {
     while (true) {
+        if (clock.nowMs() >= deadline_ms) return .timed_out; // deadline FIRST -> an EINTR/empty-slice storm is bounded
         switch (poll.pollOnce()) {
             .ready => return .ready,
             .err => return .poll_error, // a hard poll error -> fail closed
-            .again => {
-                if (clock.nowMs() >= deadline_ms) return .timed_out;
-            },
-            .eintr => {}, // RED (e665676 #3): EINTR retries WITHOUT a deadline check -> an EINTR storm never ends
+            .again, .eintr => {}, // a slice elapsed or an interruption -> loop; the top deadline check bounds it
         }
     }
 }

@@ -48,6 +48,21 @@ fn storeBytes(io: std.Io, dir: std.Io.Dir, gpa: std.mem.Allocator) ![]u8 {
     return dir.readFileAlloc(io, "runs.json", gpa, .limited(64 * 1024));
 }
 
+/// A real poll of one pipe fd for a 100ms slice, decoded for the bounded watchdog: data -> ready, slice elapsed
+/// -> again, interrupted -> eintr (the deadline bounds the retry), any other error -> err (fail closed).
+const RealPoll = struct {
+    fd: i32,
+    pub fn pollOnce(self: RealPoll) ledger.PollOutcome {
+        var pfd = [_]linux.pollfd{.{ .fd = self.fd, .events = linux.POLL.IN, .revents = 0 }};
+        const pn = linux.poll(&pfd, 1, 100);
+        return switch (linux.errno(pn)) {
+            .SUCCESS => if (pn > 0 and (pfd[0].revents & linux.POLL.IN) != 0) .ready else .again,
+            .INTR => .eintr,
+            else => .err,
+        };
+    }
+};
+
 test "a live stalled flock holder cannot wedge startup recovery: B fails closed within the deadline, no mutation" {
     // SAFETY sentinel: refuse to run (no fork, no signal) unless kernel-proven inside a private PID namespace.
     if (!inPrivatePidNamespace()) return error.NotInPrivatePidNamespace;
@@ -74,6 +89,7 @@ test "a live stalled flock holder cannot wedge startup recovery: B fails closed 
         _ = linux.nanosleep(&ts, &ts);
         linux.exit_group(0);
     }
+    if (linux.errno(a_pid) != .SUCCESS) return error.ForkFailed; // A fork failed -> fail closed (no B, no signal)
     _ = linux.close(aready[1]);
     var rb: [1]u8 = undefined;
     try std.testing.expect(linux.read(aready[0], &rb, 1) == 1); // A now holds the lock
@@ -90,41 +106,26 @@ test "a live stalled flock holder cannot wedge startup recovery: B fails closed 
         _ = linux.write(bpipe[1], &bytes, 3);
         linux.exit_group(0);
     }
+    if (linux.errno(b_pid) != .SUCCESS) { // B fork failed -> release+reap A, fail closed (no signal)
+        _ = linux.close(aready[0]);
+        var astf: u32 = undefined;
+        _ = linux.waitpid(@intCast(a_pid), &astf, 0);
+        return error.ForkFailed;
+    }
     _ = linux.close(bpipe[1]);
 
-    // Bounded, EINTR-safe watchdog (RoseCat #3): poll in slices up to ~1s, decoding every return — EINTR retries
-    // inside the deadline, any other poll error fails closed, POLLIN is confirmed in revents before reading, and a
-    // full timeout means B wedged on a blocking acquire. The watchdog itself never blocks indefinitely.
-    const watchdog_ms: i32 = 1000;
-    const slice_ms: i32 = 100;
-    var waited: i32 = 0;
-    var ready = false;
-    var poll_err = false;
-    while (waited < watchdog_ms) {
-        var pfd = [_]linux.pollfd{.{ .fd = bpipe[0], .events = linux.POLL.IN, .revents = 0 }};
-        const pn = linux.poll(&pfd, 1, slice_ms);
-        switch (linux.errno(pn)) {
-            .SUCCESS => {},
-            .INTR => continue, // interrupted -> retry within the deadline (no time charged: conservative)
-            else => {
-                poll_err = true;
-                break;
-            },
-        }
-        if (pn > 0 and (pfd[0].revents & linux.POLL.IN) != 0) {
-            ready = true;
-            break;
-        }
-        waited += slice_ms; // a timeout slice elapsed
-    }
-
-    if (!ready) {
-        _ = linux.kill(@intCast(b_pid), linux.SIG.KILL); // wedged (or poll error) -> reap B and A, then fail closed
-        var bst: u32 = undefined;
-        _ = linux.waitpid(@intCast(b_pid), &bst, 0);
-        var ast: u32 = undefined;
-        _ = linux.waitpid(@intCast(a_pid), &ast, 0);
-        return if (poll_err) error.WatchdogPollFailed else error.RecoveryWedgedPastDeadline;
+    // Bounded, EINTR-safe watchdog (RoseCat e665676 #3): waitWithinDeadline polls B's pipe within an ABSOLUTE
+    // monotonic 1s deadline, so an EINTR storm or a run of empty slices can NEVER keep it alive past the deadline.
+    // A timeout means B wedged on a blocking acquire; a poll error fails closed. Either way B is killed and reaped.
+    const clock = ledger.RealClock{ .io = io };
+    const wr = ledger.waitWithinDeadline(clock, clock.nowMs() + 1000, RealPoll{ .fd = bpipe[0] });
+    if (wr != .ready) {
+        _ = linux.kill(@intCast(b_pid), linux.SIG.KILL); // wedged or poll error -> reap B and A, then fail closed
+        var bst0: u32 = undefined;
+        _ = linux.waitpid(@intCast(b_pid), &bst0, 0);
+        var ast0: u32 = undefined;
+        _ = linux.waitpid(@intCast(a_pid), &ast0, 0);
+        return if (wr == .poll_error) error.WatchdogPollFailed else error.RecoveryWedgedPastDeadline;
     }
 
     var rbuf: [3]u8 = undefined;

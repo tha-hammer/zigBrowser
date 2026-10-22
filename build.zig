@@ -919,6 +919,14 @@ pub fn build(b: *std.Build) void {
     run_ledger_deadline_tests.skip_foreign_checks = true;
     const ledger_deadline_step = b.step("test-agent-run-ledger-deadline", "MS6.5.1 startup-recovery acquisition honors one absolute monotonic deadline");
     ledger_deadline_step.dependOn(&run_ledger_deadline_tests.step);
+    // MS6.5.1 (RoseCat e665676 #3): the recovery-busy watchdog is bounded by an absolute monotonic deadline even
+    // under an EINTR storm (waitWithinDeadline checks the deadline before each poll). Fake clock + EINTR-storm poll.
+    const ledger_watchdog_test_mod = b.createModule(.{ .root_source_file = b.path("tests/agent_run_ledger_watchdog_test.zig"), .target = target, .optimize = optimize });
+    ledger_watchdog_test_mod.addImport("agent_run_ledger", ledger_mod);
+    const run_ledger_watchdog_tests = b.addRunArtifact(b.addTest(.{ .root_module = ledger_watchdog_test_mod }));
+    run_ledger_watchdog_tests.skip_foreign_checks = true;
+    const ledger_watchdog_step = b.step("test-agent-run-ledger-watchdog", "MS6.5.1 recovery-busy watchdog is EINTR-bounded by an absolute monotonic deadline");
+    ledger_watchdog_step.dependOn(&run_ledger_watchdog_tests.step);
     // MS6.5.1 (whole-recovery, Rev 27): a live owner holding the global flock that stalls must not wedge startup
     // recovery — bounded acquire inside the total deadline, fail closed (recovery-busy incident, first run
     // refused/deferred, entry retained, zero signals). Two real processes + a parent watchdog. Linux-gated.
@@ -3009,6 +3017,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_ledger_unreadable_tests.step); // pure unit: unreadable liveness fails closed
     test_step.dependOn(&run_ledger_statio_tests.step); // pure unit: readStart outcome mapping fails closed
     test_step.dependOn(&run_ledger_deadline_tests.step); // pure unit: acquisition honors one absolute deadline
+    test_step.dependOn(&run_ledger_watchdog_tests.step); // pure unit: watchdog EINTR-bounded by the deadline
     if (target.result.os.tag == .linux) test_step.dependOn(&run_ledger_recovery_busy_tests.step);
     test_step.dependOn(&run_mac_vm_containment_tests.step);
     test_step.dependOn(&mac_vm_containment_e2e.step);
