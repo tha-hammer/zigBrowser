@@ -16,10 +16,12 @@ Login.spawn therefore, before it launches the CLI:
   that call) redirects nothing: nothing is made under the link's target and the CLI is not launched (RoseCat 7742);
 - a REAL directory (0755, ours) put in place of a just-made scratchpad or tmp between its mkdir and its open (an
   os.mkdir seam that renames the new one away and makes the replacement) is refused, never repaired: it stays 0755
-  with nothing made in it, and the CLI is not launched (RoseCat 7746's probe);
+  with nothing made in it, and the CLI is not launched (RoseCat 7746's probe); so is a VALID-looking one (0700,
+  ours) swapped in right before the open (an os.open seam): the object opened must be the one first seen;
 - the home itself must be ours and writable by no one else (only then can no other uid rename the scratchpad after
   the check, the trust boundary for the window up to and during the CLI's run): a home writable by its group or by
-  others is refused, with nothing made in it.
+  others is refused, with nothing made in it; so is a home owned by another uid while its children are ours (a
+  stat seam that shows only the home's inode as foreign; RoseCat 7750).
 subprocess.Popen is a recorder (no process is started), and os.kill / os.killpg are patched to raise; the fake
 process has no pid and has already ended. Run: cd agent/host/tests && unshare --map-current-user --pid --fork \\
   --kill-child --mount-proc sh -c '"$ZB_AGENT_HOST_PYTHON" -X dev -m unittest -v test_login_scratch_tmp; exit $?'
@@ -173,6 +175,27 @@ class LoginScratchTmp(unittest.TestCase):
     def test_a_real_directory_replacing_the_new_tmp_is_refused_unchanged(self):
         self.replaced_at_mkdir("tmp")
 
+    def test_a_valid_directory_swapped_in_before_the_open_is_refused(self):
+        for component in ("scratchpad", "tmp"):
+            with self.subTest(component=component):
+                path = self.scratchpad if component == "scratchpad" else self.dir
+                real_open = os.open
+                swapped = []
+
+                def opener(name, flags, mode=0o777, *, dir_fd=None):
+                    if name == component and not swapped:
+                        os.rename(path, path + f".seen{len(swapped)}")
+                        os.mkdir(path, 0o700)
+                        os.chmod(path, 0o700)
+                        swapped.append(os.lstat(path).st_ino)
+                    return real_open(name, flags, mode, dir_fd=dir_fd)
+                with mock.patch.object(os, "open", side_effect=opener):
+                    self.refused(f"a valid {component} swapped in before its open")
+                self.assertEqual(len(swapped), 1, "the seam did not swap")
+                shutil.rmtree(self.scratchpad)
+                if os.path.lexists(self.scratchpad + ".seen0"):
+                    shutil.rmtree(self.scratchpad + ".seen0")
+
     def test_a_scratchpad_swapped_while_tmp_is_made_redirects_nothing(self):
         os.mkdir(self.scratchpad, 0o700)
         target = self.elsewhere()
@@ -196,6 +219,25 @@ class LoginScratchTmp(unittest.TestCase):
                 self.refused(f"a home of mode {oct(mode)}")
                 self.assertEqual(os.listdir(self.home), [], "something was made in the home")
         os.chmod(self.home, 0o700)
+
+    def test_a_home_owned_by_another_uid_is_refused_with_nothing_made(self):
+        home = os.lstat(self.home)
+
+        class Foreign:  # the home's stat, but another uid's; every other field as it is
+            def __init__(self, st):
+                self.st = st
+
+            def __getattr__(self, name):
+                return self.st.st_uid + 1 if name == "st_uid" else getattr(self.st, name)
+
+        def seam(real):
+            def call(*args, **kw):
+                st = real(*args, **kw)
+                return Foreign(st) if (st.st_dev, st.st_ino) == (home.st_dev, home.st_ino) else st
+            return call
+        with mock.patch.multiple(os, stat=seam(os.stat), lstat=seam(os.lstat), fstat=seam(os.fstat)):
+            self.refused("a home owned by another uid")
+        self.assertEqual(os.listdir(self.home), [], "something was made in the home")
 
     def test_a_scratchpad_wider_than_0700_is_refused(self):
         os.makedirs(self.dir, 0o700)
