@@ -35122,3 +35122,39 @@ real drawer, while the 21 committed fixtures pass. Two blockers remain:
 
 The portable byte/offset policy red may remain. This commit does not authorize
 a Mac run and does not move the earlier `1b2fe0a` push boundary.
+
+## MS6.5.1 startup-owner red fix-forward 2 (`0245193`)
+
+**BLOCKED-for-tests; keep it unregistered, unarmed and signal-free.** The
+counted owner seam now correctly requires zero operations while disabled and
+exactly one close after each successful open, including the non-ok recovery
+return. The dispatch marker is no longer optional, the lexer covers Zig
+multiline strings, and the clean red remains at the intended absent owner/app
+integration. Three of the four `1d7dbd7` findings are not yet causally closed:
+
+1. Brace depth does not establish an unconditional statement in Zig. A
+   brace-less `if (false) agent_startup_recovery.recover...;` remains at depth
+   one and passes. The dispatch token can likewise sit in an unrelated dead
+   top-level conditional. Add committed brace-less conditional and decoy
+   dispatch mutants, then bind the call as an exact top-level startup
+   statement before the real dispatch (or drive a small production
+   startup-before-dispatch seam instead of inferring control flow from brace
+   count).
+2. The deadline row uses only `now_val = 1000`. An implementation may sample
+   the clock once, ignore the sample and pass the literal
+   `1000 + STARTUP_BUDGET_MS`; every assertion still succeeds. Drive at least
+   two distinct/nonconstant clock values and capture the clock identity handed
+   to `recover`, so both the absolute deadline and recovery clock derive from
+   the one authoritative sample/source.
+3. Link 2 is scoped to the `RealOps` struct but not to its relevant methods or
+   data flow. A dead method inside the struct may contain
+   `recoverAllAtStartup`, `ConcreteActuator(...)` and `"runs.json"` while the
+   real `recover`, `buildActuator` and `ledgerName` methods do something else.
+   Moreover, `balancedBody(raw, ...)` reintroduces brace parsing over comments
+   and strings for the ledger check. Extract the named methods lexically and
+   bind each return/call/argument to it; add an in-struct decoy mutant and a
+   raw brace-in-string/comment mutant.
+
+The close-accounting finding is closed, but this range still does not close
+`3a8a091` or arm startup recovery. It remains behind the earlier `1b2fe0a`
+push blocker.
