@@ -31191,3 +31191,46 @@ two-window row and retain the already-required owned-Job lifecycle evidence.
 The live-test comment at lines 706-708 still summarizes the old
 “`-32601/-32011`” rule; update it when the green registers the test, but the
 executable assertion is exact and this wording nit does not block the red.
+
+## Sign-in trusted path chain (`5f81c0d`, `aec8fc5`)
+
+**`5f81c0d` is BLOCKED-for-tests, and `aec8fc5` is BLOCKED cumulatively.**
+The production implementation is conservative and directionally correct: it
+starts from `/`, opens each component through held `O_DIRECTORY|O_NOFOLLOW`
+fds, compares the opened inode with the preceding `lstat`, permits only UID 0
+or the effective UID on non-home ancestors, rejects group/other write unless
+the directory is sticky, requires the home to belong to the effective UID,
+and keeps the home/scratch/tmp fds alive through `Popen`. Scratch and tmp are
+never repaired and must be the exact 0700 objects first observed.
+
+The failing-first evidence is real. In an exact clean export of `5f81c0d`,
+inside a private current-UID user/PID/mount namespace with `Popen` recorded and
+both signal calls patched to raise, the module ran **23 tests: 17 failed and 6
+passed**. At exact `aec8fc5`, that same module passed **23/23**. The diff is
+whitespace-clean and changes no registration.
+
+Two causal coverage gaps remain before this security boundary may be accepted:
+
+1. The test says “checked chain from `/`”, but every hostile ownership/mode row
+   is at the data root, app parent or home. An implementation that begins its
+   walk at the data root rather than `/` can satisfy all of those rows. Add an
+   unsafe or foreign **earlier intermediate** between `/` and the data root,
+   plus injected unsafe/foreign metadata for the root fd itself; both must
+   refuse before creating or launching anything. Mutating `open_home` to skip
+   either the root or the earlier intermediates must red the suite.
+2. `setUp` uses `mock.patch.object(..., create=True)` to replace
+   `TRUST_ANCHOR_UID` with the namespace-visible owner of `/`. That makes the
+   namespaced functional rows possible, but it does not prove the production
+   anchor exists or remains literal UID **0**. Record the unpatched value
+   before installing the namespace seam and assert it is exactly `0`; a
+   dynamic `os.stat('/').st_uid`, overflow UID, absent symbol or other value
+   must fail.
+
+The final green must register `test_login_scratch_tmp` and
+`test_login_cli_tmpdir` with the pinned interpreter and preserved status, then
+pass the real-binary login e2es and the clean full gate. The current last
+recheck occurs after `cli_env` and before `openpty`/`ioctl`; moving it to the
+immediate pre-`Popen` boundary would better match the wording, but it is not a
+separate blocker because the checked chain deliberately excludes a malicious
+same-UID process and the held fds remain alive through the spawn. Agent Mail
+sent the two test blockers to BlueBeaver.
