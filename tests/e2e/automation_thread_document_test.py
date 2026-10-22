@@ -8,6 +8,8 @@ on the platform's thread path. Real binary, Python SDK, the site-modelled Instag
   approved user): the flow captures that document and types and sends there, once.
 - crossdocwrong.user: Message loads /mallory/ instead: -32015 thread_url_changed, and nothing
   is typed or sent on either page.
+- guard.document itself: a dom.click whose guard names another document is -32015
+  document_changed before its first event ({events 0, chars 0}).
 
 Exit 77 (skip) without a binary/display, like social_flows_test.py."""
 
@@ -62,6 +64,10 @@ def scenario(zb: ZigBrowser, origin: str) -> list[str]:
     check(ev("window.__ig ? window.__ig.result : null") is None, "crossdocwrong.user: nothing sent")
     typed = ev("(document.querySelector('[contenteditable]') || {textContent: ''}).textContent")
     check(typed == "", f"crossdocwrong.user: nothing typed ({typed!r})")
+
+    code, data = attempt(zb, "dom.click", {"selector": "css=body", "options": {"guard": {"document": "not-this-document", "target": True}}})
+    check((code, data.get("reason"), data.get("sent")) == (-32015, "document_changed", {"events": 0, "chars": 0}),
+          f"guard.document naming another document: -32015 document_changed, nothing sent ({code}, {data})")
 
     if failures:
         raise AssertionError(f"{len(failures)} of {len(failures) + len(passed)} checks failed")

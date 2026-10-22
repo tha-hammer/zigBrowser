@@ -85,20 +85,16 @@ test "an Instagram thread that opens as a new page on the thread path: phase C a
     initInstagram(&h);
     defer h.deinit();
     h.windows.click_navigates = .{ .match = ig_opener, .url = ig ++ "/direct/t/42/" };
-    const reads_without = blk: {
-        var plain: Harness = undefined;
-        initInstagram(&plain);
-        defer plain.deinit();
-        try runOk(&plain, "instagram.dm", dm_approved);
-        break :blk plain.windows.token_reads;
-    };
     try runOk(&h, "instagram.dm", dm_approved);
     try testing.expectEqual(@as(usize, 1), h.fake.navigate_calls.items.len);
     // The opener, the message box, Send; and the text typed once.
     try testing.expectEqual(@as(usize, 3), realClicks(&h.fake));
     try testing.expectEqual(@as(usize, 1), countOps(&h.fake, "type"));
-    // The new document's token was captured on top of the in-page flow's reads.
-    try testing.expect(h.windows.token_reads > reads_without);
+    // Every step after the opener ran in the thread's own document (phase C captured doc-1).
+    var arena = std.heap.ArenaAllocator.init(gpa);
+    defer arena.deinit();
+    const docs = try actionDocuments(arena.allocator(), &h);
+    for (docs[1..]) |d| try testing.expectEqualStrings("doc-1", d orelse return error.TestExpectedDocument);
 }
 
 test "a LinkedIn profile message's thread that opens as a new page on /messaging/thread/ continues there" {
