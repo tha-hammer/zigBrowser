@@ -453,6 +453,7 @@ pub fn build(b: *std.Build) void {
         "--require-defined",  "zb_drawer_key_move",
         "--require-defined",  "zb_drawer_remember",
         "--require-defined",  "zb_drawer_anim_ms",
+        "--require-defined",  "zb_drawer_anim_ms_from_env",
     });
     cross_drawer_win.addFileInput(b.path("tools/check_cross_symbols.py"));
     cross_drawer_win.addFileArg(cross_drawer_win_obj.getEmittedBin());
@@ -3079,6 +3080,24 @@ pub fn build(b: *std.Build) void {
 
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_unit_tests.step);
+    // WS5 (RoseCat 05f2549): register the agent_drawer.zig geometry property tests so deleting a portable
+    // helper (incl. zb_drawer_anim_ms_from_env / animMsFromEnv) reds the gate. Host-run, link libc (atomic_file).
+    const drawer_props_dep = b.createModule(.{
+        .root_source_file = b.path("src/agent_drawer.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    const drawer_props_module = b.createModule(.{
+        .root_source_file = b.path("tests/windows/agent_drawer_props_test.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    drawer_props_module.addImport("agent_drawer", drawer_props_dep);
+    const run_drawer_props_tests = b.addRunArtifact(b.addTest(.{ .root_module = drawer_props_module }));
+    b.step("drawer-props-test", "WS5: agent_drawer.zig geometry property tests").dependOn(&run_drawer_props_tests.step);
+    test_step.dependOn(&run_drawer_props_tests.step);
     test_step.dependOn(&windows_gate_selftest.step);
     test_step.dependOn(&windows_twohost_selftest.step);
     test_step.dependOn(&windows_build_selftest.step);
