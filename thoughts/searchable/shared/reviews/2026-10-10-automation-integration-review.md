@@ -29958,3 +29958,63 @@ The safety sentinel itself is sound in this focused check: without preserved
 fd 9 it refused with `NotInPrivatePidNamespace`, and the prototype's `reap`
 only flips a child-local boolean rather than sending a signal. Agent Mail 7679
 sent the causal-red blocker to JadeBeacon.
+
+## Xsession guardian-cleanup red (`0cc9b45`)
+
+**Causal RED confirmed, but BLOCKED-for-safety as currently documented and
+therefore not ready to register.** From an exact clean export, I ran the test
+inside an outer private user, mount and PID namespace with a tmpfs `/tmp`.
+It failed exactly four times: all three sequential sessions observed the
+private display still present when `stop_browser` returned, and the
+namespace-exit row left both its lock and socket. This establishes the
+intended old-code failure.
+
+The committed cleanup is unsafe on the shared host filesystem. `own()` first
+observes `served(number)==false` and then unlinks `/tmp/.X<number>-lock` and
+`/tmp/.X11-unix/X<number>`. A concurrent X session can claim that display
+between the check and unlink, so a number plus a momentary failed connect is
+not durable ownership and the test can delete another run's live artifacts.
+The docstring's PID-namespace-only invocation does not isolate those paths.
+
+Register the test only behind a private mount namespace with a private tmpfs
+`/tmp` (plus the private PID namespace), and source-pin that launcher, or
+replace manual unlinking with an equally strong held-identity cleanup. Retain
+the four-failure red and require an empty private `/tmp` after the green.
+Agent Mail 7681 sent the safety blocker to BlueBeaver.
+
+## WSL discovery-spike safety repair (`2268c98`)
+
+**BLOCKED; one live win11-m8 run is NOT AUTHORIZED yet.** The repair removes
+the earlier raw-PID/local-signal hazards: static AST and text checks found no
+local `kill`, `terminate` or `killpg`, no `Stop-Process`, and no global
+`wsl --shutdown`. The C1 secret no longer appears in a staged template or
+result. From an exact clean export, the offline oracle passed **7/7** and the
+whole hostless module passed with the live class skipped.
+
+Three live-safety gaps remain:
+
+1. `setUp` collision-checks only the nonce's `-a` and `-b` distro names. The
+   negative then invokes `wsl --import <nonce>-nope` and destructive
+   `wsl --unregister <nonce>-absent` without proving those names were absent
+   from the baseline. Check/reserve the full prospective name set before any
+   operation and causally prove a planted negative name prevents every
+   import, unregister and directory removal.
+2. `_await_listener_gone` runs `Get-CimInstance` with errors silenced and
+   treats empty output as `GONE`. Query/access failure or an unreadable/null
+   live command line can therefore false-clean. Return a tagged
+   `GONE|OURS|NOT_OURS|UNREADABLE` result and fail closed on unreadable, with
+   an offline causal row.
+3. `_reap_no_signal` reports a timeout after 20 seconds but returns while the
+   local SSH `Popen` may remain alive. A 150-second remote sleep bounds the
+   intended remote process, not the local client under a failed connection.
+   Add SSH dead-peer bounds and wait through the known remote lifetime, or
+   otherwise prove and reap the exact owned handle without raw-PID signalling.
+
+After those fixes, the permitted one-run envelope is: no concurrent WSL
+test; exact clean export; displays unset; BatchMode plus pinned key and
+known-hosts; pinned Alpine rootfs hash; an outer current-uid private PID
+namespace with `--kill-child`; writes only under
+`C:\Users\zbtext\zb\wsl`; and exact before/after distro, run-directory,
+listener and local-child censuses. Any cleanup error fails acceptance and
+must be reported without broad/manual cleanup. Agent Mail 7680 sent the
+no-go and exact conditions to AzureRidge.
