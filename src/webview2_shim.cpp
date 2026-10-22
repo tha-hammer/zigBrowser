@@ -4,6 +4,7 @@
 
 #include <windows.h>
 #include <dwmapi.h>  // WS5.3: DwmFlush — step the fold animation on the compositor's vsync (plan:1539)
+#include <richedit.h>  // WS5.4: the inert message bubble is a read-only, plain-text RichEdit
 #include <objbase.h>
 #include <shlobj.h>
 #include <wrl.h>
@@ -79,6 +80,7 @@ struct AppState {
   HWND drawer_panel = nullptr;
   HWND drawer_icon = nullptr;
   HWND drawer_min = nullptr;  // WS5.3: the visible "-" (minimize/fold) control on the open drawer (top-right)
+  HWND drawer_bubble = nullptr;  // WS5.4: the inert message bubble (read-only, plain-text RichEdit) on the panel
   // WS5 e2e-only control-factory failure seam (ZIGBROWSER_AGENT_DRAWER_FAIL = "panel"|"icon"): forces a
   // CreateWindowExW failure branch for the test. Null unless --e2e-protocol AND the env is set.
   const char *force_drawer_fail = nullptr;
@@ -89,6 +91,9 @@ struct AppState {
   // DPI for a deterministic test. PRODUCTION never consults this — it uses GetDpiForWindow. Set only under
   // --e2e-protocol; null otherwise.
   const char *dpi_seam = nullptr;
+  // WS5.4 e2e-only bubble seam (ZIGBROWSER_AGENT_DRAWER_RTF): the literal text to render in the inert bubble. It
+  // is set verbatim via WM_SETTEXT (never EM_STREAMIN/SF_RTF), so RTF markup and URLs stay literal. e2e-only.
+  const char *rtf_seam = nullptr;
   // WS5.7 the window's current per-monitor DPI: seeded from GetDpiForWindow on first use, then kept current by
   // the WM_DPICHANGED handler. 0 until seeded. This is the production sizing authority.
   int dpi_current = 0;
@@ -893,6 +898,11 @@ void resize_controller(AppState *app) {
                  kFoldBtnSize, kFoldBtnSize, TRUE);
       ShowWindow(app->drawer_min, SW_SHOW);
     }
+    if (app->drawer_bubble) {  // WS5.4: the bubble fills the panel below the "-" control (panel-relative coords)
+      MoveWindow(app->drawer_bubble, kFoldBtnMargin, kFoldBtnMargin + kFoldBtnSize,
+                 panel.w - 2 * kFoldBtnMargin, panel.h - 2 * kFoldBtnMargin - kFoldBtnSize, TRUE);
+      ShowWindow(app->drawer_bubble, SW_SHOW);  // a child of the panel, so it hides with the panel when closed
+    }
     if (app->drawer_icon) {
       ShowWindow(app->drawer_icon, SW_HIDE);  // the icon hides while the drawer is open (D4)
     }
@@ -1271,6 +1281,27 @@ void mount_drawer(AppState *app) {
   app->icon_proc = reinterpret_cast<WNDPROC>(prev_proc);
   app->drawer_panel = panel_hwnd;
   app->drawer_icon = icon_hwnd;
+  // WS5.4: the inert message bubble — a READ-ONLY, PLAIN-TEXT RichEdit child of the panel. EM_SETTEXTMODE
+  // TM_PLAINTEXT (set while empty) keeps it plain, EM_AUTOURLDETECT stays OFF, and the text is set literally via
+  // WM_SETTEXT — never EM_STREAMIN/SF_RTF — so RTF markup and URLs render as literal text with no link and no
+  // OLE object. Non-load-bearing chrome: a bubble-create failure logs and the drawer still mounts without it.
+  static HMODULE s_msftedit = LoadLibraryW(L"Msftedit.dll");  // provides MSFTEDIT_CLASS ("RICHEDIT50W")
+  (void)s_msftedit;
+  HWND bubble_hwnd = CreateWindowExW(0, MSFTEDIT_CLASS, L"", WS_CHILD | ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL,
+                                     0, 0, 0, 0, panel_hwnd, nullptr, app->instance, nullptr);
+  if (bubble_hwnd != nullptr) {
+    SendMessageW(bubble_hwnd, EM_SETTEXTMODE, TM_PLAINTEXT, 0);  // plain text, not RTF (while still empty)
+    SendMessageW(bubble_hwnd, EM_AUTOURLDETECT, FALSE, 0);       // never linkify URLs
+    if (app->rtf_seam != nullptr) {
+      const std::wstring w = utf8_to_wide(app->rtf_seam);
+      SetWindowTextW(bubble_hwnd, w.c_str());  // literal text; no RTF parsing, no auto-link
+    }
+    app->drawer_bubble = bubble_hwnd;
+  } else {
+    fprintf(stderr, "zigBrowser: agent-drawer bubble control not created (error %lu); bubble omitted\n",
+            static_cast<unsigned long>(GetLastError()));
+    fflush(stderr);
+  }
   app->drawer_mounted = true;
   g_drawer_live.fetch_add(1, std::memory_order_relaxed);
 
@@ -1553,6 +1584,7 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam,
         app->drawer_panel = nullptr;
         app->drawer_icon = nullptr;
         app->drawer_min = nullptr;
+        app->drawer_bubble = nullptr;
       }
       app->hwnd = nullptr;
     }
@@ -1963,6 +1995,7 @@ static int run_core(const char *uri, int print_title, int e2e_protocol, bool scr
     app.fold_seam = fold_env != nullptr && strcmp(fold_env, "1") == 0;  // accept EXACTLY "1" (RoseCat 05f2549)
     app.fold_fail = getenv("ZIGBROWSER_AGENT_DRAWER_FOLD_FAIL");     // WS5.3 e2e-only fold fail-closed causal seam
     app.dpi_seam = getenv("ZIGBROWSER_AGENT_DRAWER_DPI");            // WS5.7 e2e-only DPI override (percent)
+    app.rtf_seam = getenv("ZIGBROWSER_AGENT_DRAWER_RTF");            // WS5.4 e2e-only inert-bubble literal text
     const char *dpi_ignore = getenv("ZIGBROWSER_AGENT_DRAWER_DPICHANGE_IGNORE");  // WS5.7 e2e-only causal mutant
     app.dpichange_ignore = dpi_ignore != nullptr && strcmp(dpi_ignore, "1") == 0;
   }
