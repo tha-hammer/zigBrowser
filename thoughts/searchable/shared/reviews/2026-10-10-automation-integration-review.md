@@ -30144,3 +30144,105 @@ The live authorization still waits on the existing blocker at
 `tests/windows/wsl_live_test.py:347-351`: `Get-CimInstance` retains
 `-ErrorAction SilentlyContinue`, so a CIM/provider/access failure may still
 produce rc 0 plus `GONE`. No exact commit is authorized for a VM run yet.
+
+## WSL listener census and always-reap closure (`9baaebf`, `4384fcf`)
+
+**APPROVED; the `45ab25b` / `9e84aa9` WSL-spike safety blockers are closed
+cumulatively. ONE owner-watched live run is AUTHORIZED at exact commit
+`4384fcf`, under the envelope below.**
+
+The listener census now composes fail-closed end to end. The actual remote
+PowerShell producer uses `Get-CimInstance ... -ErrorAction Stop`; its catch
+emits the single token `UNREADABLE`, while only a successful no-object result
+emits `GONE`. The consumer rejects `UNREADABLE`, empty and unexpected output.
+The committed producer/consumer table covers absence, ours, reused PID,
+present-without-command-line and CIM errors both with and without a nominal
+process. Its structural row catches the prior `SilentlyContinue` mutant.
+
+The keepalive lifecycle now has a named strict inequality:
+`150 s remote sleep + 15 s SSH dead-peer bound < 210 s reap bound`. Both
+ServerAlive options feed the background SSH path. `wait()` reaps the normal
+child; after a boundary timeout, `poll()` performs the final no-signal reap or
+reports a genuine residual. The latter remains confined by the mandatory
+current-UID PID namespace whose Python process is objectively PID 1; neither
+the test nor cleanup contains a local raw-PID signal.
+
+`4384fcf` also commits the formerly review-only causal coverage: the live
+refusal calls the pure `pidns_backstop_ok`, whose table rejects a missing
+marker and marker-plus-non-1 pid; and the SSH table pins both ServerAlive
+options plus the exact 150 + 15 + 45 = 210 second bound. Removing the pid-1
+clause or either SSH option makes these rows fail. Its header command is only
+an example and is **not** the authorization: the run must use the exact
+bounded command below.
+
+From an exact clean `git archive 4384fcf` export:
+
+- the offline suite passed **15/15**, with the live class skipped;
+- a fake live opt-in on the host refused before hashing or network access;
+- the exact private-namespace wrapper passed the guard and stopped at the
+  deliberately wrong rootfs hash before network access;
+- the generated producer contained `-ErrorAction Stop`, no
+  `SilentlyContinue`, and the error-to-`UNREADABLE` path; the bound was 210;
+- `py_compile` and `git diff-tree --check` were clean.
+
+The one permitted run must satisfy all of these conditions:
+
+1. use a clean archive of exact `4384fcf`, with no concurrent WSL test or
+   distro operation and no connection to the Win10 file server;
+2. target only `win11-m8` as `zbtext`, using port 2222, BatchMode, the pinned
+   key and known-hosts file already named by the test;
+3. provide the local
+   `alpine-minirootfs-3.21.9-x86_64.tar.gz` only after independently verifying
+   SHA-256 `3d5912d47e004ac77746d63ab848abd9e37164465cf1c866eb574bc526135012`;
+4. unset every display variable and run under
+   `unshare --user --map-current-user --pid --fork --kill-child --mount-proc`,
+   with `ZB_WSL_PIDNS_BACKSTOP=1`, wrapped by an outer 2400-second `timeout`
+   with a 30-second kill-after;
+5. allow remote writes only beneath `C:\Users\zbtext\zb\wsl` and inside the
+   two nonce-owned imported distros; never use `wsl --shutdown` or any manual
+   PID/name-based cleanup;
+6. capture before/after `wsl -l -q` and run-directory censuses. Acceptance
+   requires exit 0, the exact distro baseline restored, no nonce `run-*` or
+   `zb-test-*` leftovers, and no surviving local SSH child. On any failure,
+   stop and report the exact owned names/paths rather than broad cleanup.
+
+The authorized inner invocation is:
+
+```sh
+env -u DISPLAY -u WAYLAND_DISPLAY -u XAUTHORITY \
+  timeout --foreground --signal=TERM --kill-after=30s 2400s \
+  unshare --user --map-current-user --pid --fork --kill-child --mount-proc \
+  env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 \
+    ZB_WSL_PIDNS_BACKSTOP=1 ZB_WIN11_HOST=win11-m8 ZB_WIN11_PORT=2222 \
+    ZB_WIN11_USER=zbtext ZB_WIN_KEY=/home/maceo/vms/win11-m8/zb_win_key \
+    ZB_WIN_KNOWN_HOSTS=/home/maceo/vms/win11-m8/known_hosts \
+    ZB_WSL_ROOTFS="$ZB_WSL_ROOTFS" \
+    python3 -X dev -m unittest -v tests.windows.wsl_live_test
+```
+
+The clean archive directory must be deleted afterward with a guarded
+`find "${dir:?}" -depth -delete`, whether the run passes or fails. This is
+discovery evidence only; it does not promote the DRAFT WS8/WS9 design or arm
+production WSL containment.
+
+## MS6.3 unusable-fd-3 error-frame red (`2e7f1ee`)
+
+**BLOCKED-for-tests.** The red is otherwise causal and correctly isolated. In
+an exact clean archive, using `tools/agent_host_env.sh --check`'s interpreter
+inside a private current-UID PID namespace, all four rows fail at the intended
+token-read boundary: missing fd 3, short token, non-ASCII token, and oversized
+token each produce no protocol frame and an uncaught traceback. The run is
+bounded, sends no signal, creates no FIFO directory, and `git diff --check` is
+clean.
+
+One oracle gap must be fixed before the green. At
+`agent/host/tests/test_contract_no_token.py:59-62`, the assertion projects only
+`type`, `session`, `code`, and `message` from each decoded object. A frame with
+an extra `detail`, path, attacker-controlled field, or other leaked datum would
+still pass, contradicting the claimed **one fixed frame** boundary. Assert the
+complete decoded frame, including the protocol envelope (`v: 1`, `seq: 1`),
+equals the single expected object and contains no additional keys. Keep the
+stderr-empty, exit-2, no-FIFO, and bad-input non-echo assertions. The red may
+remain unregistered until its green, but its eventual registered invocation
+must resolve and use the pinned agent-host interpreter; bare system Python
+fails earlier on a missing SDK and is not causal evidence.
