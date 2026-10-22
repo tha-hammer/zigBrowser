@@ -19060,6 +19060,53 @@ Win10 contract, the 10 GB VM floor, the exact
 closes WS0 `--probe-only`, not the still-unimplemented no-argument product
 gate.
 
+## Win32 WS5 absolute cleanup deadline (`561f2fa`)
+
+**APPROVED-for-live-evidence; one exact three-row Win11 rerun is authorized at
+`561f2fa`.** `bounded_cleanup` computes one monotonic deadline, passes only the
+remaining budget to each step, combines remote deletion and the existence
+check into one SSH operation, and caps that subprocess call from the same
+budget. Timeout, non-removal and deadline exhaustion remain fail-closed. The
+injected-clock rows prove a transient lock extending beyond the former
+20-second window can recover and a permanent failure exhausts one decreasing
+budget rather than renewing per attempt.
+
+An exact clean export passed **44 offline tests** and skipped the seven VM
+rows; the commit message's “45 oracle pass” count is one high. The
+`max(1.0, budget)` subprocess floor can let the final call exceed the nominal
+deadline by less than one second when 0–1 second remains; passing the positive
+raw budget would make the wording exact, but the hours-long multiplication is
+gone and this does not block the diagnostic run.
+
+The rerun is limited to `assign_fail`, `assign_firststop_fail` and
+`cleanup_exhaust`, from an exact clean export of `561f2fa`, with the existing
+pinned SSH/known-hosts, unique owned root, born-in-Job teardown, no pid/name
+kill, and stop-on-first-failure rules. Every row must echo the requested force
+mode and empty fail mode, satisfy its branch oracle, report the process gone
+and zero Job members/survivors, emit no pre-resume drawer row, and leave no
+owned directory after the bounded cleanup. This authorizes evidence
+collection; WS5 acceptance still depends on that run passing.
+
+## `zigBrowser-3gl` lost-ownership reap fix (`83af4d6`)
+
+**APPROVED-for-tests; the `5308c83` signal-safety blocker is closed.** The
+sweep now distinguishes an observed exit, a still-owned timeout and a hard
+wait error. A hard error immediately marks ownership lost and returns
+fail-closed without invoking the killer. Only the timeout branch enters the
+guarded stop and bounded second sweep. The fallback cleanup consumes the same
+state and skips every ownership-lost child, so it cannot signal after the
+primary path has lost proof.
+
+The causal rows require no signal plus `ownership_lost` on the ECHILD-like
+path; a signal on the still-owned timeout path; a real status observed after
+that signal; and opposite cleanup behavior for lost versus still-owned
+children. These unit rows inject their waiter/killer and send no real signal.
+The real fork/signal scenarios remain behind the fd-9 namespace sentinel. An
+exact clean export passed **8/8** inside a private user/PID/mount namespace.
+
+This approves the prototype's coverage fix only. It remains unregistered and
+unarmed, and the named whole-recovery transaction remains OPEN.
+
 The evidence packet must contain the registered hostless totals, real Win11
 ACL/nonce/task totals, the owner-locked PASS, and a clean-export private-Xvfb
 aggregate Build Summary at the final SHA. The watched two-host run must exit
