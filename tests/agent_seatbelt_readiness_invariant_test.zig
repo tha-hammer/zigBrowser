@@ -90,6 +90,13 @@ test "the Python readiness is one source: LAUNCH_SPEC_CONSUMABLE is a function o
     try std.testing.expectEqual(curated(), facts.launch_spec_consumable);
 }
 
+test "LAUNCH_SPEC_CONSUMABLE follows PROFILE_CURATION in both states: false when BROAD, true when CURATED" {
+    // SilverRidge 1915e0d: a constant function agrees with the derivation at the current state; driving the
+    // production function with PROFILE_CURATION set to each value tells them apart.
+    try std.testing.expectEqual(false, facts.consumable_when_broad);
+    try std.testing.expectEqual(true, facts.consumable_when_curated);
+}
+
 test "a CURATED profile has no bare allow in any profile the generator renders" {
     try std.testing.expect(facts.profiles.len == 5);
     if (!curated()) return;
