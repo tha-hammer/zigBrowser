@@ -896,15 +896,32 @@ pub fn build(b: *std.Build) void {
     const ledger_darwin_step = b.step("test-agent-run-ledger-darwin-build", "MS6.5.1 ledger cross-compiles to Darwin (aarch64 + x86_64 macOS)");
     ledger_darwin_step.dependOn(&ledger_darwin_aarch64_obj.step);
     ledger_darwin_step.dependOn(&ledger_darwin_x86_64_obj.step);
-    // MS6.5.1 (RoseCat recovery row): startup recovery keys on the recorded owner (pid, start) — a leftover entry
-    // is recovery work only when its owner is proved dead; a live matching owner (another browser) is left; PID
-    // reuse or an unreadable result fails closed. Two-browser fork, signal-free. Linux-gated (/proc probe).
+    // MS6.5.1 (SCOPED, RoseCat c11bff8): a ONE-live-process liveness probe keyed on the recorded owner (pid,start)
+    // mapped to an action LABEL — proved-dead -> .recover, same live owner -> .leave, PID reuse/unreadable ->
+    // fail closed. The fork is ONE live process to probe; nothing is signalled/retired, no whole-recovery.
+    // Signal-free. Linux-gated (/proc probe).
     const ledger_recovery_test_mod = b.createModule(.{ .root_source_file = b.path("tests/agent_run_ledger_recovery_test.zig"), .target = target, .optimize = optimize });
     ledger_recovery_test_mod.addImport("agent_run_ledger", ledger_mod);
     const run_ledger_recovery_tests = b.addRunArtifact(b.addTest(.{ .root_module = ledger_recovery_test_mod }));
     run_ledger_recovery_tests.skip_foreign_checks = true;
-    const ledger_recovery_step = b.step("test-agent-run-ledger-recovery", "MS6.5.1 ledger (pid,start) owner-liveness recovery decision");
+    const ledger_recovery_step = b.step("test-agent-run-ledger-recovery", "MS6.5.1 ledger (pid,start) one-live-process liveness probe + fail-closed action label (SCOPED, not whole-recovery)");
     ledger_recovery_step.dependOn(&run_ledger_recovery_tests.step);
+    // MS6.5.1 (SCOPED, RoseCat c11bff8): the v2 platform-tagged owner-start schema — a known start_kind parses, an
+    // unknown/missing kind and an impossible per-kind shape are Malformed, (kind,sec,usec) preserved. Pure parse.
+    const ledger_start_kind_test_mod = b.createModule(.{ .root_source_file = b.path("tests/agent_run_ledger_start_kind_test.zig"), .target = target, .optimize = optimize });
+    ledger_start_kind_test_mod.addImport("agent_run_ledger", ledger_mod);
+    const run_ledger_start_kind_tests = b.addRunArtifact(b.addTest(.{ .root_module = ledger_start_kind_test_mod }));
+    run_ledger_start_kind_tests.skip_foreign_checks = true;
+    const ledger_start_kind_step = b.step("test-agent-run-ledger-start-kind", "MS6.5.1 ledger v2 platform-tagged owner-start schema (start_kind, canonical shape)");
+    ledger_start_kind_step.dependOn(&run_ledger_start_kind_tests.step);
+    // MS6.5.1 (SCOPED, RoseCat c11bff8 / 0e36742 #4): liveness is SAME-KIND only — a cross-kind identity never
+    // matches even when numerically equal (fails closed). One-live-process fork, signal-free, Linux-gated.
+    const ledger_samekind_test_mod = b.createModule(.{ .root_source_file = b.path("tests/agent_run_ledger_samekind_test.zig"), .target = target, .optimize = optimize });
+    ledger_samekind_test_mod.addImport("agent_run_ledger", ledger_mod);
+    const run_ledger_samekind_tests = b.addRunArtifact(b.addTest(.{ .root_module = ledger_samekind_test_mod }));
+    run_ledger_samekind_tests.skip_foreign_checks = true;
+    const ledger_samekind_step = b.step("test-agent-run-ledger-samekind", "MS6.5.1 ledger liveness same-kind-only: a cross-kind identity never matches (fails closed)");
+    ledger_samekind_step.dependOn(&run_ledger_samekind_tests.step);
     // MS6.5.1 (RoseCat d3b31cb #1/#2): the liveness probe keeps absence distinct from unreadability — only a
     // proved-absent process is dead; a permission/read/truncation/parse failure fails closed (.unreadable). Pure
     // injectable classifier/parser unit (no /proc, no fork), so it runs on every host.
@@ -929,7 +946,7 @@ pub fn build(b: *std.Build) void {
     ledger_deadline_test_mod.addImport("agent_run_ledger", ledger_mod);
     const run_ledger_deadline_tests = b.addRunArtifact(b.addTest(.{ .root_module = ledger_deadline_test_mod }));
     run_ledger_deadline_tests.skip_foreign_checks = true;
-    const ledger_deadline_step = b.step("test-agent-run-ledger-deadline", "MS6.5.1 startup-recovery acquisition honors one absolute monotonic deadline");
+    const ledger_deadline_step = b.step("test-agent-run-ledger-deadline", "MS6.5.1 bounded flock acquisition honors one absolute monotonic deadline");
     ledger_deadline_step.dependOn(&run_ledger_deadline_tests.step);
     // MS6.5.1 (RoseCat e665676 #3): the recovery-busy watchdog is bounded by an absolute monotonic deadline even
     // under an EINTR storm (waitWithinDeadline checks the deadline before each poll). Fake clock + EINTR-storm poll.
@@ -937,7 +954,7 @@ pub fn build(b: *std.Build) void {
     ledger_watchdog_test_mod.addImport("agent_run_ledger", ledger_mod);
     const run_ledger_watchdog_tests = b.addRunArtifact(b.addTest(.{ .root_module = ledger_watchdog_test_mod }));
     run_ledger_watchdog_tests.skip_foreign_checks = true;
-    const ledger_watchdog_step = b.step("test-agent-run-ledger-watchdog", "MS6.5.1 recovery-busy watchdog is EINTR-bounded by an absolute monotonic deadline");
+    const ledger_watchdog_step = b.step("test-agent-run-ledger-watchdog", "MS6.5.1 bounded-acquire watchdog is EINTR-bounded by an absolute monotonic deadline");
     ledger_watchdog_step.dependOn(&run_ledger_watchdog_tests.step);
     // MS6.5.1 (whole-recovery, Rev 27): a live owner holding the global flock that stalls must not wedge startup
     // recovery — bounded acquire inside the total deadline, fail closed (recovery-busy incident, first run
@@ -955,7 +972,7 @@ pub fn build(b: *std.Build) void {
         "sh",
     });
     run_ledger_recovery_busy_tests.addArtifactArg(ledger_recovery_busy_exe);
-    const ledger_recovery_busy_step = b.step("test-agent-run-ledger-recovery-busy", "MS6.5.1 whole-recovery: a stalled live flock holder cannot wedge startup (bounded, fail-closed; PID-ns sentinel)");
+    const ledger_recovery_busy_step = b.step("test-agent-run-ledger-recovery-busy", "MS6.5.1 bounded acquire fails closed on a stalled live flock holder (SCOPED, not whole-recovery; PID-ns sentinel)");
     ledger_recovery_busy_step.dependOn(&run_ledger_recovery_busy_tests.step);
     // MS6.5 (the user's decision 2026-10-21): the stubbed macOS VM-containment seam — off by default, reports
     // "not available yet", and the gate fails closed when on. Pure Linux unit (no OS calls).
@@ -3073,6 +3090,8 @@ pub fn build(b: *std.Build) void {
     if (target.result.os.tag == .linux) test_step.dependOn(&run_ledger_recovery_tests.step);
     test_step.dependOn(&run_ledger_unreadable_tests.step); // pure unit: unreadable liveness fails closed
     test_step.dependOn(&run_ledger_statio_tests.step); // pure unit: readStart outcome mapping fails closed
+    test_step.dependOn(&run_ledger_start_kind_tests.step); // pure unit: v2 start_kind schema + canonical shape
+    if (target.result.os.tag == .linux) test_step.dependOn(&run_ledger_samekind_tests.step); // same-kind-only liveness
     test_step.dependOn(&run_ledger_deadline_tests.step); // pure unit: acquisition honors one absolute deadline
     test_step.dependOn(&run_ledger_watchdog_tests.step); // pure unit: watchdog EINTR-bounded by the deadline
     if (target.result.os.tag == .linux) test_step.dependOn(&run_ledger_recovery_busy_tests.step);

@@ -1,4 +1,4 @@
-//! MS6.5.1 (whole-recovery live-stalled-holder; macOS-plan Rev 27; RoseCat e665676 #2/#3/#4). A LIVE owner that
+//! MS6.5.1 (SCOPED, RoseCat c11bff8; e665676 #2/#3/#4): the BOUNDED flock-acquisition primitive. A LIVE owner that
 //! holds the one global ledger flock and stalls must NOT wedge startup: independent B's `runStartupRecovery`
 //! acquires BOUNDED within the deadline and, on timeout, FAILS CLOSED — `acquired=false`, a `recovery_busy`
 //! incident, the first new run `refused_deferred`, zero on-disk mutation (the store byte-for-byte retained), zero
@@ -63,7 +63,7 @@ const RealPoll = struct {
     }
 };
 
-test "a live stalled flock holder cannot wedge startup recovery: B fails closed within the deadline, no mutation" {
+test "a live stalled flock holder cannot wedge the bounded acquire: B fails closed within the deadline, no mutation" {
     // SAFETY sentinel: refuse to run (no fork, no signal) unless kernel-proven inside a private PID namespace.
     if (!inPrivatePidNamespace()) return error.NotInPrivatePidNamespace;
 
@@ -94,7 +94,7 @@ test "a live stalled flock holder cannot wedge startup recovery: B fails closed 
     var rb: [1]u8 = undefined;
     try std.testing.expect(linux.read(aready[0], &rb, 1) == 1); // A now holds the lock
 
-    // B (separate process): run startup recovery with a bounded deadline (~100ms), write its 3-field result to a
+    // B (separate process): run the bounded acquire primitive with a bounded deadline (~100ms), write its 3-field result to a
     // pipe, exit. A blocking-acquire mutant never writes -> the watchdog kills B.
     var bpipe: [2]i32 = undefined;
     try std.testing.expect(linux.pipe(&bpipe) == 0);

@@ -1,18 +1,16 @@
-//! MS6.5.1 red (RoseCat recovery row). Startup recovery keys on the recorded owner (pid, start): a leftover
-//! `active` entry is recovery work ONLY when its owner is proved dead; a LIVE matching owner (another browser
-//! instance) is left untouched; PID reuse (live, different start) or an unreadable result fails closed. Real
-//! fork — no signals. UNREGISTERED until green.
+//! MS6.5.1 (SCOPED, RoseCat c11bff8). The ONE-live-process liveness probe + action-label mapping keyed on a
+//! recorded owner `(pid, start)`: a proved-dead owner labels `.recover`; a live matching owner labels `.leave`;
+//! PID reuse (live, different start) or an unreadable result fails closed. The fork creates ONE live process to
+//! probe — it is NOT a two-browser startup-recovery run: nothing here signals, retires, or mutates the ledger,
+//! and no marked child or other-browser exclusion is modelled. Real fork, no signals.
 //!
-//! Two-browser case: B starts while A (a live owner, recorded (pid,start)) and A's marked child are live. B's
-//! decision for A's entry must be `.leave` — so B neither signals A's child nor retires A's entry.
-//!
-//! The mutant this catches: a decision that recovers regardless of liveness (or a probe that reports a live
-//! owner as dead) would make B recover — i.e. signal/retire — a live instance's entry.
+//! The mutant this catches: a mapping that labels `.recover` regardless of liveness (or a probe that reports a
+//! live owner as dead) would mislabel a live process's entry as recoverable.
 const std = @import("std");
 const ledger = @import("agent_run_ledger");
 const linux = std.os.linux;
 
-test "recovery decision keys on (pid,start): live owner is left, dead recovers, reuse/unreadable fail closed" {
+test "liveness->label keys on (pid,start): live owner -> leave, dead -> recover, reuse/unreadable -> fail closed" {
     var ready: [2]i32 = undefined;
     var go: [2]i32 = undefined;
     try std.testing.expect(linux.pipe(&ready) == 0);
@@ -46,11 +44,11 @@ test "recovery decision keys on (pid,start): live owner is left, dead recovers, 
     };
     const a_start = ledger.readStartTicks(a_pid) orelse return error.TestNoStart;
 
-    // A is a LIVE matching owner -> leave untouched (B neither signals nor retires A's entry):
+    // A is a LIVE matching owner -> label .leave (classification only; nothing is signalled/retired here):
     try std.testing.expectEqual(ledger.Recovery.leave, ledger.recoveryFor(ledger.probeLiveness(a_pid, a_start)));
     // PID reuse (A live, but a different recorded start) -> fail closed:
     try std.testing.expectEqual(ledger.Recovery.fail_closed, ledger.recoveryFor(ledger.probeLiveness(a_pid, a_start +% 1)));
-    // An absent pid -> proved dead -> recovery work:
+    // An absent pid -> proved dead -> label .recover:
     try std.testing.expectEqual(ledger.Recovery.recover, ledger.recoveryFor(ledger.probeLiveness(2147483646, 0)));
 
     _ = linux.close(go[1]); // release A
@@ -59,6 +57,6 @@ test "recovery decision keys on (pid,start): live owner is left, dead recovers, 
     released = true;
     _ = linux.close(ready[0]);
 
-    // once A has exited, its (pid,start) is proved dead -> recovery work:
+    // once A has exited, its (pid,start) is proved dead -> label .recover:
     try std.testing.expectEqual(ledger.Recovery.recover, ledger.recoveryFor(ledger.probeLiveness(a_pid, a_start)));
 }

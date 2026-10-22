@@ -247,20 +247,24 @@ pub fn acquireLock(io: std.Io, dir: std.Io.Dir, max_tries: u32, backoff_ms: i64)
 }
 
 
-// ---- (pid, start) owner-liveness recovery (RoseCat recovery row) ----
+// ---- SCOPED (RoseCat c11bff8): one-live-process liveness probe + a portable fail-closed action-label mapping.
+// This is the accepted primitive. It is NOT whole-recovery: it performs NO startup-recovery pass, NO other-browser
+// exclusion, NO signal, NO retirement and NO ledger mutation. `recoveryFor` returns an action LABEL only; actually
+// performing it (census/kill, marker-unlink, rmdir, ledger retirement under one flock) is the OPEN whole-recovery
+// blocker (bd), and `reaper_ready` stays false. ----
 
-/// The liveness verdict for a recorded owner `(pid, start)`.
+/// The liveness verdict for a recorded owner `(pid, start)` from a single live-process probe.
 pub const Liveness = enum { dead, live_same, live_reused, unreadable };
-/// What startup recovery does with an `active` entry, given its owner's liveness.
+/// The action LABEL a liveness maps to (a classification only — nothing is signalled or retired here).
 pub const Recovery = enum { recover, leave, fail_closed };
 
-/// The recovery decision: a leftover entry is recovery work ONLY when its owner is proved dead; a LIVE matching
-/// owner (another browser instance) is left untouched; PID reuse (live, different start) or an unreadable
-/// liveness result FAILS CLOSED — never signalled, never retired.
+/// Map a liveness to its action label: a proved-dead owner labels `.recover`; a live matching owner labels
+/// `.leave`; PID reuse (live, different start) or an unreadable result labels `.fail_closed`. This is a pure
+/// classification — it never signals, retires, or touches the ledger.
 pub fn recoveryFor(l: Liveness) Recovery {
     return switch (l) {
-        .dead => .recover, // owner proved dead -> the leftover entry is recovery work
-        .live_same => .leave, // another live browser instance -> never signalled, never retired
+        .dead => .recover, // owner proved dead -> label the leftover entry recoverable
+        .live_same => .leave, // same live owner -> label leave (no action performed here)
         .live_reused => .fail_closed, // PID reuse (live, different start) -> fail closed
         .unreadable => .fail_closed, // can't prove liveness -> fail closed
     };
@@ -451,17 +455,17 @@ const FlockAttempt = struct {
     }
 };
 
-/// Startup recovery under the ONE global flock, bounded by ONE absolute monotonic deadline (`clock.nowMs() +
-/// budget_ms`) that caps BOTH the acquisition AND the work done while the lock is held (RoseCat e665676 #1).
-/// Acquire-failure/deadline/cancel => FAIL CLOSED: no held work runs, so zero liveness/census/signal/retire/
-/// unlink/ledger mutation; the entry is retained, a recovery-busy incident is surfaced, and the first new agent
-/// run is refused/deferred (never hung). A live holder that stalls can thus never wedge startup. The held recovery
-/// work (revalidate -> fixed point -> unlink -> rmdir -> remove) lands in the two-recoverer slice and checks the
-/// SAME deadline.
+/// SCOPED (RoseCat c11bff8): the BOUNDED, cancellable flock-acquisition primitive under ONE absolute monotonic
+/// deadline (`clock.nowMs() + budget_ms`). Acquire-failure/deadline/cancel => FAIL CLOSED (`acquired=false`,
+/// recovery-busy incident, first new run refused/deferred), so a live holder that stalls can never wedge the
+/// acquire. This is NOT the whole-recovery transaction: there is NO held recovery work here — no liveness
+/// revalidation, census/kill fixed point, signal, retirement, marker-unlink or ledger mutation. The acquired path
+/// only proves the bound is respected; the real held recovery work is the OPEN whole-recovery blocker (bd) and
+/// `reaper_ready` stays false.
 pub fn runStartupRecovery(io: std.Io, dir: std.Io.Dir, budget_ms: i64, backoff_ms: i64, clock: anytype) RecoveryResult {
-    _ = io; // reserved for the held recovery work (ledger load/publish) in the two-recoverer slice
+    _ = io; // no held work in this scoped primitive
     const busy = RecoveryResult{ .acquired = false, .incident = .recovery_busy, .first_run = .refused_deferred };
-    const deadline = clock.nowMs() + budget_ms; // ONE absolute deadline for acquire + held work
+    const deadline = clock.nowMs() + budget_ms; // one absolute deadline bounds the acquire
     const fd = std.posix.openat(dir.handle, LOCK_NAME, .{ .ACCMODE = .RDWR, .CREAT = true, .NOFOLLOW = true, .CLOEXEC = true }, 0o600) catch return busy;
     switch (acquireWithinDeadline(clock, deadline, backoff_ms, FlockAttempt{ .fd = fd })) {
         .acquired => {},
@@ -470,59 +474,7 @@ pub fn runStartupRecovery(io: std.Io, dir: std.Io.Dir, budget_ms: i64, backoff_m
             return busy;
         },
     }
-    defer _ = std.posix.system.close(fd); // release at the end (held across the whole recovery once it exists)
-    if (clock.nowMs() >= deadline) return busy; // the same deadline bounds the held work; out of budget -> fail closed
-    // The held recovery work (revalidate -> fixed point -> unlink -> rmdir -> remove) lands in the two-recoverer
-    // slice; each phase re-checks `clock.nowMs() < deadline`. This slice proves the bounded fail-closed path.
+    defer _ = std.posix.system.close(fd); // release immediately; no recovery work is performed under the lock here
+    if (clock.nowMs() >= deadline) return busy; // the acquire exhausted the budget -> fail closed
     return .{ .acquired = true, .incident = .none, .first_run = .allowed };
-}
-
-// ---- the two-recoverer whole-recovery transaction (RoseCat 97c6215 #3; whole-recovery claim) ----
-
-/// What a recoverer did with one recorded entry under the global flock.
-pub const RecoveryAction = enum { signalled, left, fail_closed, already_gone };
-
-fn indexOfBasename(l: *const Ledger, basename: []const u8) ?usize {
-    for (l.entries(), 0..) |e, i| {
-        if (std.mem.eql(u8, e.basename, basename)) return i;
-    }
-    return null;
-}
-
-fn publishWithout(io: std.Io, dir: std.Io.Dir, sub_path: []const u8, l: *const Ledger, basename: []const u8) !void {
-    var buf: [MAX_ENTRIES]Entry = undefined;
-    var n: usize = 0;
-    for (l.entries()) |e| {
-        if (std.mem.eql(u8, e.basename, basename)) continue;
-        buf[n] = e;
-        n += 1;
-    }
-    try publish(io, dir, sub_path, buf[0..n]);
-}
-
-/// Recover ONE recorded entry under the ONE global flock, held across the WHOLE recovery (read -> revalidate ->
-/// signal phase -> retire), so exactly one of two racing recoverers enters the signal phase; the other, once it
-/// acquires, re-reads and finds the entry gone. Only a proved-dead, same-kind owner is recovered: enter the signal
-/// phase (`ops.reap`) then retire (remove the entry + republish). A live owner is left; reuse/unreadable fails
-/// closed. `ops` is injectable: `afterRead`/`beforeReap` are harness hooks (no-ops in production); `reap` is the
-/// observable signal phase (the production census/kill of the marked children).
-pub fn recoverOneUnderLock(io: std.Io, gpa: std.mem.Allocator, dir: std.Io.Dir, sub_path: []const u8, basename: []const u8, max_tries: u32, backoff_ms: i64, ops: anytype) RecoveryAction {
-    var lock = acquireLock(io, dir, max_tries, backoff_ms) catch return .fail_closed;
-    defer lock.close(io); // held across the WHOLE recovery: read -> revalidate -> signal phase -> retire -> release
-    var l = load(io, gpa, dir, sub_path) catch return .fail_closed;
-    defer l.deinit();
-    const idx = indexOfBasename(&l, basename);
-    ops.afterRead();
-    if (idx == null) return .already_gone; // a prior recoverer already retired it
-    const e = l.entries()[idx.?];
-    switch (recoveryFor(probeLivenessTagged(e.pid, e.start_kind, e.start_sec, e.start_usec))) {
-        .leave => return .left,
-        .fail_closed => return .fail_closed,
-        .recover => {
-            ops.beforeReap();
-            ops.reap(basename); // SIGNAL PHASE (observable)
-            publishWithout(io, dir, sub_path, &l, basename) catch return .fail_closed;
-            return .signalled;
-        },
-    }
 }
