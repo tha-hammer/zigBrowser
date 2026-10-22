@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 
 const testing = std.testing;
 
@@ -19,11 +20,17 @@ pub const BackendName = enum {
 pub const InputMode = enum {
     cdp_input,
     js_synthetic,
+    /// Windows plan WS2b.0: no run has shown this backend's input trusted yet.
+    /// WebView2 flips to `cdp_input` only on a recorded WS2b.1 isTrusted run on
+    /// the Win11 VM and the Win10 box.
+    unproven,
 };
 
 pub const NetworkSupport = enum {
     supported,
     unsupported,
+    /// zigBrowser-ong.7: only a fake adapter backs this backend's capture.
+    unproven,
 };
 
 pub const UnsupportedReason = enum {
@@ -77,8 +84,8 @@ pub const PlatformCapabilities = struct {
 pub fn adapterCapabilities(backend: BackendName) PlatformCapabilities {
     return switch (backend) {
         .webview2 => .{
-            .input = .{ .mode = .cdp_input },
-            .network = .{ .support = .supported },
+            .input = .{ .mode = .unproven },
+            .network = .{ .support = .unproven },
         },
         .webkitgtk => .{
             .input = .{ .mode = .js_synthetic },
@@ -97,6 +104,24 @@ pub fn adapterCapabilities(backend: BackendName) PlatformCapabilities {
     };
 }
 
+/// The backend this build drives; the `capabilities` RPC reports its row.
+pub const running_backend: BackendName = switch (builtin.os.tag) {
+    .windows => .webview2,
+    .macos => .wkwebview,
+    else => .webkitgtk,
+};
+
+/// The `capabilities` RPC result: `backend`'s adapterCapabilities() row, tags
+/// as strings, no null fields. Caller frees.
+pub fn capabilitiesJson(allocator: std.mem.Allocator, backend: BackendName) error{OutOfMemory}![]u8 {
+    const caps = adapterCapabilities(backend);
+    return std.json.Stringify.valueAlloc(
+        allocator,
+        .{ .backend = backend, .input = caps.input, .network = caps.network },
+        .{ .emit_null_optional_fields = false },
+    );
+}
+
 pub const PlatformAdapter = struct {
     backend: BackendName,
     telemetry_sink: ?*InMemoryPlatformTelemetry = null,
@@ -108,11 +133,15 @@ pub const PlatformAdapter = struct {
 
     pub fn startNetwork(self: *PlatformAdapter, page_id: []const u8) !void {
         const caps = adapterCapabilities(self.backend);
-        if (caps.network.support != .supported) {
-            const reason = caps.network.unsupported_reason.?;
-            self.last_unsupported_reason = reason;
-            self.recordNetworkCapability(page_id, .unsupported, reason, .unsupported);
-            return error.CapabilityUnsupported;
+        switch (caps.network.support) {
+            .supported => {},
+            .unproven => return error.CapabilityUnproven,
+            .unsupported => {
+                const reason = caps.network.unsupported_reason.?;
+                self.last_unsupported_reason = reason;
+                self.recordNetworkCapability(page_id, .unsupported, reason, .unsupported);
+                return error.CapabilityUnsupported;
+            },
         }
 
         self.recordNetworkCapability(page_id, .supported, null, .success);
@@ -883,8 +912,8 @@ pub const InMemoryPlatformTelemetry = struct {
 
 test "P3.1 platform capability names are explicit per backend" {
     const webview2 = adapterCapabilities(.webview2);
-    try testing.expectEqual(InputMode.cdp_input, webview2.input.mode);
-    try testing.expectEqual(NetworkSupport.supported, webview2.network.support);
+    try testing.expectEqual(InputMode.unproven, webview2.input.mode);
+    try testing.expectEqual(NetworkSupport.unproven, webview2.network.support);
 
     const gtk = adapterCapabilities(.webkitgtk);
     try testing.expectEqual(InputMode.js_synthetic, gtk.input.mode);

@@ -1872,6 +1872,32 @@ pub fn build(b: *std.Build) void {
     const owner_only_step = b.step("test-owner-only", "Run WS2.0's owner-only seam and socket-place tests");
     owner_only_step.dependOn(&run_owner_only_tests.step);
     owner_only_step.dependOn(&run_transport_ws20_tests.step);
+    // Windows plan WS2b.0 (orchestrator decision (a)): the capability table's webview2 row is
+    // unproven (input until WS2b.1, network zigBrowser-ong.7), and the `capabilities` RPC reports
+    // the running backend's row over the authenticated socket on the real binary. The e2e never
+    // takes the live display (--prefer-xvfb) and a skip (77) fails the step.
+    const wv2_capabilities_tests_module = b.createModule(.{
+        .root_source_file = b.path("tests/wv2_capabilities_test.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    wv2_capabilities_tests_module.addImport("automation_platform", b.createModule(.{
+        .root_source_file = b.path("src/automation_platform.zig"),
+        .target = target,
+        .optimize = optimize,
+    }));
+    const run_wv2_capabilities_tests = b.addRunArtifact(b.addTest(.{ .root_module = wv2_capabilities_tests_module }));
+    run_wv2_capabilities_tests.skip_foreign_checks = true;
+    const capabilities_rpc_e2e = b.addSystemCommand(&.{
+        "sh",
+        "-c",
+        "python3 -I tests/e2e/capabilities_rpc_test.py --binary \"$1\" --prefer-xvfb",
+        "capabilities-rpc-e2e",
+    });
+    capabilities_rpc_e2e.addArtifactArg(exe);
+    const wv2_capabilities_step = b.step("test-wv2-capabilities", "Run WS2b.0's capability-row and capabilities-RPC tests");
+    wv2_capabilities_step.dependOn(&run_wv2_capabilities_tests.step);
+    wv2_capabilities_step.dependOn(&capabilities_rpc_e2e.step);
     // macOS plan rev 14 items 3 and 6 (MS5, BlueBeaver): where the agent runtime is per OS (an app bundle's
     // Contents/Frameworks/agent-host) and the setup gate (macOS refuses until MS6, never unsandboxed).
     const agent_setup_ms5_module = b.createModule(.{
@@ -3782,6 +3808,8 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_automation_thread_document_tests.step);
     test_step.dependOn(&automation_thread_document_e2e.step);
     test_step.dependOn(&run_owner_only_tests.step);
+    test_step.dependOn(&run_wv2_capabilities_tests.step);
+    test_step.dependOn(&capabilities_rpc_e2e.step);
     test_step.dependOn(&run_agent_setup_ms5_tests.step);
     test_step.dependOn(&run_agent_setup_ms5_python_tests.step);
     test_step.dependOn(&run_agent_setup_ms5_devtree_tests.step);

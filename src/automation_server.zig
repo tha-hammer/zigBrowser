@@ -3,6 +3,7 @@ pub const automation = @import("automation.zig");
 /// S7a: the chat drawer's in-process broker over this core (callInProcess).
 pub const agent_broker = @import("agent_broker.zig");
 const automation_websocket = @import("automation_websocket.zig");
+const automation_platform = @import("automation_platform.zig");
 const owner_only = @import("owner_only.zig");
 
 const net = std.Io.net;
@@ -450,6 +451,25 @@ fn telemetryQuery(
     return std.fmt.allocPrint(allocator, "{{\"jsonrpc\":\"2.0\",\"result\":{s},\"id\":{s}}}", .{ spans_json, id_json });
 }
 
+/// capabilities {} -> this build's adapterCapabilities() row (Windows plan
+/// WS2b.0). Runs after the envelope/auth checks like every other method.
+fn capabilitiesResult(allocator: std.mem.Allocator, id_json: []const u8, params_json: []const u8) error{OutOfMemory}![]u8 {
+    var parsed = std.json.parseFromSlice(std.json.Value, allocator, params_json, .{}) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return jsonRpcError(allocator, id_json, -32602, "Invalid params", null),
+    };
+    defer parsed.deinit();
+    const no_params = switch (parsed.value) {
+        .object => |object| object.count() == 0,
+        else => false,
+    };
+    if (!no_params) return jsonRpcError(allocator, id_json, -32602, "Invalid params", null);
+
+    const row = try automation_platform.capabilitiesJson(allocator, automation_platform.running_backend);
+    defer allocator.free(row);
+    return std.fmt.allocPrint(allocator, "{{\"jsonrpc\":\"2.0\",\"result\":{s},\"id\":{s}}}", .{ row, id_json });
+}
+
 /// What a request is answered with once it has passed the socket's checks.
 const Core = struct {
     engine: *engine_mod.Engine,
@@ -511,6 +531,9 @@ fn dispatchParsed(allocator: std.mem.Allocator, id_json: []const u8, method: []c
         .{ c.engine, c.queue, c.social, c.route, c.build_info, c.cookies, c.recent_traces, c.x_state, c.recover };
     if (std.mem.eql(u8, method, "telemetry.query")) {
         return telemetryQuery(allocator, id_json, params_json, recent_traces);
+    }
+    if (std.mem.eql(u8, method, "capabilities")) {
+        return capabilitiesResult(allocator, id_json, params_json);
     }
     if (cookie_routes.verbFromMethod(method)) |verb| {
         return handleCookies(allocator, id_json, method, verb, params_json, engine, cookies, route, build_info);
