@@ -6,19 +6,20 @@ branch: zb-automation-integration-2026-10-10-11-59
 repository: zigBrowser
 topic: "Windows 10 + Windows 11 launch support for zigBrowser — TDD implementation plan"
 tags: [plan, tdd, windows, win10, win11, webview2, win32, msvc, automation, drawer, credential-manager, sandbox, wfp, netd, msi, authenticode, launch-critical]
-status: "DRAFT — NOT IMPLEMENTATION-APPROVED (rev 2.17); the WS8/WS9 WSL2 topology is a DRAFT only; re-baselined to HEAD e4f705f (code state of c07899f) and amended with every finding of the independent review (19 critical C1-C19 + 23 warnings W1-W23); see 'Review amendments (rev 2.17)'"
+status: "DRAFT — NOT IMPLEMENTATION-APPROVED (rev 2.18); the WS8/WS9 WSL2 topology is a DRAFT only; re-baselined to HEAD e4f705f (code state of c07899f) and amended with every finding of the independent review (19 critical C1-C19 + 23 warnings W1-W23); see 'Review amendments (rev 2.17)'"
 rev: 2.17
 rebaselined_at: e4f705f
 rebaselined_code_state: c07899f
 review_input: thoughts/searchable/shared/plans/2026-10-19-windows-launch-tdd-plan-REVIEW.md
-rev_2_17_note: "Rev 2.17 (2026-10-22; enhance_plan_with_review of the independent review by BlackRobin, bead zigBrowser-4pa.4; amendments tracked as zigBrowser-4pa.31..49). PLAN-ONLY revision: no source, test, build or host file was changed and no command was run against any host. (1) RE-BASELINE: the plan's assumptions are brought to HEAD e4f705f (git diff c07899f..e4f705f is three REVIEW .md files only, so the CODE state is c07899f); the stale 'Current State Analysis' is superseded by a dated 'State at HEAD' table (W2). (2) OD-W4 CONTRACT stated exactly once, normatively, in 'OD-W4 contract (rev 2.17, normative)': WSL2 now / own VM later; the Claude agent, its CLI, bubblewrap and netd run INSIDE our own imported WSL2 distro on Windows 11 ONLY; the agent is OFF on Windows 10; no dedicated users, no AppContainer, no WFP, no Job-Object user isolation, no Windows python.exe or claude.exe for the agent. (3) EVERY review finding is mapped in 'Review amendments (rev 2.17) — traceability' (C1-C19, W1-W23) to a plan location or to an explicit rejection. (4) C1 (Win10 test host) and the C4 order question are OWNER decisions: the plan adopts the review's recommended default (every gate Win11-only; Windows 10 browser launch is UNTESTED until the owner authorizes a writable Win10 host) and marks it 'pending owner ratification'. (5) The WS8/WS9 DRAFT gate is unchanged in force except that it now names the ONE sanctioned blocker-1 live rerun (C17) and the WS8/WS9 proposals now carry concrete numbers/wire formats (still PROPOSALS, not contracts). This revision closes no blocker and approves no security claim."
+rev_2_18_note: "Rev 2.18 (2026-10-22; OWNER RULING on decision C1, tracked as zigBrowser-4pa.31 and zigBrowser-4pa.41). PLAN-ONLY revision: only this plan file changed; no source, test, build or host file was touched, no Windows host was contacted, and nothing was built or run. OWNER RULING (verbatim): 'the windows 10 machine should not be read-only it is a standard Win10 box, not some production file server.' The Windows 10 machine is zbtest@100.123.34.15, a standard, WRITABLE Win10 test box. The rev 2.10 premise (a read-only file server on which no browser may run) was WRONG and is corrected everywhere it appeared. (1) DECISION C1 default REPLACED: the physical Win10 box (zbtest@100.123.34.15) is a WRITABLE test host; a [W] both-hosts gate means the Win11 VM PLUS the Win10 box. Win10 release rule: RoseCat exact-commit approval PLUS an orchestrator release (the same rule as the Win11 VM); all work confined to C:/Users/zbtest/zb; ask the owner before ANY system-wide install. (2) Every read-only-file-server / Win10-leg-withdrawn / Win10-dropped / Win10-untested statement from rev 2.10 onward was removed or rewritten (rev-2.10 and rev-2.11 notes, rev-2.17 note item 4, Why-this-plan, markers table, State-at-HEAD table, section C, Desired End State, behaviors 1-2 and 7, host provisioning and the confinement requirements, WS0.1/0.2/0.7/0.8, the Testing Strategy real-screen and closure rules, the what-runs-where note, WS1.2, WS2.0 and the AF_UNIX stop rule, WS2a.0, WS2b.1, the WS2/WS3/WS6 gates, WS13, the real-screen table, unverified item 3). (3) The Win10 legs that rev 2.10 and rev 2.17 had removed are RESTORED, each with its OWN test and its OWN evidence line, none of them run yet: WS0 product-run Win10 leg (WS0.9), WS1.2-W10, WS2.0-W10, WS2a.0-W10, WS2b.1-W10, WS13.4-W10 and the win-render / install-smartscreen Win10 real-screen legs. (4) Honest caveats recorded, not hidden: the as-built --probe-only code still treats the Win10 box as zero-write (root/free_gb/interactive_session not_applicable) because it was written on the wrong premise; the 2026-10-20 reading of C: on that box was about 0 GB free, a capacity precondition to clear with the owner before any Win10 product leg; the WebView2 runtime, if missing there, is a system-wide install and needs the owner. (5) C4 (build-order question) is UNCHANGED and STILL PENDING OWNER RATIFICATION. This revision closes no blocker and approves no security claim."
+rev_2_17_note: "Rev 2.17 (2026-10-22; enhance_plan_with_review of the independent review by BlackRobin, bead zigBrowser-4pa.4; amendments tracked as zigBrowser-4pa.31..49). PLAN-ONLY revision: no source, test, build or host file was changed and no command was run against any host. (1) RE-BASELINE: the plan's assumptions are brought to HEAD e4f705f (git diff c07899f..e4f705f is three REVIEW .md files only, so the CODE state is c07899f); the stale 'Current State Analysis' is superseded by a dated 'State at HEAD' table (W2). (2) OD-W4 CONTRACT stated exactly once, normatively, in 'OD-W4 contract (rev 2.17, normative)': WSL2 now / own VM later; the Claude agent, its CLI, bubblewrap and netd run INSIDE our own imported WSL2 distro on Windows 11 ONLY; the agent is OFF on Windows 10; no dedicated users, no AppContainer, no WFP, no Job-Object user isolation, no Windows python.exe or claude.exe for the agent. (3) EVERY review finding is mapped in 'Review amendments (rev 2.17) — traceability' (C1-C19, W1-W23) to a plan location or to an explicit rejection. (4) [AMENDED in rev 2.18] C1 (Win10 test host) had been adopted here as 'every gate Win11-only; Windows 10 browser untested' on the mistaken read-only-file-server premise; the OWNER has since ruled that the Win10 box is a standard WRITABLE test host, so that default is REPLACED (see rev_2_18_note and section C). The C4 order question remains an OWNER decision, still pending ratification. (5) The WS8/WS9 DRAFT gate is unchanged in force except that it now names the ONE sanctioned blocker-1 live rerun (C17) and the WS8/WS9 proposals now carry concrete numbers/wire formats (still PROPOSALS, not contracts). This revision closes no blocker and approves no security claim."
 rev_2_16_note: "Rev 2.16 (2026-10-21, AzureRidge; RoseCat 9134b8b/7558 + draft-state route 7561). DOCUMENTATION-HONESTY ONLY — this revision does NOT close affd577/9134b8b, does NOT authorize any WS8/WS9 implementation, and approves NO security claim. It marks the WS8/WS9 WSL2 topology a DRAFT: (1) status/rev/WS8/WS9 headings say DRAFT — NOT IMPLEMENTATION-APPROVED; withdrew every 'causal/implementation-ready/grounded/proven' closure claim that exceeds the discovery observations. (2) one authoritative gate before WS8 forbids any WS8/WS9 red/green/production-edit/installer-change/further live-or-destructive WSL run (and WS10/WS11/agent-WS12/WS13 agent work) until a later reviewed revision closes every blocker. (3) the six 9134b8b findings are listed OPEN with exact required closure + the eight-finding status table. (4) measured facts narrowed to what the committed run actually observed (explicit -u zbagent uid/caps/userns/bwrap; exact IPv4/IPv6 canary+ACK; co-tenant reach) with an explicit NOT-proven list (default-user selection, causal reverse firewall denial, fail-closed cleanup/final census, the C1 pipe/fd bootstrap, production bwrap/netd, any product security boundary). (5) wsl_live_test.py marked DISCOVERY-ONLY / DO NOT RERUN until its ignored rc/ready-proof/staged-cleanup/final-census are repaired + reviewed; its header/result are not gate evidence. (6) an authoritative scope banner marks every dedicated-user/WFP/WindowsSandboxUserBackend/host-netd/both-host-agent/Win10-agent statement HISTORICAL and non-normative — present scope = browser on Win10+Win11, agent/WSL on Win11 only, agent OFF on Win10. (7) C1-C5 kept as PROPOSALS/TBD, not contracts, naming the later evidence required; OAuth fd-3 stays a hard-red unverified. Live evidence is required before any later implementation-approved revision."
 rev_2_15_note: "Rev 2.15 (2026-10-21, AzureRidge; RoseCat affd577 — 8 blockers on 770848b/7ca6897). [HISTORICAL — its 'causal'/'implementation-ready' claims were WITHDRAWN in rev 2.16; the topology is a DRAFT.] It aimed to correct the live spike and the WSL2 contracts: (1) the spike now creates a dedicated NON-ROOT Linux uid (zbagent 1000), launches with it, and proves id!=0, no sudo/doas, CapEff=0, 0 setuid, /etc denied, and userns+bwrap AS that user (C6). (2) transport re-probed EXACTLY on 127.0.0.1:0 (and ::1:0) with an ACK + moved canary, IPv4+IPv6, a hostile co-tenant row (a second distro reaches the 127.0.0.1 listener ⇒ auth mandatory), and WSL→Windows + TEST-NET fail-closed with every rc checked; the spike pins distros alive with keepalives, rc-checks the whole lifecycle, asserts final census==baseline, refuses a missing rootfs on an opted-in host, and cleans its local scratch. (3) C1 bootstrap de-circularised: the control capability is delivered on a one-shot inherited pipe at launch (never env/argv/file/TCP), kept DISTINCT from the OAuth fd-3 token; WS8.3 reconciled; same-Windows-user boundary stated plainly (the WSL VM is NOT a boundary against the owning Windows user). (4) C5 reverse relay specified for hook-initiated 51091/31337 (Windows dials in, in-distro broker multiplexes, framing/backpressure/cancellation/lifetime). (5) C2 file broker made concrete (Windows broker + in-distro client, server-held handle capabilities, a real held-handle check-and-use primitive replacing the removed WS0.5 Option B, bounds, immutable snapshot, atomic copy-back, session ownership, crash cleanup). (6) C3 setup/update state machine (versioned distro names + current-pointer commit/rollback, active-session-aware retire, unprivileged reboot-resume with SID binding) + honest uninstall (cannot un-enable global WSL/VMP) + C4 marker-based teardown with detached/double-fork and browser-crash recovery. (7) the old Windows-user/WFP WS9 block, the dependency-graph WFP coupling, and the unverified dedicated-user/CreateProcessWithLogonW/nested-virt-fallback items are REMOVED/reconciled to WSL. (8) Win10 ships BROWSER-ONLY agent-OFF; WS8/WS9/WS11/WS12-agent/WS13-agent-census gate win11-only, reconciled in the OD-W4 scope + the WS10/WS11/WS13 gates. The spike stays UNREGISTERED; WS8/WS9 reds remain gated on RoseCat approval."
 rev_2_14_note: "[HISTORICAL — C8: the claim 'WSL→Windows is firewall-blocked' below is WITHDRAWN as a measured fact (rev 2.16 / plan 'Loopback TCP directionality'): one reverse attempt failed WITHOUT proving the Windows listener was live, so it is an unproven observation, and the C1/C5 direction is a PROPOSAL.] Rev 2.14 (2026-10-21, AzureRidge; RoseCat 119108c WSL2 re-plan + owner 'WSL done'). The WS8/WS9 WSL2 topology is now grounded in LIVE MEASUREMENTS on win11-m8 (WSL 3.0.3.0, kernel 6.18.54.1, build 26200) by the new `tests/windows/wsl_live_test.py` (standard-user `zbtext`, no admin; Alpine minirootfs 3.21.9 pinned by in-repo SHA-256; imports two distros, probes, tears down with a guarded delete; exit 77 off-host; UNREGISTERED until the WS8/WS9 greens). Measured + folded in: `wsl --import` and the full per-user lifecycle need NO admin; automount-off works (Windows drive unmounted, `/mnt/c` not a mountpoint); appendWindowsPath-false works; interop-off is PARTIAL (the WSLInterop binfmt handler stays registered — WS8.1 must hard-disable it at boot); two distros share ONE utility VM + ONE net namespace (separate mount/PID ns); loopback TCP is one-directional by default — **Windows→WSL works (localhostForwarding), WSL→Windows is firewall-blocked**, so C1/C5 are INVERTED to agent-listens-in-distro / browser-connects-from-Windows; AF_VSOCK creatable by a standard user but host side needs AF_HYPERV (rejected); unprivileged userns + bubblewrap work inside the distro; per-run process-group kill is safe while `wsl --terminate` is distro-wide. The four WS8 contracts (C1-C4) + the new WS9 C5 bridge-topology contract answer 119108c and are re-anchored to this evidence. Still owner-only/elevated: the one-time feature-enable + reboot (the owner did it; benign 'nested virtualization not supported' notice prints, not needed). Added the **WS8/WS9 acceptance matrix (RoseCat 7516's 12 inputs)** as the production-backend closure spec and labelled `wsl_live_test.py` a DISCOVERY SPIKE (security/product claims proven later through `WslBackend`/`LinuxBwrapBackend`); measured that wsl.conf applies via a **per-distro `wsl --terminate`** so no global `wsl --shutdown` is used (pinned forbidden, #10); the spike now takes a baseline/postflight census + refuses name collisions; recorded honestly that the WSL VM is **not** an isolation boundary against the owning Windows user (#3). WS8/WS9 reds remain gated on RoseCat approving this re-plan."
 rev_2_13_note: "Rev 2.13 (2026-10-21, AzureRidge; RoseCat b3d255b-chain). Owner DECISIONS recorded + reconciled throughout: OD-W1 = per-user WiX 3.14 MSI; OD-W3 = NO code signing for launch (DEFERRED, not a launch gate, WS13.6 stays OPEN, nothing may claim signed/distributable); OD-W6 = native Win32 drawer (not WebView2/WinUI); OD-W4 = WSL2 now / own VM later (our own `wsl --import` distro, automount+interop off, appendWindowsPath=false, agent inside it under the existing bubblewrap+netd Linux sandbox, browser<->agent over loopback TCP/hvsocket since AF_UNIX does not cross WSL2, agent OFF + fixed explanation if virt/WSL absent; dedicated-users/AppContainer/WFP DROPPED for launch and marked SUPERSEDED in WS8/WS9; own-small-VM containment is a later MS6.5-stub milestone). WS13 signing reworded deferred/non-gating; the Open-decisions intro + sharpening mark W1/W3/W4/W6 decided (history, not pending); WS5 no longer offers a WebView2 drawer. UNVERIFIED (owner, elevated): reboot need for VMP/WSL; the later shared utility VM; loopback-vs-hvsocket transport + auth; win11-m8 feature-state/nested-virt (read-only non-admin probe: WSL NOT installed, feature/nested-virt queries elevation-refused). No WSL install on the VM until the owner relays OK; WS8/WS9 WSL2 reds only after RoseCat approves the re-plan."
 rev_2_12_note: "Rev 2.12 (2026-10-21, AzureRidge; RoseCat 88852d9). Lock detection no longer uses OpenInputDesktop for the verdict: on the win11-m8 LOCKED VM console OpenInputDesktop returned input desktop 'Default' and the probe mis-reported unlocked. session_probe.ps1 now derives `locked` from the WTS session-lock flag — WTSQuerySessionInformation(WTSSessionInfoEx) -> WTSINFOEX_LEVEL1.SessionFlags (WTS_SESSIONSTATE_LOCK(0)=locked, WTS_SESSIONSTATE_UNLOCK(1)=unlocked), byte offset +12 after the DWORD Level tag — with a LogonUI-in-console fallback, and it FAILS CLOSED: the ONLY unlocked verdict is the WTS flag explicitly reporting UNLOCK(1); any unknown/unreadable signal counts as locked so gate.sh refuses it as an active unlocked session. input_desktop is a DIAGNOSTIC field only. The verdict is a pure extractable Get-ZbLockVerdict (ZB_LOCK_FN markers); the watched LockedDesktopLive requires wts_lock_ok=true and session_flags==0 (LogonUI fallback tested separately in LockVerdictFixturesLive)."
-rev_2_11_note: "Rev 2.11 (2026-10-20, WS0 live-readiness closure, AzureRidge; RoseCat 5e48424/6867/6882/6889). WS0 closure is the two-host readiness `--probe-only` gate ONLY; the no-argument full product gate still exits 'not implemented' and is NOT claimed complete. Win10 file server: read-only/zero-write, host-key-only identity; root and free_gb not_applicable there; no fixed listener baseline (WS0.7 = listeners/firewall-hash/shares unchanged pre vs post); sshd ListenAddress and AllowUsers pinned exactly. VM free-space floor 10 GB; current pinned clean snapshot `pre-4dr-toolchain-2026-10-20`. zbtest_write_paths uses the real Win32 AccessCheck (zero-disk Reflection.Emit) not a hand SID walk; the Win10 probe is streamed on stdin and compiles nothing (no Add-Type/CodeDOM) and writes nothing. The in-console session helper (session_probe.ps1) is an EXTERNALLY provisioned scheduled task (provision_session_task.ps1); gate.sh pin-verifies it with verify_task.ps1 (exact canonical System32 powershell.exe, no WorkingDirectory node, exact argument tuple, one Exec, one Principal with nonempty id == Actions Context, UserId == the exact current-user SID, InteractiveToken, RunLevel absent-or-LeastPrivilege, Enabled absent-or-true, staged-script SHA-256) and only then writes a per-run nonce, triggers it, and awaits a nonce-matching fresh (non-future) session.json. Lock state comes from the WTS session-lock flag (WTSSessionInfoEx -> WTSINFOEX_LEVEL1.SessionFlags; LOCK(0)/UNLOCK(1)) with a LogonUI-in-console fallback and FAILS CLOSED (unknown => locked); the input-desktop name (OpenInputDesktop) is a diagnostic only (see rev_2_12_note). The owner-gated locked-console test (host_live_test.py LockedDesktopLive, ZB_EXPECT_LOCKED) runs with the VM console deliberately locked and is unlocked before the normal two-host run. gate_twohost_selftest.py is registered/green (windows-twohost-selftest) and load_tests also registers host_live_test.py (live cases skip without the VM env/lock opt-in)."
-rev_2_10_note: "Rev 2.10 (2026-10-20, WS2.0 scope, BlueBeaver; RoseCat 6860, 41a296a, 6870 — WS2.0 is labelled [W11], and the register names its exception): WS2.0's live production evidence is the Win11 VM only. Running the browser on the physical Windows 10 file server would mean copying an exe onto it, which the user's rule forbids: that machine is read-only as zbtest, with no writes and no installs (the file-server rule, plan:525,689,712-717). The physical-Win10 leg (the owner-side DACL check and the different-integrity connect) is withdrawn, not deferred under a claim, and Windows 10 AF_UNIX stays unverified. Where Win10 coverage would come from if ever needed: a separate, writable Windows 10 host that the user authorizes (for example a Win10 guest on the libvirt host), running the same tests/e2e/win_transport_test.py with ZB_WIN11_HOST pointed at it. Nothing here claims it."
+rev_2_11_note: "Rev 2.11 (2026-10-20, WS0 live-readiness closure, AzureRidge; RoseCat 5e48424/6867/6882/6889). WS0 closure is the two-host readiness `--probe-only` gate ONLY; the no-argument full product gate still exits 'not implemented' and is NOT claimed complete. Win10 box (zbtest@100.123.34.15): the --probe-only probe itself is zero-write with host-key-only identity, so root and free_gb are not_applicable in THAT readiness mode only [rev 2.18: the Win10 box is a writable test host, so the product-run mode enforces root/free_gb/interactive_session there]; no fixed listener baseline (WS0.7 = listeners/firewall-hash/shares unchanged pre vs post); sshd ListenAddress and AllowUsers pinned exactly. VM free-space floor 10 GB; current pinned clean snapshot `pre-4dr-toolchain-2026-10-20`. zbtest_write_paths uses the real Win32 AccessCheck (zero-disk Reflection.Emit) not a hand SID walk; the Win10 probe is streamed on stdin and compiles nothing (no Add-Type/CodeDOM) and writes nothing. The in-console session helper (session_probe.ps1) is an EXTERNALLY provisioned scheduled task (provision_session_task.ps1); gate.sh pin-verifies it with verify_task.ps1 (exact canonical System32 powershell.exe, no WorkingDirectory node, exact argument tuple, one Exec, one Principal with nonempty id == Actions Context, UserId == the exact current-user SID, InteractiveToken, RunLevel absent-or-LeastPrivilege, Enabled absent-or-true, staged-script SHA-256) and only then writes a per-run nonce, triggers it, and awaits a nonce-matching fresh (non-future) session.json. Lock state comes from the WTS session-lock flag (WTSSessionInfoEx -> WTSINFOEX_LEVEL1.SessionFlags; LOCK(0)/UNLOCK(1)) with a LogonUI-in-console fallback and FAILS CLOSED (unknown => locked); the input-desktop name (OpenInputDesktop) is a diagnostic only (see rev_2_12_note). The owner-gated locked-console test (host_live_test.py LockedDesktopLive, ZB_EXPECT_LOCKED) runs with the VM console deliberately locked and is unlocked before the normal two-host run. gate_twohost_selftest.py is registered/green (windows-twohost-selftest) and load_tests also registers host_live_test.py (live cases skip without the VM env/lock opt-in)."
+rev_2_10_note: "Rev 2.10 (2026-10-20, WS2.0 scope, BlueBeaver; RoseCat 6860, 41a296a, 6870 — WS2.0 is labelled [W11], and the register names its exception): WS2.0's live production evidence COLLECTED SO FAR is the Win11 VM only (a fact about which runs exist, not a limit on the plan). [CORRECTED in rev 2.18 per the owner ruling: this note originally asserted that the physical Windows 10 machine is a read-only file server on which the browser may not be run, set aside the physical-Win10 leg (the owner-side DACL check and the different-integrity connect) and left Windows 10 AF_UNIX unverified. That premise was WRONG: zbtest@100.123.34.15 is a standard, WRITABLE Win10 test box. The Win10 leg is RESTORED as WS2.0-W10 (own test, own evidence line; see the WS2.0 section) and is NOT yet run; Windows 10 AF_UNIX stays UNVERIFIED only until that leg runs under the Win10 release rule (RoseCat exact-commit approval + orchestrator release, work confined to C:/Users/zbtest/zb).]"
 rev_2_9_note: "Rev 2.9 (2026-10-20; WS0-completion / Route A, RoseCat 6769) [W5: frontmatter now carries this note; full text in the WS2.0 section body]: snapshot readiness moved from an in-VM probe field to a host-side read-only virsh check; console_user read network-safe; interactive_session/locked VM-only."
 rev_2_8_note: "Rev 2.8 (2026-10-20; WS13.4 uninstall census, RoseCat 6731 / 2cc125c) [W5: frontmatter now carries this note; full text in the WS2.0 section body] [HISTORICAL — the six-kind sandbox-user/WFP census it describes is the DROPPED dedicated-user design; see WS13.4 (rev 2.17, WSL-era uninstall)]."
 rev_2_7_note: "Rev 2.7 (2026-10-20, WS2.0, BlueBeaver; RoseCat 6647, 6668): the Windows automation server never started — std.Io.net enables AF_UNIX on Windows only when the target minimum is win10_rs4 (Windows 10 1803) or later, and the default x86_64-windows-msvc range starts lower, so server.start returned AddressFamilyUnsupported (exit 7) and its whole start path was dead code. build.zig windowsAfUnixFloor now gives every Windows target without an explicit minimum the win10_rs4 floor (the cross-check object uses it too); the newly reachable start path got Windows fixes (wallClockMs via RtlGetSystemTimePrecise, the token file without .fromMode, cookies.import refused on Windows until WS3). The ADR-1 spike no longer compiles on Zig 0.16 and is superseded: the production e2e tests/e2e/win_transport_test.py (red 970969f, green f29e490) is the AF_UNIX proof. Rev 2.6's claim that .fromMode compiles for Windows is withdrawn: it compiled only because the path was unreachable."
@@ -30,7 +31,7 @@ rev_2_2_note: "Rev 2.2 (bead zigBrowser-126): WS0.6 VM identity no longer uses t
 rev_2_1_note: "Rev 2.1 (RoseCat 6146): WS8.7 folded into WS8's own gate (WS8.1-WS8.7); WS12 reconciled with the committed TTS Windows cloning leg (CW) and the committed STT live-mic = physical Windows 10 only (VM = WAV seam); WS13.4 uninstall must not report success while any sandbox user / WFP filter / task survives; WS13's final gate depends on every release component + the voice packaging, not merely starting after WS7."
 last_updated: 2026-10-22
 last_updated_by: "enhance_plan_with_review (rev 2.17 — re-baseline to HEAD e4f705f, OD-W4 contract restated, all 19 criticals + 23 warnings of the independent review amended or explicitly rejected) [W5: previously said 'rev 2.13']"
-last_updated_note: "Rev 2.17 (2026-10-22): see rev_2_17_note and 'Review amendments (rev 2.17)'. Rev 2.16 (2026-10-21, AzureRidge; RoseCat 9134b8b/7558 + draft-state route 7561): DOCUMENTATION HONESTY ONLY — marked the WS8/WS9 WSL2 topology a DRAFT (NOT implementation-approved), added the authoritative no-WS8/WS9-work gate, listed the six 9134b8b blockers OPEN, narrowed the measured facts to the explicit-user discovery observations with an explicit NOT-proven list, marked wsl_live_test.py DISCOVERY-ONLY/DO-NOT-RERUN, added an authoritative scope banner making every dedicated-user/WFP/both-host-agent statement historical/non-normative, and relabelled C1-C5 as proposals/TBD. Does not close affd577 or approve any implementation/security claim. Rev 2.15 (2026-10-21, AzureRidge; RoseCat affd577): corrected the discovery spike + WSL2 contract DRAFTS from the live run — observed (explicit `-u zbagent` only) uid 1000 + userns/bwrap, exact 127.0.0.1:0/::1:0 ACK+canary, IPv6, a hostile co-tenant row; drafted C1 bootstrap, C5 relay, C2 broker, C3/C4 state machines; began removing the old Windows-user/WFP text and the Win10 agent-OFF scope (completed as non-normative marking in rev 2.16). Rev 2.14 (2026-10-21): folded the LIVE WSL2 measurements on win11-m8 (new `tests/windows/wsl_live_test.py`) into the WS8/WS9 re-plan for RoseCat 119108c — C1/C5 transport INVERTED to agent-listens-in-distro / browser-connects-from-Windows (WSL→Windows is firewall-blocked, Windows→WSL works via localhostForwarding); automount-off and appendWindowsPath-false confirmed working, interop-off partial (binfmt handler hard-disabled at boot); two distros share one utility VM + net namespace; per-run process-group kill proven vs distro-wide `wsl --terminate`; import + full lifecycle need no admin. Rev 2.13 (2026-10-21): recorded the owner's decisions — OD-W1 = per-user WiX 3.14 MSI; OD-W3 = code signing DEFERRED (no signing for launch, WS13.6 open/non-gating, nothing may claim signed/distributable); OD-W4 = WSL2 now (our own `wsl --import` distro under the existing bubblewrap+netd sandbox) with our own VM later; OD-W6 = native Win32 drawer. OD-W2/W5/W7/W8/W9 remain open. (Rev 2 review-pass history: verified file:line anchors at HEAD 032a2c9, added the WS0-WS13 red/green/refactor/closure/real-screen cases, the Win11 VM + file-server design and WS0.6-WS0.8, and reconciled the voice/macOS plans.)"
+last_updated_note: "Rev 2.18 (2026-10-22): see rev_2_18_note and section C (C1 REPLACED by the owner ruling: the Win10 box is writable and both-hosts gates include it; C4 still pending ratification). Rev 2.17 (2026-10-22): see rev_2_17_note and 'Review amendments (rev 2.17)'. Rev 2.16 (2026-10-21, AzureRidge; RoseCat 9134b8b/7558 + draft-state route 7561): DOCUMENTATION HONESTY ONLY — marked the WS8/WS9 WSL2 topology a DRAFT (NOT implementation-approved), added the authoritative no-WS8/WS9-work gate, listed the six 9134b8b blockers OPEN, narrowed the measured facts to the explicit-user discovery observations with an explicit NOT-proven list, marked wsl_live_test.py DISCOVERY-ONLY/DO-NOT-RERUN, added an authoritative scope banner making every dedicated-user/WFP/both-host-agent statement historical/non-normative, and relabelled C1-C5 as proposals/TBD. Does not close affd577 or approve any implementation/security claim. Rev 2.15 (2026-10-21, AzureRidge; RoseCat affd577): corrected the discovery spike + WSL2 contract DRAFTS from the live run — observed (explicit `-u zbagent` only) uid 1000 + userns/bwrap, exact 127.0.0.1:0/::1:0 ACK+canary, IPv6, a hostile co-tenant row; drafted C1 bootstrap, C5 relay, C2 broker, C3/C4 state machines; began removing the old Windows-user/WFP text and the Win10 agent-OFF scope (completed as non-normative marking in rev 2.16). Rev 2.14 (2026-10-21): folded the LIVE WSL2 measurements on win11-m8 (new `tests/windows/wsl_live_test.py`) into the WS8/WS9 re-plan for RoseCat 119108c — C1/C5 transport INVERTED to agent-listens-in-distro / browser-connects-from-Windows (WSL→Windows is firewall-blocked, Windows→WSL works via localhostForwarding); automount-off and appendWindowsPath-false confirmed working, interop-off partial (binfmt handler hard-disabled at boot); two distros share one utility VM + net namespace; per-run process-group kill proven vs distro-wide `wsl --terminate`; import + full lifecycle need no admin. Rev 2.13 (2026-10-21): recorded the owner's decisions — OD-W1 = per-user WiX 3.14 MSI; OD-W3 = code signing DEFERRED (no signing for launch, WS13.6 open/non-gating, nothing may claim signed/distributable); OD-W4 = WSL2 now (our own `wsl --import` distro under the existing bubblewrap+netd sandbox) with our own VM later; OD-W6 = native Win32 drawer. OD-W2/W5/W7/W8/W9 remain open. (Rev 2 review-pass history: verified file:line anchors at HEAD 032a2c9, added the WS0-WS13 red/green/refactor/closure/real-screen cases, the Win11 VM + file-server design and WS0.6-WS0.8, and reconciled the voice/macOS plans.)"
 primary_research: thoughts/searchable/shared/research/2026-10-19-windows-launch-support-surface.md
 counterpart: thoughts/searchable/shared/plans/2026-10-14-14-30-macos-launch-tdd-plan.md
 ---
@@ -41,8 +42,8 @@ counterpart: thoughts/searchable/shared/plans/2026-10-14-14-30-macos-launch-tdd-
 > **the browser ships on Windows 10 AND Windows 11; the agent + its WSL2 sandbox run on Windows 11
 > ONLY; the agent is OFF on Windows 10 (browser-only).** Anywhere in this plan that still requires
 > **dedicated local Windows users, WFP filters, a `WindowsSandboxUserBackend`, host-side netd,
-> `CreateProcessWithLogonW`/Secondary Logon, the agent/sandbox/WFP on the read-only Windows 10 file
-> server, or "the agent on both hosts"** is **HISTORICAL and NON-NORMATIVE** — superseded by this scope
+> `CreateProcessWithLogonW`/Secondary Logon, the agent/sandbox/WFP on the Windows 10 test
+> box, or "the agent on both hosts"** is **HISTORICAL and NON-NORMATIVE** — superseded by this scope
 > and by OD-W4 (WSL2), and retained only as history pending the implementation-approved revision that
 > will excise it. Where such text conflicts with this banner, **this banner wins.**
 >
@@ -106,9 +107,9 @@ uses `%LOCALAPPDATA%`; the `0o600` chmod is replaced by `restrictToOwner`.
 
 | Milestone | State at HEAD | Live Win11 evidence | Win10 evidence | Plan consequence |
 |---|---|---|---|---|
-| WS0 gate | **Readiness only** (`gate.sh --probe-only`). No-arg full gate exits 2 "not implemented" (`gate.sh:578-581`); WS0.4 runner NOT hardened; WS0.8 staging not done | probe 992b124 (review 012e1bc) | read-only probe only | WS0 = "readiness-only closed; WS0.4/0.8/0.9 OPEN" (C2, C3) |
+| WS0 gate | **Readiness only** (`gate.sh --probe-only`). No-arg full gate exits 2 "not implemented" (`gate.sh:578-581`); WS0.4 runner NOT hardened; WS0.8 staging not done | probe 992b124 (review 012e1bc) | `--probe-only` readiness probe only (product-run Win10 leg OPEN, WS0.9) | WS0 = "readiness-only closed; WS0.4/0.8/0.9 OPEN" (C2, C3) |
 | WS1 | WS1.1, 1.3, 1.4, 1.5 green on the VM (7463139, 8f36ee7, 6c771ff, dcd33ae); **WS1.2 not started**; most WS1 exe tests unregistered | yes | none | WS1.2 precedes WS2a (C3); register WS1 exe tests (W18) |
-| WS2.0 | Done and real (970969f, f29e490, 3cb8722), Win11 only | yes | none (forbidden) | closed; token-only mutant still unrecorded (W19) |
+| WS2.0 | Done and real on the Win11 VM (970969f, f29e490, 3cb8722); the Win10 leg WS2.0-W10 is restored and NOT yet run | yes | none yet (leg OPEN, WS2.0-W10) | closed; token-only mutant still unrecorded (W19) |
 | WS2a / 2b / 2c | **Zero code**: no `automation_wv2_port.zig`; `app.zig:626-627` wires the GTK ports (`supported = builtin.os.tag == .linux`, `automation_gtk_port.zig:22`) so every page/dom/input/dialog/window command returns -32011 on Windows | none | none | next Windows work (C4) |
 | `automation_platform.zig:79-82` | declares `.webview2 => cdp_input, network supported` **before any spike ran** | — | — | PLACEHOLDER / UNPROVEN until WS2b.1 passes (C5) |
 | WS3 | flag seam real (`backend_flag.zig`, refusal proven on the real exe); cookie port + profile code exist but are **unwired** (no caller at `app.zig:627`); no `win_cookie_test.py`, no `win_profile_persist_test.py`; no default `%LOCALAPPDATA%` profile (`app.zig:513` `spec.profile_dir orelse return null`); profile folder made with default ACLs (`webview2_shim.cpp:2387`); `zb_restrict_to_owner` (`owner_only.zig:243`) has no caller | partial (15fb6ee, 66060b0, e1e9264) | none | WS3.4 wiring slice (C6) |
@@ -128,18 +129,30 @@ WS9 6, WS12 1, WS13 2, WS4/WS10/WS11 0 (W23: see D.5).
 
 ### C. Owner-decision defaults adopted in this revision (pending owner ratification)   [C1, C4]
 
-- **C1 — Windows 10 test host.** The only Win10 machine is the read-only file server (rev 2.10), so no browser can
-  run there and every "[W] both hosts" gate was unsatisfiable. **Adopted default (the review's recommendation):
-  every gate is Win11-only for now, and the Windows 10 browser launch is stated as "UNTESTED on Windows 10"** until
-  the owner authorizes a writable Win10 host (a separate machine or a libvirt Win10 guest, as already described in
-  the WS2.0 host-scope note). Win10 keeps only the read-only `--probe-only` readiness evidence. Reading rule: wherever
-  this plan says "[W] both hosts", "on both hosts" or "both screens", read **"[W11] the Win11 VM (and the owner's
-  Win11 console)"**, plus "[W10] iff an authorized writable Win10 host exists". The launch claim must say
-  "Windows 11 tested; Windows 10 browser untested". **OWNER: ratify or authorize a Win10 host.**
+- **C1 — Windows 10 test host (RESOLVED by the owner ruling, rev 2.18).** Owner ruling (verbatim): "the windows 10 machine
+  should not be read-only it is a standard Win10 box, not some production file server." The rev 2.10 premise (a
+  read-only file server on which no browser may run, so every "[W] both hosts" gate was unsatisfiable) was WRONG and is
+  corrected throughout the plan. **Decision-C1 default (replaces the Win11-only default of rev 2.17): the physical Win10
+  box (`zbtest@100.123.34.15`) is a WRITABLE test host; a [W] "both-hosts" gate means the Win11 VM PLUS the Win10
+  box.** Win10 rules: (a) **release rule, the same as the Win11 VM:** no live run on the Win10 box without RoseCat's
+  exact-commit approval PLUS an orchestrator release; (b) **work confinement:** all work (staging, binaries, run
+  artifacts, per-user install directory) stays under `C:\Users\zbtest\zb`, as the standard user `zbtest`; (c) **ask the
+  owner before any system-wide install or machine-wide change** (the WebView2 runtime if the box lacks it, the
+  certificate store, firewall, services, Defender exclusions, power settings, a second local account). Win10 ships
+  BROWSER-ONLY with the agent OFF (OD-W4); its legs are the browser legs only. Reading rule: wherever this plan says
+  "[W] both hosts", "on both hosts" or "both screens", read **"[W11] the Win11 VM (and the owner's Win11 console)" AND
+  "[W10] the Win10 box (and its monitor)"**. The launch claim may say "Windows 10 browser tested" only for a Win10 leg
+  that has actually run under rule (a); a leg that has not run is stated as OPEN/not yet run, never as withdrawn.
+  **Caveats recorded, not hidden:** (1) the as-built `--probe-only` code still treats the box as zero-write
+  (`root`/`free_gb`/`interactive_session` not_applicable) because it was written on the wrong premise; WS0.9 must
+  enforce them there; (2) the 2026-10-20 reading of `C:` on that box was about 0 GB free, so free space must be
+  cleared with the owner before any Win10 product leg runs; The Win10 legs that rev 2.10 and rev 2.17 had removed are restored as: WS0.9
+  (product-run, both hosts), WS1.2-W10, WS2.0-W10, WS2a.0-W10, WS2b.1-W10, WS13.4-W10, and the Win10 monitor legs of
+  `win-render` and `win-install-smartscreen` (tracked as zigBrowser-4pa.31 and zigBrowser-4pa.41).
 - **C4 — order question.** WS3, WS5, WS6, WS7 (about 170 commits) were built before WS2a-c, against the order in
   "Dependency order". **Adopted default:** the next Windows work is the WS2a.0 and WS2b.1 spikes, then the WS2a port,
   then wiring the WS3 cookie port/profile (WS3.4) with their e2e; WS4 cannot start before WS2. No further WS5/WS6/WS7
-  feature work is scheduled until WS2a.1 is green, except the amendments in C14-C16 and C9. **OWNER: ratify the order.**
+  feature work is scheduled until WS2a.1 is green, except the amendments in C14-C16 and C9. **OWNER: ratify the order (STILL PENDING; not resolved by rev 2.18).**
 
 ### D. Cross-cutting rules added by the review   [C2, C12, C14, C18, W8, W9, W6, W16, W23]
 
@@ -152,7 +165,7 @@ to fail under the gate or be moved out of the aggregate `test` into a `windows-l
 
 **D.2 The real per-slice gate command until the product-run mode exists (C2).** `gate.sh` with no argument exits 2.
 Until WS0.9 lands, the per-slice protocol step 5 means exactly: (a) `tests/windows/gate.sh --probe-only` (readiness,
-Win11); (b) for each of the slice's live tests, `ZB_WIN_GATE=1 python3 -I <test>` against the Win11 VM, each required
+Win11); (b) for each of the slice's live tests, `ZB_WIN_GATE=1 python3 -I <test>` against the Win11 VM and, for a slice with a Win10 leg, against the Win10 box (after its release, section C), each required
 to print `ASSERTS <n>` with `n > 0` and to exit 0, with the output pasted in the commit message; a skip or an exit 77
 is recorded as UNCLOSED. Nothing may call a slice closed on a bare `zig build test` green.
 
@@ -192,12 +205,12 @@ the production script into the selftest wrapper.
 
 Review IDs: C1-C19 are the review's own numbering (bd `zigBrowser-4pa.31..49`). The review's 23 warnings are
 numbered W1-W23 here in review order (Contracts W1-W5, Interfaces W6-W10, Promises W11-W14, Data Models W15, APIs W16,
-Test-Spec W17-W23). **Rejections: none.** Every finding is amended; two (C1, C4-order) are amended with the review's
-recommended default and flagged for owner ratification (section C).
+Test-Spec W17-W23). **Rejections: none.** Every finding is amended; C4-order is amended with the review's
+recommended default and flagged for owner ratification (section C, STILL PENDING); C1 was REPLACED in rev 2.18 by the owner's ruling (the Win10 box is writable).
 
 | ID | bd | Finding (short) | Amended in |
 |---|---|---|---|
-| C1 | 4pa.31 | No Win10 browser test host | A.3; C; reading rule in markers table, Why-this-plan, Desired End State, behaviors 1-2, WS0.2, Testing Strategy, Dependency order, per-slice protocol, real-screen table, WS13 gate |
+| C1 | 4pa.31 | No Win10 browser test host (rev 2.18: owner ruling — the Win10 box IS a writable test host; the read-only-file-server premise was wrong) | A.3; C; reading rule in markers table, Why-this-plan, Desired End State, behaviors 1-2 and 7, WS0.2, WS0.7, Testing Strategy, Dependency order, per-slice protocol, real-screen table, WS13 gate. **Rev 2.18 (owner ruling): C1 default replaced (Win10 box writable; [W] = Win11 VM + Win10 box; Win10 release rule = RoseCat exact-commit approval + orchestrator release; confined to C:\Users\zbtest\zb; owner asked before any system-wide install); Win10 legs restored in WS0.9, WS1.2-W10, WS2.0-W10, WS2a.0-W10, WS2b.1-W10, WS13.4-W10 and the real-screen table** |
 | C2 | 4pa.32 | No product gate; live steps green with zero Windows rows | D.1, D.2; new **WS0.9**; Testing Strategy fail-closed rules; per-slice gate protocol |
 | C3 | 4pa.33 | WS0.4 runner never hardened; m8 tests skip 77 | WS0 header status; **WS0.4 OPEN list**; WS1.2 before WS2a; Dependency order |
 | C4 | 4pa.34 | WS2a/b/c zero code; built out of order | B; C; Dependency order; WS2 header status |
@@ -207,7 +220,7 @@ recommended default and flagged for owner ratification (section C).
 | C8 | 4pa.38 | Top-level contract contradicts OD-W4 | A; Desired End State; behaviors 5-7; NOT-doing; `rev_2_14_note` withdrawal |
 | C9 | 4pa.39 | WS7 built vs native-Windows design | A.2/A.6; WS7 rewritten |
 | C10 | 4pa.40 | WS10/WS11 for the dropped design | WS10, WS11 rewritten |
-| C11 | 4pa.41 | WS13 uninstall/gate describe sandbox users/WFP on read-only host | WS13.1, WS13.4, WS13 gate rewritten |
+| C11 | 4pa.41 | WS13 uninstall/gate describe sandbox users/WFP (dropped model); rev 2.18: the Win10 box is writable, so WS13 gets a Win10 leg | WS13.1, WS13.4, WS13 gate rewritten. **Rev 2.18 (owner ruling): the 'no install and no probe on Win10' text is removed; WS13.4-W10 (own test, own evidence line) and the Win10 `win-install-smartscreen` leg are restored** |
 | C12 | 4pa.42 | 459 lines dead Job Object code registered | D.6(a); rev 2.6 bullet in WS2.0; B table row |
 | C13 | 4pa.43 | WS6 store no consumer / no route to in-distro CLI | WS6 **WS6.4 token route**, WS6.2 consumer |
 | C14 | 4pa.44 | WS5 proven by oracles; live rows never ran | D.4; WS5 **status table** and closure rule |
@@ -252,8 +265,8 @@ recommended default and flagged for owner ratification (section C).
 The user: "Mac and Windows are the 2 main target systems, Linux is my environment, not the
 primary target for users," and "Plan windows now. I'll have a Win11 VM and windows 10
 physical machine available." So this plan supports **both Windows 10 and Windows 11** as launch targets, but
-(rev 2.17, C1) the only Windows 10 machine is read-only, so **every gate runs on the Win11 VM and the Windows 10
-browser launch is "UNTESTED on Windows 10"** until the owner authorizes a writable Win10 host (see section C). It is the counterpart of the macOS launch plan and
+(rev 2.18, C1) the Windows 10 machine is a standard WRITABLE test box, so **every [W] gate runs on the Win11 VM AND the Win10 box**
+(Win10 release rule and confinement: section C). It is the counterpart of the macOS launch plan and
 mirrors its shape: milestones WS0…WS13, a fail-closed two-host gate, a shared sandbox
 backend seam, signing last, and named red tests for every slice. The voice-output (TTS) and
 voice-input (STT) plans have Windows steps that wait on this plan (section **Voice plans**).
@@ -264,8 +277,8 @@ voice-input (STT) plans have Windows steps that wait on this plan (section **Voi
 |---|---|
 | **[L]** | Built and tested on Linux. No Windows host, no display (never `DISPLAY`, never Xvfb unless an existing Linux gate already does it under a private Xvfb). |
 | **[W11]** | Needs the Windows 11 VM (the build host: MSVC, Windows SDK, WebView2 SDK). |
-| **[W10]** | Needs the physical Windows 10 machine (run-only host: no toolchain; it receives binaries built on the VM). |
-| **[W]** | Historically "both Windows hosts in the same gate run". **Rev 2.17 (C1): read as [W11] — the Win11 VM — plus [W10] only if the owner has authorized a writable Win10 host.** The read-only Win10 file server supports only `--probe-only` readiness. Every Windows milestone gate is [W] unless it says otherwise. |
+| **[W10]** | Needs the physical Windows 10 box (a standard writable test host, no toolchain; it receives binaries built on the VM; work confined to `C:\Users\zbtest\zb`). |
+| **[W]** | "Both Windows hosts in the same gate run". **Rev 2.18 (C1, owner ruling): [W] = [W11] the Win11 VM PLUS [W10] the Win10 box** (a standard, writable test host, `zbtest@100.123.34.15`; release rule = RoseCat exact-commit approval + orchestrator release; work confined to `C:\Users\zbtest\zb`; ask the owner before any system-wide install). Every Windows milestone gate is [W] unless it says otherwise. |
 | **[U]** | UI slice: needs a real-screen check run by the orchestrator with the user. |
 
 ## Current State Analysis
@@ -315,7 +328,7 @@ voice-input (STT) plans have Windows steps that wait on this plan (section **Voi
   fixed path `/tmp/zb_worktree.tar` with `2>/dev/null`, so `agent/`, `packaging/`, `tools/`, `docs/` never
   reach the guest), and `ssh.sh` (50 lines; `127.0.0.1:2222`). **Corrections to rev 1:** `ssh.sh` is not
   superseded: the live `win11-m8` domain has a passt `2222 -> 22` forward, while the Tailscale node
-  `100.103.8.90` was offline for 105 days when checked; and `setup.ps1` must never run on the file server.
+  `100.103.8.90` was offline for 105 days when checked; and `setup.ps1` must not run on the Win10 box without the owner's OK (it opens port 22 with no address scope and installs a toolchain, a system-wide change).
 - **Automation transport on Windows is planned but unproven.** `planSocketPath` gives a
   filesystem AF_UNIX path for Windows (automation_transport.zig:17-35); `automationSocketPath`
   never reads `%LOCALAPPDATA%` (app.zig:453-460); the server `chmod`s `0o600`
@@ -345,7 +358,7 @@ voice-input (STT) plans have Windows steps that wait on this plan (section **Voi
   no `.rc`, no signing, no update channel.
 - **Hosts.** The physical Windows 10 machine is `100.123.34.15` (tailnet name
   `file-server-win-mac`; it answers Tailscale ping on the LAN path `10.0.0.163`, but **port 22
-  refuses**: OpenSSH Server is not running). It is **also a file server**. The Win11 VM's
+  refuses**: OpenSSH Server is not running). Rev 2.18 (owner ruling): it is a standard, WRITABLE Win10 test box, NOT a read-only or production file server (the tailnet name `file-server-win-mac` is a legacy label only). The Win11 VM's
   address is **to be provided**. The old `win11-m8` libvirt domain (`qemu:///session`, key
   `/home/maceo/vms/win11-m8/zb_guest_key`, old Tailscale address `maceo@100.103.8.90`) may be reused if
   the user says it is the same VM. **Read-only re-check on 2026-10-19 (`virsh`, `tailscale status`):**
@@ -376,7 +389,7 @@ voice-input (STT) plans have Windows steps that wait on this plan (section **Voi
 
 ## Desired End State
 
-A Windows 11 user (and, **browser-only and UNTESTED until a writable Win10 host exists (C1)**, a Windows 10 22H2
+A Windows 11 user (and, **browser-only and tested on the writable Win10 box (C1)**, a Windows 10 22H2
 user) installs an **unsigned per-user** zigBrowser (code signing is
 DEFERRED — OD-W3 decided no signing for launch; it is not a launch requirement) and can: browse with an
 isolated persistent profile; drive the full automation API (multi-window, freeze and
@@ -393,11 +406,11 @@ is called an **unsigned development build, not a distributable artifact**.
 
 ### Observable behaviors (top level)
 
-1. Given the Win11 VM provisioned (and the read-only Win10 host probed), when `tests/windows/gate.sh` runs in its
+1. Given the Win11 VM and the Win10 box provisioned, when `tests/windows/gate.sh` runs in its
    product-run mode (WS0.9), then it passes only if the hosts it requires are reachable, on the expected OS builds,
    with an unlocked interactive test session on the VM, a WebView2 runtime, and every test reporting nonzero
    assertions with no skip — and fails in every other case. (Until WS0.9 exists the no-argument gate exits 2.)
-2. Given a release build from the VM, when it runs on the Win11 VM (Win10: untested, C1), then a real visible window
+2. Given a release build from the VM, when it runs on the Win11 VM and on the Win10 box, then a real visible window
    renders the fixture and answers IPC.
 3. Given an authenticated socket client, when it sends any automation command, then the live
    WebView2 page is driven and the result is read back with the Linux contract.
@@ -409,7 +422,7 @@ is called an **unsigned development build, not a distributable artifact**.
 6. Given the agent runs inside the WSL2 distro on Windows 11, when a hook or the CLI tries any network other than
    the allowlisted in-distro netd proxy and the two bridges, then it fails — enforced by the in-distro bubblewrap
    network namespace + netd (NOT a Windows kernel/WFP filter; OD-W4). (Proof is a WS9 hard gate; DRAFT.)
-7. Given the installer, when a user downloads and runs it on Windows 11 (Win10: untested, C1), then it installs per
+7. Given the installer, when a user downloads and runs it on Windows 11 and on Windows 10 (browser-only), then it installs per
    user and an uninstall removes everything it added: the files, shortcuts and HKCU keys, and **only
    zigBrowser's own WSL distro, import dir and state** — it cannot un-enable global WSL/VMP (WS13.4). (The build is
    unsigned — signing is deferred, OD-W3 — so no signature-verification is claimed at launch; only "nothing may claim signed/distributable".)
@@ -422,8 +435,7 @@ is called an **unsigned development build, not a distributable artifact**.
 - Not shipping an AppContainer, Windows Sandbox, Hyper-V, dedicated-local-users or WFP backend: **OD-W4 is
   DECIDED — WSL2 IS the launch sandbox, not a fallback** (C8; section A). There is no "build WSL2 only if another
   backend's gate fails". Our own small VM is a later milestone, not WS8.
-- Not running the agent on Windows 10 (agent OFF there) and not claiming Windows 10 browser test coverage without a
-  writable Win10 host (C1).
+- Not running the agent on Windows 10 (agent OFF there); Windows 10 browser test coverage comes from the writable Win10 box (C1) and is claimed only for legs that actually ran.
 - Not obtaining or paying for a code-signing identity (user action, OD-W3).
 - Not exposing drawer text through a production automation-socket read (observation is the
   `--e2e-protocol` native census or screen capture only, as on Linux and macOS).
@@ -464,8 +476,8 @@ without the decision, and slices that depend on a still-open decision say so.
   - **Transport change (DRAFT PROPOSAL; observed in the discovery spike, not proven):** the browser↔agent link moves off AF_UNIX (which does not cross the WSL2 boundary) to **loopback TCP**; the **proposed** direction (agent listens in the distro, browser connects from Windows) is motivated by a discovery observation that a Windows→WSL connect reached an in-distro listener while a WSL→Windows connect did not — **not a causal firewall proof** (the reverse listener's readiness was not established). The auth (per-session token + nonce/HMAC) is a proposal too. See WS8 C1 (proposal/TBD).
   - **Fail-closed:** if virtualization or WSL is unavailable, **the agent stays OFF** and the app shows a **fixed explanation** (no silent fallback, no dedicated-users path).
   - **Later milestone (not launch):** our **own small VM** as the shared **Mac+Windows "VM containment mode"** (the MS6.5 stub) — a follow-up, not WS8.
-  - **Windows 10 product scope (affd577 #8): Win10 ships BROWSER-ONLY, agent OFF.** The read-only Windows 10
-    file server (and Win10 generally, where WSL2 is unsupported/NAT-only) ships the **browser with the agent
+  - **Windows 10 product scope (affd577 #8): Win10 ships BROWSER-ONLY, agent OFF.** The Windows 10 test
+    box (and Win10 generally, where WSL2 is unsupported/NAT-only) ships the **browser with the agent
     drawer DISABLED** — no WSL, no agent, no sandbox, no sign-in-to-agent, no helper/chat/commit, no voice
     agent. The **browser-level** milestones (WS0-WS4: render, automation, config, cookies) still run and gate
     on both hosts; the **agent-level** milestones — **WS8 (sandbox), WS9 (egress), WS11 (helper/chat/commit),
@@ -499,8 +511,8 @@ work that must start before the milestone that needs the answer.
   with an elevated step. Commits us to Velopack's install layout and update feed; switching later means a
   second migration for users already installed.
 - *MSIX.* Cost: signing is mandatory even for the test hosts, so each host must trust a test
-  certificate (a machine-wide certificate-store change, **not allowed on the file server** under the
-  isolation rules; the VM only). Per-package file-system virtualization of AppData writes breaks the
+  certificate (a machine-wide certificate-store change, **needs the owner's OK on the Win10 box** under the
+  confinement rules; the VM unless the owner agrees). Per-package file-system virtualization of AppData writes breaks the
   assumption in WS5-WS8 that the browser, the helper and the two sandbox users see the same real paths
   (profile, agent home, scratchpad); needs a spike before it can be chosen. Gains: built-in updates, a
   Store path. Commits us to full-trust packaging and to the App Installer constraints.
@@ -550,14 +562,14 @@ start early**).
   `CreateProcessAsUser` needs privileges a standard user lacks). Domain-joined or managed PCs may override
   logon rights or firewall policy by Group Policy. Gains: native hooks, kernel-enforced network, the
   `OpenProcess` boundary between users. It commits us to owning a privileged installer component and an
-  uninstall path for system state. On the file server this creates local accounts and **machine-wide**
-  filters, so it needs the isolation proofs in "File-server isolation requirements".
+  uninstall path for system state. On the Win10 box this would create local accounts and **machine-wide**
+  filters, so it would need the owner's OK and the proofs in "Win10 test-box confinement requirements".
 - *AppContainer/LPAC.* No new accounts. Unverified: Node/Bun `claude.exe` under AppContainer; the loopback
   exemption needed to reach netd; a hook that must run user tools cannot be in an AppContainer. Network
   isolation depends on capability SIDs and a loopback exemption that is per-package and machine-wide.
 - *WSL2.* Reuses `LinuxBwrapBackend` and its tests and the token fd route. Costs: hardware virtualization
   (nested KVM on the VM, unverified; a physical Windows 10 machine must have it enabled in firmware, which we
-  cannot assume for a file server), a distro image to ship or download, NAT-only networking on Windows 10, a
+  cannot assume for the Win10 box), a distro image to ship or download, NAT-only networking on Windows 10, a
   second filesystem view of the profile, and the user's hooks run as Linux programs (a behavior change from
   the Linux/macOS agents). Commits us to shipping and patching a Linux distro.
 - *Restricted token only.* Cheapest and weakest; cannot meet WS8.1 or WS9.2.
@@ -618,7 +630,7 @@ start early**).
 
 **OD-W9 SSH key for the Windows hosts.**
 - *One dedicated key for both hosts.* One file to protect, but a stolen key reaches both machines; on the
-  file server it lands in `zbtest`, which can read whatever the share ACLs let ordinary users read.
+  Win10 box it lands in `zbtest`, a standard user confined to its own `zb` directory.
 - *One key per host.* Independent revocation; two files, two `known_hosts` entries.
 - *Unattended (no passphrase) versus agent-held.* The gate needs unattended runs; an unencrypted private
   key on disk is the cost. Either way restrict it in `authorized_keys` with `from="<linux tailnet IP>"` and
@@ -631,14 +643,18 @@ start early**).
 Agents never SSH to a host before the user finishes that host's list. Each item has a probe in
 `tests/windows/host_probe.ps1` (WS0) so the gate can check it.
 
-### Physical Windows 10 machine — `100.123.34.15` (`file-server-win-mac`), run-only host
+### Physical Windows 10 machine — `100.123.34.15` (legacy tailnet name `file-server-win-mac`), standard WRITABLE test box, run host
+
+> **Rev 2.18 (owner ruling):** this is a standard Win10 box, NOT read-only and NOT a production file server. Release rule: RoseCat
+> exact-commit approval PLUS an orchestrator release before any live run (same as the Win11 VM). All work is confined to
+> `C:\Users\zbtest\zb`; ask the owner before any system-wide install or machine-wide change.
 
 1. **Enable OpenSSH Server first** (port 22 refuses today): Settings → Apps → Optional
    features → OpenSSH Server, or elevated
    `Add-WindowsCapability -Online -Name OpenSSH.Server~~~~0.0.1.0`, then
    `Set-Service sshd -StartupType Automatic` and `Start-Service sshd`. Restrict the inbound
    rule to Tailscale: `Set-NetFirewallRule -Name OpenSSH-Server-In-TCP -RemoteAddress 100.64.0.0/10`
-   (it is a file server; do not expose SSH to the LAN). **Also, in `C:\ProgramData\ssh\sshd_config`
+   (do not expose SSH to the LAN). **Also, in `C:\ProgramData\ssh\sshd_config`
    (rev 2):** `ListenAddress 100.123.34.15` (the tailnet address only, so port 22 does not answer on
    `10.0.0.163`), `AllowUsers zbtest` (no other account can log in over SSH, including the owner's),
    `PasswordAuthentication no`, `PubkeyAuthentication yes`, `AllowTcpForwarding no`, `X11Forwarding no`,
@@ -668,7 +684,7 @@ Agents never SSH to a host before the user finishes that host's list. Each item 
 5. **Interactive session.** Before a gate window the user signs `zbtest` in on the console
    (fast user switching is fine) and leaves it **unlocked**; or enables Sysinternals
    Autologon for `zbtest` if the owner accepts that (it stores the password as an LSA
-   secret, and on a file server it also logs `zbtest` in after every reboot, so prefer the manual
+   secret, and it also logs `zbtest` in after every reboot, so prefer the manual
    sign-in). The gate fails closed when no active, unlocked `zbtest` console session exists. **The gate
    never switches users, unlocks, or signs in by itself** (WS0.7): if the owner is using the console,
    the run reports `NOT RUN: console session belongs to <user>` and exits nonzero, and the run is
@@ -679,16 +695,17 @@ Agents never SSH to a host before the user finishes that host's list. Each item 
    window with the machine's owner.
 7. **Python 3.12+ x64 for `zbtest` only** (per-user install, no admin). No compiler.
 8. **Defender:** record whether it quarantines the unsigned dev build. Do not add exclusions on
-   the file server unless the owner agrees.
+   the Win10 box unless the owner agrees.
 9. **Admin presence only for:** steps 1-3, and the one WS8 UAC prompt (the user clicks it in
    person on the real screen).
 10. **Later, for STT VS10/VS11:** a microphone, and "Let desktop apps access your microphone"
     on for `zbtest`.
 
-### File-server isolation requirements (rev 2; hard, fail-closed; physical Windows 10 machine only)
+### Win10 test-box confinement requirements (rev 2; reframed in rev 2.18; hard, fail-closed; physical Windows 10 box only)
 
-The machine serves files to other people. A test run must be unable to read, write, slow down or
-disconnect anything it serves. Every item is checked by `host_probe.ps1` or by WS0.7, and a failed check
+Rev 2.18 (owner ruling): this is a standard writable Win10 test box, NOT a production file server and NOT read-only; these rules
+are confinement hygiene, not a no-write rule. A test run stays inside `C:\Users\zbtest\zb` and must not read, write, slow down or
+disconnect anything it does not own (any shares that happen to exist, other accounts, other drives). Every item is checked by `host_probe.ps1` or by WS0.7, and a failed check
 stops the gate before any product test runs.
 
 1. **One identity, one root.** Everything runs as the standard local user `zbtest` under
@@ -702,7 +719,7 @@ stops the gate before any product test runs.
    `Get-SmbShareAccess`) and their root paths and records them in the gate log, then **evaluates**
    `zbtest`'s effective access to each root path from ACLs and group SIDs with no write attempt (a write
    canary on a share would itself be the damage). If `zbtest` has Modify, Write or Full on any served path,
-   the gate fails with `file-server: zbtest can write to <path>` and the owner must remove it (for example
+   the gate fails with `file-server: zbtest can write to <path>` (as-built message text, a legacy label) and the owner must remove it (for example
    an explicit deny for `zbtest` on the shares, or removal of `Users`/`Authenticated Users` write access;
    changing those ACLs is the **owner's** decision, never the gate's). If `zbtest` can only read, the run
    proceeds but WS9.2 uses loopback and TEST-NET targets only and never a UNC path.
@@ -718,8 +735,8 @@ stops the gate before any product test runs.
    (creates two local users and persistent filters), and any benchmark that loads the CPU for more than a
    minute (STT `voice-bench`, VS10.3). Each is recorded with its revert command in
    the Linux-side gate log (not a repo file), and the gate prints the list at the end of the run.
-5. **WS8 on the file server is the highest-risk step.** *(⚠️ HISTORICAL / NON-NORMATIVE, OD-W4 — see the
-   scope banner: there is **no agent/WS8/WSL on the read-only Windows 10 file server**; Win10 ships
+5. **WS8 on the Win10 box would be the highest-risk step.** *(⚠️ HISTORICAL / NON-NORMATIVE, OD-W4 — see the
+   scope banner: there is **no agent/WS8/WSL on the Windows 10 box**; Win10 ships
    browser-only with the agent OFF, and the dedicated-user/WFP machinery below is dropped. Retained only as
    history.)* Required before the first setup run there: (a) the
    elevated setup takes the **target user's SID as an argument and verifies it equals the signed-in console
@@ -735,9 +752,11 @@ stops the gate before any product test runs.
    the sign-in screen (`SpecialAccounts\UserList`) so the owner never sees them.
 6. **Resources.** The probe records free space on `C:`. The bar is **10 GB on the Win11 VM**
    (orchestrator decision 2026-10-20): the KVM host disk is ~97% full so the VM image cannot grow, and a
-   zigBrowser build plus the WebView2 runtime fit comfortably in the VM's ~13 GB. On the **physical file
-   server free space is not_applicable** (orchestrator real-FS check 2026-10-20): it gets no writes — C:
-   was ~0 GB — so the gate does not judge it on `free_gb` (the field is reported for visibility only).
+   zigBrowser build plus the WebView2 runtime fit comfortably in the VM's ~13 GB. On the **physical Win10
+   box** the orchestrator real-FS check of 2026-10-20 read `C:` at ~0 GB free: that is a capacity PRECONDITION for every Win10
+   product leg (the exe and `zb\runs\<id>\` artifacts need room), to be cleared with the owner (no system-wide change without
+   asking). In `--probe-only` readiness mode `free_gb` is reported for visibility and not judged (as built); in the product-run
+   mode (WS0.9) it is gate-enforced on Win10 like the VM, with the Win10 floor chosen by the owner.
    The gate keeps run artifacts
    under `zb\runs\<id>\`, deletes them at the end, and caps a run at 30 minutes of wall time; benchmarks
    (item 4) are scheduled with the owner. No test runs while another user is signed in on the console
@@ -754,7 +773,7 @@ stops the gate before any product test runs.
 **Verified live, read-only, 2026-10-19 (cc_4), as the test user over SSH:**
 - **Test user is `zbtext`** (the account the user created; the name is kept exactly as typed). The gate
   takes the SSH user from `ZB_GUEST_USER` (as `tests/guest/ssh.sh` does) and never hard-codes it; the
-  physical Windows 10 file server uses `zbtest`. Key: `/home/maceo/vms/win11-m8/zb_win_key`
+  physical Windows 10 box uses `zbtest`. Key: `/home/maceo/vms/win11-m8/zb_win_key`
   (`IdentitiesOnly=yes`; pinned `known_hosts` at `/home/maceo/vms/win11-m8/known_hosts`). `zbtext` is a
   standard user (Medium integrity, only `BUILTIN\Users`; not an administrator).
 - **OS:** Windows 11 **25H2, build 26200**; native arch **AMD64 / x64** (no WOW). Satisfies OD-W7's ≥22621.
@@ -799,13 +818,15 @@ gate prepends to its trigger; `host_live_test.py` tests it against crafted XML +
 Any mismatch fails closed (`VERIFY=TASK_*` / `RESULT=TASK_*`). After a clean verify the gate writes a per-run
 nonce to `%USERPROFILE%\zb\runs\session\nonce.txt`, runs the task, and awaits a `session.json` whose `nonce`
 matches and whose `ts` is within the last 15 min and NOT in the future; `host_probe.ps1` trusts
-`interactive_session`/`locked` only under that nonce+freshness correlation. The physical file server runs no
-helper (not_applicable).
+`interactive_session`/`locked` only under that nonce+freshness correlation. In the as-built `--probe-only` mode the Win10 box runs no
+helper (not_applicable); rev 2.18: the product-run mode (WS0.9) provisions the same pin-verified session task on the Win10 box
+(owner-gated; no system-wide change without asking).
 
-**File server not_applicable fields (orchestrator real-FS check, 2026-10-20).** On the read-only Win10
-file server, verified as `zbtest`: `root` (`C:\Users\zbtest\zb` is never created — no writes) and
-`free_gb` (the box gets no writes; C: ~0 GB) are **not_applicable** and the gate does not judge the FS on
-them (VM-only). There is **no fixed listener baseline**: the real listeners are 135/445/5040/5357, dynamic
+**Win10 `--probe-only` not_applicable fields (orchestrator real-FS check, 2026-10-20; as built).** In the readiness mode, verified as
+`zbtest`: `root` (the probe does not create `C:\Users\zbtest\zb` — it is zero-write) and `free_gb` (C: read ~0 GB free) are
+**not_applicable** and the readiness gate does not judge them (VM-only enforcement as built). Rev 2.18: the Win10 box is writable, so
+the product-run mode (WS0.9) creates `zb` and enforces `root`/`free_gb`/`interactive_session` there like the VM; the ~0 GB reading is a
+capacity precondition to clear with the owner. There is **no fixed listener baseline**: the real listeners are 135/445/5040/5357, dynamic
 RPC 49664+, 139, 22 and high service ports with no 3389, so WS0.7 enforces only that the listener set is
 UNCHANGED pre vs post. sshd `ListenAddress` is pinned to exactly the tailnet IP (100.123.34.15) and
 `AllowUsers` to exactly `zbtest` (`LogLevel DEBUG3` is a known user to-do and is not gated).
@@ -906,7 +927,7 @@ the guest clock, Tailscale/SSH state and Windows Update state, so the gate re-pr
   never counted as Windows rows.** Rev 2 adds: SSH host key not the pinned one; the Win11 VM's `identity_marker` not the configured
   `ZB_WIN11_MARKER` nonce (rev 2.2 — the SMBIOS UUID is unreadable by a standard user, bead zigBrowser-126);
   the Win11 VM not `running` per `virsh`; the console session owned by someone other than the
-  test user; `zbtest` in a forbidden group, or able to write a served path on the file server (WS0.7); a
+  test user; `zbtest` in a forbidden group, or able to write a served path on the Win10 box (WS0.7); a
   probe whose `schema` field is not the gate's expected version; remote output files left after the run;
   and `NOT RUN` messages that always include the sentence `no Windows host configured` when either host
   variable is unset (the TTS plan W1 and the STT plan VS10 already quote that sentence).
@@ -920,19 +941,19 @@ the guest clock, Tailscale/SSH state and Windows Update state, so the gate re-pr
   prove the zigBrowser window is foreground.
 - **Network:** the fake Anthropic API is reached **through the production proxy** via the
   existing `--e2e-protocol` allowlist seam; bypassing the proxy turns the test red. Denial
-  probes use TEST-NET `192.0.2.1` and loopback decoys, **never** the file server's LAN or its
-  SMB shares.
+  probes use TEST-NET `192.0.2.1` and loopback decoys, **never** the Win10 box's LAN or any
+  SMB shares it exposes.
 - **Secrets:** a disposable Credential Manager target name and a canary token in every test;
   never the user's real credential. Credential tests run inside the interactive session task
   (Credential Manager may not persist over an SSH network logon).
 - **Chat observability:** `--e2e-protocol` native drawer census or capture, never a socket read.
 - **Real-screen (UI slices):** each names its cases; the orchestrator runs them with the user on
-  the VM console (Win11). **Rev 2.17 (C1/C14):** the Windows 10 monitor leg is dropped until a writable Win10 host
-  exists (the file server cannot run the browser), and `tests/manual/real_screen_check.py` is X11-only today — a
+  the VM console (Win11). **Rev 2.18 (C1/C14):** the Windows 10 monitor leg is RESTORED (the Win10 box is a writable test host and runs the browser; it is
+  watched by the orchestrator with the user after the Win10 release), and `tests/manual/real_screen_check.py` is X11-only today — a
   Windows capture + foreground-proof backend is a required task before any `win-*` case can be scheduled. A UI slice
-  is not approved until its cases pass on the Win11 console.
+  is not approved until its cases pass on the Win11 console and the Win10 monitor.
 - **Closure tests** are Tier-1 real-binary e2e. A slice is done only when its closure e2e was
-  **observed to execute** with nonzero assertions on the Win11 VM (and on Win10 iff a writable host is authorized);
+  **observed to execute** with nonzero assertions on the Win11 VM AND on the Win10 box (each its own evidence line);
   a skip is UNCLOSED (D.1, D.4).
 
 ### What runs where
@@ -949,8 +970,8 @@ the guest clock, Tailscale/SSH state and Windows Update state, so the gate re-pr
 | Real-screen checks | — | yes (console via virt-viewer) | yes (its monitor) |
 | Signing (OD-W3 Artifact Signing via jsign) | **DEFERRED, not built for launch (OD-W3)** | — | — |
 
-> Rev 2.17 (C1): the `[W10]` column is **probe-only** until the owner authorizes a writable Win10 host; "Any
-> real-binary e2e…" rows run on the Win11 VM. WSL2/agent rows are Win11 only (section A).
+> Rev 2.18 (C1, owner ruling): the `[W10]` column is a full product-test column (the Win10 box is writable), subject to the Win10
+> release rule; "Any real-binary e2e…" rows run on the Win11 VM AND the Win10 box. WSL2/agent rows are Win11 only (section A).
 
 ### Property register (rev 2.17, C18) — behaviors with real input domains
 
@@ -997,10 +1018,10 @@ with a mutant; [L] unless stated.
 
 **Goal.** A gate that cannot false-green, driven from Linux, that proves each host is the host it
 claims to be — and that the **GUI host (the Win11 VM)** has an unlocked, active interactive session —
-before any product test runs. (The physical file server runs no GUI and, under the read-only rule, no
-in-console helper, so its interactive-session state is **`not_applicable`** at the WS0 gate: it is
-pinned by its SSH host key and fenced as undisturbed instead. A file-server product test that needs an
-interactive session carries that precondition itself when it runs, not the WS0 readiness gate.)
+before any product test runs. (In the as-built `--probe-only` readiness mode the Win10 box is probed zero-write with no in-console helper, so its
+interactive-session state is **`not_applicable`** there: it is pinned by its SSH host key and fenced as undisturbed instead.
+Rev 2.18: the Win10 box is a writable test host, so the product-run mode (WS0.9) requires its unlocked `zbtest` console session
+the same way as the VM; a Win10 product test fails closed without it.)
 
 > **WS0 status at HEAD (rev 2.17; C2, C3, W7, W14): "readiness-only closed".** CLOSED: WS0.1, WS0.2 (readiness),
 > WS0.3, WS0.5 (removed fence), WS0.6, WS0.7 as the `--probe-only` readiness gate (probe 992b124, review 012e1bc).
@@ -1021,18 +1042,20 @@ property needing no P/Invoke, so the zero-write Win10 probe needs no `Add-Type`;
 and `sshd_allowusers` (the physical host). **Snapshot readiness is NOT an in-VM probe field (rev 2.9):**
 the gate proves it host-side with read-only `virsh` — the pinned expected clean baseline
 (`ZB_WIN11_SNAPSHOT`, e.g. `zb-clean-provisioned`) must exist and have State `shutoff`; the physical
-file server has no VM snapshot and is `not_applicable`. The current pinned clean baseline is
+Win10 box has no VM snapshot and is `not_applicable`. The current pinned clean baseline is
 **`pre-4dr-toolchain-2026-10-20`** (shut-off). **`console_user`** is read network-safe
 (`WTSUserName`, via a zero-write Reflection.Emit P/Invoke — no `Add-Type`/CodeDOM temp files), so the
 read-only probe emits it directly on both hosts; **`interactive_session`/`locked`** need the console's
 WTS session-lock flag, so they come from the in-console session helper and are required on the VM only
-(`not_applicable` on the read-only file server, which runs no helper under the no-install rule).
+(`not_applicable` for the Win10 box in the as-built `--probe-only` mode; enforced there in the product-run mode, WS0.9, rev 2.18).
 **Deferred (WS0 records but does not gate on these):** `python` and `zig` (VM only) and `webview2_pv`
-on the file server are reported for visibility but NOT enforced by the WS0 gate — the toolchain is
-proven by the build itself in a later WS, and the file server runs no browser. `native_arch` and
-`os_build` are gate-enforced on both hosts; `free_gb` and `root` are gate-enforced on the **VM only**
-(not_applicable on the read-only file server — no writes, no `C:\Users\<user>\zb`); the SSH fence
-(exact `ListenAddress` + `AllowUsers`) and the file-server isolation fields remain gate-enforced.
+on the Win10 box are reported for visibility but NOT enforced by the WS0 `--probe-only` readiness gate — the toolchain is
+proven by the build itself in a later WS; rev 2.18: the Win10 box DOES run the browser in its product legs, so the product-run mode
+(WS0.9) also enforces `webview2_pv` there (open code task). `native_arch` and
+`os_build` are gate-enforced on both hosts; `free_gb` and `root` are gate-enforced on the **VM only** in the
+as-built `--probe-only` mode (not_applicable for the Win10 box there: the probe writes nothing; the product-run mode enforces them
+on the Win10 box too, rev 2.18); the SSH fence (exact `ListenAddress` + `AllowUsers`) and the Win10 confinement fields remain
+gate-enforced.
 
 **Typed probe record (rev 2.17, C19).** The probe JSON is **parsed once into a typed record**, not checked field by
 field. Each field has an explicit state `ok(value) | not_applicable | unknown` — today "not_applicable" is JSON `null`,
@@ -1045,12 +1068,12 @@ replaced by it. Red (unregistered until green): `assert parse(null_for_unknown).
 on the VM ⇒ red.
 
 ### Behavior WS0.2: the gate fails closed
-**Given** any of: `ZB_WIN10_HOST` or `ZB_WIN11_HOST` unset (rev 2.17, C1: `ZB_WIN10_HOST` is required only for the
-`--probe-only` readiness run; the product-run mode of WS0.9 requires `ZB_WIN11_HOST` and a Win10 host only if the owner
-authorized one); a host unreachable; build below OD-W7;
+**Given** any of: `ZB_WIN10_HOST` or `ZB_WIN11_HOST` unset (rev 2.18, C1: BOTH `ZB_WIN10_HOST` and `ZB_WIN11_HOST` are required for the
+`--probe-only` readiness run AND for the product-run mode of WS0.9, because the Win10 box is a writable test host); a host unreachable; build below OD-W7;
 `native_arch` not `x64`; the **Win11 VM** without an active interactive session, or its session locked
-(`not_applicable` on the read-only file server, which is pinned by its SSH host key); `webview2_pv` empty
-**on the Win11 VM only (rev 2.17, W1: the file server runs no browser, and WS0.1 defers `webview2_pv` there; `gate.sh:265-266` is VM-only — this line now matches the code)**;
+(`not_applicable` for the Win10 box in the as-built `--probe-only` mode, pinned by its SSH host key; in product-run mode it needs an
+active unlocked `zbtest` session too); `webview2_pv` empty
+**on the Win11 VM (rev 2.17, W1: `gate.sh:265-266` enforces it on the VM only as built; rev 2.18: the Win10 box runs the browser, so the product-run mode also enforces it there, an open code task)**;
 `test_user` not the configured user; a test exiting 77; a test printing no `ASSERTS <n>` or
 `n == 0`, **when** the gate runs, **then** it exits nonzero naming the host and the reason; with
 both hosts healthy and all tests passing, it exits 0.
@@ -1108,7 +1131,7 @@ that the probe's `identity_marker` equals the pinned `ZB_WIN11_MARKER` nonce (re
 dropped — a standard user cannot read it, bead zigBrowser-126); each failure exits nonzero with the exact messages
 under "How the gate reaches the Win11 VM". The gate has no flag that starts, reverts or skips the VM.
 
-### Behavior WS0.7: the file-server host is not disturbed
+### Behavior WS0.7: the Win10 test host stays confined and undisturbed
 **Given** the Windows 10 host, **when** the probe runs, **then** it reports `groups` of `zbtest`,
 `console_user`, `shares` (names + absolute root paths), `zbtest_write_paths` (served paths the real Win32
 **AccessCheck** says `zbtest` can mutate), `listeners` (whatever set this host has — no fixed baseline; the
@@ -1116,7 +1139,7 @@ real FS has e.g. 135/445/5040/5357, dynamic RPC 49664+, 139, 22 and no 3389) and
 fails if `groups` has a forbidden group, `zbtest_write_paths` is non-empty, `console_user` is not `zbtest`
 (it never switches users), the sshd `ListenAddress`/`AllowUsers` are not exactly the pinned values, or
 `listeners`/`fw_rules_hash`/`shares` differ between the pre-run and post-run probes (any difference means the
-run changed the machine). `free_gb`/`root` are not_applicable here (no writes).
+run changed the machine). `free_gb`/`root` are not_applicable here in the as-built `--probe-only` mode (the probe writes nothing); rev 2.18: the product-run mode enforces them on the Win10 box.
 
 ### Behavior WS0.8: transport hygiene
 **Given** any remote copy, **when** the gate stages files, **then** it uses `mktemp -d` staging on Linux (never
@@ -1131,14 +1154,14 @@ and the gate defaults to `/home/maceo/vms/...`; `tests/guest/build-in-guest.sh` 
 (`StrictHostKeyChecking=no` :14, `2>/dev/null` :23, fixed `/tmp` tar) and is **retired** (D.6(b)), not wrapped;
 `build-on-windows.sh:109-112` hardcodes SDK paths instead of reading the probe; it reads `ZB_WIN_KEY` while the gate
 reads `ZB_WIN11_KEY` (one name, `ZB_WIN11_KEY`); `tests/windows/hosts.env.example:30` says build 19041 where OD-W7
-says 19045 (fix to 19045); the "INCOMPLETE: both hosts are required" message (rev 2.17: now "INCOMPLETE: product-run
-requires the Win11 VM", and the Win10 clause only when a writable host is authorized) and the separate 15 s TCP step
+says 19045 (fix to 19045); the "INCOMPLETE: both hosts are required" message (rev 2.18: stays "INCOMPLETE: both hosts are required" — product-run needs the Win11 VM AND the
+Win10 box) and the separate 15 s TCP step
 of WS0.6 are not in `gate.sh`. Each is a red with a mutant (`StrictHostKeyChecking=no` ⇒ red; ignore tar rc ⇒ red;
 fixed `zb` extract dir ⇒ red; unreachable port must fail within 15 s ⇒ red).
 
 **WS0 mutant rule (rev 2.17, W17).** Every mutant named in WS0 is an **executable selftest case that flips a named
 assertion**, not a comment: `gate_twohost_selftest.py` runs the production script with the mutation applied (a
-patched copy in a scratch dir) and asserts the case fails. The Win10 file-server **zero-write guarantee** is proven
+patched copy in a scratch dir) and asserts the case fails. The Win10 `--probe-only` **zero-write guarantee** (a property of the probe, not of the host) is proven
 by a behavioral case — a fake `ssh`/`powershell` transcript recorder that fails the run if the probe stream contains
 any write verb (`Set-`, `New-`, `Add-Type`, `Out-File`, redirection) **and** the real read-only probe still passing — not
 by a regex over source text alone (`gate_twohost_selftest.py:864-996` is a tripwire only, D.4).
@@ -1209,6 +1232,13 @@ exits nonzero naming the test. It replaces today's exit 2 "two-host run not impl
   shared by the selftest and the gate.
 - **Closure:** LEAF (test infrastructure; no product behavior crosses a seam).
 
+- **WS0.9-W10 (restored Win10 product-run leg, rev 2.18; NOT yet run):** own test: `gate_twohost_selftest.py` cases with a fake Win10 transcript
+  assert that product-run mode (a) REQUIRES `ZB_WIN10_HOST` and exits nonzero naming the Win10 box when it is unset or unreachable,
+  (b) enforces `root`, `free_gb`, `webview2_pv` and the unlocked `zbtest` console session on the Win10 box like the VM, and (c) keeps the
+  work under `C:\Users\zbtest\zb\runs\<id>\`. Mutant: treat the Win10 box as `not_applicable` in product-run mode ⇒ red. Own evidence
+  line: the Win10 live run's `ASSERTS n>0` output with its `identity_marker`, pasted in the commit message, only after the Win10
+  release (RoseCat exact-commit approval + orchestrator release).
+
 **Gate (WS0):** [L] `windows-gate-selftest` green; then [W] `gate.sh --probe-only` green on both
 hosts after provisioning (the pre/post probe pair of WS0.7 included) — this is the **readiness-only** closure; full
 WS0 closure additionally needs WS0.4, WS0.8 and WS0.9 above. Not a UI slice, so no
@@ -1230,12 +1260,17 @@ designed, and an import table within an allowlist (system DLLs + `api-ms-win-crt
 `vcruntime*.dll` or `msvcp*.dll` is a failure unless the installer ships it), and records the
 pinned WebView2 SDK version.
 
-### Behavior WS1.2: M8 render, reply channel and load-fail pass on the Win11 VM (Win10: untested, C1)
+### Behavior WS1.2: M8 render, reply channel and load-fail pass on the Win11 VM and on the Win10 box
 > **Rev 2.17 (C3): WS1.2 is NOT STARTED and now PRECEDES WS2a** (it is the m8 harness every later e2e reuses, and it
 > depends on WS0.4). Its status is "open", not "done with WS1".
 **Given** the exe on each host, **when** the gate runs `m8_render_test.py`,
 `m8_reply_channel_test.py`, `m8_load_fail_test.py` with `ZB_WIN_GATE=1`, **then** each prints
 `PASS` and `ASSERTS n>0` on each host; with `ZB_WIN_GATE=1` a missing precondition exits 1, not 77.
+- **WS1.2-W10 (restored Win10 leg, rev 2.18; NOT yet run):** own test: the same three `m8_*` tests run as `zbtest` against the Win10 box,
+  with the exe staged under `C:\Users\zbtest\zb\runs\<id>\`. Mutant: skip the Win10 invocation ⇒ the gate's both-hosts check is red.
+  Own evidence line: the Win10 host's `PASS` + `ASSERTS n>0` output with its `identity_marker`, recorded in the commit message,
+  after the Win10 release; the Win11 result never stands in for it. If the WebView2 runtime is missing on the box, installing it is
+  system-wide: ask the owner first.
 
 ### Behavior WS1.3: `--screenshot` produces a real PNG
 **Given** a fixture URL, **when** `zigBrowser.exe <url> --screenshot out.png` runs, **then** the
@@ -1291,7 +1326,7 @@ the OS build and the **executing** architecture (from `IsWow64Process2`; `x86_64
   WS1 phase rows (and in `build.zig` behind the `windows-live` aggregate, D.1) so a run actually executes them.
   `screenshot_diag_selftest.py` greps shim text: it is a tripwire only (D.4); the real row is `win_screenshot_test.py`.
 
-**Gate (WS1):** [W11] WS1.1-WS1.5 on the Win11 VM (Win10 untested, C1) + [L] `cross-check` unchanged + `win-render`.
+**Gate (WS1):** [W] WS1.1-WS1.5 on the Win11 VM, plus the Win10 box for WS1.2-W10 (each its own evidence line) + [L] `cross-check` unchanged + `win-render`.
 
 ---
 
@@ -1351,8 +1386,9 @@ FIFO semantics as Linux, proven by three production chains (the macOS plan's Clo
 | 27 `zb_automation_debug_*` test seams (header :364-424; the header declares 30 `_debug_` functions, the other three, `_hw_policy`, `_webkit_default_hw_policy`, `_media_source` at :97/:100/:131, ship with the WS3 flags) | the slice whose e2e drives each (as macOS table) | else absent at link time | per slice |
 
 ### WS2.0: the transport is local-only and owner-only   [W11]
-**Live production evidence is the Win11 VM only (rev 2.10):** the physical Windows 10 file server is read-only
-as zbtest, with no writes and no installs (plan:525,689,712-717), so no browser runs there.
+**Live production evidence so far is the Win11 VM only (rev 2.10, a fact about which runs exist).** Rev 2.18 (owner ruling): the physical
+Windows 10 machine is a standard WRITABLE test box, so the Win10 leg is RESTORED as **WS2.0-W10** below (own test, own evidence line;
+not yet run).
 **Given** the browser with `--automation-api`, **when** it starts, **then** exactly one AF_UNIX
 listener exists at `%LOCALAPPDATA%\zigbrowser\zigbrowser-automation-<nonce>.sock` (no TCP), the
 directory, socket and `<socket>.token` have a **protected DACL granting only the current user**
@@ -1361,8 +1397,9 @@ directory, socket and `<socket>.token` have a **protected DACL granting only the
   spike no longer compiles on Zig 0.16; superseded). **AF_UNIX is proven by the production e2e**
   `tests/e2e/win_transport_test.py` (the real browser binds and accepts on the Win11 VM, rev 2.10). It needs the
   **`win10_rs4` target floor** (build.zig `windowsAfUnixFloor`): below it std's `has_unix_sockets`
-  is false. **If AF_UNIX fails on the Win11 VM (or on an authorized writable production-test host), stop and
-  update ADR-1**: no silent TCP fallback. Never on the read-only file server.
+  is false. **If AF_UNIX fails on the Win11 VM OR on the Win10 box, stop and
+  update ADR-1**: no silent TCP fallback. The Win10 run happens only under the Win10 release rule (RoseCat exact-commit approval +
+  orchestrator release) and only inside `C:\Users\zbtest\zb`.
 - Replace the POSIX-only `restrictSocketMode` (`chmod`, automation_server.zig:1513-1517) and the
   `0o600` sidecar mode (:1496-1511) with one platform seam `restrictToOwner(path)`
   (rev 2.6 fix: one handle, never the path twice; POSIX `0600`/`0700` through the opened descriptor;
@@ -1373,12 +1410,9 @@ directory, socket and `<socket>.token` have a **protected DACL granting only the
   because std's AF_UNIX was off below the `win10_rs4` floor).
 - Property: invariant — for generated nonces, `planSocketPath(.windows, base, n)` stays under
   `base\zigbrowser\` and below `UnixAddress.max_len` (extends automation_transport.zig:49-62) [L].
-- **Host scope (rev 2.10, superseding rev 2's host difference):** all of WS2.0's live evidence, the cross-user
-  negative included, runs on the **Win11 VM only**. ~~On the physical Windows 10 machine the test asserts the DACL
-  itself and a different-integrity connect~~: **withdrawn**. Running the browser there would mean copying an exe
-  onto a machine the user keeps read-only as zbtest, with no writes and no installs. If Windows 10 coverage is
-  ever needed, it comes from a separate, writable Windows 10 host the user authorizes, running the same
-  `win_transport_test.py` with `ZB_WIN11_HOST` pointed at it; it is not claimed here. Mutant (the VM): leave the default
+- **Host scope (rev 2.18, superseding rev 2.10 and rev 2's host difference):** WS2.0 has TWO live legs. **Win11 VM leg (run):** all live
+  evidence so far, the cross-user negative included (`zbother`). **Win10 box leg, WS2.0-W10 (restored, NOT yet run):** see the next bullet.
+  Mutant (the VM): leave the default
   inherited DACL from `%LOCALAPPDATA%` ⇒ the principals assertion is red (it contains `Administrators`/`SYSTEM`
   inherited ACEs). Rev 2.6 decided those are **not** acceptable; on the VM the base is hostile (Everyone, inheritable),
   and the unrestricted-directory and unrestricted-socket mutants both fail (f29e490).
@@ -1386,6 +1420,17 @@ directory, socket and `<socket>.token` have a **protected DACL granting only the
   cross-user test (89c166b). Required before WS2.0 is called fully mutant-proven: run and record the mutant that
   restricts the directory and socket but leaves the `<socket>.token` file with the inherited DACL (the zbother token read
   must then succeed ⇒ `win_transport_test.py` red), on the Win11 VM, with the run output in the commit message.
+- **WS2.0-W10 (restored Win10 leg, rev 2.18; its OWN test and its OWN evidence line; NOT yet run).** Test: `tests/e2e/win_transport_test.py`
+  run as `zbtest` against the Win10 box (the test selects its host from `ZB_WIN11_HOST`/`ZB_WIN11_USER` today, so pointing it at the Win10
+  box needs a small host-selector generalization, an open task), with `LOCALAPPDATA` at a hostile base under `C:\Users\zbtest\zb\`
+  that grants Everyone full control inheritably. It asserts, on Win10: exactly one AF_UNIX listener and no TCP; `acl_principals` of the
+  directory, the socket and the token is exactly `{zbtest's SID}`, protected, with no inherited ACE; and a **different-integrity
+  connect** (a Low-integrity token for `zbtest`) is refused. The cross-user negative from a second account is run on Win10 only if
+  the owner approves creating that local account (a system-wide change); otherwise the different-integrity connect is the negative.
+  Mutant (the Win10 box): leave the inherited `%LOCALAPPDATA%` DACL ⇒ the principals assertion is red. Own evidence line: the Win10
+  run's output (host `identity_marker`, `ASSERTS n>0`, DACL read-back) in the commit message, after the Win10 release (RoseCat
+  exact-commit approval + orchestrator release); the Win11 run is never accepted in its place. Windows 10 AF_UNIX stays UNVERIFIED
+  until this leg runs.
 - **Compile coverage (rev 2.7; replaces the rev 2 "compile check first"):** the `cross-check` step's
   x86_64-windows-gnu object is built at the shipped `win10_rs4` floor, so it compiles the automation server's
   start path, token and socket included. It is a build guard, not the WS2.0 red: the red is the production e2e
@@ -1395,8 +1440,8 @@ directory, socket and `<socket>.token` have a **protected DACL granting only the
   in-VM `snapshot_marker` probe field to a host-side read-only `virsh` check in the gate: the pinned
   expected clean baseline (`ZB_WIN11_SNAPSHOT`) must exist and be `shutoff`; the gate never creates or
   reverts. `console_user` is read network-safe (WTSUserName) directly by the probe; `interactive_session`
-  /`locked` come from the in-console session helper and are VM-only (`not_applicable` on the read-only
-  file server). The WS0.1 field list and WS0.6 updated to match; the gate validates the full schema-2
+  /`locked` come from the in-console session helper and are VM-only (`not_applicable` for the Win10 box in the
+  as-built `--probe-only` mode). The WS0.1 field list and WS0.6 updated to match; the gate validates the full schema-2
   readiness fail-closed with a red per field (gate_twohost_selftest).
 - **Rev 2.8 (2026-10-20; WS13.4 uninstall census, RoseCat 6731 / commit `2cc125c`).** The WS13.4 red
   observed only sandbox users, WFP filters and scheduled tasks, while the uninstall normative (§3 item
@@ -1425,15 +1470,19 @@ directory, socket and `<socket>.token` have a **protected DACL granting only the
       2. then the browser with `--automation-api`: exactly one AF_UNIX listener, no TCP;
       3. `acl_principals` of the directory, the socket and the token is exactly `{zbtext's SID}`, protected, with no inherited ACE;
       4. from `zbother`, the connection and the token read both fail.
-    - ~~On the physical Windows 10 machine, the DACL assertion only (rev 2).~~ Withdrawn in rev 2.10: the file
-      server is read-only, with no writes and no installs, so no browser runs there.
+    - On the physical Windows 10 box: the DACL assertion and a different-integrity connect (rev 2); rev 2.18 restores this as the
+      separate leg **WS2.0-W10** above, with its own test and evidence line.
     - Mutant (the VM): leave the inherited `%LOCALAPPDATA%` DACL, and the principals assertion fails.
 
 ### WS2a: routed commands, private world, readiness   [W]
-- **WS2a.0 (spike, Win11 VM; Win10 untested, C1):** CDP isolated world exists, its globals are invisible to the page,
+- **WS2a.0 (spike, Win11 VM):** CDP isolated world exists, its globals are invisible to the page,
   and it survives navigation. Result recorded red→green before WS2a.1. **Rev 2.17 (C5): NOT RUN — no file and no
   result exist at HEAD.** The spike file is `tests/e2e/win_private_world_spike.py` (named in the WS2 register) and its
   recorded result lives in the commit message; until then no code may assert the answer (see WS2b.0).
+- **WS2a.0-W10 (restored Win10 leg, rev 2.18; NOT yet run):** own test: the same `win_private_world_spike.py` run as `zbtest` on the Win10
+  box (work under `C:\Users\zbtest\zb`), the three claims (world exists, globals invisible to the page, survives navigation) asserted
+  there. Own evidence line: its red→green result with the Win10 `identity_marker` in its own commit-message line, after the Win10
+  release; the Win11 result does not stand in for it.
 - **WS2a.1** `page.navigate`, `page.url`, `page.title`, `page.evaluate` over the socket with the
   Linux envelope/auth/errors.
 - **WS2a.2** `dom.*` run in the private world. **Property (metamorphic):** a page that defines
@@ -1454,13 +1503,18 @@ directory, socket and `<socket>.token` have a **protected DACL granting only the
   `assert capability_row_is_unproven_until_file_exists("tests/e2e/win_trusted_input_matrix.py result")`; mutant:
   leave `cdp_input` with no recorded WS2b.1 result ⇒ red. The test `automation_platform.zig:885-886`
   (`expectEqual(InputMode.cdp_input, webview2.input.mode)`) is a fake-backed tripwire only (D.4), not evidence.
-- **WS2b.1 (spike, Win11 VM; Win10 untested, C1) trusted-event matrix:** (**NOT RUN at HEAD — no file, no result**) `isTrusted` true, focus, click, key, text,
+- **WS2b.1 (spike, Win11 VM) trusted-event matrix:** (**NOT RUN at HEAD — no file, no result**) `isTrusted` true, focus, click, key, text,
   contenteditable + `beforeinput` cancel honored, scroll, pointer move, navigation during input,
   partial typing, deadline abandonment (no dispatch after the waiter leaves). CDP input is
   **unverified** to produce `isTrusted: true` in WebView2; the capability table
   (automation_platform.zig:77-98) is changed only after this passes. If CDP input is not trusted,
   WS2b stops at the spike and the orchestrator brings it to the user (no silent fallback to
   `SendInput`, which is system-wide).
+- **WS2b.1-W10 (restored Win10 leg, rev 2.18; NOT yet run):** own test: the same `win_trusted_input_matrix.py`, asserting
+  `ack["isTrusted"] is True` per row, run as `zbtest` on the Win10 box (the Win10 WebView2 runtime can differ from the VM's, so its result
+  can differ). Own evidence line: its per-row result with the Win10 `identity_marker` and the Win10 WebView2 `pv` in its own
+  commit-message line, after the Win10 release. If CDP input is trusted on one host only, WS2b stops at the spike and the
+  orchestrator brings it to the user.
 - **WS2b.2** alert/confirm/prompt/beforeunload captured by `ScriptDialogOpening` with a held
   deferral, answered through the ABI.
 - **WS2b.3** full-page `zb_screenshot_png`; **WS2b.4** input files with regular-file refusal.
@@ -1498,7 +1552,7 @@ green commit is accepted.
 
 | Behavior | Red test (unregistered until green) | Exact failing assertion (today's reason) | Mutant that must flip it | Green files |
 |---|---|---|---|---|
-| WS2.0 transport | `tests/e2e/win_transport_test.py` | protected owner-only DACL on the directory, socket and token; zbother denied (pre-fix: exit 7, no socket below the `win10_rs4` floor) | default inherited DACL | `automation_server.zig` `restrictToOwner`, `app.zig` socket base |
+| WS2.0 transport | `tests/e2e/win_transport_test.py` | protected owner-only DACL on the directory, socket and token; zbother denied (pre-fix: exit 7, no socket below the `win10_rs4` floor) | default inherited DACL (run on the Win11 VM; the restored WS2.0-W10 leg repeats it on the Win10 box with its own evidence line) | `automation_server.zig` `restrictToOwner`, `app.zig` socket base |
 | WS2a.0 world spike | `tests/e2e/win_private_world_spike.py` | `assert page_eval("typeof window.__zbAutomation") == "undefined" and world_eval("typeof window.__zbAutomation") == "object"` (no CDP route exists) | run the script in the main world | `webview2_shim.cpp` CDP wrapper |
 | WS2a.1 routed | `tests/e2e/win_routed_test.py` | `assert rpc("page.evaluate", {"expression":"1+1"})["result"] == 2` (-32011: `pagePort()` null) | return `0` from the shim | `automation_wv2_port.zig`, `app.zig` |
 | WS2a.2 private world | `tests/e2e/win_private_world_test.py` | `assert rpc("dom.text", sel)["result"] == "real"` on a page that overrides `Element.prototype.click`, `document.querySelector`, defines `window.__zbAutomation` | evaluate in the main world | shim script install |
@@ -1518,7 +1572,7 @@ green commit is accepted.
   (`cross-check` plus a link-time absence assertion in `win_abi_absence_test.py`, which fails if an
   undriven debug seam is present).
 - **Closure criteria:** Closures A, B, C below, each observed to execute with nonzero assertions on the Win11 VM
-  (rev 2.17, C1; Win10 only if a writable host is authorized). Closure B and C now name their e2e files above.
+  (rev 2.18, C1: on the Win11 VM AND the Win10 box, each its own evidence line). Closure B and C now name their e2e files above.
   **At HEAD none of Closures A, B, C has an e2e (C4).**
 - **Real-screen checks (UI parts of WS2):** `win-native-click` (WS2b, as written), plus **`win-popups`**
   (WS2c.1/WS2c.5: the orchestrator watches two popups open as real top-level windows, each closable by its
@@ -1632,8 +1686,9 @@ green commit is accepted.
   wrapper with one error-mapping table (the `mapCode` analog, automation_gtk_port.zig:337-350);
   the port contains no Windows types (only the C ABI).
 
-**Gate (WS2):** three gates (WS2a, WS2b, WS2c), each [W11] on the Win11 VM (Win10 untested, C1), plus `win-native-click`,
-`win-popups` and `win-crash-page` on the Win11 console. WS2a/b/c are NOT started (see the WS2 status block).
+**Gate (WS2):** three gates (WS2a, WS2b, WS2c), each [W] on the Win11 VM AND the Win10 box (each its own evidence line; WS2.0-W10, WS2a.0-W10, WS2b.1-W10 are the named Win10 legs
+so far), plus `win-native-click`,
+`win-popups` and `win-crash-page` on the Win11 console and the Win10 monitor. WS2a/b/c are NOT started (see the WS2 status block).
 
 ---
 
@@ -1729,7 +1784,7 @@ line); and BOTH mutants run and recorded (apply-before-validate; swallow-error-e
 
 **Property:** the cookie-JSON roundtrip incl. `sameSite` domain is in the Property register (C18).
 
-**Gate (WS3):** [W11] the Win11 VM (Win10 untested, C1). Not a UI slice. **Closed today: WS3.2 only. OPEN: WS3.1, WS3.3, WS3.4.**
+**Gate (WS3):** [W] the Win11 VM AND the Win10 box (its own evidence line: the cookie/profile e2e run as `zbtest` under `C:\Users\zbtest\zb`). Not a UI slice. **Closed today: WS3.2 only. OPEN: WS3.1, WS3.3, WS3.4.**
 
 ---
 
@@ -2113,7 +2168,7 @@ to run. Credential tests run inside the interactive session task.
 - **Real-screen check `win-secrets-window`:** paste, save, remove, and the private-file choice, on
   both screens; the window never shows the token in clear text.
 
-**Gate (WS6):** [W11] the Win11 VM (Win10 untested, C1; the Secrets window exists on Win10 too, but its agent route does not) + `win-secrets-window` on the Win11 console.
+**Gate (WS6):** [W] the Win11 VM AND the Win10 box (the Secrets window exists on Win10 too, so its own Win10 leg runs there with its own evidence line; its agent route does not, agent OFF) + `win-secrets-window` on the Win11 console and the Win10 monitor.
 
 ---
 
@@ -2501,8 +2556,8 @@ cleanly into an elevated one-shot and an unprivileged per-user import:
   claim to "leave no global WSL change": pre-existing features are preserved, and features this product
   enabled are **left enabled** (other software may now depend on WSL) — the uninstaller states this to the
   user rather than silently disabling WSL/VMP or removing another distro/global config.
-- **Win10 file server:** NO WSL and NO agent on the read-only Windows 10 file server — WSL/agent is
-  **win11-only**; any two-host install claim is removed.
+- **Win10 box:** NO WSL and NO agent on the Windows 10 box (agent OFF, OD-W4) — WSL/agent is
+  **win11-only**; any two-host agent-install claim is removed.
 
 **C4 — Per-run lifetime + a cross-process lock/lease (PROPOSAL / TBD).** Each browser session runs its agent
 under a **per-session supervisor inside the distro** that owns the whole session subtree. *Observed in the
@@ -2574,12 +2629,11 @@ executable, and writing system dirs.
   unreachable.
 - **WS8.7** no-network child (TTS/STT) inside the distro (netd denies every endpoint; model dir ro).
 - **WS8.8** fail-closed: virt/WSL off ⇒ agent OFF + the fixed explanation.
-Each with the mutant that flips it; all [W]/[U] on **win11-m8 only** (never the Win10 FS).
+Each with the mutant that flips it; all [W]/[U] on **win11-m8 only** (never the Win10 box — agent OFF there).
 
 **Gate (WS8):** [L] the `WslBackend` contract projection + the C1 auth / C2 broker / C3 setup units that are
 Linux-testable; [W] WS8.1-8.8 on **win11-m8 only**. One UAC prompt (the C3 admin step), clicked by the owner
-in person (`win-sandbox-uac`). WS11 stays blocked until all pass. (No file-server leg — the Win10 FS is
-read-only; no WSL/agent there.)
+in person (`win-sandbox-uac`). WS11 stays blocked until all pass. (No Win10 leg — agent OFF on Win10; no WSL/agent there.)
 
 ### WS8/WS9 acceptance matrix (RoseCat 7516 — the closure spec)
 
@@ -2587,7 +2641,7 @@ The live discovery spike (`tests/windows/wsl_live_test.py`) establishes the TOPO
 spike, not closure. **WS8/WS9 close only when each item below is a named red→green test driving the
 PRODUCTION backend** (`WslBackend` + the existing `LinuxBwrapBackend`/netd argv under the staged distro),
 each with the mutant that defeats it, each a bounded machine-readable PASS/FAIL row preserving stderr on
-failure, all `[W]`/`[U]` on **win11-m8 only** (never the Win10 FS), as the standard user with no admin:
+failure, all `[W]`/`[U]` on **win11-m8 only** (never the Win10 box), as the standard user with no admin:
 
 1. **Test hygiene / zero host mutation.** Preflight census (distros, default distro/version, `.wslconfig`
    absent+hash, feature state, import dirs, listeners, processes); app-owned `zb-test-*` names + ownership
@@ -2767,7 +2821,7 @@ in **different** namespaces, and must not be conflated:
   netd's census; RED-AT-SEAM = bypass netd ⇒ the distro netns denies ⇒ the request never lands.
 
 **Gate (WS9):** [L] netd units under the distro netns; [W] WS9.1-WS9.4 + the relay bypass/denial rows on
-**win11-m8 only** (never the Win10 FS — it ships browser-only with the agent OFF, WS9 does not run there).
+**win11-m8 only** (never the Win10 box — it ships browser-only with the agent OFF, WS9 does not run there).
 Not a UI slice, so no real-screen case.
 
 *(The former Windows-host WFP-filter egress — persistent WFP filters keyed on `zb-agent`/`zb-hook` SIDs,
@@ -2973,8 +3027,8 @@ once this plan is accepted (they own the edit; this plan does not edit them).
   WSL unregister is an unprivileged per-user action (no UAC; `wsl --unregister` of our own distro needs none) run by an
   immediate custom action or an in-app "Remove agent" step, and the probe is also run in the state where the MSI
   uninstall finished but a distro survived (the product then shows "finish removing the agent" on next launch).
-  **The post-uninstall probe runs on the Win11 VM only — NOT on the physical Windows 10 machine, which is read-only by
-  rule (C11); on a Win10 (agent-OFF) build the probe asserts there is simply no WSL payload to remove.** The
+  **The WSL post-uninstall probe runs on the Win11 VM; the Win10 box (writable, browser-only) runs its OWN browser
+  post-uninstall probe, WS13.4-W10 below, which also asserts that a Win10 (agent-OFF) build has no WSL payload to remove.** The
   historical sandbox-user/WFP census text below is retained only as history and gates nothing.
   *(⚠️ HISTORICAL /
   NON-NORMATIVE, OD-W4 — see the scope banner. The sandbox-user/WFP cleanup described in the rest of this
@@ -3033,12 +3087,21 @@ once this plan is accepted (they own the edit; this plan does not edit them).
 - **Closure:** LEAF (packaging assertions), except WS13.4 BLOCKING (installer → per-user WSL unregister →
   distro/state; OBSERVE = the post-uninstall probe of distros, import dirs and state files on the Win11 VM).
 - **Real-screen check `win-install-smartscreen`:** the user downloads the installer in Edge on the Win11 console and
-  records what SmartScreen shows (Windows 10: untested, C1).
+  records what SmartScreen shows; the same case is repeated on the Win10 box console (restored Win10 leg, own record).
 
-**Gate (WS13) — rev 2.17 (C11, C1): [W11] only.** The browser MSI install/uninstall/census runs on the Win11 VM; **the
-physical Windows 10 machine is read-only by rule and receives NO install and NO post-uninstall probe** (the earlier
-text that ran the install and the "(users, filters, tasks, folders)" probe there is withdrawn). Original text (history,
-read through the rule above): [W] the browser MSI install/uninstall/census on both hosts; the **agent/sandbox/WSL
+- **WS13.4-W10 (restored Win10 leg, rev 2.18; its OWN test and its OWN evidence line; NOT yet run).** Test: the `msi_install_test.py` Win10 leg:
+  `zbtest` installs the per-user browser MSI on the Win10 box with the install directory pinned inside `C:\Users\zbtest\zb\` (the `.wxs` must
+  expose an install-directory override, an open task; if it cannot, ask the owner before installing to the default
+  `...\AppData\Local\Programs\zigBrowser`), asserts the WS13.1 census, runs the uninstall, and asserts
+  `assert files_after == [] and shortcuts_after == [] and hkcu_keys_after == [] and wsl_payload_present is False and not (uninstall_reported_success and (files_after or shortcuts_after or hkcu_keys_after))`.
+  Mutants, each ⇒ red: leave a file; leave a shortcut; leave an HKCU key; report success while any survives. The agent/WSL part of
+  the census asserts those components are ABSENT on this agent-OFF build. Own evidence line: the Win10 run's census and probe output
+  with the host `identity_marker`, in the commit message, after the Win10 release (RoseCat exact-commit approval + orchestrator
+  release). A WebView2 runtime install on that box, if the runtime is missing, is system-wide: ask the owner first.
+
+**Gate (WS13) — rev 2.18 (C11, C1): [W] on the Win11 VM AND the Win10 box.** The browser MSI install/uninstall/census runs on the Win11 VM and,
+as the separate leg WS13.4-W10, on the Win10 box (writable, standard user `zbtest`, work confined to `C:\Users\zbtest\zb`; the earlier text
+that said the Win10 machine receives no install and no post-uninstall probe is removed). The **agent/sandbox/WSL
 packaging census (distro rootfs, import dir, the sandbox/voice-agent components) is win11 only** — on Win10
 the census asserts those components are ABSENT (agent-OFF build), per the OD-W4 scope. Signing is DEFERRED (OD-W3) and is **NOT part
 of the WS13 launch gate** — the gate asserts only the unsigned MSI's contents/install/uninstall/census,
@@ -3048,10 +3111,8 @@ find each component owner's artifact — browser (WS1), drawer (WS5), setup (WS7
 helper (WS9), sign-in (WS10), agent host/helper (WS11) — **and the voice packaging the voice plans own** (the
 TTS engine + model and the STT engine + model via their VSP/W1 slices); a missing component fails the census,
 so WS13's gate cannot pass until every component owner and the voice-packaging owners have landed. The
-`win-install-smartscreen` case is a UI/real-screen case ~~for both hosts; on the physical machine the install
-is by `zbtest` into `C:\Users\zbtest\AppData\Local\Programs\zigBrowser`, and the post-uninstall probe
-(users, filters, tasks, folders) also runs there~~ (WITHDRAWN, rev 2.17 C11/C1: the physical Windows 10 machine is
-read-only, so no install and no probe run there).
+`win-install-smartscreen` case is a UI/real-screen case for both hosts (the Win11 console and the Win10 monitor); on the Win10 box the
+install is by `zbtest` (install directory inside `C:\Users\zbtest\zb`) and the browser post-uninstall probe is WS13.4-W10 above.
 
 ---
 
@@ -3097,17 +3158,17 @@ never stage another agent's work). 7. Mail RoseCat for review. 8. UI slices: the
 the named real-screen cases with the user on the Win11 console (C1); not approved until they pass.
 **Never** rewrite history: no reset, rebase or amend of committed work, even unpushed; fix forward
 with a new green commit. A slice is done only when its closure e2e was observed to execute with
-nonzero assertions on the Win11 VM (and Win10 iff a writable host is authorized, C1) **and its live row is accepted
+nonzero assertions on the Win11 VM AND on the Win10 box (C1) **and its live row is accepted
 (D.4); a registered live step run with no host FAILS (D.1)**.
 
 ## Real-screen checks (all, by slice)
 
-> **Rev 2.17 (C1, C14):** "both" below reads **"the Win11 console"**; the Windows 10 monitor leg is dropped until an
-> authorized writable Win10 host exists. `tests/manual/real_screen_check.py` is X11-only today, so a Windows capture +
+> **Rev 2.18 (C1, C14):** "both" below reads **"the Win11 console AND the Win10 monitor"**; the Windows 10 monitor leg is restored (the Win10 box is a
+> writable test host, run after its release). `tests/manual/real_screen_check.py` is X11-only today, so a Windows capture +
 > foreground-proof backend is a prerequisite for scheduling any `win-*` case. `win-sandbox-uac` is Win11-only
 > (clicked by the owner). The agent cases (`win-sandbox-uac`, `win-signin`, `win-chat-reply`, `win-approval-card`) never
 > run on Win10 (agent OFF). `win-voice-live`/`win-voice-permission` need a microphone host and stay as the voice plans
-> define them (physical Windows 10 is read-only, so they are unscheduled until a writable mic host exists).
+> define them (the Win10 box is writable, so they are schedulable there once a microphone is attached and the per-user microphone permission for `zbtest` is on, item 10).
 
 | Case | Slice | Where |
 |---|---|---|
@@ -3129,9 +3190,8 @@ nonzero assertions on the Win11 VM (and Win10 iff a writable host is authorized,
 1. CDP isolated worlds inside WebView2 (WS2a.0).
 2. CDP input producing `isTrusted: true` in WebView2 (WS2b.1).
 3. AF_UNIX with the Zig 0.16 std (WS2.0). **Win11 VM: proven** by the production e2e at the `win10_rs4` floor (f29e490;
-   the zbother run 3cb8722). **Windows 10: unverified, and not run on the file server** (rev 2.10: it is read-only,
-   with no writes and no installs). It would come from a separate, writable Win10 host the user authorizes; the
-   `win10_rs4` floor requires 1803 or later there.
+   the zbother run 3cb8722). **Windows 10: unverified until the restored leg WS2.0-W10 runs on the Win10 box** (a writable test host, rev 2.18; Win10 release rule
+   applies). The `win10_rs4` floor requires 1803 or later there.
 4. `WEBVIEW2_BROWSER_EXECUTABLE_FOLDER` as a runtime-missing seam (WS1.4).
 5. A public mechanism that recovers a hung WebView2 renderer (WS2c.3).
 6. OAuth fd-3 delivery (`CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR`) to the CLI **inside the distro** via an
@@ -3186,7 +3246,7 @@ exists in `src/`.
 **Corrected in this rev (rev 1 said otherwise or omitted it):**
 1. `win11-m8` is `running` (not shut off), has no snapshots, a passt `2222 -> 22` forward, an `ich9` SPICE-audio device; its Tailscale node is offline (105 days).
 2. `tests/guest/ssh.sh` is the working path, not "superseded"; `build-in-guest.sh` omits `agent/ packaging/ tools/ docs/` and uses a fixed `/tmp` file.
-3. `tests/guest/setup.ps1` must not run on the file server (unscoped port 22 rule, toolchain installs).
+3. `tests/guest/setup.ps1` must not run on the Win10 box without the owner's OK (unscoped port 22 rule, toolchain installs: system-wide changes).
 4. Provisioning item 4 looked only at `HKLM\…\WOW6432Node`; the runtime version can be in `HKLM` (two views) or `HKCU`.
 5. The debug-seam count is 30 declared (27 listed in the ABI table + 3 config seams under WS3).
 6. WS12: TTS W1 is the bundled engine + WASAPI (not WinRT/SAPI, which is S3); TTS has no "N1"; W1 depends on the sandbox milestone (new WS8.7); STT's `win-voice-live` host claim conflicts with the VM's unproven capture device.
@@ -3195,9 +3255,9 @@ exists in `src/`.
 9. WS13.4: a per-user MSI cannot run an elevated custom action.
 10. `agent_drawer.zig` export gate is `comptime { if (builtin.os.tag == .linux)` at :338-339, closing :358.
 
-**Added:** WS0.6 (VM identity and down-VM), WS0.7 (file-server fence), WS0.8 (transport hygiene), WS7.5 (Windows
+**Added:** WS0.6 (VM identity and down-VM), WS0.7 (Win10 test-host fence), WS0.8 (transport hygiene), WS7.5 (Windows
 import-ability), WS8.7 (no-network child), the WS2 register, per-milestone reds/mutants/greens/refactors/closures/real-screen
-cases for WS1-WS13, `win-popups`, `win-crash-page`, the role map, the file-server isolation requirements, and the decision
+cases for WS1-WS13, `win-popups`, `win-crash-page`, the role map, the Win10 test-box confinement requirements, and the decision
 sharpening for OD-W1..OD-W9. (Rev 2.13, 2026-10-21: OD-W1/W3/W4/W6 are now DECIDED per the OWNER DECISIONS
 block — the sharpening for those is retained as history; OD-W2/W5/W7/W8/W9 remain open.)
 
