@@ -159,9 +159,20 @@ int zb_drawer_inside_icon(int dx, int dy, int radius);     // WS5.7 exact circul
 // WS5 shim functions (declared in webkit_shim.h), defined here for the Windows backend.
 static std::atomic<int> g_agent_drawer_enabled{0};
 static std::atomic<int> g_drawer_live{0};
+static std::atomic<int> g_drawer_live_peak{0};  // WS5.5: the max concurrent live drawers this process reached
 extern "C" void zb_app_set_agent_drawer(int enabled) { g_agent_drawer_enabled.store(enabled != 0); }
 extern "C" int zb_app_get_agent_drawer(void) { return g_agent_drawer_enabled.load(); }
 extern "C" int zb_drawer_debug_live_count(void) { return g_drawer_live.load(); }
+extern "C" int zb_drawer_debug_live_peak(void) { return g_drawer_live_peak.load(); }  // WS5.5 peak accessor
+
+// WS5.5: bump the live-drawer count and keep the running peak (the highest concurrent count seen). Single UI
+// thread, but the compare-exchange keeps the peak correct regardless.
+static void drawer_live_inc() {
+  const int now = g_drawer_live.fetch_add(1, std::memory_order_relaxed) + 1;
+  int peak = g_drawer_live_peak.load(std::memory_order_relaxed);
+  while (now > peak && !g_drawer_live_peak.compare_exchange_weak(peak, now, std::memory_order_relaxed)) {
+  }
+}
 
 void emit_safe_field(const char *text) {
   const char *p = text != nullptr ? text : "";
@@ -1338,7 +1349,7 @@ void mount_drawer(AppState *app) {
   app->drawer_panel = panel_hwnd;
   app->drawer_icon = icon_hwnd;
   app->drawer_mounted = true;
-  g_drawer_live.fetch_add(1, std::memory_order_relaxed);
+  drawer_live_inc();  // WS5.5: live count + running peak
 
   char win[16];
   snprintf(win, sizeof win, "%d", app->win_id);
