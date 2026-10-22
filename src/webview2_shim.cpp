@@ -3,11 +3,13 @@
 #endif
 
 #include <windows.h>
+#include <dwmapi.h>  // WS5.3: DwmFlush — step the fold animation on the compositor's vsync (plan:1539)
 #include <objbase.h>
 #include <shlobj.h>
 #include <wrl.h>
 #include <WebView2.h>
 #include <WebView2EnvironmentOptions.h>
+#pragma comment(lib, "dwmapi.lib")
 
 #include <ctype.h>
 #include <errno.h>
@@ -964,10 +966,32 @@ static void drawer_open_now(AppState *app) {
   }
 }
 
+// WS5.3: cancel the fold timer, checked (RoseCat 70fd7f9 #4). KillTimer is ALWAYS issued (so the timer never
+// keeps firing), but a failed cancel — or the e2e "kill" seam — names a fixed diagnostic, since a silently
+// failed cancel could leave the timer armed after folding=false.
+static void fold_kill_timer(AppState *app, HWND hwnd) {
+  const bool ok = KillTimer(hwnd, kFoldTimerId);
+  const bool force_kill_fail = app->fold_fail != nullptr && strcmp(app->fold_fail, "kill") == 0;
+  if (!ok || force_kill_fail) {
+    fprintf(stderr, "zigBrowser: agent-drawer fold timer cancel failed: KillTimer (error %lu)\n",
+            ok ? (unsigned long)ERROR_INVALID_PARAMETER : (unsigned long)GetLastError());
+    fflush(stderr);
+  }
+}
+
+// WS5.3: abort an in-flight fold into a STABLE, usable OPEN drawer (RoseCat 70fd7f9 #2/#3) — cancel the timer,
+// clear folding, and re-dock the still-open drawer. Emits NO fold row; `why` is already on stderr.
+static void fold_abort_open(AppState *app, HWND hwnd) {
+  fold_kill_timer(app, hwnd);
+  app->folding = false;
+  resize_controller(app);  // drawer_open is unchanged, so this re-docks the open drawer (panel + "-" visible)
+}
+
 // WS5.3: start the real fold (minimize) animation — the open panel transitions down INTO the icon's position
 // over `fold_ms` (ZIGBROWSER_AGENT_ANIM_MS via Zig, else 180 ms), stepped on kFoldTimerId. Each tick moves the
-// REAL panel HWND to lerp(open, icon, ease(t)); the mid frame is read back off that HWND (an independent
-// measurement, not a recomputation). Triggered by the '-' key on the focused icon and by the e2e fold seam.
+// REAL panel HWND to lerp(open, icon, ease(t)) and paces to the compositor's vsync (DwmFlush, plan:1539); the
+// mid frame is read back off that HWND (an independent measurement). Triggered by the visible "-" control
+// (click / Escape / '-') and by the e2e fold seam.
 static void drawer_fold_start(AppState *app) {
   if (app == nullptr || app->hwnd == nullptr || !app->drawer_open || app->folding) {
     return;
@@ -1421,42 +1445,54 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam,
           fprintf(stderr, "zigBrowser: agent-drawer fold aborted: MoveWindow failed (error %lu)\n",
                   force_move_fail ? (unsigned long)ERROR_INVALID_PARAMETER : (unsigned long)GetLastError());
           fflush(stderr);
-          KillTimer(hwnd, kFoldTimerId);
-          app->folding = false;
-          resize_controller(app);  // restore the open drawer's docked layout
+          fold_abort_open(app, hwnd);
           return 0;
         }
         ShowWindow(app->drawer_panel, SW_SHOWNA);
+        // WS5.3 (plan:1539): step the animation on the compositor's vsync. A DwmFlush failure fails closed.
+        const bool force_dwm_fail = app->fold_fail != nullptr && strcmp(app->fold_fail, "dwmflush") == 0;
+        const HRESULT dwm_hr = force_dwm_fail ? E_FAIL : DwmFlush();
+        if (FAILED(dwm_hr)) {
+          fprintf(stderr, "zigBrowser: agent-drawer fold aborted: DwmFlush failed (hr 0x%08lx)\n",
+                  static_cast<unsigned long>(dwm_hr));
+          fflush(stderr);
+          fold_abort_open(app, hwnd);
+          return 0;
+        }
       }
       // Capture a GENUINE midpoint only strictly before the deadline (t < 1): a delayed first tick that is
-      // already terminal never produces one, so no bogus mid is emitted.
+      // already terminal never produces one, so no bogus mid is emitted. A required read failure FAILS CLOSED —
+      // the whole fold aborts, so no later tick can fabricate a midpoint and emit a successful fold (70fd7f9 #2).
       if (!app->fold_mid_captured && t >= 0.5 && t < 1.0) {
         if (app->drawer_panel != nullptr) {  // independent read-back of the real panel HWND, mid-transition
+          const bool force_read_fail = app->fold_fail != nullptr && strcmp(app->fold_fail, "read") == 0;
           RECT wr = {};
           POINT tl = {0, 0};
-          if (GetWindowRect(app->drawer_panel, &wr)) {
+          bool read_ok = !force_read_fail && GetWindowRect(app->drawer_panel, &wr);
+          if (read_ok) {
             tl.x = wr.left;
             tl.y = wr.top;
-            if (ScreenToClient(hwnd, &tl)) {
-              app->fold_mid.x = tl.x;
-              app->fold_mid.y = tl.y;
-              app->fold_mid.w = wr.right - wr.left;
-              app->fold_mid.h = wr.bottom - wr.top;
-              app->fold_mid_captured = true;
-            }
+            read_ok = ScreenToClient(hwnd, &tl) != 0;
           }
-          if (!app->fold_mid_captured) {  // a read failure: do not fabricate a midpoint
-            fprintf(stderr, "zigBrowser: agent-drawer fold midpoint read failed (error %lu)\n",
-                    static_cast<unsigned long>(GetLastError()));
+          if (!read_ok) {  // fail closed: abort, do not let a later tick fabricate a midpoint
+            fprintf(stderr, "zigBrowser: agent-drawer fold aborted: midpoint read failed (error %lu)\n",
+                    force_read_fail ? (unsigned long)ERROR_INVALID_PARAMETER : (unsigned long)GetLastError());
             fflush(stderr);
+            fold_abort_open(app, hwnd);
+            return 0;
           }
+          app->fold_mid.x = tl.x;
+          app->fold_mid.y = tl.y;
+          app->fold_mid.w = wr.right - wr.left;
+          app->fold_mid.h = wr.bottom - wr.top;
+          app->fold_mid_captured = true;
         } else {
           app->fold_mid = frame;
           app->fold_mid_captured = true;
         }
       }
       if (t >= 1.0) {
-        KillTimer(hwnd, kFoldTimerId);
+        fold_kill_timer(app, hwnd);
         app->folding = false;
         app->drawer_open = false;
         if (app->drawer_panel != nullptr) {

@@ -395,15 +395,26 @@ class WinDrawerBehaviorsOracle(unittest.TestCase):
 
     def test_check_fold_failclosed_catches_silent_success(self):
         base = "DRAWER\t1\ttree\thost,page,icon,panel\nDRAWER\t1\ticon\t928,649,56,56\nDRAWER\t1\topen\t0,437,1008,292\n"
-        check_fold_failclosed(base, "zigBrowser: agent-drawer fold not started: SetTimer failed (error 87)\n",
-                              True, "SetTimer failed")
+        # an aborted fold (timer): no fold row, diagnostic present, terminal, left OPEN+docked
+        check_fold_failclosed(base, "SetTimer failed", "SetTimer failed", True,
+                              panel_hidden=False, icon_visible=False, page_redocked=False, expect_folded=False)
+        # a delayed fold: no fold row, diagnostic present, terminal, left FOLDED+redocked
+        check_fold_failclosed(base, "no observed midpoint", "no observed midpoint", True,
+                              panel_hidden=True, icon_visible=True, page_redocked=True, expect_folded=True)
         with self.assertRaises(AssertionError):  # silent success: a fold row emitted despite the forced failure
-            check_fold_failclosed(base + "DRAWER\t1\tfold\t500,450,500,200\t180\n",
-                                  "SetTimer failed", True, "SetTimer failed")
+            check_fold_failclosed(base + "DRAWER\t1\tfold\t500,450,500,200\t180\n", "SetTimer failed",
+                                  "SetTimer failed", True, False, False, False, expect_folded=False)
         with self.assertRaises(AssertionError):  # no diagnostic on stderr
-            check_fold_failclosed(base, "", True, "SetTimer failed")
+            check_fold_failclosed(base, "", "SetTimer failed", True, False, False, False, expect_folded=False)
         with self.assertRaises(AssertionError):  # wedged: the held process was not proven terminal
-            check_fold_failclosed(base, "SetTimer failed", False, "SetTimer failed")
+            check_fold_failclosed(base, "SetTimer failed", "SetTimer failed", False, False, False, False,
+                                  expect_folded=False)
+        with self.assertRaises(AssertionError):  # abort but the drawer wrongly FOLDED (not left open/usable)
+            check_fold_failclosed(base, "MoveWindow failed", "MoveWindow failed", True, True, True, True,
+                                  expect_folded=False)
+        with self.assertRaises(AssertionError):  # delay but the drawer did NOT reach the stable folded state
+            check_fold_failclosed(base, "no observed midpoint", "no observed midpoint", True, False, False, False,
+                                  expect_folded=True)
 
     def test_check_dpi(self):
         check_dpi(84, True, True)
@@ -600,13 +611,23 @@ def check_fold_observed(elapsed_ms, want_ms, icon_w, mid_w, drawer_w,
     assert page_redocked, "the page must be re-docked to the full client area after folding"
 
 
-def check_fold_failclosed(stdout, stderr, proc_gone, want_diag):
-    """A FORCED fold failure must fail closed (RoseCat 02c39a4 #3): NO `fold` row is emitted (no silent success),
-    a fixed diagnostic names the failure on stderr, and the process is still proven terminal (no wedged
-    folding state). A backend that emitted `fold` anyway, or hung, fails."""
+def check_fold_failclosed(stdout, stderr, want_diag, proc_gone,
+                          panel_hidden, icon_visible, page_redocked, expect_folded):
+    """A FORCED fold failure must fail closed (RoseCat 02c39a4 #3 / 70fd7f9 #2-#4): NO `fold` row is emitted (no
+    silent success), a fixed diagnostic names the failure on stderr, the process is proven terminal, AND the
+    real HWND is left in a stable state — proving fail-closed UI, not merely harness teardown (70fd7f9 #3):
+      - an ABORTED fold (timer/move/dwmflush/read) leaves a USABLE OPEN drawer: panel shown, icon hidden (the
+        drawer is open), page docked (not re-docked to the full client);
+      - a DELAYED fold leaves a STABLE FOLDED drawer: panel hidden, icon visible, page re-docked."""
     assert "\tfold\t" not in stdout, "a failed fold must emit NO fold row (no silent success)"
     assert want_diag in stderr, f"the fixed fold-failure diagnostic {want_diag!r} must be on stderr"
     assert proc_gone, "the process must still be proven terminal (a timer failure must not wedge folding)"
+    if expect_folded:
+        assert panel_hidden and icon_visible and page_redocked, \
+            "a delayed fold must leave a stable folded, redocked drawer (panel hidden, icon shown, page redocked)"
+    else:
+        assert (not panel_hidden) and (not icon_visible) and (not page_redocked), \
+            "an aborted fold must leave a usable open, docked drawer (panel shown, icon hidden, page docked)"
 
 
 def check_bubble_copy(clipboard_text, bubble_text, link_created, object_created):
@@ -748,24 +769,44 @@ class WinDrawerBehaviorsLive(_wd.WinDrawerLive):
         self._run_drawer(extra_env=self._env(ZIGBROWSER_AGENT_DRAWER_FOLD="1", ZIGBROWSER_AGENT_ANIM_MS="3000",
                                              ZB_SETTLE_KINDS="fold"), body=body)
 
-    def _fold_failclosed(self, mode, want_diag):
-        # WS5.3 (RoseCat 02c39a4 #3): the fold-failure causal seam drives a fail-closed branch. The drawer still
-        # opens (settle on `open`, default), but the forced SetTimer/MoveWindow/delayed-tick failure emits NO
-        # fold row, names a fixed diagnostic on stderr, and leaves the held process proven terminal.
+    def _fold_failclosed(self, mode, want_diag, expect_folded):
+        # WS5.3 (RoseCat 70fd7f9 #2/#3): the fold-failure causal seam drives a fail-closed branch. The run
+        # SETTLES ON THE EXACT STDERR DIAGNOSTIC (not the earlier `open` row), so the asynchronous failure has
+        # happened before the harness inspects the real HWND. The forced failure emits NO fold row, names a
+        # fixed diagnostic, leaves the held process terminal, AND leaves a stable UI (open+docked for an abort,
+        # folded+redocked for a delay) — proving fail-closed UI, not merely teardown.
         def body(r):
-            validate_transcript(r["stdout"], ["tree", "icon", "open"])
-            check_fold_failclosed(r["stdout"], r.get("stderr") or "", bool(r.get("proc_gone")), want_diag)
+            check_fold_failclosed(r["stdout"], r.get("stderr") or "", want_diag, bool(r.get("proc_gone")),
+                                  bool(r.get("panel_hidden")), bool(r.get("icon_visible")),
+                                  bool(r.get("page_redocked")), expect_folded)
         self._run_drawer(extra_env=self._env(ZIGBROWSER_AGENT_DRAWER_FOLD="1",
-                                             ZIGBROWSER_AGENT_DRAWER_FOLD_FAIL=mode), body=body)
+                                             ZIGBROWSER_AGENT_DRAWER_FOLD_FAIL=mode,
+                                             ZB_SETTLE_STDERR=want_diag), body=body)
 
     def test_ws5_3_fold_timer_failure_is_fail_closed(self):
-        self._fold_failclosed("timer", "SetTimer failed")
+        self._fold_failclosed("timer", "SetTimer failed", expect_folded=False)      # drawer stays open+docked
 
     def test_ws5_3_fold_move_failure_is_fail_closed(self):
-        self._fold_failclosed("move", "MoveWindow failed")
+        self._fold_failclosed("move", "MoveWindow failed", expect_folded=False)
+
+    def test_ws5_3_fold_dwmflush_failure_is_fail_closed(self):
+        self._fold_failclosed("dwmflush", "DwmFlush failed", expect_folded=False)   # vsync step failed (plan:1539)
+
+    def test_ws5_3_fold_midpoint_read_failure_is_fail_closed(self):
+        self._fold_failclosed("read", "midpoint read failed", expect_folded=False)  # abort, no fabricated midpoint
 
     def test_ws5_3_fold_delayed_tick_emits_no_midpoint(self):
-        self._fold_failclosed("delay", "no observed midpoint")
+        self._fold_failclosed("delay", "no observed midpoint", expect_folded=True)  # stable folded+redocked
+
+    def test_ws5_3_fold_killtimer_failure_is_diagnosed(self):
+        # RoseCat 70fd7f9 #4: a failed timer cancel is diagnosed. The fold still COMPLETES (the timer is always
+        # really killed), so settle on `fold`; the KillTimer diagnostic must be on stderr.
+        def body(r):
+            validate_transcript(r["stdout"], ["tree", "icon", "open", "fold"])
+            self.assertIn("KillTimer", r.get("stderr") or "", "a failed timer cancel must name a fixed diagnostic")
+        self._run_drawer(extra_env=self._env(ZIGBROWSER_AGENT_DRAWER_FOLD="1",
+                                             ZIGBROWSER_AGENT_DRAWER_FOLD_FAIL="kill",
+                                             ZB_SETTLE_KINDS="fold"), body=body)
 
     def test_ws5_4_bubble_copy_and_inert(self):
         # WS5.4 (plan 1575-1577): the harness performs select-all + WM_COPY and reads the clipboard; an RTF

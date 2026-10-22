@@ -536,6 +536,7 @@ try {
   # before its timer completes. A fold run also polls finely and MEASURES the animation independently: the
   # wall-clock elapsed between the `open` row and the `fold` row, and the first in-flight real panel width.
   $settle = $env:ZB_SETTLE_KINDS; if (-not $settle) { $settle = 'open|drag' }
+  $settleErr = $env:ZB_SETTLE_STDERR   # RoseCat 70fd7f9 #3: a fold-FAILURE run settles on this stderr diagnostic
   $foldWait = ($settle -eq 'fold')
   $pollMs = if ($foldWait) { 25 } else { 300 }
   $sw = [System.Diagnostics.Stopwatch]::new()
@@ -561,6 +562,12 @@ try {
         if ($foldWait) { $sw.Stop(); $res.fold_elapsed_ms = [int]$sw.ElapsedMilliseconds }
         break
       }
+    }
+    # A fold-failure run waits for its exact stderr diagnostic (NOT the earlier `open` row), so the async
+    # SetTimer/MoveWindow/DwmFlush/read/delay failure has actually happened before we inspect the HWND below.
+    if ($settleErr) {
+      $e = [string](Get-Content $err -Raw -ErrorAction SilentlyContinue)
+      if ($e -and $e.Contains($settleErr)) { $seen = $true; break }
     }
   }
   if (-not $seen) { $res.timed_out = $true }
