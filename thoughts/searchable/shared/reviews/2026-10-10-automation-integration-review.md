@@ -34152,3 +34152,35 @@ range, reaching that fix also crosses the later `2e07c7b` six-case Mac gate,
 whose released run failed and whose green/digests/rerun are not yet accepted,
 as well as the blocked `ecf14be` startup-gate red. The earliest intervening
 acceptance blocker is `2e07c7b`.
+
+## Six-case Mac gate fix-forward (`9de292a`)
+
+**BLOCKED. No Mac run is authorized.** The intended fixes are otherwise
+present. The MS8 row now observes the real `zb-hook-run -> sandbox-exec ->
+/usr/bin/env` launch boundary rather than Python's post-start environment;
+the fd-3 case records one fixed, token-free census reason; all three Linux
+proofs are registered under private PID/network namespaces. From an exact
+clean archive, the census-reason suite passed **11/11**, the fd-3 reason suite
+passed **3/3**, the launch-environment suite passed **5/5**, and the manifest
+suite passed **7/7**. The manifest hashes all six current case bytes exactly;
+its own SHA-256 is
+`26fc7e7de41f581ff4d9b432bbff7f52e58b6b697258a2f7652510604e021a0a`.
+
+One fail-open PID-reuse race remains in production
+`proc_darwin.descendants_running()`. When `path(kid)` returns `None`, that is
+the API's positive proof that the child vanished, but the code still appends
+the numeric pid to `queue`. If the pid is reused before the next breadth-first
+iteration, the census traverses the unrelated process's descendants. A
+causal exact-commit probe drove `children(root) -> [8]`, `path(8) -> None`,
+then a reused pid 8 whose child 7 is a clean matching CLI; `cli_env_census()`
+incorrectly returned **`ok`** rather than `cli-not-found`, with calls
+`children(root), path(8), children(8), path(7), children(7)`.
+
+Fix forward by continuing immediately whenever the first `path(kid)` returns
+`None`, so that confirmed-gone pid is never queued. Add a registered red that
+models reuse after the `None` result, requires no `children(kid)` call, and
+requires `cli-not-found` alone / `ok` only when a separate live descendant is
+fully checked. Re-run the focused Linux proofs and return the changed fd-3
+case/manifest bytes for another digest review if those bytes change. Until
+then the earlier failed `2e07c7b` Mac acceptance remains open and the
+contiguous push-through stays **`7b9d499`**.
