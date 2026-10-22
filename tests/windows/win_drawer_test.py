@@ -240,10 +240,19 @@ def check_success(r):
     for who, key in (("panel", "panel_pid"), ("page", "page_pid"), ("bubble", "bubble_pid")):
         assert int(r.get(key, 0)) == int(r["pid"]), \
             f"the {who} HWND must belong to the launched pid ({r.get(key)} != {r['pid']})"
-    # Native-control visibility: panel + bubble (controls we ShowWindow). The PAGE's real presentation (rendered
-    # pixels, not the WebView2 child's WS_VISIBLE bit) is verified separately in the owner real-screen check.
-    assert r.get("children_visible") is True, "the panel and bubble must be visible (native controls)"
     assert r.get("bubble_plaintext") is True, "the bubble must be in RichEdit PLAIN-TEXT mode (TM_PLAINTEXT)"
+    # OPEN-state native visibility (RoseCat ba35dc5 gap 2): the mount settles on the `open` row, so the drawer is
+    # OPEN. Each control is read and asserted INDEPENDENTLY (its own WS_VISIBLE style), so a hidden panel, a
+    # hidden bubble, a hidden "-" control, or a still-visible "S" icon each fails on its own row. This matches the
+    # shim's resize_controller (panel/min/bubble SW_SHOW, icon SW_HIDE while open). The fold terminal state has
+    # the mirror visibility and is checked by the WS5.3 fold oracle, not here; the PAGE's real presentation
+    # (rendered pixels, not the WebView2 child's WS_VISIBLE bit) is verified in the owner real-screen check.
+    assert r.get("panel_visible") is True, "the docked panel must be visible on the open drawer"
+    assert r.get("bubble_visible") is True, "the RichEdit bubble must be visible on the open drawer"
+    assert int(r.get("minimize_visible", -1)) == 1, \
+        f"the '-' minimize control must be VISIBLE on the open drawer (minimize_visible={r.get('minimize_visible')})"
+    assert int(r.get("icon_visible", -1)) == 0, \
+        f"the 'S' icon must be HIDDEN while the drawer is open (icon_visible={r.get('icon_visible')})"
 
 
 def check_mounted_fail(r, which):
@@ -593,6 +602,21 @@ public static class Z {
     }
     return -1;
   }
+  // Visibility of the "-" minimize/fold control (1 visible, 0 hidden, -1 absent) — WS5.3 requires the "-" be
+  // visible on the OPEN drawer (it is the only fold affordance while the panel is shown), the mirror of the
+  // hidden "S" icon in that state (RoseCat ba35dc5 gap 2).
+  public static int MinimizeVisible(IntPtr host) {
+    IntPtr c = GetWindow(host, GW_CHILD);
+    while (c != IntPtr.Zero) {
+      var cls = new StringBuilder(64); GetClassName(c, cls, 64);
+      if (string.Equals(cls.ToString(), "STATIC", StringComparison.OrdinalIgnoreCase)) {
+        var t = new StringBuilder(64); GetWindowText(c, t, 64);
+        if (t.ToString() == "-") { return StyleVisible(c) ? 1 : 0; }
+      }
+      c = GetWindow(c, GW_HWNDNEXT);
+    }
+    return -1;
+  }
   // WS5.3 fold observations (RoseCat 02c39a4 #2): measure the REAL panel HWND, never an emitted row. The panel
   // is the direct STATIC child with empty text (the icon is "S", the minimize control is "-").
   static IntPtr PanelHwnd(IntPtr host) {
@@ -704,12 +728,11 @@ public static class Z {
   public static int PanelPid(IntPtr host) { IntPtr p = PanelHwnd(host); return p == IntPtr.Zero ? 0 : WindowPid(p); }
   public static int PagePid(IntPtr host) { IntPtr p = PageHwnd(host); return p == IntPtr.Zero ? 0 : WindowPid(p); }
   public static int BubblePid(IntPtr host) { IntPtr b = BubbleHwnd(host); return b == IntPtr.Zero ? 0 : WindowPid(b); }
-  public static bool ChildrenVisible(IntPtr host) {
-    // NATIVE-control visibility only (RoseCat f877bc5): panel + bubble are controls WE ShowWindow, so their
-    // per-window WS_VISIBLE style is meaningful headless. The PAGE's real presentation moves to the owner
-    // real-screen check (rendered pixels, not the WebView2 child's WS_VISIBLE bit).
-    IntPtr pa = PanelHwnd(host), bu = BubbleHwnd(host);
-    return pa != IntPtr.Zero && StyleVisible(pa) && bu != IntPtr.Zero && StyleVisible(bu);
+  // The RichEdit bubble's own WS_VISIBLE style (RoseCat ba35dc5 gap 2). Measured independently of the panel so
+  // the oracle can fail bubble-hidden and panel-hidden as separate causal rows. The bubble is a control WE
+  // ShowWindow, so its per-window style is meaningful headless (unlike the WebView2 page).
+  public static bool BubbleVisible(IntPtr host) {
+    IntPtr b = BubbleHwnd(host); return b != IntPtr.Zero && StyleVisible(b);
   }
   public static bool BubblePlainText(IntPtr host) {
     IntPtr b = BubbleHwnd(host); if (b == IntPtr.Zero) return false;
@@ -721,7 +744,7 @@ public static class Z {
 }
 '@
 
-$res = @{ stdout=''; stderr=''; client_w=0; client_h=0; pid=0; controls=''; icon_rect=''; icon_visible=-1; job_count_before=0; job_count_after=0; window_found=$false; terminated=$false; timed_out=$false; proc_gone=$false; first_stop_failed=$false; cleanup_exhausted=$false; launch_failed=$false; decoded_fail=$failMode; decoded_force=$forceMode; fold_elapsed_ms=0; fold_mid_w=0; panel_hidden=$false; page_redocked=$false; dpi_before_px=0; dpi_after_px=0; icon_hittest=99999; panel_rect=''; page_rect=''; bubble_present=$false; hwnd_pid=0; born_in_job=$false; panel_pid=0; page_pid=0; bubble_pid=0; children_visible=$false; bubble_plaintext=$false; error='' }
+$res = @{ stdout=''; stderr=''; client_w=0; client_h=0; pid=0; controls=''; icon_rect=''; icon_visible=-1; minimize_visible=-1; job_count_before=0; job_count_after=0; window_found=$false; terminated=$false; timed_out=$false; proc_gone=$false; first_stop_failed=$false; cleanup_exhausted=$false; launch_failed=$false; decoded_fail=$failMode; decoded_force=$forceMode; fold_elapsed_ms=0; fold_mid_w=0; panel_hidden=$false; page_redocked=$false; dpi_before_px=0; dpi_after_px=0; icon_hittest=99999; panel_rect=''; page_rect=''; bubble_present=$false; hwnd_pid=0; born_in_job=$false; panel_pid=0; page_pid=0; bubble_pid=0; panel_visible=$false; bubble_visible=$false; bubble_plaintext=$false; error='' }
 # e2e-only seams, set in this process so the child inherits them (honoured only under --e2e-protocol).
 $env:ZIGBROWSER_AGENT_DRAWER_OPEN = '1'
 $env:ZIGBROWSER_AGENT_DRAWER_DEMO = 'messages:2'
@@ -786,7 +809,8 @@ try {
     $w = 0; $ht = 0; if ([Z]::Client($h, [ref]$w, [ref]$ht)) { $res.client_w = $w; $res.client_h = $ht }
     $res.controls = [Z]::DirectStatics($h)   # exact DIRECT STATIC children, "STATIC:<text>|..."
     $res.icon_rect = [Z]::IconClientRect($h)  # the REAL "S" icon HWND rect in client coords (WS5.2 observation)
-    $res.icon_visible = [Z]::IconVisible($h)   # 1 visible / 0 hidden / -1 absent (WS5.2 requires visible)
+    $res.icon_visible = [Z]::IconVisible($h)   # 1 visible / 0 hidden / -1 absent (open: HIDDEN; fold terminal: visible)
+    $res.minimize_visible = [Z]::MinimizeVisible($h)  # the "-" control: 1 visible / 0 hidden / -1 absent (open: visible)
     # WS5.3 terminal fold state (RoseCat 02c39a4 #2): after a completed fold the panel is hidden, the page is
     # re-docked to the full client area, and the icon is visible again (icon_visible, above).
     $res.panel_hidden = (-not [Z]::PanelVisible($h))
@@ -804,7 +828,8 @@ try {
     $res.panel_pid = [Z]::PanelPid($h)
     $res.page_pid = [Z]::PagePid($h)
     $res.bubble_pid = [Z]::BubblePid($h)
-    $res.children_visible = [Z]::ChildrenVisible($h)
+    $res.panel_visible = [Z]::PanelVisible($h)    # the docked panel's own WS_VISIBLE (independent of the bubble)
+    $res.bubble_visible = [Z]::BubbleVisible($h)   # the RichEdit bubble's own WS_VISIBLE
     $res.bubble_plaintext = [Z]::BubblePlainText($h)
     # WS5.7 (RoseCat 7a54253 #1): drive two real WM_DPICHANGED messages — "beforeDpi,afterDpi" — and measure the
     # icon width off the real HWND after each. Driving the before-DPI first makes the baseline deterministic
@@ -1009,7 +1034,9 @@ class WinDrawerOracle(unittest.TestCase):
             "error": "", "timed_out": False, "terminated": True, "job_count_after": 0, "job_count_before": 2,
             "window_found": True, "controls": "STATIC:|STATIC:S|STATIC:-", "client_w": 1008, "client_h": 729,
             "pid": 4242, "hwnd_pid": 4242, "born_in_job": True, "bubble_present": True,
-            "panel_pid": 4242, "page_pid": 4242, "bubble_pid": 4242, "children_visible": True, "bubble_plaintext": True,
+            "panel_pid": 4242, "page_pid": 4242, "bubble_pid": 4242, "bubble_plaintext": True,
+            "panel_visible": True, "bubble_visible": True, "minimize_visible": 1, "icon_visible": 0,  # open: panel/bubble/"-" shown, "S" hidden
+
             "panel_rect": "0,437,1008,292",  # == the emitted open rect (independent HWND read)
             "page_rect": "0,0,1008,437",     # top-left, full width, bottom (437) == panel top (437)
             "stdout": ("DRAWER\t1\ttree\thost,page,icon,panel\n"
@@ -1093,9 +1120,26 @@ class WinDrawerOracle(unittest.TestCase):
         # a selected child HWND (here the page) belongs to a different pid than the launched one — a stray window
         self._reject(lambda r: r.update(page_pid=9998))
 
-    def test_hidden_child_rejected(self):
-        # a selected child HWND is not visible (e.g., a never-shown panel/page/bubble) — must fail
-        self._reject(lambda r: r.update(children_visible=False))
+    # OPEN-state native visibility — one causal negative per condition (RoseCat ba35dc5 gap 2).
+    def test_open_panel_hidden_rejected(self):
+        # the docked panel is not WS_VISIBLE on the open drawer — must fail
+        self._reject(lambda r: r.update(panel_visible=False))
+
+    def test_open_bubble_hidden_rejected(self):
+        # the RichEdit bubble is not WS_VISIBLE on the open drawer — must fail
+        self._reject(lambda r: r.update(bubble_visible=False))
+
+    def test_open_minimize_hidden_rejected(self):
+        # the "-" minimize control is hidden on the open drawer (no fold affordance) — must fail
+        self._reject(lambda r: r.update(minimize_visible=0))
+
+    def test_open_minimize_absent_rejected(self):
+        # the "-" minimize control is absent entirely (never created) — must fail
+        self._reject(lambda r: r.update(minimize_visible=-1))
+
+    def test_open_icon_still_visible_rejected(self):
+        # the "S" collapsed icon is still visible while the drawer is open (should be SW_HIDE) — must fail
+        self._reject(lambda r: r.update(icon_visible=1))
 
     def test_rich_text_bubble_rejected(self):
         # the bubble is ES_READONLY but NOT plain-text (RichEdit rich-text mode) — RTF could render markup
