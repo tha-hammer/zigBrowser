@@ -32264,3 +32264,27 @@ that row. A maximum-`c_int` bounded-output row is a SHOULD. Later integration
 must still source the real window DPI, react to `WM_DPICHANGED`, pin/use the C
 export in the Windows cross-check and prove the real HWND at 150%; this
 primitive alone does not close WS5.7 or authorize a VM run.
+
+## MS6.3 compact-result-frame red (`494e2c4`)
+
+**APPROVED-for-tests.** The new unregistered Linux-only module isolates the
+two-Mac hard-gate failure without changing the case, manifest or any reviewed
+digest. It imports the production `frames.encode` implementation, so its
+honest host emits the same compact NDJSON as the real helper instead of the
+old spaced stand-in. Both `os.kill` and `os.killpg` are patched to raise.
+
+From an exact clean archive inside
+`unshare --user --map-current-user --pid --fork --kill-child --mount-proc`, the
+suite was causally red: the honest compact-frame test failed exactly because
+the positive and decoy completion checks rejected a successful compact
+`assistant_message` plus `result`; the error-result, missing-result and
+non-frame controls all passed. The module exited 1, remains unregistered and
+`git diff --check` is clean.
+
+The green must parse stdout line by line as UTF-8 JSON, count only a JSON
+object, and require `type == "result"`, `subtype == "success"` and
+`is_error is False`; malformed, non-object, error and missing-result output
+must remain non-completion. Because the green will change the case bytes, no
+Mac rerun is authorized from this red. Review the exact green SHA and all
+three resulting manifest digests before releasing one more bounded two-Mac
+run.
