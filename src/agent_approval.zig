@@ -6,6 +6,7 @@
 //! draws its cards.
 
 const std = @import("std");
+const builtin = @import("builtin");
 
 /// The user's choice (the Secrets window's "Navigation approval" control).
 pub const Selector = enum { yes, no, conditional };
@@ -53,17 +54,22 @@ pub const unreadable_line = "Navigation approval setting is unreadable; asking f
 pub const StoreRead = struct { selector: Selector, unreadable: bool = false };
 
 /// The selector the store holds. A missing file is the default; exactly `yes\n`, `no\n` or
-/// `conditional\n` in a regular 0600 file (never through a symlink) is that value; anything else
-/// fails closed to `yes`, a card in every mode.
+/// `conditional\n` in a regular 0600 file of the effective user (never through a symlink) is that
+/// value; anything else fails closed to `yes`, a card in every mode.
 pub fn readSelector(io: std.Io, dir: std.Io.Dir, name: []const u8) StoreRead {
+    return readSelectorOwned(io, dir, name, effectiveUid());
+}
+
+/// `readSelector` with the file's required owner (RoseCat f87368e #4: another owner is `yes`).
+pub fn readSelectorOwned(io: std.Io, dir: std.Io.Dir, name: []const u8, owner: std.posix.uid_t) StoreRead {
     const closed: StoreRead = .{ .selector = .yes, .unreadable = true };
     const file = dir.openFile(io, name, .{ .follow_symlinks = false }) catch |err| return switch (err) {
         error.FileNotFound => .{ .selector = default_selector },
         else => closed,
     };
     defer file.close(io);
-    const stat = file.stat(io) catch return closed;
-    if (stat.kind != .file or stat.permissions.toMode() & 0o777 != 0o600) return closed;
+    const meta = metaOf(file.handle) orelse return closed;
+    if (meta.kind != .file or meta.mode & 0o777 != 0o600 or meta.uid != owner) return closed;
     var buf: [16]u8 = undefined;
     const n = file.readPositionalAll(io, &buf, 0) catch return closed;
     const text = buf[0..n];
@@ -71,6 +77,65 @@ pub fn readSelector(io: std.Io, dir: std.Io.Dir, name: []const u8) StoreRead {
         if (std.mem.eql(u8, text, @tagName(selector) ++ "\n")) return .{ .selector = selector };
     }
     return closed;
+}
+
+/// The store as the app reads it: `<home>/settings`, opened without following a symlink, must
+/// be a directory of `owner` that neither group nor others can write; a missing one is the
+/// default; then its file, as `readSelectorOwned`.
+pub fn readStore(io: std.Io, home: []const u8, owner: std.posix.uid_t) StoreRead {
+    const closed: StoreRead = .{ .selector = .yes, .unreadable = true };
+    var home_dir = std.Io.Dir.cwd().openDir(io, home, .{}) catch |err| return switch (err) {
+        error.FileNotFound => .{ .selector = default_selector },
+        else => closed,
+    };
+    defer home_dir.close(io);
+    var settings = home_dir.openDir(io, "settings", .{ .follow_symlinks = false }) catch |err| return switch (err) {
+        error.FileNotFound => .{ .selector = default_selector },
+        else => closed,
+    };
+    defer settings.close(io);
+    const meta = metaOf(settings.handle) orelse return closed;
+    if (meta.kind != .directory or meta.mode & 0o022 != 0 or meta.uid != owner) return closed;
+    return readSelectorOwned(io, settings, store_name, owner);
+}
+
+/// The process's effective user, the store's one owner.
+pub fn effectiveUid() std.posix.uid_t {
+    return switch (builtin.os.tag) {
+        .linux => std.os.linux.geteuid(),
+        .windows => 0,
+        else => std.c.geteuid(),
+    };
+}
+
+const Meta = struct { kind: enum { file, directory, other }, mode: u32, uid: std.posix.uid_t };
+
+/// An open file's type, mode and owner (std.Io's stat has no owner).
+fn metaOf(handle: std.posix.fd_t) ?Meta {
+    switch (builtin.os.tag) {
+        .linux => {
+            const linux = std.os.linux;
+            var sx: linux.Statx = undefined;
+            const empty_path: u32 = 0x1000; // AT_EMPTY_PATH
+            const rc = linux.statx(handle, "", empty_path, .{ .TYPE = true, .MODE = true, .UID = true }, &sx);
+            if (linux.errno(rc) != .SUCCESS) return null;
+            return .{ .kind = kindOf(sx.mode), .mode = sx.mode, .uid = sx.uid };
+        },
+        .windows => return null,
+        else => {
+            var st: std.c.Stat = undefined;
+            if (std.c.fstat(handle, &st) != 0) return null;
+            return .{ .kind = kindOf(@intCast(st.mode)), .mode = @intCast(st.mode), .uid = st.uid };
+        },
+    }
+}
+
+fn kindOf(mode: u32) @FieldType(Meta, "kind") {
+    return switch (mode & 0o170000) {
+        0o100000 => .file,
+        0o040000 => .directory,
+        else => .other,
+    };
 }
 
 /// The one writer (the Secrets window's control): exactly the value and a newline, 0600,

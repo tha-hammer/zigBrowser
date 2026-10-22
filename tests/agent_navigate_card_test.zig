@@ -37,16 +37,21 @@ const approval = broker.approval;
 const navigate_tool = "mcp__zigbrowser__navigate";
 const reload_tool = "mcp__zigbrowser__reload";
 const navigate_args = "{\"url\":\"https://example.com/next\"}";
-const navigate_params = "{\"url\":\"https://example.com/next\",\"window_id\":\"window-2\"}";
-const reload_params = "{\"window_id\":\"window-2\"}";
+/// Part 4 (RoseCat f87368e #2): the card's params carry its document (phase A) as options.expect.
+const listed = "{\"result\":{\"pages\":[{\"window_id\":\"window-2\",\"url\":\"https://example.com/start\",\"title\":\"s\",\"primary\":false,\"load_serial\":3}]}}";
+const expect_json = "\"options\":{\"expect\":{\"origin\":\"https://example.com\",\"load_serial\":3}}";
+const navigate_params = "{\"url\":\"https://example.com/next\",\"window_id\":\"window-2\"," ++ expect_json ++ "}";
+const reload_params = "{\"window_id\":\"window-2\"," ++ expect_json ++ "}";
 const denied = "The navigation was denied.";
 const engine_ok = "{\"result\":{\"ok\":true}}";
 
-/// The scripted engine: every call counted, every answer `engine_ok`.
+/// The scripted engine: `page.list` (phase A) answers `listed`; every other call is counted and
+/// answered `engine_ok`.
 const Engine = struct {
     n: std.atomic.Value(usize) = .init(0),
-    fn call(ctx: *anyopaque, a: std.mem.Allocator, _: []const u8, _: []const u8) error{OutOfMemory}![]u8 {
+    fn call(ctx: *anyopaque, a: std.mem.Allocator, called: []const u8, _: []const u8) error{OutOfMemory}![]u8 {
         const self: *Engine = @ptrCast(@alignCast(ctx));
+        if (std.mem.eql(u8, called, "page.list")) return a.dupe(u8, listed);
         _ = self.n.fetchAdd(1, .acq_rel);
         return a.dupe(u8, engine_ok);
     }
@@ -91,7 +96,7 @@ const Event = struct {
     id: approval.CardId = 0,
     verb: approval.Verb = .navigate,
     window: u32 = 0,
-    params: [128]u8 = undefined,
+    params: [256]u8 = undefined,
     params_len: usize = 0,
     ending: broker.Ending = .done,
     /// The engine's call count when it happened.

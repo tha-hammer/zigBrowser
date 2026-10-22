@@ -61,7 +61,6 @@ int zb_agent_tools_approve(guint64 card);
 int zb_agent_tools_deny(guint64 card);
 unsigned int zb_agent_tools_activate(void);
 /* webkit_shim.c (GTK thread). */
-char *zb_window_page_origin(unsigned int id);
 void zb_window_present(unsigned int id);
 
 static gint zb_agent_drawer_enabled = 0;
@@ -1147,8 +1146,7 @@ typedef struct {
   guint64 id;
   guint32 win; /* the main window whose drawer holds it */
   GtkWidget *buttons, *approve, *deny, *box;
-  int ended;
-} ZbCard;
+} ZbCard; /* waiting or approved: an ended card is freed */
 
 static GList *zb_cards = NULL; /* GTK thread */
 
@@ -1217,7 +1215,7 @@ static void on_card_approve(GtkButton *button, gpointer data) {
   (void)button;
   ZbCard *c = data;
   ZbDrawer *d = drawer_of(c->win);
-  if (c->ended || d == NULL || !zb_agent_tools_approve(c->id)) {
+  if (d == NULL || !zb_agent_tools_approve(c->id)) {
     return;
   }
   card_row(d, "approvalstate", c->id, "approved", NULL);
@@ -1227,7 +1225,7 @@ static void on_card_approve(GtkButton *button, gpointer data) {
 static void on_card_deny(GtkButton *button, gpointer data) {
   (void)button;
   ZbCard *c = data;
-  if (!c->ended && zb_agent_tools_deny(c->id)) {
+  if (zb_agent_tools_deny(c->id)) {
     card_settle(c, NULL); /* its approvalend comes with the broker's ending */
   }
 }
@@ -1235,7 +1233,7 @@ static void on_card_deny(GtkButton *button, gpointer data) {
 typedef struct {
   guint32 main, bound;
   guint64 id;
-  char *verb, *params, *url;
+  char *verb, *params, *url, *origin; /* origin: the document the card describes (phase A) */
   size_t params_len;
 } ZbCardShow;
 
@@ -1243,7 +1241,6 @@ static gboolean card_show_idle(gpointer data) {
   ZbCardShow *s = data;
   ZbDrawer *d = drawer_of(s->main);
   if (d != NULL) {
-    char *origin = zb_window_page_origin(s->bound);
     char *digest = g_compute_checksum_for_data(G_CHECKSUM_SHA256, (const guchar *)s->params, s->params_len);
     char *text = strcmp(s->verb, "navigate") == 0
                      ? g_strdup_printf("Claude wants to open %s in window %u.", s->url != NULL ? s->url : "", s->bound)
@@ -1251,7 +1248,7 @@ static gboolean card_show_idle(gpointer data) {
     char win[16], card[24];
     g_snprintf(win, sizeof win, "%u", d->win_id);
     g_snprintf(card, sizeof card, "%" G_GUINT64_FORMAT, s->id);
-    const char *fields[] = {win, "approval", card, s->verb, origin != NULL ? origin : "-", "-", digest};
+    const char *fields[] = {win, "approval", card, s->verb, s->origin, "-", digest};
     zb_emit_protocol_row(d->e2e, "DRAWER", fields, 7);
 
     ZbCard *c = g_new0(ZbCard, 1);
@@ -1275,18 +1272,18 @@ static gboolean card_show_idle(gpointer data) {
     bubble_row(d, "approval", text);
     g_free(text);
     g_free(digest);
-    g_free(origin);
   }
   g_free(s->verb);
   g_free(s->params);
   g_free(s->url);
+  g_free(s->origin);
   g_free(s);
   return G_SOURCE_REMOVE;
 }
 
 /* Any thread (a broker's worker): card `id` for window `bound`'s call, in window `main`'s drawer. */
 void zb_drawer_card_show(unsigned int main, guint64 id, const char *verb, unsigned int bound, const char *params,
-                         size_t params_len, const char *url) {
+                         size_t params_len, const char *url, const char *origin) {
   ZbCardShow *s = g_new0(ZbCardShow, 1);
   s->main = main;
   s->bound = bound;
@@ -1295,6 +1292,7 @@ void zb_drawer_card_show(unsigned int main, guint64 id, const char *verb, unsign
   s->params = g_strndup(params, params_len);
   s->params_len = params_len;
   s->url = g_strdup(url);
+  s->origin = g_strdup(origin);
   g_idle_add(card_show_idle, s);
 }
 
@@ -1308,6 +1306,8 @@ static const char *ending_words(const char *ending) {
          : strcmp(ending, "failed") == 0  ? "Approved, but the browser could not do it."
          : strcmp(ending, "denied") == 0  ? "Denied. Nothing was opened."
          : strcmp(ending, "expired") == 0 ? "Not approved in time. Nothing was opened."
+         : strcmp(ending, "changed") == 0 ? "The page changed after you approved. Nothing was opened."
+         : strcmp(ending, "crashed") == 0 ? "The page crashed. Nothing was opened."
                                           : "Cancelled: its window closed. Nothing was opened.";
 }
 
@@ -1315,12 +1315,16 @@ static gboolean card_end_idle(gpointer data) {
   ZbCardEnd *e = data;
   ZbCard *c = card_of(e->id);
   ZbDrawer *d = c != NULL ? drawer_of(c->win) : NULL;
-  if (c != NULL && !c->ended) {
-    c->ended = 1;
-    if (d != NULL) { /* else the main window closed, and the card with it */
+  if (c != NULL) {
+    if (d != NULL) { /* else the main window closed, and the card's widgets with it */
       card_row(d, "approvalend", c->id, e->ending, NULL);
       card_settle(c, ending_words(e->ending));
+      g_signal_handlers_disconnect_by_data(c->approve, c);
+      g_signal_handlers_disconnect_by_data(c->deny, c);
     }
+    /* An ended card is done with: its words stay in the list, its record goes (RoseCat f87368e). */
+    zb_cards = g_list_remove(zb_cards, c);
+    g_free(c);
   }
   g_free(e->ending);
   g_free(e);

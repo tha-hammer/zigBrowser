@@ -83,12 +83,23 @@ pub const Approval = struct {
     ended: ?*const fn (ctx: *anyopaque, id: approval.CardId, ending: Ending) void = null,
 };
 
-/// A card as the app shows it: `params` are the exact bytes the engine gets if it is approved,
-/// valid only during `show`.
-pub const CardView = struct { id: approval.CardId, verb: approval.Verb, window: u32, params: []const u8 };
-/// A shown card's one ending: `done`/`failed` after its approved dispatch answered; `revoked`
-/// when its own window's broker stopped while it waited.
-pub const Ending = enum { done, failed, denied, expired, cancelled, revoked };
+/// A card as the app shows it: `params` are the exact bytes the engine gets if it is approved;
+/// `origin` and `load_serial` are the bound window's document when the card was made (phase A,
+/// RoseCat f87368e #2), which `params` carry as `options.expect`. Valid only during `show`.
+pub const CardView = struct {
+    id: approval.CardId,
+    verb: approval.Verb,
+    window: u32,
+    params: []const u8,
+    origin: []const u8,
+    load_serial: u64,
+};
+/// A shown card's one ending: `done`/`failed` after its approved dispatch answered, `changed`
+/// or `crashed` when the engine refused it because the document is no longer the card's;
+/// `revoked` when its window's broker stopped or its prompt ended first.
+pub const Ending = enum { done, failed, changed, crashed, denied, expired, cancelled, revoked };
+/// Phase A could not read the bound window's document: no card, nothing dispatched.
+pub const unchecked_text = "The page could not be checked for approval; nothing was done.";
 /// S8 decision 16: a navigate or reload whose card the user denied.
 pub const denied_text = "The navigation was denied.";
 
@@ -186,6 +197,9 @@ pub const Broker = struct {
     /// Test seam (RoseCat 304a41b): called on the worker before each look at a waiting card, so a
     /// red can hold it there. Production sets none.
     before_card_look: ?Hook = null,
+    /// Test seam (RoseCat f87368e #3): called on the worker after its card was seen approved and
+    /// before the live check that guards the dispatch. Production sets none.
+    before_dispatch: ?Hook = null,
     /// A screenshot's fit; with none, a screenshot is "the screenshot could not be read".
     fit: ?Fit = null,
     /// S8 decision 16 (S8c sets it): with none, navigate and reload are not available.
@@ -245,6 +259,33 @@ pub const Broker = struct {
         self.* = undefined;
     }
 
+    /// S8 decision 8 (RoseCat f87368e #1, 7802): prompt `prompt_id` ended (the app: its result,
+    /// its error, or Stop). Exactly its calls, queued or running, are revoked before any
+    /// dispatch; another prompt's are never touched.
+    pub fn promptOver(self: *Broker, prompt_id: i64) void {
+        const io = self.server.io;
+        self.mutex.lockUncancelable(io);
+        defer self.mutex.unlock(io);
+        for (self.queue.items) |job| {
+            if (job.prompt == prompt_id) job.revoked = true;
+        }
+        if (self.running) |job| if (job.prompt == prompt_id) {
+            job.revoked = true;
+        };
+        self.cond.broadcast(io);
+    }
+
+    /// Under the mutex: `job` may still act (its broker live, its prompt not over).
+    fn liveFor(self: *Broker, job: *const Job) bool {
+        return !self.stopping and !self.detached and !job.revoked;
+    }
+
+    fn live(self: *Broker, job: *const Job) bool {
+        self.mutex.lockUncancelable(self.server.io);
+        defer self.mutex.unlock(self.server.io);
+        return self.liveFor(job);
+    }
+
     /// The calls not ended yet: queued, or running in the engine.
     pub fn inFlight(self: *Broker) usize {
         self.mutex.lockUncancelable(self.server.io);
@@ -256,6 +297,16 @@ pub const Broker = struct {
     /// is answered before this returns; any other call is queued for the worker. A sink must
     /// not call back into this broker.
     pub fn submit(self: *Broker, id: []const u8, tool: []const u8, args_json: []const u8, sink: Sink) void {
+        self.submitIn(null, id, tool, args_json, sink);
+    }
+
+    /// `submit` for a call of prompt `prompt_id` (the validated tool_call's): `promptOver` of
+    /// that prompt revokes it (decision 8).
+    pub fn submitPrompt(self: *Broker, prompt_id: i64, id: []const u8, tool: []const u8, args_json: []const u8, sink: Sink) void {
+        self.submitIn(prompt_id, id, tool, args_json, sink);
+    }
+
+    fn submitIn(self: *Broker, prompt_id: ?i64, id: []const u8, tool: []const u8, args_json: []const u8, sink: Sink) void {
         // S8 decision 16: navigate and reload exist only with the approval seam.
         const gated = gatedTool(tool);
         if (gated != null and self.approval == null) return sink.done(sink.ctx, id, .{ .failure = "tool not available" });
@@ -288,6 +339,7 @@ pub const Broker = struct {
             return sink.done(sink.ctx, id, .{ .failure = "out of memory" });
         };
         if (gated) |g| job.verb = g.verb;
+        job.prompt = prompt_id;
         self.cond.broadcast(io);
     }
 
@@ -472,6 +524,10 @@ const Job = struct {
     verb: ?approval.Verb = null,
     /// Its approved card, whose ending follows the dispatch's answer.
     card: ?approval.CardId = null,
+    /// The prompt whose validated tool_call asked for it (decision 8); null: none.
+    prompt: ?i64 = null,
+    /// Under the broker's mutex: its prompt ended (`promptOver`), so it never dispatches.
+    revoked: bool = false,
 
     fn create(gpa: std.mem.Allocator, id: []const u8, method: []const u8, params: []u8, sink: Sink, deadline_at: i64, window: u32) !*Job {
         const job = try gpa.create(Job);
@@ -489,12 +545,22 @@ const Job = struct {
         if (self.verb) |verb| {
             if (self.awaitApproval(broker, verb)) |refused| return broker.publish(self, Outcome.fail(refused));
         }
+        if (self.card) |card| {
+            // The dispatch boundary (RoseCat f87368e #3): checked again after the approval was seen.
+            if (broker.before_dispatch) |h| h.run(h.ctx);
+            if (!broker.live(self)) {
+                endCard(broker.approval.?, card, .revoked);
+                return broker.publish(self, Outcome.fail(cancelled_text));
+            }
+        }
+        var ending: Ending = .done;
         const outcome = if (std.mem.eql(u8, self.method, "page.health")) self.windowInfo(broker) else if (std.mem.eql(u8, self.method, "page.screenshot")) self.screenshot(broker) else blk: {
             const reply = broker.call(self.method, self.params) catch break :blk Outcome.fail("out of memory");
             defer self.gpa.free(reply);
+            if (self.card != null) ending = endingOf(self.gpa, reply);
             break :blk answer(self.gpa, reply);
         };
-        if (self.card) |card| endCard(broker.approval.?, card, if (outcome.result == .content) .done else .failed);
+        if (self.card) |card| endCard(broker.approval.?, card, if (outcome.result == .content) .done else if (ending == .done) .failed else ending);
         broker.publish(self, outcome);
     }
 
@@ -503,21 +569,24 @@ const Job = struct {
     /// with one desktop notification; the cards' own clock expires it.
     fn awaitApproval(self: *Job, broker: *Broker, verb: approval.Verb) ?[]const u8 {
         const gate = broker.approval.?;
+        if (!broker.live(self)) return cancelled_text; // its prompt ended while it was queued
         const store = gate.read_selector(gate.ctx);
         if (store.unreadable) gate.report_unreadable(gate.ctx);
         if (!approval.needsCard(verb, store.selector, approval.modeOf(gate.facts(gate.ctx)))) return null;
+        // Phase A: the document the card describes, which its dispatch will expect.
+        var doc = self.phaseA(broker) catch |err| return switch (err) {
+            error.OutOfMemory => "out of memory",
+            error.Unchecked => unchecked_text,
+        };
+        defer doc.deinit(self.gpa);
         const card = gate.cards.present() catch return cancelled_text;
-        if (gate.show) |show| show(gate.ctx, .{ .id = card, .verb = verb, .window = broker.window, .params = self.params });
+        if (gate.show) |show| show(gate.ctx, .{ .id = card, .verb = verb, .window = broker.window, .params = self.params, .origin = doc.origin, .load_serial = doc.load_serial });
         gate.notify(gate.ctx);
-        const io = broker.server.io;
         while (true) {
             if (broker.before_card_look) |h| h.run(h.ctx);
-            // The stop first (RoseCat 7698): a broker that stopped never dispatches, even when an
-            // Approve won its card after the stop and before this look.
-            broker.mutex.lockUncancelable(io);
-            const stop = broker.stopping or broker.detached;
-            broker.mutex.unlock(io);
-            if (stop) {
+            // The stop first (RoseCat 7698): a broker that stopped, or whose prompt ended
+            // (decision 8), never dispatches, even when an Approve won its card after that.
+            if (!broker.live(self)) {
                 gate.cards.cancel(card);
                 endCard(gate, card, .revoked);
                 return cancelled_text;
@@ -542,8 +611,66 @@ const Job = struct {
                     return cancelled_text;
                 },
             }
-            io.sleep(.fromMilliseconds(approval_poll_ms), .awake) catch {};
+            broker.server.io.sleep(.fromMilliseconds(approval_poll_ms), .awake) catch {};
         }
+    }
+
+    const Document = struct {
+        origin: []u8,
+        load_serial: u64,
+
+        fn deinit(self: *Document, gpa: std.mem.Allocator) void {
+            gpa.free(self.origin);
+        }
+    };
+
+    /// Phase A (decisions 1 and 9): the bound window's origin (the engine's own `originOf`) and
+    /// load_serial from `page.list`, added to the dispatch as `options.expect`. A window that is
+    /// not listed, crashed, or listed without them is Unchecked: no card.
+    fn phaseA(self: *Job, broker: *Broker) error{ OutOfMemory, Unchecked }!Document {
+        const gpa = self.gpa;
+        var window_id: [24]u8 = undefined;
+        const mine = std.fmt.bufPrint(&window_id, "window-{d}", .{self.window}) catch unreachable;
+        const reply = try broker.call("page.list", "{}");
+        defer gpa.free(reply);
+        var parsed = (try parse(gpa, reply)) orelse return error.Unchecked;
+        defer parsed.deinit();
+        const result = switch (replyOf(gpa, parsed.value)) {
+            .result => |r| r,
+            .failure => |f| {
+                f.deinit(gpa);
+                return error.Unchecked;
+            },
+        };
+        const pages = field(result, "pages", .array) orelse return error.Unchecked;
+        const entry = for (pages.array.items) |page| {
+            const wid = field(page, "window_id", .string) orelse continue;
+            if (std.mem.eql(u8, wid.string, mine)) break page;
+        } else return error.Unchecked;
+        if (entry.object.get("crashed") != null) return error.Unchecked;
+        const url = field(entry, "url", .string) orelse return error.Unchecked;
+        const serial = field(entry, "load_serial", .integer) orelse return error.Unchecked;
+        const load_serial = std.math.cast(u64, serial.integer) orelse return error.Unchecked;
+        const origin = try server_mod.automation.engine.originOf(gpa, url.string);
+        errdefer gpa.free(origin);
+
+        var args = std.json.parseFromSlice(std.json.Value, gpa, self.params, .{}) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => return error.Unchecked,
+        };
+        defer args.deinit();
+        if (args.value != .object) return error.Unchecked;
+        const arena = args.arena.allocator();
+        var expect: std.json.ObjectMap = .empty;
+        try expect.put(arena, "origin", .{ .string = origin });
+        try expect.put(arena, "load_serial", .{ .integer = @intCast(load_serial) });
+        var options: std.json.ObjectMap = .empty;
+        try options.put(arena, "expect", .{ .object = expect });
+        try args.value.object.put(arena, "options", .{ .object = options });
+        const params = try std.json.Stringify.valueAlloc(gpa, args.value, .{});
+        gpa.free(self.params);
+        self.params = params;
+        return .{ .origin = origin, .load_serial = load_serial };
     }
 
     /// window_info (revs 16.20.35 and 16.20.36; RoseCat 6575, 6585, 6606): page.health answers
@@ -662,6 +789,19 @@ const Outcome = struct {
         if (self.owned) |bytes| gpa.free(bytes);
     }
 };
+
+/// A carded dispatch's ending from the engine's reply: an S8 refusal (-32015) is `changed`, or
+/// `crashed` for that reason; anything else is decided by the answer (`done` here).
+fn endingOf(gpa: std.mem.Allocator, reply: []const u8) Ending {
+    var parsed = (parse(gpa, reply) catch return .failed) orelse return .failed;
+    defer parsed.deinit();
+    const err = field(parsed.value, "error", .object) orelse return .done;
+    const code = field(err, "code", .integer) orelse return .failed;
+    if (code.integer != -32015) return .failed;
+    const data = field(err, "data", .object) orelse return .changed;
+    const reason = field(data, "reason", .string) orelse return .changed;
+    return if (std.mem.eql(u8, reason.string, "crashed")) .crashed else .changed;
+}
 
 /// The parsed reply, or null if it is no JSON.
 fn parse(gpa: std.mem.Allocator, reply: []const u8) error{OutOfMemory}!?std.json.Parsed(std.json.Value) {

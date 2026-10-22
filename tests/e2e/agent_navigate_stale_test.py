@@ -113,6 +113,9 @@ def raise_other(w: World) -> None:
     if others:
         x._x.XRaiseWindow.argtypes = [ctypes.c_void_p, ctypes.c_ulong]
         x._x.XRaiseWindow(x._dpy, others[-1])
+        # And the keyboard, as a window manager's click to front gives it (RevertToParent, now).
+        x._x.XSetInputFocus.argtypes = [ctypes.c_void_p, ctypes.c_ulong, ctypes.c_int, ctypes.c_ulong]
+        x._x.XSetInputFocus(x._dpy, others[-1], 2, 0)
         x._x.XFlush(x._dpy)
         time.sleep(0.3)
 
@@ -199,6 +202,12 @@ def case_stop(binary: Path, tmp: Path, check) -> None:
         newer_url = w.pages.url("two") + "#newer"
         w.gated.calls["navnewer"] = nav(newer_url)
         raise_other(w)
+        # The click on Stop left the keyboard on it: the drawer folds, and reopening it puts
+        # the keyboard back in its input (drawer_open), where the newer prompt is typed.
+        minus = w.b.rows("minus", 2)[-1]
+        folded = len(w.b.rows("minimized", 2))
+        w.b.x.click(*centre(minus.rect()))
+        w.b.wait(lambda: len(w.b.rows("minimized", 2)) > folded, 10)
         if not check(w.prompt("navnewer", 2, headless=True), "a newer prompt in window 2", w.b):
             return
         if wait_card(w, check, "navnewer", count=2) is None:

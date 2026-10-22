@@ -15,6 +15,7 @@
 #include <fcntl.h>
 #include <gio/gio.h>
 #include <signal.h>
+#include <stdint.h>
 #include <string.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -40,6 +41,7 @@ typedef struct {
   size_t tool_len;
   const char *args;
   size_t args_len;
+  int64_t prompt_id; /* a tool_call's, result's or error's prompt; -1 none (S8 decision 8) */
 } ZbAgentFrame;
 enum { ZB_FRAME_READY, ZB_FRAME_SESSION_OPENED, ZB_FRAME_DELTA, ZB_FRAME_MESSAGE, ZB_FRAME_TOOL_CALL,
        ZB_FRAME_RESULT, ZB_FRAME_ERROR, ZB_FRAME_SESSION_ENDED, ZB_FRAME_REPLY_CAPPED };
@@ -59,10 +61,13 @@ char *zb_agent_out_shutdown(void);
 void zb_agent_out_free(char *frame);
 char *zb_agent_out_tool_result(const char *session, const char *id, int ok, const char *body, size_t len);
 /* agent_tools.zig (S7b): a session's tool calls to its window's broker. */
-void zb_agent_tools_call(unsigned int win, const char *session, const char *id, size_t id_len, const char *tool,
-                         size_t tool_len, const char *args, size_t args_len);
+void zb_agent_tools_call(unsigned int win, const char *session, int64_t prompt_id, const char *id, size_t id_len,
+                         const char *tool, size_t tool_len, const char *args, size_t args_len);
+int64_t zb_agent_frames_current_prompt(const char *session);
 void zb_agent_tools_window_done(unsigned int win);
 void zb_agent_tools_detach_all(void);
+/* agent_tools.zig (S8 decision 8): prompt `prompt_id` of the window ended; its calls are revoked. */
+void zb_agent_tools_prompt_over(unsigned int win, int64_t prompt_id);
 int zb_agent_config_changed(const char *home);
 
 #define ZB_MAX_FRAME (256 * 1024)
@@ -404,6 +409,7 @@ static void on_frame(const ZbAgentFrame *f) {
   case ZB_FRAME_RESULT:
     zb_helper.restarts = 0;
     if (w != NULL) {
+      zb_agent_tools_prompt_over(win, f->prompt_id); /* its cards end with it (decision 8) */
       if (w->stopping && w->overflowed) { /* the overflow's interrupt ended it (S5.6) */
         w->stopping = 0;
         zb_drawer_agent_message(win, "error", ZB_TEXT_OVERFLOW, strlen(ZB_TEXT_OVERFLOW));
@@ -444,6 +450,9 @@ static void on_frame(const ZbAgentFrame *f) {
       zb_drawer_agent_message(win, "error", text, strlen(text));
     }
     if (w != NULL) { /* a session's error ends its prompt (chat's _prompt) */
+      if (f->prompt_id >= 0) {
+        zb_agent_tools_prompt_over(win, f->prompt_id); /* and its cards (decision 8) */
+      }
       w->busy = 0;
       zb_drawer_agent_status(win, "ready", "-");
       flush(w);
@@ -464,7 +473,8 @@ static void on_frame(const ZbAgentFrame *f) {
     break;
   case ZB_FRAME_TOOL_CALL: /* S7b: to the window's broker, off the GTK thread */
     if (w != NULL) {
-      zb_agent_tools_call(w->win, w->session, f->tool_id, f->tool_id_len, f->tool, f->tool_len, f->args, f->args_len);
+      zb_agent_tools_call(w->win, w->session, f->prompt_id, f->tool_id, f->tool_id_len, f->tool, f->tool_len, f->args,
+                          f->args_len);
     } else { /* a session with no window: answered here */
       char session[72] = {0}, id[40] = {0};
       memcpy(session, f->session, MIN(f->session_len, sizeof session - 1));
@@ -957,6 +967,10 @@ void zb_agent_helper_interrupt(unsigned int win) {
     return;
   }
   w->stopping = 1;
+  int64_t running = zb_agent_frames_current_prompt(w->session);
+  if (running >= 0) {
+    zb_agent_tools_prompt_over(win, running); /* Stop revokes the prompt's cards at once (decision 8) */
+  }
   write_frame(zb_agent_out_session(0, w->session));
 }
 

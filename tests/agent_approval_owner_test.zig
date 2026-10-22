@@ -90,18 +90,14 @@ test "readStore: settings owned by someone else, writable by others, a symlink o
 
     // Writable by group or others.
     for ([_]std.posix.mode_t{ 0o720, 0o702, 0o777 }) |mode| {
-        var dir = try tmp.dir.openDir(io, "settings", .{});
-        try dir.setPermissions(io, @enumFromInt(mode));
-        dir.close(io);
+        try tmp.dir.setFilePermissions(io, "settings", @enumFromInt(mode), .{});
         const loose = approval.readStore(io, home, me);
         testing.expect(loose.selector == .yes and loose.unreadable) catch |e| {
             std.debug.print("settings mode {o} read as {s}\n", .{ mode, @tagName(loose.selector) });
             return e;
         };
     }
-    var dir = try tmp.dir.openDir(io, "settings", .{});
-    try dir.setPermissions(io, @enumFromInt(0o700));
-    dir.close(io);
+    try tmp.dir.setFilePermissions(io, "settings", @enumFromInt(0o700), .{});
 
     // A symlink to a good settings directory is never followed.
     try tmp.dir.rename("settings", tmp.dir, "elsewhere", io);

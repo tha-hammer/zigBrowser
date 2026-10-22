@@ -32,7 +32,7 @@ extern fn zb_agent_helper_post_tool_result(win: c_uint, session: [*:0]const u8, 
 extern fn zb_agent_image_fit(png: [*]const u8, len: usize, max_b64: usize, out_b64: *?[*:0]u8, out_mime: *?[*:0]const u8) callconv(.c) c_int;
 extern fn zb_agent_image_free(b64: ?*anyopaque) callconv(.c) void;
 // agent_drawer.c (any thread: each hops to GTK) and agent_helper.c.
-extern fn zb_drawer_card_show(main_win: c_uint, card: u64, verb: [*:0]const u8, bound_win: c_uint, params: [*]const u8, params_len: usize, url: ?[*:0]const u8) void;
+extern fn zb_drawer_card_show(main_win: c_uint, card: u64, verb: [*:0]const u8, bound_win: c_uint, params: [*]const u8, params_len: usize, url: ?[*:0]const u8, origin: [*:0]const u8) void;
 extern fn zb_drawer_card_end(card: u64, ending: [*:0]const u8) void;
 extern fn zb_drawer_card_notify(title: [*:0]const u8, body: [*:0]const u8) void;
 extern fn zb_drawer_post_system(win: c_uint, text: [*]const u8, len: usize) void;
@@ -100,18 +100,12 @@ fn windowOf(ctx: *anyopaque) c_uint {
     return @intCast(@intFromPtr(ctx));
 }
 
-/// The store, agent-home/settings/navigate_approval, read for each call.
+/// The store, agent-home/settings/navigate_approval, read for each call: the user's own file
+/// in the user's own settings directory, never through a symlink (RoseCat f87368e #4).
 fn readSelector(_: *anyopaque) approval.StoreRead {
     const core = server orelse return .{ .selector = .yes, .unreadable = true };
     const home = zb_agent_helper_home() orelse return .{ .selector = approval.default_selector };
-    var buf: [std.fs.max_path_bytes]u8 = undefined;
-    const path = std.fmt.bufPrint(&buf, "{s}/settings", .{std.mem.span(home)}) catch return .{ .selector = .yes, .unreadable = true };
-    var dir = std.Io.Dir.cwd().openDir(core.io, path, .{}) catch |err| return switch (err) {
-        error.FileNotFound => .{ .selector = approval.default_selector },
-        else => .{ .selector = .yes, .unreadable = true },
-    };
-    defer dir.close(core.io);
-    return approval.readSelector(core.io, dir, approval.store_name);
+    return approval.readStore(core.io, std.mem.span(home), approval.effectiveUid());
 }
 
 /// Every prompt today is one the user typed: full automation has no entry yet.
@@ -135,12 +129,21 @@ fn show(_: *anyopaque, card: broker_mod.CardView) void {
     defer if (parsed) |*p| p.deinit();
     const url: ?[:0]u8 = if (parsed) |p| (if (p.value.url) |u| gpa.dupeZ(u8, u) catch null else null) else null;
     defer if (url) |u| gpa.free(u);
-    zb_drawer_card_show(@intCast(main), card.id, @tagName(card.verb), card.window, card.params.ptr, card.params.len, if (url) |u| u.ptr else null);
+    const origin = gpa.dupeZ(u8, card.origin) catch return;
+    defer gpa.free(origin);
+    zb_drawer_card_show(@intCast(main), card.id, @tagName(card.verb), card.window, card.params.ptr, card.params.len, if (url) |u| u.ptr else null, origin.ptr);
 }
 
 fn ended(_: *anyopaque, id: approval.CardId, ending: broker_mod.Ending) void {
     // `cancelled`: the main window closed, so its drawer is gone (D7b's `closed`).
     zb_drawer_card_end(id, if (ending == .cancelled) "closed" else @tagName(ending));
+}
+
+/// GTK thread (agent_helper.c): prompt `prompt_id` of window `win` ended (its result, its
+/// error, or Stop): its broker revokes exactly that prompt's calls first (decision 8).
+export fn zb_agent_tools_prompt_over(win: c_uint, prompt_id: i64) void {
+    const b = bound.get(win) orelse return;
+    b.broker.promptOver(prompt_id);
 }
 
 /// GTK thread: every window that opens; the first is the main window.
@@ -225,10 +228,10 @@ fn brokerFor(win: c_uint, session: []const u8) ?*Bound {
     return b;
 }
 
-/// GTK thread: a validated `tool_call` of `session`, open in window `win`.
-export fn zb_agent_tools_call(win: c_uint, session: [*:0]const u8, id: [*]const u8, id_len: usize, tool: [*]const u8, tool_len: usize, args: [*]const u8, args_len: usize) void {
+/// GTK thread: a validated `tool_call` of `session`'s prompt `prompt_id`, open in window `win`.
+export fn zb_agent_tools_call(win: c_uint, session: [*:0]const u8, prompt_id: i64, id: [*]const u8, id_len: usize, tool: [*]const u8, tool_len: usize, args: [*]const u8, args_len: usize) void {
     const b = brokerFor(win, std.mem.span(session)) orelse return refuse(win, session, id[0..id_len]);
-    b.broker.submit(id[0..id_len], tool[0..tool_len], args[0..args_len], .{ .ctx = b, .done = done });
+    b.broker.submitPrompt(prompt_id, id[0..id_len], tool[0..tool_len], args[0..args_len], .{ .ctx = b, .done = done });
 }
 
 /// GTK thread: window `win`'s session ended, or the window closed. Its broker detaches:

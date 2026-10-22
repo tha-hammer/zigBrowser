@@ -1088,6 +1088,19 @@ pub fn build(b: *std.Build) void {
     }));
     const run_agent_approval_policy_tests = b.addRunArtifact(b.addTest(.{ .root_module = agent_approval_policy_tests_module }));
     run_agent_approval_policy_tests.skip_foreign_checks = true;
+    // S8 decision 16 part 4 (RoseCat f87368e #4): the store's owner and its settings directory.
+    const agent_approval_owner_tests_module = b.createModule(.{
+        .root_source_file = b.path("tests/agent_approval_owner_test.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    agent_approval_owner_tests_module.addImport("agent_approval", b.createModule(.{
+        .root_source_file = b.path("src/agent_approval.zig"),
+        .target = target,
+        .optimize = optimize,
+    }));
+    const run_agent_approval_owner_tests = b.addRunArtifact(b.addTest(.{ .root_module = agent_approval_owner_tests_module }));
+    run_agent_approval_owner_tests.skip_foreign_checks = true;
 
     // Chat drawer S4a: the token's shape and the explicit file store, read and
     // write (src/agent_secrets.zig).
@@ -1716,8 +1729,8 @@ pub fn build(b: *std.Build) void {
     agent_setup_ms5_step.dependOn(&mac_group_cleanup.step);
     // Chat drawer S7a (revs 16.20.30, 16.20.32): the core in process (callInProcess) and the
     // drawer's read-only broker over it; S7b (rev 16.20.36): its reply boundary and detach.
-    var s7a_runs: [9]*std.Build.Step = undefined;
-    for ([_][]const u8{ "tests/automation_inprocess_test.zig", "tests/agent_broker_test.zig", "tests/agent_broker_window_info_test.zig", "tests/agent_broker_reply_test.zig", "tests/agent_broker_detach_test.zig", "tests/agent_broker_detach_oom_test.zig", "tests/agent_broker_screenshot_test.zig", "tests/agent_broker_navigate_test.zig", "tests/agent_navigate_card_test.zig" }, 0..) |path, i| {
+    var s7a_runs: [10]*std.Build.Step = undefined;
+    for ([_][]const u8{ "tests/automation_inprocess_test.zig", "tests/agent_broker_test.zig", "tests/agent_broker_window_info_test.zig", "tests/agent_broker_reply_test.zig", "tests/agent_broker_detach_test.zig", "tests/agent_broker_detach_oom_test.zig", "tests/agent_broker_screenshot_test.zig", "tests/agent_broker_navigate_test.zig", "tests/agent_navigate_card_test.zig", "tests/agent_navigate_bind_test.zig" }, 0..) |path, i| {
         const s7a_module = b.createModule(.{
             .root_source_file = b.path(path),
             .target = target,
@@ -2001,6 +2014,24 @@ pub fn build(b: *std.Build) void {
         "agent-navigate-approval-e2e",
     });
     agent_navigate_approval_e2e.addArtifactArg(exe);
+    // S8 decision 16 part 4 (S9.3, decision 8): Stop, a navigation, a reload, a crash, a recovery and
+    // a killed helper while a card waits dispatch nothing. It runs in a PID namespace of its own.
+    const agent_navigate_stale_e2e = b.addSystemCommand(&.{
+        "sh",
+        "-c",
+        "python3 tests/e2e/agent_navigate_stale_test.py --binary \"$1\"",
+        "agent-navigate-stale-e2e",
+    });
+    agent_navigate_stale_e2e.addArtifactArg(exe);
+    // S8 decision 8 at the app boundary (RoseCat 7802): the scripted helper's result, error,
+    // Stop, and a late or duplicate end for an earlier prompt.
+    const agent_navigate_prompt_e2e = b.addSystemCommand(&.{
+        "sh",
+        "-c",
+        "python3 tests/e2e/agent_navigate_prompt_test.py --binary \"$1\"",
+        "agent-navigate-prompt-e2e",
+    });
+    agent_navigate_prompt_e2e.addArtifactArg(exe);
     const agent_socket_separation_e2e = b.addSystemCommand(&.{
         "sh",
         "-c",
@@ -3316,6 +3347,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_agent_frames_deadline_tests.step);
     test_step.dependOn(&run_agent_config_check_tests.step);
     test_step.dependOn(&run_agent_approval_policy_tests.step);
+    test_step.dependOn(&run_agent_approval_owner_tests.step);
     test_step.dependOn(&run_config_schema_tests.step);
     test_step.dependOn(&run_automation_smoke_tests.step);
     test_step.dependOn(&run_automation_error_tests.step);
@@ -3391,6 +3423,8 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&agent_chat_e2e.step);
     test_step.dependOn(&agent_tools_e2e.step);
     test_step.dependOn(&agent_navigate_approval_e2e.step);
+    test_step.dependOn(&agent_navigate_stale_e2e.step);
+    test_step.dependOn(&agent_navigate_prompt_e2e.step);
     test_step.dependOn(&agent_socket_separation_e2e.step);
     test_step.dependOn(&agent_tools_acceptance_e2e.step);
     test_step.dependOn(&agent_tools_acceptance2_e2e.step);

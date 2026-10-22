@@ -2083,25 +2083,6 @@ static ZbWindow *auto_resolve_window(guint32 requested) {
   return NULL;
 }
 
-/* GTK thread (agent_drawer.c's approval card): the origin of window `id`'s page, newly
- * allocated ("scheme://host[:port]", or "scheme:" without a host), or NULL. */
-char *zb_window_page_origin(unsigned int id) {
-  ZbWindow *win = auto_resolve_window(id);
-  const char *uri = win != NULL ? webkit_web_view_get_uri(win->view) : NULL;
-  GUri *parsed = uri != NULL ? g_uri_parse(uri, G_URI_FLAGS_NONE, NULL) : NULL;
-  if (parsed == NULL) {
-    return NULL;
-  }
-  const char *scheme = g_uri_get_scheme(parsed);
-  const char *host = g_uri_get_host(parsed);
-  int port = g_uri_get_port(parsed);
-  char *origin = host == NULL || host[0] == '\0' ? g_strdup_printf("%s:", scheme)
-                 : port > 0                      ? g_strdup_printf("%s://%s:%d", scheme, host, port)
-                                                 : g_strdup_printf("%s://%s", scheme, host);
-  g_uri_unref(parsed);
-  return origin;
-}
-
 /* GTK thread: window `id` comes to the front (the approval notification's activation). */
 void zb_window_present(unsigned int id) {
   ZbWindow *win = auto_resolve_window(id);

@@ -20,6 +20,10 @@
 //!   main-window close; every call is answered exactly once; both verbs refuse a model's
 //!   `window_id` and any selector, mode or run-fact field, so the model can choose neither.
 //!
+//! - Part 4 (RoseCat f87368e #2): a carded call first reads its window from the engine
+//!   (`page.list`, phase A, counted apart), and its dispatch carries that document as
+//!   `options.expect`; a call with no card is dispatched exactly as before.
+//!
 //! On HEAD there is no `Broker.Approval` seam: this file does not compile there (the red).
 
 const std = @import("std");
@@ -41,19 +45,34 @@ const engine_ok = "{\"result\":{\"ok\":true}}";
 /// The exact params each verb reaches the engine with: the model's args plus the drawer's window.
 const navigate_params = "{\"url\":\"https://example.com/next\",\"window_id\":\"window-2\"}";
 const reload_params = "{\"window_id\":\"window-2\"}";
+/// A carded call also carries the document its card described (part 4, phase A; RoseCat f87368e
+/// #2): the engine's `page.list` names each window's page, and the dispatch expects it.
+const listed = "{\"result\":{\"pages\":[" ++
+    "{\"window_id\":\"window-1\",\"url\":\"https://example.com/start\",\"title\":\"s\",\"primary\":true,\"load_serial\":3}," ++
+    "{\"window_id\":\"window-2\",\"url\":\"https://example.com/start\",\"title\":\"s\",\"primary\":false,\"load_serial\":3}," ++
+    "{\"window_id\":\"window-3\",\"url\":\"https://example.com/start\",\"title\":\"s\",\"primary\":false,\"load_serial\":3}]}}";
+const expect_json = "\"options\":{\"expect\":{\"origin\":\"https://example.com\",\"load_serial\":3}}";
+const navigate_carded = "{\"url\":\"https://example.com/next\",\"window_id\":\"window-2\"," ++ expect_json ++ "}";
+const reload_carded = "{\"window_id\":\"window-2\"," ++ expect_json ++ "}";
 
-/// The scripted engine: every call recorded, every answer `engine_ok`.
+/// The scripted engine: `page.list` (phase A) answers `listed` and is only counted in `lists`;
+/// every other call is recorded and answered `engine_ok`.
 const Engine = struct {
     mutex: std.Io.Mutex = .init,
     methods: [8][32]u8 = undefined,
     params: [8][256]u8 = undefined,
     lens: [8][2]usize = undefined,
     n: usize = 0,
+    lists: usize = 0,
 
     fn call(ctx: *anyopaque, a: std.mem.Allocator, called: []const u8, with: []const u8) error{OutOfMemory}![]u8 {
         const self: *Engine = @ptrCast(@alignCast(ctx));
         self.mutex.lockUncancelable(testing.io);
         defer self.mutex.unlock(testing.io);
+        if (std.mem.eql(u8, called, "page.list")) {
+            self.lists += 1;
+            return a.dupe(u8, listed);
+        }
         if (self.n < self.methods.len) {
             const m = @min(called.len, 32);
             const p = @min(with.len, 256);
@@ -396,12 +415,12 @@ test "every selector x mode x verb: card or not, one dispatch, the method, exact
         .{ .selector = .conditional, .mode = .headless, .card = true },
         .{ .selector = .conditional, .mode = .full_automation, .card = true },
     };
-    const verbs = [_]struct { tool: []const u8, args: []const u8, method: []const u8, params: []const u8 }{
-        .{ .tool = navigate_tool, .args = "{\"url\":\"https://example.com/next\"}", .method = "page.navigate", .params = navigate_params },
-        .{ .tool = reload_tool, .args = "{}", .method = "page.reload", .params = reload_params },
+    const verbs = [_]struct { tool: []const u8, args: []const u8, method: []const u8, params: []const u8, carded: []const u8 }{
+        .{ .tool = navigate_tool, .args = "{\"url\":\"https://example.com/next\"}", .method = "page.navigate", .params = navigate_params, .carded = navigate_carded },
+        .{ .tool = reload_tool, .args = "{}", .method = "page.reload", .params = reload_params, .carded = reload_carded },
     };
     for (rows) |row| for (verbs) |verb| {
-        checkRow(row.selector, row.mode, row.card, verb.tool, verb.args, verb.method, verb.params) catch |e| {
+        checkRow(row.selector, row.mode, row.card, verb.tool, verb.args, verb.method, if (row.card) verb.carded else verb.params) catch |e| {
             std.debug.print("row: {s} {s} {s} (card {})\n", .{ verb.tool, @tagName(row.selector), @tagName(row.mode), row.card });
             return e;
         };

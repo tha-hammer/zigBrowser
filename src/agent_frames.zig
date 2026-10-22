@@ -51,6 +51,8 @@ pub const CFrame = extern struct {
     tool_len: usize = 0,
     args: ?[*]const u8 = null,
     args_len: usize = 0,
+    /// S8 decision 8 (RoseCat 7802): the prompt a tool_call, result or error names; -1 when none.
+    prompt_id: i64 = -1,
 };
 
 /// A new helper process: a fresh validator (its seq and sessions) and out seq.
@@ -98,13 +100,16 @@ pub export fn zb_agent_frames_validate(line: [*]const u8, len: usize, out: *CFra
             out.tool_id, out.tool_id_len = .{ f.id.ptr, f.id.len };
             out.tool, out.tool_len = .{ f.tool.ptr, f.tool.len };
             out.args, out.args_len = .{ f.args_json.ptr, f.args_json.len };
+            out.prompt_id = f.prompt_id;
         },
         .result => |f| {
             setSession(out, f.session);
             out.is_error = @intFromBool(f.is_error);
+            out.prompt_id = f.prompt_id;
         },
         .@"error" => |f| {
             if (f.session) |s| setSession(out, s);
+            out.prompt_id = f.prompt_id orelse -1;
             setText(out, f.message);
             out.code = f.code.ptr;
             out.code_len = f.code.len;
@@ -126,6 +131,13 @@ fn setSession(out: *CFrame, session: []const u8) void {
 fn setText(out: *CFrame, text: []const u8) void {
     out.text = text.ptr;
     out.text_len = text.len;
+}
+
+/// The prompt `session` is running (written and not yet ended), or -1 (S8 decision 8: Stop
+/// revokes that prompt's calls).
+export fn zb_agent_frames_current_prompt(session: [*:0]const u8) i64 {
+    const v = if (validator) |*v| v else return -1;
+    return v.currentPrompt(std.mem.span(session)) orelse -1;
 }
 
 export fn zb_agent_frames_reason(code: c_int) [*:0]const u8 {

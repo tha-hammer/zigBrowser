@@ -122,15 +122,17 @@ class Pages:
         self.server.server_close()
 
 
-def params_of(tool: str, win: int, url: str | None = None) -> str:
-    """The exact params the engine gets, as the broker writes them."""
-    if tool == NAVIGATE:
-        return json.dumps({"url": url, "window_id": f"window-{win}"}, separators=(",", ":"))
-    return json.dumps({"window_id": f"window-{win}"}, separators=(",", ":"))
+def params_of(tool: str, win: int, url: str | None = None, doc: tuple[str, int] | None = None) -> str:
+    """The exact params the engine gets, as the broker writes them; a carded call's also expect
+    the document its card described, `doc` = (origin, load_serial) (part 4, phase A)."""
+    params: dict = {"url": url, "window_id": f"window-{win}"} if tool == NAVIGATE else {"window_id": f"window-{win}"}
+    if doc is not None:
+        params["options"] = {"expect": {"origin": doc[0], "load_serial": doc[1]}}
+    return json.dumps(params, separators=(",", ":"))
 
 
-def digest(tool: str, win: int, url: str | None = None) -> str:
-    return hashlib.sha256(params_of(tool, win, url).encode()).hexdigest()
+def digest(tool: str, win: int, url: str | None = None, doc: tuple[str, int] | None = None) -> str:
+    return hashlib.sha256(params_of(tool, win, url, doc).encode()).hexdigest()
 
 
 class Gated:
@@ -146,13 +148,17 @@ class Gated:
 
     def __call__(self, entry, index):
         users = [m for m in (entry.get("body") or {}).get("messages") or [] if m.get("role") == "user"]
-        said = json.dumps(users[-1:])  # this turn only: a later prompt's request repeats the older ones
-        if '"tool_result"' in said:
-            return {"text": DONE}
+        turn = users[-1].get("content") if users else ""  # this turn only: later requests repeat older ones
+        blocks = [{"type": "text", "text": turn}] if isinstance(turn, str) else [b for b in turn or [] if isinstance(b, dict)]
+        typed = " ".join(b.get("text", "") for b in blocks if b.get("type") == "text")
+        # A new prompt first: after an interrupt the CLI sends the interrupted call's
+        # tool_result and the next prompt in one turn.
         for key, call in self.calls.items():
-            if key in said:
+            if key in typed:
                 self.gates[key].wait(120)
                 return {"tool_use": call}
+        if any(b.get("type") == "tool_result" for b in blocks):
+            return {"text": DONE}
         return {"text": "ok"}
 
 
@@ -213,6 +219,12 @@ class World:
         self.b.ev(f"(window.open({json.dumps(self.pages.url('pop'))}), 1)")
         return check(self.b.wait(lambda: self.b.rows("icon", n) != [], 20) and self.b.wait_page(f"window-{n}"),
                      f"window {n} is open with its drawer", self.b)
+
+    def doc(self, win: int) -> tuple[str, int]:
+        """Window `win`'s document now: its page's origin (every page here is on this server)
+        and its load_serial, as page.list gives it."""
+        serial = next(p["load_serial"] for p in self.b.zb.page.list()["pages"] if p["window_id"] == f"window-{win}")
+        return self.pages.origin, serial
 
     def path(self, win: int) -> str:
         return self.b.ev("location.pathname + location.hash", f"window-{win}")
@@ -369,7 +381,7 @@ def check_notify(w: World, check, label: str, count: int, url: str) -> list[dict
               f"{label}: the notification's fixed text ({n['app_name']!r}, {n['summary']!r}, {n['body']!r})")
         check(n["actions"][0::2] == ["default"], f"{label}: its only action is default ({n['actions']})")
         text = json.dumps(n)
-        leaked = [s for s in (CANARY, url, "two.html", "window-", digest(NAVIGATE, 2, url)) if s in text]
+        leaked = [s for s in (CANARY, url, "two.html", "window-", *(r.fields[4] for r in w.cards())) if s in text]
         check(leaked == [], f"{label}: nothing of the step in the notification ({leaked})")
     return got
 
@@ -406,7 +418,7 @@ def case_headless(binary: Path, tmp: Path, check) -> None:
         if card is None:
             return
         cid = card.fields[0]
-        check(card.fields[1:] == ("navigate", w.pages.origin, "-", digest(NAVIGATE, 2, url)),
+        check(card.fields[1:] == ("navigate", w.pages.origin, "-", digest(NAVIGATE, 2, url, w.doc(2))),
               f"the card names navigate, window 2's origin, no account and the params' digest ({card.fields})")
         check(("approval", f"Claude wants to open {url} in window 2.") in life.bubbles(w.b, 1),
               f"the card's text ({life.bubbles(w.b, 1)})")
@@ -484,7 +496,7 @@ def case_reload(binary: Path, tmp: Path, check) -> None:
         if card is None or not notes:
             return
         cid = card.fields[0]
-        check(card.fields[1:] == ("reload", w.pages.origin, "-", digest(RELOAD, 2)),
+        check(card.fields[1:] == ("reload", w.pages.origin, "-", digest(RELOAD, 2, doc=w.doc(2))),
               f"the reload card ({card.fields})")
         check(("approval", "Claude wants to reload window 2.") in life.bubbles(w.b, 1), f"its text ({life.bubbles(w.b, 1)})")
         time.sleep(1.5)
@@ -513,7 +525,7 @@ def case_main_close(binary: Path, tmp: Path, check) -> None:
             return
         if wait_card(w, check, "main-close", count=2) is None:
             return
-        check(sorted(r.fields[4] for r in w.cards(1)) == sorted([digest(NAVIGATE, 2, url), digest(NAVIGATE, 3, url)]),
+        check(sorted(r.fields[4] for r in w.cards(1)) == sorted([digest(NAVIGATE, 2, url, w.doc(2)), digest(NAVIGATE, 3, url, w.doc(3))]),
               "one card for each window's call, both in window 1's drawer")
         check_notify(w, check, "main-close", 2, url)
         w.close_first()
@@ -629,7 +641,7 @@ def case_store_yes(binary: Path, tmp: Path, check) -> None:
         if card is None:
             return
         cid = card.fields[0]
-        check(card.fields[4] == digest(NAVIGATE, 1, url), "the card is window 1's own call")
+        check(card.fields[4] == digest(NAVIGATE, 1, url, w.doc(1)), "the card is window 1's own call")
         check_notify(w, check, "store yes", 1, url)
         time.sleep(1.0)
         check(w.path(1) == "/one.html", "nothing ran before Approve")
