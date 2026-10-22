@@ -31324,3 +31324,22 @@ It must prove zero launches, `master == -1`, and `EBADF` for both recorded PTY
 ends after refusal. Mutants that restore the old recheck placement or omit
 either close must fail that row. Registration and the real-binary/full-gate
 evidence remain cumulative acceptance requirements.
+
+## Sign-in late-swap/PTTY cleanup coverage (`3f44c48`)
+
+**APPROVED-for-tests; the two test blockers on `6c249f4` are cumulatively
+closed.** The new seam records the real `openpty` pair, swaps the checked home
+from inside the first terminal-sizing `ioctl`, and then delegates to the real
+operation. That places the mutation after the former recheck location but
+before the new immediate-pre-`Popen` recheck. Restoring the old order therefore
+reaches the `Popen` recorder instead of the required refusal.
+
+The same row requires zero launch, `Login.master == -1`, and `EBADF` from
+`fstat` on both recorded PTY ends. Omitting either the master's exceptional
+close/reset or the slave's `finally` close is therefore observable rather than
+hidden by fixture cleanup. It also proves the replacement home remains empty.
+An exact clean export passed **27/27** under a private current-UID
+user/PID/mount namespace with both signal functions patched to raise. The
+test remains unregistered; cumulative sign-in acceptance still waits for its
+pinned-interpreter registration, the real-binary sign-in e2es and a clean full
+gate.
