@@ -63,20 +63,65 @@ def agent_helper_processes(root: int) -> list[list[str]]:
     return found
 
 
+GUARDIAN_GONE_SEC = 30.0  # xsession's worst case: helper grace 8 s + group TERM/KILL 10 s + Xvfb TERM 5 s
+
+
+def _xsession_guardian(pid: int) -> int | None:
+    """The xsession.py guardian watching browser `pid`: the process whose argv names xsession.py and which holds a
+    pidfd for `pid` (its fdinfo names the pid while `pid` is alive or not yet reaped). None without /proc (Windows,
+    macOS) or when there is none. Only observed, never signalled."""
+    if not os.path.isdir("/proc"):
+        return None
+    for entry in filter(str.isdigit, os.listdir("/proc")):
+        try:
+            if b"xsession.py" not in Path(f"/proc/{entry}/cmdline").read_bytes():
+                continue
+            for fd in os.listdir(f"/proc/{entry}/fd"):
+                if os.readlink(f"/proc/{entry}/fd/{fd}") != "anon_inode:[pidfd]":
+                    continue
+                if ["Pid:", str(pid)] in (line.split() for line in
+                                          Path(f"/proc/{entry}/fdinfo/{fd}").read_text().splitlines()):
+                    return int(entry)
+        except OSError:
+            continue  # gone meanwhile, or not ours to read
+    return None
+
+
+def _running(pid: int) -> bool:
+    """Running (a zombie awaiting its reaper counts as gone)."""
+    try:
+        return Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[0] != "Z"
+    except (OSError, IndexError):
+        return False
+
+
 def stop_browser(proc: subprocess.Popen, grace_sec: float = 8.0, agent_helpers_allowed: bool = False) -> int | None:
     """Shared teardown for a browser started with an xsession prefix: SIGINT
     (a clean shutdown); a browser still running after `grace_sec` gets
     SIGKILL with its whole process group (browser and WebKit helpers). After
     a clean exit the helpers are left to exit on their own (tests assert
     that); the guardian ends any that linger, then removes the private
-    display. Safe to call more than once. Returns the browser's exit status.
+    display, and once the browser has exited this waits (at most
+    GUARDIAN_GONE_SEC) for that guardian to finish: a driver that exits next,
+    ending its PID namespace, would otherwise SIGKILL the guardian and Xvfb
+    mid-cleanup and leave /tmp/.X<n>-lock and the X socket behind
+    (zigBrowser-44h). Safe to call more than once. Returns the browser's exit
+    status.
 
     The drawer is on by default (S5.5), and nothing starts an agent helper
     until its Send: unless `agent_helpers_allowed` (the agent tests), a
     helper process found under the browser fails the test with an
     AssertionError, after the teardown."""
+    guardian = _xsession_guardian(proc.pid) if proc.returncode is None else None  # before anything reaps it
     helpers = agent_helper_processes(proc.pid) if proc.poll() is None and not agent_helpers_allowed else []
     code = _stop(proc, grace_sec)
+    if guardian is not None and code is not None:
+        deadline = time.monotonic() + GUARDIAN_GONE_SEC
+        while _running(guardian):
+            if time.monotonic() >= deadline:
+                raise AssertionError(f"the xsession guardian of browser {proc.pid} did not finish its display "
+                                     f"cleanup within {GUARDIAN_GONE_SEC:.0f} s")
+            time.sleep(0.02)
     if helpers:
         raise AssertionError(f"an agent helper ran in a test that never pressed Send: {helpers}")
     return code
