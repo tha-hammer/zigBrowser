@@ -480,3 +480,49 @@ pub fn acquireRunLockBounded(io: std.Io, dir: std.Io.Dir, budget_ms: i64, backof
     if (clock.nowMs() >= deadline) return unavailable; // the acquire exhausted the budget -> fail closed
     return .{ .acquired = true, .incident = .none };
 }
+
+// ---- MS6.5.1 whole-recovery transaction (OPEN blocker bd zigBrowser-3gl). NOT IMPLEMENTED / NOT ARMED. --------
+// No production caller wires this in and there is NO `reaper_ready` gate yet. The approved held-flock design
+// (RoseCat b2f474b; plan rev 28) is: ONE global flock held from the authoritative load through the fresh owner
+// check, held-fd `(dev,ino,uid,mode)` provenance, the typed census->kill->fresh-census FIXED POINT, marker unlink,
+// `rmdir` and the atomic ledger retirement (released ONLY after the terminal publish result is known), all under
+// ONE absolute monotonic deadline over acquire AND held work. Any unreadable identity/provenance, incomplete
+// census, survivor, action error, deadline or publish error FAILS CLOSED and must never report a clean recovery
+// or `.already_gone`. The `actuator` is INJECTABLE: the production actuator is the already-reviewed reaper /
+// provenance C path (`zb_reaper_dir_fd_ok` + `zb_reaper_fixed_point`), never a second Zig implementation; tests
+// inject deterministic, signal-free fakes.
+
+/// The outcome of recovering ONE recorded entry under the held flock.
+pub const RecoveryAction = enum {
+    signalled, // proved dead, run censused->killed to a clean fixed point, entry retired
+    left, // a live same-owner entry (or a `left` entry) -> leave untouched
+    already_gone, // the entry was already retired by whichever recoverer held the flock before us
+    fail_closed, // unreadable identity/provenance, incomplete census, survivor, action error, deadline, publish error
+};
+
+/// The census->kill->fresh-census fixed-point verdict from the injected actuator (production: `zb_reaper_fixed_point`).
+pub const FixedPoint = enum { clean, survivors, incomplete };
+
+/// Recover one recorded entry under the one global ledger flock.
+///
+/// STUB for the failing-first red (bd zigBrowser-3gl). The whole-recovery transaction is NOT implemented and NOT
+/// armed: this takes the bounded flock under the shared deadline, but performs NO load / fresh-owner check / held-fd
+/// provenance / census-kill fixed point / marker-unlink / `rmdir` / retirement. It releases and returns
+/// `.fail_closed`, so nothing is EVER signalled or retired until the reviewed GREEN lands and arms it. The
+/// `actuator` is accepted (so the eventual GREEN and its reds share this signature) but never invoked here.
+pub fn recoverOneUnderLock(io: std.Io, gpa: std.mem.Allocator, dir: std.Io.Dir, basename: []const u8, clock: anytype, deadline_ms: i64, actuator: anytype) RecoveryAction {
+    _ = io;
+    _ = gpa;
+    _ = basename;
+    _ = actuator;
+    const lock_fd = std.posix.openat(dir.handle, LOCK_NAME, .{ .ACCMODE = .RDWR, .CREAT = true, .NOFOLLOW = true, .CLOEXEC = true }, 0o600) catch return .fail_closed;
+    switch (acquireWithinDeadline(clock, deadline_ms, 5, FlockAttempt{ .fd = lock_fd })) {
+        .acquired => {},
+        .busy, .failed => {
+            _ = std.posix.system.close(lock_fd);
+            return .fail_closed;
+        },
+    }
+    defer _ = std.posix.system.close(lock_fd); // the real transaction holds this across the WHOLE recovery
+    return .fail_closed; // NOT ARMED: no recovery performed -> never signal, never retire
+}
