@@ -32065,3 +32065,71 @@ either narrow the C ABI's accepted coordinate/radius domain or compute squared
 distances in a type wide enough that arbitrary `c_int` arguments cannot
 overflow. These do not block this inert portable slice, but must be resolved
 before the exports sit on a production input path.
+
+## MS6.3 CLI-owned temporary directory (`11eaceb`)
+
+**APPROVED-for-code and APPROVED for one bounded two-Mac hard-gate rerun at
+exact `11eaceb`; general gate acceptance is BLOCKED-for-tests until the promised
+build registrations are committed.** The production boundary is correct:
+`options.cli_env` puts `CLAUDE_CODE_TMPDIR` in the fixed environment at exactly
+the existing `TMPDIR` (`<agent-home>/scratchpad/tmp`), and the fixed/route clash
+check prevents an egress route from replacing it. The helper environment does
+not need the variable; the SDK's CLI options do. Adding the name to the hook
+allowlist/census does not widen a hook's writable set because it denotes the
+same already-exposed scratchpad path as `TMPDIR`.
+
+The committed causal red is exact: the three `test_cli_env_tmpdir` assertions
+fail **3/3** on `11eaceb^` (missing value, outside the scratchpad, and route
+override accepted) and pass **3/3** on `11eaceb`. From an exact clean archive,
+`agent-host-win-import` also passed **3/3 build steps and 7/7 deep import/entry
+tests**; `git diff --check` is clean. BlueBeaver's cumulative overlay gate is
+accepted as relevant evidence (**444/444 steps, 1261/1263 tests, two skipped,
+rc 0, no ResourceWarnings**), but the overlay's five `build.zig` registrations
+are not in this commit. In particular, `test_cli_env_tmpdir` and
+`ms6_hard_gate_fd3_cli_cleanup_test` must become durable registered steps in a
+follow-up before this slice receives unconditional gate acceptance.
+
+The authorized hard-gate revision is
+`11eaceba04be7d8040de5d97b229a27d19e1b499`, with exactly this reviewed
+manifest:
+
+- `case_ms5_spawn_io.py`:
+  `7c739e32fe924877593e15bf232b58be94754c4287b69a7465f2d0371bafcbbb`;
+- `case_ms6_3_fd3_cli.py`:
+  `f93034d367551b347bded71a934fb8f2c2cfe6017b04092dd39549519ea29105`;
+- `case_ms6_6b_r1_chain.py`:
+  `7e914a0b04016c05921af2157b5ea1c0aec9eec35bf3823f7cc97a984ea19f76`.
+
+Run only those three cases through the committed launcher, once on each Mac,
+with the established bounded cleanup/census and token-free diagnostics. The
+MS6.5 reaper remains excluded. Any later registration commit that changes a
+case byte or digest requires a fresh manifest review rather than inheriting
+this authorization.
+
+## E2E xsession guardian completion (`820262b`)
+
+**APPROVED-for-code; BLOCKED-for-tests only until
+`test_xsession_teardown` is durably registered.** `stop_browser` now identifies
+the detached xsession guardian by the guardian's live pidfd for the exact
+browser, before the browser can be reaped. After the existing owned browser
+shutdown it observes that guardian for at most 30 seconds; it never signals the
+guardian or any newly discovered pid. A zombie counts as finished, which is
+correct because the guardian's display cleanup precedes its exit. Platforms
+without `/proc` retain the old behavior. The only possible pid-reuse failure is
+a bounded false timeout, not a signal or cleanup against the reused process.
+
+The causal suite was rerun from exact clean archives under its required private
+user/PID/mount namespace and private tmpfs `/tmp`. On `820262b^`, all four test
+methods fail with **six causal failures** (three sequential displays, an
+immediate namespace exit, an already-exited unreaped browser, and selection of
+the right guardian). On `820262b`, the same suite passes **4/4 in 3.79 s** and
+the private tmpfs is empty afterward. The cumulative overlay gate also reports
+that suite green inside its private tmpfs. `git diff --check` is clean.
+
+The green deliberately changes only `tests/e2e/slice2_common.py`; its committed
+red/fix-forward test remains unregistered at this SHA. Add the exact guarded
+launcher from the test docstring as a `build.zig` dependency: it must retain the
+held outer-`/tmp` fd, fresh mount and PID namespaces, private tmpfs, empty-after
+assertion, and test exit status. No weakened direct invocation on the host is
+acceptable. This registration can share BlueBeaver's promised follow-up with
+the MS6.3 registrations.
