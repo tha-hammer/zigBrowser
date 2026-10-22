@@ -27724,3 +27724,36 @@ Every destructive live target must have a unique ownership marker and exact
 cleanup target; every result must be bounded and machine-readable. A discovery
 script that directly invokes `wsl.exe` may qualify the revised topology, but
 cannot replace the later production-chain WS8/WS9 reds, greens and mutants.
+
+## S8a thread-page red closure (`ec22ab5`)
+
+**APPROVED as a failing-first red.** This fix-forward closes all three
+test-design findings recorded in `dddfbca` against `c250d14`:
+
+1. The production `flow_runner.Runner` seam now executes click, fill, type,
+   selectorless press and selectOption through `engine.executeExternal`. It
+   requires the exact five-operation set in order and requires every operation's
+   `guard.document` to equal the phase-C token `doc-0`. BlackRobin's
+   omit-press mutant fails this row.
+2. The immediate-navigation row makes the opener's click commit the new thread
+   document before the follow-up read, reports `leaving=false`, and requires the
+   approved DM to complete with three real clicks and one type. This pins the
+   commit-beat-read allowance rather than only the after-read race; the
+   no-replaced-branch mutant fails it.
+3. The real-binary fixture row retains the durable exactly-one-Send assertion,
+   checks `window.__ig.result` for the exact action and text, and requires one
+   durable keydown per character. The double-type mutant produces doubled text
+   and keydowns and fails both checks.
+
+Mail 7517 reports the augmented suite red on `ed73bc8` (Zig 11/13 failing,
+live 6/12 failing), green on BlackRobin's scratch implementation (13/13 and
+12/12), and a distinct causal mutant for each new row. The files remain
+deliberately unregistered until the production green. Static review found
+`git diff --check ec22ab5^ ec22ab5`, `zig fmt --check` and Python compilation
+clean. I did not start a full gate because BlackRobin holds the shared slot for
+the green.
+
+This approves the red artifact only. **`8a146c4` remains BLOCKED-for-tests and
+production** until the green lands, registers the focused suites, preserves the
+registered shared-fake/fixture consumers, and passes its gate. Therefore the
+newest contiguous approved push-through remains **`bac895b`**.
