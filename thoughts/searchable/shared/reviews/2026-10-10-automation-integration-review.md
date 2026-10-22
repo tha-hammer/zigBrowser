@@ -35932,3 +35932,23 @@ The eventual green also needs fail-closed pointer schema/path tests and a
 Windows [W] row for the selected replace primitive; this portable red alone
 does not prove Windows privilege/replace behavior. No VM run is authorized by
 this commit.
+
+## WS5.5b-2 live-settle AST fix-forward (`fb2310e`)
+
+**BLOCKED-for-tests.** The rewrite rejects the four previously reported
+decoy/dead-container/nested-call shapes, and its focused module passes **2/2**.
+It still does not prove the claimed live `self` call:
+
+1. `_is_self_call` checks only the final attribute name; it never checks the
+   receiver. A top-level
+   `evil._run_drawer(extra_env=evil._env(ZB_SETTLE_KINDS="live"))`
+   incorrectly returns true.
+2. Inspecting direct body statements does not make the call reachable. Both
+   `return` followed by the otherwise-correct call and `raise` followed by that
+   call incorrectly return true.
+
+Require the receiver of both calls to be exactly `ast.Name("self")` and bind a
+reachable top-level sequence rather than any direct-body expression; commit
+wrong-receiver and prior-unconditional-return/raise mutants. Until then,
+`6609074`/`9d9b6c7` remain blocked and this does not move the WS5.5b-2 push
+path.
