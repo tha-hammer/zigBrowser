@@ -98,11 +98,15 @@ def main(argv):
     add_turn_args(parser)
     args = parser.parse_args(argv)
     home = options.AgentHome(args.home)
-    value = token.read_token(3)
+    out = Emitter()
+    try:
+        value = token.read_token(3)
+    except (OSError, ValueError):  # no fd 3, or not a usable token: one fixed frame, as the chat helper (MS6.3)
+        out.emit("error", session="contract", code="auth", message="no usable token")
+        return 2
     environ = options.helper_environ(home, os.environ)
     os.environ.clear()
     os.environ.update(environ)
-    out = Emitter()
     try:
         asyncio.run(run_turn(args, value, out))
     except Exception as exc:  # reported as a frame; the message never carries the token

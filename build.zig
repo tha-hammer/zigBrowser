@@ -2347,6 +2347,13 @@ pub fn build(b: *std.Build) void {
         "-c",
         "py=$(tools/agent_host_env.sh --check) || exit 1; cd agent/host/tests && env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 ZB_AGENT_HOST_PYTHON=\"$py\" \"$py\" -m unittest -v test_redact",
     });
+    // MS6.3 follow-up: contract-config without a usable fd-3 token writes one fixed error frame and exits 2 (no
+    // traceback, nothing after the read). Pinned interpreter; its runs live in an our-uid PID namespace.
+    const agent_host_contract_no_token = b.addSystemCommand(&.{
+        "sh",
+        "-c",
+        "py=$(tools/agent_host_env.sh --check) || exit 1; cd agent/host/tests && out=$(env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 ZB_AGENT_HOST_PYTHON=\"$py\" unshare --map-current-user --pid --fork --kill-child --mount-proc sh -c '\"$0\" -X dev -m unittest -v test_contract_no_token; exit $?' \"$py\" 2>&1); rc=$?; printf '%s\\n' \"$out\"; [ $rc -eq 0 ] || exit $rc; if printf '%s\\n' \"$out\" | grep -q ResourceWarning; then echo 'test_contract_no_token: ResourceWarning' >&2; exit 1; fi",
+    });
     const agent_host_chat_redact = b.addSystemCommand(&.{
         "sh",
         "-c",
@@ -3329,6 +3336,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&agent_host_chat_fit.step);
     test_step.dependOn(&agent_host_redact.step);
     test_step.dependOn(&agent_host_chat_redact.step);
+    test_step.dependOn(&agent_host_contract_no_token.step);
     test_step.dependOn(&agent_host_bridge.step);
     test_step.dependOn(&agent_host_netd.step);
     test_step.dependOn(&agent_host_netd_darwin.step);
