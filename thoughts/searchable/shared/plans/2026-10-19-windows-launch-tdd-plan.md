@@ -1720,11 +1720,13 @@ to run. Credential tests run inside the interactive session task.
    drafted in C4:** one bounded cross-process lock/lease (named mutex + lease file, TBD) shared by session
    admission, update/retire, recovery and uninstall, held exclusively across census AND action. **Still
    OPEN:** the concurrent-starter, crash-cut and stale-lease reds and their live proof.
-5. **OPEN — C5 namespaces do not compose.** A Windows-reachable listener must live in the distro host
-   netns; a broker "inside the agent's bwrap tree" cannot also appear at `127.0.0.1:51091/31337` to
-   hooks in their own private net namespaces. **Close:** name the trusted outer broker/netd namespace
-   and the per-hook endpoint handoff/relay into each hook netns, with hostile co-tenant auth/port-squat
-   negatives.
+5. **OPEN (proposal drafted) — C5 namespaces do not compose.** A Windows-reachable listener must live in
+   the distro host netns; a broker "inside the agent's bwrap tree" cannot also appear at
+   `127.0.0.1:51091/31337` to hooks in their own private net namespaces. **Proposal drafted in C5:** a
+   trusted OUTER broker in the distro host netns terminates the Windows connection (C1-authed, co-tenant/
+   port-squat fail-closed), and each hook (private netns) receives a HANDED socket endpoint (inherited fd /
+   bind-mounted AF_UNIX), not a listener. **Still OPEN:** the co-tenant/port-squat/namespace-boundary
+   acceptance reds and their live proof.
 6. **OPEN — whole-plan reconciliation.** Old dedicated-user/WFP and both-host-agent contracts remain
    in authoritative sections (see the scope banner at the top). **Close:** rewrite every such section
    for browser-on-both / agent-on-Win11-only / WSL `WslBackend`, leaving historical alternatives only
@@ -2110,15 +2112,18 @@ TCP in the proposed direction — the agent LISTENS in the distro, the browser C
 localhostForwarding** (WSL→Windows is firewall-blocked; see C1) — with the owner-only auth from WS8; that
 control link is not the agent's egress path.
 
-**C5 — Bridge topology across the WSL2 boundary (RoseCat 119108c).** The two hook bridges (`51091` TTS/notify,
-`31337` agent control) and the browser↔agent control link all cross the Windows↔distro boundary the SAME way
-as C1: **the in-distro side LISTENS on `127.0.0.1:<port>` and the Windows side connects** (the only direction
-that works without an admin firewall rule). Because two distros share one network namespace (observed in the discovery spike), a
-bridge listener is reachable by any co-tenant distro and any Windows-local process, so **each bridge carries
-the same per-session token + nonce/HMAC handshake and constant-time compare as C1** before any byte; a bridge
-is bound per session on a distinct port, closed and token-invalidated at session end. No bridge is ever bound
-`0.0.0.0`, none is published, and the Anthropic OAuth token never crosses a bridge (C1 separation). The bridge
-endpoints are part of the agent's bwrap tree so per-run teardown (C4) closes them.
+**C5 — Bridge topology across the WSL2 boundary (PROPOSAL / TBD; RoseCat 119108c + 9134b8b/7558 #5).** The
+browser↔agent control link and the two hook bridges (`51091` TTS/notify, `31337` agent control) cross the
+Windows↔distro boundary through **ONE trusted outer broker in the distro HOST netns** that the Windows side
+dials into (the only direction observed to work without an admin rule). The broker's host-netns control
+listener is bound `127.0.0.1:<ephemeral>` (never `0.0.0.0`, never published) and — because co-tenant distros
+share that host netns (observed in the discovery spike) — carries the **C1 per-session token + nonce/HMAC +
+constant-time compare** before any byte, with a squatted port failing closed. The **hooks do NOT listen**:
+each runs in its own private netns and receives a **handed socket endpoint** (inherited fd / bind-mounted
+`AF_UNIX`) from the broker, which multiplexes it over the held Windows connection (see the "C5 reverse relay"
+detail below for the exact namespace composition, framing and acceptance reds). The `zb-agent` control and
+`zb-hook` bridge endpoints are distinct capabilities; the Anthropic OAuth token never crosses any bridge (C1
+separation); per-run teardown (C4) closes the held connection and every handed endpoint.
 
 ### Egress mapping (WSL2 realization, per OD-W4)
 1. **netd runs inside the distro** (Unix-socket or loopback as on Linux), confined by its own bwrap; the
@@ -2143,21 +2148,39 @@ endpoints are part of the agent's bwrap tree so per-run teardown (C4) closes the
 
 Hooks run INSIDE the distro and initiate calls to the Windows loopback services `51091` (TTS/notify) and
 `31337` (agent control). WSL→Windows was observed in the discovery spike to fail (not yet a causal firewall proof), so a hook cannot dial Windows directly.
-The relay inverts the dial while keeping the allowed direction:
-- **Windows dials in once per session** to the in-distro control listener (the allowed Windows→WSL
-  direction, C1) and holds that connection for the session; it authenticates with the C1 session token
-  (nonce/HMAC, constant-time) before any byte.
-- **In-distro bridge broker:** a per-session broker (inside the agent's bwrap tree) listens on
-  `127.0.0.1:51091` and `127.0.0.1:31337` *within the distro*; a hook connecting there is framed onto the
-  held Windows connection as a new multiplexed stream.
+The relay inverts the dial while keeping the allowed direction. **Namespace composition (RoseCat 9134b8b/7558
+#5) — a PROPOSAL/TBD:** the broker that terminates the Windows connection and the endpoints the hooks use live
+in **different** namespaces, and must not be conflated:
+- **Trusted OUTER broker in the distro HOST netns** (NOT inside any agent/hook bwrap tree): a per-session
+  component — part of the session supervisor / netd side, running as the non-root agent uid in the distro's
+  default (host) network namespace. It owns the Windows-facing side.
+- **Windows dials in once per session** to that OUTER broker's listener on `127.0.0.1:<control port>` in the
+  host netns (the allowed Windows→WSL direction, C1) and holds the connection for the session; it
+  authenticates with the C1 session token (nonce/HMAC, constant-time) before any byte. **Because the distro
+  host netns is shared across co-tenant distros (observed in the discovery spike), this listener is reachable
+  by a co-tenant, so the token auth is mandatory and a squatted `<control port>` fails closed** (the broker
+  verifies it owns the port before "ready", and a session uses an ephemeral control port handed to Windows
+  via C1, not a fixed one).
+- **Per-hook endpoint handoff (NOT a 127.0.0.1 listener in the hook's netns):** each hook runs in its OWN
+  private network namespace (`bwrap --unshare-net`), so it has no route to the host-netns broker and the
+  broker cannot "appear at `127.0.0.1:51091/31337`" inside it. Instead the broker **pre-creates a
+  socketpair per hook and passes one end as an inherited fd into the hook's namespace at bwrap spawn** (or
+  bind-mounts a per-hook `AF_UNIX` socket into the hook's mount namespace). The hook's TTS/notify (`51091`)
+  and control (`31337`) clients are pointed at that handed endpoint — no network listener exists in the hook
+  netns at all. The broker multiplexes each hook endpoint onto the held Windows connection as a stream.
 - **Framing/backpressure/cancellation:** length-prefixed frames carry `(stream_id, op, bytes)`; each stream
   has an independent receive window (backpressure); either side sends `RST(stream_id)` to cancel; the broker
   bounds concurrent streams and frame size and drops oversize/pre-auth frames.
 - **Windows relay side** forwards each stream to the real `51091`/`31337` service and relays the reply; it
   never forwards to any other port. The `zb-agent` control stream and the `zb-hook` bridge streams are
-  distinct capabilities; a hook stream can reach only the two bridge ports, never the agent control op.
-- **Lifetime:** the tunnel is bound to the session; teardown (C4) closes the held connection, which resets
-  every open stream and the in-distro bridge listeners.
+  **distinct capabilities** (distinct handed endpoints); a hook stream can reach only the two bridge ports,
+  never the agent control op.
+- **Lifetime:** the tunnel is bound to the session; teardown (C4) closes the held Windows connection, which
+  resets every open stream and closes every handed hook endpoint.
+- **Acceptance reds (later, implementation-approved revision):** a co-tenant distro and a `zbother` process
+  against the host-netns control port must fail auth; a squatted control port must fail closed; a hook must
+  reach ONLY its handed bridge endpoints and never the agent-control op or any other host/LAN address; and
+  the namespace boundary (hook private netns ↔ host-netns broker) must be driven exactly, not assumed.
 
 ### Files / Green / Gate (WSL2 WS9)
 
