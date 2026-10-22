@@ -26795,3 +26795,75 @@ earlier read/select fault whose cleanup stop fails. The existing suite never
 causally enters the Darwin ps refusal path; its real behavior rows all use
 `/proc`. Agent Mail 7450 sent BlueBeaver the blockers and prohibited the Mac
 run pending a fix-forward.
+
+## MS6.5.1 ledger boundary grammar (`b27494d`, `50cfa92`)
+
+**`b27494d` APPROVED as the red. `50cfa92` APPROVED as the green; this closes
+the two `2f57b1e` findings.**
+
+The red independently perturbs each recorded `dev`, `ino`, `uid` and `mode`
+field, retains an exact-record positive control, and uses `.` with the runtime
+directory's own identity as the causal traversal case. From an exact clean
+export under a private user/PID namespace, its direct strict C build failed
+**5/12** checks: `.` reached and matched the runtime directory, while four
+other malformed names did not return the fail-closed `MISMATCH` state.
+
+At `src/agent_run_reaper.c:251-269`, the green validates the exact
+`zigbrowser-agent-<decimal pid>-<16 lowercase hex>` single-component grammar
+before `openat`; malformed input can therefore neither traverse nor reach a
+signal-authorizing `SWEEP`. The previously implemented four-field comparison
+remains exact. The two registered focused steps passed **7/7 build steps**
+from exact `50cfa92`, including provenance **9/9** and boundary **12/12**.
+`reaper_ready` remains false, and this review authorizes no destructive Mac
+run. Agent Mail 7453 sent JadeBeacon the approval.
+
+## R1 hard-gate owned-group seam (`6e5b4b3`, `a4bd71f`)
+
+**`6e5b4b3` APPROVED as the causal red. `a4bd71f` is BLOCKED pending the
+owned-group test-safety repair below and a truthful kill-safety description;
+no Mac hard-gate run is approved.**
+
+From an exact clean export, the red failed two of four fake-staged-host tests:
+the old case observed zero named-seam runs and therefore could not report the
+failed positive's return code. At exact `a4bd71f`, the registered fake-host
+suite passed **24/24** under a private user/PID namespace. The production case
+now spies and restores `setup.run_in_owned_group` in `finally`, and the
+manifest digest matches the changed case. That is the correct observation
+point.
+
+The safety claim at `tests/mac/hard_gate/case_ms6_6b_r1_chain.py:30-33` is
+false as written. The case has no direct `kill`, `killpg`, `send_signal` or
+`terminate` call, but it deliberately calls the real owned-group seam, which
+may send guarded `killpg` to its own child group. The fake-host unit does not
+exercise that signal path. Reword the claim and do not run the new manifest
+case on either Mac until the registered owned-group test obeys the mandatory
+signal-interposition rule and its fix-forward is approved. Agent Mail 7454
+sent BlueBeaver the hold.
+
+## Owned-group exceptional-path fix (`7307add`, `0ef12ea`)
+
+**`7307add` is BLOCKED-for-tests. `0ef12ea` is also BLOCKED-for-tests even
+though its production fix is correct.**
+
+The red is causal. At exact `7307add` under a private user/PID namespace it
+reported the expected **seven errors and one failure**: persistent Darwin
+ownership-read refusal escaped, the earlier read error won over the unproven
+cleanup, setup removed scratch on `Refused`, and selector construction left
+the spawned leader unstopped. At exact `0ef12ea`, the focused suite passed
+**6/6**. Production now constructs the selector inside the post-spawn guard,
+converts a failed/refused cleanup into `StopFailed(proc=leader)` caused by the
+earlier error, converts even a transient primary `Refused` after a successful
+retry into `StopFailed`, and makes setup retain scratch for either
+`StopFailed` or `Refused`. These changes address the logic in the earlier
+`fd1bd92` blocker.
+
+The registered test violates the mandatory post-incident rule. At
+`agent/host/tests/test_owned_group_failclosed.py:46-55`, it patches `Popen`
+but its `os.killpg` fake returns success for the selected leader. Every test
+that mocks or fakes `Popen` must patch both `os.kill` and `os.killpg` to
+**raise**, so no fake pid can ever cross a simulated successful signal call.
+The fake can record the permitted leader and then raise `ProcessLookupError`,
+which the production path already handles, while retaining `AssertionError`
+for any other pid. Until that is fixed forward, the test must not be treated
+as an approved plain-run signal oracle and the R1 Mac case remains off. Agent
+Mail 7454 sent BlueBeaver the blocker.
