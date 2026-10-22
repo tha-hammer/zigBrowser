@@ -1,94 +1,115 @@
-//! MS6.5.1 — RED-FIRST for the OPEN integration blocker (bd zigBrowser-3gl), strengthened per RoseCat 5a204f3: the
-//! real app-startup OWNER must call the startup-recovery core, EXACTLY ONCE, BEFORE command dispatch, and while the
-//! gate is false it must open/construct NOTHING. UNREGISTERED (built by no gate step), signal-free, no display, no
-//! Macs. `reaper_ready` stays false. RED now: the owner module `agent_startup_recovery` does not exist yet (compile
-//! error) and app.zig has no call (source assertions fail).
-//!
-//! Two independent kinds of proof (RoseCat 5a204f3 #4):
-//!   - BEHAVIORAL (the real owner seam): gate-false is zero-filesystem / zero-actuator / zero-recover; gate-true runs
-//!     each exactly once; a non-ok report is propagated, not swallowed.
-//!   - SOURCE (bound to the real startup path): balanced-brace fn bodies, comments & strings stripped, EXACT
-//!     qualified call expressions; the owner call appears exactly once before dispatch; the owner reaches
-//!     recoverAllAtStartup; the app-owned ledger name, one absolute deadline and the reviewed actuator are pinned.
+//! MS6.5.1 — RED-FIRST for the OPEN integration blocker (bd zigBrowser-3gl), strengthened per RoseCat 1d7dbd7:
+//! the real app-startup OWNER must call the startup-recovery core as an UNCONDITIONAL top-level statement, exactly
+//! once, BEFORE command dispatch; while the gate is false it opens/samples/constructs NOTHING; it closes the dir
+//! exactly once on any open path; it samples the clock once and the deadline is that now + the budget.
+//! UNREGISTERED, signal-free, no display, no Macs; `reaper_ready` false. RED now: the owner module
+//! `agent_startup_recovery` does not exist (compile error) and app.zig has no call.
 const std = @import("std");
 const recovery = @import("agent_run_recovery");
 const startup = @import("agent_startup_recovery");
 
-// ---- behavioral: the real owner seam, driven with spy ops ------------------------------------------------------
+// ---- behavioral: the real owner seam, driven with counted spy ops ----------------------------------------------
 
-const Counts = struct { env: usize = 0, open: usize = 0, build: usize = 0, recover: usize = 0, close: usize = 0 };
-const SpyActuator = struct {}; // never pinned in these rows; buildActuator just hands one back
+const Caps = struct {
+    env: usize = 0,
+    open: usize = 0,
+    build: usize = 0,
+    recover: usize = 0,
+    close: usize = 0,
+    now: usize = 0,
+    now_val: i64 = 1000,
+    captured_deadline: i64 = -1,
+};
+const SpyActuator = struct {};
+const CountedClock = struct {
+    caps: *Caps,
+    pub fn nowMs(self: CountedClock) i64 {
+        self.caps.now += 1;
+        return self.caps.now_val;
+    }
+    pub fn sleepMs(_: CountedClock, _: i64) void {}
+};
 const SpyOps = struct {
-    counts: *Counts,
+    caps: *Caps,
     result: recovery.StartupReport,
     pub fn runtimeDir(self: SpyOps) ?[]const u8 {
-        self.counts.env += 1;
-        return "/nonexistent-zb-runtime"; // never opened for real below
+        self.caps.env += 1;
+        return "/nonexistent-zb-runtime";
     }
     pub fn openDir(self: SpyOps, io: std.Io, path: []const u8) !std.Io.Dir {
         _ = io;
         _ = path;
-        self.counts.open += 1;
-        return std.Io.Dir.cwd(); // a handle, no real filesystem open
+        self.caps.open += 1;
+        return std.Io.Dir.cwd();
     }
     pub fn closeDir(self: SpyOps, io: std.Io, dir: *std.Io.Dir) void {
         _ = io;
         _ = dir;
-        self.counts.close += 1;
+        self.caps.close += 1;
+    }
+    pub fn clock(self: SpyOps, io: std.Io) CountedClock {
+        _ = io;
+        return .{ .caps = self.caps };
+    }
+    pub fn ledgerName(_: SpyOps) []const u8 {
+        return "runs.json";
     }
     pub fn buildActuator(self: SpyOps) SpyActuator {
-        self.counts.build += 1;
+        self.caps.build += 1;
         return .{};
     }
-    pub fn recover(self: SpyOps, io: std.Io, gpa: std.mem.Allocator, dir: std.Io.Dir, sub: []const u8, clock: anytype, deadline_ms: i64, actuator: anytype) recovery.StartupReport {
+    pub fn recover(self: SpyOps, io: std.Io, gpa: std.mem.Allocator, dir: std.Io.Dir, sub: []const u8, clk: anytype, deadline_ms: i64, actuator: anytype) recovery.StartupReport {
         _ = io;
         _ = gpa;
         _ = dir;
         _ = sub;
-        _ = clock;
-        _ = deadline_ms;
+        _ = clk;
         _ = actuator;
-        self.counts.recover += 1;
+        self.caps.recover += 1;
+        self.caps.captured_deadline = deadline_ms;
         return self.result;
     }
 };
 
-test "#3 gate FALSE: the owner opens NOTHING, constructs NO actuator, and does not recover (zero ops)" {
+test "gate FALSE: zero ops — no env, no open, no clock sample, no actuator, no recover, no close" {
     const io = std.testing.io;
     const gpa = std.testing.allocator;
-    var counts = Counts{};
-    const rep = startup.recoverLeftoverAgentRunsWith(false, io, gpa, SpyOps{ .counts = &counts, .result = .{ .status = .ran } });
+    var caps = Caps{};
+    const rep = startup.recoverLeftoverAgentRunsWith(false, io, gpa, SpyOps{ .caps = &caps, .result = .{ .status = .ran } });
     try std.testing.expectEqual(recovery.StartupStatus.disabled, rep.status);
-    try std.testing.expectEqual(@as(usize, 0), counts.env); // no environment read
-    try std.testing.expectEqual(@as(usize, 0), counts.open); // zero filesystem
-    try std.testing.expectEqual(@as(usize, 0), counts.build); // zero actuator construction
-    try std.testing.expectEqual(@as(usize, 0), counts.recover); // and no recovery call
+    inline for (.{ caps.env, caps.open, caps.build, caps.recover, caps.close, caps.now }) |c| {
+        try std.testing.expectEqual(@as(usize, 0), c);
+    }
 }
 
-test "#2 gate TRUE: the owner opens, builds and recovers EXACTLY once" {
+test "gate TRUE: env/open/build/recover each once; close once; clock sampled ONCE; deadline = now + budget" {
     const io = std.testing.io;
     const gpa = std.testing.allocator;
-    var counts = Counts{};
-    const rep = startup.recoverLeftoverAgentRunsWith(true, io, gpa, SpyOps{ .counts = &counts, .result = .{ .status = .ran } });
+    var caps = Caps{ .now_val = 1000 };
+    const rep = startup.recoverLeftoverAgentRunsWith(true, io, gpa, SpyOps{ .caps = &caps, .result = .{ .status = .ran } });
     try std.testing.expectEqual(recovery.StartupStatus.ran, rep.status);
-    try std.testing.expectEqual(@as(usize, 1), counts.env);
-    try std.testing.expectEqual(@as(usize, 1), counts.open);
-    try std.testing.expectEqual(@as(usize, 1), counts.build);
-    try std.testing.expectEqual(@as(usize, 1), counts.recover); // exactly once
+    try std.testing.expectEqual(@as(usize, 1), caps.env);
+    try std.testing.expectEqual(@as(usize, 1), caps.open);
+    try std.testing.expectEqual(@as(usize, 1), caps.build);
+    try std.testing.expectEqual(@as(usize, 1), caps.recover);
+    try std.testing.expectEqual(@as(usize, 1), caps.close); // exactly one close after a successful open (no-close mutant -> 0)
+    try std.testing.expectEqual(@as(usize, 1), caps.now); // clock sampled exactly once
+    try std.testing.expectEqual(@as(i64, 1000) + startup.STARTUP_BUDGET_MS, caps.captured_deadline); // one now + budget
 }
 
-test "#4 a non-ok report is PROPAGATED by the owner, never swallowed" {
+test "a non-ok report is PROPAGATED, never swallowed; the dir is still closed exactly once" {
     const io = std.testing.io;
     const gpa = std.testing.allocator;
-    var counts = Counts{};
+    var caps = Caps{};
     const non_ok = recovery.StartupReport{ .status = .ran, .fail_closed = 1 };
     try std.testing.expect(!non_ok.ok());
-    const rep = startup.recoverLeftoverAgentRunsWith(true, io, gpa, SpyOps{ .counts = &counts, .result = non_ok });
-    try std.testing.expect(!rep.ok()); // the owner returns the non-ok report
+    const rep = startup.recoverLeftoverAgentRunsWith(true, io, gpa, SpyOps{ .caps = &caps, .result = non_ok });
+    try std.testing.expect(!rep.ok());
     try std.testing.expectEqual(@as(usize, 1), rep.fail_closed);
+    try std.testing.expectEqual(@as(usize, 1), caps.close); // closed on the recovery path too
 }
 
-// ---- source helpers: strip comments/strings, extract balanced fn bodies, exact qualified-call counting ----------
+// ---- source helpers: strip comments + "..." strings + `\\` multiline strings; balanced bodies; brace depth ------
 
 fn stripZig(gpa: std.mem.Allocator, src: []const u8) ![]u8 {
     var out = try gpa.alloc(u8, src.len);
@@ -96,6 +117,10 @@ fn stripZig(gpa: std.mem.Allocator, src: []const u8) ![]u8 {
     var i: usize = 0;
     while (i < src.len) {
         if (src[i] == '/' and i + 1 < src.len and src[i + 1] == '/') {
+            while (i < src.len and src[i] != '\n') i += 1;
+            continue;
+        }
+        if (src[i] == '\\' and i + 1 < src.len and src[i + 1] == '\\') { // Zig `\\` multiline string line
             while (i < src.len and src[i] != '\n') i += 1;
             continue;
         }
@@ -118,11 +143,11 @@ fn stripZig(gpa: std.mem.Allocator, src: []const u8) ![]u8 {
         n += 1;
         i += 1;
     }
-    return gpa.realloc(out, n); // shrink to the exact length so the caller frees the right allocation
+    return gpa.realloc(out, n);
 }
 
-/// The brace-balanced body of `decl` (a `[pub ]fn name(` prefix) in already-stripped `src`. Empty if absent.
-fn fnBodyBalanced(src: []const u8, decl: []const u8) []const u8 {
+/// The brace-balanced body of `decl` (a `fn`/`struct` prefix) in already-stripped `src`. Includes the outer braces.
+fn balancedBody(src: []const u8, decl: []const u8) []const u8 {
     const at = std.mem.indexOf(u8, src, decl) orelse return "";
     var i = at + decl.len;
     while (i < src.len and src[i] != '{') i += 1;
@@ -139,6 +164,16 @@ fn fnBodyBalanced(src: []const u8, decl: []const u8) []const u8 {
     return "";
 }
 
+fn braceNet(s: []const u8, pos: usize) i64 {
+    var d: i64 = 0;
+    var i: usize = 0;
+    while (i < pos) : (i += 1) {
+        if (s[i] == '{') d += 1;
+        if (s[i] == '}') d -= 1;
+    }
+    return d;
+}
+
 fn countOcc(hay: []const u8, needle: []const u8) usize {
     var n: usize = 0;
     var i: usize = 0;
@@ -153,55 +188,54 @@ fn readSrc(gpa: std.mem.Allocator, path: []const u8) ![]u8 {
     return std.Io.Dir.cwd().readFileAlloc(std.testing.io, path, gpa, .limited(1 << 20));
 }
 
-// ---- source link 1 (app.zig): runWithIo calls the owner EXACTLY ONCE, BEFORE dispatch -------------------------
+// ---- source link 1 (app.zig): the owner call is an UNCONDITIONAL top-level statement, once, before dispatch -----
 
-test "link1: app.runWithIo calls recoverLeftoverAgentRuns exactly once, before command dispatch" {
+test "link1: runWithIo calls the owner once, unconditionally at top level, before command dispatch" {
     const gpa = std.testing.allocator;
     const raw = try readSrc(gpa, "src/app.zig");
     defer gpa.free(raw);
     const src = try stripZig(gpa, raw);
     defer gpa.free(src);
 
-    // the import path is a STRING literal, so check the RAW source (stripZig blanks string contents).
     try std.testing.expect(std.mem.indexOf(u8, raw, "@import(\"agent_startup_recovery\")") != null);
 
-    // the call-site proof runs on the STRIPPED, brace-balanced runWithIo body (no comment/string false matches).
-    const body = fnBodyBalanced(src, "pub fn runWithIo(");
+    const body = balancedBody(src, "pub fn runWithIo(");
     try std.testing.expect(body.len != 0);
+
+    // the dispatch marker MUST be present (so "before dispatch" is meaningful, not vacuous).
+    const dispatch_at = std.mem.indexOf(u8, body, "switch (command)");
+    try std.testing.expect(dispatch_at != null);
 
     const call = "agent_startup_recovery.recoverLeftoverAgentRuns(";
     try std.testing.expectEqual(@as(usize, 1), countOcc(body, call)); // exactly once (duplicate-call mutant -> 2)
 
     const call_at = std.mem.indexOf(u8, body, call).?;
-    const dispatch_at = std.mem.indexOf(u8, body, "switch (command)") orelse body.len;
-    try std.testing.expect(call_at < dispatch_at); // BEFORE dispatch (branch-only / after-dispatch mutants -> fail)
+    try std.testing.expect(call_at < dispatch_at.?); // before dispatch (branch-only / after-dispatch -> fail)
+    try std.testing.expectEqual(@as(i64, 1), braceNet(body, call_at)); // UNCONDITIONAL top-level (if (false) {..} -> depth 2)
 }
 
-// ---- source link 2 (the owner module): RealOps.recover reaches the gated core; pins ----------------------------
+// ---- source link 2 (the owner module): RealOps body carries the ledger arg, actuator and core call --------------
 
-test "link2: the owner's RealOps.recover reaches recoverAllAtStartup; ledger name, deadline and actuator pinned" {
+test "link2: RealOps carries the ledger arg, the reviewed actuator and the core call; seam pins one deadline" {
     const gpa = std.testing.allocator;
     const raw = try readSrc(gpa, "src/agent_startup_recovery.zig");
     defer gpa.free(raw);
     const src = try stripZig(gpa, raw);
     defer gpa.free(src);
 
-    // RealOps.recover delegates to the gated core (the second call link, independent of link1) — CODE, stripped.
-    const recover_body = fnBodyBalanced(src, "pub fn recover(");
-    try std.testing.expect(recover_body.len != 0);
-    try std.testing.expect(std.mem.indexOf(u8, recover_body, "recovery.recoverAllAtStartup(") != null);
+    // scope strictly to the RealOps struct body (a decoy string/comment outside it, or stripped away, does not count).
+    const realops = balancedBody(src, "pub const RealOps = struct");
+    try std.testing.expect(realops.len != 0);
+    try std.testing.expect(std.mem.indexOf(u8, realops, "recovery.recoverAllAtStartup(") != null); // the core call
+    try std.testing.expect(std.mem.indexOf(u8, realops, "ConcreteActuator(recovery.DarwinWiring)") != null); // actuator
+    const realops_raw = balancedBody(raw, "pub const RealOps = struct");
+    try std.testing.expect(std.mem.indexOf(u8, realops_raw, "\"runs.json\"") != null); // the app-owned ledger argument
 
-    // the gated owner seam pins ONE absolute deadline (CODE, stripped) and the app-owned ledger name (STRING, raw).
-    const seam = fnBodyBalanced(src, "pub fn recoverLeftoverAgentRunsWith(");
+    // seam pins ONE absolute deadline (one sampled now + the budget) and readiness bound to the gate.
+    const seam = balancedBody(src, "pub fn recoverLeftoverAgentRunsWith(");
     try std.testing.expect(seam.len != 0);
-    try std.testing.expectEqual(@as(usize, 1), countOcc(seam, "+ STARTUP_BUDGET_MS")); // ONE absolute deadline
-    try std.testing.expect(std.mem.indexOf(u8, raw, "\"runs.json\"") != null); // app-owned ledger location
-    try std.testing.expect(std.mem.indexOf(u8, raw, "@import(\"agent_run_recovery\")") != null);
-
-    // readiness bound to the gate (CODE, stripped); the reviewed Darwin actuator + its Mac compile boundary (CODE).
-    const prod = fnBodyBalanced(src, "pub fn recoverLeftoverAgentRuns(");
+    try std.testing.expectEqual(@as(usize, 1), countOcc(seam, "+ STARTUP_BUDGET_MS"));
+    const prod = balancedBody(src, "pub fn recoverLeftoverAgentRuns(");
     try std.testing.expect(std.mem.indexOf(u8, prod, "recovery.reaper_ready") != null);
-
-    // the reviewed actuator appears in buildActuator's return type (the signature, not its brace body) — CODE.
-    try std.testing.expect(std.mem.indexOf(u8, src, "ConcreteActuator(recovery.DarwinWiring)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, raw, "@import(\"agent_run_recovery\")") != null);
 }
