@@ -134,3 +134,15 @@ Exact minimum: retain the attachment as a candidate Mac failure input and the ex
 From an exact clean archive, `python3 -m py_compile tests/e2e/mac_ms2b_dialog_popup_id_test.py` exited 0 and the missing-browser probe exited 1 with `FAIL ...-binary-missing`, not a skip. The Mac red and its future production mutant remain unproved until the exact-commit/harness-digest approval and orchestrator release.
 
 **New push-safe SHAs from this queue:** `79a70d8` as an unregistered red draft, and `f974ae7` as the required fix-forward for `3164dbf`. No verdict is made on intervening `a65e15b`; therefore no aggregate branch-tip push approval is given. No Mac run is requested or authorized.
+
+## 2026-10-22 — 4pa.56 cookie-deadline red
+
+### `a65e15b` — late cookie-store completion seam and red
+
+**SEAM ACCEPTED; SAFE TO PUSH AS AN UNREGISTERED RED DRAFT.** `ZB_DEBUG_COOKIE_DELAY_MS` wraps the real `WKHTTPCookieStore` completion path used by get, set, and delete. It is centralized behind `zb_auto_test_hooks_enabled()` and, when unset, zero, malformed, or used without `--e2e-protocol`, invokes the handler inline as before. This is the correct socket-drivable substitute for the plan's undrivable C-only delay seam.
+
+The unregistered test is non-vacuous for all three operations: each row requires a fresh `zb-cookie-delay-hit`, an `action_timeout` response before the 12.5 s completion, and final live-job baseline/process liveness. It uses private HOME/profile state, all imports and reused helpers are live, and no raw helper bypass was found. From an exact clean archive, `python3 -m py_compile tests/e2e/mac_cookie_timeout_test.py` exited 0, the missing-browser probe exited 1 with an explicit failure, and `git diff --check a65e15b^ a65e15b` exited 0. Objective-C compilation and the runtime red remain unproved until a released both-Mac run.
+
+The green **must** extend `mac_ms2a_hook_inert_test.py` for hook 15 and catch a production mutant that drops `zb_auto_test_hooks_enabled()`. It must also register the red only with the green, retain an ordinary no-hook cookie success row to pin inline/default behavior, and demonstrate that independently deleting each get/set/delete `zb_job_inflight(job)` addition fails its corresponding row.
+
+With `a65e15b` approved, every committed implementation/documentation SHA in the ancestry since reviewed baseline `5ccf442` now has either a direct push-safe verdict or a reviewed fix-forward closing its block (`e818499` by `3b81737` + `843cf3d`; `3164dbf` by `f974ae7`). **The committed branch tip is therefore push-safe as a whole**, with the recorded unregistered-red/scoped qualifications. The unrelated untracked `tests/app_profile_dir_macos_test.zig` is not part of that tip and was not reviewed or touched. No Mac run is requested or authorized.
