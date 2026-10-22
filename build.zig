@@ -2410,6 +2410,15 @@ pub fn build(b: *std.Build) void {
         "-c",
         "py=$(tools/agent_host_env.sh --check) || exit 1; cd agent/host/tests && env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 ZB_AGENT_HOST_PYTHON=\"$py\" \"$py\" -m unittest -v test_unit",
     });
+    // WS7.3 [L] (RoseCat 1a06bb0): the portable launcher contract — direct [claude_exe, *args], case-insensitive
+    // .bat/.cmd refusal, exit-code propagation, wait+reap. Platform-neutral stdlib; the [W] e2e drives the native
+    // zb-claude.exe in the session Job.
+    const agent_host_launcher_contract = b.addSystemCommand(&.{
+        "sh",
+        "-c",
+        "py=$(tools/agent_host_env.sh --check) || exit 1; cd agent/host/tests && env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 ZB_AGENT_HOST_PYTHON=\"$py\" \"$py\" -m unittest -v test_launcher_contract",
+    });
+    b.step("test-launcher-contract", "WS7.3 [L] portable launcher contract").dependOn(&agent_host_launcher_contract.step);
     // WS item b: the pure Windows helper branches — path containment, argv quoting
     // (CommandLineToArgvW), and the fail-closed job-object containment choice. Stdlib-only, platform-neutral.
     // test_wincontain_win32_import_safe pins that the live Job Object backend module imports on a non-Windows
@@ -3762,6 +3771,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&page_health_e2e.step);
     test_step.dependOn(&page_recover_e2e.step);
     test_step.dependOn(&agent_host_unit.step);
+    test_step.dependOn(&agent_host_launcher_contract.step); // WS7.3 [L] portable launcher contract
     test_step.dependOn(&agent_host_wincontain.step);
     test_step.dependOn(&agent_host_parent_watch.step);
     test_step.dependOn(&agent_host_setup_darwin.step);

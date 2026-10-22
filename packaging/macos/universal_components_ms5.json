@@ -80,6 +80,10 @@
     },
     {
       "role": "agent-host-package",
+      "path": "Frameworks/agent-host/zb_agent_host/launcher.py"
+    },
+    {
+      "role": "agent-host-package",
       "path": "Frameworks/agent-host/zb_agent_host/login.py"
     },
     {
