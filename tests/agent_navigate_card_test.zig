@@ -14,7 +14,9 @@
 //!   ending: `done` after an approved dispatch answered, `denied`, `expired`, `cancelled` (the
 //!   main window closed), `revoked` (the bound window's broker detached or stopped while the
 //!   card waited; the card is cancelled in the core too, so a late Approve in the main
-//!   drawer dispatches nothing). The drawer's `approvalend` row is made from it.
+//!   drawer dispatches nothing; and an Approve that wins after that stop, before the worker
+//!   looks again, still dispatches nothing: RoseCat 7698). The drawer's `approvalend` row is
+//!   made from it.
 //!
 //! On HEAD there is no `Broker.Approval` seam and no `Cards.deny`: this file does not compile
 //! there (the red). Unregistered until its green.
@@ -371,6 +373,24 @@ test "the bound window's broker detaches while its card waits: ended revoked, th
     settle();
     try testing.expectEqual(@as(usize, 0), r.engine.count());
     // A detached broker answers nothing: the window that would get it is gone.
+    try testing.expectEqual(@as(u32, 0), a.n.load(.acquire));
+    try expectShownThenEnded(r, .navigate, navigate_params, .revoked);
+}
+
+test "the bound window closes just as Approve wins (RoseCat 7698): revoked, never dispatched" {
+    // The worker polls every 10 ms. Between two polls the bound window's broker detaches and
+    // then the main drawer's Approve wins the still-waiting card: the worker's next look sees
+    // an approved card of a broker that stopped. The stop is checked first, so it is revoked.
+    const r = try Rig.create();
+    defer r.destroy();
+    var a: Answer = .{};
+    r.submit(navigate_tool, navigate_args, &a);
+    const id = try r.waitCard();
+    r.detach();
+    _ = r.cards.approve(id);
+    try r.waitEnded();
+    settle();
+    try testing.expectEqual(@as(usize, 0), r.engine.count());
     try testing.expectEqual(@as(u32, 0), a.n.load(.acquire));
     try expectShownThenEnded(r, .navigate, navigate_params, .revoked);
 }
