@@ -27661,3 +27661,66 @@ The newest contiguous approved push-through nevertheless remains
 `7a30c5c`, and reaching that closure would also include the still-open
 `8a146c4` S8a red range. Therefore `8a146c4` is the next independent blocker;
 the blocked `a527e72` WSL2 re-plan follows it.
+
+## S8a thread-page red fix-forward (`c250d14`)
+
+**BLOCKED-for-tests.** The unregistered red is a substantial improvement: the
+fake now exposes `documentToken.leaving`; an unrelated navigation to a valid
+thread path is refused; a real thread page with the wrong recipient refuses
+before focus/input; and fixture-server records make Send/refusal evidence
+survive document replacement. BlackRobin's mail 7512 supplies the expected
+red counts and shows all registered consumers of the shared fake/fixture still
+green on the exact red tree. Three causal gaps remain before the green can
+close `8a146c4`:
+
+1. The claimed all-verb test executes click/fill/type/selectOption but no
+   `dom.press`; its router table proves only parsing. Require an approved-flow
+   or runner-seam press, the exact five-verb observed set, and an omit-press
+   mutant.
+2. The new `after_read` row covers an unrelated navigation committing after
+   the token read, but not the valid race where the opener's navigation has
+   already committed before that read and therefore the new document reports
+   `leaving=false`. Require success for immediate `ClickNav{leaving=false}`
+   and a mutant that removes the commit-beat-read/replaced branch.
+3. The successful live row filters the durable records down to one Send and
+   removed the prior exact-text assertion. Double typing followed by one Send
+   can pass. Retain the exact resulting text and/or assert the successful
+   input record counts, with a double-type mutant.
+
+No focused run was started because BlackRobin held the shared gate slot for
+the green. The review is based on the exact four-path diff, `git diff --check`
+(clean), and the failing-first/consumer evidence in mail 7512.
+
+## WSL2 topology live-evidence pre-review
+
+The owner's Win11 WSL2 installation enables a real discovery pass, but the
+spike is evidence for the plan rather than production closure. Mail 7516 gave
+AzureRidge the acceptance matrix required in addition to import-as-user,
+automount/interop, transport, bwrap, shared-utility-VM and lifetime probes:
+
+- exact baseline/final host census and app-owned cleanup, with no global
+  `wsl --shutdown`, default/config/feature changes, other-distro mutation, or
+  Win10/file-server leg;
+- byte-carrying transport tests in both directions across AF_UNIX, IPv4,
+  IPv6 and vsock/hvsocket, including bind exposure and hostile user/distro
+  reachability, followed by one chosen transport;
+- an honest threat boundary (WSL does not isolate the owning Windows user),
+  a non-root Linux identity, and no same-user-readable capability-file claim;
+- authenticated, replay-bound, bounded control-channel negatives, with OAuth
+  token separation and no token in environment/argv/logs/files/control rows;
+- the exact production `LinuxBwrapBackend` argv under WSL, including denial of
+  WSLg/interop/mount integration surfaces and causal omit-policy mutants;
+- complete netd/hook/speech egress and bridge positives/negatives over IPv4,
+  IPv6, DNS, UDP, gateway, LAN/SMB, loopback and another distro;
+- a concrete held-handle filesystem broker (the removed WS0.5 fence cannot be
+  cited), adversarial path/TOCTOU rows, atomic copy-back and session isolation;
+- two-session process-tree teardown, detached-child/browser-crash/next-start
+  cleanup, and proof that normal teardown never terminates the shared distro;
+- decoy-distro blast-radius, rootfs/import provenance, update/rollback/reboot
+  state-machine, WSL-preserving uninstall, fixed fail-closed reasons, and a
+  final real-browser -> production backend -> distro/bwrap/netd closure.
+
+Every destructive live target must have a unique ownership marker and exact
+cleanup target; every result must be bounded and machine-readable. A discovery
+script that directly invokes `wsl.exe` may qualify the revised topology, but
+cannot replace the later production-chain WS8/WS9 reds, greens and mutants.
