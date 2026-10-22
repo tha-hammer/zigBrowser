@@ -17,14 +17,21 @@ Rows (each in a fresh browser, because today the first failure ends the process)
   2 after a ROUTED page.navigate, the page script sets `location` to a dead host: same assertions. This keeps
     RoseCat 38d121a #4: an untagged failure in a window that ran a routed nav is still reported.
   3 after the first finish, a click on a link whose response WebKit cannot display (an attachment): the
-    browser stays alive and page.list answers. The plan's row 3 says "a response the policy cancels", but
-    nav_policy.decide returns .use for every response, so no real response is ever cancelled; an
-    undisplayable response reaches the same failure handler (reported to the orchestrator).
+    browser stays alive, page.list answers, and the fixture really served /attach (else the row is vacuous).
+    Why not the plan's wording: plan row 3 says "a response the policy cancels", but nav_policy.decide
+    returns .use for EVERY response (src/nav_policy.zig, `.response => .use`), so no real response is ever
+    cancelled and that case cannot be driven through the production policy. An undisplayable response
+    fails the provisional navigation with a non-cancel error and reaches the same
+    handleLoadFailureForWebView exit path. Substitute accepted by the orchestrator (2026-10-22); plan fit
+    is SilverRidge's ruling.
   4 is tests/e2e/mac_ms2c_recover_slow_server_test.py (recovery reload past the 15 s timer).
   5 the kept contract: the primary window's INITIAL load of a dead host, before any finish, still exits with
     ZB_EXIT_LOAD_FAILED (5) and one LOAD_FAIL row. Flips if the owner picks option B.
 
 Failing assertions today (Mac): rows 1-3 `proc.poll() is None` (the process has exited with 5).
+
+Isolation: every launch gets a private HOME and its own --profile-dir under a per-row temp dir, never the
+account's default profile.
 """
 import argparse
 import http.server
@@ -98,8 +105,10 @@ class _Browser:
         self.socket_path = tmp / "automation.sock"
         env = dict(os.environ)
         env["ZIGBROWSER_SOCKET"] = str(self.socket_path)
+        env["HOME"] = str(tmp / "home")  # private HOME: never the account's own profile or caches
+        (tmp / "home").mkdir()
         self.proc = subprocess.Popen(
-            [str(browser), url, "--automation-api", "--e2e-protocol"],
+            [str(browser), url, "--automation-api", "--e2e-protocol", "--profile-dir", str(tmp / "profile")],
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env,
             start_new_session=True,
         )

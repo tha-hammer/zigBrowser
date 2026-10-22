@@ -13,6 +13,9 @@ this file is in no gate script and no build.zig step.
 
 Failing assertion today (Mac): at t = 20 s after phase 2, `proc.poll() is None` (the process has exited
 with ZB_EXIT_TIMEOUT at ~15 s).
+
+Isolation: the launch gets a private HOME and its own --profile-dir under the temp dir, never the account's
+default profile.
 """
 import argparse
 import http.server
@@ -95,8 +98,11 @@ def main() -> int:
         socket_path = Path(tmp) / "automation.sock"
         env = dict(os.environ)
         env["ZIGBROWSER_SOCKET"] = str(socket_path)
+        env["HOME"] = str(Path(tmp) / "home")  # private HOME: never the account's own profile or caches
+        (Path(tmp) / "home").mkdir()
         proc = subprocess.Popen(
-            [str(browser), f"{fixture.base_url}/", "--automation-api", "--e2e-protocol"],
+            [str(browser), f"{fixture.base_url}/", "--automation-api", "--e2e-protocol",
+             "--profile-dir", str(Path(tmp) / "profile")],
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env,
             start_new_session=True,
         )
