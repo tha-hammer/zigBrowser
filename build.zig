@@ -1007,6 +1007,20 @@ pub fn build(b: *std.Build) void {
     }));
     const run_agent_config_check_tests = b.addRunArtifact(b.addTest(.{ .root_module = agent_config_check_tests_module }));
     run_agent_config_check_tests.skip_foreign_checks = true;
+    // Chat drawer S8 decision 16: the platform-free core of navigate/reload approval (the selector x the
+    // mode, the store, the main window's cards; src/agent_approval.zig).
+    const agent_approval_policy_tests_module = b.createModule(.{
+        .root_source_file = b.path("tests/agent_approval_policy_test.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    agent_approval_policy_tests_module.addImport("agent_approval", b.createModule(.{
+        .root_source_file = b.path("src/agent_approval.zig"),
+        .target = target,
+        .optimize = optimize,
+    }));
+    const run_agent_approval_policy_tests = b.addRunArtifact(b.addTest(.{ .root_module = agent_approval_policy_tests_module }));
+    run_agent_approval_policy_tests.skip_foreign_checks = true;
 
     // Chat drawer S4a: the token's shape and the explicit file store, read and
     // write (src/agent_secrets.zig).
@@ -3107,6 +3121,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_agent_helper_deadline_tests.step);
     test_step.dependOn(&run_agent_frames_deadline_tests.step);
     test_step.dependOn(&run_agent_config_check_tests.step);
+    test_step.dependOn(&run_agent_approval_policy_tests.step);
     test_step.dependOn(&run_config_schema_tests.step);
     test_step.dependOn(&run_automation_smoke_tests.step);
     test_step.dependOn(&run_automation_error_tests.step);
