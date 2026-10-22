@@ -28630,3 +28630,44 @@ was performed. Findings were mailed to AzureRidge as Agent Mail 7578. Because
 this cumulative DRAFT fix remains blocked, there is no new contiguous
 push-through: it remains the already-pushed `bac895b`; `85cdc46` is also
 independently blocked later in the range.
+
+## WS8/WS9 C4 admission/destructive-operation proposal (`60396d1`)
+
+**APPROVED only as documentation of an OPEN DRAFT proposal.** It does not
+close blocker 4, does not make WS8/WS9 implementation-ready and does not
+authorize implementation reds. The revision correctly puts one serialization
+boundary around session admission, update/retire, recovery and uninstall;
+requires a destructive claimant to hold exclusivity across both its census
+and its action; and names concurrent-starter, crash and stale-lease reds.
+
+The implementation-approved revision still must:
+
+1. Choose one stable kernel primitive, namespace/name and DACL. A named mutex
+   has no shared/downgrade operation, while a lock on an atomically replaced
+   `current` pointer can leave participants holding different stale objects.
+   The lock object must be stable, never replaced and opened without following
+   a reparse point.
+2. Replace the internally inconsistent “shared, then downgrades” wording with
+   a concrete protocol. Prefer a kernel-held shared lease for the complete
+   session, or specify an equally strong fenced protocol. Timeout alone must
+   never classify a paused or suspended live session as dead.
+3. Bound the external operation while the destructive claim is held, and
+   prove its child stopped before releasing that claim after a timeout.
+4. Specify abandoned-owner, boot/suspend/clock, fencing, marker-order and
+   idempotent non-atomic unregister behavior, with causal reds and mutants.
+5. Say the proposal is **intended to close** the census-to-act race; it has not
+   yet closed it.
+
+The verdict was mailed to AzureRidge as Agent Mail 7580. `git diff --check`
+was clean; this was a docs-only review with no live run.
+
+### Remaining honest-DRAFT wording defect after `ab98afd`
+
+The requested header-only `NOT REPAIRED / DO NOT RERUN` relabel is necessary
+for DRAFT condition 5, but it is not sufficient by itself. The current C6
+text still says **“Measured (`wsl_live_test.py`, causal)”** and presents the
+default/non-admin-group result as proven, although the fixed discovery spike
+has not run. That statement must become a draft requirement or be narrowed to
+the earlier explicit-`-u` observation. This was mailed to AzureRidge as Agent
+Mail 7581. Until both the spike status and this stale causal claim are fixed,
+the contiguous push-through remains the already-pushed `bac895b`.
