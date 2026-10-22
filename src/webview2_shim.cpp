@@ -33,6 +33,8 @@ constexpr wchar_t kWindowClassName[] = L"zigBrowserWebView2Host";
 constexpr int kWebView2LoadFailDomain = 2;
 constexpr UINT_PTR kNavigationTimerId = 1;
 constexpr UINT_PTR kFoldTimerId = 2;  // WS5.3: drives the drawer's fold (minimize) animation
+constexpr int kFoldBtnSize = 28;      // WS5.3: the "-" minimize control's edge length (chrome)
+constexpr int kFoldBtnMargin = 8;     // WS5.3: its inset from the open drawer's top-right corner
 constexpr UINT kNavigationTimeoutMs = 15000;
 // WS3: wakes the UI thread to run the queued jobs (the queue, not the message, owns them).
 constexpr UINT WM_ZB_JOB = WM_APP + 1;
@@ -74,6 +76,7 @@ struct AppState {
   int win_id = 1;
   HWND drawer_panel = nullptr;
   HWND drawer_icon = nullptr;
+  HWND drawer_min = nullptr;  // WS5.3: the visible "-" (minimize/fold) control on the open drawer (top-right)
   // WS5 e2e-only control-factory failure seam (ZIGBROWSER_AGENT_DRAWER_FAIL = "panel"|"icon"): forces a
   // CreateWindowExW failure branch for the test. Null unless --e2e-protocol AND the env is set.
   const char *force_drawer_fail = nullptr;
@@ -102,6 +105,7 @@ struct AppState {
   ZbDrawerRatios icon_ratios = {};
   bool has_icon_ratios = false;
   WNDPROC icon_proc = nullptr;
+  WNDPROC min_proc = nullptr;  // WS5.3: the subclassed "-" control's original proc
   bool icon_dragging = false;
   int icon_down_x = 0, icon_down_y = 0;
   ZbDrawerGeomRect icon_down_rect = {};
@@ -850,6 +854,11 @@ void resize_controller(AppState *app) {
       MoveWindow(app->drawer_panel, panel.x, panel.y, panel.w, panel.h, TRUE);
       ShowWindow(app->drawer_panel, SW_SHOW);
     }
+    if (app->drawer_min) {  // WS5.3: the "-" control sits at the open panel's top-right corner
+      MoveWindow(app->drawer_min, panel.x + panel.w - kFoldBtnSize - kFoldBtnMargin, panel.y + kFoldBtnMargin,
+                 kFoldBtnSize, kFoldBtnSize, TRUE);
+      ShowWindow(app->drawer_min, SW_SHOW);
+    }
     if (app->drawer_icon) {
       ShowWindow(app->drawer_icon, SW_HIDE);  // the icon hides while the drawer is open (D4)
     }
@@ -860,6 +869,9 @@ void resize_controller(AppState *app) {
   app->controller->put_Bounds(bounds);
   if (app->drawer_panel) {
     ShowWindow(app->drawer_panel, SW_HIDE);
+  }
+  if (app->drawer_min) {
+    ShowWindow(app->drawer_min, SW_HIDE);  // the "-" control is only present on the open drawer
   }
   if (app->agent_drawer_on && app->drawer_mounted && app->drawer_icon) {
     ZbDrawerGeomRect icon = {};
@@ -920,6 +932,9 @@ static void drawer_open_now(AppState *app) {
   snprintf(rect, sizeof rect, "%d,%d,%d,%d", panel.x, panel.y, panel.w, panel.h);
   emit_protocol3(app, "DRAWER", win, "open", rect);
   resize_controller(app);
+  if (app->drawer_min != nullptr) {
+    SetFocus(app->drawer_min);  // WS5.3: the open drawer puts focus on "-", so Escape folds immediately
+  }
 }
 
 // WS5.3: start the real fold (minimize) animation — the open panel transitions down INTO the icon's position
@@ -985,10 +1000,6 @@ static LRESULT CALLBACK icon_subclass_proc(HWND h, UINT msg, WPARAM wparam, LPAR
           drawer_open_now(app);
           return 0;
         }
-        if (wparam == VK_OEM_MINUS || wparam == VK_SUBTRACT) {  // '-' folds (minimizes) the open drawer
-          drawer_fold_start(app);
-          return 0;
-        }
         int kx = 0, ky = 0;
         if (wparam == VK_LEFT) kx = -1;
         else if (wparam == VK_RIGHT) kx = 1;
@@ -1012,6 +1023,36 @@ static LRESULT CALLBACK icon_subclass_proc(HWND h, UINT msg, WPARAM wparam, LPAR
     }
     if (app->icon_proc != nullptr) {
       return CallWindowProcW(app->icon_proc, h, msg, wparam, lparam);
+    }
+  }
+  return DefWindowProcW(h, msg, wparam, lparam);
+}
+
+// WS5.3: the "-" minimize control's window procedure (subclassed over a STATIC on the open drawer). This is the
+// REAL, user-reachable route to START the fold: a click folds; Escape or '-' on the focused control folds too
+// (the open drawer puts focus here, so Escape works immediately). The icon is hidden while the drawer is open,
+// so this control — not the icon — is the production fold trigger (RoseCat 02c39a4 #1).
+static LRESULT CALLBACK min_subclass_proc(HWND h, UINT msg, WPARAM wparam, LPARAM lparam) {
+  AppState *app = reinterpret_cast<AppState *>(GetWindowLongPtrW(GetParent(h), GWLP_USERDATA));
+  if (app != nullptr) {
+    switch (msg) {
+      case WM_LBUTTONDOWN:
+        SetFocus(h);  // so a subsequent Escape / '-' reaches the button
+        return 0;
+      case WM_LBUTTONUP:
+        drawer_fold_start(app);
+        return 0;
+      case WM_KEYDOWN:
+        if (wparam == VK_ESCAPE || wparam == VK_OEM_MINUS || wparam == VK_SUBTRACT) {  // Escape or '-' folds
+          drawer_fold_start(app);
+          return 0;
+        }
+        break;
+      default:
+        break;
+    }
+    if (app->min_proc != nullptr) {
+      return CallWindowProcW(app->min_proc, h, msg, wparam, lparam);
     }
   }
   return DefWindowProcW(h, msg, wparam, lparam);
@@ -1108,6 +1149,32 @@ void mount_drawer(AppState *app) {
     DestroyWindow(panel_hwnd);
     return;  // no mounted/live/rows
   }
+  // WS5.3: the visible "-" minimize control — the user-reachable production route that STARTS the fold (the icon
+  // is hidden while the drawer is open). Created hidden; resize_controller shows/places it top-right of the open
+  // panel. Fail closed: a create or subclass failure destroys all controls and does NOT mount (RoseCat 02c39a4 #1).
+  HWND min_hwnd = CreateWindowExW(0, L"STATIC", L"-", WS_CHILD | SS_CENTER | SS_NOTIFY | WS_TABSTOP,
+                                  0, 0, kFoldBtnSize, kFoldBtnSize, app->hwnd, nullptr, app->instance, nullptr);
+  if (min_hwnd == nullptr) {
+    fprintf(stderr, "zigBrowser: agent-drawer minimize control failed (error %lu); drawer not mounted\n",
+            static_cast<unsigned long>(GetLastError()));
+    fflush(stderr);
+    DestroyWindow(icon_hwnd);
+    DestroyWindow(panel_hwnd);
+    return;  // no mounted/live/rows
+  }
+  SetLastError(0);
+  LONG_PTR min_prev = SetWindowLongPtrW(min_hwnd, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(min_subclass_proc));
+  if (min_prev == 0 && GetLastError() != 0) {
+    fprintf(stderr, "zigBrowser: agent-drawer minimize subclass failed (error %lu); drawer not mounted\n",
+            static_cast<unsigned long>(GetLastError()));
+    fflush(stderr);
+    DestroyWindow(min_hwnd);
+    DestroyWindow(icon_hwnd);
+    DestroyWindow(panel_hwnd);
+    return;  // no mounted/live/rows
+  }
+  app->min_proc = reinterpret_cast<WNDPROC>(min_prev);
+  app->drawer_min = min_hwnd;
   app->icon_proc = reinterpret_cast<WNDPROC>(prev_proc);
   app->drawer_panel = panel_hwnd;
   app->drawer_icon = icon_hwnd;
@@ -1328,6 +1395,7 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam,
         app->drawer_mounted = false;
         app->drawer_panel = nullptr;
         app->drawer_icon = nullptr;
+        app->drawer_min = nullptr;
       }
       app->hwnd = nullptr;
     }
