@@ -90,7 +90,10 @@ ADMIN_GROUPS = {"root", "wheel", "adm", "sudo"}
 # across a connection failure; the reap then waits through the FULL known remote bound before failing.
 KEEPALIVE_SLEEP_S = 150
 SSH_DEAD_PEER_S = 15  # ServerAliveInterval=5 * ServerAliveCountMax=3
-REAP_BOUND_S = KEEPALIVE_SLEEP_S + SSH_DEAD_PEER_S + 30  # wait through the remote bound + dead-peer + slack
+# The reap bound is strictly greater than the remote `sleep` PLUS the SSH dead-peer bound, so the local ssh
+# client is GUARANTEED to exit (and thus be reaped) within the wait, even across a connection failure — the
+# keepalive can never outlive the reap. The 45 s margin keeps this invariant comfortable.
+REAP_BOUND_S = KEEPALIVE_SLEEP_S + SSH_DEAD_PEER_S + 45
 
 
 def _scrub(*cmd):
@@ -165,6 +168,30 @@ def may_destroy(name, reserved, baseline):
     pre-existing in the baseline. A planted/pre-existing name is thereby blocked from every destructive op.
     """
     return name in reserved and name not in baseline
+
+
+# The remote CIM producer for the listener census (bb17917 #1). `-ErrorAction Stop` + `catch` means a CIM
+# query/access ERROR emits UNREADABLE (fail closed), NEVER GONE; a present process with a null/empty
+# CommandLine is UNREADABLE; only genuine absence is GONE. Exactly ONE deterministic token is emitted.
+LISTENER_CENSUS_PS = (
+    "try {{ $p = Get-CimInstance Win32_Process -Filter \"ProcessId={pid}\" -ErrorAction Stop; "
+    "if ($p) {{ if ($p.CommandLine) {{ 'CMD=' + $p.CommandLine }} else {{ 'UNREADABLE' }} }} "
+    "else {{ 'GONE' }} }} catch {{ 'UNREADABLE' }}"
+)
+
+
+def listener_census_token(process_found, cim_error, command_line):
+    """Pure model of LISTENER_CENSUS_PS (mirrors it branch-for-branch) so the whole producer->consumer path is
+    tested offline. A CIM error is UNREADABLE (never GONE); a present-but-null CommandLine is UNREADABLE;
+    absence is GONE; otherwise CMD=<cmdline>.
+    """
+    if cim_error:
+        return "UNREADABLE"
+    if not process_found:
+        return "GONE"
+    if not command_line:
+        return "UNREADABLE"
+    return "CMD=" + command_line
 
 
 def classify_listener(pid, census_out, run_rand):
@@ -323,19 +350,18 @@ class WslTopologyLive(unittest.TestCase):
 
     @staticmethod
     def _reap_no_signal(p):
-        # (c101b1e #3 / mail 7680 #3) reaped-or-fail contract, NO signal ever sent to a host pid. We wait
-        # through the FULL known remote bound (REAP_BOUND_S = the in-distro `sleep` bound + the SSH dead-peer
-        # bound + slack): `wsl --terminate` normally ends the `sleep` so this returns at once, but even if the
-        # terminate failed or the peer died the keepalive is bounded by the remote `sleep` and by ServerAlive,
-        # so the local ssh client exits within REAP_BOUND_S and `wait()` REAPS it. Only if it is still alive
-        # past that whole bound do we RAISE (surfaced, never swallowed); we never fall back to a signal.
+        # (bb17917 #2) ALWAYS reap the Popen with NO signal. The remote `sleep` (KEEPALIVE_SLEEP_S) plus the
+        # SSH dead-peer bound (SSH_DEAD_PEER_S) is strictly LESS than REAP_BOUND_S, so the local ssh client is
+        # guaranteed to exit within the wait and `wait()` always REAPS it — `wsl --terminate` normally ends the
+        # `sleep` first so it returns at once. We never send a signal. A residual past the whole bound (made
+        # unreachable by the invariant below) is contained by the outer PID-namespace backstop.
         try:
             p.wait(timeout=REAP_BOUND_S)  # blocks until the child exits; returning here means it is reaped
         except subprocess.TimeoutExpired:
-            raise AssertionError(f"keepalive ssh still alive after the full remote bound ({REAP_BOUND_S}s); "
-                                 f"not reaped (no signal sent)")
-        if p.poll() is None:  # contract: must never return while the handle may still be alive
-            raise AssertionError("keepalive ssh wait() returned but handle still reports alive")
+            pass  # fall through to a final no-signal reap check
+        if p.poll() is None:  # final no-signal reap attempt failed -> surface (never signal; backstop contains)
+            raise AssertionError(f"keepalive ssh still alive past the full remote bound ({REAP_BOUND_S}s); "
+                                 f"not reaped (no signal sent; PID-namespace backstop contains it)")
 
     def _await_listener_gone(self):
         # (c101b1e #2) Bounded wait for the self-exiting Windows listener; census by identity, never a stop.
@@ -345,10 +371,7 @@ class WslTopologyLive(unittest.TestCase):
         deadline = time.time() + 30
         while time.time() < deadline:
             rc, out, e = ssh("powershell", "-NoProfile", "-Command",
-                             f"$p=Get-CimInstance Win32_Process -Filter \"ProcessId={self.win_listener_pid}\" "
-                             f"-ErrorAction SilentlyContinue; "
-                             f"if ($p) {{ if ($p.CommandLine) {{ 'CMD=' + $p.CommandLine }} else {{ 'UNREADABLE' }} }} "
-                             f"else {{ 'GONE' }}")
+                             LISTENER_CENSUS_PS.format(pid=self.win_listener_pid))
             if rc != 0:
                 raise AssertionError(f"listener identity census failed rc={rc}: {e.strip()}")
             tag = classify_listener(self.win_listener_pid, out, self.rand)
@@ -810,6 +833,39 @@ class WslSpikeOracle(unittest.TestCase):
         other = r"CMD=... \run-ZZZZZ\winlisten.ps1 0.0.0.0 39002"
         self.assertEqual(classify_listener(4242, other, "abcd1"), "NOT_OURS")
 
+    def test_listener_census_producer_consumer_path(self):
+        # (bb17917 #1) the WHOLE producer->consumer path: a CIM error NEVER yields GONE/OURS; present-unreadable
+        # is UNREADABLE; absence is GONE; identity decides OURS vs NOT_OURS.
+        rand = "abcd1"
+        ours = r"powershell ... C:\Users\zbtext\zb\wsl\run-abcd1\winlisten.ps1 0.0.0.0 39002"
+        cases = [
+            # (process_found, cim_error, command_line) -> expected final tag
+            ((False, False, None), "GONE"),
+            ((True, False, ours), "OURS"),
+            ((True, False, r"C:\Windows\System32\notepad.exe"), "NOT_OURS"),
+            ((True, False, ""), "UNREADABLE"),       # present, null/empty CommandLine
+            ((True, True, ours), "UNREADABLE"),      # CIM error though the process exists -> fail closed
+            ((False, True, None), "UNREADABLE"),     # CIM error -> UNREADABLE, never GONE
+        ]
+        for (found, err, cl), expected in cases:
+            token = listener_census_token(found, err, cl)
+            self.assertEqual(classify_listener(4242, token, rand), expected, (found, err, cl))
+
+    def test_census_ps_is_fail_closed(self):
+        # (bb17917 #1) the real remote producer must fail closed on a CIM error, not SilentlyContinue.
+        ps = LISTENER_CENSUS_PS.format(pid=1234)
+        self.assertIn("-ErrorAction Stop", ps)
+        self.assertNotIn("SilentlyContinue", ps)
+        self.assertIn("catch { 'UNREADABLE' }", ps)
+        self.assertIn("'GONE'", ps)
+        self.assertIn("'CMD='", ps)
+        self.assertIn("ProcessId=1234", ps)
+
+    def test_reap_bound_exceeds_remote_sleep(self):
+        # (bb17917 #2) the invariant that guarantees always-reap: remote sleep + dead-peer bound < reap bound.
+        self.assertLess(KEEPALIVE_SLEEP_S + SSH_DEAD_PEER_S, REAP_BOUND_S,
+                        "the keepalive can never outlive the reap bound")
+
     def test_planted_name_blocks_every_destructive_op(self):
         # (c101b1e #1) a prospective name that already exists in the baseline is a collision (refuse the run),
         # and may_destroy() blocks EVERY destructive op on it; only a reserved, non-pre-existing name is allowed.
@@ -852,8 +908,12 @@ class WslSpikeOracle(unittest.TestCase):
         self.assertEqual(f_ok.signalled, [], "no signal may be sent to a host pid")
         self.assertGreaterEqual(f_ok.wait_timeout, KEEPALIVE_SLEEP_S,
                                 "the reap must wait through the full known remote bound")
-        # still alive at the bound -> raise, still no signal
-        f_to = _Fake(wait_raises=True)
+        # timed out but the child had exited at the boundary -> final poll reaps it -> no raise, no signal
+        f_edge = _Fake(wait_raises=True, alive_after_wait=False)
+        reap(f_edge)
+        self.assertEqual(f_edge.signalled, [], "the always-reap path must not signal")
+        # timed out AND still alive -> raise, still no signal (backstop contains it)
+        f_to = _Fake(wait_raises=True, alive_after_wait=True)
         with self.assertRaises(AssertionError):
             reap(f_to)
         self.assertEqual(f_to.signalled, [], "a timed-out reap must not fall back to a signal")
