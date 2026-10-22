@@ -29323,3 +29323,68 @@ The fix-forward must enforce both canonical shapes, correct the fixtures,
 pin tag/value preservation and publication, implement the tagged comparison
 table including cross-kind equality, and register it. Agent Mail 7630 sent
 the findings to JadeBeacon.
+
+## MS6.3 resolved-scratchpad red (`301249d`)
+
+**APPROVED as a failing-first red.** The commit adds only two unregistered
+test files and changes no production path or registered gate. The unit red
+drives the production `sandbox_macos.dparams`, `launch_spec`, `launch` and
+`setup_sandbox` seams. It accepts one existing directory at its exact real
+spelling, while requiring fixed path-free refusal for a symlinked ancestor,
+a symlink leaf, a missing path and a non-directory, before any profile is
+materialized or written.
+
+The hard-gate red imports the real `case_ms6_3_fd3_cli.run` and the existing
+fake staged-host harness. Its replacement scratch root deliberately has the
+same `/tmp -> /private/tmp` shape as the two-Mac failure. It requires every
+positive, decoy and no-channel home, and therefore each `SCRATCHPAD` binding,
+to be built below the real run-root spelling; it also requires the case
+itself to emit the per-row realpath check. The harness intercepts both
+`os.kill` and `os.killpg`, and the focused run was additionally contained in
+a private user/PID namespace.
+
+From an exact clean export of `301249d`, the dependency-backed unit command
+produced the claimed 1 pass / 6 failures, all at the absent refusal or
+pre-materialization boundary. The namespaced hard-gate test produced the
+claimed six subtest failures: three homes retained the symlink spelling and
+all three per-row case checks were absent. These are causal failures of the
+agreed contract, not fixture, dependency or signal failures. Registration,
+the production fix, affected existing-fixture updates and a new reviewed
+case digest remain requirements of the green. Agent Mail sent this verdict
+to BlueBeaver.
+
+## Win32 drawer live-test plumbing (`6e4f818`)
+
+**APPROVED as a test-harness correction; `6a0ce63` remains BLOCKED.** The
+commit changes only `tests/windows/win_drawer_test.py`. Moving the two fixed
+e2e-only variables into `run.ps1` before `Start-Process` makes inheritance
+real; removing the unused Python `_ssh(env=...)` construction removes dead
+code. Changing the readiness expression from the impossible
+`DRAWER<TAB>open` shape to `DRAWER<TAB><positive-window-id><TAB>open<TAB>`
+matches the emitted schema. It does not relax any terminal assertion: the
+later parser still requires a whole valid row and the tree/icon/open and
+dock-geometry assertions are unchanged. The reported live Win11 pass is
+therefore credible evidence that these two harness bugs are repaired.
+
+It is not acceptance evidence for the native drawer green. The prior
+production and oracle blockers remain visible at this exact commit:
+
+1. The runner starts the process before assigning it to the Job, and ignores
+   failure from Job creation/configuration/assignment/termination
+   (`tests/windows/win_drawer_test.py:83-121,133-138`).
+2. Teardown uses a machine-wide top-level process-name count rather than Job
+   membership/accounting for the owned WebView2 tree
+   (`tests/windows/win_drawer_test.py:109,138-139`).
+3. The HWND comes from global `FindWindow`, rows are not required to share
+   the launched window id, and no independent child-control census exists
+   (`tests/windows/win_drawer_test.py:130,200-217`).
+4. Production marks the drawer mounted, increments the live count and emits
+   all rows without checking either `CreateWindowExW` result
+   (`src/webview2_shim.cpp:808-839`). A row-only/null-control implementation
+   still passes this live test.
+
+Thus `6e4f818` fixes the test bugs without weakening its assertions, but the
+WS5 chain still needs the previously requested production checks, a
+suspend/assign/resume Job lifecycle, owned-tree census and independent HWND
+oracle with causal old/new or mutant evidence. Agent Mail sent this split
+verdict to AzureRidge.
