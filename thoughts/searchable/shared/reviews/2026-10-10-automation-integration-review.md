@@ -31234,3 +31234,55 @@ immediate pre-`Popen` boundary would better match the wording, but it is not a
 separate blocker because the checked chain deliberately excludes a malicious
 same-UID process and the held fds remain alive through the spawn. Agent Mail
 sent the two test blockers to BlueBeaver.
+
+## `zigBrowser-3gl` causal-coverage fix-forward (`5308c83`)
+
+**BLOCKED-for-tests; keep this prototype unregistered and unarmed.** The
+fix-forward closes two of the three direct coverage gaps from `c74b2df`: a
+dropped proceed handshake now fails R1 closed before the signal phase, and a
+partial pipe-creation failure closes every created prefix. The positive
+parent-flock probe also proves R1 owns the lock before R2 is forked. In an
+exact clean export, the standalone binary passed **7/7** behind fd 9 in a
+private user/PID/mount namespace.
+
+The injectable waiter still encodes an unsafe hard-error transition.
+`sweepUntil` maps both a hard `waitpid` error and a deadline to `null`
+(`tests/agent_run_ledger_two_recoverer_proto_test.zig:181-190`), so
+`reapWithin` cannot distinguish lost child ownership from a still-owned child
+that merely timed out. It unconditionally calls `waiter.kill(pid)` after
+either outcome (`:196-210`). The supposedly fail-closed ECHILD-like row then
+requires that signal attempt (`:489-500,532-540`). Once wait reports that the
+pid is no longer this process's child, the pid may already have been reaped
+and reused; `pid > 1` is not sufficient ownership proof. The row therefore
+proves “returns null” while blessing a potentially foreign signal.
+
+Replace the nullable sweep result with distinct `exited`, `timed_out` and
+`wait_error` outcomes. Only a timeout while ownership remains proven may enter
+the guarded stop path; a hard wait error must return fail-closed **without any
+signal**, and its causal row must require `killed == false`. Carry that
+ownership-lost state into the fallback cleanup as well, so its unconditional
+kill cannot undo the fail-closed decision. Preserve the never-exits and
+exit-after-stop rows for the timeout branch. No production recovery is armed
+by this verdict.
+
+## Win32 WS5 post-kill run-directory retry (`679bdac`)
+
+**BLOCKED-for-tests; another three-row Win11 rerun is not yet authorized.**
+The change is narrow and retains exact per-run-root deletion plus fail-closed
+reporting. An exact clean export passed **42 offline tests** and skipped the
+seven VM rows. The previous `assign_fail` live body remains useful positive
+evidence: the force seam decoded, the launch failed as intended, the process
+and Job were gone, and no drawer row appeared.
+
+The new “about 60 seconds” bound is not actually a 60-second bound.
+`_run_drawer` now performs as many as 60 iterations, each containing **two**
+`_ssh` calls, while `_ssh` gives every call an independent 120-second timeout
+(`tests/windows/win_drawer_test.py:496-500,551-560`). A stalled connection can
+therefore renew the budget for hours; merely changing 20 to 60 also has no
+offline causal coverage. Use one absolute monotonic cleanup deadline, cap
+each remote operation to the remaining budget (or run one bounded remote
+cleanup loop), and add an injected-clock/executor row that proves transient
+post-kill failures beyond the old 20-second window can recover while deadline
+exhaustion still fails promptly. Then the exact three-row run may be
+reauthorized with the existing clean-export, pinned SSH/known-hosts,
+unique-root, owned-Job, no pid/name kill and stop-on-first-failure rules.
