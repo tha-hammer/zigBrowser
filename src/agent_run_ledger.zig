@@ -374,18 +374,16 @@ pub const RealClock = struct {
 /// monotonic `clock` is before the absolute `deadline_ms`, sleeping `backoff_ms` via the clock between tries; at
 /// the deadline, fail closed with `.busy`. ONE absolute deadline — NO try-count arithmetic (RoseCat e665676 #1).
 pub fn acquireWithinDeadline(clock: anytype, deadline_ms: i64, backoff_ms: i64, attempt: anytype) AcquireResult {
-    _ = clock; // RED (e665676 #1): ignores the clock/deadline — retry arithmetic instead of the absolute deadline
-    _ = deadline_ms;
-    _ = backoff_ms;
-    var tries: u32 = 0;
-    while (tries < 20) : (tries += 1) {
+    while (true) {
         switch (attempt.tryOnce()) {
             .acquired => return .acquired,
-            .failed => return .failed,
-            .busy => {},
+            .failed => return .failed, // a hard error -> fail closed
+            .busy => {
+                if (clock.nowMs() >= deadline_ms) return .busy; // at/past the absolute deadline -> fail closed
+                clock.sleepMs(backoff_ms); // cancellable backoff via the clock, then re-check the deadline
+            },
         }
     }
-    return .busy;
 }
 
 /// One non-blocking flock attempt on an already-open lock fd.
