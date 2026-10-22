@@ -975,7 +975,9 @@ class WinDrawerBehaviorsLive(_wd.WinDrawerLive):
             # WS5.5b-2: require the peak to EQUAL the 2 windows opened (both drawers concurrently live), not
             # merely positive — a serialized run or an unaccounted mount (peak == 1) must fail here.
             check_live_peak_matches(int(peak), int(final), 2)
-        self._run_drawer(extra_env=self._env(ZIGBROWSER_AGENT_DRAWER_WINDOWS="2"), body=body)
+        # WS5.5b-2 (RoseCat 35ff63f #2): settle on the TERMINAL `live` row — the shim's primary WM_CLOSE drives a
+        # clean shutdown that emits it, so the harness waits for it instead of tearing down at the first `open`.
+        self._run_drawer(extra_env=self._env(ZIGBROWSER_AGENT_DRAWER_WINDOWS="2", ZB_SETTLE_KINDS="live"), body=body)
 
     def test_ws5_5b2_closing_one_extra_drops_the_live_count_by_exactly_one(self):
         # WS5.5b-2 (RoseCat 5a204f3 #2): with 2 windows, closing ONE extra early (DestroyWindow -> the extra
@@ -986,7 +988,8 @@ class WinDrawerBehaviorsLive(_wd.WinDrawerLive):
         def body(r):
             validate_close_one_transcript(r["stdout"], 2)
         self._run_drawer(extra_env=self._env(ZIGBROWSER_AGENT_DRAWER_WINDOWS="2",
-                                             ZIGBROWSER_AGENT_DRAWER_EXTRA_CLOSE_ONE="1"), body=body)
+                                             ZIGBROWSER_AGENT_DRAWER_EXTRA_CLOSE_ONE="1",
+                                             ZB_SETTLE_KINDS="live"), body=body)  # WS5.5b-2 #2: terminal `live`
 
     def test_ws5_5b2_extra_fail_panel_drives_partial_cleanup(self):
         # WS5.5b-2 (RoseCat 5a204f3 #3): forcing the extra window's PANEL control to fail drives the partial-
@@ -996,7 +999,8 @@ class WinDrawerBehaviorsLive(_wd.WinDrawerLive):
             peak, final = validate_multiwindow_transcript(r["stdout"], 1)
             check_live(int(peak), int(final))  # peak 1 (primary only), final 0
         self._run_drawer(extra_env=self._env(ZIGBROWSER_AGENT_DRAWER_WINDOWS="2",
-                                             ZIGBROWSER_AGENT_DRAWER_EXTRA_FAIL="panel"), body=body)
+                                             ZIGBROWSER_AGENT_DRAWER_EXTRA_FAIL="panel",
+                                             ZB_SETTLE_KINDS="live"), body=body)  # WS5.5b-2 #2: terminal `live`
 
     def test_ws5_5b2_extra_fail_icon_drives_partial_cleanup(self):
         # The same for the ICON control failing: the partial extra window is destroyed and uncounted.
@@ -1004,7 +1008,8 @@ class WinDrawerBehaviorsLive(_wd.WinDrawerLive):
             peak, final = validate_multiwindow_transcript(r["stdout"], 1)
             check_live(int(peak), int(final))
         self._run_drawer(extra_env=self._env(ZIGBROWSER_AGENT_DRAWER_WINDOWS="2",
-                                             ZIGBROWSER_AGENT_DRAWER_EXTRA_FAIL="icon"), body=body)
+                                             ZIGBROWSER_AGENT_DRAWER_EXTRA_FAIL="icon",
+                                             ZB_SETTLE_KINDS="live"), body=body)  # WS5.5b-2 #2: terminal `live`
 
     def test_ws5_6_isolation_denied_and_census_unchanged(self):
         # WS5.6 (plan 1580-1582): the harness performs EXACTLY the named page-JS + socket reach attempts; each is
