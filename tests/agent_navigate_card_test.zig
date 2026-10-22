@@ -17,6 +17,9 @@
 //!   drawer dispatches nothing; and an Approve that wins after that stop, before the worker
 //!   looks again, still dispatches nothing: RoseCat 7698). The drawer's `approvalend` row is
 //!   made from it.
+//! - **`Broker.before_card_look`** (test seam, RoseCat 304a41b; production sets none): called on
+//!   the worker before each look at a waiting card, so a red can hold it there and force the
+//!   close-vs-Approve schedule.
 //!
 //! On HEAD there is no `Broker.Approval` seam and no `Cards.deny`: this file does not compile
 //! there (the red). Unregistered until its green.
@@ -377,23 +380,58 @@ test "the bound window's broker detaches while its card waits: ended revoked, th
     try expectShownThenEnded(r, .navigate, navigate_params, .revoked);
 }
 
-test "the bound window closes just as Approve wins (RoseCat 7698): revoked, never dispatched" {
-    // The worker polls every 10 ms. Between two polls the bound window's broker detaches and
-    // then the main drawer's Approve wins the still-waiting card: the worker's next look sees
-    // an approved card of a broker that stopped. The stop is checked first, so it is revoked.
+test "the bound window closes just as Approve wins (RoseCat 7698, 304a41b): revoked, never dispatched" {
+    // The schedule, forced with the broker's `before_card_look` seam: the worker is held just
+    // before its next look at the waiting card; the bound window's broker detaches; the main
+    // drawer's Approve then wins the card (asserted: it is still waiting, so Approve must win);
+    // the worker is released. It must see the stop before the approval: revoked, no dispatch.
     const r = try Rig.create();
     defer r.destroy();
+    var hold: Hold = .{};
+    r.b.before_card_look = .{ .ctx = &hold, .run = Hold.run };
     var a: Answer = .{};
     r.submit(navigate_tool, navigate_args, &a);
     const id = try r.waitCard();
+    hold.arm();
+    try hold.waitHeld();
     r.detach();
-    _ = r.cards.approve(id);
+    try testing.expect(r.cards.approve(id));
+    try testing.expectEqual(approval.Outcome.approved, r.cards.outcome(id).?);
+    hold.release();
     try r.waitEnded();
     settle();
     try testing.expectEqual(@as(usize, 0), r.engine.count());
     try testing.expectEqual(@as(u32, 0), a.n.load(.acquire));
     try expectShownThenEnded(r, .navigate, navigate_params, .revoked);
 }
+
+/// Holds the worker inside `before_card_look` once armed, until released.
+const Hold = struct {
+    armed: std.atomic.Value(bool) = .init(false),
+    held: std.atomic.Value(bool) = .init(false),
+    released: std.atomic.Value(bool) = .init(false),
+
+    fn run(ctx: *anyopaque) void {
+        const self: *Hold = @ptrCast(@alignCast(ctx));
+        if (!self.armed.load(.acquire) or self.released.load(.acquire)) return;
+        self.held.store(true, .release);
+        const until = fake.nowMs() + 10_000;
+        while (!self.released.load(.acquire) and fake.nowMs() < until) testing.io.sleep(.fromMilliseconds(1), .awake) catch {};
+    }
+    fn arm(self: *Hold) void {
+        self.armed.store(true, .release);
+    }
+    fn waitHeld(self: *Hold) !void {
+        const until = fake.nowMs() + 10_000;
+        while (!self.held.load(.acquire)) {
+            if (fake.nowMs() > until) return error.TestWorkerNotHeld;
+            testing.io.sleep(.fromMilliseconds(1), .awake) catch {};
+        }
+    }
+    fn release(self: *Hold) void {
+        self.released.store(true, .release);
+    }
+};
 
 test "no card, no show and no ending; no main window, no show and no ending" {
     {
