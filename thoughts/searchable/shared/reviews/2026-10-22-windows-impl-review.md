@@ -106,3 +106,36 @@ The approved red session is:
 3. Run `win_transport_test.py` once with the same executable as the probe-refactor regression; both transport tests must pass. Record commands/exit codes and explicitly verify that no remote `C:\Users\zbtext\zb\ws20-*` directory survives, because the borrowed cleanup helper does not itself assert after its final retry.
 
 The orchestrator's release and a free VM slot remain required. The network-row red is tracked under `zigBrowser-ong.7`; this review accepts it only as an unproven-row red, not as platform proof. A later product commit may be described as “green, registration pending,” but WS2b.0 cannot be accepted until `test-wv2-capabilities` and `windows-capabilities-live` are both registered as required by the existing R2 minimum.
+
+## WS2b.0 review — `90d2214` green, registration pending
+
+**Verdict: APPROVED as the WS2b.0 green implementation and APPROVED for one bounded Win11 VM green session at exact commit `90d2214a5553595c8c3df062567d4e36dd38886f`; BLOCK full WS2b.0 acceptance/closure until `windows-capabilities-live` is registered in the fail-on-skip `windows-live` aggregate and the approved green run passes.** This is the same registration/platform-proof requirement stated in the first R2 minimum, not a later preference. The VM slot is available after PinkOwl's completed attempt; the orchestrator's release is still required.
+
+The production path satisfies the substantive minimum. The real socket enters `handleRequestWith`, checks the envelope and token, and only then reaches `dispatchParsed` and `capabilitiesResult`. That method serializes `automation_platform.capabilitiesJson(running_backend)`, which in turn reads the production `adapterCapabilities` row; it does not hard-code the reported mode. The WebView2 row reports both input and network as `unproven`, with network ownership retained by `zigBrowser-ong.7`. The portable Zig plus real-executable socket test is registered as `test-wv2-capabilities` and is also a dependency of `zig build test`. The commit deliberately does not yet register the Windows test as `windows-capabilities-live`, so it cannot receive full acceptance under R2 item 3 or the plan's verification rule.
+
+I audited the three changed files and the exact-commit harnesses for dead imports, wrong-level calls, raw-helper bypasses and generated residue; no R3 defect was found. In a clean archive of the exact commit, with display/askpass variables unset and the signal-capable e2e inside an unshared PID namespace, `zig build -j4 test-wv2-capabilities` exited 0 with `runner=xvfb`, `ASSERTS 6`, and `PASS capabilities-rpc`; `zig test src/automation_platform.zig` exited 0 with 15/15 tests. I independently replayed all five production mutants against the registered step. WebView2 input=`cdp_input`, network=`supported`, disabled RPC dispatch, wrong running backend, and bypassed authentication each made the step exit 1 for the intended assertion. This proves the gate observes both production table fields, dispatch/wiring, actual-backend selection, and token enforcement.
+
+FoggyReef's completed red host session at `f310b4dbbd7887702f929f6cd49f047721e46017` is accepted as the planned Windows red: the build exited 0 with matching full-commit provenance; the Win11 marker was `zb-win11-m8-ws0-2026-10-20`; missing and wrong tokens produced `-32000`; the correct-token request produced the intended `-32601` with `ASSERTS 3`; the transport regression passed 2/2; and post-run checks found neither `ws20-*` directories nor a surviving browser/probe process.
+
+Reviewed SHA-256 values at `90d2214a5553595c8c3df062567d4e36dd38886f` are:
+
+- `tests/e2e/win_capabilities_test.py`: `24dbf6f8b45dccdd122ca646a9ccaed521dc58da946fb27b2110714e1ac87a57`
+- `tests/e2e/win_transport_test.py`: `309a48cc2009bcecbf0aa9ea3cba545cccae22f740a760c82760154cbf669a03`
+- `tests/windows/transport_probe.zig`: `d17f8f5de9c5e2b9310985120400142918bf442e1b5730b24c8855f1e3f6d1a6`
+- `tests/windows/build-on-windows.sh`: `1082b5fc44fae026fc4bc98eab411d87f8c3f8f12d8f70dad63e008fcf7ee1b8`
+
+The approved green session is one bounded run in a scratch clone checked out at exact `90d2214a5553595c8c3df062567d4e36dd38886f`, never the shared worktree:
+
+1. Unset `DISPLAY`, `WAYLAND_DISPLAY`, `XAUTHORITY` and `SSH_ASKPASS`; record the marker `zb-win11-m8-ws0-2026-10-20`; run `ZB_WIN11_HOST=127.0.0.1 ZB_BUILD_COMMIT=90d2214 ZB_BUILD_MODE=ReleaseSafe bash tests/windows/build-on-windows.sh` with no positional build step; and verify the fetched executable's `.sha` is the full approved commit.
+2. With that executable, run `ZB_WIN_GATE=1 ZB_WIN11_HOST=127.0.0.1 ZB_WIN_EXE=<scratch fetched exe> python3 -I tests/e2e/win_capabilities_test.py -v`. It must exit 0, print `ASSERTS 6`, retain `-32000` for missing/wrong tokens, return exactly the WebView2 row with both fields `unproven`, echo the id, and reject nonempty params with `-32602`.
+3. Run `win_transport_test.py` once with the same executable; both transport tests must pass. Record commands and exit codes, confirm the exact harness hashes above, and explicitly verify that no remote `C:\Users\zbtext\zb\ws20-*` or `C:\Users\zbother\zb\ws20-*` directory and no browser/probe process from this run survives.
+
+Any identity, provenance, hash, launch, authentication, transport, assertion-count, or cleanup mismatch is not an accepted green. Passing this session supplies the required real-platform row (and the D.5 live evidence), but the slice remains “green, registration pending” until the plan-named live step is registered and reviewed.
+
+## WS1.2 Win11 outcome — approved `0f2486b` session
+
+**Finding: the approved Win11 attempt is evidence against the WS0.4 scheduled-task runner, not a WS1.2 product defect. No WS1.2 platform behavior was reached or proved.**
+
+PinkOwl ran the previously approved exact commit `0f2486b65ee4d1844292fb403a2a82e6c4116107`. The build exited 0 and the fetched executable's `.sha` matched the full commit. `m8_live_test.py` then exited 1: all three intended Win11 rows failed at `schtasks /create` with `ERROR: Access is denied.`, before a task or browser existed, so it correctly printed zero successful assertions. `m8_gate_red_test.py` also exited 1 because only its live case failed; its five hostless cases passed. Cleanup removed the scratch and remote run directories and left no `zb_m8_*` task.
+
+This is a fail-closed harness result. It neither implicates nor validates WS1.2 behavior because the runner never launched the executable. The concrete evidence is that WS0.4's standard-user task-creation path cannot currently establish the interactive runner on this host. The runner's `/rl highest` option is a plausible cause, especially because the provisioned least-privilege task works, but remains a suspicion rather than a proven root cause. The one-run approval at `0f2486b` is consumed; any retry requires the WS0.4 runner issue to be addressed and a fresh exact-commit/harness review and release.
