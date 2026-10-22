@@ -52,3 +52,19 @@ The orchestrator has ruled that the plan's named `capabilities` RPC is implement
 5. The RPC half remains unproven until a bounded Win11 VM run at a reviewer-approved exact source commit and unchanged reviewed harness digest records the command, exit code, nonzero assertions, host identity, and cleanup. No host approval is granted by this entry.
 
 This is the complete R2 minimum. Later review rounds will not add preferences unless new evidence establishes an R3 defect.
+
+## WS0.9 review — `ea4ccaa49ea354b23e4005bd14ca9a6504175a87` red
+
+**Verdict: APPROVED as an unregistered red.** No Windows host run or later green commit is approved by this verdict.
+
+The commit adds only `gate_product_run_red_test.py` and `live_step_skip_test.py`, both outside every build step. The first drives the real `gate.sh` against isolated fake hosts and fake live tests. The second uses a labelled source lookup only to locate each registered command, then executes all ten commands with and without `ZB_WIN_GATE=1`; the executions, not the lookup, are the proof. Imports are live and the tests leave the registered suite green.
+
+I reproduced both reds in a clean archive of the exact commit with display/askpass variables unset and no host variables. The product-run script ran 11 cases and exited 1 with ten intended failures (`--product` absent/no-argument product mode absent); its existing unset-host guard passed. The live-step script exited 1 because all ten gate-mode commands returned 0 with unittest skips; its standalone clean-skip guard passed.
+
+The four proposed green design choices are accepted: one phase list consumed by product mode and the `windows-live` construction; a shared unittest helper that turns skip/zero assertions into gate failures; `slice2_common.gate_skip_exit` returning 1 under the gate and 77 standalone; and distinct gate variants while plain `zig build test` remains hostless-green. These approvals are conditional on the helper counting executed assertions rather than source text, and on the green refreshing coverage for every live step that exists at that commit, including concurrently added steps.
+
+### WS0.9 green review contract
+
+The green review will require the red cases moved into the plan-named registered steps; no-argument and `--product` execution of the real gate; readiness before any live test; named failure for nonzero, exit 77, reported skip, absent/malformed/zero `ASSERTS`, zero phase rows, and missing hosts; every then-current live command failing hostless under `ZB_WIN_GATE=1` while retaining standalone clean-skip; and the three plan mutants (treat 77 as pass, accept `ASSERTS 0`, restore one gate clean-skip) recorded against registered tests. The commit message must report the test:production ratio. If it exceeds 3:1, D.5 requires an accepted live row before the slice can be accepted.
+
+WS0.9 closure still requires separately approved, bounded exact-commit/harness runs on the Win11 VM and the Win10 box. This red review grants neither host release.
