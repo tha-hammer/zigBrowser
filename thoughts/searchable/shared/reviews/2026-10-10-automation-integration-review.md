@@ -34652,3 +34652,47 @@ recovery wiring into the browser executable.
 Keep the skeleton if useful as compile-only foundation, but relabel its claim
 accordingly and add the causal fake-call/Win11 coverage described above before
 calling WS6.1(c) green.
+
+## WS6 fix-forwards (`84a9587`, `bbcdb29`, `d156ea5`)
+
+**`d156ea5` is APPROVED.** Its complete diff is exactly the seven unrelated
+exe-root lines swept into `2e5a0fb`: the temporary ledger/recovery modules,
+the reaper C source and the two root-module imports. It leaves the WS6 compile
+step and aggregate registrations intact. From an exact clean archive,
+`test-agent-secrets` and `cross-check-secrets-win` both passed. This closes
+only the accidental recovery-wiring blocker on `2e5a0fb`; the skeleton's
+credential-store proof gaps remain open.
+
+**`bbcdb29` is APPROVED as an honest test-scope correction.** It removes the
+weak substring oracle from the registered drawer suite and retains only a
+comment naming the still-required compiled fake-call and real Win11 proofs.
+It does not claim to close `b5b7546` / `2e5a0fb`.
+
+**`84a9587` is BLOCKED.** Its useful parts are green and retained progress:
+the exact clean focused secrets step passed, the direct store suite passed
+**6/6**, and the Windows cross-compile step passed. Both new portable runs and
+the compile proof now join the aggregate `test` step. The lowercase-hex nonce
+grammar correctly rejects the listed near misses, and read now detects a
+planted API-key-shaped value through the single portable validator.
+
+Two parts of the prior contract are still not closed:
+
+1. The proposed target is still not part of `runSafety`; the new
+   `validTestTarget` helper is merely available for some later caller to
+   remember to invoke. The reviewed requirement was that the safety operation
+   itself bind the only target a credential test may touch. Change it to take
+   the proposed target and refuse unless that target satisfies the strict
+   disposable grammar, while still refusing when any existing production
+   target is present. Add causal rows showing that omitting either half lets a
+   forbidden test proceed.
+2. `TokenStore.read` asks the backend to write the untrusted value directly
+   into the caller's buffer, then returns `BadShape` without clearing it. The
+   caller therefore still receives the planted value's bytes despite the
+   error. On a bad shape (and on any returned `n > buf.len`), fail closed
+   without a slice trap and zero the bytes the backend reported before
+   returning. The red must prefill the buffer with a sentinel, plant an API
+   key, assert `BadShape`, and assert the planted bytes are absent afterward;
+   add a backend-returned oversized-length row as well.
+
+Until those are fixed, the portable store is not yet the single safe
+credential boundary advertised by the slice.
