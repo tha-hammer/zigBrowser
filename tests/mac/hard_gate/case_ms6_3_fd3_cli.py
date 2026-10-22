@@ -28,6 +28,7 @@ ones, so this file's digest covers all of its logic.
 Tokens never reach a label: only verdicts, rc and sanitized output tails.
 Kill safety: this case makes no signal call. Its runs and ps go through the guarded h.spawn_group (its own group,
 bounded, the owned-group stop)."""
+import json
 import os
 import re
 import socket
@@ -52,6 +53,21 @@ _REDACT = [re.compile(p) for p in (
     r"[A-Za-z0-9+_=-]{24,}",  # any long base64-ish run (an encoded token)
 )]
 _PS_ROW = re.compile(r"([0-9]+)\s+(-?[0-9]+)\s+(\S+)")  # pid, uid (macOS shows nobody as -2), stat
+
+
+def _turn_completed(out):
+    """The helper's stdout holds a result frame that succeeded: one NDJSON line, UTF-8, that is a JSON object with type
+    "result", subtype "success" and is_error false. The helper writes compact frames (frames.encode), so the bytes
+    are never matched as text (11eaceb on both Macs, BlueBeaver 7832)."""
+    for line in out.splitlines():
+        try:
+            frame = json.loads(line.decode("utf-8") if isinstance(line, bytes) else line)
+        except ValueError:  # malformed JSON, or not UTF-8 (UnicodeDecodeError is a ValueError)
+            continue
+        if (isinstance(frame, dict) and frame.get("type") == "result" and frame.get("subtype") == "success"
+                and frame.get("is_error") is False):
+            return True
+    return False
 
 
 def _sanitize(text):
@@ -246,7 +262,7 @@ def run(h):
     for label, tok in (("positive", CANARY), ("decoy", DECOY)):
         started = time.monotonic()
         rc, out, err, bearer, census, port, home = one(label, tok)
-        h.check(rc == 0 and b'"type": "result"' in out, f"{label}: the helper's turn completes ({diag(rc, out, err)})")
+        h.check(rc == 0 and _turn_completed(out), f"{label}: the helper's turn completes ({diag(rc, out, err)})")
         h.check(bearer == "Bearer " + tok, f"{label}: the CLI's bearer is exactly the token on fd 3 "
                                            f"(bearer={'none' if bearer is None else 'other'})")
         h.check(census == [True], f"{label}: during the request the CLI's environment holds this row's base URL and "
