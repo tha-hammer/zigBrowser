@@ -34184,3 +34184,143 @@ fully checked. Re-run the focused Linux proofs and return the changed fd-3
 case/manifest bytes for another digest review if those bytes change. Until
 then the earlier failed `2e07c7b` Mac acceptance remains open and the
 contiguous push-through stays **`7b9d499`**.
+
+## WS5.5b-2 popup-spawn red/green (`920cb46`, `3564646`)
+
+**BLOCKED-for-tests `920cb46`; BLOCKED `3564646`. No Win11 run is
+authorized.** The exact red fails its three rows and the green's available
+offline evidence is green: `win_drawer_test` passed **75/75** with its eight
+live rows skipped, `drawer-props-test` passed, and
+`cross-check-drawer-win` passed. The portable `seam - 1` count is correct and
+the production call is inert unless both `--e2e-protocol` and the strict
+WINDOWS seam are active. Those facts do not close the per-window lifecycle.
+
+1. The red's `test_spawn_accounts_and_shutdown_decrements` does not inspect
+   either action. It merely searches for `spawn_extra_drawer_windows` and
+   `windows_seam_set`; deletion of `drawer_live_inc`, the decrement or all
+   teardown still passes. Replace the token oracle with scoped/call-bound
+   assertions and causal mutants.
+2. Each extra host creates a panel and icon without checking either returned
+   `HWND`, then unconditionally increments live and emits `tree`, `icon` and
+   `open`. A failed control factory is therefore reported as a mounted drawer.
+   Require each control, destroy the partial window on failure, and emit/count
+   only after the complete required structure exists. Drive both failures.
+3. The emitted tree is `host,page,icon,panel`, but an extra window creates no
+   WebView2 controller or page child at all. The live validator checks only
+   row syntax/order and the live numbers, so these synthetic protocol claims
+   can pass as “popup windows.” Either create the genuine browser/page window
+   through the production multi-window route, or narrow the row/contract to
+   the actual test host and independently census its real HWND structure; do
+   not emit a page that does not exist.
+4. The dedicated class uses bare `DefWindowProcW`. If an extra window closes
+   before the primary, its `WM_DESTROY` performs no decrement and the vector
+   retains a stale handle. At final shutdown the code decrements regardless
+   of whether `DestroyWindow(stale)` succeeds, cosmetically restoring zero.
+   This violates WS5.5's one destroy path and can hide an early-close error.
+   Give extras a non-quitting WndProc with per-HWND ownership/accounting,
+   decrement exactly once from the real destroy path, and make bulk teardown
+   use that same path. A live causal row must close one extra while the main
+   window remains, observe the count fall exactly once, then close the rest
+   with final zero; double-decrement and skipped-destroy mutants must fail.
+
+The existing live `peak == N, final == 0` row is necessary but cannot
+distinguish the stale-handle/decrement-at-the-end implementation above. Fix
+the red forward, then the production code, before requesting a VM run.
+
+## Census PID-reuse red/green (`22ec91d`, `e81770d`)
+
+**APPROVED-for-tests `22ec91d`; APPROVED `e81770d`.** The unregistered red is
+exactly causal and signal-free. In a private PID namespace it failed exactly
+three rows on `9de292a`: direct `path(kid) -> None` still traversed the reused
+pid, returned `ok` for its unrelated clean-CLI child, and inspected that
+child; the already-correct failed-read/re-probe-to-`None` variants remained
+green. The tests also prove the gone-only case is `cli-not-found`, and that
+`ok` requires a separate live CLI which alone receives an environment read.
+
+The green continues immediately on the first `None`, before the pid is
+queued, and registers the proof in the MS5 setup step under `unshare`. The
+only older-test adjustment makes cycle pid 11 explicitly live instead of
+depending on the removed fail-open traversal. From an exact clean archive,
+the PID-reuse, census-reason and base process modules passed **34/34** inside
+the private PID namespace, and the registered `test-agent-setup-ms5` step
+passed. No hard-gate case or manifest byte changed from `9de292a`; all six
+files still hash exactly to the committed manifest.
+
+This cumulatively clears the code-review blocker on `9de292a` and authorizes
+**one bounded two-Mac six-case rerun at exact `e81770d`**. It does not itself
+turn the earlier failed `2e07c7b` acceptance green; that waits for the rerun.
+Use this exact reviewed set:
+
+- manifest: `26fc7e7de41f581ff4d9b432bbff7f52e58b6b697258a2f7652510604e021a0a`
+- `case_ms5_spawn_io.py`:
+  `7c739e32fe924877593e15bf232b58be94754c4287b69a7465f2d0371bafcbbb`
+- `case_ms6_3_fd3_cli.py`:
+  `c8533dce13eae7ed19cce2a40988a60282caf2348ee89924aacadfdee663859b`
+- `case_ms6_6b_r1_chain.py`:
+  `7e914a0b04016c05921af2157b5ea1c0aec9eec35bf3823f7cc97a984ea19f76`
+- `case_ms5_1b_skipped_links.py`:
+  `c0a7c6a78efba0c3d8c8133d504447dc16c47fe38b2c7eac163919c8abc83ac1`
+- `case_ms5_1_s3a_links.py`:
+  `4fe83ada9acd7a8702923ddc35145927df35afcd101b825b4aaa3e08509ecd6f`
+- `case_ms8_hook_sandbox.py`:
+  `136226a4d93d188622a9244f726360cf3da0b435048be483eb14d224b78051c2`
+
+## Reaper readiness/startup red second fix-forward (`a6dc989`)
+
+**BLOCKED-for-tests; keep it unregistered, unarmed and off both Macs.** The
+red now fails only on the named absent startup API when compiled from an exact
+archive with the ledger/recovery modules and reaper C source linked. It closes
+three earlier gaps outright: the injected loader proves gate-off performs zero
+loads for missing, corrupt and directory stores; the cap is pinned to the
+positive literal 64 with a literal 66-entry residual row; and the deterministic
+clock distinguishes one absolute iteration deadline from a per-entry reset.
+The gate-true corrupt row and live-owner row also pin zero actuator calls.
+
+Two causal gaps remain from the claimed five-point closure:
+
+1. The readiness rows prove the literal constant is false and ban several
+   alternative sources, but do not prove `recoverAllAtStartup` actually uses
+   `reaper_ready`. A wrapper hard-coded to pass `false` satisfies every row.
+   Bind the wrapper call to that constant (or inject the readiness source) and
+   add a mutant that substitutes literal `false` or otherwise ignores the
+   constant.
+2. Both corrupt-store rows say “untouched” / “no mutation” but never compare
+   the bytes before and after. The loader counter proves no load through that
+   injected seam; it does not reject an independent write, and the gate-true
+   row has no preservation oracle at all. Snapshot the exact corrupt bytes and
+   require byte-for-byte equality after both gate-off and gate-true calls (and
+   retain the directory shape in the unreadable gate-off row).
+
+The other outcome rows remain useful and signal-free. Fix this red forward
+before landing the production green; `ecf14be` is not yet cumulatively closed.
+
+## Windows drawer cross-check export pins (`a924085`)
+
+**APPROVED.** The commit adds exactly the two deferred
+`--require-defined` arguments for `zb_drawer_window_count_from_env` and
+`zb_drawer_extra_windows`; it removes no prior symbol requirement. From an
+exact clean archive on a private Xvfb, `zig build cross-check-drawer-win`
+passed. This closes the export-pin follow-up independently; it does not close
+the separate WS5.5b-2 lifecycle blockers on `3564646`.
+
+## WS5.6 production-registry red/green (`bae075a`, `33bde9a`)
+
+**BLOCKED-for-tests `bae075a`; BLOCKED `33bde9a`.** The exact red fails its
+two rows on the missing helper and the green's hostless module passes **45/45**
+with 19 live rows skipped. The proposed production boundary is nevertheless
+the wrong one: `src/automation.zig::phase1_command_verbs` is only the core
+router's page/dom verb list, not the socket's complete exposed method surface.
+`automation_server.dispatchParsed` handles telemetry, cookies, X/social
+routes, page list/close/health/recover and dialogs before it reaches that
+router. A future `drawer.*` branch can likewise be added there while remaining
+absent from `phase1_command_verbs`, and every new row still passes even though
+the socket exposes the drawer.
+
+Bind the proof to the real dispatch boundary. Prefer a registered in-process
+RPC test that calls the production server/router with every named
+`drawer.state/open/send` request and requires the exact `-32601` reply, plus a
+causal injected/planted route that makes the oracle fail. If a source-derived
+registry is introduced instead, it must be the authoritative complete socket
+registry consumed by `dispatchParsed`, not this phase-one subset. Until then
+the claim that absence implies method-not-found is false, and no VM run is
+authorized for this range.
