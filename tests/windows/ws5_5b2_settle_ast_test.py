@@ -29,19 +29,26 @@ METHODS = (
 
 
 def _is_self_call(node, name):
-    """node is `self.<name>(...)` (an attribute call); we bind by the method name, not by `self`."""
+    """node is EXACTLY `self.<name>(...)` — an attribute call whose receiver is the Name `self` (so a
+    `evil._run_drawer(...)` / `evil._env(...)` on a different receiver is rejected), not merely any `.<name>`."""
     return (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
-            and node.func.attr == name)
+            and node.func.attr == name
+            and isinstance(node.func.value, ast.Name) and node.func.value.id == "self")
 
 
 def live_settle_bound(method):
-    """True iff the method's ONE top-level self._run_drawer(...) passes extra_env=self._env(... with exactly one
-    ZB_SETTLE_KINDS='live' ...). Only the method's direct body statements are considered, so dead branches and
-    nested function definitions cannot contribute the keyword."""
-    runs = [s.value for s in method.body
-            if isinstance(s, ast.Expr) and _is_self_call(s.value, "_run_drawer")]
+    """True iff the method's ONE REACHABLE top-level self._run_drawer(...) passes extra_env=self._env(... with
+    exactly one ZB_SETTLE_KINDS='live' ...). Only the method's direct body statements are considered (dead
+    branches and nested defs cannot contribute), both receivers must be `self`, and a self._run_drawer that
+    follows a top-level return/raise is unreachable and does not count."""
+    runs, terminated = [], False
+    for s in method.body:
+        if isinstance(s, (ast.Return, ast.Raise)):
+            terminated = True  # anything after an unconditional top-level return/raise is dead
+        elif isinstance(s, ast.Expr) and _is_self_call(s.value, "_run_drawer") and not terminated:
+            runs.append(s.value)
     if len(runs) != 1:
-        return False  # zero, or an ambiguous second top-level _run_drawer
+        return False  # zero, unreachable, or an ambiguous second top-level _run_drawer
     env = next((kw.value for kw in runs[0].keywords if kw.arg == "extra_env"), None)
     if not _is_self_call(env, "_env"):
         return False  # extra_env must be the real self._env(...) call
@@ -113,6 +120,24 @@ MISSING = """
     def m(self):
         self._run_drawer(extra_env=self._env(ZIGBROWSER_AGENT_DRAWER_WINDOWS='2'))
 """
+WRONG_RECEIVER = """
+    def m(self):
+        evil._run_drawer(extra_env=evil._env(ZB_SETTLE_KINDS='live'))
+"""
+WRONG_ENV_RECEIVER = """
+    def m(self):
+        self._run_drawer(extra_env=evil._env(ZB_SETTLE_KINDS='live'))
+"""
+PRIOR_RETURN = """
+    def m(self):
+        return
+        self._run_drawer(extra_env=self._env(ZB_SETTLE_KINDS='live'))
+"""
+PRIOR_RAISE = """
+    def m(self):
+        raise RuntimeError('x')
+        self._run_drawer(extra_env=self._env(ZB_SETTLE_KINDS='live'))
+"""
 
 
 class Ws55b2SettleAstTest(unittest.TestCase):
@@ -131,7 +156,9 @@ class Ws55b2SettleAstTest(unittest.TestCase):
                            ("dead if-False branch", DEAD_BRANCH), ("unused nested def", NESTED_DEF),
                            ("kind on _run_drawer not _env", KIND_ON_RUN_DRAWER), ("two top-level _run_drawer", TWO_RUN_DRAWER),
                            ("wrong value 'open'", WRONG_VALUE), ("non-constant value", NON_CONSTANT),
-                           ("missing kind", MISSING)):
+                           ("missing kind", MISSING), ("wrong receiver (evil._run_drawer)", WRONG_RECEIVER),
+                           ("wrong _env receiver (evil._env)", WRONG_ENV_RECEIVER),
+                           ("unreachable after return", PRIOR_RETURN), ("unreachable after raise", PRIOR_RAISE)):
             with self.subTest(mutant=label):
                 self.assertFalse(live_settle_bound(_m(src)), f"{label} must be rejected")
 
