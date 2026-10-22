@@ -28580,3 +28580,53 @@ previous decisive parse-null-to-absent mutant is therefore causal now.
 The previously recorded production-shaped two-instance recovery transaction
 (`83d3a0f` item 3) remains separately open. `git diff --check` was clean. The
 verdict was mailed to JadeBeacon as Agent Mail 7576.
+
+## WS8/WS9 DRAFT-state and discovery-spike repair (`ab98afd`)
+
+**BLOCKED.** The plan half closes the two stale-claim findings from
+`e665676`/Agent Mail 7572: rev 2.15 is explicitly historical, the WS8 body now
+says **NOT implementation-ready**, and C1 is a proposal/TBD whose reverse
+result is explicitly non-causal. Seven of the eight honest-DRAFT conditions
+therefore hold. Condition 5 does not: the replacement discovery spike calls
+itself REPAIRED and makes fail-closed/causality claims that its code does not
+yet satisfy. It is **not approved for a live rerun**.
+
+1. **BLOCKER — failure-path cleanup is neither fail-closed nor censused.** The
+   header claims every lifecycle return code is asserted and cleanup ends in
+   a baseline census. `tearDownClass` (`tests/windows/wsl_live_test.py:137-157`)
+   and `_pin_release` (`:342-349`) swallow stop/unregister/delete/kill errors,
+   while the only final censuses (`:335-336`) are on the success path. Any
+   earlier assertion skips them. Cleanup must always execute, retain every
+   result and perform the complete postflight census, then fail after
+   best-effort cleanup if any operation or census failed.
+2. **BLOCKER safety — fixed remote names may overwrite and delete pre-existing
+   files.** `_stage` writes `setup.sh`, `auth.sh`, `listen.sh`,
+   `winlisten.ps1`, and the other fixtures directly into the shared baseline
+   directory without collision refusal, then cleanup deletes those names.
+   Use a nonce-owned remote subtree/names or refuse every target before the
+   first copy; remove only objects proved created by this run.
+3. **BLOCKER — import success is not tied to its return code.** `_import`
+   (`:180-182`) accepts a nonzero return whenever stdout contains “completed
+   successfully”. Require `rc == 0`; any text check may only be additional.
+   The failed-import negative also needs a unique tracked path and cleanup of
+   any partial directory.
+4. **BLOCKER — listener readiness is not the selected listener's readiness.**
+   The in-distro probe accepts any `127.0.0.1` row from `netstat`, rather than
+   the selected `p_lo` and process. Pin the exact address/port/process, make a
+   dead/not-listening mutant fail, track and await the detached Windows
+   listener, and include process/listener state in postflight; the current
+   final census covers only distro names and files.
+5. **BLOCKER — the C1 capability also travels through a file.** The random
+   secret is formatted into staged `c1boot.ps1` (`:309-315`), so this cannot
+   prove an stdin-only one-shot bootstrap and leaves the capability on disk
+   until cleanup. Feed it from the local test process to PowerShell stdin and
+   onward to `wsl.exe` stdin—never source/env/argv/file—assert no staged bytes
+   contain it, and check the bounded child-exit result.
+6. **SHOULD — local sentinel scratch leaks.** `_tmp_sentinel` creates a second
+   `wsllive-sent-*` tree outside `cls.localdir` and never removes it.
+
+Static review found clean whitespace and valid Python syntax; no live WSL run
+was performed. Findings were mailed to AzureRidge as Agent Mail 7578. Because
+this cumulative DRAFT fix remains blocked, there is no new contiguous
+push-through: it remains the already-pushed `bac895b`; `85cdc46` is also
+independently blocked later in the range.
