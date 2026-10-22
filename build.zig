@@ -3622,6 +3622,13 @@ pub fn build(b: *std.Build) void {
     mac_reaper_gate_shared_host_selftest.addFileInput(b.path("tests/mac/ms6_5_reaper_gate_shared_host_selftest.sh"));
     mac_reaper_gate_guard_step.dependOn(&mac_reaper_gate_shared_host_selftest.step);
     test_step.dependOn(&mac_reaper_gate_shared_host_selftest.step);
+    // Hostless selftest of the shared Mac build step: git archive <sha>, a fresh run dir, pinned host keys (bd 4pa.59, 4pa.77).
+    const mac_build_script_selftest = b.addSystemCommand(&.{ "bash", "tests/mac/build_on_mac_selftest.sh" });
+    mac_build_script_selftest.addFileInput(b.path("tests/mac/build-on-mac.sh"));
+    mac_build_script_selftest.addFileInput(b.path("tests/mac/known_hosts"));
+    mac_build_script_selftest.addFileInput(b.path("tests/mac/build_on_mac_selftest.sh"));
+    b.step("test-mac-build-script", "Run the hostless selftest of the shared Mac build step (exact commit, fresh run dir, pinned host keys)").dependOn(&mac_build_script_selftest.step);
+    test_step.dependOn(&mac_build_script_selftest.step);
     test_step.dependOn(&windows_gate_selftest.step);
     test_step.dependOn(&windows_twohost_selftest.step);
     test_step.dependOn(&windows_build_selftest.step);

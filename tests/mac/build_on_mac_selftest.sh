@@ -40,6 +40,8 @@ for tool in ssh scp; do
 #!/bin/bash
 i=\$(cat /tmp/ctl/n 2>/dev/null || echo 0); echo \$((i + 1)) > /tmp/ctl/n
 printf '%s\0' $tool "\$@" > /tmp/ctl/call.\$i
+src=\$(readlink /proc/self/fd/0)
+case "\$src" in /*) [ -f "\$src" ] && printf '%s\n' "\$src" >> /tmp/ctl/local.\$i ;; esac   # a file fed on stdin
 cat > /tmp/ctl/stdin.\$i
 if [ $tool = scp ]; then
   skip=
@@ -145,7 +147,7 @@ else
 fi
 
 # (7) no local tar left behind
-left=$(find /tmp/tmp /tmp/zb_worktree_mac.tar -mindepth 0 -name '*.tar' 2>/dev/null)
+left=$(find /tmp/tmp -mindepth 1 2>/dev/null; ls -d /tmp/zb_worktree_mac.tar 2>/dev/null)   # nothing at all
 if [ -z "$left" ]; then ok "(7) no local tar left behind"; else bad "(7) left behind: $left"; fi
 
 # (8) run alone, the script removes its remote run dir at the end
@@ -163,7 +165,8 @@ dirs2=$(remote_dirs)
 if [ -n "$dirs1" ] && [ -n "$dirs2" ] && [ "$dirs1" != "$dirs2" ]; then ok "(2) run 2 used another run dir"
 else bad "(2) run 2 run dir \"$dirs2\" is not a fresh one (run 1: \"$dirs1\")"; fi
 local2=$(cat /tmp/ctl/local.* 2>/dev/null)
-if [ -n "$local1" ] && [ "$local1" = "$local2" ]; then bad "(2) both runs used the same local tar $local1"
+if [ -z "$local1" ] || [ -z "$local2" ]; then bad "(2) no local tar file was seen (run 1: \"$local1\", run 2: \"$local2\")"
+elif [ "$local1" = "$local2" ]; then bad "(2) both runs used the same local tar $local1"
 else ok "(2) the local tar differs between runs"; fi
 
 # ---- (4) a failing git archive fails the script ------------------------------------------------------------------
