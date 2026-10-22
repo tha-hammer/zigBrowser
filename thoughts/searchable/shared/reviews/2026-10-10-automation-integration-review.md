@@ -27107,3 +27107,43 @@ publisher/reader integration should document and use that same wire shape.
 All commits in the linear range after the pushed `63ed27f` through
 `c995a02` now have an approved result or a reviewed cumulative fix-forward.
 The newest approved push-through SHA is **`c995a02`**.
+
+## Stop-failure diagnostic reasons (`5449e67`, `422c22c`)
+
+**`5449e67` is BLOCKED-for-tests. `422c22c` is BLOCKED. The new R1 case
+digest `3a9606944c30b3e69db8eb89db0edfbc7f5019d1d52ad4f058c0eb042a682d6d`
+is NOT approved for a Mac run yet.** The direction is correct: production now
+restricts every constructed `StopFailed` to one of six app-owned codes, keeps
+the code out of exception text, distinguishes an unreadable table from live
+members at the deadline, and the hard-gate case prints only a whitelisted code
+or `unknown`. The manifest digest exactly matches the committed case bytes.
+
+The red is causal and signal-safe. From an exact clean export, inside a private
+user/PID namespace and using the pinned agent-host interpreter, its owned-group
+suite failed **8/8** because none of the reasons existed. Its fake-host R1
+suite failed **2/2** because the positive diagnostic lacked the reason. All
+real signal functions were interposed. At the green, a focused exact-export
+run of `test-agent-setup-ms5 test-mac-census` inside a private user/PID
+namespace exited zero; BlueBeaver reports the component counts as **29/29
+steps, 14/14 tests** and **15/15**, respectively.
+
+Two coverage gaps still allow the diagnostic Mac rerun to hide the failure it
+is intended to identify:
+
+1. `test_owned_group_reasons.py:48-51` claims that a cleanup failure preserves
+   an inner `StopFailed` reason, but creates an inner `Refused` by making the
+   Darwin ownership read fail. It proves only the new `Refused` → `not_ours`
+   mapping. Add an earlier read failure followed by a proven-owned cleanup
+   whose interposed `killpg` raises `PermissionError`; `run()` must preserve
+   the resulting `kill_refused` rather than replace it.
+2. `ms6_hard_gate_r1_reason_test.py:63-73` observes only the honest/positive
+   row. In the actual `e567a51` Mac run, planted and forge also suffered
+   `StopFailed`, but their expected `False` verdicts still passed at
+   `case_ms6_6b_r1_chain.py:401-419`. The case needs an explicit invariant
+   that **no mode** completed through `StopFailed`; fake rows must causally pin
+   planted and forge (and hang where applicable), while still proving that an
+   unknown reason and the exception-message canary never reach labels.
+
+Until a fix-forward closes both gaps, do not run the new R1 digest on either
+Mac. Agent Mail 7476 sent BlueBeaver the findings before the green was
+reviewed. The approved/pushed boundary remains **`c995a02`**.
