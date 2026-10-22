@@ -32971,3 +32971,34 @@ compiled. This verdict closes only the specified prototype gaps. It does not
 register the manual step, arm production recovery, authorize the destructive
 Mac reaper gate, or claim a wall-clock bound for the read-only libproc scan
 itself.
+
+## MS4.4 no-`waitid` regression and two-Mac gate (`3325170`, `5b48662`)
+
+**Both APPROVED; one bounded two-Mac MS4.4 run is authorized at exact
+`5b48662`.** `3325170` causally enters the Python-3.12-compatible branch by
+removing the `os.waitid` attribute, then exercises the real leader-plus-
+grandchild stand-in. It requires the leader to be reaped with its status
+retained, both processes gone, the capability restored after the patch, and a
+second `stop()` to reach neither `kill` nor `killpg`. Reviewer execution inside
+a private user/PID/mount namespace passed **4/4**. This cumulatively closes the
+`ea393b7` test hold.
+
+`5b48662` adds the reviewed raw-client login-gate e2e immediately after the
+existing load-serial case in each architecture's `set -euo pipefail` leg, so a
+failure or exit 77 cannot be translated into success. The e2e uses only its
+loopback fixture and throwaway profile/socket, drops inherited browser seams,
+and owns the browser's exact unreaped process group. `bash -n` and an
+independent order/BatchMode check pass.
+
+The released run must start from a pristine `git archive 5b48662` export, not
+the shared worktree. A disposable `git init` solely to satisfy
+`rev-parse --show-toplevel` is acceptable; the report must identify that exact
+source SHA and must not add or edit source bytes before `build-on-mac.sh` tars
+them. Run the existing gate once on both configured Macs as their console
+users, with display variables unset on the Linux driver and BatchMode/pinned
+keys. It may build only in the existing app-owned `~/zigBrowser` tree and use
+local fixtures; no account, credential, external site, install or system
+change is allowed. Acceptance requires the existing load-serial PASS, all five
+MS4.4 rows (`closed`, `through-the-port`, `open`, `live`, final gate) on both
+architectures, the final `ms4-gate both-arches` row, and before/after censuses
+showing no surviving zigBrowser/WebKit process or `zb-ms44-*` temporary tree.
