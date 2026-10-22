@@ -6,7 +6,7 @@ branch: zb-automation-integration-2026-10-10-11-59
 repository: zigBrowser
 topic: "macOS launch support for zigBrowser — TDD implementation plan"
 tags: [plan, tdd, macos, wkwebview, appkit, seatbelt, universal-build, automation, drawer, sandbox, launch-critical]
-status: plan for review (rev 27)
+status: plan for review (rev 28)
 rev: 28
 last_updated: 2026-10-22
 last_updated_by: cc_3 / JadeBeacon

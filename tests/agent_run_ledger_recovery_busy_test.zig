@@ -1,8 +1,9 @@
 //! MS6.5.1 (SCOPED, RoseCat c11bff8; e665676 #2/#3/#4): the BOUNDED flock-acquisition primitive. A LIVE owner that
 //! holds the one global ledger flock and stalls must NOT wedge the bounded acquire: independent B's
-//! `acquireRunLockBounded` acquires within the deadline and, on timeout, FAILS CLOSED — `acquired=false`, a `lock_unavailable`
-//! incident, the first new run `refused_deferred`, zero on-disk mutation (the store byte-for-byte retained), zero
-//! signals. Two real processes + a bounded, EINTR-safe watchdog.
+//! `acquireRunLockBounded` acquires within the deadline and, on timeout, FAILS CLOSED — `acquired=false`, a
+//! `lock_unavailable` incident, and zero on-disk mutation (the store byte-for-byte retained). It makes NO
+//! run-admission claim (no `FirstRun`/`refused_deferred` here). Zero signals. Two real processes + a bounded,
+//! EINTR-safe watchdog.
 //!
 //! SAFETY (RoseCat e665676 #2): this test sends SIGKILL to its own holder in the wedge path. It runs ONLY inside a
 //! PID namespace strictly below its launcher's — a kernel-proof sentinel (fd 9 = the launcher's held outer
@@ -135,7 +136,7 @@ test "a live stalled flock holder cannot wedge the bounded acquire: B fails clos
     var ast: u32 = undefined;
     _ = linux.waitpid(@intCast(a_pid), &ast, 0); // A self-releases at 3s; reap before asserting
 
-    // fail-closed result: not acquired, recovery-busy, first run refused/deferred
+    // fail-closed result: not acquired (acquired=false) + lock_unavailable incident + no on-disk mutation
     try std.testing.expectEqual(@as(u8, 0), rbuf[0]); // acquired == false
     try std.testing.expectEqual(@as(u8, @intFromEnum(ledger.AcquireIncident.lock_unavailable)), rbuf[1]);
 
