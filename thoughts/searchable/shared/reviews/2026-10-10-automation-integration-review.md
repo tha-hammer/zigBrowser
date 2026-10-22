@@ -29096,3 +29096,27 @@ through a stale index. `a9c45c7` restores those exact bytes and is
 again. The test header's stale “red / UNREGISTERED” wording is a NIT. Agent
 Mail 7613 sent the blockers to JadeBeacon. This still does not close the held
 recovery transaction or provenance-first obligations from 7575 items 1/3.
+
+## Decision-16 broker red, part 2 (`628af96`)
+
+**BLOCKED-for-tests.** The commit is a real causal red—the Broker has no
+`Approval` seam—but it does not yet pin the complete contract that its green
+will implement. The no-seam fail-closed row, the 120-second expiry and
+late-Approve race, no-main cancellation, and the sampled pause/notification
+behavior are useful evidence. Three gaps remain:
+
+1. The plan requires all 3 selectors × 3 modes × 2 verbs. The red samples
+   only part of that matrix, so wrong `yes`, `no`, headless or
+   full-automation behavior can survive, especially for `reload`.
+2. The owner explicitly required two waiting cards to be cancelled when the
+   first-opened main window closes. The red has only one waiting call and
+   therefore cannot distinguish “cancel current” from “cancel all.”
+3. Routing/schema evidence is asymmetric: successful reload never asserts
+   its exact bound-window parameters, the model-selected `window_id` refusal
+   is navigate-only, and neither verb pins refusal of selector/mode facts in
+   tool arguments.
+
+The fix should be a table-driven 18-row oracle with exact dispatch/card and
+notification outcomes, a two-card main-close row, exact params for both
+verbs, and forbidden routing/policy fields for both schemas. Agent Mail 7615
+sent the findings to BlackRobin.
