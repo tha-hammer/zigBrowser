@@ -1041,8 +1041,9 @@ pub fn build(b: *std.Build) void {
     const ledger_lock_nofollow_step = b.step("test-agent-run-ledger-lock-nofollow", "MS6.5.1 ledger lock O_NOFOLLOW fail-closed (symlink never followed)");
     ledger_lock_nofollow_step.dependOn(&run_ledger_lock_nofollow_tests.step);
     // MS6.5.1 (RoseCat 7511b79): the ledger is a macOS primitive, so it must cross-compile to Darwin. Build the
-    // module as an object for both macOS arches — every top-level decl in the root file is analyzed, so an API
-    // misuse that only surfaces on Darwin (wrong flag/type/symbol) fails this check. The lock's flock/close/errno
+    // module as an object for both macOS arches through darwinGuardObject, whose root analyses every public non-generic
+    // declaration (4pa.63), so an API misuse that only surfaces on Darwin (wrong flag/type/symbol) fails this check.
+    // Generic functions are not analysed until instantiated. The lock's flock/close/errno
     // go through std.posix.system (the raw syscall on Linux, libc on Darwin) so they behave the same on Darwin.
     const ledger_darwin_aarch64_mod = b.createModule(.{ .root_source_file = b.path("src/agent_run_ledger.zig"), .target = b.resolveTargetQuery(.{ .cpu_arch = .aarch64, .os_tag = .macos }), .optimize = optimize });
     const ledger_darwin_aarch64_obj = darwinGuardObject(b, "agent_run_ledger_darwin_aarch64", ledger_darwin_aarch64_mod);
@@ -1054,8 +1055,7 @@ pub fn build(b: *std.Build) void {
     // bd zigBrowser-4pa.63 (plan R30-MS6, R30.2 T5): the Darwin guards' selftest. Each probe holds an UNREFERENCED pub
     // fn (top level, and one container down) that is a type error on macOS only; built through the same
     // darwinGuardObject as the guards, for both macOS arches, it must fail with exactly that error, and the same probe
-    // built for Linux must compile (so the error is Darwin's, not the probe's). RED, not in `test`, until the guard
-    // root analyses every declaration.
+    // built for Linux must compile (so the error is Darwin's, not the probe's). In `test`.
     const darwin_guard_selftest_step = b.step("test-darwin-guard-selftest", "4pa.63: the Darwin guards analyse every declaration (a Darwin-only type error fails them)");
     for ([_][]const u8{ "tests/darwin_guard_probe_top.zig", "tests/darwin_guard_probe_nested.zig" }) |probe| {
         for ([_]std.Target.Cpu.Arch{ .aarch64, .x86_64 }) |arch| {
@@ -3664,6 +3664,7 @@ pub fn build(b: *std.Build) void {
     if (target.result.os.tag == .linux) test_step.dependOn(&run_ledger_lock_nofollow_tests.step);
     test_step.dependOn(&ledger_darwin_aarch64_obj.step); // cross-compile guard: ledger must build for Darwin
     test_step.dependOn(&ledger_darwin_x86_64_obj.step);
+    test_step.dependOn(darwin_guard_selftest_step); // 4pa.63: the guard above really analyses every declaration
     if (target.result.os.tag == .linux) test_step.dependOn(&run_ledger_recovery_tests.step);
     if (target.result.os.tag == .linux) test_step.dependOn(&run_recovery_startup.step); // MS6.5.1 reaper_ready gate + startup core (unarmed)
     test_step.dependOn(&run_ledger_unreadable_tests.step); // pure unit: unreadable liveness fails closed
@@ -4205,10 +4206,14 @@ const drawer_portable_exports = [_][]const u8{
     "zb_drawer_appkit_shown",      "zb_drawer_appkit_original_offset", "zb_drawer_bubble_layout_contiguous",
 };
 
-/// bd zigBrowser-4pa.63: a Darwin cross-compile guard, `guarded` (its target set) built as an object. Every Darwin
-/// guard and its selftest (`test-darwin-guard-selftest`) build through this one helper.
+/// bd zigBrowser-4pa.63: a Darwin cross-compile guard, `guarded` (its target set) built as an object rooted at
+/// src/darwin_guard_root.zig, which analyses every public non-generic declaration of `guarded` (Zig analyses lazily,
+/// so `guarded` as its own root would analyse only what it exports). Every Darwin guard and its selftest
+/// (`test-darwin-guard-selftest`) build through this one helper.
 fn darwinGuardObject(b: *std.Build, name: []const u8, guarded: *std.Build.Module) *std.Build.Step.Compile {
-    return b.addObject(.{ .name = name, .root_module = guarded });
+    const root = b.createModule(.{ .root_source_file = b.path("src/darwin_guard_root.zig"), .target = guarded.resolved_target, .optimize = guarded.optimize });
+    root.addImport("guarded", guarded);
+    return b.addObject(.{ .name = name, .root_module = root });
 }
 
 fn addShimArg(b: *std.Build, run: *std.Build.Step.Run, shim: []const u8) void {
