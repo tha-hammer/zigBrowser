@@ -111,11 +111,23 @@ def _scrub(*cmd):
     return ["env", "-u", "DISPLAY", "-u", "WAYLAND_DISPLAY", "-u", "XAUTHORITY", *cmd]
 
 
+def _ssh_opts():
+    """The ONE option set shared by foreground ssh, background ssh and scp (RoseCat 33a9bf2). Only the program
+    (ssh/scp), the port flag (-p vs -P) and the trailing target differ between callers; every security and bound
+    option lives here so all three transports are identical and cannot drift."""
+    return ["-i", KEY,
+            "-o", "IdentitiesOnly=yes",
+            "-o", "StrictHostKeyChecking=yes",
+            "-o", f"UserKnownHostsFile={KH}",
+            "-o", "BatchMode=yes",
+            "-o", "ConnectTimeout=25",
+            "-o", "ConnectionAttempts=3",
+            "-o", "ServerAliveInterval=5",
+            "-o", "ServerAliveCountMax=3"]
+
+
 def _ssh_base():
-    return ["ssh", "-i", KEY, "-o", "IdentitiesOnly=yes", "-o", "StrictHostKeyChecking=yes",
-            "-o", f"UserKnownHostsFile={KH}", "-o", "BatchMode=yes", "-o", "ConnectTimeout=25",
-            "-o", "ConnectionAttempts=3", "-o", "ServerAliveInterval=5", "-o", "ServerAliveCountMax=3",
-            "-p", PORT, f"{USER}@{HOST}"]
+    return ["ssh", *_ssh_opts(), "-p", PORT, f"{USER}@{HOST}"]
 
 
 def ssh(*args, timeout=180, stdin_text=None):
@@ -130,10 +142,76 @@ def ssh_bg(*args):
 
 
 def scp(local, remote, timeout=180):
-    base = ["scp", "-i", KEY, "-o", "IdentitiesOnly=yes", "-o", "StrictHostKeyChecking=yes",
-            "-o", f"UserKnownHostsFile={KH}", "-o", "BatchMode=yes", "-o", "ConnectTimeout=25",
-            "-o", "ConnectionAttempts=3", "-P", PORT, local, f"{USER}@{HOST}:{remote}"]
+    base = ["scp", *_ssh_opts(), "-P", PORT, local, f"{USER}@{HOST}:{remote}"]
     return subprocess.run(_scrub(*base), capture_output=True, text=True, timeout=timeout).returncode
+
+
+# ---- offline ssh -G transport oracle (RoseCat 33a9bf2): prove the shared option set yields a secure effective
+# config INSIDE the same current-UID user namespace the live run mandates, with no proxy/jump — and never
+# contact the VM (`ssh -G` computes config only; it opens no connection). ------------------------------------
+def _userns_available():
+    try:
+        r = subprocess.run(["unshare", "--user", "--map-current-user", "true"],
+                           capture_output=True, timeout=10)
+        return r.returncode == 0
+    except Exception:
+        return False
+
+
+def ssh_effective_config(opts, host="127.0.0.1", port=None):
+    """OpenSSH's EFFECTIVE config for `opts` via `ssh -G`, run INSIDE `unshare --user --map-current-user` (the
+    mandated namespace, where root maps to the overflow uid) with a cleared environment. `ssh -G` opens no
+    connection, so the VM is never contacted. Returns (rc, cfg, stderr); `identityfile` collects every value."""
+    argv = ["unshare", "--user", "--map-current-user",
+            "env", "-i", "PATH=/usr/bin:/bin",
+            "ssh", "-G", *opts, "-p", port or PORT, f"{USER}@{host}"]
+    r = subprocess.run(argv, capture_output=True, text=True, timeout=60)
+    cfg = {}
+    for ln in (r.stdout or "").splitlines():
+        parts = ln.split(None, 1)
+        if not parts:
+            continue
+        key = parts[0].lower()
+        val = parts[1] if len(parts) > 1 else ""
+        if key == "identityfile":
+            cfg.setdefault("identityfile", []).append(val)
+        else:
+            cfg[key] = val
+    return r.returncode, cfg, (r.stderr or "")
+
+
+def _cfg_on(value):
+    # ssh -G normalizes a boolean "yes" to "yes" or "true" depending on the option; treat both as on.
+    return str(value).lower() in ("yes", "true")
+
+
+def assert_secure_ssh_config(rc, cfg, stderr):
+    """Every security property of the shared option set, read back from the effective config. Any removal,
+    substitution or relaxation of one option flips exactly one of these assertions."""
+    assert rc == 0, f"ssh -G must compute a clean config inside the user namespace (rc={rc}, stderr={stderr!r})"
+    assert "bad owner" not in stderr.lower(), \
+        f"the inherited system ssh_config drop-in must not be read (stderr={stderr!r})"
+    assert _cfg_on(cfg.get("stricthostkeychecking")), \
+        f"StrictHostKeyChecking must stay ON (got {cfg.get('stricthostkeychecking')!r})"
+    assert _cfg_on(cfg.get("identitiesonly")), \
+        f"IdentitiesOnly must stay ON (got {cfg.get('identitiesonly')!r})"
+    assert _cfg_on(cfg.get("batchmode")), \
+        f"BatchMode must stay ON (got {cfg.get('batchmode')!r})"
+    assert cfg.get("globalknownhostsfile") == "none", \
+        f"GlobalKnownHostsFile must be none (got {cfg.get('globalknownhostsfile')!r})"
+    assert cfg.get("userknownhostsfile") == KH, \
+        f"UserKnownHostsFile must be the pinned {KH} (got {cfg.get('userknownhostsfile')!r})"
+    assert KEY in (cfg.get("identityfile") or []), \
+        f"the explicit identity {KEY} must be used (got {cfg.get('identityfile')!r})"
+    assert cfg.get("port") == PORT, f"port must be {PORT} (got {cfg.get('port')!r})"
+    assert cfg.get("user") == USER, f"user must be {USER} (got {cfg.get('user')!r})"
+    assert cfg.get("connecttimeout") == "25", \
+        f"the ConnectTimeout bound must survive (got {cfg.get('connecttimeout')!r})"
+    assert cfg.get("serveraliveinterval") == "5" and cfg.get("serveralivecountmax") == "3", \
+        f"the dead-peer bounds must survive (interval={cfg.get('serveraliveinterval')!r} " \
+        f"countmax={cfg.get('serveralivecountmax')!r})"
+    assert cfg.get("proxycommand", "none") == "none", f"no ProxyCommand allowed (got {cfg.get('proxycommand')!r})"
+    assert cfg.get("proxyjump", "none") == "none", f"no ProxyJump allowed (got {cfg.get('proxyjump')!r})"
 
 
 def census_distros():
@@ -893,6 +971,16 @@ class WslSpikeOracle(unittest.TestCase):
         self.assertEqual(SSH_DEAD_PEER_S, 15, "dead-peer bound = interval 5 * count 3")
         self.assertEqual(REAP_BOUND_S, KEEPALIVE_SLEEP_S + SSH_DEAD_PEER_S + 45,
                          "reap bound = remote sleep + dead-peer bound + 45s margin")
+
+    def test_shared_ssh_opts_effective_config_is_secure(self):
+        # RoseCat 33a9bf2: prove the shared option set yields a secure effective config INSIDE the mandated user
+        # namespace (ssh -G only; never contacts the VM). Red until _ssh_opts carries -F none +
+        # GlobalKnownHostsFile=none — without them ssh reads the inherited system ssh_config drop-in and refuses
+        # (rc 255, "Bad owner or permissions"), so this assertion fails.
+        if not _userns_available():
+            self.skipTest("user namespaces unavailable; the ssh -G proof requires the same namespace as the run")
+        rc, cfg, err = ssh_effective_config(_ssh_opts())
+        assert_secure_ssh_config(rc, cfg, err)
 
     def test_pidns_backstop_refusals(self):
         # (7687 SHOULD) pin the two namespace refusals + the one pass, as committed coverage.
