@@ -8,7 +8,10 @@ STAGED pinned runtime:
      127.0.0.1:P plus the canonical bridges; writes only to the home's scratchpad)
   -> python -m zb_agent_host contract-config (the helper reads fd 3 and hands the token through its FifoHandoff to the
      zb-claude wrapper, written for h.cli as setup.stage writes it) -> the real CLI, whose token arrives on fd 3.
-The home is pre-created exactly as setup.stage lays it out; any other write the chain makes outside the scratchpad
+The home is pre-created exactly as setup.stage lays it out, under the REAL path of this case's scratch: the profile's
+write root is the scratchpad's spelling, Seatbelt compares resolved paths, and macOS's /tmp is a symlink to
+private/tmp (11b3ac4 on both Macs: every write, the token-fifo inside the scratchpad included, was denied; RoseCat
+7627). Each row checks its scratchpad is its own real path. Any other write the chain makes outside the scratchpad
 is left to fail visibly under the profile (measured evidence, not hidden).
 Rows:
  1. positive: the canary on fd 3 -> rc 0, a result frame, and the server's bearer is exactly "Bearer <canary>";
@@ -180,10 +183,13 @@ def run(h):
     sys.path.insert(0, prefix)
     from zb_agent_host import options, proc_darwin, route_probe, sandbox_macos, token  # the staged tree's own
     cli = os.path.realpath(h.cli)
+    root = os.path.realpath(h.scratch)  # never the /tmp spelling: the profile's write root must be a real path
 
     def one(label, tok):
         """One contract-config turn with `tok` on fd 3 (None: no fd 3). (rc, out, err, bearer, census, port, home)."""
-        home = _home_layout(options, os.path.join(h.scratch, f"home-{label.replace(' ', '-')}"))
+        home = _home_layout(options, os.path.join(root, f"home-{label.replace(' ', '-')}"))
+        h.check(str(home.scratchpad) == os.path.realpath(home.scratchpad),
+                f"{label}: the home's scratchpad is its own real path")
         token.write_wrapper(home.runtime / "bin" / "zb-claude", h.cli)  # as setup.stage writes it
         server = route_probe._ProbeServer(CANARY, h.cli)
         port = int(server.url.rsplit(":", 1)[1])

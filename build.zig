@@ -2121,7 +2121,7 @@ pub fn build(b: *std.Build) void {
         "-c",
         // -X dev shows every ResourceWarning (they fire in finalizers, where -W error cannot fail a test), so the
         // output is counted: any one fails the step (RoseCat 6966).
-        "py=$(tools/agent_host_env.sh --check) || exit 1; cd agent/host/tests && out=$(env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 ZB_AGENT_HOST_PYTHON=\"$py\" \"$py\" -X dev -m unittest -v test_setup_darwin 2>&1); rc=$?; printf '%s\\n' \"$out\"; [ $rc -eq 0 ] || exit $rc; if printf '%s\\n' \"$out\" | grep -q ResourceWarning; then echo 'test_setup_darwin: ResourceWarning' >&2; exit 1; fi",
+        "py=$(tools/agent_host_env.sh --check) || exit 1; cd agent/host/tests && out=$(env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 ZB_AGENT_HOST_PYTHON=\"$py\" unshare --user --map-root-user --pid --fork --kill-child --mount-proc sh -c 'sh -c \"setsid \\\"\\$ZB_AGENT_HOST_PYTHON\\\" -X dev -m unittest -v test_setup_darwin; :\"; :' 2>&1); rc=$?; printf '%s\\n' \"$out\"; [ $rc -eq 0 ] || exit $rc; if printf '%s\\n' \"$out\" | grep -q ResourceWarning; then echo 'test_setup_darwin: ResourceWarning' >&2; exit 1; fi",
     });
     // RoseCat 6966: also in the focused MS5 setup gate, as 2d65b12 does for the cleanup test.
     agent_setup_ms5_step.dependOn(&agent_host_setup_darwin.step);
@@ -2160,7 +2160,7 @@ pub fn build(b: *std.Build) void {
     const agent_host_setup_darwin_r1 = b.addSystemCommand(&.{
         "sh",
         "-c",
-        "py=$(tools/agent_host_env.sh --check) || exit 1; cd agent/host/tests && out=$(env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 ZB_AGENT_HOST_PYTHON=\"$py\" \"$py\" -X dev -m unittest -v test_setup_darwin_r1 2>&1); rc=$?; printf '%s\\n' \"$out\"; [ $rc -eq 0 ] || exit $rc; if printf '%s\\n' \"$out\" | grep -q ResourceWarning; then echo 'test_setup_darwin_r1: ResourceWarning' >&2; exit 1; fi",
+        "py=$(tools/agent_host_env.sh --check) || exit 1; cd agent/host/tests && out=$(env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 ZB_AGENT_HOST_PYTHON=\"$py\" unshare --user --map-root-user --pid --fork --kill-child --mount-proc sh -c 'sh -c \"setsid \\\"\\$ZB_AGENT_HOST_PYTHON\\\" -X dev -m unittest -v test_setup_darwin_r1; :\"; :' 2>&1); rc=$?; printf '%s\\n' \"$out\"; [ $rc -eq 0 ] || exit $rc; if printf '%s\\n' \"$out\" | grep -q ResourceWarning; then echo 'test_setup_darwin_r1: ResourceWarning' >&2; exit 1; fi",
     });
     agent_setup_ms5_step.dependOn(&agent_host_setup_darwin_r1.step);
     // Setup's Darwin sandboxed runs get TMPDIR = their writable SCRATCHPAD (4c0a3db on both Macs: the probe found no
@@ -2168,7 +2168,7 @@ pub fn build(b: *std.Build) void {
     const agent_host_setup_darwin_tmpdir = b.addSystemCommand(&.{
         "sh",
         "-c",
-        "py=$(tools/agent_host_env.sh --check) || exit 1; cd agent/host/tests && out=$(env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 ZB_AGENT_HOST_PYTHON=\"$py\" \"$py\" -X dev -m unittest -v test_setup_darwin_tmpdir 2>&1); rc=$?; printf '%s\\n' \"$out\"; [ $rc -eq 0 ] || exit $rc; if printf '%s\\n' \"$out\" | grep -q ResourceWarning; then echo 'test_setup_darwin_tmpdir: ResourceWarning' >&2; exit 1; fi",
+        "py=$(tools/agent_host_env.sh --check) || exit 1; cd agent/host/tests && out=$(env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 ZB_AGENT_HOST_PYTHON=\"$py\" unshare --user --map-root-user --pid --fork --kill-child --mount-proc sh -c 'sh -c \"setsid \\\"\\$ZB_AGENT_HOST_PYTHON\\\" -X dev -m unittest -v test_setup_darwin_tmpdir; :\"; :' 2>&1); rc=$?; printf '%s\\n' \"$out\"; [ $rc -eq 0 ] || exit $rc; if printf '%s\\n' \"$out\" | grep -q ResourceWarning; then echo 'test_setup_darwin_tmpdir: ResourceWarning' >&2; exit 1; fi",
     });
     agent_setup_ms5_step.dependOn(&agent_host_setup_darwin_tmpdir.step);
     // Setup's and the probe's throwaway trees are removed, a 0300 FIFO directory included, and a failed removal is
@@ -2264,7 +2264,7 @@ pub fn build(b: *std.Build) void {
     const agent_host_setup_darwin_r1_v6 = b.addSystemCommand(&.{
         "sh",
         "-c",
-        "py=$(tools/agent_host_env.sh --check) || exit 1; cd agent/host/tests && out=$(env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 ZB_AGENT_HOST_PYTHON=\"$py\" \"$py\" -X dev -m unittest -v test_setup_darwin_r1_v6 2>&1); rc=$?; printf '%s\\n' \"$out\"; [ $rc -eq 0 ] || exit $rc; if printf '%s\\n' \"$out\" | grep -q ResourceWarning; then echo 'test_setup_darwin_r1_v6: ResourceWarning' >&2; exit 1; fi",
+        "py=$(tools/agent_host_env.sh --check) || exit 1; cd agent/host/tests && out=$(env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 ZB_AGENT_HOST_PYTHON=\"$py\" unshare --user --map-root-user --pid --fork --kill-child --mount-proc sh -c 'sh -c \"setsid \\\"\\$ZB_AGENT_HOST_PYTHON\\\" -X dev -m unittest -v test_setup_darwin_r1_v6; :\"; :' 2>&1); rc=$?; printf '%s\\n' \"$out\"; [ $rc -eq 0 ] || exit $rc; if printf '%s\\n' \"$out\" | grep -q ResourceWarning; then echo 'test_setup_darwin_r1_v6: ResourceWarning' >&2; exit 1; fi",
     });
     agent_setup_ms5_step.dependOn(&agent_host_setup_darwin_r1_v6.step);
     // launch.py's --egress-port + Session carrier (BlackRobin 7035/7108 seam 2); Linux-runnable (PLATFORM injected).
@@ -2654,6 +2654,13 @@ pub fn build(b: *std.Build) void {
         "cd tests/e2e && out=$(env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 unshare --user --map-root-user --pid --fork --mount-proc sh -c 'setsid python3 -X dev -m unittest -v ms6_hard_gate_fd3_cli_case_test' 2>&1); rc=$?; printf '%s\\n' \"$out\"; [ $rc -eq 0 ] || exit $rc; if printf '%s\\n' \"$out\" | grep -q ResourceWarning; then echo 'ms6_hard_gate_fd3_cli_case_test: ResourceWarning' >&2; exit 1; fi",
     });
     mac_census_step.dependOn(&ms6_hard_gate_fd3_cli_case_unit.step);
+    // The fd3 case builds every home under the real path of its scratch (11b3ac4; RoseCat 7627). Namespaced.
+    const ms6_hard_gate_fd3_cli_realpath_unit = b.addSystemCommand(&.{
+        "sh",
+        "-c",
+        "cd tests/e2e && out=$(env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 unshare --user --map-root-user --pid --fork --mount-proc sh -c 'setsid python3 -X dev -m unittest -v ms6_hard_gate_fd3_cli_realpath_test' 2>&1); rc=$?; printf '%s\\n' \"$out\"; [ $rc -eq 0 ] || exit $rc; if printf '%s\\n' \"$out\" | grep -q ResourceWarning; then echo 'ms6_hard_gate_fd3_cli_realpath_test: ResourceWarning' >&2; exit 1; fi",
+    });
+    mac_census_step.dependOn(&ms6_hard_gate_fd3_cli_realpath_unit.step);
     // The R1 case names which owned-group stop proof failed, as a fixed code only (e567a51 Macs). Fakes only.
     const ms6_hard_gate_r1_reason_unit = b.addSystemCommand(&.{
         "sh",
@@ -2713,6 +2720,13 @@ pub fn build(b: *std.Build) void {
         "sh",
         "-c",
         "py=$(tools/agent_host_env.sh --check) || exit 1; cd agent/host/tests && env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 ZB_AGENT_HOST_PYTHON=\"$py\" \"$py\" -m unittest -v test_sandbox_macos",
+    });
+    // The Seatbelt write root must be the scratchpad's own real path (11b3ac4: /tmp -> private/tmp denied every
+    // write; RoseCat 7627). Plain: no process, no signal.
+    const agent_host_sandbox_macos_scratch_real = b.addSystemCommand(&.{
+        "sh",
+        "-c",
+        "py=$(tools/agent_host_env.sh --check) || exit 1; cd agent/host/tests && env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 ZB_AGENT_HOST_PYTHON=\"$py\" \"$py\" -m unittest -v test_sandbox_macos_scratch_real",
     });
     // Chat drawer S3n1 (plan rev 16.2 §3c): the host-side network helper and the
     // two relays, driven through their command lines, offline (private fakes on
@@ -3090,6 +3104,7 @@ pub fn build(b: *std.Build) void {
     if (target.result.os.tag == .linux) test_step.dependOn(&ms6_hard_gate_manifest_unit.step);
     if (target.result.os.tag == .linux) test_step.dependOn(&ms6_hard_gate_r1_case_unit.step);
     if (target.result.os.tag == .linux) test_step.dependOn(&ms6_hard_gate_fd3_cli_case_unit.step);
+    if (target.result.os.tag == .linux) test_step.dependOn(&ms6_hard_gate_fd3_cli_realpath_unit.step);
     if (target.result.os.tag == .linux) test_step.dependOn(&ms6_hard_gate_r1_reason_unit.step);
     if (target.result.os.tag == .linux) test_step.dependOn(&ms6_hard_gate_r1_reason_modes_unit.step);
     if (target.result.os.tag == .linux) test_step.dependOn(&ms6_hard_gate_entry_unit.step);
@@ -3263,6 +3278,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&agent_host_contract.step);
     test_step.dependOn(&agent_host_backend_contract.step);
     test_step.dependOn(&agent_host_sandbox_macos.step);
+    test_step.dependOn(&agent_host_sandbox_macos_scratch_real.step);
     test_step.dependOn(&agent_host_provision_unit.step);
     test_step.dependOn(&agent_host_chat.step);
     test_step.dependOn(&agent_host_chat_errors.step);

@@ -234,7 +234,8 @@ def dparams(*, scratchpad):
     or an alias that resolves to it (``/``, ``/tmp/..``, ``/a/../b``, trailing/double slashes) must be
     refused — otherwise the sole write grant widens (RoseCat 6939 #1). The value is bound literally by
     sandbox-exec (never parsed as profile source), so it cannot inject a rule. The backend's launch_spec
-    binds the exact ``home.scratchpad`` here, which is the stronger check at the call site."""
+    binds the exact ``home.scratchpad`` here, which is the stronger check at the call site. It must also
+    already exist as a directory that is its own real path: Seatbelt compares resolved paths."""
     if not isinstance(scratchpad, str) or not scratchpad.startswith("/"):
         raise ValueError(f"SCRATCHPAD must be an absolute path, got {scratchpad!r}")
     if "//" in scratchpad:  # POSIX normpath keeps a leading '//', so reject any double slash explicitly
@@ -245,6 +246,12 @@ def dparams(*, scratchpad):
                          f"{scratchpad!r} normalizes to {norm!r}")
     if norm == "/" or os.path.dirname(norm) == norm:
         raise ValueError(f"SCRATCHPAD must not be the filesystem root: {scratchpad!r}")
+    # Seatbelt matches the RESOLVED path, so a write root spelled through a symlink (macOS's /tmp -> private/tmp)
+    # grants nothing: every write, the scratchpad's own included, is denied (11b3ac4 on both Macs). Refuse it,
+    # never rewrite it: only an existing directory that is its own real path (RoseCat 7627). The message names
+    # the field only, never the supplied or resolved path.
+    if not os.path.isdir(norm) or os.path.realpath(norm) != norm:
+        raise ValueError("SCRATCHPAD must be an existing directory that is its own real path (no symlink)")
     return {SCRATCHPAD_PARAM: norm}
 
 

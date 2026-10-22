@@ -135,8 +135,10 @@ class NoUntrustedInterpolation(unittest.TestCase):
                          "added (RoseCat 6989: a weaker name-filter would let a future `source`/`root`/`home` slip in)")
 
     def test_dparams_validates_absolute_scratchpad(self):
-        self.assertEqual(sandbox_macos.dparams(scratchpad="/zb/dist/current/state/scratchpad"),
-                         {"SCRATCHPAD": "/zb/dist/current/state/scratchpad"})
+        # An existing directory that is its own real path (RoseCat 7627; test_sandbox_macos_scratch_real).
+        real = os.path.realpath(tempfile.mkdtemp(prefix="zb-dparams-"))
+        self.addCleanup(os.rmdir, real)
+        self.assertEqual(sandbox_macos.dparams(scratchpad=real), {"SCRATCHPAD": real})
         # RoseCat 6939 #1: the scratchpad is the SOLE write grant, so root / aliases that resolve to root or
         # elsewhere must be refused, or the write grant widens.
         for bad in ("relative/path", "", 'has"quote', None, "/", "/tmp/..", "/a/../b", "/tmp/", "/a/./b", "//tmp"):
