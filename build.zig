@@ -3614,8 +3614,14 @@ pub fn build(b: *std.Build) void {
     const mac_reaper_gate_guard_selftest = b.addSystemCommand(&.{ "bash", "tests/mac/ms6_5_reaper_gate_guard_selftest.sh" });
     mac_reaper_gate_guard_selftest.addFileInput(b.path("tests/mac/ms6_5_reaper_gate.sh"));
     mac_reaper_gate_guard_selftest.addFileInput(b.path("tests/mac/ms6_5_reaper_gate_guard_selftest.sh"));
-    b.step("test-mac-reaper-gate-guard", "Run the hostless selftest of the destructive reaper gate's disable-by-default guard").dependOn(&mac_reaper_gate_guard_selftest.step);
+    const mac_reaper_gate_guard_step = b.step("test-mac-reaper-gate-guard", "Run the hostless selftests of the destructive reaper gate's disable-by-default guard");
+    mac_reaper_gate_guard_step.dependOn(&mac_reaper_gate_guard_selftest.step);
     test_step.dependOn(&mac_reaper_gate_guard_selftest.step);
+    const mac_reaper_gate_shared_host_selftest = b.addSystemCommand(&.{ "bash", "tests/mac/ms6_5_reaper_gate_shared_host_selftest.sh" });
+    mac_reaper_gate_shared_host_selftest.addFileInput(b.path("tests/mac/ms6_5_reaper_gate.sh"));
+    mac_reaper_gate_shared_host_selftest.addFileInput(b.path("tests/mac/ms6_5_reaper_gate_shared_host_selftest.sh"));
+    mac_reaper_gate_guard_step.dependOn(&mac_reaper_gate_shared_host_selftest.step);
+    test_step.dependOn(&mac_reaper_gate_shared_host_selftest.step);
     test_step.dependOn(&windows_gate_selftest.step);
     test_step.dependOn(&windows_twohost_selftest.step);
     test_step.dependOn(&windows_build_selftest.step);

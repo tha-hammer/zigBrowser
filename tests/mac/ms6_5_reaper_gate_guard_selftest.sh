@@ -93,6 +93,7 @@ refused "row 5"
 # Row 6 (positive control): both conditions met. The guard must let it reach ssh (the stub fails the leg, so no
 # remote command runs anywhere), and the tar handed to ssh must hold the committed bytes.
 token "$SHA" "$SHA"
+printf '# no target of this run is shared\n' > "$T/home/.ntm/zb-release/shared-mac-hosts"   # the shared-host contract
 run "row 6, approved == HEAD and token" ZB_REAPER_DESTRUCTIVE_APPROVED="$SHA"
 case "$out" in *DISABLED*) bad "row 6: refused although approved and released" ;; *) ok "row 6: not DISABLED" ;; esac
 if [ "$calls" -ge 1 ]; then ok "row 6: reached ssh ($calls calls)"; else bad "row 6: never reached ssh"; fi

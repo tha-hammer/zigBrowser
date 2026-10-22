@@ -9,8 +9,10 @@
 # host keys, no askpass; the arm64 host is required (no default).
 # DISABLED BY DEFAULT (plan R29-SAFETY, bd zigBrowser-4pa.70): it stages one exact commit and refuses before any
 # ssh unless ZB_REAPER_DESTRUCTIVE_APPROVED equals that commit AND the orchestrator's release token
-# $HOME/.ntm/zb-release/reaper-gate-<commit> exists and holds it. Hostless selftest:
-# tests/mac/ms6_5_reaper_gate_guard_selftest.sh (zig build test-mac-reaper-gate-guard).
+# $HOME/.ntm/zb-release/reaper-gate-<commit> exists and holds it. It also refuses when the orchestrator's shared-host
+# list $HOME/.ntm/zb-release/shared-mac-hosts (one user@host or host per line, '#' comments) is missing or names
+# either target host (compared on the host part). Hostless selftests: tests/mac/ms6_5_reaper_gate_guard_selftest.sh
+# and tests/mac/ms6_5_reaper_gate_shared_host_selftest.sh (zig build test-mac-reaper-gate-guard).
 # usage: tests/mac/ms6_5_reaper_gate.sh [commit]   (default: HEAD; never the working tree)
 set -euo pipefail
 
@@ -33,6 +35,14 @@ if [ -z "$ARM_HOST" ]; then
   echo "NOT RUN: arm64 host not configured (set ZB_MAC_ARM_HOST=user@host)" >&2
   exit 1
 fi
+shared="$HOME/.ntm/zb-release/shared-mac-hosts"
+[ -f "$shared" ] && [ -r "$shared" ] || disabled "no shared-host list at $shared (fail closed)"
+for target in "$INTEL_HOST" "$ARM_HOST"; do
+  if sed -e 's/#.*//' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' -e 's/^.*@//' "$shared" \
+       | grep -qxF -- "${target##*@}"; then
+    disabled "$target is on the shared-host list $shared"
+  fi
+done
 stage=$(mktemp -d "${TMPDIR:-/tmp}/zb-reaper-XXXXXX")
 # Validated cleanup (RoseCat 7186): only our own mktemp dirs, by find -delete, never an unguarded rm -rf.
 trap 'case "$stage" in "${TMPDIR:-/tmp}"/zb-reaper-??????) find "${stage:?}" -delete;; esac' EXIT
