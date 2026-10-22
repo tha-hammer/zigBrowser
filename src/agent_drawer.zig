@@ -141,6 +141,28 @@ pub const max_anim_ms: u32 = 5000;
 pub const anim_env_name = "ZIGBROWSER_AGENT_ANIM_MS";
 pub const max_demo_messages: u32 = 5000;
 
+/// WS5.5 e2e-only multi-window count (`ZIGBROWSER_AGENT_DRAWER_WINDOWS`): how many
+/// per-window drawers the process mounts so the live count peaks at N. STRICT —
+/// decimal digits only, within [1, 8]. Unlike atoi it rejects trailing junk
+/// ("2junk"), leading whitespace (" 2"), a sign ("+2") and an empty string, so a
+/// malformed seam never silently enables a partial run (RoseCat 7952).
+pub const max_windows: u32 = 8;
+pub const windows_env_name = "ZIGBROWSER_AGENT_DRAWER_WINDOWS";
+
+pub fn parseWindowCount(text: []const u8) ?u32 {
+    return parseBounded(text, 1, max_windows);
+}
+
+/// The strict window count from the env value (null when unset): the valid count
+/// 1..8, else 0 — the "seam off" sentinel. Keeps the Windows backend free of parse
+/// logic; the C++ enables the seam only when this returns >= 1.
+pub fn windowCountFromEnv(text: ?[]const u8) c_int {
+    if (text) |t| {
+        if (parseWindowCount(t)) |n| return @intCast(n);
+    }
+    return 0;
+}
+
 /// WS5.7 (plan 1583): the icon's edge length at a DPI scale percent — the base
 /// size scaled by `scale_pct`/100, rounded half-up. At 150% the 56 px icon is
 /// 84 px. A non-positive `scale_pct` falls back to 100% (unscaled).
@@ -420,6 +442,7 @@ comptime {
         @export(&zb_drawer_anim_ms, .{ .name = "zb_drawer_anim_ms" });
         @export(&zb_drawer_anim_ms_from_env, .{ .name = "zb_drawer_anim_ms_from_env" });
         @export(&zb_drawer_icon_size_from_dpi_env, .{ .name = "zb_drawer_icon_size_from_dpi_env" });
+        @export(&zb_drawer_window_count_from_env, .{ .name = "zb_drawer_window_count_from_env" });
         @export(&zb_drawer_icon_size_for_dpi, .{ .name = "zb_drawer_icon_size_for_dpi" });
         @export(&zb_drawer_inside_icon, .{ .name = "zb_drawer_inside_icon" });
     }
@@ -524,6 +547,13 @@ fn zb_drawer_anim_ms_from_env(text: ?[*:0]const u8) callconv(.c) c_uint {
 /// Windows backend free of DPI math. This is the e2e-seam path only.
 fn zb_drawer_icon_size_from_dpi_env(text: ?[*:0]const u8) callconv(.c) c_int {
     return iconSizeFromDpiEnv(if (text) |t| std.mem.span(t) else null);
+}
+
+/// WS5.5: the strict multi-window count from `ZIGBROWSER_AGENT_DRAWER_WINDOWS`
+/// (null when unset): 1..8 when valid, else 0 (seam off). Keeps the Windows backend
+/// free of parse logic — the C++ enables the seam only when this returns >= 1.
+fn zb_drawer_window_count_from_env(text: ?[*:0]const u8) callconv(.c) c_int {
+    return windowCountFromEnv(if (text) |t| std.mem.span(t) else null);
 }
 
 /// WS5.7: the icon's edge length (px) for a raw per-monitor DPI — the PRODUCTION

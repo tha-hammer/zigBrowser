@@ -159,6 +159,7 @@ unsigned int zb_drawer_anim_ms_from_env(const char *text);  // ZIGBROWSER_AGENT_
 int zb_drawer_icon_size_for_dpi(int dpi);                  // WS5.7 production: 56*dpi/96 half-up (GetDpiForWindow)
 int zb_drawer_icon_size_from_dpi_env(const char *text);    // WS5.7 e2e seam: the DPI percent env, else 56
 int zb_drawer_inside_icon(int dx, int dy, int radius);     // WS5.7 exact circular hit-test (1 inside, 0 outside)
+int zb_drawer_window_count_from_env(const char *text);     // WS5.5 e2e seam: strict 1..8, else 0 (seam off)
 }
 
 // WS5 shim functions (declared in webkit_shim.h), defined here for the Windows backend.
@@ -2055,11 +2056,10 @@ static int run_core(const char *uri, int print_title, int e2e_protocol, bool scr
     app.dpichange_ignore = dpi_ignore != nullptr && strcmp(dpi_ignore, "1") == 0;
     const char *ht_fail = getenv("ZIGBROWSER_AGENT_DRAWER_HITTEST_FAIL");  // WS5.7 e2e-only hit-test read-fail seam
     app.hittest_read_fail = ht_fail != nullptr && strcmp(ht_fail, "1") == 0;
-    const char *win_env = getenv("ZIGBROWSER_AGENT_DRAWER_WINDOWS");  // WS5.5 e2e-only multi-window count
-    if (win_env != nullptr && win_env[0] != '\0') {
-      const int n = atoi(win_env);
-      if (n >= 1 && n <= 8) { app.windows_seam = n; app.windows_seam_set = true; }  // bounded 1..8
-    }
+    // WS5.5 e2e-only multi-window count: STRICT parse in the portable Zig (1..8, else 0), never atoi — so
+    // "2junk", " 2", "+2" or an empty value leave the seam OFF rather than silently enabling a partial run.
+    const int n = zb_drawer_window_count_from_env(getenv("ZIGBROWSER_AGENT_DRAWER_WINDOWS"));
+    if (n >= 1) { app.windows_seam = n; app.windows_seam_set = true; }
   }
   app.screenshot = screenshot;
   if (screenshot && out_path != nullptr) {

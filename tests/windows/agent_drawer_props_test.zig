@@ -190,3 +190,25 @@ test "insideIcon exact circular hit-test: the edge is inside, beyond is outside 
     try std.testing.expect(d.insideIcon(big, 0, big));    // exact edge at the extreme (big^2 == big^2): inside
     try std.testing.expect(!d.insideIcon(big, big, big)); // (big,big) is sqrt(2)*big away: outside, not a wrapped true
 }
+
+test "windowCountFromEnv: strict 1..8 decimal, else 0 (NOT atoi) (WS5.5, RoseCat 7952)" {
+    // valid in-range counts
+    try expectEqual(@as(c_int, 1), d.windowCountFromEnv("1"));
+    try expectEqual(@as(c_int, 8), d.windowCountFromEnv("8")); // the ceiling
+    try expectEqual(@as(c_int, 4), d.windowCountFromEnv("4"));
+    // unset / out of range -> 0 (seam off)
+    try expectEqual(@as(c_int, 0), d.windowCountFromEnv(null)); // env unset
+    try expectEqual(@as(c_int, 0), d.windowCountFromEnv("0"));  // below the floor
+    try expectEqual(@as(c_int, 0), d.windowCountFromEnv("9"));  // above the ceiling
+    try expectEqual(@as(c_int, 0), d.windowCountFromEnv(""));   // empty
+    // STRICT: the cases where atoi would silently accept a value must all be rejected (-> 0)
+    try expectEqual(@as(c_int, 0), d.windowCountFromEnv("2junk")); // atoi -> 2; strict rejects trailing junk
+    try expectEqual(@as(c_int, 0), d.windowCountFromEnv(" 2"));    // atoi -> 2; strict rejects leading whitespace
+    try expectEqual(@as(c_int, 0), d.windowCountFromEnv("2 "));    // trailing whitespace rejected
+    try expectEqual(@as(c_int, 0), d.windowCountFromEnv("+2"));    // atoi -> 2; strict rejects a sign
+    try expectEqual(@as(c_int, 0), d.windowCountFromEnv("-2"));    // sign rejected
+    try expectEqual(@as(c_int, 0), d.windowCountFromEnv("0x2"));   // hex rejected
+    try expectEqual(@as(c_int, 0), d.windowCountFromEnv("abc"));   // non-numeric
+    // mutant: an atoi-style parse would take "2junk" as 2 (seam ON); the strict parse leaves it OFF (0)
+    try std.testing.expect(d.windowCountFromEnv("2junk") != 2);
+}
