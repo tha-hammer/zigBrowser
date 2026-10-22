@@ -29243,3 +29243,21 @@ Add exact field assertions, a swapped-tag mutant, same/different/cross-kind
 liveness rows, malformed per-kind shapes, and an exact v2 publish round trip
 before registering the red with the green. Agent Mail 7624 sent the findings
 to JadeBeacon.
+
+## Decision-16 broker red fix-forward (`d3655a8`)
+
+**BLOCKED-for-tests.** The table now covers all 18 selector × mode × verb
+rows and pins card/no-card, notification count, one engine dispatch, method
+and exact bound-window parameters. Both verb schemas reject model-supplied
+routing/policy fields, and two simultaneous cards are exercised.
+
+The purported second drawer uses a broker bound to window 3, but the shared
+`Cards` is never told `windowOpened(3)`. Thus closing window 1 also closes
+the only window represented in the card model. A broken implementation that
+cancels cards only when the last known window closes would pass, without
+implementing the owner's rule that closing the first-opened main window
+cancels all waits while another window remains. Register window 3, leave it
+open, then close window 1 and retain the two cancellation/no-dispatch
+assertions. A main-vs-last-window mutant should fail. As a SHOULD, assert the
+answer callback count is exactly one after each matrix row settles, not only
+the engine dispatch count. Agent Mail 7626 sent the finding to BlackRobin.
