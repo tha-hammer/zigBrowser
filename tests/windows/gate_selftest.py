@@ -29,6 +29,7 @@ Run alone:  python3 -I tests/windows/gate_selftest.py -v
 """
 import os
 import pathlib
+import re
 import shutil
 import subprocess
 import tempfile
@@ -620,6 +621,41 @@ class RootResolutionTests(_GateCase):
             detail = f"\nrc={proc.returncode}\nstdout:\n{proc.stdout}\nstderr:\n{proc.stderr}"
             self.assertNotEqual(proc.returncode, 0, "a root without the gate must fail closed" + detail)
             self.assertIn("cannot resolve a repo root", proc.stderr, detail)
+
+
+class AllowedPathIsDiagnosticOnlyTests(unittest.TestCase):
+    """`--allowed-path` / `allowed_path` is a CHECK-TIME diagnostic, not a time-of-use authorization
+    boundary (RoseCat security review of aebb07b/9dbad76; bead zigBrowser-q92). Its ALLOW is a
+    point-in-time string answer and MUST NOT be reused to open a path later — a component can be
+    swapped between the check and the use. Any gate op that consumed the verdict would need the
+    held-handle check-and-use design (Windows plan, Option B) first.
+
+    This pin fails until that atomic path exists: it requires `allowed_path` to be CALLED from exactly
+    one place — the `--allowed-path` diagnostic dispatch. If anyone wires a second caller (gating a real
+    file operation on the verdict), this reds, forcing them to Option B instead.
+    """
+
+    def setUp(self):
+        self.assertTrue(GATE.exists(), "tests/windows/gate.sh must exist")
+        self.src = GATE.read_text()
+
+    def test_allowed_path_has_exactly_one_caller_the_diagnostic_dispatch(self):
+        # A call site is `allowed_path <arg>` (ws before arg); the definition `allowed_path() {` and
+        # comment lines do not match. Exactly one call must exist, and it must be the dispatch.
+        calls = [ln.strip() for ln in self.src.splitlines() if re.match(r"\s*allowed_path\s+\S", ln)]
+        self.assertEqual(len(calls), 1,
+                         "allowed_path must have exactly ONE caller (the --allowed-path diagnostic); a "
+                         "second caller means a gate op consumes its verdict — use Option B (held-handle "
+                         "check-and-use), never reuse an ALLOW. Found: %r" % calls)
+        self.assertRegex(calls[0], r'^allowed_path\s+"\$\{2:-\}"',
+                         "the sole allowed_path caller must be the --allowed-path dispatch")
+        self.assertEqual(self.src.count("allowed_path() {"), 1, "allowed_path must be defined once")
+
+    def test_allowed_path_is_documented_as_a_non_boundary(self):
+        # The reclassification must stay explicit so it is not silently re-promoted to a boundary.
+        self.assertIn("CHECK-TIME", self.src)
+        self.assertIn("NOT an authorization boundary", self.src)
+        self.assertIn("MUST NOT be reused", self.src)
 
 
 if __name__ == "__main__":

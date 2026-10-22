@@ -21,9 +21,25 @@ vacuous fail-closed on a path that was never created (RoseCat 6726):
   * a legitimate in-root junction (-> {root}\\live) must DENY  (reparse; fail-closed, not resolved)
   * a descendant through an in-root junction (junction\\sub) must DENY   (mid-path reparse)
   * a two-junction chain (-> the in-root junction) must DENY            (reparse)
+  * a forced reparse on an ORDINARY component must DENY  (ZB_RESOLVE_SELFTEST_FAULT=reparse:<seg>)
+  * a forced INVALID (unreadable/transient) component must DENY  (…=invalid:<seg>)
+  * a genuinely MISSING component must DENY             (real INVALID_FILE_ATTRIBUTES)
 
-MUTANT the production walk removes to confirm these are causal: dropping the reparse check makes the
-in-root junction ALLOW, reddening rows 3-5.
+MUTANT ISOLATION: the static junction rows (2-5) also trip CreateFile (ERROR_CANT_RESOLVE_FILENAME on
+this build), so removing the walk still DENYs them — they do not prove the walk is causal. The forced
+rows (6-7) fault an ORDINARY directory that CreateFile resolves fine, so the DENY can only come from
+the walk's own checks:
+  - dropping the reparse test `if(($a -band $RP) -ne 0){exit 3}` flips row 6 (forced reparse) to ALLOW;
+  - reintroducing the old exclusion `if($a -ne $INV -and ($a -band $RP) -ne 0){exit 3}` (the bug: INVALID
+    silently skipped) flips row 7 (forced INVALID on an existing leaf) to ALLOW. Note INVALID_FILE_
+    ATTRIBUTES is 0xFFFFFFFF, which also has the reparse bit, so the explicit `$a -eq $INV` guard must
+    fire FIRST and the exclusion form is the real regression; simply deleting the explicit guard would
+    still DENY via the reparse bit.
+These two mutants are the causal proof.
+
+NOTE: `--allowed-path` is a CHECK-TIME diagnostic, not a time-of-use authorization boundary (its ALLOW
+must never be reused to open a path later; see gate.sh and the Windows plan). These rows verify the
+check's verdict at the instant of the check only.
 
 Skips cleanly when the VM is not configured.
 
@@ -53,7 +69,7 @@ def _remote(cmd):
     return subprocess.run(_ssh_base() + [cmd], capture_output=True, text=True, timeout=40)
 
 
-def _gate_verdict(path):
+def _gate_verdict(path, extra_env=None):
     # gate.sh inherits ZB_WIN11_HOST / ZB_GUEST_USER, so its DEFAULT resolver (resolve_path.sh)
     # resolves on the real VM. Scrub any ambient ZB_RESOLVE_CMD so a stray override can never stand
     # in for the production resolver (RoseCat 6726). resolve_path.sh's ssh defaults differ from this
@@ -64,6 +80,8 @@ def _gate_verdict(path):
     env.setdefault("ZB_WIN_KEY", os.environ.get("ZB_WIN_KEY", "/home/maceo/vms/win11-m8/zb_win_key"))
     env.setdefault("ZB_WIN_KNOWN_HOSTS",
                    os.environ.get("ZB_WIN_KNOWN_HOSTS", "/home/maceo/vms/win11-m8/known_hosts"))
+    if extra_env:
+        env.update(extra_env)
     p = subprocess.run(["bash", str(GATE), "--allowed-path", path], capture_output=True, text=True,
                        timeout=60, env=env)
     return (p.stdout or "").strip(), p
@@ -96,8 +114,8 @@ def main():
     chain = rf"{root}\zb_live_chain"       # junction -> {inj}        (junction to a junction)
     asserts = 0
 
-    def expect(path, want, label):
-        out, p = _gate_verdict(path)
+    def expect(path, want, label, extra_env=None):
+        out, p = _gate_verdict(path, extra_env=extra_env)
         if out != want:
             print(f"FAIL [{label}]: resolver on {path!r} => {out!r} (want {want})\n--- gate stderr ---\n{p.stderr}")
             return False
@@ -142,6 +160,33 @@ def main():
             print(f"FAIL: chain-junction setup did not take\n{d}")
             return 1
         if not expect(chain, "DENY", "two-junction chain"):
+            return 1
+        asserts += 1
+
+        # Causal / mutant-isolating rows (ZB_RESOLVE_SELFTEST_FAULT, DENY-only). The static junction rows
+        # above also trip CreateFile (ERROR_CANT_RESOLVE_FILENAME on this build), so they do not prove
+        # WHICH check denied. These force a fault on an ORDINARY directory component — CreateFile would
+        # resolve it fine — so the DENY can only come from the walk's own check, and a mutant that drops
+        # that check flips the row to ALLOW:
+
+        # (6) a reparse point anywhere in the path -> DENY. Forced on the real {live} component; proves the
+        # reparse-walk check (drop `($a -band $RP)` and this row ALLOWs the ordinary path).
+        if not expect(live_sub, "DENY", "forced mid-path reparse (isolates reparse check)",
+                      extra_env={"ZB_RESOLVE_SELFTEST_FAULT": "reparse:live"}):
+            return 1
+        asserts += 1
+
+        # (7) an UNREADABLE component (GetFileAttributesW==INVALID_FILE_ATTRIBUTES) -> DENY. Forced on the
+        # EXISTING leaf; proves INVALID -> DENY. Causal mutant: the old exclusion form
+        # `if($a -ne $INV -and ($a -band $RP))` skips INVALID, so this row ALLOWs (CreateFile resolves the
+        # real leaf). Stands in for the unreadable/transient/raced-away cases, all INVALID at the walk.
+        if not expect(live_sub, "DENY", "forced unreadable component (isolates INVALID check)",
+                      extra_env={"ZB_RESOLVE_SELFTEST_FAULT": "invalid:sub"}):
+            return 1
+        asserts += 1
+
+        # (8) a genuinely MISSING component -> DENY (real INVALID, no seam): a non-existent leaf under root.
+        if not expect(rf"{live}\does-not-exist-{os.getpid()}", "DENY", "missing component (real INVALID)"):
             return 1
         asserts += 1
     finally:

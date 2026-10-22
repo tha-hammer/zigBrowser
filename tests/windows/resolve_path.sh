@@ -1,26 +1,31 @@
 #!/usr/bin/env bash
-# resolve_path.sh — production reparse/junction resolver for the WS0.5 fence (gate.sh default).
+# resolve_path.sh — CHECK-TIME remote-path diagnostic for gate.sh --allowed-path (the default resolver).
 #
-# Given one Windows path, print its REAL resolved target (reparse points / junctions followed) on
-# ONE line, exit 0. gate.sh re-checks that resolved path against the lexical fence, so a junction
-# under zb\ that targets outside the root is denied. Exit nonzero / empty / multiline is treated by
-# the gate as fail-closed (DENY).
+# SCOPE / NOT A SECURITY BOUNDARY: this maps a Windows path to its canonical target AT THE INSTANT OF
+# THE CHECK and is a readiness/diagnostic only. It is NOT a time-of-use authorization boundary: the
+# caller gets a verdict for a NAME, not a pinned handle, so the answer can be stale by the time any
+# later operation reuses the name (a component could be renamed/replaced by a junction in between).
+# No consumer may act on an ALLOW to open a path later — see the Windows plan: a future consumer that
+# acts on a remote path MUST do a single held-handle check-and-use (Option B) and MUST NOT reuse an
+# ALLOW (bead zigBrowser-q92; RoseCat security review of aebb07b/9dbad76).
 #
-# SECURITY: the path is passed to PowerShell as base64 DATA, never spliced into PowerShell source,
-# so a quote/backtick/newline in the path cannot inject code on the host. PowerShell decodes it,
-# resolves via GetFinalPathNameByHandle, and rejects a 0 return (failure) or a length >= the buffer
-# (truncation). The whole script is itself delivered as -EncodedCommand (no cmd-line quoting).
+# Given one Windows path, print its canonical target on ONE line, exit 0. It FAILS CLOSED (exit 3 ->
+# gate DENY) on ANY reparse point in the path AND on ANY attribute read failure: it walks every
+# component (GetFileAttributesW, which does not follow links) and exits 3 if any component is a reparse
+# point (directory junction or symlink) OR cannot be read (missing / unreadable / raced away ==
+# INVALID_FILE_ATTRIBUTES). In-root junctions are intentionally unsupported. With no reparse point and
+# all components readable, CreateFile + GetFinalPathNameByHandle returns the canonical path for the
+# lexical check; a path that cannot be opened fails closed via exit 3.
 #
-# The selftest replaces this via ZB_RESOLVE_CMD; this real implementation resolves on the Windows
-# host over SSH. Live-verified on win11-m8: a normal in-root path resolves to itself; C:\Windows
-# resolves to itself. SECURITY: the resolver FAILS CLOSED on ANY reparse point in the path — it walks
-# every existing ancestor component (GetFileAttributesW, which does not follow links) and exits 3
-# (gate DENY) if any is a reparse point (directory junction or symlink). In-root junctions are not
-# needed for launch, and ALLOWing one would reopen a swap/chain TOCTOU: the gate authorizes the
-# resolved NAME, not a pinned handle/object, so a junction ALLOWed now could be repointed outside
-# before the name is used (RoseCat, bead zigBrowser-q92). With no reparse point present, CreateFile +
-# GetFinalPathNameByHandle returns the canonical path for the string fence; a path that cannot be
-# opened fails closed via exit 3.
+# SECURITY (injection): the path is passed to PowerShell as base64 DATA, never spliced into PowerShell
+# source, so a quote/backtick/newline in the path cannot inject code on the host. The whole script is
+# delivered as -EncodedCommand (no cmd-line quoting). The selftest replaces this via ZB_RESOLVE_CMD.
+#
+# TEST SEAM (DENY-ONLY, inert unless set): ZB_RESOLVE_SELFTEST_FAULT="reparse:<seg>" or "invalid:<seg>"
+# forces the named path component to be seen as a reparse point / unreadable during the walk, so the
+# live test can prove the walk's two DENY checks CAUSALLY on an ordinary directory (a real junction
+# also trips CreateFile, which would mask whether the walk is what denied). It can ONLY cause a DENY,
+# never an ALLOW, so it cannot weaken the check if ever set in production.
 set -uo pipefail
 p="${1:?usage: resolve_path.sh <windows-path>}"
 
@@ -34,6 +39,8 @@ kh="${ZB_WIN_KNOWN_HOSTS:-tests/windows/known_hosts}"
 # The path, base64-encoded. base64's alphabet has no quote/backtick/newline, so embedding it as a
 # PowerShell single-quoted literal is injection-safe; PowerShell decodes it back to the real path.
 pb64=$(printf '%s' "$p" | base64 -w0)
+# DENY-only test seam (empty in production): base64 so it rides into the PS as data, never as source.
+fb64=$(printf '%s' "${ZB_RESOLVE_SELFTEST_FAULT:-}" | base64 -w0)
 
 # PowerShell reports the raw result only: line 1 = the GetFinalPathNameByHandle return (the length,
 # or 0 on failure, or the required size when the buffer is too small), line 2 = the resolved name.
@@ -44,6 +51,7 @@ RESOLVE_CAP=1024
 read -r -d '' PS <<'PSEOF' || true
 $ErrorActionPreference = 'Stop'
 $p = [System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('__PB64__'))
+$flt = [System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('__FLT64__'))
 Add-Type -Namespace Zb -Name P -MemberDefinition @'
 [DllImport("kernel32.dll",SetLastError=true,CharSet=CharSet.Unicode)]
 public static extern System.IntPtr CreateFile(string n,uint a,uint s,System.IntPtr sa,uint c,uint f,System.IntPtr t);
@@ -54,18 +62,22 @@ public static extern uint GetFileAttributesW(string n);
 [DllImport("kernel32.dll")] public static extern bool CloseHandle(System.IntPtr h);
 '@
 $B=0x02000000;$RP=0x400;$INV=[uint32]::MaxValue
+$fm=$flt -split ':',2
 foreach($seg in ($p -split '\\')){
   if($seg -eq ''){continue}
   if($acc -eq $null -or $acc -eq ''){$acc=$seg}else{$acc=$acc+'\'+$seg}
   $probe=$acc;if($probe -match '^[A-Za-z]:$'){$probe=$probe+'\'}
   $a=[Zb.P]::GetFileAttributesW($probe)
-  if($a -ne $INV -and ($a -band $RP) -ne 0){exit 3}
+  if($fm.Count -eq 2 -and $seg -eq $fm[1]){if($fm[0] -eq 'reparse'){$a=$RP}elseif($fm[0] -eq 'invalid'){$a=$INV}}
+  if($a -eq $INV){exit 3}
+  if(($a -band $RP) -ne 0){exit 3}
 }
 $h=[Zb.P]::CreateFile($p,0,3,[IntPtr]::Zero,3,$B,[IntPtr]::Zero)
 if($h -eq [IntPtr](-1)){exit 3}
 try{$s=New-Object Text.StringBuilder 1024;$n=[Zb.P]::GetFinalPathNameByHandle($h,$s,1024,0);if($n -eq 0 -or $n -ge 1024){exit 3};[Console]::Out.WriteLine($s.Length);[Console]::Out.WriteLine($s.ToString())}finally{[void][Zb.P]::CloseHandle($h)}
 PSEOF
 PS="${PS//__PB64__/$pb64}"
+PS="${PS//__FLT64__/$fb64}"
 
 b64=$(printf '%s' "$PS" | iconv -f UTF-8 -t UTF-16LE | base64 -w0)
 out=$(env -u DISPLAY -u WAYLAND_DISPLAY -u XAUTHORITY ssh \

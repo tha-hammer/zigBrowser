@@ -7,7 +7,11 @@
 #
 # Subcommands used by the Linux-side selftest (tests/windows/gate_selftest.py), which drives this
 # script against fake ssh/tar/virsh on PATH:
-#   --allowed-path <p>   print ALLOW/DENY for a remote path against C:\Users\<ZB_GUEST_USER>\zb
+#   --allowed-path <p>   CHECK-TIME path diagnostic: print ALLOW/DENY for a remote path against
+#                        C:\Users\<ZB_GUEST_USER>\zb. NOT an authorization boundary — the verdict is a
+#                        point-in-time string answer, so its ALLOW MUST NOT be reused to open the path
+#                        later (a component can be swapped between check and use). See the Windows plan:
+#                        a future consumer must do a single held-handle check-and-use (Option B).
 #   --selftest-stage     run only the stage-to-host step (the WS0.3/WS0.8 observation point)
 #   --probe-only         probe each configured host and print its JSON; run no product tests
 #
@@ -50,7 +54,12 @@ run_remote() { # $@ = full ssh argv (already assembled); scrubs display vars fro
   env -u DISPLAY -u WAYLAND_DISPLAY -u XAUTHORITY "$@"
 }
 
-# ---- WS0.5 remote-path fence -------------------------------------------------------------
+# ---- WS0.5 remote-path CHECK-TIME diagnostic (NOT an authorization boundary) -------------
+# This answers "is this path string inside the root right now?" as a readiness/diagnostic check. It is
+# NOT a time-of-use fence: it returns a verdict for a NAME, not a pinned handle, so the answer can be
+# stale by the time any later operation reuses the name. No caller may act on an ALLOW to open the path
+# later; a future consumer that acts on a remote path MUST do a single held-handle check-and-use
+# (Windows plan, Option B) and MUST NOT reuse an ALLOW. gate_selftest pins that no gate op consumes it.
 # Two layers:
 #  1. STRING normalization — allowed(path) is true only if the normalized path is a strict
 #     sub-path of the user's root, compared component-wise (so C:\Users\u\zbEVIL is NOT under
@@ -98,7 +107,8 @@ PY
 # ZB_RESOLVE_CMD only REPLACES it (for the selftest); it is never a way to skip resolution.
 ZB_DEFAULT_RESOLVE_CMD="$HERE/resolve_path.sh"
 
-allowed_path() { # $1 = path ; prints ALLOW or DENY. Resolution is MANDATORY and fails CLOSED.
+allowed_path() { # $1 = path ; prints ALLOW/DENY. CHECK-TIME diagnostic only (point-in-time; see above).
+                 # Resolution is MANDATORY and fails CLOSED. Do NOT call this to gate a later file op.
   local p="$1"
   # Layer 1: the named lexical string fence.
   [ "$(fence_str "$p")" = "ALLOW" ] || { echo DENY; return 0; }
@@ -559,7 +569,8 @@ case "${1:-}" in
     exit 0
     ;;
   --allowed-path)
-    # Full fence: lexical + MANDATORY reparse resolution (fails closed).
+    # CHECK-TIME diagnostic: lexical + MANDATORY reparse resolution (fails closed). Not an authorization
+    # boundary; its ALLOW must not be reused to open the path later (see allowed_path header).
     allowed_path "${2:-}"
     exit 0
     ;;

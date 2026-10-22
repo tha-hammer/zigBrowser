@@ -761,6 +761,17 @@ task or process fails the run.
 under `C:\Users\zbtest\zb\` (resolved, no `..`, no junction out) or the gate refuses before
 running anything.
 
+> **WS0.5 scope note (RoseCat security review of aebb07b/9dbad76; bead zigBrowser-q92).** `gate.sh
+> --allowed-path` / `resolve_path.sh` is a **check-time diagnostic**, not a time-of-use authorization
+> boundary: it answers for a path NAME at the instant of the check, which can be stale before any later
+> use (a component can be renamed/replaced by a junction in between). It fails closed on any reparse
+> point or attribute read failure, and in-root junctions are intentionally unsupported. **Any FUTURE
+> consumer that acts on a remote path MUST perform a single held-handle check-and-use operation
+> (Option B: open every component with `FILE_FLAG_OPEN_REPARSE_POINT` and no `FILE_SHARE_DELETE`, keep
+> the handles open through the operation, deny on any reparse point or read failure, and act only
+> through the held final handle) and MUST NEVER reuse an `--allowed-path` ALLOW for later access.**
+> `gate_selftest.py` pins that no gate op consumes the verdict until that atomic path exists.
+
 ### Behavior WS0.6: the Win11 VM is the VM it claims to be, and a down VM fails the gate
 **Given** `ZB_WIN11_HOST`/`ZB_WIN11_PORT`/`ZB_WIN11_DOMAIN`, **when** the gate starts, **then** it checks, in
 this order, `virsh` state `running`, TCP reachability within 15 s, the pinned host key, the probe JSON, and
