@@ -418,3 +418,13 @@ Exact clean-archive evidence at `68666dbf26709b8ac51ee8c2d2390822eaf630e9`: `zig
 - `ms5_gate.sh`: **3ui.5 cache HOLD CLEAR, but still HELD / not request-eligible** because its independent `StrictHostKeyChecking=no` / `UserKnownHostsFile=/dev/null` defect remains open.
 
 “Request-eligible” is not a release. Every Mac run still requires the exact source commit, SHA-256 of every harness file used, and the orchestrator's explicit release. No Mac was contacted during this review.
+
+## 2026-10-22 — MS5 pinned-transport red
+
+### `f2ccdfd` — strict pinned host keys, BatchMode, and no display
+
+**SAFE TO PUSH AS AN UNREGISTERED RED.** Exact commit `f2ccdfd05905403194f52f081f35b3db816fb3e7` adds only `tests/mac/ms5_gate_hostkey_selftest.sh`; it changes no product file, build registration, or existing test. The selftest launches the committed `ms5_gate.sh` from a scratch repository inside a private user/network namespace, with display variables deliberately set, and records every SSH/SCP argv and environment. It requires strict checking to be present and exclusively `yes`, exactly one `UserKnownHostsFile` naming the scratch repository's copied `tests/mac/known_hosts`, `BatchMode=yes`, `IdentitiesOnly=yes`, no `DISPLAY`/`WAYLAND_DISPLAY`/`XAUTHORITY`, only the two configured hosts, and a non-vacuous SSH plus SCP on each host with the final both-arches PASS line.
+
+From a clean archive of the exact commit, the script exited 1 after reaching the gate's end and all six transport calls. It produced exactly 18 intended failures: H1, H2, and H4 on each of three Intel and three arm64 SSH/SCP calls; H3, H5, and H6 already held. A scratch-only compliant change using `StrictHostKeyChecking=yes`, the exact repository pinned file, and `env -u` around both transport arrays made the same oracle exit 0 with PASS. `bash -n` and `git diff --check` passed. The test neither imports unused code nor substitutes a helper for the real gate.
+
+This test deliberately proves transport argv/environment, not a real host-key handshake; the six reviewed fingerprints in `tests/mac/known_hosts` remain the separate content proof. The green must register this file, declare the gate and pinned file as inputs, and retain mutants for strict checking, the known-hosts path, BatchMode/IdentitiesOnly, display stripping, host scope, and per-leg non-vacuity. Until that green is reviewed, `ms5_gate.sh` remains held for its independent transport defect even though its 3ui.5 cache hold is clear. No Mac was contacted.
