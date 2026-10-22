@@ -18,6 +18,8 @@
 //!   takes: no sink is called after `detach` returns (rev 16.20.36).
 const std = @import("std");
 const server_mod = @import("automation_server.zig");
+/// S8 decision 16's core: whether navigate and reload wait for a card, and the cards.
+pub const approval = @import("agent_approval.zig");
 
 const Server = server_mod.AutomationApiServer;
 
@@ -60,6 +62,55 @@ pub fn deadlineMs(helper_s: u32) u64 {
 }
 
 pub const timeout_text = "The browser did not answer in time.";
+/// S8 decision 16: a navigate or reload whose card was not approved within its time.
+pub const not_approved_text = "The navigation was not approved in time.";
+/// S8 decision 16: a navigate or reload whose card was cancelled (no main window, or it closed).
+pub const cancelled_text = "The navigation was cancelled.";
+
+/// S8 decision 16 (the app sets it, S8c): the store's selector, the run's facts, the main
+/// window's cards, the desktop notification and the unreadable-store report. Without it the
+/// gated tools are not available (S7.5).
+pub const Approval = struct {
+    ctx: *anyopaque,
+    cards: *approval.Cards,
+    read_selector: *const fn (ctx: *anyopaque) approval.StoreRead,
+    facts: *const fn (ctx: *anyopaque) approval.RunFacts,
+    notify: *const fn (ctx: *anyopaque) void,
+    report_unreadable: *const fn (ctx: *anyopaque) void,
+};
+
+/// S8 decision 16's tools: each one method, gated by the core.
+const gated_tools = [_]struct { name: []const u8, method: []const u8, verb: approval.Verb }{
+    .{ .name = "navigate", .method = "page.navigate", .verb = .navigate },
+    .{ .name = "reload", .method = "page.reload", .verb = .reload },
+};
+
+fn gatedTool(tool: []const u8) ?@TypeOf(gated_tools[0]) {
+    if (!std.mem.startsWith(u8, tool, tool_prefix)) return null;
+    const name = tool[tool_prefix.len..];
+    for (gated_tools) |t| if (std.mem.eql(u8, t.name, name)) return t;
+    return null;
+}
+
+/// navigate takes exactly {url: non-empty string}; reload exactly {}.
+fn gatedArgsOk(gpa: std.mem.Allocator, verb: approval.Verb, args_json: []const u8) error{OutOfMemory}!bool {
+    const text = std.mem.trim(u8, args_json, &std.ascii.whitespace);
+    var parsed = std.json.parseFromSlice(std.json.Value, gpa, if (text.len == 0) "{}" else text, .{}) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return false,
+    };
+    defer parsed.deinit();
+    if (parsed.value != .object) return false;
+    const object = parsed.value.object;
+    switch (verb) {
+        .reload => return object.count() == 0,
+        .navigate => {
+            if (object.count() != 1) return false;
+            const url = object.get("url") orelse return false;
+            return url == .string and url.string.len > 0;
+        },
+    }
+}
 
 /// A call's one answer: `.content`, the tool_result content (a JSON array), or `.failure`,
 /// its error text. Valid only during the sink's call.
@@ -117,6 +168,8 @@ pub const Broker = struct {
     before_publish: ?Hook = null,
     /// A screenshot's fit; with none, a screenshot is "the screenshot could not be read".
     fit: ?Fit = null,
+    /// S8 decision 16 (S8c sets it): with none, navigate and reload are not available.
+    approval: ?Approval = null,
     /// The next broker in its Reaper's list: adopting a broker allocates nothing (RoseCat 6650).
     reap_next: ?*Broker = null,
 
@@ -183,14 +236,24 @@ pub const Broker = struct {
     /// is answered before this returns; any other call is queued for the worker. A sink must
     /// not call back into this broker.
     pub fn submit(self: *Broker, id: []const u8, tool: []const u8, args_json: []const u8, sink: Sink) void {
-        const method = toolMethod(tool) orelse return sink.done(sink.ctx, id, .{ .failure = "tool not available" });
+        // S8 decision 16: navigate and reload exist only with the approval seam.
+        const gated = gatedTool(tool);
+        if (gated != null and self.approval == null) return sink.done(sink.ctx, id, .{ .failure = "tool not available" });
+        if (gated) |g| {
+            const ok = gatedArgsOk(self.gpa, g.verb, args_json) catch return sink.done(sink.ctx, id, .{ .failure = "out of memory" });
+            if (!ok) return sink.done(sink.ctx, id, .{ .failure = "the tool's arguments are not valid" });
+        }
+        const method = if (gated) |g| g.method else toolMethod(tool) orelse return sink.done(sink.ctx, id, .{ .failure = "tool not available" });
         const params = self.bound(args_json) catch |err| return sink.done(sink.ctx, id, .{ .failure = switch (err) {
             error.WindowFixed => "window is fixed to this drawer",
             error.BadArgs => "the tool's arguments are not an object",
             error.OutOfMemory => "out of memory",
         } });
         const io = self.server.io;
-        const job = Job.create(self.gpa, id, method, params, sink, nowMs(io) + @as(i64, @intCast(self.deadline_ms)), self.window) catch {
+        // A gated call's budget also holds its card's time (rev 16.20.37: gated calls get their
+        // own deadline budget).
+        const budget_ms = self.deadline_ms + if (gated != null) approval.card_ttl_ms else 0;
+        const job = Job.create(self.gpa, id, method, params, sink, nowMs(io) + @as(i64, @intCast(budget_ms)), self.window) catch {
             self.gpa.free(params);
             return sink.done(sink.ctx, id, .{ .failure = "out of memory" });
         };
@@ -204,6 +267,7 @@ pub const Broker = struct {
             job.destroy();
             return sink.done(sink.ctx, id, .{ .failure = "out of memory" });
         };
+        if (gated) |g| job.verb = g.verb;
         self.cond.broadcast(io);
     }
 
@@ -367,6 +431,9 @@ pub const Reaper = struct {
     }
 };
 
+/// How often a card-waiting call looks at its card (Approve, expiry, a close).
+const approval_poll_ms = 10;
+
 fn nowMs(io: std.Io) i64 {
     return std.Io.Clock.now(.awake, io).toMilliseconds();
 }
@@ -381,6 +448,8 @@ const Job = struct {
     deadline_at: i64,
     window: u32,
     answered: std.atomic.Value(bool) = .init(false),
+    /// S8 decision 16: set for navigate and reload, which the core may hold for a card.
+    verb: ?approval.Verb = null,
 
     fn create(gpa: std.mem.Allocator, id: []const u8, method: []const u8, params: []u8, sink: Sink, deadline_at: i64, window: u32) !*Job {
         const job = try gpa.create(Job);
@@ -395,12 +464,43 @@ const Job = struct {
 
     /// On the worker: the call's answer, published unless the deadline answered first.
     fn run(self: *Job, broker: *Broker) void {
+        if (self.verb) |verb| {
+            if (self.awaitApproval(broker, verb)) |refused| return broker.publish(self, Outcome.fail(refused));
+        }
         const outcome = if (std.mem.eql(u8, self.method, "page.health")) self.windowInfo(broker) else if (std.mem.eql(u8, self.method, "page.screenshot")) self.screenshot(broker) else blk: {
             const reply = broker.call(self.method, self.params) catch break :blk Outcome.fail("out of memory");
             defer self.gpa.free(reply);
             break :blk answer(self.gpa, reply);
         };
         broker.publish(self, outcome);
+    }
+
+    /// S8 decision 16: null when the call may run now (no card needed, or its card approved);
+    /// else the refusal text, with nothing dispatched. The card waits in the main window's drawer
+    /// with one desktop notification; the cards' own clock expires it.
+    fn awaitApproval(self: *Job, broker: *Broker, verb: approval.Verb) ?[]const u8 {
+        _ = self;
+        const gate = broker.approval.?;
+        const store = gate.read_selector(gate.ctx);
+        if (store.unreadable) gate.report_unreadable(gate.ctx);
+        if (!approval.needsCard(verb, store.selector, approval.modeOf(gate.facts(gate.ctx)))) return null;
+        const card = gate.cards.present() catch return cancelled_text;
+        gate.notify(gate.ctx);
+        const io = broker.server.io;
+        while (true) {
+            gate.cards.expireDue();
+            switch (gate.cards.outcome(card) orelse .cancelled) {
+                .waiting => {},
+                .approved => return null,
+                .expired => return not_approved_text,
+                .cancelled => return cancelled_text,
+            }
+            broker.mutex.lockUncancelable(io);
+            const stop = broker.stopping or broker.detached;
+            broker.mutex.unlock(io);
+            if (stop) return cancelled_text;
+            io.sleep(.fromMilliseconds(approval_poll_ms), .awake) catch {};
+        }
     }
 
     /// window_info (revs 16.20.35 and 16.20.36; RoseCat 6575, 6585, 6606): page.health answers

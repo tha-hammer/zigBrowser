@@ -117,8 +117,10 @@ pub const ClockSource = struct {
 pub const CardId = u64;
 
 /// The main window's waiting cards (owner, rev 16.20.54). The main window is the first window
-/// opened; when it closes there is none, and every waiting card is cancelled.
+/// opened; when it closes there is none, and every waiting card is cancelled. Safe across
+/// threads: the broker's worker presents and polls, the GTK thread opens, closes and approves.
 pub const Cards = struct {
+    lock: std.atomic.Mutex = .unlocked,
     gpa: std.mem.Allocator,
     clock: ClockSource,
     main: ?u64 = null,
@@ -137,13 +139,21 @@ pub const Cards = struct {
         self.cards.deinit(self.gpa);
     }
 
+    fn acquire(self: *Cards) void {
+        while (!self.lock.tryLock()) std.atomic.spinLoopHint();
+    }
+
     pub fn windowOpened(self: *Cards, window: u64) void {
+        self.acquire();
+        defer self.lock.unlock();
         if (self.chosen) return;
         self.chosen = true;
         self.main = window;
     }
 
     pub fn windowClosed(self: *Cards, window: u64) void {
+        self.acquire();
+        defer self.lock.unlock();
         if (self.main != window) return;
         self.main = null;
         for (self.cards.items) |*card| {
@@ -151,12 +161,16 @@ pub const Cards = struct {
         }
     }
 
-    pub fn mainWindow(self: *const Cards) ?u64 {
+    pub fn mainWindow(self: *Cards) ?u64 {
+        self.acquire();
+        defer self.lock.unlock();
         return self.main;
     }
 
     /// A new card waiting in the main window's drawer; without one, the step is cancelled.
     pub fn present(self: *Cards) error{ OutOfMemory, NoMainWindow }!CardId {
+        self.acquire();
+        defer self.lock.unlock();
         if (self.main == null) return error.NoMainWindow;
         const id = self.next_id;
         self.next_id += 1;
@@ -166,6 +180,8 @@ pub const Cards = struct {
 
     /// Every waiting card whose time is up ends `expired`.
     pub fn expireDue(self: *Cards) void {
+        self.acquire();
+        defer self.lock.unlock();
         const now = self.clock.now();
         for (self.cards.items) |*card| self.expireIfDue(card, now);
     }
@@ -176,6 +192,8 @@ pub const Cards = struct {
 
     /// The user's Approve: it wins only while the card waits and its time is not up.
     pub fn approve(self: *Cards, id: CardId) bool {
+        self.acquire();
+        defer self.lock.unlock();
         const card = self.find(id) orelse return false;
         self.expireIfDue(card, self.clock.now());
         if (card.outcome != .waiting) return false;
@@ -184,14 +202,18 @@ pub const Cards = struct {
     }
 
     pub fn outcome(self: *Cards, id: CardId) ?Outcome {
+        self.acquire();
+        defer self.lock.unlock();
         const card = self.find(id) orelse return null;
         return card.outcome;
     }
 
     /// The notification was activated (any payload, any number of times): at most open the main
     /// window's drawer; no card changes.
-    pub fn activateNotification(self: *const Cards, payload: []const u8) Activation {
+    pub fn activateNotification(self: *Cards, payload: []const u8) Activation {
         _ = payload;
+        self.acquire();
+        defer self.lock.unlock();
         const window = self.main orelse return .nothing;
         return .{ .open_drawer_of = window };
     }
