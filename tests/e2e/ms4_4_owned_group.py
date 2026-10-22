@@ -20,6 +20,8 @@ class OwnedGroup:
         self.status = None
 
     def _leader_exited(self) -> bool:
+        if not hasattr(os, "waitid"):
+            return False  # no way to look without reaping: wait the whole grace, then SIGKILL the group anyway
         try:
             return os.waitid(os.P_PID, self.proc.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT) is not None
         except ChildProcessError:
