@@ -472,10 +472,48 @@ public static class Z {
     }
     return -1;
   }
+  // WS5.3 fold observations (RoseCat 02c39a4 #2): measure the REAL panel HWND, never an emitted row. The panel
+  // is the direct STATIC child with empty text (the icon is "S", the minimize control is "-").
+  static IntPtr PanelHwnd(IntPtr host) {
+    IntPtr c = GetWindow(host, GW_CHILD);
+    while (c != IntPtr.Zero) {
+      var cls = new StringBuilder(64); GetClassName(c, cls, 64);
+      if (cls.ToString() == "STATIC") { var t = new StringBuilder(64); GetWindowText(c, t, 64); if (t.ToString() == "") return c; }
+      c = GetWindow(c, GW_HWNDNEXT);
+    }
+    return IntPtr.Zero;
+  }
+  // The panel's current width (px) while it is VISIBLE, else -1 — polled during the fold to catch an in-flight
+  // frame (a width strictly between the open drawer and the icon). -1 once it is hidden (folded away).
+  public static int PanelWidthVisible(IntPtr host) {
+    IntPtr p = PanelHwnd(host);
+    if (p == IntPtr.Zero || !IsWindowVisible(p)) return -1;
+    RECT r; if (!GetWindowRect(p, out r)) return -1;
+    return r.right - r.left;
+  }
+  // The panel visible at all (terminal check: a folded drawer's panel must be hidden).
+  public static bool PanelVisible(IntPtr host) { IntPtr p = PanelHwnd(host); return p != IntPtr.Zero && IsWindowVisible(p); }
+  // The page re-docked to the full client area after folding: the WebView2 visual (the largest non-STATIC direct
+  // child) covers the whole client height again (not client_h - panel_h). True if its height reaches the client
+  // bottom within a small tolerance.
+  public static bool PageRedocked(IntPtr host) {
+    RECT cr; if (!GetClientRect(host, out cr)) return false;
+    int ch = cr.bottom - cr.top;
+    int best = 0;
+    IntPtr c = GetWindow(host, GW_CHILD);
+    while (c != IntPtr.Zero) {
+      var cls = new StringBuilder(64); GetClassName(c, cls, 64);
+      if (cls.ToString() != "STATIC" && IsWindowVisible(c)) {
+        RECT r; if (GetWindowRect(c, out r)) { int hgt = r.bottom - r.top; if (hgt > best) best = hgt; }
+      }
+      c = GetWindow(c, GW_HWNDNEXT);
+    }
+    return best >= ch - 4;
+  }
 }
 '@
 
-$res = @{ stdout=''; stderr=''; client_w=0; client_h=0; pid=0; controls=''; icon_rect=''; icon_visible=-1; job_count_before=0; job_count_after=0; window_found=$false; terminated=$false; timed_out=$false; proc_gone=$false; first_stop_failed=$false; cleanup_exhausted=$false; launch_failed=$false; decoded_fail=$failMode; decoded_force=$forceMode; error='' }
+$res = @{ stdout=''; stderr=''; client_w=0; client_h=0; pid=0; controls=''; icon_rect=''; icon_visible=-1; job_count_before=0; job_count_after=0; window_found=$false; terminated=$false; timed_out=$false; proc_gone=$false; first_stop_failed=$false; cleanup_exhausted=$false; launch_failed=$false; decoded_fail=$failMode; decoded_force=$forceMode; fold_elapsed_ms=0; fold_mid_w=0; panel_hidden=$false; page_redocked=$false; error='' }
 # e2e-only seams, set in this process so the child inherits them (honoured only under --e2e-protocol).
 $env:ZIGBROWSER_AGENT_DRAWER_OPEN = '1'
 $env:ZIGBROWSER_AGENT_DRAWER_DEMO = 'messages:2'
@@ -493,11 +531,37 @@ try {
   [Z]::LaunchOwned($exe, $cmdline, $dir, $out, $err)   # suspended -> job -> checked assign -> resume
   $launched = $true
   $res.pid = [Z]::Pid
-  $deadline = (Get-Date).AddSeconds(18); $seen = $false
+  # Case-specific settling (RoseCat 02c39a4 #2): ZB_SETTLE_KINDS names the TERMINAL row kind(s) this case waits
+  # for; default 'open|drag' (open/drag runs). A fold run sets 'fold', so it is NOT torn down at the first `open`
+  # before its timer completes. A fold run also polls finely and MEASURES the animation independently: the
+  # wall-clock elapsed between the `open` row and the `fold` row, and the first in-flight real panel width.
+  $settle = $env:ZB_SETTLE_KINDS; if (-not $settle) { $settle = 'open|drag' }
+  $foldWait = ($settle -eq 'fold')
+  $pollMs = if ($foldWait) { 25 } else { 300 }
+  $sw = [System.Diagnostics.Stopwatch]::new()
+  $openSeen = $false; $seen = $false; $openW = 0; $hWin = [IntPtr]::Zero
+  $deadline = (Get-Date).AddSeconds(18)
   while ((Get-Date) -lt $deadline) {
-    Start-Sleep -Milliseconds 300
+    Start-Sleep -Milliseconds $pollMs
     $o = [string](Get-Content $out -Raw -ErrorAction SilentlyContinue)
-    if ($o -and ($o -match "DRAWER`t\d+`t(open|drag|fold)`t")) { $seen = $true; break }  # settle on open/drag/fold
+    if ($o) {
+      if (-not $openSeen -and ($o -match "DRAWER`t\d+`topen`t")) { $openSeen = $true; $sw.Start() }
+      if ($foldWait -and $openSeen) {
+        if ($hWin -eq [IntPtr]::Zero) { $hWin = [Z]::FindOwnedWindow([Z]::Pid, 'zigBrowserWebView2Host') }
+        if ($hWin -ne [IntPtr]::Zero) {
+          $pw = [Z]::PanelWidthVisible($hWin)   # visible panel width, or -1 once hidden
+          if ($pw -gt 0) {
+            if ($openW -eq 0) { $openW = $pw }                               # the open width (animation start)
+            elseif ($res.fold_mid_w -eq 0 -and $pw -lt $openW) { $res.fold_mid_w = $pw }  # first in-flight frame
+          }
+        }
+      }
+      if ($o -match "DRAWER`t\d+`t($settle)`t") {
+        $seen = $true
+        if ($foldWait) { $sw.Stop(); $res.fold_elapsed_ms = [int]$sw.ElapsedMilliseconds }
+        break
+      }
+    }
   }
   if (-not $seen) { $res.timed_out = $true }
   $res.job_count_before = [Z]::JobProcessCount()
@@ -508,6 +572,10 @@ try {
     $res.controls = [Z]::DirectStatics($h)   # exact DIRECT STATIC children, "STATIC:<text>|..."
     $res.icon_rect = [Z]::IconClientRect($h)  # the REAL "S" icon HWND rect in client coords (WS5.2 observation)
     $res.icon_visible = [Z]::IconVisible($h)   # 1 visible / 0 hidden / -1 absent (WS5.2 requires visible)
+    # WS5.3 terminal fold state (RoseCat 02c39a4 #2): after a completed fold the panel is hidden, the page is
+    # re-docked to the full client area, and the icon is visible again (icon_visible, above).
+    $res.panel_hidden = (-not [Z]::PanelVisible($h))
+    $res.page_redocked = [Z]::PageRedocked($h)
   }
 } catch { $res.error = $_.Exception.Message; $res.launch_failed = (-not $launched) }
 finally {

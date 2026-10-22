@@ -379,6 +379,20 @@ class WinDrawerBehaviorsOracle(unittest.TestCase):
         with self.assertRaises(AssertionError):
             check_fold_override(56, 56, 1008, 3000, 3000)   # snap (mid == icon) must fail
 
+    def test_check_fold_observed_catches_snap_nomove_emitonly(self):
+        # a real 3000 ms fold: measured elapsed ~3100 ms, panel mid strictly between, terminal state correct
+        check_fold_observed(3100, 3000, 56, 540, 1008, True, True, True)
+        with self.assertRaises(AssertionError):  # SNAP: instant (elapsed ~0) despite a 3000 ms configured fold
+            check_fold_observed(5, 3000, 56, 540, 1008, True, True, True)
+        with self.assertRaises(AssertionError):  # NO-MOVE: panel never left the open rect (mid width == drawer)
+            check_fold_observed(3100, 3000, 56, 1008, 1008, True, True, True)
+        with self.assertRaises(AssertionError):  # EMIT-ONLY: fold row written but the panel is still shown
+            check_fold_observed(3100, 3000, 56, 540, 1008, False, True, True)
+        with self.assertRaises(AssertionError):  # EMIT-ONLY: the icon was not restored
+            check_fold_observed(3100, 3000, 56, 540, 1008, True, False, True)
+        with self.assertRaises(AssertionError):  # EMIT-ONLY: the page was not re-docked to the full client area
+            check_fold_observed(3100, 3000, 56, 540, 1008, True, True, False)
+
     def test_check_dpi(self):
         check_dpi(84, True, True)
         with self.assertRaises(AssertionError):
@@ -556,6 +570,24 @@ def check_fold_override(icon_w, mid_w, drawer_w, total_ms, want_ms):
     assert total_ms == want_ms, f"the fold duration must honor the override {want_ms} ms (got {total_ms})"
 
 
+def check_fold_observed(elapsed_ms, want_ms, icon_w, mid_w, drawer_w,
+                        panel_hidden, icon_visible, page_redocked):
+    """INDEPENDENT proof the fold really animated — measured, never the product-emitted duration (RoseCat
+    02c39a4 #2). Three discriminating observations that defeat the three cheat implementations:
+      - wall-clock `elapsed_ms` is at least half the configured `want_ms`  -> a SNAP (instant, ~0 ms) fails;
+      - the in-flight real panel width `mid_w` is strictly between the icon and the open drawer  -> a NO-MOVE
+        (panel never leaves the open rect, mid_w == drawer_w) fails;
+      - the terminal state is panel-hidden + icon-visible + page-redocked  -> an EMIT-ONLY (fold row written
+        but the panel never hid / page never re-docked) fails."""
+    assert elapsed_ms >= want_ms * 0.5, \
+        f"measured wall-clock {elapsed_ms} ms must be >= half the configured {want_ms} ms (a snap is ~0)"
+    assert icon_w < mid_w < drawer_w, \
+        f"in-flight panel width {mid_w} must be strictly between icon {icon_w} and drawer {drawer_w} (no-move)"
+    assert panel_hidden, "the terminal panel must be hidden (folded away), not merely a fold row"
+    assert icon_visible, "the icon must be visible again after folding"
+    assert page_redocked, "the page must be re-docked to the full client area after folding"
+
+
 def check_bubble_copy(clipboard_text, bubble_text, link_created, object_created):
     """select-all + WM_COPY puts the EXACT bubble text on the clipboard; the bubble is inert (no link/object)."""
     assert clipboard_text == bubble_text, f"clipboard {clipboard_text!r} != bubble text {bubble_text!r}"
@@ -665,8 +697,10 @@ class WinDrawerBehaviorsLive(_wd.WinDrawerLive):
         self._run_drawer(extra_env=self._env(ZIGBROWSER_AGENT_DRAWER_OPEN="0", ZIGBROWSER_AGENT_DRAWER_DRAG="5,0"), body=body)
 
     def test_ws5_3_fold_intermediate_default_duration(self):
-        # WS5.3 (plan 1573): a mid-fold rect strictly between the icon and the open drawer width, over the
-        # DEFAULT duration. This case does NOT inject ANIM_MS, so it proves the default (~180 ms), cca6e36 #2.
+        # WS5.3 (plan 1573): the DEFAULT-duration fold. Two independent proofs (RoseCat 02c39a4 #2): the emitted
+        # row (check_fold) AND the harness-MEASURED animation (check_fold_observed) — wall-clock elapsed, the
+        # in-flight real panel width, and the terminal panel-hidden/icon-visible/page-redocked state. Settles on
+        # the `fold` terminal (not `open`), so the run is not torn down before the timer completes. No ANIM_MS.
         def body(r):
             rows = validate_transcript(r["stdout"], ["tree", "icon", "open", "fold"])
             _ix, _iy, iw, _ih = rect_of([fields_of(rows, "icon")[0]])
@@ -674,10 +708,13 @@ class WinDrawerBehaviorsLive(_wd.WinDrawerLive):
             fold = fields_of(rows, "fold")      # (rect, ms)
             _fx, _fy, fw, _fh = rect_of([fold[0]])
             check_fold(iw, fw, ow, int(fold[1]))
-        self._run_drawer(extra_env=self._env(ZIGBROWSER_AGENT_DRAWER_FOLD="1"), body=body)
+            check_fold_observed(int(r["fold_elapsed_ms"]), 180, iw, int(r["fold_mid_w"]), ow,
+                                bool(r["panel_hidden"]), bool(r["icon_visible"]), bool(r["page_redocked"]))
+        self._run_drawer(extra_env=self._env(ZIGBROWSER_AGENT_DRAWER_FOLD="1", ZB_SETTLE_KINDS="fold"), body=body)
 
     def test_ws5_3_fold_honors_anim_ms_override(self):
-        # The separate override case: ANIM_MS=3000 must be honored (cca6e36 #2).
+        # The separate override case: ANIM_MS=3000 must be honored (cca6e36 #2), proven both by the emitted row
+        # and by a MEASURED wall-clock >= ~1500 ms (a snap can't fake it). Settles on `fold`.
         def body(r):
             rows = validate_transcript(r["stdout"], ["tree", "icon", "open", "fold"])
             _ix, _iy, iw, _ih = rect_of([fields_of(rows, "icon")[0]])
@@ -685,7 +722,10 @@ class WinDrawerBehaviorsLive(_wd.WinDrawerLive):
             fold = fields_of(rows, "fold")
             _fx, _fy, fw, _fh = rect_of([fold[0]])
             check_fold_override(iw, fw, ow, int(fold[1]), 3000)
-        self._run_drawer(extra_env=self._env(ZIGBROWSER_AGENT_DRAWER_FOLD="1", ZIGBROWSER_AGENT_ANIM_MS="3000"), body=body)
+            check_fold_observed(int(r["fold_elapsed_ms"]), 3000, iw, int(r["fold_mid_w"]), ow,
+                                bool(r["panel_hidden"]), bool(r["icon_visible"]), bool(r["page_redocked"]))
+        self._run_drawer(extra_env=self._env(ZIGBROWSER_AGENT_DRAWER_FOLD="1", ZIGBROWSER_AGENT_ANIM_MS="3000",
+                                             ZB_SETTLE_KINDS="fold"), body=body)
 
     def test_ws5_4_bubble_copy_and_inert(self):
         # WS5.4 (plan 1575-1577): the harness performs select-all + WM_COPY and reads the clipboard; an RTF
