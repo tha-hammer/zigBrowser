@@ -29593,3 +29593,46 @@ and the exact control census before requesting another VM run. The file
 parses as Python and its diff is whitespace-clean, but that is not lifecycle
 evidence. Agent Mail sent the BLOCKER and explicit VM no-go to AzureRidge and
 the orchestrator.
+
+## MS6.5.1 two-recoverer flock slice (`3bfdce2`, `b5688e9`)
+
+**BLOCKED-for-tests / BLOCKED as closure of `97c6215`; no new push-through
+SHA.** The narrow green edit does keep its local lock object alive across the
+helper's load, liveness probe, callback and ledger publish. That is not enough
+to establish the claimed red-to-green change or the authoritative whole-
+recovery contract.
+
+1. The named early-unlock red survives. From clean exports, the exact
+   `3bfdce2` test binary passed **10/10** runs in a private current-UID PID
+   namespace and **3/3** more in the root-mapped variant: each reported
+   `n == 1`, so the release-after-read mutation was not killed. The exact
+   `b5688e9` binary passes 1/1, but that result does not discriminate the
+   change. `runRecoverer` discards `RecoveryAction` and sends only a boolean
+   saying whether its callback ran
+   (`tests/agent_run_ledger_two_recoverer_test.zig:62-71`). A second
+   recoverer that fails closed is therefore indistinguishable from the
+   promised `.already_gone` result. The red must causally require the exact
+   pair `{.signalled, .already_gone}`, terminal child statuses, the final
+   empty ledger and two signal-phase entries under the early-unlock mutant.
+2. The helper is not the plan's whole recovery. At
+   `src/agent_run_ledger.zig:509-526`, `ops.reap` returns `void` and the entry
+   is immediately removed. There is no held run-directory provenance check,
+   real marked child, census/kill/fresh-census fixed point, marker unlink or
+   `rmdir`, and no result with which survivors, an incomplete census or a
+   failed reap can retain the entry and authority. Plan rev 27 lines
+   1929-1940 and 2004-2012 require all those steps under the same flock.
+3. The same absolute recovery deadline does not reach this helper.
+   `recoverOneUnderLock` accepts attempt/backoff counts, performs no deadline
+   checks during held work, and is not called by `runStartupRecovery`, whose
+   body remains the stub at `src/agent_run_ledger.zig:461-477`. A stalled
+   callback can therefore retain the global flock beyond the promised total
+   deadline.
+4. `rg recoverOneUnderLock` finds only its definition and this unregistered
+   test. The original production-shaped two-instance obligations in
+   `97c6215` remain open; JadeBeacon's own handoff also says provenance-first
+   and registration are later work.
+
+The test sends no signal: its callback only flips a process-local boolean,
+and reviewer runs were nevertheless confined by the fd-9 kernel sentinel and
+`unshare --user --pid --fork --kill-child --mount-proc`. `git diff --check`
+is clean. Agent Mail 7656 sent the four blockers to JadeBeacon.
