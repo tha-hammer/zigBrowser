@@ -30784,3 +30784,118 @@ with that pinned interpreter and preserved exit status. The Mac hard-gate
 rerun remains held: `4f326ee` fixes only `login.cli_env`, not the separate chat
 `options.cli_env` `CLAUDE_CODE_TMPDIR` path required by the fd-3 case. Agent
 Mail 7736 sent the verdict to BlueBeaver.
+
+## Sign-in CLI scratch creation red (`6d7cbcb`)
+
+**BLOCKED-for-tests.** The new unregistered test is signal-safe: `Popen` is
+only a recorder, its fake process has no pid, and `os.kill` plus `os.killpg`
+raise if reached. In a private current-UID user/PID/mount namespace, the exact
+red produced the expected **3 failures** (missing directory, creation mode and
+uid, and symlink refusal), while the existing-0700 control passed.
+
+The red does not yet establish its stated **owner-only and never-symlink**
+boundary. It covers only a final-component symlink and trusts the rest of the
+path. Add zero-`Popen` rows for an existing directory wider than 0700, a final
+regular file, a final FIFO that is never opened, a symlinked `scratchpad`
+parent, and an owner mismatch through an injected identity/stat seam. At the
+launch boundary inspect both a newly created `scratchpad` and `tmp`: each must
+be a real directory, owned by the effective uid and exactly 0700. The green
+should create and walk this path through pinned directory fds with
+`O_DIRECTORY|O_NOFOLLOW`, relative `mkdir`/`stat`, and refusal of every invalid
+existing state; `os.makedirs(..., exist_ok=True)` is insufficient for this
+boundary. Keep the red unregistered until that green lands. Agent Mail 7739
+sent the required fix-forward to BlueBeaver.
+
+## Windows WS5.1-WS5.7 red fix-forward 2 (`1b0bd45`)
+
+**BLOCKED-for-tests.** This commit closes two of the four `b2f474b` findings.
+The seven-pixel drag, closed five-pixel click and independently derived
+persisted-ratio rectangle close the gesture/geometry defect. The Zig expected
+value is now the contract literal 56, with the public constant separately
+pinned. From an exact clean export, the Python suite passed **17** offline
+oracles with **8** live VM rows skipped, and the Zig suite passed **10/10**.
+
+Two defects remain:
+
+1. The claimed strict/window-bound transcript filters contradictory evidence
+   instead of failing the run. `drawer_rows` silently drops malformed,
+   wrong-arity and foreign-window rows; its own oracle appends a foreign-window
+   row and expects the same passing result. Duplicate valid behavior rows are
+   accepted. `structural_window` reduces ids to a set, while `_structural`
+   accepts duplicate or out-of-order `tree`, `icon` and `open` rows and consumes
+   the first. Each scenario must validate an exact ordered row sequence/count
+   for its one bound window and fail on every malformed, duplicate,
+   unknown-extra, foreign-window, missing or out-of-order relevant row. Add a
+   causal red for each rejection class rather than proving it was filtered
+   away.
+2. The fold row injects `ZIGBROWSER_AGENT_ANIM_MS=180`, so it proves the
+   override rather than the default. The default-duration case must omit that
+   variable; a separate override row is fine. `check_isolation` accepts any
+   nonempty list whose members happen to be `-32601` or `-32011`, including a
+   single `[-32601]`. Require exactly the named page-JS and automation-socket
+   attempts, each with its expected denial and no extras, plus the unchanged
+   census.
+
+The eventual VM green must also show that clipboard, window, census, socket
+and DPI data come from independent Win32/socket observations, not
+product-authored pass rows. No VM run is warranted for this red fix-forward.
+Agent Mail 7740 sent the findings to AzureRidge.
+
+## Sign-in CLI scratch creation red fix-forward (`4156b82`)
+
+**APPROVED as the failing-first, unregistered red; the `6d7cbcb`
+test-design blocker is cumulatively closed.** In an exact clean export under a
+private current-UID user/PID/mount namespace, the suite was causally red
+**9/10**: every missing or invalid state failed and only the existing-valid-pair
+control passed. `Popen` remains a recorder, the fake has no pid, and both signal
+functions raise if reached.
+
+The launch-boundary observation now requires both `scratchpad` and `tmp` to be
+real, effective-uid-owned 0700 directories. Zero `Popen` calls are required for
+a final symlink, wide mode, regular file or unopened FIFO; a symlinked or
+wide-mode parent; and an effective-uid mismatch. The valid-pair control also
+pins both inodes.
+
+Green acceptance still requires held directory-fd traversal with
+`O_DIRECTORY|O_NOFOLLOW` and relative `mkdir`/`stat`, refusal rather than
+repair of invalid existing objects, registration with the pinned interpreter
+and preserved status, and a causal replacement-race test that catches an
+`lstat`-then-path-use TOCTOU. Preserve an assertion that refusal leaves at
+least one planted invalid object or target unchanged. These are conditions on
+the green, not a defect in this red. Agent Mail 7742 sent the verdict to
+BlueBeaver.
+
+## `zigBrowser-3gl` bounded two-recoverer prototype (`8a351e5`)
+
+**BLOCKED-for-tests; unregistered and unarmed.** The test-only injected
+held-lock versus early-unlock policy is the right causal shape. It is valid to
+pin the mutant by two signal-phase entries rather than two `.signalled`
+returns: an unsynchronized losing publish can fail only after entering that
+phase. From an exact clean export, the standalone binary passed **2/2** in
+**3/3** runs behind the fd-9 sentinel in a private user/PID/mount namespace.
+
+Four lifecycle and determinism defects remain:
+
+1. R2 is forked before the parent consumes R1's `present=1` handshake, so R2
+   can acquire the flock first. Establish the bounded R1 handshake before
+   creating R2.
+2. The scenario renews a deadline for each phase and child acquisition remains
+   try-count/backoff based. Compute one absolute monotonic terminal deadline
+   once and use it for every acquire, poll, read and reap.
+3. `forceReap` ignores the kill result and then blocks indefinitely in
+   `waitpid(..., 0)`. Both reap helpers treat any non-`EINTR` wait error as
+   reaped while leaving the default status zero; `terminal0(0)` then passes.
+   Continue with `WNOHANG` only until the same deadline, distinguish a real
+   observed status from error/timeout, and fail closed. Namespace teardown is
+   the final containment backstop, not permission for an unbounded wait.
+4. The fd cleanup defer is installed only after all five pipes are created, so
+   a partial creation failure leaks earlier pairs. Initialize every end to -1
+   and install cleanup before the first creation. R1's proceed read is also an
+   unchecked blocking read; give it the same bounded exact-read path with EOF
+   and error distinguished.
+
+Add causal mutants for R2-start-before-R1-handshake, wait-error-as-status-zero,
+blocking post-kill wait, partial pipe creation and renewed-per-phase deadlines.
+The fd-9 sentinel and exact fork-returned-pid targeting are otherwise sound.
+The cumulative full gate cannot supersede these unregistered prototype gaps.
+Agent Mail 7743 sent the findings to JadeBeacon.
