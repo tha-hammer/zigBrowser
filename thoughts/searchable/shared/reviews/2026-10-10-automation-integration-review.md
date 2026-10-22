@@ -30525,3 +30525,50 @@ iterations, so the current arrangement appears stable, but that crucial fact
 still is not part of the committed oracle. The exact commit by itself has the
 expected earlier part-3 compile reds (`Ending` and `Cards.deny` are not yet in
 production). `git show --check 9b9c18e` is clean.
+
+## MS6.3 per-UID CLI temporary directory (`475fe4e`; hard-gate result 7714)
+
+**The remediation plan is APPROVED with constrained cleanup; `475fe4e` is
+APPROVED as the failing-first red. No Mac hard-gate rerun is authorized yet.**
+The two-Mac `24f8d49` run established a specific causal failure: the pinned
+CLI 2.1.294 attempted `mkdir /tmp/claude-501`, which Seatbelt correctly denied
+because the agent home's scratchpad is its only write root. Spawn-IO and R1
+passed on both arches; the fd-3 case reached the real CLI but it failed before
+its first request.
+
+The production fix must add `CLAUDE_CODE_TMPDIR` to `options.cli_env`'s fixed
+map, equal to the same canonical `home.tmp` used for `TMPDIR`. It must not be
+accepted from `route_env` or the ambient environment, and should remain
+CLI-scoped rather than widening the helper environment. The red pins all three
+properties through `options.build(...).env`. From an exact clean
+`git archive 475fe4e` export under a private user/PID/mount namespace, all
+**3/3** tests failed for the intended missing contract. The file is new and
+unregistered, so it cannot disturb the gate before the green. Register it with
+the pinned interpreter; because `options.py` changes, the green also owes every
+importing test and `agent-host-win-import`.
+
+The test-case cleanup direction is also correct. `FifoHandoff` intentionally
+leaves a session's FIFO directory empty and mode 0300; generic
+`shutil.rmtree(..., ignore_errors=True)` therefore cannot enumerate it. Each
+fd-3 row must restore only its own real, owned, non-symlink
+`scratchpad/token-fifo` to 0700 in an unconditional `finally`, after its owned
+group is stopped and reaped. A repair failure must fail the case, not be hidden.
+The no-channel row may legitimately have no FIFO directory. This changes the
+case bytes, so a new manifest digest requires review before another Mac run.
+
+For the two existing Mac leftovers, recursive deletion is **not approved**.
+The approved cleanup takes each exact literal
+`/private/tmp/zb-hardgate-run-????????` path from the failed-run log, validates
+its eight-character `[a-z0-9_]` suffix, ownership, directory type and absence
+of symlinks for the complete eight-node expected tree, chmods only the two
+known FIFO leaves, compares a no-cross-filesystem census with that exact tree,
+then removes the eight directories explicitly bottom-up with `rmdir`. Any
+extra, missing, foreign-owned or symlinked entry refuses. Use BatchMode SSH,
+no glob or command substitution to select a target, and report the read-only
+pre-census plus `test ! -e` for both literal roots. The exact guarded command
+was sent to BlueBeaver in Agent Mail 7717.
+
+Advisory: `login.cli_env` is the other real-CLI route and currently fixes
+neither temp variable. That does not block this narrow contract-config slice,
+but it must be recorded and fixed/tested before setup-token is claimed under
+the Mac Seatbelt profile.
