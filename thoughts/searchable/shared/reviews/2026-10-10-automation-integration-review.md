@@ -32771,3 +32771,39 @@ later separately reviewed SHA, with a throwaway profile and agent home, the
 local fake API, `--media-source off`, and explicit owner consent. It must not
 use the live browser/profile/socket, a real account/token, an external API or
 a live site.
+
+## MS4.4 cookie-port consumer (`f234ad9`)
+
+**Linux control and mutant design APPROVED; BLOCKED-for-tests as the MS4.4
+closure, and the Mac leg is NOT released yet.** The real-binary scenario is
+well targeted: before navigation, absence of `li_at`/`sessionid` produces
+`-32011 logged_out` and no fixture request; `cookies.set`/`get_all` crosses the
+same platform port; both site flows then pass; deleting `li_at` makes the next
+LinkedIn call fail before a new request. Withholding the Linux cookie port
+changes the reason to `unsupported`, while bypassing `sessionGate` removes the
+closed error, so the two reported mutants distinguish the intended boundary.
+The fixture is loopback-only, the profile/socket are private, and Linux uses
+the existing private-Xvfb guardian. `py_compile` and `git show --check` pass.
+
+Two items must land before either registration or a Mac run:
+
+1. On Darwin the test starts the browser with `start_new_session=True`, but it
+   installs no SIGTERM/SIGINT/SIGHUP cleanup. If the outer SSH/timeout kills
+   the Python driver, its `finally` does not run and the new-session browser
+   plus WebKit children can outlive the leg. Install bounded cleanup for all
+   three signals (or use an equivalently owned Mac launcher), targeting only
+   the exact child-led group and reaping the leader. Add a causal non-live
+   regression for driver termination.
+2. The broad claim that the gate stays live is proved after deletion only for
+   LinkedIn. Delete `sessionid` too, then require another Instagram dry-run to
+   return `logged_out` without adding a `/stories/` request. This catches a
+   per-site or per-cookie cache mutant.
+
+After those fixes, register the Linux control as its own real-binary step under
+the private PID namespace and private Xvfb; it may join the aggregate gate.
+Add the same test to `tests/mac/ms4_gate.sh` for both architectures, but run it
+only from an exact reviewed clean export after an orchestrator release. The
+Mac environment should also remove inherited `ZB_*`/`ZIGBROWSER_*` seams
+before adding this test's socket and fixture origin. The Mac leg is fixture
+only and needs no account or credential, but it visibly opens WKWebView on the
+two build Macs, so the existing console-user coordination still applies.
