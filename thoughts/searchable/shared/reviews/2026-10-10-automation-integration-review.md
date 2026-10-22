@@ -35088,3 +35088,37 @@ objects actually define the ABI used by the dylib, and must register the
 portable red, the linked-source oracle and that dual-architecture export gate
 together. Until those fixes, this red does not authorize a Mac build or native
 click run and does not move the earlier `1b2fe0a` push boundary.
+
+## MS7.4 real-responder copy red (`d3deb01`)
+
+**BLOCKED-for-tests; keep it unregistered.** The move of `copy:` onto each
+bubble's own `NSTextView` subclass is the right AppKit responder model, and
+per-view original bytes plus UTF-16 endpoint mapping address the central
+field-editor defect in `7ba5549`. The exact clean run is red only on the absent
+real drawer, while the 21 committed fixtures pass. Two blockers remain:
+
+1. The red silently changes the already-pinned portable/UI contract. The
+   registered policy test says `bubbleIsLabel` selects a label through
+   `label_text_max` and a read-only text view above it; this oracle instead
+   requires one `ZbBubbleView : NSTextView` for every bubble and reinterprets
+   “label” as contiguous layout. That is neither the named contract nor merely
+   an implementation detail. Preserve the two control kinds and prove the
+   small control's real field-editor copy route, or amend the plan and portable
+   seam explicitly before building the one-class design (including renaming or
+   respecifying `bubbleIsLabel` and its tests). The current red cannot approve
+   that decision by assertion.
+2. `needs()` checks only that desired squashed statements occur somewhere; it
+   does not constrain order, exclusivity or control flow. I reproduced five
+   passing dishonest sources: the correct layout call under `if (0)` followed
+   by a live constant layout; the correct bubble update followed by a live
+   `_other` update; the correct pasteboard write followed by a live `_other`
+   write; `free(shown)` moved before `initWithBytes`; and removal of
+   `[pb clearContents]`. Thus the five advertised causal fixes still admit
+   dead decoys, wrong live effects, a use-after-free and a nonfunctional
+   pasteboard write. Bind exact method structure and statement order/counts,
+   add those additive/reorder/removal mutants, require the final original to be
+   freed at bubble destruction, and keep the real-Mac clipboard checks on both
+   sides of the threshold.
+
+The portable byte/offset policy red may remain. This commit does not authorize
+a Mac run and does not move the earlier `1b2fe0a` push boundary.
