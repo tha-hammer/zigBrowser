@@ -86,3 +86,23 @@ The approved run is one bounded session in a scratch shared clone checked out at
 3. Run `m8_gate_red_test.py` with the same environment. It must accept the honest one-host result and exit 0. Both invocations must record commands and exit codes, report cleanup, leave no `zb_m8_*` scheduled task, and remove/check the remote `C:\Users\zbtext\zb\runs\m8-*` directory.
 
 If the console user is not signed in and unlocked, the run must fail closed without retry and proves no platform behavior. The orchestrator's release and the free VM slot remain required. After the run, WS1.2 is still “green, registration pending” until the plan-named build steps and registered gate case land and receive review.
+
+## WS2b.0 review — `8438086` and `f310b4d` complete red harness
+
+**Verdict: APPROVED as unregistered reds and APPROVED for one bounded Win11 VM red session at exact commit `f310b4dbbd7887702f929f6cd49f047721e46017`. VM queue position: 2, only after the approved WS1.2 session releases the slot.** This approval covers no green implementation, Win10 run, registration claim, or later bytes.
+
+I audited all changed Python and Zig files for dead imports, wrong abstractions, raw-helper bypasses and generated residue; no R3 defect was found. `win_capabilities_test.py` reuses the existing transport test's launch, pinned SSH/SCP, probe and cleanup machinery rather than creating a second path. The transport probe keeps the token secret, frames bounded requests/replies, and compiled for `x86_64-windows-gnu` at the exact commit.
+
+In a clean exact-commit scratch export, I reproduced: the Linux real-binary authenticated-socket red (missing/wrong token accepted as auth failures, correct token reached `capabilities` and got `-32601 Method not found`); the Zig red (one guard passed, input `cdp_input`, network `supported`, and `CapabilitiesJsonMissing` failed); hostless standalone clean-skip; gated hostless failure; and the Windows probe compile. Independently verified harness digests include:
+
+- `tests/e2e/win_capabilities_test.py`: `24dbf6f8b45dccdd122ca646a9ccaed521dc58da946fb27b2110714e1ac87a57`
+- `tests/e2e/win_transport_test.py`: `309a48cc2009bcecbf0aa9ea3cba545cccae22f740a760c82760154cbf669a03`
+- `tests/windows/transport_probe.zig`: `d17f8f5de9c5e2b9310985120400142918bf442e1b5730b24c8855f1e3f6d1a6`
+
+The approved red session is:
+
+1. In a scratch clone checked out at `f310b4d`, with display and askpass variables unset, build with `ZB_WIN11_HOST=127.0.0.1 ZB_BUILD_COMMIT=f310b4d ZB_BUILD_MODE=ReleaseSafe bash tests/windows/build-on-windows.sh` and **no positional build step**. Verify the fetched `.sha` names the full approved commit and record the expected Win11 identity marker before executing tests.
+2. With that executable, run `ZB_WIN_GATE=1 ZB_WIN11_HOST=127.0.0.1 ZB_WIN_EXE=<scratch fetched exe> python3 -I tests/e2e/win_capabilities_test.py -v`. It must exit 1 for the intended red only: missing and wrong token checks pass, the correct-token request reaches the method and returns `-32601`, and the script prints a nonzero `ASSERTS` count. Any earlier launch, auth, transport, identity or cleanup failure is not an accepted red.
+3. Run `win_transport_test.py` once with the same executable as the probe-refactor regression; both transport tests must pass. Record commands/exit codes and explicitly verify that no remote `C:\Users\zbtext\zb\ws20-*` directory survives, because the borrowed cleanup helper does not itself assert after its final retry.
+
+The orchestrator's release and a free VM slot remain required. The network-row red is tracked under `zigBrowser-ong.7`; this review accepts it only as an unproven-row red, not as platform proof. A later product commit may be described as “green, registration pending,” but WS2b.0 cannot be accepted until `test-wv2-capabilities` and `windows-capabilities-live` are both registered as required by the existing R2 minimum.
