@@ -27352,3 +27352,32 @@ namespace with the pinned agent-host Python, the test was causally red exactly
 as claimed: **4 tests, 2 failures, exit 1**. The pending-exit and elapsed-
 deadline rows failed; the running-leader and registration-`ESRCH` controls
 passed. The file is correctly unregistered until its production green.
+
+## Ledger atomic-publish coverage follow-up (`d5ef070`)
+
+**BLOCKED-for-tests.** The follow-up closes part, but not all, of the
+`3c3e354`/`085b4f2` blocker:
+
+- the existing `.after_temp` row observes complete OLD;
+- the new `.after_rename` row observes complete NEW and causally rejects the
+  stated rename-before-complete-write mutant; and
+- the nominal `StepLog` reports `temp_written -> temp_fsynced -> renamed ->
+  dir_fsynced` in order.
+
+However, `StepLog` is an app-maintained claim written after the operation, not
+an injectable filesystem operation seam. Deleting only the actual directory
+sync while leaving `log.push(.dir_fsynced)` makes the test report a sync that
+never occurred. I reproduced that exact mutant in a disposable exact
+`git archive d5ef070` export: the unmodified step passed **4/4 build steps and
+6/6 tests**, and after removing only the sync syscall the same step still
+passed **4/4 build steps and 6/6 tests**. Thus the required omitted-dir-fsync
+mutant survives.
+
+The production requirement is also not met as written: at
+`src/agent_run_ledger.zig:187-191`, the code still calls
+`std.posix.fdatasync(dir_ro.handle)`, whereas the requested parent-directory
+durability operation and the established `src/atomic_file.zig:36-44`
+precedent use `fsync`. Fix forward with an injectable sync operation (or an
+equally causal syscall oracle) so deleting/bypassing the actual directory
+`fsync` fails, and use `fsync` rather than `fdatasync`. The atomic-publish
+range remains blocked and the push-through remains `bac895b`.
