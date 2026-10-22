@@ -292,12 +292,18 @@ class Login:
         held = ensure_private_tmp(self.home)  # before anything starts: an invalid temp dir launches nothing
         try:
             env = cli_env(self.home)
-            held.recheck()  # the last check before the launch (RoseCat 7746): still the checked directories
             self.master, slave = pty.openpty()
-            fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 50, COLUMNS, 0, 0))
-            self.proc = subprocess.Popen([self.cli, "setup-token"], stdin=slave, stdout=slave, stderr=slave,
-                                         env=env, cwd=self.home, start_new_session=True, close_fds=True)
-            os.close(slave)
+            try:
+                fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 50, COLUMNS, 0, 0))
+                held.recheck()  # right before the launch (RoseCat 7746/7768): still the checked directories
+                self.proc = subprocess.Popen([self.cli, "setup-token"], stdin=slave, stdout=slave, stderr=slave,
+                                             env=env, cwd=self.home, start_new_session=True, close_fds=True)
+            except BaseException:
+                os.close(self.master)
+                self.master = -1
+                raise
+            finally:
+                os.close(slave)
         finally:
             held.close()
 
