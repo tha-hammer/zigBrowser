@@ -48,11 +48,16 @@ This commit also closes the three c101b1e follow-up gaps (still NOT run):
   runs the test as PID 1 and sets `ZB_WSL_PIDNS_BACKSTOP=1`); setUpClass fails closed otherwise.
 All of these have offline `WslSpikeOracle` rows.
 
-The eventual approved live command wraps `unshare` in an outer `timeout`, leaving `--kill-child` as the
-terminal backstop, e.g.:
-  timeout --signal=KILL 1200 \
+The ONLY authorized live command (RoseCat ecd290a / mail 7691, exact commit 4384fcf) wraps `unshare` in an
+outer `timeout`, leaving `--kill-child` as the terminal backstop, and runs from a clean `git archive`:
+  env -u DISPLAY -u WAYLAND_DISPLAY -u XAUTHORITY \
+    timeout --foreground --signal=TERM --kill-after=30s 2400s \
     unshare --user --map-current-user --pid --fork --kill-child --mount-proc \
-      env ZB_WSL_PIDNS_BACKSTOP=1 python3 tests/windows/wsl_live_test.py
+    env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 \
+      ZB_WSL_PIDNS_BACKSTOP=1 ZB_WIN11_HOST=win11-m8 ZB_WIN11_PORT=2222 \
+      ZB_WIN11_USER=zbtext ZB_WIN_KEY=/home/maceo/vms/win11-m8/zb_win_key \
+      ZB_WIN_KNOWN_HOSTS=/home/maceo/vms/win11-m8/known_hosts ZB_WSL_ROOTFS="$ZB_WSL_ROOTFS" \
+      python3 -X dev -m unittest -v tests.windows.wsl_live_test
 
 C1 stdio/pipe-to-fd bootstrap probe (design embodied in `test_wsl_topology`): the Windows parent launches
 `wsl.exe -d <distro> -u zbagent -e python3 c1boot.py` with redirected stdin/stdout; the capability secret is
