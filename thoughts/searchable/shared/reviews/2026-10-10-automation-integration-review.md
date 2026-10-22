@@ -27423,3 +27423,36 @@ WS5 still says its green may use the WebView2-hosted drawer; WS13.4 still says
 OD-W1 may change the installer; dependency text still says WS5 waits on W6 and
 WS13 waits on W1; and the frontmatter revision/date still predates all three
 binding decisions. This is docs-only and `git diff --check` is clean.
+
+## Ledger atomic-publish real operation seam (`7a30c5c`)
+
+**APPROVED; cumulatively closes `3c3e354`, `085b4f2`, `d5ef070`, and the
+`1347b70` blocker.** `publishCut` now performs the durability boundary through
+one injectable operation object: `syncFile(temp)`, `rename`, then
+`syncDir(parent)`. Production supplies `RealOps`; the recorder in the test
+wraps and delegates those same calls instead of accepting a separate
+self-reported log. Therefore deleting a production operation also deletes the
+observation. `RealOps.syncDir` reopens the held directory read-only and calls
+`std.Io.File.sync`; Zig 0.16's POSIX implementation dispatches that call to
+`posix.system.fsync`, so the earlier `fdatasync` mismatch is gone.
+
+Reviewer evidence from exact clean exports, with every focused run inside a
+private user/PID namespace and no display:
+
+- unmodified `7a30c5c`: **Build Summary: 4/4 steps succeeded; 6/6 tests
+  passed**;
+- deleting only `ops.syncDir(dir, io)`: **5/6 tests passed, 1 failed**, with
+  the ordered operation oracle missing `sync_dir`;
+- moving rename before the temp-file sync: **4/6 tests passed, 2 failed**,
+  with the `.after_temp` OLD-state row observing NEW and the operation order
+  reporting `rename, sync_file, sync_dir`.
+
+The crash cuts therefore causally pin OLD before rename, complete NEW after
+rename, and the required file-sync/rename/directory-sync order. `reaper_ready`
+is unchanged and the destructive Mac reaper gate remains outside this slice.
+
+The cumulative implementation cannot yet advance the **linear** push-through:
+the closing commit `7a30c5c` is after still-blocked Windows-plan commit
+`fff7033`. The newest contiguous approved push-through remains **`bac895b`**;
+`3c3e354` is technically closed only when its later fix-forwards are included,
+and `fff7033` is the next independent blocker that prevents reaching them.
