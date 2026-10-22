@@ -11,7 +11,8 @@ CLI descendant is found and fully checked. Every other failure stays a failure:
 - the vanished child was the only would-be CLI -> cli-not-found;
 - a re-probe that still cannot read the child (it fails again, or finds it alive) -> walk-unreadable;
 - a child list that fails and re-probes as gone is skipped; one that re-probes alive -> walk-unreadable; the
-  root's own child list failing is always walk-unreadable (the census never takes its root for vanished);
+  root's own child list failing, ESRCH included, is always walk-unreadable with no re-probe of the root (the census
+  never takes its root for vanished; RoseCat 7995 #1);
 - a CLI whose KERN_PROCARGS2 cannot be read, even because it vanished -> env-unreadable;
 - a CLI environment without the exact canary -> canary-missing; the token anywhere in its buffer -> token-found.
 The walk's calls (children, path, environ_of) are faked; os.kill / os.killpg raise (the re-probe is never a signal).
@@ -119,6 +120,12 @@ class Census(unittest.TestCase):
         self.assertEqual(self.census({ME: [7, 8], 8: leaky(PermissionError)},
                                      {7: [EXE], 8: ["/usr/bin/python3"]}), "walk-unreadable")
         self.assertEqual(self.census({ME: leaky(PermissionError)}, {}), "walk-unreadable")
+        self.assertNotIn(ME, self.path_calls, "the root was re-probed")
+
+    def test_the_root_reported_as_vanished_is_walk_unreadable_without_a_reprobe(self):
+        # RoseCat 7995 #1: ESRCH on the census's own root is never "vanished"; a catch-ProcessLookupError-everywhere
+        # walk would skip it and say cli-not-found.
+        self.assertEqual(self.census({ME: ProcessLookupError(errno.ESRCH, "gone")}, {7: [EXE]}), "walk-unreadable")
         self.assertNotIn(ME, self.path_calls, "the root was re-probed")
 
     def test_an_unreadable_cli_environment_is_env_unreadable(self):

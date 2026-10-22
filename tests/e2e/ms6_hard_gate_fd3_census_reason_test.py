@@ -8,9 +8,12 @@ proc_darwin here offers cli_env_census returning a chosen reason:
 - an honest host passes; the positive and decoy rows require census == ["ok"] exactly;
 - each other fixed reason (walk-unreadable, cli-not-found, env-unreadable, canary-missing, token-found) fails both
   calling rows, and their labels carry exactly census=['<that reason>']; the no-channel row makes no census;
-- a census that returns anything outside the fixed set (text holding a pid, a path, argv, an environment value, the
-  token) or raises (an exception whose text holds them) fails the rows with census=['invalid'] and echoes none of it:
-  each calling row's census label is exactly the fixed sentence plus census=['<one fixed word>'].
+- a census that returns anything outside the fixed set (a well-shaped word that is not a member, text holding a pid,
+  a path, argv, an environment name and value, the token, or a bool) or raises (an exception whose text holds them)
+  fails the rows with census=['invalid'] and echoes none of it (RoseCat 7995 #2, #3): each calling row's census label
+  is exactly the fixed sentence plus census=['<one fixed word>'], and no label anywhere holds a planted piece (the
+  pid, the argv marker, the environment name or value, the base URL, the full token, the raw exception text), nor the
+  CLI path beyond the labels an honest run already has.
 No signal is sent: h.spawn_group is a fake, and os.kill / os.killpg are patched to raise.
 Run like the gate: cd tests/e2e && unshare --user --map-root-user --pid --fork --mount-proc \\
   sh -c 'setsid python3 -X dev -m unittest -v ms6_hard_gate_fd3_census_reason_test'
@@ -80,8 +83,14 @@ class CensusReason(base.FakeStagedHost):
                 self.assertFalse(any(l.startswith("no channel: ") for l in self.failed(h)), self.failed(h))
 
     def test_a_census_outside_the_fixed_set_fails_and_echoes_nothing(self):
-        leak = f"pid 4242 {os.path.realpath(self.cli)} --home ANTHROPIC_BASE_URL=http://x {base.CANARY}"
-        for label_, got in (("free text", leak), ("a bool", False), ("an exception", OSError(5, leak)),
+        cli = os.path.realpath(self.cli)
+        honest_cli_labels = sorted(label for _ok, label in self.run_with("ok").checks if cli in label)
+        pieces = ("pid 4242", "--home=/leak-argv", "ZB_LEAK_ENV", "leak-env-value", "http://x", base.CANARY,
+                  "[Errno 5]", "RuntimeError", "OSError(")
+        leak = (f"pid 4242 {cli} --home=/leak-argv ZB_LEAK_ENV=leak-env-value ANTHROPIC_BASE_URL=http://x "
+                f"{base.CANARY}")
+        for label_, got in (("a well-shaped non-member", "other"), ("a near-member", "walk-clean"),
+                            ("free text", leak), ("a bool", False), ("an exception", OSError(5, leak)),
                             ("a runtime error", RuntimeError(leak))):
             with self.subTest(census=label_):
                 self.forget()
@@ -90,8 +99,9 @@ class CensusReason(base.FakeStagedHost):
                 self.assertEqual([(ok, LABEL.match(label).groups()) for ok, label in labels],
                                  [(False, ("positive", "invalid")), (False, ("decoy", "invalid"))], labels)
                 for _ok, label in h.checks:
-                    for piece in ("4242", "http://x"):
+                    for piece in pieces:
                         self.assertNotIn(piece, label)
+                self.assertEqual(sorted(label for _ok, label in h.checks if cli in label), honest_cli_labels)
 
 
 for _name in dir(base.FakeStagedHost):  # ms6_hard_gate_fd3_cli_case_test runs these itself
