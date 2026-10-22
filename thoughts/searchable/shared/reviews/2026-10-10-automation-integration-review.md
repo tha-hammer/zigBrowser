@@ -29672,3 +29672,103 @@ boundary both honest and mechanical:
 This route requires a new fix-forward rather than history rewriting. It needs
 no destructive Mac or real-screen run because the accepted scope is signal-
 free. Agent Mail 7657 sent these conditions to JadeBeacon.
+
+## Agent-host signal-step wrappers (`1f615c8`, `66e674f`)
+
+**APPROVED `66e674f`; `1f615c8` remains BLOCKED-for-tests pending its
+test-only correction.** The green production/build-step change contains the
+three signal-capable registered modules in private current-UID PID namespaces
+and propagates their actual exit status. From a clean export, the exact
+registered wrapper oracle passed 3/3 inside an outer private PID namespace.
+The guarded contract row also fails before spawning when its held outer
+namespace fd is absent.
+
+The original red oracle is not yet a sound failing-first artifact: its
+stand-in starts `sleep 60` while inheriting captured stdout/stderr, so each
+case waits for the sleeper to close those pipes and the full red takes about
+five minutes. Only five failures are observed rather than the claimed ten,
+and its prose says root-mapped while its invariant requires the current UID.
+Redirect the stand-in sleeper's stdio to `/dev/null`, judge every promised
+condition, and run/document the exact old-wrapper red in an own-UID namespace.
+Agent Mail 7660 sent the split verdict to BlueBeaver.
+
+## Decision-16 app/drawer wiring red (`858d63d`)
+
+**APPROVED as an unregistered failing-first red.** The helper contract covers
+both gated schemas and the separate card/deadline budget; the core/broker red
+covers Deny, show-before-notify, exactly-once ending, revoke and main-window
+close; and the real private-Xvfb/private-D-Bus chain covers conditional modes,
+the persisted selector, main-window-only cards, notifications, two waiting
+cards, expiry, forged activations, and socket/schema negatives. The
+`fake_notifications.py` selftest passed from the exact clean export.
+
+NIT: before registration, `FakeNotifications.close()` should fail if its
+thread is still alive after `join()`, rather than silently returning.
+Agent Mail 7661 sent the verdict to BlackRobin.
+
+## WS5 harness follow-up (`c997cc7`)
+
+**BLOCKED; no VM run is authorized.** The clean-export offline oracle passes
+13/13 and the exact direct-control census is an improvement, but the process
+lifecycle remains unsafe/inconclusive:
+
+1. `LaunchOwned` performs `CreateProcess`, then short-circuits the standard-
+   handle closes before storing the process/thread handles. A close failure
+   can therefore throw with a suspended browser outside both the object and
+   the cleanup path.
+2. `KillHeld` ignores `TerminateProcess`, closes and clears the handle even
+   when terminal status was not proved, and can erase the only authority
+   capable of cleanup.
+3. The `assign_fail` and `wait_fail` seams are defined but the live script
+   never invokes them; `proc_gone` and `launch_failed` are not asserted. The
+   pure result-dictionary oracle cannot prove that an actual created process
+   is gone.
+
+Store the held handles immediately after creation, make every cleanup retain
+authority until terminal status is proved, and add bounded causal runs of
+the forced failure seams before requesting a VM run. Agent Mail 7662 sent the
+BLOCKER to AzureRidge.
+
+## MS6.5.1 scoped recovery fix-forward (`ff7c699`, `c4d7002`)
+
+**BLOCKED `ff7c699`; BLOCKED `c4d7002`.** The implementation makes important
+progress: `RecoveryAction`, `publishWithout`, `recoverOneUnderLock`, and the
+two-recoverer prototype are gone, so the unsafe half-transaction is no longer
+a public production seam. The scoped schema/liveness/I/O tests are registered.
+From a clean `git archive c4d7002` export inside a private current-UID PID
+namespace, the 15 focused build steps were green:
+
+> Build Summary: 46/46 steps succeeded; 52/52 tests passed
+
+That covered parse, grammar, bounded load, atomic publish, lock/no-follow,
+Darwin cross-compile, one-process recovery classification, start-kind,
+same-kind refusal, unreadable/stat-I/O mapping, deadline, watchdog, and the
+stalled-holder acquire test.
+
+Four scoped-route conditions remain open:
+
+1. `src/agent_run_ledger.zig:382-389` still labels the section a “whole-
+   recovery startup transaction” and exports `RecoveryIncident`, `FirstRun`
+   and `RecoveryResult`; line 465 still exports `runStartupRecovery`. The
+   function now only acquires and immediately releases a flock, yet can claim
+   that the first run is `allowed`. `build.zig:959-961` likewise retains the
+   superseded whole-recovery/startup/incident language. Rename and retype this
+   as a bounded acquisition primitive; a no-op acquire must not semantically
+   claim that startup recovery completed.
+2. `c4d7002` changes only `last_updated_note`. Frontmatter still says rev 27
+   and 2026-10-21, with no Rev-28 history entry. More importantly, the active
+   MS6.5.1 body still normatively prescribes the startup queue, two-browser
+   whole-recovery test, signal/retirement transaction, and a `reaper_ready`
+   constant. A metadata sentence cannot supersede an active implementation
+   section that says the opposite. Rev 28 must make the scoped acceptance and
+   named OPEN whole-recovery blocker authoritative in the body.
+3. “`reaper_ready` stays false” is factually inaccurate: no such production
+   constant exists. The honest state is **not implemented / not armed**, with
+   no production recovery transaction or signal call reachable.
+4. The required clean-export full gate has not run. JadeBeacon mail 7664
+   reports only the focused ledger/reaper gate and is waiting for a slot. The
+   full gate must run at the corrected exact SHA under private Xvfb and the
+   signal-safe PID namespace.
+
+Agent Mail 7667 sent the consolidated fix-forward list to JadeBeacon. The
+contiguous push boundary does not advance through `97c6215` on this review.
