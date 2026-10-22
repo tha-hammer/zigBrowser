@@ -1,57 +1,34 @@
 r"""WS8/WS9 WSL2 topology — live DISCOVERY SPIKE on the Win11 VM (OD-W4).
 
-!!! DISCOVERY-ONLY / DO NOT RERUN (RoseCat 9134b8b / 7558 / 7561). This spike's executable oracle is
-    KNOWN-DEFECTIVE and MUST NOT be rerun or cited as gate evidence until it is repaired and reviewed:
-    teardown ignores every terminate/unregister/delete return code and performs NO final census; the
-    staged scripts copied into C:\\Users\\zbtext\\zb\\wsl are never removed; many probe return codes are
-    captured but never asserted; and the reverse "firewall-blocked" row never proves the Windows listener
-    started (a listener that never started yields the same green). The exact non-root facts it reported
-    were observed with an EXPLICIT `-u zbagent` launch only — it did NOT prove default-user selection.
-    Repairs required before any rerun: fail-closed on every rc; prove the Windows listener ready before the
-    reverse negative; a no-`-u` default-user + admin-group census; remove every staged artifact; assert a
-    final distro/import/process/listener/staged-file census equal to baseline; and add the
-    Windows-stdio/pipe -> Linux-fd + ephemeral-port-return (C1) probe. Nothing here is a security claim.
+!!! DISCOVERY-ONLY. REPAIRED per RoseCat 9134b8b/7558; AWAITING RoseCat review before the next live run
+    (draft gate: a live WSL run needs her OK on the repaired spike first). It is not production closure and
+    not a security claim: the security/product proofs come LATER via named red/green tests driving the
+    production WslBackend / LinuxBwrapBackend. It writes ONLY under C:\\Users\\zbtext\\zb\\wsl on win11-m8,
+    never on the read-only Windows 10 file server, and never calls global `wsl --shutdown`.
 
-This is a discovery spike, NOT the production WS8/WS9 closure. It establishes the topology facts the
-owner asked for before committing the WSL2 re-plan (RoseCat 119108c / 7516 / affd577). The security and
-product claims (full bwrap confinement, control-channel auth, egress, lifetime under concurrency, setup
-state machine, fail-closed) are proven LATER by named red/green tests driving the production
-`WslBackend` / `LinuxBwrapBackend`, not by this script. See the "WS8/WS9 acceptance matrix" in the plan.
+Repairs in this revision (addressing 9134b8b blockers 1-3):
+- FAIL-CLOSED: every lifecycle op (scp, import, run, terminate, unregister, delete) and every probe asserts
+  its return code; nothing is captured-and-discarded.
+- LISTENER-READY PROOF: the in-distro listener is confirmed LISTENing (netstat) before the Windows client
+  connects; the Windows reverse listener is confirmed "LISTENING" (its ready file) before the WSL→Windows
+  negative is accepted — so a listener that never started can no longer produce a false green.
+- CLEANUP + FINAL CENSUS: every staged file and every imported distro/import-dir is tracked and removed; the
+  final distro census AND the final `zb\\wsl` artifact census must equal the pre-run baseline.
+- DEFAULT-USER (no `-u`): a real default-user launch asserts uid 1000 AND an admin-group census (no
+  root/wheel/adm/sudo group), distinct from the explicit `-u zbagent` launch.
+- C1 BOOTSTRAP (blocker 3): a probe of the Windows-stdio→Linux-fd + ephemeral-port-return bootstrap —
+  a secret written to `wsl.exe` stdin is read at Linux fd 0, the in-distro process prints its chosen
+  `127.0.0.1:0` port to stdout (→ the browser), and an authenticated connect to that port returns an ACK.
+- NEGATIVE/MUTANT ORACLES: a connect to a closed in-distro port must be refused; a failed import and a failed
+  unregister must return nonzero; a planted leftover must be detected by the census — each proving the oracle
+  fails closed rather than passing vacuously.
 
-UNREGISTERED (live-only). It imports a tiny PINNED Alpine minirootfs as the standard Windows user (no
-admin), creates a dedicated NON-ROOT Linux user, configures wsl.conf, proves each topology fact as a
-PASS/FAIL row, then tears everything down with a guarded delete. It writes ONLY under
-C:\Users\zbtext\zb\wsl on win11-m8 and never touches the Windows 10 file server.
-
-Hygiene (RoseCat 7516 #1 / affd577): baseline distro census (rc-checked), refuse name collisions, app-owned
-`zb-test-*` names + a per-run dir, apply wsl.conf with a PER-DISTRO `wsl --terminate` and NEVER a global
-`wsl --shutdown`, pin distros alive with keepalive sessions during probes (WSL idle-terminates a distro and
-its background listeners once the last session exits), check every lifecycle return code and fail closed,
-unregister only our marked distros, assert final census == baseline, and clean the local scratch. On an
-opted-in host (ZB_WIN11_HOST set) a missing/again-mismatched rootfs is a FAILURE, not a skip.
-
-Corrected facts (affd577): the probes launch as a dedicated NON-ROOT uid (not WSL default root); the
-transport binds EXACTLY 127.0.0.1:0 and moves a canary with an ACK (not a bare connect to either of
-two addresses); IPv6 and a hostile co-tenant row are included; every return code fails closed.
-
-Measured on win11-m8 (WSL 3.0.3.0, kernel 6.18.54.1, build 26200), 2026-10-21 (AzureRidge):
-  P1 import + full per-user lifecycle run with no admin.
-  P2 automount off => /mnt/c is not a mountpoint; Windows FS unreachable.
-  P3 appendWindowsPath=false => no /mnt on PATH; interop.enabled=false is PARTIAL (WSLInterop binfmt stays
-     registered; runtime `echo 0 > .../WSLInterop` hard-disables it).
-  P4 non-root launch: default + explicit `-u zbagent` => uid 1000, no sudo/doas, CapEff=0, 0 setuid
-     binaries, /etc write denied; unprivileged userns + bubblewrap work AS that non-root user.
-  P5 two distros share ONE utility VM (boot_id) + ONE net namespace (eth0/gateway); separate mount/PID ns.
-  P6 transport: a 127.0.0.1:0 (and ::1:0) listener in the distro is reachable from Windows via
-     localhostForwarding (ACK + canary move), IPv4 and IPv6; a hostile co-tenant distro reaches the same
-     127.0.0.1 listener (shared net ns) => app-layer auth is MANDATORY; WSL->Windows is firewall-blocked.
-  P7 per-run process-group kill leaves a co-tenant session alive; `wsl --terminate` kills the whole distro.
-
-Run live:
+Run live (ONLY after RoseCat approves this repaired spike):
   ZB_WIN11_HOST=127.0.0.1 ZB_WSL_ROOTFS=/path/to/alpine-minirootfs-3.21.9-x86_64.tar.gz \
       python3 -I tests/windows/wsl_live_test.py -v
 """
 import hashlib
+import json
 import os
 import secrets
 import shutil
@@ -61,8 +38,8 @@ import tempfile
 import time
 import unittest
 
-# Reviewed, pinned rootfs identity (official Alpine v3.21 minirootfs). Verify the LOCAL file against
-# THIS constant, never against a downloaded .sha256 (same-server hash catches corruption, not tampering).
+# Reviewed, pinned rootfs identity (official Alpine v3.21 minirootfs). Verify the LOCAL file against THIS
+# constant, never a downloaded hash file (same-server hash catches corruption, not tampering).
 ROOTFS_NAME = "alpine-minirootfs-3.21.9-x86_64.tar.gz"
 ROOTFS_SHA256 = "3d5912d47e004ac77746d63ab848abd9e37164465cf1c866eb574bc526135012"
 
@@ -73,7 +50,8 @@ KEY = os.environ.get("ZB_WIN_KEY", "/home/maceo/vms/win11-m8/zb_win_key")
 KH = os.environ.get("ZB_WIN_KNOWN_HOSTS", "/home/maceo/vms/win11-m8/known_hosts")
 ROOTFS = os.environ.get("ZB_WSL_ROOTFS")
 
-NONROOT = "zbagent"  # the dedicated non-root Linux identity the production agent will run as
+NONROOT = "zbagent"
+ADMIN_GROUPS = {"root", "wheel", "adm", "sudo"}
 
 
 def _scrub(*cmd):
@@ -92,7 +70,6 @@ def ssh(*args, timeout=180):
 
 
 def ssh_bg(*args):
-    """Backgrounded ssh (e.g. a keepalive sleep) pinning a distro alive. Returns a Popen to reap."""
     return subprocess.Popen(_scrub(*_ssh_base(), *args),
                             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
@@ -104,10 +81,19 @@ def scp(local, remote, timeout=180):
     return subprocess.run(_scrub(*base), capture_output=True, text=True, timeout=timeout).returncode
 
 
-def census():
-    """(rc, sorted distro list). rc != 0 is a hard failure, never 'empty baseline'."""
-    rc, out, _ = ssh("wsl", "-l", "-q")
-    return rc, sorted(x.strip() for x in out.replace("\r", "").split("\n") if x.strip())
+def census_distros():
+    rc, out, err = ssh("wsl", "-l", "-q")
+    assert rc == 0, f"`wsl -l -q` failed rc={rc}: {err}"
+    return sorted(x.strip() for x in out.replace("\r", "").split("\n") if x.strip())
+
+
+def census_wsl_dir():
+    """Names under zb\\wsl (files + dirs); a rc!=0 is a hard failure, never an empty listing."""
+    rc, out, err = ssh("powershell", "-NoProfile", "-Command",
+                       "Get-ChildItem $env:USERPROFILE\\zb\\wsl -ErrorAction SilentlyContinue | "
+                       "Select-Object -ExpandProperty Name")
+    assert rc == 0, f"zb\\wsl census failed rc={rc}: {err}"
+    return sorted(x.strip() for x in out.replace("\r", "").split("\n") if x.strip())
 
 
 def kv(stdout):
@@ -122,7 +108,6 @@ def kv(stdout):
 class WslTopologyLive(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        # On an opted-in host a missing/mismatched rootfs is a FAILURE, not a skip (affd577).
         if not ROOTFS or not os.path.isfile(ROOTFS):
             raise AssertionError("ZB_WSL_ROOTFS unset/missing on an opted-in host — point it at the pinned Alpine minirootfs")
         h = hashlib.sha256()
@@ -135,168 +120,236 @@ class WslTopologyLive(unittest.TestCase):
         cls.na = f"zb-test-{cls.rand}-a"
         cls.nb = f"zb-test-{cls.rand}-b"
         cls.base = f"C:\\Users\\{USER}\\zb\\wsl"
-        cls.tar_remote = f"{cls.base}\\{cls.rand}.tar.gz"
-        rc, _, _ = ssh("cmd", "/c", f"if not exist {cls.base} mkdir {cls.base}")
-        assert rc == 0, "could not create install base dir"
-        rc, base_list = census()
-        assert rc == 0, f"baseline `wsl -l -q` failed rc={rc}"
-        cls.baseline = base_list
+        cls.tar_name = f"{cls.rand}.tar.gz"
+        rc, _, e = ssh("cmd", "/c", f"if not exist {cls.base} mkdir {cls.base}")
+        assert rc == 0, f"could not create install base dir: {e}"
+        cls.baseline_distros = census_distros()
+        cls.baseline_dir = census_wsl_dir()
         for n in (cls.na, cls.nb):
-            if n in cls.baseline:
+            if n in cls.baseline_distros:
                 raise AssertionError(f"collision: marked distro {n} already exists; refusing to run")
         cls.localdir = tempfile.mkdtemp(prefix="wsllive-")
+        cls.staged = set()       # remote names under zb\wsl that we created
         cls.keepalives = []
         cls.facts = {}
 
     @classmethod
     def tearDownClass(cls):
+        # Best-effort safety net; the test body already asserts the clean final census.
         for p in getattr(cls, "keepalives", []):
             try:
                 p.terminate(); p.wait(timeout=10)
             except Exception:
                 try: p.kill()
                 except Exception: pass
-        r = getattr(cls, "rand", "")
         for n in (getattr(cls, "na", ""), getattr(cls, "nb", "")):
             if n:
                 ssh("wsl", "--terminate", n)
                 ssh("wsl", "--unregister", n)
+        r = getattr(cls, "rand", "")
         if r:
             ssh("cmd", "/c",
                 f"(if exist {cls.base}\\zb-test-{r}-a rmdir /s /q {cls.base}\\zb-test-{r}-a) & "
-                f"(if exist {cls.base}\\zb-test-{r}-b rmdir /s /q {cls.base}\\zb-test-{r}-b) & "
-                f"(if exist {cls.tar_remote} del /q {cls.tar_remote})")
+                f"(if exist {cls.base}\\zb-test-{r}-b rmdir /s /q {cls.base}\\zb-test-{r}-b)")
+        for name in sorted(getattr(cls, "staged", set())):
+            ssh("cmd", "/c", f"if exist {cls.base}\\{name} del /q {cls.base}\\{name}")
         if getattr(cls, "localdir", None):
             shutil.rmtree(cls.localdir, ignore_errors=True)
 
-    def _stage(self, name, text):
+    # --- helpers (every op fail-closed) ---
+    def _stage(self, name, text, crlf=False):
         p = os.path.join(self.localdir, name)
-        with open(p, "w", newline="\n") as f:
+        with open(p, "w", newline=("\r\n" if crlf else "\n")) as f:
             f.write(text)
-        self.assertEqual(scp(p, f"zb/wsl/{name}"), 0, f"scp {name}")
-
-    def _stage_crlf(self, name, text):
-        p = os.path.join(self.localdir, name)
-        with open(p, "w", newline="\r\n") as f:
-            f.write(text)
-        self.assertEqual(scp(p, f"zb/wsl/{name}"), 0, f"scp {name}")
+        self.assertEqual(scp(p, f"zb/wsl/{name}"), 0, f"scp {name} failed")
+        self.staged.add(name)
 
     def _run(self, distro, script_remote, user=None):
         u = f"-u {user} " if user else ""
         ps = (f"Get-Content -Raw $env:USERPROFILE\\zb\\wsl\\{script_remote} | "
               f"wsl -d {distro} {u}-e /bin/sh")
         rc, out, err = ssh("powershell", "-NoProfile", "-Command", ps)
-        return rc, out, err
+        self.assertEqual(rc, 0, f"run {script_remote} on {distro} failed rc={rc}: {err}")
+        return out
 
     def _pin(self, distro):
-        p = ssh_bg("wsl", "-d", distro, "-u", "root", "-e", "/bin/sleep", "120")
+        p = ssh_bg("wsl", "-d", distro, "-u", "root", "-e", "/bin/sleep", "150")
         self.keepalives.append(p)
         return p
 
+    def _import(self, distro):
+        rc, o, e = ssh("cmd", "/c", f"wsl --import {distro} {self.base}\\{distro} {self.base}\\{self.tar_name} --version 2")
+        self.assertTrue("completed successfully" in o or rc == 0, f"import {distro} failed rc={rc}: {o}{e}")
+
+    # ------------------------------------------------------------------
+    # Negative / mutant oracles (cheap; prove the checks fail closed). No distro import needed.
+    # ------------------------------------------------------------------
+    def test_oracle_failed_import_and_unregister_return_nonzero(self):
+        rc, _, _ = ssh("cmd", "/c", f"wsl --import zb-test-{self.rand}-nope {self.base}\\nope {self.base}\\does-not-exist.tar.gz --version 2")
+        self.assertNotEqual(rc, 0, "a failed import must return nonzero (oracle: rc checks catch failure)")
+        rc, _, _ = ssh("wsl", "--unregister", f"zb-test-{self.rand}-absent")
+        self.assertNotEqual(rc, 0, "unregistering an absent distro must return nonzero (oracle)")
+
+    def test_oracle_leftover_is_detected_by_census(self):
+        sentinel = f"leftover-{self.rand}.sentinel"
+        self.assertEqual(scp(os.path.join(self.localdir or tempfile.mkdtemp(), sentinel) if False else self._tmp_sentinel(sentinel), f"zb/wsl/{sentinel}"), 0)
+        try:
+            self.assertIn(sentinel, census_wsl_dir(), "a planted leftover must be detected by the census (oracle)")
+        finally:
+            rc, _, _ = ssh("cmd", "/c", f"del /q {self.base}\\{sentinel}")
+            self.assertEqual(rc, 0, "sentinel delete must succeed")
+        self.assertNotIn(sentinel, census_wsl_dir(), "the census must confirm the leftover was removed")
+
+    def _tmp_sentinel(self, name):
+        d = tempfile.mkdtemp(prefix="wsllive-sent-")
+        p = os.path.join(d, name)
+        with open(p, "w") as f:
+            f.write("sentinel\n")
+        return p
+
+    # ------------------------------------------------------------------
+    # The main topology spike.
+    # ------------------------------------------------------------------
     def test_wsl_topology(self):
-        na, nb, base = self.na, self.nb, self.base
-        self.assertEqual(scp(ROOTFS, f"zb/wsl/{self.rand}.tar.gz"), 0, "scp rootfs")
-        # --- import both distros as the standard (non-admin) Windows user ---
-        for n in (na, nb):
-            rc, o, e = ssh("cmd", "/c", f"wsl --import {n} {base}\\{n} {self.tar_remote} --version 2")
-            self.assertTrue("completed successfully" in o or rc == 0, f"import {n} failed rc={rc}: {o}{e}")
+        na, nb = self.na, self.nb
+        self.assertEqual(scp(ROOTFS, f"zb/wsl/{self.tar_name}"), 0, "scp rootfs")
+        self.staged.add(self.tar_name)
+        self._import(na)
+        self._import(nb)
         self.facts["P1_import_no_admin"] = "ok"
 
-        # --- setup: dedicated non-root user + wsl.conf (automount/interop off, default=non-root) + tools ---
+        # setup: non-root user + wsl.conf (automount/interop off, default=non-root) + python3
         self._stage("setup.sh", _SETUP_SH)
         for n in (na, nb):
-            rc, o, e = self._run(n, "setup.sh", user="root")
-            self.assertIn("SETUP_DONE", o, f"setup {n} failed: {o}{e}")
-            self.assertIn("ADDUSER_RC=0", o, f"adduser {n}: {o}")
-            self.assertIn("APK_RC=0", o, f"apk {n}: {o}")
+            o = self._run(n, "setup.sh", user="root")
+            self.assertIn("SETUP_DONE", o, f"setup {n}: {o}")
+            self.assertIn("ADDUSER_RC=0", o)
+            self.assertIn("APK_RC=0", o)
             self.assertEqual(ssh("wsl", "--terminate", n)[0], 0, f"terminate {n}")
 
-        # --- P2/P3: automount/interop/PATH authoritative probe on A (default user = non-root) ---
+        # P2/P3 automount/interop/PATH
         self._stage("auth.sh", _AUTH_SH)
-        rc, o, e = self._run(na, "auth.sh")  # no -u: default user must be the non-root one
-        a = kv(o)
+        a = kv(self._run(na, "auth.sh"))   # default user
         self.facts.update({f"P2P3_{k}": v for k, v in a.items()})
-        self.assertEqual(a.get("MNT_C_MOUNTPOINT"), "no", f"automount off: {o}")
-        self.assertEqual(a.get("PATH_HAS_MNT"), "0", f"appendWindowsPath=false: {o}")
-        self.assertEqual(a.get("BINFMT"), "present", f"interop=false leaves WSLInterop registered (measured): {o}")
+        self.assertEqual(a.get("MNT_C_MOUNTPOINT"), "no")
+        self.assertEqual(a.get("PATH_HAS_MNT"), "0")
+        self.assertEqual(a.get("BINFMT"), "present")
 
-        # --- P4: non-root identity + userns/bwrap AS that user (explicit -u and the default) ---
+        # P4a DEFAULT user (no -u) must be the non-root uid + no admin group (blocker 2)
+        self._stage("whoami.sh", _WHOAMI_SH)
+        d = kv(self._run(na, "whoami.sh"))               # NO user= -> default
+        e = kv(self._run(na, "whoami.sh", user=NONROOT)) # explicit
+        self.facts["P4_default_uid"] = d.get("UID")
+        self.facts["P4_default_groups"] = d.get("GROUPS")
+        self.facts["P4_explicit_uid"] = e.get("UID")
+        self.assertEqual(d.get("UID"), "1000", f"default (no -u) launch must be uid 1000: {d}")
+        self.assertEqual(e.get("UID"), "1000", f"explicit -u {NONROOT} must be uid 1000: {e}")
+        groups = set((d.get("GROUPS") or "").split(","))
+        self.assertTrue(groups.isdisjoint(ADMIN_GROUPS), f"default user must be in no admin group: {d.get('GROUPS')}")
+
+        # P4b non-root security + userns/bwrap AS the non-root user
         self._stage("nonroot.sh", _NONROOT_SH)
-        rc, o, e = self._run(na, "nonroot.sh", user=NONROOT)
-        nr = kv(o)
+        nr = kv(self._run(na, "nonroot.sh", user=NONROOT))
         self.facts.update({f"P4_{k}": v for k, v in nr.items()})
-        self.assertTrue(nr.get("ID", "").startswith("1000:"), f"explicit -u {NONROOT} must be uid 1000: {o}")
-        self.assertEqual(nr.get("DEFAULT_UID"), "1000", f"wsl.conf default user must be non-root: {o}")
-        self.assertEqual(nr.get("SUDO"), "absent", f"no sudo: {o}")
-        self.assertEqual(nr.get("DOAS"), "absent", f"no doas: {o}")
-        self.assertEqual(nr.get("WRITE_ETC"), "denied", f"must not write /etc: {o}")
-        self.assertEqual(nr.get("CAPEFF"), "0000000000000000", f"no effective caps: {o}")
-        self.assertEqual(nr.get("SETUID_COUNT"), "0", f"no setuid binaries: {o}")
-        self.assertTrue(nr.get("USERNS", "").startswith("ok"), f"unprivileged userns as non-root: {o}")
-        self.assertTrue(nr.get("BWRAP", "").startswith("ok"), f"bwrap as non-root: {o}")
+        self.assertEqual(nr.get("SUDO"), "absent")
+        self.assertEqual(nr.get("DOAS"), "absent")
+        self.assertEqual(nr.get("WRITE_ETC"), "denied")
+        self.assertEqual(nr.get("CAPEFF"), "0000000000000000")
+        self.assertEqual(nr.get("SETUID_COUNT"), "0")
+        self.assertTrue(nr.get("USERNS", "").startswith("ok"))
+        self.assertTrue(nr.get("BWRAP", "").startswith("ok"))
 
-        # --- P5: shared utility VM / namespaces across two distros ---
+        # P5 shared utility VM / namespaces
         self._stage("ident.sh", _IDENT_SH)
-        _, oa, _ = self._run(na, "ident.sh", user="root")
-        _, ob, _ = self._run(nb, "ident.sh", user="root")
-        ia, ib = kv(oa), kv(ob)
-        self.facts["P5_boot_equal"] = str(ia.get("BOOT_ID") == ib.get("BOOT_ID"))
-        self.facts["P5_netns_equal"] = str(ia.get("NS_NET") == ib.get("NS_NET"))
-        self.facts["P5_pidns_differ"] = str(ia.get("NS_PID") != ib.get("NS_PID"))
+        ia, ib = kv(self._run(na, "ident.sh", user="root")), kv(self._run(nb, "ident.sh", user="root"))
         self.assertEqual(ia.get("BOOT_ID"), ib.get("BOOT_ID"), "two distros share one utility VM")
         self.assertEqual(ia.get("NS_NET"), ib.get("NS_NET"), "two distros share one net namespace")
         self.assertNotEqual(ia.get("NS_PID"), ib.get("NS_PID"), "each distro has its own PID namespace")
+        self.facts["P5_boot_equal"] = str(ia.get("BOOT_ID") == ib.get("BOOT_ID"))
+        gw = ia.get("GW", "")
 
-        # --- P6: transport, exact bind + ACK/canary + IPv6 + hostile co-tenant + reverse blocked ---
+        # P6 transport: exact bind + ACK/canary + IPv6 + hostile co-tenant + negative control
         self._pin(na); self._pin(nb)
-        time.sleep(4)  # let the pinned sessions boot the distros
+        time.sleep(4)
         self._stage("listen.sh", _LISTEN_SH)
         self._stage("readrx.sh", _READRX_SH)
-        self._stage_crlf("wtcp.ps1", _WIN_TCP_PS1)
-        self._stage_crlf("winlisten.ps1", _WIN_LISTEN_PS1)
-        self._stage_crlf("winlaunch.ps1", _WIN_LAUNCH_PS1)
-        # start the listener in A as the non-root user
-        _, lo, _ = self._run(na, "listen.sh", user=NONROOT)
-        ports = kv(lo)
-        self.assertIn("LO", ports, f"listener did not report ports: {lo}")
-        self.assertEqual(ports.get("LISTEN"), "yes", f"listener not confirmed LISTENing: {lo}")
-        p_lo, p_any, p_v6 = ports["LO"], ports["ANY"], ports["V6"]
-        self.facts["P6_ports"] = f"lo={p_lo} any={p_any} v6={p_v6}"
-        # Windows -> WSL on the EXACT 127.0.0.1 and ::1 ports, require ACK. The spec is staged to a file
-        # (not an argv) so the ssh->cmd layer cannot eat its '|'/';' characters.
-        spec = f"127.0.0.1|{p_lo}|w-lo;127.0.0.1|{p_any}|w-any;::1|{p_v6}|w-v6"
-        self._stage("wtcp_spec.txt", spec + "\n")
-        rc, ow, ew = ssh("powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
-                         f"{base}\\wtcp.ps1")
+        self._stage("wtcp.ps1", _WIN_TCP_PS1, crlf=True)
+        lo = kv(self._run(na, "listen.sh", user=NONROOT))
+        self.assertIn("LO", lo, f"listener ports: {lo}")
+        self.assertEqual(lo.get("LISTEN"), "yes", f"in-distro listener must be confirmed LISTENing: {lo}")  # ready proof
+        p_lo, p_any, p_v6, p_closed = lo["LO"], lo["ANY"], lo["V6"], lo["CLOSED"]
+        self._stage("wtcp_spec.txt", f"127.0.0.1|{p_lo}|w-lo;127.0.0.1|{p_any}|w-any;::1|{p_v6}|w-v6;127.0.0.1|{p_closed}|w-neg\n")
+        rc, ow, ew = ssh("powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", f"{self.base}\\wtcp.ps1")
+        self.assertEqual(rc, 0, f"win tcp client rc={rc}: {ew}")
         self.facts["P6_win_to_wsl"] = ow.replace("\n", " | ").strip()
-        self.assertIn(f"127.0.0.1:{p_lo} = ok ack=ACK:w-lo", ow, f"Win->WSL 127.0.0.1 listener must work with ACK: {ow}")
-        self.assertIn(f"::1:{p_v6} = ok ack=ACK:w-v6", ow, f"Win->WSL ::1 listener must work with ACK: {ow}")
-        # hostile co-tenant distro B -> A's 127.0.0.1 listener (shared net ns => auth mandatory).
-        # A and B share no filesystem, so A's ports are substituted into B's script here.
+        self.assertIn(f"127.0.0.1:{p_lo} = ok ack=ACK:w-lo", ow, f"Win->WSL 127.0.0.1 with ACK: {ow}")
+        self.assertIn(f"::1:{p_v6} = ok ack=ACK:w-v6", ow, f"Win->WSL ::1 with ACK: {ow}")
+        self.assertIn(f"127.0.0.1:{p_closed} = fail", ow, f"negative control: a closed port must be refused: {ow}")
+        # hostile co-tenant
         self._stage("cotenant.sh", _COTENANT_SH.format(lo=p_lo, any=p_any, v6=p_v6))
-        rc, oc, ec = self._run(nb, "cotenant.sh", user=NONROOT)
+        oc = self._run(nb, "cotenant.sh", user=NONROOT)
         self.facts["P6_hostile_cotenant"] = oc.replace("\n", " | ").strip()
-        self.assertIn("co->lo=ok", oc, f"a co-tenant distro reaching the 127.0.0.1 listener proves auth is mandatory: {oc}")
-        # verify the listener actually RECEIVED the moved canaries (bytes crossed, not just a connect)
-        _, rx, _ = self._run(na, "readrx.sh", user=NONROOT)
-        self.facts["P6_listener_rx"] = rx.replace("\n", " | ").strip()
-        self.assertIn("canary=b'w-lo'", rx, f"listener must have received the Windows canary: {rx}")
-        self.assertIn("canary=b'B-co->lo'", rx, f"listener must have received the co-tenant canary: {rx}")
-        # WSL -> Windows reverse (firewall-blocked) + a TEST-NET decoy, both must fail-closed
-        ssh("powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", f"{base}\\winlaunch.ps1")
-        gw = ia.get("GW", "")
+        self.assertIn("co->lo=ok", oc, f"co-tenant reaching the 127.0.0.1 listener (auth mandatory): {oc}")
+        rx = self._run(na, "readrx.sh", user=NONROOT)
+        self.assertIn("canary=b'w-lo'", rx, f"listener received the Windows canary: {rx}")
+        self.assertIn("canary=b'B-co->lo'", rx, f"listener received the co-tenant canary: {rx}")
+
+        # P6 reverse: WSL->Windows negative ONLY after proving the Windows listener ready (blocker 1)
+        self._stage("winlisten.ps1", _WIN_LISTEN_PS1, crlf=True)
+        self._stage("winlaunch.ps1", _WIN_LAUNCH_PS1, crlf=True)
+        rc, ol, el = ssh("powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", f"{self.base}\\winlaunch.ps1")
+        self.assertEqual(rc, 0, f"launch win reverse listener rc={rc}: {el}")
+        self.assertIn("LISTENING 0.0.0.0:39002", ol, f"the Windows reverse listener must prove READY before the negative: {ol}")
         self._stage("revclient.sh", _REVCLIENT_SH.format(gw=gw))
-        rc, orv, erv = self._run(na, "revclient.sh", user=NONROOT)
+        orv = self._run(na, "revclient.sh", user=NONROOT)
         self.facts["P6_wsl_to_windows"] = orv.replace("\n", " | ").strip()
-        self.assertIn("gw->win=fail", orv, f"WSL->Windows must be firewall-blocked by default: {orv}")
+        self.assertIn("gw->win=fail", orv, f"WSL->Windows must fail even with the Windows listener PROVEN ready: {orv}")
         self.assertIn("testnet=fail", orv, f"a TEST-NET decoy must be unreachable: {orv}")
 
-        print("\n==== WSL2 topology measured facts (win11-m8) ====")
+        # C1 bootstrap probe (blocker 3): stdin secret -> Linux fd0; chosen port -> stdout; authed connect
+        secret = secrets.token_hex(16)
+        self._stage("c1boot.sh", _C1BOOT_WRITER)   # writes /home/zbagent/c1boot.py
+        self._run(na, "c1boot.sh", user=NONROOT)
+        self._stage("c1boot.ps1", _C1BOOT_PS1.format(distro=na, user=NONROOT, secret=secret), crlf=True)
+        rc, oc1, ec1 = ssh("powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", f"{self.base}\\c1boot.ps1")
+        self.assertEqual(rc, 0, f"c1 bootstrap probe rc={rc}: {ec1}")
+        c1 = json.loads(oc1.strip().splitlines()[-1])
+        self.facts["P_C1_bootstrap"] = json.dumps(c1)
+        self.assertEqual(c1.get("got_secret"), secret, f"the secret must arrive at Linux fd0 via wsl stdin: {c1}")
+        self.assertTrue(int(c1.get("port", 0)) > 0, f"the in-distro ephemeral port must return on stdout: {c1}")
+        self.assertEqual(c1.get("ack"), "ACK", f"an authed connect to the returned port must succeed: {c1}")
+
+        # ---- final cleanup + census == baseline (blocker 1) ----
+        self._pin_release()
+        for n in (na, nb):
+            rc, _, e = ssh("wsl", "--terminate", n); self.assertEqual(rc, 0, f"terminate {n}: {e}")
+            rc, _, e = ssh("wsl", "--unregister", n); self.assertEqual(rc, 0, f"unregister {n}: {e}")
+        rc, _, e = ssh("cmd", "/c",
+                       f"(if exist {self.base}\\{na} rmdir /s /q {self.base}\\{na}) & "
+                       f"(if exist {self.base}\\{nb} rmdir /s /q {self.base}\\{nb})")
+        self.assertEqual(rc, 0, f"rmdir import dirs: {e}")
+        for name in sorted(self.staged):
+            rc, _, e = ssh("cmd", "/c", f"if exist {self.base}\\{name} del /q {self.base}\\{name}")
+            self.assertEqual(rc, 0, f"delete staged {name}: {e}")
+        self.staged.clear()
+        self.assertEqual(census_distros(), self.baseline_distros, "final distro census must equal baseline")
+        self.assertEqual(census_wsl_dir(), self.baseline_dir, "final zb\\wsl artifact census must equal baseline (no leftover)")
+
+        print("\n==== WSL2 topology discovery observations (win11-m8; not a closure or security claim) ====")
         for k in sorted(self.facts):
             print(f"{k}={self.facts[k]}")
 
+    def _pin_release(self):
+        for p in self.keepalives:
+            try:
+                p.terminate(); p.wait(timeout=10)
+            except Exception:
+                try: p.kill()
+                except Exception: pass
+        self.keepalives.clear()
 
-# ---- staged scripts (streamed to the distro / Windows; never parsed by cmd) ----
+
+# ---- staged scripts ----
 _SETUP_SH = """#!/bin/sh
 printf 'nameserver 8.8.8.8\\nnameserver 1.1.1.1\\n' > /etc/resolv.conf
 adduser -D -g '' zbagent 2>/dev/null; echo "ADDUSER_RC=$?"
@@ -319,9 +372,12 @@ echo "PATH_HAS_MNT=$(echo $PATH | tr ':' '\n' | grep -ci '/mnt/')"
 if [ -e /proc/sys/fs/binfmt_misc/WSLInterop ]; then echo "BINFMT=present"; else echo "BINFMT=absent"; fi
 """
 
+_WHOAMI_SH = r"""#!/bin/sh
+echo "UID=$(id -u)"
+echo "GROUPS=$(id -Gn | tr ' ' ',')"
+"""
+
 _NONROOT_SH = r"""#!/bin/sh
-echo "ID=$(id -u):$(id -un)"
-echo "DEFAULT_UID=$(id -u)"
 if unshare -Ur /bin/sh -c 'id -u' >/tmp/u.out 2>/tmp/u.err; then echo "USERNS=ok:$(cat /tmp/u.out)"; else echo "USERNS=fail:$(tr '\n' ' ' </tmp/u.err)"; fi
 if bwrap --unshare-user --unshare-pid --unshare-net --ro-bind / / --dev /dev --proc /proc /usr/bin/id -u >/tmp/bw.out 2>/tmp/bw.err; then echo "BWRAP=ok:$(cat /tmp/bw.out)"; else echo "BWRAP=fail:$(tr '\n' ' ' </tmp/bw.err)"; fi
 command -v sudo >/dev/null 2>&1 && echo "SUDO=present" || echo "SUDO=absent"
@@ -338,8 +394,8 @@ echo "NS_PID=$(readlink /proc/self/ns/pid)"
 echo "GW=$(ip route show default 2>/dev/null | awk '{print $3}')"
 """
 
-# Listener binds EXACTLY 127.0.0.1:0 + 0.0.0.0:0 + ::1:0, writes its ports, stays up 90s, records the
-# moved canary per endpoint and returns an ACK. Started as the non-root user; the distro is pinned alive.
+# Binds 127.0.0.1:0 + 0.0.0.0:0 + ::1:0 AND reserves then CLOSES one port (the negative-control target),
+# writes its ports, stays up 90s, records the moved canary + returns an ACK.
 _LISTEN_SH = r"""#!/bin/sh
 cat > /tmp/listener.py <<'PY'
 import socket,select,time
@@ -352,7 +408,9 @@ s_lo=mk(socket.AF_INET,("127.0.0.1",0)); p_lo=s_lo.getsockname()[1]
 s_any=mk(socket.AF_INET,("0.0.0.0",0)); p_any=s_any.getsockname()[1]
 try: s6=mk(socket.AF_INET6,("::1",0)); p6=s6.getsockname()[1]
 except Exception: s6=None; p6=0
-open("/tmp/ports","w").write("LO=%d ANY=%d V6=%d\n"%(p_lo,p_any,p6))
+# a reserved-then-closed port: a connect here must be refused (negative control)
+sc=socket.socket(socket.AF_INET); sc.bind(("127.0.0.1",0)); p_closed=sc.getsockname()[1]; sc.close()
+open("/tmp/ports","w").write("LO=%d ANY=%d V6=%d CLOSED=%d\n"%(p_lo,p_any,p6,p_closed))
 tag={s_lo:"lo",s_any:"any"}
 if s6: tag[s6]="v6"
 open("/tmp/rx","w").close()
@@ -373,8 +431,10 @@ cat /tmp/ports 2>/dev/null | tr ' ' '\n'
 netstat -ltn 2>/dev/null | grep -q '127.0.0.1:' && echo "LISTEN=yes" || echo "LISTEN=no"
 """
 
-# Co-tenant reads A's ports from the shared Windows-staged file (A and B share no fs, so the ports are
-# passed by re-reading /tmp/ports — but that is A-local; instead the harness substitutes them here).
+_READRX_SH = r"""#!/bin/sh
+cat /tmp/rx 2>/dev/null
+"""
+
 _COTENANT_SH = r"""#!/bin/sh
 python3 - <<'PY'
 import socket
@@ -387,10 +447,6 @@ for fam,host,port,name in specs:
 PY
 """
 
-_READRX_SH = r"""#!/bin/sh
-cat /tmp/rx 2>/dev/null
-"""
-
 _REVCLIENT_SH = r"""#!/bin/sh
 python3 - <<'PY'
 import socket
@@ -401,6 +457,52 @@ for name,host,port in [("gw->win","{gw}",39002),("testnet","192.0.2.1",443)]:
 PY
 """
 
+# C1 bootstrap: reads the secret from stdin (Linux fd 0, fed by wsl.exe's stdin), binds 127.0.0.1:0, prints
+# the port + the received secret to stdout (fd 1 -> wsl.exe stdout -> the browser), then accepts one authed conn.
+_C1BOOT_WRITER = r"""#!/bin/sh
+cat > /home/zbagent/c1boot.py <<'PY'
+import socket,sys
+secret=sys.stdin.readline().strip()
+s=socket.socket(); s.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
+s.bind(("127.0.0.1",0)); s.listen(1); port=s.getsockname()[1]
+sys.stdout.write("PORT=%d GOT=%s\n"%(port,secret)); sys.stdout.flush()
+s.settimeout(12)
+try:
+    c,a=s.accept(); tok=c.recv(200).decode(errors="replace").strip()
+    c.sendall(b"ACK" if tok==secret else b"DENY"); c.close()
+except Exception:
+    pass
+PY
+echo WROTE
+"""
+
+_C1BOOT_PS1 = """$ErrorActionPreference='Stop'
+$secret='{secret}'
+$psi = New-Object Diagnostics.ProcessStartInfo
+$psi.FileName='wsl.exe'
+$psi.Arguments='-d {distro} -u {user} -e /usr/bin/python3 /home/{user}/c1boot.py'
+$psi.RedirectStandardInput=$true; $psi.RedirectStandardOutput=$true; $psi.RedirectStandardError=$true; $psi.UseShellExecute=$false
+$res=@{{ got_secret=''; port=0; ack=''; error='' }}
+try {{
+  $p=[Diagnostics.Process]::Start($psi)
+  $p.StandardInput.WriteLine($secret); $p.StandardInput.Flush()
+  $line=$p.StandardOutput.ReadLine()   # PORT=<p> GOT=<secret>
+  if ($line -match 'PORT=(\\d+) GOT=(\\S+)') {{ $res.port=[int]$Matches[1]; $res.got_secret=$Matches[2] }}
+  if ($res.port -gt 0) {{
+    $c=New-Object Net.Sockets.TcpClient
+    $iar=$c.BeginConnect('127.0.0.1',$res.port,$null,$null)
+    if ($iar.AsyncWaitHandle.WaitOne(4000)) {{
+      $c.EndConnect($iar); $s=$c.GetStream()
+      $b=[Text.Encoding]::ASCII.GetBytes($secret); $s.Write($b,0,$b.Length); $s.Flush()
+      $buf=New-Object byte[] 16; $s.ReadTimeout=4000; $n=$s.Read($buf,0,16); $res.ack=[Text.Encoding]::ASCII.GetString($buf,0,$n)
+    }}
+    $c.Close()
+  }}
+  $p.StandardInput.Close(); [void]$p.WaitForExit(8000)
+}} catch {{ $res.error=$_.Exception.Message }}
+[Console]::Out.Write(($res | ConvertTo-Json -Compress))
+"""
+
 _WIN_TCP_PS1 = """$spec = (Get-Content -Raw (Join-Path $env:USERPROFILE 'zb\\wsl\\wtcp_spec.txt')).Trim()
 foreach($t in ($spec -split ';')){
   $f = $t -split '\\|'; $h=$f[0]; $p=[int]$f[1]; $canary=$f[2]
@@ -408,12 +510,12 @@ foreach($t in ($spec -split ';')){
     $ip=[Net.IPAddress]::Parse($h)
     $c=New-Object Net.Sockets.TcpClient($ip.AddressFamily)
     $iar=$c.BeginConnect($ip,$p,$null,$null)
-    if(-not $iar.AsyncWaitHandle.WaitOne(3000)){ Write-Output "W->WSL ${h}:${p} = timeout"; $c.Close(); continue }
+    if(-not $iar.AsyncWaitHandle.WaitOne(3000)){ Write-Output "${h}:${p} = timeout"; $c.Close(); continue }
     $c.EndConnect($iar); $s=$c.GetStream()
     $b=[Text.Encoding]::ASCII.GetBytes($canary); $s.Write($b,0,$b.Length); $s.Flush()
     $buf=New-Object byte[] 64; $s.ReadTimeout=3000; $n=$s.Read($buf,0,64)
-    Write-Output ("W->WSL ${h}:${p} = ok ack=" + [Text.Encoding]::ASCII.GetString($buf,0,$n)); $c.Close()
-  } catch { Write-Output "W->WSL ${h}:${p} = fail: $($_.Exception.Message)" }
+    Write-Output ("${h}:${p} = ok ack=" + [Text.Encoding]::ASCII.GetString($buf,0,$n)); $c.Close()
+  } catch { Write-Output "${h}:${p} = fail: $($_.Exception.Message)" }
 }
 """
 
@@ -429,8 +531,13 @@ try {
 """
 
 _WIN_LAUNCH_PS1 = """$base = Join-Path $env:USERPROFILE 'zb\\wsl'
-Start-Process powershell -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File',(Join-Path $base 'winlisten.ps1'),'0.0.0.0','39002',(Join-Path $base 'l0.txt') -WindowStyle Hidden
-Start-Sleep -Seconds 2
+$out = Join-Path $base 'l0.txt'
+Remove-Item $out -ErrorAction SilentlyContinue
+Start-Process powershell -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File',(Join-Path $base 'winlisten.ps1'),'0.0.0.0','39002',$out -WindowStyle Hidden
+# Prove the listener is READY before returning (so the reverse negative cannot false-green).
+$deadline=(Get-Date).AddSeconds(8); $ready=$false
+while((Get-Date) -lt $deadline){ Start-Sleep -Milliseconds 200; if((Test-Path $out) -and ((Get-Content $out -Raw) -match 'LISTENING 0.0.0.0:39002')){ $ready=$true; break } }
+if($ready){ Get-Content $out } else { Write-Output 'NOT_READY' }
 """
 
 
