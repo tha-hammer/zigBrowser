@@ -7,7 +7,9 @@ background sleep in its group and execs a sleep itself (a leader plus a grandchi
   driver by that very signal, and afterwards neither the leader nor the grandchild runs;
 - OwnedGroup.stop() reaps the leader (its status is kept, /proc no longer lists it as running) and stops the whole
   group;
-- once the leader is reaped, stop() signals nothing at all (its pid could be reused), and a second stop() is a no-op.
+- once the leader is reaped, stop() signals nothing at all (its pid could be reused), and a second stop() is a no-op;
+- without os.waitid (a Python that lacks it; the attribute removed), stop() still stops the whole group and reaps the
+  leader, and a second stop() signals nothing (RoseCat 7902).
 Linux only (it reads /proc to observe, never to decide). It signals only its own children and the stand-in group it
 started, so it runs inside a private PID namespace:
   cd tests/e2e && unshare --map-current-user --pid --fork --kill-child --mount-proc \\
@@ -88,6 +90,23 @@ class OwnedGroupCleanup(unittest.TestCase):
         self.assertIsNotNone(status, "the leader was not reaped")
         self.assertEqual(group.proc.returncode, status)
         self.assertEqual(self.gone_soon([leader, grandchild]), [], "stop() left the group running")
+
+    def test_without_waitid_stop_still_stops_the_group_and_reaps(self):
+        group = gate.OwnedGroup(STAND_IN, stdout=subprocess.PIPE, text=True)
+        leader, grandchild = group.proc.pid, int(group.proc.stdout.readline())
+        group.proc.stdout.close()
+        self.leftover += [leader, grandchild]
+        with mock.patch.object(os, "waitid", side_effect=AssertionError("os.waitid reached")):
+            del os.waitid  # the capability is absent, not just failing
+            self.assertFalse(hasattr(os, "waitid"))
+            status = group.stop(grace_sec=0.5)
+        self.assertTrue(hasattr(os, "waitid"), "the real os.waitid was not restored")
+        self.assertIsNotNone(status, "the leader was not reaped")
+        self.assertEqual(group.proc.returncode, status)
+        self.assertEqual(self.gone_soon([leader, grandchild]), [], "the group was left running")
+        with mock.patch.object(os, "killpg", side_effect=AssertionError("os.killpg reached")), \
+                mock.patch.object(os, "kill", side_effect=AssertionError("os.kill reached")):
+            self.assertEqual(group.stop(), status, "a second stop() is not signal-free")
 
     def test_after_the_leader_is_reaped_stop_signals_nothing(self):
         group = gate.OwnedGroup(["/bin/sh", "-c", "exit 0"])
