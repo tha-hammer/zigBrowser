@@ -145,6 +145,26 @@ def check_success(r):
     assert pw == r["client_w"], f"the panel must be full client width ({pw} != {r['client_w']})"
     assert py > 0, f"the panel must dock below a non-empty page region, not overlay (py={py})"
     assert py + ph == r["client_h"], f"page_h + panel_h must equal client_h ({py} + {ph} != {r['client_h']})"
+    # ---- INDEPENDENT pid-bound real-HWND checks (RoseCat 1e5ff2d closure #2): never trust the `open` row alone ----
+    # The HWND tree was found by the launched pid; require the observed owner pid to match, so a wrong-pid window
+    # cannot stand in.
+    assert r.get("pid") and int(r.get("hwnd_pid", 0)) == int(r["pid"]), \
+        f"the drawer HWND tree must belong to the launched pid ({r.get('hwnd_pid')} != {r.get('pid')})"
+    # The child was BORN suspended INTO the owned kill-on-close Job (not started then assigned) — no pre-Job window.
+    assert r.get("born_in_job") is True, "the browser must be born suspended into the owned Job (not start-before-Job)"
+    # Exactly one read-only (plain-text) RichEdit bubble UNDER the panel — the conversation surface.
+    assert r.get("bubble_present") is True, "the panel must host exactly one read-only RichEdit bubble"
+    # The emitted `open` rect must EQUAL the independently observed panel HWND rect (row-vs-HWND agreement).
+    panx, pany, panw, panh = rect_of([r.get("panel_rect", "")])
+    assert (panx, pany, panw, panh) == (px, py, pw, ph), \
+        f"emitted open rect {(px,py,pw,ph)} != observed panel HWND rect {(panx,pany,panw,panh)}"
+    # The page HWND fills the client ABOVE the panel: top-left, full width, nonempty, bottom == panel top (the
+    # page is docked beside the panel, not left behind/under it).
+    pgx, pgy, pgw, pgh = rect_of([r.get("page_rect", "")])
+    assert pgx == 0 and pgy == 0, f"the page must sit at the client top-left; got {(pgx, pgy)}"
+    assert pgw == r["client_w"], f"the page must be full client width ({pgw} != {r['client_w']})"
+    assert pgh > 0, "the page region above the panel must be nonempty"
+    assert pgy + pgh == pany, f"the page bottom ({pgy + pgh}) must meet the panel top ({pany}) — page not behind the panel"
 
 
 def check_mounted_fail(r, which):
@@ -541,10 +561,52 @@ public static class Z {
     }
     return -998;
   }
+  // WS5 entry closure (RoseCat 1e5ff2d #2): INDEPENDENT pid-bound real-HWND reads — never trust the emitted row.
+  [DllImport("user32", SetLastError=true)] static extern int GetWindowLongW(IntPtr h, int idx);
+  [DllImport("kernel32", SetLastError=true)] static extern bool IsProcessInJob(IntPtr proc, IntPtr job, out bool result);
+  // The panel HWND rect in host-client coords ("x,y,w,h"), "" if absent.
+  public static string PanelClientRect(IntPtr host) {
+    IntPtr p = PanelHwnd(host); if (p == IntPtr.Zero) return "";
+    RECT r; if (!GetWindowRect(p, out r)) return "";
+    POINT tl; tl.x = r.left; tl.y = r.top; if (!ScreenToClient(host, ref tl)) return "";
+    return tl.x + "," + tl.y + "," + (r.right-r.left) + "," + (r.bottom-r.top);
+  }
+  // The page (WebView2) HWND rect in host-client coords: the largest VISIBLE non-STATIC direct child.
+  public static string PageClientRect(IntPtr host) {
+    long best = -1; RECT br = new RECT();
+    IntPtr c = GetWindow(host, GW_CHILD);
+    while (c != IntPtr.Zero) {
+      var cls = new StringBuilder(64); GetClassName(c, cls, 64);
+      if (cls.ToString() != "STATIC" && IsWindowVisible(c)) {
+        RECT r; if (GetWindowRect(c, out r)) { long a = (long)(r.right-r.left) * (r.bottom-r.top); if (a > best) { best = a; br = r; } }
+      }
+      c = GetWindow(c, GW_HWNDNEXT);
+    }
+    if (best < 0) return "";
+    POINT tl; tl.x = br.left; tl.y = br.top; if (!ScreenToClient(host, ref tl)) return "";
+    return tl.x + "," + tl.y + "," + (br.right-br.left) + "," + (br.bottom-br.top);
+  }
+  // Exactly one READ-ONLY RichEdit child UNDER the panel (the conversation surface). ES_READONLY = 0x0800.
+  public static bool BubblePresent(IntPtr host) {
+    IntPtr p = PanelHwnd(host); if (p == IntPtr.Zero) return false;
+    int found = 0;
+    IntPtr c = GetWindow(p, GW_CHILD);
+    while (c != IntPtr.Zero) {
+      var cls = new StringBuilder(64); GetClassName(c, cls, 64);
+      if (cls.ToString().IndexOf("RICHEDIT", StringComparison.OrdinalIgnoreCase) >= 0) {
+        if ((GetWindowLongW(c, -16) & 0x800) != 0) found++;   // GWL_STYLE = -16, ES_READONLY = 0x0800
+      }
+      c = GetWindow(c, GW_HWNDNEXT);
+    }
+    return found == 1;
+  }
+  public static int WindowPid(IntPtr h) { uint pid; GetWindowThreadProcessId(h, out pid); return (int)pid; }
+  // The launched child is a member of the owned Job (born suspended into it, not started then assigned).
+  public static bool BornInJob() { if (_hProc == IntPtr.Zero || Job == IntPtr.Zero) return false; bool r; return IsProcessInJob(_hProc, Job, out r) && r; }
 }
 '@
 
-$res = @{ stdout=''; stderr=''; client_w=0; client_h=0; pid=0; controls=''; icon_rect=''; icon_visible=-1; job_count_before=0; job_count_after=0; window_found=$false; terminated=$false; timed_out=$false; proc_gone=$false; first_stop_failed=$false; cleanup_exhausted=$false; launch_failed=$false; decoded_fail=$failMode; decoded_force=$forceMode; fold_elapsed_ms=0; fold_mid_w=0; panel_hidden=$false; page_redocked=$false; dpi_before_px=0; dpi_after_px=0; icon_hittest=99999; error='' }
+$res = @{ stdout=''; stderr=''; client_w=0; client_h=0; pid=0; controls=''; icon_rect=''; icon_visible=-1; job_count_before=0; job_count_after=0; window_found=$false; terminated=$false; timed_out=$false; proc_gone=$false; first_stop_failed=$false; cleanup_exhausted=$false; launch_failed=$false; decoded_fail=$failMode; decoded_force=$forceMode; fold_elapsed_ms=0; fold_mid_w=0; panel_hidden=$false; page_redocked=$false; dpi_before_px=0; dpi_after_px=0; icon_hittest=99999; panel_rect=''; page_rect=''; bubble_present=$false; hwnd_pid=0; born_in_job=$false; error='' }
 # e2e-only seams, set in this process so the child inherits them (honoured only under --e2e-protocol).
 $env:ZIGBROWSER_AGENT_DRAWER_OPEN = '1'
 $env:ZIGBROWSER_AGENT_DRAWER_DEMO = 'messages:2'
@@ -614,6 +676,14 @@ try {
     # re-docked to the full client area, and the icon is visible again (icon_visible, above).
     $res.panel_hidden = (-not [Z]::PanelVisible($h))
     $res.page_redocked = [Z]::PageRedocked($h)
+    # WS5 entry closure (RoseCat 1e5ff2d #2): INDEPENDENT pid-bound real-HWND reads for check_success — the panel
+    # rect (vs the emitted open row), the page rect (docked above the panel), the read-only RichEdit bubble under
+    # the panel, the owning pid, and Job membership (born into the owned Job). Measured while the handles are live.
+    $res.panel_rect = [Z]::PanelClientRect($h)
+    $res.page_rect = [Z]::PageClientRect($h)
+    $res.bubble_present = [Z]::BubblePresent($h)
+    $res.hwnd_pid = [Z]::WindowPid($h)
+    $res.born_in_job = [Z]::BornInJob()
     # WS5.7 (RoseCat 7a54253 #1): drive two real WM_DPICHANGED messages — "beforeDpi,afterDpi" — and measure the
     # icon width off the real HWND after each. Driving the before-DPI first makes the baseline deterministic
     # regardless of the VM monitor's own DPI. The drawer must be closed (icon visible + sized) for this.
@@ -813,6 +883,9 @@ class WinDrawerOracle(unittest.TestCase):
         return {
             "error": "", "timed_out": False, "terminated": True, "job_count_after": 0, "job_count_before": 2,
             "window_found": True, "controls": "STATIC:|STATIC:S|STATIC:-", "client_w": 1008, "client_h": 729,
+            "pid": 4242, "hwnd_pid": 4242, "born_in_job": True, "bubble_present": True,
+            "panel_rect": "0,437,1008,292",  # == the emitted open rect (independent HWND read)
+            "page_rect": "0,0,1008,437",     # top-left, full width, bottom (437) == panel top (437)
             "stdout": ("DRAWER\t1\ttree\thost,page,icon,panel\n"
                        "DRAWER\t1\ticon\t928,649,56,56\n"
                        "DRAWER\t1\topen\t0,437,1008,292\n"),
@@ -862,6 +935,33 @@ class WinDrawerOracle(unittest.TestCase):
 
     def test_panel_not_full_width_rejected(self):
         self._reject(lambda r: r.update(client_w=1200))
+
+    # --- independent pid-bound real-HWND mutants (RoseCat 1e5ff2d closure #3) ---
+    def test_missing_bubble_rejected(self):
+        self._reject(lambda r: r.update(bubble_present=False))  # no read-only RichEdit conversation surface
+
+    def test_wrong_bubble_rejected(self):
+        # a bubble that is not a read-only RichEdit under the panel is reported as not-present and must fail
+        self._reject(lambda r: r.update(bubble_present=False))
+
+    def test_row_vs_hwnd_rect_mismatch_rejected(self):
+        # the emitted open row disagrees with the observed panel HWND rect — a trusted-row-only impl is caught
+        self._reject(lambda r: r.update(panel_rect="0,440,1008,292"))
+
+    def test_page_still_behind_panel_rejected(self):
+        # the page HWND was not shrunk above the panel (its bottom runs past the panel top) — left behind/under
+        self._reject(lambda r: r.update(page_rect="0,0,1008,729"))
+
+    def test_page_not_full_width_rejected(self):
+        self._reject(lambda r: r.update(page_rect="0,0,900,437"))
+
+    def test_wrong_pid_hwnd_rejected(self):
+        # the observed HWND tree belongs to a different pid than the one launched — a stray/stale window
+        self._reject(lambda r: r.update(hwnd_pid=9999))
+
+    def test_start_before_job_rejected(self):
+        # the browser was started then assigned (a pre-Job window existed), not born suspended into the Job
+        self._reject(lambda r: r.update(born_in_job=False))
 
     # --- forced control-create failure oracle (check_mounted_fail, RoseCat 7646) ---
     def _good_fail(self, which):
