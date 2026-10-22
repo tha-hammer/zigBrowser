@@ -36331,3 +36331,71 @@ does not revive source-level control-flow claims.
 
 Approval of `cd2323c` does not close the cumulative `1b2fe0a` range because
 the independent `f227c3c` teardown/causal-seam blockers above remain.
+
+## Review operating policy (owner direction, 2026-10-22)
+
+**ACCEPT R1-R4.** These rules apply prospectively to this review stream and
+make explicit the proof boundaries already used for `f1e9653` and `c6b2b32`.
+They are intended to shorten the path to an owner-testable Intel and Apple
+Silicon Mac build without weakening product or safety review.
+
+**Priority.** Review order is: (1) the WS5.5b-2 contiguous push blocker and
+its bounded Win11 evidence; (2) the Mac critical path — MS7 AppKit drawer,
+MS7/MS5.2 Keychain Secrets, MS8.2/8.3, and Mac `.app` packaging; (3) all other
+work. Windows WS6/WS7 and S8e part 2 are parked until the owner/orchestrator
+reactivates them. A safety incident or newly-red registered gate may still
+interrupt that order.
+
+### R1 — behavior proof versus source tripwires
+
+Runtime behavior is accepted only from a driven test of the production seam or
+from a bounded real-platform run. A source-text parser is an architecture
+tripwire: it may pin an agreed call site, symbol, build input, or forbidden
+route, but it is not control-flow or runtime proof. Once a tripwire meets its
+declared minimal grammar, review does not hunt speculative textual bypasses;
+runtime obligations stay with the driven/platform authority.
+
+### R2 — one exact minimum
+
+The first BLOCK on a slice states the complete minimum needed to close it:
+named product changes, tests, registration and platform evidence. Follow-up
+rounds are judged against that list. A later BLOCK may add something only when
+new evidence establishes an R3-class defect; otherwise an extra strengthening
+idea is a SHOULD and cannot move the boundary. Reviews cite the original
+minimum so authors can close a slice in one pass.
+
+### R3 — blocking threshold
+
+BLOCK only for (a) a product defect, (b) a safety or security risk, (c) a red
+registered gate, or (d) a purported proof that cannot fail when its claimed
+behavior is broken. Missing evidence explicitly required by the first minimum
+is part of (d). Coverage refinements, nicer diagnostics, additional mutants,
+and oracle-strength ideas beyond that minimum are SHOULDs. A red test may be
+approved as a valid red while remaining unregistered; its expected failing
+state is not itself a product blocker unless it breaks a registered gate.
+
+### R4 — lightweight compile-only Mac feedback
+
+**APPROVED as a separate, non-runtime proof tier.** One committed harness/case
+digest may be reviewed once and then reused for daily compiler feedback while
+its bytes are unchanged. Each authorized run must:
+
+1. name one exact source commit and verify an exact clean archive/export of it;
+2. run the approved digest on both matching hosts — x86_64 on the Intel Mac and
+   arm64 on the Apple Silicon Mac — with the exact compiler/link argv recorded;
+3. compile/link only: never launch the produced app, helper, CLI, hook, test
+   binary, or any other newly-built target;
+4. use no credentials, no live site/API, no outbound dependency fetch, no UI,
+   no signal/destructive test, no install, `sudo`, system prefix, Keychain, or
+   persistent host mutation; dependencies must already be committed or staged
+   from reviewed pins;
+5. work only in a unique bounded temporary root, fail closed on an unexpected
+   path or symlink/special entry, then report zero run-owned leftovers on both
+   Macs. On the shared personal Mac it must remain headless and non-disruptive;
+6. report commit, harness digest, host/architecture, compiler result and output
+   artifact digest. Any harness-byte change requires a new digest review.
+
+This tier proves only that the exact clean source compiles/links on both real
+Mac architectures. It cannot satisfy a runtime, containment, Keychain, UI, or
+owner-visible acceptance requirement. Those remain with the relevant driven
+test or bounded real-Mac/owner run.
