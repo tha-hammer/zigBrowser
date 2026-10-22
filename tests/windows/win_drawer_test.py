@@ -548,8 +548,11 @@ class WinDrawerLive(unittest.TestCase):
             # without masking a body failure.
             import sys as _sys
             import time as _t
+            # Bounded retry: a just-killed child (esp. a born-suspended one whose image is the scp'd exe) can
+            # hold the exe image lock briefly after its handle closes, so rmdir can transiently fail; retry up to
+            # ~60 s before failing closed (observed release is well within this on win11-m8).
             gone = False
-            for _ in range(20):
+            for _ in range(60):
                 self._ssh("cmd", "/c", f"rmdir /s /q {base_win}")
                 if "GONE" in self._ssh("cmd", "/c", f"if exist {base_win} (echo LEFT) else (echo GONE)").stdout:
                     gone = True
