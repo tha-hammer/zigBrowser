@@ -6,11 +6,12 @@ branch: zb-automation-integration-2026-10-10-11-59
 repository: zigBrowser
 topic: "Windows 10 + Windows 11 launch support for zigBrowser — TDD implementation plan"
 tags: [plan, tdd, windows, win10, win11, webview2, win32, msvc, automation, drawer, credential-manager, sandbox, wfp, netd, msi, authenticode, launch-critical]
-status: "DRAFT — NOT IMPLEMENTATION-APPROVED (rev 2.18); the WS8/WS9 WSL2 topology is a DRAFT only; re-baselined to HEAD e4f705f (code state of c07899f) and amended with every finding of the independent review (19 critical C1-C19 + 23 warnings W1-W23); see 'Review amendments (rev 2.17)'"
-rev: 2.17
+status: "DRAFT — NOT IMPLEMENTATION-APPROVED (rev 2.19); the WS8/WS9 WSL2 topology is a DRAFT only; re-baselined to HEAD e4f705f (code state of c07899f) and amended with every finding of the independent review (19 critical C1-C19 + 23 warnings W1-W23); see 'Review amendments (rev 2.17)'"
+rev: 2.19
 rebaselined_at: e4f705f
 rebaselined_code_state: c07899f
 review_input: thoughts/searchable/shared/plans/2026-10-19-windows-launch-tdd-plan-REVIEW.md
+rev_2_19_note: "Rev 2.19 (2026-10-22; OWNER ORDER on verification, tracked as zigBrowser-4pa.44 and zigBrowser-4pa.46). PLAN-ONLY revision: only this plan file changed; no source, test, build or host file was touched, no Windows host was contacted, and nothing was built or run. OWNER ORDER (verbatim, 2026-10-22): 'Make sure the plan is actually updated to reflect the proper plan and be sure the plan text instructs the agents to check code by exercising the code, not just checking it.' (1) The owner's section 'Verification rule: prove it by running it (owner, 2026-10-22)' is inserted VERBATIM as a top-level section before WS0, the first slice; it overrides any looser wording elsewhere. (2) SWEEP: the rule was applied to every behavior, success criterion, verification command and gate: 107 behavior rows were swept. 18 rows had a read/grep/regex/lexer/symbol/census/manifest/constant proof REWRITTEN into the exercise form of rule 9 (the source check is kept only as a labelled tripwire); 61 rows are marked NOT BUILT (of which 18 were re-marked from a green, closed, registered or source-only claim; 12 of the NOT BUILT rows were also rewritten); 32 rows are marked UNPROVEN (no exercising proof is possible yet; 3 of them were also rewritten). The remaining rows are 0 PROVEN (none is fully proven: every driven test still lacks a located production-mutant run record or a platform leg), 13 PROVEN-PARTIAL (a driven test or a recorded platform run exists; the open items are listed) and 1 tripwire-only suite row. The counts overlap as stated; the table at the end of the plan is the authority. (3) 4pa.44: the WS5 drawer behaviors had been proven by SOURCE ORACLES (grep, lexer, AST and model tests over the shim and the runner). Those suites are now labelled TRIPWIRES and never close a drawer behavior. Only two drawer behaviors have an exercising proof: WS5.1 (entry run b2c4f25, 8/8 on the Win11 VM) and WS5.5 (driven Zig lifecycle test plus the four live methods run on the Win11 VM at a5745b9: peak, intermediate and final counts, NoKillNeeded, zero survivors). WS5.2, WS5.3, WS5.4 and WS5.7 are re-marked NOT BUILT; WS5.8-WS5.10 stay NOT BUILT. (4) 4pa.46: WS5.6 closure was offline only (Linux in-process tests, a Python row over helpers defined in the test, a live row that never ran); it is re-marked NOT BUILT and the exercising proof is named (the real exe on the Win11 VM, page JavaScript and the authenticated socket, census unchanged, two production mutants). (5) A 'Verification rule compliance' table is added at the end of the plan. (6) No existing driven test or gate was weakened; every change tightens a proof standard. Statuses are documentary: recorded runs are as the plan and the orchestrator state them and were not re-run here (rule 8: reading alone gives SUSPECTED). This revision closes no blocker, approves no security claim and leaves C4 as ratified."
 rev_2_18_note: "Rev 2.18 (2026-10-22; OWNER RULING on decision C1, tracked as zigBrowser-4pa.31 and zigBrowser-4pa.41). PLAN-ONLY revision: only this plan file changed; no source, test, build or host file was touched, no Windows host was contacted, and nothing was built or run. OWNER RULING (verbatim): 'the windows 10 machine should not be read-only it is a standard Win10 box, not some production file server.' The Windows 10 machine is zbtest@100.123.34.15, a standard, WRITABLE Win10 test box. The rev 2.10 premise (a read-only file server on which no browser may run) was WRONG and is corrected everywhere it appeared. (1) DECISION C1 default REPLACED: the physical Win10 box (zbtest@100.123.34.15) is a WRITABLE test host; a [W] both-hosts gate means the Win11 VM PLUS the Win10 box. Win10 release rule: RoseCat exact-commit approval PLUS an orchestrator release (the same rule as the Win11 VM); all work confined to C:/Users/zbtest/zb; ask the owner before ANY system-wide install. (2) Every read-only-file-server / Win10-leg-withdrawn / Win10-dropped / Win10-untested statement from rev 2.10 onward was removed or rewritten (rev-2.10 and rev-2.11 notes, rev-2.17 note item 4, Why-this-plan, markers table, State-at-HEAD table, section C, Desired End State, behaviors 1-2 and 7, host provisioning and the confinement requirements, WS0.1/0.2/0.7/0.8, the Testing Strategy real-screen and closure rules, the what-runs-where note, WS1.2, WS2.0 and the AF_UNIX stop rule, WS2a.0, WS2b.1, the WS2/WS3/WS6 gates, WS13, the real-screen table, unverified item 3). (3) The Win10 legs that rev 2.10 and rev 2.17 had removed are RESTORED, each with its OWN test and its OWN evidence line, none of them run yet: WS0 product-run Win10 leg (WS0.9), WS1.2-W10, WS2.0-W10, WS2a.0-W10, WS2b.1-W10, WS13.4-W10 and the win-render / install-smartscreen Win10 real-screen legs. (4) Honest caveats recorded, not hidden: the as-built --probe-only code still treats the Win10 box as zero-write (root/free_gb/interactive_session not_applicable) because it was written on the wrong premise; the 2026-10-20 reading of C: on that box was about 0 GB free, a capacity precondition to clear with the owner before any Win10 product leg; the WebView2 runtime, if missing there, is a system-wide install and needs the owner. (5) C4 (build-order question) is UNCHANGED and STILL PENDING OWNER RATIFICATION. This revision closes no blocker and approves no security claim."
 rev_2_17_note: "Rev 2.17 (2026-10-22; enhance_plan_with_review of the independent review by BlackRobin, bead zigBrowser-4pa.4; amendments tracked as zigBrowser-4pa.31..49). PLAN-ONLY revision: no source, test, build or host file was changed and no command was run against any host. (1) RE-BASELINE: the plan's assumptions are brought to HEAD e4f705f (git diff c07899f..e4f705f is three REVIEW .md files only, so the CODE state is c07899f); the stale 'Current State Analysis' is superseded by a dated 'State at HEAD' table (W2). (2) OD-W4 CONTRACT stated exactly once, normatively, in 'OD-W4 contract (rev 2.17, normative)': WSL2 now / own VM later; the Claude agent, its CLI, bubblewrap and netd run INSIDE our own imported WSL2 distro on Windows 11 ONLY; the agent is OFF on Windows 10; no dedicated users, no AppContainer, no WFP, no Job-Object user isolation, no Windows python.exe or claude.exe for the agent. (3) EVERY review finding is mapped in 'Review amendments (rev 2.17) — traceability' (C1-C19, W1-W23) to a plan location or to an explicit rejection. (4) [AMENDED in rev 2.18] C1 (Win10 test host) had been adopted here as 'every gate Win11-only; Windows 10 browser untested' on the mistaken read-only-file-server premise; the OWNER has since ruled that the Win10 box is a standard WRITABLE test host, so that default is REPLACED (see rev_2_18_note and section C). The C4 order question remains an OWNER decision, still pending ratification. (5) The WS8/WS9 DRAFT gate is unchanged in force except that it now names the ONE sanctioned blocker-1 live rerun (C17) and the WS8/WS9 proposals now carry concrete numbers/wire formats (still PROPOSALS, not contracts). This revision closes no blocker and approves no security claim."
 rev_2_16_note: "Rev 2.16 (2026-10-21, AzureRidge; RoseCat 9134b8b/7558 + draft-state route 7561). DOCUMENTATION-HONESTY ONLY — this revision does NOT close affd577/9134b8b, does NOT authorize any WS8/WS9 implementation, and approves NO security claim. It marks the WS8/WS9 WSL2 topology a DRAFT: (1) status/rev/WS8/WS9 headings say DRAFT — NOT IMPLEMENTATION-APPROVED; withdrew every 'causal/implementation-ready/grounded/proven' closure claim that exceeds the discovery observations. (2) one authoritative gate before WS8 forbids any WS8/WS9 red/green/production-edit/installer-change/further live-or-destructive WSL run (and WS10/WS11/agent-WS12/WS13 agent work) until a later reviewed revision closes every blocker. (3) the six 9134b8b findings are listed OPEN with exact required closure + the eight-finding status table. (4) measured facts narrowed to what the committed run actually observed (explicit -u zbagent uid/caps/userns/bwrap; exact IPv4/IPv6 canary+ACK; co-tenant reach) with an explicit NOT-proven list (default-user selection, causal reverse firewall denial, fail-closed cleanup/final census, the C1 pipe/fd bootstrap, production bwrap/netd, any product security boundary). (5) wsl_live_test.py marked DISCOVERY-ONLY / DO NOT RERUN until its ignored rc/ready-proof/staged-cleanup/final-census are repaired + reviewed; its header/result are not gate evidence. (6) an authoritative scope banner marks every dedicated-user/WFP/WindowsSandboxUserBackend/host-netd/both-host-agent/Win10-agent statement HISTORICAL and non-normative — present scope = browser on Win10+Win11, agent/WSL on Win11 only, agent OFF on Win10. (7) C1-C5 kept as PROPOSALS/TBD, not contracts, naming the later evidence required; OAuth fd-3 stays a hard-red unverified. Live evidence is required before any later implementation-approved revision."
@@ -30,8 +31,8 @@ rev_2_3_note: "Rev 2.3 (2026-10-20): added the WS3 cross-plan coordination propo
 rev_2_2_note: "Rev 2.2 (bead zigBrowser-126): WS0.6 VM identity no longer uses the SMBIOS UUID (a standard user cannot read Win32_ComputerSystemProduct.UUID — WMI Access-denied 0x80041003, wmic absent; verified on win11-m8). Identity = pinned SSH host key + a provisioning marker nonce (ZB_WIN11_MARKER / C:\\Users\\<user>\\zb\\.gate-identity, probe field identity_marker); virsh stays read-only (domstate, snapshot-list). Updated the reach-VM identity section, the WS0.1 probe fields, the fail-closed list and WS0.6."
 rev_2_1_note: "Rev 2.1 (RoseCat 6146): WS8.7 folded into WS8's own gate (WS8.1-WS8.7); WS12 reconciled with the committed TTS Windows cloning leg (CW) and the committed STT live-mic = physical Windows 10 only (VM = WAV seam); WS13.4 uninstall must not report success while any sandbox user / WFP filter / task survives; WS13's final gate depends on every release component + the voice packaging, not merely starting after WS7."
 last_updated: 2026-10-22
-last_updated_by: "enhance_plan_with_review (rev 2.17 — re-baseline to HEAD e4f705f, OD-W4 contract restated, all 19 criticals + 23 warnings of the independent review amended or explicitly rejected) [W5: previously said 'rev 2.13']"
-last_updated_note: "Rev 2.18 (2026-10-22): see rev_2_18_note and section C (C1 REPLACED by the owner ruling: the Win10 box is writable and both-hosts gates include it; C4 still pending ratification). Rev 2.17 (2026-10-22): see rev_2_17_note and 'Review amendments (rev 2.17)'. Rev 2.16 (2026-10-21, AzureRidge; RoseCat 9134b8b/7558 + draft-state route 7561): DOCUMENTATION HONESTY ONLY — marked the WS8/WS9 WSL2 topology a DRAFT (NOT implementation-approved), added the authoritative no-WS8/WS9-work gate, listed the six 9134b8b blockers OPEN, narrowed the measured facts to the explicit-user discovery observations with an explicit NOT-proven list, marked wsl_live_test.py DISCOVERY-ONLY/DO-NOT-RERUN, added an authoritative scope banner making every dedicated-user/WFP/both-host-agent statement historical/non-normative, and relabelled C1-C5 as proposals/TBD. Does not close affd577 or approve any implementation/security claim. Rev 2.15 (2026-10-21, AzureRidge; RoseCat affd577): corrected the discovery spike + WSL2 contract DRAFTS from the live run — observed (explicit `-u zbagent` only) uid 1000 + userns/bwrap, exact 127.0.0.1:0/::1:0 ACK+canary, IPv6, a hostile co-tenant row; drafted C1 bootstrap, C5 relay, C2 broker, C3/C4 state machines; began removing the old Windows-user/WFP text and the Win10 agent-OFF scope (completed as non-normative marking in rev 2.16). Rev 2.14 (2026-10-21): folded the LIVE WSL2 measurements on win11-m8 (new `tests/windows/wsl_live_test.py`) into the WS8/WS9 re-plan for RoseCat 119108c — C1/C5 transport INVERTED to agent-listens-in-distro / browser-connects-from-Windows (WSL→Windows is firewall-blocked, Windows→WSL works via localhostForwarding); automount-off and appendWindowsPath-false confirmed working, interop-off partial (binfmt handler hard-disabled at boot); two distros share one utility VM + net namespace; per-run process-group kill proven vs distro-wide `wsl --terminate`; import + full lifecycle need no admin. Rev 2.13 (2026-10-21): recorded the owner's decisions — OD-W1 = per-user WiX 3.14 MSI; OD-W3 = code signing DEFERRED (no signing for launch, WS13.6 open/non-gating, nothing may claim signed/distributable); OD-W4 = WSL2 now (our own `wsl --import` distro under the existing bubblewrap+netd sandbox) with our own VM later; OD-W6 = native Win32 drawer. OD-W2/W5/W7/W8/W9 remain open. (Rev 2 review-pass history: verified file:line anchors at HEAD 032a2c9, added the WS0-WS13 red/green/refactor/closure/real-screen cases, the Win11 VM + file-server design and WS0.6-WS0.8, and reconciled the voice/macOS plans.)"
+last_updated_by: "verification-rule sweep (rev 2.19, owner order 2026-10-22); earlier: enhance_plan_with_review (rev 2.17 — re-baseline to HEAD e4f705f, OD-W4 contract restated, all 19 criticals + 23 warnings of the independent review amended or explicitly rejected) [W5: previously said 'rev 2.13']"
+last_updated_note: "Rev 2.19 (2026-10-22): see rev_2_19_note and the top-level section 'Verification rule: prove it by running it' (inserted verbatim before WS0); every behavior now states its proof and the compliance table is at the end. Rev 2.18 (2026-10-22): see rev_2_18_note and section C (C1 REPLACED by the owner ruling: the Win10 box is writable and both-hosts gates include it; C4 still pending ratification). Rev 2.17 (2026-10-22): see rev_2_17_note and 'Review amendments (rev 2.17)'. Rev 2.16 (2026-10-21, AzureRidge; RoseCat 9134b8b/7558 + draft-state route 7561): DOCUMENTATION HONESTY ONLY — marked the WS8/WS9 WSL2 topology a DRAFT (NOT implementation-approved), added the authoritative no-WS8/WS9-work gate, listed the six 9134b8b blockers OPEN, narrowed the measured facts to the explicit-user discovery observations with an explicit NOT-proven list, marked wsl_live_test.py DISCOVERY-ONLY/DO-NOT-RERUN, added an authoritative scope banner making every dedicated-user/WFP/both-host-agent statement historical/non-normative, and relabelled C1-C5 as proposals/TBD. Does not close affd577 or approve any implementation/security claim. Rev 2.15 (2026-10-21, AzureRidge; RoseCat affd577): corrected the discovery spike + WSL2 contract DRAFTS from the live run — observed (explicit `-u zbagent` only) uid 1000 + userns/bwrap, exact 127.0.0.1:0/::1:0 ACK+canary, IPv6, a hostile co-tenant row; drafted C1 bootstrap, C5 relay, C2 broker, C3/C4 state machines; began removing the old Windows-user/WFP text and the Win10 agent-OFF scope (completed as non-normative marking in rev 2.16). Rev 2.14 (2026-10-21): folded the LIVE WSL2 measurements on win11-m8 (new `tests/windows/wsl_live_test.py`) into the WS8/WS9 re-plan for RoseCat 119108c — C1/C5 transport INVERTED to agent-listens-in-distro / browser-connects-from-Windows (WSL→Windows is firewall-blocked, Windows→WSL works via localhostForwarding); automount-off and appendWindowsPath-false confirmed working, interop-off partial (binfmt handler hard-disabled at boot); two distros share one utility VM + net namespace; per-run process-group kill proven vs distro-wide `wsl --terminate`; import + full lifecycle need no admin. Rev 2.13 (2026-10-21): recorded the owner's decisions — OD-W1 = per-user WiX 3.14 MSI; OD-W3 = code signing DEFERRED (no signing for launch, WS13.6 open/non-gating, nothing may claim signed/distributable); OD-W4 = WSL2 now (our own `wsl --import` distro under the existing bubblewrap+netd sandbox) with our own VM later; OD-W6 = native Win32 drawer. OD-W2/W5/W7/W8/W9 remain open. (Rev 2 review-pass history: verified file:line anchors at HEAD 032a2c9, added the WS0-WS13 red/green/refactor/closure/real-screen cases, the Win11 VM + file-server design and WS0.6-WS0.8, and reconciled the voice/macOS plans.)"
 primary_research: thoughts/searchable/shared/research/2026-10-19-windows-launch-support-surface.md
 counterpart: thoughts/searchable/shared/plans/2026-10-14-14-30-macos-launch-tdd-plan.md
 ---
@@ -60,6 +61,14 @@ counterpart: thoughts/searchable/shared/plans/2026-10-14-14-30-macos-launch-tdd-
 > warning findings of the independent review to amendments (section E). Where an older paragraph elsewhere in this
 > plan disagrees with section A, B, C or D below, **sections A-D win**. Status is still DRAFT / NOT
 > implementation-approved.
+
+> ⚠️ **REV 2.19 (2026-10-22) VERIFICATION RULE — OWNER ORDER.** "Make sure the plan is actually updated to reflect the proper
+> plan and be sure the plan text instructs the agents to check code by exercising the code, not just checking it." The
+> top-level section **"Verification rule: prove it by running it (owner, 2026-10-22)"** (placed before WS0, the first slice)
+> is binding and **overrides any looser wording in this plan**. A behavior is proven only by running the real code path;
+> grep, regex, lexer, symbol-exists, "file contains", nm, strings and otool checks are **tripwires, never proof**. Every
+> behavior states (a) its production entry point, (b) its test file and build.zig step, (c) its mutant and (d) its platform run.
+> Markers: **PROVEN**, **PROVEN-PARTIAL**, **NOT BUILT**, **UNPROVEN**, **TRIPWIRE** (legend in section F; table at the end of the plan).
 
 ## Review amendments (rev 2.17)
 
@@ -160,6 +169,7 @@ WS9 6, WS12 1, WS13 2, WS4/WS10/WS11 0 (W23: see D.5).
 **FAILS (nonzero), never exits 0**. Test exit 77 (skip) is a failure whenever `ZB_WIN_GATE=1`. A registered step may
 only skip cleanly when run standalone by a human (no `ZB_WIN_GATE`), and such a step is then NOT counted as a Windows
 row. The drawer suites must stop force-unsetting the host variables (`build.zig:3549, 3559`) in the gate path.
+**Rev 2.19 (rule 7, "skip is failure"):** the proof of this rule is exercised, not read: run each live step's real command with `ZB_WIN_GATE=1` and no host and assert it exits nonzero (WS0.9, `live_step_skip_test.py`). Reading `build.zig` to see that a step exists is a tripwire.
 Eight registered live steps currently exit 0 when `ZB_WIN11_HOST` is unset (`build.zig:294-334`); each must be changed
 to fail under the gate or be moved out of the aggregate `test` into a `windows-live` aggregate that requires a host.
 
@@ -168,6 +178,7 @@ Until WS0.9 lands, the per-slice protocol step 5 means exactly: (a) `tests/windo
 Win11); (b) for each of the slice's live tests, `ZB_WIN_GATE=1 python3 -I <test>` against the Win11 VM and, for a slice with a Win10 leg, against the Win10 box (after its release, section C), each required
 to print `ASSERTS <n>` with `n > 0` and to exit 0, with the output pasted in the commit message; a skip or an exit 77
 is recorded as UNCLOSED. Nothing may call a slice closed on a bare `zig build test` green.
+**Rev 2.19 (rules 3 and 8):** the pasted commit-message output also records, for each behavior, the production mutant that was applied, the command, and the failing output; "passes" means the run was observed in the session, at a named commit, with the command and exit code recorded. A claim not backed by such a run is SUSPECTED, not VERIFIED.
 
 **D.3 `--e2e-protocol` contract (W16).** The ~12 `ZIGBROWSER_AGENT_DRAWER_*` e2e seams in the shim
 (`webview2_shim.cpp:2210-2232`: OPEN, FAIL, DRAG, FOLD, FOLD_FAIL, DPI, RTF, DPICHANGE_IGNORE, HITTEST_FAIL, WINDOWS,
@@ -178,13 +189,14 @@ client, a shortcut or a runtime message); (ii) **packaged (MSI) builds refuse it
 message, OR the plan records why it is safe — default is refuse; (iii) the full list of seams it unlocks is one
 inventory file `tests/windows/e2e_seams.json`; (iv) WS2's "absent at link time" rule applies to the drawer seams too.
 Reds (unregistered until green): `tests/windows/e2e_protocol_contract_test.py` — packaged-flavor build refuses the flag;
-inventory equals the seams actually read in the shim (mutant: add an undeclared `ZIGBROWSER_*` seam ⇒ red); a page
-`postMessage` and every socket method cannot set it (mutant: honour it from the environment ⇒ red).
+for EVERY seam in the inventory, launch the real exe WITHOUT `--e2e-protocol` and with that seam's variable set in the environment and assert the seam is inert, then WITH the flag and assert it takes effect (mutant: honour a seam from the environment ⇒ red); a page
+`postMessage` and every socket method cannot set it (mutant: honour it from a runtime message ⇒ red). **Rev 2.19 (rule 5):** a comparison of the inventory file against the seams read in the shim source is kept only as a labelled TRIPWIRE (mutant: add an undeclared `ZIGBROWSER_*` seam ⇒ the tripwire is red); it never closes D.3.
 
 **D.4 A behavior closes only on a real-binary row (C14, W23).** Offline oracles (source greps, AST parses, models) are
 **tripwires**, not proof. A behavior is CLOSED only when one accepted run of its live row on the Win11 VM exists, with
 `ASSERTS n>0`, at a named commit. Until then the plan marks it OPEN. **No new offline oracle may be added without a
 paired live row in the same slice.** An AST parse of a Python test file is explicitly not a control-flow proof.
+**Rev 2.19 (owner order; rule 5):** this is now binding for every kind of source check: grep, regex, lexer, AST, "the symbol exists", "the file contains", nm, strings and otool listings, PE import listings, SDDL or flag-constant comparisons and file censuses are TRIPWIRES. They may guard against regressions and must be labelled so; they never close a behavior, a slice, a review finding or a validation finding. The 4pa.44 and 4pa.46 findings are re-marked on this basis (WS5).
 
 **D.5 Test-to-production budget (W23).** The review measured about 5.7 test lines per production line on Windows with
 the review loop centred on oracle precision. Rule: each slice reports its test:production line ratio in its commit
@@ -252,6 +264,23 @@ recommended default and flagged for owner ratification (section C, STILL PENDING
 | W21 | — | `agent_secrets_win.cpp` gated by compile only | WS6.1 |
 | W22 | — | WS7 reds use toy inputs | WS7 |
 | W23 | — | 5.7:1 test:production, oracle-centred loop | D.4, D.5 |
+
+### F. Verification-rule overlay (rev 2.19; owner order 2026-10-22)   [4pa.44, 4pa.46]
+
+The owner ordered that agents check code by **exercising** it. The binding text is the top-level section **"Verification rule: prove it by running it (owner, 2026-10-22)"** placed before WS0, the first slice; it overrides any looser wording elsewhere in this plan. This section only records how the plan was swept.
+
+**F.1 Markers used in the slice "proof blocks" and in the table at the end of the plan.**
+- **PROVEN** = the production code path is driven by a registered test that asserts an observable result, and (platform code) a run on the platform is recorded at a named commit. **PROVEN-PARTIAL** = the same, with the open items listed (a missing production mutant record, a missing leg, a clean-skip registration).
+- **NOT BUILT** = the code is absent, or the only proof is source-only, unregistered or unreachable from a production caller (rules 2, 5, 6). A behavior listed earlier as green or closed whose test is a tripwire or unregistered is **re-marked** NOT BUILT.
+- **UNPROVEN** = no exercising proof is possible yet; the proof block states exactly what is missing.
+- **TRIPWIRE** = a source-text check (grep, regex, lexer, AST, symbol, file-contains, nm, strings, otool, PE import listing, constant or SDDL comparison, file census). It may guard a regression and is always labelled; it never closes a behavior, slice, review finding or validation finding.
+- Statuses are documentary. Runs are cited as the plan and the orchestrator record them; this revision ran nothing (rule 8). A run claim without a named commit is SUSPECTED.
+
+**F.2 Source checks kept ONLY as tripwires (they no longer close anything).** `RemotePathFenceRemovedTests`; the `WS0ZeroWrite` class (`host_probe.ps1` regex, `session_probe.ps1` lexers, `*_extractable_and_used`); `pe_census.py` and its selftest; `screenshot_diag_selftest.py`; `cross-check`, `cross-check-ws3-win` and `ws3_win_cross_root.zig` symbol checks; `automation_platform.zig:885-886` (fake-backed); the `agent_secrets_win.cpp` export check at `build.zig:564-567`; the planned `win_abi_absence_test.py` symbol listing; the e2e-seam inventory comparison; the WS5 offline oracle and model suites (`windows-drawer-settle`, `windows-drawer-lifecycle`, the offline halves of `windows-drawer-live` and `windows-drawer-behaviors`); the WS13.1 component census.
+
+**F.3 What changed in the plan text.** (i) The rule section is inserted verbatim. (ii) D.1, D.2, D.3 and D.4 are tightened. (iii) Each slice (WS0-WS13) gains a "proof blocks" subsection stating, for every behavior, (a) entry point, (b) test and step, (c) mutant, (d) platform run, plus its status. (iv) In-place source-check proofs were rewritten: WS0.5, WS0.9, D.3, WS1.1, the WS2 absence assertion, WS2b.0, WS3 cross-check, WS6.1 constants and WS13.1 census. (v) The compliance table is at the end. D.6 retirements are not behaviors: each is closed by running the full registered `zig build test` and `cross-check` after the retirement commit; a grep for residual names is a tripwire.
+
+**F.4 Nothing was weakened.** Every existing driven test, mutant requirement, fail-closed rule and release gate remains in force; the rule only tightens what counts as proof.
 
 > **PLAN ONLY.** No implementation and no live runs were done to write it. Agents prepare
 > scripts and run them on the **two Windows hosts over SSH** (a Windows 11 VM and the
@@ -426,6 +455,8 @@ is called an **unsigned development build, not a distributable artifact**.
    user and an uninstall removes everything it added: the files, shortcuts and HKCU keys, and **only
    zigBrowser's own WSL distro, import dir and state** — it cannot un-enable global WSL/VMP (WS13.4). (The build is
    unsigned — signing is deferred, OD-W3 — so no signature-verification is claimed at launch; only "nothing may claim signed/distributable".)
+
+**Rev 2.19 (verification rule):** each top-level behavior above closes only through the rule-9 rows of its slices (the compliance table at the end of the plan). A green `zig build test` never closes one; a behavior is closed by an exercised run, at a named commit, on the platform that runs the code.
 
 ## What We're NOT Doing
 
@@ -965,7 +996,7 @@ the guest clock, Tailscale/SSH state and Windows Update state, so the gate re-pr
 | `cross-check`, `ipc-test-win`, pure-Zig units (drawer geometry, protocol, grant, config seam) | yes | — | — |
 | Python backend contract tests for the Windows backend's spec projection (WS8.0) | yes | — | — |
 | Windows build (MSVC) | — | yes | — |
-| PE import census of the built exe (WS1.1) | yes (on the fetched exe) | — | — |
+| PE import census of the built exe (WS1.1; a TRIPWIRE listing, rev 2.19: WS1.1 is closed only by running the exe) | yes (on the fetched exe) | — | — |
 | Any real-binary e2e, GUI, socket, sandbox, network, secrets test | — | yes | yes |
 | Real-screen checks | — | yes (console via virt-viewer) | yes (its monitor) |
 | Signing (OD-W3 Artifact Signing via jsign) | **DEFERRED, not built for launch (OD-W3)** | — | — |
@@ -1011,6 +1042,34 @@ with a mutant; [L] unless stated.
 | Async-completion ownership contract + ABI-absence rule | macOS MS2 | Same rules: copied inputs, exactly once, no effect after abandon; an unsupported seam is absent at link time | — |
 | Real-screen runner | `tests/manual/real_screen_check.py` | New Windows backend for capture + foreground proof | WS5 |
 | Two-host fail-closed gate pattern | `tests/mac/gate.sh` | `tests/windows/gate.sh` copies its structure and its `|| return 1` discipline | WS0 |
+
+---
+
+## Verification rule: prove it by running it (owner, 2026-10-22)
+
+The owner's order: agents check code by exercising it, not by reading or "checking" it. This rule overrides any looser wording elsewhere in this plan.
+
+1. **A behavior is proven only by running the real code path.** The test calls the production function, C export, binary or script with real inputs. It asserts on the observable result: return value, output, persisted state, process state, or a UI row. A test that reimplements the logic, or drives a copy of it, proves nothing.
+2. **Registered or it does not count.** The test must be in a build.zig step that `zig build test` or the named platform gate runs. An unregistered test is a draft.
+3. **Red, green, then a mutant.**
+   - The red must fail for the stated reason before the green exists.
+   - After the green, at least one mutant of the PRODUCTION code (not the test) must make the test fail. Record the mutant, the command and the failing output in the commit message.
+   - A test that stays green under its mutant is not proof.
+4. **Platform code is proven on the platform.** AppKit/Objective-C, Keychain, Seatbelt, Win32/C++, WebView2 and Credential Manager are proven only by running them, under a release, on that platform: the two Macs (x86_64 and arm64), the Win11 VM, or the Win10 box. A Linux build or cross-compile proves only that the code compiles.
+5. **Source-text checks are tripwires, never proof.** grep, regex, lexers, "the symbol exists", "the file contains", nm, strings and otool listings may guard against regressions. They never close a behavior, a slice, a review finding or a validation finding.
+6. **Wired, not just present.** A behavior that a production caller never reaches is NOT BUILT, even if its unit test passes. Each behavior names its production entry point, such as a CLI flag, an app start path or a menu action. An end-to-end test proves that the entry point reaches the code.
+7. **Skip is failure.** Under a gate, a skip, an exit 77, or zero real rows or asserts is a failure.
+8. **Validators follow the same rule.**
+   - validate_plan, reviews and code checks mark a claim VERIFIED only after running its test, or a mutant of it, and recording the command and exit code.
+   - Reading code alone gives SUSPECTED.
+   - "Passes" means the run was observed in this session, at a named commit.
+9. **Every behavior states its proof.** Each behavior lists:
+   - (a) the production entry point it exercises;
+   - (b) the test file and its build.zig step;
+   - (c) the mutant that must make it fail;
+   - (d) for platform code, the platform run and its host or hosts.
+
+   A behavior missing any of these is not ready for implementation.
 
 ---
 
@@ -1108,8 +1167,7 @@ remote-path authorization fence — there is no such boundary, because a name-on
 close the junction-swap time-of-use race (RoseCat security review of aebb07b/9dbad76/7ea3c95; bead
 zigBrowser-q92). The reparse-resolving fence (`gate.sh --allowed-path` / `allowed_path` /
 `resolve_path.sh`) and its live test have been **deleted**. No gate step consumes an authorization
-verdict for a remote path, and `gate_selftest.py::RemotePathFenceRemovedTests` pins that the fence stays
-removed (no `allowed_path`, no `--allowed-path`, no resolver files).
+verdict for a remote path, and the fence's absence is proven by EXERCISE (rev 2.19, rule 1): a driven case in `gate_selftest.py` runs the real `gate.sh --allowed-path <p>` and asserts a nonzero exit with an unknown-option message (mutant: re-add an `--allowed-path` branch to a scratch copy ⇒ the case is red). `gate_selftest.py::RemotePathFenceRemovedTests` (no `allowed_path`, no `--allowed-path`, no resolver files) checks that names and files are absent; it is a labelled TRIPWIRE only. The driven case is NOT BUILT yet.
 
 **A lexical-only shape check remains** (rev 2.17, W8: it has no production caller and `gate.sh:69-103` carries test-only
 log hooks `ZB_SELFTEST_RAN_LOG`/`ENV_LOG` — those hooks move into the selftest wrapper, D.6(d); it stays a diagnostic
@@ -1174,9 +1232,9 @@ exits nonzero naming the test. It replaces today's exit 2 "two-host run not impl
 - 🔴 Red `tests/windows/gate_twohost_selftest.py` case `product_run_fails_on_skip`: a fake host whose test exits 77 ⇒
   `assert rc != 0 and "skipped" in err`; a fake test with no `ASSERTS` ⇒ `rc != 0`; unset `ZB_WIN11_HOST` ⇒ `rc != 0`
   and the sentence `no Windows host configured`. Mutants: treat 77 as pass ⇒ red; accept `ASSERTS 0` ⇒ red.
-- 🔴 Red `build.zig` registration check (Python, reads the manifest only): the eight live steps at `build.zig:294-334`
-  and the drawer suites (`:3549, 3559`) must either be absent from the aggregate `test` or fail when `ZB_WIN_GATE=1` and
-  the host is unset — never exit 0 (D.1). Mutant: re-add a clean-skip ⇒ red.
+- 🔴 Red `tests/windows/live_step_skip_test.py` (rev 2.19, rule 7; REWRITTEN from a Python read of `build.zig`): run the real command of each of the eight live steps at `build.zig:294-334`
+  and of the two drawer suites (`:3549, 3559`) with `ZB_WIN_GATE=1` and every host variable unset, and assert each exits NONZERO — never 0 (D.1).
+  Mutant: restore a clean-skip in one step ⇒ that step exits 0 ⇒ red. (Reading `build.zig` to check that the steps exist is only a tripwire.)
 - 🟢 Green: the product-run mode in `gate.sh` + `ZB_WIN_GATE` handling in the live steps. 🔵 Refactor: one phase list
   shared by `--probe-only`, `--product` and `--phase voice` (WS12.2). **Closure:** LEAF (gate infrastructure).
 
@@ -1239,6 +1297,26 @@ exits nonzero naming the test. It replaces today's exit 2 "two-host run not impl
   line: the Win10 live run's `ASSERTS n>0` output with its `identity_marker`, pasted in the commit message, only after the Win10
   release (RoseCat exact-commit approval + orchestrator release).
 
+### WS0 proof blocks (rule 9, rev 2.19)
+
+> These blocks override any looser proof wording above. A source regex or lexer over a script is a TRIPWIRE; the gate is proven by running it against fake and real hosts.
+
+- **WS0.1a — probe fields and fail-closed validation (readiness)** — status **PROVEN-PARTIAL**. (a) entry point: `tests/windows/gate.sh --probe-only` (streams `host_probe.ps1` to each host). (b) test and step: `tests/windows/gate_twohost_selftest.py` (step `windows-twohost-selftest`, in `zig build test`) runs the real gate script against a fake ssh/virsh; live `tests/windows/host_live_test.py`. (c) mutant: drop `native_arch` from the script; compare only the pre-run probe (WS0.7). (d) platform run: Win11 VM and Win10 box `--probe-only` runs (probe 992b124, review 012e1bc). Proof type: driven + platform run. Readiness only. Product-run enforcement of `root`, `free_gb`, `webview2_pv` and the unlocked session on the Win10 box is WS0.9-W10 (NOT BUILT).
+- **WS0.1b — lock verdict comes from the WTS session-lock flag** — status **PROVEN-PARTIAL**. (a) entry point: `gate.sh --probe-only` -> the console task running `session_probe.ps1`. (b) test and step: `tests/windows/host_live_test.py` `LockedDesktopLive` (owner-gated, `ZB_EXPECT_LOCKED`) and `LockVerdictFixturesLive`; NOT part of any automatic gate. (c) mutant: trust the `OpenInputDesktop` name for the verdict: the locked-console run must go red (it read `Default` on the locked VM console, rev 2.12, 88852d9). (d) platform run: Win11 VM console deliberately locked, then unlocked. Proof type: platform run. REWRITTEN: the source tests `test_session_probe_lock_verdict_uses_wts_flag`, `test_session_probe_wts_flag_offset_is_16_not_12`, `test_acl_function_is_extractable_and_used`, `test_verify_task_fn_extractable_and_used` and `test_share_verdict_fn_and_emitted_fields` (class `WS0ZeroWrite`) are TRIPWIRES; the closing proof is the locked-console live run. Open: it is owner-gated, so no gate runs it.
+- **WS0.1c — the Win10 `--probe-only` probe writes nothing (zero-write)** — status **NOT BUILT**. (a) entry point: `gate.sh --probe-only` against the Win10 host. (b) test and step: NEW `gate_twohost_selftest.py` case with a recording fake ssh/powershell that captures the exact stream sent to the Win10 box and fails on any write verb while the real probe still returns the full schema; plus a live before/after census of `C:\Users\zbtest` on the Win10 box (zero new files). (c) mutant: add `Out-File` to a scratch copy of `host_probe.ps1`: the recorder case must fail. (d) platform run: Win10 box, after its release. Proof type: tripwire-only today (a regex over `host_probe.ps1`). REWRITTEN + NOT BUILT: `WS0ZeroWrite.test_host_probe_is_zero_write_no_dynamic_compilation` and `gate_twohost_selftest.py:864-996` lex the script text. They stay as a labelled TRIPWIRE. The behavioral recorder case does not exist yet.
+- **WS0.1d — typed probe record (ok / not_applicable / unknown)** — status **NOT BUILT**. (a) entry point: `gate.sh --probe-only` (the parser that replaces the heredoc validation at `gate.sh:215-451`). (b) test and step: NEW cases in `gate_twohost_selftest.py` (step `windows-twohost-selftest`): `parse(null_for_unknown).state == "unknown"`, a stored `interactive_session=true` with `locked=true` is refused. (c) mutant: parse JSON `null` as `not_applicable` on the VM. (d) platform run: the real probe JSON from the Win11 VM and the Win10 box must parse into the record. Proof type: none yet. Unregistered red; no typed record in `gate.sh` today (C19).
+- **WS0.2 — the gate fails closed** — status **PROVEN-PARTIAL**. (a) entry point: `tests/windows/gate.sh` (readiness mode today; product-run mode is WS0.9). (b) test and step: `gate_twohost_selftest.py` and `gate_selftest.py` (steps `windows-twohost-selftest`, `windows-gate-selftest`). (c) mutant: treat exit 77 as pass; accept `ASSERTS 0` (product-run cases); soften a marker/host-key failure to a warning. (d) platform run: Win11 VM and Win10 box probes. Proof type: driven + platform run. Readiness cases are driven. The product-run cases (exit 77, no `ASSERTS`) are WS0.9 (NOT BUILT).
+- **WS0.3 — the gate never reaches the Linux display** — status **PROVEN-PARTIAL**. (a) entry point: `tests/windows/gate.sh` with `DISPLAY=:0` exported to the driver. (b) test and step: `gate_twohost_selftest.py` `WS0TwoHostReds.test_no_display_var_reaches_any_child` (records the env of every child the fake ssh sees). (c) mutant: remove `env -u DISPLAY` from the gate: the recorded child env contains `DISPLAY` and the test fails. (d) platform run: none: the driver is Linux; the property is about the Linux driver's children. Proof type: driven (L). Open: no production-mutant run record was located in this audit; record it in the commit message (rule 3).
+- **WS0.4 — interactive launches are real, bounded and clean** — status **NOT BUILT**. (a) entry point: any GUI test started through `slice2_common.run_windows_interactive_until` (`tests/e2e/slice2_common.py:492-593`). (b) test and step: NEW selftest cases (fake host with a leftover task or process) plus live `m8_*` rows, per the six-item OPEN list in WS0.4. (c) mutant: pass `timeout_sec=600` (must be clamped to 120); ignore the `schtasks /delete` result; leave one task behind. (d) platform run: Win11 VM and Win10 box. Proof type: none yet. Runner is not hardened at HEAD (C3, W14).
+- **WS0.5 — no remote-path authorization fence** — status **NOT BUILT**. (a) entry point: `gate.sh --allowed-path <p>` (must be refused) and `gate.sh --fence-string <p>` (lexical diagnostic). (b) test and step: NEW driven case in `gate_selftest.py` (step `windows-gate-selftest`): run the real script with the removed flag and assert nonzero with an unknown-option message; the existing lexical property over `--fence-string` is driven through the CLI. (c) mutant: re-add an `--allowed-path` branch to a scratch copy of `gate.sh`: the case must fail. (d) platform run: none: Linux-side script. Proof type: tripwire-only today (`RemotePathFenceRemovedTests` checks that names and files are absent). REWRITTEN + NOT BUILT: the absence-of-names pin is a TRIPWIRE; the driven refused-flag case is not written.
+- **WS0.6 — the Win11 VM is the VM it claims to be; a down VM fails the gate** — status **PROVEN-PARTIAL**. (a) entry point: `gate.sh` (virsh state, pinned host key, `identity_marker` vs `ZB_WIN11_MARKER`). (b) test and step: `gate_twohost_selftest.py` class `WS06VmIdentity` (missing, empty and wrong marker; shut-off VM). (c) mutant: treat a marker mismatch, or a missing or empty marker, as a warning. (d) platform run: Win11 VM (pinned SSH host key plus provisioning marker). Proof type: driven + platform run. The 15 s TCP step is WS0.6b.
+- **WS0.6b — unreachable VM port fails within 15 s** — status **NOT BUILT**. (a) entry point: `gate.sh` TCP reachability step. (b) test and step: NEW case in `gate_twohost_selftest.py`: a fake host that accepts no connection must make the gate exit nonzero inside 15 s. (c) mutant: remove the 15 s bound (the case then hangs to its own watchdog and fails). (d) platform run: Win11 VM (one real unreachable-port run). Proof type: none yet. Not in `gate.sh` (listed in the WS0.8 OPEN list).
+- **WS0.7 — the Win10 test host stays confined and undisturbed** — status **PROVEN-PARTIAL**. (a) entry point: `gate.sh --probe-only` pre-run and post-run probes of the Win10 box. (b) test and step: `gate_twohost_selftest.py` classes `WS07FileServerFence` and `WS07ListenerPidChurn`. (c) mutant: compare only the pre-run probe; ignore a changed listener set. (d) platform run: Win10 box live probe, pre and post. Proof type: driven + platform run. Win10 product legs are open (WS0.9-W10).
+- **WS0.8 — transport hygiene (staging, pinned host keys, tar status)** — status **NOT BUILT**. (a) entry point: `gate.sh` staging and `tests/windows/build-on-windows.sh`. (b) test and step: NEW cases in `gate_twohost_selftest.py` and `build_on_windows_selftest.py`, plus one real staged run to the VM that must leave no `zb\runs\<id>` behind. (c) mutant: `StrictHostKeyChecking=no`; ignore the tar exit code; extract into the fixed `zb` directory. (d) platform run: Win11 VM staging run. Proof type: none yet. OPEN at HEAD (W4, W6, W7).
+- **WS0.9 — product-run mode with fail-on-skip** — status **NOT BUILT**. (a) entry point: `tests/windows/gate.sh` with no argument or `--product`; and each registered live step run with `ZB_WIN_GATE=1`. (b) test and step: `gate_twohost_selftest.py` case `product_run_fails_on_skip`; NEW `tests/windows/live_step_skip_test.py` runs every registered live step's real command with `ZB_WIN_GATE=1` and no host and asserts a nonzero exit. (c) mutant: treat 77 as pass; accept `ASSERTS 0`; restore a clean-skip in one live step. (d) platform run: Win11 VM and Win10 box. Proof type: none yet. REWRITTEN + NOT BUILT: the old red read the `build.zig` manifest (a source check). It is now an exercised run of each step's command; reading `build.zig` is only a tripwire.
+- **WS0.9-W10 — Win10 product-run leg** — status **NOT BUILT**. (a) entry point: `gate.sh` product-run mode against the Win10 box. (b) test and step: `gate_twohost_selftest.py` cases with a fake Win10 transcript, plus the live run. (c) mutant: treat the Win10 box as `not_applicable` in product-run mode. (d) platform run: Win10 box, after the Win10 release. Proof type: none yet. Not run.
+- **D.3 — `--e2e-protocol` is a command-line-only flag; seams are inert without it** — status **NOT BUILT**. (a) entry point: launch the real exe with and without `--e2e-protocol`, and with each seam variable set in the environment. (b) test and step: NEW `tests/windows/e2e_protocol_contract_test.py` (unregistered until green). (c) mutant: honour a seam from the environment; add an undeclared `ZIGBROWSER_*` seam; let a packaged flavor accept the flag. (d) platform run: Win11 VM (and the Win10 box). Proof type: none yet. REWRITTEN + NOT BUILT: for EVERY seam in the inventory the test launches the exe WITHOUT the flag and asserts the seam is inert (no seam row), then WITH the flag and asserts it takes effect. The inventory-equals-shim-source comparison is a TRIPWIRE only.
+
 **Gate (WS0):** [L] `windows-gate-selftest` green; then [W] `gate.sh --probe-only` green on both
 hosts after provisioning (the pre/post probe pair of WS0.7 included) — this is the **readiness-only** closure; full
 WS0 closure additionally needs WS0.4, WS0.8 and WS0.9 above. Not a UI slice, so no
@@ -1255,7 +1333,7 @@ window, with honest exit codes and build info.
 
 ### Behavior WS1.1: the release exe is a clean x64 PE with a known import set
 **Given** `build-on-windows.sh ReleaseSafe` on the VM, **when** the exe is fetched to Linux,
-**then** `tests/windows/pe_census.py` [L] finds machine `0x8664`, subsystem GUI or console as
+**then** the exe RUNS (rev 2.19, rules 1 and 4: `--version` and `--screenshot` exit 0 on a host recorded as having no VC++ redistributable; a host with that state is not yet recorded, so this is UNPROVEN) and, as a labelled TRIPWIRE only (a listing never proves behavior), `tests/windows/pe_census.py` [L] finds machine `0x8664`, subsystem GUI or console as
 designed, and an import table within an allowlist (system DLLs + `api-ms-win-crt-*`; any
 `vcruntime*.dll` or `msvcp*.dll` is a failure unless the installer ships it), and records the
 pinned WebView2 SDK version.
@@ -1299,7 +1377,7 @@ the OS build and the **executing** architecture (from `IsWow64Process2`; `x86_64
   `assert rc == 0, f"--screenshot exit {rc}"` (today 11 / `ZB_EXIT_SNAPSHOT_FAILED`) and
   `assert nonuniform(png)` (a stub that writes a blank PNG must fail). Mutant: write a 1x1 white PNG ⇒ red.
   The other WS1 reds (each with a mutant, run on both hosts before green):
-  - WS1.1 `tests/windows/pe_census_selftest.py` [L]: `assert census(fixture_vcruntime_pe).verdict == "FAIL: vcruntime140.dll"`
+  - WS1.1 `tests/windows/pe_census_selftest.py` [L] (rev 2.19: a TRIPWIRE-tool test over fixture PEs; it does not close WS1.1, see the WS1 proof blocks): `assert census(fixture_vcruntime_pe).verdict == "FAIL: vcruntime140.dll"`
     and `assert census(fixture_clean_pe).machine == 0x8664`. Mutant: an allowlist that matches by prefix
     `vc*` ⇒ the clean-but-for-`vcruntime` fixture passes ⇒ red.
   - WS1.2 `tests/windows/gate_selftest.py` case `m8_precondition_missing`: `assert rc == 1 and "ZB_WIN_GATE" in err`
@@ -1325,6 +1403,17 @@ the OS build and the **executing** architecture (from `IsWow64Process2`; `x86_64
   `png_census_test.py` and `ws1_run_test.py` are **unregistered and not in `gate.sh`** — register them as `gate.sh`
   WS1 phase rows (and in `build.zig` behind the `windows-live` aggregate, D.1) so a run actually executes them.
   `screenshot_diag_selftest.py` greps shim text: it is a tripwire only (D.4); the real row is `win_screenshot_test.py`.
+
+### WS1 proof blocks (rule 9, rev 2.19)
+
+> The PE import census is a listing and a TRIPWIRE. WS1 is proven by running the exe.
+
+- **WS1.1 — the release exe has no hidden runtime dependency** — status **UNPROVEN**. (a) entry point: `zigBrowser.exe --version` and `--screenshot` from `build-on-windows.sh ReleaseSafe`. (b) test and step: `tests/windows/ws1_run_test.py` (UNREGISTERED; register in the `gate.sh` WS1 phase) run on a host recorded as having NO VC++ redistributable. (c) mutant: link the CRT dynamically in a scratch build: the exe fails to start on that host. (d) platform run: a host without the VC++ redistributable (Win10 box if it lacks it, or a VM snapshot): NOT RECORDED on either host. Proof type: tripwire-only today (PE import listing). REWRITTEN + UNPROVEN: the PE import census (`pe_census.py`, `pe_census_selftest.py`, `pe_census_test.py`) is a listing, so a TRIPWIRE (rule 5). Missing for the exercising proof: a host recorded without the redistributable. **Rule-9 fields incomplete: not ready for implementation.**
+- **WS1.2 — M8 render, reply channel and load-fail on both hosts** — status **NOT BUILT**. (a) entry point: `zigBrowser.exe` window start, IPC reply channel, load failure. (b) test and step: `tests/e2e/m8_render_test.py`, `m8_reply_channel_test.py`, `m8_load_fail_test.py`, run by a `gate.sh` WS1 phase (today they `return SKIP_EXIT`). (c) mutant: leave `SKIP_EXIT` in place; skip the Win10 invocation. (d) platform run: Win11 VM and Win10 box. Proof type: none yet. NOT STARTED; precedes WS2a.
+- **WS1.2-W10 — M8 tests on the Win10 box** — status **NOT BUILT**. (a) entry point: same three `m8_*` tests as `zbtest` on the Win10 box. (b) test and step: as WS1.2, exe staged under `C:\Users\zbtest\zb\runs\<id>\`. (c) mutant: skip the Win10 invocation: the both-hosts check goes red. (d) platform run: Win10 box, after the Win10 release. Proof type: none yet. Not run.
+- **WS1.3 — `--screenshot` produces a real PNG** — status **PROVEN-PARTIAL**. (a) entry point: `zigBrowser.exe <url> --screenshot out.png`. (b) test and step: `tests/windows/screenshot_live_test.py` (step `windows-screenshot-live`, in `zig build test`, clean-skips hostless) plus `png_census.py` over the output (selftest step `windows-png-census-selftest`). (c) mutant: write a 1x1 white PNG (named; the run record was not located in this audit). (d) platform run: Win11 VM run at 8f36ee7; Win10 box not run. Proof type: driven + platform run. Open: fail-on-skip registration under the gate (D.1), a recorded production mutant, the Win10 leg. `screenshot_diag_selftest.py` greps shim text: TRIPWIRE.
+- **WS1.4 — a missing runtime fails with exit 9 and the documented message** — status **NOT BUILT**. (a) entry point: `zigBrowser.exe` start with `WEBVIEW2_BROWSER_EXECUTABLE_FOLDER` at an empty directory. (b) test and step: `tests/windows/ws1_run_test.py` (UNREGISTERED; the plan-named `win_runtime_missing_test.py` does not exist). (c) mutant: print the message but exit 1; exit 9 without the message. (d) platform run: Win11 VM; the env seam is itself an unverified spike. Proof type: none yet. RE-MARKED NOT BUILT: listed green (6c771ff) but the test is unregistered and not in `gate.sh`.
+- **WS1.5 — build info reports what actually ran** — status **NOT BUILT**. (a) entry point: `zigBrowser.exe --version`. (b) test and step: `tests/windows/ws1_run_test.py` (UNREGISTERED; plan-named `win_version_test.py` does not exist). (c) mutant: report `PROCESSOR_ARCHITECTURE` instead of `IsWow64Process2` and run from an x86 shell. (d) platform run: Win11 VM; Win10 box. Proof type: none yet. RE-MARKED NOT BUILT: listed green (dcd33ae) but the test is unregistered and not in `gate.sh`.
 
 **Gate (WS1):** [W] WS1.1-WS1.5 on the Win11 VM, plus the Win10 box for WS1.2-W10 (each its own evidence line) + [L] `cross-check` unchanged + `win-render`.
 
@@ -1500,8 +1589,8 @@ directory, socket and `<socket>.token` have a **protected DACL granting only the
   `isTrusted`) has ever run; the plan says that row may change only after WS2b.1 passes. Until then the row is a
   **PLACEHOLDER / UNPROVEN**: either change it to an `unproven` mode in the owner's slice, or keep it and have this plan
   and every WS2 gate treat it as unproven (no client or doc may rely on it). Red (unregistered until green):
-  `assert capability_row_is_unproven_until_file_exists("tests/e2e/win_trusted_input_matrix.py result")`; mutant:
-  leave `cdp_input` with no recorded WS2b.1 result ⇒ red. The test `automation_platform.zig:885-886`
+  a driven Zig test that calls the production `adapterCapabilities(.webview2)` and asserts `input.mode == .unproven`, plus a Windows e2e that starts the real exe with `--automation-api` and asserts the `capabilities` RPC over the authenticated socket reports `unproven` for input until a WS2b.1 platform run exists (rev 2.19, REWRITTEN from a file-exists check, which is a tripwire); mutant:
+  leave `cdp_input` with no recorded WS2b.1 result ⇒ both red. The flip to `cdp_input` is allowed only by a recorded WS2b.1 run on both hosts. The test `automation_platform.zig:885-886`
   (`expectEqual(InputMode.cdp_input, webview2.input.mode)`) is a fake-backed tripwire only (D.4), not evidence.
 - **WS2b.1 (spike, Win11 VM) trusted-event matrix:** (**NOT RUN at HEAD — no file, no result**) `isTrusted` true, focus, click, key, text,
   contenteditable + `beforeinput` cancel honored, scroll, pointer move, navigation during input,
@@ -1569,8 +1658,7 @@ green commit is accepted.
 
 - **Refactor gate (WS2, as stated):** one marshal helper, one CDP wrapper with one error table; the port
   has no Windows types. Add: no `zb_automation_debug_*` is compiled outside the slice whose e2e drives it
-  (`cross-check` plus a link-time absence assertion in `win_abi_absence_test.py`, which fails if an
-  undriven debug seam is present).
+  (rev 2.19, rule 5: `cross-check` and a link-time symbol listing are TRIPWIRES only; the closing proof is `win_abi_absence_test.py`, which starts the release-flavor exe without `--e2e-protocol` and drives every entry that would use a debug seam, asserting it is refused; mutant: expose an undriven debug seam ⇒ red).
 - **Closure criteria:** Closures A, B, C below, each observed to execute with nonzero assertions on the Win11 VM
   (rev 2.18, C1: on the Win11 VM AND the Win10 box, each its own evidence line). Closure B and C now name their e2e files above.
   **At HEAD none of Closures A, B, C has an e2e (C4).**
@@ -1686,6 +1774,33 @@ green commit is accepted.
   wrapper with one error-mapping table (the `mapCode` analog, automation_gtk_port.zig:337-350);
   the port contains no Windows types (only the C ABI).
 
+### WS2 proof blocks (rule 9, rev 2.19)
+
+> WS2.0 is the only WS2 behavior with a run; WS2a, WS2b and WS2c have zero code, so their rows are NOT BUILT or UNPROVEN until the port exists and the spikes have run.
+
+- **WS2.0 — transport is local-only and owner-only** — status **PROVEN-PARTIAL**. (a) entry point: `zigBrowser.exe --automation-api` start path (`restrictToOwner`, `%LOCALAPPDATA%` socket base). (b) test and step: `tests/e2e/win_transport_test.py` (step `windows-transport-live`, in `zig build test`, clean-skips hostless); Linux `tests/owner_only_test.zig` and `tests/automation_transport_ws20_test.zig` (registered, driven). (c) mutant: leave the inherited DACL (recorded); unrestricted directory and socket mutants (f29e490); the TOKEN-ONLY mutant is NOT recorded (W19). (d) platform run: Win11 VM, including the `zbother` cross-user negative (970969f, f29e490, 3cb8722). Proof type: driven + platform run. The `cross-check` compile of the Windows object is a build guard (compiles only, rule 4), not proof.
+- **WS2.0-W10 — transport on the Win10 box** — status **NOT BUILT**. (a) entry point: same start path on the Win10 box as `zbtest`. (b) test and step: `tests/e2e/win_transport_test.py` with a host-selector generalization (open task). (c) mutant: leave the inherited `%LOCALAPPDATA%` DACL. (d) platform run: Win10 box, after the Win10 release. Proof type: none yet. Not run; Windows 10 AF_UNIX stays UNVERIFIED.
+- **WS2a.0 — CDP isolated-world spike** — status **NOT BUILT**. (a) entry point: the WebView2 shim's CDP wrapper on the Win11 VM. (b) test and step: NEW `tests/e2e/win_private_world_spike.py` (no file at HEAD). (c) mutant: run the script in the main world: the page can then see the global. (d) platform run: Win11 VM. Proof type: none yet. NOT RUN (C5).
+- **WS2a.0-W10 — isolated-world spike on the Win10 box** — status **NOT BUILT**. (a) entry point: same spike as `zbtest`. (b) test and step: `win_private_world_spike.py`. (c) mutant: run in the main world. (d) platform run: Win10 box, after the Win10 release. Proof type: none yet. Not run.
+- **WS2a.1 — routed `page.*` commands over the socket** — status **NOT BUILT**. (a) entry point: the authenticated automation socket -> router -> `automation_wv2_port.zig` (does not exist). (b) test and step: NEW `tests/e2e/win_routed_test.py`. (c) mutant: return `0` from the shim. (d) platform run: Win11 VM and Win10 box. Proof type: none yet. Zero code: `pagePort()` is the GTK port, so every command returns -32011.
+- **WS2a.2 — `dom.*` runs in a private world** — status **UNPROVEN**. (a) entry point: `dom.*` RPC through the socket. (b) test and step: NEW `tests/e2e/win_private_world_test.py` (metamorphic page that overrides `Element.prototype.click`). (c) mutant: evaluate in the main world. (d) platform run: Win11 VM and Win10 box. Proof type: none yet. UNPROVEN: the isolated-world mechanism has never been shown to exist in WebView2 (WS2a.0 not run). If it does not, WS2a stops.
+- **WS2a.3 — async completion ownership and bounded waits** — status **NOT BUILT**. (a) entry point: a UI-thread marshal driven through any `zb_automation_*` call. (b) test and step: NEW `tests/e2e/win_async_ownership_test.py` using the `zb_automation_debug_waiter_grace` seam (compiled only here); a stalled-UI-thread test asserting `-32015` within deadline plus grace. (c) mutant: drop the generation guard; restore the `INFINITE` wait (`webview2_shim.cpp:769`): the test hangs to its watchdog. (d) platform run: Win11 VM and Win10 box. Proof type: none yet. The seam and the test do not exist.
+- **WS2b.0 — capability table honesty (`cdp_input` placeholder)** — status **UNPROVEN**. (a) entry point: the production `adapterCapabilities(.webview2)` and the `capabilities` RPC over the real socket. (b) test and step: NEW driven Zig test plus a Windows e2e on the real exe (see the in-place rewrite in WS2b.0). (c) mutant: leave `cdp_input` with no recorded WS2b.1 result: both fail. (d) platform run: Win11 VM (the RPC half). Proof type: tripwire-only today (`automation_platform.zig:885-886` is fake-backed). REWRITTEN + UNPROVEN: the capability claim `cdp_input` is UNPROVEN until WS2b.1 runs on both hosts.
+- **WS2b.1 — trusted-event matrix (isTrusted)** — status **NOT BUILT**. (a) entry point: CDP `Input.dispatch*` through `zb_native_*` (do not exist). (b) test and step: NEW `tests/e2e/win_trusted_input_matrix.py`. (c) mutant: dispatch synthetic `dispatchEvent`: `isTrusted` is false. (d) platform run: Win11 VM. Proof type: none yet. NOT RUN; if CDP input is not trusted WS2b stops.
+- **WS2b.1-W10 — trusted-event matrix on the Win10 box** — status **NOT BUILT**. (a) entry point: same matrix as `zbtest`. (b) test and step: `win_trusted_input_matrix.py`. (c) mutant: synthetic `dispatchEvent`. (d) platform run: Win10 box with its own WebView2 `pv`. Proof type: none yet. Not run.
+- **WS2b.2 — dialogs (alert/confirm/prompt/beforeunload)** — status **NOT BUILT**. (a) entry point: `dialog.get` and `dialog.respond` RPCs. (b) test and step: NEW `tests/e2e/win_dialog_test.py`. (c) mutant: auto-accept in the handler without the deferral. (d) platform run: Win11 VM and Win10 box. Proof type: none yet. Zero code.
+- **WS2b.3 — full-page screenshot over the socket** — status **NOT BUILT**. (a) entry point: `page.screenshot {fullPage:true}` RPC. (b) test and step: NEW `tests/e2e/win_screenshot_full_test.py`. (c) mutant: omit `captureBeyondViewport`. (d) platform run: Win11 VM and Win10 box. Proof type: none yet. Zero code.
+- **WS2b.4 — input files with regular-file refusal** — status **NOT BUILT**. (a) entry point: `input.setFiles` RPC. (b) test and step: NEW `tests/e2e/win_input_files_test.py`. (c) mutant: accept directories. (d) platform run: Win11 VM and Win10 box. Proof type: none yet. Zero code.
+- **WS2c.1 — popups and per-window ids** — status **NOT BUILT**. (a) entry point: a page's `window.open` chain, `page.list` RPC. (b) test and step: NEW `tests/e2e/win_popup_chain_test.py`. (c) mutant: open popups in the opener's window. (d) platform run: Win11 VM and Win10 box. Proof type: none yet. Zero code.
+- **WS2c.2 — health answers while a sibling's FIFO is stuck** — status **NOT BUILT**. (a) entry point: `page.health` RPC with window 1 stuck. (b) test and step: NEW `tests/e2e/win_health_sibling_test.py`. (c) mutant: route `page.health` through the FIFO. (d) platform run: Win11 VM and Win10 box. Proof type: none yet. Zero code.
+- **WS2c.3 — two-phase recovery of a hung renderer** — status **UNPROVEN**. (a) entry point: `page.recover` RPC. (b) test and step: NEW `tests/e2e/win_recover_test.py`. (c) mutant: kill the renderer without consent. (d) platform run: Win11 VM and Win10 box. Proof type: none yet. UNPROVEN: no public mechanism that recovers a hung WebView2 renderer has been shown (unverified item 5). If neither spike route works WS2c.3 stops.
+- **WS2c.4 — crash parity (`ProcessFailed`)** — status **NOT BUILT**. (a) entry point: a real renderer crash in the real exe. (b) test and step: NEW `tests/e2e/win_crash_parity_test.py`. (c) mutant: auto-reload after 3 s. (d) platform run: Win11 VM and Win10 box. Proof type: none yet. Zero code.
+- **WS2c.5 — popup drawer slots and one destroy path** — status **NOT BUILT**. (a) entry point: closing three windows by three paths. (b) test and step: NEW `tests/e2e/win_window_lifecycle_test.py`. (c) mutant: skip the detach in one path. (d) platform run: Win11 VM and Win10 box. Proof type: none yet. Zero code.
+- **Closure A — ordinary routed command (socket to live page)** — status **NOT BUILT**. (a) entry point: authenticated socket -> `handleRequestWith` -> wv2 port -> CDP. (b) test and step: `win_routed_test.py`. (c) mutant: adapter absent: `pagePort()` null. (d) platform run: Win11 VM and Win10 box. Proof type: none yet. No e2e at HEAD.
+- **Closure B — health while a sibling is stuck** — status **NOT BUILT**. (a) entry point: socket `page.health`. (b) test and step: `win_health_sibling_test.py`. (c) mutant: health behind the FIFO. (d) platform run: Win11 VM and Win10 box. Proof type: none yet. No e2e at HEAD.
+- **Closure C — two-phase recover** — status **NOT BUILT**. (a) entry point: socket `page.recover`. (b) test and step: `win_recover_test.py`. (c) mutant: kill without consent. (d) platform run: Win11 VM and Win10 box. Proof type: none yet. No e2e at HEAD.
+- **WS2.ABI — unsupported seams are absent from the shipped exe** — status **NOT BUILT**. (a) entry point: the release-flavor exe started with `--automation-api` and WITHOUT `--e2e-protocol`. (b) test and step: NEW `tests/e2e/win_abi_absence_test.py`: drive every entry that would use a debug seam (socket RPC or environment variable) and assert it is refused; the debug-seam-only entries are driven only in the slice whose e2e owns them. (c) mutant: compile an undriven `zb_automation_debug_*` seam into the release flavor and expose its entry: the test must fail. (d) platform run: Win11 VM. Proof type: none yet (a link-time symbol listing is a tripwire). REWRITTEN + NOT BUILT: the link-time symbol-absence assertion is now a TRIPWIRE; the closing proof drives the release exe.
+
 **Gate (WS2):** three gates (WS2a, WS2b, WS2c), each [W] on the Win11 VM AND the Win10 box (each its own evidence line; WS2.0-W10, WS2a.0-W10, WS2b.1-W10 are the named Win10 legs
 so far), plus `win-native-click`,
 `win-popups` and `win-crash-page` on the Win11 console and the Win10 monitor. WS2a/b/c are NOT started (see the WS2 status block).
@@ -1783,6 +1898,17 @@ line); and BOTH mutants run and recorded (apply-before-validate; swallow-error-e
 `page.evaluate` half is explicitly OPEN.
 
 **Property:** the cookie-JSON roundtrip incl. `sameSite` domain is in the Property register (C18).
+
+### WS3 proof blocks (rule 9, rev 2.19)
+
+> A symbol or cross-compile check proves only that code links (rule 4).
+
+- **WS3.1 — isolated persistent profile** — status **NOT BUILT**. (a) entry point: `zigBrowser.exe --profile-dir <dir>` and the default `%LOCALAPPDATA%\zigBrowser\profile\default`. (b) test and step: NEW `tests/windows/win_profile_persist_test.py` (does not exist). (c) mutant: ignore `--profile-dir`. (d) platform run: Win11 VM and Win10 box. Proof type: none yet. Needs WS2a.1 for the `page.evaluate` read; no default profile at `app.zig:513`.
+- **WS3.2 — flags decided by one fallible seam** — status **PROVEN-PARTIAL**. (a) entry point: `zigBrowser.exe --media-source`, `--hardware-acceleration`, `--renderer` on Windows. (b) test and step: `tests/backend_flag_test.zig` (step `test-backend-flag`, in `zig build test`, driven over the real `backendFlagDecision`); live `tests/windows/refusal_stderr_live_test.py` and `win_config_flags_test.py` (steps `windows-refusal-live`, `windows-config-flags-live`). (c) mutant: accept an unknown or empty value; apply before validating; swallow the error and exit 0 (the last two named, not recorded as run). (d) platform run: Win11 VM (refusal on the real exe; media-source read from a NAV title). Proof type: driven + platform run. REWRITTEN to exercise form (W20): the real exe is run for refusal and application. Sub-proofs still missing are WS3.2b.
+- **WS3.2b — `--disable-gpu` is actually passed; `typeof MediaSource` read over the socket** — status **NOT BUILT**. (a) entry point: `zigBrowser.exe --hardware-acceleration never` and `--media-source off`. (b) test and step: extend `win_config_flags_test.py`: read the `AdditionalBrowserArguments` actually passed through the slice's debug seam, and `typeof MediaSource` through `page.evaluate`. (c) mutant: apply before validating; swallow the error and exit 0; drop `--disable-gpu`. (d) platform run: Win11 VM and Win10 box. Proof type: none yet. The `page.evaluate` half needs WS2a.1.
+- **WS3.3 — cookie ABI and `CookiePort` over `ICoreWebView2CookieManager`** — status **NOT BUILT**. (a) entry point: `cookies.set` and `cookies.get` RPCs, then `document.cookie`. (b) test and step: NEW `tests/windows/win_cookie_test.py` (does not exist); Property: cookie JSON roundtrip with `sameSite` in {Strict, Lax, None, absent, junk} (unknown value must be refused). (c) mutant: write to a second `CookieManager` of another profile; map an unknown `sameSite` to unset. (d) platform run: Win11 VM and Win10 box. Proof type: none yet. Port is unwired (no production caller at `app.zig:627`).
+- **WS3.4 — cookie port and profile are WIRED and proven live** — status **NOT BUILT**. (a) entry point: `buildAutomationConfig` (`app.zig:626-627`) on `builtin.os.tag == .windows`; the relaunch path. (b) test and step: `win_cookie_test.py` and `win_profile_persist_test.py` (NEW), registered behind the `windows-live` aggregate with fail-on-skip. (c) mutant: leave the GTK port wired; skip `zb_restrict_to_owner` on the profile folder; second `CookieManager`. (d) platform run: Win11 VM and Win10 box. Proof type: none yet. NOT BUILT.
+- **WS3.X — `cross-check-ws3-win` symbol check** — status **NOT BUILT**. (a) entry point: the `x86_64-windows-gnu` object built from `src/ws3_win_cross_root.zig`. (b) test and step: `cross-check-ws3-win` (`build.zig:580-604`; never wired into `cross-check` or `test`). (c) mutant: drop `zb_cookies_add` from the Zig cookie path (a symbol-need mutant). (d) platform run: none: compile and link-need check only (rule 4). Proof type: tripwire-only. REWRITTEN + NOT BUILT: it is a TRIPWIRE and never proves any cookie or flag behavior; it is also not registered in `cross-check` or `test`.
 
 **Gate (WS3):** [W] the Win11 VM AND the Win10 box (its own evidence line: the cookie/profile e2e run as `zbtest` under `C:\Users\zbtest\zb`). Not a UI slice. **Closed today: WS3.2 only. OPEN: WS3.1, WS3.3, WS3.4.**
 
@@ -1892,7 +2018,7 @@ The native shim files are **BlackRobin's alone**; the per-OS **apply** lives in 
   (the seam exists). Mutant: accept an unknown/empty value ⇒ red. This supersedes AzureRidge's earlier
   standalone `src/ws3_backend_flag_table_test.zig` (`.windows`-only, 88e16cd), which is **removed** to
   keep a single literal oracle (no duplicated table to drift).
-- **Windows cookie-port cross-check** (`cross-check-ws3-win`, unregistered — a dedicated
+- **Windows cookie-port cross-check — TRIPWIRE ONLY (rev 2.19, rule 5: a compile and symbol-need check, never proof of any cookie or flag behavior; the closing proofs are `win_cookie_test.py` and `win_config_flags_test.py` run on the VM)** (`cross-check-ws3-win`, unregistered — a dedicated
   `x86_64-windows-gnu` object from `src/ws3_win_cross_root.zig`): the object compiles and references
   `automation_wv2_cookie_port.zig`'s `getAll`/`set`/`delete` and ~~`webview2_config.zig`'s
   `applyWindowsFlag`/`applyProfileDir`~~ (rev 2.17, W9: `webview2_config.zig` duplicates the real arm at
@@ -1958,6 +2084,14 @@ launch, or (b) schedule the tuple as its own cross-platform slice.** Default ado
   real `tool_use` source is WS11's helper). **Files touched:** tests only, plus any Windows-specific wiring the WS2 port
   needs. **Gate (WS4):** [W11] fixtures only, no live sites. Not a UI slice. **WS4 cannot start until WS2a.1 is green
   (C4).** Grant-field property: see the Property register (C18).
+
+### WS4 proof blocks (rule 9, rev 2.19)
+
+> WS4 is characterization on top of WS2: no proof exists until the WS2a.1 port exists.
+
+- **WS4.1 — page worlds, iframes, popups, socket clients, model text and hooks cannot approve** — status **UNPROVEN**. (a) entry point: authenticated socket -> router -> broker -> engine on Windows. (b) test and step: NEW `tests/e2e/win_flow_refusal_test.py` (telemetry root spans unchanged after each forged approval). (c) mutant: let a popup-world caller approve. (d) platform run: Win11 VM and Win10 box (fixtures only). Proof type: none yet. UNPROVEN: there is no exercising proof until the WS2a.1 port exists (`pagePort()` is null, every call returns -32011) and, for WS4.3, until WS3.4 wires the cookie port.
+- **WS4.2 — per-write confirmation; a dry run commits nothing** — status **UNPROVEN**. (a) entry point: authenticated socket -> router -> broker -> engine on Windows. (b) test and step: same file; dry-run assertions. (c) mutant: skip the `options.expect` check; mint without the single-use mark. (d) platform run: Win11 VM and Win10 box (fixtures only). Proof type: none yet. UNPROVEN: there is no exercising proof until the WS2a.1 port exists (`pagePort()` is null, every call returns -32011) and, for WS4.3, until WS3.4 wires the cookie port.
+- **WS4.3 — the login gate reads the session cookie through the WS3 cookie port** — status **UNPROVEN**. (a) entry point: authenticated socket -> router -> broker -> engine on Windows. (b) test and step: same file plus `win_cookie_test.py`. (c) mutant: skip the pre-dispatch `load_serial` revalidation. (d) platform run: Win11 VM and Win10 box (fixtures only). Proof type: none yet. UNPROVEN: there is no exercising proof until the WS2a.1 port exists (`pagePort()` is null, every call returns -32011) and, for WS4.3, until WS3.4 wires the cookie port.
 
 ---
 
@@ -2079,6 +2213,23 @@ Windows capture + foreground-proof backend (Testing Strategy, real-screen bullet
   zigBrowser window is foreground (`GetForegroundWindow`) before any `SendInput`, and the runner
   fails closed if the capture is unavailable or the desktop is locked.
 
+### WS5 proof blocks (rule 9, rev 2.19; 4pa.44 and 4pa.46)
+
+> **4pa.44 — source oracles are tripwires, never proof.** The WS5 drawer behaviors had been closed by about 116 offline oracle and model tests (grep, lexer, AST and extract tests over the shim and the C# runner text, and Python models of the lifecycle) against 27 live rows. Those suites are TRIPWIRES. A drawer behavior is proven only by the registered live run on the Win11 VM or the Win10 box. Two drawer behaviors have that proof: **WS5.1** (entry run b2c4f25, 8/8) and **WS5.5** (the four live lifecycle methods run on the Win11 VM at **a5745b9**: peak, intermediate and final counts, NoKillNeeded, zero survivors; the live count is driven in portable Zig by `agent_drawer_props_test.zig`). Even those two stay PROVEN-PARTIAL until a production mutant is recorded and the run is registered under fail-on-skip. **4pa.46 — WS5.6 closure was offline only**; it is re-marked NOT BUILT below with the exercising proof named. WS5.2, WS5.3, WS5.4 and WS5.7 are re-marked NOT BUILT; WS5.8, WS5.9 and WS5.10 do not exist.
+
+- **WS5.1 — the dock resizes the page above it (entry run)** — status **PROVEN-PARTIAL**. (a) entry point: `zigBrowser.exe` start with the drawer on (`zb_app_set_agent_drawer`): `DRAWER open` rows and native child visibility. (b) test and step: `tests/windows/win_drawer_test.py` `WinDrawerLive` (step `windows-drawer-live`: in `zig build test` it scrubs the host variables and skips, so the live run is by hand with the host set). (c) mutant: NONE recorded on production (the b2c4f25 negatives mutate the oracle's observations). Required: skip the icon `SW_HIDE` in `resize_controller`: `icon_visible == 0` must go red. (d) platform run: Win11 VM entry run b2c4f25, 8/8; Win10 box not run. Proof type: platform run. PROVEN by the recorded platform run. Open: production mutant, fail-on-skip gate registration, Win10 leg.
+- **WS5.2 — the icon drags, moves by keys, persists** — status **NOT BUILT**. (a) entry point: real icon input on the real exe. (b) test and step: `win_drawer_behaviors_test.py` live rows `test_ws5_2_icon_drag_moves_to_persisted_ratio` and `test_ws5_2_small_move_from_closed_is_click_that_opens` (skip in the gate; never run). (c) mutant: drag threshold 0. (d) platform run: Win11 VM. Proof type: tripwire-only today (offline oracles and models). RE-MARKED NOT BUILT (4pa.44): proven only by source oracles and models; the live rows have never run.
+- **WS5.2P — drawer geometry properties (ratio roundtrip, `clampRect`)** — status **PROVEN-PARTIAL**. (a) entry point: the production `agent_drawer.zig` functions. (b) test and step: `tests/windows/agent_drawer_props_test.zig` (step `drawer-props-test`, in `zig build test`, driven). (c) mutant: let `clampRect` leave the icon outside the client area. (d) platform run: none: pure Zig (hit-testing on the platform is WS5.7). Proof type: driven (L). Open: no production-mutant run record was located in this audit; record it in the commit message (rule 3).
+- **WS5.3 — `-` folds into the icon over 180 ms** — status **NOT BUILT**. (a) entry point: the fold on the real exe with `ZIGBROWSER_AGENT_ANIM_MS=3000`. (b) test and step: live rows `test_ws5_3_fold_intermediate_default_duration`, `..._honors_anim_ms_override` (never run). (c) mutant: snap with no animation. (d) platform run: Win11 VM. Proof type: tripwire-only today. RE-MARKED NOT BUILT (4pa.44): the fold-failure rows are source/model oracles; no accepted live run.
+- **WS5.4 — bubble text is selectable, copyable and inert** — status **NOT BUILT**. (a) entry point: select-all and `WM_COPY` on a real bubble. (b) test and step: live row `test_ws5_4_bubble_copy_and_inert` (never run). (c) mutant: set the text as RTF (`EM_STREAMIN`). (d) platform run: Win11 VM. Proof type: tripwire-only today. RE-MARKED NOT BUILT (4pa.44).
+- **WS5.5 — per-window drawers, one destroy path, live count back to zero** — status **PROVEN-PARTIAL**. (a) entry point: closing windows through the popup close path and `WM_DESTROY`, which call `zb_drawer_live_inc` and `zb_drawer_live_dec` in Zig. (b) test and step: DRIVEN Zig `tests/windows/agent_drawer_props_test.zig` over the real `DrawerLive` and `retireExtraWindow` (step `drawer-props-test`); live methods `test_ws5_5_live_count_peak_then_zero`, `test_ws5_5b2_closing_one_extra_drops_the_live_count_by_exactly_one`, `test_ws5_5b2_extra_fail_panel_drives_partial_cleanup`, `test_ws5_5b2_extra_fail_icon_drives_partial_cleanup`. (c) mutant: skip the destroy in the popup close path: the live count stays above zero (named; run record not located: record it). (d) platform run: Win11 VM live run at a5745b9: peak, intermediate and final counts, NoKillNeeded, zero survivors. Proof type: driven + platform run. PROVEN by the a5745b9 Win11 run (accepted per the State-at-HEAD table; the run output is not in a5745b9's own commit message, which says the run was pending, so paste the output into the next commit). Open: recorded production mutant, Win10 leg.
+- **WS5.6 — the drawer is unreachable from page JavaScript and the socket** — status **NOT BUILT**. (a) entry point: the real exe with `--automation-api` and the drawer on; page `postMessage`, `window.chrome.webview` and a DOM walk; every socket method containing `drawer`. (b) test and step: live row `test_ws5_6_isolation_denied_and_census_unchanged` (`win_drawer_behaviors_test.py:1018`, never run) plus a NEW page-JS half that needs WS2a.1. (c) mutant: expose `drawer.state` over the socket; reply to a `chrome.webview` message with drawer state. (d) platform run: Win11 VM; Win10 box for the same row. Proof type: tripwire-only today (4cb740d and 33bde9a are offline Linux in-process tests; the Python row exercises helpers defined in the test itself). REWRITTEN + NOT BUILT (4pa.46): offline closure does not prove WS5.6. Exercising proof needed: the Win11 real-binary row above. The socket half can run now; the page-JS half is blocked by WS2a.1.
+- **WS5.7 — 150% DPI: icon is 84 px and hit-testing is exact** — status **NOT BUILT**. (a) entry point: the real exe at 150% scaling. (b) test and step: live rows `test_ws5_7_dpi_scaled_rect_and_hit_test`, `..._dpichanged_resizes_the_icon` (never run). (c) mutant: ignore DPI. (d) platform run: Win11 VM. Proof type: tripwire-only today (env-seam proof only; the process is not DPI-aware). RE-MARKED NOT BUILT (4pa.44): no manifest, so no 150% acceptance until WS5.8.
+- **WS5.8 — DPI manifest and resource file** — status **NOT BUILT**. (a) entry point: the exe started at 150%: `GetDpiForWindow`. (b) test and step: NEW live row: `dpi_for_window == 144 and icon_px == 84`. (c) mutant: drop the manifest from the link. (d) platform run: Win11 VM. Proof type: none yet. Nothing exists.
+- **WS5.9 — owned layered popup for the icon** — status **NOT BUILT**. (a) entry point: the real exe: icon above the GPU-composited page. (b) test and step: NEW live row with window capture. (c) mutant: revert to the child STATIC. (d) platform run: Win11 VM. Proof type: none yet. Nothing exists.
+- **WS5.10 — approval card and Send box** — status **NOT BUILT**. (a) entry point: the real drawer's Approve handler and Send control. (b) test and step: NEW live rows (also prerequisites of WS11.3 and WS12.1). (c) mutant: mint a grant before the click. (d) platform run: Win11 VM. Proof type: none yet. Nothing exists.
+- **WS5.O — WS5 offline oracle and model suites** — status **TRIPWIRE ONLY**. (a) entry point: (none: these suites do not reach production). (b) test and step: `windows-drawer-behaviors` (offline half), `windows-drawer-live` (offline half), `windows-drawer-settle` (`ws5_5b2_settle_ast_test.py`, an AST parse of a Python test file), `windows-drawer-lifecycle` (`ws5_5b2_lifecycle_seam_test.py`, a Python model plus a call-site tripwire bound to the runner text), `ws5_5b2_clean_quit_red_test.py`. (c) mutant: n/a (they are guards). (d) platform run: n/a. Proof type: tripwire-only. REWRITTEN (4pa.44): source oracles are tripwires and never close a drawer behavior. The only drawer proofs are the driven Zig test and the registered live run on the Win11 VM or Win10 box. **Rule-9 fields incomplete: not ready for implementation.**
+
 **Gate (WS5):** [L] Zig properties; [W11] `win_drawer_test.py` and the live rows of `win_drawer_behaviors_test.py` on the
 Win11 VM under fail-on-skip (D.1; the drawer suites must stop force-unsetting the host vars, `build.zig:3549, 3559`);
 all five real-screen cases on the Win11 console. A behavior counts only when its live row is accepted (D.4).
@@ -2106,9 +2257,8 @@ with `CredWriteW` (`CRED_TYPE_GENERIC`, target `zigBrowser/ClaudeAgentToken/defa
   `agent_secrets_win.cpp` is gated today only by "compiles and exports four names" (`build.zig:564-567`); dropping
   `CRYPTPROTECT_UI_FORBIDDEN` (`:75`) or changing the SDDL (`:95`) would pass every registered step. Create the missing
   `agent_secrets_win_logic.h` (`tests/windows/agent_secrets_win_logic_test.cpp:11` includes it; it does not exist) with
-  the flag/SDDL constants as testable values, and add reds: `assert flags & CRYPTPROTECT_UI_FORBIDDEN`,
-  `assert sddl == owner_only_sddl(current_sid)`, and a live `acl_principals(p) == {current_sid}` on the VM. Mutants:
-  drop the flag ⇒ red; widen the SDDL ⇒ red.
+  the flag/SDDL constants as testable values **for a compile-level TRIPWIRE only (rev 2.19, rule 5: asserting a constant or comparing an SDDL string is a source check)**. The proofs are exercised: a live `acl_principals(p) == {current_sid}` read-back of the file the real store writes, on the VM, and a real `zb_secret_dpapi_protect` / `dpapi_unprotect` round trip. Mutant: widen the SDDL ⇒ the read-back is red.
+  `CRYPTPROTECT_UI_FORBIDDEN` has no known exercising proof (its effect shows only when DPAPI would prompt): **UNPROVEN** (WS6.1c) until a scenario that provokes the prompt is found.
 - **`runSafety` gets a consumer and a non-null target (W3).** `runSafety` (`agent_secrets_store.zig:33-67`) has no
   consumer, and `agent_secrets_win.cpp:30,43,60` accept `nullptr` (the real production target) and any target string,
   so a credential test could reach `zigBrowser/ClaudeAgentToken/default`. Required: every Windows credential **test**
@@ -2167,6 +2317,19 @@ to run. Credential tests run inside the interactive session task.
   launcher). Here LEAF (store round-trip, single process).
 - **Real-screen check `win-secrets-window`:** paste, save, remove, and the private-file choice, on
   both screens; the window never shows the token in clear text.
+
+### WS6 proof blocks (rule 9, rev 2.19)
+
+> The Windows Credential Manager code is a skeleton with no caller; a symbol check does not prove a credential round trip.
+
+- **WS6.1 — Credential Manager token store (`CredWriteW/ReadW/DeleteW`)** — status **NOT BUILT**. (a) entry point: the Secrets window's Save, Remove and read-back (the consumer; does not exist). (b) test and step: NEW `tests/e2e/win_secrets_test.py` run inside the interactive-session task. (c) mutant: skip the shape check; write plaintext. (d) platform run: Win11 VM and Win10 box. Proof type: tripwire-only today (the `agent_secrets_win.cpp` exports are symbol-checked at `build.zig:564-567`). REWRITTEN + NOT BUILT: a symbol check is a TRIPWIRE; the closing proof is a real CredWrite, CredRead, CredDelete round trip. Skeleton with no caller.
+- **WS6.1a — `Token` is parsed once** — status **NOT BUILT**. (a) entry point: `zb_secret_cred_save(bad_bytes)` through the C ABI. (b) test and step: NEW Zig test plus the `win_secrets_test.py` shape row. (c) mutant: let the C ABI accept raw bytes. (d) platform run: Win11 VM. Proof type: none yet. `validToken` returns a bool and is re-checked in five places (C19).
+- **WS6.1b — private-file fallback ACL and DPAPI wrap** — status **NOT BUILT**. (a) entry point: the real `zb_secret_dpapi_protect` and the owner-only file writer. (b) test and step: NEW live row: `acl_principals(p) == {current_sid}` read back on the VM and `dpapi_unprotect(read_file(p)) == canary`; replaces the plan's earlier `sddl == owner_only_sddl(...)` string comparison. (c) mutant: widen the SDDL; write plaintext. (d) platform run: Win11 VM. Proof type: none yet. REWRITTEN + NOT BUILT: comparing an SDDL constant is a source check (TRIPWIRE only). The test header `agent_secrets_win_logic.h` also does not exist.
+- **WS6.1c — `CRYPTPROTECT_UI_FORBIDDEN` is honored** — status **UNPROVEN**. (a) entry point: `zb_secret_dpapi_protect`. (b) test and step: none known. (c) mutant: drop the flag. (d) platform run: Win11 VM. Proof type: none yet. REWRITTEN + UNPROVEN: asserting that a flag bit is set is a source check. The flag's effect is observable only when DPAPI would prompt; no way to provoke that prompt is known. Missing: a provoking scenario. **Rule-9 fields incomplete: not ready for implementation.**
+- **WS6.2 — the Secrets window** — status **NOT BUILT**. (a) entry point: the real Win32 Secrets window. (b) test and step: NEW `win_secrets_test.py` rows (`page.list` shows no secrets window; registry count unchanged). (c) mutant: register the window in the registry. (d) platform run: Win11 VM and Win10 box. Proof type: none yet. No window exists.
+- **WS6.3 — tests never touch a real credential** — status **NOT BUILT**. (a) entry point: every Windows credential test entry point. (b) test and step: NEW row: a test that passes `nullptr` or a non-`zigBrowser-test-*` target is refused. (c) mutant: skip `runSafety`. (d) platform run: Win11 VM. Proof type: none yet. `runSafety` has no consumer (W3).
+- **WS6.4 — token route from the Windows store to the in-distro CLI's fd 3** — status **UNPROVEN**. (a) entry point: browser process -> `wsl.exe` one-shot pipe -> CLI fd 3. (b) test and step: TBD: named only after the WS8/WS9 DRAFT gate closes. (c) mutant: pass the token in argv. (d) platform run: Win11 VM only. Proof type: none yet. UNPROVEN: needs the C1 bootstrap (DRAFT gate blocker 3) and a distro. **Rule-9 fields incomplete: not ready for implementation.**
+- **WS6.S — portable token shape check** — status **PROVEN-PARTIAL**. (a) entry point: `agent_secrets.zig` shape rules. (b) test and step: `agent_secrets_shape_test.zig` (registered; 10k-string property). (c) mutant: accept a 21-character suffix. (d) platform run: none: pure Zig. Proof type: driven (L). Open: no production-mutant run record was located in this audit; record it in the commit message (rule 3).
 
 **Gate (WS6):** [W] the Win11 VM AND the Win10 box (the Secrets window exists on Win10 too, so its own Win10 leg runs there with its own evidence line; its agent route does not, agent OFF) + `win-secrets-window` on the Win11 console and the Win10 monitor.
 
@@ -2243,6 +2406,17 @@ to run. Credential tests run inside the interactive session task.
   real NTFS junction on the VM (the in-distro copy-skip on a real ext4 symlink).
 - **Closure:** WS7.1 BLOCKING (setup process → home on disk → helper launch reads it; OBSERVE =
   WS11.1's `ready` frame); WS7.4 LEAF (copy rules).
+
+### WS7 proof blocks (rule 9, rev 2.19)
+
+> WS7 was built against the superseded native-Windows design; toy-input reds are tripwires.
+
+- **WS7.0 — `--agent-setup` on Windows 11 builds the agent home in the distro** — status **NOT BUILT**. (a) entry point: `zigBrowser.exe --agent-setup`. (b) test and step: NEW `tests/windows/win_agent_setup_test.py`. (c) mutant: unpinned `pip install`. (d) platform run: Win11 VM only. Proof type: none yet. Behind the WS8/WS9 DRAFT gate for anything touching WSL; built so far against the superseded native-Windows design.
+- **WS7.1 — atomic `current` switch** — status **NOT BUILT**. (a) entry point: `--agent-setup` run twice (second run swaps `current`). (b) test and step: in-distro POSIX `rename` property [L]; the Windows C3 pointer via `MoveFileExW`: a VM row where a reader polls 1000 times while a writer swaps. (c) mutant: delete-then-create. (d) platform run: Win11 VM. Proof type: tripwire-only today (threads with POSIX `os.rename`, a toy). REWRITTEN + NOT BUILT: the toy-input red is a TRIPWIRE; `MoveFileExW` atomicity must be exercised on the VM.
+- **WS7.2 — bundled runtime inside the distro, pinned by SHA-256** — status **UNPROVEN**. (a) entry point: the distro's Python and the Agent SDK wheel launched inside the imported distro. (b) test and step: TBD: named only after the WS8/WS9 DRAFT gate closes. (c) mutant: unpinned `pip install`. (d) platform run: Win11 VM only. Proof type: none yet. UNPROVEN: needs the imported distro (WS8 DRAFT gate). A SHA-256 match of a file is an integrity check, not proof the runtime works. **Rule-9 fields incomplete: not ready for implementation.**
+- **WS7.3 — launcher is `wsl.exe -d <distro> -u <nonroot>` plus the C1 bootstrap** — status **NOT BUILT**. (a) entry point: the production launcher in the Windows browser process (`agent/host/zb_agent_host/launcher.py` is 35 lines with no `wsl.exe`, no `pass_fds`, no fd 3). (b) test and step: `agent/host/tests/test_launcher_contract.py` [L] (driven over the real launcher function); the live `wsl.exe` leg is DRAFT-gated. (c) mutant: launcher returns 0 always. (d) platform run: Win11 VM (DRAFT-gated). Proof type: none yet. Nothing built for WSL2.
+- **WS7.4 — SAI copy rules skip links and junctions** — status **NOT BUILT**. (a) entry point: the setup copy path. (b) test and step: a real ext4 symlink inside the distro and a real NTFS junction on the VM; today's reds use an in-memory filesystem. (c) mutant: follow links. (d) platform run: Win11 VM. Proof type: tripwire-only today (toy inputs). REWRITTEN + NOT BUILT: toy-input reds are TRIPWIRES; the real-link rows do not exist.
+- **WS7.5 — Windows-host Python modules import on Windows** — status **NOT BUILT**. (a) entry point: import of every module the Windows host still imports, with POSIX-only modules blocked. (b) test and step: NEW `agent/host/tests/test_windows_import.py`. (c) mutant: re-add a top-level `import fcntl`. (d) platform run: none (Linux run with blocked modules). Proof type: none yet. Unwritten red.
 
 **Gate (WS7):** [L] layout/copy tests; [W11] setup e2e on the Win11 VM only (agent is Win11-only; Win10 asserts the
 agent-OFF explanation). Not a UI slice. WS7.5 (Windows-importability of the Python modules) is retained only for the
@@ -2631,6 +2805,20 @@ executable, and writing system dirs.
 - **WS8.8** fail-closed: virt/WSL off ⇒ agent OFF + the fixed explanation.
 Each with the mutant that flips it; all [W]/[U] on **win11-m8 only** (never the Win10 box — agent OFF there).
 
+### WS8 proof blocks (rule 9, rev 2.19; DRAFT)
+
+> DRAFT. No row is ready for implementation; the test names are TBD until the DRAFT gate closes. `wsl_live_test.py` is a discovery spike and never proof.
+
+- **WS8.1 — isolation: host profile, processes and browser memory unreachable from the distro** — status **UNPROVEN**. (a) entry point: `WslBackend` launched by the real browser/helper into the staged distro. (b) test and step: TBD: named only after the WS8/WS9 DRAFT gate closes. (c) mutant: canary in the host profile and one outside the bwrap mounts stay unreadable (the mutant that omits the defense must expose the canary). (d) platform run: Win11 VM only (never the Win10 box). Proof type: none yet. UNPROVEN: DRAFT, no production `WslBackend` exists; `wsl_live_test.py` is a DISCOVERY-ONLY spike and is never proof. Missing: the production backend, a repaired and approved spike (blocker 1), and the named test and step. **Rule-9 fields incomplete: not ready for implementation.**
+- **WS8.2 — one-admin resumable setup (idempotent, rollback, reboot flag)** — status **UNPROVEN**. (a) entry point: `WslBackend` launched by the real browser/helper into the staged distro. (b) test and step: TBD: named only after the WS8/WS9 DRAFT gate closes. (c) mutant: failed setup leaves no distro and no global WSL change (the mutant that omits the defense must expose the canary). (d) platform run: Win11 VM only (never the Win10 box). Proof type: none yet. UNPROVEN: DRAFT, no production `WslBackend` exists; `wsl_live_test.py` is a DISCOVERY-ONLY spike and is never proof. Missing: the production backend, a repaired and approved spike (blocker 1), and the named test and step. **Rule-9 fields incomplete: not ready for implementation.**
+- **WS8.3 — two token channels (control capability, OAuth fd 3)** — status **UNPROVEN**. (a) entry point: `WslBackend` launched by the real browser/helper into the staged distro. (b) test and step: TBD: named only after the WS8/WS9 DRAFT gate closes. (c) mutant: the canary never appears in argv, env, files, control frames or logs (the mutant that omits the defense must expose the canary). (d) platform run: Win11 VM only (never the Win10 box). Proof type: none yet. UNPROVEN: DRAFT, no production `WslBackend` exists; `wsl_live_test.py` is a DISCOVERY-ONLY spike and is never proof. Missing: the production backend, a repaired and approved spike (blocker 1), and the named test and step. **Rule-9 fields incomplete: not ready for implementation.**
+- **WS8.4 — dedicated non-root uid, default-user selection, no admin group** — status **UNPROVEN**. (a) entry point: `WslBackend` launched by the real browser/helper into the staged distro. (b) test and step: TBD: named only after the WS8/WS9 DRAFT gate closes. (c) mutant: negatives: mount, ptrace, host-exe launch, system-dir writes (the mutant that omits the defense must expose the canary). (d) platform run: Win11 VM only (never the Win10 box). Proof type: none yet. UNPROVEN: DRAFT, no production `WslBackend` exists; `wsl_live_test.py` is a DISCOVERY-ONLY spike and is never proof. Missing: the production backend, a repaired and approved spike (blocker 1), and the named test and step. **Rule-9 fields incomplete: not ready for implementation.**
+- **WS8.5 — per-run teardown within 5 s, never the shared distro** — status **UNPROVEN**. (a) entry point: `WslBackend` launched by the real browser/helper into the staged distro. (b) test and step: TBD: named only after the WS8/WS9 DRAFT gate closes. (c) mutant: SIGTERM-ignoring and setsid children are gone; the second session survives (the mutant that omits the defense must expose the canary). (d) platform run: Win11 VM only (never the Win10 box). Proof type: none yet. UNPROVEN: DRAFT, no production `WslBackend` exists; `wsl_live_test.py` is a DISCOVERY-ONLY spike and is never proof. Missing: the production backend, a repaired and approved spike (blocker 1), and the named test and step. **Rule-9 fields incomplete: not ready for implementation.**
+- **WS8.6 — file scope via the broker** — status **UNPROVEN**. (a) entry point: `WslBackend` launched by the real browser/helper into the staged distro. (b) test and step: TBD: named only after the WS8/WS9 DRAFT gate closes. (c) mutant: `..`, symlink, junction, hardlink, parent swap each refused (the mutant that omits the defense must expose the canary). (d) platform run: Win11 VM only (never the Win10 box). Proof type: none yet. UNPROVEN: DRAFT, no production `WslBackend` exists; `wsl_live_test.py` is a DISCOVERY-ONLY spike and is never proof. Missing: the production backend, a repaired and approved spike (blocker 1), and the named test and step. **Rule-9 fields incomplete: not ready for implementation.**
+- **WS8.7 — no-network child inside the distro** — status **UNPROVEN**. (a) entry point: `WslBackend` launched by the real browser/helper into the staged distro. (b) test and step: TBD: named only after the WS8/WS9 DRAFT gate closes. (c) mutant: netd denies every endpoint (the mutant that omits the defense must expose the canary). (d) platform run: Win11 VM only (never the Win10 box). Proof type: none yet. UNPROVEN: DRAFT, no production `WslBackend` exists; `wsl_live_test.py` is a DISCOVERY-ONLY spike and is never proof. Missing: the production backend, a repaired and approved spike (blocker 1), and the named test and step. **Rule-9 fields incomplete: not ready for implementation.**
+- **WS8.8 — fail-closed: virtualization or WSL off** — status **UNPROVEN**. (a) entry point: `WslBackend` launched by the real browser/helper into the staged distro. (b) test and step: TBD: named only after the WS8/WS9 DRAFT gate closes. (c) mutant: agent OFF plus the fixed message, not a crash (the mutant that omits the defense must expose the canary). (d) platform run: Win11 VM only (never the Win10 box). Proof type: none yet. UNPROVEN: DRAFT, no production `WslBackend` exists; `wsl_live_test.py` is a DISCOVERY-ONLY spike and is never proof. Missing: the production backend, a repaired and approved spike (blocker 1), and the named test and step. **Rule-9 fields incomplete: not ready for implementation.**
+- **WS8.M — WS8/WS9 acceptance matrix (12 items)** — status **UNPROVEN**. (a) entry point: the real browser/helper -> production backend -> staged distro, bwrap and netd. (b) test and step: TBD: named only after the WS8/WS9 DRAFT gate closes. (c) mutant: one omit-defense mutant per item. (d) platform run: Win11 VM only. Proof type: none yet. UNPROVEN until each item is a named driven test against the production backend. **Rule-9 fields incomplete: not ready for implementation.**
+
 **Gate (WS8):** [L] the `WslBackend` contract projection + the C1 auth / C2 broker / C3 setup units that are
 Linux-testable; [W] WS8.1-8.8 on **win11-m8 only**. One UAC prompt (the C3 admin step), clicked by the owner
 in person (`win-sandbox-uac`). WS11 stays blocked until all pass. (No Win10 leg — agent OFF on Win10; no WSL/agent there.)
@@ -2820,6 +3008,16 @@ in **different** namespaces, and must not be conflated:
   helper's first SDK request; DRIVER = the real in-distro netd accept loop; OBSERVE = the fake API log +
   netd's census; RED-AT-SEAM = bypass netd ⇒ the distro netns denies ⇒ the request never lands.
 
+### WS9 proof blocks (rule 9, rev 2.19; DRAFT)
+
+> DRAFT, as WS8.
+
+- **WS9.1 — the CLI reaches the fake API only through the in-distro netd** — status **UNPROVEN**. (a) entry point: the in-distro netd driven by the real helper's first SDK request. (b) test and step: TBD: named only after the WS8/WS9 DRAFT gate closes. (c) mutant: remove netd: the bypass probe must reach the API and the test goes red. (d) platform run: Win11 VM only. Proof type: none yet. UNPROVEN: DRAFT; needs the WS8 backend and the C5 topology (blocker 5). **Rule-9 fields incomplete: not ready for implementation.**
+- **WS9.2 — denials: 1.1.1.1, TEST-NET, loopback decoy, DNS, non-allowlisted CONNECT** — status **UNPROVEN**. (a) entry point: the in-distro netd driven by the real helper's first SDK request. (b) test and step: TBD: named only after the WS8/WS9 DRAFT gate closes. (c) mutant: widen the allowlist: a denied host connects. (d) platform run: Win11 VM only. Proof type: none yet. UNPROVEN: DRAFT; needs the WS8 backend and the C5 topology (blocker 5). **Rule-9 fields incomplete: not ready for implementation.**
+- **WS9.3 — a hook reaches only the two bridges, both carry bytes** — status **UNPROVEN**. (a) entry point: the in-distro netd driven by the real helper's first SDK request. (b) test and step: TBD: named only after the WS8/WS9 DRAFT gate closes. (c) mutant: give a hook stream the agent-control op. (d) platform run: Win11 VM only. Proof type: none yet. UNPROVEN: DRAFT; needs the WS8 backend and the C5 topology (blocker 5). **Rule-9 fields incomplete: not ready for implementation.**
+- **WS9.4 — the sign-in netd allows exactly two hosts and no bridges** — status **UNPROVEN**. (a) entry point: the in-distro netd driven by the real helper's first SDK request. (b) test and step: TBD: named only after the WS8/WS9 DRAFT gate closes. (c) mutant: add a third sign-in host. (d) platform run: Win11 VM only. Proof type: none yet. UNPROVEN: DRAFT; needs the WS8 backend and the C5 topology (blocker 5). **Rule-9 fields incomplete: not ready for implementation.**
+- **WS9.R — C5 reverse relay acceptance (bytes through both ports; co-tenant, squat and namespace negatives)** — status **UNPROVEN**. (a) entry point: a hook inside a private netns connecting to `127.0.0.1:51091` and `:31337`. (b) test and step: TBD: named only after the WS8/WS9 DRAFT gate closes. (c) mutant: let the relay forward to a non-bridge port; omit the pre-auth frame drop. (d) platform run: Win11 VM only. Proof type: none yet. UNPROVEN: blocker 5. **Rule-9 fields incomplete: not ready for implementation.**
+
 **Gate (WS9):** [L] netd units under the distro netns; [W] WS9.1-WS9.4 + the relay bypass/denial rows on
 **win11-m8 only** (never the Win10 box — it ships browser-only with the agent OFF, WS9 does not run there).
 Not a UI slice, so no real-screen case.
@@ -2867,6 +3065,14 @@ runs inside the distro and the C5 relay replaces the host-side filters.)*
   `CredReadW` + the `SECRETS` census row).
 - **Real-screen check `win-signin`:** Sign in opens the default browser, pasting the code saves the
   token, on the Win11 console.
+
+### WS10 proof blocks (rule 9, rev 2.19; DRAFT)
+
+> DRAFT, blocked on the WS8/WS9 DRAFT gate.
+
+- **WS10.1 — `claude setup-token` runs in the distro; authorize URL opened only on click** — status **UNPROVEN**. (a) entry point: the Secrets window's Sign-in and the login relay. (b) test and step: TBD: named only after the WS8/WS9 DRAFT gate closes. (c) mutant: open the browser at start. (d) platform run: Win11 VM only. Proof type: none yet. UNPROVEN: blocked on the WS8/WS9 DRAFT gate; no code. **Rule-9 fields incomplete: not ready for implementation.**
+- **WS10.2 — pasted code reaches the CLI over C1; the token returns on a one-shot channel into the store** — status **UNPROVEN**. (a) entry point: the Secrets window's Sign-in and the login relay. (b) test and step: TBD: named only after the WS8/WS9 DRAFT gate closes. (c) mutant: pass the token in argv. (d) platform run: Win11 VM only. Proof type: none yet. UNPROVEN: blocked on the WS8/WS9 DRAFT gate; no code. **Rule-9 fields incomplete: not ready for implementation.**
+- **WS10.3 — cancel and timeout map to the same codes as Linux** — status **UNPROVEN**. (a) entry point: the Secrets window's Sign-in and the login relay. (b) test and step: TBD: named only after the WS8/WS9 DRAFT gate closes. (c) mutant: collapse `cancelled` into `cli`. (d) platform run: Win11 VM only. Proof type: none yet. UNPROVEN: blocked on the WS8/WS9 DRAFT gate; no code. **Rule-9 fields incomplete: not ready for implementation.**
 
 **Gate (WS10):** [W11] the Win11 VM + `win-signin` (the whole agent sign-in path is Win11-only: Win10 ships agent-OFF,
 OD-W4 scope; Win10 shows only the agent-OFF explanation). Blocked on the WS8/WS9 DRAFT gate.
@@ -2925,6 +3131,14 @@ OD-W4 scope; Win10 shows only the agent-OFF explanation). Blocked on the WS8/WS9
 - **Real-screen checks:** `win-chat-reply` (a streamed reply appears in the drawer, text copyable)
   and `win-approval-card` (the user clicks Approve and sees one commit; Deny commits nothing), on the Win11
   console (rev 2.17: agent is Win11-only).
+
+### WS11 proof blocks (rule 9, rev 2.19; DRAFT)
+
+> DRAFT, blocked on WS8, WS9 and WS5.10.
+
+- **WS11.1 — helper starts under the backend and emits a validated `ready` frame** — status **UNPROVEN**. (a) entry point: the Windows helper relay, drawer Send and native card. (b) test and step: TBD: named only after the WS8/WS9 DRAFT gate closes. (c) mutant: pass the token in env. (d) platform run: Win11 VM only. Proof type: none yet. UNPROVEN: blocked on WS8, WS9 and (WS11.3) WS5.10. **Rule-9 fields incomplete: not ready for implementation.**
+- **WS11.2 — chat round trip streams into the Win32 drawer** — status **UNPROVEN**. (a) entry point: the Windows helper relay, drawer Send and native card. (b) test and step: TBD: named only after the WS8/WS9 DRAFT gate closes. (c) mutant: disconnect the drawer to helper wiring. (d) platform run: Win11 VM only. Proof type: none yet. UNPROVEN: blocked on WS8, WS9 and (WS11.3) WS5.10. **Rule-9 fields incomplete: not ready for implementation.**
+- **WS11.3 — approved commit exactly once; Deny, expiry, retarget and wrong account commit zero** — status **UNPROVEN**. (a) entry point: the Windows helper relay, drawer Send and native card. (b) test and step: TBD: named only after the WS8/WS9 DRAFT gate closes. (c) mutant: mint the grant before the click. (d) platform run: Win11 VM only. Proof type: none yet. UNPROVEN: blocked on WS8, WS9 and (WS11.3) WS5.10. **Rule-9 fields incomplete: not ready for implementation.**
 
 **Gate (WS11):** [W] WS11.1-WS11.3 on **win11 only** (WS11 is the agent helper/chat/commit, which needs
 WS8+WS9; Win10 ships agent-OFF per the OD-W4 scope, so WS11 does not run there) + both real-screen cases.
@@ -2986,6 +3200,13 @@ once this plan is accepted (they own the edit; this plan does not edit them).
   (recorded-file) tests only — it has no proven capture device (STT D8 / provisioning item 12), so
   `win-voice-live` runs on Windows 10 only.
 
+### WS12 proof blocks (rule 9, rev 2.19)
+
+> Not started.
+
+- **WS12.1 — drawer voice hook points (`zb_drawer_set_draft`, `zb_drawer_speaker_toggled`)** — status **NOT BUILT**. (a) entry point: the two exports on the real drawer. (b) test and step: NEW `win_drawer_voice_hooks_test.py`. (c) mutant: make `zb_drawer_set_draft` a no-op; let page JavaScript call it. (d) platform run: Win11 VM and Win10 box. Proof type: none yet. Neither export exists.
+- **WS12.2 — `gate.sh --phase voice` fails closed** — status **NOT BUILT**. (a) entry point: `gate.sh --phase voice`. (b) test and step: selftest case: a fake host reporting `NOT RUN: no capture device` must make the gate exit nonzero. (c) mutant: treat it as skip. (d) platform run: none: Linux selftest. Proof type: none yet. Not started.
+
 **Gate (WS12):** [W] the hook-point test; the voice tests run under the voice plans' own gates.
 
 ---
@@ -2994,7 +3215,7 @@ once this plan is accepted (they own the edit; this plan does not edit them).
 
 ### Behaviors
 - **WS13.1 the MSI ships every component** the release needs, per user under
-  `%LOCALAPPDATA%\Programs\zigBrowser` (OD-W1); a census lists every PE/file and fails on an unlisted one.
+  `%LOCALAPPDATA%\Programs\zigBrowser` (OD-W1); a census lists every PE/file and fails on an unlisted one (rev 2.19: the census is a TRIPWIRE, rule 5; WS13.1 closes only when the installed product is installed and run from its install directory, see the WS13 proof blocks).
   **Rev 2.17 (C11, OD-W4) component list:** browser, manifest/`.rc` (WS5.8), the drawer, the Secrets/CredMan code, the
   voice engines/models (voice plans), and — **Win11 build only** — the WSL2 agent payload: the **distro rootfs tarball
   (pinned SHA-256) and the in-distro agent home/`zb_agent_host`/Linux `claude` as data inside it**, plus the
@@ -3099,6 +3320,18 @@ once this plan is accepted (they own the edit; this plan does not edit them).
   with the host `identity_marker`, in the commit message, after the Win10 release (RoseCat exact-commit approval + orchestrator
   release). A WebView2 runtime install on that box, if the runtime is missing, is system-wide: ask the owner first.
 
+### WS13 proof blocks (rule 9, rev 2.19)
+
+> A file census is a listing and a TRIPWIRE; packaging is proven by installing and running the product.
+
+- **WS13.1 — the MSI ships every component** — status **NOT BUILT**. (a) entry point: the per-user MSI installed on a host, then the installed exe launched and the m8 render run from the install directory. (b) test and step: `tests/e2e/msi_install_test.py` plus NEW `components.json`; the census (a file listing) is a TRIPWIRE. (c) mutant: add an unlisted DLL to the payload: the census tripwire fails; remove a listed binary: the installed run fails. (d) platform run: Win11 VM and Win10 box. Proof type: tripwire-only today. REWRITTEN + NOT BUILT: the census lists files, so it cannot close WS13.1; the closing proof installs and runs the installed product.
+- **WS13.2 — WebView2 bootstrapper failure is surfaced** — status **NOT BUILT**. (a) entry point: an MSI install with the bootstrapper forced to fail. (b) test and step: `msi_install_test.py` (install log and the app's runtime-missing message). (c) mutant: keep `Return="ignore"` and drop the log. (d) platform run: Win11 VM. Proof type: none yet. `Return="ignore"` unchanged at `zigBrowser.wxs:80`.
+- **WS13.3 — cabinet sizes stay below 2 GB** — status **NOT BUILT**. (a) entry point: `build-msi.ps1` with generated payload sizes. (b) test and step: NEW property test over the splitter plus a real MSI build on the VM. (c) mutant: cap at `<=` instead of `<`. (d) platform run: Win11 VM. Proof type: none yet. `MediaTemplate` has no cabinet cap.
+- **WS13.4 — uninstall removes only zigBrowser's WSL state (Win11)** — status **NOT BUILT**. (a) entry point: the real uninstall. (b) test and step: NEW `msi_install_test.py` leg with the post-uninstall probe. (c) mutant: leave a distro, import dir, or lease; disable WSL or VMP; report success while any survives. (d) platform run: Win11 VM only. Proof type: none yet. Nothing built.
+- **WS13.4-W10 — Win10 browser uninstall** — status **NOT BUILT**. (a) entry point: per-user MSI install and uninstall as `zbtest`. (b) test and step: `msi_install_test.py` Win10 leg. (c) mutant: leave a file, shortcut or HKCU key; report success while any survives. (d) platform run: Win10 box, after the Win10 release. Proof type: none yet. Not run; needs an install-directory override.
+- **WS13.5 — update verifies the signature** — status **UNPROVEN**. (a) entry point: the chosen updater (OD-W2 not decided). (b) test and step: none. (c) mutant: skip the signature check. (d) platform run: Win11 VM. Proof type: none yet. UNPROVEN: no updater exists and OD-W2 is open; post-launch. **Rule-9 fields incomplete: not ready for implementation.**
+- **WS13.6 — signing (DEFERRED, OD-W3)** — status **UNPROVEN**. (a) entry point: none (deferred). (b) test and step: none. (c) mutant: none. (d) platform run: none. Proof type: none yet. UNPROVEN and not a launch gate: nothing may claim signed or distributable. **Rule-9 fields incomplete: not ready for implementation.**
+
 **Gate (WS13) — rev 2.18 (C11, C1): [W] on the Win11 VM AND the Win10 box.** The browser MSI install/uninstall/census runs on the Win11 VM and,
 as the separate leg WS13.4-W10, on the Win10 box (writable, standard user `zbtest`, work confined to `C:\Users\zbtest\zb`; the earlier text
 that said the Win10 machine receives no install and no post-uninstall probe is removed). The **agent/sandbox/WSL
@@ -3110,7 +3343,7 @@ packaging gate depends on every release component, not merely on WS7 having star
 find each component owner's artifact — browser (WS1), drawer (WS5), setup (WS7), sandbox setup (WS8), egress
 helper (WS9), sign-in (WS10), agent host/helper (WS11) — **and the voice packaging the voice plans own** (the
 TTS engine + model and the STT engine + model via their VSP/W1 slices); a missing component fails the census,
-so WS13's gate cannot pass until every component owner and the voice-packaging owners have landed. The
+so WS13's gate cannot pass until every component owner and the voice-packaging owners have landed (rev 2.19: the census is a TRIPWIRE; the gate also requires the installed product to be installed and run from its install directory, WS13.1). The
 `win-install-smartscreen` case is a UI/real-screen case for both hosts (the Win11 console and the Win10 monitor); on the Win10 box the
 install is by `zbtest` (install directory inside `C:\Users\zbtest\zb`) and the browser post-uninstall probe is WS13.4-W10 above.
 
@@ -3159,7 +3392,7 @@ the named real-screen cases with the user on the Win11 console (C1); not approve
 **Never** rewrite history: no reset, rebase or amend of committed work, even unpushed; fix forward
 with a new green commit. A slice is done only when its closure e2e was observed to execute with
 nonzero assertions on the Win11 VM AND on the Win10 box (C1) **and its live row is accepted
-(D.4); a registered live step run with no host FAILS (D.1)**.
+(D.4); a registered live step run with no host FAILS (D.1)**. **Rev 2.19 (rules 3 and 9):** a behavior is not ready for implementation until it states its entry point, test and step, mutant and platform run; and it is not accepted until the commit message records the red failure, the green, and the production mutant with its command and failing output.
 
 ## Real-screen checks (all, by slice)
 
@@ -3296,3 +3529,123 @@ migration-locked — is **withdrawn**: `bd` works today and the independent revi
 `zigBrowser-4pa` (`4pa.31` through `4pa.49`, discovered-from `4pa.4`; the enhancement task is `4pa.9`). `bd migrate` and
 `bootstrap` are still never run unilaterally on the remote-backed clone. Track status with `bd` (epic `zigBrowser-4pa`)
 and Agent Mail; this plan is the source of the amendments, not the tracker.
+
+---
+
+## Verification rule compliance (rev 2.19)
+
+Added by the owner's order of 2026-10-22 (section "Verification rule: prove it by running it", before WS0). One row per behavior, sub-slice, closure chain and gate item. "Rule-9 fields complete" means the plan now states all four of (a) entry point, (b) test and build.zig step, (c) mutant, (d) platform run; a row marked no is not ready for implementation. Proof type is driven, platform run, or tripwire-only. Status uses the legend in section F. The Win10 legs are separate rows (suffix -W10) and none has run. Statuses are documentary (this revision ran nothing).
+
+| ID | Behavior | Rule-9 fields complete | Proof type | Status | Sweep action |
+|---|---|---|---|---|---|
+| WS0.1a | probe fields and fail-closed validation (readiness) | yes | driven + platform run | PROVEN-PARTIAL | kept; proof fields added |
+| WS0.1b | lock verdict comes from the WTS session-lock flag | yes | platform run | PROVEN-PARTIAL | rewritten |
+| WS0.1c | the Win10 `--probe-only` probe writes nothing (zero-write) | yes | tripwire-only today (a regex over `host_probe.ps1`) | NOT BUILT | rewritten + NOT BUILT |
+| WS0.1d | typed probe record (ok / not_applicable / unknown) | yes | none yet | NOT BUILT | NOT BUILT |
+| WS0.2 | the gate fails closed | yes | driven + platform run | PROVEN-PARTIAL | kept; proof fields added |
+| WS0.3 | the gate never reaches the Linux display | yes | driven (L) | PROVEN-PARTIAL | kept; proof fields added |
+| WS0.4 | interactive launches are real, bounded and clean | yes | none yet | NOT BUILT | NOT BUILT |
+| WS0.5 | no remote-path authorization fence | yes | tripwire-only today (`RemotePathFenceRemovedTests` checks that names and files are absent) | NOT BUILT | rewritten + NOT BUILT |
+| WS0.6 | the Win11 VM is the VM it claims to be; a down VM fails the gate | yes | driven + platform run | PROVEN-PARTIAL | kept; proof fields added |
+| WS0.6b | unreachable VM port fails within 15 s | yes | none yet | NOT BUILT | NOT BUILT |
+| WS0.7 | the Win10 test host stays confined and undisturbed | yes | driven + platform run | PROVEN-PARTIAL | kept; proof fields added |
+| WS0.8 | transport hygiene (staging, pinned host keys, tar status) | yes | none yet | NOT BUILT | NOT BUILT |
+| WS0.9 | product-run mode with fail-on-skip | yes | none yet | NOT BUILT | rewritten + NOT BUILT |
+| WS0.9-W10 | Win10 product-run leg | yes | none yet | NOT BUILT | NOT BUILT |
+| D.3 | `--e2e-protocol` is a command-line-only flag; seams are inert without it | yes | none yet | NOT BUILT | rewritten + NOT BUILT |
+| WS1.1 | the release exe has no hidden runtime dependency | no | tripwire-only today (PE import listing) | UNPROVEN | rewritten + UNPROVEN |
+| WS1.2 | M8 render, reply channel and load-fail on both hosts | yes | none yet | NOT BUILT | NOT BUILT |
+| WS1.2-W10 | M8 tests on the Win10 box | yes | none yet | NOT BUILT | NOT BUILT |
+| WS1.3 | `--screenshot` produces a real PNG | yes | driven + platform run | PROVEN-PARTIAL | kept; proof fields added |
+| WS1.4 | a missing runtime fails with exit 9 and the documented message | yes | none yet | NOT BUILT | NOT BUILT |
+| WS1.5 | build info reports what actually ran | yes | none yet | NOT BUILT | NOT BUILT |
+| WS2.0 | transport is local-only and owner-only | yes | driven + platform run | PROVEN-PARTIAL | kept; proof fields added |
+| WS2.0-W10 | transport on the Win10 box | yes | none yet | NOT BUILT | NOT BUILT |
+| WS2a.0 | CDP isolated-world spike | yes | none yet | NOT BUILT | NOT BUILT |
+| WS2a.0-W10 | isolated-world spike on the Win10 box | yes | none yet | NOT BUILT | NOT BUILT |
+| WS2a.1 | routed `page.*` commands over the socket | yes | none yet | NOT BUILT | NOT BUILT |
+| WS2a.2 | `dom.*` runs in a private world | yes | none yet | UNPROVEN | UNPROVEN |
+| WS2a.3 | async completion ownership and bounded waits | yes | none yet | NOT BUILT | NOT BUILT |
+| WS2b.0 | capability table honesty (`cdp_input` placeholder) | yes | tripwire-only today (`automation_platform.zig:885-886` is fake-backed) | UNPROVEN | rewritten + UNPROVEN |
+| WS2b.1 | trusted-event matrix (isTrusted) | yes | none yet | NOT BUILT | NOT BUILT |
+| WS2b.1-W10 | trusted-event matrix on the Win10 box | yes | none yet | NOT BUILT | NOT BUILT |
+| WS2b.2 | dialogs (alert/confirm/prompt/beforeunload) | yes | none yet | NOT BUILT | NOT BUILT |
+| WS2b.3 | full-page screenshot over the socket | yes | none yet | NOT BUILT | NOT BUILT |
+| WS2b.4 | input files with regular-file refusal | yes | none yet | NOT BUILT | NOT BUILT |
+| WS2c.1 | popups and per-window ids | yes | none yet | NOT BUILT | NOT BUILT |
+| WS2c.2 | health answers while a sibling's FIFO is stuck | yes | none yet | NOT BUILT | NOT BUILT |
+| WS2c.3 | two-phase recovery of a hung renderer | yes | none yet | UNPROVEN | UNPROVEN |
+| WS2c.4 | crash parity (`ProcessFailed`) | yes | none yet | NOT BUILT | NOT BUILT |
+| WS2c.5 | popup drawer slots and one destroy path | yes | none yet | NOT BUILT | NOT BUILT |
+| Closure A | ordinary routed command (socket to live page) | yes | none yet | NOT BUILT | NOT BUILT |
+| Closure B | health while a sibling is stuck | yes | none yet | NOT BUILT | NOT BUILT |
+| Closure C | two-phase recover | yes | none yet | NOT BUILT | NOT BUILT |
+| WS2.ABI | unsupported seams are absent from the shipped exe | yes | none yet (a link-time symbol listing is a tripwire) | NOT BUILT | rewritten + NOT BUILT |
+| WS3.1 | isolated persistent profile | yes | none yet | NOT BUILT | NOT BUILT |
+| WS3.2 | flags decided by one fallible seam | yes | driven + platform run | PROVEN-PARTIAL | rewritten |
+| WS3.2b | `--disable-gpu` is actually passed; `typeof MediaSource` read over the socket | yes | none yet | NOT BUILT | NOT BUILT |
+| WS3.3 | cookie ABI and `CookiePort` over `ICoreWebView2CookieManager` | yes | none yet | NOT BUILT | NOT BUILT |
+| WS3.4 | cookie port and profile are WIRED and proven live | yes | none yet | NOT BUILT | NOT BUILT |
+| WS3.X | `cross-check-ws3-win` symbol check | yes | tripwire-only | NOT BUILT | rewritten + NOT BUILT |
+| WS4.1 | page worlds, iframes, popups, socket clients, model text and hooks cannot approve | yes | none yet | UNPROVEN | UNPROVEN |
+| WS4.2 | per-write confirmation; a dry run commits nothing | yes | none yet | UNPROVEN | UNPROVEN |
+| WS4.3 | the login gate reads the session cookie through the WS3 cookie port | yes | none yet | UNPROVEN | UNPROVEN |
+| WS5.1 | the dock resizes the page above it (entry run) | yes | platform run | PROVEN-PARTIAL | kept; proof fields added |
+| WS5.2 | the icon drags, moves by keys, persists | yes | tripwire-only today (offline oracles and models) | NOT BUILT | NOT BUILT |
+| WS5.2P | drawer geometry properties (ratio roundtrip, `clampRect`) | yes | driven (L) | PROVEN-PARTIAL | kept; proof fields added |
+| WS5.3 | `-` folds into the icon over 180 ms | yes | tripwire-only today | NOT BUILT | NOT BUILT |
+| WS5.4 | bubble text is selectable, copyable and inert | yes | tripwire-only today | NOT BUILT | NOT BUILT |
+| WS5.5 | per-window drawers, one destroy path, live count back to zero | yes | driven + platform run | PROVEN-PARTIAL | kept; proof fields added |
+| WS5.6 | the drawer is unreachable from page JavaScript and the socket | yes | tripwire-only today (4cb740d and 33bde9a are offline Linux in-process tests; the Python row exercises helpers defined in the test itself) | NOT BUILT | rewritten + NOT BUILT |
+| WS5.7 | 150% DPI: icon is 84 px and hit-testing is exact | yes | tripwire-only today (env-seam proof only; the process is not DPI-aware) | NOT BUILT | NOT BUILT |
+| WS5.8 | DPI manifest and resource file | yes | none yet | NOT BUILT | NOT BUILT |
+| WS5.9 | owned layered popup for the icon | yes | none yet | NOT BUILT | NOT BUILT |
+| WS5.10 | approval card and Send box | yes | none yet | NOT BUILT | NOT BUILT |
+| WS5.O | WS5 offline oracle and model suites | no | tripwire-only | TRIPWIRE ONLY | rewritten |
+| WS6.1 | Credential Manager token store (`CredWriteW/ReadW/DeleteW`) | yes | tripwire-only today (the `agent_secrets_win.cpp` exports are symbol-checked at `build.zig:564-567`) | NOT BUILT | rewritten + NOT BUILT |
+| WS6.1a | `Token` is parsed once | yes | none yet | NOT BUILT | NOT BUILT |
+| WS6.1b | private-file fallback ACL and DPAPI wrap | yes | none yet | NOT BUILT | rewritten + NOT BUILT |
+| WS6.1c | `CRYPTPROTECT_UI_FORBIDDEN` is honored | no | none yet | UNPROVEN | rewritten + UNPROVEN |
+| WS6.2 | the Secrets window | yes | none yet | NOT BUILT | NOT BUILT |
+| WS6.3 | tests never touch a real credential | yes | none yet | NOT BUILT | NOT BUILT |
+| WS6.4 | token route from the Windows store to the in-distro CLI's fd 3 | no | none yet | UNPROVEN | UNPROVEN |
+| WS6.S | portable token shape check | yes | driven (L) | PROVEN-PARTIAL | kept; proof fields added |
+| WS7.0 | `--agent-setup` on Windows 11 builds the agent home in the distro | yes | none yet | NOT BUILT | NOT BUILT |
+| WS7.1 | atomic `current` switch | yes | tripwire-only today (threads with POSIX `os.rename`, a toy) | NOT BUILT | rewritten + NOT BUILT |
+| WS7.2 | bundled runtime inside the distro, pinned by SHA-256 | no | none yet | UNPROVEN | UNPROVEN |
+| WS7.3 | launcher is `wsl.exe -d <distro> -u <nonroot>` plus the C1 bootstrap | yes | none yet | NOT BUILT | NOT BUILT |
+| WS7.4 | SAI copy rules skip links and junctions | yes | tripwire-only today (toy inputs) | NOT BUILT | rewritten + NOT BUILT |
+| WS7.5 | Windows-host Python modules import on Windows | yes | none yet | NOT BUILT | NOT BUILT |
+| WS8.1 | isolation: host profile, processes and browser memory unreachable from the distro | no | none yet | UNPROVEN | UNPROVEN |
+| WS8.2 | one-admin resumable setup (idempotent, rollback, reboot flag) | no | none yet | UNPROVEN | UNPROVEN |
+| WS8.3 | two token channels (control capability, OAuth fd 3) | no | none yet | UNPROVEN | UNPROVEN |
+| WS8.4 | dedicated non-root uid, default-user selection, no admin group | no | none yet | UNPROVEN | UNPROVEN |
+| WS8.5 | per-run teardown within 5 s, never the shared distro | no | none yet | UNPROVEN | UNPROVEN |
+| WS8.6 | file scope via the broker | no | none yet | UNPROVEN | UNPROVEN |
+| WS8.7 | no-network child inside the distro | no | none yet | UNPROVEN | UNPROVEN |
+| WS8.8 | fail-closed: virtualization or WSL off | no | none yet | UNPROVEN | UNPROVEN |
+| WS8.M | WS8/WS9 acceptance matrix (12 items) | no | none yet | UNPROVEN | UNPROVEN |
+| WS9.1 | the CLI reaches the fake API only through the in-distro netd | no | none yet | UNPROVEN | UNPROVEN |
+| WS9.2 | denials: 1.1.1.1, TEST-NET, loopback decoy, DNS, non-allowlisted CONNECT | no | none yet | UNPROVEN | UNPROVEN |
+| WS9.3 | a hook reaches only the two bridges, both carry bytes | no | none yet | UNPROVEN | UNPROVEN |
+| WS9.4 | the sign-in netd allows exactly two hosts and no bridges | no | none yet | UNPROVEN | UNPROVEN |
+| WS9.R | C5 reverse relay acceptance (bytes through both ports; co-tenant, squat and namespace negatives) | no | none yet | UNPROVEN | UNPROVEN |
+| WS10.1 | `claude setup-token` runs in the distro; authorize URL opened only on click | no | none yet | UNPROVEN | UNPROVEN |
+| WS10.2 | pasted code reaches the CLI over C1; the token returns on a one-shot channel into the store | no | none yet | UNPROVEN | UNPROVEN |
+| WS10.3 | cancel and timeout map to the same codes as Linux | no | none yet | UNPROVEN | UNPROVEN |
+| WS11.1 | helper starts under the backend and emits a validated `ready` frame | no | none yet | UNPROVEN | UNPROVEN |
+| WS11.2 | chat round trip streams into the Win32 drawer | no | none yet | UNPROVEN | UNPROVEN |
+| WS11.3 | approved commit exactly once; Deny, expiry, retarget and wrong account commit zero | no | none yet | UNPROVEN | UNPROVEN |
+| WS12.1 | drawer voice hook points (`zb_drawer_set_draft`, `zb_drawer_speaker_toggled`) | yes | none yet | NOT BUILT | NOT BUILT |
+| WS12.2 | `gate.sh --phase voice` fails closed | yes | none yet | NOT BUILT | NOT BUILT |
+| WS13.1 | the MSI ships every component | yes | tripwire-only today | NOT BUILT | rewritten + NOT BUILT |
+| WS13.2 | WebView2 bootstrapper failure is surfaced | yes | none yet | NOT BUILT | NOT BUILT |
+| WS13.3 | cabinet sizes stay below 2 GB | yes | none yet | NOT BUILT | NOT BUILT |
+| WS13.4 | uninstall removes only zigBrowser's WSL state (Win11) | yes | none yet | NOT BUILT | NOT BUILT |
+| WS13.4-W10 | Win10 browser uninstall | yes | none yet | NOT BUILT | NOT BUILT |
+| WS13.5 | update verifies the signature | no | none yet | UNPROVEN | UNPROVEN |
+| WS13.6 | signing (DEFERRED, OD-W3) | no | none yet | UNPROVEN | UNPROVEN |
+
+**Totals (rev 2.19).** Rows: 107. Rewritten into exercise form: 18. NOT BUILT: 61 (of which 18 re-marked from a green, closed, registered or source-only claim; 12 also rewritten). UNPROVEN: 32 (3 also rewritten). PROVEN: 0. PROVEN-PARTIAL: 13. Tripwire-only suite row: 1. Rows with incomplete rule-9 fields: 27. A row counts once per status; "rewritten" overlaps with NOT BUILT and UNPROVEN where a proof was both rewritten and found missing.
+
+**How 4pa.44 and 4pa.46 are closed in this table.** 4pa.44: WS5.O is TRIPWIRE ONLY; WS5.1 and WS5.5 are PROVEN-PARTIAL on recorded Win11 runs (b2c4f25, a5745b9); WS5.2, WS5.3, WS5.4, WS5.7 are NOT BUILT; WS5.8-WS5.10 are NOT BUILT. 4pa.46: WS5.6 is NOT BUILT until the real-binary row runs on the Win11 VM (the page-JavaScript half also needs WS2a.1).
