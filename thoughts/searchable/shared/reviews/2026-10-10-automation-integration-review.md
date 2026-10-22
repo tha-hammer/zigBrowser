@@ -36090,3 +36090,26 @@ catch both. Once these four items are present, the later follow-up may
 cumulatively supersede the blocked `918cb09`/`96df8ea`/`a3beeb1` source-oracle
 attempts and close the `1b2fe0a` range. No further textual control-flow mutant
 rounds are required.
+
+## WS7.4 bounded-cycle safety fix-forward (`2f5b0c7`)
+
+**BLOCKED-for-tests; keep it unregistered.** The two critical safety defects in
+`1e48000` are closed. `CycleIsBounded.setUp` calls the established kernel
+`pidns_guard` before any `Popen`, and the documented launcher holds the outer
+PID namespace fd before creating the nested user/PID namespace. A host run
+therefore skips without spawning or signalling. The cycle-follow mutant is now
+a fixed-memory two-node loop, so it no longer needs a flood/OOM cap. I ran the
+module through the required private namespace: the mutant timed out and its
+signal stayed namespace-local; the other two rows retained their intended
+missing-production red shape.
+
+One causal defect remains in the claimed reap proof. After `proc.kill()`, a
+second `communicate(timeout=5)` catches `TimeoutExpired` and simply `pass`es;
+`_run_worker` then returns `None`, so
+`test_a_cycle_following_copy_times_out_and_is_reaped` passes even though the
+child was never observed terminal or reaped. Make that second timeout a hard
+test failure, and after successful `communicate` assert a non-`None` terminal
+return code (for the infinite mutant, the SIGKILL status). Keep the
+`ProcessLookupError` exit/kill race explicit. With a committed no-reap/failed-
+reap mutant, this safety proof can be approved and registered; no Windows or
+Mac run is involved.
