@@ -71,6 +71,15 @@
         var params = new URLSearchParams(location.search);
         var path = location.pathname;
         var ig = window.__ig = { page: '', events: [], result: null, frames: [] };
+        // A record that outlives the page (RoseCat 7504 #4): each focus, keydown and Send on a DM
+        // box is a request to the fixture server, /__record/<what>/<page path>, which logs it.
+        function record(what) {
+          try { fetch('/__record/' + what + location.pathname, { keepalive: true }); } catch (e) {}
+        }
+        function recordBox(box) {
+          box.addEventListener('focus', function () { record('focus'); });
+          box.addEventListener('keydown', function () { record('keydown'); });
+        }
         // Every pointer, key and edit event, captured before any handler: a
         // dry run (options.dry_run) must leave this empty.
         var input = window.__input = [];
@@ -229,7 +238,8 @@
           }
           var dm = document.getElementById('dm');
           var box = dm.querySelector('[contenteditable]');
-          document.getElementById('send').addEventListener('click', function () { ig.result = { action: 'dm', text: box.textContent }; });
+          recordBox(box);
+          document.getElementById('send').addEventListener('click', function () { record('send'); ig.result = { action: 'dm', text: box.textContent }; });
           ig.shareSends = 0;
           document.getElementById('share-send').addEventListener('click', function () { ig.shareSends += 1; });
           // nosend.user: the composer has no Send (renamed while sending), so
@@ -259,6 +269,7 @@
             // its thread at /direct/t/77/; crossdocwrong.user's loads another profile instead.
             document.getElementById('message').addEventListener('click', function () {
               if (m[1] === 'crossdoc.user') location.assign('/direct/t/77/?with=crossdoc.user');
+              else if (m[1] === 'crossdocmallory.user') location.assign('/direct/t/78/?with=mallory');
               else if (m[1] === 'crossdocwrong.user') location.assign('/mallory/');
               else dm.hidden = false;
             });
@@ -271,7 +282,8 @@
             '<div aria-label="Message" contenteditable="true"></div>' +
             '<div role="button" id="send"><svg width="12" height="12"><title>Paper plane icon</title></svg>Send</div></div>';
           var threadBox = main.querySelector('[contenteditable]');
-          document.getElementById('send').addEventListener('click', function () { ig.result = { action: 'dm', text: threadBox.textContent }; });
+          recordBox(threadBox);
+          document.getElementById('send').addEventListener('click', function () { record('send'); ig.result = { action: 'dm', text: threadBox.textContent }; });
         } else {
           ig.page = 'other';
         }

@@ -8,6 +8,12 @@ on the platform's thread path. Real binary, Python SDK, the site-modelled Instag
   approved user): the flow captures that document and types and sends there, once.
 - crossdocwrong.user: Message loads /mallory/ instead: -32015 thread_url_changed, and nothing
   is typed or sent on either page.
+- crossdocmallory.user: Message loads a real thread page (/direct/t/78/) whose header names
+  someone else: the thread path passes, the recipient mark refuses the first thread step
+  (-32015 mark_changed at click_dm_input, {0, 0}), nothing focused, typed or sent.
+- What is sent is counted outside the pages (the fixture's /__record/<what>/<path> requests to
+  the server, which survive the navigation): exactly one send for crossdoc.user, and no focus,
+  keydown or send after the opener in the refused cases (RoseCat 7504 #3, #4).
 - guard.document itself: a dom.click whose guard names another document is -32015
   document_changed before its first event ({events 0, chars 0}).
 
@@ -31,7 +37,13 @@ from slice2_common import SKIP_EXIT, detect_runner, eprint, require_file, stop_b
 from zigbrowser import ZigBrowser  # noqa: E402
 
 
-def scenario(zb: ZigBrowser, origin: str) -> list[str]:
+def records(server, since: int) -> list[str]:
+    """The fixture's /__record/<what>/<page path> requests since `since` (an index into paths)."""
+    time.sleep(0.5)  # a keepalive fetch fired just before the flow answered still lands
+    return [p for p in server.paths[since:] if p.startswith("/__record/")]
+
+
+def scenario(zb: ZigBrowser, origin: str, server) -> list[str]:
     failures: list[str] = []
     passed: list[str] = []
 
@@ -52,18 +64,27 @@ def scenario(zb: ZigBrowser, origin: str) -> list[str]:
             "options": {"expect": {"origin": origin, "load_serial": serial(zb), "url": f"{origin}/{user}/"}},
         })
 
+    since = len(server.paths)
     code, data = dm("crossdoc.user")
     check(code is None, f"crossdoc.user: the flow succeeds ({code}, {data})")
     check(ev("location.pathname") == "/direct/t/77/", f"crossdoc.user: it ended on the thread page ({ev('location.pathname')!r})")
-    check(ev("window.__ig ? window.__ig.result : null") == {"action": "dm", "text": TEXT},
-          f"crossdoc.user: sent once on the thread page ({ev('window.__ig ? window.__ig.result : null')})")
+    sent = [r for r in records(server, since) if r.startswith("/__record/send/")]
+    check(sent == ["/__record/send/direct/t/77/"], f"crossdoc.user: exactly one send, on the thread page ({sent})")
 
+    since = len(server.paths)
     code, data = dm("crossdocwrong.user")
     check((code, data.get("reason")) == (-32015, "thread_url_changed"), f"crossdocwrong.user: -32015 thread_url_changed ({code}, {data})")
     check(ev("location.pathname") == "/mallory/", f"crossdocwrong.user: the window shows the other profile ({ev('location.pathname')!r})")
-    check(ev("window.__ig ? window.__ig.result : null") is None, "crossdocwrong.user: nothing sent")
-    typed = ev("(document.querySelector('[contenteditable]') || {textContent: ''}).textContent")
-    check(typed == "", f"crossdocwrong.user: nothing typed ({typed!r})")
+    got = records(server, since)
+    check(got == [], f"crossdocwrong.user: no focus, keydown or send after the opener ({got})")
+
+    since = len(server.paths)
+    code, data = dm("crossdocmallory.user")
+    check((code, data.get("reason"), data.get("step"), data.get("sent")) == (-32015, "mark_changed", "click_dm_input", {"events": 0, "chars": 0}),
+          f"crossdocmallory.user: the thread page names someone else: -32015 mark_changed at click_dm_input ({code}, {data})")
+    check(ev("location.pathname") == "/direct/t/78/", f"crossdocmallory.user: on its thread page ({ev('location.pathname')!r})")
+    got = records(server, since)
+    check(got == [], f"crossdocmallory.user: no focus, keydown or send ({got})")
 
     code, data = attempt(zb, "dom.click", {"selector": "css=body", "options": {"guard": {"document": "not-this-document", "target": True}}})
     check((code, data.get("reason"), data.get("sent")) == (-32015, "document_changed", {"events": 0, "chars": 0}),
@@ -106,7 +127,7 @@ def main() -> int:
         try:
             social.wait_for_socket(socket_path, args.timeout_sec)
             with ZigBrowser(socket_path=str(socket_path)) as zb:
-                passed = scenario(zb, server.origin)
+                passed = scenario(zb, server.origin, server)
         except Exception as exc:  # noqa: BLE001 - report every failure the same way
             print("FAIL\tthread-document")
             eprint(f"error={exc!r}")

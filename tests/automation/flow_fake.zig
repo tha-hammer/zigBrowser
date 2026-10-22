@@ -63,6 +63,12 @@ pub const Windowed = struct {
     click_navigates_then: ?ClickNav = null,
     /// The URL the last click navigation committed (shown by the registry).
     clicked_to: ?[]const u8 = null,
+    /// automation.js's `leaving` in the next documentToken answer (a click navigation sets it
+    /// from its ClickNav; the answer clears it).
+    ack_leaving: bool = false,
+    /// A click navigation that commits only after the next documentToken read: one the click
+    /// did not start (it reports no `leaving`), landing before the flow's next action.
+    commit_after_read: ?[]const u8 = null,
     unreadable: enum { script_failure, malformed, empty, missing } = .script_failure,
 
     pub fn port(self: *Windowed) page_port.PagePort {
@@ -98,7 +104,13 @@ pub const Windowed = struct {
                 .empty => "{\"ok\":true,\"value\":{\"documentToken\":\"\"}}",
                 .missing => "{\"ok\":true,\"value\":{}}",
             }) catch error.OutOfMemory;
-            return std.fmt.allocPrint(a, "{{\"ok\":true,\"value\":{{\"documentToken\":\"doc-{d}\"}}}}", .{self.token_bumps}) catch error.OutOfMemory;
+            const answer = std.fmt.allocPrint(a, "{{\"ok\":true,\"value\":{{\"documentToken\":\"doc-{d}\",\"leaving\":{}}}}}", .{ self.token_bumps, self.ack_leaving }) catch return error.OutOfMemory;
+            self.ack_leaving = false;
+            if (self.commit_after_read) |to| {
+                self.commit_after_read = null;
+                self.commitClickNav(to);
+            }
+            return answer;
         }
         const p = self.innerPort();
         var answer = try p.vtable.evalJson(p.ptr, a, world, body, arg, timeout_ms);
@@ -113,12 +125,18 @@ pub const Windowed = struct {
             if (self.click_navigates) |nav| {
                 if (std.mem.indexOf(u8, arg, nav.match) != null) {
                     self.click_navigates = null;
-                    self.commitClickNav(nav.url);
+                    if (nav.after_read) {
+                        self.commit_after_read = nav.url;
+                    } else {
+                        self.commitClickNav(nav.url);
+                        self.ack_leaving = nav.leaving;
+                    }
                 }
             } else if (self.click_navigates_then) |again| {
                 if (std.mem.indexOf(u8, arg, again.match) != null) {
                     self.click_navigates_then = null;
                     self.commitClickNav(again.url);
+                    self.ack_leaving = again.leaving;
                 }
             }
         }
@@ -183,7 +201,10 @@ pub const Windowed = struct {
     }
 };
 
-pub const ClickNav = struct { match: []const u8, url: []const u8 };
+/// A click that navigates: `leaving` is what automation.js reports right after it (true: the click
+/// started that navigation); `after_read`: the navigation commits only after the next
+/// documentToken read instead (one the click did not start).
+pub const ClickNav = struct { match: []const u8, url: []const u8, leaving: bool = true, after_read: bool = false };
 
 pub fn hasOp(arg: []const u8, op: []const u8) bool {
     var buf: [64]u8 = undefined;
