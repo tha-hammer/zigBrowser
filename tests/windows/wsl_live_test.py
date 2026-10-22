@@ -1,27 +1,26 @@
 r"""WS8/WS9 WSL2 topology — live DISCOVERY SPIKE on the Win11 VM (OD-W4).
 
-!!! DISCOVERY-ONLY / DO NOT RERUN / NOT REPAIRED. This oracle is KNOWN-DEFECTIVE and MUST NOT be rerun or
-    cited as gate evidence; its results are not a closure or a security claim. The review of the 6e9f989
-    rewrite found that the code does NOT deliver the cleanup / fail-closed / secret / listener guarantees it
-    described, so do not read any wording in this file as a satisfied guarantee. The security/product proofs
-    come LATER via named red/green tests driving the production WslBackend / LinuxBwrapBackend. It writes ONLY
-    under a unique per-run directory beneath C:\\Users\\zbtext\\zb\\wsl on win11-m8, never on the read-only
-    Windows 10 file server, and never calls global `wsl --shutdown`.
+!!! DISCOVERY-ONLY. NOT RUN; AWAITING RoseCat review of this repair before any live run (draft gate). It is
+    NOT a closure or a security claim — the security/product proofs come LATER via named red/green tests
+    driving the production WslBackend / LinuxBwrapBackend. It writes ONLY under a unique per-run directory
+    beneath C:\\Users\\zbtext\\zb\\wsl on win11-m8, never on the read-only Windows 10 file server, and never
+    calls global `wsl --shutdown`.
 
-Known-open defects (from the 6e9f989 review), to be fixed in a SEPARATE later commit before any rerun:
-- cleanup can abort part-way instead of always completing best-effort then failing;
-- distro/artifact ownership is recorded too late (a partial import before the failing assertion is not
-  tracked, so it would not be cleaned);
-- stopping the Windows listener by PID is not PID-reuse-safe;
-- a local kill must run inside a PID namespace;
-- the C1 secret can still reach a process argv (it must be kept out of argv entirely, not just off disk);
-- the `::1` listener-readiness check does not match the exact `::1:<port>` row.
+This commit ADDRESSES the six 6e9f989-review defects (in code; not yet reviewed or run):
+- cleanup now runs EVERY step best-effort (each wrapped, errors accumulate) and fails the test at the end if
+  anything failed — it can no longer abort part-way;
+- distro/artifact ownership is recorded BEFORE the import attempt, so a partial/failed import is still
+  censused and cleaned;
+- the Windows listener is stopped PID-reuse-safely: only when the PID's command line still matches this run's
+  `run-<nonce>\winlisten.ps1` (same identity check in the survival census);
+- local teardown terminates ONLY our own tracked Popen handles (reuse-safe; no numeric `os.kill`), with a
+  pid>1 guard;
+- the C1 secret reaches neither disk nor argv/env: it is fed over stdin to the bootstrap AND the no-leak
+  census reads its pattern from stdin (never interpolated into a PowerShell/ssh command line);
+- the `::1` readiness check matches the exact `::1:<port>` row.
 
-What the spike ATTEMPTS (NOT yet enforced — see the defects above): a lifecycle with per-op checks and a
-postflight census; an in-distro + a Windows reverse listener with readiness checks; a default-user (no `-u`)
-uid/group check; a Windows-stdio→Linux-fd + ephemeral-port C1 bootstrap probe; and negative/mutant oracles.
-
-DO NOT RUN until the separate repair commit lands and RoseCat approves it.
+The spike still must be reviewed and explicitly approved by RoseCat before it is ever run; until then it is
+not gate evidence. DO NOT RUN before that approval.
 """
 import hashlib
 import json
@@ -131,45 +130,75 @@ class WslTopologyLive(unittest.TestCase):
         self.addCleanup(self._cleanup_and_census)  # ALWAYS runs, fails closed
 
     def _cleanup_and_census(self):
+        # (a) EVERY step is best-effort and cannot abort the rest: each is wrapped, errors accumulate, and the
+        # test fails at the end if anything failed. (c)/(d) teardown is PID-reuse-safe and uses no numeric
+        # local kills — only our own Popen handles, verified by identity on the Windows side.
         errs = []
-        for p in self.keepalives:
+
+        def step(label, fn):
             try:
-                p.terminate(); p.wait(timeout=10)
-            except Exception as ex:
-                try: p.kill()
-                except Exception: pass
-                errs.append(f"keepalive kill: {ex}")
+                return fn()
+            except Exception as ex:  # never let one failure skip the remaining cleanup
+                errs.append(f"{label}: {ex}")
+                return None
+
+        # (d) local teardown: terminate ONLY our own tracked Popen children by handle (reuse-safe; no numeric
+        # os.kill). A valid child has an int pid > 1; reap it.
+        for p in self.keepalives:
+            def _kill(p=p):
+                if not isinstance(getattr(p, "pid", None), int) or p.pid <= 1:
+                    return
+                p.terminate()
+                try:
+                    p.wait(timeout=10)
+                except Exception:
+                    p.kill(); p.wait(timeout=10)
+            step("keepalive terminate", _kill)
+
+        # (c) PID-reuse-safe Windows listener stop: only stop a PID whose process command line is OUR
+        # per-run winlisten.ps1 (a reused PID with a different command line is left alone).
         if self.win_listener_pid:
-            rc, _, _ = ssh("powershell", "-NoProfile", "-Command",
-                           f"Stop-Process -Id {self.win_listener_pid} -Force -ErrorAction SilentlyContinue; exit 0")
+            marker = f"run-{self.rand}\\\\winlisten.ps1"
+            step("stop win listener", lambda: ssh("powershell", "-NoProfile", "-Command",
+                 f"$p=Get-CimInstance Win32_Process -Filter \"ProcessId={self.win_listener_pid}\" -ErrorAction SilentlyContinue; "
+                 f"if ($p -and $p.CommandLine -match '{marker}') {{ Stop-Process -Id {self.win_listener_pid} -Force -ErrorAction SilentlyContinue }}; exit 0"))
+
+        # Unregister only distros that are actually registered now (a never-registered partial import is skipped,
+        # not a spurious failure); a present-but-failing unregister IS an error.
+        _, present = (0, [])
+        res = step("list distros", census_distros)
+        present = res if res is not None else []
         for n in self.imported:
-            rc, _, e = ssh("wsl", "--terminate", n)
-            if rc != 0:
-                errs.append(f"terminate {n} rc={rc}: {e.strip()}")
-            rc, _, e = ssh("wsl", "--unregister", n)
-            if rc != 0:
-                errs.append(f"unregister {n} rc={rc}: {e.strip()}")
-        rc, _, e = ssh("cmd", "/c", f"if exist {self.run_win} rmdir /s /q {self.run_win}")
-        if rc != 0:
-            errs.append(f"rmdir run dir rc={rc}: {e.strip()}")
-        # postflight census: distros back to baseline, run dir gone, no leftover win listener
-        try:
-            final = census_distros()
-            if final != self.baseline_distros:
-                errs.append(f"final distro census {final} != baseline {self.baseline_distros}")
-        except AssertionError as ex:
-            errs.append(str(ex))
-        rc, out, _ = ssh("cmd", "/c", f"if exist {self.run_win} (echo LEFT) else (echo GONE)")
-        if rc != 0 or "GONE" not in out:
-            errs.append(f"run dir not gone (rc={rc}, out={out!r})")
+            if n not in present:
+                continue
+            step(f"terminate {n}", lambda n=n: self._cleanup_rc("terminate", n, ssh("wsl", "--terminate", n), errs))
+            step(f"unregister {n}", lambda n=n: self._cleanup_rc("unregister", n, ssh("wsl", "--unregister", n), errs))
+        step("rmdir run dir", lambda: self._cleanup_rc("rmdir run dir", self.run_win,
+             ssh("cmd", "/c", f"if exist {self.run_win} rmdir /s /q {self.run_win}"), errs))
+
+        # postflight census: distros back to baseline, run dir gone, no leftover (identity-checked) win listener
+        final = step("final distro census", census_distros)
+        if final is not None and final != self.baseline_distros:
+            errs.append(f"final distro census {final} != baseline {self.baseline_distros}")
+        res = step("run-dir gone probe", lambda: ssh("cmd", "/c", f"if exist {self.run_win} (echo LEFT) else (echo GONE)"))
+        if res is not None and (res[0] != 0 or "GONE" not in res[1]):
+            errs.append(f"run dir not gone (rc={res[0]}, out={res[1]!r})")
         if self.win_listener_pid:
-            rc, out, _ = ssh("powershell", "-NoProfile", "-Command",
-                             f"if (Get-Process -Id {self.win_listener_pid} -ErrorAction SilentlyContinue) {{'ALIVE'}} else {{'DEAD'}}")
-            if "DEAD" not in out:
-                errs.append(f"windows reverse listener pid {self.win_listener_pid} survived")
+            marker = f"run-{self.rand}\\\\winlisten.ps1"
+            res = step("win listener survival", lambda: ssh("powershell", "-NoProfile", "-Command",
+                 f"$p=Get-CimInstance Win32_Process -Filter \"ProcessId={self.win_listener_pid}\" -ErrorAction SilentlyContinue; "
+                 f"if ($p -and $p.CommandLine -match '{marker}') {{'ALIVE'}} else {{'DEAD'}}"))
+            if res is not None and "DEAD" not in res[1]:
+                errs.append(f"windows reverse listener pid {self.win_listener_pid} survived (identity-matched)")
         shutil.rmtree(self.localdir, ignore_errors=True)
         if errs:
             raise AssertionError("cleanup/postflight census failed: " + " | ".join(errs))
+
+    @staticmethod
+    def _cleanup_rc(label, target, result, errs):
+        rc, _, e = result
+        if rc != 0:
+            errs.append(f"{label} {target} rc={rc}: {e.strip()}")
 
     # --- helpers (every op fail-closed) ---
     def _stage(self, name, text, crlf=False):
@@ -193,11 +222,13 @@ class WslTopologyLive(unittest.TestCase):
         return p
 
     def _import(self, distro):
+        # (b) record ownership BEFORE the attempt, so a partial/failed import is still censused + cleaned.
+        if distro not in self.imported:
+            self.imported.append(distro)
         rc, o, e = ssh("cmd", "/c",
                        f"wsl --import {distro} {self.run_win}\\{distro} {self.run_win}\\{self.tar_name} --version 2")
         self.assertEqual(rc, 0, f"import {distro} rc must be 0, got {rc}: {o}{e}")
         self.assertIn("completed successfully", o, f"import {distro} did not report success: {o}{e}")
-        self.imported.append(distro)
 
     # ------------------------------------------------------------------
     # Negative / mutant oracles (cheap; prove the checks fail closed).
@@ -332,9 +363,11 @@ class WslTopologyLive(unittest.TestCase):
         self.assertTrue(int(c1.get("port", 0)) > 0, f"the ephemeral port must return on stdout: {c1}")
         self.assertEqual(c1.get("ack"), "ACK", f"authed connect to the returned port must ACK: {c1}")
         self.assertTrue(c1.get("exited"), f"the bootstrap child must exit within the bound: {c1}")
-        # the secret must never appear in any staged file (no disk/argv/env leak)
+        # (e) the secret must never appear in any staged file — and the CHECK itself must not put the secret
+        # in argv/env: the pattern is read from stdin, never interpolated into the PowerShell/ssh command line.
         rc, grepped, _ = ssh("powershell", "-NoProfile", "-Command",
-                             f"Select-String -Path {self.run_win}\\* -SimpleMatch -Pattern '{secret}' -ErrorAction SilentlyContinue | Measure-Object | Select-Object -ExpandProperty Count")
+                             f"$pat=[Console]::In.ReadLine(); (Select-String -Path {self.run_win}\\* -SimpleMatch -Pattern $pat -ErrorAction SilentlyContinue | Measure-Object).Count",
+                             stdin_text=secret + "\n")
         self.assertEqual(grepped.strip(), "0", "the C1 secret must not appear in any staged file")
 
         print("\n==== WSL2 topology discovery observations (win11-m8; not a closure or security claim) ====")
@@ -422,7 +455,7 @@ sleep 2
 cat /tmp/ports 2>/dev/null | tr ' ' '\n'
 P_LO=$(sed -n 's/LO=\([0-9]*\).*/\1/p' /tmp/ports); P_V6=$(sed -n 's/.*V6=\([0-9]*\).*/\1/p' /tmp/ports)
 netstat -ltn 2>/dev/null | grep -q "127.0.0.1:$P_LO " && echo "LISTEN_LO=yes" || echo "LISTEN_LO=no"
-netstat -ltn 2>/dev/null | grep -q ":::$P_V6 " && echo "LISTEN_V6=yes" || echo "LISTEN_V6=no"
+netstat -ltn 2>/dev/null | grep -q "::1:$P_V6 " && echo "LISTEN_V6=yes" || echo "LISTEN_V6=no"
 """
 
 _READRX_SH = r"""#!/bin/sh
