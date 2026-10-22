@@ -53,6 +53,18 @@ screen. The screenshot the model saw is saved in --out.
 
     python3 tests/manual/real_screen_check.py --confirm-user-permission --case tools \\
         --bin zig-out/bin/zigBrowser --out /tmp/zb-tools
+
+`--case approval` (S8 decision 16, S8d) checks a navigate approval card on this screen: the
+same throwaway agent home and fake API, with the navigate_approval store set to `yes`, so the
+prompt "approve" gets a card in the window's own drawer. The card's text, its Approve and Deny
+buttons and the desktop notification must be seen by the person at the screen; the script
+waits APPROVAL_LOOK_S seconds with the card shown (so the notification can be looked at and
+clicked), then clicks Approve: the card must end `done` and the page must change. The prompt
+"deny" gets a second card; its Deny click must end it `denied`. Captures of both cards are in
+--out. The session bus is the desktop's own: the notification is a real one, fixed text only.
+
+    python3 tests/manual/real_screen_check.py --confirm-user-permission --case approval \\
+        --bin zig-out/bin/zigBrowser --out /tmp/zb-approval
 """
 
 from __future__ import annotations
@@ -1131,6 +1143,103 @@ class DrawerInput:
         return self.b.wait(lambda: len(self.b.of("open")) > opened, 10)
 
 
+APPROVAL_LOOK_S = 15.0  # the card shown, untouched: time to look at it and at the notification
+APPROVAL_PAGE = """<!doctype html><title>zb approval check: approved</title>
+<body style="margin:0;background:#2e7d32;color:#fff;font:32px sans-serif">
+<p style="padding:40px">Approved: the navigation ran.</p></body>"""
+
+
+def approval_turn(target: str):
+    """The fake API's script for the approval case: "approve" and "deny" each ask to
+    navigate to `target`; the tool's answer gets a short final text."""
+    def respond(request, index):
+        users = [m for m in (request.get("body") or {}).get("messages") or [] if m.get("role") == "user"]
+        turn = users[-1].get("content") if users else ""
+        blocks = [{"type": "text", "text": turn}] if isinstance(turn, str) else [b for b in turn or [] if isinstance(b, dict)]
+        said = " ".join(b.get("text", "") for b in blocks if b.get("type") == "text")
+        if "approve" in said or "deny" in said:
+            return {"tool_use": {"name": "mcp__zigbrowser__navigate", "input": {"url": target}}}
+        return {"text": "The approval check is done."}
+    return respond
+
+
+def run_approval(binary: str, out: Path, settle: float) -> list[tuple[str, str, str]]:
+    """(PASS | FAIL | INVALID, case, detail) for the approval case's checks."""
+    work = Path(tempfile.mkdtemp(prefix="zb-real-screen-approval-"))
+    target = work / "approved.html"
+    target.write_text(APPROVAL_PAGE)
+    b = None
+    try:
+        b = LongRunBrowser(binary, work, out, respond=approval_turn(target.as_uri()), label="approval")
+        settings = b.world.agent / "settings"
+        settings.mkdir(mode=0o700, exist_ok=True)
+        fd = os.open(settings / "navigate_approval", os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        os.write(fd, b"yes\n")  # a card even while the drawer is open (decision 16's `yes`)
+        os.close(fd)
+        deadline, wid = time.monotonic() + 30, None
+        while wid is None and time.monotonic() < deadline and b.proc.poll() is None:
+            time.sleep(0.5)
+            wid = our_window(b.proc.pid)
+        if wid is None:
+            return [(FAIL, "approval", f"no window (browser exit {b.proc.poll()})")]
+        x11 = X11()
+        try:
+            if not raise_window(x11, wid) and not (ensure_active(x11, wid) and raise_window(x11, wid, tries=1)):
+                return [(INVALID, "approval", "the window stayed covered or inactive: nothing judged, no input sent")]
+            time.sleep(settle)
+            drawer = DrawerInput(b, x11, wid)
+            if not b.wait(lambda: b.of("icon") != [], 30):
+                return [(FAIL, "approval", "no icon row")]
+            if not drawer.reopen():
+                return [(FAIL, "approval", "the drawer did not open")]
+            results = []
+            for n, (prompt, button, ending) in enumerate((("approve", "approve", "done"), ("deny", "deny", "denied")), 1):
+                for ch in prompt:
+                    drawer.key(ord(ch), what=f"typing {prompt!r}")
+                drawer.key(KEY_RETURN, what="Enter")
+                if not b.wait(lambda: len(b.of("approval")) >= n, 60):
+                    results.append((FAIL, f"approval-{prompt}", "no card was shown"))
+                    break
+                card = b.of("approval")[n - 1].fields[0]
+                rects = lambda: [r for r in b.of("approvalrect") if r.fields[0] == card and r.fields[1] == button]  # noqa: E731
+                if not b.wait(lambda: rects() != [], 20):
+                    results.append((FAIL, f"approval-{prompt}", f"card {card}: its {button} button is not drawn"))
+                    break
+                print(f"Card {card} is on the screen: look at it, and at the desktop notification "
+                      f"('zigBrowser', 'Claude is waiting for your approval.'). {APPROVAL_LOOK_S:.0f} s.", flush=True)
+                time.sleep(APPROVAL_LOOK_S)
+                if not raise_window(x11, wid) and not ensure_active(x11, wid):
+                    return results + [(INVALID, f"approval-{prompt}", "the window was left covered: no click sent")]
+                window, screen = capture_both(wid, out, f"approval.{prompt}.card")
+                x, y, w, h = geometry(wid)
+                seen, why = judge_not_blank(window, screen, (max(x, 0), max(y, 0), w, h))
+                results.append((PASS if seen else FAIL, f"approval-{prompt}-drawn", why))
+                rx, ry, rw, rh = rects()[-1].rect(2)
+                gx, gy = drawer.origin()
+                drawer.click((rx - gx, ry - gy, rw, rh), f"card {card}'s {button}")
+                ended = b.wait(lambda: [r.fields[1] for r in b.of("approvalend") if r.fields[0] == card] == [ending], 30)
+                ends = [r.fields[1] for r in b.of("approvalend") if r.fields[0] == card]
+                results.append((PASS if ended else FAIL, f"approval-{prompt}-{ending}", f"card {card} ended {ends}"))
+                b.wait(lambda: sum(1 for r in b.of("msg") if r.fields[0] == "assistant") >= n, 60)
+                if n == 1:  # the click left the keyboard on the card: fold and reopen, the input has it
+                    folded = len(b.of("minimized"))
+                    drawer.click(drawer.control("minus"), "the '-' button")
+                    if not (b.wait(lambda: len(b.of("minimized")) > folded, 10) and drawer.reopen()):
+                        results.append((FAIL, "approval-deny", "the drawer did not fold and reopen"))
+                        break
+            time.sleep(1.0)
+            capture_both(wid, out, "approval.after")
+            return results
+        except Refused as stop:
+            return [(INVALID, "approval", f"{stop}; nothing more sent")]
+        finally:
+            x11.close()
+    finally:
+        if b is not None:
+            b.close(out)
+        shutil.rmtree(work, ignore_errors=True)
+
+
 def run_long_run(binary: str, out: Path, settle: float) -> list[tuple[str, str, str]]:
     """(PASS | FAIL | INVALID, case, detail) for each LONG_RUN reply. Every click and key
     goes through safe_click or safe_key; a refused one stops the run (INVALID)."""
@@ -1250,11 +1359,12 @@ def main(argv: list[str]) -> int:
     ap.add_argument("--variant-page-only", action="append", default=[], metavar="NAME=PATH",
                     help="like --variant, for a build that draws no icon: only the page is checked")
     ap.add_argument("--settle", type=float, default=4.0, help="seconds between the window appearing and capture")
-    ap.add_argument("--case", choices=["long-run", "tools"],
+    ap.add_argument("--case", choices=["long-run", "tools", "approval"],
                     help="run only this case: long-run is S5.6's 200 KiB replies (with no spaces, then words) "
                          "from a local fake API in a throwaway agent home; each must show, fold within 1 s and "
                          "copy exactly with a click, Ctrl+A and Ctrl+C. tools is S7b's read tools: the model's "
-                         "get_text and screenshot of the fixture, and the answer shown")
+                         "get_text and screenshot of the fixture, and the answer shown. approval is decision 16's "
+                         "navigate card and its desktop notification: Approve runs it, Deny ends it")
     ap.add_argument("--url", help="load this page instead of the fixture (for example the page the user saw blank); "
                                   "then a page is drawn when no single colour covers 90%% of it")
     args = ap.parse_args(argv)
@@ -1294,6 +1404,16 @@ def main(argv: list[str]) -> int:
         if INVALID in statuses:
             return 3
         return 0 if statuses.count(PASS) == 3 else 1
+    if args.case == "approval":
+        print("approval types two prompts into the drawer; each shows a card and a desktop notification.", flush=True)
+        results = run_approval(args.bin, out, args.settle)
+        for status, name, detail in results:
+            print(f"{status:<7} {name:<22} {detail}", flush=True)
+        statuses = [status for status, _name, _detail in results]
+        print(f"{statuses.count(FAIL)} failed, {statuses.count(INVALID)} invalid; captures and logs in {out}")
+        if INVALID in statuses:
+            return 3
+        return 0 if statuses.count(PASS) == 4 else 1
     if args.case == "long-run":
         print("long-run types two prompts into the drawer and replaces the clipboard's contents.", flush=True)
         results = run_long_run(args.bin, out, args.settle)
