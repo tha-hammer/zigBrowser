@@ -27312,3 +27312,26 @@ the currently pushed `c995a02` is `bac895b`**. The earliest blocked commit is
 `3c3e354`, still blocked cumulatively by the missing causal atomic-publish
 coverage in `085b4f2`. `fff7033` is separately blocked by the plan
 contradictions above.
+
+## Darwin zombie-group EPERM follow-up red (`261640d`)
+
+**APPROVED as a failing-first red.** This is the causal regression requested
+by the diagnostic Mac run at `5b24bc1`: on Darwin, `killpg` returning `EPERM`
+may mean the already-exited, unreaped child is the group's only remaining
+member, but that outcome is accepted only after independent evidence proves
+all of Darwin + exact `EPERM` + our own exited/unreaped group leader + a
+readable census with no live member of that pgid.
+
+The refusal matrix keeps a live member, a live leader, unreadable census,
+leader-not-yet-exited, any non-EPERM errno, and non-Darwin behavior at
+`kill_refused`. The test is signal-safe: its inherited fixture patches
+`os.kill` to fail and this test replaces `os.killpg` with an interposer that
+records only the real child leader and always raises; every real stand-in
+exits by itself and is reaped. Per the project rule, I nevertheless ran it
+inside a private user/PID namespace from an exact `git archive 261640d`
+export. It was causally red in exactly the three completion rows and green in
+the six refusal controls: **9 tests, 3 errors, exit 1**. It is correctly
+unregistered until its production green.
+
+This later approved red cannot advance the linear push boundary across the
+earlier blocked `3c3e354`/`085b4f2` range; the boundary remains `bac895b`.
