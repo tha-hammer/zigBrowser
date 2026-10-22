@@ -27147,3 +27147,29 @@ is intended to identify:
 Until a fix-forward closes both gaps, do not run the new R1 digest on either
 Mac. Agent Mail 7476 sent BlueBeaver the findings before the green was
 reviewed. The approved/pushed boundary remains **`c995a02`**.
+
+## Stop-failure reason follow-up red (`84f547c`)
+
+**APPROVED as the failing-first/causal follow-up red.** It directly covers both
+gaps from review `1ac503a` without weakening the signal boundary.
+
+- `test_owned_group_reasons_cleanup.py` makes the earlier read fail, proves
+  ownership of the real child/group through `/proc`, and interposes `killpg`
+  with `EPERM`. It requires the outer `StopFailed` to preserve the cleanup's
+  own `kill_refused` reason and the earlier `OSError` as its cause. This row
+  already passes on `422c22c`, as expected because that production branch was
+  implemented but untested; replacing the inner reason with `not_ours`
+  causally fails it.
+- `ms6_hard_gate_r1_reason_modes_test.py` injects a stop failure into each of
+  honest/positive, planted, forge and hang. Every mode must emit one failed
+  stop-proof check with the whitelisted reason, and the unknown-reason variant
+  must print only `unknown`; neither the message canary nor the untrusted code
+  may reach any label. This prevents an expected security `False` from hiding
+  a lifecycle failure.
+
+Reviewer exact-export evidence, inside a private user/PID namespace: the
+cleanup row passed **1/1** with no real signal; the all-mode suite was causally
+red in **8/8 subtests**, each because its required stop-proof check did not yet
+exist. The tests are correctly unregistered until their green. The current R1
+manifest digest remains unapproved and no Mac run is authorized until the
+green registers these rows and receives review.
