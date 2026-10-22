@@ -1711,13 +1711,19 @@ to run. Credential tests run inside the interactive session task.
 > not close `affd577`, does not authorize implementation, and approves no security claim.
 
 **The six OPEN blockers from `9134b8b` (each must be closed, with live evidence, in the later revision):**
-1. **OPEN — spike is not fail-closed.** `tests/windows/wsl_live_test.py` ignores every terminate/
-   unregister/delete return code, performs no final census, and leaves staged scripts in
-   `C:\Users\zbtext\zb\wsl`; many probe rc values are captured but never asserted; the reverse
-   "firewall-blocked" row never proves the Windows listener started. **Close:** make every op fail
-   closed, prove the Windows listener ready before the reverse negative, remove every staged artifact,
-   assert a final distro/import/process/listener/staged-file census equal to baseline, add
-   failed-launch/failed-unregister/leftover mutants, then rerun live.
+1. **OPEN — the spike oracle (`tests/windows/wsl_live_test.py`) is not safe to run.** Current defects (from
+   the 6e9f989 review; the spike is DISCOVERY-ONLY / DO-NOT-RERUN / NOT-REPAIRED): (a) cleanup can **abort
+   part-way** — an exception in one cleanup op skips the rest instead of completing best-effort then failing;
+   (b) distro/artifact **ownership is recorded too late**, so a partial import before a failing assertion is
+   not tracked or cleaned; (c) the Windows listener is stopped by a **raw PID that can be reused** (not
+   PID-reuse-safe); (d) a local terminate/kill **lacks the PID-namespace safety contract** (it must run inside
+   a PID namespace); (e) the **C1 secret is interpolated into the PowerShell/ssh argv** (it must be kept out
+   of argv entirely, not merely off disk); (f) the **`::1` readiness check does not prove the exact
+   `::1:<port>` row**. **Close:** fix all six in a separate reviewed repair commit (cleanup that always
+   completes best-effort then fails; ownership recorded before/at the attempt; PID-reuse-safe listener stop;
+   local kills inside a PID namespace; the secret off argv; exact `::1:<port>` readiness) with a final
+   distro/import/process/listener/staged-file census == baseline and failed-launch/failed-unregister/leftover
+   mutants — then, only after RoseCat approves the repaired spike, rerun live.
 2. **OPEN — default non-root unproven.** The committed oracle only ran explicit `-u zbagent`; a
    no-`-u` default-user launch and an admin-group census are required.
 3. **OPEN — C1 bootstrap not implementable/proven.** The exact Windows-handle→WSL-fd mechanism (only
