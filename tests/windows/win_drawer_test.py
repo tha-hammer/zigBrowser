@@ -110,6 +110,9 @@ function Census() { @(Get-Process -Name zigBrowser -ErrorAction SilentlyContinue
 
 $res = @{ stdout=''; stderr=''; client_w=0; client_h=0; census_before=0; census_after=0; terminated=$false; timed_out=$false; error='' }
 $res.census_before = Census
+# e2e-only seams, set in this process so Start-Process's child inherits them (honoured only under --e2e-protocol).
+$env:ZIGBROWSER_AGENT_DRAWER_OPEN = '1'
+$env:ZIGBROWSER_AGENT_DRAWER_DEMO = 'messages:2'
 $job = [Z]::MakeJob()
 $p = Start-Process -FilePath $exe `
      -ArgumentList '--e2e-protocol','--agent-drawer','on',$url `
@@ -121,7 +124,7 @@ try {
   while ((Get-Date) -lt $deadline) {
     Start-Sleep -Milliseconds 300
     $o = [string](Get-Content $out -Raw -ErrorAction SilentlyContinue)
-    if ($o -and ($o -match "DRAWER`topen")) { $seen = $true; break }
+    if ($o -and ($o -match "DRAWER`t\d+`topen`t")) { $seen = $true; break }
   }
   if (-not $seen) { $res.timed_out = $true }
   $h = [Z]::FindWindow('zigBrowserWebView2Host', $null)
@@ -156,10 +159,7 @@ class WinDrawerLive(unittest.TestCase):
     def _scrub(self, *cmd):
         return ["env", "-u", "DISPLAY", "-u", "WAYLAND_DISPLAY", "-u", "XAUTHORITY", *cmd]
 
-    def _ssh(self, *args, env=None):
-        pre = []
-        if env:
-            pre = ["cmd", "/c"] + [f"set {k}={v}&&" for k, v in env.items()]
+    def _ssh(self, *args):
         base = ["ssh", "-i", self.key, "-o", "IdentitiesOnly=yes", "-o", "StrictHostKeyChecking=yes",
                 "-o", f"UserKnownHostsFile={self.kh}", "-o", "BatchMode=yes", "-o", "ConnectTimeout=15",
                 "-o", "ConnectionAttempts=3", "-p", self.port, f"{self.user}@{self.host}"]
@@ -187,11 +187,10 @@ class WinDrawerLive(unittest.TestCase):
                 pairs.append((str(loader), "WebView2Loader.dll"))
             for local, name in pairs:
                 self.assertEqual(self._scp(local, f"{rel}/{name}"), 0, f"scp {name}")
-            # The e2e-only deterministic open seam + the demo seed, via the environment of the ssh command.
+            # run.ps1 sets the e2e-only open seam + demo seed in its own environment before Start-Process,
+            # so the exe inherits them (honoured only under --e2e-protocol).
             run = self._ssh("powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
-                            "-File", f"{base_win}\\run.ps1", base_win,
-                            env={"ZIGBROWSER_AGENT_DRAWER_DEMO": "messages:2",
-                                 "ZIGBROWSER_AGENT_DRAWER_OPEN": "1"})
+                            "-File", f"{base_win}\\run.ps1", base_win)
             self.assertEqual(run.returncode, 0, f"runner failed: {run.stdout}\n{run.stderr}")
             r = json.loads(run.stdout.strip().splitlines()[-1])
             # Lifecycle first (b2595b0 #2): a timeout or a surviving process is a failure, before any cleanup.
