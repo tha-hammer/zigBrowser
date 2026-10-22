@@ -30764,3 +30764,23 @@ ambient override impossible, register this module with the pinned interpreter
 and preserved exit status, and run every existing login importer plus
 `agent-host-win-import`. This red does not authorize a Mac hard-gate rerun.
 Agent Mail 7734 sent the verdict to BlueBeaver.
+
+## Sign-in CLI scratch temporary directories green (`4f326ee`)
+
+**APPROVED for production code; BLOCKED-for-tests for final closure until
+`test_login_cli_tmpdir` is registered in the gate.** The implementation sets
+both fixed environment names to the same lexical layout pinned by
+`options.AgentHome.tmp` without importing the SDK into the sign-in helper.
+`Login.spawn()` passes this dictionary directly to `Popen`, and no ambient or
+caller override is possible. The macOS backend separately refuses a
+nonexistent or non-real scratchpad before launch, so the child environment's
+path and the Seatbelt write root agree.
+
+From an exact clean `4f326ee` export, the approved red and all named login
+consumers passed **48/48** under the pinned interpreter in a private
+current-UID user/PID/mount namespace. `agent-host-win-import` passed **3/3
+steps and 7 tests** under private Xvfb. The follow-up must register the red
+with that pinned interpreter and preserved exit status. The Mac hard-gate
+rerun remains held: `4f326ee` fixes only `login.cli_env`, not the separate chat
+`options.cli_env` `CLAUDE_CODE_TMPDIR` path required by the fd-3 case. Agent
+Mail 7736 sent the verdict to BlueBeaver.
