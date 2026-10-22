@@ -332,15 +332,14 @@ pub const RecoveryResult = struct { acquired: bool, incident: RecoveryIncident, 
 /// never wedge startup. The held recovery work (revalidate -> fixed point -> unlink -> rmdir -> remove) lands in
 /// the two-recoverer slice.
 pub fn runStartupRecovery(io: std.Io, dir: std.Io.Dir, max_tries: u32, backoff_ms: i64) RecoveryResult {
-    _ = io;
-    _ = max_tries;
-    _ = backoff_ms;
-    // RED (whole-recovery live-stalled-holder): a BLOCKING LOCK_EX acquire ignores the bound, so a stalled live
-    // holder wedges startup forever. The green takes the bounded, cancellable acquireLock inside the deadline and
-    // fails closed on LockBusy/LockFailed.
-    const fd = std.posix.openat(dir.handle, LOCK_NAME, .{ .ACCMODE = .RDWR, .CREAT = true, .NOFOLLOW = true, .CLOEXEC = true }, 0o600) catch
-        return .{ .acquired = false, .incident = .recovery_busy, .first_run = .refused_deferred };
-    _ = std.posix.system.flock(fd, std.posix.LOCK.EX); // BLOCKING (mutant) -> hangs on a stalled holder
-    _ = std.posix.system.close(fd);
+    // Take the ONE global flock with the BOUNDED, cancellable acquireLock (LOCK_EX|LOCK_NB + monotonic retry
+    // inside the total deadline). A live holder that stalls can never wedge us: acquire-failure/deadline fails
+    // CLOSED — no held work runs, so zero liveness/census/signal/retire/unlink/ledger mutation; the entry is
+    // retained, a recovery-busy incident is surfaced, and the first new agent run is refused/deferred.
+    var lock = acquireLock(io, dir, max_tries, backoff_ms) catch |e| switch (e) {
+        error.LockBusy, error.LockFailed => return .{ .acquired = false, .incident = .recovery_busy, .first_run = .refused_deferred },
+    };
+    lock.close(io); // release; the held recovery work (revalidate -> fixed point -> unlink -> rmdir -> remove)
+    // lands in the two-recoverer slice. This slice proves only the bounded fail-closed path.
     return .{ .acquired = true, .incident = .none, .first_run = .allowed };
 }
