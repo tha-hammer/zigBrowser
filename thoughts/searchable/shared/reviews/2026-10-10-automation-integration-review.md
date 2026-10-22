@@ -31689,3 +31689,47 @@ still holds the global flock. Every mismatch, incomplete census, survivor,
 deadline, teardown error, or lost capability must remain `fail_closed`, with
 the entry retained. No Mac reaper run or production arming is authorized by
 these two red approvals.
+
+## Windows WS5.2 source and observation follow-ups (`aec562b`, `d8e49c0`)
+
+**`aec562b` BLOCKED.** Moving `ZbDrawerGeomRect` and `ZbDrawerRatios` before
+`AppState` fixes the identified incomplete-type source error. The
+`SetWindowLongPtrW` last-error disambiguation and the rule that a failed
+`MoveWindow` neither persists nor emits are also the right fail-closed source
+changes. But the commit supplies only an ad-hoc minimal type-order/parser
+probe: it adds no registered causal row for either Windows API failure and it
+still does not compile the real changed C++ translation unit with MSVC (or an
+equivalent full translation-unit check). A successful text/Zig cross-check is
+not evidence that this Windows source builds.
+
+The replacement parser is overflow-safe, but it is not the exact grammar its
+comments and commit claim. `strtol` accepts leading whitespace and `+`, and it
+accepts whitespace after the comma; values such as `" 1,2"`, `"+1,2"`, and
+`"1, 2"` therefore reach the input path. Define and enforce the intended
+ASCII grammar explicitly, update the stale `[-100000,100000]` comment to the
+actual bound, and commit/register malformed, boundary and overflow rows. Add
+injectable failure seams or equivalent causal tests proving subclass failure
+leaves no mounted drawer and move failure produces neither persistence nor a
+`drag` row. A real MSVC compile remains required before this source fix is
+accepted.
+
+**`d8e49c0` BLOCKED.** The production handler now understands Enter/Space and
+focuses the icon on mouse-down, and the later HWND measurement waits for a
+`drag` row. However, `mount_drawer` sends the seam's `WM_LBUTTONDOWN/UP`
+*before* its final `resize_controller` call shows the newly created icon.
+`CreateWindowExW` did not use `WS_VISIBLE`, so the input is still delivered
+directly to a hidden child. The harness then measures `IsWindowVisible` only
+after `resize_controller` has shown it. This recreates the original bypass:
+the row proves a hidden-control `SendMessage`, not a visible input path. Show
+and verify the icon before injecting, and add a causal event-time visibility
+oracle/mutant.
+
+Keyboard reachability is also not proved. `WS_TABSTOP` alone does not perform
+tab traversal in this ordinary top-level message loop (it calls only
+`TranslateMessage`/`DispatchMessage`, not `IsDialogMessage`), and mouse-down
+focus proves only a mouse-assisted route. No live row sends keyboard input,
+observes focus, verifies 16/64-pixel movement of the real HWND, or opens with
+Enter/Space. Implement an actual keyboard-only focus path and the previously
+required live key-input oracle. Cross-restart profile persistence, finding 2
+from `b1ea2ed`, is still untouched. Therefore the cumulative WS5.2 range is
+not accepted and no VM behavior run is authorized on this pair yet.
