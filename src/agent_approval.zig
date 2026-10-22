@@ -99,6 +99,26 @@ pub fn readStore(io: std.Io, home: []const u8, owner: std.posix.uid_t) StoreRead
     return readSelectorOwned(io, settings, store_name, owner);
 }
 
+/// The Secrets window's control (part 5, rev 16.20.58): `selector` written through
+/// `<home>/settings`, made 0700 when missing, and only through one `readStore` would trust (a
+/// directory of `owner`, never a symlink, writable by neither group nor others); any other is
+/// error.UnsafeStore, and nothing is written anywhere.
+pub fn writeStore(io: std.Io, home: []const u8, owner: std.posix.uid_t, selector: Selector) !void {
+    var home_dir = try std.Io.Dir.cwd().openDir(io, home, .{});
+    defer home_dir.close(io);
+    var settings = home_dir.openDir(io, "settings", .{ .follow_symlinks = false }) catch |err| switch (err) {
+        error.FileNotFound => blk: {
+            try home_dir.createDir(io, "settings", @enumFromInt(0o700));
+            break :blk try home_dir.openDir(io, "settings", .{ .follow_symlinks = false });
+        },
+        else => return error.UnsafeStore, // a symlink (never followed), a file, or unreadable
+    };
+    defer settings.close(io);
+    const meta = metaOf(settings.handle) orelse return error.UnsafeStore;
+    if (meta.kind != .directory or meta.mode & 0o022 != 0 or meta.uid != owner) return error.UnsafeStore;
+    try writeSelector(io, settings, selector);
+}
+
 /// The process's effective user, the store's one owner.
 pub fn effectiveUid() std.posix.uid_t {
     return switch (builtin.os.tag) {

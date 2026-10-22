@@ -58,6 +58,15 @@ int zb_secrets_file_present(const char *agent_home);
 #define TEXT_REASON_OTHER "Something unexpected happened during sign-in. Try again."
 #define TEXT_LINK "Open this link in your browser to sign in:"
 #define TEXT_COPY_LINK "Copy link"
+/* The Navigation approval drop-down (S8 decision 16, rev 16.20.58): the store's one writer. */
+#define TEXT_NAV_LABEL "_Navigation approval:"
+#define TEXT_NAV_UNREADABLE "Navigation approval setting is unreadable; asking for every navigation."
+#define TEXT_NAV_REFUSED "The navigation approval setting could not be saved."
+
+/* agent_tools.zig: the store (0 yes, 1 no, 2 conditional). */
+int zb_agent_navapproval_read(const char *home, int *unreadable);
+int zb_agent_navapproval_write(const char *home, int value);
+static const char *const nav_values[] = {"yes", "no", "conditional"};
 
 typedef enum {
   STATE_EMPTY,
@@ -100,6 +109,10 @@ typedef struct {
   GtkWidget *link;
   GtkWidget *copy_link;
   GtkWindow *parent; /* the transient parent whose delete-event we watch (weak) */
+  /* The Navigation approval drop-down (Yes, No, Conditional) and its note line. */
+  GtkWidget *nav;
+  GtkWidget *nav_note;
+  int nav_showing; /* the drop-down is being set to the store's value: no write */
   char *link_url;
   /* The token being stored came from a sign-in: its row and sentences. */
   int signin_store;
@@ -643,6 +656,48 @@ static void report_rect(const char *name, GtkWidget *widget) {
   secrets_row("rect", name, rect);
 }
 
+/* The drop-down's note: hidden, or one fixed sentence (its `SECRETS text` row). */
+static void nav_note(const char *text) {
+  if (text == NULL) {
+    gtk_widget_hide(secrets.nav_note);
+    return;
+  }
+  gtk_label_set_text(GTK_LABEL(secrets.nav_note), text);
+  gtk_widget_show(secrets.nav_note);
+  secrets_row("text", text, NULL);
+}
+
+/* The drop-down shows the store, as each opening of the window finds it. */
+static void show_navapproval(void) {
+  int unreadable = 0;
+  int value = zb_agent_navapproval_read(secrets.agent_home != NULL ? secrets.agent_home : "", &unreadable);
+  if (value < 0 || value > 2) {
+    value = 0;
+    unreadable = 1;
+  }
+  secrets.nav_showing = 1;
+  gtk_combo_box_set_active(GTK_COMBO_BOX(secrets.nav), value);
+  secrets.nav_showing = 0;
+  nav_note(unreadable ? TEXT_NAV_UNREADABLE : NULL);
+  secrets_row("navapproval", nav_values[value], unreadable ? "unreadable" : "ok");
+}
+
+/* The user chose a value: the control's one write. */
+static void on_nav_changed(GtkComboBox *box, gpointer unused) {
+  (void)unused;
+  int value = gtk_combo_box_get_active(box);
+  if (secrets.nav_showing || value < 0 || value > 2) {
+    return;
+  }
+  if (zb_agent_navapproval_write(secrets.agent_home != NULL ? secrets.agent_home : "", value) != 0) {
+    nav_note(TEXT_NAV_REFUSED);
+    secrets_row("navapproval-refused", nav_values[value], NULL);
+    return;
+  }
+  nav_note(NULL);
+  secrets_row("navapproval", nav_values[value], "ok");
+}
+
 static gboolean report_rects(gpointer unused) {
   (void)unused;
   if (secrets.window != NULL && secrets.config.e2e_protocol) {
@@ -655,6 +710,7 @@ static gboolean report_rects(gpointer unused) {
     report_rect("send-code", secrets.send_code);
     report_rect("cancel", secrets.cancel);
     report_rect("copy-link", secrets.copy_link);
+    report_rect("navapproval", secrets.nav);
   }
   return G_SOURCE_REMOVE;
 }
@@ -783,6 +839,22 @@ static GtkWidget *build(void) {
   gtk_label_set_line_wrap(GTK_LABEL(secrets.reason), TRUE);
   gtk_box_pack_start(GTK_BOX(box), secrets.reason, FALSE, FALSE, 0);
 
+  /* Navigation approval (S8 decision 16): Yes, No, Conditional, in that order. */
+  GtkWidget *nav_row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+  GtkWidget *nav_label = gtk_label_new_with_mnemonic(TEXT_NAV_LABEL);
+  secrets.nav = gtk_combo_box_text_new();
+  gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(secrets.nav), "yes", "Yes");
+  gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(secrets.nav), "no", "No");
+  gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(secrets.nav), "conditional", "Conditional");
+  gtk_label_set_mnemonic_widget(GTK_LABEL(nav_label), secrets.nav);
+  gtk_box_pack_start(GTK_BOX(nav_row), nav_label, FALSE, FALSE, 0);
+  gtk_box_pack_end(GTK_BOX(nav_row), secrets.nav, FALSE, FALSE, 0);
+  gtk_box_pack_start(GTK_BOX(box), nav_row, FALSE, FALSE, 0);
+  secrets.nav_note = gtk_label_new(NULL);
+  gtk_label_set_xalign(GTK_LABEL(secrets.nav_note), 0);
+  gtk_label_set_line_wrap(GTK_LABEL(secrets.nav_note), TRUE);
+  gtk_box_pack_start(GTK_BOX(box), secrets.nav_note, FALSE, FALSE, 0);
+
   secrets.file_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
   GtkWidget *warning = gtk_label_new(TEXT_FILE_WARNING);
   gtk_label_set_xalign(GTK_LABEL(warning), 0);
@@ -800,6 +872,7 @@ static GtkWidget *build(void) {
   g_signal_connect(secrets.code, "activate", G_CALLBACK(on_send_code), NULL);
   g_signal_connect(secrets.cancel, "clicked", G_CALLBACK(on_cancel), NULL);
   g_signal_connect(secrets.copy_link, "clicked", G_CALLBACK(on_copy_link), NULL);
+  g_signal_connect(secrets.nav, "changed", G_CALLBACK(on_nav_changed), NULL);
   g_signal_connect(window, "destroy", G_CALLBACK(on_destroy), NULL);
   g_signal_connect_after(box, "size-allocate", G_CALLBACK(on_allocated), NULL);
   g_signal_connect(window, "configure-event", G_CALLBACK(on_configure), NULL);
@@ -812,6 +885,8 @@ static GtkWidget *build(void) {
   gtk_widget_hide(secrets.reason);
   gtk_widget_set_no_show_all(secrets.link_box, TRUE);
   gtk_widget_hide(secrets.link_box);
+  gtk_widget_set_no_show_all(secrets.nav_note, TRUE);
+  gtk_widget_hide(secrets.nav_note);
   gtk_widget_set_no_show_all(secrets.code_box, TRUE);
   gtk_widget_set_no_show_all(secrets.cancel, TRUE);
   gtk_widget_hide(secrets.code_box);
@@ -845,6 +920,7 @@ void zb_secrets_window_present(GtkWindow *transient_for) {
   if (!secrets.busy) {
     show_current_state();
   }
+  show_navapproval();
   if (transient_for != NULL) {
     gtk_window_set_transient_for(GTK_WINDOW(secrets.window), transient_for);
     /* Never outlive the parent. Its close button (delete-event, before GTK unmaps it): this

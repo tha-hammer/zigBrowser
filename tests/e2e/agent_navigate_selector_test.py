@@ -21,7 +21,7 @@ Cases:
   card, as the store says;
 - unreadable: a 0644 store shows Yes, says "Navigation approval setting is unreadable; asking
   for every navigation.", and End (Conditional) rewrites it 0600;
-- refused: a settings directory that is a symlink shows Yes (unreadable); Home is refused:
+- refused: a settings directory that is a symlink shows Yes (unreadable); Down (No) is refused:
   nothing is written through the link, it stays a link, and the window says so.
 
 Stopping each browser signals its own process group, so the test runs in a PID namespace of
@@ -114,6 +114,12 @@ def case_effect(binary: Path, tmp: Path, check) -> None:
         check(sec.closed(w.b), "the Secrets window closed", w.b)
         w.gated.calls["naveffect"] = nav(w.pages.target())
         w.raise_first()
+        # The keyboard left with the Secrets window: fold the drawer; reopening it (prompt) puts
+        # the keyboard back in its input.
+        from agent_common import centre
+        folded = len(w.b.rows("minimized", 1))
+        w.b.x.click(*centre(w.b.rows("minus", 1)[-1].rect()))
+        w.b.wait(lambda: len(w.b.rows("minimized", 1)) > folded, 10)
         w.prompt("naveffect", 1, headless=False)
         card = wait_card(w, check, "Yes, interactive")
         check(card is not None, "with Yes chosen in the control, an interactive call gets a card")
@@ -160,9 +166,9 @@ def case_refused(binary: Path, tmp: Path, check) -> None:
             return
         check(w.b.wait(lambda: nav_rows(w)[-1:] == [("navapproval", "yes", "unreadable")], 10),
               f"a symlinked settings directory shows Yes, unreadable ({nav_rows(w)})", w.b)
-        choose(w, "Home")
-        check(w.b.wait(lambda: nav_rows(w)[-1:] == [("navapproval-refused", "yes")], 10),
-              f"Yes is refused ({nav_rows(w)[-2:]})", w.b)
+        choose(w, "Down")  # from Yes, the value an unreadable store shows, to No
+        check(w.b.wait(lambda: nav_rows(w)[-1:] == [("navapproval-refused", "no")], 10),
+              f"No is refused ({nav_rows(w)[-2:]})", w.b)
         check(w.b.wait(lambda: REFUSED in texts(w), 10), f"and the window says so ({texts(w)[-2:]})", w.b)
         check((elsewhere / "navigate_approval").read_bytes() == b"no\n" and settings.is_symlink(),
               "nothing was written through the link, and it is still a link")

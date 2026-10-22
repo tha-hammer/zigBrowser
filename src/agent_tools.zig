@@ -146,6 +146,32 @@ export fn zb_agent_tools_prompt_over(win: c_uint, prompt_id: i64) void {
     b.broker.promptOver(prompt_id);
 }
 
+/// GTK thread (agent_secrets_window.c's Navigation approval control, part 5): the store's value,
+/// 0 yes, 1 no, 2 conditional, and whether it was unreadable (then yes).
+export fn zb_agent_navapproval_read(home: [*:0]const u8, unreadable: *c_int) c_int {
+    const core = server orelse {
+        unreadable.* = 1;
+        return @intFromEnum(approval.Selector.yes);
+    };
+    const read = approval.readStore(core.io, std.mem.span(home), approval.effectiveUid());
+    unreadable.* = @intFromBool(read.unreadable);
+    return @intFromEnum(read.selector);
+}
+
+/// GTK thread: the control's one write (0 yes, 1 no, 2 conditional). 0 when written, -1 when
+/// refused (an unsafe settings directory) or failed: then nothing was written.
+export fn zb_agent_navapproval_write(home: [*:0]const u8, value: c_int) c_int {
+    const core = server orelse return -1;
+    const selector: approval.Selector = switch (value) {
+        0 => .yes,
+        1 => .no,
+        2 => .conditional,
+        else => return -1,
+    };
+    approval.writeStore(core.io, std.mem.span(home), approval.effectiveUid(), selector) catch return -1;
+    return 0;
+}
+
 /// GTK thread: every window that opens; the first is the main window.
 export fn zb_agent_tools_window_opened(win: c_uint) void {
     if (server == null) return;
