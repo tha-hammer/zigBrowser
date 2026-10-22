@@ -10,18 +10,20 @@
 //!   A window the engine does not list, or one that crashed, gets no card and no dispatch.
 //! - **The refusal's ending.** A -32015 answer ends the card `changed`, or `crashed` when the
 //!   engine's reason is `crashed` (D7b's outcomes); the model gets the call's failure.
-//! - **Prompt binding (decision 8).** `Broker.promptOver()` ends the running prompt (the app
-//!   calls it on Stop, the prompt's result, its error, and before it sends the next prompt):
-//!   every call submitted before it is revoked. A waiting card ends `revoked` and is cancelled
-//!   in the core; an approved call not yet dispatched is revoked too. A call submitted after
-//!   it belongs to the next prompt and is not touched.
+//! - **Prompt binding (decision 8; RoseCat 7802).** A call carries its validated tool_call's
+//!   `prompt_id` (`Broker.submitPrompt`); `Broker.promptOver(prompt_id)` ends exactly that
+//!   prompt (the app calls it with the id of the prompt its result, its error or its Stop
+//!   ends). Its waiting cards end `revoked` and are cancelled in the core; its approved calls
+//!   not yet dispatched are revoked too. Another prompt's calls are never touched: an end for an
+//!   earlier prompt, or a late or duplicate end for N once N+1 runs, revokes nothing of N+1
+//!   and never releases N's card. A call with no prompt (`submit`) belongs to none.
 //! - **The dispatch boundary (finding 3).** After the worker saw the card approved, it checks
 //!   again, under the broker's mutex, that the broker is live and the prompt not over, before
 //!   the engine call. `Broker.before_dispatch` (test seam; production sets none) holds it
 //!   between the two, so a red can let a detach or a prompt's end win there: revoked, the
 //!   engine never asked to navigate.
 //!
-//! On HEAD there is no `promptOver`, `before_dispatch` or `CardView.origin`: this file does not
+//! On HEAD there is no `submitPrompt`, `promptOver`, `before_dispatch` or `CardView.origin`: this file does not
 //! compile there (the red). Unregistered until its green.
 
 const std = @import("std");
@@ -221,6 +223,9 @@ const Rig = struct {
     fn submit(self: *Rig, tool: []const u8, args: []const u8, answer: *Answer) void {
         self.b.submit("c-1", tool, args, .{ .ctx = answer, .done = Answer.done });
     }
+    fn submitIn(self: *Rig, prompt_id: i64, tool: []const u8, args: []const u8, answer: *Answer) void {
+        self.b.submitPrompt(prompt_id, "c-1", tool, args, .{ .ctx = answer, .done = Answer.done });
+    }
     fn waitCard(self: *Rig, id: approval.CardId) !void {
         const until = fake.nowMs() + 10_000;
         while (true) {
@@ -313,13 +318,13 @@ test "the engine refuses a changed document: ended changed (crashed when its rea
     }
 }
 
-test "the prompt's end revokes its waiting card: cancelled in the core, nothing dispatched; a later Approve is false" {
+test "prompt 7's end revokes its waiting card: cancelled in the core, nothing dispatched; a later Approve is false" {
     const r = try Rig.create();
     defer r.destroy();
     var a: Answer = .{};
-    r.submit(navigate_tool, navigate_args, &a);
+    r.submitIn(7, navigate_tool, navigate_args, &a);
     try r.waitCard(1);
-    r.b.promptOver();
+    r.b.promptOver(7);
     try r.waitEnded(1);
     try testing.expectEqual(broker.Ending.revoked, r.app.endings[0]);
     try testing.expectEqual(approval.Outcome.cancelled, r.cards.outcome(1).?);
@@ -331,18 +336,65 @@ test "the prompt's end revokes its waiting card: cancelled in the core, nothing 
     try testing.expectEqual(@as(usize, 1), r.app.ended_n);
 }
 
-test "Approve won, then the prompt ended before the dispatch (held at before_dispatch): revoked, nothing dispatched" {
+test "an end for another prompt revokes nothing: prompt 7's card waits through ends of 6 and 8, then runs" {
+    const r = try Rig.create();
+    defer r.destroy();
+    var a: Answer = .{};
+    r.submitIn(7, navigate_tool, navigate_args, &a);
+    try r.waitCard(1);
+    r.b.promptOver(6);
+    r.b.promptOver(8);
+    settle();
+    try testing.expectEqual(approval.Outcome.waiting, r.cards.outcome(1).?);
+    try testing.expectEqual(@as(usize, 0), r.app.endedCount());
+    try testing.expect(r.cards.approve(1));
+    try a.wait();
+    try testing.expect(a.ok);
+    try r.waitEnded(1);
+    try testing.expectEqual(broker.Ending.done, r.app.endings[0]);
+    try testing.expectEqual(@as(usize, 1), r.engine.dispatches());
+}
+
+test "a late or duplicate end for prompt 7 once prompt 8 runs: 8's card waits on, 7's stays revoked, only 8 dispatches" {
+    const r = try Rig.create();
+    defer r.destroy();
+    var a: Answer = .{};
+    r.submitIn(7, navigate_tool, navigate_args, &a);
+    try r.waitCard(1);
+    r.b.promptOver(7);
+    try r.waitEnded(1);
+    try a.wait();
+    var b: Answer = .{};
+    r.submitIn(8, reload_tool, "{}", &b);
+    try r.waitCard(2);
+    r.b.promptOver(7); // late
+    r.b.promptOver(7); // and again
+    settle();
+    try testing.expectEqual(approval.Outcome.waiting, r.cards.outcome(2).?);
+    try testing.expectEqual(approval.Outcome.cancelled, r.cards.outcome(1).?);
+    try testing.expect(!r.cards.approve(1));
+    try testing.expectEqual(@as(usize, 1), r.app.endedCount());
+    try testing.expect(r.cards.approve(2));
+    try b.wait();
+    try testing.expect(b.ok);
+    try r.waitEnded(2);
+    try testing.expectEqual(broker.Ending.done, r.app.endings[1]);
+    try testing.expectEqual(@as(usize, 1), r.engine.dispatches());
+    try testing.expectEqualStrings("page.reload", r.engine.method(r.engine.n - 1));
+}
+
+test "Approve won, then prompt 7 ended before the dispatch (held at before_dispatch): revoked, nothing dispatched" {
     const r = try Rig.create();
     defer r.destroy();
     var hold: Hold = .{};
     hold.armed.store(true, .release);
     r.b.before_dispatch = .{ .ctx = &hold, .run = Hold.run };
     var a: Answer = .{};
-    r.submit(navigate_tool, navigate_args, &a);
+    r.submitIn(7, navigate_tool, navigate_args, &a);
     try r.waitCard(1);
     try testing.expect(r.cards.approve(1));
     try hold.waitHeld();
-    r.b.promptOver();
+    r.b.promptOver(7);
     hold.released.store(true, .release);
     try r.waitEnded(1);
     try a.wait();
@@ -350,6 +402,26 @@ test "Approve won, then the prompt ended before the dispatch (held at before_dis
     try testing.expect(!a.ok);
     try testing.expectEqual(broker.Ending.revoked, r.app.endings[0]);
     try testing.expectEqual(@as(usize, 0), r.engine.dispatches());
+}
+
+test "Approve won, then another prompt ended before the dispatch (held at before_dispatch): prompt 7's call runs" {
+    const r = try Rig.create();
+    defer r.destroy();
+    var hold: Hold = .{};
+    hold.armed.store(true, .release);
+    r.b.before_dispatch = .{ .ctx = &hold, .run = Hold.run };
+    var a: Answer = .{};
+    r.submitIn(7, navigate_tool, navigate_args, &a);
+    try r.waitCard(1);
+    try testing.expect(r.cards.approve(1));
+    try hold.waitHeld();
+    r.b.promptOver(6);
+    hold.released.store(true, .release);
+    try a.wait();
+    try testing.expect(a.ok);
+    try r.waitEnded(1);
+    try testing.expectEqual(broker.Ending.done, r.app.endings[0]);
+    try testing.expectEqual(@as(usize, 1), r.engine.dispatches());
 }
 
 test "Approve won, then the bound window's broker detached before the dispatch (held at before_dispatch): revoked, nothing dispatched" {
@@ -370,19 +442,4 @@ test "Approve won, then the bound window's broker detached before the dispatch (
     try testing.expectEqual(broker.Ending.revoked, r.app.endings[0]);
     try testing.expectEqual(@as(usize, 0), r.engine.dispatches());
     try testing.expectEqual(@as(u32, 0), a.n.load(.acquire));
-}
-
-test "a call submitted after the prompt's end belongs to the next prompt and runs once approved" {
-    const r = try Rig.create();
-    defer r.destroy();
-    r.b.promptOver();
-    var a: Answer = .{};
-    r.submit(navigate_tool, navigate_args, &a);
-    try r.waitCard(1);
-    try testing.expect(r.cards.approve(1));
-    try a.wait();
-    try testing.expect(a.ok);
-    try r.waitEnded(1);
-    try testing.expectEqual(broker.Ending.done, r.app.endings[0]);
-    try testing.expectEqual(@as(usize, 1), r.engine.dispatches());
 }
