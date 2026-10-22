@@ -31644,3 +31644,48 @@ list; removing/freeing terminal cards is a SHOULD for long sessions. Because
 this adds visible card, button, and desktop-notification UI, approval after the
 code blockers close still needs the planned real-screen check on the user's
 NVIDIA display. The current Xvfb-only visual result is not that acceptance.
+
+## MS6.5.1 whole-recovery initial reds (`d0c0db4`, `6935f6f`)
+
+**`d0c0db4` APPROVED-for-tests; `6935f6f` APPROVED-for-tests.** Both commits
+remain deliberately unregistered and nothing is armed. The production addition
+is a fail-closed stub with no caller and no `reaper_ready`; it acquires the
+bounded no-follow ledger lock and returns `fail_closed` without loading,
+signalling, unlinking, retiring, or invoking the injected actuator. The first
+red is therefore genuinely failing-first: two child recoverers get zero
+`signalled` results and retain the entry instead of the required one
+`signalled`, one `already_gone`, empty-ledger outcome. The second red is also
+genuine and actuator-independent: a real child and its real Linux start ticks
+must classify as live-same and return `left`, while the stub returns
+`fail_closed`; the ledger entry must remain.
+
+The signal containment is adequate for these reds. Before forking, each test
+requires fd 9 to be a held outer PID-namespace fd, proves it differs from the
+current `/proc/self/ns/pid`, proves the current process maps into it, and
+requires the test or its parent to be PID 1 in the inner namespace. Missing,
+closed, wrong-type, same-namespace, unmapped, or ambiguous state refuses before
+any child or signal. Every pid later passed to `kill` is a direct child that
+has not been reaped, so the kernel still reserves its pid; a wait error marks
+ownership lost and suppresses the signal. Registration must preserve the exact
+outer-fd/private-user+PID+mount-namespace launcher and its exit status.
+
+This is not yet the plan's complete whole-recovery red. The fake actuator is
+signal-free, so counting the enum value `signalled` does not prove that exactly
+one recoverer entered the real marked-child kill phase, and there is not yet an
+early-unlock mutant producing the plan's two observed signal entries. Those
+rows remain required before the destructive green can be accepted.
+
+**GREEN interface ruling: the proposed three independent methods are not
+approved as written.** `provenanceMatches(entry) -> bool`, followed by
+`fixedPointClean(entry, ...)` and `retireDir(entry)`, carries no held directory
+capability in its type; an implementation can close/reopen by name between
+the check and action and recreate the path-swap race the plan's held-fd rule is
+meant to exclude. Use either one production `performRecovery` operation that
+pins and retains the run-dir fd through provenance, fixed-point census/kill,
+marker unlink and `rmdir`, or a typed `RecoveryLease` returned by the pin/check
+step whose later methods operate only through that held fd and whose lifetime
+ends after teardown. Zig may publish the ledger retirement afterward while it
+still holds the global flock. Every mismatch, incomplete census, survivor,
+deadline, teardown error, or lost capability must remain `fail_closed`, with
+the entry retained. No Mac reaper run or production arming is authorized by
+these two red approvals.
