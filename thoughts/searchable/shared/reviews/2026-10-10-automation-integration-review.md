@@ -27242,3 +27242,73 @@ Before the green registers this suite, add causal coverage that:
 
 The arbitrary leftover-temp row is useful but does not prove either missing
 guarantee. Agent Mail 7481 sent JadeBeacon the blocker before the green.
+
+## Ledger atomic-publish green (`085b4f2`)
+
+**BLOCKED-for-tests.** The production implementation now has the intended
+shape — fresh 0600 `O_EXCL` sibling temp, complete serialization and flush,
+temp fsync, rename over the store, then a directory sync — and an exact
+clean-export rerun after the host reboot passed **Build Summary: 4/4 steps
+succeeded; 4/4 tests passed**. That green result does not close the causal
+coverage blocker on `3c3e354`, because the registered test file is unchanged.
+
+In particular, `tests/agent_run_ledger_publish_test.zig:29-37` observes only
+`.after_temp`; no test calls the declared `.after_rename` cut. Lines 50-56
+observe only the final parsed value after an ordinary publish. No operation
+seam or other oracle observes the required sequence or even whether the parent
+directory was synced. Therefore the rename-before-write plus omitted-dir-sync
+mutant documented in the prior review still survives all four tests.
+
+The green needs a fix-forward red/green that causally observes complete OLD at
+`after_temp`, complete NEW at `after_rename`, and the ordered operations
+complete-temp-write/flush -> temp fsync -> rename -> parent-directory fsync,
+including at least rename-before-complete-temp and omitted-directory-fsync
+mutants. Use `fsync`, matching `src/atomic_file.zig:36-44`, or provide a
+Darwin-specific proof that `fdatasync` on the directory is the intended
+portable durability primitive; this slice is for macOS and the current code at
+`src/agent_run_ledger.zig:165-170` changes the existing precedent from
+`fsync` to `fdatasync` without a Mac oracle. `reaper_ready` remains false and
+the destructive Mac gate remains off.
+
+## Windows owner decisions (`fff7033`)
+
+**BLOCKED (plan consistency).** The newly added block at
+`2026-10-19-windows-launch-tdd-plan.md:227-232` states the three owner
+decisions accurately: **per-user MSI**; **no signing now, no signed or
+distributable claim**; and a **native Win32 drawer**. However, the rest of the
+same authoritative plan was not reconciled and still contradicts those
+decisions:
+
+- lines 162 and 190-191 still make a signed install and verified signatures
+  part of the current desired/observable end state;
+- lines 208-225 still label OD-W1, OD-W3 and OD-W6 as open recommendations,
+  and lines 236-237 still say nothing below picks for the user;
+- lines 1471-1473 still condition WS5's implementation on the user possibly
+  picking the WebView2-hosted drawer;
+- lines 1992, 1995-2019, 2025 and 2048-2049 still describe W1/W3/W6 as open or
+  gating current work, keep signature-valid rows in the current WS13 red/gate,
+  and call signing merely blocked on OD-W3 rather than a deferred, non-launch
+  slice; and
+- the frontmatter remains rev 2.12 / last-updated 2026-10-20 despite adding
+  binding decisions dated 2026-10-21.
+
+Fix forward by marking W1/W3/W6 decided throughout, removing the obsolete WS5
+alternative, making the current installer/end-state/gate explicitly an
+**unsigned per-user MSI with no distributable claim**, and moving Authenticode
+and its tests to a clearly named deferred future slice that is not a launch or
+packaging gate. Leave OD-W4 open. Bump the plan revision/date. The commit is
+docs-only and `git diff --check` is clean; no test gate is required.
+
+## Post-reboot pending-review and push-boundary audit (`fff7033`)
+
+No reviewer process or gate survived the host reboot, and no partial result was
+used. The focused ledger publish step above was rerun from a fresh exact
+`git archive 085b4f2` export and its throwaway tree was deleted on exit.
+
+The stop-reason range `5449e67`/`422c22c`/`84f547c`/`5b24bc1` is cumulatively
+approved. The review-only commits interleaved through `bac895b` are also
+docs-only and accepted. The **newest contiguous approved push-through after
+the currently pushed `c995a02` is `bac895b`**. The earliest blocked commit is
+`3c3e354`, still blocked cumulatively by the missing causal atomic-publish
+coverage in `085b4f2`. `fff7033` is separately blocked by the plan
+contradictions above.
