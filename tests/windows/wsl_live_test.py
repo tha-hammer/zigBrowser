@@ -1,33 +1,27 @@
 r"""WS8/WS9 WSL2 topology — live DISCOVERY SPIKE on the Win11 VM (OD-W4).
 
-!!! DISCOVERY-ONLY. A work-in-progress discovery oracle; AWAITING RoseCat review before any live run
-    (draft gate). It is NOT production closure and NOT a security claim: the security/product proofs come
-    LATER via named red/green tests driving the production WslBackend / LinuxBwrapBackend. It writes ONLY
+!!! DISCOVERY-ONLY / DO NOT RERUN / NOT REPAIRED. This oracle is KNOWN-DEFECTIVE and MUST NOT be rerun or
+    cited as gate evidence; its results are not a closure or a security claim. The review of the 6e9f989
+    rewrite found that the code does NOT deliver the cleanup / fail-closed / secret / listener guarantees it
+    described, so do not read any wording in this file as a satisfied guarantee. The security/product proofs
+    come LATER via named red/green tests driving the production WslBackend / LinuxBwrapBackend. It writes ONLY
     under a unique per-run directory beneath C:\\Users\\zbtext\\zb\\wsl on win11-m8, never on the read-only
     Windows 10 file server, and never calls global `wsl --shutdown`.
 
-Design (addressing RoseCat ab98afd findings 1-6):
-- CLEANUP ALWAYS RUNS AND FAILS CLOSED: cleanup+postflight census is registered with `addCleanup`, so it runs
-  on every exit path (including an earlier assertion failure), records every terminate/unregister/delete/kill
-  return code, and FAILS the test if any op or the final census is not clean.
-- UNIQUE PER-RUN DIR + NO SHARED-NAME OVERWRITE: every staged file and every imported distro lives under a
-  unique `run-<nonce>` dir; the run refuses to start if that dir already exists, and cleanup deletes only that
-  dir — never a pre-existing baseline file.
-- STRICT rc: import requires `rc == 0` (the "completed successfully" text is an extra assertion, never an
-  alternative to rc); every lifecycle op asserts its rc.
-- LISTENER READINESS TIED TO THE EXACT PORT: the in-distro listener must be LISTENing on the exact
-  `127.0.0.1:<p_lo>` (and `[::1]:<p_v6>`) before the client connects (a killed/wrong-port listener fails); the
-  Windows reverse listener records its PID and proves "LISTENING" before the WSL→Windows negative, and its PID
-  is stopped + censused in postflight.
-- C1 SECRET NEVER TOUCHES DISK/ARGV/ENV: the control-capability secret is fed from THIS test process to
-  PowerShell stdin, which forwards it to `wsl.exe` stdin (Linux fd 0). The staged scripts are asserted to
-  contain no secret; the probe binds `127.0.0.1:0`, returns the port on stdout, and an authed connect must ACK.
-- NEGATIVE/MUTANT ORACLES: a closed-port connect must be refused; a failed import and a failed unregister must
-  return nonzero; a planted leftover must be detected by the census — each proving the oracle fails closed.
+Known-open defects (from the 6e9f989 review), to be fixed in a SEPARATE later commit before any rerun:
+- cleanup can abort part-way instead of always completing best-effort then failing;
+- distro/artifact ownership is recorded too late (a partial import before the failing assertion is not
+  tracked, so it would not be cleaned);
+- stopping the Windows listener by PID is not PID-reuse-safe;
+- a local kill must run inside a PID namespace;
+- the C1 secret can still reach a process argv (it must be kept out of argv entirely, not just off disk);
+- the `::1` listener-readiness check does not match the exact `::1:<port>` row.
 
-Run live (ONLY after RoseCat approves this spike):
-  ZB_WIN11_HOST=127.0.0.1 ZB_WSL_ROOTFS=/path/to/alpine-minirootfs-3.21.9-x86_64.tar.gz \
-      python3 -I tests/windows/wsl_live_test.py -v
+What the spike ATTEMPTS (NOT yet enforced — see the defects above): a lifecycle with per-op checks and a
+postflight census; an in-distro + a Windows reverse listener with readiness checks; a default-user (no `-u`)
+uid/group check; a Windows-stdio→Linux-fd + ephemeral-port C1 bootstrap probe; and negative/mutant oracles.
+
+DO NOT RUN until the separate repair commit lands and RoseCat approves it.
 """
 import hashlib
 import json
