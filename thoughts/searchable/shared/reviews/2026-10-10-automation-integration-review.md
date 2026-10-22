@@ -32636,3 +32636,30 @@ items above, run the full clean private-Xvfb gate. Only then may the
 orchestrator run the same exact commit's real MSVC artifact on `win11-m8`
 under the eight-row, owned-Job and before/after-census conditions already
 recorded in the `1e5ff2d` checklist.
+
+## Drawer-gate scrub and inherited-row fix (`1b5697d`)
+
+**APPROVED cumulatively for `6c2077f` findings 1 and 2, but the commit is
+BLOCKED-for-tests as a whole; no Win11 run yet.** An exact-export run planted
+a hostile reserved host, `/bin/true` executable, port, user, key and known-host
+path in the parent environment. Both registered steps remained offline:
+**5/5 steps**, entry **61 tests / 8 skips**, behavior **42 tests / 19 skips**.
+The explicit `env -u` list therefore closes the immediate inherited-live-target
+route, and nullifying the bubble entry method restores the behavior suite's
+own exact 19-row surface.
+
+Two test-integrity issues remain. First, this commit captured unrelated
+decision-16 part-5 `build.zig` registrations from the shared worktree:
+`agent_approval_writer_test.zig` and `agent_navigate_selector_test.py`. Their
+own committed headers say they are red and **unregistered until green**, and
+production has no `writeStore`; ordinary aggregate `test` is consequently red
+from a registration outside this fix's ownership. Fix forward by removing the
+premature registrations or land the corresponding production green with its
+causal evidence before claiming the full gate. Second, the hostile environment
+run above is reviewer evidence, not a committed regression. Add a small
+registered source/runner test that plants the live variables and proves each
+aggregate command removes them before either `_ssh` or `_scp` can run.
+
+The independent child-HWND ownership/visibility/plain-text finding on
+`6c2077f` also remains open. The exact-commit full gate and Win11 authorization
+therefore remain pending.
