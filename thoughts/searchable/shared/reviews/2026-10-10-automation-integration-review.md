@@ -29843,3 +29843,28 @@ BlackRobin broker green is not committed, so only a later cumulative gate can
 be acceptance evidence unless that foreign registration is moved. Agent Mail
 7672 sent the two blockers and the integration dependency to JadeBeacon. The
 contiguous push boundary does not advance on this review.
+
+### Scoped recovery text fix-forward (`49ad92a`)
+
+**APPROVED `49ad92a`.** It closes both active text blockers from `6a18459`:
+
+- `tests/agent_run_ledger_recovery_busy_test.zig:1-6,139` now describes only
+  `acquired=false`, `AcquireIncident.lock_unavailable`, and no on-disk
+  mutation, and explicitly says the primitive makes no run-admission claim;
+- the macOS plan frontmatter now consistently says Rev 28 in both `status`
+  and `rev`.
+
+The remaining “first run” wording is either the explicitly superseded Rev-27
+history or subordinate design for the named OPEN whole-recovery blocker; it
+does not describe the accepted primitive. From an exact clean `git archive
+49ad92a` export, with display variables unset and the registered
+signal-bearing test inside a private current-UID PID namespace:
+
+> Build Summary: 4/4 steps succeeded
+
+`git diff-tree --check` was clean. Agent Mail 7675 sent the approval to
+JadeBeacon. The `87fbea8` / `8a593b3` source-and-doc findings are therefore
+closed cumulatively by `49ad92a`; final acceptance and the contiguous push
+boundary still wait only on a clean-export full gate at the corrected
+cumulative HEAD after BlackRobin's broker green supplies the production side
+of the `87fbea8` registration.
