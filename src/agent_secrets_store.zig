@@ -22,9 +22,27 @@ pub const StoreError = error{
     NotFound,
 };
 
-/// A disposable test target iff it starts with `zigBrowser-test-`.
+/// The disposable test nonce is lowercase hex, at least this many chars (>= 32 bits), so the bare prefix and
+/// short/near-miss targets are rejected.
+pub const min_test_nonce_len = 8;
+
+/// A disposable test target iff it is EXACTLY `zigBrowser-test-<nonce>` where <nonce> is >= 8 lowercase-hex
+/// characters. The bare prefix, a too-short nonce, or any non-hex byte is NOT a test target (WS6.3, RoseCat).
 pub fn isTestTarget(name: []const u8) bool {
-    return std.mem.startsWith(u8, name, test_target_prefix);
+    if (!std.mem.startsWith(u8, name, test_target_prefix)) return false;
+    const nonce = name[test_target_prefix.len..];
+    if (nonce.len < min_test_nonce_len) return false;
+    for (nonce) |c| switch (c) {
+        '0'...'9', 'a'...'f' => {},
+        else => return false,
+    };
+    return true;
+}
+
+/// A credential target is SAFE for a test to create/read/delete iff it is a disposable test target AND not a
+/// production `zigBrowser/*` credential — the only target a credential test may ever touch (WS6.3).
+pub fn validTestTarget(name: []const u8) bool {
+    return isTestTarget(name) and !isProductionTarget(name);
 }
 
 /// A production credential iff it is in the `zigBrowser/*` family. A `zigBrowser-test-*` target starts
@@ -63,9 +81,14 @@ pub const TokenStore = struct {
         return self.vtable.save(self.ptr, token);
     }
 
-    /// Read the stored token into `buf`; returns its length, or error.NotFound.
+    /// Read the stored token into `buf`; returns its length. The backend's value is validated against the ONE
+    /// shape centrally (RoseCat WS6), so a planted/corrupt backend value (e.g. an API key seeded straight into
+    /// Credential Manager) is rejected here with error.BadShape — the Windows store preserves the shipped
+    /// load contract (agent_secrets.loadFile refuses a bad-shape file) without the backend repeating the rule.
     pub fn read(self: TokenStore, buf: []u8) StoreError!usize {
-        return self.vtable.read(self.ptr, buf);
+        const n = try self.vtable.read(self.ptr, buf);
+        if (!shape.validToken(buf[0..n])) return error.BadShape;
+        return n;
     }
 
     /// Remove the stored token (idempotent at the backend's discretion).

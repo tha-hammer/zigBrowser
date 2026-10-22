@@ -3510,6 +3510,11 @@ pub fn build(b: *std.Build) void {
     agent_secrets_step.dependOn(&run_agent_secrets_shape_tests.step);
     agent_secrets_step.dependOn(&run_shape_portable_tests.step);
     agent_secrets_step.dependOn(&run_agent_secrets_store_tests.step);
+    // WS6 [L] (RoseCat): the shape-portable and TokenStore tests must also join the AGGREGATE gate, not only
+    // the focused step, with the registered Windows compile proof.
+    test_step.dependOn(&run_shape_portable_tests.step);
+    test_step.dependOn(&run_agent_secrets_store_tests.step);
+    test_step.dependOn(&secrets_win_cross.step);
     if (target.result.os.tag == .linux) agent_secrets_step.dependOn(&run_agent_secrets_dlopen_test.step);
     if (target.result.os.tag == .linux) agent_secrets_step.dependOn(&run_agent_secrets_clear_fetch_test.step);
     test_step.dependOn(&run_agent_auth_tests.step);

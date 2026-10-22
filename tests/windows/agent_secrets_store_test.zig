@@ -58,6 +58,39 @@ test "TokenStore round-trips a valid token: save -> read -> remove" {
     try std.testing.expectError(error.NotFound, ts.read(&buf));
 }
 
+test "TokenStore.read rejects a planted invalid backend value (central one-rule load contract)" {
+    // A value seeded straight into the backend (bypassing save) that is NOT the setup-token shape must be
+    // rejected on read — Windows preserves the shipped load contract without the backend repeating the rule.
+    var fake = FakeStore{};
+    fake.saved = "sk-ant-api03-" ++ "a" ** 40; // an API key planted directly into the backend
+    const ts = fake.iface();
+    var buf: [600]u8 = undefined;
+    try std.testing.expectError(error.BadShape, ts.read(&buf));
+    // a valid value still reads back
+    fake.saved = canary;
+    const n = try ts.read(&buf);
+    try std.testing.expectEqualStrings(canary, buf[0..n]);
+}
+
+test "WS6.3 disposable target grammar: prefix + >=8 hex; the bare prefix and near misses are rejected" {
+    try std.testing.expect(store.isTestTarget("zigBrowser-test-deadbeef"));
+    try std.testing.expect(store.isTestTarget("zigBrowser-test-0123456789abcdef"));
+    try std.testing.expect(store.validTestTarget("zigBrowser-test-deadbeef"));
+    for ([_][]const u8{
+        "zigBrowser-test-",            // the bare prefix (no nonce)
+        "zigBrowser-test",             // no trailing dash
+        "zigBrowser-test-dead",        // nonce too short (< 8)
+        "zigBrowser-test-deadbeeg",    // 'g' is not hex
+        "zigBrowser-test-DEADBEEF",    // uppercase is not the lowercase-hex grammar
+        "zigBrowser-test-dead beef",   // space
+        "zigBrowser/ClaudeAgentToken/default", // the production target
+        "zigBrowser-testdeadbeef",     // missing the dash before the nonce
+    }) |bad| {
+        try std.testing.expect(!store.isTestTarget(bad));
+        try std.testing.expect(!store.validTestTarget(bad));
+    }
+}
+
 test "WS6.3 safety: refuse to run when a non-test zigBrowser/* target exists" {
     try std.testing.expectEqual(store.RunSafety.refuse_production_target,
         store.runSafety(&.{"zigBrowser/ClaudeAgentToken/default"}));
