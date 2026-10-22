@@ -33915,3 +33915,76 @@ production code changed.
 From an exact clean archive, the registered module command passed **8/8 six
 times**, each run inside its own private user/PID/mount namespace. No signal
 could reach a host pid.
+
+## Six-case Mac gate diagnostic result (`2e07c7b`)
+
+**The released run FAILED and is not acceptance evidence. No rerun is
+authorized yet.** All seven reviewed digests matched and the process/folder
+censuses were clean, but the MS8 hook case's exact-environment row failed on
+both Macs because the Python hook observed runtime-added
+`__CF_USER_TEXT_ENCODING` (and `LC_CTYPE` on Intel). Every sandbox, bridge,
+denial, marker-fd, session and cleanup check passed. The fd-3 CLI case also
+had one intermittent Intel failure whose collapsed boolean did not reveal
+whether the walk, CLI discovery, environment read, canary or token check was
+responsible.
+
+The fix direction is approved red-first, not the implementation. Preserve the
+exact launch allowlist: add a separate real hook-runner row using a non-Python
+reporter to observe names and values before CoreFoundation/Python can mutate
+the environment. Do not ignore a fixed set of injected names and do not add a
+locale-control variable merely to shape the test. Keep the Python row for the
+sandbox/network/fd/session contract and for independent absence of all
+planted names, values and the marker variable.
+
+For fd-3, production's boolean remains fail closed but derives from a fixed,
+token-free diagnostic reason such as `ok`, `walk-unreadable`,
+`cli-not-found`, `env-unreadable`, `canary-missing` or `token-found`. A child
+exit is benign only when disappearance is independently confirmed and another
+live CLI descendant is found and fully checked; every other read failure and
+an absent CLI remain failures. The Linux red must distinguish those outcomes
+and prove the case emits no pid, path, argv, environment value, token or raw
+exception. Changed case bytes and any staged inventory need a new digest
+review before another Mac release.
+
+## WSL discovery transport refusal (`4384fcf` live diagnostic)
+
+**The owner-watched run failed safely before any VM mutation; it is diagnostic
+evidence, not topology acceptance. No rerun is authorized yet.** Inside the
+mandated user namespace, OpenSSH rejected the inherited system config drop-in
+because root maps to the overflow uid. Offline rows passed **15/15**; no distro
+or run directory was created, the baseline remained empty and the archive was
+deleted.
+
+The harness fix may proceed red-first with one option constructor shared by
+foreground ssh, background ssh and scp: `-F none`,
+`GlobalKnownHostsFile=none`, the exact pinned `UserKnownHostsFile`, strict host
+checking, identities-only, batch mode, explicit identity/port/user and the
+existing connection/dead-peer bounds. An offline `ssh -G` oracle inside the
+same namespace must prove that effective configuration and no proxy/jump, and
+causal mutants must catch removal/substitution/relaxation of each security
+option. No offline proof may contact the VM. Review the fix commit before a
+new exact-commit WSL release.
+
+## Reaper readiness/startup red (`da68ff9`)
+
+**BLOCKED-for-tests; unregistered/unarmed status is correct.** The gate-off,
+gate-on success, shipped-default and corrupt-ledger rows are a useful seed,
+but they do not yet support the claimed safety boundary:
+
+1. The tests call an exported helper directly; no production startup owner
+   calls it. Add a real call-site oracle or scope the slice explicitly to the
+   startup-recovery core and retain actual integration as an open blocker.
+2. Prove gate-off performs no ledger read with missing, corrupt and unreadable
+   stores, all returning disabled with zero pin/mutation. A valid ledger plus
+   `scanned == 0` cannot establish that.
+3. Pin `reaper_ready` as the literal immutable source constant and causally
+   reject environment, argv or build-option arming; equality to false in one
+   build is insufficient.
+4. Drive left/already-gone/reconciled/fail-closed outcomes. Any fail-closed
+   entry must make the aggregate report non-ok, retain the entry and never be
+   hidden by a generic `ran` status.
+5. Pin the per-start entry cap and one absolute deadline across the whole
+   iteration, with residual entries retained and reported on cap/deadline.
+
+These remain signal-free fake rows. Fix the red forward before implementing
+its green; keep it off both Macs.
