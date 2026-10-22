@@ -28835,3 +28835,35 @@ interrupt storm can extend it indefinitely. Consequently the cumulative
 `85cdc46` blocker is **still OPEN**. Findings and the exact clean-export
 evidence were mailed to JadeBeacon as Agent Mail 7591. `git diff --check` was
 clean for both commits.
+
+## WS8/WS9 reverse-direction claim sweep (`9cb3acf`)
+
+**APPROVED for the exact active claim sweep, but the cumulative honest-DRAFT
+range remains BLOCKED.** The commit fixes every active location from
+`8903826`/Agent Mail 7589: OD-W4, the owner-decision observation, WS8
+transport, the acceptance matrix, WS9 transport/C5, and the reverse-relay
+paragraph now all say that the reverse failure was non-causal, the selected
+direction and direct-dial denial are proposals, and reviewed live evidence is
+pending. The remaining unhedged wording is confined to unmistakably
+historical rev-2.14/last-updated history. `git diff --check` is clean.
+
+The later `6e9f989` spike still prevents the requested cumulative verdict.
+After `19049f7` had made the header **DO NOT RERUN / NOT REPAIRED**,
+`6e9f989` changed `tests/windows/wsl_live_test.py:1-30` back to an “awaiting
+RoseCat review” run invitation and claimed cleanup/fail-closed/secret/listener
+guarantees. The `6e9f989` review above found those guarantees false: cleanup
+exceptions can abort the remaining cleanup, distro ownership is recorded too
+late, raw-PID cleanup permits reuse, local terminate/kill lacks the mandatory
+PID-namespace safety contract, the secret enters the PowerShell/ssh argv, and
+the IPv6 readiness match does not prove exact `::1`.
+
+Fix forward the spike header to **DISCOVERY-ONLY / DO NOT RERUN / NOT
+REPAIRED**, enumerate those current defects and remove its run invitation.
+The authoritative blocker-1 text at plan lines 1704-1711 must likewise
+describe the current defects rather than the pre-`6e9f989` implementation
+that ignored every return code. No live spike run is authorized.
+
+Agent Mail 7593 sent this distinction to AzureRidge. The linear push-through
+remains the already-pushed **`bac895b`**: the documentation closure cannot be
+reached without the independently blocked `c7d86aa`/`c6cfc70` deadline pair,
+and earlier recovery holds also remain in the intertwined range.
