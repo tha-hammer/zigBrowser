@@ -3627,8 +3627,19 @@ pub fn build(b: *std.Build) void {
     mac_build_script_selftest.addFileInput(b.path("tests/mac/build-on-mac.sh"));
     mac_build_script_selftest.addFileInput(b.path("tests/mac/known_hosts"));
     mac_build_script_selftest.addFileInput(b.path("tests/mac/build_on_mac_selftest.sh"));
-    b.step("test-mac-build-script", "Run the hostless selftest of the shared Mac build step (exact commit, fresh run dir, pinned host keys)").dependOn(&mac_build_script_selftest.step);
+    const mac_build_script_step = b.step("test-mac-build-script", "Run the hostless selftests of the shared Mac build step and its eight callers (exact commit, fresh run dir, pinned host keys)");
+    mac_build_script_step.dependOn(&mac_build_script_selftest.step);
     test_step.dependOn(&mac_build_script_selftest.step);
+    // Every caller of build-on-mac.sh works only in its fresh run dir (bd 4pa.59, 4pa.77; GREEN B).
+    const mac_gate_callers_selftest = b.addSystemCommand(&.{ "bash", "tests/mac/mac_gate_callers_selftest.sh" });
+    for ([_][]const u8{
+        "tests/mac/mac_gate_callers_selftest.sh", "tests/mac/mac_gate_lib.sh",    "tests/mac/build-on-mac.sh",
+        "tests/mac/known_hosts",                  "tests/mac/gate.sh",            "tests/mac/ms1b_signed_gate.sh",
+        "tests/mac/ms2a_gate.sh",                 "tests/mac/ms2b_gate.sh",       "tests/mac/ms2c_gate.sh",
+        "tests/mac/ms3_gate.sh",                  "tests/mac/ms4_gate.sh",        "packaging/macos/build-dmg.sh",
+    }) |input| mac_gate_callers_selftest.addFileInput(b.path(input));
+    mac_build_script_step.dependOn(&mac_gate_callers_selftest.step);
+    test_step.dependOn(&mac_gate_callers_selftest.step);
     test_step.dependOn(&windows_gate_selftest.step);
     test_step.dependOn(&windows_twohost_selftest.step);
     test_step.dependOn(&windows_build_selftest.step);

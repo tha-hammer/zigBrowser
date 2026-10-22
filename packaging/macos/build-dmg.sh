@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Build a signed .dmg for macOS on the M9 build host over Tailscale SSH.
 # Usage:
-#   bash packaging/macos/build-dmg.sh            # build + sign + package
-#   bash packaging/macos/build-dmg.sh --skip-build  # repackage existing binary
+#   bash packaging/macos/build-dmg.sh            # build ${ZB_GATE_COMMIT:-HEAD} + sign + package
+# It builds one exact commit into a fresh per-run dir on the Mac and works only there, with pinned host keys (bd 4pa.59,
+# 4pa.77). The old --skip-build (repackage a binary left in a shared dir) is refused: there is no shared dir any more.
 set -euo pipefail
 
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
@@ -15,42 +16,39 @@ DMG_NAME="${APP_NAME}_${VERSION}_macos.dmg"
 
 KEY="${ZB_MAC_KEY:-/home/maceo/vms/mac-m9/zb_mac_key}"
 HOST="${ZB_MAC_HOST:-maceojourdan@100.92.212.47}"
-# BatchMode=yes: agents have no terminal but inherit DISPLAY=:0 with ssh-askpass installed, so a brief
-# key-auth refusal would otherwise pop a graphical password window on the user's desktop (see build-on-mac.sh).
-SSH=(ssh -i "$KEY" -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -o BatchMode=yes \
-     -o UserKnownHostsFile=/dev/null -o ConnectTimeout=15 -o ServerAliveInterval=10)
-SCP=(scp -i "$KEY" -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -o BatchMode=yes \
-     -o UserKnownHostsFile=/dev/null -o ConnectTimeout=15)
 
-SKIP_BUILD=0
 if [ "${1:-}" = "--skip-build" ]; then
-  SKIP_BUILD=1
+  echo "REFUSED: --skip-build is gone; every dmg builds one exact commit in a fresh per-run dir" >&2
+  exit 1
 fi
 
 cd "$REPO_ROOT"
+. tests/mac/mac_gate_lib.sh
+trap mac_remove_run_dirs EXIT
+mapfile -d '' SSH < <(mac_ssh_opts "$KEY")
+mapfile -d '' SCP < <(mac_scp_opts "$KEY")
 
-# ── Step 1: Build on the Mac (unless --skip-build) ──
-if [ "$SKIP_BUILD" -eq 0 ]; then
-  echo "==> Building on macOS host..."
-  bash tests/mac/build-on-mac.sh
-fi
+# ── Step 1: Build on the Mac, into a fresh run dir ──
+echo "==> Building on macOS host..."
+mac_build "$HOST" "$KEY"
+RUN_DIR=$MAC_RDIR
 
 # ── Step 2: Sync assets to the Mac ──
 echo "==> Syncing packaging assets..."
 "${SCP[@]}" \
   packaging/assets/zigBrowser.png \
   packaging/macos/Info.plist \
-  "$HOST":zigBrowser/ >/dev/null
+  "$HOST:$RUN_DIR/" >/dev/null
 
 # ── Step 3: Assemble .app bundle, sign, and create .dmg on the Mac ──
 echo "==> Assembling .app bundle, signing, and creating .dmg..."
-"${SSH[@]}" "$HOST" /bin/bash -s "$VERSION" "$APP_NAME" "$DMG_NAME" <<'REMOTE'
+"${SSH[@]}" "$HOST" /bin/bash -s "$VERSION" "$APP_NAME" "$DMG_NAME" "$RUN_DIR" <<'REMOTE'
 set -euo pipefail
 VERSION="$1"
 APP_NAME="$2"
 DMG_NAME="$3"
 
-cd "$HOME/zigBrowser"
+cd "$HOME/${4:?}"
 BINARY="zig-out/bin/zigBrowser"
 if [ ! -f "$BINARY" ]; then
   echo "ERROR: binary not found: $BINARY" >&2
@@ -114,7 +112,7 @@ REMOTE
 
 # ── Step 4: Copy .dmg back to the Linux host ──
 echo "==> Downloading .dmg..."
-"${SCP[@]}" "$HOST:zigBrowser/$DMG_NAME" "$REPO_ROOT/$DMG_NAME" >/dev/null
+"${SCP[@]}" "$HOST:$RUN_DIR/$DMG_NAME" "$REPO_ROOT/$DMG_NAME" >/dev/null
 
 ls -lh "$REPO_ROOT/$DMG_NAME"
 printf '==> Done: %s\n' "$REPO_ROOT/$DMG_NAME"

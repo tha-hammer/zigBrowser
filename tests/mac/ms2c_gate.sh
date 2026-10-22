@@ -12,9 +12,9 @@ ARM_HOST="${ZB_MAC_ARM_HOST:-}"
 ARM_KEY="${ZB_MAC_ARM_KEY:-$KEY}"
 
 cd "$(git rev-parse --show-toplevel)"
-
-ssh_opts() { printf '%s\0' ssh -i "$1" -o IdentitiesOnly=yes -o StrictHostKeyChecking=no \
-  -o UserKnownHostsFile=/dev/null -o BatchMode=yes -o ConnectTimeout=15 -o ServerAliveInterval=10; }
+# Builds one exact commit into a fresh per-run dir and works only there; pinned host keys (bd 4pa.59, 4pa.77).
+. tests/mac/mac_gate_lib.sh
+trap mac_remove_run_dirs EXIT
 
 if [ -z "$ARM_HOST" ]; then
   echo "NOT RUN: arm64 host not configured (set ZB_MAC_ARM_HOST=user@host)" >&2
@@ -27,12 +27,12 @@ LEG_TIMEOUT="${ZB_MAC_LEG_TIMEOUT:-600}"
 
 verify_host() { # $1=host $2=key $3=label
   local host="$1" key="$2" label="$3"
-  local -a SSH; mapfile -d '' SSH < <(ssh_opts "$key")
+  local -a SSH; mapfile -d '' SSH < <(mac_ssh_opts "$key")
   echo "== build + MS2c e2e on $host ($label) ==" >&2
-  ZB_MAC_HOST="$host" ZB_MAC_KEY="$key" timeout "$BUILD_TIMEOUT" bash tests/mac/build-on-mac.sh || { echo "FAIL: build on $host timed out/failed" >&2; return 1; }
-  timeout "$LEG_TIMEOUT" "${SSH[@]}" "$host" /bin/bash -s <<'REMOTE' || { echo "FAIL: MS2c leg on $host timed out/failed" >&2; return 1; }
+  mac_build "$host" "$key" "$BUILD_TIMEOUT" || { echo "FAIL: build on $host timed out/failed" >&2; return 1; }
+  timeout "$LEG_TIMEOUT" "${SSH[@]}" "$host" /bin/bash -s "$MAC_RDIR" <<'REMOTE' || { echo "FAIL: MS2c leg on $host timed out/failed" >&2; return 1; }
 set -euo pipefail
-cd "$HOME/zigBrowser"
+cd "$HOME/${1:?}"
 python3 tests/e2e/mac_ms2c_list_windows_test.py --browser zig-out/bin/zigBrowser
 python3 tests/e2e/mac_ms2c_stable_ids_test.py --browser zig-out/bin/zigBrowser
 python3 tests/e2e/mac_ms2c_window_fifo_test.py --browser zig-out/bin/zigBrowser
