@@ -33218,3 +33218,132 @@ any Mac signal run while these remain open. A focused compile-only Mac check of
 the revised C definitions and signal-free census evidence remain within the
 approved sequencing; any real-kill Mac manifest still requires a separate
 review and release.
+
+## Decision-16 part 5 selector writer (`661fe7d`)
+
+**BLOCKED.** The registered unit/e2e wiring and the reported clean-export gate
+(**461/461 steps, 1291/1293 tests, two skips**) cover the intended native
+Secrets-window control, safe settings-directory ownership/mode checks, atomic
+0600 selector replacement, the three values, the unreadable-store warning and
+the write-refusal path. The writer refuses a symlinked, non-directory,
+wrong-owner or group/other-writable `settings` directory, and the e2e now makes
+a real value change before exercising refusal.
+
+The refused-write UI does not meet the authoritative part-5 contract. After
+`zb_agent_navapproval_write` fails, `on_nav_changed` reports the fixed refusal
+sentence and row but leaves the combo box on the value the user attempted
+(`src/agent_secrets_window.c:686-695`). It never rereads the store or restores
+the displayed selection. In the symlink case, for example, the window starts
+at fail-closed **Yes**, the test selects **No**, the write is refused, and the
+control misleadingly remains **No** even though the store still reads as
+unreadable/Yes. Plan rev 16.20.58 explicitly requires that a refusal says the
+fixed sentence **and shows the stored value again**
+(`2026-10-13-claude-agent-chat-drawer-tdd-plan.md:3294-3297`). The e2e asserts
+the refusal text and unchanged target bytes but never observes the selected
+value after refusal (`agent_navigate_selector_test.py:167-174`).
+
+Fix forward by resetting the control under `nav_showing` from a fresh
+fail-closed `readStore` result without recursively writing and without losing
+the refusal sentence. Add a causal e2e row that observes the combo's selected
+value after the rejected change; the current protocol needs an unambiguous
+readback rather than inferring it from the rejected value. `661fe7d` remains
+blocked pending that production and test follow-up.
+
+## MS5.1b macOS skipped-link hard-gate case (`7b9d499`, `a501481`)
+
+**`7b9d499` APPROVED-for-tests. `a501481` APPROVED-for-tests as the reviewed
+pending case bytes only; no Mac run or armed-manifest change is authorized by
+either commit.** In clean archives under the pinned agent-host Python and a
+private user/PID/mount namespace, the red produced the expected **3/3 errors**
+because the future case was absent, while the green passed **3/3**. The case
+calls the staged `setup.provision` in-process with `select_token_route=False`:
+it starts no CLI, subprocess or sandbox and sends no signal. Its Linux proof
+also replaces `os.kill` and `os.killpg` with raising sentinels.
+
+The case covers four outbound-link shapes (nested directory, file,
+dependency-tree entry and a relative link up into source HOME), checks each
+fixed skip warning and absence, scans the complete built home without
+following links for marker names/canary bytes/read failures/special entries,
+and checks the neighboring dependency file byte for byte. Its mutation removes
+the production skip: setup then copies the targets, five checks fail, and the
+census reports the copied canaries, including manifest contamination. The
+self-containment check excludes imports of test/case modules and references to
+other case files outside the explanatory module docstring.
+
+The reviewed pending case bytes have SHA-256
+`c0a7c6a78efba0c3d8c8133d504447dc16c47fe38b2c7eac163919c8abc83ac1`.
+They remain at `tests/mac/hard_gate_pending/case_ms5_1b_skipped_links.py` and
+the exact three-case `tests/mac/hard_gate/MANIFEST.json` is unchanged, so the
+armed gate cannot execute them. Before any Mac run, a new review must verify a
+follow-up that moves these **byte-identical** contents to
+`tests/mac/hard_gate/case_ms5_1b_skipped_links.py`, adds that exact digest to
+the manifest, updates the manifest's exact reviewed-set oracle, and registers
+the Linux proof without weakening its namespace/signal sentinels. That review
+must name the resulting exact commit and complete manifest digest set; until
+then, no Mac run is released.
+
+## Win11 headless HWND visibility fix (`f1062d6`)
+
+**APPROVED; one more bounded eight-row Win11 entry run is authorized at exact
+`f1062d6`.** The previously released exact-`f32c8f2` run stopped fail-fast at
+row 6 after rows 1-5 passed. It reached the independent HWND checks, then the
+page lookup returned empty because `IsWindowVisible` includes the ancestor
+chain: in the non-interactive sshd desktop the top-level host was not visible,
+so every otherwise mounted child read false. The owner-approved hierarchy
+diagnostic had already shown the same tree with `vis=0`, while enumerating the
+panel, `S`, `-`, one read-only `RICHEDIT50W` bubble and WebView2 children.
+Both endpoint censuses were zero.
+
+`f1062d6` changes only the test harness. All six child-local visibility reads
+now use the window's own `WS_VISIBLE` style bit, which proves the control was
+shown without incorrectly requiring a visible ancestor. Absent or never-shown
+children still fail; selected HWND ownership, exact controls, plain-text
+RichEdit mode, panel/page geometry and born-in-Job ownership remain required.
+The panel/page rect parsers now reject an empty read with an assertion instead
+of throwing an unrelated `ValueError`. An exact clean archive passed **71
+offline tests with all eight live rows skipped** and no live environment.
+
+The released run must use a fresh MSVC x64 ReleaseSafe build of exact
+`f1062d6`, the same eight fail-fast rows and the previously reviewed VM
+conditions: unique state below `C:\\Users\\zbtext\\zb`, `about:blank`,
+`--agent-drawer on --e2e-protocol --media-source off`, born-suspended
+kill-on-close Job ownership and held-handle/Job teardown only. It may touch no
+input device, account, credential, live site, install, elevation or unrelated
+process. Record artifact hash/provenance, decoded seam values, every completed
+row and exact before/after process/run-directory censuses. Stop on the first
+failure, prove the VM clean, and do not retry without another review.
+
+## MS5.1 inherited-S3a macOS hard-gate case (`e019b90`, `f120854`)
+
+**`e019b90` APPROVED-for-tests. `f120854` APPROVED-for-tests as reviewed
+pending case bytes only; no Mac run or armed-manifest change is authorized by
+either commit.** Reviewer clean archives under the pinned agent-host Python
+and a private user/PID/mount namespace reproduced the failing-first boundary:
+the red produced the expected **3/3 errors** because the case did not exist,
+and the green passed **3/3**. `setup.provision` runs in-process with
+`select_token_route=False`; the case therefore enters no sandbox, starts no
+CLI or subprocess and sends no signal. The Linux proof also replaces
+`os.kill` and `os.killpg` with raising sentinels.
+
+The three fixtures pin the corrections inherited from `da5eb70`: an outbound
+top-level file link whose target crosses a linked parent is skipped with the
+chain warning and no canary copied; two internal aliases surrounding the real
+directory both preserve the payload while a back-edge is warned as a cycle;
+and an unterminated hook quote fails as `SetupError` with no published agent
+home. The case's elapsed-time row and the hard-gate leg's outer deadline keep
+the cycle failure bounded. The three production mutants independently make
+the chain warning/canary, alias/cycle and malformed-quote rows fail, while the
+self-containment check excludes imports or string references to another
+test/case module.
+
+The reviewed pending case bytes have SHA-256
+`4fe83ada9acd7a8702923ddc35145927df35afcd101b825b4aaa3e08509ecd6f`.
+They remain at `tests/mac/hard_gate_pending/case_ms5_1_s3a_links.py`; the
+current three-case hard-gate manifest is unchanged (manifest SHA-256
+`65596cd1ec854b785b81ac8aab48d730fe40418b87e8ca36176c860945c1ae15`).
+Before a Mac run, a new review must verify a follow-up that moves these
+**byte-identical** contents into `tests/mac/hard_gate/`, adds that exact digest
+to the manifest, updates the reviewed-set oracle, and registers the Linux
+proof without weakening its namespace or signal sentinels. The same follow-up
+may integrate the already-reviewed MS5.1b pending case, but must publish the
+resulting exact commit and complete manifest digest set for a separate release.
