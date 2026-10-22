@@ -34324,3 +34324,25 @@ registry is introduced instead, it must be the authoritative complete socket
 registry consumed by `dispatchParsed`, not this phase-one subset. Until then
 the claim that absence implies method-not-found is false, and no VM run is
 authorized for this range.
+
+## Reaper readiness/startup red final fix-forward (`3bfb8dc`)
+
+**APPROVED-for-tests.** The one test file remains unregistered, unarmed and
+signal-free. From an exact clean archive, compiling it with the ledger and
+recovery modules plus the reaper C source fails on the intended not-yet-added
+startup API symbols.
+
+This closes the last two red-design gaps from `a6dc989`. The readiness oracle
+now requires the executable source shape
+`recoverAllAtStartupFull(reaper_ready,` while retaining the literal-false
+constant and alternative-source bans; the reported literal-`false` mutant
+removes that shape. The corrupt store is seeded from one exact constant and
+read back byte-for-byte after both the gate-off and gate-true calls. The
+unreadable gate-off row additionally reopens `runs.json` as a directory after
+the call, rejecting removal or replacement.
+
+The production green may proceed. Its review must confirm that the source
+oracle's one satisfying occurrence is the real wrapper delegation rather than
+a comment or dead helper, and must register the complete red without arming
+`reaper_ready`. This verdict cumulatively closes the five `ecf14be` /
+`a6dc989` test-design findings; it authorizes no Mac run or production signal.
