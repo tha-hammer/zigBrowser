@@ -34882,3 +34882,55 @@ failing-first slice, the already-approved startup-recovery core and complete
 comment correction through `6f145bc` form the next approved prefix. The next
 commit, `1b2fe0a`, remains BLOCKED on its per-HWND ownership/validator gaps;
 its later red `60c20a0` is also still incomplete.
+
+## MS7.1 AppKit geometry red fix-forward (`f6be5de`)
+
+**APPROVED as the failing-first, unregistered red; this closes the findings on
+`06d21f3` and the naming SHOULD on `e7cac20`.** The geometry contract now
+defines non-positive content explicitly and drives negative, zero,
+off-content, oversized, panel and page rectangles through the pure helper and
+both C wrappers. Every returned rectangle must be non-negative and contained
+by `max(0,width) × max(0,height)`. The in-content cases retain the independent
+AppKit flip/involution and dock-contiguity properties. The C truth contract is
+also pinned with `0` closed and `1`, `2`, `-1`, `INT_MAX` and `INT_MIN` open.
+
+Both new C symbols join the dual-architecture Mac export inventory, and the
+inventory comment now accurately calls it AppKit-required rather than equal
+to the Windows list. From an exact clean archive,
+`test-agent-drawer-appkit` remains red with the expected seven missing-member
+compile errors. The step and the Mac export cross-check remain outside the
+aggregate gate until their production green.
+
+## MS6.5.1 startup-owner red fix-forward (`caa7999`)
+
+**BLOCKED-for-tests; keep it unregistered, unarmed and signal-free.** This is
+substantial progress: it replaces the next-declaration parser with balanced
+braces, strips ordinary comments/strings, separates the two call links, adds
+gate-false zero-operation and gate-true owner-seam rows, and checks non-ok
+report propagation. The committed red remains at the intended absent
+`agent_startup_recovery` module/app call. Four gaps still allow a false owner
+closure:
+
+1. Link 1 accepts an owner call nested under `if (false)` before the command
+   switch, and treats an absent `switch (command)` as the end of the function.
+   Require the dispatch marker and prove the call is an unconditional
+   top-level statement on the startup path; add the conditional-call mutant.
+2. `Counts.close` is never asserted. The true and non-ok rows therefore pass
+   if the pinned directory is leaked. Require one close after every successful
+   open/recovery path and zero close in the disabled row, including a causal
+   no-close mutant.
+3. The absolute-deadline check only counts the text
+   `+ STARTUP_BUDGET_MS`; `SpyOps.recover` discards its `deadline_ms`, so an
+   unused calculation or passing a different/recomputed deadline succeeds.
+   Inject a counted monotonic clock, capture the deadline passed to recovery,
+   and require the one sampled `now + budget` value.
+4. Link 2 is not actually scoped to `RealOps`: it takes the first global
+   `pub fn recover(`, accepts `runs.json` anywhere in raw source, and accepts
+   `ConcreteActuator(recovery.DarwinWiring)` anywhere in stripped source.
+   A dead decoy satisfies all three. Extract the `RealOps` body/declarations
+   structurally and bind the ledger argument, actuator return/construction and
+   core call to that implementation; add a decoy mutant. Also extend the
+   lexer to Zig multiline strings before treating source counts as causal.
+
+Until those rows land, this commit does not close `3a8a091` and does not arm
+startup recovery.
