@@ -21,8 +21,10 @@ flow; a dead branch, an extra effect, a reorder or a removal changes the shape.
     the three portable #defines. Its header's preprocessing is exactly HEADER_DIRECTIVES (the include guard and two
     includes). So no #if hides an implementation, and no macro (#define NO YES) changes a bound token.
   - No digraph directive (%:), _Pragma or line splice anywhere in the drawer or its header.
-  - The drawer is in the macOS link (build.zig configureMacosBackend), and that function passes the compiler no
-    preprocessor flag (-D, -U, -include, -imacros, -Xpreprocessor, -Xclang).
+  - The drawer is in the macOS link, and that link is bound EXACTLY by the card oracle's mac_build_problems
+    (RoseCat 8112 #1/#2): configureMacosBackend equals the reviewed text, so every source and the whole clang argv are
+    fixed. There is no source through a variable, no -D / -Wp forwarding / response file / -trigraphs, and no
+    unreviewed member access on root_module, exe or site_options_module.
 - V1 the control: `@interface ZbBubbleView : NSTextView` holds exactly the ivars `char *_original; size_t _originalLen;`
   and declares exactly `- (void)keepOriginal:(const char *)text length:(size_t)len;`. There is no category on it or on
   NSTextView / NSResponder, and no runtime method replacement.
@@ -51,10 +53,18 @@ flow; a dead branch, an extra effect, a reorder or a removal changes the shape.
   ZbBubbleView allocation or closed route. An NSTextField may only be a static `[NSTextField labelWithString:@"..."]`,
   optionally assigned to a local (never selectable or editable: those setters are guarded). The NEVER list (markup, NUL-terminated reads, field
   editor routes, swizzling, other pasteboard writers) and RUNTIME_REWRITES appear nowhere.
-- V7 the rest of the link (RoseCat 8101 #2): every OTHER native source build.zig links on macOS (the shim and the C
-  files) holds no category on the bubble's class chain, no RUNTIME_REWRITES (method exchange or replacement, isa
-  swaps, class creation, lookup by name), no ZbBubbleView, no NSPasteboard, and no copy: other than
-  `@selector(copy:)`, which is the future Edit > Copy menu item (target nil) that Cmd+C needs.
+- V7 the rest of the link (RoseCat 8101 #2, 8112 #3/#4): every OTHER native source build.zig links on macOS (the
+  shim and the C files) and every project header they include (quoted includes under src/, recursively; a missing
+  one fails) holds:
+  - no preprocessing that can rename a token: no ##, digraph, _Pragma, trigraph or line splice; every #define is a
+    constant (a name, optionally an integer or a string); no #undef or #line; #pragma only `mark` / `clang
+    diagnostic`;
+  - no category or class extension on ANY class;
+  - no RUNTIME_REWRITES (method exchange or replacement, isa swaps, class creation, lookup by name, sel_registerName);
+  - no ZbBubbleView and no NSPasteboard;
+  - no `copy :` selector token (whitespace allowed) except inside at most one exact Edit menu item
+    `[menu addItemWithTitle:@"Copy" action:@selector(copy:) keyEquivalent:@"c"]`, and no setTarget: (its target
+    stays nil, so Cmd+C reaches the first responder).
 Self-checking: an honest drawer, header and link pass (the honest shim wires Edit > Copy and uses associated
 objects); names in strings and comments do not count; and each dishonest drawer, header and link fails for its own
 stated rule. Among them are RoseCat 8101's #if 0 and #define NO YES, a digraph, a _Pragma, a -D flag, categories,
@@ -72,7 +82,7 @@ import re
 import unittest
 from pathlib import Path
 
-from mac_drawer_card_authority_test import mac_link_sources
+from mac_drawer_card_authority_test import HONEST_BUILD, mac_build_problems, macos_build_mutant, mac_link_sources
 
 REPO = Path(__file__).resolve().parents[2]
 DRAWER = "src/agent_drawer_mac.m"
@@ -84,14 +94,19 @@ DRAWER_DIRECTIVES = ["#import <AppKit/AppKit.h>", "#import <WebKit/WebKit.h>", "
                      "#define ZB_CARD_DENY 2", "#define ZB_GESTURE_DRAG 1"]
 HEADER_DIRECTIVES = ["#ifndef ZB_AGENT_DRAWER_MAC_H", "#define ZB_AGENT_DRAWER_MAC_H", "#include <stddef.h>",
                      "#include <stdint.h>", "#endif"]
-# Compiler flags that would preprocess the drawer from outside it.
-PREPROCESSOR_FLAGS = ("-D", "-U", "-include", "-imacros", "-Xpreprocessor", "-Xclang")
 # Across EVERY linked native source (RoseCat 8101 #2): routes that would change a bubble's behavior at run time.
 RUNTIME_REWRITES = ("method_exchangeImplementations", "method_setImplementation", "class_replaceMethod",
                     "class_addMethod", "imp_implementationWithBlock", "object_setClass", "objc_allocateClassPair",
                     "objc_registerClassPair", "objc_duplicateClass", "class_setSuperclass", "NSClassFromString",
-                    "NSSelectorFromString")
-CATEGORY = re.compile(r"@(?:interface|implementation)\s+(?:ZbBubbleView|NSTextView|NSText|NSResponder|NSView|NSObject)\s*\(")
+                    "NSSelectorFromString", "sel_registerName", "sel_getUid")
+# Any category or class extension, on any class (RoseCat 8112 #3: a macro can build the class name, so none at all).
+CATEGORY = re.compile(r"@(?:interface|implementation)\s+\w+\s*\(")
+# The one copy: the rest of the link may name: the Edit menu's Copy item, target nil (RoseCat 8112 #4).
+EDIT_COPY_ITEM = re.compile(r'\[\s*\w+\s+addItemWithTitle\s*:\s*@"Copy"\s+action\s*:\s*@selector\s*\(\s*copy\s*:\s*\)\s+'
+                            r'keyEquivalent\s*:\s*@"c"\s*\]')
+# A macro the rest of the link may define: a name, optionally an integer or a string constant. Nothing a macro
+# expands to can then be an identifier, a selector or a class (RoseCat 8112 #3).
+CONSTANT_MACRO = re.compile(r'[A-Z][A-Z0-9_]*(?:\s+(?:-?\d+[uUlL]*|"(?:[^"\\\n]|\\.)*"))?')
 
 BUBBLE_IFACE_IVARS = "char *_original; size_t _originalLen;"
 BUBBLE_IFACE_DECLS = "- (void)keepOriginal:(const char *)text length:(size_t)len;"
@@ -271,25 +286,74 @@ def directives(where, text, allowed):
     return found
 
 
-def link_problems(build_zig, sources, others):
-    """V0 / V7 over the macOS link: the drawer is in it, no flag preprocesses it, and no other linked native source
-    (`others`: {path: text}) reaches the bubble's class chain, copy: or the pasteboard."""
+def local_includes(text):
+    """The quoted (project) headers `text` includes, as repo paths under src/ (the build's one -I)."""
+    kept = lexical(text, keep_strings=True)
+    return ["src/" + h for h in re.findall(r'^\s*#\s*(?:include|import)\s*"([^"]+)"', kept, re.M)]
+
+
+def native_closure(sources, read):
+    """{path: text or None} of every linked native source but the drawer, and every project header they include."""
+    out, todo = {}, [p for p in sources if p != DRAWER]
+    while todo:
+        path = todo.pop()
+        if path in out:
+            continue
+        out[path] = read(path)
+        if out[path] is not None:
+            todo += local_includes(out[path])
+    return out
+
+
+def native_preprocessing(path, text):
+    """V7: a linked source's (or header's) preprocessing can rename nothing."""
     found = []
+    blank = lexical(text)
+    for word, why in (("##", "token pasting"), ("%:", "a digraph directive"), ("_Pragma", "a _Pragma"),
+                      ("??=", "a trigraph"), ("\\\n", "a line splice")):
+        if word in blank:
+            found.append(f"V7 {path}: {why}")
+    for line in lexical(text, keep_strings=True).splitlines():
+        m = re.match(r"\s*#\s*(\w+)\s*(.*?)\s*$", line)
+        if m is None:
+            continue
+        kind, rest = m.groups()
+        if kind == "define" and not CONSTANT_MACRO.fullmatch(rest):
+            found.append(f"V7 {path}: a macro other than a constant (`{line.strip()}`)")
+        elif kind in ("undef", "line") or (kind == "pragma" and not re.match(r"(?:mark\b|clang\s+diagnostic\b)", rest)):
+            found.append(f"V7 {path}: #{kind}")
+    return found
+
+
+def link_problems(build_zig, sources, others):
+    """B / V0 / V7 over the macOS link: build.zig's macOS link is exactly the reviewed one (the card oracle's
+    mac_build_problems: every source and the whole clang argv fixed), the drawer is in it, and no other linked native
+    source or project header it includes (`others`: {path: text or None}) can rename a token, add a category, rewrite
+    the runtime, name the bubble or the pasteboard, or name copy: beyond the Edit menu's one Copy item."""
+    found = mac_build_problems(build_zig)
     if DRAWER not in sources:
         found.append(f"V0: {DRAWER} is not in the macOS link ({sources})")
-    m = re.search(r"fn configureMacosBackend\(.*?\n}\n", build_zig, re.S)
-    for flag in re.findall(r'"(-[^"]*)"', m.group(0) if m else ""):
-        if flag.startswith(PREPROCESSOR_FLAGS):
-            found.append(f"V0: the macOS build passes the preprocessor flag {flag}")
+    items = 0
     for path, text in sorted(others.items()):
+        if text is None:
+            found.append(f"V7 {path}: missing (included or linked, and unreadable)")
+            continue
+        found += native_preprocessing(path, text)
         code = lexical(text)
         if CATEGORY.search(code):
-            found.append(f"V7 {path}: a category on the bubble's class chain")
+            found.append(f"V7 {path}: a category or class extension")
         for word in RUNTIME_REWRITES + ("ZbBubbleView", "NSPasteboard"):
             if re.search(r"\b" + word + r"\b", code):
                 found.append(f"V7 {path}: {word}")
-        if re.search(r"\bcopy:", re.sub(r"@selector\(\s*copy:\s*\)", "", code)):
-            found.append(f"V7 {path}: copy: other than the Edit menu's @selector(copy:)")
+        kept = lexical(text, keep_strings=True)
+        items += len(EDIT_COPY_ITEM.findall(kept))
+        rest = re.sub(r'"(?:[^"\\\n]|\\.)*"', '""', EDIT_COPY_ITEM.sub("", kept))
+        if re.search(r"\bcopy\s*:", rest):
+            found.append(f"V7 {path}: copy: other than the Edit menu's Copy item")
+        if re.search(r"\bsetTarget\s*:", code):
+            found.append(f"V7 {path}: setTarget: (the Edit menu's Copy item keeps target nil)")
+    if items > 1:
+        found.append(f"V7: more than one Edit menu Copy item ({items})")
     return found
 
 
@@ -313,7 +377,7 @@ def problems(source, header=None):
         found += diff("V1 declarations", shape(code[ivars_end:end]), shape(lexical(BUBBLE_IFACE_DECLS)))
         bound.append((ifaces[0].start(), end + 4))
     if CATEGORY.search(code):
-        found.append("V1: a category on the bubble's class chain")
+        found.append("V1: a category or class extension")
     # V2 the implementation
     impls = list(re.finditer(r"@implementation\s+ZbBubbleView\b", code))
     if len(impls) != 1:
@@ -487,17 +551,10 @@ void *zb_drawer_mac_mount(void *ns_window, void *wk_web_view, uint32_t window_id
 
 #endif
 """
-BUILD = """fn configureMacosBackend(module: *std.Build.Module, b: *std.Build) void {
-    module.addCSourceFile(.{ .file = b.path("src/agent_home_lock.c"), .flags = &.{"-std=gnu11"} });
-    const shim = b.addSystemCommand(&.{ "xcrun", "clang", "-dynamiclib", "-fobjc-arc", "-Wl,-undefined,dynamic_lookup", "-Wl,-fixup_chains" });
-    shim.addArg("-I");
-    shim.addFileArg(b.path("src/wkwebview_shim.m"));
-    shim.addFileArg(b.path("src/agent_drawer_mac.m"));
-    shim.addArgs(&.{ "-install_name", "@executable_path/../Frameworks/libwkwebview_shim.dylib", "-o" });
-}
-"""
+BUILD = HONEST_BUILD
 OTHERS = {
-    "src/wkwebview_shim.m": """#import <Cocoa/Cocoa.h>
+    "src/wkwebview_shim.m": """#include "webkit_shim.h"
+#import <Cocoa/Cocoa.h>
 #import <objc/runtime.h>
 static void zb_menu(NSMenu *editMenu) {
   [editMenu addItemWithTitle:@"Copy" action:@selector(copy:) keyEquivalent:@"c"];
@@ -507,6 +564,14 @@ static void zb_tag(id window, id value) {
 }
 """,
     "src/agent_home_lock.c": "int zb_agent_home_lock(void) { return 0; }\n",
+    "src/agent_spawn_posix.c": "#ifdef __APPLE__\n#include <spawn.h>\n#endif\n",
+    "src/webkit_shim.h": """#ifndef ZB_WEBKIT_SHIM_H
+#define ZB_WEBKIT_SHIM_H
+#define ZB_MAX_WINDOWS 16
+#define ZB_AUTOMATION_WORLD "zigbrowser-automation"
+#define ZB_COOKIE_MAX_EXPIRES 253402300799LL
+#endif
+""",
 }
 
 
@@ -518,7 +583,8 @@ def link_case(build=BUILD, **others):
 
 
 def link_found(build, files):
-    return link_problems(build, mac_link_sources(build), files)
+    sources = mac_link_sources(build)
+    return link_problems(build, sources, native_closure(sources, files.get))
 
 
 def mutate(old, new):
@@ -561,6 +627,7 @@ MUTANTS = {  # name -> (source, the rule it must fail)
                                    "  [self setBubble:view text:text length:len];\n"), "V3 factory"),
     # the routes the shown text could leave by
     "copy: on the drawer view": (mutate("- (void)sent {", "- (void)copy:(id)sender {\n}\n- (void)sent {"), "V6: copy:"),
+    "copy : with spaces on the drawer view": (mutate("- (void)sent {", "- (void)copy : (id)sender {\n}\n- (void)sent {"), "V6: copy:"),
     "drag-out left open": (mutate("- (BOOL)dragSelectionWithEvent:(NSEvent *)event offset:(NSSize)mouseOffset slideBack:(BOOL)slideBack {\n  return NO;\n}\n", ""),
                            "V2 ZbBubbleView"),
     "Services left open": (mutate("- (id)validRequestorForSendType:(NSPasteboardType)sendType returnType:(NSPasteboardType)returnType {\n  return nil;\n}\n", ""),
@@ -616,10 +683,46 @@ HEADER_MUTANTS = {  # name -> (header text or None, the rule it must fail)
     "the drawer's header is missing": (None, "V0: src/agent_drawer_mac.h is missing"),
 }
 LINK_MUTANTS = {  # name -> ((build.zig, {path: text}), the rule it must fail)
-    "the drawer is not linked": (link_case(BUILD.replace('    shim.addFileArg(b.path("src/agent_drawer_mac.m"));\n', "")),
+    "the drawer is not linked": (link_case(macos_build_mutant('    shim.addFileArg(b.path("src/agent_drawer_mac.m"));\n', "")),
                                  "V0: src/agent_drawer_mac.m is not in the macOS link"),
-    "a -D flag on the shim": (link_case(BUILD.replace('"-fobjc-arc",', '"-fobjc-arc", "-DNO=YES",')),
-                              "V0: the macOS build passes the preprocessor flag -DNO=YES"),
+    "a -D flag on the shim": (link_case(macos_build_mutant('"-fobjc-arc",', '"-fobjc-arc", "-DNO=YES",')),
+                              "B: fn configureMacosBackend differs"),
+    # RoseCat 8112
+    "a linked source through a variable": (link_case(macos_build_mutant('    shim.addFileArg(b.path("src/agent_drawer_mac.m"));\n',
+                                                                  '    shim.addFileArg(b.path("src/agent_drawer_mac.m"));\n'
+                                                                  '    const evil = b.path("src/evil.m");\n    shim.addFileArg(evil);\n')),
+                                           "B: fn configureMacosBackend differs"),
+    "a forwarded -Wp,-DNO=YES": (link_case(macos_build_mutant('"-fobjc-arc",', '"-fobjc-arc", "-Wp,-DNO=YES",')),
+                                 "B: fn configureMacosBackend differs"),
+    "a token-pasted category": (link_case(src__wkwebview_shim_dot_m=OTHERS["src/wkwebview_shim.m"]
+                                          + "#define CAT(a, b) a##b\n@implementation CAT(ZbBubble, View) (Steal)\n- (void)x {\n}\n@end\n"),
+                                "V7 src/wkwebview_shim.m: token pasting"),
+    "a category through an aliasing macro": (link_case(src__wkwebview_shim_dot_m=OTHERS["src/wkwebview_shim.m"]
+                                                       + "#define NSTV NSTextView\n@implementation NSTV (Steal)\n@end\n"),
+                                             "V7 src/wkwebview_shim.m: a macro other than a constant"),
+    "a category on another class": (link_case(src__wkwebview_shim_dot_m=OTHERS["src/wkwebview_shim.m"]
+                                              + "@implementation NSWindow (Steal)\n@end\n"),
+                                    "V7 src/wkwebview_shim.m: a category or class extension"),
+    "a macro in the shim's header": (link_case(src__webkit_shim_dot_h=OTHERS["src/webkit_shim.h"].replace(
+                                         "#endif\n", "#define copyText copy\n#endif\n")),
+                                     "V7 src/webkit_shim.h: a macro other than a constant"),
+    "an #undef": (link_case(src__webkit_shim_dot_h=OTHERS["src/webkit_shim.h"].replace("#endif\n", "#undef YES\n#endif\n")),
+                  "V7 src/webkit_shim.h: #undef"),
+    "the shim's header missing": (link_case(src__wkwebview_shim_dot_m=OTHERS["src/wkwebview_shim.m"].replace(
+                                      '#include "webkit_shim.h"', '#include "webkit_shim2.h"')),
+                                  "V7 src/webkit_shim2.h: missing"),
+    "copy : with spaces in the shim": (link_case(src__wkwebview_shim_dot_m=OTHERS["src/wkwebview_shim.m"]
+                                                 + "@implementation ZBWindow\n- (void)copy : (id)sender {\n}\n@end\n"),
+                                       "V7 src/wkwebview_shim.m: copy: other than the Edit menu's Copy item"),
+    "a Copy item with a target": (link_case(src__wkwebview_shim_dot_m=OTHERS["src/wkwebview_shim.m"]
+                                            + "static void zb_t(NSMenuItem *i, id t) {\n  [i setTarget:t];\n}\n"),
+                                  "V7 src/wkwebview_shim.m: setTarget:"),
+    "a second Copy item": (link_case(src__wkwebview_shim_dot_m=OTHERS["src/wkwebview_shim.m"]
+                                     + 'static void zb_m2(NSMenu *m) {\n  [m addItemWithTitle:@"Copy" action:@selector(copy:) keyEquivalent:@"c"];\n}\n'),
+                           "V7: more than one Edit menu Copy item"),
+    "a selector built at run time": (link_case(src__wkwebview_shim_dot_m=OTHERS["src/wkwebview_shim.m"]
+                                               + 'static SEL zb_s(void) {\n  return sel_registerName("copy:");\n}\n'),
+                                     "V7 src/wkwebview_shim.m: sel_registerName"),
     "a category on ZbBubbleView in the shim": (link_case(src__wkwebview_shim_dot_m=OTHERS["src/wkwebview_shim.m"]
                                                          + "@implementation ZbBubbleView (Steal)\n- (void)copy:(id)s {\n}\n@end\n"),
                                                "V7 src/wkwebview_shim.m: a category"),
@@ -648,9 +751,9 @@ class BubbleInert(unittest.TestCase):
         build = (REPO / "build.zig").read_text()
         sources = mac_link_sources(build)
         self.assertIn("src/wkwebview_shim.m", sources, "the link parser found no macOS sources")
-        others = {p: (REPO / p).read_text() for p in sources if p != DRAWER and (REPO / p).is_file()}
         read = (lambda p: (REPO / p).read_text() if (REPO / p).is_file() else None)
-        self.assertEqual(link_problems(build, sources, others) + problems(read(DRAWER), read(HEADER)), [])
+        self.assertEqual(link_problems(build, sources, native_closure(sources, read)) + problems(read(DRAWER), read(HEADER)),
+                         [])
 
     def test_the_honest_fixture_passes(self):
         self.assertEqual(problems(HONEST, HONEST_HEADER), [])

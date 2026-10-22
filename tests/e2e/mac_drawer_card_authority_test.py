@@ -6,6 +6,12 @@ link: build.zig's configureMacosBackend, the Objective-C files it hands `xcrun c
 it compiles into the exe (module.addCSourceFile). Each source is read lexically: comments removed and the contents of
 string and character literals blanked, so a name inside a string or a comment never counts (button titles are read
 from the comment-free text with strings kept).
+- B (RoseCat 8112): that link is bound EXACTLY, failing closed on any other link expression:
+  - configureMacosBackend equals REVIEWED_MACOS_BACKEND, token for token. That is today's function plus the drawer's
+    line, so every source, every C flag and the whole clang argv are fixed: no source through a variable, no -Wp
+    forwarding, response file or -trigraphs.
+  - configureBackend equals REVIEWED_CONFIGURE_BACKEND, and configureMacosBackend is called once.
+  - Every member access on root_module, exe or the generated site_options_module is a reviewed statement.
 - L0: src/agent_drawer_mac.m is one of those link sources.
 - L1: no link source names zb_agent_tools_approve or zb_agent_tools_deny at all (no call, no address, no alias): the
   AppKit side reaches the cards only through zb_drawer_card_press.
@@ -78,6 +84,144 @@ def mac_link_sources(build_zig):
     body = m.group(0)
     return re.findall(r'(?:shim\.addFileArg|module\.addCSourceFile)\(\s*(?:\.\{\s*\.file\s*=\s*)?b\.path\("([^"]+)"\)',
                       body)
+
+
+# RoseCat 8112 #1/#2: the macOS link and its compiler argv are bound EXACTLY (no prefix denylist), so a source
+# reached through a variable, a forwarded preprocessor flag (-Wp,...), a response file or -trigraphs is a change to
+# reviewed text. REVIEWED_MACOS_BACKEND is today's configureMacosBackend plus the drawer's one line.
+REVIEWED_MACOS_BACKEND = r'''fn configureMacosBackend(module: *std.Build.Module, b: *std.Build) void {
+    module.addIncludePath(b.path("src"));
+    module.addCSourceFile(.{ .file = b.path("src/agent_home_lock.c"), .flags = &.{"-std=gnu11"} });
+    module.addCSourceFile(.{ .file = b.path("src/agent_spawn_posix.c"), .flags = &.{"-std=gnu11"} });
+    const shim = b.addSystemCommand(&.{ "xcrun", "clang", "-dynamiclib", "-fobjc-arc", "-Wl,-undefined,dynamic_lookup", "-Wl,-fixup_chains" });
+    shim.addArg("-I");
+    shim.addDirectoryArg(b.path("src"));
+    shim.addFileArg(b.path("src/wkwebview_shim.m"));
+    shim.addFileArg(b.path("src/agent_drawer_mac.m"));
+    shim.addArgs(&.{ "-framework", "WebKit", "-framework", "Cocoa", "-framework", "Foundation" });
+    shim.addArgs(&.{ "-install_name", "@executable_path/../Frameworks/libwkwebview_shim.dylib", "-o" });
+    const dylib = shim.addOutputFileArg("libwkwebview_shim.dylib");
+    module.addLibraryPath(dylib.dirname());
+    module.linkSystemLibrary("wkwebview_shim", .{});
+    module.linkFramework("WebKit", .{});
+    module.linkFramework("Cocoa", .{});
+    module.linkFramework("Foundation", .{});
+    const install_dylib = b.addInstallFileWithDir(dylib, .{ .custom = "Frameworks" }, "libwkwebview_shim.dylib");
+    b.getInstallStep().dependOn(&install_dylib.step);
+}
+'''
+REVIEWED_CONFIGURE_BACKEND = r'''fn configureBackend(
+    module: *std.Build.Module,
+    b: *std.Build,
+    backend: Backend,
+    webview2_paths: WebView2Paths,
+) void {
+    switch (backend) {
+        .gtk_backend => configureGtkBackend(module, b),
+        .webview2_backend => configureWebView2Backend(module, b, webview2_paths),
+        .macos_backend => configureMacosBackend(module, b),
+    }
+}
+'''
+# Every other statement that can add to the shipped executable's link: a member access on root_module, exe or the
+# generated site_options_module (its one import), each a reviewed statement, at most as often as reviewed.
+REVIEWED_MEMBER_USES = Counter({
+    "configureBackend(root_module,b,backend,webview2_paths);": 1,
+    ".root_source_file=root_module.root_source_file.?,": 1,
+    "if(backend==.macos_backend)exe.rdynamic=true;": 1,
+    "exe.subsystem=.Windows;": 1,
+    'exe.entry=.{.symbol_name="mainCRTStartup"};': 1,
+    "exe.step.dependOn(pkg_guard);": 1,
+})
+MEMBER_USE = re.compile(r"(?<![.\w])(?:root_module\b(?!\s*=\s*b\.createModule)|exe\s*\.|site_options_module\s*\.)")
+
+
+def mac_build_problems(build_zig):
+    """B: build.zig's macOS link is exactly the reviewed one (fail closed on any other link expression)."""
+    code = zig_lexical(build_zig, keep_strings=True)
+    found = []
+    for name, want in (("configureMacosBackend", REVIEWED_MACOS_BACKEND), ("configureBackend", REVIEWED_CONFIGURE_BACKEND)):
+        got = re.findall(r"\bfn\s+" + name + r"\s*\(.*?\n}\n", code, re.S)
+        if len(got) != 1:
+            found.append(f"B: want exactly one fn {name} ({len(got)})")
+        elif shape(got[0]) != shape(want):
+            g, w = shape(got[0]), shape(want)
+            i = next((k for k, (x, y) in enumerate(zip(g, w)) if x != y), min(len(g), len(w)))
+            found.append(f"B: fn {name} differs from the reviewed text at statement {i}: got "
+                         f"`{g[i] if i < len(g) else '<end>'}`, want `{w[i] if i < len(w) else '<end>'}`")
+    for name, calls in (("configureMacosBackend", 1), ("configureBackend", None)):
+        n = len(re.findall(r"(?<!fn )\b" + name + r"\s*\(", code))
+        if calls is not None and n != calls:
+            found.append(f"B: {name} must be called exactly {calls} time(s) ({n})")
+    uses = Counter()
+    for line in code.splitlines():
+        if MEMBER_USE.search(line) and not re.match(r"\s*\.root_module\s*=\s*root_module\s*,\s*$", line):
+            uses[re.sub(r"\s+", "", line)] += 1
+    for use, n in sorted(uses.items()):
+        if n > REVIEWED_MEMBER_USES[use]:
+            found.append(f"B: an unreviewed link statement `{use}`")
+    return found
+
+
+HONEST_BUILD = """pub fn build(b: *std.Build) void {
+    const root_module = b.createModule(.{
+        .root_source_file = b.path("src/main.zig"),
+    });
+    configureBackend(root_module, b, backend, webview2_paths);
+    const exe = b.addExecutable(.{
+        .name = "zigBrowser",
+        .root_module = root_module,
+    });
+    if (backend == .macos_backend) exe.rdynamic = true;
+    exe.step.dependOn(pkg_guard);
+    b.installArtifact(exe);
+    const card_authority_mac_module = b.createModule(.{
+        .root_source_file = root_module.root_source_file.?,
+    });
+}
+
+""" + REVIEWED_CONFIGURE_BACKEND + "\n" + REVIEWED_MACOS_BACKEND
+
+
+def macos_build_mutant(old, new, text=None):
+    text = HONEST_BUILD if text is None else text
+    assert text.count(old) == 1, old
+    return text.replace(old, new)
+
+
+BUILD_MUTANTS = {  # name -> (build.zig, the reason it must fail for); RoseCat 8112 #1 / #2
+    "a linked source through a variable": (macos_build_mutant('    shim.addFileArg(b.path("src/agent_drawer_mac.m"));\n',
+                                                        '    shim.addFileArg(b.path("src/agent_drawer_mac.m"));\n'
+                                                        '    const evil = b.path("src/evil.m");\n    shim.addFileArg(evil);\n'),
+                                           "B: fn configureMacosBackend differs"),
+    "a C source through a variable": (macos_build_mutant('    module.addIncludePath(b.path("src"));\n',
+                                                   '    module.addIncludePath(b.path("src"));\n    const evil = b.path("src/evil.c");\n'
+                                                   "    module.addCSourceFile(.{ .file = evil });\n"), "B: fn configureMacosBackend differs"),
+    "a forwarded -Wp,-DNO=YES": (macos_build_mutant('"-fobjc-arc",', '"-fobjc-arc", "-Wp,-DNO=YES",'), "B: fn configureMacosBackend differs"),
+    "a response file": (macos_build_mutant('"-fobjc-arc",', '"-fobjc-arc", "@zb.rsp",'), "B: fn configureMacosBackend differs"),
+    "trigraphs on": (macos_build_mutant('"-fobjc-arc",', '"-fobjc-arc", "-trigraphs",'), "B: fn configureMacosBackend differs"),
+    "a C flag": (macos_build_mutant('.flags = &.{"-std=gnu11"} });\n    module.addCSourceFile(.{ .file = b.path("src/agent_spawn_posix.c")',
+                              '.flags = &.{ "-std=gnu11", "-DNO=1" } });\n    module.addCSourceFile(.{ .file = b.path("src/agent_spawn_posix.c")'),
+                 "B: fn configureMacosBackend differs"),
+    "a source on the root module in build()": (macos_build_mutant("    exe.step.dependOn(pkg_guard);\n",
+                                                            "    exe.step.dependOn(pkg_guard);\n"
+                                                            '    root_module.addCSourceFile(.{ .file = b.path("src/evil.c") });\n'),
+                                               "B: an unreviewed link statement `root_module.addCSourceFile"),
+    "an object on the exe": (macos_build_mutant("    exe.step.dependOn(pkg_guard);\n",
+                                          '    exe.step.dependOn(pkg_guard);\n    exe.addObjectFile(b.path("evil.o"));\n'),
+                             "B: an unreviewed link statement `exe.addObjectFile"),
+    "a source on the exe's root module": (macos_build_mutant("    exe.step.dependOn(pkg_guard);\n",
+                                                       "    exe.step.dependOn(pkg_guard);\n"
+                                                       '    exe.root_module.addCSourceFile(.{ .file = b.path("src/evil.c") });\n'),
+                                          "B: an unreviewed link statement `exe.root_module.addCSourceFile"),
+    "a source on the imported options module": (macos_build_mutant("    exe.step.dependOn(pkg_guard);\n",
+                                                             "    exe.step.dependOn(pkg_guard);\n"
+                                                             '    site_options_module.addCSourceFile(.{ .file = b.path("src/evil.c") });\n'),
+                                                "B: an unreviewed link statement `site_options_module.addCSourceFile"),
+    "the macOS backend configured twice": (macos_build_mutant("    exe.step.dependOn(pkg_guard);\n",
+                                                        "    exe.step.dependOn(pkg_guard);\n    configureMacosBackend(other, b);\n"),
+                                           "B: configureMacosBackend must be called exactly 1 time(s)"),
+}
 
 
 def strip(text, blank_strings):
@@ -601,10 +745,20 @@ ROOT_MUTANTS = {  # name -> (build.zig, the reason it must fail for)
 
 class CardAuthority(unittest.TestCase):
     def test_the_real_macos_link_keeps_the_one_minter(self):
-        sources = mac_link_sources((REPO / "build.zig").read_text())
+        build = (REPO / "build.zig").read_text()
+        sources = mac_link_sources(build)
         self.assertIn("src/wkwebview_shim.m", sources, "the link parser found no macOS sources")
         files = {p: (REPO / p).read_text() for p in sources if (REPO / p).exists()}
-        self.assertEqual(problems(sources, files), [])
+        self.assertEqual(mac_build_problems(build) + problems(sources, files), [])
+
+    def test_the_honest_build_passes(self):
+        self.assertEqual(mac_build_problems(HONEST_BUILD), [])
+
+    def test_each_dishonest_build_fails_for_its_reason(self):
+        for name, (text, reason) in BUILD_MUTANTS.items():
+            with self.subTest(mutant=name):
+                found = mac_build_problems(text)
+                self.assertTrue(any(f.startswith(reason) for f in found), (name, found))
 
     def test_the_real_zig_graph_keeps_the_one_minter(self):
         root, bad_root = exe_root((REPO / "build.zig").read_text())
