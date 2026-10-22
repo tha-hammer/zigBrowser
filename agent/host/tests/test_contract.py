@@ -28,6 +28,7 @@ import unittest
 from pathlib import Path
 
 import census
+import pidns_guard
 import support
 from support import (DECOY_MARKER, HOOK_EVENTS, FakeAnthropicApi, Helper, Homes, Inotify, NotifyServer, canary,
                      host_python, install_dump_hooks, processes_holding, provision)
@@ -390,6 +391,12 @@ class P05ExecOracle(unittest.TestCase):
         self.assertEqual(lines[-1], f"END {len(lines) - 2}")
 
     def test_without_its_supervisor_no_exec_runs_and_the_log_has_no_end(self):
+        # The snippet SIGKILLs a pid it READS FROM A FILE (the tracer's "START <supervisor pid>" line): it runs only
+        # under kernel proof of a private PID namespace below the launcher's (pidns_guard; the gate step's
+        # ZB_OUTER_PIDNS_FD launcher). Anywhere else this row fails before anything is spawned.
+        ok, why = pidns_guard.private_pid_namespace()
+        if not ok:
+            self.fail(f"refusing to SIGKILL a pid read from a file outside a proven private PID namespace: {why}")
         out = self.traced("/usr/bin/python3", "-I", "-c", KILL_SUPERVISOR_SNIPPET, self.log)
         self.assertEqual(out.stdout.strip(), "ENOSYS", out.stderr)
         self.assertFalse(self.log.read_text().rstrip().splitlines()[-1].startswith("END"))

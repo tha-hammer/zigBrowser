@@ -2121,7 +2121,7 @@ pub fn build(b: *std.Build) void {
         "-c",
         // -X dev shows every ResourceWarning (they fire in finalizers, where -W error cannot fail a test), so the
         // output is counted: any one fails the step (RoseCat 6966).
-        "py=$(tools/agent_host_env.sh --check) || exit 1; cd agent/host/tests && out=$(env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 ZB_AGENT_HOST_PYTHON=\"$py\" unshare --user --map-root-user --pid --fork --kill-child --mount-proc sh -c 'sh -c \"setsid \\\"\\$ZB_AGENT_HOST_PYTHON\\\" -X dev -m unittest -v test_setup_darwin; :\"; :' 2>&1); rc=$?; printf '%s\\n' \"$out\"; [ $rc -eq 0 ] || exit $rc; if printf '%s\\n' \"$out\" | grep -q ResourceWarning; then echo 'test_setup_darwin: ResourceWarning' >&2; exit 1; fi",
+        "py=$(tools/agent_host_env.sh --check) || exit 1; cd agent/host/tests && out=$(env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 ZB_AGENT_HOST_PYTHON=\"$py\" unshare --map-current-user --pid --fork --kill-child --mount-proc sh -c 'sh -c \"setsid -w \\\"\\$ZB_AGENT_HOST_PYTHON\\\" -X dev -m unittest -v test_setup_darwin; exit \\$?\"; exit $?' 2>&1); rc=$?; printf '%s\\n' \"$out\"; [ $rc -eq 0 ] || exit $rc; if printf '%s\\n' \"$out\" | grep -q ResourceWarning; then echo 'test_setup_darwin: ResourceWarning' >&2; exit 1; fi",
     });
     // RoseCat 6966: also in the focused MS5 setup gate, as 2d65b12 does for the cleanup test.
     agent_setup_ms5_step.dependOn(&agent_host_setup_darwin.step);
@@ -2160,7 +2160,7 @@ pub fn build(b: *std.Build) void {
     const agent_host_setup_darwin_r1 = b.addSystemCommand(&.{
         "sh",
         "-c",
-        "py=$(tools/agent_host_env.sh --check) || exit 1; cd agent/host/tests && out=$(env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 ZB_AGENT_HOST_PYTHON=\"$py\" unshare --user --map-root-user --pid --fork --kill-child --mount-proc sh -c 'sh -c \"setsid \\\"\\$ZB_AGENT_HOST_PYTHON\\\" -X dev -m unittest -v test_setup_darwin_r1; :\"; :' 2>&1); rc=$?; printf '%s\\n' \"$out\"; [ $rc -eq 0 ] || exit $rc; if printf '%s\\n' \"$out\" | grep -q ResourceWarning; then echo 'test_setup_darwin_r1: ResourceWarning' >&2; exit 1; fi",
+        "py=$(tools/agent_host_env.sh --check) || exit 1; cd agent/host/tests && out=$(env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 ZB_AGENT_HOST_PYTHON=\"$py\" unshare --map-current-user --pid --fork --kill-child --mount-proc sh -c 'sh -c \"setsid -w \\\"\\$ZB_AGENT_HOST_PYTHON\\\" -X dev -m unittest -v test_setup_darwin_r1; exit \\$?\"; exit $?' 2>&1); rc=$?; printf '%s\\n' \"$out\"; [ $rc -eq 0 ] || exit $rc; if printf '%s\\n' \"$out\" | grep -q ResourceWarning; then echo 'test_setup_darwin_r1: ResourceWarning' >&2; exit 1; fi",
     });
     agent_setup_ms5_step.dependOn(&agent_host_setup_darwin_r1.step);
     // Setup's Darwin sandboxed runs get TMPDIR = their writable SCRATCHPAD (4c0a3db on both Macs: the probe found no
@@ -2168,7 +2168,7 @@ pub fn build(b: *std.Build) void {
     const agent_host_setup_darwin_tmpdir = b.addSystemCommand(&.{
         "sh",
         "-c",
-        "py=$(tools/agent_host_env.sh --check) || exit 1; cd agent/host/tests && out=$(env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 ZB_AGENT_HOST_PYTHON=\"$py\" unshare --user --map-root-user --pid --fork --kill-child --mount-proc sh -c 'sh -c \"setsid \\\"\\$ZB_AGENT_HOST_PYTHON\\\" -X dev -m unittest -v test_setup_darwin_tmpdir; :\"; :' 2>&1); rc=$?; printf '%s\\n' \"$out\"; [ $rc -eq 0 ] || exit $rc; if printf '%s\\n' \"$out\" | grep -q ResourceWarning; then echo 'test_setup_darwin_tmpdir: ResourceWarning' >&2; exit 1; fi",
+        "py=$(tools/agent_host_env.sh --check) || exit 1; cd agent/host/tests && out=$(env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 ZB_AGENT_HOST_PYTHON=\"$py\" unshare --map-current-user --pid --fork --kill-child --mount-proc sh -c 'sh -c \"setsid -w \\\"\\$ZB_AGENT_HOST_PYTHON\\\" -X dev -m unittest -v test_setup_darwin_tmpdir; exit \\$?\"; exit $?' 2>&1); rc=$?; printf '%s\\n' \"$out\"; [ $rc -eq 0 ] || exit $rc; if printf '%s\\n' \"$out\" | grep -q ResourceWarning; then echo 'test_setup_darwin_tmpdir: ResourceWarning' >&2; exit 1; fi",
     });
     agent_setup_ms5_step.dependOn(&agent_host_setup_darwin_tmpdir.step);
     // Setup's and the probe's throwaway trees are removed, a 0300 FIFO directory included, and a failed removal is
@@ -2264,7 +2264,7 @@ pub fn build(b: *std.Build) void {
     const agent_host_setup_darwin_r1_v6 = b.addSystemCommand(&.{
         "sh",
         "-c",
-        "py=$(tools/agent_host_env.sh --check) || exit 1; cd agent/host/tests && out=$(env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 ZB_AGENT_HOST_PYTHON=\"$py\" unshare --user --map-root-user --pid --fork --kill-child --mount-proc sh -c 'sh -c \"setsid \\\"\\$ZB_AGENT_HOST_PYTHON\\\" -X dev -m unittest -v test_setup_darwin_r1_v6; :\"; :' 2>&1); rc=$?; printf '%s\\n' \"$out\"; [ $rc -eq 0 ] || exit $rc; if printf '%s\\n' \"$out\" | grep -q ResourceWarning; then echo 'test_setup_darwin_r1_v6: ResourceWarning' >&2; exit 1; fi",
+        "py=$(tools/agent_host_env.sh --check) || exit 1; cd agent/host/tests && out=$(env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 ZB_AGENT_HOST_PYTHON=\"$py\" unshare --map-current-user --pid --fork --kill-child --mount-proc sh -c 'sh -c \"setsid -w \\\"\\$ZB_AGENT_HOST_PYTHON\\\" -X dev -m unittest -v test_setup_darwin_r1_v6; exit \\$?\"; exit $?' 2>&1); rc=$?; printf '%s\\n' \"$out\"; [ $rc -eq 0 ] || exit $rc; if printf '%s\\n' \"$out\" | grep -q ResourceWarning; then echo 'test_setup_darwin_r1_v6: ResourceWarning' >&2; exit 1; fi",
     });
     agent_setup_ms5_step.dependOn(&agent_host_setup_darwin_r1_v6.step);
     // launch.py's --egress-port + Session carrier (BlackRobin 7035/7108 seam 2); Linux-runnable (PLATFORM injected).
@@ -2332,7 +2332,7 @@ pub fn build(b: *std.Build) void {
     const agent_host_chat_redact = b.addSystemCommand(&.{
         "sh",
         "-c",
-        "py=$(tools/agent_host_env.sh --check) || exit 1; cd agent/host/tests && env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 ZB_AGENT_HOST_PYTHON=\"$py\" \"$py\" -m unittest -v test_chat_redact",
+        "py=$(tools/agent_host_env.sh --check) || exit 1; cd agent/host/tests && env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 ZB_AGENT_HOST_PYTHON=\"$py\" unshare --map-current-user --pid --fork --kill-child --mount-proc sh -c '\"$0\" -m unittest -v test_chat_redact; exit $?' \"$py\"",
     });
     // Chat drawer S7.0 (rev 16.20.30, 16.20.32): the Bridge names the running prompt; tool_result by
     // id, in section 3's grammar; every ending ends its calls; S7b (rev 16.20.34): its six read tools.
@@ -2549,6 +2549,13 @@ pub fn build(b: *std.Build) void {
     real_screen_longrun_xvfb.addArtifactArg(exe);
     // The X input harness survives an X error about a window that just went away
     // (BlackRobin 5773), on its own private Xvfb.
+    // The agent-host step wrappers keep the test's exit status and contain what it starts (RoseCat 7647). It runs
+    // every wrapped step's exact command with a stand-in python, so it runs inside its own private PID namespace.
+    const gate_step_wrappers_unit = b.addSystemCommand(&.{
+        "sh",
+        "-c",
+        "cd tests/e2e && out=$(env -i HOME=\"$HOME\" PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 unshare --map-current-user --pid --fork --kill-child --mount-proc sh -c 'setsid -w python3 -X dev -m unittest -v test_gate_step_wrappers; exit $?' 2>&1); rc=$?; printf '%s\\n' \"$out\"; [ $rc -eq 0 ] || exit $rc; if printf '%s\\n' \"$out\" | grep -q ResourceWarning; then echo 'test_gate_step_wrappers: ResourceWarning' >&2; exit 1; fi",
+    });
     const xinput_errors_xvfb = b.addSystemCommand(&.{
         "sh",
         "-c",
@@ -2702,7 +2709,7 @@ pub fn build(b: *std.Build) void {
     const agent_host_contract = b.addSystemCommand(&.{
         "sh",
         "-c",
-        "py=$(tools/agent_host_env.sh --check) || exit 1; cd agent/host/tests && env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 ZB_AGENT_HOST_PYTHON=\"$py\" \"$py\" -m unittest -v test_contract",
+        "py=$(tools/agent_host_env.sh --check) || exit 1; cd agent/host/tests && env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 ZB_AGENT_HOST_PYTHON=\"$py\" sh -c 'exec 9</proc/self/ns/pid; exec unshare --map-current-user --pid --fork --kill-child --mount-proc sh -c \"\\\"\\$@\\\"; exit \\$?\" sh env ZB_OUTER_PIDNS_FD=9 \"$0\" -m unittest -v test_contract' \"$py\"",
     });
     // MS0 (macOS launch plan, rev 6): the shared SandboxBackend seam — the
     // behaviour-preserving golden-argv oracle (LinuxBwrapBackend reproduces
@@ -2794,7 +2801,7 @@ pub fn build(b: *std.Build) void {
     const agent_host_hook_net = b.addSystemCommand(&.{
         "sh",
         "-c",
-        "py=$(tools/agent_host_env.sh --check) || exit 1; cd agent/host/tests && env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 ZB_AGENT_HOST_PYTHON=\"$py\" /usr/bin/bwrap --unshare-net --die-with-parent --dev-bind / / --proc /proc -- \"$py\" -m unittest -v test_hook_net",
+        "py=$(tools/agent_host_env.sh --check) || exit 1; cd agent/host/tests && env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 ZB_AGENT_HOST_PYTHON=\"$py\" unshare --map-current-user --pid --fork --kill-child --mount-proc sh -c '/usr/bin/bwrap --unshare-net --die-with-parent --dev-bind / / --proc /proc -- \"$0\" -m unittest -v test_hook_net; exit $?' \"$py\"",
     });
 
     // Page dialogs (alert/confirm/prompt/beforeunload) in the primary window
@@ -3308,6 +3315,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&real_screen_input_xvfb.step);
     test_step.dependOn(&real_screen_longrun_xvfb.step);
     test_step.dependOn(&xinput_errors_xvfb.step);
+    test_step.dependOn(&gate_step_wrappers_unit.step);
     test_step.dependOn(&automation_dialogs_e2e.step);
     test_step.dependOn(&ipc_windows_compile.step);
     test_step.dependOn(&cross_check.step);
