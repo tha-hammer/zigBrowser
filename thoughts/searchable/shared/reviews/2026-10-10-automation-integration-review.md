@@ -32559,3 +32559,80 @@ Until those offline fixes land, **no Win11 run is authorized** for this
 chain: the current live result could still be certified by the row-only
 geometry oracle, and a normal aggregate gate could unexpectedly consume an
 inherited live target.
+
+## Decision-16 owner-screen recipe (`e5d68fc`)
+
+**BLOCKED-for-safety; do not run it on the owner's display yet.** The case
+creates an unpredictable `mkdtemp` root, gives the browser an explicit
+`profile/` below it, and replaces `HOME` and `XDG_DATA_HOME` with the fixture
+world's paths. Setup itself receives the small fixture `World.env`, not the
+caller's environment, and cleanup targets only that generated root. Those
+parts correctly isolate the WebKit profile and agent home.
+
+The launch environment does not have the same safety property. `run_approval`
+uses `LongRunBrowser`, whose `env_for` starts from `dict(os.environ)` and
+removes only names beginning `ZIGBROWSER_AGENT_`. It does **not** call this
+script's `case_env`, which removes every `ZIGBROWSER_*` and `ZB_*` variable.
+An inherited `ZIGBROWSER_SOCKET=$XDG_RUNTIME_DIR/zb-live.sock` can therefore
+reach the throwaway browser even though the argv names a private profile.
+Other inherited browser e2e seams can also change what the owner-screen run
+does. This violates the handoff's promise that the live socket is untouched.
+
+The run uses a local `file:` page and an HTTPS fake bound on loopback. Under
+`--e2e-protocol`, `--test-allow fake.zb.invalid=<local-port>` replaces the
+production egress allowlist; the helper/CLI therefore cannot reach Anthropic
+or another external host. The two advertised bridge destinations are also
+loopback decoys. The handoff's “no network” wording means **no external
+network**; loopback is intentionally used for the fake API and decoys. The
+desktop session bus is deliberately retained solely for the real notification.
+
+Fix forward before any owner run: construct the launch environment from an
+explicit allowlist or remove all inherited `ZIGBROWSER_*` and `ZB_*` names
+before adding the case's own three `ZIGBROWSER_AGENT_*` seams. Also strip
+ambient Claude/Anthropic credentials and proxy variables; retain only the
+specific display/Xauthority and desktop D-Bus values the UI test needs. Add a
+non-live regression that plants hostile live socket/profile/home, e2e, token
+and proxy variables, intercepts the final `Popen` environment/argv and proves
+none survives while the private profile/home, fake endpoint,
+`--media-source off` and notification bus do. The test must also prove the
+external-egress replacement and loopback-only listeners. After that, the
+existing active-window/server-grab input checks and exact `Popen` process-group
+teardown are suitable for an orchestrator-owned real-screen run.
+
+## Native Win32 drawer entry closure follow-up (`6c2077f`)
+
+**BLOCKED-for-tests; the Win11 live run is NOT authorized.** An exact-commit
+clean export passed the focused private-Xvfb run: **12/12 steps, 15/15 Zig
+tests**, entry **61/61 with 8 skips**, and behavior **43/43 with 20 skips**.
+The isolated `python3 -I` invocations and separate named steps correctly close
+one part of `6870bf8`, and the new real-HWND fields materially improve the
+success oracle. Three checklist gaps remain:
+
+1. Both aggregate-dependent commands still inherit `ZB_WIN11_HOST` and
+   `ZB_WIN_EXE`. The comments call them hostless, but neither command unsets
+   the variables. A normal `zig build test` in a shell holding a live target
+   can therefore contact Win11 and open GUI rows. The offline aggregate steps
+   must explicitly unset all `ZB_WIN11_*`, `ZB_WIN_EXE`, key and known-host
+   inputs; a separately named live step may consume them only when deliberately
+   invoked. Add a planted-environment regression that proves aggregate `test`
+   cannot enter `_ssh` or `_scp`.
+2. `WinDrawerBehaviorsLive` still inherits
+   `test_bubble_create_failure_leaves_no_drawer`; it does not set that method
+   to `None` with the other entry rows. The observed 20 behavior skips prove
+   the accidental duplicate remains. Its own live set is 19; remove the
+   inherited entry method and pin the exact hostless skip counts.
+3. The independent census checks only the host HWND's pid. `PanelClientRect`,
+   `PageClientRect` and `BubblePresent` do not require their selected HWNDs to
+   belong to the launched pid, and they do not require the panel/page/bubble
+   to be visible. `BubblePresent` checks read-only RichEdit style but not its
+   plain-text mode. This does not yet meet the checklist's launched-process,
+   visible panel/page and read-only plain-text bubble contract. Return the
+   selected child HWND pids, visibility and RichEdit text mode, require exact
+   agreement, and add wrong-child-pid, hidden-child and rich-text mutants.
+
+The commit message also explicitly leaves the exact-commit full gate pending,
+so checklist item 4 is not complete. After a fix-forward closes the three
+items above, run the full clean private-Xvfb gate. Only then may the
+orchestrator run the same exact commit's real MSVC artifact on `win11-m8`
+under the eight-row, owned-Job and before/after-census conditions already
+recorded in the `1e5ff2d` checklist.
