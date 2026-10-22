@@ -16,11 +16,12 @@ Hardened per review of e36f5fa (RoseCat, d8d79d8) so the future green cannot fal
   * The partial-tar case requires tar to have run AND the exit code to propagate (plus a named
     diagnostic), so "tar never invoked" cannot satisfy it.
   * WS0.8 parses the FULL, non-conflicting ssh option set, not one substring.
-  * WS0.5 lexical property runs on a NAMED string-fence seam (`gate.sh --fence-string`) over the full
-    separator×case×head×dot×tail CROSS PRODUCT, checked against an INDEPENDENT hand-rolled oracle.
-  * Reparse resolution is MANDATORY: `gate.sh --allowed-path` always runs the resolver (the env hook
-    only replaces it) and fails CLOSED on resolver failure, empty, multiline/malformed output, a
-    missing resolver, or a resolved path that escapes the root.
+  * WS0.5 LEXICAL shape check runs on `gate.sh --fence-string` (string normalization only; no FS access,
+    no authorization claim) over the full separator×case×head×dot×tail CROSS PRODUCT, checked against an
+    INDEPENDENT hand-rolled oracle. It is kept only as the WS0.3 python-child observation point.
+  * The reparse-resolving remote-path fence (`--allowed-path` / `allowed_path` / resolve_path.sh) was
+    REMOVED (a name-only check/use boundary cannot close the junction-swap TOCTOU; RoseCat / bead
+    zigBrowser-q92). RemotePathFenceRemovedTests pins that it stays gone.
   * ssh options are checked against OpenSSH's own grammar via `ssh -G` (case-insensitive keywords,
     both `Key=val` and `Key val`), with a separate scan that rejects any conflicting occurrence.
   * Each case runs with a private HOME, never the host's real HOME.
@@ -37,7 +38,6 @@ import unittest
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
 GATE = REPO / "tests" / "windows" / "gate.sh"
-RESOLVE = REPO / "tests" / "windows" / "resolve_path.sh"
 _BASE_PATH = "/usr/bin:/bin"
 TAR_SENTINEL = "ZB_TAR_STDERR_SENTINEL"
 
@@ -59,19 +59,6 @@ _SSH_STUB = _FAKE_COMMON.format(tool="ssh") + r"""
 # Record argv with boundaries (one arg per line), so the test parses real -o settings rather
 # than substring-matching a flattened $* (BatchMode=yes followed by BatchMode=no must be caught).
 if [ -n "${ZB_SELFTEST_SSH_LOG:-}" ]; then printf '%s\n' "$@" >> "$ZB_SELFTEST_SSH_LOG"; fi
-# When the PRODUCTION default resolver (resolve_path.sh) calls ssh to run a remote powershell
-# EncodedCommand, stand in for the host so the no-override path is exercised hermetically:
-# optionally fail, or print a canned resolved path on stdout.
-case " $* " in
-  *powershell*EncodedCommand*)
-    if [ -n "${ZB_SELFTEST_RESOLVE_FAIL:-}" ]; then exit 3; fi
-    # Stand in for the host: resolve_path.sh reads line 1 = length, line 2 = resolved path.
-    if [ -n "${ZB_SELFTEST_RESOLVE_OUT:-}" ] || [ -n "${ZB_SELFTEST_RESOLVE_N:-}" ]; then
-      printf '%s\n%s\n' "${ZB_SELFTEST_RESOLVE_N:-50}" "${ZB_SELFTEST_RESOLVE_OUT:-}"
-    fi
-    exit 0
-    ;;
-esac
 exit 0
 """
 
@@ -304,23 +291,6 @@ class PathFenceTests(_GateCase):
         self.assertIn(out, ("ALLOW", "DENY"), f"--fence-string must print ALLOW/DENY, got {out!r}")
         return out == "ALLOW"
 
-    def _allowed(self, path, bindir, home, resolver=None):
-        """The full fence: lexical + MANDATORY reparse resolution."""
-        env = {"ZB_GUEST_USER": _TEST_USER}
-        if resolver is not None:
-            env["ZB_RESOLVE_CMD"] = resolver
-        proc = self._run_gate(env, bindir, args=["--allowed-path", path], home=home)
-        out = (proc.stdout or "").strip()
-        self.assertIn(out, ("ALLOW", "DENY"), f"--allowed-path must print ALLOW/DENY, got {out!r}")
-        return out == "ALLOW"
-
-    @staticmethod
-    def _resolver(td, body):
-        r = td / f"resolve_{abs(hash(body)) % 10000}.sh"
-        r.write_text("#!/usr/bin/env bash\n" + body)
-        r.chmod(0o755)
-        return str(r)
-
     def test_lexical_fence_matches_oracle_over_cross_product(self):
         """WS0.5 property on the named string-fence seam: gate --fence-string == independent oracle,
         over the full separator×case×head×dot×tail cross product (interaction mutants cannot survive)."""
@@ -342,79 +312,6 @@ class PathFenceTests(_GateCase):
             bindir = _fakes(td)
             self.assertFalse(self._fence(rf"C:\Users\{_TEST_USER}\zbEVIL\x", bindir, str(home)))
             self.assertTrue(self._fence(rf"C:\Users\{_TEST_USER}\zb\runs\1\out.png", bindir, str(home)))
-
-    def test_allowed_path_resolution_is_mandatory_and_fails_closed(self):
-        """WS0.5 reparse: --allowed-path ALWAYS resolves; the env hook only REPLACES the resolver.
-        Junction escape, resolver failure, empty, multiline/malformed, and a missing resolver all DENY."""
-        with tempfile.TemporaryDirectory() as t:
-            td = pathlib.Path(t); home = td / "home"; home.mkdir()
-            bindir = _fakes(td)
-            good = rf"C:\Users\{_TEST_USER}\zb\runs\1\out.png"   # string-OK sub-path
-            identity = self._resolver(td, 'printf "%s\\n" "$1"\n')
-            self.assertTrue(self._allowed(good, bindir, str(home), resolver=identity),
-                            "a real sub-path with an identity resolver must be ALLOWED")
-            escape = self._resolver(td, 'printf "%s\\n" "C:\\\\Windows\\\\System32"\n')
-            self.assertFalse(self._allowed(good, bindir, str(home), resolver=escape),
-                             "a junction resolving outside the root must be DENIED")
-            failing = self._resolver(td, 'exit 7\n')
-            self.assertFalse(self._allowed(good, bindir, str(home), resolver=failing),
-                             "a resolver that fails must DENY (fail closed)")
-            empty = self._resolver(td, 'exit 0\n')
-            self.assertFalse(self._allowed(good, bindir, str(home), resolver=empty),
-                             "a resolver with empty output must DENY")
-            multi = self._resolver(td, 'printf "%s\\n%s\\n" "$1" "$1"\n')
-            self.assertFalse(self._allowed(good, bindir, str(home), resolver=multi),
-                             "a resolver with multiline/malformed output must DENY")
-            self.assertFalse(self._allowed(good, bindir, str(home), resolver=str(td / "nope.sh")),
-                             "a missing resolver must DENY (resolution is mandatory)")
-
-    def test_default_resolver_rejects_zero_and_truncated_length(self):
-        """The default resolver's zero (GetFinalPathNameByHandle==0) and n>=buffer (truncated)
-        branches must fail closed -> the gate DENYs."""
-        good = rf"C:\Users\{_TEST_USER}\zb\runs\1\out.png"
-
-        def verdict(extra):
-            with tempfile.TemporaryDirectory() as t:
-                td = pathlib.Path(t)
-                env, home, _kh, _logs = self._stage_env(td)   # no ZB_RESOLVE_CMD: default resolver runs
-                env.update(extra)
-                proc = self._run_gate(env, _fakes(td), args=["--allowed-path", good], home=home)
-                return (proc.stdout or "").strip()
-
-        self.assertEqual(verdict({"ZB_SELFTEST_RESOLVE_OUT": good, "ZB_SELFTEST_RESOLVE_N": "0"}), "DENY",
-                         "GetFinalPathNameByHandle returning 0 must DENY")
-        self.assertEqual(verdict({"ZB_SELFTEST_RESOLVE_OUT": good, "ZB_SELFTEST_RESOLVE_N": "2000"}), "DENY",
-                         "a resolved length >= the buffer (truncated) must DENY")
-
-    def test_default_resolver_runs_without_override_and_fails_closed(self):
-        """The PRODUCTION default resolver (gate.sh's resolve_path.sh) must actually run when no
-        ZB_RESOLVE_CMD override is set — observed hermetically through the fake-SSH seam. Deleting
-        the default-resolver code from gate.sh would make the escaping case fall back to a lexical
-        ALLOW and fail this test."""
-        good = rf"C:\Users\{_TEST_USER}\zb\runs\1\out.png"
-
-        def verdict(extra):
-            with tempfile.TemporaryDirectory() as t:
-                td = pathlib.Path(t)
-                env, home, _kh, logs = self._stage_env(td)   # sets host/user/key/known_hosts, NO ZB_RESOLVE_CMD
-                env.update(extra)
-                bindir = _fakes(td)
-                proc = self._run_gate(env, bindir, args=["--allowed-path", good], home=home)
-                out = (proc.stdout or "").strip()
-                self.assertIn(out, ("ALLOW", "DENY"), f"got {out!r}\nstderr:\n{proc.stderr}")
-                ran = self._read(logs["ran"])
-                self.assertIn("ssh", ran, "the default resolver must reach the host via ssh (observed)")
-                return out
-
-        # default resolver returns an in-root path -> ALLOW (default path exercised end-to-end)
-        self.assertEqual(verdict({"ZB_SELFTEST_RESOLVE_OUT": good}), "ALLOW")
-        # default resolver returns an ESCAPING path -> DENY (deleting the default resolver survives only
-        # if this fails: a lexical-only fallback would wrongly ALLOW the string-OK path)
-        self.assertEqual(verdict({"ZB_SELFTEST_RESOLVE_OUT": r"C:\Windows\System32"}), "DENY")
-        # default resolver's ssh fails -> DENY (fail closed)
-        self.assertEqual(verdict({"ZB_SELFTEST_RESOLVE_FAIL": "1"}), "DENY")
-        # default resolver returns empty -> DENY (fail closed)
-        self.assertEqual(verdict({}), "DENY")
 
 
 class TransportHygieneTests(_GateCase):
@@ -513,74 +410,6 @@ class TransportHygieneTests(_GateCase):
             self.assertIn("tar failed", proc.stderr, "the gate must name the tar failure" + detail)
 
 
-class ResolvePathSafetyTests(unittest.TestCase):
-    """SECURITY (item 1): resolve_path.sh must pass the Windows path to PowerShell as base64 DATA,
-    never spliced into PowerShell source, so a quote/backtick/newline in a path cannot inject."""
-
-    def _resolver_ssh_argv(self, path, td):
-        bindir = _fakes(td)
-        ssh_log = td / "ssh.log"
-        env = {
-            "PATH": bindir + os.pathsep + _BASE_PATH, "HOME": str(td),
-            "ZB_WIN11_HOST": "127.0.0.1", "ZB_WIN11_PORT": "2222", "ZB_GUEST_USER": _TEST_USER,
-            "ZB_WIN_KEY": str(td / "k"), "ZB_WIN_KNOWN_HOSTS": str(td / "kh"),
-            "ZB_SELFTEST_SSH_LOG": str(ssh_log),
-        }
-        (td / "k").write_text("x"); (td / "kh").write_text("#")
-        subprocess.run([str(RESOLVE), path], env=env, capture_output=True, text=True, timeout=30)
-        return ssh_log.read_text() if ssh_log.exists() else ""
-
-    def test_path_is_encoded_data_not_powershell_source(self):
-        import base64
-        import re
-        dangerous = [
-            rf'C:\Users\{_TEST_USER}\zb\a"; Remove-Item C:\ -Recurse; "',  # quote break-out attempt
-            rf'C:\Users\{_TEST_USER}\zb\a`b',                               # backtick (PS escape)
-            'C:\\Users\\%s\\zb\\a\nb' % _TEST_USER,                         # embedded newline
-        ]
-        for path in dangerous:
-            with tempfile.TemporaryDirectory() as t:
-                argv = self._resolver_ssh_argv(path, pathlib.Path(t))
-                self.assertIn("-EncodedCommand", argv, "resolver must deliver PS via -EncodedCommand")
-                line = [l for l in argv.splitlines() if "-EncodedCommand" in l][0]
-                b64 = line.split("-EncodedCommand", 1)[1].strip()
-                ps = base64.b64decode(b64).decode("utf-16-le")
-                # the raw dangerous path must NOT appear as PowerShell source
-                self.assertNotIn(path, ps, f"raw path spliced into PS source: {path!r}")
-                self.assertIn("FromBase64String(", ps, "PS must decode the path from base64 data")
-                # and the embedded base64 must decode back to the exact path (pure data channel)
-                m = re.search(r"FromBase64String\('([A-Za-z0-9+/=]+)'\)", ps)
-                self.assertIsNotNone(m, "PS must carry the path as a base64 literal")
-                self.assertEqual(base64.b64decode(m.group(1)).decode("utf-8"), path,
-                                 "the path must round-trip through the base64 data channel unchanged")
-
-    def _run_resolver(self, extra):
-        with tempfile.TemporaryDirectory() as t:
-            td = pathlib.Path(t)
-            bindir = _fakes(td)
-            env = {
-                "PATH": bindir + os.pathsep + _BASE_PATH, "HOME": str(td),
-                "ZB_WIN11_HOST": "127.0.0.1", "ZB_WIN11_PORT": "2222", "ZB_GUEST_USER": _TEST_USER,
-                "ZB_WIN_KEY": str(td / "k"), "ZB_WIN_KNOWN_HOSTS": str(td / "kh"),
-            }
-            env.update(extra)
-            (td / "k").write_text("x"); (td / "kh").write_text("#")
-            return subprocess.run([str(RESOLVE), rf"C:\Users\{_TEST_USER}\zb\x"],
-                                  env=env, capture_output=True, text=True, timeout=30)
-
-    def test_resolver_rejects_zero_and_truncated_length(self):
-        """resolve_path.sh's own bash branches: GetFinalPathNameByHandle==0 -> exit 4; length >=
-        buffer -> exit 5; a normal length -> exit 0 and the resolved path on stdout."""
-        good = rf"C:\Users\{_TEST_USER}\zb\x"
-        p0 = self._run_resolver({"ZB_SELFTEST_RESOLVE_OUT": good, "ZB_SELFTEST_RESOLVE_N": "0"})
-        self.assertEqual(p0.returncode, 4, f"zero length must exit 4\n{p0.stderr}")
-        pc = self._run_resolver({"ZB_SELFTEST_RESOLVE_OUT": good, "ZB_SELFTEST_RESOLVE_N": "2000"})
-        self.assertEqual(pc.returncode, 5, f"truncated length must exit 5\n{pc.stderr}")
-        pn = self._run_resolver({"ZB_SELFTEST_RESOLVE_OUT": good, "ZB_SELFTEST_RESOLVE_N": "50"})
-        self.assertEqual(pn.returncode, 0, f"normal length must exit 0\n{pn.stderr}")
-        self.assertEqual(pn.stdout.strip(), good, "a normal resolve must print the resolved path")
-
-
 class RootResolutionTests(_GateCase):
     """RoseCat 012e1bc: the gate must resolve its root from an explicit root or the Git root and FAIL
     CLOSED when neither exists — never silently `cd ""` and run in the caller's cwd (as an archive export
@@ -623,39 +452,38 @@ class RootResolutionTests(_GateCase):
             self.assertIn("cannot resolve a repo root", proc.stderr, detail)
 
 
-class AllowedPathIsDiagnosticOnlyTests(unittest.TestCase):
-    """`--allowed-path` / `allowed_path` is a CHECK-TIME diagnostic, not a time-of-use authorization
-    boundary (RoseCat security review of aebb07b/9dbad76; bead zigBrowser-q92). Its ALLOW is a
-    point-in-time string answer and MUST NOT be reused to open a path later — a component can be
-    swapped between the check and the use. Any gate op that consumed the verdict would need the
-    held-handle check-and-use design (Windows plan, Option B) first.
-
-    This pin fails until that atomic path exists: it requires `allowed_path` to be CALLED from exactly
-    one place — the `--allowed-path` diagnostic dispatch. If anyone wires a second caller (gating a real
-    file operation on the verdict), this reds, forcing them to Option B instead.
-    """
+class RemotePathFenceRemovedTests(unittest.TestCase):
+    """The reparse-resolving remote-path fence was REMOVED, not reclassified: a name-only check/use
+    boundary cannot close the junction-swap TOCTOU (RoseCat security review of aebb07b/9dbad76/7ea3c95;
+    bead zigBrowser-q92). There is no `allowed_path`, no `--allowed-path`, and no resolver. A future
+    remote file op that needs safety MUST use a single held-handle check-and-use (Windows plan, Option B),
+    never a name-based pre-check. This pin keeps the fence from being silently re-added — no code means
+    no TOCTOU and no caller-census to defeat (the previous caller pin missed `$(allowed_path ...)`)."""
 
     def setUp(self):
         self.assertTrue(GATE.exists(), "tests/windows/gate.sh must exist")
-        self.src = GATE.read_text()
+        self.gate = GATE.read_text()
 
-    def test_allowed_path_has_exactly_one_caller_the_diagnostic_dispatch(self):
-        # A call site is `allowed_path <arg>` (ws before arg); the definition `allowed_path() {` and
-        # comment lines do not match. Exactly one call must exist, and it must be the dispatch.
-        calls = [ln.strip() for ln in self.src.splitlines() if re.match(r"\s*allowed_path\s+\S", ln)]
-        self.assertEqual(len(calls), 1,
-                         "allowed_path must have exactly ONE caller (the --allowed-path diagnostic); a "
-                         "second caller means a gate op consumes its verdict — use Option B (held-handle "
-                         "check-and-use), never reuse an ALLOW. Found: %r" % calls)
-        self.assertRegex(calls[0], r'^allowed_path\s+"\$\{2:-\}"',
-                         "the sole allowed_path caller must be the --allowed-path dispatch")
-        self.assertEqual(self.src.count("allowed_path() {"), 1, "allowed_path must be defined once")
+    def test_no_authorization_fence_remains_in_the_gate(self):
+        # No function, no dispatch, no resolver hook. Comments explaining the removal are allowed, so
+        # only flag ACTUAL code: a function definition, a CLI case, or a resolver variable assignment.
+        self.assertNotIn("allowed_path() {", self.gate, "allowed_path must stay removed")
+        self.assertNotIn("--allowed-path)", self.gate, "the --allowed-path dispatch must stay removed")
+        self.assertNotRegex(self.gate, r"ZB_(DEFAULT_)?RESOLVE_CMD=",
+                            "no resolver hook may be reintroduced")
+        self.assertNotRegex(self.gate, r'\n\s*allowed_path\b',
+                            "no caller of allowed_path may exist (the function is gone)")
 
-    def test_allowed_path_is_documented_as_a_non_boundary(self):
-        # The reclassification must stay explicit so it is not silently re-promoted to a boundary.
-        self.assertIn("CHECK-TIME", self.src)
-        self.assertIn("NOT an authorization boundary", self.src)
-        self.assertIn("MUST NOT be reused", self.src)
+    def test_resolver_files_are_gone(self):
+        self.assertFalse((REPO / "tests" / "windows" / "resolve_path.sh").exists(),
+                         "resolve_path.sh must be deleted")
+        self.assertFalse((REPO / "tests" / "windows" / "resolve_live_test.py").exists(),
+                         "resolve_live_test.py must be deleted")
+
+    def test_fence_str_is_documented_as_lexical_only_not_a_boundary(self):
+        # The surviving lexical shape-check must stay labelled a non-boundary so it is not re-promoted.
+        self.assertIn("NO remote-path authorization fence", self.gate)
+        self.assertIn("NOT a boundary", self.gate)
 
 
 if __name__ == "__main__":

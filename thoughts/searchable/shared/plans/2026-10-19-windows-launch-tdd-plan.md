@@ -756,21 +756,25 @@ the runner confirms `ProcessIdToSessionId(pid) == WTSGetActiveConsoleSessionId()
 kills its job after at most 120 s, and deletes its scheduled task; the selftest proves a leftover
 task or process fails the run.
 
-### Behavior WS0.5: the file-server host is fenced
-**Given** the Windows 10 host, **when** any gate step names a remote path, **then** the path must be
-under `C:\Users\zbtest\zb\` (resolved, no `..`, no junction out) or the gate refuses before
-running anything.
+### Behavior WS0.5: there is NO remote-path authorization fence (removed)
+**Given** the gate, **when** it operates on remote paths, **then** it does so WITHOUT a name-based
+remote-path authorization fence — there is no such boundary, because a name-only check/use design cannot
+close the junction-swap time-of-use race (RoseCat security review of aebb07b/9dbad76/7ea3c95; bead
+zigBrowser-q92). The reparse-resolving fence (`gate.sh --allowed-path` / `allowed_path` /
+`resolve_path.sh`) and its live test have been **deleted**. No gate step consumes an authorization
+verdict for a remote path, and `gate_selftest.py::RemotePathFenceRemovedTests` pins that the fence stays
+removed (no `allowed_path`, no `--allowed-path`, no resolver files).
 
-> **WS0.5 scope note (RoseCat security review of aebb07b/9dbad76; bead zigBrowser-q92).** `gate.sh
-> --allowed-path` / `resolve_path.sh` is a **check-time diagnostic**, not a time-of-use authorization
-> boundary: it answers for a path NAME at the instant of the check, which can be stale before any later
-> use (a component can be renamed/replaced by a junction in between). It fails closed on any reparse
-> point or attribute read failure, and in-root junctions are intentionally unsupported. **Any FUTURE
-> consumer that acts on a remote path MUST perform a single held-handle check-and-use operation
-> (Option B: open every component with `FILE_FLAG_OPEN_REPARSE_POINT` and no `FILE_SHARE_DELETE`, keep
-> the handles open through the operation, deny on any reparse point or read failure, and act only
-> through the held final handle) and MUST NEVER reuse an `--allowed-path` ALLOW for later access.**
-> `gate_selftest.py` pins that no gate op consumes the verdict until that atomic path exists.
+**A lexical-only shape check remains** as `gate.sh --fence-string`: pure string normalization (strict
+sub-path of `C:\Users\<user>\zb`, no `..`, drive-absolute), with NO filesystem access, NO reparse
+resolution, and therefore NO time-of-use race and NO authorization claim. It exists only as the WS0.3
+display-scrub observation point and as a sanity diagnostic; nothing may use it to authorize access.
+
+**Future work (its own milestone — "Option B"):** any remote file operation that must be safe against a
+malicious junction MUST perform a single held-handle **check-and-use** in one remote operation — open
+every path component with `FILE_FLAG_OPEN_REPARSE_POINT` and no `FILE_SHARE_DELETE`, keep the handles
+open through the operation, deny on any reparse point or attribute read failure, and act ONLY through
+the held final handle. It must NEVER do a name-based pre-check and then reuse the name.
 
 ### Behavior WS0.6: the Win11 VM is the VM it claims to be, and a down VM fails the gate
 **Given** `ZB_WIN11_HOST`/`ZB_WIN11_PORT`/`ZB_WIN11_DOMAIN`, **when** the gate starts, **then** it checks, in
@@ -796,9 +800,12 @@ a fixed `/tmp` name), `StrictHostKeyChecking=yes` against `tests/windows/known_h
 the slice needs (`src build.zig build.zig.zon tests tools agent packaging docs/how-to-build.md` as the slice
 requires, listed in one manifest file), and deletes the remote staging under `zb\runs\<id>\` at the end.
 
-- **Property (WS0.5):** invariant — for any generated path string (relative segments, `..`,
-  UNC `\\server\share`, drive letters, mixed slashes, junction names), `allowed(path)` is true
-  only if its normalized form starts with the root. Hypothesis-style generator in the selftest.
+- **Property (WS0.5, LEXICAL only):** invariant on the pure string-shape check (`gate.sh
+  --fence-string`) — for any generated path string (relative segments, `..`, UNC `\\server\share`,
+  drive letters, mixed slashes, junction NAMES as plain strings), the lexical verdict is ALLOW only if
+  the normalized form is a strict sub-path of the root. This is string normalization only (no filesystem
+  access, no reparse resolution) and makes NO authorization claim; the reparse-resolving fence was
+  removed. Cross-product generator vs. an independent oracle in the selftest.
 - **Files touched:** `tests/windows/gate.sh` (new), `tests/windows/host_probe.ps1` (new),
   `tests/windows/hosts.env.example` (new), `tests/windows/build-on-windows.sh` (new; the
   generalized `build-in-guest.sh` with SDK paths read from the probe instead of hardcoded),
@@ -822,8 +829,10 @@ requires, listed in one manifest file), and deletes the remote staging under `zb
   - WS0.4 `assert selftest_cleanup["tasks_left"] == 0 and selftest_cleanup["procs_left"] == 0`, and the
     inverse case `assert gate_rc != 0` when the fake host reports one leftover task. Mutant: skip
     `schtasks /delete` ⇒ red.
-  - WS0.5 `assert allowed(p) is False` for the generated bad paths plus `assert allowed(r"C:\Users\zbtest\zb\x") is True`.
-    Mutant: normalize with a naive `startswith` (no `..`/junction handling) ⇒ the property fails.
+  - WS0.5 (lexical only) `assert lexical(p) is False` for the generated bad path STRINGS plus
+    `assert lexical(r"C:\Users\zbtest\zb\x") is True` via `--fence-string`. Mutant: normalize with a naive
+    `startswith` (no `..` handling) ⇒ the property fails. There is no reparse/`allowed()` assertion — that
+    fence was removed (a lexical string check cannot and does not claim to be an authorization boundary).
   - WS0.6 `assert rc != 0 and "Win11 VM win11-m8 is shut off" in err` (fake `virsh domstate`); the unreachable
     and host-key cases likewise; and three explicit **identity-marker** cases (rev 2.2, bead zigBrowser-126) —
     the probe's `identity_marker` **missing**, **empty**, or **different** from the pinned `ZB_WIN11_MARKER` each

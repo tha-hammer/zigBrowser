@@ -7,11 +7,10 @@
 #
 # Subcommands used by the Linux-side selftest (tests/windows/gate_selftest.py), which drives this
 # script against fake ssh/tar/virsh on PATH:
-#   --allowed-path <p>   CHECK-TIME path diagnostic: print ALLOW/DENY for a remote path against
-#                        C:\Users\<ZB_GUEST_USER>\zb. NOT an authorization boundary — the verdict is a
-#                        point-in-time string answer, so its ALLOW MUST NOT be reused to open the path
-#                        later (a component can be swapped between check and use). See the Windows plan:
-#                        a future consumer must do a single held-handle check-and-use (Option B).
+#   --fence-string <p>   LEXICAL path-shape check (string normalization only; no FS access; NOT an
+#                        authorization boundary). Exists for the WS0.3 python-child display-scrub
+#                        observation and as a sanity diagnostic. (The reparse-resolving remote-path
+#                        fence was removed — see "WS0.5: there is NO remote-path authorization fence".)
 #   --selftest-stage     run only the stage-to-host step (the WS0.3/WS0.8 observation point)
 #   --probe-only         probe each configured host and print its JSON; run no product tests
 #
@@ -21,7 +20,7 @@ set -uo pipefail
 
 # Whole-gate display scrub: remove the X/Wayland vars from the environment UNCONDITIONALLY at entry
 # (no sentinel a caller could pre-set to skip it), so EVERY child the gate starts (python, ssh, tar,
-# virsh, resolve_path.sh) inherits a display-free environment (WS0.3).
+# virsh) inherits a display-free environment (WS0.3).
 unset DISPLAY WAYLAND_DISPLAY XAUTHORITY
 
 # Resolve the repo root from an EXPLICIT root (ZB_GATE_ROOT) or the Git root, and FAIL CLOSED when neither
@@ -54,20 +53,20 @@ run_remote() { # $@ = full ssh argv (already assembled); scrubs display vars fro
   env -u DISPLAY -u WAYLAND_DISPLAY -u XAUTHORITY "$@"
 }
 
-# ---- WS0.5 remote-path CHECK-TIME diagnostic (NOT an authorization boundary) -------------
-# This answers "is this path string inside the root right now?" as a readiness/diagnostic check. It is
-# NOT a time-of-use fence: it returns a verdict for a NAME, not a pinned handle, so the answer can be
-# stale by the time any later operation reuses the name. No caller may act on an ALLOW to open the path
-# later; a future consumer that acts on a remote path MUST do a single held-handle check-and-use
-# (Windows plan, Option B) and MUST NOT reuse an ALLOW. gate_selftest pins that no gate op consumes it.
-# Two layers:
-#  1. STRING normalization — allowed(path) is true only if the normalized path is a strict
-#     sub-path of the user's root, compared component-wise (so C:\Users\u\zbEVIL is NOT under
-#     C:\Users\u\zb). ntpath normalizes Windows paths (slashes, .., drive, UNC) on Linux.
-#  2. REPARSE/junction resolution — a junction under zb\ can resolve OUTSIDE the root while the
-#     string still looks inside. When a resolver is configured (ZB_RESOLVE_CMD; on a host it maps
-#     a path to its real resolved target), the resolved path must ALSO pass the string fence.
-fence_str() { # $1 = path ; prints ALLOW or DENY for the STRING fence only
+# ---- WS0.5: there is NO remote-path authorization fence (removed) ------------------------
+# The reparse/junction-resolving remote-path fence (`--allowed-path` / `allowed_path` / resolve_path.sh)
+# was REMOVED. A name-only check/use boundary cannot close the junction-swap TOCTOU — the resolver
+# returned a verdict for a NAME, but any later operation reopened that name, and a component could be
+# replaced by a junction in between (RoseCat security review of aebb07b/9dbad76/7ea3c95; bead
+# zigBrowser-q92). There is no consumer and no boundary. A FUTURE remote file op that needs safety MUST
+# use a single held-handle check-and-use (Windows plan, "Option B" — its own milestone), never a
+# name-based pre-check.
+#
+# What remains below is `fence_str`: a PURE LEXICAL path-shape check (string normalization only, no
+# filesystem access, no reparse resolution — therefore no TOCTOU and NO authorization claim). It exists
+# only as the WS0.3 python-child observation point (the display-scrub seam) and as a lexical sanity
+# diagnostic. It must never be used to authorize access to a path.
+fence_str() { # $1 = path ; LEXICAL path-shape only (string normalization; no FS access; NOT a boundary)
   python3 - "$1" "${ZB_GUEST_USER:-}" <<'PY'
 import sys, ntpath, os
 # Observability for the WS0.3 selftest: record that this python child ran and any display var it
@@ -101,26 +100,6 @@ pd, pc = parts(norm)
 ok = (pd == rd) and (len(pc) > len(rc)) and (pc[:len(rc)] == rc)
 print("ALLOW" if ok else "DENY")
 PY
-}
-
-# The production reparse resolver (maps a path to its real on-host target, resolving junctions).
-# ZB_RESOLVE_CMD only REPLACES it (for the selftest); it is never a way to skip resolution.
-ZB_DEFAULT_RESOLVE_CMD="$HERE/resolve_path.sh"
-
-allowed_path() { # $1 = path ; prints ALLOW/DENY. CHECK-TIME diagnostic only (point-in-time; see above).
-                 # Resolution is MANDATORY and fails CLOSED. Do NOT call this to gate a later file op.
-  local p="$1"
-  # Layer 1: the named lexical string fence.
-  [ "$(fence_str "$p")" = "ALLOW" ] || { echo DENY; return 0; }
-  # Layer 2: ALWAYS resolve reparse points (a junction under zb\ can target outside the root).
-  local resolver="${ZB_RESOLVE_CMD:-$ZB_DEFAULT_RESOLVE_CMD}"
-  local out rc
-  out=$("$resolver" "$p" 2>/dev/null); rc=$?
-  if [ "$rc" -ne 0 ]; then echo "allowed-path: resolver failed/missing (rc=$rc)" >&2; echo DENY; return 0; fi
-  if [ -z "$out" ]; then echo "allowed-path: resolver returned empty output" >&2; echo DENY; return 0; fi
-  case "$out" in *$'\n'*) echo "allowed-path: resolver returned multiline/malformed output" >&2; echo DENY; return 0 ;; esac
-  [ "$(fence_str "$out")" = "ALLOW" ] || { echo "allowed-path: resolved path escapes the root" >&2; echo DENY; return 0; }
-  echo ALLOW
 }
 
 # ---- WS0.2 fail-closed banner ------------------------------------------------------------
@@ -564,14 +543,8 @@ probe_only() { # WS0.6 (VM identity) + WS0.7 (file-server fence) across both hos
 # Sub-commands that do NOT need the full two-host set:
 case "${1:-}" in
   --fence-string)
-    # The named LEXICAL seam (string normalization only), used by the WS0.5 property corpus.
+    # LEXICAL path-shape check only (string normalization; no FS access; NOT an authorization boundary).
     fence_str "${2:-}"
-    exit 0
-    ;;
-  --allowed-path)
-    # CHECK-TIME diagnostic: lexical + MANDATORY reparse resolution (fails closed). Not an authorization
-    # boundary; its ALLOW must not be reused to open the path later (see allowed_path header).
-    allowed_path "${2:-}"
     exit 0
     ;;
   --selftest-stage)
