@@ -27547,3 +27547,71 @@ commit remains `3c3e354`: its causal closure is `7a30c5c`, but that closing
 commit cannot enter a contiguous prefix without also including the still-open
 `fff7033` decision reconciliation and the independently blocked `8a146c4`
 test range.
+
+## Windows WSL2 sandbox re-plan (`a527e72`)
+
+**BLOCKED (security/topology plan).** The owner decision itself is transcribed
+correctly: the launch backend is an app-owned `wsl --import` distro; automount
+and interop are off; no global `.wslconfig` is changed; unavailable
+virtualization/WSL leaves the agent off; and the app-owned VM is a later shared
+containment milestone. The proposed reuse of the existing bwrap/netd policy is
+also directionally sound. The plan is not implementation-ready yet:
+
+1. **The privileged transport and token boundary is still a choice, not a
+   contract.** At `2026-10-19-windows-launch-tdd-plan.md:1689-1692` and
+   `:1704-1705`, “loopback TCP or hvsocket” and “same owner-only auth” do not
+   specify a buildable or testable channel. A TCP loopback listener is not
+   owner-only by itself. Choose one transport and pin listener ownership,
+   per-session capability generation/storage, constant-time comparison,
+   replay/session binding, endpoint lifetime, token separation from control
+   frames, and hostile clients from another Windows user/process and another
+   distro. Preserve the current `Channel` contract's property that the OAuth
+   token reaches only the CLI channel, never a generally reachable control
+   listener.
+2. **The filesystem projection is undefined with automount disabled.** Lines
+   `1675-1679` say the host `Mount` list “maps into the distro's own
+   filesystem,” but do not say how Windows workspace, scratch, state, runtime
+   and approval-scoped writes enter or leave that filesystem. Define the copy,
+   share or broker boundary; its reparse/symlink and TOCTOU rules; read-only
+   enforcement; write-back semantics; per-run cleanup; and the tests proving
+   that no other host path becomes reachable. Enabling drvfs implicitly would
+   contradict the `/mnt/c`-absent isolation claim at `:1697-1700`.
+3. **Setup is not a crash/reboot-safe one-admin-step protocol.** Lines
+   `1680-1685` acknowledge that enabling WSL/VMP may require a reboot but do
+   not define how the one approved elevation resumes, which state proves the
+   operation belongs to this app/user, or how partial feature enablement,
+   import and rollback remain idempotent across that cut. Pin and authenticate
+   the rootfs bytes, protect the import directory from replacement, specify
+   version/update ownership, and add red rows for every pre/post-reboot cut.
+   The physical Win10 file server is read-only by owner rule; WS8/WS9 must not
+   retain a two-host setup claim that would install WSL or import a distro
+   there without a new owner authorization.
+4. **Lifetime ownership has an undefined blast radius.** `:1678-1679` and
+   `:1706-1707` alternate between a per-run process tree and “distro
+   terminate.” Terminating the named app distro can kill another browser
+   instance's/session's agent. Pin a per-run lifetime primitive inside the
+   distro, prove exactly which descendants it owns, and reserve distro-wide
+   termination for a census-proven last owner or explicit uninstall/recovery.
+5. **The bridge and egress topology is incomplete.** WS9 `:1822-1839` does
+   not define how hooks inside a private WSL/bwrap network reach only the two
+   Windows-host bridges at 51091/31337, how netd alone resolves/reaches the
+   allowlisted API, or how every other Windows-loopback, LAN, SMB, DNS and
+   other-distro endpoint is denied. Pin the exact relay endpoints and auth,
+   then require positive byte-carrying bridge rows plus hostile host-listener,
+   direct-DNS and direct-API mutants.
+6. **Contradictory normative text remains active after the new sections.** A
+   “SUPERSEDED” paragraph is not enough while the old hard gates, green files,
+   closure and gate remain at `:1722-1809`, the old WFP implementation remains
+   at `:1847-1895`, the shared-backend table still requires
+   `WindowsSandboxUserBackend`/WFP at `:713-716`, WS13 uninstall still removes
+   users/WFP at `:2052-2063`, and the dependency graph still says WS8/WS9 are
+   mutually dependent through WFP at `:2114-2118`. Provisioning and
+   unverified-item text likewise still calls WSL a fallback (`:600-601`,
+   `:2169-2179`). Replace these contracts with the chosen WSL design or move
+   them into a clearly non-normative historical appendix; otherwise two
+   incompatible implementations and gates are simultaneously authoritative.
+
+No product or test files changed in this docs-only commit, so no runtime gate
+was required. `git diff --check` is clean. Do not start WS8/WS9 reds from this
+revision: the reds would encode unresolved transport, filesystem, lifecycle
+and network choices.
