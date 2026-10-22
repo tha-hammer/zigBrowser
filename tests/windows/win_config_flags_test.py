@@ -25,6 +25,9 @@ import pathlib
 import secrets
 import subprocess
 import unittest
+import sys
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "windows"))
+import live_gate  # noqa: E402  ZB_WIN_GATE=1: a missing host fails instead of skipping; prints ASSERTS <n>
 
 # A page whose title reports whether MediaSource exists after its inline script runs.
 _HTML = (
@@ -57,10 +60,10 @@ class WinConfigFlags(unittest.TestCase):
     def setUp(self):
         self.host = os.environ.get("ZB_WIN11_HOST")
         if not self.host:
-            self.skipTest("ZB_WIN11_HOST unset — live VM backend-flag test skipped")
+            live_gate.skip_or_fail(self, "ZB_WIN11_HOST unset — live VM backend-flag test skipped")
         self.exe = os.environ.get("ZB_WIN_EXE")
         if not self.exe or not pathlib.Path(self.exe).is_file():
-            self.skipTest("ZB_WIN_EXE unset or missing — set it to a built zigBrowser.exe")
+            live_gate.skip_or_fail(self, "ZB_WIN_EXE unset or missing — set it to a built zigBrowser.exe")
         self.port = os.environ.get("ZB_WIN11_PORT", "2222")
         self.user = os.environ.get("ZB_WIN11_USER", "zbtext")
         self.key = os.environ.get("ZB_WIN_KEY", "/home/maceo/vms/win11-m8/zb_win_key")
@@ -139,4 +142,4 @@ class WinConfigFlags(unittest.TestCase):
 
 
 if __name__ == "__main__":
-    unittest.main()
+    live_gate.main()

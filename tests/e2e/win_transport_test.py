@@ -39,6 +39,9 @@ import subprocess
 import tempfile
 import time
 import unittest
+import sys
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "windows"))
+import live_gate  # noqa: E402  ZB_WIN_GATE=1: a missing host fails instead of skipping; prints ASSERTS <n>
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
 PROBE_SRC = REPO / "tests" / "windows" / "transport_probe.zig"
@@ -161,9 +164,9 @@ class WinTransport(unittest.TestCase):
 
     def setUp(self):
         if not self.host:
-            self.skipTest("ZB_WIN11_HOST unset — live VM transport test skipped")
+            live_gate.skip_or_fail(self, "ZB_WIN11_HOST unset — live VM transport test skipped")
         if not self.exe or not pathlib.Path(self.exe).is_file():
-            self.skipTest("ZB_WIN_EXE unset or missing — set it to a built zigBrowser.exe")
+            live_gate.skip_or_fail(self, "ZB_WIN_EXE unset or missing — set it to a built zigBrowser.exe")
         self.port = os.environ.get("ZB_WIN11_PORT", "2222")
         self.user = os.environ.get("ZB_WIN11_USER", "zbtext")
         self.other = os.environ.get("ZB_WIN11_OTHER_USER", "zbother")
@@ -307,4 +310,4 @@ class WinTransport(unittest.TestCase):
 
 
 if __name__ == "__main__":
-    unittest.main()
+    live_gate.main()

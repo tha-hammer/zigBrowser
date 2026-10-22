@@ -1078,6 +1078,143 @@ class WS07ListenerPidChurn(_TwoHostCase):
             self._assert_fail_closed(proc, "service listener ports changed")
 
 
+# ---- WS0.9: the product-run mode with fail-on-skip (plan WS0.9, D.1/D.2; red ea4ccaa) ----------------------------
+# The REAL gate.sh runs from a scratch root (ZB_GATE_ROOT) holding the gate's own files and a phase list of fake live
+# tests; ssh/virsh are the fakes above. Mutants recorded in the green commit: treat exit 77 as pass
+# (test_product_run_fails_on_skip), accept ASSERTS 0 (test_asserts_zero_fails).
+_GATE_FILES = ("gate.sh", "host_probe.ps1", "session_probe.ps1", "verify_task.ps1", "stage_manifest.txt")
+
+# A fake live test: records that it ran and the ZB_WIN_GATE it saw, then behaves as `mode` says.
+_FAKE_LIVE_TEST = r'''
+import os, sys
+with open(os.environ["ZB_FAKE_RAN_LOG"], "a") as fh:
+    fh.write("%s ZB_WIN_GATE=%s\n" % (os.path.basename(__file__), os.environ.get("ZB_WIN_GATE", "")))
+mode = {mode!r}
+if mode == "pass":
+    print("PASS\tfake"); print("ASSERTS 3"); sys.exit(0)
+if mode == "exit77":      # only the exit code says skip: a gate that treats 77 as pass would pass it
+    print("ASSERTS 3"); sys.exit(77)
+if mode == "no_asserts":
+    print("PASS\tfake"); sys.exit(0)
+if mode == "asserts0":
+    print("ASSERTS 0"); sys.exit(0)
+if mode == "malformed":
+    print("ASSERTS three"); sys.exit(0)
+if mode == "two_lines":
+    print("ASSERTS 2"); print("ASSERTS 2"); sys.exit(0)
+if mode == "fail1":
+    print("ASSERTS 2"); sys.exit(1)
+if mode == "unittest_skipped":
+    print("ASSERTS 4"); print("OK (skipped=1)", file=sys.stderr); sys.exit(0)
+if mode == "gate_only":   # passes ONLY when the gate exported ZB_WIN_GATE=1 to it
+    if os.environ.get("ZB_WIN_GATE") != "1":
+        sys.exit(3)
+    print("ASSERTS 1"); sys.exit(0)
+sys.exit(99)
+'''
+
+
+class WS09ProductRun(_TwoHostCase):
+    def _run_product(self, td, tests, extra=None, args=("--product",)):
+        root = td / "root"
+        (root / "tests" / "windows" / "fake").mkdir(parents=True)
+        for name in _GATE_FILES:
+            shutil.copy2(GATE.parent / name, root / "tests" / "windows" / name)
+        rels = []
+        for name, mode in tests:
+            rel = f"tests/windows/fake/{name}"
+            (root / rel).write_text(_FAKE_LIVE_TEST.format(mode=mode))
+            rels.append(rel)
+        (root / "tests" / "windows" / "live_phases.txt").write_text("# fake phases\n" + "".join(r + "\n" for r in rels))
+        ran = td / "ran.log"
+        ran.write_text("")
+        home = td / "home"; home.mkdir(exist_ok=True)
+        env = {
+            "ZB_GATE_ROOT": str(root), "ZB_FAKE_RAN_LOG": str(ran),
+            "PATH": _fakes(td) + os.pathsep + _BASE_PATH, "HOME": str(home), "TMPDIR": str(td),
+            "ZB_WIN11_HOST": "127.0.0.1", "ZB_WIN11_PORT": "2222", "ZB_WIN11_DOMAIN": "win11-m8",
+            "ZB_WIN11_USER": "zbtext", "ZB_WIN11_MARKER": VM_MARKER, "ZB_WIN11_SNAPSHOT": "pre-4dr-toolchain-2026-10-20",
+            "ZB_WIN10_HOST": "100.123.34.15", "ZB_WIN10_PORT": "22", "ZB_WIN10_USER": "zbtest", "ZB_WIN10_MARKER": FS_MARKER,
+            "ZB_WIN11_KEY": str(td / "k"), "ZB_WIN11_KNOWN_HOSTS": str(td / "k"),
+            "ZB_WIN10_KEY": str(td / "k"), "ZB_WIN10_KNOWN_HOSTS": str(td / "k"),
+            "ZB_SELFTEST_WIN10_CALLS": str(td / "win10.calls"),
+            "ZB_SELFTEST_PROBE_WIN11": _vm_probe(), "ZB_SELFTEST_PROBE_WIN10": _fs_probe(),
+        }
+        (td / "k").write_text("x")
+        env.update(extra or {})
+        env = {k: v for k, v in env.items() if v is not None}
+        proc = subprocess.run(["bash", str(root / "tests" / "windows" / "gate.sh"), *args], env=env,
+                              capture_output=True, text=True, timeout=120, stdin=subprocess.DEVNULL)
+        return proc, ran.read_text().splitlines()
+
+    @staticmethod
+    def _detail(proc):
+        return f"\nrc={proc.returncode}\nstdout:\n{proc.stdout}\nstderr:\n{proc.stderr}"
+
+    def _assert_named_failure(self, tests, needle, **kw):
+        with tempfile.TemporaryDirectory() as t:
+            proc, ran = self._run_product(pathlib.Path(t), tests, **kw)
+            self.assertNotEqual(proc.returncode, 0, "must fail the gate" + self._detail(proc))
+            self.assertIn(needle, proc.stderr, self._detail(proc))
+            return proc, ran
+
+    def test_healthy_product_run_passes_and_runs_every_test(self):
+        with tempfile.TemporaryDirectory() as t:
+            proc, ran = self._run_product(pathlib.Path(t), [("a_test.py", "pass"), ("b_test.py", "pass")])
+            self.assertEqual(proc.returncode, 0, "every test passed with ASSERTS>0: the gate must pass" + self._detail(proc))
+            self.assertEqual(sorted(r.split()[0] for r in ran), ["a_test.py", "b_test.py"], self._detail(proc))
+            self.assertIn("product run PASSED: 2 live tests, ASSERTS 6", proc.stderr, self._detail(proc))
+
+    def test_no_argument_gate_is_the_product_run(self):
+        with tempfile.TemporaryDirectory() as t:
+            proc, ran = self._run_product(pathlib.Path(t), [("a_test.py", "pass")], args=())
+            self.assertEqual(proc.returncode, 0, "the no-argument gate is the product run" + self._detail(proc))
+            self.assertEqual(len(ran), 1, self._detail(proc))
+
+    def test_every_test_runs_with_zb_win_gate_1(self):
+        with tempfile.TemporaryDirectory() as t:
+            proc, ran = self._run_product(pathlib.Path(t), [("g_test.py", "gate_only")])
+            self.assertEqual(proc.returncode, 0, "the gate must export ZB_WIN_GATE=1 to each test" + self._detail(proc))
+            self.assertEqual(ran, ["g_test.py ZB_WIN_GATE=1"], self._detail(proc))
+
+    def test_product_run_fails_on_skip(self):
+        self._assert_named_failure([("a_test.py", "pass"), ("skip_test.py", "exit77")],
+                                   "FAIL tests/windows/fake/skip_test.py: skipped (exit 77)")
+
+    def test_unittest_skip_with_rc0_fails(self):
+        self._assert_named_failure([("u_test.py", "unittest_skipped")],
+                                   "FAIL tests/windows/fake/u_test.py: skipped (it reported a skip)")
+
+    def test_no_asserts_line_fails(self):
+        self._assert_named_failure([("n_test.py", "no_asserts")], "FAIL tests/windows/fake/n_test.py: printed no ASSERTS line")
+
+    def test_asserts_zero_fails(self):
+        self._assert_named_failure([("z_test.py", "asserts0")], "FAIL tests/windows/fake/z_test.py: printed ASSERTS 0")
+
+    def test_malformed_asserts_fails(self):
+        self._assert_named_failure([("m_test.py", "malformed")], "FAIL tests/windows/fake/m_test.py: printed a malformed ASSERTS line")
+        self._assert_named_failure([("d_test.py", "two_lines")], "FAIL tests/windows/fake/d_test.py: printed a malformed ASSERTS line")
+
+    def test_failing_test_fails_and_is_named(self):
+        proc, _ = self._assert_named_failure([("f_test.py", "fail1"), ("a_test.py", "pass")],
+                                             "FAIL tests/windows/fake/f_test.py: failed (exit 1)")
+        self.assertIn("1 of 2 live tests", proc.stderr, self._detail(proc))
+
+    def test_empty_phase_list_is_zero_rows_and_fails(self):
+        self._assert_named_failure([], "no live tests in the phase list")
+
+    def test_readiness_failure_runs_no_test(self):
+        _, ran = self._assert_named_failure([("a_test.py", "pass")], "Win11 VM win11-m8 is shut off",
+                                            extra={"ZB_SELFTEST_VIRSH_STATE": "shut off"})
+        self.assertEqual(ran, [], "no product test may run before readiness passes")
+
+    def test_unset_host_names_no_windows_host(self):
+        for var in ("ZB_WIN11_HOST", "ZB_WIN10_HOST"):
+            with self.subTest(unset=var):
+                _, ran = self._assert_named_failure([("a_test.py", "pass")], "no Windows host configured", extra={var: None})
+                self.assertEqual(ran, [])
+
+
 def load_tests(loader, tests, pattern):
     # Register the live VM suite (host_live_test.py) alongside the hostless cases so one run covers both.
     # The live cases SKIP when the VM env (ZB_WIN11_HOST...) is absent, so this is a no-op in CI without a VM.

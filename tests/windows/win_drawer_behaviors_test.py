@@ -26,6 +26,7 @@ from collections import namedtuple
 # import resolve regardless of cwd / isolated mode (this file is unregistered and may be run from anywhere).
 # Import the MODULE (not the classes) so unittest does not also collect win_drawer_test's own TestCases here.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import live_gate  # noqa: E402  ZB_WIN_GATE=1: a skip fails under the gate; prints ASSERTS <n>
 import win_drawer_test as _wd  # noqa: E402
 parse_drawer = _wd.parse_drawer
 rect_of = _wd.rect_of
@@ -1068,4 +1069,4 @@ class WinDrawerBehaviorsLive(_wd.WinDrawerLive):
 
 
 if __name__ == "__main__":
-    unittest.main(verbosity=2)
+    live_gate.main(verbosity=2)

@@ -13,6 +13,8 @@
 #                        fence was removed — see "WS0.5: there is NO remote-path authorization fence".)
 #   --selftest-stage     run only the stage-to-host step (the WS0.3/WS0.8 observation point)
 #   --probe-only         probe each configured host and print its JSON; run no product tests
+#   --product (or none)  readiness, then every live test in tests/windows/live_phases.txt under ZB_WIN_GATE=1;
+#                        exit 0 only if each exited 0 with one `ASSERTS <n>` line, n > 0, and no skip (WS0.9)
 #
 # Errors are handled explicitly (no `set -e`, to avoid the set-e-inside-if trap that bit
 # tests/mac/gate.sh): functions return nonzero and callers check with `|| return 1`.
@@ -539,6 +541,54 @@ probe_only() { # WS0.6 (VM identity) + WS0.7 (file-server fence) across both hos
   return 0
 }
 
+# ---- WS0.9 product run (fail on skip) ----------------------------------------------------
+# The one phase list, also read by build.zig's `windows-live` aggregate. After the readiness probe, every entry runs
+# as `ZB_WIN_GATE=1 python3 -I <file>` (D.1: under the gate a skip is a failure). An entry passes only on exit 0
+# with exactly one `ASSERTS <n>` line, n > 0, and no reported skip. Zero entries is zero rows: a failure (rule 7).
+PHASES="$HERE/live_phases.txt"
+LIVE_TIMEOUT="${ZB_LIVE_TEST_TIMEOUT:-1800}"
+
+judge_live() { # $1=rc $2=stdout file $3=stderr file ; prints the ASSERTS count (pass) or the reason (fail)
+  local rc="$1" asserts
+  [ "$rc" -eq 77 ] && { echo "skipped (exit 77)"; return 1; }
+  grep -Eqs 'skipped=[1-9]|^SKIP\b' "$2" "$3" && { echo "skipped (it reported a skip)"; return 1; }
+  [ "$rc" -ne 0 ] && { echo "failed (exit $rc)"; return 1; }
+  asserts=$(grep -E '^ASSERTS\b' "$2")
+  [ -z "$asserts" ] && { echo "printed no ASSERTS line"; return 1; }
+  if [ "$(printf '%s\n' "$asserts" | wc -l)" -ne 1 ] || [[ ! "$asserts" =~ ^ASSERTS\ ([0-9]{1,9})$ ]]; then
+    echo "printed a malformed ASSERTS line: $(printf '%s' "$asserts" | tr '\n' '|' | head -c 200)"; return 1
+  fi
+  [ "$((10#${BASH_REMATCH[1]}))" -le 0 ] && { echo "printed ASSERTS 0 (zero assertions)"; return 1; }
+  echo "$((10#${BASH_REMATCH[1]}))"
+}
+
+product_run() {
+  local -a tests=(); mapfile -t tests < <(grep -vE '^[[:space:]]*(#|$)' "$PHASES" 2>/dev/null)
+  if [ "${#tests[@]}" -eq 0 ]; then
+    echo "NOT RUN: no live tests in the phase list $PHASES (zero rows is a failure)" >&2
+    return 1
+  fi
+  probe_only || { echo "gate: product run FAILED: readiness failed; no live test was run" >&2; return 1; }
+  local work; work=$(mktemp -d "${TMPDIR:-/tmp}/zb-gate-product.XXXXXX") || { echo "gate: mktemp failed" >&2; return 1; }
+  local t rc verdict total=0; local -a failed=()
+  for t in "${tests[@]}"; do
+    env ZB_WIN_GATE=1 timeout "$LIVE_TIMEOUT" python3 -I "$t" >"$work/out" 2>"$work/err" </dev/null; rc=$?
+    sed "s|^|  [$t] |" "$work/out" "$work/err" >&2
+    if verdict=$(judge_live "$rc" "$work/out" "$work/err"); then
+      echo "PASS $t ASSERTS $verdict" >&2; total=$((total + verdict))
+    else
+      echo "FAIL $t: $verdict" >&2; failed+=("$t")
+    fi
+  done
+  rm -rf "${work:?}"
+  if [ "${#failed[@]}" -ne 0 ]; then
+    echo "gate: product run FAILED: ${#failed[@]} of ${#tests[@]} live tests: ${failed[*]}" >&2
+    return 1
+  fi
+  echo "gate: product run PASSED: ${#tests[@]} live tests, ASSERTS $total" >&2
+  return 0
+}
+
 # ---- orchestration -----------------------------------------------------------------------
 # Sub-commands that do NOT need the full two-host set:
 case "${1:-}" in
@@ -575,9 +625,10 @@ case "${1:-}" in
     probe_only
     exit $?
     ;;
-  "")
-    echo "gate: two-host run not implemented yet (needs the Win10 host); WS0 foundation only" >&2
-    exit 2
+  ""|--product)
+    # WS0.9: readiness on both hosts, then every phase-list entry under ZB_WIN_GATE=1, fail on skip.
+    product_run
+    exit $?
     ;;
   *)
     echo "gate: unknown argument: $1" >&2

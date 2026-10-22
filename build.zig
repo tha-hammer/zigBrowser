@@ -356,6 +356,28 @@ pub fn build(b: *std.Build) void {
     const windows_refusal_live = b.addSystemCommand(&.{ "python3", "-I", "tests/windows/refusal_stderr_live_test.py" });
     b.step("windows-refusal-live", "Live Windows: a refused flag's message reaches stderr on the GUI exe (skips without ZB_WIN11_HOST)").dependOn(&windows_refusal_live.step);
 
+    // WS0.9 / D.1: `windows-live` runs every entry of the ONE phase list tests/windows/live_phases.txt (the list
+    // `gate.sh --product` runs) with ZB_WIN_GATE=1, so a missing host or any skip FAILS. It needs a host and is not
+    // part of the hostless `zig build test`; the same tests' plain steps above stay hostless-green there.
+    const windows_live = b.step("windows-live", "Run every live Windows test in tests/windows/live_phases.txt under ZB_WIN_GATE=1 (needs a host; a skip fails)");
+    {
+        const phases = std.Io.Dir.cwd().readFileAlloc(b.graph.io, "tests/windows/live_phases.txt", b.allocator, .limited(64 * 1024)) catch |err|
+            std.debug.panic("failed to read tests/windows/live_phases.txt: {s}", .{@errorName(err)});
+        var lines = std.mem.tokenizeScalar(u8, phases, '\n');
+        while (lines.next()) |raw| {
+            const entry = std.mem.trim(u8, raw, " \t\r");
+            if (entry.len == 0 or entry[0] == '#') continue;
+            const live = b.addSystemCommand(&.{ "env", "ZB_WIN_GATE=1", "python3", "-I", entry });
+            live.has_side_effects = true;
+            windows_live.dependOn(&live.step);
+        }
+    }
+
+    // WS0.9 / D.1 (rule 7): every registered live step's real command, run hostless with ZB_WIN_GATE=1, exits
+    // nonzero; the hostless ones still exit 0 standalone. Hermetic (every ZB_WIN* var removed; no host contacted).
+    const windows_live_step_skip = b.addSystemCommand(&.{ "python3", "-I", "tests/windows/live_step_skip_test.py" });
+    b.step("windows-live-step-skip", "WS0.9: every live Windows step fails under ZB_WIN_GATE=1 with no host (hermetic)").dependOn(&windows_live_step_skip.step);
+
     const run_step = b.step("run", "Run zigBrowser");
     const run_cmd = b.addRunArtifact(exe);
     run_cmd.step.dependOn(b.getInstallStep());
@@ -3656,6 +3678,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&windows_config_flags_live.step);
     test_step.dependOn(&windows_transport_live.step);
     test_step.dependOn(&windows_refusal_live.step);
+    test_step.dependOn(&windows_live_step_skip.step);
     test_step.dependOn(&run_ipc_tests.step);
     test_step.dependOn(&run_nav_policy_tests.step);
     test_step.dependOn(&run_agent_drawer_tests.step);

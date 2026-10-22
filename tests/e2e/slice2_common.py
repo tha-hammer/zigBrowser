@@ -19,6 +19,17 @@ from typing import Any, Callable, Iterable
 
 SKIP_EXIT = 77
 HARNESS_EXIT_PREFIX = "ZB_HARNESS_EXIT"
+WIN_GATE_ENV = "ZB_WIN_GATE"
+
+
+def gate_skip_exit(reason: str) -> int:
+    """Exit code for a missing precondition (Windows plan WS0.9, D.1): SKIP_EXIT when a human runs the test
+    standalone; 1 under the gate (ZB_WIN_GATE=1), where a skip is a failure. Use as `return gate_skip_exit(...)`."""
+    print(reason, file=sys.stderr)
+    if os.environ.get(WIN_GATE_ENV) == "1":
+        print(f"{WIN_GATE_ENV}=1: precondition missing; a skip is a failure under the gate", file=sys.stderr)
+        return 1
+    return SKIP_EXIT
 # The one launcher for E2E browsers (see its docstring): the browser keeps
 # its own PID, and a guardian ends it and its private Xvfb if the test dies.
 XSESSION = Path(__file__).resolve().parent / "xsession.py"
