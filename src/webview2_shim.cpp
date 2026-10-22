@@ -68,14 +68,23 @@ struct AppState {
   // WS5 e2e-only control-factory failure seam (ZIGBROWSER_AGENT_DRAWER_FAIL = "panel"|"icon"): forces a
   // CreateWindowExW failure branch for the test. Null unless --e2e-protocol AND the env is set.
   const char *force_drawer_fail = nullptr;
+  // WS5.2 e2e-only drag seam (ZIGBROWSER_AGENT_DRAWER_DRAG = "dx,dy"): drives a synthetic icon drag so the
+  // test can observe the gesture outcome. A drag (> 6 px, zb_drawer_classify) moves the icon to its
+  // persisted-ratio rect (emitted as a `drag` row); a click (<= 6 px) opens the drawer. e2e-only.
+  const char *drag_seam = nullptr;
 };
 
 // The portable drawer geometry (src/agent_drawer.zig, exported for Windows). Rect matches Zig's
-// `extern struct { x, y, w, h: c_int }`.
+// `extern struct { x, y, w, h: c_int }`; Ratios matches `extern struct { x, y: f64 }`. No geometry math in C++.
 extern "C" {
 struct ZbDrawerGeomRect { int x, y, w, h; };
+struct ZbDrawerRatios { double x, y; };
 void zb_drawer_panel_rect(int width, int height, ZbDrawerGeomRect *out);
 void zb_drawer_place(const void *ratios, int width, int height, ZbDrawerGeomRect *out);
+void zb_drawer_clamp(ZbDrawerGeomRect *r, int width, int height);
+void zb_drawer_ratios_of(const ZbDrawerGeomRect *r, int width, int height, ZbDrawerRatios *out);
+int zb_drawer_classify(double dx, double dy);  // 0 = click, 1 = drag
+void zb_drawer_remember(const ZbDrawerRatios *ratios);
 }
 
 // WS5 shim functions (declared in webkit_shim.h), defined here for the Windows backend.
@@ -864,6 +873,33 @@ void mount_drawer(AppState *app) {
     snprintf(rect, sizeof rect, "%d,%d,%d,%d", panel.x, panel.y, panel.w, panel.h);
     emit_protocol3(app, "DRAWER", win, "open", rect);
   }
+  // WS5.2 (e2e-only): a synthetic icon drag. classifyGesture decides click vs drag (6 px threshold); a drag
+  // moves the icon to its PERSISTED-RATIO rect (clamp -> ratios -> place, all portable Zig logic) and emits a
+  // `drag` row; a small move is a click that OPENS the drawer. No geometry math in C++.
+  if (app->drag_seam != nullptr && app->drag_seam[0] != '\0') {
+    int dx = 0, dy = 0;
+    if (sscanf(app->drag_seam, "%d,%d", &dx, &dy) == 2) {
+      if (zb_drawer_classify((double)dx, (double)dy) != 0) {  // a drag
+        ZbDrawerGeomRect moved = icon;
+        moved.x += dx;
+        moved.y += dy;
+        zb_drawer_clamp(&moved, cw, ch);
+        ZbDrawerRatios ratios = {};
+        zb_drawer_ratios_of(&moved, cw, ch, &ratios);
+        ZbDrawerGeomRect after = {};
+        zb_drawer_place(&ratios, cw, ch, &after);
+        zb_drawer_remember(&ratios);  // a user move persists for new windows
+        snprintf(rect, sizeof rect, "%d,%d,%d,%d", after.x, after.y, after.w, after.h);
+        emit_protocol3(app, "DRAWER", win, "drag", rect);
+      } else if (!app->drawer_open) {  // a click opens the drawer
+        app->drawer_open = true;
+        ZbDrawerGeomRect panel = {};
+        zb_drawer_panel_rect(cw, ch, &panel);
+        snprintf(rect, sizeof rect, "%d,%d,%d,%d", panel.x, panel.y, panel.w, panel.h);
+        emit_protocol3(app, "DRAWER", win, "open", rect);
+      }
+    }
+  }
   resize_controller(app);  // dock the page / place the icon
 }
 
@@ -1401,6 +1437,7 @@ static int run_core(const char *uri, int print_title, int e2e_protocol, bool scr
     const char *open_env = getenv("ZIGBROWSER_AGENT_DRAWER_OPEN");
     app.drawer_open = open_env != nullptr && open_env[0] != '\0' && !(open_env[0] == '0' && open_env[1] == '\0');
     app.force_drawer_fail = getenv("ZIGBROWSER_AGENT_DRAWER_FAIL");  // e2e-only control-factory failure seam
+    app.drag_seam = getenv("ZIGBROWSER_AGENT_DRAWER_DRAG");          // WS5.2 e2e-only synthetic-drag seam
   }
   app.screenshot = screenshot;
   if (screenshot && out_path != nullptr) {
