@@ -71,6 +71,10 @@ struct AppState {
   // WS5.2 e2e-only drag seam (ZIGBROWSER_AGENT_DRAWER_DRAG = "dx,dy"): DRIVES the real icon input path (posts
   // synthetic mouse messages to the icon's own window procedure), it does not substitute for it. e2e-only.
   const char *drag_seam = nullptr;
+  // WS5.3 e2e-only fold seam (ZIGBROWSER_AGENT_DRAWER_FOLD=1): emits a mid-animation `fold` row (an intermediate
+  // rect strictly between the icon and the open drawer) + the fold duration, so the test can observe the fold
+  // without a capture. e2e-only.
+  bool fold_seam = false;
   // WS5.2 icon position + drag/subclass state. `icon_ratios`/`has_icon_ratios` is the icon's current position
   // as portable ratios (seeded from the persisted profile via zb_drawer_start_ratios, updated on every user
   // move); mount and resize place the real icon HWND from it (not the default). `icon_proc` is the STATIC's
@@ -96,6 +100,9 @@ int zb_drawer_classify(double dx, double dy);  // 0 = click, 1 = drag
 void zb_drawer_remember(const ZbDrawerRatios *ratios);
 void zb_drawer_key_move(ZbDrawerGeomRect *r, int dx, int dy, int big, int width, int height);
 int zb_drawer_start_ratios(ZbDrawerRatios *out);  // 1 + out set: a persisted position; 0: use the default
+void zb_drawer_lerp(const ZbDrawerGeomRect *a, const ZbDrawerGeomRect *b, double t, ZbDrawerGeomRect *out);
+double zb_drawer_ease(double t);
+unsigned int zb_drawer_anim_ms_from_env(const char *text);  // ZIGBROWSER_AGENT_ANIM_MS override, else 180
 }
 
 // WS5 shim functions (declared in webkit_shim.h), defined here for the Windows backend.
@@ -144,6 +151,25 @@ void emit_protocol3(const AppState *app, const char *tag, const char *a,
   emit_safe_field(b);
   fputc('\t', stdout);
   emit_safe_field(c);
+  fputc('\n', stdout);
+  fflush(stdout);
+}
+
+// Four data fields (e.g. the WS5.3 `fold` row: win, kind, rect, duration), each tab-safe.
+void emit_protocol4(const AppState *app, const char *tag, const char *a,
+                    const char *b, const char *c, const char *d) {
+  if (app == nullptr || !app->e2e_protocol) {
+    return;
+  }
+  fputs(tag, stdout);
+  fputc('\t', stdout);
+  emit_safe_field(a);
+  fputc('\t', stdout);
+  emit_safe_field(b);
+  fputc('\t', stdout);
+  emit_safe_field(c);
+  fputc('\t', stdout);
+  emit_safe_field(d);
   fputc('\n', stdout);
   fflush(stdout);
 }
@@ -1010,6 +1036,20 @@ void mount_drawer(AppState *app) {
       SendMessageW(app->drawer_icon, WM_LBUTTONUP, 0, MAKELPARAM(cx + dx, cy + dy));
     }
   }
+  // WS5.3 fold seam (e2e-only): a mid-animation frame, strictly between the icon and the open drawer, plus the
+  // fold duration — all from the portable logic (lerp(panel, icon, ease(0.5)); the duration from the
+  // ANIM_MS env via Zig). No timing/geometry math in C++.
+  if (app->fold_seam) {
+    ZbDrawerGeomRect panel = {};
+    zb_drawer_panel_rect(cw, ch, &panel);
+    ZbDrawerGeomRect mid = {};
+    zb_drawer_lerp(&panel, &icon, zb_drawer_ease(0.5), &mid);  // fold the open drawer down into the icon
+    const unsigned int ms = zb_drawer_anim_ms_from_env(getenv("ZIGBROWSER_AGENT_ANIM_MS"));
+    snprintf(rect, sizeof rect, "%d,%d,%d,%d", mid.x, mid.y, mid.w, mid.h);
+    char ms_buf[16];
+    snprintf(ms_buf, sizeof ms_buf, "%u", ms);
+    emit_protocol4(app, "DRAWER", win, "fold", rect, ms_buf);
+  }
   resize_controller(app);  // dock the page / place the icon
 }
 
@@ -1548,6 +1588,8 @@ static int run_core(const char *uri, int print_title, int e2e_protocol, bool scr
     app.drawer_open = open_env != nullptr && open_env[0] != '\0' && !(open_env[0] == '0' && open_env[1] == '\0');
     app.force_drawer_fail = getenv("ZIGBROWSER_AGENT_DRAWER_FAIL");  // e2e-only control-factory failure seam
     app.drag_seam = getenv("ZIGBROWSER_AGENT_DRAWER_DRAG");          // WS5.2 e2e-only synthetic-drag seam
+    const char *fold_env = getenv("ZIGBROWSER_AGENT_DRAWER_FOLD");   // WS5.3 e2e-only fold-observation seam
+    app.fold_seam = fold_env != nullptr && fold_env[0] != '\0';
   }
   app.screenshot = screenshot;
   if (screenshot && out_path != nullptr) {
