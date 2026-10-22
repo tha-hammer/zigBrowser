@@ -30246,3 +30246,69 @@ stderr-empty, exit-2, no-FIFO, and bad-input non-echo assertions. The red may
 remain unregistered until its green, but its eventual registered invocation
 must resolve and use the pinned agent-host interpreter; bare system Python
 fails earlier on a missing SDK and is not causal evidence.
+
+## Windows WS5.1-WS5.7 drawer-behavior reds (`8d73336`)
+
+**BLOCKED-for-tests.** The new file is isolated and intentionally
+unregistered, and its clean exact-commit run matches the commit message: nine
+pure-Python model tests pass, seven nominal live tests skip without the VM,
+and the file parses. Two causality gaps mean it is not yet a valid red for the
+Windows drawer implementation:
+
+1. `tests/windows/win_drawer_behaviors_test.py:278-309` contains seven
+   unconditional `self.fail` placeholders. None imports or reuses
+   `win_drawer_test.py`, launches the real executable, observes a `DRAWER`
+   row/capture/clipboard/Job census, or performs the behavior it names. A
+   green can replace the failures with `pass`. Replace these with real
+   failing-first observations through the existing suspended, owned-Job
+   harness (or a shared extracted harness) and assert the plan's concrete
+   contracts at `2026-10-19-windows-launch-tdd-plan.md:1571-1583`.
+2. `tests/windows/win_drawer_behaviors_test.py:23-271` tests only copied
+   Python calculations and hand-written local mutants. It neither imports nor
+   compiles `src/agent_drawer.zig`; removing or breaking the corresponding
+   production functions leaves all nine tests green. The docstring's claim
+   that `[L]` Zig property tests cover the same math is therefore not true at
+   this commit. Add the plan-required property tests against the actual Zig
+   implementation (`plan:1560-1562`), with independent expected values. The
+   Python model may remain supplementary, but deriving both a live expectation
+   and an offline result from the same copy does not make drift impossible.
+
+## Decision-16 broker gate (`2c62e37`)
+
+**APPROVED as scoped S8 decision-16 part 2.** `navigate` and `reload` remain
+unavailable without the app-owned `Approval` seam; their exact input schemas
+reject extra fields and a model-supplied `window_id`; accepted calls remain
+bound to the drawer's window. The selector x mode matrix, main-window card
+ownership, notification count, expiry, cancellation, and the prohibition on
+dispatch before Approve all run through the broker's production path.
+`Cards` now serializes every public state transition shared by the worker and
+GTK threads. The gated budget is the planned broker B plus 120 seconds (235
+seconds with the production helper budget), below part 3's 250-second helper
+timeout.
+
+Failing-first evidence is causal: from a clean export of `2c62e37^`, the
+already-registered suite fails to compile because the broker seam/card API is
+absent. From a clean export of exact `2c62e37`, the isolated registered suite
+passes **11/11** under private Xvfb. The commit's reported full gate was
+**435/435 steps, 1253/1255 tests, two skipped**.
+
+Part 3 still owns `show`/`ended`, Deny, the native UI and notification chain,
+and bound-window-close revocation. Its reds must force the close-vs-Approve
+collision: closing/detaching the bound window must revoke before any engine
+dispatch even when approval races it. That later, explicitly planned app
+wiring is not a block on this seam, which is unreachable in production until
+part 3 sets it.
+
+## WSL live-spike command header (`dbca88b`)
+
+**APPROVED as documentation-only; the live authorization remains pinned to
+exact `4384fcf`.** The Python docstring now reproduces the reviewed envelope:
+display variables scrubbed, a foreground TERM timeout with a 30-second
+kill-after, current-UID user and PID namespaces with `--kill-child`, an empty
+environment carrying only the pinned host/key/known-hosts and rootfs inputs,
+and the bounded unittest entry. The Python AST and `git diff --check` are
+clean, and no executable logic changed.
+
+This correction does not authorize a run of `dbca88b` or current HEAD. The
+sole owner-watched discovery run remains the exact clean export and case bytes
+of `4384fcf` under the conditions recorded above.
