@@ -29552,3 +29552,44 @@ fields. As a SHOULD, `PLATFORM_START_KIND` should use an explicit Linux/macOS
 switch instead of treating every non-Linux target as Darwin. Registration and
 the exact publish/load identity-roundtrip coverage remain open. Agent Mail
 7648 sent this scoped verdict to JadeBeacon.
+
+## WS5 owned-Job drawer runner (`5b6c421`)
+
+**BLOCKED; a VM run is NOT authorized.** The commit removes the unsafe
+machine-wide process-name cleanup and raw-pid `Stop-Process`, and the primary
+launch order is now correctly create-suspended, configure Job, assign, then
+resume. The unique run directory also replaces the prior broad `drawer-*`
+sweep. Those are meaningful improvements, but three blockers remain:
+
+1. An `AssignProcessToJobObject` failure leaves a real suspended browser
+   outside the Job. `LaunchOwned` stores its handles and throws, but the
+   `finally` block terminates only the Job; waiting and closing the process
+   handle do not terminate that unassigned child
+   (`tests/windows/win_drawer_test.py:155-160,170-177`). Before any live run,
+   the failure path must terminate by the already-held process handle (not by
+   pid), wait for terminal status, and prove no survivor. An atomically
+   attached Job at creation would also satisfy the invariant.
+2. `Teardown` ignores the return from `WaitForSingleObject`, and PowerShell
+   sets `terminated=true` whenever the method merely returns. A timeout or
+   `WAIT_FAILED` is therefore reported as bounded success
+   (`tests/windows/win_drawer_test.py:170-173,213-216`). Require
+   `WAIT_OBJECT_0`; reject timeout/failure, preserve the error, and causally
+   test both results. Handle-close and enumeration failures should likewise
+   not contradict the file's “every Win32 API failure throws” claim.
+3. `EnumChildWindows` counts every descendant HWND, including WebView2's own
+   child window hierarchy. `child_controls >= 2` does not establish that the
+   drawer's two direct `STATIC` controls exist, and can let a row-only mutant
+   pass (`tests/windows/win_drawer_test.py:183-185,284-287`). The oracle must
+   identify the exact direct panel and icon controls independently (class,
+   parent and distinguishing text/geometry/visibility), with enumeration
+   failure rejected and a row-only mutant proven red.
+
+The cleanup retry also suppresses a surviving run directory whenever another
+assertion is already failing, and ignores both remote command statuses
+(`tests/windows/win_drawer_test.py:308-328`). Preserve the original failure
+while still reporting cleanup exhaustion. Add non-live failure-injection
+coverage for assignment failure, wait timeout/failure, partial enumeration
+and the exact control census before requesting another VM run. The file
+parses as Python and its diff is whitespace-clean, but that is not lifecycle
+evidence. Agent Mail sent the BLOCKER and explicit VM no-go to AzureRidge and
+the orchestrator.
