@@ -27173,3 +27173,39 @@ red in **8/8 subtests**, each because its required stop-proof check did not yet
 exist. The tests are correctly unregistered until their green. The current R1
 manifest digest remains unapproved and no Mac run is authorized until the
 green registers these rows and receives review.
+
+## Stop-failure reason green (`5b24bc1`)
+
+**APPROVED.** This closes the two coverage blockers on `5449e67`/`422c22c`
+through the causal red `84f547c`. The new R1 case digest
+`7e914a0b04016c05921af2157b5ea1c0aec9eec35bf3823f7cc97a984ea19f76`
+is approved for **one diagnostic Mac run** of the exact reviewed manifest.
+
+The production-shaped case now records a `StopFailed` reason as a fixed
+whitelisted code (or `unknown`) without retaining exception text, and
+`_stop_proven` is called independently for positive, planted, forge and hang.
+Thus an expected false verdict can no longer conceal a lifecycle failure:
+any row that encountered `StopFailed` fails its own stop-proof assertion.
+The cleanup regression separately preserves the cleanup stop's
+`kill_refused` over an earlier read error. Both follow-up tests are registered
+in their focused steps and in the full gate.
+
+Reviewer checks:
+
+- The SHA-256 of the exact committed R1 case bytes is
+  `7e914a0b04016c05921af2157b5ea1c0aec9eec35bf3823f7cc97a984ea19f76`,
+  exactly the value in `tests/mac/hard_gate/MANIFEST.json`; the manifest still
+  contains only the reviewed spawn-I/O and R1 cases and no reaper case.
+- In an exact clean export of `5b24bc1`, the focused registered gate
+  `test-agent-setup-ms5 test-mac-census` ran inside a private user/PID
+  namespace and passed: **Build Summary: 45/45 steps succeeded; 14/14 tests
+  passed**. The cleanup regression passed **1/1** and the all-mode reason suite
+  passed **2/2**.
+- This commit adds no production signal path. The case sends no raw signal;
+  its setup runs continue through the previously reviewed guarded owned-group
+  primitive. The new Linux regressions use fakes/interposition and the gate
+  was itself PID-namespaced.
+
+The one diagnostic Mac run may now be released at this exact digest. It does
+not authorize adding the still-excluded reaper case or changing either
+manifest case without another digest review.
