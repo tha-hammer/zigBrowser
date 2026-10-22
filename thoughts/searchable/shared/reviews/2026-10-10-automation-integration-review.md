@@ -29636,3 +29636,39 @@ The test sends no signal: its callback only flips a process-local boolean,
 and reviewer runs were nevertheless confined by the fd-9 kernel sentinel and
 `unshare --user --pid --fork --kill-child --mount-proc`. `git diff --check`
 is clean. Agent Mail 7656 sent the four blockers to JadeBeacon.
+
+### Accepted route to an honest scoped primitive
+
+**YES, conditionally.** `97c6215`/`afe3920` may be accepted cumulatively as
+only the liveness-probe and liveness-to-action mapping primitive, without
+waiting for the large whole-recovery transaction, if a fix-forward makes the
+boundary both honest and mechanical:
+
+- supersede every “two-browser”, “startup recovery”, “signals/retires” and
+  recovery-GREEN claim in the test docstring/name, build-step text, source
+  comments and authoritative plan; the fork proves only one live-process
+  probe;
+- state that the accepted primitive is the cumulatively fixed Linux probe
+  plus a portable fail-closed boundary, not a Darwin same-kind probe, ledger
+  transaction, other-browser exclusion, signal, retirement or UI result;
+- register the complete scoped truth table and production I/O mapping:
+  absent, non-absence open error, read error/empty/truncated/malformed, same
+  start, reused start and cross-kind refusal, with recover-regardless and
+  unreadable-as-dead mutants red and unconditional child cleanup;
+- make the incomplete transaction mechanically unavailable to production.
+  The preferred route is to remove `RecoveryAction`, `publishWithout` and
+  `recoverOneUnderLock` from production source and keep any prototype in
+  test-only code. If retained, it must be compile-time unavailable outside
+  tests plus have a registered reachability/source oracle; an unused-by-
+  convention public half-transaction is not acceptable;
+- add a named OPEN whole-recovery blocker containing every `7b29fd6` item:
+  production owner/call path, held-fd provenance, typed fixed-point outcome,
+  census/kill/fresh-census, marker unlink/rmdir/ledger retirement under one
+  flock, one absolute deadline over acquire and held work, a deterministic
+  exact-result two-recoverer red, registration and the full gate. Keep
+  `reaper_ready=false` and every production signal unreachable; and
+- pass the registered focused ledger steps and one clean-export full gate.
+
+This route requires a new fix-forward rather than history rewriting. It needs
+no destructive Mac or real-screen run because the accepted scope is signal-
+free. Agent Mail 7657 sent these conditions to JadeBeacon.
