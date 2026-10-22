@@ -213,6 +213,15 @@ pub fn build(b: *std.Build) void {
         const ws2a0_module = b.createModule(.{ .target = target, .optimize = optimize, .link_libc = true });
         configureBackend(ws2a0_module, b, backend, webview2_paths);
         ws2a0_module.addCSourceFile(.{ .file = b.path("tests/windows/ws2a0_world_spike.c"), .flags = &.{"-std=c11"} });
+        // The shim calls the portable drawer logic (zb_drawer_*), which the browser exe gets from Zig; link the
+        // same src/agent_drawer.zig here (its exports are enabled for .windows), not a stub.
+        const ws2a0_drawer = b.addObject(.{ .name = "ws2a0-agent-drawer", .root_module = b.createModule(.{
+            .root_source_file = b.path("src/agent_drawer.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+        }) });
+        ws2a0_module.addObject(ws2a0_drawer);
         const ws2a0_exe = b.addExecutable(.{ .name = "ws2a0-world-spike", .root_module = ws2a0_module });
         ws2a0_exe.step.dependOn(pkg_guard);
         const ws2a0_run = b.addRunArtifact(ws2a0_exe);
