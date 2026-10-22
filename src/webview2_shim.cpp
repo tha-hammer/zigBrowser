@@ -77,6 +77,11 @@ struct AppState {
   bool drawer_open = false;
   bool drawer_mounted = false;
   int win_id = 1;
+  // WS5.5 e2e-only multi-window seam (ZIGBROWSER_AGENT_DRAWER_WINDOWS = N): the process mounts N per-window
+  // drawers so the live count peaks at N then drops to 0; the global `live` row is emitted at shutdown. Set only
+  // under --e2e-protocol; windows_seam_set gates the row so ordinary single-window runs never emit it.
+  int windows_seam = 1;
+  bool windows_seam_set = false;
   HWND drawer_panel = nullptr;
   HWND drawer_icon = nullptr;
   HWND drawer_min = nullptr;  // WS5.3: the visible "-" (minimize/fold) control on the open drawer (top-right)
@@ -2050,6 +2055,11 @@ static int run_core(const char *uri, int print_title, int e2e_protocol, bool scr
     app.dpichange_ignore = dpi_ignore != nullptr && strcmp(dpi_ignore, "1") == 0;
     const char *ht_fail = getenv("ZIGBROWSER_AGENT_DRAWER_HITTEST_FAIL");  // WS5.7 e2e-only hit-test read-fail seam
     app.hittest_read_fail = ht_fail != nullptr && strcmp(ht_fail, "1") == 0;
+    const char *win_env = getenv("ZIGBROWSER_AGENT_DRAWER_WINDOWS");  // WS5.5 e2e-only multi-window count
+    if (win_env != nullptr && win_env[0] != '\0') {
+      const int n = atoi(win_env);
+      if (n >= 1 && n <= 8) { app.windows_seam = n; app.windows_seam_set = true; }  // bounded 1..8
+    }
   }
   app.screenshot = screenshot;
   if (screenshot && out_path != nullptr) {
@@ -2073,6 +2083,19 @@ static int run_core(const char *uri, int print_title, int e2e_protocol, bool scr
       rc = run_message_loop(&app);
     }
     loop_end();
+  }
+
+  // WS5.5: after the message loop (every window has closed, so the live count is back to 0), emit the global
+  // live-count row on window 1 — the PEAK concurrent drawers and the FINAL count. e2e-only, and only under the
+  // WINDOWS seam, so ordinary single-window runs never emit it.
+  if (app.agent_drawer_on && app.e2e_protocol && app.windows_seam_set) {
+    char win[16];
+    snprintf(win, sizeof win, "%d", app.win_id);
+    char peak_buf[16];
+    snprintf(peak_buf, sizeof peak_buf, "%d", g_drawer_live_peak.load());
+    char final_buf[16];
+    snprintf(final_buf, sizeof final_buf, "%d", g_drawer_live.load());
+    emit_protocol4(&app, "DRAWER", win, "live", peak_buf, final_buf);
   }
 
   close_webview(&app);
