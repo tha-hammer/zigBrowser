@@ -183,6 +183,13 @@ int zb_drawer_inside_icon(int dx, int dy, int radius);     // WS5.7 exact circul
 int zb_drawer_window_count_from_env(const char *text);     // WS5.5 e2e seam: strict 1..8, else 0 (seam off)
 int zb_drawer_extra_windows(int seam);                     // WS5.5b-2: extra windows beyond the primary (seam-1)
 int zb_drawer_retire_extra(ExtraWindow *records, size_t count, uintptr_t hwnd);  // WS5.5b-2: retire-once (1 => decrement)
+// WS5.5b-2 (RoseCat 35ff63f #1): the portable post-controller decision. Given the gate flags it returns how
+// many EXTRA drawer windows to spawn (so the live count peaks at the seam) and whether to drive the primary's
+// normal close. It is tested directly over every gate combination (tests/windows/agent_drawer_props_test.zig),
+// so the C++ owns no gate/count logic — only this ONE call site. Layout mirrors the Zig extern struct
+// (c_int spawn_count; u8 close_primary).
+struct AfterController { int spawn_count; unsigned char close_primary; };
+AfterController zb_drawer_after_controller(int seam, int e2e, int drawer, int windows_seam_set);
 }
 
 // WS5 shim functions (declared in webkit_shim.h), defined here for the Windows backend.
@@ -1456,9 +1463,11 @@ static void emit_extra_drawer_rows(AppState *app, int wid, ZbDrawerGeomRect pane
   emit_protocol3(app, "DRAWER", win, "open", rect);
 }
 
-void spawn_extra_drawer_windows(AppState *app) {
-  if (app == nullptr || !app->e2e_protocol || !app->windows_seam_set || !app->agent_drawer_on ||
-      app->hwnd == nullptr) {
+// Spawn exactly `count` extra drawer windows. The gate/count decision lives in the portable
+// zb_drawer_after_controller (the sole caller passes its spawn_count), so this function owns no gate logic;
+// it needs only a primary window (app->hwnd) and a positive count.
+void spawn_extra_drawer_windows(AppState *app, int count) {
+  if (app == nullptr || app->hwnd == nullptr || count <= 0) {
     return;
   }
   static bool extra_class_registered = false;
@@ -1479,9 +1488,8 @@ void spawn_extra_drawer_windows(AppState *app) {
   }
   const bool fail_panel = app->extra_fail != nullptr && strcmp(app->extra_fail, "panel") == 0;
   const bool fail_icon = app->extra_fail != nullptr && strcmp(app->extra_fail, "icon") == 0;
-  const int extra = zb_drawer_extra_windows(app->windows_seam);
   const int icon_px = effective_icon_px(app);
-  for (int i = 0; i < extra; i++) {
+  for (int i = 0; i < count; i++) {
     HWND w = CreateWindowExW(0, kDrawerExtraClassName, L"zigBrowser", WS_OVERLAPPEDWINDOW,
                              CW_USEDEFAULT, CW_USEDEFAULT, 1024, 768, nullptr, nullptr, app->instance, nullptr);
     if (w == nullptr) {
@@ -2037,7 +2045,18 @@ HRESULT create_controller(AppState *app) {
             resize_controller(app);
             app->controller->put_IsVisible(TRUE);
             mount_drawer(app);  // WS5: mount the native drawer once the page is live (no-op unless on)
-            spawn_extra_drawer_windows(app);  // WS5.5b-2: e2e multi-window spawn so the live count peaks at N
+            // WS5.5b-2 (RoseCat 35ff63f #1): the SOLE post-controller decision call site. The portable
+            // zb_drawer_after_controller owns the gate/count logic; here we only spawn its extras (so the live
+            // count peaks at the seam) and, when it says so, drive the primary's normal WM_CLOSE. The close
+            // runs AFTER the spawn so the peak is already reached, and it lets run_core exit cleanly and emit
+            // the terminal `live <peak> <final>` row BEFORE the owned-Job backstop kill.
+            const AfterController after = zb_drawer_after_controller(
+                app->windows_seam, app->e2e_protocol ? 1 : 0, app->agent_drawer_on ? 1 : 0,
+                app->windows_seam_set ? 1 : 0);
+            spawn_extra_drawer_windows(app, after.spawn_count);
+            if (after.close_primary) {
+              PostMessageW(app->hwnd, WM_CLOSE, 0, 0);
+            }
 
             ComPtr<ICoreWebView2Settings> settings;
             if (SUCCEEDED(app->webview->get_Settings(&settings)) && settings) {
