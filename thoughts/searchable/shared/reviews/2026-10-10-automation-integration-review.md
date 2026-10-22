@@ -31921,3 +31921,55 @@ id or use an unscoped current-prompt revoke. The existing document,
 dispatch-boundary and owner rows should be retained unchanged. Until that red
 lands, `3405ad5` does not close `ebe6529`/`f87368e`, and the linear push path
 remains held there.
+
+## Windows WS5.3 timer-driven fold (`c219dcd`)
+
+**BLOCKED.** This is a material improvement over `0524517`: the exact-value
+e2e seam now starts a `WM_TIMER` state machine, each tick calls the shared Zig
+lerp/ease functions and moves the real panel HWND, the midpoint is read back
+from that HWND, and the terminal tick hides the panel, restores the icon/page
+layout and emits one `fold` row. An exact clean export passed
+`cross-check-drawer-win` (**5/5 steps**) and the offline behavior module passed
+**20/20 tests** with all **9** live VM rows skipped. `git diff --check` is clean.
+
+It does not yet close WS5.3 or authorize the Windows live/user run:
+
+1. There is no usable production fold control. `mount_drawer` creates only the
+   empty panel STATIC and the `S` icon (`webview2_shim.cpp:1079-1090`), while
+   the sole minus-key handler is in the icon subclass (`:983-990`). Opening the
+   drawer hides that icon (`:846-855`), so the user cannot focus it and press
+   `-` while the drawer is open; the e2e environment seam is presently the only
+   route that can start the animation. Add the required visible top-right `-`
+   control in the open panel (and the planned Escape route), drive the same
+   state machine from real input, and add a causal input row. The control must
+   remain app-owned and outside page reach.
+
+2. The live oracle still cannot prove an animation. The runner stops as soon
+   as it sees `open|drag|fold` (`win_drawer_test.py:496-501`), but every fold
+   launch emits `open` before the timer starts. It therefore tears down at the
+   first 300 ms poll; the 3000 ms case cannot reach its `fold` row. Moreover,
+   both WS5.3 bodies read the configured duration *from the product's terminal
+   row* and never measure wall-clock elapsed, the in-flight HWND, or the final
+   panel-hidden/icon-visible/page-redocked state
+   (`win_drawer_behaviors_test.py:667-688`). A product that waits one tick,
+   emits the requested number and snaps still satisfies those assertions.
+   Make settling case-specific, measure elapsed externally, sample the real
+   panel during the 3000 ms run, and independently inspect the terminal HWND
+   and page bounds. Retain snap, emit-only and no-move mutants.
+
+3. The production transition is not the plan's fail-closed, vsync-stepped
+   animation. It uses a 16 ms `SetTimer` rather than `DwmFlush`, ignores a zero
+   `SetTimer` result, ignores `MoveWindow` and geometry-read failures, and then
+   emits success anyway (`webview2_shim.cpp:929-943,1273-1317`). A timer-create
+   failure leaves `folding=true` forever; a move failure can report a fold that
+   never occurred. Check each state-changing/measurement result, recover to a
+   stable open or folded state with an observable fixed diagnostic, and add
+   causal failure seams. Also handle a delayed first tick: if it arrives only
+   after the deadline, the current “midpoint” capture is the endpoint, so no
+   visible intermediate frame occurred.
+
+The GNU cross-object compile proves this source still builds on the existing
+cross target, but it is not the required MSVC run. After the three blockers
+above, run the live default and 3000 ms cases on the VM, then the owner's
+`win-drawer-fold` real-screen check; only that last check can accept the visible
+fold UX.
