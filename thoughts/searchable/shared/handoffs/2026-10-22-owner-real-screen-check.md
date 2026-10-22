@@ -7,7 +7,8 @@
 ## What this run does and does not touch
 - It uses a **throwaway profile** and a **throwaway agent home**, both in a new temporary folder that is deleted afterwards. It never uses `~/zb-live-profile` or your own agent home.
 - It starts the browser with `--media-source off`.
-- **No real Claude account and no network.** A local fake Claude, started by the script, asks to "open a page". The page is a local file.
+- **No real Claude account and no external network.** A local fake Claude, started by the script on this machine's loopback address (127.0.0.1), asks to "open a page". The page is a local file. The agent's egress allowlist is replaced by that local fake alone, so nothing can reach Anthropic or any other outside host.
+- **None of your shell's settings reach the test browser** (RoseCat d3985c9). It is started from an explicit allowlist: only your display (`DISPLAY`, `XAUTHORITY`) and your desktop's session bus (`DBUS_SESSION_BUS_ADDRESS`, for the notification). A live browser's socket (`ZIGBROWSER_SOCKET`), any other `ZIGBROWSER_*` or `ZB_*` setting, Claude or Anthropic credentials, and proxies are all dropped. `tests/manual/test_real_screen_env.py` checks this.
 - The **desktop notification is real**: it goes to your desktop's own notification area. It carries only the fixed text "zigBrowser" and "Claude is waiting for your approval."
 
 ## Before you start

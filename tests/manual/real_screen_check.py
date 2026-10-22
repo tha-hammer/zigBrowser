@@ -821,21 +821,52 @@ LONG_RUN_TOKEN = "sk-ant-oat01-REALSCREEN-not-a-real-token-0123"  # the setup-to
 FOLD_MAX_S = 1.0
 
 
+# What the owner's screen gives a fake-API case, and nothing else (RoseCat d3985c9): the display
+# and its Xauthority, and the desktop's session bus for the real desktop notification. Every
+# other inherited name is dropped: the live socket (ZIGBROWSER_SOCKET), every ZIGBROWSER_* and
+# ZB_* seam, Claude/Anthropic credentials, proxies, HOME and the XDG directories.
+LAUNCH_KEEP = ("DISPLAY", "XAUTHORITY", "DBUS_SESSION_BUS_ADDRESS")
+
+
+def launch_env(base: dict[str, str], world_env: dict[str, str], runtime: Path, seams: dict[str, str]) -> dict[str, str]:
+    """The launch environment of a fake-API case, from an explicit allowlist: LAUNCH_KEEP from
+    `base` (the shell), then the throwaway world's own (PATH, HOME, XDG_DATA_HOME and its agent
+    host), a fixed locale, its private runtime directory, and the case's three seams."""
+    env = {name: base[name] for name in LAUNCH_KEEP if name in base}
+    env.update(world_env)
+    env.update({"LANG": "C.UTF-8", "LC_ALL": "C.UTF-8", "XDG_RUNTIME_DIR": str(runtime)})
+    env.update(seams)
+    return env
+
+
+def venv_python(base: dict[str, str]) -> str:
+    """The dev helper venv's python (tools/agent_host_env.sh --check), found from the shell's HOME
+    and XDG_CACHE_HOME only: an inherited ZB_AGENT_HOST_PYTHON, LD_PRELOAD or any other seam
+    cannot choose it (RoseCat d3985c9)."""
+    env = {"PATH": "/usr/bin:/bin"}
+    env.update({name: base[name] for name in ("HOME", "XDG_CACHE_HOME") if name in base})
+    done = subprocess.run([str(REPO / "tools" / "agent_host_env.sh"), "--check"], capture_output=True, text=True,
+                          env=env)
+    path = done.stdout.strip()
+    if done.returncode != 0 or not path:
+        raise RuntimeError(f"helper venv missing: {done.stderr.strip()[-200:]} (run tools/agent_host_env.sh)")
+    return path
+
+
 class LongRunBrowser:
     """The built binary on $DISPLAY with a throwaway agent home and the local fake API;
     its `--e2e-protocol` rows are read from its stdout."""
 
     def __init__(self, binary: str, work: Path, out: Path, respond=None, label: str = "long-run") -> None:
         import threading
-        import agent_host_lifecycle_test as life
         import agent_setup_test
-        from agent_common import host_python, parse_row
+        from agent_common import parse_row
         from agent_hook_net import HookNetDecoys
         from fake_anthropic_api import FakeAnthropicApi, make_test_cert
 
         self.parse_row, self.rows, self.lines = parse_row, [], []
         self.proc = self.api = self.decoys = None
-        agent_setup_test.PYTHON = host_python()
+        agent_setup_test.PYTHON = venv_python(dict(os.environ))
         self.label = label
         self.world = agent_setup_test.World(work, label)  # its own HOME, data and PATH
         rc, _out, err, _events, _seen = agent_setup_test.run_setup(Path(binary), self.world)
@@ -867,9 +898,7 @@ class LongRunBrowser:
                  "ZIGBROWSER_AGENT_TEST_BASE_URL": "https://fake.zb.invalid"}
         runtime = work / "run"
         runtime.mkdir(mode=0o700)
-        env = life.env_for(self.world, runtime, seams, hostile=False)
-        for name in RENDER_ENV:
-            env.pop(name, None)
+        env = launch_env(dict(os.environ), self.world.env(), runtime, seams)
         self.env = env
         page = work / "page.html"
         page.write_text(FIXTURE_HTML)
