@@ -29261,3 +29261,65 @@ open, then close window 1 and retain the two cancellation/no-dispatch
 assertions. A main-vs-last-window mutant should fail. As a SHOULD, assert the
 answer callback count is exactly one after each matrix row settles, not only
 the engine dispatch count. Agent Mail 7626 sent the finding to BlackRobin.
+
+## MS6.3 fd-3 sandbox-denial diagnosis
+
+**Option B was conclusive; no rerun occurred.** A bounded, non-streaming
+unified-log query over the already-completed `11b3ac4` run found the same two
+events on both Macs: Python was denied `file-write-create` for each row's
+`scratchpad/token-fifo`. Nothing outside the exact case roots was emitted,
+and the before/after census was empty.
+
+The case root used the `/tmp/...` spelling, while macOS resolves `/tmp` to
+`/private/tmp`; Seatbelt matches the resolved path, but the `SCRATCHPAD`
+parameter retained the unresolved spelling. Thus the helper was denied its
+intended sole writable directory before the CLI began. A red-first fix may
+make `dparams` refuse (not silently rewrite) any non-existing,
+non-directory, or non-realpath-equal scratch and make the case create homes
+under its real run-root spelling. Errors stay fixed and token/path-free. Any
+changed case requires a newly reviewed digest before a Mac run. Agent Mail
+7627 sent the bounded fix contract to BlueBeaver.
+
+## Native Win32 drawer entry green (`6a0ce63`)
+
+**BLOCKED.** An exact clean export passes `zig build
+cross-check-drawer-win` (5/5), but that gate compiles only the Zig object and
+text-scans the C++ shim; it neither compiles/links nor runs the Win32 backend.
+The committed red is byte-identical before and after this green,
+unregistered, and retains all prior harness defects:
+
+1. `_ssh(env=...)` builds but never uses the remote environment prefix, so
+   the startup-open seam cannot reach the executable.
+2. The process runs before unchecked Job assignment; Job creation,
+   configuration, assignment and termination results remain unchecked.
+3. Teardown counts only the global top-level process name, not the owned
+   Job/WebView2 tree, and ignores the before census.
+4. Production marks the drawer mounted, increments live count and emits the
+   structural rows without checking either `CreateWindowExW`. The test never
+   enumerates a child HWND/control tree, so a row-only/null-control
+   implementation passes.
+
+Fix those boundaries, register the red, and provide causal red-before and
+green-after evidence from a real MSVC Win11 build. This remains an entry
+slice; it does not implement the rest of WS5's click, drag, fold, RichEdit or
+DPI contracts. Agent Mail 7629 sent the blockers to AzureRidge.
+
+## Platform-tagged owner-start schema green (`79a5e26`)
+
+**BLOCKED**, cumulatively with `116c086`. Exact-export focused tests pass
+(start-kind 5/5, parse 10/10, publish 6/6, load 4/4 and grammar 13/13), but
+the missing reds correspond to live defects:
+
+- the parser accepts `linux_ticks` with nonzero `start_usec`, and this commit
+  changes registered fixtures to that impossible representation;
+- Darwin microseconds are not range-checked;
+- the positive tests do not assert the preserved kind or identity values;
+- same-kind-only comparison is explicitly deferred, so a numerically equal
+  cross-kind identity is not yet forced to fail closed;
+- publish/load checks only the basename, not the v2 identity round trip; and
+- the new red is not registered in the committed build.
+
+The fix-forward must enforce both canonical shapes, correct the fixtures,
+pin tag/value preservation and publication, implement the tagged comparison
+table including cross-kind equality, and register it. Agent Mail 7630 sent
+the findings to JadeBeacon.
