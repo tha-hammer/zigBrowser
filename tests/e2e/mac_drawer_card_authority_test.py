@@ -41,6 +41,9 @@ from the comment-free text with strings kept).
   - No lookup by name: no @extern, dlsym, dlopen or DynLib anywhere in the graph. Every @field names its member with
     one plain literal, except the six reviewed reflective sites in REFLECTIVE (none reaches Cards, a minter or the
     bridge), each at most as often as reviewed. Every @export names its symbol with one plain literal.
+  - The bodies of the two minters, toolsApprove / toolsDeny and zb_drawer_card_press are exactly BODIES (statements,
+    order, count and control flow: RoseCat 8097 / 4124a1b), so neither an alias called twice nor a loop around one
+    call consumes a card twice.
   - The minter definitions must be `export fn` and the drawer's declarations `extern fn`; the bridge's @export,
     read comment-free, is exactly one, under exactly "zb_drawer_card_press".
   The ObjC rules above stay the narrower authority for native event ingress.
@@ -310,6 +313,36 @@ ALLOWED = Counter({
 })
 
 
+# RoseCat 8097 / 4124a1b: the reviewed bodies, exactly (statements, order, count, control flow), so neither an alias
+# called twice nor a loop around one call consumes a card twice.
+BODIES = {
+    ("src/agent_tools.zig", "zb_agent_tools_approve"): "{ if (server == null) return 0; return @intFromBool(cards.approve(card)); }",
+    ("src/agent_tools.zig", "zb_agent_tools_deny"): "{ if (server == null) return 0; return @intFromBool(cards.deny(card)); }",
+    ("src/agent_drawer.zig", "toolsApprove"): "{ return zb_agent_tools_approve(card) != 0; }",
+    ("src/agent_drawer.zig", "toolsDeny"): "{ return zb_agent_tools_deny(card) != 0; }",
+    ("src/agent_drawer.zig", "zb_drawer_card_press"):
+        "{ var unused: u8 = 0; return @intFromEnum(cardPress(card, control, own != 0, "
+        ".{ .ctx = &unused, .approve = toolsApprove, .deny = toolsDeny })); }",
+}
+
+
+def shape(code):
+    """The token shape of (lexical) code: each `;`-statement, `{` and `}` in order, whitespace removed."""
+    out, cur = [], ""
+    for ch in code:
+        if ch in "{};":
+            if ch == ";" or cur.strip():
+                out.append(re.sub(r"\s+", "", cur) + (";" if ch == ";" else ""))
+            if ch != ";":
+                out.append(ch)
+            cur = ""
+        else:
+            cur += ch
+    if cur.strip():
+        out.append(re.sub(r"\s+", "", cur))
+    return out
+
+
 def zig_problems(files, bad):
     """The Zig graph ({repo-relative path: text}, import violations) -> the inventory's violations (empty: holds)."""
     found = list(bad)
@@ -341,6 +374,13 @@ def zig_problems(files, bad):
             found.append(f"Z: {name} must be src/agent_tools.zig's `export fn`")
         if not re.search(r"\bextern\s+fn\s+" + name + r"\s*\(", zig_lexical(drawer)):
             found.append(f"Z: src/agent_drawer.zig must declare {name} as `extern fn`")
+    for (path, fn), want in BODIES.items():
+        code = zig_lexical(files.get(path, ""))
+        spans = [sp for sp in fn_spans(code) if sp[2] == fn]
+        if len(spans) != 1:
+            found.append(f"Z: want exactly one {path} fn {fn} ({len(spans)})")
+        elif shape(code[spans[0][0]:spans[0][1]]) != shape(zig_lexical(want)):
+            found.append(f"Z: {path} fn {fn} must be exactly `{want}`")
     exports = re.findall(r'@export\(\s*&zb_drawer_card_press\s*,\s*\.\{\s*\.name\s*=\s*"([^"]*)"\s*\}\s*\)',
                          zig_lexical(drawer, keep_strings=True))
     if exports != ["zb_drawer_card_press"]:
@@ -418,8 +458,11 @@ Z_FILES = {
                               "    pub fn deny(self: *Cards, id: u64) bool { _ = self; _ = id; return true; }\n};\n",
     "src/agent_tools.zig": 'const approval = @import("agent_approval.zig");\nvar cards: approval.Cards = .{};\n'
                            "// the main drawer's Approve button, the only caller of zb_agent_tools_approve\n"
-                           "export fn zb_agent_tools_approve(card: u64) c_int { return @intFromBool(cards.approve(card)); }\n"
-                           "export fn zb_agent_tools_deny(card: u64) c_int { return @intFromBool(cards.deny(card)); }\n",
+                           "var server: ?*u8 = null;\n"
+                           "export fn zb_agent_tools_approve(card: u64) c_int {\n    if (server == null) return 0;\n"
+                           "    return @intFromBool(cards.approve(card));\n}\n"
+                           "export fn zb_agent_tools_deny(card: u64) c_int {\n    if (server == null) return 0;\n"
+                           "    return @intFromBool(cards.deny(card));\n}\n",
     "src/agent_drawer.zig": "pub const Approver = struct { ctx: *anyopaque, approve: *const fn (*anyopaque, u64) bool, "
                             "deny: *const fn (*anyopaque, u64) bool };\n"
                             "pub fn cardPress(card: u64, control: c_int, own: bool, approver: Approver) c_int {\n"
@@ -431,7 +474,7 @@ Z_FILES = {
                             "fn toolsDeny(_: *anyopaque, card: u64) bool {\n    return zb_agent_tools_deny(card) != 0;\n}\n"
                             "pub fn zb_drawer_card_press(card: u64, control: c_int, own: c_int) callconv(.c) c_int {\n"
                             "    var unused: u8 = 0;\n"
-                            "    return cardPress(card, control, own != 0, .{ .ctx = &unused, .approve = toolsApprove, .deny = toolsDeny });\n}\n"
+                            "    return @intFromEnum(cardPress(card, control, own != 0, .{ .ctx = &unused, .approve = toolsApprove, .deny = toolsDeny }));\n}\n"
                             'comptime {\n    @export(&zb_drawer_card_press, .{ .name = "zb_drawer_card_press" });\n}\n',
 }
 
@@ -493,6 +536,21 @@ Z_MUTANTS = {  # name -> (graph, the reason it must fail for)
     "files substituted under src/evil/": (z_substituted(), "('src/evil/agent_tools.zig', 'zb_agent_tools_approve', '-') occurs 1 times, want 0"),
     "an import outside the repository": (z_mutant("src/app.zig", "const tools", 'const out = @import("../../outside/agent_tools.zig");\nconst tools'),
                                          "import outside the repository: ../outside/agent_tools.zig"),
+    # RoseCat 8097 / 4124a1b: a card consumed twice
+    "Cards.approve called twice through an alias": (z_mutant("src/agent_tools.zig", "    return @intFromBool(cards.approve(card));\n",
+                                                             "    const mint = approval.Cards.approve;\n"
+                                                             "    return @intFromBool(mint(&cards, card)) + @intFromBool(mint(&cards, card));\n"),
+                                                    "src/agent_tools.zig fn zb_agent_tools_approve must be exactly"),
+    "Cards.deny called twice through an alias": (z_mutant("src/agent_tools.zig", "    return @intFromBool(cards.deny(card));\n",
+                                                          "    const mint = approval.Cards.deny;\n"
+                                                          "    return @intFromBool(mint(&cards, card)) + @intFromBool(mint(&cards, card));\n"),
+                                                 "src/agent_tools.zig fn zb_agent_tools_deny must be exactly"),
+    "Cards.approve in a loop": (z_mutant("src/agent_tools.zig", "    return @intFromBool(cards.approve(card));\n",
+                                         "    var won = false;\n    for (0..2) |_| won = cards.approve(card);\n    return @intFromBool(won);\n"),
+                                "src/agent_tools.zig fn zb_agent_tools_approve must be exactly"),
+    "the minter asked twice by the bridge": (z_mutant("src/agent_drawer.zig", "    return zb_agent_tools_approve(card) != 0;\n",
+                                                      "    _ = zb_agent_tools_approve(card);\n    return zb_agent_tools_approve(card) != 0;\n"),
+                                             "src/agent_drawer.zig fn toolsApprove must be exactly"),
     "a renamed export behind a comment decoy": (z_mutant("src/agent_drawer.zig", '    @export(&zb_drawer_card_press, .{ .name = "zb_drawer_card_press" });\n',
                                                          '    // @export(&zb_drawer_card_press, .{ .name = "zb_drawer_card_press" });\n'
                                                          '    @export(&zb_drawer_card_press, .{ .name = "zb_press" });\n'),

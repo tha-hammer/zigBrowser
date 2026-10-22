@@ -13,23 +13,30 @@ target address; one it cannot decode fails closed). Over that reference graph, o
   zb_agent_tools_deny, agent_drawer's toolsApprove / toolsDeny and zb_drawer_card_press are each DEFINED in the object,
   under exactly those repo-relative module names (a same-named file elsewhere, an inlined minter or a minter outside
   the object fails), and the two minters and the bridge are exported under their own C names, at the same address.
-- R2 exactly one referrer each: Cards.approve <- zb_agent_tools_approve; Cards.deny <- zb_agent_tools_deny;
+- R2 exactly one referrer each, by exactly ONE reference site (RoseCat 8097 / 4124a1b: multiplicity is kept, so an
+  alias called twice is two sites): Cards.approve <- zb_agent_tools_approve; Cards.deny <- zb_agent_tools_deny;
   zb_agent_tools_approve <- toolsApprove; zb_agent_tools_deny <- toolsDeny; toolsApprove and toolsDeny <-
-  zb_drawer_card_press; zb_drawer_card_press <- nothing in Zig (the AppKit buttons call it from the dylib).
+  zb_drawer_card_press; zb_drawer_card_press <- nothing in Zig (the AppKit buttons call it from the dylib). A site is
+  one call or address-take (an arm64 PAGE21/PAGEOFF12 pair counts once). One site run twice, a loop, is the lexical
+  layer's to see: it binds the minters' and the bridge's exact bodies.
 - R3 no other symbol in the object is named for a minter, a Cards method or the bridge (no second definition, no
   undefined reference to a minter name).
 Not covered here, and named: a re-implementation of Cards.approve's state change on the cards' fields, and native
 event ingress (the ObjC rules of mac_drawer_card_authority_test.py, and the owner-run real-screen click).
 Self-checking: an honest fixture graph compiled for both Darwin arches passes; each dishonest graph (RoseCat's
 @field and @extern callers, an alias, files substituted under src/evil/, a function-pointer table, a second
-Cards.approve caller, an inlined Cards.approve, a minter outside the object) compiled the same way fails, each with
-its own reason. The compiler runs as a plain child (no timeout, no signal).
+Cards.approve caller, an inlined Cards.approve, a minter outside the object, and RoseCat 8097's Cards.approve /
+Cards.deny alias called twice) compiled the same way fails, each with its own reason. One compiler runs at a time,
+each in its own process group under a COMPILE_DEADLINE_S deadline, past which the group is killed (SIGKILL) and the
+row fails; a row proves that kill on a real `sleep`. The self-check sends signals: run it inside
+`unshare --map-current-user --pid --fork --kill-child --mount-proc`.
 Run (self-check): cd tests/e2e && python3 -X dev -m unittest -v mac_card_authority_objects_test
 Run (real objects): zig build check-card-authority-mac (unregistered; RED until the macOS build defines the minters
 and the bridge)."""
 import bisect
 import collections
 import os
+import signal
 import struct
 import subprocess
 import sys
@@ -39,6 +46,10 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 CPU_X86_64, CPU_ARM64 = 0x01000007, 0x0100000C
+# arm64 relocations that are not a site of their own: SUBTRACTOR (1), the PAGEOFF12 halves (4, 6, 9), ADDEND (10).
+ARM64_NOT_A_SITE = (1, 4, 6, 9, 10)
+COMPILE_DEADLINE_S = 240  # one fixture compile; past it the compiler's whole process group is killed
+COMPILE_JOBS = 1  # one compiler at a time: the gate host's memory is tight
 ARCHES = {"aarch64": CPU_ARM64, "x86_64": CPU_X86_64}
 APPROVE, DENY = "_agent_approval.Cards.approve", "_agent_approval.Cards.deny"
 MINT_A, MINT_D = "_agent_tools.zb_agent_tools_approve", "_agent_tools.zb_agent_tools_deny"
@@ -107,8 +118,10 @@ class Obj:
         return v[bisect.bisect_left(self.keys[sect], v[i]["value"])]["name"]
 
     def references(self):
-        """{referrer: {target}} over every code and data relocation."""
-        refs = collections.defaultdict(set)
+        """{referrer: Counter(target: reference SITES)} over every code and data relocation. A site is one call or
+        address-take: an arm64 address load is a PAGE21 + PAGEOFF12 pair, counted once at its PAGE21; a SUBTRACTOR
+        names the base of a pair, not a target."""
+        refs = collections.defaultdict(collections.Counter)
         for si, s in enumerate(self.sects, 1):
             if s["seg"] in ("__DWARF", "__LD") or s["name"] == "__eh_frame":
                 continue
@@ -118,12 +131,14 @@ class Obj:
                                                 info >> 28)
                 if r_addr < 0:
                     raise ValueError("a scattered relocation")
-                if self.cpu == CPU_ARM64 and typ == 10:
-                    continue  # ARM64_RELOC_ADDEND carries the next entry's addend, not a symbol
+                if self.cpu == CPU_ARM64 and typ in ARM64_NOT_A_SITE:
+                    continue
+                if self.cpu == CPU_X86_64 and typ == 5:
+                    continue  # X86_64_RELOC_SUBTRACTOR: the base of the pair that follows
                 src = self.owner(si, s["addr"] + r_addr)
                 if ext:
                     t = self.syms[num]
-                    refs[src].add(self.owner(t["sect"], t["value"]) if is_defined(t) else t["name"])
+                    refs[src][self.owner(t["sect"], t["value"]) if is_defined(t) else t["name"]] += 1
                 elif num == self.text:
                     loc = s["foff"] + r_addr
                     if self.cpu == CPU_X86_64 and pcrel and length == 2:
@@ -132,7 +147,7 @@ class Obj:
                         target = struct.unpack_from("<Q", self.data, loc)[0]
                     else:
                         raise ValueError(f"an undecodable local relocation into code (type {typ}) in {src}")
-                    refs[src].add(self.owner(self.text, target))
+                    refs[src][self.owner(self.text, target)] += 1
         return refs
 
 
@@ -154,14 +169,14 @@ def problems(data, arch):
         g = defined.get(c_name)
         if g is None or not g["type"] & 1 or local not in defined or g["value"] != defined[local]["value"]:
             found.append(f"R1 {arch}: {c_name} must be the exported name of {local}")
-    by_target = collections.defaultdict(set)
+    by_target = collections.defaultdict(collections.Counter)
     for src, targets in refs.items():
-        for t in targets:
-            by_target[t].add(src)
+        for t, sites in targets.items():
+            by_target[t][src] += sites
     for target, want in REFERRERS.items():
-        got = by_target.get(target, set())
-        if got != want:
-            found.append(f"R2 {arch}: {target} is referenced by {sorted(got)}, want {sorted(want)}")
+        got = dict(sorted(by_target.get(target, {}).items()))
+        if got != {src: 1 for src in want}:
+            found.append(f"R2 {arch}: {target} is referenced by {got}, want {dict.fromkeys(sorted(want), 1)}")
     allowed = set(REFERRERS) | set(EXPORTS)
     for s in obj.syms:
         if any(w in s["name"] for w in NAMED) and s["name"] not in allowed and not s["type"] & 0xE0:
@@ -234,6 +249,15 @@ MUTANTS = {
                                               "export fn zb_agent_tools_deny"), "'_agent_tools.zb_auto'"),
     "an inlined Cards.approve": (fixture("agent_approval.zig", "pub fn approve(", "pub inline fn approve("),
                                  f"R1 {{arch}}: {APPROVE} is not defined"),
+    # RoseCat 8097 / 4124a1b: one alias of the Cards method, called twice (a double consume)
+    "Cards.approve called twice through an alias": (fixture("agent_tools.zig", "    return @intFromBool(cards.approve(card));\n",
+                                                             "    const mint = approval.Cards.approve;\n"
+                                                             "    return @intFromBool(mint(&cards, card)) + @intFromBool(mint(&cards, card));\n"),
+                                                     f"R2 {{arch}}: {APPROVE} is referenced by {{'{MINT_A}': 2}}"),
+    "Cards.deny called twice through an alias": (fixture("agent_tools.zig", "    return @intFromBool(cards.deny(card));\n",
+                                                          "    const mint = approval.Cards.deny;\n"
+                                                          "    return @intFromBool(mint(&cards, card)) + @intFromBool(mint(&cards, card));\n"),
+                                                  f"R2 {{arch}}: {DENY} is referenced by {{'{MINT_D}': 2}}"),
     "a minter outside the object": (fixture("app.zig", 'pub const tools = @import("agent_tools.zig");\n',
                                             "const tools = struct {};\n"), f"R1 {{arch}}: {MINT_A} is not defined"),
 }
@@ -246,21 +270,52 @@ def compile_graph(files, arch, work):
         (root / rel).parent.mkdir(parents=True, exist_ok=True)
         (root / rel).write_text(text)
     out = Path(work) / f"{arch}.o"
-    r = subprocess.run(["zig", "build-obj", "-target", f"{arch}-macos", "-O", "Debug", "-lc", str(root / "main.zig"),
-                        f"-femit-bin={out}", "--cache-dir", str(Path(work) / "zc"), "--global-cache-dir",
-                        str(Path(work) / "zgc")], capture_output=True, text=True)
-    if r.returncode != 0:
-        raise AssertionError(f"zig build-obj failed for {arch}: {r.stderr[-2000:]}")
+    code, err = run_bounded(["zig", "build-obj", "-target", f"{arch}-macos", "-O", "Debug", "-lc", str(root / "main.zig"),
+                             f"-femit-bin={out}", "--cache-dir", str(Path(work) / "zc"), "--global-cache-dir",
+                             str(Path(work) / "zgc")], COMPILE_DEADLINE_S)
+    if code != 0:
+        raise AssertionError(f"zig build-obj failed for {arch}: {err[-2000:]}")
     return out.read_bytes()
+
+
+def run_bounded(argv, deadline_s):
+    """Runs `argv` in its own process group -> (exit code, stderr). Past `deadline_s` the whole group is killed and
+    reaped, and the result is (None, a deadline message)."""
+    proc = subprocess.Popen(argv, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True, start_new_session=True)
+    try:
+        _, err = proc.communicate(timeout=deadline_s)
+        return proc.returncode, err
+    except subprocess.TimeoutExpired:
+        pid = proc.pid
+        if isinstance(pid, int) and pid > 1:  # never a placeholder pid: killpg(0/1) would reach far beyond the child
+            os.killpg(pid, signal.SIGKILL)
+        proc.communicate()
+        return None, f"{argv[0]} exceeded its {deadline_s} s deadline; its process group was killed"
 
 
 def compiled(cases):
     """{name: files} -> {(name, arch): object bytes}, each compiled in its own directory."""
     with tempfile.TemporaryDirectory() as tmp:
         jobs = {(name, arch): Path(tmp) / f"{i}-{arch}" for i, name in enumerate(cases) for arch in ARCHES}
-        with ThreadPoolExecutor(max_workers=4) as pool:
+        with ThreadPoolExecutor(max_workers=COMPILE_JOBS) as pool:
             futures = {key: pool.submit(compile_graph, cases[key[0]], key[1], str(work)) for key, work in jobs.items()}
             return {key: f.result() for key, f in futures.items()}
+
+
+def gone(pid, wait_s=5.0):
+    """True once `pid` no longer runs (absent, or a zombie its new parent has not reaped), within `wait_s`."""
+    import time
+    end = time.monotonic() + wait_s
+    while True:
+        try:
+            state = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[0]
+        except (FileNotFoundError, ProcessLookupError):
+            return True
+        if state == "Z":
+            return True
+        if time.monotonic() > end:
+            return False
+        time.sleep(0.05)
 
 
 class CardAuthorityObjects(unittest.TestCase):
@@ -279,7 +334,17 @@ class CardAuthorityObjects(unittest.TestCase):
             for arch in ARCHES:
                 with self.subTest(mutant=name, arch=arch):
                     found = problems(self.objects[(name, arch)], arch)
-                    self.assertTrue(any(reason.format(arch=arch) in f for f in found), (name, found))
+                    self.assertTrue(any(reason.replace("{arch}", arch) in f for f in found), (name, found))
+
+    def test_a_compiler_past_its_deadline_is_killed_with_its_group(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            marker = Path(tmp) / "grandchild"
+            code, err = run_bounded(["sh", "-c", f"sleep 30 & echo $! > {marker}; wait"], 1)
+            self.assertIsNone(code)
+            self.assertIn("deadline", err)
+            grandchild = int(marker.read_text())
+            self.assertGreater(grandchild, 1)
+            self.assertTrue(gone(grandchild), "the group's grandchild outlived the deadline kill")
 
     def test_the_wrong_arch_and_a_non_object_fail(self):
         self.assertNotEqual(problems(self.objects[("honest", "x86_64")], "aarch64"), [])
