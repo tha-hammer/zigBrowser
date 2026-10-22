@@ -30572,3 +30572,81 @@ Advisory: `login.cli_env` is the other real-CLI route and currently fixes
 neither temp variable. That does not block this narrow contract-config slice,
 but it must be recorded and fixed/tested before setup-token is claimed under
 the Mac Seatbelt profile.
+
+## MS6.5.1 `zigBrowser-3gl` green-design ruling (`22b8400`)
+
+**APPROVED TO PROCEED with the bounded red repair and held-flock green; this
+does not approve arming recovery or closing `zigBrowser-3gl`.** The
+deterministic handshake is the right causal shape. The production transaction
+must own the one global ledger flock from its authoritative load through the
+fresh owner check, held-fd `(dev,ino,uid,mode)` provenance, typed
+census/kill/fresh-census fixed point, marker unlink, directory removal and
+atomic ledger retirement plus directory fsync. Unlock happens only after the
+terminal publish result is known. One absolute monotonic deadline covers both
+acquisition and every part of the held work; an unreadable identity or
+provenance, incomplete census, survivor, action error, deadline or publish
+error fails closed and must never report Clean or `already_gone`.
+
+The green must not merely flip `EARLY_UNLOCK`. Keep the early-unlock policy as
+a test-only injected mutant and prove both causal branches: the mutant reaches
+two signal phases, while the held-lock implementation gives exactly one
+`.signalled`, one `.already_gone`, one signal phase, an empty ledger and two
+terminal children. Recoverer 2 may learn `already_gone` only after it acquires
+the released flock and reloads the retired state.
+
+Before registration, the prototype must close the test-lifecycle findings
+recorded for `22b8400`: every unused pipe end closed in each process; exact
+EINTR-safe reads, writes and polls; checked `poll` result and `revents`; one
+absolute deadline; bounded waits/reaps; and unconditional cleanup limited to
+the exact fork-returned children behind the fd-9 private-PID-namespace
+sentinel. The handshake itself must prove R1 read `present=1`; mutant R2 reads
+`present=1` before release; held-lock R2 cannot read before release and later
+reads `present=0`. Registration then requires the private user/PID namespace.
+Production signalling stays mechanically unreachable until the remainder of
+the bead -- including the reviewed reaper/provenance path and destructive
+gate -- closes. Agent Mail 7719 sent this design boundary to JadeBeacon.
+
+## Windows WS5.1-WS5.7 red fix-forward (`c67b838`)
+
+**BLOCKED-for-tests.** This commit materially closes the two structural gaps
+in `8d73336`: the live class now subclasses the approved suspended,
+owned-Job harness, and the new Zig suite imports the real
+`src/agent_drawer.zig`. From an exact clean export, the offline Python suite
+passed **9** tests and skipped the **8** VM rows, the Zig suite passed **9/9**,
+and both Python files compiled. The additive staged-env plumbing is acceptable
+test infrastructure as long as every eventual production seam remains inert
+without `--e2e-protocol`.
+
+The live oracles still do not establish the plan's behaviors:
+
+1. The drag row sends exactly six pixels and requires a drag, while production
+   `classifyGesture` and the registered S1 contract define movement at most six
+   pixels as a click and seven as a drag. Use a seven-pixel input, assert the
+   after rectangle equals the independently derived persisted-ratio rectangle,
+   and require the movement bound. The five-pixel row currently asserts only
+   that no `drag` row exists while the shared runner has already forced the
+   drawer open; it passes if that input does nothing. Start closed and require
+   that the five-pixel action itself produces the click/open result.
+2. The remaining rows are product-emitted summaries rather than the raw
+   observations required at plan lines 1573-1583. A one-pixel `fold` passes
+   without an icon lower bound or default-duration evidence; an RTF-looking
+   `bubble` passes without select-all/`WM_COPY`, clipboard equality or
+   no-link/no-object evidence; `live 0` has no positive count and popup-close
+   sequence; `isolation ok` performs no page-JS or socket attempts and proves
+   neither the exact errors nor the unchanged census; and `dpi 84` proves no
+   scaled rectangle or edge hit tests. The owned harness must perform and
+   measure those operations; a status word emitted by the implementation is
+   not an independent oracle.
+3. `drawer_rows` accepts arbitrary field counts and shapes and does not bind a
+   behavior row to the window that emitted the structural `tree`, `icon` and
+   `open` rows. An exact-commit probe accepted behavior rows on windows 998 and
+   999 beside an open row for window 1. Define an exact schema per kind, reject
+   extras and malformed rows, require the expected count/order, and bind every
+   row to the same owned window.
+4. The Zig suite's claimed independent formula initializes `IW` from
+   `d.icon_size`, so an icon-size mutation changes actual and expected values
+   together. Assert the public value is the contract literal 56 and use that
+   independent literal in expected formulas.
+
+No VM run is warranted until those reds are causal. Agent Mail 7720 sent the
+findings to AzureRidge.
