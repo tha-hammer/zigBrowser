@@ -31973,3 +31973,58 @@ cross target, but it is not the required MSVC run. After the three blockers
 above, run the live default and 3000 ms cases on the VM, then the owner's
 `win-drawer-fold` real-screen check; only that last check can accept the visible
 fold UX.
+
+## MS6.5.1 deadline/tagged-pin follow-up (`5609d81`)
+
+**BLOCKED overall; the tagged outcome and C3 control-flow shape are
+APPROVED-for-code.** The commit remains safely unarmed: there is no production
+caller, no concrete signal-capable actuator and no `reaper_ready`. The change
+correctly replaces the ambiguous optional pin with distinct `held`, `gone`,
+`mismatch` and `unreadable` outcomes. The Zig transaction now retains the row
+for mismatch/unreadable, maps `gone` to a signal-free `.reconciled` retirement,
+and gives teardown a typed done/failed result. Those are the right boundaries.
+
+From an exact clean export, the unregistered transaction module passed **6/6
+tests** inside a private user/PID/mount namespace with the outer PID namespace
+held on fd 9. The registered recovery, same-kind, parse, publish and
+recovery-busy steps passed **16/16 build steps and 18/18 tests**. The forked
+tests' namespace sentinel and bounded owned-child cleanup remain intact.
+
+The commit does not yet close findings 2 and 3 from `9f62ea4`:
+
+1. The absolute-deadline test covers only a deadline that was already expired
+   immediately after taking a free flock. It does not cover the required held-
+   work boundaries. The implementation can still return `.already_gone` or
+   `.left` after `load` or liveness crosses the deadline, because those early
+   returns precede the next clock check (`agent_run_ledger.zig:581-593`). A pin
+   can also cross the deadline before entering a fake/concrete fixed point.
+   `teardown` receives only the integer deadline, not the injected clock, so a
+   deterministic test cannot prove that it uses the same monotonic authority.
+   Add a scripted clock/call-counter matrix that expires after load, liveness,
+   pin, fixed point and teardown, plus before each C3/normal publish. Every row
+   must return fail-closed, call no later action, and preserve the on-disk row.
+   Pass the same clock and deadline into teardown (and the concrete pin path
+   must itself be bounded or followed by an authoritative check) rather than
+   relying on the next component to notice expiry.
+
+2. C2 and the publish retry remain assertions in comments, not tested
+   behavior. The fake returns `.done` without creating a marker-less directory,
+   so it does not prove that marker `ENOENT` completes `rmdir` and retirement;
+   similarly the fake `.gone` row proves the Zig branch but not that an actual
+   no-follow open of a missing run dir maps only to `gone`. The source itself
+   acknowledges that the publish-failure/retry row is absent
+   (`recovery_txn_test.zig:405-408`). The concrete held-fd lease must construct
+   the real C2 and C3 filesystem states, prove both signal-free and idempotent,
+   keep mismatch/unreadable distinct, and inject a failed retirement publish
+   followed by a successful retry with the entry retained until success.
+   Retain causal mutants for marker-ENOENT-as-failure, missing-dir-as-unreadable,
+   and retirement-before-success.
+
+The proposed build arrangement for the next C-linked step is acceptable: add
+a named, manually invoked build step that links the real reaper C object but is
+not yet a dependency of aggregate `test`. The step itself must always enter
+the private user/PID/mount namespace, preserve fd 9 for the kernel sentinel,
+and refuse before any signal if that setup is absent. It may be registered in
+the aggregate gate only after the intercepted real-action/early-unlock/path-
+swap matrix passes and the destructive slice is accepted. No Mac destructive
+run and no production arming are authorized by this review.
