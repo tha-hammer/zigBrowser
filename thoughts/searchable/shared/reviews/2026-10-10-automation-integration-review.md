@@ -28069,3 +28069,37 @@ passed **10/10 steps and 3/3 tests**. Both Darwin objects compiled and both
 Linux behavioral lock suites passed. `git diff --check` is clean. This verdict
 is scoped to `08db002`'s portability repair; it does not approve or close the
 later, separately blocked `(pid,start)` recovery red in `97c6215`.
+
+## WS5 native Win32 drawer entry red (`1e5ff2d`)
+
+**BLOCKED-for-tests.** The new file is correctly unregistered, uses only
+native Win32 as OD-W6 requires, scrubs local display variables, and uses
+BatchMode plus strict known-host checking. Its hostless clean-export run is
+syntactically valid and skips exactly once when the live-host inputs are
+absent. It does not yet pin the plan's red or own the real browser lifecycle:
+
+1. `tests/windows/win_drawer_test.py:99-103` accepts **any** stdout line whose
+   first field is `DRAWER`. A backend that merely prints `DRAWER\tbogus`, or a
+   stub that emits one row without creating a Win32 control, passes. The
+   authoritative red at plan lines 1530-1532 requires the `open` observation
+   and `page_h + panel_h == client_h`; the observation contract at line 1522
+   also requires the same row names as GTK. Parse the protocol fields and pin
+   at least the exact structural `tree`/`icon` rows plus the planned `open`
+   rectangle and client-height equation. Add mutants for a row-only stub and a
+   panel that overlays rather than docks.
+2. `_RUNNER` at `:41-47` sleeps, force-stops only the top-level PID, never waits
+   for it, then reads redirected output. WebView2 descendants may survive and
+   the output read races process/pipe teardown. Make the test launcher own the
+   complete browser tree (the production Job Object or an equivalent
+   test-owned job), stop it through that owner, wait boundedly for terminal
+   status and assert a before/after process census. A timeout or cleanup
+   failure must fail, not be hidden by the `finally` directory removal.
+3. No failing-first real-binary evidence accompanies the commit. The only
+   reviewer-run path is the expected hostless skip; it cannot prove the test
+   fails because the Windows drawer is absent. Run the exact red against the
+   current Windows binary and report the failing assertion. The eventual WS5
+   gate must also cover both Windows hosts as plan line 1561 requires; a
+   `ZB_WIN11_HOST`-only interface cannot silently satisfy that claim.
+
+No Windows host or user desktop was touched in this review. `git diff --check`
+is clean.
