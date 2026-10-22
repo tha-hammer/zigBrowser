@@ -8,9 +8,9 @@ tests/mac/hard_gate/hard_gate_driver.py --manifest <MANIFEST.json> <cases dir>:
   SHA-256; an extra (unreviewed) case, a missing one, an edited one, or a malformed manifest is a FAIL naming it, and
   then NO case is imported at all (each fake case below writes a sentinel when imported);
 - with an exact match, the cases run as before.
-The committed tests/mac/hard_gate/MANIFEST.json lists exactly the reviewed set, case_ms5_spawn_io.py and
-case_ms6_6b_r1_chain.py, with their current hashes; nothing of the MS6.5 reaper is in the cases dir or the manifest
-(RoseCat 7250 #3, 7244).
+The committed tests/mac/hard_gate/MANIFEST.json lists exactly the reviewed set, case_ms5_spawn_io.py,
+case_ms6_3_fd3_cli.py and case_ms6_6b_r1_chain.py, with their current hashes; nothing of the MS6.5 reaper is in the
+cases dir or the manifest (RoseCat 7250 #3, 7244).
 
 No process signal: the fake cases only check(True).
 Registered (build.zig: test-mac-census and the Linux test step), inside the namespace.
@@ -30,7 +30,7 @@ REPO = Path(__file__).resolve().parents[2]
 HARD_GATE = REPO / "tests" / "mac" / "hard_gate"
 DRIVER = HARD_GATE / "hard_gate_driver.py"
 MANIFEST = HARD_GATE / "MANIFEST.json"
-REVIEWED = {"case_ms5_spawn_io.py", "case_ms6_6b_r1_chain.py"}
+REVIEWED = {"case_ms5_spawn_io.py", "case_ms6_3_fd3_cli.py", "case_ms6_6b_r1_chain.py"}
 
 
 def sha(path):
