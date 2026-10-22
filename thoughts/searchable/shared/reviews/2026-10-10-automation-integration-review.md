@@ -32943,3 +32943,31 @@ One more bounded eight-row Win11 entry run is authorized at exact clean commit
 `361935b` under the previously recorded MSVC, BatchMode, owned-Job, unique-root,
 fail-fast and clean-census conditions. No install, elevation, WSL/Win10 or
 local-display action is authorized.
+
+## Concrete recovery deadline and flock handshake (`cf1778e`)
+
+**APPROVED for the two `0b7805a` follow-ups; keep the slice unregistered,
+unarmed and off the Macs.** The fixed-point wrapper now checks the same
+absolute monotonic deadline on entry and again through `dir_ok` immediately
+before every `killsig`. A clock that crosses after inspection but before the
+signal therefore makes the engine incomplete and sends zero signals; removing
+that callback check changes the new row to Clean. All concrete `ReaperWiring`
+callers in this slice derive the deadline from `RealClock`, the same monotonic
+domain used by `realNowMs`.
+
+The concurrency row no longer infers contention from scheduling. While R1 is
+parked inside the intercepted kill callback, the parent independently opens
+the ledger lock and requires a nonblocking exclusive flock to fail with
+`EWOULDBLOCK`; only then does it start R2, consume R2's acquire-attempt barrier
+and judge the negative kill-phase window. The early-unlock mutant is therefore
+caught by the parent's positive lock probe, before scheduler timing can mask
+it. Terminal outcomes still require exactly one intercepted kill, the other
+recoverer `already_gone`, an empty ledger and both children reaped.
+
+From an exact clean `cf1778e` export, reviewer execution of the manual
+`test-agent-run-recovery-txn` step passed **6/6 build steps and 16/16 tests**
+inside its fd-9-sentinel private user/PID/mount namespace; both Darwin objects
+compiled. This verdict closes only the specified prototype gaps. It does not
+register the manual step, arm production recovery, authorize the destructive
+Mac reaper gate, or claim a wall-clock bound for the read-only libproc scan
+itself.
