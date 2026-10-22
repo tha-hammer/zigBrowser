@@ -216,57 +216,6 @@ def extract_cpp_function(src, name):
     raise AssertionError(f"unbalanced braces extracting {name}")
 
 
-def cpp_top_level_statements(body):
-    """The statements at the TOP LEVEL of a comment/string-stripped C++ block body — brace depth 0 AND paren
-    depth 0. A braced block (if/for/bare scope) flushes as ONE statement at its closing brace; a lambda or
-    braced initializer INSIDE a call's parentheses keeps paren depth > 0, so a statement that embeds a lambda
-    stays whole. Lets an oracle require REAL top-level statements, so a sequence hidden under if(false), a
-    runtime gate, or an unused lambda is not mistaken for the live controller path."""
-    stmts, buf, brace, paren = [], [], 0, 0
-    for c in body:
-        buf.append(c)
-        if c == "(":
-            paren += 1
-        elif c == ")":
-            paren -= 1
-        elif c == "{":
-            brace += 1
-        elif c == "}":
-            brace -= 1
-            if brace == 0 and paren == 0:
-                stmts.append("".join(buf).strip())
-                buf = []
-        elif c == ";" and brace == 0 and paren == 0:
-            stmts.append("".join(buf).strip())
-            buf = []
-    return [s for s in stmts if s]
-
-
-def cpp_enclosing_block(stripped, anchor):
-    """The body of the innermost braced block that DIRECTLY contains `anchor` (within comment/string-stripped
-    C++ `stripped`) — used to pin the controller-completion lambda body via a unique anchor statement."""
-    idx = stripped.index(anchor)
-    depth, start = 0, None
-    for j in range(idx - 1, -1, -1):
-        if stripped[j] == "}":
-            depth += 1
-        elif stripped[j] == "{":
-            if depth == 0:
-                start = j
-                break
-            depth -= 1
-    assert start is not None, f"no enclosing block for {anchor!r}"
-    depth = 0
-    for j in range(start, len(stripped)):
-        if stripped[j] == "{":
-            depth += 1
-        elif stripped[j] == "}":
-            depth -= 1
-            if depth == 0:
-                return stripped[start + 1:j]
-    raise AssertionError("unbalanced braces in enclosing block")
-
-
 def page_selector_body_is_strict(body):
     """Causal predicate on the embedded [Z]::PageHwnd body (RoseCat ba35dc5). The selector is strict iff it
     selects by the WebView2 widget CLASS, by the launched PID, requires EXACTLY ONE match, and uses NEITHER a
@@ -1343,58 +1292,54 @@ class WinDrawerOracle(unittest.TestCase):
     # the real disposable-target round-trip on Win11.
 
     def test_ws5_5b2_spawn_is_call_bound(self):
-        # WS5.5b-2 (RoseCat 3c0b7b3 fix-forward of 9132e93): the post-controller gate/count decision is the
-        # portable zb_drawer_after_controller (every gate combination driven directly in
-        # agent_drawer_props_test.zig). This oracle binds the C++ ARCHITECTURE through a lexer that strips
-        # comments and string literals (so a decoy can neither satisfy nor defeat it): the controller completion
-        # makes ONE real decision call, the spawn body is driven by the returned COUNT (not another field), and
-        # ONE primary WM_CLOSE follows the spawn; the spawn body keeps its partial-window cleanup and its
-        # record-before-increment order. It is RED on the pre-9132e93 shape (count decided inside the spawn)
-        # and GREEN on the new one. The retire-once/8-gate semantics are the Zig property test's job.
+        # WS5.5b-2 (RoseCat f1e9653 RULING): a lexer-bound ARCHITECTURE TRIPWIRE only — the handwritten C++ parser
+        # does NOT try to prove control flow, reachability, or statement order (the recording/teardown seam and
+        # the one bounded Win11 run cover the behaviour). After stripping comments and string literals:
+        #   (1) the spawn body is count-driven (for i < count), keeps its partial-window cleanup and its
+        #       record-before-increment order, and NEVER recomputes the decision (no zb_drawer_extra_windows /
+        #       zb_drawer_after_controller inside it);
+        #   (2) EXACTLY ONE zb_drawer_after_controller CALL exists in the whole shim (the extern declaration
+        #       aside), it uses the four exact production app inputs, and it sits inside the
+        #       CreateCoreWebView2ControllerCompletedHandler callback.
         shim = (pathlib.Path(__file__).resolve().parents[2] / "src" / "webview2_shim.cpp").read_text(encoding="utf-8")
 
         def lx(s):  # lexer: strip comments/literals, then collapse ALL whitespace so matching is spacing-proof
             return re.sub(r"\s+", "", strip_cpp(s))
-
-        spawn = lx(extract_cpp_function(shim, "spawn_extra_drawer_windows"))
 
         loop = lx("for (int i = 0; i < count; i++)")               # count-driven, not a re-decided extra count
         both_check = lx("panel_h == nullptr || icon_h == nullptr")
         fail_arm = lx("DestroyWindow(w); continue;")                # partial destroy then the terminating continue
         push = lx("extra_windows.push_back(ExtraWindow{reinterpret_cast<uintptr_t>(w), 1})")
         inc = lx("drawer_live_inc();")
-        pre913 = lx("zb_drawer_extra_windows(app->windows_seam)")   # the pre-9132e93 count decision in the spawn
-        # The controller completion sequence must be LIVE TOP-LEVEL statements of the completion lambda, not a
-        # substring that could sit under if(false), a runtime gate, or an unused lambda (RoseCat 8132). Bind
-        # three CONSECUTIVE top-level statements: `after` assigned from the decision, the count-consuming spawn,
-        # then the primary close inside exactly `if (after.close_primary)`; each exactly once.
-        assign_sq = lx("const AfterController after = zb_drawer_after_controller(app->windows_seam, "
-                       "app->e2e_protocol ? 1 : 0, app->agent_drawer_on ? 1 : 0, app->windows_seam_set ? 1 : 0);")
-        spawn_sq = lx("spawn_extra_drawer_windows(app, after.spawn_count);")   # consume the returned COUNT
-        guarded_sq = lx("if (after.close_primary) { PostMessageW(app->hwnd, WM_CLOSE, 0, 0); }")  # GUARDED primary close
+        after_call = lx("zb_drawer_after_controller(")              # any decision call
+        extra_call = lx("zb_drawer_extra_windows(")                 # the pre-9132e93 count recomputation
+        decl = lx("AfterController zb_drawer_after_controller(int seam, int e2e, int drawer, int windows_seam_set);")
+        decide = lx("zb_drawer_after_controller(app->windows_seam, app->e2e_protocol ? 1 : 0, "
+                    "app->agent_drawer_on ? 1 : 0, app->windows_seam_set ? 1 : 0)")   # the four exact app inputs
+        handler = lx("CreateCoreWebView2ControllerCompletedHandler")
 
         def spawn_ok(b):
             need = [loop, both_check, fail_arm, push, lx("GWLP_USERDATA, reinterpret_cast<LONG_PTR>(app)"), inc]
             if not all(t in b for t in need):
                 return False
-            if pre913 in b:
-                return False  # the count must NOT be re-decided inside the spawn body (pre-9132e93 shape)
-            # the LIVE app-owned record is pushed, and the both-controls check runs, BEFORE the increment
+            if extra_call in b or after_call in b:
+                return False  # the spawn must NOT decide/recompute the count — it receives it as the argument
             return b.index(push) < b.index(inc) and b.index(both_check) < b.index(inc)
 
-        def seq_top_level(raw_body):
-            # the three statements must be CONSECUTIVE top-level statements (brace/paren depth 0), each once — a
-            # sequence nested under if(false)/a runtime gate/an unused lambda flushes as ONE block statement and
-            # never matches the individual top-level needles.
-            stmts = [lx(s) for s in cpp_top_level_statements(strip_cpp(raw_body))]
-            if stmts.count(assign_sq) != 1 or stmts.count(spawn_sq) != 1 or stmts.count(guarded_sq) != 1:
+        def tripwire_ok(shim_src):
+            sq = lx(shim_src).replace(decl, "", 1)       # drop the single extern declaration; count CALLS only
+            cc = lx(extract_cpp_function(shim_src, "create_controller"))
+            if sq.count(after_call) != 1:                # exactly one decision CALL anywhere in the shim
                 return False
-            i = stmts.index(assign_sq)
-            return i + 2 < len(stmts) and stmts[i + 1] == spawn_sq and stmts[i + 2] == guarded_sq
+            if sq.count(decide) != 1:                    # ... with the four exact production app inputs
+                return False
+            if handler not in cc:                        # the completion callback is present
+                return False
+            return decide in cc[cc.index(handler):]      # the one call sits inside that callback
 
-        self.assertTrue(spawn_ok(spawn), f"spawn must be count-driven w/ partial-cleanup + record-then-inc; spawn={spawn!r}")
-        lam = cpp_enclosing_block(strip_cpp(extract_cpp_function(shim, "create_controller")), "mount_drawer(app);")
-        self.assertTrue(seq_top_level(lam), f"the controller completion must have assign->spawn->guarded-close as live top-level statements; lam={lam!r}")
+        spawn = lx(extract_cpp_function(shim, "spawn_extra_drawer_windows"))
+        self.assertTrue(spawn_ok(spawn), f"spawn must be count-driven, partial-cleanup, record-then-inc, no recompute; spawn={spawn!r}")
+        self.assertTrue(tripwire_ok(shim), "exactly one decision call, inside the completion callback, with the four exact app inputs")
 
         # --- spawn-body mutants (synthetic; prove the predicate is not vacuous) ---
         self.assertFalse(spawn_ok(spawn.replace(inc, "", 1)), "a removed increment must be caught")
@@ -1402,33 +1347,32 @@ class WinDrawerOracle(unittest.TestCase):
         self.assertFalse(spawn_ok(spawn.replace(fail_arm, lx("DestroyWindow(gStale); continue;"), 1)), "a wrong-HWND partial destroy must be caught")
         self.assertFalse(spawn_ok(spawn.replace(both_check, lx("false"), 1)), "dropping the both-controls check must be caught")
         self.assertFalse(spawn_ok(spawn.replace(push, "", 1).replace(inc, inc + push, 1)), "recording the live window AFTER the increment must be caught")
-        self.assertFalse(spawn_ok(spawn.replace(loop, loop + pre913 + ";", 1)), "the pre-9132e93 shape (count re-decided inside the spawn) must be caught")
+        # RoseCat f1e9653 mutant (b): reintroducing a decision/recomputation inside the spawn must be caught
+        self.assertFalse(spawn_ok(spawn.replace(loop, loop + lx("const int extra = zb_drawer_extra_windows(app->windows_seam);"), 1)), "a count recomputation inside the spawn must be caught")
+        self.assertFalse(spawn_ok(spawn + lx("const AfterController a2 = zb_drawer_after_controller(app->windows_seam, 1, 1, 1);")), "a decision call inside the spawn must be caught")
 
-        # --- controller mutants (synthetic lambda bodies; the real top-level shape passes, each defect fails) ---
-        anc = "mount_drawer(app);"  # the unique anchor that pins the completion lambda body
-        D = ("const AfterController after = zb_drawer_after_controller(app->windows_seam, app->e2e_protocol ? 1 : 0, "
-             "app->agent_drawer_on ? 1 : 0, app->windows_seam_set ? 1 : 0);")
-        S = "spawn_extra_drawer_windows(app, after.spawn_count);"
-        C = "if (after.close_primary) { PostMessageW(app->hwnd, WM_CLOSE, 0, 0); }"
+        # --- controller tripwire mutants (synthetic shims; RoseCat f1e9653 mutant (a): remove/move the call) ---
+        DECI = ("const AfterController after = zb_drawer_after_controller(app->windows_seam, app->e2e_protocol ? 1 : 0, "
+                "app->agent_drawer_on ? 1 : 0, app->windows_seam_set ? 1 : 0);")
+        TAIL = " spawn_extra_drawer_windows(app, after.spawn_count); if (after.close_primary) { PostMessageW(app->hwnd, WM_CLOSE, 0, 0); }"
+        GOOD_SPAWN = "void spawn_extra_drawer_windows(AppState* app, int count) { for (int i = 0; i < count; i++) {} }"
 
-        def lam_body(*stmts):
-            return anc + " " + " ".join(stmts)
+        def shim_of(cc_body, spawn_body=GOOD_SPAWN):
+            return spawn_body + "\nHRESULT create_controller(AppState* app) { " + cc_body + " }\n"
 
-        self.assertTrue(seq_top_level(lam_body(D, S, C)), "the real top-level sequence passes")
-        self.assertFalse(seq_top_level(lam_body("/* " + D + " */", S, C)), "a commented-out decision call must be caught")
-        self.assertFalse(seq_top_level(lam_body(D, S, "/* " + C + " */")), "a commented-out primary close must be caught")
-        self.assertFalse(seq_top_level(lam_body(D, D, S, C)), "a duplicate decision call must be caught")
-        self.assertFalse(seq_top_level(lam_body(D, S, S, C)), "a duplicate spawn must be caught")
-        self.assertFalse(seq_top_level(lam_body(D, S, C, C)), "a duplicate primary close must be caught")
-        self.assertFalse(seq_top_level(lam_body(D, "spawn_extra_drawer_windows(app, after.close_primary);", C)), "spawning with the wrong returned field must be caught")
-        self.assertFalse(seq_top_level(lam_body(D, C, S)), "closing the primary before the spawn must be caught")
-        self.assertFalse(seq_top_level(lam_body(D, S, "if (after.close_primary) { PostMessageW(extra, WM_CLOSE, 0, 0); }")), "closing a non-primary HWND must be caught")
-        self.assertFalse(seq_top_level(lam_body(D, S, "PostMessageW(app->hwnd, WM_CLOSE, 0, 0);")), "an UNGUARDED primary close must be caught")
-        self.assertFalse(seq_top_level(lam_body(D, S, "if (app->screenshot) { PostMessageW(app->hwnd, WM_CLOSE, 0, 0); }")), "a WRONG-gate close must be caught")
-        # RoseCat 8132: the WHOLE sequence hidden in a dead or nested scope must be caught (not just assign+spawn)
-        self.assertFalse(seq_top_level(lam_body("if (false) { " + D + " " + S + " " + C + " }")), "the whole sequence under if(false) must be caught")
-        self.assertFalse(seq_top_level(lam_body("if (app->screenshot) { " + D + " " + S + " " + C + " }")), "the whole sequence under a runtime gate must be caught")
-        self.assertFalse(seq_top_level(lam_body("auto f = [app]() { " + D + " " + S + " " + C + " };")), "the whole sequence inside an unused lambda must be caught")
+        def callback(inner, before=""):
+            return (before + "app->env->CreateCoreWebView2Controller(h, "
+                    "Callback<ICoreWebView2CreateCoreWebView2ControllerCompletedHandler>("
+                    "[app](HRESULT r, ICoreWebView2Controller* c) -> HRESULT { mount_drawer(app); "
+                    + inner + " return S_OK; }).Get());")
+
+        self.assertTrue(tripwire_ok(shim_of(callback(DECI + TAIL))), "the real-shaped synthetic passes")
+        self.assertFalse(tripwire_ok(shim_of(callback(TAIL))), "removing the callback decision call must be caught")
+        self.assertFalse(tripwire_ok(shim_of(callback(TAIL, before=DECI + " "))), "moving the decision OUTSIDE the callback must be caught")
+        self.assertFalse(tripwire_ok(shim_of(callback("const AfterController after = zb_drawer_after_controller(app->screenshot, 0, 0, 0);" + TAIL))), "the wrong app inputs must be caught")
+        self.assertFalse(tripwire_ok(shim_of(callback(DECI + TAIL),
+                                             spawn_body="void spawn_extra_drawer_windows(AppState* app, int count) { auto a = zb_drawer_after_controller(app->windows_seam, 0, 0, 0); }")),
+                         "a second decision call (here in the spawn) must be caught")
 
         # --- the lexer defeats literal/comment decoys; close-one still destroys via the record HWND ---
         self.assertNotIn(fail_arm, lx('const char* s = "DestroyWindow(w); continue;";'), "a string-literal decoy must be stripped by the lexer")
