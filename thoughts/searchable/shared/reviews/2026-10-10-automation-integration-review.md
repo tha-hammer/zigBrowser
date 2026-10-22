@@ -26731,3 +26731,67 @@ The row is signal-free because `run_in_owned_group` is replaced before
 commit. The same committed row passes against BlueBeaver's current uncommitted
 fixed-diagnostic WIP. `git diff --check` is clean. No full gate was run while
 BlackRobin held the slot. Agent Mail 7445 sent BlueBeaver the approval.
+
+## Windows allowed-path diagnostic reclassification (`7ea3c95`)
+
+**BLOCKED.** The production check itself is correctly fail closed: the
+component walk rejects `INVALID_FILE_ATTRIBUTES` before testing the reparse
+bit, every reparse point is denied, and the test seam can only turn an
+ordinary component into a denial. A repository-wide census also confirms that
+the current `allowed_path` function has no consumer beyond the
+`--allowed-path` diagnostic dispatch.
+
+The promised future-consumer pin is incomplete, however. At
+`tests/windows/gate_selftest.py:642-652` it recognizes only a command line that
+starts with `allowed_path`. In an exact `7ea3c95` export I added the mutant
+`verdict=$(allowed_path "$1")`; both `AllowedPathIsDiagnosticOnlyTests` still
+passed. The same bypass exists for an `if [ "$(allowed_path ...)" = ALLOW ]`
+consumer. The oracle must census `allowed_path` as a shell word anywhere in a
+non-comment, non-definition command and carry causal command-substitution and
+conditional mutants (or use a stronger syntax-aware census).
+
+The authoritative plan is also internally contradictory. Its normative
+WS0.5 heading and Given/When/Then at lines 759-762 still claim that the
+file-server host is fenced and every gate step naming a remote path is refused
+before use, while the new note at lines 764-773 says this is a non-authorizing
+diagnostic with no consumer. Option A deliberately removed that boundary, so
+the behavior itself—not just a note beneath it—must state the check-time
+contract and bind any future consumer to the held-handle design. Agent Mail
+7448 sent AzureRidge both blockers. The push-through remains the already
+pushed `63ed27f`; `aebb07b` remains the earliest blocked ancestor.
+
+## Darwin owned process group green (`fd1bd92`)
+
+**BLOCKED; no Mac run is approved.** The core signal authorization is sound:
+`owned_group.py:132-138` requires an exact `int` pid above 1, excludes self and
+the caller's process group, and proves `(ppid, pgid) == (getpid(), pid)` before
+`killpg`. The leader remains unreaped through Linux `waitid(...WNOWAIT)` or
+Darwin kqueue, preserving pid/pgid ownership until that signal. Darwin uses
+absolute `/bin/ps`; timeout, failure or malformed output becomes a pre-signal
+refusal. The modified tests interpose all signal calls for fake/refusal rows,
+and every real-signal row is registered only through the held-fd PID-namespace
+launcher. An exact clean-export focused gate passed **27/27 steps and 14/14
+tests**; no full gate was taken from BlackRobin.
+
+The fail-closed cleanup invariant does not hold on exceptional paths. At
+`owned_group.py:209-215`, the exception handler suppresses `Refused` and
+`StopFailed` from its cleanup attempt and rethrows the earlier exception. At
+`setup.py:790-802`, only `StopFailed` selects scratch retention. Therefore a
+persistent Darwin ownership-table timeout can escape as `Refused`, and an
+earlier selector/read error followed by an unproven stop can escape as that
+earlier error; setup then deletes scratch around a group which was never
+proven stopped. A signal-interposed exact-commit probe injected
+`Refused("ps timed out")`: `_sandboxed` raised that exception and reported
+`SCRATCH_ENTRIES []`, causally proving deletion. In addition,
+`DefaultSelector()` is constructed after `Popen` but before the cleanup
+`try`; constructor failure leaks the newly spawned group entirely.
+
+Any post-spawn inability to complete and prove the stop must win over an
+earlier exception and surface as `StopFailed(proc=leader)`, so setup retains
+the scratch and emits the fixed diagnostic. Selector construction must be
+inside that protected lifetime. Reds must cover persistent Darwin ps
+timeout/malformed output with zero signals and retained scratch, plus an
+earlier read/select fault whose cleanup stop fails. The existing suite never
+causally enters the Darwin ps refusal path; its real behavior rows all use
+`/proc`. Agent Mail 7450 sent BlueBeaver the blockers and prohibited the Mac
+run pending a fix-forward.
