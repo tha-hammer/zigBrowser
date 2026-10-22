@@ -2,7 +2,7 @@
 """zb-hook-run: runs one SAI hook in its own PID and network namespaces, from an allowlisted environment.
 
 Installed as <agent-home>/runtime/bin/zb-hook-run (read-only in the sandbox);
-every hook command is rewritten as `zb-hook-run -- <command>`. In order it:
+every hook command is rewritten as `zb-hook-run -- <command>`. On Linux, in order it:
 1. closes every descriptor >= 3, so no FIFO, socket or pipe of the CLI leaks;
 2. builds a fresh environment holding only the names in runtime/hook-env.json
    (refusing the token names, the CLI's messaging capability and its proxy outright);
@@ -20,6 +20,10 @@ every hook command is rewritten as `zb-hook-run -- <command>`. In order it:
    (chat-drawer plan rev 16.2, §3c.8b). bwrap installs the filter last, after
    its own namespace and mount setup, and closes its descriptor: the relay and
    the hook run under it, on top of the helper's outer filter (§3c.6).
+On Darwin (design 7929; a dormant scaffold until seatbelt_ready) it checks the run marker, runtime/hook.sb and the
+scratchpad before closing anything (a refusal closes nothing and runs nothing), closes every descriptor >= 3 except
+the reviewed run marker on fd 5 (MS6.5.1), and execs sandbox-exec with the bridges-only hook profile setup rendered,
+from the same allowlisted environment: no bwrap, relay or seccomp filter.
 Standard library only: it runs before, and outside of, the helper's venv.
 """
 
