@@ -33603,3 +33603,66 @@ first-window-owned live row, with causal mount/destroy mutants. **SHOULD:**
 replace `atoi` with the project's strict full-string unsigned parser so values
 such as `2junk`, leading whitespace or `+2` cannot silently arm an e2e seam;
 add those malformed rows to the production test when the seam becomes live.
+
+## Win32 page-child selector (`58f79c1`)
+
+**BLOCKED-for-tests; no eight-row Win11 entry run is authorized.** The actual
+embedded C# selector is correct on inspection: it walks only direct children
+of the exact launched-pid host, accepts class `Chrome_WidgetWin_0` only when
+the child owner is the launched pid, requires exactly one match, and does not
+use size or visibility. `PageRedocked` reuses that identity, while the live
+success oracle retains the page's pid, nonempty top-left/full-width rectangle
+and exact panel boundary. An exact clean archive passed the Python module
+**75/75 tests with 8 live skips** and the focused private-Xvfb build passed
+**12/12 steps and 15/15 Zig tests**.
+
+Two advertised contracts remain unproved:
+
+1. The four new negative rows drive only the detached Python
+   `select_page_child` model, not the embedded C# `PageHwnd` used on Win11.
+   Reverting the C# body to the old largest-visible-child heuristic leaves all
+   four rows green. Add a causal binding/source oracle scoped to that method's
+   class, pid and exactly-one predicates and absence of size/visibility, with
+   old/largest, no-pid and first-match mutants rejected.
+2. The `f877bc5` split retained native panel/icon/minimize visibility. The
+   success oracle now consumes `children_visible` for panel and bubble only;
+   `icon_visible` is measured but never asserted, and the `-` control is
+   counted but never required visible. An open drawer with the S icon still
+   visible or the minimize control hidden therefore passes. Record and assert
+   the open state—panel/bubble/minimize visible and S icon hidden—with causal
+   fail rows. Only the WebView2 page's rendered pixels remain deferred to the
+   owner-watched real-screen case.
+
+**NIT:** remove the stale `largest VISIBLE non-STATIC` comment immediately
+above `PageHwnd`. Review and green the follow-up offline before releasing the
+single bounded eight-row Win11 run.
+
+## Darwin hook runner under Seatbelt (`84f2576`)
+
+**APPROVED as a dormant, gated scaffold. This verdict authorizes no Mac run
+and does not arm or complete the Mac hook gate.** The Darwin branch consumes
+the same refused-name check and allowlist, validates the marker/profile/
+scratchpad before any descriptor close, preserves only stdio plus the reviewed
+fd 5 marker, and replaces itself with `/usr/bin/sandbox-exec` using the
+rendered hook profile and literal scratchpad parameter. The staged profile is
+0600, owner-checked again at use, derives the canonical bridge-only ports and
+contains no CLI/API egress. Linux's bwrap/relay/seccomp path is unchanged.
+
+The earlier red's self-dup harness issue is fixed: fd 5 is not closed when it
+was the newly opened source and is immediately verified open. In an exact
+clean archive, the Darwin module passed **10/10** in a private user/PID/mount
+namespace. Reviewer Linux regressions passed `test_provision` **54/54**,
+`test_backend_contract` **28/28**, `test_contract` **21/21** and
+`test_hook_net` **19/19**; `agent-host-win-import` passed its complete import
+suite. Signal-capable modules used the registered outer-fd private-namespace
+wrapper.
+
+The feature remains unreachable because `seatbelt_ready` is false, macOS
+launch refuses before dispatch, and this test is unregistered. A later hard-
+gate case must still prove on both Macs the two bridge positives, proxy/API
+and direct-network negatives, exact environment/token absence, fd 5 survival
+into the intended detached descendant, and complete hook lifetime cleanup
+before any Mac hook execution is approved. **SHOULD:** compute `net_manifest`
+once in `stage()` and use those exact bytes both for `net.json` and the hook
+profile ports, and update the module overview's Linux-only “closes every fd
+>=3” wording to describe Darwin's reviewed marker exception.
