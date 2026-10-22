@@ -26897,3 +26897,41 @@ reports `test-mac-census` **14/14** and `test-agent-setup-ms5` **28/28 steps,
 orchestrator releases it under the normal gate/owner rules. This approval does
 not include the separate MS6.5 reaper case. Agent Mail 7457 sent BlueBeaver
 the cumulative approval.
+
+## MS6.5.1 ledger schema parse (`9ac707c`, `51fb680`)
+
+**`9ac707c` is BLOCKED-for-tests. `51fb680` is BLOCKED.** The green correctly
+registers the focused step and changes `std.json` to its strict default,
+rejects an unknown schema version, rejects more than 256 parsed entries, and
+rejects duplicate basename strings. An exact clean-export run of
+`test-agent-run-ledger-parse` passed **4/4 build steps and 10/10 tests**.
+
+Two plan contracts remain unimplemented:
+
+1. The parser never validates the basename's fixed-length, single-component
+   `zigbrowser-agent-<decimal pid>-<16 lowercase hex>` grammar. The red's
+   duplicate row at `tests/agent_run_ledger_parse_test.zig:77-80` deliberately
+   uses `"dup"`, and its over-cap row at lines 83-101 uses `"r<N>"`; both tests
+   therefore require schema-invalid entries to survive parsing. The later C
+   reopen boundary is still safe, but the authoritative plan requires a
+   malformed ledger row to fail as a malformed read, not to become an entry.
+   Add wrong-prefix/case/hex-length, slash/dot/absolute and oversized-name
+   rows, and make the duplicate row repeat a genuinely valid basename so it
+   tests duplication rather than depending on missing grammar validation.
+2. The entry cap is checked only *after* `std.json.parseFromSlice` has parsed
+   and allocated the entire document (`src/agent_run_ledger.zig:54-62`). A
+   hostile file can therefore allocate and parse an unbounded array or an
+   unbounded basename before returning `TooManyEntries`; this is not the
+   plan's bounded schema. Enforce a named input/field bound before allocation,
+   or use a streaming parse that stops at the cap, and add a causal mutant
+   proving that parse-all-then-count fails.
+
+The plan spells the owner start field as `start`, while the new schema exposes
+`start_sec` plus `start_usec`; that wire shape must be reconciled before this
+becomes the production ledger contract. Explicit duplicate-JSON-key and
+top-level missing/extra-field rows would also pin the relied-on `std.json`
+defaults. The `51fb680` subject's literal `<ledger-parse red>` placeholder is a
+commit-message NIT; the actual red is `9ac707c`. No destructive Mac run is
+authorized by this review. Agent Mail 7458 sent JadeBeacon the test gaps before
+the green landed; a follow-up verdict reports that `51fb680` did not close
+them.
