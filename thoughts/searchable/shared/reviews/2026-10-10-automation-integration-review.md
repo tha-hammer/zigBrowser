@@ -36399,3 +36399,36 @@ This tier proves only that the exact clean source compiles/links on both real
 Mac architectures. It cannot satisfy a runtime, containment, Keychain, UI, or
 owner-visible acceptance requirement. Those remain with the relevant driven
 test or bounded real-Mac/owner run.
+
+## MS7.0/7.1/7.4 portable Mac drawer green (`da37c1c`)
+
+**APPROVED.** This closes the portable-logic/export obligations from the
+approved `e7cac20`, `f6be5de`, and amended `7ba5549` / `d8978b6` reds. The
+production portable module now exports the drawer/page and AppKit-frame
+geometry, the one-control displayed-text policy, UTF-16-to-original-byte copy
+mapping, and the contiguous-bubble-layout predicate on Darwin as well as the
+existing targets. The driven Zig tests exercise the production functions and
+their C wrappers rather than a mirror: the focused geometry and text steps
+each pass all seven rows, including invalid UTF-8/NUL replacement, astral
+UTF-16 offsets, breakpoints, seeded arbitrary bytes, and the 200 KiB case.
+
+The two focused steps are registered in the aggregate `test` step. The
+dual-architecture export check is registered as `cross-check-drawer-mac` and
+under the aggregate `cross-check`; from an exact clean `da37c1c` worktree I
+ran it successfully for both `aarch64-macos` and `x86_64-macos`, and the
+aggregate cross-check also passed. The resulting production objects carry the
+complete 24-symbol portable inventory, including the five new AppKit exports.
+All focused checks ran under a private Xvfb; no browser or real display was
+used.
+
+This verdict is deliberately scoped to portable logic, C ABI availability,
+and dual-arch compiler/export feedback. It does **not** approve AppKit control
+construction, Edit > Copy routing, approval-card authority, or other runtime
+UI behavior; those remain with the compiled two-Mac MS7 hard gate and its
+real-platform evidence under the `c6b2b32` split.
+
+**SHOULD:** update the two test-file headers that still describe these suites
+as RED/unregistered. If the canonical full gate invokes only `zig build test`
+and not the aggregate `cross-check`, also make the Darwin export runs a direct
+dependency of that gate; the proof itself is already registered and green, so
+neither documentation/aggregation cleanup blocks this slice.
