@@ -123,6 +123,7 @@ struct AppState {
   ZbDrawerGeomRect fold_to = {};
   ZbDrawerGeomRect fold_mid = {};
   bool fold_mid_captured = false;
+  bool fold_kill_tried = false;  // WS5.3: one-shot so the e2e "kill" seam fails only the FIRST cancel per fold
   // WS5.2 icon position + drag/subclass state. `icon_ratios`/`has_icon_ratios` is the icon's current position
   // as portable ratios (seeded from the persisted profile via zb_drawer_start_ratios, updated on every user
   // move); mount and resize place the real icon HWND from it (not the default). `icon_proc` is the STATIC's
@@ -989,17 +990,28 @@ static void drawer_open_now(AppState *app) {
   }
 }
 
-// WS5.3: cancel the fold timer, checked (RoseCat 70fd7f9 #4). KillTimer is ALWAYS issued (so the timer never
-// keeps firing), but a failed cancel — or the e2e "kill" seam — names a fixed diagnostic, since a silently
-// failed cancel could leave the timer armed after folding=false.
-static void fold_kill_timer(AppState *app, HWND hwnd) {
-  const bool ok = KillTimer(hwnd, kFoldTimerId);
-  const bool force_kill_fail = app->fold_fail != nullptr && strcmp(app->fold_fail, "kill") == 0;
-  if (!ok || force_kill_fail) {
-    fprintf(stderr, "zigBrowser: agent-drawer fold timer cancel failed: KillTimer (error %lu)\n",
-            ok ? (unsigned long)ERROR_INVALID_PARAMETER : (unsigned long)GetLastError());
+// WS5.3: cancel the fold timer, checked WITH a confirm-retry (RoseCat e666b02 #1). Returns true once the timer
+// is genuinely cancelled. The e2e "kill" seam makes the FIRST real cancel genuinely fail (the KillTimer call is
+// skipped, so the timer really stays armed) — then the retry must actually cancel it, proving the retry policy
+// rather than a fabricated error. If even the retry fails, the caller still clears `folding`, and the WM_TIMER
+// fold branch is guarded by `folding`, so no later tick does fold work regardless.
+static bool fold_kill_timer(AppState *app, HWND hwnd) {
+  const bool force_first_fail = app->fold_fail != nullptr && strcmp(app->fold_fail, "kill") == 0
+                                && !app->fold_kill_tried;
+  app->fold_kill_tried = true;
+  bool cancelled = force_first_fail ? false : (KillTimer(hwnd, kFoldTimerId) != 0);
+  if (!cancelled) {
+    fprintf(stderr, "zigBrowser: agent-drawer fold timer cancel failed: KillTimer (error %lu); retrying\n",
+            force_first_fail ? (unsigned long)ERROR_INVALID_PARAMETER : (unsigned long)GetLastError());
     fflush(stderr);
+    cancelled = (KillTimer(hwnd, kFoldTimerId) != 0);  // confirm cancellation before the caller clears state
+    if (!cancelled) {
+      fprintf(stderr, "zigBrowser: agent-drawer fold timer STILL armed after retry (error %lu); "
+                      "folding cleared, later ticks are guarded\n", static_cast<unsigned long>(GetLastError()));
+      fflush(stderr);
+    }
   }
+  return cancelled;
 }
 
 // WS5.3: abort an in-flight fold into a STABLE, usable OPEN drawer (RoseCat 70fd7f9 #2/#3) — cancel the timer,
@@ -1033,6 +1045,7 @@ static void drawer_fold_start(AppState *app) {
   app->fold_ms = zb_drawer_anim_ms_from_env(getenv("ZIGBROWSER_AGENT_ANIM_MS"));
   app->fold_start_ms = GetTickCount64();
   app->fold_mid_captured = false;
+  app->fold_kill_tried = false;  // each fold's cancel seam fires once
   // Arm the timer FIRST and verify it: a SetTimer failure must not wedge folding=true with no tick to clear it.
   // The e2e "timer" seam forces this failure branch.
   const bool force_timer_fail = app->fold_fail != nullptr && strcmp(app->fold_fail, "timer") == 0;
@@ -1516,18 +1529,22 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam,
       // the whole fold aborts, so no later tick can fabricate a midpoint and emit a successful fold (70fd7f9 #2).
       if (!app->fold_mid_captured && t >= 0.5 && t < 1.0) {
         if (app->drawer_panel != nullptr) {  // independent read-back of the real panel HWND, mid-transition
-          const bool force_read_fail = app->fold_fail != nullptr && strcmp(app->fold_fail, "read") == 0;
+          // Each read is independently forceable (RoseCat e666b02 #2): "readrect" fails GetWindowRect, "readstc"
+          // fails ScreenToClient. Either failure aborts the whole fold permanently (no fabricated midpoint).
+          const bool force_readrect = app->fold_fail != nullptr && strcmp(app->fold_fail, "readrect") == 0;
+          const bool force_readstc = app->fold_fail != nullptr && strcmp(app->fold_fail, "readstc") == 0;
           RECT wr = {};
           POINT tl = {0, 0};
-          bool read_ok = !force_read_fail && GetWindowRect(app->drawer_panel, &wr);
+          bool read_ok = !force_readrect && GetWindowRect(app->drawer_panel, &wr);
           if (read_ok) {
             tl.x = wr.left;
             tl.y = wr.top;
-            read_ok = ScreenToClient(hwnd, &tl) != 0;
+            read_ok = !force_readstc && (ScreenToClient(hwnd, &tl) != 0);
           }
           if (!read_ok) {  // fail closed: abort, do not let a later tick fabricate a midpoint
             fprintf(stderr, "zigBrowser: agent-drawer fold aborted: midpoint read failed (error %lu)\n",
-                    force_read_fail ? (unsigned long)ERROR_INVALID_PARAMETER : (unsigned long)GetLastError());
+                    (force_readrect || force_readstc) ? (unsigned long)ERROR_INVALID_PARAMETER
+                                                      : (unsigned long)GetLastError());
             fflush(stderr);
             fold_abort_open(app, hwnd);
             return 0;

@@ -817,18 +817,25 @@ class WinDrawerBehaviorsLive(_wd.WinDrawerLive):
     def test_ws5_3_fold_dwmflush_failure_is_fail_closed(self):
         self._fold_failclosed("dwmflush", "DwmFlush failed", expect_folded=False)   # vsync step failed (plan:1539)
 
-    def test_ws5_3_fold_midpoint_read_failure_is_fail_closed(self):
-        self._fold_failclosed("read", "midpoint read failed", expect_folded=False)  # abort, no fabricated midpoint
+    def test_ws5_3_fold_getwindowrect_failure_is_fail_closed(self):
+        # RoseCat e666b02 #2: a GetWindowRect failure at the midpoint aborts the whole fold (open+docked, no row).
+        self._fold_failclosed("readrect", "midpoint read failed", expect_folded=False)
+
+    def test_ws5_3_fold_screentoclient_failure_is_fail_closed(self):
+        # RoseCat e666b02 #2: the SEPARATE ScreenToClient failure branch must also abort (open+docked, no row).
+        self._fold_failclosed("readstc", "midpoint read failed", expect_folded=False)
 
     def test_ws5_3_fold_delayed_tick_emits_no_midpoint(self):
         self._fold_failclosed("delay", "no observed midpoint", expect_folded=True)  # stable folded+redocked
 
-    def test_ws5_3_fold_killtimer_failure_is_diagnosed(self):
-        # RoseCat 70fd7f9 #4: a failed timer cancel is diagnosed. The fold still COMPLETES (the timer is always
-        # really killed), so settle on `fold`; the KillTimer diagnostic must be on stderr.
+    def test_ws5_3_fold_killtimer_failure_retries_and_leaves_no_timer(self):
+        # RoseCat e666b02 #1: the e2e "kill" seam makes the FIRST real cancel genuinely fail (KillTimer skipped),
+        # so the retry must actually cancel the timer. The fold still COMPLETES (settle on `fold`), the retry
+        # diagnostic appears, and EXACTLY ONE fold row is emitted — proving no later tick survived.
         def body(r):
-            validate_transcript(r["stdout"], ["tree", "icon", "open", "fold"])
-            self.assertIn("KillTimer", r.get("stderr") or "", "a failed timer cancel must name a fixed diagnostic")
+            rows = validate_transcript(r["stdout"], ["tree", "icon", "open", "fold"])  # exactly one fold terminal
+            self.assertEqual(len(fields_of(rows, "fold")), 1, "no later tick may emit a second fold row")
+            self.assertIn("retrying", r.get("stderr") or "", "a failed first cancel must be diagnosed + retried")
         self._run_drawer(extra_env=self._env(ZIGBROWSER_AGENT_DRAWER_FOLD="1",
                                              ZIGBROWSER_AGENT_DRAWER_FOLD_FAIL="kill",
                                              ZB_SETTLE_KINDS="fold"), body=body)
