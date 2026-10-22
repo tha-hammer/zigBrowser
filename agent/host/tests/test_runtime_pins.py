@@ -7,8 +7,9 @@ no pip, no installs: it feeds a manifest {name: sha256} and an artifacts {name: 
 UNREGISTERED, signal-free, no VM, no Macs. Only agent/host/tests/ touched (not zb_agent_host/), so no ms5 inventory
 change. RED now: `setup.verify_pins` / `setup.PinError` absent (AttributeError). The green adds the verifier.
 
-MUTANTS (committed as rows): an unpinned artifact (the "unpinned pip install"), a sha256 mismatch, and a missing
-required pin must each be REFUSED.
+MUTANTS (committed as rows): an unpinned artifact (the "unpinned pip install"), a sha256 mismatch, a missing
+required pin, and a DROP-COMPLETENESS mutant (a verifier that checks only the artifacts it is handed and never
+requires every pinned artifact to be present) must each be REFUSED / caught.
 """
 
 import hashlib
@@ -34,6 +35,18 @@ def _artifacts():
     return {"python-x64": PY_X64, "claude_agent_sdk.whl": WHEEL}
 
 
+def _mutant_drop_completeness(manifest, artifacts):
+    """Committed DROP-COMPLETENESS mutant: it verifies every artifact it is HANDED against its pin, but never
+    requires that every pinned artifact in the manifest is actually present. A complete two-pin manifest whose
+    artifacts omit one pinned item therefore slips through. The real verify_pins must refuse that; this mutant
+    proves the two completeness rows below exercise completeness, not just per-artifact sha."""
+    for name, blob in artifacts.items():
+        if name not in manifest:
+            raise setup.PinError("unpinned artifact: %s" % name)
+        if _sha(blob) != manifest[name]:
+            raise setup.PinError("sha256 mismatch: %s" % name)
+
+
 class RuntimePinContract(unittest.TestCase):
     def test_matching_pinned_artifacts_verify(self):
         setup.verify_pins(_manifest(), _artifacts())  # exact x64 python + SDK wheel, sha256 pinned -> no raise
@@ -57,6 +70,28 @@ class RuntimePinContract(unittest.TestCase):
             setup.verify_pins({"python-x64": _sha(PY_X64)}, {"python-x64": PY_X64})  # wheel pin missing
         with self.assertRaises(setup.PinError):
             setup.verify_pins({"claude_agent_sdk.whl": _sha(WHEEL)}, {"claude_agent_sdk.whl": WHEEL})  # python pin missing
+
+    def test_complete_manifest_with_only_the_python_artifact_is_refused(self):
+        # the manifest pins BOTH, but the wheel artifact was never produced: the runtime is incomplete -> refuse.
+        with self.assertRaises(setup.PinError):
+            setup.verify_pins(_manifest(), {"python-x64": PY_X64})
+
+    def test_complete_manifest_with_only_the_wheel_artifact_is_refused(self):
+        # the manifest pins BOTH, but the python build is missing: the runtime is incomplete -> refuse.
+        with self.assertRaises(setup.PinError):
+            setup.verify_pins(_manifest(), {"claude_agent_sdk.whl": WHEEL})
+
+    def test_drop_completeness_mutant_wrongly_accepts_a_missing_artifact(self):
+        # The committed drop-completeness mutant: on a complete two-pin manifest whose artifacts omit one pinned
+        # item, the real verify_pins REFUSES, but a verifier that drops the completeness check wrongly ACCEPTS.
+        manifest = _manifest()
+        python_only = {"python-x64": PY_X64}  # the wheel pin has no artifact
+        with self.assertRaises(setup.PinError):
+            setup.verify_pins(manifest, python_only)  # the real engine requires every pinned artifact present
+        try:
+            _mutant_drop_completeness(manifest, python_only)  # the mutant skips completeness -> no raise
+        except setup.PinError:
+            self.fail("the drop-completeness mutant must NOT raise here; otherwise it does not model the gap")
 
 
 if __name__ == "__main__":
