@@ -684,6 +684,19 @@ pub fn build(b: *std.Build) void {
     const agent_drawer_tests = b.addTest(.{ .root_module = agent_drawer_tests_module });
     const run_agent_drawer_tests = b.addRunArtifact(agent_drawer_tests);
     run_agent_drawer_tests.skip_foreign_checks = true;
+    // MS7.1 (macOS plan line 2158): the AppKit dock geometry (pageRect, appKitFrame) in the portable logic.
+    // RED until agent_drawer.zig has them; not in `test` until the green.
+    const agent_drawer_appkit_tests_module = b.createModule(.{
+        .root_source_file = b.path("tests/agent_drawer_appkit_test.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    agent_drawer_appkit_tests_module.addImport("agent_drawer", agent_drawer_module);
+    const run_agent_drawer_appkit_tests = b.addRunArtifact(b.addTest(.{ .root_module = agent_drawer_appkit_tests_module }));
+    run_agent_drawer_appkit_tests.skip_foreign_checks = true;
+    const agent_drawer_appkit_step = b.step("test-agent-drawer-appkit", "MS7.1: the AppKit drawer's dock geometry in the portable logic");
+    agent_drawer_appkit_step.dependOn(&run_agent_drawer_appkit_tests.step);
     // Chat drawer S5c-1 (S5.6, rev 16.20.2): long unbroken runs get break points,
     // and Copy maps a selection back to the original bytes.
     const agent_drawer_breaks_tests_module = b.createModule(.{
