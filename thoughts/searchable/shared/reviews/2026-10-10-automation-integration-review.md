@@ -28103,3 +28103,57 @@ absent. It does not yet pin the plan's red or own the real browser lifecycle:
 
 No Windows host or user desktop was touched in this review. `git diff --check`
 is clean.
+
+## MS6.5.1 `(pid,start)` recovery green (`afe3920`)
+
+**BLOCKED.** The pure decision mapping is now correct, and the non-Linux branch
+is safely portable: Darwin compiles both architectures and returns
+`.unreadable`, which `recoveryFor` maps to `.fail_closed`. Reviewer
+clean-export evidence inside a private user/PID namespace passed **7/7 steps
+and 1/1 test** for `test-agent-run-ledger-recovery` plus both Darwin object
+builds. That does not close the blockers already recorded against red
+`97c6215`:
+
+1. `src/agent_run_ledger.zig:282-289` first opens `/proc/<pid>/stat`, closes
+   it, then opens/reads/parses it again through `readStartTicks`. Every failure
+   of that second open/read/parse is still mapped to `.dead` at line 288. Only
+   `ENOENT`/`ESRCH` proves absence; permission, I/O, truncation and parse errors
+   must return `.unreadable`. Read and parse the already-open fd, or return a
+   typed result that preserves absence versus unreadability.
+2. The now-registered test still has no unreadable row. Reviewer mutation
+   evidence is decisive: changing only
+   `.unreadable => .fail_closed` to `.unreadable => .recover` leaves
+   `test-agent-run-ledger-recovery` **green (4/4 steps, 1/1 test)**. Add
+   injectable open/read/parse failures and require no recovery for each.
+3. `tests/agent_run_ledger_recovery_test.zig:15-53` remains a decision/probe
+   unit around one idle fork. It creates no ledger entry, run directory,
+   marker-holding child, recovery transaction, signal seam or retire seam, so
+   its “neither signals nor retires” claim is not observed. The plan's
+   two-instance red at macOS-plan lines 2020-2025 must drive the production-
+   shaped recovery boundary and catch a recover-without-liveness mutant.
+4. The registered test has no unconditional cleanup guard: an assertion before
+   lines 47-50 relies on test-process fd teardown to release A and never
+   explicitly reaps it. Install a defer/guard before the first assertion so
+   every failure closes the release pipe and waits for the child.
+
+`afe3920` may remain a useful scoped primitive, but it cannot be the GREEN or
+registered closure for the plan row until the red is fixed forward and these
+production-shaped assertions pass. `git diff --check` is clean.
+
+## Linear prefix audit after pushed `bac895b`
+
+**No new push-through SHA exists; the boundary remains `bac895b`.** The first
+post-boundary commit is `3c3e354`; its atomic-publish range is cumulatively
+closed only by later `7a30c5c`. Reaching that fix-forward includes
+`fff7033`, whose cumulative decision fixes land only after `a527e72`, and
+`a527e72` remains independently BLOCKED by the incomplete WSL2 revisions
+`770848b`/`7ca6897`.
+
+BlackRobin's `8a146c4..ec22ab5` red artifacts now satisfy the reviewed red-test
+design through `ec22ab5`, but the range is still explicitly
+**BLOCKED-for-tests until its production green is committed and reviewed**;
+`6e90442` approved the red artifact only. Thus the immediate high-leverage
+missing commit is BlackRobin's S8a production green, while the WSL2 plan is a
+second independent blocker farther along the same intertwined prefix. The
+new `97c6215`/`afe3920` recovery range and `1e5ff2d` Windows-drawer red are later
+blocked items; neither is the first cause of the present boundary.
