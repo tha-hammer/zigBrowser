@@ -133,6 +133,22 @@ def rect_of(fields, i=0):
     return x, y, w, h
 
 
+# The WebView2 page widget class. The page is selected ONLY by class + owning pid, never by size (RoseCat
+# f877bc5): a larger unrelated direct child must not be mistaken for the page.
+PAGE_WIDGET_CLASS = "Chrome_WidgetWin_0"
+
+
+def select_page_child(children, launched_pid):
+    """Pure model of [Z]::PageHwnd (RoseCat f877bc5). `children` is the host's DIRECT children, each a dict with
+    at least {"hwnd", "cls", "pid"}. Return the UNIQUE direct child whose class is the WebView2 widget class AND
+    whose owning pid equals the launched pid, else None. Selection is by class + pid ONLY — NOT by size, and with
+    NO visibility gate (the WebView2 widget is not WS_VISIBLE headless; real page presentation is proven on the
+    owner's real screen). Absent, duplicate, or wrong-pid => None, so the caller fails closed."""
+    matches = [c for c in children
+               if c.get("cls") == PAGE_WIDGET_CLASS and int(c.get("pid", 0)) == int(launched_pid)]
+    return matches[0]["hwnd"] if len(matches) == 1 else None
+
+
 def check_success(r):
     """The discriminating oracle for a SUCCESSFUL drawer run. Raises AssertionError on any violation. Pure
     (takes the runner's JSON result dict), so it is exercised offline with injected results in WinDrawerOracle
@@ -192,7 +208,9 @@ def check_success(r):
     for who, key in (("panel", "panel_pid"), ("page", "page_pid"), ("bubble", "bubble_pid")):
         assert int(r.get(key, 0)) == int(r["pid"]), \
             f"the {who} HWND must belong to the launched pid ({r.get(key)} != {r['pid']})"
-    assert r.get("children_visible") is True, "the panel, page and bubble must all be visible"
+    # Native-control visibility: panel + bubble (controls we ShowWindow). The PAGE's real presentation (rendered
+    # pixels, not the WebView2 child's WS_VISIBLE bit) is verified separately in the owner real-screen check.
+    assert r.get("children_visible") is True, "the panel and bubble must be visible (native controls)"
     assert r.get("bubble_plaintext") is True, "the bubble must be in RichEdit PLAIN-TEXT mode (TM_PLAINTEXT)"
 
 
@@ -564,22 +582,16 @@ public static class Z {
   }
   // The panel visible at all (terminal check: a folded drawer's panel must be hidden).
   public static bool PanelVisible(IntPtr host) { IntPtr p = PanelHwnd(host); return p != IntPtr.Zero && StyleVisible(p); }
-  // The page re-docked to the full client area after folding: the WebView2 visual (the largest non-STATIC direct
-  // child) covers the whole client height again (not client_h - panel_h). True if its height reaches the client
-  // bottom within a small tolerance.
+  // The page re-docked to the full client area after folding: the WebView2 visual (the SAME strict page child
+  // PageHwnd selects) covers the whole client height again (not client_h - panel_h). True if its height reaches
+  // the client bottom within a small tolerance. Uses PageHwnd for one consistent page identity (no visibility
+  // gate; the WebView2 widget is not WS_VISIBLE headless).
   public static bool PageRedocked(IntPtr host) {
     RECT cr; if (!GetClientRect(host, out cr)) return false;
     int ch = cr.bottom - cr.top;
-    int best = 0;
-    IntPtr c = GetWindow(host, GW_CHILD);
-    while (c != IntPtr.Zero) {
-      var cls = new StringBuilder(64); GetClassName(c, cls, 64);
-      if (!string.Equals(cls.ToString(), "STATIC", StringComparison.OrdinalIgnoreCase) && StyleVisible(c)) {
-        RECT r; if (GetWindowRect(c, out r)) { int hgt = r.bottom - r.top; if (hgt > best) best = hgt; }
-      }
-      c = GetWindow(c, GW_HWNDNEXT);
-    }
-    return best >= ch - 4;
+    IntPtr pg = PageHwnd(host); if (pg == IntPtr.Zero) return false;
+    RECT r; if (!GetWindowRect(pg, out r)) return false;
+    return (r.bottom - r.top) >= ch - 4;
   }
   // WS5.7: drive a real WM_DPICHANGED (0x02E0) to the host with a new per-monitor DPI (wparam = MAKEWPARAM(dpi,
   // dpi)); the drawer's handler adopts it and re-sizes the icon. lparam (the suggested RECT*) is unused by the
@@ -619,17 +631,20 @@ public static class Z {
     return tl.x + "," + tl.y + "," + (r.right-r.left) + "," + (r.bottom-r.top);
   }
   // The page (WebView2) HWND: the largest VISIBLE non-STATIC direct child.
+  // The WebView2 page: the UNIQUE direct child of the host whose class is the WebView2 widget class
+  // (Chrome_WidgetWin_0) AND whose owning pid is the launched pid (RoseCat f877bc5). NOT merely the largest
+  // non-STATIC child, and NO visibility gate (real page presentation moves to the owner real-screen check).
+  // Absent / duplicate / wrong-pid => IntPtr.Zero (the caller fails closed). Mirrors select_page_child() offline.
   public static IntPtr PageHwnd(IntPtr host) {
-    long best = -1; IntPtr found = IntPtr.Zero;
+    IntPtr found = IntPtr.Zero; int n = 0;
     IntPtr c = GetWindow(host, GW_CHILD);
     while (c != IntPtr.Zero) {
       var cls = new StringBuilder(64); GetClassName(c, cls, 64);
-      if (!string.Equals(cls.ToString(), "STATIC", StringComparison.OrdinalIgnoreCase) && StyleVisible(c)) {
-        RECT r; if (GetWindowRect(c, out r)) { long a = (long)(r.right-r.left) * (r.bottom-r.top); if (a > best) { best = a; found = c; } }
-      }
+      uint pid; GetWindowThreadProcessId(c, out pid);
+      if (cls.ToString() == "Chrome_WidgetWin_0" && (int)pid == Pid) { found = c; n++; }
       c = GetWindow(c, GW_HWNDNEXT);
     }
-    return found;
+    return n == 1 ? found : IntPtr.Zero;
   }
   public static string PageClientRect(IntPtr host) {
     IntPtr pg = PageHwnd(host); if (pg == IntPtr.Zero) return "";
@@ -658,9 +673,11 @@ public static class Z {
   public static int PagePid(IntPtr host) { IntPtr p = PageHwnd(host); return p == IntPtr.Zero ? 0 : WindowPid(p); }
   public static int BubblePid(IntPtr host) { IntPtr b = BubbleHwnd(host); return b == IntPtr.Zero ? 0 : WindowPid(b); }
   public static bool ChildrenVisible(IntPtr host) {
-    IntPtr pa = PanelHwnd(host), pg = PageHwnd(host), bu = BubbleHwnd(host);
-    return pa != IntPtr.Zero && StyleVisible(pa) && pg != IntPtr.Zero && StyleVisible(pg)
-        && bu != IntPtr.Zero && StyleVisible(bu);
+    // NATIVE-control visibility only (RoseCat f877bc5): panel + bubble are controls WE ShowWindow, so their
+    // per-window WS_VISIBLE style is meaningful headless. The PAGE's real presentation moves to the owner
+    // real-screen check (rendered pixels, not the WebView2 child's WS_VISIBLE bit).
+    IntPtr pa = PanelHwnd(host), bu = BubbleHwnd(host);
+    return pa != IntPtr.Zero && StyleVisible(pa) && bu != IntPtr.Zero && StyleVisible(bu);
   }
   public static bool BubblePlainText(IntPtr host) {
     IntPtr b = BubbleHwnd(host); if (b == IntPtr.Zero) return false;
@@ -1051,6 +1068,37 @@ class WinDrawerOracle(unittest.TestCase):
     def test_rich_text_bubble_rejected(self):
         # the bubble is ES_READONLY but NOT plain-text (RichEdit rich-text mode) — RTF could render markup
         self._reject(lambda r: r.update(bubble_plaintext=False))
+
+    # --- strict page-child selector (select_page_child / [Z]::PageHwnd, RoseCat f877bc5) ---
+    # The headless gate keeps page EXISTENCE + OWNERSHIP (class + launched pid); only real page PRESENTATION
+    # (rendered pixels) moves to the owner real-screen check. These prove the selector is causal: a larger
+    # unrelated direct child is ignored, while absent / duplicate / wrong-pid matches fail closed.
+    def test_page_child_larger_unrelated_ignored(self):
+        # A LARGER unrelated direct child (a different class) must NOT be mistaken for the page: selection is by
+        # class + pid, never by size. The genuine Chrome_WidgetWin_0 child is still picked.
+        children = [
+            {"hwnd": 0x10, "cls": "Static", "pid": 4242},
+            {"hwnd": 0x20, "cls": "SomeHugeOverlay", "pid": 4242},  # larger area, wrong class — a size-based pick would take this
+            {"hwnd": 0x30, "cls": PAGE_WIDGET_CLASS, "pid": 4242},
+        ]
+        self.assertEqual(select_page_child(children, 4242), 0x30)
+
+    def test_page_child_absent_fails(self):
+        # No Chrome_WidgetWin_0 child at all => None (caller fails closed).
+        children = [{"hwnd": 0x10, "cls": "Static", "pid": 4242},
+                    {"hwnd": 0x20, "cls": "SomeHugeOverlay", "pid": 4242}]
+        self.assertIsNone(select_page_child(children, 4242))
+
+    def test_page_child_duplicate_fails(self):
+        # TWO launched-pid Chrome_WidgetWin_0 children => ambiguous => None (not "pick the bigger/first one").
+        children = [{"hwnd": 0x30, "cls": PAGE_WIDGET_CLASS, "pid": 4242},
+                    {"hwnd": 0x31, "cls": PAGE_WIDGET_CLASS, "pid": 4242}]
+        self.assertIsNone(select_page_child(children, 4242))
+
+    def test_page_child_wrong_pid_fails(self):
+        # A Chrome_WidgetWin_0 child owned by a DIFFERENT pid (a stray/stale browser) must not count => None.
+        children = [{"hwnd": 0x30, "cls": PAGE_WIDGET_CLASS, "pid": 9999}]
+        self.assertIsNone(select_page_child(children, 4242))
 
     def test_exactly_eight_live_methods(self):
         # RoseCat 7862/7868 #2: pin the hostless skip count — WinDrawerLive has EXACTLY the 8 entry live rows.
