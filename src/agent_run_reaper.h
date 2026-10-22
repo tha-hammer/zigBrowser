@@ -109,6 +109,20 @@ int zb_reaper_run_full(int (*scan)(void *buf, int bytes), const struct zb_reaper
 int zb_reaper_fixed_point(int (*scan)(void *buf, int bytes), const struct zb_reaper_ops *ops, const char *dir,
                           int max_passes, int *clean, int *passes, int *overflow);
 
+/* MS6.5.1 capability composite (portable; the Linux kill-safety proof): the ONE operation that may recover a run.
+ * It consumes the HELD run-dir fd, its pinned (dev,ino,uid,mode) identity, and ONE absolute monotonic deadline
+ * (`now_ms` in ms, read-failure-saturating so a failed clock reads as crossed = fail closed), and runs the reviewed
+ * `zb_reaper_fixed_point`. The kill is INJECTED — this NEVER exposes a raw signal primitive. The sockdir grammar,
+ * the deadline and the pinned identity are validated BEFORE the engine and the deadline+identity AGAIN before Clean,
+ * so an invalid/changed pin or a crossed deadline can never authorize a Clean teardown. 0 with *out_clean set only on
+ * the complete, revalidated empty census; EINVAL (bad arg/grammar/pin), EOVERFLOW (crossed deadline / incomplete /
+ * overflow), else the engine's nonzero result. */
+int zb_reaper_prod_fixed_point(int (*scan)(void *buf, int bytes),
+                               void (*inspect)(pid_t, const char *, struct zb_reaper_id *, void *),
+                               int (*killsig)(pid_t, int, void *), int run_dir_fd,
+                               const struct zb_reaper_dir_id *pinned, int64_t (*now_ms)(void), int64_t deadline_ms,
+                               const char *dir, int max_passes, int *out_clean, int *out_passes, int *out_overflow);
+
 /* ---- the run ledger: per-entry creation-provenance decision (portable; Linux-testable with real dirs) ---- */
 
 /* The outcome of deciding one recorded ledger entry against the real filesystem. A directory is ever swept ONLY
@@ -155,11 +169,12 @@ int zb_reaper_census(int run_dir_fd, const struct zb_reaper_dir_id *pinned, int 
 int zb_reaper_sweep(int run_dir_fd, const struct zb_reaper_dir_id *pinned, int *out_killed_pids, int killed_cap,
                     int *out_killed_n, int *out_survivor_pids, int survivor_cap, int *out_survivor_n,
                     int *out_overflow);
-/* The static libproc + real-kill callbacks, exported so a caller can run the reviewed engine over them with its
- * own deadline-aware dir_ok (no new algorithm). */
-int zb_reaper_prod_scan(void *buf, int bytes);
-void zb_reaper_prod_inspect(pid_t pid, const char *dir, struct zb_reaper_id *out, void *ctx);
-int zb_reaper_prod_killsig(pid_t pid, int sig, void *ctx);
+/* The ONLY Apple export for the production actuator: binds the file-private libproc + real-kill callbacks to the
+ * portable capability composite above. The raw kill is never exported; it can act only through the composite after
+ * it has consumed the held fd, the exact pin and the deadline. */
+int zb_reaper_prod_recover(int run_dir_fd, const struct zb_reaper_dir_id *pinned, int64_t (*now_ms)(void),
+                           int64_t deadline_ms, const char *dir, int max_passes, int *out_clean, int *out_passes,
+                           int *out_overflow);
 #endif
 
 #ifdef __cplusplus

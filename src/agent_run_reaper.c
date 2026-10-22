@@ -248,6 +248,62 @@ int zb_reaper_fixed_point(int (*scan)(void *buf, int bytes), const struct zb_rea
   return 0; /* max_passes exhausted without an empty census: *clean stays 0 (Survivors) */
 }
 
+/* MS6.5.1 (RoseCat afdffbf): the ONE capability-enforcing composite over the reviewed fixed point. It consumes the
+ * HELD run-dir fd, its pinned (dev,ino,uid,mode) identity, and ONE absolute monotonic deadline, and NEVER exposes a
+ * raw signal primitive: the kill is INJECTED (production binds the file-private libproc + real-kill callbacks; the
+ * Linux proof binds fakes with the kill intercepted). No new algorithm — the decision is `zb_reaper_fixed_point`.
+ * The deadline and the pinned identity are revalidated BEFORE the engine AND AGAIN before returning Clean, so an
+ * invalid/changed pin or a crossed deadline can never authorize a Clean teardown. `now_ms` is a monotonic clock in
+ * ms whose read failure MUST saturate (so the deadline reads as crossed = fail closed). Returns 0 with *out_clean
+ * set only on the complete, revalidated empty census; EINVAL on a bad argument / sockdir grammar / pin; EOVERFLOW on
+ * a crossed deadline or an incomplete/overflowed census; else the engine's nonzero result. */
+struct zb_reaper_prod_ctx {
+  int run_dir_fd;
+  const struct zb_reaper_dir_id *pinned;
+  int64_t (*now_ms)(void);
+  int64_t deadline_ms;
+};
+static int zb_reaper_prod_dir_ok(void *ctx) {
+  const struct zb_reaper_prod_ctx *c = (const struct zb_reaper_prod_ctx *)ctx;
+  if (c->now_ms != NULL && c->now_ms() >= c->deadline_ms) return 0; /* deadline crossed: the engine sends NO signal */
+  return zb_reaper_dir_fd_ok(c->run_dir_fd, c->pinned);             /* fstat the HELD fd: no pathname, no symlink */
+}
+int zb_reaper_prod_fixed_point(int (*scan)(void *buf, int bytes),
+                               void (*inspect)(pid_t, const char *, struct zb_reaper_id *, void *),
+                               int (*killsig)(pid_t, int, void *), int run_dir_fd,
+                               const struct zb_reaper_dir_id *pinned, int64_t (*now_ms)(void), int64_t deadline_ms,
+                               const char *dir, int max_passes, int *out_clean, int *out_passes, int *out_overflow) {
+  if (scan == NULL || inspect == NULL || killsig == NULL || pinned == NULL || dir == NULL || out_clean == NULL ||
+      out_overflow == NULL)
+    return EINVAL;
+  *out_clean = 0;
+  *out_overflow = 0;
+  if (out_passes != NULL) *out_passes = 0;
+  if (run_dir_fd < 0 || max_passes < 1) return EINVAL;
+  if (!zb_reaper_run_dir_ok(dir)) return EINVAL;                   /* the sockdir grammar (pure, name only) */
+  if (now_ms != NULL && now_ms() >= deadline_ms) {                /* deadline already crossed up front */
+    *out_overflow = 1;
+    return EOVERFLOW;
+  }
+  if (!zb_reaper_dir_fd_ok(run_dir_fd, pinned)) return EINVAL;    /* UP-FRONT pin check: a bad pin never acts */
+  struct zb_reaper_prod_ctx pc = {run_dir_fd, pinned, now_ms, deadline_ms};
+  struct zb_reaper_ops ops = {inspect, killsig, zb_reaper_prod_dir_ok, &pc};
+  int clean = 0, passes = 0, overflow = 0;
+  const int rc = zb_reaper_fixed_point(scan, &ops, dir, max_passes, &clean, &passes, &overflow);
+  if (out_passes != NULL) *out_passes = passes;
+  if (overflow) *out_overflow = 1;
+  if (rc != 0) return rc;                                         /* EINVAL etc: propagate */
+  if (overflow) return EOVERFLOW;                                 /* incomplete/scan error: non-clean */
+  if (!clean) return 0;                                           /* Survivors / max_passes exhausted: non-clean */
+  if (now_ms != NULL && now_ms() >= deadline_ms) {                /* FINAL deadline recheck: crossed during passes */
+    *out_overflow = 1;
+    return EOVERFLOW;
+  }
+  if (!zb_reaper_dir_fd_ok(run_dir_fd, pinned)) return EINVAL;    /* FINAL pin recheck: changed during passes */
+  *out_clean = 1;                                                 /* complete, revalidated empty census: Clean */
+  return 0;
+}
+
 int zb_reaper_ledger_entry_state(int runtime_fd, const char *basename, const struct zb_reaper_dir_id *rec,
                                  int active) {
   if (runtime_fd < 0 || basename == NULL || rec == NULL) return ZB_LEDGER_EINVAL;
@@ -380,12 +436,13 @@ int zb_reaper_sweep(int run_dir_fd, const struct zb_reaper_dir_id *pinned, int *
                        out_survivor_pids, survivor_cap, out_survivor_n, out_overflow);
 }
 
-/* Thin exported wrappers over the static libproc + real-kill callbacks, so a caller can run the REVIEWED engine
- * (zb_reaper_fixed_point / zb_reaper_run_full) with the REAL scan/inspect/kill while supplying its own
- * deadline-aware dir_ok. No new algorithm: these are the same functions reaper_public already wires. */
-int zb_reaper_prod_scan(void *buf, int bytes) { return reaper_scan_real(buf, bytes); }
-void zb_reaper_prod_inspect(pid_t pid, const char *dir, struct zb_reaper_id *out, void *ctx) {
-  reaper_inspect_real(pid, dir, out, ctx);
+/* The ONLY Apple export for the production actuator: bind the file-private libproc + real-kill callbacks to the
+ * capability composite. The raw kill primitive is NEVER exported — it can act only after `zb_reaper_prod_fixed_point`
+ * has consumed the held fd, the exact pin and the deadline, and revalidated them before and after the passes. */
+int zb_reaper_prod_recover(int run_dir_fd, const struct zb_reaper_dir_id *pinned, int64_t (*now_ms)(void),
+                           int64_t deadline_ms, const char *dir, int max_passes, int *out_clean, int *out_passes,
+                           int *out_overflow) {
+  return zb_reaper_prod_fixed_point(reaper_scan_real, reaper_inspect_real, reaper_killsig_real, run_dir_fd, pinned,
+                                    now_ms, deadline_ms, dir, max_passes, out_clean, out_passes, out_overflow);
 }
-int zb_reaper_prod_killsig(pid_t pid, int sig, void *ctx) { return reaper_killsig_real(pid, sig, ctx); }
 #endif /* __APPLE__ */

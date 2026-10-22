@@ -785,12 +785,45 @@ test "#5 deterministic handshake: the held flock serialises the kill phase; exac
     try std.testing.expectEqual(@as(usize, 0), try entryCount(io, gpa, td.dir));
 }
 
-// ---- 9e19fd0: the failure surface the Darwin actuator inherits (incomplete scan / unreadable / EPERM / survivor
-// -> non-Clean), proven on Linux through the SAME engine + runFixedPoint the Darwin actuator wraps. -------------
+// ---- 9e19fd0 / afdffbf: drive the REAL capability composite `zb_reaper_prod_fixed_point` (the production actuator
+// reaches the SAME composite via `zb_reaper_prod_recover`). These rows causally exercise the grammar check, the
+// UP-FRONT and FINAL pin/deadline revalidation, and the injected-callback selection, with every kill intercepted
+// (no real Mac signal). The composite owns the ops ctx (`&pc`), so these fakes count via globals and ignore ctx. ---
 
 const EPERM: c_int = @intFromEnum(std.posix.E.PERM);
+var g_prod_kills: u32 = 0; // intercepted SIGKILLs through the composite (reset per row)
+var g_prod_gone: bool = false; // engine_gone liveness: gone AFTER our kill
+// (the step-clock call counter `g_now_calls` is declared above with nowCrossBeforeKill; reused here)
+
 fn nowFar() callconv(.c) i64 {
     return 0; // far under any positive deadline -> the deadline never bites in these rows
+}
+// Returns < deadline on the FIRST call (up-front), then saturates: the empty census crosses the deadline exactly at
+// the FINAL recheck, so only a composite that rechecks the deadline before Clean stays non-Clean (afdffbf #2).
+fn nowStepExpire() callconv(.c) i64 {
+    const n = g_now_calls;
+    g_now_calls += 1;
+    return if (n == 0) 0 else std.math.maxInt(i64);
+}
+fn scanEmpty(buf: ?*anyopaque, bytes: c_int) callconv(.c) c_int {
+    _ = buf;
+    _ = bytes;
+    return 0; // a complete, EMPTY census every pass
+}
+// ctx-free match (identity readable -> killable) + a counting intercepted kill, for the composite seam.
+fn pInspectMatch(pid: recovery.pid_t, dir: [*c]const u8, out: [*c]recovery.ReaperId, ctx: ?*anyopaque) callconv(.c) void {
+    _ = pid;
+    _ = dir;
+    _ = ctx;
+    out.* = .{ .matches = 1, .have_bsd = 1, .uid = linux.getuid(), .start_sec = 111, .start_usec = 0 };
+}
+fn pKillCount(pid: recovery.pid_t, sig: c_int, ctx: ?*anyopaque) callconv(.c) c_int {
+    _ = pid;
+    _ = ctx;
+    if (sig == 0) return if (g_prod_gone) ESRCH else 0; // engine_gone probe: gone AFTER our kill
+    g_prod_kills += 1; // the real SIGKILL -> INTERCEPTED (counted, never sent)
+    g_prod_gone = true;
+    return 0;
 }
 fn scanFull(buf: ?*anyopaque, bytes: c_int) callconv(.c) c_int {
     if (buf == null) return 64; // size estimate
@@ -820,43 +853,96 @@ fn killEPERM(pid: recovery.pid_t, sig: c_int, ctx: ?*anyopaque) callconv(.c) c_i
     return EPERM; // the SIGKILL is refused EPERM -> a survivor, never clean
 }
 
-test "9e19fd0 failure surface: an incomplete libproc scan is non-Clean (incomplete), zero action" {
+// A row's held fd + its matching pin, under a fresh run dir; resets the per-row global counters.
+fn prodFixture(td: *std.testing.TmpDir) !struct { fd: i32, pinned: recovery.DirId } {
+    _ = try makeRunDir(td.dir, true);
+    const fd = try openRunDir(td.dir);
+    const pinned = recovery.pinDir(td.dir, BASENAME) orelse return error.Pin;
+    g_pass = 0;
+    g_prod_kills = 0;
+    g_prod_gone = false;
+    g_now_calls = 0;
+    return .{ .fd = fd, .pinned = pinned };
+}
+
+test "afdffbf composite: the happy path reaches Clean with exactly one intercepted kill" {
     if (!inPrivatePidNamespace()) return error.NotInPrivatePidNamespace;
     var td = std.testing.tmpDir(.{});
     defer td.cleanup();
-    _ = try makeRunDir(td.dir, true);
-    const fd = try openRunDir(td.dir);
-    defer _ = std.posix.system.close(fd);
-    const pinned = recovery.pinDir(td.dir, BASENAME) orelse return error.Pin;
-    var counters = Counters{};
-    const fp = recovery.runFixedPoint(&nowFar, 1000, fd, &pinned, DUMMY_PATH, 3, &scanFull, &inspectCb, &killCb, &counters);
+    const f = try prodFixture(&td);
+    defer _ = std.posix.system.close(f.fd);
+    // scanCb: pass 1 yields the marked pid, every later pass is empty -> the revalidated empty final census.
+    const fp = recovery.prodFixedPoint(&scanCb, &pInspectMatch, &pKillCount, f.fd, &f.pinned, &nowFar, 1000, DUMMY_PATH, 8);
+    try std.testing.expectEqual(ledger.FixedPoint.clean, fp);
+    try std.testing.expectEqual(@as(u32, 1), g_prod_kills);
+}
+
+test "afdffbf composite: an incomplete libproc scan is non-Clean (incomplete), zero action" {
+    if (!inPrivatePidNamespace()) return error.NotInPrivatePidNamespace;
+    var td = std.testing.tmpDir(.{});
+    defer td.cleanup();
+    const f = try prodFixture(&td);
+    defer _ = std.posix.system.close(f.fd);
+    const fp = recovery.prodFixedPoint(&scanFull, &pInspectMatch, &pKillCount, f.fd, &f.pinned, &nowFar, 1000, DUMMY_PATH, 3);
     try std.testing.expectEqual(ledger.FixedPoint.incomplete, fp);
-    try std.testing.expectEqual(@as(u32, 0), counters.kills);
+    try std.testing.expectEqual(@as(u32, 0), g_prod_kills);
 }
 
-test "9e19fd0 failure surface: an UNREADABLE identity is never swept -> non-Clean, zero kills" {
+test "afdffbf composite: an UNREADABLE identity is never swept -> non-Clean, zero kills" {
     if (!inPrivatePidNamespace()) return error.NotInPrivatePidNamespace;
     var td = std.testing.tmpDir(.{});
     defer td.cleanup();
-    _ = try makeRunDir(td.dir, true);
-    const fd = try openRunDir(td.dir);
-    defer _ = std.posix.system.close(fd);
-    const pinned = recovery.pinDir(td.dir, BASENAME) orelse return error.Pin;
-    var counters = Counters{};
-    const fp = recovery.runFixedPoint(&nowFar, 1000, fd, &pinned, DUMMY_PATH, 3, &scanOnePersistent, &inspectUnreadable, &killCb, &counters);
+    const f = try prodFixture(&td);
+    defer _ = std.posix.system.close(f.fd);
+    const fp = recovery.prodFixedPoint(&scanOnePersistent, &inspectUnreadable, &pKillCount, f.fd, &f.pinned, &nowFar, 1000, DUMMY_PATH, 3);
     try std.testing.expect(fp != .clean); // never clean while an unreadable-identity match persists
-    try std.testing.expectEqual(@as(u32, 0), counters.kills); // never killed (have_bsd == 0)
+    try std.testing.expectEqual(@as(u32, 0), g_prod_kills); // never killed (have_bsd == 0)
 }
 
-test "9e19fd0 failure surface: an EPERM kill is a survivor -> non-Clean" {
+test "afdffbf composite: an EPERM kill is a survivor -> non-Clean" {
     if (!inPrivatePidNamespace()) return error.NotInPrivatePidNamespace;
     var td = std.testing.tmpDir(.{});
     defer td.cleanup();
-    _ = try makeRunDir(td.dir, true);
-    const fd = try openRunDir(td.dir);
-    defer _ = std.posix.system.close(fd);
-    const pinned = recovery.pinDir(td.dir, BASENAME) orelse return error.Pin;
-    var counters = Counters{};
-    const fp = recovery.runFixedPoint(&nowFar, 1000, fd, &pinned, DUMMY_PATH, 3, &scanOnePersistent, &inspectCb, &killEPERM, &counters);
+    const f = try prodFixture(&td);
+    defer _ = std.posix.system.close(f.fd);
+    const fp = recovery.prodFixedPoint(&scanOnePersistent, &pInspectMatch, &killEPERM, f.fd, &f.pinned, &nowFar, 1000, DUMMY_PATH, 3);
     try std.testing.expect(fp != .clean); // an EPERM-refused kill is a survivor, never clean
+}
+
+test "afdffbf #2: a wrong UP-FRONT pin never authorizes a Clean teardown, zero action" {
+    if (!inPrivatePidNamespace()) return error.NotInPrivatePidNamespace;
+    var td = std.testing.tmpDir(.{});
+    defer td.cleanup();
+    const f = try prodFixture(&td);
+    defer _ = std.posix.system.close(f.fd);
+    var bogus = f.pinned;
+    bogus.ino +%= 1; // the held fd no longer fstats to this pinned identity
+    // An EMPTY census would otherwise return Clean; the up-front pin check must fail closed before the engine.
+    const fp = recovery.prodFixedPoint(&scanEmpty, &pInspectMatch, &pKillCount, f.fd, &bogus, &nowFar, 1000, DUMMY_PATH, 3);
+    try std.testing.expect(fp != .clean);
+    try std.testing.expectEqual(@as(u32, 0), g_prod_kills);
+}
+
+test "afdffbf #2: the deadline crossing at the FINAL recheck downgrades an empty census from Clean" {
+    if (!inPrivatePidNamespace()) return error.NotInPrivatePidNamespace;
+    var td = std.testing.tmpDir(.{});
+    defer td.cleanup();
+    const f = try prodFixture(&td);
+    defer _ = std.posix.system.close(f.fd);
+    // nowStepExpire: < deadline up front (census runs, empty -> would be Clean), saturated by the final recheck.
+    const fp = recovery.prodFixedPoint(&scanEmpty, &pInspectMatch, &pKillCount, f.fd, &f.pinned, &nowStepExpire, 1000, DUMMY_PATH, 3);
+    try std.testing.expectEqual(ledger.FixedPoint.incomplete, fp);
+    try std.testing.expectEqual(@as(u32, 0), g_prod_kills);
+}
+
+test "afdffbf composite: a dir failing the sockdir grammar fails closed before the engine, zero action" {
+    if (!inPrivatePidNamespace()) return error.NotInPrivatePidNamespace;
+    var td = std.testing.tmpDir(.{});
+    defer td.cleanup();
+    const f = try prodFixture(&td);
+    defer _ = std.posix.system.close(f.fd);
+    // "/tmp" is not the sockdir grammar; a mutant dropping the grammar check would run the engine and reach Clean.
+    const fp = recovery.prodFixedPoint(&scanCb, &pInspectMatch, &pKillCount, f.fd, &f.pinned, &nowFar, 1000, "/tmp", 8);
+    try std.testing.expect(fp != .clean);
+    try std.testing.expectEqual(@as(u32, 0), g_prod_kills);
 }

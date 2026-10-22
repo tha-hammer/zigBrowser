@@ -1001,14 +1001,17 @@ pub fn build(b: *std.Build) void {
     run_recovery_concrete.addArtifactArg(recovery_concrete_exe);
     const recovery_concrete_step = b.step("test-agent-run-recovery-txn", "MS6.5.1 bd zigBrowser-3gl CONCRETE recovery lease over the reaper C (private ns, fd-9 sentinel; MANUAL, not in aggregate)");
     recovery_concrete_step.dependOn(&run_recovery_concrete.step);
-    // Prove the Darwin build path for the portable recovery slice (RoseCat 671c986 #3): cross-compile the Zig to
-    // aarch64 + x86_64 macOS as objects. The slice uses only std.posix.system + portable header translation, so it
-    // must build for Darwin. (The reviewed reaper C's own Darwin build is covered by the Mac gate.)
+    // Prove the Darwin build path for the recovery slice (RoseCat 671c986 #3) AND compile the reviewed reaper C's
+    // __APPLE__ body here (RoseCat afdffbf #3): cross-compile the Zig actuator + src/agent_run_reaper.c to aarch64 +
+    // x86_64 macOS as objects. The Zig actuator calls the Apple-only `zb_reaper_prod_recover`, so the reaper C must
+    // compile for Darwin in THIS step — invalid Apple C (e.g. the capability binder) fails the manual step, not just
+    // the far-off Mac gate. Zig ships the macOS libproc headers, so the libproc + real-kill wrappers compile here.
     inline for (.{ .{ "aarch64", std.Target.Cpu.Arch.aarch64 }, .{ "x86_64", std.Target.Cpu.Arch.x86_64 } }) |m| {
         const dl = b.createModule(.{ .root_source_file = b.path("src/agent_run_ledger.zig"), .target = b.resolveTargetQuery(.{ .cpu_arch = m[1], .os_tag = .macos }), .optimize = optimize });
         const dr = b.createModule(.{ .root_source_file = b.path("src/agent_run_recovery.zig"), .target = b.resolveTargetQuery(.{ .cpu_arch = m[1], .os_tag = .macos }), .optimize = optimize, .link_libc = true });
         dr.addImport("agent_run_ledger", dl);
         dr.addIncludePath(b.path("src"));
+        dr.addCSourceFile(.{ .file = b.path("src/agent_run_reaper.c"), .flags = &.{"-std=gnu11"} }); // compiles the __APPLE__ body
         const dobj = b.addObject(.{ .name = "agent_run_recovery_darwin_" ++ m[0], .root_module = dr });
         recovery_concrete_step.dependOn(&dobj.step);
     }

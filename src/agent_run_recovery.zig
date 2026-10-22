@@ -222,13 +222,16 @@ fn dirOkThunk(ctx: ?*anyopaque) callconv(.c) c_int {
 /// A real CLOCK_MONOTONIC reader in C-callable form, for the production/generic census now-fn. Per-OS so it builds
 /// on Darwin (Linux raw syscall; Darwin libc), mirroring the ledger's RealClock.
 pub fn realNowMs() callconv(.c) i64 {
+    // A clock read failure at a destructive deadline boundary MUST fail closed, never read an undefined timespec
+    // (RoseCat afdffbf #4): on failure return the saturated value, so the deadline always reads as crossed and no
+    // signal/Clean can follow.
     if (builtin.os.tag == .linux) {
         var ts: std.os.linux.timespec = undefined;
-        _ = std.os.linux.clock_gettime(std.os.linux.CLOCK.MONOTONIC, &ts);
+        if (std.os.linux.clock_gettime(std.os.linux.CLOCK.MONOTONIC, &ts) != 0) return std.math.maxInt(i64);
         return @as(i64, ts.sec) * 1000 + @divTrunc(@as(i64, ts.nsec), 1_000_000);
     } else {
         var ts: std.c.timespec = undefined;
-        _ = std.c.clock_gettime(std.c.CLOCK.MONOTONIC, &ts);
+        if (std.c.clock_gettime(std.c.CLOCK.MONOTONIC, &ts) != 0) return std.math.maxInt(i64);
         return @as(i64, @intCast(ts.sec)) * 1000 + @divTrunc(@as(i64, @intCast(ts.nsec)), 1_000_000);
     }
 }
@@ -250,26 +253,51 @@ pub fn runFixedPoint(now: NowFn, deadline_ms: i64, run_dir_fd: i32, pinned: *con
     return if (clean != 0) .clean else .survivors;
 }
 
-// ---- the Darwin PRODUCTION census actuator (RoseCat 9e19fd0) --------------------------------------------------
-// Wraps the SAME reviewed engine (`runFixedPoint` -> `zb_reaper_fixed_point`) with the reviewed real libproc
-// scan/inspect + real kill (`zb_reaper_prod_*`, thin wrappers over the engine's own static callbacks), the held-fd
-// + pinned-identity capability, the deadline-aware `dirOkThunk`, and the ONE absolute deadline through every
-// pre-signal boundary. No second algorithm. Incomplete libproc scans, unreadable identity, EPERM and any survivor
-// map to non-Clean exactly as the engine + `runFixedPoint` already do. NOT ARMED / NOT reachable: no caller, no
-// `reaper_ready` gate. Mac-only; on every other target the body is comptime-pruned and it fails closed.
+// ---- the Darwin PRODUCTION census actuator (RoseCat 9e19fd0 / afdffbf) ----------------------------------------
+// A thin Mac-only binder over the ONE capability composite `zb_reaper_prod_fixed_point` (RoseCat afdffbf #1): it
+// derives the held inode's CURRENT path and calls the composite, which consumes the held fd + pinned identity + the
+// ONE absolute deadline, revalidates them before the engine AND again before Clean, and runs the reviewed
+// `zb_reaper_fixed_point`. No raw signal is exposed and no second algorithm exists here — the decision, the
+// grammar/pin/deadline capability and the kill all live in the reviewed C. The capability logic is portable and is
+// exercised on Linux through `prodFixedPoint` with the kill intercepted (RoseCat afdffbf #2/#3). NOT ARMED / NOT
+// reachable: no caller, no `reaper_ready` gate. Mac-only; every other target comptime-prunes the body and fails closed.
 
 const PATH_MAX = 4096;
+
+/// Map the composite's (rc, clean, overflow) to the ledger outcome: Clean only on a revalidated empty census; a
+/// crossed deadline / incomplete / overflow -> incomplete; any other nonzero or non-clean -> survivors. Never Clean
+/// on doubt.
+fn mapProd(rc: c_int, clean: c_int, overflow: c_int) ledger.FixedPoint {
+    if (overflow != 0) return .incomplete;
+    if (rc != 0) return .survivors; // EINVAL (bad grammar/pin) etc: fail closed, never Clean
+    return if (clean != 0) .clean else .survivors;
+}
+
+/// The Linux-testable production seam (RoseCat afdffbf #3): drive the REAL capability composite
+/// `zb_reaper_prod_fixed_point` with injected scan/inspect/killsig (the kill intercepted on Linux) so the grammar,
+/// up-front + final pin/deadline revalidation and callback selection are all causally exercised. Production (Darwin)
+/// reaches the same composite through `zb_reaper_prod_recover`, which binds the file-private real callbacks.
+pub fn prodFixedPoint(scan: ScanFn, inspect: InspectFn, killsig: KillFn, run_dir_fd: i32, pinned: *const DirId, now: NowFn, deadline_ms: i64, dir_path: [*:0]const u8, max_passes: c_int) ledger.FixedPoint {
+    var clean: c_int = 0;
+    var passes: c_int = 0;
+    var overflow: c_int = 0;
+    const rc = c.zb_reaper_prod_fixed_point(scan, inspect, killsig, run_dir_fd, pinned, now, deadline_ms, dir_path, max_passes, &clean, &passes, &overflow);
+    return mapProd(rc, clean, overflow);
+}
 
 /// The Darwin production census/sweep over the HELD run-dir fd. `max_passes` bounds the fixed point; the real kill
 /// only runs on a Mac (every Linux signal is intercepted, and no caller invokes this yet).
 pub fn darwinCensus(run_dir_fd: i32, pinned: *const DirId, deadline_ms: i64, max_passes: c_int) ledger.FixedPoint {
     if (builtin.os.tag == .macos) {
         var buf: [PATH_MAX]u8 = undefined;
-        const F_GETPATH: i32 = 50; // Darwin: the held inode's CURRENT path (swap-immune) for the classifier
+        const F_GETPATH: i32 = 50; // Darwin: the held inode's CURRENT path (swap-immune); the composite grammar-checks it
         if (std.posix.errno(std.posix.system.fcntl(run_dir_fd, F_GETPATH, @as(usize, @intFromPtr(&buf)))) != .SUCCESS) return .incomplete;
         const dir: [*:0]const u8 = @ptrCast(&buf);
-        if (c.zb_reaper_run_dir_ok(dir) == 0) return .incomplete; // not the sockdir grammar -> fail closed
-        return runFixedPoint(&realNowMs, deadline_ms, run_dir_fd, pinned, dir, max_passes, &c.zb_reaper_prod_scan, &c.zb_reaper_prod_inspect, &c.zb_reaper_prod_killsig, null);
+        var clean: c_int = 0;
+        var passes: c_int = 0;
+        var overflow: c_int = 0;
+        const rc = c.zb_reaper_prod_recover(run_dir_fd, pinned, &realNowMs, deadline_ms, dir, max_passes, &clean, &passes, &overflow);
+        return mapProd(rc, clean, overflow);
     }
     return .incomplete; // unreachable off Darwin
 }
