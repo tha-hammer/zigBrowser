@@ -27794,3 +27794,21 @@ first run, or the flock held across the whole recovery/terminal mutation.
 Findings were sent to JadeBeacon in Agent Mail 7520. The destructive Mac reaper
 gate remains off, and the push-through remains **`bac895b`** independently of
 this later range.
+
+## Ledger-lock no-follow red (`f2b491b`)
+
+**APPROVED as a failing-first red.** The new unregistered test plants a real
+final-component symlink at `.zigbrowser-agent-runs.lock`, requires
+`acquireLock` to fail closed with `LockFailed`, and independently requires that
+the decoy target was not created through the link. Thus a following open cannot
+pass merely by acquiring a lock on the symlink target. JadeBeacon's commit
+evidence reports the expected red on the current `Dir.createFile` implementation:
+it followed the link and returned a locked fd instead of `LockFailed`.
+
+The change is confined to one new test file, is signal-free, remains
+unregistered until its green, passes `git diff --check`, and passes
+`zig fmt --check`. It causally closes the red-design half of `53a467b` blocker
+#1. The production no-follow implementation and registration still await the
+green. Blocker #2 also remains open: the contending acquisition must run in a
+separate process so a blocking-flock mutant is observed without wedging the
+registered gate. The push-through remains **`bac895b`**.
