@@ -35395,3 +35395,57 @@ not the claimed data-flow proof:
 
 The absent owner module remains the intended red. This commit does not close
 the startup-owner range or authorize any Mac or signal-bearing run.
+
+## MS7.4 one-control AppKit bubble amendment (`d8978b6`)
+
+**The amendment is ACCEPTED; the committed red is BLOCKED-for-tests and stays
+unregistered.** A per-bubble read-only `ZbBubbleView : NSTextView` is a cleaner
+AppKit responder/copy boundary than routing small bubbles through the window's
+shared field editor. It is also reasonable to retain `label_text_max` as the
+threshold between contiguous and non-contiguous layout, applied on every
+stream update. The owner-run real-Mac case must still prove exact Copy and UI
+responsiveness on both sides of that threshold.
+
+The rewritten shape oracle closes the five additive/order bypasses from
+`44ca58e`; its focused run passed the honest and **31** dishonest fixtures and
+failed only at the intended absent `agent_drawer_mac.m`. It still does not
+prove the source that the compiler executes:
+
+1. The lexer ignores the C preprocessor. I wrapped the exact
+   `@implementation ZbBubbleView` in `#if 0` and, separately, prepended
+   `#define NO YES`; `problems()` returned `[]` for both. Reject/bind
+   preprocessing around the reviewed implementation and semantic constants
+   (or prove compiled behavior), with causal dead-implementation and
+   macro-altered-semantics mutants.
+2. Only `agent_drawer_mac.m` is scanned. Another exact macOS-linked source can
+   add a category on `ZbBubbleView`/`NSTextView`, swizzle `copy:`, or introduce
+   another relevant pasteboard route. Inventory the exact linked native source
+   set and ban those override routes across it, while allowing the future
+   first-responder Edit > Copy menu wiring.
+3. The exact proposed `copy:` does pointer arithmetic on `_original` even
+   after `keepOriginal` records an allocation failure as null/zero. Make that
+   path safely copy nothing or refuse before constructing `NSData`, and add the
+   allocation-failure row.
+
+## WS7.3 portable launcher red (`1a06bb0`)
+
+**APPROVED as the failing-first, unregistered [L] red.** It matches the Windows
+plan's portable contract: direct `[claude_exe, *args]`, case-insensitive
+`.bat`/`.cmd` refusal, child exit-code propagation, and wait/reap evidence. Run
+from `agent/host/tests`, it fails at the intended absent
+`zb_agent_host.launcher` import. The later [W] gate must still drive the native
+Zig `zb-claude.exe`, prove the child joins the session Job and show no
+descendant/orphan; this leader-only portable proof is not the Windows closure.
+
+## WS7.4 portable copy-rules red (`9ec1600`)
+
+**BLOCKED-for-tests; keep it unregistered.** The outside symlink/junction
+no-canary row is a useful fake-filesystem foundation, but the only positive
+link row is non-causal: `/src/skills/a.txt` already contributes
+`inside-bytes`, so an engine that skips every link passes the assertion over
+all copied values. Require the exact alias destination/value, add an in-root
+junction positive, and require the outside `sym` and `junc` destinations to be
+absent rather than checking bytes alone. Add a bounded internal symlink and
+junction cycle so the portable walker cannot wedge. The green must bind the
+real `copy_sai` path to this engine and retain a Windows reparse-aware adapter
+gate.
