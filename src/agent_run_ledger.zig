@@ -197,10 +197,17 @@ pub const LockError = error{ LockBusy, LockFailed };
 /// CLOSED with error.LockBusy, having mutated nothing (only the lock file is opened). The returned File HOLDS
 /// the lock; close it (or process death) releases it. Any non-contention error also fails closed (LockFailed).
 pub fn acquireLock(io: std.Io, dir: std.Io.Dir, max_tries: u32, backoff_ms: i64) LockError!std.Io.File {
-    // RED STUB: opens the lock file WITHOUT honoring the exclusive lock (no .lock, no LOCK_NB, no bounded retry),
-    // so a held lock never fails us closed — it just hands back an unlocked fd. The green uses
-    // .lock=.exclusive + .lock_nonblocking with a bounded retry and returns error.LockBusy on a stalled holder.
-    _ = max_tries;
-    _ = backoff_ms;
-    return dir.createFile(io, LOCK_NAME, .{ .read = true, .truncate = false }) catch error.LockFailed;
+    var tries: u32 = 0;
+    while (true) {
+        if (dir.createFile(io, LOCK_NAME, .{ .read = true, .truncate = false, .lock = .exclusive, .lock_nonblocking = true })) |f| {
+            return f; // acquired; caller holds the lock until close
+        } else |e| switch (e) {
+            error.WouldBlock => {
+                tries += 1;
+                if (tries >= max_tries) return error.LockBusy; // bounded -> fail closed, zero mutation
+                io.sleep(.fromMilliseconds(backoff_ms), .awake) catch return error.LockBusy; // cancellable
+            },
+            else => return error.LockFailed, // any other error -> fail closed
+        }
+    }
 }
