@@ -4,7 +4,7 @@ long-run) launch the browser from an explicit allowlist, never the shell's envir
 
 Non-live: no display, no browser and no signal. A hostile shell is planted (the live socket,
 a live profile and home, every kind of ZIGBROWSER_* and ZB_* seam, Claude/Anthropic
-credentials, proxies, rendering overrides) next to the three names the owner's screen must
+credentials, proxies, the ssh agent, rendering overrides) next to the three names the owner's screen must
 give (DISPLAY, XAUTHORITY, DBUS_SESSION_BUS_ADDRESS). LongRunBrowser is built with the setup run
 and the final Popen intercepted, and the recorded argv and environment are checked:
 - none of the hostile names or values survives; the display, its Xauthority and the desktop
@@ -63,6 +63,8 @@ HOSTILE = {
     "ALL_PROXY": "socks5://proxy.hostile:1080",
     "NO_PROXY": "zb-hostile-no-proxy",
     "LD_PRELOAD": "/tmp/zb-hostile.so",
+    "SSH_AUTH_SOCK": "/run/user/1000/zb-hostile-ssh-agent",
+    "SSH_AGENT_PID": "zb-hostile-ssh-pid",
     "GDK_BACKEND": "zb-hostile-backend",
     "PATH": "/tmp/zb-hostile-bin:/usr/bin:/bin",
 }
