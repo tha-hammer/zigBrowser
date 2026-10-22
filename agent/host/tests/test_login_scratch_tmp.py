@@ -31,7 +31,9 @@ Login.spawn therefore, before it launches the CLI:
   sticky data root holding our own app parent is accepted (a control);
 - the paths the CLI gets must still name the checked directories right before the launch: a home swapped for a
   valid-looking one (scratchpad and tmp 0700, ours) when the CLI's environment is built (a login.cli_env seam) is
-  refused, launching nothing, and the replacement is left as it is.
+  refused, launching nothing, and the replacement is left as it is; so is one swapped while the CLI's terminal is
+  set up (a fcntl.ioctl seam, after the pty is opened): the recheck is the last step before Popen, and the refused
+  launch leaves no pty open (master reset to -1, both recorded ends EBADF; RoseCat 7772).
 The walk starts at / itself: / shown as another uid's or as writable by others (a stat seam on its inode), or an
 earlier ancestor above the data root made wide or foreign, is refused too (RoseCat 7768).
 The trust anchor's owner is root: login.TRUST_ANCHOR_UID is pinned as the literal integer 0 in login.py's source
@@ -41,6 +43,7 @@ subprocess.Popen is a recorder (no process is started), and os.kill / os.killpg 
 process has no pid and has already ended. Run: cd agent/host/tests && unshare --map-current-user --pid --fork \\
   --kill-child --mount-proc sh -c '"$ZB_AGENT_HOST_PYTHON" -X dev -m unittest -v test_login_scratch_tmp; exit $?'
 Unregistered until the green."""
+import errno
 import os
 import shutil
 import stat
@@ -369,6 +372,37 @@ class LoginScratchTmp(unittest.TestCase):
         self.refused("a symlinked data root")
         self.assertEqual(os.listdir(os.path.join(data + ".real", "zigbrowser", "agent-home")), [],
                          "something was made through the link")
+
+    def test_a_home_swapped_while_the_terminal_is_set_up_is_refused_with_no_pty_left(self):
+        _, _, home = self.deep_home()
+        real_openpty, real_ioctl = login.pty.openpty, login.fcntl.ioctl
+        ends, swapped = [], []
+
+        def openpty():
+            pair = real_openpty()
+            ends.extend(pair)
+            return pair
+
+        def ioctl(fd, *args):
+            if fd in ends and not swapped:  # the terminal is being set up: the pty is open, the CLI not yet
+                os.rename(home, home + ".checked")
+                os.makedirs(os.path.join(home, "scratchpad", "tmp"), 0o700)
+                for d in (home, os.path.join(home, "scratchpad"), os.path.join(home, "scratchpad", "tmp")):
+                    os.chmod(d, 0o700)
+                swapped.append(os.lstat(home).st_ino)
+            return real_ioctl(fd, *args)
+        with mock.patch.object(login.pty, "openpty", side_effect=openpty), \
+                mock.patch.object(login.fcntl, "ioctl", side_effect=ioctl):
+            self.refused("a home swapped while the terminal was set up")
+        self.assertEqual(len(ends), 2, "the pty was not opened")
+        self.assertEqual(swapped, [os.lstat(home).st_ino], "the seam did not swap, or the replacement was moved")
+        self.assertEqual(self.login.master, -1, "the refused launch kept its pty master")
+        for end in ends:
+            with self.subTest(pty_end=end):
+                with self.assertRaises(OSError) as closed:
+                    os.fstat(end)
+                self.assertEqual(closed.exception.errno, errno.EBADF, "a pty end was left open")
+        self.assertEqual(os.listdir(os.path.join(home, "scratchpad", "tmp")), [], "the replacement was written")
 
     def test_an_ancestor_swapped_while_the_path_is_walked_is_refused_unchanged(self):
         data, parent, home = self.deep_home()
