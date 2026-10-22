@@ -53,6 +53,14 @@ struct ZbDrawerGeomRect { int x, y, w, h; };
 struct ZbDrawerRatios { double x, y; };
 }
 
+// WS5.5b-2 (RoseCat 5a204f3 #1): an APP-OWNED record for each e2e extra drawer window. `live` is retired on
+// the real WM_DESTROY path (drawer_extra_window_proc), so bulk teardown acts only on still-live records and
+// an early close never has to pre-remove the record.
+struct ExtraWindow {
+  HWND hwnd;
+  bool live;
+};
+
 struct AppState {
   HWND hwnd = nullptr;
   HINSTANCE instance = nullptr;
@@ -90,7 +98,7 @@ struct AppState {
   HWND drawer_icon = nullptr;
   HWND drawer_min = nullptr;  // WS5.3: the visible "-" (minimize/fold) control on the open drawer (top-right)
   HWND drawer_bubble = nullptr;  // WS5.4: the inert message bubble (read-only, plain-text RichEdit) on the panel
-  std::vector<HWND> e2e_extra_windows;  // WS5.5b-2: the e2e multi-window spawn's extra drawer windows (torn down at shutdown)
+  std::vector<ExtraWindow> extra_windows;  // WS5.5b-2: app-owned records for the e2e extra drawer windows
   // WS5.5b-2 e2e-only seams. extra_fail ("panel"|"icon") forces the matching control CreateWindowExW in an
   // extra window to fail, so the partial-window cleanup path is driven. extra_close_one closes ONE extra early
   // and emits an intermediate live count, so a live test sees the count fall by exactly one.
@@ -1412,17 +1420,23 @@ void mount_drawer(AppState *app) {
 // drawer_live_inc path and emitting its own [tree, icon, open] rows with a distinct window id. They are torn
 // down (and the live count decremented) at shutdown, before the global `live` row, so the final count is 0.
 // e2e-only and seam-gated; ordinary single-window runs never enter here.
-// WS5.5b-2 (RoseCat 6b324c8 #4): the extra windows' own window procedure. It NEVER PostQuitMessage (so one
-// closing does not end the app), and it owns the live-count decrement PER HWND: a window that was counted
-// carries GWLP_USERDATA == 1, and WM_DESTROY decrements EXACTLY ONCE and clears the flag, so a second
-// WM_DESTROY (or a double teardown) cannot decrement twice, and an uncounted partial window never decrements.
-// Both bulk shutdown teardown and an early single close go through DestroyWindow -> this same path.
-constexpr LONG_PTR kExtraCounted = 1;
+// WS5.5b-2 (RoseCat 5a204f3 #1): the extra windows' own window procedure. It NEVER PostQuitMessage (so one
+// closing does not end the app), and it owns the decrement through the APP-OWNED record: on the REAL
+// WM_DESTROY path it finds this HWND's record in app->extra_windows and, only if it is still live, retires it
+// (live=false) and decrements EXACTLY ONCE. A second WM_DESTROY, a double teardown, or an uncounted partial
+// window (no record) therefore cannot decrement. GWLP_USERDATA carries the AppState* (set only once the full
+// structure exists). Both bulk teardown and an early single close go through DestroyWindow -> this same path.
 LRESULT CALLBACK drawer_extra_window_proc(HWND h, UINT msg, WPARAM wparam, LPARAM lparam) {
   if (msg == WM_DESTROY) {
-    if (GetWindowLongPtrW(h, GWLP_USERDATA) == kExtraCounted) {
-      SetWindowLongPtrW(h, GWLP_USERDATA, 0);  // per-HWND ownership: decrement once, never again
-      g_drawer_live.fetch_sub(1, std::memory_order_relaxed);
+    AppState *app = reinterpret_cast<AppState *>(GetWindowLongPtrW(h, GWLP_USERDATA));
+    if (app != nullptr) {
+      for (auto &rec : app->extra_windows) {
+        if (rec.hwnd == h && rec.live) {
+          rec.live = false;  // retire the app-owned record on the real destroy path
+          g_drawer_live.fetch_sub(1, std::memory_order_relaxed);
+          break;
+        }
+      }
     }
   }
   return DefWindowProcW(h, msg, wparam, lparam);
@@ -1494,20 +1508,25 @@ void spawn_extra_drawer_windows(AppState *app) {
       DestroyWindow(w);
       continue;
     }
-    // The FULL structure exists: mark this HWND counted, THEN account it and emit its rows exactly once.
-    SetWindowLongPtrW(w, GWLP_USERDATA, kExtraCounted);
+    // The FULL structure exists: record this HWND as a LIVE app-owned record and point its GWLP_USERDATA at
+    // the AppState, THEN account it and emit its rows exactly once. The record (not a flag) is the counted
+    // mark; the WndProc retires it on destroy.
+    app->extra_windows.push_back(ExtraWindow{w, true});
+    SetWindowLongPtrW(w, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(app));
     ShowWindow(w, SW_SHOWNORMAL);
     drawer_live_inc();  // WS5.5: this concurrent drawer raises the running live peak toward N
     emit_extra_drawer_rows(app, app->win_id + i + 1, panel, ix, iy, icon_px);
-    app->e2e_extra_windows.push_back(w);
   }
-  // WS5.5b-2 (#4) close-one-early seam: close a SINGLE counted extra through DestroyWindow (the same path as
-  // bulk teardown), so its WM_DESTROY decrements exactly once, and emit the intermediate live count so a live
-  // test sees the count fall by exactly one. The window is dropped from the teardown list (already destroyed).
-  if (app->extra_close_one && !app->e2e_extra_windows.empty()) {
-    HWND one = app->e2e_extra_windows.back();
-    app->e2e_extra_windows.pop_back();
-    DestroyWindow(one);  // routes through drawer_extra_window_proc -> single decrement
+  // WS5.5b-2 (#1) close-one-early seam: close a SINGLE still-live extra through DestroyWindow (the same path as
+  // bulk teardown), WITHOUT pre-removing its record — its WM_DESTROY retires the app-owned record and
+  // decrements exactly once. Emit the intermediate live count so a live test sees the count fall by one.
+  if (app->extra_close_one) {
+    for (auto &rec : app->extra_windows) {
+      if (rec.live) {
+        DestroyWindow(rec.hwnd);  // routes through drawer_extra_window_proc -> retire record + single decrement
+        break;
+      }
+    }
     char win[16];
     snprintf(win, sizeof win, "%d", app->win_id);
     char peak_buf[16];
@@ -2215,14 +2234,15 @@ static int run_core(const char *uri, int print_title, int e2e_protocol, bool scr
     loop_end();
   }
 
-  // WS5.5b-2 (RoseCat 6b324c8 #4): tear down the e2e extra windows through the SAME path as an early close —
-  // DestroyWindow routes WM_DESTROY to drawer_extra_window_proc, which decrements the live count exactly once
-  // per counted HWND (never here). So the FINAL count returns to 0 with no double-decrement, and the running
-  // PEAK (already at N) is unaffected.
-  for (HWND w : app.e2e_extra_windows) {
-    if (w != nullptr) DestroyWindow(w);
+  // WS5.5b-2 (RoseCat 5a204f3 #1): tear down the e2e extra windows through the SAME path as an early close —
+  // DestroyWindow routes WM_DESTROY to drawer_extra_window_proc, which retires the app-owned record and
+  // decrements exactly once (never here). Teardown acts ONLY on records that are still LIVE, so an
+  // already-closed extra (retired by its own WM_DESTROY) is not destroyed or decremented twice. The FINAL
+  // count returns to 0 with no double-decrement; the running PEAK (already at N) is unaffected.
+  for (auto &rec : app.extra_windows) {
+    if (rec.live) DestroyWindow(rec.hwnd);
   }
-  app.e2e_extra_windows.clear();
+  app.extra_windows.clear();
 
   // WS5.5: after the message loop (every window has closed, so the live count is back to 0), emit the global
   // live-count row on window 1 — the PEAK concurrent drawers and the FINAL count. e2e-only, and only under the

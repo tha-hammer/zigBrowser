@@ -183,7 +183,7 @@ class WinDrawerBehaviorsOracle(unittest.TestCase):
         # duplicate re-collected here.
         live = [m for m in dir(WinDrawerBehaviorsLive)
                 if m.startswith("test_") and getattr(WinDrawerBehaviorsLive, m) is not None]
-        self.assertEqual(len(live), 20, f"behaviour-live rows must be exactly 20; got {len(live)}: {sorted(live)}")
+        self.assertEqual(len(live), 22, f"behaviour-live rows must be exactly 22; got {len(live)}: {sorted(live)}")
 
     # WS5.1 ---------------------------------------------------------
     def test_ws5_1_dock_no_overlap(self):
@@ -274,6 +274,25 @@ class WinDrawerBehaviorsOracle(unittest.TestCase):
                                (2, 1, 2)):  # a destroy not accounted -> final != 0
             with self.assertRaises(AssertionError):
                 check_live_peak_matches(peak, final, n)
+
+    def test_ws5_5b2_close_one_validator_structure_and_mutants(self):
+        # WS5.5b-2 (RoseCat 5a204f3 #2): the close-one transcript validator — exact structures, peak=2,
+        # intermediate=1, terminal=0 — with the skipped / double-decrement / missing-final-cleanup mutants.
+        def t(peak, intermediate, final):
+            w1 = ("DRAWER\t1\ttree\thost,page,icon,panel\nDRAWER\t1\ticon\t928,649,56,56\n"
+                  "DRAWER\t1\topen\t0,437,1008,292\n")
+            w2 = ("DRAWER\t2\ttree\thost,icon,panel\nDRAWER\t2\ticon\t928,649,56,56\n"
+                  "DRAWER\t2\topen\t0,437,1008,292\n")
+            return w1 + w2 + f"DRAWER\t1\tliveclose\t{peak}\t{intermediate}\n" + f"DRAWER\t1\tlive\t{peak}\t{final}\n"
+        self.assertEqual(validate_close_one_transcript(t(2, 1, 0), 2), (2, 1, 0))
+        with self.assertRaises(AssertionError):  # skipped: no liveclose row
+            validate_close_one_transcript(t(2, 1, 0).replace("DRAWER\t1\tliveclose\t2\t1\n", ""), 2)
+        with self.assertRaises(AssertionError):  # double-decrement: intermediate 0 not 1
+            validate_close_one_transcript(t(2, 0, 0), 2)
+        with self.assertRaises(AssertionError):  # missing final cleanup: terminal 1 not 0
+            validate_close_one_transcript(t(2, 1, 1), 2)
+        with self.assertRaises(AssertionError):  # wrong peak
+            validate_close_one_transcript(t(3, 1, 0), 2)
 
     # WS5.6 ---------------------------------------------------------
     def test_ws5_6_isolation(self):
@@ -501,6 +520,7 @@ _BEHAVIOR_SCHEMAS = {
     "drag": (_RECT,),                       # the icon's measured after-rect
     "fold": (_RECT, r"\d+"),                # a mid-animation rect + the total fold duration in ms
     "live": (r"\d+", r"\d+"),              # peak live count, final live count (after the popup-close sequence)
+    "liveclose": (r"\d+", r"\d+"),         # WS5.5b-2: peak, intermediate live count after an early single close
 }
 
 
@@ -585,6 +605,44 @@ def validate_multiwindow_transcript(stdout, n_windows):
         if w == owner:
             live = [f for (k, f) in by_win[w] if k == "live"][0]
     return live
+
+
+def validate_close_one_transcript(stdout, n_windows):
+    """WS5.5b-2 close-one-early (RoseCat 5a204f3 #2): EXACTLY `n_windows` windows each an ordered
+    `[tree, icon, open]`; the owner (lowest id) additionally carries exactly one `liveclose` (peak,
+    intermediate) THEN one terminal `live` (peak, final). Requires peak == n_windows, intermediate ==
+    n_windows - 1, and final == 0 — so a skipped close (no liveclose), a double-decrement (intermediate !=
+    n-1) and a missing final cleanup (final != 0) each fail. Returns (peak, intermediate, final)."""
+    parsed = []
+    for ln in stdout.splitlines():
+        tag = classify_drawer_line(ln)
+        if tag[0] == "malformed":
+            raise AssertionError(f"malformed DRAWER row: {tag[1]!r}")
+        if tag[0] == "ok":
+            parsed.append((tag[1], tag[2], tag[3]))
+    by_win = {}
+    for (w, k, f) in parsed:
+        by_win.setdefault(w, []).append((k, f))
+    wins = sorted(by_win)
+    if len(wins) != n_windows:
+        raise AssertionError(f"expected exactly {n_windows} drawer windows, got {wins}")
+    owner = wins[0]
+    for w in wins:
+        kinds = [k for (k, _f) in by_win[w]]
+        expected = ["tree", "icon", "open", "liveclose", "live"] if w == owner else ["tree", "icon", "open"]
+        if kinds != expected:
+            raise AssertionError(f"window {w} sequence {kinds} != expected {expected}")
+    liveclose = [f for (k, f) in by_win[owner] if k == "liveclose"][0]
+    live = [f for (k, f) in by_win[owner] if k == "live"][0]
+    peak_lc, intermediate = int(liveclose[0]), int(liveclose[1])
+    peak_fin, final = int(live[0]), int(live[1])
+    if peak_lc != n_windows or peak_fin != n_windows:
+        raise AssertionError(f"peak must be {n_windows} (liveclose peak {peak_lc}, live peak {peak_fin})")
+    if intermediate != n_windows - 1:
+        raise AssertionError(f"intermediate live must be {n_windows - 1} (one closed), got {intermediate}")
+    if final != 0:
+        raise AssertionError(f"terminal live must be 0 (full cleanup), got {final}")
+    return (peak_fin, intermediate, final)
 
 
 # ------------------------------------------------------------------
@@ -896,18 +954,33 @@ class WinDrawerBehaviorsLive(_wd.WinDrawerLive):
         self._run_drawer(extra_env=self._env(ZIGBROWSER_AGENT_DRAWER_WINDOWS="2"), body=body)
 
     def test_ws5_5b2_closing_one_extra_drops_the_live_count_by_exactly_one(self):
-        # WS5.5b-2 (RoseCat 6b324c8 #4): with 2 windows, closing ONE extra early (through DestroyWindow -> the
-        # extra WndProc's WM_DESTROY) drops the live count by EXACTLY one. The shim emits a `liveclose` row
-        # (peak, now) after the single close: peak stays 2 (the running max), now is 1 (primary still live) —
-        # not 0 (double) and not 2 (skipped). The source-body mutants for double-decrement and skipped-destroy
+        # WS5.5b-2 (RoseCat 5a204f3 #2): with 2 windows, closing ONE extra early (DestroyWindow -> the extra
+        # WndProc's WM_DESTROY retires the app-owned record) drops the live count by EXACTLY one. The strict
+        # validator requires exactly 2 windows each [tree,icon,open], the owner's one liveclose (peak 2,
+        # intermediate 1) and terminal live (peak 2, final 0). The source-body double-decrement / skipped mutants
         # are in win_drawer_test.py WinDrawerOracle.test_ws5_5b2_extra_wndproc_decrements_once.
         def body(r):
-            m = re.search(r"DRAWER\t\d+\tliveclose\t(\d+)\t(\d+)", r["stdout"])
-            assert m, f"expected a DRAWER liveclose row; stdout={r['stdout']!r}"
-            self.assertEqual((m.group(1), m.group(2)), ("2", "1"),
-                             "closing one of two concurrent drawers must leave peak 2, live 1")
+            validate_close_one_transcript(r["stdout"], 2)
         self._run_drawer(extra_env=self._env(ZIGBROWSER_AGENT_DRAWER_WINDOWS="2",
                                              ZIGBROWSER_AGENT_DRAWER_EXTRA_CLOSE_ONE="1"), body=body)
+
+    def test_ws5_5b2_extra_fail_panel_drives_partial_cleanup(self):
+        # WS5.5b-2 (RoseCat 5a204f3 #3): forcing the extra window's PANEL control to fail drives the partial-
+        # cleanup arm — the partial window is destroyed, nothing is counted (peak stays 1, the primary), and the
+        # extra emits no [tree,icon,open] rows. Only one window in the transcript.
+        def body(r):
+            peak, final = validate_multiwindow_transcript(r["stdout"], 1)
+            check_live(int(peak), int(final))  # peak 1 (primary only), final 0
+        self._run_drawer(extra_env=self._env(ZIGBROWSER_AGENT_DRAWER_WINDOWS="2",
+                                             ZIGBROWSER_AGENT_DRAWER_EXTRA_FAIL="panel"), body=body)
+
+    def test_ws5_5b2_extra_fail_icon_drives_partial_cleanup(self):
+        # The same for the ICON control failing: the partial extra window is destroyed and uncounted.
+        def body(r):
+            peak, final = validate_multiwindow_transcript(r["stdout"], 1)
+            check_live(int(peak), int(final))
+        self._run_drawer(extra_env=self._env(ZIGBROWSER_AGENT_DRAWER_WINDOWS="2",
+                                             ZIGBROWSER_AGENT_DRAWER_EXTRA_FAIL="icon"), body=body)
 
     def test_ws5_6_isolation_denied_and_census_unchanged(self):
         # WS5.6 (plan 1580-1582): the harness performs EXACTLY the named page-JS + socket reach attempts; each is

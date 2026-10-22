@@ -1269,28 +1269,30 @@ class WinDrawerOracle(unittest.TestCase):
         # strip // comments before collapsing, so comment prose can't satisfy (or defeat) a call-bound check
         body = " ".join(re.sub(r"//[^\n]*", "", extract_cpp_function(shim, "spawn_extra_drawer_windows")).split())
 
+        push = "extra_windows.push_back(ExtraWindow{w, true})"
+
         def spawn_ok(b):
             need = ["zb_drawer_extra_windows(app->windows_seam)", "panel_h == nullptr || icon_h == nullptr",
-                    "DestroyWindow(w)", "SetWindowLongPtrW(w, GWLP_USERDATA, kExtraCounted)", "drawer_live_inc();"]
+                    "DestroyWindow(w)", push, "GWLP_USERDATA, reinterpret_cast<LONG_PTR>(app)", "drawer_live_inc();"]
             if not all(t in b for t in need):
                 return False
-            # the HWND is marked counted, and the full-structure check runs, BEFORE the live-count increment
-            return (b.index("SetWindowLongPtrW(w, GWLP_USERDATA, kExtraCounted)") < b.index("drawer_live_inc();")
+            # the LIVE app-owned record is pushed, and the full-structure check runs, BEFORE the increment
+            return (b.index(push) < b.index("drawer_live_inc();")
                     and b.index("panel_h == nullptr || icon_h == nullptr") < b.index("drawer_live_inc();"))
 
-        self.assertTrue(spawn_ok(body), f"spawn must be call-bound: count+both-controls+partial-destroy+count-then-inc; body={body!r}")
+        self.assertTrue(spawn_ok(body), f"spawn must be call-bound: count+both-controls+partial-destroy+record-then-inc; body={body!r}")
         self.assertNotIn('"host,page,icon,panel"', body, "an extra window has no page — its tree row must not claim one")
         # causal mutants on the spawn body
         self.assertFalse(spawn_ok(body.replace("drawer_live_inc();", "", 1)), "inc removed must be caught")
         self.assertFalse(spawn_ok(body.replace("DestroyWindow(w)", "", 1)), "partial-window cleanup removed must be caught")
         self.assertFalse(spawn_ok(body.replace("panel_h == nullptr || icon_h == nullptr", "false")),
                          "dropping the both-controls check must be caught")
-        reordered = body.replace("SetWindowLongPtrW(w, GWLP_USERDATA, kExtraCounted);", "", 1).replace(
-            "drawer_live_inc();", "drawer_live_inc(); SetWindowLongPtrW(w, GWLP_USERDATA, kExtraCounted);", 1)
-        self.assertFalse(spawn_ok(reordered), "counting (inc) before the full-structure mark must be caught")
-        # the close-one-early path destroys ONE extra through the same DestroyWindow route and emits the
-        # intermediate live count (never a manual fetch_sub)
-        self.assertIn("DestroyWindow(one)", body, "close-one must route through DestroyWindow (the WndProc decrements)")
+        reordered = body.replace(push + ";", "", 1).replace(
+            "drawer_live_inc();", "drawer_live_inc(); " + push + ";", 1)
+        self.assertFalse(spawn_ok(reordered), "recording the live window AFTER the increment must be caught")
+        # the close-one-early path destroys ONE live record via DestroyWindow without pre-removing it
+        self.assertIn("DestroyWindow(rec.hwnd)", body, "close-one must route through DestroyWindow (the WndProc retires the record)")
+        self.assertNotIn("pop_back", body, "close-one must NOT pre-remove the record — the WM_DESTROY path retires it")
         self.assertIn('"liveclose"', body, "close-one must emit the intermediate live count row")
         self.assertNotIn("fetch_sub", body, "the spawn must never decrement manually — the WM_DESTROY path owns it")
 
@@ -1301,22 +1303,30 @@ class WinDrawerOracle(unittest.TestCase):
         proc = " ".join(re.sub(r"//[^\n]*", "", extract_cpp_function(shim, "drawer_extra_window_proc")).split())
 
         def proc_ok(b):
-            return ("WM_DESTROY" in b and "GetWindowLongPtrW(h, GWLP_USERDATA) == kExtraCounted" in b
-                    and "SetWindowLongPtrW(h, GWLP_USERDATA, 0)" in b and "g_drawer_live.fetch_sub(1" in b
+            # on WM_DESTROY, find THIS HWND's app-owned record and, only if still live, retire it and
+            # decrement exactly once; never PostQuitMessage.
+            return ("WM_DESTROY" in b
+                    and "reinterpret_cast<AppState *>(GetWindowLongPtrW(h, GWLP_USERDATA))" in b
+                    and "rec.hwnd == h && rec.live" in b
+                    and "rec.live = false" in b and "g_drawer_live.fetch_sub(1" in b
                     and "PostQuitMessage" not in b)
 
-        self.assertTrue(proc_ok(proc), f"the extra WndProc must decrement once per counted HWND; body={proc!r}")
+        self.assertTrue(proc_ok(proc), f"the extra WndProc must retire the app-owned record once; body={proc!r}")
         # causal mutants
-        self.assertFalse(proc_ok(proc.replace("SetWindowLongPtrW(h, GWLP_USERDATA, 0);", "", 1)),
-                         "dropping the clear = double-decrement on a repeat WM_DESTROY must be caught")
+        self.assertFalse(proc_ok(proc.replace("&& rec.live", "", 1)),
+                         "dropping the live guard = decrement a retired record twice must be caught")
+        self.assertFalse(proc_ok(proc.replace("rec.live = false;", "", 1)),
+                         "dropping the retire = the record stays live and decrements again must be caught")
         self.assertFalse(proc_ok(proc.replace("g_drawer_live.fetch_sub", "g_drawer_live.no_dec", 1)),
                          "removing the decrement must be caught")
         self.assertFalse(proc_ok(proc + " PostQuitMessage(0);"), "an extra window must never PostQuitMessage")
 
-        # the shutdown teardown routes through DestroyWindow (the proc decrements), never a manual fetch_sub
-        start = shim.index("for (HWND w : app.e2e_extra_windows)")
-        teardown = " ".join(re.sub(r"//[^\n]*", "", shim[start:shim.index("e2e_extra_windows.clear();", start)]).split())
-        self.assertIn("DestroyWindow(w)", teardown, "teardown must destroy each extra (routing to the WndProc)")
+        # the shutdown teardown acts ONLY on live records, through DestroyWindow (the proc decrements), never
+        # a manual fetch_sub
+        start = shim.index("for (auto &rec : app.extra_windows)")
+        teardown = " ".join(re.sub(r"//[^\n]*", "", shim[start:shim.index("extra_windows.clear();", start)]).split())
+        self.assertIn("if (rec.live) DestroyWindow(rec.hwnd)", teardown,
+                      "teardown must destroy ONLY still-live records (routing to the WndProc)")
         self.assertNotIn("fetch_sub", teardown, "teardown must NOT decrement manually — the WM_DESTROY path owns it")
 
     # --- forced control-create failure oracle (check_mounted_fail, RoseCat 7646) ---
