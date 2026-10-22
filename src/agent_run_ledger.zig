@@ -386,6 +386,29 @@ pub fn acquireWithinDeadline(clock: anytype, deadline_ms: i64, backoff_ms: i64, 
     }
 }
 
+/// The outcome of a bounded wait for a child/pipe to become ready.
+pub const WaitResult = enum { ready, timed_out, poll_error };
+/// One poll attempt's outcome: data ready, a slice elapsed (retry), interrupted (EINTR, retry), or a hard error.
+pub const PollOutcome = enum { ready, again, eintr, err };
+
+/// A bounded, EINTR-safe wait for readiness within an absolute monotonic deadline (RoseCat e665676 #3): retry the
+/// injected `poll.pollOnce()` and return `.ready` on data or `.poll_error` on a hard error. Crucially, the
+/// monotonic `clock` deadline is checked BEFORE each poll, so an EINTR storm (or a storm of empty slices) is
+/// bounded by wall-clock and can NEVER keep a watchdog alive indefinitely; reaching the deadline returns
+/// `.timed_out`.
+pub fn waitWithinDeadline(clock: anytype, deadline_ms: i64, poll: anytype) WaitResult {
+    while (true) {
+        switch (poll.pollOnce()) {
+            .ready => return .ready,
+            .err => return .poll_error, // a hard poll error -> fail closed
+            .again => {
+                if (clock.nowMs() >= deadline_ms) return .timed_out;
+            },
+            .eintr => {}, // RED (e665676 #3): EINTR retries WITHOUT a deadline check -> an EINTR storm never ends
+        }
+    }
+}
+
 /// One non-blocking flock attempt on an already-open lock fd.
 const FlockAttempt = struct {
     fd: i32,
