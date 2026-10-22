@@ -341,3 +341,38 @@ Clean-archive `6ff2ccc6e3c31f9fd13ddb6227706003427eec26` evidence: the bypass-cl
 From an exact clean archive of `be883b38f48de85cd0f09f964d6dcf1f5edb5a38`, the script exited 1 with exactly six intended missing-flag failures, one per leg. Adding in-run flags to all three real scripts made it exit 0; replacing the two real flags on `ms5_setup_e2e.sh` with identical strings only after shell `#` made it exit 1 on both of that script's legs. The structural oracle is sound for the paths it drives, and `git diff --check` passed.
 
 The coverage claim is incomplete: the orchestrator named `mac_compile_only.sh` and `ms7_appkit_gate.sh`, but this red explicitly does not execute either. Static source inspection suggests both already pass in-run local/global cache flags, but that is not the required exercising proof and cannot protect them from regression. Before registration or any direct-harness HOLD is cleared, extend the proof to drive all five discovered direct-Zig paths, preserve per-leg non-vacuity, and record missing/outside/comment-or-echo mutants against their actual Zig argv. All five direct harnesses remain held. The aggregate tip through `be883b3` is nevertheless push-safe as an accurately unregistered partial red; no Mac run is approved.
+
+## 2026-10-22 — direct-Zig Mac harness cache green
+
+### `d574edc` — three MS5 paths fixed, but the registered proof still omits two direct paths
+
+**BLOCK AS THE COMPLETE 3ui.5 DIRECT-HARNESS GREEN; THE ANCESTRY TIP IS NOT PUSH-SAFE UNTIL THE FIVE-PATH PROOF IS COMPLETE.** The production changes for the three MS5 paths are correct. `ms5_setup_refusal_gate.sh`, `ms5_setup_e2e.sh`, and `ms5_gate.sh` derive `d="$HOME/${ZB_RDIR:?}"`, set both Zig cache environment variables beneath `d`, and pass both `--cache-dir` and `--global-cache-dir` beneath `d` on the actual Zig argv. The hostless test is now registered under `test-mac-build-script` and `zig build test`; it executes both modeled Mac legs of all three scripts, parses each Zig argv structurally, and enforces non-vacuity.
+
+Independent exact-commit evidence from a clean archive of `d574edc2a25949f12a64bfec02393e9877cc6952`: `zig build test-mac-build-script test-mac-compile-only -j4 --summary all` exited 0 with 8/8 steps. The direct-cache test observed one Zig invocation on each of six MS5 legs and printed PASS. Redirecting `ms5_gate.sh`'s global cache to `$HOME/.cache/zig` made that test exit 1 with the expected two D2 failures. `git diff --check` passed.
+
+The registered test nevertheless explicitly excludes `mac_compile_only.sh` and `ms7_appkit_gate.sh`, contrary to the exact five-path minimum recorded for `be883b3`. Existing tests do not close the gap:
+
+- In an exact-commit scratch tree, changing `mac_compile_only.sh` from `--global-cache-dir "$root/zgc"` to `$HOME/.cache/zig` left registered `zig build test-mac-compile-only` green, 3/3 steps. Its fake Zig parses `--cache-dir` but not `--global-cache-dir`.
+- Changing `ms7_appkit_case.py`'s global cache from `d/zgc` to `$HOME/.cache/zig` left all six relevant offline MS7 checker/launcher tests green; the seventh test failed for the commit's pre-existing MS7-red findings, not the cache mutant. That offline file is itself unregistered at this commit and only source-inspects the spawn structure.
+
+Thus static confirmation that both commands currently spell in-run flags is not R1/R3 exercising proof and cannot prevent a cache regression. The exact unblock remains: extend a registered structural-argv test to execute all five direct paths, with per-leg non-vacuity, and make missing, outside-run, and comment/echo-token mutants fail for `mac_compile_only` and MS7 as well as the three MS5 paths.
+
+**3ui.5 HOLD status, harness by harness:**
+
+- `build-on-mac.sh`: **CLEAR / request-eligible** through `6aeee3e` + `63721e2`.
+- Its eight callers—`gate.sh`, `ms1b_signed_gate.sh`, `ms2a_gate.sh`, `ms2b_gate.sh`, `ms2c_gate.sh`, `ms3_gate.sh`, `ms4_gate.sh`, and `packaging/macos/build-dmg.sh`: **CLEAR / request-eligible**, because every Zig invocation goes through `build-on-mac.sh`.
+- `ms5_setup_refusal_gate.sh`, `ms5_setup_e2e.sh`, and `ms5_gate.sh`: their 3ui.5 production confinement and individual driven rows are **technically green at `d574edc`**, but no run request is approved from the blocked ancestry until the five-path proof fix lands. `ms5_gate.sh` also remains independently non-run-ready because it still uses `StrictHostKeyChecking=no`; clearing the cache issue would not clear that separate safety defect.
+- `mac_compile_only.sh`: **HELD**; current code appears compliant, but its registered selftest lets an outside-global-cache mutant survive.
+- `ms7_appkit_gate.sh` / `ms7_appkit_case.py`: **HELD**; current code appears compliant, but no registered driven cache-argv proof catches an outside-global-cache mutant.
+
+No Mac run is approved or was performed. Every later request still requires the exact source commit, SHA-256 of every harness file used, and the orchestrator's explicit release.
+
+## 2026-10-22 — 4pa.66 Seatbelt readiness red
+
+### `abf3d00` — cross-language one-fact invariant and readiness pin
+
+**BLOCK AS THE GREEN'S ORACLE; SAFE TO PUSH ONLY AS AN UNREGISTERED RED DRAFT.** The commit changes only three new, unregistered test files. It correctly renders the five production profile shapes, labels the rendered-text check as a tripwire rather than kernel proof, checks comments and free whitespace around bare allows, and keeps the constant pin explicitly classified as T8. From an exact clean archive of `abf3d003e8bed450b542d3f8b4d59a30b1d1d6d3`, the invariant reproduced the intended red: 3/5 passed, with exact failures for missing `agent_setup.seatbelt_gate` and missing `sandbox_macos.PROFILE_CURATION`; the separate pin passed 1/1. No existing registered step is affected.
+
+The central “one fact” oracle is only a one-point value comparison and admits a dishonest green. In an independent scratch mutant, Python defined `PROFILE_CURATION = BROAD` but made `LAUNCH_SPEC_CONSUMABLE` an independent constant-returning function (`return False`); Zig exposed `seatbelt_gate.accepted_commit = null` but kept `seatbelt_ready` independently set to `false`. All five invariant tests and the pin then passed. Both forbidden independent facts merely happened to agree at the current BROAD/unaccepted state, so the claimed state remained representable despite a green test.
+
+Before registration, the minimum is to exercise the derivation in both states rather than inspect one value: temporarily evaluate the Python function with `PROFILE_CURATION` set to BROAD and CURATED and require false then true; compile/run the Zig derivation against both null and non-null accepted-commit fixtures (an injectable gate module or equivalent) and require false then true. Keep the production BROAD/null pin, the profile-text mutant, registration in `zig build test`, and the later released both-Mac kernel-denial proof. Until that fix-forward, `abf3d00` is a useful, inert red draft but does not yet enforce “readiness is one fact.” No Mac was contacted.
