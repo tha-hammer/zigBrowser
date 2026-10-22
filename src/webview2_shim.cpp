@@ -809,7 +809,6 @@ void mount_drawer(AppState *app) {
   if (app == nullptr || !app->agent_drawer_on || app->drawer_mounted || app->hwnd == nullptr) {
     return;
   }
-  app->drawer_mounted = true;
   RECT cr = {};
   GetClientRect(app->hwnd, &cr);
   const int cw = cr.right - cr.left;
@@ -818,10 +817,22 @@ void mount_drawer(AppState *app) {
   ZbDrawerGeomRect icon = {};
   zb_drawer_place(nullptr, cw, ch, &icon);
   // Native Win32 controls (OD-W6): a docked panel and the floating "S" icon, children of the host window.
-  app->drawer_panel = CreateWindowExW(0, L"STATIC", L"", WS_CHILD, 0, 0, 0, 0,
-                                      app->hwnd, nullptr, app->instance, nullptr);
-  app->drawer_icon = CreateWindowExW(0, L"STATIC", L"S", WS_CHILD | SS_CENTER,
-                                     icon.x, icon.y, icon.w, icon.h, app->hwnd, nullptr, app->instance, nullptr);
+  HWND panel_hwnd = CreateWindowExW(0, L"STATIC", L"", WS_CHILD, 0, 0, 0, 0,
+                                    app->hwnd, nullptr, app->instance, nullptr);
+  HWND icon_hwnd = CreateWindowExW(0, L"STATIC", L"S", WS_CHILD | SS_CENTER,
+                                   icon.x, icon.y, icon.w, icon.h, app->hwnd, nullptr, app->instance, nullptr);
+  // Fail closed: only a drawer with REAL native controls counts. If either control could not be created,
+  // destroy any partial one and do NOT mark mounted / increment the live count / emit any DRAWER row — a
+  // row-only/null-control implementation must not pass (RoseCat 7633 #4).
+  if (panel_hwnd == nullptr || icon_hwnd == nullptr) {
+    log_last_error("CreateWindowExW(drawer control)");
+    if (panel_hwnd != nullptr) DestroyWindow(panel_hwnd);
+    if (icon_hwnd != nullptr) DestroyWindow(icon_hwnd);
+    return;  // drawer stays unmounted; no census rows emitted
+  }
+  app->drawer_panel = panel_hwnd;
+  app->drawer_icon = icon_hwnd;
+  app->drawer_mounted = true;
   g_drawer_live.fetch_add(1, std::memory_order_relaxed);
 
   char win[16];
