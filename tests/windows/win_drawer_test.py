@@ -149,6 +149,38 @@ def select_page_child(children, launched_pid):
     return matches[0]["hwnd"] if len(matches) == 1 else None
 
 
+def extract_csharp_method(src, name):
+    """Extract the body (the text between the method's outermost braces) of a `public static <type> <name>(...)`
+    method from the embedded C# source, by brace matching. Lets the offline oracle pin the ACTUAL embedded
+    selector the Win11 run executes — not just the detached Python model. Raises AssertionError if not found."""
+    m = re.search(r"public static [\w\.]+ " + re.escape(name) + r"\s*\([^)]*\)\s*\{", src)
+    assert m is not None, f"method {name} not found in the embedded C# source"
+    start = m.end() - 1  # index of the opening brace
+    depth = 0
+    for j in range(start, len(src)):
+        if src[j] == "{":
+            depth += 1
+        elif src[j] == "}":
+            depth -= 1
+            if depth == 0:
+                return src[start + 1:j]
+    raise AssertionError(f"unbalanced braces extracting {name}")
+
+
+def page_selector_body_is_strict(body):
+    """Causal predicate on the embedded [Z]::PageHwnd body (RoseCat ba35dc5). The selector is strict iff it
+    selects by the WebView2 widget CLASS, by the launched PID, requires EXACTLY ONE match, and uses NEITHER a
+    size/area heuristic NOR a visibility gate. Reverting to the old largest-visible-child body, dropping the pid
+    term, or returning the first match instead of the unique one each flips this to False."""
+    norm = " ".join(body.split())  # collapse whitespace so token checks are layout-independent
+    has_class = '"Chrome_WidgetWin_0"' in norm         # selects by the widget class
+    has_pid = "== Pid" in norm                          # ... AND the launched pid
+    has_exactly_one = "n == 1" in norm                  # ... AND exactly one match (not first/largest)
+    no_visibility_gate = "StyleVisible" not in norm     # no WS_VISIBLE gate (headless the page is not visible)
+    no_size_heuristic = "GetWindowRect" not in norm and "best" not in norm  # no largest-child area pick
+    return has_class and has_pid and has_exactly_one and no_visibility_gate and no_size_heuristic
+
+
 def check_success(r):
     """The discriminating oracle for a SUCCESSFUL drawer run. Raises AssertionError on any violation. Pure
     (takes the runner's JSON result dict), so it is exercised offline with injected results in WinDrawerOracle
@@ -630,11 +662,11 @@ public static class Z {
     POINT tl; tl.x = r.left; tl.y = r.top; if (!ScreenToClient(host, ref tl)) return "";
     return tl.x + "," + tl.y + "," + (r.right-r.left) + "," + (r.bottom-r.top);
   }
-  // The page (WebView2) HWND: the largest VISIBLE non-STATIC direct child.
   // The WebView2 page: the UNIQUE direct child of the host whose class is the WebView2 widget class
-  // (Chrome_WidgetWin_0) AND whose owning pid is the launched pid (RoseCat f877bc5). NOT merely the largest
-  // non-STATIC child, and NO visibility gate (real page presentation moves to the owner real-screen check).
-  // Absent / duplicate / wrong-pid => IntPtr.Zero (the caller fails closed). Mirrors select_page_child() offline.
+  // (Chrome_WidgetWin_0) AND whose owning pid is the launched pid (RoseCat f877bc5). Selected by class + pid
+  // ONLY — NOT the largest non-STATIC child, and NO visibility gate (real page presentation moves to the owner
+  // real-screen check). Absent / duplicate / wrong-pid => IntPtr.Zero (the caller fails closed). Mirrors
+  // select_page_child() offline; the embedded body is pinned by test_page_hwnd_embedded_selector_is_strict.
   public static IntPtr PageHwnd(IntPtr host) {
     IntPtr found = IntPtr.Zero; int n = 0;
     IntPtr c = GetWindow(host, GW_CHILD);
@@ -1099,6 +1131,43 @@ class WinDrawerOracle(unittest.TestCase):
         # A Chrome_WidgetWin_0 child owned by a DIFFERENT pid (a stray/stale browser) must not count => None.
         children = [{"hwnd": 0x30, "cls": PAGE_WIDGET_CLASS, "pid": 9999}]
         self.assertIsNone(select_page_child(children, 4242))
+
+    def test_page_hwnd_embedded_selector_is_strict(self):
+        # RoseCat ba35dc5: bind the oracle to the ACTUAL embedded C# selector that the Win11 run executes, not
+        # only the detached Python model. Extract [Z]::PageHwnd's real body and pin class + pid + exactly-one and
+        # the ABSENCE of size/visibility heuristics, so reverting the C# to the old largest-visible-child body
+        # would turn this red (it does not change select_page_child or the four model rows above).
+        body = extract_csharp_method(_RUNNER, "PageHwnd")
+        self.assertTrue(page_selector_body_is_strict(body),
+                        f"embedded PageHwnd must select by class + pid + exactly-one, no size/visibility; body={body!r}")
+        # independent of the predicate: the real body must carry each required token and neither heuristic
+        self.assertIn('"Chrome_WidgetWin_0"', body)      # the widget class
+        self.assertIn("== Pid", body)                     # the launched pid
+        self.assertIn("n == 1", body)                     # exactly one match
+        self.assertNotIn("StyleVisible", body)            # no visibility gate
+        self.assertNotIn("GetWindowRect", body)           # no size/area measurement
+
+    def test_page_hwnd_selector_mutants_rejected(self):
+        # The same predicate must REJECT each reverted selector — proving it is causal, not vacuous.
+        old_largest = (  # the pre-f877bc5 largest-VISIBLE-non-STATIC heuristic
+            'IntPtr best_h = IntPtr.Zero; int best = 0; IntPtr c = GetWindow(host, GW_CHILD);'
+            'while (c != IntPtr.Zero) { var cls = new StringBuilder(64); GetClassName(c, cls, 64);'
+            'if (cls.ToString() != "STATIC" && StyleVisible(c)) { RECT r; if (GetWindowRect(c, out r)) {'
+            'int hh = r.bottom - r.top; if (hh > best) { best = hh; best_h = c; } } }'
+            'c = GetWindow(c, GW_HWNDNEXT); } return best_h;')
+        no_pid = (  # class + exactly-one, but the pid term dropped (a wrong-pid page would be accepted)
+            'IntPtr found = IntPtr.Zero; int n = 0; IntPtr c = GetWindow(host, GW_CHILD);'
+            'while (c != IntPtr.Zero) { var cls = new StringBuilder(64); GetClassName(c, cls, 64);'
+            'if (cls.ToString() == "Chrome_WidgetWin_0") { found = c; n++; } c = GetWindow(c, GW_HWNDNEXT); }'
+            'return n == 1 ? found : IntPtr.Zero;')
+        first_match = (  # returns the FIRST class+pid match instead of requiring a unique one
+            'IntPtr c = GetWindow(host, GW_CHILD); while (c != IntPtr.Zero) {'
+            'var cls = new StringBuilder(64); GetClassName(c, cls, 64); uint pid;'
+            'GetWindowThreadProcessId(c, out pid);'
+            'if (cls.ToString() == "Chrome_WidgetWin_0" && (int)pid == Pid) return c;'
+            'c = GetWindow(c, GW_HWNDNEXT); } return IntPtr.Zero;')
+        for label, mutant in (("old-largest", old_largest), ("no-pid", no_pid), ("first-match", first_match)):
+            self.assertFalse(page_selector_body_is_strict(mutant), f"mutant {label} must be rejected by the predicate")
 
     def test_exactly_eight_live_methods(self):
         # RoseCat 7862/7868 #2: pin the hostless skip count — WinDrawerLive has EXACTLY the 8 entry live rows.
