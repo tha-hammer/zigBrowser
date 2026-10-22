@@ -691,6 +691,19 @@ pub fn build(b: *std.Build) void {
     run_agent_drawer_appkit_tests.skip_foreign_checks = true;
     const agent_drawer_appkit_step = b.step("test-agent-drawer-appkit", "MS7.1: the AppKit drawer's dock geometry in the portable logic");
     agent_drawer_appkit_step.dependOn(&run_agent_drawer_appkit_tests.step);
+    // MS7.4 (RoseCat 8058): the AppKit bubble text (UTF-16 copy map, invalid UTF-8 and NUL policy, the label/text
+    // view boundary) in the portable logic. RED until agent_drawer.zig has it; not in `test` until the green.
+    const agent_drawer_appkit_text_tests_module = b.createModule(.{
+        .root_source_file = b.path("tests/agent_drawer_appkit_text_test.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    agent_drawer_appkit_text_tests_module.addImport("agent_drawer", agent_drawer_module);
+    const run_agent_drawer_appkit_text_tests = b.addRunArtifact(b.addTest(.{ .root_module = agent_drawer_appkit_text_tests_module }));
+    run_agent_drawer_appkit_text_tests.skip_foreign_checks = true;
+    const agent_drawer_appkit_text_step = b.step("test-agent-drawer-appkit-text", "MS7.4: the AppKit drawer's bubble text in the portable logic");
+    agent_drawer_appkit_text_step.dependOn(&run_agent_drawer_appkit_text_tests.step);
     // Chat drawer S5c-1 (S5.6, rev 16.20.2): long unbroken runs get break points,
     // and Copy maps a selection back to the original bytes.
     const agent_drawer_breaks_tests_module = b.createModule(.{
@@ -4030,6 +4043,7 @@ const drawer_portable_exports = [_][]const u8{
     "zb_drawer_break_runs",        "zb_drawer_row_text_len",    "zb_drawer_original_offset",
     "zb_drawer_reply_text_max",    "zb_drawer_reply_content_max", "zb_drawer_label_text_max",
     "zb_drawer_inside_icon",       "zb_drawer_page_rect",       "zb_drawer_appkit_frame",
+    "zb_drawer_appkit_shown",      "zb_drawer_appkit_original_offset", "zb_drawer_bubble_is_label",
 };
 
 fn addShimArg(b: *std.Build, run: *std.Build.Step.Run, shim: []const u8) void {
