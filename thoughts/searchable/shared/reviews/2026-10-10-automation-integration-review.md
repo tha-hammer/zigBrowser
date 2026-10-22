@@ -29408,3 +29408,129 @@ registered. A direct compile of the unregistered test from an exact clean
 still absent from the broker seam, so `windowOpened` cannot compile). The
 green must register this exact file and preserve the main-vs-last mutant
 evidence. Agent Mail sent the verdict to BlackRobin.
+
+## Win32 drawer child-tree cleanup (`72a2266`)
+
+**BLOCKED; no further VM run with this teardown should occur.** The new
+manual WebView2 stop is not stable process identity. It enumerates CIM rows
+whose executable basename is `msedgewebview2.exe` and whose command line
+contains the unique run directory, but then discards that observation and
+calls `Stop-Process` with only the numeric pid
+(`tests/windows/win_drawer_test.py:140-145`). If the matched process exits
+and the pid is reused before the stop, an unrelated process can be killed.
+Use a stable opened process handle and revalidate the same creation identity
+before termination, or preferably create the browser suspended, check Job
+configuration and assignment, then resume it so descendants cannot escape
+the owned Job.
+
+The accompanying proof is also fail-open. Both CIM enumeration and
+`Stop-Process` suppress errors, so an unreadable process list, unreadable
+command line or failed stop can be reported as zero survivors
+(`tests/windows/win_drawer_test.py:141-148`). The Python assertion defaults a
+missing `webview_kids_left` field to zero. Every inspection and stop failure
+must fail the test explicitly.
+
+Cleanup widens beyond the run as well. `setUp` recursively deletes every
+`%USERPROFILE%\zb\drawer-*` directory without a durable ownership/dead-owner
+proof (`tests/windows/win_drawer_test.py:169-173`), so a concurrent live run
+can lose its directory. The current run's retry loop then silently accepts a
+remaining directory (`tests/windows/win_drawer_test.py:237-247`) instead of
+surfacing cleanup failure. Limit deletion to a proven test-owned unique root;
+make any stale sweep ledger/identity based; report a surviving current root.
+
+Required failing-first rows are a deterministic pid/identity swap, CIM and
+command-line read failure, stop failure, a concurrent decoy directory and
+cleanup exhaustion. The older unchecked start-before-Job-assignment, global
+name/`FindWindow` oracles, absent child-HWND census and unchecked
+`CreateWindowExW` production results remain open. Agent Mail 7640 sent these
+blockers to AzureRidge.
+
+## Canonical owner-start shape (`c2594f8`, `9045a92`)
+
+**APPROVED `c2594f8` as a failing-first red and APPROVED `9045a92` for the
+canonical-shape production fix.** From exact clean exports, the red produced
+6/8: precisely the Linux-nonzero-usec and Darwin-usec-1,000,000 rows failed,
+while exact identity preservation passed. At the green, the start-kind file
+passes 8/8 and the registered parse, grammar, load and publish steps pass
+13/13 build steps and 33/33 tests.
+
+The fixture edits do not weaken their named malformed-input assertions. They
+only correct an orthogonal impossible Linux representation from nonzero
+`start_usec` to zero, leaving the extra, missing, mistyped and unknown-state
+defects in place. Production now rejects a Linux tick identity with any
+microsecond component and a Darwin identity with a microsecond component
+above 999999.
+
+The cumulative `116c086`/`79a5e26` chain remains open for its separately
+declared same-kind comparison and build registration. The current publish
+helper also reloads and checks only the basename; the parser pins exact
+identity preservation, but an exact publish/load `(kind,sec,usec)` round-trip
+remains a coverage SHOULD unless a later registered test adds it. Agent Mail
+7645 sent the split verdict to JadeBeacon.
+
+## Agent-host registered-step environment check (`11b3ac4`)
+
+The reported three failures are **not reproduced in the registered gate
+environment and are not a code regression at `11b3ac4`.** A clean exact
+export under `/run/user/1000` passed the registered `test_contract` command
+21/21, including the named P04 row; the registered `test_hook_net` command
+19/19; and the named chat-redact prompt-end row 1/1. Repeating the named rows
+and full hook-net module inside `unshare --user --map-current-user --pid
+--fork --kill-child --mount-proc` passed 1/1, 1/1 and 19/19.
+
+BlueBeaver independently isolated the failing full-gate run to
+`--map-root-user`: it changed the effective home and runtime paths to
+`/root` and `/run/user/0`, causing the three environment-sensitive failures.
+That is a harness choice, not a product regression. A distinct safety defect
+is real: all three registered build steps contain signal paths but currently
+run without a PID namespace. They must be wrapped with
+`--map-current-user --pid --fork --kill-child --mount-proc`; BlueBeaver owns
+that urgent fix. Agent Mail 7644 recorded the evidence and ownership.
+
+## Win32 drawer mount failure transaction (`496039d`)
+
+**BLOCKED-for-tests.** The production ordering is correct for the intended
+state invariant: both HWNDs remain local until both are non-null; only then
+are the application fields, mounted bit, live count and protocol rows
+committed (`src/webview2_shim.cpp:820-850`). A partial child is destroyed and
+no false mounted/census state is published. This closes the static-code half
+of the earlier `CreateWindowExW` finding.
+
+Neither failure branch has a failing-first or causal test. The existing live
+test exercises only successful control creation and would still pass if the
+new null check were deleted. A narrow injectable control-factory seam must
+prove panel failure, icon failure after a panel succeeds, partial cleanup,
+zero mounted/live/rows, and a later exactly-once successful retry. The code
+also creates the icon after a panel failure and only then reads
+`GetLastError`; a successful second call may erase the useful diagnostic.
+Sequential create/check or immediate error capture is a SHOULD.
+
+The unsafe `72a2266` teardown and the remaining Job/HWND/census WS5 blockers
+are independent and remain open. Agent Mail 7646 sent the test blocker and
+diagnostic note to AzureRidge.
+
+## MS6.3 resolved-scratchpad green (`8413992`)
+
+**BLOCKED; no Mac hard-gate run is authorized.** The production/path part is
+directionally correct: `dparams` refuses rather than rewrites a scratch path
+that is missing, not a directory or not equal to its real path; the hard-gate
+case creates homes below `realpath(h.scratch)`; and the changed case bytes
+match manifest digest
+`5109446ba0d9291cc6e59ed3c8248723fb310f39561149afdb4992c589a853b1`.
+Because production does no rewrite, this change does not widen the Seatbelt
+write grant.
+
+The four newly namespaced setup-Darwin build commands erase every unittest
+failure. Each nested shell ends in `; :`, so the outer captured status is
+always zero. Running the exact wrapper shape against a nonexistent unittest
+module printed `FAILED (errors=1)` but returned rc 0. Thus the reported
+registered gate cannot prove these modules passed. The wrappers also use
+`--map-root-user`, while the contemporaneous gate diagnosis shows that root
+mapping changes HOME/runtime paths to `/root` and `/run/user/0` and invalidates
+environment- and permission-sensitive assertions.
+
+A fix-forward must keep the required parent pid while returning the test's
+exact status, add a causal wrapper test (exit 37 remains 37; success remains
+zero; parent pid is above 1), and use `--map-current-user`. Re-run all four
+affected modules and the focused registered gates. Agent Mail 7647 sent this
+BLOCKER to BlueBeaver.
