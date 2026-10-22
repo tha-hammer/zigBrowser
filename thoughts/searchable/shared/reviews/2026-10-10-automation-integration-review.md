@@ -30899,3 +30899,53 @@ blocking post-kill wait, partial pipe creation and renewed-per-phase deadlines.
 The fd-9 sentinel and exact fork-returned-pid targeting are otherwise sound.
 The cumulative full gate cannot supersede these unregistered prototype gaps.
 Agent Mail 7743 sent the findings to JadeBeacon.
+
+## Sign-in scratch creation green (`cd992e9`)
+
+**BLOCKED.** The held-fd walk rejects the committed symlink-swap mutation,
+and the exact clean-export `test_login_scratch_tmp` suite passed **11/11** in
+a private current-UID user/PID/mount namespace. The fake setup-token fixture
+precedence change is coherent. Neither result closes the replacement race or
+the registration requirement.
+
+A causal exact-commit probe replaced the newly created `scratchpad` with a
+different same-uid real directory after the patched `mkdirat` returned but
+before `ensure_private_tmp` performed `openat`. The function returned success,
+chmodded that replacement from 0755 to 0700, and created its `tmp`:
+
+`REAL_DIR_SWAP_ACCEPTED True 0o700 True`
+
+Thus the function repaired and accepted an object it did not create. The
+committed row swaps the already-open scratchpad to a symlink only when the
+`tmp` mkdir begins, which `O_NOFOLLOW` plus the final lexical recheck catches;
+it does not cover the mkdir-to-open real-directory replacement. There is also
+a check-to-use window after the final lexical comparison closes every held fd
+and before `Popen` resolves `cwd`, `TMPDIR` and `CLAUDE_CODE_TMPDIR`.
+
+Add a deterministic real-directory replacement row at mkdir-to-open that
+leaves the replacement unchanged and launches nothing. The green must bind the
+created inode before modifying or accepting it, and retain the checked object
+through actual spawn, or obtain an explicit narrower trust-boundary decision.
+Register both login tempdir suites with the pinned interpreter and preserved
+status. Agent Mail 7746 sent the blocker to BlueBeaver.
+
+## Windows WS5 born-in-Job lifecycle (`dbe6382`)
+
+**APPROVED-for-live-evidence; BLOCKED-for-acceptance pending the exact Win11
+row.** This test-only fix closes the code/design gap in `8545430`:
+`PROC_THREAD_ATTRIBUTE_JOB_LIST` makes the suspended child a member of the
+kill-on-close Job at `CreateProcess`; a failed membership verification cannot
+leave a never-owned child; final cleanup closes the Job before proving exit
+through the retained process handle; and `cleanup_exhaust` suppresses every
+`TerminateProcess`-based attempt. Its direct wait can therefore pass only if
+Job close terminated the suspended child. No pid- or name-based signal is
+introduced.
+
+From an exact clean export, the two Python modules passed **54** offline oracle
+tests and skipped **15** live rows. That proves the result validators, not the
+Windows `STARTUPINFOEX`/Job-list mechanism. One exact-commit Win11 run is
+authorized for `assign_fail`, `assign_firststop_fail` and `cleanup_exhaust`,
+with the existing unique-root and owned-Job cleanup. Acceptance requires every
+row to report `proc_gone=true`, the exhaustion row to report
+`cleanup_exhausted=true`, no pre-resume `DRAWER` row, and zero owned survivors
+or leftovers after the runner. Agent Mail 7747 sent the verdict to AzureRidge.
