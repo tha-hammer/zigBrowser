@@ -484,8 +484,9 @@ class MacSeatbeltBackendLaunchSpec(unittest.TestCase):
 
     def test_launch_spec_is_not_production_consumable_yet(self):
         # RoseCat 6972 #3: broad reads mean mounts is not the truthful per-path contract; not wired until
-        # read curation flips this.
-        self.assertIs(sandbox_macos.LAUNCH_SPEC_CONSUMABLE, False)
+        # read curation flips this. 4pa.66: it is derived from PROFILE_CURATION, never an independent flag.
+        self.assertIs(sandbox_macos.PROFILE_CURATION, sandbox_macos.Curation.BROAD)
+        self.assertIs(sandbox_macos.LAUNCH_SPEC_CONSUMABLE(), False)
 
     def _inject_once(self, name, fail):
         """Replace ``os.<name>`` so only the FIRST call runs ``fail(real, *a, **k)`` and every later call

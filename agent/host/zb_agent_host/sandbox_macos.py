@@ -27,6 +27,7 @@ land). Pure stdlib, so it unit-tests on Linux; the eventual both-Mac `sandbox-ex
 """
 
 import contextlib
+import enum
 import os
 import secrets
 import shutil
@@ -345,11 +346,24 @@ def _remove_profile_dir(d):
         shutil.rmtree(d, ignore_errors=True)
 
 
-# The macOS LaunchSpec is NOT production-consumable yet (RoseCat 6972 #3): the profile grants broad file-read*
-# and a blanket mach-lookup, so LaunchSpec.mounts cannot be the truthful per-path filesystem contract. The
-# platform dispatch must not wire this until the deny-default read / tiny mach-lookup curation lands and this
-# flag is flipped (together with per-path read mounts).
-LAUNCH_SPEC_CONSUMABLE = False
+class Curation(enum.Enum):
+    """How far the generated profiles are curated: BROAD (bare file-read*, process-exec and mach-lookup) or
+    CURATED (deny-default reads, curated exec and a tiny mach-lookup)."""
+    BROAD = "broad"
+    CURATED = "curated"
+
+
+# The ONE readiness source for the macOS profile (plan R29-MS6 D2, bd zigBrowser-4pa.66). Only the reviewed MS6
+# acceptance commit flips it, together with the curated renderers and src/seatbelt_gate.zig's accepted_commit;
+# tests/agent_seatbelt_readiness_invariant_test.zig fails if any one of the three moves alone.
+PROFILE_CURATION = Curation.BROAD
+
+
+def LAUNCH_SPEC_CONSUMABLE():  # noqa: N802 - the plan's name; a function, so it is never an independent flag
+    """Whether the macOS LaunchSpec is production-consumable (RoseCat 6972 #3). While the profile grants broad
+    file-read* and a blanket mach-lookup, LaunchSpec.mounts cannot be the truthful per-path filesystem contract, so
+    the platform dispatch must not wire it. Derived from PROFILE_CURATION, never set on its own."""
+    return PROFILE_CURATION is Curation.CURATED
 
 
 class MacSeatbeltBackend:

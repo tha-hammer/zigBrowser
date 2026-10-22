@@ -63,8 +63,10 @@ pub const mac_python_subpath = "Python.framework/Versions/3.12/bin/python3.12";
 pub const Gate = union(enum) { run, refuse: []const u8 };
 pub const macos_unsandboxed_refusal = "zigBrowser: agent-setup: the macOS sandbox is not ready; setup will not run unsandboxed";
 pub const linux_only_refusal = "zigBrowser: agent-setup: the Claude Agent is Linux-only";
-/// MS6's green (the accepted Seatbelt backend) flips this.
-pub const seatbelt_ready = false;
+/// The MS6 acceptance fact (4pa.66, D2). Readiness is derived from it, so it cannot be flipped on its own.
+pub const seatbelt_gate = @import("seatbelt_gate.zig");
+/// True only once MS6's acceptance commit names its gate run in seatbelt_gate.zig.
+pub const seatbelt_ready = seatbelt_gate.accepted_commit != null;
 
 pub fn platformGate(os: std.Target.Os.Tag, sandbox_ready: bool) Gate {
     return switch (os) {

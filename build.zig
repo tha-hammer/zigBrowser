@@ -3292,6 +3292,44 @@ pub fn build(b: *std.Build) void {
         "-c",
         "py=$(tools/agent_host_env.sh --check) || exit 1; cd agent/host/tests && env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 ZB_AGENT_HOST_PYTHON=\"$py\" \"$py\" -m unittest -v test_sandbox_macos",
     });
+    // 4pa.66 (plan R29-MS6 D2, R30-MS6): the macOS seatbelt readiness is one fact. The production profile generator's
+    // readiness source and rendered profiles are generated into `seatbelt_facts` and judged beside
+    // agent_setup.seatbelt_ready (seatbelt_ready => CURATED, no bare allow, and only then the macOS gate runs), plus
+    // the seatbelt_ready pin. Both are tripwires (Rev 31 L3, T8); the closing proof is the Mac kernel-denial rows.
+    const seatbelt_facts_gen = b.addSystemCommand(&.{
+        "sh",
+        "-c",
+        "py=$(tools/agent_host_env.sh --check) || exit 1; env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 \"$py\" agent/host/tests/seatbelt_readiness_facts.py \"$1\"",
+        "sh",
+    });
+    const seatbelt_facts_zig = seatbelt_facts_gen.addOutputFileArg("seatbelt_facts.zig");
+    seatbelt_facts_gen.addFileInput(b.path("agent/host/tests/seatbelt_readiness_facts.py"));
+    seatbelt_facts_gen.addFileInput(b.path("agent/host/zb_agent_host/sandbox_macos.py"));
+    seatbelt_facts_gen.addFileInput(b.path("agent/host/zb_agent_host/sandbox.py"));
+    seatbelt_facts_gen.addFileInput(b.path("agent/host/zb_agent_host/relay.py"));
+    const seatbelt_agent_setup_module = b.createModule(.{
+        .root_source_file = b.path("src/agent_setup.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const seatbelt_invariant_module = b.createModule(.{
+        .root_source_file = b.path("tests/agent_seatbelt_readiness_invariant_test.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    seatbelt_invariant_module.addImport("agent_setup", seatbelt_agent_setup_module);
+    seatbelt_invariant_module.addAnonymousImport("seatbelt_facts", .{ .root_source_file = seatbelt_facts_zig });
+    const run_seatbelt_invariant_tests = b.addRunArtifact(b.addTest(.{ .root_module = seatbelt_invariant_module }));
+    const seatbelt_pin_module = b.createModule(.{
+        .root_source_file = b.path("tests/agent_setup_seatbelt_ready_pin_test.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    seatbelt_pin_module.addImport("agent_setup", seatbelt_agent_setup_module);
+    const run_seatbelt_pin_tests = b.addRunArtifact(b.addTest(.{ .root_module = seatbelt_pin_module }));
+    const seatbelt_readiness_step = b.step("test-agent-seatbelt-readiness", "Run the macOS seatbelt readiness invariant and pin (4pa.66)");
+    seatbelt_readiness_step.dependOn(&run_seatbelt_invariant_tests.step);
+    seatbelt_readiness_step.dependOn(&run_seatbelt_pin_tests.step);
     // The Seatbelt write root must be the scratchpad's own real path (11b3ac4: /tmp -> private/tmp denied every
     // write; RoseCat 7627). Plain: no process, no signal.
     const agent_host_sandbox_macos_scratch_real = b.addSystemCommand(&.{
@@ -4020,6 +4058,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&agent_host_contract.step);
     test_step.dependOn(&agent_host_backend_contract.step);
     test_step.dependOn(&agent_host_sandbox_macos.step);
+    test_step.dependOn(seatbelt_readiness_step);
     test_step.dependOn(&agent_host_sandbox_macos_scratch_real.step);
     test_step.dependOn(&agent_host_provision_unit.step);
     test_step.dependOn(&agent_host_chat.step);
