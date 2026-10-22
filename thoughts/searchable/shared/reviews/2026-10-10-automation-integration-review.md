@@ -32028,3 +32028,40 @@ and refuse before any signal if that setup is absent. It may be registered in
 the aggregate gate only after the intercepted real-action/early-unlock/path-
 swap matrix passes and the destructive slice is accepted. No Mac destructive
 run and no production arming are authorized by this review.
+
+## Windows WS5.7 portable DPI and circular hit test (`fefe97d`)
+
+**APPROVED-for-code as WS5.7 slice 1; WS5.7 remains BLOCKED/incomplete.** The
+portable result required by the plan is correct: 56 logical pixels at 150%
+becomes 84 physical pixels, invalid percentages fall back to 56, and the
+circular predicate includes the exact radius while excluding the next pixel.
+The ASCII percentage grammar is bounded to `[100,400]`. Both functions are
+exported only by the existing Linux/Windows portable-drawer export block, and
+the additive property rows are in the already registered `drawer-props-test`.
+From an exact `git archive fefe97d` export with the display variables removed,
+that step passed **4/4 build steps and 14/14 tests**; the Windows cross-object
+step passed **5/5 build steps**. `git diff --check` is clean.
+
+This approval does not authorize the proposed slice-2 wiring exactly as
+described in mail 7807. In normal production the authoritative scale must come
+from the icon/browser HWND's real per-monitor DPI (including a
+`WM_DPICHANGED` transition), not directly from ambient
+`ZIGBROWSER_AGENT_DRAWER_DPI`. That environment value may be an
+`--e2e-protocol`-gated seam, but an ordinary user environment must not override
+the OS DPI. The slice-2 causal test must therefore distinguish the real DPI
+source from the test seam and make an ignore-`WM_DPICHANGED` mutant red.
+
+The remaining WS5.7 closure is also unchanged: wire both new exports into the
+Win32 implementation and add them to `cross-check-drawer-win`'s required-symbol
+list; drive the exact edge/beyond behavior through the real icon HWND/region,
+not by calling the Zig predicate from the test; prove the scaled HWND is 84 px
+at the actual 150% setting; and complete the owner-watched `win-drawer-dpi`
+case. The current cross-check does not pin either new symbol because the C++
+backend neither declares nor consumes it yet (`build.zig:446-460`).
+
+Two hardening SHOULDs belong in slice 2: add a true half-tie row to the claimed
+round-half-up contract (the present 56-pixel examples contain no `.5` tie), and
+either narrow the C ABI's accepted coordinate/radius domain or compute squared
+distances in a type wide enough that arbitrary `c_int` arguments cannot
+overflow. These do not block this inert portable slice, but must be resolved
+before the exports sit on a production input path.
