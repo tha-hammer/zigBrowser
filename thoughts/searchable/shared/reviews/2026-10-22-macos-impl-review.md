@@ -118,3 +118,19 @@ The remote-directory oracle is presently too weak for registration: it accepts a
 Exact minimum: retain the attachment as a candidate Mac failure input and the exact-one matching `LOAD_FAIL` criterion, but state that the app policy allows every response; remove the `decidePolicyForNavigationResponse -> cancel` claim/citation and describe any refusal/conversion as WebKit behavior to be established by the Mac red. If the released red produces no matching `LOAD_FAIL`, the row must select a different producible failure. Until that documentation fix-forward lands, the submitted aggregate tip through `3164dbf` is not push-safe as plan-correct. A later unreviewed commit moved the shared-worktree HEAD to `79a70d8`; no verdict on that commit is included here.
 
 **Push-safe SHAs from this queue:** `3b81737`, `843cf3d`, `ffc0330`, `bbba1b3`, `7f8b217`, `461deff`, `78bcbc9`, and `6074fba` with the red-draft/scoped qualifications above. `3164dbf` is blocked. No Mac run is requested or authorized.
+
+## 2026-10-22 — Plan fix-forward and 4pa.57 red
+
+### `f974ae7` — fix-forward for the `3164dbf` plan block
+
+**APPROVED; SAFE TO PUSH; CLOSES THE `3164dbf` BLOCK.** Judged only against the exact `2559ea6` minimum, the two authoritative row-3 passages now state that the app response policy allows every response (`nav_policy.zig:27`, `.response => .use`), remove the false `decidePolicyForNavigationResponse -> cancel` claim and citation, retain the attachment only as a candidate WebKit failure input, require exactly one matching `LOAD_FAIL`, attribute any refusal/download conversion to WebKit behavior that the released Mac red must establish, and require a different producible failure if that red emits no matching `LOAD_FAIL`. `git diff --check` exited 0, and a search for either stale policy-refusal/cancel claim exited 1. No runtime proof is claimed by this documentation fix.
+
+`3164dbf` remains wrong in isolation; the plan content is push-safe as the `3164dbf` + `f974ae7` fix-forward series. The current branch tip is not yet approved as an aggregate because the unrelated `a65e15b` lies between review commit `2559ea6` and `f974ae7` and has not been reviewed in this queue.
+
+### `79a70d8` — 4pa.57 later-popup dialog-id red
+
+**SAFE TO PUSH AS AN UNREGISTERED RED DRAFT.** The commit adds only `tests/e2e/mac_ms2b_dialog_popup_id_test.py` and registers no gate. It drives the specified defect non-vacuously: open two popups, preserve their stable `page.list` ids, close the first, open a confirm in the later popup, then require the listed stable id, targeted lookup, response success, and the page-observed accepted result. Against the current `idx + 1` implementation the remaining `window-3` dialog is misreported as `window-2`, so the assertions distinguish the defect. All imports and reused helpers are live and appropriate; every launch has a private HOME and explicit profile.
+
+From an exact clean archive, `python3 -m py_compile tests/e2e/mac_ms2b_dialog_popup_id_test.py` exited 0 and the missing-browser probe exited 1 with `FAIL ...-binary-missing`, not a skip. The Mac red and its future production mutant remain unproved until the exact-commit/harness-digest approval and orchestrator release.
+
+**New push-safe SHAs from this queue:** `79a70d8` as an unregistered red draft, and `f974ae7` as the required fix-forward for `3164dbf`. No verdict is made on intervening `a65e15b`; therefore no aggregate branch-tip push approval is given. No Mac run is requested or authorized.
