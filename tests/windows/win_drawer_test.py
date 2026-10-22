@@ -104,6 +104,19 @@ def check_success(r):
     assert py + ph == r["client_h"], f"page_h + panel_h must equal client_h ({py} + {ph} != {r['client_h']})"
 
 
+def check_mounted_fail(r, which):
+    """The oracle for a FORCED control-create failure (`which` in {panel, icon}, RoseCat 7646): the browser
+    still runs and tears down cleanly, but NO drawer mounts — no DRAWER rows, no drawer controls — and the
+    exact failure diagnostic is emitted. Pure; raises AssertionError on any violation."""
+    assert r.get("error", "") == "", f"the browser itself must run (a forced drawer-control failure is a drawer branch, not a runner Win32 error): {r.get('error')!r}"
+    assert r["terminated"], "teardown must reach WAIT_OBJECT_0 even when the drawer did not mount"
+    assert r["job_count_after"] == 0, f"the owned Job must be empty after teardown (got {r['job_count_after']})"
+    rows = [row for row in (parse_drawer(ln) for ln in r["stdout"].splitlines()) if row]
+    assert rows == [], f"a forced-{which}-fail mount must emit NO DRAWER rows; got {rows}"
+    assert "STATIC:S" not in (r.get("controls") or ""), f"the drawer 'S' icon control must be absent on a {which} failure; controls={r.get('controls')!r}"
+    assert f"agent-drawer {which} control failed" in (r.get("stderr") or ""), f"the {which}-failure diagnostic must be present in stderr; got {r.get('stderr')!r}"
+
+
 # VM-side runner (RoseCat 29e8852): create the browser SUSPENDED, assign it to a Job we OWN
 # (KILL_ON_JOB_CLOSE) and CHECK the assignment, then resume — so every descendant (incl. msedgewebview2.exe)
 # is born inside the job and cannot escape. Teardown closes/terminates the job, which kills the whole tree;
@@ -113,6 +126,7 @@ def check_success(r):
 _RUNNER = r"""
 $ErrorActionPreference='Stop'
 $dir = $args[0]
+$failMode = $args[1]   # '', 'panel' or 'icon' — drives the e2e control-factory failure seam
 $exe = Join-Path $dir 'zigBrowser.exe'
 $out = Join-Path $dir 'o.txt'; $err = Join-Path $dir 'e.txt'; $nul = 'NUL'
 Remove-Item $out,$err -ErrorAction SilentlyContinue
@@ -255,6 +269,7 @@ $res = @{ stdout=''; stderr=''; client_w=0; client_h=0; pid=0; controls=''; job_
 # e2e-only seams, set in this process so the child inherits them (honoured only under --e2e-protocol).
 $env:ZIGBROWSER_AGENT_DRAWER_OPEN = '1'
 $env:ZIGBROWSER_AGENT_DRAWER_DEMO = 'messages:2'
+if ($failMode) { $env:ZIGBROWSER_AGENT_DRAWER_FAIL = $failMode }
 $cmdline = '"' + $exe + '" --e2e-protocol --agent-drawer on "' + $url + '"'
 $launched = $false
 try {
@@ -319,7 +334,9 @@ class WinDrawerLive(unittest.TestCase):
                 "-o", "ConnectionAttempts=3", "-P", self.port, local, f"{self.user}@{self.host}:{remote}"]
         return subprocess.run(self._scrub(*base), capture_output=True, text=True, timeout=120).returncode
 
-    def test_native_drawer_mounts_docks_and_emits_census(self):
+    def _run_drawer(self, fail_mode="", body=None):
+        """Stage + run run.ps1 (optionally with the control-factory failure seam `fail_mode`), parse the JSON
+        result, invoke `body(r)`, and always tear down this run's unique root fail-closed."""
         rel = f"zb/drawer-{os.getpid()}-{secrets.token_hex(4)}"
         base_win = f"%USERPROFILE%\\{rel}".replace("/", "\\")
         self.assertEqual(self._ssh("cmd", "/c", f"mkdir {base_win}").returncode, 0)
@@ -335,13 +352,16 @@ class WinDrawerLive(unittest.TestCase):
                 pairs.append((str(loader), "WebView2Loader.dll"))
             for local, name in pairs:
                 self.assertEqual(self._scp(local, f"{rel}/{name}"), 0, f"scp {name}")
-            # run.ps1 sets the e2e-only open seam + demo seed in its own environment before Start-Process,
-            # so the exe inherits them (honoured only under --e2e-protocol).
-            run = self._ssh("powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
-                            "-File", f"{base_win}\\run.ps1", base_win)
+            args = ["powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+                    "-File", f"{base_win}\\run.ps1", base_win]
+            if fail_mode:
+                args.append(fail_mode)
+            run = self._ssh(*args)
             self.assertEqual(run.returncode, 0, f"runner failed: {run.stdout}\n{run.stderr}")
             r = json.loads(run.stdout.strip().splitlines()[-1])
-            check_success(r)  # the full discriminating oracle (also exercised offline, WinDrawerOracle)
+            if body:
+                body(r)
+            return r
         finally:
             # The owned Job (KILL_ON_JOB_CLOSE) kills the WHOLE tree — including the WebView2 children born
             # inside it — so the run dir's WebView2 cache is released and this unique root must come back
@@ -367,6 +387,17 @@ class WinDrawerLive(unittest.TestCase):
                 _sys.stderr.write(f"CLEANUP: run dir left behind (not removed): {base_win}\n")
                 if _sys.exc_info()[0] is None:
                     self.fail(f"run dir left behind (not removed): {base_win}")
+
+    def test_native_drawer_mounts_docks_and_emits_census(self):
+        self._run_drawer(body=check_success)
+
+    def test_panel_create_failure_leaves_no_drawer(self):
+        # WS5 (RoseCat 7646): forcing the panel CreateWindowExW to fail must mount NO drawer — no DRAWER rows,
+        # no drawer controls — the browser still runs and tears down cleanly, with the panel diagnostic.
+        self._run_drawer(fail_mode="panel", body=lambda r: check_mounted_fail(r, "panel"))
+
+    def test_icon_create_failure_leaves_no_drawer(self):
+        self._run_drawer(fail_mode="icon", body=lambda r: check_mounted_fail(r, "icon"))
 
 
 class WinDrawerOracle(unittest.TestCase):
@@ -427,6 +458,38 @@ class WinDrawerOracle(unittest.TestCase):
 
     def test_panel_not_full_width_rejected(self):
         self._reject(lambda r: r.update(client_w=1200))
+
+    # --- forced control-create failure oracle (check_mounted_fail, RoseCat 7646) ---
+    def _good_fail(self, which):
+        return {"error": "", "terminated": True, "job_count_after": 0, "controls": "",
+                "stdout": "NAV\tfile:///x/test.html\tdrawer\n",
+                "stderr": f"zigBrowser: agent-drawer {which} control failed (error 87); drawer not mounted\n"}
+
+    def test_panel_fail_good_passes(self):
+        check_mounted_fail(self._good_fail("panel"), "panel")
+
+    def test_icon_fail_good_passes(self):
+        check_mounted_fail(self._good_fail("icon"), "icon")
+
+    def test_fail_but_rows_emitted_rejected(self):
+        r = self._good_fail("panel"); r["stdout"] += "DRAWER\t1\ttree\thost,page,icon,panel\n"
+        with self.assertRaises(AssertionError):
+            check_mounted_fail(r, "panel")
+
+    def test_fail_but_icon_control_present_rejected(self):
+        r = self._good_fail("icon"); r["controls"] = "STATIC:|STATIC:S"
+        with self.assertRaises(AssertionError):
+            check_mounted_fail(r, "icon")
+
+    def test_fail_without_diagnostic_rejected(self):
+        r = self._good_fail("panel"); r["stderr"] = ""
+        with self.assertRaises(AssertionError):
+            check_mounted_fail(r, "panel")
+
+    def test_fail_but_not_torn_down_rejected(self):
+        r = self._good_fail("panel"); r["terminated"] = False
+        with self.assertRaises(AssertionError):
+            check_mounted_fail(r, "panel")
 
 
 if __name__ == "__main__":

@@ -65,6 +65,9 @@ struct AppState {
   int win_id = 1;
   HWND drawer_panel = nullptr;
   HWND drawer_icon = nullptr;
+  // WS5 e2e-only control-factory failure seam (ZIGBROWSER_AGENT_DRAWER_FAIL = "panel"|"icon"): forces a
+  // CreateWindowExW failure branch for the test. Null unless --e2e-protocol AND the env is set.
+  const char *force_drawer_fail = nullptr;
 };
 
 // The portable drawer geometry (src/agent_drawer.zig, exported for Windows). Rect matches Zig's
@@ -816,19 +819,33 @@ void mount_drawer(AppState *app) {
 
   ZbDrawerGeomRect icon = {};
   zb_drawer_place(nullptr, cw, ch, &icon);
-  // Native Win32 controls (OD-W6): a docked panel and the floating "S" icon, children of the host window.
-  HWND panel_hwnd = CreateWindowExW(0, L"STATIC", L"", WS_CHILD, 0, 0, 0, 0,
-                                    app->hwnd, nullptr, app->instance, nullptr);
-  HWND icon_hwnd = CreateWindowExW(0, L"STATIC", L"S", WS_CHILD | SS_CENTER,
-                                   icon.x, icon.y, icon.w, icon.h, app->hwnd, nullptr, app->instance, nullptr);
-  // Fail closed: only a drawer with REAL native controls counts. If either control could not be created,
-  // destroy any partial one and do NOT mark mounted / increment the live count / emit any DRAWER row — a
-  // row-only/null-control implementation must not pass (RoseCat 7633 #4).
-  if (panel_hwnd == nullptr || icon_hwnd == nullptr) {
-    log_last_error("CreateWindowExW(drawer control)");
-    if (panel_hwnd != nullptr) DestroyWindow(panel_hwnd);
-    if (icon_hwnd != nullptr) DestroyWindow(icon_hwnd);
-    return;  // drawer stays unmounted; no census rows emitted
+  // e2e-only control-factory failure seam (inert unless --e2e-protocol AND ZIGBROWSER_AGENT_DRAWER_FAIL is
+  // "panel"/"icon"): forces the matching CreateWindowExW to be treated as failed, so the failure branches are
+  // driveable by a test (RoseCat 7646). Never consulted in normal runs.
+  const bool fail_panel = app->force_drawer_fail != nullptr && strcmp(app->force_drawer_fail, "panel") == 0;
+  const bool fail_icon = app->force_drawer_fail != nullptr && strcmp(app->force_drawer_fail, "icon") == 0;
+
+  // Native Win32 controls (OD-W6). SEQUENTIAL create+check so a later success can't clobber the panel's
+  // failure error, and the icon is never attempted after a panel failure (RoseCat 7646). Each error is
+  // captured IMMEDIATELY after its own failed call. Fail closed: no mounted/live/rows without real controls.
+  HWND panel_hwnd = fail_panel ? nullptr
+                               : CreateWindowExW(0, L"STATIC", L"", WS_CHILD, 0, 0, 0, 0,
+                                                 app->hwnd, nullptr, app->instance, nullptr);
+  if (panel_hwnd == nullptr) {
+    const unsigned long e = fail_panel ? (unsigned long)ERROR_INVALID_PARAMETER : (unsigned long)GetLastError();
+    fprintf(stderr, "zigBrowser: agent-drawer panel control failed (error %lu); drawer not mounted\n", e);
+    fflush(stderr);
+    return;  // no icon attempt, no mounted/live/rows
+  }
+  HWND icon_hwnd = fail_icon ? nullptr
+                             : CreateWindowExW(0, L"STATIC", L"S", WS_CHILD | SS_CENTER,
+                                               icon.x, icon.y, icon.w, icon.h, app->hwnd, nullptr, app->instance, nullptr);
+  if (icon_hwnd == nullptr) {
+    const unsigned long e = fail_icon ? (unsigned long)ERROR_INVALID_PARAMETER : (unsigned long)GetLastError();
+    fprintf(stderr, "zigBrowser: agent-drawer icon control failed (error %lu); drawer not mounted\n", e);
+    fflush(stderr);
+    DestroyWindow(panel_hwnd);  // destroy the exact panel we just created
+    return;  // no mounted/live/rows
   }
   app->drawer_panel = panel_hwnd;
   app->drawer_icon = icon_hwnd;
@@ -1383,6 +1400,7 @@ static int run_core(const char *uri, int print_title, int e2e_protocol, bool scr
   if (app.agent_drawer_on && app.e2e_protocol) {
     const char *open_env = getenv("ZIGBROWSER_AGENT_DRAWER_OPEN");
     app.drawer_open = open_env != nullptr && open_env[0] != '\0' && !(open_env[0] == '0' && open_env[1] == '\0');
+    app.force_drawer_fail = getenv("ZIGBROWSER_AGENT_DRAWER_FAIL");  // e2e-only control-factory failure seam
   }
   app.screenshot = screenshot;
   if (screenshot && out_path != nullptr) {
