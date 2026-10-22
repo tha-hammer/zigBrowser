@@ -307,3 +307,37 @@ The exact fix-forward minimum is to parse or otherwise anchor both cache flags t
 Because `6aeee3e` is blocked, **`build-on-mac.sh` and its eight callers may not take Mac run requests again yet**. Even after their proof is repaired, four independent direct-Zig harnesses remain separately held under 3ui.5: `tests/mac/mac_compile_only.sh`, `tests/mac/ms5_setup_e2e.sh`, `tests/mac/ms5_setup_refusal_gate.sh`, and `tests/mac/ms7_appkit_gate.sh`. No request using any of those four may be approved until each confines both caches beneath its own per-run directory and receives the required review. Any later request still needs the exact source commit, SHA-256 of every harness file, and the orchestrator's explicit release. No Mac was contacted during this review.
 
 The current aggregate branch tip is additionally not push-safe because it still contains the independently blocked `a2bc627` complete-green claim.
+
+## 2026-10-22 — 3ui.5 Zig-cache proof fix-forward
+
+### `63721e2` — bind cache flags to the actual Zig argv
+
+**APPROVED; SAFE TO PUSH; CLOSES THE `fe88498` BLOCK ON `6aeee3e`.** Judged only against that exact minimum, the registered oracle now parses the remote command and script with POSIX `shlex`, drops comments, stops each Zig argv at shell control/redirection tokens, and evaluates only the flags on that invocation. Both cache flags must occur in that argv, their separate-argument and `--flag=value` forms are recognized, and every supplied value must remain beneath the exact host run directory. The corrected total is 16 remote Zig invocations.
+
+Independent exact-commit evidence from a clean archive of `63721e2b788a48971cc9b1fa7924026318f60db2`: `zig build test-mac-build-script -j4 --summary all` exited 0 with 5/5 steps, and all 16 invocations across `build-on-mac.sh` plus the eight callers passed. Four independent production mutants each exited 1 with 16 failures: remove the real cache environment and flags but leave both strings after shell `#`; move them after `; echo`; retain only the environment assignments; and move the global cache to `$HOME/.cache/zig`. `git diff --check` passed, and the only committed file change is the registered hostless selftest.
+
+The scoped 3ui.5 HOLD is therefore cleared for **`build-on-mac.sh` and its eight callers**: they may submit Mac run requests again. This is readiness, not a release; every request still requires the exact source commit, SHA-256 of every harness file used, and the orchestrator's explicit release.
+
+The independent direct-Zig harnesses remain held. Static tracing confirms the four already named, and additionally finds `tests/mac/ms5_gate.sh` invoking `zig test` without either cache flag. Thus the held set is now five: `mac_compile_only.sh`, `ms5_setup_e2e.sh`, `ms5_setup_refusal_gate.sh`, `ms7_appkit_gate.sh`, and `ms5_gate.sh`. No Mac was contacted.
+
+## 2026-10-22 — 4pa.71/I-W3 recovery fix-forward
+
+### `6ff2ccc` — production bypass closure, T20, and deterministic recoverer handshake
+
+**APPROVED; SAFE TO PUSH; CLOSES THE `c6c04b7` BLOCK ON `a2bc627`.** Judged only against the three-part exact minimum:
+
+1. `recoverOneUnderLock`, `recoverOneUnderLockP`, `recoverAllAtStartupGated`, `recoverAllAtStartupGatedH`, and `recoverAllAtStartupFull` are file-private in `agent_run_recovery.zig`; the ledger no longer exposes the transaction. Test access is confined to `test_support = if (builtin.is_test) ... else struct {}`. The sole public startup-recovery entry is `recoverAllAtStartup`, whose readiness argument is the immutable `reaper_ready`.
+2. Registered Linux step `test-agent-run-recovery-bypass-closed`, also attached to `zig build test`, compiles 13 non-test objects: twelve exact compile-fail bypass probes and one positive control for `recoverAllAtStartup`. Independently changing `recoverAllAtStartupGated` back to `pub` made the step exit 1 because that direct probe compiled.
+3. The two-recoverer test no longer uses scheduler sleep. Recoverer A reports arrival and blocks at its fixed point before B is forked; the parent probes the flock, and the free-lock branch waits for B's own arrival before releasing either child. The assertion counts fixed-point arrivals to EOF before checking the exact results. An independent early-unlock mutant failed five consecutive fresh-cache runs at the intended first assertion, each with `expected 1, found 2`.
+
+Clean-archive `6ff2ccc6e3c31f9fd13ddb6227706003427eec26` evidence: the bypass-closed, transaction, store/PID, and startup steps exited 0 with 25/25 build steps and 20/20 tests; the registered transaction was 6/6. `git diff --check` passed. The earlier 4pa.65/4pa.68 findings remain unchanged. With `63721e2` also closing the harness block, the ancestry through `6ff2ccc` is push-safe as a whole.
+
+## 2026-10-22 — direct-Zig Mac harness cache red
+
+### `be883b3` — structural argv oracle for three noncompliant direct paths
+
+**SAFE TO PUSH AS AN UNREGISTERED PARTIAL RED; NOT ACCEPTED AS COMPLETE COVERAGE OF THE FOUR-SCRIPT QUEUE.** The commit adds one unregistered hostless test and changes no product or registered step. It runs the real `ms5_setup_refusal_gate.sh`, `ms5_setup_e2e.sh`, and newly discovered `ms5_gate.sh` against isolated recording SSH/SCP stubs on both modeled hosts. For those six legs it derives the passed run directory, parses each Zig command's own argv with the same comment/control-token boundary as `63721e2`, requires both flags inside that run directory, and requires a non-vacuous Zig invocation. The test re-execs under a private network namespace.
+
+From an exact clean archive of `be883b38f48de85cd0f09f964d6dcf1f5edb5a38`, the script exited 1 with exactly six intended missing-flag failures, one per leg. Adding in-run flags to all three real scripts made it exit 0; replacing the two real flags on `ms5_setup_e2e.sh` with identical strings only after shell `#` made it exit 1 on both of that script's legs. The structural oracle is sound for the paths it drives, and `git diff --check` passed.
+
+The coverage claim is incomplete: the orchestrator named `mac_compile_only.sh` and `ms7_appkit_gate.sh`, but this red explicitly does not execute either. Static source inspection suggests both already pass in-run local/global cache flags, but that is not the required exercising proof and cannot protect them from regression. Before registration or any direct-harness HOLD is cleared, extend the proof to drive all five discovered direct-Zig paths, preserve per-leg non-vacuity, and record missing/outside/comment-or-echo mutants against their actual Zig argv. All five direct harnesses remain held. The aggregate tip through `be883b3` is nevertheless push-safe as an accurately unregistered partial red; no Mac run is approved.
