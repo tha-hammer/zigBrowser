@@ -28960,3 +28960,77 @@ and hook-bridge capabilities remain separate. Acceptance rows cover both
 positive ports and no-API/no-other-port negatives. C5 blocker 5 remains OPEN,
 and this verdict authorizes neither implementation nor a live run. Agent Mail
 7600 sent the verdict to AzureRidge.
+
+## Decision-16 platform-free approval core (`d5cac3e`)
+
+**APPROVED as the platform-free policy/store/card core.** A direct exact-SHA
+run of `src/agent_approval.zig` passed **7/7**. The implementation pins the
+owner-approved selector/mode matrix (`yes|no|conditional`, default
+`conditional`), treats the first-opened window as the main window, cancels all
+waiting cards when that window closes, makes an approval at or after 120 s
+lose to expiry, and returns a fixed desktop-notification action that can only
+open that main window's drawer. The selector store is a no-follow, regular,
+0600 file with an exact bounded value; publication is temp-file sync plus
+rename.
+
+This is not approval of the later GTK/broker wiring. Those slices must still
+prove wrong-owner refusal in the real platform path, zero dispatch on every
+cancel/expiry/race, the sole authorized store writer, and the real
+notification/UI boundary. BlackRobin's full gate had the already-tracked
+unrelated `agent-netd-spawn-e2e` flake; it does not invalidate the exact unit
+evidence above. Verdict sent to BlackRobin as Agent Mail 7605.
+
+## WS8/WS9 honest-DRAFT closure (`29683b9`)
+
+**APPROVED as documentation honesty only.** It fixes the sole remaining
+`ecd029b` mismatch: the authoritative DRAFT blocker now lists the exact six
+current defects in the still-forbidden `6e9f989` spike (abortable cleanup,
+late ownership, raw/reuse-unsafe PID cleanup, unsafe local signalling, the C1
+secret in argv, and non-exact IPv6 readiness). The header and plan now agree
+that the spike is DISCOVERY-ONLY / DO-NOT-RERUN / NOT-REPAIRED, and require a
+separate reviewed repair plus final census and mutant evidence.
+
+This closes the WS8/WS9 range only as an honest DRAFT state: it authorizes no
+implementation, security claim or live run. The contiguous push-through does
+not advance beyond already-pushed **`bac895b`**, because the earlier
+`97c6215` recovery red is still independently BLOCKED-for-tests pending the
+production-shaped two-instance recovery transaction. Verdict sent to
+AzureRidge as Agent Mail 7608.
+
+## MS6.3 real-CLI fd-3 hard-gate case (`11b3ac4`)
+
+**APPROVED; one exact-commit run of the three reviewed cases is authorized on
+both Macs.** The new case drives the staged production chain through
+`MacSeatbeltBackend(P).launch(home)`, staged Python, `contract-config`, the
+generated wrapper and the real CLI. It passes exactly one unnamed
+`AF_UNIX/SOCK_STREAM` socketpair end to fd 3, checks positive, decoy and
+no-channel rows, and runs production `proc_darwin.cli_env_clean` while the CLI
+is alive to prove the row's exact base URL is present and the row token is
+absent. Diagnostics are bounded and redacted before truncation; every row
+checks dual-family port release and a fail-closed process census. The case
+makes no raw signal call; process execution stays behind the previously
+reviewed guarded Harness.
+
+The manifest remains fail closed and names exactly three cases. Independent
+`git show | sha256sum` results match its committed values:
+
+- `case_ms5_spawn_io.py`:
+  `7c739e32fe924877593e15bf232b58be94754c4287b69a7465f2d0371bafcbbb`
+- `case_ms6_3_fd3_cli.py`:
+  `bcb24510edb28ea8830ed05bc6cc90346a210fbece4a0dc2f38240340f971bc5`
+- `case_ms6_6b_r1_chain.py`:
+  `7e914a0b04016c05921af2157b5ea1c0aec9eec35bf3823f7cc97a984ea19f76`
+
+A clean export of exact `11b3ac4`, with displays unset and every
+signal-capable component internally private-PID-namespaced, passed:
+
+```
+Build Summary: 17/17 steps succeeded
+```
+
+The fd-3 case was **12/12** and the three-case manifest suite **7/7**. Agent
+Mail 7609 approved the case and 7610 supplied the authoritative digest list
+after correcting a transcription in the first mail. The authorized Mac run
+must use exact commit `11b3ac43bc908d1d7046f3bff9cf2e72abc4f022`, import
+only after manifest verification, and report all three case results plus the
+before/after census and leftovers.
