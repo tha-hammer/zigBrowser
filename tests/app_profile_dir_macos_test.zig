@@ -1,47 +1,83 @@
 //! RED (UNREGISTERED; bd zigBrowser-4pa.60, plan R30-MS3 Red 1, MS3.1) — on macOS a fresh --profile-dir
-//! must exist after the profile step, so the pacing (daily-cap) state can be saved into it.
+//! must exist, before the WebKit store is bound, so the pacing (daily-cap) state can be saved into it.
 //!
 //! The macOS branch of app.applyProfileDir only binds the WebKit store (the shim says "No directory is
 //! created"), while the pacing store writes <profile>/automation-pacing.json with atomic_file.replaceJson,
 //! which does not create parents. So for a fresh --profile-dir every save fails and the X/social daily caps
 //! reset on each restart. Linux creates the directory (its shim makes it).
 //!
-//! The macOS branch is selected at compile time and calls the C shim, so this Linux test drives the step
-//! the green adds to it: `atomic_file.ensureDir(io, dir)`, the directory half of the macOS profile step,
-//! which the macOS branch of applyProfileDir calls before binding the store. It lives beside replaceJson
-//! (the module that owns the profile's state files; a test cannot import app.zig and atomic_file.zig as two
-//! modules, since app.zig imports atomic_file.zig). The test proves the consumer, not only the directory:
-//! the real pacing writer (atomic_file.replaceJson) fails on the fresh path first and succeeds after the
-//! step. The wiring (the macOS branch calls it) is proven by the Mac Red 2 (restart keeps actions_today == 1,
-//! `ms3-gate`). Mutant (green): remove the createDirPath from ensureDir.
+//! This drives the PRODUCTION profile step, not a helper (SilverRidge 5a2b776 exact minimum):
+//! `profile_step.applyMacos(arena, io, dir, binder)` is the macOS branch of app.applyProfileDir, which is a
+//! one-line call to it with the shim binder (zb_app_set_profile_dir); here the binder is a recorder, so the
+//! step runs on Linux. (It is its own module because importing app.zig into a test pulls in every export of
+//! the app and the whole backend shim.) Assertions: the bind happens once, on the given path, and the
+//! directory already EXISTS when it does; the step returns the directory; afterwards the fresh nested
+//! directory exists and the real pacing writer (profile_step.atomic_file.replaceJson) saves at the production
+//! pacing path (profile_step.pacingStatePath, which app.zig uses) and reads back; a second step on the
+//! existing directory is fine; without --profile-dir nothing is bound.
+//! Mutants (green): (1) remove the createDirPath from atomic_file.ensureDir; (2) remove the ensureDir call
+//! from profile_step.applyMacos. Each must make this test fail. The one-line app.zig call is covered by the
+//! Mac Red 2 (tests/e2e/mac_profile_pacing_persist_test.py) and compiled by `cross-check`.
 //!
-//! Red today: compile error (atomic_file has no member "ensureDir"). Built and run only in a scratch
-//! export, in no build.zig step until the green registers it in `test`.
+//! Red today: the module profile_step does not exist. Built and run only in a scratch export, in no
+//! build.zig step until the green registers it in `test`.
 const std = @import("std");
-const atomic_file = @import("atomic_file");
+const profile_step = @import("profile_step");
 
-test "a fresh nested --profile-dir exists after the macOS profile step and takes the pacing state" {
+const RecordingBinder = struct {
+    calls: u32 = 0,
+    dir_existed_at_bind: bool = false,
+    bound: [std.fs.max_path_bytes]u8 = undefined,
+    bound_len: usize = 0,
+
+    pub fn bind(self: *RecordingBinder, arena: std.mem.Allocator, dir: []const u8) bool {
+        _ = arena;
+        self.calls += 1;
+        self.dir_existed_at_bind = if (std.Io.Dir.cwd().access(std.testing.io, dir, .{})) |_| true else |_| false;
+        @memcpy(self.bound[0..dir.len], dir);
+        self.bound_len = dir.len;
+        return true;
+    }
+};
+
+test "the macOS profile step creates a fresh nested --profile-dir before the bind, and the pacing state saves there" {
     const io = std.testing.io;
     const gpa = std.testing.allocator;
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const profile = try std.fmt.allocPrint(gpa, ".zig-cache/tmp/{s}/fresh/zb-profile", .{tmp.sub_path});
-    defer gpa.free(profile);
-    const pacing = try std.fs.path.join(gpa, &.{ profile, "automation-pacing.json" });
-    defer gpa.free(pacing);
+    const profile = try std.fmt.allocPrint(arena, ".zig-cache/tmp/{s}/fresh/zb-profile", .{tmp.sub_path});
+    const pacing = try profile_step.pacingStatePath(arena, profile);
 
     // The defect's mechanism: the pacing writer cannot save into a profile that does not exist yet.
-    try std.testing.expectError(error.FileNotFound, atomic_file.replaceJson(io, pacing, .{ .actions_today = 1 }));
+    try std.testing.expectError(error.FileNotFound, profile_step.atomic_file.replaceJson(io, pacing, .{ .actions_today = 1 }));
 
-    try atomic_file.ensureDir(io, profile);
+    var binder: RecordingBinder = .{};
+    const used = try profile_step.applyMacos(arena, io, profile, &binder);
+    try std.testing.expectEqualStrings(profile, used.?);
+    try std.testing.expectEqual(@as(u32, 1), binder.calls);
+    try std.testing.expectEqualStrings(profile, binder.bound[0..binder.bound_len]);
+    try std.testing.expect(binder.dir_existed_at_bind); // created BEFORE the WebKit bind
 
     try std.Io.Dir.cwd().access(io, profile, .{});
-    try atomic_file.replaceJson(io, pacing, .{ .actions_today = 1 });
+    try profile_step.atomic_file.replaceJson(io, pacing, .{ .actions_today = 1 });
     var buf: [64]u8 = undefined;
     const saved = try std.Io.Dir.cwd().readFile(io, pacing, &buf);
     try std.testing.expectEqualStrings("{\"actions_today\":1}", saved);
 
-    // A profile directory that already exists (every restart) is not an error.
-    try atomic_file.ensureDir(io, profile);
+    // Every restart runs the step on a directory that already exists: not an error.
+    var again: RecordingBinder = .{};
+    _ = try profile_step.applyMacos(arena, io, profile, &again);
+    try std.testing.expectEqual(@as(u32, 1), again.calls);
+}
+
+test "without --profile-dir the macOS profile step binds nothing and creates nothing" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    var binder: RecordingBinder = .{};
+    try std.testing.expectEqual(@as(?[]const u8, null), try profile_step.applyMacos(arena_state.allocator(), std.testing.io, null, &binder));
+    try std.testing.expectEqual(@as(u32, 0), binder.calls);
 }
