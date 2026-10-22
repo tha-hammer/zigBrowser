@@ -224,38 +224,121 @@ fn readSrc(gpa: std.mem.Allocator, path: []const u8) ![]u8 {
     return std.Io.Dir.cwd().readFileAlloc(std.testing.io, path, gpa, .limited(1 << 20));
 }
 
-test "source(thin): RealOps.recover reaches recoverAllAtStartup — RealOps body, then its recover method, lexed" {
-    const gpa = std.testing.allocator;
-    const raw = try readSrc(gpa, "src/agent_startup_recovery.zig");
-    defer gpa.free(raw);
-    const code = try lex(gpa, raw, false);
-    defer gpa.free(code);
-    const realops = balancedBody(code, "pub const RealOps = struct"); // scope to RealOps first
-    try std.testing.expect(realops.len != 0);
-    const recover = balancedBody(realops, "pub fn recover("); // then its named recover method (in-module decoy ignored)
-    try std.testing.expect(recover.len != 0);
-    try std.testing.expect(std.mem.indexOf(u8, recover, "recovery.recoverAllAtStartup(") != null);
+/// The text between the matching parens of the first `call` (a "name(" prefix) in `code`; null if absent.
+fn callInner(code: []const u8, call: []const u8) ?[]const u8 {
+    const at = std.mem.indexOf(u8, code, call) orelse return null;
+    var i = at + call.len;
+    var depth: usize = 1;
+    const start = i;
+    while (i < code.len) : (i += 1) {
+        if (code[i] == '(') depth += 1;
+        if (code[i] == ')') {
+            depth -= 1;
+            if (depth == 0) return code[start..i];
+        }
+    }
+    return null;
+}
+/// The nth top-level (comma-separated, ()/[]/{}-aware) argument in `inner`, trimmed; null if absent.
+fn nthArg(inner: []const u8, n: usize) ?[]const u8 {
+    var depth: usize = 0;
+    var start: usize = 0;
+    var idx: usize = 0;
+    var i: usize = 0;
+    while (i <= inner.len) : (i += 1) {
+        const at_end = i == inner.len;
+        const c: u8 = if (at_end) ',' else inner[i];
+        if (!at_end and (c == '(' or c == '[' or c == '{')) {
+            depth += 1;
+        } else if (!at_end and (c == ')' or c == ']' or c == '}')) {
+            depth -= 1;
+        } else if ((at_end or c == ',') and depth == 0) {
+            if (idx == n) return std.mem.trim(u8, inner[start..i], " \t\r\n");
+            idx += 1;
+            start = i + 1;
+        }
+    }
+    return null;
+}
+fn braceNet(s: []const u8, pos: usize) i64 {
+    var d: i64 = 0;
+    var i: usize = 0;
+    while (i < pos) : (i += 1) {
+        if (s[i] == '{') d += 1;
+        if (s[i] == '}') d -= 1;
+    }
+    return d;
 }
 
-test "source(thin): StartupHook.run IS the owner; runWithIo routes through the combinator + StartupHook" {
+// (1) call-site: the FIRST argument of runStartupThenDispatch is the named owner hook. The additive-decoy mutant
+// (OtherHook{} first + an unrelated StartupHook{} elsewhere) is committed below as a row, not an offline edit.
+test "call-site: runStartupThenDispatch's first arg is StartupHook; additive-decoy is rejected" {
+    const gpa = std.testing.allocator;
+    const app = try readSrc(gpa, "src/app.zig");
+    defer gpa.free(app);
+    const code = try lex(gpa, app, false);
+    defer gpa.free(code);
+    const nc = try lex(gpa, app, true); // comment-safe import binding (strings kept)
+    defer gpa.free(nc);
+    try std.testing.expect(std.mem.indexOf(u8, nc, "@import(\"agent_startup_recovery\")") != null);
+    const body = balancedBody(code, "pub fn runWithIo(");
+    try std.testing.expect(body.len != 0);
+    const inner = callInner(body, "runStartupThenDispatch(") orelse return error.NoCall;
+    const a0 = nthArg(inner, 0) orelse return error.NoArg;
+    try std.testing.expect(std.mem.indexOf(u8, a0, "StartupHook") != null); // first arg IS the owner hook
+
+    const MUT = // additive decoy: the real first arg is OtherHook; a StartupHook{} sits unrelated nearby
+        "pub fn runWithIo() void {\n    const decoy = StartupHook{};\n    _ = decoy;\n" ++
+        "    _ = runStartupThenDispatch(OtherHook{ .a = 1 }, Dispatch{ .c = 2 });\n}\n";
+    const mcode = try lex(gpa, MUT, false);
+    defer gpa.free(mcode);
+    const mbody = balancedBody(mcode, "pub fn runWithIo(");
+    const minner = callInner(mbody, "runStartupThenDispatch(") orelse return error.NoCall;
+    const ma0 = nthArg(minner, 0) orelse return error.NoArg;
+    try std.testing.expect(std.mem.indexOf(u8, ma0, "StartupHook") == null); // the FIRST-arg bind rejects the decoy
+}
+
+// (2) StartupHook.run IS the owner, as a LIVE top-level statement. The dead-branch mutant is a committed row.
+test "StartupHook.run calls the owner as a live top-level statement; dead-branch is rejected" {
     const gpa = std.testing.allocator;
     const owner = try readSrc(gpa, "src/agent_startup_recovery.zig");
     defer gpa.free(owner);
-    const owner_code = try lex(gpa, owner, false);
-    defer gpa.free(owner_code);
-    const hook_run = balancedBody(balancedBody(owner_code, "pub const StartupHook = struct"), "pub fn run(");
-    try std.testing.expect(hook_run.len != 0);
-    try std.testing.expect(std.mem.indexOf(u8, hook_run, "recoverLeftoverAgentRuns(") != null); // the hook IS the owner
+    const code = try lex(gpa, owner, false);
+    defer gpa.free(code);
+    const run = balancedBody(balancedBody(code, "pub const StartupHook = struct"), "pub fn run(");
+    try std.testing.expect(run.len != 0);
+    const at = std.mem.indexOf(u8, run, "recoverLeftoverAgentRuns(") orelse return error.NoCall;
+    try std.testing.expectEqual(@as(i64, 1), braceNet(run, at)); // live, top-level (not a dead branch)
 
-    const app = try readSrc(gpa, "src/app.zig");
-    defer gpa.free(app);
-    const app_nc = try lex(gpa, app, true); // comment-safe (strings kept) for the import binding
-    defer gpa.free(app_nc);
-    try std.testing.expect(std.mem.indexOf(u8, app_nc, "@import(\"agent_startup_recovery\")") != null);
-    const app_code = try lex(gpa, app, false);
-    defer gpa.free(app_code);
-    const run_body = balancedBody(app_code, "pub fn runWithIo(");
-    try std.testing.expect(run_body.len != 0);
-    try std.testing.expect(std.mem.indexOf(u8, run_body, "runStartupThenDispatch(") != null);
-    try std.testing.expect(std.mem.indexOf(u8, run_body, "StartupHook") != null); // the hook arg IS the owner's hook (wrong-hook mutant -> fail)
+    const MUT = "pub fn run(self: H) void {\n    if (false) {\n        _ = recoverLeftoverAgentRuns(self.a, self.b);\n    }\n}\n";
+    const mcode = try lex(gpa, MUT, false);
+    defer gpa.free(mcode);
+    const mrun = balancedBody(mcode, "pub fn run(");
+    const mat = std.mem.indexOf(u8, mrun, "recoverLeftoverAgentRuns(") orelse return error.NoCall;
+    try std.testing.expect(braceNet(mrun, mat) != 1); // nested in if (false) -> depth 2 -> rejected
+}
+
+// (3) RealOps.recover forwards the live ledger/clock/deadline/actuator args to recoverAllAtStartup. The dead-call
+// mutant is a committed row.
+test "RealOps.recover forwards the live args to recoverAllAtStartup; dead-call is rejected" {
+    const gpa = std.testing.allocator;
+    const owner = try readSrc(gpa, "src/agent_startup_recovery.zig");
+    defer gpa.free(owner);
+    const code = try lex(gpa, owner, false);
+    defer gpa.free(code);
+    const realops = balancedBody(code, "pub const RealOps = struct");
+    const recover = balancedBody(realops, "pub fn recover("); // RealOps body first, then its recover method
+    try std.testing.expect(recover.len != 0);
+    const inner = callInner(recover, "recovery.recoverAllAtStartup(") orelse return error.NoCall;
+    try std.testing.expectEqualStrings("dir", nthArg(inner, 2).?); // the opened dir
+    try std.testing.expectEqualStrings("sub", nthArg(inner, 3).?); // the ledger name argument
+    try std.testing.expectEqualStrings("clk", nthArg(inner, 4).?); // the clock
+    try std.testing.expectEqualStrings("deadline_ms", nthArg(inner, 5).?); // the one absolute deadline
+    try std.testing.expectEqualStrings("actuator", nthArg(inner, 6).?); // the reviewed actuator
+
+    const MUT = "pub fn recover(self: R) Rep {\n    _ = self;\n    return .{ .status = .disabled };\n}\n"; // dead: no call
+    const mcode = try lex(gpa, MUT, false);
+    defer gpa.free(mcode);
+    const mrec = balancedBody(mcode, "pub fn recover(");
+    try std.testing.expect(callInner(mrec, "recovery.recoverAllAtStartup(") == null); // no live call -> rejected
 }
