@@ -11,9 +11,11 @@ background sleep in its group and execs a sleep itself (a leader plus a grandchi
 - without os.waitid (a Python that lacks it; the attribute removed), stop() still stops the whole group and reaps the
   leader, and a second stop() signals nothing (RoseCat 7902);
 - Darwin's killpg answers EPERM for a group whose only member is the exited, not yet reaped leader (5b48662 on both
-  Macs, BlueBeaver 7909): an EPERM once the leader has exited is that group being gone, so stop() reaps and returns
-  the status; an EPERM while the leader still runs is a real refusal and stop() raises it. Both with and without
-  os.waitid (os.killpg wrapped: the real call, then the EPERM Darwin would answer).
+  Macs, BlueBeaver 7909). stop() accepts that EPERM only on an independent `ps` census of the exact group, taken
+  before anything is reaped, that shows the leader as a zombie and no live member (RoseCat 7912): then it reaps and
+  returns the status. An EPERM that was never sent while a descendant still runs (the leader alone ended) is raised
+  and the descendant is left as it is; so is an EPERM while the leader runs; and a census that times out, fails or
+  reads malformed is raised too. Each with and without os.waitid.
 Linux only (it reads /proc to observe, never to decide). It signals only its own children and the stand-in group it
 started, so it runs inside a private PID namespace:
   cd tests/e2e && unshare --map-current-user --pid --fork --kill-child --mount-proc \\
@@ -64,7 +66,11 @@ class OwnedGroupCleanup(unittest.TestCase):
         for pid in self.leftover:
             if not (isinstance(pid, int) and pid > 1 and running(pid)):
                 continue
-            if b"sleep" in Path(f"/proc/{pid}/cmdline").read_bytes():
+            try:
+                ours = b"sleep" in Path(f"/proc/{pid}/cmdline").read_bytes()
+            except FileNotFoundError:
+                continue  # gone meanwhile
+            if ours:
                 os.kill(pid, signal.SIGKILL)
 
     def gone_soon(self, pids, timeout=10.0):
@@ -142,6 +148,48 @@ class OwnedGroupCleanup(unittest.TestCase):
                 self.assertIsNotNone(status, "the leader was not reaped")
                 self.assertEqual(group.proc.returncode, status)
                 self.assertEqual(self.gone_soon([leader, grandchild]), [], "the group was left running")
+
+    def unsent_eperm_leader_only(self, group):
+        """os.killpg as a hostile host could answer: SIGTERM ends only the leader, SIGKILL is never sent (EPERM)."""
+        def killpg(pid, sig):
+            if pid != group.proc.pid:
+                raise AssertionError(f"killpg({pid}) is not the owned group")
+            if sig == signal.SIGTERM:
+                os.kill(pid, signal.SIGTERM)  # the leader alone; its grandchild keeps running
+                return
+            raise PermissionError(1, "Operation not permitted")
+        return mock.patch.object(os, "killpg", side_effect=killpg)
+
+    def test_an_unsent_eperm_with_a_live_descendant_is_raised(self):
+        for waitid in (True, False):
+            with self.subTest(waitid=waitid):
+                group, leader, grandchild = self.started()
+                with self.unsent_eperm_leader_only(group), contextlib.ExitStack() as stack:
+                    if not waitid:
+                        stack.enter_context(mock.patch.object(os, "waitid", create=True))
+                        del os.waitid
+                    with self.assertRaises(PermissionError):
+                        group.stop(grace_sec=1.0)
+                self.assertTrue(running(grandchild), "the descendant was not left as it was")
+                self.assertIsNone(group.proc.returncode, "the leader was reaped before the refusal")
+                os.killpg(leader, signal.SIGKILL)  # this test's own stand-in group, leader unreaped
+                group.proc.wait(10)
+
+    def test_a_failed_census_never_accepts_the_eperm(self):
+        bad = {"timeout": subprocess.TimeoutExpired(gate.PS, gate.CENSUS_TIMEOUT_S),
+               "exit 1": subprocess.CompletedProcess(gate.PS, 1, "", "ps: error"),
+               "malformed": subprocess.CompletedProcess(gate.PS, 0, "12 x Z\n", "")}
+        for name, answer in bad.items():
+            with self.subTest(census=name):
+                group, leader, grandchild = self.started()
+                ps = mock.patch.object(gate.subprocess, "run",
+                                       side_effect=answer if isinstance(answer, Exception) else [answer])
+                with self.eperm_once_exited(group), ps:
+                    with self.assertRaises(gate.GroupCensusError):
+                        group.stop(grace_sec=1.0)
+                self.assertIsNone(group.proc.returncode, "the leader was reaped on a failed census")
+                group.proc.wait(10)  # the real signals were sent: the group is already gone
+                self.assertEqual(self.gone_soon([leader, grandchild]), [])
 
     def test_an_eperm_while_the_leader_runs_is_raised(self):
         for waitid in (True, False):

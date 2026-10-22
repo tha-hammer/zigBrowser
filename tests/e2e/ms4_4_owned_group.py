@@ -7,6 +7,33 @@ import subprocess
 import time
 
 SEAM_PREFIXES = ("ZB_", "ZIGBROWSER_")
+PS = ("/bin/ps", "-A", "-o", "pid=", "-o", "pgid=", "-o", "stat=")
+CENSUS_TIMEOUT_S = 5.0
+
+
+class GroupCensusError(RuntimeError):
+    """The census of a process group could not be taken or read: never evidence that the group is gone."""
+
+
+def group_members(pgid: int) -> list[tuple[int, str]]:
+    """(pid, ps state) of every process whose process group is `pgid`, from one bounded `ps` run (Linux and
+    Darwin alike; zombies included, as state Z). Fails closed: a timeout, a non-zero exit or any malformed row
+    raises GroupCensusError."""
+    try:
+        done = subprocess.run(PS, capture_output=True, text=True, timeout=CENSUS_TIMEOUT_S,
+                              env={"PATH": "/bin:/usr/bin", "LC_ALL": "C"})
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise GroupCensusError(f"ps did not run: {exc!r}") from exc
+    if done.returncode != 0:
+        raise GroupCensusError(f"ps exited {done.returncode}")
+    members = []
+    for line in done.stdout.splitlines():
+        fields = line.split()
+        if len(fields) != 3 or not fields[0].isdigit() or not fields[1].isdigit():
+            raise GroupCensusError(f"a malformed ps row: {line!r}")
+        if int(fields[1]) == pgid:
+            members.append((int(fields[0]), fields[2]))
+    return members
 
 
 class OwnedGroup:
@@ -27,11 +54,13 @@ class OwnedGroup:
         except ChildProcessError:
             return True
 
-    def _leader_gone(self) -> bool:
-        """Exited: looked at without reaping when os.waitid exists, else reaped here (nothing is signalled after)."""
-        if hasattr(os, "waitid"):
-            return self._leader_exited()
-        return self.proc.poll() is not None
+    def _only_zombies_left(self) -> bool:
+        """Darwin's EPERM is accepted only on an independent census of the exact group, taken while the leader is
+        still unreaped (so the pgid cannot have been reused): its leader is there as a zombie and no member is live.
+        A census error propagates (fail closed); nothing is reaped here."""
+        members = group_members(self.proc.pid)
+        leader = [state for pid, state in members if pid == self.proc.pid]
+        return leader != [] and all(state.startswith("Z") for _pid, state in members)
 
     def stop(self, grace_sec: float = 2.0):
         pid = self.proc.pid
@@ -46,8 +75,9 @@ class OwnedGroup:
                 break
             except PermissionError:
                 # Darwin answers EPERM for a group whose only member is the exited, not yet reaped leader (5b48662
-                # on both Macs): that group is gone. While the leader still runs, the refusal is real.
-                if not self._leader_gone():
+                # on both Macs): that group is gone, but only a census of it can say so (RoseCat 7912). A live
+                # member, or a census that fails, keeps the refusal.
+                if not self._only_zombies_left():
                     raise
                 break
             if sig == signal.SIGTERM:
