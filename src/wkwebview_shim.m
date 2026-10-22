@@ -1479,6 +1479,24 @@ static const char *zb_auto_test_native_close_title(void) {
   return (v != NULL && v[0] != '\0') ? v : NULL;
 }
 
+// Test-only (ZB_DEBUG_COOKIE_DELAY_MS, 4pa.56): hold every WKHTTPCookieStore completion this many ms before
+// it is handled, so a red can prove a cookie call returns at its deadline when WebKit answers late (the
+// socket-drivable form of the GTK zb_automation_debug_cookie_delay seam). -1 when unset, malformed or
+// without --e2e-protocol. Main thread only (the store completions run there).
+static long zb_auto_test_cookie_delay_ms(void) {
+  if (!zb_auto_test_hooks_enabled()) return -1;
+  return zb_parse_nonneg(getenv("ZB_DEBUG_COOKIE_DELAY_MS"));
+}
+
+// Run a cookie-store completion now, or after the e2e-only delay above (printing zb-cookie-delay-hit).
+static void zb_cookie_after_test_delay(void (^handle)(void)) {
+  long ms = zb_auto_test_cookie_delay_ms();
+  if (ms <= 0) { handle(); return; }
+  fprintf(stderr, "zb-cookie-delay-hit=%ld\n", ms);
+  fflush(stderr);
+  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)ms * NSEC_PER_MSEC), dispatch_get_main_queue(), handle);
+}
+
 // Test-only (ZB_DEBUG_STALE_TOKEN): the native-click documentToken guard reads a fabricated stale token
 // (a real mismatch) WITHOUT reloading the page, so locate still succeeds and only the guard sees a
 // changed document — the production DOC_CHANGED path with no engine-reload masking (RoseCat option b).
@@ -2051,7 +2069,7 @@ int zb_cookies_get_all(uint32_t win, const char *url, unsigned int timeout_ms, c
     WKHTTPCookieStore *store = zb_cookie_store();
     if (store == nil) { zb_job_complete(job, ZB_AUTO_ERR_NO_WINDOW, NULL, NULL); zb_job_unref(job); return; }
     NSURL *filter = (url_str != nil) ? [NSURL URLWithString:url_str] : nil;
-    [store getAllCookies:^(NSArray<NSHTTPCookie *> *cookies) {
+    [store getAllCookies:^(NSArray<NSHTTPCookie *> *cookies) { zb_cookie_after_test_delay(^{
       char *result = NULL;
       @autoreleasepool {
         NSMutableArray<NSDictionary *> *arr = [NSMutableArray array];
@@ -2065,7 +2083,7 @@ int zb_cookies_get_all(uint32_t win, const char *url, unsigned int timeout_ms, c
       }
       zb_job_complete(job, ZB_AUTO_OK, result, NULL);
       zb_job_unref(job);
-    }];
+    }); }];
   });
   int rc = zb_job_wait(job, timeout_ms);
   if (rc == ZB_AUTO_OK && out_json != NULL) { *out_json = job->result; job->result = NULL; }
@@ -2108,10 +2126,10 @@ int zb_cookies_add(uint32_t win, const ZbCookie *cookie, unsigned int timeout_ms
     }
     NSHTTPCookie *ck = [NSHTTPCookie cookieWithProperties:props];
     if (ck == nil) { zb_job_complete(job, ZB_AUTO_ERR_INTERNAL, NULL, NULL); zb_job_unref(job); return; }
-    [store setCookie:ck completionHandler:^{
+    [store setCookie:ck completionHandler:^{ zb_cookie_after_test_delay(^{
       zb_job_complete(job, ZB_AUTO_OK, NULL, NULL);
       zb_job_unref(job);
-    }];
+    }); }];
   });
   int rc = zb_job_wait(job, timeout_ms);
   zb_job_unref(job);
@@ -2132,7 +2150,7 @@ int zb_cookies_delete(uint32_t win, const char *name, const char *domain, unsign
     if (!zb_job_claim_dispatch(job)) { zb_job_unref(job); return; }
     WKHTTPCookieStore *store = zb_cookie_store();
     if (store == nil) { zb_job_complete(job, ZB_AUTO_ERR_NO_WINDOW, NULL, NULL); zb_job_unref(job); return; }
-    [store getAllCookies:^(NSArray<NSHTTPCookie *> *cookies) {
+    [store getAllCookies:^(NSArray<NSHTTPCookie *> *cookies) { zb_cookie_after_test_delay(^{
       NSMutableArray<NSHTTPCookie *> *doomed = [NSMutableArray array];
       for (NSHTTPCookie *ck in cookies) {
         if (![ck.name isEqualToString:want_name]) continue;
@@ -2157,7 +2175,7 @@ int zb_cookies_delete(uint32_t win, const char *name, const char *domain, unsign
           }
         }];
       }
-    }];
+    }); }];
   });
   int rc = zb_job_wait(job, timeout_ms);
   zb_job_unref(job);
