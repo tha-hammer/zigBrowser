@@ -352,21 +352,76 @@ pub const FirstRun = enum { allowed, refused_deferred };
 /// The outcome of a startup-recovery pass.
 pub const RecoveryResult = struct { acquired: bool, incident: RecoveryIncident, first_run: FirstRun };
 
-/// Startup recovery under the ONE global flock, bounded by a total monotonic deadline (acquireLock's
-/// max_tries x backoff_ms). Acquire-failure/deadline/cancel => FAIL CLOSED: no held work runs, so zero
-/// liveness/census/signal/retire/unlink/ledger mutation; the entry is retained, a recovery-busy incident is
-/// surfaced, and the first new agent run is refused/deferred (never hung). A live holder that stalls can thus
-/// never wedge startup. The held recovery work (revalidate -> fixed point -> unlink -> rmdir -> remove) lands in
-/// the two-recoverer slice.
-pub fn runStartupRecovery(io: std.Io, dir: std.Io.Dir, max_tries: u32, backoff_ms: i64) RecoveryResult {
-    // Take the ONE global flock with the BOUNDED, cancellable acquireLock (LOCK_EX|LOCK_NB + monotonic retry
-    // inside the total deadline). A live holder that stalls can never wedge us: acquire-failure/deadline fails
-    // CLOSED — no held work runs, so zero liveness/census/signal/retire/unlink/ledger mutation; the entry is
-    // retained, a recovery-busy incident is surfaced, and the first new agent run is refused/deferred.
-    var lock = acquireLock(io, dir, max_tries, backoff_ms) catch |e| switch (e) {
-        error.LockBusy, error.LockFailed => return .{ .acquired = false, .incident = .recovery_busy, .first_run = .refused_deferred },
-    };
-    lock.close(io); // release; the held recovery work (revalidate -> fixed point -> unlink -> rmdir -> remove)
-    // lands in the two-recoverer slice. This slice proves only the bounded fail-closed path.
+/// One non-blocking acquire attempt's outcome: got the lock, contended (retry), or a hard error (fail closed).
+pub const AcquireResult = enum { acquired, busy, failed };
+
+/// The real monotonic clock + cancellable sleep seam. Tests inject a fake clock to drive the deadline
+/// deterministically (RoseCat e665676 #1).
+pub const RealClock = struct {
+    io: std.Io,
+    pub fn nowMs(self: RealClock) i64 {
+        _ = self;
+        var ts: std.os.linux.timespec = undefined;
+        _ = std.os.linux.clock_gettime(std.os.linux.CLOCK.MONOTONIC, &ts);
+        return @as(i64, ts.sec) * 1000 + @divTrunc(@as(i64, ts.nsec), 1_000_000);
+    }
+    pub fn sleepMs(self: RealClock, ms: i64) void {
+        self.io.sleep(.fromMilliseconds(ms), .awake) catch {};
+    }
+};
+
+/// A deadline-bounded, clock-driven acquisition loop: retry the non-blocking `attempt.tryOnce()` ONLY while the
+/// monotonic `clock` is before the absolute `deadline_ms`, sleeping `backoff_ms` via the clock between tries; at
+/// the deadline, fail closed with `.busy`. ONE absolute deadline — NO try-count arithmetic (RoseCat e665676 #1).
+pub fn acquireWithinDeadline(clock: anytype, deadline_ms: i64, backoff_ms: i64, attempt: anytype) AcquireResult {
+    _ = clock; // RED (e665676 #1): ignores the clock/deadline — retry arithmetic instead of the absolute deadline
+    _ = deadline_ms;
+    _ = backoff_ms;
+    var tries: u32 = 0;
+    while (tries < 20) : (tries += 1) {
+        switch (attempt.tryOnce()) {
+            .acquired => return .acquired,
+            .failed => return .failed,
+            .busy => {},
+        }
+    }
+    return .busy;
+}
+
+/// One non-blocking flock attempt on an already-open lock fd.
+const FlockAttempt = struct {
+    fd: i32,
+    pub fn tryOnce(self: FlockAttempt) AcquireResult {
+        return switch (std.posix.errno(std.posix.system.flock(self.fd, std.posix.LOCK.EX | std.posix.LOCK.NB))) {
+            .SUCCESS => .acquired,
+            .AGAIN => .busy,
+            else => .failed,
+        };
+    }
+};
+
+/// Startup recovery under the ONE global flock, bounded by ONE absolute monotonic deadline (`clock.nowMs() +
+/// budget_ms`) that caps BOTH the acquisition AND the work done while the lock is held (RoseCat e665676 #1).
+/// Acquire-failure/deadline/cancel => FAIL CLOSED: no held work runs, so zero liveness/census/signal/retire/
+/// unlink/ledger mutation; the entry is retained, a recovery-busy incident is surfaced, and the first new agent
+/// run is refused/deferred (never hung). A live holder that stalls can thus never wedge startup. The held recovery
+/// work (revalidate -> fixed point -> unlink -> rmdir -> remove) lands in the two-recoverer slice and checks the
+/// SAME deadline.
+pub fn runStartupRecovery(io: std.Io, dir: std.Io.Dir, budget_ms: i64, backoff_ms: i64, clock: anytype) RecoveryResult {
+    _ = io; // reserved for the held recovery work (ledger load/publish) in the two-recoverer slice
+    const busy = RecoveryResult{ .acquired = false, .incident = .recovery_busy, .first_run = .refused_deferred };
+    const deadline = clock.nowMs() + budget_ms; // ONE absolute deadline for acquire + held work
+    const fd = std.posix.openat(dir.handle, LOCK_NAME, .{ .ACCMODE = .RDWR, .CREAT = true, .NOFOLLOW = true, .CLOEXEC = true }, 0o600) catch return busy;
+    switch (acquireWithinDeadline(clock, deadline, backoff_ms, FlockAttempt{ .fd = fd })) {
+        .acquired => {},
+        .busy, .failed => {
+            _ = std.posix.system.close(fd);
+            return busy;
+        },
+    }
+    defer _ = std.posix.system.close(fd); // release at the end (held across the whole recovery once it exists)
+    if (clock.nowMs() >= deadline) return busy; // the same deadline bounds the held work; out of budget -> fail closed
+    // The held recovery work (revalidate -> fixed point -> unlink -> rmdir -> remove) lands in the two-recoverer
+    // slice; each phase re-checks `clock.nowMs() < deadline`. This slice proves the bounded fail-closed path.
     return .{ .acquired = true, .incident = .none, .first_run = .allowed };
 }

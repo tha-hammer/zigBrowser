@@ -85,7 +85,7 @@ test "a live stalled flock holder cannot wedge startup recovery: B fails closed 
     const b_pid = linux.fork();
     if (b_pid == 0) {
         _ = linux.close(bpipe[0]);
-        const r = ledger.runStartupRecovery(io, td.dir, 20, 5); // bounded ~100ms
+        const r = ledger.runStartupRecovery(io, td.dir, 100, 5, ledger.RealClock{ .io = io }); // 100ms budget
         const bytes = [3]u8{ @intFromBool(r.acquired), @intFromEnum(r.incident), @intFromEnum(r.first_run) };
         _ = linux.write(bpipe[1], &bytes, 3);
         linux.exit_group(0);
