@@ -250,9 +250,10 @@ pub fn acquireLock(io: std.Io, dir: std.Io.Dir, max_tries: u32, backoff_ms: i64)
 // ---- SCOPED (RoseCat c11bff8): one-live-process liveness probe + a portable fail-closed action-label mapping.
 // This is the accepted primitive. It is NOT whole-recovery: it performs NO startup-recovery pass, NO other-browser
 // exclusion, NO signal, NO retirement and NO ledger mutation. `recoveryFor` returns an action LABEL only; actually
-// performing it (census/kill, marker-unlink, rmdir, ledger retirement under one flock) is the OPEN whole-recovery
-// blocker (bd). No production recovery transaction or signal path is implemented or armed — there is no
-// `reaper_ready` constant yet; it is part of that OPEN blocker. ----
+// performing it (census/kill, marker-unlink, rmdir, ledger retirement under one flock) is `recoverOneUnderLock`
+// below, now wrapped by the startup-recovery core `agent_run_recovery.recoverAllAtStartup` behind the immutable
+// `reaper_ready` gate. That gate ships false and no app-startup owner calls it, so production recovery stays
+// unreachable; the real app-startup owner is the OPEN integration blocker (bd). ----
 
 /// The liveness verdict for a recorded owner `(pid, start)` from a single live-process probe.
 pub const Liveness = enum { dead, live_same, live_reused, unreadable };
@@ -462,8 +463,9 @@ const FlockAttempt = struct {
 /// (`acquired=true`); acquire-failure/deadline/cancel => `acquired=false` with a `lock_unavailable` incident, so a
 /// live holder that stalls can never wedge the acquire. It performs NO recovery work — no liveness revalidation,
 /// census/kill, signal, retirement, marker-unlink or ledger mutation — and makes NO claim that any run may start.
-/// The whole-recovery transaction is the OPEN blocker bd zigBrowser-3gl; no production recovery or signal path is
-/// implemented or armed.
+/// The whole-recovery transaction (`recoverOneUnderLock`) and its startup-recovery core now exist behind the
+/// `reaper_ready` gate, which ships false with no app-startup owner calling it; the real startup owner is the OPEN
+/// integration blocker bd zigBrowser-3gl, so production recovery stays unreachable.
 pub fn acquireRunLockBounded(io: std.Io, dir: std.Io.Dir, budget_ms: i64, backoff_ms: i64, clock: anytype) AcquireOutcome {
     _ = io; // no work is done under the lock in this acquisition primitive
     const unavailable = AcquireOutcome{ .acquired = false, .incident = .lock_unavailable };
@@ -481,8 +483,10 @@ pub fn acquireRunLockBounded(io: std.Io, dir: std.Io.Dir, budget_ms: i64, backof
     return .{ .acquired = true, .incident = .none };
 }
 
-// ---- MS6.5.1 whole-recovery transaction (OPEN blocker bd zigBrowser-3gl). NOT IMPLEMENTED / NOT ARMED. --------
-// No production caller wires this in and there is NO `reaper_ready` gate yet. The approved held-flock design
+// ---- MS6.5.1 whole-recovery transaction (bd zigBrowser-3gl). IMPLEMENTED + gated, NOT ARMED. ------------------
+// The startup-recovery core `agent_run_recovery.recoverAllAtStartup` wraps this behind the immutable `reaper_ready`
+// gate, which ships false and is called by no app-startup owner yet, so production recovery is unreachable (the
+// real app-startup owner is the OPEN integration blocker). The approved held-flock design
 // (RoseCat b2f474b; plan rev 28) is: ONE global flock held from the authoritative load through the fresh owner
 // check, held-fd `(dev,ino,uid,mode)` provenance, the typed census->kill->fresh-census FIXED POINT, marker unlink,
 // `rmdir` and the atomic ledger retirement (released ONLY after the terminal publish result is known), all under
@@ -531,8 +535,8 @@ pub const Teardown = enum { done, failed };
 //
 // The production actuator/lease wrap the already-reviewed reaper/provenance C path (`zb_reaper_pin_fd` +
 // `zb_reaper_dir_fd_ok` + `zb_reaper_fixed_point`) over the held fd — never a second Zig implementation; tests
-// inject a deterministic, signal-free fake. Nothing here is armed: no production caller wires an actuator in, and
-// there is still no `reaper_ready` gate.
+// inject a deterministic, signal-free fake. Nothing here is armed: the `reaper_ready` gate ships false and no
+// app-startup owner calls `recoverAllAtStartup` with a destructive actuator, so production recovery is unreachable.
 
 fn indexOfEntry(l: *const Ledger, basename: []const u8) ?usize {
     for (l.entries(), 0..) |e, i| if (std.mem.eql(u8, e.basename, basename)) return i;

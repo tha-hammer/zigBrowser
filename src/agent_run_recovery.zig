@@ -274,8 +274,9 @@ pub fn runFixedPoint(now: NowFn, deadline_ms: i64, run_dir_fd: i32, pinned: *con
 // ONE absolute deadline, revalidates them before the engine AND again before Clean, and runs the reviewed
 // `zb_reaper_fixed_point`. No raw signal is exposed and no second algorithm exists here — the decision, the
 // grammar/pin/deadline capability and the kill all live in the reviewed C. The capability logic is portable and is
-// exercised on Linux through `prodFixedPoint` with the kill intercepted (RoseCat afdffbf #2/#3). NOT ARMED / NOT
-// reachable: no caller, no `reaper_ready` gate. Mac-only; every other target comptime-prunes the body and fails closed.
+// exercised on Linux through `prodFixedPoint` with the kill intercepted (RoseCat afdffbf #2/#3). NOT ARMED: the
+// `reaper_ready` gate ships false and no app-startup owner calls `recoverAllAtStartup`, so production recovery is
+// unreachable. Mac-only; every other target comptime-prunes the body and fails closed.
 
 const PATH_MAX = 4096;
 
