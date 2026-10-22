@@ -32,11 +32,13 @@ zeroed, so the token lives in this process's memory until it exits: the helper
 is one-shot, and exits right after `done`."""
 
 import argparse
+import errno
 import json
 import os
 import re
 import select
 import signal
+import stat
 import struct
 import subprocess
 import sys
@@ -165,6 +167,43 @@ def cli_env(home):
     }
 
 
+def ensure_private_tmp(home):
+    """Makes sure <home>/scratchpad and <home>/scratchpad/tmp (cli_env's TMPDIR) are real directories of the
+    effective uid, mode 0700, before the CLI starts (setup.ensure_home's layout). It walks them through pinned
+    directory fds, never following a link: a missing component is made 0700; any other existing state (a link, a
+    file, a FIFO, a wider mode, another owner) raises OSError and is left as it is (RoseCat 7739). Last, the paths
+    the CLI is given must still name exactly the directories it checked (lstat, no link followed): a component
+    swapped meanwhile is refused, never followed (RoseCat 7742)."""
+    euid = os.geteuid()
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+    fds = [os.open(home, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)]
+    try:
+        for name in ("scratchpad", "tmp"):
+            made = False
+            try:
+                os.mkdir(name, 0o700, dir_fd=fds[-1])
+                made = True
+            except FileExistsError:
+                st = os.lstat(name, dir_fd=fds[-1])  # never opens a FIFO or follows a link
+                if not stat.S_ISDIR(st.st_mode):
+                    raise OSError(errno.ENOTDIR, f"the sign-in's {name} is not a directory") from None
+            fds.append(os.open(name, flags, dir_fd=fds[-1]))
+            if made:
+                os.fchmod(fds[-1], 0o700)  # exactly 0700, whatever the umask
+            st = os.fstat(fds[-1])
+            if not stat.S_ISDIR(st.st_mode) or st.st_uid != euid or stat.S_IMODE(st.st_mode) != 0o700:
+                raise OSError(errno.EPERM, f"the sign-in's {name} is not a private directory")
+        path = home
+        for name, fd in zip(("scratchpad", "tmp"), fds[1:]):
+            path = os.path.join(path, name)
+            here, held = os.lstat(path), os.fstat(fd)
+            if (here.st_dev, here.st_ino) != (held.st_dev, held.st_ino):
+                raise OSError(errno.EPERM, f"the sign-in's {name} changed while it was checked")
+    finally:
+        for fd in fds:
+            os.close(fd)
+
+
 class Login:
     def __init__(self, home, cli, out, token_fd, timeout_s=TIMEOUT_S, exchange_s=EXCHANGE_S):
         self.home, self.cli, self.out, self.token_fd = home, cli, out, token_fd
@@ -192,6 +231,7 @@ class Login:
 
     # ---- the CLI on a pty -------------------------------------------------
     def spawn(self):
+        ensure_private_tmp(self.home)  # before anything starts: an invalid temp dir launches nothing
         self.master, slave = pty.openpty()
         fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 50, COLUMNS, 0, 0))
         self.proc = subprocess.Popen([self.cli, "setup-token"], stdin=slave, stdout=slave, stderr=slave,

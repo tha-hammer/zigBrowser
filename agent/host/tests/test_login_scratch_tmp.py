@@ -10,7 +10,10 @@ Login.spawn therefore, before it launches the CLI:
 - refuses any existing invalid state, launching nothing (OSError, which run() reports as "the Claude CLI could not
   start"), never following or repairing it (RoseCat 7739): tmp a symlink, tmp wider than 0700, tmp a regular file,
   tmp a FIFO (never opened), the scratchpad itself a symlink, the scratchpad wider than 0700, and a pair not owned by
-  the effective uid (an os.geteuid seam: the namespace cannot make a foreign uid).
+  the effective uid (an os.geteuid seam: the namespace cannot make a foreign uid). A refused object is left exactly
+  as it was (a snapshot of the wide tmp, and of a symlinked scratchpad's target, before and after);
+- a scratchpad swapped for a link to elsewhere WHILE the sign-in makes its tmp (an os.mkdir seam that swaps it at
+  that call) redirects nothing: nothing is made under the link's target and the CLI is not launched (RoseCat 7742).
 subprocess.Popen is a recorder (no process is started), and os.kill / os.killpg are patched to raise; the fake
 process has no pid and has already ended. Run: cd agent/host/tests && unshare --map-current-user --pid --fork \\
   --kill-child --mount-proc sh -c '"$ZB_AGENT_HOST_PYTHON" -X dev -m unittest -v test_login_scratch_tmp; exit $?'
@@ -110,7 +113,10 @@ class LoginScratchTmp(unittest.TestCase):
     def test_a_tmp_wider_than_0700_is_refused(self):
         os.makedirs(self.dir, 0o700)
         os.chmod(self.dir, 0o755)
+        before = os.lstat(self.dir)
         self.refused("a tmp wider than 0700")
+        after = os.lstat(self.dir)
+        self.assertEqual((after.st_ino, stat.S_IMODE(after.st_mode)), (before.st_ino, 0o755), "it was repaired")
 
     def test_a_tmp_that_is_a_regular_file_is_refused(self):
         os.mkdir(self.scratchpad, 0o700)
@@ -128,7 +134,25 @@ class LoginScratchTmp(unittest.TestCase):
         os.mkdir(os.path.join(target, "tmp"), 0o700)
         os.chmod(target, 0o700)
         os.symlink(target, self.scratchpad)
+        before = (os.readlink(self.scratchpad), sorted(os.listdir(target)))
         self.refused("a symlinked scratchpad")
+        self.assertEqual((os.readlink(self.scratchpad), sorted(os.listdir(target))), before, "changed on refusal")
+
+    def test_a_scratchpad_swapped_while_tmp_is_made_redirects_nothing(self):
+        os.mkdir(self.scratchpad, 0o700)
+        target = self.elsewhere()
+        os.chmod(target, 0o700)
+        real_mkdir = os.mkdir
+
+        def mkdir(path, mode=0o777, *, dir_fd=None):
+            if path == "tmp" and not os.path.islink(self.scratchpad):  # swap it right at this call
+                os.rename(self.scratchpad, self.scratchpad + ".moved")
+                os.symlink(target, self.scratchpad)
+            return real_mkdir(path, mode, dir_fd=dir_fd)
+
+        with mock.patch.object(os, "mkdir", side_effect=mkdir):
+            self.refused("a scratchpad swapped for a link meanwhile")
+        self.assertEqual(os.listdir(target), [], "something was made under the link's target")
 
     def test_a_scratchpad_wider_than_0700_is_refused(self):
         os.makedirs(self.dir, 0o700)

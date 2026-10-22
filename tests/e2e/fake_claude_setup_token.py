@@ -24,9 +24,11 @@ What it copies from the real CLI (2.1.301's own source, read, not run):
   about 64 bytes (a real code with its 43-character state is longer), and always
   submitted it when the Enter came as its own write.
 
-Its files live in $HOME/scratchpad/.zb-fake-setup-token/ when $HOME/scratchpad is a
-directory (inside the helper's sandbox only the agent home's scratchpad is writable;
-plan rev 16.18.3), else in $HOME/.zb-fake-setup-token/:
+Its files live in $HOME/.zb-fake-setup-token/ when a test made that directory (the unit
+tests' fixtures; the sign-in now makes $HOME/scratchpad itself before it starts the CLI), else
+in $HOME/scratchpad/.zb-fake-setup-token/ when $HOME/scratchpad is a directory (inside the
+helper's sandbox only the agent home's scratchpad is writable; plan rev 16.18.3), else in
+$HOME/.zb-fake-setup-token/:
 - `codes.log`: every line it reads at the prompt (the "received-code log" the S6
   tests read);
 - `reads.log`: one line per terminal read at the prompt, `<text bytes> <line ends>`
@@ -95,6 +97,9 @@ def authorize_url(challenge, state):
 
 def fake_dir():
     home = os.environ.get("HOME", "/nonexistent")
+    own = os.path.join(home, ".zb-fake-setup-token")
+    if os.path.isdir(own):  # a test's fixture wins
+        return own
     scratch = os.path.join(home, "scratchpad")
     return os.path.join(scratch if os.path.isdir(scratch) else home, ".zb-fake-setup-token")
 
