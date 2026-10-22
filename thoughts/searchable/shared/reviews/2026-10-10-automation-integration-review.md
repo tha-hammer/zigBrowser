@@ -33845,3 +33845,73 @@ commit must pin these exact bytes and receive a separate release. **NIT:** the
 Linux-test docstring still says no process is started, although its fd-5 row
 now starts short-lived `/bin/sh` and Python children; correct that when the
 case is registered.
+
+## WS5 native Win32 drawer entry final acceptance (`b2c4f25` live evidence)
+
+**FINAL ACCEPTED; the native-entry range beginning at `1e5ff2d` is closed.**
+The owner-released exact-`b2c4f25` Win11 run passed all **8/8** bounded entry
+methods in **109 seconds**, including the native mount/dock/control census.
+Every method's born-owned Job reached zero, and the independent before/after
+censuses found no zigBrowser process and no drawer run directory. Together
+with the exact-commit offline and causal visibility evidence already recorded,
+this satisfies the native-entry closure checklist. It does not substitute for
+later WS5 behavior slices or the owner-visible WebView2 pixel check.
+
+Fresh ancestry reconciliation from pushed `bac895b` now advances the newest
+contiguous approved push-through to **`7b9d499`**. The next commit is
+**`661fe7d`**, which remains the earliest blocked commit: decision-16 part 5
+still leaves a refused selector change displayed instead of rereading and
+showing the stored fail-closed value. Its approved failing-first follow-up is
+`897f1bd`; the required production green has not landed. The later
+decision-16 part-4 green `c2b4c38` closes the separate `ebe6529` range but
+cannot move the boundary across `661fe7d`.
+
+## Six-case armed MS6 hard-gate manifest (`2e07c7b`)
+
+**APPROVED. One bounded two-Mac six-case hard-gate run is authorized at exact
+`2e07c7b`.** The reviewed hook case moves byte-identically from pending into
+the armed case directory, the manifest and exact reviewed-set test gain only
+that case, and its Linux proof is registered under a private user/network/PID/
+mount namespace. The case still has no reaper and the released run must use
+the committed launcher, scrub display/askpass variables, use per-case scratch,
+stop on the first failure and record before/after process and folder censuses.
+
+Reviewer clean-archive evidence passed the hook case **4/4** and the manifest,
+driver and harness suites (**26 tests**, six expected Linux kqueue skips) in a
+private user/network/PID/mount namespace. The approved digests are:
+
+- manifest: `19374383d606095fc9f105d5f8c2ab47abea74bc6a22332349bb01c8bef01a78`
+- spawn-io: `7c739e32fe924877593e15bf232b58be94754c4287b69a7465f2d0371bafcbbb`
+- fd-3 CLI: `636b7785c78e023de0bee4160712ccc57dfa7098b3e90bbb6059c6e182d8a1aa`
+- R1 chain: `7e914a0b04016c05921af2157b5ea1c0aec9eec35bf3823f7cc97a984ea19f76`
+- MS5.1b skipped links: `c0a7c6a78efba0c3d8c8133d504447dc16c47fe38b2c7eac163919c8abc83ac1`
+- MS5.1 S3a links: `4fe83ada9acd7a8702923ddc35145927df35afcd101b825b4aaa3e08509ecd6f`
+- MS8 hook: `896e057ecc001944758521e7356d904dbdc2283e855a8c7a5b92079ddf9e2a69`
+
+## MS6.5.1 held-fd classifier binding (`d375eb2`)
+
+**APPROVED.** Exact entry equality now binds the classifier's `dir` to the
+path captured from the held descriptor before any inspect or action. A
+well-formed unrelated-path row causally proves refusal with zero action. A
+separate candidate-bearing rename row fires at the pre-kill `dir_ok` check,
+requires zero kills and non-Clean, and distinguishes that check from the final
+Clean recheck. This closes both findings on `222ad73`.
+
+An exact clean archive, inside a private user/PID/mount namespace, passed the
+manual recovery-transaction step **29/29**, both Darwin object cross-compiles
+and **6/6 steps**. The slice remains manual/unregistered and unarmed: there is
+still no `reaper_ready` and no production caller. No real-signal or Mac run is
+authorized by this verdict.
+
+## MS4.4 cleanup-sweep exit race (`e7ed5b3`)
+
+**APPROVED.** The test-only cleanup now treats `FileNotFoundError` or
+`ProcessLookupError` as gone only when a listed `/proc/<pid>/cmdline` entry
+vanishes, and treats `ProcessLookupError` as gone only when the already
+identified test-owned sleep exits before its cleanup `SIGKILL`. Permission,
+parse, other read and other signal failures still propagate; no assertion or
+production code changed.
+
+From an exact clean archive, the registered module command passed **8/8 six
+times**, each run inside its own private user/PID/mount namespace. No signal
+could reach a host pid.
