@@ -260,8 +260,8 @@ pub const StartRead = union(enum) {
 /// is NEVER dead.
 pub fn livenessFromRead(r: StartRead, recorded_start: u64) Liveness {
     return switch (r) {
-        .absent => .dead,
-        .unreadable => .dead, // RED (d3b31cb #1/#2): unreadable must NOT be dead; green returns .unreadable
+        .absent => .dead, // only a proved-absent process is dead
+        .unreadable => .unreadable, // can't prove liveness -> fail closed (recoveryFor -> .fail_closed), never dead
         .ticks => |now| if (now == recorded_start) .live_same else .live_reused,
     };
 }

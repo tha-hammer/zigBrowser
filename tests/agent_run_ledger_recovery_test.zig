@@ -35,6 +35,15 @@ test "recovery decision keys on (pid,start): live owner is left, dead recovers, 
     try std.testing.expect(linux.read(ready[0], &rb, 1) == 1); // A is now live
 
     const a_pid: i32 = @intCast(pid);
+    // Unconditional cleanup guard (RoseCat d3b31cb #4): a failure in any assertion below must still release and
+    // reap A, never leave it blocked on the `go` pipe. The explicit release path clears `released` so this does
+    // not double-release (a second close/waitpid would be harmless EBADF/ECHILD, but the flag keeps it clean).
+    var released = false;
+    defer if (!released) {
+        _ = linux.close(go[1]);
+        var gst: u32 = undefined;
+        _ = linux.waitpid(a_pid, &gst, 0);
+    };
     const a_start = ledger.readStartTicks(a_pid) orelse return error.TestNoStart;
 
     // A is a LIVE matching owner -> leave untouched (B neither signals nor retires A's entry):
@@ -47,6 +56,7 @@ test "recovery decision keys on (pid,start): live owner is left, dead recovers, 
     _ = linux.close(go[1]); // release A
     var st: u32 = undefined;
     _ = linux.waitpid(a_pid, &st, 0);
+    released = true;
     _ = linux.close(ready[0]);
 
     // once A has exited, its (pid,start) is proved dead -> recovery work:
