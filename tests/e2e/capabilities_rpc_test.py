@@ -6,7 +6,7 @@ browser's backend, over the authenticated automation socket.
 Launches the REAL binary with --automation-api and speaks raw JSON-RPC frames
 (4-byte big-endian length + JSON) to its socket, so the exact error objects are
 seen:
-  - a wrong token is refused with -32000 (the RPC sits behind the socket's auth);
+  - a missing or wrong token is refused with -32000 (the RPC sits behind the socket's auth);
   - with the sidecar token, `capabilities` answers exactly this backend's row;
   - params other than {} are refused with -32602.
 The expected rows are literal (the plan's capability decisions), not computed from
@@ -91,6 +91,8 @@ def scenario(socket_path: Path, token: str, timeout_sec: float) -> int:
     check = Asserts()
     base = {"jsonrpc": "2.0", "method": "capabilities"}
 
+    missing = rpc(socket_path, {**base, "id": 0}, timeout_sec)
+    check.equal("missing token refused", error_code(missing), AUTH_FAILED)
     refused = rpc(socket_path, {**base, "id": 1, "auth": token + "x"}, timeout_sec)
     check.equal("wrong token refused", error_code(refused), AUTH_FAILED)
 

@@ -6,6 +6,10 @@
 //!   probe connect <path>  {"ok":true} | {"ok":false,"wsa":10013}   an AF_UNIX stream connect to the socket
 //!   probe read <path>     {"ok":true,"len":64} | {"ok":false,"err":5}  open for read + ReadFile (the bytes
 //!                         are never printed: the token stays secret)
+//!   probe rpc <socket> <request.json> [<token-file>]
+//!                         {"ok":true,"reply":{...}}               one JSON-RPC frame (4-byte big-endian
+//!                         length + JSON) sent and its reply printed; with a token file its hex token is
+//!                         added as the request's "auth" (never printed). Windows plan WS2b.0 onward.
 //! Failures carry the Win32/WSA error code, so the test can tell "denied" from "missing".
 const std = @import("std");
 
@@ -34,8 +38,14 @@ extern "ws2_32" fn WSAGetLastError() callconv(.winapi) c_int;
 extern "ws2_32" fn socket(af: c_int, kind: c_int, proto: c_int) callconv(.winapi) usize;
 extern "ws2_32" fn connect(s: usize, addr: *const anyopaque, len: c_int) callconv(.winapi) c_int;
 extern "ws2_32" fn closesocket(s: usize) callconv(.winapi) c_int;
+extern "ws2_32" fn send(s: usize, buf: [*]const u8, len: c_int, flags: c_int) callconv(.winapi) c_int;
+extern "ws2_32" fn recv(s: usize, buf: [*]u8, len: c_int, flags: c_int) callconv(.winapi) c_int;
 
 var out_buf: [4096]u8 = undefined;
+var request_buf: [16 * 1024]u8 = undefined;
+var token_buf: [256]u8 = undefined;
+var frame_buf: [16 * 1024 + 512]u8 = undefined;
+var reply_buf: [1024 * 1024]u8 = undefined;
 
 fn emit(comptime fmt: []const u8, args: anytype) noreturn {
     const line = std.fmt.bufPrint(&out_buf, fmt ++ "\n", args) catch "{\"ok\":false,\"err\":-1}\n";
@@ -73,6 +83,12 @@ fn sddl(path: [*:0]const u16) noreturn {
 }
 
 fn connectTo(path: [*:0]const u16) noreturn {
+    _ = closesocket(openSocket(path));
+    emit("{{\"ok\":true}}", .{});
+}
+
+/// An AF_UNIX stream socket connected to `path`; emits the WSA error and exits on failure.
+fn openSocket(path: [*:0]const u16) usize {
     var wsa: [512]u8 = undefined;
     if (WSAStartup(0x0202, &wsa) != 0) emit("{{\"ok\":false,\"wsa\":{d}}}", .{WSAGetLastError()});
     const s = socket(1, 1, 0); // AF_UNIX, SOCK_STREAM
@@ -84,26 +100,80 @@ fn connectTo(path: [*:0]const u16) noreturn {
     if (p.len >= addr.path.len) emit("{{\"ok\":false,\"err\":\"too long\"}}", .{});
     @memcpy(addr.path[0..p.len], p);
     if (connect(s, &addr, @sizeOf(@TypeOf(addr))) != 0) emit("{{\"ok\":false,\"wsa\":{d}}}", .{WSAGetLastError()});
-    _ = closesocket(s);
-    emit("{{\"ok\":true}}", .{});
+    return s;
 }
 
-fn readFrom(path: [*:0]const u16) noreturn {
+/// The whole file at `path` (at most buf.len - 1 bytes); emits the Win32 error and exits on failure.
+fn readAll(path: [*:0]const u16, buf: []u8) []const u8 {
     // GENERIC_READ, share read|write|delete, OPEN_EXISTING.
     const h = CreateFileW(path, 0x80000000, 0x7, null, 3, 0, null);
     if (h == INVALID) emit("{{\"ok\":false,\"err\":{d}}}", .{GetLastError()});
     const handle: HANDLE = @ptrFromInt(h);
-    var buf: [512]u8 = undefined;
     var got: DWORD = 0;
-    if (ReadFile(handle, &buf, buf.len, &got, null) == 0) emit("{{\"ok\":false,\"err\":{d}}}", .{GetLastError()});
+    if (ReadFile(handle, buf.ptr, @intCast(buf.len), &got, null) == 0) emit("{{\"ok\":false,\"err\":{d}}}", .{GetLastError()});
     _ = CloseHandle(handle);
-    emit("{{\"ok\":true,\"len\":{d}}}", .{got});
+    if (got == buf.len) emit("{{\"ok\":false,\"err\":\"file too large\"}}", .{});
+    return buf[0..got];
+}
+
+fn sendAll(s: usize, bytes: []const u8) void {
+    var sent: usize = 0;
+    while (sent < bytes.len) {
+        const n = send(s, bytes[sent..].ptr, @intCast(bytes.len - sent), 0);
+        if (n <= 0) emit("{{\"ok\":false,\"wsa\":{d}}}", .{WSAGetLastError()});
+        sent += @intCast(n);
+    }
+}
+
+fn recvExact(s: usize, buf: []u8) void {
+    var got: usize = 0;
+    while (got < buf.len) {
+        const n = recv(s, buf[got..].ptr, @intCast(buf.len - got), 0);
+        if (n == 0) emit("{{\"ok\":false,\"err\":\"closed\"}}", .{});
+        if (n < 0) emit("{{\"ok\":false,\"wsa\":{d}}}", .{WSAGetLastError()});
+        got += @intCast(n);
+    }
+}
+
+fn writeOut(bytes: []const u8) void {
+    if (GetStdHandle(@bitCast(@as(i32, -11)))) |h| _ = WriteFile(h, bytes.ptr, @intCast(bytes.len), null, null);
+}
+
+fn rpc(sock_path: [*:0]const u16, request_path: [*:0]const u16, token_path: ?[*:0]const u16) noreturn {
+    const request = std.mem.trim(u8, readAll(request_path, &request_buf), " \t\r\n");
+    if (request.len < 2 or request[0] != '{' or request[request.len - 1] != '}') emit("{{\"ok\":false,\"err\":\"request is not a JSON object\"}}", .{});
+    var frame: []const u8 = request;
+    if (token_path) |path| {
+        const token = std.mem.trim(u8, readAll(path, &token_buf), " \t\r\n");
+        for (token) |ch| if (!std.ascii.isHex(ch)) emit("{{\"ok\":false,\"err\":\"token is not hex\"}}", .{});
+        frame = std.fmt.bufPrint(&frame_buf, "{s},\"auth\":\"{s}\"}}", .{ request[0 .. request.len - 1], token }) catch
+            emit("{{\"ok\":false,\"err\":\"request too large\"}}", .{});
+    }
+    const s = openSocket(sock_path);
+    var header: [4]u8 = undefined;
+    std.mem.writeInt(u32, &header, @intCast(frame.len), .big);
+    sendAll(s, &header);
+    sendAll(s, frame);
+    recvExact(s, &header);
+    const len = std.mem.readInt(u32, &header, .big);
+    if (len > reply_buf.len) emit("{{\"ok\":false,\"err\":\"reply too large\"}}", .{});
+    recvExact(s, reply_buf[0..len]);
+    _ = closesocket(s);
+    writeOut("{\"ok\":true,\"reply\":");
+    writeOut(reply_buf[0..len]);
+    writeOut("}\n");
+    ExitProcess(0);
+}
+
+fn readFrom(path: [*:0]const u16) noreturn {
+    var buf: [512]u8 = undefined;
+    emit("{{\"ok\":true,\"len\":{d}}}", .{readAll(path, &buf).len});
 }
 
 pub fn main() void {
     var argc: c_int = 0;
     const argv = CommandLineToArgvW(GetCommandLineW(), &argc) orelse emit("{{\"ok\":false,\"err\":\"argv\"}}", .{});
-    if (argc < 2) emit("{{\"ok\":false,\"err\":\"usage: sid | sddl|connect|read <path>\"}}", .{});
+    if (argc < 2) emit("{{\"ok\":false,\"err\":\"usage: sid | sddl|connect|read <path> | rpc <socket> <request.json> [<token-file>]\"}}", .{});
     var cb: [32]u8 = undefined;
     const cmd = utf8(&cb, argv[1]);
     if (std.mem.eql(u8, cmd, "sid")) sid();
@@ -111,5 +181,9 @@ pub fn main() void {
     if (std.mem.eql(u8, cmd, "sddl")) sddl(argv[2]);
     if (std.mem.eql(u8, cmd, "connect")) connectTo(argv[2]);
     if (std.mem.eql(u8, cmd, "read")) readFrom(argv[2]);
+    if (std.mem.eql(u8, cmd, "rpc")) {
+        if (argc < 4) emit("{{\"ok\":false,\"err\":\"usage: rpc <socket> <request.json> [<token-file>]\"}}", .{});
+        rpc(argv[2], argv[3], if (argc >= 5) argv[4] else null);
+    }
     emit("{{\"ok\":false,\"err\":\"unknown command\"}}", .{});
 }
