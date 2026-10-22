@@ -16,7 +16,7 @@ const linux = std.os.linux;
 const ledger = @import("agent_run_ledger");
 const recovery = @import("agent_run_recovery");
 
-const BASENAME = "zigbrowser-agent-515151-00bb00bb00bb00bb";
+const BASENAME = "zigbrowser-agent-2147483645-00bb00bb00bb00bb"; // its pid is DEAD_PID, as a ledger entry requires
 const DEAD_PID: i32 = 2147483645; // absent + reuse-proof
 const BUDGET_MS: i64 = 30000;
 
@@ -124,7 +124,7 @@ fn expectBytes(io: std.Io, gpa: std.mem.Allocator, dir: std.Io.Dir, sub: []const
 }
 var g_bn_bufs: [128][64]u8 = undefined;
 fn basenameN(i: usize) []const u8 {
-    return std.fmt.bufPrint(&g_bn_bufs[i], "zigbrowser-agent-515151-{x:0>16}", .{i}) catch unreachable;
+    return std.fmt.bufPrint(&g_bn_bufs[i], "zigbrowser-agent-2147483645-{x:0>16}", .{i}) catch unreachable;
 }
 fn seedActiveN(io: std.Io, dir: std.Io.Dir, n: usize) !void {
     var ents: [128]ledger.Entry = undefined;
@@ -314,7 +314,9 @@ test "left: a LIVE same-owner entry (this process) is left untouched, RETAINED, 
     defer td.cleanup();
     const self = linux.getpid();
     const ticks = ledger.readStartTicks(self) orelse return error.NoStartTicks;
-    try ledger.publish(io, td.dir, "runs.json", &[_]ledger.Entry{entryOf(BASENAME, self, ticks, .active, 2)});
+    var bn_buf: [64]u8 = undefined;
+    const bn = try std.fmt.bufPrint(&bn_buf, "zigbrowser-agent-{d}-00bb00bb00bb00bb", .{self}); // the entry's own pid
+    try ledger.publish(io, td.dir, "runs.json", &[_]ledger.Entry{entryOf(bn, self, ticks, .active, 2)});
     var pins: usize = 0;
     const rep = recovery.recoverAllAtStartupGated(true, io, gpa, td.dir, "runs.json", clock, clock.nowMs() + BUDGET_MS, act(&pins, HELD_CLEAN));
     try std.testing.expectEqual(@as(usize, 1), rep.left);

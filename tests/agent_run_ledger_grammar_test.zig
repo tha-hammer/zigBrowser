@@ -9,7 +9,7 @@ const ledger = @import("agent_run_ledger");
 
 fn one(comptime basename: []const u8) []const u8 {
     return "{\"schema_version\":2,\"runs\":[{\"basename\":\"" ++ basename ++
-        "\",\"dev\":1,\"ino\":2,\"uid\":0,\"mode\":16832,\"pid\":1,\"start_kind\":\"linux_ticks\",\"start_sec\":0,\"start_usec\":0,\"state\":\"active\"}]}";
+        "\",\"dev\":1,\"ino\":2,\"uid\":0,\"mode\":16832,\"pid\":2,\"start_kind\":\"linux_ticks\",\"start_sec\":0,\"start_usec\":0,\"state\":\"active\"}]}";
 }
 
 fn expectErr(expected: ledger.ParseError, s: []const u8) !void {
@@ -24,31 +24,31 @@ fn expectErr(expected: ledger.ParseError, s: []const u8) !void {
 }
 
 test "a valid grammar basename parses" {
-    var l = try ledger.parse(std.testing.allocator, one("zigbrowser-agent-1-0011223344556677"));
+    var l = try ledger.parse(std.testing.allocator, one("zigbrowser-agent-2-0011223344556677"));
     defer l.deinit();
     try std.testing.expectEqual(@as(usize, 1), l.entries().len);
 }
 
 test "wrong prefix is Malformed" {
-    try expectErr(error.Malformed, one("notzigbrowser-agent-1-0011223344556677"));
+    try expectErr(error.Malformed, one("notzigbrowser-agent-2-0011223344556677"));
 }
 test "uppercase hex is Malformed" {
-    try expectErr(error.Malformed, one("zigbrowser-agent-1-00112233445566AA"));
+    try expectErr(error.Malformed, one("zigbrowser-agent-2-00112233445566AA"));
 }
 test "wrong hex length (15) is Malformed" {
-    try expectErr(error.Malformed, one("zigbrowser-agent-1-001122334455667"));
+    try expectErr(error.Malformed, one("zigbrowser-agent-2-001122334455667"));
 }
 test "non-decimal pid is Malformed" {
     try expectErr(error.Malformed, one("zigbrowser-agent-0x1-0011223344556677"));
 }
 test "embedded slash is Malformed" {
-    try expectErr(error.Malformed, one("zigbrowser-agent-1-0011223344556677/x"));
+    try expectErr(error.Malformed, one("zigbrowser-agent-2-0011223344556677/x"));
 }
 test "a dot basename is Malformed" {
     try expectErr(error.Malformed, one("."));
 }
 test "an absolute path basename is Malformed" {
-    try expectErr(error.Malformed, one("/zigbrowser-agent-1-0011223344556677"));
+    try expectErr(error.Malformed, one("/zigbrowser-agent-2-0011223344556677"));
 }
 test "an oversized basename is Malformed" {
     try expectErr(error.Malformed, one("zigbrowser-agent-111111111111111111111111111111-0011223344556677"));
@@ -56,7 +56,7 @@ test "an oversized basename is Malformed" {
 
 test "a duplicate of a VALID basename is DuplicateBasename (not masked by grammar)" {
     const s =
-        \\{"schema_version":2,"runs":[{"basename":"zigbrowser-agent-1-0011223344556677","dev":1,"ino":2,"uid":0,"mode":16832,"pid":1,"start_kind":"linux_ticks","start_sec":0,"start_usec":0,"state":"active"},{"basename":"zigbrowser-agent-1-0011223344556677","dev":3,"ino":4,"uid":0,"mode":16832,"pid":2,"start_kind":"linux_ticks","start_sec":0,"start_usec":0,"state":"active"}]}
+        \\{"schema_version":2,"runs":[{"basename":"zigbrowser-agent-2-0011223344556677","dev":1,"ino":2,"uid":0,"mode":16832,"pid":2,"start_kind":"linux_ticks","start_sec":0,"start_usec":0,"state":"active"},{"basename":"zigbrowser-agent-2-0011223344556677","dev":3,"ino":4,"uid":0,"mode":16832,"pid":2,"start_kind":"linux_ticks","start_sec":0,"start_usec":0,"state":"active"}]}
     ;
     try expectErr(error.DuplicateBasename, s);
 }

@@ -17,7 +17,7 @@ const std = @import("std");
 const ledger = @import("agent_run_ledger");
 const linux = std.os.linux;
 
-const BASENAME = "zigbrowser-agent-515151-00bb00bb00bb00bb";
+const BASENAME = "zigbrowser-agent-2147483645-00bb00bb00bb00bb"; // its pid is DEAD_PID, as a ledger entry requires
 const DEAD_PID: i32 = 2147483645; // absent + reuse-proof in this fresh PID namespace
 
 const OUTER_NS_FD: i32 = 9;
@@ -219,7 +219,11 @@ fn okActuator() FakeActuator {
 }
 
 fn seedActive(io: std.Io, dir: std.Io.Dir, pid: i32, start_sec: u64) !void {
-    const seed = [_]ledger.Entry{.{ .basename = BASENAME, .dev = 1, .ino = 2, .uid = 0, .mode = 16832, .pid = pid, .start_kind = .linux_ticks, .start_sec = start_sec, .start_usec = 0, .state = .active }};
+    try seedActiveAs(io, dir, BASENAME, pid, start_sec);
+}
+
+fn seedActiveAs(io: std.Io, dir: std.Io.Dir, basename: []const u8, pid: i32, start_sec: u64) !void {
+    const seed = [_]ledger.Entry{.{ .basename = basename, .dev = 1, .ino = 2, .uid = 0, .mode = 16832, .pid = pid, .start_kind = .linux_ticks, .start_sec = start_sec, .start_usec = 0, .state = .active }};
     try ledger.publish(io, dir, "runs.json", &seed);
 }
 
@@ -334,9 +338,11 @@ test "a LIVE same-owner entry is LEFT untouched (.left) and RETAINED, never sign
     if (!readExactWithin(clock, ready[0], &rb, terminal)) return error.ChildNotReady;
 
     const ticks = ledger.readStartTicks(@intCast(pid)) orelse return error.NoStartTicks;
-    try seedActive(io, td.dir, @intCast(pid), ticks);
+    var bn_buf: [64]u8 = undefined;
+    const bn = try std.fmt.bufPrint(&bn_buf, "zigbrowser-agent-{d}-00bb00bb00bb00bb", .{pid}); // the entry's own pid
+    try seedActiveAs(io, td.dir, bn, @intCast(pid), ticks);
 
-    const act = ledger.recoverOneUnderLock(io, gpa, td.dir, BASENAME, clock, terminal, okActuator());
+    const act = ledger.recoverOneUnderLock(io, gpa, td.dir, bn, clock, terminal, okActuator());
     try std.testing.expectEqual(ledger.RecoveryAction.left, act); // live same-owner -> leave untouched
     try std.testing.expectEqual(@as(usize, 1), try entryCount(io, gpa, td.dir)); // entry RETAINED
 }

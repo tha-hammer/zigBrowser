@@ -8,7 +8,7 @@ const std = @import("std");
 const ledger = @import("agent_run_ledger");
 const linux = std.os.linux;
 
-const A = [_]ledger.Entry{.{ .basename = "zigbrowser-agent-1-00aa00aa00aa00aa", .dev = 1, .ino = 2, .uid = 0, .mode = 16832, .pid = 1, .start_kind = .linux_ticks, .start_sec = 0, .start_usec = 0, .state = .active }};
+const A = [_]ledger.Entry{.{ .basename = "zigbrowser-agent-2-00aa00aa00aa00aa", .dev = 1, .ino = 2, .uid = 0, .mode = 16832, .pid = 2, .start_kind = .linux_ticks, .start_sec = 0, .start_usec = 0, .state = .active }};
 
 test "acquire on a free lock succeeds; releasing lets the next acquire succeed" {
     const io = std.testing.io;
