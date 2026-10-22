@@ -1,19 +1,12 @@
-//! MS6.5.1 — RED-FIRST for the OPEN integration blocker (bd zigBrowser-3gl). Per RoseCat a1ba7b1, the proof is now
-//! driven through a PRODUCTION SEAM behaviorally (source inference kept leaking), with source used only as a thin
-//! call-site binding. UNREGISTERED, signal-free, no display, no Macs; `reaper_ready` false. RED now: the owner
-//! module `agent_startup_recovery` does not exist (compile error) and app.zig has no call.
-//!
-//!   - ORDERING (behavioral): `runStartupThenDispatch` runs the startup hook exactly once, strictly before dispatch
-//!     (skip / after / twice mutants are runtime-observable — no brace/depth source heuristic).
-//!   - SEAM (behavioral): gate-false touches nothing; gate-true runs each op once, closes once, samples the clock
-//!     ONCE over DISTINCT values, and hands recover the deadline (one sampled now + budget) and the SAME clock.
-//!   - REALOPS (behavioral): ledgerName() == "runs.json"; buildActuator() is the reviewed ConcreteActuator type.
-//!   - SOURCE (thin): recover() reaches recoverAllAtStartup; app.runWithIo routes through the combinator + hook.
+//! MS6.5.1 — RED-FIRST for the OPEN integration blocker (bd zigBrowser-3gl). Per RoseCat a1ba7b1/bc224f7 the proof
+//! drives a PRODUCTION SEAM behaviorally, source only as a comment-safe, scoped call-site binding. UNREGISTERED,
+//! signal-free, no display, no Macs; `reaper_ready` false. RED now: the owner module `agent_startup_recovery` does
+//! not exist (compile error) and app.zig has no call.
 const std = @import("std");
 const recovery = @import("agent_run_recovery");
 const startup = @import("agent_startup_recovery");
 
-// ---- ORDERING: the runWithIo-level combinator runs the hook once, strictly before dispatch --------------------
+// ---- ORDERING: the combinator runs the hook once, strictly before dispatch ------------------------------------
 
 const Log = struct { hook: usize = 0, disp: usize = 0, hook_before_disp: bool = false };
 const SpyHook = struct {
@@ -35,14 +28,13 @@ test "ordering: the hook runs exactly once, strictly before dispatch" {
     var log = Log{};
     const rc = startup.runStartupThenDispatch(SpyHook{ .log = &log }, SpyDisp{ .log = &log });
     try std.testing.expectEqual(@as(u8, 0), rc);
-    try std.testing.expectEqual(@as(usize, 1), log.hook); // exactly once (skip -> 0, twice -> 2)
+    try std.testing.expectEqual(@as(usize, 1), log.hook);
     try std.testing.expectEqual(@as(usize, 1), log.disp);
-    try std.testing.expect(log.hook_before_disp); // hook ran while disp count was 0 (after-dispatch mutant -> false)
+    try std.testing.expect(log.hook_before_disp);
 }
 
-// ---- SEAM: the gated owner, driven with counted spy ops + a distinct-valued, identity-tagged clock -------------
+// ---- SEAM: the gated owner, with counted ops + a clock whose CONSTRUCTION is counted and identity-tagged -------
 
-const CLOCK_TOKEN: u32 = 0xC10C;
 const Caps = struct {
     env: usize = 0,
     open: usize = 0,
@@ -50,14 +42,15 @@ const Caps = struct {
     recover: usize = 0,
     close: usize = 0,
     now: usize = 0,
-    now_seq: [3]i64 = .{ 777, 888, 999 }, // DISTINCT values: a literal/second sample differs from the first
+    construct: usize = 0, // clock CONSTRUCTIONS (ops.clock calls)
+    now_seq: [3]i64 = .{ 777, 888, 999 },
     captured_deadline: i64 = -1,
-    captured_token: u32 = 0,
+    captured_token: usize = 0, // the clock identity (construction ordinal) handed to recover
 };
 const SpyActuator = struct {};
 const CountedClock = struct {
     caps: *Caps,
-    token: u32,
+    token: usize, // a DISTINCT token per construction (the construction ordinal)
     pub fn nowMs(self: CountedClock) i64 {
         const v = self.caps.now_seq[@min(self.caps.now, self.caps.now_seq.len - 1)];
         self.caps.now += 1;
@@ -85,7 +78,8 @@ const SpyOps = struct {
     }
     pub fn clock(self: SpyOps, io: std.Io) CountedClock {
         _ = io;
-        return .{ .caps = self.caps, .token = CLOCK_TOKEN };
+        self.caps.construct += 1; // count each construction; hand out a distinct token
+        return .{ .caps = self.caps, .token = self.caps.construct };
     }
     pub fn ledgerName(_: SpyOps) []const u8 {
         return "runs.json";
@@ -102,23 +96,23 @@ const SpyOps = struct {
         _ = actuator;
         self.caps.recover += 1;
         self.caps.captured_deadline = deadline_ms;
-        self.caps.captured_token = clk.token; // the clock IDENTITY handed to recover
+        self.caps.captured_token = clk.token;
         return self.result;
     }
 };
 
-test "gate FALSE: zero ops — no env, open, clock, actuator, recover, or close" {
+test "gate FALSE: zero ops — no env, open, clock construction, actuator, recover, close" {
     const io = std.testing.io;
     const gpa = std.testing.allocator;
     var caps = Caps{};
     const rep = startup.recoverLeftoverAgentRunsWith(false, io, gpa, SpyOps{ .caps = &caps, .result = .{ .status = .ran } });
     try std.testing.expectEqual(recovery.StartupStatus.disabled, rep.status);
-    inline for (.{ caps.env, caps.open, caps.build, caps.recover, caps.close, caps.now }) |c| {
+    inline for (.{ caps.env, caps.open, caps.build, caps.recover, caps.close, caps.now, caps.construct }) |c| {
         try std.testing.expectEqual(@as(usize, 0), c);
     }
 }
 
-test "gate TRUE: each op once; one close; clock sampled ONCE; deadline = first sampled now + budget; same clock to recover" {
+test "gate TRUE: each op once; one close; ONE clock construction; its FIRST identity at recover; deadline = first now + budget" {
     const io = std.testing.io;
     const gpa = std.testing.allocator;
     var caps = Caps{};
@@ -129,9 +123,10 @@ test "gate TRUE: each op once; one close; clock sampled ONCE; deadline = first s
     try std.testing.expectEqual(@as(usize, 1), caps.build);
     try std.testing.expectEqual(@as(usize, 1), caps.recover);
     try std.testing.expectEqual(@as(usize, 1), caps.close);
-    try std.testing.expectEqual(@as(usize, 1), caps.now); // sampled exactly once over distinct values
-    try std.testing.expectEqual(@as(i64, 777) + startup.STARTUP_BUDGET_MS, caps.captured_deadline); // first sample + budget
-    try std.testing.expectEqual(CLOCK_TOKEN, caps.captured_token); // the owner handed recover the clock it sampled
+    try std.testing.expectEqual(@as(usize, 1), caps.now); // sampled once
+    try std.testing.expectEqual(@as(usize, 1), caps.construct); // exactly one clock constructed (two-clock mutant -> 2)
+    try std.testing.expectEqual(@as(usize, 1), caps.captured_token); // recover got the FIRST clock's identity
+    try std.testing.expectEqual(@as(i64, 777) + startup.STARTUP_BUDGET_MS, caps.captured_deadline);
 }
 
 test "a non-ok report is PROPAGATED, never swallowed; dir still closed once" {
@@ -144,17 +139,15 @@ test "a non-ok report is PROPAGATED, never swallowed; dir still closed once" {
     try std.testing.expectEqual(@as(usize, 1), caps.close);
 }
 
-// ---- REALOPS: the production ops are exercised (not dead): the ledger name and the reviewed actuator type -------
-
-test "RealOps is live: ledgerName is the app-owned runs.json; buildActuator is the reviewed Darwin actuator" {
+test "RealOps is live: ledgerName is runs.json; buildActuator is the reviewed Darwin actuator" {
     const ro = startup.RealOps{};
     try std.testing.expectEqualStrings("runs.json", ro.ledgerName());
     try std.testing.expect(@TypeOf(ro.buildActuator()) == recovery.ConcreteActuator(recovery.DarwinWiring));
 }
 
-// ---- SOURCE (thin): recover() reaches the core; app.runWithIo routes through the combinator + hook --------------
+// ---- source lexers: strip-all (code-token checks) and strip-comments-only (import/string checks) ---------------
 
-fn stripZig(gpa: std.mem.Allocator, src: []const u8) ![]u8 {
+fn lex(gpa: std.mem.Allocator, src: []const u8, comptime keep_strings: bool) ![]u8 {
     var out = try gpa.alloc(u8, src.len);
     var n: usize = 0;
     var i: usize = 0;
@@ -174,12 +167,33 @@ fn stripZig(gpa: std.mem.Allocator, src: []const u8) ![]u8 {
             continue;
         }
         if (src[i] == '"') {
-            i += 1;
-            while (i < src.len and src[i] != '"') {
-                if (src[i] == '\\') i += 1;
+            if (keep_strings) {
+                out[n] = src[i];
+                n += 1;
+                i += 1;
+                while (i < src.len and src[i] != '"') {
+                    out[n] = src[i];
+                    n += 1;
+                    if (src[i] == '\\' and i + 1 < src.len) {
+                        i += 1;
+                        out[n] = src[i];
+                        n += 1;
+                    }
+                    i += 1;
+                }
+                if (i < src.len) {
+                    out[n] = src[i];
+                    n += 1;
+                    i += 1;
+                }
+            } else {
+                i += 1;
+                while (i < src.len and src[i] != '"') {
+                    if (src[i] == '\\') i += 1;
+                    i += 1;
+                }
                 i += 1;
             }
-            i += 1;
             continue;
         }
         out[n] = src[i];
@@ -188,7 +202,8 @@ fn stripZig(gpa: std.mem.Allocator, src: []const u8) ![]u8 {
     }
     return gpa.realloc(out, n);
 }
-fn methodBody(src: []const u8, decl: []const u8) []const u8 {
+
+fn balancedBody(src: []const u8, decl: []const u8) []const u8 {
     const at = std.mem.indexOf(u8, src, decl) orelse return "";
     var i = at + decl.len;
     while (i < src.len and src[i] != '{') i += 1;
@@ -204,30 +219,43 @@ fn methodBody(src: []const u8, decl: []const u8) []const u8 {
     }
     return "";
 }
+
 fn readSrc(gpa: std.mem.Allocator, path: []const u8) ![]u8 {
     return std.Io.Dir.cwd().readFileAlloc(std.testing.io, path, gpa, .limited(1 << 20));
 }
 
-test "source(thin): RealOps.recover reaches recoverAllAtStartup (scoped to the recover method body)" {
+test "source(thin): RealOps.recover reaches recoverAllAtStartup — RealOps body, then its recover method, lexed" {
     const gpa = std.testing.allocator;
     const raw = try readSrc(gpa, "src/agent_startup_recovery.zig");
     defer gpa.free(raw);
-    const src = try stripZig(gpa, raw);
-    defer gpa.free(src);
-    const recover_body = methodBody(src, "pub fn recover("); // the recover METHOD body, stripped (not the struct)
-    try std.testing.expect(recover_body.len != 0);
-    try std.testing.expect(std.mem.indexOf(u8, recover_body, "recovery.recoverAllAtStartup(") != null);
+    const code = try lex(gpa, raw, false);
+    defer gpa.free(code);
+    const realops = balancedBody(code, "pub const RealOps = struct"); // scope to RealOps first
+    try std.testing.expect(realops.len != 0);
+    const recover = balancedBody(realops, "pub fn recover("); // then its named recover method (in-module decoy ignored)
+    try std.testing.expect(recover.len != 0);
+    try std.testing.expect(std.mem.indexOf(u8, recover, "recovery.recoverAllAtStartup(") != null);
 }
 
-test "source(thin): app.runWithIo routes startup through the combinator + the recovery hook" {
+test "source(thin): StartupHook.run IS the owner; runWithIo routes through the combinator + StartupHook" {
     const gpa = std.testing.allocator;
-    const raw = try readSrc(gpa, "src/app.zig");
-    defer gpa.free(raw);
-    const src = try stripZig(gpa, raw);
-    defer gpa.free(src);
-    try std.testing.expect(std.mem.indexOf(u8, raw, "@import(\"agent_startup_recovery\")") != null);
-    const body = methodBody(src, "pub fn runWithIo(");
-    try std.testing.expect(body.len != 0);
-    try std.testing.expect(std.mem.indexOf(u8, body, "runStartupThenDispatch(") != null); // routed through the reviewed combinator
-    try std.testing.expect(std.mem.indexOf(u8, body, "recoverLeftoverAgentRuns") != null); // whose hook wires the owner
+    const owner = try readSrc(gpa, "src/agent_startup_recovery.zig");
+    defer gpa.free(owner);
+    const owner_code = try lex(gpa, owner, false);
+    defer gpa.free(owner_code);
+    const hook_run = balancedBody(balancedBody(owner_code, "pub const StartupHook = struct"), "pub fn run(");
+    try std.testing.expect(hook_run.len != 0);
+    try std.testing.expect(std.mem.indexOf(u8, hook_run, "recoverLeftoverAgentRuns(") != null); // the hook IS the owner
+
+    const app = try readSrc(gpa, "src/app.zig");
+    defer gpa.free(app);
+    const app_nc = try lex(gpa, app, true); // comment-safe (strings kept) for the import binding
+    defer gpa.free(app_nc);
+    try std.testing.expect(std.mem.indexOf(u8, app_nc, "@import(\"agent_startup_recovery\")") != null);
+    const app_code = try lex(gpa, app, false);
+    defer gpa.free(app_code);
+    const run_body = balancedBody(app_code, "pub fn runWithIo(");
+    try std.testing.expect(run_body.len != 0);
+    try std.testing.expect(std.mem.indexOf(u8, run_body, "runStartupThenDispatch(") != null);
+    try std.testing.expect(std.mem.indexOf(u8, run_body, "StartupHook") != null); // the hook arg IS the owner's hook (wrong-hook mutant -> fail)
 }
