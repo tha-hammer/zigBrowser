@@ -291,3 +291,46 @@ test "two recoverers through the PRODUCTION transaction: exact {signalled, alrea
     defer l.deinit();
     try std.testing.expectEqual(@as(usize, 0), l.entries().len);
 }
+
+test "a LIVE same-owner entry is LEFT untouched (.left) and RETAINED, never signalled or retired" {
+    if (!inPrivatePidNamespace()) return error.NotInPrivatePidNamespace;
+    const io = std.testing.io;
+    const gpa = std.testing.allocator;
+    const clock = ledger.RealClock{ .io = io };
+    const terminal = clock.nowMs() + TOTAL_BUDGET_MS;
+
+    var td = std.testing.tmpDir(.{});
+    defer td.cleanup();
+
+    // Fork a genuinely LIVE child that parks, and record its REAL (pid, start-ticks) so the entry names a live
+    // owner. The fresh-owner liveness check must then classify it live_same -> `.left`, before any actuator/action.
+    var ready = [2]i32{ -1, -1 };
+    defer for ([_]*i32{ &ready[0], &ready[1] }) |p| closeAndClear(p);
+    if (linux.pipe(&ready) != 0) return error.PipeFailed;
+    var kids = [_]Child{.{}};
+    defer cleanupChildren(&kids, RealWaiter{});
+    const pid = linux.fork();
+    if (linux.errno(pid) != .SUCCESS) return error.ForkFailed;
+    if (pid == 0) {
+        _ = linux.close(ready[0]);
+        writeAll(ready[1], "R");
+        var ts: linux.timespec = .{ .sec = 60, .nsec = 0 }; // park past the call; the parent SIGKILLs+reaps us
+        _ = linux.nanosleep(&ts, &ts);
+        linux.exit_group(0);
+    }
+    kids[0] = .{ .pid = @intCast(pid) };
+    closeAndClear(&ready[1]);
+    var rb: [1]u8 = undefined;
+    if (!readExactWithin(clock, ready[0], &rb, terminal)) return error.ChildNotReady;
+
+    const ticks = ledger.readStartTicks(@intCast(pid)) orelse return error.NoStartTicks;
+    const seed = [_]ledger.Entry{.{ .basename = BASENAME, .dev = 1, .ino = 2, .uid = 0, .mode = 16832, .pid = @intCast(pid), .start_kind = .linux_ticks, .start_sec = ticks, .start_usec = 0, .state = .active }};
+    try ledger.publish(io, td.dir, "runs.json", &seed);
+
+    const act = ledger.recoverOneUnderLock(io, gpa, td.dir, BASENAME, clock, terminal, FakeActuator{});
+    try std.testing.expectEqual(ledger.RecoveryAction.left, act); // live same-owner -> leave untouched
+
+    var l = try ledger.load(io, gpa, td.dir, "runs.json"); // the live owner's entry is RETAINED
+    defer l.deinit();
+    try std.testing.expectEqual(@as(usize, 1), l.entries().len);
+}
