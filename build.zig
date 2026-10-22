@@ -3823,6 +3823,16 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_automation_thread_document_tests.step);
     test_step.dependOn(&automation_thread_document_e2e.step);
     test_step.dependOn(&run_owner_only_tests.step);
+    // WS2a.0 (Windows plan rev 2.21): the CDP-result reader the WebView2 shim's CDP wrapper uses
+    // (src/cdp_json.hpp, portable C++17, no Windows headers), driven on the host.
+    const cdp_json_module = b.createModule(.{ .target = target, .optimize = optimize, .link_libcpp = true });
+    cdp_json_module.addIncludePath(b.path("src"));
+    cdp_json_module.addCSourceFile(.{ .file = b.path("tests/cdp_json_test.cpp"), .flags = &.{"-std=c++17"} });
+    const run_cdp_json = b.addRunArtifact(b.addExecutable(.{ .name = "cdp-json-test", .root_module = cdp_json_module }));
+    run_cdp_json.skip_foreign_checks = true;
+    run_cdp_json.expectExitCode(0);
+    b.step("test-cdp-json", "Run WS2a.0's CDP-result reader tests").dependOn(&run_cdp_json.step);
+    test_step.dependOn(&run_cdp_json.step);
     test_step.dependOn(&run_wv2_capabilities_tests.step);
     test_step.dependOn(&capabilities_rpc_e2e.step);
     test_step.dependOn(&run_agent_setup_ms5_tests.step);
