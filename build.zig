@@ -490,6 +490,27 @@ pub fn build(b: *std.Build) void {
         cross_drawer_mac_step.dependOn(&cross_drawer_mac.step);
     }
 
+    // MS7.6 / MS7.8 (RoseCat 8079 / 2796d94): the card's one minter proven on the real Darwin objects, by symbol and
+    // relocation (tests/e2e/mac_card_authority_objects_test.py). The shipped executable's own root module, Debug so
+    // no inlining hides a call, for both arches. Pure compile — no SDK, no link.
+    // RED until the macOS build defines the minters and the bridge; not in `test` until the green.
+    const card_authority_mac_step = b.step("check-card-authority-mac", "MS7.6/7.8: the card's one minter, on both Darwin objects' relocations");
+    const card_authority_mac = b.addSystemCommand(&.{ "python3", "tests/e2e/mac_card_authority_objects_test.py" });
+    card_authority_mac.addFileInput(b.path("tests/e2e/mac_card_authority_objects_test.py"));
+    for ([_]std.Target.Cpu.Arch{ .aarch64, .x86_64 }) |arch| {
+        const card_authority_mac_module = b.createModule(.{
+            .root_source_file = root_module.root_source_file.?,
+            .imports = &.{.{ .name = "build_options", .module = site_options_module }},
+            .target = b.resolveTargetQuery(.{ .cpu_arch = arch, .os_tag = .macos }),
+            .optimize = .Debug,
+            .link_libc = true,
+        });
+        card_authority_mac_module.addIncludePath(b.path("src"));
+        const card_authority_mac_obj = b.addObject(.{ .name = "zigBrowser-card-authority-mac", .root_module = card_authority_mac_module });
+        card_authority_mac.addFileArg(card_authority_mac_obj.getEmittedBin());
+    }
+    card_authority_mac_step.dependOn(&card_authority_mac.step);
+
     // WS6.1 (c): the Windows Credential Manager / DPAPI token store compiles for x86_64-windows and exports
     // its zb_secret_* C-ABI functions. A trivial Zig root pulls the C++ in (addCSourceFile); the object retains
     // every TU symbol, so check_cross_symbols can require them.

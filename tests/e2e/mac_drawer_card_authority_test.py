@@ -21,19 +21,32 @@ from the comment-free text with strings kept).
   objc_msgSend, method_getImplementation, class_replaceMethod, method_exchangeImplementations, sendAction:,
   performSelector, performClick, setAction: or setTarget:; and the drawer has no WKScriptMessageHandler,
   WKUserContentController, addScriptMessageHandler or evaluateJavaScript.
-- Z (RoseCat 8074 / 64e2225): the executable's Zig side, where the minters live, is inventoried too, fail closed.
-  The graph is every .zig file reachable from src/main.zig through relative @import (an import of any module other
-  than std, builtin, root and the generated build_options is a violation: unreviewed code). Read lexically (// comments
-  removed, string literals blanked), every occurrence of the identifiers zb_agent_tools_approve, zb_agent_tools_deny,
-  zb_drawer_card_press, approve and deny is located by file and innermost enclosing fn ("-": none), and the census
-  must equal ALLOWED exactly: the two minter definitions (agent_tools.zig, each the only caller of cards.approve /
-  cards.deny), Cards.approve / Cards.deny's definitions (agent_approval.zig), and the reviewed bridge in
-  agent_drawer.zig (its Approver fields, cardPress's two calls, the adapter's .approve/.deny, the extern declarations,
-  one call each in toolsApprove / toolsDeny, and zb_drawer_card_press's definition and its one @export). The minter
-  definitions must be `export fn`, the drawer's declarations `extern fn`, and the bridge's @export name exactly
-  "zb_drawer_card_press". The ObjC rules above stay the narrower authority for native event ingress.
+- Z (RoseCat 8074 / 64e2225; 8079 / 2796d94): the executable's Zig side, where the minters live, is inventoried too,
+  fail closed. This is the SECONDARY layer: the primary proof is by symbol and relocation on the real cross-compiled
+  Darwin objects (mac_card_authority_objects_test.py, build step check-card-authority-mac).
+  - The root is derived from build.zig, never assumed: exactly one installed `zigBrowser` executable, whose
+    root_module's root source must be src/main.zig, importing exactly build_options and gaining no other import.
+  - The graph is every .zig file reachable from that root through relative @import, keyed by its full normalized
+    repo-relative path (an absolute import or one leaving the repository is a violation; so is an import of any module
+    other than std, builtin, root and build_options).
+  - Each file is read twice with the same offsets: comment-free with literal contents blanked to spaces, and
+    comment-free with literals kept. Every occurrence of the identifiers zb_agent_tools_approve, zb_agent_tools_deny,
+    zb_drawer_card_press, approve and deny, and every string literal containing one of the three symbol names (or
+    equal to "approve" / "deny"), is located by path and innermost enclosing fn ("-": none). The census must equal
+    ALLOWED exactly: the two minter definitions (src/agent_tools.zig, each the only caller of cards.approve /
+    cards.deny), Cards.approve / Cards.deny's definitions (src/agent_approval.zig), and the reviewed bridge in
+    src/agent_drawer.zig (its Approver fields, cardPress's two calls, the adapter's .approve/.deny, the extern
+    declarations, one call each in toolsApprove / toolsDeny, zb_drawer_card_press's definition, its one @export and
+    that export's one name string).
+  - No lookup by name: no @extern, dlsym, dlopen or DynLib anywhere in the graph. Every @field names its member with
+    one plain literal, except the six reviewed reflective sites in REFLECTIVE (none reaches Cards, a minter or the
+    bridge), each at most as often as reviewed. Every @export names its symbol with one plain literal.
+  - The minter definitions must be `export fn` and the drawer's declarations `extern fn`; the bridge's @export,
+    read comment-free, is exactly one, under exactly "zb_drawer_card_press".
+  The ObjC rules above stay the narrower authority for native event ingress.
 The real native click (MS7.8's -[NSWindow sendEvent:] Approve/Deny) stays the owner-run real-screen closure.
-Self-checking: an honest fixture passes; names in strings and comments do not count; and each dishonest fixture fails.
+Self-checking: an honest fixture passes; names in strings and comments do not count; and each dishonest fixture
+fails, the Zig graphs and build.zig roots each for their own stated reason (RoseCat 2796d94's four among them).
 RED until build.zig's macOS link has src/agent_drawer_mac.m with that shape. No process, no signal.
 Run: cd tests/e2e && python3 -X dev -m unittest -v mac_drawer_card_authority_test
 Unregistered until the green."""
@@ -153,34 +166,63 @@ def problems(sources, files):
     return found
 
 
-def zig_lexical(text):
-    """Zig source without // comments, with "..." and '...' literal contents and \\\\ multiline strings blanked."""
+def zig_lexical(text, keep_strings=False):
+    """Zig source without // comments; "..." / '...' literal contents and \\\\ multiline strings blanked (to spaces,
+    so offsets match the kept form), or kept."""
     out, i, n = [], 0, len(text)
     while i < n:
         if text.startswith("//", i):
             j = text.find("\n", i); i = n if j < 0 else j
         elif text.startswith("\\\\", i):
-            j = text.find("\n", i); out.append('""'); i = n if j < 0 else j
+            j = text.find("\n", i); j = n if j < 0 else j
+            out.append(text[i:j] if keep_strings else '""' + " " * (j - i - 2)); i = j
         elif text[i] in "\"'":
             q, j = text[i], i + 1
             while j < n and text[j] != q and text[j] != "\n":
                 j += 2 if text[j] == "\\" else 1
-            out.append(q + q); i = j + 1
+            out.append(text[i:j + 1] if keep_strings else q + " " * max(0, min(j, n - 1) - i - 1) + q); i = j + 1
         else:
             out.append(text[i]); i += 1
     return "".join(out)
 
-def graph(read, root="src/main.zig"):
-    seen, q, bad = {}, deque([root]), []
+EXE_ROOT = "src/main.zig"
+
+def exe_root(build_zig):
+    """build.zig -> (the shipped zigBrowser executable's root source, violations): derived, never assumed."""
+    code = zig_lexical(build_zig, keep_strings=True)
+    exes = re.findall(r'const\s+(\w+)\s*=\s*b\.addExecutable\(\s*\.\{\s*\.name\s*=\s*"zigBrowser"\s*,\s*\.root_module\s*=\s*(\w+)\s*,', code)
+    if len(exes) != 1:
+        return None, [f"R: want exactly one zigBrowser executable in build.zig ({len(exes)})"]
+    exe, module = exes[0]
+    bad = []
+    if len(re.findall(r"\bb\.installArtifact\(\s*" + exe + r"\s*\)", code)) != 1:
+        bad.append(f"R: build.zig must install {exe} once")
+    roots = re.findall(r"const\s+" + module + r'\s*=\s*b\.createModule\(\s*\.\{\s*\.root_source_file\s*=\s*b\.path\("([^"]+)"\)', code)
+    if len(roots) != 1:
+        return None, bad + [f"R: want exactly one root source for {module} ({len(roots)})"]
+    imports = re.search(r"const\s+" + module + r"\s*=\s*b\.createModule\(\s*\.\{.*?\.imports\s*=\s*&\.\{(.*?)\}\s*,\s*\.target", code, re.S)
+    if imports is None or re.findall(r'\.name\s*=\s*"([^"]+)"', imports.group(1)) != ["build_options"]:
+        bad.append(f"R: {module} must import exactly build_options")
+    if re.search(r"\b" + module + r"\.add(?:Anonymous)?Import\(", code):
+        bad.append(f"R: {module} must gain no other import")
+    if roots[0] != EXE_ROOT:
+        bad.append(f"R: the shipped executable's root is {roots[0]}, want {EXE_ROOT}")
+    return roots[0], bad
+
+def graph(read, root):
+    """{repo-relative path: text} of every .zig reachable from `root` by relative @import, and import violations."""
+    seen, q, bad = {}, deque([os.path.normpath(root)]), []
     while q:
         f = q.popleft()
         if f in seen: continue
+        if os.path.isabs(f) or f == ".." or f.startswith("../"):
+            bad.append(f"import outside the repository: {f}"); seen[f] = ""; continue
         text = read(f)
         if text is None: bad.append(f"missing {f}"); continue
         seen[f] = text
-        for imp in re.findall(r'@import\(\s*"([^"]+)"\s*\)', text):
+        for imp in re.findall(r'@import\(\s*"([^"]+)"\s*\)', zig_lexical(text, keep_strings=True)):
             if imp.endswith(".zig"):
-                q.append(os.path.normpath(os.path.join(os.path.dirname(f), imp)))
+                q.append(imp if os.path.isabs(imp) else os.path.normpath(os.path.join(os.path.dirname(f), imp)))
             elif imp not in ("std", "builtin", "root", "build_options"):
                 bad.append(f"{f} imports the unreviewed module {imp!r}")
     return seen, bad
@@ -202,47 +244,107 @@ def where(code, spans, pos):
     return min(inner, key=lambda s: s[1] - s[0])[2] if inner else "-"
 
 TOKENS = ("zb_agent_tools_approve", "zb_agent_tools_deny", "zb_drawer_card_press", "approve", "deny")
+SYMBOLS = TOKENS[:3]
+# The graph's reflective @field sites, reviewed (none reaches Cards, a minter or the bridge): (path, fn, expression).
+# Any other @field whose name is not one plain literal is a violation; a reviewed site may go away.
+REFLECTIVE = Counter({
+    ("src/agent_protocol.zig", "encode", "@field(f,fd.name)"): 1,
+    ("src/automation/social_flow_routes.zig", "tableName", "@field(linkedin.selectors,decl.name)"): 1,
+    ("src/automation/social_flow_routes.zig", "tableName", "@field(instagram.selectors,decl.name)"): 1,
+    ("src/automation_gtk_port.zig", "-", "@field(vtable,field.name)"): 1,
+    ("src/flow_steps.zig", "selectorReportExcept", "@field(Table,decl.name)"): 1,
+    ("src/x.zig", "selfCheck", "@field(selectors,decl.name)"): 1,
+})
+DYNAMIC = ("@extern", "dlsym", "dlopen", "DynLib")
+
+def call_args(code, start):
+    """The top-level comma-separated arguments of the call whose `(` ends just before `start`, and its end."""
+    args, depth, cur, i = [], 1, start, start
+    while i < len(code) and depth:
+        ch = code[i]
+        if ch == '"':
+            j = i + 1
+            while j < len(code) and code[j] not in '"\n':
+                j += 2 if code[j] == "\\" else 1
+            i = j
+        elif ch in "([{":
+            depth += 1
+        elif ch in ")]}":
+            depth -= 1
+            if depth == 0:
+                args.append(code[cur:i])
+        elif ch == "," and depth == 1:
+            args.append(code[cur:i]); cur = i + 1
+        i += 1
+    return args, i
+
 
 def census(files):
+    """Identifiers (strings blanked) and string literals naming them, by (repo-relative path, token, enclosing fn)."""
     c = Counter()
     for f, text in files.items():
         code = zig_lexical(text); spans = fn_spans(code)
         for tok in TOKENS:
             for m in re.finditer(r"\b" + tok + r"\b", code):
-                c[(os.path.basename(f), tok, where(code, spans, m.start()))] += 1
+                c[(f, tok, where(code, spans, m.start()))] += 1
+        kept = zig_lexical(text, keep_strings=True)  # same offsets as `code`: only literal contents differ
+        for m in re.finditer(r'"((?:[^"\\\n]|\\.)*)"|\\\\([^\n]*)', kept):
+            s = m.group(1) if m.group(1) is not None else m.group(2)
+            for tok in TOKENS:
+                if (tok in s) if tok in SYMBOLS else (s == tok):
+                    c[(f, f'"{tok}"', where(code, spans, m.start()))] += 1
     return c
 
 ALLOWED = Counter({
-    ("agent_approval.zig", "approve", "-"): 1, ("agent_approval.zig", "deny", "-"): 1,
-    ("agent_tools.zig", "zb_agent_tools_approve", "-"): 1, ("agent_tools.zig", "zb_agent_tools_deny", "-"): 1,
-    ("agent_tools.zig", "approve", "zb_agent_tools_approve"): 1, ("agent_tools.zig", "deny", "zb_agent_tools_deny"): 1,
-    ("agent_drawer.zig", "approve", "-"): 1, ("agent_drawer.zig", "deny", "-"): 1,
-    ("agent_drawer.zig", "approve", "cardPress"): 1, ("agent_drawer.zig", "deny", "cardPress"): 1,
-    ("agent_drawer.zig", "approve", "zb_drawer_card_press"): 1, ("agent_drawer.zig", "deny", "zb_drawer_card_press"): 1,
-    ("agent_drawer.zig", "zb_agent_tools_approve", "-"): 1, ("agent_drawer.zig", "zb_agent_tools_deny", "-"): 1,
-    ("agent_drawer.zig", "zb_agent_tools_approve", "toolsApprove"): 1,
-    ("agent_drawer.zig", "zb_agent_tools_deny", "toolsDeny"): 1,
-    ("agent_drawer.zig", "zb_drawer_card_press", "-"): 2,
+    ("src/agent_approval.zig", "approve", "-"): 1, ("src/agent_approval.zig", "deny", "-"): 1,
+    ("src/agent_tools.zig", "zb_agent_tools_approve", "-"): 1, ("src/agent_tools.zig", "zb_agent_tools_deny", "-"): 1,
+    ("src/agent_tools.zig", "approve", "zb_agent_tools_approve"): 1, ("src/agent_tools.zig", "deny", "zb_agent_tools_deny"): 1,
+    ("src/agent_drawer.zig", "approve", "-"): 1, ("src/agent_drawer.zig", "deny", "-"): 1,
+    ("src/agent_drawer.zig", "approve", "cardPress"): 1, ("src/agent_drawer.zig", "deny", "cardPress"): 1,
+    ("src/agent_drawer.zig", "approve", "zb_drawer_card_press"): 1, ("src/agent_drawer.zig", "deny", "zb_drawer_card_press"): 1,
+    ("src/agent_drawer.zig", "zb_agent_tools_approve", "-"): 1, ("src/agent_drawer.zig", "zb_agent_tools_deny", "-"): 1,
+    ("src/agent_drawer.zig", "zb_agent_tools_approve", "toolsApprove"): 1,
+    ("src/agent_drawer.zig", "zb_agent_tools_deny", "toolsDeny"): 1,
+    ("src/agent_drawer.zig", "zb_drawer_card_press", "-"): 2,
+    ("src/agent_drawer.zig", '"zb_drawer_card_press"', "-"): 1,
 })
 
 
 def zig_problems(files, bad):
-    """The Zig graph ({path: text}, import violations) -> the inventory's violations (empty: holds)."""
+    """The Zig graph ({repo-relative path: text}, import violations) -> the inventory's violations (empty: holds)."""
     found = list(bad)
     got = census(files)
     for key in sorted(set(got) | set(ALLOWED)):
         if got[key] != ALLOWED[key]:
             found.append(f"Z: {key} occurs {got[key]} times, want {ALLOWED[key]}")
-    by_name = {os.path.basename(f): t for f, t in files.items()}
-    tools, drawer = zig_lexical(by_name.get("agent_tools.zig", "")), zig_lexical(by_name.get("agent_drawer.zig", ""))
+    reflective = Counter()
+    for f, text in files.items():
+        code, kept = zig_lexical(text), zig_lexical(text, keep_strings=True)
+        spans = fn_spans(code)
+        for word in DYNAMIC:
+            if re.search(re.escape(word) + (r"\b" if word[0] != "@" else r"\s*\("), code):
+                found.append(f"Z: {f} uses {word} (a lookup by name)")
+        for m in re.finditer(r"@field\(", code):
+            args, end = call_args(kept, m.end())
+            if len(args) != 2 or not re.fullmatch(r'"(?:[^"\\\n]|\\.)*"', args[1].strip()):
+                reflective[(f, where(code, spans, m.start()), re.sub(r"\s+", "", kept[m.start():end]))] += 1
+        for m in re.finditer(r"@export\(", kept):
+            if not re.match(r'@export\(\s*&\w+\s*,\s*\.\{\s*\.name\s*=\s*"[A-Za-z0-9_]+"\s*\}\s*\)', kept[m.start():]):
+                found.append(f"Z: {f}: every @export names its symbol with one plain literal")
+    for key in sorted(reflective):
+        if reflective[key] > REFLECTIVE[key]:
+            found.append(f"Z: reflective @field {key} occurs {reflective[key]} times, at most {REFLECTIVE[key]} reviewed")
+    tools = zig_lexical(files.get("src/agent_tools.zig", ""))
+    drawer = files.get("src/agent_drawer.zig", "")
     for name in ("zb_agent_tools_approve", "zb_agent_tools_deny"):
         if not re.search(r"\bexport\s+fn\s+" + name + r"\s*\(", tools):
-            found.append(f"Z: {name} must be agent_tools.zig's `export fn`")
-        if not re.search(r"\bextern\s+fn\s+" + name + r"\s*\(", drawer):
-            found.append(f"Z: agent_drawer.zig must declare {name} as `extern fn`")
-    if not re.search(r'@export\(\s*&zb_drawer_card_press\s*,\s*\.\{\s*\.name\s*=\s*"zb_drawer_card_press"\s*\}\s*\)',
-                     by_name.get("agent_drawer.zig", "")):
-        found.append('Z: zb_drawer_card_press must be exported once, under exactly that name')
+            found.append(f"Z: {name} must be src/agent_tools.zig's `export fn`")
+        if not re.search(r"\bextern\s+fn\s+" + name + r"\s*\(", zig_lexical(drawer)):
+            found.append(f"Z: src/agent_drawer.zig must declare {name} as `extern fn`")
+    exports = re.findall(r'@export\(\s*&zb_drawer_card_press\s*,\s*\.\{\s*\.name\s*=\s*"([^"]*)"\s*\}\s*\)',
+                         zig_lexical(drawer, keep_strings=True))
+    if exports != ["zb_drawer_card_press"]:
+        found.append(f'Z: zb_drawer_card_press must be exported once, under exactly that name (got {exports})')
     return found
 
 
@@ -335,7 +437,7 @@ Z_FILES = {
 
 
 def z_graph(files):
-    return graph(lambda f: files.get(f))
+    return graph(lambda f: files.get(f), "src/main.zig")
 
 
 def z_mutant(path, old, new):
@@ -343,20 +445,99 @@ def z_mutant(path, old, new):
     return dict(Z_FILES, **{path: Z_FILES[path].replace(old, new)})
 
 
-Z_MUTANTS = {
-    "a planted second Zig caller": z_mutant("src/app.zig", "const tools", "extern fn zb_agent_tools_approve(card: u64) c_int;\n"
-                                            "pub fn auto() void { _ = zb_agent_tools_approve(7); }\nconst tools"),
-    "an alias of the minter": z_mutant("src/agent_drawer.zig", "fn toolsDeny", "const mint = zb_agent_tools_approve;\nfn toolsDeny"),
-    "an alias of Cards.approve": z_mutant("src/app.zig", "const tools", 'const f = @import("agent_approval.zig").Cards.approve;\nconst tools'),
-    "a second cards.approve caller": z_mutant("src/agent_tools.zig", "export fn zb_agent_tools_deny",
-                                              "export fn zb_auto(card: u64) c_int { return @intFromBool(cards.approve(card)); }\n"
-                                              "export fn zb_agent_tools_deny"),
-    "Zig calls the bridge": z_mutant("src/app.zig", "const tools", "pub fn k() void { _ = drawer.zb_drawer_card_press(1, 1, 1); }\nconst tools"),
-    "a second export of the bridge": z_mutant("src/agent_drawer.zig", "comptime {\n", 'comptime {\n    @export(&zb_drawer_card_press, .{ .name = "zb_more" });\n'),
-    "the bridge under another name": z_mutant("src/agent_drawer.zig", '.name = "zb_drawer_card_press"', '.name = "zb_press"'),
-    "an unreviewed module": z_mutant("src/app.zig", "const tools", 'const sneaky = @import("sneaky");\nconst tools'),
-    "the minter not exported": z_mutant("src/agent_tools.zig", "export fn zb_agent_tools_approve", "pub fn zb_agent_tools_approve"),
-    "an unreachable drawer": z_mutant("src/app.zig", 'const drawer = @import("agent_drawer.zig");\n', ""),
+def z_substituted():
+    files = {k: v for k, v in Z_FILES.items() if k not in ("src/agent_tools.zig", "src/agent_approval.zig")}
+    files["src/evil/agent_tools.zig"] = Z_FILES["src/agent_tools.zig"]
+    files["src/evil/agent_approval.zig"] = Z_FILES["src/agent_approval.zig"]
+    files["src/app.zig"] = Z_FILES["src/app.zig"].replace('"agent_tools.zig"', '"evil/agent_tools.zig"')
+    return files
+
+
+Z_MUTANTS = {  # name -> (graph, the reason it must fail for)
+    "a planted second Zig caller": (z_mutant("src/app.zig", "const tools", "extern fn zb_agent_tools_approve(card: u64) c_int;\n"
+                                             "pub fn auto() void { _ = zb_agent_tools_approve(7); }\nconst tools"),
+                                    "('src/app.zig', 'zb_agent_tools_approve', 'auto')"),
+    "an alias of the minter": (z_mutant("src/agent_drawer.zig", "fn toolsDeny", "const mint = zb_agent_tools_approve;\nfn toolsDeny"),
+                               "('src/agent_drawer.zig', 'zb_agent_tools_approve', '-') occurs 2"),
+    "an alias of Cards.approve": (z_mutant("src/app.zig", "const tools", 'const f = @import("agent_approval.zig").Cards.approve;\nconst tools'),
+                                  "('src/app.zig', 'approve', '-')"),
+    "a second cards.approve caller": (z_mutant("src/agent_tools.zig", "export fn zb_agent_tools_deny",
+                                               "export fn zb_auto(card: u64) c_int { return @intFromBool(cards.approve(card)); }\n"
+                                               "export fn zb_agent_tools_deny"), "('src/agent_tools.zig', 'approve', 'zb_auto')"),
+    "Zig calls the bridge": (z_mutant("src/app.zig", "const tools", "pub fn k() void { _ = drawer.zb_drawer_card_press(1, 1, 1); }\nconst tools"),
+                             "('src/app.zig', 'zb_drawer_card_press', 'k')"),
+    "a second export of the bridge": (z_mutant("src/agent_drawer.zig", "comptime {\n", 'comptime {\n    @export(&zb_drawer_card_press, .{ .name = "zb_more" });\n'),
+                                      "exported once, under exactly that name"),
+    "the bridge under another name": (z_mutant("src/agent_drawer.zig", '.name = "zb_drawer_card_press"', '.name = "zb_press"'),
+                                      "exported once, under exactly that name"),
+    "an unreviewed module": (z_mutant("src/app.zig", "const tools", 'const sneaky = @import("sneaky");\nconst tools'), "unreviewed module 'sneaky'"),
+    "the minter not exported": (z_mutant("src/agent_tools.zig", "export fn zb_agent_tools_approve", "pub fn zb_agent_tools_approve"),
+                                "must be src/agent_tools.zig's `export fn`"),
+    "an unreachable drawer": (z_mutant("src/app.zig", 'const drawer = @import("agent_drawer.zig");\n', ""),
+                              "('src/agent_drawer.zig', 'zb_drawer_card_press', '-') occurs 0"),
+    # RoseCat 8079 / 2796d94
+    "an @field caller by string": (z_mutant("src/agent_tools.zig", "export fn zb_agent_tools_deny",
+                                            'export fn zb_auto(c: u64) c_int { return @field(@This(), "zb_agent_tools_approve")(c); }\n'
+                                            "export fn zb_agent_tools_deny"), "('src/agent_tools.zig', '\"zb_agent_tools_approve\"', 'zb_auto')"),
+    "an @extern caller by string": (z_mutant("src/app.zig", "const tools",
+                                             'pub fn auto(c: u64) c_int { return @extern(*const fn (u64) callconv(.c) c_int, .{ .name = "zb_agent_tools_approve" })(c); }\n'
+                                             "const tools"), "src/app.zig uses @extern"),
+    "an @extern by a built name": (z_mutant("src/app.zig", "const tools",
+                                            'pub fn auto(c: u64) c_int { return @extern(*const fn (u64) callconv(.c) c_int, .{ .name = "zb_agent_" ++ "tools_appr" ++ "ove" })(c); }\n'
+                                            "const tools"), "src/app.zig uses @extern"),
+    "an @field by a built name": (z_mutant("src/agent_tools.zig", "export fn zb_agent_tools_deny",
+                                           'export fn zb_auto(c: u64) c_int { return @field(@This(), "zb_agent_" ++ "tools_appr" ++ "ove")(c); }\n'
+                                           "export fn zb_agent_tools_deny"), "reflective @field ('src/agent_tools.zig', 'zb_auto'"),
+    "a lookup through dlsym": (z_mutant("src/app.zig", "const tools", 'pub fn auto() ?*anyopaque { return std.c.dlsym(null, name); }\nconst tools'),
+                               "src/app.zig uses dlsym"),
+    "files substituted under src/evil/": (z_substituted(), "('src/evil/agent_tools.zig', 'zb_agent_tools_approve', '-') occurs 1 times, want 0"),
+    "an import outside the repository": (z_mutant("src/app.zig", "const tools", 'const out = @import("../../outside/agent_tools.zig");\nconst tools'),
+                                         "import outside the repository: ../outside/agent_tools.zig"),
+    "a renamed export behind a comment decoy": (z_mutant("src/agent_drawer.zig", '    @export(&zb_drawer_card_press, .{ .name = "zb_drawer_card_press" });\n',
+                                                         '    // @export(&zb_drawer_card_press, .{ .name = "zb_drawer_card_press" });\n'
+                                                         '    @export(&zb_drawer_card_press, .{ .name = "zb_press" });\n'),
+                                                "under exactly that name (got ['zb_press'])"),
+}
+
+BUILD_ZIG = '''pub fn build(b: *std.Build) void {
+    const root_module = b.createModule(.{
+        .root_source_file = b.path("src/main.zig"),
+        .imports = &.{
+            .{ .name = "build_options", .module = site_options_module },
+        },
+        .target = target,
+        .optimize = optimize,
+    });
+    configureBackend(root_module, b, backend, webview2_paths);
+
+    const exe = b.addExecutable(.{
+        .name = "zigBrowser",
+        .root_module = root_module,
+    });
+    b.installArtifact(exe);
+}
+'''
+
+
+def build_mutant(old, new):
+    assert BUILD_ZIG.count(old) == 1, old
+    return BUILD_ZIG.replace(old, new)
+
+
+ROOT_MUTANTS = {  # name -> (build.zig, the reason it must fail for)
+    "a substituted executable root": (build_mutant('b.path("src/main.zig")', 'b.path("src/evil_main.zig")'),
+                                      "root is src/evil_main.zig, want src/main.zig"),
+    "the root in a comment, another in code": (build_mutant('        .root_source_file = b.path("src/main.zig"),\n',
+                                                            '        // .root_source_file = b.path("src/main.zig"),\n'
+                                                            '        .root_source_file = b.path("src/evil_main.zig"),\n'),
+                                               "root is src/evil_main.zig"),
+    "another import on the root module": (build_mutant("    configureBackend(", '    root_module.addImport("evil", evil_module);\n    configureBackend('),
+                                          "must gain no other import"),
+    "a second executable named zigBrowser": (build_mutant("    b.installArtifact(exe);\n",
+                                                          "    b.installArtifact(exe);\n    const exe2 = b.addExecutable(.{\n"
+                                                          '        .name = "zigBrowser",\n        .root_module = other,\n    });\n'),
+                                             "want exactly one zigBrowser executable"),
+    "the executable not installed": (build_mutant("    b.installArtifact(exe);\n", ""), "must install exe once"),
 }
 
 
@@ -368,17 +549,29 @@ class CardAuthority(unittest.TestCase):
         self.assertEqual(problems(sources, files), [])
 
     def test_the_real_zig_graph_keeps_the_one_minter(self):
-        files, bad = graph(lambda f: (REPO / f).read_text() if (REPO / f).exists() else None)
+        root, bad_root = exe_root((REPO / "build.zig").read_text())
+        self.assertEqual(bad_root, [])
+        files, bad = graph(lambda f: (REPO / f).read_text() if (REPO / f).is_file() else None, root)
         self.assertGreater(len(files), 20, "the graph walk found too little of the app")
         self.assertEqual(zig_problems(files, bad), [])
+
+    def test_the_honest_build_root_passes(self):
+        self.assertEqual(exe_root(BUILD_ZIG), ("src/main.zig", []))
+
+    def test_each_dishonest_build_root_fails_for_its_reason(self):
+        for name, (text, reason) in ROOT_MUTANTS.items():
+            with self.subTest(mutant=name):
+                found = exe_root(text)[1]
+                self.assertTrue(any(reason in f for f in found), (name, found))
 
     def test_the_honest_zig_graph_passes(self):
         self.assertEqual(zig_problems(*z_graph(Z_FILES)), [])
 
-    def test_each_dishonest_zig_graph_fails(self):
-        for name, files in Z_MUTANTS.items():
+    def test_each_dishonest_zig_graph_fails_for_its_reason(self):
+        for name, (files, reason) in Z_MUTANTS.items():
             with self.subTest(mutant=name):
-                self.assertNotEqual(zig_problems(*z_graph(files)), [], name)
+                found = zig_problems(*z_graph(files))
+                self.assertTrue(any(reason in f for f in found), (name, found))
 
     def test_the_honest_fixture_passes(self):
         self.assertEqual(problems(LINK, honest()), [])
