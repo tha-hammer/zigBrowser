@@ -152,7 +152,7 @@ WS9 6, WS12 1, WS13 2, WS4/WS10/WS11 0 (W23: see D.5).
 - **C4 — order question.** WS3, WS5, WS6, WS7 (about 170 commits) were built before WS2a-c, against the order in
   "Dependency order". **Adopted default:** the next Windows work is the WS2a.0 and WS2b.1 spikes, then the WS2a port,
   then wiring the WS3 cookie port/profile (WS3.4) with their e2e; WS4 cannot start before WS2. No further WS5/WS6/WS7
-  feature work is scheduled until WS2a.1 is green, except the amendments in C14-C16 and C9. **OWNER: ratify the order (STILL PENDING; not resolved by rev 2.18).**
+  feature work is scheduled until WS2a.1 is green, except the amendments in C14-C16 and C9. **RATIFIED by the owner (2026-10-22):** this is the decided sequence — the WS2a.0 and WS2b.1 spikes, then the WS2a port, then WS3.4 wiring; WS4 not before WS2; no new WS5/WS6/WS7 feature work until WS2a.1 is green. (Freeze zigBrowser-4pa.1 still holds — nothing is built yet.)
 
 ### D. Cross-cutting rules added by the review   [C2, C12, C14, C18, W8, W9, W6, W16, W23]
 
