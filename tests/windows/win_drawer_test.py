@@ -117,6 +117,23 @@ def check_mounted_fail(r, which):
     assert f"agent-drawer {which} control failed" in (r.get("stderr") or ""), f"the {which}-failure diagnostic must be present in stderr; got {r.get('stderr')!r}"
 
 
+def check_assign_fail(r):
+    """Forced AssignProcessToJobObject failure (RoseCat fd17cba/7662): the suspended process is outside the
+    job, so it must be terminated by its HELD handle and PROVEN gone — never a pid/name kill, no orphan."""
+    assert r.get("launch_failed"), f"a forced assign failure must report launch_failed; got {r!r}"
+    assert r.get("proc_gone"), "the held (unassigned, suspended) process must be proven terminated (proc_gone)"
+    assert "AssignProcessToJobObject" in (r.get("error") or ""), f"the assign-failure error must be surfaced; got {r.get('error')!r}"
+    rows = [row for row in (parse_drawer(ln) for ln in r.get("stdout", "").splitlines()) if row]
+    assert rows == [], f"a process killed before resume must emit NO DRAWER rows; got {rows}"
+
+
+def check_wait_fail(r):
+    """Forced teardown WaitForSingleObject != WAIT_OBJECT_0 (RoseCat fd17cba/7662 #2): must be a test FAILURE,
+    never a silent bounded success."""
+    assert not r.get("terminated"), "a non-WAIT_OBJECT_0 teardown must NOT count as terminated"
+    assert "WAIT_OBJECT_0" in (r.get("error") or ""), f"the wait failure must be surfaced as an error; got {r.get('error')!r}"
+
+
 # VM-side runner (RoseCat 29e8852): create the browser SUSPENDED, assign it to a Job we OWN
 # (KILL_ON_JOB_CLOSE) and CHECK the assignment, then resume — so every descendant (incl. msedgewebview2.exe)
 # is born inside the job and cannot escape. Teardown closes/terminates the job, which kills the whole tree;
@@ -126,7 +143,9 @@ def check_mounted_fail(r, which):
 _RUNNER = r"""
 $ErrorActionPreference='Stop'
 $dir = $args[0]
-$failMode = $args[1]   # '', 'panel' or 'icon' — drives the e2e control-factory failure seam
+$failMode = $args[1]    # '', 'panel' or 'icon' — drives the PRODUCTION control-factory failure seam
+$forceMode = $args[2]   # '', 'assign_fail' or 'wait_fail' — drives the HARNESS job-lifecycle failure seam
+if ($forceMode) { $env:ZB_E2E_DRAWER_FORCE = $forceMode }  # read by [Z]::ForceFail at first use
 $exe = Join-Path $dir 'zigBrowser.exe'
 $out = Join-Path $dir 'o.txt'; $err = Join-Path $dir 'e.txt'; $nul = 'NUL'
 Remove-Item $out,$err -ErrorAction SilentlyContinue
@@ -188,13 +207,18 @@ public static class Z {
     if (h == new IntPtr(-1)) Fail("CreateFile NUL"); return h;
   }
   public static IntPtr Job; static IntPtr _hProc, _hThread; public static int Pid; public static bool ProcGone;
-  // Terminate the exact held process handle (never a pid) and wait for it to exit; record that it is gone.
-  static void KillHeld() {
-    if (_hProc == IntPtr.Zero) { ProcGone = true; return; }
-    TerminateProcess(_hProc, 1);
+  // Terminate the exact held process handle (never a pid) and PROVE it exited: TerminateProcess must succeed,
+  // WaitForSingleObject must signal WAIT_OBJECT_0, and the exit code must not be STILL_ACTIVE. The handle is
+  // closed/cleared ONLY when exit is proven; on an unproven stop the handle is RETAINED (a cleanup route) and
+  // ProcGone stays false so the caller/oracle treats it as a failure. Returns ProcGone.
+  static bool KillHeld() {
+    if (_hProc == IntPtr.Zero) { ProcGone = true; return true; }
+    bool term = TerminateProcess(_hProc, 1);
     uint w = WaitForSingleObject(_hProc, 8000);
-    uint code; ProcGone = (w == WAIT_OBJECT_0) && GetExitCodeProcess(_hProc, out code) && code != STILL_ACTIVE;
-    CloseHandle(_hThread); CloseHandle(_hProc); _hThread = IntPtr.Zero; _hProc = IntPtr.Zero;
+    uint code = STILL_ACTIVE; bool got = GetExitCodeProcess(_hProc, out code);
+    ProcGone = term && (w == WAIT_OBJECT_0) && got && code != STILL_ACTIVE;
+    if (ProcGone) { CloseHandle(_hThread); CloseHandle(_hProc); _hThread = IntPtr.Zero; _hProc = IntPtr.Zero; }
+    return ProcGone;
   }
   // Create the job (KILL_ON_JOB_CLOSE), the suspended process with inherited std handles, assign it to the
   // job (CHECKED) BEFORE it runs, then resume. On any post-create failure the HELD handle is terminated +
@@ -213,14 +237,18 @@ public static class Z {
     var ta = new SECURITY_ATTRIBUTES(); ta.nLength = Marshal.SizeOf(typeof(SECURITY_ATTRIBUTES));
     PROCESS_INFORMATION pi;
     bool ok = CreateProcess(exe, cmdline, ref pa, ref ta, true, CREATE_SUSPENDED, IntPtr.Zero, cwd, ref si, out pi);
-    if (!CloseHandle(hOut) || !CloseHandle(hErr) || !CloseHandle(hIn)) Fail("CloseHandle(std)");
+    // Store the process handles IMMEDIATELY (before reacting to any std-handle close failure), so KillHeld can
+    // always reach the created suspended process. On CreateProcess failure there is no process to store.
+    if (ok) { _hProc = pi.hProcess; _hThread = pi.hThread; Pid = pi.dwProcessId; }
+    // Close all three inherited std handles (no short-circuit: close each, then react).
+    bool cOut = CloseHandle(hOut), cErr = CloseHandle(hErr), cIn = CloseHandle(hIn);
     if (!ok) Fail("CreateProcess");
-    _hProc = pi.hProcess; _hThread = pi.hThread; Pid = pi.dwProcessId;
+    if (!cOut || !cErr || !cIn) { KillHeld(); Fail("CloseHandle(std) (held process terminated; gone=" + ProcGone + ")"); }
     // Forced assignment failure (e2e seam): the suspended process is outside the job; it MUST be terminated
-    // by the held handle, not leaked. Proven by ProcGone.
+    // by the held handle (never a pid) and PROVEN gone (ProcGone).
     bool assigned = (ForceFail == "assign_fail") ? false : AssignProcessToJobObject(Job, pi.hProcess);
     if (!assigned) { KillHeld(); throw new Exception("AssignProcessToJobObject failed (held process terminated; gone=" + ProcGone + ")"); }
-    if (ResumeThread(pi.hThread) == 0xFFFFFFFF) { KillHeld(); Fail("ResumeThread"); }
+    if (ResumeThread(pi.hThread) == 0xFFFFFFFF) { KillHeld(); Fail("ResumeThread (held process terminated; gone=" + ProcGone + ")"); }
   }
   // Number of processes currently owned by the job (the owned-tree census; not a machine-wide name count).
   public static int JobProcessCount() {
@@ -334,9 +362,10 @@ class WinDrawerLive(unittest.TestCase):
                 "-o", "ConnectionAttempts=3", "-P", self.port, local, f"{self.user}@{self.host}:{remote}"]
         return subprocess.run(self._scrub(*base), capture_output=True, text=True, timeout=120).returncode
 
-    def _run_drawer(self, fail_mode="", body=None):
-        """Stage + run run.ps1 (optionally with the control-factory failure seam `fail_mode`), parse the JSON
-        result, invoke `body(r)`, and always tear down this run's unique root fail-closed."""
+    def _run_drawer(self, fail_mode="", force_mode="", body=None):
+        """Stage + run run.ps1 (optionally with the production control-factory seam `fail_mode` and/or the
+        harness job-lifecycle seam `force_mode`), parse the JSON result, invoke `body(r)`, and always tear
+        down this run's unique root fail-closed."""
         rel = f"zb/drawer-{os.getpid()}-{secrets.token_hex(4)}"
         base_win = f"%USERPROFILE%\\{rel}".replace("/", "\\")
         self.assertEqual(self._ssh("cmd", "/c", f"mkdir {base_win}").returncode, 0)
@@ -354,8 +383,10 @@ class WinDrawerLive(unittest.TestCase):
                 self.assertEqual(self._scp(local, f"{rel}/{name}"), 0, f"scp {name}")
             args = ["powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
                     "-File", f"{base_win}\\run.ps1", base_win]
-            if fail_mode:
-                args.append(fail_mode)
+            if fail_mode or force_mode:
+                args.append(fail_mode)          # positional $args[1]
+            if force_mode:
+                args.append(force_mode)         # positional $args[2]
             run = self._ssh(*args)
             self.assertEqual(run.returncode, 0, f"runner failed: {run.stdout}\n{run.stderr}")
             r = json.loads(run.stdout.strip().splitlines()[-1])
@@ -398,6 +429,15 @@ class WinDrawerLive(unittest.TestCase):
 
     def test_icon_create_failure_leaves_no_drawer(self):
         self._run_drawer(fail_mode="icon", body=lambda r: check_mounted_fail(r, "icon"))
+
+    def test_assign_failure_terminates_held_process(self):
+        # RoseCat fd17cba/7662: forcing AssignProcessToJobObject to fail must terminate the held (suspended)
+        # process by its handle — proven gone (no pid/name kill, no orphan).
+        self._run_drawer(force_mode="assign_fail", body=check_assign_fail)
+
+    def test_wait_failure_is_reported(self):
+        # A teardown that does not reach WAIT_OBJECT_0 must FAIL (never a silent bounded success).
+        self._run_drawer(force_mode="wait_fail", body=check_wait_fail)
 
 
 class WinDrawerOracle(unittest.TestCase):
@@ -490,6 +530,28 @@ class WinDrawerOracle(unittest.TestCase):
         r = self._good_fail("panel"); r["terminated"] = False
         with self.assertRaises(AssertionError):
             check_mounted_fail(r, "panel")
+
+    # --- forced job-lifecycle failure oracles (check_assign_fail / check_wait_fail) ---
+    def test_assign_fail_good_passes(self):
+        check_assign_fail({"launch_failed": True, "proc_gone": True,
+                           "error": "AssignProcessToJobObject failed (held process terminated; gone=True)", "stdout": ""})
+
+    def test_assign_fail_orphan_survivor_rejected(self):
+        with self.assertRaises(AssertionError):
+            check_assign_fail({"launch_failed": True, "proc_gone": False,
+                               "error": "AssignProcessToJobObject failed (held process terminated; gone=False)", "stdout": ""})
+
+    def test_assign_fail_rows_emitted_rejected(self):
+        with self.assertRaises(AssertionError):
+            check_assign_fail({"launch_failed": True, "proc_gone": True,
+                               "error": "AssignProcessToJobObject failed", "stdout": "DRAWER\t1\topen\t0,437,1008,292\n"})
+
+    def test_wait_fail_good_passes(self):
+        check_wait_fail({"terminated": False, "error": "WaitForSingleObject on the browser did not signal WAIT_OBJECT_0: 258"})
+
+    def test_wait_fail_silent_success_rejected(self):
+        with self.assertRaises(AssertionError):
+            check_wait_fail({"terminated": True, "error": ""})
 
 
 if __name__ == "__main__":
