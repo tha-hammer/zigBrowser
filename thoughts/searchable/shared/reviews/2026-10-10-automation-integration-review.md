@@ -29152,3 +29152,34 @@ prior `6e9f989` verdict:
 A listener which starts but misses the READY assertion also has no recorded
 pid/identity for final census. Agent Mail 7616 sent these blockers to
 AzureRidge. The file remains DISCOVERY-ONLY and must not be run.
+
+## WS5 native Win32 drawer-entry red follow-up (`203e7e7`)
+
+**BLOCKED-for-tests.** The Win11-only scope now matches OD-W4, row parsing is
+stricter, and the reported live run usefully establishes that the current
+Windows binary launches but has no drawer. A display-scrubbed hostless run
+also skipped cleanly. Four defects prevent this from gating the green:
+
+1. `_ssh(..., env=...)` constructs a `pre` command containing the two drawer
+   environment variables but never executes it. The demo/open seams do not
+   reach the runner, so a correct backend would still time out waiting for
+   `open`.
+2. The process starts running before assignment to the Job and may spawn
+   descendants which escape it. Creation, limit configuration, assignment
+   and termination return values are all ignored. The runner must create the
+   browser suspended, configure/assign it to a valid Job, check every result,
+   then resume it.
+3. The postflight census counts only the top-level `zigBrowser` process name;
+   it does not prove the WebView2 descendants owned by the Job are gone, and
+   its before count is unused. Query pinned Job membership/accounting and
+   require no active member after teardown; surface remote-directory cleanup
+   failure too.
+4. The asserted structural row is any comma-separated token list, rows need
+   not share one window id, and `FindWindow` may select another process's
+   host. A row-only stub can still print plausible geometry for an ordinary
+   client rect. Tie the HWND to the launched pid, require one protocol window,
+   and independently census the expected native control tree and rectangles.
+
+The exact red should also prove the open seam is production-inert without
+`--e2e-protocol` and report the claimed row-only/overlay mutant results.
+Agent Mail 7619 sent these findings to AzureRidge.
