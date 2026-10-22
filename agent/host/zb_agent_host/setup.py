@@ -36,7 +36,7 @@ import threading
 import time
 from pathlib import Path
 
-from . import hook_run, options, parent_watch, proc_darwin, relay, sandbox, sandbox_macos, token
+from . import hook_run, options, owned_group, parent_watch, proc_darwin, relay, sandbox, sandbox_macos, token
 from . import provision as runtime_provision
 from .files import atomic_write, remove_tree, write_all
 
@@ -755,6 +755,11 @@ def setup_sandbox(scratch, ro_paths, command):
     return argv + ["--bind", str(scratch), str(scratch), "--chdir", str(scratch), "--", *map(str, command)]
 
 
+# Setup's Darwin sandboxed runs go through this named seam (RoseCat 7418): an owned process group, stopped and its
+# leader reaped before _sandboxed's cleanup, so nothing the run started (the probe's CLI) outlives its bound.
+run_in_owned_group = owned_group.run
+
+
 def _sandboxed(ro_paths, command, timeout, env=None, listener=None, census=None):
     """Runs `command` in setup_sandbox with a fresh throwaway home; (stdout, ok). `listener` (macOS R1 only): the
     127.0.0.1 listener setup bound outside the sandbox; the command gets it as `--listen-fd/--listen-port` through
@@ -763,6 +768,7 @@ def _sandboxed(ro_paths, command, timeout, env=None, listener=None, census=None)
     # write grant (SCRATCHPAD), HOME and TMPDIR must name the path writes actually resolve to (e7b7370, both Macs).
     scratch = Path(os.path.realpath(tempfile.mkdtemp(prefix="zb-setup-run-")))
     run_env = {"PATH": "/usr/bin:/bin", "HOME": str(scratch), "LANG": "C.UTF-8", **(env or {})}
+    stop_failed = False
     try:
         if PLATFORM == "darwin":
             # Seatbelt lets the run write only its SCRATCHPAD (this scratch): its temporary files go there too, or
@@ -776,17 +782,25 @@ def _sandboxed(ro_paths, command, timeout, env=None, listener=None, census=None)
                 pass_fds = (*pass_fds, census.fileno())
                 command = [*command, "--census-fd", str(census.fileno())]
             with _darwin_sandbox(scratch, ro_paths, command, port) as argv:
-                done = subprocess.run(argv, capture_output=True, text=True, timeout=timeout, env=run_env,
-                                      pass_fds=pass_fds)
+                done = run_in_owned_group(argv, env=run_env, pass_fds=pass_fds, timeout=timeout)
         else:
             done = subprocess.run(setup_sandbox(scratch, ro_paths, command), capture_output=True, text=True,
                                   timeout=timeout, env=run_env)
         return done.stdout, done.returncode == 0
+    except owned_group.StopFailed:
+        # Its group could not be proven stopped: something it started may still be using the scratch, so it is left
+        # where it is, never cleaned up around a live process (RoseCat 7436). The line is fixed text plus the root
+        # this made: never the exception, argv, output or anything the run named (RoseCat 7444).
+        stop_failed = True
+        print(f"zigBrowser: agent-setup: a sandboxed run could not be proven stopped; its scratch is left at {scratch}",
+              file=sys.stderr)
+        return "", False
     except (OSError, subprocess.SubprocessError):
         return "", False
     finally:
-        for problem in remove_tree(scratch):
-            print(f"zigBrowser: agent-setup: could not remove {problem}", file=sys.stderr)
+        if not stop_failed:
+            for problem in remove_tree(scratch):
+                print(f"zigBrowser: agent-setup: could not remove {problem}", file=sys.stderr)
 
 
 def cli_version(cli):

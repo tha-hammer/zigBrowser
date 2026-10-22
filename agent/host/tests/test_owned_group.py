@@ -15,8 +15,9 @@ Behaviour, with real processes:
 - after run() returns, its leader is reaped (it is no longer this process's child);
 - a descendant that closed the pipes and outlives a leader that exited 0: run() returns the result and the
   descendant is not alive (the group is stopped on success too);
-- a descendant that ESCAPES the group (its own new session, RoseCat 7438) and holds the pipes: run() ends at its bound
-  and the escaped descendant is not alive either;
+- a descendant that ESCAPES the group (its own new session, RoseCat 7438) and holds the pipes: run() fails closed
+  within its bound (RoseCat 7443): StopFailed, the group stopped and its leader reaped, and the escapee NOT signalled
+  (holding our pipe is not proof it is ours), so it is still alive and ends itself;
 Stop failures (RoseCat 7436), each within a bound and explicit, never an unbounded wait or a claimed cleanup; these are
 signal-interposed (killpg refuses, os.kill fails the test) and so run without the namespace (RoseCat 7439):
 - a guarded, valid owned group whose killpg is refused (EPERM): stop_group raises StopFailed within 2 s;
@@ -24,7 +25,8 @@ signal-interposed (killpg refuses, os.kill fails the test) and so run without th
 It signals real processes, so it runs ONLY inside a PID namespace that pidns_guard proves, through the kernel, to be
 below the launcher's held one (RoseCat 7433); it skips anywhere else. Every stand-in ends itself within 20 s.
 Run: cd agent/host/tests && sh -c 'exec 9</proc/self/ns/pid; exec unshare --user --map-root-user --pid --fork \\
-  --mount-proc env ZB_OUTER_PIDNS_FD=9 python -X dev -m unittest -v test_owned_group'.
+  --mount-proc sh -c "\\"\\$@\\"; :" sh env ZB_OUTER_PIDNS_FD=9 python -X dev -m unittest -v test_owned_group'
+(a shell stays pid 1, so orphans are never adopted by the test process itself, as in production).
 Unregistered until the green.
 """
 import os
@@ -81,6 +83,11 @@ class Refusals(Base):
         mock.patch.object(os, "kill", side_effect=record).start()
         mock.patch.object(os, "killpg", side_effect=record).start()
 
+    @staticmethod
+    def parent_of(pid):
+        with open(f"/proc/{pid}/stat") as f:
+            return int(f.read().rsplit(")", 1)[1].split()[1])
+
     def assert_refused(self, proc, why):
         with self.assertRaises(owned_group.Refused, msg=why):
             owned_group.stop_group(proc)
@@ -100,13 +107,14 @@ class Refusals(Base):
         child = subprocess.Popen(_py("import subprocess, sys, time\n"
                                      "g = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(3)'],"
                                      " start_new_session=True)\n"
-                                     f"import os; os.write({w}, str(g.pid).encode()); time.sleep(3)"),
+                                     f"import os; os.write({w}, str(g.pid).encode() + b'\\n'); time.sleep(3)"),
                                  pass_fds=(w,))
         os.close(w)
         self.addCleanup(child.wait)
         with os.fdopen(r) as f:
-            grandchild = int(f.read(16))
+            grandchild = int(f.readline())  # one line, while the child still lives: never wait for its exit
         self.assertTrue(_alive(grandchild))
+        self.assertEqual(self.parent_of(grandchild), child.pid, "the grandchild is the child's, not ours")
         self.assert_refused(types.SimpleNamespace(pid=grandchild), "a grandchild that leads its own group")
 
     def test_our_child_that_does_not_lead_its_own_group_is_refused(self):
@@ -115,10 +123,8 @@ class Refusals(Base):
         self.assert_refused(child, "a child in our own group")
 
 
-class Behaviour(Base):
-    def test_a_quick_command_returns_its_code_and_output(self):
-        done = owned_group.run(_py("print('ok'); import sys; sys.exit(3)"), env=None, pass_fds=(), timeout=10)
-        self.assertEqual((done.returncode, done.stdout.strip()), (3, "ok"))
+class Bounded(Base):
+    """Shared real-process helpers; no tests of its own (RoseCat 7443's NIT: nothing runs twice)."""
 
     def bounded(self, leader_code):
         d = os.path.join(support.TEST_TMP, f"owned-{os.getpid()}-{time.monotonic_ns()}")
@@ -144,6 +150,13 @@ class Behaviour(Base):
              + ")' % DIR])\n"
              "while not os.path.exists(os.path.join(DIR, 'descendant')): time.sleep(0.05)\n")
 
+
+
+class Behaviour(Bounded):
+    def test_a_quick_command_returns_its_code_and_output(self):
+        done = owned_group.run(_py("print('ok'); import sys; sys.exit(3)"), env=None, pass_fds=(), timeout=10)
+        self.assertEqual((done.returncode, done.stdout.strip()), (3, "ok"))
+
     def test_a_hanging_leader_and_its_descendant_end_at_the_bound(self):
         self.bounded(self.SPAWN + f"time.sleep({LIFETIME_S})\n")
 
@@ -151,7 +164,7 @@ class Behaviour(Base):
         self.bounded(self.SPAWN + "sys.exit(0)\n")
 
 
-class EscapedDescendant(Behaviour):
+class EscapedDescendant(Bounded):
     ESCAPE = ("import os, subprocess, sys, time\n"
               "open(os.path.join(DIR, 'leader'), 'w').write(str(os.getpid()))\n"
               "d = subprocess.Popen([sys.executable, '-c', 'import os, time; "
@@ -159,11 +172,28 @@ class EscapedDescendant(Behaviour):
               + ")' % DIR], start_new_session=True)\n"
               "while not os.path.exists(os.path.join(DIR, 'descendant')): time.sleep(0.05)\n")
 
-    def test_a_descendant_in_its_own_session_holding_the_pipes_is_gone_at_the_bound(self):
-        self.bounded(self.ESCAPE + f"time.sleep({LIFETIME_S})\n")
+    def fails_closed(self, leader_code):
+        d = os.path.join(support.TEST_TMP, f"owned-esc-{os.getpid()}-{time.monotonic_ns()}")
+        os.makedirs(d)
+        started = time.monotonic()
+        with self.assertRaises(owned_group.StopFailed):
+            owned_group.run(_py(leader_code.replace("DIR", repr(d))), env=None, pass_fds=(), timeout=2)
+        took = time.monotonic() - started
+        with open(os.path.join(d, "leader")) as f:
+            leader = int(f.read())
+        with open(os.path.join(d, "descendant")) as f:
+            escapee = int(f.read())
+        self.assertLess(took, 2 + GRACE_S, f"run waited for the escapee ({took:.1f} s)")
+        self.assertFalse(_alive(leader), "the leader outlived the group stop")
+        with self.assertRaises(ChildProcessError, msg="the leader was left unreaped"):
+            os.waitpid(leader, os.WNOHANG)
+        self.assertTrue(_alive(escapee), "the escapee was signalled: holding our pipe is not proof it is ours")
 
-    def test_it_is_gone_too_when_the_leader_has_exited(self):
-        self.bounded(self.ESCAPE + "sys.exit(0)\n")
+    def test_a_descendant_in_its_own_session_holding_the_pipes_fails_closed(self):
+        self.fails_closed(self.ESCAPE + f"time.sleep({LIFETIME_S})\n")
+
+    def test_it_fails_closed_too_when_the_leader_has_exited(self):
+        self.fails_closed(self.ESCAPE + "sys.exit(0)\n")
 
 
 class SuccessStopsTheGroup(Base):

@@ -123,7 +123,7 @@ class Base(unittest.TestCase):
                     rec["reply"] = reply
             return setup.subprocess.CompletedProcess(argv, 0, stdout=json.dumps({"r1": verdict}) + "\n", stderr="")
 
-        mock.patch.object(setup.subprocess, "run", side_effect=run).start()
+        support.fake_setup_runs(setup, side_effect=run).start()
 
     def census_threads(self):
         return [t for t in threading.enumerate() if "census" in t.name]

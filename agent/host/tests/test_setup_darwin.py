@@ -101,7 +101,7 @@ class SetupSandbox(unittest.TestCase):
             self.fail("setup.PLATFORM (the injected platform) is missing (rev 14 item 6)")
         self.addCleanup(mock.patch.stopall)
         self.spawned = []
-        mock.patch.object(setup.subprocess, "run", side_effect=lambda *a, **k: self.spawned.append(a)).start()
+        support.fake_setup_runs(setup, side_effect=lambda *a, **k: self.spawned.append(a)).start()
 
     def test_darwin_without_the_seatbelt_seam_refuses_and_spawns_nothing(self):
         mock.patch.object(setup, "PLATFORM", "darwin").start()
@@ -122,7 +122,7 @@ class SetupSandbox(unittest.TestCase):
                         profile_existed=os.path.isfile(argv[2]), profile_text=Path(argv[2]).read_text())
             return setup.subprocess.CompletedProcess(argv, 0, stdout="2.1.294 (Claude Code)\n", stderr="")
 
-        mock.patch.object(setup.subprocess, "run", side_effect=fake_run).start()
+        support.fake_setup_runs(setup, side_effect=fake_run).start()
         self.assertEqual(setup.cli_version("/opt/claude"), "2.1.294")
         argv, scratch, profile = seen["argv"], seen["scratch"], seen["profile"]
         self.assertEqual(argv[:2], ["/usr/bin/sandbox-exec", "-f"])
@@ -145,7 +145,7 @@ class SetupSandbox(unittest.TestCase):
             seen.update(profile=argv[2], scratch=kwargs["env"]["HOME"], existed=os.path.isfile(argv[2]))
             raise setup.subprocess.TimeoutExpired(argv, kwargs["timeout"])
 
-        mock.patch.object(setup.subprocess, "run", side_effect=fake_run).start()
+        support.fake_setup_runs(setup, side_effect=fake_run).start()
         self.assertEqual(setup._sandboxed(["/ro"], ["/opt/claude", "--version"], timeout=1), ("", False))
         self.assertTrue(seen["existed"], "the profile existed while the command ran")
         self.assertFalse(os.path.exists(seen["profile"]), "the timed-out run's profile is deleted")

@@ -113,7 +113,7 @@ class TokenFreeReport(Base):
             open(os.path.join(kwargs["env"]["HOME"], TOKEN), "w").close()
             return setup.subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
 
-        mock.patch.object(setup.subprocess, "run", side_effect=run).start()
+        support.fake_setup_runs(setup, side_effect=run).start()
         real_unlink = os.unlink
 
         def stuck(p, *a, **kw):

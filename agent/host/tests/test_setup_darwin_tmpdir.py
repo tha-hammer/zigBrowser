@@ -38,7 +38,7 @@ class Envs(r1.Base):
             envs.append(env)
             return real(argv, **kwargs)
 
-        mock.patch.object(setup.subprocess, "run", side_effect=run).start()
+        support.fake_setup_runs(setup, side_effect=run).start()
         return envs
 
 
@@ -81,7 +81,7 @@ class Darwin(Envs):
 
     def test_cli_version_runs_with_tmpdir_in_its_writable_scratch(self):
         self.fake_seam()
-        mock.patch.object(setup.subprocess, "run",
+        support.fake_setup_runs(setup,
                           return_value=setup.subprocess.CompletedProcess([], 0, stdout="2.1.0 (Claude Code)\n",
                                                                          stderr="")).start()
         envs = self.record_envs()
@@ -97,7 +97,7 @@ class Linux(Envs):
         mock.patch.object(setup, "PLATFORM", "linux").start()
 
     def test_linux_runs_get_no_tmpdir_from_setup(self):
-        mock.patch.object(setup.subprocess, "run",
+        support.fake_setup_runs(setup,
                           return_value=setup.subprocess.CompletedProcess([], 0, stdout="2.1.0 (Claude Code)\n",
                                                                          stderr="")).start()
         envs = self.record_envs()

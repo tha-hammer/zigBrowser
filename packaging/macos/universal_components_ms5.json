@@ -92,6 +92,10 @@
     },
     {
       "role": "agent-host-package",
+      "path": "Frameworks/agent-host/zb_agent_host/owned_group.py"
+    },
+    {
+      "role": "agent-host-package",
       "path": "Frameworks/agent-host/zb_agent_host/parent_watch.py"
     },
     {

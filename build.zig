@@ -1987,6 +1987,27 @@ pub fn build(b: *std.Build) void {
         "py=$(tools/agent_host_env.sh --check) || exit 1; cd agent/host/tests && out=$(env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 ZB_AGENT_HOST_PYTHON=\"$py\" \"$py\" -X dev -m unittest -v test_scratch_cleanup_fd 2>&1); rc=$?; printf '%s\\n' \"$out\"; [ $rc -eq 0 ] || exit $rc; if printf '%s\\n' \"$out\" | grep -q ResourceWarning; then echo 'test_scratch_cleanup_fd: ResourceWarning' >&2; exit 1; fi",
     });
     agent_setup_ms5_step.dependOn(&agent_host_scratch_cleanup_fd.step);
+    // Setup's sandboxed runs as an owned process group (RoseCat 7418-7444): kill-safety refusals, bounded stops with a
+    // group-gone proof, a fail-closed escapee, and the whole tree ended at setup's bound. Real signals: ONLY through the
+    // held-fd launcher pidns_guard proves (RoseCat 7433), a shell kept as pid 1; a skipped row fails the step.
+    const agent_host_owned_group = b.addSystemCommand(&.{
+        "sh",
+        "-c",
+        "py=$(tools/agent_host_env.sh --check) || exit 1; cd agent/host/tests && out=$(sh -c 'exec 9</proc/self/ns/pid; exec unshare --user --map-root-user --pid --fork --mount-proc sh -c \"\\\"\\$@\\\"; :\" sh env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 ZB_AGENT_HOST_PYTHON=\"$1\" ZB_OUTER_PIDNS_FD=9 \"$1\" -X dev -m unittest -v test_owned_group' sh \"$py\" 2>&1); rc=$?; printf '%s\\n' \"$out\"; [ $rc -eq 0 ] || exit $rc; if printf '%s\\n' \"$out\" | grep -q ResourceWarning; then echo 'test_owned_group: ResourceWarning' >&2; exit 1; fi; if printf '%s\\n' \"$out\" | grep -q 'skipped'; then echo 'test_owned_group: real-signal rows skipped: not armed' >&2; exit 1; fi",
+    });
+    agent_setup_ms5_step.dependOn(&agent_host_owned_group.step);
+    const agent_host_setup_sandbox_lifetime = b.addSystemCommand(&.{
+        "sh",
+        "-c",
+        "py=$(tools/agent_host_env.sh --check) || exit 1; cd agent/host/tests && out=$(sh -c 'exec 9</proc/self/ns/pid; exec unshare --user --map-root-user --pid --fork --mount-proc sh -c \"\\\"\\$@\\\"; :\" sh env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 ZB_AGENT_HOST_PYTHON=\"$1\" ZB_OUTER_PIDNS_FD=9 \"$1\" -X dev -m unittest -v test_setup_sandbox_lifetime' sh \"$py\" 2>&1); rc=$?; printf '%s\\n' \"$out\"; [ $rc -eq 0 ] || exit $rc; if printf '%s\\n' \"$out\" | grep -q ResourceWarning; then echo 'test_setup_sandbox_lifetime: ResourceWarning' >&2; exit 1; fi; if printf '%s\\n' \"$out\" | grep -q 'skipped'; then echo 'test_setup_sandbox_lifetime: real-signal rows skipped: not armed' >&2; exit 1; fi",
+    });
+    agent_setup_ms5_step.dependOn(&agent_host_setup_sandbox_lifetime.step);
+    const agent_host_pidns_guard = b.addSystemCommand(&.{
+        "sh",
+        "-c",
+        "py=$(tools/agent_host_env.sh --check) || exit 1; cd agent/host/tests && out=$(env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 ZB_AGENT_HOST_PYTHON=\"$py\" \"$py\" -X dev -m unittest -v test_pidns_guard 2>&1); rc=$?; printf '%s\\n' \"$out\"; [ $rc -eq 0 ] || exit $rc; if printf '%s\\n' \"$out\" | grep -q ResourceWarning; then echo 'test_pidns_guard: ResourceWarning' >&2; exit 1; fi",
+    });
+    agent_setup_ms5_step.dependOn(&agent_host_pidns_guard.step);
     // R1's census broker (RoseCat 7019; BlueBeaver 7021): setup runs the Darwin process census outside Seatbelt, the
     // probe asks over a socketpair (--census-fd). The kernel-properties half is tests/mac/ms6_r1_kernel_gate.sh (plan
     // MS6.6 (A)); the Mac production chain is MS6.6 (B).
@@ -2945,6 +2966,9 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&agent_host_setup_darwin_tmpdir.step);
     test_step.dependOn(&agent_host_scratch_cleanup.step);
     test_step.dependOn(&agent_host_scratch_cleanup_fd.step);
+    test_step.dependOn(&agent_host_owned_group.step);
+    test_step.dependOn(&agent_host_setup_sandbox_lifetime.step);
+    test_step.dependOn(&agent_host_pidns_guard.step);
     test_step.dependOn(&agent_host_route_probe_census.step);
     test_step.dependOn(&agent_host_setup_census.step);
     test_step.dependOn(&agent_host_setup_darwin_r1_v6.step);

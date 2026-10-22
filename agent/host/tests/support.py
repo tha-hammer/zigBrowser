@@ -394,3 +394,17 @@ def files_containing(root, needle):
             except OSError:
                 continue
     return hits
+
+
+class fake_setup_runs:
+    """Fakes BOTH of setup's run seams with one side effect (or return value): subprocess.run (its Linux bwrap runs)
+    and setup.run_in_owned_group (its Darwin sandboxed runs, an owned process group; RoseCat 7418). .start() as a
+    mock patcher; mock.patch.stopall() stops it."""
+
+    def __init__(self, setup, **kwargs):
+        from unittest import mock
+        self._patches = [mock.patch.object(setup.subprocess, "run", **kwargs),
+                         mock.patch.object(setup, "run_in_owned_group", **kwargs)]
+
+    def start(self):
+        return [p.start() for p in self._patches]

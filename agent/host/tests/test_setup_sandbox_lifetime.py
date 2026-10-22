@@ -13,10 +13,11 @@ outlive the bound by far (each also ends itself after 20 s, so a leak is bounded
   _sandboxed reports no success and LEAVES the scratch rather than cleaning up around a possibly live process
   (RoseCat 7436); its one stderr line is exactly a fixed reason plus the real scratch root, with no descendant name,
   argv or exception text (RoseCat 7444).
-It sends signals, so it runs ONLY inside a private PID namespace proven by pidns_guard (the launcher passes its
-outer namespace inode in ZB_OUTER_PIDNS) and skips anywhere else.
-Run: cd agent/host/tests && outer=$(readlink /proc/self/ns/pid) && unshare --user --map-root-user --pid --fork \\
-  --mount-proc sh -c "setsid env ZB_OUTER_PIDNS=$outer python -X dev -m unittest -v test_setup_sandbox_lifetime".
+It sends signals, so it runs ONLY inside a PID namespace that pidns_guard proves, through the kernel, to be below the
+launcher's held one (ZB_OUTER_PIDNS_FD; RoseCat 7433), and skips anywhere else.
+Run: cd agent/host/tests && sh -c 'exec 9</proc/self/ns/pid; exec unshare --user --map-root-user --pid --fork \\
+  --mount-proc sh -c "\\"\\$@\\"; :" sh env ZB_OUTER_PIDNS_FD=9 python -X dev -m unittest -v \\
+  test_setup_sandbox_lifetime' (a shell stays pid 1, as in production).
 Unregistered until the green.
 """
 import contextlib

@@ -109,7 +109,7 @@ class Base(unittest.TestCase):
                 raise setup.subprocess.TimeoutExpired(argv, kwargs.get("timeout"))
             return setup.subprocess.CompletedProcess(argv, 0, stdout=json.dumps({"r1": True}) + "\n", stderr="")
 
-        mock.patch.object(setup.subprocess, "run", side_effect=run).start()
+        support.fake_setup_runs(setup, side_effect=run).start()
 
 
 class Darwin(Base):
@@ -234,7 +234,7 @@ class DarwinRealSeam(Base):
 
         real_run()
         run = setup.subprocess.run.side_effect
-        mock.patch.object(setup.subprocess, "run", side_effect=capture).start()
+        support.fake_setup_runs(setup, side_effect=capture).start()
 
     def outbound(self, profile):
         return re.findall(r"\(allow network-outbound[^\n]*", profile)

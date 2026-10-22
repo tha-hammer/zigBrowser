@@ -186,7 +186,7 @@ class SetupRuns(Base):
             os.chmod(full, 0o300)
             return setup.subprocess.CompletedProcess(argv, 0, stdout="2.1.0 (Claude Code)\n", stderr="")
 
-        mock.patch.object(setup.subprocess, "run", side_effect=run).start()
+        support.fake_setup_runs(setup, side_effect=run).start()
 
     def test_a_sandboxed_run_leaves_no_scratch_behind(self):
         setup.cli_version(r1.CLI)

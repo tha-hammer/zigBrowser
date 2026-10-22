@@ -89,7 +89,7 @@ class V6Reservation(Base):
                          bind_errno(socket.AF_INET6, ("::1", port), reuse=True)))
             return inner(argv, **kwargs)
 
-        mock.patch.object(setup.subprocess, "run", side_effect=run).start()
+        support.fake_setup_runs(setup, side_effect=run).start()
         self.assertIs(setup.probe_r1(WRAPPER, CLI), True)
         ((port, plain, reuse),) = held
         self.assertEqual(shapes, [{"name": ("::1", port), "type": socket.SOCK_STREAM, "v6only": 1, "acceptconn": 0,

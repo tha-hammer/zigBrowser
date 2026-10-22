@@ -3,7 +3,8 @@
 
 The launcher opens its own PID namespace as an inherited fd BEFORE unshare and names that fd in ZB_OUTER_PIDNS_FD:
   sh -c 'exec 9</proc/self/ns/pid; exec unshare --user --map-root-user --pid --fork --mount-proc \\
-    env ZB_OUTER_PIDNS_FD=9 python -m unittest ...'
+    sh -c "\\"\\$@\\"; :" sh env ZB_OUTER_PIDNS_FD=9 python -m unittest ...'
+(a shell stays pid 1, so orphans are adopted by it, never by the test process: as in production)
 The guard arms only when all hold:
 - the fd is a PID namespace (ioctl NS_GET_NSTYPE == CLONE_NEWPID);
 - it is not this process's own PID namespace (st_dev/st_ino differ);
