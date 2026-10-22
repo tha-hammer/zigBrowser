@@ -279,7 +279,7 @@ function Decode-Mode($v, $allowed) {
   if ($allowed -notcontains $v) { throw "unknown/blank seam mode '$v' (allowed: none, $($allowed -join ', '))" }
   return $v
 }
-$failMode = Decode-Mode $args[1] @('panel','icon')
+$failMode = Decode-Mode $args[1] @('panel','icon','bubble')
 $forceMode = Decode-Mode $args[2] @('assign_fail','assign_firststop_fail','cleanup_exhaust','wait_fail')
 if ($forceMode) { $env:ZB_E2E_DRAWER_FORCE = $forceMode }  # read by [Z]::ForceFail at first use
 $exe = Join-Path $dir 'zigBrowser.exe'
@@ -1242,6 +1242,17 @@ class WinDrawerOracle(unittest.TestCase):
         # option a: the runner records job_count_after via the fail-closed SETTLED read, not a single instant read.
         self.assertIn("JobProcessCountSettled", _RUNNER)
         self.assertNotIn("$res.job_count_after = [Z]::JobProcessCount()", _RUNNER)
+
+    def test_runner_seam_allowlists_match_the_python_modes(self):
+        # The runner's PowerShell Decode-Mode allowlists MUST list every FAIL_MODES / FORCE_MODES value (minus
+        # the empty 'none'); a drift (e.g. adding a shim+Python fail mode but not the runner's list) silently
+        # reds a VM row as "unknown/blank seam mode". Pin both lists so the drift reds OFFLINE instead.
+        for m in FAIL_MODES:
+            if m:
+                self.assertIn(f"'{m}'", _RUNNER, f"runner Decode-Mode fail allowlist is missing {m!r}")
+        for m in FORCE_MODES:
+            if m:
+                self.assertIn(f"'{m}'", _RUNNER, f"runner Decode-Mode force allowlist is missing {m!r}")
 
     # --- fail-closed settled owned-job count oracles (orchestrator option a) ---
     def _run_settled(self, counts, deadline_s=0.4, poll_s=0.1):
