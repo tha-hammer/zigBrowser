@@ -2359,6 +2359,12 @@ pub fn build(b: *std.Build) void {
     });
     // MS6.3 follow-up: contract-config without a usable fd-3 token writes one fixed error frame and exits 2 (no
     // traceback, nothing after the read). Pinned interpreter; its runs live in an our-uid PID namespace.
+    // MS6.3: the CLI's per-uid temp dir lives in the scratchpad (CLAUDE_CODE_TMPDIR = TMPDIR; 24f8d49 both Macs).
+    const agent_host_cli_env_tmpdir = b.addSystemCommand(&.{
+        "sh",
+        "-c",
+        "py=$(tools/agent_host_env.sh --check) || exit 1; cd agent/host/tests && out=$(env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 ZB_AGENT_HOST_PYTHON=\"$py\" unshare --map-current-user --pid --fork --kill-child --mount-proc sh -c '\"$0\" -X dev -m unittest -v test_cli_env_tmpdir; exit $?' \"$py\" 2>&1); rc=$?; printf '%s\\n' \"$out\"; [ $rc -eq 0 ] || exit $rc; if printf '%s\\n' \"$out\" | grep -q ResourceWarning; then echo 'test_cli_env_tmpdir: ResourceWarning' >&2; exit 1; fi",
+    });
     const agent_host_contract_no_token = b.addSystemCommand(&.{
         "sh",
         "-c",
@@ -2591,6 +2597,13 @@ pub fn build(b: *std.Build) void {
         "-c",
         "cd tests/e2e && out=$(env -i HOME=\"$HOME\" PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 unshare --map-current-user --pid --fork --kill-child --mount-proc sh -c 'setsid -w python3 -X dev -m unittest -v test_gate_step_wrappers; exit $?' 2>&1); rc=$?; printf '%s\\n' \"$out\"; [ $rc -eq 0 ] || exit $rc; if printf '%s\\n' \"$out\" | grep -q ResourceWarning; then echo 'test_gate_step_wrappers: ResourceWarning' >&2; exit 1; fi",
     });
+    // zigBrowser-44h: stop_browser returns only after the xsession guardian removed the private display. The test
+    // makes and cleans X locks, so it runs ONLY in a private tmpfs /tmp (RoseCat 7681) and a private PID namespace.
+    const xsession_teardown_unit = b.addSystemCommand(&.{
+        "sh",
+        "-c",
+        "cd tests/e2e && out=$(env -i HOME=\"$HOME\" PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 sh -c 'exec 7</tmp; exec unshare --map-current-user --keep-caps --mount --pid --fork --kill-child --mount-proc sh -c \"mount --rbind /tmp /mnt && mount -t tmpfs -o mode=1777 tmpfs /tmp && mkdir -m 1777 /tmp/.X11-unix || exit 99; case \\$PWD in /tmp/*) cd \\\"/mnt\\${PWD#/tmp}\\\" || exit 98;; esac; ZB_OUTER_TMP_FD=7 setsid -w python3 -X dev -m unittest -v test_xsession_teardown; rc=\\$?; left=\\$(find /tmp -mindepth 1 ! -path /tmp/.X11-unix; ls -A /tmp/.X11-unix); [ -z \\\"\\$left\\\" ] || { echo \\\"private /tmp not empty: \\$left\\\"; exit 1; }; exit \\$rc\"' 2>&1); rc=$?; printf '%s\\n' \"$out\"; [ $rc -eq 0 ] || exit $rc; if printf '%s\\n' \"$out\" | grep -q ResourceWarning; then echo 'test_xsession_teardown: ResourceWarning' >&2; exit 1; fi",
+    });
     const xinput_errors_xvfb = b.addSystemCommand(&.{
         "sh",
         "-c",
@@ -2717,6 +2730,14 @@ pub fn build(b: *std.Build) void {
         "cd tests/e2e && out=$(env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 unshare --user --map-root-user --pid --fork --mount-proc sh -c 'setsid python3 -X dev -m unittest -v ms6_hard_gate_fd3_cli_realpath_test' 2>&1); rc=$?; printf '%s\\n' \"$out\"; [ $rc -eq 0 ] || exit $rc; if printf '%s\\n' \"$out\" | grep -q ResourceWarning; then echo 'ms6_hard_gate_fd3_cli_realpath_test: ResourceWarning' >&2; exit 1; fi",
     });
     mac_census_step.dependOn(&ms6_hard_gate_fd3_cli_realpath_unit.step);
+    // The fd3 case leaves its scratch removable: every token-fifo dir it left is 0700 again (bcbc989, e2c20a7;
+    // 24f8d49 left /tmp/zb-hardgate-run-* on both Macs). Our uid without capabilities (a 0300 dir is unlistable).
+    const ms6_hard_gate_fd3_cli_cleanup_unit = b.addSystemCommand(&.{
+        "sh",
+        "-c",
+        "cd tests/e2e && out=$(env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 unshare --map-current-user --pid --fork --kill-child --mount-proc sh -c 'setsid -w python3 -X dev -m unittest -v ms6_hard_gate_fd3_cli_cleanup_test; exit $?' 2>&1); rc=$?; printf '%s\\n' \"$out\"; [ $rc -eq 0 ] || exit $rc; if printf '%s\\n' \"$out\" | grep -q ResourceWarning; then echo 'ms6_hard_gate_fd3_cli_cleanup_test: ResourceWarning' >&2; exit 1; fi",
+    });
+    mac_census_step.dependOn(&ms6_hard_gate_fd3_cli_cleanup_unit.step);
     // The R1 case names which owned-group stop proof failed, as a fixed code only (e567a51 Macs). Fakes only.
     const ms6_hard_gate_r1_reason_unit = b.addSystemCommand(&.{
         "sh",
@@ -2834,6 +2855,19 @@ pub fn build(b: *std.Build) void {
     });
     // Chat drawer S6 (rev 16.18.1/16.18.2): the sign-in's network is its own
     // backend capability, launch spec and published runtime/net-login.json.
+    // The sign-in CLI's TMPDIR and CLAUDE_CODE_TMPDIR are the scratchpad's tmp (4f326ee; RoseCat 0c476b8).
+    const agent_host_login_cli_tmpdir = b.addSystemCommand(&.{
+        "sh",
+        "-c",
+        "py=$(tools/agent_host_env.sh --check) || exit 1; cd agent/host/tests && out=$(env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 ZB_AGENT_HOST_PYTHON=\"$py\" unshare --map-current-user --pid --fork --kill-child --mount-proc sh -c '\"$0\" -X dev -m unittest -v test_login_cli_tmpdir; exit $?' \"$py\" 2>&1); rc=$?; printf '%s\\n' \"$out\"; [ $rc -eq 0 ] || exit $rc; if printf '%s\\n' \"$out\" | grep -q ResourceWarning; then echo 'test_login_cli_tmpdir: ResourceWarning' >&2; exit 1; fi",
+    });
+    // The sign-in reaches its temp dirs through a checked chain from / and rechecks them right before the
+    // launch; nothing is repaired (cd992e9, aec8fc5, 6c249f4; RoseCat 7739-7774). Popen is a recorder.
+    const agent_host_login_scratch_tmp = b.addSystemCommand(&.{
+        "sh",
+        "-c",
+        "py=$(tools/agent_host_env.sh --check) || exit 1; cd agent/host/tests && out=$(env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 ZB_AGENT_HOST_PYTHON=\"$py\" unshare --map-current-user --pid --fork --kill-child --mount-proc sh -c '\"$0\" -X dev -m unittest -v test_login_scratch_tmp; exit $?' \"$py\" 2>&1); rc=$?; printf '%s\\n' \"$out\"; [ $rc -eq 0 ] || exit $rc; if printf '%s\\n' \"$out\" | grep -q ResourceWarning; then echo 'test_login_scratch_tmp: ResourceWarning' >&2; exit 1; fi",
+    });
     const agent_host_login_network = b.addSystemCommand(&.{
         "sh",
         "-c",
@@ -3181,6 +3215,7 @@ pub fn build(b: *std.Build) void {
     if (target.result.os.tag == .linux) test_step.dependOn(&ms6_hard_gate_r1_case_unit.step);
     if (target.result.os.tag == .linux) test_step.dependOn(&ms6_hard_gate_fd3_cli_case_unit.step);
     if (target.result.os.tag == .linux) test_step.dependOn(&ms6_hard_gate_fd3_cli_realpath_unit.step);
+    if (target.result.os.tag == .linux) test_step.dependOn(&ms6_hard_gate_fd3_cli_cleanup_unit.step);
     if (target.result.os.tag == .linux) test_step.dependOn(&ms6_hard_gate_r1_reason_unit.step);
     if (target.result.os.tag == .linux) test_step.dependOn(&ms6_hard_gate_r1_reason_modes_unit.step);
     if (target.result.os.tag == .linux) test_step.dependOn(&ms6_hard_gate_entry_unit.step);
@@ -3366,6 +3401,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&agent_host_redact.step);
     test_step.dependOn(&agent_host_chat_redact.step);
     test_step.dependOn(&agent_host_contract_no_token.step);
+    test_step.dependOn(&agent_host_cli_env_tmpdir.step);
     test_step.dependOn(&agent_host_bridge.step);
     test_step.dependOn(&agent_host_netd.step);
     test_step.dependOn(&agent_host_netd_darwin.step);
@@ -3375,6 +3411,8 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&agent_host_netd_login.step);
     test_step.dependOn(&agent_host_netd_census.step);
     test_step.dependOn(&agent_host_login_network.step);
+    test_step.dependOn(&agent_host_login_cli_tmpdir.step);
+    test_step.dependOn(&agent_host_login_scratch_tmp.step);
     test_step.dependOn(&agent_host_relay_ports.step);
     test_step.dependOn(&agent_host_hook_net.step);
     test_step.dependOn(&agent_setup_e2e.step);
@@ -3386,6 +3424,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&real_screen_input_xvfb.step);
     test_step.dependOn(&real_screen_longrun_xvfb.step);
     test_step.dependOn(&xinput_errors_xvfb.step);
+    test_step.dependOn(&xsession_teardown_unit.step);
     test_step.dependOn(&xinput_vanished_server.step);
     test_step.dependOn(&run_step_unit.step);
     test_step.dependOn(&gate_step_wrappers_unit.step);
