@@ -1800,6 +1800,15 @@ pub fn build(b: *std.Build) void {
         "agent-tools-acceptance2-e2e",
     });
     agent_tools_acceptance2_e2e.addArtifactArg(exe);
+    // S7b follow-ups (RoseCat 6843 on 83c9d96): the tool deadline seam reaches the broker's H, a bad
+    // value refuses the agent, and without --e2e-protocol it is inert.
+    const agent_tool_deadline_e2e = b.addSystemCommand(&.{
+        "sh",
+        "-c",
+        "python3 tests/e2e/agent_tool_deadline_test.py --binary \"$1\"",
+        "agent-tool-deadline-e2e",
+    });
+    agent_tool_deadline_e2e.addArtifactArg(exe);
     // Chat drawer S5b (S5.4): one session per window, transcripts in the agent's own home.
     const agent_window_sessions_e2e = b.addSystemCommand(&.{
         "sh",
@@ -2979,6 +2988,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&agent_socket_separation_e2e.step);
     test_step.dependOn(&agent_tools_acceptance_e2e.step);
     test_step.dependOn(&agent_tools_acceptance2_e2e.step);
+    test_step.dependOn(&agent_tool_deadline_e2e.step);
     test_step.dependOn(&agent_window_sessions_e2e.step);
     test_step.dependOn(&agent_flood_e2e.step);
     test_step.dependOn(&agent_cap_e2e.step);
