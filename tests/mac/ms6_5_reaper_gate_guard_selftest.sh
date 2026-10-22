@@ -50,9 +50,9 @@ run() { # run <label> [VAR=value ...]: runs the real script; sets rc, out, calls
   rm -f "$T/ctl/calls" "$T/ctl"/stdin.*
   out=$(cd "$T/repo" && env -i PATH="$T/bin:/usr/bin:/bin" HOME="$T/home" TMPDIR="$T/tmp" \
           ZB_MAC_ARM_HOST=arm@stub.invalid ZB_MAC_HOST=intel@stub.invalid ZB_MAC_LEG_TIMEOUT=5 "$@" \
-          bash tests/mac/ms6_5_reaper_gate.sh 2>&1)
+          timeout 60 bash tests/mac/ms6_5_reaper_gate.sh 2>&1 </dev/null)
   rc=$?
-  calls=$(wc -l < "$T/ctl/calls" 2>/dev/null || echo 0)
+  calls=0; [ -f "$T/ctl/calls" ] && calls=$(wc -l < "$T/ctl/calls")
   printf -- '--- %s: rc=%s calls=%s\n%s\n' "$label" "$rc" "$calls" "$out" | sed 's/^/     /'
 }
 refused() { # refused <label>: exit 1, the DISABLED line, zero ssh/scp calls

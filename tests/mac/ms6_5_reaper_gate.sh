@@ -7,7 +7,11 @@
 # marker re-checked immediately before the signal) keeps a wrong pid away from a real signal; the driver cleans
 # up every process it starts. Per-run ~/zb-reaper-<nonce>, deleted on exit; nothing installed. BatchMode, strict
 # host keys, no askpass; the arm64 host is required (no default).
-# usage: tests/mac/ms6_5_reaper_gate.sh [commit]   (default: the working tree)
+# DISABLED BY DEFAULT (plan R29-SAFETY, bd zigBrowser-4pa.70): it stages one exact commit and refuses before any
+# ssh unless ZB_REAPER_DESTRUCTIVE_APPROVED equals that commit AND the orchestrator's release token
+# $HOME/.ntm/zb-release/reaper-gate-<commit> exists and holds it. Hostless selftest:
+# tests/mac/ms6_5_reaper_gate_guard_selftest.sh (zig build test-mac-reaper-gate-guard).
+# usage: tests/mac/ms6_5_reaper_gate.sh [commit]   (default: HEAD; never the working tree)
 set -euo pipefail
 
 KEY="${ZB_MAC_KEY:-/home/maceo/vms/mac-m9/zb_mac_key}"
@@ -18,6 +22,13 @@ LEG_TIMEOUT="${ZB_MAC_LEG_TIMEOUT:-240}"
 export SSH_ASKPASS_REQUIRE=never
 
 cd "$(git rev-parse --show-toplevel)"
+disabled() { echo "DISABLED: destructive reaper gate ($1)" >&2; exit 1; }
+commit=$(git rev-parse --verify --quiet "${1:-HEAD}^{commit}") || disabled "no such commit: ${1:-HEAD}"
+[ "${ZB_REAPER_DESTRUCTIVE_APPROVED:-}" = "$commit" ] \
+  || disabled "ZB_REAPER_DESTRUCTIVE_APPROVED is not the staged commit $commit"
+release="$HOME/.ntm/zb-release/reaper-gate-$commit"
+{ [ -f "$release" ] && [ "$(head -n 1 "$release")" = "$commit" ]; } \
+  || disabled "no orchestrator release token for $commit at $release"
 if [ -z "$ARM_HOST" ]; then
   echo "NOT RUN: arm64 host not configured (set ZB_MAC_ARM_HOST=user@host)" >&2
   exit 1
@@ -26,7 +37,7 @@ stage=$(mktemp -d "${TMPDIR:-/tmp}/zb-reaper-XXXXXX")
 # Validated cleanup (RoseCat 7186): only our own mktemp dirs, by find -delete, never an unguarded rm -rf.
 trap 'case "$stage" in "${TMPDIR:-/tmp}"/zb-reaper-??????) find "${stage:?}" -delete;; esac' EXIT
 for f in src/agent_run_reaper.c src/agent_run_reaper.h tests/mac/ms6_5_reaper_test.c; do
-  if [ -n "${1:-}" ]; then git show "$1:$f" > "${stage:?}/$(basename "$f")"; else cp "$f" "${stage:?}/"; fi
+  git show "$commit:$f" > "${stage:?}/$(basename "$f")"
 done
 
 leg() { # $1=host $2=expected uname -m $3=key
