@@ -33002,3 +33002,63 @@ change is allowed. Acceptance requires the existing load-serial PASS, all five
 MS4.4 rows (`closed`, `through-the-port`, `open`, `live`, final gate) on both
 architectures, the final `ms4-gate both-arches` row, and before/after censuses
 showing no surviving zigBrowser/WebKit process or `zb-ms44-*` temporary tree.
+
+## Win32 drawer bubble diagnostic after the `361935b` run
+
+**One diagnostic launch is AUTHORIZED; `1e5ff2d` remains unaccepted.** The
+exact reviewed MSVC artifact from clean `361935b` reached 5/8 entry rows, then
+the native-mount row found no controls; both endpoint owned-process/run-dir
+censuses were zero. A single offline launch may now distinguish RichEdit
+unavailability from a construction bug: exact artifact SHA-256
+`0fc0cb66a78686857d0df690d92c52b0935077ba98833e33b543b30b48647028`,
+`about:blank`, `--agent-drawer on --e2e-protocol --media-source off`, and a
+fresh unique profile/root below `C:\\Users\\zbtext\\zb`. Capture stderr only
+until the fixed drawer diagnostic/error code appears or a short deadline
+expires, then close the exact born-suspended owned Job and handles. No input,
+socket mutation, network, account, credential, install, elevation, WSL/Win10,
+pid/name kill or second run is authorized. Report exact argv, outcome,
+diagnostic and zero before/after owned-process and run-dir deltas.
+
+## MS4.4 Darwin `killpg`-EPERM fix (`473b1c8`)
+
+**BLOCKED; do not rerun the Mac gate.** Printing and flushing each scenario row
+before teardown, giving teardown its own FAIL row and withholding the final
+PASS until teardown succeeds are correct. The ordinary registered cleanup
+suite also passes **6/6** inside a private PID namespace. The EPERM acceptance,
+however, is unsafe and its positive test is non-causal: the wrapper sends the
+real group signal first and only then injects EPERM, so the grandchild is
+already dead before production's swallow rule is exercised.
+
+Production accepts an unsent EPERM merely because the leader exited. In an
+exact `473b1c8` export inside a private PID namespace, the reviewer intercepted
+SIGTERM to end only the owned leader and returned an unsent EPERM for the later
+group SIGKILL. `stop()` returned the leader's `-15` status while the stand-in
+grandchild remained live. Thus leader exit does not prove group exit.
+
+Before accepting Darwin EPERM, require an independent, bounded, fail-closed
+process-table census proving there is no live member of that exact pgid,
+matching the already-reviewed owned-group rule. Keep the leader unreaped so
+the pgid cannot be reused while deciding; on Python without `waitid`, use a
+kqueue/NOTE_EXIT-style unreaped observation or equivalent rather than
+`Popen.poll()`. Timeout, unreadable/malformed census or any live member must
+preserve the refusal. Add the causal unsent-EPERM/live-descendant row. No Mac
+rerun is released by this commit.
+
+## MS6.5.1 next-slice sequencing after `cf1778e`
+
+**Build the Darwin actuator first; keep it unregistered, unarmed and
+unreachable.** Its final typed interface and failure surface must exist before
+the `reaper_ready` gate and startup call site can be reviewed honestly. The
+slice must wrap the existing reviewed engine rather than implement a second
+recovery algorithm, retain the held-fd/pinned-identity capability, use the
+same absolute deadline through every pre-signal boundary, and make incomplete
+libproc scans, unreadable identity, EPERM and any survivor non-Clean. Every
+Linux signal is intercepted; Darwin evidence is compile or census-only. No
+real Mac kill is authorized.
+
+After that actuator passes review, make the gate/call site a separate red-first
+slice: immutable `reaper_ready` default false, no reachable production action
+while false, explicit startup order and failure reporting, and causal proof
+that adding only the gate or only the caller cannot signal. Flipping the gate,
+registering the destructive test and running a real-kill two-Mac manifest all
+remain later explicit review/release decisions.
