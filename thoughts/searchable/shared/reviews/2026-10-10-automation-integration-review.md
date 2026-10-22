@@ -27335,3 +27335,20 @@ unregistered until its production green.
 
 This later approved red cannot advance the linear push boundary across the
 earlier blocked `3c3e354`/`085b4f2` range; the boundary remains `bac895b`.
+
+## macOS kqueue no-wait exit-check red (`eee7089`)
+
+**APPROVED as a failing-first red.** The test isolates the Python 3.12/macOS
+fallback by hiding `os.waitid` and replacing `select.kqueue` with a pure fake;
+it starts no process and calls no signal primitive. It pins the missing
+semantic precisely: registering `NOTE_EXIT` is not enough — even with an
+already-expired deadline, `_await_unreaped` must make exactly the immediate,
+zero-timeout poll needed to observe an event that is already pending. A
+running leader remains false without blocking, and `ESRCH` at registration
+remains exited.
+
+From an exact clean `git archive eee7089` export, run under a private user/PID
+namespace with the pinned agent-host Python, the test was causally red exactly
+as claimed: **4 tests, 2 failures, exit 1**. The pending-exit and elapsed-
+deadline rows failed; the running-leader and registration-`ESRCH` controls
+passed. The file is correctly unregistered until its production green.
