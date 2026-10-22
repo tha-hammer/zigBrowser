@@ -28248,3 +28248,34 @@ clean.
 
 Do not add the case to the reviewed hard-gate manifest or run it on either Mac
 until this endpoint oracle is fixed forward and its new digest is reviewed.
+
+## MS6.5.1 unreadable-liveness fix (`6093f59`, `16cff86`)
+
+**`6093f59` APPROVED as the scoped classifier red. `16cff86`
+BLOCKED-for-tests as the claimed closure of `d3b31cb` item 2.** The production
+repair itself is correct and closes items 1 and 4:
+
+- `src/agent_run_ledger.zig:247-317` now opens `/proc/<pid>/stat` once, treats
+  only `ENOENT`/`ESRCH` as proved absence, and maps every other open/read/empty/
+  parse failure to `.unreadable`; `recoveryFor(.unreadable)` fails closed.
+- `tests/agent_run_ledger_recovery_test.zig:38-47` installs its child-release/
+  reap defer before any liveness assertion, so an early failure cannot strand
+  the forked owner.
+- Reviewer clean-export execution inside a private user/PID namespace passed
+  **7/7 steps and 2/2 tests** for the registered recovery and unreadable suites.
+
+The new test does not yet drive the production classification of open/read/
+parse failures, despite claiming it does. It passes an already-classified
+`StartRead.unreadable` directly to `livenessFromRead`; its malformed-stat rows
+only assert that `parseStartTicks` returns null. A reviewer mutation changing
+the real `readStart` parse-failure branch from `.unreadable` to `.absent`
+leaves both registered suites **green: 7/7 steps, 2/2 tests**. Equivalent
+mutations remain possible for non-absence open errors, read errors and empty/
+truncated reads.
+
+Add an injectable read boundary (or pure lower-level outcome classifier) whose
+registered rows carry each open/read/empty/parse failure through `readStart`
+to `probeLiveness`/`recoveryFor`, and require no recovery for each. The full
+production-shaped two-instance recovery transaction from `d3b31cb` item 3 is
+also still open, as JadeBeacon already notes. Thus `afe3920` is not yet
+cumulatively closed.
