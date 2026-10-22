@@ -2127,12 +2127,15 @@ Windows↔distro boundary through **ONE trusted outer broker in the distro HOST 
 dials into (a PROPOSED direction, unproven: one reverse attempt failed without proving listener readiness; direction + direct-dial denial remain proposals pending reviewed live evidence). The broker's host-netns control
 listener is bound `127.0.0.1:<ephemeral>` (never `0.0.0.0`, never published) and — because co-tenant distros
 share that host netns (observed in the discovery spike) — carries the **C1 per-session token + nonce/HMAC +
-constant-time compare** before any byte, with a squatted port failing closed. The **hooks do NOT listen**:
-each runs in its own private netns and receives a **handed socket endpoint** (inherited fd / bind-mounted
-`AF_UNIX`) from the broker, which multiplexes it over the held Windows connection (see the "C5 reverse relay"
-detail below for the exact namespace composition, framing and acceptance reds). The `zb-agent` control and
-`zb-hook` bridge endpoints are distinct capabilities; the Anthropic OAuth token never crosses any bridge (C1
-separation); per-run teardown (C4) closes the held connection and every handed endpoint.
+constant-time compare** before any byte, with a squatted port failing closed. **The hook keeps its existing
+TCP contract** (`127.0.0.1:51091`/`:31337`): the broker hands a **per-hook capability** into each hook's
+private netns and an **inner per-hook relay** binds those loopback ports there and forwards over the
+capability (preserving `hook_run.py`/`relay.py`; no hook API changes), and the broker multiplexes it over the
+held Windows connection (see the "C5 reverse relay" detail below for the exact namespace composition, inner
+relay, framing and acceptance reds). The `zb-agent` control and `zb-hook` bridge capabilities are distinct;
+the Windows relay forwards only to the fixed app-owned `127.0.0.1:51091`/`:31337`, never an agent-supplied
+address; the Anthropic OAuth token never crosses any bridge (C1 separation); per-run teardown (C4) closes the
+held connection and every handed capability.
 
 ### Egress mapping (WSL2 realization, per OD-W4)
 1. **netd runs inside the distro** (Unix-socket or loopback as on Linux), confined by its own bwrap; the
@@ -2170,26 +2173,34 @@ in **different** namespaces, and must not be conflated:
   by a co-tenant, so the token auth is mandatory and a squatted `<control port>` fails closed** (the broker
   verifies it owns the port before "ready", and a session uses an ephemeral control port handed to Windows
   via C1, not a fixed one).
-- **Per-hook endpoint handoff (NOT a 127.0.0.1 listener in the hook's netns):** each hook runs in its OWN
-  private network namespace (`bwrap --unshare-net`), so it has no route to the host-netns broker and the
-  broker cannot "appear at `127.0.0.1:51091/31337`" inside it. Instead the broker **pre-creates a
-  socketpair per hook and passes one end as an inherited fd into the hook's namespace at bwrap spawn** (or
-  bind-mounts a per-hook `AF_UNIX` socket into the hook's mount namespace). The hook's TTS/notify (`51091`)
-  and control (`31337`) clients are pointed at that handed endpoint — no network listener exists in the hook
-  netns at all. The broker multiplexes each hook endpoint onto the held Windows connection as a stream.
+- **Per-hook endpoint handoff + an INNER per-hook relay that preserves the existing hook TCP contract
+  (RoseCat 7594):** each hook runs in its OWN private network namespace (`bwrap --unshare-net`), so it has no
+  route to the host-netns broker and the broker cannot "appear at `127.0.0.1:51091/31337`" inside it. The
+  existing Linux contract already runs a **per-hook relay inside that hook's private netns** that binds
+  loopback `127.0.0.1:51091` + `127.0.0.1:31337` and forwards to the bridge sockets (`hook_run.py:138-147`,
+  `relay.py:4-8`; drawer plan §3c.8b) — and **every hook API must keep that TCP contract unchanged** (hooks
+  are NOT re-pointed at a raw fd). So the topology is: the outer host-netns broker hands a **per-hook
+  capability** into the private netns (an inherited fd / bind-mounted `AF_UNIX` socketpair), and the **inner
+  per-hook relay binds only loopback `51091`/`31337` there and forwards over that capability** to the broker,
+  which multiplexes it onto the held Windows connection. The hook keeps connecting to `127.0.0.1:51091/31337`
+  exactly as today; only the relay's upstream changes.
 - **Framing/backpressure/cancellation:** length-prefixed frames carry `(stream_id, op, bytes)`; each stream
   has an independent receive window (backpressure); either side sends `RST(stream_id)` to cancel; the broker
   bounds concurrent streams and frame size and drops oversize/pre-auth frames.
-- **Windows relay side** forwards each stream to the real `51091`/`31337` service and relays the reply; it
-  never forwards to any other port. The `zb-agent` control stream and the `zb-hook` bridge streams are
+- **Windows relay side** forwards each stream to the **exact app-owned Windows loopback `127.0.0.1:51091` /
+  `127.0.0.1:31337` services** — a fixed destination the relay owns, **never an agent-supplied address/port**;
+  it never forwards anywhere else. The `zb-agent` control stream and the `zb-hook` bridge streams are
   **distinct capabilities** (distinct handed endpoints); a hook stream can reach only the two bridge ports,
   never the agent control op.
 - **Lifetime:** the tunnel is bound to the session; teardown (C4) closes the held Windows connection, which
   resets every open stream and closes every handed hook endpoint.
-- **Acceptance reds (later, implementation-approved revision):** a co-tenant distro and a `zbother` process
-  against the host-netns control port must fail auth; a squatted control port must fail closed; a hook must
-  reach ONLY its handed bridge endpoints and never the agent-control op or any other host/LAN address; and
-  the namespace boundary (hook private netns ↔ host-netns broker) must be driven exactly, not assumed.
+- **Acceptance reds (later, implementation-approved revision):** the existing **bytes-through-both-ports
+  positives** — a hook connecting to `127.0.0.1:51091` and to `127.0.0.1:31337` carries bytes end to end
+  through the inner relay → capability → broker → Windows services — plus the **no-API / no-other-port
+  negatives**: no hook API changes; a hook reaches ONLY those two loopback ports (never the agent-control op,
+  never any other host/LAN address, never the Windows relay's destination directly); a co-tenant distro and a
+  `zbother` process against the host-netns control port fail auth; a squatted control port fails closed; and
+  the namespace boundary (hook private netns ↔ host-netns broker) is driven exactly, not assumed.
 
 ### Files / Green / Gate (WSL2 WS9)
 
