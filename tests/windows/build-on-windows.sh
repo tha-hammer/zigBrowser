@@ -151,10 +151,15 @@ rc_arch=${PIPESTATUS[0]} rc_stage=${PIPESTATUS[1]}
 [ "$rc_stage" -eq 0 ] || { echo "build-on-windows: stage failed (rc=$rc_stage)" >&2; exit "$rc_stage"; }
 
 # ---- build: a base64 -EncodedCommand; values embedded as PowerShell single-quoted literals (no injection) -
+# bd zigBrowser-ong.11: both Zig caches stay under %USERPROFILE%\zb (writes are confined to zb\): the global
+# cache in zb\zig-global-cache (shared by runs), the local cache inside this run's own folder. Without them
+# Zig writes its global cache to %LOCALAPPDATA%\zig.
 psq() { printf "%s" "$1" | sed "s/'/''/g"; }   # PowerShell single-quote escaping
 build_ps=$(cat <<PS
 \$ErrorActionPreference = 'Stop'
 Set-Location -LiteralPath (Join-Path \$env:USERPROFILE '$remote_rundir')
+\$env:ZIG_GLOBAL_CACHE_DIR = Join-Path \$env:USERPROFILE 'zb\zig-global-cache'
+\$env:ZIG_LOCAL_CACHE_DIR = Join-Path \$env:USERPROFILE '$remote_rundir\.zig-cache'
 & '$(psq "$zig")' build $step '-Dtarget=x86_64-windows-msvc' '-Doptimize=$mode' '-Dwebview2_include=$(psq "$inc")' '-Dwebview2_lib=$(psq "$lib")' '-Dwinrt_include=$(psq "$winrt")'
 exit \$LASTEXITCODE
 PS

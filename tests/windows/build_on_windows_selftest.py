@@ -21,6 +21,7 @@ import base64
 import fcntl
 import os
 import pathlib
+import re
 import shutil
 import subprocess
 import tempfile
@@ -746,6 +747,79 @@ class StagePrepGatesBuild(_Case):
             self.assertNotIn("-EncodedCommand", ssh_log,
                              "the build (EncodedCommand ssh) must not run after a staging-prep failure:\n" + ssh_log)
             self.assertFalse(proc.out_path.exists(), "a staging-prep failure must publish no artifact")
+
+
+# bd zigBrowser-ong.11 (red efd02a0): both Zig caches stay under %USERPROFILE%\zb. Decodes the exact
+# -EncodedCommand the real script sends and resolves each cache assignment against USERPROFILE.
+USERPROFILE = "C:\\Users\\zbtext"
+ZB_ROOT = USERPROFILE + "\\zb\\"
+# `$env:NAME = Join-Path $env:USERPROFILE '<relative>'` — the one accepted form.
+ASSIGN = re.compile(r"^\s*\$env:(ZIG_GLOBAL_CACHE_DIR|ZIG_LOCAL_CACHE_DIR)\s*=\s*(.+?)\s*$")
+JOIN = re.compile(r"^Join-Path\s+\$env:USERPROFILE\s+'([^']*)'$")
+
+
+def resolve(expr):
+    """The value an assignment's right-hand side gives under USERPROFILE, or None if not the accepted form."""
+    m = JOIN.match(expr)
+    if not m:
+        return None
+    rel = m.group(1)
+    if not rel or "$" in rel or "%" in rel or rel.startswith("\\") or re.match(r"^[A-Za-z]:", rel):
+        return None
+    parts = [p for p in rel.replace("/", "\\").split("\\") if p]
+    if any(p in (".", "..") for p in parts):
+        return None
+    return USERPROFILE + "\\" + "\\".join(parts)
+
+
+class ZigCachesStayUnderZb(_Case):
+    def _build_command(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            td = pathlib.Path(tmp)
+            proc = self._run(td)
+            self.assertEqual(proc.returncode, 0, f"the faked build must succeed: {proc.stderr}")
+            cmd = self._decoded_build(td)
+        self.assertTrue(cmd, "no -EncodedCommand build call was recorded")
+        return cmd
+
+    def test_both_zig_caches_are_set_under_zb_before_zig_build(self):
+        lines = self._build_command().splitlines()
+        build_at = next((i for i, ln in enumerate(lines) if re.search(r"zig[^']*'\)?\s+build\b|zig\.exe'\s+build", ln)), None)
+        self.assertIsNotNone(build_at, f"no zig build line in the command: {lines}")
+        seen = {}
+        for i, ln in enumerate(lines):
+            m = ASSIGN.match(ln)
+            if m:
+                self.assertNotIn(m.group(1), seen, f"{m.group(1)} assigned twice")
+                seen[m.group(1)] = (i, m.group(2))
+        for name in ("ZIG_GLOBAL_CACHE_DIR", "ZIG_LOCAL_CACHE_DIR"):
+            with self.subTest(var=name):
+                self.assertIn(name, seen, f"{name} is never set: Zig falls back to a cache outside zb\\")
+                at, expr = seen[name]
+                self.assertLess(at, build_at, f"{name} must be set before zig build")
+                value = resolve(expr)
+                self.assertIsNotNone(value, f"{name} = {expr!r} is not Join-Path $env:USERPROFILE '<zb\\...>'")
+                self.assertTrue(value.startswith(ZB_ROOT), f"{name} resolves to {value}, outside {ZB_ROOT}")
+
+    def test_local_cache_is_inside_this_runs_folder(self):
+        cmd = self._build_command()
+        expr = next((m.group(2) for m in map(ASSIGN.match, cmd.splitlines()) if m and m.group(1) == "ZIG_LOCAL_CACHE_DIR"), None)
+        self.assertIsNotNone(expr, "ZIG_LOCAL_CACHE_DIR is never set")
+        value = resolve(expr) or ""
+        self.assertTrue(value.startswith(ZB_ROOT + "build\\run-" + FAKE_SHA + "\\"),
+                        f"ZIG_LOCAL_CACHE_DIR resolves to {value!r}, not inside zb\\build\\run-<sha>")
+
+    def test_resolver_refuses_escapes(self):
+        # The checker itself must not accept an escape (a guard on the guard).
+        for bad in ("Join-Path $env:USERPROFILE 'zb\\..\\AppData\\Local\\zig'",
+                    "Join-Path $env:LOCALAPPDATA 'zig'",
+                    "Join-Path $env:USERPROFILE 'C:\\Windows\\Temp'",
+                    "Join-Path $env:USERPROFILE ''",
+                    "'C:\\Users\\zbtext\\zb\\x'"):
+            with self.subTest(expr=bad):
+                v = resolve(bad)
+                self.assertTrue(v is None or not v.startswith(ZB_ROOT), f"{bad!r} resolved to {v!r}")
+        self.assertEqual(resolve("Join-Path $env:USERPROFILE 'zb\\zig-global-cache'"), ZB_ROOT + "zig-global-cache")
 
 
 if __name__ == "__main__":
