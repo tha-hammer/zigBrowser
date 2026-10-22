@@ -1,6 +1,6 @@
 """MS5.1b's macOS half as a hard-gate case, on Linux with the repo's own zb_agent_host standing in for the staged one.
-The case waits in tests/mac/hard_gate_pending/ until its kill-safety review: an unreviewed file in tests/mac/hard_gate/
-would make the armed gate refuse ("not a reviewed case"). On approval it moves there with its MANIFEST.json entry.
+The case was reviewed in tests/mac/hard_gate_pending/ (RoseCat 7933) and now lives, byte-identical, in
+tests/mac/hard_gate/ with its MANIFEST.json entry.
 
 The case runs, under the staged interpreter, the real setup.provision (select_token_route=False: no CLI is run) on a
 SAI source it builds itself in its scratch: a skill with a dependency tree (node_modules), and four links that
@@ -19,7 +19,7 @@ No signal is sent and no process is started (the case starts none: provision run
 Run under the pinned agent-host python (setup imports the SDK), in a private PID namespace:
   cd tests/e2e && unshare --map-current-user --pid --fork --kill-child --mount-proc \\
     sh -c '"$ZB_AGENT_HOST_PYTHON" -X dev -m unittest -v ms5_1b_hard_gate_case_test; exit $?'
-Unregistered until the green."""
+Registered (build.zig: test-mac-census and the Linux test step), inside the namespace."""
 import ast
 import contextlib
 import importlib.util
@@ -35,7 +35,7 @@ from unittest import mock
 
 REPO = Path(__file__).resolve().parents[2]
 HARD_GATE = REPO / "tests" / "mac" / "hard_gate"
-CASE = REPO / "tests" / "mac" / "hard_gate_pending" / "case_ms5_1b_skipped_links.py"
+CASE = REPO / "tests" / "mac" / "hard_gate" / "case_ms5_1b_skipped_links.py"
 EXPECTED = ("the staged agent-host is present", "this case runs under the staged interpreter",
             "setup provisions the home", "skipped skills/demo/assets", "skipped skills/demo/notes.md",
             "skipped skills/demo/node_modules/evil", "skipped skills/demo/up", "no canary bytes",

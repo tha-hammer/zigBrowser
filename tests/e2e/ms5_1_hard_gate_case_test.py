@@ -1,5 +1,5 @@
 """MS5.1's inherited S3a corrections (da5eb70; RoseCat 833767e) on a Mac, as a hard-gate case
-(tests/mac/hard_gate_pending/case_ms5_1_s3a_links.py), proven here on Linux with the repo's own zb_agent_host standing
+(tests/mac/hard_gate/case_ms5_1_s3a_links.py), proven here on Linux with the repo's own zb_agent_host standing
 in for the staged one. The plan: "the Mac port must reuse the corrected behavior, not port today's defects".
 
 Under the staged runtime the case runs the real setup.provision (route off: no CLI run, no process, no signal) on three
@@ -20,7 +20,7 @@ Here, with the real shipped harness.Harness (ZB_HG_PYTHON / ZB_HG_PREFIX set as 
 No signal is sent and no process is started. Run under the pinned agent-host python (setup imports the SDK):
   cd tests/e2e && unshare --map-current-user --pid --fork --kill-child --mount-proc \\
     sh -c '"$ZB_AGENT_HOST_PYTHON" -X dev -m unittest -v ms5_1_hard_gate_case_test; exit $?'
-Unregistered until the green."""
+Registered (build.zig: test-mac-census and the Linux test step), inside the namespace."""
 import ast
 import contextlib
 import importlib.util
@@ -36,7 +36,7 @@ from unittest import mock
 
 REPO = Path(__file__).resolve().parents[2]
 HARD_GATE = REPO / "tests" / "mac" / "hard_gate"
-CASE = REPO / "tests" / "mac" / "hard_gate_pending" / "case_ms5_1_s3a_links.py"
+CASE = REPO / "tests" / "mac" / "hard_gate" / "case_ms5_1_s3a_links.py"
 EXPECTED = ("the staged agent-host is present", "this case runs under the staged interpreter",
             "chain: setup provisions", "chain: skipped CLAUDE.md", "chain: the canary is nowhere",
             "alias: setup provisions", "alias: both names hold the payload", "alias: the cycle is bounded",

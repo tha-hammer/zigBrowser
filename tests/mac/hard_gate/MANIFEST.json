@@ -16,6 +16,14 @@
     {
       "file": "case_ms6_6b_r1_chain.py",
       "sha256": "7e914a0b04016c05921af2157b5ea1c0aec9eec35bf3823f7cc97a984ea19f76"
+    },
+    {
+      "file": "case_ms5_1b_skipped_links.py",
+      "sha256": "c0a7c6a78efba0c3d8c8133d504447dc16c47fe38b2c7eac163919c8abc83ac1"
+    },
+    {
+      "file": "case_ms5_1_s3a_links.py",
+      "sha256": "4fe83ada9acd7a8702923ddc35145927df35afcd101b825b4aaa3e08509ecd6f"
     }
   ]
 }
