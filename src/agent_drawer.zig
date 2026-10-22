@@ -170,8 +170,9 @@ pub fn iconSizeFromDpiEnv(text: ?[]const u8) c_int {
 /// as inside, a pixel beyond it as outside. Integer math (widened), so the edge
 /// pixel is exact with no rounding.
 pub fn insideIcon(dx: c_int, dy: c_int, radius: c_int) bool {
-    const d2 = @as(i64, dx) * @as(i64, dx) + @as(i64, dy) * @as(i64, dy);
-    const r2 = @as(i64, radius) * @as(i64, radius);
+    // i128 so even extreme `c_int` squares (and their sum) cannot overflow (RoseCat 7a54253 #4).
+    const d2 = @as(i128, dx) * @as(i128, dx) + @as(i128, dy) * @as(i128, dy);
+    const r2 = @as(i128, radius) * @as(i128, radius);
     return d2 <= r2;
 }
 

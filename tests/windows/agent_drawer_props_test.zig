@@ -145,6 +145,8 @@ test "iconSizeScaled rounds base*pct/100 half-up, independent (WS5.7)" {
     try expectEqual(@as(c_int, 112), d.iconSizeScaled(56, 200)); // 200%
     try expectEqual(@as(c_int, 70), d.iconSizeScaled(56, 125)); // 70.0 exact
     try expectEqual(@as(c_int, 74), d.iconSizeScaled(56, 133)); // 74.48 -> 74 (round half-up, down here)
+    try expectEqual(@as(c_int, 13), d.iconSizeScaled(10, 125)); // EXACTLY 12.5 -> 13 (half-up, not banker's)
+    try expectEqual(@as(c_int, 8), d.iconSizeScaled(6, 125));   // EXACTLY 7.5 -> 8 (half-up)
     try expectEqual(@as(c_int, 56), d.iconSizeScaled(56, 0));   // non-positive -> 100% fallback
     // mutant: ignoring DPI keeps 56 at 150% -> disagrees with the real 84
     try std.testing.expect(d.iconSizeScaled(56, 150) != d.icon_size);
@@ -171,4 +173,8 @@ test "insideIcon exact circular hit-test: the edge is inside, beyond is outside 
     // mutant: a strict '<' edge test would wrongly reject the exact edge pixel
     const d2 = @as(i64, 42) * 42;
     try std.testing.expect(!(d2 < @as(i64, r) * r)); // the edge is NOT strictly inside; insideIcon must still accept it
+    // overflow domain (RoseCat 7a54253 #4): extreme c_int squares must not wrap — i128 keeps the predicate exact
+    const big: c_int = std.math.maxInt(c_int);
+    try std.testing.expect(d.insideIcon(big, 0, big));    // exact edge at the extreme (big^2 == big^2): inside
+    try std.testing.expect(!d.insideIcon(big, big, big)); // (big,big) is sqrt(2)*big away: outside, not a wrapped true
 }
