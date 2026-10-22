@@ -11,3 +11,4 @@ tests/e2e/win_capabilities_test.py
 tests/windows/refusal_stderr_live_test.py
 tests/windows/win_drawer_test.py
 tests/windows/win_drawer_behaviors_test.py
+tests/e2e/win_private_world_spike.py
