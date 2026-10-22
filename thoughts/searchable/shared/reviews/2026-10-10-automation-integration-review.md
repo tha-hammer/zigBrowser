@@ -36202,3 +36202,31 @@ green is forced to prove exact equality among the required artifact names, the
 manifest keys, and the supplied artifact keys before comparing bytes. A
 drop-completeness mutant must fail only these new rows. After that fix-forward,
 this offline red can be approved; registration still waits for its green.
+
+## WS5.5b-2 reduced controller architecture tripwire (`037b79b`)
+
+**BLOCKED-for-tests.** The scope reduction is correct: the removed handwritten
+statement parser no longer claims control-flow, reachability or ordering proof,
+and the focused module passes **84/84** hostless rows with eight live skips. The
+spawn-side tripwire also retains the required no-recomputation, partial-cleanup
+and record-before-increment checks.
+
+One narrow gap remains against item 3 of the `f1e9653` ruling. The predicate
+claims the sole `zb_drawer_after_controller` call is *inside* the
+`CreateCoreWebView2ControllerCompletedHandler` callback, but it proves only
+that the exact call text occurs somewhere after the handler type name in the
+whole `create_controller` function. I drove an exact synthetic mutation that
+closes the callback and its `.Get());`, then puts the sole four-argument
+decision call in the next statement. `tripwire_ok` returned true. The committed
+“move outside callback” mutant moves the call *before* the handler token, so it
+does not cover this bypass.
+
+Keep the agreed minimal scope: do not restore the control-flow parser. After
+comment/literal stripping, locate the handler callback's lambda body by its
+own matched braces and require the sole exact call inside that body. Add the
+post-`.Get());` mutant above; it must fail while the production body passes.
+The two required architecture mutants (remove/move the callback call and
+recompute inside spawn) then become causal, and no additional source-level
+reachability or order proof is required. Until that fix-forward, the
+`1b2fe0a` WS5.5b-2 range remains blocked and another Win11 run is neither
+needed nor authorized for this test-only defect.
