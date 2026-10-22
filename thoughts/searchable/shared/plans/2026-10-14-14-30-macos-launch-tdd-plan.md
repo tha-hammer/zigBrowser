@@ -7,20 +7,20 @@ branch: zb-automation-integration-2026-10-10-11-59
 repository: zigBrowser
 topic: "macOS launch support for zigBrowser — TDD implementation plan"
 tags: [plan, tdd, macos, wkwebview, appkit, seatbelt, universal-build, automation, drawer, sandbox, launch-critical]
-status: living plan, rev 30 - applied exercise-the-code rule + MS0-9 code validation (bd zigBrowser-4pa.12), findings .55-.80; code validated at d0f1841, plan baseline e4f705f
-rev: 30
+status: living plan, rev 31 - closed the 29 rule-audit gaps (RULE-AUDIT.md, PASS WITH GAPS (29)) on top of rev 30 (exercise-the-code rule + MS0-9 code validation, bd zigBrowser-4pa.12, findings .55-.80); code validated at d0f1841, plan baseline e4f705f
+rev: 31
 rebaselined_to: e4f705f922f2059bb62782db5fdcca288709e3a2
 code_unchanged_since: c07899f (the review's commit; no src/, build.zig, agent/, packaging/ or tests/ change between c07899f and e4f705f)
 review: thoughts/searchable/shared/plans/2026-10-14-14-30-macos-launch-tdd-plan-REVIEW.md (BlueBeaver, Needs Major Revision, 26 critical + 52 warnings)
 last_updated: 2026-10-22
-last_updated_by: rev 30 - enhance_plan_with_review agent (Sonnet 5.5) for the owner exercise-the-code order and bd zigBrowser-4pa.12 findings 4pa.55-4pa.80, on behalf of the orchestrator; rev 29 - enhance_plan_with_review agent (Sonnet 5.5) for bd zigBrowser-4pa.7
-last_updated_note: "HISTORICAL, NOT NORMATIVE changelog; current proof requirements are in the Verification rule + Rev 30. Rev 30 (2026-10-22): applied the owner's exercise-the-code verification rule (new top section, verbatim) and the independent MS0-9 code validation (bd zigBrowser-4pa.12, three VALIDATION files, code HEAD d0f1841): findings bd zigBrowser-4pa.55 to .80 plus 34 minors. Read the section 'Rev 30' after the Rev 29 section and the 'Verification rule compliance' table at the end. In rev 30 the MS7.6/7.8 portable half is RED-UNREGISTERED and not built, MS4.4 is registered on Linux only, the Darwin cross-compile guard is a tripwire, and the macOS approval minters are inert. Rev 29 (2026-10-22): LIVING PLAN, RE-BASELINED TO HEAD e4f705f. Rev 28 was no longer a true description of the code. Rev 29 FIRST re-baselines (bd zigBrowser-4pa.19: K1, K2, W2 plan text) and THEN applies every finding of the independent review (K1-K6, I1-I2, P1-P4, D1-D2, W1-W7, T1-T5 and all 52 warnings). Read the section 'Rev 29' right after the revision history: it holds the HEAD facts, the Built-vs-Not-built table, the name/citation corrections, the finding map and the cross-cutting amendments; the 'Behavior specification ledger' before 'Dependency order' gives every listed behaviour a Given/When/Then, a named red with its exact failing assertion, a Property or a reasoned skip, and a BLOCKING/LEAF class. Where any older text below (revs 2-28, the frontmatter note, the MS6.5.1 body) conflicts with Rev 29, Rev 29 wins. Implementation freeze zigBrowser-4pa.1 still holds: this is a docs-only revision. Rev 28 (2026-10-22, JadeBeacon): the MS6.5.1 recovery row is ACCEPTED SCOPED (RoseCat c11bff8, commit ff7c699) as ONLY the Linux one-live-process liveness probe + portable fail-closed action-label mapping — the cumulatively-fixed probe (schema v2 platform-tagged start_kind, canonical per-kind shape, same-kind-only comparison that fails closed on a cross-kind identity, StartRead I/O outcome mapping) plus the bounded, cancellable flock acquire under one absolute monotonic deadline. It is NOT the whole-recovery transaction: NO two-browser / other-browser exclusion, NO startup-recovery pass, NO signals or retires, NO ledger-mutating transaction, NO Darwin same-kind probe, and NO UI result — every such earlier 'two-browser', 'startup recovery', 'signals/retires' and recovery-GREEN claim in this plan is SUPERSEDED by this scoped boundary. [REV 29 CORRECTION OF THIS REV-28 SENTENCE: it was false of HEAD. `RecoveryAction`, `publishWithout`/`publishWithoutCut`, `recoverOneUnderLock`/`recoverOneUnderLockP` ARE in production source at src/agent_run_ledger.zig:500-634 (added by 09dca89, 05ce038, cf1778e and later commits), and the startup core `recoverAllAtStartup*` plus `pub const reaper_ready: bool = false;` are in src/agent_run_recovery.zig:328-410. They are BUILT-UNARMED: no app-startup owner calls them and the gate ships false. The whole-recovery transaction PROTOTYPE is therefore not history-only; what is still OPEN is the production owner, the Darwin liveness probe, the registration of its tests and the full gate (bd zigBrowser-3gl).] The full whole-recovery transaction is the named OPEN blocker bd zigBrowser-3gl: production owner/call path, held-fd (dev,ino,uid,mode) provenance before teardown, typed fixed-point outcome, census/kill/fresh-census, marker unlink -> rmdir -> ledger retirement under the ONE flock, one absolute deadline over acquire AND held work, a deterministic exact-result two-recoverer red ({.signalled,.already_gone} pair + terminal child statuses + empty final ledger + two signal entries under the early-unlock mutant), registration, and a full gate. [REV 29 CORRECTION: the recovery transaction code EXISTS in HEAD but is NOT ARMED and has NO production owner: no production recovery pass or signal call is reachable because `pub const reaper_ready: bool = false;` exists at src/agent_run_recovery.zig:334 and nothing calls `recoverAllAtStartup`. The earlier sentence 'there is no `reaper_ready` constant yet' is withdrawn.] Rev 27 (2026-10-21): answers RoseCat mail 7362/7363 — the widened whole-recovery flock claim exposed a liveness gap: a BLOCKING flock(LOCK_EX) cannot be capped by the recovery deadline (that caps only work AFTER acquisition), so a frozen live holder would wedge the bounded startup queue and every new agent run indefinitely. Fix: acquisition is now BOUNDED/cancellable LOCK_EX|LOCK_NB + monotonic retry inside the SAME total recovery deadline (both the wait-to-acquire and the held work are capped). Acquire-failure/deadline/cancel => fail closed: zero liveness/census/signal/retire/unlink/ledger mutation, entry retained, a fixed recovery-busy/lock-unavailable incident surfaced, UI responsive, the first new agent run refused/deferred (never hung), later retry may recover. Owner-driven Stopping takes the same bounded acquisition before its terminal mutation; failure stays Survivors/authority-retained, never an uncoordinated clean. New red: two-process live-stalled-holder (A alive+holding stalls; B returns fail-closed within the deadline, zero signals/mutation), and a blocking-LOCK_EX mutant that must exceed the deadline/hang and be killed by the watchdog. Rev 26 (2026-10-21): answers RoseCat ec24db0's two remaining items. (1) A recoverer holds the one global ledger flock across the WHOLE recovery of an entry — liveness revalidation -> census/kill/fresh-census fixed point -> marker unlink -> rmdir -> ledger removal, releasing only at the end (bounded by the fixed-point deadline) — so exactly one recoverer enters the signal/kill phase; a second blocks then finds the entry gone. Revalidating liveness AFTER taking the flock closes the died-after-first-read window. Red: two independent recoverers + one real marked child, exactly one enters the signal phase; release-the-flock-early mutant lets BOTH in. (2) C4 crash cut sharpened: the ledger store is old-or-new complete, never torn, idempotent on both sides of the rename. Also fixed the startup ordering: mkdir -> openat+pin -> create run.marker -> publish 'active' -> ONLY THEN spawn any process (marker before any inheritor, 'active' before any marker-holder). Rev 25 (2026-10-21): orchestrator SIMPLIFICATION answering RoseCat 565e107's five blockers (all from the per-run owner.lock lease) by DROPPING the lease entirely. The ONE cross-process global ledger flock (<runtime_dir>/.zigbrowser-agent-runs.lock, O_CLOEXEC|O_NOFOLLOW, not inherited by children) is now the only claim and is held across the WHOLE terminal sequence: claim -> unlinkat(run_dir_fd, run.marker) -> unlinkat(runtime_fd, name, AT_REMOVEDIR) -> ledger removal -> release, so the destructive teardown is one atomic crash-released critical section and two recoverers can never race (no split-inode race, no owner.lock to mis-target). Startup liveness is proved from the entry's (pid,start) with ONE fail-closed rule: pid absent => recover; pid live + start match => leave untouched (live owner); pid live + different start (reuse) OR unreadable => fail closed. Fewer files => fewer crash cuts: a crash-cut table enumerates C1-C4, each with one signal-free idempotent recovery (C2 marker-less empty dir => openat ENOENT finish; C3 entry naming no dir => drop). Tests updated: two-process/two-recoverer ledger reds, two-instance (pid,start) recovery red, C1-C4 crash-cut reds. Rev 24 (2026-10-21): MS6.5.1 answers RoseCat ee626d0's three blockers on rev 23 — (1) the ledger transaction is guarded by an OS-visible cross-process flock on <runtime_dir>/.zigbrowser-agent-runs.lock (held from read through parent-dir fsync, released by process death), not a process-local mutex; two-PROCESS barrier red + remove-the-flock-loses-an-entry mutant. (2) startup recovery never touches a LIVE app's runs: it must take the per-run owner lease (flock on <run-dir>/owner.lock) non-blockingly — acquire FAILS => a live owner holds it => leave untouched; acquire SUCCEEDS + (pid,start) proved dead => recover; live/reused/unreadable liveness fails closed; two-BROWSER red. (3) the Clean teardown crash cut after marker unlink but before rmdir is specified: a provenance-valid empty marker-less dir recovers via openat(run.marker)=>ENOENT, finishes rmdir+entry-remove idempotently, never a permanent incident, never a signal; crash-cut red. Rev 23 (2026-10-21): MS6.5.1 answers RoseCat 3118838's three remaining blockers on rev 22 — (1) ONE app-global ledger actor wraps each read-validate-update-write-fsync-rename-dirfsync transaction so a concurrent run can never erase another (barrier reds for publish/publish and publish-or-remove/update); (2) Stopping is a bounded census->kill->fresh-census FIXED POINT reaching Clean only after a complete EMPTY final census (a marked process can fork after the single gather, agent_run_reaper.c:188-202; spawn-during-pass-one red + no-recensus mutant; a cap/deadline/incomplete census is Survivors); (3) reaper_ready is an IMMUTABLE source/build constant like agent_setup.zig:60-73's seatbelt_ready, never the env_switch pattern (env_switch.zig:1-27 is flag/env-driven and a hostile ambient value must not arm signalling; bypass mutant). Plus crash-after-marker/dir-removal-before-ledger-removal recovery (active entry naming no dir is dropped), normal stop/close sweeps off the UI thread under a total deadline, and revs 19-22 added to the revision-history list. Rev 22 (2026-10-21): MS6.5.1 Darwin lifecycle-owner section answers RoseCat 012e1bc (5 blockers) + 3c39b9f/7327 — the run marker is a dedicated non-token reserved descriptor inherited EXPLICITLY at every seam (browser→netd, browser→helper, sandbox-exec/CLI relay, nested hook, double-fork), each with a production-chain red + drop-the-pass-fd mutant and no collision with token fd 3 / egress fd 4 / census broker fd (agent_spawn_posix sets CLOEXEC_DEFAULT, child holds only 0-2); the owner record is a versioned, strictly-parsed, bounded schema published temp+fsync+rename+dir-fsync with named crash cuts and malformed/duplicate/truncated/swapped/symlinked handling (never signal until durably published); the state machine gains Clean unlink(marker,no-follow)→rmdir→record-remove order, [Leave] retires the entry to a terminal `left` state (never swept), window/session close ownership, SIGKILL→next-start-only, exactly-once races, and [Stop them now] DISABLED on an incomplete fresh census; the setting is a named app-owned atomic PERSISTED value with env>persisted>default precedence and a UI write path; a named `reaper_ready` hard gate keeps production signalling unreachable until the reviewed destructive gate passes; the stale 'Both-Mac gate GREEN' claim (7fa8906) is SUPERSEDED. Frontmatter bumped 17→22 (body had advanced through revs 19-22). Earlier: Rev 11 records MS1b GREEN (commit 3421428, option d): the WKWebView ObjC shim is built by the Apple toolchain as a chained-fixups dylib (xcrun clang -dynamiclib, -Wl,-fixup_chains + -undefined dynamic_lookup; -install_name @executable_path/../Frameworks; exe sets rdynamic macOS-only to export the two back-refs zb_ipc_dispatch/zb_policy_decide), so the SIGNED x86_64 binary runs (was SIGSEGV at [ZBAppHost init]; cause = zig 0.16 classic LC_DYLD_INFO_ONLY into signed __DATA_CONST). The MS1 bundle is now {browser + webview-shim dylib}; resource_phase accepts the empty-resources set only for that exact 2-component shape (6002 bypass protection kept). MS1.3 gains release_least_privilege (disable-library-validation forbidden in a release manifest/binary; ad-hoc dev/test only). ms1b_signed_gate.sh is registered as `zig build ms1b-gate`; validated rc 0 on both Macs (x86_64+arm64, ad-hoc+hardened). Linux/Windows build unchanged. (Frontmatter rev was stale at 6 while body sections advanced to rev 10; bumped to 11.) Shim surface confirmed by BlackRobin (6125)."
+last_updated_by: rev 31 - enhance_plan_with_review agent (Sonnet 5.5) closing the 29 gaps of 2026-10-14-14-30-macos-launch-tdd-plan-RULE-AUDIT.md (docs only); rev 30 - enhance_plan_with_review agent (Sonnet 5.5) for the owner exercise-the-code order and bd zigBrowser-4pa.12 findings 4pa.55-4pa.80, on behalf of the orchestrator; rev 29 - enhance_plan_with_review agent (Sonnet 5.5) for bd zigBrowser-4pa.7
+last_updated_note: "HISTORICAL, NOT NORMATIVE changelog; current proof requirements are in the Verification rule + Rev 30 + Rev 31. Rev 31 (2026-10-22): closed the 29 gaps of the independent rule audit (RULE-AUDIT.md); see the section 'Audit gaps closed' at the end. Rev 30 (2026-10-22): applied the owner's exercise-the-code verification rule (new top section, verbatim) and the independent MS0-9 code validation (bd zigBrowser-4pa.12, three VALIDATION files, code HEAD d0f1841): findings bd zigBrowser-4pa.55 to .80 plus 34 minors. Read the section 'Rev 30' after the Rev 29 section and the 'Verification rule compliance' table at the end. In rev 30 the MS7.6/7.8 portable half is RED-UNREGISTERED and not built, MS4.4 is registered on Linux only, the Darwin cross-compile guard is a tripwire, and the macOS approval minters are inert. Rev 29 (2026-10-22): LIVING PLAN, RE-BASELINED TO HEAD e4f705f. Rev 28 was no longer a true description of the code. Rev 29 FIRST re-baselines (bd zigBrowser-4pa.19: K1, K2, W2 plan text) and THEN applies every finding of the independent review (K1-K6, I1-I2, P1-P4, D1-D2, W1-W7, T1-T5 and all 52 warnings). Read the section 'Rev 29' right after the revision history: it holds the HEAD facts, the Built-vs-Not-built table, the name/citation corrections, the finding map and the cross-cutting amendments; the 'Behavior specification ledger' before 'Dependency order' gives every listed behaviour a Given/When/Then, a named red with its exact failing assertion, a Property or a reasoned skip, and a BLOCKING/LEAF class. Where any older text below (revs 2-28, the frontmatter note, the MS6.5.1 body) conflicts with Rev 29, Rev 29 wins. Implementation freeze zigBrowser-4pa.1 still holds: this is a docs-only revision. Rev 28 (2026-10-22, JadeBeacon): the MS6.5.1 recovery row is ACCEPTED SCOPED (RoseCat c11bff8, commit ff7c699) as ONLY the Linux one-live-process liveness probe + portable fail-closed action-label mapping — the cumulatively-fixed probe (schema v2 platform-tagged start_kind, canonical per-kind shape, same-kind-only comparison that fails closed on a cross-kind identity, StartRead I/O outcome mapping) plus the bounded, cancellable flock acquire under one absolute monotonic deadline. It is NOT the whole-recovery transaction: NO two-browser / other-browser exclusion, NO startup-recovery pass, NO signals or retires, NO ledger-mutating transaction, NO Darwin same-kind probe, and NO UI result — every such earlier 'two-browser', 'startup recovery', 'signals/retires' and recovery-GREEN claim in this plan is SUPERSEDED by this scoped boundary. [REV 29 CORRECTION OF THIS REV-28 SENTENCE: it was false of HEAD. `RecoveryAction`, `publishWithout`/`publishWithoutCut`, `recoverOneUnderLock`/`recoverOneUnderLockP` ARE in production source at src/agent_run_ledger.zig:500-634 (added by 09dca89, 05ce038, cf1778e and later commits), and the startup core `recoverAllAtStartup*` plus `pub const reaper_ready: bool = false;` are in src/agent_run_recovery.zig:328-410. They are BUILT-UNARMED: no app-startup owner calls them and the gate ships false. The whole-recovery transaction PROTOTYPE is therefore not history-only; what is still OPEN is the production owner, the Darwin liveness probe, the registration of its tests and the full gate (bd zigBrowser-3gl).] The full whole-recovery transaction is the named OPEN blocker bd zigBrowser-3gl: production owner/call path, held-fd (dev,ino,uid,mode) provenance before teardown, typed fixed-point outcome, census/kill/fresh-census, marker unlink -> rmdir -> ledger retirement under the ONE flock, one absolute deadline over acquire AND held work, a deterministic exact-result two-recoverer red ({.signalled,.already_gone} pair + terminal child statuses + empty final ledger + two signal entries under the early-unlock mutant), registration, and a full gate. [REV 29 CORRECTION: the recovery transaction code EXISTS in HEAD but is NOT ARMED and has NO production owner: no production recovery pass or signal call is reachable because `pub const reaper_ready: bool = false;` exists at src/agent_run_recovery.zig:334 and nothing calls `recoverAllAtStartup`. The earlier sentence 'there is no `reaper_ready` constant yet' is withdrawn.] Rev 27 (2026-10-21): answers RoseCat mail 7362/7363 — the widened whole-recovery flock claim exposed a liveness gap: a BLOCKING flock(LOCK_EX) cannot be capped by the recovery deadline (that caps only work AFTER acquisition), so a frozen live holder would wedge the bounded startup queue and every new agent run indefinitely. Fix: acquisition is now BOUNDED/cancellable LOCK_EX|LOCK_NB + monotonic retry inside the SAME total recovery deadline (both the wait-to-acquire and the held work are capped). Acquire-failure/deadline/cancel => fail closed: zero liveness/census/signal/retire/unlink/ledger mutation, entry retained, a fixed recovery-busy/lock-unavailable incident surfaced, UI responsive, the first new agent run refused/deferred (never hung), later retry may recover. Owner-driven Stopping takes the same bounded acquisition before its terminal mutation; failure stays Survivors/authority-retained, never an uncoordinated clean. New red: two-process live-stalled-holder (A alive+holding stalls; B returns fail-closed within the deadline, zero signals/mutation), and a blocking-LOCK_EX mutant that must exceed the deadline/hang and be killed by the watchdog. Rev 26 (2026-10-21): answers RoseCat ec24db0's two remaining items. (1) A recoverer holds the one global ledger flock across the WHOLE recovery of an entry — liveness revalidation -> census/kill/fresh-census fixed point -> marker unlink -> rmdir -> ledger removal, releasing only at the end (bounded by the fixed-point deadline) — so exactly one recoverer enters the signal/kill phase; a second blocks then finds the entry gone. Revalidating liveness AFTER taking the flock closes the died-after-first-read window. Red: two independent recoverers + one real marked child, exactly one enters the signal phase; release-the-flock-early mutant lets BOTH in. (2) C4 crash cut sharpened: the ledger store is old-or-new complete, never torn, idempotent on both sides of the rename. Also fixed the startup ordering: mkdir -> openat+pin -> create run.marker -> publish 'active' -> ONLY THEN spawn any process (marker before any inheritor, 'active' before any marker-holder). Rev 25 (2026-10-21): orchestrator SIMPLIFICATION answering RoseCat 565e107's five blockers (all from the per-run owner.lock lease) by DROPPING the lease entirely. The ONE cross-process global ledger flock (<runtime_dir>/.zigbrowser-agent-runs.lock, O_CLOEXEC|O_NOFOLLOW, not inherited by children) is now the only claim and is held across the WHOLE terminal sequence: claim -> unlinkat(run_dir_fd, run.marker) -> unlinkat(runtime_fd, name, AT_REMOVEDIR) -> ledger removal -> release, so the destructive teardown is one atomic crash-released critical section and two recoverers can never race (no split-inode race, no owner.lock to mis-target). Startup liveness is proved from the entry's (pid,start) with ONE fail-closed rule: pid absent => recover; pid live + start match => leave untouched (live owner); pid live + different start (reuse) OR unreadable => fail closed. Fewer files => fewer crash cuts: a crash-cut table enumerates C1-C4, each with one signal-free idempotent recovery (C2 marker-less empty dir => openat ENOENT finish; C3 entry naming no dir => drop). Tests updated: two-process/two-recoverer ledger reds, two-instance (pid,start) recovery red, C1-C4 crash-cut reds. Rev 24 (2026-10-21): MS6.5.1 answers RoseCat ee626d0's three blockers on rev 23 — (1) the ledger transaction is guarded by an OS-visible cross-process flock on <runtime_dir>/.zigbrowser-agent-runs.lock (held from read through parent-dir fsync, released by process death), not a process-local mutex; two-PROCESS barrier red + remove-the-flock-loses-an-entry mutant. (2) startup recovery never touches a LIVE app's runs: it must take the per-run owner lease (flock on <run-dir>/owner.lock) non-blockingly — acquire FAILS => a live owner holds it => leave untouched; acquire SUCCEEDS + (pid,start) proved dead => recover; live/reused/unreadable liveness fails closed; two-BROWSER red. (3) the Clean teardown crash cut after marker unlink but before rmdir is specified: a provenance-valid empty marker-less dir recovers via openat(run.marker)=>ENOENT, finishes rmdir+entry-remove idempotently, never a permanent incident, never a signal; crash-cut red. Rev 23 (2026-10-21): MS6.5.1 answers RoseCat 3118838's three remaining blockers on rev 22 — (1) ONE app-global ledger actor wraps each read-validate-update-write-fsync-rename-dirfsync transaction so a concurrent run can never erase another (barrier reds for publish/publish and publish-or-remove/update); (2) Stopping is a bounded census->kill->fresh-census FIXED POINT reaching Clean only after a complete EMPTY final census (a marked process can fork after the single gather, agent_run_reaper.c:188-202; spawn-during-pass-one red + no-recensus mutant; a cap/deadline/incomplete census is Survivors); (3) reaper_ready is an IMMUTABLE source/build constant like agent_setup.zig:60-73's seatbelt_ready, never the env_switch pattern (env_switch.zig:1-27 is flag/env-driven and a hostile ambient value must not arm signalling; bypass mutant). Plus crash-after-marker/dir-removal-before-ledger-removal recovery (active entry naming no dir is dropped), normal stop/close sweeps off the UI thread under a total deadline, and revs 19-22 added to the revision-history list. Rev 22 (2026-10-21): MS6.5.1 Darwin lifecycle-owner section answers RoseCat 012e1bc (5 blockers) + 3c39b9f/7327 — the run marker is a dedicated non-token reserved descriptor inherited EXPLICITLY at every seam (browser→netd, browser→helper, sandbox-exec/CLI relay, nested hook, double-fork), each with a production-chain red + drop-the-pass-fd mutant and no collision with token fd 3 / egress fd 4 / census broker fd (agent_spawn_posix sets CLOEXEC_DEFAULT, child holds only 0-2); the owner record is a versioned, strictly-parsed, bounded schema published temp+fsync+rename+dir-fsync with named crash cuts and malformed/duplicate/truncated/swapped/symlinked handling (never signal until durably published); the state machine gains Clean unlink(marker,no-follow)→rmdir→record-remove order, [Leave] retires the entry to a terminal `left` state (never swept), window/session close ownership, SIGKILL→next-start-only, exactly-once races, and [Stop them now] DISABLED on an incomplete fresh census; the setting is a named app-owned atomic PERSISTED value with env>persisted>default precedence and a UI write path; a named `reaper_ready` hard gate keeps production signalling unreachable until the reviewed destructive gate passes; the stale 'Both-Mac gate GREEN' claim (7fa8906) is SUPERSEDED. Frontmatter bumped 17→22 (body had advanced through revs 19-22). Earlier: Rev 11 records MS1b GREEN (commit 3421428, option d): the WKWebView ObjC shim is built by the Apple toolchain as a chained-fixups dylib (xcrun clang -dynamiclib, -Wl,-fixup_chains + -undefined dynamic_lookup; -install_name @executable_path/../Frameworks; exe sets rdynamic macOS-only to export the two back-refs zb_ipc_dispatch/zb_policy_decide), so the SIGNED x86_64 binary runs (was SIGSEGV at [ZBAppHost init]; cause = zig 0.16 classic LC_DYLD_INFO_ONLY into signed __DATA_CONST). The MS1 bundle is now {browser + webview-shim dylib}; resource_phase accepts the empty-resources set only for that exact 2-component shape (6002 bypass protection kept). MS1.3 gains release_least_privilege (disable-library-validation forbidden in a release manifest/binary; ad-hoc dev/test only). ms1b_signed_gate.sh is registered as `zig build ms1b-gate`; validated rc 0 on both Macs (x86_64+arm64, ad-hoc+hardened). Linux/Windows build unchanged. (Frontmatter rev was stale at 6 while body sections advanced to rev 10; bumped to 11.) Shim surface confirmed by BlackRobin (6125)."
 primary_research: thoughts/searchable/shared/research/2026-10-14-14-19-macos-launch-support-surface.md
 ---
 
 # macOS Launch Support for zigBrowser — TDD Implementation Plan
 
-> **LIVING PLAN, rev 30 (rev 29 re-baselined to HEAD `e4f705f`; rev 30 validated against code at `d0f1841`).** Rev 30 applies
+> **LIVING PLAN, rev 31 (rev 29 re-baselined to HEAD `e4f705f`; rev 30 validated against code at `d0f1841`; rev 31 closes the 29 gaps of the independent rule audit, see "Audit gaps closed" at the end).** Rev 30 applies
 > the owner's verification rule (the section "Verification rule: prove it by running it", below) and the MS0-9 code validation;
 > the statuses and proofs in this plan are current as of rev 30. This revision is docs-only. The
 > implementation freeze `zigBrowser-4pa.1` is in force: no product code, tests or build files
@@ -294,6 +294,13 @@ The owner's order: agents check code by exercising it, not by reading or "checki
   validations disprove (R30.1, 25 rows); (4) each critical and major finding `4pa.55` to `4pa.80` is a red or a fix-forward in
   its owning slice (R30-MS0 to R30-MS9) and the 34 minors are traced; (5) two open owner decisions with recommendations
   (R30.3); (6) a finding map (R30.4) and a "Verification rule compliance" table at the end of the plan. Frontmatter to rev 30.
+- **Rev 31** (enhance_plan_with_review agent for the independent rule audit `…-macos-launch-tdd-plan-RULE-AUDIT.md`, VERDICT PASS WITH GAPS (29),
+  2026-10-22; docs only): all 29 gaps closed in place and listed in the section "Audit gaps closed" at the end. Highlights: the
+  false "reaper gate is disabled by default / enforced in code" sentence (G5.1, bd `4pa.70`) is rewritten as a REQUIRED fix-forward
+  that is not in code; the live-only MS4 `load_serial` mutants and socket separation moved out of the historical rev-6 section
+  (G5.7); remaining text-check closures relabelled TRIPWIRE with an exercise-form proof named (L1-L6); the compliance table
+  recounted (BUILT+REGISTERED 9, UNPROVEN 38, NOT BUILT 28, Complete = yes 5); one Secrets-window symbol name
+  (`zb_secrets_window_mac_show`); and a dependency order for the 26 Rev-30 fix-forwards (critical `4pa.55` first). Frontmatter to rev 31.
 
 ## Rev 29 — RE-BASELINE TO HEAD `e4f705f`, THEN EVERY REVIEW FINDING (AUTHORITATIVE)
 
@@ -344,8 +351,8 @@ plus `zb_drawer_debug_live_count`. Presence in `src/wkwebview_shim.m` at HEAD (c
 | Sub-slice | What it is (HEAD) | Evidence | State |
 |---|---|---|---|
 | **MS7.0** | the portable drawer logic (`zb_drawer_*`) compiles and is exported by both macOS objects | `da37c1c`; `build.zig` step `cross-check-drawer-mac` (`:477`), in `cross-check` only [Rev 30, V79-m3: `test` runs only the `cross_check` command, not this step]; `src/agent_drawer.zig:633-636,671-728` | **NOT BUILT** (Rev 30, rule 6): a symbol-presence TRIPWIRE with no production caller on macOS (`applyAgentDrawer` returns false, `src/webkit.zig:134`); R30.1 #6 |
-| **MS7.1 (portable half)** | AppKit dock geometry `zb_drawer_appkit_frame` | `build.zig` step `test-agent-drawer-appkit` (`:749`) | portable seam BUILT + REGISTERED (driven, 7/7 observed at d0f1841); the behaviour is NOT BUILT (Rev 30, rule 6: no AppKit caller); AppKit dock view NOT STARTED |
-| **MS7.4 (portable half)** | bubble text seam `zb_drawer_appkit_shown/_original_offset`, `bubbleLayoutContiguous` | step `test-agent-drawer-appkit-text` (`:780`), `tests/agent_drawer_appkit_text_test.zig` | portable seam BUILT + REGISTERED (driven, 7/7 observed at d0f1841); the behaviour is NOT BUILT (Rev 30, rule 6); `ZbBubbleView`, Edit menu NOT STARTED |
+| **MS7.1 (portable half)** | AppKit dock geometry `zb_drawer_appkit_frame` | `build.zig` step `test-agent-drawer-appkit` (`:749`) | portable SEAM, driven but status NOT BUILT (R30.0, Rev 31 G4.1: no production caller) (driven, 7/7 observed at d0f1841); the behaviour is NOT BUILT (Rev 30, rule 6: no AppKit caller); AppKit dock view NOT STARTED |
+| **MS7.4 (portable half)** | bubble text seam `zb_drawer_appkit_shown/_original_offset`, `bubbleLayoutContiguous` | step `test-agent-drawer-appkit-text` (`:780`), `tests/agent_drawer_appkit_text_test.zig` | portable SEAM, driven but status NOT BUILT (R30.0, Rev 31 G4.1: no production caller) (driven, 7/7 observed at d0f1841); the behaviour is NOT BUILT (Rev 30, rule 6); `ZbBubbleView`, Edit menu NOT STARTED |
 | **MS7.6/7.8 (portable half)** | the card press decided in portable logic (claimed; not built); the card's one minter checked by relocation on both Darwin objects (TRIPWIRE — not proof; the proof is the compiled gate `grants` row, UNPROVEN: the card and gate do not exist) | steps `test-agent-drawer-card-press` (`:767`), `check-card-authority-mac` (`:534`); `tests/mac_card_authority_objects_test.py` | **RED-UNREGISTERED. NOT BUILT** (Rev 30, bd `4pa.72`; the rev-29 "portable BUILT + REGISTERED" was FALSE): `Approver`, `cardPress` and `zb_drawer_card_press` do not exist in `src/agent_drawer.zig`; `test-agent-drawer-card-press` exits 1 (5 compile errors) and `check-card-authority-mac` exits 1 on both arches (observed at d0f1841); neither step is in `test` or `cross-check`; AppKit card NOT STARTED |
 | **MS7 compiled hard gate** | the two-Mac compiled authority gate for the AppKit drawer | `c63020d`: `tests/mac/ms7_appkit_{gate.sh,check.py,case.py,probe.m}`, `tests/e2e/ms7_appkit_gate_test.py` | RED, UNREGISTERED, not run (and cannot pass before MS8; see K6 below) |
 | **MS7.5 (portable half)** | Secrets-window controller logic + C entry header | `5e71d67`: `src/agent_secrets_window_mac.h`, `tests/agent_secrets_window_mac_logic_test.zig` | RED, UNREGISTERED (imports a module that does not exist; Rev 30, `4pa.76`: the entry name `zb_secrets_window_open` clashes with `agent_secrets_window.h:56`); the AppKit window NOT STARTED |
@@ -395,7 +402,7 @@ Status words: **BUILT+REGISTERED** (a production entry point reaches the code an
 | MS4.3 per-write confirmation / dry-run inert | **NOT STARTED on macOS** | no macOS test is evidenced |
 | MS4.4 login gate | BUILT+REGISTERED on **Linux ONLY**; the macOS `WKHTTPCookieStore` path is **BUILT-HANDRUN (UNPROVEN)** (Rev 30, bd `4pa.69`) | `ms4-4-login-gate-e2e` (`build.zig:2047-2053`, attached only for a Linux target, `:3799`) drives the Linux binary and the GTK cookie port; the macOS consumer runs only in hand-run `tests/mac/ms4_gate.sh:40` |
 | MS5.1 setup refusal + `runtimeFor` + parent watch | PARTIAL (refusal + seam; S3a-links hard-gate case `case_ms5_1_s3a_links.py` + registered stand-in unit `ms5_1_hard_gate_case_test`) | `seatbelt_ready = false` (`agent_setup.zig:67`); `parent_watch.arm()` steps 1-4 + `test_parent_watch.py`; macOS `--agent-setup` runs nothing |
-| MS5.1b skipped-link bytes | BUILT as a pre-ready hard-gate case; production macOS setup still refuses | `tests/mac/hard_gate/case_ms5_1b_skipped_links.py` (MANIFEST entry), Linux stand-in unit `ms5_1b_hard_gate_case_test` registered in `test-mac-census`; the staged-Mac run waits on the MS5 pinned tree (UNPROVEN: needs a released Mac run) |
+| MS5.1b skipped-link bytes | UNPROVEN (Rev 31 status word; the Linux stand-in unit is BUILT+REGISTERED as a seam only); production macOS setup still refuses, so the behaviour is NOT BUILT | `tests/mac/hard_gate/case_ms5_1b_skipped_links.py` (MANIFEST entry), Linux stand-in unit `ms5_1b_hard_gate_case_test` registered in `test-mac-census`; the staged-Mac run waits on the MS5 pinned tree (UNPROVEN: needs a released Mac run) |
 | MS5.1c census + staging + merge + relocate | BUILT-HANDRUN (UNPROVEN on the Macs; the pure parts are driven by registered unit tests) | `ms5_*_gate.sh`, `mac_merge_universal_test.py`; emits an `sdk-path` resource the plan did not name (D-W7) |
 | MS5.2 Keychain onboarding | **NOT STARTED / NOT BUILT** (Rev 30: the Keychain files are in no `build.zig` target, `4pa.67`) | only raw store/lookup/clear (`agent_secrets_mac.m`); `configureAgentSecrets` returns on non-Linux (`app.zig:395`); `zb_agent_onboard_token` only in RED `24ef54c` (`keychain_onboard_test.m`, unregistered) |
 | MS5.3 token only to fd 3 | **NOT STARTED / NOT BUILT (seam only; in no build target, `4pa.67`)** | `zb_mac_token_to_fd` has no production caller, is not in `build.zig`, and carries test-only args (I-W2) |
@@ -406,19 +413,19 @@ Status words: **BUILT+REGISTERED** (a production entry point reaches the code an
 | MS6.5 reaper core | BUILT-HANDRUN (signal-free census gate); **NOT BUILT as a behaviour** (Rev 30, rule 6: linked only into test modules, `build.zig:872,1149,1184`) | `ms6_5_reaper_census_gate.sh`; `ms6_5_reaper_gate.sh` is destructive (T4) and its R29-SAFETY guard is not implemented (`4pa.70`) |
 | MS6.5 survivor warning / setting | **NOT STARTED** | no UI, no setting, no reader of `ZIGBROWSER_AGENT_AUTO_STOP_LEFTOVERS` (P2) |
 | MS6.5.1 ledger / lock / liveness / recovery | **BUILT-UNARMED = NOT BUILT** (Rev 30, rule 6: no production caller; the transaction test is unregistered; store-name mismatch `4pa.65`; pid unchecked `4pa.68`; Darwin build guard vacuous `4pa.63`), production owner **NOT STARTED** | R29.1(a), R30.1 #14-#15 |
-| MS6.6 (A)/(B) R1 under Seatbelt | (A) BUILT-HANDRUN; (B) pre-ready hard-gate harness BUILT, not run in production chain | `ms6_r1_kernel_gate.sh`, `tests/mac/hard_gate` |
-| MS6/MS8 hook Darwin branch (`zb-hook-run` under `sandbox-exec`, marker fd 5 inherited into the hook and a detached grandchild, hook env allowlist) | BUILT as a pre-ready hard-gate case; Mac run pending | `tests/mac/hard_gate/case_ms8_hook_sandbox.py`, `case_ms8_hook_launch_env`, registered stand-in units `ms8_hook_sandbox_case_test`, `ms8_hook_launch_env_case_test` (`build.zig` ~`:3133-3146`); this is the REAL hook mechanism (P1) |
+| MS6.6 (A)/(B) R1 under Seatbelt | (A) BUILT-HANDRUN = UNPROVEN; (B) UNPROVEN (Rev 31 status word; a pre-ready hard-gate harness exists, not run in the production chain) | `ms6_r1_kernel_gate.sh`, `tests/mac/hard_gate` |
+| MS6/MS8 hook Darwin branch (`zb-hook-run` under `sandbox-exec`, marker fd 5 inherited into the hook and a detached grandchild, hook env allowlist) | UNPROVEN (Rev 31 status word; was "BUILT as a pre-ready hard-gate case"); no released Mac run | `tests/mac/hard_gate/case_ms8_hook_sandbox.py`, `case_ms8_hook_launch_env`; **only the stand-in unit `ms8_hook_sandbox_case_unit` is in `test` (`build.zig:3133-3138`, attached `:3695`)**. `ms8_hook_launch_env_case_unit` (`build.zig:3141-3146`) hangs off `test-mac-census` ONLY (no `test` dependency, not a platform gate), so by rule 2 it is a DRAFT (G2.5); registering it in `test` is a required fix-forward. This is the REAL hook mechanism (P1) |
 | MS6.7 read + mach-lookup curation | **NOT STARTED (NEW, K4)** | profile emits `(allow file-read*)` / `(allow mach-lookup)` (`sandbox_macos.py:173,183,216,226`) |
 | MS6 production launch connector | **NOT STARTED (NEW, I2/P1)** | `launch.py:154-157` refuses on darwin; `agent_helper.zig:121-130` never passes `--egress-port`; `LAUNCH_SPEC_CONSUMABLE = False` |
 | MS7.0 | **NOT BUILT** (Rev 30: a symbol tripwire in `cross-check` only; no production caller) | R29.1(c), R30.1 #6 |
-| MS7.1 / 7.4 portable seams | BUILT+REGISTERED as seams (driven, observed); the behaviours are NOT BUILT (Rev 30) | R29.1(c) |
+| MS7.1 / 7.4 portable seams | NOT BUILT (driven seams, observed 7/7, but no production caller; Rev 31 G4.1); the behaviours are NOT BUILT | R29.1(c) |
 | MS7.6 / 7.8 portable half | **RED-UNREGISTERED. NOT BUILT** (Rev 30, bd `4pa.72`) | R29.1(c), R30.1 #1-#2 |
 | MS7.1-7.4 AppKit views, MS7.2 icon, MS7.3 fold | **NOT STARTED** | no `agent_drawer_mac.m`; no main menu in `wkwebview_shim.m` |
 | MS7.5 Secrets window | portable RED-UNREGISTERED; AppKit **NOT STARTED** | `5e71d67` |
 | MS7.7 chat observability census | **NOT STARTED** | |
 | MS7.9 drawer ownership | **NOT STARTED** | |
 | MS8.0 | **NOT BUILT** (Rev 30, bd `4pa.75`: the minters are inert on macOS; the step is a symbol tripwire) | R29.1(c), R30.1 #5 |
-| MS8.1 helper under `MacSeatbeltBackend` | **NOT STARTED** (portable spawner core BUILT+REGISTERED) | |
+| MS8.1 helper under `MacSeatbeltBackend` | **NOT STARTED** (the portable spawner core is a driven SEAM, NOT BUILT: no production importer, Rev 31 G4.1) | |
 | MS8.2a / 8.2b | RED-UNREGISTERED | R29.1(c) |
 | MS8.2c, MS8.3 | **NOT STARTED** | blocked by MS6 + MS7 |
 | MS9 | **NOT STARTED** | blocked on Developer ID |
@@ -519,7 +526,7 @@ BLOCKING. The ledger below classifies all of them.
 | I-W5 | `recoverOneUnderLockP` hard-codes `"runs.json"` (`:594/614/630`); the store is `zigbrowser-agent-runs.json` | red: recover an entry in a store named `zigbrowser-agent-runs.json` → entry retired (today: stays); green: pass the store name through |
 | I-W6 | debug seams are unconditional production-dylib exports; `zb_automation_debug_strings_live` unlisted | list it in the debug table (done below); build option, or an export-set census (TRIPWIRE — not proof; the proof is the 13 `ZB_DEBUG_*` hooks being inert in the shipping binary without `--e2e-protocol`, `mac_ms2a_hook_inert_test.py` extended, step `ms2a-gate`, mutant: make one hook unconditional; both Macs, UNPROVEN until released) (R29-MS2) |
 | I-W7 | `rdynamic` exports every exe symbol on macOS (`build.zig:181`), not only the two back-refs | census: `nm -gU` of the exe lists exactly `zb_ipc_dispatch` and `zb_policy_decide` among `zb_*`, or an export list file replaces `rdynamic` **[Rev 30: the `nm` census is a TRIPWIRE; proof = R30.2 T11]** |
-| I-W8 | `zb_secrets_window_open(unsigned long long)` (mac) vs Linux `zb_secrets_window_open(void)` | rename the mac symbol (`zb_secrets_window_open_for`) or unify; red (exercise form): the renamed entry opens the real Secrets window on a Mac and the window is absent from the registry (MS7.5 compiled gate); mutant: make the entry a no-op → the window-open row fails. A C file including both headers is a TRIPWIRE — not proof; UNPROVEN until MS7.5 exists |
+| I-W8 | `zb_secrets_window_open(unsigned long long)` (mac) vs Linux `zb_secrets_window_open(void)` | rename the mac symbol to `zb_secrets_window_mac_show` (the one name used everywhere in this plan; R30.2 T16, R30-MS7); red (exercise form): the renamed entry opens the real Secrets window on a Mac and the window is absent from the registry (MS7.5 compiled gate); mutant: make the entry a no-op → the window-open row fails. A C file including both headers is a TRIPWIRE — not proof; UNPROVEN until MS7.5 exists |
 | I-W9 | `launch.build_argv` is Linux-only and reaches the private `sandbox._LINUX_BACKEND` (`launch.py:97,111`) | folded into the production launch connector (R29-MS6): one `launch.build_launch(spec)` over the backend protocol |
 | D-W1 | ledger `pid` is an unchecked `i32` (`agent_run_ledger.zig:40`); 0/negative parses as proved-dead; not cross-checked with the basename pid | parse: reject `pid < 2`; require basename pid == entry pid. Reds: pid 0, -1, 1, mismatch → malformed read, no signal |
 | D-W2 | profile identity is the lexical path (symlink/trailing-slash may differ) | MS3.1 Property: same spelling ⇒ same store UUID; a symlink spelling and its target, `/a/b` and `/a/b/`: **documented** behaviour (canonicalize via `realpath` before hashing, red for trailing slash) |
@@ -541,7 +548,7 @@ plan. (2) The independent code validation of the whole plan, bd `zigBrowser-4pa.
 `…-VALIDATION-ms0-3.md`, `…-VALIDATION-ms4-6.md`, `…-VALIDATION-ms7-9.md`. The validators read and RAN the code at worktree
 HEAD `d0f1841`. Rev 29 was written against `e4f705f`; the ms4-6 validator checked that no file under `src/`, `build.zig`,
 `agent/`, `packaging/` or `tests/` differs between the two, and the other two found no drift that matters. Their findings are
-bd `zigBrowser-4pa.55` to `zigBrowser-4pa.80` (26 findings: 1 critical, 25 major) plus 34 minor findings that have no bd id.
+bd `zigBrowser-4pa.55` to `zigBrowser-4pa.80` (26 findings: 3 critical (`4pa.55`, `4pa.72`, `4pa.73`) + 23 major) plus 34 minor findings that have no bd id.
 
 **Scope.** Docs-only. The implementation freeze `zigBrowser-4pa.1` still holds: this revision changes no code, test or build
 file, no bd record, and touches no Mac, VM or ssh host. Every red below is a specification for a later slice. None was run for
@@ -575,7 +582,7 @@ Evidence marked "observed" was run at `d0f1841` by a validator; "read" means con
 | 4 | The Darwin cross-compile guards (`build.zig:1043-1052` and `:1159-1168`, in `test`) show the ledger and recovery code builds for Darwin | **Vacuous. A tripwire, not proof.** They analyse none of the ledger/recovery pub API. | A type error inside an unreferenced `pub fn` appended to `src/agent_run_ledger.zig` still exits 0; the same error reached from one `export fn` exits 1 (observed). Zig analyses lazily and neither file has an `export` or forcing `comptime` block. Only the C reaper body is really compiled for Darwin. | `4pa.63` |
 | 5 | MS8.0 **BUILT+REGISTERED**: the approval minters are defined in both macOS builds | **NOT BUILT (rule 6).** `agent_tools.start` is Linux-only (`app.zig:477-479`), so on macOS `cards` is never initialised and `zb_agent_tools_approve/_deny` (`agent_tools.zig:200-210`) always return 0; nothing in the macOS build calls them. `cross-check-agent-tools-mac` only checks that the symbols exist: a TRIPWIRE. | `cross-check-agent-tools-mac` exits 0 with the inert minter; `check-card-authority-mac` reports "_agent_tools.zb_agent_tools_approve is referenced by {}" on both Darwin objects (observed) | `4pa.75` |
 | 6 | MS7.0 `cross-check-drawer-mac` is "in `cross-check` and `test`" | In `cross-check` only (`test` uses only the `cross_check` command, `build.zig:3921`). It is symbol presence: a TRIPWIRE. MS7.0 has no production caller on macOS (`applyAgentDrawer` returns false off Linux/Windows, `src/webkit.zig:134`), so the behaviour is **NOT BUILT**; the export seam compiles. | read | V79-m3 |
-| 7 | MS7.1 and MS7.4 portable halves **BUILT+REGISTERED** | The **seam** is BUILT+REGISTERED and driven (`test-agent-drawer-appkit` and `test-agent-drawer-appkit-text` exit 0, 7/7 each, observed). The **behaviour** (AppKit dock, bubble) is **NOT BUILT** by rule 6: no `.m` file calls the seam. | observed | — |
+| 7 | MS7.1 and MS7.4 portable halves **BUILT+REGISTERED** | The **seam** is driven and registered (status NOT BUILT, Rev 31 G4.1: a seam with no production caller; `test-agent-drawer-appkit` and `test-agent-drawer-appkit-text` exit 0, 7/7 each, observed). The **behaviour** (AppKit dock, bubble) is **NOT BUILT** by rule 6: no `.m` file calls the seam. | observed | — |
 | 8 | MS1.3 entitlements **BUILT+REGISTERED (static)** | **Tripwire-only; UNPROVEN as least privilege.** The Mac check signs with the plist and then compares the signature to the same plist (a tautology); the one key `com.apple.security.network.client` is an App Sandbox entitlement and nothing sets `com.apple.security.app-sandbox`, so it does nothing; `build-dmg.sh` never uses the manifest. | read | `4pa.61`, `4pa.79` |
 | 9 | MS1.1 census proves bundle completeness | The unit (`mac_universal_census_test`, 27 OK) is driven. The Mac census cannot see an undeclared non-Mach-O file (a demo run found 0 failures). So **bundle == inventory is NOT BUILT** (D-W3). | observed | — |
 | 10 | "Mac-only gate steps are excluded from `test` by design (`unguarded` list, `build.zig:4045`)" | Wrong. `:4045` is the display-guard skip list. The Mac gates are outside `test` only because `test` never depends on them. | read | V03-F9 |
@@ -725,7 +732,9 @@ Re-pinned to HEAD `774ce31` (the executable gate + tests are `c53b580`).
 
 > **History (rev 17):** row 1's `zb-claude` as a bundle `resource`, and MS5's roles going into
 > `universal_components.json`, are **superseded** by Behavior MS5.1c as rewritten in rev 17: `zb-claude` is per-user
-> setup output, and MS5 uses its own inventory. Row 2's MS1 rule still stands.
+> setup output, and MS5 uses its own inventory. Row 2's MS1 "does not invoke `resource_compat`" rule was
+> **superseded by Rev 9 and MS1.1** (the green calls the typed phase gate at every milestone); this whole section is history
+> and carries no normative force (Rev 31, G5.8).
 
 RoseCat approved the `{browser}` MS1 scope (`build.zig:163-173`) but BLOCKED rev 7 on two
 representation contradictions in how components and resources are typed. Both are fixed in docs.
@@ -1073,7 +1082,9 @@ it **without behavior change**, naming the exact files, methods, ownership, and 
 **Rev 29 amendments to this contract (I1, I2, C-W2, I-W9; details in R29-MS6):**
 - **Conformance is tested, not assumed (I1).** `MacSeatbeltBackend` and `LinuxBwrapBackend` must both conform to the
   `SandboxBackend` Protocol, proven by a registered test (`agent/host/tests/test_backend_conformance.py`). At HEAD they
-  already differ: `network(self)` (`sandbox_macos.py:371`) vs `network(self, session=None)` (`sandbox.py:213/307`); the
+  differ from the Protocol, not from each other (Rev 31, V46-F12: the earlier wording had the gap pointing the wrong way):
+  BOTH backends already use `network(self, session=None)` (`sandbox_macos.py:371`, `sandbox.py:307`); only the Protocol
+  declaration `network(self)` (`sandbox.py:213`) is wrong and gets `session=None`. Also: the
   Protocol `launch_spec` has no `network=` argument (`sandbox.py:210`); `egress_dir()` is typed `str` but the Mac
   backend returns `None` (`sandbox_macos.py:393`); the Mac `launch_spec` ignores `ro_paths`, `state_dirs`, `net_dir`
   and `seccomp_fd` (`:413-442`). Fix the Protocol types (`Optional[str]`, `session=None`, `network=`) and make every
@@ -1231,8 +1242,10 @@ records zero assertions,
   the file named; today it passes (the census requires every Mach-O fat and the roles to exist, not bundle ==
   inventory). Mutant: drop the undeclared-file scan → the red does not fail (must be caught).
 - 🔴 Red: `mac_universal_test.py` asserts both slices exist, each component is fat, the executing
-  arch matches the host, build info reports it, and the entitlements file lists the exact keys —
-  red today. 🟢 Green: per-arch build + lipo + arch-record + entitlements. 🔵 Refactor: one
+  arch matches the host, and build info reports it — red today. **Rev 31 (L5): the earlier clause "and the entitlements
+  file lists the exact keys" is RETIRED** — it is the tautology R30.1 #8 and R30.2 T17 retire (a listing compared with its own
+  input). Entitlements are proven only by the feature probe in R30-MS1 (`ms1_entitlement_probe.sh`, TO BE AUTHORED); any
+  `codesign -d --entitlements` listing is a TRIPWIRE — not proof. 🟢 Green: per-arch build + lipo + arch-record + entitlements. 🔵 Refactor: one
   per-arch build fn shared by `gate.sh`/`build-dmg.sh`; one signing fn (ad-hoc now, Developer ID
   in MS9) selected by flag.
 - **Closure:** LEAF (packaging/build-info assertions; no cross-process product behavior).
@@ -1321,9 +1334,14 @@ fix. (It does NOT by itself make a signed binary run — see `MS1b`.)
 
 ---
 
-## MS1b: the signed x86_64 binary runs (zig-linker / codesign / ObjC-init crash) — LANDED `3421428`
+## MS1b: the signed x86_64 binary runs (zig-linker / codesign / ObjC-init crash) — fix committed `3421428`; UNPROVEN (C10)
 
-**STATUS: LANDED (green `3421428`, option d) — for AD-HOC signing only.** The ad-hoc-signed x86_64 binary ran the m9
+**STATUS (Rev 31, G6.1): COMMITTED, NOT CLOSED. UNPROVEN.** The fix commit `3421428` (option d) exists, but the compliance
+table row C10 is UNPROVEN: `ms1b-gate` is not in `test`, no hardened leg exists, the pixel check is skipped, and the only
+recorded run could not be verified. The sentence below that an ad-hoc-signed x86_64 binary "ran the m9 workload rc 0 on both
+Macs" is an agent report of a 2026-10-20 run, **not reproduced** by a released run at a named commit (rule 8: SUSPECTED). The
+hardened-runtime leg is **UNPROVEN** and its cited run could not be verified (see Rev 29 below).
+Earlier wording (history of what was reported): the ad-hoc-signed x86_64 binary ran the m9
 workload rc 0 on both Macs. **Rev 29 (P4, T-W3):** the earlier wording "ad-hoc AND hardened-runtime" is **not
 reproduced by any gate**: `tests/mac/ms1b_signed_gate.sh:80-81` signs ad-hoc only, with no `--options runtime`, and the
 hardened evidence lives only in scratchpad notes; the gate also skips the non-uniform render check (`:119`,
@@ -1359,12 +1377,12 @@ UNSIGNED MS1 run ships it: `gate.sh` lipos+ships the unsigned fat dylib into `Fr
 protection is kept — browser-alone, wrong-shim-path, MS5-shaped, non-browser all still fail closed).
 The census auto-requires the dylib fat (both slices).
 
-### Behavior MS1b.1: a signed universal binary runs the m9 workload on x86_64 — GREEN
+### Behavior MS1b.1: a signed universal binary runs the m9 workload on x86_64 — reported green, UNPROVEN (Rev 31)
 **Given** the universal exe + shim dylib, both ad-hoc signed (`codesign -s - --entitlements …`),
 **When** they run the m9 workload on the Intel Mac,
 **Then** the page loads and `WINCOUNT`/`TITLE`/`NAV` print with no crash. 🔴 Red (`bf0a66f` →
 `2f6214f` → `41882ae`, unregistered): the signed x86_64 launch SIGSEGV'd at `0xf0000001`, 3×, right
-reason. 🟢 Green (`3421428`): it runs — on x86_64 AND arm64, ad-hoc and hardened. m9 render drives
+reason. 🟢 Green (`3421428`), AS REPORTED, SUSPECTED / UNPROVEN: it ran — on x86_64 AND arm64 ad-hoc; the "and hardened" leg is **UNPROVEN** (no gate signs with `--options runtime`; the cited run could not be verified). m9 render drives
 `zb_policy_decide` and m9 reply-channel drives `zb_ipc_dispatch`, so both dylib→exe back-refs are
 exercised through the signed build.
 
@@ -1383,14 +1401,14 @@ Concrete evidence behind the cause + fix (so the record does not depend on ephem
    x86_64 → MS9 would hit it; MS1b is a hard MS9 prerequisite.
 5. **Fix validated:** the ObjC shim built by Apple ld64 with `-Wl,-fixup_chains` has
    `LC_DYLD_CHAINED_FIXUPS`; the signed universal exe+dylib then run the m9 workload **rc 0 on both
-   Macs, ad-hoc AND hardened** (hardened needs same-team signing — MS9's Developer ID — or, for
+   Macs, ad-hoc AND hardened** [Rev 31: AS REPORTED; SUSPECTED / UNPROVEN, and the hardened leg is not reproduced by any gate] (hardened needs same-team signing — MS9's Developer ID — or, for
    ad-hoc dev only, `disable-library-validation`). Options (e)/(c) were not needed.
 Working notes retained in `scratchpad/ms1/CRASH_CAUSE.md` + `MS1b_INVESTIGATION.md` while they exist;
 the summary above is the durable record.
 
 **Gate (MS1b):** `tests/mac/ms1b_signed_gate.sh` (registered as `zig build ms1b-gate`) SIGNS both the
 universal exe and the universal shim dylib, installs the signed pair, and runs the m9 workload +
-exec-arch probe on BOTH Macs, fail-closed. Validated rc 0 both Macs (ad-hoc). The MS1.3 least-privilege rule
+exec-arch probe on BOTH Macs, fail-closed. Reported rc 0 on both Macs (ad-hoc) [Rev 31: SUSPECTED / UNPROVEN until a released run at a named commit]. The MS1.3 least-privilege rule
 (`release_least_privilege`) fails a release manifest/binary carrying `disable-library-validation`
 (ad-hoc dev/test only). Coordinated with **BlueBeaver** (build/gate) and **BlackRobin** (shim).
 **Rev 29 closure caveat (WC-W4):** the MS1b closure runs a pair the TEST SCRIPT places and signs
@@ -1489,7 +1507,7 @@ No seam silently returns zero and no config export fakes an error channel it doe
 | `zb_automation_window_alive` | int | MS2a | **SUPERSEDED (rev 13)** — subsumed by `zb_automation_list_windows` (id present in the list) | MS2a window test |
 | `zb_automation_window_id_at` | uint32 | **MS2a** | **SUPERSEDED (rev 13)** — subsumed by `zb_automation_list_windows` enumeration | MS2a window-registry test |
 | `zb_automation_run_generation` | uint32 | **MS2a** | **SUPERSEDED (rev 13)** — not exported; the per-job state machine (`zb_job_complete` records only while DISPATCHING/INFLIGHT; `zb_job_claim_dispatch` abandon guard) replaces the generation counter | MS2a.3 late-completion test |
-| `zb_automation_list_dialogs` / `_respond_dialog` | int | MS2b | impl — `WKUIDelegate` captures **alert/confirm/prompt**, held until answered; cancel-aware list/respond + dialog_open fast-fail + eval dialog-watch (36d3065, mutant-proven both arches). **beforeunload is NOT surfaced** — see below | MS2b.2 |
+| `zb_automation_list_dialogs` / `_respond_dialog` | int | MS2b | impl — `WKUIDelegate` captures **alert/confirm/prompt**, held until answered; cancel-aware list/respond + dialog_open fast-fail + eval dialog-watch (36d3065; "mutant-proven both arches" is an agent report, SUSPECTED / UNPROVEN: no released Mac run at a named commit — Rev 31, rule 8). **beforeunload is NOT surfaced** — see below | MS2b.2 |
 | `zb_automation_list_windows` / `_close_window` | int | MS2c | impl — page.list + health watchdog (list_windows), page.close a popup (primary refused) + forWindow (d82da2e/03a6523/9870693) | MS2c.1 |
 | `zb_automation_recover_windows` | int | MS2c | **Implemented via VIEW-REPLACEMENT** (public API; no process kill, no SPI). Consent (phase 1) server-side; phase 2 swaps a fresh WKWebView into each window keeping its stable id and reloads the committed URL, emitting `[{id,url,ended,reloaded}]` (`ended`=was crashed, `reloaded`=URL restored). Pinned by `mac_ms2c_recover_test.py` | MS2c.3 |
 | `zb_cookies_get_all` / `_add` / `_delete` | int | **MS3** (moved from MS2c) | impl over `WKHTTPCookieStore` (the MS3 data-store owner); MS4.4 login gate consumes | `mac_cookie_test` (MS3) |
@@ -2092,6 +2110,25 @@ digest*.
   a **non-current** navigation must NOT bump `load_serial`, and a **current** one must; untested today. Red: start
   navigation A, start navigation B, let A's late commit arrive → assertion `load_serial` unchanged until B commits; a
   mutant that bumps on every callback is caught.
+  **Rev 31 (G5.7, G2.2): the base `load_serial` proof, moved here from the historical rev-6 section so no live proof sits
+  in a non-normative section.** (a) Entry: the per-window counter that increments on load-commit (macOS
+  `didCommitNavigation:` in the shim, stored on `ZBWindowHost`, carried in `page_port.WindowInfo`, published in the
+  `page.list`/`page.health` JSON). (b) Linux twin: `tests/e2e/automation_load_serial_test.py`, step
+  `automation_load_serial_e2e` (`build.zig:3348`, in `test` at `:3812`), driven and registered; Mac: `tests/e2e/mac_ms4_load_serial_test.py`,
+  hand-run through `tests/mac/ms4_gate.sh` (UNPROVEN until the `ms4-gate` step exists and a released run happens). Assertion:
+  `serial_after_commit == serial_before + 1` for a committed load and `serial_after_reload == serial_after_commit + 1`.
+  (c) Mutants of the PRODUCTION counter, each of which must fail that assertion: (1) a counter that never increments;
+  (2) a counter that resets to 0 on every commit. The Linux twin's mutants are the ones recorded for C37; the Mac mutants
+  are NOT yet recorded (C38 stays c=y only on the plan's naming, UNPROVEN). (d) Mac twin: both Macs, released run.
+- **MS4 socket separation (Rev 31, G5.7; moved from the historical rev-6 section).** The external automation socket must
+  remain unable to reach the broker or the approval authority. Given an authenticated external socket client, when it
+  calls `agent.*` or `broker.*` methods, then each returns -32601 (method not found); when it presents a broker grant id as
+  the socket `auth`, then it gets -32000 (unauthorized). Exercising proof: (a) entry = the real socket
+  (`handleRequestWith`); (b) Linux: `tests/automation_inprocess_test.zig` (the `agent.tools` -32601 row, `:159`, in the
+  `build.zig:1947` family) and `tests/e2e/agent_tools_acceptance_test.py:30` (step at `build.zig:2310`), driven and
+  registered; macOS: `tests/e2e/mac_ms4_socket_separation_test.py` (TO BE AUTHORED), the same assertions through the macOS
+  binary; (c) mutant: register one `agent.*` method on the external router, or accept a grant id as `auth` → the -32601 or
+  -32000 row fails; (d) macOS row: both Macs, released run, UNPROVEN until then. MS8 re-asserts it with the real helper.
 - **MS4.1 (macOS half) — in-ticket refusal over the real platform.** Given a card approved for window W at
   (origin O, load_serial N), when W navigates / crashes / opens a dialog / enters `recovering` before the run
   dispatches, then the run refuses inside its ticket with -32015 (or -32013 for a dialog) and the fixture records 0
@@ -2175,7 +2212,7 @@ its test proves the gate opens only when the session cookie is present.
 sites), both arches. Not a UI slice (the card is MS7; the positive commit closure is MS8.3).
 Coordinate with **BlueBeaver** (flows/approval authority).
 
-### MS4 TDD plan revision (rev 6 — JadeBeacon 2026-10-20) — HISTORICAL, NOT NORMATIVE — [Rev 29: MS4.1b and the `agent_broker` "single shared broker / mint" claims below are SUPERSEDED by R29-MS4; MS4.1a, MS4.2-MS4.4 scope stands]
+### MS4 TDD plan revision (rev 6 — JadeBeacon 2026-10-20) — HISTORICAL, NOT NORMATIVE — [Rev 29: MS4.1b and the `agent_broker` "single shared broker / mint" claims below are SUPERSEDED by R29-MS4. Rev 31: this whole section is history and carries NO normative force; the two live-only requirements it used to hold (the MS4.1a `load_serial` mutants and the socket separation) were MOVED into R29-MS4 above]
 
 **The grant contract is the drawer plan's, verbatim — not invented here.** MS4 reuses the schema in
 `thoughts/searchable/shared/plans/2026-10-13-claude-agent-chat-drawer-tdd-plan.md` :516–533: a single-use
@@ -2419,7 +2456,8 @@ The behaviours below stay as written; these are the per-OS contracts their reds 
      NEVER install system-wide on either Mac** (laroncha gets no system install).
    - **Destination:** the unpacked `Python.framework` goes in **`Contents/Frameworks/agent-host/`** (rev 14),
      where nested code is signed/notarized (Resources would fail hardened-runtime).
-   - **VERIFIED 2026-10-20 (JadeBeacon):** MD5 matches the real download; `pkgutil --check-signature` →
+   - **[Rev 31, rule 8: SUSPECTED / UNPROVEN. This is a 2026-10-20 agent report of a Mac run; it was not observed by a
+     validator at a named commit under a release, so the word "VERIFIED" no longer applies.]** Reported 2026-10-20 (JadeBeacon): MD5 matches the real download; `pkgutil --check-signature` →
      *"signed by a developer certificate issued by Apple for distribution"*, *"Notarization: trusted by the
      Apple notary service"*, **Developer ID Installer: Python Software Foundation (BMM5U3QVKW)**; `pkgutil
      --expand-full` succeeds and the `lib-dynload` C extensions are fat (`lipo -info` → `x86_64 arm64`).
@@ -2549,8 +2587,16 @@ inventory holds:
     does not read `agent_runtime_pins.json`. Required: `agent_runtime_pins.json` is the one source; a registered test
     runs `stage_agent_runtime.sh` on a `.pkg` whose SHA-256 differs from the pins file and asserts it refuses (mutant: restore a hard-coded literal → the bad package is accepted); a grep of the six files is a TRIPWIRE — not proof; the stage
     tool reads the pins file. Also (T-W7) `ms5_stage_gate.sh:42` installs an **unpinned** `sigstore` from pip: it must
-    reuse the MS6 hard gate's hash-locked verifier (red: a `pip install sigstore` without `--require-hashes` in the
-    script fails a lint test).
+    reuse the MS6 hard gate's hash-locked verifier (`packaging/macos/sigstore_verifier.txt`).
+    **Rev 31 (L1): the unpinned-sigstore half is now an exercise-form red, not a lint.** A lint test that greps the script for
+    `pip install sigstore` without `--require-hashes` is a TRIPWIRE — not proof. The proof: (a) entry = the real
+    `tests/mac/ms5_stage_gate.sh` driver, run hostless (no ssh to any host) with stub `curl`, `ssh`, `scp` and a stub `pip`/`python3`
+    on `PATH` that record argv; (b) `tests/mac/ms5_stage_gate_selftest.sh` (TO BE AUTHORED), step `test-mac-stage-gate-selftest`
+    (TO BE ADDED to `test`, in the style of `mac_compile_only_selftest.sh`); assertions: (1) every recorded `pip` install
+    argv contains `--require-hashes` and `-r packaging/macos/sigstore_verifier.txt` and no bare `sigstore` requirement;
+    (2) with `sigstore_verifier.txt` replaced by a file lacking `--hash=` lines, the driver exits non-zero BEFORE any `scp`
+    or `ssh` call (`ssh_calls == 0`); (c) mutant of the production script: restore the bare `pip -q install sigstore` → the
+    stub records an unhashed install and assertion 1 fails; (d) none (hostless). UNPROVEN until this step exists.
   - **Not resources:** `zb-claude`, `zb-hook-run`, `zb-net-relay` and `runtime/*.json` are written by `setup.py`
     into each user's agent home (`setup.py:481-504`), never into the bundle. The MS5 setup e2e proves them, once
     MS6 lets setup run.
@@ -2646,7 +2692,11 @@ and **BlackRobin** (Keychain/Secrets window later).
     `pip install sigstore` without hashes. The grep test of R29.6 D-W4 is a TRIPWIRE (R30.2 T12). Exercising red: run
     `stage_agent_runtime.sh` on a `.pkg` whose SHA-256 differs from `agent_runtime_pins.json` and assert it refuses (exit
     non-zero, the pin named); mutant: restore a hard-coded literal → a mismatching package is accepted. The script reads the
-    pins file; sigstore comes from the hash-locked `packaging/macos/sigstore_verifier.txt`.
+    pins file; sigstore comes from the hash-locked `packaging/macos/sigstore_verifier.txt`. **Rev 31 (L1): the unpinned-sigstore
+    half is closed by the same kind of exercise, not a lint:** the stub-`pip` selftest `test-mac-stage-gate-selftest`
+    (`tests/mac/ms5_stage_gate_selftest.sh`, TO BE AUTHORED) runs the real `ms5_stage_gate.sh` and asserts every recorded
+    install carries `--require-hashes -r packaging/macos/sigstore_verifier.txt`; mutant: restore the bare `pip install sigstore`
+    → fails. Any grep of the script for `pip install` is a TRIPWIRE — not proof.
   - V46-F11: MS5 item 5 has a Linux fake-ops proof only (`setup.py` has no `--e2e-protocol` barrier between `arm()` steps 1 and
     2, so `ms5_setup_e2e.sh` case (b) cannot pass). Add the barrier seam (already R29), AND set `POSIX_SPAWN_CLOEXEC_DEFAULT` plus
     explicit stdio in `zb_agent_spawn_group` (`agent_spawn_posix.c:14-33`; the `_io` variant sets it at `:47-49`). Red: a child
@@ -2744,6 +2794,11 @@ from one fact:
   `seatbelt_gate.zig` is changed only by the MS6 acceptance commit.
 - **Registered cross-language invariant test** (`tests/agent_seatbelt_readiness_invariant_test.zig`, TO BE AUTHORED, run in
   `test`): `seatbelt_ready ⇒ PROFILE_CURATION == CURATED ∧ no bare allow in the rendered profile ∧ platformGate allows`.
+  **Rev 31 (L3): "no bare allow in the rendered profile" is a profile-TEXT check, so it is a TRIPWIRE (the same check R30.2 T9
+  labels a TRIPWIRE) — never the closing proof of D2.** The `seatbelt_ready` constant read is also a tripwire (T8). The closing
+  proof is the kernel denial run beside them: the Mac rows of `tests/mac/ms6_generated_profile_test.sh` (canary `cat` → EPERM,
+  windowserver lookup denied, `exec /bin/sh` EPERM) executed under the generated profile on both Macs, released run, with
+  the bare-allow mutant making those rows fail. D2 stays UNPROVEN until then.
   Red assertion: with `PROFILE_CURATION = BROAD` the invariant holds vacuously only while `seatbelt_ready == false`;
   mutant 1: flip `seatbelt_ready = true` alone → the invariant fails; mutant 2: flip curation to CURATED without the
   profile change → the rendered-profile assertion fails. Both must be caught. **[Rev 30, bd `4pa.66`: observed at d0f1841, with `seatbelt_ready = true` `test-agent-setup-ms5` still exits 0, so no pin exists in the code; this registered invariant is the fix. The constant read itself is a TRIPWIRE, R30.2 T8.]**
@@ -2752,7 +2807,7 @@ from one fact:
 `agent/host/tests/test_backend_conformance.py` (next to `test_backend_contract.py`, same venv-fail-closed pattern,
 `build.zig` ~`:3194`) iterates `LinuxBwrapBackend` and `MacSeatbeltBackend` over the Protocol. Red assertion:
 `inspect.signature(MacSeatbeltBackend.network) == inspect.signature(SandboxBackend.network)` — fails today
-(`network(self)` vs `network(self, session=None)`); also asserts `launch_spec` accepts `network=`, `egress_dir()`
+(Rev 31, V46-F12: the Protocol's `network(self)` at `sandbox.py:213` vs BOTH backends' `network(self, session=None)`; the Protocol is the wrong side); also asserts `launch_spec` accepts `network=`, `egress_dir()`
 returns `Optional[str]` (Protocol typed `str`), and that every input the Mac `launch_spec` ignores (`ro_paths`,
 `state_dirs`, `net_dir`, `seccomp_fd`, `sandbox_macos.py:413-442`) either is honoured or raises
 `UnsupportedLaunchInput`. **Property:** for every Protocol member `m`, both classes expose `m` with identical parameter
@@ -2775,7 +2830,13 @@ backend"; owner BlueBeaver, joint with MS8.1). It is **NOT STARTED** and MS6 can
   the darwin refusal (assertion fails on exception); (b) Zig, the Darwin helper argv contains `--egress-port` (assertion
   `std.mem.indexOf(argv, "--egress-port") != null`, today absent); (c) with the VM-containment setting ON the launch
   path itself refuses with "VM containment is not available yet" (today only `--agent-setup` consults it, `app.zig:62-71`);
-  (d) a Python conformance row proves no production module imports `sandbox._LINUX_BACKEND` directly.
+  (d) **Rev 31 (L2): a Python import scan that "proves no production module imports `sandbox._LINUX_BACKEND` directly" is
+  a TRIPWIRE (static import check) — not proof, and it does not close I-W9.** The closing red is an exercise: (a) entry =
+  `launch.build_launch(backend, spec)`; (b) `agent/host/tests/test_backend_conformance.py` (same registered file as I1), a row
+  that POISONS the private module global (`sandbox._LINUX_BACKEND` replaced by an object whose every attribute access raises),
+  then calls `launch.build_launch(MacSeatbeltBackend(51234), spec)` and `launch.build_launch(LinuxBwrapBackend(), spec)` and
+  asserts both return their argv with no exception; (c) mutant of the production code: restore the `launch.py:97,111` use of
+  `_LINUX_BACKEND` inside `build_launch` → the poisoned global raises and the row fails; (d) none (portable).
 - **Classification:** BLOCKING (spawn crosses Zig → Python → sandbox-exec → CLI).
 
 **MS6.1 closure — relabel and keep OPEN (W1).** The current MS6.1 scripts (`ms6_1_token_isolation_test.sh`,
@@ -2858,7 +2919,7 @@ The gate MUST prove, both arches:
    `IPV6_V6ONLY=1`, **non-listening, no-reuse** reservation on `[::1]:<same port>`. If either cannot be
    held (e.g. a pre-planted `::1:<port>` listener → `EADDRINUSE`), it **fails closed**: netd exits 2 with
    no ready line and the browser treats it as the existing network failure; `probe_r1` returns no R1; the
-   profile is never published. Proven in `tests/mac/ms6_netd_darwin_gate.sh` / `test_netd_darwin` and
+   profile is never published. **[Rev 31, rule 8: the "Proven in" claim below is an agent report of Mac runs, SUSPECTED / UNPROVEN until a released run at a named commit.]** Reported in `tests/mac/ms6_netd_darwin_gate.sh` / `test_netd_darwin` and
    `tests/mac/ms6_r1_kernel_gate.sh` / `test_setup_darwin_r1` (pre-planted-`::1` fail-closed; second bind
    EADDRINUSE; reservation lifetime == v4 listener; lsof shows `[::1]:<port>` not-LISTEN + no reuse flags).
 2. **`[::1]:<port>` reaches nothing** — because (1) holds a **bound, non-listening** reservation there, a
@@ -2948,17 +3009,22 @@ above plus per-process Seatbelt port rules**. Either way MS0's launch spec is th
     reaper (fd-based creation pin, per-kill revalidation, recorded provenance). It has NOT been re-run since and
     **must not run on the Macs** until the signal paths are reviewed and the `reaper_ready` hard gate (MS6.5.1) is
     green; treat that prior PASS as **superseded, not current**. The current Mac evidence is the SIGNAL-FREE
-    census gate `tests/mac/ms6_5_reaper_census_gate.sh` (both arches 18/18, zero kill); the pure core + engine +
+    census gate `tests/mac/ms6_5_reaper_census_gate.sh` (reported both arches 18/18, zero kill [Rev 31, rule 8: agent-reported, SUSPECTED / UNPROVEN; no released run at a named commit]); the pure core + engine +
     pin are Linux-unit-tested under `unshare`. **MS6.5 no longer requires defeating the escape**, so it no longer
     forces the VM backend; the earlier "no survivors / Failure ⇒ VM required" criterion is withdrawn. The production lifecycle owner and the drawer
     survivor-warning are specified in **MS6.5.1** below.
-    **Rev 29 SAFETY (T4, bd `4pa.24`): `tests/mac/ms6_5_reaper_gate.sh` is DISABLED BY DEFAULT.** At HEAD its only
-    precondition is that `ZB_MAC_ARM_HOST` is set (script lines 15-23); it sends SIGKILL and the repo already records an
-    unreleased Mac test incident (`c07899f`). The technical guard, its red and its mutant are specified in
-    **R29-SAFETY**. The plan's sentence "must not run on the Macs" is now enforced in code, not only in prose.
+    **Rev 31 SAFETY (T4, bd `4pa.24`, `4pa.70`; V46-F8; R30.1 #18): the disable-by-default guard for
+    `tests/mac/ms6_5_reaper_gate.sh`, its red and its mutant are a REQUIRED fix-forward (R29-SAFETY, bd `4pa.70`), NOT yet in
+    code.** At HEAD the script is guarded ONLY by `ZB_MAC_ARM_HOST` being set (script lines 15-23). It sends SIGKILL, and the
+    repo already records an unreleased Mac test incident (`c07899f`). **The script must NOT be run on either Mac.** The
+    guard (exit 1 with "DISABLED: destructive reaper gate" unless `ZB_REAPER_DESTRUCTIVE_APPROVED` equals the staged commit
+    AND an orchestrator release-token file exists), its hostless red (`ssh_calls == 0` with a stub `ssh` on `PATH`) and its
+    mutant are specified in R29-SAFETY and R30-MS6 but have NOT been written. Status: UNPROVEN (the behaviour is NOT BUILT,
+    C80) until the guard lands in code, its hostless selftest is registered, and the orchestrator releases it. The earlier
+    Rev 29 sentences "is DISABLED BY DEFAULT" and "now enforced in code, not only in prose" were FALSE and are withdrawn.
 - **MS6.5.1 (the Darwin per-run dir, its run marker, lifecycle owner, and the census sweep + warning; rev 27 —
   orchestrator + RoseCat 3c39b9f / 012e1bc / 3118838 / ee626d0 / 565e107 / ec24db0 / 7362-7363, mails 7327/7333/7338/7345/7350/7352/7362, 2026-10-21).** The reaper library (`src/agent_run_reaper.c`) is
-  complete and verified signal-free on both Macs; this is its **browser-owned** production owner (RoseCat agrees
+  reported complete and signal-free on both Macs [Rev 31: SUSPECTED / UNPROVEN, not a released observed run]; this is its **browser-owned** production owner (RoseCat agrees
   that is the right owner). **This signal path is unreachable in production until a named `reaper_ready` hard gate
   passes (see *Gating* below); `seatbelt_ready` is NOT approval of it.** ~~The owner is real launch-path code, not a
   test-only caller~~ **[Rev 29, W2 plan text: FALSE of HEAD. The owner is NOT built. `recoverAllAtStartup` is called only
@@ -2968,17 +3034,22 @@ above plus per-process Seatbelt port rules**. Either way MS0's launch spec is th
   `zigBrowser-3gl` and by MS6.8.]** It will be dormant on two independent gates: the macOS agent-run path
   (`seatbelt_ready`, MS6) and `reaper_ready`.
   - **SCOPED ACCEPTANCE (Rev 28, AUTHORITATIVE — RoseCat `c11bff8`/`cdedf98`; overrides the rest of this MS6.5.1
-    body).** What is BUILT, reviewed and registered in `src/agent_run_ledger.zig` is ONLY: (a) the Linux
+    body).** What is reviewed and registered (as seam tests only; NOT BUILT as a behaviour under rule 6, Rev 31) in `src/agent_run_ledger.zig` is ONLY: (a) the Linux
     one-live-process liveness probe keyed on the recorded owner `(pid, start)` — schema v2 platform-tagged
     `start_kind`, canonical per-kind shape, `StartRead` I/O outcome mapping, and a **same-kind-only** comparison
     that fails closed on a cross-kind identity — mapped by `recoveryFor` to an action LABEL only (`.recover` /
-    `.leave` / `.fail_closed`); and (b) the bounded, cancellable `acquireRunLockBounded` flock-acquisition
-    primitive under one absolute monotonic deadline (fail-closed `lock_unavailable` on timeout). **Everything else
+    `.leave` / `.fail_closed`); and (b) ~~the bounded, cancellable `acquireRunLockBounded` flock-acquisition
+    primitive under one absolute monotonic deadline~~ **[Rev 31, V46-F15 / I-W4: STRUCK. `acquireRunLockBounded` is NOT a
+    held-lock primitive. It ignores `io` and acquires then RELEASES at once (`agent_run_ledger.zig:470`), so `acquired=true`
+    holds no lock. It is a lock PROBE with a deadline (fail-closed `lock_unavailable` on timeout), it is not "BUILT, reviewed
+    and registered" as an acquisition, and the two-process exclusion it was said to give does not exist. Fix: rename to
+    `probeRunLock` or return the held lock (R29.6 I-W4).]**. **Everything else
     described below in this MS6.5.1 body is NOT YET IMPLEMENTED and NOT ARMED** and is subordinate to this block:
     the startup queue / first-run refusal, the two-browser / other-browser exclusion, the signal / retirement /
     census-kill / marker-unlink / rmdir / ledger-mutating transaction under the held flock, and the `reaper_ready`
-    hard gate. No production recovery pass or signal call is reachable, and **there is no `reaper_ready` constant
-    yet**. The whole-recovery transaction (every item: production owner/call path, held-fd `(dev,ino,uid,mode)`
+    hard gate. No production recovery pass or signal call is reachable, and ~~**there is no `reaper_ready` constant
+    yet**~~ **[Rev 31, G6.2: STRUCK. `pub const reaper_ready: bool = false;` exists at `src/agent_run_recovery.zig:334`;
+    it is BUILT-UNARMED = NOT BUILT (rule 6), as the next bullet says.]**. The whole-recovery transaction (every item: production owner/call path, held-fd `(dev,ino,uid,mode)`
     provenance before teardown, typed fixed-point outcome, census/kill/fresh-census, marker-unlink → rmdir →
     ledger-retirement under the one flock, one deadline over acquire AND held work, a deterministic exact-result
     two-recoverer red asserting `{.signalled,.already_gone}` + terminal child statuses + empty final ledger + two
@@ -3354,7 +3425,8 @@ above plus per-process Seatbelt port rules**. Either way MS0's launch spec is th
       dependency tree it stages; it does not wait on `seatbelt_ready` or on the armed `ms5_setup_e2e.sh`.
   - **Resolved (rev 18.1):** the rev 18 blocker, HEAD's setup profile killing the real interpreter with SIGILL, is
     fixed by JadeBeacon's `aa83b5f`, `(allow process-info* (target self))`. (A) then reached its intended census
-    seam and went green on both Macs (`47199d3`, `ac15dfd`).
+    seam and went green on both Macs (`47199d3`, `ac15dfd`) [Rev 31, rule 8: agent-reported, SUSPECTED / UNPROVEN; the plan
+    cannot cite an observed released run].
 
 ### Workflow Closure (MS6.1 — token isolation; the load-bearing security belt)   [BLOCKING — Rev 29: OPEN, NOT implemented (W1); see R29-MS6 "MS6.1 closure — relabel and keep OPEN" and MS6.8. `mac_session.py` below does not exist; the trigger `zb_agent_run_sync` → `MacSeatbeltBackend` is not a production path.]
 - **Chain:** `token stored -> helper reads fd 3 -> MacSeatbeltBackend spawns CLI under profile -> CLI holds token -> hook spawned app-side under its own profile -> hook attempts task_for_pid/KERN_PROCARGS2 -> kernel denies -> hook's recorded result = denied, no canary bytes`
@@ -3421,7 +3493,11 @@ Rule 6 applies to the whole slice: no production path launches the agent under S
     TRIPWIRE (R30.2 T8). Exercising proof: (a) the real macOS binary's `--agent-setup` refuses with the fixed line
     (`ms5_setup_refusal_gate.sh`, both Macs, released run); (b) `tests/agent_seatbelt_readiness_invariant_test.zig` (TO BE
     AUTHORED, step `test-agent-seatbelt-readiness`, TO BE ADDED to `test`) renders the REAL profile from the production
-    generator and asserts `seatbelt_ready ⇒ PROFILE_CURATION == CURATED ∧ no bare allow in the rendered profile`;
+    generator and asserts `seatbelt_ready ⇒ PROFILE_CURATION == CURATED ∧ no bare allow in the rendered profile`
+    (**Rev 31, L3: the "no bare allow" clause is a profile-TEXT check, a TRIPWIRE exactly as R30.2 T9 labels it; it is a
+    cross-language consistency guard, not the closing proof. The closing proof is the kernel/run denial beside the constant
+    read: the Mac rows of `ms6_generated_profile_test.sh` (canary `cat` EPERM, windowserver lookup denied, `exec /bin/sh` EPERM)
+    under the generated profile, both Macs, released run. `4pa.66` stays UNPROVEN until they run.**);
     (c) mutants: flip `seatbelt_ready = true` alone → the invariant fails (today nothing fails); flip curation to CURATED without
     the profile change → the rendered-profile assertion fails.
 - **[bd `zigBrowser-4pa.67`, V46-F5, MAJOR] MS6 has no production path — NOT BUILT (MS6 half; the MS5 half is in R30-MS5).**
@@ -3494,7 +3570,7 @@ Rule 6 applies to the whole slice: no production path launches the agent under S
 
 ### R29-MS7 — MS7 status and amendments (Rev 29; K6, W3, T3, bd `4pa.27`; AUTHORITATIVE)
 
-**Status (Rev 30 corrected, bd `4pa.72`, `4pa.75`).** MS7.0 is a symbol-presence tripwire with no production caller (NOT BUILT); the portable *seams* of MS7.1 and MS7.4 are BUILT+REGISTERED and driven (7/7 each, observed at d0f1841) but their behaviours are NOT BUILT; the MS7.6/7.8 portable half is **RED-UNREGISTERED and NOT BUILT** (`Approver`, `cardPress` and `zb_drawer_card_press` do not exist; `test-agent-drawer-card-press` and `check-card-authority-mac` both exit 1, observed, and neither is in `test`);
+**Status (Rev 30 corrected, bd `4pa.72`, `4pa.75`).** MS7.0 is a symbol-presence tripwire with no production caller (NOT BUILT); the portable *seams* of MS7.1 and MS7.4 are driven and registered (7/7 each, observed at d0f1841) but are NOT BUILT as behaviours or by status word (Rev 31 G4.1: no production caller); the MS7.6/7.8 portable half is **RED-UNREGISTERED and NOT BUILT** (`Approver`, `cardPress` and `zb_drawer_card_press` do not exist; `test-agent-drawer-card-press` and `check-card-authority-mac` both exit 1, observed, and neither is in `test`);
 MS7.5's portable controller logic is a RED (unregistered). **No AppKit drawer exists**: `src/agent_drawer_mac.m` does not
 exist (the planned file; creating it is MS7's green), `wkwebview_shim.m` builds no main menu, and `zb_app_set/get_agent_drawer`
 are not in the shim. MS7.1/7.2/7.3 AppKit views, MS7.4 `ZbBubbleView`, MS7.5 window, MS7.7 census and MS7.9 ownership
@@ -3505,8 +3581,9 @@ are **NOT STARTED**. The native approve and deny minters (`agent_tools.zig:200,2
 with no helper, but `tests/mac/ms7_appkit_check.py:187-190` requires a card "presented by the real chain", which its own
 probe says does not exist until MS8 (`ms7_appkit_probe.m:11,321-324`). The gate could not pass at MS7. Resolution
 (plan decision): **MS7 gets a fixture-card entry** — a *production* card constructor (the same `Cards` presentation
-path the chain uses) invoked through an `--e2e-protocol`-gated test seam `zb_drawer_present_fixture_card(window,
-params)`; the **chain-sourced card stays MS8.3**. `ms7_appkit_check.py` is edited to require "presented by the fixture
+path the chain uses) invoked through the test seam `zb_drawer_present_fixture_card(window,
+params)`, **built ONLY under a test-only build option (`-Dtest-seams`) and absent from the shipping binary — NOT merely
+`--e2e-protocol`-gated, because `--e2e-protocol` is a public flag (Rev 31, bd `4pa.78`; R30-MS7)**; the **chain-sourced card stays MS8.3**. `ms7_appkit_check.py` is edited to require "presented by the fixture
 entry" at MS7 and "presented by the real chain" at MS8.3 (a milestone argument, like `resource_phase`'s). Red: the
 compiled gate at MS7 with the fixture entry present passes the card step; with the entry absent it fails with "no
 fixture card entry" (today it fails on "no real chain" and can never pass). **[Rev 30, bd `4pa.74`, `4pa.78`: K6 is a plan decision only. `ms7_appkit_check.py:198-200` still requires `source == "chain"`, there is no milestone argument and no `zb_drawer_present_fixture_card`. Also `--e2e-protocol` is a public flag, so the fixture seam must be compiled only under a test-only build option and be absent from the release binary. See R30-MS7.]**
@@ -3517,9 +3594,11 @@ built, the census; a real-screen case is listed separately as unbuilt, never con
 **T3 — lexical oracles are retired as authority.** `tests/e2e/mac_drawer_card_authority_test.py` and
 `mac_drawer_bubble_inert_test.py` (~2,000 lines) parse `src/agent_drawer_mac.m`, which does not exist, and neither is
 registered. They are relabelled **offline tripwires** (RoseCat `c6b2b32`, docs `3f536a8`) and are **not** acceptance
-evidence. The authority for MS7.4/7.6/7.8 is the **compiled two-Mac hard gate** (`c63020d`: production argv and
-preprocessor output, live ObjC census, live Edit > Copy with nil target, real bubble and page copies, the card's real
-Approve, no GTK-only card call) driving a real native card through the fixture entry. Once that gate drives a real card
+evidence. The authority for MS7.4/7.6/7.8 is the **compiled two-Mac hard gate** (`c63020d`: live ObjC census, live Edit > Copy
+with nil target, real bubble and page copies, the card's real Approve) driving a real native card through the fixture entry.
+**Rev 31 (L6): two items that the gate also lists are NOT authority and are TRIPWIRES — "production argv and preprocessor
+output" (compile-output text) and "no GTK-only card call" (a symbol/relocation check). Only the live items, above all the
+live Approve that mints a `grants` row, close MS7.4/7.6/7.8, and they are UNPROVEN until a released two-Mac run.** Once that gate drives a real card
 the lexical oracles are deleted from the plan's evidence list. **[Rev 30, bd `4pa.72`: the former sentence "Registered Linux evidence that DOES count: `check-card-authority-mac`" is WITHDRAWN. `check-card-authority-mac` is a red, unregistered relocation TRIPWIRE and counts as no evidence. What counts today is only the portable text and geometry seams (`test-agent-drawer-appkit`, `test-agent-drawer-appkit-text`: driven, registered, observed 7/7 each). The card-press tests count only after the green adds `cardPress` and registers them.]**
 
 **W3 — drawer ownership closure (MS2c.5 → MS7.9)** has no code and no test; see MS7.9 and the ledger.
@@ -3538,8 +3617,8 @@ the lexical oracles are deleted from the plan's evidence list. **[Rev 30, bd `4p
 - **Approval card:** the native row; **only the Approve handler mints** the MS4 grant.
 
 ### Behaviors
-> **Rev 29 status per behaviour (details in R29.2 and the ledger):** MS7.1 portable BUILT+REGISTERED / AppKit NOT
-> STARTED; MS7.2 NOT STARTED; MS7.3 NOT STARTED; MS7.4 portable BUILT+REGISTERED / `ZbBubbleView` NOT STARTED; MS7.5
+> **Rev 29 status per behaviour (details in R29.2 and the ledger):** MS7.1 portable driven SEAM, NOT BUILT (Rev 31 G4.1) / AppKit NOT
+> STARTED; MS7.2 NOT STARTED; MS7.3 NOT STARTED; MS7.4 portable driven SEAM, NOT BUILT (Rev 31 G4.1) / `ZbBubbleView` NOT STARTED; MS7.5
 > portable RED-UNREGISTERED / window NOT STARTED; MS7.6 portable half RED-UNREGISTERED (NOT BUILT, Rev 30 `4pa.72`) / AppKit card NOT STARTED; MS7.7
 > NOT STARTED; MS7.8 portable half RED-UNREGISTERED (NOT BUILT, Rev 30 `4pa.72`) / compiled gate RED-UNREGISTERED; MS7.9 NOT STARTED.
 - **MS7.1** dock resizes the page above it; **MS7.2** the "S" icon drags/persists/hides-while-open;
@@ -3605,8 +3684,9 @@ the lexical oracles are deleted from the plan's evidence list. **[Rev 30, bd `4p
 #### Workflow Closure (MS7.8 — native card mint/deny)   [BLOCKING: AppKit action → MS4 grant seam]
 - **Chain:** `native AppKit Approve click (-[NSWindow sendEvent:]) -> on_approve (= zb_agent_tools_approve -> Cards.approve, Rev 29) -> MS4 grant minted (tuple/120s/single-use)`; a Deny click mints nothing.
 - **SOURCE (seed):** a loaded bound window + a pending approval card (built from fixture
-  parameters through the **MS7 fixture-card entry** — a production card constructor behind an `--e2e-protocol` test
-  seam, R29-MS7 — **no helper**; the chain-sourced card is MS8.3). **TRIGGER:** the native Approve/Deny click (the card is the entry
+  parameters through the **MS7 fixture-card entry** — a production card constructor built ONLY under a test-only build
+  option (`-Dtest-seams`), absent from the shipping binary (Rev 31, bd `4pa.78`; R29-MS7, R30-MS7), **not** merely behind
+  the public `--e2e-protocol` flag — **no helper**; the chain-sourced card is MS8.3). **TRIGGER:** the native Approve/Deny click (the card is the entry
   point; there is no socket or helper at MS7). **DRIVER:** the real `[NSApp run]` loop + the real
   native click (real-screen case, orchestrator-run). **OBSERVE:** the MS4 grant seam — a valid
   grant exists after Approve, none after Deny. **FORBIDDEN SPAN:** the grant minter internals.
@@ -3652,7 +3732,7 @@ real-screen check (incl. the MS7.8 native Approve/Deny click). Coordinate with *
   (MS7.5).** `src/agent_secrets_window_mac.h:23` declares `int zb_secrets_window_open(unsigned long long window_id)` (open or
   focus the window); `src/agent_secrets_window.h:56` and `.c:188` already define `int zb_secrets_window_open(void)` ("is it
   open?"). A translation unit or Zig extern that sees both breaks, and callers get the wrong meaning; the mac header also points
-  to a non-existent `agent_secrets_window_mac.zig`. Fix: rename the Mac entry (for example `zb_secrets_window_mac_show`) before
+  to a non-existent `agent_secrets_window_mac.zig`. Fix: rename the Mac entry to `zb_secrets_window_mac_show` (the single name used in R29.6 I-W8, R30.2 T16 and here) before
   the green. Red 1 (portable): a C translation unit including both headers must compile (`clang -fsyntax-only`); fails today
   with "conflicting types for 'zb_secrets_window_open'" — a TRIPWIRE (R30.2 T16). Red 2 (the proof): the renamed entry opens the
   real Secrets window on a Mac and the window is absent from the registry (MS7.5 compiled gate, `ms7-gate`); mutant: make the
@@ -3690,7 +3770,7 @@ The following are being built on this branch and were absent from rev 28 (eviden
 - **MS8.0 — NOT BUILT (Rev 30, bd `4pa.75`; was BUILT+REGISTERED)** (`29744db`): the approval cards' minters (`zb_agent_tools_approve/_deny`) and the card
   window lifecycle are *defined* in both macOS builds, but on macOS the minters always return 0 (`agent_tools.start` is Linux-only, so `cards` is never initialised) and nothing calls them; the GTK-only tool call stays Linux-only.
   `cross-check-agent-tools-mac` is a symbol-presence TRIPWIRE and passes with the inert minter (observed at d0f1841). The proof is the R30-MS8 reds: a driven minter test and the compiled gate `grants` row.
-- **MS8.1 (portable core) — seam BUILT+REGISTERED (12/12 and 8 kill-group cases observed at d0f1841; no production importer of `spawnNetd`):** the macOS host spawner pure core and `spawnNetd` integration
+- **MS8.1 (portable core) — driven SEAM, status NOT BUILT (Rev 31 G4.1) (12/12 and 8 kill-group cases observed at d0f1841; no production importer of `spawnNetd`):** the macOS host spawner pure core and `spawnNetd` integration
   (`src/agent_host_posix.zig`, `agent_spawn_posix.c`). **MS8.1 proper (the helper launches under `MacSeatbeltBackend`)
   is NOT STARTED and needs MS6.8.**
 - **MS8.2a — RED-UNREGISTERED** (`2a851b5`, `7a04182`): the portable helper core's chat path
@@ -3776,7 +3856,7 @@ MS4) and **BlackRobin** (drawer/native card from MS7).
     child (`child_fds` assertion). (iii) `zb_agent_spawn_group` (the non-`_io` variant) lacks `POSIX_SPAWN_CLOEXEC_DEFAULT`;
     the red is in R30-MS5 V46-F11.
   - Unchanged and sound: MS8.1 portable spawner core (`test-agent-spawn`: 12/12 spawnNetd tests and the kill-group C test, 8
-    cases, observed at d0f1841; status seam BUILT+REGISTERED, behaviour NOT BUILT: no production importer of `spawnNetd`).
+    cases, observed at d0f1841; status NOT BUILT (a driven seam; Rev 31 G4.1), behaviour NOT BUILT: no production importer of `spawnNetd`).
 
 ---
 
@@ -3790,7 +3870,8 @@ Developer ID**, tracked via **Agent Mail / plan status** (the beads DB is migrat
 - **MS9.1 inside-out nested signing:** sign nested code in explicit **inside-out order** (helper,
   CLI, embedded frameworks/runtimes, then the `.app`) with the **MS1.3 least-privilege entitlement
   manifest** and `--options runtime`, per arch.
-- **MS9.2 whole-bundle hardened-runtime verify on both arches, then notarize:** `codesign --verify
+- **MS9.2 whole-bundle hardened-runtime verify on both arches, then notarize** (**Rev 31, L4: every `codesign`, `spctl` and
+  `stapler` check named here is a TRIPWIRE; the proof is launching the notarized app, see Closure below**): `codesign --verify
   --strict` passes on the universal bundle on **both** arches; then `xcrun notarytool submit
   --wait` returns `Accepted`, `xcrun stapler staple` + `stapler validate` succeed, and `spctl
   --assess --type execute` accepts the `.app`.
@@ -3808,8 +3889,15 @@ Developer ID**, tracked via **Agent Mail / plan status** (the beads DB is migrat
   `--version` under `--options runtime`). (3) The hardened-runtime leg of MS1b (Rev 29, P4) exists, or MS9.2 itself
   proves hardened-runtime on both arches.
 
-- **Closure:** LEAF (packaging assertions) — assert via `codesign --verify --strict`, `spctl
-  --assess`, `stapler validate`, each per arch.
+- **Closure (Rev 31, L4 — corrected):** `codesign --verify --strict`, `spctl --assess` and `stapler validate` (each per arch)
+  are **artifact verifiers: TRIPWIRES — not proof** (they list and check a signature; nothing in them launches the app). They
+  guard against regressions and never close MS9 or MS9.1/MS9.2. **The closing proof is LAUNCHING the notarized, stapled
+  universal `.app` (from the distributable `.dmg`, after Gatekeeper quarantine) on a Mac of each arch, and running the MS1b
+  workload on it** (m9 render and `WINCOUNT/TITLE/NAV`, the exec-arch readback, and the bundled CLI's `--version` from MS9.0):
+  (a) entry = the stapled `.app` launched as a user would; (b) a new `ms9-gate` step (TO BE ADDED, Mac-only) running that
+  launch; (c) mutant: ship a `.app` signed with the wrong entitlement or missing a nested signature → the launch row fails
+  (Gatekeeper kill or the dyld load error); (d) both Macs, released run. MS9 stays **UNPROVEN** until that launch is observed;
+  it is also blocked on the Developer ID.
 
 **Gate (MS9):** release gate on both arches producing a distributable `.dmg`. Not a UI slice.
 **Blocked on:** the Apple Developer ID (Agent Mail / plan status).
@@ -3974,9 +4062,9 @@ this plan are the 20 tripwires T1-T20 in R30.2. The four rule-9 fields of every 
 ### MS5
 - **MS5.1 [LEAF for the refusal decision; BLOCKING for a running setup] [PARTIAL]** Refusal: `tests/agent_setup_ms5_test.zig` —
   `assert platformGate(.macos, false) == .refuse` with the exact line. Running setup: the hard-gate cases in R29.2.
-- **MS5.1b [BLOCKING — filesystem census of a built home] [BUILT as a hard-gate case]** `ms5_1b_hard_gate_case_test.py` —
+- **MS5.1b [BLOCKING — filesystem census of a built home] [UNPROVEN; Linux stand-in unit BUILT+REGISTERED as a seam only, Mac run pending]** `ms5_1b_hard_gate_case_test.py` —
   `assert canary_bytes_in_home == 0`; Property: **Skip** — four enumerated link shapes, exhaustive.
-- **MS5.1c [BLOCKING — a two-tree oracle across arches] [BUILT]** Red: `mac_universal_census_test.py` /
+- **MS5.1c [BLOCKING — a two-tree oracle across arches] [BUILT-HANDRUN = UNPROVEN on the Macs; the pure parts are driven by registered unit tests (C56 is UNPROVEN: its step fails as root and skips)]** Red: `mac_universal_census_test.py` /
   `mac_ms5_census_test.py` mutants. **Properties (T2):** (a) `resource_phase(milestone, inventory)` is total and
   **accepts an empty resource set iff (milestone == "MS1" ∧ exactly the {browser, shim} components)**; domain =
   milestone ∈ {MS1, MS5, "", other} × component sets {browser, browser+shim, +extra, non-browser, MS5-shaped} × resources
@@ -4001,7 +4089,7 @@ this plan are the 20 tripwires T1-T20 in R30.2. The four rule-9 fields of every 
 - **MS6.2 [LEAF — pure profile-acceptance probe] [BUILT-HANDRUN]** G a generated profile; W `sandbox-exec -f` on each OS
   version; T accepted (exit 0). Red: `ms6_generated_profile_test.sh` — `assert rc == 0`. **Property (well-formedness):**
   over generated `(ro_paths, workspace, ports)` every profile parses under `sandbox-exec`.
-- **MS6.3 [BLOCKING — real CLI across the fd boundary] [lower layer BUILT-HANDRUN; hard-gate case built, run pending]** Red:
+- **MS6.3 [BLOCKING — real CLI across the fd boundary] [lower layer BUILT-HANDRUN; real-CLI hard-gate case UNPROVEN (stand-in unit only, no released Mac run)]** Red:
   `case_ms6_3_fd3_cli.py` — `assert cli_read == canary`; profile-mutant row (R29-MS6) `assert mutant_profile_result ==
   FAIL`. Property: **Skip** — one channel.
 - **MS6.4 [BLOCKING — egress through the production proxy] [BUILT-HANDRUN; production-proxy traversal NOT STARTED]** Red:
@@ -4010,24 +4098,27 @@ this plan are the 20 tripwires T1-T20 in R30.2. The four rule-9 fields of every 
   (domain: 12 combinations, exhaustive).
 - **MS6.5 [BLOCKING — reaper across processes; core only] [core BUILT-HANDRUN, warning NOT STARTED]** Red:
   `ms6_5_reaper_census_gate.sh` (signal-free) — `assert census_pids ⊇ escaper and kill_calls == 0`; the destructive gate is
-  disabled by default (R29-SAFETY).
+  REQUIRED to be disabled by default (R29-SAFETY, bd `4pa.70`; NOT yet in code, Rev 31 G5.1).
 - **MS6.5.1 [BLOCKING — cross-process ledger/flock] [BUILT-UNARMED = NOT BUILT (Rev 30); owner NOT STARTED]** Reds and mutants as listed in its
   Testing section. **Property (ledger parser, T2):** `parse` is total over arbitrary byte strings of length 0-70 000 — it
   returns a valid ledger or a typed error, never panics, and accepts a document iff it satisfies the strict grammar (closed
   `State {active, left}`, ≤ 256 entries, ≤ 64 KiB, unique basenames, canonical `start_usec`, `pid ≥ 2`, basename pid ==
   entry pid); round-trip `parse(write(l)) == l` for generated valid ledgers; domain = random bytes + mutated valid
   documents (field removed/duplicated/retyped).
-- **MS6.6 [BLOCKING — R1 under Seatbelt across processes] [(A) BUILT-HANDRUN, (B) harness built, run pending]** Red:
+- **MS6.6 [BLOCKING — R1 under Seatbelt across processes] [(A) BUILT-HANDRUN = UNPROVEN, (B) UNPROVEN: a pre-ready hard-gate harness exists but has not run in the production chain]** Red:
   `ms6_hard_gate_r1_case_test.py` — `assert verdict == "R1" and census_clean`; the forged-capability mutant → red.
 - **MS6.7 [BLOCKING] [NOT STARTED]** and **MS6.8 [BLOCKING] [NOT STARTED]** — specified in R29-MS6 with reds and mutants.
 - **`reaper_ready` arming [LEAF — one constant read] [BUILT-UNARMED = NOT BUILT (Rev 30)]** Red: the runtime hostile-environment test
   (`assert actuator_calls == 0`); Property: the (reaper_ready × setting × env) truth table (C-W8, in MS6.5.1).
 
 ### MS7
-- **MS7.1 [BLOCKING — dock geometry vs the real WKWebView frame, AppKit boundary] [portable seam BUILT+REGISTERED (observed 7/7); behaviour NOT BUILT; view NOT STARTED]**
+- **MS7.1 [BLOCKING — dock geometry vs the real WKWebView frame, AppKit boundary] [portable driven SEAM (observed 7/7), status NOT BUILT (Rev 31 G4.1); behaviour NOT BUILT; view NOT STARTED]**
   G a window of size (w, h) and the drawer open/folded; W the dock is laid out; T the page rect is above the dock and
   no overlay covers the GPU-composited layer. Red: `agent_drawer_appkit_test.zig` — `assert pageRect.h == h - dock.h`
   (portable); compiled gate: live frame census `assert webview.frame.maxY <= dock.frame.minY` (fails with no view).
+  **Mutant (Rev 31, G2.1; named, NOT yet run or recorded):** of the PRODUCTION `zb_drawer_appkit_frame` in
+  `src/agent_drawer.zig` — return the page rect with the full window height (do not subtract `dock.h`) → `assert pageRect.h ==
+  h - dock.h` in `test-agent-drawer-appkit` fails. Command and failing output go in the commit message when it is run (rule 3).
   **Property (geometry):** for every (w, h, dock ratio) with w, h ∈ [200, 4000], ratio ∈ [0.1, 0.9], `pageRect ∪
   dockRect == windowRect` and they do not overlap; domain = 1 000 random seeds. **[Rev 30, V79-m5: the registered test uses a fixed 10x13 (w, h) grid and `drawerRect` has a fixed 0.4 ratio with no ratio parameter, so this property (1,000 seeds, ratio in [0.1, 0.9]) is NOT what runs. Today's property is the grid; widening it needs a ratio parameter on `drawerRect`.]**
 - **MS7.2 [LEAF — one view's drag/persist logic, same module] [NOT STARTED]** G the "S" icon; W it is dragged, clicked
@@ -4037,9 +4128,11 @@ this plan are the 20 tripwires T1-T20 in R30.2. The four rule-9 fields of every 
 - **MS7.3 [LEAF — one animation curve] [NOT STARTED]** G the panel open; W `-` is pressed; T it folds to the icon's last
   position over 180 ms cubic ease-out. Red: portable curve test (TO BE AUTHORED if absent) — `assert ease(0) == 0 and
   ease(1) == 1 and monotone`; **Property:** monotonicity over t ∈ [0, 1] (1 000 samples).
-- **MS7.4 [BLOCKING — NSTextView first-responder copy route] [portable seam BUILT+REGISTERED (observed 7/7); behaviour NOT BUILT; `ZbBubbleView` NOT STARTED]** Red:
+- **MS7.4 [BLOCKING — NSTextView first-responder copy route] [portable driven SEAM (observed 7/7), status NOT BUILT (Rev 31 G4.1); behaviour NOT BUILT; `ZbBubbleView` NOT STARTED]** Red:
   `agent_drawer_appkit_text_test.zig` — `assert original_offset(shown(t), i) <= len(t)`; compiled gate: live Edit > Copy
-  with a nil target copies the ORIGINAL bytes. **Property:** for every UTF-8/invalid/NUL text t (length 0-2 000), `shown(t)`
+  with a nil target copies the ORIGINAL bytes. **Mutant (Rev 31, G2.1; named, NOT yet run or recorded):** of the PRODUCTION
+  `zb_drawer_appkit_original_offset` in `src/agent_drawer.zig` — drop the clamp to `len(t)` (return the shown offset plus the
+  run expansion unbounded) → `assert original_offset(shown(t), i) <= len(t)` in `test-agent-drawer-appkit-text` fails. **Property:** for every UTF-8/invalid/NUL text t (length 0-2 000), `shown(t)`
   is a valid UTF-16 mapping and `original_offset` is monotone and inverts `shown` on valid prefixes.
 - **MS7.5 [BLOCKING — Secrets window → Keychain across the AppKit/Keychain boundary] [portable RED-UNREGISTERED; window NOT STARTED]**
   G the Secrets window and a disposable keychain; W the user saves a token; T it is stored via MS5.2 and the window is
@@ -4065,7 +4158,7 @@ this plan are the 20 tripwires T1-T20 in R30.2. The four rule-9 fields of every 
   windows after each step.
 
 ### MS8
-- **MS8.1 [BLOCKING — helper under the backend, spawn chain] [NOT STARTED; portable core BUILT+REGISTERED]** G the token on
+- **MS8.1 [BLOCKING — helper under the backend, spawn chain] [NOT STARTED; portable core is a driven SEAM, NOT BUILT (Rev 31 G4.1)]** G the token on
   fd 3 and `MacSeatbeltBackend`; W the browser starts the helper via MS6.8; T `ready` arrives and validates. Red:
   `tests/e2e/mac_ms8_helper_ready_test.py` (TO BE AUTHORED) — `assert ready_frame_valid`. Property: **Skip** — frame
   validation is the shared, registered `agent_protocol.zig`.
@@ -4084,6 +4177,73 @@ on MS6) → MS9 (blocked on Developer ID)`. **Rev 29 additions to the order:** `
 MS9`; `MS6.7 (curation) and MS6.8 (production launch connector) are part of MS6 and precede MS8.1`; `MS6.5.2` needs
 MS6.8 + MS7; `MS7 AppKit views → MS7.9 → MS8.2c`; MS7.1/7.4 portable seams are landed and driven; MS7.0, the MS7.6/7.8 portable half and MS8.0 are NOT BUILT (Rev 30: R30.1 #1, #5, #6). MS3/MS4/MS5 may proceed in parallel after MS2a; MS7
 needs MS4 (grant) + MS5 (Keychain); MS8 needs MS5 (setup) + MS6 (sandbox) + MS7 (drawer).
+
+### Rev 31 — dependency order of the 26 Rev-30 fix-forwards (bd `4pa.55` to `4pa.80`; G6.3)
+
+This is the order in which the 26 fix-forwards are implemented once the freeze `zigBrowser-4pa.1` lifts. It orders WORK, not
+slices; the slice order above still governs everything else. Each item names its owning R30-MSn block. Every item follows the
+per-slice protocol (red first, registered in the green, mutant recorded). **No item below authorises a Mac run**: Mac steps
+need RoseCat exact-commit approval AND an orchestrator release (R29-SAFETY).
+
+**Phase A — the three CRITICAL findings, in this order.**
+1. **`4pa.55` (CRITICAL, R30-MS2): a failed or recovered page load must not quit the browser.** FIRST. Take the owner decision
+   R30.3 #1 (default: option C, quit only for the primary window's initial load). Rewrite `mac_ms2a_user_nav_failure_test.py`
+   (the oracle that encodes the defect), then the fix. Red is Linux-parsed or compile-only until a Mac release.
+2. **`4pa.72` (CRITICAL, R30-MS7): MS7.6/7.8 card press.** Author `Approver`, `cardPress`, `zb_drawer_card_press` in
+   `src/agent_drawer.zig`; the red `test-agent-drawer-card-press` is registered in `test` only in the green. Portable, no Mac.
+3. **`4pa.73` (CRITICAL, R30-MS1): the release script cannot make a working app (MS1c).** Hostless Red 1 (`test-mac-dmg-script`)
+   first; the Mac Red 2 and the bundle layout wait for item 24 (`4pa.80` spike).
+
+**Phase B — the HOSTLESS selftests that need no Mac. Do these early; they are independent and may run beside Phase A.**
+Each is a Linux step with stub `ssh`/`scp`/`lipo`/`codesign`, added to `test` in its green, and none touches a host.
+4. **`4pa.70` (R30-MS6 / R29-SAFETY): `test-mac-reaper-gate-guard`.** Land the disable-by-default guard for
+   `ms6_5_reaper_gate.sh` BEFORE anyone is tempted to run it. Until it lands the script must not be run (G5.1).
+5. **`4pa.59` + `4pa.77` (R30-MS1): `test-mac-build-script`.** Build from `git archive <sha>` into a fresh per-run remote
+   directory, pinned `known_hosts`, `StrictHostKeyChecking=yes`. Takes owner decision R30.3 #2 (default YES). Every later Mac
+   gate depends on it, so it precedes any Mac step.
+6. **`test-mac-dmg-script`** (the hostless half of item 3, `4pa.73`), if not already done in item 3.
+7. **MS1.4 fail-closed runner: `test-mac-gate-selftest`** (R30-MS1; no bd id, a rule-7 requirement).
+8. **`4pa.63` (R30-MS6): `test-darwin-guard-selftest`.** The meta-test that proves the Darwin cross-compile guard analyses the
+   ledger and recovery code. It precedes any claim that ledger/recovery "builds for Darwin" (items 15-16).
+9. **Rev 31 L1: `test-mac-stage-gate-selftest`** (R30-MS5; hash-locked sigstore install of `ms5_stage_gate.sh`).
+
+**Phase C — MS2 and MS3 majors (the Mac runtime is UNPROVEN until these exist).**
+10. **`4pa.62` (R30-MS2): give `ms2b-gate`, `ms2c-gate` and `ms3-gate` real build steps, and add the Linux parser tests.** Without
+    it nothing in MS2/MS3 can be called registered.
+11. **`4pa.58` (R30-MS2): new sub-slice MS2c.6, the native close button must reach the registry.** After item 1 (same window
+    lifecycle code) and the owner decision R30.3 #3 (default: match Linux). MS2c.6 specifies popups and secondary windows only.
+12. **`4pa.57` (R30-MS2): `page.dialogs` window id.**
+13. **`4pa.56` (R30-MS3): cookie calls honour `timeout_ms`.**
+14. **`4pa.60` (R30-MS3): pacing dir created for a new `--profile-dir`.**
+
+**Phase D — MS4 majors.**
+15. **`4pa.64` (R30-MS4): broker phaseA keeps `options.guard`.** Portable, Linux-registered.
+16. **`4pa.69` (R30-MS4): the Mac-only `ms4-gate` step** (MS4.4 login gate over `WKHTTPCookieStore`; `load_serial` on a Mac).
+
+**Phase E — MS5 and MS6 majors, in this order.**
+17. **`4pa.66` (R30-MS6, D2): the registered readiness pin and the one-type derivation BEFORE ANY MS6.7 WORK.** The `4pa.66`
+    rule "before any MS6.7 work" (R30-MS6, the Order bullet) is a hard gate on MS6.7 and on every item after it in this phase.
+18. **`4pa.65` + `4pa.71` + `4pa.68` (R30-MS6, MS6.5.1) in ONE green:** thread the real store name (`zigbrowser-agent-runs.json`)
+    into `recoverOneUnderLock`/`…P`, register the transaction test in `test` and make the gated entries non-`pub`, and reject
+    `pid < 2` at parse. Needs item 8 (`4pa.63`) first so the Darwin compile claim is real.
+19. **`4pa.67` (R30-MS5 and R30-MS6): production paths.** Put the Keychain and token-fd files in the macOS build target (MS5.2,
+    MS5.3), and build the launch connector MS6.8 with an `ms6-gate` and `ms5-gate` step. Until then those rows are NOT BUILT.
+20. **MS6.7 curation** (R29-MS6; no bd id of its own, owned by `4pa.66`'s derivation): after items 17-19.
+
+**Phase F — MS7 and MS8 majors.**
+21. **`4pa.76` (R30-MS7): rename the Mac Secrets entry to `zb_secrets_window_mac_show`** before the MS7.5 green.
+22. **`4pa.75` (R30-MS8): the macOS approval minters must start and work (MS8.0).** After item 2 (card press).
+23. **`4pa.74` + `4pa.78` (R30-MS7): the K6 fixture-card entry and the gate that can pass at MS7, built ONLY under the test-only
+    build option `-Dtest-seams`, absent from the release binary.** After items 2 and 22.
+
+**Phase G — MS9 and packaging majors (all need a Mac; blocked on release, and the notarization leg on the Developer ID).**
+24. **`4pa.80` (R30-MS9): the bundle-layout spike.** Runs BEFORE MS1c fixes the layout (item 3, Red 2).
+25. **`4pa.79` (R30-MS9): the widened MS9.0 entitlement and CLI spike.** Before MS9.1.
+26. **`4pa.61` (R30-MS1): the MS1.3 entitlement probe (`ms1_entitlement_probe.sh`).** Shares the MS9.0 spike (item 25), so it
+    runs with it.
+
+All 26 bd ids appear above exactly once (`4pa.59` and `4pa.77` share item 5; `4pa.65`, `4pa.71`, `4pa.68` share item 18;
+`4pa.74` and `4pa.78` share item 23). The Linux-side or hostless reds of items 4-16 can proceed while the owner decides R30.3 (each uses the stated default); their Mac proofs stay UNPROVEN until a released run.
 
 **MS1b (the signed x86_64 binary runs) — split out, NOT a universal blocker** (user decision
 "split it out, fix now", over "fix it before MS1"; orchestrator). Its binding edges:
@@ -4175,7 +4335,7 @@ cell or in the R30 block cited there.
 | C04 | MS1.1 Mac census of the built bundle | y | y | n | n | no | `mac-gate` is not in `test`; no recorded released run; census is a listing (T18) | UNPROVEN |
 | C05 | MS1.1 bundle == inventory (undeclared file) | n | n | n | n | no | observed demo: an undeclared non-Mach-O file passes | NOT BUILT |
 | C06 | MS1.2 executing-arch readback | y | y | n | n | no | `mac-gate` only; no mutant recorded; no released run | UNPROVEN |
-| C07 | MS1.3 least-privilege entitlement manifest | n | y | n | n | no | tripwire-only (signs with the plist, compares to it); key does nothing; R30-MS1 `4pa.61`, R30-MS9 `4pa.79` | UNPROVEN |
+| C07 | MS1.3 least-privilege entitlement manifest | n | n | n | n | no | tripwire-only (signs with the plist, compares to it); key does nothing; the exercising proof `tests/mac/ms1_entitlement_probe.sh` is TO BE AUTHORED, so b=n (Rev 31, G2.6: y means "exists today"); R30-MS1 `4pa.61`, R30-MS9 `4pa.79` | UNPROVEN |
 | C08 | MS1.3 `release_least_privilege` rule | n | y | y | n/a | no | tripwire-only (manifest/binary text scan) | UNPROVEN |
 | C09 | MS1.4 fail-closed gate runner | y | n | n | n | no | no hermetic selftest; R30-MS1 | UNPROVEN |
 | C10 | MS1b signed binary runs (ad-hoc) | y | y | n | n | no | `ms1b-gate` not in `test`; no hardened leg; pixel check skipped | UNPROVEN |
@@ -4205,8 +4365,8 @@ cell or in the R30 block cited there.
 | C34 | MS3.2 flag effect on macOS | y | n | n | n | no | Mac e2e hand-run; no read-back seam | UNPROVEN |
 | C35 | MS3.3 cookie ABI and port | y | n | n | n | no | Zig tests skip off a Mac; e2e hand-run | UNPROVEN |
 | C36 | MS3.3 cookie calls honour `timeout_ms` | n | n | n | n | no | `zb_job_inflight` missing; R30-MS3 `4pa.56` | NOT BUILT |
-| C37 | MS4.1a `load_serial` (Linux twin) | y | y | y | n/a | yes | driven (`build.zig:3348,3812`) | BUILT+REGISTERED |
-| C38 | MS4.1a `load_serial` (macOS) | y | n | y | n | no | `ms4_gate.sh` hand-run | UNPROVEN |
+| C37 | MS4.1a `load_serial` (Linux twin) | y | y | y | n/a | yes | driven (`build.zig:3348,3812`); mutants (counter never increments / resets on commit) are named in the LIVE R29-MS4 text (Rev 31, G2.2), not only in the historical rev-6 section | BUILT+REGISTERED |
+| C38 | MS4.1a `load_serial` (macOS) | y | n | y | n | no | `ms4_gate.sh` hand-run; mutants named in the live R29-MS4 text (Rev 31, G2.2), not yet run on a Mac | UNPROVEN |
 | C39 | MS4.1 in-ticket refusal (engine, Linux) | y | y | y | n/a | yes | driven (`automation_expect_*_test.zig`) | BUILT+REGISTERED |
 | C40 | MS4.1 in-ticket refusal over macOS | n | n | n | n | no | `mac_ms4_refusal_test.py` does not exist | NOT STARTED |
 | C41 | MS4 card single use (`Cards`, Linux) | y | y | y | n/a | yes | driven; the only caller is the GTK drawer | BUILT+REGISTERED |
@@ -4219,12 +4379,12 @@ cell or in the R30 block cited there.
 | C48 | MS5 `platformGate` decision (macOS refuses) | y | y | n | n/a | no | driven (`agent_setup_ms5_test.zig`); decision mutant not named | BUILT+REGISTERED |
 | C49 | MS5 `seatbelt_ready` stays false | y | n | n | n | no | observed: flipping the constant leaves the step at exit 0; R30-MS6 `4pa.66` | UNPROVEN |
 | C50 | MS5 `runtimeFor`, `selfExe` on macOS | n | y | n | n/a | no | Linux branch driven; macOS branch unreachable (gate refuses) | NOT BUILT |
-| C51 | MS5 home lock | y | y | n | n/a | no | driven (Linux lock tests); macOS only compiles | BUILT+REGISTERED |
+| C51 | MS5 home lock | y | n | n | n/a | no | Rev 31 (G2.3): the plan cannot name a test file and step that call `zb_agent_home_lock` (callers: `app.zig:127,191`, `agent_helper.c:813,952`; `tests/e2e/agent_login_locks_test.py`, `build.zig:2866`, is about Secrets-window control locks, NOT this flock); "existing lock tests" is unnamed, so b=n; a named flock exclusion test (two processes, one holder) is required; macOS only compiles | UNPROVEN |
 | C52 | MS5 item 5 setup group dies with the browser (macOS) | n | y | y | n | no | Linux fake-ops only; Mac e2e case (b) hard-fails; unreachable | NOT BUILT |
 | C53 | MS5.1 setup runs on macOS | n | n | n | n | no | `--agent-setup` refuses | NOT BUILT |
 | C54 | MS5.1 hard-gate case S3a links | y | y | y | n | no | stand-in unit registered; Mac run pending | UNPROVEN |
 | C55 | MS5.1b skipped-link bytes | y | y | y | n | no | stand-in unit registered; Mac run pending | UNPROVEN |
-| C56 | MS5.1c census, merge, relocate, stage (pure parts) | y | y | y | n/a | yes | driven; step also fails as root (V46-F20) | BUILT+REGISTERED |
+| C56 | MS5.1c census, merge, relocate, stage (pure parts) | y | n | y | n/a | no | Rev 31 (G2.4, G4.2): `test-mac-census` exits 1 under `--map-root-user` (`test_ms5_1b…unreadable_file_or_a_fifo` fails as root) and reports "OK (skipped=6)" (6 Darwin-only "no kqueue" skips). Rule 7: a skip or a failing step is a failure, so it is NOT Complete and NOT BUILT+REGISTERED until the skips fail the Mac tier and the root guard lands (R30-MS5 V46-F20); observed | UNPROVEN |
 | C57 | MS5.1c staging on the Macs | y | n | y | n | no | `ms5_*_gate.sh` hand-run | UNPROVEN |
 | C58 | MS5.2 Keychain onboarding | n | n | n | n | no | Keychain files in no build target; R30-MS5 `4pa.67` | NOT BUILT |
 | C59 | MS5.3 token only to fd 3 | n | n | n | n | no | seam, no caller, not in `build.zig`; R30-MS5 `4pa.67` | NOT BUILT |
@@ -4242,7 +4402,7 @@ cell or in the R30 block cited there.
 | C71 | MS6.5.1 production owner (run dir, marker, states) | n | n | n | n | no | not started; bd `zigBrowser-3gl` | NOT STARTED |
 | C72 | MS6.5.2 warning and setting; MS6.5.3 Darwin probe | n | n | n | n | no | not started | NOT STARTED |
 | C73 | MS6.6 R1 under Seatbelt (A) kernel gate and (B) harness | y | y | y | n | no | hand-run; (B) built, not run | UNPROVEN |
-| C74 | MS6/MS8 hook Darwin branch | y | y | y | n | no | stand-in units registered; Mac run pending; nested `sandbox-exec` unverified | UNPROVEN |
+| C74 | MS6/MS8 hook Darwin branch | y | n | y | n | no | Rev 31 (G2.5, G4.4): only `ms8_hook_sandbox_case_unit` is in `test` (`build.zig:3695`); `ms8_hook_launch_env_case_unit` hangs off `test-mac-census` only (`build.zig:3146`), a draft by rule 2, so b=n until it is added to `test`; Mac run pending; nested `sandbox-exec` unverified | UNPROVEN |
 | C75 | MS6 profile generator output | y | y | n | n | no | tripwire-only (pins broad text); kernel enforcement unproven | UNPROVEN |
 | C76 | MS6.7 read and mach-lookup curation | n | n | n | n | no | not started | NOT STARTED |
 | C77 | MS6.8 production launch connector | n | n | n | n | no | not started | NOT STARTED |
@@ -4251,10 +4411,10 @@ cell or in the R30 block cited there.
 | C80 | Reaper destructive gate disabled by default | n | n | n | n/a | no | only `ZB_MAC_ARM_HOST` guards it; `4pa.70` | NOT BUILT |
 | C81 | Debug hooks inert without `--e2e-protocol` | y | y | n | n | no | covers 4 of 13 hooks | UNPROVEN |
 | C82 | MS7.0 portable drawer exports on macOS | n | n | n | n | no | tripwire-only (symbols); not in `test`; no caller | NOT BUILT |
-| C83 | MS7.1 portable dock geometry seam | y | y | y | n/a | yes | driven; observed 7/7 | BUILT+REGISTERED |
+| C83 | MS7.1 portable dock geometry seam | n | y | n | n/a | no | Rev 31 (G4.1, G2.1): driven, observed 7/7, but no `.m` file calls the seam (R30.1 #7), so a=n and the status word is NOT BUILT (R30.0: BUILT+REGISTERED needs a production caller). The mutant (full-height page rect) is NAMED in the ledger MS7.1 entry but not yet run, so c=n | NOT BUILT |
 | C84 | MS7.1 AppKit dock view | n | n | n | n | no | `agent_drawer_mac.m` does not exist | NOT STARTED |
 | C85 | MS7.2 icon, MS7.3 fold | n | n | n | n | no | not started | NOT STARTED |
-| C86 | MS7.4 portable bubble text seam | y | y | y | n/a | yes | driven; observed 7/7 | BUILT+REGISTERED |
+| C86 | MS7.4 portable bubble text seam | n | y | n | n/a | no | Rev 31 (G4.1, G2.1): driven, observed 7/7, but no `.m` file calls the seam (R30.1 #7), so a=n and the status word is NOT BUILT. The mutant (unclamped `original_offset`) is NAMED in the ledger MS7.4 entry but not yet run, so c=n | NOT BUILT |
 | C87 | MS7.4 `ZbBubbleView`, Edit menu | n | n | n | n | no | not started | NOT STARTED |
 | C88 | MS7.5 Secrets window controller | n | n | n | n | no | red, unregistered, imports a missing module; name clash `4pa.76` | RED-UNREGISTERED |
 | C89 | MS7.6/7.8 portable card press | n | n | n | n | no | observed exit 1 (5 compile errors); `4pa.72` | RED-UNREGISTERED |
@@ -4264,16 +4424,57 @@ cell or in the R30 block cited there.
 | C93 | MS8.0 approval minters on macOS | n | n | n | n | no | always return 0; symbol check passes (observed); `4pa.75` | NOT BUILT |
 | C94 | MS7.7 chat census; MS7.9 drawer ownership | n | n | n | n | no | not started | NOT STARTED |
 | C95 | Fixture-card entry (K6) and its absence from release | n | n | n | n | no | plan only; `4pa.74`, `4pa.78` | NOT STARTED |
-| C96 | MS8.1 portable spawner core seam | n | y | y | n/a | no | driven; observed 12/12 and 8 kill-group cases; no `spawnNetd` importer | BUILT+REGISTERED |
+| C96 | MS8.1 portable spawner core seam | n | y | y | n/a | no | driven; observed 12/12 and 8 kill-group cases; no `spawnNetd` importer, so a=n and (Rev 31, G4.1) the status word is NOT BUILT (a seam with a driven test, no production caller) | NOT BUILT |
 | C97 | MS8.1 helper under `MacSeatbeltBackend` | n | n | n | n | no | not started | NOT STARTED |
 | C98 | MS8.2a helper core | n | n | n | n | no | red, unregistered | RED-UNREGISTERED |
 | C99 | MS8.2b POSIX transport | n | n | n | n | no | red, uncommitted | RED-UNREGISTERED |
 | C100 | MS8.2c wiring; MS8.3 approved commit | n | n | n | n | no | not started | NOT STARTED |
 | C101 | MS9.0 spike, MS9.1 signing, MS9.2 notarization | n | n | n | n | no | not started; blocked on Developer ID; `4pa.79`, `4pa.80` | NOT STARTED |
-| C102 | R4 compile-only harness selftest | y | y | n | n/a | no | driven; observed exit 1 as root, exit 0 as a real user (V79-m12) | BUILT+REGISTERED |
+| C102 | R4 compile-only harness selftest | y | n | n | n/a | no | driven; observed exit 1 as root (7 cases), exit 0 as a real user under a reaping PID 1 (V79-m12). Rev 31 (G4.3): it fails under the plan's own standard wrapper (R30.1 #24), so b=n and it is not BUILT+REGISTERED until the root guard lands | UNPROVEN |
 
-**Counts of record at Rev 30 (102 behaviours):** BUILT+REGISTERED 15 (of which 5 are observed seams or units: C01, C03, C83, C86, C96);
-UNPROVEN 35; NOT BUILT 25; RED-UNREGISTERED 5; NOT STARTED 20; UNSUPPORTED 1; RETIRED 1. Rows with all applicable rule-9 fields
-complete: 8 (C01, C03, C37, C39, C41, C56, C83, C86). Every other row names what is missing. A BUILT+REGISTERED row with
-Complete = no (for example C33, C46, C48) is registered and driven but lacks a recorded mutant, so it is not proof until the
-mutant is recorded in the commit message (rule 3).
+**Counts of record at Rev 31 (102 behaviours; recounted from the 102 rows above by script after the Rev 31 status changes):**
+BUILT+REGISTERED 9 (C01, C03, C33, C37, C39, C41, C46, C48, C79; C01 and C03 were observed at d0f1841, the rest rest on the plan's own statement);
+UNPROVEN 38; NOT BUILT 28; RED-UNREGISTERED 5; NOT STARTED 20; UNSUPPORTED 1; RETIRED 1 (9 + 38 + 28 + 5 + 20 + 1 + 1 = 102).
+Rows with all applicable rule-9 fields complete (Complete = yes): 5 (C01, C03, C37, C39, C41). Every other row names what is
+missing. A BUILT+REGISTERED row with Complete = no (for example C33, C46, C48, C79) is registered and driven but lacks a recorded
+mutant, so it is not proof until the mutant is recorded in the commit message (rule 3).
+**Changes from the Rev 30 counts (15 / 35 / 25 / 5 / 20 / 1 / 1 and 8 complete):** C83, C86 and C96 moved from BUILT+REGISTERED to
+NOT BUILT (seams with a driven test and no production caller, R30.0; G4.1); C56, C102 and C51 moved from BUILT+REGISTERED to
+UNPROVEN (C56 and C102 fail under the plan's standard wrapper and skip, rules 2 and 7; C51 names no test, G2.3); C56, C83 and C86
+left Complete = yes (G2.4, G2.1). The C07 and C74 rows changed field b only (G2.6, G2.5); their status stays UNPROVEN.
+
+## Audit gaps closed (Rev 31; the 29 gaps of `2026-10-14-14-30-macos-launch-tdd-plan-RULE-AUDIT.md`, PASS WITH GAPS (29))
+
+Section names are used instead of line numbers because the file moved. "Fix" says where the corrected text now sits.
+
+| Gap | What was wrong (rev 30) | The fix (Rev 31) |
+|---|---|---|
+| G2.1 | C83, C86 were Complete = yes with c = y but no mutant was named for the MS7.1 and MS7.4 seams | The ledger entries MS7.1 and MS7.4 now name a production mutant each (full-height page rect; unclamped `original_offset`). They are NOT yet run, so C83 and C86 are Complete = no, c = n (and a = n, G4.1) |
+| G2.2 | C37, C38 relied on a `load_serial` mutant that lived only in the HISTORICAL MS4 rev-6 section | The mutants (counter never increments; resets on commit) and the full (a)-(d) proof were moved into the live R29-MS4 text (MS4.1a bullet); the rev-6 heading now says it carries no normative force; C37 and C38 rows point at the live text |
+| G2.3 | C51 (home lock) was b = y "Linux lock tests" with no named file or step | No test calls `zb_agent_home_lock`; `agent_login_locks_test.py` is about Secrets controls, not this flock. C51 is now b = n, UNPROVEN, and the row says a two-process flock test is required |
+| G2.4 | C56 was Complete = yes and BUILT+REGISTERED but its step fails as root and skips 6 Darwin tests (rule 7) | C56 is b = n, Complete = no, UNPROVEN; the row records the root failure and "OK (skipped=6)" |
+| G2.5 | C74 and R29.2 row for the hook branch called both stand-in units registered; `ms8_hook_launch_env_case_unit` is only on `test-mac-census` (`build.zig:3146`) | R29.2 row and C74 now say only `ms8_hook_sandbox_case_unit` is in `test`; the other is a draft by rule 2 and registering it is a required fix-forward; C74 b = n |
+| G2.6 | C07 was b = y though `ms1_entitlement_probe.sh` is TO BE AUTHORED | C07 b = n with the reason (header: y means "exists today") |
+| L1 | The only red for the unpinned-sigstore half of V46-F10 was a lint test | MS5.1c (T-W7) and R30-MS5 V46-F10 now use an exercise-form red: stub-`pip` selftest `test-mac-stage-gate-selftest` runs the real `ms5_stage_gate.sh` and asserts `--require-hashes -r sigstore_verifier.txt`, with a restore-bare-install mutant; the lint is labelled a TRIPWIRE |
+| L2 | MS6.8 red (d), an import scan for `sandbox._LINUX_BACKEND`, closed I-W9 unlabelled | Labelled a TRIPWIRE; the real red poisons `sandbox._LINUX_BACKEND` and calls `launch.build_launch` for both backends, mutant restores the private use |
+| L3 | D2 and `4pa.66`/T8(b) promoted "no bare allow in the rendered profile" (profile text) to proof, though T9 calls it a TRIPWIRE | Both places (R29-MS6 D2, R30-MS6 `4pa.66`) now label it a TRIPWIRE and name the closing proof: the Mac kernel-denial rows of `ms6_generated_profile_test.sh` beside the constant read |
+| L4 | MS9 closure asserted via `codesign --verify --strict`, `spctl --assess`, `stapler validate` (artifact verifiers) | MS9.2 and the Closure bullet label them TRIPWIRES; the proof is launching the notarized, stapled app on each Mac (new `ms9-gate` launch row, mutant, UNPROVEN until released and Developer ID) |
+| L5 | MS1 red still asserted "the entitlements file lists the exact keys" (the retired tautology) | Clause removed and labelled retired (R30.1 #8, T17); proof is the `ms1_entitlement_probe.sh` feature probe |
+| L6 | R29-MS7 T3 listed "production argv and preprocessor output" first among the authority items | Marked TRIPWIRES (with "no GTK-only card call"); only the live items, above all the live Approve minting a `grants` row, are authority |
+| G4.1 | C96 (a = n), C83, C86 (no caller) were BUILT+REGISTERED, against R30.0 | C83, C86, C96 are NOT BUILT (driven seams, no production caller); totals recomputed |
+| G4.2 | = G2.4 (C56 observed rc 1 and 6 skips) | See G2.4 |
+| G4.3 | C102 was BUILT+REGISTERED but fails under the plan's own wrapper (R30.1 #24) | C102 is UNPROVEN, b = n |
+| G4.4 | = G2.5 | See G2.5 |
+| G5.1 | MS6.5 body said `ms6_5_reaper_gate.sh` "is DISABLED BY DEFAULT" and "now enforced in code" (false; V46-F8, R30.1 #18) | Rewritten: the guard, red and mutant are a REQUIRED fix-forward (R29-SAFETY, bd `4pa.70`), NOT in code; at HEAD only `ZB_MAC_ARM_HOST` guards the SIGKILL script, which must not be run; UNPROVEN until the guard lands and is released (exact wording in MS6.5, "Rev 31 SAFETY") |
+| G5.2 | The AUTHORITATIVE SCOPED ACCEPTANCE block listed `acquireRunLockBounded` as "BUILT, reviewed and registered" (it holds no lock) | The block itself now strikes it: it acquires then releases, it is a probe, and the whole block's "BUILT" is reduced to "reviewed and registered as seam tests only, NOT BUILT (rule 6)" |
+| G5.3 | The Shared contract amendment (I1) pointed the gap the wrong way (`network(self)` on the Mac backend) | Corrected: both backends use `network(self, session=None)`; only the Protocol (`sandbox.py:213`) is wrong; same fix in R29-MS6 I1 |
+| G5.4 | MS7.8 Workflow Closure (and K6) still put the fixture-card entry "behind an `--e2e-protocol` test seam" | Both now say it is built ONLY under a test-only build option (`-Dtest-seams`), absent from the shipping binary (`4pa.78`, R30-MS7) |
+| G5.5 | Two renames for the Secrets window symbol: `zb_secrets_window_open_for` (I-W8) and `zb_secrets_window_mac_show` (T16, R30-MS7) | Standardised on `zb_secrets_window_mac_show` in R29.6 I-W8 and R30-MS7 (T16 already used it) |
+| G5.6 | R30 sources paragraph said "1 critical, 25 major" | Corrected to 3 critical (`4pa.55`, `4pa.72`, `4pa.73`) + 23 major |
+| G5.7 | Two live-only requirements lived only in the HISTORICAL MS4 rev-6 section: the `load_serial` mutant and socket separation (`agent.*`/`broker.*` -32601, grant id as auth -32000) | Both moved into R29-MS4 with an (a)-(d) proof each (Linux step names, macOS test TO BE AUTHORED, mutants); the rev-6 heading is history only |
+| G5.8 | Rev 8 history note said "Row 2's MS1 rule still stands" though Rev 9 and MS1.1 superseded it | The "still stands" claim removed; the note says the rule was superseded and the section is history |
+| G6.1 | MS1b heading said "LANDED `3421428`" and the behaviour "GREEN ... ad-hoc and hardened", while C10 is UNPROVEN | Heading now "fix committed `3421428`; UNPROVEN (C10)"; STATUS block says COMMITTED, NOT CLOSED; the hardened leg is UNPROVEN and the cited run could not be verified; "validated"/"GREEN" replaced by "reported ... SUSPECTED / UNPROVEN" |
+| G6.2 | The SCOPED ACCEPTANCE block still said "there is no `reaper_ready` constant yet" | Struck; says `reaper_ready` exists at `agent_run_recovery.zig:334`, BUILT-UNARMED = NOT BUILT |
+| G6.3 | No order for the Rev 30 fix-forwards | New subsection "Rev 31 - dependency order of the 26 Rev-30 fix-forwards" under Dependency order: 3 criticals first (`4pa.55`, `4pa.72`, `4pa.73`), then the hostless selftests (including MS2c.6 placement and the `4pa.66` "before any MS6.7" rule), then the majors by slice |
+| G6.4 | Status words outside R30.0 ("BUILT as a pre-ready hard-gate case", "[BUILT as a hard-gate case]", "[BUILT]", "hard-gate case built, run pending", "(B) harness built") | All six normalised to UNPROVEN, BUILT-HANDRUN = UNPROVEN, or BUILT+REGISTERED-as-a-seam, in R29.2 and the ledger |
+| G6.5 | Mac runtime claims (MS2b.2 mutant-proven, PSF pkg VERIFIED, MS6.3 netd/R1 "Proven in", MS6.5 census 18/18 and "verified signal-free", MS6.6 (A) green) stated as fact | Each now carries "SUSPECTED / UNPROVEN" (rule 8) in the slice text |
