@@ -173,6 +173,25 @@ test "x flow phase A: a stale load_serial or another origin refuses each verb be
     };
 }
 
+test "x flow phase A comes before the daily cap: with the cap used up, a stale approval is load_serial_changed, never x_daily_cap (RoseCat a758ef8)" {
+    for (verbs) |verb| {
+        var h: XHarness = undefined;
+        h.init();
+        defer h.deinit();
+        // Use up the whole daily cap: a run that took its slot before phase A would be refused
+        // as x_daily_cap instead.
+        while (h.state.reserve()) |slot| {
+            var r = slot;
+            r.commit();
+        }
+        try testing.expectEqual(@as(u32, 0), h.state.remaining());
+        var buf: [512]u8 = undefined;
+        try refusedAs(&h, verb, try approved(&buf, verb, 2, compose), "load_serial_changed");
+        try expectNothingRan(&h, 0);
+        try testing.expectEqual(@as(usize, 0), h.fake.eval_calls.items.len);
+    }
+}
+
 test "x flow phase B: an approval for another URL than the compose_url navigates nowhere, for each verb" {
     for (verbs) |verb| {
         var h: XHarness = undefined;
