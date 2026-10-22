@@ -28410,3 +28410,38 @@ red: **12 tests, 12 errors**, all `FileNotFoundError` for
 `case_ms6_3_fd3_cli.py`. `git diff --check` is clean. BlueBeaver may now build
 the green, register it and present the resulting reviewed manifest digest; no
 Mac run is authorized by this red-only verdict.
+
+## Decision-16 navigate/reload approval core red (`f2e7e24`)
+
+**APPROVED as the scoped, unregistered part-1 red.** The table test pins the
+three selector values against all three modes: `yes` always requires a card,
+`no` never does, and the default `conditional` requires one only in headless
+or full-automation mode (`tests/agent_approval_policy_test.zig:28-59`). Thus
+the owner's statement that cards appear only in headless/full automation is
+correct for the default `conditional` policy; an explicit `yes` intentionally
+overrides it in interactive mode. The store tests pin `conditional` as the
+absent default, the exact `yes|no|conditional` grammar, atomic temp+fsync+
+rename+directory-fsync publication, mode `0600`, and fail-closed behavior for
+wrong ownership, symlinks and read errors (`:61-116`).
+
+The state-machine reds also match the owner's window and timing rules: the
+first opened window remains the main approval host, later windows never take
+over, closing it cancels all pending cards, and an approval at or after the
+exact 120-second boundary loses to expiry (`:118-181`). Notification text is
+generic and activation only exposes the already-existing card (`:183-199`).
+
+Reviewer clean-export execution failed causally before compilation because
+`src/agent_approval.zig` is absent at this red commit. The direct command was
+`env -u DISPLAY -u WAYLAND_DISPLAY timeout 120 zig test --dep agent_approval
+-Mroot=tests/agent_approval_policy_test.zig
+-Magent_approval=src/agent_approval.zig`; Zig reported `FileNotFound`. The test
+is intentionally not registered, so the existing gate remains green while the
+production core is built.
+
+Later S8b/S8c wiring still has binding obligations, but they do not block this
+platform-free red: prove that main-window close and the 120-second expiry
+cancel the real waiting step with zero dispatch; linearize close/expiry against
+Approve; place the card only in the first-opened main window; prove the real
+store's atomic publication and fail-closed owner/read paths; and pin Deny as a
+terminal card action. Those are integration/production-state reds, not missing
+cases in this part-1 decision core.
