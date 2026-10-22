@@ -29801,3 +29801,45 @@ cleanup authority without proving the process tree is gone:
 SHOULD: the two `CloseHandle` calls in `KillHeld` remain unchecked despite
 the file's claim that every Win32 API failure is surfaced. Agent Mail 7670
 sent the blockers and explicit VM no-go to AzureRidge.
+
+## MS6.5.1 scoped recovery retype and plan Rev 28 (`87fbea8`, `8a593b3`)
+
+**BLOCKED `87fbea8`; BLOCKED `8a593b3`.** The substantive retype is correct:
+the former startup result becomes the narrowly named
+`acquireRunLockBounded` / `AcquireOutcome` /
+`AcquireIncident.lock_unavailable`, the function acquires and immediately
+releases the flock, and its production comments make no recovery, run-start,
+signal, retirement, or ledger-mutation claim. The Rev-28 history entry and
+the authoritative block at plan lines 1786-1803 correctly subordinate the
+old MS6.5.1 design and name `zigBrowser-3gl` as the OPEN whole-recovery
+blocker.
+
+From an exact clean `git archive 8a593b3` export, with `DISPLAY` and
+`WAYLAND_DISPLAY` unset and the signal-bearing stalled-holder step inside a
+private current-UID PID namespace, the focused registered suite was green:
+
+> Build Summary: 28/28 steps succeeded; 16/16 tests passed
+
+That covered the liveness truth table, start-kind/canonical-shape and
+same-kind refusal, unreadable/stat-I/O mapping, absolute acquisition deadline,
+EINTR-bounded watchdog, stalled-holder acquire, and both Darwin cross-builds.
+
+Two contradictory text claims still need a small fix-forward:
+
+1. `tests/agent_run_ledger_recovery_busy_test.zig:4` still says the first new
+   run is `refused_deferred`, and line 138 still says “recovery-busy, first run
+   refused/deferred.” The retyped primitive intentionally has no `FirstRun`
+   field and makes no run-admission claim. Both comments must describe only
+   the observed `acquired=false`, `lock_unavailable`, and no-mutation result.
+2. The macOS plan frontmatter at line 9 still says
+   `status: plan for review (rev 27)` while line 10 says `rev: 28`. Make the
+   status Rev 28 so the authoritative revision is internally consistent.
+
+The required full clean-export gate is still open and must run at the
+corrected cumulative SHA after JadeBeacon receives the shared slot. Also,
+`87fbea8` includes the unrelated registration of
+`tests/agent_broker_navigate_test.zig`; at that exact SHA the corresponding
+BlackRobin broker green is not committed, so only a later cumulative gate can
+be acceptance evidence unless that foreign registration is moved. Agent Mail
+7672 sent the two blockers and the integration dependency to JadeBeacon. The
+contiguous push boundary does not advance on this review.
