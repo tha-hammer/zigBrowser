@@ -267,3 +267,43 @@ No later Mac run may be approved until a reviewed fix: confines Zig's global cac
 This matches 4pa.76 Red 1 and is correctly labelled a tripwire, not behavioral proof. The future green may register it only with the rename. Closing MS7.5 still requires Red 2: the renamed production entry must open/focus the real Secrets window and keep it out of the automation registry, with a no-op production mutant failing on both Macs. That run is additionally blocked by the global-cache HOLD above.
 
 `2470871` is safe in isolation as a red draft, but the current ancestry tip is **not push-safe as a whole** because it contains the blocked `a2bc627` complete-green claim.
+
+## 2026-10-22 — 3ui.5 Zig-cache confinement red
+
+### `642e4ed` — every remote Zig invocation names both in-run caches
+
+**SAFE TO PUSH ONLY AS AN UNREGISTERED RED DRAFT; NOT ACCEPTED AS REGISTRATION-READY PROOF OF THE `c6c04b7` MINIMUM.** The test runs the real `build-on-mac.sh` and all eight callers through isolated stub SSH/SCP, discovers each host's exact extraction directory, requires a Zig invocation on every expected host, and checks both `--cache-dir` and `--global-cache-dir`. It is absent from `build.zig`, network-isolated, and changes no product code or registered gate.
+
+From an exact clean archive of `642e4edb09e105ccc407523c25db658007a54c03`, the script exited 1 with the intended 32 Z2 failures: 16 remote Zig invocations, each missing both cache flags. A scratch production fix putting both cache paths beneath the exact `$HOME/zb-gate-<sha>-<nonce>` directory made all nine harness/caller checks pass. Removing the global-cache flag made the test exit 1 with 16 failures; redirecting it to `$HOME/.cache/zig` made it exit 1 with 32 failures.
+
+The current oracle does not yet **structurally bind** the flags to the Zig argv. It searches the whole remote command/heredoc text. A production mutant that removed both real cache arguments but placed the expected strings only after shell `#`—so Zig receives neither—still exited 0 with `PASS mac-zig-cache-isolation-selftest` across all nine checks. This is the same irrelevant-token class the earlier path oracle had to reject.
+
+Before the green registers this test or clears the Mac HOLD, constrain each check to the actual Zig command/argv before any comment or shell control boundary, and record a comment/echo-token mutant that fails. The deletion and outside-run-dir mutants must continue failing. Non-blocking residue: the commit message says 15 remote Zig invocations, but its enumeration and 32 failures correctly total 16. No Mac was contacted; the HOLD remains in force.
+
+## 2026-10-22 — 4pa.76 Secrets symbol green
+
+### `e825cc5` — canonical Mac entry name and registered header compilation
+
+**APPROVED SCOPED; SAFE TO PUSH.** The macOS declaration is renamed to the plan's canonical `zb_secrets_window_mac_show`, while Linux retains `zb_secrets_window_open(void)`. Repository references confirm there is no macOS definition or caller of either the old or new entry yet. The real C compiler now compiles both production headers in one translation unit, and the object is attached to Linux `zig build test` through `check-secrets-window-headers`.
+
+Exact clean-archive evidence at `e825cc54d21ba2daa3a29abefbe879b70355adee`: `zig build check-secrets-window-headers -j4 --summary all` exited 0, 3/3 steps. Restoring the old macOS declaration made that same registered step exit 1 with the intended conflicting-types diagnostic. `git diff --check` passed; the other edited test file changes only its stale symbol-name comment.
+
+Under R1 this is **real compile evidence for the narrow compile contract**—the two production headers coexist and the old declaration breaks compilation—but it remains **only the R30.2 T16 tripwire for product behavior**. It cannot prove that `zb_secrets_window_mac_show` is defined, linked, called, opens/focuses a real Secrets window, or stays outside the automation registry. The commit labels that limit correctly. 4pa.76/MS7.5 therefore remains open for the released both-Mac Red 2 and its no-op production mutant; that run is also subject to the active Zig-cache HOLD.
+
+`e825cc5` is safe in isolation as the name-clash green. The current ancestry tip is not push-safe as a whole because it still contains the blocked `a2bc627` complete-green claim; `642e4ed` also remains only a draft until its structural oracle is strengthened.
+
+## 2026-10-22 — 3ui.5 Zig-cache confinement green
+
+### `6aeee3e` — in-run local/global caches and registered hostless proof
+
+**BLOCK; NOT SAFE TO PUSH AS THE 3ui.5 GREEN; THE `build-on-mac.sh` HOLD IS NOT CLEARED.** The production change itself has the right shape: the sole remote `$ZIG build` in `build-on-mac.sh` sets both `ZIG_LOCAL_CACHE_DIR` and `ZIG_GLOBAL_CACHE_DIR` and passes both `--cache-dir` and `--global-cache-dir`, with all four values beneath that host's exact `$HOME/zb-gate-<sha>-<nonce>` run directory. From an exact clean archive of `6aeee3e6c4380418fa38e7a7a18f1ec86f0f58f0`, `zig build test-mac-build-script test-mac-reaper-gate-guard -j4 --summary all` exited 0 with 8/8 steps, and `git diff --check` passed.
+
+The eight-caller closure is also correct. `tests/mac/{gate,ms1b_signed_gate,ms2a_gate,ms2b_gate,ms2c_gate,ms3_gate,ms4_gate}.sh` and `packaging/macos/build-dmg.sh` each call `mac_build`; `tests/mac/mac_gate_lib.sh` implements `mac_build` by calling `tests/mac/build-on-mac.sh`. No direct Zig compiler invocation appears in those eight callers, the helper, or the remote Python tests they name. Thus their 16 per-host builds reach Zig only through `build-on-mac.sh`.
+
+The registered oracle still fails the structural minimum recorded for `642e4ed`. It searches the entire remote command/heredoc text for the expected cache strings rather than binding them to the actual Zig argv. In an independent mutant of the exact green, both cache environment assignments and both real flags were removed from the `$ZIG build` command, and the two expected flag strings were appended only after shell `#`; Zig therefore received neither cache path, yet `zig_cache_isolation_selftest.sh` exited 0 and printed PASS for the harness and all eight callers. This is an R3 proof-can-stay-green failure, not a cosmetic test weakness.
+
+The exact fix-forward minimum is to parse or otherwise anchor both cache flags to the executable Zig command before comments and shell control boundaries; the comment/echo-token mutant above must make the registered step fail, while the deletion/env-only and outside-run-directory mutants must remain red. Re-run the registered `test-mac-build-script` step after that proof fix.
+
+Because `6aeee3e` is blocked, **`build-on-mac.sh` and its eight callers may not take Mac run requests again yet**. Even after their proof is repaired, four independent direct-Zig harnesses remain separately held under 3ui.5: `tests/mac/mac_compile_only.sh`, `tests/mac/ms5_setup_e2e.sh`, `tests/mac/ms5_setup_refusal_gate.sh`, and `tests/mac/ms7_appkit_gate.sh`. No request using any of those four may be approved until each confines both caches beneath its own per-run directory and receives the required review. Any later request still needs the exact source commit, SHA-256 of every harness file, and the orchestrator's explicit release. No Mac was contacted during this review.
+
+The current aggregate branch tip is additionally not push-safe because it still contains the independently blocked `a2bc627` complete-green claim.
