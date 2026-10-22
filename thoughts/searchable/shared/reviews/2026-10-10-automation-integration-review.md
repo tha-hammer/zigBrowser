@@ -30650,3 +30650,71 @@ The live oracles still do not establish the plan's behaviors:
 
 No VM run is warranted until those reds are causal. Agent Mail 7720 sent the
 findings to AzureRidge.
+
+## MS6.3 fd-3 FIFO cleanup (`bcbc989`, `e2c20a7`)
+
+**APPROVED for one bounded two-Mac hard-gate rerun at exact commit
+`e2c20a7fac6076f91e74395e59e0f83e2713b979`; BLOCKED-for-tests for final
+closure until `ms6_hard_gate_fd3_cli_cleanup_test.py` is registered.** The
+unregistered red is causal: in an exact clean export, under a private
+current-UID user/PID/mount namespace, both planted 0300 FIFO-directory mode
+checks failed and the ordinary `shutil.rmtree` raised `PermissionError`.
+
+The green repairs only the fixed row-owned
+`home/scratchpad/token-fifo` path, uses `lstat`, skips absent paths and refuses
+symlinks/special entries, and performs the chmod in the row's unconditional
+`finally` after its owned process-group operation has returned. A chmod error
+raises and therefore fails the case; it is not hidden. The clean-export
+cleanup, case, realpath and manifest suites passed **22/22** inside the private
+namespace. An explicit `st_uid == os.geteuid()` assertion would make the
+ownership invariant self-documenting, but the case creates the fresh scratch
+as the unprivileged runner and never accepts an external root, so this is not
+a rerun blocker.
+
+The exact reviewed three-case manifest is:
+
+- `case_ms5_spawn_io.py`:
+  `7c739e32fe924877593e15bf232b58be94754c4287b69a7465f2d0371bafcbbb`
+- `case_ms6_3_fd3_cli.py`:
+  `f93034d367551b347bded71a934fb8f2c2cfe6017b04092dd39549519ea29105`
+- `case_ms6_6b_r1_chain.py`:
+  `7e914a0b04016c05921af2157b5ea1c0aec9eec35bf3823f7cc97a984ea19f76`
+
+The authorized rerun is the reviewed committed-launcher entry with normal
+per-run temporary staging, only those three cases, no MS6.5 reaper, and the
+usual before/after process and folder census. It must report each case PASS
+and zero survivors or leftovers on both Macs. Agent Mail 7728 sent the commit,
+digests and boundary to BlueBeaver and the orchestrator.
+
+`CLAUDE_CODE_TMPDIR` may join `HOOK_ENV_NAMES` only as the app-owned fixed
+value equal to the already-exposed scratch `TMPDIR`, with route override
+refused and the exact P0 census updated. This adds no write root or secret. A
+caller-controlled value or a path outside the per-run scratch remains a
+blocker.
+
+## Windows WS5 lifecycle follow-up (`8545430`)
+
+**BLOCKED.** The combined `assign_firststop_fail` mode closes the first
+`a94db57` causality gap: assignment fails while the child is suspended and
+never job-owned, the first terminal proof is forced to fail without acting,
+normal teardown is skipped, and only the independent cleanup route can make
+the row pass. The offline suite passed **41** tests with **6** live rows
+skipped, and the behavior suite passed **9** with **8** live rows skipped.
+
+The durable-ownership gap remains. `FinalReap` makes only three termination
+attempts. If all three fail for the suspended, never-job-owned child, it keeps
+the process handle only in the PowerShell process's static state. The empty
+Job has already been closed; after the script emits failure and exits, closing
+that process handle does not terminate the child. Moreover, the earlier
+assignment error means the conditional cleanup-exhausted diagnostic does not
+replace the existing error. Thus the row can truthfully report failure while
+leaving an orphan; an injected result dictionary that says `proc_gone=false`
+does not prove the embedded C# prevents that outcome.
+
+Establish durable ownership atomically before the child may run -- preferably
+create it directly in the Job with `STARTUPINFOEX` and
+`PROC_THREAD_ATTRIBUTE_JOB_LIST`, or an equivalent launch primitive -- then
+close the kill-on-close Job and wait on the still-held process handle. Add a
+causal live cleanup-exhaustion row that proves the child cannot outlive the
+runner. **No Win11 VM run is approved for `8545430`.** Agent Mail 7729 sent
+the blocker to AzureRidge and the orchestrator.
