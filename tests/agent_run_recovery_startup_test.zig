@@ -111,6 +111,17 @@ fn fileExists(io: std.Io, dir: std.Io.Dir, sub: []const u8) bool {
     dir.access(io, sub, .{}) catch return false;
     return true;
 }
+fn isDir(io: std.Io, dir: std.Io.Dir, sub: []const u8) bool {
+    var d = dir.openDir(io, sub, .{}) catch return false;
+    d.close(io);
+    return true;
+}
+const CORRUPT = "this is not valid ledger json {{{"; // the exact corrupt bytes we snapshot and require unchanged
+fn expectBytes(io: std.Io, gpa: std.mem.Allocator, dir: std.Io.Dir, sub: []const u8, want: []const u8) !void {
+    const got = try dir.readFileAlloc(io, sub, gpa, .limited(1 << 20));
+    defer gpa.free(got);
+    try std.testing.expectEqualStrings(want, got); // byte-for-byte equality: the store was NOT mutated
+}
 var g_bn_bufs: [128][64]u8 = undefined;
 fn basenameN(i: usize) []const u8 {
     return std.fmt.bufPrint(&g_bn_bufs[i], "zigbrowser-agent-515151-{x:0>16}", .{i}) catch unreachable;
@@ -146,22 +157,24 @@ test "#1 gate OFF + MISSING store: no read (loads==0), disabled, no mutation" {
     try std.testing.expect(!fileExists(io, td.dir, "runs.json"));
 }
 
-test "#1 gate OFF + CORRUPT store: no read (loads==0), disabled, store untouched" {
+test "#1 gate OFF + CORRUPT store: no read (loads==0), disabled, bytes byte-for-byte unchanged" {
     const io = std.testing.io;
     const gpa = std.testing.allocator;
     var td = std.testing.tmpDir(.{});
     defer td.cleanup();
-    try td.dir.writeFile(io, .{ .sub_path = "runs.json", .data = "not valid ledger json {{{" });
+    try td.dir.writeFile(io, .{ .sub_path = "runs.json", .data = CORRUPT });
     try expectGateOffNoRead(io, gpa, td.dir);
+    try expectBytes(io, gpa, td.dir, "runs.json", CORRUPT); // the exact corrupt bytes survive the gate-off call
 }
 
-test "#1 gate OFF + UNREADABLE store (a directory at the path): no read (loads==0), disabled" {
+test "#1 gate OFF + UNREADABLE store (a directory at the path): no read (loads==0), disabled, shape kept" {
     const io = std.testing.io;
     const gpa = std.testing.allocator;
     var td = std.testing.tmpDir(.{});
     defer td.cleanup();
     if (linux.errno(linux.mkdirat(td.dir.handle, "runs.json", 0o700)) != .SUCCESS) return error.Mkdir;
     try expectGateOffNoRead(io, gpa, td.dir);
+    try std.testing.expect(isDir(io, td.dir, "runs.json")); // still a directory: not replaced/removed
 }
 
 // ================================================================================================================
@@ -176,6 +189,9 @@ test "#2 reaper_ready is the literal immutable false constant; readiness has NO 
     const src = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, "src/agent_run_recovery.zig", gpa, .limited(1 << 20));
     defer gpa.free(src);
     try std.testing.expect(std.mem.indexOf(u8, src, "pub const reaper_ready: bool = false;") != null); // literal
+    // The wrapper's readiness is `reaper_ready` and nothing else: it delegates that constant (RoseCat 6b324c8 #1).
+    // A mutant hard-coding literal false (`recoverAllAtStartupFull(false,`) or any other readiness removes this.
+    try std.testing.expect(std.mem.indexOf(u8, src, "recoverAllAtStartupFull(reaper_ready,") != null);
     // readiness is not derived from any of these arming sources anywhere in the module:
     for ([_][]const u8{ "build_options", "env_switch", "getenv", "getEnvVarOwned", "std.os.argv", "std.process" }) |banned| {
         try std.testing.expect(std.mem.indexOf(u8, src, banned) == null);
@@ -261,13 +277,14 @@ test "#5 gate TRUE + corrupt ledger: load_failed, non-ok, zero action, no mutati
     const clock = ledger.RealClock{ .io = io };
     var td = std.testing.tmpDir(.{});
     defer td.cleanup();
-    try td.dir.writeFile(io, .{ .sub_path = "runs.json", .data = "this is not valid ledger json {{{" });
+    try td.dir.writeFile(io, .{ .sub_path = "runs.json", .data = CORRUPT });
     var pins: usize = 0;
     const rep = recovery.recoverAllAtStartupGated(true, io, gpa, td.dir, "runs.json", clock, clock.nowMs() + BUDGET_MS, act(&pins, HELD_CLEAN));
     try std.testing.expect(rep.load_failed);
     try std.testing.expect(!rep.ok());
     try std.testing.expectEqual(@as(usize, 0), rep.signalled);
     try std.testing.expectEqual(@as(usize, 0), pins); // zero action
+    try expectBytes(io, gpa, td.dir, "runs.json", CORRUPT); // gate-true + corrupt: store NOT mutated either
 }
 
 // ================================================================================================================
