@@ -27812,3 +27812,35 @@ unregistered until its green, passes `git diff --check`, and passes
 green. Blocker #2 also remains open: the contending acquisition must run in a
 separate process so a blocking-flock mutant is observed without wedging the
 registered gate. The push-through remains **`bac895b`**.
+
+## Ledger-lock no-follow green and bounded-mutant harness (`e2a54ec`)
+
+**BLOCKED.** The Linux behavior and the requested mutant result are real. On a
+clean export, the two registered focused steps passed **7/7 build steps and
+3/3 tests**. The implementation opens the lock with `O_NOFOLLOW|O_CLOEXEC` and
+0600 creation mode, registers the approved symlink red, closes the fd on every
+failure path, and keeps `LOCK_EX|LOCK_NB` for the normal acquisition.
+
+I independently changed that exact export to blocking `LOCK_EX`. The holder
+child self-released after 500 ms, the acquisition then returned a file, and the
+test failed normally with `TestExpectedError` rather than timing out. Static
+inspection found no `kill`, `killpg`, or other signal call in the acquisition
+or either lock test. Thus the blocking mutant is caught without a hang and
+without a signal.
+
+One production blocker remains. `src/agent_run_ledger.zig:206,211,215,220`
+uses `std.os.linux.errno`, the raw `std.os.linux.flock` syscall wrapper, and
+`std.os.linux.close`. This is the ledger primitive for the **macOS** lifecycle
+owner, and the file itself describes the ledger as portable. A successful
+aarch64-macos cross-compile does not make Linux's raw syscall ABI valid on
+Darwin. Replace those calls with a Darwin/POSIX-capable implementation or a
+small platform seam, retain the no-follow/open flags and failure mapping, and
+provide Darwin execution evidence before this primitive can feed MS6.5.1.
+
+The commit's “separate-process contender” wording is also inaccurate: the
+holder is the forked child, while the parent remains the contender at test line
+53. The self-releasing holder is behaviorally sufficient for the blocking
+mutant, but the subject/body/comments must describe the topology honestly.
+Finally, `git diff --check e2a54ec^ e2a54ec` reports a new blank line at EOF in
+`src/agent_run_ledger.zig:226` (NIT). Findings were sent to JadeBeacon in Agent
+Mail 7526. Push-through remains **`bac895b`**.
