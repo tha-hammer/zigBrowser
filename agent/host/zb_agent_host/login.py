@@ -167,41 +167,99 @@ def cli_env(home):
     }
 
 
+# The trust anchor: the one owner, besides the effective uid, a directory above the home may have (RoseCat 7753).
+TRUST_ANCHOR_UID = 0
+
+
+def open_home(home, euid):
+    """An O_DIRECTORY fd of the home, reached from / one component at a time through held fds, never following a
+    link. Every directory on the way is owned by the trust anchor (root) or by us, and writable by no one else
+    unless it is sticky (like /tmp), where only an entry's owner may rename it; its next entry is then checked as
+    root's or ours in turn, the home itself as ours alone. So no other uid can rename or replace anything on the
+    home's path (RoseCat 7753). Each component opened must be the one lstat saw first."""
+    path = os.fspath(home)
+    names = [n for n in path.split("/") if n]
+    if not os.path.isabs(path) or any(n in (".", "..") for n in names):
+        raise OSError(errno.EINVAL, "the sign-in's home is not an absolute, plain path")
+    trusted = (TRUST_ANCHOR_UID, euid)
+    fd = os.open("/", os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    try:
+        for name in names:
+            here, seen = os.fstat(fd), os.lstat(name, dir_fd=fd)
+            if here.st_uid not in trusted or (here.st_mode & 0o022 and not here.st_mode & stat.S_ISVTX):
+                raise OSError(errno.EPERM, f"a directory above the sign-in's home is not safe ({name})")
+            if not stat.S_ISDIR(seen.st_mode):
+                raise OSError(errno.ENOTDIR, f"the sign-in's home path is not plain directories ({name})")
+            nxt = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=fd)
+            os.close(fd)
+            fd = nxt
+            if not os.path.samestat(os.fstat(fd), seen):
+                raise OSError(errno.EPERM, f"the sign-in's home path changed while it was walked ({name})")
+        st = os.fstat(fd)
+        if st.st_uid != euid or st.st_mode & 0o022:
+            raise OSError(errno.EPERM, "the sign-in's home is not ours alone")
+        return fd
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+class PrivateTmp:
+    """The checked home, scratchpad and tmp, each held open (so its inode cannot be reused) with the path the CLI
+    is given. recheck(), right before the launch, refuses when a path no longer names its checked directory."""
+
+    def __init__(self):
+        self.held = []  # (path, fd)
+
+    def recheck(self):
+        for path, fd in self.held:
+            if not os.path.samestat(os.lstat(path), os.fstat(fd)):
+                raise OSError(errno.EPERM, f"the sign-in's {os.path.basename(path)} changed after it was checked")
+
+    def close(self):
+        held, self.held = self.held, []
+        for _, fd in held:
+            os.close(fd)
+
+
 def ensure_private_tmp(home):
     """Makes sure <home>/scratchpad and <home>/scratchpad/tmp (cli_env's TMPDIR) are real directories of the
-    effective uid, mode 0700, before the CLI starts (setup.ensure_home's layout). It walks them through pinned
+    effective uid, mode 0700, before the CLI starts (setup.ensure_home's layout), and returns them held
+    (PrivateTmp). The home is reached through a checked chain from / (open_home). The two are walked through held
     directory fds, never following a link: a missing component is made 0700; any other existing state (a link, a
-    file, a FIFO, a wider mode, another owner) raises OSError and is left as it is (RoseCat 7739). Last, the paths
-    the CLI is given must still name exactly the directories it checked (lstat, no link followed): a component
-    swapped meanwhile is refused, never followed (RoseCat 7742)."""
+    file, a FIFO, a wider mode, another owner) raises OSError and is left as it is (RoseCat 7739). Nothing is ever
+    repaired: the object opened must be the very one lstat saw first, and it is accepted only as it is, so a
+    directory swapped in between mkdir and open is refused unchanged (RoseCat 7746).
+
+    Trust boundary (RoseCat 7746/7753): the CLI resolves TMPDIR and CLAUDE_CODE_TMPDIR by path for its whole run,
+    so no fd could bind them. The chain check is what makes that safe: after it, only root or our own uid can
+    rename anything on those paths. The caller rechecks them right before the launch."""
     euid = os.geteuid()
     flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
-    fds = [os.open(home, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)]
+    held = PrivateTmp()
     try:
+        path, fd = os.fspath(home), open_home(home, euid)
+        held.held.append((path, fd))
         for name in ("scratchpad", "tmp"):
-            made = False
             try:
-                os.mkdir(name, 0o700, dir_fd=fds[-1])
-                made = True
+                os.mkdir(name, 0o700, dir_fd=fd)  # 0700 under any umask that leaves the owner's bits alone
             except FileExistsError:
-                st = os.lstat(name, dir_fd=fds[-1])  # never opens a FIFO or follows a link
-                if not stat.S_ISDIR(st.st_mode):
-                    raise OSError(errno.ENOTDIR, f"the sign-in's {name} is not a directory") from None
-            fds.append(os.open(name, flags, dir_fd=fds[-1]))
-            if made:
-                os.fchmod(fds[-1], 0o700)  # exactly 0700, whatever the umask
-            st = os.fstat(fds[-1])
-            if not stat.S_ISDIR(st.st_mode) or st.st_uid != euid or stat.S_IMODE(st.st_mode) != 0o700:
+                pass
+            seen = os.lstat(name, dir_fd=fd)  # never opens a FIFO or follows a link
+            if not stat.S_ISDIR(seen.st_mode):
+                raise OSError(errno.ENOTDIR, f"the sign-in's {name} is not a directory")
+            path, fd = os.path.join(path, name), os.open(name, flags, dir_fd=fd)
+            held.held.append((path, fd))
+            st = os.fstat(fd)
+            if not os.path.samestat(st, seen):
+                raise OSError(errno.EPERM, f"the sign-in's {name} changed while it was opened")
+            if st.st_uid != euid or stat.S_IMODE(st.st_mode) != 0o700:
                 raise OSError(errno.EPERM, f"the sign-in's {name} is not a private directory")
-        path = home
-        for name, fd in zip(("scratchpad", "tmp"), fds[1:]):
-            path = os.path.join(path, name)
-            here, held = os.lstat(path), os.fstat(fd)
-            if (here.st_dev, here.st_ino) != (held.st_dev, held.st_ino):
-                raise OSError(errno.EPERM, f"the sign-in's {name} changed while it was checked")
-    finally:
-        for fd in fds:
-            os.close(fd)
+        held.recheck()
+        return held
+    except BaseException:
+        held.close()
+        raise
 
 
 class Login:
@@ -231,13 +289,17 @@ class Login:
 
     # ---- the CLI on a pty -------------------------------------------------
     def spawn(self):
-        ensure_private_tmp(self.home)  # before anything starts: an invalid temp dir launches nothing
-        self.master, slave = pty.openpty()
-        fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 50, COLUMNS, 0, 0))
-        self.proc = subprocess.Popen([self.cli, "setup-token"], stdin=slave, stdout=slave, stderr=slave,
-                                     env=cli_env(self.home), cwd=self.home, start_new_session=True,
-                                     close_fds=True)
-        os.close(slave)
+        held = ensure_private_tmp(self.home)  # before anything starts: an invalid temp dir launches nothing
+        try:
+            env = cli_env(self.home)
+            held.recheck()  # the last check before the launch (RoseCat 7746): still the checked directories
+            self.master, slave = pty.openpty()
+            fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 50, COLUMNS, 0, 0))
+            self.proc = subprocess.Popen([self.cli, "setup-token"], stdin=slave, stdout=slave, stderr=slave,
+                                         env=env, cwd=self.home, start_new_session=True, close_fds=True)
+            os.close(slave)
+        finally:
+            held.close()
 
     def kill(self):
         if self.proc and self.proc.poll() is None:
