@@ -146,3 +146,23 @@ The unregistered test is non-vacuous for all three operations: each row requires
 The green **must** extend `mac_ms2a_hook_inert_test.py` for hook 15 and catch a production mutant that drops `zb_auto_test_hooks_enabled()`. It must also register the red only with the green, retain an ordinary no-hook cookie success row to pin inline/default behavior, and demonstrate that independently deleting each get/set/delete `zb_job_inflight(job)` addition fails its corresponding row.
 
 With `a65e15b` approved, every committed implementation/documentation SHA in the ancestry since reviewed baseline `5ccf442` now has either a direct push-safe verdict or a reviewed fix-forward closing its block (`e818499` by `3b81737` + `843cf3d`; `3164dbf` by `f974ae7`). **The committed branch tip is therefore push-safe as a whole**, with the recorded unregistered-red/scoped qualifications. The unrelated untracked `tests/app_profile_dir_macos_test.zig` is not part of that tip and was not reviewed or touched. No Mac run is requested or authorized.
+
+## 2026-10-22 — 4pa.60 fresh-profile pacing reds
+
+### `cd1c55f` — portable fresh-directory red
+
+**SAFE TO PUSH ONLY AS AN UNREGISTERED RED DRAFT; NOT ACCEPTED AS THE PLAN'S RED 1 PROOF.** The test is genuinely red and isolated: from an exact clean archive, `zig test -lc --dep atomic_file -Mroot=tests/app_profile_dir_macos_test.zig -Matomic_file=src/atomic_file.zig` exited 1 at the intended missing `atomic_file.ensureDir` call. It uses `std.testing.tmpDir`, first proves the real `atomic_file.replaceJson` consumer fails on the absent nested parent, then specifies directory creation, successful replacement/readback, and idempotence. It is absent from `build.zig`, and `git diff --check` exited 0.
+
+The plan at lines 2040–2042 requires this Linux red to call the macOS branch of production `applyProfileDir`. The committed file instead imports only `atomic_file` and calls the proposed helper directly. It therefore remains green if the helper exists but `src/app.zig:497-507` never calls it. The Mac Red 2 can eventually prove that wiring, but it does not make this file the portable production-branch proof the authoritative plan specifies.
+
+The first exact minimum before the 4pa.60 green may register or claim Red 1 is: make the portable red execute a production-owned macOS profile-application seam used by `applyProfileDir`, with the WebKit binder injected or otherwise safely testable on Linux; assert the fresh nested directory and real pacing write through that seam; register it in `test`; create the directory before the WebKit bind; and record production mutants removing (1) directory creation and (2) the production invocation, each making the registered red fail. If the owner instead keeps this helper-only test, rev 32 must first be amended to label Red 1 helper/consumer coverage and assign all production-call wiring proof to the released Red 2.
+
+### `909053e` — real-binary restart red
+
+**APPROVED AS AN UNREGISTERED RED 2 DRAFT; SAFE TO PUSH.** It launches the production binary twice with the same genuinely fresh nested `--profile-dir`, a private temporary HOME/socket/profile and loopback-only page. Run 1 checks a non-vacuous default, drives `social.set_pacing`, requires the real pacing file and no save warning; run 2 requires the changed cap. `social.set_pacing` is acceptable for the scoped 4pa.60 directory/persistence defect because it synchronously reaches the same `state.changed -> Persister.persist -> pacing_store.save -> atomic_file.replaceJson` path and kills the plan's skip-directory-creation mutant without a UTC-day rollover hazard. It does **not** prove the broader counted-action/`actions_today == 1` contract and must not be cited as that proof.
+
+From an exact clean archive, `python3 -m py_compile tests/e2e/mac_profile_pacing_persist_test.py` exited 0, and the missing-browser row failed closed with exit 1. The file is absent from every gate and `build.zig`; no Mac behavior is proved.
+
+**No Mac run is approved.** Besides the absent exact-commit/harness-digest request and orchestrator release, this file imports `stop_browser_macos`, whose teardown can send `SIGKILL`; the session brief forbids running anything that sends `SIGKILL` on a Mac. Any future run proposal must use a reviewed SIGTERM-only bounded teardown (and include every imported harness digest) before it can be approved.
+
+**Push-safe result:** both `cd1c55f` and `909053e` are safe to push as unregistered drafts, so the committed branch tip is push-safe as a whole. The qualification is substantive: `cd1c55f` cannot be registered as rev-32 Red 1 until the exact minimum above is met. No Mac was contacted.
