@@ -4,11 +4,13 @@
 # cbf5865 showed `zig build` with no cache flags, so zig used the owner's ~/.cache/zig on both Macs.
 # It runs tests/mac/build-on-mac.sh alone and then each of its eight callers (tests/mac/{gate,ms1b_signed_gate,
 # ms2a_gate,ms2b_gate,ms2c_gate,ms3_gate,ms4_gate}.sh, packaging/macos/build-dmg.sh, through tests/mac/mac_gate_lib.sh)
-# against a stub ssh/scp that records every remote command and script. For every ssh call whose remote command or
-# script invokes zig, it requires:
-#   Z1 the command runs in the host's run dir: it starts  cd "$HOME/RD" &&  (RD = the dir the extraction call made);
-#   Z2 it passes  --cache-dir "$HOME/RD/<sub>"  and  --global-cache-dir "$HOME/RD/<sub>", and every cache-dir flag it
-#      passes is inside "$HOME/RD/";
+# against a stub ssh/scp that records every remote command and script. The remote command and any remote script are
+# parsed as shell (python shlex: comments dropped; each zig invocation's argv ends at the first ; & | ( ) < > token
+# or the end of the line), so only the zig command's OWN arguments count (SilverRidge fe88498). For every zig
+# invocation it requires:
+#   Z1 an inline command runs in the host's run dir: it starts  cd "$HOME/RD" &&  (RD = the dir the extraction made);
+#   Z2 its argv has  --cache-dir <"$HOME/RD/sub">  and  --global-cache-dir <"$HOME/RD/sub">, and every cache-dir flag
+#      in its argv (also the --flag=value form) is inside "$HOME/RD/";
 #   Z3 each host built by the run has at least one such zig invocation (so the check cannot pass vacuously).
 # No Mac, no signal: the REAL scripts run in a scratch git repo, HOME/TMPDIR in this test's temp tree; it re-runs
 # itself in a private user+network namespace.
@@ -71,7 +73,45 @@ G=(env -i PATH=/usr/bin:/bin HOME="$T/home" GIT_CONFIG_NOSYSTEM=1 git -C "$R")
 
 GATE='zb-gate-[0-9a-f]{40}-[0-9a-f]+'
 EXTRACT_RE="^mkdir \"\\\$HOME/($GATE)\" && tar -xf - -C \"\\\$HOME/($GATE)\"\$"
-ZIG_RE='(^|[^[:alnum:]_.-])zig[[:space:]]+[a-z]'   # a zig command (zig build, .../bin/zig test ...), not zig-out/
+cat > "$T/zigargv.py" <<'ZIGARGV'
+# Prints one "ZIG<TAB>ok|bad<TAB>detail" line per zig invocation in stdin, judging ONLY that invocation's own argv:
+# shell comments are dropped and the argv ends at the first control/redirect token (; & | ( ) < >) or end of line.
+import shlex, sys
+rd = sys.argv[1]
+prefix = "$HOME/" + rd + "/"
+PUNCT = set("();<>|&")
+for line in sys.stdin.read().replace("\\\n", " ").split("\n"):
+    lex = shlex.shlex(line, posix=True, punctuation_chars=True)
+    lex.whitespace_split = True
+    try:
+        toks = list(lex)
+    except ValueError as exc:
+        if "zig" in line:
+            print(f"ZIG\tbad\tunparsable line ({exc}): {line[:120]}")
+        continue
+    i = 0
+    while i < len(toks):
+        t = toks[i]
+        if (t == "zig" or t.endswith("/zig")) and i + 1 < len(toks) and toks[i + 1][:1].isalpha():
+            argv, j = [], i + 1
+            while j < len(toks) and not set(toks[j]) <= PUNCT:
+                argv.append(toks[j])
+                j += 1
+            problems = []
+            for flag in ("--cache-dir", "--global-cache-dir"):
+                vals = [argv[k + 1] for k in range(len(argv) - 1) if argv[k] == flag]
+                vals += [a.split("=", 1)[1] for a in argv if a.startswith(flag + "=")]
+                if not vals:
+                    problems.append(f"no {flag} in the zig argv")
+                for v in vals:
+                    if not (v.startswith(prefix) and len(v) > len(prefix)):
+                        problems.append(f"{flag} {v} is outside $HOME/{rd}/")
+            print("ZIG\t" + ("bad" if problems else "ok") + "\t" + ("; ".join(problems) or "zig " + " ".join(argv)))
+            i = j
+        else:
+            i += 1
+ZIGARGV
+zig_verdicts() { python3 -I "$T/zigargv.py" "$1"; }   # stdin: shell text; $1: the run dir
 
 check() { # check <label> <script> <host...>
   local label=$1 script=$2; shift 2
@@ -95,20 +135,20 @@ check() { # check <label> <script> <host...>
     done
     text="${cmd[*]}"
     if [[ "$text" =~ $EXTRACT_RE ]]; then RD[$host]=${BASH_REMATCH[1]}; continue; fi
-    tar -tf "$T/ctl/stdin.$i" >/dev/null 2>&1 || text+=$'\n'"$(cat "$T/ctl/stdin.$i")"
-    [[ "$text" =~ $ZIG_RE ]] || continue
     rd=${RD[$host]:-}
-    ZN[$host]=$(( ${ZN[$host]:-0} + 1 )); zn=$((zn + 1))
-    if [ -z "$rd" ]; then bad "$label Z1: call $i runs zig on $host before any run dir exists"; continue; fi
-    [[ "${cmd[*]}" == "cd \"\$HOME/$rd\" && "* ]] || bad "$label Z1: call $i runs zig outside cd \"\$HOME/$rd\": $(head -c 160 <<<"$text")"
-    for flag in --cache-dir --global-cache-dir; do
-      local fre="(^|[[:space:]])$flag[[:space:]]+\"\\\$HOME/$rd/[^\"/][^\"]*\""
-      [[ "$text" =~ $fre ]] || bad "$label Z2: call $i on $host runs zig without $flag \"\$HOME/$rd/...\""
-      while IFS= read -r sk; do
-        [ -n "$sk" ] || continue
-        local inre="^$flag[[:space:]]+\"\\\$HOME/$rd/"
-        [[ "$sk" =~ $inre ]] || bad "$label Z2: call $i passes $sk outside \$HOME/$rd"
-      done < <(grep -oE -- "$flag[[:space:]]+[^[:space:]]+" <<<"$text")
+    local where kind verdict detail script_in
+    script_in=""; tar -tf "$T/ctl/stdin.$i" >/dev/null 2>&1 || script_in=$(cat "$T/ctl/stdin.$i")
+    for where in command script; do
+      local body=$text; [ "$where" = script ] && body=$script_in
+      while IFS=$'\t' read -r kind verdict detail; do
+        [ "$kind" = ZIG ] || continue
+        ZN[$host]=$(( ${ZN[$host]:-0} + 1 )); zn=$((zn + 1))
+        if [ -z "$rd" ]; then bad "$label Z1: call $i runs zig on $host before any run dir exists"; continue; fi
+        if [ "$where" = command ] && [[ "$text" != "cd \"\$HOME/$rd\" && "* ]]; then
+          bad "$label Z1: call $i runs zig outside cd \"\$HOME/$rd\": $(head -c 160 <<<"$text")"
+        fi
+        [ "$verdict" = ok ] || bad "$label Z2: call $i on $host ($where): $detail"
+      done < <(printf '%s\n' "$body" | zig_verdicts "${rd:-none}")
     done
   done
   for h in "${hosts[@]}"; do
