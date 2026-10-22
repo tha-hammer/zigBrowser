@@ -205,6 +205,21 @@ pub fn build(b: *std.Build) void {
         ws3_shim_exe.step.dependOn(pkg_guard);
         b.step("ws3-shim-test-win", "WS3: run the WebView2 shim's config setters and cookie store on Windows")
             .dependOn(&b.addRunArtifact(ws3_shim_exe).step);
+
+        // WS2a.0 spike (Windows plan rev 2.21): the automation script's private CDP world, through the
+        // production zb_automation_set_script / zb_automation_eval_json, linked with the shim
+        // (tests/windows/ws2a0_world_spike.c). Windows-target builds only; run on the Win11 VM by
+        // `bash tests/windows/build-on-windows.sh ws2a0-world-spike-win` (tests/e2e/win_private_world_spike.py).
+        const ws2a0_module = b.createModule(.{ .target = target, .optimize = optimize, .link_libc = true });
+        configureBackend(ws2a0_module, b, backend, webview2_paths);
+        ws2a0_module.addCSourceFile(.{ .file = b.path("tests/windows/ws2a0_world_spike.c"), .flags = &.{"-std=c11"} });
+        const ws2a0_exe = b.addExecutable(.{ .name = "ws2a0-world-spike", .root_module = ws2a0_module });
+        ws2a0_exe.step.dependOn(pkg_guard);
+        const ws2a0_run = b.addRunArtifact(ws2a0_exe);
+        ws2a0_run.addFileArg(b.path("tests/fixtures/app/index.html"));
+        ws2a0_run.addFileArg(b.path("tests/fixtures/app/page-b.html"));
+        b.step("ws2a0-world-spike-win", "WS2a.0: the automation script's private CDP world on Windows")
+            .dependOn(&ws2a0_run.step);
     }
 
     // WS2.0 (Windows plan rev 2.6): the owner-only seam's DACLs read back from Windows. Windows-target
@@ -4070,7 +4085,7 @@ fn guardDisplay(b: *std.Build) void {
     guard.has_side_effects = true; // the environment is read on every run, never cached
     // ws3-shim-test-win and owner-only-test-win exist only in Windows-target builds and run on
     // Windows, which has no X display to guard (and no python3 to run the guard).
-    const unguarded = [_][]const u8{ "install", "uninstall", "agent-runtime", "mac-gate", "ms1b-gate", "ms2a-gate", "ws3-shim-test-win", "owner-only-test-win" };
+    const unguarded = [_][]const u8{ "install", "uninstall", "agent-runtime", "mac-gate", "ms1b-gate", "ms2a-gate", "ws3-shim-test-win", "owner-only-test-win", "ws2a0-world-spike-win" };
     next: for (b.top_level_steps.keys(), b.top_level_steps.values()) |name, top| {
         for (unguarded) |skip| if (std.mem.eql(u8, name, skip)) continue :next;
         for (top.step.dependencies.items) |dep| dep.dependOn(&guard.step);
