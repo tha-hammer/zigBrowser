@@ -56,9 +56,10 @@ flow; a dead branch, an extra effect, a reorder or a removal changes the shape.
 - V8 the Edit menu is live (RoseCat 8129 #2): the shim holds exactly one `static void zb_install_edit_menu(NSApplication
   *application)` equal to REVIEWED_EDIT_MENU (an application-menu slot, then Edit with its one Copy item,
   `action:@selector(copy:) keyEquivalent:@"c"`, target nil, installed with setMainMenu:). It is named only there and
-  in its one call, which must be the statement right after `[application
-  setActivationPolicy:NSApplicationActivationPolicyRegular];` in zb_app_run's @autoreleasepool block (under no if, loop
-  or block). So Cmd+C reaches the first responder: a bubble's copy:, or the page's. RED until the shim has it.
+  in its one call. zb_app_run must open exactly as REVIEWED_RUN_OPENING (RoseCat 8139): `application` is the live
+  [NSApplication sharedApplication], the only earlier exit is the invalid-URI return, and the activation and the
+  install follow in the pool's own block. Nothing else in the shim may touch the main menu (setMainMenu, mainMenu).
+  So Cmd+C reaches the first responder: a bubble's copy:, or the page's. RED until the shim has it.
 - V7 the rest of the link (RoseCat 8101 #2, 8112 #3/#4): every OTHER native source build.zig links on macOS (the
   shim and the C files) and every project header they include (quoted includes under src/, recursively; a missing
   one fails) holds:
@@ -125,8 +126,20 @@ REVIEWED_EDIT_MENU = r"""static void zb_install_edit_menu(NSApplication *applica
   [edit setSubmenu:menu];
   [application setMainMenu:bar];
 }"""
-EDIT_MENU_SITE = re.compile(r"\[\s*application\s+setActivationPolicy\s*:\s*NSApplicationActivationPolicyRegular\s*\]\s*;"
-                            r"\s*zb_install_edit_menu\s*\(\s*application\s*\)\s*;")
+# RoseCat 8139: zb_app_run's opening, exactly, through the install: `application` is the live sharedApplication,
+# the only earlier exit is the invalid-URI return, and the pair runs in the pool's own block. After it, nothing in
+# the shim may touch the main menu again (MENU_REPLACERS outside zb_install_edit_menu).
+REVIEWED_RUN_OPENING = r"""int zb_app_run(const char *uri, int print_title, int e2e_protocol) {
+  @autoreleasepool {
+    NSString *uri_text = string_from_c(uri);
+    if (uri_text.length == 0) {
+      return ZB_EXIT_INVALID_URI;
+    }
+
+    NSApplication *application = [NSApplication sharedApplication];
+    [application setActivationPolicy:NSApplicationActivationPolicyRegular];
+    zb_install_edit_menu(application);"""
+MENU_REPLACERS = re.compile(r"\b(?:setMainMenu|mainMenu)\b")
 # No target or action is set anywhere in the rest of the link: no setter, property, key-value coding or binding.
 TARGET_ROUTES = ((re.compile(r"\bsetTarget\s*:"), "setTarget:"), (re.compile(r"\.\s*(?:target|action)\b"), "a target/action property"),
                  (re.compile(r"\b(?:setValue|setValuesForKeysWithDictionary|setNilValueForKey|takeValue)\w*\s*:"),
@@ -399,18 +412,17 @@ def edit_menu_problems(text):
     if len(re.findall(r"\bzb_install_edit_menu\b", blank)) != 2:
         found.append("V8: zb_install_edit_menu may be named only by its definition and its one call")
     runs = [m for m in re.finditer(r"\bint\s+zb_app_run\s*\(", blank) if blank.find(";", m.end()) > blank.find("{", m.end())]
-    sites = list(EDIT_MENU_SITE.finditer(blank))
+    want = shape(lexical(REVIEWED_RUN_OPENING, keep_strings=True))
     ok = False
-    if len(runs) == 1 and len(sites) == 1:
-        start = blank.find("{", runs[0].end())
-        end = block_end(blank, start)
-        pool = re.match(r"\{\s*@autoreleasepool\s*\{", blank[start:])
-        if pool and start < sites[0].start() < end:
-            between = blank[start + pool.end():sites[0].start()]
-            ok = between.count("{") == between.count("}")  # in the pool's own block: under no if, loop or block
+    if len(runs) == 1:
+        end = block_end(blank, blank.find("{", runs[0].end()))
+        ok = shape(kept[runs[0].start():end])[:len(want)] == want
     if not ok:
-        found.append("V8: the Edit menu must be installed, unconditionally, by the statement right after "
-                     "[application setActivationPolicy:NSApplicationActivationPolicyRegular] in zb_app_run's @autoreleasepool")
+        found.append("V8: zb_app_run must open exactly as REVIEWED_RUN_OPENING (the live sharedApplication, activated, "
+                     "then the Edit menu installed, with only the invalid-URI return before it)")
+    outside = blank[:span[0]] + blank[span[1]:] if span else blank
+    if MENU_REPLACERS.search(outside):
+        found.append("V8: the main menu touched outside zb_install_edit_menu (setMainMenu / mainMenu)")
     return found, span
 
 
@@ -662,11 +674,7 @@ static const char *zb_names[] = {"alpha", """ + '"' + "x" * 600 + '"' + """};
 static void zb_tag(id window, id value) {
   objc_setAssociatedObject(window, "zb", value, OBJC_ASSOCIATION_RETAIN);
 }
-int zb_app_run(const char *uri, int print_title, int e2e_protocol) {
-  @autoreleasepool {
-    NSApplication *application = [NSApplication sharedApplication];
-    [application setActivationPolicy:NSApplicationActivationPolicyRegular];
-    zb_install_edit_menu(application);
+""" + REVIEWED_RUN_OPENING + """
     [application run];
   }
   return 0;
@@ -886,15 +894,32 @@ LINK_MUTANTS = {  # name -> ((build.zig, {path: text}), the rule it must fail)
                                        "V7 src/wkwebview_shim.m: copy: other than the reviewed Edit menu's Copy item"),
     "the Edit menu installed under if (0)": (link_case(src__wkwebview_shim_dot_m=OTHERS["src/wkwebview_shim.m"].replace(
         "    zb_install_edit_menu(application);\n", "    if (0) {\n      zb_install_edit_menu(application);\n    }\n")),
-        "V8: the Edit menu must be installed, unconditionally"),
+        "V8: zb_app_run must open exactly as REVIEWED_RUN_OPENING"),
     "the Edit menu never installed": (link_case(src__wkwebview_shim_dot_m=OTHERS["src/wkwebview_shim.m"].replace("    zb_install_edit_menu(application);\n", "")),
-                                      "V8: the Edit menu must be installed"),
+                                      "V8: zb_app_run must open exactly as REVIEWED_RUN_OPENING"),
     "the Edit menu installed elsewhere": (link_case(src__wkwebview_shim_dot_m=OTHERS["src/wkwebview_shim.m"].replace("    zb_install_edit_menu(application);\n", "")
                                                     .replace("static void zb_tag", "static void zb_later(NSApplication *application) {\n"
                                                              "  zb_install_edit_menu(application);\n}\nstatic void zb_tag")),
-                                         "V8: the Edit menu must be installed"),
+                                         "V8: zb_app_run must open exactly as REVIEWED_RUN_OPENING"),
     "the Edit menu's item retitled": (link_case(src__wkwebview_shim_dot_m=OTHERS["src/wkwebview_shim.m"].replace('action:@selector(copy:) keyEquivalent:@"c"', 'action:@selector(copy:) keyEquivalent:@"x"')),
                                       "V8: zb_install_edit_menu differs"),
+    # RoseCat 8139: the install not on the live path, or undone later
+    "application is nil": (link_case(src__wkwebview_shim_dot_m=OTHERS["src/wkwebview_shim.m"].replace(
+        "NSApplication *application = [NSApplication sharedApplication];", "NSApplication *application = nil;")),
+        "V8: zb_app_run must open exactly as REVIEWED_RUN_OPENING"),
+    "the menu replaced after the install": (link_case(src__wkwebview_shim_dot_m=OTHERS["src/wkwebview_shim.m"].replace(
+        "    [application run];\n", "    [application setMainMenu:nil];\n    [application run];\n")),
+        "V8: the main menu touched outside zb_install_edit_menu"),
+    "a return before the install": (link_case(src__wkwebview_shim_dot_m=OTHERS["src/wkwebview_shim.m"].replace(
+        "    NSApplication *application = [NSApplication sharedApplication];\n",
+        "    return 0;\n    NSApplication *application = [NSApplication sharedApplication];\n")),
+        "V8: zb_app_run must open exactly as REVIEWED_RUN_OPENING"),
+    "the menu emptied elsewhere": (link_case(src__wkwebview_shim_dot_m=OTHERS["src/wkwebview_shim.m"]
+                                             + "static void zb_e(void) {\n  [[NSApp mainMenu] removeAllItems];\n}\n"),
+                                   "V8: the main menu touched outside zb_install_edit_menu"),
+    "the menu cleared by a property": (link_case(src__wkwebview_shim_dot_m=OTHERS["src/wkwebview_shim.m"]
+                                                 + "static void zb_e(void) {\n  NSApp.mainMenu = nil;\n}\n"),
+                                       "V8: the main menu touched outside zb_install_edit_menu"),
     "a second Edit menu function": (link_case(src__wkwebview_shim_dot_m=OTHERS["src/wkwebview_shim.m"] + REVIEWED_EDIT_MENU.replace("zb_install_edit_menu", "zb_install_edit_menu2") + "\n"),
                                     "V7 src/wkwebview_shim.m: copy: other than the reviewed Edit menu's Copy item"),
     # RoseCat 8129 #3: the item retargeted through its ivar, or bound
