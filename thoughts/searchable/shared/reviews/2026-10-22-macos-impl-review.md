@@ -394,3 +394,27 @@ From an exact clean archive of `898880d178a6f18424a37d872042faa125a29df3`, regis
 The combined `abf3d00` + `57915c3` + `898880d` 4pa.66 slice is therefore safe to push in isolation. It remains correctly **UNPROVEN** for final D2/security closure until the generated-profile kernel-denial rows and setup-refusal row pass on both Macs under an exact-commit, exact-harness-digest, orchestrator-released run. No Mac was contacted. The aggregate branch tip remains not push-safe because the independent `d574edc` five-path direct-cache proof block is still open.
 
 For queue reconciliation, `63721e2b788a48971cc9b1fa7924026318f60db2` and `6ff2ccc6e3c31f9fd13ddb6227706003427eec26` are **already APPROVED and SAFE TO PUSH** in their earlier sections: the former closes the 3ui.5 structural-argv block for `build-on-mac.sh` plus its eight callers, and the latter closes the 4pa.71 I-W3/T20 and deterministic-handshake block.
+
+## 2026-10-22 — direct-Zig five-path proof and stale-base repair
+
+### `68666db` — drive all five direct Zig paths
+
+**APPROVED AGAINST THE `1915e0d` FIVE-PATH MINIMUM.** The proof need not live in one test file: both owning steps are registered individually and in `zig build test`. The existing structural test executes both modeled-host legs of `ms5_setup_refusal_gate.sh`, `ms5_setup_e2e.sh`, and `ms5_gate.sh`; each leg names its run directory, produces exactly one non-vacuous Zig invocation, and has that invocation's POSIX-shell argv checked before comments and control tokens. Its new MS7 row executes the committed `ms7_appkit_gate.sh` and `ms7_appkit_case.py` through isolated, executing SSH/SCP, `uname`, and Zig stubs; each leg reaches Zig exactly once, and the recorded argv must put both cache flags below that leg's exact `zb-ms7gate-*` directory. The separately registered `mac_compile_only_selftest.sh` executes the committed compile-only harness on both legs, records the argv received by its Zig stub, and requires both cache values beneath the same exact `zb-compile-*` root for that leg. The four MS7 dependencies are also declared as build-step inputs.
+
+Exact clean-archive evidence at `68666dbf26709b8ac51ee8c2d2390822eaf630e9`: `zig build test-mac-build-script test-mac-compile-only test-agent-seatbelt-readiness -j4 --summary all` exited 0 with 14/14 steps and 7/7 tests. The direct-cache row observed one Zig call on each of the six MS5 legs and each of the two MS7 legs; compile-only printed the two intended per-leg cache assertions. Independent production mutants were red: moving compile-only's global cache to `$HOME/.cache/zig` made `test-mac-compile-only` exit 1 with both leg assertions failing; removing MS7's real cache flags while retaining their text only after Python `#` made `test-mac-build-script` exit 1 with both M2 assertions failing. That second mutant simultaneously proves missing flags and inert comment tokens do not satisfy the oracle. The unchanged MS5 parser stops at shell comments/control tokens; the previously recorded missing, outside-run, comment, and `; echo` mutants remain applicable. The commit's recorded missing/comment/outside mutants for both newly driven paths agree with the independently exercised branches of their actual-argv checks.
+
+`68666db` **was not push-safe alone**: its stale `build.zig` deleted all 23 lines registering `898880d`'s two-state Zig seatbelt derivation. The exact-commit readiness step fell from 11/11 steps and 10/10 tests to 7/7 and 7/7; worse, independently hand-setting `seatbelt_ready = false` still exited 0. That unrelated R3 regression required the following fix-forward.
+
+### `075658c` — restore the deleted two-state registration
+
+**APPROVED; THE ANCESTRY THROUGH `075658c47473084dd5f663390e22d49d4b11b7ad` IS PUSH-SAFE AGAIN.** This commit restores the exact 23-line `seatbelt_derivation_module` fixture/import/run/dependency hunk from `898880d` and changes no other file. `git diff 898880d 075658c -- build.zig` contains only `68666db`'s intended four MS7 input additions. From a clean archive of the restored tip, `zig build test-agent-seatbelt-readiness test-mac-build-script test-mac-compile-only -j4 --summary all` exited 0 with 18/18 steps and 10/10 tests. Reapplying the dishonest `seatbelt_ready = false` mutant made the registered readiness step exit 1, 8/10 tests, at both accepted-state assertions. Thus `075658c` closes the stale-base regression without changing the approved cache proof.
+
+**3ui.5 HOLD status after `63721e2` + `68666db` + `075658c`:**
+
+- `build-on-mac.sh` and its eight callers (`gate.sh`, `ms1b_signed_gate.sh`, `ms2a_gate.sh`, `ms2b_gate.sh`, `ms2c_gate.sh`, `ms3_gate.sh`, `ms4_gate.sh`, and `packaging/macos/build-dmg.sh`): **cache HOLD CLEAR; request-eligible**.
+- `ms5_setup_refusal_gate.sh` and `ms5_setup_e2e.sh`: **cache HOLD CLEAR; request-eligible**.
+- `mac_compile_only.sh`: **cache HOLD CLEAR; request-eligible**.
+- `ms7_appkit_gate.sh` / `ms7_appkit_case.py`: **cache HOLD CLEAR; request-eligible**.
+- `ms5_gate.sh`: **3ui.5 cache HOLD CLEAR, but still HELD / not request-eligible** because its independent `StrictHostKeyChecking=no` / `UserKnownHostsFile=/dev/null` defect remains open.
+
+“Request-eligible” is not a release. Every Mac run still requires the exact source commit, SHA-256 of every harness file used, and the orchestrator's explicit release. No Mac was contacted during this review.
