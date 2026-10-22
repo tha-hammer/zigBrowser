@@ -36177,3 +36177,28 @@ card calls, keep the four exports on both objects, and retain a clean unresolved
 symbol census. Runtime minter exclusivity, menu/action ownership and lifecycle
 remain obligations of the compiled two-Mac hard gate; this object test does not
 claim them by itself.
+
+## WS7.2 runtime SHA-256 pin red (`ea8940e`)
+
+**BLOCKED-for-tests; keep it unregistered.** The red correctly fixes the two
+required artifact identities (`python-x64` and `claude_agent_sdk.whl`), accepts
+matching SHA-256 content, and refuses a changed wheel, an unpinned extra
+artifact, and a manifest from which a required pin was removed. With a minimal
+SDK import stub, all four rows fail on the absent production `PinError` /
+`verify_pins`, so the intended pre-green state is genuine.
+
+The required-set proof is incomplete, however. Both “missing pin” rows remove
+the pin *and* its corresponding artifact. A verifier that requires the two
+manifest keys and validates every artifact it is handed, but never checks that
+every manifest pin has a supplied artifact, passes all committed rows while
+accepting a complete two-pin manifest with the wheel (or Python archive)
+missing. I reproduced that exact weak implementation and the absent-wheel
+input was accepted.
+
+Add one causal row for each direction: the complete two-pin manifest with only
+the Python artifact, and the complete manifest with only the wheel. Both must
+raise `PinError`. Keep the existing missing-pin and unpinned-extra rows so the
+green is forced to prove exact equality among the required artifact names, the
+manifest keys, and the supplied artifact keys before comparing bytes. A
+drop-completeness mutant must fail only these new rows. After that fix-forward,
+this offline red can be approved; registration still waits for its green.
