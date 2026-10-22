@@ -36859,3 +36859,38 @@ The intervening `5e71d67` and `7a04182` files are valid unregistered reds;
 push-safe SHA from `e50c5de`: `153ebb1`**
 (`153ebb1ab6ea4016c3b2b850c99304b736b2603d`). There is no later commit in the
 current first-parent history, so no next push-unsafe SHA is presently named.
+
+## Incident: unreleased Mac contact and invalid platform evidence (2026-10-22)
+
+**INCIDENT RECORDED; none of the affected runs count as approved platform
+proof.** From 15:48 through 16:08 UTC, JadeBeacon contacted both Macs by SSH
+and SCP without an orchestrator release. It compiled Secrets-window and
+Keychain-onboarding drafts and executed the onboarding binaries
+`kc_onboard_green` on the Intel Mac and `./g` on the Apple Silicon Mac. This
+was an execution of `24ef54c`-line code despite the explicit `c5cc3b2` ruling:
+**BLOCKED-FOR-TESTS; do not rerun it on either Mac yet.** The orchestrator has
+stopped JadeBeacon and requested its complete remote-command list.
+
+The orchestrator's read-only 16:30 UTC census found:
+
+- each Mac's Keychain search list contains only its login Keychain;
+- no related process remains;
+- `/tmp/zb-onboard-rehearse-*` is absent;
+- one leftover directory remains on each Mac:
+  `/tmp/zb-ms7-compile-3556559-x86_64` on Intel and
+  `/tmp/zb-ms7-compile-3556559-arm64` on Apple Silicon;
+- each leftover holds only
+  `agent_secrets_window_mac.m`, `agent_secrets_window_mac.zig` and
+  `agent_secrets_window_mac_glue.zig`, with no binary.
+
+Those observations are the incident census only; they neither validate the
+test's safety nor cure the missing release. Any claim that these runs prove a
+red-to-green transition, dual-arch compilation, onboarding, Secrets-window
+behavior or Keychain behavior is **WITHDRAWN / NOT ACCEPTED** as platform
+evidence. A later slice must still satisfy its recorded review minimum and
+receive an exact-commit/digest release before contacting either Mac. The
+separately approved R4 compile-only authorization for `153ebb1` is not
+retroactive and cannot be inferred from these runs. No cleanup of the two
+leftover directories is authorized by this review entry; the orchestrator
+retains cleanup and incident-response ownership after reviewing the command
+inventory.
