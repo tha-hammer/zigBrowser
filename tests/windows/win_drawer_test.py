@@ -127,20 +127,35 @@ def check_mounted_fail(r, which):
 
 
 def check_assign_fail(r):
-    """Forced AssignProcessToJobObject failure (RoseCat fd17cba/7662): the suspended process is outside the
-    job, so it must be terminated by its HELD handle and PROVEN gone — never a pid/name kill, no orphan."""
+    """Forced AssignProcessToJobObject failure (RoseCat fd17cba/7662, 7670 #1): the suspended process is
+    outside the job, so the bounded cleanup route must terminate it by its HELD handle and PROVE it gone —
+    never a pid/name kill, no orphan, and no owned job members left behind."""
     assert r.get("launch_failed"), f"a forced assign failure must report launch_failed; got {r!r}"
     assert r.get("proc_gone"), "the held (unassigned, suspended) process must be proven terminated (proc_gone)"
+    assert r.get("job_count_after") == 0, f"no owned job members may survive (got {r.get('job_count_after')})"
     assert "AssignProcessToJobObject" in (r.get("error") or ""), f"the assign-failure error must be surfaced; got {r.get('error')!r}"
     rows = [row for row in (parse_drawer(ln) for ln in r.get("stdout", "").splitlines()) if row]
     assert rows == [], f"a process killed before resume must emit NO DRAWER rows; got {rows}"
 
 
+def check_firststop_fail(r):
+    """Forced FIRST-stop-proof failure (RoseCat 7670 #1, causal row (d)): the first TerminateProcess/wait proof
+    fails, but the SEPARATE bounded cleanup route still proves the process terminal and leaves ZERO owned job
+    members — no orphan, no signal fallback."""
+    assert r.get("first_stop_failed"), "the first stop proof must actually have failed (seam fired)"
+    assert r.get("proc_gone"), "the bounded cleanup route must still prove the process terminal (proc_gone)"
+    assert r.get("job_count_after") == 0, f"the backstop must leave zero owned job members (got {r.get('job_count_after')})"
+    assert r.get("error", "") == "", f"the backstop recovered, so no hard error is surfaced; got {r.get('error')!r}"
+
+
 def check_wait_fail(r):
-    """Forced teardown WaitForSingleObject != WAIT_OBJECT_0 (RoseCat fd17cba/7662 #2): must be a test FAILURE,
-    never a silent bounded success."""
+    """Forced teardown WaitForSingleObject != WAIT_OBJECT_0 (RoseCat fd17cba/7662 #2, 7670 #2): the first-wait
+    failure must be a test FAILURE (never a silent bounded success), AND the distinct bounded cleanup route must
+    prove the process + job tree are gone before that failure is reported."""
     assert not r.get("terminated"), "a non-WAIT_OBJECT_0 teardown must NOT count as terminated"
-    assert "WAIT_OBJECT_0" in (r.get("error") or ""), f"the wait failure must be surfaced as an error; got {r.get('error')!r}"
+    assert "WAIT_OBJECT_0" in (r.get("error") or ""), f"the first-wait failure must be surfaced as an error; got {r.get('error')!r}"
+    assert r.get("proc_gone"), "the distinct bounded cleanup route must prove the process terminal (proc_gone)"
+    assert r.get("job_count_after") == 0, f"the job tree must be proven gone (job_count_after={r.get('job_count_after')})"
 
 
 # VM-side runner (RoseCat 29e8852): create the browser SUSPENDED, assign it to a Job we OWN
@@ -216,17 +231,36 @@ public static class Z {
     if (h == new IntPtr(-1)) Fail("CreateFile NUL"); return h;
   }
   public static IntPtr Job; static IntPtr _hProc, _hThread; public static int Pid; public static bool ProcGone;
-  // Terminate the exact held process handle (never a pid) and PROVE it exited: TerminateProcess must succeed,
-  // WaitForSingleObject must signal WAIT_OBJECT_0, and the exit code must not be STILL_ACTIVE. The handle is
-  // closed/cleared ONLY when exit is proven; on an unproven stop the handle is RETAINED (a cleanup route) and
-  // ProcGone stays false so the caller/oracle treats it as a failure. Returns ProcGone.
-  static bool KillHeld() {
-    if (_hProc == IntPtr.Zero) { ProcGone = true; return true; }
-    bool term = TerminateProcess(_hProc, 1);
-    uint w = WaitForSingleObject(_hProc, 8000);
+  public static bool FirstStopFailed; static int _proveCalls;
+  // ONE attempt to prove the held process is terminal. The PROOF is wait + exit-code (TerminateProcess is only
+  // the action — an already-dead process may return false). Does NOT close any handle. The e2e `firststop_fail`
+  // seam forces ONLY the first attempt to fail (so a separate bounded cleanup route must reap it).
+  static bool ProveTerminal(uint waitMs) {
+    if (_hProc == IntPtr.Zero) return true;
+    _proveCalls++;
+    if (ForceFail == "firststop_fail" && _proveCalls == 1) { FirstStopFailed = true; return false; }
+    TerminateProcess(_hProc, 1);                       // best-effort action
+    uint w = WaitForSingleObject(_hProc, waitMs);
     uint code = STILL_ACTIVE; bool got = GetExitCodeProcess(_hProc, out code);
-    ProcGone = term && (w == WAIT_OBJECT_0) && got && code != STILL_ACTIVE;
-    if (ProcGone) { CloseHandle(_hThread); CloseHandle(_hProc); _hThread = IntPtr.Zero; _hProc = IntPtr.Zero; }
+    return (w == WAIT_OBJECT_0) && got && (code != STILL_ACTIVE);  // proof: signaled + a real exit code
+  }
+  // First stop attempt for the pre-resume recovery paths. Sets ProcGone; NEVER closes/discards the handle (the
+  // bounded cleanup route FinalReap owns the proven close), so an unproven stop can never discard the last
+  // authority over a still-live child.
+  static bool KillHeld() { ProcGone = ProveTerminal(8000); return ProcGone; }
+  // The SEPARATE bounded cleanup route (RoseCat 7670 #1): if not yet proven terminal, retry a bounded number
+  // of times; only when PROVEN terminal are the process/thread handles closed+cleared (every CloseHandle is
+  // checked — #3). If it still cannot be proven, the handle is RETAINED (never discarded) and ProcGone stays
+  // false so the caller surfaces a hard failure. Returns ProcGone.
+  public static bool FinalReap() {
+    if (_hProc == IntPtr.Zero) { ProcGone = true; return true; }
+    for (int i = 0; !ProcGone && i < 3; i++) ProcGone = ProveTerminal(8000);
+    if (ProcGone) {
+      bool okT = _hThread == IntPtr.Zero || CloseHandle(_hThread);
+      bool okP = CloseHandle(_hProc);
+      _hThread = IntPtr.Zero; _hProc = IntPtr.Zero;
+      if (!okT || !okP) Fail("CloseHandle(held)");
+    }
     return ProcGone;
   }
   // Create the job (KILL_ON_JOB_CLOSE), the suspended process with inherited std handles, assign it to the
@@ -267,18 +301,34 @@ public static class Z {
       return Marshal.ReadInt32(buf, 4); // NumberOfProcessIdsInList
     } finally { Marshal.FreeHGlobal(buf); }
   }
-  // Terminate the job and REQUIRE the held process to reach WAIT_OBJECT_0 (a timeout/WAIT_FAILED throws).
+  // Terminate the job and REQUIRE the held process to reach WAIT_OBJECT_0 on the FIRST wait. On a non-OBJECT_0
+  // first wait (the `wait_fail` seam) a DISTINCT bounded cleanup route (FinalReap) first PROVES the process +
+  // job tree are gone; only THEN is the intentionally-preserved first-wait failure reported (RoseCat 7670 #2).
   public static void Teardown() {
-    uint wait = (ForceFail == "wait_fail") ? 258u /*WAIT_TIMEOUT*/ : 0xFFFFFFFFu;
     if (Job != IntPtr.Zero) { if (!TerminateJobObject(Job, 1)) Fail("TerminateJobObject"); }
-    if (ForceFail != "wait_fail" && _hProc != IntPtr.Zero) wait = WaitForSingleObject(_hProc, 8000);
-    else if (ForceFail != "wait_fail") wait = WAIT_OBJECT_0;
-    if (wait != WAIT_OBJECT_0) throw new Exception("WaitForSingleObject on the browser did not signal WAIT_OBJECT_0: " + wait);
+    uint wait;
+    if (ForceFail == "wait_fail") wait = 258u;                               // forced WAIT_TIMEOUT (first wait)
+    else if (_hProc != IntPtr.Zero) wait = WaitForSingleObject(_hProc, 8000);
+    else wait = WAIT_OBJECT_0;
+    if (wait != WAIT_OBJECT_0) {
+      FinalReap();  // distinct bounded cleanup: prove the held process terminal (job already terminated above)
+      throw new Exception("WaitForSingleObject on the browser did not signal WAIT_OBJECT_0: " + wait +
+                          " (bounded cleanup proved gone=" + ProcGone + ", job_members=" + JobProcessCount() + ")");
+    }
+    // Normal path proved terminal by the first wait. The `firststop_fail` seam deliberately leaves ProcGone
+    // unset here so the separate bounded cleanup route (FinalReap) is exercised and must still reap it.
+    if (ForceFail != "firststop_fail") ProcGone = true;
   }
+  // Close the Job (KILL_ON_CLOSE backstop). Release the process/thread handles ONLY when the process is PROVEN
+  // terminal — NEVER discard an unproven handle (that would orphan a live child). Every CloseHandle is checked.
   public static void Close() {
-    bool okT = _hThread == IntPtr.Zero || CloseHandle(_hThread);
-    bool okP = _hProc == IntPtr.Zero || CloseHandle(_hProc);
-    bool okJ = Job == IntPtr.Zero || CloseHandle(Job);  // KILL_ON_JOB_CLOSE: belt-and-suspenders
+    bool okT = true, okP = true;
+    if (ProcGone) {
+      okT = _hThread == IntPtr.Zero || CloseHandle(_hThread);
+      okP = _hProc == IntPtr.Zero || CloseHandle(_hProc);
+      _hThread = IntPtr.Zero; _hProc = IntPtr.Zero;
+    }
+    bool okJ = Job == IntPtr.Zero || CloseHandle(Job);
     if (!okT || !okP || !okJ) Fail("CloseHandle");
   }
   static IntPtr _found; static uint _pid; static string _cls; static readonly EnumProc _findCb = FindCb;
@@ -302,7 +352,7 @@ public static class Z {
 }
 '@
 
-$res = @{ stdout=''; stderr=''; client_w=0; client_h=0; pid=0; controls=''; job_count_before=0; job_count_after=0; window_found=$false; terminated=$false; timed_out=$false; proc_gone=$false; launch_failed=$false; error='' }
+$res = @{ stdout=''; stderr=''; client_w=0; client_h=0; pid=0; controls=''; job_count_before=0; job_count_after=0; window_found=$false; terminated=$false; timed_out=$false; proc_gone=$false; first_stop_failed=$false; launch_failed=$false; error='' }
 # e2e-only seams, set in this process so the child inherits them (honoured only under --e2e-protocol).
 $env:ZIGBROWSER_AGENT_DRAWER_OPEN = '1'
 $env:ZIGBROWSER_AGENT_DRAWER_DEMO = 'messages:2'
@@ -327,12 +377,17 @@ try {
     $w = 0; $ht = 0; if ([Z]::Client($h, [ref]$w, [ref]$ht)) { $res.client_w = $w; $res.client_h = $ht }
     $res.controls = [Z]::DirectStatics($h)   # exact DIRECT STATIC children, "STATIC:<text>|..."
   }
-} catch { $res.error = $_.Exception.Message; $res.proc_gone = [Z]::ProcGone; $res.launch_failed = (-not $launched) }
+} catch { $res.error = $_.Exception.Message; $res.launch_failed = (-not $launched) }
 finally {
   if ($launched) {
     try { [Z]::Teardown(); $res.terminated = $true } catch { if (-not $res.error) { $res.error = $_.Exception.Message } }
-    try { $res.job_count_after = [Z]::JobProcessCount() } catch { if (-not $res.error) { $res.error = $_.Exception.Message } }
   }
+  # ALWAYS run the bounded cleanup route (proves the held process terminal and closes its handle only when
+  # proven), then census the owned job, then Close. Querying the job BEFORE Close (the job handle is still open).
+  try { [Z]::FinalReap() | Out-Null } catch { if (-not $res.error) { $res.error = $_.Exception.Message } }
+  $res.proc_gone = [Z]::ProcGone
+  $res.first_stop_failed = [Z]::FirstStopFailed
+  try { if ([Z]::Job -ne [IntPtr]::Zero) { $res.job_count_after = [Z]::JobProcessCount() } } catch { if (-not $res.error) { $res.error = $_.Exception.Message } }
   try { [Z]::Close() } catch { if (-not $res.error) { $res.error = $_.Exception.Message } }
   $res.stdout = [string](Get-Content $out -Raw -ErrorAction SilentlyContinue); if ($null -eq $res.stdout) { $res.stdout = '' }
   $res.stderr = [string](Get-Content $err -Raw -ErrorAction SilentlyContinue); if ($null -eq $res.stderr) { $res.stderr = '' }
@@ -440,12 +495,18 @@ class WinDrawerLive(unittest.TestCase):
         self._run_drawer(fail_mode="icon", body=lambda r: check_mounted_fail(r, "icon"))
 
     def test_assign_failure_terminates_held_process(self):
-        # RoseCat fd17cba/7662: forcing AssignProcessToJobObject to fail must terminate the held (suspended)
-        # process by its handle — proven gone (no pid/name kill, no orphan).
+        # RoseCat fd17cba/7662, 7670 #1: forcing AssignProcessToJobObject to fail must terminate the held
+        # (suspended) process by its handle — proven gone, no owned job members left (no pid/name kill, no orphan).
         self._run_drawer(force_mode="assign_fail", body=check_assign_fail)
 
+    def test_first_stop_failure_recovered_by_backstop(self):
+        # RoseCat 7670 causal row (d): the first stop proof fails, but the separate bounded cleanup route still
+        # proves the process terminal and leaves zero owned job members.
+        self._run_drawer(force_mode="firststop_fail", body=check_firststop_fail)
+
     def test_wait_failure_is_reported(self):
-        # A teardown that does not reach WAIT_OBJECT_0 must FAIL (never a silent bounded success).
+        # RoseCat 7670 #2: a teardown whose first wait is not WAIT_OBJECT_0 must FAIL (never a silent bounded
+        # success) AND the distinct bounded cleanup route must prove the process + job tree gone first.
         self._run_drawer(force_mode="wait_fail", body=check_wait_fail)
 
 
@@ -560,27 +621,66 @@ class WinDrawerOracle(unittest.TestCase):
         with self.assertRaises(AssertionError):
             check_mounted_fail(r, "panel")
 
-    # --- forced job-lifecycle failure oracles (check_assign_fail / check_wait_fail) ---
+    # --- forced job-lifecycle failure oracles (check_assign_fail / check_firststop_fail / check_wait_fail) ---
     def test_assign_fail_good_passes(self):
-        check_assign_fail({"launch_failed": True, "proc_gone": True,
-                           "error": "AssignProcessToJobObject failed (held process terminated; gone=True)", "stdout": ""})
+        check_assign_fail({"launch_failed": True, "proc_gone": True, "job_count_after": 0,
+                           "error": "AssignProcessToJobObject failed (held stop gone=True)", "stdout": ""})
 
     def test_assign_fail_orphan_survivor_rejected(self):
         with self.assertRaises(AssertionError):
-            check_assign_fail({"launch_failed": True, "proc_gone": False,
-                               "error": "AssignProcessToJobObject failed (held process terminated; gone=False)", "stdout": ""})
+            check_assign_fail({"launch_failed": True, "proc_gone": False, "job_count_after": 0,
+                               "error": "AssignProcessToJobObject failed (held stop gone=False)", "stdout": ""})
+
+    def test_assign_fail_job_member_survivor_rejected(self):
+        # RoseCat 7670 #1: an owned job member surviving teardown must fail even if proc_gone is claimed.
+        with self.assertRaises(AssertionError):
+            check_assign_fail({"launch_failed": True, "proc_gone": True, "job_count_after": 1,
+                               "error": "AssignProcessToJobObject failed", "stdout": ""})
 
     def test_assign_fail_rows_emitted_rejected(self):
         with self.assertRaises(AssertionError):
-            check_assign_fail({"launch_failed": True, "proc_gone": True,
+            check_assign_fail({"launch_failed": True, "proc_gone": True, "job_count_after": 0,
                                "error": "AssignProcessToJobObject failed", "stdout": "DRAWER\t1\topen\t0,437,1008,292\n"})
 
+    def test_firststop_fail_good_passes(self):
+        # RoseCat 7670 causal row (d): first stop proof fails, the bounded cleanup still leaves zero owned.
+        check_firststop_fail({"first_stop_failed": True, "proc_gone": True, "job_count_after": 0,
+                              "terminated": True, "error": ""})
+
+    def test_firststop_fail_but_not_reaped_rejected(self):
+        with self.assertRaises(AssertionError):
+            check_firststop_fail({"first_stop_failed": True, "proc_gone": False, "job_count_after": 0,
+                                  "terminated": True, "error": ""})
+
+    def test_firststop_fail_but_job_member_survivor_rejected(self):
+        with self.assertRaises(AssertionError):
+            check_firststop_fail({"first_stop_failed": True, "proc_gone": True, "job_count_after": 1,
+                                  "terminated": True, "error": ""})
+
+    def test_firststop_fail_not_actually_exercised_rejected(self):
+        # if the seam never fired, this is not evidence of the backstop recovering a first-stop failure.
+        with self.assertRaises(AssertionError):
+            check_firststop_fail({"first_stop_failed": False, "proc_gone": True, "job_count_after": 0,
+                                  "terminated": True, "error": ""})
+
     def test_wait_fail_good_passes(self):
-        check_wait_fail({"terminated": False, "error": "WaitForSingleObject on the browser did not signal WAIT_OBJECT_0: 258"})
+        check_wait_fail({"terminated": False, "proc_gone": True, "job_count_after": 0,
+                         "error": "WaitForSingleObject on the browser did not signal WAIT_OBJECT_0: 258 (bounded cleanup proved gone=True, job_members=0)"})
 
     def test_wait_fail_silent_success_rejected(self):
         with self.assertRaises(AssertionError):
-            check_wait_fail({"terminated": True, "error": ""})
+            check_wait_fail({"terminated": True, "proc_gone": True, "job_count_after": 0, "error": ""})
+
+    def test_wait_fail_without_cleanup_proof_rejected(self):
+        # RoseCat 7670 #2: reporting the diagnostic without proving the process/job gone must fail.
+        with self.assertRaises(AssertionError):
+            check_wait_fail({"terminated": False, "proc_gone": False, "job_count_after": 0,
+                             "error": "WaitForSingleObject on the browser did not signal WAIT_OBJECT_0: 258"})
+
+    def test_wait_fail_job_member_survivor_rejected(self):
+        with self.assertRaises(AssertionError):
+            check_wait_fail({"terminated": False, "proc_gone": True, "job_count_after": 1,
+                             "error": "WaitForSingleObject on the browser did not signal WAIT_OBJECT_0: 258"})
 
 
 if __name__ == "__main__":
