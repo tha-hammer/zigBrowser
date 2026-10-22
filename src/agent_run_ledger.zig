@@ -185,3 +185,22 @@ pub fn publishCut(io: std.Io, dir: std.Io.Dir, sub_path: []const u8, entries: []
     if (cut == .after_rename) return; // crash before the dir fsync: store is the new content, not yet durable
     try ops.syncDir(dir, io); // fsync the dir through the seam, so the rename itself survives a crash
 }
+
+/// The ledger's cross-process advisory lock file (sibling of the store).
+pub const LOCK_NAME = ".zigbrowser-agent-runs.lock";
+
+pub const LockError = error{ LockBusy, LockFailed };
+
+/// Acquire the ledger's cross-process advisory lock with a BOUNDED, CANCELLABLE LOCK_EX|LOCK_NB + retry
+/// (RoseCat flock row): at most `max_tries` non-blocking attempts, sleeping `backoff_ms` between them. A held
+/// lock — a stalled holder, even in a SEPARATE process — never blocks us indefinitely: after the bound we FAIL
+/// CLOSED with error.LockBusy, having mutated nothing (only the lock file is opened). The returned File HOLDS
+/// the lock; close it (or process death) releases it. Any non-contention error also fails closed (LockFailed).
+pub fn acquireLock(io: std.Io, dir: std.Io.Dir, max_tries: u32, backoff_ms: i64) LockError!std.Io.File {
+    // RED STUB: opens the lock file WITHOUT honoring the exclusive lock (no .lock, no LOCK_NB, no bounded retry),
+    // so a held lock never fails us closed — it just hands back an unlocked fd. The green uses
+    // .lock=.exclusive + .lock_nonblocking with a bounded retry and returns error.LockBusy on a stalled holder.
+    _ = max_tries;
+    _ = backoff_ms;
+    return dir.createFile(io, LOCK_NAME, .{ .read = true, .truncate = false }) catch error.LockFailed;
+}
