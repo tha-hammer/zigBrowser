@@ -190,25 +190,27 @@ int zb_drawer_retire_extra(ExtraWindow *records, size_t count, uintptr_t hwnd); 
 // (c_int spawn_count; u8 close_primary).
 struct AfterController { int spawn_count; unsigned char close_primary; };
 AfterController zb_drawer_after_controller(int seam, int e2e, int drawer, int windows_seam_set);
+// WS5.5b-2 (RoseCat 2dcf84e / R3(d)): the portable drawer live-count state machine. The shim OWNS no count
+// transition logic — it calls inc when a full drawer registers and dec when a retired window's WM_DESTROY fires;
+// the transitions (live++, running peak, never-below-zero dec) are driven in agent_drawer_props_test.zig. Layout
+// mirrors the Zig extern struct (c_int live; c_int peak).
+struct DrawerLive { int live; int peak; };
+int zb_drawer_live_inc(DrawerLive *s);   // full drawer registers: live++, peak tracks the max; returns new live
+int zb_drawer_live_dec(DrawerLive *s);   // retired window: live-- (never below 0); returns new live
 }
 
 // WS5 shim functions (declared in webkit_shim.h), defined here for the Windows backend.
 static std::atomic<int> g_agent_drawer_enabled{0};
-static std::atomic<int> g_drawer_live{0};
-static std::atomic<int> g_drawer_live_peak{0};  // WS5.5: the max concurrent live drawers this process reached
+// WS5.5b-2 (R3(d)): the live-count state is the portable DrawerLive, mutated ONLY through the Zig transitions
+// (zb_drawer_live_inc/dec). All drawer-window lifecycle runs on the single UI/message-loop thread.
+static DrawerLive g_drawer_live_state{0, 0};
 extern "C" void zb_app_set_agent_drawer(int enabled) { g_agent_drawer_enabled.store(enabled != 0); }
 extern "C" int zb_app_get_agent_drawer(void) { return g_agent_drawer_enabled.load(); }
-extern "C" int zb_drawer_debug_live_count(void) { return g_drawer_live.load(); }
-extern "C" int zb_drawer_debug_live_peak(void) { return g_drawer_live_peak.load(); }  // WS5.5 peak accessor
+extern "C" int zb_drawer_debug_live_count(void) { return g_drawer_live_state.live; }
+extern "C" int zb_drawer_debug_live_peak(void) { return g_drawer_live_state.peak; }  // WS5.5 peak accessor
 
-// WS5.5: bump the live-drawer count and keep the running peak (the highest concurrent count seen). Single UI
-// thread, but the compare-exchange keeps the peak correct regardless.
-static void drawer_live_inc() {
-  const int now = g_drawer_live.fetch_add(1, std::memory_order_relaxed) + 1;
-  int peak = g_drawer_live_peak.load(std::memory_order_relaxed);
-  while (now > peak && !g_drawer_live_peak.compare_exchange_weak(peak, now, std::memory_order_relaxed)) {
-  }
-}
+// WS5.5: register one more live drawer through the portable counter (live++, running peak).
+static void drawer_live_inc() { zb_drawer_live_inc(&g_drawer_live_state); }
 
 void emit_safe_field(const char *text) {
   const char *p = text != nullptr ? text : "";
@@ -1444,7 +1446,7 @@ LRESULT CALLBACK drawer_extra_window_proc(HWND h, UINT msg, WPARAM wparam, LPARA
         zb_drawer_retire_extra(app->extra_windows.data(), app->extra_windows.size(),
                                reinterpret_cast<uintptr_t>(h))) {
       // The portable ownership helper tombstoned exactly one LIVE record for this HWND, so decrement once.
-      g_drawer_live.fetch_sub(1, std::memory_order_relaxed);
+      zb_drawer_live_dec(&g_drawer_live_state);
     }
   }
   return DefWindowProcW(h, msg, wparam, lparam);
@@ -1539,9 +1541,9 @@ void spawn_extra_drawer_windows(AppState *app, int count) {
     char win[16];
     snprintf(win, sizeof win, "%d", app->win_id);
     char peak_buf[16];
-    snprintf(peak_buf, sizeof peak_buf, "%d", g_drawer_live_peak.load());
+    snprintf(peak_buf, sizeof peak_buf, "%d", g_drawer_live_state.peak);
     char now_buf[16];
-    snprintf(now_buf, sizeof now_buf, "%d", g_drawer_live.load());
+    snprintf(now_buf, sizeof now_buf, "%d", g_drawer_live_state.live);
     emit_protocol4(app, "DRAWER", win, "liveclose", peak_buf, now_buf);
   }
 }
@@ -1787,7 +1789,7 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam,
       if (app->drawer_mounted) {
         // WS5: the child panel/icon are destroyed with the host window; account the live drawer going away
         // (zb_drawer_debug_live_count reaches 0 after every window closes — WS5.5).
-        g_drawer_live.fetch_sub(1, std::memory_order_relaxed);
+        zb_drawer_live_dec(&g_drawer_live_state);
         app->drawer_mounted = false;
         app->drawer_panel = nullptr;
         app->drawer_icon = nullptr;
@@ -2271,9 +2273,9 @@ static int run_core(const char *uri, int print_title, int e2e_protocol, bool scr
     char win[16];
     snprintf(win, sizeof win, "%d", app.win_id);
     char peak_buf[16];
-    snprintf(peak_buf, sizeof peak_buf, "%d", g_drawer_live_peak.load());
+    snprintf(peak_buf, sizeof peak_buf, "%d", g_drawer_live_state.peak);
     char final_buf[16];
-    snprintf(final_buf, sizeof final_buf, "%d", g_drawer_live.load());
+    snprintf(final_buf, sizeof final_buf, "%d", g_drawer_live_state.live);
     emit_protocol4(&app, "DRAWER", win, "live", peak_buf, final_buf);
   }
 

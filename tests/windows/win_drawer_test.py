@@ -1433,12 +1433,14 @@ class WinDrawerOracle(unittest.TestCase):
         proc = " ".join(strip_cpp(extract_cpp_function(shim, "drawer_extra_window_proc")).split())
         call = "zb_drawer_retire_extra(app->extra_windows.data(), app->extra_windows.size(), reinterpret_cast<uintptr_t>(h))"
 
+        dec = "zb_drawer_live_dec(&g_drawer_live_state)"  # WS5.5b-2 R3(d): the portable Zig dec (was a C++ atomic)
+
         def proc_ok(b):
-            return ("WM_DESTROY" in b and call in b and "g_drawer_live.fetch_sub(1" in b and "PostQuitMessage" not in b)
+            return ("WM_DESTROY" in b and call in b and dec in b and "PostQuitMessage" not in b)
 
         self.assertTrue(proc_ok(proc), f"the extra WndProc must call the ownership helper and decrement on true; body={proc!r}")
         self.assertFalse(proc_ok(proc.replace(call, "false", 1)), "removing the ownership-helper call must be caught")
-        self.assertFalse(proc_ok(proc.replace("g_drawer_live.fetch_sub", "g_drawer_live.no_dec", 1)),
+        self.assertFalse(proc_ok(proc.replace(dec, "no_dec(1)", 1)),
                          "removing the decrement must be caught")
         self.assertFalse(proc_ok(proc + " PostQuitMessage(0);"), "an extra window must never PostQuitMessage")
 

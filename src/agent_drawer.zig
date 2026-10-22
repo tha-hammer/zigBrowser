@@ -206,6 +206,24 @@ pub fn retireExtraWindow(records: []ExtraRecord, hwnd: usize) bool {
     return false;
 }
 
+/// WS5.5b-2 (RoseCat 2dcf84e / R3(d)): the portable drawer live-count state machine, so the live transitions are
+/// SHARED production bytes the Windows shim CALLS (not a C++ re-implementation that a detached test could mirror).
+/// `live` is the current concurrent live-drawer count; `peak` is the running maximum. A FULL window registers via
+/// inc (live++, peak tracks the max); a window whose WM_DESTROY retired a live record (retireExtraWindow == true)
+/// decrements via dec; a partial-cleanup window never registers, so it never inc's. Driven on the UI thread only.
+pub const DrawerLive = extern struct { live: c_int = 0, peak: c_int = 0 };
+
+pub fn drawerLiveInc(s: *DrawerLive) c_int {
+    s.live += 1;
+    if (s.live > s.peak) s.peak = s.live;
+    return s.live;
+}
+
+pub fn drawerLiveDec(s: *DrawerLive) c_int {
+    if (s.live > 0) s.live -= 1; // never below zero: a double-retire (retireExtraWindow == false) must not dec
+    return s.live;
+}
+
 /// WS5.5b-2: the number of EXTRA drawer windows the e2e multi-window spawn creates BEYOND the primary window,
 /// for a given WINDOWS seam. The seam is the total window count (1..8 when set, 1 otherwise), so the extra count
 /// is seam-1, clamped to [0, max_windows-1]. The shim loops this many times, so the C++ keeps no count logic.
@@ -606,6 +624,8 @@ comptime {
         @export(&zb_drawer_window_count_from_env, .{ .name = "zb_drawer_window_count_from_env" });
         @export(&zb_drawer_extra_windows, .{ .name = "zb_drawer_extra_windows" });
         @export(&zb_drawer_retire_extra, .{ .name = "zb_drawer_retire_extra" });
+        @export(&zb_drawer_live_inc, .{ .name = "zb_drawer_live_inc" });
+        @export(&zb_drawer_live_dec, .{ .name = "zb_drawer_live_dec" });
         @export(&zb_drawer_after_controller, .{ .name = "zb_drawer_after_controller" });
         @export(&zb_drawer_icon_size_for_dpi, .{ .name = "zb_drawer_icon_size_for_dpi" });
         @export(&zb_drawer_inside_icon, .{ .name = "zb_drawer_inside_icon" });
@@ -764,6 +784,17 @@ fn zb_drawer_extra_windows(seam: c_int) callconv(.c) c_int {
 /// caller decrements exactly once). The shim's extra WndProc calls this on WM_DESTROY.
 fn zb_drawer_retire_extra(records: ?[*]ExtraRecord, count: usize, hwnd: usize) callconv(.c) c_int {
     if (records) |ptr| return @intFromBool(retireExtraWindow(ptr[0..count], hwnd));
+    return 0;
+}
+
+/// WS5.5b-2: the shim calls these on the live-count state; inc when a FULL extra/primary drawer registers, dec
+/// when its WM_DESTROY retired a live record. Returns the new live count.
+fn zb_drawer_live_inc(s: ?*DrawerLive) callconv(.c) c_int {
+    if (s) |p| return drawerLiveInc(p);
+    return 0;
+}
+fn zb_drawer_live_dec(s: ?*DrawerLive) callconv(.c) c_int {
+    if (s) |p| return drawerLiveDec(p);
     return 0;
 }
 

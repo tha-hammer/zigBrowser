@@ -271,3 +271,39 @@ test "retireExtraWindow: lookup by hwnd, one live transition, tombstone-before-r
     if (d.retireExtraWindow(&one, 0x30)) decs += 1;
     try std.testing.expectEqual(@as(usize, 1), decs);
 }
+
+test "drawer live lifecycle: register inc + running peak, partial counts nothing, retire-once dec, 0->N->intermediate->0 (WS5.5b-2 R3(d))" {
+    // Drive the SHARED production live-count transitions the Windows shim calls (zb_drawer_live_inc/dec over a
+    // DrawerLive, gated on retireExtraWindow). This replaces the detached Python lifecycle mirror (RoseCat 2dcf84e):
+    // the shim registers a FULL drawer with inc, skips a partial-cleanup window entirely, and decs exactly once
+    // when a WM_DESTROY retired a live record.
+    var live = d.DrawerLive{};
+    var recs = [_]d.ExtraRecord{ .{ .hwnd = 0, .live = 0 }, .{ .hwnd = 0, .live = 0 } };
+
+    // the primary drawer registers (full): 0 -> 1
+    try expectEqual(@as(c_int, 1), d.drawerLiveInc(&live));
+    // a full extra 0xA1 registers: its record + inc -> live 2, peak 2
+    recs[0] = .{ .hwnd = 0xA1, .live = 1 };
+    try expectEqual(@as(c_int, 2), d.drawerLiveInc(&live));
+    try expectEqual(@as(c_int, 2), live.peak);
+    // a PARTIAL window (a control failed): never registered, so the shim never inc's -> still 2, peak 2
+    try expectEqual(@as(c_int, 2), live.live);
+    try expectEqual(@as(c_int, 2), live.peak);
+
+    // close ONE extra early: its WM_DESTROY retires the live record once, and only then the shim decs -> 1
+    try expect(d.retireExtraWindow(&recs, 0xA1));
+    try expectEqual(@as(c_int, 1), d.drawerLiveDec(&live));
+    try expectEqual(@as(c_int, 2), live.peak); // the running peak is unaffected by a close
+
+    // a DOUBLE close of the same hwnd retires nothing, so the shim (gating dec on the bool) does NOT dec
+    try expect(!d.retireExtraWindow(&recs, 0xA1));
+    try expectEqual(@as(c_int, 1), live.live);
+
+    // teardown: the primary's WM_DESTROY decs -> final 0, peak preserved at N
+    try expectEqual(@as(c_int, 0), d.drawerLiveDec(&live));
+    try expectEqual(@as(c_int, 0), live.live);
+    try expectEqual(@as(c_int, 2), live.peak);
+
+    // dec never drops below zero (an unexpected extra dec stays 0)
+    try expectEqual(@as(c_int, 0), d.drawerLiveDec(&live));
+}
