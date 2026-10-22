@@ -454,6 +454,9 @@ pub fn build(b: *std.Build) void {
         "--require-defined",  "zb_drawer_remember",
         "--require-defined",  "zb_drawer_anim_ms",
         "--require-defined",  "zb_drawer_anim_ms_from_env",
+        "--require-defined",  "zb_drawer_icon_size_for_dpi",
+        "--require-defined",  "zb_drawer_icon_size_from_dpi_env",
+        "--require-defined",  "zb_drawer_inside_icon",
     });
     cross_drawer_win.addFileInput(b.path("tools/check_cross_symbols.py"));
     cross_drawer_win.addFileArg(cross_drawer_win_obj.getEmittedBin());

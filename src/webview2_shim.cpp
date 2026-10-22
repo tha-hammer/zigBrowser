@@ -83,6 +83,10 @@ struct AppState {
   // WS5.2 e2e-only drag seam (ZIGBROWSER_AGENT_DRAWER_DRAG = "dx,dy"): DRIVES the real icon input path (posts
   // synthetic mouse messages to the icon's own window procedure), it does not substitute for it. e2e-only.
   const char *drag_seam = nullptr;
+  // WS5.7 e2e-only DPI seam (ZIGBROWSER_AGENT_DRAWER_DPI = a percent, e.g. "150"): overrides the real monitor
+  // DPI for a deterministic test. PRODUCTION never consults this — it uses GetDpiForWindow. Set only under
+  // --e2e-protocol; null otherwise.
+  const char *dpi_seam = nullptr;
   // WS5.3 e2e-only fold seam (ZIGBROWSER_AGENT_DRAWER_FOLD, exactly "1"): starts the REAL fold animation at
   // mount so the test can observe it. e2e-only.
   bool fold_seam = false;
@@ -129,6 +133,9 @@ int zb_drawer_start_ratios(ZbDrawerRatios *out);  // 1 + out set: a persisted po
 void zb_drawer_lerp(const ZbDrawerGeomRect *a, const ZbDrawerGeomRect *b, double t, ZbDrawerGeomRect *out);
 double zb_drawer_ease(double t);
 unsigned int zb_drawer_anim_ms_from_env(const char *text);  // ZIGBROWSER_AGENT_ANIM_MS override, else 180
+int zb_drawer_icon_size_for_dpi(int dpi);                  // WS5.7 production: 56*dpi/96 half-up (GetDpiForWindow)
+int zb_drawer_icon_size_from_dpi_env(const char *text);    // WS5.7 e2e seam: the DPI percent env, else 56
+int zb_drawer_inside_icon(int dx, int dy, int radius);     // WS5.7 exact circular hit-test (1 inside, 0 outside)
 }
 
 // WS5 shim functions (declared in webkit_shim.h), defined here for the Windows backend.
@@ -836,10 +843,22 @@ void close_webview(AppState *app) {
   app->environment.Reset();
 }
 
+// WS5.7: the icon's current edge length in px. PRODUCTION authority is the window's real per-monitor DPI
+// (GetDpiForWindow); the e2e DPI seam (set only under --e2e-protocol) overrides it for a deterministic test.
+// All scaling math is in the portable Zig logic (zb_drawer_icon_size_*). 0 DPI (a GetDpiForWindow failure)
+// falls back to 96.
+static int effective_icon_px(AppState *app) {
+  if (app->dpi_seam != nullptr && app->dpi_seam[0] != '\0') {
+    return zb_drawer_icon_size_from_dpi_env(app->dpi_seam);
+  }
+  const UINT dpi = (app->hwnd != nullptr) ? GetDpiForWindow(app->hwnd) : 96;
+  return zb_drawer_icon_size_for_dpi(dpi == 0 ? 96 : static_cast<int>(dpi));
+}
+
 // WS5: lay out the page (WebView2) and the native drawer within the client area. When the drawer is open the
 // panel docks full-width at the bottom (zb_drawer_panel_rect) and the page fills the region above it, so
 // page_h + panel_h == client_h; when closed the page fills the client and the "S" icon shows at its rect
-// (zb_drawer_place). No geometry math here — all rects come from the portable Zig logic.
+// (zb_drawer_place), sized to the current DPI. No geometry math here — all rects come from the portable logic.
 void resize_controller(AppState *app) {
   if (app == nullptr || !app->controller || app->hwnd == nullptr) {
     return;
@@ -880,8 +899,12 @@ void resize_controller(AppState *app) {
   if (app->agent_drawer_on && app->drawer_mounted && app->drawer_icon) {
     ZbDrawerGeomRect icon = {};
     // Place the icon at its stored ratios (the persisted / last-moved position), not always the default (WS5.2
-    // "persists"; RoseCat 1cd82d8 #3).
+    // "persists"; RoseCat 1cd82d8 #3). Size it to the current DPI (WS5.7).
     zb_drawer_place(app->has_icon_ratios ? &app->icon_ratios : nullptr, cw, ch, &icon);
+    const int ipx = effective_icon_px(app);
+    icon.w = ipx;
+    icon.h = ipx;
+    zb_drawer_clamp(&icon, cw, ch);  // keep the DPI-sized icon fully inside the client area
     MoveWindow(app->drawer_icon, icon.x, icon.y, icon.w, icon.h, TRUE);
     ShowWindow(app->drawer_icon, SW_SHOW);
   }
@@ -984,6 +1007,21 @@ static LRESULT CALLBACK icon_subclass_proc(HWND h, UINT msg, WPARAM wparam, LPAR
   AppState *app = reinterpret_cast<AppState *>(GetWindowLongPtrW(GetParent(h), GWLP_USERDATA));
   if (app != nullptr) {
     switch (msg) {
+      case WM_NCHITTEST: {
+        // WS5.7 exact circular hit-test on the REAL icon HWND: a screen point inside the icon's circle is
+        // HTCLIENT; the square corners outside the circle are HTTRANSPARENT (not the icon). radius = half the
+        // icon's current (DPI-scaled) width. The portable zb_drawer_inside_icon decides — no geometry here.
+        RECT wr = {};
+        if (GetWindowRect(h, &wr)) {
+          const int w = wr.right - wr.left;
+          const int cx = wr.left + w / 2;
+          const int cy = wr.top + (wr.bottom - wr.top) / 2;
+          const int px = static_cast<short>(LOWORD(lparam));  // WM_NCHITTEST lparam is screen coords
+          const int py = static_cast<short>(HIWORD(lparam));
+          return (zb_drawer_inside_icon(px - cx, py - cy, w / 2) != 0) ? HTCLIENT : HTTRANSPARENT;
+        }
+        break;
+      }
       case WM_LBUTTONDOWN: {
         SetFocus(h);  // so subsequent arrow / Enter / Space keys reach the icon (WS5.2 keyboard)
         SetCapture(h);
@@ -1126,6 +1164,10 @@ void mount_drawer(AppState *app) {
   }
   ZbDrawerGeomRect icon = {};
   zb_drawer_place(app->has_icon_ratios ? &app->icon_ratios : nullptr, cw, ch, &icon);
+  const int icon_px = effective_icon_px(app);  // WS5.7: the DPI-scaled icon edge (real DPI, or the e2e seam)
+  icon.w = icon_px;
+  icon.h = icon_px;
+  zb_drawer_clamp(&icon, cw, ch);  // keep the DPI-sized icon fully inside the client area
   // e2e-only control-factory failure seam (inert unless --e2e-protocol AND ZIGBROWSER_AGENT_DRAWER_FAIL is
   // "panel"/"icon"): forces the matching CreateWindowExW to be treated as failed, so the failure branches are
   // driveable by a test (RoseCat 7646). Never consulted in normal runs.
@@ -1861,6 +1903,7 @@ static int run_core(const char *uri, int print_title, int e2e_protocol, bool scr
     const char *fold_env = getenv("ZIGBROWSER_AGENT_DRAWER_FOLD");   // WS5.3 e2e-only fold-observation seam
     app.fold_seam = fold_env != nullptr && strcmp(fold_env, "1") == 0;  // accept EXACTLY "1" (RoseCat 05f2549)
     app.fold_fail = getenv("ZIGBROWSER_AGENT_DRAWER_FOLD_FAIL");     // WS5.3 e2e-only fold fail-closed causal seam
+    app.dpi_seam = getenv("ZIGBROWSER_AGENT_DRAWER_DPI");            // WS5.7 e2e-only DPI override (percent)
   }
   app.screenshot = screenshot;
   if (screenshot && out_path != nullptr) {
