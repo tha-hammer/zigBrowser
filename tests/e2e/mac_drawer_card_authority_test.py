@@ -10,7 +10,11 @@ from the comment-free text with strings kept).
   - configureMacosBackend equals REVIEWED_MACOS_BACKEND, token for token. That is today's function plus the drawer's
     line, so every source, every C flag and the whole clang argv are fixed: no source through a variable, no -Wp
     forwarding, response file or -trigraphs.
-  - configureBackend equals REVIEWED_CONFIGURE_BACKEND, and configureMacosBackend is called once.
+  - configureBackend equals REVIEWED_CONFIGURE_BACKEND, resolveBackend equals REVIEWED_RESOLVE_BACKEND, and
+    configureMacosBackend is called once.
+  - The production call is live (RoseCat 3c0b7b3 #1): build() holds `const backend = resolveBackend(target);` once
+    and the one root_module createModule, followed directly by `configureBackend(root_module, b, backend,
+    webview2_paths);`, all at build()'s own brace depth (under no if, loop or block).
   - Every member access on root_module, exe or the generated site_options_module is a reviewed statement.
 - L0: src/agent_drawer_mac.m is one of those link sources.
 - L1: no link source names zb_agent_tools_approve or zb_agent_tools_deny at all (no call, no address, no alias): the
@@ -123,6 +127,16 @@ REVIEWED_CONFIGURE_BACKEND = r'''fn configureBackend(
     }
 }
 '''
+# The backend choice (RoseCat 3c0b7b3 #1): reviewed exactly, so the macOS target keeps the macOS backend.
+REVIEWED_RESOLVE_BACKEND = r'''fn resolveBackend(target: std.Build.ResolvedTarget) Backend {
+    return switch (target.result.os.tag) {
+        .linux => .gtk_backend,
+        .windows => .webview2_backend,
+        .macos => .macos_backend,
+        else => std.debug.panic("NoBackendLinked: no backend for target os '{s}'", .{@tagName(target.result.os.tag)}),
+    };
+}
+'''
 # Every other statement that can add to the shipped executable's link: a member access on root_module, exe or the
 # generated site_options_module (its one import), each a reviewed statement, at most as often as reviewed.
 REVIEWED_MEMBER_USES = Counter({
@@ -136,11 +150,53 @@ REVIEWED_MEMBER_USES = Counter({
 MEMBER_USE = re.compile(r"(?<![.\w])(?:root_module\b(?!\s*=\s*b\.createModule)|exe\s*\.|site_options_module\s*\.)")
 
 
+def production_call_problems(build_zig):
+    """B (RoseCat 3c0b7b3 #1): the reviewed link statements are not mere upper bounds. In build()'s own body
+    (brace depth 1, so under no if, loop or block): `const backend = resolveBackend(target);` exactly once, the one
+    `const root_module = b.createModule(...);` and, as the very next statement, the one
+    `configureBackend(root_module, b, backend, webview2_paths);`."""
+    code = zig_lexical(build_zig)
+    m = re.search(r"\bpub\s+fn\s+build\s*\([^)]*\)\s*void\s*\{", code)
+    if m is None:
+        return ["B: no pub fn build"]
+    start, depth = m.end(), 1
+    end = start
+    while end < len(code) and depth:
+        depth += {"{": 1, "}": -1}.get(code[end], 0)
+        end += 1
+    body = code[start:end]
+
+    def depth_of(pos):
+        return 1 + body[:pos].count("{") - body[:pos].count("}")
+
+    found = []
+    checks = (("const backend = resolveBackend(target);", r"\bconst\s+backend\s*=\s*resolveBackend\(\s*target\s*\)\s*;"),
+              ("const root_module = b.createModule(...)", r"\bconst\s+root_module\s*=\s*b\.createModule\("))
+    for what, pattern in checks:
+        hits = [h.start() for h in re.finditer(pattern, body)]
+        if len(hits) != 1 or depth_of(hits[0]) != 1:
+            found.append(f"B: build() must hold `{what}` exactly once, unconditionally ({len(hits)})")
+    if len(re.findall(r"\b(?:var|const)\s+backend\b", body)) != 1:
+        found.append("B: build() must declare backend exactly once")
+    mod = re.search(r"\bconst\s+root_module\s*=\s*b\.createModule\(", body)
+    if mod:
+        i, d = mod.end(), 1
+        while i < len(body) and d:
+            d += {"(": 1, ")": -1}.get(body[i], 0)
+            i += 1
+        call = re.match(r"\s*;\s*configureBackend\(\s*root_module\s*,\s*b\s*,\s*backend\s*,\s*webview2_paths\s*\)\s*;", body[i:])
+        if call is None or depth_of(i) != 1:
+            found.append("B: `configureBackend(root_module, b, backend, webview2_paths);` must be the statement right "
+                         "after root_module's createModule, unconditionally in build()")
+    return found
+
+
 def mac_build_problems(build_zig):
     """B: build.zig's macOS link is exactly the reviewed one (fail closed on any other link expression)."""
     code = zig_lexical(build_zig, keep_strings=True)
     found = []
-    for name, want in (("configureMacosBackend", REVIEWED_MACOS_BACKEND), ("configureBackend", REVIEWED_CONFIGURE_BACKEND)):
+    for name, want in (("configureMacosBackend", REVIEWED_MACOS_BACKEND), ("configureBackend", REVIEWED_CONFIGURE_BACKEND),
+                       ("resolveBackend", REVIEWED_RESOLVE_BACKEND)):
         got = re.findall(r"\bfn\s+" + name + r"\s*\(.*?\n}\n", code, re.S)
         if len(got) != 1:
             found.append(f"B: want exactly one fn {name} ({len(got)})")
@@ -153,6 +209,7 @@ def mac_build_problems(build_zig):
         n = len(re.findall(r"(?<!fn )\b" + name + r"\s*\(", code))
         if calls is not None and n != calls:
             found.append(f"B: {name} must be called exactly {calls} time(s) ({n})")
+    found += production_call_problems(build_zig)
     uses = Counter()
     for line in code.splitlines():
         if MEMBER_USE.search(line) and not re.match(r"\s*\.root_module\s*=\s*root_module\s*,\s*$", line):
@@ -164,6 +221,7 @@ def mac_build_problems(build_zig):
 
 
 HONEST_BUILD = """pub fn build(b: *std.Build) void {
+    const backend = resolveBackend(target);
     const root_module = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),
     });
@@ -180,7 +238,7 @@ HONEST_BUILD = """pub fn build(b: *std.Build) void {
     });
 }
 
-""" + REVIEWED_CONFIGURE_BACKEND + "\n" + REVIEWED_MACOS_BACKEND
+""" + REVIEWED_RESOLVE_BACKEND + "\n" + REVIEWED_CONFIGURE_BACKEND + "\n" + REVIEWED_MACOS_BACKEND
 
 
 def macos_build_mutant(old, new, text=None):
@@ -218,6 +276,22 @@ BUILD_MUTANTS = {  # name -> (build.zig, the reason it must fail for); RoseCat 8
                                                              "    exe.step.dependOn(pkg_guard);\n"
                                                              '    site_options_module.addCSourceFile(.{ .file = b.path("src/evil.c") });\n'),
                                                 "B: an unreviewed link statement `site_options_module.addCSourceFile"),
+    # RoseCat 3c0b7b3 #1: the reviewed call dead or moved
+    "the production configureBackend call removed": (macos_build_mutant("    configureBackend(root_module, b, backend, webview2_paths);\n", ""),
+                                                     "B: `configureBackend(root_module, b, backend, webview2_paths);` must be"),
+    "the production call under if (gtk)": (macos_build_mutant("    configureBackend(root_module, b, backend, webview2_paths);\n",
+                                                              "    if (backend == .gtk_backend) {\n"
+                                                              "        configureBackend(root_module, b, backend, webview2_paths);\n    }\n"),
+                                           "B: `configureBackend(root_module, b, backend, webview2_paths);` must be"),
+    "the production call moved later": (macos_build_mutant("    configureBackend(root_module, b, backend, webview2_paths);\n", "")
+                                        .replace("    b.installArtifact(exe);\n",
+                                                 "    b.installArtifact(exe);\n    configureBackend(root_module, b, backend, webview2_paths);\n"),
+                                        "B: `configureBackend(root_module, b, backend, webview2_paths);` must be"),
+    "the backend chosen another way": (macos_build_mutant("    const backend = resolveBackend(target);\n",
+                                                          "    const backend: Backend = .gtk_backend;\n"),
+                                       "B: build() must hold `const backend = resolveBackend(target);`"),
+    "macOS resolved to another backend": (macos_build_mutant("        .macos => .macos_backend,\n", "        .macos => .gtk_backend,\n"),
+                                          "B: fn resolveBackend differs"),
     "the macOS backend configured twice": (macos_build_mutant("    exe.step.dependOn(pkg_guard);\n",
                                                         "    exe.step.dependOn(pkg_guard);\n    configureMacosBackend(other, b);\n"),
                                            "B: configureMacosBackend must be called exactly 1 time(s)"),

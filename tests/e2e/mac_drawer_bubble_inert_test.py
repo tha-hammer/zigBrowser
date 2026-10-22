@@ -104,6 +104,12 @@ CATEGORY = re.compile(r"@(?:interface|implementation)\s+\w+\s*\(")
 # The one copy: the rest of the link may name: the Edit menu's Copy item, target nil (RoseCat 8112 #4).
 EDIT_COPY_ITEM = re.compile(r'\[\s*\w+\s+addItemWithTitle\s*:\s*@"Copy"\s+action\s*:\s*@selector\s*\(\s*copy\s*:\s*\)\s+'
                             r'keyEquivalent\s*:\s*@"c"\s*\]')
+# RoseCat 3c0b7b3 #4: the Copy item is one bare statement (its result is never kept, so nothing can retarget it), and
+# no target or action is set anywhere in the rest of the link: no setter, no property, no key-value coding.
+EDIT_COPY_STATEMENT = re.compile(r"(^|[;{}])(\s*)" + EDIT_COPY_ITEM.pattern + r"\s*;")
+TARGET_ROUTES = ((re.compile(r"\bsetTarget\s*:"), "setTarget:"), (re.compile(r"\.\s*(?:target|action)\b"), "a target/action property"),
+                 (re.compile(r"\b(?:setValue|setValuesForKeysWithDictionary|setNilValueForKey|takeValue)\w*\s*:"),
+                  "a key-value-coding setter"))
 # A macro the rest of the link may define: a name, optionally an integer or a string constant. Nothing a macro
 # expands to can then be an identifier, a selector or a class (RoseCat 8112 #3).
 CONSTANT_MACRO = re.compile(r'[A-Z][A-Z0-9_]*(?:\s+(?:-?\d+[uUlL]*|"(?:[^"\\\n]|\\.)*"))?')
@@ -192,7 +198,7 @@ NEVER = ("stringWithUTF8String", "initWithUTF8String", "initWithHTML", "initWith
          "labelWithAttributedString:", "NSTextAttachment", "windowWillReturnFieldEditor", "fieldEditor:",
          "objc/runtime.h", "method_exchangeImplementations", "class_replaceMethod", "class_addMethod",
          "method_setImplementation", "writeSelectionToPasteboard", "writeObjects:", "setPropertyList:", "declareTypes:",
-         "NSSharingService")
+         "NSSharingService", "setValue:", "setValuesForKeysWithDictionary", "setNilValueForKey")
 PROTOTYPES = re.compile(r"^[ \t]*(?:extern[ \t]+)?[\w \t\*]+\bzb_drawer_\w+[ \t]*\([^)]*\)[ \t]*;", re.M)
 SIG_FACTORY = r"-\s*\(\s*ZbBubbleView\s*\*\s*\)\s*bubbleWithText:"
 SIG_UPDATE = r"-\s*\(\s*void\s*\)\s*setBubble:"
@@ -271,11 +277,39 @@ def diff(where, got, want):
     return [f"{where}: differs at statement {i}: got `{g}`, want `{w}`"]
 
 
+# RoseCat 3c0b7b3 #3: in RAW text (before any lexing, strings included), any carriage return, any line splice (a
+# backslash, optional horizontal whitespace, then a line end) and any trigraph is rejected.
+RAW = ((re.compile(r"\r"), "a carriage return (CR / CRLF line ends)"),
+       (re.compile(r"\\[ \t\f\v]*\n"), "a line splice"),
+       (re.compile(r"\?\?[=/'()!<>-]"), "a trigraph"))
+# Every include names its header by one literal; this is that header's name, and whether it was <angle> or "quoted".
+INCLUDE = re.compile(r'^\s*#\s*(include|import|include_next)\b\s*(.*?)\s*$', re.M)
+# Under -I src, a project header in src/ shadows a system header of the same name; so src/ may hold headers only under
+# names no system header has (RoseCat 3c0b7b3 #2).
+PROJECT_HEADER = re.compile(r"src/(?:agent_\w+|webkit_shim)\.h")
+
+
+def raw_problems(where, text):
+    return [f"{where}: {why}" for rx, why in RAW if rx.search(text)]
+
+
+def includes(where, text):
+    """([(header name, quoted)], violations): every include of `text`, each by exactly one literal name."""
+    names, found = [], []
+    for kind, rest in INCLUDE.findall(lexical(text, keep_strings=True)):
+        m = re.fullmatch(r'<([^<>"]+)>|"([^"]+)"', rest)
+        if kind == "include_next" or m is None:
+            found.append(f"{where}: an include other than one literal <name> or \"name\" (`#{kind} {rest}`)")
+            continue
+        names.append((m.group(1) or m.group(2), m.group(2) is not None))
+    return names, found
+
+
 def directives(where, text, allowed):
     """V0: the file's preprocessing is exactly `allowed` (no digraph, _Pragma or line splice to hide one)."""
-    found = []
+    found = raw_problems(f"V0 {where}", text)
     blank = lexical(text)
-    for word, why in (("%:", "a digraph directive"), ("_Pragma", "a _Pragma"), ("\\\n", "a line splice")):
+    for word, why in (("%:", "a digraph directive"), ("_Pragma", "a _Pragma")):
         if word in blank:
             found.append(f"V0 {where}: {why}")
     got = [re.sub(r"\s+", " ", line.strip()) for line in lexical(text, keep_strings=True).splitlines()
@@ -286,31 +320,28 @@ def directives(where, text, allowed):
     return found
 
 
-def local_includes(text):
-    """The quoted (project) headers `text` includes, as repo paths under src/ (the build's one -I)."""
-    kept = lexical(text, keep_strings=True)
-    return ["src/" + h for h in re.findall(r'^\s*#\s*(?:include|import)\s*"([^"]+)"', kept, re.M)]
-
-
 def native_closure(sources, read):
-    """{path: text or None} of every linked native source but the drawer, and every project header they include."""
+    """{path: text or None} of every linked native source but the drawer, and every header any of them includes that
+    resolves to a file under src/ (the build's one -I), by <angle> or "quoted" name alike (RoseCat 3c0b7b3 #2)."""
     out, todo = {}, [p for p in sources if p != DRAWER]
     while todo:
         path = todo.pop()
         if path in out:
             continue
         out[path] = read(path)
-        if out[path] is not None:
-            todo += local_includes(out[path])
+        if out[path] is None:
+            continue
+        for name, quoted in includes(path, out[path])[0]:
+            if quoted or read("src/" + name) is not None:  # a quoted one that is missing fails closed below
+                todo.append("src/" + name)
     return out
 
 
 def native_preprocessing(path, text):
     """V7: a linked source's (or header's) preprocessing can rename nothing."""
-    found = []
+    found = raw_problems(f"V7 {path}", text) + [f"V7 {f}" for f in includes(path, text)[1]]
     blank = lexical(text)
-    for word, why in (("##", "token pasting"), ("%:", "a digraph directive"), ("_Pragma", "a _Pragma"),
-                      ("??=", "a trigraph"), ("\\\n", "a line splice")):
+    for word, why in (("##", "token pasting"), ("%:", "a digraph directive"), ("_Pragma", "a _Pragma")):
         if word in blank:
             found.append(f"V7 {path}: {why}")
     for line in lexical(text, keep_strings=True).splitlines():
@@ -325,7 +356,7 @@ def native_preprocessing(path, text):
     return found
 
 
-def link_problems(build_zig, sources, others):
+def link_problems(build_zig, sources, others, read=None, headers=()):
     """B / V0 / V7 over the macOS link: build.zig's macOS link is exactly the reviewed one (the card oracle's
     mac_build_problems: every source and the whole clang argv fixed), the drawer is in it, and no other linked native
     source or project header it includes (`others`: {path: text or None}) can rename a token, add a category, rewrite
@@ -333,6 +364,15 @@ def link_problems(build_zig, sources, others):
     found = mac_build_problems(build_zig)
     if DRAWER not in sources:
         found.append(f"V0: {DRAWER} is not in the macOS link ({sources})")
+    for h in sorted(headers):
+        if not PROJECT_HEADER.fullmatch(h):
+            found.append(f"V0: {h} may shadow a system header under -I src (project headers: src/agent_*.h, src/webkit_shim.h)")
+    if read is not None:
+        for where in (DRAWER, HEADER):
+            text = read(where)
+            for name, _ in (includes(where, text)[0] if text else []):
+                if name != "agent_drawer_mac.h" and read("src/" + name) is not None:
+                    found.append(f"V0 {where}: <{name}> resolves to src/{name}, not the system header")
     items = 0
     for path, text in sorted(others.items()):
         if text is None:
@@ -346,12 +386,13 @@ def link_problems(build_zig, sources, others):
             if re.search(r"\b" + word + r"\b", code):
                 found.append(f"V7 {path}: {word}")
         kept = lexical(text, keep_strings=True)
-        items += len(EDIT_COPY_ITEM.findall(kept))
-        rest = re.sub(r'"(?:[^"\\\n]|\\.)*"', '""', EDIT_COPY_ITEM.sub("", kept))
+        items += len(EDIT_COPY_STATEMENT.findall(kept))
+        rest = re.sub(r'"(?:[^"\\\n]|\\.)*"', '""', EDIT_COPY_STATEMENT.sub(r"\1", kept))
         if re.search(r"\bcopy\s*:", rest):
-            found.append(f"V7 {path}: copy: other than the Edit menu's Copy item")
-        if re.search(r"\bsetTarget\s*:", code):
-            found.append(f"V7 {path}: setTarget: (the Edit menu's Copy item keeps target nil)")
+            found.append(f"V7 {path}: copy: other than the Edit menu's Copy item, as one bare statement")
+        for rx, why in TARGET_ROUTES:
+            if rx.search(code):
+                found.append(f"V7 {path}: {why} (the Edit menu's Copy item keeps target nil)")
     if items > 1:
         found.append(f"V7: more than one Edit menu Copy item ({items})")
     return found
@@ -584,7 +625,8 @@ def link_case(build=BUILD, **others):
 
 def link_found(build, files):
     sources = mac_link_sources(build)
-    return link_problems(build, sources, native_closure(sources, files.get))
+    return link_problems(build, sources, native_closure(sources, files.get), files.get,
+                         [p for p in files if p.endswith(".h")])
 
 
 def mutate(old, new):
@@ -651,6 +693,10 @@ MUTANTS = {  # name -> (source, the rule it must fail)
                        "V0 src/agent_drawer_mac.m: preprocessing"),
     "a digraph #define": (mutate("#define ZB_GESTURE_DRAG 1\n", "#define ZB_GESTURE_DRAG 1\n%:define NO YES\n"),
                           "V0 src/agent_drawer_mac.m: a digraph directive"),
+    "key-value coding on a bubble": (mutate("- (void)sent {\n", '- (void)sent {\n  [_input setValue:@YES forKey:@"richText"];\n'),
+                                     "V6: setValue:"),
+    "a CRLF splice in the drawer": (mutate("- (void)sent {\n", "- (void)sent {\n  [_input in\\\r\nsertText:@\"x\"];\n"),
+                                    "V0 src/agent_drawer_mac.m: a carriage return"),
     "a _Pragma": (mutate("#define ZB_GESTURE_DRAG 1\n", "#define ZB_GESTURE_DRAG 1\n_Pragma(\"clang diagnostic ignored\")\n"),
                   "V0 src/agent_drawer_mac.m: a _Pragma"),
     # RoseCat 8101 #3: allocation failure
@@ -720,6 +766,48 @@ LINK_MUTANTS = {  # name -> ((build.zig, {path: text}), the rule it must fail)
     "a second Copy item": (link_case(src__wkwebview_shim_dot_m=OTHERS["src/wkwebview_shim.m"]
                                      + 'static void zb_m2(NSMenu *m) {\n  [m addItemWithTitle:@"Copy" action:@selector(copy:) keyEquivalent:@"c"];\n}\n'),
                            "V7: more than one Edit menu Copy item"),
+    # RoseCat 3c0b7b3 #2: includes that reach src/ other than by a quoted literal
+    "an <angle> include of a project header": (link_case(
+        src__wkwebview_shim_dot_m=OTHERS["src/wkwebview_shim.m"].replace('#include "webkit_shim.h"', "#include <webkit_shim.h>"),
+        src__webkit_shim_dot_h=OTHERS["src/webkit_shim.h"].replace("#endif\n", "#define NSTV NSTextView\n#endif\n")),
+        "V7 src/webkit_shim.h: a macro other than a constant"),
+    "an include by macro": (link_case(src__wkwebview_shim_dot_m=OTHERS["src/wkwebview_shim.m"].replace(
+        '#include "webkit_shim.h"', '#define ZB_HEADER "webkit_shim.h"\n#include ZB_HEADER')),
+        "V7 src/wkwebview_shim.m: an include other than one literal"),
+    "an #include_next": (link_case(src__agent_home_lock_dot_c="#include_next <stdio.h>\n"),
+                         "V7 src/agent_home_lock.c: an include other than one literal"),
+    "a system header shadowed in src/": (link_case(src__stdlib_dot_h="#define NO YES\n",
+                                                   src__agent_drawer_mac_dot_m=HONEST, src__agent_drawer_mac_dot_h=HONEST_HEADER),
+                                         "V0: src/stdlib.h may shadow a system header"),
+    "the drawer's <stdlib.h> resolving into src/": (link_case(src__stdlib_dot_h="#define NO YES\n",
+                                                              src__agent_drawer_mac_dot_m=HONEST, src__agent_drawer_mac_dot_h=HONEST_HEADER),
+                                                    "V0 src/agent_drawer_mac.m: <stdlib.h> resolves to src/stdlib.h"),
+    "a framework header shadowed in src/": (link_case(src__AppKit__AppKit_dot_h="#define NO YES\n"),
+                                            "V0: src/AppKit/AppKit.h may shadow a system header"),
+    # RoseCat 3c0b7b3 #3: splices the C preprocessor joins
+    "a CRLF line splice": (link_case(src__wkwebview_shim_dot_m=OTHERS["src/wkwebview_shim.m"] + "static void zb_c(id o, id s) {\n  [o co\\\r\npy:s];\n}\n"),
+                           "V7 src/wkwebview_shim.m: a carriage return"),
+    "a CR-only line end": (link_case(src__wkwebview_shim_dot_m=OTHERS["src/wkwebview_shim.m"] + "static int zb_r;\r"),
+                           "V7 src/wkwebview_shim.m: a carriage return"),
+    "a splice after trailing spaces": (link_case(src__wkwebview_shim_dot_m=OTHERS["src/wkwebview_shim.m"] + "static void zb_c(id o, id s) {\n  [o co\\  \npy:s];\n}\n"),
+                                       "V7 src/wkwebview_shim.m: a line splice"),
+    "a trigraph backslash": (link_case(src__wkwebview_shim_dot_m=OTHERS["src/wkwebview_shim.m"] + "static void zb_c(id o, id s) {\n  [o co??/\npy:s];\n}\n"),
+                             "V7 src/wkwebview_shim.m: a trigraph"),
+    # RoseCat 3c0b7b3 #4: the Copy item retargeted
+    "the Copy item kept and given a target property": (link_case(src__wkwebview_shim_dot_m=OTHERS["src/wkwebview_shim.m"].replace(
+        '  [editMenu addItemWithTitle:@"Copy" action:@selector(copy:) keyEquivalent:@"c"];\n',
+        '  NSMenuItem *item = [editMenu addItemWithTitle:@"Copy" action:@selector(copy:) keyEquivalent:@"c"];\n  item.target = editMenu;\n')),
+        "V7 src/wkwebview_shim.m: copy: other than the Edit menu's Copy item"),
+    "a target property anywhere": (link_case(src__wkwebview_shim_dot_m=OTHERS["src/wkwebview_shim.m"]
+                                             + "static void zb_t(NSMenu *m, id t) {\n  [m itemAtIndex:0].target = t;\n}\n"),
+                                   "V7 src/wkwebview_shim.m: a target/action property"),
+    "a target set by key-value coding": (link_case(src__wkwebview_shim_dot_m=OTHERS["src/wkwebview_shim.m"]
+                                                   + 'static void zb_t(NSMenu *m, id t) {\n  [[m itemAtIndex:0] setValue:t forKey:@"target"];\n}\n'),
+                                         "V7 src/wkwebview_shim.m: a key-value-coding setter"),
+    "the Copy item retargeted inline": (link_case(src__wkwebview_shim_dot_m=OTHERS["src/wkwebview_shim.m"].replace(
+        '  [editMenu addItemWithTitle:@"Copy" action:@selector(copy:) keyEquivalent:@"c"];\n',
+        '  [[editMenu addItemWithTitle:@"Copy" action:@selector(copy:) keyEquivalent:@"c"] setTarget:editMenu];\n')),
+        "V7 src/wkwebview_shim.m: copy: other than the Edit menu's Copy item"),
     "a selector built at run time": (link_case(src__wkwebview_shim_dot_m=OTHERS["src/wkwebview_shim.m"]
                                                + 'static SEL zb_s(void) {\n  return sel_registerName("copy:");\n}\n'),
                                      "V7 src/wkwebview_shim.m: sel_registerName"),
@@ -752,8 +840,9 @@ class BubbleInert(unittest.TestCase):
         sources = mac_link_sources(build)
         self.assertIn("src/wkwebview_shim.m", sources, "the link parser found no macOS sources")
         read = (lambda p: (REPO / p).read_text() if (REPO / p).is_file() else None)
-        self.assertEqual(link_problems(build, sources, native_closure(sources, read)) + problems(read(DRAWER), read(HEADER)),
-                         [])
+        headers = [str(h.relative_to(REPO)) for h in (REPO / "src").rglob("*.h")]
+        self.assertEqual(link_problems(build, sources, native_closure(sources, read), read, headers)
+                         + problems(read(DRAWER), read(HEADER)), [])
 
     def test_the_honest_fixture_passes(self):
         self.assertEqual(problems(HONEST, HONEST_HEADER), [])
