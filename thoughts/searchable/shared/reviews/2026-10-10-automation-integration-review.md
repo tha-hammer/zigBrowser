@@ -31532,3 +31532,58 @@ suites passed **71 offline tests** while skipping **16 live VM rows**. Those
 results prove neither C++ compilation nor the live interaction. No VM run is
 authorized until the compile failure and the observation/input gaps above are
 fixed; the restart test is also required before WS5.2 can be accepted.
+
+## Windows WS5.3 duration resolver slice (`5f2ab9d`)
+
+**APPROVED-for-code; BLOCKED-for-tests.** `animMsFromEnv` is a faithful thin
+wrapper around the already-reviewed exact `parseAnimMs` grammar: a valid
+180..5000 decimal override wins, while unset, empty, malformed and out-of-range
+values return the literal 180 ms default. The optional sentinel pointer maps
+cleanly to a nullable `const char *`, and no timing arithmetic moved into the
+Windows shim in this slice. A future caller must still preserve the existing
+rule that `ZIGBROWSER_AGENT_ANIM_MS` is an e2e-only seam and is inert without
+`--e2e-protocol`; this commit has no caller and therefore does not itself open
+that boundary.
+
+The new causal row lives in
+`tests/windows/agent_drawer_props_test.zig`, whose own header says
+**UNREGISTERED**, and `build.zig` neither runs that module nor adds
+`zb_drawer_anim_ms_from_env` to `cross-check-drawer-win`'s required exports.
+Deleting the new wrapper or C export therefore leaves the registered gate
+green. Register the property module (with preserved exit status) and require
+the new export in the Windows cross-check before this commit is fully
+approved. From an exact clean export, the direct property module passed
+**11/11**, the registered drawer suite passed **20/20**, and
+`cross-check-drawer-win` passed; the latter two do not exercise or require the
+new wrapper/export.
+
+## Windows WS5.3 calculated-fold row (`0524517`)
+
+**BLOCKED; do not run the VM rows.** The ABI calls the portable lerp/ease and
+duration helpers correctly, `emit_protocol4` escapes each field separately,
+and `fold_seam` is assigned only under `--e2e-protocol`. But the code merely
+calculates `lerp(panel, icon, ease(0.5))` synchronously during drawer mount and
+emits that value. It never moves the panel to an intermediate rectangle,
+waits for the requested duration, steps frames with `DwmFlush`, handles the
+minus control, or observes any real window. A snap-with-no-animation
+implementation therefore produces the same row and passes both WS5.3 tests,
+despite the plan naming that exact mutant (`plan:1538-1539,1552-1553,
+1573-1574`).
+
+Implement the actual minus-triggered fold state machine on the production
+input route. The live test must stretch it with the e2e-only 3000 ms override,
+capture or independently read the real panel HWND while the animation is in
+flight, prove its rectangle is strictly between the open panel and saved icon,
+and prove the terminal folded state. The default case must measure elapsed
+time around the real transition rather than trust a duration field. A snap
+mutant and a caller that merely emits the calculated midpoint must both fail.
+The runner also currently stops waiting on the earlier flushed `open` row, so
+even its synthetic `fold` row can race the transcript read; wait for the
+case-specific terminal observation.
+
+The seam should accept exactly its documented value `1`, not every nonempty
+string. The C++ translation unit also retains `8988294`'s declaration-order
+compile failure, while `cross-check-drawer-win` still text-scans rather than
+compiles it. From an exact clean export the Python module passed **20 offline
+tests** and skipped **9 live rows**, and the cross-check passed. None of that
+evidence exercises a real fold or C++ compilation.
