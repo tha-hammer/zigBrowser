@@ -34970,3 +34970,39 @@ run the close-one, panel-failure and icon-failure cases and show the exact
 intermediate/terminal counts, one primary transcript on partial failure and
 zero process/drawer leftovers. Until then, this commit is useful retained
 implementation progress but does not close `1b2fe0a` or `60c20a0`.
+
+## MS7.4 AppKit bubble-text red fix-forward (`7ba5549`)
+
+**BLOCKED-for-tests; keep it unregistered.** The portable seam is a strong
+correction to `0281321`: exact-length UTF-8 construction, the explicit
+NUL/invalid-input replacement policy, UTF-16-aware original-byte mapping, the
+label/text-view threshold, 200 KiB cases, dual-architecture export inventory
+and lexical Objective-C scan all belong in the MS7.4 red. From an exact clean
+archive, the Python oracle's honest/comment/mutant controls passed and only the
+absent real drawer failed; the Zig step failed at the intended two missing
+portable members. Two causal gaps still let the eventual green satisfy the
+test without providing working Copy or the promised control boundary:
+
+1. The oracle does not bind `copy:` to either selectable control's real
+   responder path. Its honest fixture puts `copy:` on `ZbDrawerView` and sends
+   `selectedRange` to `self`, while a selectable `NSTextField` uses its field
+   editor and an `NSTextView` is itself the first responder. Nothing proves
+   that mouse selection plus Ctrl+C reaches this method instead of AppKit's
+   normal shown-string copy. Specify and test a real control/subclass or
+   field-editor route, with per-bubble original bytes and selection, then bind
+   the mapper and pasteboard write to that same bubble. Retain the required
+   real-Mac clipboard check for both the label and large-text-view sides of
+   `label_text_max`.
+2. The new lexical scanner is useful, but the checks remain presence-based at
+   the decisive branches. I verified that the oracle returns no problems when
+   (a) `zb_drawer_bubble_is_label` is inverted, (b) it is called and ignored
+   before `if (1)`, (c) the streaming update writes `_other` instead of
+   `bubble`, (d) both offset calls map `_other/_other_len`, or (e) `setData:`
+   copies `_other + from`. Add those causal mutants and bind the branch result,
+   update receiver, selected control, stored original, mapped endpoints and
+   exact `original + from, to - from` payload structurally (or through a driven
+   production helper).
+
+The pure-policy tests may remain as written while these Objective-C authority
+and data-flow rows are fixed forward. This commit does not change the current
+push boundary: AzureRidge's `1b2fe0a` range remains the earlier blocker.
