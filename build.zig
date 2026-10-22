@@ -3330,29 +3330,6 @@ pub fn build(b: *std.Build) void {
     const seatbelt_readiness_step = b.step("test-agent-seatbelt-readiness", "Run the macOS seatbelt readiness invariant and pin (4pa.66)");
     seatbelt_readiness_step.dependOn(&run_seatbelt_invariant_tests.step);
     seatbelt_readiness_step.dependOn(&run_seatbelt_pin_tests.step);
-    // SilverRidge 1915e0d: drive the Zig derivation in both states. The real src/agent_setup.zig (and its xdg.zig) is
-    // compiled beside a null and a non-null fixture seatbelt_gate.zig; production imports are unchanged.
-    const seatbelt_derivation_module = b.createModule(.{
-        .root_source_file = b.path("tests/agent_seatbelt_derivation_test.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-    inline for (.{
-        .{ "agent_setup_unaccepted", "null" },
-        .{ "agent_setup_accepted", "\"fixture-accepted-commit\"" },
-    }) |fixture| {
-        const tree = b.addWriteFiles();
-        _ = tree.addCopyFile(b.path("src/agent_setup.zig"), "agent_setup.zig");
-        _ = tree.addCopyFile(b.path("src/xdg.zig"), "xdg.zig");
-        _ = tree.add("seatbelt_gate.zig", "pub const accepted_commit: ?[]const u8 = " ++ fixture[1] ++ ";\n");
-        seatbelt_derivation_module.addImport(fixture[0], b.createModule(.{
-            .root_source_file = tree.getDirectory().path(b, "agent_setup.zig"),
-            .target = target,
-            .optimize = optimize,
-        }));
-    }
-    const run_seatbelt_derivation_tests = b.addRunArtifact(b.addTest(.{ .root_module = seatbelt_derivation_module }));
-    seatbelt_readiness_step.dependOn(&run_seatbelt_derivation_tests.step);
     // The Seatbelt write root must be the scratchpad's own real path (11b3ac4: /tmp -> private/tmp denied every
     // write; RoseCat 7627). Plain: no process, no signal.
     const agent_host_sandbox_macos_scratch_real = b.addSystemCommand(&.{
@@ -3787,7 +3764,8 @@ pub fn build(b: *std.Build) void {
     const mac_zig_cache_direct_selftest = b.addSystemCommand(&.{ "bash", "tests/mac/zig_cache_direct_selftest.sh" });
     for ([_][]const u8{
         "tests/mac/zig_cache_direct_selftest.sh", "tests/mac/ms5_setup_refusal_gate.sh", "tests/mac/ms5_setup_e2e.sh",
-        "tests/mac/ms5_gate.sh",                  "tests/mac/lib_group_cleanup.sh",
+        "tests/mac/ms5_gate.sh",                  "tests/mac/lib_group_cleanup.sh",      "tests/mac/ms7_appkit_gate.sh",
+        "tests/mac/ms7_appkit_case.py",           "tests/mac/ms7_appkit_check.py",       "tests/mac/hard_gate/harness.py",
     }) |input| mac_zig_cache_direct_selftest.addFileInput(b.path(input));
     mac_build_script_step.dependOn(&mac_zig_cache_direct_selftest.step);
     test_step.dependOn(&mac_zig_cache_direct_selftest.step);

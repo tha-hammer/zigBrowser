@@ -10,13 +10,17 @@
 #      the run dir: "$HOME/<name>/...", "$HOME/${ZB_RDIR:?}/...", or "$d/..." where the script sets
 #      d="$HOME/${ZB_RDIR:?}";
 #   D3 every leg's script runs zig at least once (the check cannot pass vacuously).
-# (mac_compile_only.sh and ms7_appkit_gate.sh pass both flags under their run roots already; they are not covered here.)
-# No Mac, no signal: the scripts run in a scratch git repo, HOME/TMPDIR in this test's temp tree; it re-runs itself in a
-# private user+network namespace.
+# tests/mac/ms7_appkit_gate.sh runs zig from tests/mac/ms7_appkit_case.py, so it is DRIVEN, not parsed (SilverRidge
+# 3c09433): launched as committed, its legs run for real through an executing stub ssh/scp in a fake home per Mac, with a
+# fake `uname` (the leg's arch) and a fake zig that records the argv it actually receives; M1 each leg's case runs zig
+# exactly once, and M2 that argv has --cache-dir and --global-cache-dir, both inside that leg's run dir.
+# (tests/mac/mac_compile_only.sh is driven the same way by its own registered selftest, mac_compile_only_selftest.sh.)
+# No Mac: the scripts run in a scratch git repo, HOME/TMPDIR in this test's temp tree; it re-runs itself in a private
+# user+network+PID namespace (the ms7 case's harness signals only the process groups it spawned, all inside it).
 # Run: bash tests/mac/zig_cache_direct_selftest.sh [repo root]   (step: zig build test-mac-build-script)
 set -uo pipefail
 if [ "${ZB_ZIGDIRECT_SELFTEST_INNER:-}" != 1 ]; then
-  ZB_ZIGDIRECT_SELFTEST_INNER=1 exec unshare --user --map-current-user --net bash "$(realpath "$0")" "$@"
+  ZB_ZIGDIRECT_SELFTEST_INNER=1 exec unshare --user --map-current-user --net --pid --fork --mount-proc bash "$(realpath "$0")" "$@"
 fi
 ROOT=$(realpath "${1:-.}")
 BASE=$(mktemp -d "${TMPDIR:-/tmp}/zb-zigdirect-selftest-XXXXXX")
@@ -135,6 +139,78 @@ check() { # check <label> <script>
 check ms5-setup-refusal tests/mac/ms5_setup_refusal_gate.sh
 check ms5-setup-e2e     tests/mac/ms5_setup_e2e.sh
 check ms5-keychain      tests/mac/ms5_gate.sh
+
+# ---- ms7_appkit_gate.sh: driven through executing stubs; zig's real argv is recorded -------------------------------
+X="$T/x"; R7="$T/repo7"
+mkdir -p "$X/bin" "$X/hostbin" "$X/hosts/intel/.local/bin" "$X/hosts/arm/.local/bin" "$X/ctl"
+cat > "$X/bin/ssh" <<EOF
+#!/bin/bash
+host= skip= k=0
+for a in "\$@"; do
+  k=\$((k + 1))
+  if [ -n "\$skip" ]; then skip=; continue; fi
+  case "\$a" in -i|-o|-F|-p|-l) skip=1; continue ;; -*) continue ;; esac
+  host=\$a; break
+done
+case "\$host" in $INTEL) role=intel ;; $ARM) role=arm ;; *) echo "stub ssh: unexpected host \$host" >&2; exit 99 ;; esac
+cd "$X/hosts/\$role" && exec env -i HOME="$X/hosts/\$role" PATH="$X/hostbin:/usr/bin:/bin" bash -c "\${*:k+1}"
+EOF
+cat > "$X/bin/scp" <<EOF
+#!/bin/bash
+dst="\${@: -1}" src="\${@: -2:1}"
+case "\$dst" in $INTEL:*) role=intel ;; $ARM:*) role=arm ;; *) echo "stub scp: unexpected target \$dst" >&2; exit 99 ;; esac
+cp "\$src" "$X/hosts/\$role/\${dst#*:}"
+EOF
+cat > "$X/hostbin/uname" <<'EOF'
+#!/bin/bash
+[ "$1" = -m ] && { echo "${ZB_ARCH:-x86_64}"; exit 0; }
+exec /usr/bin/uname "$@"
+EOF
+for role in intel arm; do
+  cat > "$X/hosts/$role/.local/bin/zig" <<EOF
+#!/bin/bash
+[ "\$1" = version ] && { echo 0.16.0; exit 0; }
+n=\$(ls "$X/ctl" | grep -c "^zig\.$role\." || true)
+printf '%s\0' "\$@" > "$X/ctl/zig.$role.\$n"
+exit 1   # a stub build: the case records a failed build and stops; only the argv matters here
+EOF
+done
+chmod +x "$X/bin/ssh" "$X/bin/scp" "$X/hostbin/uname" "$X/hosts/intel/.local/bin/zig" "$X/hosts/arm/.local/bin/zig"
+mkdir -p "$R7/tests/mac/hard_gate" "$R7/src" "$R7/packaging" "$R7/tools"
+cp "$ROOT/tests/mac/ms7_appkit_gate.sh" "$ROOT/tests/mac/ms7_appkit_case.py" "$ROOT/tests/mac/ms7_appkit_check.py" "$R7/tests/mac/"
+cp "$ROOT/tests/mac/hard_gate/harness.py" "$R7/tests/mac/hard_gate/"
+echo "// stand-in" > "$R7/src/wkwebview_shim.m"; echo x > "$R7/packaging/x"; echo x > "$R7/tools/x"
+echo build > "$R7/build.zig"; echo zon > "$R7/build.zig.zon"; echo '{}' > "$R7/zigbrowser.json"
+G7=(env -i PATH=/usr/bin:/bin HOME="$T/home" GIT_CONFIG_NOSYSTEM=1 git -C "$R7")
+"${G7[@]}" init -q && "${G7[@]}" add -A \
+  && "${G7[@]}" -c user.name=selftest -c user.email=selftest@invalid commit -q -m staged \
+  || { bad "could not build the ms7 scratch repo"; exit 1; }
+(cd "$R7" && env -i PATH="$X/bin:/usr/bin:/bin" HOME="$T/home" TMPDIR="$T/tmp" ZB_MAC_HOST="$INTEL" ZB_MAC_ARM_HOST="$ARM" \
+   ZB_MAC_KEY="$T/home/no_such_key" timeout 300 bash -c "$("${G7[@]}" show HEAD:tests/mac/ms7_appkit_gate.sh)" \
+   ms7-appkit-gate HEAD >"$T/out7" 2>&1 </dev/null)
+for role in intel arm; do
+  mapfile -t recs < <(ls "$X/ctl" | grep "^zig\.$role\." || true)
+  if [ "${#recs[@]}" -ne 1 ]; then
+    bad "ms7-appkit M1: the $role leg ran zig ${#recs[@]} time(s), want 1: $(grep -m3 -E 'FAIL|Error|error' "$T/out7" | tr '\n' ' ')"
+    continue
+  fi
+  mapfile -d '' zargv < "$X/ctl/${recs[0]}"
+  cache= gcache=
+  for ((k = 0; k < ${#zargv[@]}; k++)); do
+    case "${zargv[k]}" in
+      --cache-dir) cache=${zargv[k+1]:-} ;; --global-cache-dir) gcache=${zargv[k+1]:-} ;;
+      --cache-dir=*) cache=${zargv[k]#*=} ;; --global-cache-dir=*) gcache=${zargv[k]#*=} ;;
+    esac
+  done
+  rundir=$(grep -oE "$X/hosts/$role/zb-ms7gate-[0-9]+-[0-9]+-[0-9]+" <<<"$cache $gcache" | sort -u)
+  if [ "$(grep -c . <<<"$rundir")" -eq 1 ] && [[ "$cache" == "$rundir"/?* ]] && [[ "$gcache" == "$rundir"/?* ]]; then
+    ok "ms7-appkit: $role leg's zig argv keeps --cache-dir and --global-cache-dir in $rundir"
+  else
+    bad "ms7-appkit M2: $role leg's zig argv (${zargv[*]}) does not keep both caches in one run dir (cache='$cache' global='$gcache')"
+  fi
+done
+left=$(find "$X/hosts" -maxdepth 2 -name 'zb-ms7gate-*' 2>/dev/null)
+[ -z "$left" ] || bad "ms7-appkit: a leg left its run dir: $left"
 
 if [ "$fails" -eq 0 ]; then printf 'PASS\tmac-zig-cache-direct-selftest\n'; exit 0; fi
 printf 'FAIL\tmac-zig-cache-direct-selftest\t%s failure(s)\n' "$fails"

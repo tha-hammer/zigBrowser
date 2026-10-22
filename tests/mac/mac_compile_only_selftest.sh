@@ -143,6 +143,7 @@ for u in intel arm; do
   cat > "$H/.local/zig-0/zig" <<EOF
 #!/bin/bash
 [ "\$1" = version ] && { echo 0.16.0; exit 0; }
+printf '%s\0' "\$@" > "$T/ctl/zig.argv.$u"   # the argv the build really receives (bd 3ui.5)
 mode=\$(cat "$T/ctl/zig" 2>/dev/null)
 p= c=
 while [ \$# -gt 0 ]; do case "\$1" in --prefix) p=\$2 ;; --cache-dir) c=\$2 ;; esac; shift; done
@@ -240,11 +241,28 @@ expect "a symlink in the commit refuses" fail "symlink or special entry"; no_con
 reset; launch "$NOSTEP"
 expect "no mac-compile-only step refuses" fail "has no mac-compile-only step"; no_contact
 
-reset; launch "$HONEST"
+reset; rm -f "$T/ctl"/zig.argv.*; launch "$HONEST"
 expect "an honest run passes both legs" 0 "PASS	mac-compile	x86_64	$HONEST" "PASS	mac-compile	arm64	$HONEST" \
   "PASS	mac-compile-only	both-arches	$HONEST" "ok   the sandbox runs a confined write below the root" \
   "ok   the sandbox refuses a read of the system keychain" "argv clang -dynamiclib" "ok   the run root is deleted"
 [ "$(grep -c '^ok   the sandbox refuses' "$OUT")" = 16 ] || bad "honest: want 8 refused canaries per leg"
+# bd 3ui.5: both zig caches stay inside the leg's run root (never the real ~/.cache/zig), judged on the argv zig got.
+for u in intel arm; do
+  zc= zg=
+  if [ -s "$T/ctl/zig.argv.$u" ]; then
+    mapfile -d '' za < "$T/ctl/zig.argv.$u"
+    for ((k = 0; k < ${#za[@]}; k++)); do
+      case "${za[k]}" in --cache-dir) zc=${za[k+1]:-} ;; --global-cache-dir) zg=${za[k+1]:-} ;;
+        --cache-dir=*) zc=${za[k]#*=} ;; --global-cache-dir=*) zg=${za[k]#*=} ;; esac
+    done
+  fi
+  zroot=$(grep -oE "$T/Users/$u/zb-compile-[^/ ]+" <<<"$zc $zg" | sort -u)
+  if [ "$(grep -c . <<<"$zroot")" -eq 1 ] && [[ "$zc" == "$zroot"/?* ]] && [[ "$zg" == "$zroot"/?* ]]; then
+    ok "honest: the $u build keeps --cache-dir and --global-cache-dir in its run root"
+  else
+    bad "honest: the $u build's zig argv does not keep both caches in its run root (cache='$zc' global='$zg')"
+  fi
+done
 clean_homes
 
 reset; echo tamper > "$T/ctl/ssh"; launch "$HONEST"
