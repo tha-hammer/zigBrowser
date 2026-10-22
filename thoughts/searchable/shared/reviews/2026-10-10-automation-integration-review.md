@@ -31069,3 +31069,33 @@ failure without retry. Acceptance requires the exact decoded force mode, each
 existing branch oracle, `proc_gone=true`, zero Job members/survivors, no
 pre-resume `DRAWER` row and zero owned leftovers. Agent Mail 7754 sent the
 ruling and authorization conditions to AzureRidge.
+
+## Windows WS5 behavior-red fix-forward 3 (`d0e7091`)
+
+**BLOCKED-for-tests; keep the suite offline and unregistered.** The exact
+clean-export Python run passed **19** offline oracles and skipped **9** live VM
+rows; the unchanged Zig property suite passed **10/10**. This closes the
+one-window filtering defect: malformed, foreign, duplicate, missing, extra and
+out-of-order rows now raise. The default fold case omits `ANIM_MS`, while a
+separate 3000-ms case pins the override.
+
+Two contract defects remain:
+
+1. WS5.5 asks the harness to create two windows but applies a validator that
+   rejects every row whose window differs from the first. A valid transcript
+   containing exact `tree/icon/open` sequences for windows 1 and 2 is rejected
+   as a foreign-window row. That permits green only by suppressing the popup's
+   required drawer evidence. This case needs an exact multi-window validator:
+   the requested window set/count, one ordered structural sequence per window,
+   no malformed/duplicate/extra/out-of-order rows, and a separately bound
+   global live-count observation. Add causal missing-popup-drawer and
+   post-close-count-one rows.
+2. `check_isolation` pins the probe names but permits either `-32601` or
+   `-32011` for every name. A direct probe showed that swapping the classes —
+   `-32011` for every socket `drawer.*` method and `-32601` for both JS reaches
+   — still passes. An exposed `drawer.state` method that denies by policy can
+   therefore survive. Pin the exact expected result per name: socket drawer
+   methods must be absent (`-32601`), and each JS reach must have its defined
+   negative observation/code. Add a swapped-code mutant.
+
+Agent Mail 7756 sent the blockers to AzureRidge; no VM run is authorized.
