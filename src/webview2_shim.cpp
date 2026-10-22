@@ -10,6 +10,7 @@
 #include <WebView2EnvironmentOptions.h>
 
 #include <ctype.h>
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -34,6 +35,13 @@ constexpr UINT_PTR kNavigationTimerId = 1;
 constexpr UINT kNavigationTimeoutMs = 15000;
 // WS3: wakes the UI thread to run the queued jobs (the queue, not the message, owns them).
 constexpr UINT WM_ZB_JOB = WM_APP + 1;
+
+// Portable drawer geometry types (src/agent_drawer.zig). Declared BEFORE AppState, which embeds them. Rect
+// matches Zig's `extern struct { x, y, w, h: c_int }`; Ratios matches `extern struct { x, y: f64 }`.
+extern "C" {
+struct ZbDrawerGeomRect { int x, y, w, h; };
+struct ZbDrawerRatios { double x, y; };
+}
 
 struct AppState {
   HWND hwnd = nullptr;
@@ -87,11 +95,9 @@ struct AppState {
   ZbDrawerGeomRect icon_down_rect = {};
 };
 
-// The portable drawer geometry (src/agent_drawer.zig, exported for Windows). Rect matches Zig's
-// `extern struct { x, y, w, h: c_int }`; Ratios matches `extern struct { x, y: f64 }`. No geometry math in C++.
+// The portable drawer geometry functions (src/agent_drawer.zig, exported for Windows). The Rect/Ratios types
+// are declared above (AppState embeds them). No geometry math in C++.
 extern "C" {
-struct ZbDrawerGeomRect { int x, y, w, h; };
-struct ZbDrawerRatios { double x, y; };
 void zb_drawer_panel_rect(int width, int height, ZbDrawerGeomRect *out);
 void zb_drawer_place(const void *ratios, int width, int height, ZbDrawerGeomRect *out);
 void zb_drawer_clamp(ZbDrawerGeomRect *r, int width, int height);
@@ -864,13 +870,20 @@ static void drawer_apply_icon(AppState *app, ZbDrawerGeomRect candidate) {
   const int cw = cr.right - cr.left;
   const int ch = cr.bottom - cr.top;
   zb_drawer_clamp(&candidate, cw, ch);
-  // Persist as ratios and place the icon at the PERSISTED-RATIO rect (the position the next window/restart will
-  // restore), then move the real HWND there — so the actual window and the stored ratios agree.
-  zb_drawer_ratios_of(&candidate, cw, ch, &app->icon_ratios);
-  app->has_icon_ratios = true;
+  // Compute the PERSISTED-RATIO rect (the position the next window/restart restores), then move the real HWND
+  // there. Only persist/emit after the move SUCCEEDS — a failed MoveWindow must not report a move (fail-closed).
+  ZbDrawerRatios ratios = {};
+  zb_drawer_ratios_of(&candidate, cw, ch, &ratios);
   ZbDrawerGeomRect placed = {};
-  zb_drawer_place(&app->icon_ratios, cw, ch, &placed);
-  MoveWindow(app->drawer_icon, placed.x, placed.y, placed.w, placed.h, TRUE);
+  zb_drawer_place(&ratios, cw, ch, &placed);
+  if (!MoveWindow(app->drawer_icon, placed.x, placed.y, placed.w, placed.h, TRUE)) {
+    fprintf(stderr, "zigBrowser: agent-drawer icon move failed (error %lu)\n",
+            static_cast<unsigned long>(GetLastError()));
+    fflush(stderr);
+    return;
+  }
+  app->icon_ratios = ratios;
+  app->has_icon_ratios = true;
   zb_drawer_remember(&app->icon_ratios);  // the user move persists for new windows / restarts
   char win[16];
   snprintf(win, sizeof win, "%d", app->win_id);
@@ -1001,11 +1014,22 @@ void mount_drawer(AppState *app) {
     DestroyWindow(panel_hwnd);  // destroy the exact panel we just created
     return;  // no mounted/live/rows
   }
+  // Subclass the icon so it handles real mouse-drag + arrow-key input through the portable logic (WS5.2).
+  // SetWindowLongPtrW returns the previous proc, or 0 on failure — disambiguate with GetLastError. Fail closed:
+  // destroy both controls and do NOT mount/persist/emit if the subclass fails (RoseCat b1ea2ed #5).
+  SetLastError(0);
+  LONG_PTR prev_proc = SetWindowLongPtrW(icon_hwnd, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(icon_subclass_proc));
+  if (prev_proc == 0 && GetLastError() != 0) {
+    fprintf(stderr, "zigBrowser: agent-drawer icon subclass failed (error %lu); drawer not mounted\n",
+            static_cast<unsigned long>(GetLastError()));
+    fflush(stderr);
+    DestroyWindow(icon_hwnd);
+    DestroyWindow(panel_hwnd);
+    return;  // no mounted/live/rows
+  }
+  app->icon_proc = reinterpret_cast<WNDPROC>(prev_proc);
   app->drawer_panel = panel_hwnd;
   app->drawer_icon = icon_hwnd;
-  // Subclass the icon so it handles real mouse-drag + arrow-key input through the portable logic (WS5.2).
-  app->icon_proc = reinterpret_cast<WNDPROC>(
-      SetWindowLongPtrW(icon_hwnd, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(icon_subclass_proc)));
   app->drawer_mounted = true;
   g_drawer_live.fetch_add(1, std::memory_order_relaxed);
 
@@ -1026,14 +1050,25 @@ void mount_drawer(AppState *app) {
   // clamps, moves the real HWND and persists. The seam does not compute or move anything itself. Exact,
   // fully-consumed, bounded parse: "<int>,<int>" with no trailing garbage, each in [-100000, 100000].
   if (app->drag_seam != nullptr && app->drag_seam[0] != '\0') {
-    int dx = 0, dy = 0;
-    char extra = 0;
-    if (sscanf(app->drag_seam, "%d,%d%c", &dx, &dy, &extra) == 2 &&
-        dx >= -100000 && dx <= 100000 && dy >= -100000 && dy <= 100000) {
+    // Exact, overflow-free parse of "<int>,<int>" with no trailing garbage; each delta bounded to [-8000, 8000]
+    // so it stays representable through MAKELPARAM's signed 16-bit coordinates together with the icon-centre
+    // offset (RoseCat b1ea2ed #6). strtol with errno catches overflow; the separators must match exactly.
+    char *end = nullptr;
+    errno = 0;
+    const long pdx = strtol(app->drag_seam, &end, 10);
+    bool ok = (errno == 0 && end != app->drag_seam && *end == ',');
+    long pdy = 0;
+    if (ok) {
+      const char *after = end + 1;
+      errno = 0;
+      pdy = strtol(after, &end, 10);
+      ok = (errno == 0 && end != after && *end == '\0');
+    }
+    if (ok && pdx >= -8000 && pdx <= 8000 && pdy >= -8000 && pdy <= 8000) {
       const int cx = icon.w / 2;
       const int cy = icon.h / 2;
       SendMessageW(app->drawer_icon, WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(cx, cy));
-      SendMessageW(app->drawer_icon, WM_LBUTTONUP, 0, MAKELPARAM(cx + dx, cy + dy));
+      SendMessageW(app->drawer_icon, WM_LBUTTONUP, 0, MAKELPARAM(cx + static_cast<int>(pdx), cy + static_cast<int>(pdy)));
     }
   }
   // WS5.3 fold seam (e2e-only): a mid-animation frame, strictly between the icon and the open drawer, plus the
