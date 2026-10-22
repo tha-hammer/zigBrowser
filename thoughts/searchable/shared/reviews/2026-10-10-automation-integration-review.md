@@ -34068,3 +34068,50 @@ The green must keep `cli_env_clean()` as a thin `reason == ok` wrapper,
 register all three tests under their required namespaces, update any MS5
 inventory that pins `proc_darwin`, and return changed hard-gate cases plus the
 manifest for a fresh digest review. No Mac run is authorized by this verdict.
+
+## Census-reason red fix-forward (`e75ca02`)
+
+**APPROVED-for-tests.** The two-file follow-up closes all three red gaps on
+`193041a`. From a clean archive inside private user/PID/mount namespaces, the
+process-census module remained red with **18 failures**, and the fd-3 module
+remained red with the expected **1 failure + 11 errors**. The new root-ESRCH
+row requires `walk-unreadable` without a root-path reprobe; well-shaped
+non-members require exactly `census=['invalid']`; and every label is checked
+against the full CLI-path boundary, argv/home marker, environment name and
+value, base URL, complete token and raw exception markers. Both files remain
+unregistered and signal-contained. The production green may proceed, but its
+registrations, changed case bytes and manifest need fresh review; no Mac run
+is authorized.
+
+## Reaper readiness/startup red fix-forward (`ecf14be`)
+
+**BLOCKED-for-tests.** The file is unregistered, unarmed and signal-free; its
+scope now honestly stops at the startup-recovery core and leaves the real app
+startup owner open. A clean direct compile is red only on the intended absent
+startup API symbols. Its expanded outcome matrix is useful, but five causal
+gaps remain:
+
+1. The missing/corrupt/directory store rows prove disabled outcomes, not that
+   gate-off performs no read. An implementation can access/load the store,
+   discard the result and return the asserted report. Add an injected
+   loader/access counter or a source-bound early-return oracle plus a
+   move-load-before-gate mutant.
+2. The literal-constant row does not bind the production wrapper's readiness
+   solely to that constant. It bans `build_options` and tries two guessed env
+   names, but an args route or another env name could arm the wrapper. Bind
+   `recoverAllAtStartup` to `reaper_ready` and causally reject getenv, argv
+   and `env_switch` arming.
+3. The cap test derives its expectation from the production constant, so a
+   zero cap passes while recovering nothing. Pin a positive bounded contract
+   (and the exact value if the plan selects one) plus a zero-cap mutant.
+4. An already-expired deadline does not distinguish one absolute iteration
+   deadline from a per-entry reset. Use a deterministic clock where entry one
+   completes before the bound and the same terminal expires before entry two;
+   require the latter deferred and retained, and catch a reset-per-entry
+   mutant.
+5. Restore the gate-true corrupt-ledger row: `load_failed`, non-ok, zero
+   action and no mutation. Also require zero actuator pins for the live-owner
+   `left` row.
+
+Fix the red forward before the production green; keep it unregistered,
+unarmed and off both Macs.
