@@ -129,7 +129,9 @@ pub fn applyMediaSource(flag: ?media_config.MediaSource) void {
 /// effective choice when it is not the default, and a variable that is not
 /// on or off. Returns whether the drawer is on (never on other platforms).
 pub fn applyAgentDrawer(flag: ?agent_config.AgentDrawer) bool {
-    if (comptime builtin.os.tag != .linux) return false;
+    // WS5 (OD-W6): the native Win32 drawer backend (src/webview2_shim.cpp) mounts on Windows too, so the
+    // switch applies on Linux AND Windows; macOS has no drawer backend yet.
+    if (comptime builtin.os.tag != .linux and builtin.os.tag != .windows) return false;
     const env = if (std.c.getenv(agent_config.env_name)) |v| std.mem.span(v) else null;
     const resolved = agent_config.resolve(flag, env);
     if (resolved.bad_env) |text| {

@@ -15,6 +15,7 @@
 #include <string.h>
 
 #include <algorithm>
+#include <atomic>
 #include <deque>
 #include <functional>
 #include <vector>
@@ -52,7 +53,34 @@ struct AppState {
   ComPtr<ICoreWebView2Environment> environment;
   ComPtr<ICoreWebView2Controller> controller;
   ComPtr<ICoreWebView2> webview;
+
+  // WS5 (OD-W6): the native Win32 agent drawer. `agent_drawer_on` mirrors the Zig switch
+  // (zb_app_get_agent_drawer, set by webkit.applyAgentDrawer before zb_app_run). `drawer_open` is the
+  // e2e-only startup-open seam (ZIGBROWSER_AGENT_DRAWER_OPEN, honoured only under --e2e-protocol). The
+  // panel docks below the page and the floating "S" icon sits above it; geometry comes from the portable
+  // zb_drawer_* logic (src/agent_drawer.zig) — no geometry math in C++.
+  bool agent_drawer_on = false;
+  bool drawer_open = false;
+  bool drawer_mounted = false;
+  int win_id = 1;
+  HWND drawer_panel = nullptr;
+  HWND drawer_icon = nullptr;
 };
+
+// The portable drawer geometry (src/agent_drawer.zig, exported for Windows). Rect matches Zig's
+// `extern struct { x, y, w, h: c_int }`.
+extern "C" {
+struct ZbDrawerGeomRect { int x, y, w, h; };
+void zb_drawer_panel_rect(int width, int height, ZbDrawerGeomRect *out);
+void zb_drawer_place(const void *ratios, int width, int height, ZbDrawerGeomRect *out);
+}
+
+// WS5 shim functions (declared in webkit_shim.h), defined here for the Windows backend.
+static std::atomic<int> g_agent_drawer_enabled{0};
+static std::atomic<int> g_drawer_live{0};
+extern "C" void zb_app_set_agent_drawer(int enabled) { g_agent_drawer_enabled.store(enabled != 0); }
+extern "C" int zb_app_get_agent_drawer(void) { return g_agent_drawer_enabled.load(); }
+extern "C" int zb_drawer_debug_live_count(void) { return g_drawer_live.load(); }
 
 void emit_safe_field(const char *text) {
   const char *p = text != nullptr ? text : "";
@@ -733,14 +761,82 @@ void close_webview(AppState *app) {
   app->environment.Reset();
 }
 
+// WS5: lay out the page (WebView2) and the native drawer within the client area. When the drawer is open the
+// panel docks full-width at the bottom (zb_drawer_panel_rect) and the page fills the region above it, so
+// page_h + panel_h == client_h; when closed the page fills the client and the "S" icon shows at its rect
+// (zb_drawer_place). No geometry math here — all rects come from the portable Zig logic.
 void resize_controller(AppState *app) {
   if (app == nullptr || !app->controller || app->hwnd == nullptr) {
     return;
   }
+  RECT cr = {};
+  GetClientRect(app->hwnd, &cr);
+  const int cw = cr.right - cr.left;
+  const int ch = cr.bottom - cr.top;
 
-  RECT bounds = {};
-  GetClientRect(app->hwnd, &bounds);
+  if (app->agent_drawer_on && app->drawer_mounted && app->drawer_open) {
+    ZbDrawerGeomRect panel = {};
+    zb_drawer_panel_rect(cw, ch, &panel);
+    RECT page = {0, 0, cw, panel.y};  // the page fills the region above the docked panel
+    app->controller->put_Bounds(page);
+    if (app->drawer_panel) {
+      MoveWindow(app->drawer_panel, panel.x, panel.y, panel.w, panel.h, TRUE);
+      ShowWindow(app->drawer_panel, SW_SHOW);
+    }
+    if (app->drawer_icon) {
+      ShowWindow(app->drawer_icon, SW_HIDE);  // the icon hides while the drawer is open (D4)
+    }
+    return;
+  }
+
+  RECT bounds = cr;
   app->controller->put_Bounds(bounds);
+  if (app->drawer_panel) {
+    ShowWindow(app->drawer_panel, SW_HIDE);
+  }
+  if (app->agent_drawer_on && app->drawer_mounted && app->drawer_icon) {
+    ZbDrawerGeomRect icon = {};
+    zb_drawer_place(nullptr, cw, ch, &icon);
+    MoveWindow(app->drawer_icon, icon.x, icon.y, icon.w, icon.h, TRUE);
+    ShowWindow(app->drawer_icon, SW_SHOW);
+  }
+}
+
+// WS5: mount the native Win32 drawer once the window + controller exist. Creates the native panel + "S"
+// icon child controls (OD-W6), emits the same DRAWER census row NAMES as the GTK backend (tree, icon, and
+// open when opened), and lays the drawer out. e2e census rows are gated by --e2e-protocol inside emit_*.
+void mount_drawer(AppState *app) {
+  if (app == nullptr || !app->agent_drawer_on || app->drawer_mounted || app->hwnd == nullptr) {
+    return;
+  }
+  app->drawer_mounted = true;
+  RECT cr = {};
+  GetClientRect(app->hwnd, &cr);
+  const int cw = cr.right - cr.left;
+  const int ch = cr.bottom - cr.top;
+
+  ZbDrawerGeomRect icon = {};
+  zb_drawer_place(nullptr, cw, ch, &icon);
+  // Native Win32 controls (OD-W6): a docked panel and the floating "S" icon, children of the host window.
+  app->drawer_panel = CreateWindowExW(0, L"STATIC", L"", WS_CHILD, 0, 0, 0, 0,
+                                      app->hwnd, nullptr, app->instance, nullptr);
+  app->drawer_icon = CreateWindowExW(0, L"STATIC", L"S", WS_CHILD | SS_CENTER,
+                                     icon.x, icon.y, icon.w, icon.h, app->hwnd, nullptr, app->instance, nullptr);
+  g_drawer_live.fetch_add(1, std::memory_order_relaxed);
+
+  char win[16];
+  snprintf(win, sizeof win, "%d", app->win_id);
+  emit_protocol3(app, "DRAWER", win, "tree", "host,page,icon,panel");
+  char rect[64];
+  snprintf(rect, sizeof rect, "%d,%d,%d,%d", icon.x, icon.y, icon.w, icon.h);
+  emit_protocol3(app, "DRAWER", win, "icon", rect);
+  if (app->drawer_open) {
+    ZbDrawerGeomRect panel = {};
+    zb_drawer_panel_rect(cw, ch, &panel);
+    snprintf(rect, sizeof rect, "%d,%d,%d,%d", panel.x, panel.y, panel.w, panel.h);
+    emit_protocol3(app, "DRAWER", win, "open", rect);
+  }
+  resize_controller(app);  // dock the page / place the icon
 }
 
 void emit_load_fail(AppState *app, COREWEBVIEW2_WEB_ERROR_STATUS status) {
@@ -865,6 +961,14 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam,
     break;
   case WM_DESTROY:
     if (app != nullptr) {
+      if (app->drawer_mounted) {
+        // WS5: the child panel/icon are destroyed with the host window; account the live drawer going away
+        // (zb_drawer_debug_live_count reaches 0 after every window closes — WS5.5).
+        g_drawer_live.fetch_sub(1, std::memory_order_relaxed);
+        app->drawer_mounted = false;
+        app->drawer_panel = nullptr;
+        app->drawer_icon = nullptr;
+      }
       app->hwnd = nullptr;
     }
     PostQuitMessage(app != nullptr ? app->exit_code : ZB_EXIT_SUCCESS);
@@ -1115,6 +1219,7 @@ HRESULT create_controller(AppState *app) {
 
             resize_controller(app);
             app->controller->put_IsVisible(TRUE);
+            mount_drawer(app);  // WS5: mount the native drawer once the page is live (no-op unless on)
 
             ComPtr<ICoreWebView2Settings> settings;
             if (SUCCEEDED(app->webview->get_Settings(&settings)) && settings) {
@@ -1260,6 +1365,13 @@ static int run_core(const char *uri, int print_title, int e2e_protocol, bool scr
   app.e2e_protocol = e2e_protocol != 0;
   if (app.e2e_protocol) {
     app.force_screenshot_fail = getenv("ZB_E2E_FORCE_SCREENSHOT_FAIL");  // inert e2e branch-selection seam
+  }
+  // WS5: the agent drawer is on iff webkit.applyAgentDrawer set the flag (before zb_app_run); screenshot
+  // mode never mounts a drawer. The startup-open seam is e2e-only (a sibling of the demo seed).
+  app.agent_drawer_on = (zb_app_get_agent_drawer() != 0) && !screenshot;
+  if (app.agent_drawer_on && app.e2e_protocol) {
+    const char *open_env = getenv("ZIGBROWSER_AGENT_DRAWER_OPEN");
+    app.drawer_open = open_env != nullptr && open_env[0] != '\0' && !(open_env[0] == '0' && open_env[1] == '\0');
   }
   app.screenshot = screenshot;
   if (screenshot && out_path != nullptr) {
