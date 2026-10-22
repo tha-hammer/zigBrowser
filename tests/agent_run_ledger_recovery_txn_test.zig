@@ -192,25 +192,33 @@ fn terminal0(status: u32) bool {
 
 // ---- the injected recovery actuator (deterministic, signal-free) ---------------------------------------------
 
-/// The injected actuator the production transaction will call for the destructive action. Here it is deterministic
-/// and signal-free: the seeded entry is proved dead, its run-dir provenance matches, its census is already a clean
-/// fixed point (no live process), and the dir retires. The PRODUCTION actuator will instead be the reviewed reaper/
-/// provenance C path (`zb_reaper_dir_fd_ok` + `zb_reaper_fixed_point`). This is my RECOMMENDED interface shape
-/// (provenanceMatches / fixedPointClean / retireDir) pending RoseCat's confirmation.
-const FakeActuator = struct {
-    pub fn provenanceMatches(_: FakeActuator, entry: ledger.Entry) bool {
-        _ = entry;
-        return true;
-    }
-    pub fn fixedPointClean(_: FakeActuator, entry: ledger.Entry, clock: anytype, deadline_ms: i64) ledger.FixedPoint {
-        _ = entry;
+/// The injected actuator + the typed lease it returns (RoseCat 62888b1: the destructive action is reached ONLY
+/// through a lease that RETAINS the pinned run-dir fd, so the provenance check and the teardown cannot be split by
+/// a path swap). Here both are deterministic and SIGNAL-FREE: `pin` accepts the dead entry (provenance matches),
+/// the fixed point is clean (no live process), and teardown succeeds. The PRODUCTION lease will instead wrap the
+/// reviewed reaper/provenance C path (`zb_reaper_pin_fd` + `zb_reaper_dir_fd_ok` + `zb_reaper_fixed_point`) over the
+/// held fd. (This signal-free fake does NOT yet prove a real marked-child kill phase; that row + the early-unlock
+/// mutant are still required before the destructive green is accepted — RoseCat 62888b1.)
+const FakeLease = struct {
+    pub fn fixedPoint(self: *FakeLease, clock: anytype, deadline_ms: i64) ledger.FixedPoint {
+        _ = self;
         _ = clock;
         _ = deadline_ms;
         return .clean;
     }
-    pub fn retireDir(_: FakeActuator, entry: ledger.Entry) bool {
-        _ = entry;
+    pub fn teardown(self: *FakeLease) bool {
+        _ = self;
         return true;
+    }
+    pub fn deinit(self: *FakeLease) void {
+        _ = self;
+    }
+};
+const FakeActuator = struct {
+    pub fn pin(_: FakeActuator, dir: std.Io.Dir, entry: ledger.Entry) ?FakeLease {
+        _ = dir;
+        _ = entry;
+        return FakeLease{};
     }
 };
 
