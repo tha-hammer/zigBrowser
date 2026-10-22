@@ -31390,3 +31390,47 @@ user/PID/mount namespace with both signal functions patched to raise. The
 test remains unregistered; cumulative sign-in acceptance still waits for its
 pinned-interpreter registration, the real-binary sign-in e2es and a clean full
 gate.
+
+## Windows WS5.2 synthetic-drag green (`4140425`)
+
+**BLOCKED; do not run the VM row yet.** The portable ABI is coherent and the
+seam is correctly inert without `--e2e-protocol`, but this commit does not
+implement the WS5.2 user behavior it claims and its live red can pass while
+the real icon does not move.
+
+1. `mount_drawer` computes an `after` rectangle and emits it as a `DRAWER ...
+   drag` row, but it never applies that rectangle to `drawer_icon`. It then
+   immediately calls `resize_controller`, whose closed-drawer branch calls
+   `zb_drawer_place(nullptr, ...)` and `MoveWindow` at the default rectangle
+   (`src/webview2_shim.cpp:879-903`, `:809-813`). Thus the protocol says the
+   icon moved while the HWND is at the default position. The live test treats
+   that implementation-emitted row as a “MEASURED” window rectangle
+   (`tests/windows/win_drawer_behaviors_test.py:643-651`), so it cannot catch
+   the defect. The harness must read the actual icon HWND rectangle after the
+   action; the row may be supplementary evidence only.
+2. The only route to the new drag/click branch is the e2e environment seam.
+   The host window procedure handles size, jobs, timers and destroy, while the
+   `STATIC` icon has no subclass/control procedure for mouse capture,
+   `WM_MOUSEMOVE`/release, click, or arrow keys. A normal user therefore cannot
+   drag the icon or use WS5.2's 16/64-pixel keyboard moves. Wire real Win32
+   input through the same portable classifier/clamp/key helpers and make the
+   seam drive that production route rather than substitute for it.
+3. Persistence is written but never read by the Windows backend. Both mount
+   and resize pass null to `zb_drawer_place`; neither calls
+   `zb_drawer_start_ratios` nor retains per-window ratios. Every resize and
+   every new launch/window therefore resets to the default, contrary to the
+   plan's “persists” contract. Add an actual restart/new-window oracle using a
+   throwaway profile. It must observe the real HWND at the saved ratio, not
+   merely a calculated protocol row.
+
+The e2e parser is also too permissive for a shipped seam: `sscanf("%d,%d")`
+accepts trailing garbage, and out-of-range `%d` plus `moved.x += dx` can enter
+undefined signed-overflow behavior. Retain the seam only with exact,
+fully-consumed bounded integer parsing and causal malformed/extreme rows.
+
+From an exact clean export, `zig build cross-check-drawer-win` passed; the
+offline `WinDrawerBehaviorsOracle` passed **20/20**; and the direct
+`agent_drawer_props_test.zig` invocation passed **10/10**. Those results prove
+the portable math and link surface, not the missing Win32 input, actual-window
+movement or persistence. No VM run is authorized until the production route
+and independent observation are fixed forward.
