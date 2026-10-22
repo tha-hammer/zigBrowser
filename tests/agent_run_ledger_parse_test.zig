@@ -76,7 +76,7 @@ test "a truncated/unparseable document is Malformed" {
 
 test "a duplicate basename is DuplicateBasename" {
     try expectErr(error.DuplicateBasename,
-        \\{"schema_version":1,"runs":[{"basename":"dup","dev":1,"ino":2,"uid":0,"mode":16832,"pid":1,"start_sec":0,"start_usec":0,"state":"active"},{"basename":"dup","dev":3,"ino":4,"uid":0,"mode":16832,"pid":2,"start_sec":0,"start_usec":0,"state":"active"}]}
+        \\{"schema_version":1,"runs":[{"basename":"zigbrowser-agent-1-0011223344556677","dev":1,"ino":2,"uid":0,"mode":16832,"pid":1,"start_sec":0,"start_usec":0,"state":"active"},{"basename":"zigbrowser-agent-1-0011223344556677","dev":3,"ino":4,"uid":0,"mode":16832,"pid":2,"start_sec":0,"start_usec":0,"state":"active"}]}
     );
 }
 
@@ -92,7 +92,7 @@ test "an over-cap array is TooManyEntries" {
             buf[len] = ',';
             len += 1;
         }
-        const s = try std.fmt.bufPrint(buf[len..], "{{\"basename\":\"r{d}\",\"dev\":1,\"ino\":2,\"uid\":0,\"mode\":16832,\"pid\":1,\"start_sec\":0,\"start_usec\":0,\"state\":\"active\"}}", .{i});
+        const s = try std.fmt.bufPrint(buf[len..], "{{\"basename\":\"zigbrowser-agent-{d}-0011223344556677\",\"dev\":1,\"ino\":2,\"uid\":0,\"mode\":16832,\"pid\":1,\"start_sec\":0,\"start_usec\":0,\"state\":\"active\"}}", .{i});
         len += s.len;
     }
     const tail = "]}";

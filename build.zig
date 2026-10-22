@@ -820,6 +820,14 @@ pub fn build(b: *std.Build) void {
     run_ledger_parse_tests.skip_foreign_checks = true;
     const ledger_parse_step = b.step("test-agent-run-ledger-parse", "MS6.5.1 ledger schema parse (versioned/strict/bounded)");
     ledger_parse_step.dependOn(&run_ledger_parse_tests.step);
+    // MS6.5.1 (RoseCat 0d2e91d #1): the parse validates each entry's fixed-length single-component basename
+    // grammar, so one malformed row makes the whole ledger a malformed read (never an entry).
+    const ledger_grammar_test_mod = b.createModule(.{ .root_source_file = b.path("tests/agent_run_ledger_grammar_test.zig"), .target = target, .optimize = optimize });
+    ledger_grammar_test_mod.addImport("agent_run_ledger", ledger_mod);
+    const run_ledger_grammar_tests = b.addRunArtifact(b.addTest(.{ .root_module = ledger_grammar_test_mod }));
+    run_ledger_grammar_tests.skip_foreign_checks = true;
+    const ledger_grammar_step = b.step("test-agent-run-ledger-grammar", "MS6.5.1 ledger basename grammar in the parse (whole-ledger fail-closed)");
+    ledger_grammar_step.dependOn(&run_ledger_grammar_tests.step);
     // MS6.5 (the user's decision 2026-10-21): the stubbed macOS VM-containment seam — off by default, reports
     // "not available yet", and the gate fails closed when on. Pure Linux unit (no OS calls).
     const mac_vm_containment_module = b.createModule(.{
@@ -2809,6 +2817,7 @@ pub fn build(b: *std.Build) void {
     if (target.result.os.tag == .linux) test_step.dependOn(&run_reaper_lg_tests.step);
     if (target.result.os.tag == .linux) test_step.dependOn(&run_reaper_lb_tests.step);
     test_step.dependOn(&run_ledger_parse_tests.step);
+    test_step.dependOn(&run_ledger_grammar_tests.step);
     test_step.dependOn(&run_mac_vm_containment_tests.step);
     test_step.dependOn(&mac_vm_containment_e2e.step);
     test_step.dependOn(&run_agent_secrets_tests.step);

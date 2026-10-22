@@ -11,6 +11,12 @@ const std = @import("std");
 pub const SCHEMA_VERSION: u32 = 1;
 /// The bounded cap on recovered entries (RoseCat SHOULD: bound the number of startup dirs).
 pub const MAX_ENTRIES: usize = 256;
+/// The fixed maximum run-dir basename length: "zigbrowser-agent-" (17) + up to 10 pid digits + "-" + 16 hex = 44.
+pub const MAX_BASENAME: usize = 44;
+/// A finite maximum ledger document size, derived from the fixed field lengths x MAX_ENTRIES plus structural
+/// overhead. Any input larger than this is rejected BEFORE allocation, so a corrupt/hostile file (millions of
+/// entries, or one huge string) can never allocate/work without bound (RoseCat 7458 #2).
+pub const MAX_LEDGER_BYTES: usize = 64 * 1024;
 
 pub const State = enum { active, left };
 
@@ -47,6 +53,30 @@ pub const Ledger = struct {
     }
 };
 
+/// The fixed-length, single-component run-dir grammar `zigbrowser-agent-<decimal pid>-<16 lowercase hex>`
+/// (the Zig twin of C `name_is_sockdir`), length-bounded by MAX_BASENAME. Rejects a wrong prefix, a non-decimal
+/// pid, a wrong hex length, uppercase hex, and — being a single component with no interior '.'/'/' — a dot,
+/// an embedded slash, an absolute path, and anything oversized. A malformed basename makes the whole ledger a
+/// malformed read (RoseCat 0d2e91d #1).
+fn basenameOk(s: []const u8) bool {
+    const sig = "zigbrowser-agent-";
+    if (s.len > MAX_BASENAME) return false;
+    if (!std.mem.startsWith(u8, s, sig)) return false;
+    var i: usize = sig.len;
+    const pid_start = i;
+    while (i < s.len and s[i] >= '0' and s[i] <= '9') i += 1;
+    if (i == pid_start) return false; // at least one decimal pid digit
+    if (i >= s.len or s[i] != '-') return false;
+    i += 1;
+    if (s.len - i != 16) return false; // exactly 16 hex after the dash, nothing more
+    var k: usize = 0;
+    while (k < 16) : (k += 1) {
+        const c = s[i + k];
+        if (!((c >= '0' and c <= '9') or (c >= 'a' and c <= 'f'))) return false; // lowercase hex only
+    }
+    return true;
+}
+
 pub fn parse(gpa: std.mem.Allocator, bytes: []const u8) ParseError!Ledger {
     // STRICT: `.{}` keeps ignore_unknown_fields=false, so an extra field, a missing field, a mistyped field, an
     // unknown `state` and any truncated/unparseable input all error -> Malformed. A JSON object with a duplicate
@@ -60,6 +90,12 @@ pub fn parse(gpa: std.mem.Allocator, bytes: []const u8) ParseError!Ledger {
     if (runs.len > MAX_ENTRIES) {
         parsed.deinit();
         return error.TooManyEntries; // bounded: a corrupt/hostile over-long ledger is refused, not truncated
+    }
+    for (runs) |e| {
+        if (!basenameOk(e.basename)) {
+            parsed.deinit();
+            return error.Malformed; // a malformed basename makes the WHOLE ledger a malformed read
+        }
     }
     var i: usize = 0;
     while (i < runs.len) : (i += 1) {
