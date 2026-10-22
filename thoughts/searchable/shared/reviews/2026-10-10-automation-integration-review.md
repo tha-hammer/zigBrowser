@@ -30328,3 +30328,56 @@ From an exact clean export, using that interpreter in a private current-UID
 PID namespace, all four rows fail at the intended absent-frame boundary. The
 suite remains unregistered, so the red does not break HEAD. Its green must
 register the now-complete red only when the production behavior passes.
+
+## MS6.3 unusable-fd-3 green (`c38f8fd`)
+
+**APPROVED.** The token read is now the first operation after argument parsing
+and emitter construction. Missing fd 3, fd read/close failures, non-ASCII and
+shape/size refusal are caught only around `read_token`; the helper writes
+exactly the fixed `v:1`, `seq:1`, `error/auth/no usable token` frame and exits
+2 before helper-environment rewriting, FIFO construction, SDK setup or any
+other side effect. No exception or token text reaches stdout or stderr.
+
+The complete red is registered with the pinned agent-host interpreter inside
+a private current-UID PID namespace. Its wrapper preserves the unittest exit
+status and refuses ResourceWarnings. From an exact clean export:
+
+- `test_contract_no_token`: **4/4**;
+- the existing signal-capable `test_contract`, with the outer-namespace fd
+  sentinel and private PID namespace: **21/21**;
+- `test_gate_step_wrappers`: **3/3** in a private PID namespace;
+- `agent-host-win-import`: **3/3 build steps**, **7/7 Python tests**.
+
+`git diff --check` is clean. This cumulatively approves the
+`2e7f1ee`/`740611d`/`c38f8fd` chain.
+
+## MS6.5.1 deterministic two-recoverer prototype (`22b8400`)
+
+**The causal race is fixed, but the red remains BLOCKED-for-tests on its
+unbounded child lifecycle.** From an exact clean export, compiled separately
+and run behind the fd-9 namespace sentinel plus a private user/PID/mount
+namespace, `EARLY_UNLOCK=true` failed **10/10** at the exact two-signal count.
+A review-only `EARLY_UNLOCK=false` build passed **3/3** with the exact
+`{signalled, already_gone}` pair, one signal-phase entry, an empty ledger and
+terminal children. The new two-reader handshake therefore closes the
+principal timing defect from review 7679.
+
+The second half of 7679 remains open:
+
+1. The first read at
+   `tests/agent_run_ledger_two_recoverer_proto_test.zig:159`, both result reads
+   at `:185-186`, and both blocking `waitpid` calls at `:189-190` have no
+   deadline. A child failure before its write wedges the test, and there is no
+   unconditional cleanup/reap path for fork, poll, read or assertion failure.
+2. The parent retains child-side pipe ends, including the result-pipe writers,
+   so a failed child does not even give the parent EOF. Close every unused end
+   immediately in the parent and in each child.
+3. The `poll` return and `revents` at `:179-180` are ignored. Use an EINTR-safe
+   absolute deadline and assert the handshake itself: the early-unlock build
+   receives recoverer 2's `present=1` before release, while the held-lock build
+   times out there and later receives `present=0`. Otherwise an early error or
+   EINTR can release recoverer 1 before recoverer 2 reads and revive the
+   mutant-survival schedule.
+
+Keep the prototype unregistered until bounded poll/read/wait helpers and an
+unconditional, private-namespace-safe child cleanup close those paths.
