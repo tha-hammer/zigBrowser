@@ -9,35 +9,17 @@
 const std = @import("std");
 const linux = std.os.linux;
 
-/// The long-lived token `claude setup-token` prints; nothing else is a token
-/// (API keys are out of scope, plan section 5).
-pub const token_prefix = "sk-ant-oat01-";
-/// RFC 6819 section 5.1.4.2.2 asks at least 128 bits of a token handle: 22
-/// characters of the 64-symbol suffix alphabet carry 132 (RoseCat 5731).
-pub const min_suffix_len = 22;
-pub const min_token_len = token_prefix.len + min_suffix_len;
-pub const max_token_len = 512;
-
-/// A setup token, one rule for Save, store and load (the user's requirement
-/// after the S4a real-screen check): ^sk-ant-oat01-[A-Za-z0-9_-]{22,499}$.
-pub fn validToken(text: []const u8) bool {
-    if (text.len < min_token_len or text.len > max_token_len) return false;
-    if (!std.mem.startsWith(u8, text, token_prefix)) return false;
-    for (text[token_prefix.len..]) |c| {
-        switch (c) {
-            'A'...'Z', 'a'...'z', '0'...'9', '_', '-' => {},
-            else => return false,
-        }
-    }
-    return true;
-}
-
-/// A pasted token: surrounding ASCII whitespace (SP HT CR LF VT FF) trimmed,
-/// then validToken. The token as a slice of `text`, or null.
-pub fn tokenFromPaste(text: []const u8) ?[]const u8 {
-    const token = std.mem.trim(u8, text, &std.ascii.whitespace);
-    return if (validToken(token)) token else null;
-}
+// WS6.1: the token SHAPE is split into the portable, platform-free agent_secrets_shape.zig so the
+// Windows CredMan/DPAPI store reuses the one rule without pulling this module's std.os.linux file
+// store. Re-exported here so Linux callers and the existing tests keep one import site — no
+// duplicated validation (the refactor goal).
+pub const shape = @import("agent_secrets_shape.zig");
+pub const token_prefix = shape.token_prefix;
+pub const min_suffix_len = shape.min_suffix_len;
+pub const min_token_len = shape.min_token_len;
+pub const max_token_len = shape.max_token_len;
+pub const validToken = shape.validToken;
+pub const tokenFromPaste = shape.tokenFromPaste;
 
 pub const secrets_dir = "secrets";
 pub const token_file = "claude-token";
