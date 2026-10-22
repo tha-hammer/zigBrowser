@@ -28445,3 +28445,87 @@ Approve; place the card only in the first-opened main window; prove the real
 store's atomic publication and fail-closed owner/read paths; and pin Deny as a
 terminal card action. Those are integration/production-state reds, not missing
 cases in this part-1 decision core.
+
+## Startup recovery versus a stalled ledger holder (`202151a`, `85cdc46`)
+
+`202151a` is **APPROVED as the scoped, unregistered causal red**. In a clean
+export inside a private user/PID namespace, its direct Zig run failed with
+`RecoveryWedgedPastDeadline` (exit 1). At `85cdc46`, the registered focused
+step was green: **4/4 steps, 1/1 tests**, in about three seconds.
+
+`85cdc46` is nevertheless **BLOCKED**:
+
+1. **BLOCKER — the implementation has retry arithmetic, not rev 27's single
+   total monotonic deadline.** `runStartupRecovery` still accepts
+   `max_tries/backoff_ms`; it neither receives nor propagates an absolute
+   deadline through lock acquisition and the work performed while the lock is
+   held (`src/agent_run_ledger.zig:195-227,328-344`). The plan requires the
+   *same* deadline to bound both phases. The current red allows intended
+   roughly-100-ms acquisition to take anything below a one-second watchdog,
+   so a roughly-900-ms mutation survives. Add a clock/deadline seam and a
+   deterministic budget mutation.
+2. **BLOCKER — the registered signal test is not forced into a PID
+   namespace.** It sends raw `SIGKILL` to its holder process, while the new
+   build step directly runs the artifact. Enforce
+   `unshare --user --map-root-user --pid --fork --mount-proc` (and preferably
+   a fail-closed namespace sentinel) before any signal can be reached.
+3. **BLOCKER-for-tests — the watchdog can itself block.** Its raw `poll`
+   result treats any nonzero value, including encoded error/EINTR, as
+   readiness and then performs a blocking read. Poll errors must be decoded
+   and retried only inside the same deadline.
+4. **BLOCKER-for-tests — the retained-ledger oracle is incomplete.** It checks
+   only one entry and its basename, so rewriting or corrupting the retained
+   row survives. Compare the complete bytes and identity/stat (or every
+   field) across the failed recovery.
+
+These findings and the exact reproducer were mailed to JadeBeacon as Agent
+Mail 7571. `git diff --check` was clean for both commits.
+
+## Xvfb-loss diagnostic red (`53332c8`)
+
+**APPROVED as the scoped, unregistered red.** In a clean export inside a
+private user/PID namespace, the X-input test produced the intended causal
+result: four cases, with the three vanished-X-server paths failing because the
+process exited through Xlib's broken-connection path, while the live-server
+control passed. The companion step-wrapper suite was **7/7 red** because the
+wrapper and build registration do not exist yet. This agrees with the traced
+failure: browser shutdown causes the xsession guardian to stop Xvfb, driver
+teardown enters `XCloseDisplay`, Xlib's default I/O-error handler exits the C
+process, and the build step loses the useful diagnostic.
+
+For the green, teardown must remain bounded and prove that timeout leaves no
+Xvfb/helper orphan. A shell return code `128+n` is only a signal-style status,
+not unique proof of signal death (a program can explicitly `exit 143`); use
+that wording or a runner that retains wait-status semantics. Register the
+coverage under a private Xvfb and PID namespace. Verdict and these advisories
+were mailed to BlueBeaver as Agent Mail 7573.
+
+## WS8/WS9 honest-DRAFT fix-forward (`e707d50`)
+
+**BLOCKED.** The revision satisfies most of the requested DRAFT-state route:
+the document prominently says NOT implementation-approved; one authoritative
+gate forbids WS8/WS9 work and dependent agent work; all six `9134b8b`
+findings remain open; the earlier eight-finding table and NOT-proven list are
+present; old platform scope is historical/non-normative; the live script says
+DISCOVERY-ONLY / DO NOT RERUN; C1-C5 are nominally proposals/TBD; and OAuth
+fd-3 remains a hard red.
+
+Two stale claim clusters still contradict that state:
+
+1. `tests/windows/wsl_live_test.py:26-47` retains the old **Hygiene**,
+   **Corrected facts**, and **Measured** prose claiming rc-checked lifecycle
+   and final census, a dedicated non-root launch, causal transport, and a
+   firewall-blocked reverse path. The new header immediately above says those
+   facts were not proved. Delete that prose or mark it explicitly superseded
+   and not evidence, retaining only the narrow explicit-`-u` observations.
+2. The normative WS8 body still says the contracts make the topology
+   **implementation-ready** (`plan:1809-1811`) and that C1's direction is
+   **fixed by measurement** / reverse is **firewall-blocked by default**
+   (`plan:1853-1859`). Those statements conflict with the surrounding correct
+   admission that listener readiness and reverse causality were not proved.
+
+This is a docs-only fix; no new live run is needed. The findings were mailed
+to AzureRidge as Agent Mail 7572. Because `e707d50` does not yet make the
+earlier WS8/WS9 plan range honest, and `85cdc46` is independently blocked
+later in the same linear range, the newest contiguous push-through remains
+the already-pushed `bac895b`.
