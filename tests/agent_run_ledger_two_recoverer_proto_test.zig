@@ -1,20 +1,28 @@
 //! MS6.5.1 OPEN whole-recovery blocker bd zigBrowser-3gl, red for 7b29fd6 item 1 (the exact-result two-recoverer
-//! oracle). This is an UNREGISTERED, TEST-ONLY PROTOTYPE — there is NO production recovery transaction, and none is
-//! added until RoseCat approves the design. The prototype `protoRecoverOneUnderLock` lives only here and is built
-//! from the public ledger API (acquireLock / load / probeLivenessTagged / recoveryFor / publish).
+//! oracle). UNREGISTERED, TEST-ONLY PROTOTYPE — there is NO production recovery transaction, and none is added
+//! until RoseCat approves the design. `protoRecoverOneUnderLock` lives only here, built from the public ledger API
+//! (acquireLock / load / probeLivenessTagged / recoveryFor / publish).
 //!
-//! The oracle causally pins the whole-recovery claim (not just a boolean): with two independent recoverers racing
-//! ONE proved-dead entry under the global flock, the correct (flock-held-across-the-whole-recovery) design yields
-//! the EXACT pair {.signalled, .already_gone}, BOTH children exit terminally (status 0), exactly ONE signal-phase
-//! entry (reap), and an EMPTY final ledger. The mutant this must catch — releasing the flock right after the read
-//! (this prototype's current behaviour) — lets BOTH recoverers enter the signal phase (two reaps) and breaks the
-//! pair, so the oracle fails. The GREEN (flock held across read→revalidate→signal→retire) lands with the approved
-//! design. Signal path: a kernel-proof PID-ns sentinel gates every fork; the build runner wraps it in unshare.
+//! The oracle causally pins the whole-recovery claim (not a boolean): with two independent recoverers racing ONE
+//! proved-dead entry under the global flock, the correct (flock-held-across-the-whole-recovery) design yields the
+//! EXACT pair {.signalled, .already_gone}, BOTH children terminal (status 0), exactly ONE signal-phase entry
+//! (reap), and an EMPTY final ledger. The early-unlock mutant (this prototype's current `EARLY_UNLOCK = true`)
+//! releases the flock right after the read, so BOTH recoverers enter the signal phase — the oracle fails.
+//!
+//! DETERMINISM (fixes RoseCat 7679 — the old fixed `beforeReap` window let the mutant survive 10/10 on a fast
+//! host): the race is driven by a HANDSHAKE, not a timing window. Recoverer 1 reads, signals "read done" and then
+//! BLOCKS until the parent says proceed. The parent starts recoverer 2 and waits for ITS "read done" signal: in
+//! the mutant recoverer 2 acquires the released flock and reads immediately, so its signal arrives fast and the
+//! parent lets both proceed → two reaps; in the green recoverer 2 blocks on the held flock and never signals, so
+//! the parent times out, lets recoverer 1 retire+release, and recoverer 2 then reads the entry gone → one reap.
+//! The mutant path never depends on host speed. Signal path gated by a kernel-proof PID-ns sentinel; the build
+//! runner wraps it in unshare.
 const std = @import("std");
 const ledger = @import("agent_run_ledger");
 const linux = std.os.linux;
 
 const BASENAME = "zigbrowser-agent-424242-00aa00aa00aa00aa";
+const EARLY_UNLOCK = true; // current prototype behaviour = the mutant; the green flips this to false
 
 const OUTER_NS_FD: i32 = 9;
 const NS_GET_NSTYPE: u32 = 0xB703;
@@ -41,16 +49,21 @@ fn inPrivatePidNamespace() bool {
 
 const ProtoAction = enum { signalled, left, fail_closed, already_gone };
 
+/// Handshake seam. `readdone_fd`: write the one-byte present flag when the read completes (-1 = skip). `proceed_fd`:
+/// if >= 0, BLOCK reading one byte before the signal phase (recoverer 1 waits so recoverer 2 can race first).
 const Ops = struct {
-    ready_fd: i32,
-    sleep_ms: i64,
+    readdone_fd: i32,
+    proceed_fd: i32,
     reaped: *bool,
-    pub fn afterRead(self: Ops) void {
-        if (self.ready_fd >= 0) _ = linux.write(self.ready_fd, "R", 1);
-    }
-    pub fn beforeReap(self: Ops) void {
-        var ts: linux.timespec = .{ .sec = 0, .nsec = self.sleep_ms * std.time.ns_per_ms };
-        _ = linux.nanosleep(&ts, &ts);
+    pub fn afterRead(self: Ops, present: bool) void {
+        if (self.readdone_fd >= 0) {
+            const b = [1]u8{if (present) 1 else 0};
+            _ = linux.write(self.readdone_fd, &b, 1);
+        }
+        if (self.proceed_fd >= 0) {
+            var b: [1]u8 = undefined;
+            _ = linux.read(self.proceed_fd, &b, 1); // wait for the parent to release us into the signal phase
+        }
     }
     pub fn reap(self: Ops) void {
         self.reaped.* = true;
@@ -73,8 +86,8 @@ fn publishWithout(io: std.Io, dir: std.Io.Dir, sub_path: []const u8, l: *const l
     try ledger.publish(io, dir, sub_path, buf[0..n]);
 }
 
-/// TEST-ONLY prototype. CURRENT = the early-unlock MUTANT: it releases the flock right after the read, so two
-/// recoverers both enter the signal phase. The green holds the flock across read→revalidate→signal→retire.
+/// TEST-ONLY prototype. With `EARLY_UNLOCK` it releases the flock right after the read (the mutant); the green
+/// variant holds the flock across read→revalidate→signal→retire (releases only at the end via the defer).
 fn protoRecoverOneUnderLock(io: std.Io, gpa: std.mem.Allocator, dir: std.Io.Dir, basename: []const u8, max_tries: u32, backoff_ms: i64, ops: Ops) ProtoAction {
     var lock = ledger.acquireLock(io, dir, max_tries, backoff_ms) catch return .fail_closed;
     var l = ledger.load(io, gpa, dir, "runs.json") catch {
@@ -83,15 +96,15 @@ fn protoRecoverOneUnderLock(io: std.Io, gpa: std.mem.Allocator, dir: std.Io.Dir,
     };
     defer l.deinit();
     const idx = indexOf(&l, basename);
-    lock.close(io); // MUTANT: release right after the read (not across revalidate+signal+retire)
-    ops.afterRead();
+    if (EARLY_UNLOCK) lock.close(io) else {} // MUTANT: unlock right after the read
+    defer if (!EARLY_UNLOCK) lock.close(io); // GREEN: hold across the whole recovery
+    ops.afterRead(idx != null);
     if (idx == null) return .already_gone;
     const e = l.entries()[idx.?];
     switch (ledger.recoveryFor(ledger.probeLivenessTagged(e.pid, e.start_kind, e.start_sec, e.start_usec))) {
         .leave => return .left,
         .fail_closed => return .fail_closed,
         .recover => {
-            ops.beforeReap();
             ops.reap();
             publishWithout(io, dir, "runs.json", &l, basename) catch return .fail_closed;
             return .signalled;
@@ -99,9 +112,9 @@ fn protoRecoverOneUnderLock(io: std.Io, gpa: std.mem.Allocator, dir: std.Io.Dir,
     }
 }
 
-fn runRecoverer(io: std.Io, dir: std.Io.Dir, ready_fd: i32, result_fd: i32) noreturn {
+fn runRecoverer(io: std.Io, dir: std.Io.Dir, readdone_fd: i32, proceed_fd: i32, result_fd: i32) noreturn {
     var reaped = false;
-    const act = protoRecoverOneUnderLock(io, std.heap.page_allocator, dir, BASENAME, 1000, 5, Ops{ .ready_fd = ready_fd, .sleep_ms = 1000, .reaped = &reaped });
+    const act = protoRecoverOneUnderLock(io, std.heap.page_allocator, dir, BASENAME, 2000, 5, Ops{ .readdone_fd = readdone_fd, .proceed_fd = proceed_fd, .reaped = &reaped });
     const b = [2]u8{ @intFromEnum(act), if (reaped) 1 else 0 };
     _ = linux.write(result_fd, &b, 2);
     linux.exit_group(0);
@@ -122,36 +135,50 @@ test "two recoverers, exact result: {signalled, already_gone}, one signal phase,
     const seed = [_]ledger.Entry{.{ .basename = BASENAME, .dev = 1, .ino = 2, .uid = 0, .mode = 16832, .pid = dead_pid, .start_kind = .linux_ticks, .start_sec = 123456, .start_usec = 0, .state = .active }};
     try ledger.publish(io, td.dir, "runs.json", &seed);
 
-    var b1ready: [2]i32 = undefined;
+    var b1rd: [2]i32 = undefined; // recoverer 1 "read done"
+    var b1go: [2]i32 = undefined; // parent -> recoverer 1 "proceed"
+    var b2rd: [2]i32 = undefined; // recoverer 2 "read done"
     var b1res: [2]i32 = undefined;
     var b2res: [2]i32 = undefined;
-    try std.testing.expect(linux.pipe(&b1ready) == 0);
-    try std.testing.expect(linux.pipe(&b1res) == 0);
-    try std.testing.expect(linux.pipe(&b2res) == 0);
+    for ([_]*[2]i32{ &b1rd, &b1go, &b2rd, &b1res, &b2res }) |p| try std.testing.expect(linux.pipe(p) == 0);
 
+    // Recoverer 1: signals read-done, then waits for the parent's go before the signal phase.
     const b1 = linux.fork();
     if (b1 == 0) {
-        _ = linux.close(b1ready[0]);
+        _ = linux.close(b1rd[0]);
+        _ = linux.close(b1go[1]);
+        _ = linux.close(b2rd[0]);
+        _ = linux.close(b2rd[1]);
         _ = linux.close(b1res[0]);
         _ = linux.close(b2res[0]);
         _ = linux.close(b2res[1]);
-        runRecoverer(io, td.dir, b1ready[1], b1res[1]);
+        runRecoverer(io, td.dir, b1rd[1], b1go[0], b1res[1]);
     }
     if (linux.errno(b1) != .SUCCESS) return error.ForkFailed;
-    _ = linux.close(b1ready[1]);
     var rb: [1]u8 = undefined;
-    try std.testing.expect(linux.read(b1ready[0], &rb, 1) == 1); // recoverer 1 has read the ledger
+    try std.testing.expect(linux.read(b1rd[0], &rb, 1) == 1); // recoverer 1 read the entry (present)
 
+    // Recoverer 2: signals read-done, does NOT wait (proceed_fd = -1).
     const b2 = linux.fork();
     if (b2 == 0) {
+        _ = linux.close(b1rd[0]);
+        _ = linux.close(b1go[0]);
+        _ = linux.close(b1go[1]);
+        _ = linux.close(b2rd[0]);
         _ = linux.close(b1res[0]);
         _ = linux.close(b1res[1]);
         _ = linux.close(b2res[0]);
-        runRecoverer(io, td.dir, -1, b2res[1]);
+        runRecoverer(io, td.dir, b2rd[1], -1, b2res[1]);
     }
     if (linux.errno(b2) != .SUCCESS) return error.ForkFailed;
-    _ = linux.close(b1res[1]);
-    _ = linux.close(b2res[1]);
+    _ = linux.close(b2rd[1]);
+
+    // Wait up to ~3s for recoverer 2's read-done. Mutant: it acquires the released flock and reads fast, so its
+    // signal arrives → both proceed. Green: it blocks on the held flock and never signals → timeout, then we let
+    // recoverer 1 retire and release so recoverer 2 reads the entry gone.
+    var pfd = [_]linux.pollfd{.{ .fd = b2rd[0], .events = linux.POLL.IN, .revents = 0 }};
+    _ = linux.poll(&pfd, 1, 3000);
+    _ = linux.write(b1go[1], "G", 1); // release recoverer 1 into the signal phase (both cases)
 
     var r1: [2]u8 = undefined;
     var r2: [2]u8 = undefined;
@@ -161,25 +188,16 @@ test "two recoverers, exact result: {signalled, already_gone}, one signal phase,
     var s2: u32 = undefined;
     _ = linux.waitpid(@intCast(b1), &s1, 0);
     _ = linux.waitpid(@intCast(b2), &s2, 0);
-    _ = linux.close(b1ready[0]);
-    _ = linux.close(b1res[0]);
-    _ = linux.close(b2res[0]);
+    for ([_]i32{ b1rd[0], b1go[1], b2rd[0], b1res[0], b2res[0] }) |fd| _ = linux.close(fd);
 
-    // (a) both children exited terminally with status 0
-    try std.testing.expect(terminal0(s1));
+    try std.testing.expect(terminal0(s1)); // both children exited terminally (status 0)
     try std.testing.expect(terminal0(s2));
-
-    // (b) exactly ONE recoverer entered the signal phase (reaped)
-    try std.testing.expectEqual(@as(u32, 1), @as(u32, r1[1]) + @as(u32, r2[1]));
-
-    // (c) the EXACT action pair is {.signalled, .already_gone} (in either order)
+    try std.testing.expectEqual(@as(u32, 1), @as(u32, r1[1]) + @as(u32, r2[1])); // exactly ONE signal-phase entry
     const sig = @intFromEnum(ProtoAction.signalled);
     const gone = @intFromEnum(ProtoAction.already_gone);
-    const pair_ok = (r1[0] == sig and r2[0] == gone) or (r1[0] == gone and r2[0] == sig);
+    const pair_ok = (r1[0] == sig and r2[0] == gone) or (r1[0] == gone and r2[0] == sig); // EXACT {signalled, already_gone}
     try std.testing.expect(pair_ok);
-
-    // (d) the final ledger is EMPTY (the one recoverer retired the entry)
-    var l = try ledger.load(io, gpa, td.dir, "runs.json");
+    var l = try ledger.load(io, gpa, td.dir, "runs.json"); // EMPTY final ledger (entry retired)
     defer l.deinit();
     try std.testing.expectEqual(@as(usize, 0), l.entries().len);
 }
