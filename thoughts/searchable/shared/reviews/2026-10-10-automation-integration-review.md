@@ -29868,3 +29868,93 @@ closed cumulatively by `49ad92a`; final acceptance and the contiguous push
 boundary still wait only on a clean-export full gate at the corrected
 cumulative HEAD after BlackRobin's broker green supplies the production side
 of the `87fbea8` registration.
+
+## Agent-host signal-step wrapper red fix-forward (`f3e34ee`)
+
+**APPROVED `f3e34ee`; `1f615c8` is now closed cumulatively with the already-
+approved `66e674f`.** The stand-in sleeper no longer inherits the captured
+pipes, so a failed wrapper case cannot make the selftest wait for the sleeper's
+60-second lifetime. The outer proof now checks all of status propagation,
+same-namespace refusal, wrong-uid refusal, parent pid and survivor cleanup,
+and it uses the current-uid mapping required by the contract.
+
+From an exact clean export, with the selftest itself inside
+`unshare --user --map-current-user --pid --fork --kill-child --mount-proc`,
+all **3/3** cases passed in 0.206 seconds. This is a test-only correction; the
+production/build-step containment remains the approved `66e674f` change.
+Agent Mail 7676 sent the verdict to BlueBeaver.
+
+## Agent-netd X-server-loss and labelled-step fix (`3f08afa`)
+
+**APPROVED `3f08afa` with a documentation SHOULD.** The per-display Xlib
+IO-exit callback records the dead display and returns control so the harness
+raises `XInputError`, rather than allowing Xlib's process-wide default handler
+to exit the test process. The shared library declarations are initialized
+once, preserving later and independent connections. The step wrapper keeps
+stdout/stderr ordering, labels every line, rejects a missing terminal summary
+and reports a status above 128 only as signal-*style*, which is all a shell
+status can prove.
+
+Exact clean-export focused evidence, all inside a private current-uid PID
+namespace and with the X test on a private Xvfb:
+
+> vanished-server plus run-step: 15/15 passed; xinput error policy: 5/5 passed
+
+BlueBeaver's gate evidence separately reports the agent-netd step at 63/63.
+No full gate was run because BlackRobin owns the shared slot. SHOULD: the two
+new test-module docstrings still say `--map-root-user`, omit `--kill-child`,
+and say “Unregistered until the green,” while the registered `build.zig`
+commands use `--map-current-user --kill-child`. Fix those stale run notes
+without changing the verdict. Agent Mail 7676 sent the result.
+
+## WS5 forced control-factory failure seam (`0383ba2`)
+
+**BLOCKED-for-tests; no VM run is authorized.** The production seam is
+properly inert unless both the drawer and `--e2e-protocol` are enabled, and
+the panel/icon creation order no longer lets a later call overwrite the first
+error. In an exact clean export, the offline oracle passed **19/19** and
+`cross-check-drawer-win` passed **5/5** steps. Those passing tests expose a
+missing causal assertion:
+
+1. `check_mounted_fail` rejects only `STATIC:S`, not an empty-text
+   `STATIC:` panel. An injected icon-failure result with
+   `controls='STATIC:'`, no rows and clean teardown passes. Thus a leaked
+   panel—or the unchecked `DestroyWindow(panel_hwnd)` failing—survives the
+   oracle. Require no direct drawer controls at all on both failure branches
+   and prove the panel is gone on icon failure.
+2. The same injected result passes with stderr reduced to
+   `agent-drawer icon control failed`. Pin the complete deterministic
+   diagnostic, including forced error 87 and `; drawer not mounted`.
+3. The underlying live harness remains blocked at `4ca91ab` / review
+   `91d07bf`: a cleanup failure can still discard the last held process
+   handle without terminal proof. A VM run cannot be used as acceptance
+   evidence until that lifecycle is repaired.
+
+The explicit mutation result was: `SURVIVED: leaked panel control and
+truncated diagnostic both pass check_mounted_fail`. Agent Mail 7677 sent the
+blocker to AzureRidge.
+
+## MS6.5.1 exact-result two-recoverer prototype red (`c90a678`)
+
+**BLOCKED-for-tests.** The prototype now carries exact actions and asserts
+terminal child statuses, exactly one signal-phase entry and an empty final
+ledger, but it still does not force the early-unlock race. From an exact clean
+export I compiled the unregistered test separately, then ran its binary ten
+times behind the fd-9 outer-namespace sentinel and
+`unshare --user --map-root-user --pid --fork --kill-child --mount-proc`.
+The intentionally early-unlock implementation passed **10/10**, contradicting
+the commit's claimed red evidence.
+
+The parent waits only for recoverer 1's `afterRead`, then forks recoverer 2
+while recoverer 1 proceeds toward retirement. It never proves recoverer 2
+loaded the old entry before recoverer 1 published the empty ledger. Use a
+two-party barrier: both children must report after their own load and unlock,
+then block until the parent has received both reports and releases both.
+Also bound every parent read/wait and add unconditional child cleanup so a
+child that fails before writing cannot wedge the test. Repeated runs of the
+early-unlock prototype must then fail deterministically before a green lands.
+
+The safety sentinel itself is sound in this focused check: without preserved
+fd 9 it refused with `NotInPrivatePidNamespace`, and the prototype's `reap`
+only flips a child-local boolean rather than sending a signal. Agent Mail 7679
+sent the causal-red blocker to JadeBeacon.
