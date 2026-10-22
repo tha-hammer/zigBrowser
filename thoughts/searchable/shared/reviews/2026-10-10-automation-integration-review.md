@@ -34740,3 +34740,145 @@ before the green:
 The eventual green should register both the geometry properties and the two
 architecture export proof together; a host-only unit pass is insufficient for
 the AppKit ABI boundary.
+
+## WS5.5b-2 close-one ownership red (`60c20a0`)
+
+**BLOCKED-for-tests; keep it unregistered.** From an exact clean archive, the
+three rows are red at the intended absent validator and bare-`GWLP_USERDATA`
+seams. The desired app-owned per-HWND record and terminal-zero transcript are
+the right contracts, but the current oracle is too weak to establish them:
+
+1. The “strict” validator is tested only against a missing `liveclose`, an
+   intermediate double decrement and a nonzero final count. Add causal
+   refusals for duplicate/extra/reordered rows, duplicate or missing window
+   ids, wrong row ownership, wrong `peak`, malformed fields, a missing
+   tree/icon/open row for either window, and trailing output. Otherwise a
+   search-based validator can pass while accepting a non-exact transcript.
+2. The WndProc source check requires only the substrings `extra_windows` and
+   `.live`. Comments, an unrelated loop or a record lookup that never matches
+   `h` satisfies it. Bind a real extracted branch (with comments/strings
+   removed) to lookup by the destroyed HWND, an atomic/live transition that
+   succeeds once, removal or tombstoning before HWND reuse, and exactly one
+   decrement. Better, drive the production ownership helper directly with
+   close, duplicate-close and handle-reuse rows and keep the source oracle only
+   as a call-site binding.
+
+The green must also retain the existing owned-Job teardown and terminal-zero
+live test; an offline parser alone does not authorize another Win11 run.
+
+## MS7.6/7.8 native approval-card authority red (`698ba02`)
+
+**BLOCKED-for-tests; keep it unregistered and unarmed.** The exact clean run
+has the intended one real-source failure (`agent_drawer_mac.m` absent), while
+the honest fixture, comment control and seven planted dishonest shapes pass
+their self-checks. The test correctly rejects several obvious alternate
+routes, but it does not yet prove the plan's security-critical “only native
+Approve control mints” boundary:
+
+1. It scans only `src/*.m`. A C, C++, Zig, generated or dynamically linked
+   macOS caller is invisible, although the C ABI minter remains callable.
+   Bind the check to the exact sources/objects in the macOS link and prove the
+   sole undefined/call reference resolves from the AppKit drawer handler.
+2. Counting the literal `zb_agent_tools_approve(` misses aliases/function
+   pointers and `dlsym`; a second path can store the function address and call
+   the alias without changing the count. Likewise, banning `performClick`
+   does not catch `sendAction`, an `NSButton` action invoked through its
+   target/action fields, or another event path forwarding the selector. Add
+   causal mutants for those routes and fail closed on any indirect minter
+   reference.
+3. `method_body` counts braces inside retained strings/character literals, so
+   a string can truncate or extend the inspected body. Use a real lexical
+   scanner (or compiled seam) that strips non-code tokens before matching.
+4. The oracle never requires `sender == _approve` / `_deny`, the card id bound
+   to that displayed card, or the grant result's tuple/expiry/single-use
+   shape. A directly invoked handler with an arbitrary sender currently
+   passes. Pin the own-control and own-card checks offline, then retain the
+   owner-run native `sendEvent:` Approve/Deny real-screen closure required by
+   MS7.8.
+
+This can remain a useful source-binding layer, but it cannot be the authority
+proof or be registered until those alternate ingress paths are causally red.
+
+## WS6(b) second fix-forward (`bf57707`)
+
+**APPROVED; this cumulatively closes `f8087d7`, `2b85811` and `84a9587`, and
+the test-registration hold on `b5a08e4`.** The safety operation now binds both
+authorities in one call: the proposed target must match the strict disposable
+grammar, and no existing production-family target may exist. The tests make
+each half independently load-bearing. The read path now wipes the caller's
+buffer on backend error, rejects an oversized reported length before slicing,
+wipes the whole buffer in that case, and securely zeroes every reported byte
+before returning `BadShape` for planted content.
+
+From an exact clean archive, the focused secrets step passed, the direct store
+suite passed **7/7**, and the test module compiled for
+`x86_64-windows-msvc`. The aggregate registration added by `84a9587` remains
+present. This approves the portable interface and WS6.3 preflight foundation;
+it does not approve the separate CredMan/DPAPI skeleton or replace its real
+Win11 disposable-target closure.
+
+## MS7.4 inert-bubble source red (`0281321`)
+
+**BLOCKED-for-tests; keep it unregistered.** The exact clean run has the
+intended absent-drawer failure, and its honest/comment controls plus nine
+mutants are green. The proposed contract would nevertheless lock the AppKit
+drawer into incorrect long-text and copy behavior:
+
+1. It requires `stringWithUTF8String:shown`, ignoring the returned
+   `shown_len`. A model string may contain an embedded NUL, so the bubble would
+   truncate even though the portable API is length-aware. Require
+   `initWithBytes:length:encoding:` (or an equivalent exact-length
+   constructor), with causal embedded-NUL and invalid-UTF-8 policy rows.
+2. It claims Copy maps through `zb_drawer_original_offset`, but never mentions
+   or tests that function. Native copying from the break-run label copies the
+   inserted newline breakpoints rather than the original text. Add a real
+   selection/copy seam whose selected shown offsets map back to the original
+   bytes, plus long unbroken and multibyte rows; the Mac real-screen case must
+   read the clipboard and recover the exact original.
+3. Globally forbidding `NSTextView` conflicts with the shipped long-reply
+   responsiveness boundary: labels are deliberately avoided above the
+   portable `label_text_max`. Permit a read-only, non-rich text view for large
+   bubbles (or prove an AppKit alternative meets the same bound), and add the
+   200 KiB unbroken/words responsiveness and exact-copy case before the UI
+   slice can close.
+4. Like the card oracle, `body_of` counts braces inside retained string and
+   character literals. Use a lexical scanner/compiled seam, and bind the one
+   bubble factory to every production message path rather than merely banning
+   a short list of constructor spellings.
+
+The inertness negatives are useful, but they must be combined with exact-byte
+construction, original-text Copy and the existing long-reply bound before the
+green is registered.
+
+## S8e hover/scroll red fix-forward (`aabe95f`)
+
+**APPROVED as the failing-first, unregistered red; this closes the two
+coverage/safety blockers on `edbdc1b`.** The helper contract now makes the
+scroll schema exact without a top-level union: at least one property is
+required, and a present selector excludes both offsets. The server-path rows
+causally refuse empty, selector-plus-offset, empty-selector, non-integer,
+out-of-range and extra-option shapes before emitting any browser call, while
+all five accepted shapes are shown to forward. The real helper/CLI fixture
+adds empty and mixed refusal cases and proves the page did not move.
+
+The signal-capable e2e no longer trusts either command-line marker. Its outer
+shell holds the pre-unshare PID namespace as fd 9; the child starts only after
+`pidns_guard.private_pid_namespace()` proves by kernel namespace ioctls that
+its namespace is a strict descendant. A bare `--sealed-child` exits 1 before
+starting a browser. I also ran the real launcher through its `--help` path:
+the held fd survived bwrap/unshare and the kernel proof succeeded; the direct
+marker-only path failed closed as required. The helper red ran from an exact
+archive and produced the expected **7 failures and 3 errors of 10**, all at
+the absent hover/scroll production seam. No live display or browser was used.
+
+The earlier SHOULDs are also closed: selector help retains both `css=` and
+`text=`, and the broker refusal row runs with selector `yes` while requiring
+zero card shows, notifications and outcomes. Keep all three test files
+unregistered until the production green.
+
+**Newest contiguous approved push-through from origin `4cb740d`:
+`6f145bc`.** With the unregistered `edbdc1b` red now accepted as a safe
+failing-first slice, the already-approved startup-recovery core and complete
+comment correction through `6f145bc` form the next approved prefix. The next
+commit, `1b2fe0a`, remains BLOCKED on its per-HWND ownership/validator gaps;
+its later red `60c20a0` is also still incomplete.
