@@ -36113,3 +36113,47 @@ return code (for the infinite mutant, the SIGKILL status). Keep the
 `ProcessLookupError` exit/kill race explicit. With a committed no-reap/failed-
 reap mutant, this safety proof can be approved and registered; no Windows or
 Mac run is involved.
+
+## MS7.4 native Edit-menu fix-forward and Mac proof-boundary ruling (`17e1f53`)
+
+**APPROVED-for-tests under the scoped proof split; keep it unregistered and do
+not claim runtime authority yet.** The focused source module passes its honest
+fixtures and mutants and retains the intended single production red. This
+commit closes the three concrete `aa7e8d9` bypasses: it binds `application` to
+`[NSApplication sharedApplication]`, rejects an earlier return, and rejects a
+later main-menu replacement/clear. Together with `aa7e8d9`, the earlier forced
+target, detached Copy item and ivar-reflection mutants are also closed.
+
+The offline suite must be described and used as an architecture tripwire, not
+as proof of Objective-C runtime reachability or exclusivity. The exact split is:
+
+1. **Offline hard gate:** retain the exact production macOS build binding on
+   both target architectures; the portable bubble/layout/copy-map and card
+   authority tests; the drawer-owned Objective-C method shapes; and a small
+   shim tripwire requiring one reviewed Edit-menu installer and one call from
+   `zb_app_run`, with a `copy:` item whose source target is nil. It may census
+   the linked files, but it must not claim that lexical absence proves runtime
+   reachability or the absence of categories/retargeting.
+2. **Compiled two-Mac hard gate at one exact commit:** capture the actual
+   production compile/link argv and preprocessor output; inspect the loaded
+   Objective-C class/superclass, method list, method IMP/image provenance and
+   relevant categories after initialization; inspect the live main menu's Copy
+   action and nil target; then make a real `ZbBubbleView` first responder,
+   select known text, invoke the live Copy action and assert the pasteboard gets
+   the exact original bytes. The long/short bubble boundary and page-copy
+   fallback remain covered as specified by the Mac plan.
+3. **Card authority in the same compiled gate:** inspect the real AppKit
+   Approve control's action/target and invoke it through the production bridge;
+   exactly one grant is minted, while every other control/model/page route
+   mints none. The executable/link census must also prove that no GTK-only card
+   call reaches either macOS build.
+4. Run on both Intel and Apple Silicon from a clean exact-commit export with a
+   throwaway profile/home, no credential and no live network; print the commit,
+   architecture, binary/source digests and each bounded assertion. Leave no
+   process or folder behind.
+
+Before registration, revise the source-test headings/comments that currently
+say V7/V8 *prove* the live first-responder route so they instead name the
+offline tripwire and the compiled-gate dependency. With that relabel plus the
+compiled two-Mac result, `16449ca`/`aa7e8d9`/`17e1f53` may close cumulatively;
+no further lexical reachability rounds are required.
