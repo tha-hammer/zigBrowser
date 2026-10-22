@@ -36157,3 +36157,23 @@ say V7/V8 *prove* the live first-responder route so they instead name the
 offline tripwire and the compiled-gate dependency. With that relabel plus the
 compiled two-Mac result, `16449ca`/`aa7e8d9`/`17e1f53` may close cumulatively;
 no further lexical reachability rounds are required.
+
+## MS8.0 dual-macOS card-authority compile red (`52d8f00`)
+
+**APPROVED red; keep the step unregistered until the green.** The step compiles
+the shipped `src/main.zig` root for both aarch64-macos and x86_64-macos. Its
+object parser requires the two card minters and the window-open/window-close
+lifecycle exports to be defined, while every unresolved `zb_*` dependency must
+be supplied by the declared macOS shim closure. Thus merely enabling the whole
+Linux/GTK `agent_tools` surface on Darwin fails instead of importing its helper,
+image, card-widget and system-row C dependencies.
+
+I ran `zig build cross-check-agent-tools-mac` with both displays scrubbed. Both
+architectures fail on exactly the four absent required definitions, the
+intended production-red state. This is the correct offline compile/link
+tripwire for the Mac proof boundary recorded above. The green must include the
+real `agent_drawer_mac.m` in the declared shim closure once it supplies native
+card calls, keep the four exports on both objects, and retain a clean unresolved
+symbol census. Runtime minter exclusivity, menu/action ownership and lifecycle
+remain obligations of the compiled two-Mac hard gate; this object test does not
+claim them by itself.
