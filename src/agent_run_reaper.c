@@ -379,4 +379,13 @@ int zb_reaper_sweep(int run_dir_fd, const struct zb_reaper_dir_id *pinned, int *
   return reaper_public(run_dir_fd, pinned, 1, out_killed_pids, killed_cap, out_killed_n,
                        out_survivor_pids, survivor_cap, out_survivor_n, out_overflow);
 }
+
+/* Thin exported wrappers over the static libproc + real-kill callbacks, so a caller can run the REVIEWED engine
+ * (zb_reaper_fixed_point / zb_reaper_run_full) with the REAL scan/inspect/kill while supplying its own
+ * deadline-aware dir_ok. No new algorithm: these are the same functions reaper_public already wires. */
+int zb_reaper_prod_scan(void *buf, int bytes) { return reaper_scan_real(buf, bytes); }
+void zb_reaper_prod_inspect(pid_t pid, const char *dir, struct zb_reaper_id *out, void *ctx) {
+  reaper_inspect_real(pid, dir, out, ctx);
+}
+int zb_reaper_prod_killsig(pid_t pid, int sig, void *ctx) { return reaper_killsig_real(pid, sig, ctx); }
 #endif /* __APPLE__ */

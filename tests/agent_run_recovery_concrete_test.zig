@@ -784,3 +784,79 @@ test "#5 deterministic handshake: the held flock serialises the kill phase; exac
     try std.testing.expectEqual(@as(u8, 0), r2[1]); // R2 never entered the kill phase
     try std.testing.expectEqual(@as(usize, 0), try entryCount(io, gpa, td.dir));
 }
+
+// ---- 9e19fd0: the failure surface the Darwin actuator inherits (incomplete scan / unreadable / EPERM / survivor
+// -> non-Clean), proven on Linux through the SAME engine + runFixedPoint the Darwin actuator wraps. -------------
+
+const EPERM: c_int = @intFromEnum(std.posix.E.PERM);
+fn nowFar() callconv(.c) i64 {
+    return 0; // far under any positive deadline -> the deadline never bites in these rows
+}
+fn scanFull(buf: ?*anyopaque, bytes: c_int) callconv(.c) c_int {
+    if (buf == null) return 64; // size estimate
+    const cap: usize = @intCast(@divTrunc(bytes, @sizeOf(i32)));
+    const p: [*]i32 = @ptrCast(@alignCast(buf.?));
+    var i: usize = 0;
+    while (i < cap) : (i += 1) p[i] = @intCast(900000 + i);
+    return @intCast(cap); // n == cap every attempt -> gather stays full -> INCOMPLETE
+}
+fn scanOnePersistent(buf: ?*anyopaque, bytes: c_int) callconv(.c) c_int {
+    if (buf == null) return 1;
+    if (bytes < @sizeOf(i32)) return -1;
+    const p: [*]i32 = @ptrCast(@alignCast(buf.?));
+    p[0] = SCRIPTED_PID;
+    return 1; // the same pid EVERY pass (never killed below -> never a clean empty census)
+}
+fn inspectUnreadable(pid: recovery.pid_t, dir: [*c]const u8, out: [*c]recovery.ReaperId, ctx: ?*anyopaque) callconv(.c) void {
+    _ = pid;
+    _ = dir;
+    _ = ctx;
+    out.* = .{ .matches = 1, .have_bsd = 0, .uid = @intCast(linux.getuid()), .start_sec = 0, .start_usec = 0 }; // identity UNREADABLE
+}
+fn killEPERM(pid: recovery.pid_t, sig: c_int, ctx: ?*anyopaque) callconv(.c) c_int {
+    _ = pid;
+    _ = ctx;
+    if (sig == 0) return 0; // "still alive" on the liveness probe
+    return EPERM; // the SIGKILL is refused EPERM -> a survivor, never clean
+}
+
+test "9e19fd0 failure surface: an incomplete libproc scan is non-Clean (incomplete), zero action" {
+    if (!inPrivatePidNamespace()) return error.NotInPrivatePidNamespace;
+    var td = std.testing.tmpDir(.{});
+    defer td.cleanup();
+    _ = try makeRunDir(td.dir, true);
+    const fd = try openRunDir(td.dir);
+    defer _ = std.posix.system.close(fd);
+    const pinned = recovery.pinDir(td.dir, BASENAME) orelse return error.Pin;
+    var counters = Counters{};
+    const fp = recovery.runFixedPoint(&nowFar, 1000, fd, &pinned, DUMMY_PATH, 3, &scanFull, &inspectCb, &killCb, &counters);
+    try std.testing.expectEqual(ledger.FixedPoint.incomplete, fp);
+    try std.testing.expectEqual(@as(u32, 0), counters.kills);
+}
+
+test "9e19fd0 failure surface: an UNREADABLE identity is never swept -> non-Clean, zero kills" {
+    if (!inPrivatePidNamespace()) return error.NotInPrivatePidNamespace;
+    var td = std.testing.tmpDir(.{});
+    defer td.cleanup();
+    _ = try makeRunDir(td.dir, true);
+    const fd = try openRunDir(td.dir);
+    defer _ = std.posix.system.close(fd);
+    const pinned = recovery.pinDir(td.dir, BASENAME) orelse return error.Pin;
+    var counters = Counters{};
+    const fp = recovery.runFixedPoint(&nowFar, 1000, fd, &pinned, DUMMY_PATH, 3, &scanOnePersistent, &inspectUnreadable, &killCb, &counters);
+    try std.testing.expect(fp != .clean); // never clean while an unreadable-identity match persists
+    try std.testing.expectEqual(@as(u32, 0), counters.kills); // never killed (have_bsd == 0)
+}
+
+test "9e19fd0 failure surface: an EPERM kill is a survivor -> non-Clean" {
+    if (!inPrivatePidNamespace()) return error.NotInPrivatePidNamespace;
+    var td = std.testing.tmpDir(.{});
+    defer td.cleanup();
+    _ = try makeRunDir(td.dir, true);
+    const fd = try openRunDir(td.dir);
+    defer _ = std.posix.system.close(fd);
+    const pinned = recovery.pinDir(td.dir, BASENAME) orelse return error.Pin;
+    var counters = Counters{};
+    const fp = recovery.runFixedPoint(&nowFar, 1000, fd, &pinned, DUMMY_PATH, 3, &scanOnePersistent, &inspectCb, &killEPERM, &counters);
+    try std.testing.expect(fp != .clean); // an EPERM-refused kill is a survivor, never clean
+}

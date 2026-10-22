@@ -155,6 +155,11 @@ int zb_reaper_census(int run_dir_fd, const struct zb_reaper_dir_id *pinned, int 
 int zb_reaper_sweep(int run_dir_fd, const struct zb_reaper_dir_id *pinned, int *out_killed_pids, int killed_cap,
                     int *out_killed_n, int *out_survivor_pids, int survivor_cap, int *out_survivor_n,
                     int *out_overflow);
+/* The static libproc + real-kill callbacks, exported so a caller can run the reviewed engine over them with its
+ * own deadline-aware dir_ok (no new algorithm). */
+int zb_reaper_prod_scan(void *buf, int bytes);
+void zb_reaper_prod_inspect(pid_t pid, const char *dir, struct zb_reaper_id *out, void *ctx);
+int zb_reaper_prod_killsig(pid_t pid, int sig, void *ctx);
 #endif
 
 #ifdef __cplusplus

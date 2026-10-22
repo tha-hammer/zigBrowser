@@ -249,3 +249,27 @@ pub fn runFixedPoint(now: NowFn, deadline_ms: i64, run_dir_fd: i32, pinned: *con
     if (rc != 0 or overflow != 0) return .incomplete;
     return if (clean != 0) .clean else .survivors;
 }
+
+// ---- the Darwin PRODUCTION census actuator (RoseCat 9e19fd0) --------------------------------------------------
+// Wraps the SAME reviewed engine (`runFixedPoint` -> `zb_reaper_fixed_point`) with the reviewed real libproc
+// scan/inspect + real kill (`zb_reaper_prod_*`, thin wrappers over the engine's own static callbacks), the held-fd
+// + pinned-identity capability, the deadline-aware `dirOkThunk`, and the ONE absolute deadline through every
+// pre-signal boundary. No second algorithm. Incomplete libproc scans, unreadable identity, EPERM and any survivor
+// map to non-Clean exactly as the engine + `runFixedPoint` already do. NOT ARMED / NOT reachable: no caller, no
+// `reaper_ready` gate. Mac-only; on every other target the body is comptime-pruned and it fails closed.
+
+const PATH_MAX = 4096;
+
+/// The Darwin production census/sweep over the HELD run-dir fd. `max_passes` bounds the fixed point; the real kill
+/// only runs on a Mac (every Linux signal is intercepted, and no caller invokes this yet).
+pub fn darwinCensus(run_dir_fd: i32, pinned: *const DirId, deadline_ms: i64, max_passes: c_int) ledger.FixedPoint {
+    if (builtin.os.tag == .macos) {
+        var buf: [PATH_MAX]u8 = undefined;
+        const F_GETPATH: i32 = 50; // Darwin: the held inode's CURRENT path (swap-immune) for the classifier
+        if (std.posix.errno(std.posix.system.fcntl(run_dir_fd, F_GETPATH, @as(usize, @intFromPtr(&buf)))) != .SUCCESS) return .incomplete;
+        const dir: [*:0]const u8 = @ptrCast(&buf);
+        if (c.zb_reaper_run_dir_ok(dir) == 0) return .incomplete; // not the sockdir grammar -> fail closed
+        return runFixedPoint(&realNowMs, deadline_ms, run_dir_fd, pinned, dir, max_passes, &c.zb_reaper_prod_scan, &c.zb_reaper_prod_inspect, &c.zb_reaper_prod_killsig, null);
+    }
+    return .incomplete; // unreachable off Darwin
+}
