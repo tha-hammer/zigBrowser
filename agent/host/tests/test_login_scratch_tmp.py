@@ -32,8 +32,11 @@ Login.spawn therefore, before it launches the CLI:
 - the paths the CLI gets must still name the checked directories right before the launch: a home swapped for a
   valid-looking one (scratchpad and tmp 0700, ours) when the CLI's environment is built (a login.cli_env seam) is
   refused, launching nothing, and the replacement is left as it is.
-The trust anchor's owner is root (uid 0). In a user namespace real root shows as the overflow uid, so the rows read
-it from / as this run sees it (a test-only seam, login.TRUST_ANCHOR_UID); production trusts only uid 0.
+The walk starts at / itself: / shown as another uid's or as writable by others (a stat seam on its inode), or an
+earlier ancestor above the data root made wide or foreign, is refused too (RoseCat 7768).
+The trust anchor's owner is root: login.TRUST_ANCHOR_UID is pinned as the literal integer 0 in login.py's source
+and as its value before any seam (RoseCat 7768). In a user namespace real root shows as the overflow uid, so the
+other rows then patch it to /'s owner as this run sees it (a test-only seam); production trusts only uid 0.
 subprocess.Popen is a recorder (no process is started), and os.kill / os.killpg are patched to raise; the fake
 process has no pid and has already ended. Run: cd agent/host/tests && unshare --map-current-user --pid --fork \\
   --kill-child --mount-proc sh -c '"$ZB_AGENT_HOST_PYTHON" -X dev -m unittest -v test_login_scratch_tmp; exit $?'
@@ -87,7 +90,8 @@ class LoginScratchTmp(unittest.TestCase):
         self.addCleanup(p.stop)
         self.login = login.Login(self.home, "/opt/claude", out=None, token_fd=-1)
         self.addCleanup(self.close_master)
-        p = mock.patch.object(login, "TRUST_ANCHOR_UID", os.stat("/").st_uid, create=True)
+        self.anchor = vars(login).get("TRUST_ANCHOR_UID", "absent")  # before the seam below (RoseCat 7768)
+        p = mock.patch.object(login, "TRUST_ANCHOR_UID", os.stat("/").st_uid)
         p.start()
         self.addCleanup(p.stop)
 
@@ -110,8 +114,9 @@ class LoginScratchTmp(unittest.TestCase):
         self.use_home(home)
         return data, parent, home
 
-    def foreign(self, path):
-        """A seam over os.stat/lstat/fstat that shows only `path`'s inode with another uid; all else as it is."""
+    def foreign(self, path, uid=True, mode_bits=0):
+        """A seam over os.stat/lstat/fstat that shows only `path`'s inode with another uid (or, with uid=False, its
+        own) and `mode_bits` added to its mode; all else as it is."""
         st0 = os.lstat(path)
 
         class Foreign:
@@ -119,7 +124,11 @@ class LoginScratchTmp(unittest.TestCase):
                 self.st = st
 
             def __getattr__(self, name):
-                return self.st.st_uid + 1 if name == "st_uid" else getattr(self.st, name)
+                if name == "st_uid":
+                    return self.st.st_uid + (1 if uid else 0)
+                if name == "st_mode":
+                    return self.st.st_mode | mode_bits
+                return getattr(self.st, name)
 
         def seam(real):
             def call(*args, **kw):
@@ -288,6 +297,42 @@ class LoginScratchTmp(unittest.TestCase):
                 _, _, home = self.deep_home(data_mode=mode)
                 self.refused(f"a data root of mode {oct(mode)}")
                 self.assertEqual(os.listdir(home), [], "something was made in the home")
+
+    def test_the_production_trust_anchor_is_root(self):
+        import ast
+        with open(login.__file__, encoding="utf-8") as f:
+            tree = ast.parse(f.read())
+        pinned = [node.value for node in tree.body if isinstance(node, ast.Assign)
+                  and [getattr(t, "id", None) for t in node.targets] == ["TRUST_ANCHOR_UID"]]
+        self.assertEqual(len(pinned), 1, "TRUST_ANCHOR_UID is not assigned exactly once at module level")
+        self.assertTrue(isinstance(pinned[0], ast.Constant) and type(pinned[0].value) is int
+                        and pinned[0].value == 0, "TRUST_ANCHOR_UID is not the literal integer 0")
+        self.assertTrue(type(self.anchor) is int and self.anchor == 0, f"TRUST_ANCHOR_UID is {self.anchor!r}")
+
+    def test_root_itself_foreign_or_writable_is_refused(self):
+        for why, seam in (("another uid's", dict(uid=True)), ("writable by others", dict(uid=False, mode_bits=0o002)),
+                          ("writable by its group", dict(uid=False, mode_bits=0o020))):
+            with self.subTest(root=why):
+                _, _, home = self.deep_home()
+                with self.foreign("/", **seam):
+                    self.refused(f"/ shown as {why}")
+                self.assertEqual(os.listdir(home), [], "something was made in the home")
+
+    def test_an_earlier_ancestor_wide_or_foreign_is_refused(self):
+        earlier = self.tmp.name  # above the data root: /tmp/<this test>/<fresh>/data/zigbrowser/agent-home
+        with self.subTest(earlier="0777"):
+            _, _, home = self.deep_home()
+            os.chmod(earlier, 0o777)
+            try:
+                self.refused("an earlier ancestor of mode 0777")
+            finally:
+                os.chmod(earlier, 0o700)
+            self.assertEqual(os.listdir(home), [], "something was made in the home")
+        with self.subTest(earlier="foreign"):
+            _, _, home = self.deep_home()
+            with self.foreign(earlier):
+                self.refused("an earlier ancestor owned by another uid")
+            self.assertEqual(os.listdir(home), [], "something was made in the home")
 
     def test_a_sticky_ancestor_is_trusted_only_for_our_own_entry(self):
         self.deep_home(data_mode=0o1777)  # a control: like /tmp, holding our own app parent
