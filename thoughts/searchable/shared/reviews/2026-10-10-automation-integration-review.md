@@ -31874,3 +31874,50 @@ before this closes the parser test finding. The outstanding subclass- and
 `MoveWindow`-failure rows, visible event-time input, keyboard-only reachability
 and restart persistence remain separate blockers on the cumulative WS5.2
 range; this code-only approval does not authorize the VM behavior run.
+
+## Decision-16 prompt/document binding red (`3405ad5`)
+
+**BLOCKED-for-tests overall; findings 2 through 4 are APPROVED-for-tests.** The
+commit is safely unregistered and is a genuine red. In an exact clean
+`git archive 3405ad5` export, the owner module failed compilation because
+`effectiveUid` is absent, and the broker module failed on the absent
+`CardView.origin`, `Ending.changed`, `promptOver` and `before_dispatch`
+surfaces. The Python E2E passes `py_compile`, and `git diff --check` is clean.
+
+The document-binding red is strong. It makes one canonical `page.list`
+preview supply both the immutable card and the exact dispatched
+`options.expect {origin, load_serial}` for navigate and reload; missing,
+crashed, malformed and serial-less entries get neither a card nor a dispatch;
+and -32015 is classified as changed or crashed. The real-binary rows cover a
+user navigation, reload, crash and recover/view replacement and prove that no
+second page change follows approval. The scripted `before_dispatch` hold also
+places prompt end and broker detach after visible approval but before the
+engine call, requiring zero dispatch. That is the missing race boundary from
+`f87368e` findings 2 and 3.
+
+The store red also closes the intended test shape for finding 4: it isolates
+the final file-owner check, then requires the `settings` directory itself to
+be the expected owner, not group/other writable, a directory, and opened
+without following a symlink. Missing state retains the owner's `conditional`
+default; every unreadable or untrusted state fails closed to `yes`.
+
+Finding 1 is not yet a prompt-binding red. The authoritative contract says a
+gated job carries its `prompt_id`, but the tests submit no prompt id and expose
+only the unscoped `Broker.promptOver()` (`agent_navigate_bind_test.zig:316-387`).
+They can therefore go green with a global/current-prompt epoch. In particular,
+the “later prompt” row calls `promptOver()` before submitting the later job; it
+never delivers a late or duplicate end for prompt N after prompt N+1 exists,
+so it cannot distinguish scoped revocation from “revoke whatever is current.”
+The real-chain row proves Stop and a subsequent prompt, but it does not drive
+the prompt's `result` or session-scoped `error` through the app boundary.
+
+Before the green, make `prompt_id` explicit from the validated `tool_call`
+through `zb_agent_tools_call`, `Broker.submit` and `Job`, and scope the end
+operation to that id. Add causal rows in which result, error and Stop for
+prompt N revoke only N; prompt N+1 is then created; a late/duplicate end for N
+must neither revoke N+1 nor release or dispatch N's card. Pin the app's
+result/error/interrupt/session-end wiring and kill mutants that discard the
+id or use an unscoped current-prompt revoke. The existing document,
+dispatch-boundary and owner rows should be retained unchanged. Until that red
+lands, `3405ad5` does not close `ebe6529`/`f87368e`, and the linear push path
+remains held there.
