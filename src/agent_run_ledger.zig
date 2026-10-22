@@ -298,7 +298,7 @@ pub fn startReadFromIo(o: StatIo) StartRead {
         .open_absent => .absent,
         .open_error => .unreadable,
         .read_error => .unreadable,
-        .bytes => |b| if (parseStartTicks(b)) |t| StartRead{ .ticks = t } else .absent, // RED (83d3a0f #2): unparseable must be .unreadable, not .absent
+        .bytes => |b| if (parseStartTicks(b)) |t| StartRead{ .ticks = t } else .unreadable, // readable but unparseable -> fail closed, never absent
     };
 }
 

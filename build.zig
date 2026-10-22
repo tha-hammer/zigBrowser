@@ -902,6 +902,15 @@ pub fn build(b: *std.Build) void {
     run_ledger_unreadable_tests.skip_foreign_checks = true;
     const ledger_unreadable_step = b.step("test-agent-run-ledger-unreadable", "MS6.5.1 ledger liveness: unreadable fails closed, never dead");
     ledger_unreadable_step.dependOn(&run_ledger_unreadable_tests.step);
+    // MS6.5.1 (RoseCat 83d3a0f #2): drive the PRODUCTION readStart outcome mapping through the injectable StatIo
+    // boundary — only open_absent is absence; a non-absence open error, read error, empty read, or unparseable
+    // bytes all map to .unreadable and fail closed. Pure injected outcomes (no /proc, no fork), every host.
+    const ledger_statio_test_mod = b.createModule(.{ .root_source_file = b.path("tests/agent_run_ledger_statio_test.zig"), .target = target, .optimize = optimize });
+    ledger_statio_test_mod.addImport("agent_run_ledger", ledger_mod);
+    const run_ledger_statio_tests = b.addRunArtifact(b.addTest(.{ .root_module = ledger_statio_test_mod }));
+    run_ledger_statio_tests.skip_foreign_checks = true;
+    const ledger_statio_step = b.step("test-agent-run-ledger-statio", "MS6.5.1 ledger readStart outcome mapping: only absence recovers, every unreadable class fails closed");
+    ledger_statio_step.dependOn(&run_ledger_statio_tests.step);
     // MS6.5.1 (whole-recovery, Rev 27): a live owner holding the global flock that stalls must not wedge startup
     // recovery — bounded acquire inside the total deadline, fail closed (recovery-busy incident, first run
     // refused/deferred, entry retained, zero signals). Two real processes + a parent watchdog. Linux-gated.
@@ -2981,6 +2990,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&ledger_darwin_x86_64_obj.step);
     if (target.result.os.tag == .linux) test_step.dependOn(&run_ledger_recovery_tests.step);
     test_step.dependOn(&run_ledger_unreadable_tests.step); // pure unit: unreadable liveness fails closed
+    test_step.dependOn(&run_ledger_statio_tests.step); // pure unit: readStart outcome mapping fails closed
     if (target.result.os.tag == .linux) test_step.dependOn(&run_ledger_recovery_busy_tests.step);
     test_step.dependOn(&run_mac_vm_containment_tests.step);
     test_step.dependOn(&mac_vm_containment_e2e.step);
