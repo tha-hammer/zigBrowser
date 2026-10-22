@@ -35645,3 +35645,27 @@ unregistered and production-red until the later green supplies and registers
 the real AppKit/Zig objects; this approval does not authorize a Mac run and
 does not move the contiguous push boundary beyond the already-pushed
 `6f145bc`.
+
+## WS7.3 portable launcher green (`b9ff6da`)
+
+**APPROVED; this closes the approved [L] red `1a06bb0`.** The new portable
+module builds exactly `[claude_exe, *args]`, rejects `.bat` and `.cmd`
+case-insensitively before `Popen`, launches without a shell, waits for the
+child and returns that child's exit status. The registered test observes the
+stand-in's actual argv and pid, gets its nonzero exit 7 back through the
+launcher, and proves the waited child is no longer present. The module keeps
+only `subprocess` at module scope, so it remains importable under the
+Windows-shaped POSIX-import refusal gate.
+
+The focused evidence is green: `test-launcher-contract` **3/3** and
+`agent-host-win-import` **7/7**. The package inventory update is also exact:
+from a clean `git archive` of `b9ff6da`, `mac_ms5_census_test` passed **11/11**.
+The same inventory check in the shared tree was predictably dirty because an
+ignored runtime `.baml` directory currently exists under `zb_agent_host`; that
+is not evidence against the commit and the exact-export result is the one used
+for this verdict.
+
+This remains the deliberately narrow portable contract. It does not claim or
+close the later [W] requirement to drive the native Zig `zb-claude.exe`, put
+the real child and descendants in the session Job, and prove no Windows
+orphan. No VM or Mac run is required or authorized by this [L] green.
