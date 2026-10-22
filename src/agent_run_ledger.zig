@@ -82,10 +82,13 @@ fn basenameOk(s: []const u8) bool {
 /// string) is rejected (`TooManyEntries`) rather than read/allocated without bound. Then `parse` the bounded
 /// bytes. A missing/unreadable/over-limit file never yields entries.
 pub fn load(io: std.Io, gpa: std.mem.Allocator, dir: std.Io.Dir, sub_path: []const u8) ParseError!Ledger {
-    // RED STUB — NO size bound: reads with a large limit, so a file past MAX_LEDGER_BYTES is fully read and
-    // becomes a Malformed (truncated) parse instead of a clean, pre-allocation-bounded TooManyEntries. The green
-    // reads with `.limited(MAX_LEDGER_BYTES)` and maps the over-limit StreamTooLong to TooManyEntries.
-    const text = dir.readFileAlloc(io, sub_path, gpa, .limited(64 * 1024 * 1024)) catch return error.Malformed;
+    // Size-limited read: `.limited(MAX_LEDGER_BYTES)` returns error.StreamTooLong once the file reaches the
+    // bound, so a hostile file never allocates/reads past it. Over-limit -> TooManyEntries; any other read/open
+    // failure (missing, unreadable, ...) -> Malformed (never entries).
+    const text = dir.readFileAlloc(io, sub_path, gpa, .limited(MAX_LEDGER_BYTES)) catch |e| switch (e) {
+        error.StreamTooLong => return error.TooManyEntries,
+        else => return error.Malformed,
+    };
     defer gpa.free(text);
     return parse(gpa, text);
 }
