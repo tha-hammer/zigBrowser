@@ -77,11 +77,26 @@ fn basenameOk(s: []const u8) bool {
     return true;
 }
 
+/// Read and parse the ledger from the held runtime dir, BOUNDING the input before unbounded allocation (RoseCat
+/// 0d2e91d #2): the read is size-limited to MAX_LEDGER_BYTES, so a hostile file (millions of entries, one huge
+/// string) is rejected (`TooManyEntries`) rather than read/allocated without bound. Then `parse` the bounded
+/// bytes. A missing/unreadable/over-limit file never yields entries.
+pub fn load(io: std.Io, gpa: std.mem.Allocator, dir: std.Io.Dir, sub_path: []const u8) ParseError!Ledger {
+    // RED STUB — NO size bound: reads with a large limit, so a file past MAX_LEDGER_BYTES is fully read and
+    // becomes a Malformed (truncated) parse instead of a clean, pre-allocation-bounded TooManyEntries. The green
+    // reads with `.limited(MAX_LEDGER_BYTES)` and maps the over-limit StreamTooLong to TooManyEntries.
+    const text = dir.readFileAlloc(io, sub_path, gpa, .limited(64 * 1024 * 1024)) catch return error.Malformed;
+    defer gpa.free(text);
+    return parse(gpa, text);
+}
+
 pub fn parse(gpa: std.mem.Allocator, bytes: []const u8) ParseError!Ledger {
     // STRICT: `.{}` keeps ignore_unknown_fields=false, so an extra field, a missing field, a mistyped field, an
     // unknown `state` and any truncated/unparseable input all error -> Malformed. A JSON object with a duplicate
     // key also errors here. The version, cap and duplicate-basename checks are explicit below.
-    const parsed = std.json.parseFromSlice(Doc, gpa, bytes, .{}) catch return error.Malformed;
+    // .alloc_always so the returned Ledger OWNS copies of every string (basename/state) rather than aliasing
+    // `bytes` — `load` frees its read buffer immediately after, so an aliasing parse would dangle.
+    const parsed = std.json.parseFromSlice(Doc, gpa, bytes, .{ .allocate = .alloc_always }) catch return error.Malformed;
     if (parsed.value.schema_version != SCHEMA_VERSION) {
         parsed.deinit();
         return error.Malformed; // an unknown version is never silently upgraded/downgraded
