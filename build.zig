@@ -691,6 +691,24 @@ pub fn build(b: *std.Build) void {
     run_agent_drawer_appkit_tests.skip_foreign_checks = true;
     const agent_drawer_appkit_step = b.step("test-agent-drawer-appkit", "MS7.1: the AppKit drawer's dock geometry in the portable logic");
     agent_drawer_appkit_step.dependOn(&run_agent_drawer_appkit_tests.step);
+    // MS7.6/7.8 (RoseCat 8055/bdc8202): what a press on the AppKit card may do (own control, own card, the real
+    // cards' single use and 120 s expiry), decided in the portable logic. RED until agent_drawer.zig has it.
+    const agent_drawer_card_press_tests_module = b.createModule(.{
+        .root_source_file = b.path("tests/agent_drawer_card_press_test.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    agent_drawer_card_press_tests_module.addImport("agent_drawer", agent_drawer_module);
+    agent_drawer_card_press_tests_module.addImport("agent_approval", b.createModule(.{
+        .root_source_file = b.path("src/agent_approval.zig"),
+        .target = target,
+        .optimize = optimize,
+    }));
+    const run_agent_drawer_card_press_tests = b.addRunArtifact(b.addTest(.{ .root_module = agent_drawer_card_press_tests_module }));
+    run_agent_drawer_card_press_tests.skip_foreign_checks = true;
+    const agent_drawer_card_press_step = b.step("test-agent-drawer-card-press", "MS7.6/7.8: the AppKit card press, decided in the portable logic");
+    agent_drawer_card_press_step.dependOn(&run_agent_drawer_card_press_tests.step);
     // MS7.4 (RoseCat 8058): the AppKit bubble text (UTF-16 copy map, invalid UTF-8 and NUL policy, the label/text
     // view boundary) in the portable logic. RED until agent_drawer.zig has it; not in `test` until the green.
     const agent_drawer_appkit_text_tests_module = b.createModule(.{
