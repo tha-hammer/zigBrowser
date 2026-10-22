@@ -1017,6 +1017,22 @@ pub fn build(b: *std.Build) void {
         const dobj = b.addObject(.{ .name = "agent_run_recovery_darwin_" ++ m[0], .root_module = dr });
         recovery_concrete_step.dependOn(&dobj.step);
     }
+    // MS6.5.1 bd zigBrowser-3gl: the reaper_ready arming gate + startup-recovery CORE (RoseCat 428d06e APPROVED the
+    // red 3bfb8dc). UNARMED (reaper_ready ships false); signal-free fakes, no fork/namespace/display. The reaper C is
+    // linked because the module @cImports its header. A real app-startup owner calling recoverAllAtStartup is an OPEN
+    // integration blocker, not this slice.
+    const recovery_startup_mod = b.createModule(.{ .root_source_file = b.path("src/agent_run_recovery.zig"), .target = target, .optimize = optimize, .link_libc = true });
+    recovery_startup_mod.addImport("agent_run_ledger", ledger_mod);
+    recovery_startup_mod.addIncludePath(b.path("src"));
+    const recovery_startup_test_mod = b.createModule(.{ .root_source_file = b.path("tests/agent_run_recovery_startup_test.zig"), .target = target, .optimize = optimize, .link_libc = true });
+    recovery_startup_test_mod.addImport("agent_run_ledger", ledger_mod);
+    recovery_startup_test_mod.addImport("agent_run_recovery", recovery_startup_mod);
+    recovery_startup_test_mod.addIncludePath(b.path("src"));
+    recovery_startup_test_mod.addCSourceFile(.{ .file = b.path("src/agent_run_reaper.c"), .flags = &.{"-std=gnu11"} });
+    const run_recovery_startup = b.addRunArtifact(b.addTest(.{ .root_module = recovery_startup_test_mod }));
+    run_recovery_startup.skip_foreign_checks = true;
+    const recovery_startup_step = b.step("test-agent-run-recovery-startup", "MS6.5.1 reaper_ready gate + startup-recovery core (unarmed; signal-free fakes)");
+    recovery_startup_step.dependOn(&run_recovery_startup.step);
     // MS6.5 (the user's decision 2026-10-21): the stubbed macOS VM-containment seam — off by default, reports
     // "not available yet", and the gate fails closed when on. Pure Linux unit (no OS calls).
     const mac_vm_containment_module = b.createModule(.{
@@ -3388,6 +3404,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&ledger_darwin_aarch64_obj.step); // cross-compile guard: ledger must build for Darwin
     test_step.dependOn(&ledger_darwin_x86_64_obj.step);
     if (target.result.os.tag == .linux) test_step.dependOn(&run_ledger_recovery_tests.step);
+    if (target.result.os.tag == .linux) test_step.dependOn(&run_recovery_startup.step); // MS6.5.1 reaper_ready gate + startup core (unarmed)
     test_step.dependOn(&run_ledger_unreadable_tests.step); // pure unit: unreadable liveness fails closed
     test_step.dependOn(&run_ledger_statio_tests.step); // pure unit: readStart outcome mapping fails closed
     test_step.dependOn(&run_ledger_start_kind_tests.step); // pure unit: v2 start_kind schema + canonical shape

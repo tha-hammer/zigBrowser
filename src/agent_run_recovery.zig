@@ -323,3 +323,91 @@ pub fn darwinCensus(run_dir_fd: i32, pinned: *const DirId, deadline_ms: i64, max
     }
     return .incomplete; // unreachable off Darwin
 }
+
+// ---- MS6.5.1 reaper_ready arming gate + startup-recovery CORE (bd zigBrowser-3gl) — GREEN block to append to
+// src/agent_run_recovery.zig. UNARMED (reaper_ready default false). SCOPE: startup-recovery CORE; a real app-startup
+// owner calling recoverAllAtStartup is an OPEN integration blocker, not this slice. ----
+
+/// IMMUTABLE arming gate: a literal source constant, default FALSE. Readiness is bound SOLELY to this constant — no
+/// environment variable, command-line argument or build flag can arm it. Flipping it is a reviewed SOURCE edit.
+pub const reaper_ready: bool = false;
+
+/// Per-start entry cap (positive, bounded): at most this many ACTIVE entries are recovered in one startup pass; the
+/// rest are DEFERRED (retained + reported). The plan selects 64.
+pub const MAX_RECOVER_PER_START: usize = 64;
+
+pub const StartupStatus = enum { disabled, ran };
+
+pub const StartupReport = struct {
+    status: StartupStatus,
+    scanned: usize = 0,
+    signalled: usize = 0,
+    left: usize = 0,
+    already_gone: usize = 0,
+    reconciled: usize = 0,
+    fail_closed: usize = 0,
+    deferred: usize = 0,
+    load_failed: bool = false,
+    pub fn ok(self: StartupReport) bool {
+        return !self.load_failed and self.fail_closed == 0;
+    }
+};
+
+/// The production ledger loader; the injectable seam lets a test prove gate-off performs NO read (zero loads).
+pub const RealLoader = struct {
+    pub fn load(_: RealLoader, io: std.Io, gpa: std.mem.Allocator, dir: std.Io.Dir, sub_path: []const u8) ledger.ParseError!ledger.Ledger {
+        return ledger.load(io, gpa, dir, sub_path);
+    }
+};
+
+/// The PRODUCTION startup caller: readiness is `reaper_ready` and nothing else.
+pub fn recoverAllAtStartup(io: std.Io, gpa: std.mem.Allocator, dir: std.Io.Dir, sub_path: []const u8, clock: anytype, deadline_ms: i64, actuator: anytype) StartupReport {
+    return recoverAllAtStartupFull(reaper_ready, io, gpa, dir, sub_path, clock, deadline_ms, actuator, RealLoader{}, null);
+}
+pub fn recoverAllAtStartupGated(ready: bool, io: std.Io, gpa: std.mem.Allocator, dir: std.Io.Dir, sub_path: []const u8, clock: anytype, deadline_ms: i64, actuator: anytype) StartupReport {
+    return recoverAllAtStartupFull(ready, io, gpa, dir, sub_path, clock, deadline_ms, actuator, RealLoader{}, null);
+}
+pub fn recoverAllAtStartupGatedH(ready: bool, io: std.Io, gpa: std.mem.Allocator, dir: std.Io.Dir, sub_path: []const u8, clock: anytype, deadline_ms: i64, actuator: anytype, window_hook: ?*const fn () void) StartupReport {
+    return recoverAllAtStartupFull(ready, io, gpa, dir, sub_path, clock, deadline_ms, actuator, RealLoader{}, window_hook);
+}
+
+/// The gated core. Startup ORDER: (1) consult the gate — while false, return `.disabled` BEFORE any load or actuator
+/// touch (the injected `loader` is never called); (2) load via the loader — a parse/read error fails closed; (3) for
+/// each ACTIVE entry, bounded by the per-start cap AND the one absolute deadline (checked every iteration against the
+/// SAME `deadline_ms`, never reset per entry), run `recoverOneUnderLock`; a cap/deadline stop DEFERS the remaining
+/// active entries (retained + reported); (4) tally; a `.fail_closed` entry keeps the entry and makes the report
+/// non-ok, never hidden by `ran`. `window_hook` fires once after the snapshot (test seam for the concurrent-retire
+/// window); production passes null.
+pub fn recoverAllAtStartupFull(ready: bool, io: std.Io, gpa: std.mem.Allocator, dir: std.Io.Dir, sub_path: []const u8, clock: anytype, deadline_ms: i64, actuator: anytype, loader: anytype, window_hook: ?*const fn () void) StartupReport {
+    if (!ready) return .{ .status = .disabled }; // (1) GATE FIRST: no load, no actuator, no mutation
+
+    var rep = StartupReport{ .status = .ran };
+    var l = loader.load(io, gpa, dir, sub_path) catch {
+        rep.load_failed = true; // (2) missing/corrupt/unreadable -> fail closed, no entry acted upon
+        return rep;
+    };
+    defer l.deinit();
+
+    if (window_hook) |h| h();
+
+    const ents = l.entries();
+    for (ents, 0..) |e, i| {
+        if (e.state != .active) continue;
+        if (rep.scanned >= MAX_RECOVER_PER_START or clock.nowMs() >= deadline_ms) { // (3) cap + ONE absolute deadline
+            var j = i;
+            while (j < ents.len) : (j += 1) {
+                if (ents[j].state == .active) rep.deferred += 1;
+            }
+            break;
+        }
+        rep.scanned += 1;
+        switch (ledger.recoverOneUnderLock(io, gpa, dir, e.basename, clock, deadline_ms, actuator)) { // (4)
+            .signalled => rep.signalled += 1,
+            .left => rep.left += 1,
+            .already_gone => rep.already_gone += 1,
+            .reconciled => rep.reconciled += 1,
+            .fail_closed => rep.fail_closed += 1,
+        }
+    }
+    return rep;
+}
