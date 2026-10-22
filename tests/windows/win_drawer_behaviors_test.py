@@ -641,16 +641,18 @@ class WinDrawerBehaviorsLive(_wd.WinDrawerLive):
         self._run_drawer(extra_env=self._env(), body=body)
 
     def test_ws5_2_icon_drag_moves_to_persisted_ratio(self):
-        # WS5.2 (plan 1571-1572): a 7 px drag (>6) moves the icon to the persisted-ratio rect, by >= the
-        # threshold. The acceptance reads the REAL icon HWND rect (r["icon_rect"], measured by GetWindowRect),
-        # NOT the implementation-emitted row (RoseCat 1cd82d8 #1); the `drag` row is supplementary transcript.
+        # WS5.2 (plan 1571-1572): a 7 px drag (>6) moves the icon to the persisted-ratio rect. Start CLOSED so
+        # the icon is VISIBLE and the real mouse path is exercised, wait for the `drag` row, then read the REAL
+        # icon HWND rect (r["icon_rect"]) — not the implementation-emitted row (RoseCat b1ea2ed #1/#4). A drag
+        # does not open, so the transcript is [tree, icon, drag] (no open row).
         def body(r):
-            rows = validate_transcript(r["stdout"], ["tree", "icon", "open", "drag"])
+            rows = validate_transcript(r["stdout"], ["tree", "icon", "drag"])
             icon_start = rect_of([fields_of(rows, "icon")[0]])
+            self.assertEqual(r.get("icon_visible"), 1, "the icon must be visible when the drag is measured")
             self.assertTrue(r.get("icon_rect"), "the harness must measure the real icon HWND rect")
             measured = tuple(int(v) for v in r["icon_rect"].split(","))
             check_drag(icon_start, measured, r["client_w"], r["client_h"], dx=7, dy=0)
-        self._run_drawer(extra_env=self._env(ZIGBROWSER_AGENT_DRAWER_DRAG="7,0"), body=body)
+        self._run_drawer(extra_env=self._env(ZIGBROWSER_AGENT_DRAWER_OPEN="0", ZIGBROWSER_AGENT_DRAWER_DRAG="7,0"), body=body)
 
     def test_ws5_2_small_move_from_closed_is_click_that_opens(self):
         # Start CLOSED; a 5 px move (<=6) is a click that OPENS the drawer and produces no drag. The exact

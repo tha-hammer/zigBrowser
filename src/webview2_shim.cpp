@@ -892,6 +892,24 @@ static void drawer_apply_icon(AppState *app, ZbDrawerGeomRect candidate) {
   emit_protocol3(app, "DRAWER", win, "drag", rect);  // supplementary; the test reads the real icon HWND rect
 }
 
+// WS5.2: open the drawer from an icon gesture (a click or Enter/Space) — emit the open row and re-dock, once.
+static void drawer_open_now(AppState *app) {
+  if (app == nullptr || app->drawer_open) {
+    return;
+  }
+  app->drawer_open = true;
+  RECT cr = {};
+  GetClientRect(app->hwnd, &cr);
+  ZbDrawerGeomRect panel = {};
+  zb_drawer_panel_rect(cr.right - cr.left, cr.bottom - cr.top, &panel);
+  char win[16];
+  snprintf(win, sizeof win, "%d", app->win_id);
+  char rect[64];
+  snprintf(rect, sizeof rect, "%d,%d,%d,%d", panel.x, panel.y, panel.w, panel.h);
+  emit_protocol3(app, "DRAWER", win, "open", rect);
+  resize_controller(app);
+}
+
 // WS5.2: the "S" icon's window procedure (subclassed over the STATIC). REAL Win32 input: mouse capture + drag,
 // and arrow-key moves (16/64 px with Shift), all classified/clamped/moved via the portable zb_drawer_* logic.
 // A drag (> 6 px, zb_drawer_classify) moves the icon to its persisted-ratio position; a click (<= 6 px) opens
@@ -901,6 +919,7 @@ static LRESULT CALLBACK icon_subclass_proc(HWND h, UINT msg, WPARAM wparam, LPAR
   if (app != nullptr) {
     switch (msg) {
       case WM_LBUTTONDOWN: {
+        SetFocus(h);  // so subsequent arrow / Enter / Space keys reach the icon (WS5.2 keyboard)
         SetCapture(h);
         app->icon_dragging = true;
         app->icon_down_x = static_cast<short>(LOWORD(lparam));
@@ -922,23 +941,17 @@ static LRESULT CALLBACK icon_subclass_proc(HWND h, UINT msg, WPARAM wparam, LPAR
             cand.x += dx;
             cand.y += dy;
             drawer_apply_icon(app, cand);
-          } else if (!app->drawer_open) {  // a click opens the drawer
-            app->drawer_open = true;
-            RECT cr = {};
-            GetClientRect(app->hwnd, &cr);
-            ZbDrawerGeomRect panel = {};
-            zb_drawer_panel_rect(cr.right - cr.left, cr.bottom - cr.top, &panel);
-            char win[16];
-            snprintf(win, sizeof win, "%d", app->win_id);
-            char rect[64];
-            snprintf(rect, sizeof rect, "%d,%d,%d,%d", panel.x, panel.y, panel.w, panel.h);
-            emit_protocol3(app, "DRAWER", win, "open", rect);
-            resize_controller(app);
+          } else {  // a click opens the drawer
+            drawer_open_now(app);
           }
         }
         return 0;
       }
       case WM_KEYDOWN: {
+        if (wparam == VK_RETURN || wparam == VK_SPACE) {  // Enter/Space on the focused icon opens the drawer
+          drawer_open_now(app);
+          return 0;
+        }
         int kx = 0, ky = 0;
         if (wparam == VK_LEFT) kx = -1;
         else if (wparam == VK_RIGHT) kx = 1;
@@ -1005,7 +1018,7 @@ void mount_drawer(AppState *app) {
     return;  // no icon attempt, no mounted/live/rows
   }
   HWND icon_hwnd = fail_icon ? nullptr
-                             : CreateWindowExW(0, L"STATIC", L"S", WS_CHILD | SS_CENTER | SS_NOTIFY,
+                             : CreateWindowExW(0, L"STATIC", L"S", WS_CHILD | SS_CENTER | SS_NOTIFY | WS_TABSTOP,
                                                icon.x, icon.y, icon.w, icon.h, app->hwnd, nullptr, app->instance, nullptr);
   if (icon_hwnd == nullptr) {
     const unsigned long e = fail_icon ? (unsigned long)ERROR_INVALID_PARAMETER : (unsigned long)GetLastError();

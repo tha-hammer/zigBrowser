@@ -288,6 +288,7 @@ public static class Z {
   [DllImport("user32")] static extern bool GetClientRect(IntPtr h, out RECT r);
   [DllImport("user32", SetLastError=true)] static extern bool GetWindowRect(IntPtr h, out RECT r);
   [DllImport("user32", SetLastError=true)] static extern bool ScreenToClient(IntPtr h, ref POINT p);
+  [DllImport("user32")] static extern bool IsWindowVisible(IntPtr h);
 
   const uint CREATE_SUSPENDED = 0x4, GENERIC_WRITE = 0x40000000, FILE_SHARE_READ = 1, FILE_SHARE_WRITE = 2, CREATE_ALWAYS = 2;
   const uint KILL_ON_CLOSE = 0x2000, GENERIC_READ = 0x80000000, OPEN_EXISTING = 3, STARTF_USESTDHANDLES = 0x100;
@@ -457,10 +458,24 @@ public static class Z {
     }
     return "";
   }
+  // Visibility of the "S" icon child (1 visible, 0 hidden, -1 absent) — WS5.2 requires the icon be visible when
+  // the drag observation is taken (RoseCat b1ea2ed #4).
+  public static int IconVisible(IntPtr host) {
+    IntPtr c = GetWindow(host, GW_CHILD);
+    while (c != IntPtr.Zero) {
+      var cls = new StringBuilder(64); GetClassName(c, cls, 64);
+      if (cls.ToString() == "STATIC") {
+        var t = new StringBuilder(64); GetWindowText(c, t, 64);
+        if (t.ToString() == "S") { return IsWindowVisible(c) ? 1 : 0; }
+      }
+      c = GetWindow(c, GW_HWNDNEXT);
+    }
+    return -1;
+  }
 }
 '@
 
-$res = @{ stdout=''; stderr=''; client_w=0; client_h=0; pid=0; controls=''; icon_rect=''; job_count_before=0; job_count_after=0; window_found=$false; terminated=$false; timed_out=$false; proc_gone=$false; first_stop_failed=$false; cleanup_exhausted=$false; launch_failed=$false; decoded_fail=$failMode; decoded_force=$forceMode; error='' }
+$res = @{ stdout=''; stderr=''; client_w=0; client_h=0; pid=0; controls=''; icon_rect=''; icon_visible=-1; job_count_before=0; job_count_after=0; window_found=$false; terminated=$false; timed_out=$false; proc_gone=$false; first_stop_failed=$false; cleanup_exhausted=$false; launch_failed=$false; decoded_fail=$failMode; decoded_force=$forceMode; error='' }
 # e2e-only seams, set in this process so the child inherits them (honoured only under --e2e-protocol).
 $env:ZIGBROWSER_AGENT_DRAWER_OPEN = '1'
 $env:ZIGBROWSER_AGENT_DRAWER_DEMO = 'messages:2'
@@ -482,7 +497,7 @@ try {
   while ((Get-Date) -lt $deadline) {
     Start-Sleep -Milliseconds 300
     $o = [string](Get-Content $out -Raw -ErrorAction SilentlyContinue)
-    if ($o -and ($o -match "DRAWER`t\d+`topen`t")) { $seen = $true; break }
+    if ($o -and ($o -match "DRAWER`t\d+`t(open|drag)`t")) { $seen = $true; break }  # settle on open OR drag
   }
   if (-not $seen) { $res.timed_out = $true }
   $res.job_count_before = [Z]::JobProcessCount()
@@ -492,6 +507,7 @@ try {
     $w = 0; $ht = 0; if ([Z]::Client($h, [ref]$w, [ref]$ht)) { $res.client_w = $w; $res.client_h = $ht }
     $res.controls = [Z]::DirectStatics($h)   # exact DIRECT STATIC children, "STATIC:<text>|..."
     $res.icon_rect = [Z]::IconClientRect($h)  # the REAL "S" icon HWND rect in client coords (WS5.2 observation)
+    $res.icon_visible = [Z]::IconVisible($h)   # 1 visible / 0 hidden / -1 absent (WS5.2 requires visible)
   }
 } catch { $res.error = $_.Exception.Message; $res.launch_failed = (-not $launched) }
 finally {
