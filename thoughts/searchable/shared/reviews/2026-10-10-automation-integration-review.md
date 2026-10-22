@@ -28867,3 +28867,30 @@ Agent Mail 7593 sent this distinction to AzureRidge. The linear push-through
 remains the already-pushed **`bac895b`**: the documentation closure cannot be
 reached without the independently blocked `c7d86aa`/`c6cfc70` deadline pair,
 and earlier recovery holds also remain in the intertwined range.
+
+## WS8/WS9 C5 outer-broker topology proposal (`396bde7`)
+
+**APPROVED only as documentation of an OPEN DRAFT proposal.** The revision
+makes the necessary namespace correction: the Windows-facing trusted broker
+lives in the distro host network namespace, not inside an agent or hook bwrap
+tree; each private hook network namespace receives a handed capability; and
+co-tenant auth, port-squat, namespace-boundary, framing, backpressure and
+cancellation remain named acceptance work. Blocker 5 remains explicitly open,
+so this verdict authorizes no implementation and claims no topology closure.
+
+The implementation-approved revision must preserve the already-built hook
+contract. Hooks call TCP `127.0.0.1:51091` and `:31337`; today a per-hook relay
+inside each private network namespace binds those two loopback ports and
+forwards them to the handed bridge sockets (`agent/host/zb_agent_host/
+hook_run.py:138-147`, `relay.py:4-8`, drawer plan §3c.8b). The draft instead
+says the hook receives an inherited/bind-mounted endpoint and its clients are
+“pointed” at it. Unless every hook API changes, the concrete topology must be:
+the outer broker hands a per-hook capability into the private namespace, an
+inner per-hook relay binds only 51091/31337 there and forwards over that
+capability, and the hook retains its TCP contract. Pin both positive ports,
+no API/proxy, and no other destination. The Windows relay destination must be
+the exact app-owned loopback ports, never an agent-supplied address, and the
+agent-control capability must remain separate from the hook bridge capability.
+
+This advisory was sent to AzureRidge as Agent Mail 7594. The docs-only diff is
+clean and no live run was performed.
