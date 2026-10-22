@@ -31164,3 +31164,30 @@ mode and an empty decoded fail mode, satisfy its existing branch oracle,
 report `proc_gone=true` and zero remaining Job members/survivors, emit no
 pre-resume `DRAWER` row, and leave no owned directory behind. This approval
 does not accept WS5 until that live evidence passes.
+
+## Windows WS5 behavior-red fix-forward 4 (`7e0ca8e`)
+
+**APPROVED as the unregistered failing-first red; the two test-design blockers
+on `d0e7091` are closed cumulatively.** The WS5.5 case no longer feeds a
+legitimate two-window transcript into the single-window validator. Its new
+validator rejects every malformed `DRAWER` row, requires exactly two distinct
+window ids, requires each window's exact ordered `tree`, `icon`, `open`
+sequence, permits the single global `live` row only on the first/lowest window,
+and returns that row to the existing positive-peak/final-zero check. Missing
+popup-drawer evidence, a third window, an incomplete popup sequence and a
+post-close count of one are causal failures.
+
+The isolation oracle now fixes both the probe set and every probe's result:
+the three automation-socket `drawer.*` names must be absent with `-32601`,
+while the two page-world probes must return their distinct unreachable
+observations. A policy denial can therefore no longer disguise an exposed
+socket method, and swapping a JS result with a JSON-RPC code fails.
+
+The commit is test-only, unregistered and whitespace-clean. A local run with
+all display variables removed passed **20 offline tests** and skipped the nine
+VM rows. No VM run is authorized by this verdict. The eventual WS5 green must
+register this exact contract, populate the raw observations, prove the live
+two-window row and retain the already-required owned-Job lifecycle evidence.
+The live-test comment at lines 706-708 still summarizes the old
+“`-32601/-32011`” rule; update it when the green registers the test, but the
+executable assertion is exact and this wording nit does not block the red.
