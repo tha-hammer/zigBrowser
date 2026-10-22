@@ -980,6 +980,37 @@ static LRESULT CALLBACK icon_subclass_proc(HWND h, UINT msg, WPARAM wparam, LPAR
   return DefWindowProcW(h, msg, wparam, lparam);
 }
 
+// WS5.2 drag-seam parse: one signed delta with a STRICT grammar — an optional leading '-', then 1..4 decimal
+// digits, no leading/internal/trailing whitespace and no '+' sign; the value must lie in [-8000, 8000]
+// (representable through MAKELPARAM's signed 16-bit coordinates with the icon-centre offset). Advances *pp past
+// the digits on success; returns false on ANY deviation (RoseCat 3d294b0).
+static bool parse_drag_delta(const char **pp, int *out) {
+  const char *p = *pp;
+  const bool neg = (*p == '-');
+  if (neg) {
+    ++p;
+  }
+  if (*p < '0' || *p > '9') {
+    return false;  // need at least one digit; rejects '+', whitespace, empty
+  }
+  long v = 0;
+  int digits = 0;
+  while (*p >= '0' && *p <= '9') {
+    if (++digits > 4) {
+      return false;
+    }
+    v = v * 10 + (*p - '0');
+    ++p;
+  }
+  v = neg ? -v : v;
+  if (v < -8000 || v > 8000) {
+    return false;
+  }
+  *out = static_cast<int>(v);
+  *pp = p;
+  return true;
+}
+
 // WS5: mount the native Win32 drawer once the window + controller exist. Creates the native panel + "S"
 // icon child controls (OD-W6), emits the same DRAWER census row NAMES as the GTK backend (tree, icon, and
 // open when opened), and lays the drawer out. e2e census rows are gated by --e2e-protocol inside emit_*.
@@ -1060,28 +1091,18 @@ void mount_drawer(AppState *app) {
   }
   // WS5.2 drag seam (e2e-only): DRIVE the real icon window procedure with synthetic mouse messages — a press at
   // the icon centre and a release at centre+(dx,dy) — so the PRODUCTION handler (icon_subclass_proc) classifies,
-  // clamps, moves the real HWND and persists. The seam does not compute or move anything itself. Exact,
-  // fully-consumed, bounded parse: "<int>,<int>" with no trailing garbage, each in [-100000, 100000].
+  // clamps, moves the real HWND and persists. The seam does not compute or move anything itself.
   if (app->drag_seam != nullptr && app->drag_seam[0] != '\0') {
-    // Exact, overflow-free parse of "<int>,<int>" with no trailing garbage; each delta bounded to [-8000, 8000]
-    // so it stays representable through MAKELPARAM's signed 16-bit coordinates together with the icon-centre
-    // offset (RoseCat b1ea2ed #6). strtol with errno catches overflow; the separators must match exactly.
-    char *end = nullptr;
-    errno = 0;
-    const long pdx = strtol(app->drag_seam, &end, 10);
-    bool ok = (errno == 0 && end != app->drag_seam && *end == ',');
-    long pdy = 0;
-    if (ok) {
-      const char *after = end + 1;
-      errno = 0;
-      pdy = strtol(after, &end, 10);
-      ok = (errno == 0 && end != after && *end == '\0');
-    }
-    if (ok && pdx >= -8000 && pdx <= 8000 && pdy >= -8000 && pdy <= 8000) {
+    // Exact grammar: `-?<1..4 digits>,-?<1..4 digits>`, no leading/internal/trailing whitespace, no '+' sign,
+    // each delta in [-8000, 8000] (representable through MAKELPARAM's signed 16-bit coords with the icon
+    // centre). parse_drag_delta rejects everything else (RoseCat 3d294b0).
+    int dx = 0, dy = 0;
+    const char *p = app->drag_seam;
+    if (parse_drag_delta(&p, &dx) && *p == ',' && (++p, parse_drag_delta(&p, &dy)) && *p == '\0') {
       const int cx = icon.w / 2;
       const int cy = icon.h / 2;
       SendMessageW(app->drawer_icon, WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(cx, cy));
-      SendMessageW(app->drawer_icon, WM_LBUTTONUP, 0, MAKELPARAM(cx + static_cast<int>(pdx), cy + static_cast<int>(pdy)));
+      SendMessageW(app->drawer_icon, WM_LBUTTONUP, 0, MAKELPARAM(cx + dx, cy + dy));
     }
   }
   // WS5.3 fold seam (e2e-only): a mid-animation frame, strictly between the icon and the open drawer, plus the
