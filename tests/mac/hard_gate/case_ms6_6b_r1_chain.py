@@ -266,6 +266,14 @@ def _chain_release(scan, started_at, clock=time.monotonic, sleep=time.sleep):
         sleep(1)
 
 
+def _stop_proven(h, label, runs):
+    """EVERY row fails on a stop failure, whatever its own verdict (RoseCat 7476: at e567a51 the planted and forge runs
+    also failed closed on both Macs, yet their expected "no R1" verdicts passed). Only the fixed code is shown."""
+    reasons = [r["stop_reason"] for r in runs if "stop_reason" in r]
+    h.check(not reasons, f"{label}: the run's process group was proven stopped"
+            + (f" (reason={reasons[0]})" if reasons else ""))
+
+
 def _released(h, proc_darwin, label, cli, runtime, runs, started_at):
     """After EVERY row (RoseCat 7300 #2): the port free on both families; no inspection fault in any scan (RoseCat
     7312); no part of the chain alive after CHAIN_GRACE_S; and, waited out unsignalled to the row's horizon, a
@@ -341,8 +349,10 @@ def run(h):
                 raise
             except Exception as e:
                 reason = getattr(e, "reason", None)  # owned_group's fixed code for which stop proof failed; never text
+                if reason is not None:
+                    rec["stop_reason"] = reason if reason in STOP_REASONS else "unknown"
                 rec["diag"] = f"probe run raised {type(e).__name__}" + (
-                    "" if reason is None else f" (reason={reason if reason in STOP_REASONS else 'unknown'})")
+                    "" if reason is None else f" (reason={rec['stop_reason']})")
                 raise
             rec["diag"] = (f"probe rc={done.returncode}; stdout {_sanitize(done.stdout)!r}; "
                            f"stderr {_sanitize(done.stderr)!r}")
@@ -394,6 +404,7 @@ def run(h):
                 and censuses[0]["exe"] == clis["honest"] and censuses[0]["root"] == os.getpid()
                 and censuses[0]["clean"] is True,
                 f"positive: setup's census ran once, exact request, clean ({[_census_view(c) for c in censuses]})")
+    _stop_proven(h, "positive", runs)
     _released(h, proc_darwin, "positive", clis["honest"], runtime, runs, t0)
 
     # 2. planted-token control and 3. forged capability: their own positives first. The planted CLI is the forge CLI
@@ -416,6 +427,7 @@ def run(h):
             h.check(forged == [], f"planted: the forge-deleted mutant carries no forge record ({forged})")
         h.check(seen.get("clean") is False, f"{mode}: setup's census says dirty")
         h.check(verdict is False, f"{mode}: probe_r1 is False (no R1)")
+        _stop_proven(h, mode, runs)
         _released(h, proc_darwin, mode, clis[mode], runtime, runs, t0)
 
     # 4. timeout and lifecycle
@@ -424,4 +436,5 @@ def run(h):
     h.check(verdict is False, "hang: a CLI that never calls is no R1")
     h.check(took <= setup.PROBE_TIMEOUT_S + 45, f"hang: probe_r1 ends within its bound ({took:.1f} s)")
     h.check(censuses == [], "hang: no census without a call")
+    _stop_proven(h, "hang", runs)
     _released(h, proc_darwin, "hang", clis["hang"], runtime, runs, t0)

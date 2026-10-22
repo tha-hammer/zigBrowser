@@ -2068,6 +2068,13 @@ pub fn build(b: *std.Build) void {
         "py=$(tools/agent_host_env.sh --check) || exit 1; cd agent/host/tests && out=$(env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 ZB_AGENT_HOST_PYTHON=\"$py\" \"$py\" -X dev -m unittest -v test_owned_group_reasons 2>&1); rc=$?; printf '%s\\n' \"$out\"; [ $rc -eq 0 ] || exit $rc; if printf '%s\\n' \"$out\" | grep -q ResourceWarning; then echo 'test_owned_group_reasons: ResourceWarning' >&2; exit 1; fi",
     });
     agent_setup_ms5_step.dependOn(&agent_host_owned_group_reasons.step);
+    // A cleanup stop's own StopFailed reason is kept (RoseCat 7476). Signal-interposed, plain.
+    const agent_host_owned_group_reasons_cleanup = b.addSystemCommand(&.{
+        "sh",
+        "-c",
+        "py=$(tools/agent_host_env.sh --check) || exit 1; cd agent/host/tests && out=$(env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 ZB_AGENT_HOST_PYTHON=\"$py\" \"$py\" -X dev -m unittest -v test_owned_group_reasons_cleanup 2>&1); rc=$?; printf '%s\\n' \"$out\"; [ $rc -eq 0 ] || exit $rc; if printf '%s\\n' \"$out\" | grep -q ResourceWarning; then echo 'test_owned_group_reasons_cleanup: ResourceWarning' >&2; exit 1; fi",
+    });
+    agent_setup_ms5_step.dependOn(&agent_host_owned_group_reasons_cleanup.step);
     // R1's census broker (RoseCat 7019; BlueBeaver 7021): setup runs the Darwin process census outside Seatbelt, the
     // probe asks over a socketpair (--census-fd). The kernel-properties half is tests/mac/ms6_r1_kernel_gate.sh (plan
     // MS6.6 (A)); the Mac production chain is MS6.6 (B).
@@ -2476,6 +2483,13 @@ pub fn build(b: *std.Build) void {
         "cd tests/e2e && out=$(env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 unshare --user --map-root-user --pid --fork --mount-proc sh -c 'setsid python3 -X dev -m unittest -v ms6_hard_gate_r1_reason_test' 2>&1); rc=$?; printf '%s\\n' \"$out\"; [ $rc -eq 0 ] || exit $rc; if printf '%s\\n' \"$out\" | grep -q ResourceWarning; then echo 'ms6_hard_gate_r1_reason_test: ResourceWarning' >&2; exit 1; fi",
     });
     mac_census_step.dependOn(&ms6_hard_gate_r1_reason_unit.step);
+    // Every R1 row fails on a stop failure, naming its fixed reason (RoseCat 7476). Fakes only.
+    const ms6_hard_gate_r1_reason_modes_unit = b.addSystemCommand(&.{
+        "sh",
+        "-c",
+        "cd tests/e2e && out=$(env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 unshare --user --map-root-user --pid --fork --mount-proc sh -c 'setsid python3 -X dev -m unittest -v ms6_hard_gate_r1_reason_modes_test' 2>&1); rc=$?; printf '%s\\n' \"$out\"; [ $rc -eq 0 ] || exit $rc; if printf '%s\\n' \"$out\" | grep -q ResourceWarning; then echo 'ms6_hard_gate_r1_reason_modes_test: ResourceWarning' >&2; exit 1; fi",
+    });
+    mac_census_step.dependOn(&ms6_hard_gate_r1_reason_modes_unit.step);
     // The ARMED hard-gate entry: the MS5 pins, every bad precondition refused before any network, and the pinned pkg
     // download as its first network call (RoseCat 7250, 9dfc9c7). Recording shims only; no Mac is contacted.
     const ms6_hard_gate_entry_unit = b.addSystemCommand(&.{
@@ -2885,6 +2899,7 @@ pub fn build(b: *std.Build) void {
     if (target.result.os.tag == .linux) test_step.dependOn(&ms6_hard_gate_manifest_unit.step);
     if (target.result.os.tag == .linux) test_step.dependOn(&ms6_hard_gate_r1_case_unit.step);
     if (target.result.os.tag == .linux) test_step.dependOn(&ms6_hard_gate_r1_reason_unit.step);
+    if (target.result.os.tag == .linux) test_step.dependOn(&ms6_hard_gate_r1_reason_modes_unit.step);
     if (target.result.os.tag == .linux) test_step.dependOn(&ms6_hard_gate_entry_unit.step);
     if (target.result.os.tag == .linux) test_step.dependOn(&ms6_hard_gate_harness_unit.step);
     if (target.result.os.tag == .linux) test_step.dependOn(&ms6_hard_gate_harness_safety_unit.step);
@@ -3043,6 +3058,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&agent_host_pidns_guard.step);
     test_step.dependOn(&agent_host_owned_group_failclosed.step);
     test_step.dependOn(&agent_host_owned_group_reasons.step);
+    test_step.dependOn(&agent_host_owned_group_reasons_cleanup.step);
     test_step.dependOn(&agent_host_route_probe_census.step);
     test_step.dependOn(&agent_host_setup_census.step);
     test_step.dependOn(&agent_host_setup_darwin_r1_v6.step);
