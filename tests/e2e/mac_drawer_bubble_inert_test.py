@@ -1,31 +1,49 @@
-"""MS7.4 (macOS plan line 2158; RoseCat 8058 / bdc8202 on 0281321): the AppKit drawer's conversation bubbles are INERT
-text, as the GTK and Win32 drawers' are, and their text is the portable seam's (tests/agent_drawer_appkit_text_test.zig):
-the shown form from zb_drawer_appkit_shown (break points, NUL and invalid UTF-8 shown as U+FFFD, always valid UTF-8), a
-label up to label_text_max bytes and a read-only, non-rich text view past it (zb_drawer_bubble_is_label: a 200 KiB
-reply stays responsive), and Copy giving the ORIGINAL bytes through zb_drawer_appkit_original_offset (originalOffset's
-map over UTF-16 selection offsets).
-Offline (no macOS SDK here), a source-bound oracle over src/agent_drawer_mac.m, read LEXICALLY: comments removed and
-the contents of string and character literals blanked before any brace matching or call counting, so a brace or a
-call name inside a string never counts.
-- B1 one factory: every bubble view is made in `- (NSView *)bubbleWithText:(const char *)text length:(size_t)len`:
-  +[NSTextField wrappingLabelWithString:] and [[NSTextView alloc] appear there and nowhere else, chosen by
-  zb_drawer_bubble_is_label(len); no other text view or label constructor exists in the file.
-- B2 one text path, bound to every production message path: every call that puts text into a view
-  (wrappingLabelWithString:, setStringValue:, setString:, replaceCharactersInRange:, insertText:) is inside the
-  factory or `- (void)setBubble:(NSView *)bubble text:(const char *)text length:(size_t)len` (the streaming update),
-  and each of those two calls zb_drawer_appkit_shown exactly once, makes exactly one NSString, by
-  -[NSString initWithBytes:<shown> length:<shown_len> encoding:NSUTF8StringEncoding] (exact length, never a
-  NUL-terminated read), frees the shown buffer, and passes only that NSString (or it ?: @"") to its text setters. stringWithUTF8String / initWithUTF8String never appear.
-- B3 inert controls: the label gets setSelectable:YES and setAllowsEditingTextAttributes:NO; the text view
-  setEditable:NO, setRichText:NO, setImportsGraphics:NO and setAutomaticLinkDetectionEnabled:NO; the file never sets
-  any of them to the other value.
-- B4 no markup, data or links: no initWithHTML, initWithRTF, initWithRTFD, initWithData:, HTML/RTF document types,
-  NSLinkAttributeName, (set)attributedStringValue, labelWithAttributedString: or NSTextAttachment.
-- B5 copy gives the original bytes: exactly one `- (void)copy:(id)sender`; it maps the selection's two ends through
-  zb_drawer_appkit_original_offset (twice) and puts the original's bytes on the pasteboard with setData: (never
-  setString:, never the shown text).
-Self-checking: an honest fixture passes; braces and call names inside strings and comments do not count; and each
-dishonest fixture fails its rule.
+"""MS7.4 (macOS plan line 2158; RoseCat 8058 / bdc8202 / e48e262 on 0281321 and 7ba5549): the AppKit drawer's
+conversation bubbles are INERT text whose content and copy come from the portable seam
+(tests/agent_drawer_appkit_text_test.zig: zb_drawer_appkit_shown, zb_drawer_appkit_original_offset,
+zb_drawer_bubble_is_label).
+The responder path (e48e262 #1): a selectable NSTextField copies through the window's shared field editor, so a copy:
+on any other object is never what Ctrl+C reaches. Every bubble is therefore one control class,
+`@interface ZbBubbleView : NSTextView`: an NSTextView is itself the first responder of its selection, so ZbBubbleView's
+own `- (void)copy:(id)sender` IS the Ctrl+C / Edit > Copy path, and each view keeps its own original bytes
+(`_original`, `_originalLen`). The label_text_max boundary stays the responsiveness boundary: a bubble past it lays out
+non-contiguously (`setAllowsNonContiguousLayout:`), so a 200 KiB reply stays responsive. The real-Mac clipboard check
+on both sides of label_text_max stays an owner-run real-screen case.
+Offline (no macOS SDK here), a source-bound oracle over src/agent_drawer_mac.m, read LEXICALLY (comments removed, the
+contents of string and character literals blanked), binding each value structurally by exact statement (whitespace
+ignored):
+- V1 the control: `@interface ZbBubbleView : NSTextView` declares ivars `char *_original;` and `size_t _originalLen;`;
+  the drawer has no NSTextField, no field-editor route (windowWillReturnFieldEditor / fieldEditor:) and no other
+  NSTextView subclass or allocation: `[[ZbBubbleView alloc] initWithFrame:NSZeroRect]` is the one view constructor.
+- V2 the factory `- (ZbBubbleView *)bubbleWithText:(const char *)text length:(size_t)len` makes `view` that way, sets
+  setEditable:NO, setRichText:NO, setImportsGraphics:NO, setAutomaticLinkDetectionEnabled:NO, setSelectable:YES and
+  setAllowsEditingTextAttributes:NO on `view`, binds the kind's result as exactly
+  `[[view layoutManager] setAllowsNonContiguousLayout:!zb_drawer_bubble_is_label(len)]` (the only mention of
+  zb_drawer_bubble_is_label), fills it with exactly `[self setBubble:view text:text length:len]`, and returns `view`.
+- V3 the one text path `- (void)setBubble:(ZbBubbleView *)bubble text:(const char *)text length:(size_t)len` (every
+  message path: the factory and each streaming update go through it; it is the file's only text setter):
+  `char *shown = zb_drawer_appkit_shown(text, len, &shown_len)`, exactly one NSString
+  `NSString *plain = [[NSString alloc] initWithBytes:shown length:shown_len encoding:NSUTF8StringEncoding]`,
+  `free(shown)`, then exactly `[bubble keepOriginal:text length:len]` and `[bubble setString:plain ?: @""]`; no other
+  setString:, setStringValue:, replaceCharactersInRange:, insertText: or initWithBytes: in the file, and
+  zb_drawer_appkit_shown nowhere else.
+- V4 the stored original: inside @implementation ZbBubbleView,
+  `- (void)keepOriginal:(const char *)text length:(size_t)len` frees the old `_original`, allocates `len` bytes into
+  `_original` (exactly `_original = malloc(len ? len : 1)`), copies exactly `memcpy(_original, text, len)` and sets
+  exactly `_originalLen = len`.
+- V5 the copy, inside @implementation ZbBubbleView: exactly one `- (void)copy:(id)sender` in the file; its selection
+  is `NSRange r = [self selectedRange]`; its endpoints are exactly
+  `size_t from = zb_drawer_appkit_original_offset(_original, _originalLen, r.location)` and
+  `size_t to = zb_drawer_appkit_original_offset(_original, _originalLen, NSMaxRange(r))`; it writes exactly
+  `[pb setData:[NSData dataWithBytes:_original + from length:to - from] forType:NSPasteboardTypeString]` to
+  `NSPasteboard *pb = [NSPasteboard generalPasteboard]`, and never setString:.
+- V6 inert, no markup: none of stringWithUTF8String, initWithUTF8String, setEditable:YES, setRichText:YES,
+  setImportsGraphics:YES, setAutomaticLinkDetectionEnabled:YES, setAllowsEditingTextAttributes:YES, initWithHTML,
+  initWithRTF, initWithRTFD, initWithData:, NSHTMLTextDocumentType, NSRTFTextDocumentType, NSLinkAttributeName,
+  (set)attributedStringValue, labelWithAttributedString: or NSTextAttachment.
+Self-checking: an honest fixture passes; names in strings and comments do not count; and each dishonest fixture fails,
+including RoseCat's five (an inverted kind, a kind called and ignored before a constant, an update sent to _other, both
+offsets mapping _other/_other_len, a payload from _other + from).
 RED until src/agent_drawer_mac.m exists with that shape. No process, no signal.
 Run: cd tests/e2e && python3 -X dev -m unittest -v mac_drawer_bubble_inert_test
 Unregistered until the green."""
@@ -34,23 +52,34 @@ import unittest
 from pathlib import Path
 
 DRAWER = Path(__file__).resolve().parents[2] / "src" / "agent_drawer_mac.m"
-FACTORY = r"-\s*\(\s*NSView\s*\*\s*\)\s*bubbleWithText:\s*\(\s*const\s+char\s*\*\s*\)\s*\w+\s+length:\s*\(\s*size_t\s*\)\s*\w+\s*\{"
-UPDATE = (r"-\s*\(\s*void\s*\)\s*setBubble:\s*\(\s*NSView\s*\*\s*\)\s*\w+\s+text:\s*\(\s*const\s+char\s*\*\s*\)\s*\w+"
-          r"\s+length:\s*\(\s*size_t\s*\)\s*\w+\s*\{")
-COPY = r"-\s*\(\s*void\s*\)\s*copy:\s*\(\s*id\s*\)\s*\w+\s*\{"
-TEXT_SETTERS = ("wrappingLabelWithString:", "setStringValue:", "setString:", "replaceCharactersInRange:", "insertText:")
-OTHER_VIEWS = ("labelWithString:", "textFieldWithString:", "labelWithAttributedString:")
-NEVER = ("stringWithUTF8String", "initWithUTF8String", "setSelectable:NO", "setAllowsEditingTextAttributes:YES",
-         "setEditable:YES", "setRichText:YES", "setImportsGraphics:YES", "setAutomaticLinkDetectionEnabled:YES",
-         "initWithHTML", "initWithRTF", "initWithRTFD", "initWithData:", "NSHTMLTextDocumentType",
-         "NSRTFTextDocumentType", "NSLinkAttributeName", "setAttributedStringValue", "attributedStringValue",
-         "NSTextAttachment")
+SIG_FACTORY = r"-\s*\(\s*ZbBubbleView\s*\*\s*\)\s*bubbleWithText:\s*\(\s*const\s+char\s*\*\s*\)\s*text\s+length:\s*\(\s*size_t\s*\)\s*len\s*\{"
+SIG_UPDATE = (r"-\s*\(\s*void\s*\)\s*setBubble:\s*\(\s*ZbBubbleView\s*\*\s*\)\s*bubble\s+text:\s*\(\s*const\s+char\s*\*\s*\)"
+              r"\s*text\s+length:\s*\(\s*size_t\s*\)\s*len\s*\{")
+SIG_KEEP = r"-\s*\(\s*void\s*\)\s*keepOriginal:\s*\(\s*const\s+char\s*\*\s*\)\s*text\s+length:\s*\(\s*size_t\s*\)\s*len\s*\{"
+SIG_COPY = r"-\s*\(\s*void\s*\)\s*copy:\s*\(\s*id\s*\)\s*\w+\s*\{"
+NEVER = ("stringWithUTF8String", "initWithUTF8String", "setEditable:YES", "setRichText:YES", "setImportsGraphics:YES",
+         "setAutomaticLinkDetectionEnabled:YES", "setAllowsEditingTextAttributes:YES", "initWithHTML", "initWithRTF",
+         "initWithRTFD", "initWithData:", "NSHTMLTextDocumentType", "NSRTFTextDocumentType", "NSLinkAttributeName",
+         "setAttributedStringValue", "attributedStringValue", "labelWithAttributedString:", "NSTextAttachment",
+         "NSTextField", "windowWillReturnFieldEditor", "fieldEditor:")
 PROTOTYPES = re.compile(r"^[ \t]*(?:extern[ \t]+)?[\w \t\*]+\bzb_drawer_\w+[ \t]*\([^)]*\)[ \t]*;", re.M)
+FACTORY_NEEDS = ["ZbBubbleView*view=[[ZbBubbleViewalloc]initWithFrame:NSZeroRect]", "[viewsetEditable:NO]",
+                 "[viewsetRichText:NO]", "[viewsetImportsGraphics:NO]", "[viewsetAutomaticLinkDetectionEnabled:NO]",
+                 "[viewsetSelectable:YES]", "[viewsetAllowsEditingTextAttributes:NO]",
+                 "[[viewlayoutManager]setAllowsNonContiguousLayout:!zb_drawer_bubble_is_label(len)]",
+                 "[selfsetBubble:viewtext:textlength:len]", "returnview"]
+UPDATE_NEEDS = ["char*shown=zb_drawer_appkit_shown(text,len,&shown_len)",
+                "NSString*plain=[[NSStringalloc]initWithBytes:shownlength:shown_lenencoding:NSUTF8StringEncoding]",
+                "free(shown)", "[bubblekeepOriginal:textlength:len]", '[bubblesetString:plain?:@""]']
+KEEP_NEEDS = ["free(_original)", "_original=malloc(len?len:1)", "memcpy(_original,text,len)", "_originalLen=len"]
+COPY_NEEDS = ["NSRanger=[selfselectedRange]", "size_tfrom=zb_drawer_appkit_original_offset(_original,_originalLen,r.location)",
+              "size_tto=zb_drawer_appkit_original_offset(_original,_originalLen,NSMaxRange(r))",
+              "NSPasteboard*pb=[NSPasteboardgeneralPasteboard]",
+              "[pbsetData:[NSDatadataWithBytes:_original+fromlength:to-from]forType:NSPasteboardTypeString]"]
 
 
 def lexical(text):
-    """`text` with comments removed and every string/character literal's contents blanked (its quotes kept, an
-    Objective-C @"..." stays @""), so structure and calls are read from code alone."""
+    """`text` with comments removed and every string/character literal's contents blanked (quotes kept)."""
     out, i, n = [], 0, len(text)
     while i < n:
         if text.startswith("//", i):
@@ -71,45 +100,30 @@ def lexical(text):
     return "".join(out)
 
 
-def spans(code, pattern):
-    """(start, end) of each brace-matched body of `pattern` (which ends at its `{`) in lexical `code`."""
+def bodies(code, pattern):
     found = []
     for m in re.finditer(pattern, code):
         depth, i = 1, m.end()
         while i < len(code) and depth:
             depth += {"{": 1, "}": -1}.get(code[i], 0)
             i += 1
-        found.append((m.end(), i - 1))
+        found.append((m.start(), m.end(), i - 1))
     return found
 
 
-def inside(pos, regions):
-    return any(a <= pos < b for a, b in regions)
+def statements(body):
+    """The squashed (whitespace-free) `;`-statements of a method body, block braces dropped."""
+    return [re.sub(r"\s+", "", s).strip("{}") for s in re.split(r"[;{}]", body) if s.strip()]
 
 
-def text_path_problems(body, name):
-    found = []
-    if body.count("zb_drawer_appkit_shown(") != 1:
-        found.append(f"B2: {name} must call zb_drawer_appkit_shown exactly once")
-        return found
-    shown = re.search(r"(\w+)\s*=\s*zb_drawer_appkit_shown\s*\(\s*\w+\s*,\s*\w+\s*,\s*&\s*(\w+)\s*\)", body)
-    if shown is None:
-        return found + [f"B2: {name} must keep zb_drawer_appkit_shown's result and length"]
-    buf, length = shown.groups()
-    exact = re.search(r"initWithBytes:\s*" + re.escape(buf) + r"\s+length:\s*" + re.escape(length)
-                      + r"\s+encoding:\s*NSUTF8StringEncoding", body)
-    if exact is None:
-        found.append(f"B2: {name} must make its NSString with initWithBytes:{buf} length:{length} (exact length)")
-    if not re.search(r"\bfree\s*\(\s*" + re.escape(buf) + r"\s*\)", body):
-        found.append(f"B2: {name} must free the shown buffer")
-    if body.count("initWithBytes:") != 1:
-        found.append(f"B2: {name} must make exactly one NSString, the shown text's")
-    plain = re.search(r"(\w+)\s*=\s*\[\s*\[\s*NSString\s+alloc\s*\]\s*initWithBytes:\s*" + re.escape(buf) + r"\b", body)
-    for m in re.finditer(r"(?:" + "|".join(map(re.escape, TEXT_SETTERS[:3])) + r")\s*([^\]]+)\]", body):
-        arg = re.fullmatch(r'(\w+)(?:\s*\?:\s*@"")?', m.group(1).strip())
-        if plain is None or arg is None or arg.group(1) != plain.group(1):
-            found.append(f"B2: {name} must put only the shown text's NSString into a view ({m.group(0).strip()[:60]})")
-    return found
+def needs(body, wanted, where):
+    have = statements(body)
+    return [f"{where}: want exactly `{w}`" for w in wanted if w not in have]
+
+
+def implementation(code, cls):
+    m = re.search(r"@implementation\s+" + cls + r"\b(.*?)@end", code, re.S)
+    return (m.start(1), m.end(1)) if m else None
 
 
 def problems(source):
@@ -117,44 +131,43 @@ def problems(source):
     if source is None:
         return ["src/agent_drawer_mac.m is missing"]
     code = PROTOTYPES.sub("", lexical(source))
-    factory, update, copy = spans(code, FACTORY), spans(code, UPDATE), spans(code, COPY)
     found = []
-    if len(factory) != 1:
-        return found + [f"B1: want exactly one bubbleWithText:length: factory ({len(factory)})"]
-    if len(update) != 1:
-        return found + [f"B2: want exactly one setBubble:text:length: update ({len(update)})"]
-    f_body, u_body = code[slice(*factory[0])], code[slice(*update[0])]
-    for needle in ("wrappingLabelWithString:", "[[NSTextView alloc]"):
-        sites = [m.start() for m in re.finditer(re.escape(needle), code)]
-        if len(sites) != 1 or not inside(sites[0], factory):
-            found.append(f"B1: {needle} must appear once, in the factory ({len(sites)} sites)")
-    if "zb_drawer_bubble_is_label(" not in f_body:
-        found.append("B1: the factory must choose label or text view by zb_drawer_bubble_is_label")
-    for other in OTHER_VIEWS:
-        if other in code:
-            found.append(f"B1: another text view constructor ({other})")
-    for setter in TEXT_SETTERS:
+    iface = re.search(r"@interface\s+ZbBubbleView\s*:\s*NSTextView\s*\{([^}]*)\}", code)
+    if iface is None or "char*_original" not in re.sub(r"\s+", "", iface.group(1)) \
+            or "size_t_originalLen" not in re.sub(r"\s+", "", iface.group(1)):
+        found.append("V1: want `@interface ZbBubbleView : NSTextView { char *_original; size_t _originalLen; }`")
+    if len(re.findall(r"@interface\s+\w+\s*:\s*NSTextView\b", code)) != 1 or code.count("[NSTextView alloc]") \
+            or code.count("[[ZbBubbleView alloc]") != 1 and len(re.findall(r"\[\s*\[\s*ZbBubbleView\s+alloc\s*\]", code)) != 1:
+        found.append("V1: ZbBubbleView must be the one NSTextView class and its one allocation")
+    impl = implementation(code, "ZbBubbleView")
+    for name, sig, wanted in (("V2 factory", SIG_FACTORY, FACTORY_NEEDS), ("V3 update", SIG_UPDATE, UPDATE_NEEDS)):
+        got = bodies(code, sig)
+        if len(got) != 1:
+            found.append(f"{name}: want exactly one ({len(got)})")
+        else:
+            found += needs(code[got[0][1]:got[0][2]], wanted, name)
+    if len(re.findall(r"\bzb_drawer_bubble_is_label\b", code)) != 1:
+        found.append("V2: zb_drawer_bubble_is_label must be named once, in the bound layout statement")
+    for name, sig, wanted in (("V4 keepOriginal", SIG_KEEP, KEEP_NEEDS), ("V5 copy", SIG_COPY, COPY_NEEDS)):
+        got = bodies(code, sig)
+        if len(got) != 1:
+            found.append(f"{name}: want exactly one ({len(got)})")
+        elif impl is None or not (impl[0] <= got[0][0] < impl[1]):
+            found.append(f"{name}: must be ZbBubbleView's own method (the responder Ctrl+C reaches)")
+        else:
+            found += needs(code[got[0][1]:got[0][2]], wanted, name)
+            if name.startswith("V5") and "setString:" in code[got[0][1]:got[0][2]]:
+                found.append("V5 copy: never setString:")
+    update = bodies(code, SIG_UPDATE)
+    inside = (lambda pos: bool(update) and update[0][1] <= pos < update[0][2])
+    for setter in ("setString:", "setStringValue:", "replaceCharactersInRange:", "insertText:", "initWithBytes:",
+                   "zb_drawer_appkit_shown("):
         for m in re.finditer(re.escape(setter), code):
-            if not inside(m.start(), factory + update):
-                found.append(f"B2: {setter} outside the factory and the update")
-    found += text_path_problems(f_body, "the factory") + text_path_problems(u_body, "the update")
-    if code.count("zb_drawer_appkit_shown(") != 2:
-        found.append("B2: zb_drawer_appkit_shown is called outside the factory and the update")
-    for need in ("setSelectable:YES", "setAllowsEditingTextAttributes:NO", "setEditable:NO", "setRichText:NO",
-                 "setImportsGraphics:NO", "setAutomaticLinkDetectionEnabled:NO"):
-        if need not in f_body:
-            found.append(f"B3: the factory must call {need}")
+            if not inside(m.start()):
+                found.append(f"V3: {setter} outside setBubble:text:length:")
     for word in NEVER:
         if word in code:
-            found.append(f"B3/B4: {word}")
-    if len(copy) != 1:
-        found.append(f"B5: want exactly one copy: ({len(copy)})")
-    else:
-        c_body = code[slice(*copy[0])]
-        if c_body.count("zb_drawer_appkit_original_offset(") != 2:
-            found.append("B5: copy: must map both selection ends through zb_drawer_appkit_original_offset")
-        if "setData:" not in c_body or "setString:" in c_body or "zb_drawer_appkit_shown(" in c_body:
-            found.append("B5: copy: must put the original bytes with setData:, never a string or the shown text")
+            found.append(f"V6: {word}")
     return found
 
 
@@ -163,33 +176,49 @@ HONEST = r'''
 char *zb_drawer_appkit_shown(const char *text, size_t len, size_t *out_len);
 size_t zb_drawer_appkit_original_offset(const char *text, size_t len, size_t shown);
 int zb_drawer_bubble_is_label(size_t len);
+
+/* one bubble control: an NSTextView is its own first responder, so its copy: is the one Ctrl+C reaches */
+@interface ZbBubbleView : NSTextView {
+  char *_original;
+  size_t _originalLen;
+}
+- (void)keepOriginal:(const char *)text length:(size_t)len;
+@end
+
+@implementation ZbBubbleView
+- (void)keepOriginal:(const char *)text length:(size_t)len {
+  free(_original);
+  _original = malloc(len ? len : 1);
+  memcpy(_original, text, len);
+  _originalLen = len;
+}
+- (void)copy:(id)sender {
+  NSRange r = [self selectedRange];
+  size_t from = zb_drawer_appkit_original_offset(_original, _originalLen, r.location);
+  size_t to = zb_drawer_appkit_original_offset(_original, _originalLen, NSMaxRange(r));
+  NSPasteboard *pb = [NSPasteboard generalPasteboard];
+  [pb clearContents];
+  [pb setData:[NSData dataWithBytes:_original + from length:to - from] forType:NSPasteboardTypeString];
+}
+- (void)dealloc {
+  free(_original);
+}
+@end
+
 @implementation ZbDrawerView
-/* a bubble: the seam's shown text, plain, selectable, never editable or rich ("{" in comments is fine) */
-- (NSView *)bubbleWithText:(const char *)text length:(size_t)len {
-  size_t shown_len = 0;
-  char *shown = zb_drawer_appkit_shown(text, len, &shown_len);
-  if (shown == NULL) {
-    return nil;
-  }
-  NSString *plain = [[NSString alloc] initWithBytes:shown length:shown_len encoding:NSUTF8StringEncoding];
-  free(shown);
-  if (zb_drawer_bubble_is_label(len)) {
-    NSTextField *label = [NSTextField wrappingLabelWithString:plain ?: @"{"];
-    [label setSelectable:YES];
-    [label setAllowsEditingTextAttributes:NO];
-    return label;
-  }
-  NSTextView *view = [[NSTextView alloc] initWithFrame:NSZeroRect];
+- (ZbBubbleView *)bubbleWithText:(const char *)text length:(size_t)len {
+  ZbBubbleView *view = [[ZbBubbleView alloc] initWithFrame:NSZeroRect];
   [view setEditable:NO];
   [view setRichText:NO];
   [view setImportsGraphics:NO];
   [view setAutomaticLinkDetectionEnabled:NO];
   [view setSelectable:YES];
   [view setAllowsEditingTextAttributes:NO];
-  [view setString:plain ?: @""];
+  [[view layoutManager] setAllowsNonContiguousLayout:!zb_drawer_bubble_is_label(len)];
+  [self setBubble:view text:text length:len];
   return view;
 }
-- (void)setBubble:(NSView *)bubble text:(const char *)text length:(size_t)len {
+- (void)setBubble:(ZbBubbleView *)bubble text:(const char *)text length:(size_t)len {
   size_t shown_len = 0;
   char *shown = zb_drawer_appkit_shown(text, len, &shown_len);
   if (shown == NULL) {
@@ -197,49 +226,52 @@ int zb_drawer_bubble_is_label(size_t len);
   }
   NSString *plain = [[NSString alloc] initWithBytes:shown length:shown_len encoding:NSUTF8StringEncoding];
   free(shown);
-  if ([bubble isKindOfClass:[NSTextView class]]) {
-    [(NSTextView *)bubble setString:plain ?: @""];
-  } else {
-    [(NSTextField *)bubble setStringValue:plain ?: @""];
-  }
-}
-- (void)copy:(id)sender {
-  NSRange r = [self selectedRange];
-  size_t from = zb_drawer_appkit_original_offset(_text, _len, r.location);
-  size_t to = zb_drawer_appkit_original_offset(_text, _len, r.location + r.length);
-  NSPasteboard *pb = [NSPasteboard generalPasteboard];
-  [pb clearContents];
-  [pb setData:[NSData dataWithBytes:_text + from length:to - from] forType:NSPasteboardTypeString];
+  [bubble keepOriginal:text length:len];
+  [bubble setString:plain ?: @"{"];
 }
 @end
 '''
 
 
-def mutate(old, new, count=1):
-    assert HONEST.count(old) == count, old
+def mutate(old, new):
+    assert HONEST.count(old) == 1, old
     return HONEST.replace(old, new)
 
 
 MUTANTS = {
-    "a NUL-terminated read": mutate("[[NSString alloc] initWithBytes:shown length:shown_len encoding:NSUTF8StringEncoding];\n  free(shown);\n  if (zb",
-                                    "[NSString stringWithUTF8String:shown];\n  free(shown);\n  if (zb"),
-    "the length is not the shown length": mutate("initWithBytes:shown length:shown_len encoding:NSUTF8StringEncoding];\n  free(shown);\n  if (zb",
-                                                 "initWithBytes:shown length:len encoding:NSUTF8StringEncoding];\n  free(shown);\n  if (zb"),
-    "raw text bypasses the seam": mutate("    [(NSTextView *)bubble setString:plain ?: @\"\"];",
-                                         "    [(NSTextView *)bubble setString:[[NSString alloc] initWithBytes:text length:len encoding:NSUTF8StringEncoding]];"),
-    "a second text path": HONEST.replace("@end", "- (void)note:(NSTextField *)f { [f setStringValue:@\"x\"]; }\n@end"),
-    "HTML text": mutate("    [label setSelectable:YES];", "    [label setSelectable:YES];\n    (void)[[NSAttributedString alloc] initWithHTML:nil documentAttributes:nil];"),
-    "a link attribute": mutate("    [label setSelectable:YES];", "    [label setSelectable:YES];\n    (void)@{NSLinkAttributeName: plain};"),
-    "an editable text view": mutate("  [view setEditable:NO];", "  [view setEditable:YES];"),
+    # RoseCat e48e262's five
+    "an inverted kind": mutate("setAllowsNonContiguousLayout:!zb_drawer_bubble_is_label(len)]",
+                               "setAllowsNonContiguousLayout:zb_drawer_bubble_is_label(len)]"),
+    "a kind called and ignored": mutate("  [[view layoutManager] setAllowsNonContiguousLayout:!zb_drawer_bubble_is_label(len)];",
+                                        "  (void)zb_drawer_bubble_is_label(len);\n  if (1) {\n    [[view layoutManager] setAllowsNonContiguousLayout:YES];\n  }"),
+    "an update sent to _other": mutate("  [bubble setString:plain ?: @\"{\"];", "  [_other setString:plain ?: @\"{\"];"),
+    "offsets over _other": mutate("  size_t from = zb_drawer_appkit_original_offset(_original, _originalLen, r.location);\n"
+                                  "  size_t to = zb_drawer_appkit_original_offset(_original, _originalLen, NSMaxRange(r));",
+                                  "  size_t from = zb_drawer_appkit_original_offset(_other, _other_len, r.location);\n"
+                                  "  size_t to = zb_drawer_appkit_original_offset(_other, _other_len, NSMaxRange(r));"),
+    "a payload from _other": mutate("dataWithBytes:_original + from length:to - from]", "dataWithBytes:_other + from length:to - from]"),
+    # the responder path and the binding
+    "copy: on the drawer view": mutate("@end\n\n@implementation ZbDrawerView\n", "@end\n\n@implementation ZbDrawerView\n- (void)copy:(id)sender {}\n").replace(
+        "- (void)copy:(id)sender {\n  NSRange", "- (void)copyBytes:(id)sender {\n  NSRange"),
+    "a field editor route": mutate("@end\n\n@implementation ZbDrawerView\n",
+                                   "@end\n\n@implementation ZbDrawerView\n- (id)windowWillReturnFieldEditor:(NSWindow *)w toObject:(id)o { return nil; }\n"),
+    "an NSTextField label": mutate("  ZbBubbleView *view = [[ZbBubbleView alloc] initWithFrame:NSZeroRect];",
+                                   "  ZbBubbleView *view = [[ZbBubbleView alloc] initWithFrame:NSZeroRect];\n  (void)[NSTextField wrappingLabelWithString:@\"\"];"),
+    "the original is never kept": mutate("  [bubble keepOriginal:text length:len];\n", ""),
+    "the shown text is kept": mutate("  [bubble keepOriginal:text length:len];", "  [bubble keepOriginal:shown length:shown_len];"),
+    "a short memcpy": mutate("  memcpy(_original, text, len);", "  memcpy(_original, text, len - 1);"),
+    "another view's selection": mutate("  NSRange r = [self selectedRange];", "  NSRange r = [_other selectedRange];"),
+    "a one-sided endpoint": mutate("_originalLen, NSMaxRange(r));", "_originalLen, r.length);"),
+    "a payload of the wrong length": mutate("length:to - from]", "length:to]"),
+    "copy puts a string": mutate("  [pb clearContents];", "  [pb clearContents];\n  [pb setString:[self string] forType:NSPasteboardTypeString];"),
+    "a NUL-terminated read": mutate("[[NSString alloc] initWithBytes:shown length:shown_len encoding:NSUTF8StringEncoding]",
+                                    "[NSString stringWithUTF8String:shown]"),
+    "a second text setter": mutate("  return view;\n", "  [view insertText:@\"x\"];\n  return view;\n"),
+    "the factory fills another view": mutate("  [self setBubble:view text:text length:len];", "  [self setBubble:_other text:text length:len];"),
+    "a plain NSTextView": mutate("  ZbBubbleView *view = [[ZbBubbleView alloc] initWithFrame:NSZeroRect];",
+                                 "  ZbBubbleView *view = (ZbBubbleView *)[[NSTextView alloc] initWithFrame:NSZeroRect];"),
     "link detection on": mutate("  [view setAutomaticLinkDetectionEnabled:NO];", "  [view setAutomaticLinkDetectionEnabled:YES];"),
-    "always a label": mutate("  if (zb_drawer_bubble_is_label(len)) {", "  if (1) {"),
-    "the buffer leaks": HONEST.replace("  free(shown);\n  if (zb", "  if (zb", 1),
-    "copy puts the shown string": mutate("  [pb setData:[NSData dataWithBytes:_text + from length:to - from] forType:NSPasteboardTypeString];",
-                                         "  [pb setString:[[self textStorage] string] forType:NSPasteboardTypeString];"),
-    "copy skips the map": mutate("  size_t to = zb_drawer_appkit_original_offset(_text, _len, r.location + r.length);",
-                                 "  size_t to = r.location + r.length;"),
-    "a second label constructor": HONEST.replace("@end", "- (NSView *)raw { return [NSTextField labelWithString:@\"\"]; }\n@end"),
-    "an attachment": mutate("  [view setString:plain ?: @\"\"];", "  [view setString:plain ?: @\"\"];\n  (void)[NSTextAttachment new];"),
+    "HTML": mutate("  free(shown);\n", "  free(shown);\n  (void)[[NSAttributedString alloc] initWithHTML:nil documentAttributes:nil];\n"),
 }
 
 
@@ -251,8 +283,8 @@ class BubbleInert(unittest.TestCase):
         self.assertEqual(problems(HONEST), [])
 
     def test_strings_and_comments_do_not_count(self):
-        extra = ('// initWithHTML setEditable:YES zb_drawer_appkit_shown( setString:\n'
-                 'static const char *k = "setStringValue: } { initWithHTML";\n')
+        extra = ('// NSTextField setString: initWithHTML zb_drawer_bubble_is_label\n'
+                 'static const char *k = "setStringValue: } { fieldEditor: zb_drawer_appkit_shown(";\n')
         self.assertEqual(problems(HONEST + extra), [])
 
     def test_each_dishonest_fixture_fails(self):
