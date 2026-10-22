@@ -34008,3 +34008,63 @@ hostless live rows skipped and `Build Summary: 3/3`.
 This is the offline contract only. The VM-gated popup implementation still
 requires its later reviewed production change and a released live run; this
 verdict authorizes neither.
+
+## WSL shared ssh transport (`6f2188d`, `1006b1e`)
+
+**APPROVED-for-tests `6f2188d`; BLOCKED-for-tests `1006b1e`.** From clean
+archives, the red reproduced the inherited-system-config refusal exactly:
+`WslSpikeOracle` was **15/16**, with `ssh -G` returning 255 for the bad-owner
+system drop-in. The green's full module was **18/18** with its one live row
+skipped. The production test harness now correctly gives foreground ssh,
+background ssh and scp one option constructor including `-F none`, no global
+known-hosts file, the pinned per-run known-hosts file, strict host checking,
+identities-only, batch mode, explicit identity/port/user and the existing
+connection/dead-peer bounds. No VM rerun is authorized yet.
+
+Two causal-proof gaps remain:
+
+1. `ConnectionAttempts` is not asserted or mutated. Removing its requested
+   value is wrongly accepted with effective value `1`; changing it to `99` is
+   also wrongly accepted. Require effective `connectionattempts == 3` and a
+   rejecting mutant.
+2. `test_one_option_set_shared_by_ssh_and_scp` fabricates its own scp argv
+   from `_ssh_opts`; it never invokes the production `scp()` wrapper. A
+   regression that restores an independent unsafe scp command therefore
+   passes. Patch subprocess launch, capture the real argv from `ssh()`,
+   `ssh_bg()` and `scp()`, and prove the ordered shared options. Extend the
+   no-network effective-config mutants across identity, user, port,
+   `ConnectTimeout`, `ConnectionAttempts`, both server-alive fields and
+   injected `ProxyCommand`/`ProxyJump`.
+
+## MS8 launch environment and fd-3 census reason red (`193041a`)
+
+**BLOCKED-for-tests.** The three files are genuinely new and unregistered,
+and all are red in clean archives: the process-census module and fd-3 case
+fail inside private user/PID/mount namespaces; the launch-environment case
+fails inside private user/net/PID/mount namespaces with loopback enabled.
+All three commands returned nonzero. The tests patch `os.kill` and
+`os.killpg` to raise, and the namespace boundary contains their process
+inspection. The launch reporter otherwise has the intended shape: the staged
+real `zb-hook-run` invokes a stand-in sandbox-exec and bare `/usr/bin/env`,
+requires exact names and values, rejects planted data and the marker
+variable, drives malformed-output/widened-allowlist/boundary mutants, and
+keeps the Python row for sandbox, network, descriptor and session checks.
+
+Fix these red gaps before landing the green:
+
+1. Drive `children(root) -> ProcessLookupError`/`ESRCH` explicitly and require
+   `walk-unreadable` with zero root-path reprobes. The current root row covers
+   only a generic `PermissionError`, despite the contract that root failure
+   can never be treated as a vanished child.
+2. Return a syntactically well-formed but unknown census reason such as
+   `other` or `walk-clean`, and require exactly `census=['invalid']`. Free
+   text, booleans and exceptions do not catch a sanitizer that accepts any
+   reason-shaped string.
+3. Make the no-leak oracle search for the full CLI path, `--home`, an
+   environment name and value, the complete test token and raw exception
+   text, rather than only the short pid/base-URL fragments.
+
+The green must keep `cli_env_clean()` as a thin `reason == ok` wrapper,
+register all three tests under their required namespaces, update any MS5
+inventory that pins `proc_darwin`, and return changed hard-gate cases plus the
+manifest for a fresh digest review. No Mac run is authorized by this verdict.
