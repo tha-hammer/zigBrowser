@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Hostless driven selftest of every caller of tests/mac/build-on-mac.sh (plan R30-MS1, bd zigBrowser-4pa.59 +
 # zigBrowser-4pa.77; orchestrator ruling: migrate all callers in the same green; SilverRidge 3665306 + de1751c). The
-# callers are the seven Mac gates tests/mac/{gate,ms1b_signed_gate,ms2a_gate,ms2b_gate,ms2c_gate,ms3_gate,ms4_gate}.sh
-# and packaging/macos/build-dmg.sh. A caller that builds into the fresh run dir but works anywhere else (the old shared
+# callers are the seven Mac gates tests/mac/{gate,ms1b_signed_gate,ms2a_gate,ms2b_gate,ms2c_gate,ms3_gate,ms4_gate}.sh,
+# the runtime-fix rows gate tests/mac/ms_runtime_rows_gate.sh, and packaging/macos/build-dmg.sh. A caller that builds into the fresh run dir but works anywhere else (the old shared
 # $HOME/zigBrowser, /tmp, the shared home) tests a stale tree: a proof that cannot fail. For each caller, run end to
 # end, every recorded ssh/scp call is classified STRUCTURALLY against its host's exact run dir
 # RD = zb-gate-<sha>-<nonce> (remote path "$HOME/RD"), and anything unrecognised fails:
@@ -219,6 +219,7 @@ check_caller ms2b        tests/mac/ms2b_gate.sh        $'^PASS\tms2b-gate\tboth-
 check_caller ms2c        tests/mac/ms2c_gate.sh        $'^PASS\tms2c-gate\tboth-arches$'          "$INTEL" "$ARM"
 check_caller ms3         tests/mac/ms3_gate.sh         $'^PASS\tms3-gate\tboth-arches$'           "$INTEL" "$ARM"
 check_caller ms4         tests/mac/ms4_gate.sh         $'^PASS\tms4-gate\tboth-arches$'           "$INTEL" "$ARM"
+check_caller rows        tests/mac/ms_runtime_rows_gate.sh $'^PASS\tms-runtime-rows-gate\tboth-arches$' "$INTEL" "$ARM"
 check_caller build-dmg   packaging/macos/build-dmg.sh  '^==> Done: '                             "$INTEL"
 
 if [ "$fails" -eq 0 ]; then printf 'PASS\tmac-gate-callers-selftest\n'; exit 0; fi
