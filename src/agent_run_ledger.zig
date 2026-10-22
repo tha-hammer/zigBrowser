@@ -315,3 +315,32 @@ pub fn readStartTicks(pid: i32) ?u64 {
 pub fn probeLiveness(pid: i32, start_ticks: u64) Liveness {
     return livenessFromRead(readStart(pid), start_ticks);
 }
+
+// ---- whole-recovery startup transaction (RoseCat whole-recovery claim; macOS-plan Rev 25-27) ----
+
+/// Whether the startup-recovery transaction surfaced a fixed incident.
+pub const RecoveryIncident = enum { none, recovery_busy };
+/// What startup does with the first NEW agent run when recovery could not complete.
+pub const FirstRun = enum { allowed, refused_deferred };
+/// The outcome of a startup-recovery pass.
+pub const RecoveryResult = struct { acquired: bool, incident: RecoveryIncident, first_run: FirstRun };
+
+/// Startup recovery under the ONE global flock, bounded by a total monotonic deadline (acquireLock's
+/// max_tries x backoff_ms). Acquire-failure/deadline/cancel => FAIL CLOSED: no held work runs, so zero
+/// liveness/census/signal/retire/unlink/ledger mutation; the entry is retained, a recovery-busy incident is
+/// surfaced, and the first new agent run is refused/deferred (never hung). A live holder that stalls can thus
+/// never wedge startup. The held recovery work (revalidate -> fixed point -> unlink -> rmdir -> remove) lands in
+/// the two-recoverer slice.
+pub fn runStartupRecovery(io: std.Io, dir: std.Io.Dir, max_tries: u32, backoff_ms: i64) RecoveryResult {
+    _ = io;
+    _ = max_tries;
+    _ = backoff_ms;
+    // RED (whole-recovery live-stalled-holder): a BLOCKING LOCK_EX acquire ignores the bound, so a stalled live
+    // holder wedges startup forever. The green takes the bounded, cancellable acquireLock inside the deadline and
+    // fails closed on LockBusy/LockFailed.
+    const fd = std.posix.openat(dir.handle, LOCK_NAME, .{ .ACCMODE = .RDWR, .CREAT = true, .NOFOLLOW = true, .CLOEXEC = true }, 0o600) catch
+        return .{ .acquired = false, .incident = .recovery_busy, .first_run = .refused_deferred };
+    _ = std.posix.system.flock(fd, std.posix.LOCK.EX); // BLOCKING (mutant) -> hangs on a stalled holder
+    _ = std.posix.system.close(fd);
+    return .{ .acquired = true, .incident = .none, .first_run = .allowed };
+}
