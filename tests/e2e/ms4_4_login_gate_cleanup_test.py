@@ -9,12 +9,17 @@ background sleep in its group and execs a sleep itself (a leader plus a grandchi
   group;
 - once the leader is reaped, stop() signals nothing at all (its pid could be reused), and a second stop() is a no-op;
 - without os.waitid (a Python that lacks it; the attribute removed), stop() still stops the whole group and reaps the
-  leader, and a second stop() signals nothing (RoseCat 7902).
+  leader, and a second stop() signals nothing (RoseCat 7902);
+- Darwin's killpg answers EPERM for a group whose only member is the exited, not yet reaped leader (5b48662 on both
+  Macs, BlueBeaver 7909): an EPERM once the leader has exited is that group being gone, so stop() reaps and returns
+  the status; an EPERM while the leader still runs is a real refusal and stop() raises it. Both with and without
+  os.waitid (os.killpg wrapped: the real call, then the EPERM Darwin would answer).
 Linux only (it reads /proc to observe, never to decide). It signals only its own children and the stand-in group it
 started, so it runs inside a private PID namespace:
   cd tests/e2e && unshare --map-current-user --pid --fork --kill-child --mount-proc \\
     sh -c 'setsid -w python3 -X dev -m unittest -v ms4_4_login_gate_cleanup_test; exit $?'
 Unregistered until its registration."""
+import contextlib
 import os
 import signal
 import subprocess
@@ -107,6 +112,51 @@ class OwnedGroupCleanup(unittest.TestCase):
         with mock.patch.object(os, "killpg", side_effect=AssertionError("os.killpg reached")), \
                 mock.patch.object(os, "kill", side_effect=AssertionError("os.kill reached")):
             self.assertEqual(group.stop(), status, "a second stop() is not signal-free")
+
+    def eperm_once_exited(self, group):
+        """os.killpg as Darwin answers it: the real signal, then EPERM when the leader has exited (a zombie)."""
+        real = os.killpg
+
+        def killpg(pid, sig):
+            real(pid, sig)
+            if pid == group.proc.pid and Path(f"/proc/{pid}").exists() and not running(pid):
+                raise PermissionError(1, "Operation not permitted")
+        return mock.patch.object(os, "killpg", side_effect=killpg)
+
+    def started(self):
+        group = gate.OwnedGroup(STAND_IN, stdout=subprocess.PIPE, text=True)
+        leader, grandchild = group.proc.pid, int(group.proc.stdout.readline())
+        group.proc.stdout.close()
+        self.leftover += [leader, grandchild]
+        return group, leader, grandchild
+
+    def test_darwin_eperm_for_an_exited_leader_is_the_group_gone(self):
+        for waitid in (True, False):
+            with self.subTest(waitid=waitid):
+                group, leader, grandchild = self.started()
+                with self.eperm_once_exited(group), contextlib.ExitStack() as stack:
+                    if not waitid:
+                        stack.enter_context(mock.patch.object(os, "waitid", create=True))
+                        del os.waitid
+                    status = group.stop(grace_sec=1.0)
+                self.assertIsNotNone(status, "the leader was not reaped")
+                self.assertEqual(group.proc.returncode, status)
+                self.assertEqual(self.gone_soon([leader, grandchild]), [], "the group was left running")
+
+    def test_an_eperm_while_the_leader_runs_is_raised(self):
+        for waitid in (True, False):
+            with self.subTest(waitid=waitid):
+                group, leader, grandchild = self.started()
+                refused = mock.patch.object(os, "killpg", side_effect=PermissionError(1, "Operation not permitted"))
+                with refused, contextlib.ExitStack() as stack:
+                    if not waitid:
+                        stack.enter_context(mock.patch.object(os, "waitid", create=True))
+                        del os.waitid
+                    with self.assertRaises(PermissionError):
+                        group.stop(grace_sec=0.3)
+                self.assertTrue(running(leader), "the refused stop() still ended the leader")
+                os.killpg(leader, signal.SIGKILL)  # this test's own stand-in group, leader unreaped
+                group.proc.wait(10)
 
     def test_after_the_leader_is_reaped_stop_signals_nothing(self):
         group = gate.OwnedGroup(["/bin/sh", "-c", "exit 0"])

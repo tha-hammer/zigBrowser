@@ -196,25 +196,31 @@ def main() -> int:
             proc = subprocess.Popen(prefix + argv, **kw)
         err: list[str] = []
         threading.Thread(target=lambda: err.extend(proc.stderr), daemon=True).start()
-        rpc = None
+        rpc, failed = None, False
         try:
             rpc = RpcClient(socket_path, args.timeout_sec)
-            passed = scenario(rpc, server.origin, server)
+            for name in scenario(rpc, server.origin, server):
+                print(f"PASS\t{name}", flush=True)  # before the teardown, which cannot hide them (7909)
         except Exception as exc:  # noqa: BLE001 - every failure is reported the same way
-            print("FAIL\tms4.4-login-gate")
+            print("FAIL\tms4.4-login-gate", flush=True)
             eprint(f"error={exc!r}")
             eprint(f"requests={server.paths[-12:]}")
             eprint(f"stderr={err[-8:]}")
-            return 1
+            failed = True
         finally:
             if rpc is not None:
                 rpc.close()
-            if DARWIN:
-                group.stop()
-            else:
-                stop(proc)
-    for name in passed:
-        print(f"PASS\t{name}")
+            try:
+                if DARWIN:
+                    group.stop()
+                else:
+                    stop(proc)
+            except Exception as exc:  # noqa: BLE001 - a teardown failure fails the test by name
+                print("FAIL\tms4.4-teardown", flush=True)
+                eprint(f"teardown error={exc!r}")
+                failed = True
+    if failed:
+        return 1
     print("PASS\tms4.4-login-gate")
     return 0
 

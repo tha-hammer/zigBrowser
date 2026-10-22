@@ -27,6 +27,12 @@ class OwnedGroup:
         except ChildProcessError:
             return True
 
+    def _leader_gone(self) -> bool:
+        """Exited: looked at without reaping when os.waitid exists, else reaped here (nothing is signalled after)."""
+        if hasattr(os, "waitid"):
+            return self._leader_exited()
+        return self.proc.poll() is not None
+
     def stop(self, grace_sec: float = 2.0):
         pid = self.proc.pid
         if self.status is None and self.proc.returncode is not None:
@@ -37,6 +43,12 @@ class OwnedGroup:
             try:
                 os.killpg(pid, sig)
             except ProcessLookupError:
+                break
+            except PermissionError:
+                # Darwin answers EPERM for a group whose only member is the exited, not yet reaped leader (5b48662
+                # on both Macs): that group is gone. While the leader still runs, the refusal is real.
+                if not self._leader_gone():
+                    raise
                 break
             if sig == signal.SIGTERM:
                 deadline = time.monotonic() + grace_sec
