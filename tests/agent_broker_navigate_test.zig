@@ -16,7 +16,8 @@
 //!
 //! - RoseCat 7615: every selector x mode x verb (18 rows) pins card or not, the dispatch count,
 //!   the method, the exact bound-window params and the notification count; two cards waiting
-//!   (two drawers) are both cancelled by one main-window close; both verbs refuse a model's
+//!   (two drawers, their windows 2 and 3 still open: RoseCat 7626) are both cancelled by one
+//!   main-window close; every call is answered exactly once; both verbs refuse a model's
 //!   `window_id` and any selector, mode or run-fact field, so the model can choose neither.
 //!
 //! On HEAD there is no `Broker.Approval` seam: this file does not compile there (the red).
@@ -426,6 +427,7 @@ fn checkRow(selector: approval.Selector, mode: approval.Mode, card: bool, tool: 
     try a.wait();
     try testing.expect(a.ok);
     settle();
+    try testing.expectEqual(@as(u32, 1), a.n.load(.acquire));
     try testing.expectEqual(@as(usize, 1), r.engine.count());
     try testing.expectEqualStrings(method, r.engine.method(0));
     try testing.expectEqualStrings(params, r.engine.param(0));
@@ -442,7 +444,11 @@ test "two drawers each wait on a card; one main-window close cancels both, neith
     if (!has) return error.TestNoApprovalSeam;
     const r = try Rig.create(true);
     defer r.destroy();
+    // Three live windows: the main one (1, opened first) and the two drawers' (2 and 3), which
+    // stay open while the main one closes (RoseCat 7626: not merely the last window closing).
     r.cards.windowOpened(1);
+    r.cards.windowOpened(2);
+    r.cards.windowOpened(3);
     r.app.drawer_showing = false;
     // A second drawer, on window 3, sharing the app's one set of cards.
     var other = broker.Broker.init(gpa, &r.f.server, 3, 30_000);
@@ -472,6 +478,8 @@ test "two drawers each wait on a card; one main-window close cancels both, neith
     try testing.expect(!r.cards.approve(2));
     settle();
     try testing.expectEqual(@as(usize, 0), r.engine.count());
+    try testing.expectEqual(@as(u32, 1), a.n.load(.acquire));
+    try testing.expectEqual(@as(u32, 1), b.n.load(.acquire));
 }
 
 test "both verbs refuse a model's window_id and every selector, mode or run-fact field; no engine call, no card" {
