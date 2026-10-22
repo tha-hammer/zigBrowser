@@ -53,7 +53,7 @@ _KINDS = {"icon": [_RECT], "open": [_RECT], "tree": [r"[A-Za-z0-9_]+(,[A-Za-z0-9
 
 # The e2e seam modes. Both runner mode slots carry a NONEMPTY sentinel ("none" == off), so an empty fail slot
 # can never be dropped in the ssh->PowerShell arg transit and shift the force arg (the dbe6382 live-run bug).
-FAIL_MODES = ("", "panel", "icon")
+FAIL_MODES = ("", "panel", "icon", "bubble")
 FORCE_MODES = ("", "assign_fail", "assign_firststop_fail", "cleanup_exhaust", "wait_fail")
 
 
@@ -129,7 +129,9 @@ def check_success(r):
     # null-control implementation (or EnumChildWindows counting WebView2's own HWNDs) does not pass.
     statics = [s for s in (r.get("controls") or "").split("|") if s]
     texts = sorted(s[len("STATIC:"):] for s in statics if s.startswith("STATIC:"))
-    assert texts == ["", "S"], f"host window must have exactly the drawer panel + 'S' icon direct STATIC children; got {statics!r}"
+    # The drawer's DIRECT STATIC host children: the panel ("" text), the "S" icon, and the "-" minimize control
+    # (WS5.3). The bubble is a RichEdit child of the PANEL, not a direct host STATIC, so it is not listed here.
+    assert texts == ["", "-", "S"], f"host window must have exactly the panel, 'S' icon and '-' control as direct STATIC children; got {statics!r}"
     rows = [row for row in (parse_drawer(ln) for ln in r["stdout"].splitlines()) if row]
     wins = {win for win, _, _ in rows}
     assert len(wins) == 1, f"all DRAWER rows must share one window id; got {sorted(wins)}"
@@ -154,12 +156,13 @@ def check_mounted_fail(r, which):
     assert r["job_count_after"] == 0, f"the owned Job must be empty after teardown (got {r['job_count_after']})"
     rows = [row for row in (parse_drawer(ln) for ln in r["stdout"].splitlines()) if row]
     assert rows == [], f"a forced-{which}-fail mount must emit NO DRAWER rows; got {rows}"
-    # NO direct drawer controls at all: neither the panel ("STATIC:" empty text) nor the "S" icon
-    # ("STATIC:S"). For an ICON failure this causally proves the already-created panel was DESTROYED — a leaked
-    # (not-destroyed, or failed-DestroyWindow) panel shows up as "STATIC:" and must fail here (RoseCat 7677).
+    # NO direct drawer controls at all: not the panel ("STATIC:" empty text), the "S" icon ("STATIC:S"), or the
+    # "-" minimize control ("STATIC:-", WS5.3). For a later-control failure this causally proves every control
+    # created before it was DESTROYED — a leaked (not-destroyed, or failed-DestroyWindow) control shows up here
+    # and must fail (RoseCat 7677 / 6774439).
     statics = [s for s in (r.get("controls") or "").split("|") if s]
-    drawer_controls = [s for s in statics if s in ("STATIC:", "STATIC:S")]
-    assert drawer_controls == [], f"a forced-{which}-fail mount must leave NO drawer controls (panel/icon); got {statics!r}"
+    drawer_controls = [s for s in statics if s in ("STATIC:", "STATIC:S", "STATIC:-")]
+    assert drawer_controls == [], f"a forced-{which}-fail mount must leave NO drawer controls (panel/icon/min); got {statics!r}"
     # The EXACT complete diagnostic (deterministic forced error 87 + "; drawer not mounted"), as a full line,
     # NOT a truncated substring (RoseCat 7677).
     expected = f"zigBrowser: agent-drawer {which} control failed (error 87); drawer not mounted"
@@ -770,6 +773,12 @@ class WinDrawerLive(unittest.TestCase):
     def test_icon_create_failure_leaves_no_drawer(self):
         self._run_drawer(fail_mode="icon", body=self._seam_body("icon", "", lambda r: check_mounted_fail(r, "icon")))
 
+    def test_bubble_create_failure_leaves_no_drawer(self):
+        # WS5.4 (RoseCat 6774439): the bubble is the conversation surface, not expendable chrome. Forcing its
+        # RichEdit create to fail must mount NO drawer — no rows, no controls — with the bubble diagnostic. This
+        # causally proves the panel/icon/min created before it were all DESTROYED (no leaked STATICs).
+        self._run_drawer(fail_mode="bubble", body=self._seam_body("bubble", "", lambda r: check_mounted_fail(r, "bubble")))
+
     def test_assign_failure_terminates_held_process(self):
         # RoseCat fd17cba/7662, 7670 #1: forcing AssignProcessToJobObject to fail must terminate the held
         # (suspended) process by its handle — proven gone, no owned job members left (no pid/name kill, no orphan).
@@ -803,7 +812,7 @@ class WinDrawerOracle(unittest.TestCase):
     def _good(self):
         return {
             "error": "", "timed_out": False, "terminated": True, "job_count_after": 0, "job_count_before": 2,
-            "window_found": True, "controls": "STATIC:|STATIC:S", "client_w": 1008, "client_h": 729,
+            "window_found": True, "controls": "STATIC:|STATIC:S|STATIC:-", "client_w": 1008, "client_h": 729,
             "stdout": ("DRAWER\t1\ttree\thost,page,icon,panel\n"
                        "DRAWER\t1\ticon\t928,649,56,56\n"
                        "DRAWER\t1\topen\t0,437,1008,292\n"),
@@ -865,6 +874,15 @@ class WinDrawerOracle(unittest.TestCase):
 
     def test_icon_fail_good_passes(self):
         check_mounted_fail(self._good_fail("icon"), "icon")
+
+    def test_bubble_fail_good_passes(self):
+        check_mounted_fail(self._good_fail("bubble"), "bubble")
+
+    def test_bubble_fail_but_leaked_min_rejected(self):
+        # A bubble failure must DESTROY the panel/icon/min created before it; a leaked "-" control must fail.
+        r = self._good_fail("bubble"); r["controls"] = "STATIC:-"
+        with self.assertRaises(AssertionError):
+            check_mounted_fail(r, "bubble")
 
     def test_fail_but_rows_emitted_rejected(self):
         r = self._good_fail("panel"); r["stdout"] += "DRAWER\t1\ttree\thost,page,icon,panel\n"

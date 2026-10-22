@@ -1240,6 +1240,7 @@ void mount_drawer(AppState *app) {
   // driveable by a test (RoseCat 7646). Never consulted in normal runs.
   const bool fail_panel = app->force_drawer_fail != nullptr && strcmp(app->force_drawer_fail, "panel") == 0;
   const bool fail_icon = app->force_drawer_fail != nullptr && strcmp(app->force_drawer_fail, "icon") == 0;
+  const bool fail_bubble = app->force_drawer_fail != nullptr && strcmp(app->force_drawer_fail, "bubble") == 0;
 
   // Native Win32 controls (OD-W6). SEQUENTIAL create+check so a later success can't clobber the panel's
   // failure error, and the icon is never attempted after a panel failure (RoseCat 7646). Each error is
@@ -1300,32 +1301,42 @@ void mount_drawer(AppState *app) {
     DestroyWindow(panel_hwnd);
     return;  // no mounted/live/rows
   }
-  app->min_proc = reinterpret_cast<WNDPROC>(min_prev);
-  app->drawer_min = min_hwnd;
-  app->icon_proc = reinterpret_cast<WNDPROC>(prev_proc);
-  app->drawer_panel = panel_hwnd;
-  app->drawer_icon = icon_hwnd;
   // WS5.4: the inert message bubble — a READ-ONLY, PLAIN-TEXT RichEdit child of the panel. EM_SETTEXTMODE
   // TM_PLAINTEXT (set while empty) keeps it plain, EM_AUTOURLDETECT stays OFF, and the text is set literally via
   // WM_SETTEXT — never EM_STREAMIN/SF_RTF — so RTF markup and URLs render as literal text with no link and no
-  // OLE object. Non-load-bearing chrome: a bubble-create failure logs and the drawer still mounts without it.
+  // OLE object. The bubble is the conversation SURFACE, not expendable chrome: a Msftedit load or CreateWindowExW
+  // failure (or the e2e "bubble" seam) FAILS CLOSED — destroy every control and do NOT mount/emit/live-count, so
+  // there is never a mounted conversation with no message surface (RoseCat 6774439).
   static HMODULE s_msftedit = LoadLibraryW(L"Msftedit.dll");  // provides MSFTEDIT_CLASS ("RICHEDIT50W")
-  (void)s_msftedit;
-  HWND bubble_hwnd = CreateWindowExW(0, MSFTEDIT_CLASS, L"", WS_CHILD | ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL,
-                                     0, 0, 0, 0, panel_hwnd, nullptr, app->instance, nullptr);
-  if (bubble_hwnd != nullptr) {
-    SendMessageW(bubble_hwnd, EM_SETTEXTMODE, TM_PLAINTEXT, 0);  // plain text, not RTF (while still empty)
-    SendMessageW(bubble_hwnd, EM_AUTOURLDETECT, FALSE, 0);       // never linkify URLs
-    if (app->rtf_seam != nullptr) {
-      const std::wstring w = utf8_to_wide(app->rtf_seam);
-      SetWindowTextW(bubble_hwnd, w.c_str());  // literal text; no RTF parsing, no auto-link
-    }
-    app->drawer_bubble = bubble_hwnd;
-  } else {
-    fprintf(stderr, "zigBrowser: agent-drawer bubble control not created (error %lu); bubble omitted\n",
-            static_cast<unsigned long>(GetLastError()));
+  HWND bubble_hwnd = (fail_bubble || s_msftedit == nullptr)
+                         ? nullptr
+                         : CreateWindowExW(0, MSFTEDIT_CLASS, L"",
+                                           WS_CHILD | ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL,
+                                           0, 0, 0, 0, panel_hwnd, nullptr, app->instance, nullptr);
+  if (bubble_hwnd == nullptr) {
+    const unsigned long e = (fail_bubble || s_msftedit == nullptr) ? (unsigned long)ERROR_INVALID_PARAMETER
+                                                                   : (unsigned long)GetLastError();
+    // "bubble control failed …; drawer not mounted" matches the panel/icon diagnostic shape: the bubble is the
+    // conversation surface, so this failure is as fatal to the mount as the panel/icon (RoseCat 6774439).
+    fprintf(stderr, "zigBrowser: agent-drawer bubble control failed (error %lu); drawer not mounted\n", e);
     fflush(stderr);
+    DestroyWindow(min_hwnd);
+    DestroyWindow(icon_hwnd);
+    DestroyWindow(panel_hwnd);
+    return;  // no mounted/live/rows: never a conversation with no message surface
   }
+  SendMessageW(bubble_hwnd, EM_SETTEXTMODE, TM_PLAINTEXT, 0);  // plain text, not RTF (while still empty)
+  SendMessageW(bubble_hwnd, EM_AUTOURLDETECT, FALSE, 0);       // never linkify URLs
+  if (app->rtf_seam != nullptr) {
+    const std::wstring w = utf8_to_wide(app->rtf_seam);
+    SetWindowTextW(bubble_hwnd, w.c_str());  // literal text; no RTF parsing, no auto-link
+  }
+  app->min_proc = reinterpret_cast<WNDPROC>(min_prev);
+  app->drawer_min = min_hwnd;
+  app->drawer_bubble = bubble_hwnd;
+  app->icon_proc = reinterpret_cast<WNDPROC>(prev_proc);
+  app->drawer_panel = panel_hwnd;
+  app->drawer_icon = icon_hwnd;
   app->drawer_mounted = true;
   g_drawer_live.fetch_add(1, std::memory_order_relaxed);
 
