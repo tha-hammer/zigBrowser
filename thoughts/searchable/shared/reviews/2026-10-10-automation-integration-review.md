@@ -27844,3 +27844,159 @@ mutant, but the subject/body/comments must describe the topology honestly.
 Finally, `git diff --check e2a54ec^ e2a54ec` reports a new blank line at EOF in
 `src/agent_run_ledger.zig:226` (NIT). Findings were sent to JadeBeacon in Agent
 Mail 7526. Push-through remains **`bac895b`**.
+
+## WS8/WS9 WSL2 re-plan (`770848b`, `7ca6897`)
+
+**`770848b` BLOCKED; `7ca6897` BLOCKED as a partial follow-up. Do not start the
+WS8/WS9 implementation reds from this revision.** Rev 2.14 makes several sound
+directional decisions: it uses an app-owned imported distro, forbids normal
+per-session `wsl --terminate`, keeps automount and interop off, admits the
+shared utility VM/network namespace, keeps the agent off when containment is
+unavailable, and separates the discovery spike from production closure.
+`7ca6897` also adds a strong twelve-row acceptance matrix and removes the
+spike's global `wsl --shutdown`. Those improvements do not yet make the
+topology implementation-ready or make all of its measured claims causal.
+
+BLOCKER findings:
+
+1. **The discovery run does not prove a non-root Linux launch.**
+   `tests/windows/wsl_live_test.py:63-77` sets `default = root`,
+   `:102-106` explicitly uses `wsl ... -u root`, and the userns/bwrap probes at
+   `:182-184,260-270` therefore run as root. The plan nevertheless says the
+   evidence proves “unprivileged userns + bubblewrap” and was gathered as a
+   “standard user” (`plan:1727-1747`). The Windows SSH caller may be standard,
+   but the Linux security principal is root. Create the dedicated non-root
+   uid/gid first, launch with it explicitly, and prove `id -u != 0`, no sudo or
+   dangerous capabilities/setuid, no system-root writes, and the real
+   `LinuxBwrapBackend` argv under that identity.
+2. **The chosen loopback transport is not what the spike tested.** The WSL
+   listener binds `0.0.0.0:39001` (`wsl_live_test.py:300-314`), while C1
+   requires `127.0.0.1:0` (`plan:1758-1760`). The Windows client tries both
+   localhost and the distro `eth0` address and the test passes if *either*
+   connects (`wsl_live_test.py:223-227`); it does not require an ACK or inspect
+   the listener's received canary. The reverse-direction listener's readiness
+   and exit are not checked before the timeout is called evidence. Correct the
+   live probe to carry bytes over the exact bind/direction, add IPv6 and hostile
+   co-tenant/LAN rows, and fail closed on every listener/client/staging return
+   code before fixing C1 to that result.
+3. **The channel bootstrap is circular and WS8.3 contradicts C1.** The design
+   writes the session capability to a Windows DACL file and says the launcher
+   “also delivers it into the distro” by an unnamed non-env route
+   (`plan:1761-1764`). But the authenticated TCP channel needs that capability
+   before it can be used. The earlier hard-gate wording says “the token reaches
+   the agent over the loopback-TCP transport” (`:1709-1710`), while the revised
+   behavior and C1 say the OAuth token never crosses that channel
+   (`:1772-1773,1822`). Specify the exact bootstrap descriptor/stdio/pipe path,
+   framing, bounds and close ownership, and consistently distinguish the
+   control capability from the OAuth fd-3 credential. The owner-DACL file does
+   not exclude hostile processes running as the same Windows user, so the
+   threat claim must say that plainly.
+4. **C5's direction does not implement the existing bridge API.** Hooks inside
+   the private Linux sandbox initiate calls to voice/control ports 51091 and
+   31337. “The in-distro side listens and the Windows side connects”
+   (`plan:1916-1924`) supplies no path for a hook-initiated request to reach the
+   Windows loopback services. Define a concrete reverse relay/tunnel, including
+   which side dials, framing, authentication, backpressure, cancellation and
+   per-session lifetime, then drive both bridge positives and all bypass
+   negatives through it.
+5. **The file broker is still a placeholder, not a buildable boundary.** C2
+   cites the removed WS0.5 “Option B” and an unspecified shared control channel
+   (`plan:1775-1788`); the acceptance matrix itself says the primitive “must be
+   defined concretely” (`:1877-1882`). Name the Windows and distro components,
+   capability representation, held-handle check-and-use operation, protocol,
+   size/count/deadline limits, immutable snapshot and atomic copy-back, session
+   ownership, conflicts and crash cleanup. A production closure test and the
+   adversarial reparse/swap/special-file rows must use those actual components.
+6. **Setup/update and lifetime are not crash-safe enough to implement.**
+   “import a new dir, swap, remove the old” (`plan:1790-1805`) does not define
+   versioned distro registration names, the current-pointer commit point,
+   rollback, active old sessions, or the reboot-resume actor/authorization.
+   Enabling WSL/VMP is a global change, so uninstall can preserve pre-existing
+   features but cannot truthfully promise to “leave no global WSL change” after
+   this product enabled them (`:1681-1686`). C4 relies on a raw process group
+   without a production ownership marker or detached/double-fork and
+   browser-crash recovery protocol (`:1808-1814`). Define those state machines
+   and exact fail-closed reasons before implementation.
+7. **Superseded Windows-user/WFP text remains normative and conflicts with the
+   new path.** The second WS9 Behaviors/Files/Green/Gate block still requires
+   dedicated users, WFP, fixed Windows ports and both hosts
+   (`plan:1966-1999`); the dependency graph still says WS8/WS9 are coupled by
+   WFP filters (`:2220-2224`); and the unverified list still requires inherited
+   Windows token handles, dedicated-user isolation, nested-virt fallback and
+   `CreateProcessWithLogonW` (`:2265-2285`). A “SUPERSEDED” history heading is
+   insufficient while these later lines remain active requirements. Remove or
+   quarantine the old block and make every dependency/gate/file list name the
+   WSL implementation only.
+8. **The product/host scope is internally inconsistent.** C3 correctly says
+   no WSL/agent on the read-only Win10 file server and gates WS8 on Win11 only
+   (`plan:1805-1806,1828-1833`), while later WS9/WS10/WS11/WS13 requirements and
+   the global gate protocol still require both hosts. State whether the Win10
+   product deliberately ships browser-only with the drawer agent disabled, and
+   revise the launch claim, UX, packaging census and downstream gates to that
+   decision.
+
+The `7ca6897` spike hygiene also remains fail-open: baseline/final `wsl -l`
+return codes, `wsl --terminate`/`--unregister`, staged-script calls and the
+guarded delete are ignored; a failed census can be treated as an empty baseline
+or clean teardown. `_stage` leaks its local temporary directory. Preserve the
+new acceptance matrix, but make the spike refuse missing rootfs on an opted-in
+host (rather than a successful unittest skip), check every lifecycle return,
+prove the exact final import-dir/process/listener census, and clean its local
+scratch.
+
+This is a docs/read-only review; no live Windows or WSL command was run.
+`git diff --check` is clean for both commits. The current contiguous
+push-through remains **`bac895b`**.
+
+## MS6.5.1 `(pid,start)` recovery red (`97c6215`)
+
+**BLOCKED-for-tests.** The isolated mapping mutant is genuinely red: from an
+exact clean export, the unregistered focused command failed **0/1** exactly at
+the live-owner expectation (`expected .leave, found .recover`). The test uses
+a real fork and no signal. But it does not yet implement the plan's required
+two-instance recovery red, and the supposedly real probe has a fail-open path:
+
+1. `src/agent_run_ledger.zig:271` maps every `readStartTicks` failure to
+   `.dead`. That includes permission/read/parse failures, not only a process
+   proved absent. Rev 27 requires all unreadable liveness to fail closed. Read
+   and parse the already-open fd, distinguish `ENOENT`/`ESRCH` from every other
+   error, and add an injectable unreadable row before claiming the mutant is
+   isolated.
+2. The test never exercises `.unreadable`, despite naming it in the test and
+   commit contract. It must require `.fail_closed` for open/read/parse/identity
+   failures and catch the current `.dead` mapping.
+3. `tests/agent_run_ledger_recovery_test.zig:17-54` contains no ledger entry,
+   run dir, marker-holder child, recovery transaction, signal/retire seam, or
+   disk assertion. “B neither signals nor retires” is only a comment around a
+   pure `recoveryFor` call. Keep this as a unit red if useful, but add the
+   specified two-instance production-shaped red: A owns an active entry plus a
+   live marked child; independent B runs startup recovery under the ledger
+   claim; live-same leaves entry/dir/child untouched; live-reused/unreadable
+   fails closed; only proved-dead A permits recovery. A recover-regardless
+   mutant must attempt the observable signal/retire and fail the test.
+
+Because the first expected red occurs before the normal close/wait cleanup,
+the test should also use a defer/guard that always releases and reaps A on any
+assertion failure. The direct red left no process behind in this review, but
+that currently relies on test-process fd teardown rather than an explicit
+test-owned lifecycle. The test remains correctly unregistered; no full gate
+was run.
+
+## MS6.6(B) real-Mac armed hard-gate acceptance (`efa1485`)
+
+**FINAL ACCEPTED for MS6.6(B) on the exact reviewed manifest.** The
+owner-authorized armed hard gate passed on both the Intel and Apple Silicon
+Macs at exact `efa1485`: spawn-I/O passed all four cases per arch; the real R1
+chain selected R1; every row's process group was independently proved stopped
+with **zero** stop-failure reason; and the before/after census was **0 run
+folders and 0 processes** on each Mac. The terminal row was
+`PASS ms6-hard-gate-gate both-arches`.
+
+The manifest at `efa1485` contains exactly the two reviewed cases:
+`case_ms5_spawn_io.py` SHA-256
+`7c739e32fe924877593e15bf232b58be94754c4287b69a7465f2d0371bafcbbb`
+and `case_ms6_6b_r1_chain.py` SHA-256
+`7e914a0b04016c05921af2157b5ea1c0aec9eec35bf3823f7cc97a984ea19f76`.
+This closes the real-Mac acceptance that the earlier diagnostic run was
+waiting for. It does not approve adding the excluded destructive reaper case,
+changing either case byte, or independently flipping `reaper_ready`.
