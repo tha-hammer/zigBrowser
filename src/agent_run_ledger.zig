@@ -140,15 +140,32 @@ pub fn publish(io: std.Io, dir: std.Io.Dir, sub_path: []const u8, entries: []con
 }
 
 pub fn publishCut(io: std.Io, dir: std.Io.Dir, sub_path: []const u8, entries: []const Entry, cut: Cut) !void {
-    // RED STUB — write-in-place (NO temp/rename): it truncates the live store and writes into it directly, so a
-    // crash mid-write (cut == .after_temp, here "after truncate, before data") leaves the store torn/empty rather
-    // than the old content intact. The green writes a synced temp and renames it over the store.
-    var file = try dir.createFile(io, sub_path, .{ .truncate = true, .permissions = .fromMode(0o600) });
-    defer file.close(io);
-    if (cut == .after_temp) return; // crashed after truncating the live store, before writing -> torn/empty store
-    var buf: [1024]u8 = undefined;
-    var writer = file.writer(io, &buf);
-    try std.json.Stringify.value(.{ .schema_version = SCHEMA_VERSION, .runs = entries }, .{}, &writer.interface);
-    try writer.interface.flush();
-    try file.sync(io);
+    // Atomic: write a fresh 0600 O_EXCL sibling temp, fsync it, rename it over the store, fsync the dir. Mirrors
+    // src/atomic_file.zig but relative to the HELD runtime `dir`. The store is only ever replaced whole, so a
+    // reader sees old-or-new (never torn); the temp never outlives a failed publish (defer).
+    var nonce: [8]u8 = undefined;
+    io.random(&nonce);
+    var tmp_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const tmp = try std.fmt.bufPrint(&tmp_buf, "{s}.tmp-{x}", .{ sub_path, std.mem.readInt(u64, &nonce, .little) });
+    var file = try dir.createFile(io, tmp, .{ .exclusive = true, .permissions = .fromMode(0o600) });
+    var renamed = false;
+    defer if (!renamed) dir.deleteFile(io, tmp) catch {};
+    {
+        defer file.close(io);
+        var buf: [1024]u8 = undefined;
+        var writer = file.writer(io, &buf);
+        try std.json.Stringify.value(.{ .schema_version = SCHEMA_VERSION, .runs = entries }, .{}, &writer.interface);
+        try writer.interface.flush();
+        try file.sync(io); // fsync the temp before it can be renamed into place
+    }
+    if (cut == .after_temp) return; // crash before rename: the old store is untouched; the defer removes the temp
+    try dir.rename(tmp, dir, sub_path, io);
+    renamed = true;
+    if (cut == .after_rename) return; // crash before the dir fsync: store is the new content, not yet durable
+    // fsync the dir so the rename itself survives a crash. Reopen it `.iterate` (O_RDONLY) first — the held
+    // handle may be O_PATH, which fsync refuses (src/atomic_file.zig notes the same) — then a DIRECT fdatasync
+    // syscall on that handle (the io event loop does not own this fd).
+    var dir_ro = try dir.openDir(io, ".", .{ .iterate = true });
+    defer dir_ro.close(io);
+    try std.posix.fdatasync(dir_ro.handle);
 }
