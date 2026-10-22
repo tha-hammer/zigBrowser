@@ -51,6 +51,29 @@ _RECT = r"-?\d+,-?\d+,\d+,\d+"
 # The subset of DRAWER row shapes this entry red pins (names identical to src/agent_drawer.c / agent_common).
 _KINDS = {"icon": [_RECT], "open": [_RECT], "tree": [r"[A-Za-z0-9_]+(,[A-Za-z0-9_]+)*"]}
 
+# The e2e seam modes. Both runner mode slots carry a NONEMPTY sentinel ("none" == off), so an empty fail slot
+# can never be dropped in the ssh->PowerShell arg transit and shift the force arg (the dbe6382 live-run bug).
+FAIL_MODES = ("", "panel", "icon")
+FORCE_MODES = ("", "assign_fail", "assign_firststop_fail", "cleanup_exhaust", "wait_fail")
+
+
+def drawer_runner_args(base_win, fail_mode, force_mode):
+    """The EXACT positional args to run.ps1 (RoseCat f7ff742): [base_win, fail_slot, force_slot] with a nonempty
+    sentinel in BOTH mode slots ('none' for off). Always 3 elements — never a blank positional."""
+    assert fail_mode in FAIL_MODES, f"unknown fail mode {fail_mode!r}"
+    assert force_mode in FORCE_MODES, f"unknown force mode {force_mode!r}"
+    return [base_win, fail_mode or "none", force_mode or "none"]
+
+
+def decode_mode(arg, allowed):
+    """Fail-closed mirror of the runner's decode: 'none' -> off (''); a value in `allowed` passes through;
+    anything else (including a blank) raises. The _RUNNER performs the same decode in PowerShell."""
+    if arg == "none":
+        return ""
+    if arg not in allowed:
+        raise AssertionError(f"unknown/blank mode {arg!r} (allowed: {allowed})")
+    return arg
+
 
 def parse_drawer(line):
     """`DRAWER\\t<win>\\t<kind>\\t...` -> (win, kind, fields) with field validation, or None."""
@@ -179,9 +202,17 @@ def check_wait_fail(r):
 # list is the census (not a machine-wide name count).
 _RUNNER = r"""
 $ErrorActionPreference='Stop'
+# Exactly 3 args; both mode slots carry a nonempty sentinel ('none' == off). Fail-closed enum decode so a
+# dropped/blank slot or an unknown value aborts rather than silently shifting a seam (RoseCat f7ff742).
+if ($args.Count -ne 3) { throw "runner expected exactly 3 args (dir, failSlot, forceSlot), got $($args.Count): $($args -join '|')" }
 $dir = $args[0]
-$failMode = $args[1]    # '', 'panel' or 'icon' — drives the PRODUCTION control-factory failure seam
-$forceMode = $args[2]   # '', 'assign_fail', 'assign_firststop_fail', 'cleanup_exhaust' or 'wait_fail' — seam
+function Decode-Mode($v, $allowed) {
+  if ($v -eq 'none') { return '' }
+  if ($allowed -notcontains $v) { throw "unknown/blank seam mode '$v' (allowed: none, $($allowed -join ', '))" }
+  return $v
+}
+$failMode = Decode-Mode $args[1] @('panel','icon')
+$forceMode = Decode-Mode $args[2] @('assign_fail','assign_firststop_fail','cleanup_exhaust','wait_fail')
 if ($forceMode) { $env:ZB_E2E_DRAWER_FORCE = $forceMode }  # read by [Z]::ForceFail at first use
 $exe = Join-Path $dir 'zigBrowser.exe'
 $out = Join-Path $dir 'o.txt'; $err = Join-Path $dir 'e.txt'; $nul = 'NUL'
@@ -389,7 +420,7 @@ public static class Z {
 }
 '@
 
-$res = @{ stdout=''; stderr=''; client_w=0; client_h=0; pid=0; controls=''; job_count_before=0; job_count_after=0; window_found=$false; terminated=$false; timed_out=$false; proc_gone=$false; first_stop_failed=$false; cleanup_exhausted=$false; launch_failed=$false; error='' }
+$res = @{ stdout=''; stderr=''; client_w=0; client_h=0; pid=0; controls=''; job_count_before=0; job_count_after=0; window_found=$false; terminated=$false; timed_out=$false; proc_gone=$false; first_stop_failed=$false; cleanup_exhausted=$false; launch_failed=$false; decoded_fail=$failMode; decoded_force=$forceMode; error='' }
 # e2e-only seams, set in this process so the child inherits them (honoured only under --e2e-protocol).
 $env:ZIGBROWSER_AGENT_DRAWER_OPEN = '1'
 $env:ZIGBROWSER_AGENT_DRAWER_DEMO = 'messages:2'
@@ -500,12 +531,10 @@ class WinDrawerLive(unittest.TestCase):
                 pairs.append((str(loader), "WebView2Loader.dll"))
             for local, name in pairs:
                 self.assertEqual(self._scp(local, f"{rel}/{name}"), 0, f"scp {name}")
+            # Always 3 positionals with nonempty sentinels (no blank positional that could be dropped in transit
+            # and shift the seam — the dbe6382 live-run bug; RoseCat f7ff742).
             args = ["powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
-                    "-File", f"{base_win}\\run.ps1", base_win]
-            if fail_mode or force_mode:
-                args.append(fail_mode)          # positional $args[1]
-            if force_mode:
-                args.append(force_mode)         # positional $args[2]
+                    "-File", f"{base_win}\\run.ps1", *drawer_runner_args(base_win, fail_mode, force_mode)]
             run = self._ssh(*args)
             self.assertEqual(run.returncode, 0, f"runner failed: {run.stdout}\n{run.stderr}")
             r = json.loads(run.stdout.strip().splitlines()[-1])
@@ -543,35 +572,46 @@ class WinDrawerLive(unittest.TestCase):
     def test_native_drawer_mounts_docks_and_emits_census(self):
         self._run_drawer(body=check_success)
 
+    def _seam_body(self, want_fail, want_force, check):
+        # Verify the runner DECODED the seam the test intended (the live echo, RoseCat f7ff742) — this is what
+        # catches the dropped/blank-positional bug — then apply the behavior check.
+        def body(r):
+            self.assertEqual(r.get("decoded_fail"), want_fail, f"decoded fail seam mismatch: {r.get('decoded_fail')!r}")
+            self.assertEqual(r.get("decoded_force"), want_force, f"decoded force seam mismatch: {r.get('decoded_force')!r}")
+            check(r)
+        return body
+
     def test_panel_create_failure_leaves_no_drawer(self):
         # WS5 (RoseCat 7646): forcing the panel CreateWindowExW to fail must mount NO drawer — no DRAWER rows,
         # no drawer controls — the browser still runs and tears down cleanly, with the panel diagnostic.
-        self._run_drawer(fail_mode="panel", body=lambda r: check_mounted_fail(r, "panel"))
+        self._run_drawer(fail_mode="panel", body=self._seam_body("panel", "", lambda r: check_mounted_fail(r, "panel")))
 
     def test_icon_create_failure_leaves_no_drawer(self):
-        self._run_drawer(fail_mode="icon", body=lambda r: check_mounted_fail(r, "icon"))
+        self._run_drawer(fail_mode="icon", body=self._seam_body("icon", "", lambda r: check_mounted_fail(r, "icon")))
 
     def test_assign_failure_terminates_held_process(self):
         # RoseCat fd17cba/7662, 7670 #1: forcing AssignProcessToJobObject to fail must terminate the held
         # (suspended) process by its handle — proven gone, no owned job members left (no pid/name kill, no orphan).
-        self._run_drawer(force_mode="assign_fail", body=check_assign_fail)
+        self._run_drawer(force_mode="assign_fail", body=self._seam_body("", "assign_fail", check_assign_fail))
 
     def test_assign_plus_first_stop_failure_reaped_by_independent_cleanup(self):
         # RoseCat a94db57 #1 / c943215: membership verify fails AND the first stop proof fails on the suspended
         # child, so only the born-in-job backstop (job close + post-close wait) can prove it gone — Teardown is
         # skipped and cannot supply the proof.
-        self._run_drawer(force_mode="assign_firststop_fail", body=check_assign_firststop_fail)
+        self._run_drawer(force_mode="assign_firststop_fail",
+                         body=self._seam_body("", "assign_firststop_fail", check_assign_firststop_fail))
 
     def test_cleanup_exhaustion_cannot_outlive_runner(self):
         # RoseCat c943215: every held-handle reap attempt is exhausted, yet because the child was BORN INTO the
         # kill-on-close job, closing the job + the durable post-close wait still prove it terminal. The child
         # cannot outlive the runner even when the TerminateProcess-based reap fails entirely.
-        self._run_drawer(force_mode="cleanup_exhaust", body=check_cleanup_exhaustion)
+        self._run_drawer(force_mode="cleanup_exhaust",
+                         body=self._seam_body("", "cleanup_exhaust", check_cleanup_exhaustion))
 
     def test_wait_failure_is_reported(self):
         # RoseCat 7670 #2: a teardown whose first wait is not WAIT_OBJECT_0 must FAIL (never a silent bounded
         # success) AND the distinct bounded cleanup route must prove the process + job tree gone first.
-        self._run_drawer(force_mode="wait_fail", body=check_wait_fail)
+        self._run_drawer(force_mode="wait_fail", body=self._seam_body("", "wait_fail", check_wait_fail))
 
 
 class WinDrawerOracle(unittest.TestCase):
@@ -764,6 +804,47 @@ class WinDrawerOracle(unittest.TestCase):
         with self.assertRaises(AssertionError):
             check_wait_fail({"terminated": False, "proc_gone": True, "job_count_after": 1,
                              "error": "WaitForSingleObject on the browser did not signal WAIT_OBJECT_0: 258"})
+
+    # --- runner arg encoding / decoding oracles (RoseCat f7ff742: no blank positional) ---
+    def test_runner_args_causal_rows(self):
+        b = "C:\\Users\\zbtext\\zb\\drawer-x"
+        self.assertEqual(drawer_runner_args(b, "", ""), [b, "none", "none"])          # no seam
+        self.assertEqual(drawer_runner_args(b, "panel", ""), [b, "panel", "none"])    # fail-only
+        self.assertEqual(drawer_runner_args(b, "", "assign_fail"), [b, "none", "assign_fail"])  # force-only
+        self.assertEqual(drawer_runner_args(b, "panel", "assign_fail"), [b, "panel", "assign_fail"])  # both
+        for fm, fo in (("", ""), ("panel", ""), ("", "assign_fail"), ("icon", "wait_fail")):
+            self.assertEqual(len(drawer_runner_args(b, fm, fo)), 3, "exactly 3 positionals")
+
+    def test_runner_args_force_only_is_not_blank_positional(self):
+        # The exact dbe6382 regression: a force-only run must put 'none' (not '') in the fail slot, so the force
+        # arg cannot shift. base='...', fail slot pinned 'none', force 'assign_fail'.
+        b = "C:\\Users\\zbtext\\zb\\drawer-x"
+        args = drawer_runner_args(b, "", "assign_fail")
+        self.assertEqual(args, [b, "none", "assign_fail"])
+        self.assertEqual(args[1], "none", "the fail slot must be a nonempty sentinel, never a blank positional")
+
+    def test_runner_args_fail_closed(self):
+        b = "C:\\Users\\zbtext\\zb\\drawer-x"
+        with self.assertRaises(AssertionError):
+            drawer_runner_args(b, "bogus", "")
+        with self.assertRaises(AssertionError):
+            drawer_runner_args(b, "", "bogus")
+
+    def test_decode_mode_fail_closed(self):
+        self.assertEqual(decode_mode("none", ("assign_fail",)), "")
+        self.assertEqual(decode_mode("assign_fail", ("assign_fail", "wait_fail")), "assign_fail")
+        with self.assertRaises(AssertionError):
+            decode_mode("bogus", ("assign_fail",))      # unknown -> fail closed
+        with self.assertRaises(AssertionError):
+            decode_mode("", ("assign_fail",))           # a blank (dropped) slot -> fail closed, not treated as off
+
+    def test_runner_decodes_and_echoes(self):
+        # structural: the VM runner enforces the exact arg count, fail-closed decode, and echoes the decoded seam.
+        self.assertIn("if ($args.Count -ne 3)", _RUNNER)
+        self.assertIn("function Decode-Mode", _RUNNER)
+        self.assertIn("unknown/blank seam mode", _RUNNER)
+        self.assertIn("decoded_fail=$failMode", _RUNNER)
+        self.assertIn("decoded_force=$forceMode", _RUNNER)
 
 
 if __name__ == "__main__":
