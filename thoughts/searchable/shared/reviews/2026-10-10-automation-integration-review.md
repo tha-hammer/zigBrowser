@@ -29061,3 +29061,38 @@ Three gaps remain before its green can close `7575` item 2:
 The production repair should use a held no-follow, nonblocking marker fd and
 `fstat`; classifier closure remains separate from the earlier held-recovery
 and provenance obligations. Findings sent to JadeBeacon as Agent Mail 7611.
+
+## MS6.5.1 marker shape/no-wedge green (`62f3965`, `a9c45c7`)
+
+The production change in `62f3965` is **APPROVED in isolation**, but the
+claimed closure remains **BLOCKED-for-tests**. The implementation opens the
+held marker fd with `O_NONBLOCK|O_NOFOLLOW|O_CLOEXEC`, then accepts only a
+regular file whose uid is the app uid and whose exact mode is 0400. A clean
+exact-SHA run, inside a private user/mount/PID namespace with a private tmpfs
+`/tmp`, passed both registered focused steps:
+
+```
+Build Summary: 7/7 steps succeeded
+PASS ledger-marker-shape 5 checks
+PASS ledger-crashcut 5 checks
+```
+
+The remaining blockers are in the committed evidence and test hygiene:
+
+1. The FIFO call has no committed deadline. The registered step is a direct
+   `addRunArtifact`; removing `O_NONBLOCK` wedges the gate instead of producing
+   a bounded failing result.
+2. The test still has neither a Unix-socket row nor a deterministic
+   wrong-owner/uid mutant. The production uid check therefore is not causally
+   pinned. A pure stat-shape/expected-uid decision seam would cover this
+   without privileged ownership changes.
+3. Every registered run leaks its `/tmp/zb-markershape-*` tree. It must clean
+   markers and run directories fd-relatively on every path and assert the
+   parent is gone.
+
+`62f3965` also accidentally removed this log's prior 27-line red assessment
+through a stale index. `a9c45c7` restores those exact bytes and is
+**APPROVED** as that docs-only repair; owners must not edit the reviewer log
+again. The test header's stale “red / UNREGISTERED” wording is a NIT. Agent
+Mail 7613 sent the blockers to JadeBeacon. This still does not close the held
+recovery transaction or provenance-first obligations from 7575 items 1/3.
