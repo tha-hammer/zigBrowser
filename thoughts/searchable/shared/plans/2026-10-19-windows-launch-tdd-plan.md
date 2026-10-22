@@ -1766,11 +1766,11 @@ or AppContainer fallback (those are dropped for launch, OD-W4).
   `appendWindowsPath=false` — and leaves the global `%USERPROFILE%\.wslconfig` untouched. `--uninstall`
   (WS13.4) unregisters the distro and leaves no global WSL change.
 - **Agent confinement is the EXISTING Linux sandbox** (bubblewrap + netd) run inside the distro — the
-  same code and policy as Linux, so WS8's isolation is largely the Linux guarantees re-proven under
+  same code and policy as Linux, so WS8's isolation is largely the Linux guarantees re-established under
   WSL2, not new Windows-host user/WFP machinery.
 - **Transport (browser↔agent / browser↔netd):** AF_UNIX does **not** cross the WSL2 boundary, so the
   link is **loopback TCP with the agent listening inside the distro and the browser connecting from
-  Windows** (measured: that is the only direction that works without an admin firewall rule; see C1),
+  Windows** (observed in the discovery spike: that is the only direction that works without an admin firewall rule; see C1),
   carrying the **same owner-only auth** as the Linux AF_UNIX path (per-session token + nonce/HMAC, an
   endpoint reachable only with the live-session token). WS2.0's owner-only proof is re-expressed for this
   transport.
@@ -1779,9 +1779,9 @@ or AppContainer fallback (those are dropped for launch, OD-W4).
 
 ### Hard-gate behaviors (WSL2; all red first; failure or absent virt ⇒ launch OFF + fixed explanation)
 - **WS8.1 isolation:** the agent in the distro cannot read the Windows host user's profile, processes
-  or the browser's memory (automount OFF so the Windows drive is not mounted — measured: `/mnt/c` is not
+  or the browser's memory (automount OFF so the Windows drive is not mounted — observed in the discovery spike: `/mnt/c` is not
   a mountpoint; no Windows PATH; and the `WSLInterop` binfmt handler hard-disabled at boot, since
-  `interop.enabled=false` alone leaves it registered — measured), and inside the distro the bubblewrap
+  `interop.enabled=false` alone leaves it registered — observed in the discovery spike), and inside the distro the bubblewrap
   confinement holds (agent home ro, real credentials unreachable) — a canary in the host profile and one
   outside the bwrap mounts both stay unreadable.
 - **WS8.2 setup:** one UAC prompt enables the features + imports the distro; idempotent (a second run
@@ -1838,7 +1838,7 @@ pinned in-repo by SHA-256). The committed oracle does not enforce several of its
   socket path — is unreachable from the distro.
 - `appendWindowsPath=false` **works** (no `/mnt` on PATH). `interop.enabled=false` is **PARTIAL**: the
   `binfmt_misc/WSLInterop` handler stays registered/enabled, so WS8.1 must ALSO hard-disable it at boot
-  (`echo 0 > /proc/sys/fs/binfmt_misc/WSLInterop`, measured to block exec) and never bind `/mnt` into the
+  (`echo 0 > /proc/sys/fs/binfmt_misc/WSLInterop`, observed in the discovery spike to block exec) and never bind `/mnt` into the
   agent's bwrap tree. wsl.conf itself IS honored (hostname / `generateResolvConf` / `user.default` all applied).
 - Two distros **share one utility VM** (identical `boot_id`) and **share one network namespace** (same net-ns
   inode, same `eth0`/gateway) while keeping **separate mount + PID namespaces**. So loopback is NOT isolated
@@ -1881,7 +1881,7 @@ proposal:
   partial pre-auth frame is dropped and the connection closed.
 - **Endpoint lifetime:** the listener exists only for the session; close + capability-invalidate on exit.
 - **Honest threat boundary (affd577 #3):** the control capability defends against page content/hooks, other
-  Windows users, and co-tenant distros (measured: a co-tenant distro CAN reach the `127.0.0.1` listener).
+  Windows users, and co-tenant distros (observed in the discovery spike: a co-tenant distro CAN reach the `127.0.0.1` listener).
   It does **not** defend against another process running as the **same Windows user**, which can read the
   owner-DACL files, inject the bootstrap, or run `wsl -d <app> -u root`; the WSL VM is explicitly **not** an
   isolation boundary against the owning Windows user. The claim is "reachable only with the live-session
@@ -1895,7 +1895,7 @@ proposal:
 **C2 — Mount crossing with automount off (no `/mnt/c`).** The semantic `Mount` list does NOT become a WSL
 automount. Files cross via a **host-side broker over the control channel**:
 - The agent's workspace/scratch/state live in the distro's own ext4 (inside the VHDX); the agent never
-  touches the Windows filesystem directly. (Measured: with automount off the Windows drive is genuinely
+  touches the Windows filesystem directly. (Observed in the discovery spike: with automount off the Windows drive is genuinely
   unmounted; only WSLg's own `/mnt/wsl` + `/mnt/wslg` tmpfs remain, which carry no Windows data and are not
   bound into the agent's bwrap tree.)
 - **Two named components (affd577 #5):** a **Windows broker service** (part of the browser process, holding
@@ -1923,7 +1923,7 @@ automount. Files cross via a **host-side broker over the control channel**:
   staging dirs owned by dead sessions (census by the lifetime marker, C4) and deletes them.
 
 **C3 — Crash/reboot-safe, truly one-admin-step setup.** Admin is needed ONLY for the one-time feature enable
-(`wsl --install --no-distribution` → VirtualMachinePlatform + WSL), which needs a reboot. **Measured:** once
+(`wsl --install --no-distribution` → VirtualMachinePlatform + WSL), which needs a reboot. *Observed in the discovery spike:* once
 WSL is present, `wsl --import` and the whole per-user distro lifecycle run with NO admin, so the setup splits
 cleanly into an elevated one-shot and an unprivileged per-user import:
 - **Resumable:** the elevated setup records a durable state marker (features-enabled / reboot-pending /
@@ -1995,18 +1995,22 @@ distro.
   census AND the terminate, so no session can be admitted in between — no other session's marked processes or
   live lease remain); `wsl --shutdown` is forbidden in production entirely.
 
-**C6 — Dedicated non-root Linux identity (affd577 #1).** The agent launches as a **dedicated non-root Linux
-uid** inside the distro, never WSL's default root. `wsl.conf [user] default` is pinned to that user AND the
-launcher passes an explicit `-u <nonroot>` (defence in depth). **Measured (`wsl_live_test.py`, causal):** that
-user is uid 1000, in no sudo/admin group, `sudo`/`doas` absent, `CapEff=0000000000000000`, zero setuid
-binaries on the rootfs, cannot write `/etc`; unprivileged user namespaces AND bubblewrap both work AS that
-non-root user. The rootfs ships read-only to the agent (bwrap RO-binds it); production negatives cover `mount`,
-`ptrace`/`process_vm_readv`, launching a host executable, and writing system dirs.
+**C6 — Dedicated non-root Linux identity (PROPOSAL, affd577 #1).** The **proposal** is that the agent
+launches as a **dedicated non-root Linux uid** inside the distro, never WSL's default root, with `wsl.conf
+[user] default` pinned to that user AND the launcher passing an explicit `-u <nonroot>` (defence in depth).
+*Observed in the discovery spike with an **explicit `-u zbagent`** launch only:* that user is uid 1000, no
+`sudo`/`doas`, `CapEff=0000000000000000`, zero setuid binaries on the rootfs, cannot write `/etc`, and
+unprivileged user namespaces AND bubblewrap both work as that user. **Still UNPROVEN (see the observed/
+not-proven block above and DRAFT-gate blocker 2):** that the **default** (no-`-u`) launch selects that uid,
+and the agent user's **group membership** (no admin group) — the committed oracle observed only the explicit
+`-u` case. The rootfs would ship read-only to the agent (bwrap RO-binds it); production negatives (proposed,
+for the implementation-approved revision) cover `mount`, `ptrace`/`process_vm_readv`, launching a host
+executable, and writing system dirs.
 
 ### Behaviors (WSL2; all red first; written only after this re-plan is approved)
 - **WS8.1** isolation: the host profile/processes/browser memory are unreachable from the distro
   (automount off + no Windows PATH + the `WSLInterop` binfmt handler hard-disabled at boot, since
-  `interop.enabled=false` alone leaves it registered — measured), and bwrap holds inside the distro.
+  `interop.enabled=false` alone leaves it registered — observed in the discovery spike), and bwrap holds inside the distro.
 - **WS8.2** one-admin resumable setup (C3): one prompt, reboot-resume, idempotent, rollback, records whether
   a reboot was needed.
 - **WS8.3** the OAuth token reaches only the CLI channel (C1 separation), never the control channel/env.
@@ -2038,7 +2042,7 @@ failure, all `[W]`/`[U]` on **win11-m8 only** (never the Win10 FS), as the stand
 2. **Transport matrix (both directions, exact exposure).** MOVE a canary (not just connect) over AF_UNIX,
    IPv4/IPv6 TCP, AF_VSOCK/hvsocket for Windows→WSL and WSL→Windows; record NAT/mirrored mode and exact
    bind/connect addrs (`127.0.0.1`, `0.0.0.0`, `::1`, gateway, LAN decoy) under default WSL 3.0.3 with NO
-   global `.wslconfig`. The plan picks ONE transport from the facts. **Measured so far:** Windows→WSL
+   global `.wslconfig`. The plan picks ONE transport from the facts. **Observed so far (discovery spike):** Windows→WSL
    loopback works; WSL→Windows is firewall-blocked ⇒ C1/C5 = agent-listens-in-distro / browser-connects.
 3. **Honest hostile reachability.** From a second throwaway distro and `zbother`, attempt the chosen
    endpoint and the app distro/import tree. Record honestly that a same-Windows-user native process or
@@ -2102,14 +2106,14 @@ failure, all `[W]`/`[U]` on **win11-m8 only** (never the Win10 FS), as the stand
 CONNECT/SNI allowlist (`api.anthropic.com`; plus `platform.claude.com` for sign-in) and the same
 bubblewrap confinement as Linux. There is **no Windows-host WFP**: the WSL2 boundary + the in-distro
 netd/bwrap confine the agent. The browser reaches netd/the agent across the WSL2 boundary over **loopback
-TCP in the measured direction — the agent LISTENS in the distro, the browser CONNECTS from Windows via
+TCP in the proposed direction — the agent LISTENS in the distro, the browser CONNECTS from Windows via
 localhostForwarding** (WSL→Windows is firewall-blocked; see C1) — with the owner-only auth from WS8; that
 control link is not the agent's egress path.
 
 **C5 — Bridge topology across the WSL2 boundary (RoseCat 119108c).** The two hook bridges (`51091` TTS/notify,
 `31337` agent control) and the browser↔agent control link all cross the Windows↔distro boundary the SAME way
 as C1: **the in-distro side LISTENS on `127.0.0.1:<port>` and the Windows side connects** (the only direction
-that works without an admin firewall rule). Because two distros share one network namespace (measured), a
+that works without an admin firewall rule). Because two distros share one network namespace (observed in the discovery spike), a
 bridge listener is reachable by any co-tenant distro and any Windows-local process, so **each bridge carries
 the same per-session token + nonce/HMAC handshake and constant-time compare as C1** before any byte; a bridge
 is bound per session on a distinct port, closed and token-invalidated at session end. No bridge is ever bound
@@ -2128,7 +2132,7 @@ endpoints are part of the agent's bwrap tree so per-run teardown (C4) closes the
    allows exactly `api.anthropic.com` + `platform.claude.com`.
 4. **Fail-closed:** no virt/WSL ⇒ no distro ⇒ no netd ⇒ agent OFF + the fixed explanation (WS8.8).
 
-### Behaviors (hard gates; the Linux netd denials re-proven in WSL2)
+### Behaviors (hard gates; the Linux netd denials re-exercised in WSL2)
 - **WS9.1** the CLI reaches the fake Anthropic API **only** through the in-distro netd (removing netd ⇒ red).
 - **WS9.2** denials from the agent inside the distro: `1.1.1.1:443`, TEST-NET `192.0.2.1:443`, a loopback
   decoy, DNS to the resolver, and any non-allowlisted CONNECT host (403 from netd).
@@ -2138,7 +2142,7 @@ endpoints are part of the agent's bwrap tree so per-run teardown (C4) closes the
 ### C5 reverse relay for hook-initiated bridges (RoseCat affd577 #4)
 
 Hooks run INSIDE the distro and initiate calls to the Windows loopback services `51091` (TTS/notify) and
-`31337` (agent control). WSL→Windows is firewall-blocked (measured), so a hook cannot dial Windows directly.
+`31337` (agent control). WSL→Windows was observed in the discovery spike to fail (not yet a causal firewall proof), so a hook cannot dial Windows directly.
 The relay inverts the dial while keeping the allowed direction:
 - **Windows dials in once per session** to the in-distro control listener (the allowed Windows→WSL
   direction, C1) and holds that connection for the session; it authenticates with the C1 session token
