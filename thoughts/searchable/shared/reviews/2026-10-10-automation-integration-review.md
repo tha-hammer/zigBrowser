@@ -33347,3 +33347,259 @@ to the manifest, updates the reviewed-set oracle, and registers the Linux
 proof without weakening its namespace or signal sentinels. The same follow-up
 may integrate the already-reviewed MS5.1b pending case, but must publish the
 resulting exact commit and complete manifest digest set for a separate release.
+
+## Windows WS5.5a live-peak foundation (`8b355d7`)
+
+**APPROVED as a scoped production foundation; it does not complete WS5.5 and
+authorizes no VM run.** The new relaxed atomic stores the process-lifetime
+maximum immediately after the existing live count is incremented. The
+compare-exchange loop handles a concurrent larger observation correctly, the
+existing fail-closed mount paths never increment either counter, and the
+existing destroy path continues to decrement only the live count. Thus a
+successful two-window overlap can later report a positive peak while the
+terminal live count reaches zero; preserving the peak across closes is the
+intended diagnostic.
+
+The accessor is not yet declared or consumed, no protocol row is emitted, and
+no second window is created by this commit. Those are expressly deferred to
+WS5.5b, which must connect the already-approved multi-window red to real
+popup creation, emit exactly one first-window-owned `live <peak> <final>` row,
+prove `peak >= 2` and `final == 0`, and causally fail when either mount or
+destroy accounting is omitted. Exact clean-archive execution of
+`zig build cross-check-drawer-win --summary all` with display variables unset
+passed **5/5 steps**. No live Windows evidence is needed for this inert
+foundation alone.
+
+## Darwin hook-runner scaffold red (`3f6c2e4`)
+
+**BLOCKED-for-tests and design; keep it unregistered and do not build the
+production green yet.** The direction is correct: a Darwin hook must execute
+under the already-reviewed bridge-only Seatbelt profile, never bwrap, the
+egress proxy or a Linux seccomp memfd; setup may generate that fixed profile
+while building the immutable dist. Reviewer execution in a private user/PID/
+mount namespace reproduced the claimed **eight failing Darwin rows and two
+passing Linux controls**, with both signal calls replaced by raising sentinels.
+
+Four boundary defects must be fixed forward in the red before production:
+
+1. The test permanently requires one `closerange(3, ...)`, which drops the
+   authoritative MS6.5.1 run-marker capability. The current macOS plan requires
+   a nested hook to inherit only `ZB_AGENT_RUN_MARKER_FD`, distinct from token
+   fd 3, egress fd 4 and the Linux memfd range. Define a close-except contract:
+   no marker present closes everything from 3 up; an injected/real valid marker
+   preserves exactly that one fd; malformed/colliding marker metadata refuses.
+   Add the drop-marker mutant. A scaffold that pins the contrary behavior is
+   not an MS8 prerequisite.
+2. The descriptor row records only the lower bound. A mutant
+   `closerange(3, 4)` passes. Record/assert the exact upper bound and, for the
+   marker form, both closed ranges; prove no unrelated planted fd reaches the
+   recorded exec.
+3. The proposed `hook.sb` boundary says “regular file of ours,” but the red
+   checks only missing/symlink/directory. Require the staged profile's owner
+   and non-writable/exact mode, and add causal wrong-owner and group/other-
+   writable rows. Setup's positive must retain exact 0600 output.
+4. The scratch contract says the same canonical-real-path rule as
+   `sandbox_macos.dparams`, but the red tests only a missing leaf and leaf
+   symlink. Add a regular-file leaf and a parent-component symlink (plus the
+   canonical/non-root checks that the standalone stdlib runner reimplements),
+   all refusing before close/exec. Also assert the full allowlisted env values,
+   not only its key set.
+
+The eventual Mac proof remains a separate reviewed hard-gate case: bridge
+positives, proxy/direct-loopback denials, exact environment/token absence and
+the run marker surviving into a detached hook descendant. No Mac run is
+authorized by this red.
+
+## Decision-16 refused-selector readback red (`897f1bd`)
+
+**APPROVED-for-tests as the exact failing-first red; keep it unregistered until
+the production green lands.** The new case observes the native control itself,
+not an inferred store value. With `settings` replaced by a symlink, the control
+starts fail-closed at Yes. Each of two Down actions must attempt No, emit the
+fixed refusal, reread the store, report `navapproval yes unreadable`, reset the
+control to Yes and leave the refusal as the window's last status line. Repeating
+Down is causal: if the first refusal leaves the rejected No displayed, the
+second action attempts Conditional instead.
+
+Reviewer execution from an exact clean archive under the test's private Xvfb
+reproduced the intended old-code failure: the first refusal produced no
+readback/reset row and the second Down attempted Conditional, while the fixed
+refusal text, unchanged target bytes and surviving symlink assertions passed.
+The build completed **5/5 steps** with display variables unset. The test is a
+new unregistered file and touches no live display, profile, agent home or
+network. The green must do the fresh fail-closed store read and control reset
+under `nav_showing`, preserve the refusal sentence as last, emit the row from
+the control's actual selected value, and register this case additively.
+
+## WS5 native-entry page-observation split after the `f1062d6` run
+
+**APPROVED in principle, with a stricter page selector; no rerun is authorized
+until its fix-forward is reviewed.** The exact `f1062d6` run again passed rows
+1-5, decoded every seam and left zero process/run-directory deltas. Row 6 now
+fails cleanly only because the harness requires the embedded WebView2 page
+widget's own `WS_VISIBLE` bit. In the non-interactive sshd desktop the native
+drawer controls have their app-owned style bits, but the WebView2 child is
+owned/managed by WebView2 and is not shown by the drawer code. That bit is not
+a valid headless proof of either docking or presentation.
+
+Keep the headless entry gate's page **existence, ownership and geometry**. Find
+the unique direct child of the exact launched-pid host whose class is
+`Chrome_WidgetWin_0`, require its owning pid to be the launched pid, require a
+nonempty full-width rect beginning at the client origin and ending exactly at
+the panel top, and retain `page_h + panel_h == client_h`. Do not select merely
+the largest non-`STATIC` child: a planted larger unrelated child, no matching
+child, a duplicate or wrong-pid child must fail. All native panel/icon/minimize
+visibility, bubble read-only/plain-text, row/rect and Job/census checks remain.
+
+Move only **actual page presentation** to the owner-watched real-screen check.
+That check must use on-screen/window pixels (not the same `WS_VISIBLE` bit) to
+prove the page renders above the docked drawer. The implementation needs an
+offline causal oracle for the unique-class selection and then a fresh review;
+only after that may another bounded eight-row Win11 run be released.
+
+## MS5.1 / MS5.1b reviewed-manifest integration (`b096e72`)
+
+**BLOCKED pending the promised build registration; no five-case Mac run is
+authorized yet.** The two case moves are genuine 100% renames and their bytes
+match the previously reviewed pending cases. The committed manifest names the
+exact five files, preserves the prior three hashes and passes the fail-closed
+set/hash oracle. An exact clean-archive run of the manifest suite inside a
+private user/PID/mount namespace passed **7/7**, and an import-only call to
+`manifest_problem` returned `None`.
+
+This commit nevertheless moves both cases into the **armed** manifest before
+registering either Linux proof. `build.zig` contains none of the three promised
+steps, while both proof-module docstrings already claim they are registered.
+That violates the explicit prior condition that the byte-identical move,
+manifest/oracle update **and registered Linux proofs** be reviewed together
+before a Mac release. Add the three namespace-wrapped, pinned-Python steps to
+both the appropriate focused aggregate and the normal Linux test aggregate,
+preserving exit status and ResourceWarning failure, and correct/validate those
+registration claims. The follow-up must rerun the three proof steps plus the
+manifest/driver/harness suites from a clean archive.
+
+The candidate bytes are recorded but **not run-approved**:
+
+- manifest: `8b3e14fc4637d59b23185827ae6db24899309ac854544990fb32dada09234ffb`;
+- `case_ms5_spawn_io.py`: `7c739e32fe924877593e15bf232b58be94754c4287b69a7465f2d0371bafcbbb`;
+- `case_ms6_3_fd3_cli.py`: `636b7785c78e023de0bee4160712ccc57dfa7098b3e90bbb6059c6e182d8a1aa`;
+- `case_ms6_6b_r1_chain.py`: `7e914a0b04016c05921af2157b5ea1c0aec9eec35bf3823f7cc97a984ea19f76`;
+- `case_ms5_1b_skipped_links.py`: `c0a7c6a78efba0c3d8c8133d504447dc16c47fe38b2c7eac163919c8abc83ac1`;
+- `case_ms5_1_s3a_links.py`: `4fe83ada9acd7a8702923ddc35145927df35afcd101b825b4aaa3e08509ecd6f`.
+
+## MS6.5.1 Darwin actuator capability composite (`9a10c8b`)
+
+**BLOCKED; keep the actuator unregistered, unarmed and off both Macs.** The
+commit closes the raw-signal export and genuinely compiles the Apple C body.
+An exact clean archive, run behind the outer-fd/private-user+PID+mount
+namespace sentinel, passed all **23** concrete tests and both Darwin object
+builds (**6/6 steps**). The real callbacks are file-private, the portable seam
+does drive the new composite with an intercepted kill, and a clock read error
+now returns the saturated value in source. Four capability/oracle gaps remain:
+
+1. The exported composite accepts `now_ms == NULL`. Every deadline check then
+   becomes conditional and the injected kill can run without any clock or
+   absolute deadline, contradicting the interface's defining capability.
+   Reject a null clock before scan/inspect/action and add a direct C/composite
+   row proving zero callbacks. Production happens to pass `realNowMs`; the
+   public boundary must still fail closed.
+2. The code contains a final fd/pin check, but no row changes the held inode's
+   identity between the up-front check and a would-be Clean result. The current
+   wrong-pin row exercises only the first check; removing only the final check
+   remains green. Change mode/identity during the empty census and require
+   non-Clean, with a final-check mutant.
+3. The classifier path is not tied to the held fd for the whole operation.
+   `darwinCensus` reads `F_GETPATH` once; the composite thereafter grammar-
+   checks that copied string while every pre-kill/final check merely `fstat`s
+   the still-valid held inode. If that inode is renamed after `F_GETPATH` and a
+   replacement occupies the old path, libproc classification can select the
+   replacement's processes while the fd check still passes. Revalidate the
+   held fd's current path against the captured path immediately before every
+   signal and before Clean (or provide an equivalent inode-bound classifier),
+   with a causal rename/replacement row and mutant.
+4. The clock-error branch itself remains unproved. `nowStepExpire` injects an
+   already-saturated clock and tests the composite's response; it never forces
+   `clock_gettime` to fail, so a mutant restoring the undefined-timespec read
+   leaves all 23 rows green. Add an injectable clock syscall/wrapper or an
+   equivalent causal compile/run oracle for the actual failure branch.
+
+The separate `reaper_ready` gate, startup call site, aggregate registration and
+every real-signal Mac run remain out of scope until this typed boundary closes.
+
+## Darwin hook-runner red fix-forward (`0892003`)
+
+**APPROVED-for-tests; keep it unregistered and do not build or run a Mac green
+from this verdict.** An exact clean archive under the pinned agent-host Python
+and a private user/PID/mount namespace reproduced the intended boundary:
+**25 Darwin rows fail on the old Linux-only implementation and both Linux
+controls pass**. The test replaces `execve` and `closerange` with recorders and
+both signal calls with raising sentinels.
+
+This fixes the four defects in the earlier red. The run marker is the reviewed
+fixed descriptor 5, distinct from token fd 3, egress fd 4 and memfds at 10+;
+missing metadata closes exactly `[3, SC_OPEN_MAX)`, valid metadata preserves
+only 5 through exact `[3,5)` and `[6,SC_OPEN_MAX)` ranges, and malformed,
+colliding, closed or non-regular marker states refuse before close or exec.
+The staged `hook.sb` must be a regular effective-user-owned file not writable
+by group or other, while setup's positive remains 0600. Scratchpad validation
+now covers missing, regular-file, leaf-symlink and parent-component-symlink
+forms, and the exec recorder requires the complete allowlisted environment
+values rather than merely their names.
+
+**SHOULD for the green/harness cleanup:** make `hold_marker()` safe when the
+fresh source descriptor already equals 5 (`dup2(5,5); close(5)` otherwise
+closes its own marker), and assert the marker remains open after setup. This is
+a possible false-red/harness flake, not a way for unsafe production behavior to
+pass. The production green still needs the named marker-drop, short-range,
+owner, mode, parent-symlink and env mutants and remains subject to the separate
+reviewed hard-gate case before any Mac execution.
+
+## MS5.1 / MS5.1b Linux registration and five-case manifest (`7c1b7d9` over `b096e72`)
+
+**`7c1b7d9` APPROVED; it cumulatively closes the `b096e72` registration hold.
+The exact five-case manifest is approved for one separately released bounded
+two-Mac hard-gate run at commit `7c1b7d9`.** The follow-up adds, without
+deletions, all three promised pinned-Python commands to `test-mac-census` and
+the normal Linux `test` aggregate. Each uses a private current-user PID/mount
+namespace, preserves the child exit status, and fails on `ResourceWarning`.
+
+An exact clean archive of `7c1b7d9` passed the three newly registered proofs:
+MS5.1b whole-home skipped-link bytes **4/4**, its staged hard-gate case **3/3**,
+and MS5.1 inherited-S3a corrections **3/3**. In the same namespace the exact
+manifest/driver/harness suites passed **20 tests plus 6 expected Linux kqueue
+skips**. The earlier manifest-only suite remains **7/7** green; both moved
+cases remain byte-identical to their independently reviewed pending forms.
+
+The reviewed bytes for the released run are:
+
+- manifest: `8b3e14fc4637d59b23185827ae6db24899309ac854544990fb32dada09234ffb`;
+- `case_ms5_spawn_io.py`: `7c739e32fe924877593e15bf232b58be94754c4287b69a7465f2d0371bafcbbb`;
+- `case_ms6_3_fd3_cli.py`: `636b7785c78e023de0bee4160712ccc57dfa7098b3e90bbb6059c6e182d8a1aa`;
+- `case_ms6_6b_r1_chain.py`: `7e914a0b04016c05921af2157b5ea1c0aec9eec35bf3823f7cc97a984ea19f76`;
+- `case_ms5_1b_skipped_links.py`: `c0a7c6a78efba0c3d8c8133d504447dc16c47fe38b2c7eac163919c8abc83ac1`;
+- `case_ms5_1_s3a_links.py`: `4fe83ada9acd7a8702923ddc35145927df35afcd101b825b4aaa3e08509ecd6f`.
+
+This verdict changes no standing safety conditions: run only the exact
+commit/manifest, through the committed launcher, on the two named Macs; do not
+include the reaper case; retain per-case scratch cleanup, exact before/after
+process and folder censuses, and stop on the first failure.
+
+## Windows WS5.5b-1 count seam and terminal row (`b302adf`)
+
+**APPROVED as a narrowly scoped foundation; it does not complete WS5.5b and
+authorizes no VM run.** The seam is read only inside `--e2e-protocol`, is
+bounded to 1..8, and ordinary launches neither set it nor emit the new row.
+After the message loop has processed window destruction, the first app state
+emits one global `DRAWER\t1\tlive\t<peak>\t<final>` observation; the existing
+destroy path remains the only decrement and the prior atomic peak primitive is
+unchanged. An exact clean archive passed `cross-check-drawer-win` **5/5** with
+all display variables unset.
+
+The commit deliberately does not create the additional windows, assign their
+distinct ids or prove the row; the existing WS5.5 red therefore remains red.
+The next slice must drive `windows_seam`, create exactly N app-owned drawers,
+close all of them, and satisfy the strict per-window transcript plus single
+first-window-owned live row, with causal mount/destroy mutants. **SHOULD:**
+replace `atoi` with the project's strict full-string unsigned parser so values
+such as `2junk`, leading whitespace or `+2` cannot silently arm an e2e seam;
+add those malformed rows to the production test when the seam becomes live.
