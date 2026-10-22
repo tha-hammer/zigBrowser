@@ -30653,10 +30653,16 @@ findings to AzureRidge.
 
 ## MS6.3 fd-3 FIFO cleanup (`bcbc989`, `e2c20a7`)
 
-**APPROVED for one bounded two-Mac hard-gate rerun at exact commit
-`e2c20a7fac6076f91e74395e59e0f83e2713b979`; BLOCKED-for-tests for final
-closure until `ms6_hard_gate_fd3_cli_cleanup_test.py` is registered.** The
-unregistered red is causal: in an exact clean export, under a private
+**APPROVED as the scoped FIFO-cleanup fix; the two-Mac hard-gate rerun is
+HELD, and final closure remains BLOCKED-for-tests until
+`ms6_hard_gate_fd3_cli_cleanup_test.py` is registered.** The earlier
+authorization at exact commit
+`e2c20a7fac6076f91e74395e59e0f83e2713b979` is withdrawn: that commit does
+not set `CLAUDE_CODE_TMPDIR`, so the real CLI would repeat the already-proven
+Seatbelt denial while creating `/tmp/claude-501`. The rerun may be
+re-authorized only at the later reviewed commit carrying the fixed
+per-scratch TMPDIR route. The unregistered red is causal: in an exact clean
+export, under a private
 current-UID user/PID/mount namespace, both planted 0300 FIFO-directory mode
 checks failed and the ordinary `shutil.rmtree` raised `PermissionError`.
 
@@ -30680,11 +30686,13 @@ The exact reviewed three-case manifest is:
 - `case_ms6_6b_r1_chain.py`:
   `7e914a0b04016c05921af2157b5ea1c0aec9eec35bf3823f7cc97a984ea19f76`
 
-The authorized rerun is the reviewed committed-launcher entry with normal
-per-run temporary staging, only those three cases, no MS6.5 reaper, and the
-usual before/after process and folder census. It must report each case PASS
-and zero survivors or leftovers on both Macs. Agent Mail 7728 sent the commit,
-digests and boundary to BlueBeaver and the orchestrator.
+These three digests are the reviewed manifest at `e2c20a7`, not a current run
+authorization. Once the TMPDIR green lands, review and name its exact commit
+and recompute the complete manifest before release. The eventual run remains
+the committed-launcher entry with normal per-run temporary staging, only the
+reviewed manifest cases, no MS6.5 reaper, and the usual before/after process
+and folder census. It must report each case PASS and zero survivors or
+leftovers on both Macs. The orchestrator correctly held the `e2c20a7` run.
 
 `CLAUDE_CODE_TMPDIR` may join `HOOK_ENV_NAMES` only as the app-owned fixed
 value equal to the already-exposed scratch `TMPDIR`, with route override
@@ -30718,3 +30726,22 @@ close the kill-on-close Job and wait on the still-held process handle. Add a
 causal live cleanup-exhaustion row that proves the child cannot outlive the
 runner. **No Win11 VM run is approved for `8545430`.** Agent Mail 7729 sent
 the blocker to AzureRidge and the orchestrator.
+
+## Decision-16 deterministic close-vs-Approve red (`af7e716`)
+
+**APPROVED as the failing-first, unregistered red.** This closes the
+`304a41b` finding on `9b9c18e`. The test now arms its hold only after the card
+is visibly waiting, waits until the worker is parked immediately before its
+next card lookup, detaches the bound broker, asserts that `approve(id)` wins
+and that the stored outcome is `.approved` while the worker is still parked,
+and only then releases the worker. It therefore cannot pass through the old
+late-Approve path in which detach had already cancelled the card.
+
+After release, the row independently requires a revoked ending, zero engine
+calls and no answer to the closed window. The reported outcome-before-stop,
+seam-not-called and revoked-as-cancelled mutants each make the row fail; the
+separate late-Approve row still catches omission of core cancellation. Against
+the pending part-3 production green, the exact narrow non-GUI module passed
+**8/8** with both display variables unset. Keep this red unregistered until
+the production seam, stop-first implementation and registration land in the
+same green. Agent Mail 7733 sent the verdict to BlackRobin.
