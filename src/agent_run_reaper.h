@@ -131,6 +131,19 @@ enum {
 int zb_reaper_ledger_entry_state(int runtime_fd, const char *basename, const struct zb_reaper_dir_id *rec,
                                  int active);
 
+/* C2 crash-cut classifier (MS6.5.1 crash-cut table). At startup recovery, does the run dir named `basename` still
+ * hold its reserved `run.marker`? The dir is reopened no-follow (the single-component grammar is enforced first),
+ * then `run.marker` is opened no-follow RELATIVE to that dir fd. A crash in the Clean teardown after
+ * `unlinkat(run.marker)` but before `rmdir` leaves a provenance-valid, empty, MARKER-LESS dir; recovery must
+ * recognise that durable teardown phase and finish `rmdir`+entry-remove idempotently, never signal, and never
+ * raise a permanent incident. Pure classification — it never signals or mutates. */
+enum {
+  ZB_RUN_MARKER_PRESENT = 1,  /* run.marker present: a real run — classify/census normally */
+  ZB_RUN_MARKER_TEARDOWN = 0, /* run.marker ENOENT: the durable teardown phase (C2) — finish rmdir+remove, no signal */
+  ZB_RUN_MARKER_ERR = -1      /* bad fd/args/grammar, or a non-ENOENT error: fail closed */
+};
+int zb_reaper_run_marker_state(int runtime_fd, const char *basename);
+
 #ifdef __APPLE__
 /* Production: `run_dir_fd` is the no-follow dir fd the caller opened at run-dir creation and holds for the run;
  * `pinned` is zb_reaper_pin_fd's identity from it. The reaper revalidates the fd (never a pathname), derives the

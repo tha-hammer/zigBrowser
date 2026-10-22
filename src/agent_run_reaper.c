@@ -269,6 +269,20 @@ int zb_reaper_ledger_entry_state(int runtime_fd, const char *basename, const str
   return zb_reaper_dir_id_eq(&got, rec) ? ZB_LEDGER_SWEEP : ZB_LEDGER_MISMATCH;
 }
 
+int zb_reaper_run_marker_state(int runtime_fd, const char *basename) {
+  if (runtime_fd < 0 || basename == NULL) return ZB_RUN_MARKER_ERR;
+  /* Enforce the single-component grammar BEFORE openat (same as ledger_entry_state), so a "."/".."/absolute/
+   * embedded-slash/wrong name can never reach another directory. */
+  if (!name_is_sockdir(basename)) return ZB_RUN_MARKER_ERR;
+  const int dfd = openat(runtime_fd, basename, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+  if (dfd < 0) return ZB_RUN_MARKER_ERR;
+  /* RED (C2 crash cut): this IGNORES run.marker, so a marker-less teardown dir looks like a real run — the mutant
+   * the plan names (re-census / warn-forever for a signal => a permanent incident). The green opens run.marker
+   * no-follow relative to dfd and maps ENOENT to the durable teardown phase. */
+  close(dfd);
+  return ZB_RUN_MARKER_PRESENT;
+}
+
 /* ---- macOS production wrappers (libproc + real kill; Mac-only) ---- */
 
 #ifdef __APPLE__
