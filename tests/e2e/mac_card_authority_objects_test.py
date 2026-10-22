@@ -27,10 +27,15 @@ Self-checking: an honest fixture graph compiled for both Darwin arches passes; e
 @field and @extern callers, an alias, files substituted under src/evil/, a function-pointer table, a second
 Cards.approve caller, an inlined Cards.approve, a minter outside the object, and RoseCat 8097's Cards.approve /
 Cards.deny alias called twice) compiled the same way fails, each with its own reason. One compiler runs at a time,
-each in its own process group under a COMPILE_DEADLINE_S deadline, past which the group is killed (SIGKILL) and the
-row fails; a row proves that kill on a real `sleep`. The self-check sends signals: run it inside
-`unshare --map-current-user --pid --fork --kill-child --mount-proc`.
-Run (self-check): cd tests/e2e && python3 -X dev -m unittest -v mac_card_authority_objects_test
+each in its own process group under a COMPILE_DEADLINE_S deadline, past which the group is killed (SIGKILL), and
+the drain and the reap are bounded by REAP_S each; rows prove the group kill on a real `sleep` grandchild and that a
+`setsid` escapee holding the output pipe cannot wedge the drain.
+The self-check spawns and signals, so it runs only through its launcher (RoseCat 8107): `--self-check` holds the
+outer /proc/self/ns/pid fd and re-runs the module under `unshare --map-current-user --pid --fork --kill-child
+--mount-proc`. Before any spawn or signal, pidns_problem() requires that held namespace to differ from the current
+one, and it refuses on an absent, unreadable or equal state (rows cover each, and that nothing is spawned or
+signalled then).
+Run (self-check, the only supported way): python3 tests/e2e/mac_card_authority_objects_test.py --self-check
 Run (real objects): zig build check-card-authority-mac (unregistered; RED until the macOS build defines the minters
 and the bridge)."""
 import bisect
@@ -50,6 +55,8 @@ CPU_X86_64, CPU_ARM64 = 0x01000007, 0x0100000C
 ARM64_NOT_A_SITE = (1, 4, 6, 9, 10)
 COMPILE_DEADLINE_S = 240  # one fixture compile; past it the compiler's whole process group is killed
 COMPILE_JOBS = 1  # one compiler at a time: the gate host's memory is tight
+REAP_S = 5  # after the deadline kill: the drain, then the reap, each at most this long
+PIDNS_ENV = "ZB_CARD_OUTER_PIDNS_FD"  # the launcher's held /proc/self/ns/pid fd (RoseCat 8107)
 ARCHES = {"aarch64": CPU_ARM64, "x86_64": CPU_X86_64}
 APPROVE, DENY = "_agent_approval.Cards.approve", "_agent_approval.Cards.deny"
 MINT_A, MINT_D = "_agent_tools.zb_agent_tools_approve", "_agent_tools.zb_agent_tools_deny"
@@ -278,19 +285,57 @@ def compile_graph(files, arch, work):
     return out.read_bytes()
 
 
-def run_bounded(argv, deadline_s):
-    """Runs `argv` in its own process group -> (exit code, stderr). Past `deadline_s` the whole group is killed and
-    reaped, and the result is (None, a deadline message)."""
+def pidns_problem(env=None, readlink=os.readlink):
+    """None when this process provably runs in a PID namespace other than its launcher's: the launcher's held
+    /proc/self/ns/pid fd (number in PIDNS_ENV) names a different namespace than this process's own. Otherwise why
+    not (absent, unreadable, not a PID namespace, or the same one), and nothing may be spawned or signalled."""
+    raw = (os.environ if env is None else env).get(PIDNS_ENV)
+    if raw is None or not raw.isdigit():
+        return f"no launcher PID-namespace fd ({PIDNS_ENV}): run `python3 {Path(__file__).name} --self-check`"
+    try:
+        outer, inner = readlink(f"/proc/self/fd/{raw}"), readlink("/proc/self/ns/pid")
+    except OSError as e:
+        return f"the PID-namespace sentinel is unreadable: {e}"
+    if not (outer.startswith("pid:[") and inner.startswith("pid:[")):
+        return f"the sentinel is not a PID namespace ({outer!r}, {inner!r})"
+    if outer == inner:
+        return f"this process shares its launcher's PID namespace {inner}: refusing to spawn or signal"
+    return None
+
+
+def run_bounded(argv, deadline_s, reap_s=REAP_S):
+    """Runs `argv` in its own process group -> (exit code, stderr). Refuses (RuntimeError) before spawning outside
+    a proven private PID namespace. Past `deadline_s` the whole group is killed; the drain and the reap are bounded by
+    `reap_s` each, so an escaped holder of the output pipe cannot wedge it; the result is then (None, what happened)."""
+    why = pidns_problem()
+    if why:
+        raise RuntimeError(why)
     proc = subprocess.Popen(argv, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True, start_new_session=True)
     try:
         _, err = proc.communicate(timeout=deadline_s)
         return proc.returncode, err
     except subprocess.TimeoutExpired:
-        pid = proc.pid
-        if isinstance(pid, int) and pid > 1:  # never a placeholder pid: killpg(0/1) would reach far beyond the child
+        pass
+    notes = [f"{argv[0]} exceeded its {deadline_s} s deadline"]
+    pid, why = proc.pid, pidns_problem()
+    if why or not (isinstance(pid, int) and pid > 1):  # never a placeholder pid: killpg(0/1) reaches far beyond it
+        notes.append(f"its group was NOT signalled ({why or f'pid {pid!r}'})")
+    else:
+        try:
             os.killpg(pid, signal.SIGKILL)
-        proc.communicate()
-        return None, f"{argv[0]} exceeded its {deadline_s} s deadline; its process group was killed"
+            notes.append("its process group was killed")
+        except OSError as e:
+            notes.append(f"killing its process group failed: {e!r}")
+    try:
+        proc.communicate(timeout=reap_s)
+    except subprocess.TimeoutExpired:
+        notes.append(f"its output stayed open past {reap_s} s (an escaped holder): drain abandoned")
+        proc.stderr.close()
+        try:
+            proc.wait(timeout=reap_s)
+        except subprocess.TimeoutExpired:
+            notes.append(f"it was not reaped within {reap_s} s")
+    return None, "; ".join(notes)
 
 
 def compiled(cases):
@@ -336,6 +381,56 @@ class CardAuthorityObjects(unittest.TestCase):
                     found = problems(self.objects[(name, arch)], arch)
                     self.assertTrue(any(reason.replace("{arch}", arch) in f for f in found), (name, found))
 
+    def test_this_run_is_in_a_private_pid_namespace(self):
+        self.assertIsNone(pidns_problem())
+
+    def test_the_sentinel_refuses_every_unproven_state(self):
+        ns = {"/proc/self/fd/9": "pid:[1]", "/proc/self/ns/pid": "pid:[2]"}
+        def reader(table):
+            def readlink(path):
+                if path not in table:
+                    raise FileNotFoundError(path)
+                return table[path]
+            return readlink
+        self.assertIsNone(pidns_problem({PIDNS_ENV: "9"}, reader(ns)))
+        for name, env, table, want in (
+                ("absent", {}, ns, "no launcher"),
+                ("not a number", {PIDNS_ENV: "x"}, ns, "no launcher"),
+                ("unreadable", {PIDNS_ENV: "8"}, ns, "unreadable"),
+                ("not a PID namespace", {PIDNS_ENV: "9"}, dict(ns, **{"/proc/self/fd/9": "/dev/null"}), "not a PID namespace"),
+                ("the same namespace", {PIDNS_ENV: "9"}, dict(ns, **{"/proc/self/fd/9": "pid:[2]"}), "shares")):
+            with self.subTest(state=name):
+                self.assertIn(want, pidns_problem(env, reader(table)) or "")
+
+    def test_outside_a_proven_namespace_nothing_is_spawned_or_signalled(self):
+        from unittest import mock
+        def never(*a, **k):
+            raise AssertionError("spawned or signalled outside a proven namespace")
+        env = {k: v for k, v in os.environ.items() if k != PIDNS_ENV}
+        with mock.patch.dict(os.environ, env, clear=True), mock.patch.object(subprocess, "Popen", never), \
+                mock.patch.object(os, "kill", never), mock.patch.object(os, "killpg", never):
+            with self.assertRaises(RuntimeError):
+                run_bounded(["sleep", "30"], 1)
+
+    def test_an_escaped_output_holder_cannot_wedge_the_drain(self):
+        import time
+        with tempfile.TemporaryDirectory() as tmp:
+            marker = Path(tmp) / "escaped"
+            start = time.monotonic()
+            code, err = run_bounded(["sh", "-c", f"setsid sleep 8 & echo $! > {marker}; wait"], 1, reap_s=1)
+            elapsed = time.monotonic() - start
+            escaped = int(marker.read_text())
+            try:
+                self.assertIsNone(code)
+                self.assertIn("drain abandoned", err)
+                self.assertLess(elapsed, 5, "the drain waited on the escaped holder")
+            finally:
+                if escaped > 1:
+                    try:
+                        os.kill(escaped, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+
     def test_a_compiler_past_its_deadline_is_killed_with_its_group(self):
         with tempfile.TemporaryDirectory() as tmp:
             marker = Path(tmp) / "grandchild"
@@ -349,6 +444,18 @@ class CardAuthorityObjects(unittest.TestCase):
     def test_the_wrong_arch_and_a_non_object_fail(self):
         self.assertNotEqual(problems(self.objects[("honest", "x86_64")], "aarch64"), [])
         self.assertNotEqual(problems(b"\x7fELF" + bytes(64), "aarch64"), [])
+
+
+def launch_self_check():
+    """The only way to run the self-check: hold this namespace's /proc/self/ns/pid open, then re-run the module
+    under `unshare --map-current-user --pid --fork --kill-child --mount-proc`, where pidns_problem() proves the
+    namespace changed before anything is spawned or signalled."""
+    fd = os.open("/proc/self/ns/pid", os.O_RDONLY)
+    os.set_inheritable(fd, True)
+    os.chdir(Path(__file__).resolve().parent)
+    env = dict(os.environ, **{PIDNS_ENV: str(fd)})
+    os.execvpe("unshare", ["unshare", "--map-current-user", "--pid", "--fork", "--kill-child", "--mount-proc",
+                           sys.executable, "-X", "dev", "-m", "unittest", "-v", Path(__file__).stem], env)
 
 
 def main(argv):
@@ -366,6 +473,9 @@ def main(argv):
 
 
 if __name__ == "__main__":
-    if len(sys.argv) > 1 and not sys.argv[1].startswith("-"):
+    if sys.argv[1:] == ["--self-check"]:
+        launch_self_check()
+    elif len(sys.argv) > 1 and not sys.argv[1].startswith("-"):
         sys.exit(main(sys.argv[1:]))
-    unittest.main()
+    else:
+        sys.exit(f"usage: {sys.argv[0]} --self-check | <aarch64-macos object> <x86_64-macos object>")
