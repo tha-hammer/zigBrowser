@@ -1,29 +1,36 @@
 //! MS6.5.1 OPEN whole-recovery blocker bd zigBrowser-3gl, 7b29fd6 item 1 (the exact-result two-recoverer oracle).
 //! UNREGISTERED, TEST-ONLY PROTOTYPE — there is NO production recovery transaction, and none is added until every
 //! zigBrowser-3gl item lands and the destructive gate is reviewed. `protoRecoverOneUnderLock` lives only here,
-//! built from the public ledger API (acquireLock / load / probeLivenessTagged / recoveryFor / publish); the
-//! early-unlock policy is a test-only INJECTED argument, never a production switch or a flipped const (RoseCat
-//! 7719). A green of this prototype proves only the flock HOLD BOUNDARY; it does not arm or close whole recovery.
+//! built from the public ledger API (acquireWithinDeadline / load / probeLivenessTagged / recoveryFor / publish);
+//! the early-unlock policy is a test-only INJECTED argument, never a production switch (RoseCat 7719). A green of
+//! this prototype proves only the flock HOLD BOUNDARY; it does not arm or close whole recovery.
 //!
 //! BOTH causal branches are proven as distinct scenarios (RoseCat 7719):
 //!   * held-lock green  — one process owns the flock across read -> revalidate -> signal -> retire, releasing only
-//!     after the publish result. Two recoverers racing ONE proved-dead entry yield the EXACT pair
-//!     {.signalled, .already_gone}, exactly ONE signal phase (one reap), an EMPTY final ledger, and two terminal
-//!     children. Recoverer 2 learns `.already_gone` ONLY after it acquires the released flock and reloads the
-//!     retired state.
+//!     after the publish result. Two recoverers racing ONE proved-dead entry yield the EXACT ordered pair
+//!     {R1 .signalled, R2 .already_gone}, exactly ONE signal phase (one reap), an EMPTY final ledger, and two
+//!     terminal children. R2 learns `.already_gone` ONLY after it acquires the released flock and reloads state.
 //!   * early-unlock mutant — releasing the flock right after the read lets BOTH recoverers enter the signal phase:
-//!     two reaps, both `.signalled`. The oracle (one reap) fails, so the mutant is caught.
+//!     TWO signal-phase entries (two reaps). This is the stable mutant invariant (not two `.signalled` returns: a
+//!     losing unsynchronized publish may fail only AFTER entering the phase — RoseCat accepted 7743).
 //!
-//! DETERMINISM via a HANDSHAKE, not a timing window (RoseCat 7679): recoverer 1 reads, signals "read done", then
-//! BLOCKS until the parent says proceed. The handshake is itself the oracle (RoseCat 7706/7719):
-//!   * R1's read-done is always present=1.
-//!   * mutant: R2 acquires the released flock and its read-done arrives present=1 BEFORE R1 is released.
-//!   * held-lock: R2 blocks on the held flock, so its read-done CANNOT arrive before release; after R1 retires it
-//!     arrives present=0 and yields `.already_gone`.
-//! No path depends on host speed. Every fork/signal is gated by a kernel-proof PID-ns sentinel (fd 9); the build
-//! runner wraps the step in a private user+PID namespace. Parent waits/reads/polls are bounded against an absolute
-//! monotonic deadline (reusing the reviewed `waitWithinDeadline`); every unused pipe end is closed in the parent
-//! and each child; children are reaped within a deadline and otherwise SIGKILLed and reaped unconditionally.
+//! DETERMINISM (RoseCat 7743):
+//!   1. R1 is established FIRST: the parent consumes R1's `present=1` read-done BEFORE forking R2, so R1 holds the
+//!      flock before R2 exists — causal ordering, not scheduler luck.
+//!   2. ONE absolute monotonic terminal deadline is computed once and threaded through every acquire, poll, read
+//!      and reap (children acquire with `acquireWithinDeadline` against that same CLOCK_MONOTONIC deadline); no
+//!      per-phase budget is renewed. The pre-release handshake uses a short sub-window CAPPED at the terminal
+//!      deadline, purely to distinguish the branches.
+//!   3. Reaps are bounded and HONEST: WNOHANG until the same deadline; a real observed status is distinguished
+//!      from every wait error/timeout (which fail closed), never a fabricated zero. A guarded SIGKILL is followed
+//!      by more WNOHANG against the same deadline, never a blocking `waitpid(..,0)`. The private namespace is the
+//!      final containment backstop, not a reason for an unbounded in-test wait.
+//!   4. Every fd/read exit path is bounded: all pipe ends start at -1 and the close-all cleanup is installed BEFORE
+//!      the first `pipe()`, so a partial creation leaks nothing; R1's proceed read is the same bounded exact-read
+//!      (EOF/error/deadline distinguished).
+//! The handshake is itself the oracle: R1 read present=1; mutant R2 present=1 BEFORE release; held-lock R2 cannot
+//! read before release and later reads present=0. Every fork/signal is gated by a kernel-proof PID-ns sentinel
+//! (fd 9); the build runner wraps the step in a private user+PID namespace.
 const std = @import("std");
 const ledger = @import("agent_run_ledger");
 const linux = std.os.linux;
@@ -38,11 +45,10 @@ const CLONE_NEWPID: usize = 0x20000000;
 const AT_EMPTY_PATH: u32 = 0x1000;
 const WNOHANG: u32 = 1;
 
-// Bounds (absolute monotonic deadlines are computed from these at each wait).
-const READ_BUDGET_MS: i64 = 5000; // a read-done/result byte that should already be available
-const PRE_RELEASE_MS: i64 = 1500; // pre-release window: mutant R2 reads in ms; held-lock R2 is blocked -> timeout
-const ACQUIRE_BUDGET_MS: i64 = 12000; // held-lock R2 must re-acquire the released flock (bounded retry) then read
-const REAP_BUDGET_MS: i64 = 3000; // graceful reap before a forced SIGKILL+reap
+// ONE terminal budget bounds the whole scenario; everything is capped by the single absolute deadline below it.
+const TOTAL_BUDGET_MS: i64 = 30000; // generous: R2's held-lock re-acquire waits for R1 to retire, well within this
+const PRE_RELEASE_MS: i64 = 1500; // handshake decision sub-window (capped at the terminal deadline)
+const BACKOFF_MS: i64 = 5;
 
 fn nsIno(dirfd: i32, path: [*:0]const u8, flags: u32) ?u64 {
     var sx: linux.Statx = undefined;
@@ -96,8 +102,8 @@ fn writeAll(fd: i32, bytes: []const u8) void {
     }
 }
 
-/// Read exactly `buf.len` bytes, bounded by an absolute monotonic deadline and EINTR-safe: poll readable within the
-/// deadline before each read; EOF (n==0), a hard poll error, or the deadline returns false (never an unchecked
+/// Read exactly `buf.len` bytes, bounded by the absolute monotonic deadline and EINTR-safe: poll readable within
+/// the deadline before each read; EOF (n==0), a hard poll error, or the deadline returns false (never an unchecked
 /// blocking read).
 fn readExactWithin(clock: ledger.RealClock, fd: i32, buf: []u8, deadline_ms: i64) bool {
     var off: usize = 0;
@@ -123,36 +129,13 @@ fn closeAndClear(p: *i32) void {
     }
 }
 
-// ---- bounded child reaping -----------------------------------------------------------------------------------
+// ---- bounded, honest child reaping ---------------------------------------------------------------------------
 
-const Child = struct { pid: i32 = 0, reaped: bool = false, status: u32 = 0 };
+const Child = struct { pid: i32 = -1, reaped: bool = false, status: u32 = 0 };
 
-/// Force-reap: SIGKILL (idempotent) then an EINTR-safe blocking waitpid. Bounded because the kill guarantees exit.
-/// Guards pid <= 1 so a bad pid can never become killpg/kill of the session (MEMORY: mocked pid + killpg logout).
-fn forceReap(c: *Child) void {
-    if (c.reaped) return;
-    if (c.pid <= 1) {
-        c.reaped = true;
-        return;
-    }
-    _ = linux.kill(c.pid, linux.SIG.KILL);
-    while (true) {
-        var st: u32 = 0;
-        const rc = linux.waitpid(c.pid, &st, 0);
-        if (linux.errno(rc) == .INTR) continue;
-        c.status = st;
-        c.reaped = true;
-        return;
-    }
-}
-
-/// Reap within a deadline (recording the real exit status), else SIGKILL+reap. Never an unchecked blocking waitpid.
-fn reapWithin(clock: ledger.RealClock, c: *Child, deadline_ms: i64) void {
-    if (c.reaped) return;
-    if (c.pid <= 1) {
-        c.reaped = true;
-        return;
-    }
+/// One WNOHANG sweep until the deadline. Returns the REAL observed status, or null if the child has not been
+/// observed to exit by the deadline OR a wait error occurs (fail closed — never a fabricated zero).
+fn sweepUntil(clock: ledger.RealClock, c: *Child, deadline_ms: i64) ?u32 {
     while (true) {
         var st: u32 = 0;
         const rc = linux.waitpid(c.pid, &st, WNOHANG);
@@ -160,38 +143,81 @@ fn reapWithin(clock: ledger.RealClock, c: *Child, deadline_ms: i64) void {
             .INTR => continue,
             .SUCCESS => {
                 if (rc == @as(usize, @intCast(c.pid))) {
-                    c.status = st;
                     c.reaped = true;
-                    return;
+                    c.status = st;
+                    return st; // a real, observed exit status
                 }
-                // rc == 0: not exited yet
+                // rc == 0: not exited yet -> fall through to the deadline check
             },
-            else => {
-                c.reaped = true; // ECHILD etc. -> nothing to reap
-                return;
-            },
+            else => return null, // ECHILD/other wait error -> fail closed, do NOT mark reaped
         }
-        if (clock.nowMs() >= deadline_ms) break;
+        if (clock.nowMs() >= deadline_ms) return null; // timed out -> fail closed
         var ts: linux.timespec = .{ .sec = 0, .nsec = 2_000_000 };
         _ = linux.nanosleep(&ts, &ts);
     }
-    forceReap(c);
 }
 
+/// Reap within the single absolute deadline, returning the real observed status or null (timeout/wait-error ->
+/// fail closed). A graceful sweep first; then a guarded SIGKILL followed by more WNOHANG against the SAME deadline
+/// (never a blocking `waitpid(..,0)`). pid<=1 is refused so a bad pid can never become kill of the session.
+fn reapWithin(clock: ledger.RealClock, c: *Child, deadline_ms: i64) ?u32 {
+    if (c.reaped) return c.status;
+    if (c.pid <= 1) return null;
+    if (sweepUntil(clock, c, deadline_ms)) |st| return st;
+    _ = linux.kill(c.pid, linux.SIG.KILL);
+    return sweepUntil(clock, c, deadline_ms);
+}
+
+/// Unconditional containment backstop: guarded SIGKILL + a SINGLE non-blocking WNOHANG. Whatever is still alive is
+/// left to the private-namespace teardown. Never blocks, never asserts.
 fn cleanupChildren(children: []Child) void {
-    for (children) |*c| forceReap(c);
+    for (children) |*c| {
+        if (c.reaped or c.pid <= 1) continue;
+        _ = linux.kill(c.pid, linux.SIG.KILL);
+        var st: u32 = 0;
+        const rc = linux.waitpid(c.pid, &st, WNOHANG);
+        if (linux.errno(rc) == .SUCCESS and rc == @as(usize, @intCast(c.pid))) c.reaped = true;
+    }
 }
 
 // ---- the prototype transaction (test-only) -------------------------------------------------------------------
 
 const ProtoAction = enum { signalled, left, fail_closed, already_gone };
 
+/// One non-blocking flock attempt for `acquireWithinDeadline` (the ledger's own `FlockAttempt` is private).
+const LockAttempt = struct {
+    fd: i32,
+    pub fn tryOnce(self: LockAttempt) ledger.AcquireResult {
+        return switch (std.posix.errno(std.posix.system.flock(self.fd, std.posix.LOCK.EX | std.posix.LOCK.NB))) {
+            .SUCCESS => .acquired,
+            .AGAIN => .busy,
+            else => .failed,
+        };
+    }
+};
+
+/// Deadline-bounded flock acquire on a freshly opened O_NOFOLLOW|O_CLOEXEC lock fd, against the SHARED absolute
+/// monotonic deadline (CLOCK_MONOTONIC is system-wide, so the children honour the same terminal deadline). Returns
+/// the held fd (close to release) or null on busy/failed/deadline.
+fn acquireLockByDeadline(dir: std.Io.Dir, clock: ledger.RealClock, deadline_ms: i64) ?std.Io.File {
+    const fd = std.posix.openat(dir.handle, ledger.LOCK_NAME, .{ .ACCMODE = .RDWR, .CREAT = true, .NOFOLLOW = true, .CLOEXEC = true }, 0o600) catch return null;
+    switch (ledger.acquireWithinDeadline(clock, deadline_ms, BACKOFF_MS, LockAttempt{ .fd = fd })) {
+        .acquired => return .{ .handle = fd, .flags = .{ .nonblocking = false } },
+        else => {
+            _ = std.posix.system.close(fd);
+            return null;
+        },
+    }
+}
+
 /// Handshake seam. `readdone_fd`: write the one-byte present flag when the read completes (-1 = skip). `proceed_fd`:
-/// if >= 0, BLOCK (EINTR-safe) reading one byte before the signal phase, so recoverer 1 parks until the parent
-/// releases it. On EOF (the parent closed `go` during cleanup) R1 simply proceeds and the test then reaps it.
+/// if >= 0, BLOCK (bounded exact-read against the terminal deadline) reading one byte before the signal phase, so
+/// recoverer 1 parks until the parent releases it. On EOF/error/deadline R1 simply proceeds and the test reaps it.
 const Ops = struct {
     readdone_fd: i32,
     proceed_fd: i32,
+    clock: ledger.RealClock,
+    deadline_ms: i64,
     reaped: *bool,
     pub fn afterRead(self: Ops, present: bool) void {
         if (self.readdone_fd >= 0) {
@@ -200,11 +226,7 @@ const Ops = struct {
         }
         if (self.proceed_fd >= 0) {
             var b: [1]u8 = undefined;
-            while (true) {
-                const n = linux.read(self.proceed_fd, &b, 1);
-                if (linux.errno(n) == .INTR) continue; // EINTR-safe
-                break; // one byte, or EOF -> release into the signal phase
-            }
+            _ = readExactWithin(self.clock, self.proceed_fd, &b, self.deadline_ms); // bounded; EOF/error/deadline -> proceed
         }
     }
     pub fn reap(self: Ops) void {
@@ -230,9 +252,10 @@ fn publishWithout(io: std.Io, dir: std.Io.Dir, sub_path: []const u8, l: *const l
 
 /// TEST-ONLY prototype. `early_unlock` is an INJECTED mutant policy, not a production switch: when true it releases
 /// the flock right after the read (the mutant); when false it holds the flock across read -> revalidate -> signal
-/// -> retire, releasing only after the publish result via the defer (the green boundary).
-fn protoRecoverOneUnderLock(io: std.Io, gpa: std.mem.Allocator, dir: std.Io.Dir, basename: []const u8, max_tries: u32, backoff_ms: i64, ops: Ops, early_unlock: bool) ProtoAction {
-    var lock = ledger.acquireLock(io, dir, max_tries, backoff_ms) catch return .fail_closed;
+/// -> retire, releasing only after the publish result via the defer (the green boundary). The acquire, the parked
+/// read and the publish are all bounded by the shared absolute `deadline_ms`.
+fn protoRecoverOneUnderLock(io: std.Io, gpa: std.mem.Allocator, dir: std.Io.Dir, basename: []const u8, clock: ledger.RealClock, deadline_ms: i64, ops: Ops, early_unlock: bool) ProtoAction {
+    var lock = acquireLockByDeadline(dir, clock, deadline_ms) orelse return .fail_closed;
     var l = ledger.load(io, gpa, dir, "runs.json") catch {
         lock.close(io);
         return .fail_closed;
@@ -255,9 +278,9 @@ fn protoRecoverOneUnderLock(io: std.Io, gpa: std.mem.Allocator, dir: std.Io.Dir,
     }
 }
 
-fn runRecoverer(io: std.Io, dir: std.Io.Dir, readdone_fd: i32, proceed_fd: i32, result_fd: i32, early_unlock: bool) noreturn {
+fn runRecoverer(io: std.Io, dir: std.Io.Dir, readdone_fd: i32, proceed_fd: i32, result_fd: i32, clock: ledger.RealClock, deadline_ms: i64, early_unlock: bool) noreturn {
     var reaped = false;
-    const act = protoRecoverOneUnderLock(io, std.heap.page_allocator, dir, BASENAME, 2000, 5, Ops{ .readdone_fd = readdone_fd, .proceed_fd = proceed_fd, .reaped = &reaped }, early_unlock);
+    const act = protoRecoverOneUnderLock(io, std.heap.page_allocator, dir, BASENAME, clock, deadline_ms, Ops{ .readdone_fd = readdone_fd, .proceed_fd = proceed_fd, .clock = clock, .deadline_ms = deadline_ms, .reaped = &reaped }, early_unlock);
     const b = [2]u8{ @intFromEnum(act), if (reaped) 1 else 0 };
     writeAll(result_fd, &b);
     linux.exit_group(0);
@@ -269,65 +292,71 @@ fn terminal0(status: u32) bool {
 
 // ---- the scenario (shared by both branches) ------------------------------------------------------------------
 
-/// Run one two-recoverer race under the injected `early_unlock` policy and assert the full branch oracle. All parent
-/// waits/reads are bounded; every unused pipe end is closed in the parent and each child; both children are reaped
-/// within a deadline and otherwise SIGKILLed+reaped by the unconditional cleanup defer behind the fd-9 sentinel.
+/// Run one two-recoverer race under the injected `early_unlock` policy and assert the full branch oracle. R1 is
+/// established first; one absolute terminal deadline bounds everything; every unused pipe end is closed in the
+/// parent and each child; reaps are bounded and distinguish a real status from timeout/error; the unconditional
+/// cleanup is the private-namespace backstop.
 fn runScenario(early_unlock: bool) !void {
     if (!inPrivatePidNamespace()) return error.NotInPrivatePidNamespace;
     const io = std.testing.io;
     const gpa = std.testing.allocator;
     const clock = ledger.RealClock{ .io = io };
+    const terminal = clock.nowMs() + TOTAL_BUDGET_MS; // the ONE absolute monotonic deadline for the whole scenario
 
     var td = std.testing.tmpDir(.{});
     defer td.cleanup();
     const seed = [_]ledger.Entry{.{ .basename = BASENAME, .dev = 1, .ino = 2, .uid = 0, .mode = 16832, .pid = DEAD_PID, .start_kind = .linux_ticks, .start_sec = 123456, .start_usec = 0, .state = .active }};
     try ledger.publish(io, td.dir, "runs.json", &seed);
 
-    var b1rd: [2]i32 = undefined; // R1 -> parent  "read done"
-    var b1go: [2]i32 = undefined; // parent -> R1  "proceed"
-    var b2rd: [2]i32 = undefined; // R2 -> parent  "read done"
-    var b1res: [2]i32 = undefined; // R1 -> parent  result
-    var b2res: [2]i32 = undefined; // R2 -> parent  result
-    for ([_]*[2]i32{ &b1rd, &b1go, &b2rd, &b1res, &b2res }) |p| {
-        if (linux.pipe(p) != 0) return error.PipeFailed;
-    }
-    // Close EVERY pipe end on EVERY exit path exactly once (closeAndClear skips an already-closed -1 end). Child-only
-    // ends are closed in the parent immediately after the forks (below); this defer closes whatever remains.
+    // All pipe ends start at -1 and the close-all cleanup is installed BEFORE the first pipe(), so a PARTIAL
+    // creation leaks nothing (RoseCat 7743 #4). closeAndClear skips an already-closed -1 end.
+    var b1rd = [2]i32{ -1, -1 }; // R1 -> parent  "read done"
+    var b1go = [2]i32{ -1, -1 }; // parent -> R1  "proceed"
+    var b2rd = [2]i32{ -1, -1 }; // R2 -> parent  "read done"
+    var b1res = [2]i32{ -1, -1 }; // R1 -> parent  result
+    var b2res = [2]i32{ -1, -1 }; // R2 -> parent  result
     defer for ([_]*i32{ &b1rd[0], &b1rd[1], &b1go[0], &b1go[1], &b2rd[0], &b2rd[1], &b1res[0], &b1res[1], &b2res[0], &b2res[1] }) |p| closeAndClear(p);
 
-    // Unconditional child cleanup. Registered BEFORE the forks and LIFO-ahead of the fd defer, so a fork/poll/read
-    // failure or a failed assertion still SIGKILLs+reaps exactly the fork-returned children (pid still 0 -> skipped).
+    // Child cleanup is the containment backstop; registered after the fd defer so (LIFO) children are SIGKILLed
+    // before the fds are closed, and before any fork so a partial setup still reaps (pid -1 -> skipped).
     var children = [_]Child{ .{}, .{} };
     defer cleanupChildren(&children);
+
+    for ([_]*[2]i32{ &b1rd, &b1go, &b2rd, &b1res, &b2res }) |p| {
+        if (linux.pipe(p) != 0) return error.PipeFailed; // partial failure -> the fd defer closes whatever opened
+    }
 
     // Recoverer 1: reads, signals read-done present=1, then BLOCKS on `proceed` before its signal phase.
     const p1 = linux.fork();
     if (linux.errno(p1) != .SUCCESS) return error.ForkFailed;
     if (p1 == 0) {
         for ([_]i32{ b1rd[0], b1go[1], b2rd[0], b2rd[1], b1res[0], b2res[0], b2res[1] }) |fd| _ = linux.close(fd);
-        runRecoverer(io, td.dir, b1rd[1], b1go[0], b1res[1], early_unlock);
+        runRecoverer(io, td.dir, b1rd[1], b1go[0], b1res[1], clock, terminal, early_unlock);
     }
     children[0] = .{ .pid = @intCast(p1) };
+    // Parent closes R1's child-only ends NOW so R1's death EOFs and R2 never inherits them (RoseCat 7743 #1/#4).
+    for ([_]*i32{ &b1rd[1], &b1go[0], &b1res[1] }) |p| closeAndClear(p);
 
-    // Recoverer 2: reads, signals read-done, does NOT wait (proceed = -1).
+    // (1) ESTABLISH R1 FIRST: consume R1's present=1 read-done BEFORE forking R2, so R1 holds the flock before R2
+    // exists. This makes the named ordering causal, not scheduler luck (RoseCat 7743 #1).
+    var r1rd: [1]u8 = undefined;
+    if (!readExactWithin(clock, b1rd[0], &r1rd, terminal)) return error.R1ReadDoneLost;
+    try std.testing.expectEqual(@as(u8, 1), r1rd[0]);
+
+    // Recoverer 2: reads, signals read-done, does NOT wait (proceed = -1). Forked only after R1 is established.
     const p2 = linux.fork();
     if (linux.errno(p2) != .SUCCESS) return error.ForkFailed; // defer cleanup reaps R1
     if (p2 == 0) {
-        for ([_]i32{ b1rd[0], b1rd[1], b1go[0], b1go[1], b2rd[0], b1res[0], b1res[1], b2res[0] }) |fd| _ = linux.close(fd);
-        runRecoverer(io, td.dir, b2rd[1], -1, b2res[1], early_unlock);
+        for ([_]i32{ b1rd[0], b1go[1], b2rd[0], b1res[0], b2res[0] }) |fd| _ = linux.close(fd);
+        runRecoverer(io, td.dir, b2rd[1], -1, b2res[1], clock, terminal, early_unlock);
     }
     children[1] = .{ .pid = @intCast(p2) };
+    for ([_]*i32{ &b2rd[1], &b2res[1] }) |p| closeAndClear(p);
 
-    // Parent closes every child-only end NOW so a child's death produces EOF at the parent (RoseCat 7706 #2).
-    for ([_]*i32{ &b1rd[1], &b1go[0], &b2rd[1], &b1res[1], &b2res[1] }) |p| closeAndClear(p);
-
-    // (a) R1 always reads the present entry first: present=1.
-    var r1rd: [1]u8 = undefined;
-    if (!readExactWithin(clock, b1rd[0], &r1rd, clock.nowMs() + READ_BUDGET_MS)) return error.R1ReadDoneLost;
-    try std.testing.expectEqual(@as(u8, 1), r1rd[0]);
-
-    // (b) pre-release window: does R2 reach read-done BEFORE we release R1?
-    const pre = ledger.waitWithinDeadline(clock, clock.nowMs() + PRE_RELEASE_MS, RealPoll{ .fd = b2rd[0] });
+    // (2) pre-release handshake window: does R2 reach read-done BEFORE we release R1? Bounded by a short sub-window
+    // CAPPED at the single terminal deadline (never a renewed per-phase budget).
+    const pre_deadline = @min(clock.nowMs() + PRE_RELEASE_MS, terminal);
+    const pre = ledger.waitWithinDeadline(clock, pre_deadline, RealPoll{ .fd = b2rd[0] });
     if (pre == .poll_error) return error.PreReleasePollFailed;
 
     if (early_unlock) {
@@ -335,10 +364,11 @@ fn runScenario(early_unlock: bool) !void {
         // BEFORE R1 is released -> read-done arrives within the window, present=1.
         try std.testing.expectEqual(ledger.WaitResult.ready, pre);
         var r2rd: [1]u8 = undefined;
-        if (!readExactWithin(clock, b2rd[0], &r2rd, clock.nowMs() + READ_BUDGET_MS)) return error.R2ReadDoneLost;
+        if (!readExactWithin(clock, b2rd[0], &r2rd, terminal)) return error.R2ReadDoneLost;
         try std.testing.expectEqual(@as(u8, 1), r2rd[0]);
     } else {
-        // GREEN: R1 holds the flock, so R2 blocks on acquire and CANNOT read before release -> the window times out.
+        // GREEN: R1 holds the flock, so R2 blocks on the deadline-bounded acquire and CANNOT read before release
+        // -> the window times out.
         try std.testing.expectEqual(ledger.WaitResult.timed_out, pre);
     }
 
@@ -346,21 +376,22 @@ fn runScenario(early_unlock: bool) !void {
 
     if (!early_unlock) {
         // GREEN: only AFTER R1 retires + releases does R2 acquire the freed flock, reload the retired state, and
-        // read the entry GONE -> present=0 (bounded by the re-acquire retry budget).
+        // read the entry GONE -> present=0 (bounded by the same terminal deadline).
         var r2rd: [1]u8 = undefined;
-        if (!readExactWithin(clock, b2rd[0], &r2rd, clock.nowMs() + ACQUIRE_BUDGET_MS)) return error.R2ReadDoneLost;
+        if (!readExactWithin(clock, b2rd[0], &r2rd, terminal)) return error.R2ReadDoneLost;
         try std.testing.expectEqual(@as(u8, 0), r2rd[0]);
     }
 
     var r1: [2]u8 = undefined;
     var r2: [2]u8 = undefined;
-    if (!readExactWithin(clock, b1res[0], &r1, clock.nowMs() + READ_BUDGET_MS)) return error.R1ResultLost;
-    if (!readExactWithin(clock, b2res[0], &r2, clock.nowMs() + ACQUIRE_BUDGET_MS)) return error.R2ResultLost;
+    if (!readExactWithin(clock, b1res[0], &r1, terminal)) return error.R1ResultLost;
+    if (!readExactWithin(clock, b2res[0], &r2, terminal)) return error.R2ResultLost;
 
-    reapWithin(clock, &children[0], clock.nowMs() + REAP_BUDGET_MS);
-    reapWithin(clock, &children[1], clock.nowMs() + REAP_BUDGET_MS);
-    try std.testing.expect(terminal0(children[0].status)); // both children exited terminally (status 0)
-    try std.testing.expect(terminal0(children[1].status));
+    // (3) bounded, honest reaps against the SAME terminal deadline; a real status, never a fabricated zero.
+    const st0 = reapWithin(clock, &children[0], terminal) orelse return error.R1ReapFailed;
+    const st1 = reapWithin(clock, &children[1], terminal) orelse return error.R2ReapFailed;
+    try std.testing.expect(terminal0(st0)); // both children exited terminally (status 0)
+    try std.testing.expect(terminal0(st1));
 
     const reaped_sum: u32 = @as(u32, r1[1]) + @as(u32, r2[1]);
     const sig = @intFromEnum(ProtoAction.signalled);
@@ -368,9 +399,8 @@ fn runScenario(early_unlock: bool) !void {
 
     if (early_unlock) {
         // MUTANT oracle: dropping the flock early lets BOTH recoverers enter the signal phase -> TWO reaps. Two
-        // signal phases is the deterministic invariant. Their individual return codes are NOT asserted: with the
-        // lock gone, the two uncoordinated `publishWithout` writes race, so one can collide and fail-close AFTER
-        // reaping -- itself a vivid symptom of releasing the lock before the retirement completes.
+        // signal phases is the deterministic invariant; individual return codes are NOT asserted (the two
+        // uncoordinated publishes race, so a loser can fail-close AFTER reaping).
         try std.testing.expectEqual(@as(u32, 2), reaped_sum);
     } else {
         // GREEN oracle: exactly ONE signal phase; the exact ordered pair {R1 .signalled, R2 .already_gone}; empty
