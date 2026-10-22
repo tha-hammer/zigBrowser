@@ -60,7 +60,7 @@ test "4pa.65: a dead entry in the REAL store name is recovered once and retired;
     try ledger.publish(io, td.dir, REAL_STORE, &[_]ledger.Entry{entryOf(DEAD_BASENAME, DEAD_PID)});
 
     var pins: usize = 0;
-    const rep = recovery.recoverAllAtStartupGated(true, io, gpa, td.dir, REAL_STORE, clock, clock.nowMs() + BUDGET_MS, CountingActuator{ .pins = &pins });
+    const rep = recovery.test_support.recoverAllAtStartupGated(true, io, gpa, td.dir, REAL_STORE, clock, clock.nowMs() + BUDGET_MS, CountingActuator{ .pins = &pins });
     try std.testing.expectEqual(@as(usize, 1), rep.signalled);
     try std.testing.expectEqual(@as(usize, 0), rep.fail_closed);
     try std.testing.expectEqual(@as(usize, 1), pins);
@@ -108,7 +108,7 @@ test "4pa.68: a pid-0, pid--1 or mismatched-pid entry never reaches the actuator
         try td.dir.writeFile(io, .{ .sub_path = "runs.json", .data = bytes });
 
         var pins: usize = 0;
-        const rep = recovery.recoverAllAtStartupGated(true, io, gpa, td.dir, "runs.json", clock, clock.nowMs() + BUDGET_MS, CountingActuator{ .pins = &pins });
+        const rep = recovery.test_support.recoverAllAtStartupGated(true, io, gpa, td.dir, "runs.json", clock, clock.nowMs() + BUDGET_MS, CountingActuator{ .pins = &pins });
         try std.testing.expectEqual(@as(usize, 0), pins); // never pinned, so never signalled
         try std.testing.expectEqual(@as(usize, 0), rep.signalled);
         try std.testing.expect(!rep.ok()); // a malformed store fails closed, visibly

@@ -1,6 +1,8 @@
 //! MS6.5.1 OPEN whole-recovery blocker bd zigBrowser-3gl, 7b29fd6 item 1 — reds/greens for the REAL PRODUCTION
-//! transaction `ledger.recoverOneUnderLock` (NOT the test-only prototype). Registered (step
-//! `test-agent-run-ledger-recovery-txn`, in `test`, 4pa.71) and UNARMED (no production caller; `reaper_ready` false). The held-flock design is RoseCat b2f474b / 62888b1; the deadline authority, tagged
+//! transaction `recoverOneUnderLock` (file-private in agent_run_recovery.zig, reached here through its test-build-only
+//! `test_support`; NOT the test-only prototype). Registered (step `test-agent-run-ledger-recovery-txn`, in `test`,
+//! 4pa.71) and UNARMED (no production caller; `reaper_ready` false). The held-flock design is RoseCat b2f474b /
+//! 62888b1; the deadline authority, tagged
 //! pin outcome, idempotent teardown and crash-cut handling answer RoseCat 9f62ea4 #2/#3.
 //!
 //! The destructive action is reached ONLY through a typed lease that RETAINS the pinned run-dir fd (so the
@@ -15,6 +17,7 @@
 //! reaped within it, else SIGKILLed+reaped (only proven-owned); an ownership-lost pid is never signalled.
 const std = @import("std");
 const ledger = @import("agent_run_ledger");
+const recovery = @import("agent_run_recovery");
 const linux = std.os.linux;
 
 const BASENAME = "zigbrowser-agent-2147483645-00bb00bb00bb00bb"; // its pid is DEAD_PID, as a ledger entry requires
@@ -191,15 +194,15 @@ fn terminal0(status: u32) bool {
 const FakeLease = struct {
     fp: ledger.FixedPoint,
     td: ledger.Teardown,
-    /// Time spent inside the fixed point, as a real census/kill pass takes time: it holds the one flock open long
-    /// enough that a recoverer which released the flock early (4pa.71's mutant) lets the other in.
-    hold_ms: u32 = 0,
+    /// The two-recoverer handshake (4pa.71): entering the fixed point, the recoverer writes its id to `arrive_fd`,
+    /// then waits for the parent's one byte on `go_fd`, so the parent holds it AT the fixed point, inside the held
+    /// flock, for as long as the parent needs. EOF or the deadline ends the wait as an incomplete census (fail closed).
+    gate: ?Gate = null,
     pub fn fixedPoint(self: *FakeLease, clock: anytype, deadline_ms: i64) ledger.FixedPoint {
-        _ = clock;
-        _ = deadline_ms;
-        if (self.hold_ms > 0) {
-            var ts: linux.timespec = .{ .sec = 0, .nsec = @as(isize, self.hold_ms) * 1_000_000 };
-            while (linux.errno(linux.nanosleep(&ts, &ts)) == .INTR) {}
+        if (self.gate) |g| {
+            writeAll(g.arrive_fd, &[1]u8{g.id});
+            var go: [1]u8 = undefined;
+            if (!readExactWithin(clock, g.go_fd, &go, deadline_ms)) return .incomplete;
         }
         return self.fp;
     }
@@ -212,6 +215,7 @@ const FakeLease = struct {
         _ = self;
     }
 };
+const Gate = struct { arrive_fd: i32, go_fd: i32, id: u8 };
 const FakePin = union(enum) { held: FakeLease, gone, mismatch, unreadable };
 const FakeActuator = struct {
     result: FakePin,
@@ -225,9 +229,9 @@ const FakeActuator = struct {
 fn okActuator() FakeActuator {
     return .{ .result = .{ .held = .{ .fp = .clean, .td = .done } } };
 }
-/// The happy actuator whose fixed point takes 300 ms (the two-recoverer race).
-fn slowActuator() FakeActuator {
-    return .{ .result = .{ .held = .{ .fp = .clean, .td = .done, .hold_ms = 300 } } };
+/// The happy actuator whose fixed point waits at the handshake `gate` (the two-recoverer race).
+fn gatedActuator(gate: Gate) FakeActuator {
+    return .{ .result = .{ .held = .{ .fp = .clean, .td = .done, .gate = gate } } };
 }
 
 fn seedActive(io: std.Io, dir: std.Io.Dir, pid: i32, start_sec: u64) !void {
@@ -247,14 +251,31 @@ fn entryCount(io: std.Io, gpa: std.mem.Allocator, dir: std.Io.Dir) !usize {
 
 // ---- forked two-recoverer race (needs the sentinel) ----------------------------------------------------------
 
-fn runRecoverer(io: std.Io, dir: std.Io.Dir, deadline_ms: i64, result_fd: i32) noreturn {
+fn runRecoverer(io: std.Io, dir: std.Io.Dir, deadline_ms: i64, result_fd: i32, gate: Gate) noreturn {
     const clock = ledger.RealClock{ .io = io };
-    const act = ledger.recoverOneUnderLock(io, std.heap.page_allocator, dir, STORE, BASENAME, clock, deadline_ms, slowActuator());
+    const act = recovery.test_support.recoverOneUnderLock(io, std.heap.page_allocator, dir, STORE, BASENAME, clock, deadline_ms, gatedActuator(gate));
     const b = [1]u8{@intFromEnum(act)};
     writeAll(result_fd, &b);
     linux.exit_group(0);
 }
 
+/// Whether some process holds the ledger flock now: one non-blocking attempt on a fresh descriptor, released at once.
+fn flockHeldByOther(dir: std.Io.Dir) !bool {
+    const fd = std.posix.openat(dir.handle, ledger.LOCK_NAME, .{ .ACCMODE = .RDWR, .NOFOLLOW = true, .CLOEXEC = true }, 0) catch return error.LockOpen;
+    defer _ = linux.close(fd);
+    return switch (std.posix.errno(std.posix.system.flock(fd, std.posix.LOCK.EX | std.posix.LOCK.NB))) {
+        .SUCCESS => false,
+        .AGAIN => true,
+        else => error.LockProbe,
+    };
+}
+
+// The handshake, deterministic with no sleep: recoverer A is forked alone and stopped AT its fixed point (inside the
+// transaction, past its pin). Only then the parent probes the flock (only A can hold it) and forks B. Held, as the
+// production transaction must be: A is released, B waits for the flock and finds the entry retired. Free (a
+// recoverer that released the flock before its fixed point): the parent also waits for B to reach ITS fixed point
+// -- it can, since the flock is free and A has not yet retired the entry -- and then releases both, so the early
+// unlock always gives two signal phases.
 test "two recoverers through the PRODUCTION transaction: exact {signalled, already_gone}, empty ledger, terminal" {
     if (!inPrivatePidNamespace()) return error.NotInPrivatePidNamespace;
     const io = std.testing.io;
@@ -266,35 +287,54 @@ test "two recoverers through the PRODUCTION transaction: exact {signalled, alrea
     defer td.cleanup();
     try seedActive(io, td.dir, DEAD_PID, 234567);
 
-    var p1res = [2]i32{ -1, -1 };
-    var p2res = [2]i32{ -1, -1 };
-    defer for ([_]*i32{ &p1res[0], &p1res[1], &p2res[0], &p2res[1] }) |p| closeAndClear(p);
+    // [0] read end, [1] write end: results from A and B, the shared arrival pipe, and one go pipe each.
+    var res_a = [2]i32{ -1, -1 };
+    var res_b = [2]i32{ -1, -1 };
+    var arrive = [2]i32{ -1, -1 };
+    var go_a = [2]i32{ -1, -1 };
+    var go_b = [2]i32{ -1, -1 };
+    const all = [_]*[2]i32{ &res_a, &res_b, &arrive, &go_a, &go_b };
+    defer for (all) |pp| for (pp) |*fd| closeAndClear(fd);
     var children = [_]Child{ .{}, .{} };
     defer cleanupChildren(&children, RealWaiter{});
-    if (linux.pipe(&p1res) != 0) return error.PipeFailed;
-    if (linux.pipe(&p2res) != 0) return error.PipeFailed;
+    for (all) |pp| if (linux.pipe(pp) != 0) return error.PipeFailed;
 
     const a = linux.fork();
     if (linux.errno(a) != .SUCCESS) return error.ForkFailed;
     if (a == 0) {
-        for ([_]i32{ p1res[0], p2res[0], p2res[1] }) |fd| _ = linux.close(fd);
-        runRecoverer(io, td.dir, terminal, p1res[1]);
+        for ([_]i32{ res_a[0], res_b[0], res_b[1], arrive[0], go_a[1], go_b[0], go_b[1] }) |fd| _ = linux.close(fd);
+        runRecoverer(io, td.dir, terminal, res_a[1], .{ .arrive_fd = arrive[1], .go_fd = go_a[0], .id = 'A' });
     }
     children[0] = .{ .pid = @intCast(a) };
+    var who: [1]u8 = undefined;
+    var fixed_points: u32 = 0; // signal phases: arrivals at a fixed point (census -> kill), read off the arrival pipe
+    if (!readExactWithin(clock, arrive[0], &who, terminal)) return error.ANeverReachedItsFixedPoint;
+    fixed_points += 1;
+    try std.testing.expectEqual(@as(u8, 'A'), who[0]);
+    const held_at_fixed_point = try flockHeldByOther(td.dir); // only A exists, and it is at its fixed point
 
     const b = linux.fork();
     if (linux.errno(b) != .SUCCESS) return error.ForkFailed;
     if (b == 0) {
-        for ([_]i32{ p1res[0], p1res[1], p2res[0] }) |fd| _ = linux.close(fd);
-        runRecoverer(io, td.dir, terminal, p2res[1]);
+        for ([_]i32{ res_a[0], res_a[1], res_b[0], arrive[0], go_a[0], go_a[1], go_b[1] }) |fd| _ = linux.close(fd);
+        runRecoverer(io, td.dir, terminal, res_b[1], .{ .arrive_fd = arrive[1], .go_fd = go_b[0], .id = 'B' });
     }
     children[1] = .{ .pid = @intCast(b) };
-    for ([_]*i32{ &p1res[1], &p2res[1] }) |p| closeAndClear(p);
+    for ([_]*i32{ &res_a[1], &res_b[1], &arrive[1], &go_a[0], &go_b[0] }) |fd| closeAndClear(fd);
+
+    if (!held_at_fixed_point) {
+        if (!readExactWithin(clock, arrive[0], &who, terminal)) return error.BNeverReachedItsFixedPoint;
+        try std.testing.expectEqual(@as(u8, 'B'), who[0]);
+        fixed_points += 1;
+        writeAll(go_b[1], "g");
+    }
+    writeAll(go_a[1], "g");
+    closeAndClear(&go_b[1]); // a B that reaches its fixed point after A released the flock reads EOF: fail closed
 
     var r1: [1]u8 = undefined;
     var r2: [1]u8 = undefined;
-    if (!readExactWithin(clock, p1res[0], &r1, terminal)) return error.R1ResultLost;
-    if (!readExactWithin(clock, p2res[0], &r2, terminal)) return error.R2ResultLost;
+    if (!readExactWithin(clock, res_a[0], &r1, terminal)) return error.R1ResultLost;
+    if (!readExactWithin(clock, res_b[0], &r2, terminal)) return error.R2ResultLost;
 
     const st0 = switch (reapWithin(clock, &children[0], clock.nowMs() + REAP_BUDGET_MS, RealWaiter{})) {
         .status => |s| s,
@@ -306,6 +346,9 @@ test "two recoverers through the PRODUCTION transaction: exact {signalled, alrea
     };
     try std.testing.expect(terminal0(st0));
     try std.testing.expect(terminal0(st1));
+    // Both children are reaped, so every write end of the arrival pipe is closed: count any later arrival to EOF.
+    while (readExactWithin(clock, arrive[0], &who, terminal)) fixed_points += 1;
+    try std.testing.expectEqual(@as(u32, 1), fixed_points); // exactly ONE signal phase: the held flock serialises
 
     const sig = @intFromEnum(ledger.RecoveryAction.signalled);
     const gone = @intFromEnum(ledger.RecoveryAction.already_gone);
@@ -318,6 +361,7 @@ test "two recoverers through the PRODUCTION transaction: exact {signalled, alrea
     try std.testing.expectEqual(@as(u32, 1), n_sig); // exactly ONE signal phase (the held flock serialises)
     try std.testing.expectEqual(@as(u32, 1), n_gone);
     try std.testing.expectEqual(@as(usize, 0), try entryCount(io, gpa, td.dir)); // EMPTY final ledger
+    try std.testing.expect(held_at_fixed_point); // the one flock was held at the fixed point
 }
 
 test "a LIVE same-owner entry is LEFT untouched (.left) and RETAINED, never signalled or retired" {
@@ -354,7 +398,7 @@ test "a LIVE same-owner entry is LEFT untouched (.left) and RETAINED, never sign
     const bn = try std.fmt.bufPrint(&bn_buf, "zigbrowser-agent-{d}-00bb00bb00bb00bb", .{pid}); // the entry's own pid
     try seedActiveAs(io, td.dir, bn, @intCast(pid), ticks);
 
-    const act = ledger.recoverOneUnderLock(io, gpa, td.dir, STORE, bn, clock, terminal, okActuator());
+    const act = recovery.test_support.recoverOneUnderLock(io, gpa, td.dir, STORE, bn, clock, terminal, okActuator());
     try std.testing.expectEqual(ledger.RecoveryAction.left, act); // live same-owner -> leave untouched
     try std.testing.expectEqual(@as(usize, 1), try entryCount(io, gpa, td.dir)); // entry RETAINED
 }
@@ -371,7 +415,7 @@ test "deadline AUTHORITY: a free lock at an already-expired deadline fails close
     try seedActive(io, td.dir, DEAD_PID, 234567);
 
     const expired = clock.nowMs() - 1; // already past -> acquire succeeds (free lock) but the post-acquire check bites
-    const act = ledger.recoverOneUnderLock(io, gpa, td.dir, STORE, BASENAME, clock, expired, okActuator());
+    const act = recovery.test_support.recoverOneUnderLock(io, gpa, td.dir, STORE, BASENAME, clock, expired, okActuator());
     try std.testing.expectEqual(ledger.RecoveryAction.fail_closed, act);
     try std.testing.expectEqual(@as(usize, 1), try entryCount(io, gpa, td.dir)); // entry RETAINED, no mutation past expiry
 }
@@ -386,7 +430,7 @@ test "crash cut C3: a dead entry whose dir is GONE is dropped idempotently (.rec
     defer td.cleanup();
     try seedActive(io, td.dir, DEAD_PID, 234567);
 
-    const act = ledger.recoverOneUnderLock(io, gpa, td.dir, STORE, BASENAME, clock, terminal, FakeActuator{ .result = .gone });
+    const act = recovery.test_support.recoverOneUnderLock(io, gpa, td.dir, STORE, BASENAME, clock, terminal, FakeActuator{ .result = .gone });
     try std.testing.expectEqual(ledger.RecoveryAction.reconciled, act); // dropped, signal-free, never wedged
     try std.testing.expectEqual(@as(usize, 0), try entryCount(io, gpa, td.dir)); // entry DROPPED
 }
@@ -401,7 +445,7 @@ test "provenance MISMATCH never sweeps: fail closed, entry retained" {
     defer td.cleanup();
     try seedActive(io, td.dir, DEAD_PID, 234567);
 
-    const act = ledger.recoverOneUnderLock(io, gpa, td.dir, STORE, BASENAME, clock, terminal, FakeActuator{ .result = .mismatch });
+    const act = recovery.test_support.recoverOneUnderLock(io, gpa, td.dir, STORE, BASENAME, clock, terminal, FakeActuator{ .result = .mismatch });
     try std.testing.expectEqual(ledger.RecoveryAction.fail_closed, act);
     try std.testing.expectEqual(@as(usize, 1), try entryCount(io, gpa, td.dir)); // RETAINED
 }
@@ -416,7 +460,7 @@ test "UNREADABLE provenance fails closed, entry retained" {
     defer td.cleanup();
     try seedActive(io, td.dir, DEAD_PID, 234567);
 
-    const act = ledger.recoverOneUnderLock(io, gpa, td.dir, STORE, BASENAME, clock, terminal, FakeActuator{ .result = .unreadable });
+    const act = recovery.test_support.recoverOneUnderLock(io, gpa, td.dir, STORE, BASENAME, clock, terminal, FakeActuator{ .result = .unreadable });
     try std.testing.expectEqual(ledger.RecoveryAction.fail_closed, act);
     try std.testing.expectEqual(@as(usize, 1), try entryCount(io, gpa, td.dir)); // RETAINED
 }

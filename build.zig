@@ -1226,8 +1226,11 @@ pub fn build(b: *std.Build) void {
     // It forks, and a stuck child is SIGKILLed, so it runs only in a private user+PID namespace: the launcher holds
     // the OUTER /proc/self/ns/pid as fd 9 for the test's sentinel, the shell stays PID 1 (orphans adopt to it), and
     // it exits with the test's own status (`rc=$?; exit $rc`), so a failing test fails the step.
-    const ledger_recovery_txn_test_mod = b.createModule(.{ .root_source_file = b.path("tests/agent_run_ledger_recovery_txn_test.zig"), .target = target, .optimize = optimize });
+    const ledger_recovery_txn_test_mod = b.createModule(.{ .root_source_file = b.path("tests/agent_run_ledger_recovery_txn_test.zig"), .target = target, .optimize = optimize, .link_libc = true });
     ledger_recovery_txn_test_mod.addImport("agent_run_ledger", ledger_mod);
+    ledger_recovery_txn_test_mod.addImport("agent_run_recovery", recovery_startup_mod); // the transaction lives there (I-W3)
+    ledger_recovery_txn_test_mod.addIncludePath(b.path("src"));
+    ledger_recovery_txn_test_mod.addCSourceFile(.{ .file = b.path("src/agent_run_reaper.c"), .flags = &.{"-std=gnu11"} });
     const run_ledger_recovery_txn_tests = b.addSystemCommand(&.{
         "sh", "-c",
         "exec 9</proc/self/ns/pid; exec unshare --user --map-root-user --pid --fork --mount-proc sh -c '\"$@\"; rc=$?; exit $rc' sh \"$1\"",
@@ -1236,6 +1239,37 @@ pub fn build(b: *std.Build) void {
     run_ledger_recovery_txn_tests.addArtifactArg(b.addTest(.{ .root_module = ledger_recovery_txn_test_mod }));
     const ledger_recovery_txn_step = b.step("test-agent-run-ledger-recovery-txn", "MS6.5.1 4pa.71: the production recovery transaction (signal-free fake lease; PID-ns sentinel)");
     ledger_recovery_txn_step.dependOn(&run_ledger_recovery_txn_tests.step);
+    // R29.6 I-W3 / R30.2 T20 (4pa.71): a PRODUCTION (non-test) build can reach recovery only through the readiness-bound
+    // recoverAllAtStartup. Each probe is a generated non-test object that names one bypass -- the transaction or a
+    // readiness-taking startup entry, directly, through `test_support`, or on the ledger -- and must FAIL to compile with
+    // exactly that refusal; a control probe naming recoverAllAtStartup must compile. Compiled, never run.
+    const bypass_closed_step = b.step("test-agent-run-recovery-bypass-closed", "4pa.71 / T20: a production build reaches recovery only through recoverAllAtStartup");
+    const bypass_probes = b.addWriteFiles();
+    const BypassProbe = struct { name: []const u8, ref: []const u8, want: []const u8 };
+    const bypasses = [_][]const u8{ "recoverOneUnderLock", "recoverOneUnderLockP", "recoverAllAtStartupGated", "recoverAllAtStartupGatedH", "recoverAllAtStartupFull" };
+    var bypass_rows: [2 * bypasses.len + 2 + 1]BypassProbe = undefined;
+    var n_rows: usize = 0;
+    for (bypasses) |name| {
+        bypass_rows[n_rows] = .{ .name = b.fmt("direct_{s}", .{name}), .ref = b.fmt("recovery.{s}", .{name}), .want = b.fmt("error: '{s}' is not marked 'pub'", .{name}) };
+        bypass_rows[n_rows + 1] = .{ .name = b.fmt("test_support_{s}", .{name}), .ref = b.fmt("recovery.test_support.{s}", .{name}), .want = b.fmt("has no member named '{s}'", .{name}) };
+        n_rows += 2;
+    }
+    for ([_][]const u8{ "recoverOneUnderLock", "recoverOneUnderLockP" }) |name| {
+        bypass_rows[n_rows] = .{ .name = b.fmt("ledger_{s}", .{name}), .ref = b.fmt("ledger.{s}", .{name}), .want = b.fmt("has no member named '{s}'", .{name}) };
+        n_rows += 1;
+    }
+    bypass_rows[n_rows] = .{ .name = "control_recoverAllAtStartup", .ref = "recovery.recoverAllAtStartup", .want = "" };
+    n_rows += 1;
+    for (bypass_rows[0..n_rows]) |row| {
+        const src = bypass_probes.add(b.fmt("{s}.zig", .{row.name}), b.fmt("const recovery = @import(\"agent_run_recovery\");\nconst ledger = @import(\"agent_run_ledger\");\ncomptime {{\n    _ = recovery;\n    _ = ledger;\n    _ = {s};\n}}\n", .{row.ref}));
+        const probe_mod = b.createModule(.{ .root_source_file = src, .target = target, .optimize = optimize, .link_libc = true });
+        probe_mod.addImport("agent_run_recovery", recovery_startup_mod);
+        probe_mod.addImport("agent_run_ledger", ledger_mod);
+        probe_mod.addIncludePath(b.path("src"));
+        const probe_obj = b.addObject(.{ .name = b.fmt("bypass_{s}", .{row.name}), .root_module = probe_mod });
+        if (row.want.len > 0) probe_obj.expect_errors = .{ .contains = row.want };
+        bypass_closed_step.dependOn(&probe_obj.step);
+    }
     // MS6.5 (the user's decision 2026-10-21): the stubbed macOS VM-containment seam — off by default, reports
     // "not available yet", and the gate fails closed when on. Pure Linux unit (no OS calls).
     const mac_vm_containment_module = b.createModule(.{
@@ -3736,6 +3770,7 @@ pub fn build(b: *std.Build) void {
     if (target.result.os.tag == .linux) test_step.dependOn(&run_recovery_startup.step); // MS6.5.1 reaper_ready gate + startup core (unarmed)
     if (target.result.os.tag == .linux) test_step.dependOn(&run_recovery_store_pid.step); // 4pa.65/4pa.68: real store name, entry pid
     if (target.result.os.tag == .linux) test_step.dependOn(&run_ledger_recovery_txn_tests.step); // 4pa.71: the production transaction
+    if (target.result.os.tag == .linux) test_step.dependOn(bypass_closed_step); // 4pa.71 / T20: no production bypass of reaper_ready
     test_step.dependOn(&run_ledger_unreadable_tests.step); // pure unit: unreadable liveness fails closed
     test_step.dependOn(&run_ledger_statio_tests.step); // pure unit: readStart outcome mapping fails closed
     test_step.dependOn(&run_ledger_start_kind_tests.step); // pure unit: v2 start_kind schema + canonical shape

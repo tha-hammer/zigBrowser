@@ -461,7 +461,7 @@ pub fn waitWithinDeadline(clock: anytype, deadline_ms: i64, poll: anytype) WaitR
 }
 
 /// One non-blocking flock attempt on an already-open lock fd.
-const FlockAttempt = struct {
+pub const FlockAttempt = struct {
     fd: i32,
     pub fn tryOnce(self: FlockAttempt) AcquireResult {
         return switch (std.posix.errno(std.posix.system.flock(self.fd, std.posix.LOCK.EX | std.posix.LOCK.NB))) {
@@ -497,8 +497,9 @@ pub fn acquireRunLockBounded(io: std.Io, dir: std.Io.Dir, budget_ms: i64, backof
     return .{ .acquired = true, .incident = .none };
 }
 
-// ---- MS6.5.1 whole-recovery transaction (bd zigBrowser-3gl). IMPLEMENTED + gated, NOT ARMED. ------------------
-// The startup-recovery core `agent_run_recovery.recoverAllAtStartup` wraps this behind the immutable `reaper_ready`
+// ---- MS6.5.1 whole-recovery transaction (bd zigBrowser-3gl): its outcome types. NOT ARMED. --------------------
+// The transaction itself is file-private in agent_run_recovery.zig (I-W3, 4pa.71), reachable only through the
+// readiness-bound `recoverAllAtStartup`. That startup core runs it behind the immutable `reaper_ready`
 // gate, which ships false and is called by no app-startup owner yet, so production recovery is unreachable (the
 // real app-startup owner is the OPEN integration blocker). The approved held-flock design
 // (RoseCat b2f474b; plan rev 28) is: ONE global flock held from the authoritative load through the fresh owner
@@ -525,125 +526,3 @@ pub const FixedPoint = enum { clean, survivors, incomplete };
 /// The idempotent teardown verdict from the held-fd lease: `done` includes crash cut C2 (the marker was already
 /// unlinked before the crash — `ENOENT` on the marker unlink is finished, not failed, then `rmdir` completes).
 pub const Teardown = enum { done, failed };
-
-// The destructive action is reached ONLY through a typed lease that RETAINS the pinned run-dir fd, so the
-// provenance check and the teardown cannot be separated by a path swap (RoseCat 62888b1). The injected `actuator`
-// exposes ONE pin/check step whose result is a TAGGED union distinguishing the crash cuts from a failure
-// (RoseCat 9f62ea4 #3):
-//
-//     actuator.pin(dir, entry) -> union(enum) {
-//         held: Lease,   // the run dir reopened O_DIRECTORY|O_NOFOLLOW and its pinned (dev,ino,uid,mode) equals
-//                        //   the recorded entry; the lease RETAINS that fd (+ the parent authority for rmdir)
-//         gone,          // ENOENT: the entry names no dir -> crash cut C3 (removed before ledger retirement)
-//         mismatch,      // reopened a non-dir/symlink, or (dev,ino,uid,mode) != recorded -> NEVER sweep
-//         unreadable,    // could not open/fstat -> fail closed
-//     }
-//
-// and the returned `Lease` operates ONLY through that held fd and ends its lifetime at `deinit`:
-//
-//     lease.fixedPoint(clock, deadline_ms) FixedPoint  // census -> kill -> fresh-census, clean iff a complete
-//                                                       //   empty final census (via the held fd); else survivors/incomplete
-//     lease.teardown(clock, deadline_ms) Teardown      // unlinkat(run.marker) then unlinkat(name, AT_REMOVEDIR)
-//                                                       //   through the held fds, idempotent on ENOENT (crash cut C2)
-//     lease.deinit() void                              // close the held fd(s)
-//
-// The production actuator/lease wrap the already-reviewed reaper/provenance C path (`zb_reaper_pin_fd` +
-// `zb_reaper_dir_fd_ok` + `zb_reaper_fixed_point`) over the held fd — never a second Zig implementation; tests
-// inject a deterministic, signal-free fake. Nothing here is armed: the `reaper_ready` gate ships false and no
-// app-startup owner calls `recoverAllAtStartup` with a destructive actuator, so production recovery is unreachable.
-
-fn indexOfEntry(l: *const Ledger, basename: []const u8) ?usize {
-    for (l.entries(), 0..) |e, i| if (std.mem.eql(u8, e.basename, basename)) return i;
-    return null;
-}
-
-/// Publish the current ledger MINUS `basename` (the atomic retirement), under the caller's held flock.
-fn publishWithoutCut(io: std.Io, dir: std.Io.Dir, sub_path: []const u8, l: *const Ledger, basename: []const u8, cut: Cut, ops: anytype) !void {
-    var buf: [MAX_ENTRIES]Entry = undefined;
-    var n: usize = 0;
-    for (l.entries()) |e| {
-        if (std.mem.eql(u8, e.basename, basename)) continue;
-        buf[n] = e;
-        n += 1;
-    }
-    try publishCut(io, dir, sub_path, buf[0..n], cut, ops);
-}
-fn publishWithout(io: std.Io, dir: std.Io.Dir, sub_path: []const u8, l: *const Ledger, basename: []const u8) !void {
-    try publishWithoutCut(io, dir, sub_path, l, basename, .none, RealOps{});
-}
-
-/// Recover one recorded entry of the store `sub_path` under the one global ledger flock (bd zigBrowser-3gl; RoseCat
-/// b2f474b/62888b1).
-///
-/// The ONE flock is held across the WHOLE recovery: authoritative load → fresh owner check → held-fd provenance
-/// (the lease) → census/kill fixed point → marker unlink → `rmdir` → ledger retirement, released ONLY after the
-/// terminal publish result is known. One absolute monotonic `deadline_ms` bounds acquire AND held work. Outcomes:
-///   `.already_gone` — the entry was retired by whichever recoverer held the flock before us;
-///   `.left`         — a `left` entry, or a live same-owner entry → leave untouched, entry RETAINED;
-///   `.signalled`    — proved dead, provenance matched, census→clean fixed point, dir torn down, entry retired;
-///   `.fail_closed`  — any unreadable store/identity, provenance mismatch, incomplete census, survivor, teardown
-///                     error, or publish error → entry RETAINED, never a clean recovery, never `.already_gone`.
-///
-/// NOT ARMED: no production caller passes a destructive actuator, so nothing is signalled in production yet.
-pub fn recoverOneUnderLock(io: std.Io, gpa: std.mem.Allocator, dir: std.Io.Dir, sub_path: []const u8, basename: []const u8, clock: anytype, deadline_ms: i64, actuator: anytype) RecoveryAction {
-    return recoverOneUnderLockP(io, gpa, dir, sub_path, basename, clock, deadline_ms, actuator, RealOps{});
-}
-
-/// As `recoverOneUnderLock`, but with an INJECTABLE publish ops for the atomic retirement (production uses
-/// `RealOps`; a test injects a failing ops to exercise the publish-failure/retry path — RoseCat 9f62ea4 #3).
-pub fn recoverOneUnderLockP(io: std.Io, gpa: std.mem.Allocator, dir: std.Io.Dir, sub_path: []const u8, basename: []const u8, clock: anytype, deadline_ms: i64, actuator: anytype, pub_ops: anytype) RecoveryAction {
-    const lock_fd = std.posix.openat(dir.handle, LOCK_NAME, .{ .ACCMODE = .RDWR, .CREAT = true, .NOFOLLOW = true, .CLOEXEC = true }, 0o600) catch return .fail_closed;
-    switch (acquireWithinDeadline(clock, deadline_ms, 5, FlockAttempt{ .fd = lock_fd })) {
-        .acquired => {},
-        .busy, .failed => {
-            _ = std.posix.system.close(lock_fd);
-            return .fail_closed;
-        },
-    }
-    defer _ = std.posix.system.close(lock_fd); // released ONLY after the terminal publish result is known
-    // Deadline AUTHORITY (RoseCat 9f62ea4 #2): `acquireWithinDeadline` tries once before checking time, so a FREE
-    // lock at an already-expired deadline would otherwise proceed. Fail closed here, and re-check at every held-work
-    // boundary below, so no action or disk mutation happens past the single absolute deadline.
-    if (clock.nowMs() >= deadline_ms) return .fail_closed;
-
-    var l = load(io, gpa, dir, sub_path) catch return .fail_closed; // the caller's store (4pa.65); malformed/unreadable -> fail closed
-    defer l.deinit();
-    const idx = indexOfEntry(&l, basename) orelse return .already_gone; // retired by a prior recoverer under the lock
-    const e = l.entries()[idx];
-    if (e.state != .active) return .left; // a `left` entry is never swept
-
-    switch (recoveryFor(probeLivenessTagged(e.pid, e.start_kind, e.start_sec, e.start_usec))) {
-        .leave => return .left, // live same owner -> leave untouched, entry retained
-        .fail_closed => return .fail_closed, // reuse / unreadable -> fail closed, entry retained
-        .recover => {}, // proved dead -> proceed to the pinned, held-fd teardown
-    }
-
-    if (clock.nowMs() >= deadline_ms) return .fail_closed; // pre-pin
-    // Pin + provenance in one step; the `held` lease RETAINS the run-dir fd and all later actions go through it.
-    switch (actuator.pin(dir, e)) {
-        .mismatch, .unreadable => return .fail_closed, // never sweep; entry retained
-        .gone => {
-            // Crash cut C3: the entry names no dir (a prior recoverer removed it, then crashed before retiring the
-            // entry). Drop the entry idempotently, signal-free -- NOT fail-closed, so it never wedges forever.
-            if (clock.nowMs() >= deadline_ms) return .fail_closed; // pre-publish
-            publishWithoutCut(io, dir, sub_path, &l, basename, .none, pub_ops) catch return .fail_closed;
-            return .reconciled;
-        },
-        .held => |held| {
-            var lease = held;
-            defer lease.deinit();
-            switch (lease.fixedPoint(clock, deadline_ms)) {
-                .clean => {}, // a complete, empty final census -> proceed to teardown
-                .survivors, .incomplete => return .fail_closed, // never a clean recovery, entry retained
-            }
-            if (clock.nowMs() >= deadline_ms) return .fail_closed; // pre-teardown
-            switch (lease.teardown(clock, deadline_ms)) { // idempotent on ENOENT (crash cut C2)
-                .done => {},
-                .failed => return .fail_closed, // teardown error -> fail closed, entry retained
-            }
-            if (clock.nowMs() >= deadline_ms) return .fail_closed; // pre-publish
-            publishWithoutCut(io, dir, sub_path, &l, basename, .none, pub_ops) catch return .fail_closed; // atomic retirement under the flock
-            return .signalled;
-        },
-    }
-}

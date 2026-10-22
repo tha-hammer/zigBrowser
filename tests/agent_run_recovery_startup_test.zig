@@ -141,7 +141,7 @@ fn expectGateOffNoRead(io: std.Io, gpa: std.mem.Allocator, dir: std.Io.Dir) !voi
     var pins: usize = 0;
     var loads: usize = 0;
     const clock = ledger.RealClock{ .io = io };
-    const rep = recovery.recoverAllAtStartupFull(false, io, gpa, dir, STORE, clock, clock.nowMs() + BUDGET_MS, act(&pins, HELD_CLEAN), CountingLoader{ .loads = &loads }, null);
+    const rep = recovery.test_support.recoverAllAtStartupFull(false, io, gpa, dir, STORE, clock, clock.nowMs() + BUDGET_MS, act(&pins, HELD_CLEAN), CountingLoader{ .loads = &loads }, null);
     try std.testing.expectEqual(recovery.StartupStatus.disabled, rep.status);
     try std.testing.expectEqual(@as(usize, 0), loads); // the store was NEVER read (move-load-before-gate mutant catches this)
     try std.testing.expect(!rep.load_failed);
@@ -234,7 +234,7 @@ test "#3/#5 the cap processes exactly 64 and defers the remaining 2 (retained)" 
     defer td.cleanup();
     try seedActiveN(io, td.dir, 66); // 64 + 2, LITERAL, not derived from the constant
     var pins: usize = 0;
-    const rep = recovery.recoverAllAtStartupGated(true, io, gpa, td.dir, STORE, clock, clock.nowMs() + BUDGET_MS, act(&pins, HELD_CLEAN));
+    const rep = recovery.test_support.recoverAllAtStartupGated(true, io, gpa, td.dir, STORE, clock, clock.nowMs() + BUDGET_MS, act(&pins, HELD_CLEAN));
     try std.testing.expectEqual(@as(usize, 64), rep.scanned); // a zero-cap mutant recovers 0 -> fails here
     try std.testing.expectEqual(@as(usize, 64), rep.signalled);
     try std.testing.expectEqual(@as(usize, 2), rep.deferred);
@@ -260,7 +260,7 @@ test "#4 entry one completes before the bound; the SAME deadline expires before 
     var pins: usize = 0;
     // before=0 (< deadline) for entry one's 5 clock calls, after=2000 (>= deadline 1000) from entry two's pre-check.
     const clock = StepClock{ .n = &n, .cross_at = 5, .before = 0, .after = 2000 };
-    const rep = recovery.recoverAllAtStartupGated(true, io, gpa, td.dir, STORE, clock, 1000, act(&pins, HELD_CLEAN));
+    const rep = recovery.test_support.recoverAllAtStartupGated(true, io, gpa, td.dir, STORE, clock, 1000, act(&pins, HELD_CLEAN));
     try std.testing.expectEqual(@as(usize, 1), rep.scanned); // entry one only
     try std.testing.expectEqual(@as(usize, 1), rep.signalled); // entry one completed before the bound
     try std.testing.expectEqual(@as(usize, 1), rep.deferred); // entry two deferred by the SAME absolute deadline
@@ -280,7 +280,7 @@ test "#5 gate TRUE + corrupt ledger: load_failed, non-ok, zero action, no mutati
     defer td.cleanup();
     try td.dir.writeFile(io, .{ .sub_path = STORE, .data = CORRUPT });
     var pins: usize = 0;
-    const rep = recovery.recoverAllAtStartupGated(true, io, gpa, td.dir, STORE, clock, clock.nowMs() + BUDGET_MS, act(&pins, HELD_CLEAN));
+    const rep = recovery.test_support.recoverAllAtStartupGated(true, io, gpa, td.dir, STORE, clock, clock.nowMs() + BUDGET_MS, act(&pins, HELD_CLEAN));
     try std.testing.expect(rep.load_failed);
     try std.testing.expect(!rep.ok());
     try std.testing.expectEqual(@as(usize, 0), rep.signalled);
@@ -300,7 +300,7 @@ test "signalled: gate TRUE, a dead entry is recovered exactly once and retired (
     defer td.cleanup();
     try seedActive(io, td.dir, DEAD_PID, 234567);
     var pins: usize = 0;
-    const rep = recovery.recoverAllAtStartupGated(true, io, gpa, td.dir, STORE, clock, clock.nowMs() + BUDGET_MS, act(&pins, HELD_CLEAN));
+    const rep = recovery.test_support.recoverAllAtStartupGated(true, io, gpa, td.dir, STORE, clock, clock.nowMs() + BUDGET_MS, act(&pins, HELD_CLEAN));
     try std.testing.expectEqual(@as(usize, 1), rep.signalled);
     try std.testing.expectEqual(@as(usize, 1), pins);
     try std.testing.expect(rep.ok());
@@ -319,7 +319,7 @@ test "left: a LIVE same-owner entry (this process) is left untouched, RETAINED, 
     const bn = try std.fmt.bufPrint(&bn_buf, "zigbrowser-agent-{d}-00bb00bb00bb00bb", .{self}); // the entry's own pid
     try ledger.publish(io, td.dir, STORE, &[_]ledger.Entry{entryOf(bn, self, ticks, .active, 2)});
     var pins: usize = 0;
-    const rep = recovery.recoverAllAtStartupGated(true, io, gpa, td.dir, STORE, clock, clock.nowMs() + BUDGET_MS, act(&pins, HELD_CLEAN));
+    const rep = recovery.test_support.recoverAllAtStartupGated(true, io, gpa, td.dir, STORE, clock, clock.nowMs() + BUDGET_MS, act(&pins, HELD_CLEAN));
     try std.testing.expectEqual(@as(usize, 1), rep.left);
     try std.testing.expectEqual(@as(usize, 0), rep.signalled);
     try std.testing.expectEqual(@as(usize, 0), pins); // a live owner is decided BEFORE the actuator -> never pinned
@@ -335,7 +335,7 @@ test "reconciled: a dead entry whose dir is GONE (C3) is dropped idempotently, s
     defer td.cleanup();
     try seedActive(io, td.dir, DEAD_PID, 234567);
     var pins: usize = 0;
-    const rep = recovery.recoverAllAtStartupGated(true, io, gpa, td.dir, STORE, clock, clock.nowMs() + BUDGET_MS, act(&pins, .gone));
+    const rep = recovery.test_support.recoverAllAtStartupGated(true, io, gpa, td.dir, STORE, clock, clock.nowMs() + BUDGET_MS, act(&pins, .gone));
     try std.testing.expectEqual(@as(usize, 1), rep.reconciled);
     try std.testing.expect(rep.ok());
     try std.testing.expectEqual(@as(usize, 0), try entryCount(io, gpa, td.dir));
@@ -357,7 +357,7 @@ test "already_gone: an entry retired concurrently (after our snapshot) is tallie
     g_hook_io = io;
     g_hook_dir = td.dir;
     var pins: usize = 0;
-    const rep = recovery.recoverAllAtStartupGatedH(true, io, gpa, td.dir, STORE, clock, clock.nowMs() + BUDGET_MS, act(&pins, HELD_CLEAN), &retireAllHook);
+    const rep = recovery.test_support.recoverAllAtStartupGatedH(true, io, gpa, td.dir, STORE, clock, clock.nowMs() + BUDGET_MS, act(&pins, HELD_CLEAN), &retireAllHook);
     try std.testing.expectEqual(@as(usize, 1), rep.scanned);
     try std.testing.expectEqual(@as(usize, 0), rep.signalled);
     try std.testing.expectEqual(@as(usize, 1), rep.already_gone);
@@ -374,7 +374,7 @@ test "fail_closed: a mismatch entry keeps the entry and makes the report NON-ok"
     defer td.cleanup();
     try seedActive(io, td.dir, DEAD_PID, 234567);
     var pins: usize = 0;
-    const rep = recovery.recoverAllAtStartupGated(true, io, gpa, td.dir, STORE, clock, clock.nowMs() + BUDGET_MS, act(&pins, .mismatch));
+    const rep = recovery.test_support.recoverAllAtStartupGated(true, io, gpa, td.dir, STORE, clock, clock.nowMs() + BUDGET_MS, act(&pins, .mismatch));
     try std.testing.expectEqual(recovery.StartupStatus.ran, rep.status);
     try std.testing.expectEqual(@as(usize, 1), rep.fail_closed);
     try std.testing.expect(!rep.ok()); // never hidden by the `ran` status
@@ -394,7 +394,7 @@ test "a fail_closed entry alongside a signalled one still makes the aggregate NO
         entryOf(bn_fail, DEAD_PID, 234567, .active, 3),
     });
     var pins: usize = 0;
-    const rep = recovery.recoverAllAtStartupGated(true, io, gpa, td.dir, STORE, clock, clock.nowMs() + BUDGET_MS, RoutingActuator{ .pins = &pins, .fail_bn = bn_fail });
+    const rep = recovery.test_support.recoverAllAtStartupGated(true, io, gpa, td.dir, STORE, clock, clock.nowMs() + BUDGET_MS, RoutingActuator{ .pins = &pins, .fail_bn = bn_fail });
     try std.testing.expectEqual(@as(usize, 1), rep.signalled);
     try std.testing.expectEqual(@as(usize, 1), rep.fail_closed);
     try std.testing.expect(!rep.ok());
@@ -413,7 +413,7 @@ test "gate FALSE: a recoverable dead entry is NEVER touched (disabled, zero sign
     defer td.cleanup();
     try seedActive(io, td.dir, DEAD_PID, 234567);
     var pins: usize = 0;
-    const rep = recovery.recoverAllAtStartupGated(false, io, gpa, td.dir, STORE, clock, clock.nowMs() + BUDGET_MS, act(&pins, HELD_CLEAN));
+    const rep = recovery.test_support.recoverAllAtStartupGated(false, io, gpa, td.dir, STORE, clock, clock.nowMs() + BUDGET_MS, act(&pins, HELD_CLEAN));
     try std.testing.expectEqual(recovery.StartupStatus.disabled, rep.status);
     try std.testing.expectEqual(@as(usize, 0), pins);
     try std.testing.expectEqual(@as(usize, 1), try entryCount(io, gpa, td.dir));
