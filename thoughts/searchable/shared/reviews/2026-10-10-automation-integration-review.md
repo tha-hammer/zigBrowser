@@ -33988,3 +33988,23 @@ but they do not yet support the claimed safety boundary:
 
 These remain signal-free fake rows. Fix the red forward before implementing
 its green; keep it off both Macs.
+
+## WS5.5b-2 exact live peak (`ba05a9c`, `08e4e9e`)
+
+**APPROVED-for-tests `ba05a9c`; APPROVED `08e4e9e`.** A clean archive of the
+red failed all **4/4** rows because `check_live_peak_matches` did not exist.
+The green moves the contract into the registered oracle, deletes the
+throwaway red and makes the live row require `peak == 2` and `final == 0`.
+
+The comparison is independently bound to observed windows rather than merely
+comparing two caller-supplied values: `validate_multiwindow_transcript` first
+requires exactly two distinct window ids, each with the exact ordered
+`[tree, icon, open]` sequence and exactly one global live row. The peak check
+then rejects a serialized run, an unaccounted mount, an over-count or a leaked
+destroy. From an exact clean archive, the offline oracle passed **25/25** and
+the registered `windows-drawer-behaviors` step passed **44/44**, with the 19
+hostless live rows skipped and `Build Summary: 3/3`.
+
+This is the offline contract only. The VM-gated popup implementation still
+requires its later reviewed production change and a released live run; this
+verdict authorizes neither.
