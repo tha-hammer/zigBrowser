@@ -476,3 +476,56 @@ pub fn runStartupRecovery(io: std.Io, dir: std.Io.Dir, budget_ms: i64, backoff_m
     // slice; each phase re-checks `clock.nowMs() < deadline`. This slice proves the bounded fail-closed path.
     return .{ .acquired = true, .incident = .none, .first_run = .allowed };
 }
+
+// ---- the two-recoverer whole-recovery transaction (RoseCat 97c6215 #3; whole-recovery claim) ----
+
+/// What a recoverer did with one recorded entry under the global flock.
+pub const RecoveryAction = enum { signalled, left, fail_closed, already_gone };
+
+fn indexOfBasename(l: *const Ledger, basename: []const u8) ?usize {
+    for (l.entries(), 0..) |e, i| {
+        if (std.mem.eql(u8, e.basename, basename)) return i;
+    }
+    return null;
+}
+
+fn publishWithout(io: std.Io, dir: std.Io.Dir, sub_path: []const u8, l: *const Ledger, basename: []const u8) !void {
+    var buf: [MAX_ENTRIES]Entry = undefined;
+    var n: usize = 0;
+    for (l.entries()) |e| {
+        if (std.mem.eql(u8, e.basename, basename)) continue;
+        buf[n] = e;
+        n += 1;
+    }
+    try publish(io, dir, sub_path, buf[0..n]);
+}
+
+/// Recover ONE recorded entry under the ONE global flock, held across the WHOLE recovery (read -> revalidate ->
+/// signal phase -> retire), so exactly one of two racing recoverers enters the signal phase; the other, once it
+/// acquires, re-reads and finds the entry gone. Only a proved-dead, same-kind owner is recovered: enter the signal
+/// phase (`ops.reap`) then retire (remove the entry + republish). A live owner is left; reuse/unreadable fails
+/// closed. `ops` is injectable: `afterRead`/`beforeReap` are harness hooks (no-ops in production); `reap` is the
+/// observable signal phase (the production census/kill of the marked children).
+pub fn recoverOneUnderLock(io: std.Io, gpa: std.mem.Allocator, dir: std.Io.Dir, sub_path: []const u8, basename: []const u8, max_tries: u32, backoff_ms: i64, ops: anytype) RecoveryAction {
+    var lock = acquireLock(io, dir, max_tries, backoff_ms) catch return .fail_closed;
+    var l = load(io, gpa, dir, sub_path) catch {
+        lock.close(io);
+        return .fail_closed;
+    };
+    defer l.deinit();
+    const idx = indexOfBasename(&l, basename);
+    lock.close(io); // RED (whole-recovery): release right after the READ, not across revalidate+reap+retire
+    ops.afterRead();
+    if (idx == null) return .already_gone; // a prior recoverer already retired it
+    const e = l.entries()[idx.?];
+    switch (recoveryFor(probeLivenessTagged(e.pid, e.start_kind, e.start_sec, e.start_usec))) {
+        .leave => return .left,
+        .fail_closed => return .fail_closed,
+        .recover => {
+            ops.beforeReap();
+            ops.reap(basename); // SIGNAL PHASE (observable)
+            publishWithout(io, dir, sub_path, &l, basename) catch return .fail_closed;
+            return .signalled;
+        },
+    }
+}
