@@ -35297,3 +35297,101 @@ The absent owner module remains the intended red, but this commit does not
 close `0245193` or the startup-owner range and authorizes no Mac/signal run.
 The newest contiguous approved push-through remains the already-pushed
 `6f145bc`; `1b2fe0a` remains the earliest blocker.
+
+## WS5.5b-2 corrected terminal-live-row red (`aead88d`)
+
+**BLOCKED-for-tests; keep it unregistered, and no further Win11 run is
+authorized.** Closing the primary through `WM_CLOSE` instead of merely posting
+quit is the correct lifecycle direction, and the focused offline module is red
+at the absent production seam (**3/3 expected failures**). The committed oracle
+still does not causally establish the implementation or the harness behavior
+needed by `bc224f7`:
+
+1. The production check remains a collection of global substring/count tests.
+   It does not extract the actual controller-completion branch or require, in
+   that branch and in that order, successful e2e/drawer/WINDOWS parsing,
+   `spawn_extra_drawer_windows(app)`, then exactly one
+   `PostMessageW(app->hwnd, WM_CLOSE, 0, 0)`. A comment/marker decoy, a wrong
+   gate, close-before-spawn, an extra-WndProc close or a bare
+   `PostQuitMessage` can still satisfy the ingredients. Bind the real branch
+   structurally and add each of those mutants.
+2. The four named WINDOWS cases are not individually checked. A global
+   `ZB_SETTLE_KINDS=live` count of at least four permits one case to retain
+   `open` while another contains a duplicate. Extract each base, close-one,
+   panel-fail and icon-fail method and require exactly one live settle in each.
+3. The runner test never drives the normal-exit/backstop control flow. Merely
+   finding `Wait-Process`, `HasExited` and `WaitForExit` somewhere does not
+   prove a bounded normal wait precedes the owned-Job kill, nor that a normal
+   exit uses no kill. Drive the production helper (or bind its exact branch),
+   record normal-exit versus backstop actions, and add kill-first, unbounded and
+   false-status mutants.
+
+The earlier live evidence remains useful for the retire-once path, but this red
+does not yet authorize repeating it. The contiguous push boundary remains the
+already-pushed `6f145bc`; `1b2fe0a` remains the earliest blocked commit.
+
+## MS7.6/7.8 compiled card-authority red (`46b910f`)
+
+**BLOCKED-for-tests; keep both new layers unregistered and do not run them on a
+Mac yet.** The secondary lexical layer closes all four bypasses from
+`2796d94`: it derives the installed executable root, keys the graph by full
+repository-relative paths, keeps sensitive strings while banning dynamic
+lookup, and reads the bridge export comment-free. Its focused suite passed all
+honest/build/mutant rows and failed the two real rows at the expected absent
+AppKit drawer/bridge. The compiled-object layer is also a worthwhile primary
+direction and its fresh module represents the production Zig graph; the
+omitted backend configuration adds only C/link inputs that the narrower native
+source layer inventories.
+
+One combined-layer authority bypass remains. `references()` and `by_target`
+both use sets, so two relocations from the same approved source symbol collapse
+to one referrer. The lexical layer can be kept at its permitted single name by
+binding the method once and invoking the alias twice inside the real minter:
+
+```zig
+const mint = approval.Cards.approve;
+return @intFromBool(mint(&cards, card)) +
+    @intFromBool(mint(&cards, card));
+```
+
+I compiled that mutant into a real x86_64 Darwin Mach-O object. Both
+`problems()` and `zig_problems()` returned an empty list. It can consume a card
+twice while satisfying the claimed one-minter graph, and the portable bridge
+test substitutes recording minters, so it does not exercise this production
+minter-to-`Cards` edge. Preserve relocation multiplicity (or add a driven real
+minter seam), require exactly one approve/deny edge invocation, and commit
+approve and deny alias-double-call mutants.
+
+Before registration, also bound every compiler subprocess and avoid four
+parallel Zig compilers in this already resource-sensitive aggregate gate; a
+compiler stall must fail the step rather than wedge it. The green must still
+register the portable card test, native ingress oracle, lexical graph, compiled
+objects and dual-arch export inventory together.
+
+## MS6.5.1 startup-owner red fix-forward 3 (`e0f3d8e`)
+
+**BLOCKED-for-tests; keep it unregistered, unarmed and signal-free.** The
+counted clock construction and distinct construction token close
+`bc224f7` finding 2. Scoping the source read first to `RealOps` and then to its
+`recover` method, plus comment-safe import parsing, closes the literal scoping
+part of finding 3. The app/owner and core-call bindings remain presence tests,
+not the claimed data-flow proof:
+
+1. `runWithIo` independently searches for `runStartupThenDispatch(` and
+   `StartupHook`. It still passes
+   `runStartupThenDispatch(OtherHook{}, ...)` plus an unrelated
+   `_ = startup.StartupHook{}` decoy. Extract the call and require the actual
+   first argument to be the one named owner hook; commit the additive-decoy
+   mutant, not only a replacement mutant run in a scratch copy.
+2. `StartupHook.run` is never driven. Its body need only contain the substring
+   `recoverLeftoverAgentRuns(`, so a dead `if (false)` call and a no-op live
+   path pass. Drive the production hook through injectable ops or require the
+   exact live call/return structure, with a dead-branch mutant.
+3. The `RealOps.recover` check likewise accepts a dead core call inside the
+   correctly scoped method while returning an unrelated report. Bind the
+   ledger, clock, deadline and actuator arguments to the live
+   `recoverAllAtStartup` call (or drive this adapter) and commit the dead-call
+   mutant. The reported scratch-copy mutants are not durable gate evidence.
+
+The absent owner module remains the intended red. This commit does not close
+the startup-owner range or authorize any Mac or signal-bearing run.
