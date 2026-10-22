@@ -27757,3 +27757,40 @@ This approves the red artifact only. **`8a146c4` remains BLOCKED-for-tests and
 production** until the green lands, registers the focused suites, preserves the
 registered shared-fake/fixture consumers, and passes its gate. Therefore the
 newest contiguous approved push-through remains **`bac895b`**.
+
+## MS6.5.1 bounded ledger flock (`62e5cbf`, `deaf274`)
+
+**`62e5cbf` BLOCKED-for-tests; `deaf274` BLOCKED.** The central evidence is
+real: the holder is a distinct child created by `linux.fork`, it takes
+`LOCK_EX` before notifying the parent over a pipe, and neither the test nor
+`acquireLock` invokes any signal API. On a clean export of exact `deaf274`, the
+registered narrow step passed **4/4 build steps and 2/2 tests** in 103 ms.
+The green also correctly requests an exclusive nonblocking flock and maps
+contention exhaustion to `LockBusy` and other failures to `LockFailed`.
+
+Two blockers remain:
+
+1. `src/agent_run_ledger.zig:202` uses `Dir.createFile`, whose Zig 0.16
+   `CreateFileOptions` has no no-follow option. It therefore follows an existing
+   `.zigbrowser-agent-runs.lock` symlink. That violates rev 27's explicit
+   `O_CLOEXEC|O_NOFOLLOW` lock-fd contract and permits a planted or swapped
+   symlink to select a different lock inode, defeating the single global claim.
+   Add a causal symlink row and open/create the lock without following links,
+   failing closed on any symlink or read error. (`createFile` does provide
+   `O_CLOEXEC`; the missing property is `O_NOFOLLOW`.)
+2. `tests/agent_run_ledger_lock_test.zig:52` performs the contending
+   acquisition in the parent. If the accepted plan's blocking-`LOCK_EX` mutant
+   is applied, the registered test wedges forever; `build.zig:852-855` supplies
+   no watchdog. Put the contender in a separate process and let the parent
+   observe the deadline, then release the holder so even a blocking mutant can
+   exit and be reaped without a signal, or supply an equally safe bounded
+   watchdog. The registered test must causally catch the blocking mutant
+   without hanging the gate.
+
+This pair proves only the lock-acquisition primitive. It does not yet close
+rev 27's integration obligations: the same total monotonic recovery deadline,
+fixed recovery-busy incident, retained entry and authority, refused/deferred
+first run, or the flock held across the whole recovery/terminal mutation.
+Findings were sent to JadeBeacon in Agent Mail 7520. The destructive Mac reaper
+gate remains off, and the push-through remains **`bac895b`** independently of
+this later range.
