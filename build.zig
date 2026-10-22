@@ -2084,6 +2084,21 @@ pub fn build(b: *std.Build) void {
         "py=$(tools/agent_host_env.sh --check) || exit 1; cd agent/host/tests && out=$(env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 ZB_AGENT_HOST_PYTHON=\"$py\" \"$py\" -X dev -m unittest -v test_owned_group_reasons_cleanup 2>&1); rc=$?; printf '%s\\n' \"$out\"; [ $rc -eq 0 ] || exit $rc; if printf '%s\\n' \"$out\" | grep -q ResourceWarning; then echo 'test_owned_group_reasons_cleanup: ResourceWarning' >&2; exit 1; fi",
     });
     agent_setup_ms5_step.dependOn(&agent_host_owned_group_reasons_cleanup.step);
+    // Darwin killpg EPERM on our own exited leader's group is a completed stop only on an independent census
+    // (5b24bc1 Macs). Signal-interposed, plain.
+    const agent_host_owned_group_zombie_eperm = b.addSystemCommand(&.{
+        "sh",
+        "-c",
+        "py=$(tools/agent_host_env.sh --check) || exit 1; cd agent/host/tests && out=$(env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 ZB_AGENT_HOST_PYTHON=\"$py\" \"$py\" -X dev -m unittest -v test_owned_group_zombie_eperm 2>&1); rc=$?; printf '%s\\n' \"$out\"; [ $rc -eq 0 ] || exit $rc; if printf '%s\\n' \"$out\" | grep -q ResourceWarning; then echo 'test_owned_group_zombie_eperm: ResourceWarning' >&2; exit 1; fi",
+    });
+    agent_setup_ms5_step.dependOn(&agent_host_owned_group_zombie_eperm.step);
+    // Without os.waitid (macOS) the no-wait exit check polls the kqueue once. Fakes only, plain.
+    const agent_host_owned_group_kqueue_poll = b.addSystemCommand(&.{
+        "sh",
+        "-c",
+        "py=$(tools/agent_host_env.sh --check) || exit 1; cd agent/host/tests && out=$(env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 ZB_AGENT_HOST_PYTHON=\"$py\" \"$py\" -X dev -m unittest -v test_owned_group_kqueue_poll 2>&1); rc=$?; printf '%s\\n' \"$out\"; [ $rc -eq 0 ] || exit $rc; if printf '%s\\n' \"$out\" | grep -q ResourceWarning; then echo 'test_owned_group_kqueue_poll: ResourceWarning' >&2; exit 1; fi",
+    });
+    agent_setup_ms5_step.dependOn(&agent_host_owned_group_kqueue_poll.step);
     // R1's census broker (RoseCat 7019; BlueBeaver 7021): setup runs the Darwin process census outside Seatbelt, the
     // probe asks over a socketpair (--census-fd). The kernel-properties half is tests/mac/ms6_r1_kernel_gate.sh (plan
     // MS6.6 (A)); the Mac production chain is MS6.6 (B).
@@ -3069,6 +3084,8 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&agent_host_owned_group_failclosed.step);
     test_step.dependOn(&agent_host_owned_group_reasons.step);
     test_step.dependOn(&agent_host_owned_group_reasons_cleanup.step);
+    test_step.dependOn(&agent_host_owned_group_zombie_eperm.step);
+    test_step.dependOn(&agent_host_owned_group_kqueue_poll.step);
     test_step.dependOn(&agent_host_route_probe_census.step);
     test_step.dependOn(&agent_host_setup_census.step);
     test_step.dependOn(&agent_host_setup_darwin_r1_v6.step);

@@ -14,6 +14,7 @@ stop_group() signals only after proving the target: an exact int pid above 1, no
 this process's child, and the leader of its own group; anything else is Refused before any signal. killpg(1) is
 kill(-1): every process the user owns (a MagicMock pid indexes as 1; it logged the user out twice on 2026-10-21).
 """
+import errno
 import os
 import select
 import selectors
@@ -105,13 +106,15 @@ def _live_members(pgid):
 
 
 def _await_unreaped(pid, deadline):
-    """True once our child `pid` has exited, False at the deadline; it is never reaped here."""
+    """True once our child `pid` has exited, False at the deadline; it is never reaped here. It always looks at least
+    once, even with the deadline already passed (a no-wait check)."""
     if hasattr(os, "waitid"):
-        while time.monotonic() < deadline:
+        while True:
             if os.waitid(os.P_PID, pid, os.WEXITED | os.WNOHANG | os.WNOWAIT) is not None:
                 return True
+            if time.monotonic() >= deadline:
+                return False
             time.sleep(0.01)
-        return False
     # kqueue NOTE_EXIT fires at once for a child that is already a zombie, and an unreaped child of ours cannot
     # vanish, so ESRCH at registration also means it has exited.
     kq = select.kqueue()
@@ -123,11 +126,11 @@ def _await_unreaped(pid, deadline):
         except ProcessLookupError:
             return True
         while True:
-            left = deadline - time.monotonic()
+            left = max(0.0, deadline - time.monotonic())
+            if kq.control(None, 1, left):  # timeout 0 at an elapsed deadline: one poll, never a wait
+                return True
             if left <= 0:
                 return False
-            if kq.control(None, 1, left):
-                return True
     finally:
         kq.close()
 
@@ -146,8 +149,13 @@ def stop_group(proc):
     except ProcessLookupError:
         pass  # no member left to signal; the proof below still decides
     except OSError as exc:
-        raise StopFailed(f"process group {pid} could not be stopped: {exc.strerror or exc}", proc,
-                         "kill_refused") from None
+        # Darwin answers EPERM, not ESRCH, for a group whose only member is our own exited, unreaped leader (5b24bc1
+        # on both Macs). That, and only that, is "already gone": exactly EPERM, on Darwin, the leader proven exited,
+        # and an independent census reading no live member of the group. Anything else is a refused kill.
+        if not (exc.errno == errno.EPERM and sys.platform == "darwin" and _exited_now(pid)
+                and _live_members(pid) == []):
+            raise StopFailed(f"process group {pid} could not be stopped: {exc.strerror or exc}", proc,
+                             "kill_refused") from None
     try:
         proc.wait(timeout=STOP_S)
     except subprocess.TimeoutExpired:
