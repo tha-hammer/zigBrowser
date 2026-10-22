@@ -48,6 +48,12 @@ This commit also closes the three c101b1e follow-up gaps (still NOT run):
   runs the test as PID 1 and sets `ZB_WSL_PIDNS_BACKSTOP=1`); setUpClass fails closed otherwise.
 All of these have offline `WslSpikeOracle` rows.
 
+The eventual approved live command wraps `unshare` in an outer `timeout`, leaving `--kill-child` as the
+terminal backstop, e.g.:
+  timeout --signal=KILL 1200 \
+    unshare --user --map-current-user --pid --fork --kill-child --mount-proc \
+      env ZB_WSL_PIDNS_BACKSTOP=1 python3 tests/windows/wsl_live_test.py
+
 C1 stdio/pipe-to-fd bootstrap probe (design embodied in `test_wsl_topology`): the Windows parent launches
 `wsl.exe -d <distro> -u zbagent -e python3 c1boot.py` with redirected stdin/stdout; the capability secret is
 written to the child's stdin (Windows parent pipe -> wsl.exe stdin -> Linux fd 0), the child binds an
@@ -170,6 +176,14 @@ def may_destroy(name, reserved, baseline):
     return name in reserved and name not in baseline
 
 
+def pidns_backstop_ok(marker, pid):
+    """The live run is permitted only inside the private PID-namespace backstop (mail 7680 #3): the approved
+    wrapper sets ZB_WSL_PIDNS_BACKSTOP=1 AND `--fork --mount-proc` makes the test PID 1 of the new namespace.
+    BOTH are required; a missing marker, or the marker set but PID != 1, fails closed.
+    """
+    return marker == "1" and pid == 1
+
+
 # The remote CIM producer for the listener census (bb17917 #1). `-ErrorAction Stop` + `catch` means a CIM
 # query/access ERROR emits UNREADABLE (fail closed), NEVER GONE; a present process with a null/empty
 # CommandLine is UNREADABLE; only genuine absence is GONE. Exactly ONE deterministic token is emitted.
@@ -253,7 +267,7 @@ class WslTopologyLive(unittest.TestCase):
         # With --fork --mount-proc the command runs as PID 1 of the new namespace; we require BOTH the marker
         # (documented intent) AND pid==1 (objective proof) and fail closed otherwise. No raw PID signalling is
         # ever used; this namespace is only a containment backstop.
-        if os.environ.get("ZB_WSL_PIDNS_BACKSTOP") != "1" or os.getpid() != 1:
+        if not pidns_backstop_ok(os.environ.get("ZB_WSL_PIDNS_BACKSTOP"), os.getpid()):
             raise AssertionError(
                 "refusing the live run outside a private PID namespace backstop; launch with: "
                 "unshare --user --map-current-user --pid --fork --kill-child --mount-proc "
@@ -865,6 +879,22 @@ class WslSpikeOracle(unittest.TestCase):
         # (bb17917 #2) the invariant that guarantees always-reap: remote sleep + dead-peer bound < reap bound.
         self.assertLess(KEEPALIVE_SLEEP_S + SSH_DEAD_PEER_S, REAP_BOUND_S,
                         "the keepalive can never outlive the reap bound")
+
+    def test_ssh_dead_peer_bounds_and_reap_composition(self):
+        # (7687 SHOULD) pin BOTH ServerAlive options and the reap-bound composition as committed coverage.
+        base = _ssh_base()
+        self.assertIn("ServerAliveInterval=5", base, "SSH must carry a dead-peer interval")
+        self.assertIn("ServerAliveCountMax=3", base, "SSH must carry a dead-peer count")
+        self.assertEqual(SSH_DEAD_PEER_S, 15, "dead-peer bound = interval 5 * count 3")
+        self.assertEqual(REAP_BOUND_S, KEEPALIVE_SLEEP_S + SSH_DEAD_PEER_S + 45,
+                         "reap bound = remote sleep + dead-peer bound + 45s margin")
+
+    def test_pidns_backstop_refusals(self):
+        # (7687 SHOULD) pin the two namespace refusals + the one pass, as committed coverage.
+        self.assertFalse(pidns_backstop_ok(None, 1), "missing marker must refuse the live run")
+        self.assertFalse(pidns_backstop_ok("1", 4321), "marker set but PID != 1 must refuse the live run")
+        self.assertFalse(pidns_backstop_ok(None, 4321), "neither condition met must refuse")
+        self.assertTrue(pidns_backstop_ok("1", 1), "marker set AND PID 1 (private PID ns) is the only pass")
 
     def test_planted_name_blocks_every_destructive_op(self):
         # (c101b1e #1) a prospective name that already exists in the baseline is a collision (refuse the run),
