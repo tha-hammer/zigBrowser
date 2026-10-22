@@ -3,7 +3,9 @@
 //! (AutomationApiServer.callInProcess; no socket, no auth).
 //!
 //! - Before S8 the model has read tools only (S7.5): six tools over the eight read methods.
-//!   Anything else is "tool not available" and reaches no engine (S7.3, S7.8).
+//!   Anything else is "tool not available" and reaches no engine (S7.3, S7.8). With the app's
+//!   S8 wiring (`approval`) it also has hover and scroll (no card, S8 decision 12) and navigate
+//!   and reload (decision 16).
 //! - A drawer's calls run on its own window: the broker adds `window_id`, and a `window_id` in
 //!   the model's args is refused (S7.2).
 //! - The engine's error data never reaches the model: a failure is a fixed text and the error's
@@ -138,6 +140,49 @@ fn gatedArgsOk(gpa: std.mem.Allocator, verb: approval.Verb, args_json: []const u
             return url == .string and url.string.len > 0;
         },
     }
+}
+
+/// S8 decision 12 (S8e part 1): the act-on-page tools that need no card. Like navigate and
+/// reload they exist only with the app's S8 wiring, but they never ask the selector.
+const ActKind = enum { hover, scroll };
+const act_tools = [_]struct { name: []const u8, method: []const u8, kind: ActKind }{
+    .{ .name = "hover", .method = "dom.hover", .kind = .hover },
+    .{ .name = "scroll", .method = "dom.scroll", .kind = .scroll },
+};
+
+fn actTool(tool: []const u8) ?@TypeOf(act_tools[0]) {
+    if (!std.mem.startsWith(u8, tool, tool_prefix)) return null;
+    const name = tool[tool_prefix.len..];
+    for (act_tools) |t| if (std.mem.eql(u8, t.name, name)) return t;
+    return null;
+}
+
+const max_offset = 100_000;
+
+/// hover takes exactly {selector: non-empty string}; scroll exactly that, or a non-empty
+/// subset of {x, y}, integers in [-100000, 100000]. Never `options`: native input would move
+/// the user's own pointer.
+fn actArgsOk(gpa: std.mem.Allocator, kind: ActKind, args_json: []const u8) error{OutOfMemory}!bool {
+    const text = std.mem.trim(u8, args_json, &std.ascii.whitespace);
+    var parsed = std.json.parseFromSlice(std.json.Value, gpa, if (text.len == 0) "{}" else text, .{}) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return false,
+    };
+    defer parsed.deinit();
+    if (parsed.value != .object) return false;
+    const object = parsed.value.object;
+    if (object.get("selector")) |selector| {
+        return object.count() == 1 and selector == .string and selector.string.len > 0;
+    }
+    if (kind == .hover or object.count() == 0) return false;
+    var it = object.iterator();
+    while (it.next()) |entry| {
+        const key = entry.key_ptr.*;
+        if (!std.mem.eql(u8, key, "x") and !std.mem.eql(u8, key, "y")) return false;
+        const value = entry.value_ptr.*;
+        if (value != .integer or value.integer < -max_offset or value.integer > max_offset) return false;
+    }
+    return true;
 }
 
 /// A call's one answer: `.content`, the tool_result content (a JSON array), or `.failure`,
@@ -307,14 +352,14 @@ pub const Broker = struct {
     }
 
     fn submitIn(self: *Broker, prompt_id: ?i64, id: []const u8, tool: []const u8, args_json: []const u8, sink: Sink) void {
-        // S8 decision 16: navigate and reload exist only with the approval seam.
+        // S8 decisions 12 and 16: hover, scroll, navigate and reload exist only with the approval seam.
         const gated = gatedTool(tool);
-        if (gated != null and self.approval == null) return sink.done(sink.ctx, id, .{ .failure = "tool not available" });
-        if (gated) |g| {
-            const ok = gatedArgsOk(self.gpa, g.verb, args_json) catch return sink.done(sink.ctx, id, .{ .failure = "out of memory" });
-            if (!ok) return sink.done(sink.ctx, id, .{ .failure = "the tool's arguments are not valid" });
-        }
-        const method = if (gated) |g| g.method else toolMethod(tool) orelse return sink.done(sink.ctx, id, .{ .failure = "tool not available" });
+        const act = actTool(tool);
+        if ((gated != null or act != null) and self.approval == null) return sink.done(sink.ctx, id, .{ .failure = "tool not available" });
+        const args_ok = if (gated) |g| gatedArgsOk(self.gpa, g.verb, args_json) else if (act) |a| actArgsOk(self.gpa, a.kind, args_json) else true;
+        const ok = args_ok catch return sink.done(sink.ctx, id, .{ .failure = "out of memory" });
+        if (!ok) return sink.done(sink.ctx, id, .{ .failure = "the tool's arguments are not valid" });
+        const method = if (gated) |g| g.method else if (act) |a| a.method else toolMethod(tool) orelse return sink.done(sink.ctx, id, .{ .failure = "tool not available" });
         const params = self.bound(args_json) catch |err| return sink.done(sink.ctx, id, .{ .failure = switch (err) {
             error.WindowFixed => "window is fixed to this drawer",
             error.BadArgs => "the tool's arguments are not an object",

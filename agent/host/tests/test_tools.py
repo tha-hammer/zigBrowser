@@ -38,8 +38,9 @@ TOOLS = {
                         "timeout_ms": {"type": "integer", "minimum": 0, "maximum": 10000}}, ["selector"]),
     "screenshot": schema({}),
 }
+ACT = ("hover", "scroll")  # S8 decision 12, no card: test_tools_hover_scroll.py
 GATED = ("navigate", "reload")  # S8 decision 16: test_tools_navigate.py
-NAMES = sorted(f"mcp__zigbrowser__{name}" for name in [*TOOLS, *GATED])
+NAMES = sorted(f"mcp__zigbrowser__{name}" for name in [*TOOLS, *ACT, *GATED])
 
 
 def bridge():
@@ -47,10 +48,10 @@ def bridge():
 
 
 class ToolListTest(unittest.TestCase):
-    def test_the_server_lists_the_six_read_tools_with_their_schemas_and_the_two_gated(self):
+    def test_the_server_lists_the_six_read_tools_with_their_schemas_hover_scroll_and_the_two_gated(self):
         b = bridge()
         tools = b.tools()
-        self.assertEqual(sorted(t.name for t in tools), sorted([*TOOLS, *GATED]))
+        self.assertEqual(sorted(t.name for t in tools), sorted([*TOOLS, *ACT, *GATED]))
         for t in tools:
             if t.name in TOOLS:
                 self.assertEqual(t.input_schema, TOOLS[t.name], t.name)
@@ -71,18 +72,18 @@ class ToolListTest(unittest.TestCase):
     def test_allowed_tools_are_exactly_their_names(self):
         self.assertEqual(sorted(bridge().allowed_tools()), NAMES)
 
-    def test_no_act_tool_is_offered(self):
+    def test_no_other_act_tool_is_offered(self):
         names = {t.name for t in bridge().tools()}
-        for act in ("click", "hover", "scroll", "type", "fill", "evaluate", "echo", "cookies_get"):
+        for act in ("click", "type", "fill", "press", "select_option", "evaluate", "echo", "cookies_get"):
             self.assertNotIn(act, names)
 
 
 class ServerListTest(unittest.IsolatedAsyncioTestCase):
-    async def test_the_mcp_servers_own_list_is_exactly_the_eight_tools(self):
+    async def test_the_mcp_servers_own_list_is_exactly_the_ten_tools(self):
         """RoseCat 6575: through the server's tools/list path, as the CLI sees it."""
         b = bridge()
         listed = await b.server()["instance"].get_request_handler("tools/list").handler(None, None)
-        self.assertEqual(sorted(t.name for t in listed.tools), sorted([*TOOLS, *GATED]))
+        self.assertEqual(sorted(t.name for t in listed.tools), sorted([*TOOLS, *ACT, *GATED]))
         mine = {t.name: t for t in b.tools()}
         for t in listed.tools:
             if t.name in TOOLS:

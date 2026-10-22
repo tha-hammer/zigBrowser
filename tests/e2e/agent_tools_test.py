@@ -12,8 +12,8 @@ through the socket.
 - closure: window 1's `get_text css=#greeting` reaches the model as "Hello from page 1",
   never page 2's text, and the final reply is shown (DRAWER msg assistant);
 - own-window: the same from window 2's drawer gives "Hello from page 2";
-- tools-listed: the request lists exactly S7.5's six mcp__zigbrowser__ read tools plus S8
-  decision 16's navigate and reload;
+- tools-listed: the request lists exactly S7.5's six mcp__zigbrowser__ read tools, S8
+  decision 12's hover and scroll, and decision 16's navigate and reload;
 - screenshot: the tool_result holds one image whose base64 decodes to a PNG or JPEG;
 - window-fixed: a model-supplied window_id is an error that reads nothing. The SDK's input
   schema (additionalProperties false) refuses it before the broker sees it; the broker's own
@@ -40,9 +40,9 @@ sys.path.insert(0, str(HERE))
 
 import agent_host_lifecycle_test as life  # noqa: E402 - its world, seams and helpers
 
-# S7.5's six read tools and S8 decision 16's navigate and reload (rev 16.20.56).
+# S7.5's six read tools, S8 decision 12's hover and scroll, and decision 16's navigate and reload.
 TOOLS = {f"mcp__zigbrowser__{n}" for n in ("window_info", "query", "get_text", "get_attribute", "wait_for", "screenshot",
-                                            "navigate", "reload")}
+                                            "hover", "scroll", "navigate", "reload")}
 DONE = "zb-tools-done"
 COOKIE = "zbcookiecanary7c41"
 PAGE = """<!doctype html><meta charset="utf-8"><title>tools</title>
@@ -152,7 +152,7 @@ def case_closure(binary: Path, tmp: Path, check) -> None:
               f"the model got window 1's text ({text[:120]!r}, is_error {block.get('is_error')})")
         check(b.wait(lambda: ("assistant", DONE) in life.bubbles(b), 60), f"the final reply is shown ({life.bubbles(b)})", b)
         tools = {t.get("name") for t in fake.api.messages_requests()[0]["body"].get("tools") or []}
-        check(tools == TOOLS, f"tools-listed: exactly the six read tools plus navigate and reload ({sorted(tools)})")
+        check(tools == TOOLS, f"tools-listed: exactly the six read tools, hover, scroll, navigate and reload ({sorted(tools)})")
     finally:
         finish(b, fake)
 

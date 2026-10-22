@@ -54,13 +54,25 @@ READ_TOOLS = (  # S7.5's list (rev 16.20.34): (name, description, input schema)
               "timeout_ms": {"type": "integer", "minimum": 0, "maximum": 10000}}, ["selector"])),
     ("screenshot", "A picture of this window's page.", _schema({})),
 )
+_ACT_SELECTOR = {**_SELECTOR, "minLength": 1}
+_OFFSET = {"type": "integer", "minimum": -100000, "maximum": 100000}
+ACT_TOOLS = (  # S8 decision 12: they act on the page but need no card (S8e part 1)
+    ("hover", "Moves the pointer over the element a selector matches, in this window's page.",
+     _schema({"selector": _ACT_SELECTOR}, ["selector"])),
+    ("scroll", "Scrolls this window's page: to the element a selector matches, or by x and y CSS pixels.",
+     _schema({"selector": _ACT_SELECTOR, "x": {**_OFFSET, "description": "Pixels to the right (negative: left)."},
+              "y": {**_OFFSET, "description": "Pixels down (negative: up)."}})
+     # Exactly the broker contract: a selector alone, or a non-empty subset of x and y. Not a
+     # top-level oneOf, which the Messages API refuses in a tool input_schema.
+     | {"minProperties": 1, "dependentSchemas": {"selector": {"maxProperties": 1}}}),
+)
 GATED_TOOLS = (  # S8 decision 16: each may wait for the user's card (plan rev 16.20.56)
     ("navigate", "Opens a URL in this drawer's window. It may wait for the user's approval.",
      _schema({"url": {"type": "string", "minLength": 1, "description": "The URL to open."}}, ["url"])),
     ("reload", "Reloads this drawer's window. It may wait for the user's approval.", _schema({})),
 )
 GATED_NAMES = frozenset(name for name, _, _ in GATED_TOOLS)
-TOOLS = READ_TOOLS + GATED_TOOLS
+TOOLS = READ_TOOLS + ACT_TOOLS + GATED_TOOLS
 
 
 def failed(text):

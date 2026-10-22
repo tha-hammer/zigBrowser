@@ -1907,8 +1907,8 @@ pub fn build(b: *std.Build) void {
     agent_setup_ms5_step.dependOn(&mac_group_cleanup.step);
     // Chat drawer S7a (revs 16.20.30, 16.20.32): the core in process (callInProcess) and the
     // drawer's read-only broker over it; S7b (rev 16.20.36): its reply boundary and detach.
-    var s7a_runs: [10]*std.Build.Step = undefined;
-    for ([_][]const u8{ "tests/automation_inprocess_test.zig", "tests/agent_broker_test.zig", "tests/agent_broker_window_info_test.zig", "tests/agent_broker_reply_test.zig", "tests/agent_broker_detach_test.zig", "tests/agent_broker_detach_oom_test.zig", "tests/agent_broker_screenshot_test.zig", "tests/agent_broker_navigate_test.zig", "tests/agent_navigate_card_test.zig", "tests/agent_navigate_bind_test.zig" }, 0..) |path, i| {
+    var s7a_runs: [11]*std.Build.Step = undefined;
+    for ([_][]const u8{ "tests/automation_inprocess_test.zig", "tests/agent_broker_test.zig", "tests/agent_broker_window_info_test.zig", "tests/agent_broker_reply_test.zig", "tests/agent_broker_detach_test.zig", "tests/agent_broker_detach_oom_test.zig", "tests/agent_broker_screenshot_test.zig", "tests/agent_broker_navigate_test.zig", "tests/agent_navigate_card_test.zig", "tests/agent_navigate_bind_test.zig", "tests/agent_broker_hover_test.zig" }, 0..) |path, i| {
         const s7a_module = b.createModule(.{
             .root_source_file = b.path(path),
             .target = target,
@@ -2208,6 +2208,15 @@ pub fn build(b: *std.Build) void {
         "agent-navigate-approval-e2e",
     });
     agent_navigate_approval_e2e.addArtifactArg(exe);
+    // S8e part 1 (S8 decision 12): the model's hover and scroll through the real chain, with no
+    // card even with the store at `yes`. It runs in a PID namespace of its own.
+    const agent_hover_scroll_e2e = b.addSystemCommand(&.{
+        "sh",
+        "-c",
+        "python3 tests/e2e/agent_hover_scroll_test.py --binary \"$1\"",
+        "agent-hover-scroll-e2e",
+    });
+    agent_hover_scroll_e2e.addArtifactArg(exe);
     // S8 decision 16 part 4 (S9.3, decision 8): Stop, a navigation, a reload, a crash, a recovery and
     // a killed helper while a card waits dispatch nothing. It runs in a PID namespace of its own.
     const agent_navigate_stale_e2e = b.addSystemCommand(&.{
@@ -2690,7 +2699,7 @@ pub fn build(b: *std.Build) void {
     const agent_host_bridge = b.addSystemCommand(&.{
         "sh",
         "-c",
-        "py=$(tools/agent_host_env.sh --check) || exit 1; cd agent/host/tests && env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 ZB_AGENT_HOST_PYTHON=\"$py\" \"$py\" -m unittest -v test_bridge && env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 ZB_AGENT_HOST_PYTHON=\"$py\" \"$py\" -m unittest -v test_bridge_result && env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 ZB_AGENT_HOST_PYTHON=\"$py\" \"$py\" -m unittest -v test_bridge_endings && env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 ZB_AGENT_HOST_PYTHON=\"$py\" \"$py\" -m unittest -v test_bridge_envelope && env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 ZB_AGENT_HOST_PYTHON=\"$py\" \"$py\" -m unittest -v test_tools && env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 ZB_AGENT_HOST_PYTHON=\"$py\" \"$py\" -m unittest -v test_tools_navigate",
+        "py=$(tools/agent_host_env.sh --check) || exit 1; cd agent/host/tests && env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 ZB_AGENT_HOST_PYTHON=\"$py\" \"$py\" -m unittest -v test_bridge && env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 ZB_AGENT_HOST_PYTHON=\"$py\" \"$py\" -m unittest -v test_bridge_result && env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 ZB_AGENT_HOST_PYTHON=\"$py\" \"$py\" -m unittest -v test_bridge_endings && env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 ZB_AGENT_HOST_PYTHON=\"$py\" \"$py\" -m unittest -v test_bridge_envelope && env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 ZB_AGENT_HOST_PYTHON=\"$py\" \"$py\" -m unittest -v test_tools && env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 ZB_AGENT_HOST_PYTHON=\"$py\" \"$py\" -m unittest -v test_tools_navigate && env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 ZB_AGENT_HOST_PYTHON=\"$py\" \"$py\" -m unittest -v test_tools_hover_scroll",
     });
     // Chat drawer S6 (rev 16.18): the one-shot sign-in helper drives the
     // setup-token fake on a pty; the token reaches fd 4 only.
@@ -3748,6 +3757,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&agent_chat_e2e.step);
     test_step.dependOn(&agent_tools_e2e.step);
     test_step.dependOn(&agent_navigate_approval_e2e.step);
+    test_step.dependOn(&agent_hover_scroll_e2e.step);
     test_step.dependOn(&agent_navigate_stale_e2e.step);
     test_step.dependOn(&agent_navigate_prompt_e2e.step);
     test_step.dependOn(&agent_navigate_selector_e2e.step);

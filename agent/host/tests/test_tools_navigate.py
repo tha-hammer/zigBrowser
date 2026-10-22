@@ -1,10 +1,11 @@
 """S8 decision 16, part 3 red (chat-drawer plan; S8c's helper side): the helper offers
 `navigate` and `reload`, and gives them time for their card.
 
-- The MCP server `zigbrowser` lists S7.5's six read tools plus `navigate` (exactly
+- The MCP server `zigbrowser` lists S7.5's six read tools, hover and scroll (S8e part 1,
+  test_tools_hover_scroll.py), plus `navigate` (exactly
   `{url: non-empty string}`) and `reload` (exactly `{}`), both `additionalProperties: false`,
   so the CLI refuses a model's `window_id`, `navigate_approval`, mode or any other field before
-  the browser sees it (the broker refuses them too, d3655a8). `allowed_tools` is those eight.
+  the browser sees it (the broker refuses them too, d3655a8). `allowed_tools` is those ten.
 - Each forwards exactly the model's args as one `tool_call` (`mcp__zigbrowser__navigate` /
   `..._reload`); the helper adds nothing.
 - Deadlines (plan rev 16.20.37, "gated calls get their own deadline budget"): a read tool keeps
@@ -28,7 +29,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from test_bridge import Out, answer, error_text, started  # noqa: E402
-from test_tools import TOOLS as READ  # noqa: E402
+from test_tools import ACT, TOOLS as READ  # noqa: E402
 
 from zb_agent_host import options  # noqa: E402
 from zb_agent_host.bridge import Bridge  # noqa: E402
@@ -37,7 +38,7 @@ NAVIGATE = {"type": "object", "properties": {"url": {"type": "string", "minLengt
             "additionalProperties": False}
 RELOAD = {"type": "object", "properties": {}, "required": [], "additionalProperties": False}
 GATED = {"navigate": NAVIGATE, "reload": RELOAD}
-NAMES = sorted(f"mcp__zigbrowser__{n}" for n in [*READ, *GATED])
+NAMES = sorted(f"mcp__zigbrowser__{n}" for n in [*READ, *ACT, *GATED])
 
 
 def bridge(out=None, deadline_s=5.0, **kw):
@@ -51,16 +52,16 @@ def without_descriptions(schema):
 
 
 class ListTest(unittest.TestCase):
-    def test_the_server_lists_the_six_read_tools_plus_navigate_and_reload(self):
+    def test_the_server_lists_the_six_read_tools_hover_scroll_navigate_and_reload(self):
         tools = {t.name: t for t in bridge().tools()}
-        self.assertEqual(sorted(tools), sorted([*READ, *GATED]))
+        self.assertEqual(sorted(tools), sorted([*READ, *ACT, *GATED]))
         for name, schema in READ.items():
             self.assertEqual(tools[name].input_schema, schema, name)
         for name, schema in GATED.items():
             self.assertEqual(without_descriptions(tools[name].input_schema), schema, name)
             self.assertTrue(tools[name].description, name)
 
-    def test_allowed_tools_are_exactly_the_eight_names(self):
+    def test_allowed_tools_are_exactly_the_ten_names(self):
         self.assertEqual(sorted(bridge().allowed_tools()), NAMES)
 
     def test_no_schema_names_the_selector_the_mode_or_a_window(self):
@@ -76,7 +77,7 @@ class ServerListTest(unittest.IsolatedAsyncioTestCase):
     async def test_the_mcp_servers_own_list_has_the_gated_schemas(self):
         listed = await bridge().server()["instance"].get_request_handler("tools/list").handler(None, None)
         got = {t.name: t.input_schema for t in listed.tools}
-        self.assertEqual(sorted(got), sorted([*READ, *GATED]))
+        self.assertEqual(sorted(got), sorted([*READ, *ACT, *GATED]))
         for name, schema in GATED.items():
             self.assertEqual(without_descriptions(got[name]), schema, name)
 
