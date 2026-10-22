@@ -34115,3 +34115,40 @@ gaps remain:
 
 Fix the red forward before the production green; keep it unregistered,
 unarmed and off both Macs.
+
+## WSL shared-transport oracle fix-forward (`bd92f4a`)
+
+**APPROVED; this cumulatively closes the `1006b1e` BLOCKED-for-tests
+verdict.** `assert_secure_ssh_config` now pins
+`ConnectionAttempts == 3`, and the matrix rejects both its removal (effective
+default 1) and substitution with 99. The transport test patches the real
+launch boundary and captures argv from production `ssh()`, `ssh_bg()` and
+`scp()`, requiring the one shared option sequence contiguously and in order
+in all three. The no-network `ssh -G` mutants now cover identity, user, port,
+`ConnectTimeout`, `ConnectionAttempts`, both server-alive fields and injected
+proxy/jump settings. From a clean archive the full module passed **18/18**,
+with its one live row skipped. This is offline harness approval and authorizes
+no WSL VM run.
+
+## Decision-16 refused-selector production green (`846a46e`)
+
+**APPROVED; this cumulatively closes `661fe7d` and its approved red
+`897f1bd`.** A failed selector write now records the attempted value, performs
+a fresh fail-closed store read under `nav_showing`, resets the combo without a
+recursive write, emits the readback from `gtk_combo_box_get_active`, and then
+restores the fixed refusal sentence as the final status. The new e2e is added
+to the aggregate gate without removing any step.
+
+From an exact clean archive on a private Xvfb, the focused registered case
+passed **9/9**. Both successive Down actions attempted No, emitted the
+refusal/readback pair, returned the control to Yes/unreadable, preserved the
+refusal as the last line and left the symlink target untouched. This is the
+causal reset proof: without the first reset, the second Down would attempt
+Conditional.
+
+There is **no newer contiguous push-through SHA yet**: the boundary remains
+the already-pushed **`7b9d499`**. Although `846a46e` closes the first blocked
+range, reaching that fix also crosses the later `2e07c7b` six-case Mac gate,
+whose released run failed and whose green/digests/rerun are not yet accepted,
+as well as the blocked `ecf14be` startup-gate red. The earliest intervening
+acceptance blocker is `2e07c7b`.
