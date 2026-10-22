@@ -14,6 +14,11 @@
 //!   approved in time.", a main-window close (or no main window) "The navigation was
 //!   cancelled.": the engine is never called, and a late Approve changes nothing.
 //!
+//! - RoseCat 7615: every selector x mode x verb (18 rows) pins card or not, the dispatch count,
+//!   the method, the exact bound-window params and the notification count; two cards waiting
+//!   (two drawers) are both cancelled by one main-window close; both verbs refuse a model's
+//!   `window_id` and any selector, mode or run-fact field, so the model can choose neither.
+//!
 //! On HEAD there is no `Broker.Approval` seam: this file does not compile there (the red).
 
 const std = @import("std");
@@ -32,6 +37,9 @@ const reload_tool = "mcp__zigbrowser__reload";
 const not_approved = "The navigation was not approved in time.";
 const cancelled = "The navigation was cancelled.";
 const engine_ok = "{\"result\":{\"ok\":true}}";
+/// The exact params each verb reaches the engine with: the model's args plus the drawer's window.
+const navigate_params = "{\"url\":\"https://example.com/next\",\"window_id\":\"window-2\"}";
+const reload_params = "{\"window_id\":\"window-2\"}";
 
 /// The scripted engine: every call recorded, every answer `engine_ok`.
 const Engine = struct {
@@ -179,10 +187,13 @@ const Rig = struct {
     }
     /// Waits until the card the call presented is waiting (the broker presented it).
     fn waitCard(self: *Rig) !u64 {
+        return self.waitCardId(1);
+    }
+    fn waitCardId(self: *Rig, id: u64) !u64 {
         if (!has) return error.TestNoApprovalSeam;
         const until = fake.nowMs() + 10_000;
         while (true) {
-            if (self.cards.outcome(1)) |o| if (o == .waiting) return 1;
+            if (self.cards.outcome(id)) |o| if (o == .waiting) return id;
             if (fake.nowMs() > until) return error.TestNoCard;
             testing.io.sleep(.fromMilliseconds(5), .awake) catch {};
         }
@@ -222,7 +233,9 @@ test "interactive with conditional: navigate and reload run at once on the drawe
     try testing.expectEqualStrings("page.navigate", r.engine.method(0));
     try testing.expect(std.mem.indexOf(u8, r.engine.param(0), "\"url\":\"https://example.com/next\"") != null);
     try testing.expect(std.mem.indexOf(u8, r.engine.param(0), "\"window_id\":\"window-2\"") != null);
+    try testing.expectEqualStrings(navigate_params, r.engine.param(0));
     try testing.expectEqualStrings("page.reload", r.engine.method(1));
+    try testing.expectEqualStrings(reload_params, r.engine.param(1));
     try testing.expectEqual(@as(?approval.Outcome, null), r.cards.outcome(1));
     try testing.expectEqual(@as(u32, 0), r.app.notifications.load(.acquire));
 }
@@ -355,4 +368,143 @@ test "navigate takes exactly {url: string} and reload exactly {}; a model's wind
     }
     settle();
     try testing.expectEqual(@as(usize, 0), r.engine.count());
+}
+
+
+/// The run facts that give each mode.
+fn setMode(app: *App, mode: if (has) approval.Mode else u8) void {
+    if (!has) return;
+    app.drawer_showing, app.typed_prompt = switch (mode) {
+        .interactive => .{ true, true },
+        .headless => .{ false, true },
+        .full_automation => .{ true, false },
+    };
+}
+
+test "every selector x mode x verb: card or not, one dispatch, the method, exact params, notifications" {
+    if (!has) return error.TestNoApprovalSeam;
+    const Row = struct { selector: approval.Selector, mode: approval.Mode, card: bool };
+    const rows = [_]Row{
+        .{ .selector = .yes, .mode = .interactive, .card = true },
+        .{ .selector = .yes, .mode = .headless, .card = true },
+        .{ .selector = .yes, .mode = .full_automation, .card = true },
+        .{ .selector = .no, .mode = .interactive, .card = false },
+        .{ .selector = .no, .mode = .headless, .card = false },
+        .{ .selector = .no, .mode = .full_automation, .card = false },
+        .{ .selector = .conditional, .mode = .interactive, .card = false },
+        .{ .selector = .conditional, .mode = .headless, .card = true },
+        .{ .selector = .conditional, .mode = .full_automation, .card = true },
+    };
+    const verbs = [_]struct { tool: []const u8, args: []const u8, method: []const u8, params: []const u8 }{
+        .{ .tool = navigate_tool, .args = "{\"url\":\"https://example.com/next\"}", .method = "page.navigate", .params = navigate_params },
+        .{ .tool = reload_tool, .args = "{}", .method = "page.reload", .params = reload_params },
+    };
+    for (rows) |row| for (verbs) |verb| {
+        checkRow(row.selector, row.mode, row.card, verb.tool, verb.args, verb.method, verb.params) catch |e| {
+            std.debug.print("row: {s} {s} {s} (card {})\n", .{ verb.tool, @tagName(row.selector), @tagName(row.mode), row.card });
+            return e;
+        };
+    };
+}
+
+fn checkRow(selector: approval.Selector, mode: approval.Mode, card: bool, tool: []const u8, args: []const u8, method: []const u8, params: []const u8) !void {
+    const r = try Rig.create(true);
+    defer r.destroy();
+    r.cards.windowOpened(1);
+    r.app.selector = selector;
+    setMode(&r.app, mode);
+    var a: Answer = .{};
+    r.submit(tool, args, &a);
+    if (card) {
+        const id = try r.waitCard();
+        settle();
+        try testing.expectEqual(@as(u32, 0), a.n.load(.acquire));
+        try testing.expectEqual(@as(usize, 0), r.engine.count());
+        try testing.expectEqual(@as(u32, 1), r.app.notifications.load(.acquire));
+        try testing.expect(r.cards.approve(id));
+    }
+    try a.wait();
+    try testing.expect(a.ok);
+    settle();
+    try testing.expectEqual(@as(usize, 1), r.engine.count());
+    try testing.expectEqualStrings(method, r.engine.method(0));
+    try testing.expectEqualStrings(params, r.engine.param(0));
+    try testing.expectEqual(@as(u32, if (card) 1 else 0), r.app.notifications.load(.acquire));
+    if (card) {
+        try testing.expectEqual(approval.Outcome.approved, r.cards.outcome(1).?);
+    } else {
+        try testing.expectEqual(@as(?approval.Outcome, null), r.cards.outcome(1));
+    }
+    try testing.expectEqual(@as(u32, 0), r.app.unreadable_reports.load(.acquire));
+}
+
+test "two drawers each wait on a card; one main-window close cancels both, neither dispatched" {
+    if (!has) return error.TestNoApprovalSeam;
+    const r = try Rig.create(true);
+    defer r.destroy();
+    r.cards.windowOpened(1);
+    r.app.drawer_showing = false;
+    // A second drawer, on window 3, sharing the app's one set of cards.
+    var other = broker.Broker.init(gpa, &r.f.server, 3, 30_000);
+    defer other.deinit();
+    other.engine = .{ .ctx = &r.engine, .call = Engine.call };
+    other.approval = r.b.approval;
+
+    var a: Answer = .{};
+    r.submit(navigate_tool, "{\"url\":\"https://example.com/next\"}", &a);
+    _ = try r.waitCardId(1);
+    var b: Answer = .{};
+    other.submit("c-2", reload_tool, "{}", .{ .ctx = &b, .done = Answer.done });
+    _ = try r.waitCardId(2);
+    settle();
+    try testing.expectEqual(approval.Outcome.waiting, r.cards.outcome(1).?);
+    try testing.expectEqual(approval.Outcome.waiting, r.cards.outcome(2).?);
+    try testing.expectEqual(@as(u32, 2), r.app.notifications.load(.acquire));
+
+    r.cards.windowClosed(1);
+    try a.wait();
+    try b.wait();
+    try testing.expectEqualStrings(cancelled, a.failure());
+    try testing.expectEqualStrings(cancelled, b.failure());
+    try testing.expectEqual(approval.Outcome.cancelled, r.cards.outcome(1).?);
+    try testing.expectEqual(approval.Outcome.cancelled, r.cards.outcome(2).?);
+    try testing.expect(!r.cards.approve(1));
+    try testing.expect(!r.cards.approve(2));
+    settle();
+    try testing.expectEqual(@as(usize, 0), r.engine.count());
+}
+
+test "both verbs refuse a model's window_id and every selector, mode or run-fact field; no engine call, no card" {
+    const r = try Rig.create(true);
+    defer r.destroy();
+    r.cards.windowOpened(1);
+    // Interactive and conditional: an accepted call would dispatch at once, so a lax check shows.
+    const bad = [_][2][]const u8{
+        .{ reload_tool, "{\"window_id\":\"window-1\"}" },
+        .{ navigate_tool, "{\"url\":\"https://example.com/\",\"navigate_approval\":\"no\"}" },
+        .{ reload_tool, "{\"navigate_approval\":\"no\"}" },
+        .{ navigate_tool, "{\"url\":\"https://example.com/\",\"selector\":\"no\"}" },
+        .{ reload_tool, "{\"selector\":\"no\"}" },
+        .{ navigate_tool, "{\"url\":\"https://example.com/\",\"mode\":\"interactive\"}" },
+        .{ reload_tool, "{\"mode\":\"interactive\"}" },
+        .{ navigate_tool, "{\"url\":\"https://example.com/\",\"drawer_showing\":true}" },
+        .{ reload_tool, "{\"drawer_showing\":true}" },
+        .{ navigate_tool, "{\"url\":\"https://example.com/\",\"typed_prompt\":true}" },
+        .{ reload_tool, "{\"typed_prompt\":true}" },
+        .{ navigate_tool, "{\"url\":\"https://example.com/\",\"approved\":true}" },
+        .{ reload_tool, "{\"approved\":true}" },
+    };
+    for (bad) |call| {
+        var answer: Answer = .{};
+        r.submit(call[0], call[1], &answer);
+        try answer.wait();
+        testing.expect(!answer.ok) catch |e| {
+            std.debug.print("{s} {s} was accepted\n", .{ call[0], call[1] });
+            return e;
+        };
+    }
+    settle();
+    try testing.expectEqual(@as(usize, 0), r.engine.count());
+    try testing.expectEqual(@as(?approval.Outcome, null), r.cards.outcome(1));
+    try testing.expectEqual(@as(u32, 0), r.app.notifications.load(.acquire));
 }
