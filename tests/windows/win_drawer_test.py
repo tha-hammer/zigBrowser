@@ -72,6 +72,38 @@ def rect_of(fields, i=0):
     return x, y, w, h
 
 
+def check_success(r):
+    """The discriminating oracle for a SUCCESSFUL drawer run. Raises AssertionError on any violation. Pure
+    (takes the runner's JSON result dict), so it is exercised offline with injected results in WinDrawerOracle
+    AND on the live result in WinDrawerLive (RoseCat 29e8852)."""
+    assert r.get("error", "") == "", f"runner reported a Win32 failure: {r.get('error')!r}"
+    assert not r["timed_out"], f"runner timed out waiting for the drawer rows\nstdout={r['stdout']!r}\nstderr={r['stderr']!r}"
+    assert r["terminated"], "the owned Job teardown did not reach WAIT_OBJECT_0 on the browser"
+    # Owned-tree census: the Job's process-id list (not a machine-wide name count) is empty after teardown.
+    assert r["job_count_after"] == 0, f"the owned Job still had processes after teardown (job_count_after={r['job_count_after']})"
+    assert r["job_count_before"] >= 1, f"the Job owned no process while running (job_count_before={r['job_count_before']})"
+    # The window is OUR process's, found by pid (not a global FindWindow).
+    assert r["window_found"], "no zigBrowserWebView2Host window owned by the launched pid was found"
+    # Exact DIRECT STATIC children: the drawer panel ("" text) + the "S" icon, and nothing else. A row-only /
+    # null-control implementation (or EnumChildWindows counting WebView2's own HWNDs) does not pass.
+    statics = [s for s in (r.get("controls") or "").split("|") if s]
+    texts = sorted(s[len("STATIC:"):] for s in statics if s.startswith("STATIC:"))
+    assert texts == ["", "S"], f"host window must have exactly the drawer panel + 'S' icon direct STATIC children; got {statics!r}"
+    rows = [row for row in (parse_drawer(ln) for ln in r["stdout"].splitlines()) if row]
+    wins = {win for win, _, _ in rows}
+    assert len(wins) == 1, f"all DRAWER rows must share one window id; got {sorted(wins)}"
+    by_kind = {}
+    for win, kind, fields in rows:
+        by_kind.setdefault(kind, []).append(fields)
+    for k in ("tree", "icon", "open"):
+        assert k in by_kind, f"missing DRAWER `{k}` row (the native drawer backend must emit it); rows={r['stdout']!r}"
+    px, py, pw, ph = rect_of(by_kind["open"][0])
+    assert r["client_h"] > 0, "could not read the client rect (GetClientRect)"
+    assert pw == r["client_w"], f"the panel must be full client width ({pw} != {r['client_w']})"
+    assert py > 0, f"the panel must dock below a non-empty page region, not overlay (py={py})"
+    assert py + ph == r["client_h"], f"page_h + panel_h must equal client_h ({py} + {ph} != {r['client_h']})"
+
+
 # VM-side runner (RoseCat 29e8852): create the browser SUSPENDED, assign it to a Job we OWN
 # (KILL_ON_JOB_CLOSE) and CHECK the assignment, then resume — so every descendant (incl. msedgewebview2.exe)
 # is born inside the job and cannot escape. Teardown closes/terminates the job, which kills the whole tree;
@@ -115,16 +147,21 @@ public static class Z {
   [DllImport("kernel32", SetLastError=true)] static extern bool QueryInformationJobObject(IntPtr j, int cls, IntPtr info, uint len, IntPtr ret);
   [DllImport("kernel32", SetLastError=true)] static extern bool CloseHandle(IntPtr h);
   [DllImport("kernel32", SetLastError=true)] static extern uint WaitForSingleObject(IntPtr h, uint ms);
+  [DllImport("kernel32", SetLastError=true)] static extern bool TerminateProcess(IntPtr h, uint code);
+  [DllImport("kernel32", SetLastError=true)] static extern bool GetExitCodeProcess(IntPtr h, out uint code);
   delegate bool EnumProc(IntPtr h, IntPtr l);
   [DllImport("user32")] static extern bool EnumWindows(EnumProc cb, IntPtr l);
-  [DllImport("user32")] static extern bool EnumChildWindows(IntPtr p, EnumProc cb, IntPtr l);
   [DllImport("user32")] static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
   [DllImport("user32", CharSet=CharSet.Unicode)] static extern int GetClassName(IntPtr h, StringBuilder s, int n);
+  [DllImport("user32", CharSet=CharSet.Unicode)] static extern int GetWindowText(IntPtr h, StringBuilder s, int n);
+  [DllImport("user32", SetLastError=true)] static extern IntPtr GetWindow(IntPtr h, uint cmd);
   [DllImport("user32")] static extern bool GetClientRect(IntPtr h, out RECT r);
 
   const uint CREATE_SUSPENDED = 0x4, GENERIC_WRITE = 0x40000000, FILE_SHARE_READ = 1, FILE_SHARE_WRITE = 2, CREATE_ALWAYS = 2;
   const uint KILL_ON_CLOSE = 0x2000, GENERIC_READ = 0x80000000, OPEN_EXISTING = 3, STARTF_USESTDHANDLES = 0x100;
-  const int INFINITE_WAIT = -1;
+  const uint GW_CHILD = 5, GW_HWNDNEXT = 2, WAIT_OBJECT_0 = 0, STILL_ACTIVE = 259;
+  // e2e-only forced-failure seam for the OFFLINE/LIVE failure-branch proofs (inert unless set).
+  public static string ForceFail = Environment.GetEnvironmentVariable("ZB_E2E_DRAWER_FORCE");
   static void Fail(string op) { throw new Exception(op + " failed: " + Marshal.GetLastWin32Error()); }
   static IntPtr OpenWrite(string path) {
     var sa = new SECURITY_ATTRIBUTES(); sa.nLength = Marshal.SizeOf(typeof(SECURITY_ATTRIBUTES)); sa.bInherit = 1;
@@ -136,9 +173,18 @@ public static class Z {
     IntPtr h = CreateFile("NUL", GENERIC_READ, FILE_SHARE_READ|FILE_SHARE_WRITE, ref sa, OPEN_EXISTING, 0, IntPtr.Zero);
     if (h == new IntPtr(-1)) Fail("CreateFile NUL"); return h;
   }
-  public static IntPtr Job; static IntPtr _hProc, _hThread; public static int Pid;
+  public static IntPtr Job; static IntPtr _hProc, _hThread; public static int Pid; public static bool ProcGone;
+  // Terminate the exact held process handle (never a pid) and wait for it to exit; record that it is gone.
+  static void KillHeld() {
+    if (_hProc == IntPtr.Zero) { ProcGone = true; return; }
+    TerminateProcess(_hProc, 1);
+    uint w = WaitForSingleObject(_hProc, 8000);
+    uint code; ProcGone = (w == WAIT_OBJECT_0) && GetExitCodeProcess(_hProc, out code) && code != STILL_ACTIVE;
+    CloseHandle(_hThread); CloseHandle(_hProc); _hThread = IntPtr.Zero; _hProc = IntPtr.Zero;
+  }
   // Create the job (KILL_ON_JOB_CLOSE), the suspended process with inherited std handles, assign it to the
-  // job (CHECKED) BEFORE it runs, then resume. Any failure throws.
+  // job (CHECKED) BEFORE it runs, then resume. On any post-create failure the HELD handle is terminated +
+  // waited (no orphan). Any failure throws.
   public static void LaunchOwned(string exe, string cmdline, string cwd, string outPath, string errPath) {
     Job = CreateJobObject(IntPtr.Zero, null); if (Job == IntPtr.Zero) Fail("CreateJobObject");
     var eli = new JOBOBJECT_EXTENDED_LIMIT_INFORMATION(); eli.basic.flags = KILL_ON_CLOSE;
@@ -153,11 +199,14 @@ public static class Z {
     var ta = new SECURITY_ATTRIBUTES(); ta.nLength = Marshal.SizeOf(typeof(SECURITY_ATTRIBUTES));
     PROCESS_INFORMATION pi;
     bool ok = CreateProcess(exe, cmdline, ref pa, ref ta, true, CREATE_SUSPENDED, IntPtr.Zero, cwd, ref si, out pi);
-    CloseHandle(hOut); CloseHandle(hErr); CloseHandle(hIn);  // the child keeps its own copies
+    if (!CloseHandle(hOut) || !CloseHandle(hErr) || !CloseHandle(hIn)) Fail("CloseHandle(std)");
     if (!ok) Fail("CreateProcess");
     _hProc = pi.hProcess; _hThread = pi.hThread; Pid = pi.dwProcessId;
-    if (!AssignProcessToJobObject(Job, pi.hProcess)) Fail("AssignProcessToJobObject");  // CHECKED, before resume
-    if (ResumeThread(pi.hThread) == 0xFFFFFFFF) Fail("ResumeThread");
+    // Forced assignment failure (e2e seam): the suspended process is outside the job; it MUST be terminated
+    // by the held handle, not leaked. Proven by ProcGone.
+    bool assigned = (ForceFail == "assign_fail") ? false : AssignProcessToJobObject(Job, pi.hProcess);
+    if (!assigned) { KillHeld(); throw new Exception("AssignProcessToJobObject failed (held process terminated; gone=" + ProcGone + ")"); }
+    if (ResumeThread(pi.hThread) == 0xFFFFFFFF) { KillHeld(); Fail("ResumeThread"); }
   }
   // Number of processes currently owned by the job (the owned-tree census; not a machine-wide name count).
   public static int JobProcessCount() {
@@ -167,33 +216,50 @@ public static class Z {
       return Marshal.ReadInt32(buf, 4); // NumberOfProcessIdsInList
     } finally { Marshal.FreeHGlobal(buf); }
   }
+  // Terminate the job and REQUIRE the held process to reach WAIT_OBJECT_0 (a timeout/WAIT_FAILED throws).
   public static void Teardown() {
+    uint wait = (ForceFail == "wait_fail") ? 258u /*WAIT_TIMEOUT*/ : 0xFFFFFFFFu;
     if (Job != IntPtr.Zero) { if (!TerminateJobObject(Job, 1)) Fail("TerminateJobObject"); }
-    if (_hProc != IntPtr.Zero) WaitForSingleObject(_hProc, 8000);
+    if (ForceFail != "wait_fail" && _hProc != IntPtr.Zero) wait = WaitForSingleObject(_hProc, 8000);
+    else if (ForceFail != "wait_fail") wait = WAIT_OBJECT_0;
+    if (wait != WAIT_OBJECT_0) throw new Exception("WaitForSingleObject on the browser did not signal WAIT_OBJECT_0: " + wait);
   }
   public static void Close() {
-    if (_hThread != IntPtr.Zero) CloseHandle(_hThread);
-    if (_hProc != IntPtr.Zero) CloseHandle(_hProc);
-    if (Job != IntPtr.Zero) CloseHandle(Job);  // KILL_ON_JOB_CLOSE: belt-and-suspenders
+    bool okT = _hThread == IntPtr.Zero || CloseHandle(_hThread);
+    bool okP = _hProc == IntPtr.Zero || CloseHandle(_hProc);
+    bool okJ = Job == IntPtr.Zero || CloseHandle(Job);  // KILL_ON_JOB_CLOSE: belt-and-suspenders
+    if (!okT || !okP || !okJ) Fail("CloseHandle");
   }
   static IntPtr _found; static uint _pid; static string _cls; static readonly EnumProc _findCb = FindCb;
   static bool FindCb(IntPtr h, IntPtr l) { uint p; GetWindowThreadProcessId(h, out p);
     if (p == _pid) { var sb = new StringBuilder(256); GetClassName(h, sb, 256); if (sb.ToString() == _cls) { _found = h; return false; } } return true; }
   public static IntPtr FindOwnedWindow(int pid, string cls) { _pid = (uint)pid; _cls = cls; _found = IntPtr.Zero; EnumWindows(_findCb, IntPtr.Zero); return _found; }
-  static int _kids; static readonly EnumProc _childCb = ChildCb;
-  static bool ChildCb(IntPtr h, IntPtr l) { _kids++; return true; }
-  public static int ChildCount(IntPtr parent) { _kids = 0; EnumChildWindows(parent, _childCb, IntPtr.Zero); return _kids; }
+  // The DIRECT STATIC children of the host (GW_CHILD/GW_HWNDNEXT) — NOT EnumChildWindows (which also counts
+  // WebView2's own HWND hierarchy). Returns "class:text" for each, so the oracle can require exactly the
+  // drawer's panel ("" text) + "S" icon. A row-only impl has no such controls.
+  public static string DirectStatics(IntPtr parent) {
+    var parts = new System.Collections.Generic.List<string>();
+    IntPtr c = GetWindow(parent, GW_CHILD);
+    while (c != IntPtr.Zero) {
+      var cls = new StringBuilder(64); GetClassName(c, cls, 64);
+      if (cls.ToString() == "STATIC") { var t = new StringBuilder(64); GetWindowText(c, t, 64); parts.Add("STATIC:" + t.ToString()); }
+      c = GetWindow(c, GW_HWNDNEXT);
+    }
+    return String.Join("|", parts.ToArray());
+  }
   public static bool Client(IntPtr h, out int w, out int ht) { RECT r; bool ok = GetClientRect(h, out r); w = r.right-r.left; ht = r.bottom-r.top; return ok; }
 }
 '@
 
-$res = @{ stdout=''; stderr=''; client_w=0; client_h=0; pid=0; child_controls=0; job_count_before=0; job_count_after=0; window_found=$false; terminated=$false; timed_out=$false; error='' }
+$res = @{ stdout=''; stderr=''; client_w=0; client_h=0; pid=0; controls=''; job_count_before=0; job_count_after=0; window_found=$false; terminated=$false; timed_out=$false; proc_gone=$false; launch_failed=$false; error='' }
 # e2e-only seams, set in this process so the child inherits them (honoured only under --e2e-protocol).
 $env:ZIGBROWSER_AGENT_DRAWER_OPEN = '1'
 $env:ZIGBROWSER_AGENT_DRAWER_DEMO = 'messages:2'
 $cmdline = '"' + $exe + '" --e2e-protocol --agent-drawer on "' + $url + '"'
+$launched = $false
 try {
   [Z]::LaunchOwned($exe, $cmdline, $dir, $out, $err)   # suspended -> job -> checked assign -> resume
+  $launched = $true
   $res.pid = [Z]::Pid
   $deadline = (Get-Date).AddSeconds(18); $seen = $false
   while ((Get-Date) -lt $deadline) {
@@ -207,13 +273,15 @@ try {
   if ($h -ne [IntPtr]::Zero) {
     $res.window_found = $true
     $w = 0; $ht = 0; if ([Z]::Client($h, [ref]$w, [ref]$ht)) { $res.client_w = $w; $res.client_h = $ht }
-    $res.child_controls = [Z]::ChildCount($h)
+    $res.controls = [Z]::DirectStatics($h)   # exact DIRECT STATIC children, "STATIC:<text>|..."
   }
-} catch { $res.error = $_.Exception.Message }
+} catch { $res.error = $_.Exception.Message; $res.proc_gone = [Z]::ProcGone; $res.launch_failed = (-not $launched) }
 finally {
-  try { [Z]::Teardown(); $res.terminated = $true } catch { if (-not $res.error) { $res.error = $_.Exception.Message } }
-  try { $res.job_count_after = [Z]::JobProcessCount() } catch { if (-not $res.error) { $res.error = $_.Exception.Message } }
-  [Z]::Close()
+  if ($launched) {
+    try { [Z]::Teardown(); $res.terminated = $true } catch { if (-not $res.error) { $res.error = $_.Exception.Message } }
+    try { $res.job_count_after = [Z]::JobProcessCount() } catch { if (-not $res.error) { $res.error = $_.Exception.Message } }
+  }
+  try { [Z]::Close() } catch { if (-not $res.error) { $res.error = $_.Exception.Message } }
   $res.stdout = [string](Get-Content $out -Raw -ErrorAction SilentlyContinue); if ($null -eq $res.stdout) { $res.stdout = '' }
   $res.stderr = [string](Get-Content $err -Raw -ErrorAction SilentlyContinue); if ($null -eq $res.stderr) { $res.stderr = '' }
 }
@@ -273,38 +341,7 @@ class WinDrawerLive(unittest.TestCase):
                             "-File", f"{base_win}\\run.ps1", base_win)
             self.assertEqual(run.returncode, 0, f"runner failed: {run.stdout}\n{run.stderr}")
             r = json.loads(run.stdout.strip().splitlines()[-1])
-            # Any Win32 API failure in the runner fails the test (fail-closed, RoseCat 29e8852).
-            self.assertEqual(r.get("error", ""), "", f"runner reported a Win32 failure: {r.get('error')!r}")
-            self.assertFalse(r["timed_out"], f"runner timed out waiting for the drawer rows\nstdout={r['stdout']!r}\nstderr={r['stderr']!r}")
-            self.assertTrue(r["terminated"], "the owned Job did not terminate the browser tree within the bound")
-            # Owned-tree census (b2595b0 #2 / 29e8852 #2): the Job's process-id list — not a machine-wide name
-            # count — must be empty after teardown (every descendant was born in the job and killed with it).
-            self.assertEqual(r["job_count_after"], 0, f"the owned Job still had processes after teardown (job_count_after={r['job_count_after']})")
-            self.assertGreaterEqual(r["job_count_before"], 1, f"the Job owned no process while running (job_count_before={r['job_count_before']})")
-            # The window is OUR process's (found by pid, not a global FindWindow, 29e8852 #3), and it has real
-            # child controls (independent HWND census — not just rows; a row-only impl has no children).
-            self.assertTrue(r["window_found"], "no zigBrowserWebView2Host window owned by the launched pid was found")
-            self.assertGreaterEqual(r["child_controls"], 2, f"the host window must have >=2 native child controls (panel+icon); got {r['child_controls']}")
-            rows = [row for row in (parse_drawer(ln) for ln in r["stdout"].splitlines()) if row]
-            wins = {win for win, _, _ in rows}
-            self.assertEqual(len(wins), 1, f"all DRAWER rows must share one window id; got {sorted(wins)}")
-            by_kind = {}
-            for win, kind, fields in rows:
-                by_kind.setdefault(kind, []).append(fields)
-            # Structural rows (same names as GTK), parsed — not a bare "DRAWER" prefix (b2595b0 #1).
-            self.assertIn("tree", by_kind,
-                          "WS5: the native Win32 drawer must emit a structural `tree` row (as GTK does). "
-                          f"Got none — the Windows drawer backend is not implemented yet.\nstdout={r['stdout']!r}\nstderr={r['stderr']!r}")
-            self.assertIn("icon", by_kind, f"WS5: the drawer must emit an `icon` rect row. rows={r['stdout']!r}")
-            self.assertIn("open", by_kind, f"WS5: with the e2e open seam the drawer must emit an `open` panel rect. rows={r['stdout']!r}")
-            # Dock geometry in client coords: full-width, docked at the bottom, page region above it,
-            # so page_h + panel_h == client_h. Kills the overlay mutant (panel.y==0) and needs the real client rect.
-            px, py, pw, ph = rect_of(by_kind["open"][0])
-            self.assertGreater(r["client_h"], 0, "could not read the client rect (GetClientRect)")
-            self.assertEqual(pw, r["client_w"], f"the panel must be full client width ({pw} != {r['client_w']})")
-            self.assertGreater(py, 0, f"the panel must dock below a non-empty page region, not overlay ({py=})")
-            self.assertEqual(py + ph, r["client_h"],
-                             f"page_h + panel_h must equal client_h (panel.y {py} + panel.h {ph} != client_h {r['client_h']})")
+            check_success(r)  # the full discriminating oracle (also exercised offline, WinDrawerOracle)
         finally:
             # The owned Job (KILL_ON_JOB_CLOSE) kills the WHOLE tree — including the WebView2 children born
             # inside it — so the run dir's WebView2 cache is released and this unique root must come back
@@ -324,8 +361,72 @@ class WinDrawerLive(unittest.TestCase):
                     p.unlink()
                 except OSError:
                     pass
-            if not gone and _sys.exc_info()[0] is None:
-                self.fail(f"run dir left behind (not removed): {base_win}")
+            if not gone:
+                # Report cleanup exhaustion either way (never silently accepted); only raise if the body did
+                # not already fail, so the original failure is preserved (29e8852 #4).
+                _sys.stderr.write(f"CLEANUP: run dir left behind (not removed): {base_win}\n")
+                if _sys.exc_info()[0] is None:
+                    self.fail(f"run dir left behind (not removed): {base_win}")
+
+
+class WinDrawerOracle(unittest.TestCase):
+    """OFFLINE (no VM) injected coverage proving the runner-result oracle is discriminating and fail-closed
+    (RoseCat 29e8852 'add non-live injected coverage ...'). Each case feeds a crafted result dict to
+    check_success and asserts it raises for the corresponding failure branch."""
+
+    def _good(self):
+        return {
+            "error": "", "timed_out": False, "terminated": True, "job_count_after": 0, "job_count_before": 2,
+            "window_found": True, "controls": "STATIC:|STATIC:S", "client_w": 1008, "client_h": 729,
+            "stdout": ("DRAWER\t1\ttree\thost,page,icon,panel\n"
+                       "DRAWER\t1\ticon\t928,649,56,56\n"
+                       "DRAWER\t1\topen\t0,437,1008,292\n"),
+            "stderr": "",
+        }
+
+    def test_good_passes(self):
+        check_success(self._good())  # must NOT raise
+
+    def _reject(self, mutate):
+        r = self._good(); mutate(r)
+        with self.assertRaises(AssertionError):
+            check_success(r)
+
+    def test_assign_failure_rejected(self):
+        self._reject(lambda r: r.update(error="AssignProcessToJobObject failed (held process terminated; gone=True)"))
+
+    def test_win32_error_rejected(self):
+        self._reject(lambda r: r.update(error="CreateProcess failed: 2"))
+
+    def test_wait_not_object0_rejected(self):
+        self._reject(lambda r: r.update(terminated=False))
+
+    def test_timed_out_rejected(self):
+        self._reject(lambda r: r.update(timed_out=True))
+
+    def test_job_survivor_rejected(self):
+        self._reject(lambda r: r.update(job_count_after=1))
+
+    def test_no_owned_window_rejected(self):
+        self._reject(lambda r: r.update(window_found=False))
+
+    def test_row_only_no_controls_rejected(self):
+        self._reject(lambda r: r.update(controls=""))  # a row-only / null-control impl
+
+    def test_wrong_or_extra_controls_rejected(self):
+        self._reject(lambda r: r.update(controls="STATIC:|STATIC:S|STATIC:X"))
+
+    def test_multiple_window_ids_rejected(self):
+        self._reject(lambda r: r.update(stdout=r["stdout"].replace("DRAWER\t1\topen", "DRAWER\t2\topen")))
+
+    def test_missing_open_row_rejected(self):
+        self._reject(lambda r: r.update(stdout="DRAWER\t1\ttree\thost,page,icon,panel\nDRAWER\t1\ticon\t928,649,56,56\n"))
+
+    def test_overlay_geometry_rejected(self):  # panel.y == 0 (overlay, not docked)
+        self._reject(lambda r: r.update(stdout=r["stdout"].replace("0,437,1008,292", "0,0,1008,729")))
+
+    def test_panel_not_full_width_rejected(self):
+        self._reject(lambda r: r.update(client_w=1200))
 
 
 if __name__ == "__main__":
