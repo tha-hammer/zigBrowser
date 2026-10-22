@@ -2282,6 +2282,13 @@ coordinated with BlackRobin), then MS4.4.
   bound into the card's digest (D10) and re-checked by `options.guard`" is WITHDRAWN as a description of HEAD.** Until the fix
   lands, a raw-DOM card is bound only to origin and `load_serial`: a same-document account or target change is refused by
   nothing. The fault is platform-neutral (Linux today, macOS once MS7/MS8 land).
+  - **Erratum 2026-10-22 (orchestrator; HazySpring, verified in code): LATENT, deferred.** The overwrite at
+    `agent_broker.zig:709-714` is real, but today the broker's only carded tools are `navigate` and `reload`
+    (`gated_tools`, `:113`). `gatedArgsOk` (`:125-145`) admits exactly `{url}` and `{}`, so no carded call can carry
+    `options`, and `router.zig:327-332` refuses `options.guard` on navigate and reload. No carded `dom.click` path exists, so
+    entry (a) below cannot be driven and a merge fix would be dead code. Until then the plan states: **no carded call carries
+    options; raw-DOM cards do not exist.** The red (b), mutant (c) and merge fix move to the slice that adds the FIRST carded
+    DOM-write tool, and that slice must not register without them. bd `4pa.64` stays open, blocked on that slice.
   - (a) Entry: a carded `dom.click` dispatched by `agent_broker` phaseA into the engine (the production path the helper uses).
     (b) `tests/automation_broker_phasea_options_test.zig` (TO BE AUTHORED), registered in `test` next to the other broker tests.
     Assertions: the engine receives `options.guard` unchanged AND `options.expect = {origin, load_serial}` merged into the same
@@ -4220,7 +4227,8 @@ Each is a Linux step with stub `ssh`/`scp`/`lipo`/`codesign`, added to `test` in
 14. **`4pa.60` (R30-MS3): pacing dir created for a new `--profile-dir`.**
 
 **Phase D — MS4 majors.**
-15. **`4pa.64` (R30-MS4): broker phaseA keeps `options.guard`.** Portable, Linux-registered.
+15. **`4pa.64` (R30-MS4): broker phaseA keeps `options.guard`.** Portable, Linux-registered. **DEFERRED (erratum
+    2026-10-22): latent until the first carded DOM-write tool; its red, mutant and fix ship in that slice.**
 16. **`4pa.69` (R30-MS4): the Mac-only `ms4-gate` step** (MS4.4 login gate over `WKHTTPCookieStore`; `load_serial` on a Mac).
 
 **Phase E — MS5 and MS6 majors, in this order.**
