@@ -33784,3 +33784,64 @@ not yet causally proved:
 The existing bridge, API-listener, exact-environment, marker, stray-fd,
 grandchild, census, ps-failure and nonzero-exit rows remain useful; the red
 must be extended rather than weakened before the pending case can be armed.
+
+## MS6.5.1 Darwin actuator composite follow-up (`222ad73`)
+
+**BLOCKED; keep it unregistered, unarmed and off both Macs.** The follow-up
+closes three of the four `9a10c8b` findings. A null clock is rejected before
+the engine, the final descriptor/pin check now has a causal between-check mode
+mutation, and the real monotonic-clock mapping has an injected failed-reader
+row that proves saturation without touching an undefined timespec. The final
+held-path check also has a useful rename/replacement row. An exact clean
+archive, inside a private user/PID/mount namespace, passed all **27/27**
+concrete tests and both Darwin object builds (**6/6 steps**).
+
+The classifier is nevertheless still not bound to the held descriptor:
+
+1. The composite captures the held fd's current path as `path0`, but passes the
+   independent caller-supplied `dir` to `zb_reaper_fixed_point`; it neither
+   compares those strings nor classifies with `path0`. The existing happy-path
+   test proves the gap directly: its held fd names a Zig temporary directory,
+   it supplies the unrelated but well-formed constant `DUMMY_PATH`, and the
+   composite still returns Clean after one intercepted kill. In production,
+   a rename/replacement between `darwinCensus`'s first `F_GETPATH` and the C
+   composite's second `F_GETPATH` can therefore leave the classifier targeting
+   the replaced old path while every current `current == path0` check follows
+   the renamed held inode. Classify with the captured held-fd path, or require
+   exact entry equality and preserve it; add a well-formed mismatched-path row
+   that refuses before inspect/action.
+2. The only new rename mutation fires at the final clock call during an empty
+   census. It proves the final Clean check but cannot detect removal of the
+   pre-signal path check. Add a candidate-bearing row that renames/replaces at
+   the pre-kill `dir_ok` call, requires zero kills and turns red when only that
+   pre-kill path check is removed.
+
+No real-signal or Mac execution is authorized by this verdict.
+
+## Darwin hook hard-gate fix-forward (`d6b8de9`, `7092544`)
+
+**`d6b8de9` APPROVED-for-tests; `7092544` APPROVED as the pending case.**
+This cumulatively closes the five findings on `2c1357b`/`08b6b9f`. An exact
+red archive exits nonzero with the session-shape, fd-5-at-open-equals-5 and
+partial-listener-cleanup defects exposed. The exact green archive passes
+**4/4** under the pinned helper Python inside a private user/network/PID/mount
+namespace; the Linux proof keeps both signal calls patched to raise.
+
+The fixed case now proves the detached sid differs from the hook's original
+sid and equals the detached process's pgid; fd 5 is explicitly inheritable
+even when `open` returned 5; both forbidden connects fail specifically with
+Seatbelt's EPERM rather than an arbitrary network failure; the planted names,
+values and marker variable are absent independently of the current allowlist;
+and each successfully created listener is cleanup-owned immediately. The
+extended dishonest matrix includes no-`setsid`, timeout/unreachable results,
+marker leakage and an accidentally widened allowlist.
+
+The reviewed pending-case digest is
+`896e057ecc001944758521e7356d904dbdc2283e855a8c7a5b92079ddf9e2a69`.
+The armed manifest remains unchanged at
+`8b3e14fc4637d59b23185827ae6db24899309ac854544990fb32dada09234ffb`;
+therefore this verdict authorizes **no Mac run**. A later registration/manifest
+commit must pin these exact bytes and receive a separate release. **NIT:** the
+Linux-test docstring still says no process is started, although its fd-5 row
+now starts short-lived `/bin/sh` and Python children; correct that when the
+case is registered.
