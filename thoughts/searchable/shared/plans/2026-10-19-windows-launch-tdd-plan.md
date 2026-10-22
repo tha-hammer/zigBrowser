@@ -1715,10 +1715,11 @@ to run. Credential tests run inside the interactive session task.
    the stdio bridge is known) and the reverse channel that returns the in-distro ephemeral port to the
    browser are unspecified. **Close:** specify the exact bidirectional stdio/pipe protocol + closure/
    timeout and prove it live with canaries. OAuth fd-3 stays a hard-red unverified.
-4. **OPEN — destructive distro ops have a check/use race.** Retire-after-census (C3) and
-   terminate-after-last-owner (C4) have no cross-process claim held across census→action. **Close:**
-   one bounded cross-process lock/lease shared by session admission, update/retire, recovery and
-   uninstall, with crash-cut and concurrent-start reds.
+4. **OPEN (proposal drafted) — destructive distro ops have a check/use race.** Retire-after-census (C3)
+   and terminate-after-last-owner (C4) had no cross-process claim held across census→action. **Proposal
+   drafted in C4:** one bounded cross-process lock/lease (named mutex + lease file, TBD) shared by session
+   admission, update/retire, recovery and uninstall, held exclusively across census AND action. **Still
+   OPEN:** the concurrent-starter, crash-cut and stale-lease reds and their live proof.
 5. **OPEN — C5 namespaces do not compose.** A Windows-reachable listener must live in the distro host
    netns; a broker "inside the agent's bwrap tree" cannot also appear at `127.0.0.1:51091/31337` to
    hooks in their own private net namespaces. **Close:** name the trusted outer broker/netd namespace
@@ -1941,7 +1942,9 @@ cleanly into an elevated one-shot and an unprivileged per-user import:
   single commit; a crash before it leaves the old distro current (new one is orphaned and reaped), a crash
   after it leaves the new one current (old one is retired on next run).
 - **Active old sessions on update:** the retire step **never** unregisters a distro that still has live
-  sessions (census by the C4 marker); the old distro lingers until its last session ends, then is reaped.
+  sessions. It acquires the **C4 cross-process lock** in exclusive mode and holds it across the live-session
+  census (by the C4 marker/lease) AND the unregister, so no new session can be admitted between census and
+  action; the old distro lingers until its last session's lease ends, then is reaped under the same lock.
 - **Reboot-resume actor/authorization:** the resumable marker records which elevated action is pending and
   the target user SID; the post-reboot resume runs **unprivileged** (import needs no admin) and refuses if the
   console user SID differs, so no second UAC prompt and no cross-user resume.
@@ -1956,10 +1959,27 @@ cleanly into an elevated one-shot and an unprivileged per-user import:
 - **Win10 file server:** NO WSL and NO agent on the read-only Windows 10 file server — WSL/agent is
   **win11-only**; any two-host install claim is removed.
 
-**C4 — Per-run lifetime (never kill another session's distro).** Each browser session runs its agent under a
-**per-session supervisor inside the distro** that owns the whole session subtree. **Measured:** background
-trees persist across `wsl` invocations, a `kill -TERM -<pgid>` removes exactly one session's tree while a
-co-tenant session stays alive, and `wsl --terminate <distro>` kills every process in the distro.
+**C4 — Per-run lifetime + a cross-process lock/lease (PROPOSAL / TBD).** Each browser session runs its agent
+under a **per-session supervisor inside the distro** that owns the whole session subtree. *Observed in the
+discovery spike:* background trees persist across `wsl` invocations, a `kill -TERM -<pgid>` removes exactly one
+session's tree while a co-tenant session stays alive, and `wsl --terminate <distro>` kills every process in the
+distro.
+- **One bounded cross-process lock/lease over admission + destructive actions (PROPOSAL, affd577/9134b8b #4 —
+  closes the census→act race):** a single named, owner-DACL **lock/lease** (e.g. a Windows named mutex +
+  lease file under `C:\Users\<user>\zb`, or an advisory lock on the current-pointer state file) is the one
+  serialization point shared by **session admission, update/retire, crash-recovery reaping, and uninstall**.
+  The rule: a destructive distro action (unregister/terminate of the app distro, retire of an old versioned
+  distro) acquires the lock in **exclusive** mode and HOLDS it across BOTH the live-session census AND the
+  action, so no new session can be admitted in between (session admission takes the lock in **shared** mode,
+  registers its marker under it, then downgrades). A session is "live" iff it holds a current lease (renewed
+  on a bound); a crashed session's lease expires, so recovery reaps its marker only after the lease is
+  provably dead. **Reds (later, implementation-approved revision):** a concurrent-starter red (a session that
+  tries to admit during a retire must either block until the retire completes or be refused — never slip
+  between census and unregister); a crash-cut red (the destructive holder is killed mid-action → the lock is
+  released by the OS/lease timeout and the next run completes or rolls back, never leaving a half-retired
+  distro); and a stale-lease red (an expired lease must not keep a dead session's distro alive). The exact
+  lock primitive (named mutex vs. lease file vs. both) and its timeout are **TBD** pending the implementation
+  revision.
 - **Ownership marker, not a raw pgid (affd577 #6):** every process in the session is tagged with a durable
   **session marker** (a session-id env/credential the supervisor sets, plus a session cgroup/ pgid). Teardown
   and recovery act on the MARKER (reap every process carrying it), so a detached/double-fork/`setsid` child
@@ -1971,8 +1991,9 @@ co-tenant session stays alive, and `wsl --terminate <distro>` kills every proces
   already plants/kills such survivors to shape this test).
 - **Forbidden distro-wide teardown:** normal teardown NEVER calls `wsl --terminate <distro>` or
   `wsl --shutdown` — both would kill co-tenant sessions / every distro. `wsl --terminate <app distro>` is
-  reserved for uninstall or a **census-proven last owner** (no other session's marked processes remain);
-  `wsl --shutdown` is forbidden in production entirely.
+  reserved for uninstall or a **census-proven last owner under the C4 lock** (the lock is held across the
+  census AND the terminate, so no session can be admitted in between — no other session's marked processes or
+  live lease remain); `wsl --shutdown` is forbidden in production entirely.
 
 **C6 — Dedicated non-root Linux identity (affd577 #1).** The agent launches as a **dedicated non-root Linux
 uid** inside the distro, never WSL's default root. `wsl.conf [user] default` is pinned to that user AND the
