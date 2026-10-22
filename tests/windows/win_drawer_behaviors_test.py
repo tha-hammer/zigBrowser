@@ -265,6 +265,16 @@ class WinDrawerBehaviorsOracle(unittest.TestCase):
         self.assertEqual(live_count(3, 2), 1)
         self.assertNotEqual(live_count(3, 2), 0, "the skip-destroy mutant must leave a nonzero live count")
 
+    def test_ws5_5b2_live_peak_equals_window_count(self):
+        # WS5.5b-2: the live peak must equal the opened-window count (N concurrent drawers), not merely be
+        # positive. Each mutant reverts one property and must reject.
+        check_live_peak_matches(2, 0, 2)  # true concurrency
+        for peak, final, n in ((1, 0, 2),   # serial open/close, or a mount not accounted -> peak < n
+                               (3, 0, 2),   # over-count -> peak > n
+                               (2, 1, 2)):  # a destroy not accounted -> final != 0
+            with self.assertRaises(AssertionError):
+                check_live_peak_matches(peak, final, n)
+
     # WS5.6 ---------------------------------------------------------
     def test_ws5_6_isolation(self):
         exposed = ["page.navigate", "input.dispatch", "runtime.evaluate"]
@@ -665,6 +675,16 @@ def check_live(peak, final):
     assert final == 0, f"the live count must be 0 after every window closes (got {final})"
 
 
+def check_live_peak_matches(peak, final, n_windows):
+    """WS5.5b-2 (RoseCat 7937/7952, 'prove peak >= 2'): the live PEAK must EQUAL the number of windows opened —
+    every drawer CONCURRENTLY live at the peak, not opened and closed one at a time. Stronger than check_live
+    (peak > 0): a serialized N-window run or a mount that is never accounted yields peak < n; an over-count
+    yields peak > n; a destroy that is never accounted yields final != 0."""
+    assert peak == n_windows, \
+        f"the live peak {peak} must equal the {n_windows} windows opened (N concurrent drawers, not serial)"
+    assert final == 0, f"the live count must be 0 after every window closes (got {final})"
+
+
 # The EXACT expected result of each drawer-reach attempt (RoseCat d0e7091 #2): a socket `drawer.*` method must
 # be METHOD-NOT-FOUND (-32601) — a policy-denial (-32011) would mean the method EXISTS (exposed), which must
 # fail; each page-JS reach has its own defined unreachable observation. The isolation check requires exactly
@@ -866,7 +886,9 @@ class WinDrawerBehaviorsLive(_wd.WinDrawerLive):
         # an exact [tree,icon,open] sequence, plus one global `live` row on the first window (RoseCat d0e7091 #1).
         def body(r):
             peak, final = validate_multiwindow_transcript(r["stdout"], 2)
-            check_live(int(peak), int(final))
+            # WS5.5b-2: require the peak to EQUAL the 2 windows opened (both drawers concurrently live), not
+            # merely positive — a serialized run or an unaccounted mount (peak == 1) must fail here.
+            check_live_peak_matches(int(peak), int(final), 2)
         self._run_drawer(extra_env=self._env(ZIGBROWSER_AGENT_DRAWER_WINDOWS="2"), body=body)
 
     def test_ws5_6_isolation_denied_and_census_unchanged(self):
