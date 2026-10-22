@@ -28,7 +28,7 @@ test "a valid within-bound ledger loads to its entries" {
     var td = std.testing.tmpDir(.{});
     defer td.cleanup();
     const s =
-        \\{"schema_version":2,"runs":[{"basename":"zigbrowser-agent-1-0011223344556677","dev":10,"ino":20,"uid":0,"mode":16832,"pid":100,"start_kind":"linux_ticks","start_sec":5,"start_usec":7,"state":"active"}]}
+        \\{"schema_version":2,"runs":[{"basename":"zigbrowser-agent-1-0011223344556677","dev":10,"ino":20,"uid":0,"mode":16832,"pid":100,"start_kind":"linux_ticks","start_sec":5,"start_usec":0,"state":"active"}]}
     ;
     try td.dir.writeFile(io, .{ .sub_path = "ok.json", .data = s });
     var l = try ledger.load(io, std.testing.allocator, td.dir, "ok.json");

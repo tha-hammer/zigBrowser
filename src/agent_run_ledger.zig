@@ -123,6 +123,17 @@ pub fn parse(gpa: std.mem.Allocator, bytes: []const u8) ParseError!Ledger {
             parsed.deinit();
             return error.Malformed; // a malformed basename makes the WHOLE ledger a malformed read
         }
+        // Each start_kind has ONE legal shape (RoseCat 0e36742): linux_ticks is a bare tick count with NO
+        // microseconds (start_usec MUST be 0); darwin_tvsec's start_usec is a real microseconds value in
+        // [0, 999999]. An impossible identity is a malformed read — never a trusted owner start.
+        const canonical = switch (e.start_kind) {
+            .linux_ticks => e.start_usec == 0,
+            .darwin_tvsec => e.start_usec <= 999_999,
+        };
+        if (!canonical) {
+            parsed.deinit();
+            return error.Malformed;
+        }
     }
     var i: usize = 0;
     while (i < runs.len) : (i += 1) {

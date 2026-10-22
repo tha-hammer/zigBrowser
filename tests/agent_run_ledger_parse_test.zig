@@ -20,7 +20,7 @@ fn expectErr(expected: ledger.ParseError, s: []const u8) !void {
 
 test "valid versioned ledger parses to its entries" {
     const s =
-        \\{"schema_version":2,"runs":[{"basename":"zigbrowser-agent-1-0011223344556677","dev":10,"ino":20,"uid":0,"mode":16832,"pid":100,"start_kind":"linux_ticks","start_sec":5,"start_usec":7,"state":"active"}]}
+        \\{"schema_version":2,"runs":[{"basename":"zigbrowser-agent-1-0011223344556677","dev":10,"ino":20,"uid":0,"mode":16832,"pid":100,"start_kind":"linux_ticks","start_sec":5,"start_usec":0,"state":"active"}]}
     ;
     var l = try ledger.parse(std.testing.allocator, s);
     defer l.deinit();
@@ -40,25 +40,25 @@ test "an unknown schema_version is Malformed" {
 
 test "an extra field is Malformed (strict, no unknown fields)" {
     try expectErr(error.Malformed,
-        \\{"schema_version":2,"runs":[{"basename":"zigbrowser-agent-1-0011223344556677","dev":10,"ino":20,"uid":0,"mode":16832,"pid":100,"start_kind":"linux_ticks","start_sec":5,"start_usec":7,"state":"active","extra":1}]}
+        \\{"schema_version":2,"runs":[{"basename":"zigbrowser-agent-1-0011223344556677","dev":10,"ino":20,"uid":0,"mode":16832,"pid":100,"start_kind":"linux_ticks","start_sec":5,"start_usec":0,"state":"active","extra":1}]}
     );
 }
 
 test "a missing field is Malformed" {
     try expectErr(error.Malformed,
-        \\{"schema_version":2,"runs":[{"basename":"zigbrowser-agent-1-0011223344556677","ino":20,"uid":0,"mode":16832,"pid":100,"start_kind":"linux_ticks","start_sec":5,"start_usec":7,"state":"active"}]}
+        \\{"schema_version":2,"runs":[{"basename":"zigbrowser-agent-1-0011223344556677","ino":20,"uid":0,"mode":16832,"pid":100,"start_kind":"linux_ticks","start_sec":5,"start_usec":0,"state":"active"}]}
     );
 }
 
 test "a mistyped field is Malformed" {
     try expectErr(error.Malformed,
-        \\{"schema_version":2,"runs":[{"basename":"zigbrowser-agent-1-0011223344556677","dev":"x","ino":20,"uid":0,"mode":16832,"pid":100,"start_kind":"linux_ticks","start_sec":5,"start_usec":7,"state":"active"}]}
+        \\{"schema_version":2,"runs":[{"basename":"zigbrowser-agent-1-0011223344556677","dev":"x","ino":20,"uid":0,"mode":16832,"pid":100,"start_kind":"linux_ticks","start_sec":5,"start_usec":0,"state":"active"}]}
     );
 }
 
 test "an unknown state is Malformed" {
     try expectErr(error.Malformed,
-        \\{"schema_version":2,"runs":[{"basename":"zigbrowser-agent-1-0011223344556677","dev":10,"ino":20,"uid":0,"mode":16832,"pid":100,"start_kind":"linux_ticks","start_sec":5,"start_usec":7,"state":"paused"}]}
+        \\{"schema_version":2,"runs":[{"basename":"zigbrowser-agent-1-0011223344556677","dev":10,"ino":20,"uid":0,"mode":16832,"pid":100,"start_kind":"linux_ticks","start_sec":5,"start_usec":0,"state":"paused"}]}
     );
 }
 
