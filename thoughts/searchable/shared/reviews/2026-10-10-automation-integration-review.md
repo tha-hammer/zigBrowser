@@ -35482,3 +35482,166 @@ failures**). The new predicates still do not bind the claimed control flow:
 
 The red therefore does not close `aead88d` or the WS5.5b-2 terminal-row range.
 The contiguous push boundary remains the already-pushed `6f145bc`.
+
+## MS7.6/7.8 multiplicity and exact-body red fix-forward (`2102ae3`)
+
+**The authority proof closes the semantic `4124a1b` bypass, but the commit is
+BLOCKED-for-tests on its signal/deadline harness; keep it unregistered and do
+not run it on a Mac.** The object graph now preserves reference-site
+multiplicity and both alias-double-call objects fail with the expected count 2
+on x86_64 and arm64. The lexical graph binds the exact minter, adapter and
+bridge bodies, so it independently catches a loop or a second call through one
+address-take. Compiler jobs are serialized. In a private PID namespace the
+combined focused run produced **11 passes and the two intended production-red
+failures** (missing linked AppKit drawer and missing real Zig minter graph).
+
+Two harness gaps remain before registration:
+
+1. `test_a_compiler_past_its_deadline_is_killed_with_its_group` always sends a
+   real `killpg`, but the module has no kernel-proven private-PID-namespace
+   sentinel before `Popen`/signal. Its own `Run (self-check)` line still shows a
+   plain `python3` invocation, which violates the project-wide signal-test rule
+   despite the preceding prose mentioning `unshare`. Hold the outer namespace
+   fd before `unshare`, compare it with the current namespace in the test, and
+   refuse before spawning on any absent/unreadable/equal result. Register only
+   the guarded launcher and make the documented command match it.
+2. After the deadline signal, `run_bounded` calls `proc.communicate()` with no
+   second deadline. An escaped descendant retaining stderr, a failed group
+   signal or another cleanup fault can still wedge the supposedly bounded
+   compiler run. Bound the post-signal drain/reap too, handle signal/reap errors
+   explicitly, and add a causal escaped-pipe or stuck-drain row that terminates
+   with a fixed failure rather than hanging.
+
+No Mac execution is authorized by this red. The contiguous push boundary
+remains the already-pushed `6f145bc`.
+
+## MS6.5.1 startup-owner committed-mutant red (`3dc35cc`)
+
+**BLOCKED-for-tests; keep it unregistered, unarmed and signal-free.** Committing
+the three negative fixtures as durable rows is the right correction, and the
+new argument splitter does bind the five named `recoverAllAtStartup` arguments.
+The rows still prove only narrower examples than the live ownership claims:
+
+1. The app predicate accepts any first argument containing the substring
+   `StartupHook`; it does not bind the imported owner type or constructor. For
+   example `OtherHook{ .decoy = StartupHook{} }` and
+   `WrongStartupHook{}` both pass, as does an unused global import plus a hook
+   from another module. Bind the exact import alias and exact first-argument
+   constructor/expression, and commit both additive mutants.
+2. Brace depth 1 does not mean an unconditional live statement. An unbraced
+   `if (false) _ = recoverLeftoverAgentRuns(...)`, `while (false)` or another
+   single-statement conditional remains at depth 1 and passes. Drive
+   `StartupHook.run` through injectable ops, or constrain its lexed body to the
+   exact unconditional owner-call/return shape; commit the unbraced dead-branch
+   mutant.
+3. `RealOps.recover` does not check branch depth or that the adapter returns the
+   core result. A dead branch containing
+   `recoverAllAtStartup(dir, sub, clk, deadline_ms, actuator)` followed by an
+   unrelated disabled report satisfies all five argument checks. Bind the live
+   return/data flow (preferably drive the adapter) and commit both a dead-call
+   and a call-result-discarded mutant.
+
+The absent owner module remains the intended red, but this commit does not
+close `e0f3d8e` or the startup-owner integration range.
+
+## MS7.4 preprocessing/link/allocation red fix-forward (`382f889`)
+
+**The allocation-failure fix is correct; the commit remains BLOCKED-for-tests
+on the preprocessing and whole-link authority claims. Keep it unregistered and
+do not run it on a Mac.** The focused suite has six fixture/mutant passes and
+the one intended missing-production-drawer failure. The exact drawer/header
+directive lists reject the committed `#if`, ordinary `#define`, digraph,
+`_Pragma` and missing-header rows, and the new early null guard prevents pointer
+arithmetic after `malloc` failure.
+
+Four concrete bypasses still return an empty finding list:
+
+1. `mac_link_sources` recognizes only literal `b.path("...")` arguments on two
+   call shapes. A source added through `const evil = b.path("src/evil.m");
+   module.addCSourceFile(.{ .file = evil, ... })` is really linked but absent
+   from `sources` and from the V7 scan. Make the build inventory fail closed on
+   every unrecognized native-link expression (including alternate add-source,
+   object and system-command forms) and commit the path-variable mutant.
+2. The compiler-flag ban accepts `-Wp,-DNO=YES`, which Clang forwards to the
+   preprocessor. Bind the exact reviewed shim argv/flags rather than a partial
+   prefix denylist, and cover forwarded flags, response files and trigraph
+   enabling.
+3. Preprocessing is constrained only in the drawer and its header. Another
+   linked source can synthesize the protected class name with
+   `#define CAT(a,b) a##b` and `@implementation CAT(ZbBubble,View) (Steal)`;
+   the category and name checks both miss it. Apply a fail-closed preprocessing
+   contract to every scanned linked source or inspect compiler output, with the
+   token-paste category mutant.
+4. The V7 `copy:` regex is not token-aware. A linked Objective-C method spelled
+   `- (void)copy : (id)sender` is a copy selector but passes. Parse selector
+   tokens with legal whitespace, and bind the one permitted `@selector(copy:)`
+   to the reviewed target-nil Edit-menu construction rather than deleting every
+   such selector globally.
+
+The accepted one-control amendment stands, but `d8978b6` is not cumulatively
+closed by this commit.
+
+## WS5.5b-2 portable post-controller decision (`e57f620`)
+
+**APPROVED for `35ff63f` finding 1's portable decision slice.**
+`afterController` directly implements the one conjunction
+`e2e && drawer && windows_seam_set`; every one of its eight Boolean gate
+combinations is exercised, every false combination returns zero spawn and zero
+close, and the active path derives its spawn count from the already bounded
+`extraDrawerWindows`. The C ABI wrapper maps each integer gate to nonzero=true
+without adding policy. The registered `zig build drawer-props-test` step passed
+with both display variables removed.
+
+This approval does not yet close `918cb09`/`aead88d`: the next production slice
+must bind the shim to this export at exactly one controller-completion site,
+consume the returned spawn count exactly once, and post the primary close
+exactly once. The per-method live-settle AST proof (`35ff63f` finding 2) and the
+normal-exit-versus-Job-backstop harness proof (finding 3) also remain open. No
+Win11 rerun is authorized yet, and the contiguous push boundary remains the
+already-pushed `6f145bc`.
+
+## WS7.4 portable copy-rule red rework (`dcddac3`)
+
+**BLOCKED-for-tests on the no-wedge oracle; keep it unregistered.** The exact
+inside-symlink destination/value now makes following the alias causal, the
+inside junction is asserted under its own name, and outside symlink/junction
+destinations as well as their bytes are absent. Those changes close the first
+two findings on `9ec1600`.
+
+The cycle test is not actually bounded: `setUp` invokes `copy_tree_fs` inline
+for every row, with no subprocess or deadline. A recursive implementation will
+eventually raise `RecursionError`, but an iterative cycle-follow bug can wedge
+the test forever—the exact failure the requested bounded symlink/junction
+cycles were meant to catch. Run the cycle cases in a disposable worker with a
+strict deadline and guaranteed reap, assert the ordinary result through that
+worker, and commit a cycle-follow mutant that times out to a fixed failure.
+Keep the real `copy_sai`-to-engine binding and Windows reparse-aware adapter as
+green requirements. The local focused import currently stops earlier because
+this checkout lacks `claude_agent_sdk`; that environment error is not red
+evidence for the missing engine.
+
+## MS7.6/7.8 signal-safe self-check fix-forward (`44e061e`)
+
+**APPROVED as the fix-forward for `2102ae3`'s two harness blockers.** The
+module's supported self-check now opens and preserves the launcher's PID
+namespace fd, re-executes itself under `unshare --map-current-user --pid
+--fork --kill-child --mount-proc`, and compares that held namespace with the
+current `/proc/self/ns/pid` before every spawn and again before `killpg`.
+Absent, malformed, unreadable, non-PID-namespace and equal sentinels all
+refuse before `Popen`; the refusal row patches `Popen`, `kill` and `killpg` to
+raise, so no mocked pid can reach a signal call. The real compiler child is a
+new process-group leader with an exact integer pid greater than one.
+
+The timeout path now bounds the post-signal `communicate` and the subsequent
+`wait` separately. Its escaped `setsid sleep 8` row proves a retained stderr
+writer cannot wedge the parent; the escapee is a real, freshly recorded pid
+inside the proven private namespace, and `unshare --kill-child` remains the
+outer cleanup boundary. Through the only documented launcher, the focused
+self-check passed **8/8 in 41.2 seconds** with both display variables removed.
+
+Thus the cumulative `2102ae3`/`44e061e` RED proves the reviewed authority
+graph without an unsafe or unbounded test harness. It remains intentionally
+unregistered and production-red until the later green supplies and registers
+the real AppKit/Zig objects; this approval does not authorize a Mac run and
+does not move the contiguous push boundary beyond the already-pushed
+`6f145bc`.
