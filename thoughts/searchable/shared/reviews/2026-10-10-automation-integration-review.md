@@ -28894,3 +28894,69 @@ agent-control capability must remain separate from the hook bridge capability.
 
 This advisory was sent to AzureRidge as Agent Mail 7594. The docs-only diff is
 clean and no live run was performed.
+
+## Recovery-busy watchdog EINTR deadline (`5c0fdca`, `89a83dc`)
+
+`5c0fdca` is **APPROVED as the scoped causal red**. In a clean export inside a
+private user/PID namespace, the exact-SHA direct test produced **1/2 failed**:
+the EINTR storm returned `.ready` instead of `.timed_out`, while the ready and
+hard-error controls passed. The injected clock advances on every interruption
+and the fake's cap keeps the deliberately broken run finite. The red is
+correctly unregistered until its green.
+
+`89a83dc` is **APPROVED for `e665676` item 3**. The registered helper checks
+the absolute monotonic deadline before every retry; the EINTR-storm row kills
+the skip-deadline mutant; and the production-shaped recovery-busy watchdog now
+uses that same helper through a decoded, bounded 100-ms `RealPoll` slice. A
+clean export inside a private user/PID namespace passed:
+
+```
+Build Summary: 7/7 steps succeeded; 2/2 tests passed
+```
+
+This closes only the watchdog-EINTR finding from `defa0c0`. It does not close
+the independent `c6cfc70` production acquisition-clock, cancellation,
+attempt-order or held-work-deadline findings. The fixed poll slice can exceed
+the nominal deadline by at most one slice, but it is finite and an EINTR storm
+cannot extend it indefinitely. Verdict sent to JadeBeacon as Agent Mail 7597.
+
+## Windows old-topology non-normative marking (`c934b8d`)
+
+**APPROVED only for honest-DRAFT documentation.** The authoritative OD-W4
+scope banner globally makes the dedicated-user, WFP, host-netd,
+`WindowsSandboxUserBackend`, file-server-agent and both-host-agent text
+historical/non-normative. This commit also marks the most dangerous concrete
+locations inline: OD-W4c, the shared-code table, the old file-server WS8
+warning and WS13.4 uninstall/census. Blocker 6 remains explicitly OPEN for the
+implementation-approved excision, which is correct; this approval authorizes
+no WS8/WS9 implementation or live run.
+
+## WSL spike DO-NOT-RERUN header (`ecd029b`)
+
+**BLOCKED (docs-only).** The spike header itself is correct at
+`tests/windows/wsl_live_test.py:3-24`: it says DISCOVERY-ONLY / DO-NOT-RERUN /
+NOT-REPAIRED, removes the run invitation and enumerates the current six
+`6e9f989` defects. The second half of the explicit `edd21ff` requirement is
+still missing. The authoritative DRAFT gate at
+`thoughts/searchable/shared/plans/2026-10-19-windows-launch-tdd-plan.md:
+1714-1720` still describes the pre-`6e9f989` implementation (every cleanup rc
+ignored, no final census, shared staged scripts and no listener-ready proof).
+Those are no longer the current defect set and contradict the repaired header.
+
+Fix forward that one blocker paragraph to the six current defects and retain
+repair plus reviewed evidence as the close condition. The spike remains
+forbidden to run. Agent Mail 7598 sent the finding to AzureRidge. The
+honest-DRAFT range therefore remains open and there is **no new contiguous
+push-through SHA**; it remains the already-pushed `bac895b`.
+
+## Windows C5 inner-relay refinement (`2bd76a0`)
+
+**APPROVED only as an OPEN DRAFT proposal.** It preserves the existing hook
+API at `127.0.0.1:51091/31337`: an inner relay in each hook network namespace
+binds only those ports and forwards over a distinct per-hook capability to the
+outer host-netns broker. The Windows side is constrained to the exact
+app-owned loopback services, never an agent-supplied address; agent-control
+and hook-bridge capabilities remain separate. Acceptance rows cover both
+positive ports and no-API/no-other-port negatives. C5 blocker 5 remains OPEN,
+and this verdict authorizes neither implementation nor a live run. Agent Mail
+7600 sent the verdict to AzureRidge.
