@@ -494,28 +494,40 @@ pub fn acquireRunLockBounded(io: std.Io, dir: std.Io.Dir, budget_ms: i64, backof
 
 /// The outcome of recovering ONE recorded entry under the held flock.
 pub const RecoveryAction = enum {
-    signalled, // proved dead, run censused->killed to a clean fixed point, entry retired
+    signalled, // proved dead, provenance matched, run censused->killed to a clean fixed point, dir torn down, entry retired
     left, // a live same-owner entry (or a `left` entry) -> leave untouched
     already_gone, // the entry was already retired by whichever recoverer held the flock before us
-    fail_closed, // unreadable identity/provenance, incomplete census, survivor, action error, deadline, publish error
+    reconciled, // crash cut C3: the entry names NO dir (removed before a prior recoverer retired it) -> dropped idempotently, no signal
+    fail_closed, // unreadable identity/provenance, provenance mismatch, incomplete census, survivor, teardown/publish error, or deadline
 };
 
 /// The census->kill->fresh-census fixed-point verdict from the held-fd lease (production: `zb_reaper_fixed_point`).
 pub const FixedPoint = enum { clean, survivors, incomplete };
 
+/// The idempotent teardown verdict from the held-fd lease: `done` includes crash cut C2 (the marker was already
+/// unlinked before the crash — `ENOENT` on the marker unlink is finished, not failed, then `rmdir` completes).
+pub const Teardown = enum { done, failed };
+
 // The destructive action is reached ONLY through a typed lease that RETAINS the pinned run-dir fd, so the
 // provenance check and the teardown cannot be separated by a path swap (RoseCat 62888b1). The injected `actuator`
-// exposes ONE pin/check step:
+// exposes ONE pin/check step whose result is a TAGGED union distinguishing the crash cuts from a failure
+// (RoseCat 9f62ea4 #3):
 //
-//     actuator.pin(dir, entry) ?Lease   // open the run dir O_DIRECTORY|O_NOFOLLOW, pin (dev,ino,uid,mode) and
-//                                        // require it to equal the recorded entry; null on mismatch/absent.
+//     actuator.pin(dir, entry) -> union(enum) {
+//         held: Lease,   // the run dir reopened O_DIRECTORY|O_NOFOLLOW and its pinned (dev,ino,uid,mode) equals
+//                        //   the recorded entry; the lease RETAINS that fd (+ the parent authority for rmdir)
+//         gone,          // ENOENT: the entry names no dir -> crash cut C3 (removed before ledger retirement)
+//         mismatch,      // reopened a non-dir/symlink, or (dev,ino,uid,mode) != recorded -> NEVER sweep
+//         unreadable,    // could not open/fstat -> fail closed
+//     }
 //
 // and the returned `Lease` operates ONLY through that held fd and ends its lifetime at `deinit`:
 //
 //     lease.fixedPoint(clock, deadline_ms) FixedPoint  // census -> kill -> fresh-census, clean iff a complete
-//                                                       // empty final census (via the held fd); else survivors/incomplete
-//     lease.teardown() bool                            // unlinkat(run.marker) then unlinkat(name, AT_REMOVEDIR), held fd
-//     lease.deinit() void                              // close the held fd
+//                                                       //   empty final census (via the held fd); else survivors/incomplete
+//     lease.teardown(deadline_ms) Teardown             // unlinkat(run.marker) then unlinkat(name, AT_REMOVEDIR)
+//                                                       //   through the held fds, idempotent on ENOENT (crash cut C2)
+//     lease.deinit() void                              // close the held fd(s)
 //
 // The production actuator/lease wrap the already-reviewed reaper/provenance C path (`zb_reaper_pin_fd` +
 // `zb_reaper_dir_fd_ok` + `zb_reaper_fixed_point`) over the held fd — never a second Zig implementation; tests
@@ -561,6 +573,10 @@ pub fn recoverOneUnderLock(io: std.Io, gpa: std.mem.Allocator, dir: std.Io.Dir, 
         },
     }
     defer _ = std.posix.system.close(lock_fd); // released ONLY after the terminal publish result is known
+    // Deadline AUTHORITY (RoseCat 9f62ea4 #2): `acquireWithinDeadline` tries once before checking time, so a FREE
+    // lock at an already-expired deadline would otherwise proceed. Fail closed here, and re-check at every held-work
+    // boundary below, so no action or disk mutation happens past the single absolute deadline.
+    if (clock.nowMs() >= deadline_ms) return .fail_closed;
 
     var l = load(io, gpa, dir, "runs.json") catch return .fail_closed; // malformed/unreadable store -> fail closed
     defer l.deinit();
@@ -574,16 +590,32 @@ pub fn recoverOneUnderLock(io: std.Io, gpa: std.mem.Allocator, dir: std.Io.Dir, 
         .recover => {}, // proved dead -> proceed to the pinned, held-fd teardown
     }
 
-    // Pin + provenance in one step that RETAINS the run-dir fd; all later actions go through the held fd only.
-    var lease = actuator.pin(dir, e) orelse return .fail_closed; // mismatch / absent dir -> fail closed, retained
-    defer lease.deinit();
-
-    switch (lease.fixedPoint(clock, deadline_ms)) {
-        .clean => {}, // a complete, empty final census -> proceed to teardown
-        .survivors, .incomplete => return .fail_closed, // never a clean recovery, entry retained
+    if (clock.nowMs() >= deadline_ms) return .fail_closed; // pre-pin
+    // Pin + provenance in one step; the `held` lease RETAINS the run-dir fd and all later actions go through it.
+    switch (actuator.pin(dir, e)) {
+        .mismatch, .unreadable => return .fail_closed, // never sweep; entry retained
+        .gone => {
+            // Crash cut C3: the entry names no dir (a prior recoverer removed it, then crashed before retiring the
+            // entry). Drop the entry idempotently, signal-free -- NOT fail-closed, so it never wedges forever.
+            if (clock.nowMs() >= deadline_ms) return .fail_closed; // pre-publish
+            publishWithout(io, dir, "runs.json", &l, basename) catch return .fail_closed;
+            return .reconciled;
+        },
+        .held => |held| {
+            var lease = held;
+            defer lease.deinit();
+            switch (lease.fixedPoint(clock, deadline_ms)) {
+                .clean => {}, // a complete, empty final census -> proceed to teardown
+                .survivors, .incomplete => return .fail_closed, // never a clean recovery, entry retained
+            }
+            if (clock.nowMs() >= deadline_ms) return .fail_closed; // pre-teardown
+            switch (lease.teardown(deadline_ms)) { // idempotent on ENOENT (crash cut C2)
+                .done => {},
+                .failed => return .fail_closed, // teardown error -> fail closed, entry retained
+            }
+            if (clock.nowMs() >= deadline_ms) return .fail_closed; // pre-publish
+            publishWithout(io, dir, "runs.json", &l, basename) catch return .fail_closed; // atomic retirement under the flock
+            return .signalled;
+        },
     }
-    if (!lease.teardown()) return .fail_closed; // marker-unlink / rmdir error -> fail closed, entry retained
-
-    publishWithout(io, dir, "runs.json", &l, basename) catch return .fail_closed; // atomic retirement under the flock
-    return .signalled;
 }

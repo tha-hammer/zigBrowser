@@ -1,23 +1,18 @@
-//! MS6.5.1 OPEN whole-recovery blocker bd zigBrowser-3gl, 7b29fd6 item 1 — the exact-result two-recoverer red
-//! against the REAL PRODUCTION transaction `ledger.recoverOneUnderLock` (NOT the test-only prototype). UNREGISTERED,
-//! failing-first: production is a fail-closed STUB that arms nothing, so this red FAILS until the reviewed GREEN
-//! implements the held-flock recovery (RoseCat b2f474b; plan rev 28).
+//! MS6.5.1 OPEN whole-recovery blocker bd zigBrowser-3gl, 7b29fd6 item 1 — reds/greens for the REAL PRODUCTION
+//! transaction `ledger.recoverOneUnderLock` (NOT the test-only prototype). UNREGISTERED and UNARMED (no production
+//! caller, no `reaper_ready`). The held-flock design is RoseCat b2f474b / 62888b1; the deadline authority, tagged
+//! pin outcome, idempotent teardown and crash-cut handling answer RoseCat 9f62ea4 #2/#3.
 //!
-//! Oracle (the approved exact result): two recoverers race ONE proved-dead entry through the production transaction.
-//! Because the real transaction holds the ONE global flock across the whole recovery (load -> fresh owner check ->
-//! provenance -> census/kill fixed point -> marker unlink -> rmdir -> ledger retirement, released only after the
-//! publish result), the flock SERIALISES them deterministically — no in-test handshake needed: whichever acquires
-//! first performs the whole recovery and retires the entry (`.signalled`); the other blocks on acquire, then loads
-//! the retired state and returns `.already_gone`. Exactly ONE `.signalled`, exactly ONE `.already_gone`, an EMPTY
-//! final ledger, and two terminal children. The fail-closed stub returns `.fail_closed` from both, so the oracle
-//! currently fails (0 signalled, entry retained) — the intended failing-first state.
+//! The destructive action is reached ONLY through a typed lease that RETAINS the pinned run-dir fd (so the
+//! provenance check and teardown cannot be split by a path swap). The injected `actuator.pin` returns a TAGGED
+//! result {held, gone, mismatch, unreadable}; the `held` lease exposes `fixedPoint`, `teardown`, `deinit`. These
+//! tests inject a deterministic, SIGNAL-FREE fake. (Finding 9f62ea4 #1/#4 — a CONCRETE lease wrapping the reviewed
+//! reaper C path, an intercepted real marked-child action count, the early-unlock mutant and a held-fd path-swap
+//! mutant — are the next step; this signal-free fake does not yet prove a real kill phase.)
 //!
-//! The recovery action is INJECTED through `actuator` (deterministic, signal-free here): the production actuator
-//! will be the already-reviewed reaper/provenance C path (`zb_reaper_dir_fd_ok` + `zb_reaper_fixed_point`), never a
-//! second Zig implementation. Every fork/signal is gated by the kernel-proof fd-9 PID-ns sentinel; the eventual
-//! build step wraps the run in a private user+PID namespace. Parent reads/reaps are bounded against one absolute
-//! monotonic deadline; children are reaped within it, else SIGKILLed+reaped (only proven-owned), and an
-//! ownership-lost pid is never signalled.
+//! Every fork/signal is gated by the kernel-proof fd-9 PID-ns sentinel; the eventual build step wraps the run in a
+//! private user+PID namespace. Parent reads/reaps are bounded on one absolute monotonic deadline; children are
+//! reaped within it, else SIGKILLed+reaped (only proven-owned); an ownership-lost pid is never signalled.
 const std = @import("std");
 const ledger = @import("agent_run_ledger");
 const linux = std.os.linux;
@@ -155,12 +150,12 @@ fn reapWithin(clock: anytype, c: *Child, deadline_ms: i64, waiter: anytype) Reap
             return .{ .status = st };
         },
         .wait_error => {
-            c.ownership_lost = true; // lost ownership -> never signal
+            c.ownership_lost = true;
             return .fail_closed;
         },
         .timed_out => {},
     }
-    waiter.kill(c.pid); // only a proven-owned timeout reaches the guarded stop
+    waiter.kill(c.pid);
     switch (sweepUntil(clock, deadline_ms, c.pid, waiter)) {
         .exited => |st| {
             c.reaped = true;
@@ -190,41 +185,54 @@ fn terminal0(status: u32) bool {
     return (status & 0x7f) == 0 and ((status >> 8) & 0xff) == 0;
 }
 
-// ---- the injected recovery actuator (deterministic, signal-free) ---------------------------------------------
+// ---- the injected actuator + typed lease (deterministic, signal-free fake) -----------------------------------
 
-/// The injected actuator + the typed lease it returns (RoseCat 62888b1: the destructive action is reached ONLY
-/// through a lease that RETAINS the pinned run-dir fd, so the provenance check and the teardown cannot be split by
-/// a path swap). Here both are deterministic and SIGNAL-FREE: `pin` accepts the dead entry (provenance matches),
-/// the fixed point is clean (no live process), and teardown succeeds. The PRODUCTION lease will instead wrap the
-/// reviewed reaper/provenance C path (`zb_reaper_pin_fd` + `zb_reaper_dir_fd_ok` + `zb_reaper_fixed_point`) over the
-/// held fd. (This signal-free fake does NOT yet prove a real marked-child kill phase; that row + the early-unlock
-/// mutant are still required before the destructive green is accepted — RoseCat 62888b1.)
 const FakeLease = struct {
+    fp: ledger.FixedPoint,
+    td: ledger.Teardown,
     pub fn fixedPoint(self: *FakeLease, clock: anytype, deadline_ms: i64) ledger.FixedPoint {
-        _ = self;
         _ = clock;
         _ = deadline_ms;
-        return .clean;
+        return self.fp;
     }
-    pub fn teardown(self: *FakeLease) bool {
-        _ = self;
-        return true;
+    pub fn teardown(self: *FakeLease, deadline_ms: i64) ledger.Teardown {
+        _ = deadline_ms;
+        return self.td;
     }
     pub fn deinit(self: *FakeLease) void {
         _ = self;
     }
 };
+const FakePin = union(enum) { held: FakeLease, gone, mismatch, unreadable };
 const FakeActuator = struct {
-    pub fn pin(_: FakeActuator, dir: std.Io.Dir, entry: ledger.Entry) ?FakeLease {
+    result: FakePin,
+    pub fn pin(self: FakeActuator, dir: std.Io.Dir, entry: ledger.Entry) FakePin {
         _ = dir;
         _ = entry;
-        return FakeLease{};
+        return self.result;
     }
 };
+/// The happy actuator: provenance matches (held), census is a clean fixed point, teardown done.
+fn okActuator() FakeActuator {
+    return .{ .result = .{ .held = .{ .fp = .clean, .td = .done } } };
+}
+
+fn seedActive(io: std.Io, dir: std.Io.Dir, pid: i32, start_sec: u64) !void {
+    const seed = [_]ledger.Entry{.{ .basename = BASENAME, .dev = 1, .ino = 2, .uid = 0, .mode = 16832, .pid = pid, .start_kind = .linux_ticks, .start_sec = start_sec, .start_usec = 0, .state = .active }};
+    try ledger.publish(io, dir, "runs.json", &seed);
+}
+
+fn entryCount(io: std.Io, gpa: std.mem.Allocator, dir: std.Io.Dir) !usize {
+    var l = try ledger.load(io, gpa, dir, "runs.json");
+    defer l.deinit();
+    return l.entries().len;
+}
+
+// ---- forked two-recoverer race (needs the sentinel) ----------------------------------------------------------
 
 fn runRecoverer(io: std.Io, dir: std.Io.Dir, deadline_ms: i64, result_fd: i32) noreturn {
     const clock = ledger.RealClock{ .io = io };
-    const act = ledger.recoverOneUnderLock(io, std.heap.page_allocator, dir, BASENAME, clock, deadline_ms, FakeActuator{});
+    const act = ledger.recoverOneUnderLock(io, std.heap.page_allocator, dir, BASENAME, clock, deadline_ms, okActuator());
     const b = [1]u8{@intFromEnum(act)};
     writeAll(result_fd, &b);
     linux.exit_group(0);
@@ -239,8 +247,7 @@ test "two recoverers through the PRODUCTION transaction: exact {signalled, alrea
 
     var td = std.testing.tmpDir(.{});
     defer td.cleanup();
-    const seed = [_]ledger.Entry{.{ .basename = BASENAME, .dev = 1, .ino = 2, .uid = 0, .mode = 16832, .pid = DEAD_PID, .start_kind = .linux_ticks, .start_sec = 234567, .start_usec = 0, .state = .active }};
-    try ledger.publish(io, td.dir, "runs.json", &seed);
+    try seedActive(io, td.dir, DEAD_PID, 234567);
 
     var p1res = [2]i32{ -1, -1 };
     var p2res = [2]i32{ -1, -1 };
@@ -283,7 +290,6 @@ test "two recoverers through the PRODUCTION transaction: exact {signalled, alrea
     try std.testing.expect(terminal0(st0));
     try std.testing.expect(terminal0(st1));
 
-    // Exact result: one recoverer signalled, the other found the entry already gone.
     const sig = @intFromEnum(ledger.RecoveryAction.signalled);
     const gone = @intFromEnum(ledger.RecoveryAction.already_gone);
     var n_sig: u32 = 0;
@@ -292,12 +298,9 @@ test "two recoverers through the PRODUCTION transaction: exact {signalled, alrea
         if (v == sig) n_sig += 1;
         if (v == gone) n_gone += 1;
     }
-    try std.testing.expectEqual(@as(u32, 1), n_sig); // exactly ONE signal phase
-    try std.testing.expectEqual(@as(u32, 1), n_gone); // the other recoverer saw it already gone
-
-    var l = try ledger.load(io, gpa, td.dir, "runs.json"); // EMPTY final ledger (the entry was retired)
-    defer l.deinit();
-    try std.testing.expectEqual(@as(usize, 0), l.entries().len);
+    try std.testing.expectEqual(@as(u32, 1), n_sig); // exactly ONE signal phase (the held flock serialises)
+    try std.testing.expectEqual(@as(u32, 1), n_gone);
+    try std.testing.expectEqual(@as(usize, 0), try entryCount(io, gpa, td.dir)); // EMPTY final ledger
 }
 
 test "a LIVE same-owner entry is LEFT untouched (.left) and RETAINED, never signalled or retired" {
@@ -310,8 +313,6 @@ test "a LIVE same-owner entry is LEFT untouched (.left) and RETAINED, never sign
     var td = std.testing.tmpDir(.{});
     defer td.cleanup();
 
-    // Fork a genuinely LIVE child that parks, and record its REAL (pid, start-ticks) so the entry names a live
-    // owner. The fresh-owner liveness check must then classify it live_same -> `.left`, before any actuator/action.
     var ready = [2]i32{ -1, -1 };
     defer for ([_]*i32{ &ready[0], &ready[1] }) |p| closeAndClear(p);
     if (linux.pipe(&ready) != 0) return error.PipeFailed;
@@ -322,7 +323,7 @@ test "a LIVE same-owner entry is LEFT untouched (.left) and RETAINED, never sign
     if (pid == 0) {
         _ = linux.close(ready[0]);
         writeAll(ready[1], "R");
-        var ts: linux.timespec = .{ .sec = 60, .nsec = 0 }; // park past the call; the parent SIGKILLs+reaps us
+        var ts: linux.timespec = .{ .sec = 60, .nsec = 0 };
         _ = linux.nanosleep(&ts, &ts);
         linux.exit_group(0);
     }
@@ -332,13 +333,76 @@ test "a LIVE same-owner entry is LEFT untouched (.left) and RETAINED, never sign
     if (!readExactWithin(clock, ready[0], &rb, terminal)) return error.ChildNotReady;
 
     const ticks = ledger.readStartTicks(@intCast(pid)) orelse return error.NoStartTicks;
-    const seed = [_]ledger.Entry{.{ .basename = BASENAME, .dev = 1, .ino = 2, .uid = 0, .mode = 16832, .pid = @intCast(pid), .start_kind = .linux_ticks, .start_sec = ticks, .start_usec = 0, .state = .active }};
-    try ledger.publish(io, td.dir, "runs.json", &seed);
+    try seedActive(io, td.dir, @intCast(pid), ticks);
 
-    const act = ledger.recoverOneUnderLock(io, gpa, td.dir, BASENAME, clock, terminal, FakeActuator{});
+    const act = ledger.recoverOneUnderLock(io, gpa, td.dir, BASENAME, clock, terminal, okActuator());
     try std.testing.expectEqual(ledger.RecoveryAction.left, act); // live same-owner -> leave untouched
-
-    var l = try ledger.load(io, gpa, td.dir, "runs.json"); // the live owner's entry is RETAINED
-    defer l.deinit();
-    try std.testing.expectEqual(@as(usize, 1), l.entries().len);
+    try std.testing.expectEqual(@as(usize, 1), try entryCount(io, gpa, td.dir)); // entry RETAINED
 }
+
+// ---- no-fork control-flow rows (sentinel-independent; the entry is a dead pid, the actuator is injected) ------
+
+test "deadline AUTHORITY: a free lock at an already-expired deadline fails closed with ZERO mutation" {
+    const io = std.testing.io;
+    const gpa = std.testing.allocator;
+    const clock = ledger.RealClock{ .io = io };
+
+    var td = std.testing.tmpDir(.{});
+    defer td.cleanup();
+    try seedActive(io, td.dir, DEAD_PID, 234567);
+
+    const expired = clock.nowMs() - 1; // already past -> acquire succeeds (free lock) but the post-acquire check bites
+    const act = ledger.recoverOneUnderLock(io, gpa, td.dir, BASENAME, clock, expired, okActuator());
+    try std.testing.expectEqual(ledger.RecoveryAction.fail_closed, act);
+    try std.testing.expectEqual(@as(usize, 1), try entryCount(io, gpa, td.dir)); // entry RETAINED, no mutation past expiry
+}
+
+test "crash cut C3: a dead entry whose dir is GONE is dropped idempotently (.reconciled), never fail-closed" {
+    const io = std.testing.io;
+    const gpa = std.testing.allocator;
+    const clock = ledger.RealClock{ .io = io };
+    const terminal = clock.nowMs() + TOTAL_BUDGET_MS;
+
+    var td = std.testing.tmpDir(.{});
+    defer td.cleanup();
+    try seedActive(io, td.dir, DEAD_PID, 234567);
+
+    const act = ledger.recoverOneUnderLock(io, gpa, td.dir, BASENAME, clock, terminal, FakeActuator{ .result = .gone });
+    try std.testing.expectEqual(ledger.RecoveryAction.reconciled, act); // dropped, signal-free, never wedged
+    try std.testing.expectEqual(@as(usize, 0), try entryCount(io, gpa, td.dir)); // entry DROPPED
+}
+
+test "provenance MISMATCH never sweeps: fail closed, entry retained" {
+    const io = std.testing.io;
+    const gpa = std.testing.allocator;
+    const clock = ledger.RealClock{ .io = io };
+    const terminal = clock.nowMs() + TOTAL_BUDGET_MS;
+
+    var td = std.testing.tmpDir(.{});
+    defer td.cleanup();
+    try seedActive(io, td.dir, DEAD_PID, 234567);
+
+    const act = ledger.recoverOneUnderLock(io, gpa, td.dir, BASENAME, clock, terminal, FakeActuator{ .result = .mismatch });
+    try std.testing.expectEqual(ledger.RecoveryAction.fail_closed, act);
+    try std.testing.expectEqual(@as(usize, 1), try entryCount(io, gpa, td.dir)); // RETAINED
+}
+
+test "UNREADABLE provenance fails closed, entry retained" {
+    const io = std.testing.io;
+    const gpa = std.testing.allocator;
+    const clock = ledger.RealClock{ .io = io };
+    const terminal = clock.nowMs() + TOTAL_BUDGET_MS;
+
+    var td = std.testing.tmpDir(.{});
+    defer td.cleanup();
+    try seedActive(io, td.dir, DEAD_PID, 234567);
+
+    const act = ledger.recoverOneUnderLock(io, gpa, td.dir, BASENAME, clock, terminal, FakeActuator{ .result = .unreadable });
+    try std.testing.expectEqual(ledger.RecoveryAction.fail_closed, act);
+    try std.testing.expectEqual(@as(usize, 1), try entryCount(io, gpa, td.dir)); // RETAINED
+}
+
+// NOTE: the publish-failure/retry row (RoseCat 9f62ea4 #3) is NOT here yet. Under the required `--map-root-user`
+// launcher the test runs as namespace-root with CAP_DAC_OVERRIDE, so a read-only-dir trick cannot force a
+// deterministic publish failure, and the atomic temp name is randomized (no collision). It needs a publish
+// failure-injection seam, which lands with the concrete C-backed lease (finding #1) in the next step.
