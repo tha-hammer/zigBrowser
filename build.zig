@@ -853,6 +853,14 @@ pub fn build(b: *std.Build) void {
     run_ledger_lock_tests.skip_foreign_checks = true;
     const ledger_lock_step = b.step("test-agent-run-ledger-lock", "MS6.5.1 ledger cross-process flock (bounded, cancellable, fail-closed)");
     ledger_lock_step.dependOn(&run_ledger_lock_tests.step);
+    // MS6.5.1 (RoseCat 53a467b #1): the lock is opened/created O_NOFOLLOW|O_CLOEXEC, so a symlink planted at
+    // the lock path can never select another inode — a symlink (or any open error) fails closed.
+    const ledger_lock_nofollow_test_mod = b.createModule(.{ .root_source_file = b.path("tests/agent_run_ledger_lock_nofollow_test.zig"), .target = target, .optimize = optimize });
+    ledger_lock_nofollow_test_mod.addImport("agent_run_ledger", ledger_mod);
+    const run_ledger_lock_nofollow_tests = b.addRunArtifact(b.addTest(.{ .root_module = ledger_lock_nofollow_test_mod }));
+    run_ledger_lock_nofollow_tests.skip_foreign_checks = true;
+    const ledger_lock_nofollow_step = b.step("test-agent-run-ledger-lock-nofollow", "MS6.5.1 ledger lock O_NOFOLLOW fail-closed (symlink never followed)");
+    ledger_lock_nofollow_step.dependOn(&run_ledger_lock_nofollow_tests.step);
     // MS6.5 (the user's decision 2026-10-21): the stubbed macOS VM-containment seam — off by default, reports
     // "not available yet", and the gate fails closed when on. Pure Linux unit (no OS calls).
     const mac_vm_containment_module = b.createModule(.{
@@ -2898,6 +2906,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_ledger_load_tests.step);
     test_step.dependOn(&run_ledger_publish_tests.step);
     if (target.result.os.tag == .linux) test_step.dependOn(&run_ledger_lock_tests.step);
+    if (target.result.os.tag == .linux) test_step.dependOn(&run_ledger_lock_nofollow_tests.step);
     test_step.dependOn(&run_mac_vm_containment_tests.step);
     test_step.dependOn(&mac_vm_containment_e2e.step);
     test_step.dependOn(&run_agent_secrets_tests.step);

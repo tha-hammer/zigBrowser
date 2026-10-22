@@ -197,17 +197,30 @@ pub const LockError = error{ LockBusy, LockFailed };
 /// CLOSED with error.LockBusy, having mutated nothing (only the lock file is opened). The returned File HOLDS
 /// the lock; close it (or process death) releases it. Any non-contention error also fails closed (LockFailed).
 pub fn acquireLock(io: std.Io, dir: std.Io.Dir, max_tries: u32, backoff_ms: i64) LockError!std.Io.File {
+    // Open/create the lock O_NOFOLLOW|O_CLOEXEC (raw openat — Zig 0.16 CreateFileOptions has no no-follow), so a
+    // planted/swapped symlink can never redirect the lock to another inode; a symlink (ELOOP) or any other open
+    // error fails closed (RoseCat 53a467b #1). Then flock LOCK_EX|LOCK_NB with the bounded, cancellable retry.
+    const fd = std.posix.openat(dir.handle, LOCK_NAME, .{ .ACCMODE = .RDWR, .CREAT = true, .NOFOLLOW = true, .CLOEXEC = true }, 0o600) catch return error.LockFailed;
     var tries: u32 = 0;
     while (true) {
-        if (dir.createFile(io, LOCK_NAME, .{ .read = true, .truncate = false, .lock = .exclusive, .lock_nonblocking = true })) |f| {
-            return f; // acquired; caller holds the lock until close
-        } else |e| switch (e) {
-            error.WouldBlock => {
+        switch (std.os.linux.errno(std.os.linux.flock(fd, std.posix.LOCK.EX | std.posix.LOCK.NB))) {
+            .SUCCESS => return .{ .handle = fd, .flags = .{ .nonblocking = false } }, // held; caller closes to release
+            .AGAIN => {
                 tries += 1;
-                if (tries >= max_tries) return error.LockBusy; // bounded -> fail closed, zero mutation
-                io.sleep(.fromMilliseconds(backoff_ms), .awake) catch return error.LockBusy; // cancellable
+                if (tries >= max_tries) {
+                    _ = std.os.linux.close(fd);
+                    return error.LockBusy; // bounded -> fail closed, zero mutation
+                }
+                io.sleep(.fromMilliseconds(backoff_ms), .awake) catch {
+                    _ = std.os.linux.close(fd);
+                    return error.LockBusy; // cancelled -> fail closed
+                };
             },
-            else => return error.LockFailed, // any other error -> fail closed
+            else => {
+                _ = std.os.linux.close(fd);
+                return error.LockFailed; // any other error -> fail closed
+            },
         }
     }
 }
+

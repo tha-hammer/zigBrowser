@@ -27,29 +27,30 @@ test "a stalled holder in a SEPARATE process -> acquire fails closed, bounded, z
     try ledger.publish(io, td.dir, "runs.json", &A); // a store to prove the failed acquire mutates nothing
 
     var ready: [2]i32 = undefined;
-    var go: [2]i32 = undefined;
     try std.testing.expect(linux.pipe(&ready) == 0);
-    try std.testing.expect(linux.pipe(&go) == 0);
 
     const pid = linux.fork();
     if (pid == 0) {
-        // CHILD (separate process): take LOCK_EX on the lock file, signal ready, hold until released, exit.
+        // CHILD (separate process): take LOCK_EX on the lock file, signal ready, hold for a BOUNDED window,
+        // then exit (self-release). The hold outlasts the parent's acquire deadline (~100ms), so a correct
+        // bounded acquire returns LockBusy while the child still holds. Crucially, the child self-releases on
+        // its OWN timer rather than waiting for the parent, so even a BLOCKING-LOCK_EX mutant (whose parent
+        // acquireLock never returns to release a go pipe) still sees the holder exit and is reaped with NO
+        // signal -> the mutant test fails (wrong return) without hanging the gate forever.
         _ = linux.close(ready[0]);
-        _ = linux.close(go[1]);
         const lf = linux.openat(td.dir.handle, ledger.LOCK_NAME, .{ .ACCMODE = .RDWR, .CREAT = true }, 0o600);
         _ = linux.flock(@intCast(lf), std.posix.LOCK.EX);
         _ = linux.write(ready[1], "R", 1);
-        var b: [1]u8 = undefined;
-        _ = linux.read(go[0], &b, 1); // blocks until the parent closes go[1]
+        var ts: linux.timespec = .{ .sec = 0, .nsec = 500 * std.time.ns_per_ms };
+        _ = linux.nanosleep(&ts, &ts); // bounded hold, then self-release on exit
         linux.exit_group(0);
     }
     // PARENT
     _ = linux.close(ready[1]);
-    _ = linux.close(go[0]);
     var rb: [1]u8 = undefined;
     try std.testing.expect(linux.read(ready[0], &rb, 1) == 1); // the child now holds the lock
 
-    const r = ledger.acquireLock(io, td.dir, 20, 5); // bounded (~100ms)
+    const r = ledger.acquireLock(io, td.dir, 20, 5); // bounded (~100ms), shorter than the child's 500ms hold
     try std.testing.expectError(error.LockBusy, r);
 
     // zero mutation: the store is still exactly A
@@ -58,7 +59,7 @@ test "a stalled holder in a SEPARATE process -> acquire fails closed, bounded, z
     try std.testing.expectEqual(@as(usize, 1), l.entries().len);
     try std.testing.expectEqualStrings(A[0].basename, l.entries()[0].basename);
 
-    _ = linux.close(go[1]); // release the child
+    // wait out the child's bounded hold; once it exits the lock is free (reaped, no signal sent)
     var st: u32 = undefined;
     _ = linux.waitpid(@intCast(pid), &st, 0);
     _ = linux.close(ready[0]);
