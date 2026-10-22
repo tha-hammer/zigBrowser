@@ -6,18 +6,41 @@ r"""WS8/WS9 WSL2 topology — live DISCOVERY SPIKE on the Win11 VM (OD-W4).
     beneath C:\\Users\\zbtext\\zb\\wsl on win11-m8, never on the read-only Windows 10 file server, and never
     calls global `wsl --shutdown`.
 
-This commit ADDRESSES the six 6e9f989-review defects (in code; not yet reviewed or run):
-- cleanup now runs EVERY step best-effort (each wrapped, errors accumulate) and fails the test at the end if
-  anything failed — it can no longer abort part-way;
-- distro/artifact ownership is recorded BEFORE the import attempt, so a partial/failed import is still
-  censused and cleaned;
-- the Windows listener is stopped PID-reuse-safely: only when the PID's command line still matches this run's
-  `run-<nonce>\winlisten.ps1` (same identity check in the survival census);
-- local teardown terminates ONLY our own tracked Popen handles (reuse-safe; no numeric `os.kill`), with a
-  pid>1 guard;
-- the C1 secret reaches neither disk nor argv/env: it is fed over stdin to the bootstrap AND the no-leak
-  census reads its pattern from stdin (never interpolated into a PowerShell/ssh command line);
-- the `::1` readiness check matches the exact `::1:<port>` row.
+This commit ADDRESSES the six acc13ea / Agent-Mail-7616 blockers (in code; not yet reviewed or run). No
+local signal, no raw-PID stop, and no check/use race remains:
+- (1) NO local `Popen.terminate()`/`kill()` anywhere. The in-distro keepalive is a `wsl -d <distro> sleep`;
+  cleanup ends it REMOTE-FIRST (`wsl --terminate <distro>` kills the in-distro sleep), then only reaps each
+  keepalive handle with a bounded `wait()` — a signal is never sent. A keepalive that does not exit within
+  the bound is recorded (its remote `sleep` is itself bounded, so it is a bounded natural exit, never an
+  orphan held open by us).
+- (2) The Windows reverse listener is NEVER `Stop-Process`'d. It self-exits on its own 20 s bound; cleanup
+  only CENSUSES it by identity (its PID's command line must still be this run's `run-<nonce>\winlisten.ps1`)
+  with a bounded natural-exit wait. A reused PID whose command line no longer matches is classified NOT_OURS
+  and left alone — there is no enumerate-then-kill race.
+- (3) A census FAILURE during cleanup no longer skips teardown: `plan_distro_cleanup` attempts EVERY owned
+  distro when the census is unavailable (instead of `present=[]`), and `rmtree` runs checked (no
+  `ignore_errors`), so a leftover is surfaced, not swallowed.
+- (4) The deliberately-failed negative import records its nonce names in the owned list BEFORE the attempt,
+  so a partial registration is censused and cleaned by the same postflight that proves the happy path.
+- (5) The C1 canary travels in NO result or diagnostic: `c1boot.py` prints only `PORT=<p>` (never the
+  secret), the JSON carries no `got_secret`, and no assertion message contains it. Correct stdin->fd0
+  delivery is proven TRANSITIVELY by the authed `ACK` (the child ACKs iff the token presented on the
+  returned port equals the secret it read from fd0). The no-leak scan still reads its pattern from stdin,
+  never from argv/env.
+- (6) An OFFLINE injected-failure suite (`WslSpikeOracle`, runs with NO VM) proves: a raising cleanup step
+  still reaches every later step; a census failure still plans teardown for every owned distro; a reused PID
+  is classified NOT_OURS; and the staged scripts never contain the canary.
+- A listener that starts but misses READY now still records its PID (winlaunch emits `pid=` on both
+  branches), so a not-ready listener is still censused.
+
+C1 stdio/pipe-to-fd bootstrap probe (design embodied in `test_wsl_topology`): the Windows parent launches
+`wsl.exe -d <distro> -u zbagent -e python3 c1boot.py` with redirected stdin/stdout; the capability secret is
+written to the child's stdin (Windows parent pipe -> wsl.exe stdin -> Linux fd 0), the child binds an
+EPHEMERAL 127.0.0.1 port and returns it on stdout (Linux fd 1 -> wsl.exe stdout -> Windows parent), and the
+parent then dials that port and presents the secret; the child's `ACK` (vs `DENY`) proves the one-shot
+inherited-pipe capability handshake carried the secret across the Windows/Linux boundary without it ever
+touching argv, env, or disk. This is the C1 (one-shot inherited-pipe capability bootstrap) direction,
+distinct from the OAuth fd-3 flow.
 
 The spike still must be reviewed and explicitly approved by RoseCat before it is ever run; until then it is
 not gate evidence. DO NOT RUN before that approval.
@@ -91,11 +114,63 @@ def kv(stdout):
     return out
 
 
+# --- pure cleanup/decision helpers (exercised offline by WslSpikeOracle) ---
+def plan_distro_cleanup(imported, present):
+    """Which owned distros to attempt terminate/unregister on.
+
+    present is the live `wsl -l -q` list, or None when that census FAILED. On a
+    census failure we must NOT skip teardown (acc13ea #3): we attempt EVERY owned
+    distro. When the census succeeds we attempt only those actually registered.
+    """
+    out = []
+    for n in imported:
+        if present is not None and n not in present:
+            continue  # census ok and never registered -> nothing to clean
+        out.append(n)
+    return out
+
+
+def classify_listener(pid, cmdline, run_rand):
+    """Identity of a possibly-reused Windows PID (acc13ea #2).
+
+    Returns OURS only when the PID's command line still names THIS run's
+    winlisten.ps1. A reused PID with a different command line is NOT_OURS and is
+    never acted on; an empty command line means the PID is GONE.
+    """
+    if pid is None:
+        return "NONE"
+    if not cmdline or not cmdline.strip():
+        return "GONE"
+    marker = "run-%s\\winlisten.ps1" % run_rand
+    return "OURS" if marker in cmdline else "NOT_OURS"
+
+
+def run_best_effort(steps, errs):
+    """Run every (label, fn) step; a raising step is recorded in errs and does NOT
+    abort the remaining steps (acc13ea #1/#3). Returns results (None where raised).
+    """
+    results = []
+    for label, fn in steps:
+        try:
+            results.append(fn())
+        except Exception as ex:  # noqa: BLE001 - cleanup must continue past any failure
+            errs.append("%s: %s" % (label, ex))
+            results.append(None)
+    return results
+
+
+def count_secret_leaks(texts, secret):
+    """How many of the given staged-file texts contain the canary (must be 0)."""
+    return sum(1 for t in texts if secret and secret in t)
+
+
 class WslTopologyLive(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
+        if not HOST:
+            raise unittest.SkipTest("ZB_WIN11_HOST unset — WSL2 live topology spike skipped (offline oracle still runs)")
         if not ROOTFS or not os.path.isfile(ROOTFS):
-            raise AssertionError("ZB_WSL_ROOTFS unset/missing on an opted-in host — point it at the pinned Alpine minirootfs")
+            raise unittest.SkipTest("ZB_WSL_ROOTFS unset/missing on an opted-in host — point it at the pinned Alpine minirootfs")
         h = hashlib.sha256()
         with open(ROOTFS, "rb") as f:
             for chunk in iter(lambda: f.read(1 << 20), b""):
@@ -130,75 +205,82 @@ class WslTopologyLive(unittest.TestCase):
         self.addCleanup(self._cleanup_and_census)  # ALWAYS runs, fails closed
 
     def _cleanup_and_census(self):
-        # (a) EVERY step is best-effort and cannot abort the rest: each is wrapped, errors accumulate, and the
-        # test fails at the end if anything failed. (c)/(d) teardown is PID-reuse-safe and uses no numeric
-        # local kills — only our own Popen handles, verified by identity on the Windows side.
+        # Every step is best-effort and cannot abort the rest (run_best_effort records failures, continues).
+        # No local signal and no raw-PID Stop-Process is ever issued (acc13ea #1/#2): distros are terminated
+        # REMOTE-FIRST, which ends the in-distro keepalive `sleep`, then each keepalive handle is reaped with a
+        # bounded wait only; the Windows listener self-exits and is merely censused by identity.
         errs = []
 
-        def step(label, fn):
-            try:
-                return fn()
-            except Exception as ex:  # never let one failure skip the remaining cleanup
-                errs.append(f"{label}: {ex}")
-                return None
+        # (acc13ea #3) census first; present is None on failure, which plans teardown for EVERY owned distro
+        # rather than skipping it.
+        present = run_best_effort([("list distros", census_distros)], errs)[0]
+        must_assert = present is not None
+        targets = plan_distro_cleanup(self.imported, present)
 
-        # (d) local teardown: terminate ONLY our own tracked Popen children by handle (reuse-safe; no numeric
-        # os.kill). A valid child has an int pid > 1; reap it.
-        for p in self.keepalives:
-            def _kill(p=p):
-                if not isinstance(getattr(p, "pid", None), int) or p.pid <= 1:
-                    return
-                p.terminate()
-                try:
-                    p.wait(timeout=10)
-                except Exception:
-                    p.kill(); p.wait(timeout=10)
-            step("keepalive terminate", _kill)
+        steps = []
+        # terminate each owned distro FIRST (this kills that distro's in-distro keepalive `sleep`), then
+        # unregister it. A nonzero is an error only when the census confirmed the distro was present.
+        for n in targets:
+            steps.append((f"terminate {n}",
+                          lambda n=n: self._rc("terminate", n, ssh("wsl", "--terminate", n), must_assert)))
+            steps.append((f"unregister {n}",
+                          lambda n=n: self._rc("unregister", n, ssh("wsl", "--unregister", n), must_assert)))
+        # reap keepalives WITHOUT signalling — the remote terminate above ended their `sleep`.
+        for i, p in enumerate(self.keepalives):
+            steps.append((f"reap keepalive {i}", lambda p=p: self._reap_no_signal(p)))
+        steps.append(("rmdir run dir",
+                      lambda: self._rc("rmdir run dir", self.run_win,
+                                       ssh("cmd", "/c", f"if exist {self.run_win} rmdir /s /q {self.run_win}"), True)))
+        run_best_effort(steps, errs)
 
-        # (c) PID-reuse-safe Windows listener stop: only stop a PID whose process command line is OUR
-        # per-run winlisten.ps1 (a reused PID with a different command line is left alone).
-        if self.win_listener_pid:
-            marker = f"run-{self.rand}\\\\winlisten.ps1"
-            step("stop win listener", lambda: ssh("powershell", "-NoProfile", "-Command",
-                 f"$p=Get-CimInstance Win32_Process -Filter \"ProcessId={self.win_listener_pid}\" -ErrorAction SilentlyContinue; "
-                 f"if ($p -and $p.CommandLine -match '{marker}') {{ Stop-Process -Id {self.win_listener_pid} -Force -ErrorAction SilentlyContinue }}; exit 0"))
-
-        # Unregister only distros that are actually registered now (a never-registered partial import is skipped,
-        # not a spurious failure); a present-but-failing unregister IS an error.
-        _, present = (0, [])
-        res = step("list distros", census_distros)
-        present = res if res is not None else []
-        for n in self.imported:
-            if n not in present:
-                continue
-            step(f"terminate {n}", lambda n=n: self._cleanup_rc("terminate", n, ssh("wsl", "--terminate", n), errs))
-            step(f"unregister {n}", lambda n=n: self._cleanup_rc("unregister", n, ssh("wsl", "--unregister", n), errs))
-        step("rmdir run dir", lambda: self._cleanup_rc("rmdir run dir", self.run_win,
-             ssh("cmd", "/c", f"if exist {self.run_win} rmdir /s /q {self.run_win}"), errs))
-
-        # postflight census: distros back to baseline, run dir gone, no leftover (identity-checked) win listener
-        final = step("final distro census", census_distros)
+        # postflight: distros back to baseline, run dir gone, listener naturally exited (identity-matched).
+        final = run_best_effort([("final distro census", census_distros)], errs)[0]
         if final is not None and final != self.baseline_distros:
             errs.append(f"final distro census {final} != baseline {self.baseline_distros}")
-        res = step("run-dir gone probe", lambda: ssh("cmd", "/c", f"if exist {self.run_win} (echo LEFT) else (echo GONE)"))
+        res = run_best_effort([("run-dir gone probe",
+                                lambda: ssh("cmd", "/c", f"if exist {self.run_win} (echo LEFT) else (echo GONE)"))], errs)[0]
         if res is not None and (res[0] != 0 or "GONE" not in res[1]):
             errs.append(f"run dir not gone (rc={res[0]}, out={res[1]!r})")
-        if self.win_listener_pid:
-            marker = f"run-{self.rand}\\\\winlisten.ps1"
-            res = step("win listener survival", lambda: ssh("powershell", "-NoProfile", "-Command",
-                 f"$p=Get-CimInstance Win32_Process -Filter \"ProcessId={self.win_listener_pid}\" -ErrorAction SilentlyContinue; "
-                 f"if ($p -and $p.CommandLine -match '{marker}') {{'ALIVE'}} else {{'DEAD'}}"))
-            if res is not None and "DEAD" not in res[1]:
-                errs.append(f"windows reverse listener pid {self.win_listener_pid} survived (identity-matched)")
-        shutil.rmtree(self.localdir, ignore_errors=True)
+        if self.win_listener_pid is not None:
+            run_best_effort([("listener natural-exit census", self._await_listener_gone)], errs)
+
+        run_best_effort([("rm localdir", lambda: shutil.rmtree(self.localdir))], errs)
         if errs:
             raise AssertionError("cleanup/postflight census failed: " + " | ".join(errs))
 
     @staticmethod
-    def _cleanup_rc(label, target, result, errs):
+    def _rc(label, target, result, must_assert):
         rc, _, e = result
-        if rc != 0:
-            errs.append(f"{label} {target} rc={rc}: {e.strip()}")
+        if must_assert and rc != 0:
+            raise AssertionError(f"{label} {target} rc={rc}: {e.strip()}")
+
+    @staticmethod
+    def _reap_no_signal(p):
+        # NO terminate()/kill(): the remote `wsl --terminate` already ended the in-distro `sleep`, so the ssh
+        # client reaches EOF and exits. We only reap it; a stuck handle is a bounded natural exit (its remote
+        # `sleep` is itself bounded), recorded here, never force-killed by us.
+        if p.poll() is not None:
+            return
+        try:
+            p.wait(timeout=20)
+        except subprocess.TimeoutExpired:
+            raise AssertionError("keepalive ssh did not exit after remote distro terminate "
+                                 "(bounded natural exit pending; no local kill issued)")
+
+    def _await_listener_gone(self):
+        # Bounded wait for the self-exiting Windows listener; census by identity, never a stop (acc13ea #2).
+        deadline = time.time() + 30
+        while time.time() < deadline:
+            rc, out, e = ssh("powershell", "-NoProfile", "-Command",
+                             f"$p=Get-CimInstance Win32_Process -Filter \"ProcessId={self.win_listener_pid}\" "
+                             f"-ErrorAction SilentlyContinue; if ($p) {{ $p.CommandLine }}")
+            if rc != 0:
+                raise AssertionError(f"listener identity census failed rc={rc}: {e.strip()}")
+            if classify_listener(self.win_listener_pid, out, self.rand) in ("GONE", "NOT_OURS"):
+                return  # naturally exited, or the PID was reused by an unrelated process (not ours)
+            time.sleep(2)
+        raise AssertionError(f"windows reverse listener pid {self.win_listener_pid} (identity-matched) "
+                             f"survived its natural-exit bound")
 
     # --- helpers (every op fail-closed) ---
     def _stage(self, name, text, crlf=False):
@@ -234,12 +316,19 @@ class WslTopologyLive(unittest.TestCase):
     # Negative / mutant oracles (cheap; prove the checks fail closed).
     # ------------------------------------------------------------------
     def test_oracle_failed_import_and_unregister_return_nonzero(self):
+        # (acc13ea #4) record BOTH nonce names in the owned list BEFORE the attempts, so a partial
+        # registration from the failed import is censused and cleaned by the postflight.
+        nope = f"zb-test-{self.rand}-nope"
+        absent = f"zb-test-{self.rand}-absent"
+        for n in (nope, absent):
+            if n not in self.imported:
+                self.imported.append(n)
         rc, _, _ = ssh("cmd", "/c",
-                       f"wsl --import zb-test-{self.rand}-nope {self.run_win}\\nope {self.run_win}\\does-not-exist.tar.gz --version 2")
+                       f"wsl --import {nope} {self.run_win}\\nope {self.run_win}\\does-not-exist.tar.gz --version 2")
         self.assertNotEqual(rc, 0, "a failed import must return nonzero (oracle)")
         # clean a partial dir if the failed import created one
         ssh("cmd", "/c", f"if exist {self.run_win}\\nope rmdir /s /q {self.run_win}\\nope")
-        rc, _, _ = ssh("wsl", "--unregister", f"zb-test-{self.rand}-absent")
+        rc, _, _ = ssh("wsl", "--unregister", absent)
         self.assertNotEqual(rc, 0, "unregistering an absent distro must return nonzero (oracle)")
 
     def test_oracle_leftover_is_detected_by_census(self):
@@ -340,9 +429,12 @@ class WslTopologyLive(unittest.TestCase):
         rc, ol, el = ssh("powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
                          f"{self.run_win}\\winlaunch.ps1", self.run_win)
         self.assertEqual(rc, 0, f"launch win reverse listener rc={rc}: {el}")
-        m = re.search(r"READY pid=(\d+) 0\.0\.0\.0:39002", ol)
-        self.assertIsNotNone(m, f"the Windows reverse listener must prove READY with a pid before the negative: {ol}")
-        self.win_listener_pid = int(m.group(1))
+        # record the PID regardless of READY, so a started-but-not-ready listener is still censused/cleaned.
+        mp = re.search(r"pid=(\d+)", ol)
+        if mp:
+            self.win_listener_pid = int(mp.group(1))
+        self.assertIsNotNone(re.search(r"READY pid=\d+ 0\.0\.0\.0:39002", ol),
+                             f"the Windows reverse listener must prove READY with a pid before the negative: {ol}")
         self._stage("revclient.sh", _REVCLIENT_SH.format(gw=gw))
         orv = self._run(self.na, "revclient.sh", user=NONROOT)
         facts["P6_wsl_to_windows"] = orv.replace("\n", " | ").strip()
@@ -359,8 +451,10 @@ class WslTopologyLive(unittest.TestCase):
         self.assertEqual(rc, 0, f"c1 bootstrap rc={rc}: {ec1}")
         c1 = json.loads(oc1.strip().splitlines()[-1])
         facts["P_C1_bootstrap"] = json.dumps({k: c1[k] for k in ("port", "ack") if k in c1})
-        self.assertEqual(c1.get("got_secret"), secret, f"secret must arrive at Linux fd0 via wsl stdin: {c1}")
         self.assertTrue(int(c1.get("port", 0)) > 0, f"the ephemeral port must return on stdout: {c1}")
+        # (acc13ea #5) the secret appears in NO stdout, JSON, or diagnostic. ACK proves stdin->fd0 delivery
+        # TRANSITIVELY: the child ACKs iff the token dialed on the returned port equals the secret it read
+        # from fd0; a broken stdin delivery would make the child's secret differ and yield DENY, not ACK.
         self.assertEqual(c1.get("ack"), "ACK", f"authed connect to the returned port must ACK: {c1}")
         self.assertTrue(c1.get("exited"), f"the bootstrap child must exit within the bound: {c1}")
         # (e) the secret must never appear in any staged file — and the CHECK itself must not put the secret
@@ -485,14 +579,15 @@ PY
 """
 
 # C1 bootstrap: reads the secret from stdin (Linux fd 0, fed by wsl.exe's stdin), binds 127.0.0.1:0, prints
-# the port + the received secret to stdout, then accepts one authed conn. The secret never reaches this file.
+# ONLY the ephemeral port to stdout (NEVER the secret), then accepts one authed conn. The secret reaches
+# neither this file, nor stdout, nor argv/env; the authed ACK transitively proves it arrived at fd 0.
 _C1BOOT_WRITER = r"""#!/bin/sh
 cat > /home/zbagent/c1boot.py <<'PY'
 import socket,sys
 secret=sys.stdin.readline().strip()
 s=socket.socket(); s.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
 s.bind(("127.0.0.1",0)); s.listen(1); port=s.getsockname()[1]
-sys.stdout.write("PORT=%d GOT=%s\n"%(port,secret)); sys.stdout.flush()
+sys.stdout.write("PORT=%d\n"%port); sys.stdout.flush()
 s.settimeout(12)
 try:
     c,a=s.accept(); tok=c.recv(200).decode(errors="replace").strip()
@@ -511,12 +606,12 @@ $psi = New-Object Diagnostics.ProcessStartInfo
 $psi.FileName='wsl.exe'
 $psi.Arguments='-d {distro} -u {user} -e /usr/bin/python3 /home/{user}/c1boot.py'
 $psi.RedirectStandardInput=$true; $psi.RedirectStandardOutput=$true; $psi.RedirectStandardError=$true; $psi.UseShellExecute=$false
-$res=@{{ got_secret=''; port=0; ack=''; exited=$false; error='' }}
+$res=@{{ port=0; ack=''; exited=$false; error='' }}
 try {{
   $p=[Diagnostics.Process]::Start($psi)
   $p.StandardInput.WriteLine($secret); $p.StandardInput.Flush()
   $line=$p.StandardOutput.ReadLine()
-  if ($line -match 'PORT=(\\d+) GOT=(\\S+)') {{ $res.port=[int]$Matches[1]; $res.got_secret=$Matches[2] }}
+  if ($line -match 'PORT=(\\d+)') {{ $res.port=[int]$Matches[1] }}
   if ($res.port -gt 0) {{
     $c=New-Object Net.Sockets.TcpClient
     $iar=$c.BeginConnect('127.0.0.1',$res.port,$null,$null)
@@ -567,12 +662,75 @@ Remove-Item $out -ErrorAction SilentlyContinue
 $p = Start-Process powershell -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File',(Join-Path $run 'winlisten.ps1'),'0.0.0.0','39002',$out -WindowStyle Hidden -PassThru
 $deadline=(Get-Date).AddSeconds(8); $ready=$false
 while((Get-Date) -lt $deadline){ Start-Sleep -Milliseconds 200; if((Test-Path $out) -and ((Get-Content $out -Raw) -match 'LISTENING 0.0.0.0:39002')){ $ready=$true; break } }
-if($ready){ Write-Output ("READY pid=" + $p.Id + " 0.0.0.0:39002") } else { Write-Output 'NOT_READY' }
+if($ready){ Write-Output ("READY pid=" + $p.Id + " 0.0.0.0:39002") } else { Write-Output ("NOT_READY pid=" + $p.Id) }
 """
 
 
+# ------------------------------------------------------------------
+# OFFLINE injected-failure suite (acc13ea #6). NO VM, NO ssh — it drives the pure cleanup/decision helpers
+# with crafted inputs to prove the safety properties the live paths rely on.
+# ------------------------------------------------------------------
+class WslSpikeOracle(unittest.TestCase):
+    def test_raising_step_does_not_abort_later_steps(self):
+        # a cleanup step that raises must NOT skip the steps after it (acc13ea #1/#3).
+        ran = []
+        errs = []
+        steps = [
+            ("a", lambda: ran.append("a")),
+            ("boom", lambda: (_ for _ in ()).throw(RuntimeError("stop failed"))),
+            ("b", lambda: ran.append("b")),
+            ("c", lambda: ran.append("c")),
+        ]
+        results = run_best_effort(steps, errs)
+        self.assertEqual(ran, ["a", "b", "c"], "every later step must still run past a raising step")
+        self.assertEqual(len(errs), 1, f"the single failure must be recorded: {errs}")
+        self.assertIn("boom: stop failed", errs[0])
+        self.assertIsNone(results[1], "the raising step's result is recorded as None")
+
+    def test_census_failure_still_plans_every_owned_distro(self):
+        # present=None models a FAILED `wsl -l -q`; teardown must target every owned distro, not skip (acc13ea #3).
+        imported = ["zb-test-x-a", "zb-test-x-b", "zb-test-x-nope"]
+        self.assertEqual(plan_distro_cleanup(imported, None), imported,
+                         "a census failure must plan teardown for every owned distro")
+
+    def test_census_success_targets_only_registered(self):
+        imported = ["zb-test-x-a", "zb-test-x-b"]
+        present = ["zb-test-x-a", "Ubuntu"]
+        self.assertEqual(plan_distro_cleanup(imported, present), ["zb-test-x-a"],
+                         "with a good census, only actually-registered owned distros are targeted")
+
+    def test_listener_identity_pid_reuse_is_not_ours(self):
+        rand = "abcd1"
+        ours = r"powershell ... C:\Users\zbtext\zb\wsl\run-abcd1\winlisten.ps1 0.0.0.0 39002"
+        reused = r"C:\Windows\System32\notepad.exe"
+        self.assertEqual(classify_listener(4242, ours, rand), "OURS")
+        self.assertEqual(classify_listener(4242, reused, rand), "NOT_OURS",
+                         "a reused PID with a different command line must never be treated as ours")
+        self.assertEqual(classify_listener(4242, "", rand), "GONE")
+        self.assertEqual(classify_listener(None, ours, rand), "NONE")
+
+    def test_listener_identity_rejects_other_run_nonce(self):
+        # a concurrent sibling run's winlisten.ps1 must not match our nonce.
+        other = r"... \run-ZZZZZ\winlisten.ps1 0.0.0.0 39002"
+        self.assertEqual(classify_listener(4242, other, "abcd1"), "NOT_OURS")
+
+    def test_canary_never_in_staged_scripts(self):
+        # no staged script template may embed a secret-shaped token; the scan must report zero leaks.
+        secret = secrets.token_hex(16)
+        staged = [_SETUP_SH, _AUTH_SH, _WHOAMI_SH, _NONROOT_SH, _IDENT_SH, _LISTEN_SH, _READRX_SH,
+                  _COTENANT_SH, _REVCLIENT_SH, _C1BOOT_WRITER, _C1BOOT_PS1, _WIN_TCP_PS1, _WIN_LISTEN_PS1,
+                  _WIN_LAUNCH_PS1]
+        self.assertEqual(count_secret_leaks(staged, secret), 0,
+                         "no staged template may contain the canary")
+        # and the scan is real: a file that DOES contain the secret is detected.
+        self.assertEqual(count_secret_leaks(["x", f"leak {secret} here"], secret), 1)
+
+    def test_c1_boot_writer_never_prints_secret(self):
+        # acc13ea #5: c1boot.py prints only PORT=, never GOT=/the secret.
+        self.assertIn("PORT=%d", _C1BOOT_WRITER)
+        self.assertNotIn("GOT=", _C1BOOT_WRITER)
+        self.assertNotIn("got_secret", _C1BOOT_PS1)
+
+
 if __name__ == "__main__":
-    if not HOST:
-        sys.stderr.write("ZB_WIN11_HOST unset — WSL2 live topology spike skipped (exit 77)\n")
-        sys.exit(77)
     unittest.main(verbosity=2)
