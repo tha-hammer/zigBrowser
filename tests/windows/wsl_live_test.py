@@ -1,5 +1,17 @@
 r"""WS8/WS9 WSL2 topology — live DISCOVERY SPIKE on the Win11 VM (OD-W4).
 
+!!! DISCOVERY-ONLY / DO NOT RERUN (RoseCat 9134b8b / 7558 / 7561). This spike's executable oracle is
+    KNOWN-DEFECTIVE and MUST NOT be rerun or cited as gate evidence until it is repaired and reviewed:
+    teardown ignores every terminate/unregister/delete return code and performs NO final census; the
+    staged scripts copied into C:\\Users\\zbtext\\zb\\wsl are never removed; many probe return codes are
+    captured but never asserted; and the reverse "firewall-blocked" row never proves the Windows listener
+    started (a listener that never started yields the same green). The exact non-root facts it reported
+    were observed with an EXPLICIT `-u zbagent` launch only — it did NOT prove default-user selection.
+    Repairs required before any rerun: fail-closed on every rc; prove the Windows listener ready before the
+    reverse negative; a no-`-u` default-user + admin-group census; remove every staged artifact; assert a
+    final distro/import/process/listener/staged-file census equal to baseline; and add the
+    Windows-stdio/pipe -> Linux-fd + ephemeral-port-return (C1) probe. Nothing here is a security claim.
+
 This is a discovery spike, NOT the production WS8/WS9 closure. It establishes the topology facts the
 owner asked for before committing the WSL2 re-plan (RoseCat 119108c / 7516 / affd577). The security and
 product claims (full bwrap confinement, control-channel auth, egress, lifetime under concurrency, setup

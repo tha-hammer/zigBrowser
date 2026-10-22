@@ -6,8 +6,9 @@ branch: zb-automation-integration-2026-10-10-11-59
 repository: zigBrowser
 topic: "Windows 10 + Windows 11 launch support for zigBrowser — TDD implementation plan"
 tags: [plan, tdd, windows, win10, win11, webview2, win32, msvc, automation, drawer, credential-manager, sandbox, wfp, netd, msi, authenticode, launch-critical]
-status: plan for review (rev 2.15)
-rev: 2.15
+status: "DRAFT — NOT IMPLEMENTATION-APPROVED (rev 2.16); the WS8/WS9 WSL2 topology is a DRAFT only"
+rev: 2.16
+rev_2_16_note: "Rev 2.16 (2026-10-21, AzureRidge; RoseCat 9134b8b/7558 + draft-state route 7561). DOCUMENTATION-HONESTY ONLY — this revision does NOT close affd577/9134b8b, does NOT authorize any WS8/WS9 implementation, and approves NO security claim. It marks the WS8/WS9 WSL2 topology a DRAFT: (1) status/rev/WS8/WS9 headings say DRAFT — NOT IMPLEMENTATION-APPROVED; withdrew every 'causal/implementation-ready/grounded/proven' closure claim that exceeds the discovery observations. (2) one authoritative gate before WS8 forbids any WS8/WS9 red/green/production-edit/installer-change/further live-or-destructive WSL run (and WS10/WS11/agent-WS12/WS13 agent work) until a later reviewed revision closes every blocker. (3) the six 9134b8b findings are listed OPEN with exact required closure + the eight-finding status table. (4) measured facts narrowed to what the committed run actually observed (explicit -u zbagent uid/caps/userns/bwrap; exact IPv4/IPv6 canary+ACK; co-tenant reach) with an explicit NOT-proven list (default-user selection, causal reverse firewall denial, fail-closed cleanup/final census, the C1 pipe/fd bootstrap, production bwrap/netd, any product security boundary). (5) wsl_live_test.py marked DISCOVERY-ONLY / DO NOT RERUN until its ignored rc/ready-proof/staged-cleanup/final-census are repaired + reviewed; its header/result are not gate evidence. (6) an authoritative scope banner marks every dedicated-user/WFP/WindowsSandboxUserBackend/host-netd/both-host-agent/Win10-agent statement HISTORICAL and non-normative — present scope = browser on Win10+Win11, agent/WSL on Win11 only, agent OFF on Win10. (7) C1-C5 kept as PROPOSALS/TBD, not contracts, naming the later evidence required; OAuth fd-3 stays a hard-red unverified. Live evidence is required before any later implementation-approved revision."
 rev_2_15_note: "Rev 2.15 (2026-10-21, AzureRidge; RoseCat affd577 — 8 blockers on 770848b/7ca6897). Corrected the live spike and the WSL2 contracts to be causal and implementation-ready: (1) the spike now creates a dedicated NON-ROOT Linux uid (zbagent 1000), launches with it, and proves id!=0, no sudo/doas, CapEff=0, 0 setuid, /etc denied, and userns+bwrap AS that user (C6). (2) transport re-probed EXACTLY on 127.0.0.1:0 (and ::1:0) with an ACK + moved canary, IPv4+IPv6, a hostile co-tenant row (a second distro reaches the 127.0.0.1 listener ⇒ auth mandatory), and WSL→Windows + TEST-NET fail-closed with every rc checked; the spike pins distros alive with keepalives, rc-checks the whole lifecycle, asserts final census==baseline, refuses a missing rootfs on an opted-in host, and cleans its local scratch. (3) C1 bootstrap de-circularised: the control capability is delivered on a one-shot inherited pipe at launch (never env/argv/file/TCP), kept DISTINCT from the OAuth fd-3 token; WS8.3 reconciled; same-Windows-user boundary stated plainly (the WSL VM is NOT a boundary against the owning Windows user). (4) C5 reverse relay specified for hook-initiated 51091/31337 (Windows dials in, in-distro broker multiplexes, framing/backpressure/cancellation/lifetime). (5) C2 file broker made concrete (Windows broker + in-distro client, server-held handle capabilities, a real held-handle check-and-use primitive replacing the removed WS0.5 Option B, bounds, immutable snapshot, atomic copy-back, session ownership, crash cleanup). (6) C3 setup/update state machine (versioned distro names + current-pointer commit/rollback, active-session-aware retire, unprivileged reboot-resume with SID binding) + honest uninstall (cannot un-enable global WSL/VMP) + C4 marker-based teardown with detached/double-fork and browser-crash recovery. (7) the old Windows-user/WFP WS9 block, the dependency-graph WFP coupling, and the unverified dedicated-user/CreateProcessWithLogonW/nested-virt-fallback items are REMOVED/reconciled to WSL. (8) Win10 ships BROWSER-ONLY agent-OFF; WS8/WS9/WS11/WS12-agent/WS13-agent-census gate win11-only, reconciled in the OD-W4 scope + the WS10/WS11/WS13 gates. The spike stays UNREGISTERED; WS8/WS9 reds remain gated on RoseCat approval."
 rev_2_14_note: "Rev 2.14 (2026-10-21, AzureRidge; RoseCat 119108c WSL2 re-plan + owner 'WSL done'). The WS8/WS9 WSL2 topology is now grounded in LIVE MEASUREMENTS on win11-m8 (WSL 3.0.3.0, kernel 6.18.54.1, build 26200) by the new `tests/windows/wsl_live_test.py` (standard-user `zbtext`, no admin; Alpine minirootfs 3.21.9 pinned by in-repo SHA-256; imports two distros, probes, tears down with a guarded delete; exit 77 off-host; UNREGISTERED until the WS8/WS9 greens). Measured + folded in: `wsl --import` and the full per-user lifecycle need NO admin; automount-off works (Windows drive unmounted, `/mnt/c` not a mountpoint); appendWindowsPath-false works; interop-off is PARTIAL (the WSLInterop binfmt handler stays registered — WS8.1 must hard-disable it at boot); two distros share ONE utility VM + ONE net namespace (separate mount/PID ns); loopback TCP is one-directional by default — **Windows→WSL works (localhostForwarding), WSL→Windows is firewall-blocked**, so C1/C5 are INVERTED to agent-listens-in-distro / browser-connects-from-Windows; AF_VSOCK creatable by a standard user but host side needs AF_HYPERV (rejected); unprivileged userns + bubblewrap work inside the distro; per-run process-group kill is safe while `wsl --terminate` is distro-wide. The four WS8 contracts (C1-C4) + the new WS9 C5 bridge-topology contract answer 119108c and are re-anchored to this evidence. Still owner-only/elevated: the one-time feature-enable + reboot (the owner did it; benign 'nested virtualization not supported' notice prints, not needed). Added the **WS8/WS9 acceptance matrix (RoseCat 7516's 12 inputs)** as the production-backend closure spec and labelled `wsl_live_test.py` a DISCOVERY SPIKE (security/product claims proven later through `WslBackend`/`LinuxBwrapBackend`); measured that wsl.conf applies via a **per-distro `wsl --terminate`** so no global `wsl --shutdown` is used (pinned forbidden, #10); the spike now takes a baseline/postflight census + refuses name collisions; recorded honestly that the WSL VM is **not** an isolation boundary against the owning Windows user (#3). WS8/WS9 reds remain gated on RoseCat approving this re-plan."
 rev_2_13_note: "Rev 2.13 (2026-10-21, AzureRidge; RoseCat b3d255b-chain). Owner DECISIONS recorded + reconciled throughout: OD-W1 = per-user WiX 3.14 MSI; OD-W3 = NO code signing for launch (DEFERRED, not a launch gate, WS13.6 stays OPEN, nothing may claim signed/distributable); OD-W6 = native Win32 drawer (not WebView2/WinUI); OD-W4 = WSL2 now / own VM later (our own `wsl --import` distro, automount+interop off, appendWindowsPath=false, agent inside it under the existing bubblewrap+netd Linux sandbox, browser<->agent over loopback TCP/hvsocket since AF_UNIX does not cross WSL2, agent OFF + fixed explanation if virt/WSL absent; dedicated-users/AppContainer/WFP DROPPED for launch and marked SUPERSEDED in WS8/WS9; own-small-VM containment is a later MS6.5-stub milestone). WS13 signing reworded deferred/non-gating; the Open-decisions intro + sharpening mark W1/W3/W4/W6 decided (history, not pending); WS5 no longer offers a WebView2 drawer. UNVERIFIED (owner, elevated): reboot need for VMP/WSL; the later shared utility VM; loopback-vs-hvsocket transport + auth; win11-m8 feature-state/nested-virt (read-only non-admin probe: WSL NOT installed, feature/nested-virt queries elevation-refused). No WSL install on the VM until the owner relays OK; WS8/WS9 WSL2 reds only after RoseCat approves the re-plan."
@@ -23,12 +24,29 @@ rev_2_2_note: "Rev 2.2 (bead zigBrowser-126): WS0.6 VM identity no longer uses t
 rev_2_1_note: "Rev 2.1 (RoseCat 6146): WS8.7 folded into WS8's own gate (WS8.1-WS8.7); WS12 reconciled with the committed TTS Windows cloning leg (CW) and the committed STT live-mic = physical Windows 10 only (VM = WAV seam); WS13.4 uninstall must not report success while any sandbox user / WFP filter / task survives; WS13's final gate depends on every release component + the voice packaging, not merely starting after WS7."
 last_updated: 2026-10-21
 last_updated_by: AzureRidge (rev 2.13 — owner decisions OD-W1/W3/W4/W6 + WSL2 re-plan)
-last_updated_note: "Rev 2.15 (2026-10-21, AzureRidge; RoseCat affd577): corrected the live spike + WSL2 contracts to be causal/implementation-ready — dedicated NON-ROOT uid proven (userns/bwrap as uid 1000, no sudo/caps/setuid); transport re-probed EXACTLY on 127.0.0.1:0/::1:0 with ACK+canary, IPv6, a hostile co-tenant row (auth mandatory), reverse+TEST-NET fail-closed, rc-checked keepalive-pinned lifecycle; C1 bootstrap de-circularised (one-shot inherited pipe, distinct from OAuth fd-3); C5 reverse relay for hook 51091/31337; C2 broker made concrete (server-held handle capabilities + held-handle check-and-use); C3/C4 crash-safe state machines + honest uninstall; the old Windows-user/WFP WS9 block + dependency/unverified items removed; Win10 ships browser-only agent-OFF with WS8/WS9/WS11/WS13-agent gating win11-only. Rev 2.14 (2026-10-21): folded the LIVE WSL2 measurements on win11-m8 (new `tests/windows/wsl_live_test.py`) into the WS8/WS9 re-plan for RoseCat 119108c — C1/C5 transport INVERTED to agent-listens-in-distro / browser-connects-from-Windows (WSL→Windows is firewall-blocked, Windows→WSL works via localhostForwarding); automount-off and appendWindowsPath-false confirmed working, interop-off partial (binfmt handler hard-disabled at boot); two distros share one utility VM + net namespace; per-run process-group kill proven vs distro-wide `wsl --terminate`; import + full lifecycle need no admin. Rev 2.13 (2026-10-21): recorded the owner's decisions — OD-W1 = per-user WiX 3.14 MSI; OD-W3 = code signing DEFERRED (no signing for launch, WS13.6 open/non-gating, nothing may claim signed/distributable); OD-W4 = WSL2 now (our own `wsl --import` distro under the existing bubblewrap+netd sandbox) with our own VM later; OD-W6 = native Win32 drawer. OD-W2/W5/W7/W8/W9 remain open. (Rev 2 review-pass history: verified file:line anchors at HEAD 032a2c9, added the WS0-WS13 red/green/refactor/closure/real-screen cases, the Win11 VM + file-server design and WS0.6-WS0.8, and reconciled the voice/macOS plans.)"
+last_updated_note: "Rev 2.16 (2026-10-21, AzureRidge; RoseCat 9134b8b/7558 + draft-state route 7561): DOCUMENTATION HONESTY ONLY — marked the WS8/WS9 WSL2 topology a DRAFT (NOT implementation-approved), added the authoritative no-WS8/WS9-work gate, listed the six 9134b8b blockers OPEN, narrowed the measured facts to the explicit-user discovery observations with an explicit NOT-proven list, marked wsl_live_test.py DISCOVERY-ONLY/DO-NOT-RERUN, added an authoritative scope banner making every dedicated-user/WFP/both-host-agent statement historical/non-normative, and relabelled C1-C5 as proposals/TBD. Does not close affd577 or approve any implementation/security claim. Rev 2.15 (2026-10-21, AzureRidge; RoseCat affd577): corrected the discovery spike + WSL2 contract DRAFTS from the live run — observed (explicit `-u zbagent` only) uid 1000 + userns/bwrap, exact 127.0.0.1:0/::1:0 ACK+canary, IPv6, a hostile co-tenant row; drafted C1 bootstrap, C5 relay, C2 broker, C3/C4 state machines; began removing the old Windows-user/WFP text and the Win10 agent-OFF scope (completed as non-normative marking in rev 2.16). Rev 2.14 (2026-10-21): folded the LIVE WSL2 measurements on win11-m8 (new `tests/windows/wsl_live_test.py`) into the WS8/WS9 re-plan for RoseCat 119108c — C1/C5 transport INVERTED to agent-listens-in-distro / browser-connects-from-Windows (WSL→Windows is firewall-blocked, Windows→WSL works via localhostForwarding); automount-off and appendWindowsPath-false confirmed working, interop-off partial (binfmt handler hard-disabled at boot); two distros share one utility VM + net namespace; per-run process-group kill proven vs distro-wide `wsl --terminate`; import + full lifecycle need no admin. Rev 2.13 (2026-10-21): recorded the owner's decisions — OD-W1 = per-user WiX 3.14 MSI; OD-W3 = code signing DEFERRED (no signing for launch, WS13.6 open/non-gating, nothing may claim signed/distributable); OD-W4 = WSL2 now (our own `wsl --import` distro under the existing bubblewrap+netd sandbox) with our own VM later; OD-W6 = native Win32 drawer. OD-W2/W5/W7/W8/W9 remain open. (Rev 2 review-pass history: verified file:line anchors at HEAD 032a2c9, added the WS0-WS13 red/green/refactor/closure/real-screen cases, the Win11 VM + file-server design and WS0.6-WS0.8, and reconciled the voice/macOS plans.)"
 primary_research: thoughts/searchable/shared/research/2026-10-19-windows-launch-support-surface.md
 counterpart: thoughts/searchable/shared/plans/2026-10-14-14-30-macos-launch-tdd-plan.md
 ---
 
 # Windows Launch Support for zigBrowser — TDD Implementation Plan
+
+> ⚠️ **AUTHORITATIVE SCOPE (OD-W4; rev 2.16 DRAFT).** The present **normative** scope is:
+> **the browser ships on Windows 10 AND Windows 11; the agent + its WSL2 sandbox run on Windows 11
+> ONLY; the agent is OFF on Windows 10 (browser-only).** Anywhere in this plan that still requires
+> **dedicated local Windows users, WFP filters, a `WindowsSandboxUserBackend`, host-side netd,
+> `CreateProcessWithLogonW`/Secondary Logon, the agent/sandbox/WFP on the read-only Windows 10 file
+> server, or "the agent on both hosts"** is **HISTORICAL and NON-NORMATIVE** — superseded by this scope
+> and by OD-W4 (WSL2), and retained only as history pending the implementation-approved revision that
+> will excise it. Where such text conflicts with this banner, **this banner wins.**
+>
+> ⚠️ **DRAFT — WS8/WS9 WSL2 TOPOLOGY IS NOT IMPLEMENTATION-APPROVED.** See the **"WS8/WS9 DRAFT gate"**
+> block immediately before WS8: no WS8/WS9 red, green, production edit, installer change, or further
+> live/destructive WSL run may begin — and WS10/WS11/agent-dependent WS12/WS13 work stays blocked —
+> until a later reviewed revision closes every blocker listed there. The C1-C5 mechanics are
+> **proposals/TBD, not contracts**. `tests/windows/wsl_live_test.py` is a **DISCOVERY-ONLY** spike and
+> **must not be rerun** or cited as gate evidence until repaired and reviewed. Accepting this revision is
+> **documentation honesty only**; it closes nothing and approves no security claim.
 
 > **PLAN ONLY.** No implementation and no live runs were done to write it. Agents prepare
 > scripts and run them on the **two Windows hosts over SSH** (a Windows 11 VM and the
@@ -1674,7 +1692,59 @@ to run. Credential tests run inside the interactive session task.
 
 ---
 
-## WS8: Agent sandbox = WSL2 + our own distro (per OD-W4; hard launch gates)   [L] spec, [W]
+## WS8/WS9 DRAFT gate (RoseCat 9134b8b / 7558 / 7561 — authoritative; read before WS8 and WS9)
+
+> ⚠️ **WS8 and WS9 below are a DRAFT, NOT IMPLEMENTATION-APPROVED.** **No WS8 or WS9 red, green,
+> production source edit, installer change, or any further live/destructive WSL run may begin — and
+> WS10, WS11, the agent-dependent parts of WS12, and the agent/sandbox parts of WS13 stay blocked —
+> until a later reviewed plan revision closes EVERY blocker below.** The C1-C5 mechanics are
+> **proposals/TBD, not contracts**. Accepting this revision is **documentation honesty only**: it does
+> not close `affd577`, does not authorize implementation, and approves no security claim.
+
+**The six OPEN blockers from `9134b8b` (each must be closed, with live evidence, in the later revision):**
+1. **OPEN — spike is not fail-closed.** `tests/windows/wsl_live_test.py` ignores every terminate/
+   unregister/delete return code, performs no final census, and leaves staged scripts in
+   `C:\Users\zbtext\zb\wsl`; many probe rc values are captured but never asserted; the reverse
+   "firewall-blocked" row never proves the Windows listener started. **Close:** make every op fail
+   closed, prove the Windows listener ready before the reverse negative, remove every staged artifact,
+   assert a final distro/import/process/listener/staged-file census equal to baseline, add
+   failed-launch/failed-unregister/leftover mutants, then rerun live.
+2. **OPEN — default non-root unproven.** The committed oracle only ran explicit `-u zbagent`; a
+   no-`-u` default-user launch and an admin-group census are required.
+3. **OPEN — C1 bootstrap not implementable/proven.** The exact Windows-handle→WSL-fd mechanism (only
+   the stdio bridge is known) and the reverse channel that returns the in-distro ephemeral port to the
+   browser are unspecified. **Close:** specify the exact bidirectional stdio/pipe protocol + closure/
+   timeout and prove it live with canaries. OAuth fd-3 stays a hard-red unverified.
+4. **OPEN — destructive distro ops have a check/use race.** Retire-after-census (C3) and
+   terminate-after-last-owner (C4) have no cross-process claim held across census→action. **Close:**
+   one bounded cross-process lock/lease shared by session admission, update/retire, recovery and
+   uninstall, with crash-cut and concurrent-start reds.
+5. **OPEN — C5 namespaces do not compose.** A Windows-reachable listener must live in the distro host
+   netns; a broker "inside the agent's bwrap tree" cannot also appear at `127.0.0.1:51091/31337` to
+   hooks in their own private net namespaces. **Close:** name the trusted outer broker/netd namespace
+   and the per-hook endpoint handoff/relay into each hook netns, with hostile co-tenant auth/port-squat
+   negatives.
+6. **OPEN — whole-plan reconciliation.** Old dedicated-user/WFP and both-host-agent contracts remain
+   in authoritative sections (see the scope banner at the top). **Close:** rewrite every such section
+   for browser-on-both / agent-on-Win11-only / WSL `WslBackend`, leaving historical alternatives only
+   when unmistakably labelled non-normative. (Rev 2.16 marks them non-normative via the top banner;
+   the excision itself is part of the implementation-approved revision.)
+
+**Status of the earlier `affd577` eight findings** (what rev 2.15 did vs. what remains): #1 non-root —
+explicit-user observed, **default-user + groups still OPEN** (blocker 2); #2 transport — exact bind +
+bytes observed, **reverse-ready proof + rc enforcement OPEN** (blocker 1); #3 C1 bootstrap — separation
+stated, **exact fd/port mechanism OPEN** (blocker 3); #4 C5 relay — described, **namespace composition
+OPEN** (blocker 5); #5 C2 broker — drafted at plan level, **hardlink no-shared-inode rule OPEN**; #6
+setup/update — versioned+pointer drafted, **lock/lease race OPEN** (blocker 4); #7 WFP removal — WS9
+block replaced, **rest of plan OPEN** (blocker 6); #8 Win10 scope — banner added, **section rewrites
+OPEN** (blocker 6).
+
+---
+
+## WS8: Agent sandbox = WSL2 + our own distro (per OD-W4; hard launch gates — **DRAFT, NOT IMPLEMENTATION-APPROVED**)   [L] spec, [W]
+
+> ⚠️ **DRAFT.** This section is not implementation-approved; see the WS8/WS9 DRAFT gate above. C1-C6
+> are **proposals/TBD**, not contracts.
 
 **Goal.** The Windows launch agent sandbox is **WSL2 running our own minimal imported distro**, with
 the agent confined INSIDE it by our **existing Linux sandbox (bubblewrap + netd)**. Its isolation
@@ -1730,23 +1800,37 @@ or AppContainer fallback (those are dropped for launch, OD-W4).
 - **WS8.8 fail-closed:** with virt/WSL off, the agent never starts and the app shows the fixed
   explanation (tested on a host with the features disabled: agent-OFF + the message, not a crash).
 
-### WSL2 contracts (RoseCat 119108c — pinned before any WS8 red)
+### WSL2 contracts (C1-C6) — **DRAFT PROPOSALS / TBD, NOT pinned contracts**
+
+> ⚠️ C1-C6 below are **proposals**, not approved contracts. Several mechanics are unresolved (see the
+> WS8/WS9 DRAFT gate blockers 1-6) and are marked TBD. They may not be implemented until a later
+> reviewed revision closes those blockers with live evidence.
 
 These four contracts (+ WS9's bridge topology) make the WSL2 topology implementation-ready. The dropped
 dedicated-local-users / job-object / separate-desktop / WFP design and its reds are **REMOVED** (not merely
 prefaced); their isolation intent is re-expressed below as the WSL2 model.
 
-**MEASURED on win11-m8 (WSL 3.0.3.0, kernel 6.18.54.1-microsoft-standard-WSL2, build 26200), 2026-10-21,
-by `tests/windows/wsl_live_test.py`** (standard **Windows** user `zbtext`, no admin; a dedicated **non-root
-Linux** user `zbagent` uid 1000 inside the distro; Alpine minirootfs 3.21.9 pinned in-repo by SHA-256). These
-contracts are grounded in those measurements, not assumptions:
-- `wsl --import` and a full session (configure/run/terminate/unregister) run as the **standard Windows user,
-  no admin**. A benign "Nested virtualization is not supported on this machine" notice prints; WSL2 runs fine
-  and the agent needs no nested virt.
-- **Non-root Linux identity (C6):** with `wsl.conf [user] default=zbagent` and explicit `-u zbagent`, the
-  agent runs as **uid 1000** (not root): no sudo/doas, `CapEff=0`, 0 setuid binaries, `/etc` write denied —
-  and **unprivileged user namespaces + bubblewrap both work as that non-root user** (the earlier root-only
-  reading is corrected; this run launches non-root and proves it causally).
+**OBSERVED in the DISCOVERY SPIKE (narrow — do NOT read as a closure or security claim)** on win11-m8 (WSL
+3.0.3.0, kernel 6.18.54.1-microsoft-standard-WSL2, build 26200), 2026-10-21, by the DISCOVERY-ONLY
+`tests/windows/wsl_live_test.py` (standard **Windows** user `zbtext`, no admin; Alpine minirootfs 3.21.9
+pinned in-repo by SHA-256). The committed oracle does not enforce several of its own rows (DRAFT-gate blocker
+1), so these are observations to motivate the proposals below, **not** grounds for implementation:
+
+> **What the committed run actually observed:** with an **explicit `-u zbagent`** launch, uid 1000 with no
+> sudo/doas, `CapEff=0`, 0 setuid binaries, `/etc` write denied, and unprivileged user namespaces +
+> bubblewrap working as that user; `wsl --import`/configure/run/terminate/unregister as the standard Windows
+> user (no admin); `automount=false` leaves `/mnt/c` unmounted; `appendWindowsPath=false` keeps `/mnt` off
+> PATH (`interop=false` is PARTIAL — the `WSLInterop` binfmt handler stays registered); two distros share one
+> utility VM + one net namespace (separate mount/PID ns); an **exact** `127.0.0.1:0`/`::1:0` listener is
+> reachable Windows→WSL with an ACK + moved canary (IPv4 and IPv6); a hostile co-tenant distro reached that
+> `127.0.0.1` listener; a per-run process-group kill left a co-tenant session alive.
+>
+> **What it did NOT prove (OPEN):** default-user (no-`-u`) selection and group membership; a **causal**
+> reverse firewall denial (the Windows listener readiness was not proven, so the "firewall-blocked" row is
+> not yet causal); fail-closed lifecycle cleanup + a final census equal to baseline; the **C1 Windows-handle
+> → WSL-fd + ephemeral-port-return bootstrap**; the production bubblewrap/netd argv; and **any product
+> security boundary**. The paragraphs below are DRAFT PROPOSALS motivated by the observations, not verified
+> contracts.
 - `automount.enabled=false` **works** — the Windows drive is not mounted (`/mnt/c` is not a mountpoint; only
   WSLg's own `/mnt/wsl` + `/mnt/wslg` tmpfs remain), so the Windows filesystem — and any Windows AF_UNIX
   socket path — is unreachable from the distro.
@@ -1757,13 +1841,14 @@ contracts are grounded in those measurements, not assumptions:
 - Two distros **share one utility VM** (identical `boot_id`) and **share one network namespace** (same net-ns
   inode, same `eth0`/gateway) while keeping **separate mount + PID namespaces**. So loopback is NOT isolated
   across distros; per-session network isolation must come from the agent's own bwrap netns + netd + C1 auth.
-- **Loopback TCP is one-directional by default (causal):** a listener bound EXACTLY `127.0.0.1:0` (and
-  `::1:0`) inside the distro is reachable from **Windows→WSL** via localhostForwarding (IPv4 and IPv6), with an
-  ACK and the canary bytes moved; **WSL→Windows is firewall-blocked** (times out even on an already-allowed
-  port; a TEST-NET decoy also fails) — opening it needs an admin rule. A **hostile co-tenant distro reached
-  A's `127.0.0.1` listener** (shared net ns), proving the loopback is not a boundary between distros and
-  **app-layer auth is mandatory** (C1). A per-run **process-group/marker kill** removes one session's tree and
-  leaves a co-tenant session alive; `wsl --terminate` kills the whole distro.
+- **Loopback TCP directionality (observed; reverse NOT yet causal):** a listener bound EXACTLY `127.0.0.1:0`
+  (and `::1:0`) inside the distro was reachable from **Windows→WSL** via localhostForwarding (IPv4 and IPv6),
+  with an ACK and the canary bytes moved; the **WSL→Windows attempt failed** (timed out), but the committed
+  oracle did not prove the Windows listener was live, so this is **not yet a causal "firewall-blocked" result**
+  (DRAFT-gate blocker 1). A **hostile co-tenant distro reached the `127.0.0.1` listener** (shared net ns),
+  indicating the loopback is not a boundary between distros and that **app-layer auth is mandatory** (C1
+  proposal). A per-run process-group kill left a co-tenant session alive; `wsl --terminate` killed the whole
+  distro.
 
 **C1 — ONE transport + full auth contract (browser↔agent/netd control channel).** Transport = **loopback
 TCP**, chosen over hvsocket (simpler, portable, reuses the existing token-auth code) and over AF_UNIX (does
@@ -1985,7 +2070,10 @@ failure, all `[W]`/`[U]` on **win11-m8 only** (never the Win10 FS), as the stand
 
 ---
 
-## WS9: netd egress INSIDE WSL2 (per OD-W4)   [W]
+## WS9: netd egress INSIDE WSL2 (per OD-W4 — **DRAFT, NOT IMPLEMENTATION-APPROVED**)   [W]
+
+> ⚠️ **DRAFT.** Not implementation-approved; see the WS8/WS9 DRAFT gate. C5 and the egress mechanics are
+> **proposals/TBD** (blocker 5: the outer-broker/per-hook-netns topology is unresolved), not contracts.
 
 **Goal.** The agent's egress is the **existing Linux netd running INSIDE the WSL2 distro** — the same
 CONNECT/SNI allowlist (`api.anthropic.com`; plus `platform.claude.com` for sign-in) and the same
