@@ -8,7 +8,10 @@ test_provision pins one shape (a top-level skill linked outside; its canary abse
   (node_modules), and a relative link up into the user's HOME (outside ~/.claude) are each skipped with a warning
   naming it, and each target holds a distinct binary canary (NUL and 0xff around a marker);
 - after setup, no regular file anywhere under the agent home (dist-<n>, current, state and every other path, walked
-  without following links, read with O_NOFOLLOW) holds any canary's bytes, and no path name holds a canary marker;
+  without following links, read with O_NOFOLLOW) holds any canary's bytes, and no path name holds a canary marker.
+  The census fails closed (RoseCat 7895): each entry is lstat'ed, only a symlink is passed over (never followed),
+  anything else that is not a regular file or a directory is a finding, and a regular file that cannot be opened
+  or read is a finding; a control row proves an unreadable file and a FIFO each fail the census;
 - the dependency tree beside the skipped link is still copied byte for byte (no HOME rewrite, no scan).
 Pure Python: setup runs in-process with a fake `bun`; no signal is sent.
 Run: cd agent/host/tests && unshare --map-current-user --pid --fork --kill-child --mount-proc \\
@@ -17,6 +20,7 @@ Unregistered until its registration."""
 import contextlib
 import io
 import os
+import stat
 import unittest
 
 import support  # noqa: F401  (puts the helper package on sys.path)
@@ -28,6 +32,35 @@ MARKERS = ("ZB-MS51B-DIR", "ZB-MS51B-FILE", "ZB-MS51B-DEP", "ZB-MS51B-HOME")
 
 def canary(marker):
     return b"\x00" + marker.encode() + b"\xff"
+
+
+def census(root):
+    """(canary hits, marker names, problems, regular files read) over everything under `root`, failing closed."""
+    found, names, problems, files = [], [], [], 0
+    for top, dirs, filenames in os.walk(root, followlinks=False, onerror=lambda e: problems.append(("walk", repr(e)))):
+        for name in dirs + filenames:
+            path = os.path.join(top, name)
+            rel = os.path.relpath(path, root)
+            if any(m in name for m in MARKERS):
+                names.append(rel)
+            if name in dirs:
+                continue
+            st = os.lstat(path)
+            if stat.S_ISLNK(st.st_mode):
+                continue  # never followed; its target is checked where it lives, if inside the home
+            if not stat.S_ISREG(st.st_mode):
+                problems.append((rel, "not a regular file"))
+                continue
+            try:
+                fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+                with os.fdopen(fd, "rb") as f:
+                    data = f.read()
+            except OSError as exc:
+                problems.append((rel, f"unreadable: {exc.strerror}"))
+                continue
+            files += 1
+            found += [(rel, m) for m in MARKERS if m.encode() in data]
+    return found, names, problems, files
 
 
 class SkippedLinkBytes(unittest.TestCase):
@@ -63,23 +96,20 @@ class SkippedLinkBytes(unittest.TestCase):
                 self.assertFalse(os.path.lexists(self.box.home.root / ".claude" / rel), f"{rel} is in the home")
 
     def test_no_target_bytes_or_names_anywhere_in_the_home(self):
-        found, names, files = [], [], 0
-        for top, dirs, filenames in os.walk(self.box.home.root, followlinks=False):
-            for name in dirs + filenames:
-                if any(m in name for m in MARKERS):
-                    names.append(os.path.join(top, name))
-            for name in filenames:
-                path = os.path.join(top, name)
-                try:
-                    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
-                except OSError:
-                    continue  # a link (never followed here) or not readable
-                with os.fdopen(fd, "rb") as f:
-                    data = f.read()
-                files += 1
-                found += [(os.path.relpath(path, self.box.home.root), m) for m in MARKERS if m.encode() in data]
+        found, names, problems, files = census(self.box.home.root)
         self.assertGreater(files, 10, "the walk saw too little of the home to mean anything")
-        self.assertEqual((found, names), ([], []))
+        self.assertEqual((found, names, problems), ([], [], []))
+
+    def test_the_census_fails_closed_on_an_unreadable_file_or_a_fifo(self):
+        """The control: a canary the census cannot read, or an entry it cannot classify, is a finding."""
+        hidden = self.box.home.root / "state" / "hidden.bin"
+        hidden.write_bytes(canary(MARKERS[0]))
+        hidden.chmod(0)
+        self.addCleanup(hidden.chmod, 0o600)
+        os.mkfifo(self.box.home.root / "state" / "pipe", 0o600)
+        _found, _names, problems, _files = census(self.box.home.root)
+        self.assertEqual(sorted(problems), [("state/hidden.bin", "unreadable: Permission denied"),
+                                            ("state/pipe", "not a regular file")])
 
     def test_the_dependency_tree_beside_it_is_still_copied_byte_for_byte(self):
         copied = self.box.home.root / ".claude/skills/demo/node_modules/pkg/index.js"
