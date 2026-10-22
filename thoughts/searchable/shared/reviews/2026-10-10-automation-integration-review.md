@@ -27381,3 +27381,45 @@ precedent use `fsync`. Fix forward with an injectable sync operation (or an
 equally causal syscall oracle) so deleting/bypassing the actual directory
 `fsync` fails, and use `fsync` rather than `fdatasync`. The atomic-publish
 range remains blocked and the push-through remains `bac895b`.
+
+## Darwin zombie-EPERM and kqueue green (`efa1485`)
+
+**APPROVED.** This closes the two approved reds `261640d` and `eee7089`.
+The production EPERM exception is narrowly conjunctive: it is accepted only
+for exact `EPERM`, on Darwin, after the already-owned leader is independently
+proved exited-but-unreaped, and only when a separate process-table census
+returns the exact empty live-member set for that pgid. A live leader, any live
+member, an unreadable/malformed census, another errno, or another OS remains
+`StopFailed(reason=kill_refused)`. After accepting that special case,
+`stop_group` still performs the bounded leader reap and repeats the full
+live-member proof before returning, so a live group member cannot be accepted
+by either observation.
+
+The kqueue fallback now registers `NOTE_EXIT`, polls once with
+`max(0, deadline-now)`, and only then applies the elapsed-deadline return. Thus
+the no-wait check observes a pending event without ever blocking. The two reds
+are registered in the focused and full gates.
+
+Reviewer evidence from an exact clean `git archive efa1485` export, with the
+entire focused step inside a private user/PID namespace:
+**Build Summary: 32/32 steps succeeded; 14/14 tests passed**. The EPERM matrix
+passed **9/9**, the kqueue matrix **4/4**, and the real-signal owned-group suite
+**12/12**. No process or gate survived outside the namespace.
+
+## Windows signing-deferral reconciliation (`a250f97`)
+
+**APPROVED for the OD-W3/signing portion of `fff7033`; the cumulative Windows
+decision-plan commit remains BLOCKED on its separate OD-W1/OD-W6 and metadata
+items.** The current desired state is now explicitly an unsigned per-user
+build; signature verification is removed from launch behavior; WS13.6 is a
+named deferred, open, non-launch slice; signature-valid and signing-script
+requirements are removed from the launch red/green/gate; and the dependency
+text no longer makes OD-W3 a launch gate. The retained future signing analysis
+is clearly conditional and makes no present signed/distributable claim.
+
+Still open from `b3d255b`: the `Open decisions` table and its blanket
+"nothing below picks" text still treat decided W1/W6 as recommendations;
+WS5 still says its green may use the WebView2-hosted drawer; WS13.4 still says
+OD-W1 may change the installer; dependency text still says WS5 waits on W6 and
+WS13 waits on W1; and the frontmatter revision/date still predates all three
+binding decisions. This is docs-only and `git diff --check` is clean.
