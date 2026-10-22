@@ -7,6 +7,7 @@ tests/windows/screenshot_live_test.py
 tests/e2e/screenshot_branches_live_test.py
 tests/windows/win_config_flags_test.py
 tests/e2e/win_transport_test.py
+tests/e2e/win_capabilities_test.py
 tests/windows/refusal_stderr_live_test.py
 tests/windows/win_drawer_test.py
 tests/windows/win_drawer_behaviors_test.py

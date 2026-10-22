@@ -350,6 +350,8 @@ pub fn build(b: *std.Build) void {
     // read the token. Skips cleanly without ZB_WIN11_HOST/ZB_WIN_EXE; needs no slot.
     const windows_transport_live = b.addSystemCommand(&.{ "python3", "-I", "tests/e2e/win_transport_test.py" });
     b.step("windows-transport-live", "Live Windows WS2.0 transport: owner-only socket, token and directory on the VM (skips without ZB_WIN11_HOST)").dependOn(&windows_transport_live.step);
+    const windows_capabilities_live = b.addSystemCommand(&.{ "python3", "-I", "tests/e2e/win_capabilities_test.py" });
+    b.step("windows-capabilities-live", "Live Windows WS2b.0: the capabilities RPC on the real exe reports the webview2 row (skips without ZB_WIN11_HOST)").dependOn(&windows_capabilities_live.step);
 
     // WS2a.0 spike: the automation script's private CDP world on the VM (tests/e2e/win_private_world_spike.py
     // builds and runs ws2a0-world-spike-win there). Gated (ZB_WIN_GATE=1): with no host or marker it FAILS,
@@ -3686,6 +3688,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&windows_screenshot_live.step);
     test_step.dependOn(&windows_config_flags_live.step);
     test_step.dependOn(&windows_transport_live.step);
+    test_step.dependOn(&windows_capabilities_live.step);
     test_step.dependOn(&windows_refusal_live.step);
     test_step.dependOn(&windows_live_step_skip.step);
     test_step.dependOn(&run_ipc_tests.step);
