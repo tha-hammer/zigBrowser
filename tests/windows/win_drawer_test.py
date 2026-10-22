@@ -138,14 +138,19 @@ def check_assign_fail(r):
     assert rows == [], f"a process killed before resume must emit NO DRAWER rows; got {rows}"
 
 
-def check_firststop_fail(r):
-    """Forced FIRST-stop-proof failure (RoseCat 7670 #1, causal row (d)): the first TerminateProcess/wait proof
-    fails, but the SEPARATE bounded cleanup route still proves the process terminal and leaves ZERO owned job
-    members — no orphan, no signal fallback."""
-    assert r.get("first_stop_failed"), "the first stop proof must actually have failed (seam fired)"
-    assert r.get("proc_gone"), "the bounded cleanup route must still prove the process terminal (proc_gone)"
-    assert r.get("job_count_after") == 0, f"the backstop must leave zero owned job members (got {r.get('job_count_after')})"
-    assert r.get("error", "") == "", f"the backstop recovered, so no hard error is surfaced; got {r.get('error')!r}"
+def check_assign_firststop_fail(r):
+    """Combined forced mode (RoseCat a94db57 #1): the assignment fails (so the child is suspended and NEVER in
+    the job) AND the FIRST stop proof fails. The pre-assignment recovery's first stop therefore genuinely does
+    not kill a live child; the SEPARATE independent bounded cleanup (after the empty Job is closed) must then
+    actually reap the suspended, never-assigned child and prove it gone. This is the only path that establishes
+    first-stop-fails/backstop-succeeds — Teardown is skipped (launch_failed), so it cannot supply the proof."""
+    assert r.get("launch_failed"), "the child must never have resumed (pre-assignment path), so Teardown is skipped"
+    assert "AssignProcessToJobObject" in (r.get("error") or ""), f"the assign failure must be surfaced; got {r.get('error')!r}"
+    assert r.get("first_stop_failed"), "the first stop proof must actually have failed on the live suspended child"
+    assert r.get("proc_gone"), "the independent cleanup must still reap the never-assigned suspended child (proc_gone)"
+    assert r.get("job_count_after") == 0, f"the never-assigned child leaves zero owned job members (got {r.get('job_count_after')})"
+    rows = [row for row in (parse_drawer(ln) for ln in r.get("stdout", "").splitlines()) if row]
+    assert rows == [], f"a process killed before resume must emit NO DRAWER rows; got {rows}"
 
 
 def check_wait_fail(r):
@@ -168,7 +173,7 @@ _RUNNER = r"""
 $ErrorActionPreference='Stop'
 $dir = $args[0]
 $failMode = $args[1]    # '', 'panel' or 'icon' — drives the PRODUCTION control-factory failure seam
-$forceMode = $args[2]   # '', 'assign_fail' or 'wait_fail' — drives the HARNESS job-lifecycle failure seam
+$forceMode = $args[2]   # '', 'assign_fail', 'assign_firststop_fail' or 'wait_fail' — HARNESS lifecycle seam
 if ($forceMode) { $env:ZB_E2E_DRAWER_FORCE = $forceMode }  # read by [Z]::ForceFail at first use
 $exe = Join-Path $dir 'zigBrowser.exe'
 $out = Join-Path $dir 'o.txt'; $err = Join-Path $dir 'e.txt'; $nul = 'NUL'
@@ -233,12 +238,14 @@ public static class Z {
   public static IntPtr Job; static IntPtr _hProc, _hThread; public static int Pid; public static bool ProcGone;
   public static bool FirstStopFailed; static int _proveCalls;
   // ONE attempt to prove the held process is terminal. The PROOF is wait + exit-code (TerminateProcess is only
-  // the action — an already-dead process may return false). Does NOT close any handle. The e2e `firststop_fail`
-  // seam forces ONLY the first attempt to fail (so a separate bounded cleanup route must reap it).
+  // the action — an already-dead process may return false). Does NOT close any handle. The e2e
+  // `assign_firststop_fail` seam forces ONLY the first attempt to fail AND skips the action, so the first stop
+  // genuinely does NOT kill the (still-suspended, never-assigned) child — a separate bounded cleanup route
+  // must actually reap it (RoseCat a94db57 #1).
   static bool ProveTerminal(uint waitMs) {
     if (_hProc == IntPtr.Zero) return true;
     _proveCalls++;
-    if (ForceFail == "firststop_fail" && _proveCalls == 1) { FirstStopFailed = true; return false; }
+    if (ForceFail == "assign_firststop_fail" && _proveCalls == 1) { FirstStopFailed = true; return false; }
     TerminateProcess(_hProc, 1);                       // best-effort action
     uint w = WaitForSingleObject(_hProc, waitMs);
     uint code = STILL_ACTIVE; bool got = GetExitCodeProcess(_hProc, out code);
@@ -289,7 +296,7 @@ public static class Z {
     if (!cOut || !cErr || !cIn) { KillHeld(); Fail("CloseHandle(std) (held process terminated; gone=" + ProcGone + ")"); }
     // Forced assignment failure (e2e seam): the suspended process is outside the job; it MUST be terminated
     // by the held handle (never a pid) and PROVEN gone (ProcGone).
-    bool assigned = (ForceFail == "assign_fail") ? false : AssignProcessToJobObject(Job, pi.hProcess);
+    bool assigned = (ForceFail == "assign_fail" || ForceFail == "assign_firststop_fail") ? false : AssignProcessToJobObject(Job, pi.hProcess);
     if (!assigned) { KillHeld(); throw new Exception("AssignProcessToJobObject failed (held process terminated; gone=" + ProcGone + ")"); }
     if (ResumeThread(pi.hThread) == 0xFFFFFFFF) { KillHeld(); Fail("ResumeThread (held process terminated; gone=" + ProcGone + ")"); }
   }
@@ -315,21 +322,14 @@ public static class Z {
       throw new Exception("WaitForSingleObject on the browser did not signal WAIT_OBJECT_0: " + wait +
                           " (bounded cleanup proved gone=" + ProcGone + ", job_members=" + JobProcessCount() + ")");
     }
-    // Normal path proved terminal by the first wait. The `firststop_fail` seam deliberately leaves ProcGone
-    // unset here so the separate bounded cleanup route (FinalReap) is exercised and must still reap it.
-    if (ForceFail != "firststop_fail") ProcGone = true;
+    ProcGone = true;  // the first wait proved terminal
   }
-  // Close the Job (KILL_ON_CLOSE backstop). Release the process/thread handles ONLY when the process is PROVEN
-  // terminal — NEVER discard an unproven handle (that would orphan a live child). Every CloseHandle is checked.
-  public static void Close() {
-    bool okT = true, okP = true;
-    if (ProcGone) {
-      okT = _hThread == IntPtr.Zero || CloseHandle(_hThread);
-      okP = _hProc == IntPtr.Zero || CloseHandle(_hProc);
-      _hThread = IntPtr.Zero; _hProc = IntPtr.Zero;
-    }
-    bool okJ = Job == IntPtr.Zero || CloseHandle(Job);
-    if (!okT || !okP || !okJ) Fail("CloseHandle");
+  // Close ONLY the Job handle (KILL_ON_CLOSE: this kills any STILL-ASSIGNED child). The held process/thread
+  // handles are owned by FinalReap, which must run AFTER this so a Job-close kill is proven by a post-close wait
+  // through the still-held process handle, and a never-assigned child (closing the empty Job cannot stop it) is
+  // reaped by FinalReap's own TerminateProcess+wait (RoseCat a94db57 #2).
+  public static void CloseJob() {
+    if (Job != IntPtr.Zero) { if (!CloseHandle(Job)) Fail("CloseHandle(Job)"); Job = IntPtr.Zero; }
   }
   static IntPtr _found; static uint _pid; static string _cls; static readonly EnumProc _findCb = FindCb;
   static bool FindCb(IntPtr h, IntPtr l) { uint p; GetWindowThreadProcessId(h, out p);
@@ -389,13 +389,16 @@ finally {
   if ($launched) {
     try { [Z]::Teardown(); $res.terminated = $true } catch { if (-not $res.error) { $res.error = $_.Exception.Message } }
   }
-  # ALWAYS run the bounded cleanup route (proves the held process terminal and closes its handle only when
-  # proven), then census the owned job, then Close. Querying the job BEFORE Close (the job handle is still open).
+  # Census the owned job while its handle is still open, THEN close the Job (KILL_ON_CLOSE kills any still-
+  # assigned child), THEN run the definitive bounded reap through the still-held process handle — so a Job-close
+  # kill is proven by a post-close wait, and a never-assigned child is terminated+proven by FinalReap itself.
+  # The runner never exits with an unproved child (RoseCat a94db57 #2).
+  try { if ([Z]::Job -ne [IntPtr]::Zero) { $res.job_count_after = [Z]::JobProcessCount() } } catch { if (-not $res.error) { $res.error = $_.Exception.Message } }
+  try { [Z]::CloseJob() } catch { if (-not $res.error) { $res.error = $_.Exception.Message } }
   try { [Z]::FinalReap() | Out-Null } catch { if (-not $res.error) { $res.error = $_.Exception.Message } }
   $res.proc_gone = [Z]::ProcGone
   $res.first_stop_failed = [Z]::FirstStopFailed
-  try { if ([Z]::Job -ne [IntPtr]::Zero) { $res.job_count_after = [Z]::JobProcessCount() } } catch { if (-not $res.error) { $res.error = $_.Exception.Message } }
-  try { [Z]::Close() } catch { if (-not $res.error) { $res.error = $_.Exception.Message } }
+  if (-not $res.proc_gone -and -not $res.error) { $res.error = 'cleanup exhausted: held child not proven terminal' }
   $res.stdout = [string](Get-Content $out -Raw -ErrorAction SilentlyContinue); if ($null -eq $res.stdout) { $res.stdout = '' }
   $res.stderr = [string](Get-Content $err -Raw -ErrorAction SilentlyContinue); if ($null -eq $res.stderr) { $res.stderr = '' }
 }
@@ -515,10 +518,11 @@ class WinDrawerLive(unittest.TestCase):
         # (suspended) process by its handle — proven gone, no owned job members left (no pid/name kill, no orphan).
         self._run_drawer(force_mode="assign_fail", body=check_assign_fail)
 
-    def test_first_stop_failure_recovered_by_backstop(self):
-        # RoseCat 7670 causal row (d): the first stop proof fails, but the separate bounded cleanup route still
-        # proves the process terminal and leaves zero owned job members.
-        self._run_drawer(force_mode="firststop_fail", body=check_firststop_fail)
+    def test_assign_plus_first_stop_failure_reaped_by_independent_cleanup(self):
+        # RoseCat a94db57 #1: assignment fails (child suspended, never in the job) AND the first stop proof
+        # fails, so only the independent bounded cleanup (after the empty Job is closed) can reap the live
+        # suspended child — Teardown is skipped and cannot supply the proof.
+        self._run_drawer(force_mode="assign_firststop_fail", body=check_assign_firststop_fail)
 
     def test_wait_failure_is_reported(self):
         # RoseCat 7670 #2: a teardown whose first wait is not WAIT_OBJECT_0 must FAIL (never a silent bounded
@@ -637,7 +641,7 @@ class WinDrawerOracle(unittest.TestCase):
         with self.assertRaises(AssertionError):
             check_mounted_fail(r, "panel")
 
-    # --- forced job-lifecycle failure oracles (check_assign_fail / check_firststop_fail / check_wait_fail) ---
+    # --- forced job-lifecycle failure oracles (check_assign_fail / check_assign_firststop_fail / check_wait_fail) ---
     def test_assign_fail_good_passes(self):
         check_assign_fail({"launch_failed": True, "proc_gone": True, "job_count_after": 0,
                            "error": "AssignProcessToJobObject failed (held stop gone=True)", "stdout": ""})
@@ -658,26 +662,36 @@ class WinDrawerOracle(unittest.TestCase):
             check_assign_fail({"launch_failed": True, "proc_gone": True, "job_count_after": 0,
                                "error": "AssignProcessToJobObject failed", "stdout": "DRAWER\t1\topen\t0,437,1008,292\n"})
 
-    def test_firststop_fail_good_passes(self):
-        # RoseCat 7670 causal row (d): first stop proof fails, the bounded cleanup still leaves zero owned.
-        check_firststop_fail({"first_stop_failed": True, "proc_gone": True, "job_count_after": 0,
-                              "terminated": True, "error": ""})
+    def test_assign_firststop_fail_good_passes(self):
+        # RoseCat a94db57 #1: assign fails + first stop fails; the independent cleanup reaps the never-assigned
+        # suspended child and leaves zero owned. launch_failed proves Teardown did NOT supply the first proof.
+        check_assign_firststop_fail({"launch_failed": True, "first_stop_failed": True, "proc_gone": True,
+                                     "job_count_after": 0, "error": "AssignProcessToJobObject failed", "stdout": ""})
 
-    def test_firststop_fail_but_not_reaped_rejected(self):
+    def test_assign_firststop_fail_but_not_reaped_rejected(self):
         with self.assertRaises(AssertionError):
-            check_firststop_fail({"first_stop_failed": True, "proc_gone": False, "job_count_after": 0,
-                                  "terminated": True, "error": ""})
+            check_assign_firststop_fail({"launch_failed": True, "first_stop_failed": True, "proc_gone": False,
+                                         "job_count_after": 0, "error": "AssignProcessToJobObject failed", "stdout": ""})
 
-    def test_firststop_fail_but_job_member_survivor_rejected(self):
+    def test_assign_firststop_fail_teardown_supplied_proof_rejected(self):
+        # if the run resumed (launch_failed False), Teardown supplied the proof — not the independent cleanup.
         with self.assertRaises(AssertionError):
-            check_firststop_fail({"first_stop_failed": True, "proc_gone": True, "job_count_after": 1,
-                                  "terminated": True, "error": ""})
+            check_assign_firststop_fail({"launch_failed": False, "first_stop_failed": True, "proc_gone": True,
+                                         "job_count_after": 0, "error": "AssignProcessToJobObject failed", "stdout": ""})
 
-    def test_firststop_fail_not_actually_exercised_rejected(self):
-        # if the seam never fired, this is not evidence of the backstop recovering a first-stop failure.
+    def test_assign_firststop_fail_not_actually_exercised_rejected(self):
+        # if the first-stop seam never fired, this is not evidence of first-stop-fails/backstop-succeeds.
         with self.assertRaises(AssertionError):
-            check_firststop_fail({"first_stop_failed": False, "proc_gone": True, "job_count_after": 0,
-                                  "terminated": True, "error": ""})
+            check_assign_firststop_fail({"launch_failed": True, "first_stop_failed": False, "proc_gone": True,
+                                         "job_count_after": 0, "error": "AssignProcessToJobObject failed", "stdout": ""})
+
+    def test_cleanup_exhaustion_cannot_leave_process_rejected(self):
+        # RoseCat a94db57 #2: a cleanup-exhausted result (held child not proven terminal) must FAIL, never pass
+        # as clean — the runner may not exit with an unproved child.
+        with self.assertRaises(AssertionError):
+            check_assign_firststop_fail({"launch_failed": True, "first_stop_failed": True, "proc_gone": False,
+                                         "job_count_after": 0,
+                                         "error": "cleanup exhausted: held child not proven terminal", "stdout": ""})
 
     def test_wait_fail_good_passes(self):
         check_wait_fail({"terminated": False, "proc_gone": True, "job_count_after": 0,
