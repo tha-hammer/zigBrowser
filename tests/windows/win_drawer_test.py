@@ -1292,44 +1292,83 @@ class WinDrawerOracle(unittest.TestCase):
     # the real disposable-target round-trip on Win11.
 
     def test_ws5_5b2_spawn_is_call_bound(self):
-        # WS5.5b-2 (RoseCat bdc8202 #2): CALL-BOUND to the real spawn body through a LEXER that strips block
-        # comments, line comments and literals — so a decoy in a comment/string can neither satisfy nor defeat
-        # the binding. Binds the failure condition, the partial DestroyWindow, and the terminating continue
-        # structurally; the ownership retire-once logic is driven directly in the Zig property test.
+        # WS5.5b-2 (RoseCat 3c0b7b3 fix-forward of 9132e93): the post-controller gate/count decision is the
+        # portable zb_drawer_after_controller (every gate combination driven directly in
+        # agent_drawer_props_test.zig). This oracle binds the C++ ARCHITECTURE through a lexer that strips
+        # comments and string literals (so a decoy can neither satisfy nor defeat it): the controller completion
+        # makes ONE real decision call, the spawn body is driven by the returned COUNT (not another field), and
+        # ONE primary WM_CLOSE follows the spawn; the spawn body keeps its partial-window cleanup and its
+        # record-before-increment order. It is RED on the pre-9132e93 shape (count decided inside the spawn)
+        # and GREEN on the new one. The retire-once/8-gate semantics are the Zig property test's job.
         shim = (pathlib.Path(__file__).resolve().parents[2] / "src" / "webview2_shim.cpp").read_text(encoding="utf-8")
-        body = " ".join(strip_cpp(extract_cpp_function(shim, "spawn_extra_drawer_windows")).split())
-        push = "extra_windows.push_back(ExtraWindow{reinterpret_cast<uintptr_t>(w), 1})"
-        fail_arm = "DestroyWindow(w); continue;"  # partial destroy immediately followed by the terminating continue
+
+        def lx(s):  # lexer: strip comments/literals, then collapse ALL whitespace so matching is spacing-proof
+            return re.sub(r"\s+", "", strip_cpp(s))
+
+        spawn = lx(extract_cpp_function(shim, "spawn_extra_drawer_windows"))
+        ctrl = lx(extract_cpp_function(shim, "create_controller"))
+
+        loop = lx("for (int i = 0; i < count; i++)")               # count-driven, not a re-decided extra count
+        both_check = lx("panel_h == nullptr || icon_h == nullptr")
+        fail_arm = lx("DestroyWindow(w); continue;")                # partial destroy then the terminating continue
+        push = lx("extra_windows.push_back(ExtraWindow{reinterpret_cast<uintptr_t>(w), 1})")
+        inc = lx("drawer_live_inc();")
+        pre913 = lx("zb_drawer_extra_windows(app->windows_seam)")   # the pre-9132e93 count decision in the spawn
+        decide = lx("zb_drawer_after_controller(app->windows_seam, app->e2e_protocol ? 1 : 0, "
+                    "app->agent_drawer_on ? 1 : 0, app->windows_seam_set ? 1 : 0)")
+        spawn_use = lx("spawn_extra_drawer_windows(app, after.spawn_count)")  # consume the returned COUNT
+        close = lx("PostMessageW(app->hwnd, WM_CLOSE, 0, 0)")                 # the PRIMARY close
 
         def spawn_ok(b):
-            need = ["zb_drawer_extra_windows(app->windows_seam)", "panel_h == nullptr || icon_h == nullptr",
-                    fail_arm, push, "GWLP_USERDATA, reinterpret_cast<LONG_PTR>(app)", "drawer_live_inc();"]
+            need = [loop, both_check, fail_arm, push, lx("GWLP_USERDATA, reinterpret_cast<LONG_PTR>(app)"), inc]
             if not all(t in b for t in need):
                 return False
-            # the LIVE app-owned record is pushed, and the full-structure check runs, BEFORE the increment
-            return (b.index(push) < b.index("drawer_live_inc();")
-                    and b.index("panel_h == nullptr || icon_h == nullptr") < b.index("drawer_live_inc();"))
+            if pre913 in b:
+                return False  # the count must NOT be re-decided inside the spawn body (pre-9132e93 shape)
+            # the LIVE app-owned record is pushed, and the both-controls check runs, BEFORE the increment
+            return b.index(push) < b.index(inc) and b.index(both_check) < b.index(inc)
 
-        self.assertTrue(spawn_ok(body), f"spawn must be call-bound: count+check+partial-destroy+continue+record-then-inc; body={body!r}")
-        # causal mutants on the spawn body
-        self.assertFalse(spawn_ok(body.replace("drawer_live_inc();", "", 1)), "inc removed must be caught")
-        self.assertFalse(spawn_ok(body.replace(fail_arm, "DestroyWindow(w);", 1)), "a missing terminating continue must be caught")
-        self.assertFalse(spawn_ok(body.replace(fail_arm, "DestroyWindow(gStale); continue;", 1)), "a wrong-HWND destroy must be caught")
-        self.assertFalse(spawn_ok(body.replace("panel_h == nullptr || icon_h == nullptr", "false")),
-                         "dropping the both-controls check must be caught")
-        reordered = body.replace(push + ";", "", 1).replace(
-            "drawer_live_inc();", "drawer_live_inc(); " + push + ";", 1)
-        self.assertFalse(spawn_ok(reordered), "recording the live window AFTER the increment must be caught")
-        # the lexer defeats decoys: the failure arm hidden in a comment or a string literal does NOT satisfy it
-        self.assertNotIn(fail_arm, " ".join(strip_cpp("f(){ /* " + fail_arm + " */ }").split()),
-                         "a comment decoy must be stripped by the lexer")
-        self.assertNotIn("DestroyWindow", " ".join(strip_cpp('const char* s = "DestroyWindow(w); continue;";').split()),
-                         "a string-literal decoy must be stripped by the lexer")
-        # close-one destroys ONE live record via DestroyWindow without pre-removing it; never a manual decrement
-        self.assertIn("DestroyWindow(reinterpret_cast<HWND>(rec.hwnd))", body,
-                      "close-one/teardown must destroy via the record HWND (routing to the WndProc)")
-        self.assertNotIn("pop_back", body, "close-one must NOT pre-remove the record — the WM_DESTROY path retires it")
-        self.assertNotIn("fetch_sub", body, "the spawn must never decrement manually — the WM_DESTROY path owns it")
+        def ctrl_ok(b):
+            # exactly one decision call, exactly one count-consuming spawn, exactly one primary close, spawn first
+            if b.count(decide) != 1 or b.count(spawn_use) != 1 or b.count(close) != 1:
+                return False
+            return b.index(spawn_use) < b.index(close)  # spawn (the peak is reached) BEFORE the primary close
+
+        self.assertTrue(spawn_ok(spawn), f"spawn must be count-driven w/ partial-cleanup + record-then-inc; spawn={spawn!r}")
+        self.assertTrue(ctrl_ok(ctrl), f"controller must decide once, spawn with the count, then close the primary; ctrl={ctrl!r}")
+
+        # --- spawn-body mutants (synthetic; prove the predicate is not vacuous) ---
+        self.assertFalse(spawn_ok(spawn.replace(inc, "", 1)), "a removed increment must be caught")
+        self.assertFalse(spawn_ok(spawn.replace(fail_arm, lx("DestroyWindow(w);"), 1)), "a missing terminating continue must be caught")
+        self.assertFalse(spawn_ok(spawn.replace(fail_arm, lx("DestroyWindow(gStale); continue;"), 1)), "a wrong-HWND partial destroy must be caught")
+        self.assertFalse(spawn_ok(spawn.replace(both_check, lx("false"), 1)), "dropping the both-controls check must be caught")
+        self.assertFalse(spawn_ok(spawn.replace(push, "", 1).replace(inc, inc + push, 1)), "recording the live window AFTER the increment must be caught")
+        self.assertFalse(spawn_ok(spawn.replace(loop, loop + pre913 + ";", 1)), "the pre-9132e93 shape (count re-decided inside the spawn) must be caught")
+
+        # --- controller mutants (synthetic; the real shape passes, each named defect fails) ---
+        D = ("const AfterController after = zb_drawer_after_controller(app->windows_seam, app->e2e_protocol ? 1 : 0, "
+             "app->agent_drawer_on ? 1 : 0, app->windows_seam_set ? 1 : 0);")
+        S = "spawn_extra_drawer_windows(app, after.spawn_count);"
+        C = "if (after.close_primary) { PostMessageW(app->hwnd, WM_CLOSE, 0, 0); }"
+
+        def synth(*stmts):
+            return lx("HRESULT f(AppState* app) { " + " ".join(stmts) + " }")
+
+        self.assertTrue(ctrl_ok(synth(D, S, C)), "the real controller shape passes")
+        self.assertFalse(ctrl_ok(synth("/* " + D + " */", S, C)), "a commented-out decision call must be caught")
+        self.assertFalse(ctrl_ok(synth(D, S, "/* " + C + " */")), "a commented-out primary close must be caught")
+        self.assertFalse(ctrl_ok(synth(D, D, S, C)), "a duplicate decision call must be caught")
+        self.assertFalse(ctrl_ok(synth(D, S, S, C)), "a duplicate spawn must be caught")
+        self.assertFalse(ctrl_ok(synth(D, S, C, C)), "a duplicate primary close must be caught")
+        self.assertFalse(ctrl_ok(synth(D, "spawn_extra_drawer_windows(app, after.close_primary);", C)), "spawning with the wrong returned field must be caught")
+        self.assertFalse(ctrl_ok(synth(D, C, S)), "closing the primary before the spawn must be caught")
+        self.assertFalse(ctrl_ok(synth(D, S, "if (after.close_primary) { PostMessageW(extra, WM_CLOSE, 0, 0); }")), "closing a non-primary HWND must be caught")
+
+        # --- the lexer defeats literal/comment decoys; close-one still destroys via the record HWND ---
+        self.assertNotIn(fail_arm, lx('const char* s = "DestroyWindow(w); continue;";'), "a string-literal decoy must be stripped by the lexer")
+        self.assertIn(lx("DestroyWindow(reinterpret_cast<HWND>(rec.hwnd))"), spawn, "close-one/teardown must destroy via the record HWND (routing to the WndProc)")
+        self.assertNotIn("pop_back", spawn, "close-one must NOT pre-remove the record — the WM_DESTROY path retires it")
+        self.assertNotIn("fetch_sub", spawn, "the spawn must never decrement manually — the WM_DESTROY path owns it")
 
     def test_ws5_5b2_extra_wndproc_calls_the_ownership_helper(self):
         # RoseCat bdc8202 #2: the extra WndProc is a CALL-SITE binding to the production ownership helper
