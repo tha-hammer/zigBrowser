@@ -32897,3 +32897,49 @@ namespace passed **4/4**.
 The file remains deliberately unregistered. Registration and the real macOS
 setup half are still separate requirements, so this verdict releases no Mac
 run and does not yet complete MS5.1b across both platforms.
+
+## MS4.4 raw socket client (`5d49cc1`)
+
+**APPROVED.** The e2e no longer imports the Python SDK: it uses the existing
+stdlib-only framed `RpcClient` and a local loopback fixture while preserving
+the four load-bearing phases and exact error reasons. It still proves both
+cookies through `cookies.set`/`cookies.getAll`, both gated flows open only with
+their cookie, and each delete makes the next flow fail `logged_out` without a
+new fixture request. Reviewer private-PID-namespace/private-Xvfb execution
+passed `closed`, `through-the-port`, `open`, `live` and the aggregate row; both
+Python files also compile.
+
+The MS4.4 two-Mac leg is not released yet. It still needs (1) the portable
+`OwnedGroup.stop` fallback covered by a committed registered regression, and
+(2) a reviewed `tests/mac/ms4_gate.sh` change that runs this raw-client test
+after `mac_ms4_load_serial_test.py` on each architecture. Then an orchestrator-
+released exact clean commit must produce all five MS4.4 PASS rows on Intel and
+arm64, the existing load-serial PASS, the final both-arches gate row, and clean
+browser/WebKit/temp-root censuses. It uses only its local fixture, throwaway
+profile/socket and scrubbed seams; no account, credential, external site or
+live profile is permitted.
+
+## MS4.4 no-`waitid` cleanup fallback (`ea393b7`)
+
+**Code is sound, BLOCKED-for-tests.** If `waitid` is unavailable, retaining the
+unreaped leader for the whole grace keeps its pid/process-group id from reuse;
+the subsequent exact-group SIGKILL and leader wait are therefore safe. But the
+commit adds no regression for the new branch: the registered cleanup suite on
+Linux continues through `waitid`. Add a row that removes/mocks the capability,
+starts the real leader-plus-grandchild stand-in, calls `stop`, and proves the
+leader reaped, the group gone and a second stop signal-free. Run it only in the
+existing private PID namespace. That coverage is required before the Mac leg.
+
+## Win32 drawer fail-mode allowlist (`361935b`)
+
+**APPROVED-for-live-evidence.** The change admits only the already-defined
+`bubble` failure seam; unknown/blank values remain refused. The new parity row
+pins every Python fail/force mode into the PowerShell runner, and reviewer
+execution passed **70/70 offline rows** with exactly eight live skips. The
+`460e2ac` rerun's first two rows validly proved the settled Job count; row 3
+refused before launch and both endpoint censuses were zero.
+
+One more bounded eight-row Win11 entry run is authorized at exact clean commit
+`361935b` under the previously recorded MSVC, BatchMode, owned-Job, unique-root,
+fail-fast and clean-census conditions. No install, elevation, WSL/Win10 or
+local-display action is authorized.
