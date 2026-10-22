@@ -26935,3 +26935,34 @@ commit-message NIT; the actual red is `9ac707c`. No destructive Mac run is
 authorized by this review. Agent Mail 7458 sent JadeBeacon the test gaps before
 the green landed; a follow-up verdict reports that `51fb680` did not close
 them.
+
+## WS0.5 remote-path fence removal (`1d7b604`)
+
+**BLOCKED on one authoritative-plan contradiction.** The code and registered
+test removal are otherwise correct. At exact `1d7b604`, `allowed_path`, the
+`--allowed-path` dispatch, both resolver-command hooks, the two resolver files,
+and the build registration/dependency are gone. A repository-wide exact-commit
+search finds no functional caller; the surviving names are explanatory text
+and `RemotePathFenceRemovedTests` assertions that pin their absence. The
+remaining `--fence-string` path is visibly labelled a lexical diagnostic with
+no filesystem access or authorization claim. The normative WS0.5 text at
+plan lines 759-777 likewise states that no remote-path authorization fence
+exists and requires a future held-handle check-and-use milestone.
+
+From an exact clean export with display variables removed, the registered
+`windows-gate-selftest` passed **3/3 build steps and 16/16 tests**. The deleted
+resolver files are absent, `git diff --check` is clean, and the narrowed step
+also proves the modified `build.zig` parses.
+
+However, host-provisioning item 3 at plan lines 397-400 still says that “the
+gate refuses any remote path outside” `C:\Users\zbtest\zb\` under WS0.5. That
+is the removed name-based authorization promise and directly contradicts the
+new normative section. Fix it forward to distinguish the intended user/run-
+root policy from an enforcement boundary the gate does not have. The stale
+`build.zig:253-255` summary saying “path fence” should also be relabelled as
+the lexical path-shape check, but that comment is only a SHOULD.
+
+Until the plan contradiction is corrected, `1d7b604` does not cumulatively
+close `aebb07b`/`9dbad76`/`7ea3c95`; the approved linear push-through remains
+the already-pushed `63ed27f`. Agent Mail 7462 sent AzureRidge the exact docs
+blocker.
