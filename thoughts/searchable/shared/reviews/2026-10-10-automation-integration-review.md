@@ -28391,3 +28391,22 @@ negative.
 No WS8/WS9 implementation red is authorized by this review. `git diff --check`
 is clean and the spike compiles with `python3 -m py_compile`; those static
 checks do not change the plan verdict.
+
+## MS6.3 unnamed fd-3 endpoint red (`64e6ccb`)
+
+**APPROVED as the scoped unregistered red; `7553` is closed.** The fake now
+records the duplicated endpoint's family, type, local address and peer address,
+and requires `(AF_UNIX, SOCK_STREAM, "", "")` for both token-bearing rows
+(`tests/e2e/ms6_hard_gate_fd3_cli_case_test.py:191-215,266-294`). That accepts
+an unnamed connected socketpair end while rejecting a pipe/file, an
+unconnected Unix stream socket and clients/accepted sockets connected through
+filesystem or abstract Unix listeners. A reviewer Linux shape probe confirmed
+the intended distinction: a socketpair reports two empty addresses, while a
+named or abstract listener leaves its path/name on exactly one side.
+
+The red remains unregistered and the production case is still absent. Reviewer
+clean-export execution inside a private user/PID namespace produced the causal
+red: **12 tests, 12 errors**, all `FileNotFoundError` for
+`case_ms6_3_fd3_cli.py`. `git diff --check` is clean. BlueBeaver may now build
+the green, register it and present the resulting reviewed manifest digest; no
+Mac run is authorized by this red-only verdict.
