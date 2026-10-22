@@ -5,14 +5,22 @@ CONTRACT AMENDMENT (RoseCat 44ca58e #1; macOS plan MS7.4): on AppKit every bubbl
 `@interface ZbBubbleView : NSTextView`, instead of the GTK split (a label up to label_text_max, a text view past it).
 A selectable NSTextField copies through the window's shared field editor, so a label kind would need a second copy
 route through the window delegate (windowWillReturnFieldEditor:toObject:), shared with every other field in the
-window. An NSTextView is itself the first responder of its selection, so ZbBubbleView's own copy: is the one route.
+window. An NSTextView is itself the first responder of its selection, so ZbBubbleView's own copy: is meant to be the
+one route (the design; proven at run time only by the compiled gate below).
 label_text_max stays the responsiveness boundary as the bubble's LAYOUT: up to it contiguous, past it
 non-contiguous (a 200 KiB reply). The portable seam says so (bubbleLayoutContiguous /
 zb_drawer_bubble_layout_contiguous replace bubbleIsLabel / zb_drawer_bubble_is_label). Because setBubble:text:length:
 applies it on every update, a streaming bubble that crosses the boundary changes layout in place (GTK swaps the widget).
-The real-Mac clipboard checks on both sides of label_text_max stay owner-run real-screen cases. So does Edit > Copy
-(Cmd+C), which reaches copy: only through a menu item whose target is the first responder.
-Offline (no macOS SDK here), a source-bound oracle over src/agent_drawer_mac.m. The file is read LEXICALLY (comments
+AUTHORITY (RoseCat c6b2b32): this module is an OFFLINE TRIPWIRE over source text. It proves no run-time behavior. The
+runtime authority is the compiled two-Mac hard-gate case tests/mac/hard_gate/case_ms7_appkit_authority.py, on Intel and Apple Silicon
+from a clean exact-commit export:
+- the production argv and preprocessor output;
+- the loaded ObjC classes, method lists, IMP images and categories;
+- the live main-menu Copy item and its nil target;
+- a real ZbBubbleView first responder copying the exact original bytes on both sides of label_text_max, and the page
+  fallback.
+Every "so Cmd+C reaches ..." below names what that gate must observe, not what this file proves.
+Offline (no macOS SDK here), a source-bound tripwire over src/agent_drawer_mac.m. The file is read LEXICALLY (comments
 removed, string and character literal contents blanked) and cut into a token SHAPE: each `;`-statement, `{` and `}`
 in order, with whitespace removed. So a bound body fixes its statements, their order, their count and their control
 flow; a dead branch, an extra effect, a reorder or a removal changes the shape.
@@ -53,14 +61,16 @@ flow; a dead branch, an extra effect, a reorder or a removal changes the shape.
   ZbBubbleView allocation or closed route. An NSTextField may only be a static `[NSTextField labelWithString:@"..."]`,
   optionally assigned to a local (never selectable or editable: those setters are guarded). The NEVER list (markup, NUL-terminated reads, field
   editor routes, swizzling, other pasteboard writers) and RUNTIME_REWRITES appear nowhere.
-- V8 the Edit menu is live (RoseCat 8129 #2): the shim holds exactly one `static void zb_install_edit_menu(NSApplication
+- V8 tripwire, the Edit menu's source shape (RoseCat 8129 #2; live behavior: the compiled gate): the shim holds exactly one `static void zb_install_edit_menu(NSApplication
   *application)` equal to REVIEWED_EDIT_MENU (an application-menu slot, then Edit with its one Copy item,
   `action:@selector(copy:) keyEquivalent:@"c"`, target nil, installed with setMainMenu:). It is named only there and
   in its one call. zb_app_run must open exactly as REVIEWED_RUN_OPENING (RoseCat 8139): `application` is the live
   [NSApplication sharedApplication], the only earlier exit is the invalid-URI return, and the activation and the
   install follow in the pool's own block. Nothing else in the shim may touch the main menu (setMainMenu, mainMenu).
-  So Cmd+C reaches the first responder: a bubble's copy:, or the page's. RED until the shim has it.
-- V7 the rest of the link (RoseCat 8101 #2, 8112 #3/#4): every OTHER native source build.zig links on macOS (the
+  The compiled gate then observes, on the running app, that Cmd+C reaches the first responder (a bubble's copy:, or
+  the page's) through a Copy item whose target is nil. RED until the shim has it.
+- V7 tripwire, the rest of the link (RoseCat 8101 #2, 8112 #3/#4; c6b2b32: the compiled gate's class, method, IMP-image
+  and category census is the authority): every OTHER native source build.zig links on macOS (the
   shim and the C files) and every project header they include (quoted includes under src/, recursively; a missing
   one fails) holds:
   - no preprocessing that can rename a token: no ##, digraph, _Pragma, trigraph or line splice; every #define is a
@@ -72,7 +82,8 @@ flow; a dead branch, an extra effect, a reorder or a removal changes the shape.
   - no `copy :` selector token (whitespace allowed) outside the reviewed zb_install_edit_menu (V8);
   - no target or action set anywhere (setTarget:, a `.target` / `.action` property, a key-value-coding setter, a
     binding), and no ivar reflection or message send by hand (class_getInstanceVariable, object_setIvar,
-    ivar_getOffset, objc_msgSend, method_invoke, ...), so the Copy item's target stays nil.
+    ivar_getOffset, objc_msgSend, method_invoke, ...). A tripwire for a retargeted Copy item; the compiled gate
+    reads the live item's target.
 Self-checking: an honest drawer, header and link pass (the honest shim wires Edit > Copy and uses associated
 objects); names in strings and comments do not count; and each dishonest drawer, header and link fails for its own
 stated rule. Among them are RoseCat 8101's #if 0 and #define NO YES, a digraph, a _Pragma, a -D flag, categories,
@@ -112,8 +123,8 @@ RUNTIME_REWRITES = ("method_exchangeImplementations", "method_setImplementation"
                     "object_getIvar", "object_setInstanceVariable", "object_getInstanceVariable", "ivar_getOffset")
 # Any category or class extension, on any class (RoseCat 8112 #3: a macro can build the class name, so none at all).
 CATEGORY = re.compile(r"@(?:interface|implementation)\s+\w+\s*\(")
-# V8 (RoseCat 8112 #4, 3c0b7b3 #4, 8129 #2): the one copy: the rest of the link may name is the Edit menu's Copy item,
-# and that menu is LIVE: the shim's one reviewed zb_install_edit_menu (an application-menu slot, then Edit with its
+# V8 tripwire (RoseCat 8112 #4, 3c0b7b3 #4, 8129 #2; c6b2b32: liveness is the compiled gate's): the one copy: the rest of
+# the link may name is the Edit menu's Copy item, in the shim's one reviewed zb_install_edit_menu (an application-menu slot, then Edit with its
 # one Copy item, target nil, installed as the main menu), called once, by the statement right after
 # `[application setActivationPolicy:NSApplicationActivationPolicyRegular];` in zb_app_run's @autoreleasepool.
 SHIM = "src/wkwebview_shim.m"

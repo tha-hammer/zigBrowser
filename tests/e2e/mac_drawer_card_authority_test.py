@@ -60,8 +60,10 @@ from the comment-free text with strings kept).
     call consumes a card twice.
   - The minter definitions must be `export fn` and the drawer's declarations `extern fn`; the bridge's @export,
     read comment-free, is exactly one, under exactly "zb_drawer_card_press".
-  The ObjC rules above stay the narrower authority for native event ingress.
-The real native click (MS7.8's -[NSWindow sendEvent:] Approve/Deny) stays the owner-run real-screen closure.
+  The ObjC rules above are an offline TRIPWIRE for native event ingress (RoseCat c6b2b32).
+The runtime authority is the compiled two-Mac hard-gate case tests/mac/hard_gate/case_ms7_appkit_authority.py, on Intel and Apple Silicon from a
+clean exact-commit export: a real click on the card's Approve control (its live action and target) mints exactly one
+grant, Deny and every other route mint none, and neither macOS build reaches a GTK-only card call.
 Self-checking: an honest fixture passes; names in strings and comments do not count; and each dishonest fixture
 fails, the Zig graphs and build.zig roots each for their own stated reason (RoseCat 2796d94's four among them).
 RED until build.zig's macOS link has src/agent_drawer_mac.m with that shape. No process, no signal.
