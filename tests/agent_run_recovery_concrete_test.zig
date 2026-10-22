@@ -883,6 +883,18 @@ fn okClock() recovery.ClockRead {
     return .{ .ok = true, .sec = 5, .nsec = 500_000_000 };
 }
 
+// The held fd's current path (the SAME /proc/self/fd readlink the C composite uses), NUL-terminated, so a row can
+// pass the held fd's own path as `dir` and satisfy the entry-equality binding (RoseCat 37788f4 #1).
+var g_path_buf: [4096]u8 = undefined;
+fn fdPathZ(fd: i32) [*:0]const u8 {
+    var lbuf: [64]u8 = undefined;
+    const link = std.fmt.bufPrintZ(&lbuf, "/proc/self/fd/{d}", .{fd}) catch unreachable;
+    const n = linux.readlinkat(linux.AT.FDCWD, link.ptr, &g_path_buf, g_path_buf.len - 1);
+    if (linux.errno(n) != .SUCCESS) unreachable;
+    g_path_buf[n] = 0;
+    return @ptrCast(&g_path_buf);
+}
+
 // A row's held fd + its matching pin, under a fresh run dir; resets the per-row global counters.
 fn prodFixture(td: *std.testing.TmpDir) !struct { fd: i32, pinned: recovery.DirId } {
     _ = try makeRunDir(td.dir, true);
@@ -905,7 +917,7 @@ test "afdffbf composite: the happy path reaches Clean with exactly one intercept
     const f = try prodFixture(&td);
     defer _ = std.posix.system.close(f.fd);
     // scanCb: pass 1 yields the marked pid, every later pass is empty -> the revalidated empty final census.
-    const fp = recovery.prodFixedPoint(&scanCb, &pInspectMatch, &pKillCount, f.fd, &f.pinned, &nowFar, 1000, DUMMY_PATH, 8);
+    const fp = recovery.prodFixedPoint(&scanCb, &pInspectMatch, &pKillCount, f.fd, &f.pinned, &nowFar, 1000, fdPathZ(f.fd), 8);
     try std.testing.expectEqual(ledger.FixedPoint.clean, fp);
     try std.testing.expectEqual(@as(u32, 1), g_prod_kills);
 }
@@ -916,7 +928,7 @@ test "afdffbf composite: an incomplete libproc scan is non-Clean (incomplete), z
     defer td.cleanup();
     const f = try prodFixture(&td);
     defer _ = std.posix.system.close(f.fd);
-    const fp = recovery.prodFixedPoint(&scanFull, &pInspectMatch, &pKillCount, f.fd, &f.pinned, &nowFar, 1000, DUMMY_PATH, 3);
+    const fp = recovery.prodFixedPoint(&scanFull, &pInspectMatch, &pKillCount, f.fd, &f.pinned, &nowFar, 1000, fdPathZ(f.fd), 3);
     try std.testing.expectEqual(ledger.FixedPoint.incomplete, fp);
     try std.testing.expectEqual(@as(u32, 0), g_prod_kills);
 }
@@ -927,7 +939,7 @@ test "afdffbf composite: an UNREADABLE identity is never swept -> non-Clean, zer
     defer td.cleanup();
     const f = try prodFixture(&td);
     defer _ = std.posix.system.close(f.fd);
-    const fp = recovery.prodFixedPoint(&scanOnePersistent, &inspectUnreadable, &pKillCount, f.fd, &f.pinned, &nowFar, 1000, DUMMY_PATH, 3);
+    const fp = recovery.prodFixedPoint(&scanOnePersistent, &inspectUnreadable, &pKillCount, f.fd, &f.pinned, &nowFar, 1000, fdPathZ(f.fd), 3);
     try std.testing.expect(fp != .clean); // never clean while an unreadable-identity match persists
     try std.testing.expectEqual(@as(u32, 0), g_prod_kills); // never killed (have_bsd == 0)
 }
@@ -938,7 +950,7 @@ test "afdffbf composite: an EPERM kill is a survivor -> non-Clean" {
     defer td.cleanup();
     const f = try prodFixture(&td);
     defer _ = std.posix.system.close(f.fd);
-    const fp = recovery.prodFixedPoint(&scanOnePersistent, &pInspectMatch, &killEPERM, f.fd, &f.pinned, &nowFar, 1000, DUMMY_PATH, 3);
+    const fp = recovery.prodFixedPoint(&scanOnePersistent, &pInspectMatch, &killEPERM, f.fd, &f.pinned, &nowFar, 1000, fdPathZ(f.fd), 3);
     try std.testing.expect(fp != .clean); // an EPERM-refused kill is a survivor, never clean
 }
 
@@ -951,7 +963,7 @@ test "afdffbf #2: a wrong UP-FRONT pin never authorizes a Clean teardown, zero a
     var bogus = f.pinned;
     bogus.ino +%= 1; // the held fd no longer fstats to this pinned identity
     // An EMPTY census would otherwise return Clean; the up-front pin check must fail closed before the engine.
-    const fp = recovery.prodFixedPoint(&scanEmpty, &pInspectMatch, &pKillCount, f.fd, &bogus, &nowFar, 1000, DUMMY_PATH, 3);
+    const fp = recovery.prodFixedPoint(&scanEmpty, &pInspectMatch, &pKillCount, f.fd, &bogus, &nowFar, 1000, fdPathZ(f.fd), 3);
     try std.testing.expect(fp != .clean);
     try std.testing.expectEqual(@as(u32, 0), g_prod_kills);
 }
@@ -963,7 +975,7 @@ test "afdffbf #2: the deadline crossing at the FINAL recheck downgrades an empty
     const f = try prodFixture(&td);
     defer _ = std.posix.system.close(f.fd);
     // nowStepExpire: < deadline up front (census runs, empty -> would be Clean), saturated by the final recheck.
-    const fp = recovery.prodFixedPoint(&scanEmpty, &pInspectMatch, &pKillCount, f.fd, &f.pinned, &nowStepExpire, 1000, DUMMY_PATH, 3);
+    const fp = recovery.prodFixedPoint(&scanEmpty, &pInspectMatch, &pKillCount, f.fd, &f.pinned, &nowStepExpire, 1000, fdPathZ(f.fd), 3);
     try std.testing.expectEqual(ledger.FixedPoint.incomplete, fp);
     try std.testing.expectEqual(@as(u32, 0), g_prod_kills);
 }
@@ -1003,7 +1015,7 @@ test "afdffbf #2: the pinned identity CHANGING at the FINAL check downgrades an 
     const f = try prodFixture(&td);
     defer _ = std.posix.system.close(f.fd);
     g_mut_fd = f.fd; // nowChmodAtFinal flips the held dir's mode at the final clock call (after the up-front pin check)
-    const fp = recovery.prodFixedPoint(&scanEmpty, &pInspectMatch, &pKillCount, f.fd, &f.pinned, &nowChmodAtFinal, 1000, DUMMY_PATH, 3);
+    const fp = recovery.prodFixedPoint(&scanEmpty, &pInspectMatch, &pKillCount, f.fd, &f.pinned, &nowChmodAtFinal, 1000, fdPathZ(f.fd), 3);
     try std.testing.expect(fp != .clean); // up-front pin passed; ONLY the FINAL pin recheck catches the mode change
     try std.testing.expectEqual(@as(u32, 0), g_prod_kills);
 }
@@ -1015,7 +1027,7 @@ test "afdffbf #3: a RENAME of the held inode after capture fails closed before C
     const f = try prodFixture(&td);
     defer _ = std.posix.system.close(f.fd);
     g_mut_dirfd = td.dir.handle; // nowSwapAtFinal renames BASENAME away + plants a replacement at the final clock call
-    const fp = recovery.prodFixedPoint(&scanEmpty, &pInspectMatch, &pKillCount, f.fd, &f.pinned, &nowSwapAtFinal, 1000, DUMMY_PATH, 3);
+    const fp = recovery.prodFixedPoint(&scanEmpty, &pInspectMatch, &pKillCount, f.fd, &f.pinned, &nowSwapAtFinal, 1000, fdPathZ(f.fd), 3);
     try std.testing.expect(fp != .clean); // the held inode's fstat still matches, but its CURRENT path diverged -> fail closed
     try std.testing.expectEqual(@as(u32, 0), g_prod_kills);
 }
@@ -1023,4 +1035,32 @@ test "afdffbf #3: a RENAME of the held inode after capture fails closed before C
 test "afdffbf #4: a FAILED clock read saturates (fail closed) without reading the timespec; a good read maps to ms" {
     try std.testing.expectEqual(std.math.maxInt(i64), recovery.nowMsFrom(&failClock)); // failure -> deadline crossed
     try std.testing.expectEqual(@as(i64, 5500), recovery.nowMsFrom(&okClock)); // 5s + 500ms
+}
+
+test "37788f4 #1: a well-formed dir that is NOT the held fd's path refuses before inspect/action" {
+    if (!inPrivatePidNamespace()) return error.NotInPrivatePidNamespace;
+    var td = std.testing.tmpDir(.{});
+    defer td.cleanup();
+    const f = try prodFixture(&td);
+    defer _ = std.posix.system.close(f.fd);
+    // A recoverable candidate is present (scanCb). DUMMY_PATH is well-formed but is NOT the held fd's current path,
+    // so the classifier would otherwise target the wrong tree; the entry-equality binding must refuse first.
+    const r = recovery.prodFixedPointRc(&scanCb, &pInspectMatch, &pKillCount, f.fd, &f.pinned, &nowFar, 1000, DUMMY_PATH, 8);
+    try std.testing.expectEqual(EINVAL, r.@"0");
+    try std.testing.expect(r.@"1" != .clean);
+    try std.testing.expectEqual(@as(u32, 0), g_prod_kills); // refused before inspect/action
+}
+
+test "37788f4 #2: a RENAME at the PRE-KILL dir_ok blocks the signal (zero kills, never Clean)" {
+    if (!inPrivatePidNamespace()) return error.NotInPrivatePidNamespace;
+    var td = std.testing.tmpDir(.{});
+    defer td.cleanup();
+    const f = try prodFixture(&td);
+    defer _ = std.posix.system.close(f.fd);
+    g_mut_dirfd = td.dir.handle; // nowSwapAtFinal renames at clock call #1 = the FIRST pre-kill dir_ok (candidate census)
+    // scanOnePersistent keeps presenting the candidate, so dir_ok runs before the would-be kill; the pre-kill path
+    // check sees the renamed inode's new current path != path0 and sends NO signal.
+    const fp = recovery.prodFixedPoint(&scanOnePersistent, &pInspectMatch, &pKillCount, f.fd, &f.pinned, &nowSwapAtFinal, 1000, fdPathZ(f.fd), 3);
+    try std.testing.expect(fp != .clean);
+    try std.testing.expectEqual(@as(u32, 0), g_prod_kills); // the pre-kill path check blocked every signal
 }

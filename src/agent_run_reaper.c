@@ -324,6 +324,10 @@ int zb_reaper_prod_fixed_point(int (*scan)(void *buf, int bytes),
   if (!zb_reaper_dir_fd_ok(run_dir_fd, pinned)) return EINVAL;  /* UP-FRONT pin check: a bad pin never acts */
   char path0[ZB_PROD_PATH_CAP];
   if (!zb_reaper_fd_cur_path(run_dir_fd, path0, sizeof path0)) return EINVAL; /* capture the held inode's path */
+  /* BIND the classifier to the held fd (RoseCat 37788f4 #1): the dir handed to the engine for classification MUST
+   * be the held fd's own current path. A rename/replacement between the caller's F_GETPATH and this capture makes
+   * them differ, which would leave the classifier targeting the replaced old path -> refuse before inspect/action. */
+  if (strcmp(dir, path0) != 0) return EINVAL;
   struct zb_reaper_prod_ctx pc = {run_dir_fd, pinned, now_ms, deadline_ms, path0};
   struct zb_reaper_ops ops = {inspect, killsig, zb_reaper_prod_dir_ok, &pc};
   int clean = 0, passes = 0, overflow = 0;
