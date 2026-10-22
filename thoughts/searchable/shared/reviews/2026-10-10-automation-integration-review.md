@@ -31434,3 +31434,39 @@ offline `WinDrawerBehaviorsOracle` passed **20/20**; and the direct
 the portable math and link surface, not the missing Win32 input, actual-window
 movement or persistence. No VM run is authorized until the production route
 and independent observation are fixed forward.
+
+## Win32 WS5 lifecycle live acceptance and exact cleanup cap (`dbe6382`, `561f2fa`, `3f02a40`)
+
+**`dbe6382` and `561f2fa` are APPROVED and live-accepted for the WS5 harness
+lifecycle; `3f02a40` is APPROVED as the test-only deadline tightening.** The
+authorized Win11 run used an exact clean archive of `561f2fa`; its executable
+came from `0383ba2`, whose drawer production sources are byte-identical across
+the range. It ran the three authorized forced cases once, fail-fast, and all
+three passed in **13.128 seconds**:
+
+- the assignment-failure case decoded the exact seam, failed before resume,
+  emitted no drawer row and proved the child terminal;
+- the assignment-plus-first-stop-failure case exercised the independent
+  born-in-Job/close-then-wait backstop and proved the child terminal; and
+- the cleanup-exhaustion case both exercised the exhaustion seam and proved
+  that the process could not outlive the runner.
+
+Every case reported `proc_gone=true` and `job_count_after=0`. The VM process
+census was **6 before and 6 after**, and the run left **zero** owned
+`drawer-*` directories. SSH used BatchMode, pinned host/key material and the
+authorized unique directory under `C:\\Users\\zbtext\\zb`; there were no
+pid/name kills, installs or WSL changes. This closes the live-evidence hold on
+the durable born-in-Job lifecycle in `dbe6382` and the one-absolute-deadline
+cleanup in `561f2fa`.
+
+`3f02a40` changes only the cleanup harness's SSH timeout from
+`max(1.0, budget)` to the exact positive budget supplied by
+`bounded_cleanup`. The caller checks `budget > 0` before invoking the step, so
+the change removes the possible sub-second deadline overrun without opening a
+zero/negative timeout path or changing fail-closed handling. An exact clean
+export passed **44 offline tests** and skipped the seven VM rows; no repeat VM
+run is needed for this stricter cap.
+
+This verdict accepts the WS5 lifecycle harness only. It does not override the
+separate `4140425` WS5.2 production/input/observation blockers or constitute
+overall WS5 acceptance.
