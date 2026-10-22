@@ -86,6 +86,13 @@ fn basenameOk(s: []const u8) bool {
     return true;
 }
 
+/// The decimal pid of a grammar-valid basename (`basenameOk`); null when it does not fit an i32.
+fn basenamePid(s: []const u8) ?i32 {
+    const start = "zigbrowser-agent-".len;
+    const end = std.mem.indexOfScalarPos(u8, s, start, '-') orelse return null;
+    return std.fmt.parseInt(i32, s[start..end], 10) catch null;
+}
+
 /// Read and parse the ledger from the held runtime dir, BOUNDING the input before unbounded allocation (RoseCat
 /// 0d2e91d #2): the read is size-limited to MAX_LEDGER_BYTES, so a hostile file (millions of entries, one huge
 /// string) is rejected (`TooManyEntries`) rather than read/allocated without bound. Then `parse` the bounded
@@ -122,6 +129,13 @@ pub fn parse(gpa: std.mem.Allocator, bytes: []const u8) ParseError!Ledger {
         if (!basenameOk(e.basename)) {
             parsed.deinit();
             return error.Malformed; // a malformed basename makes the WHOLE ledger a malformed read
+        }
+        // D-W1 (4pa.68): an owner pid below 2 is never a real owner (0 and -1 read as absent, so they would be
+        // proved dead), and the run dir is named for its owner's pid, so a basename naming another pid is not this
+        // entry's dir. Either is a malformed read, never a recoverable entry.
+        if (e.pid < 2 or basenamePid(e.basename) != e.pid) {
+            parsed.deinit();
+            return error.Malformed;
         }
         // Each start_kind has ONE legal shape (RoseCat 0e36742): linux_ticks is a bare tick count with NO
         // microseconds (start_usec MUST be 0); darwin_tvsec's start_usec is a real microseconds value in
@@ -558,7 +572,8 @@ fn publishWithout(io: std.Io, dir: std.Io.Dir, sub_path: []const u8, l: *const L
     try publishWithoutCut(io, dir, sub_path, l, basename, .none, RealOps{});
 }
 
-/// Recover one recorded entry under the one global ledger flock (bd zigBrowser-3gl; RoseCat b2f474b/62888b1).
+/// Recover one recorded entry of the store `sub_path` under the one global ledger flock (bd zigBrowser-3gl; RoseCat
+/// b2f474b/62888b1).
 ///
 /// The ONE flock is held across the WHOLE recovery: authoritative load → fresh owner check → held-fd provenance
 /// (the lease) → census/kill fixed point → marker unlink → `rmdir` → ledger retirement, released ONLY after the
@@ -570,13 +585,13 @@ fn publishWithout(io: std.Io, dir: std.Io.Dir, sub_path: []const u8, l: *const L
 ///                     error, or publish error → entry RETAINED, never a clean recovery, never `.already_gone`.
 ///
 /// NOT ARMED: no production caller passes a destructive actuator, so nothing is signalled in production yet.
-pub fn recoverOneUnderLock(io: std.Io, gpa: std.mem.Allocator, dir: std.Io.Dir, basename: []const u8, clock: anytype, deadline_ms: i64, actuator: anytype) RecoveryAction {
-    return recoverOneUnderLockP(io, gpa, dir, basename, clock, deadline_ms, actuator, RealOps{});
+pub fn recoverOneUnderLock(io: std.Io, gpa: std.mem.Allocator, dir: std.Io.Dir, sub_path: []const u8, basename: []const u8, clock: anytype, deadline_ms: i64, actuator: anytype) RecoveryAction {
+    return recoverOneUnderLockP(io, gpa, dir, sub_path, basename, clock, deadline_ms, actuator, RealOps{});
 }
 
 /// As `recoverOneUnderLock`, but with an INJECTABLE publish ops for the atomic retirement (production uses
 /// `RealOps`; a test injects a failing ops to exercise the publish-failure/retry path — RoseCat 9f62ea4 #3).
-pub fn recoverOneUnderLockP(io: std.Io, gpa: std.mem.Allocator, dir: std.Io.Dir, basename: []const u8, clock: anytype, deadline_ms: i64, actuator: anytype, pub_ops: anytype) RecoveryAction {
+pub fn recoverOneUnderLockP(io: std.Io, gpa: std.mem.Allocator, dir: std.Io.Dir, sub_path: []const u8, basename: []const u8, clock: anytype, deadline_ms: i64, actuator: anytype, pub_ops: anytype) RecoveryAction {
     const lock_fd = std.posix.openat(dir.handle, LOCK_NAME, .{ .ACCMODE = .RDWR, .CREAT = true, .NOFOLLOW = true, .CLOEXEC = true }, 0o600) catch return .fail_closed;
     switch (acquireWithinDeadline(clock, deadline_ms, 5, FlockAttempt{ .fd = lock_fd })) {
         .acquired => {},
@@ -591,7 +606,7 @@ pub fn recoverOneUnderLockP(io: std.Io, gpa: std.mem.Allocator, dir: std.Io.Dir,
     // boundary below, so no action or disk mutation happens past the single absolute deadline.
     if (clock.nowMs() >= deadline_ms) return .fail_closed;
 
-    var l = load(io, gpa, dir, "runs.json") catch return .fail_closed; // malformed/unreadable store -> fail closed
+    var l = load(io, gpa, dir, sub_path) catch return .fail_closed; // the caller's store (4pa.65); malformed/unreadable -> fail closed
     defer l.deinit();
     const idx = indexOfEntry(&l, basename) orelse return .already_gone; // retired by a prior recoverer under the lock
     const e = l.entries()[idx];
@@ -611,7 +626,7 @@ pub fn recoverOneUnderLockP(io: std.Io, gpa: std.mem.Allocator, dir: std.Io.Dir,
             // Crash cut C3: the entry names no dir (a prior recoverer removed it, then crashed before retiring the
             // entry). Drop the entry idempotently, signal-free -- NOT fail-closed, so it never wedges forever.
             if (clock.nowMs() >= deadline_ms) return .fail_closed; // pre-publish
-            publishWithoutCut(io, dir, "runs.json", &l, basename, .none, pub_ops) catch return .fail_closed;
+            publishWithoutCut(io, dir, sub_path, &l, basename, .none, pub_ops) catch return .fail_closed;
             return .reconciled;
         },
         .held => |held| {
@@ -627,7 +642,7 @@ pub fn recoverOneUnderLockP(io: std.Io, gpa: std.mem.Allocator, dir: std.Io.Dir,
                 .failed => return .fail_closed, // teardown error -> fail closed, entry retained
             }
             if (clock.nowMs() >= deadline_ms) return .fail_closed; // pre-publish
-            publishWithoutCut(io, dir, "runs.json", &l, basename, .none, pub_ops) catch return .fail_closed; // atomic retirement under the flock
+            publishWithoutCut(io, dir, sub_path, &l, basename, .none, pub_ops) catch return .fail_closed; // atomic retirement under the flock
             return .signalled;
         },
     }

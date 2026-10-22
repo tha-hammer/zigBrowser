@@ -402,7 +402,7 @@ pub fn recoverAllAtStartupFull(ready: bool, io: std.Io, gpa: std.mem.Allocator, 
             break;
         }
         rep.scanned += 1;
-        switch (ledger.recoverOneUnderLock(io, gpa, dir, e.basename, clock, deadline_ms, actuator)) { // (4)
+        switch (ledger.recoverOneUnderLock(io, gpa, dir, sub_path, e.basename, clock, deadline_ms, actuator)) { // (4)
             .signalled => rep.signalled += 1,
             .left => rep.left += 1,
             .already_gone => rep.already_gone += 1,

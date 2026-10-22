@@ -13,6 +13,7 @@ const recovery = @import("agent_run_recovery");
 const linux = std.os.linux;
 
 const BASENAME = "zigbrowser-agent-2147483645-00bb00bb00bb00bb"; // its pid is the entry pid 2147483645, as a ledger entry requires
+const STORE = "zigbrowser-agent-runs.json"; // the ledger's real store name (4pa.65)
 const OUTER_NS_FD: i32 = 9;
 const NS_GET_NSTYPE: u32 = 0xB703;
 const NS_GET_TGID_IN_PIDNS: u32 = 0x8004B709;
@@ -98,16 +99,16 @@ fn seedFrom(io: std.Io, dir: std.Io.Dir, id: RealId) !void {
         .start_usec = 0,
         .state = .active,
     }};
-    try ledger.publish(io, dir, "runs.json", &seed);
+    try ledger.publish(io, dir, STORE, &seed);
 }
 
 fn seedExplicit(io: std.Io, dir: std.Io.Dir, dev: u64, ino: u64) !void {
     const seed = [_]ledger.Entry{.{ .basename = BASENAME, .dev = dev, .ino = ino, .uid = 0, .mode = 16832, .pid = 2147483645, .start_kind = .linux_ticks, .start_sec = 234567, .start_usec = 0, .state = .active }};
-    try ledger.publish(io, dir, "runs.json", &seed);
+    try ledger.publish(io, dir, STORE, &seed);
 }
 
 fn entryCount(io: std.Io, gpa: std.mem.Allocator, dir: std.Io.Dir) !usize {
-    var l = try ledger.load(io, gpa, dir, "runs.json");
+    var l = try ledger.load(io, gpa, dir, STORE);
     defer l.deinit();
     return l.entries().len;
 }
@@ -141,7 +142,7 @@ test "concrete lease: a dead entry with matching provenance is recovered — mar
     const id = try makeRunDir(td.dir, true);
     try seedFrom(io, td.dir, id);
 
-    const act = ledger.recoverOneUnderLock(io, gpa, td.dir, BASENAME, clock, clock.nowMs() + TOTAL_BUDGET_MS, actuator());
+    const act = ledger.recoverOneUnderLock(io, gpa, td.dir, STORE, BASENAME, clock, clock.nowMs() + TOTAL_BUDGET_MS, actuator());
     try std.testing.expectEqual(ledger.RecoveryAction.signalled, act);
     try std.testing.expectEqual(@as(usize, 0), try entryCount(io, gpa, td.dir)); // entry retired
     try std.testing.expect(!runDirExists(td.dir)); // the real run dir was torn down through the held fd
@@ -158,7 +159,7 @@ test "concrete lease crash cut C2: a marker-less (already-unlinked) dir tears do
     const id = try makeRunDir(td.dir, false); // NO marker -> the marker unlink must be idempotent (ENOENT = done)
     try seedFrom(io, td.dir, id);
 
-    const act = ledger.recoverOneUnderLock(io, gpa, td.dir, BASENAME, clock, clock.nowMs() + TOTAL_BUDGET_MS, actuator());
+    const act = ledger.recoverOneUnderLock(io, gpa, td.dir, STORE, BASENAME, clock, clock.nowMs() + TOTAL_BUDGET_MS, actuator());
     try std.testing.expectEqual(ledger.RecoveryAction.signalled, act);
     try std.testing.expectEqual(@as(usize, 0), try entryCount(io, gpa, td.dir));
     try std.testing.expect(!runDirExists(td.dir));
@@ -174,7 +175,7 @@ test "concrete lease crash cut C3: a dead entry whose dir is GONE is dropped (.r
 
     try seedExplicit(io, td.dir, 1, 2); // the dir named by the entry does NOT exist -> ENOENT -> gone (C3)
 
-    const act = ledger.recoverOneUnderLock(io, gpa, td.dir, BASENAME, clock, clock.nowMs() + TOTAL_BUDGET_MS, actuator());
+    const act = ledger.recoverOneUnderLock(io, gpa, td.dir, STORE, BASENAME, clock, clock.nowMs() + TOTAL_BUDGET_MS, actuator());
     try std.testing.expectEqual(ledger.RecoveryAction.reconciled, act);
     try std.testing.expectEqual(@as(usize, 0), try entryCount(io, gpa, td.dir)); // entry dropped
 }
@@ -190,7 +191,7 @@ test "concrete lease provenance MISMATCH (recorded dev/ino != the real dir) neve
     _ = try makeRunDir(td.dir, true); // a REAL dir exists...
     try seedExplicit(io, td.dir, 999999, 888888); // ...but the entry records a DIFFERENT (dev,ino) -> mismatch
 
-    const act = ledger.recoverOneUnderLock(io, gpa, td.dir, BASENAME, clock, clock.nowMs() + TOTAL_BUDGET_MS, actuator());
+    const act = ledger.recoverOneUnderLock(io, gpa, td.dir, STORE, BASENAME, clock, clock.nowMs() + TOTAL_BUDGET_MS, actuator());
     try std.testing.expectEqual(ledger.RecoveryAction.fail_closed, act);
     try std.testing.expectEqual(@as(usize, 1), try entryCount(io, gpa, td.dir)); // entry RETAINED
     try std.testing.expect(runDirExists(td.dir)); // the mismatched dir is NOT torn down
@@ -347,7 +348,7 @@ test "concrete lease #5 real census: one marked child is killed (intercepted cou
     try seedFrom(io, td.dir, id);
     g_pass = 0;
     var counters = Counters{};
-    const act = ledger.recoverOneUnderLock(io, gpa, td.dir, BASENAME, clock, clock.nowMs() + TOTAL_BUDGET_MS, recovery.ConcreteActuator(ReaperWiring){ .wiring = .{ .counters = &counters } });
+    const act = ledger.recoverOneUnderLock(io, gpa, td.dir, STORE, BASENAME, clock, clock.nowMs() + TOTAL_BUDGET_MS, recovery.ConcreteActuator(ReaperWiring){ .wiring = .{ .counters = &counters } });
     try std.testing.expectEqual(ledger.RecoveryAction.signalled, act);
     try std.testing.expectEqual(@as(u32, 1), counters.kills); // ONE marked child entered the real kill phase (observed, not an enum)
     try std.testing.expectEqual(@as(usize, 0), try entryCount(io, gpa, td.dir));
@@ -445,7 +446,7 @@ fn terminal0(status: u32) bool {
 fn runReaperRecoverer(io: std.Io, dir: std.Io.Dir, deadline_ms: i64, result_fd: i32) noreturn {
     g_pass = 0;
     var counters = Counters{};
-    const act = ledger.recoverOneUnderLock(io, std.heap.page_allocator, dir, BASENAME, ledger.RealClock{ .io = io }, deadline_ms, recovery.ConcreteActuator(ReaperWiring){ .wiring = .{ .counters = &counters } });
+    const act = ledger.recoverOneUnderLock(io, std.heap.page_allocator, dir, STORE, BASENAME, ledger.RealClock{ .io = io }, deadline_ms, recovery.ConcreteActuator(ReaperWiring){ .wiring = .{ .counters = &counters } });
     const b = [2]u8{ @intFromEnum(act), @intCast(@min(counters.kills, 255)) };
     writeAll(result_fd, &b);
     linux.exit_group(0);
@@ -552,7 +553,7 @@ test "concrete lease #5 publish-retry: a failed atomic retirement fails closed (
     // attempt 1: census clean + dir torn down, but the atomic retirement PUBLISH fails -> fail closed, entry kept.
     g_pass = 0;
     var c1 = Counters{};
-    const a1 = ledger.recoverOneUnderLockP(io, gpa, td.dir, BASENAME, clock, clock.nowMs() + TOTAL_BUDGET_MS, recovery.ConcreteActuator(ReaperWiring){ .wiring = .{ .counters = &c1 } }, FailingPublishOps{});
+    const a1 = ledger.recoverOneUnderLockP(io, gpa, td.dir, STORE, BASENAME, clock, clock.nowMs() + TOTAL_BUDGET_MS, recovery.ConcreteActuator(ReaperWiring){ .wiring = .{ .counters = &c1 } }, FailingPublishOps{});
     try std.testing.expectEqual(ledger.RecoveryAction.fail_closed, a1);
     try std.testing.expectEqual(@as(usize, 1), try entryCount(io, gpa, td.dir)); // RETAINED for retry
 
@@ -560,7 +561,7 @@ test "concrete lease #5 publish-retry: a failed atomic retirement fails closed (
     // completes the retirement -> the entry is finally removed.
     g_pass = 0;
     var c2 = Counters{};
-    const a2 = ledger.recoverOneUnderLock(io, gpa, td.dir, BASENAME, clock, clock.nowMs() + TOTAL_BUDGET_MS, recovery.ConcreteActuator(ReaperWiring){ .wiring = .{ .counters = &c2 } });
+    const a2 = ledger.recoverOneUnderLock(io, gpa, td.dir, STORE, BASENAME, clock, clock.nowMs() + TOTAL_BUDGET_MS, recovery.ConcreteActuator(ReaperWiring){ .wiring = .{ .counters = &c2 } });
     try std.testing.expectEqual(ledger.RecoveryAction.reconciled, a2);
     try std.testing.expectEqual(@as(usize, 0), try entryCount(io, gpa, td.dir)); // removed only after the retry succeeds
 }
@@ -586,7 +587,7 @@ test "concrete lease #1b check/use-window swap: caught by the post-rmdir held-in
     const id = try makeRunDir(td.dir, true);
     try seedFrom(io, td.dir, id);
     g_swap_dirfd = td.dir.handle;
-    const act = ledger.recoverOneUnderLock(io, gpa, td.dir, BASENAME, clock, clock.nowMs() + TOTAL_BUDGET_MS, recovery.ConcreteActuator(CleanWiring){ .wiring = .{}, .window_hook = &swapHook });
+    const act = ledger.recoverOneUnderLock(io, gpa, td.dir, STORE, BASENAME, clock, clock.nowMs() + TOTAL_BUDGET_MS, recovery.ConcreteActuator(CleanWiring){ .wiring = .{}, .window_hook = &swapHook });
     // The by-name rmdir removed the swapped-in replacement, but the HELD inode survived (nlink > 0), so the
     // post-rmdir verification fails the teardown -> recoverOneUnderLock fails closed and does NOT retire the entry.
     try std.testing.expectEqual(ledger.RecoveryAction.fail_closed, act);
@@ -697,7 +698,7 @@ fn runHandshakeRecoverer(io: std.Io, dir: std.Io.Dir, deadline_ms: i64, role: u8
     if (start_fd >= 0) writeAll(start_fd, "S"); // "I have started and am about to attempt the flock acquire"
     g_pass = 0;
     var counters = Counters{ .role = role, .r1kill_fd = r1kill, .r2kill_fd = r2kill, .proceed_fd = proceed };
-    const act = ledger.recoverOneUnderLock(io, std.heap.page_allocator, dir, BASENAME, ledger.RealClock{ .io = io }, deadline_ms, recovery.ConcreteActuator(ReaperWiring){ .wiring = .{ .counters = &counters } });
+    const act = ledger.recoverOneUnderLock(io, std.heap.page_allocator, dir, STORE, BASENAME, ledger.RealClock{ .io = io }, deadline_ms, recovery.ConcreteActuator(ReaperWiring){ .wiring = .{ .counters = &counters } });
     const b = [2]u8{ @intFromEnum(act), @intCast(@min(counters.kills, 255)) };
     writeAll(result_fd, &b);
     linux.exit_group(0);

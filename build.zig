@@ -1198,6 +1198,32 @@ pub fn build(b: *std.Build) void {
     run_recovery_startup.skip_foreign_checks = true;
     const recovery_startup_step = b.step("test-agent-run-recovery-startup", "MS6.5.1 reaper_ready gate + startup-recovery core (unarmed; signal-free fakes)");
     recovery_startup_step.dependOn(&run_recovery_startup.step);
+    // 4pa.65 / 4pa.68 (plan R30-MS6): the real store name `zigbrowser-agent-runs.json` recovers, and an entry pid below
+    // 2 or unlike its basename's never reaches the actuator. Through the production startup core; signal-free fakes.
+    const recovery_store_pid_test_mod = b.createModule(.{ .root_source_file = b.path("tests/agent_run_recovery_store_pid_test.zig"), .target = target, .optimize = optimize, .link_libc = true });
+    recovery_store_pid_test_mod.addImport("agent_run_ledger", ledger_mod);
+    recovery_store_pid_test_mod.addImport("agent_run_recovery", recovery_startup_mod);
+    recovery_store_pid_test_mod.addIncludePath(b.path("src"));
+    recovery_store_pid_test_mod.addCSourceFile(.{ .file = b.path("src/agent_run_reaper.c"), .flags = &.{"-std=gnu11"} });
+    const run_recovery_store_pid = b.addRunArtifact(b.addTest(.{ .root_module = recovery_store_pid_test_mod }));
+    run_recovery_store_pid.skip_foreign_checks = true;
+    const recovery_store_pid_step = b.step("test-agent-run-recovery-store-pid", "MS6.5.1 4pa.65/4pa.68: the real store name recovers; a bad entry pid never reaches the actuator");
+    recovery_store_pid_step.dependOn(&run_recovery_store_pid.step);
+    // 4pa.71 (plan R30-MS6): the PRODUCTION recovery transaction `ledger.recoverOneUnderLock` with an injected,
+    // signal-free fake lease (two forked recoverers, a live owner, the deadline, crash cut C3, mismatch, unreadable).
+    // It forks, and a stuck child is SIGKILLed, so it runs only in a private user+PID namespace: the launcher holds
+    // the OUTER /proc/self/ns/pid as fd 9 for the test's sentinel, the shell stays PID 1 (orphans adopt to it), and
+    // it exits with the test's own status (`rc=$?; exit $rc`), so a failing test fails the step.
+    const ledger_recovery_txn_test_mod = b.createModule(.{ .root_source_file = b.path("tests/agent_run_ledger_recovery_txn_test.zig"), .target = target, .optimize = optimize });
+    ledger_recovery_txn_test_mod.addImport("agent_run_ledger", ledger_mod);
+    const run_ledger_recovery_txn_tests = b.addSystemCommand(&.{
+        "sh", "-c",
+        "exec 9</proc/self/ns/pid; exec unshare --user --map-root-user --pid --fork --mount-proc sh -c '\"$@\"; rc=$?; exit $rc' sh \"$1\"",
+        "sh",
+    });
+    run_ledger_recovery_txn_tests.addArtifactArg(b.addTest(.{ .root_module = ledger_recovery_txn_test_mod }));
+    const ledger_recovery_txn_step = b.step("test-agent-run-ledger-recovery-txn", "MS6.5.1 4pa.71: the production recovery transaction (signal-free fake lease; PID-ns sentinel)");
+    ledger_recovery_txn_step.dependOn(&run_ledger_recovery_txn_tests.step);
     // MS6.5 (the user's decision 2026-10-21): the stubbed macOS VM-containment seam — off by default, reports
     // "not available yet", and the gate fails closed when on. Pure Linux unit (no OS calls).
     const mac_vm_containment_module = b.createModule(.{
@@ -3685,6 +3711,8 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(darwin_guard_selftest_step); // 4pa.63: the guard above really analyses every declaration
     if (target.result.os.tag == .linux) test_step.dependOn(&run_ledger_recovery_tests.step);
     if (target.result.os.tag == .linux) test_step.dependOn(&run_recovery_startup.step); // MS6.5.1 reaper_ready gate + startup core (unarmed)
+    if (target.result.os.tag == .linux) test_step.dependOn(&run_recovery_store_pid.step); // 4pa.65/4pa.68: real store name, entry pid
+    if (target.result.os.tag == .linux) test_step.dependOn(&run_ledger_recovery_txn_tests.step); // 4pa.71: the production transaction
     test_step.dependOn(&run_ledger_unreadable_tests.step); // pure unit: unreadable liveness fails closed
     test_step.dependOn(&run_ledger_statio_tests.step); // pure unit: readStart outcome mapping fails closed
     test_step.dependOn(&run_ledger_start_kind_tests.step); // pure unit: v2 start_kind schema + canonical shape

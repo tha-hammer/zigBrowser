@@ -1,6 +1,6 @@
 //! MS6.5.1 OPEN whole-recovery blocker bd zigBrowser-3gl, 7b29fd6 item 1 — reds/greens for the REAL PRODUCTION
-//! transaction `ledger.recoverOneUnderLock` (NOT the test-only prototype). UNREGISTERED and UNARMED (no production
-//! caller, no `reaper_ready`). The held-flock design is RoseCat b2f474b / 62888b1; the deadline authority, tagged
+//! transaction `ledger.recoverOneUnderLock` (NOT the test-only prototype). Registered (step
+//! `test-agent-run-ledger-recovery-txn`, in `test`, 4pa.71) and UNARMED (no production caller; `reaper_ready` false). The held-flock design is RoseCat b2f474b / 62888b1; the deadline authority, tagged
 //! pin outcome, idempotent teardown and crash-cut handling answer RoseCat 9f62ea4 #2/#3.
 //!
 //! The destructive action is reached ONLY through a typed lease that RETAINS the pinned run-dir fd (so the
@@ -10,14 +10,15 @@
 //! reaper C path, an intercepted real marked-child action count, the early-unlock mutant and a held-fd path-swap
 //! mutant — are the next step; this signal-free fake does not yet prove a real kill phase.)
 //!
-//! Every fork/signal is gated by the kernel-proof fd-9 PID-ns sentinel; the eventual build step wraps the run in a
-//! private user+PID namespace. Parent reads/reaps are bounded on one absolute monotonic deadline; children are
+//! Every fork/signal is gated by the kernel-proof fd-9 PID-ns sentinel; its build step runs it in a private user+PID
+//! namespace, holding the outer PID namespace as fd 9 and keeping the test's exit status. Parent reads/reaps are bounded on one absolute monotonic deadline; children are
 //! reaped within it, else SIGKILLed+reaped (only proven-owned); an ownership-lost pid is never signalled.
 const std = @import("std");
 const ledger = @import("agent_run_ledger");
 const linux = std.os.linux;
 
 const BASENAME = "zigbrowser-agent-2147483645-00bb00bb00bb00bb"; // its pid is DEAD_PID, as a ledger entry requires
+const STORE = "zigbrowser-agent-runs.json"; // the ledger's real store name (4pa.65)
 const DEAD_PID: i32 = 2147483645; // absent + reuse-proof in this fresh PID namespace
 
 const OUTER_NS_FD: i32 = 9;
@@ -190,9 +191,16 @@ fn terminal0(status: u32) bool {
 const FakeLease = struct {
     fp: ledger.FixedPoint,
     td: ledger.Teardown,
+    /// Time spent inside the fixed point, as a real census/kill pass takes time: it holds the one flock open long
+    /// enough that a recoverer which released the flock early (4pa.71's mutant) lets the other in.
+    hold_ms: u32 = 0,
     pub fn fixedPoint(self: *FakeLease, clock: anytype, deadline_ms: i64) ledger.FixedPoint {
         _ = clock;
         _ = deadline_ms;
+        if (self.hold_ms > 0) {
+            var ts: linux.timespec = .{ .sec = 0, .nsec = @as(isize, self.hold_ms) * 1_000_000 };
+            while (linux.errno(linux.nanosleep(&ts, &ts)) == .INTR) {}
+        }
         return self.fp;
     }
     pub fn teardown(self: *FakeLease, clock: anytype, deadline_ms: i64) ledger.Teardown {
@@ -217,6 +225,10 @@ const FakeActuator = struct {
 fn okActuator() FakeActuator {
     return .{ .result = .{ .held = .{ .fp = .clean, .td = .done } } };
 }
+/// The happy actuator whose fixed point takes 300 ms (the two-recoverer race).
+fn slowActuator() FakeActuator {
+    return .{ .result = .{ .held = .{ .fp = .clean, .td = .done, .hold_ms = 300 } } };
+}
 
 fn seedActive(io: std.Io, dir: std.Io.Dir, pid: i32, start_sec: u64) !void {
     try seedActiveAs(io, dir, BASENAME, pid, start_sec);
@@ -224,11 +236,11 @@ fn seedActive(io: std.Io, dir: std.Io.Dir, pid: i32, start_sec: u64) !void {
 
 fn seedActiveAs(io: std.Io, dir: std.Io.Dir, basename: []const u8, pid: i32, start_sec: u64) !void {
     const seed = [_]ledger.Entry{.{ .basename = basename, .dev = 1, .ino = 2, .uid = 0, .mode = 16832, .pid = pid, .start_kind = .linux_ticks, .start_sec = start_sec, .start_usec = 0, .state = .active }};
-    try ledger.publish(io, dir, "runs.json", &seed);
+    try ledger.publish(io, dir, STORE, &seed);
 }
 
 fn entryCount(io: std.Io, gpa: std.mem.Allocator, dir: std.Io.Dir) !usize {
-    var l = try ledger.load(io, gpa, dir, "runs.json");
+    var l = try ledger.load(io, gpa, dir, STORE);
     defer l.deinit();
     return l.entries().len;
 }
@@ -237,7 +249,7 @@ fn entryCount(io: std.Io, gpa: std.mem.Allocator, dir: std.Io.Dir) !usize {
 
 fn runRecoverer(io: std.Io, dir: std.Io.Dir, deadline_ms: i64, result_fd: i32) noreturn {
     const clock = ledger.RealClock{ .io = io };
-    const act = ledger.recoverOneUnderLock(io, std.heap.page_allocator, dir, BASENAME, clock, deadline_ms, okActuator());
+    const act = ledger.recoverOneUnderLock(io, std.heap.page_allocator, dir, STORE, BASENAME, clock, deadline_ms, slowActuator());
     const b = [1]u8{@intFromEnum(act)};
     writeAll(result_fd, &b);
     linux.exit_group(0);
@@ -342,7 +354,7 @@ test "a LIVE same-owner entry is LEFT untouched (.left) and RETAINED, never sign
     const bn = try std.fmt.bufPrint(&bn_buf, "zigbrowser-agent-{d}-00bb00bb00bb00bb", .{pid}); // the entry's own pid
     try seedActiveAs(io, td.dir, bn, @intCast(pid), ticks);
 
-    const act = ledger.recoverOneUnderLock(io, gpa, td.dir, bn, clock, terminal, okActuator());
+    const act = ledger.recoverOneUnderLock(io, gpa, td.dir, STORE, bn, clock, terminal, okActuator());
     try std.testing.expectEqual(ledger.RecoveryAction.left, act); // live same-owner -> leave untouched
     try std.testing.expectEqual(@as(usize, 1), try entryCount(io, gpa, td.dir)); // entry RETAINED
 }
@@ -359,7 +371,7 @@ test "deadline AUTHORITY: a free lock at an already-expired deadline fails close
     try seedActive(io, td.dir, DEAD_PID, 234567);
 
     const expired = clock.nowMs() - 1; // already past -> acquire succeeds (free lock) but the post-acquire check bites
-    const act = ledger.recoverOneUnderLock(io, gpa, td.dir, BASENAME, clock, expired, okActuator());
+    const act = ledger.recoverOneUnderLock(io, gpa, td.dir, STORE, BASENAME, clock, expired, okActuator());
     try std.testing.expectEqual(ledger.RecoveryAction.fail_closed, act);
     try std.testing.expectEqual(@as(usize, 1), try entryCount(io, gpa, td.dir)); // entry RETAINED, no mutation past expiry
 }
@@ -374,7 +386,7 @@ test "crash cut C3: a dead entry whose dir is GONE is dropped idempotently (.rec
     defer td.cleanup();
     try seedActive(io, td.dir, DEAD_PID, 234567);
 
-    const act = ledger.recoverOneUnderLock(io, gpa, td.dir, BASENAME, clock, terminal, FakeActuator{ .result = .gone });
+    const act = ledger.recoverOneUnderLock(io, gpa, td.dir, STORE, BASENAME, clock, terminal, FakeActuator{ .result = .gone });
     try std.testing.expectEqual(ledger.RecoveryAction.reconciled, act); // dropped, signal-free, never wedged
     try std.testing.expectEqual(@as(usize, 0), try entryCount(io, gpa, td.dir)); // entry DROPPED
 }
@@ -389,7 +401,7 @@ test "provenance MISMATCH never sweeps: fail closed, entry retained" {
     defer td.cleanup();
     try seedActive(io, td.dir, DEAD_PID, 234567);
 
-    const act = ledger.recoverOneUnderLock(io, gpa, td.dir, BASENAME, clock, terminal, FakeActuator{ .result = .mismatch });
+    const act = ledger.recoverOneUnderLock(io, gpa, td.dir, STORE, BASENAME, clock, terminal, FakeActuator{ .result = .mismatch });
     try std.testing.expectEqual(ledger.RecoveryAction.fail_closed, act);
     try std.testing.expectEqual(@as(usize, 1), try entryCount(io, gpa, td.dir)); // RETAINED
 }
@@ -404,7 +416,7 @@ test "UNREADABLE provenance fails closed, entry retained" {
     defer td.cleanup();
     try seedActive(io, td.dir, DEAD_PID, 234567);
 
-    const act = ledger.recoverOneUnderLock(io, gpa, td.dir, BASENAME, clock, terminal, FakeActuator{ .result = .unreadable });
+    const act = ledger.recoverOneUnderLock(io, gpa, td.dir, STORE, BASENAME, clock, terminal, FakeActuator{ .result = .unreadable });
     try std.testing.expectEqual(ledger.RecoveryAction.fail_closed, act);
     try std.testing.expectEqual(@as(usize, 1), try entryCount(io, gpa, td.dir)); // RETAINED
 }

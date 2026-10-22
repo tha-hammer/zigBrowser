@@ -7,7 +7,7 @@
 //! - 4pa.68: an entry `pid` below 2 (0, -1, 1), or one that differs from the pid in its basename, is a malformed
 //!   read. It never reaches the actuator: zero pins, nothing signalled, the store bytes unchanged. (pid 0 and -1
 //!   read as absent, so they were classified proved-dead and pinned.)
-//! RED, UNREGISTERED: the green registers it (step `test-agent-run-recovery-store-pid`, in `test`).
+//! Build step `test-agent-run-recovery-store-pid`, in `test`.
 const std = @import("std");
 const ledger = @import("agent_run_ledger");
 const recovery = @import("agent_run_recovery");
