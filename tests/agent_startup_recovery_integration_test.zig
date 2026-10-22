@@ -1,10 +1,14 @@
-//! MS6.5.1 — RED-FIRST for the OPEN integration blocker (bd zigBrowser-3gl). Per RoseCat a1ba7b1/bc224f7 the proof
-//! drives a PRODUCTION SEAM behaviorally, source only as a comment-safe, scoped call-site binding. UNREGISTERED,
-//! signal-free, no display, no Macs; `reaper_ready` false. RED now: the owner module `agent_startup_recovery` does
-//! not exist (compile error) and app.zig has no call.
+//! MS6.5.1 — RED-FIRST for the OPEN integration blocker (bd zigBrowser-3gl). Per RoseCat 2f8f5a8 the hook and the
+//! adapter are INJECTABLE and DRIVEN: tests run the real StartupHook.run and RealOps.recover under spies and observe
+//! that the owner call happens, its result is returned, and the forwarded args are exact. Source is bound to ONE
+//! exact token sequence (import alias + constructor); the additive decoys are committed rows. UNREGISTERED,
+//! signal-free, no display, no Macs; reaper_ready false. RED now: `agent_startup_recovery` absent (compile error).
 const std = @import("std");
 const recovery = @import("agent_run_recovery");
 const startup = @import("agent_startup_recovery");
+
+const HOOK_SENTINEL = recovery.StartupReport{ .status = .ran, .signalled = 41 };
+const CORE_SENTINEL = recovery.StartupReport{ .status = .ran, .signalled = 42 };
 
 // ---- ORDERING: the combinator runs the hook once, strictly before dispatch ------------------------------------
 
@@ -33,7 +37,64 @@ test "ordering: the hook runs exactly once, strictly before dispatch" {
     try std.testing.expect(log.hook_before_disp);
 }
 
-// ---- SEAM: the gated owner, with counted ops + a clock whose CONSTRUCTION is counted and identity-tagged -------
+// ---- DRIVE StartupHook.run: the hook IS the owner (injected spy recover) --------------------------------------
+
+var g_recover_calls: usize = 0;
+fn spyRecover(arena: std.mem.Allocator, io: std.Io) recovery.StartupReport {
+    _ = arena;
+    _ = io;
+    g_recover_calls += 1;
+    return HOOK_SENTINEL;
+}
+
+test "StartupHook.run calls the owner exactly once and returns its result" {
+    g_recover_calls = 0;
+    const hook = startup.StartupHook{ .arena = std.testing.allocator, .io = std.testing.io, .recover = &spyRecover };
+    const got = hook.run(); // the REAL StartupHook.run, driven with a spy owner
+    try std.testing.expectEqual(@as(usize, 1), g_recover_calls); // the owner call happens (dead run -> 0)
+    try std.testing.expectEqual(HOOK_SENTINEL.signalled, got.signalled); // its result is returned (not swallowed)
+    try std.testing.expectEqual(HOOK_SENTINEL.status, got.status);
+}
+
+// ---- DRIVE RealOps.recover: it forwards the exact args to the core and returns its result ---------------------
+
+const TagClock = struct {
+    token: usize,
+    pub fn nowMs(_: TagClock) i64 {
+        return 0;
+    }
+    pub fn sleepMs(_: TagClock, _: i64) void {}
+};
+const TagActuator = struct { token: usize };
+const CoreCaps = struct { calls: usize = 0, sub: []const u8 = "", deadline: i64 = -1, clk: usize = 0, act: usize = 0 };
+const SpyCore = struct {
+    caps: *CoreCaps,
+    pub fn run(self: SpyCore, io: std.Io, gpa: std.mem.Allocator, dir: std.Io.Dir, sub: []const u8, clk: anytype, deadline_ms: i64, actuator: anytype) recovery.StartupReport {
+        _ = io;
+        _ = gpa;
+        _ = dir;
+        self.caps.calls += 1;
+        self.caps.sub = sub;
+        self.caps.deadline = deadline_ms;
+        self.caps.clk = clk.token;
+        self.caps.act = actuator.token;
+        return CORE_SENTINEL;
+    }
+};
+
+test "RealOps.recover calls the core once, forwards the exact args, and returns its result" {
+    var caps = CoreCaps{};
+    const ops = startup.RealOpsG(SpyCore){ .core = .{ .caps = &caps } };
+    const got = ops.recover(std.testing.io, std.testing.allocator, std.Io.Dir.cwd(), "runs.json", TagClock{ .token = 5 }, 1234, TagActuator{ .token = 9 });
+    try std.testing.expectEqual(@as(usize, 1), caps.calls); // the core (recoverAllAtStartup) call happens (dead-call -> 0)
+    try std.testing.expectEqualStrings("runs.json", caps.sub); // ledger arg forwarded
+    try std.testing.expectEqual(@as(i64, 1234), caps.deadline); // deadline forwarded
+    try std.testing.expectEqual(@as(usize, 5), caps.clk); // the clock forwarded
+    try std.testing.expectEqual(@as(usize, 9), caps.act); // the actuator forwarded
+    try std.testing.expectEqual(CORE_SENTINEL.signalled, got.signalled); // its result is returned
+}
+
+// ---- SEAM: the gated owner, with counted ops + a clock whose construction is counted and identity-tagged -------
 
 const Caps = struct {
     env: usize = 0,
@@ -42,15 +103,15 @@ const Caps = struct {
     recover: usize = 0,
     close: usize = 0,
     now: usize = 0,
-    construct: usize = 0, // clock CONSTRUCTIONS (ops.clock calls)
+    construct: usize = 0,
     now_seq: [3]i64 = .{ 777, 888, 999 },
     captured_deadline: i64 = -1,
-    captured_token: usize = 0, // the clock identity (construction ordinal) handed to recover
+    captured_token: usize = 0,
 };
 const SpyActuator = struct {};
 const CountedClock = struct {
     caps: *Caps,
-    token: usize, // a DISTINCT token per construction (the construction ordinal)
+    token: usize,
     pub fn nowMs(self: CountedClock) i64 {
         const v = self.caps.now_seq[@min(self.caps.now, self.caps.now_seq.len - 1)];
         self.caps.now += 1;
@@ -78,7 +139,7 @@ const SpyOps = struct {
     }
     pub fn clock(self: SpyOps, io: std.Io) CountedClock {
         _ = io;
-        self.caps.construct += 1; // count each construction; hand out a distinct token
+        self.caps.construct += 1;
         return .{ .caps = self.caps, .token = self.caps.construct };
     }
     pub fn ledgerName(_: SpyOps) []const u8 {
@@ -101,53 +162,48 @@ const SpyOps = struct {
     }
 };
 
-test "gate FALSE: zero ops — no env, open, clock construction, actuator, recover, close" {
-    const io = std.testing.io;
-    const gpa = std.testing.allocator;
+test "gate FALSE: zero ops" {
     var caps = Caps{};
-    const rep = startup.recoverLeftoverAgentRunsWith(false, io, gpa, SpyOps{ .caps = &caps, .result = .{ .status = .ran } });
+    const rep = startup.recoverLeftoverAgentRunsWith(false, std.testing.io, std.testing.allocator, SpyOps{ .caps = &caps, .result = .{ .status = .ran } });
     try std.testing.expectEqual(recovery.StartupStatus.disabled, rep.status);
     inline for (.{ caps.env, caps.open, caps.build, caps.recover, caps.close, caps.now, caps.construct }) |c| {
         try std.testing.expectEqual(@as(usize, 0), c);
     }
 }
 
-test "gate TRUE: each op once; one close; ONE clock construction; its FIRST identity at recover; deadline = first now + budget" {
-    const io = std.testing.io;
-    const gpa = std.testing.allocator;
+test "gate TRUE: each op once; one close; one clock construction; first identity at recover; deadline = first now + budget" {
     var caps = Caps{};
-    const rep = startup.recoverLeftoverAgentRunsWith(true, io, gpa, SpyOps{ .caps = &caps, .result = .{ .status = .ran } });
+    const rep = startup.recoverLeftoverAgentRunsWith(true, std.testing.io, std.testing.allocator, SpyOps{ .caps = &caps, .result = .{ .status = .ran } });
     try std.testing.expectEqual(recovery.StartupStatus.ran, rep.status);
     try std.testing.expectEqual(@as(usize, 1), caps.env);
     try std.testing.expectEqual(@as(usize, 1), caps.open);
     try std.testing.expectEqual(@as(usize, 1), caps.build);
     try std.testing.expectEqual(@as(usize, 1), caps.recover);
     try std.testing.expectEqual(@as(usize, 1), caps.close);
-    try std.testing.expectEqual(@as(usize, 1), caps.now); // sampled once
-    try std.testing.expectEqual(@as(usize, 1), caps.construct); // exactly one clock constructed (two-clock mutant -> 2)
-    try std.testing.expectEqual(@as(usize, 1), caps.captured_token); // recover got the FIRST clock's identity
+    try std.testing.expectEqual(@as(usize, 1), caps.now);
+    try std.testing.expectEqual(@as(usize, 1), caps.construct);
+    try std.testing.expectEqual(@as(usize, 1), caps.captured_token);
     try std.testing.expectEqual(@as(i64, 777) + startup.STARTUP_BUDGET_MS, caps.captured_deadline);
 }
 
 test "a non-ok report is PROPAGATED, never swallowed; dir still closed once" {
-    const io = std.testing.io;
-    const gpa = std.testing.allocator;
     var caps = Caps{};
-    const rep = startup.recoverLeftoverAgentRunsWith(true, io, gpa, SpyOps{ .caps = &caps, .result = .{ .status = .ran, .fail_closed = 1 } });
+    const rep = startup.recoverLeftoverAgentRunsWith(true, std.testing.io, std.testing.allocator, SpyOps{ .caps = &caps, .result = .{ .status = .ran, .fail_closed = 1 } });
     try std.testing.expect(!rep.ok());
     try std.testing.expectEqual(@as(usize, 1), rep.fail_closed);
     try std.testing.expectEqual(@as(usize, 1), caps.close);
 }
 
-test "RealOps is live: ledgerName is runs.json; buildActuator is the reviewed Darwin actuator" {
-    const ro = startup.RealOps{};
-    try std.testing.expectEqualStrings("runs.json", ro.ledgerName());
+test "RealOps builds the reviewed Darwin actuator type" {
+    const ro = startup.RealOps{ .core = .{} };
     try std.testing.expect(@TypeOf(ro.buildActuator()) == recovery.ConcreteActuator(recovery.DarwinWiring));
+    try std.testing.expectEqualStrings("runs.json", ro.ledgerName());
 }
 
-// ---- source lexers: strip-all (code-token checks) and strip-comments-only (import/string checks) ---------------
+// ---- SOURCE binding: ONE exact token sequence (import alias + constructor); additive decoys committed as rows ---
 
-fn lex(gpa: std.mem.Allocator, src: []const u8, comptime keep_strings: bool) ![]u8 {
+fn commentStripped(gpa: std.mem.Allocator, src: []const u8) ![]u8 {
+    // strip // and /* */ and `\\` multiline comments; KEEP "..." strings (so the import path survives).
     var out = try gpa.alloc(u8, src.len);
     var n: usize = 0;
     var i: usize = 0;
@@ -166,36 +222,6 @@ fn lex(gpa: std.mem.Allocator, src: []const u8, comptime keep_strings: bool) ![]
             i += 2;
             continue;
         }
-        if (src[i] == '"') {
-            if (keep_strings) {
-                out[n] = src[i];
-                n += 1;
-                i += 1;
-                while (i < src.len and src[i] != '"') {
-                    out[n] = src[i];
-                    n += 1;
-                    if (src[i] == '\\' and i + 1 < src.len) {
-                        i += 1;
-                        out[n] = src[i];
-                        n += 1;
-                    }
-                    i += 1;
-                }
-                if (i < src.len) {
-                    out[n] = src[i];
-                    n += 1;
-                    i += 1;
-                }
-            } else {
-                i += 1;
-                while (i < src.len and src[i] != '"') {
-                    if (src[i] == '\\') i += 1;
-                    i += 1;
-                }
-                i += 1;
-            }
-            continue;
-        }
         out[n] = src[i];
         n += 1;
         i += 1;
@@ -203,142 +229,34 @@ fn lex(gpa: std.mem.Allocator, src: []const u8, comptime keep_strings: bool) ![]
     return gpa.realloc(out, n);
 }
 
-fn balancedBody(src: []const u8, decl: []const u8) []const u8 {
-    const at = std.mem.indexOf(u8, src, decl) orelse return "";
-    var i = at + decl.len;
-    while (i < src.len and src[i] != '{') i += 1;
-    if (i >= src.len) return "";
-    const start = i;
-    var depth: usize = 0;
-    while (i < src.len) : (i += 1) {
-        if (src[i] == '{') depth += 1;
-        if (src[i] == '}') {
-            depth -= 1;
-            if (depth == 0) return src[start .. i + 1];
-        }
-    }
-    return "";
+const IMPORT_TOKEN = "const agent_startup_recovery = @import(\"agent_startup_recovery\")";
+const CTOR_TOKEN = "runStartupThenDispatch(agent_startup_recovery.StartupHook{";
+
+test "source: app binds the import alias and passes EXACTLY agent_startup_recovery.StartupHook to the combinator" {
+    const gpa = std.testing.allocator;
+    const app = try readSrc(gpa, "src/app.zig");
+    defer gpa.free(app);
+    const code = try commentStripped(gpa, app);
+    defer gpa.free(code);
+    try std.testing.expect(std.mem.indexOf(u8, code, IMPORT_TOKEN) != null);
+    try std.testing.expect(std.mem.indexOf(u8, code, CTOR_TOKEN) != null);
+}
+
+test "source(committed mutants): additive decoy and wrong-hook do NOT satisfy the exact constructor token" {
+    const gpa = std.testing.allocator;
+    // additive decoy: the real first arg is OtherHook carrying a StartupHook{} payload; a loose predicate passes.
+    const DECOY = "_ = runStartupThenDispatch(OtherHook{ .decoy = agent_startup_recovery.StartupHook{} }, Dispatch{});";
+    const d = try commentStripped(gpa, DECOY);
+    defer gpa.free(d);
+    try std.testing.expect(std.mem.indexOf(u8, d, CTOR_TOKEN) == null); // first arg is OtherHook -> rejected
+
+    // wrong-hook: a different type whose name merely contains "StartupHook".
+    const WRONG = "_ = runStartupThenDispatch(agent_startup_recovery.WrongStartupHook{}, Dispatch{});";
+    const w = try commentStripped(gpa, WRONG);
+    defer gpa.free(w);
+    try std.testing.expect(std.mem.indexOf(u8, w, CTOR_TOKEN) == null); // ".WrongStartupHook{" != ".StartupHook{"
 }
 
 fn readSrc(gpa: std.mem.Allocator, path: []const u8) ![]u8 {
     return std.Io.Dir.cwd().readFileAlloc(std.testing.io, path, gpa, .limited(1 << 20));
-}
-
-/// The text between the matching parens of the first `call` (a "name(" prefix) in `code`; null if absent.
-fn callInner(code: []const u8, call: []const u8) ?[]const u8 {
-    const at = std.mem.indexOf(u8, code, call) orelse return null;
-    var i = at + call.len;
-    var depth: usize = 1;
-    const start = i;
-    while (i < code.len) : (i += 1) {
-        if (code[i] == '(') depth += 1;
-        if (code[i] == ')') {
-            depth -= 1;
-            if (depth == 0) return code[start..i];
-        }
-    }
-    return null;
-}
-/// The nth top-level (comma-separated, ()/[]/{}-aware) argument in `inner`, trimmed; null if absent.
-fn nthArg(inner: []const u8, n: usize) ?[]const u8 {
-    var depth: usize = 0;
-    var start: usize = 0;
-    var idx: usize = 0;
-    var i: usize = 0;
-    while (i <= inner.len) : (i += 1) {
-        const at_end = i == inner.len;
-        const c: u8 = if (at_end) ',' else inner[i];
-        if (!at_end and (c == '(' or c == '[' or c == '{')) {
-            depth += 1;
-        } else if (!at_end and (c == ')' or c == ']' or c == '}')) {
-            depth -= 1;
-        } else if ((at_end or c == ',') and depth == 0) {
-            if (idx == n) return std.mem.trim(u8, inner[start..i], " \t\r\n");
-            idx += 1;
-            start = i + 1;
-        }
-    }
-    return null;
-}
-fn braceNet(s: []const u8, pos: usize) i64 {
-    var d: i64 = 0;
-    var i: usize = 0;
-    while (i < pos) : (i += 1) {
-        if (s[i] == '{') d += 1;
-        if (s[i] == '}') d -= 1;
-    }
-    return d;
-}
-
-// (1) call-site: the FIRST argument of runStartupThenDispatch is the named owner hook. The additive-decoy mutant
-// (OtherHook{} first + an unrelated StartupHook{} elsewhere) is committed below as a row, not an offline edit.
-test "call-site: runStartupThenDispatch's first arg is StartupHook; additive-decoy is rejected" {
-    const gpa = std.testing.allocator;
-    const app = try readSrc(gpa, "src/app.zig");
-    defer gpa.free(app);
-    const code = try lex(gpa, app, false);
-    defer gpa.free(code);
-    const nc = try lex(gpa, app, true); // comment-safe import binding (strings kept)
-    defer gpa.free(nc);
-    try std.testing.expect(std.mem.indexOf(u8, nc, "@import(\"agent_startup_recovery\")") != null);
-    const body = balancedBody(code, "pub fn runWithIo(");
-    try std.testing.expect(body.len != 0);
-    const inner = callInner(body, "runStartupThenDispatch(") orelse return error.NoCall;
-    const a0 = nthArg(inner, 0) orelse return error.NoArg;
-    try std.testing.expect(std.mem.indexOf(u8, a0, "StartupHook") != null); // first arg IS the owner hook
-
-    const MUT = // additive decoy: the real first arg is OtherHook; a StartupHook{} sits unrelated nearby
-        "pub fn runWithIo() void {\n    const decoy = StartupHook{};\n    _ = decoy;\n" ++
-        "    _ = runStartupThenDispatch(OtherHook{ .a = 1 }, Dispatch{ .c = 2 });\n}\n";
-    const mcode = try lex(gpa, MUT, false);
-    defer gpa.free(mcode);
-    const mbody = balancedBody(mcode, "pub fn runWithIo(");
-    const minner = callInner(mbody, "runStartupThenDispatch(") orelse return error.NoCall;
-    const ma0 = nthArg(minner, 0) orelse return error.NoArg;
-    try std.testing.expect(std.mem.indexOf(u8, ma0, "StartupHook") == null); // the FIRST-arg bind rejects the decoy
-}
-
-// (2) StartupHook.run IS the owner, as a LIVE top-level statement. The dead-branch mutant is a committed row.
-test "StartupHook.run calls the owner as a live top-level statement; dead-branch is rejected" {
-    const gpa = std.testing.allocator;
-    const owner = try readSrc(gpa, "src/agent_startup_recovery.zig");
-    defer gpa.free(owner);
-    const code = try lex(gpa, owner, false);
-    defer gpa.free(code);
-    const run = balancedBody(balancedBody(code, "pub const StartupHook = struct"), "pub fn run(");
-    try std.testing.expect(run.len != 0);
-    const at = std.mem.indexOf(u8, run, "recoverLeftoverAgentRuns(") orelse return error.NoCall;
-    try std.testing.expectEqual(@as(i64, 1), braceNet(run, at)); // live, top-level (not a dead branch)
-
-    const MUT = "pub fn run(self: H) void {\n    if (false) {\n        _ = recoverLeftoverAgentRuns(self.a, self.b);\n    }\n}\n";
-    const mcode = try lex(gpa, MUT, false);
-    defer gpa.free(mcode);
-    const mrun = balancedBody(mcode, "pub fn run(");
-    const mat = std.mem.indexOf(u8, mrun, "recoverLeftoverAgentRuns(") orelse return error.NoCall;
-    try std.testing.expect(braceNet(mrun, mat) != 1); // nested in if (false) -> depth 2 -> rejected
-}
-
-// (3) RealOps.recover forwards the live ledger/clock/deadline/actuator args to recoverAllAtStartup. The dead-call
-// mutant is a committed row.
-test "RealOps.recover forwards the live args to recoverAllAtStartup; dead-call is rejected" {
-    const gpa = std.testing.allocator;
-    const owner = try readSrc(gpa, "src/agent_startup_recovery.zig");
-    defer gpa.free(owner);
-    const code = try lex(gpa, owner, false);
-    defer gpa.free(code);
-    const realops = balancedBody(code, "pub const RealOps = struct");
-    const recover = balancedBody(realops, "pub fn recover("); // RealOps body first, then its recover method
-    try std.testing.expect(recover.len != 0);
-    const inner = callInner(recover, "recovery.recoverAllAtStartup(") orelse return error.NoCall;
-    try std.testing.expectEqualStrings("dir", nthArg(inner, 2).?); // the opened dir
-    try std.testing.expectEqualStrings("sub", nthArg(inner, 3).?); // the ledger name argument
-    try std.testing.expectEqualStrings("clk", nthArg(inner, 4).?); // the clock
-    try std.testing.expectEqualStrings("deadline_ms", nthArg(inner, 5).?); // the one absolute deadline
-    try std.testing.expectEqualStrings("actuator", nthArg(inner, 6).?); // the reviewed actuator
-
-    const MUT = "pub fn recover(self: R) Rep {\n    _ = self;\n    return .{ .status = .disabled };\n}\n"; // dead: no call
-    const mcode = try lex(gpa, MUT, false);
-    defer gpa.free(mcode);
-    const mrec = balancedBody(mcode, "pub fn recover(");
-    try std.testing.expect(callInner(mrec, "recovery.recoverAllAtStartup(") == null); // no live call -> rejected
 }
