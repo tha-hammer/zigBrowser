@@ -476,6 +476,10 @@ public static class Z {
   }
   public static IntPtr Job; static IntPtr _hProc, _hThread; public static int Pid; public static bool ProcGone;
   public static bool FirstStopFailed; public static bool CleanupExhausted; static int _proveCalls;
+  // WS5.5b-2 (RoseCat f1e9653): ExpectNormalExit is set for self-closing runs (ZB_SETTLE_KINDS='live', where the
+  // shim's primary WM_CLOSE drives a clean shutdown); NoKillNeeded records that such a run exited on its own, so
+  // no TerminateJobObject was needed. For every other run the teardown keeps its kill-first contract unchanged.
+  public static bool ExpectNormalExit; public static bool NoKillNeeded;
   // ONE TerminateProcess-based attempt to prove the held process terminal (proof = wait + exit-code;
   // TerminateProcess is only the action). Does NOT close any handle. The e2e `assign_firststop_fail` seam fails
   // ONLY the first attempt; `cleanup_exhaust` fails EVERY attempt. Either way the child was born INTO the
@@ -581,6 +585,21 @@ public static class Z {
   // first wait (the `wait_fail` seam) a DISTINCT bounded cleanup route (FinalReap) first PROVES the process +
   // job tree are gone; only THEN is the intentionally-preserved first-wait failure reported (RoseCat 7670 #2).
   public static void Teardown() {
+    if (ExpectNormalExit) {
+      // Self-closing run: wait FIRST (bounded, positive) for the browser's own clean exit — the shim's primary
+      // WM_CLOSE drives it, emitting the terminal `live` row before we ever reach a kill. WAIT_OBJECT_0 => the
+      // owned-Job kill was unnecessary (NoKillNeeded); the finally's CloseJob (KILL_ON_CLOSE) remains the durable
+      // backstop. Only a timeout/failure takes the kill branch.
+      uint w = (ForceFail == "wait_fail") ? 258u
+             : (_hProc != IntPtr.Zero ? WaitForSingleObject(_hProc, 8000) : WAIT_OBJECT_0);
+      if (w == WAIT_OBJECT_0) { NoKillNeeded = true; ProcGone = true; return; }
+      if (Job != IntPtr.Zero) { if (!TerminateJobObject(Job, 1)) Fail("TerminateJobObject"); }  // backstop
+      FinalReap();
+      throw new Exception("WaitForSingleObject on the browser did not signal WAIT_OBJECT_0: " + w +
+                          " (bounded cleanup proved gone=" + ProcGone + ", job_members=" + JobProcessCount() + ")");
+    }
+    // Non-self-closing run (unchanged contract): terminate the Job FIRST, then require WAIT_OBJECT_0; a non-
+    // OBJECT_0 first wait (the wait_fail seam) proves terminal via the distinct FinalReap, then reports.
     if (Job != IntPtr.Zero) { if (!TerminateJobObject(Job, 1)) Fail("TerminateJobObject"); }
     uint wait;
     if (ForceFail == "wait_fail") wait = 258u;                               // forced WAIT_TIMEOUT (first wait)
@@ -818,6 +837,9 @@ try {
   $settle = $env:ZB_SETTLE_KINDS; if (-not $settle) { $settle = 'open|drag' }
   $settleErr = $env:ZB_SETTLE_STDERR   # RoseCat 70fd7f9 #3: a fold-FAILURE run settles on this stderr diagnostic
   $foldWait = ($settle -eq 'fold')
+  # WS5.5b-2 (RoseCat f1e9653): a 'live' run self-closes (the shim posts the primary WM_CLOSE), so Teardown must
+  # wait for that normal exit and record NoKillNeeded instead of killing first. Every other run keeps kill-first.
+  [Z]::ExpectNormalExit = ($settle -eq 'live')
   $pollMs = if ($foldWait) { 25 } else { 300 }
   $sw = [System.Diagnostics.Stopwatch]::new()
   $openSeen = $false; $seen = $false; $openW = 0; $hWin = [IntPtr]::Zero
@@ -912,6 +934,7 @@ finally {
   $res.proc_gone = [Z]::ProcGone
   $res.first_stop_failed = [Z]::FirstStopFailed
   $res.cleanup_exhausted = [Z]::CleanupExhausted
+  $res.no_kill_needed = [Z]::NoKillNeeded   # WS5.5b-2: a 'live' run exited normally; no TerminateJobObject was used
   if (-not $res.proc_gone -and -not $res.error) { $res.error = 'cleanup exhausted: held child not proven terminal' }
   $res.stdout = [string](Get-Content $out -Raw -ErrorAction SilentlyContinue); if ($null -eq $res.stdout) { $res.stdout = '' }
   $res.stderr = [string](Get-Content $err -Raw -ErrorAction SilentlyContinue); if ($null -eq $res.stderr) { $res.stderr = '' }

@@ -975,6 +975,7 @@ class WinDrawerBehaviorsLive(_wd.WinDrawerLive):
             # WS5.5b-2: require the peak to EQUAL the 2 windows opened (both drawers concurrently live), not
             # merely positive — a serialized run or an unaccounted mount (peak == 1) must fail here.
             check_live_peak_matches(int(peak), int(final), 2)
+            self.assertTrue(r.get("no_kill_needed"), "the 'live' run must exit normally (NoKillNeeded; no Job kill)")
         # WS5.5b-2 (RoseCat 35ff63f #2): settle on the TERMINAL `live` row — the shim's primary WM_CLOSE drives a
         # clean shutdown that emits it, so the harness waits for it instead of tearing down at the first `open`.
         self._run_drawer(extra_env=self._env(ZIGBROWSER_AGENT_DRAWER_WINDOWS="2", ZB_SETTLE_KINDS="live"), body=body)
@@ -987,6 +988,7 @@ class WinDrawerBehaviorsLive(_wd.WinDrawerLive):
         # are in win_drawer_test.py WinDrawerOracle.test_ws5_5b2_extra_wndproc_decrements_once.
         def body(r):
             validate_close_one_transcript(r["stdout"], 2)
+            self.assertTrue(r.get("no_kill_needed"), "the 'live' run must exit normally (NoKillNeeded; no Job kill)")
         self._run_drawer(extra_env=self._env(ZIGBROWSER_AGENT_DRAWER_WINDOWS="2",
                                              ZIGBROWSER_AGENT_DRAWER_EXTRA_CLOSE_ONE="1",
                                              ZB_SETTLE_KINDS="live"), body=body)  # WS5.5b-2 #2: terminal `live`
@@ -998,6 +1000,7 @@ class WinDrawerBehaviorsLive(_wd.WinDrawerLive):
         def body(r):
             peak, final = validate_multiwindow_transcript(r["stdout"], 1)
             check_live(int(peak), int(final))  # peak 1 (primary only), final 0
+            self.assertTrue(r.get("no_kill_needed"), "the 'live' run must exit normally (NoKillNeeded; no Job kill)")
         self._run_drawer(extra_env=self._env(ZIGBROWSER_AGENT_DRAWER_WINDOWS="2",
                                              ZIGBROWSER_AGENT_DRAWER_EXTRA_FAIL="panel",
                                              ZB_SETTLE_KINDS="live"), body=body)  # WS5.5b-2 #2: terminal `live`
@@ -1007,6 +1010,7 @@ class WinDrawerBehaviorsLive(_wd.WinDrawerLive):
         def body(r):
             peak, final = validate_multiwindow_transcript(r["stdout"], 1)
             check_live(int(peak), int(final))
+            self.assertTrue(r.get("no_kill_needed"), "the 'live' run must exit normally (NoKillNeeded; no Job kill)")
         self._run_drawer(extra_env=self._env(ZIGBROWSER_AGENT_DRAWER_WINDOWS="2",
                                              ZIGBROWSER_AGENT_DRAWER_EXTRA_FAIL="icon",
                                              ZB_SETTLE_KINDS="live"), body=body)  # WS5.5b-2 #2: terminal `live`
