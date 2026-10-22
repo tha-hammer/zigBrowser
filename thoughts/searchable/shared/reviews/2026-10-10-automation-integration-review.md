@@ -32133,3 +32133,134 @@ held outer-`/tmp` fd, fresh mount and PID namespaces, private tmpfs, empty-after
 assertion, and test exit status. No weakened direct invocation on the host is
 acceptable. This registration can share BlueBeaver's promised follow-up with
 the MS6.3 registrations.
+
+## Windows WS5.3 fold-failure handling (`70fd7f9`)
+
+**BLOCKED.** The slice makes two sound production improvements: `SetTimer` is
+now armed and checked before `folding` becomes true, and a failed animated
+`MoveWindow` restores the open layout without emitting a `fold` row. The
+delayed-first-tick branch also no longer fabricates the terminal endpoint as a
+midpoint. From an exact clean archive, `cross-check-drawer-win` passed **5/5
+steps**, the offline behavior module passed **34/34 tests** with twelve
+VM-gated cases skipped, and `git diff --check` is clean.
+
+Four issues keep `02c39a4` finding 3 open:
+
+1. The authoritative WS5.3 contract still requires the transition to be
+   stepped on vsync through `DwmFlush` (Windows plan:1539). Production remains
+   a plain 16 ms `SetTimer` state machine with no present-sync call
+   (`webview2_shim.cpp:944-976,1358-1441`). Either implement and check
+   `DwmFlush`, including a causal failure row, or amend the contract through an
+   explicit owner/design decision. The implementation cannot silently replace
+   that requirement.
+2. Midpoint read failures are not actually fail-closed
+   (`webview2_shim.cpp:1391-1410`). A failed `GetWindowRect` or
+   `ScreenToClient` merely logs; a later timer tick may capture a midpoint and
+   emit a successful `fold`. Abort or permanently suppress success for that
+   fold once a required measurement fails, and causally cover both read
+   branches (or an equivalent seam that independently mutates each result).
+3. The three new live failure cases settle on the earlier `open` row
+   (`win_drawer_behaviors_test.py:751-768`; runner default at
+   `win_drawer_test.py:534-566`). The harness may therefore tear down before
+   the asynchronous move/delay branch executes. Settle on an exact failure
+   observation and inspect the HWND before teardown: timer/move failures must
+   leave the panel usable, open and docked; the delayed terminal must leave it
+   folded and the page redocked. `proc_gone` proves only harness cleanup, not a
+   stable failure state.
+4. Both fold abort/completion paths ignore `KillTimer`'s result. Check timer
+   cancellation and cover its failure with a fixed diagnostic and a causal
+   row, so an allegedly terminal transition cannot leave an armed timer.
+
+No Windows VM or owner-visible run is authorized for this slice yet.
+
+## Push-path test registrations (`1cff3ab`)
+
+**APPROVED.** The commit adds only the five promised durable `build.zig`
+registrations: CLI temporary-directory policy, fd-3 cleanup, login CLI temp,
+login scratch/temp, and the guarded xsession teardown. It does not change any
+case bytes or any of the three reviewed MS6 hard-gate manifest digests.
+
+From an exact clean archive, the registered commands passed independently:
+`test_cli_env_tmpdir` **3/3**, `test_login_cli_tmpdir` **4/4**,
+`test_login_scratch_tmp` **27/27**, fd-3 cleanup **1/1**, and xsession teardown
+**4/4 in 3.816 s** with its private tmpfs empty. The xsession launcher retains
+the outer `/tmp` fd, user/PID/mount namespaces, private tmpfs and empty-after
+assertion. This cumulatively closes the registration-only holds on `11eaceb`
+and `820262b`; it does not replace the separately authorized bounded Mac run.
+
+## Decision-16 part-4 red fix-forward (`2f15ce7`)
+
+**APPROVED-for-tests.** The new row proves that an unscoped navigation card is
+not owned by any prompt epoch: `promptOver` for ids 0, 1, 7 and max-int neither
+ends nor releases it, and its normal approval still dispatches. Together with
+the existing same/other/late-duplicate rows this kills current-prompt,
+global-end and epoch-derived ownership models rather than restating the fake.
+The e2e now enters a private user/PID/mount namespace before its existing
+sealed bwrap child, which is the required containment for its signal-capable
+cleanup. The Python module compiles and `git diff --check` is clean.
+
+The red remains intentionally unregistered until the production green. This
+approval does not approve or arm any decision-16 production path.
+
+## Windows WS5.7 overflow/tie addendum (`7e499b6`)
+
+**APPROVED.** The circular hit-test now widens every operand to `i128` before
+squaring, so arbitrary `c_int` coordinates and radius cannot overflow. The
+additive property rows cover both maximum signed endpoints. The percentage-
+scale helper also gains true `.5` ties (`10*125%=12.5 -> 13` and
+`6*125%=7.5 -> 8`), closing the SHOULDs left on `fefe97d` without changing
+production behavior. An exact clean `drawer-props-test` passed **4/4 steps and
+14/14 tests**. WS5.7 remains incomplete until the real per-monitor DPI source,
+`WM_DPICHANGED`, C++ symbol use and real-HWND/owner-screen checks land.
+
+## MS6.5.1 concrete recovery lease (`1fca631`)
+
+**BLOCKED.** The commit is correctly unarmed and outside aggregate `test`, and
+its exact clean-archive manual step passed **4/4 tests and 4/4 steps** inside
+the private PID namespace. Those rows prove the current pin and simple
+filesystem states, but the implementation is not yet a safe concrete Darwin
+lease:
+
+1. The held run-directory fd protects `run.marker`, but final removal is
+   `unlinkat(runtime_fd, basename, AT_REMOVEDIR)`. If the original directory is
+   renamed and an empty replacement is installed at that basename, teardown
+   can remove the replacement rather than the held inode. Revalidate the
+   parent/name against the held `(dev,ino,uid,mode)` immediately before removal
+   (or use an equivalent fd-safe design) and add the causal rename/replacement
+   mutant.
+2. `fixedPoint` discards its clock and `teardown` discards both clock and
+   deadline. The ledger's one pre-teardown check cannot stop marker unlink from
+   crossing the absolute deadline and then continuing to rmdir/retire. Check
+   the same injected absolute deadline before each destructive mutation,
+   including between marker unlink and rmdir; expiry after marker unlink must
+   preserve the C2 state and fail closed. Add the held-work call-counter rows.
+3. The macOS slice imports `std.os.linux` and uses
+   `linux.unlinkat/linux.errno/linux.AT.REMOVEDIR`. Replace that with a portable
+   POSIX/libc boundary or reviewed C wrapper and prove the Darwin build path.
+4. `zb_reaper_pin_fd` returns `EINVAL` for both `fstat` failure and a real
+   shape/identity refusal, while the Zig actuator maps every nonzero result to
+   `mismatch`. Preserve the promised `unreadable`/`mismatch` distinction and
+   cover the unreadable branch causally.
+5. `CleanWiring.run` returns `.clean` without calling
+   `zb_reaper_fixed_point`, so the four tests do not prove the claimed held-fd
+   census/kill/fresh-census path. The intercepted-action, early-unlock and
+   publish-failure/retry matrix remains required.
+
+The manual namespace arrangement is acceptable for this signal-free
+increment. No destructive Mac run or production arming is authorized.
+
+## Windows WS5.7 raw-DPI primitive (`d2804f1`)
+
+**BLOCKED-for-tests; implementation shape otherwise acceptable as slice
+2b-1.** The additive function keeps the e2e percentage seam separate and
+computes the production raw-DPI size in Zig. From an exact clean archive,
+`drawer-props-test` passed **4/4 steps and 15/15 tests**.
+
+Every positive raw-DPI vector divides to an integer (96, 120, 144 and 192), so
+the tests do not distinguish the claimed half-up rule from floor, ceil or
+truncation. Add a causal raw-DPI tie such as `dpi=102`, where
+`56*102/96=59.5` must yield **60**, and show the floor/truncation mutant fails
+that row. A maximum-`c_int` bounded-output row is a SHOULD. Later integration
+must still source the real window DPI, react to `WM_DPICHANGED`, pin/use the C
+export in the Windows cross-check and prove the real HWND at 150%; this
+primitive alone does not close WS5.7 or authorize a VM run.
