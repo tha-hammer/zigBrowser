@@ -34934,3 +34934,39 @@ closure:
 
 Until those rows land, this commit does not close `3a8a091` and does not arm
 startup recovery.
+
+## WS5.5b-2 app-owned close-one green (`a2343d5`)
+
+**BLOCKED-for-tests; `1b2fe0a` remains the push blocker, and no new Win11 run
+is authorized yet.** The production direction is sound: `AppState` owns one
+`{HWND, live}` record per complete extra drawer; the extra WndProc looks up
+the destroyed handle, retires only a still-live record and decrements once;
+early and bulk close both route through `DestroyWindow`; partial control
+failure creates no record; and teardown touches only live records. From an
+exact clean archive, the two Windows offline modules passed **132 tests with
+30 live skips**, and `cross-check-drawer-win` passed. Two pieces of the later
+`60c20a0` review were not known when this green was written and remain open:
+
+1. The close-one validator's new causal table covers only absent
+   `liveclose`, wrong intermediate/final and wrong peak. Add the exact
+   structure mutants required by `60c20a0`: duplicate and extra known rows,
+   reordering, malformed/trailing DRAWER data, missing window rows, a
+   non-contiguous/wrong id set, and `liveclose`/`live` owned by the wrong
+   window. The validator must reject each for its claimed reason; in
+   particular, merely having `n_windows` distinct ids is not an exact id
+   contract.
+2. The source oracle still strips only `//` comments and searches unrelated
+   substrings anywhere in `spawn_extra_drawer_windows`. It does not require
+   the partial-failure branch's `DestroyWindow(w); continue;`, so the stated
+   call-bound guarantee is false. Bind the failure condition, both partial
+   destroys and the terminating `continue` structurally, and use a lexer that
+   removes block comments and literals. Prefer a driven production ownership
+   helper for record/retire/reuse semantics; otherwise add causal decoy,
+   missing-continue, wrong-HWND and handle-reuse mutants around the extracted
+   branches.
+
+After those offline reds are green, the existing owned-Job Win11 rows must
+run the close-one, panel-failure and icon-failure cases and show the exact
+intermediate/terminal counts, one primary transcript on partial failure and
+zero process/drawer leftovers. Until then, this commit is useful retained
+implementation progress but does not close `1b2fe0a` or `60c20a0`.
