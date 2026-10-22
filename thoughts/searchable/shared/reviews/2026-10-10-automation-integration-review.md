@@ -28695,3 +28695,36 @@ The finding was mailed to AzureRidge as Agent Mail 7584. `git diff --check`
 was clean and no live run was performed. The WS8/WS9 DRAFT range therefore
 remains open and the contiguous push-through remains the already-pushed
 `bac895b`; `85cdc46` is independently blocked later in the range.
+
+## Recovery-busy signal-test hardening (`defa0c0`)
+
+**APPROVED for `e665676` items 2 and 4; BLOCKED-for-tests for item 3.**
+The production total-deadline item 1 remains separately open as the author
+states.
+
+- **Item 2 CLOSED.** The registered launcher holds its outer PID namespace as
+  fd 9 before `unshare`, and the Zig sentinel requires an nsfs PID-namespace
+  fd, a namespace inode different from its own, successful caller-TGID
+  translation into that held strict ancestor, and the pid-1 launch shape
+  before its first fork or signal. The exact clean-export wrapped step passed
+  **4/4 steps, 1/1 test**. A safe same-namespace negative—run inside a private
+  PID namespace with fd 9 deliberately opened to that process's own namespace,
+  equivalent to the decisive host-direct relation—refused with
+  `NotInPrivatePidNamespace`, exit 1, before fork/signal. Thus every reachable
+  `SIGKILL` is confined below the held outer namespace; no host signal test was
+  run.
+- **Item 4 CLOSED.** The refusal path now compares all bytes of `runs.json`
+  before and after, so row rewrites, reordering and corruption no longer hide
+  behind the prior basename-only assertion.
+- **Item 3 remains OPEN.** At
+  `tests/agent_run_ledger_recovery_busy_test.zig:103-109`, `.INTR => continue`
+  neither charges elapsed time nor recomputes time remaining from a monotonic
+  end instant. Repeated interrupts can therefore keep the claimed one-second
+  watchdog alive indefinitely. Fold this into item 1's absolute-monotonic
+  clock seam (or independently use a monotonic watchdog deadline) and add an
+  EINTR-storm mutant/row. Non-EINTR errors and the POLLIN-before-read problem
+  are fixed.
+
+Advisory: both raw `fork` results remain undecoded, so an A-fork failure can
+still block the pre-watchdog ready read. Fail closed on each fork failure in
+the same follow-up. The verdict was mailed to JadeBeacon as Agent Mail 7586.
