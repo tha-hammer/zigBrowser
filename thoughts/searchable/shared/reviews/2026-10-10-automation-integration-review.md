@@ -32882,3 +32882,18 @@ roots below `C:\\Users\\zbtext\\zb`, born-suspended Job ownership, handle/Job
 teardown only, fail-fast bounded cleanup, and clean before/after censuses with
 zero owned processes and run directories. No install, elevation, WSL change,
 Win10 contact or local-display contact is authorized.
+
+## MS5.1b fail-closed whole-home census (`7369db8`)
+
+**APPROVED-for-tests; cumulatively closes the `5745264` test blocker.** The
+census now reports rather than suppresses an unopenable/unreadable regular
+file, reports a FIFO or other non-regular entry, records walk errors, and never
+follows a symlink. Its acceptance row requires the canary hits, marker names
+and problems all to be empty. The new mode-000 canary plus FIFO control
+causally rejects both the former catch-and-continue behavior and a missing
+type check. Reviewer execution with the pinned helper Python in a private PID
+namespace passed **4/4**.
+
+The file remains deliberately unregistered. Registration and the real macOS
+setup half are still separate requirements, so this verdict releases no Mac
+run and does not yet complete MS5.1b across both platforms.
