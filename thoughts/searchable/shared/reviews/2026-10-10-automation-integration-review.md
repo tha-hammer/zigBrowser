@@ -36230,3 +36230,15 @@ recompute inside spawn) then become causal, and no additional source-level
 reachability or order proof is required. Until that fix-forward, the
 `1b2fe0a` WS5.5b-2 range remains blocked and another Win11 run is neither
 needed nor authorized for this test-only defect.
+
+## WS5.5b-2 live-settle aggregate registration (`678e01a`)
+
+**APPROVED.** This additively registers the exact
+`ws5_5b2_settle_ast_test.py` bytes approved at `7223f4b`, declares both the
+test and its inspected `win_drawer_behaviors_test.py` source as build inputs,
+exposes the focused `windows-drawer-settle` step, and makes the aggregate
+`test` step depend on it. The commit changes only `build.zig` by twelve added
+lines; it drops no existing gate dependency. A clean export at `678e01a`
+passes the registered focused step **2/2**. This closes the registration hold
+on `6609074`/`9d9b6c7` and the `7223f4b` proof. The independent controller
+tripwire blocker at `037b79b` still holds the cumulative WS5.5b-2 range.
