@@ -33167,3 +33167,54 @@ input device or unrelated process. Record the artifact hash/provenance,
 decoded seam values, all eight results, and exact before/after process and
 run-directory censuses. Stop on the first failure, leave the VM clean and do
 not retry without a new review.
+
+## MS6.5.1 Darwin recovery actuator (`05ce038`)
+
+**BLOCKED.** The commit is genuinely unarmed and unreachable: source search
+finds no `darwinCensus` caller or `reaper_ready` gate, and no Mac was contacted.
+The reused portable engine remains green. From an exact `05ce038` archive,
+`test-agent-run-reaper`, `test-agent-run-reaper-engine` and the manual
+`test-agent-run-recovery-txn` completed **12/12 build steps**, the engine's
+**43 checks**, and all **19** concrete-recovery tests inside the prescribed
+private namespace; both Darwin Zig objects cross-compiled. Four issues prevent
+this from being the final typed production actuator required by `9e19fd0`:
+
+1. `zb_reaper_prod_killsig` is now a public Apple C symbol and header entry
+   that directly accepts arbitrary `(pid, sig)` and calls `kill`, with no held
+   fd, pinned identity, deadline or `dir_ok` capability
+   (`agent_run_reaper.h:158-162`, `agent_run_reaper.c:383-390`). This is a
+   bypass around the safety boundary the new API is meant to enforce even
+   though no current caller uses it. Keep the real kill callback file-private
+   and export one composite operation that can act only after consuming the
+   held fd, exact pin and deadline; do not expose the raw signal primitive.
+2. `darwinCensus` validates the fd/pin only from `dirOkThunk` immediately
+   before a matched-process kill. A complete empty scan invokes no kill and
+   can therefore return `.clean` without ever checking
+   `zb_reaper_dir_fd_ok` (`agent_run_recovery.zig:238-250,265-272`). An
+   invalid or subsequently changed pin must never authorize a Clean teardown.
+   Require fd/pin validation before entering the engine and again before
+   returning Clean, with causal empty-census/wrong-pin and final-revalidation
+   rows.
+3. The new evidence does not exercise the new entry point. Each added row
+   calls `runFixedPoint` directly (`agent_run_recovery_concrete_test.zig:
+   823-861`), while the Darwin object build compiles only the Zig object and
+   never compiles the new `__APPLE__` C definitions (`build.zig:1004-1013`).
+   In an exact temporary export, replacing `darwinCensus` with unconditional
+   `.clean` **and** putting invalid C in the Apple-only
+   `zb_reaper_prod_killsig` body still left the advertised manual step green:
+   **6/6 steps and 19/19 tests**, including both Darwin-object builds. Add a
+   testable composite seam that causally drives the production actuator's
+   get-path/grammar/capability/deadline/callback selection and compile the
+   changed Darwin C body. Darwin proof remains compile/census-only; no real
+   signal is authorized.
+4. The now-production clock callback ignores `clock_gettime` failure and then
+   reads an undefined `timespec` (`agent_run_recovery.zig:225-232`). A clock
+   read failure at a destructive deadline boundary must force expiry/non-Clean,
+   not undefined behavior. Make it fail closed and cover that outcome through
+   the actuator seam.
+
+Do not add the `reaper_ready` gate, a startup caller, aggregate registration or
+any Mac signal run while these remain open. A focused compile-only Mac check of
+the revised C definitions and signal-free census evidence remain within the
+approved sequencing; any real-kill Mac manifest still requires a separate
+review and release.
