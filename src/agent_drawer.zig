@@ -141,6 +141,42 @@ pub const max_anim_ms: u32 = 5000;
 pub const anim_env_name = "ZIGBROWSER_AGENT_ANIM_MS";
 pub const max_demo_messages: u32 = 5000;
 
+/// WS5.7 (plan 1583): the icon's edge length at a DPI scale percent — the base
+/// size scaled by `scale_pct`/100, rounded half-up. At 150% the 56 px icon is
+/// 84 px. A non-positive `scale_pct` falls back to 100% (unscaled).
+pub fn iconSizeScaled(base: c_int, scale_pct: c_int) c_int {
+    const pct = if (scale_pct > 0) scale_pct else 100;
+    const scaled = @as(f64, @floatFromInt(base)) * @as(f64, @floatFromInt(pct)) / 100.0;
+    return @intFromFloat(@floor(scaled + 0.5));
+}
+
+/// A DPI scale percent: decimal digits only, within [100, 400] (100%..400%).
+pub fn parseScalePercent(text: []const u8) ?u32 {
+    return parseBounded(text, 100, 400);
+}
+
+/// WS5.7: the icon's scaled edge length from the `ZIGBROWSER_AGENT_DRAWER_DPI`
+/// env percent (e.g. "150"). Unset/invalid yields the unscaled `icon_size` (56).
+/// Used by the Windows backend so the C++ keeps no DPI math of its own.
+pub fn iconSizeFromDpiEnv(text: ?[]const u8) c_int {
+    if (text) |t| {
+        if (parseScalePercent(t)) |pct| return iconSizeScaled(icon_size, @intCast(pct));
+    }
+    return icon_size;
+}
+
+/// WS5.7 exact circular hit-test: a point `dx,dy` from the icon centre is inside
+/// when its distance is at most `radius` — the edge (distance == radius) counts
+/// as inside, a pixel beyond it as outside. Integer math (widened), so the edge
+/// pixel is exact with no rounding.
+pub fn insideIcon(dx: c_int, dy: c_int, radius: c_int) bool {
+    const d2 = @as(i64, dx) * @as(i64, dx) + @as(i64, dy) * @as(i64, dy);
+    const r2 = @as(i64, radius) * @as(i64, radius);
+    return d2 <= r2;
+}
+
+pub const dpi_env_name = "ZIGBROWSER_AGENT_DRAWER_DPI";
+
 /// A DRAWER row's text field holds at most this many bytes, then "…".
 pub const row_text_max: usize = 4096;
 
@@ -373,6 +409,8 @@ comptime {
         @export(&zb_drawer_demo_messages, .{ .name = "zb_drawer_demo_messages" });
         @export(&zb_drawer_anim_ms, .{ .name = "zb_drawer_anim_ms" });
         @export(&zb_drawer_anim_ms_from_env, .{ .name = "zb_drawer_anim_ms_from_env" });
+        @export(&zb_drawer_icon_size_from_dpi_env, .{ .name = "zb_drawer_icon_size_from_dpi_env" });
+        @export(&zb_drawer_inside_icon, .{ .name = "zb_drawer_inside_icon" });
     }
 }
 
@@ -468,4 +506,17 @@ fn zb_drawer_anim_ms() callconv(.c) c_uint {
 /// the default 180 (WS5.3). Keeps the Windows backend free of timing math.
 fn zb_drawer_anim_ms_from_env(text: ?[*:0]const u8) callconv(.c) c_uint {
     return animMsFromEnv(if (text) |t| std.mem.span(t) else null);
+}
+
+/// WS5.7: the icon's scaled edge length (px) from the `ZIGBROWSER_AGENT_DRAWER_DPI`
+/// env percent (null when unset): 84 at "150", else the unscaled 56. Keeps the
+/// Windows backend free of DPI math.
+fn zb_drawer_icon_size_from_dpi_env(text: ?[*:0]const u8) callconv(.c) c_int {
+    return iconSizeFromDpiEnv(if (text) |t| std.mem.span(t) else null);
+}
+
+/// WS5.7 exact circular hit-test: 1 when `dx,dy` from the icon centre is within
+/// `radius` (the edge counts as inside), else 0.
+fn zb_drawer_inside_icon(dx: c_int, dy: c_int, radius: c_int) callconv(.c) c_int {
+    return @intFromBool(insideIcon(dx, dy, radius));
 }

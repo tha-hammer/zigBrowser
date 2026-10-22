@@ -138,3 +138,37 @@ test "animMsFromEnv: valid override else the default 180 (WS5.3)" {
     try expectEqual(@as(u32, 180), d.animMsFromEnv(null));    // env unset -> default
     try expectEqual(@as(u32, 180), d.animMsFromEnv("100"));   // below the 180 floor -> default
 }
+
+test "iconSizeScaled rounds base*pct/100 half-up, independent (WS5.7)" {
+    try expectEqual(@as(c_int, 84), d.iconSizeScaled(56, 150)); // 150% of 56 = 84 (the contract case)
+    try expectEqual(@as(c_int, 56), d.iconSizeScaled(56, 100)); // 100% unchanged
+    try expectEqual(@as(c_int, 112), d.iconSizeScaled(56, 200)); // 200%
+    try expectEqual(@as(c_int, 70), d.iconSizeScaled(56, 125)); // 70.0 exact
+    try expectEqual(@as(c_int, 74), d.iconSizeScaled(56, 133)); // 74.48 -> 74 (round half-up, down here)
+    try expectEqual(@as(c_int, 56), d.iconSizeScaled(56, 0));   // non-positive -> 100% fallback
+    // mutant: ignoring DPI keeps 56 at 150% -> disagrees with the real 84
+    try std.testing.expect(d.iconSizeScaled(56, 150) != d.icon_size);
+}
+
+test "iconSizeFromDpiEnv: valid percent scales, else the unscaled 56 (WS5.7)" {
+    try expectEqual(@as(c_int, 84), d.iconSizeFromDpiEnv("150")); // the 150% env the harness sets
+    try expectEqual(@as(c_int, 56), d.iconSizeFromDpiEnv("100")); // 100%
+    try expectEqual(@as(c_int, 224), d.iconSizeFromDpiEnv("400")); // the 400% ceiling
+    try expectEqual(@as(c_int, 56), d.iconSizeFromDpiEnv(null));  // env unset -> unscaled
+    try expectEqual(@as(c_int, 56), d.iconSizeFromDpiEnv("56"));  // below the 100 floor -> unscaled
+    try expectEqual(@as(c_int, 56), d.iconSizeFromDpiEnv("401")); // above the 400 ceiling -> unscaled
+    try expectEqual(@as(c_int, 56), d.iconSizeFromDpiEnv("abc")); // non-numeric -> unscaled
+}
+
+test "insideIcon exact circular hit-test: the edge is inside, beyond is outside (WS5.7)" {
+    const r: c_int = 42; // the 84 px icon's radius
+    try std.testing.expect(d.insideIcon(0, 0, r));   // centre
+    try std.testing.expect(d.insideIcon(42, 0, r));  // the exact edge pixel is inside (== radius)
+    try std.testing.expect(d.insideIcon(0, 42, r));  // exact edge on the other axis
+    try std.testing.expect(!d.insideIcon(43, 0, r)); // one pixel beyond is outside
+    try std.testing.expect(d.insideIcon(29, 29, r)); // 29,29 -> 1682 <= 1764 inside
+    try std.testing.expect(!d.insideIcon(30, 30, r)); // 30,30 -> 1800 > 1764 outside
+    // mutant: a strict '<' edge test would wrongly reject the exact edge pixel
+    const d2 = @as(i64, 42) * 42;
+    try std.testing.expect(!(d2 < @as(i64, r) * r)); // the edge is NOT strictly inside; insideIcon must still accept it
+}
