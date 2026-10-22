@@ -505,6 +505,18 @@ fn applyProfileDir(arena: std.mem.Allocator, spec: OpenSpec) errors.BrowserError
         std.debug.print("profile: {s}\n", .{if (err != null) std.mem.span(err) else dir});
         return error.WriteFailed;
     }
+    if (comptime builtin.os.tag == .windows) {
+        // WS5.2: an explicit --profile-dir binds the drawer's persistence store (<profile>/agent-drawer.json)
+        // on Windows, like macOS; without one there is no persistent store (configure gets null). This lets the
+        // "S" icon's position survive a restart (zb_drawer_remember -> save; zb_drawer_start_ratios -> load).
+        const dir = spec.profile_dir orelse return null;
+        const dir_z = arena.dupeZ(u8, dir) catch return error.WriteFailed;
+        var werr: [*c]u8 = null;
+        if (c.zb_app_set_profile_dir(dir_z.ptr, &werr) == c.ZB_AUTO_OK) return dir;
+        defer c.zb_automation_free(werr);
+        std.debug.print("profile: {s}\n", .{if (werr != null) std.mem.span(werr) else dir});
+        return error.WriteFailed;
+    }
     if (comptime builtin.os.tag != .linux) return null;
     const explicit = spec.profile_dir != null;
     const dir = spec.profile_dir orelse
