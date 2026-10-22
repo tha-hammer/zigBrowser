@@ -1,31 +1,27 @@
 r"""WS8/WS9 WSL2 topology — live DISCOVERY SPIKE on the Win11 VM (OD-W4).
 
-!!! DISCOVERY-ONLY. REPAIRED per RoseCat 9134b8b/7558; AWAITING RoseCat review before the next live run
-    (draft gate: a live WSL run needs her OK on the repaired spike first). It is not production closure and
-    not a security claim: the security/product proofs come LATER via named red/green tests driving the
-    production WslBackend / LinuxBwrapBackend. It writes ONLY under C:\\Users\\zbtext\\zb\\wsl on win11-m8,
-    never on the read-only Windows 10 file server, and never calls global `wsl --shutdown`.
+!!! DISCOVERY-ONLY / DO NOT RERUN / NOT REPAIRED. This oracle is KNOWN-DEFECTIVE and MUST NOT be rerun or
+    cited as gate evidence; its results are not a closure or a security claim. Known defects (RoseCat
+    ab98afd / 3a8c21a), to be fixed in a SEPARATE later commit before any rerun: teardown/`_pin_release`
+    swallow terminate/unregister/delete/kill failures and the final census runs only on the success path, so
+    cleanup is neither guaranteed nor fail-closed; staged files use fixed shared names that can overwrite and
+    then delete pre-existing baseline files; `_import` treats stdout text as an alternative to `rc == 0`
+    instead of requiring `rc == 0`; listener readiness is not tied to the exact selected port and the
+    detached Windows listener is not tracked/censused; and the C1 secret is written into a staged file rather
+    than fed only over stdin. Do NOT read the words below as satisfied guarantees — they describe what the
+    spike ATTEMPTS, not what the current code enforces. The security/product proofs come LATER via named
+    red/green tests driving the production WslBackend / LinuxBwrapBackend. It writes ONLY under
+    C:\\Users\\zbtext\\zb\\wsl on win11-m8, never on the read-only Windows 10 file server, and never calls
+    global `wsl --shutdown`.
 
-Repairs in this revision (addressing 9134b8b blockers 1-3):
-- FAIL-CLOSED: every lifecycle op (scp, import, run, terminate, unregister, delete) and every probe asserts
-  its return code; nothing is captured-and-discarded.
-- LISTENER-READY PROOF: the in-distro listener is confirmed LISTENing (netstat) before the Windows client
-  connects; the Windows reverse listener is confirmed "LISTENING" (its ready file) before the WSL→Windows
-  negative is accepted — so a listener that never started can no longer produce a false green.
-- CLEANUP + FINAL CENSUS: every staged file and every imported distro/import-dir is tracked and removed; the
-  final distro census AND the final `zb\\wsl` artifact census must equal the pre-run baseline.
-- DEFAULT-USER (no `-u`): a real default-user launch asserts uid 1000 AND an admin-group census (no
-  root/wheel/adm/sudo group), distinct from the explicit `-u zbagent` launch.
-- C1 BOOTSTRAP (blocker 3): a probe of the Windows-stdio→Linux-fd + ephemeral-port-return bootstrap —
-  a secret written to `wsl.exe` stdin is read at Linux fd 0, the in-distro process prints its chosen
-  `127.0.0.1:0` port to stdout (→ the browser), and an authenticated connect to that port returns an ACK.
-- NEGATIVE/MUTANT ORACLES: a connect to a closed in-distro port must be refused; a failed import and a failed
-  unregister must return nonzero; a planted leftover must be detected by the census — each proving the oracle
-  fails closed rather than passing vacuously.
+What the spike ATTEMPTS (NOT yet enforced — see the defects above):
+- a lifecycle (scp/import/run/terminate/unregister/delete) with per-op checks and a postflight census;
+- an in-distro listener and a Windows reverse listener with readiness checks;
+- a default-user (no `-u`) uid/group check distinct from the explicit `-u zbagent` launch;
+- a Windows-stdio→Linux-fd + ephemeral-port C1 bootstrap probe;
+- negative/mutant oracles (closed-port refusal; failed import/unregister nonzero; planted-leftover detection).
 
-Run live (ONLY after RoseCat approves this repaired spike):
-  ZB_WIN11_HOST=127.0.0.1 ZB_WSL_ROOTFS=/path/to/alpine-minirootfs-3.21.9-x86_64.tar.gz \
-      python3 -I tests/windows/wsl_live_test.py -v
+DO NOT RUN until the separate repair commit lands and RoseCat reviews it.
 """
 import hashlib
 import json
