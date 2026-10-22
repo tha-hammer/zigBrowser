@@ -8,6 +8,9 @@
 # Plan R30-MS1 (bd 4pa.59, 4pa.77; owner decision R30.3 #2): the source is `git archive <sha>` (committed bytes only,
 # never the working tree), written to a fresh local mktemp tar and extracted into a fresh per-run remote directory
 # ~/zb-gate-<sha>-<nonce>. Every ssh pins the build Macs' host keys (tests/mac/known_hosts, StrictHostKeyChecking=yes).
+# Both zig caches live inside that run dir too (bd 3ui.5): the build passes --cache-dir and --global-cache-dir under it
+# and sets ZIG_LOCAL_CACHE_DIR / ZIG_GLOBAL_CACHE_DIR to the same paths, so nothing touches the owner's ~/.cache/zig.
+# Every build is therefore cold.
 # It prints ZB_REMOTE_DIR<TAB><remote dir> first and PASS<TAB>build-on-mac<TAB><sha><TAB><remote dir> last. Run
 # alone, it removes the remote directory at the end; a gate that builds then runs in it sets ZB_KEEP_REMOTE_DIR=1,
 # reads the directory from those lines, and removes it itself. On any failure the remote directory is removed.
@@ -57,7 +60,9 @@ remote_live=1
 
 # Build on the Mac NATIVELY. Do NOT pass -Dtarget: an explicit target flips Zig into cross-compile mode and it stops
 # auto-detecting the Xcode SDK framework search paths (WebKit/Cocoa/Foundation -> "searched paths: none").
-"${SSH[@]}" "$HOST" "cd \"\$HOME/${RDIR}\" && $ZIG build ${STEP} 2>&1" </dev/null
+LOCAL_CACHE="\$HOME/${RDIR}/.zig-cache" GLOBAL_CACHE="\$HOME/${RDIR}/.zig-global-cache"
+"${SSH[@]}" "$HOST" "cd \"\$HOME/${RDIR}\" && ZIG_LOCAL_CACHE_DIR=\"$LOCAL_CACHE\" ZIG_GLOBAL_CACHE_DIR=\"$GLOBAL_CACHE\" \
+$ZIG build --cache-dir \"$LOCAL_CACHE\" --global-cache-dir \"$GLOBAL_CACHE\" ${STEP} 2>&1" </dev/null
 
 if [ "${ZB_KEEP_REMOTE_DIR:-}" != 1 ]; then
   "${SSH[@]}" "$HOST" "cd / && find \"\$HOME/${RDIR:?}\" -delete" </dev/null

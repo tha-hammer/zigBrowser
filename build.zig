@@ -3678,6 +3678,16 @@ pub fn build(b: *std.Build) void {
     }) |input| mac_gate_callers_selftest.addFileInput(b.path(input));
     mac_build_script_step.dependOn(&mac_gate_callers_selftest.step);
     test_step.dependOn(&mac_gate_callers_selftest.step);
+    // Every remote zig invocation keeps both zig caches inside its run dir (bd 3ui.5).
+    const mac_zig_cache_selftest = b.addSystemCommand(&.{ "bash", "tests/mac/zig_cache_isolation_selftest.sh" });
+    for ([_][]const u8{
+        "tests/mac/zig_cache_isolation_selftest.sh", "tests/mac/build-on-mac.sh",    "tests/mac/mac_gate_lib.sh",
+        "tests/mac/known_hosts",                     "tests/mac/gate.sh",            "tests/mac/ms1b_signed_gate.sh",
+        "tests/mac/ms2a_gate.sh",                    "tests/mac/ms2b_gate.sh",       "tests/mac/ms2c_gate.sh",
+        "tests/mac/ms3_gate.sh",                     "tests/mac/ms4_gate.sh",        "packaging/macos/build-dmg.sh",
+    }) |input| mac_zig_cache_selftest.addFileInput(b.path(input));
+    mac_build_script_step.dependOn(&mac_zig_cache_selftest.step);
+    test_step.dependOn(&mac_zig_cache_selftest.step);
     test_step.dependOn(&windows_gate_selftest.step);
     test_step.dependOn(&windows_twohost_selftest.step);
     test_step.dependOn(&windows_build_selftest.step);
