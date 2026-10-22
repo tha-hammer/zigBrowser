@@ -35053,3 +35053,38 @@ predates these seams and is not this evidence.
 Until that run passes, `1b2fe0a` remains the earliest blocked commit and the
 newest contiguous approved push-through remains the already-pushed
 `6f145bc`.
+
+## MS7.6/7.8 card-authority red fix-forward (`7472674`)
+
+**BLOCKED-for-tests; keep it unregistered and unarmed.** This is a substantial
+improvement over `698ba02`: the portable red drives the real MS4 `Cards`
+state through own-control, own-card, single-use and exact 120-second expiry
+rows, and its C-export table distinguishes ignored/approved/denied/lost. The
+Objective-C oracle now strips comments and literal contents before parsing,
+binds the two native button statements to their exact selectors, rejects the
+named indirect/action/script ingresses, and includes causal wrong-sender,
+wrong-card, wrong-control and alternate-source fixtures. From an exact clean
+archive, all honest and dishonest fixture rows passed and the real-source row
+failed only because `agent_drawer_mac.m` is not yet linked; the Zig step failed
+at the intended missing `Press`/`cardPress` seam.
+
+One security-critical coverage gap from the earlier verdict remains:
+`mac_link_sources()` is not the exact macOS link. It extracts only
+`shim.addFileArg` and `module.addCSourceFile` inputs from
+`configureMacosBackend`, yielding the two plain C files and the Objective-C
+shim. It omits the executable's entire Zig root/import graph, including
+`app.zig`, `agent_drawer.zig` and `agent_tools.zig`—precisely where the two
+minters are defined and where the proposed C bridge will call them. A second
+Zig caller or alias can therefore mint without changing any checked source,
+while the oracle still reports success. Fix forward with a fail-closed
+production-source/object inventory that includes the Zig graph and permits
+only the two definitions plus the reviewed `zb_drawer_card_press` bridge;
+include causal planted alternate Zig caller/alias rows. The ObjC linked-source
+inventory may remain the narrower authority for native event ingress.
+
+The green must also add `zb_drawer_card_press` to
+`drawer_portable_exports`, so `cross-check-drawer-mac` proves that both Darwin
+objects actually define the ABI used by the dylib, and must register the
+portable red, the linked-source oracle and that dual-architecture export gate
+together. Until those fixes, this red does not authorize a Mac build or native
+click run and does not move the earlier `1b2fe0a` push boundary.
