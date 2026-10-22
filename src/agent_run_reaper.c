@@ -251,6 +251,11 @@ int zb_reaper_fixed_point(int (*scan)(void *buf, int bytes), const struct zb_rea
 int zb_reaper_ledger_entry_state(int runtime_fd, const char *basename, const struct zb_reaper_dir_id *rec,
                                  int active) {
   if (runtime_fd < 0 || basename == NULL || rec == NULL) return ZB_LEDGER_EINVAL;
+  /* Enforce the single-component run-dir grammar BEFORE openat (RoseCat 2f57b1e): name_is_sockdir rejects "."/
+   * ".."/an absolute path/an embedded slash/a wrong prefix/case/length, so a malformed or hostile ledger name
+   * can never reach another directory (e.g. the runtime dir via ".") and be swept. A malformed name is a
+   * census/warn MISMATCH, never a signal. */
+  if (!name_is_sockdir(basename)) return ZB_LEDGER_MISMATCH;
   if (!active) return ZB_LEDGER_NOT_ACTIVE;
   const int fd = openat(runtime_fd, basename, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
   if (fd < 0) return (errno == ENOENT) ? ZB_LEDGER_GONE : ZB_LEDGER_MISMATCH;
