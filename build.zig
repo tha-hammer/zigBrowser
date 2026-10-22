@@ -494,9 +494,11 @@ pub fn build(b: *std.Build) void {
     // objects of the shipped root must DEFINE agent_tools' two minters (the AppKit card's only way to approve or deny,
     // through agent_drawer.zig's bridge) and the cards' window lifecycle, and leave no zb_* undefined that the macOS
     // shims do not define (agent_tools' GTK-only C calls must not reach macOS). Pure compile — no SDK, no link.
-    // RED until agent_tools builds for macOS; not in `cross-check` or `test` until the green.
+    // In `cross-check` and `test` (MS8.0 green). The shim closure is the macOS build's: the real agent_drawer_mac.m
+    // joins it once it supplies the native card calls (RoseCat ea73fe7).
+    var cross_tools_mac_runs: [2]*std.Build.Step = undefined;
     const cross_tools_mac_step = b.step("cross-check-agent-tools-mac", "MS8.0: both macOS builds define the approval cards' minters and window lifecycle");
-    for ([_]std.Target.Cpu.Arch{ .aarch64, .x86_64 }) |arch| {
+    for ([_]std.Target.Cpu.Arch{ .aarch64, .x86_64 }, 0..) |arch, i| {
         const cross_tools_mac_module = b.createModule(.{
             .root_source_file = b.path("src/main.zig"),
             .imports = &.{.{ .name = "build_options", .module = site_options_module }},
@@ -517,6 +519,8 @@ pub fn build(b: *std.Build) void {
         cross_tools_mac.addFileArg(cross_tools_mac_obj.getEmittedBin());
         addShimArg(b, cross_tools_mac, "src/wkwebview_shim.m:src/agent_home_lock.c:src/agent_spawn_posix.c");
         cross_tools_mac_step.dependOn(&cross_tools_mac.step);
+        cross_check_step.dependOn(&cross_tools_mac.step);
+        cross_tools_mac_runs[i] = &cross_tools_mac.step;
     }
 
     // MS7.6 / MS7.8 (RoseCat 8079 / 2796d94): the card's one minter proven on the real Darwin objects, by symbol and
@@ -3891,6 +3895,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&ipc_windows_compile.step);
     test_step.dependOn(&cross_check.step);
     test_step.dependOn(&cross_drawer_win.step);
+    for (cross_tools_mac_runs) |run| test_step.dependOn(run); // MS8.0: the approval cards' minters in both macOS builds
     test_step.dependOn(&cross_self_test.step);
     test_step.dependOn(&run_gaussian_tests.step);
     test_step.dependOn(&run_bezier_tests.step);

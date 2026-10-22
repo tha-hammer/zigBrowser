@@ -1,6 +1,8 @@
 //! S7b (chat-drawer plan section 10, S7, revs 16.20.34-16.20.36): a drawer's tool calls go
-//! to its window's broker; their answers go back to the helper on the GTK thread. GTK app
-//! (Linux) only.
+//! to its window's broker; their answers go back to the helper on the GTK thread. The tool calls
+//! are the GTK app's (Linux) only; the approval cards, their two minters and the window lifecycle
+//! are in every build (MS8.0: on macOS the AppKit card's bridge in agent_drawer.zig calls the same
+//! minters).
 //!
 //! - `start` (app.zig) gives the in-process automation core; with none, every call is
 //!   answered "tool not available".
@@ -20,6 +22,7 @@
 //!   cards through zb_agent_tools_approve/deny, their only callers.
 //! Everything here but the sink and the approval callbacks runs on the GTK thread.
 const std = @import("std");
+const builtin = @import("builtin");
 const automation_server = @import("automation_server.zig");
 const broker_mod = @import("agent_broker.zig");
 const agent_frames = @import("agent_frames.zig");
@@ -255,9 +258,14 @@ fn brokerFor(win: c_uint, session: []const u8) ?*Bound {
 }
 
 /// GTK thread: a validated `tool_call` of `session`'s prompt `prompt_id`, open in window `win`.
-export fn zb_agent_tools_call(win: c_uint, session: [*:0]const u8, prompt_id: i64, id: [*]const u8, id_len: usize, tool: [*]const u8, tool_len: usize, args: [*]const u8, args_len: usize) void {
+/// Linux only (MS8.0): its broker's sink and card callbacks are agent_helper.c's and agent_drawer.c's.
+fn zb_agent_tools_call(win: c_uint, session: [*:0]const u8, prompt_id: i64, id: [*]const u8, id_len: usize, tool: [*]const u8, tool_len: usize, args: [*]const u8, args_len: usize) callconv(.c) void {
     const b = brokerFor(win, std.mem.span(session)) orelse return refuse(win, session, id[0..id_len]);
     b.broker.submitPrompt(prompt_id, id[0..id_len], tool[0..tool_len], args[0..args_len], .{ .ctx = b, .done = done });
+}
+
+comptime {
+    if (builtin.os.tag == .linux) @export(&zb_agent_tools_call, .{ .name = "zb_agent_tools_call" });
 }
 
 /// GTK thread: window `win`'s session ended, or the window closed. Its broker detaches:

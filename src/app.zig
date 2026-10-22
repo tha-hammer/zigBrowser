@@ -381,8 +381,9 @@ fn readSmall(arena: std.mem.Allocator, io: std.Io, path: []const u8) ?[]const u8
 // agent_helper.c, which calls them, is built.
 comptime {
     if (builtin.os.tag == .linux) _ = agent_frames;
-    // A drawer's tool calls (src/agent_tools.zig), for agent_helper.c (S7b).
-    if (builtin.os.tag == .linux) _ = agent_tools;
+    // A drawer's tool calls (src/agent_tools.zig), for agent_helper.c (S7b); on every OS, the
+    // approval cards' minters and window lifecycle (MS8.0).
+    _ = agent_tools;
     // The sign-in's frame exports (src/agent_login.zig), for agent_login.c.
     if (builtin.os.tag == .linux) _ = agent_login;
 }
