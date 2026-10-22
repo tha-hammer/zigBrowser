@@ -224,6 +224,27 @@ test "extraDrawerWindows is seam-1 clamped to [0, max_windows-1] (WS5.5b-2)" {
     try std.testing.expect(d.extraDrawerWindows(2) != 2);
 }
 
+test "afterController: close the primary + spawn seam-1 ONLY when e2e AND drawer AND the WINDOWS seam all hold (WS5.5b-2)" {
+    // Every gate combination, driven directly (RoseCat 35ff63f) — the decision is tested, not a source string.
+    for ([_]bool{ false, true }) |e2e| {
+        for ([_]bool{ false, true }) |drawer| {
+            for ([_]bool{ false, true }) |seam_set| {
+                const res = d.afterController(2, e2e, drawer, seam_set); // seam=2 -> 1 extra when active
+                if (e2e and drawer and seam_set) {
+                    try std.testing.expectEqual(@as(c_int, 1), res.spawn_count);
+                    try std.testing.expectEqual(@as(u8, 1), res.close_primary);
+                } else {
+                    try std.testing.expectEqual(@as(c_int, 0), res.spawn_count); // no extras off the gate
+                    try std.testing.expectEqual(@as(u8, 0), res.close_primary);   // and NEVER close the primary
+                }
+            }
+        }
+    }
+    // the spawn count tracks the seam when active (8 -> 7), and an empty/true gate alone never closes.
+    try std.testing.expectEqual(@as(c_int, 7), d.afterController(8, true, true, true).spawn_count);
+    try std.testing.expectEqual(@as(u8, 0), d.afterController(2, true, true, false).close_primary);
+}
+
 test "retireExtraWindow: lookup by hwnd, one live transition, tombstone-before-reuse, exactly one decrement (WS5.5b-2)" {
     var recs = [_]d.ExtraRecord{ .{ .hwnd = 0x10, .live = 1 }, .{ .hwnd = 0x20, .live = 1 } };
     // close 0x10: the live record is retired once (caller decrements)

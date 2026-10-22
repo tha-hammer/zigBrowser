@@ -191,6 +191,20 @@ pub fn extraDrawerWindows(seam: c_int) c_int {
     return n - 1;
 }
 
+/// WS5.5b-2 (RoseCat 35ff63f): the decision the shim makes right after the controller completes, factored out
+/// of the C++ so it is tested DIRECTLY over every gate combination (no leaky source predicate). The e2e
+/// multi-window path is active ONLY when e2e AND drawer AND a set WINDOWS seam ALL hold; then the process
+/// spawns `extraDrawerWindows(seam)` extra windows and closes the primary cleanly (so run_core's shutdown
+/// emits the terminal `live` row before the owned-Job kill). Any gate false => no extra windows, no close.
+pub const AfterController = extern struct { spawn_count: c_int, close_primary: u8 };
+
+pub fn afterController(seam: c_int, e2e: bool, drawer: bool, windows_seam_set: bool) AfterController {
+    if (e2e and drawer and windows_seam_set) {
+        return .{ .spawn_count = extraDrawerWindows(seam), .close_primary = 1 };
+    }
+    return .{ .spawn_count = 0, .close_primary = 0 };
+}
+
 /// WS5.7 (plan 1583): the icon's edge length at a DPI scale percent — the base
 /// size scaled by `scale_pct`/100, rounded half-up. At 150% the 56 px icon is
 /// 84 px. A non-positive `scale_pct` falls back to 100% (unscaled).
@@ -473,6 +487,7 @@ comptime {
         @export(&zb_drawer_window_count_from_env, .{ .name = "zb_drawer_window_count_from_env" });
         @export(&zb_drawer_extra_windows, .{ .name = "zb_drawer_extra_windows" });
         @export(&zb_drawer_retire_extra, .{ .name = "zb_drawer_retire_extra" });
+        @export(&zb_drawer_after_controller, .{ .name = "zb_drawer_after_controller" });
         @export(&zb_drawer_icon_size_for_dpi, .{ .name = "zb_drawer_icon_size_for_dpi" });
         @export(&zb_drawer_inside_icon, .{ .name = "zb_drawer_inside_icon" });
     }
@@ -596,6 +611,11 @@ fn zb_drawer_extra_windows(seam: c_int) callconv(.c) c_int {
 fn zb_drawer_retire_extra(records: ?[*]ExtraRecord, count: usize, hwnd: usize) callconv(.c) c_int {
     if (records) |ptr| return @intFromBool(retireExtraWindow(ptr[0..count], hwnd));
     return 0;
+}
+
+/// WS5.5b-2: the post-controller decision (spawn count + whether to close the primary) for the e2e gate.
+fn zb_drawer_after_controller(seam: c_int, e2e: c_int, drawer: c_int, windows_seam_set: c_int) callconv(.c) AfterController {
+    return afterController(seam, e2e != 0, drawer != 0, windows_seam_set != 0);
 }
 
 /// WS5.7: the icon's edge length (px) for a raw per-monitor DPI — the PRODUCTION
