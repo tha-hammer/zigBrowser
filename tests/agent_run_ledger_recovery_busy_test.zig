@@ -1,6 +1,6 @@
 //! MS6.5.1 (SCOPED, RoseCat c11bff8; e665676 #2/#3/#4): the BOUNDED flock-acquisition primitive. A LIVE owner that
-//! holds the one global ledger flock and stalls must NOT wedge startup: independent B's `runStartupRecovery`
-//! acquires BOUNDED within the deadline and, on timeout, FAILS CLOSED — `acquired=false`, a `recovery_busy`
+//! holds the one global ledger flock and stalls must NOT wedge the bounded acquire: independent B's
+//! `acquireRunLockBounded` acquires within the deadline and, on timeout, FAILS CLOSED — `acquired=false`, a `lock_unavailable`
 //! incident, the first new run `refused_deferred`, zero on-disk mutation (the store byte-for-byte retained), zero
 //! signals. Two real processes + a bounded, EINTR-safe watchdog.
 //!
@@ -101,9 +101,9 @@ test "a live stalled flock holder cannot wedge the bounded acquire: B fails clos
     const b_pid = linux.fork();
     if (b_pid == 0) {
         _ = linux.close(bpipe[0]);
-        const r = ledger.runStartupRecovery(io, td.dir, 100, 5, ledger.RealClock{ .io = io }); // 100ms budget
-        const bytes = [3]u8{ @intFromBool(r.acquired), @intFromEnum(r.incident), @intFromEnum(r.first_run) };
-        _ = linux.write(bpipe[1], &bytes, 3);
+        const r = ledger.acquireRunLockBounded(io, td.dir, 100, 5, ledger.RealClock{ .io = io }); // 100ms budget
+        const bytes = [2]u8{ @intFromBool(r.acquired), @intFromEnum(r.incident) };
+        _ = linux.write(bpipe[1], &bytes, 2);
         linux.exit_group(0);
     }
     if (linux.errno(b_pid) != .SUCCESS) { // B fork failed -> release+reap A, fail closed (no signal)
@@ -128,8 +128,8 @@ test "a live stalled flock holder cannot wedge the bounded acquire: B fails clos
         return if (wr == .poll_error) error.WatchdogPollFailed else error.RecoveryWedgedPastDeadline;
     }
 
-    var rbuf: [3]u8 = undefined;
-    try std.testing.expect(linux.read(bpipe[0], &rbuf, 3) == 3);
+    var rbuf: [2]u8 = undefined;
+    try std.testing.expect(linux.read(bpipe[0], &rbuf, 2) == 2);
     var bst: u32 = undefined;
     _ = linux.waitpid(@intCast(b_pid), &bst, 0);
     var ast: u32 = undefined;
@@ -137,8 +137,7 @@ test "a live stalled flock holder cannot wedge the bounded acquire: B fails clos
 
     // fail-closed result: not acquired, recovery-busy, first run refused/deferred
     try std.testing.expectEqual(@as(u8, 0), rbuf[0]); // acquired == false
-    try std.testing.expectEqual(@as(u8, @intFromEnum(ledger.RecoveryIncident.recovery_busy)), rbuf[1]);
-    try std.testing.expectEqual(@as(u8, @intFromEnum(ledger.FirstRun.refused_deferred)), rbuf[2]);
+    try std.testing.expectEqual(@as(u8, @intFromEnum(ledger.AcquireIncident.lock_unavailable)), rbuf[1]);
 
     // zero on-disk mutation: the store is byte-for-byte the SEED store it was before the failed recovery (RoseCat
     // #4 — a complete-bytes oracle catches any rewrite/corruption/reordering, not just one basename).

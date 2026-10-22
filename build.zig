@@ -948,17 +948,18 @@ pub fn build(b: *std.Build) void {
     run_ledger_deadline_tests.skip_foreign_checks = true;
     const ledger_deadline_step = b.step("test-agent-run-ledger-deadline", "MS6.5.1 bounded flock acquisition honors one absolute monotonic deadline");
     ledger_deadline_step.dependOn(&run_ledger_deadline_tests.step);
-    // MS6.5.1 (RoseCat e665676 #3): the recovery-busy watchdog is bounded by an absolute monotonic deadline even
-    // under an EINTR storm (waitWithinDeadline checks the deadline before each poll). Fake clock + EINTR-storm poll.
+    // MS6.5.1 (RoseCat e665676 #3): the bounded-acquire test's watchdog is bounded by an absolute monotonic
+    // deadline even under an EINTR storm (waitWithinDeadline checks the deadline before each poll). Fake clock.
     const ledger_watchdog_test_mod = b.createModule(.{ .root_source_file = b.path("tests/agent_run_ledger_watchdog_test.zig"), .target = target, .optimize = optimize });
     ledger_watchdog_test_mod.addImport("agent_run_ledger", ledger_mod);
     const run_ledger_watchdog_tests = b.addRunArtifact(b.addTest(.{ .root_module = ledger_watchdog_test_mod }));
     run_ledger_watchdog_tests.skip_foreign_checks = true;
     const ledger_watchdog_step = b.step("test-agent-run-ledger-watchdog", "MS6.5.1 bounded-acquire watchdog is EINTR-bounded by an absolute monotonic deadline");
     ledger_watchdog_step.dependOn(&run_ledger_watchdog_tests.step);
-    // MS6.5.1 (whole-recovery, Rev 27): a live owner holding the global flock that stalls must not wedge startup
-    // recovery — bounded acquire inside the total deadline, fail closed (recovery-busy incident, first run
-    // refused/deferred, entry retained, zero signals). Two real processes + a parent watchdog. Linux-gated.
+    // MS6.5.1 (SCOPED, RoseCat c11bff8): a live owner holding the global flock that stalls must not wedge the
+    // bounded acquire — acquireRunLockBounded fails closed within the total deadline (acquired=false,
+    // lock_unavailable incident), performing no recovery and no mutation. Two real processes + a parent watchdog;
+    // signal-free (the SIGKILL in the wedge path is confined to the PID-ns sentinel). Linux-gated.
     const ledger_recovery_busy_test_mod = b.createModule(.{ .root_source_file = b.path("tests/agent_run_ledger_recovery_busy_test.zig"), .target = target, .optimize = optimize });
     ledger_recovery_busy_test_mod.addImport("agent_run_ledger", ledger_mod);
     const ledger_recovery_busy_exe = b.addTest(.{ .root_module = ledger_recovery_busy_test_mod });
@@ -1678,8 +1679,8 @@ pub fn build(b: *std.Build) void {
     agent_setup_ms5_step.dependOn(&mac_group_cleanup.step);
     // Chat drawer S7a (revs 16.20.30, 16.20.32): the core in process (callInProcess) and the
     // drawer's read-only broker over it; S7b (rev 16.20.36): its reply boundary and detach.
-    var s7a_runs: [7]*std.Build.Step = undefined;
-    for ([_][]const u8{ "tests/automation_inprocess_test.zig", "tests/agent_broker_test.zig", "tests/agent_broker_window_info_test.zig", "tests/agent_broker_reply_test.zig", "tests/agent_broker_detach_test.zig", "tests/agent_broker_detach_oom_test.zig", "tests/agent_broker_screenshot_test.zig" }, 0..) |path, i| {
+    var s7a_runs: [8]*std.Build.Step = undefined;
+    for ([_][]const u8{ "tests/automation_inprocess_test.zig", "tests/agent_broker_test.zig", "tests/agent_broker_window_info_test.zig", "tests/agent_broker_reply_test.zig", "tests/agent_broker_detach_test.zig", "tests/agent_broker_detach_oom_test.zig", "tests/agent_broker_screenshot_test.zig", "tests/agent_broker_navigate_test.zig" }, 0..) |path, i| {
         const s7a_module = b.createModule(.{
             .root_source_file = b.path(path),
             .target = target,

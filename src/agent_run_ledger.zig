@@ -251,7 +251,8 @@ pub fn acquireLock(io: std.Io, dir: std.Io.Dir, max_tries: u32, backoff_ms: i64)
 // This is the accepted primitive. It is NOT whole-recovery: it performs NO startup-recovery pass, NO other-browser
 // exclusion, NO signal, NO retirement and NO ledger mutation. `recoveryFor` returns an action LABEL only; actually
 // performing it (census/kill, marker-unlink, rmdir, ledger retirement under one flock) is the OPEN whole-recovery
-// blocker (bd), and `reaper_ready` stays false. ----
+// blocker (bd). No production recovery transaction or signal path is implemented or armed — there is no
+// `reaper_ready` constant yet; it is part of that OPEN blocker. ----
 
 /// The liveness verdict for a recorded owner `(pid, start)` from a single live-process probe.
 pub const Liveness = enum { dead, live_same, live_reused, unreadable };
@@ -379,14 +380,15 @@ pub fn probeLivenessTagged(pid: i32, kind: StartKind, start_sec: u64, start_usec
     return livenessFromRead(readStart(pid), start_sec);
 }
 
-// ---- whole-recovery startup transaction (RoseCat whole-recovery claim; macOS-plan Rev 25-27) ----
+// ---- bounded cross-process lock ACQUISITION primitive (RoseCat c11bff8; cdedf98 #1) ----
+// This acquires (and immediately releases) the one global ledger flock within a bounded deadline. It performs NO
+// startup recovery: no liveness pass, census/kill, signal, retirement or ledger mutation, and it makes NO claim
+// about whether any run may start. A no-op acquire never means "startup recovery completed".
 
-/// Whether the startup-recovery transaction surfaced a fixed incident.
-pub const RecoveryIncident = enum { none, recovery_busy };
-/// What startup does with the first NEW agent run when recovery could not complete.
-pub const FirstRun = enum { allowed, refused_deferred };
-/// The outcome of a startup-recovery pass.
-pub const RecoveryResult = struct { acquired: bool, incident: RecoveryIncident, first_run: FirstRun };
+/// Whether the bounded acquire surfaced a fixed incident.
+pub const AcquireIncident = enum { none, lock_unavailable };
+/// The outcome of a bounded acquire attempt: whether the flock was taken within the deadline, and any incident.
+pub const AcquireOutcome = struct { acquired: bool, incident: AcquireIncident };
 
 /// One non-blocking acquire attempt's outcome: got the lock, contended (retry), or a hard error (fail closed).
 pub const AcquireResult = enum { acquired, busy, failed };
@@ -455,26 +457,26 @@ const FlockAttempt = struct {
     }
 };
 
-/// SCOPED (RoseCat c11bff8): the BOUNDED, cancellable flock-acquisition primitive under ONE absolute monotonic
-/// deadline (`clock.nowMs() + budget_ms`). Acquire-failure/deadline/cancel => FAIL CLOSED (`acquired=false`,
-/// recovery-busy incident, first new run refused/deferred), so a live holder that stalls can never wedge the
-/// acquire. This is NOT the whole-recovery transaction: there is NO held recovery work here — no liveness
-/// revalidation, census/kill fixed point, signal, retirement, marker-unlink or ledger mutation. The acquired path
-/// only proves the bound is respected; the real held recovery work is the OPEN whole-recovery blocker (bd) and
-/// `reaper_ready` stays false.
-pub fn runStartupRecovery(io: std.Io, dir: std.Io.Dir, budget_ms: i64, backoff_ms: i64, clock: anytype) RecoveryResult {
-    _ = io; // no held work in this scoped primitive
-    const busy = RecoveryResult{ .acquired = false, .incident = .recovery_busy, .first_run = .refused_deferred };
+/// SCOPED (RoseCat c11bff8; cdedf98 #1): the BOUNDED, cancellable flock ACQUISITION under ONE absolute monotonic
+/// deadline (`clock.nowMs() + budget_ms`). On success the flock is taken and IMMEDIATELY released
+/// (`acquired=true`); acquire-failure/deadline/cancel => `acquired=false` with a `lock_unavailable` incident, so a
+/// live holder that stalls can never wedge the acquire. It performs NO recovery work — no liveness revalidation,
+/// census/kill, signal, retirement, marker-unlink or ledger mutation — and makes NO claim that any run may start.
+/// The whole-recovery transaction is the OPEN blocker bd zigBrowser-3gl; no production recovery or signal path is
+/// implemented or armed.
+pub fn acquireRunLockBounded(io: std.Io, dir: std.Io.Dir, budget_ms: i64, backoff_ms: i64, clock: anytype) AcquireOutcome {
+    _ = io; // no work is done under the lock in this acquisition primitive
+    const unavailable = AcquireOutcome{ .acquired = false, .incident = .lock_unavailable };
     const deadline = clock.nowMs() + budget_ms; // one absolute deadline bounds the acquire
-    const fd = std.posix.openat(dir.handle, LOCK_NAME, .{ .ACCMODE = .RDWR, .CREAT = true, .NOFOLLOW = true, .CLOEXEC = true }, 0o600) catch return busy;
+    const fd = std.posix.openat(dir.handle, LOCK_NAME, .{ .ACCMODE = .RDWR, .CREAT = true, .NOFOLLOW = true, .CLOEXEC = true }, 0o600) catch return unavailable;
     switch (acquireWithinDeadline(clock, deadline, backoff_ms, FlockAttempt{ .fd = fd })) {
         .acquired => {},
         .busy, .failed => {
             _ = std.posix.system.close(fd);
-            return busy;
+            return unavailable;
         },
     }
-    defer _ = std.posix.system.close(fd); // release immediately; no recovery work is performed under the lock here
-    if (clock.nowMs() >= deadline) return busy; // the acquire exhausted the budget -> fail closed
-    return .{ .acquired = true, .incident = .none, .first_run = .allowed };
+    defer _ = std.posix.system.close(fd); // release immediately; nothing is done while the lock is held
+    if (clock.nowMs() >= deadline) return unavailable; // the acquire exhausted the budget -> fail closed
+    return .{ .acquired = true, .incident = .none };
 }
