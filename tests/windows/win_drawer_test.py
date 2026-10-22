@@ -357,6 +357,13 @@ $res = @{ stdout=''; stderr=''; client_w=0; client_h=0; pid=0; controls=''; job_
 $env:ZIGBROWSER_AGENT_DRAWER_OPEN = '1'
 $env:ZIGBROWSER_AGENT_DRAWER_DEMO = 'messages:2'
 if ($failMode) { $env:ZIGBROWSER_AGENT_DRAWER_FAIL = $failMode }
+# Optional extra e2e seam env (behavior reds): a staged env.json of {name: value} is applied verbatim. Inert
+# on a backend that does not honour the named seam (so the behavior reds fail-first until the green emits them).
+$envJson = Join-Path $dir 'env.json'
+if (Test-Path $envJson) {
+  $extra = Get-Content -Raw $envJson | ConvertFrom-Json
+  foreach ($p in $extra.PSObject.Properties) { Set-Item -Path ("Env:" + $p.Name) -Value ([string]$p.Value) }
+}
 $cmdline = '"' + $exe + '" --e2e-protocol --agent-drawer on "' + $url + '"'
 $launched = $false
 try {
@@ -426,10 +433,11 @@ class WinDrawerLive(unittest.TestCase):
                 "-o", "ConnectionAttempts=3", "-P", self.port, local, f"{self.user}@{self.host}:{remote}"]
         return subprocess.run(self._scrub(*base), capture_output=True, text=True, timeout=120).returncode
 
-    def _run_drawer(self, fail_mode="", force_mode="", body=None):
-        """Stage + run run.ps1 (optionally with the production control-factory seam `fail_mode` and/or the
-        harness job-lifecycle seam `force_mode`), parse the JSON result, invoke `body(r)`, and always tear
-        down this run's unique root fail-closed."""
+    def _run_drawer(self, fail_mode="", force_mode="", body=None, extra_env=None):
+        """Stage + run run.ps1 (optionally with the production control-factory seam `fail_mode`, the harness
+        job-lifecycle seam `force_mode`, and/or `extra_env` — extra e2e seam env applied verbatim via a staged
+        env.json), parse the JSON result, invoke `body(r)`, and always tear down this run's unique root
+        fail-closed."""
         rel = f"zb/drawer-{os.getpid()}-{secrets.token_hex(4)}"
         base_win = f"%USERPROFILE%\\{rel}".replace("/", "\\")
         self.assertEqual(self._ssh("cmd", "/c", f"mkdir {base_win}").returncode, 0)
@@ -438,8 +446,14 @@ class WinDrawerLive(unittest.TestCase):
         runner = tmp / f"drawerrun-{secrets.token_hex(4)}.ps1"
         html.write_text(_HTML, encoding="utf-8")
         runner.write_text(_RUNNER, encoding="utf-8", newline="\r\n")
+        env_file = None
+        if extra_env:
+            env_file = tmp / f"drawerenv-{secrets.token_hex(4)}.json"
+            env_file.write_text(json.dumps(extra_env), encoding="utf-8")
         try:
             pairs = [(self.exe, "zigBrowser.exe"), (str(html), "test.html"), (str(runner), "run.ps1")]
+            if env_file is not None:
+                pairs.append((str(env_file), "env.json"))
             loader = pathlib.Path(self.exe).with_name("WebView2Loader.dll")
             if loader.is_file():
                 pairs.append((str(loader), "WebView2Loader.dll"))
@@ -471,7 +485,9 @@ class WinDrawerLive(unittest.TestCase):
                     gone = True
                     break
                 _t.sleep(1)
-            for p in (html, runner):
+            for p in (html, runner, env_file):
+                if p is None:
+                    continue
                 try:
                     p.unlink()
                 except OSError:
