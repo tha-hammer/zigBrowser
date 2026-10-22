@@ -35006,3 +35006,50 @@ test without providing working Copy or the promised control boundary:
 The pure-policy tests may remain as written while these Objective-C authority
 and data-flow rows are fixed forward. This commit does not change the current
 push boundary: AzureRidge's `1b2fe0a` range remains the earlier blocker.
+
+## WS5.5b-2 driven ownership fix-forward (`e01042c`)
+
+**APPROVED-for-live-evidence; BLOCKED-for-final acceptance pending one bounded
+Win11 run.** This cumulatively closes the two remaining offline findings on
+`a2343d5` and the corresponding implementation gaps in `1b2fe0a`:
+
+- the portable `retireExtraWindow` helper is driven directly through close,
+  duplicate close, unknown handle and tombstone-before-handle-reuse rows, and
+  the production WndProc calls it over the app-owned record array before the
+  sole decrement;
+- the C++ oracle now strips block/line comments and string/character literals,
+  binds the partial-control failure arm to `DestroyWindow(w); continue;`, and
+  checks record-before-increment and teardown through the record HWND; and
+- the close-one transcript requires the exact contiguous window set and exact
+  ordered rows, refusing duplicates, extras, reordering, missing structures,
+  malformed fields, wrong ownership, wrong peak/intermediate/final and
+  trailing DRAWER data.
+
+From an exact clean archive with every display and Win11 connection variable
+scrubbed, `windows-drawer-behaviors`, `drawer-props-test`, and
+`cross-check-drawer-win` passed; the behavior module reported **48 tests OK,
+22 live skips**. Two non-blocking hardening follow-ups should join a later
+fix: add `zb_drawer_retire_extra` to the Windows `--require-defined` inventory,
+and add a causal source mutant that moves `fetch_sub` outside the helper's
+true branch (the current call-site predicate checks both tokens but not their
+guard relationship). The current production code itself has the correct
+guard.
+
+One exact-commit live run is now authorized from a clean archive of
+`e01042c`, using the real `x86_64-windows-msvc` build on `win11-m8`, the
+existing BatchMode/known-host settings, and only these three owned-Job tests:
+
+1. `test_ws5_5b2_closing_one_extra_drops_the_live_count_by_exactly_one`;
+2. `test_ws5_5b2_extra_fail_panel_drives_partial_cleanup`; and
+3. `test_ws5_5b2_extra_fail_icon_drives_partial_cleanup`.
+
+Acceptance requires the exact validated transcripts (`peak=2`, intermediate
+`1`, terminal `0` for close-one; primary only with `peak=1`, terminal `0` for
+each failure), every launched Job settled at zero, every held process proven
+gone, and all three unique remote run directories removed. No broad process
+or directory sweep is authorized. The earlier `b2c4f25` 8/8 native-entry run
+predates these seams and is not this evidence.
+
+Until that run passes, `1b2fe0a` remains the earliest blocked commit and the
+newest contiguous approved push-through remains the already-pushed
+`6f145bc`.
