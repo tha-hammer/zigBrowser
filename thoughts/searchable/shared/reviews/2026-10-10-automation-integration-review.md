@@ -28157,3 +28157,66 @@ missing commit is BlackRobin's S8a production green, while the WSL2 plan is a
 second independent blocker farther along the same intertwined prefix. The
 new `97c6215`/`afe3920` recovery range and `1e5ff2d` Windows-drawer red are later
 blocked items; neither is the first cause of the present boundary.
+
+## S8a cross-document thread production green (`da3be80`)
+
+**APPROVED.** This closes the production/test chain for reds `8a146c4`,
+`6139ba8`, `c250d14` and `ec22ab5`. The implementation preserves phase C
+across exactly the page transition the approved Message opener started, while
+failing closed everywhere else:
+
+- `src/automation/flow_runner.zig:161-169,250-270` injects the phase-C document
+  token into every action and consumes the one-shot thread allowance before
+  accepting a changed load serial. The replacement page must be same-origin,
+  under the platform's exact thread prefix, readable, and current in the
+  window registry before the runner replaces its captured serial/token.
+- `src/automation/flow_runner.zig:497-528` arms that allowance only when the
+  isolated-world navigation acknowledgement is pending or the navigation
+  committed before the read. Instagram and LinkedIn invoke it only immediately
+  after their approved profile-owner Message action
+  (`src/instagram.zig:185-188`, `src/linkedin.zig:386-389`).
+- `src/automation/router.zig:609-621` accepts only a nonempty document token;
+  `src/automation_script/automation.js:155-160` compares it before the path,
+  marks and target checks. Because the same gate runs at each native/synthetic
+  event boundary, a retry or chunk crossing into another document stops before
+  dispatch there.
+- The allowance is spent on the next action even when the candidate page is
+  wrong. Same-origin wrong paths, wrong recipients on valid thread pages,
+  unrelated navigation, a second navigation, selectorless press, all five
+  committing verbs, commit-before-read, surviving counts and the exact typed
+  text are covered by the registered unit/e2e artifacts. `build.zig` adds both
+  dependencies without deleting prior registrations.
+
+Reviewer clean-export evidence: the exact Zig red suite passed **13/13**. A
+real `da3be80` binary under a private Xvfb passed the e2e's **12/12** observable
+checks: one successful cross-document DM, wrong path and wrong recipient both
+refused before any post-opener event, and a wrong `guard.document` refused with
+`{events: 0, chars: 0}`. BlackRobin's failing-first evidence reports all 12
+mutants red and the same live test green. `git diff --check` is clean.
+
+One reviewer rerun of the unmodified Python-3.14 path timed out while another
+agent's repeatedly failing `agent-netd-spawn-e2e` was active; it is
+load-contaminated and is not counted as evidence. The successful private-Xvfb
+review run used only a throwaway `from __future__ import annotations` line in
+the SDK so `/usr/bin/python3` could import it; no production or fixture byte
+used by the browser was changed.
+
+### Separate pre-existing Python SDK compatibility defect
+
+This is **not introduced by `da3be80` and does not change the verdict above**,
+but it needs a BlueBeaver follow-up. `sdk/python/pyproject.toml` promises
+Python `>=3.11`, while `sdk/python/src/zigbrowser/client.py:198,217` defines a
+method named `list` and then evaluates `list[str]` in the same class body.
+Clean exports fail importing `ZigBrowser` on Python 3.12.13 and 3.13.5 with
+`TypeError: 'function' object is not subscriptable`; Python 3.14.6 happens to
+import it. Add a compatibility red covering every supported interpreter and
+fix it without narrowing the declared support.
+
+## Linear prefix after `da3be80`
+
+`da3be80` removes the S8a production-green blocker. The contiguous
+push-through nevertheless remains `bac895b`: the earlier `a527e72` WSL2 plan
+is still independently BLOCKED by the incomplete `770848b`/`7ca6897`
+topology/acceptance revisions. Later, `97c6215`/`afe3920` recovery and
+`1e5ff2d` Windows drawer-entry coverage also remain blocked. No verdict here
+approves those ranges.
