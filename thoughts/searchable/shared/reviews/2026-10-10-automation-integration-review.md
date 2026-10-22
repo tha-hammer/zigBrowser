@@ -36277,3 +36277,57 @@ absence of GTK-only card calls. This satisfies the relabel condition in the
 `c6b2b32` proof-boundary ruling without weakening the existing offline checks.
 The compiled two-Mac case and result are still required before the cumulative
 MS7.4 / MS7.6-7.8 range can claim runtime acceptance.
+
+## WS5.5b-2 wait-first teardown and lifecycle model (`f227c3c`)
+
+**BLOCKED; do not run the Win11 rows yet.** The wait-first direction is right,
+and exact-commit focused runs pass: the new lifecycle module is **9/9**,
+`win_drawer_test.py` is **84/84** with eight live skips, and
+`win_drawer_behaviors_test.py` is **48/48** with 22 live skips. The commit does
+not yet satisfy item 2 or item 4 of the `f1e9653` proof-boundary ruling.
+
+1. `NoKillNeeded` is not proof of a no-kill exit. `Teardown` waits only for the
+   browser leader, sets the flag immediately on `WAIT_OBJECT_0`, and returns.
+   The `finally` block then closes the `KILL_ON_CLOSE` Job. A WebView2 child may
+   still be a job member and be killed by that close while the four behavior
+   rows nevertheless see `no_kill_needed == true`. Those rows do not require
+   `job_count_after == 0`, `proc_gone`, or an explicit zero kill count. Require
+   a valid held leader handle and a bounded, fail-closed owned-job census of
+   zero *before* setting `NoKillNeeded`; a nonzero or unreadable census must
+   take the explicit terminate/reap failure path. Add a causal survivor mutant
+   proving that a leader exit followed by a kill-on-close child kill cannot be
+   labelled normal/no-kill. The `_hProc == IntPtr.Zero` normal branch must also
+   refuse rather than synthesize `WAIT_OBJECT_0`.
+2. `ws5_5b2_lifecycle_seam_test.py` is a detached Python reimplementation. It
+   executes its own `WinSeam`, `spawn_extras`, `wnddestroy`, and `teardown`; no
+   production C++, exported portable helper, embedded runner operation, or
+   recording seam calls it. Production can violate registration, partial
+   cleanup, retire-once, live transitions, or teardown order while this model
+   remains green. Item 2 requires a seam/shared decision used by production,
+   with the tests driving those same bytes. The bounded live run then supplies
+   the runtime half; calling a mirror “causal” does not.
+3. The new module is unregistered. Register the production-bound replacement
+   additively once it is green. Also reconcile the run set: this commit changes
+   four live behavior bodies (peak/final, close-one, panel failure and icon
+   failure), while its message calls them three. The ruling requires both
+   partial-failure outcomes; either combine those two outcomes under one named
+   test or run all four explicitly.
+
+Because the current result can call a kill-on-close cleanup “NoKillNeeded” and
+the recording model is not bound to production, no exact commit or three-test
+Win11 authorization is issued from this review.
+
+## WS5.5b-2 callback-scoped architecture tripwire (`cd2323c`)
+
+**APPROVED.** This closes the narrow `037b79b` / `59d4ea5` tripwire blocker.
+After stripping comments and literals, the oracle now matches the completion
+lambda's own balanced-brace body and requires the sole exact four-input
+`zb_drawer_after_controller` call inside it. The new durable mutant closes the
+callback with `.Get());` and moves the call into the following statement; it
+is rejected. The prior remove, move-before, wrong-input and spawn-recomputation
+mutants remain. The exact hostless module passes **84/84** with eight live
+skips. This retains the deliberately narrow item-3 architecture scope and
+does not revive source-level control-flow claims.
+
+Approval of `cd2323c` does not close the cumulative `1b2fe0a` range because
+the independent `f227c3c` teardown/causal-seam blockers above remain.
