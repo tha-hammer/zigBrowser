@@ -167,6 +167,7 @@ test "iconSizeForDpi: production authority scales 56*dpi/96 half-up (WS5.7)" {
     try expectEqual(@as(c_int, 84), d.iconSizeForDpi(144));  // 150% -> 84 (the contract case)
     try expectEqual(@as(c_int, 70), d.iconSizeForDpi(120));  // 125%
     try expectEqual(@as(c_int, 112), d.iconSizeForDpi(192)); // 200%
+    try expectEqual(@as(c_int, 60), d.iconSizeForDpi(102));  // 56*102/96 = 59.5 EXACTLY -> 60 (half-up, not floor/trunc)
     try expectEqual(@as(c_int, 56), d.iconSizeForDpi(0));    // non-positive -> 96 DPI fallback
     try expectEqual(@as(c_int, 56), d.iconSizeForDpi(-5));   // negative -> fallback
     // mutant: ignoring DPI (always 96) disagrees with the real 144-DPI size
