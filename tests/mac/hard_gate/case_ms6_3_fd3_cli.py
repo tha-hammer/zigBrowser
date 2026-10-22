@@ -31,6 +31,7 @@ bounded, the owned-group stop)."""
 import os
 import re
 import socket
+import stat
 import sys
 import time
 
@@ -158,6 +159,19 @@ def _home_layout(options, root):
     return home
 
 
+def _unlock_token_fifo_dir(home):
+    """The helper's FifoHandoff leaves <scratchpad>/token-fifo empty at 0300 by design; the driver must still be
+    able to remove this case's scratch (24f8d49 left /tmp/zb-hardgate-run-* on both Macs). Only a real directory,
+    never a symlink, and only inside this case's own home."""
+    path = home.scratchpad / "token-fifo"
+    try:
+        st = os.lstat(path)
+    except FileNotFoundError:
+        return
+    if stat.S_ISDIR(st.st_mode):
+        os.chmod(path, 0o700)
+
+
 def _with_census(server, proc_darwin, cli, tok, seen):
     """Hooks the server's handler: on the first /v1/messages, BEFORE it is answered (the CLI is waiting on it, so it
     is alive), production's census runs over this process's descendants, and its verdict is recorded."""
@@ -217,6 +231,7 @@ def run(h):
             if theirs is not None:
                 theirs.close()
             server.close()
+            _unlock_token_fifo_dir(home)
 
     def diag(rc, out, err):
         return f"rc={rc}; stdout {_sanitize(out)!r}; stderr {_sanitize(err)!r}"
