@@ -1045,12 +1045,28 @@ pub fn build(b: *std.Build) void {
     // misuse that only surfaces on Darwin (wrong flag/type/symbol) fails this check. The lock's flock/close/errno
     // go through std.posix.system (the raw syscall on Linux, libc on Darwin) so they behave the same on Darwin.
     const ledger_darwin_aarch64_mod = b.createModule(.{ .root_source_file = b.path("src/agent_run_ledger.zig"), .target = b.resolveTargetQuery(.{ .cpu_arch = .aarch64, .os_tag = .macos }), .optimize = optimize });
-    const ledger_darwin_aarch64_obj = b.addObject(.{ .name = "agent_run_ledger_darwin_aarch64", .root_module = ledger_darwin_aarch64_mod });
+    const ledger_darwin_aarch64_obj = darwinGuardObject(b, "agent_run_ledger_darwin_aarch64", ledger_darwin_aarch64_mod);
     const ledger_darwin_x86_64_mod = b.createModule(.{ .root_source_file = b.path("src/agent_run_ledger.zig"), .target = b.resolveTargetQuery(.{ .cpu_arch = .x86_64, .os_tag = .macos }), .optimize = optimize });
-    const ledger_darwin_x86_64_obj = b.addObject(.{ .name = "agent_run_ledger_darwin_x86_64", .root_module = ledger_darwin_x86_64_mod });
+    const ledger_darwin_x86_64_obj = darwinGuardObject(b, "agent_run_ledger_darwin_x86_64", ledger_darwin_x86_64_mod);
     const ledger_darwin_step = b.step("test-agent-run-ledger-darwin-build", "MS6.5.1 ledger cross-compiles to Darwin (aarch64 + x86_64 macOS)");
     ledger_darwin_step.dependOn(&ledger_darwin_aarch64_obj.step);
     ledger_darwin_step.dependOn(&ledger_darwin_x86_64_obj.step);
+    // bd zigBrowser-4pa.63 (plan R30-MS6, R30.2 T5): the Darwin guards' selftest. Each probe holds an UNREFERENCED pub
+    // fn (top level, and one container down) that is a type error on macOS only; built through the same
+    // darwinGuardObject as the guards, for both macOS arches, it must fail with exactly that error, and the same probe
+    // built for Linux must compile (so the error is Darwin's, not the probe's). RED, not in `test`, until the guard
+    // root analyses every declaration.
+    const darwin_guard_selftest_step = b.step("test-darwin-guard-selftest", "4pa.63: the Darwin guards analyse every declaration (a Darwin-only type error fails them)");
+    for ([_][]const u8{ "tests/darwin_guard_probe_top.zig", "tests/darwin_guard_probe_nested.zig" }) |probe| {
+        for ([_]std.Target.Cpu.Arch{ .aarch64, .x86_64 }) |arch| {
+            const probe_mod = b.createModule(.{ .root_source_file = b.path(probe), .target = b.resolveTargetQuery(.{ .cpu_arch = arch, .os_tag = .macos }), .optimize = optimize });
+            const probe_obj = darwinGuardObject(b, "darwin_guard_probe", probe_mod);
+            probe_obj.expect_errors = .{ .contains = "error: index 1 outside array of length 1" };
+            darwin_guard_selftest_step.dependOn(&probe_obj.step);
+        }
+        const probe_linux_mod = b.createModule(.{ .root_source_file = b.path(probe), .target = b.resolveTargetQuery(.{ .cpu_arch = .x86_64, .os_tag = .linux }), .optimize = optimize });
+        darwin_guard_selftest_step.dependOn(&darwinGuardObject(b, "darwin_guard_probe_linux", probe_linux_mod).step);
+    }
     // MS6.5.1 (SCOPED, RoseCat c11bff8): a ONE-live-process liveness probe keyed on the recorded owner (pid,start)
     // mapped to an action LABEL — proved-dead -> .recover, same live owner -> .leave, PID reuse/unreadable ->
     // fail closed. The fork is ONE live process to probe; nothing is signalled/retired, no whole-recovery.
@@ -1163,7 +1179,7 @@ pub fn build(b: *std.Build) void {
         dr.addImport("agent_run_ledger", dl);
         dr.addIncludePath(b.path("src"));
         dr.addCSourceFile(.{ .file = b.path("src/agent_run_reaper.c"), .flags = &.{"-std=gnu11"} }); // compiles the __APPLE__ body
-        const dobj = b.addObject(.{ .name = "agent_run_recovery_darwin_" ++ m[0], .root_module = dr });
+        const dobj = darwinGuardObject(b, "agent_run_recovery_darwin_" ++ m[0], dr);
         recovery_concrete_step.dependOn(&dobj.step);
     }
     // MS6.5.1 bd zigBrowser-3gl: the reaper_ready arming gate + startup-recovery CORE (RoseCat 428d06e APPROVED the
@@ -4182,6 +4198,12 @@ const drawer_portable_exports = [_][]const u8{
     "zb_drawer_inside_icon",       "zb_drawer_page_rect",       "zb_drawer_appkit_frame",
     "zb_drawer_appkit_shown",      "zb_drawer_appkit_original_offset", "zb_drawer_bubble_layout_contiguous",
 };
+
+/// bd zigBrowser-4pa.63: a Darwin cross-compile guard, `guarded` (its target set) built as an object. Every Darwin
+/// guard and its selftest (`test-darwin-guard-selftest`) build through this one helper.
+fn darwinGuardObject(b: *std.Build, name: []const u8, guarded: *std.Build.Module) *std.Build.Step.Compile {
+    return b.addObject(.{ .name = name, .root_module = guarded });
+}
 
 fn addShimArg(b: *std.Build, run: *std.Build.Step.Run, shim: []const u8) void {
     var parts = std.mem.splitScalar(u8, shim, ':');
