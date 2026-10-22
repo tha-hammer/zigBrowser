@@ -16,7 +16,10 @@ Login.spawn therefore, before it launches the CLI:
   that call) redirects nothing: nothing is made under the link's target and the CLI is not launched (RoseCat 7742);
 - a REAL directory (0755, ours) put in place of a just-made scratchpad or tmp between its mkdir and its open (an
   os.mkdir seam that renames the new one away and makes the replacement) is refused, never repaired: it stays 0755
-  with nothing made in it, and the CLI is not launched (RoseCat 7746's probe).
+  with nothing made in it, and the CLI is not launched (RoseCat 7746's probe);
+- the home itself must be ours and writable by no one else (only then can no other uid rename the scratchpad after
+  the check, the trust boundary for the window up to and during the CLI's run): a home writable by its group or by
+  others is refused, with nothing made in it.
 subprocess.Popen is a recorder (no process is started), and os.kill / os.killpg are patched to raise; the fake
 process has no pid and has already ended. Run: cd agent/host/tests && unshare --map-current-user --pid --fork \\
   --kill-child --mount-proc sh -c '"$ZB_AGENT_HOST_PYTHON" -X dev -m unittest -v test_login_scratch_tmp; exit $?'
@@ -185,6 +188,14 @@ class LoginScratchTmp(unittest.TestCase):
         with mock.patch.object(os, "mkdir", side_effect=mkdir):
             self.refused("a scratchpad swapped for a link meanwhile")
         self.assertEqual(os.listdir(target), [], "something was made under the link's target")
+
+    def test_a_home_writable_by_others_is_refused_with_nothing_made(self):
+        for mode in (0o770, 0o707, 0o1777):
+            with self.subTest(mode=oct(mode)):
+                os.chmod(self.home, mode)
+                self.refused(f"a home of mode {oct(mode)}")
+                self.assertEqual(os.listdir(self.home), [], "something was made in the home")
+        os.chmod(self.home, 0o700)
 
     def test_a_scratchpad_wider_than_0700_is_refused(self):
         os.makedirs(self.dir, 0o700)
