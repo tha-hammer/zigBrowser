@@ -30949,3 +30949,62 @@ with the existing unique-root and owned-Job cleanup. Acceptance requires every
 row to report `proc_gone=true`, the exhaustion row to report
 `cleanup_exhausted=true`, no pre-resume `DRAWER` row, and zero owned survivors
 or leftovers after the runner. Agent Mail 7747 sent the verdict to AzureRidge.
+
+## `zigBrowser-3gl` prototype lifecycle fix-forward (`c74b2df`)
+
+**BLOCKED-for-tests; keep the prototype unregistered and unarmed.** The
+fix-forward closes the four direct lifecycle defects from `8a351e5`: the parent
+consumes R1's held-lock handshake before forking R2; one absolute monotonic
+deadline governs acquisition, reads and reaping; committed waits stay
+`WNOHANG`; and all pipe ends start at -1 under a defer installed before the
+first pipe. In an exact clean export, the standalone binary passed **2/2** in
+**6/6** runs inside a private current-UID user/PID/mount namespace behind the
+fd-9 namespace sentinel.
+
+The causal coverage is not yet sufficient to accept those safety properties:
+
+1. `Ops.afterRead` discards the result of `readExactWithin`. EOF, read error or
+   deadline therefore releases R1 into liveness/reap/publish rather than
+   failing closed. A causal mutation that closed the go pipe instead of writing
+   `G` was caught only later as `R1ResultLost`/`R2ResultLost`, after the terminal
+   deadline; it did not pin the intended read boundary.
+2. The stated child-nonzero mutant does not exercise the former
+   wait-error-as-status-zero path: a normal wait observes the nonzero status too.
+   Inject `ECHILD` or another hard wait error and require the explicit fail-closed
+   result.
+3. Add causal injected rows for a blocking post-kill wait and partial pipe
+   creation. Structural source checks do not prove either bounded reaping or
+   cleanup of every successfully created prefix.
+
+Agent Mail 7749 sent the findings to JadeBeacon.
+
+## Sign-in real-directory replacement red (`dc0d8dc`)
+
+**APPROVED as a failing-first, unregistered red.** The two deterministic rows
+replace either the newly created `scratchpad` or its `tmp` child between
+`mkdirat` and `openat` with a same-uid real 0755 directory. Each requires
+refusal before launch and requires the replacement's inode, mode and empty
+contents to remain unchanged. In the exact cumulative private-namespace run,
+both rows failed on HEAD with `OSError not raised`; the preceding **11** controls
+passed. `Popen` remains a recorder and both signal functions raise if reached.
+The rows causally pin the real-directory replacement gap found in `cd992e9`.
+
+## Sign-in home trust-boundary red (`ac4f412`)
+
+**BLOCKED-for-tests.** The new 0770, 0707 and 1777 home-mode rows are causal:
+with the two `dc0d8dc` replacement rows, the exact private-namespace run had
+**5** expected failures while **11** controls passed. They correctly require a
+0700 home leaf before sign-in.
+
+The claimed "home must be ours" boundary is still unproved. The existing
+foreign-owner row mocks the effective uid for the home and its descendants
+together, so a green that validates only descendants can pass. Add a
+home-specific identity/stat seam where only the home appears foreign. Also
+define and test the trusted ancestor boundary: a 0700 leaf is replaceable when
+an already-existing controlling ancestor is writable by another uid, and
+`root.parent.mkdir(..., exist_ok=True)` does not validate that ancestor. The
+green must either fd-walk and validate the trusted chain (including the chosen
+sticky-directory rule) through spawn, or source-pin a guaranteed app-owned
+parent. Until both ownership and ancestor control are causal, the sign-in home
+can be replaced between the check and `Popen` path resolution. Agent Mail 7750
+sent the verdict to BlueBeaver.
