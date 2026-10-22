@@ -159,7 +159,8 @@ voice-input (STT) plans have Windows steps that wait on this plan (section **Voi
 
 ## Desired End State
 
-A Windows 10 (22H2) or Windows 11 user installs a **signed** zigBrowser and can: browse with an
+A Windows 10 (22H2) or Windows 11 user installs an **unsigned per-user** zigBrowser (code signing is
+DEFERRED — OD-W3 decided no signing for launch; it is not a launch requirement) and can: browse with an
 isolated persistent profile; drive the full automation API (multi-window, freeze and
 recovery, dialogs, popups, native input proven trusted) with the same client contract and
 per-window FIFO semantics as Linux; run site flows behind the same approval grant; use a
@@ -188,7 +189,8 @@ eyes on both screens. Until a code-signing identity exists, every artifact is ca
 6. Given the agent runs, when a hook or the CLI tries any network other than the allowlisted
    proxy and the two bridges, then it fails at the kernel.
 7. Given the installer, when a user downloads and runs it on either OS, then it installs per
-   user, its signatures verify, and an uninstall removes everything it added.
+   user and an uninstall removes everything it added. (The build is unsigned — signing is deferred,
+   OD-W3 — so no signature-verification is claimed at launch; only "nothing may claim signed/distributable".)
 
 ## What We're NOT Doing
 
@@ -272,7 +274,9 @@ for the user. For each item: what each option costs, what can go wrong, and what
   parent once** (an update then needs no UAC), or every update needs a UAC prompt to re-grant. WS8.2 is
   written so the first is testable.
 
-**OD-W3 Signing identity and who buys it** (WS13.6 and every "distributable" claim; **long lead time, so
+**OD-W3 Signing identity and who buys it** — **DECIDED 2026-10-21: DEFERRED, no signing for launch, not a
+launch gate (see OWNER DECISIONS); the analysis below is retained only for if/when signing is later
+adopted.** (WS13.6 and every "distributable" claim; **long lead time, so
 start early**).
 - *Azure Artifact Signing (about $9.99/month).* Identity validation can take 1-20 business days; open
   to individuals only in the US or Canada, otherwise an organization with a verifiable history; needs an
@@ -1962,7 +1966,7 @@ once this plan is accepted (they own the edit; this plan does not edit them).
 
 ---
 
-## WS13: Packaging, signing, update, uninstall   [W11] build, [L]/[W11] sign, [W], [U]
+## WS13: Packaging, update, uninstall (signing DEFERRED — OD-W3, NOT a launch gate)   [W11] build, [W], [U]
 
 ### Behaviors
 - **WS13.1 the MSI ships every component** the release needs (browser, manifest, launcher, sandbox
@@ -1992,22 +1996,24 @@ once this plan is accepted (they own the edit; this plan does not edit them).
   result is asserted only once that probe is empty. OD-W1 may change this.
 - **WS13.5 update (OD-W2):** the chosen updater verifies the update's signature before running it; a
   tampered update is refused.
-- **WS13.6 signing (gated on OD-W3):** every PE then the MSI is Authenticode-signed inside-out with
-  an RFC 3161 timestamp (jsign from Linux for Artifact Signing, or signtool on the VM);
-  `Get-AuthenticodeSignature` is `Valid` for every file on both hosts; a downloaded copy (with a
-  `Zone.Identifier` stream, ZoneId=3) shows the publisher name in SmartScreen, and Smart App Control
-  on the VM does not block it. **Until a certificate exists, the artifact is an unsigned development
-  build, not a distributable artifact**; status is tracked via Agent Mail / plan status (the beads DB
-  is migration-locked).
+- **WS13.6 signing — DEFERRED (OD-W3 decided: no signing for launch); NOT a launch gate; stays OPEN.**
+  If/when a code-signing identity is later adopted, this slice would Authenticode-sign every PE then the
+  MSI inside-out with an RFC 3161 timestamp (jsign from Linux for Artifact Signing, or signtool on the
+  VM), `Get-AuthenticodeSignature` `Valid` on both hosts, publisher shown in SmartScreen, Smart App
+  Control not blocking. **None of this is built or gated for launch.** The ONLY hard rule now: **the
+  artifact is an unsigned development build and NOTHING may claim it is "signed" or "distributable".**
+  Status tracked via Agent Mail / plan status (the beads DB is migration-locked).
 - 🔴 More reds (each with a mutant): WS13.1 `assert census.unlisted == [] and census.missing == []`
   (mutant: add an unlisted DLL ⇒ red); WS13.2 `assert install_log.bootstrapper_result is not None and (rc == 0 or app_shows_runtime_message)`
   (mutant: keep `Return="ignore"` and drop the log ⇒ red); WS13.3 `assert all(c.size < 2**31 for c in cabinets)`
   (mutant: one 2.1 GB payload ⇒ red); WS13.4 `assert users_after == [] and profiles_after == [] and wfp_filters_after == [] and wfp_providers_after == [] and wfp_sublayers_after == [] and tasks_after == [] and not (uninstall_reported_success and (users_after or profiles_after or wfp_filters_after or wfp_providers_after or wfp_sublayers_after or tasks_after))`
   (the probe censuses all SIX kinds the uninstall normative names in §3 item (d) — sandbox **users**, **profile folders**, WFP **filters**, WFP **providers**, WFP **sublayers** and scheduled **tasks** — "no user, profile folder, filter, provider, sublayer or scheduled task behind"; mutants, each ⇒ red: skip the filter removal; leave a profile folder; leave a WFP provider; leave a WFP sublayer; skip a scheduled task; and report uninstall success while ANY of a user/profile/filter/provider/sublayer/task survives); WS13.5 `assert tampered_update_refused` (mutant: skip the signature
-  check ⇒ red); WS13.6 `assert all(sig.Status == "Valid" for sig in signatures)` on both hosts, red until
-  OD-W3, and a **negative** test that a modified file after signing is `HashMismatch`.
+  check ⇒ red). WS13.6 (signing) is **DEFERRED and not a launch red** — no `sig.Status == "Valid"`
+  assertion gates launch; if signing is ever adopted it would add those checks (+ a `HashMismatch`
+  negative), but they are explicitly out of the launch gate.
 - 🟢 Green: the `.wxs` components for every release PE, `build-msi.ps1` cabinet split and census,
-  `components.json`, `sign.sh`/`sign.ps1` (blocked on OD-W3), the uninstall wiring above.
+  `components.json`, the uninstall wiring above. (`sign.sh`/`sign.ps1` is DEFERRED — OD-W3; not built
+  for launch.)
   🔵 Refactor: one component manifest feeds the MSI, the census and the macOS-style "every shipped binary is
   listed" check; the installer stays free of policy literals (ports, allowlists).
 - **Files touched:** `packaging/windows/zigBrowser.wxs`, `packaging/windows/build-msi.ps1`,
@@ -2015,14 +2021,16 @@ once this plan is accepted (they own the edit; this plan does not edit them).
   `packaging/windows/sign.sh` (new, jsign) or `sign.ps1`, `tests/e2e/msi_install_test.py`,
   `tests/windows/gate.sh` (package phase).
 - 🔴 Red `msi_install_test.py`: `assert census.unlisted == [] and census.missing == []` (today the
-  MSI ships only `zigBrowser.exe` + the bootstrapper); and `assert sig.Status == "Valid"` (fails until
-  OD-W3).
+  MSI ships only `zigBrowser.exe` + the bootstrapper). (No signature assertion — signing is deferred,
+  OD-W3, and is not a launch red.)
 - **Closure:** LEAF (packaging assertions), except WS13.4 BLOCKING (installer → elevated helper →
   system state; OBSERVE = the post-uninstall probe of users and WFP filters).
 - **Real-screen check `win-install-smartscreen`:** the user downloads the installer in Edge on each
   host and records what SmartScreen shows.
 
-**Gate (WS13):** [W] install/uninstall/census both hosts; signing part blocked on OD-W3. The **final
+**Gate (WS13):** [W] install/uninstall/census both hosts. Signing is DEFERRED (OD-W3) and is **NOT part
+of the WS13 launch gate** — the gate asserts only the unsigned MSI's contents/install/uninstall/census,
+never a signature. The **final
 packaging gate depends on every release component, not merely on WS7 having started**: WS13.1's census must
 find each component owner's artifact — browser (WS1), drawer (WS5), setup (WS7), sandbox setup (WS8), egress
 helper (WS9), sign-in (WS10), agent host/helper (WS11) — **and the voice packaging the voice plans own** (the
@@ -2045,8 +2053,9 @@ first with filters stubbed to "deny all", and WS9 replaces the stub with the rea
 but its **final gate depends on every release component** (WS1, WS5, WS7, WS8, WS9, WS10, WS11) and the
 **voice packaging** the voice plans own (TTS engine+model, STT engine+model via VSP/W1): WS13.1's census fails
 on any missing component, so the final packaging gate cannot pass until every component owner has landed. Its
-signing half waits on OD-W3. Decision gates: WS5 waits on OD-W6 only for its green files; WS8 waits
-on OD-W4; WS13 on OD-W1/W2/W3/W8.
+signing is DEFERRED (OD-W3) and is not a launch gate. Decision gates: WS5 waits on OD-W6 only for its
+green files; WS8 waits on OD-W4; WS13's LAUNCH items wait on OD-W1 (+ OD-W8 runtime) only — OD-W2 (update)
+is post-launch and OD-W3 (signing) is deferred, neither gating launch.
 
 ## Per-slice gate protocol (all slices)
 
