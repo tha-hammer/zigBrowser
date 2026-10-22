@@ -36242,3 +36242,23 @@ lines; it drops no existing gate dependency. A clean export at `678e01a`
 passes the registered focused step **2/2**. This closes the registration hold
 on `6609074`/`9d9b6c7` and the `7223f4b` proof. The independent controller
 tripwire blocker at `037b79b` still holds the cumulative WS5.5b-2 range.
+
+## MS8.0 dual-macOS card-authority compile green (`29744db`)
+
+**APPROVED.** This closes the approved `52d8f00` red. `app.zig` now retains
+`agent_tools` on every target so the platform-neutral card minters and window
+lifecycle exports are materialized in both Darwin objects. The only GTK/C
+entry, `zb_agent_tools_call`, is no longer an unconditional Zig export: it has
+an explicit C calling convention and is exported under its unchanged literal
+name only when the compile-time OS is Linux. The Darwin object census therefore
+gets the four required definitions without importing the GTK helper, drawer or
+image symbols; the Linux ABI remains named `zb_agent_tools_call`.
+
+The two architecture runs are registered in both `cross-check` and the
+aggregate `test` graph, with only additive `build.zig` changes. In clean exports
+at `29744db`, `cross-check-agent-tools-mac` passed for aarch64 and x86_64, and
+the complete `cross-check` step also passed, including the Linux, Windows and
+both Darwin objects. This is the approved offline compile/link tripwire. The
+runtime AppKit action/target, minter exclusivity and lifecycle authority remain
+with the compiled two-Mac gate defined by the `c6b2b32` proof-boundary ruling;
+this commit does not claim those runtime properties.
