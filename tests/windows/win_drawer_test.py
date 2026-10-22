@@ -108,7 +108,7 @@ public static class Z {
 
 function Census() { @(Get-Process -Name zigBrowser -ErrorAction SilentlyContinue).Count }
 
-$res = @{ stdout=''; stderr=''; client_w=0; client_h=0; census_before=0; census_after=0; terminated=$false; timed_out=$false; error='' }
+$res = @{ stdout=''; stderr=''; client_w=0; client_h=0; census_before=0; census_after=0; webview_kids_left=0; terminated=$false; timed_out=$false; error='' }
 $res.census_before = Census
 # e2e-only seams, set in this process so Start-Process's child inherits them (honoured only under --e2e-protocol).
 $env:ZIGBROWSER_AGENT_DRAWER_OPEN = '1'
@@ -134,7 +134,18 @@ finally {
   [void][Z]::TerminateJobObject($job, 1)
   $exited = $p.WaitForExit(8000)
   $res.terminated = $exited
-  Start-Sleep -Milliseconds 300
+  # WebView2 spawns msedgewebview2.exe children that break away from the Job Object and hold this run's
+  # user-data dir open. Own them by IDENTITY: kill only those whose command line references THIS run dir
+  # (the --user-data-dir lives under $dir), then bounded-wait for them to exit.
+  for ($i=0; $i -lt 60; $i++) {
+    $kids = @(Get-CimInstance Win32_Process -Filter "Name='msedgewebview2.exe'" -ErrorAction SilentlyContinue |
+              Where-Object { $_.CommandLine -and $_.CommandLine -like ('*' + $dir + '*') })
+    if ($kids.Count -eq 0) { break }
+    foreach ($k in $kids) { Stop-Process -Id $k.ProcessId -Force -ErrorAction SilentlyContinue }
+    Start-Sleep -Milliseconds 250
+  }
+  $res.webview_kids_left = @(Get-CimInstance Win32_Process -Filter "Name='msedgewebview2.exe'" -ErrorAction SilentlyContinue |
+                            Where-Object { $_.CommandLine -and $_.CommandLine -like ('*' + $dir + '*') }).Count
   $res.census_after = Census
   $res.stdout = [string](Get-Content $out -Raw -ErrorAction SilentlyContinue); if ($null -eq $res.stdout) { $res.stdout = '' }
   $res.stderr = [string](Get-Content $err -Raw -ErrorAction SilentlyContinue); if ($null -eq $res.stderr) { $res.stderr = '' }
@@ -155,6 +166,11 @@ class WinDrawerLive(unittest.TestCase):
         self.user = os.environ.get("ZB_WIN11_USER", "zbtext")
         self.key = os.environ.get("ZB_WIN_KEY", "/home/maceo/vms/win11-m8/zb_win_key")
         self.kh = os.environ.get("ZB_WIN_KNOWN_HOSTS", "/home/maceo/vms/win11-m8/known_hosts")
+        # Sweep any stale drawer-* dirs whose WebView2 cache has since been released (best-effort), so a
+        # slow async file-release from a prior run never accumulates.
+        self._ssh("powershell", "-NoProfile", "-Command",
+                  "Get-ChildItem $env:USERPROFILE\\zb -Filter drawer-* -Directory -ErrorAction SilentlyContinue | "
+                  "ForEach-Object { Remove-Item -LiteralPath $_.FullName -Recurse -Force -ErrorAction SilentlyContinue }")
 
     def _scrub(self, *cmd):
         return ["env", "-u", "DISPLAY", "-u", "WAYLAND_DISPLAY", "-u", "XAUTHORITY", *cmd]
@@ -197,6 +213,8 @@ class WinDrawerLive(unittest.TestCase):
             self.assertFalse(r["timed_out"], f"runner timed out waiting for the drawer rows\nstdout={r['stdout']!r}\nstderr={r['stderr']!r}")
             self.assertTrue(r["terminated"], "the Job Object did not terminate the browser tree within the bound")
             self.assertEqual(r["census_after"], 0, f"a zigBrowser process survived job termination (census_after={r['census_after']})")
+            self.assertEqual(r.get("webview_kids_left", 0), 0,
+                             f"a WebView2 child of this run survived teardown (webview_kids_left={r.get('webview_kids_left')})")
             rows = [row for row in (parse_drawer(ln) for ln in r["stdout"].splitlines()) if row]
             by_kind = {}
             for win, kind, fields in rows:
@@ -216,7 +234,17 @@ class WinDrawerLive(unittest.TestCase):
             self.assertEqual(py + ph, r["client_h"],
                              f"page_h + panel_h must equal client_h (panel.y {py} + panel.h {ph} != client_h {r['client_h']})")
         finally:
-            self._ssh("cmd", "/c", f"rmdir /s /q {base_win}")
+            # The tree is owned + proven dead by the process census above (b2595b0 #2). The run dir may still
+            # hold WebView2's EBWebView cache files, which Windows releases asynchronously for tens of seconds
+            # after the processes die — a file-release lag, not a surviving process — so dir removal is
+            # best-effort with a generous retry (not a test failure). setUp() also sweeps stale drawer-* dirs
+            # so nothing accumulates.
+            import time as _t
+            for _ in range(20):
+                self._ssh("cmd", "/c", f"rmdir /s /q {base_win}")
+                if "GONE" in self._ssh("cmd", "/c", f"if exist {base_win} (echo LEFT) else (echo GONE)").stdout:
+                    break
+                _t.sleep(1)
             for p in (html, runner):
                 try:
                     p.unlink()
