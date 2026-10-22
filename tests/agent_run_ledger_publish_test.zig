@@ -32,7 +32,7 @@ test "a mid-publish crash leaves the OLD store intact (never torn)" {
     defer td.cleanup();
     try ledger.publish(io, td.dir, "runs.json", &A); // store = A
     // crash while publishing B, before it could atomically replace the store:
-    try ledger.publishCut(io, td.dir, "runs.json", &B, .after_temp);
+    try ledger.publishCut(io, td.dir, "runs.json", &B, .after_temp, null);
     // the store must still be the OLD, complete A — not a torn/empty/partial file:
     try expectStore(io, td.dir, "runs.json", A[0].basename);
 }
@@ -54,4 +54,25 @@ test "a second publish atomically replaces the store" {
     try ledger.publish(io, td.dir, "runs.json", &A);
     try ledger.publish(io, td.dir, "runs.json", &B);
     try expectStore(io, td.dir, "runs.json", B[0].basename);
+}
+
+test "a crash AFTER rename (before dir fsync) leaves the complete NEW store" {
+    const io = std.testing.io;
+    var td = std.testing.tmpDir(.{});
+    defer td.cleanup();
+    try ledger.publish(io, td.dir, "runs.json", &A); // store = A
+    // rename has happened; the dir fsync has not. The store must be the COMPLETE new B — so the temp MUST have
+    // been fully written and synced BEFORE the rename (a rename-before-write would leave an empty/torn store):
+    try ledger.publishCut(io, td.dir, "runs.json", &B, .after_rename, null);
+    try expectStore(io, td.dir, "runs.json", B[0].basename);
+}
+
+test "publish performs temp-write, temp-fsync, rename, dir-fsync IN THAT ORDER" {
+    const io = std.testing.io;
+    var td = std.testing.tmpDir(.{});
+    defer td.cleanup();
+    var log: ledger.StepLog = .{};
+    try ledger.publishCut(io, td.dir, "runs.json", &A, .none, &log);
+    const expected = [_]ledger.Step{ .temp_written, .temp_fsynced, .renamed, .dir_fsynced };
+    try std.testing.expectEqualSlices(ledger.Step, &expected, log.steps());
 }
