@@ -36533,3 +36533,47 @@ proof-that-cannot-fail apply; they are not requests for another source-parser
 arms race. A fix that satisfies this exact minimum may receive one new digest
 review under R4. Until then neither the Intel Mac nor the personal Apple
 Silicon Mac may run this harness.
+
+## WS5.5b-2 production-bound live lifecycle (`a5745b9`)
+
+**APPROVED; one bounded Win11 run is authorized at exact commit
+`a5745b960bede264992c5da1ad0efa42d98c4286`.** This closes item 2 of the
+`f1e9653` minimum and therefore makes items 1–3 cumulatively complete before
+the live authority. `DrawerLive`, `drawerLiveInc`, `drawerLiveDec`, and the
+already-driven `retireExtraWindow` now are production Zig bytes rather than a
+detached Python lifecycle model. The Windows shim owns the state but routes
+full registration and retired-window decrement through those exports; its old
+C++ atomic counter and peak transition are gone. The direct Zig test drives
+the running peak, uncounted partial structure, retire-once close, intermediate
+count, terminal zero, preserved peak, and underflow refusal over those same
+functions. The remaining C++ checks are appropriately narrow call-site
+tripwires; runtime call ordering is the bounded live run's authority under R1.
+
+From a clean `git archive` of the exact commit, under private Xvfb, I ran the
+registered focused steps: `drawer-props-test`, `windows-drawer-lifecycle`
+(**9/9**), `cross-check-drawer-win`, `windows-drawer-live` (**84/84**, eight
+expected live skips), and `windows-drawer-behaviors` (**48/48**, 22 expected
+live skips). Every step exited zero. This retains `00a862c`'s leader-exit plus
+settled-zero-owned-Job no-kill gate and `cd2323c`'s approved callback-scoped
+decision tripwire.
+
+Run only these four methods, sequentially, from a clean export/build of that
+exact SHA through the existing owned-Job harness on `win11-m8`:
+
+1. `WinDrawerBehaviorsLive.test_ws5_5_live_count_peak_then_zero`;
+2. `WinDrawerBehaviorsLive.test_ws5_5b2_closing_one_extra_drops_the_live_count_by_exactly_one`;
+3. `WinDrawerBehaviorsLive.test_ws5_5b2_extra_fail_panel_drives_partial_cleanup`;
+4. `WinDrawerBehaviorsLive.test_ws5_5b2_extra_fail_icon_drives_partial_cleanup`.
+
+The run must report a clean process/drawer-directory census before and after,
+zero owned Job members and zero survivors after each method, `NoKillNeeded`
+for every normal close, peak/intermediate/final counts matching each method,
+and both partial-control branches producing no counted extra drawer. Stop on
+the first failure and retain its diagnostic; do not broaden the run set or use
+name-based process cleanup.
+
+**SHOULD:** add `zb_drawer_live_inc` and `zb_drawer_live_dec` to the Windows
+`--require-defined` cross-check list, and update the lifecycle build-step
+description that still calls the removed lifecycle half a recording model.
+The exact live MSVC link/run will cover the current commit, so these durability
+and wording cleanups do not block this authorized run.
