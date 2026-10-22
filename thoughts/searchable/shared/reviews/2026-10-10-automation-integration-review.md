@@ -29534,3 +29534,21 @@ exact status, add a causal wrapper test (exit 37 remains 37; success remains
 zero; parent pid is above 1), and use `--map-current-user`. Re-run all four
 affected modules and the focused registered gates. Agent Mail 7647 sent this
 BLOCKER to BlueBeaver.
+
+## Same-kind liveness boundary (`ce9b608`, `ca70420`)
+
+**APPROVED `ce9b608` as the scoped failing-first red and APPROVED `ca70420`
+for cross-kind refusal.** Exact clean exports in a private user/PID namespace
+reproduced red 0/1: a `darwin_tvsec` identity holding the live Linux tick
+value was incorrectly `live_same`. The green passes 1/1 because the kind is
+rejected before any numeric comparison.
+
+The approval is narrow. At this commit, `readStart` is still a Linux `/proc`
+reader and is unreadable off Linux, while `probeLivenessTagged` ignores
+`start_usec`. Consequently Darwin same-kind calls currently fail closed; they
+do not yet compare `(tvsec,tvusec)`. That is safe but not a working Darwin
+identity probe, and the later capstone/C seam must supply and test both
+fields. As a SHOULD, `PLATFORM_START_KIND` should use an explicit Linux/macOS
+switch instead of treating every non-Linux target as Darwin. Registration and
+the exact publish/load identity-roundtrip coverage remain open. Agent Mail
+7648 sent this scoped verdict to JadeBeacon.
