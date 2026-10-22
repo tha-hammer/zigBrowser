@@ -976,6 +976,28 @@ pub fn build(b: *std.Build) void {
     run_ledger_recovery_busy_tests.addArtifactArg(ledger_recovery_busy_exe);
     const ledger_recovery_busy_step = b.step("test-agent-run-ledger-recovery-busy", "MS6.5.1 bounded acquire fails closed on a stalled live flock holder (SCOPED, not whole-recovery; PID-ns sentinel)");
     ledger_recovery_busy_step.dependOn(&run_ledger_recovery_busy_tests.step);
+    // MS6.5.1 bd zigBrowser-3gl (RoseCat 9f62ea4 #1 / mail 7806): the CONCRETE recovery lease over the reviewed
+    // reaper C path (src/agent_run_reaper.c). MANUAL step — deliberately NOT attached to the aggregate `test` step
+    // until the intercepted-action / early-unlock / path-swap matrix passes and the destructive slice is accepted.
+    // It runs inside a private user/PID/mount namespace; the launcher holds its OUTER /proc/self/ns/pid as fd 9
+    // (`exec 9<…`) BEFORE unshare, so the test's sentinel refuses before any signal if fd 9 is absent. UNARMED.
+    const recovery_concrete_mod = b.createModule(.{ .root_source_file = b.path("src/agent_run_recovery.zig"), .target = target, .optimize = optimize, .link_libc = true });
+    recovery_concrete_mod.addImport("agent_run_ledger", ledger_mod);
+    recovery_concrete_mod.addIncludePath(b.path("src"));
+    const recovery_concrete_test_mod = b.createModule(.{ .root_source_file = b.path("tests/agent_run_recovery_concrete_test.zig"), .target = target, .optimize = optimize, .link_libc = true });
+    recovery_concrete_test_mod.addImport("agent_run_ledger", ledger_mod);
+    recovery_concrete_test_mod.addImport("agent_run_recovery", recovery_concrete_mod);
+    recovery_concrete_test_mod.addIncludePath(b.path("src"));
+    recovery_concrete_test_mod.addCSourceFile(.{ .file = b.path("src/agent_run_reaper.c"), .flags = &.{"-std=gnu11"} });
+    const recovery_concrete_exe = b.addTest(.{ .root_module = recovery_concrete_test_mod });
+    const run_recovery_concrete = b.addSystemCommand(&.{
+        "sh", "-c",
+        "exec 9</proc/self/ns/pid; exec unshare --user --map-root-user --pid --fork --mount-proc sh -c '\"$@\"; :' sh \"$1\"",
+        "sh",
+    });
+    run_recovery_concrete.addArtifactArg(recovery_concrete_exe);
+    const recovery_concrete_step = b.step("test-agent-run-recovery-txn", "MS6.5.1 bd zigBrowser-3gl CONCRETE recovery lease over the reaper C (private ns, fd-9 sentinel; MANUAL, not in aggregate)");
+    recovery_concrete_step.dependOn(&run_recovery_concrete.step);
     // MS6.5 (the user's decision 2026-10-21): the stubbed macOS VM-containment seam — off by default, reports
     // "not available yet", and the gate fails closed when on. Pure Linux unit (no OS calls).
     const mac_vm_containment_module = b.createModule(.{

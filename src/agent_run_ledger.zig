@@ -525,7 +525,7 @@ pub const Teardown = enum { done, failed };
 //
 //     lease.fixedPoint(clock, deadline_ms) FixedPoint  // census -> kill -> fresh-census, clean iff a complete
 //                                                       //   empty final census (via the held fd); else survivors/incomplete
-//     lease.teardown(deadline_ms) Teardown             // unlinkat(run.marker) then unlinkat(name, AT_REMOVEDIR)
+//     lease.teardown(clock, deadline_ms) Teardown      // unlinkat(run.marker) then unlinkat(name, AT_REMOVEDIR)
 //                                                       //   through the held fds, idempotent on ENOENT (crash cut C2)
 //     lease.deinit() void                              // close the held fd(s)
 //
@@ -609,7 +609,7 @@ pub fn recoverOneUnderLock(io: std.Io, gpa: std.mem.Allocator, dir: std.Io.Dir, 
                 .survivors, .incomplete => return .fail_closed, // never a clean recovery, entry retained
             }
             if (clock.nowMs() >= deadline_ms) return .fail_closed; // pre-teardown
-            switch (lease.teardown(deadline_ms)) { // idempotent on ENOENT (crash cut C2)
+            switch (lease.teardown(clock, deadline_ms)) { // idempotent on ENOENT (crash cut C2)
                 .done => {},
                 .failed => return .fail_closed, // teardown error -> fail closed, entry retained
             }

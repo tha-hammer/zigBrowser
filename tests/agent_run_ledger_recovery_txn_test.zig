@@ -195,7 +195,8 @@ const FakeLease = struct {
         _ = deadline_ms;
         return self.fp;
     }
-    pub fn teardown(self: *FakeLease, deadline_ms: i64) ledger.Teardown {
+    pub fn teardown(self: *FakeLease, clock: anytype, deadline_ms: i64) ledger.Teardown {
+        _ = clock;
         _ = deadline_ms;
         return self.td;
     }
