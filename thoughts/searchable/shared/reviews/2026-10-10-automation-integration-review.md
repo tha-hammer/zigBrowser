@@ -36056,3 +36056,37 @@ in `build.zig`, so `6609074`/`9d9b6c7` do not yet have registered gate proof.
 Register this exact module additively before claiming that range closed. The
 earlier and independent `a3beeb1` controller-oracle blocker also continues to
 hold the `1b2fe0a` WS5.5b-2 range.
+
+## WS5.5b-2 controller proof-boundary ruling
+
+**ACCEPT the proposed scope change.** A handwritten C++ source parser should
+not be treated as a control-flow proof. `e57f620`'s already-approved driven
+portable decision table, the recording/teardown seam, and one bounded owned-Job
+Win11 run of the three named WS5.5b-2 behavior tests may be the causal proof.
+The source check may be reduced to an architecture tripwire.
+
+The exact minimum is:
+
+1. The driven portable tests keep the complete gate-input table and exact
+   `spawn_count` / `close_primary` outputs.
+2. The recording/teardown seam causally proves app-owned per-HWND registration,
+   partial-control failure cleanup, retire-once `WM_DESTROY`, and exact live
+   count transitions. It must not infer those properties from source text.
+3. The source tripwire lexes comments and literals, extracts the real
+   `create_controller` function, and requires exactly one
+   `zb_drawer_after_controller` call inside the
+   `CreateCoreWebView2ControllerCompletedHandler` callback with the four exact
+   production app inputs. It also rejects any other decision call in the shim
+   and any decision recomputation inside `spawn_extra_drawer_windows`. It need
+   not prove reachability, adjacency or statement order.
+4. At one exact follow-up commit, the bounded Win11 run exercises the three
+   named behavior tests through the owned-Job harness and observes the peak,
+   intermediate and terminal counts, normal non-kill exit, both required
+   partial-failure outcomes, zero survivors and clean before/after censuses.
+
+Commit one mutant that removes or moves the callback's sole decision call and
+one that reintroduces the decision in the spawn function; the tripwire must
+catch both. Once these four items are present, the later follow-up may
+cumulatively supersede the blocked `918cb09`/`96df8ea`/`a3beeb1` source-oracle
+attempts and close the `1b2fe0a` range. No further textual control-flow mutant
+rounds are required.
