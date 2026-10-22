@@ -17,7 +17,6 @@ live assertion and the offline oracle cannot drift.
 """
 import math
 import os
-import pathlib
 import re
 import sys
 import unittest
@@ -159,16 +158,6 @@ def js_can_reach_drawer(page_window_ids, page_dom_ids, drawer_win_id, drawer_dom
     return (drawer_win_id in page_window_ids) or (drawer_dom_id in page_dom_ids)
 
 
-def production_automation_verbs():
-    """The REAL exposed automation method registry — `src/automation.zig`'s `phase1_command_verbs` — parsed
-    from source, so the WS5.6 socket-isolation oracle binds the production surface instead of a hand-written
-    list. Any method NOT in this registry falls through to the JSON-RPC not-found path (-32601)."""
-    src = (pathlib.Path(__file__).resolve().parents[2] / "src" / "automation.zig").read_text(encoding="utf-8")
-    m = re.search(r"phase1_command_verbs\s*=\s*\[_\]\[\]const u8\{(.*?)\};", src, re.S)
-    assert m, "could not find phase1_command_verbs in src/automation.zig"
-    return re.findall(r'"([^"]+)"', m.group(1))
-
-
 # ---- WS5.7 DPI ----
 def icon_px_at(scale, base=ICON_SIZE):
     return int(round(base * scale))
@@ -302,21 +291,9 @@ class WinDrawerBehaviorsOracle(unittest.TestCase):
         self.assertTrue(js_can_reach_drawer([1, 2, 99], ["doc"], 99, "drawer-root"),
                         "a leaked window id must be caught")
 
-    def test_ws5_6_socket_isolation_bound_to_real_registry(self):
-        # WS5.6 production enforcement: bind EXPECTED_ISOLATION's socket side to the REAL registry
-        # (src/automation.zig phase1_command_verbs), not a hand-written list — so a drawer.* method added to
-        # production is caught by the gate. Every socket.drawer.* must be absent from the registry (=> -32601).
-        verbs = production_automation_verbs()
-        self.assertIn("page.navigate", verbs, "sanity: the production registry was actually parsed")
-        self.assertEqual(reachable_drawer_methods(verbs), [], "production exposes no drawer.* automation method")
-        for key, code in EXPECTED_ISOLATION.items():
-            if key.startswith("socket.drawer."):
-                method = key[len("socket."):]  # e.g. "drawer.state"
-                self.assertNotIn(method, verbs, f"{method} must be absent from the registry so it is -32601")
-                self.assertEqual(code, -32601, f"{key} must expect method-not-found")
-        # mutant: a drawer.* verb added to the registry is caught by reachable_drawer_methods
-        self.assertNotEqual(reachable_drawer_methods(verbs + ["drawer.state"]), [],
-                            "a planted drawer.state verb must be caught")
+    # WS5.6 production enforcement is proven at the REAL dispatch, not here: see
+    # tests/automation_inprocess_test.zig "WS5.6 … REAL in-process dispatch (-32601)" (RoseCat 6b324c8 —
+    # phase1_command_verbs was the wrong boundary). This module keeps only the WS5.6 MODEL check above.
 
     # WS5.7 ---------------------------------------------------------
     def test_ws5_7_dpi_scaling_and_hit_test(self):

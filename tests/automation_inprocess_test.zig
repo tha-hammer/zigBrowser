@@ -181,3 +181,26 @@ test "S7.1 parity (RoseCat 6566): an unknown method and bad params answer in pro
     defer gpa.free(malformed);
     try testing.expect(std.mem.indexOf(u8, malformed, "-32602") != null);
 }
+
+test "WS5.6 (RoseCat 6b324c8): the drawer is unreachable through the REAL in-process dispatch (-32601)" {
+    // The right boundary is the actual dispatch (callInProcess -> dispatchParsed -> router.parse), not the
+    // phase1_command_verbs list. Every drawer.* method is unrouted, so it returns exactly method-not-found.
+    // A planted drawer route in the router makes one of these carry a different code — verified in-session by
+    // adding a `drawer.state` route and watching this go red, then reverting (the production router is clean).
+    const f = try fake.Fixture.create("ws56-drawer-iso", token);
+    defer f.destroy();
+    try startCore(&f.server);
+    for ([_][]const u8{ "drawer.state", "drawer.open", "drawer.send" }) |method| {
+        const reply = try callInProcess(&f.server, method, "{}");
+        defer gpa.free(reply);
+        try testing.expect(std.mem.indexOf(u8, reply, "-32601") != null);
+        try testing.expect(std.mem.indexOf(u8, reply, "Method not found") != null);
+        try testing.expect(std.mem.indexOf(u8, reply, "\"result\"") == null); // never a success
+    }
+    // Causal contrast: a genuinely-routed method does NOT yield -32601 through the SAME path — so the rows
+    // above are specific to the unrouted drawer.*, not "everything is -32601".
+    const routed = try callInProcess(&f.server, "page.url", "{}");
+    defer gpa.free(routed);
+    try testing.expect(std.mem.indexOf(u8, routed, "-32601") == null);
+    try testing.expect(std.mem.indexOf(u8, routed, "\"result\"") != null);
+}
