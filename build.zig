@@ -749,7 +749,7 @@ pub fn build(b: *std.Build) void {
     const agent_drawer_appkit_step = b.step("test-agent-drawer-appkit", "MS7.1: the AppKit drawer's dock geometry in the portable logic");
     agent_drawer_appkit_step.dependOn(&run_agent_drawer_appkit_tests.step);
     // MS7.6/7.8 (RoseCat 8055/bdc8202): what a press on the AppKit card may do (own control, own card, the real
-    // cards' single use and 120 s expiry), decided in the portable logic. RED until agent_drawer.zig has it.
+    // cards' single use and 120 s expiry), decided in the portable logic. In `test`.
     const agent_drawer_card_press_tests_module = b.createModule(.{
         .root_source_file = b.path("tests/agent_drawer_card_press_test.zig"),
         .target = target,
@@ -3612,6 +3612,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_agent_drawer_tests.step);
     test_step.dependOn(&run_agent_drawer_breaks_tests.step);
     test_step.dependOn(&run_agent_drawer_appkit_tests.step);
+    test_step.dependOn(&run_agent_drawer_card_press_tests.step);
     test_step.dependOn(&run_agent_drawer_appkit_text_tests.step);
     test_step.dependOn(&run_agent_net_tests.step);
     test_step.dependOn(&run_agent_net_manifest_tests.step);

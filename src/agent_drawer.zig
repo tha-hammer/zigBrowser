@@ -504,6 +504,32 @@ pub fn originalOffset(text: []const u8, shown: usize) usize {
     return text.len;
 }
 
+/// MS7.6/7.8: what a press on an approval card did; zb_drawer_card_press returns it.
+pub const Press = enum(c_int) { ignored = 0, approved = 1, denied = 2, lost = 3 };
+
+/// The card's two controls, as its AppKit buttons report them.
+pub const card_approve: c_int = 1;
+pub const card_deny: c_int = 2;
+
+/// Who settles a card: the approval cards' two minters, each true when it won the card.
+pub const Approver = struct {
+    ctx: *anyopaque,
+    approve: *const fn (ctx: *anyopaque, card: u64) bool,
+    deny: *const fn (ctx: *anyopaque, card: u64) bool,
+};
+
+/// MS7.6/7.8: a press on `card`'s `control`; `own`: the sender is that card's own control. Only Approve or Deny on
+/// the card's own control asks the approver, about exactly that card; anything else is ignored (fail closed). An
+/// ask the approver refuses (the card had ended or expired) is lost.
+pub fn cardPress(card: u64, control: c_int, own: bool, approver: Approver) Press {
+    if (!own) return .ignored;
+    return switch (control) {
+        card_approve => if (approver.approve(approver.ctx, card)) .approved else .lost,
+        card_deny => if (approver.deny(approver.ctx, card)) .denied else .lost,
+        else => .ignored,
+    };
+}
+
 pub const file_name = "agent-drawer.json";
 pub const max_file_bytes: usize = 1024;
 pub const version: u32 = 1;
@@ -635,6 +661,30 @@ comptime {
         @export(&zb_drawer_appkit_original_offset, .{ .name = "zb_drawer_appkit_original_offset" });
         @export(&zb_drawer_bubble_layout_contiguous, .{ .name = "zb_drawer_bubble_layout_contiguous" });
     }
+}
+
+// MS7.6/7.8: the AppKit card's buttons (src/agent_drawer_mac.m) reach the minters only through this bridge. The GTK
+// card calls the minters itself (src/agent_drawer.c), so the bridge is exported on macOS only.
+comptime {
+    if (builtin.os.tag == .macos) @export(&zb_drawer_card_press, .{ .name = "zb_drawer_card_press" });
+}
+
+extern fn zb_agent_tools_approve(card: u64) c_int;
+extern fn zb_agent_tools_deny(card: u64) c_int;
+
+fn toolsApprove(_: *anyopaque, card: u64) bool {
+    return zb_agent_tools_approve(card) != 0;
+}
+
+fn toolsDeny(_: *anyopaque, card: u64) bool {
+    return zb_agent_tools_deny(card) != 0;
+}
+
+/// MS7.6/7.8: a press on an AppKit card's `control` (card_approve, card_deny); `own` non-zero: the sender is that
+/// card's own control. Settles the card through the minters exactly as cardPress decides; returns the Press.
+pub fn zb_drawer_card_press(card: u64, control: c_int, own: c_int) callconv(.c) c_int {
+    var unused: u8 = 0;
+    return @intFromEnum(cardPress(card, control, own != 0, .{ .ctx = &unused, .approve = toolsApprove, .deny = toolsDeny }));
 }
 
 fn zb_drawer_classify(dx: f64, dy: f64) callconv(.c) c_int {

@@ -12,7 +12,7 @@
 //! - zb_drawer_card_press(card, control, own) is the C export the .m calls: it reaches zb_agent_tools_approve /
 //!   zb_agent_tools_deny (here: this test's own recording definitions) exactly as cardPress decides, `own` by C truth
 //!   (any non-zero is own), and returns the Press value.
-//! RED until the green adds them; build step `test-agent-drawer-card-press`, not in `test`.
+//! Build step `test-agent-drawer-card-press`, in `test`.
 const std = @import("std");
 const drawer = @import("agent_drawer");
 const approval = @import("agent_approval");
