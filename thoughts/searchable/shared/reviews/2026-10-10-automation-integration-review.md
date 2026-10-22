@@ -35189,3 +35189,45 @@ save/read round trip. It is not yet the complete red required by the earlier
 
 The current file can remain as the happy-path foundation, but it does not yet
 close `b5b7546` / `2e5a0fb` and does not affect the earlier push boundary.
+
+## MS7.6/7.8 Zig-graph authority fix-forward (`1e35862`)
+
+**BLOCKED-for-tests; keep it unregistered and unarmed.** The exact clean run
+walked **65** reachable Zig files with no missing/unreviewed import and failed
+at the intended absent bridge census, alongside the existing absent AppKit
+drawer failure. The honest Zig graph and ten committed mutants pass their
+self-checks. This directly addresses the largest omission in `7472674`, but
+the claimed fail-closed inventory still has four executable bypasses:
+
+1. `zig_lexical()` blanks every string before the sensitive-name census.
+   Zig reflection/linkage can therefore name and call the authority without a
+   counted identifier. I verified that both
+   `@field(tools, "zb_agent_tools_approve")(card)` and an `@extern` whose
+   `.name` is that string produce an alternate minter caller while
+   `zig_problems()` returns no problems. Count sensitive symbol strings and
+   reject reflective/external lookup outside the one exact reviewed export;
+   include causal `@field`, `@extern` (and any permitted C-import alias)
+   mutants.
+2. Every census key and the structural lookup collapse paths with
+   `os.path.basename`. I replaced the reachable reviewed
+   `src/agent_tools.zig` and `src/agent_approval.zig` with files under
+   `src/evil/` having the same basenames; the original files became
+   unreachable and the oracle still returned no problems. Key `ALLOWED` and
+   all structural checks by full normalized repository-relative path, reject
+   absolute/out-of-root traversal, and add the same-basename substitution
+   mutant.
+3. The exact `@export` name regex runs on raw source. A real export renamed to
+   `zb_wrong` plus a comment containing the desired export expression passes
+   the whole oracle. Parse the export from comment-free tokens while retaining
+   that one string value, and add this decoy mutant.
+4. `graph()` hard-codes `src/main.zig`; it never binds that file to the actual
+   executable root selected in `build.zig`. A build-root switch can leave the
+   inspected graph intact but unused. Derive or independently pin the shipped
+   macOS executable root and add a root-substitution mutant.
+
+Retain the planned green requirements from `64e2225`: the bridge must join
+`drawer_portable_exports`, both Darwin objects must define it, and the
+portable card red, ObjC ingress oracle, Zig authority oracle and export gate
+must be registered together. Until the four inventory bypasses close, this
+commit does not authorize a Mac build/click run or change the earlier push
+boundary.
