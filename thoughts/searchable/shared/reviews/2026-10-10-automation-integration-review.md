@@ -31733,3 +31733,43 @@ Enter/Space. Implement an actual keyboard-only focus path and the previously
 required live key-input oracle. Cross-restart profile persistence, finding 2
 from `b1ea2ed`, is still untouched. Therefore the cumulative WS5.2 range is
 not accepted and no VM behavior run is authorized on this pair yet.
+
+## Windows WS5.2 profile binding (`d507ee7`)
+
+**BLOCKED.** The new Windows arm is the correct missing connection for an
+*explicit* `--profile-dir`: it calls the existing WebView2 profile setter
+before drawer configuration and returns the same directory to
+`agent_drawer.configure`, so `agent-drawer.json` can share the selected
+profile and `zb_drawer_remember` can persist beyond process-global memory.
+Failure remains fail-closed as `WriteFailed`, and this additive arm does not
+alter the Linux or macOS branches.
+
+It does not yet close finding 2 or WS5.2's persistence contract:
+
+1. A normal Windows launch still has no drawer store. The new arm returns
+   `null` whenever `spec.profile_dir` is absent, although the Windows plan
+   defines the default as `%LOCALAPPDATA%\zigBrowser\profile\default`
+   (`windows-launch-tdd-plan.md:1312-1315`) and WS5.2 says the icon position
+   persists without limiting that promise to an explicit flag
+   (`:1551-1552`). `cli.parse` also leaves `profile_dir` null by default.
+   Resolve and bind the Windows default, or explicitly revise the accepted
+   contract; otherwise the default-on drawer loses its position at every
+   restart for ordinary users.
+
+2. No committed test executes this Windows branch or crosses a process
+   boundary. The reported Linux cross-check does not prove the Windows app
+   arm, the Windows atomic-file write, or restoration of the real HWND. Add a
+   registered two-process Windows row: launch 1 with a unique throwaway
+   profile, move the *visible real icon through the production input path*,
+   observe completion and the profile-owned file, exit, then launch 2 with
+   the same profile and independently measure the restored HWND before any
+   move seam. A second fresh/default profile and an ignore-profile/configure-
+   null mutant must distinguish a real persisted load from process-global or
+   harness state. The Windows target must compile with MSVC and the row must
+   run on the VM before this is accepted.
+
+This commit therefore improves the explicit-profile production path, but the
+cumulative `aec562b` / `d8e49c0` / `d507ee7` range remains blocked by the
+earlier parser/API-failure, visible-input, and keyboard-reachability findings
+as well as the default-profile and restart-proof gaps above. No WS5.2 VM
+behavior run is authorized on this range yet.
