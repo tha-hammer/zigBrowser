@@ -68,10 +68,13 @@ class OwnedGroupCleanup(unittest.TestCase):
                 continue
             try:
                 ours = b"sleep" in Path(f"/proc/{pid}/cmdline").read_bytes()
-            except FileNotFoundError:
-                continue  # gone meanwhile
+            except (FileNotFoundError, ProcessLookupError):
+                continue  # gone meanwhile (a /proc read of an exiting pid can raise ESRCH; BlackRobin 7977)
             if ours:
-                os.kill(pid, signal.SIGKILL)
+                try:
+                    os.kill(pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass  # gone between the read and the kill
 
     def gone_soon(self, pids, timeout=10.0):
         deadline = time.monotonic() + timeout
