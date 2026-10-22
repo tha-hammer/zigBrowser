@@ -132,7 +132,8 @@ class SelectorFailsAfterSpawn(Interposed):
 
 class SetupRetainsTheScratch(unittest.TestCase):
     def test_refused_or_stop_failed_from_the_seam_retains_the_scratch(self):
-        for exc in (owned_group.Refused("ps timed out ZB-CANARY"), owned_group.StopFailed("ZB-CANARY")):
+        for exc in (owned_group.Refused("ps timed out ZB-CANARY"),
+                    owned_group.StopFailed("ZB-CANARY", reason="output_held")):
             with self.subTest(exc=type(exc).__name__):
                 with mock.patch.object(os, "kill", side_effect=AssertionError), \
                         mock.patch.object(os, "killpg", side_effect=AssertionError):

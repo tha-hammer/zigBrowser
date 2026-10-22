@@ -5,7 +5,8 @@ On the fake staged host of ms6_hard_gate_r1_case_test, setup's seam raises a Sto
 message holding a canary:
 - a reason from the fixed set appears in the positive row's label as "reason=<code>";
 - a reason outside the set appears as "reason=unknown" (an exception's attribute is not trusted text);
-- the message canary never appears in any check label.
+- the message canary never appears in any check label;
+- the case's own copy of the codes (STOP_REASONS) is exactly owned_group.REASONS.
 No process is started and no signal is sent (the same fakes as the base suite).
 Run like the gate: cd tests/e2e && python3 -X dev -m unittest -v ms6_hard_gate_r1_reason_test. Unregistered until
 the green.
@@ -71,6 +72,16 @@ class ReasonInTheLabel(base.RunWithAFakeStagedHost):
         (line,) = [label for label in labels if label.startswith("positive: an honest CLI")]
         self.assertIn("probe run raised StopFailed (reason=unknown)", line)
         self.assertFalse([label for label in labels if "ZB-UNTRUSTED-REASON" in label])
+
+
+class TheCodesAgree(unittest.TestCase):
+    def test_the_case_holds_exactly_owned_groups_codes(self):
+        import importlib.util
+        path = base.CASE.parents[3] / "agent" / "host" / "zb_agent_host" / "owned_group.py"
+        spec = importlib.util.spec_from_file_location("zb_owned_group_codes", path)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        self.assertEqual(tuple(base.load_case().STOP_REASONS), tuple(mod.REASONS))
 
 
 if __name__ == "__main__":

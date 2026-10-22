@@ -133,7 +133,7 @@ class StopFailedLeavesTheScratch(unittest.TestCase):
 
         def stuck(argv, **kwargs):  # the run leaves a CLI-named file, then its group cannot be proven stopped
             open(os.path.join(kwargs["env"]["HOME"], self.NAME), "w").close()
-            raise owned_group.StopFailed(f"{self.EXC} process group 4242 could not be stopped")
+            raise owned_group.StopFailed(f"{self.EXC} process group 4242 could not be stopped", reason="kill_refused")
 
         mock.patch.object(sandbox_macos, "setup_sandbox", seam).start()
         mock.patch.object(setup, "run_in_owned_group", side_effect=stuck).start()

@@ -127,6 +127,8 @@ int main(int argc, char **argv) {
 
 MODES = {"honest": (0, 0, 0), "planted": (1, 0, 0), "forge": (1, 1, 0), "hang": (0, 0, 1)}
 TOKEN_SHAPE = re.compile(rb"zb-probe-[0-9a-f]{48}")
+# owned_group.REASONS, held here: the case trusts no text from an exception, only a code from this fixed set.
+STOP_REASONS = ("not_ours", "kill_refused", "reap_timeout", "table_unreadable", "members_alive", "output_held")
 DIAG_MAX = 600  # characters of each probe stream shown when a row fails
 _REDACT = [re.compile(p) for p in (
     r"zb-probe-\S*",  # the probe token, whatever follows its prefix
@@ -338,7 +340,9 @@ def run(h):
                                f"stderr {_sanitize(e.stderr)!r}")
                 raise
             except Exception as e:
-                rec["diag"] = f"probe run raised {type(e).__name__}"
+                reason = getattr(e, "reason", None)  # owned_group's fixed code for which stop proof failed; never text
+                rec["diag"] = f"probe run raised {type(e).__name__}" + (
+                    "" if reason is None else f" (reason={reason if reason in STOP_REASONS else 'unknown'})")
                 raise
             rec["diag"] = (f"probe rc={done.returncode}; stdout {_sanitize(done.stdout)!r}; "
                            f"stderr {_sanitize(done.stderr)!r}")

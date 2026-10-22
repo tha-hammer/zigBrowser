@@ -31,14 +31,21 @@ class Refused(Exception):
     """A process group this module will not signal."""
 
 
+# Which stop proof failed, as fixed app-owned codes (the only thing a caller may print about a StopFailed; e567a51).
+REASONS = ("not_ours", "kill_refused", "reap_timeout", "table_unreadable", "members_alive", "output_held")
+
+
 class StopFailed(subprocess.SubprocessError):
     """An owned group whose stop could not be completed or proven (RoseCat 7436): the kill was refused, the leader
     was not reaped, or a member was still alive at the bound. `proc` is the leader, possibly unreaped; nothing was
-    claimed stopped, so the caller must not clean up after it."""
+    claimed stopped, so the caller must not clean up after it. `reason` is one of REASONS: which proof failed."""
 
-    def __init__(self, message, proc=None):
+    def __init__(self, message, proc=None, reason=None):
+        if reason not in REASONS:
+            raise ValueError(f"not a StopFailed reason: {reason!r}")
         super().__init__(message)
         self.proc = proc
+        self.reason = reason
 
 
 def _ps(args):
@@ -139,18 +146,22 @@ def stop_group(proc):
     except ProcessLookupError:
         pass  # no member left to signal; the proof below still decides
     except OSError as exc:
-        raise StopFailed(f"process group {pid} could not be stopped: {exc.strerror or exc}", proc) from None
+        raise StopFailed(f"process group {pid} could not be stopped: {exc.strerror or exc}", proc,
+                         "kill_refused") from None
     try:
         proc.wait(timeout=STOP_S)
     except subprocess.TimeoutExpired:
-        raise StopFailed(f"process group {pid}'s leader was not reaped within {STOP_S} s", proc) from None
+        raise StopFailed(f"process group {pid}'s leader was not reaped within {STOP_S} s", proc,
+                         "reap_timeout") from None
     deadline = time.monotonic() + STOP_S
     while True:
         members = _live_members(pid)
         if members == []:
             return
-        if members is None or time.monotonic() >= deadline:
-            raise StopFailed(f"process group {pid} could not be proven stopped", proc)
+        if members is None:
+            raise StopFailed(f"process group {pid}'s members could not be read", proc, "table_unreadable")
+        if time.monotonic() >= deadline:
+            raise StopFailed(f"process group {pid} still had a live member at the bound", proc, "members_alive")
         time.sleep(0.02)
 
 
@@ -206,7 +217,7 @@ def run(argv, *, env=None, pass_fds=(), timeout):
         stop_end = time.monotonic() + DRAIN_AFTER_STOP_S
         if not _read_until(sel, chunks, lambda: time.monotonic() >= stop_end):
             raise StopFailed(f"process group {proc.pid} is stopped, but a process outside it still holds the run's "
-                             "output (it left the group; not signalled)", proc)
+                             "output (it left the group; not signalled)", proc, "output_held")
     except StopFailed:
         raise  # already explicit
     except BaseException as exc:
@@ -216,11 +227,12 @@ def run(argv, *, env=None, pass_fds=(), timeout):
         if proc.returncode is None:
             try:
                 stop_group(proc)
-            except (Refused, StopFailed):
+            except (Refused, StopFailed) as stop_exc:
+                reason = stop_exc.reason if isinstance(stop_exc, StopFailed) else "not_ours"
                 raise StopFailed(f"process group {proc.pid} could not be stopped after {type(exc).__name__}",
-                                 proc) from exc
+                                 proc, reason) from exc
         if isinstance(exc, Refused):
-            raise StopFailed(f"process group {proc.pid} could not be proven ours", proc) from exc
+            raise StopFailed(f"process group {proc.pid} could not be proven ours", proc, "not_ours") from exc
         raise
     finally:
         if sel is not None:
