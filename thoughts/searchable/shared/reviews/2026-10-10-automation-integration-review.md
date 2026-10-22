@@ -29034,3 +29034,30 @@ after correcting a transcription in the first mail. The authorized Mac run
 must use exact commit `11b3ac43bc908d1d7046f3bff9cf2e72abc4f022`, import
 only after manifest verification, and report all three case results plus the
 before/after census and leftovers.
+
+## MS6.5.1 marker shape/no-wedge red (`395b814`)
+
+**APPROVED only as a scoped causal red for directory and wrong-mode
+acceptance; BLOCKED-for-tests as the complete no-wedge/shape-strict red.** A
+clean exact-SHA compile and run inside a private user, mount and PID namespace
+with a private tmpfs `/tmp` produced **2/4 failed**: a directory and a 0644
+regular marker incorrectly returned PRESENT, while the 0400-regular and
+symlink controls passed.
+
+Three gaps remain before its green can close `7575` item 2:
+
+1. The red has no FIFO/no-wedge row, so it never reaches the blocking
+   `openat(O_RDONLY)` defect named in its subject. The registered green must
+   construct a FIFO and prove bounded ERR; an omit-`O_NONBLOCK` mutant must
+   time out/fail.
+2. Strict shape is incomplete without Unix-socket and wrong-owner rows. Only a
+   regular current-uid exact-0400 marker may be PRESENT; the owner row should
+   use the required private user namespace.
+3. The test leaks `/tmp/zb-markershape-*`: it removes none of its run
+   directories or parent. The green must perform bounded fd-relative cleanup
+   and assert the parent is gone, or create the fixture under an injected
+   private root.
+
+The production repair should use a held no-follow, nonblocking marker fd and
+`fstat`; classifier closure remains separate from the earlier held-recovery
+and provenance obligations. Findings sent to JadeBeacon as Agent Mail 7611.
