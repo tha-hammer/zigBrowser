@@ -205,3 +205,23 @@ The full-gate evidence is accepted as a two-stage environmental disposition. Wit
 The orchestrator released PinkOwl's previously approved exact Win11 red leg at `4af1a3c18b39647925002f27c723039b9a689aab` and green leg at `34f0fa2e772b52bc48d99a9e489bc9ae14782e63`. PinkOwl consumed the red leg once, but it is **not accepted**: the Windows link failed first on six unrelated `zb_drawer_*` symbols, so it never demonstrated the approved unresolved `zb_automation_set_script` / `zb_automation_eval_json` red. The executable did not run, cleanup found no new process, and the green leg was correctly not attempted. The slot is free and both old one-run approvals are consumed.
 
 PinkOwl has proposed a link-fix green at `505216ca6c9001636ee8a140470e6e32b3281efe`, scratch red `d3d3c3ce72d6408ce3a19c9c1e040a63e24e08fc`, and scratch main-world mutant `98bec286d3644db5d0083f682a628ee4a02ee590`. They are a new review request and **no host run is approved by this entry**. The orchestrator must issue a new release only after a later exact-commit review records the applicable hashes and accepted outcomes.
+
+## WS2b.0 registration — `4f9cac2`
+
+**Verdict: APPROVED; WS2b.0 Win11 is ACCEPTED. Win10 remains open.** Exact `4f9cac2a1cd39010452e87ce26d2263bfb2c082b` adds the named `windows-capabilities-live` step and the unchanged harness to `live_phases.txt`, so both `windows-live` and `gate.sh --product` consume it fail-on-skip. In a clean archive, standalone hostless execution exited 0 with a skip, gated execution exited 1 with `ASSERTS 0`, `windows-live` exited 1 and named the capabilities test, and `windows-live-step-skip` passed. This satisfies the last condition of the R2 minimum; the already accepted exact-`90d2214` Win11 run covers the unchanged `win_capabilities_test.py` bytes (`24dbf6f8b45dccdd122ca646a9ccaed521dc58da946fb27b2110714e1ac87a57`).
+
+## WS0.4 item 4 red — `bf0e6b5`
+
+**Verdict: APPROVED as an unregistered red.** Exact `bf0e6b52b51f250c0fa88e50b30bf1c465195f38` adds only `runner_ws04_red_test.py` and is absent from `build.zig`. It drives both real scheduled-task runners through recording `schtasks`/`taskkill` fakes. A clean exact-commit run exited 1 with the intended six failures: both runners request `/rl highest`, both fail as a standard user with `Access is denied`, and both false-green a failed `/delete`. Green must move these cases into the plan-named registered selftest, use least privilege for both runners, and make named task cleanup failures fail the run; live runner proof remains separate.
+
+## WS2a.0 revised exact Win11 legs — `505216c`, `d3d3c3c`, `98bec28`
+
+**Verdict: APPROVED for one bounded, no-retry Win11 run of each exact leg, in order red, green, mutant; each still requires the orchestrator's release and slot.** The red and mutant refs are present and both have exact `505216ca6c9001636ee8a140470e6e32b3281efe` as parent. The link fix uses the real `src/agent_drawer.zig` object, not a stub; a local Windows-object build exported the drawer symbols that caused the old unrelated failure, and `test-cdp-json` passed.
+
+Common SHA-256 values at all three commits are: `win_private_world_spike.py` `cabf866020298b0c8dc60e7781e81026a498a9f4a4ec1abd01fae3f7bee4fd0d`; `ws2a0_world_spike.c` `7b9189f99e4b01bba30b168d72afd4df90f9a8c278f34adffb5124ab8f532d13`; `build-on-windows.sh` `1082b5fc44fae026fc4bc98eab411d87f8c3f8f12d8f70dad63e008fcf7ee1b8`; `build.zig` `958c7337fc068abaa569209acca03f22213968c396dd003521d4dd640bde51fa`; `agent_drawer.zig` `fc19ad3edd0ad90597c00aa449ca753e067d65e1c35d9396598be2b95b29adac`; and `cdp_json.hpp` `4afb62ebd6403a6e0d9f69b32acda669b99106d34e963182e8af6db7b04c5473`. Per-leg `webview2_shim.cpp` values are green `de44ade6a88cf5dc511d13177ac16b36b8afdfb44f933e72c1174e62bcd327b9`, red `e23145ffe452be99b0e40be7822bfe0fad9d5bd98d8dd9f08e2d09147ee2f2ec`, and mutant `447c4f4c97edc46cb7569f11cc39c07ff583861d127945e7139825b62536586b`.
+
+- **Red `d3d3c3ce72d6408ce3a19c9c1e040a63e24e08fc`:** accept only exit 1 with unresolved `zb_automation_set_script` and `zb_automation_eval_json`, no unresolved `zb_drawer_*`, and `ASSERTS 0`.
+- **Green `505216ca6c9001636ee8a140470e6e32b3281efe`:** accept only exit 0, every REQUIRED row `ok`, `ASSERTS n>0`, and `PASS\tws2a0-private-world-spike`.
+- **Mutant `98bec286d3644db5d0083f682a628ee4a02ee590`:** its only change deletes `worldName`; accept only exit 1 because `page world cannot see the automation global` fails.
+
+All three use `python3 -I tests/e2e/win_private_world_spike.py` under the previously recorded scrubbed-display, identity, full-commit provenance, pre/post process and cleanup contract. Stop after any unexpected result; do not substitute a main-world fallback.
