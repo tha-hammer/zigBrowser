@@ -30018,3 +30018,43 @@ namespace with `--kill-child`; writes only under
 listener and local-child censuses. Any cleanup error fails acceptance and
 must be reported without broad/manual cleanup. Agent Mail 7680 sent the
 no-go and exact conditions to AzureRidge.
+
+## Xsession guardian-cleanup private-tmp red fix-forward (`5a7eb5e`)
+
+**APPROVED as the corrected failing-first RED.** This closes the safety
+blocker on `0cc9b45`: the launcher holds the outer `/tmp` before entering a
+new current-uid mount namespace, mounts a fresh tmpfs at `/tmp`, and the test
+refuses before starting Xvfb unless the held outer directory and active
+`/tmp` have different device identities. Its manual lock/socket cleanup is
+therefore limited to the disposable tmpfs. The process model also remains
+contained by the outer private PID namespace with `--kill-child`; the nested
+namespace row can signal only descendants of that outer namespace.
+
+From an exact clean `git archive 5a7eb5e` export:
+
+- a direct shared-`/tmp` invocation failed all **4/4** cases in `setUp`, with
+  the named refusal and before any X session started;
+- the documented private-tmpfs/private-PID launcher produced the intended
+  **6** causal failures: three sequential return-before-cleanup rows, the
+  namespace-exit row, the already-exited/unreaped-browser row, and the
+  other-session/lower-guardian-pid row;
+- the wrapper additionally found the old guardian's private
+  `zb-xsession-*/Xauthority` directory still present and exited 97. That is
+  safely destroyed with the private mount namespace and usefully strengthens
+  the future green condition: the registered green must return the unittest
+  status and leave the private tmpfs empty except for the launcher's empty
+  `.X11-unix` directory.
+
+The two added rows exercise distinct ordering hazards. `xsession.py` execs
+the browser in the launcher's PID while its double-forked guardian remains a
+separate process, so `waitid(..., WNOWAIT)` really observes the exited browser
+without reaping it; starting the unrelated session first also makes its
+guardian the tempting lower-PID false match while the assertions prove it
+remains alive and served. `git diff-tree --check` was clean.
+
+The file is deliberately unregistered at this red. Its line-24 wording that
+the launcher is already pinned in `build.zig` is prospective, not current.
+The green must register and source-pin this exact private-tmp/private-PID
+launcher; a caller-controlled `ZB_OUTER_TMP_FD` by itself is not an adequate
+security boundary. This condition does not block the red verdict, but the
+test must not be registered through a weaker command.
