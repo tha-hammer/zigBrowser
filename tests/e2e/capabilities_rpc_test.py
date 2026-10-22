@@ -122,13 +122,23 @@ def main() -> int:
     prefix, env, runner_note = runner
     eprint(f"runner={runner_note}")
 
-    with AutomationFixtureServer() as fixture, tempfile.TemporaryDirectory(prefix="zb-caps-") as tmp:
-        socket_path = Path(tmp) / "automation.sock"
+    # The socket gets its own short private dir: an AF_UNIX path holds ~108 bytes, and tmp (which follows
+    # TMPDIR into a scratch dir) can be longer than that.
+    with AutomationFixtureServer() as fixture, tempfile.TemporaryDirectory(prefix="zb-caps-") as tmp, \
+            tempfile.TemporaryDirectory(prefix="zbc-", dir="/tmp") as sock_dir:
+        socket_path = Path(sock_dir) / "automation.sock"
         token_path = Path(str(socket_path) + ".token")
         env = dict(env)
         env["ZIGBROWSER_SOCKET"] = str(socket_path)
+        # Never the owner's HOME or profile: a private HOME, XDG dirs and --profile-dir, all under tmp.
+        private = {"HOME": "home", "XDG_CONFIG_HOME": "config", "XDG_DATA_HOME": "data",
+                   "XDG_CACHE_HOME": "cache", "XDG_STATE_HOME": "state", "XDG_RUNTIME_DIR": "runtime"}
+        for var, name in private.items():
+            (Path(tmp) / name).mkdir(mode=0o700)
+            env[var] = str(Path(tmp) / name)
+        profile = Path(tmp) / "profile"
         proc = subprocess.Popen(
-            prefix + [str(browser), f"{fixture.base_url}/nav-a", "--automation-api"],
+            prefix + [str(browser), f"{fixture.base_url}/nav-a", "--automation-api", "--profile-dir", str(profile)],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.PIPE,
             text=True,
@@ -138,6 +148,9 @@ def main() -> int:
             wait_for(socket_path, args.timeout_sec)
             wait_for(token_path, args.timeout_sec)
             asserts = scenario(socket_path, token_path.read_text(encoding="utf-8").strip(), args.timeout_sec)
+            if not profile.is_dir():
+                raise AssertionError(f"the browser did not use the private --profile-dir {profile}")
+            asserts += 1
         except Exception as exc:  # noqa: BLE001 - report every failure the same way
             print("FAIL\tcapabilities-rpc")
             eprint(f"error={exc!r}")
