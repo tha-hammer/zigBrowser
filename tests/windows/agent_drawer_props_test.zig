@@ -13,13 +13,21 @@ const d = @import("agent_drawer");
 const expect = std.testing.expect;
 const expectEqual = std.testing.expectEqual;
 
-const IW: c_int = d.icon_size; // 56 at 100%
+// The icon's contract size is the LITERAL 56 (not d.icon_size): using the implementation's own constant in
+// the "independent" expected values would let an icon-size mutation move actual and expected together
+// (RoseCat b2f474b #4). A dedicated test pins that the public constant equals this literal.
+const IW: c_int = 56; // 100% contract size
 
 fn eqRect(r: d.Rect, x: c_int, y: c_int, w: c_int, h: c_int) !void {
     try expectEqual(x, r.x);
     try expectEqual(y, r.y);
     try expectEqual(w, r.w);
     try expectEqual(h, r.h);
+}
+
+test "the public icon_size equals the contract literal 56 (independent of the formulas)" {
+    try expectEqual(@as(c_int, 56), d.icon_size);
+    try expectEqual(@as(c_int, 56), IW);
 }
 
 test "clampRect keeps the icon fully inside for generated sizes and DPI-scaled icons (plan 1561-1562)" {
