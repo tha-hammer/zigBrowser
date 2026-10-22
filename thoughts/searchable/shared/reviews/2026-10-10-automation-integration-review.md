@@ -30105,3 +30105,42 @@ not weaken the registered step. From an exact clean export, using the exact
 registered namespace shape, `test_run_step` passed **8/8** and
 `test_xinput_vanished_server` passed **7/7**. The commit is documentation-only
 and `git diff-tree --check` was clean.
+
+## WSL discovery-spike full reap bound (`9e84aa9`)
+
+**APPROVED for the `c101b1e` / mail-7680 reap gap; the cumulative live WSL
+run remains NOT AUTHORIZED while the independent CIM false-`GONE` blocker is
+open.** The background SSH command now inherits exact established-peer
+keepalive options (`ServerAliveInterval=5`, `ServerAliveCountMax=3`), the
+remote sleep and reap use named constants, and `_reap_no_signal` waits 195
+seconds: the 150-second remote lifetime, the 15-second dead-peer interval and
+30 seconds of slack. A normal or disconnected session is therefore reaped;
+a still-live exceptional child is reported rather than silently accepted.
+
+The exceptional path now also has a valid containment backstop. A live opt-in
+requires both `ZB_WSL_PIDNS_BACKSTOP=1` and `os.getpid()==1`, and the documented
+launcher uses a current-UID user namespace plus `--pid --fork --kill-child
+--mount-proc`. Thus a child that defeats the natural bound cannot become a
+host orphan when the test exits, and no application-level raw-PID signal was
+introduced. From an exact clean export:
+
+- the offline suite passed **10/10**, with the live class skipped;
+- a fake live opt-in on the host refused at the PID-namespace guard before
+  hashing or network access;
+- the exact private-namespace launcher passed that guard and stopped at the
+  deliberately wrong rootfs hash before network access;
+- `_ssh_base` carried both keepalive options and `REAP_BOUND_S` was exactly
+  195; `py_compile` and `git diff-tree --check` were clean.
+
+**SHOULD before the eventual live run:** commit causal coverage for the new
+safety envelope. Pin both keepalive options and the full bound, and exercise
+the two guard refusals (missing marker and marker present but PID not 1).
+Those are currently review-time probes only, so deleting the backstop or
+dead-peer options would survive the committed offline suite. The live command
+must also have an outer `timeout` around `unshare`, so `--kill-child` remains
+the terminal backstop for an unforeseen wedge.
+
+The live authorization still waits on the existing blocker at
+`tests/windows/wsl_live_test.py:347-351`: `Get-CimInstance` retains
+`-ErrorAction SilentlyContinue`, so a CIM/provider/access failure may still
+produce rc 0 plus `GONE`. No exact commit is authorized for a VM run yet.
