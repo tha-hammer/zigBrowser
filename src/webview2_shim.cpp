@@ -1055,15 +1055,20 @@ static LRESULT CALLBACK icon_subclass_proc(HWND h, UINT msg, WPARAM wparam, LPAR
         // HTCLIENT; the square corners outside the circle are HTTRANSPARENT (not the icon). radius = half the
         // icon's current (DPI-scaled) width. The portable zb_drawer_inside_icon decides — no geometry here.
         RECT wr = {};
-        if (GetWindowRect(h, &wr)) {
-          const int w = wr.right - wr.left;
-          const int cx = wr.left + w / 2;
-          const int cy = wr.top + (wr.bottom - wr.top) / 2;
-          const int px = static_cast<short>(LOWORD(lparam));  // WM_NCHITTEST lparam is screen coords
-          const int py = static_cast<short>(HIWORD(lparam));
-          return (zb_drawer_inside_icon(px - cx, py - cy, w / 2) != 0) ? HTCLIENT : HTTRANSPARENT;
+        if (!GetWindowRect(h, &wr)) {
+          // Fail closed (RoseCat 103e549 SHOULD): if we can't read the icon's rect we cannot bound the circle,
+          // so DON'T delegate a square hit region to the prior proc — treat the point as NOT the icon.
+          fprintf(stderr, "zigBrowser: agent-drawer icon hit-test read failed (error %lu); treating as outside\n",
+                  static_cast<unsigned long>(GetLastError()));
+          fflush(stderr);
+          return HTTRANSPARENT;
         }
-        break;
+        const int w = wr.right - wr.left;
+        const int cx = wr.left + w / 2;
+        const int cy = wr.top + (wr.bottom - wr.top) / 2;
+        const int px = static_cast<short>(LOWORD(lparam));  // WM_NCHITTEST lparam is screen coords
+        const int py = static_cast<short>(HIWORD(lparam));
+        return (zb_drawer_inside_icon(px - cx, py - cy, w / 2) != 0) ? HTCLIENT : HTTRANSPARENT;
       }
       case WM_LBUTTONDOWN: {
         SetFocus(h);  // so subsequent arrow / Enter / Space keys reach the icon (WS5.2 keyboard)
