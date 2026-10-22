@@ -148,6 +148,7 @@ pub fn ConcreteActuator(comptime Wiring: type) type {
     return struct {
         wiring: Wiring,
         window_hook: ?*const fn () void = null, // TEST-ONLY: forwarded to the lease; null in production
+        probe: *const fn (i32) ?u64 = &fstatNlink, // the post-open readability probe; a test injects a failing one
         const Self = @This();
         pub const Lease = ConcreteLease(Wiring);
         pub const Pin = union(enum) { held: Lease, gone, mismatch, unreadable };
@@ -165,7 +166,7 @@ pub fn ConcreteActuator(comptime Wiring: type) type {
                 error.NotDir, error.SymLinkLoop => return .mismatch, // a non-dir / symlink at the name -> never sweep
                 else => return .unreadable, // could not even open the identity
             };
-            if (fstatNlink(fd) == null) {
+            if (self.probe(fd) == null) {
                 _ = std.posix.system.close(fd);
                 return .unreadable; // opened, but the identity could not be fstat'd -> unreadable, not mismatch
             }
@@ -216,7 +217,10 @@ fn dirOkThunk(ctx: ?*anyopaque) callconv(.c) c_int {
 
 /// Run the reviewed `zb_reaper_fixed_point` census->kill->fresh-census over the held fd. Clean iff the complete
 /// empty final census; any engine error/overflow -> incomplete; else survivors (never a clean result on doubt).
-pub fn runFixedPoint(run_dir_fd: i32, pinned: *const DirId, dir_path: [*:0]const u8, max_passes: c_int, scan: ScanFn, inspect: InspectFn, killsig: KillFn, user: ?*anyopaque) ledger.FixedPoint {
+pub fn runFixedPoint(clock: anytype, deadline_ms: i64, run_dir_fd: i32, pinned: *const DirId, dir_path: [*:0]const u8, max_passes: c_int, scan: ScanFn, inspect: InspectFn, killsig: KillFn, user: ?*anyopaque) ledger.FixedPoint {
+    // The ONE absolute deadline bounds the census: past expiry we neither inspect nor act (RoseCat e034dda #1).
+    // A census begun past the deadline is NOT clean -> incomplete, so the caller fails closed.
+    if (clock.nowMs() >= deadline_ms) return .incomplete;
     var octx = OpsCtx{ .held_fd = run_dir_fd, .pinned = pinned.*, .user = user };
     var ops = c.struct_zb_reaper_ops{ .inspect = inspect, .killsig = killsig, .dir_ok = &dirOkThunk, .ctx = &octx };
     var clean: c_int = 0;

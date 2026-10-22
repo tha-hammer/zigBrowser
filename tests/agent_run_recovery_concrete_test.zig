@@ -267,7 +267,15 @@ test "concrete lease #4 unreadable: an open that fails for a non-shape reason is
 
 // ---- finding #5: the reviewed zb_reaper_fixed_point over the held fd, with an INTERCEPTED (counting) kill -------
 
-const Counters = struct { kills: u32 = 0, gone: bool = false };
+const Counters = struct {
+    kills: u32 = 0,
+    gone: bool = false,
+    // Handshake fds for the deterministic two-recoverer row (RoseCat e034dda #3); role 0 = no handshake.
+    role: u8 = 0,
+    r1kill_fd: i32 = -1, // role 1 writes "in the kill phase" here
+    proceed_fd: i32 = -1, // role 1 BLOCKS here until the parent releases it (parked inside the held flock)
+    r2kill_fd: i32 = -1, // role 2 writes "in the kill phase" here
+};
 var g_pass: usize = 0; // census pass counter; the per-pass SIZING call (buf==null) advances it. Per-process (fork).
 const SCRIPTED_PID: i32 = 424242; // a marked child; > 1, not us; the kill is intercepted so no real signal
 const DUMMY_PATH: [*:0]const u8 = "/run/zb/zigbrowser-agent-515151-00bb00bb00bb00bb";
@@ -302,6 +310,18 @@ fn killCb(pid: recovery.pid_t, sig: c_int, ctx: ?*anyopaque) callconv(.c) c_int 
     const o: *recovery.OpsCtx = @ptrCast(@alignCast(ctx.?));
     const cnt: *Counters = @ptrCast(@alignCast(o.user.?));
     if (sig == 0) return if (cnt.gone) ESRCH else 0; // engine_gone liveness probe: gone AFTER our kill
+    // The SIGKILL = entering the real kill phase. The handshake makes the flock serialisation OBSERVABLE: under the
+    // held-flock green only role 1 reaches here (it parks, holding the flock); an early-unlock regime lets role 2
+    // reach here too. role 0 = no handshake (the single-recoverer rows).
+    if (cnt.role == 1) {
+        if (cnt.r1kill_fd >= 0) writeAll(cnt.r1kill_fd, "K");
+        if (cnt.proceed_fd >= 0) {
+            var b: [1]u8 = undefined;
+            while (linux.errno(linux.read(cnt.proceed_fd, &b, 1)) == .INTR) {}
+        }
+    } else if (cnt.role == 2) {
+        if (cnt.r2kill_fd >= 0) writeAll(cnt.r2kill_fd, "K");
+    }
     cnt.kills += 1; // the real SIGKILL -> INTERCEPTED (counted, never actually sent)
     cnt.gone = true;
     return 0;
@@ -310,9 +330,7 @@ fn killCb(pid: recovery.pid_t, sig: c_int, ctx: ?*anyopaque) callconv(.c) c_int 
 const ReaperWiring = struct {
     counters: *Counters,
     pub fn run(self: ReaperWiring, clock: anytype, run_dir_fd: i32, pinned: *const recovery.DirId, deadline_ms: i64) ledger.FixedPoint {
-        _ = clock;
-        _ = deadline_ms;
-        return recovery.runFixedPoint(run_dir_fd, pinned, DUMMY_PATH, 8, scanCb, inspectCb, killCb, self.counters);
+        return recovery.runFixedPoint(clock, deadline_ms, run_dir_fd, pinned, DUMMY_PATH, 8, scanCb, inspectCb, killCb, self.counters);
     }
 };
 
@@ -597,4 +615,132 @@ test "concrete lease #2b deadline AFTER the re-open/fstat validation (before rmd
         },
         else => return error.ExpectedHeld,
     }
+}
+
+// ---- e034dda #1: the wiring enforces the single absolute deadline ---------------------------------------------
+
+const ExpiredClock = struct {
+    pub fn nowMs(_: ExpiredClock) i64 {
+        return 2000;
+    }
+};
+
+test "#5 deadline: the wiring refuses a census begun past the deadline (no inspect, no act)" {
+    if (!inPrivatePidNamespace()) return error.NotInPrivatePidNamespace;
+    var td = std.testing.tmpDir(.{});
+    defer td.cleanup();
+    _ = try makeRunDir(td.dir, true);
+    const fd = std.posix.openatZ(td.dir.handle, BASENAME, .{ .ACCMODE = .RDONLY, .DIRECTORY = true, .NOFOLLOW = true, .CLOEXEC = true }, 0) catch return error.Open;
+    defer _ = std.posix.system.close(fd);
+    const pinned = recovery.pinDir(td.dir, BASENAME) orelse return error.Pin;
+    g_pass = 0;
+    var counters = Counters{};
+    const w = ReaperWiring{ .counters = &counters };
+    const fp = w.run(ExpiredClock{}, fd, &pinned, 1000); // deadline 1000 < now 2000 -> already expired
+    try std.testing.expectEqual(ledger.FixedPoint.incomplete, fp);
+    try std.testing.expectEqual(@as(u32, 0), counters.kills); // nothing inspected or killed past the deadline
+}
+
+// ---- e034dda #2: a post-open readability-probe failure is .unreadable, distinct from a shape/identity mismatch
+
+fn nullProbe(_: i32) ?u64 {
+    return null;
+}
+
+test "#4b unreadable AFTER a successful open: a failing readability probe -> unreadable, not mismatch" {
+    if (!inPrivatePidNamespace()) return error.NotInPrivatePidNamespace;
+    var td = std.testing.tmpDir(.{});
+    defer td.cleanup();
+    const id = try makeRunDir(td.dir, true); // a REAL openable dir with MATCHING provenance...
+    var a = recovery.ConcreteActuator(CleanWiring){ .wiring = .{}, .probe = &nullProbe }; // ...but the probe fails
+    switch (a.pin(td.dir, entryFor(id))) {
+        .unreadable => {}, // the open succeeded + provenance matches, yet the identity read failed -> unreadable
+        .held => |held| {
+            var l = held;
+            l.deinit();
+            return error.ExpectedUnreadable;
+        },
+        else => return error.ExpectedUnreadable,
+    }
+}
+
+// ---- e034dda #3: a deterministic held-flock handshake -- only ONE recoverer reaches the kill phase ------------
+
+fn runHandshakeRecoverer(io: std.Io, dir: std.Io.Dir, deadline_ms: i64, role: u8, r1kill: i32, r2kill: i32, proceed: i32, result_fd: i32) noreturn {
+    g_pass = 0;
+    var counters = Counters{ .role = role, .r1kill_fd = r1kill, .r2kill_fd = r2kill, .proceed_fd = proceed };
+    const act = ledger.recoverOneUnderLock(io, std.heap.page_allocator, dir, BASENAME, ledger.RealClock{ .io = io }, deadline_ms, recovery.ConcreteActuator(ReaperWiring){ .wiring = .{ .counters = &counters } });
+    const b = [2]u8{ @intFromEnum(act), @intCast(@min(counters.kills, 255)) };
+    writeAll(result_fd, &b);
+    linux.exit_group(0);
+}
+
+test "#5 deterministic handshake: the held flock serialises the kill phase; exactly ONE recoverer reaches it" {
+    if (!inPrivatePidNamespace()) return error.NotInPrivatePidNamespace;
+    const io = std.testing.io;
+    const gpa = std.testing.allocator;
+    const clock = ledger.RealClock{ .io = io };
+    const terminal = clock.nowMs() + TOTAL_BUDGET_MS;
+    var td = std.testing.tmpDir(.{});
+    defer td.cleanup();
+    const id = try makeRunDir(td.dir, true);
+    try seedFrom(io, td.dir, id);
+
+    var r1k = [2]i32{ -1, -1 }; // R1 -> parent "in kill phase"
+    var r2k = [2]i32{ -1, -1 }; // R2 -> parent "in kill phase"
+    var go = [2]i32{ -1, -1 }; // parent -> R1 "proceed"
+    var p1 = [2]i32{ -1, -1 };
+    var p2 = [2]i32{ -1, -1 };
+    defer for ([_]*i32{ &r1k[0], &r1k[1], &r2k[0], &r2k[1], &go[0], &go[1], &p1[0], &p1[1], &p2[0], &p2[1] }) |p| closeAndClear(p);
+    var kids = [_]Child{ .{}, .{} };
+    defer cleanupKids(&kids);
+    for ([_]*[2]i32{ &r1k, &r2k, &go, &p1, &p2 }) |p| if (linux.pipe(p) != 0) return error.Pipe;
+
+    // R1: role 1 -- enters the kill phase, announces it on r1k, and BLOCKS on `go` while holding the flock.
+    const a = linux.fork();
+    if (linux.errno(a) != .SUCCESS) return error.Fork;
+    if (a == 0) {
+        for ([_]i32{ r1k[0], r2k[0], r2k[1], go[1], p1[0], p2[0], p2[1] }) |fd| _ = linux.close(fd);
+        runHandshakeRecoverer(io, td.dir, terminal, 1, r1k[1], -1, go[0], p1[1]);
+    }
+    kids[0] = .{ .pid = @intCast(a) };
+    for ([_]*i32{ &r1k[1], &go[0], &p1[1] }) |p| closeAndClear(p);
+
+    // Wait for R1 to be in the kill phase (holding the flock) BEFORE R2 exists -- the barrier RoseCat #3 requires.
+    var rb: [1]u8 = undefined;
+    if (!readExactWithin(clock, r1k[0], &rb, terminal)) return error.R1NotInKill;
+
+    // R2: role 2 -- it will block on the flock acquire while R1 holds it; if it ever reaches the kill phase it
+    // announces on r2k.
+    const b = linux.fork();
+    if (linux.errno(b) != .SUCCESS) return error.Fork;
+    if (b == 0) {
+        for ([_]i32{ r1k[0], r2k[0], go[1], p1[0], p2[0] }) |fd| _ = linux.close(fd);
+        runHandshakeRecoverer(io, td.dir, terminal, 2, -1, r2k[1], -1, p2[1]);
+    }
+    kids[1] = .{ .pid = @intCast(b) };
+    for ([_]*i32{ &r2k[1], &p2[1] }) |p| closeAndClear(p);
+
+    // Pre-release window: R2 must NOT reach the kill phase while R1 holds the flock. Under the held-flock green
+    // this times out; an early-unlock regime lets R2 acquire and reach the kill phase -> r2k becomes ready.
+    const pre = ledger.waitWithinDeadline(clock, @min(clock.nowMs() + 1500, terminal), RealPoll{ .fd = r2k[0] });
+    try std.testing.expectEqual(ledger.WaitResult.timed_out, pre); // held flock serialises -> R2 is blocked
+
+    writeAll(go[1], "G"); // release R1 -> it finishes census + teardown + retire + releases the flock
+    var r1: [2]u8 = undefined;
+    var r2: [2]u8 = undefined;
+    if (!readExactWithin(clock, p1[0], &r1, terminal)) return error.R1Lost;
+    if (!readExactWithin(clock, p2[0], &r2, terminal)) return error.R2Lost;
+    try std.testing.expect(reapWithin(clock, &kids[0], clock.nowMs() + 3000));
+    try std.testing.expect(reapWithin(clock, &kids[1], clock.nowMs() + 3000));
+    try std.testing.expect(terminal0(kids[0].status));
+    try std.testing.expect(terminal0(kids[1].status));
+
+    const sig = @intFromEnum(ledger.RecoveryAction.signalled);
+    const gone = @intFromEnum(ledger.RecoveryAction.already_gone);
+    try std.testing.expectEqual(@as(u8, sig), r1[0]); // R1 ran the recovery...
+    try std.testing.expectEqual(@as(u8, 1), r1[1]); // ...and killed exactly one marked child (one kill phase)
+    try std.testing.expectEqual(@as(u8, gone), r2[0]); // R2 blocked, then found it already retired
+    try std.testing.expectEqual(@as(u8, 0), r2[1]); // R2 never entered the kill phase
+    try std.testing.expectEqual(@as(usize, 0), try entryCount(io, gpa, td.dir));
 }
