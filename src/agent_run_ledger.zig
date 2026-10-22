@@ -6,6 +6,7 @@
 //! publish, the cross-process flock and the fd-level provenance decision (C `zb_reaper_ledger_entry_state`) are
 //! separate.
 const std = @import("std");
+const builtin = @import("builtin");
 
 /// The only accepted schema version. A different value is a malformed read (never silently upgraded/downgraded).
 pub const SCHEMA_VERSION: u32 = 1;
@@ -238,13 +239,18 @@ pub const Recovery = enum { recover, leave, fail_closed };
 /// owner (another browser instance) is left untouched; PID reuse (live, different start) or an unreadable
 /// liveness result FAILS CLOSED — never signalled, never retired.
 pub fn recoveryFor(l: Liveness) Recovery {
-    _ = l;
-    return .recover; // MUTANT (red): recovers regardless of liveness — green corrects the mapping
+    return switch (l) {
+        .dead => .recover, // owner proved dead -> the leftover entry is recovery work
+        .live_same => .leave, // another live browser instance -> never signalled, never retired
+        .live_reused => .fail_closed, // PID reuse (live, different start) -> fail closed
+        .unreadable => .fail_closed, // can't prove liveness -> fail closed
+    };
 }
 
 /// The process start time (field 22 of /proc/<pid>/stat, clock ticks since boot) on Linux, or null if it cannot
 /// be read/parsed. comm (field 2) may contain spaces and ')', so parse after the LAST ')'.
 pub fn readStartTicks(pid: i32) ?u64 {
+    if (builtin.os.tag != .linux) return null; // /proc is Linux-only; a Darwin probe (proc_pidinfo) lands later
     const linux = std.os.linux;
     var path_buf: [64]u8 = undefined;
     const path = std.fmt.bufPrintZ(&path_buf, "/proc/{d}/stat", .{pid}) catch return null;
@@ -269,6 +275,7 @@ pub fn readStartTicks(pid: i32) ?u64 {
 /// Linux liveness probe for a recorded owner `(pid, start_ticks)`: the process is gone (dead), present with the
 /// SAME start (live_same), present with a DIFFERENT start = PID reuse (live_reused), or unreadable.
 pub fn probeLiveness(pid: i32, start_ticks: u64) Liveness {
+    if (builtin.os.tag != .linux) return .unreadable; // no /proc probe off Linux -> fail closed (recoveryFor -> .fail_closed)
     const linux = std.os.linux;
     var path_buf: [64]u8 = undefined;
     const path = std.fmt.bufPrintZ(&path_buf, "/proc/{d}/stat", .{pid}) catch return .unreadable;

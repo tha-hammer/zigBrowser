@@ -872,6 +872,15 @@ pub fn build(b: *std.Build) void {
     const ledger_darwin_step = b.step("test-agent-run-ledger-darwin-build", "MS6.5.1 ledger cross-compiles to Darwin (aarch64 + x86_64 macOS)");
     ledger_darwin_step.dependOn(&ledger_darwin_aarch64_obj.step);
     ledger_darwin_step.dependOn(&ledger_darwin_x86_64_obj.step);
+    // MS6.5.1 (RoseCat recovery row): startup recovery keys on the recorded owner (pid, start) — a leftover entry
+    // is recovery work only when its owner is proved dead; a live matching owner (another browser) is left; PID
+    // reuse or an unreadable result fails closed. Two-browser fork, signal-free. Linux-gated (/proc probe).
+    const ledger_recovery_test_mod = b.createModule(.{ .root_source_file = b.path("tests/agent_run_ledger_recovery_test.zig"), .target = target, .optimize = optimize });
+    ledger_recovery_test_mod.addImport("agent_run_ledger", ledger_mod);
+    const run_ledger_recovery_tests = b.addRunArtifact(b.addTest(.{ .root_module = ledger_recovery_test_mod }));
+    run_ledger_recovery_tests.skip_foreign_checks = true;
+    const ledger_recovery_step = b.step("test-agent-run-ledger-recovery", "MS6.5.1 ledger (pid,start) owner-liveness recovery decision");
+    ledger_recovery_step.dependOn(&run_ledger_recovery_tests.step);
     // MS6.5 (the user's decision 2026-10-21): the stubbed macOS VM-containment seam — off by default, reports
     // "not available yet", and the gate fails closed when on. Pure Linux unit (no OS calls).
     const mac_vm_containment_module = b.createModule(.{
@@ -2920,6 +2929,7 @@ pub fn build(b: *std.Build) void {
     if (target.result.os.tag == .linux) test_step.dependOn(&run_ledger_lock_nofollow_tests.step);
     test_step.dependOn(&ledger_darwin_aarch64_obj.step); // cross-compile guard: ledger must build for Darwin
     test_step.dependOn(&ledger_darwin_x86_64_obj.step);
+    if (target.result.os.tag == .linux) test_step.dependOn(&run_ledger_recovery_tests.step);
     test_step.dependOn(&run_mac_vm_containment_tests.step);
     test_step.dependOn(&mac_vm_containment_e2e.step);
     test_step.dependOn(&run_agent_secrets_tests.step);
