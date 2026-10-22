@@ -33666,3 +33666,49 @@ before any Mac hook execution is approved. **SHOULD:** compute `net_manifest`
 once in `stage()` and use those exact bytes both for `net.json` and the hook
 profile ports, and update the module overview's Linux-only “closes every fd
 >=3” wording to describe Darwin's reviewed marker exception.
+
+## WS5.5 strict window-count seam (`54ed9cf`)
+
+**APPROVED as the narrow parser fix; it does not complete WS5.5 or authorize a
+VM run.** The portable boundary accepts only complete decimal strings in
+`[1,8]`, maps unset/malformed/out-of-range input to the seam-off zero, and the
+Windows shim calls it only inside the existing agent-drawer plus
+`--e2e-protocol` branch. The previous `atoi` acceptance of whitespace, signs
+and suffixes is gone. An exact clean archive under private Xvfb passed
+`drawer-props-test` and `cross-check-drawer-win`: **8/8 steps, 16/16 tests**.
+
+The exact production call is correct by inspection, but the current property
+rows exercise the Zig parser rather than causally binding the embedded C++
+call. Before the WS5.5 production green/VM release, add
+`zb_drawer_window_count_from_env` to the Windows export pin and add a source or
+live malformed-value row that fails if the shim returns to `atoi` or stops
+calling the strict export. This is follow-up coverage for the unfinished
+multi-window slice, not a defect in this scoped parser change.
+
+## Darwin hook-runner documentation/manifest cleanup (`51a7d4e`)
+
+**APPROVED.** `stage()` now computes one `net_manifest` object and uses that
+same object's bridge ports for both the published JSON and rendered hook
+profile. The module overview accurately separates Linux's close-all/bwrap/
+relay/seccomp sequence from Darwin's reviewed fd-5 exception and
+`sandbox-exec` path. There is no behavioral widening, the feature remains
+dormant and no Mac run is authorized by this verdict. An exact clean archive
+passed the Darwin hook module **10/10** inside a private user/PID/mount
+namespace; the broader parent regressions recorded above remain applicable.
+
+## Embedded Windows page-selector oracle (`fb1df73`)
+
+**APPROVED for gap 1 of the `58f79c1` follow-up; no Win11 run yet.** The
+offline oracle now extracts the actual embedded `[Z]::PageHwnd` C# method and
+requires class plus launched pid plus exactly-one selection while excluding
+the old visibility and size heuristics. The old-largest, no-pid and
+first-match mutants are each rejected, so this is causal coverage of the code
+the live runner executes rather than only of the detached Python model. An
+exact clean archive under private Xvfb passed **77 tests with 8 live skips**.
+
+The second `ba35dc5` blocker remains. In the open state, the independent native
+oracle must require the panel, RichEdit bubble and `-` minimize control visible
+while the `S` icon is hidden, with a causal negative row for each condition.
+At this commit `ChildrenVisible` covers only panel and bubble, `icon_visible`
+is measured but unused by `check_success`, and minimize visibility is not read.
+Therefore `fb1df73` is not the exact commit for the eight-row Win11 run.
