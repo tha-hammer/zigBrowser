@@ -26966,3 +26966,64 @@ Until the plan contradiction is corrected, `1d7b604` does not cumulatively
 close `aebb07b`/`9dbad76`/`7ea3c95`; the approved linear push-through remains
 the already-pushed `63ed27f`. Agent Mail 7462 sent AzureRidge the exact docs
 blocker.
+
+## WS0.5 remote-path fence docs closure (`5fff763`)
+
+**APPROVED.** The follow-up removes the sole normative contradiction from the
+`1d7b604` review. Host-provisioning item 3 now says that
+`C:\Users\zbtest\zb\` is a convention/review policy, explicitly not a
+remote-path authorization fence, and routes any future junction-safe remote
+operation to the held-handle check-and-use milestone. The only `build.zig`
+change is the matching comment relabel from “path fence” to “lexical path-shape
+check”; `git diff --check` is clean.
+
+This cumulatively closes `1d7b604` and the earlier
+`aebb07b`/`9dbad76`/`7ea3c95` fence chain. No new behavioral gate was needed:
+the exact `1d7b604` registered `windows-gate-selftest` had already passed
+**3/3 build steps and 16/16 tests**. Agent Mail 7468 sent AzureRidge the
+approval.
+
+The linear push-through nevertheless remains the already-pushed `63ed27f`:
+the earlier `9ac707c`/`51fb680` ledger-parser range is still blocked on the
+pre-allocation input bound described below, so the later WS0 fix-forward cannot
+yet form a fully approved contiguous prefix.
+
+## MS6.5.1 ledger basename grammar (`b20669a`, `0e36321`)
+
+**`b20669a` is APPROVED as the failing-first red. `0e36321` closes grammar
+item 1, but the cumulative ledger-parser slice remains BLOCKED on item 2.** In
+an exact clean export of the red commit, the direct module-wired test was
+causally red: **5 passed and 8 failed**. The valid grammar, duplicate-valid,
+missing/extra-field and duplicate-key controls passed; each malformed-basename
+case failed because the old parser accepted it. Keeping the red unregistered
+until its green was correct.
+
+The green's `basenameOk` now enforces the required prefix, at least one decimal
+PID digit, one separator, exactly 16 lowercase hexadecimal characters, the
+single-component/end condition and a finite basename cap before duplicate
+handling. The existing duplicate and over-cap rows now use valid grammar
+basenames, and the focused step is registered in the full test step. From an
+exact clean export of `0e36321`,
+`zig build test-agent-run-ledger-grammar test-agent-run-ledger-parse --summary all`
+passed **7/7 build steps and 23/23 tests** (grammar **13/13**, parse **10/10**).
+Agent Mail 7466 sent JadeBeacon the verdict.
+
+The prior bound blocker is intentionally still open. At
+`src/agent_run_ledger.zig:16-19`, `0e36321` adds `MAX_LEDGER_BYTES` and claims
+that an oversized input is rejected before allocation, but `parse` at lines
+80-84 still calls `std.json.parseFromSlice` without first checking
+`bytes.len`. The next red/green must make that claim true with a causal
+pre-allocation bound test (or remove the false claim until it does). The plan's
+wire field `start` versus implementation fields `start_sec`/`start_usec` also
+still needs reconciliation before this is the production ledger contract.
+
+## Decision-16 main-window confirmation (`9b48ee2`)
+
+**APPROVED.** Rev 16.20.54 records the owner's answer exactly: the main window
+is the first zigBrowser window opened in the session (`window-1`), no later
+window replaces it, and headless/full-automation approval cards use its drawer
+plus the generic desktop notification. Closing it cancels **every** pending
+card and stops each corresponding step with nothing dispatched. The plan keeps
+the two-card close red, forbids fallback to a bound or other window, and keeps
+expiry/cancellation ahead of a late Approve. This is plan-only and
+`git diff --check` is clean. Agent Mail 7467 sent BlackRobin the approval.
