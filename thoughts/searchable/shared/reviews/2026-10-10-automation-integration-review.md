@@ -32453,3 +32453,109 @@ blocked decision-16 production green `ebe6529`, so `ebe6529` is not the first
 linear blocker. Because the MS6.3 acceptance and several earlier fix-forwards
 that make the intertwined range honest occur after `1e5ff2d`, there is no
 intermediate descendant of `bac895b` whose complete ancestry is approved.
+
+## Exact closure checklist for WS5 native Win32 drawer entry (`1e5ff2d`)
+
+**The Win11 live run is NOT authorized yet.** One new pathspec closure commit
+must first make the entry evidence registered and independently observe the
+native geometry. The current `tests/windows/win_drawer_test.py` still calls
+itself “UNREGISTERED,” `build.zig` has no step for that module, and
+`check_success` trusts the emitted `DRAWER open` rectangle for the dock
+equation. Its independent census proves only the three direct `STATIC`
+controls; it does not read the real panel/page HWND rectangles or the
+successful bubble child. A plausible row-emitting overlay can therefore
+still satisfy the entry oracle.
+
+The single closure commit must satisfy this exact checklist:
+
+1. Register `python3 -I tests/windows/win_drawer_test.py -v` as build step
+   **`windows-drawer-live`** and make aggregate `test` depend on it. With
+   `ZB_WIN11_HOST`/`ZB_WIN_EXE` absent, the registered step must run all pure
+   oracles and skip exactly the eight `WinDrawerLive` methods; it must not
+   contact a host. Keep the existing registered `cross-check-drawer-win` and
+   `drawer-props-test` steps green.
+2. Extend the success result with an independent, pid-bound HWND census and
+   client-coordinate rectangles. Require exactly one host-owned panel, `S`
+   icon and `-` control, exactly one read-only plain-text RichEdit bubble
+   under that panel, and the launched process's page HWND. Require the emitted
+   `open` rectangle to equal the observed panel rectangle, the panel to occupy
+   the full client width at the bottom, a nonempty page above it, and the
+   observed page bottom to meet the observed panel top. The authoritative
+   equation is therefore based on real HWNDs, not protocol rows alone.
+3. Preserve causal pure-oracle failures for at least: row-only output,
+   overlay geometry, wrong/extra/missing controls, a missing/wrong bubble,
+   a row/real-panel rectangle mismatch, a page that remains behind the
+   panel, an HWND owned by another pid, start-before-Job, and a survivor or
+   unproved terminal status.
+4. From a clean export of that exact commit, on a private Xvfb, run
+   `zig build cross-check-drawer-win drawer-props-test windows-drawer-live --summary all`
+   and the full `zig build test --summary all`. Both must exit zero; report
+   the exact Build Summary line. The display guard applies even though the
+   Windows module itself scrubs display variables.
+5. Build the **same exact commit** with the real MSVC/Windows SDK/WebView2
+   toolchain, then run the registered `windows-drawer-live` step once against
+   that exact exe on writable `win11-m8` as `zbtext`. The expected live rows
+   are all eight current methods: successful mount/dock; forced panel, icon
+   and bubble creation failures; `assign_fail`;
+   `assign_firststop_fail`; `cleanup_exhaust`; and `wait_fail`. The success
+   row must satisfy item 2. Every forced-create row must emit no drawer row or
+   control and the exact fixed `error 87; drawer not mounted` diagnostic.
+   Every lifecycle row must exercise its decoded seam, prove the held process
+   terminal and the owned Job empty, and retain the intended failure result.
+6. The VM run is permitted only with no competing zigBrowser/WebView2 test,
+   a clean before-census, BatchMode and pinned known-host/key material, unique
+   roots below `C:\\Users\\zbtext\\zb`, suspended create into the owned
+   kill-on-close Job, handle/Job teardown only (no pid/name kill), bounded
+   SSH/cleanup, fail-fast, and a clean after-census with zero owned processes
+   and zero run directories. Do not run it on the read-only Win10 file server;
+   do not install, elevate, change WSL, or touch the user's local display.
+
+The evidence must report the exact commit, real MSVC artifact identity, the
+registered-step outputs, all eight live method results, before/after census
+and leftover count. Passing this checklist closes the `1e5ff2d` entry slice;
+it does not by itself accept later WS5.2--WS5.7 behavior or replace their
+eventual owner-visible real-screen checks.
+
+## Native Win32 drawer offline registrations (`6870bf8`)
+
+**BLOCKED-for-tests; do not run the Win11 leg yet.** The new build step makes
+the two previously unregistered Python suites visible to aggregate `test`.
+With the Windows host variables explicitly removed, reviewer evidence passed
+**3/3 build steps and 97/97 tests, with 28 VM-gated skips**. Direct isolated-
+mode runs also passed: entry **54/54 (8 skipped)** and behavior **43/43 (20
+skipped)**.
+
+Three issues keep this from closing the `1e5ff2d` chain:
+
+1. The aggregate command does not remove `ZB_WIN11_HOST` or `ZB_WIN_EXE`.
+   If they are inherited and the exe exists, ordinary `zig build test`
+   silently contacts the VM and runs live GUI rows. An aggregate step called
+   offline must explicitly unset every live-host/exe variable before Python.
+2. It runs `python3 -m unittest` without `-I`, leaving `PYTHONPATH`, user-site
+   and startup injection active. Both files pass as direct
+   `python3 -I tests/windows/<file>.py`; use those isolated invocations and
+   preserve either failure status. Also set
+   `WinDrawerBehaviorsLive.test_bubble_create_failure_leaves_no_drawer = None`:
+   the new entry row is currently inherited into the behavior class, which is
+   why that module skips 20 rather than its own 19 live cases.
+3. Registration does not cure the entry oracle gap. `check_success` still
+   trusts the emitted `open` rectangle, independently observes only direct
+   STATIC names, and never reads the real panel/page HWND rectangles or the
+   successful RichEdit bubble. Complete items 2--3 of the preceding exact
+   closure checklist before the live run.
+
+After that fix-forward, the live evidence needed to close **only**
+`1e5ff2d` is one exact-commit Win11 run of the entry module's eight methods:
+mount/dock success; panel, icon and bubble creation failure; `assign_fail`;
+`assign_firststop_fail`; `cleanup_exhaust`; and `wait_fail`. It must use the
+real MSVC artifact from that same commit and meet the lifecycle, census,
+path, SSH and no-pid/name-kill conditions in the preceding checklist. Later
+WS5.2--WS5.7 behavior rows are not prerequisites for this narrow entry-slice
+closure. A separate explicit `windows-drawer-live` step may expose the entry
+run, but it must not be an aggregate dependency or run without caller-supplied
+live variables.
+
+Until those offline fixes land, **no Win11 run is authorized** for this
+chain: the current live result could still be certified by the row-only
+geometry oracle, and a normal aggregate gate could unexpectedly consume an
+inherited live target.
