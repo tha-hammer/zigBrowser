@@ -11,12 +11,15 @@ PID namespace and parent pid, leaves a marked background sleeper behind, and exi
 - its parent pid is above 1 (setup-darwin's parent-watch row passes --browser-pid os.getppid());
 - test_contract's stand-in sees ZB_OUTER_PIDNS_FD (the launcher's held outer namespace, for pidns_guard), and its
   parent is that namespace's pid 1;
-- once the command has returned, the marked sleeper is gone (--kill-child: the namespace's teardown ends it).
+- once the command has returned, the marked sleeper is gone (--kill-child: the namespace's teardown ends it). The
+  sleeper holds none of the command's pipes (its stdio is /dev/null), so an unwrapped step fails this within the
+  5 s bound instead of holding subprocess.run for the sleeper's 60 s (RoseCat 7659).
 No signal is sent by this test; the only signals are the namespace teardown's, inside the namespace.
-It runs every step command, so it runs only inside an OUTER private PID namespace (an unwrapped step, as in the
-red, then reaches no further than that namespace): cd tests/e2e && unshare --user --map-root-user --pid --fork \\
-  --kill-child --mount-proc sh -c 'setsid python3 -X dev -m unittest -v test_gate_step_wrappers; exit $?'
-Unregistered until the green."""
+It runs every step command, so it runs only inside an OUTER private PID namespace that keeps our own uid (an
+unwrapped step then reaches no further than that namespace, and the own-uid row stays meaningful):
+  cd tests/e2e && unshare --map-current-user --pid --fork --kill-child --mount-proc \\
+    sh -c 'setsid -w python3 -X dev -m unittest -v test_gate_step_wrappers; exit $?'
+Registered (66e674f) in its own private PID namespace; RoseCat 7659 made the sleeper pipe-free."""
 import os
 import re
 import secrets
@@ -33,7 +36,7 @@ SETUP_DARWIN = ("test_setup_darwin", "test_setup_darwin_r1", "test_setup_darwin_
 STANDIN = """#!/bin/sh
 {{ echo "ns=$(readlink /proc/self/ns/pid)"; echo "pid=$$"; echo "ppid=$PPID"; echo "uid=$(id -u)";
    echo "outer_fd=${{ZB_OUTER_PIDNS_FD:-}}"; }} > {record}
-sh -c 'sleep 60' {marker} &
+sh -c 'sleep 60' {marker} </dev/null >/dev/null 2>&1 &
 exit {rc}
 """
 
@@ -82,13 +85,16 @@ class Wrappers(unittest.TestCase):
         for rc in (37, 0):
             with self.subTest(module=module, rc=rc):
                 done, rows, left = self.run_step(module, rc)
-                self.assertEqual(done.returncode, rc, f"the wrapper did not keep the status: {done.stdout[-300:]}")
-                self.assertTrue(rows, "the stand-in never ran")
-                self.assertNotEqual(rows.get("ns"), mine, "the stand-in ran in this test's own PID namespace")
-                self.assertEqual(rows.get("uid"), str(os.getuid()), "the namespace does not keep our own uid")
-                if parent_above_one:
-                    self.assertGreater(int(rows.get("ppid", "0")), 1, rows)
-                self.assertEqual(left, [], "a process the stand-in left outlived the step")
+                self.assertTrue(rows, f"the stand-in never ran: {done.stderr[-300:]}")
+                # Every condition is judged, so one row shows ALL of what an old wrapper gets wrong (RoseCat 7659).
+                problems = [name for name, bad in (
+                    ("status", done.returncode != rc),
+                    ("same-namespace", rows.get("ns") == mine),
+                    ("not-our-uid", rows.get("uid") != str(os.getuid())),
+                    ("parent-pid-1", parent_above_one and int(rows.get("ppid", "0")) <= 1),
+                    ("survivor", left != []),
+                ) if bad]
+                self.assertEqual(problems, [], f"rc={done.returncode} rows={rows}")
                 yield rows
 
     def test_the_setup_darwin_steps(self):
