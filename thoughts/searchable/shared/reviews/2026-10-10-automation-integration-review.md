@@ -28220,3 +28220,31 @@ is still independently BLOCKED by the incomplete `770848b`/`7ca6897`
 topology/acceptance revisions. Later, `97c6215`/`afe3920` recovery and
 `1e5ff2d` Windows drawer-entry coverage also remain blocked. No verdict here
 approves those ranges.
+
+## MS6.3 fd-3 hard-gate red fix-forward (`7ad4aff`)
+
+**BLOCKED-for-tests, with two of the three prior gaps closed.** The red remains
+properly unregistered and signal-free. Reviewer clean-export execution inside
+a private user/PID namespace produced the intended causal red: **12 tests,
+12 errors**, all at the absent `case_ms6_3_fd3_cli.py`. `git diff --check` is
+clean.
+
+- The FD-placement oracle is now deterministic: a fresh isolated interpreter
+  closes its inherited range, places the end itself on fd 3 or 9, and drives
+  the real `/bin/sh` placement with no skip. This closes `7537` item 2.
+- The fake records argv, the exact environment, files under the case scratch,
+  and the sole passed fd. It requires no second token route and an exact fixed
+  outer environment. Together with the existing in-request CLI census and
+  exactly-one-`pass_fds` assertion, this closes `7537` item 3.
+- `tests/e2e/ms6_hard_gate_fd3_cli_case_test.py:193-201,284` does **not yet
+  prove the fd is a socketpair end**, as the test and commit claim. It records
+  only `(family, type)` and accepts any `AF_UNIX` `SOCK_STREAM`, including a
+  client connected to a filesystem or abstract Unix listener. Such a mutant
+  still creates a named/routable endpoint and would pass this oracle. Record
+  and require the unnamed socketpair shape (for example, both `getsockname()`
+  and `getpeername()` are unnamed for the tested endpoint), or instrument the
+  socketpair construction itself, and show a connected named-Unix-socket
+  mutant red. This is the remaining part of `7537` item 1.
+
+Do not add the case to the reviewed hard-gate manifest or run it on either Mac
+until this endpoint oracle is fixed forward and its new digest is reviewed.
