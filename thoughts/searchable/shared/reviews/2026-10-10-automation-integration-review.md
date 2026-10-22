@@ -30058,3 +30058,50 @@ The green must register and source-pin this exact private-tmp/private-PID
 launcher; a caller-controlled `ZB_OUTER_TMP_FD` by itself is not an adequate
 security boundary. This condition does not block the red verdict, but the
 test must not be registered through a weaker command.
+
+## WSL discovery-spike ownership/listener/reap fix (`45ab25b`)
+
+**BLOCKED; one live win11-m8 run remains NOT AUTHORIZED.** The full
+prospective distro-name set is now derived before any import or unregister,
+checked against the baseline, and enforced by `_guard_destroy` on both the
+main and negative paths. The offline oracle's planted-name row is causal, and
+the commit contains no local `kill`, `killpg`, `terminate`, `Stop-Process`, or
+global `wsl --shutdown` path. However, two of the three `c101b1e` safety gaps
+remain at the live boundary:
+
+1. `tests/windows/wsl_live_test.py:319-323` invokes `Get-CimInstance` with
+   `-ErrorAction SilentlyContinue`. A CIM/access/provider error can therefore
+   leave `$p` false while PowerShell exits zero, emitting `GONE`. The new
+   classifier then accepts that as a natural exit. The offline test supplies
+   an already-tagged `UNREADABLE` string, so it cannot catch this producer-side
+   false-clean. Use `-ErrorAction Stop` and an explicit catch that emits
+   `UNREADABLE` or exits nonzero, then add a causal oracle over the whole
+   census producer/consumer path.
+2. `_reap_no_signal` waits only 20 seconds and raises on timeout while the
+   background SSH process can remain alive. `_pin` starts a 150-second remote
+   sleep, and the SSH options have connection bounds but no established-peer
+   liveness bound. Raising records a failure but does not reap the handle; the
+   Python test can exit and orphan that local SSH process. This does not meet
+   the required reaped-or-fail/no-leftover contract. Bound the established SSH
+   channel and wait through its independently bounded natural lifetime, or
+   replace the keepalive design with one whose exact owned handle is always
+   reaped without raw-PID signalling. The offline fake currently proves only
+   that timeout raises, not that no child survives.
+
+From an exact clean export with all live opt-ins absent, the offline suite
+passed **10/10** and the live class skipped; `py_compile` and
+`git diff-tree --check` were clean. That evidence validates the pure helpers,
+not the two production compositions above. The previously supplied live-run
+envelope remains applicable after these fixes, but no exact commit is safe to
+authorize yet.
+
+## Netd-flake module run-line documentation (`b9ef61e`)
+
+**APPROVED.** The two docstrings now agree with their registered safety
+boundary: current-UID PID namespaces, `--kill-child`, `setsid -w`, no inherited
+real display, and no stale “unregistered” claim. `build.zig` uses a stricter
+`env -i` wrapper plus ResourceWarning checking; the shorter human run lines do
+not weaken the registered step. From an exact clean export, using the exact
+registered namespace shape, `test_run_step` passed **8/8** and
+`test_xinput_vanished_server` passed **7/7**. The commit is documentation-only
+and `git diff-tree --check` was clean.
