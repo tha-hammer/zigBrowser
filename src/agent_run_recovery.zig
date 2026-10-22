@@ -208,20 +208,39 @@ pub const InspectFn = *const fn (c.pid_t, [*c]const u8, [*c]ReaperId, ?*anyopaqu
 pub const KillFn = *const fn (c.pid_t, c_int, ?*anyopaque) callconv(.c) c_int;
 
 /// Threaded through the ops `ctx`: the HELD run-dir fd + pinned id for the real `dir_ok`, plus the injected `user`.
-pub const OpsCtx = extern struct { held_fd: c_int, pinned: DirId, user: ?*anyopaque };
+/// `now`/`deadline_ms` thread the ONE absolute deadline THROUGH the kill boundary (RoseCat 0b7805a #1): `dir_ok`
+/// runs immediately before each `killsig`, so a deadline crossed mid-census stops the engine there with NO kill.
+pub const NowFn = *const fn () callconv(.c) i64;
+pub const OpsCtx = extern struct { held_fd: c_int, pinned: DirId, user: ?*anyopaque, now: ?NowFn = null, deadline_ms: i64 = 0 };
 
 fn dirOkThunk(ctx: ?*anyopaque) callconv(.c) c_int {
     const o: *OpsCtx = @ptrCast(@alignCast(ctx.?));
+    if (o.now) |nf| if (nf() >= o.deadline_ms) return 0; // deadline crossed before this kill -> engine overflows + breaks
     return c.zb_reaper_dir_fd_ok(o.held_fd, &o.pinned); // revalidate the HELD fd immediately before each kill
+}
+
+/// A real CLOCK_MONOTONIC reader in C-callable form, for the production/generic census now-fn. Per-OS so it builds
+/// on Darwin (Linux raw syscall; Darwin libc), mirroring the ledger's RealClock.
+pub fn realNowMs() callconv(.c) i64 {
+    if (builtin.os.tag == .linux) {
+        var ts: std.os.linux.timespec = undefined;
+        _ = std.os.linux.clock_gettime(std.os.linux.CLOCK.MONOTONIC, &ts);
+        return @as(i64, ts.sec) * 1000 + @divTrunc(@as(i64, ts.nsec), 1_000_000);
+    } else {
+        var ts: std.c.timespec = undefined;
+        _ = std.c.clock_gettime(std.c.CLOCK.MONOTONIC, &ts);
+        return @as(i64, @intCast(ts.sec)) * 1000 + @divTrunc(@as(i64, @intCast(ts.nsec)), 1_000_000);
+    }
 }
 
 /// Run the reviewed `zb_reaper_fixed_point` census->kill->fresh-census over the held fd. Clean iff the complete
 /// empty final census; any engine error/overflow -> incomplete; else survivors (never a clean result on doubt).
-pub fn runFixedPoint(clock: anytype, deadline_ms: i64, run_dir_fd: i32, pinned: *const DirId, dir_path: [*:0]const u8, max_passes: c_int, scan: ScanFn, inspect: InspectFn, killsig: KillFn, user: ?*anyopaque) ledger.FixedPoint {
-    // The ONE absolute deadline bounds the census: past expiry we neither inspect nor act (RoseCat e034dda #1).
-    // A census begun past the deadline is NOT clean -> incomplete, so the caller fails closed.
-    if (clock.nowMs() >= deadline_ms) return .incomplete;
-    var octx = OpsCtx{ .held_fd = run_dir_fd, .pinned = pinned.*, .user = user };
+pub fn runFixedPoint(now: NowFn, deadline_ms: i64, run_dir_fd: i32, pinned: *const DirId, dir_path: [*:0]const u8, max_passes: c_int, scan: ScanFn, inspect: InspectFn, killsig: KillFn, user: ?*anyopaque) ledger.FixedPoint {
+    // The ONE absolute deadline bounds the census: past expiry we neither inspect nor act (RoseCat e034dda #1 /
+    // 0b7805a #1). Checked pre-engine AND, through `dir_ok`, immediately before each kill. A census past the
+    // deadline is NOT clean -> incomplete, so the caller fails closed.
+    if (now() >= deadline_ms) return .incomplete;
+    var octx = OpsCtx{ .held_fd = run_dir_fd, .pinned = pinned.*, .user = user, .now = now, .deadline_ms = deadline_ms };
     var ops = c.struct_zb_reaper_ops{ .inspect = inspect, .killsig = killsig, .dir_ok = &dirOkThunk, .ctx = &octx };
     var clean: c_int = 0;
     var passes: c_int = 0;
