@@ -3571,6 +3571,19 @@ pub fn build(b: *std.Build) void {
     windows_drawer_settle.addFileInput(b.path("tests/windows/win_drawer_behaviors_test.py"));
     b.step("windows-drawer-settle", "WS5.5b-2 #2: the four WINDOWS-seam methods settle on the terminal `live` row (AST proof)").dependOn(&windows_drawer_settle.step);
     test_step.dependOn(&windows_drawer_settle.step);
+
+    // WS5.5b-2 #3 (RoseCat 28d6f8d): the causal recording-seam model of the drawer lifecycle + owned-Job teardown
+    // (per-HWND registration, partial-control cleanup, retire-once WM_DESTROY, live-count transitions, and the
+    // leader-exit + zero-owned-members no-kill gate). Driven; bound to the production _RUNNER Teardown bytes.
+    const windows_drawer_lifecycle = b.addSystemCommand(&.{
+        "sh",
+        "-c",
+        "PYTHONDONTWRITEBYTECODE=1 python3 -I tests/windows/ws5_5b2_lifecycle_seam_test.py -v",
+    });
+    windows_drawer_lifecycle.addFileInput(b.path("tests/windows/ws5_5b2_lifecycle_seam_test.py"));
+    windows_drawer_lifecycle.addFileInput(b.path("tests/windows/win_drawer_test.py"));
+    b.step("windows-drawer-lifecycle", "WS5.5b-2 #3: drawer lifecycle + teardown recording-seam model (driven; bound to the runner)").dependOn(&windows_drawer_lifecycle.step);
+    test_step.dependOn(&windows_drawer_lifecycle.step);
     test_step.dependOn(&windows_gate_selftest.step);
     test_step.dependOn(&windows_twohost_selftest.step);
     test_step.dependOn(&windows_build_selftest.step);

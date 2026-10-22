@@ -587,16 +587,19 @@ public static class Z {
   public static void Teardown() {
     if (ExpectNormalExit) {
       // Self-closing run: wait FIRST (bounded, positive) for the browser's own clean exit — the shim's primary
-      // WM_CLOSE drives it, emitting the terminal `live` row before we ever reach a kill. WAIT_OBJECT_0 => the
-      // owned-Job kill was unnecessary (NoKillNeeded); the finally's CloseJob (KILL_ON_CLOSE) remains the durable
-      // backstop. Only a timeout/failure takes the kill branch.
+      // WM_CLOSE drives it, emitting the terminal `live` row before we ever reach a kill. But NoKillNeeded may be
+      // claimed ONLY when BOTH the leader exited (WAIT_OBJECT_0 on a VALID handle) AND the owned Job has drained
+      // to zero (a bounded, fail-closed settled count) — otherwise the finally's KILL_ON_CLOSE close, not a clean
+      // exit, could be what removed a surviving WebView2 child. A missing handle, a non-signal, or a nonzero/
+      // unreadable owned-job count takes the kill+reap+failure path (RoseCat 28d6f8d #1).
       uint w = (ForceFail == "wait_fail") ? 258u
-             : (_hProc != IntPtr.Zero ? WaitForSingleObject(_hProc, 8000) : WAIT_OBJECT_0);
-      if (w == WAIT_OBJECT_0) { NoKillNeeded = true; ProcGone = true; return; }
+             : (_hProc != IntPtr.Zero ? WaitForSingleObject(_hProc, 8000) : 258u);  // no leader handle => refuse
+      int members = (w == WAIT_OBJECT_0) ? JobProcessCountSettled(3000, 100) : -1;   // bounded, fail-closed
+      if (w == WAIT_OBJECT_0 && members == 0) { NoKillNeeded = true; ProcGone = true; return; }
       if (Job != IntPtr.Zero) { if (!TerminateJobObject(Job, 1)) Fail("TerminateJobObject"); }  // backstop
       FinalReap();
       throw new Exception("WaitForSingleObject on the browser did not signal WAIT_OBJECT_0: " + w +
-                          " (bounded cleanup proved gone=" + ProcGone + ", job_members=" + JobProcessCount() + ")");
+                          " (expect-normal-exit not clean; owned job_members=" + members + ", proved gone=" + ProcGone + ")");
     }
     // Non-self-closing run (unchanged contract): terminate the Job FIRST, then require WAIT_OBJECT_0; a non-
     // OBJECT_0 first wait (the wait_fail seam) proves terminal via the distinct FinalReap, then reports.
