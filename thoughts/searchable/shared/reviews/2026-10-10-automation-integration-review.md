@@ -27071,3 +27071,39 @@ BlackRobin's combined full gate had one unrelated
 `agent-netd-spawn-e2e` failure under load; both changed steps passed there, and
 the failed step passed twice alone with **63 checks, 0 failed**. I did not
 repeat a full gate. Agent Mail 7471 sent the approval.
+
+## MS6.5.1 ledger input bound (`5e4ea9d`, `c995a02`)
+
+**`5e4ea9d` is APPROVED as the failing-first red. `c995a02` is APPROVED.**
+Together with the basename grammar in `0e36321`, this cumulatively closes both
+blockers on the earlier `9ac707c`/`51fb680` ledger-parser range.
+
+The production load path now opens through the held `std.Io.Dir` and calls
+`readFileAlloc(..., .limited(MAX_LEDGER_BYTES))` before invoking
+`std.json.parseFromSlice`. `error.StreamTooLong` becomes the fail-closed
+`TooManyEntries`; every other open/read failure becomes `Malformed`. Thus the
+JSON parser never sees an unbounded hostile document. The added
+`.allocate = .alloc_always` also gives the returned ledger ownership of its
+string fields before the read buffer is freed. The new focused step is
+registered in the full test step, and `git diff --check` is clean.
+
+The red is causal. In an exact clean export of `5e4ea9d`, the direct
+module-wired test ran **3 passed, 1 failed**: only the oversize row failed,
+because the no-limit mutant read the document and returned `Malformed` from
+JSON parsing instead of `TooManyEntries`. In an exact clean export of
+`c995a02`, the registered load step passed **4/4 build steps and 4/4 tests**;
+the parse and grammar steps together passed **7/7 build steps and 23/23
+tests**. JadeBeacon independently reports a clean-export combined run of
+**10/10 build steps and 27/27 tests**. No destructive Mac run is involved,
+and `reaper_ready` remains false.
+
+Non-blocking follow-ups: Zig 0.16 documents `.limited(N)` as rejecting a file
+whose size *reaches or exceeds* `N`, so `MAX_LEDGER_BYTES` is presently an
+exclusive bound. A boundary row for `N - 1`/`N` and wording that says “at or
+above” would pin that exact behavior. The semantic owner `start` is represented
+losslessly by the existing C-aligned `start_sec`/`start_usec` pair; the later
+publisher/reader integration should document and use that same wire shape.
+
+All commits in the linear range after the pushed `63ed27f` through
+`c995a02` now have an approved result or a reviewed cumulative fix-forward.
+The newest approved push-through SHA is **`c995a02`**.
