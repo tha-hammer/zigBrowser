@@ -224,6 +224,13 @@ only where a slice can start without the decision; slices that depend on a decis
 | **OD-W8** | WebView2 runtime distribution | **Evergreen bootstrapper** (current, ~2 MB) with a fail-closed launch-time check (WS1.4) and the **Evergreen standalone x64 installer** as a downloadable fallback. | Bootstrapper needs network at install. Standalone: offline, larger. Fixed Version: >250 MB, the app must update it, and Windows 10 needs `icacls` grants for the AppContainer SIDs. | WS13.2 |
 | **OD-W9** | SSH key for the Windows hosts | **A new dedicated ed25519 key** (`/home/maceo/vms/win-hosts/zb_win_key`) for both Windows hosts, not the Mac key `zb_mac_key`. | A dedicated key can be revoked per host family without touching the Macs; reusing the Mac key is one less file but widens the blast radius. | WS0 |
 
+### OWNER DECISIONS (2026-10-21)
+
+- **OD-W1 — DECIDED: keep the per-user MSI** (WiX 3.14, already built and gated). WS13 installer work targets the MSI; no Velopack/MSIX rewrite.
+- **OD-W3 — DECIDED: NO code signing for now.** Signing is **deferred**; agents hold no key and buy no certificate. **Nothing may claim "distributable" or "signed"** — WS13.6 (the signed/distributable claim) **stays OPEN** and is not a launch gate. WS13 may build and gate the UNSIGNED per-user MSI; it just can't assert distributability. SmartScreen/unsigned warnings are expected and must not be hidden or claimed away.
+- **OD-W6 — DECIDED: native Win32 drawer controls** (docked sibling panel, read-only RichEdit bubbles, an owned layered no-activate popup for the "S" icon, fold animation driven by `agent_drawer.zig`) — NOT a second WebView2 and NOT WinUI/XAML Islands. This unblocks WS5's green files; the reds and portable `agent_drawer.zig` logic are backend-agnostic.
+- **OD-W4 — STILL OPEN** (sandbox technology). The orchestrator is researching how Claude Code sandboxes on Windows for the owner. WS8/WS9/WS11 (agent sandbox + launch) remain blocked; Windows agent launch stays disabled until a backend passes every WS8 gate.
+
 ### Decision sharpening (rev 2 review): costs, risks and what each choice commits us to
 
 The "Recommendation" column above is the planner's lean, **not** a decision; nothing below picks
