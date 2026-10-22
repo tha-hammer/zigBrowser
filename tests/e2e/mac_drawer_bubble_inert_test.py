@@ -16,13 +16,21 @@ Offline (no macOS SDK here), a source-bound oracle over src/agent_drawer_mac.m. 
 removed, string and character literal contents blanked) and cut into a token SHAPE: each `;`-statement, `{` and `}`
 in order, with whitespace removed. So a bound body fixes its statements, their order, their count and their control
 flow; a dead branch, an extra effect, a reorder or a removal changes the shape.
+- V0 the tokens mean what they say (RoseCat 8101 / 07e55fd #1):
+  - The drawer's preprocessing is exactly DRAWER_DIRECTIVES, in order: its imports and includes, its own header, and
+    the three portable #defines. Its header's preprocessing is exactly HEADER_DIRECTIVES (the include guard and two
+    includes). So no #if hides an implementation, and no macro (#define NO YES) changes a bound token.
+  - No digraph directive (%:), _Pragma or line splice anywhere in the drawer or its header.
+  - The drawer is in the macOS link (build.zig configureMacosBackend), and that function passes the compiler no
+    preprocessor flag (-D, -U, -include, -imacros, -Xpreprocessor, -Xclang).
 - V1 the control: `@interface ZbBubbleView : NSTextView` holds exactly the ivars `char *_original; size_t _originalLen;`
   and declares exactly `- (void)keepOriginal:(const char *)text length:(size_t)len;`. There is no category on it or on
   NSTextView / NSResponder, and no runtime method replacement.
 - V2 its whole @implementation is exactly BUBBLE_IMPL, in order:
   - keepOriginal frees the old original and copies `len` bytes into a fresh one (malloc failure leaves it empty).
-  - copy: writes the ORIGINAL bytes between the mapped endpoints of [self selectedRange] to a cleared general
-    pasteboard.
+  - copy: refuses a missing original first (an allocation failure copies nothing: no pointer arithmetic on NULL,
+    RoseCat 8101 #3), then writes the ORIGINAL bytes between the mapped endpoints of [self selectedRange] to a
+    cleared general pasteboard.
   - Drag-out (dragSelectionWithEvent:offset:slideBack: -> NO), Services (validRequestorForSendType:returnType: ->
     nil) and the context menu (menuForEvent: -> nil) are closed, since they would carry the shown text.
   - dealloc frees the final original.
@@ -42,9 +50,16 @@ flow; a dead branch, an extra effect, a reorder or a removal changes the shape.
   other text setter, pasteboard write, copy:, layout or editability setter, original buffer, seam call, NSTextView,
   ZbBubbleView allocation or closed route. An NSTextField may only be a static `[NSTextField labelWithString:@"..."]`,
   optionally assigned to a local (never selectable or editable: those setters are guarded). The NEVER list (markup, NUL-terminated reads, field
-  editor routes, swizzling, other pasteboard writers) appears nowhere.
-Self-checking: an honest fixture passes; names in strings and comments do not count; and each dishonest fixture fails
-for its own stated rule, including RoseCat 44ca58e's five:
+  editor routes, swizzling, other pasteboard writers) and RUNTIME_REWRITES appear nowhere.
+- V7 the rest of the link (RoseCat 8101 #2): every OTHER native source build.zig links on macOS (the shim and the C
+  files) holds no category on the bubble's class chain, no RUNTIME_REWRITES (method exchange or replacement, isa
+  swaps, class creation, lookup by name), no ZbBubbleView, no NSPasteboard, and no copy: other than
+  `@selector(copy:)`, which is the future Edit > Copy menu item (target nil) that Cmd+C needs.
+Self-checking: an honest drawer, header and link pass (the honest shim wires Edit > Copy and uses associated
+objects); names in strings and comments do not count; and each dishonest drawer, header and link fails for its own
+stated rule. Among them are RoseCat 8101's #if 0 and #define NO YES, a digraph, a _Pragma, a -D flag, categories,
+swizzles, an isa swap, a pasteboard write or a copy: elsewhere in the link, and copy: past a failed allocation; and
+RoseCat 44ca58e's five:
 - a correct layout under if (0), followed by a live constant one;
 - a correct update, followed by a live _other update;
 - a correct pasteboard write, followed by a live _other write;
@@ -57,7 +72,26 @@ import re
 import unittest
 from pathlib import Path
 
-DRAWER = Path(__file__).resolve().parents[2] / "src" / "agent_drawer_mac.m"
+from mac_drawer_card_authority_test import mac_link_sources
+
+REPO = Path(__file__).resolve().parents[2]
+DRAWER = "src/agent_drawer_mac.m"
+HEADER = "src/agent_drawer_mac.h"
+# The only preprocessing the drawer and its header may hold, exactly and in order (RoseCat 8101: no #if, no other
+# #define, no macro may change what the bound tokens mean).
+DRAWER_DIRECTIVES = ["#import <AppKit/AppKit.h>", "#import <WebKit/WebKit.h>", "#include <stdlib.h>",
+                     "#include <string.h>", '#include "agent_drawer_mac.h"', "#define ZB_CARD_APPROVE 1",
+                     "#define ZB_CARD_DENY 2", "#define ZB_GESTURE_DRAG 1"]
+HEADER_DIRECTIVES = ["#ifndef ZB_AGENT_DRAWER_MAC_H", "#define ZB_AGENT_DRAWER_MAC_H", "#include <stddef.h>",
+                     "#include <stdint.h>", "#endif"]
+# Compiler flags that would preprocess the drawer from outside it.
+PREPROCESSOR_FLAGS = ("-D", "-U", "-include", "-imacros", "-Xpreprocessor", "-Xclang")
+# Across EVERY linked native source (RoseCat 8101 #2): routes that would change a bubble's behavior at run time.
+RUNTIME_REWRITES = ("method_exchangeImplementations", "method_setImplementation", "class_replaceMethod",
+                    "class_addMethod", "imp_implementationWithBlock", "object_setClass", "objc_allocateClassPair",
+                    "objc_registerClassPair", "objc_duplicateClass", "class_setSuperclass", "NSClassFromString",
+                    "NSSelectorFromString")
+CATEGORY = re.compile(r"@(?:interface|implementation)\s+(?:ZbBubbleView|NSTextView|NSText|NSResponder|NSView|NSObject)\s*\(")
 
 BUBBLE_IFACE_IVARS = "char *_original; size_t _originalLen;"
 BUBBLE_IFACE_DECLS = "- (void)keepOriginal:(const char *)text length:(size_t)len;"
@@ -73,6 +107,9 @@ BUBBLE_IMPL = r"""
   _originalLen = len;
 }
 - (void)copy:(id)sender {
+  if (_original == NULL) {
+    return;
+  }
   NSRange r = [self selectedRange];
   size_t from = zb_drawer_appkit_original_offset(_original, _originalLen, r.location);
   size_t to = zb_drawer_appkit_original_offset(_original, _originalLen, NSMaxRange(r));
@@ -146,8 +183,8 @@ SIG_FACTORY = r"-\s*\(\s*ZbBubbleView\s*\*\s*\)\s*bubbleWithText:"
 SIG_UPDATE = r"-\s*\(\s*void\s*\)\s*setBubble:"
 
 
-def lexical(text):
-    """`text` with comments removed and every string/character literal's contents blanked (quotes kept)."""
+def lexical(text, keep_strings=False):
+    """`text` with comments removed and every string/character literal's contents blanked (quotes kept), or kept."""
     out, i, n = [], 0, len(text)
     while i < n:
         if text.startswith("//", i):
@@ -160,7 +197,7 @@ def lexical(text):
             q, j = text[i], i + 1
             while j < n and text[j] != q:
                 j += 2 if text[j] == "\\" else 1
-            out.append(q + q)
+            out.append(text[i:j + 1] if keep_strings else q + q)
             i = j + 1
         else:
             out.append(text[i])
@@ -219,12 +256,51 @@ def diff(where, got, want):
     return [f"{where}: differs at statement {i}: got `{g}`, want `{w}`"]
 
 
-def problems(source):
-    """agent_drawer_mac.m's source (None: missing) -> the contract's violations (empty: holds)."""
+def directives(where, text, allowed):
+    """V0: the file's preprocessing is exactly `allowed` (no digraph, _Pragma or line splice to hide one)."""
+    found = []
+    blank = lexical(text)
+    for word, why in (("%:", "a digraph directive"), ("_Pragma", "a _Pragma"), ("\\\n", "a line splice")):
+        if word in blank:
+            found.append(f"V0 {where}: {why}")
+    got = [re.sub(r"\s+", " ", line.strip()) for line in lexical(text, keep_strings=True).splitlines()
+           if line.lstrip().startswith("#")]
+    if got != allowed:
+        extra = [d for d in got if d not in allowed] or got
+        found.append(f"V0 {where}: preprocessing must be exactly {allowed} (got {extra})")
+    return found
+
+
+def link_problems(build_zig, sources, others):
+    """V0 / V7 over the macOS link: the drawer is in it, no flag preprocesses it, and no other linked native source
+    (`others`: {path: text}) reaches the bubble's class chain, copy: or the pasteboard."""
+    found = []
+    if DRAWER not in sources:
+        found.append(f"V0: {DRAWER} is not in the macOS link ({sources})")
+    m = re.search(r"fn configureMacosBackend\(.*?\n}\n", build_zig, re.S)
+    for flag in re.findall(r'"(-[^"]*)"', m.group(0) if m else ""):
+        if flag.startswith(PREPROCESSOR_FLAGS):
+            found.append(f"V0: the macOS build passes the preprocessor flag {flag}")
+    for path, text in sorted(others.items()):
+        code = lexical(text)
+        if CATEGORY.search(code):
+            found.append(f"V7 {path}: a category on the bubble's class chain")
+        for word in RUNTIME_REWRITES + ("ZbBubbleView", "NSPasteboard"):
+            if re.search(r"\b" + word + r"\b", code):
+                found.append(f"V7 {path}: {word}")
+        if re.search(r"\bcopy:", re.sub(r"@selector\(\s*copy:\s*\)", "", code)):
+            found.append(f"V7 {path}: copy: other than the Edit menu's @selector(copy:)")
+    return found
+
+
+def problems(source, header=None):
+    """agent_drawer_mac.m's source (None: missing) and its header -> the contract's violations (empty: holds)."""
     if source is None:
         return ["src/agent_drawer_mac.m is missing"]
+    found = directives(DRAWER, source, DRAWER_DIRECTIVES)
+    found += ([f"V0: {HEADER} is missing"] if header is None else directives(HEADER, header, HEADER_DIRECTIVES))
     code = PROTOTYPES.sub("", lexical(source))
-    found, bound = [], []
+    bound = []
     # V1 the interface
     ifaces = list(re.finditer(r"@interface\s+ZbBubbleView\s*:\s*NSTextView\s*\{", code))
     if len(ifaces) != 1:
@@ -236,7 +312,7 @@ def problems(source):
         found += diff("V1 ivars", shape(code[k + 1:ivars_end - 1]), shape(lexical(BUBBLE_IFACE_IVARS)))
         found += diff("V1 declarations", shape(code[ivars_end:end]), shape(lexical(BUBBLE_IFACE_DECLS)))
         bound.append((ifaces[0].start(), end + 4))
-    if re.search(r"@(?:interface|implementation)\s+(?:ZbBubbleView|NSTextView|NSText|NSResponder|NSView)\s*\(", code):
+    if CATEGORY.search(code):
         found.append("V1: a category on the bubble's class chain")
     # V2 the implementation
     impls = list(re.finditer(r"@implementation\s+ZbBubbleView\b", code))
@@ -282,7 +358,7 @@ def problems(source):
     labels = re.sub(r'(?:\bNSTextField\s*\*\s*\w+\s*=\s*)?\[\s*NSTextField\s+labelWithString:\s*@""\s*\]', "", rest)
     if re.search(r"\bNSTextField\b", labels):
         found.append("V6: an NSTextField other than a static [NSTextField labelWithString:@\"...\"]")
-    for word in NEVER:
+    for word in NEVER + RUNTIME_REWRITES:
         if word in code:
             found.append(f"V6: {word}")
     return found
@@ -290,6 +366,16 @@ def problems(source):
 
 HONEST = r'''
 #import <AppKit/AppKit.h>
+#import <WebKit/WebKit.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include "agent_drawer_mac.h"
+
+#define ZB_CARD_APPROVE 1
+#define ZB_CARD_DENY 2
+#define ZB_GESTURE_DRAG 1
+
 char *zb_drawer_appkit_shown(const char *text, size_t len, size_t *out_len);
 size_t zb_drawer_appkit_original_offset(const char *text, size_t len, size_t shown);
 int zb_drawer_bubble_layout_contiguous(size_t len);
@@ -314,6 +400,9 @@ int zb_drawer_bubble_layout_contiguous(size_t len);
   _originalLen = len;
 }
 - (void)copy:(id)sender {
+  if (_original == NULL) {
+    return;
+  }
   NSRange r = [self selectedRange];
   size_t from = zb_drawer_appkit_original_offset(_original, _originalLen, r.location);
   size_t to = zb_drawer_appkit_original_offset(_original, _originalLen, NSMaxRange(r));
@@ -387,6 +476,51 @@ int zb_drawer_bubble_layout_contiguous(size_t len);
 '''
 
 
+HONEST_HEADER = """/* the drawer's mount, called by the shim */
+#ifndef ZB_AGENT_DRAWER_MAC_H
+#define ZB_AGENT_DRAWER_MAC_H
+
+#include <stddef.h>
+#include <stdint.h>
+
+void *zb_drawer_mac_mount(void *ns_window, void *wk_web_view, uint32_t window_id);
+
+#endif
+"""
+BUILD = """fn configureMacosBackend(module: *std.Build.Module, b: *std.Build) void {
+    module.addCSourceFile(.{ .file = b.path("src/agent_home_lock.c"), .flags = &.{"-std=gnu11"} });
+    const shim = b.addSystemCommand(&.{ "xcrun", "clang", "-dynamiclib", "-fobjc-arc", "-Wl,-undefined,dynamic_lookup", "-Wl,-fixup_chains" });
+    shim.addArg("-I");
+    shim.addFileArg(b.path("src/wkwebview_shim.m"));
+    shim.addFileArg(b.path("src/agent_drawer_mac.m"));
+    shim.addArgs(&.{ "-install_name", "@executable_path/../Frameworks/libwkwebview_shim.dylib", "-o" });
+}
+"""
+OTHERS = {
+    "src/wkwebview_shim.m": """#import <Cocoa/Cocoa.h>
+#import <objc/runtime.h>
+static void zb_menu(NSMenu *editMenu) {
+  [editMenu addItemWithTitle:@"Copy" action:@selector(copy:) keyEquivalent:@"c"];
+}
+static void zb_tag(id window, id value) {
+  objc_setAssociatedObject(window, "zb", value, OBJC_ASSOCIATION_RETAIN);
+}
+""",
+    "src/agent_home_lock.c": "int zb_agent_home_lock(void) { return 0; }\n",
+}
+
+
+def link_case(build=BUILD, **others):
+    files = dict(OTHERS)
+    for path, text in others.items():
+        files[path.replace("_dot_", ".").replace("__", "/")] = text
+    return build, files
+
+
+def link_found(build, files):
+    return link_problems(build, mac_link_sources(build), files)
+
+
 def mutate(old, new):
     assert HONEST.count(old) == 1, old
     return HONEST.replace(old, new)
@@ -438,7 +572,23 @@ MUTANTS = {  # name -> (source, the rule it must fail)
                                        "V6: an NSTextField other than"),
     "a category overriding copy:": (mutate("@interface ZbDrawerView", "@implementation ZbBubbleView (Copy)\n- (void)copy:(id)sender {\n}\n@end\n\n@interface ZbDrawerView"),
                                     "V1: a category"),
-    "a swizzled copy:": (mutate("#import <AppKit/AppKit.h>\n", "#import <AppKit/AppKit.h>\n#import <objc/runtime.h>\n"), "V6: objc/runtime.h"),
+    "a swizzled copy:": (mutate("#import <AppKit/AppKit.h>\n", "#import <AppKit/AppKit.h>\n#import <objc/runtime.h>\n"),
+                         "V0 src/agent_drawer_mac.m: preprocessing"),
+    "a swizzle without the header": (mutate("- (void)sent {\n", "- (void)sent {\n  method_exchangeImplementations(NULL, NULL);\n"),
+                                     "V6: method_exchangeImplementations"),
+    # RoseCat 8101 #1: preprocessing
+    "#if 0 around the implementation": (mutate("@implementation ZbBubbleView\n", "#if 0\n@implementation ZbBubbleView\n")
+                                        .replace("  free(_original);\n}\n@end\n", "  free(_original);\n}\n@end\n#endif\n"),
+                                        "V0 src/agent_drawer_mac.m: preprocessing"),
+    "#define NO YES": (mutate("#define ZB_GESTURE_DRAG 1\n", "#define ZB_GESTURE_DRAG 1\n#define NO YES\n"),
+                       "V0 src/agent_drawer_mac.m: preprocessing"),
+    "a digraph #define": (mutate("#define ZB_GESTURE_DRAG 1\n", "#define ZB_GESTURE_DRAG 1\n%:define NO YES\n"),
+                          "V0 src/agent_drawer_mac.m: a digraph directive"),
+    "a _Pragma": (mutate("#define ZB_GESTURE_DRAG 1\n", "#define ZB_GESTURE_DRAG 1\n_Pragma(\"clang diagnostic ignored\")\n"),
+                  "V0 src/agent_drawer_mac.m: a _Pragma"),
+    # RoseCat 8101 #3: allocation failure
+    "copy: past a failed allocation": (mutate("- (void)copy:(id)sender {\n  if (_original == NULL) {\n    return;\n  }\n",
+                                              "- (void)copy:(id)sender {\n"), "V2 ZbBubbleView"),
     # the bubbles and the input
     "a second, plain NSTextView bubble": (mutate("  [_rows addArrangedSubview:[self bubbleWithText:text length:len]];",
                                                  "  [_rows addArrangedSubview:[[NSTextView alloc] initWithFrame:NSZeroRect]];"), "V6: NSTextView"),
@@ -460,23 +610,76 @@ MUTANTS = {  # name -> (source, the rule it must fail)
 }
 
 
+HEADER_MUTANTS = {  # name -> (header text or None, the rule it must fail)
+    "a macro in the drawer's header": (HONEST_HEADER.replace("#include <stdint.h>\n", "#include <stdint.h>\n#define NO YES\n"),
+                                       "V0 src/agent_drawer_mac.h: preprocessing"),
+    "the drawer's header is missing": (None, "V0: src/agent_drawer_mac.h is missing"),
+}
+LINK_MUTANTS = {  # name -> ((build.zig, {path: text}), the rule it must fail)
+    "the drawer is not linked": (link_case(BUILD.replace('    shim.addFileArg(b.path("src/agent_drawer_mac.m"));\n', "")),
+                                 "V0: src/agent_drawer_mac.m is not in the macOS link"),
+    "a -D flag on the shim": (link_case(BUILD.replace('"-fobjc-arc",', '"-fobjc-arc", "-DNO=YES",')),
+                              "V0: the macOS build passes the preprocessor flag -DNO=YES"),
+    "a category on ZbBubbleView in the shim": (link_case(src__wkwebview_shim_dot_m=OTHERS["src/wkwebview_shim.m"]
+                                                         + "@implementation ZbBubbleView (Steal)\n- (void)copy:(id)s {\n}\n@end\n"),
+                                               "V7 src/wkwebview_shim.m: a category"),
+    "a category on NSTextView in the shim": (link_case(src__wkwebview_shim_dot_m=OTHERS["src/wkwebview_shim.m"]
+                                                       + "@implementation NSTextView (Steal)\n- (void)copy:(id)s {\n}\n@end\n"),
+                                             "V7 src/wkwebview_shim.m: a category"),
+    "a swizzle in the shim": (link_case(src__wkwebview_shim_dot_m=OTHERS["src/wkwebview_shim.m"]
+                                        + "static void zb_s(Method a, Method b) {\n  method_exchangeImplementations(a, b);\n}\n"),
+                              "V7 src/wkwebview_shim.m: method_exchangeImplementations"),
+    "an isa swap in the shim": (link_case(src__wkwebview_shim_dot_m=OTHERS["src/wkwebview_shim.m"]
+                                          + "static void zb_i(id v, Class c) {\n  object_setClass(v, c);\n}\n"),
+                                "V7 src/wkwebview_shim.m: object_setClass"),
+    "a pasteboard write in the shim": (link_case(src__wkwebview_shim_dot_m=OTHERS["src/wkwebview_shim.m"]
+                                                 + "static void zb_p(NSString *t) {\n  [[NSPasteboard generalPasteboard] setString:t forType:NSPasteboardTypeString];\n}\n"),
+                                       "V7 src/wkwebview_shim.m: NSPasteboard"),
+    "a copy: in the shim's responder chain": (link_case(src__wkwebview_shim_dot_m=OTHERS["src/wkwebview_shim.m"]
+                                                        + "@implementation ZBWindow\n- (void)copy:(id)sender {\n}\n@end\n"),
+                                              "V7 src/wkwebview_shim.m: copy: other than"),
+    "a runtime rewrite in a C source": (link_case(src__agent_home_lock_dot_c="void zb_r(void) { class_replaceMethod(0, 0, 0, 0); }\n"),
+                                        "V7 src/agent_home_lock.c: class_replaceMethod"),
+}
+
+
 class BubbleInert(unittest.TestCase):
     def test_the_real_drawer_keeps_bubbles_inert(self):
-        self.assertEqual(problems(DRAWER.read_text() if DRAWER.exists() else None), [])
+        build = (REPO / "build.zig").read_text()
+        sources = mac_link_sources(build)
+        self.assertIn("src/wkwebview_shim.m", sources, "the link parser found no macOS sources")
+        others = {p: (REPO / p).read_text() for p in sources if p != DRAWER and (REPO / p).is_file()}
+        read = (lambda p: (REPO / p).read_text() if (REPO / p).is_file() else None)
+        self.assertEqual(link_problems(build, sources, others) + problems(read(DRAWER), read(HEADER)), [])
 
     def test_the_honest_fixture_passes(self):
-        self.assertEqual(problems(HONEST), [])
+        self.assertEqual(problems(HONEST, HONEST_HEADER), [])
+
+    def test_the_honest_link_passes_with_the_edit_menu(self):
+        self.assertEqual(link_found(*link_case()), [])
+
+    def test_each_dishonest_header_fails_for_its_rule(self):
+        for name, (header, rule) in HEADER_MUTANTS.items():
+            with self.subTest(mutant=name):
+                found = problems(HONEST, header)
+                self.assertTrue(any(f.startswith(rule) for f in found), (name, found))
+
+    def test_each_dishonest_link_fails_for_its_rule(self):
+        for name, ((build, files), rule) in LINK_MUTANTS.items():
+            with self.subTest(mutant=name):
+                found = link_found(build, files)
+                self.assertTrue(any(f.startswith(rule) for f in found), (name, found))
 
     def test_strings_and_comments_do_not_count(self):
         extra = ('// NSTextField setString: initWithHTML zb_drawer_bubble_layout_contiguous copy:\n'
                  'static const char *k = "setStringValue: } { fieldEditor: zb_drawer_appkit_shown( _original";\n')
-        self.assertEqual(problems(HONEST + extra), [])
+        self.assertEqual(problems(HONEST + extra, HONEST_HEADER), [])
 
     def test_each_dishonest_fixture_fails_for_its_rule(self):
         for name, (text, rule) in MUTANTS.items():
             with self.subTest(mutant=name):
                 self.assertNotEqual(text, HONEST, "the mutation's anchor moved")
-                found = problems(text)
+                found = problems(text, HONEST_HEADER)
                 self.assertTrue(any(f.startswith(rule) for f in found), (name, found))
 
 
