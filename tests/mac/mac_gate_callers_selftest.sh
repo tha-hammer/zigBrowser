@@ -242,13 +242,26 @@ check_caller build-dmg   packaging/macos/build-dmg.sh  '^==> Done: '            
 #   green whose PASS line names another test; every row runs and the leg exits 1 on any mismatch, 0 when all match;
 #   V6 the leg exports HOME, CFFIXED_USER_HOME, TMPDIR, the XDG dirs and ZB_E2E_SOCKET_DIR beneath the run root and
 #   ZB_DEBUG_EPHEMERAL_DATA_STORE=1, and writes nothing in the original HOME outside the run root.
+# The leg sources the real tests/mac/mac_varfolders_audit.sh, copied into each fake run root, against a getconf stub
+# whose per-user roots are directories under $T/vf (rows VF below).
 rows_leg() { # rows_leg <out var> <rows...>: run the extracted leg in $T/rows-home/$RRD; sets LEG_RC
   local -n _o=$1; shift
   _o=$(cd / && env -i PATH="$T/rows-bin:/usr/bin:/bin" HOME="$T/rows-home" bash "$T/rows-leg.sh" "$RRD" "$@" 2>&1)
   LEG_RC=$?
 }
+rows_root() { # rows_root <run dir name>: a fake run root holding the exact helper the leg sources
+  mkdir -p "$T/rows-home/$1/tests/mac" && cp "$R/tests/mac/mac_varfolders_audit.sh" "$T/rows-home/$1/tests/mac/"
+}
 RRD=zb-gate-0000000000000000000000000000000000000000-1
-mkdir -p "$T/rows-bin" "$T/rows-home/$RRD"
+mkdir -p "$T/rows-bin" "$T/vf/T" "$T/vf/C"
+rows_root "$RRD"
+: > "$T/vf/C/keep"   # a file that was there before every leg: no leg may delete it
+cat > "$T/rows-bin/getconf" <<EOF
+#!/bin/bash
+[ -e "$T/vf/fail" ] && exit 1   # VF2: the per-user roots cannot be resolved
+case "\$1" in DARWIN_USER_TEMP_DIR) echo "$T/vf/T/" ;; DARWIN_USER_CACHE_DIR) echo "$T/vf/C/" ;; *) exit 1 ;; esac
+EOF
+chmod +x "$T/rows-bin/getconf"
 awk "/<<'REMOTE'/{f=1;next} /^REMOTE\$/{f=0} f" "$R/tests/mac/ms_runtime_rows_gate.sh" > "$T/rows-leg.sh"
 cat > "$T/rows-bin/python3" <<'EOF'
 #!/bin/bash
@@ -265,6 +278,7 @@ case "$1" in
   *v_leak*)      printf 'FAIL\tv-red\nLEAK\t4242\t4242\tThu Oct 22 21:00:00 2026\t/x/zigBrowser --e2e-protocol\n'; exit 1 ;;
   *v_hang*)      exec sleep 30 ;;   # a row that never returns (V9: the leg times out)
   *v_green*)     printf 'PASS\tv-other\n'; exit 0 ;;
+  *v_vf*)        : > "$(getconf DARWIN_USER_TEMP_DIR)zb-row-wrote"; printf 'PASS\tv-vf\n'; exit 0 ;;   # WebKit-like temp
   *v_env*)       printf 'ENV\t%s\n' "$HOME" "$CFFIXED_USER_HOME" "$TMPDIR" "$XDG_DATA_HOME" "$XDG_CACHE_HOME" \
                    "$XDG_CONFIG_HOME" "$XDG_RUNTIME_DIR" "$ZB_E2E_SOCKET_DIR"
                  printf 'EPH\t%s\n' "${ZB_DEBUG_EPHEMERAL_DATA_STORE:-}"
@@ -321,7 +335,7 @@ else
   bad "rows V7: rc=$LEG_RC ROW lines $(grep -c $'^ROW\t' <<<"$out"): $(tail -4 <<<"$out")"
 fi
 RRD_FIRST=$RRD RRD=zb-gate-0000000000000000000000000000000000000000-2
-mkdir -p "$T/rows-home/$RRD"
+rows_root "$RRD"
 rows_leg out "tests/e2e/mac_v_red_ok_test.py|red|v-red"
 if [ "$LEG_RC" -eq 4 ] && [ "$(grep -c $'^ROW\t' <<<"$out")" -eq 0 ] && grep -q $'^HOST_HELD\t../'"$RRD_FIRST"'/LEAKED' <<<"$out"; then
   ok "rows V8: a later leg on a host with a leaked run root runs nothing (exit 4, HOST_HELD)"
@@ -336,7 +350,7 @@ RRD=$RRD_FIRST
 # the timed-out leg can hold the second one.
 rm -f -- "${T:?}/rows-home/${RRD_FIRST:?}/LEAKED"
 RRD_T1=zb-gate-0000000000000000000000000000000000000000-3 RRD_T2=zb-gate-0000000000000000000000000000000000000000-4
-mkdir -p "$T/rows-home/$RRD_T1" "$T/rows-home/$RRD_T2"
+rows_root "$RRD_T1" && rows_root "$RRD_T2"
 t1=$(cd / && env -i PATH="$T/rows-bin:/usr/bin:/bin" HOME="$T/rows-home" \
        unshare --user --map-root-user --pid --fork --mount-proc bash -c \
        'timeout 3 bash "$1" "$2" "tests/e2e/mac_v_hang_test.py|red|v-red"; echo "LEG1_RC=$?"' _ "$T/rows-leg.sh" "$RRD_T1" 2>&1)
@@ -356,9 +370,39 @@ rows_leg out "tests/e2e/mac_v_red_ok_test.py|red|v-red"
 [ "$LEG_RC" -eq 0 ] && [ ! -e "$T/rows-home/$RRD/LEAKED" ] && ok "rows V10: a leg that finishes cleanly removes its RUNNING marker" \
   || bad "rows V10: rc=$LEG_RC, marker $( [ -e "$T/rows-home/$RRD/LEAKED" ] && echo left || echo gone)"
 
+# VF (the owner's /var/folders rule, SilverRidge 94ebe76b): VF1 the leg prints the physical roots, the path a row wrote
+# there and the temp root's own changed record (unfiltered) and COMPLETE, exits 0 and deletes nothing there; VF2 an audit that cannot resolve its roots
+# is INCONCLUSIVE: the leg exits 5 although its row matched; VF3 a leak stop still reports the audit, and exits 3.
+rows_leg out "tests/e2e/mac_v_vf_test.py|green|v-vf"
+if [ "$LEG_RC" -eq 0 ] && [ "$(rows_verdict "$out" v_vf)" = MATCH ] \
+   && [ "$(grep -c $'^VARFOLDERS_ROOTS\t' <<<"$out")" -eq 1 ] && grep -qx $'VARFOLDERS_ROOTS\tT\t'"$T/vf/T"$'\tC\t'"$T/vf/C" <<<"$out" \
+   && [ "$(grep $'^VARFOLDERS-DELTA\t' <<<"$out" | cut -f2-4)" = $'changed\tT\t.\nadded\tT\tzb-row-wrote' ] \
+   && grep -qx $'VARFOLDERS\tCOMPLETE\t2' <<<"$out" && [ -e "$T/vf/C/keep" ] && [ -e "$T/vf/T/zb-row-wrote" ]; then
+  ok "rows VF1: the leg reports the roots and the row's /var/folders write (the temp root and its new file), exit 0, nothing deleted there"
+else
+  bad "rows VF1: rc=$LEG_RC: $(grep -E $'^(VARFOLDERS|ROW)' <<<"$out" | tr '\n' ' ')"
+fi
+: > "$T/vf/fail"
+rows_leg out "tests/e2e/mac_v_red_ok_test.py|red|v-red"
+rm -f -- "${T:?}/vf/fail"
+if [ "$LEG_RC" -eq 5 ] && [ "$(rows_verdict "$out" v_red_ok)" = MATCH ] && grep -q $'^VARFOLDERS\tINCONCLUSIVE\t' <<<"$out" \
+   && ! grep -q $'^VARFOLDERS\tCOMPLETE' <<<"$out"; then
+  ok "rows VF2: an audit without its roots is INCONCLUSIVE: the leg exits 5 although its row matched"
+else
+  bad "rows VF2: rc=$LEG_RC: $(grep -E $'^(VARFOLDERS|ROW)' <<<"$out" | tr '\n' ' ')"
+fi
+rows_leg out "tests/e2e/mac_v_leak_test.py|red|v-red"
+if [ "$LEG_RC" -eq 3 ] && grep -q $'^HOST_STOPPED\t' <<<"$out" && grep -q $'^VARFOLDERS\tCOMPLETE\t' <<<"$out"; then
+  ok "rows VF3: a leak stop still prints the /var/folders audit, and the leg exits 3"
+else
+  bad "rows VF3: rc=$LEG_RC: $(grep -E $'^(VARFOLDERS|HOST_STOPPED)' <<<"$out" | tr '\n' ' ')"
+fi
+rm -f -- "${T:?}/rows-home/${RRD:?}/LEAKED"
+
 # L: this side of the leak path, the real rows caller with stub ssh. A leaked leg (exit 3) or a timed-out leg (124) on
-# intel keeps intel's run dir (no delete call to intel) while arm is still cleaned; a held leg (exit 4) keeps nothing.
-for case in "3 0 STOPPED" "124 0 STOPPED" "4 1 HELD"; do
+# intel keeps intel's run dir (no delete call to intel) while arm is still cleaned; a held leg (exit 4) or an
+# INCONCLUSIVE /var/folders audit (exit 5) keeps nothing.
+for case in "3 0 STOPPED" "124 0 STOPPED" "4 1 HELD" "5 1 INCONCLUSIVE"; do
   read -r leg_rc want_del word <<<"$case"
   rm -f "$T/ctl"/*
   out=$(cd "$R" && env -i PATH="$T/bin:/usr/bin:/bin" HOME="$T/home" TMPDIR="$T/tmp" ZB_MAC_HOST="$INTEL" \

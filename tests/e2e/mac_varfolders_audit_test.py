@@ -6,9 +6,9 @@ snapshots, report EVERY added, changed or removed path there without filtering, 
 there itself. A /var/folders delta alone is reportable and may coexist with PASS; a missing or incomplete snapshot, or a
 root that changed identity during the run, is INCONCLUSIVE.
 
-RED, UNREGISTERED, second fix-forward for SilverRidge c65d61e0 (on 23d8b313, itself for 30a7a1e8 on 143a12f6):
-tests/mac/mac_varfolders_audit.sh, the one shared sourced helper (the Mac rows gate and the MS1c .app gate both use
-it), does not exist yet.
+Registered (step test-mac-varfolders-audit; red 143a12f6, fix-forwards 23d8b313 and 44fc9313 for SilverRidge
+30a7a1e8 and c65d61e0, approved f0590a29): tests/mac/mac_varfolders_audit.sh is the one shared sourced helper (the
+Mac rows gate and the MS1c .app gate both use it).
 
 The helper's contract under test (sourced by bash):
   varfolders_begin <evidence dir>   prints nothing and exits 0; resolves and records the roots (path, device, inode),
@@ -55,9 +55,9 @@ itself from lstat and the file bytes):
   file (ctime, and nlink, are in its record).
 - V14 a tripwire for what a Linux bash cannot show (it pipes small here-documents): the helper has no here-document,
   because macOS /bin/bash 3.2 writes each one to a temp file in $TMPDIR, the audited temp root by default.
-The green adds the helper and a mutant check, which runs these rows against altered copies of the helper.
+tests/e2e/mac_varfolders_audit_mutant_selftest.py runs these rows against altered copies of the helper.
 
-Run: python3 -X dev tests/e2e/mac_varfolders_audit_test.py [helper path]
+Run: python3 -X dev tests/e2e/mac_varfolders_audit_test.py [helper path]   (zig build test-mac-varfolders-audit)
 """
 from __future__ import annotations
 

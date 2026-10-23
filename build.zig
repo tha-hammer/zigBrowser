@@ -4040,9 +4040,24 @@ pub fn build(b: *std.Build) void {
         "tests/mac/known_hosts", "tests/mac/mac_config.sh",                  "tests/mac/gate.sh",            "tests/mac/ms1b_signed_gate.sh",
         "tests/mac/ms2a_gate.sh",                 "tests/mac/ms2b_gate.sh",       "tests/mac/ms2c_gate.sh",
         "tests/mac/ms3_gate.sh",                  "tests/mac/ms4_gate.sh",        "packaging/macos/build-dmg.sh",
+        "tests/mac/ms_runtime_rows_gate.sh",      "tests/mac/mac_varfolders_audit.sh",
     }) |input| mac_gate_callers_selftest.addFileInput(b.path(input));
     mac_build_script_step.dependOn(&mac_gate_callers_selftest.step);
     test_step.dependOn(&mac_gate_callers_selftest.step);
+    // The owner's /var/folders rule (2026-10-23; SilverRidge 94ebe76b): the one shared audit helper that every Mac gate
+    // launching the browser sources (the runtime rows gate, the MS1c .app gate), and its helper mutants. Hostless: a
+    // getconf stub and private temp roots. V7 and the mutants need a non-root user (root reads a mode-000 directory).
+    const mac_varfolders_audit_step = b.step("test-mac-varfolders-audit", "The /var/folders audit helper: physical roots, every delta unfiltered, INCONCLUSIVE when incomplete, nothing deleted");
+    for ([_][]const u8{ "tests/e2e/mac_varfolders_audit_test.py", "tests/e2e/mac_varfolders_audit_mutant_selftest.py" }) |script| {
+        const run = b.addSystemCommand(&.{ "python3", script });
+        for ([_][]const u8{
+            "tests/e2e/mac_varfolders_audit_test.py",
+            "tests/e2e/mac_varfolders_audit_mutant_selftest.py",
+            "tests/mac/mac_varfolders_audit.sh",
+        }) |input| run.addFileInput(b.path(input));
+        mac_varfolders_audit_step.dependOn(&run.step);
+        test_step.dependOn(&run.step);
+    }
     // MS1.4: the two-host gate fails closed on no GUI session, wrong arch, a missing SDK and zero recorded assertions.
     const mac_gate_selftest = b.addSystemCommand(&.{ "bash", "tests/mac/gate_selftest.sh" });
     for ([_][]const u8{

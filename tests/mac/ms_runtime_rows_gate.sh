@@ -27,6 +27,12 @@
 # marker is DURABLE (SilverRidge c78a1f6): the leg writes <run root>/LEAKED as RUNNING before its first row and
 # removes it only after every row finished with no leak, so a leg that timed out or died leaves it and the next run
 # on that host is held; this side keeps a timed-out leg's run root too.
+# /var/folders (the owner's rule, 2026-10-23; SilverRidge 94ebe76b): a row may write under this Mac user's own
+# /var/folders (WebKit's cache and temp), and nowhere else outside the run root. The leg sources the one shared helper
+# tests/mac/mac_varfolders_audit.sh, snapshots the physical roots of getconf DARWIN_USER_TEMP_DIR and
+# DARWIN_USER_CACHE_DIR before the first row and after the last (also before a leak stop), prints every added, changed
+# or removed path there unfiltered (VARFOLDERS-DELTA lines) and deletes nothing there. A delta alone is reportable; an
+# incomplete audit (VARFOLDERS<TAB>INCONCLUSIVE) holds the leg from PASS: it exits 5 and its host is INCONCLUSIVE.
 # Every row runs (one row's result never stops the next); each prints its output and a
 # ROW<TAB><file><TAB><want><TAB>rc=<n><TAB>MATCH|MISMATCH line. The gate prints PASS<TAB>ms-runtime-rows-gate<TAB>both-arches
 # only when every row on both Macs matched. Console user, no xvfb (WKWebView needs the WindowServer), like ms2a/ms2c.
@@ -84,6 +90,9 @@ export HOME="$root/run-env/home" CFFIXED_USER_HOME="$root/run-env/home" TMPDIR="
   XDG_DATA_HOME="$root/run-env/xdg-data" XDG_CACHE_HOME="$root/run-env/xdg-cache" \
   XDG_CONFIG_HOME="$root/run-env/xdg-config" XDG_RUNTIME_DIR="$root/run-env/xdg-runtime" \
   ZB_E2E_SOCKET_DIR="$root/s" ZB_DEBUG_EPHEMERAL_DATA_STORE=1
+# The before snapshot of this user's /var/folders, ahead of the first browser launch (evidence in the run root).
+. "$root/tests/mac/mac_varfolders_audit.sh" || exit 1
+varfolders_begin "$root/evidence/varfolders" || exit 1
 # Durable before any row: only a clean finish below removes it, so a timeout or a death holds this host.
 printf 'RUNNING\t%s\tthe leg did not finish; processes may be left running\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
   > "$root/LEAKED" || exit 1
@@ -107,11 +116,13 @@ for row in "$@"; do
     printf '%s\n' "$out" | grep "^LEAK$T" | sed 's/^LEAK/LEAKED/' > "$root/LEAKED"
     printf 'HOST_STOPPED\t%s\t%s\n' "$file" "$root"
     cat "$root/LEAKED"
+    varfolders_end "$root/evidence/varfolders"   # the rows so far wrote what they wrote: report it; a leak still wins
     exit 3
   fi
   [ "$verdict" = MATCH ] || overall=1
 done
 rm -f -- "${root:?}/LEAKED"   # every row finished and none left a process running
+varfolders_end "$root/evidence/varfolders" || exit 5   # INCONCLUSIVE: the rows are not judged
 exit "$overall"
 REMOTE
   case "$leg_rc" in
@@ -123,6 +134,8 @@ REMOTE
         "exactly the reported process before any cleanup of it or further work on $host." >&2
       return 1 ;;
     4) echo "HELD: $host ($label) still has a run dir with a leaked process (HOST_HELD above); nothing ran" >&2; return 1 ;;
+    5) echo "INCONCLUSIVE: $host ($label): the /var/folders audit is incomplete (VARFOLDERS INCONCLUSIVE above);" \
+         "its rows are not judged" >&2; return 1 ;;
     *) echo "FAIL: rows leg on $host failed (exit $leg_rc)" >&2; return 1 ;;
   esac
   printf 'PASS\tms-runtime-rows-leg\t%s\t%s\n' "$host" "$label"
