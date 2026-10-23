@@ -917,6 +917,43 @@ test "token sidecar: whitespace-only token refused; failed start leaves no sidec
     try testing.expectError(error.FileNotFound, std.Io.Dir.cwd().access(testing.io, token_path, .{}));
 }
 
+test "start refuses a relative socket path before it unlinks, binds or writes anything (3ui.6)" {
+    if (!net.has_unix_sockets) return error.AddressFamilyUnsupported;
+    const name = "zb-3ui6-relative.sock";
+    var server = try automation_server.AutomationApiServer.init(testing.allocator, testing.io, .{
+        .enabled = true,
+        .socket_path = name,
+        .token = "0123456789abcdef",
+        .token_file_path = name ++ ".token",
+    });
+    defer server.deinit();
+    try testing.expectError(error.SocketPathNotAbsolute, server.start());
+    try testing.expectError(error.FileNotFound, std.Io.Dir.cwd().access(testing.io, name, .{}));
+    try testing.expectError(error.FileNotFound, std.Io.Dir.cwd().access(testing.io, name ++ ".token", .{}));
+
+    // A relative socket with no token sidecar (--automation-token-file supplies the token): the socket check alone.
+    var no_sidecar = try automation_server.AutomationApiServer.init(testing.allocator, testing.io, .{
+        .enabled = true,
+        .socket_path = name,
+        .token = "0123456789abcdef",
+        .token_file_path = "",
+    });
+    defer no_sidecar.deinit();
+    try testing.expectError(error.SocketPathNotAbsolute, no_sidecar.start());
+    try testing.expectError(error.FileNotFound, std.Io.Dir.cwd().access(testing.io, name, .{}));
+
+    // An absolute socket with a relative token sidecar is refused the same way.
+    var token_rel = try automation_server.AutomationApiServer.init(testing.allocator, testing.io, .{
+        .enabled = true,
+        .socket_path = "/tmp/zb-3ui6-absolute.sock",
+        .token = "0123456789abcdef",
+        .token_file_path = name ++ ".token",
+    });
+    defer token_rel.deinit();
+    try testing.expectError(error.SocketPathNotAbsolute, token_rel.start());
+    try testing.expectError(error.FileNotFound, std.Io.Dir.cwd().access(testing.io, "/tmp/zb-3ui6-absolute.sock", .{}));
+}
+
 test "AutomationApiServer.init frees everything when an allocation fails" {
     const Init = struct {
         fn run(allocator: std.mem.Allocator) !void {

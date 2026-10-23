@@ -194,6 +194,11 @@ pub const AutomationApiServer = struct {
         if (!self.config.enabled) return;
         if (!net.has_unix_sockets) return error.AddressFamilyUnsupported;
         if (self.listener != null) return;
+        // 3ui.6: the socket and its token sidecar are bound, unlinked and created by absolute path
+        // (cleanupSocketPath's deleteFileAbsolute asserts one), and a relative socket would depend on
+        // the cwd, so a client could not find it. Refuse before anything is touched.
+        if (!std.fs.path.isAbsolute(self.config.socket_path)) return error.SocketPathNotAbsolute;
+        if (self.config.token_file_path.len > 0 and !std.fs.path.isAbsolute(self.config.token_file_path)) return error.SocketPathNotAbsolute;
         try self.startCore();
         try self.startSocket();
     }

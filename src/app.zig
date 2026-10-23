@@ -471,7 +471,14 @@ fn runOpen(arena: std.mem.Allocator, io: std.Io, spec: OpenSpec) errors.BrowserE
         defer server.deinit();
         // S7.1: with the drawer alone the core runs in process, with no socket and no token
         // sidecar; with --automation-api the socket starts as before.
-        if (spec.automation_api) server.start() catch return error.WriteFailed else server.startCore() catch return error.WriteFailed;
+        if (spec.automation_api) server.start() catch |err| {
+            // 3ui.6: the only relative socket path is a relative ZIGBROWSER_SOCKET (the default is absolute).
+            if (err == error.SocketPathNotAbsolute) {
+                std.debug.print("zigBrowser: ZIGBROWSER_SOCKET must be an absolute path\n", .{});
+                return error.Usage;
+            }
+            return error.WriteFailed;
+        } else server.startCore() catch return error.WriteFailed;
         defer server.stop();
         // After the GTK loop and before the core stops: the drawers' brokers detached and
         // their Reaper joined (a call still waiting for GTK then gives up, NO_LOOP).

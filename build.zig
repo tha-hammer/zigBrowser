@@ -2240,6 +2240,16 @@ pub fn build(b: *std.Build) void {
     });
     automation_scroll_e2e.addArtifactArg(exe);
 
+    // 3ui.6: a relative ZIGBROWSER_SOCKET is refused (exit 1, a fixed line), never a panic. The real binary runs
+    // under a private Xvfb, HOME and XDG dirs; the test relaunches itself below a held PID namespace and proves it
+    // (pidns_guard) before it starts anything it may have to signal.
+    const automation_relative_socket_e2e = b.addSystemCommand(&.{ "python3", "tests/e2e/automation_relative_socket_test.py", "--binary" });
+    automation_relative_socket_e2e.addArtifactArg(exe);
+    automation_relative_socket_e2e.addFileInput(b.path("tests/e2e/automation_relative_socket_test.py"));
+    automation_relative_socket_e2e.addFileInput(b.path("agent/host/tests/pidns_guard.py"));
+    const automation_relative_socket_step = b.step("test-automation-relative-socket", "3ui.6: a relative ZIGBROWSER_SOCKET is refused with a clear error, never a panic");
+    automation_relative_socket_step.dependOn(&automation_relative_socket_e2e.step);
+
     // PagePort v3.3/v3.4 on the real GTK adapter: screenshot PNG, file
     // chooser, native wheel scrolling.
     const automation_native_ports_e2e = b.addSystemCommand(&.{
@@ -4036,6 +4046,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_x_tests.step);
     test_step.dependOn(&run_automation_x_tests.step);
     test_step.dependOn(&run_automation_server_tests.step);
+    test_step.dependOn(automation_relative_socket_step);
     test_step.dependOn(&run_automation_expect_phase_a_tests.step);
     test_step.dependOn(&run_automation_expect_budget_tests.step);
     test_step.dependOn(&run_automation_expect_deadline_tests.step);
