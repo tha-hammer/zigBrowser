@@ -358,8 +358,10 @@ pub const WebView2NetworkInterceptor = struct {
         };
     }
 
+    /// The one capability table's WebView2 network record (zigBrowser-ong.7): `.unproven` until a recorded Windows
+    /// network-capture run exists. This fake-backed interceptor never claims more than the table.
     pub fn capability(_: *const WebView2NetworkInterceptor) NetworkCapability {
-        return .{ .support = .supported };
+        return adapterCapabilities(.webview2).network;
     }
 
     pub fn start(self: *WebView2NetworkInterceptor) !void {
@@ -434,7 +436,7 @@ pub const WebView2NetworkInterceptor = struct {
                 .command_id = self.telemetry_context.command_id,
                 .backend = .webview2,
                 .page_id = self.page_id,
-                .network_capability = .supported,
+                .network_capability = self.capability().support,
                 .network_operation = operation,
                 .drop_reason = drop_reason,
                 .result_status = status,
@@ -456,7 +458,7 @@ pub const WebView2NetworkInterceptor = struct {
                 .command_id = self.telemetry_context.command_id,
                 .backend = .webview2,
                 .page_id = self.page_id,
-                .network_capability = .supported,
+                .network_capability = self.capability().support,
                 .network_operation = .event,
                 .drop_reason = drop_reason,
                 .target_host = event.target_host,
@@ -991,7 +993,7 @@ test "P3.3 WebView2 NetworkInterceptor start and stop register handlers idempote
     var interceptor = WebView2NetworkInterceptor.init(&fake, "page-network");
     interceptor.telemetry_sink = &telemetry;
 
-    try testing.expectEqual(NetworkSupport.supported, interceptor.capability().support);
+    try testing.expectEqual(NetworkSupport.unproven, interceptor.capability().support); // ong.7: the table's record
 
     try interceptor.start();
     try interceptor.start();

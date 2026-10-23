@@ -2175,8 +2175,22 @@ pub fn build(b: *std.Build) void {
         "capabilities-rpc-e2e",
     });
     capabilities_rpc_e2e.addArtifactArg(exe);
+    // zigBrowser-ong.7: the fake-backed WebView2 network interceptor reports the table's record, never more.
+    const wv2_network_claim_module = b.createModule(.{
+        .root_source_file = b.path("tests/wv2_network_claim_test.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    wv2_network_claim_module.addImport("automation_platform", b.createModule(.{
+        .root_source_file = b.path("src/automation_platform.zig"),
+        .target = target,
+        .optimize = optimize,
+    }));
+    const run_wv2_network_claim_tests = b.addRunArtifact(b.addTest(.{ .root_module = wv2_network_claim_module }));
+    run_wv2_network_claim_tests.skip_foreign_checks = true;
     const wv2_capabilities_step = b.step("test-wv2-capabilities", "Run WS2b.0's capability-row and capabilities-RPC tests");
     wv2_capabilities_step.dependOn(&run_wv2_capabilities_tests.step);
+    wv2_capabilities_step.dependOn(&run_wv2_network_claim_tests.step);
     wv2_capabilities_step.dependOn(&capabilities_rpc_e2e.step);
     // macOS plan rev 14 items 3 and 6 (MS5, BlueBeaver): where the agent runtime is per OS (an app bundle's
     // Contents/Frameworks/agent-host) and the setup gate (macOS refuses until MS6, never unsandboxed).
@@ -4123,6 +4137,7 @@ pub fn build(b: *std.Build) void {
     b.step("test-cdp-json", "Run WS2a.0's CDP-result reader tests").dependOn(&run_cdp_json.step);
     test_step.dependOn(&run_cdp_json.step);
     test_step.dependOn(&run_wv2_capabilities_tests.step);
+    test_step.dependOn(&run_wv2_network_claim_tests.step);
     test_step.dependOn(&capabilities_rpc_e2e.step);
     test_step.dependOn(&run_agent_setup_ms5_tests.step);
     test_step.dependOn(&run_agent_setup_ms5_python_tests.step);
