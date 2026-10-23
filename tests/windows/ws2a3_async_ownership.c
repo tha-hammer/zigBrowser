@@ -29,7 +29,17 @@
  *
  * 3a red and mutant (plan WS2a.3: restore the INFINITE wait): job_submit waits for a
  * COMPLETING job with WaitForSingleObject(job->done, INFINITE), so the call answers OK with "App Index A" after
- * the 3 s hold; that one assertion is the only FAIL line. Exit 0 only when every check passes. */
+ * the 3 s hold; that one assertion is the only FAIL line.
+ * WS2a.3c (plan WS2a.3: "an immediate quit wakes waiters and cancels queued jobs"), each in a fresh child
+ * process of this executable (`--ws2a3c-init-failure`, `--ws2a3c-immediate-quit <index.html>`), because a run
+ * that ends its loop ends it for the whole process. These run first, before this process's own loop:
+ *   - ONE named assertion: a caller already waiting for the loop when zb_app_run fails before its loop (here
+ *     an invalid UTF-8 URI) is answered NO_LOOP at once, with no result, and so is every later call;
+ *   - closing the window as soon as it exists (before or while the WebView starts) answers the waiting caller
+ *     NO_LOOP at once, frees its job, and ends zb_app_run.
+ *   3c red and mutant (no loop end on the early-failure paths of run_core): the waiter sits out its whole
+ *   8 s deadline and answers TIMEOUT, so that one assertion is the only FAIL line. Exit 0 only when every
+ *   check passes. */
 
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -49,6 +59,8 @@ void zb_automation_debug_step_hold_ms(unsigned int ms);
 int zb_automation_debug_late_dispatches(void);
 
 enum { kDeadlineMs = 300, kWaiterGraceMs = 250, kSlackMs = 300, kHoldMs = 3000, kStepHoldMs = 1200 };
+/* WS2a.3c: the early caller's deadline, how soon "at once" is, and how long a child may run. */
+enum { kEarlyMs = 8000, kAtOnceMs = 2000, kChildMs = 60000 };
 
 int zb_ipc_dispatch(const char *cmd, const char *args_json, const char **out_result,
                     const char **out_err) {
@@ -120,6 +132,151 @@ static int eval(const char *world, const char *body, unsigned int timeout_ms, ch
   return rc;
 }
 
+/* WS2a.3c: one title read on its own thread, timed to the tick it returned. */
+struct early_call {
+  int rc;
+  char got[256];
+  ULONGLONG took;
+  ULONGLONG ended;
+};
+
+static DWORD WINAPI early_title(LPVOID arg) {
+  struct early_call *call = (struct early_call *)arg;
+  call->rc = title(kEarlyMs, call->got, sizeof call->got, &call->took);
+  call->ended = GetTickCount64();
+  return 0;
+}
+
+/* The child's own host window (EnumWindows over this process only; never another process's window). */
+struct own_window {
+  DWORD pid;
+  HWND hwnd;
+};
+
+static BOOL CALLBACK find_own_window(HWND hwnd, LPARAM arg) {
+  struct own_window *want = (struct own_window *)arg;
+  DWORD pid = 0;
+  char cls[64];
+  GetWindowThreadProcessId(hwnd, &pid);
+  if (pid == want->pid && GetClassNameA(hwnd, cls, sizeof cls) > 0 && strcmp(cls, "zigBrowserWebView2Host") == 0) {
+    want->hwnd = hwnd;
+    return FALSE;
+  }
+  return TRUE;
+}
+
+/* Child: a caller waits for the loop; zb_app_run then fails before its loop (invalid UTF-8 URI). */
+static int init_failure_child(void) {
+  struct early_call call = {0};
+  HANDLE waiter = CreateThread(NULL, 0, early_title, &call, 0, NULL);
+  if (waiter == NULL) {
+    printf("ws2a3c child: CreateThread failed\n");
+    return 3;
+  }
+  Sleep(300); /* the call is now waiting for the loop */
+  const ULONGLONG failed_at = GetTickCount64();
+  const int run = zb_app_run("\xff\xfe-not-utf8", 0, 0);
+  const int joined = WaitForSingleObject(waiter, kEarlyMs + 5000) == WAIT_OBJECT_0;
+  CloseHandle(waiter);
+  char later[256];
+  ULONGLONG later_took = 0;
+  const int later_rc = title(3000, later, sizeof later, &later_took);
+  const ULONGLONG woke = joined && call.ended > failed_at ? call.ended - failed_at : 0;
+  printf("ws2a3c child: zb_app_run=%d (want %d); waiter rc=%d result=%s woke %llums after the failure (want %d "
+         "within %dms); later call rc=%d result=%s took=%llums\n",
+         run, ZB_EXIT_WEBVIEW_INIT_FAILED, call.rc, joined ? call.got : "(still waiting)", woke, ZB_AUTO_ERR_NO_LOOP,
+         kAtOnceMs, later_rc, later, later_took);
+  fflush(stdout);
+  return run == ZB_EXIT_WEBVIEW_INIT_FAILED && joined && call.rc == ZB_AUTO_ERR_NO_LOOP &&
+                 strcmp(call.got, "(null)") == 0 && woke < kAtOnceMs && later_rc == ZB_AUTO_ERR_NO_LOOP &&
+                 strcmp(later, "(null)") == 0 && later_took < kAtOnceMs
+             ? 0
+             : 1;
+}
+
+/* Child: a caller waits; the window is closed as soon as it exists. */
+static int immediate_quit_child(void) {
+  struct early_call call = {0};
+  HANDLE waiter = CreateThread(NULL, 0, early_title, &call, 0, NULL);
+  HANDLE loop = waiter != NULL ? CreateThread(NULL, 0, loop_main, NULL, 0, NULL) : NULL;
+  if (loop == NULL) {
+    printf("ws2a3c child: CreateThread failed\n");
+    return 3;
+  }
+  struct own_window own = {GetCurrentProcessId(), NULL};
+  const ULONGLONG give_up = GetTickCount64() + 20000;
+  while (own.hwnd == NULL && GetTickCount64() < give_up) {
+    EnumWindows(find_own_window, (LPARAM)&own);
+    if (own.hwnd == NULL) {
+      Sleep(5);
+    }
+  }
+  const ULONGLONG closed_at = GetTickCount64();
+  if (own.hwnd != NULL) {
+    PostMessageA(own.hwnd, WM_CLOSE, 0, 0);
+  }
+  const int ended = WaitForSingleObject(loop, 20000) == WAIT_OBJECT_0;
+  const int joined = WaitForSingleObject(waiter, kEarlyMs + 5000) == WAIT_OBJECT_0;
+  CloseHandle(loop);
+  CloseHandle(waiter);
+  const int live = zb_automation_debug_live_jobs();
+  const ULONGLONG woke = joined && call.ended > closed_at ? call.ended - closed_at : 0;
+  printf("ws2a3c child: window %s; zb_app_run %s rc=%ld; waiter rc=%d result=%s woke %llums after the close (want %d "
+         "within %dms); live jobs %d\n",
+         own.hwnd != NULL ? "closed" : "never appeared", ended ? "ended" : "still running",
+         (long)InterlockedCompareExchange(&run_rc, 0, 0), call.rc, joined ? call.got : "(still waiting)", woke,
+         ZB_AUTO_ERR_NO_LOOP, kAtOnceMs, live);
+  fflush(stdout);
+  return own.hwnd != NULL && ended && joined && call.rc == ZB_AUTO_ERR_NO_LOOP && strcmp(call.got, "(null)") == 0 &&
+                 woke < kAtOnceMs && live == 0
+             ? 0
+             : 1;
+}
+
+/* Runs this executable again as a WS2a.3c child (its lines go to the same stdout) and checks it exits 0.
+ * A child still running after kChildMs is this test's own process: it is terminated and reported. */
+static void child_check(const char *flag, const char *fixture, const char *what) {
+  char exe[MAX_PATH];
+  char cmd[3 * MAX_PATH];
+  char why[128];
+  STARTUPINFOA si;
+  PROCESS_INFORMATION pi;
+  DWORD n = GetModuleFileNameA(NULL, exe, MAX_PATH);
+  if (n == 0 || n >= MAX_PATH ||
+      (fixture != NULL ? snprintf(cmd, sizeof cmd, "\"%s\" %s \"%s\"", exe, flag, fixture)
+                       : snprintf(cmd, sizeof cmd, "\"%s\" %s", exe, flag)) >= (int)sizeof cmd) {
+    check(0, what, "cannot build the child command line");
+    return;
+  }
+  memset(&si, 0, sizeof si);
+  si.cb = sizeof si;
+  si.dwFlags = STARTF_USESTDHANDLES;
+  si.hStdInput = NULL;
+  si.hStdOutput = GetStdHandle(STD_OUTPUT_HANDLE);
+  si.hStdError = GetStdHandle(STD_ERROR_HANDLE);
+  SetHandleInformation(si.hStdOutput, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT);
+  SetHandleInformation(si.hStdError, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT);
+  fflush(stdout);
+  if (!CreateProcessA(exe, cmd, NULL, NULL, TRUE, 0, NULL, NULL, &si, &pi)) {
+    snprintf(why, sizeof why, "CreateProcess failed (%lu)", GetLastError());
+    check(0, what, why);
+    return;
+  }
+  CloseHandle(pi.hThread);
+  DWORD code = 0;
+  if (WaitForSingleObject(pi.hProcess, kChildMs) != WAIT_OBJECT_0) {
+    TerminateProcess(pi.hProcess, 99);
+    WaitForSingleObject(pi.hProcess, 10000);
+    snprintf(why, sizeof why, "the child ran past %dms and was terminated", kChildMs);
+    check(0, what, why);
+  } else {
+    GetExitCodeProcess(pi.hProcess, &code);
+    snprintf(why, sizeof why, "child exit %lu (see the ws2a3c child line above)", code);
+    check(code == 0, what, why);
+  }
+  CloseHandle(pi.hProcess);
+}
+
 static int wait_live_jobs(int want, DWORD ms) {
   const ULONGLONG end = GetTickCount64() + ms;
   while (GetTickCount64() < end) {
@@ -135,10 +292,22 @@ int main(int argc, char **argv) {
   char why[256];
   char got[512];
   ULONGLONG took = 0;
+  if (argc == 2 && strcmp(argv[1], "--ws2a3c-init-failure") == 0) {
+    return init_failure_child();
+  }
+  if (argc == 3 && strcmp(argv[1], "--ws2a3c-immediate-quit") == 0) {
+    return file_uri(argv[2], index_uri, sizeof index_uri) ? immediate_quit_child() : 3;
+  }
   if (!check(argc == 2, "usage: ws2a3-async-ownership <index.html>", NULL) ||
       !check(file_uri(argv[1], index_uri, sizeof index_uri), "fixture file exists", argv[1])) {
     return 1;
   }
+
+  /* WS2a.3c first, each in a fresh child process (this process's own loop has not started yet). */
+  child_check("--ws2a3c-init-failure", NULL,
+              "a caller waiting for the loop is answered NO_LOOP at once when zb_app_run fails before its loop");
+  child_check("--ws2a3c-immediate-quit", argv[1],
+              "an immediate quit wakes the waiting caller with NO_LOOP, frees its job and ends zb_app_run");
   HANDLE thread = CreateThread(NULL, 0, loop_main, NULL, 0, NULL);
   if (!check(thread != NULL, "zb_app_run starts on its own thread", NULL)) {
     return 1;

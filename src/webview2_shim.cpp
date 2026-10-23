@@ -765,6 +765,9 @@ void loop_end() {
     job_complete(job, ZB_AUTO_ERR_NO_LOOP);
     job_release(job);
   }
+  // WS2a.3c: a caller still waiting for the loop to start (a run that failed before loop_begin) wakes now,
+  // finds the loop ended and answers ZB_AUTO_ERR_NO_LOOP, as does every later call.
+  SetEvent(g_loop_started);
 }
 
 // Plan WS2 "Deadlines": how long a waiter whose deadline passed waits for a completion already being written.
@@ -2809,6 +2812,11 @@ int run_message_loop(AppState *app) {
 // ZB_EXIT_RUNTIME_MISSING (9); tests/windows/ws1_run_test.py WS14MissingRuntime asserts the exact text.
 static int run_core(const char *uri, int print_title, int e2e_protocol, bool screenshot,
                     const char *out_path) {
+  // WS2a.3c: whichever path this run leaves by, its loop has ended for every caller; an early failure (no
+  // runtime, COM, the URI, the window) never reaches loop_begin, and loop_end is safe to run twice.
+  struct LoopEndOnExit {
+    ~LoopEndOnExit() { loop_end(); }
+  } loop_end_on_exit;
   char version[128] = {0};
   if (!webview2_runtime_version(version, sizeof(version))) {
     // WS1.4 pinned message (exact, on STDERR — never stdout), then exit 9.

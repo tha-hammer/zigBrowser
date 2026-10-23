@@ -17,6 +17,12 @@ WS2a.3b: strings are issued and freed exactly once (result, error, late-but-seen
 whose caller gave up starts no further CDP step (ONE named check). Red and mutant (drop the generation guard):
 the chain dispatches the next steps for the abandoned job, so that one check is the only FAIL line.
 
+WS2a.3c (each in a fresh child process of the test executable): a caller already waiting for the loop when zb_app_run
+fails before its loop is answered NO_LOOP at once, as is every later call (ONE named check); and closing the window
+as soon as it exists answers the waiting caller NO_LOOP at once, frees its job and ends zb_app_run. Red and mutant
+(no loop end on run_core's early-failure paths): the waiter sits out its whole deadline (TIMEOUT), so that one check
+is the only FAIL line.
+
 Under ZB_WIN_GATE=1 a missing host or marker exits 1 ("no Windows host configured"); standalone it exits 77.
 A host run needs NavyCanyon's exact-commit approval and the orchestrator's release.
 
@@ -43,6 +49,8 @@ REQUIRED = (
     "a late completion the waiter still sees is reported once and its string freed once",
     "a late completion after a timeout dispatches nothing more and returns no string",
     "closing the window ends zb_app_run",
+    "a caller waiting for the loop is answered NO_LOOP at once when zb_app_run fails before its loop",
+    "an immediate quit wakes the waiting caller with NO_LOOP, frees its job and ends zb_app_run",
 )
 
 
