@@ -96,7 +96,10 @@ audit() {
   find "$H" -mindepth 1 -maxdepth 1 ! -path "$ROOT" -print0 2>/dev/null | xargs -0 "${st[@]}" 2>/dev/null
   return 0
 }
-audit | LC_ALL=C sort | sbx /bin/sh -c 'cat > "$1"' sh "$E/audit.before" || notrun audit "the before-audit could not be stored"
+# The listing is read outside (find/stat); sort, which may spill temporary files, runs under the profile with them in
+# the root (SilverRidge 0d0656f4).
+snapshot() { audit | sbx /bin/sh -c 'mkdir -p "$2" && LC_ALL=C TMPDIR="$2" sort -T "$2" > "$1"' sh "$1" "$ROOT/audit-tmp"; }
+snapshot "$E/audit.before" || notrun audit "the before-audit could not be stored"
 
 # --- negative canaries, before any real work: unique, pre-absent targets outside the root; each write must be refused ---
 for t in "$H/.zb-spike-canary-$NONCE" "${TD%/}/zb-spike-canary-$NONCE" "${CD%/}/zb-spike-canary-$NONCE"; do
@@ -175,7 +178,7 @@ printf "VERIFY\trc=%d\tunsealed=%s\tnot-signed=%s\tsealed-resource=%s\tdenied=%s
 if [ "$prc" -eq 0 ]; then echo "PHASE	post	ok"; else printf 'PHASE\tpost\tfail\trc=%d\n' "$prc"; fi
 fi
 
-audit | LC_ALL=C sort | sbx /bin/sh -c 'cat > "$1"' sh "$E/audit.after" || echo "PHASE	audit	fail	the after-audit could not be stored"
+snapshot "$E/audit.after" || echo "PHASE	audit	fail	the after-audit could not be stored"
 sbx /bin/sh -c 'cd "$1" && tar -cf evidence.tar evidence' sh "$ROOT" </dev/null || echo "PHASE	evidence	fail"
 echo "LEGDONE"
 [ "$brc" -eq 0 ] && [ "$prc" -eq 0 ] && exit 0

@@ -34,7 +34,9 @@
 #                          a verify failure without the diagnostic, a mutant that verify accepts, missing evidence)
 #         BREACH           (a canary write was not refused: the run stops, the root and the canary stay for the owner)
 #       then SPIKE-RESULT<TAB><sha><TAB><mutant><TAB>x86_64=<class><TAB>arm64=<class>. Exit 0 when both legs are
-#       conclusive, 2 when one is inconclusive, 4 on a breach, 1 when refused before any host is touched.
+#       conclusive, 2 when one is inconclusive, 4 on a breach, 1 when refused before any host is touched. A root whose
+#       ordinary remove still fails after 3 attempts (and one more at exit) makes its leg INCONCLUSIVE, is printed as
+#       RETAINED<TAB><host><TAB><run dir>, and the run is nonzero.
 # No browser is launched and nothing is installed. The arm64 host is mandatory. Hostless proof:
 # tests/mac/bundle_layout_spike_containment_selftest.sh.
 set -euo pipefail
@@ -119,15 +121,33 @@ COMMIT=$(git rev-parse --verify "${ZB_GATE_COMMIT:-HEAD}^{commit}")
 . tests/mac/mac_gate_lib.sh
 L=$(mktemp -d "${TMPDIR:-/tmp}/zb-spike-run-XXXXXX")
 LIVE=()   # "host<TAB>key<TAB>run dir" of every root that exists and is ours to remove
-remove_root() { # $1=host $2=key $3=run dir
+remove_root() { # $1=host $2=key $3=run dir; 0 only when the leg driver removed exactly that root
   local -a SSH
   mapfile -d '' SSH < <(mac_ssh_opts "$2")
-  "${SSH[@]}" "$1" /bin/bash -s remove "$3" < "$L/leg.sh" >/dev/null || echo "WARN: could not remove $3 on $1" >&2
+  "${SSH[@]}" "$1" /bin/bash -s remove "$3" < "$L/leg.sh" >/dev/null
 }
-cleanup() {
-  local e h k r
-  for e in "${LIVE[@]+"${LIVE[@]}"}"; do IFS=$'\t' read -r h k r <<<"$e"; remove_root "$h" "$k" "$r"; done
+REMOVE_TRIES=3 REMOVE_SLEEP="${ZB_SPIKE_REMOVE_SLEEP:-10}"
+remove_retry() { # $1=host $2=key $3=run dir: at most REMOVE_TRIES attempts
+  local i
+  for ((i = 1; i <= REMOVE_TRIES; i++)); do
+    remove_root "$@" && return 0
+    echo "WARN: removing $3 on $1 failed (attempt $i of $REMOVE_TRIES)" >&2
+    [ "$i" -eq "$REMOVE_TRIES" ] || sleep "$REMOVE_SLEEP"
+  done
+  return 1
+}
+cleanup() { # one last attempt for every root still live; a root that stays is named and the run is nonzero
+  local st=$? e h k r
+  for e in "${LIVE[@]+"${LIVE[@]}"}"; do
+    IFS=$'\t' read -r h k r <<<"$e"
+    if ! remove_root "$h" "$k" "$r"; then
+      printf 'RETAINED\t%s\t%s\n' "$h" "$r"
+      echo "INCONCLUSIVE: run root $r is still on $h (not removed)" >&2
+      [ "$st" -ne 0 ] || st=2
+    fi
+  done
   case "$L" in "${TMPDIR:-/tmp}"/zb-spike-run-??????) rm -rf "${L:?}" ;; esac
+  exit "$st"
 }
 trap cleanup EXIT
 trap 'exit 143' TERM INT HUP
@@ -198,11 +218,15 @@ leg() { # $1=host $2=key $3=expected uname -m; sets CLASS
   if "${SCP[@]}" "$host:$rd/evidence.tar" "$ev/" >/dev/null 2>&1; then
     tar --no-same-owner -xf "$ev/evidence.tar" -C "${ev:?}" evidence 2>/dev/null || true
   fi
-  remove_root "$host" "$key" "$rd"
-  LIVE=("${LIVE[@]:0:${#LIVE[@]}-1}")
-  local verdict
+  local verdict removed=no
+  # A root that will not go stays live (the EXIT trap tries once more and names it) and the leg is not conclusive.
+  if remove_retry "$host" "$key" "$rd"; then LIVE=("${LIVE[@]:0:${#LIVE[@]}-1}"); removed=yes; fi
   verdict=$(classify "$out" "$ev")
   [ "$rc" -eq 0 ] || [ "${verdict%%$'\t'*}" = INCONCLUSIVE ] || verdict=$(printf 'INCONCLUSIVE\tthe leg exited %s' "$rc")
+  if [ "$removed" != yes ]; then
+    local why="remove failed $REMOVE_TRIES times: root $rd is kept on $host"
+    if [ "${verdict%%$'\t'*}" = INCONCLUSIVE ]; then verdict="$verdict; $why"; else verdict=$(printf 'INCONCLUSIVE\t%s' "$why"); fi
+  fi
   CLASS=${verdict%%$'\t'*}
   printf 'LEG\t%s\t%s\t%s\n' "$arch" "$MUTANT" "$verdict"
 }

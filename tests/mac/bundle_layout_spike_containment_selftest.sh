@@ -432,8 +432,11 @@ sbx_sequence() {
         "/bin/sh|: > \"\$1\"|$rt/evidence/positive") seq+=(positive) ;;
         "/bin/sh|: > /dev/null|: > /dev/null") seq+=(devnull) ;;
         "/bin/sh|cat > \"\$1\"|$rt/evidence/profile") seq+=(profile) ;;
-        "/bin/sh|cat > \"\$1\"|$rt/evidence/audit.before") seq+=(audit-before) ;;
-        "/bin/sh|cat > \"\$1\"|$rt/evidence/audit.after") seq+=(audit-after) ;;
+        "/bin/sh|$SNAP|$rt/audit-tmp")   # the snapshot: sorted under the profile, temporary files in the root
+          case "${#a[@]}|${a[4]:-}" in
+            "6|$rt/evidence/audit.before") seq+=(audit-before) ;; "6|$rt/evidence/audit.after") seq+=(audit-after) ;;
+            *) seq+=(audit-bad) ;;
+          esac ;;
         "/bin/sh|: > \"\$1\"|$H/.zb-spike-canary-"*) seq+=(canary-home) ;;
         "/bin/sh|: > \"\$1\"|$H/var/folders/zz/zyxw/T/zb-spike-canary-"*) seq+=(canary-temp) ;;
         "/bin/sh|: > \"\$1\"|$H/var/folders/zz/zyxw/C/zb-spike-canary-"*) seq+=(canary-cache) ;;
@@ -448,6 +451,7 @@ sbx_sequence() {
   done
   echo "${seq[*]}"
 }
+SNAP='mkdir -p "$2" && LC_ALL=C TMPDIR="$2" sort -T "$2" > "$1"'
 WANT_SEQ="parse mkdir-evidence positive devnull profile audit-before canary-home canary-temp canary-cache build post audit-after evidence-tar"
 
 US=$'\x1f'
@@ -724,12 +728,14 @@ direct_root; o=$(drun 2>/dev/null 9> >(cat >/dev/null)); r=$?
 rm -rf "${RT:?}"
 
 # ===== K14: a run root that is a symlink to an outside directory is refused before any sandbox or tool =====
-run_spike swap_root swap_root clean both
+run_spike swap_root swap_root clean both ZB_SPIKE_REMOVE_SLEEP=0
 if [ "$rc" -eq 2 ] && [[ "$(leg_detail x86_64)" == "root: "* ]] && [[ "$(leg_detail arm64)" == "root: "* ]] \
-   && [ ! -e "$C/sbx.0.argv" ] && [ "$(mac_tool_calls)" -eq 0 ] && outside_snapshot | cmp -s - "$T/outside.want"; then
-  ok "swap_root K14: a root swapped for a symlink after transfer is INCONCLUSIVE (root) on both legs, no sandbox-exec or tool call, the target unchanged"
+   && [ ! -e "$C/sbx.0.argv" ] && [ "$(mac_tool_calls)" -eq 0 ] && outside_snapshot | cmp -s - "$T/outside.want" \
+   && [ "$(grep -c '^RETAINED' <<<"$out")" -eq 2 ]; then
+  ok "swap_root K14: a root swapped for a symlink after transfer is INCONCLUSIVE (root) on both legs, no sandbox-exec or tool call, the target unchanged, the unremovable root named RETAINED"
 else bad "swap_root K14: exit $rc, '$(leg_class x86_64): $(leg_detail x86_64)' '$(leg_class arm64): $(leg_detail arm64)', sandbox-exec calls $(cat "$C/sbx.count" 2>/dev/null || echo 0)"; fi
-check_xport "swap_root K14" none "$LEG5" "$LEG5"
+# The validated remove refuses the symlink, so it is retried (3) and tried once more at exit (SilverRidge 0d0656f4).
+check_xport "swap_root K14" none "create inputs run evidence remove remove remove remove" "create inputs run evidence remove remove remove remove"
 for role in intel arm; do
   find "$X/hosts/$role" -maxdepth 1 -name 'zb-gate-*' -type l -delete
   case "$X/swapped-aside-$role" in "$X"/swapped-aside-*) rm -rf "${X:?}/swapped-aside-$role" ;; esac

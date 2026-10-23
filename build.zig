@@ -3966,6 +3966,17 @@ pub fn build(b: *std.Build) void {
     const mac_bundle_layout_spike_step = b.step("test-mac-bundle-layout-spike", "Run the hostless selftests of the 4pa.80 bundle-layout spike (prep and run)");
     mac_bundle_layout_spike_step.dependOn(&mac_bundle_layout_spike_selftest.step);
     test_step.dependOn(&mac_bundle_layout_spike_selftest.step);
+    // Its fix-forward rows reuse that scaffolding: a not-signed verify, the snapshot sort under the profile, and a failed
+    // ordinary remove that fails closed (SilverRidge 0d0656f4).
+    const mac_bundle_layout_spike_ff_selftest = b.addSystemCommand(&.{ "bash", "tests/mac/bundle_layout_spike_containment_ff_selftest.sh" });
+    for ([_][]const u8{
+        "tests/mac/bundle_layout_spike_containment_ff_selftest.sh", "tests/mac/bundle_layout_spike_containment_selftest.sh",
+        "tests/mac/bundle_layout_spike.sh",                         "tests/mac/bundle_layout_spike_leg.sh",
+        "tests/mac/build-on-mac.sh",                                "tests/mac/mac_gate_lib.sh",
+        "tests/mac/known_hosts",                                    "packaging/macos/Info.plist",
+    }) |input| mac_bundle_layout_spike_ff_selftest.addFileInput(b.path(input));
+    mac_bundle_layout_spike_step.dependOn(&mac_bundle_layout_spike_ff_selftest.step);
+    test_step.dependOn(&mac_bundle_layout_spike_ff_selftest.step);
     // Its prep reads the commit's pins, installs the hash-locked verifier and keeps every cache in scratch (8f28c5d).
     const mac_bundle_layout_spike_prep_selftest = b.addSystemCommand(&.{ "bash", "tests/mac/bundle_layout_spike_prep_selftest.sh" });
     for ([_][]const u8{
