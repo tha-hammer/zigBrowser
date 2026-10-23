@@ -32,7 +32,9 @@
 # tests/mac/mac_varfolders_audit.sh, snapshots the physical roots of getconf DARWIN_USER_TEMP_DIR and
 # DARWIN_USER_CACHE_DIR before the first row and after the last (also before a leak stop), prints every added, changed
 # or removed path there unfiltered (VARFOLDERS-DELTA lines) and deletes nothing there. A delta alone is reportable; an
-# incomplete audit (VARFOLDERS<TAB>INCONCLUSIVE) holds the leg from PASS: it exits 5 and its host is INCONCLUSIVE.
+# incomplete audit (VARFOLDERS<TAB>INCONCLUSIVE) holds the leg from PASS: it exits 5 and its host is INCONCLUSIVE. A
+# begin that cannot take a complete before snapshot refuses (SilverRidge 3661c9b8): the leg exits 5 at once, before
+# it writes its RUNNING marker, runs any row or launches a browser.
 # Every row runs (one row's result never stops the next); each prints its output and a
 # ROW<TAB><file><TAB><want><TAB>rc=<n><TAB>MATCH|MISMATCH line. The gate prints PASS<TAB>ms-runtime-rows-gate<TAB>both-arches
 # only when every row on both Macs matched. Console user, no xvfb (WKWebView needs the WindowServer), like ms2a/ms2c.
@@ -92,7 +94,7 @@ export HOME="$root/run-env/home" CFFIXED_USER_HOME="$root/run-env/home" TMPDIR="
   ZB_E2E_SOCKET_DIR="$root/s" ZB_DEBUG_EPHEMERAL_DATA_STORE=1
 # The before snapshot of this user's /var/folders, ahead of the first browser launch (evidence in the run root).
 . "$root/tests/mac/mac_varfolders_audit.sh" || exit 1
-varfolders_begin "$root/evidence/varfolders" || exit 1
+varfolders_begin "$root/evidence/varfolders" || exit 5   # refused (fail closed): no RUNNING marker, no row, no browser
 # Durable before any row: only a clean finish below removes it, so a timeout or a death holds this host.
 printf 'RUNNING\t%s\tthe leg did not finish; processes may be left running\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
   > "$root/LEAKED" || exit 1

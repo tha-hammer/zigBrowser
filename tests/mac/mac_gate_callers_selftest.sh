@@ -259,6 +259,7 @@ rows_root "$RRD"
 cat > "$T/rows-bin/getconf" <<EOF
 #!/bin/bash
 [ -e "$T/vf/fail" ] && exit 1   # VF2: the per-user roots cannot be resolved
+[ -e "$T/vf/empty" ] && exit 0  # VF4: getconf answers nothing
 case "\$1" in DARWIN_USER_TEMP_DIR) echo "$T/vf/T/" ;; DARWIN_USER_CACHE_DIR) echo "$T/vf/C/" ;; *) exit 1 ;; esac
 EOF
 chmod +x "$T/rows-bin/getconf"
@@ -288,6 +289,13 @@ case "$1" in
                  printf 'PASS\tx\n'; exit 0 ;;
 esac
 exit 2
+EOF
+chmod +x "$T/rows-bin/python3"
+mv "$T/rows-bin/python3" "$T/rows-bin/python3.rows"   # every row invocation (each would launch a browser) is logged
+cat > "$T/rows-bin/python3" <<EOF
+#!/bin/bash
+printf '%s\n' "\$1" >> "$T/rows-calls"
+exec "$T/rows-bin/python3.rows" "\$@"
 EOF
 chmod +x "$T/rows-bin/python3"
 rows_verdict() { # rows_verdict <leg output> <file stem>: the ROW verdict word for that file
@@ -371,8 +379,10 @@ rows_leg out "tests/e2e/mac_v_red_ok_test.py|red|v-red"
   || bad "rows V10: rc=$LEG_RC, marker $( [ -e "$T/rows-home/$RRD/LEAKED" ] && echo left || echo gone)"
 
 # VF (the owner's /var/folders rule, SilverRidge 94ebe76b): VF1 the leg prints the physical roots, the path a row wrote
-# there and the temp root's own changed record (unfiltered) and COMPLETE, exits 0 and deletes nothing there; VF2 an audit that cannot resolve its roots
-# is INCONCLUSIVE: the leg exits 5 although its row matched; VF3 a leak stop still reports the audit, and exits 3.
+# there and the temp root's own changed record (unfiltered) and COMPLETE, exits 0 and deletes nothing there; VF3 a leak
+# stop still reports the audit, and exits 3. Fail closed (SilverRidge 3661c9b8): VF2 a failing getconf, VF4 an empty
+# getconf answer and VF5 an unreadable initial tree each make varfolders_begin refuse, and the leg exits 5 at once: its
+# refusal line, zero ROW lines, zero row (browser) invocations and no RUNNING marker.
 rows_leg out "tests/e2e/mac_v_vf_test.py|green|v-vf"
 if [ "$LEG_RC" -eq 0 ] && [ "$(rows_verdict "$out" v_vf)" = MATCH ] \
    && [ "$(grep -c $'^VARFOLDERS_ROOTS\t' <<<"$out")" -eq 1 ] && grep -qx $'VARFOLDERS_ROOTS\tT\t'"$T/vf/T"$'\tC\t'"$T/vf/C" <<<"$out" \
@@ -382,15 +392,28 @@ if [ "$LEG_RC" -eq 0 ] && [ "$(rows_verdict "$out" v_vf)" = MATCH ] \
 else
   bad "rows VF1: rc=$LEG_RC: $(grep -E $'^(VARFOLDERS|ROW)' <<<"$out" | tr '\n' ' ')"
 fi
-: > "$T/vf/fail"
+: > "$T/rows-calls"; : > "$T/vf/fail"
 rows_leg out "tests/e2e/mac_v_red_ok_test.py|red|v-red"
 rm -f -- "${T:?}/vf/fail"
-if [ "$LEG_RC" -eq 5 ] && [ "$(rows_verdict "$out" v_red_ok)" = MATCH ] && grep -q $'^VARFOLDERS\tINCONCLUSIVE\t' <<<"$out" \
-   && ! grep -q $'^VARFOLDERS\tCOMPLETE' <<<"$out"; then
-  ok "rows VF2: an audit without its roots is INCONCLUSIVE: the leg exits 5 although its row matched"
-else
-  bad "rows VF2: rc=$LEG_RC: $(grep -E $'^(VARFOLDERS|ROW)' <<<"$out" | tr '\n' ' ')"
-fi
+refused_leg() { # refused_leg <row name> <why>: the leg after a refused begin
+  if [ "$LEG_RC" -eq 5 ] && grep -q $'^VARFOLDERS\tINCONCLUSIVE\tbegin refused' <<<"$out" \
+     && [ "$(grep -c $'^ROW\t' <<<"$out")" -eq 0 ] && [ ! -s "$T/rows-calls" ] && [ ! -e "$T/rows-home/$RRD/LEAKED" ] \
+     && ! grep -q $'^VARFOLDERS\tCOMPLETE' <<<"$out"; then
+    ok "rows $1: $2: begin refuses, the leg exits 5 with zero rows, zero browser launches and no RUNNING marker"
+  else
+    bad "rows $1: rc=$LEG_RC rows=$(grep -c $'^ROW\t' <<<"$out") calls=$(wc -l < "$T/rows-calls" 2>/dev/null) marker=$([ -e "$T/rows-home/$RRD/LEAKED" ] && echo yes || echo no): $(grep -E '^VARFOLDERS' <<<"$out" | tr '\n' ' ')"
+  fi
+  rm -f -- "${T:?}/rows-home/${RRD:?}/LEAKED"
+}
+refused_leg VF2 "a failing getconf"
+: > "$T/rows-calls"; : > "$T/vf/empty"
+rows_leg out "tests/e2e/mac_v_red_ok_test.py|red|v-red"
+rm -f -- "${T:?}/vf/empty"
+refused_leg VF4 "an empty getconf answer"
+: > "$T/rows-calls"; mkdir -p "$T/vf/C/locked" && : > "$T/vf/C/locked/x" && chmod 0 "$T/vf/C/locked"
+rows_leg out "tests/e2e/mac_v_red_ok_test.py|red|v-red"
+chmod 700 "$T/vf/C/locked" && rm -f -- "$T/vf/C/locked/x" && rmdir -- "$T/vf/C/locked"
+refused_leg VF5 "an unreadable initial tree"
 rows_leg out "tests/e2e/mac_v_leak_test.py|red|v-red"
 if [ "$LEG_RC" -eq 3 ] && grep -q $'^HOST_STOPPED\t' <<<"$out" && grep -q $'^VARFOLDERS\tCOMPLETE\t' <<<"$out"; then
   ok "rows VF3: a leak stop still prints the /var/folders audit, and the leg exits 3"

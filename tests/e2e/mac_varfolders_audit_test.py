@@ -11,8 +11,9 @@ Registered (step test-mac-varfolders-audit; red 143a12f6, fix-forwards 23d8b313 
 Mac rows gate and the MS1c .app gate both use it).
 
 The helper's contract under test (sourced by bash):
-  varfolders_begin <evidence dir>   prints nothing and exits 0; resolves and records the roots (path, device, inode),
-                                    then the before snapshot, all inside <evidence dir>
+  varfolders_begin <evidence dir>   resolves and records the roots (path, device, inode), then the before snapshot,
+                                    all inside <evidence dir>: prints nothing and exits 0 when that snapshot is
+                                    complete; otherwise refuses with exit 2 and one INCONCLUSIVE line (V15)
   varfolders_end <evidence dir>     the after snapshot, then exactly these lines and nothing else:
       VARFOLDERS_ROOTS<TAB>T<TAB><physical temp root><TAB>C<TAB><physical cache root>
       VARFOLDERS-DELTA<TAB><added|changed|removed><TAB><T|C><TAB><relative path><TAB><before><TAB><after>
@@ -53,6 +54,9 @@ itself from lstat and the file bytes):
 - V12 a root-only mode change and a root-only mtime change each give exactly the one delta of that root's `.`.
 - V13 an extended attribute alone, and a hard link made outside the roots, each give exactly the one delta of that
   file (ctime, and nlink, are in its record).
+- V15 fail closed (SilverRidge 3661c9b8): when the roots cannot be resolved (V6) or the initial tree cannot be
+  snapshotted completely (V7, V11), varfolders_begin refuses: exit 2 and exactly one VARFOLDERS<TAB>INCONCLUSIVE<TAB>
+  <nonempty reason> line, so a caller never starts a browser without a complete before snapshot.
 - V14 a tripwire for what a Linux bash cannot show (it pipes small here-documents): the helper has no here-document,
   because macOS /bin/bash 3.2 writes each one to a temp file in $TMPDIR, the audited temp root by default.
 tests/e2e/mac_varfolders_audit_mutant_selftest.py runs these rows against altered copies of the helper.
@@ -190,6 +194,16 @@ class Box:
             bad(f"V2 varfolders_begin must be silent and exit 0, got rc={rc} {out[-3:]!r}")
         if between is not None:
             between(self)
+        return self.call("varfolders_end")
+
+    def refused(self, row: str) -> tuple[int, list[str]]:
+        """V15: a begin that cannot take a complete before snapshot refuses (fails closed): exit 2 and exactly one
+        VARFOLDERS<TAB>INCONCLUSIVE<TAB><nonempty reason> line; the end after it is INCONCLUSIVE too."""
+        rc, out = self.call("varfolders_begin")
+        fields = out[0].split("\t") if len(out) == 1 else []
+        if rc != 2 or len(fields) != 3 or fields[:2] != ["VARFOLDERS", "INCONCLUSIVE"] or not fields[2].strip():
+            bad(f"V15 {row} varfolders_begin must refuse: exit 2 and one INCONCLUSIVE line with a reason, "
+                f"got rc={rc} {out[-3:]!r}")
         return self.call("varfolders_end")
 
     def close(self) -> None:
@@ -412,7 +426,7 @@ def run_rows(helper: Path) -> list[str]:
             elif name == "missing directory":
                 cache = f"{box.C}/"
             box.stub(temp, cache, code)
-            rc, out = box.cycle()
+            rc, out = box.refused(f"V6 {name}:")
             inconclusive(f"V6 {name}:", box, rc, out)
         finally:
             box.close()
@@ -426,7 +440,7 @@ def run_rows(helper: Path) -> list[str]:
             locked.mkdir()
             (locked / "x").write_text("x")
             locked.chmod(0)
-            rc, out = box.cycle()
+            rc, out = box.refused("V7 an unreadable directory:")
             inconclusive("V7 an unreadable directory:", box, rc, out)
     finally:
         box.close()
@@ -457,7 +471,7 @@ def run_rows(helper: Path) -> list[str]:
         box = Box(helper)
         try:  # V11
             os.close(os.open(os.fsencode(box.C) + b"/" + fname, os.O_CREAT | os.O_WRONLY, 0o644))
-            rc, out = box.cycle()
+            rc, out = box.refused(f"V11 a name with a {name}:")
             inconclusive(f"V11 a name with a {name}:", box, rc, out)
         finally:
             box.close()
@@ -504,7 +518,7 @@ def main(argv: list[str]) -> int:
     if problems:
         print(f"FAIL\tmac-varfolders-audit\t{len(problems)} problem(s)")
         return 1
-    print("PASS\tmac-varfolders-audit\tV1-V14")
+    print("PASS\tmac-varfolders-audit\tV1-V15")
     return 0
 
 

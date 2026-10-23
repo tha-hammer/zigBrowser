@@ -3,8 +3,10 @@
 # Mac gate that launches the browser (the runtime rows gate, the MS1c .app gate). Sourced, never run. A run may write
 # under the user's own /var/folders; this records exactly what changed there and writes, changes or deletes nothing
 # there itself:
-#   varfolders_begin <evidence dir>  prints nothing; resolves the physical per-user roots from getconf
-#                                    DARWIN_USER_TEMP_DIR and DARWIN_USER_CACHE_DIR and takes the before snapshot
+#   varfolders_begin <evidence dir>  resolves the physical per-user roots from getconf DARWIN_USER_TEMP_DIR and
+#                                    DARWIN_USER_CACHE_DIR and takes the before snapshot; prints nothing and exits 0
+#                                    when it is complete, else refuses (fails closed): exit 2 and one line
+#                                    VARFOLDERS<TAB>INCONCLUSIVE<TAB><reason>, and the caller must start nothing
 #   varfolders_end <evidence dir>    re-resolves the roots, takes the after snapshot and prints exactly:
 #     VARFOLDERS_ROOTS<TAB>T<TAB><temp root><TAB>C<TAB><cache root>
 #     VARFOLDERS-DELTA<TAB><added|changed|removed><TAB><T|C><TAB><path><TAB><before><TAB><after>
@@ -145,13 +147,25 @@ __vf_python() { # $1=evidence dir, then the python3 arguments: a child that neve
   TMPDIR="$ev/" /usr/bin/python3 -I -B -X utf8 "$@"
 }
 
-varfolders_begin() { # $1=evidence dir
+__vf_refuse() { # $1=reason: the one bounded line of a refused begin (fail closed, SilverRidge 3661c9b8)
+  local why="${1//$'\t'/ }"
+  why="${why//$'\n'/ }"
+  printf 'VARFOLDERS\tINCONCLUSIVE\tbegin refused, no complete before snapshot: %s\n' "${why:0:400}"
+  return 2
+}
+
+varfolders_begin() { # $1=evidence dir; exit 0 with a complete before snapshot, else 2 (refused: start nothing)
   local ev="${1:?evidence dir}"
-  mkdir -p -- "$ev" && ev=$(cd -- "$ev" && pwd -P) || return 1
-  __vf_roots > "$ev/varfolders-roots" 2> "$ev/varfolders-roots.err" || return 0   # end reports INCONCLUSIVE
-  __vf_python "$ev" -c "$__VF_SNAPSHOT_PY" "$ev/varfolders-roots" "$ev/varfolders-before.tsv" \
-    2> "$ev/varfolders-before.err"
-  return 0
+  mkdir -p -- "$ev" && ev=$(cd -- "$ev" && pwd -P) || { __vf_refuse "the evidence dir $1 cannot be made"; return; }
+  if ! __vf_roots > "$ev/varfolders-roots" 2> "$ev/varfolders-roots.err"; then
+    __vf_refuse "$(cat "$ev/varfolders-roots.err" 2>/dev/null)"
+    return
+  fi
+  if ! __vf_python "$ev" -c "$__VF_SNAPSHOT_PY" "$ev/varfolders-roots" "$ev/varfolders-before.tsv" \
+      2> "$ev/varfolders-before.err"; then
+    __vf_refuse "$(grep -m 3 '^ERROR' "$ev/varfolders-before.tsv" 2>/dev/null || cat "$ev/varfolders-before.err")"
+    return
+  fi
 }
 
 varfolders_end() { # $1=evidence dir; exit 0 COMPLETE, 2 INCONCLUSIVE

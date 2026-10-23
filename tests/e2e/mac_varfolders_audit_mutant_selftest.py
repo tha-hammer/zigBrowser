@@ -19,6 +19,8 @@ fails here instead of passing vacuously. The mutants:
 - U1 a name that is not UTF-8 silently skipped;
 - H1 a here-document (macOS /bin/bash 3.2 writes it to a temp file in $TMPDIR, the temp root by default);
 - H2 a python3 child without the helper's TMPDIR override that makes a temp file;
+- F1 begin fails open again (1362d73a's ignore-and-run: a failed root discovery or an incomplete before snapshot
+  still exits 0, so a caller would launch a browser without a complete before image; V15, SilverRidge 3661c9b8);
 - K1 (a control that must pass): that same temp file WITH the override lands outside the roots.
 The deletes name only the rows' own fixture files, inside the rows' private temporary roots (their getconf stub is
 first on PATH), and run only on Linux (the rows refuse to start elsewhere). Like V7, this runs as a non-root user.
@@ -34,7 +36,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import mac_varfolders_audit_test as audit  # noqa: E402
 
 ROOTS_OK = '  [ "$pt" != "$pc" ] || { echo "temp and cache roots are the same directory $pt" >&2; return 1; }\n'
-BEGIN_SNAP = '    2> "$ev/varfolders-before.err"\n'
+BEGIN_SNAP = ("""    __vf_refuse "$(grep -m 3 '^ERROR' "$ev/varfolders-before.tsv" 2>/dev/null || cat "$ev/varfolders-before.err")"\n"""
+              "    return\n  fi\n")  # the end of begin, after a complete before snapshot
 END_SNAP = '  __vf_python "$ev" -c "$__VF_SNAPSHOT_PY" "$ev/varfolders-roots" "$ev/varfolders-after.tsv" \\\n'
 EACH = '  while IFS=$\'\\t\' read -r _ r; do %s; done < "$ev/varfolders-roots"\n'
 REWRITE = ('/usr/bin/python3 -c "import os,sys\nfor n in os.listdir(sys.argv[1]):\n p=os.path.join(sys.argv[1],n)\n'
@@ -96,6 +99,10 @@ MUTANTS = [
     ("H2 a python3 child without the TMPDIR override makes a temp file",
      [('  TMPDIR="$ev/" /usr/bin/python3', "  /usr/bin/python3"), (SNAP_IMPORTS, TEMP_FILE)]),
 ]
+MUTANTS.append(("F1 begin fails open (ignore and run)", [
+    ('    __vf_refuse "$(cat "$ev/varfolders-roots.err" 2>/dev/null)"\n    return\n', "    return 0\n"),
+    ("""    __vf_refuse "$(grep -m 3 '^ERROR' "$ev/varfolders-before.tsv" 2>/dev/null || cat "$ev/varfolders-before.err")"\n    return\n""",
+     "    return 0\n")]))
 CONTROLS = [("K1 the same temp file WITH the TMPDIR override", [(SNAP_IMPORTS, TEMP_FILE)])]
 
 
