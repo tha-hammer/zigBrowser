@@ -374,6 +374,12 @@ pub fn build(b: *std.Build) void {
     // Win10/legacy selector reaching a child. Hermetic: TEST-NET fakes inside a network namespace.
     const windows_m8_run_selftest = b.addSystemCommand(&.{ "python3", "-I", "tests/windows/m8_run_selftest.py" });
     b.step("windows-m8-run-selftest", "Run the WS1.2 m8 run driver selftest (fake build/ssh, netns)").dependOn(&windows_m8_run_selftest.step);
+
+    // One-time m8 1032dbb incident cleanup (NavyCanyon 649755f7): tests/windows/m8_1032dbb_incident_cleanup.py against a
+    // fake VM — exact pinned identities, a mismatch never stopped, any failure stops, each folder removed once
+    // through the shared helper. Hermetic: inside a network namespace.
+    const windows_incident_cleanup_selftest = b.addSystemCommand(&.{ "python3", "-I", "tests/windows/m8_1032dbb_incident_cleanup_selftest.py" });
+    b.step("windows-incident-cleanup-selftest", "Run the m8 1032dbb incident cleanup selftest (fake VM, netns)").dependOn(&windows_incident_cleanup_selftest.step);
     const windows_win10_spike_run_selftest = b.addSystemCommand(&.{ "python3", "-I", "tests/windows/win10_spike_run_selftest.py" });
     b.step("windows-win10-spike-run-selftest", "Run the WS2b.1-W10 copy-to-Win10 spike driver selftest (fake build/ssh/scp, netns)").dependOn(&windows_win10_spike_run_selftest.step);
 
@@ -3823,6 +3829,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&windows_twohost_selftest.step);
     test_step.dependOn(&windows_host_live_optin.step);
     test_step.dependOn(&windows_m8_run_selftest.step);
+    test_step.dependOn(&windows_incident_cleanup_selftest.step);
     test_step.dependOn(&windows_win10_spike_run_selftest.step);
     test_step.dependOn(&windows_build_selftest.step);
     test_step.dependOn(&windows_pe_census_selftest.step);
