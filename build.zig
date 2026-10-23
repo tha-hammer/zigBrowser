@@ -643,6 +643,21 @@ pub fn build(b: *std.Build) void {
     const run_nav_policy_tests = b.addRunArtifact(nav_policy_tests);
     run_nav_policy_tests.skip_foreign_checks = true;
 
+    // Hook 16 inert row (SilverRidge 8721b6d, option B): the data-store selection decision of the e2e-only hook
+    // ZB_DEBUG_EPHEMERAL_DATA_STORE, probed through src/zb_test_hook_gate.h with no AppKit and no WebKit store.
+    // Portable: runs on every host.
+    const hook16_tests_module = b.createModule(.{
+        .root_source_file = b.path("tests/hook16_decision_test.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    hook16_tests_module.addIncludePath(b.path("src"));
+    hook16_tests_module.addAnonymousImport("wkwebview_shim_src", .{ .root_source_file = b.path("src/wkwebview_shim.m") });
+    const run_hook16_tests = b.addRunArtifact(b.addTest(.{ .root_module = hook16_tests_module }));
+    run_hook16_tests.skip_foreign_checks = true;
+    b.step("test-hook16-decision", "Hook 16 is inert without --e2e-protocol: the store decision stays persistent").dependOn(&run_hook16_tests.step);
+
     // Chat drawer S3.3: the native validator of helper frames.
     const agent_protocol_module = b.createModule(.{
         .root_source_file = b.path("src/agent_protocol.zig"),
@@ -3830,6 +3845,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&windows_refusal_live.step);
     test_step.dependOn(&run_ipc_tests.step);
     test_step.dependOn(&run_nav_policy_tests.step);
+    test_step.dependOn(&run_hook16_tests.step);
     test_step.dependOn(&run_agent_drawer_tests.step);
     test_step.dependOn(&run_agent_drawer_breaks_tests.step);
     test_step.dependOn(&run_agent_drawer_appkit_tests.step);

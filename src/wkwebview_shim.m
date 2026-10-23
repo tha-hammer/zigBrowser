@@ -1,4 +1,5 @@
 #include "webkit_shim.h"
+#include "zb_test_hook_gate.h"  // hook 16: the pure data-store decision (tests/hook16_decision_test.zig)
 
 #import <Cocoa/Cocoa.h>
 #import <WebKit/WebKit.h>
@@ -1492,11 +1493,10 @@ static long zb_auto_test_cookie_delay_ms(void) {
 // instead of the default store or the --profile-dir store (dataStoreForIdentifier). Both of those live in WebKit's
 // own location under the account Library, outside any e2e run directory; an ephemeral store writes no website data
 // to disk, so a Mac e2e run leaves nothing outside its run root (SilverRidge fe4542e). Inert without
-// --e2e-protocol. Main thread only (read from newConfiguredWebView).
+// --e2e-protocol: the decision is zb_hook16_select_store (zb_test_hook_gate.h), probed without AppKit or any WebKit
+// store by tests/hook16_decision_test.zig (SilverRidge 8721b6d). Main thread only (read from newConfiguredWebView).
 static BOOL zb_auto_test_ephemeral_store(void) {
-  if (!zb_auto_test_hooks_enabled()) return NO;
-  const char *v = getenv("ZB_DEBUG_EPHEMERAL_DATA_STORE");
-  return v != NULL && v[0] == '1';
+  return zb_hook16_select_store(zb_auto_test_hooks_enabled()) == ZB_STORE_EPHEMERAL;
 }
 
 // Run a cookie-store completion now, or after the e2e-only delay above (printing zb-cookie-delay-hit).
