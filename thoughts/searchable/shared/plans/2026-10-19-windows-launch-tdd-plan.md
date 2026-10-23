@@ -3606,7 +3606,7 @@ Added by the owner's order of 2026-10-22 (section "Verification rule: prove it b
 | WS2a.2 | `dom.*` runs in a private world | yes (NEW step `windows-private-world-live`) | none yet | UNPROVEN | UNPROVEN |
 | WS2a.3 | async completion ownership and bounded waits | yes (NEW step `windows-async-ownership-live`) | none yet | NOT BUILT | NOT BUILT |
 | WS2b.0 | capability table honesty (`cdp_input` placeholder) | yes (NEW steps `test-wv2-capabilities`, `windows-capabilities-live`) | tripwire-only today (`automation_platform.zig:885-886` is fake-backed) | UNPROVEN | rewritten + UNPROVEN |
-| WS2b.1 | trusted-event matrix (isTrusted) | yes (NEW step `windows-trusted-input-matrix-live`) | none yet | NOT BUILT | NOT BUILT |
+| WS2b.1 | trusted-event matrix (isTrusted) | yes (step `windows-trusted-input-matrix-live`, in `windows-live`) | driven + platform run, Win11 only (green 01458a8: 37/37 rows; mutant 0e696e0: every isTrusted row red; NavyCanyon 14b4c68) | PROVEN-PARTIAL | WS2b.1 Win11: PROVEN-PARTIAL — WebView2 input is `cdp_input`, proven by the 37-row trusted-event matrix; the capability table and the `capabilities` RPC stay `unproven` until WS2b.1-W10 passes |
 | WS2b.1-W10 | trusted-event matrix on the Win10 box | yes (same NEW step, Win10 host) | none yet | NOT BUILT | NOT BUILT |
 | WS2b.2 | dialogs (alert/confirm/prompt/beforeunload) | yes (NEW step `windows-dialog-live`) | none yet | NOT BUILT | NOT BUILT |
 | WS2b.3 | full-page screenshot over the socket | yes (NEW step `windows-screenshot-full-live`) | none yet | NOT BUILT | NOT BUILT |

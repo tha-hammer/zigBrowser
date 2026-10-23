@@ -458,6 +458,14 @@ pub fn build(b: *std.Build) void {
     windows_async_ownership_live.has_side_effects = true;
     b.step("windows-async-ownership-live", "Live WS2a.3 async completion ownership and bounded waits on the VM (fails without ZB_WIN11_HOST)").dependOn(&windows_async_ownership_live.step);
 
+    // WS2b.1: native input through the shim's CDP Input.dispatch* reaches WebView2 pages as trusted events (the 37-row
+    // matrix; tests/e2e/win_trusted_input_matrix.py builds and runs ws2b1-input-spike-win on the VM). Gated
+    // (ZB_WIN_GATE=1): with no host or marker it FAILS, never skips (plan D.1). Not part of `zig build test`.
+    const windows_trusted_input_matrix_live = b.addSystemCommand(&.{ "python3", "-I", "tests/e2e/win_trusted_input_matrix.py" });
+    windows_trusted_input_matrix_live.setEnvironmentVariable("ZB_WIN_GATE", "1");
+    windows_trusted_input_matrix_live.has_side_effects = true;
+    b.step("windows-trusted-input-matrix-live", "Live WS2b.1 trusted-event matrix: CDP native input is isTrusted on the VM (fails without ZB_WIN11_HOST)").dependOn(&windows_trusted_input_matrix_live.step);
+
     // j76 / WS3.2: a refused backend flag reaches the user's stderr on the Windows GUI exe (exactly the
     // refusal line, exit 1, open and --screenshot), and `--renderer=shm` stays a parse error. Skips without
     // ZB_WIN11_HOST/ZB_WIN_EXE; needs no slot.
