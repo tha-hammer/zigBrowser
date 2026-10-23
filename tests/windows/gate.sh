@@ -110,15 +110,36 @@ no_host_configured() { # $1 = space-separated names of the missing host variable
   echo "        both ZB_WIN10_HOST and ZB_WIN11_HOST are required for the two-host gate" >&2
 }
 
+# ---- bd zigBrowser-ong.25: every configured host's transport selectors are explicit -----------------------
+# A host that is set needs its own <prefix>_PORT, _USER, _KEY and _KNOWN_HOSTS (no default, no legacy name, and
+# Win10 never borrows a Win11 value). Checked before any staging, probing or session work; refused with rc 2.
+require_selectors() { # $@ = host prefixes (ZB_WIN11 / ZB_WIN10); an unset host forces nothing
+  local p h v n; local -a missing=()
+  for p in "$@"; do
+    h="${p}_HOST"
+    [ -n "${!h:-}" ] || continue
+    for v in PORT USER KEY KNOWN_HOSTS; do
+      n="${p}_${v}"
+      [ -n "${!n:-}" ] || missing+=("$n")
+    done
+  done
+  if [ "${#missing[@]}" -gt 0 ]; then
+    echo "gate: refused: ${missing[*]} not set for a configured host; every transport selector must be explicit" >&2
+    exit 2
+  fi
+}
+
 # ---- WS0.3 + WS0.8 stage-to-host ---------------------------------------------------------
 # Tar the manifest and pipe it over ssh to the host's zb\runs\<id>\. The tar exit status is
 # checked (pipefail); no `2>/dev/null` swallows it. StrictHostKeyChecking=yes pins the key.
 selftest_stage() {
-  local host="${ZB_WIN11_HOST:-${ZB_WIN10_HOST:-}}"
-  local port="${ZB_WIN11_PORT:-22}"
-  local user="${ZB_GUEST_USER:-}"
-  local key="${ZB_WIN11_KEY:-${ZB_WIN_KEY:-/home/maceo/vms/win11-m8/zb_win_key}}"
-  local kh="${ZB_WIN11_KNOWN_HOSTS:-${ZB_WIN_KNOWN_HOSTS:-/home/maceo/vms/win11-m8/known_hosts}}"
+  # bd zigBrowser-ong.25 (NavyCanyon 456c9420): the transport principal is ZB_WIN11_USER at ZB_WIN11_PORT;
+  # ZB_GUEST_USER stays the lexical-fence identity only and is never compared with it.
+  local host="$ZB_WIN11_HOST"
+  local port="$ZB_WIN11_PORT"
+  local user="$ZB_WIN11_USER"
+  local key="$ZB_WIN11_KEY"
+  local kh="$ZB_WIN11_KNOWN_HOSTS"
   local -a SSH; mapfile -d '' SSH < <(ssh_opts "$key" "$kh")
   local manifest="$HERE/stage_manifest.txt"
   local -a files=(); mapfile -t files < <(grep -vE '^[[:space:]]*(#|$)' "$manifest" 2>/dev/null)
@@ -215,7 +236,7 @@ PS
 ZB_FS_EXC_PINNED='K:\=exFAT, no ACL possible; owner accepted 2026-10-21'
 
 validate_probes() { # $1=vm_json $2=fs_pre $3=fs_post ; ALLOW to stdout, fail reason to stderr
-  python3 - "$1" "$2" "$3" "${ZB_WIN11_MARKER:-}" "${ZB_WIN10_USER:-zbtest}" "${ZB_WIN10_MARKER:-}" "${ZB_WIN11_USER:-zbtext}" "${ZB_WIN10_LISTEN:-${ZB_WIN10_HOST:-}}" "$ZB_FS_EXC_PINNED" <<'PY'
+  python3 - "$1" "$2" "$3" "${ZB_WIN11_MARKER:-}" "$ZB_WIN10_USER" "${ZB_WIN10_MARKER:-}" "$ZB_WIN11_USER" "${ZB_WIN10_LISTEN:-${ZB_WIN10_HOST:-}}" "$ZB_FS_EXC_PINNED" <<'PY'
 import sys, json, math, ntpath
 vm, fs_pre, fs_post, win11_marker, win10_user, win10_marker, win11_user, win10_listen, fs_exc_pinned = sys.argv[1:10]
 # The one approved exception as (path, reason); exact match only.
@@ -495,15 +516,14 @@ probe_only() { # WS0.6 (VM identity) + WS0.7 (file-server fence) across both hos
   fi
   echo "WS0.6: Win11 snapshot '$want' state=$sstate created_epoch=$screated ($(date -d @"$screated" 2>/dev/null))" >&2
   local vm_json fs_pre fs_post
-  # Per-host key + known_hosts (new ZB_WIN11_*/ZB_WIN10_* vars; fall back to the legacy single
-  # ZB_WIN_* then the on-disk defaults). The VM and the file server pin DIFFERENT host keys.
-  local vm_key="${ZB_WIN11_KEY:-${ZB_WIN_KEY:-/home/maceo/vms/win11-m8/zb_win_key}}"
-  local vm_kh="${ZB_WIN11_KNOWN_HOSTS:-${ZB_WIN_KNOWN_HOSTS:-/home/maceo/vms/win11-m8/known_hosts}}"
-  # The Win10 file server uses the SAME private key as the VM (only its known_hosts differs — the two
-  # hosts pin different host keys). So the key default is the win11-m8 key path; only known_hosts
-  # defaults under win10-fs. ZB_WIN10_KEY still overrides if a separate key is ever issued.
-  local fs_key="${ZB_WIN10_KEY:-${ZB_WIN_KEY:-/home/maceo/vms/win11-m8/zb_win_key}}"
-  local fs_kh="${ZB_WIN10_KNOWN_HOSTS:-${ZB_WIN_KNOWN_HOSTS:-/home/maceo/vms/win10-fs/known_hosts}}"
+  # Per-host key + known_hosts, each host's own explicit ZB_WIN11_* / ZB_WIN10_* (bd zigBrowser-ong.25; checked by
+  # require_selectors before this runs). The VM and the file server pin DIFFERENT host keys.
+  local vm_key="$ZB_WIN11_KEY"
+  local vm_kh="$ZB_WIN11_KNOWN_HOSTS"
+  # The Win10 file server may use the same private key file as the VM, but only through its own explicit
+  # ZB_WIN10_KEY: it never borrows a Win11 value (bd zigBrowser-ong.25).
+  local fs_key="$ZB_WIN10_KEY"
+  local fs_kh="$ZB_WIN10_KNOWN_HOSTS"
   # RoseCat be655f3 (2): the owner approved exactly ONE share exception. Pin it: ZB_WIN10_SHARE_EXCEPTIONS,
   # if set, MUST equal this record EXACTLY (no extra/duplicate/other-path/malformed entries) before any SSH;
   # unset means no exception. Only this record is carried to Win10 (via probe_host's base64 prelude).
@@ -519,7 +539,7 @@ probe_only() { # WS0.6 (VM identity) + WS0.7 (file-server fence) across both hos
   local nonce sres sess_sha
   nonce="ws0-$(date -u +%Y%m%dT%H%M%SZ)-$$-${RANDOM}${RANDOM}"
   sess_sha=$(sha256sum "$HERE/session_probe.ps1" | awk '{print $1}')
-  sres=$(run_session_probe "${ZB_WIN11_USER:-zbtext}" "$ZB_WIN11_HOST" "${ZB_WIN11_PORT:-2222}" "$vm_key" "$vm_kh" "$nonce" "$sess_sha")
+  sres=$(run_session_probe "$ZB_WIN11_USER" "$ZB_WIN11_HOST" "$ZB_WIN11_PORT" "$vm_key" "$vm_kh" "$nonce" "$sess_sha")
   echo "WS0.1: VM session-probe -> $sres" >&2
   case "$sres" in
     *RESULT=OK*) : ;;
@@ -529,12 +549,12 @@ probe_only() { # WS0.6 (VM identity) + WS0.7 (file-server fence) across both hos
   # => rc 255) must fail the gate HERE, before any success row is accepted — never rely on empty JSON failing
   # later in validation. (probe_host's rc is ssh's rc.)
   local rc
-  vm_json=$(probe_host "${ZB_WIN11_USER:-zbtext}" "$ZB_WIN11_HOST" "${ZB_WIN11_PORT:-2222}" "$vm_key" "$vm_kh"); rc=$?
+  vm_json=$(probe_host "$ZB_WIN11_USER" "$ZB_WIN11_HOST" "$ZB_WIN11_PORT" "$vm_key" "$vm_kh"); rc=$?
   [ "$rc" -ne 0 ] && { echo "NOT RUN: Win11 probe transport failed (ssh rc=$rc — unreachable or host-key refusal)" >&2; return 1; }
-  fs_pre=$(probe_host "${ZB_WIN10_USER:-zbtest}" "$ZB_WIN10_HOST" "${ZB_WIN10_PORT:-22}" "$fs_key" "$fs_kh" "$fs_exc"); rc=$?
+  fs_pre=$(probe_host "$ZB_WIN10_USER" "$ZB_WIN10_HOST" "$ZB_WIN10_PORT" "$fs_key" "$fs_kh" "$fs_exc"); rc=$?
   [ "$rc" -ne 0 ] && { echo "NOT RUN: Win10 probe transport failed (ssh rc=$rc — unreachable or host-key refusal)" >&2; return 1; }
   # A full gate runs the product tests here; --probe-only re-probes to catch any change (WS0.7).
-  fs_post=$(probe_host "${ZB_WIN10_USER:-zbtest}" "$ZB_WIN10_HOST" "${ZB_WIN10_PORT:-22}" "$fs_key" "$fs_kh" "$fs_exc"); rc=$?
+  fs_post=$(probe_host "$ZB_WIN10_USER" "$ZB_WIN10_HOST" "$ZB_WIN10_PORT" "$fs_key" "$fs_kh" "$fs_exc"); rc=$?
   [ "$rc" -ne 0 ] && { echo "NOT RUN: Win10 re-probe transport failed (ssh rc=$rc)" >&2; return 1; }
   validate_probes "$vm_json" "$fs_pre" "$fs_post" >/dev/null || return 1
   printf 'WIN11 %s\nWIN10 %s\n' "$vm_json" "$fs_post"
@@ -603,6 +623,7 @@ case "${1:-}" in
       echo "gate: --selftest-stage needs ZB_WIN11_HOST" >&2
       exit 1
     fi
+    require_selectors ZB_WIN11
     selftest_stage
     exit $?
     ;;
@@ -617,6 +638,7 @@ if [ -n "$missing" ]; then
   no_host_configured "$missing"
   exit 1
 fi
+require_selectors ZB_WIN11 ZB_WIN10
 
 case "${1:-}" in
   --probe-only)

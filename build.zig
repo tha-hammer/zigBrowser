@@ -364,6 +364,16 @@ pub fn build(b: *std.Build) void {
     const windows_guest_default_step = b.step("windows-guest-default-selftest", "Run the build-in-guest no-default-host selftest (netns)");
     windows_guest_default_step.dependOn(&windows_guest_default_selftest.step);
 
+    // bd zigBrowser-ong.25 (NavyCanyon fb4d56d1 / 456c9420): once a Windows host is set, all its transport selectors
+    // are explicit (tests/windows/live_transport.py for the Python callers; build-on-windows.sh and gate.sh check
+    // their own). The red live_transport_selectors_red_test.py (a24e70c0 + R2 96ba44a2) drives every real caller
+    // against fake ssh/scp; the step runs it inside an empty network namespace.
+    const windows_transport_selectors_selftest = b.addSystemCommand(&.{
+        "unshare", "--user", "--map-current-user", "--net", "--", "python3", "-I", "tests/windows/live_transport_selectors_red_test.py",
+    });
+    const windows_transport_selectors_step = b.step("windows-transport-selectors-selftest", "Run the Windows live transport selector matrix (netns)");
+    windows_transport_selectors_step.dependOn(&windows_transport_selectors_selftest.step);
+
     // (WS0.5 remote-path fence removed — resolve_path.sh / resolve_live_test.py deleted; bead
     // zigBrowser-q92. A future remote file op uses the held-handle check-and-use design, its own milestone.)
 
@@ -3820,7 +3830,7 @@ pub fn build(b: *std.Build) void {
         "-c",
         // Scrub the live connection vars (RoseCat 7862 #1) so an ordinary `zig build test` can NEVER contact the
         // VM, even if a dev has them exported — the 8 live rows then skip deterministically. Isolated (-I).
-        "env -u ZB_WIN11_HOST -u ZB_WIN_EXE -u ZB_WIN11_PORT -u ZB_WIN11_USER -u ZB_WIN_KEY -u ZB_WIN_KNOWN_HOSTS PYTHONDONTWRITEBYTECODE=1 python3 -I tests/windows/win_drawer_test.py -v",
+        "env -u ZB_WIN11_HOST -u ZB_WIN_EXE -u ZB_WIN11_PORT -u ZB_WIN11_USER -u ZB_WIN11_KEY -u ZB_WIN11_KNOWN_HOSTS PYTHONDONTWRITEBYTECODE=1 python3 -I tests/windows/win_drawer_test.py -v",
     });
     windows_drawer_live.addFileInput(b.path("tests/windows/win_drawer_test.py"));
     b.step("windows-drawer-live", "WS5: native Win32 drawer harness — offline oracles run, VM live rows skip").dependOn(&windows_drawer_live.step);
@@ -3830,7 +3840,7 @@ pub fn build(b: *std.Build) void {
     const windows_drawer_behaviors = b.addSystemCommand(&.{
         "sh",
         "-c",
-        "env -u ZB_WIN11_HOST -u ZB_WIN_EXE -u ZB_WIN11_PORT -u ZB_WIN11_USER -u ZB_WIN_KEY -u ZB_WIN_KNOWN_HOSTS PYTHONDONTWRITEBYTECODE=1 python3 -I tests/windows/win_drawer_behaviors_test.py -v",
+        "env -u ZB_WIN11_HOST -u ZB_WIN_EXE -u ZB_WIN11_PORT -u ZB_WIN11_USER -u ZB_WIN11_KEY -u ZB_WIN11_KNOWN_HOSTS PYTHONDONTWRITEBYTECODE=1 python3 -I tests/windows/win_drawer_behaviors_test.py -v",
     });
     windows_drawer_behaviors.addFileInput(b.path("tests/windows/win_drawer_behaviors_test.py"));
     windows_drawer_behaviors.addFileInput(b.path("tests/windows/win_drawer_test.py"));
@@ -3876,6 +3886,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&windows_m8_profile_selftest.step);
     test_step.dependOn(&windows_msi_default_selftest.step);
     test_step.dependOn(&windows_guest_default_selftest.step);
+    test_step.dependOn(&windows_transport_selectors_selftest.step);
     test_step.dependOn(&windows_incident_cleanup_selftest.step);
     test_step.dependOn(&windows_incident_cleanup_r2.step);
     test_step.dependOn(&windows_win10_probe_selftest.step);

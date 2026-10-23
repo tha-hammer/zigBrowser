@@ -284,7 +284,10 @@ class SpikeDriverCaller(Case):
                 return subprocess.CompletedProcess(argv, 0, "ok   the spike ran\n", "")
             raise AssertionError(f"unexpected argv {argv!r}")
 
-        env = {"ZB_WIN11_HOST": "fake.invalid", "ZB_WIN11_MARKER": MARKER, "ZB_BUILD_COMMIT": "HEAD"}
+        env = {"ZB_WIN11_HOST": "fake.invalid", "ZB_WIN11_MARKER": MARKER, "ZB_BUILD_COMMIT": "HEAD",
+               # bd zigBrowser-ong.25: every selector explicit (subprocess.run is faked; nothing is contacted)
+               "ZB_WIN11_PORT": "2222", "ZB_WIN11_USER": "zbtext", "ZB_WIN11_KEY": "/nonexistent/key",
+               "ZB_WIN11_KNOWN_HOSTS": "/nonexistent/known_hosts"}
         out, err = io.StringIO(), io.StringIO()
         with mock.patch.dict(os.environ, env), mock.patch.object(spike_driver.subprocess, "run", fake_run), \
                 contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):

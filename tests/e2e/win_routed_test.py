@@ -19,8 +19,8 @@ RED today: app.zig wires the GTK port on Windows (`supported = os.tag == .linux`
 every page.* command answers -32011, so the first page-port assertion (page.evaluate 1+1) fails.
 Mutant for the green (plan): return 0 from the shim without doing the work.
 
-Host selection, as win_transport_test.py: ZB_WIN11_HOST, ZB_WIN_EXE, ZB_WIN11_PORT, ZB_WIN11_USER, ZB_WIN_KEY,
-ZB_WIN_KNOWN_HOSTS. With no host it skips when run by hand and FAILS under ZB_WIN_GATE=1 (plan D.1, rule 7).
+Host selection, as win_transport_test.py: ZB_WIN11_HOST, ZB_WIN_EXE, ZB_WIN11_PORT, ZB_WIN11_USER, ZB_WIN11_KEY,
+ZB_WIN11_KNOWN_HOSTS (all explicit once the host is set; bd zigBrowser-ong.25). With no host it skips when run by hand and FAILS under ZB_WIN_GATE=1 (plan D.1, rule 7).
 Prints `ASSERTS <n>` (tests/windows/live_gate.py).
 
 Run live (after a reviewer-approved exact commit and the orchestrator's release):

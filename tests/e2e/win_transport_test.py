@@ -42,6 +42,7 @@ import unittest
 import sys
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "windows"))
 import live_gate  # noqa: E402  ZB_WIN_GATE=1: a missing host fails instead of skipping; prints ASSERTS <n>
+import live_transport  # noqa: E402  bd zigBrowser-ong.25: the one transport resolver (every selector explicit)
 import scp_legacy  # noqa: E402  bd zigBrowser-ong.12: every copy over the legacy scp protocol (-O)
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
@@ -166,13 +167,16 @@ class WinTransport(unittest.TestCase):
     def setUp(self):
         if not self.host:
             live_gate.skip_or_fail(self, "ZB_WIN11_HOST unset — live VM transport test skipped")
+        # bd zigBrowser-ong.25: once the host is set, port/user/key/known_hosts are explicit too; a partial
+        # configuration FAILS here (never a skip), before any transport. The second account ZB_WIN11_OTHER_USER
+        # is a sixth selector for WinTransport's own tests only (NavyCanyon 456c9420): the suites that borrow this
+        # setUp (win_capabilities/private_world/routed) never use it.
+        extra = ("ZB_WIN11_OTHER_USER",) if isinstance(self, WinTransport) else ()
+        t = live_transport.for_test(self, "ZB_WIN11", extra)
+        self.port, self.user, self.key, self.kh = t.port, t.user, t.key, t.known_hosts
+        self.other = t.extra.get("ZB_WIN11_OTHER_USER")
         if not self.exe or not pathlib.Path(self.exe).is_file():
             live_gate.skip_or_fail(self, "ZB_WIN_EXE unset or missing — set it to a built zigBrowser.exe")
-        self.port = os.environ.get("ZB_WIN11_PORT", "2222")
-        self.user = os.environ.get("ZB_WIN11_USER", "zbtext")
-        self.other = os.environ.get("ZB_WIN11_OTHER_USER", "zbother")
-        self.key = os.environ.get("ZB_WIN_KEY", "/home/maceo/vms/win11-m8/zb_win_key")
-        self.kh = os.environ.get("ZB_WIN_KNOWN_HOSTS", "/home/maceo/vms/win11-m8/known_hosts")
 
     # ---- transport (BatchMode: a refused key fails at once, never a prompt) ----------------------------
     def _opts(self):

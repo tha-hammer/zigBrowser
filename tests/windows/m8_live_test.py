@@ -38,6 +38,7 @@ import sys
 import tempfile
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))  # `python3 -I` drops the script dir
+import live_transport  # noqa: E402  bd zigBrowser-ong.25: the one transport resolver
 import webview2_cleanup  # noqa: E402  the ONE shared WebView2 run-folder cleanup (NavyCanyon 6dd7fda)
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
@@ -74,10 +75,9 @@ class Host:
         env = os.environ
         self.label = label
         self.host = env.get(f"{prefix}_HOST", "")
-        self.port = env.get(f"{prefix}_PORT", port)
-        self.user = env.get(f"{prefix}_USER", user)
-        self.key = env.get(f"{prefix}_KEY", key)
-        self.known_hosts = env.get(f"{prefix}_KNOWN_HOSTS", known_hosts)
+        # bd zigBrowser-ong.25: the transport selectors are exactly what the caller resolved (configured_hosts);
+        # this class reads none of them from the environment.
+        self.port, self.user, self.key, self.known_hosts = port, user, key, known_hosts
         self.marker = env.get(f"{prefix}_MARKER", "")
         self.python = env.get(f"{prefix}_PYTHON", python or "")
         self.marker_var = f"{prefix}_MARKER"
@@ -102,14 +102,20 @@ class Host:
 
 
 def configured_hosts() -> list[Host]:
-    k = os.environ.get("ZB_WIN_KEY", "/home/maceo/vms/win11-m8/zb_win_key")
-    kh = os.environ.get("ZB_WIN_KNOWN_HOSTS", "/home/maceo/vms/win11-m8/known_hosts")
-    hosts = [
-        Host("win11", "ZB_WIN11", "2222", "zbtext", k, kh, r"C:\Python314\python.exe"),
-        Host("win10", "ZB_WIN10", "22", "zbtest", "/home/maceo/vms/win11-m8/zb_win_key",
-             "/home/maceo/vms/win10-fs/known_hosts", None),
-    ]
-    return [h for h in hosts if h.host]
+    """The configured hosts, each with its own explicit ZB_WIN11_* / ZB_WIN10_* selectors (bd zigBrowser-ong.25).
+    Raises live_transport.TransportConfigError naming every missing selector of every configured host."""
+    hosts, errors = [], []
+    for label, prefix, python in (("win11", "ZB_WIN11", r"C:\Python314\python.exe"), ("win10", "ZB_WIN10", None)):
+        try:
+            t = live_transport.resolve(prefix)
+        except live_transport.TransportConfigError as e:
+            errors.append(str(e))
+            continue
+        if t is not None:
+            hosts.append(Host(label, prefix, t.port, t.user, t.key, t.known_hosts, python))
+    if errors:
+        raise live_transport.TransportConfigError("; ".join(errors))
+    return hosts
 
 
 def stage_local(exe: pathlib.Path) -> pathlib.Path:
@@ -196,7 +202,10 @@ def run_on_host(h: Host, stage: pathlib.Path) -> tuple[bool, int]:
 
 
 def main() -> int:
-    hosts = configured_hosts()
+    try:
+        hosts = configured_hosts()
+    except live_transport.TransportConfigError as e:
+        return live_transport.refuse(e)
     if not hosts:
         rc = precondition_exit(f"NOT RUN: {NO_HOST} (set ZB_WIN11_HOST and ZB_WIN10_HOST)")
         return rc

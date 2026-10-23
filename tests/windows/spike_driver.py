@@ -18,6 +18,7 @@ import subprocess
 import sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import live_transport  # noqa: E402  bd zigBrowser-ong.25: the one transport resolver
 import webview2_cleanup  # noqa: E402
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
@@ -40,18 +41,19 @@ def precondition_exit(reason: str) -> int:
 
 def run_spike(step: str, required: tuple, tag: str) -> int:
     env = {k: v for k, v in os.environ.items() if k not in SCRUB}
-    host = env.get("ZB_WIN11_HOST", "")
+    try:  # bd zigBrowser-ong.25: every selector explicit once the host is set; refused (rc 2) before any ssh
+        t = live_transport.resolve("ZB_WIN11", env)
+    except live_transport.TransportConfigError as e:
+        return live_transport.refuse(e)
     marker = env.get("ZB_WIN11_MARKER", "")
-    if not host:
+    if t is None:
         return precondition_exit("NOT RUN: no Windows host configured (set ZB_WIN11_HOST)")
     if not marker:
         return precondition_exit("NOT RUN: ZB_WIN11_MARKER unset: the host identity cannot be checked")
 
-    key = env.get("ZB_WIN11_KEY", env.get("ZB_WIN_KEY", "/home/maceo/vms/win11-m8/zb_win_key"))
-    kh = env.get("ZB_WIN11_KNOWN_HOSTS", env.get("ZB_WIN_KNOWN_HOSTS", "/home/maceo/vms/win11-m8/known_hosts"))
-    ssh = ["ssh", "-i", key, "-o", "IdentitiesOnly=yes", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes",
-           "-o", f"UserKnownHostsFile={kh}", "-o", "ConnectTimeout=15", "-p", env.get("ZB_WIN11_PORT", "2222"),
-           f"{env.get('ZB_WIN11_USER', 'zbtext')}@{host}", r'type "%USERPROFILE%\zb\.gate-identity"']
+    ssh = ["ssh", "-i", t.key, "-o", "IdentitiesOnly=yes", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes",
+           "-o", f"UserKnownHostsFile={t.known_hosts}", "-o", "ConnectTimeout=15", "-p", t.port,
+           f"{t.user}@{t.host}", r'type "%USERPROFILE%\zb\.gate-identity"']
     ident = subprocess.run(ssh, env=env, capture_output=True, text=True, timeout=120, stdin=subprocess.DEVNULL)
 
     def on_host(command, timeout=300):

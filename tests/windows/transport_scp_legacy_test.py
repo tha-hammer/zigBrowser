@@ -79,7 +79,10 @@ class LegacyScpStaging(unittest.TestCase):
         for name in ("zigBrowser.exe", "probe.exe", "test.html", "run.ps1"):
             (staged / name).write_bytes(b"x")
         self.staged = staged
-        saved = {k: os.environ.get(k) for k in ("PATH", "ZB_FAKE_SSH_STATE", "ZB_WIN11_HOST", "ZB_WIN_EXE")}
+        # bd zigBrowser-ong.25: the real setUp needs every selector explicit (and WinTransport's second account)
+        selectors = {"ZB_WIN11_PORT": "2222", "ZB_WIN11_USER": "zbtext", "ZB_WIN11_KEY": "/nonexistent/key",
+                     "ZB_WIN11_KNOWN_HOSTS": "/nonexistent/known_hosts", "ZB_WIN11_OTHER_USER": "zbother"}
+        saved = {k: os.environ.get(k) for k in ("PATH", "ZB_FAKE_SSH_STATE", "ZB_WIN11_HOST", "ZB_WIN_EXE", *selectors)}
 
         def restore():
             for k, v in saved.items():
@@ -92,6 +95,7 @@ class LegacyScpStaging(unittest.TestCase):
         os.environ["ZB_FAKE_SSH_STATE"] = str(self.state)
         os.environ["ZB_WIN11_HOST"] = "192.0.2.1"  # TEST-NET; only the fakes ever see it
         os.environ["ZB_WIN_EXE"] = str(staged / "zigBrowser.exe")
+        os.environ.update(selectors)
 
     def _harness(self, cls, method):
         t = cls(method)

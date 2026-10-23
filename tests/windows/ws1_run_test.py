@@ -42,6 +42,7 @@ import sys
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # `python3 -I` drops the script dir
+import live_transport  # noqa: E402  bd zigBrowser-ong.25: the one transport resolver
 import scp_legacy  # noqa: E402  bd zigBrowser-ong.12: every copy over the legacy scp protocol (-O)
 
 ZB_EXIT_RUNTIME_MISSING = 9
@@ -59,11 +60,10 @@ PE_MACHINE_AMD64 = 0x8664
 REPO = pathlib.Path(__file__).resolve().parents[2]
 PE_CENSUS = REPO / "tests" / "windows" / "pe_census.py"
 
-HOST = os.environ.get("ZB_WIN11_HOST")
-USER = os.environ.get("ZB_WIN11_USER", "zbtext")
-PORT = os.environ.get("ZB_WIN11_PORT", "2222")
-KEY = os.environ.get("ZB_WIN_KEY", "/home/maceo/vms/win11-m8/zb_win_key")
-KH = os.environ.get("ZB_WIN_KNOWN_HOSTS", "/home/maceo/vms/win11-m8/known_hosts")
+# bd zigBrowser-ong.25: no host -> every test fails its _exe_available() check, as before; a host with any selector
+# missing raises TransportConfigError (naming them) at import, before any transport.
+_T = live_transport.resolve("ZB_WIN11")
+HOST, USER, PORT, KEY, KH = (_T.host, _T.user, _T.port, _T.key, _T.known_hosts) if _T else (None,) * 5
 # The gate stages the built exe here before this phase; absent until WS1 builds + stages it.
 # `%USERPROFILE%\...` is for cmd on the host; EXE_REMOTE_REL is the SFTP home-relative path for scp.
 EXE_REMOTE = os.environ.get("ZB_WIN_EXE_REMOTE", r"%USERPROFILE%\zb\zigBrowser.exe")

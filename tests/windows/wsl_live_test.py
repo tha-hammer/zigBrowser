@@ -55,8 +55,8 @@ outer `timeout`, leaving `--kill-child` as the terminal backstop, and runs from 
     unshare --user --map-current-user --pid --fork --kill-child --mount-proc \
     env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 \
       ZB_WSL_PIDNS_BACKSTOP=1 ZB_WIN11_HOST=win11-m8 ZB_WIN11_PORT=2222 \
-      ZB_WIN11_USER=zbtext ZB_WIN_KEY=/home/maceo/vms/win11-m8/zb_win_key \
-      ZB_WIN_KNOWN_HOSTS=/home/maceo/vms/win11-m8/known_hosts ZB_WSL_ROOTFS="$ZB_WSL_ROOTFS" \
+      ZB_WIN11_USER=zbtext ZB_WIN11_KEY=<the Win11 key> \
+      ZB_WIN11_KNOWN_HOSTS=<the Win11 known_hosts> ZB_WSL_ROOTFS="$ZB_WSL_ROOTFS" \
       python3 -X dev -m unittest -v tests.windows.wsl_live_test
 
 C1 stdio/pipe-to-fd bootstrap probe (design embodied in `test_wsl_topology`): the Windows parent launches
@@ -83,14 +83,20 @@ import tempfile
 import time
 import unittest
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # `python3 -I` / `-m unittest` drop it
+import live_transport  # noqa: E402  bd zigBrowser-ong.25: the one transport resolver
+
 ROOTFS_NAME = "alpine-minirootfs-3.21.9-x86_64.tar.gz"
 ROOTFS_SHA256 = "3d5912d47e004ac77746d63ab848abd9e37164465cf1c866eb574bc526135012"
 
-HOST = os.environ.get("ZB_WIN11_HOST")
-PORT = os.environ.get("ZB_WIN11_PORT", "2222")
-USER = os.environ.get("ZB_WIN11_USER", "zbtext")
-KEY = os.environ.get("ZB_WIN_KEY", "/home/maceo/vms/win11-m8/zb_win_key")
-KH = os.environ.get("ZB_WIN_KNOWN_HOSTS", "/home/maceo/vms/win11-m8/known_hosts")
+# bd zigBrowser-ong.25: a host with any selector missing raises TransportConfigError (naming them) at import, before
+# any transport. With no host the live class skips as before, and the offline `ssh -G` oracle (which opens no
+# connection) runs on placeholders that name no real key or account (`ssh -G` drops an identity file that does
+# not exist, so the placeholder identity is /dev/null).
+_T = live_transport.resolve("ZB_WIN11")
+_ORACLE = ("2222", "zboracle", "/dev/null", "/nonexistent/zb-wsl-oracle.known_hosts")
+HOST = _T.host if _T else None
+PORT, USER, KEY, KH = (_T.port, _T.user, _T.key, _T.known_hosts) if _T else _ORACLE
 ROOTFS = os.environ.get("ZB_WSL_ROOTFS")
 
 NONROOT = "zbagent"

@@ -2,9 +2,10 @@
 
 The fake ssh/scp first on PATH are the only thing between a hostless selftest and a real Windows host, so every
 fake case aims at TEST-NET addresses (RFC 5737, never routed) with key and known_hosts paths that do not exist.
-A case that needs a driver's built-in key default (the REAL key) runs inside NETNS, an empty network namespace,
-so no packet can leave. problem() is the one check: callers run it on the env before a fake run and on every
-ssh/scp argv the fakes logged after it.
+problem() is the one check: callers run it on the env before a fake run and on every ssh/scp argv the fakes logged
+after it. bd zigBrowser-ong.25: a configured host must carry all of its own explicit selectors (port, user, key,
+known_hosts); a default, a legacy ZB_WIN_KEY / ZB_WIN_KNOWN_HOSTS or the other host's values never count, even
+inside NETNS (an empty network namespace, still required for any case that names a real key file).
 """
 import ipaddress
 import os
@@ -16,11 +17,9 @@ NETNS = ["unshare", "--user", "--map-current-user", "--net"]
 DEFAULT_KEY = "/home/maceo/vms/win11-m8/zb_win_key"
 DEFAULT_KNOWN_HOSTS = "/home/maceo/vms/win11-m8/known_hosts"
 
-# host variable -> the key variables the gate and the build driver read for it, first wins, then DEFAULT_KEY
-_KEYS_FOR_HOST = {
-    "ZB_WIN11_HOST": ("ZB_WIN11_KEY", "ZB_WIN_KEY"),
-    "ZB_WIN10_HOST": ("ZB_WIN10_KEY", "ZB_WIN_KEY"),
-}
+# host variable -> its prefix; every <prefix>_<selector> must be explicit once the host is set (bd zigBrowser-ong.25)
+_PREFIX_FOR_HOST = {"ZB_WIN11_HOST": "ZB_WIN11", "ZB_WIN10_HOST": "ZB_WIN10"}
+SELECTORS = ("PORT", "USER", "KEY", "KNOWN_HOSTS")
 _HOST_VARS = ("ZB_WIN11_HOST", "ZB_WIN10_HOST", "ZB_WIN10_LISTEN")
 
 
@@ -52,17 +51,30 @@ def _real_key(key):
     return key == DEFAULT_KEY or os.path.exists(key)
 
 
-def problem(env, calls, netns=False):
-    """None when a fake run cannot reach a real host with a real key, else what is wrong."""
+def problem(env, calls, netns=False, partial_ok=False):
+    """None when a fake run cannot reach a real host with a real key, else what is wrong.
+
+    partial_ok: the case under test IS a partial configuration (a refusal). It is fail-safe only if no ssh/scp call
+    was made at all; any logged call under it is itself the problem."""
+    partial = False
     for var in _HOST_VARS:
         if env.get(var) and not unreachable(env[var]):
             return f"{var}={env[var]!r} is not a TEST-NET address"
-    for var, chain in _KEYS_FOR_HOST.items():
+    for var, prefix in _PREFIX_FOR_HOST.items():
         if not env.get(var):
             continue
-        key = next((env[k] for k in chain if env.get(k)), DEFAULT_KEY)
+        missing = [f"{prefix}_{s}" for s in SELECTORS if not env.get(f"{prefix}_{s}")]
+        if missing and not partial_ok:
+            return (f"{var} is set without an explicit {' '.join(missing)} "
+                    "(no default, legacy or other-host selector counts)")
+        if missing:
+            partial = True
+            continue
+        key = env[f"{prefix}_KEY"]
         if not netns and _real_key(key):
             return f"{var} resolves to a real key {key!r} outside a network namespace"
+    if partial and calls:
+        return f"a transport call was made under a partial configuration: {' '.join(calls[0])}"
     for argv in calls:
         hosts, keys = hosts_and_keys(argv)
         if not hosts or not all(unreachable(h) for h in hosts):

@@ -97,7 +97,7 @@ def census_end(lines):
 
 
 class M8RunDriver(unittest.TestCase):
-    def _run(self, **over):
+    def _run(self, partial=False, **over):
         t = tempfile.mkdtemp(prefix="zb-m8run-")
         self.addCleanup(shutil.rmtree, t, True)
         td = pathlib.Path(t)
@@ -132,12 +132,12 @@ class M8RunDriver(unittest.TestCase):
         (td / "home").mkdir()
         env.update(over)
         env = {k: v for k, v in env.items() if v is not None}
-        self.assertIsNone(transport_problem(env, []), "fake m8 run is not fail-safe")
+        self.assertIsNone(transport_problem(env, [], partial_ok=partial), "fake m8 run is not fail-safe")
         proc = subprocess.run([*NETNS, "python3", "-I", str(win / "m8_run.py")], cwd=root, env=env,
                               capture_output=True, text=True, timeout=300, stdin=subprocess.DEVNULL)
         lines = log.read_text().splitlines()
         ssh = [l[4:].split() for l in lines if l.startswith("SSH ")]
-        self.assertIsNone(transport_problem(env, ssh), "fake m8 run is not fail-safe")
+        self.assertIsNone(transport_problem(env, ssh, partial_ok=partial), "fake m8 run is not fail-safe")
         m8 = json.loads(m8log.read_text()) if m8log.exists() else None
         detail = (f"\nrc={proc.returncode}\nstdout:\n{proc.stdout}\nstderr:\n{proc.stderr}\ncalls:\n"
                   + "\n".join(lines))
@@ -225,7 +225,8 @@ class M8RunDriver(unittest.TestCase):
         for missing in ("ZB_WIN11_HOST", "ZB_WIN11_KEY", "ZB_WIN11_KNOWN_HOSTS", "ZB_WIN11_MARKER",
                         "ZB_BUILD_COMMIT"):
             with self.subTest(missing=missing):
-                proc, lines, m8, _, detail = self._run(**{missing: None})
+                partial = missing in ("ZB_WIN11_KEY", "ZB_WIN11_KNOWN_HOSTS")  # bd zigBrowser-ong.25
+                proc, lines, m8, _, detail = self._run(partial=partial, **{missing: None})
                 self.assertEqual(proc.returncode, 1, "a missing precondition fails under the gate" + detail)
                 self.assertEqual(lines, [], "nothing is contacted or built" + detail)
 

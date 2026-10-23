@@ -53,7 +53,7 @@ STEP = "ws2b1-input-spike-exe-win"
 INPUTS = ("tests/fixtures/automation/input.html", "tests/fixtures/automation/scroll.html",
           "src/automation_script/automation.js")
 COPIED = ("tests/windows/win10_spike_run.py", "tests/windows/webview2_cleanup.py", "tests/windows/scp_legacy.py",
-          "tests/windows/spike_driver.py", "tests/e2e/win_trusted_input_matrix.py",
+          "tests/windows/spike_driver.py", "tests/windows/live_transport.py", "tests/e2e/win_trusted_input_matrix.py",
           "tests/e2e/win_trusted_input_matrix_w10.py", *INPUTS)
 STRIPPED = ("ZB_WIN10_HOST", "ZB_WIN10_PORT", "ZB_WIN10_USER", "ZB_WIN10_KEY", "ZB_WIN10_KNOWN_HOSTS",
             "ZB_WIN10_MARKER", "ZB_WIN10_PYTHON", "ZB_WIN10_LISTEN", "ZB_WIN_KEY", "ZB_WIN_KNOWN_HOSTS", "ZB_HOST_LIVE")
@@ -107,7 +107,7 @@ def required_rows():
 
 
 class Win10SpikeRun(unittest.TestCase):
-    def _run(self, spike_lines=None, **over):
+    def _run(self, spike_lines=None, partial=False, **over):
         t = tempfile.mkdtemp(prefix="zb-w10run-")
         self.addCleanup(shutil.rmtree, t, True)
         td = pathlib.Path(t)
@@ -159,13 +159,13 @@ class Win10SpikeRun(unittest.TestCase):
         }
         env.update(over)
         env = {k: v for k, v in env.items() if v is not None}
-        self.assertIsNone(transport_problem(env, []), "fake Win10 run is not fail-safe")
+        self.assertIsNone(transport_problem(env, [], partial_ok=partial), "fake Win10 run is not fail-safe")
         entry = root / "tests" / "e2e" / "win_trusted_input_matrix_w10.py"
         proc = subprocess.run([*NETNS, "python3", "-I", str(entry)], cwd=root, env=env, capture_output=True, text=True,
                               timeout=300, stdin=subprocess.DEVNULL)
         self.lines = self.log.read_text().splitlines()
         calls = [l.split(" ", 1)[1].split() for l in self.lines if l.startswith(("SSH", "SCP"))]
-        self.assertIsNone(transport_problem(env, calls), "fake Win10 run is not fail-safe")
+        self.assertIsNone(transport_problem(env, calls, partial_ok=partial), "fake Win10 run is not fail-safe")
         self.out = proc.stdout + proc.stderr
         return proc
 
@@ -248,7 +248,7 @@ class Win10SpikeRun(unittest.TestCase):
         self.assertEqual(list(self.tmp.iterdir()), [], "the driver left local files behind")
 
     def test_a_missing_win10_key_is_refused_before_any_transport(self):
-        proc = self._run(ZB_WIN10_KEY=None)
+        proc = self._run(partial=True, ZB_WIN10_KEY=None)  # bd zigBrowser-ong.25: fail-safe only with no call
         self.assertEqual(proc.returncode, 1, self.out)
         self.assertIn("ZB_WIN10_KEY", self.out)
         self.assertEqual([l for l in self.lines if l.startswith(("SSH", "SCP", "BUILD"))], [])

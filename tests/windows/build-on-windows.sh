@@ -98,12 +98,20 @@ if [ "${1:-}" = "--gc" ]; then
 fi
 
 host="${ZB_WIN11_HOST:?set ZB_WIN11_HOST (see tests/windows/hosts.env)}"
-port="${ZB_WIN11_PORT:-2222}"
-user="${ZB_WIN11_USER:-zbtext}"
-# WS0.8: one key name with the gate — ZB_WIN11_KEY / ZB_WIN11_KNOWN_HOSTS first (hosts.env.example), then the
-# legacy ZB_WIN_KEY / ZB_WIN_KNOWN_HOSTS, then the built-in default.
-key="${ZB_WIN11_KEY:-${ZB_WIN_KEY:-/home/maceo/vms/win11-m8/zb_win_key}}"
-kh="${ZB_WIN11_KNOWN_HOSTS:-${ZB_WIN_KNOWN_HOSTS:-/home/maceo/vms/win11-m8/known_hosts}}"
+# bd zigBrowser-ong.25 (NavyCanyon fb4d56d1): with the host set, its port, user, key and known_hosts are explicit
+# too (hosts.env.example); there is no legacy name and no built-in default. Refused (rc 2) before any staging or ssh.
+missing=()
+for v in ZB_WIN11_PORT ZB_WIN11_USER ZB_WIN11_KEY ZB_WIN11_KNOWN_HOSTS; do
+  [ -n "${!v:-}" ] || missing+=("$v")
+done
+if [ "${#missing[@]}" -gt 0 ]; then
+  echo "build-on-windows: refused: ZB_WIN11_HOST is set but ${missing[*]} not; every transport selector must be explicit" >&2
+  exit 2
+fi
+port="$ZB_WIN11_PORT"
+user="$ZB_WIN11_USER"
+key="$ZB_WIN11_KEY"
+kh="$ZB_WIN11_KNOWN_HOSTS"
 # bead zigBrowser-4dr (option B): zig 0.16.0 and the WebView2 SDK nuget are installed MACHINE-WIDE under
 # C:\tools (readable+executable by all users), so these default to the known layout; override only for an
 # off-standard host. zig => C:\tools\zig\zig.exe; the WebView2 nuget unzips to C:\tools\webview2 with its

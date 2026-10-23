@@ -17,8 +17,8 @@ Expected at HEAD (WS2a.0 world + WS2a.1 port): GREEN. The failing-first evidence
 automation.js in, and evaluate it in, the page's MAIN world; then the page's spoofs win and the first dom.* call
 (the plan's assertion) is red.
 
-Host selection, as win_transport_test.py: ZB_WIN11_HOST, ZB_WIN_EXE, ZB_WIN11_PORT, ZB_WIN11_USER, ZB_WIN_KEY,
-ZB_WIN_KNOWN_HOSTS. With no host it skips when run by hand and FAILS under ZB_WIN_GATE=1 (plan D.1, rule 7).
+Host selection, as win_transport_test.py: ZB_WIN11_HOST, ZB_WIN_EXE, ZB_WIN11_PORT, ZB_WIN11_USER, ZB_WIN11_KEY,
+ZB_WIN11_KNOWN_HOSTS (all explicit once the host is set; bd zigBrowser-ong.25). With no host it skips when run by hand and FAILS under ZB_WIN_GATE=1 (plan D.1, rule 7).
 Prints `ASSERTS <n>` (tests/windows/live_gate.py).
 
 Run live (after a reviewer-approved exact commit and the orchestrator's release):

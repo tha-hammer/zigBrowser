@@ -28,6 +28,7 @@ import unittest
 import sys
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "windows"))
 import live_gate  # noqa: E402  ZB_WIN_GATE=1: a missing host fails instead of skipping; prints ASSERTS <n>
+import live_transport  # noqa: E402  bd zigBrowser-ong.25: the one transport resolver (every selector explicit)
 import scp_legacy  # noqa: E402  bd zigBrowser-ong.12: every copy over the legacy scp protocol (-O)
 
 # A page whose title reports whether MediaSource exists after its inline script runs.
@@ -62,13 +63,13 @@ class WinConfigFlags(unittest.TestCase):
         self.host = os.environ.get("ZB_WIN11_HOST")
         if not self.host:
             live_gate.skip_or_fail(self, "ZB_WIN11_HOST unset — live VM backend-flag test skipped")
+        # bd zigBrowser-ong.25: once the host is set, port/user/key/known_hosts are explicit too; a partial
+        # configuration FAILS here (never a skip), before any transport.
+        t = live_transport.for_test(self, "ZB_WIN11")
+        self.port, self.user, self.key, self.kh = t.port, t.user, t.key, t.known_hosts
         self.exe = os.environ.get("ZB_WIN_EXE")
         if not self.exe or not pathlib.Path(self.exe).is_file():
             live_gate.skip_or_fail(self, "ZB_WIN_EXE unset or missing — set it to a built zigBrowser.exe")
-        self.port = os.environ.get("ZB_WIN11_PORT", "2222")
-        self.user = os.environ.get("ZB_WIN11_USER", "zbtext")
-        self.key = os.environ.get("ZB_WIN_KEY", "/home/maceo/vms/win11-m8/zb_win_key")
-        self.kh = os.environ.get("ZB_WIN_KNOWN_HOSTS", "/home/maceo/vms/win11-m8/known_hosts")
 
     def _scrub(self, *cmd):
         return ["env", "-u", "DISPLAY", "-u", "WAYLAND_DISPLAY", "-u", "XAUTHORITY", *cmd]

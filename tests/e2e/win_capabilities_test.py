@@ -12,7 +12,7 @@ The webview2 row is literal: input `unproven` until a recorded WS2b.1 isTrusted 
 `unproven` (zigBrowser-ong.7). The flip to `cdp_input` changes this row and needs that recorded run.
 
 Host selection, as win_transport_test.py: ZB_WIN11_HOST, ZB_WIN_EXE, ZB_WIN11_PORT, ZB_WIN11_USER,
-ZB_WIN_KEY, ZB_WIN_KNOWN_HOSTS. With no host it skips when run by hand, and FAILS under ZB_WIN_GATE=1
+ZB_WIN11_KEY, ZB_WIN11_KNOWN_HOSTS (all explicit once the host is set; bd zigBrowser-ong.25). With no host it skips when run by hand, and FAILS under ZB_WIN_GATE=1
 (plan D.1 / rule 7). Prints `ASSERTS <n>`; zero asserts under the gate is a failure.
 
 Run live (after a reviewer-approved exact commit and the orchestrator's release):

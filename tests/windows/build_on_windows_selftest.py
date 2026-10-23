@@ -39,7 +39,7 @@ FAKE_SHA = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
 # with a key and known_hosts that do not exist; a case that needs the built-in (REAL) key default runs with
 # netns=True, inside an empty network namespace. _check_transport runs before and after every fake run.
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
-from fake_transport import DEFAULT_KEY, DEFAULT_KNOWN_HOSTS, FAKE_WIN10_HOST  # noqa: E402
+from fake_transport import DEFAULT_KEY, FAKE_WIN10_HOST  # noqa: E402
 from fake_transport import FAKE_WIN11_HOST as FAKE_HOST, NETNS as _NETNS  # noqa: E402
 from fake_transport import hosts_and_keys as _call_hosts_and_keys, problem as _transport_problem  # noqa: E402
 
@@ -47,7 +47,7 @@ from fake_transport import hosts_and_keys as _call_hosts_and_keys, problem as _t
 def _fake_transport(td):
     return {
         "ZB_WIN11_HOST": FAKE_HOST, "ZB_WIN11_PORT": "2222", "ZB_WIN11_USER": "zbtext",
-        "ZB_WIN_KEY": str(td / "no-such-key"), "ZB_WIN_KNOWN_HOSTS": str(td / "no-such-kh"),
+        "ZB_WIN11_KEY": str(td / "no-such-key"), "ZB_WIN11_KNOWN_HOSTS": str(td / "no-such-kh"),
         "ZB_SELFTEST_SSH_LOG": str(td / "ssh.log"), "ZB_SELFTEST_SCP_LOG": str(td / "scp.log"),
     }
 
@@ -143,11 +143,11 @@ def _fakes(bindir):
 
 
 class _Case(unittest.TestCase):
-    def _check_transport(self, env, td, netns=False, calls=None):
-        problem = _transport_problem(env, _transport_calls(td) if calls is None else calls, netns)
+    def _check_transport(self, env, td, netns=False, calls=None, partial=False):
+        problem = _transport_problem(env, _transport_calls(td) if calls is None else calls, netns, partial_ok=partial)
         self.assertIsNone(problem, "fake harness is not fail-safe")
 
-    def _run(self, td, extra=None, args=None, unset=None, pre=None, netns=False):
+    def _run(self, td, extra=None, args=None, unset=None, pre=None, netns=False, partial=False):
         bindir = td / "bin"; bindir.mkdir(exist_ok=True)
         root = td / "root"; root.mkdir(exist_ok=True)
         out = td / "out" / "current" / "zigBrowser.exe"   # ZB_WIN_EXE IS the stable .../current/<base> surface
@@ -171,10 +171,10 @@ class _Case(unittest.TestCase):
             env.pop(k, None)
         if pre:
             pre(td, out)
-        self._check_transport(env, td, netns, calls=[])
+        self._check_transport(env, td, netns, calls=[], partial=partial)
         cmd = (_NETNS if netns else []) + ["bash", SCRIPT] + (args or [])
         proc = subprocess.run(cmd, env=env, capture_output=True, text=True, timeout=90)
-        self._check_transport(env, td, netns)
+        self._check_transport(env, td, netns, partial=partial)
         proc.out_path = out                                 # ZB_WIN_EXE == the single consumer surface
         proc.sha_path = out.parent / (out.name + ".sha")    # current/zigBrowser.exe.sha
         proc.outdir = td / "out"                            # publish root (holds gen/, current, .fetch-*.part)
@@ -766,8 +766,9 @@ class AtomicPublish(_Case):
 
 
 class KeyNames(_Case):
-    """WS0.8 (plan rev 2.21 OPEN list): the driver reads the gate's key names. ZB_WIN11_KEY /
-    ZB_WIN11_KNOWN_HOSTS first, then the legacy ZB_WIN_KEY / ZB_WIN_KNOWN_HOSTS, then the built-in default.
+    """WS0.8, narrowed by bd zigBrowser-ong.25 (NavyCanyon fb4d56d1): the driver reads ONLY the gate's ZB_WIN11_*
+    names, and once the host is set every one of them is explicit. The legacy ZB_WIN_KEY / ZB_WIN_KNOWN_HOSTS are
+    never read and there is no built-in default: a missing name is refused (rc 2) before any ssh/scp.
     Read from the -i and UserKnownHostsFile of every ssh/scp call the driver made."""
 
     def _used(self, extra, unset, netns=False):
@@ -786,30 +787,43 @@ class KeyNames(_Case):
             return keys, khs, td, detail
 
     @staticmethod
-    def _win11(td):
-        return {"ZB_WIN11_KEY": str(td / "no-such-k11"), "ZB_WIN11_KNOWN_HOSTS": str(td / "no-such-kh11")}
+    def _legacy(td):
+        return {"ZB_WIN_KEY": str(td / "no-such-legacy-key"), "ZB_WIN_KNOWN_HOSTS": str(td / "no-such-legacy-kh")}
 
     def test_zb_win11_key_and_known_hosts_are_used(self):
-        keys, khs, td, detail = self._used(self._win11, unset=["ZB_WIN_KEY", "ZB_WIN_KNOWN_HOSTS"])
-        self.assertEqual(keys, {str(td / "no-such-k11")}, "every ssh/scp must use ZB_WIN11_KEY" + detail)
-        self.assertEqual(khs, {str(td / "no-such-kh11")}, "every ssh/scp must pin ZB_WIN11_KNOWN_HOSTS" + detail)
-
-    def test_zb_win11_names_win_over_the_legacy_names(self):
-        keys, khs, td, detail = self._used(self._win11, unset=[])   # ZB_WIN_KEY / ZB_WIN_KNOWN_HOSTS also set
-        self.assertEqual(keys, {str(td / "no-such-k11")}, "ZB_WIN11_KEY takes precedence, as in the gate" + detail)
-        self.assertEqual(khs, {str(td / "no-such-kh11")}, detail)
-
-    def test_legacy_names_still_work_alone(self):
         keys, khs, td, detail = self._used(lambda td: {}, unset=[])
-        self.assertEqual(keys, {str(td / "no-such-key")}, "the legacy ZB_WIN_KEY stays a fallback" + detail)
-        self.assertEqual(khs, {str(td / "no-such-kh")}, detail)
+        self.assertEqual(keys, {str(td / "no-such-key")}, "every ssh/scp must use ZB_WIN11_KEY" + detail)
+        self.assertEqual(khs, {str(td / "no-such-kh")}, "every ssh/scp must pin ZB_WIN11_KNOWN_HOSTS" + detail)
 
-    def test_built_in_default_when_no_name_is_set(self):
-        # the REAL default key: only inside an empty network namespace
-        keys, khs, _, detail = self._used(lambda td: {}, netns=True,
-                                          unset=["ZB_WIN_KEY", "ZB_WIN_KNOWN_HOSTS"])
-        self.assertEqual(keys, {DEFAULT_KEY}, detail)
-        self.assertEqual(khs, {DEFAULT_KNOWN_HOSTS}, detail)
+    def test_the_legacy_names_are_never_read(self):
+        keys, khs, td, detail = self._used(self._legacy, unset=[])   # ZB_WIN_KEY / ZB_WIN_KNOWN_HOSTS also set
+        self.assertEqual(keys, {str(td / "no-such-key")}, "ZB_WIN_KEY is never read" + detail)
+        self.assertEqual(khs, {str(td / "no-such-kh")}, "ZB_WIN_KNOWN_HOSTS is never read" + detail)
+
+    def _refused(self, extra, unset):
+        with tempfile.TemporaryDirectory() as t:
+            td = pathlib.Path(t)
+            proc = self._run(td, extra=extra(td), unset=unset, netns=True, partial=True)
+            calls = _transport_calls(td)
+        detail = f"\nrc={proc.returncode}\nstderr:\n{proc.stderr}\ncalls: {calls}"
+        self.assertEqual(calls, [], "no ssh/scp before every selector is explicit" + detail)
+        self.assertEqual(proc.returncode, 2, "refused, not built" + detail)
+        refused = [l for l in proc.stderr.splitlines() if "refused:" in l]
+        self.assertTrue(refused, detail)
+        for name in unset:
+            self.assertIn(name, refused[0], detail)
+
+    def test_the_legacy_names_alone_are_refused_before_transport(self):
+        self._refused(self._legacy, ["ZB_WIN11_KEY", "ZB_WIN11_KNOWN_HOSTS"])
+
+    def test_no_key_name_at_all_is_refused_before_transport(self):
+        # formerly the built-in default key (the REAL key); there is none now
+        self._refused(lambda td: {}, ["ZB_WIN11_KEY", "ZB_WIN11_KNOWN_HOSTS"])
+
+    def test_a_missing_port_or_user_is_refused_before_transport(self):
+        for name in ("ZB_WIN11_PORT", "ZB_WIN11_USER"):
+            with self.subTest(missing=name):
+                self._refused(lambda td: {}, [name])
 
 
 class FakeTransportGuard(unittest.TestCase):
@@ -828,11 +842,19 @@ class FakeTransportGuard(unittest.TestCase):
         td = pathlib.Path("/nonexistent-zb-td")
         self.assertIn("TEST-NET", _transport_problem(self._env(td, ZB_WIN11_HOST="127.0.0.1"), [], False))
 
-    def test_default_key_outside_a_namespace_is_refused(self):
+    def test_a_host_without_an_explicit_key_is_refused_even_in_a_namespace(self):
+        # bd zigBrowser-ong.25: no default resolution at all (formerly the real key, allowed inside NETNS)
         td = pathlib.Path("/nonexistent-zb-td")
-        env = self._env(td, ZB_WIN_KEY=None)
-        self.assertIn("real key", _transport_problem(env, [], netns=False))
-        self.assertIsNone(_transport_problem(env, [], netns=True))
+        env = self._env(td, ZB_WIN11_KEY=None, ZB_WIN_KEY=str(td / "legacy-key"))
+        self.assertIn("ZB_WIN11_KEY", _transport_problem(env, [], netns=False))
+        self.assertIn("ZB_WIN11_KEY", _transport_problem(env, [], netns=True))
+
+    def test_a_partial_configuration_is_fail_safe_only_with_no_call(self):
+        td = pathlib.Path("/nonexistent-zb-td")
+        env = self._env(td, ZB_WIN11_KEY=None)
+        self.assertIsNone(_transport_problem(env, [], netns=True, partial_ok=True))
+        argv = ["-i", str(td / "no-such-key"), "-p", "2222", f"zbtext@{FAKE_HOST}", "cmd"]
+        self.assertIn("partial", _transport_problem(env, [argv], netns=True, partial_ok=True))
 
     def test_existing_key_file_is_refused(self):
         with tempfile.TemporaryDirectory() as t:
@@ -846,7 +868,8 @@ class FakeTransportGuard(unittest.TestCase):
 
     def test_real_win10_address_is_refused(self):
         td = pathlib.Path("/nonexistent-zb-td")
-        env = self._env(td, ZB_WIN10_HOST="100.123.34.15", ZB_WIN10_KEY=str(td / "no-such-k10"))
+        env = self._env(td, ZB_WIN10_HOST="100.123.34.15", ZB_WIN10_PORT="22", ZB_WIN10_USER="zbtest",
+                        ZB_WIN10_KEY=str(td / "no-such-k10"), ZB_WIN10_KNOWN_HOSTS=str(td / "no-such-kh10"))
         self.assertIn("ZB_WIN10_HOST", _transport_problem(env, [], False))
         env["ZB_WIN10_HOST"] = FAKE_WIN10_HOST
         self.assertIsNone(_transport_problem(env, [], False))

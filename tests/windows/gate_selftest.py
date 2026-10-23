@@ -195,7 +195,9 @@ class _GateCase(unittest.TestCase):
         env = {
             "ZB_WIN11_HOST": FAKE_WIN11_HOST, "ZB_WIN11_PORT": "2222",
             "ZB_WIN11_DOMAIN": "win11-m8", "ZB_GUEST_USER": _TEST_USER,
-            "ZB_WIN_KEY": str(td / "no-such-key"), "ZB_WIN_KNOWN_HOSTS": str(kh),
+            # bd zigBrowser-ong.25: the stage's transport principal is ZB_WIN11_USER (the fence identity is
+            # ZB_GUEST_USER; here they happen to match)
+            "ZB_WIN11_USER": _TEST_USER, "ZB_WIN11_KEY": str(td / "no-such-key"), "ZB_WIN11_KNOWN_HOSTS": str(kh),
             "ZB_SELFTEST_RAN_LOG": str(logs["ran"]), "ZB_SELFTEST_SSH_LOG": str(logs["ssh"]),
             "ZB_SELFTEST_TAR_LOG": str(logs["tar"]), "ZB_SELFTEST_ENV_LOG": str(logs["env"]),
         }
@@ -222,8 +224,9 @@ class FailClosedTests(_GateCase):
         """WS0.2: EITHER host missing must fail closed. Win10 set, Win11 missing => fail, name Win11."""
         with tempfile.TemporaryDirectory() as t:
             td = pathlib.Path(t); home = td / "home"; home.mkdir()
-            proc = self._run_gate({"ZB_WIN10_HOST": f"zbtest@{FAKE_WIN10_HOST}",
-                                    "ZB_WIN_KEY": str(td / "no-such-key")}, _fakes(td), home=str(home))
+            proc = self._run_gate({"ZB_WIN10_HOST": f"zbtest@{FAKE_WIN10_HOST}", "ZB_WIN10_PORT": "22",
+                                   "ZB_WIN10_USER": "zbtest", "ZB_WIN10_KEY": str(td / "no-such-key"),
+                                   "ZB_WIN10_KNOWN_HOSTS": str(td / "no-such-kh")}, _fakes(td), home=str(home))
             detail = f"\nstdout:\n{proc.stdout}\nstderr:\n{proc.stderr}"
             self.assertNotEqual(proc.returncode, 0, "one host is not a two-host gate" + detail)
             self.assertIn("NOT RUN: no Windows host configured", proc.stderr, detail)
@@ -233,8 +236,9 @@ class FailClosedTests(_GateCase):
         """WS0.2: Win11 set, Win10 missing => fail, name Win10."""
         with tempfile.TemporaryDirectory() as t:
             td = pathlib.Path(t); home = td / "home"; home.mkdir()
-            proc = self._run_gate({"ZB_WIN11_HOST": FAKE_WIN11_HOST,
-                                    "ZB_WIN_KEY": str(td / "no-such-key")}, _fakes(td), home=str(home))
+            proc = self._run_gate({"ZB_WIN11_HOST": FAKE_WIN11_HOST, "ZB_WIN11_PORT": "2222",
+                                   "ZB_WIN11_USER": "zbtext", "ZB_WIN11_KEY": str(td / "no-such-key"),
+                                   "ZB_WIN11_KNOWN_HOSTS": str(td / "no-such-kh")}, _fakes(td), home=str(home))
             detail = f"\nstdout:\n{proc.stdout}\nstderr:\n{proc.stderr}"
             self.assertNotEqual(proc.returncode, 0, "one host is not a two-host gate" + detail)
             self.assertIn("NOT RUN: no Windows host configured", proc.stderr, detail)
