@@ -14,8 +14,11 @@
 #     under its Contents/Frameworks that is not inside a framework whose main binary was already signed makes it print
 #     "<target>: code object is not signed at all" and "In subcomponent: <the first such path>" and exit 1, as the
 #     released Stage B showed on both Macs. Test scenarios only widen or narrow that model (links_unsigned: links under
-#     Frameworks count too; links_detritus: the same with another diagnostic; sign_ignores_data; sign_app_only), or
-#     inject a generic error, a denial, or a changed subcomponent, for the INCONCLUSIVE and SIGN-FINDING rows.
+#     Frameworks count too; links_detritus: the same with another diagnostic; links_app_only / links_exe_only: only the
+#     app / only the executable is sealed; links_cli: the bundled CLI fails instead of the executable; outside_app,
+#     escape_sub, sub_missing: the named subcomponent is outside the app, beside it, or not there; sign_ignores_data;
+#     sign_app_only; stray_as_macho: `file` calls the stray file Mach-O), or inject a generic error, a denial, or a
+#     changed subcomponent, for the INCONCLUSIVE and SIGN-FINDING rows.
 # Modes: ZB_SPIKE_MUTANT=none is the candidate (relocated layout); ZB_SPIKE_MUTANT=stray_in_frameworks is the control
 # (the same, plus the pinned stray file Contents/Frameworks/agent-host/zb-4pa80-stray.txt, "zb-4pa80-control\n",
 # mode 644, written after the relocation). Each run writes <prep>/evidence/SPIKE-RESULT.<mode>; the control runs only
@@ -46,6 +49,13 @@
 #      (a missing failure), extra failures naming other subcomponents, a generic error on the app (wrong diagnostic), a
 #      changed stray hash, a changed stray mode, a stray replaced by a link (wrong kind), a second data file under
 #      Frameworks (census 2, though the two failures still name the stray file first), a denied signing tool;
+#   L8 (SilverRidge fa57a8f9) a candidate whose signing fails with the not-signed diagnostic is SIGN-FINDING only for
+#      exactly two failures, the executable then the app, each naming a subcomponent inside the app (Contents/..., no
+#      .. segment) with an inspected kind, an octal mode and a kind-consistent hash (64 hex for a regular file, - for a
+#      link or directory); otherwise INCONCLUSIVE, exit 2: only the app failing, only the executable failing, a
+#      nested Mach-O failing instead of the executable, a subcomponent outside the app (an absolute path elsewhere, or
+#      ../ beside the .app), a subcomponent that is not there; the L6 control rows also include a stray file the file
+#      seam calls Mach-O (only the kind wrong);
 #   L7 one attempt: each run's SPIKE-RESULT.<mode> already says STARTED<TAB><sha><TAB><mode> at its first host contact;
 #      a second candidate after L1, a second control after L2, and a candidate after one that never ended are refused
 #      (exit 1, no ssh/scp).
@@ -73,6 +83,8 @@ MACHO_FILES=$(printf '%s\n' "$APP/Contents/MacOS/zigBrowser" "$APP/Contents/Fram
 fake "$X/hostbin/file" <<'EOF'
 NAME=file; printf "%s\t%s\t%s\t%s\n" "$NAME" "${ZB_FAKE_SANDBOXED:-0}" "${ZB_ROLE:-}" "$*" >> "$C/tools.log"
 [ "$1" = -b ] && shift
+# stray_as_macho: the seam calls the pinned stray file Mach-O (its bytes, path and mode unchanged)
+[ "$(cat "$C/scenario")" = stray_as_macho ] && [[ "$1" == */zb-4pa80-stray.txt ]] && { echo "Mach-O 64-bit executable"; exit 0; }
 h=$(od -An -tx1 -N8 "$1" 2>/dev/null | tr -d ' \n')
 case "$h" in
   cffaedfe*|cefaedfe*|feedfacf*|feedface*) echo "Mach-O 64-bit executable"; exit 0 ;;
@@ -110,9 +122,12 @@ case " $* " in *" --verify "*)
 esac
 [ "$scen" = deny_tool ] && { echo "$tgt: Operation not permitted"; exit 1; }
 bundle=
+case "$scen" in links_*|outside_app|escape_sub|sub_missing) links_model=yes ;; *) links_model=no ;; esac
 case "$tgt" in
-  *.app) [ "$kind" = dir ] && bundle=$tgt ;;
-  */Contents/MacOS/*) [ "$scen" = sign_app_only ] || { [ -f "${tgt%/MacOS/*}/Info.plist" ] && bundle=${tgt%/Contents/MacOS/*}; } ;;
+  *.app) [ "$kind" = dir ] && [ "$scen" != links_exe_only ] && bundle=$tgt ;;
+  */Contents/MacOS/*)
+    case "$scen" in sign_app_only|links_app_only|links_cli) ;; *) [ -f "${tgt%/MacOS/*}/Info.plist" ] && bundle=${tgt%/Contents/MacOS/*} ;; esac ;;
+  */_bundled/claude) [ "$scen" = links_cli ] && bundle=${tgt%/Contents/Frameworks/*} ;;   # a nested Mach-O fails too
 esac
 [ -n "$bundle" ] || exit 0
 [ "$scen" = sign_generic ] && [ "$kind" = dir ] && { echo "$tgt: internal error in Code Signing subsystem"; exit 1; }
@@ -127,7 +142,7 @@ first=
 while IFS= read -r p; do
   for s in "${sealed[@]+"${sealed[@]}"}"; do case "$p" in "$s"*) continue 2 ;; esac; done
   if [ -L "$p" ]; then
-    [ "$scen" = links_unsigned ] || [ "$scen" = links_detritus ] || { [ "$scen" = stray_link ] && [[ "$p" == */zb-4pa80-stray.txt ]]; } || continue
+    [ "$links_model" = yes ] || { [ "$scen" = stray_link ] && [[ "$p" == */zb-4pa80-stray.txt ]]; } || continue
   elif [ "$scen" = sign_ignores_data ] || macho "$p"; then continue; fi
   first=$p; break
 done < <(find "$bundle/Contents/Frameworks" \( -type f -o -type l \) | LC_ALL=C sort)
@@ -136,6 +151,11 @@ case "$scen" in
   stray_changed) [[ "$first" == */zb-4pa80-stray.txt ]] && echo extra >> "$first" ;;
   stray_mode) [[ "$first" == */zb-4pa80-stray.txt ]] && chmod 600 "$first" ;;
   stray_link) [[ "$first" == */zb-4pa80-stray.txt ]] && [ ! -L "$first" ] && rm "$first" && ln -s ../../Resources/agent-host/runtime.json "$first" ;;
+esac
+case "$scen" in   # the subcomponent codesign names: the found file, or one outside the app, or one that is not there
+  outside_app) first=/tmp/zb-outside-the-app ;;
+  escape_sub) first="$bundle/../zb-outside.txt"; [ -e "$first" ] || printf 'outside\n' > "$first" ;;
+  sub_missing) first="$bundle/Contents/Frameworks/agent-host/zb-not-there.txt" ;;
 esac
 if [ "$scen" = links_detritus ]; then echo "$tgt: resource fork, Finder information, or similar detritus not allowed"
 else echo "$tgt: code object is not signed at all"; fi
@@ -341,8 +361,25 @@ for scen in sign_generic links_detritus hard_link extra_data deny_tool; do
     || bad "cand_$scen L5: exit $rc, result '$(spike_result)', '$d', $extra"
 done
 
+# ===== L8: a candidate SIGN-FINDING needs exactly the executable then the app, each inside the app and inspected =====
+for scen in links_app_only links_exe_only links_cli outside_app escape_sub sub_missing; do
+  fresh
+  run_layout "cand_$scen" "$scen"
+  case "$scen" in
+    links_app_only|links_exe_only) why='1 sign failure(s), want exactly the executable then the app' ;;
+    links_cli) why='target zigBrowser.app/Contents/Frameworks/agent-host/site-packages/claude_agent_sdk/_bundled/claude, want zigBrowser.app/Contents/MacOS/zigBrowser' ;;
+    outside_app) why='subcomponent outside-the-app:/tmp/zb-outside-the-app is not inside the app' ;;
+    escape_sub) why='subcomponent ../zb-outside.txt is not inside the app' ;;
+    sub_missing) why='subcomponent Contents/Frameworks/agent-host/zb-not-there.txt not inspected: missing - -' ;;
+  esac
+  { [ "$rc" -eq 2 ] && [ "$(spike_result)" = "x86_64=INCONCLUSIVE arm64=INCONCLUSIVE" ] && ! grep -q SIGN-FINDING <<<"$out" \
+    && [[ "$(leg_detail x86_64)" == *"$why"* ]] && [[ "$(leg_detail arm64)" == *"$why"* ]]; } \
+    && ok "cand_$scen L8: not SIGN-FINDING but INCONCLUSIVE on both legs ($(leg_detail x86_64)), exit 2" \
+    || bad "cand_$scen L8: exit $rc, result '$(spike_result)', '$(leg_detail x86_64)'"
+done
+
 # ===== L6: control INCONCLUSIVE, each after a LAYOUT-OK candidate =====
-for scen in sign_ignores_data sign_app_only links_unsigned sign_generic stray_changed stray_mode stray_link extra_data deny_tool; do
+for scen in sign_ignores_data sign_app_only links_unsigned sign_generic stray_changed stray_mode stray_link stray_as_macho extra_data deny_tool; do
   fresh
   run_layout "pre_$scen" none
   [ "$(spike_result)" = "x86_64=LAYOUT-OK arm64=LAYOUT-OK" ] || { bad "ctl_$scen L6: the candidate was not LAYOUT-OK ($(spike_result))"; continue; }
@@ -351,7 +388,7 @@ for scen in sign_ignores_data sign_app_only links_unsigned sign_generic stray_ch
     sign_ignores_data) why='wrong stage' ;; sign_app_only) why='1 sign failures' ;;
     links_unsigned) why='agent-host/runtime.json link' ;; sign_generic) why='zigBrowser.app other' ;;
     stray_changed) why="zb-4pa80-stray.txt file-data 644 " ;; stray_mode) why='zb-4pa80-stray.txt file-data 600' ;;
-    stray_link) why='zb-4pa80-stray.txt link' ;; extra_data) why='control census 2, want 1' ;; deny_tool) why='denied' ;;
+    stray_link) why='zb-4pa80-stray.txt link' ;; stray_as_macho) why='zb-4pa80-stray.txt file-macho 644' ;; extra_data) why='control census 2, want 1' ;; deny_tool) why='denied' ;;
   esac
   { [ "$rc" -eq 2 ] && [ "$(spike_result)" = "x86_64=INCONCLUSIVE arm64=INCONCLUSIVE" ] && ! grep -q EXPECTED-FAIL <<<"$out" \
     && [[ "$(leg_detail x86_64)" == *"$why"* ]] && [[ "$(leg_detail arm64)" == *"$why"* ]]; } \

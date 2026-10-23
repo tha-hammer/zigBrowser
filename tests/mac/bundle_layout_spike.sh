@@ -38,13 +38,16 @@
 #       both Macs at this commit. Per leg it prints LEG<TAB><arch><TAB><mutant><TAB><class><TAB><detail>, where class is
 #         LAYOUT-OK        (candidate: census 0, every signing call succeeded, verify exit 0, no diagnostic)
 #         LAYOUT-FINDING   (candidate: census 0, verify fails with an unsealed / not-signed / sealed-resource diagnostic)
-#         SIGN-FINDING     (candidate: census 0, signing failed, every SIGNFAIL line not-signed with a subcomponent)
+#         SIGN-FINDING     (candidate: census 0, exactly two SIGNFAIL lines, the executable then the app, each not-signed
+#                          naming a subcomponent below the app's Contents/ with an inspected lstat kind, an octal mode
+#                          and a kind-consistent SHA-256: 64 hex for a regular file, - for a link or directory)
 #         EXPECTED-FAIL    (control: census 1 and exactly two SIGNFAIL lines, the executable then the app, each not-signed
 #                          in the stray file, which is file-data, mode 644, with its pinned SHA-256)
 #         INCONCLUSIVE     (any NOT RUN or failed phase, a refused relocation, a sandbox denial anywhere, an escaping
 #                          symlink, an audit delta, a candidate census other than 0, a sign failure without the not-signed
-#                          diagnostic, a verify failure without the diagnostic, a control that signs cleanly or whose sign
-#                          failures are not exactly the predicted two, missing evidence)
+#                          diagnostic, candidate sign failures that are not exactly that SIGN-FINDING shape, a verify
+#                          failure without the diagnostic, a control that signs cleanly or whose sign failures are not
+#                          exactly the predicted two, missing evidence)
 #         BREACH           (a canary write was not refused: the run stops, the root and the canary stay for the owner)
 #       then SPIKE-RESULT<TAB><sha><TAB><mutant><TAB>x86_64=<class><TAB>arm64=<class>. Exit 0 when both legs are
 #       conclusive, 2 when one is inconclusive, 4 on a breach, 1 when refused before any host is touched. A root whose
@@ -212,6 +215,24 @@ verdict_verify() { # $1=driver output: the candidate's verify verdict
   elif [ "$vrc" != 0 ] && [ "$diag" = yes ]; then printf 'LAYOUT-FINDING\tverify rc %s with the code-signature diagnostic\n' "$vrc"
   else printf 'INCONCLUSIVE\tverify rc %s, diagnostic %s\n' "$vrc" "$diag"; fi
 }
+in_app() { # $1=subcomponent: bundle-relative below Contents/, no . or .. segment
+  case "$1" in Contents/*) ;; *) return 1 ;; esac
+  case "/$1/" in */../*|*/./*) return 1 ;; esac
+}
+inspected() { # $1=kind $2=mode $3=sha256: an lstat kind, an octal mode, a hash for a regular file and none otherwise
+  case "$2" in [0-7][0-7][0-7]|[0-7][0-7][0-7][0-7]) ;; *) return 1 ;; esac
+  case "$1" in file-data|file-macho) [[ "$3" =~ ^[0-9a-f]{64}$ ]] ;; link|dir) [ "$3" = - ] ;; *) return 1 ;; esac
+}
+signfail_problem() { # $1=exactly two SIGNFAIL lines: '' when they are the executable then the app, each in an inspected app path
+  local i=0 want _ tgt diag sub kind mode sha
+  while IFS=$'\t' read -r _ tgt diag sub kind mode sha; do
+    i=$((i + 1))
+    want=zigBrowser.app/Contents/MacOS/zigBrowser; [ "$i" -eq 1 ] || want=zigBrowser.app
+    [ "$tgt" = "$want" ] || { echo "target $tgt, want $want"; return; }
+    in_app "$sub" || { echo "subcomponent $sub is not inside the app"; return; }
+    inspected "$kind" "$mode" "$sha" || { echo "subcomponent $sub not inspected: $kind $mode $sha"; return; }
+  done <<<"$1"
+}
 classify() { # $1=driver output $2=evidence dir -> "<class><TAB><detail>"
   local out=$1 ev=$2 nr vrc delta census sf nsf want first
   nr=$(awk -F'\t' '$1 == "PHASE" && ($3 == "NOT-RUN" || $3 == "fail") { print $2 ": " $4; exit }' <<<"$out")
@@ -241,10 +262,17 @@ classify() { # $1=driver output $2=evidence dir -> "<class><TAB><detail>"
       printf 'INCONCLUSIVE\tnot the predicted sign failure: %s\n' "$first"
     fi
   elif [ "$census" != 0 ]; then printf 'INCONCLUSIVE\tcandidate census %s, want 0\n' "${census:-none}"
-  elif [ "$vrc" = skipped ]; then
-    if [ "$nsf" -gt 0 ] && [ -z "$(awk -F'\t' '$3 != "not-signed" || $4 == "-"' <<<"$sf")" ]; then
-      printf 'SIGN-FINDING\t%s sign failure(s), first in %s (%s)\n' "$nsf" "$(head -n 1 <<<"$sf" | cut -f4)" "$(head -n 1 <<<"$sf" | cut -f5)"
-    else printf 'INCONCLUSIVE\tsign failed without the not-signed diagnostic (%s failure(s))\n' "$nsf"; fi
+  elif [ "$vrc" = skipped ]; then   # SIGN-FINDING: exactly the executable then the app, each in an inspected app path
+    if [ "$nsf" -eq 0 ] || [ -n "$(awk -F'\t' '$3 != "not-signed"' <<<"$sf")" ]; then
+      printf 'INCONCLUSIVE\tsign failed without the not-signed diagnostic (%s failure(s))\n' "$nsf"
+    elif [ "$nsf" -ne 2 ]; then
+      printf 'INCONCLUSIVE\t%s sign failure(s), want exactly the executable then the app\n' "$nsf"
+    else
+      first=$(signfail_problem "$sf")
+      if [ -z "$first" ]; then
+        printf 'SIGN-FINDING\tthe executable and the app failed to sign, first in %s (%s)\n' "$(head -n 1 <<<"$sf" | cut -f4)" "$(head -n 1 <<<"$sf" | cut -f5)"
+      else printf 'INCONCLUSIVE\tnot the executable then the app with an inspected subcomponent: %s\n' "$first"; fi
+    fi
   elif [ "$nsf" -ne 0 ]; then printf 'INCONCLUSIVE\tSIGNFAIL lines beside a verify\n'
   else verdict_verify "$out"; fi
 }
