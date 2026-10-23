@@ -19,12 +19,12 @@ Run alone:  python3 -I tests/windows/build_on_windows_selftest.py -v
 """
 import base64
 import fcntl
-import ipaddress
 import os
 import pathlib
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import time
 import unittest
@@ -35,16 +35,13 @@ _BASE_PATH = "/usr/bin:/bin"
 
 FAKE_SHA = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
 
-# WS0.8 fail-safe fake transport. The fake ssh/scp first on PATH are the only thing between these cases and a
-# real host, so every fake case aims at TEST-NET-1 (RFC 5737, never routed) with a key and known_hosts that do
-# not exist. A case that needs the driver's built-in key default (the REAL key) runs with netns=True, inside
-# `unshare --user --map-current-user --net`, so no packet can leave. _check_transport enforces both, before
-# the run (the env) and after it (every ssh/scp argv the fakes logged).
-FAKE_HOST = "192.0.2.1"
-_TEST_NETS = [ipaddress.ip_network(n) for n in ("192.0.2.0/24", "198.51.100.0/24", "203.0.113.0/24")]
-_NETNS = ["unshare", "--user", "--map-current-user", "--net"]
-DEFAULT_KEY = "/home/maceo/vms/win11-m8/zb_win_key"
-DEFAULT_KNOWN_HOSTS = "/home/maceo/vms/win11-m8/known_hosts"
+# WS0.8 fail-safe fake transport, through the shared check in fake_transport.py: every fake case aims at TEST-NET
+# with a key and known_hosts that do not exist; a case that needs the built-in (REAL) key default runs with
+# netns=True, inside an empty network namespace. _check_transport runs before and after every fake run.
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+from fake_transport import DEFAULT_KEY, DEFAULT_KNOWN_HOSTS, FAKE_WIN10_HOST  # noqa: E402
+from fake_transport import FAKE_WIN11_HOST as FAKE_HOST, NETNS as _NETNS  # noqa: E402
+from fake_transport import hosts_and_keys as _call_hosts_and_keys, problem as _transport_problem  # noqa: E402
 
 
 def _fake_transport(td):
@@ -53,13 +50,6 @@ def _fake_transport(td):
         "ZB_WIN_KEY": str(td / "no-such-key"), "ZB_WIN_KNOWN_HOSTS": str(td / "no-such-kh"),
         "ZB_SELFTEST_SSH_LOG": str(td / "ssh.log"), "ZB_SELFTEST_SCP_LOG": str(td / "scp.log"),
     }
-
-
-def _unreachable(host):
-    try:
-        return any(ipaddress.ip_address(host) in n for n in _TEST_NETS)
-    except ValueError:
-        return False
 
 
 def _transport_calls(td):
@@ -71,29 +61,6 @@ def _transport_calls(td):
                 calls.append(line[len("ARGV: "):].split())
     return calls
 
-
-def _call_hosts_and_keys(argv):
-    hosts = [a.split("@", 1)[1].split(":", 1)[0] for a in argv if "@" in a and not a.startswith("-")]
-    keys = [argv[i + 1] for i, a in enumerate(argv[:-1]) if a == "-i"]
-    return hosts, keys
-
-
-def _transport_problem(env, calls, netns):
-    """None when a fake run cannot reach a real host with a real key, else what is wrong."""
-    host = env.get("ZB_WIN11_HOST", "")
-    if not _unreachable(host):
-        return f"ZB_WIN11_HOST={host!r} is not a TEST-NET address"
-    key = env.get("ZB_WIN11_KEY") or env.get("ZB_WIN_KEY") or DEFAULT_KEY
-    if not netns and (key == DEFAULT_KEY or os.path.exists(key)):
-        return f"the run resolves to a real key {key!r} outside a network namespace"
-    for argv in calls:
-        hosts, keys = _call_hosts_and_keys(argv)
-        if not hosts or not all(_unreachable(h) for h in hosts):
-            return f"a transport call targets {hosts!r}: {' '.join(argv)}"
-        for k in keys:
-            if not netns and (k == DEFAULT_KEY or os.path.exists(k)):
-                return f"a transport call uses a real key {k!r} outside a network namespace"
-    return None
 
 _GIT_STUB = r"""
 [ -n "${ZB_SELFTEST_GIT_LOG:-}" ] && printf '%s\n' "$*" >> "$ZB_SELFTEST_GIT_LOG"
@@ -876,6 +843,13 @@ class FakeTransportGuard(unittest.TestCase):
         td = pathlib.Path("/nonexistent-zb-td")
         argv = ["-i", str(td / "no-such-key"), "-P", "2222", "zbtext@127.0.0.1:C:/zb/x.exe", "/tmp/x"]
         self.assertIn("targets", _transport_problem(self._env(td), [argv], netns=False))
+
+    def test_real_win10_address_is_refused(self):
+        td = pathlib.Path("/nonexistent-zb-td")
+        env = self._env(td, ZB_WIN10_HOST="100.123.34.15", ZB_WIN10_KEY=str(td / "no-such-k10"))
+        self.assertIn("ZB_WIN10_HOST", _transport_problem(env, [], False))
+        env["ZB_WIN10_HOST"] = FAKE_WIN10_HOST
+        self.assertIsNone(_transport_problem(env, [], False))
 
     def test_logged_call_with_the_default_key_is_refused(self):
         td = pathlib.Path("/nonexistent-zb-td")

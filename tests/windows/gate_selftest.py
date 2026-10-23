@@ -35,11 +35,16 @@ import re
 import shlex
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
 GATE = REPO / "tests" / "windows" / "gate.sh"
+# zigBrowser-ong.17: the fakes aim at TEST-NET with keys that do not exist; fake_transport.problem is checked on
+# every gate run's env and on the ssh argv the fake logged.
+sys.path.insert(0, str(REPO / "tests" / "windows"))
+from fake_transport import FAKE_WIN10_HOST, FAKE_WIN11_HOST, problem as transport_problem  # noqa: E402
 _BASE_PATH = "/usr/bin:/bin"
 TAR_SENTINEL = "ZB_TAR_STDERR_SENTINEL"
 
@@ -171,25 +176,29 @@ class _GateCase(unittest.TestCase):
         env = {"PATH": bindir + os.pathsep + _BASE_PATH, "HOME": home or "/nonexistent-zb-home",
                "ZB_GATE_ROOT": str(REPO)}
         env.update(env_overrides)
+        self.assertIsNone(transport_problem(env, []), "fake gate run is not fail-safe")
         # Direct invocation: with gate.sh absent this raises FileNotFoundError (the red).
-        return subprocess.run(
+        proc = subprocess.run(
             [str(GATE), *(args or [])],
             env=env, capture_output=True, text=True, timeout=120,
         )
+        log = pathlib.Path(env.get("ZB_SELFTEST_SSH_LOG", "/nonexistent-zb-ssh.log"))
+        argv = log.read_text().splitlines() if log.exists() else []   # one arg per line, every call
+        self.assertIsNone(transport_problem(env, [argv] if argv else []), "fake gate run is not fail-safe")
+        return proc
 
     def _stage_env(self, td: pathlib.Path):
         """A configured fake Win11 host + per-case logs + pinned known_hosts, with private HOME."""
         home = td / "home"; home.mkdir()
-        kh = td / "known_hosts"; kh.write_text("# pinned\n")
+        kh = td / "no-such-known_hosts"
         logs = {k: td / f"{k}.log" for k in ("ran", "ssh", "tar", "env")}
         env = {
-            "ZB_WIN11_HOST": "127.0.0.1", "ZB_WIN11_PORT": "2222",
+            "ZB_WIN11_HOST": FAKE_WIN11_HOST, "ZB_WIN11_PORT": "2222",
             "ZB_WIN11_DOMAIN": "win11-m8", "ZB_GUEST_USER": _TEST_USER,
-            "ZB_WIN_KEY": str(td / "fake_key"), "ZB_WIN_KNOWN_HOSTS": str(kh),
+            "ZB_WIN_KEY": str(td / "no-such-key"), "ZB_WIN_KNOWN_HOSTS": str(kh),
             "ZB_SELFTEST_RAN_LOG": str(logs["ran"]), "ZB_SELFTEST_SSH_LOG": str(logs["ssh"]),
             "ZB_SELFTEST_TAR_LOG": str(logs["tar"]), "ZB_SELFTEST_ENV_LOG": str(logs["env"]),
         }
-        (td / "fake_key").write_text("x")
         return env, str(home), kh, logs
 
     @staticmethod
@@ -213,7 +222,8 @@ class FailClosedTests(_GateCase):
         """WS0.2: EITHER host missing must fail closed. Win10 set, Win11 missing => fail, name Win11."""
         with tempfile.TemporaryDirectory() as t:
             td = pathlib.Path(t); home = td / "home"; home.mkdir()
-            proc = self._run_gate({"ZB_WIN10_HOST": "zbtest@10.0.0.9"}, _fakes(td), home=str(home))
+            proc = self._run_gate({"ZB_WIN10_HOST": f"zbtest@{FAKE_WIN10_HOST}",
+                                    "ZB_WIN_KEY": str(td / "no-such-key")}, _fakes(td), home=str(home))
             detail = f"\nstdout:\n{proc.stdout}\nstderr:\n{proc.stderr}"
             self.assertNotEqual(proc.returncode, 0, "one host is not a two-host gate" + detail)
             self.assertIn("NOT RUN: no Windows host configured", proc.stderr, detail)
@@ -223,7 +233,8 @@ class FailClosedTests(_GateCase):
         """WS0.2: Win11 set, Win10 missing => fail, name Win10."""
         with tempfile.TemporaryDirectory() as t:
             td = pathlib.Path(t); home = td / "home"; home.mkdir()
-            proc = self._run_gate({"ZB_WIN11_HOST": "127.0.0.1"}, _fakes(td), home=str(home))
+            proc = self._run_gate({"ZB_WIN11_HOST": FAKE_WIN11_HOST,
+                                    "ZB_WIN_KEY": str(td / "no-such-key")}, _fakes(td), home=str(home))
             detail = f"\nstdout:\n{proc.stdout}\nstderr:\n{proc.stderr}"
             self.assertNotEqual(proc.returncode, 0, "one host is not a two-host gate" + detail)
             self.assertIn("NOT RUN: no Windows host configured", proc.stderr, detail)

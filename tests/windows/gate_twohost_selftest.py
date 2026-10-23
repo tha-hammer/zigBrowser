@@ -27,11 +27,16 @@ import pathlib
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
 GATE = REPO / "tests" / "windows" / "gate.sh"
+# zigBrowser-ong.17: the fakes (and the stub's host patterns) use TEST-NET addresses and key/known_hosts paths that
+# do not exist; fake_transport.problem is checked on every gate run's env and on every ssh argv the fake logged.
+sys.path.insert(0, str(REPO / "tests" / "windows"))
+from fake_transport import FAKE_WIN10_HOST, FAKE_WIN11_HOST, problem as transport_problem  # noqa: E402
 _BASE_PATH = "/usr/bin:/bin"
 
 VM_MARKER = "MARKER-VM-NONCE"
@@ -46,10 +51,10 @@ argv="$*"
 # Per-host transport failure injection (unreachable / host-key refusal rc 255): exit nonzero BEFORE any
 # output, so the gate must fail on the rc, not on empty JSON later.
 case "$argv" in
-  *127.0.0.1*|*zbtext@*) [ -n "${ZB_SELFTEST_FAIL_WIN11:-}" ] && exit "${ZB_SELFTEST_FAIL_WIN11}" ;;
+  *192.0.2.1*|*zbtext@*) [ -n "${ZB_SELFTEST_FAIL_WIN11:-}" ] && exit "${ZB_SELFTEST_FAIL_WIN11}" ;;
 esac
 case "$argv" in
-  *100.123.34.15*|*zbtest@*) [ -n "${ZB_SELFTEST_FAIL_WIN10:-}" ] && exit "${ZB_SELFTEST_FAIL_WIN10}" ;;
+  *198.51.100.15*|*zbtest@*) [ -n "${ZB_SELFTEST_FAIL_WIN10:-}" ] && exit "${ZB_SELFTEST_FAIL_WIN10}" ;;
 esac
 case "$argv" in
   *host_probe*|*powershell*|*EncodedCommand*)
@@ -63,8 +68,8 @@ case "$argv" in
       *schtasks*) printf '%s' "${ZB_SELFTEST_SESSION_RESULT:-RESULT=OK interactive=True locked=False}"; exit 0 ;;
     esac
     case "$argv" in
-      *127.0.0.1*|*zbtext@*) printf '%s' "${ZB_SELFTEST_PROBE_WIN11:-}" ;;
-      *100.123.34.15*|*zbtest@*)
+      *192.0.2.1*|*zbtext@*) printf '%s' "${ZB_SELFTEST_PROBE_WIN11:-}" ;;
+      *198.51.100.15*|*zbtest@*)
         cf="${ZB_SELFTEST_WIN10_CALLS:-}"
         c=1
         if [ -n "$cf" ]; then c=$(cat "$cf" 2>/dev/null || echo 0); c=$((c+1)); echo "$c" > "$cf"; fi
@@ -135,7 +140,7 @@ def _fs_probe(**over):
                        {"port": 445, "pid": 4}, {"port": 3389, "pid": 500}],
          "fw_rules_hash": "abc123", "shares": [],
          "root": "C:\\Users\\zbtest\\zb", "free_gb": 500.0,
-         "sshd_listen": ["100.123.34.15"], "sshd_allowusers": ["zbtest"]}
+         "sshd_listen": ["198.51.100.15"], "sshd_allowusers": ["zbtest"]}
     p.update(over)
     return json.dumps(p)
 
@@ -150,10 +155,10 @@ class _TwoHostCase(unittest.TestCase):
             # 7bb26ce carried the same fix into gate_selftest.py). REPO is this export/checkout's root.
             "ZB_GATE_ROOT": str(REPO),
             "PATH": _fakes(td) + os.pathsep + _BASE_PATH, "HOME": str(home),
-            "ZB_WIN11_HOST": "127.0.0.1", "ZB_WIN11_PORT": "2222", "ZB_WIN11_DOMAIN": "win11-m8",
+            "ZB_WIN11_HOST": FAKE_WIN11_HOST, "ZB_WIN11_PORT": "2222", "ZB_WIN11_DOMAIN": "win11-m8",
             "ZB_WIN11_USER": "zbtext", "ZB_WIN11_MARKER": VM_MARKER,
             "ZB_WIN11_SNAPSHOT": "pre-4dr-toolchain-2026-10-20",
-            "ZB_WIN10_HOST": "100.123.34.15", "ZB_WIN10_PORT": "22", "ZB_WIN10_USER": "zbtest",
+            "ZB_WIN10_HOST": FAKE_WIN10_HOST, "ZB_WIN10_PORT": "22", "ZB_WIN10_USER": "zbtest",
             "ZB_WIN10_MARKER": FS_MARKER,
             # Per-host key + known_hosts (distinct files — the two hosts pin different host keys).
             "ZB_WIN11_KEY": str(td / "win11.key"), "ZB_WIN11_KNOWN_HOSTS": str(td / "win11.kh"),
@@ -163,15 +168,22 @@ class _TwoHostCase(unittest.TestCase):
             "ZB_SELFTEST_PROBE_WIN11": _vm_probe(),
             "ZB_SELFTEST_PROBE_WIN10": _fs_probe(),
         }
-        for _n in ("win11.key", "win11.kh", "win10.key", "win10.kh"):
-            (td / _n).write_text("x")
+        env.setdefault("ZB_SELFTEST_SSH_LOG", str(td / "guard-ssh.log"))
         env.update(extra)
         # stdin=DEVNULL: nothing is piped to the gate itself, so the stub's stdin is /dev/null unless
         # probe_host explicitly redirects host_probe.ps1 into ssh (the streaming path under test).
+        self._check_transport(env, before=True)
         proc = subprocess.run(["bash", str(GATE), "--probe-only"], env=env,
                               capture_output=True, text=True, timeout=90,
                               stdin=subprocess.DEVNULL)
+        self._check_transport(env)
         return proc
+
+    def _check_transport(self, env, before=False):
+        log = pathlib.Path(env.get("ZB_SELFTEST_SSH_LOG") or "/nonexistent-zb-ssh.log")
+        calls = [] if before or not log.exists() else [
+            l[len("ARGV: "):].split() for l in log.read_text().splitlines() if l.startswith("ARGV: ")]
+        self.assertIsNone(transport_problem(env, calls), "fake gate run is not fail-safe")
 
     def _assert_fail_closed(self, proc, needle):
         detail = f"\nrc={proc.returncode}\nstdout:\n{proc.stdout}\nstderr:\n{proc.stderr}"
@@ -620,8 +632,8 @@ class SshHygiene(_TwoHostCase):
     def test_oracle_flags_a_call_that_omits_batchmode(self):
         # Failing-first (1): one call keeps BatchMode, another omits it (OpenSSH default is no).
         invs, bad = _batchmode_violations(
-            "ARGV: -o BatchMode=yes -p 2222 zbtext@127.0.0.1 probe\n"
-            "ARGV: -o StrictHostKeyChecking=yes -p 22 zbtest@100.123.34.15 probe\n")
+            "ARGV: -o BatchMode=yes -p 2222 zbtext@192.0.2.1 probe\n"
+            "ARGV: -o StrictHostKeyChecking=yes -p 22 zbtest@198.51.100.15 probe\n")
         self.assertEqual(len(invs), 2)
         self.assertEqual(len(bad), 1, "the invocation without BatchMode must be flagged")
 
@@ -765,9 +777,9 @@ class ProbeTransport(_TwoHostCase):
             saw11 = saw10 = False
             for tokens in invs:
                 argv = " ".join(tokens); kh = _known_hosts_of(tokens)
-                if "127.0.0.1" in argv or "zbtext@" in argv:
+                if "192.0.2.1" in argv or "zbtext@" in argv:
                     self.assertEqual(kh, win11_kh, f"win11 ssh must pin win11 known_hosts: {argv}"); saw11 = True
-                elif "100.123.34.15" in argv or "zbtest@" in argv:
+                elif "198.51.100.15" in argv or "zbtest@" in argv:
                     self.assertEqual(kh, win10_kh, f"win10 ssh must pin win10 known_hosts: {argv}"); saw10 = True
             self.assertTrue(saw11 and saw10, "expected ssh to both the VM and the file server")
 
@@ -1132,19 +1144,21 @@ class WS09ProductRun(_TwoHostCase):
         env = {
             "ZB_GATE_ROOT": str(root), "ZB_FAKE_RAN_LOG": str(ran),
             "PATH": _fakes(td) + os.pathsep + _BASE_PATH, "HOME": str(home), "TMPDIR": str(td),
-            "ZB_WIN11_HOST": "127.0.0.1", "ZB_WIN11_PORT": "2222", "ZB_WIN11_DOMAIN": "win11-m8",
+            "ZB_WIN11_HOST": FAKE_WIN11_HOST, "ZB_WIN11_PORT": "2222", "ZB_WIN11_DOMAIN": "win11-m8",
             "ZB_WIN11_USER": "zbtext", "ZB_WIN11_MARKER": VM_MARKER, "ZB_WIN11_SNAPSHOT": "pre-4dr-toolchain-2026-10-20",
-            "ZB_WIN10_HOST": "100.123.34.15", "ZB_WIN10_PORT": "22", "ZB_WIN10_USER": "zbtest", "ZB_WIN10_MARKER": FS_MARKER,
+            "ZB_WIN10_HOST": FAKE_WIN10_HOST, "ZB_WIN10_PORT": "22", "ZB_WIN10_USER": "zbtest", "ZB_WIN10_MARKER": FS_MARKER,
             "ZB_WIN11_KEY": str(td / "k"), "ZB_WIN11_KNOWN_HOSTS": str(td / "k"),
             "ZB_WIN10_KEY": str(td / "k"), "ZB_WIN10_KNOWN_HOSTS": str(td / "k"),
             "ZB_SELFTEST_WIN10_CALLS": str(td / "win10.calls"),
             "ZB_SELFTEST_PROBE_WIN11": _vm_probe(), "ZB_SELFTEST_PROBE_WIN10": _fs_probe(),
         }
-        (td / "k").write_text("x")
+        env["ZB_SELFTEST_SSH_LOG"] = str(td / "guard-ssh.log")
         env.update(extra or {})
         env = {k: v for k, v in env.items() if v is not None}
+        _TwoHostCase._check_transport(self, env, before=True)
         proc = subprocess.run(["bash", str(root / "tests" / "windows" / "gate.sh"), *args], env=env,
                               capture_output=True, text=True, timeout=120, stdin=subprocess.DEVNULL)
+        _TwoHostCase._check_transport(self, env)
         return proc, ran.read_text().splitlines()
 
     @staticmethod
