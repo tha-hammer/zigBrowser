@@ -34,9 +34,10 @@ release="$HOME/.ntm/zb-release/reaper-gate-$commit"
 mac_config two
 shared="$HOME/.ntm/zb-release/shared-mac-hosts"
 [ -f "$shared" ] && [ -r "$shared" ] || disabled "no shared-host list at $shared (fail closed)"
+shared_hosts=$(sed -e 's/#.*//' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' -e 's/^.*@//' "$shared") \
+  || disabled "could not read the shared-host list $shared"
 for target in "$INTEL_HOST" "$ARM_HOST"; do
-  if sed -e 's/#.*//' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' -e 's/^.*@//' "$shared" \
-       | grep -qxF -- "${target##*@}"; then
+  if grep -qxF -- "${target##*@}" <<<"$shared_hosts"; then
     disabled "$target is on the shared-host list $shared"
   fi
 done

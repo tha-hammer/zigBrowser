@@ -76,8 +76,16 @@ A="$d/prefix/Frameworks/agent-host"
 for c in Python.framework/Versions/3.12/bin/python3.12 Python.framework/Versions/3.12/Python; do
   [ "$(lipo -archs "$A/$c" 2>/dev/null)" = "x86_64 arm64" ] || { echo "  FAIL $c is not fat"; fails=$((fails+1)); }
 done
-ls "$A/Python.framework/Versions/3.12/bin/" | grep -q intel64 && { echo "  FAIL an -intel64 launcher was staged"; fails=$((fails+1)); }
-thin=0; while IFS= read -r f; do file -b "$f" | grep -q Mach-O || continue
+if ! launchers=$(ls "$A/Python.framework/Versions/3.12/bin/"); then
+  echo "  FAIL unable to list the staged launchers"; fails=$((fails+1))
+else
+  case "$launchers" in *intel64*) echo "  FAIL an -intel64 launcher was staged"; fails=$((fails+1));; esac
+fi
+thin=0; while IFS= read -r f; do
+  if ! file_desc=$(file -b "$f"); then
+    echo "  FAIL file inspection failed for ${f#$A/}"; fails=$((fails+1)); continue
+  fi
+  case "$file_desc" in *Mach-O*) ;; *) continue;; esac
   case "$(lipo -archs "$f" 2>/dev/null)" in "x86_64 arm64"|"arm64 x86_64") ;; *) thin=$((thin+1)); echo "  thin: ${f#$A/}";; esac
 done < <(find "$A" -type f); [ "$thin" = 0 ] || { echo "  FAIL $thin thin Mach-O staged"; fails=$((fails+1)); }
 /usr/bin/python3 - "$d/repo" "$A" <<'PY' || fails=$((fails+1))

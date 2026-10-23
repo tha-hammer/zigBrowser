@@ -72,7 +72,11 @@ else head -10 check.log; bad "absolute paths left after relocation"; fi
 # 3. signatures
 unsigned=0
 while IFS= read -r f; do
-  file -b "$f" | grep -q Mach-O || continue
+  if ! file_desc=$(file -b "$f"); then
+    unsigned=$((unsigned+1)); echo "    file inspection failed: ${f#$V/}"
+    continue
+  fi
+  case "$file_desc" in *Mach-O*) ;; *) continue;; esac
   codesign --verify --strict "$f" 2>/dev/null || { unsigned=$((unsigned+1)); echo "    invalid signature: ${f#$V/}"; }
 done < <(find "$V" -type f)
 [ "$unsigned" = 0 ] && ok "every Mach-O of the framework passes codesign --verify --strict" || bad "$unsigned Mach-O with an invalid signature"

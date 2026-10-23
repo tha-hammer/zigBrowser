@@ -73,7 +73,9 @@ A="$d/prefix/Frameworks/agent-host"; S="$A/site-packages"; CLI="$S/claude_agent_
 case "$(lipo -archs "$CLI" 2>/dev/null)" in "x86_64 arm64"|"arm64 x86_64") ok "the Claude CLI is fat (x86_64 arm64)";;
   *) bad "the Claude CLI is not a fat x86_64+arm64 binary at $CLI";; esac
 # 2. no thin Mach-O; relocation clean
-thin=0; while IFS= read -r f; do file -b "$f" | grep -q Mach-O || continue
+thin=0; while IFS= read -r f; do
+  if ! file_desc=$(file -b "$f"); then bad "file inspection failed for ${f#$A/}"; continue; fi
+  case "$file_desc" in *Mach-O*) ;; *) continue;; esac
   case "$f" in *.o|*.a) continue;; esac
   case "$(lipo -archs "$f" 2>/dev/null)" in "x86_64 arm64"|"arm64 x86_64") ;; *) thin=$((thin+1)); echo "    thin: ${f#$A/}";; esac
 done < <(find "$A" -type f)

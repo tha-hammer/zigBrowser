@@ -4021,6 +4021,16 @@ pub fn build(b: *std.Build) void {
     mac_compile_only_selftest.addFileInput(b.path("tests/mac/mac_config.sh"));
     b.step("test-mac-compile-only", "Run the R4 compile-only Mac harness's hostless safety selftest").dependOn(&mac_compile_only_selftest.step);
     test_step.dependOn(&mac_compile_only_selftest.step);
+    // bd zigBrowser-3ui.16: producers are allowed to finish and their status is checked before matching their
+    // completed output. Executes only bounded extracted predicate blocks; never runs the destructive reaper gate.
+    const mac_pipefail_producer_selftest = b.addSystemCommand(&.{ "python3", "tests/mac/mac_pipefail_producer_selftest.py" });
+    for ([_][]const u8{
+        "tests/mac/mac_pipefail_producer_selftest.py", "tests/mac/ms5_relocate_gate.sh",
+        "tests/mac/ms5_stage_gate.sh",                 "tests/mac/ms5_deps_gate.sh",
+        "tests/mac/mac_compile_only.sh",               "tests/mac/ms6_5_reaper_gate.sh",
+    }) |input| mac_pipefail_producer_selftest.addFileInput(b.path(input));
+    b.step("test-mac-pipefail-producers", "Mac script producer output is completed and its status checked before matching").dependOn(&mac_pipefail_producer_selftest.step);
+    test_step.dependOn(&mac_pipefail_producer_selftest.step);
     // Hostless selftest of the destructive reaper gate's disable-by-default guard (plan R29-SAFETY, bd 4pa.70).
     const mac_reaper_gate_guard_selftest = b.addSystemCommand(&.{ "bash", "tests/mac/ms6_5_reaper_gate_guard_selftest.sh" });
     mac_reaper_gate_guard_selftest.addFileInput(b.path("tests/mac/ms6_5_reaper_gate.sh"));
@@ -4041,6 +4051,7 @@ pub fn build(b: *std.Build) void {
     mac_build_script_selftest.addFileInput(b.path("tests/mac/build_on_mac_selftest.sh"));
     const mac_build_script_step = b.step("test-mac-build-script", "Run the hostless selftests of the shared Mac build step and its eight callers (exact commit, fresh run dir, pinned host keys)");
     mac_build_script_step.dependOn(&mac_build_script_selftest.step);
+    mac_build_script_step.dependOn(&mac_pipefail_producer_selftest.step);
     test_step.dependOn(&mac_build_script_selftest.step);
     // Every caller of build-on-mac.sh works only in its fresh run dir (bd 4pa.59, 4pa.77; GREEN B).
     const mac_gate_callers_selftest = b.addSystemCommand(&.{ "bash", "tests/mac/mac_gate_callers_selftest.sh" });

@@ -75,7 +75,8 @@ cd "$L/repo"
 
 odd=$(find "${SHIP[@]}" ! -type f ! -type d | LC_ALL=C sort | tr '\n' ' ')
 [ -z "$odd" ] || fail "a shipped path holds a symlink or special entry (refused): $odd"
-! sed 's#//.*##' build.zig.zon | grep -Eq '\.url[[:space:]]*=' || fail "build.zig.zon names a URL dependency (no outbound fetch)"
+ZON_TEXT=$(sed 's#//.*##' build.zig.zon) || fail "could not inspect build.zig.zon for URL dependencies"
+if grep -Eq '\.url[[:space:]]*=' <<<"$ZON_TEXT"; then fail "build.zig.zon names a URL dependency (no outbound fetch)"; fi
 grep -q '"mac-compile-only"' build.zig || fail "build.zig at $SHA has no mac-compile-only step"
 find "${SHIP[@]}" -type f ! -path '*/__pycache__/*' | LC_ALL=C sort > "$L/ship.list"
 git -C "$TOP" ls-tree -r "$SHA" -- "${SHIP[@]}" | awk -F'\t' '$1 ~ / blob / {split($1, m, " "); print $2 " " m[3]}' \
