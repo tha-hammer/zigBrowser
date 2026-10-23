@@ -1580,3 +1580,30 @@ Exact fix-forward minimum:
 1. Resolve the bridge artifact to a stable absolute path before `cd agent/host/tests`, or avoid changing directory while giving Python the equivalent module path. Do not weaken the executable check or any bridge assertion.
 2. From a clean exact archive, under the same hostless isolation and **without an external absolute cache masking the boundary**, make `zig build -j4 test-agent-launch-bridge --summary all` pass with the default repo-relative cache. Also rerun the combined bridge/connector/Windows-import/spawn/cross-check/install command.
 3. Preserve the exact approved red oracle, the `Realization` production changes, the complete 19-mutant boundary, and the `agent_host_posix` deletion. No additional product change or new red is required; the registered step itself is the regression proof for this path-resolution bug.
+
+## 2026-10-23 — 4pa.80 slice-2 audit-classifier RED `6f69f7ec`
+
+**BLOCK.** Exact `6f69f7ec8993e00b5ebb364c499b84e8ef13ac7e` is an honest hostless red, but its oracle does not yet enforce several explicit `7f3b4c70` boundaries. It is therefore not the accepted slice-2 red and is not push-safe on this review. This ruling authorizes no Mac contact; 3ui.13 still holds every Mac run.
+
+The commit adds exactly the disclosed eleven files, touches no existing path or mode, remains absent from `build.zig`, and is clean under `git diff --check`. In a clean exact archive under `env -i`, private HOME/TMP, and private user/network/PID/mount namespaces, the Python oracle ran exactly 24 tests and failed 23, with only Q1 provenance green. The shell oracle exited 1 with exactly eleven `FAIL` and two `ok` rows. Its fake transport is confined to the private network namespace; no Mac or external network was contacted. The fixture reverse-substitution reproduces the retained 22 Intel and 31 arm64 delta lines and their bead hashes, and the stated Intel 11 / arm64 18 family counts are correctly encoded.
+
+The red nevertheless admits concrete wrong implementations. I used the submitter's disclosed scratch classifier only as a satisfiability probe after first confirming the red oracle file was byte-identical and that the unmodified draft passed 24/24. Each of the following independent production mutations also passed all 24 tests:
+
+- delete only the `CACHE`–`HOME` disjointness check;
+- replace separator-bounded ownership with raw `startswith(root)`;
+- treat any descendant as surface coverage instead of requiring the TEMP/CACHE/CACHES root entry;
+- stop validating snapshot `size` and `mtime` as integers;
+- stop requiring the PU parent to remain a directory with the same mode.
+
+The physical-root contract is also not driven. Keeping the fixture's `given=/var/folders/...` while changing TEMP's physical root and all TEMP snapshot rows to an unrelated normalized `/private/not-the-real-alias-target/T` still produced `AUDIT-AMBIENT` with all eleven Intel deltas. Q8 proves that the reviewed alias is accepted, but not that `physical == pwd -P(given)`; the promised “accepted without verification” mutant is absent. Finally, adding an undeclared identical shallow-HOME row to both Intel snapshots, without adding it to `intel.synthetic`, left all 24 rows green: Q1 checks that declared synthetic entries are a subset, not that they are the complete synthetic remainder.
+
+Exact fix-forward minimum:
+
+1. Make Q1 prove fixture completeness: after reversing the one declared root substitution, the before/after differences still reproduce the exact retained hashes, and the complete unchanged intersection equals the declared synthetic file rather than merely containing it.
+2. Bind `given` to `physical`. Add a driven bad-relation case (or equivalent executing leg mutant) in which a normalized but unrelated physical root is reported; it must be rejected or make the leg inconclusive. Keep the real `/var -> /private/var` ancestor alias green and the terminal-root-symlink row red.
+3. Complete the root/ownership oracle with at least the missing field-isolated `CACHE`-inside-`HOME` case and a sibling-prefix path such as `<TEMP>-other/x`. Dropping either the CACHE–HOME disjointness check or the separator boundary must turn the oracle red.
+4. For each snapshot, remove only the TEMP, CACHE, or CACHES root entry while retaining a child; this must be a structural error. Keep the existing whole-surface omission rows. Add malformed numeric `size` and `mtime` rows so each closed six-field metadata column is driven.
+5. Add PU-parent type and mode mutations, separately from the existing inode/growth/coupling cases. Each must classify every Usage delta UNKNOWN, so dropping only the directory check or only the same-mode check is red.
+6. Exercise the manifest's required regular-file boundary, not only missing/changed bytes: replace one required evidence file with a symlink or other nonregular entry and require INCONCLUSIVE/no accepted manifest. Preserve the exact sorted inventory, no-self-reference, canary, denial, SHA, UNKNOWN, and missing-classifier rows.
+
+The green may then register both corrected oracles and run the submitted classifier/runner mutants through the registered aggregate step as planned. Preserve all accepted slice-1, containment, ff, prep, transport, evidence-before-remove, and fail-closed cleanup rows.
