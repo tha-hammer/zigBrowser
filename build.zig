@@ -444,6 +444,14 @@ pub fn build(b: *std.Build) void {
     windows_private_world_spike_live.has_side_effects = true;
     b.step("windows-private-world-spike-live", "Live WS2a.0 private CDP world spike on the VM (fails without ZB_WIN11_HOST)").dependOn(&windows_private_world_spike_live.step);
 
+    // WS2a.3a/b: the UI-thread marshal's waits are bounded and a late completion is dropped
+    // (tests/e2e/win_async_ownership_test.py builds and runs ws2a3-async-ownership-win on the VM). Gated
+    // (ZB_WIN_GATE=1): with no host or marker it FAILS, never skips (plan D.1). Not part of `zig build test`.
+    const windows_async_ownership_live = b.addSystemCommand(&.{ "python3", "-I", "tests/e2e/win_async_ownership_test.py" });
+    windows_async_ownership_live.setEnvironmentVariable("ZB_WIN_GATE", "1");
+    windows_async_ownership_live.has_side_effects = true;
+    b.step("windows-async-ownership-live", "Live WS2a.3 async completion ownership and bounded waits on the VM (fails without ZB_WIN11_HOST)").dependOn(&windows_async_ownership_live.step);
+
     // j76 / WS3.2: a refused backend flag reaches the user's stderr on the Windows GUI exe (exactly the
     // refusal line, exit 1, open and --screenshot), and `--renderer=shm` stays a parse error. Skips without
     // ZB_WIN11_HOST/ZB_WIN_EXE; needs no slot.

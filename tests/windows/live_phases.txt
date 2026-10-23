@@ -14,3 +14,4 @@ tests/windows/win_drawer_behaviors_test.py
 tests/e2e/win_private_world_spike.py
 tests/e2e/win_routed_test.py
 tests/e2e/win_private_world_test.py
+tests/e2e/win_async_ownership_test.py
