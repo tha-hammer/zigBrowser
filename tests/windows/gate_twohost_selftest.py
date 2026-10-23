@@ -1231,7 +1231,8 @@ class WS09ProductRun(_TwoHostCase):
 
 def load_tests(loader, tests, pattern):
     # Register the live VM suite (host_live_test.py) alongside the hostless cases so one run covers both.
-    # The live cases SKIP when the VM env (ZB_WIN11_HOST...) is absent, so this is a no-op in CI without a VM.
+    # The live cases SKIP unless ZB_HOST_LIVE=1 and the whole VM env are set, and the registered step strips both
+    # (build.zig `env -u ...`, pinned by host_live_optin_test.py), so here they never contact a host.
     # FAIL CLOSED: if the live suite is missing or cannot be imported, register a FAILING test so the gate
     # goes RED — a deleted/broken host_live_test.py must never silently produce a green suite.
     import importlib.util

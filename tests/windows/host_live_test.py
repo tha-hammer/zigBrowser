@@ -12,8 +12,9 @@ actual PowerShell on the VM over SSH:
   * NonceLive — plants nonce.txt + session.json and runs the real host_probe.ps1, asserting
                interactive/locked are trusted ONLY on a nonce match with a fresh, non-future ts.
 
-It is SKIPPED (not failed) when the VM env is absent, so it never runs in the hostless Linux gate; run it
-with the VM env set (ZB_WIN11_HOST/PORT/USER/KEY/KNOWN_HOSTS) to verify on real Windows. All temp dirs and
+It is SKIPPED (not failed) unless ZB_HOST_LIVE=1 AND the whole VM env (ZB_WIN11_HOST/PORT/USER/KEY/KNOWN_HOSTS)
+is set, so it never runs in the hostless Linux gate (whose step also strips those variables); a live run needs
+NavyCanyon's exact-commit approval and the orchestrator's release. All temp dirs and
 planted files are under the VM's %TEMP% / %USERPROFILE%\\zb\\runs\\session and are cleaned up.
 """
 import os
@@ -26,16 +27,18 @@ REPO = pathlib.Path(__file__).resolve().parents[2]
 HOST_PROBE = REPO / "tests" / "windows" / "host_probe.ps1"
 
 
+# The live cases need an explicit opt-in AND a complete configuration (ong.17 R2, NavyCanyon f52ef80): an inherited
+# ZB_WIN11_HOST alone (a shell that sourced hosts.env) must never contact the VM. No value falls back to a default.
+LIVE_OPT_IN = "ZB_HOST_LIVE"
+_LIVE_VARS = {"host": "ZB_WIN11_HOST", "port": "ZB_WIN11_PORT", "user": "ZB_WIN11_USER",
+              "key": "ZB_WIN11_KEY", "kh": "ZB_WIN11_KNOWN_HOSTS"}
+
+
 def _vm_env():
-    if not os.environ.get("ZB_WIN11_HOST"):
+    if os.environ.get(LIVE_OPT_IN) != "1":
         return None
-    return {
-        "host": os.environ["ZB_WIN11_HOST"],
-        "port": os.environ.get("ZB_WIN11_PORT", "2222"),
-        "user": os.environ.get("ZB_WIN11_USER", "zbtext"),
-        "key": os.environ.get("ZB_WIN11_KEY", os.environ.get("ZB_WIN_KEY", "/home/maceo/vms/win11-m8/zb_win_key")),
-        "kh": os.environ.get("ZB_WIN11_KNOWN_HOSTS", os.environ.get("ZB_WIN_KNOWN_HOSTS", "/home/maceo/vms/win11-m8/known_hosts")),
-    }
+    cfg = {k: os.environ.get(v, "") for k, v in _LIVE_VARS.items()}
+    return cfg if all(cfg.values()) else None
 
 
 def _ssh_run(env, ps_text, timeout=120):

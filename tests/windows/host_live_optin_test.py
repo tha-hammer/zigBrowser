@@ -55,6 +55,8 @@ INHERITED = {
     "ZB_WIN10_KNOWN_HOSTS": "/home/maceo/vms/win10-fs/known_hosts",
 }
 
+SCRUBBED = ("ZB_HOST_LIVE", *INHERITED, "ZB_WIN10_LISTEN")
+
 
 def step_argv():
     """The argv of the registered windows-twohost-selftest command, as build.zig declares it."""
@@ -88,6 +90,15 @@ class HostLiveOptIn(unittest.TestCase):
         return self._run(["python3", "-I", "tests/windows/host_live_test.py", "-v"], extra)
 
     # --- the registered hostless step ---------------------------------------------------------------------
+    def test_step_argv_removes_the_opt_in_and_every_host_variable(self):
+        # tripwire (each layer alone is proven by the runs below): the scrub names the opt-in and every
+        # inherited host, key and known_hosts variable, before the interpreter starts
+        argv = step_argv()
+        head = argv[:argv.index("python3")] if "python3" in argv else argv
+        removed = {head[i + 1] for i, a in enumerate(head[:-1]) if a == "-u"}
+        self.assertEqual(head[:1], ["env"], f"the step must start through `env -u ...`: {argv}")
+        self.assertEqual(set(SCRUBBED) - removed, set(), f"the step does not remove these: {argv}")
+
     def test_registered_step_runs_no_ssh_with_an_inherited_opt_in_and_hosts(self):
         proc, calls, detail = self._run(step_argv(), {"ZB_HOST_LIVE": "1", **INHERITED})
         self.assertEqual(calls, [], "the hostless step executed ssh/scp from inherited host variables" + detail)

@@ -333,8 +333,32 @@ pub fn build(b: *std.Build) void {
     // WS0.6/WS0.7 two-host gate selftest: drives gate.sh --probe-only against fake ssh/virsh (VM
     // identity marker + file-server fence). Hermetic — no Windows host. The live --probe-only run
     // against both real hosts is separate (needs the slot + the .gate-identity nonce).
-    const windows_twohost_selftest = b.addSystemCommand(&.{ "python3", "-I", "tests/windows/gate_twohost_selftest.py" });
-    b.step("windows-twohost-selftest", "Run the Windows two-host gate selftest (WS0.6/WS0.7, fake ssh/virsh)").dependOn(&windows_twohost_selftest.step);
+    // ong.17 R2 (NavyCanyon f52ef80): the selftest also loads host_live_test.py, so the step runs it with the live
+    // opt-in and every Win11/Win10/legacy host, key and known_hosts variable removed; an inherited hosts.env can
+    // never reach a host. host_live_optin_test.py runs this exact argv with those variables set (in a netns).
+    const windows_twohost_selftest = b.addSystemCommand(&.{
+        "env",
+        "-u",      "ZB_HOST_LIVE",
+        "-u",      "ZB_WIN11_HOST",
+        "-u",      "ZB_WIN11_PORT",
+        "-u",      "ZB_WIN11_USER",
+        "-u",      "ZB_WIN11_KEY",
+        "-u",      "ZB_WIN11_KNOWN_HOSTS",
+        "-u",      "ZB_WIN_KEY",
+        "-u",      "ZB_WIN_KNOWN_HOSTS",
+        "-u",      "ZB_WIN10_HOST",
+        "-u",      "ZB_WIN10_PORT",
+        "-u",      "ZB_WIN10_USER",
+        "-u",      "ZB_WIN10_KEY",
+        "-u",      "ZB_WIN10_KNOWN_HOSTS",
+        "-u",      "ZB_WIN10_LISTEN",
+        "python3", "-I",
+        "tests/windows/gate_twohost_selftest.py",
+    });
+    const windows_host_live_optin = b.addSystemCommand(&.{ "python3", "-I", "tests/windows/host_live_optin_test.py" });
+    const windows_twohost_step = b.step("windows-twohost-selftest", "Run the Windows two-host gate selftest (WS0.6/WS0.7, fake ssh/virsh)");
+    windows_twohost_step.dependOn(&windows_twohost_selftest.step);
+    windows_twohost_step.dependOn(&windows_host_live_optin.step);
 
     // WS1 build-driver selftest: drives build-on-windows.sh against fake git/ssh/scp/timeout — clean
     // git-archive source, injection-safe EncodedCommand, fail-closed stage/build/fetch, outer deadlines,
@@ -3759,6 +3783,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&mac_compile_only_selftest.step);
     test_step.dependOn(&windows_gate_selftest.step);
     test_step.dependOn(&windows_twohost_selftest.step);
+    test_step.dependOn(&windows_host_live_optin.step);
     test_step.dependOn(&windows_build_selftest.step);
     test_step.dependOn(&windows_pe_census_selftest.step);
     test_step.dependOn(&windows_png_census_selftest.step);
