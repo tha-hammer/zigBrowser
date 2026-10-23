@@ -27,6 +27,9 @@
 #   O19 an extra, otherwise well-formed ROW record for a row that was not selected.
 #   Every refusal: exit status exactly 1 (not 124 or any signal-shaped status), exactly one remote-success refusal for
 #   that host and none for the other.
+#   Order (SilverRidge 3add0d33): that refusal comes before any EVIDENCE<TAB><host> record and before every evidence
+#   scp to that host (each fake scp records how many refusals for its host the gate had printed by then). Both may be
+#   absent when the gate returns before retrieval.
 #   P1 positive control: the real legs: PASS for both legs and the gate, and no remote-success FAIL.
 #   P2 positive control, one selected row: PASS. The required ROW lines follow the selection.
 #   P3 positive control, a red row (ms2c-close-button, rc=1 and its RED_SHAPE): PASS. A red row's line is rc=1.
@@ -107,6 +110,7 @@ while [ \$# -gt 2 ]; do shift; done
 src=\$1 dst=\$2
 case "\$src" in *:*) ;; *) exit 1 ;; esac
 host=\${src%%:*} path=\${src#*:}
+printf 'SCP\t%s\t%s\n' "\$host" "\$(grep -c "^FAIL\$(printf '\t')remote-success\$(printf '\t')ms_runtime_rows_gate\$(printf '\t')\$host\$(printf '\t')" "$T/gate.out" 2>/dev/null)" >> "$T/ctl/scp-order"
 [ -e "$T/ctl/scp-fail-\$host" ] && exit 1
 cp -- "$T/mac/\$host/\$path" "\$dst" || exit 1
 case "\$path" in *.tar) [ -e "$T/ctl/scp-corrupt-\$host" ] && printf 'x' >> "\$dst" ;; esac
@@ -174,13 +178,21 @@ run_gate() { # run_gate <selection>: a fresh evidence dir; sets OUT RC
   OUT=$(cat "$T/gate.out")
 }
 BOTH="ms2a-load-fail-no-quit ms2c-recover-slow-server"
+refusal_first() { # refusal_first <host>: its one refusal precedes any EVIDENCE<TAB><host> record and every scp to it
+  local h=$1 fl el
+  fl=$(grep -n -m1 $'^FAIL\tremote-success\tms_runtime_rows_gate\t'"$h"$'\t' <<<"$OUT" | cut -d: -f1)
+  el=$(grep -n -m1 $'^EVIDENCE\t'"$h"$'\t' <<<"$OUT" | cut -d: -f1)
+  [ -n "$fl" ] || return 1
+  [ -z "$el" ] || [ "$fl" -lt "$el" ] || return 1
+  ! grep $'^SCP\t'"$h"$'\t' "$T/ctl/scp-order" 2>/dev/null | grep -qv $'\t1$'   # none, or every one after the refusal
+}
 refused() { # refused <name> <host> <arch> <other host> <other arch>: only that host refused, by its exact line
   local name=$1 h=$2 a=$3 oh=$4 oa=$5
   if [ "$RC" -eq 1 ] && [ "$(grep -c $'^FAIL\tremote-success\tms_runtime_rows_gate\t'"$h"$'\t' <<<"$OUT")" -eq 1 ] \
      && grep -qxF "FAIL"$'\t'"remote-success"$'\t'"ms_runtime_rows_gate"$'\t'"$h"$'\t'"$a"$'\t'"missing" <<<"$OUT" \
      && ! grep -q $'^PASS\tms-runtime-rows-leg\t'"$h"$'\t' <<<"$OUT" && ! grep -q $'^PASS\tms-runtime-rows-gate' <<<"$OUT" \
      && grep -qx $'PASS\tms-runtime-rows-leg\t'"$oh"$'\t'"$oa" <<<"$OUT" \
-     && ! grep -q $'^FAIL\tremote-success\tms_runtime_rows_gate\t'"$oh"$'\t' <<<"$OUT"; then
+     && ! grep -q $'^FAIL\tremote-success\tms_runtime_rows_gate\t'"$oh"$'\t' <<<"$OUT" && refusal_first "$h"; then
     ok "$name: $h refused once (remote-success missing), exit 1, no leg or gate PASS; $oh judged on its own and passed"
   else bad "$name: rc=$RC $(grep -E $'^(FAIL\tremote-success|PASS\tms-runtime-rows)' <<<"$OUT" | tr '\n' ' ')"; fi
 }
