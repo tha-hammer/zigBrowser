@@ -20,6 +20,11 @@
 #   green exit 0, its own `PASS<TAB><test id>` line, and no FAIL<TAB> line.
 # Every browser launch in these rows stops the browser with SIGTERM only (tests/e2e/mac_term_teardown.py): the
 # session brief forbids SIGKILL on a Mac, so a browser that does not quit is left running and its row fails.
+# A LEAK STOPS THAT HOST (SilverRidge cf16730): the leg runs no further row, prints HOST_STOPPED and the exact
+# identity of each process left running (LEAKED<TAB>pid<TAB>pgid<TAB>start<TAB>command), writes them to
+# <run root>/LEAKED and exits 3; this side then KEEPS that run root (no cleanup of it) for a person to stop exactly
+# that process first. A leg that finds any ~/zb-gate-*/LEAKED on its host runs nothing (HOST_HELD, exit 4). A leg
+# that timed out is treated as a leak of unknown processes: its run root is kept too.
 # Every row runs (one row's result never stops the next); each prints its output and a
 # ROW<TAB><file><TAB><want><TAB>rc=<n><TAB>MATCH|MISMATCH line. The gate prints PASS<TAB>ms-runtime-rows-gate<TAB>both-arches
 # only when every row on both Macs matched. Console user, no xvfb (WKWebView needs the WindowServer), like ms2a/ms2c.
@@ -65,19 +70,23 @@ verify_host() { # $1=host $2=key $3=label
   local -a SSH; mapfile -d '' SSH < <(mac_ssh_opts "$key")
   echo "== build + runtime rows on $host ($label) ==" >&2
   mac_build "$host" "$key" "$BUILD_TIMEOUT" || { echo "FAIL: build on $host timed out/failed" >&2; return 1; }
-  timeout "$LEG_TIMEOUT" "${SSH[@]}" "$host" /bin/bash -s "$MAC_RDIR" "${ROWS[@]}" <<'REMOTE' || { echo "FAIL: rows leg on $host timed out/failed" >&2; return 1; }
+  local leg_rc=0
+  timeout "$LEG_TIMEOUT" "${SSH[@]}" "$host" /bin/bash -s "$MAC_RDIR" "${ROWS[@]}" <<'REMOTE' || leg_rc=$?
 set -uo pipefail
 cd "$HOME/${1:?}"
 shift
 # Everything below stays in the run root: a private home, temp dir and XDG dirs, and an ephemeral website store.
 root=$PWD
+T=$'\t'
+for m in ../zb-gate-*/LEAKED; do   # a host whose earlier run left a process running is held until a person acts
+  if [ -e "$m" ]; then printf 'HOST_HELD\t%s\n' "$m"; sed 's/^/    /' "$m"; exit 4; fi
+done
 mkdir -p run-env/home run-env/tmp run-env/xdg-data run-env/xdg-cache run-env/xdg-config run-env/xdg-runtime s || exit 1
 chmod 700 run-env/xdg-runtime s || exit 1
 export HOME="$root/run-env/home" CFFIXED_USER_HOME="$root/run-env/home" TMPDIR="$root/run-env/tmp/" \
   XDG_DATA_HOME="$root/run-env/xdg-data" XDG_CACHE_HOME="$root/run-env/xdg-cache" \
   XDG_CONFIG_HOME="$root/run-env/xdg-config" XDG_RUNTIME_DIR="$root/run-env/xdg-runtime" \
   ZB_E2E_SOCKET_DIR="$root/s" ZB_DEBUG_EPHEMERAL_DATA_STORE=1
-T=$'\t'
 overall=0
 for row in "$@"; do
   IFS='|' read -r file want id <<<"$row"
@@ -94,11 +103,39 @@ for row in "$@"; do
     *) verdict=MISMATCH ;;
   esac
   printf 'ROW\t%s\t%s\trc=%s\t%s\n' "$file" "$want" "$rc" "$verdict"
+  if printf '%s\n' "$out" | grep -q "^LEAK$T"; then   # a process was left running: stop this host now
+    printf '%s\n' "$out" | grep "^LEAK$T" | sed 's/^LEAK/LEAKED/' > "$root/LEAKED"
+    printf 'HOST_STOPPED\t%s\t%s\n' "$file" "$root"
+    cat "$root/LEAKED"
+    exit 3
+  fi
   [ "$verdict" = MATCH ] || overall=1
 done
 exit "$overall"
 REMOTE
+  case "$leg_rc" in
+    0) ;;
+    3|124)
+      mac_keep_run_dir "$host" "$MAC_RDIR"
+      echo "STOPPED: $host ($label): $([ "$leg_rc" -eq 3 ] && echo 'a row left a process running (LEAKED lines above)' \
+        || echo 'the leg timed out; processes may be left running'). Run dir ~/$MAC_RDIR is KEPT. A person must stop" \
+        "exactly the reported process before any cleanup of it or further work on $host." >&2
+      return 1 ;;
+    4) echo "HELD: $host ($label) still has a run dir with a leaked process (HOST_HELD above); nothing ran" >&2; return 1 ;;
+    *) echo "FAIL: rows leg on $host failed (exit $leg_rc)" >&2; return 1 ;;
+  esac
   printf 'PASS\tms-runtime-rows-leg\t%s\t%s\n' "$host" "$label"
+}
+
+mac_keep_run_dir() { # $1=host $2=run dir: drop it from the EXIT-trap cleanup (mac_gate_lib.sh MAC_RUN_DIRS)
+  local entry h k d
+  local -a keep=()
+  for entry in "${MAC_RUN_DIRS[@]+"${MAC_RUN_DIRS[@]}"}"; do
+    IFS=$'\t' read -r h k d <<<"$entry"
+    if [ "$h" = "$1" ] && [ "$d" = "$2" ]; then continue; fi
+    keep+=("$entry")
+  done
+  MAC_RUN_DIRS=("${keep[@]+"${keep[@]}"}")
 }
 
 overall=0

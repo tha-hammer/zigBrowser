@@ -8,7 +8,9 @@ only after a probe shows it still has members (a group id with live members cann
 handles SIGTERM itself (wkwebview_shim.m handle_signal) and quits. Nothing is ever escalated: a leader or group
 member still running after the grace is LEFT running and recorded as a LEAK, and a test that leaked fails: its
 process exits 1 at interpreter exit after printing `FAIL\tmac-teardown-leak` (leak_failures() also lists the leaks
-for tests that report them themselves).
+for tests that report them themselves). At the leak it prints the exact identity of every process left in the group,
+one `LEAK\t<pid>\t<pgid>\t<start time>\t<command>` line each (ps), so a person can stop exactly that process; the
+rows gate stops that host on a LEAK line and keeps its run root (SilverRidge cf16730).
 
 run_term_only: subprocess.run(capture_output=True, text=True) whose timeout uses the teardown above, because
 subprocess.run's own timeout SIGKILLs the child.
@@ -34,10 +36,27 @@ def _fail_at_exit() -> None:
         os._exit(1)
 
 
-def _leak(msg: str) -> None:
+def _leak(msg: str, pgid=None) -> None:
     if not _leaks:
         atexit.register(_fail_at_exit)
     _leaks.append(msg)
+    if pgid is not None:
+        for ident in _group_identity(pgid):
+            print("LEAK\t" + "\t".join(ident), flush=True)
+
+
+def _group_identity(pgid: int) -> list:
+    """(pid, pgid, start time, command) of every process in group `pgid`, read with ps (macOS and Linux)."""
+    try:
+        out = subprocess.run(["ps", "-A", "-o", "pid=,pgid=,lstart=,command="], capture_output=True, text=True).stdout
+    except OSError as exc:
+        return [(str(pgid), str(pgid), "?", f"ps failed: {exc}")]
+    found = []
+    for line in out.splitlines():
+        f = line.split(None, 7)  # pid pgid <weekday month day hh:mm:ss year> command
+        if len(f) == 8 and f[1] == str(pgid):
+            found.append((f[0], f[1], " ".join(f[2:7]), f[7]))
+    return found or [(str(pgid), str(pgid), "?", "no process of the group found by ps")]
 
 
 def _group_has_members(pgid: int) -> bool:
@@ -67,12 +86,13 @@ def stop_browser_term_only(proc: subprocess.Popen, grace_s: float = GRACE_S) -> 
         try:
             proc.wait(timeout=max(0.0, deadline - time.monotonic()))
         except subprocess.TimeoutExpired:
-            _leak(f"LEAK browser pid {pgid} still running {grace_s:.0f}s after SIGTERM (left running: no SIGKILL on a Mac)")
+            _leak(f"LEAK browser pid {pgid} still running {grace_s:.0f}s after SIGTERM (left running: no SIGKILL on a Mac)",
+                  pgid)
             return
     # The leader is reaped; its group id stays reserved while any member lives, so probing it is safe.
     while _group_has_members(pgid):
         if time.monotonic() >= deadline:
-            _leak(f"LEAK process group {pgid} still has members {grace_s:.0f}s after SIGTERM (left running)")
+            _leak(f"LEAK process group {pgid} still has members {grace_s:.0f}s after SIGTERM (left running)", pgid)
             return
         time.sleep(0.05)
 

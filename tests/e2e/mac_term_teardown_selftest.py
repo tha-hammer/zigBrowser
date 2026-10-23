@@ -13,7 +13,8 @@ SIGTERM fails the test. Children left running die with the namespace.
   T5 an exited, reaped leader whose group child quits on SIGTERM (mac_ms2a_teardown_test's case): the child is
      reached and gone, SIGTERM only, no leak;
   T6 the same with a child that ignores SIGTERM: left running, one LEAK;
-  T7 a test process whose teardown leaked but whose main returns 0 exits 1 and prints FAIL\tmac-teardown-leak;
+  T7 a test process whose teardown leaked but whose main returns 0 exits 1 and prints FAIL\tmac-teardown-leak, and
+     at the leak one LEAK<TAB>pid<TAB>pgid<TAB>start<TAB>command line naming exactly the leaked child;
   T8 run_term_only past its timeout raises TimeoutExpired and the child is gone, SIGTERM only;
   T9 mac_ms2a_routed_test.stop_browser_macos (the ms2a/ms2b/ms2c helper) stops a child with SIGTERM only.
 """
@@ -117,10 +118,14 @@ def main() -> int:
     here = os.path.dirname(os.path.abspath(__file__))
     leak_src = ("import subprocess,sys,time; import mac_term_teardown as t;"
                 f"q=subprocess.Popen([sys.executable,'-c',{IGNORE_TERM!r}], start_new_session=True); time.sleep(0.5);"
-                "t.stop_browser_term_only(q, grace_s=0.5); print('PASS\\tpretend', flush=True); sys.exit(0)")
+                "print(f'CHILD\\t{q.pid}', flush=True); t.stop_browser_term_only(q, grace_s=0.5);"
+                "print('PASS\\tpretend', flush=True); sys.exit(0)")
     res = subprocess.run([PY, "-c", leak_src], cwd=here, capture_output=True, text=True,
                          env={**os.environ, "PYTHONPATH": here})
-    expect("T7", res.returncode == 1 and "FAIL\tmac-teardown-leak\t1" in res.stdout, (res.returncode, res.stdout))
+    child = next((l.split("\t")[1] for l in res.stdout.splitlines() if l.startswith("CHILD\t")), "?")
+    ident = [l.split("\t") for l in res.stdout.splitlines() if l.startswith("LEAK\t")]
+    expect("T7", res.returncode == 1 and "FAIL\tmac-teardown-leak\t1" in res.stdout and len(ident) == 1
+           and ident[0][1:3] == [child, child] and "signal.SIG_IGN" in ident[0][4], (res.returncode, res.stdout))
 
     sent.clear()
     try:

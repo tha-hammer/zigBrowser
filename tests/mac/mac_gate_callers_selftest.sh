@@ -54,6 +54,8 @@ if grep -q m9_render_test.py "$T/ctl/stdin.\$i"; then
 elif grep -q mac_universal_test.py "$T/ctl/stdin.\$i"; then
   printf 'PASS\tmac-universal\t12 assertions\n'
 fi
+# the rows gate's leak path (rows L): the leg on STUB_LEG_RC_HOST exits STUB_LEG_RC
+if [ -n "\${STUB_LEG_RC_HOST:-}" ] && [[ " \$* " == *" \$STUB_LEG_RC_HOST /bin/bash -s "* ]]; then exit "\${STUB_LEG_RC:-0}"; fi
 exit 0
 EOF
 cat > "$T/bin/scp" <<EOF
@@ -259,6 +261,7 @@ case "$1" in
   *v_red_none*)  printf 'FAIL\tv-red\n'; exit 1 ;;
   *v_red_pre*)   printf 'FAIL\tv-red\nRED_SHAPE\tv-red\n  PRECONDITION seam never fired\n'; exit 1 ;;
   *v_red_pass*)  printf 'PASS\tv-red\nRED_SHAPE\tv-red\n'; exit 0 ;;
+  *v_leak*)      printf 'FAIL\tv-red\nLEAK\t4242\t4242\tThu Oct 22 21:00:00 2026\t/x/zigBrowser --e2e-protocol\n'; exit 1 ;;
   *v_green*)     printf 'PASS\tv-other\n'; exit 0 ;;
   *v_env*)       printf 'ENV\t%s\n' "$HOME" "$CFFIXED_USER_HOME" "$TMPDIR" "$XDG_DATA_HOME" "$XDG_CACHE_HOME" \
                    "$XDG_CONFIG_HOME" "$XDG_RUNTIME_DIR" "$ZB_E2E_SOCKET_DIR"
@@ -304,6 +307,50 @@ grep -qx $'EPH\t1' <<<"$out" || { envbad=1; bad "rows V6: ZB_DEBUG_EPHEMERAL_DAT
 after=$(cd "$T/rows-home" && find . -mindepth 1 -maxdepth 1 | sort)
 [ "$before" = "$after" ] || { envbad=1; bad "rows V6: the leg wrote outside the run root: $(comm -13 <(echo "$before") <(echo "$after") | tr '\n' ' ')"; }
 [ "$envbad" -eq 0 ] && [ "$LEG_RC" -eq 0 ] && ok "rows V6: private HOME/TMPDIR/XDG beneath the run root, ephemeral store on, nothing written outside it"
+
+# A LEAK stops the host (SilverRidge cf16730). V7: after a row prints a LEAK line the leg runs no further row, prints
+# HOST_STOPPED, writes the exact identity to <run root>/LEAKED, keeps the root and exits 3. V8: a later leg on that host
+# (any ~/zb-gate-*/LEAKED) runs nothing and exits 4.
+rows_leg out "tests/e2e/mac_v_leak_test.py|red|v-red" "tests/e2e/mac_v_red_ok_test.py|red|v-red"
+if [ "$LEG_RC" -eq 3 ] && [ "$(grep -c $'^ROW\t' <<<"$out")" -eq 1 ] && grep -q $'^HOST_STOPPED\ttests/e2e/mac_v_leak_test.py\t' <<<"$out" \
+   && grep -qx $'LEAKED\t4242\t4242\tThu Oct 22 21:00:00 2026\t/x/zigBrowser --e2e-protocol' "$T/rows-home/$RRD/LEAKED" 2>/dev/null; then
+  ok "rows V7: a LEAK stops the leg after that row (exit 3), names the exact process, keeps it in <root>/LEAKED"
+else
+  bad "rows V7: rc=$LEG_RC ROW lines $(grep -c $'^ROW\t' <<<"$out"): $(tail -4 <<<"$out")"
+fi
+RRD_FIRST=$RRD RRD=zb-gate-0000000000000000000000000000000000000000-2
+mkdir -p "$T/rows-home/$RRD"
+rows_leg out "tests/e2e/mac_v_red_ok_test.py|red|v-red"
+if [ "$LEG_RC" -eq 4 ] && [ "$(grep -c $'^ROW\t' <<<"$out")" -eq 0 ] && grep -q $'^HOST_HELD\t../'"$RRD_FIRST"'/LEAKED' <<<"$out"; then
+  ok "rows V8: a later leg on a host with a leaked run root runs nothing (exit 4, HOST_HELD)"
+else
+  bad "rows V8: rc=$LEG_RC: $(tail -3 <<<"$out")"
+fi
+RRD=$RRD_FIRST
+
+# L: this side of the leak path, the real rows caller with stub ssh. A leaked leg (exit 3) or a timed-out leg (124) on
+# intel keeps intel's run dir (no delete call to intel) while arm is still cleaned; a held leg (exit 4) keeps nothing.
+for case in "3 0 STOPPED" "124 0 STOPPED" "4 1 HELD"; do
+  read -r leg_rc want_del word <<<"$case"
+  rm -f "$T/ctl"/*
+  out=$(cd "$R" && env -i PATH="$T/bin:/usr/bin:/bin" HOME="$T/home" TMPDIR="$T/tmp" ZB_MAC_HOST="$INTEL" \
+          ZB_MAC_ARM_HOST="$ARM" ZB_MAC_KEY="$T/home/no_such_key" STUB_LEG_RC_HOST="$INTEL" STUB_LEG_RC="$leg_rc" \
+          timeout 120 bash tests/mac/ms_runtime_rows_gate.sh 2>&1 </dev/null)
+  rc=$?
+  n=$(cat "$T/ctl/n" 2>/dev/null || echo 0)
+  di=0 da=0
+  for ((i = 0; i < n; i++)); do
+    parse "$i"
+    [ "$TOOL" = ssh ] && [[ "${CMD[*]}" == *-delete* ]] || continue
+    [ "$HOST" = "$INTEL" ] && di=$((di + 1))
+    [ "$HOST" = "$ARM" ] && da=$((da + 1))
+  done
+  if [ "$rc" -eq 1 ] && [ "$di" -eq "$want_del" ] && [ "$da" -eq 1 ] && grep -q "^$word: $INTEL" <<<"$out"; then
+    ok "rows L: intel leg exit $leg_rc -> $word, $di delete call(s) to intel, arm cleaned, gate exit 1"
+  else
+    bad "rows L: intel leg exit $leg_rc: rc=$rc intel deletes $di (want $want_del), arm deletes $da: $(grep -E '^(STOPPED|HELD|FAIL)' <<<"$out" | head -2)"
+  fi
+done
 
 # The red vectors themselves (tests/e2e/mac_red_shape_selftest.py, hostless): each red test's exact vector gives
 # RED_SHAPE, and a flipped, missing, extra, duplicated or precondition-broken outcome, or the real row-3 check driven
