@@ -12,8 +12,10 @@
 #   nosdk          the native build on that host cannot find the SDK frameworks: the build fails;
 #   zero_m9        the M9 remote script exits 0 but no test printed its PASS line (zero recorded assertions);
 #   zero_universal mac_universal_test exits 0 silently (zero recorded assertions);
-#   zero_count     mac_universal_test prints "PASS mac-universal 0 assertions" and exits 0.
-# Every failure row requires: exit non-zero, no "PASS<TAB>mac-universal-gate" line, no stdout line starting with SKIP,
+#   zero_count     mac_universal_test prints "PASS mac-universal 0 assertions" and exits 0;
+#   late_m9        the M9 remote script prints every PASS line, then exits 1 (the exit code is checked too);
+#   late_universal mac_universal_test prints its PASS line, then exits 1.
+# Every failure row requires: exit 1 with no shell error (not a crash), no "PASS<TAB>mac-universal-gate" line, no stdout line starting with SKIP,
 # and no PASS mac-leg line for the failing host. Plus: no arm64 host configured -> NOT RUN, exit 1, zero ssh calls.
 # No Mac, no signal: it re-runs itself in a private user+network namespace; HOME/TMPDIR live in its temp tree.
 # Run: bash tests/mac/gate_selftest.sh [repo root]   (step: zig build test-mac-gate-selftest)
@@ -74,7 +76,9 @@ if [ "\${cmd[0]:-}" = /bin/bash ] && [ "\${cmd[1]:-}" = -s ]; then
     printf 'PASS\tm9-render-webview-screenshot\tzig-out/m9-render.png\tuniformity deferred to the caller'"'"'s PIL host\n'
     printf 'PASS\tm9-reply-channel-contract\n'
     printf 'PASS\tm9-load-fail-contract\n'
-    echo "exec_arch_probe: build.exec_arch=\$arch"; exit 0
+    echo "exec_arch_probe: build.exec_arch=\$arch"
+    if [ "\$hit" = late_m9 ]; then echo "Traceback: teardown failed after the PASS lines" >&2; exit 1; fi
+    exit 0
   elif grep -q mac_universal_test.py "\$s"; then
     case "\$hit" in
       wrongarch) echo "FAIL: executing arch \$other != expected \$arch" >&2
@@ -82,7 +86,9 @@ if [ "\${cmd[0]:-}" = /bin/bash ] && [ "\${cmd[1]:-}" = -s ]; then
       zero_universal) exit 0 ;;
       zero_count) printf 'PASS\tmac-universal\t0 assertions\n'; exit 0 ;;
     esac
-    printf 'PASS\tmac-universal\t12 assertions\n'; exit 0
+    printf 'PASS\tmac-universal\t12 assertions\n'
+    if [ "\$hit" = late_universal ]; then echo "Traceback: teardown failed after the PASS line" >&2; exit 1; fi
+    exit 0
   fi
 fi
 echo "stub ssh: unknown remote command: \$c" >&2
@@ -130,7 +136,12 @@ run_gate() { # run_gate <mode> <where> [arm host]: sets rc, out (stdout), err (s
 }
 fails_closed() { # fails_closed <label> <failing host>
   local label=$1 host=$2
-  if [ "$rc" -ne 0 ]; then ok "$label: exit $rc"; else bad "$label: exit 0 (false green)"; fi
+  # It must fail the way the gate fails (exit 1), not crash: a missing function or a typo exits 127 or 2 and would
+  # otherwise pass every row here while the gate is broken.
+  if [ "$rc" -eq 1 ]; then ok "$label: exit 1"; else bad "$label: exit $rc, want 1 (the gate's own failure)"; fi
+  if grep -qE 'command not found|syntax error|unbound variable|bad substitution' <<<"$err"; then
+    bad "$label: the gate hit a shell error: $(grep -m1 -E 'command not found|syntax error|unbound variable|bad substitution' <<<"$err")"
+  fi
   if grep -qP '^PASS\tmac-universal-gate' <<<"$out"; then bad "$label: printed PASS mac-universal-gate"
   else ok "$label: no PASS mac-universal-gate line"; fi
   if grep -q '^SKIP' <<<"$out"; then bad "$label: printed a SKIP line"; else ok "$label: no SKIP line"; fi
@@ -151,6 +162,8 @@ for host_role in intel arm; do
   run_gate zero_m9 "$host_role";        fails_closed "zero M9 assertions on $host_role" "$h"
   run_gate zero_universal "$host_role"; fails_closed "zero mac_universal assertions on $host_role" "$h"
   run_gate zero_count "$host_role";     fails_closed "mac_universal 0 assertions on $host_role" "$h"
+  run_gate late_m9 "$host_role";        fails_closed "M9 PASS lines then exit 1 on $host_role" "$h"
+  run_gate late_universal "$host_role"; fails_closed "mac_universal PASS line then exit 1 on $host_role" "$h"
 done
 run_gate wrongarch arm; fails_closed "wrong arch (Rosetta) on arm" "$ARM"
 

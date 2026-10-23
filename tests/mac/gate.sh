@@ -45,6 +45,22 @@ if [ -z "$ARM_HOST" ]; then
   exit 1
 fi
 
+# MS1.4 / rule 7: a remote test counts only when it printed its own PASS line. Exit 0 with no PASS line is zero
+# recorded assertions (a gutted test, a main() never called) and fails the leg; the exit codes are checked as well.
+# A leg runs only in the run dir its own passing build made; a build that did not pass leaves no run dir.
+run_dir_of() { # $1=host -> its run dir on stdout, or non-zero
+  local rd=${RUN_DIR[$1]:-}
+  [[ "$rd" =~ ^zb-gate-[0-9a-f]{40}-[0-9a-f]+$ ]] || { echo "FAIL: $1 has no run dir from a passing build" >&2; return 1; }
+  printf '%s\n' "$rd"
+}
+has_line() { [[ $'\n'"$2" == *$'\n'"$1"* ]]; }   # $1 = the line's start, $2 = captured output
+require_lines() { # $1=leg label $2=captured output $3...=the starts of the lines each test prints on success
+  local leg=$1 out=$2 want; shift 2
+  for want in "$@"; do
+    has_line "$want" "$out" || { echo "FAIL: $leg: no \"$want\" line (zero recorded assertions)" >&2; return 1; }
+  done
+}
+
 # --- Phase 1: build each arch natively on its host and fetch the per-arch browser slice. ---
 build_and_fetch() { # $1=host  $2=key  $3=arch
   local host="$1" key="$2" arch="$3"
@@ -69,7 +85,8 @@ build_and_fetch "$ARM_HOST" "$ARM_KEY" "arm64"
 echo "== assemble universal (lipo unsigned + sign a copy) on $INTEL_HOST ==" >&2
 intel_ssh=(); mapfile -d '' intel_ssh < <(mac_ssh_opts "$KEY")
 intel_scp=(); mapfile -d '' intel_scp < <(mac_scp_opts "$KEY")
-INTEL_DIR=${RUN_DIR[$INTEL_HOST]}
+INTEL_DIR=$(run_dir_of "$INTEL_HOST")
+run_dir_of "$ARM_HOST" >/dev/null
 "${intel_scp[@]}" "$STAGING/zigBrowser-x86_64" "$STAGING/zigBrowser-arm64" "$INTEL_HOST:$INTEL_DIR/" >/dev/null
 "${intel_scp[@]}" "$STAGING/shim-x86_64.dylib" "$STAGING/shim-arm64.dylib" "$INTEL_HOST:$INTEL_DIR/" >/dev/null
 "${intel_ssh[@]}" "$INTEL_HOST" /bin/bash -s "$INTEL_DIR" <<'REMOTE'
@@ -105,7 +122,8 @@ verify_host() { # $1=host  $2=key  $3=expect_arch
   local -a SSH SCP
   mapfile -d '' SSH < <(mac_ssh_opts "$key")
   mapfile -d '' SCP < <(mac_scp_opts "$key")
-  local rd=${RUN_DIR[$host]}
+  local rd
+  rd=$(run_dir_of "$host") || return 1
   echo "== verify $expect on $host (universal binary, in $rd) ==" >&2
   # NOTE: this function is invoked under `if ! verify_host`, which DISABLES `set -e` inside it
   # (bash gotcha). So every step below is checked EXPLICITLY with `|| return 1` — a swallowed
@@ -124,7 +142,8 @@ verify_host() { # $1=host  $2=key  $3=expect_arch
   local local_png="zig-out/m9-render-${expect}.png"
   # M9 visible e2es on the universal binary (the loader runs this host's slice), then the MS1.2
   # exec-arch readback. The probe writes nothing on failure, so MS1.2 fails closed.
-  "${SSH[@]}" "$host" /bin/bash -s "$rd" <<'REMOTE' || return 1
+  local m9_out
+  m9_out=$("${SSH[@]}" "$host" /bin/bash -s "$rd" <<'REMOTE' | tee /dev/stderr
 set -euo pipefail
 cd "$HOME/${1:?}"
 test -f tests/fixtures/app/index.html && test -f tests/fixtures/app/zbhost.js
@@ -136,6 +155,9 @@ python3 tests/e2e/m9_load_fail_test.py --browser zig-out/bin/zigBrowser
 rm -f zig-out/exec-arch.txt
 python3 tests/mac/exec_arch_probe.py --browser zig-out/bin/zigBrowser --out zig-out/exec-arch.txt
 REMOTE
+  ) || return 1
+  require_lines "$expect M9" "$m9_out" $'PASS\tm9-render-webview-screenshot\t' $'PASS\tm9-reply-channel-contract' \
+    $'PASS\tm9-load-fail-contract' 'exec_arch_probe: build.exec_arch=' || return 1
 
   # The render-nonuniform oracle needs Pillow, which is only on the Intel host (not the arm Mac,
   # not the Linux driver). Route this leg's PNG to the Intel host's PIL (pixel analysis is
@@ -154,7 +176,8 @@ REMOTE
   # MS1.1 (census, unsigned --binary), MS1.2 (executing-arch readback) and MS1.3 (the SIGNED
   # copy's entitlements via static `codesign -d`, --signed-binary) run ON the Mac
   # (lipo/codesign/sysctl/uname live there).
-  "${SSH[@]}" "$host" /bin/bash -s "$expect" "$rd" <<REMOTE || return 1
+  local mu_out
+  mu_out=$("${SSH[@]}" "$host" /bin/bash -s "$expect" "$rd" <<REMOTE | tee /dev/stderr
 set -euo pipefail
 cd "\$HOME/\${2:?}"
 python3 tests/e2e/mac_universal_test.py \
@@ -166,6 +189,9 @@ python3 tests/e2e/mac_universal_test.py \
   --signed-binary "\$HOME/\$2/zigBrowser-universal-signed" \
   ${reported_arg[*]+${reported_arg[*]}}
 REMOTE
+  ) || return 1
+  grep -qE $'^PASS\tmac-universal\t[1-9][0-9]* assertions$' <<<"$mu_out" \
+    || { echo "FAIL: $expect mac_universal: no \"PASS mac-universal <N >= 1> assertions\" line (zero recorded assertions)" >&2; return 1; }
   printf 'PASS\tmac-leg\t%s\t%s\n' "$host" "$expect"
 }
 

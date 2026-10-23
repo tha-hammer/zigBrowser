@@ -47,6 +47,13 @@ cat > "$T/bin/ssh" <<EOF
 i=\$(cat "$T/ctl/n" 2>/dev/null || echo 0); echo \$((i + 1)) > "$T/ctl/n"
 printf '%s\0' ssh "\$@" > "$T/ctl/call.\$i"
 cat > "$T/ctl/stdin.\$i"
+# Answer like a passing Mac where gate.sh requires each remote test's PASS line (MS1.4).
+if grep -q m9_render_test.py "$T/ctl/stdin.\$i"; then
+  printf 'PASS\tm9-render-webview-screenshot\tzig-out/m9-render.png\tstub\nPASS\tm9-reply-channel-contract\n'
+  printf 'PASS\tm9-load-fail-contract\nexec_arch_probe: build.exec_arch=stub\n'
+elif grep -q mac_universal_test.py "$T/ctl/stdin.\$i"; then
+  printf 'PASS\tmac-universal\t12 assertions\n'
+fi
 exit 0
 EOF
 cat > "$T/bin/scp" <<EOF
