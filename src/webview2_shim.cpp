@@ -611,6 +611,10 @@ HANDLE g_loop_started = CreateEventW(nullptr, TRUE, FALSE, nullptr);
 // running a job; and WebView2's cookie-read completion is parked until the test runs it.
 volatile LONG g_debug_hold_ms = 0;
 volatile LONG g_debug_park = 0;
+// WS2a.3 test seams (ws2a3_async_ownership.c; inert at 0): a completion sleeps this long after it has
+// claimed its job (COMPLETING) and before the answer is written; and the number of jobs allocated.
+volatile LONG g_debug_complete_hold_ms = 0;
+volatile LONG g_live_jobs = 0;
 SRWLOCK g_parked_lock = SRWLOCK_INIT;
 std::vector<std::function<void()>> g_parked; // under g_parked_lock
 
@@ -622,6 +626,7 @@ void job_release(Job *job) {
       CloseHandle(job->done);
     }
     delete job;
+    InterlockedDecrement(&g_live_jobs);
   }
 }
 
@@ -629,6 +634,10 @@ void job_release(Job *job) {
 bool job_complete(Job *job, int code, std::string json = {}, std::string err = {}) {
   if (InterlockedCompareExchange(&job->state, kCompleting, kRunning) != kRunning) {
     return false;
+  }
+  const LONG hold = InterlockedCompareExchange(&g_debug_complete_hold_ms, 0, 0);
+  if (hold > 0) {
+    Sleep(static_cast<DWORD>(hold));
   }
   job->code = code;
   job->json = std::move(json);
@@ -752,6 +761,7 @@ int job_submit(uint32_t win, unsigned int timeout_ms, std::function<void(Job *, 
     return fail_with(out_err, "called on the UI thread");
   }
   Job *job = new Job();
+  InterlockedIncrement(&g_live_jobs);
   job->run = std::move(run);
   AcquireSRWLockExclusive(&g_jobs_lock);
   const bool queued = !g_loop_ended && g_job_hwnd != nullptr;
@@ -2931,6 +2941,14 @@ extern "C" int zb_cookies_delete(uint32_t win, const char *name, const char *dom
       },
       nullptr, out_err);
 }
+
+// ---- WS2a.3 test seams (tests/windows/ws2a3_async_ownership.c; inert until called) ----
+
+extern "C" void zb_automation_debug_complete_hold_ms(unsigned int ms) {
+  InterlockedExchange(&g_debug_complete_hold_ms, static_cast<LONG>(ms));
+}
+
+extern "C" int zb_automation_debug_live_jobs(void) { return static_cast<int>(InterlockedCompareExchange(&g_live_jobs, 0, 0)); }
 
 // ---- WS3 test seams (tests/windows/ws3_shim_test.c only; inert until called) ----
 

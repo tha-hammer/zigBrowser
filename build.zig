@@ -230,6 +230,28 @@ pub fn build(b: *std.Build) void {
         b.step("ws2a0-world-spike-win", "WS2a.0: the automation script's private CDP world on Windows")
             .dependOn(&ws2a0_run.step);
 
+        // WS2a.3 (Windows plan rev 2.21): the UI-thread marshal's waits are bounded (no INFINITE wait; a job still
+        // completing is given up after the waiter grace), through the production zb_automation_get_title and the
+        // shim's inert test seams, linked with the shim (tests/windows/ws2a3_async_ownership.c). Windows-target
+        // builds only; run on the Win11 VM by `bash tests/windows/build-on-windows.sh ws2a3-async-ownership-win`
+        // (tests/e2e/win_async_ownership_test.py).
+        const ws2a3_module = b.createModule(.{ .target = target, .optimize = optimize, .link_libc = true });
+        configureBackend(ws2a3_module, b, backend, webview2_paths);
+        ws2a3_module.addCSourceFile(.{ .file = b.path("tests/windows/ws2a3_async_ownership.c"), .flags = &.{"-std=c11"} });
+        const ws2a3_drawer = b.addObject(.{ .name = "ws2a3-agent-drawer", .root_module = b.createModule(.{
+            .root_source_file = b.path("src/agent_drawer.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+        }) });
+        ws2a3_module.addObject(ws2a3_drawer);
+        const ws2a3_exe = b.addExecutable(.{ .name = "ws2a3-async-ownership", .root_module = ws2a3_module });
+        ws2a3_exe.step.dependOn(pkg_guard);
+        const ws2a3_run = b.addRunArtifact(ws2a3_exe);
+        ws2a3_run.addFileArg(b.path("tests/fixtures/app/index.html"));
+        b.step("ws2a3-async-ownership-win", "WS2a.3: the UI-thread marshal's waits are bounded on Windows")
+            .dependOn(&ws2a3_run.step);
+
         // WS2b.1 spike (Windows plan rev 2.21): native input through the production zb_native_* ABI must reach
         // the page as trusted events (tests/windows/ws2b1_input_spike.c, the GTK input fixtures, the real
         // automation.js for the document guard). Linked like the WS2a.0 spike, with the same drawer object.
@@ -4179,7 +4201,7 @@ fn guardDisplay(b: *std.Build) void {
     guard.has_side_effects = true; // the environment is read on every run, never cached
     // ws3-shim-test-win and owner-only-test-win exist only in Windows-target builds and run on
     // Windows, which has no X display to guard (and no python3 to run the guard).
-    const unguarded = [_][]const u8{ "install", "uninstall", "agent-runtime", "mac-gate", "ms1b-gate", "ms2a-gate", "ws3-shim-test-win", "owner-only-test-win", "ws2a0-world-spike-win" };
+    const unguarded = [_][]const u8{ "install", "uninstall", "agent-runtime", "mac-gate", "ms1b-gate", "ms2a-gate", "ws3-shim-test-win", "owner-only-test-win", "ws2a0-world-spike-win", "ws2a3-async-ownership-win" };
     next: for (b.top_level_steps.keys(), b.top_level_steps.values()) |name, top| {
         for (unguarded) |skip| if (std.mem.eql(u8, name, skip)) continue :next;
         for (top.step.dependencies.items) |dep| dep.dependOn(&guard.step);
