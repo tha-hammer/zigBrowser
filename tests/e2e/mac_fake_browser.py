@@ -179,6 +179,50 @@ class CloseButtonBrowser(FakeBrowser):
         return error("unscripted", f"unscripted {method} {params}")
 
 
+class ClosePrimaryBrowser(FakeBrowser):
+    """mac_ms2c_close_primary_test (launch A: the primary with a popup; launch B: the primary alone). Knobs: fixed (the
+    green: the primary's native close removes it, and the last removal exits 0), popup_gone (the popup disappears with
+    the primary), wincount (the last WINCOUNT row of B), b_exit_rc (B exits with this status at the close)."""
+
+    def on_launch(self, argv, env):
+        self.url = argv[1]
+        self.launch_no = len(self.launches)
+        self.windows = ["window-1"]
+        self.out.append("WINCOUNT\t1")
+        self.err.append("zb-live-jobs=0")
+
+    def rpc(self, method, params):
+        if method == "page.url":
+            return {"result": {"url": self.url}}
+        if method == "page.list":
+            return {"result": {"pages": [{"window_id": w, "title": w} for w in self.windows]}}
+        if method == "page.evaluate":
+            expr = params.get("expression", "")
+            if "window.open" in expr:
+                self.windows.append("window-2")
+                self.out.append("WINCOUNT\t2")
+                return {"result": {"result": True}}
+            if "document.title" in expr and params.get("window_id") == "window-1":
+                self.out.append("NATIVE_CLOSE\t1")
+                if self.knobs.get("fixed"):
+                    self.windows.remove("window-1")
+                    self.out.append(f"WINCOUNT\t{len(self.windows)}")
+                    if not self.windows:
+                        self.proc.exit(self.clock, 0)
+                if self.knobs.get("popup_gone") and "window-2" in self.windows:
+                    self.windows.remove("window-2")
+                if self.launch_no == 2 and self.knobs.get("wincount"):
+                    self.out.append(self.knobs["wincount"])
+                if self.launch_no == 2 and self.knobs.get("b_exit_rc") is not None:
+                    self.proc.exit(self.clock, self.knobs["b_exit_rc"])
+                return {"result": {"result": True}}
+        if method == "page.title":
+            if params.get("window_id") in self.windows:
+                return {"result": {"title": params.get("window_id")}}
+            return error("no_window")
+        return error("unscripted", f"unscripted {method} {params}")
+
+
 def fetch(url: str, timeout: float = 0.5) -> None:
     """A real GET to the row's fixture (so its hit/held counters see the page's request); the reply is ignored and
     a server that holds the request open is left after `timeout`."""

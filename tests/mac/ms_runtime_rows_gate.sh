@@ -42,6 +42,7 @@ ROWS=(
   "tests/e2e/mac_ms2a_load_fail_no_quit_test.py|red|ms2a-load-fail-no-quit"
   "tests/e2e/mac_ms2c_recover_slow_server_test.py|red|ms2c-recover-slow-server"
   "tests/e2e/mac_ms2c_close_button_test.py|red|ms2c-close-button"
+  "tests/e2e/mac_ms2c_close_primary_test.py|red|ms2c-close-primary"
   "tests/e2e/mac_ms2b_dialog_popup_id_test.py|red|ms2b-dialog-popup-id"
   "tests/e2e/mac_cookie_timeout_test.py|red|ms3-cookie-timeout"
   "tests/e2e/mac_profile_pacing_persist_test.py|red|ms3-profile-pacing-persist"

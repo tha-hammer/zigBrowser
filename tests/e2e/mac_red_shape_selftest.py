@@ -41,6 +41,7 @@ RED_MODULES = (
     "mac_ms2a_load_fail_no_quit_test",
     "mac_ms2c_recover_slow_server_test",
     "mac_ms2c_close_button_test",
+    "mac_ms2c_close_primary_test",
     "mac_ms2b_dialog_popup_id_test",
     "mac_cookie_timeout_test",
     "mac_profile_pacing_persist_test",
@@ -194,6 +195,18 @@ def drive_records() -> int:
               ("D3 close 5 WINCOUNT 3", close, {"5-shared-destroy-path"},
                lambda sh: close.record_destroy(sh, ["WINCOUNT\t2", "WINCOUNT\t3"]), False),
               ("D3 close 5 no WINCOUNT", close, {"5-shared-destroy-path"}, lambda sh: close.record_destroy(sh, []), False)]
+    prim = importlib.import_module("mac_ms2c_close_primary_test")
+    cases += [("D3b primary 1 listed", prim, {"1-primary-left-page-list"},
+               lambda sh: prim.record_primary_listed(sh, "window-1", "window-2", ["window-1", "window-2"]), True),
+              ("D3b primary 1 popup missing", prim, {"1-primary-left-page-list"},
+               lambda sh: prim.record_primary_listed(sh, "window-1", "window-2", []), False),
+              ("D3b primary 4 WINCOUNT 1", prim, {"4-last-wincount-zero"},
+               lambda sh: prim.record_last_wincount(sh, ["WINCOUNT\t1"]), True),
+              ("D3b primary 4 WINCOUNT 2", prim, {"4-last-wincount-zero"},
+               lambda sh: prim.record_last_wincount(sh, ["WINCOUNT\t1", "WINCOUNT\t2"]), False),
+              ("D3b primary 4 no WINCOUNT", prim, {"4-last-wincount-zero"}, lambda sh: prim.record_last_wincount(sh, []), False),
+              ("D3b primary 5 alive", prim, {"5-last-clean-exit"}, lambda sh: prim.record_last_exit(sh, None), True),
+              ("D3b primary 5 exit 1", prim, {"5-last-clean-exit"}, lambda sh: prim.record_last_exit(sh, 1), False)]
     dialog = importlib.import_module("mac_ms2b_dialog_popup_id_test")
     cases += [("D4 dialog 1 window-2", dialog, {"1-listed-under-stable-id"},
                lambda sh: dialog.record_listed(sh, {"open": True, "window_id": "window-2"}, "window-3"), True),
@@ -239,6 +252,7 @@ def drive_records() -> int:
 MAIN_PINS = {
     "mac_ms2c_recover_slow_server_test": ("record_after_recovery(",),
     "mac_ms2c_close_button_test": ("record_listed(", "record_routed(", "record_destroy("),
+    "mac_ms2c_close_primary_test": ("record_primary_listed(", "record_last_wincount(", "record_last_exit("),
     "mac_ms2b_dialog_popup_id_test": ("record_listed(", "record_by_id(", "record_respond(", "record_confirm("),
     "mac_cookie_timeout_test": ("record_op(",),
     "mac_profile_pacing_persist_test": ("record_saved(", "record_restored("),
@@ -274,6 +288,11 @@ MAIN_SCENARIOS = (
         ("today", {}, "red"), ("fixed", {"fixed": True}, "pass"),
         ("routed reply action_timeout", {"routed": "timeout"}, "mismatch"),
         ("last WINCOUNT 3", {"wincount": "WINCOUNT\t3"}, "mismatch"))),
+    ("mac_ms2c_close_primary_test", "ClosePrimaryBrowser", (
+        ("today", {}, "red"), ("fixed", {"fixed": True}, "pass"),
+        ("the popup goes with the primary", {"popup_gone": True}, "mismatch"),
+        ("last WINCOUNT 2", {"wincount": "WINCOUNT\t2"}, "mismatch"),
+        ("B exits 1 at the close", {"b_exit_rc": 1}, "mismatch"))),
     ("mac_ms2b_dialog_popup_id_test", "DialogBrowser", (
         ("today", {}, "red"), ("fixed", {"fixed": True}, "pass"),
         ("listed under window-1", {"listed": "window-1"}, "mismatch"),
