@@ -1,72 +1,139 @@
-# ong.13 — Windows navigation policy (WS2a): TDD plan addendum
+# ong.13 — Windows navigation policy (WS2a): TDD plan addendum (rev 2)
 
 Owner: PinkOwl (cc_2). Parent plan: `2026-10-19-windows-launch-tdd-plan.md` rev 2.21, WS2a ABI table
 (`_navigate_guarded` = NavigationStarting + `zb_policy_decide`). Bead: `zigBrowser-ong.13`.
-Status: **plan for review** (no code yet). Hostless first; any VM run needs NavyCanyon's exact-commit approval and
-the orchestrator's release.
+Status: **rev 2 for re-review** — revised to the minimum in NavyCanyon `f38f8153` (rev 1 `3ed85a19` BLOCKED: D1, D2,
+D3 revised; D4 and the B2 home approved). No red, product edit or host request until this revision is approved.
 
-## 1. The gap (research, at HEAD d52370f7)
+## 1. The gap (research, at HEAD d52370f7; unchanged from rev 1)
 
-- `src/webview2_shim.cpp` never calls `zb_policy_decide`. Its `NavigationStarting` handler only records ids
-  (routed `nav_id`, `current_nav_id`, WS2a.3d). So a routed `page.navigate` outside the app's base, and a
-  page-initiated navigation outside it, both load. ABI (`src/webkit_shim.h`, ops comment): a navigation blocked by
+- `src/webview2_shim.cpp` never calls `zb_policy_decide`: a routed `page.navigate` outside the app's base and a
+  page-initiated navigation outside it both load. ABI (`src/webkit_shim.h`, ops comment): a navigation blocked by
   policy answers `ZB_AUTO_ERR_NAV_FAILED`.
-- GTK (`src/webkit_shim.c`): `derive_app_base(uri)` = the canonical directory URI of a `file:` start page (else the
-  URI itself); every policy decision calls `zb_policy_decide(app->app_base, candidate, dtype)`; `ignore` →
-  `webkit_policy_decision_ignore` + e2e `BLOCKED <uri>` row; a routed navigation that is blocked ends as failed.
-- `src/nav_policy.zig` (shared with GTK and macOS): `navigation_action` with a `file:` base → `use` only when the
-  candidate's normalized path is inside the base directory; non-`file:` base → `use`; unparsable/non-file
-  candidate with a file base → `ignore`; `new_window_action` → `open_in_subwindow`; `response` → `use`.
+- GTK (`src/webkit_shim.c`): `derive_app_base(uri)`; every policy decision calls
+  `zb_policy_decide(app->app_base, candidate, dtype)`; `ignore` → `webkit_policy_decision_ignore` + e2e
+  `BLOCKED <uri>` row (`emit_protocol1`, e2e-gated); a blocked routed navigation ends as failed.
+- `src/nav_policy.zig` (shared with GTK/macOS): with a `file:` base, `navigation_action` is `use` only when the
+  decoded, lexically normalized candidate path is the base directory or inside it (segment boundary: the base path
+  ends with `/`); a non-`file:`/unparsable base → `use`; a non-`file:`/unparsable/non-local-host candidate with a
+  `file:` base → `ignore`; `new_window_action` → `open_in_subwindow`; `response` → `use`.
+- Hostless probe of today's `decide` (base `file:///C:/…/tests/fixtures/app/`): drive-letter case
+  (`file:///c:/…/app/page-b.html`) → `ignore` (wrong: same file); directory case (`…/APP/…`) → `ignore`;
+  `..`/`localhost`/percent-encoding → `use`; outside dir, other drive, encoded backslash, UNC host → `ignore`.
 
-### Hostless probe of today's `decide` with Windows-shaped URLs (base `file:///C:/Users/zbtext/zb/build/run-x/tests/fixtures/app/`)
+## 2. Decisions (rev 2)
 
-| candidate | want | today |
-|---|---|---|
-| `file:///C:/…/app/page-b.html` | use | use |
-| `file:///c:/…/app/page-b.html` (drive-letter case) | use | **ignore** |
-| `file:///C:/…/APP/page-b.html` (directory case) | use | **ignore** |
-| `…/app/../app/page-b.html`, `file://localhost/C:/…`, `page%2Db.html` | use | use |
-| `…/automation/input.html`, `file:///D:/x.html`, `app%5C..%5Cautomation…`, `file://server/share/x.html` | ignore | ignore |
+### D1 — drive-designator folding only (revised per f38f8153)
 
-So enabling the policy on Windows as-is can block same-file navigations whose spelling differs only in case, e.g. a
-base built from a CLI path with `c:` while Chromium reports `C:`. Every existing live row that navigates to
-`page-b.html` (routed, private world, WS2a.3d) would then fail.
+- `nav_policy.zig` gains `decideWith(app_base, candidate, dtype, fold_drive: bool)`; `decide` = `decideWith(…, false)`
+  (POSIX unchanged). The export `zb_policy_decide` passes `fold_drive = builtin.os.tag == .windows`.
+- With `fold_drive`, after URI decode and lexical `.`/`..` normalization of BOTH base and candidate, a leading drive
+  designator — exactly `/X:` where X is an ASCII letter, followed by `/` or end — has its letter upper-cased in both.
+  Nothing else is folded: every later component is compared exactly, so a directory-case alias (`…/APP/…`) is
+  `ignore` (fail closed). Arbitrary component-case aliases need a separate design based on real Windows path
+  resolution/case mode, and are out of scope.
+- The live fold mutant edits the production export wiring (`fold_drive = false` in `zb_policy_decide`), not the
+  hostless helper.
 
-## 2. Decisions for the reviewer
+### D2 — the Windows base contract (revised per f38f8153)
 
-- **D1 (shared `nav_policy.zig`)**: path containment is ASCII-case-insensitive when the target OS is Windows (NTFS
-  default). Implemented as `decideWith(…, fold_case: bool)`; the export passes `builtin.os.tag == .windows`. The fold
-  path is unit-tested hostless on Linux by calling `decideWith(…, true)`; GTK/macOS behaviour is unchanged
-  (`fold_case = false`, existing tests untouched). Alternative: fold only in the WebView2 shim (would need its own
-  canonicalizer — rejected, duplicates the parser).
-- **D2 (base)**: the shim derives `app_base` from the start URI exactly as GTK does (directory URI of a `file:`
-  start page, else the URI), computed once in `run_core` from the UTF-8 argument.
-- **D3 (hook)**: in `NavigationStarting`, read `get_Uri`; `zb_policy_decide(app_base, uri, NAVIGATION)`; on
-  `ignore` → `args->put_Cancel(TRUE)`, e2e `BLOCKED <uri>` row (GTK parity), and if this start is the routed job's
-  own first start (`nav_job && !nav_start_seen` at entry) the job is finished at once with
-  `ZB_AUTO_ERR_NAV_FAILED` ("navigation blocked by policy") and `nav_job` is cleared, so the answer never depends
-  on whether WebView2 raises NavigationCompleted for a cancelled start. An unreadable URI fails closed (cancel).
-  The first (start-page) navigation is decided too (it is inside its own base).
-- **D4 (scope)**: `new_window_action` (NewWindowRequested) stays with WS2c.1 (popup chain); `response` is `use`
-  (no hook). The crash-page reload special case is GTK-only (no WebView2 crash page yet).
+A new pure function `nav_policy.baseFromStart(start_uri, out) ?[]const u8`, exported as
+`zb_policy_base_from_start(start, out, cap) c_int` for the shim, computed once in `run_core` from the UTF-8 start
+argument and stored in `AppState` (`std::string app_base`) for the whole AppState lifetime:
+
+- **valid local `file:` start** (scheme `file`, empty or `localhost` host, absolute path): decode the path, drop the
+  query and fragment, normalize `.`/`..` lexically, then take the directory: if the start path ends with `/` the start
+  is a directory and the base is that directory; otherwise drop the last segment. Result: `file://` + the
+  percent-encoded directory path + a trailing `/` (only bytes outside RFC 3986 unreserved / `/` / `:` / `@` / sub-delims
+  are encoded; the policy decodes again).
+  (GTK note: for a trailing-slash start GTK's `g_canonicalize_filename` + `g_path_get_dirname` yields the PARENT
+  directory. Windows keeps the directory itself: WebView2 shows a listing of that directory and its own entries must
+  stay reachable. Behavioural difference recorded; GTK unchanged.)
+- **non-`file:` start**: GTK's last-slash rule (`uri` up to and including its last `/`, else the whole `uri`). This
+  is behaviourally immaterial for the decision — the shared policy returns `use` for any non-`file:` base — and is
+  kept only for parity.
+- **malformed `file:` start** (non-local host such as `file://server/share/x`, relative or unparsable path): the start
+  URI unchanged, as GTK's fallback. The policy then finds no local base and returns `use` — the same (unconfined)
+  outcome GTK has for such a start; the start page itself could not be confined meaningfully.
+- **Hostless pins (B1b)**: `file:///C:/run/app/test.html` → `file:///C:/run/app/`; `…/test.html?x=1`, `…#f`,
+  `…?x=1#f` → same; `file:///C:/run/app/` (trailing slash) → `file:///C:/run/app/`;
+  `file:///C:/run/app/../app/test.html` → `file:///C:/run/app/`; `file://localhost/C:/run/app/t.html` →
+  `file:///C:/run/app/`; a space / `%` / non-ASCII byte in a segment is percent-encoded; `file:///home/u/app/t.html`
+  (POSIX) → `file:///home/u/app/`; `https://h/a/b?q` → `https://h/a/` (last slash); `file://server/share/x.html` and
+  `file:relative.html` → unchanged.
+
+### D3 — the `NavigationStarting` hook (location approved; lifecycle revised per f38f8153)
+
+The policy runs FIRST in the handler, before any of `current_nav_*`, `nav_start_seen`, `nav_id*` or the WS2a.3d
+deferred-abandon seam is touched; a cancelled start is never the current navigation and never binds a routed id.
+
+1. `args == nullptr` → fail closed: `webview->Stop()` (no args to cancel with), e2e `BLOCKED (null)`, routed block
+   (step 4), return.
+2. `get_Uri` fails or yields null → `put_Cancel(TRUE)`; if that fails → `webview->Stop()`; `BLOCKED (null)`; routed
+   block; return. A successful `get_Uri` string is converted to UTF-8 and then always freed with `CoTaskMemFree`
+   (every path, including errors).
+3. `zb_policy_decide(app_base, uri, NAVIGATION)`; only exact `ZB_DECISION_USE` proceeds to today's bookkeeping.
+   Anything else → `put_Cancel(TRUE)`; if it fails → `webview->Stop()`. The block is reported only after the
+   cancel (or the Stop fallback) was issued: the e2e row `BLOCKED <uri>` (sanitized like the other protocol rows,
+   flushed), then the routed block.
+4. **Routed block**: if a routed job is waiting for its own first start (`nav_job != nullptr && !nav_start_seen`), it
+   is detached (`nav_job = nullptr`), finished `ZB_AUTO_ERR_NAV_FAILED` with "navigation blocked by policy" (or
+   "navigation blocked: no event args/uri" in 1–2), and its separate navigation hold is released exactly once. A
+   later `NavigationCompleted` for the cancelled id is inert: `nav_job` is null or belongs to a newer navigation
+   whose id differs.
+5. A page-initiated blocked start leaves `nav_job` (if any, already started) untouched.
+
+### D4 — approved (unchanged)
+
+`NewWindowRequested` stays with WS2c.1; no response-policy hook; the GTK-only crash page is out of scope.
+
+### D5 — effect on the existing WS2a.3 slice (new; found while revising)
+
+- The slice executable links the shim but not `nav_policy.zig`; once the shim calls `zb_policy_decide` it must link
+  the real policy object (`build.zig`, slice module only; no stub).
+- The slice parent starts on the `file:` fixture and its WS2a.3d rows navigate to `http://127.0.0.1` loopback pages;
+  the `--ws2a3d-timeout-close` child does the same. With the policy on, those are (correctly) blocked. Minimum: the
+  parent and that child start from the loopback server instead (`GET /app/index.html` serves the fixture bytes),
+  whose non-`file:` base is `use`, so every existing 3a–3d/ong.20 row keeps its meaning; `page-b.html` stays a
+  `file:` URL (allowed from a non-`file:` base). The ong.20 child already starts on `/slow`.
+- Other live tests: the private-world test navigates to `clean.html` beside its `test.html` (same dir, allowed);
+  the transport, capabilities, screenshot, config-flag, refusal, drawer, input-matrix and spike tests do not navigate.
 
 ## 3. Behaviours, tests, mutants
 
-1. **B1 hostless (Zig, red first, unregistered file `tests/windows/nav_policy_windows_test.zig`)**: with
-   `fold_case = true`, the drive-letter-case and directory-case candidates above are `use`; every `ignore` row stays
-   `ignore` (including `..` escapes past the drive, another drive, UNC host, encoded backslash); with
-   `fold_case = false` today's answers are unchanged. Green: `decideWith` + the export. Registered in the green as
-   its own step in `zig build test`. Mutant: fold off on Windows → the fold rows fail.
-2. **B2 live (product exe over the socket, `tests/e2e/win_routed_test.py`, rows added in the red leg only)**: from
-   the file start page A, `page.navigate` to a staged file OUTSIDE the app directory → JSON-RPC error
-   `navigation_failed` (`ZB_AUTO_ERR_NAV_FAILED`), and url/title/heading are still page A's; a page-initiated
-   navigation outside (`page.evaluate` `location.href = <outside>`) leaves page A in place; `page.navigate` to page B
-   (inside, different drive-letter case in the URL we send) still succeeds. Red (no hook): the outside navigations
-   load. Mutant: skip the check (always `use`). Guard row: the case-folded inside navigation, whose mutant is D1's
-   fold-off.
-3. Win11 legs as a chain (red → green → mutant(s)) on the then-current HEAD; Win10 waits on ong.12.
+- **B1 hostless (Zig; red first in the new UNREGISTERED `tests/windows/nav_policy_windows_test.zig`; registered in
+  the green as its own `zig build test` member)**:
+  - B1a `decideWith(…, fold_drive = true)`: drive-letter case only → `use`; directory case → `ignore`; segment
+    boundary (`/C:/run/app2/x` vs base `/C:/run/app/`) → `ignore`; the base directory itself → `use`;
+    normalization before comparison (`/c:/run/x/../app/p.html`, `/C:/run/app/./p.html`) → `use`; `..` past the drive
+    into another drive, another drive, UNC host, encoded backslash, `https:` candidate → `ignore`; a POSIX base with
+    a case-different path → `ignore` (no designator to fold). `fold_drive = false` reproduces today's answers for
+    every row. Red: `decideWith` does not exist (compile error) — the red file is unregistered.
+  - B1b `baseFromStart`: every pin in D2.
+  - Mutant (hostless, export wiring): `zb_policy_decide` with `fold_drive = false` → the drive-case row through the
+    export fails.
+- **B2 live (`tests/e2e/win_routed_test.py`, rows added in the red leg)** — fixture per f38f8153: launch
+  `%run%\app\test.html`, page B at `%run%\app\page-b.html`, the distinguishable outside page at `%run%\outside.html`,
+  all inside the one owned `ws20-*` root and its existing cleanup. Three independent test executions (separate test
+  methods, each launching its own browser), so a red cannot hide a later behaviour:
+  - routed block: `page.navigate` to the outside page → JSON-RPC `navigation_failed`; then, bounded and stable,
+    url/title/heading are still A's; the exact `BLOCKED <outside uri>` row was printed.
+  - page-initiated block: `page.evaluate` `location.href = <outside>` → A stays (bounded, stable) and the exact
+    `BLOCKED` row.
+  - drive-case allow: `page.navigate` to page B with only the drive letter's case changed → `{"ok": true}` and B's
+    url/title/heading.
+  - Red (no hook): both block rows red. Mutants: skip the check (always `use`) → both block rows red;
+    export-fold-off → only the drive-case row red.
+- **B3 live ownership (`tests/windows/ws2a3_async_ownership.c`, registered via `windows-async-ownership-live`)**: a
+  new child `--ws2a3-policy-block` starts on the `file:` fixture, takes the live-jobs baseline, routes
+  `zb_automation_navigate` to `…/tests/fixtures/automation/input.html` (outside `app/`) → `ZB_AUTO_ERR_NAV_FAILED`
+  with the policy message, the title stays App Index A, and live jobs return to the baseline before the close.
+  Mutant: omit the navigation-hold release in the routed block → live jobs stay baseline + 1 → that row red.
+- Win11 legs as one chain per review (red → green → each mutant) on the then-current HEAD; Win10 waits on ong.12.
 
 ## 4. Hostless checks before any request
 
-`zig build test` slice for B1 (private caches, no display), `cross-check`, both shim syntax variants (MinGW and MSVC
-min/max), `windows-live-step-skip`, `windows-vm-steps-unguarded`; `win_routed_test.py` gated rc 1 / standalone 77.
+`zig build test` member for B1 (private caches, no display); `cross-check`; both shim syntax variants (MinGW and
+MSVC min/max, with and without `ZB_WS2A3_SEAMS`); `windows-ws2a3-seam-gating`, `windows-live-step-skip`,
+`windows-vm-steps-unguarded`, `windows-msvc-minmax`; a hostless Windows link of the slice C test with the real
+policy object; `win_routed_test.py` gated rc 1 / standalone skip.
