@@ -59,6 +59,17 @@ case "\$s" in
     printf 'PASS\tm9-load-fail-contract\nexec_arch_probe: build.exec_arch=%s\n' "\$arch" ;;
   *mac_universal_test.py*) printf 'PASS\tmac-universal\t12 assertions\n' ;;
 esac
+# The four gates below now require the remote test leg's exact completed PASS records. Supply only the current S1
+# gate's records, and only to its /bin/bash -s run-dir leg call; build, staging and cleanup calls stay marker-free.
+case " \$* " in
+  *' /bin/bash -s zb-gate-'*)
+    case "\${ZB_GATE_STEPS_GATE:-}" in
+      ms2a-gate) printf 'PASS\tms2a-routed-commands\nPASS\tms2a-private-world\nPASS\tms2a-abi-census\nPASS\tms2a-late-completion\nPASS\tms2a-string-ownership\nPASS\tms2a-str-accounting\nPASS\tms2a-hang-guard\nPASS\tms2a.2-nav-failure\nPASS\tms2a-dispatch-race\nPASS\tms2a-immediate-quit\nPASS\tms2a-teardown-reap\nPASS\tms2a-refused-start\nPASS\tms2a-user-nav-failure\nPASS\tms2a-hook-inert\nPASS\tms2a-stale-callback\nPASS\tms2a-stale-failure\n' ;;
+      ms2b-gate) printf 'PASS\tms2b-key-table-parity\t(31 names)\nPASS\tms2b.1a-native-click\nPASS\tms2b.1b-key-text\nPASS\tms2b-key-coverage\nPASS\tms2b-ack-error\nPASS\tms2b-doc-changed\nPASS\tms2b-text-doc-changed-selftest\nPASS\tms2b-text-doc-changed\nPASS\tms2b-partial-type\nPASS\tms2b-pair-race\nPASS\tms2b-ack-hang\nPASS\tms2b-dialogs\nPASS\tms2b-eval-dialog\n' ;;
+      ms2c-gate) printf 'PASS\tms2c-list-windows\nPASS\tms2c-stable-ids\nPASS\tms2c-window-fifo\nPASS\tms2c-popup-chain\nPASS\tms2c-loading\nPASS\tms2c-process-group\nPASS\tms2c-oob-during-stuck\nPASS\tms2c-snapshot-oob\nPASS\tms2c-dialog-snapshot\nPASS\tms2c-script-close\nPASS\tms2c-health\nPASS\tms2c-close-window\nPASS\tms2c-crash\nPASS\tms2c-crash-controls\nPASS\tms2c-recover\nPASS\tms2c-recover-dialog\nPASS\tms2c-recover-stale-health\n' ;;
+      ms3-gate) printf 'PASS\tms3-cookie\nPASS\tms3-config-flags\nPASS\tms3-profile-persist\nPASS\tms3-profile-cwd-isolation\n' ;;
+    esac ;;
+esac
 exit 0
 EOF
 cat > "$T/bin/scp" <<EOF
@@ -86,7 +97,7 @@ G=(env -i PATH=/usr/bin:/bin HOME="$T/home" GIT_CONFIG_NOSYSTEM=1 git -C "$R")
 run_step() { # run_step <step> <arm host>: sets rc, calls, hosts; output in $T/out
   rm -f "$T/ctl"/*
   (cd "$R" && env -i PATH="$T/bin:/usr/bin:/bin" HOME="$T/home" TMPDIR="$T/tmp" ZB_MAC_HOST="$INTEL" \
-     ZB_MAC_ARM_HOST="$2" ZB_MAC_KEY="$T/fake_mac_key" timeout 600 "$ZIG" build "$1" \
+     ZB_MAC_ARM_HOST="$2" ZB_MAC_KEY="$T/fake_mac_key" ZB_GATE_STEPS_GATE="$1" timeout 600 "$ZIG" build "$1" \
      --cache-dir "$T/zig-cache" --global-cache-dir "$T/zig-global-cache" >"$T/out" 2>&1 </dev/null)
   rc=$?
   calls=$(cat "$T/ctl/n" 2>/dev/null || echo 0)
