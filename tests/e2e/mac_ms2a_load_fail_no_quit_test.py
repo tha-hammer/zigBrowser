@@ -37,6 +37,7 @@ account's default profile.
 import argparse
 import http.server
 import os
+import secrets
 import subprocess
 import sys
 import tempfile
@@ -56,6 +57,15 @@ PAGES = {
           b"<a id='attach' href='/attach'>attach</a></body></html>",
     "/b": b"<!doctype html><html><head><meta charset='utf-8'><title>B</title></head><body><h1>B</h1></body></html>",
 }
+
+def e2e_socket_path(default):
+    """The automation socket: in ZB_E2E_SOCKET_DIR when the Mac rows gate sets it (a short directory directly in its
+    long run root; macOS caps a socket path at 104 bytes and the browser needs an absolute one), else `default`."""
+    d = os.environ.get("ZB_E2E_SOCKET_DIR")
+    path = Path(d) / f"{secrets.token_hex(3)}.sock" if d else Path(default)
+    if sys.platform == "darwin" and len(str(path)) > 103:  # fail closed, never a truncated or relative socket
+        raise RuntimeError(f"PRECONDITION socket path is {len(str(path))} bytes, macOS allows 103: {path}")
+    return path
 
 
 def eprint(*a):
@@ -103,10 +113,11 @@ class _Browser:
     """One browser process with --automation-api and --e2e-protocol (the LOAD_FAIL/NAV rows)."""
 
     def __init__(self, browser: Path, url: str, tmp: Path, proc_holder: list):
-        self.socket_path = tmp / "automation.sock"
+        self.socket_path = e2e_socket_path(tmp / "automation.sock")
         env = dict(os.environ)
         env["ZIGBROWSER_SOCKET"] = str(self.socket_path)
         env["HOME"] = str(tmp / "home")  # private HOME: never the account's own profile or caches
+        env["ZB_DEBUG_EPHEMERAL_DATA_STORE"] = "1"  # e2e-only hook 16: no website data written outside the run (SilverRidge fe4542e)
         (tmp / "home").mkdir()
         self.proc = subprocess.Popen(
             [str(browser), url, "--automation-api", "--e2e-protocol", "--profile-dir", str(tmp / "profile")],

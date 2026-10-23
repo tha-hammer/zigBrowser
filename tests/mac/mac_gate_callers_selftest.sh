@@ -23,6 +23,7 @@
 # scratch git repo, HOME/TMPDIR inside this test's temp tree, with stub ssh, scp and python3 first on PATH that record
 # argv and stdin and succeed (scp leaves a stub file where a fetch lands). The test re-runs itself in a private
 # user+network namespace, so no network is reachable.
+# The rows gate's Mac leg is also run here (verdicts and environment, V1-V6; see that section).
 # Run: bash tests/mac/mac_gate_callers_selftest.sh [repo root]   (step: zig build test-mac-build-script)
 set -uo pipefail
 if [ "${ZB_CALLERS_SELFTEST_INNER:-}" != 1 ]; then
@@ -221,6 +222,74 @@ check_caller ms3         tests/mac/ms3_gate.sh         $'^PASS\tms3-gate\tboth-a
 check_caller ms4         tests/mac/ms4_gate.sh         $'^PASS\tms4-gate\tboth-arches$'           "$INTEL" "$ARM"
 check_caller rows        tests/mac/ms_runtime_rows_gate.sh $'^PASS\tms-runtime-rows-gate\tboth-arches$' "$INTEL" "$ARM"
 check_caller build-dmg   packaging/macos/build-dmg.sh  '^==> Done: '                             "$INTEL"
+
+# The rows gate's Mac leg (tests/mac/ms_runtime_rows_gate.sh, SilverRidge fe4542e): the structural checks above
+# never run the leg script, so run it here, extracted from the real caller, in a fake run root with a stub python3.
+#   V1 a red with every required line matches; V2 a red of the wrong shape (FAIL, one required line missing), V3 a
+#   red with a PRECONDITION, V4 a "red" that passes, and V5 a green missing a required line each MISMATCH; every row
+#   runs and the leg exits 1 on any mismatch, 0 when all match;
+#   V6 the leg exports HOME, CFFIXED_USER_HOME, TMPDIR, the XDG dirs and ZB_E2E_SOCKET_DIR beneath the run root and
+#   ZB_DEBUG_EPHEMERAL_DATA_STORE=1, and writes nothing in the original HOME outside the run root.
+rows_leg() { # rows_leg <out var> <rows...>: run the extracted leg in $T/rows-home/$RRD; sets LEG_RC
+  local -n _o=$1; shift
+  _o=$(cd / && env -i PATH="$T/rows-bin:/usr/bin:/bin" HOME="$T/rows-home" bash "$T/rows-leg.sh" "$RRD" "$@" 2>&1)
+  LEG_RC=$?
+}
+RRD=zb-gate-0000000000000000000000000000000000000000-1
+mkdir -p "$T/rows-bin" "$T/rows-home/$RRD"
+awk "/<<'REMOTE'/{f=1;next} /^REMOTE\$/{f=0} f" "$R/tests/mac/ms_runtime_rows_gate.sh" > "$T/rows-leg.sh"
+cat > "$T/rows-bin/python3" <<'EOF'
+#!/bin/bash
+case "$1" in
+  *v_red_ok*)    printf 'FAIL\tx\n  need-a\n  need-b\n'; exit 1 ;;
+  *v_red_shape*) printf 'FAIL\tx\n  need-a\n'; exit 1 ;;
+  *v_red_pre*)   printf 'FAIL\tx\n  need-a\n  need-b\n  PRECONDITION seam never fired\n'; exit 1 ;;
+  *v_red_pass*)  printf 'PASS\tx\n  need-a\n  need-b\n'; exit 0 ;;
+  *v_green*)     printf 'PASS\tx\n  need-a\n'; exit 0 ;;
+  *v_env*)       printf 'ENV\t%s\n' "$HOME" "$CFFIXED_USER_HOME" "$TMPDIR" "$XDG_DATA_HOME" "$XDG_CACHE_HOME" \
+                   "$XDG_CONFIG_HOME" "$XDG_RUNTIME_DIR" "$ZB_E2E_SOCKET_DIR"
+                 printf 'EPH\t%s\n' "${ZB_DEBUG_EPHEMERAL_DATA_STORE:-}"
+                 # probe files only inside the leg's run root (its cwd): a bad HOME/TMPDIR must fail V6 by its
+                 # path, never make this stub write in the real /tmp or home
+                 for d in "$HOME" "$TMPDIR"; do case "$d" in "$PWD"/*) : > "${d%/}/probe" ;; esac; done
+                 printf 'PASS\tx\n'; exit 0 ;;
+esac
+exit 2
+EOF
+chmod +x "$T/rows-bin/python3"
+rows_verdict() { # rows_verdict <leg output> <file stem>: the ROW verdict word for that file
+  awk -F'\t' -v f="tests/e2e/mac_$2_test.py" '$1 == "ROW" && $2 == f { print $5 }' <<<"$1"
+}
+rows_leg out "tests/e2e/mac_v_red_ok_test.py|red|need-a|need-b"
+[ "$(rows_verdict "$out" v_red_ok)" = MATCH ] && [ "$LEG_RC" -eq 0 ] && ok "rows V1: a red with every required line matches, leg exit 0" \
+  || bad "rows V1: $(rows_verdict "$out" v_red_ok) rc=$LEG_RC"
+for v in v_red_shape v_red_pre v_red_pass; do
+  rows_leg out "tests/e2e/mac_${v}_test.py|red|need-a|need-b"
+  [ "$(rows_verdict "$out" "$v")" = MISMATCH ] && [ "$LEG_RC" -eq 1 ] && ok "rows: $v is a MISMATCH, leg exit 1" \
+    || bad "rows: $v gave $(rows_verdict "$out" "$v") rc=$LEG_RC"
+done
+rows_leg out "tests/e2e/mac_v_green_test.py|green|need-a|need-z"
+[ "$(rows_verdict "$out" v_green)" = MISMATCH ] && [ "$LEG_RC" -eq 1 ] && ok "rows V5: a green missing a required line is a MISMATCH" \
+  || bad "rows V5: $(rows_verdict "$out" v_green) rc=$LEG_RC"
+rows_leg out "tests/e2e/mac_v_red_ok_test.py|red|need-a" "tests/e2e/mac_v_red_shape_test.py|red|need-a|need-b" "tests/e2e/mac_v_green_test.py|green|need-a"
+n=$(grep -c $'^ROW\t' <<<"$out")
+[ "$n" -eq 3 ] && [ "$LEG_RC" -eq 1 ] && ok "rows: all 3 rows ran around a mismatch, leg exit 1" || bad "rows: $n ROW lines, rc=$LEG_RC"
+before=$(cd "$T/rows-home" && find . -mindepth 1 -maxdepth 1 | sort)
+rows_leg out "tests/e2e/mac_v_env_test.py|green|"$'EPH\t1'
+root="$T/rows-home/$RRD"
+envbad=0
+out=$(sed -n 's|^    tests/e2e/mac_v_env_test.py: ||p' <<<"$out")   # the leg prefixes each output line with its file
+while IFS=$'\t' read -r tag val; do
+  case "$tag" in
+    ENV) case "$val" in "$root"/run-env/*|"$root"/s) ;; *) envbad=1; bad "rows V6: $val is outside the run root" ;; esac ;;
+  esac
+done <<<"$out"
+[ "$(grep -c $'^ENV\t' <<<"$out")" -eq 8 ] || { envbad=1; bad "rows V6: want 8 ENV lines"; }
+grep -qx $'EPH\t1' <<<"$out" || { envbad=1; bad "rows V6: ZB_DEBUG_EPHEMERAL_DATA_STORE is not 1"; }
+[ -f "$root/run-env/home/probe" ] && [ -f "$root/run-env/tmp/probe" ] || { envbad=1; bad "rows V6: the probe files are not in the run root"; }
+after=$(cd "$T/rows-home" && find . -mindepth 1 -maxdepth 1 | sort)
+[ "$before" = "$after" ] || { envbad=1; bad "rows V6: the leg wrote outside the run root: $(comm -13 <(echo "$before") <(echo "$after") | tr '\n' ' ')"; }
+[ "$envbad" -eq 0 ] && [ "$LEG_RC" -eq 0 ] && ok "rows V6: private HOME/TMPDIR/XDG beneath the run root, ephemeral store on, nothing written outside it"
 
 if [ "$fails" -eq 0 ]; then printf 'PASS\tmac-gate-callers-selftest\n'; exit 0; fi
 printf 'FAIL\tmac-gate-callers-selftest\t%s failure(s)\n' "$fails"

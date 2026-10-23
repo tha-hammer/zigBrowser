@@ -28,6 +28,7 @@ build.zig step. Every launch gets a private HOME and its own --profile-dir.
 import argparse
 import http.server
 import os
+import secrets
 import re
 import subprocess
 import sys
@@ -45,6 +46,15 @@ PAGES = {
           b"<body><p id='t'>opener-dom</p></body></html>",
     "/p": b"<!doctype html><html><head><meta charset='utf-8'><title>POPUP</title></head><body>p</body></html>",
 }
+
+def e2e_socket_path(default):
+    """The automation socket: in ZB_E2E_SOCKET_DIR when the Mac rows gate sets it (a short directory directly in its
+    long run root; macOS caps a socket path at 104 bytes and the browser needs an absolute one), else `default`."""
+    d = os.environ.get("ZB_E2E_SOCKET_DIR")
+    path = Path(d) / f"{secrets.token_hex(3)}.sock" if d else Path(default)
+    if sys.platform == "darwin" and len(str(path)) > 103:  # fail closed, never a truncated or relative socket
+        raise RuntimeError(f"PRECONDITION socket path is {len(str(path))} bytes, macOS allows 103: {path}")
+    return path
 
 
 def eprint(*a):
@@ -113,10 +123,11 @@ def main() -> int:
     asserted = 0
 
     with _FixtureServer() as fixture, tempfile.TemporaryDirectory(prefix="zb-ms2c-closebtn-") as tmp:
-        socket_path = Path(tmp) / "automation.sock"
+        socket_path = e2e_socket_path(Path(tmp) / "automation.sock")
         env = dict(os.environ)
         env["ZIGBROWSER_SOCKET"] = str(socket_path)
         env["HOME"] = str(Path(tmp) / "home")  # private HOME: never the account's own profile or caches
+        env["ZB_DEBUG_EPHEMERAL_DATA_STORE"] = "1"  # e2e-only hook 16: no website data written outside the run (SilverRidge fe4542e)
         (Path(tmp) / "home").mkdir()
         env["ZB_DEBUG_NATIVE_CLOSE_ON_TITLE"] = CLOSE_TITLE
         proc = subprocess.Popen(
