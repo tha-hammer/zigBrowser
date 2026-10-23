@@ -221,20 +221,144 @@ fi
 . "$RD/tests/mac/mac_varfolders_audit.sh"
 log "HOMEROOT${T}$REAL_HOME${T}excluding $RD"
 DIAG="$REAL_HOME/Library/Logs/DiagnosticReports"
-snap() { # $1=root $2=out [$3=excluded subtree]: sorted path|type|mode|inode|size|mtime; DENIED/VANISHED entries kept
-  local root="$1" out="$2" ex="${3:-}" fst xst
-  if [ -n "$ex" ]; then
-    find -P "$root" -path "$ex" -prune -o -print0 2> "$out.err" | xargs -0 stat -f '%N|%HT|%p|%i|%z|%m' > "$out.raw" 2>> "$out.err"
-  else
-    find -P "$root" -print0 2> "$out.err" | xargs -0 stat -f '%N|%HT|%p|%i|%z|%m' > "$out.raw" 2>> "$out.err"
-  fi
-  fst=${PIPESTATUS[0]} xst=${PIPESTATUS[1]}
-  sed -n -e 's/^find: \(.*\): \(Operation not permitted\|Permission denied\)$/\1|DENIED/p' \
-    -e 's/^stat: \(.*\): No such file or directory$/\1|VANISHED/p' "$out.err" >> "$out.raw"
-  LC_ALL=C sort -u "$out.raw" > "$out"
-  if grep -qvE '^(find: .*: (Operation not permitted|Permission denied)|stat: .*: No such file or directory)$' "$out.err"; then return 1; fi
-  [ "$fst" -le 1 ] && [ "$xst" -le 123 ] && [ -s "$out" ]
-}
+# The account home is recorded the way the shared /var/folders helper records its roots (SilverRidge 0be64570): every
+# entry's lstat identity "type mode uid gid nlink size mtime_ns ctime_ns inode sha256 link" (sha256 of a regular file's
+# bytes, a symlink's target), in path byte order, with only the exact run root left out (matched by device and inode,
+# not by name). Any traversal, stat or read failure, or a name that cannot be recorded (not UTF-8, a tab or newline),
+# is an ERROR line: the snapshot is incomplete. The before snapshot then starts nothing; the after one is INCONCLUSIVE.
+HOME_SNAP_PY='
+import hashlib, os, stat, sys
+root, exclude, out = sys.argv[1:4]
+rows, errors = [], []
+KIND = ((stat.S_ISREG, "f"), (stat.S_ISDIR, "d"), (stat.S_ISLNK, "l"), (stat.S_ISFIFO, "p"), (stat.S_ISSOCK, "s"),
+        (stat.S_ISCHR, "c"), (stat.S_ISBLK, "b"))
+def digest(p):
+    fd = os.open(p, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    h = hashlib.sha256()
+    with os.fdopen(fd, "rb") as f:
+        for chunk in iter(lambda: f.read(1048576), b""):
+            h.update(chunk)
+    return h.hexdigest()
+def err(e):
+    rel = os.path.relpath(e.filename, root) if e.filename else "?"
+    errors.append("%s\t%s" % (rel, e.strerror))
+def entry(p, rel):
+    try:
+        st = os.lstat(p)
+        kind = next((k for test, k in KIND if test(st.st_mode)), "o")
+        link = os.readlink(p) if kind == "l" else "-"
+        sha = digest(p) if kind == "f" else "-"
+    except OSError as e:
+        err(e)
+        return
+    try:
+        rel.encode("utf-8")
+        link.encode("utf-8")
+    except UnicodeEncodeError:
+        errors.append("%r\ta name or link target that is not UTF-8 cannot be recorded" % rel)
+        return
+    if any(ch in t for t in (rel, link) for ch in "\t\n"):
+        errors.append("%r\ta tab or newline in the name or link target cannot be recorded" % rel)
+        return
+    meta = "%s %o %d %d %d %d %d %d %d %s %s" % (kind, stat.S_IMODE(st.st_mode), st.st_uid, st.st_gid, st.st_nlink,
+                                                st.st_size, st.st_mtime_ns, st.st_ctime_ns, st.st_ino, sha, link)
+    rows.append((os.fsencode(rel), "%s\t%s" % (rel, meta)))
+try:
+    ex = os.lstat(exclude)
+    rst = os.lstat(root)
+except OSError as e:
+    err(e)
+else:
+    if not stat.S_ISDIR(rst.st_mode):
+        errors.append(".\tthe home is not a directory")
+    else:
+        entry(root, ".")
+        excluded = 0
+        for dirpath, dirs, names in os.walk(root, onerror=err, followlinks=False):
+            if dirpath == root:
+                kept = []
+                for d in dirs:
+                    try:
+                        st = os.lstat(os.path.join(root, d))
+                    except OSError as e:
+                        err(e)
+                        continue
+                    if (st.st_dev, st.st_ino) == (ex.st_dev, ex.st_ino):
+                        excluded += 1
+                    else:
+                        kept.append(d)
+                dirs[:] = kept
+            dirs.sort()
+            for n in sorted(dirs + names):
+                q = os.path.join(dirpath, n)
+                entry(q, os.path.relpath(q, root))
+        if excluded != 1:
+            errors.append(".\tthe run root was not found exactly once directly under the home")
+with open(out, "w", encoding="utf-8") as f:
+    f.write("ROOT\t%s\t%s\n" % (root, exclude))
+    for _k, line in sorted(rows):
+        f.write(line + "\n")
+    for e in errors:
+        f.write("ERROR\t" + e + "\n")
+    f.write("END\t%d\n" % len(rows))
+sys.exit(3 if errors else 0)
+'
+# The home delta: added, changed or deleted entries, each a HOME-DELTA line. The only allowed change (owner decision
+# 2026-10-23) is a new regular file directly in ~/Library/Logs/DiagnosticReports whose bytes name the control's exe
+# (a CRASHREPORT line with its recorded sha256), with that folder changing only its nlink, size and times. Exit 0 clean,
+# 2 for any other delta, 3 when either snapshot is incomplete (HOMEAUDIT INCONCLUSIVE, no delta judged).
+HOME_DIFF_PY='
+import os, sys
+before, after, root, diag, ctl = sys.argv[1:6]
+def load(p):
+    try:
+        lines = open(p, encoding="utf-8").read().split("\n")
+    except OSError:
+        return None
+    if lines and lines[-1] == "":
+        lines.pop()
+    if len(lines) < 2 or not lines[0].startswith("ROOT\t") or not lines[-1].startswith("END\t"):
+        return None
+    body = lines[1:-1]
+    if any(l.startswith("ERROR\t") for l in body) or lines[-1] != "END\t%d" % len(body):
+        return None
+    rows = dict(l.split("\t", 1) for l in body)
+    return rows if len(rows) == len(body) else None
+b, a = load(before), load(after)
+for name, snap in (("before", b), ("after", a)):
+    if snap is None:
+        print("HOMEAUDIT\tINCONCLUSIVE\tthe %s snapshot is incomplete" % name)
+        sys.exit(3)
+crash = []
+for rel in sorted(set(a) - set(b), key=os.fsencode):
+    if os.path.dirname(rel) == diag and a[rel].split(" ")[0] == "f":
+        try:
+            with open(os.path.join(root, rel), "rb") as f:
+                named = ctl.encode() in f.read()
+        except OSError:
+            named = False
+        if named:
+            crash.append(rel)
+deltas = []
+for rel in sorted(set(a) | set(b), key=os.fsencode):
+    if rel in a and rel in b and a[rel] == b[rel]:
+        continue
+    if rel in crash:
+        continue
+    kind = "ADDED" if rel not in b else "DELETED" if rel not in a else "CHANGED"
+    if kind == "CHANGED" and rel == diag and crash:
+        bf, af = b[rel].split(" "), a[rel].split(" ")
+        if [bf[i] for i in (0, 1, 2, 3, 8, 9, 10)] == [af[i] for i in (0, 1, 2, 3, 8, 9, 10)]:
+            continue
+    deltas.append((kind, rel))
+for rel in crash:
+    print("CRASHREPORT\t%s\t%s" % (os.path.basename(rel), a[rel].split(" ")[9]))
+for kind, rel in deltas:
+    path = root if rel == "." else os.path.join(root, rel)
+    print("HOME-DELTA\t%s\t%s\t%s\t%s" % (kind, path, b.get(rel, "-"), a.get(rel, "-")))
+print("HOMEAUDIT\t%s\t%d" % ("CHANGED" if deltas else "CLEAN", len(deltas)))
+sys.exit(2 if deltas else 0)
+'
 take() { # $1=before|after
   local st=0
   if [ "$1" = before ]; then
@@ -243,7 +367,10 @@ take() { # $1=before|after
     varfolders_end "$EV/varfolders" > "$EV/varfolders.end" 2>&1 || st=1
     tee -a "$EV/leg.log" < "$EV/varfolders.end"
   fi
-  if [ "$st" -eq 0 ]; then snap "$REAL_HOME" "$EV/home.$1" "$RD" || st=1; fi
+  if [ "$st" -eq 0 ] || [ "$1" = after ]; then   # the after home snapshot is always taken: the diff reports it
+    /usr/bin/python3 -I -B -X utf8 -c "$HOME_SNAP_PY" "$REAL_HOME" "$RD" "$EV/home.$1" || st=1
+    grep "^ERROR${T}" "$EV/home.$1" >> "$EV/leg.log" 2>/dev/null
+  fi
   log "SNAPSHOT${T}$1${T}rc=$st"
   [ "$st" -eq 0 ] || inconclusive "the $1 snapshot is missing or incomplete"
   return "$st"
@@ -281,32 +408,19 @@ row() { # $1=name $2=PASS id ('' = none) argv...: one status line per row; a LEA
   return 0
 }
 after() { # the after snapshots and every delta
-  local s k
-  take after || return
+  local st
+  take after   # an incomplete after snapshot is INCONCLUSIVE; the diff below still says which one and why
   [ "$audit_ok" -eq 0 ] || return
-  for s in home; do
-    awk -F'\t' 'NR == FNR { b[$1] = $2; next } { a[$1] = $2 }
-      END { for (p in b) if (!(p in a)) print "DELETED\t" p "\t" b[p] "\t-";
-            for (p in a) if (!(p in b)) print "ADDED\t" p "\t-\t" a[p]; else if (a[p] != b[p]) print "CHANGED\t" p "\t" b[p] "\t" a[p] }' \
-      <(sed 's/|/\t/' "$EV/$s.before") <(sed 's/|/\t/' "$EV/$s.after") | LC_ALL=C sort -t"$T" -k2 > "$EV/$s.delta"
-  done
-  : > "$EV/crashreports"
-  local kind p b a name sum ncrash=0
-  while IFS="$T" read -r kind p b a; do
-    if [ "$kind" = ADDED ] && [ "${p%/*}" = "$DIAG" ] && [ "${a%%|*}" = "Regular File" ] && grep -qF "$CTL_EXE" "$p" 2>/dev/null; then
-      name=${p##*/}
-      sum=$(shasum -a 256 "$p" | awk '{ print $1 }')
-      printf 'CRASHREPORT\t%s\t%s\n' "$name" "$sum" | tee -a "$EV/crashreports" "$EV/leg.log"
-      ncrash=$((ncrash + 1))
-    fi
-  done < "$EV/home.delta"
-  while IFS="$T" read -r kind p b a; do
-    if [ "$kind" = ADDED ] && grep -qF "${T}${p##*/}${T}" "$EV/crashreports" && [ "${p%/*}" = "$DIAG" ]; then continue; fi
-    if [ "$kind" = CHANGED ] && [ "$p" = "$DIAG" ] && [ "$ncrash" -gt 0 ] \
-       && [ "$(cut -d'|' -f1-3 <<<"$b")" = "$(cut -d'|' -f1-3 <<<"$a")" ]; then continue; fi
-    log "HOME-DELTA${T}$kind${T}$p${T}$b${T}$a"
-    inconclusive "the account home changed outside the run root: $kind $p"
-  done < "$EV/home.delta"
+  /usr/bin/python3 -I -B -X utf8 -c "$HOME_DIFF_PY" "$EV/home.before" "$EV/home.after" "$REAL_HOME" \
+    Library/Logs/DiagnosticReports "$CTL_EXE" > "$EV/home.delta" 2>&1
+  st=$?
+  tee -a "$EV/leg.log" < "$EV/home.delta"
+  grep "^CRASHREPORT${T}" "$EV/home.delta" > "$EV/crashreports"
+  case "$st" in
+    0) ;;
+    2) inconclusive "the account home changed outside the run root (HOME-DELTA lines)" ;;
+    *) inconclusive "the home audit is incomplete or failed (exit $st)" ;;
+  esac
 }
 
 CTL="$RD/control/zigBrowser.app"

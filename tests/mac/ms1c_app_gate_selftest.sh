@@ -49,11 +49,17 @@
 #   F17 build-dmg.sh fails: FAIL, exit 1, no leg ran;
 #   F18 the control prints dyld's exact load failure but exits 0: FAIL (the exit and the text are both required);
 #   F19 exec_arch_probe writes the right arch but exits 77: FAIL (a skip is never a pass);
-#   F20 the home snapshot is incomplete (a stat error on a file that is there before and after): INCONCLUSIVE;
+#   F20 the home snapshot is incomplete (a file there before and after that cannot be read): INCONCLUSIVE;
 #   F21 the removal of a run root fails (find -delete exits 1): CLEANUP rc != 0 for it, both legs still PASS, the root
 #       is still there, the evidence came back, INCONCLUSIVE, exit 2, no PASS;
 #   F22 the removal claims success but leaves the root (find -delete exits 0, deletes nothing): the absence check
-#       catches it, the same verdict as F21.
+#       catches it, the same verdict as F21;
+#   F23 a same-size rewrite of a home file with its mtime put back: HOME-DELTA CHANGED for it, INCONCLUSIVE;
+#   F24 an unreadable subtree in the home before the run: the before snapshot is incomplete, nothing is launched there
+#       (no workload row, no control), INCONCLUSIVE;
+#   F25 a subtree that becomes unreadable during the run: "HOMEAUDIT INCONCLUSIVE the after snapshot is incomplete",
+#       INCONCLUSIVE;
+#   F26 a ctime-only change (a mode changed and put back): HOME-DELTA CHANGED for it, INCONCLUSIVE.
 # No Mac, no signal: it re-runs itself in a private user+network namespace; HOME/TMPDIR live in its temp tree.
 # Run: bash tests/mac/ms1c_app_gate_selftest.sh [repo root]
 set -uo pipefail
@@ -82,6 +88,9 @@ for role in intel arm; do
     "$X/private/var/folders/$role/T" "$X/private/var/folders/$role/C"
   echo keep > "$X/private/var/folders/$role/T/sentinel"; echo keep > "$X/private/var/folders/$role/C/sentinel"
   echo old > "$X/hosts/$role/Library/Logs/DiagnosticReports/older.ips"
+  mkdir -p "$X/hosts/$role/Library/Preferences" "$X/hosts/$role/Library/Lockable"
+  echo aaaa > "$X/hosts/$role/Library/Preferences/keep.plist"; echo cccc > "$X/hosts/$role/Library/Preferences/keep2.plist"
+  chmod 644 "$X/hosts/$role/Library/Preferences/keep2.plist"; echo inside > "$X/hosts/$role/Library/Lockable/file"
 done
 cat > "$X/bin/ssh" <<EOF
 #!/bin/bash
@@ -216,20 +225,6 @@ cat > "$X/hostbin/shasum" <<EOF
 [ "\$1" = -a ] && [ "\$2" = 256 ] && shift 2
 exec sha256sum "\$@"
 EOF
-cat > "$X/hostbin/stat" <<EOF
-#!/bin/bash
-[ "\$1" = -f ] || exec /usr/bin/stat "\$@"
-[ "\$2" = '%N|%HT|%p|%i|%z|%m' ] || { echo "stub stat: unexpected format \$2" >&2; exit 64; }
-shift 2; rc=0
-for f in "\$@"; do
-  case "\$f" in */zb-stat-error) echo "stat: \$f: Input/output error" >&2; rc=1; continue ;; esac
-  line=\$(/usr/bin/stat -c '%n|%F|%f|%i|%s|%Y' -- "\$f" 2>/dev/null) || { echo "stat: \$f: No such file or directory" >&2; rc=1; continue; }
-  IFS='|' read -r n ty hex ino sz mt <<<"\$line"
-  case "\$ty" in "regular file"|"regular empty file") ty="Regular File" ;; directory) ty=Directory ;; "symbolic link") ty="Symbolic Link" ;; fifo) ty="Fifo File" ;; *) ty=Unknown ;; esac
-  printf '%s|%s|%o|%s|%s|%s\n' "\$n" "\$ty" "\$((16#\$hex))" "\$ino" "\$sz" "\$mt"
-done
-exit \$rc
-EOF
 cat > "$X/hostbin/getconf" <<EOF
 #!/bin/bash
 case "\$1" in
@@ -314,6 +309,12 @@ case "\$name" in
     if on var_unreadable; then mkdir -p "$X/private/var/folders/\$ZB_ROLE/T/zb-locked"; chmod 000 "$X/private/var/folders/\$ZB_ROLE/T/zb-locked"; fi
     echo render > "$X/private/var/folders/\$ZB_ROLE/T/zigBrowser-render.tmp"
     on home_write && { mkdir -p "\$REAL/Library/Caches/zigBrowser"; echo db > "\$REAL/Library/Caches/zigBrowser/cache.db"; }
+    if on same_size_rewrite; then   # F23: same size, the exact ns mtime put back: only the bytes (and the ctime) differ
+      k="\$REAL/Library/Preferences/keep.plist"; ref=\$(mktemp)   # TMPDIR is under the run root, outside the audit
+      touch -r "\$k" "\$ref"; echo bbbb > "\$k"; touch -r "\$ref" "\$k"; rm -f "\$ref"
+    fi
+    if on lock_after; then chmod 000 "\$REAL/Library/Lockable"; fi   # F25: a subtree that becomes unreadable
+    if on ctime_only; then chmod 600 "\$REAL/Library/Preferences/keep2.plist"; chmod 644 "\$REAL/Library/Preferences/keep2.plist"; fi
     on fail_render && { printf '%b\n' "FAIL\tm9-render-title-or-nav-not-observed"; exit 1; }
     : > "\$out"; printf '%b\n' "PASS\tm9-render-webview-screenshot\t\$out\tuniformity deferred to the caller's PIL host" ;;
   m9_reply_channel_test.py)
@@ -416,10 +417,15 @@ run_gate() { # run_gate <label> [mode files...] [-- VAR=value ...]: sets rc, OUT
     [ "$label" = leaknext ] || find "$X/hosts/$role" -mindepth 1 -maxdepth 1 -name 'zb-gate-*' -exec rm -rf {} +
     rm -rf "$X/hosts/$role/Library/Caches/zigBrowser"
     find "$X/hosts/$role/Library/Logs/DiagnosticReports" -name 'zigBrowser-*' -delete
-    rm -f "$X/private/var/folders/$role/T/zigBrowser-render.tmp" "$X/hosts/$role/zb-stat-error"
+    rm -f "$X/private/var/folders/$role/T/zigBrowser-render.tmp" "$X/hosts/$role/zb-unreadable"
+    chmod 700 "$X/hosts/$role/Library/Lockable"; echo aaaa > "$X/hosts/$role/Library/Preferences/keep.plist"
+    if [ -d "$X/hosts/$role/Library/Locked" ]; then chmod 700 "$X/hosts/$role/Library/Locked"; rm -rf "$X/hosts/$role/Library/Locked"; fi
     if [ -d "$X/private/var/folders/$role/T/zb-locked" ]; then chmod 700 "$X/private/var/folders/$role/T/zb-locked"; rmdir "$X/private/var/folders/$role/T/zb-locked"; fi
   done
-  [ "$label" = homestat ] && echo x > "$X/hosts/intel/zb-stat-error"
+  if [ "$label" = homestat ]; then echo x > "$X/hosts/intel/zb-unreadable"; chmod 000 "$X/hosts/intel/zb-unreadable"; fi
+  if [ "$label" = lockedbefore ]; then
+    mkdir -p "$X/hosts/intel/Library/Locked"; echo x > "$X/hosts/intel/Library/Locked/f"; chmod 000 "$X/hosts/intel/Library/Locked"
+  fi
   [ "$label" = held ] && { mkdir -p "$X/hosts/arm/zb-gate-old"; printf 'LEAKED\t1\t1\tx\ty\n' > "$X/hosts/arm/zb-gate-old/LEAKED"; }
   OUT="$T/out.$label"
   (cd "$R" && env -i PATH="$X/bin:/usr/bin:/bin" HOME="$T/home" TMPDIR="$T/tmp" ZB_MAC_HOST="$INTEL" ZB_MAC_ARM_HOST="$ARM" \
@@ -591,7 +597,7 @@ run_gate varlocked var_unreadable.intel
   && ok "F15: an unreadable directory under /var/folders: the audit is INCONCLUSIVE, so is the leg" || bad "F15: exit $rc: $(tailout)"
 run_gate homestat
 { [ "$rc" -eq 2 ] && leg_is x86_64 INCONCLUSIVE && leg_is arm64 PASS && no_pass; } \
-  && ok "F20: an incomplete home snapshot (a stat error): INCONCLUSIVE" || bad "F20: exit $rc: $(tailout)"
+  && ok "F20: an incomplete home snapshot (an unreadable file there before and after): INCONCLUSIVE" || bad "F20: exit $rc: $(tailout)"
 run_gate held
 { [ "$rc" -eq 2 ] && leg_is arm64 INCONCLUSIVE && no_pass && grep -q "HOST_HELD" "$OUT" && ! grep -q "^arm${TB}attach" "$C/seq" \
   && [ "$(cat "$X/hosts/arm/zb-gate-old/LEAKED" 2>/dev/null)" = "LEAKED${TB}1${TB}1${TB}x${TB}y" ]; } \
@@ -616,6 +622,23 @@ for mode in remove_fails remove_noop; do
     ok "$row: a run root that is not removed ($mode) is a CLEANUP failure: INCONCLUSIVE, exit 2, evidence kept"
   else bad "$row: exit $rc, root '$rd' $( [ -d "$rd" ] && echo kept || echo gone): $(grep '^CLEANUP' "$OUT" | tr '\n' '|') $(tailout)"; fi
 done
+
+run_gate rewrite same_size_rewrite.intel
+{ [ "$rc" -eq 2 ] && leg_is x86_64 INCONCLUSIVE && leg_is arm64 PASS && no_pass \
+  && grep -q "^HOME-DELTA${TB}CHANGED${TB}$X/hosts/intel/Library/Preferences/keep.plist${TB}" "$EV/x86_64/evidence/leg.log" 2>/dev/null; } \
+  && ok "F23: a same-size rewrite with its mtime put back: HOME-DELTA, INCONCLUSIVE" || bad "F23: exit $rc: $(tailout)"
+run_gate lockedbefore
+{ [ "$rc" -eq 2 ] && leg_is x86_64 INCONCLUSIVE && leg_is arm64 PASS && no_pass && [ -z "$(pyrows intel)" ]; } \
+  && ok "F24: an unreadable home subtree before the run: nothing launched there, INCONCLUSIVE" || bad "F24: exit $rc, intel rows '$(pyrows intel)': $(tailout)"
+run_gate lockafter lock_after.intel
+{ [ "$rc" -eq 2 ] && leg_is x86_64 INCONCLUSIVE && leg_is arm64 PASS && no_pass \
+  && grep -qx "HOMEAUDIT${TB}INCONCLUSIVE${TB}the after snapshot is incomplete" "$EV/x86_64/evidence/leg.log" 2>/dev/null; } \
+  && ok "F25: a home subtree unreadable after the run: the after snapshot is incomplete, INCONCLUSIVE" || bad "F25: exit $rc: $(tailout)"
+run_gate ctimeonly ctime_only.intel
+{ [ "$rc" -eq 2 ] && leg_is x86_64 INCONCLUSIVE && leg_is arm64 PASS && no_pass \
+  && grep -q "^HOME-DELTA${TB}CHANGED${TB}$X/hosts/intel/Library/Preferences/keep2.plist${TB}" "$EV/x86_64/evidence/leg.log" 2>/dev/null; } \
+  && ok "F26: a ctime-only change in the home: HOME-DELTA, INCONCLUSIVE" || bad "F26: exit $rc: $(tailout)"
+chmod 700 "$X/hosts/intel/Library/Lockable" 2>/dev/null
 
 if [ "$fails" -eq 0 ]; then printf 'PASS\tmac-ms1c-app-gate-selftest\n'; exit 0; fi
 printf 'FAIL\tmac-ms1c-app-gate-selftest\t%s failure(s)\n' "$fails"
