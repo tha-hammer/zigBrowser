@@ -20,6 +20,13 @@
 #      outer /var/folders end is exactly SELFAUDIT<TAB>VARFOLDERS<TAB>COMPLETE<TAB>0.
 #   L6 a /var/folders helper that itself writes under the temp root during its cycle: the self-audit shows that delta,
 #      and the leg exits 5 with zero rows, zero row invocations and no RUNNING marker.
+#   L5 is exact (SilverRidge 90151365): SELFAUDIT_STATUS<TAB><step><TAB>0 for outer-begin, inner-varfolders,
+#      inner-crashreports and outer-end, in that order; outer-begin silent; each other step's last line COMPLETE 0; all
+#      before the first ROW line. L7 an inner refusal or a non-COMPLETE inner result (each injected into the fake run
+#      root's helper, for the self-audit's evidence dir only): exit 5, zero rows, zero row invocations, no marker.
+#   L8 a crash-report evidence dir that cannot be made: exactly one begin refusal, and the leg starts nothing.
+#   S1/S2 also bind order: one transcript records, at each fake ssh/scp contact, how many ROWS_SELECTED lines the gate
+#      had printed by then; every contact must see exactly one. S3-S5 leave the transcript empty.
 # The leg's own HOME is its private run-env/home, so L1/L2 also prove the listing is of the real home, not that one.
 # Run: bash tests/mac/ms_runtime_rows_gate_select_selftest.sh [repo root]
 set -uo pipefail
@@ -44,6 +51,7 @@ mkdir -p "$T/bin" "$T/ctl" "$T/home" "$T/tmp"
 printf 'not a real key\n' > "$T/fake_mac_key"
 cat > "$T/bin/ssh" <<EOF
 #!/bin/bash
+printf 'CONTACT\tssh\t%s\n' "\$(grep -c '^ROWS_SELECTED' "$T/gate.out" 2>/dev/null)" >> "$T/ctl/transcript"
 i=\$(cat "$T/ctl/n" 2>/dev/null || echo 0); echo \$((i + 1)) > "$T/ctl/n"
 printf '%s\0' ssh "\$@" > "$T/ctl/call.\$i"
 cat > "$T/ctl/stdin.\$i"
@@ -51,6 +59,7 @@ exit 0
 EOF
 cat > "$T/bin/scp" <<EOF
 #!/bin/bash
+printf 'CONTACT\tscp\t%s\n' "\$(grep -c '^ROWS_SELECTED' "$T/gate.out" 2>/dev/null)" >> "$T/ctl/transcript"
 i=\$(cat "$T/ctl/n" 2>/dev/null || echo 0); echo \$((i + 1)) > "$T/ctl/n"
 printf '%s\0' scp "\$@" > "$T/ctl/call.\$i"
 exit 0
@@ -69,13 +78,14 @@ G=(env -i PATH=/usr/bin:/bin HOME="$T/home" GIT_CONFIG_NOSYSTEM=1 git -C "$R")
 mapfile -t ROWS < <(awk -F'"' '/^ROWS=\(/{f=1;next} f&&/^\)/{f=0} f&&NF>1{print $2}' "$ROOT/$GATE")
 [ "${#ROWS[@]}" -ge 2 ] || bad "could not read the gate's ROWS (${#ROWS[@]} entries)"
 
-run_gate() { # run_gate <selection or __UNSET__>: sets OUT RC N
-  rm -f "$T/ctl"/*
+run_gate() { # run_gate <selection or __UNSET__>: sets OUT RC N; $T/ctl/transcript holds the ordered contacts
+  rm -f "$T/ctl"/* "$T/gate.out"
   local -a sel=()
   [ "$1" = __UNSET__ ] || sel=(ZB_RUNTIME_ROWS="$1")
-  OUT=$(cd "$R" && env -i PATH="$T/bin:/usr/bin:/bin" HOME="$T/home" TMPDIR="$T/tmp" ZB_MAC_HOST="$INTEL" \
-          ZB_MAC_ARM_HOST="$ARM" ZB_MAC_KEY="$T/fake_mac_key" "${sel[@]}" timeout 120 bash "$GATE" 2>&1 </dev/null)
+  (cd "$R" && env -i PATH="$T/bin:/usr/bin:/bin" HOME="$T/home" TMPDIR="$T/tmp" ZB_MAC_HOST="$INTEL" \
+     ZB_MAC_ARM_HOST="$ARM" ZB_MAC_KEY="$T/fake_mac_key" "${sel[@]}" timeout 120 bash "$GATE" > "$T/gate.out" 2>&1 </dev/null)
   RC=$?
+  OUT=$(cat "$T/gate.out")
   N=$(cat "$T/ctl/n" 2>/dev/null || echo 0)
 }
 leg_rows() { # leg_rows <host>: the row arguments the gate gave that host's leg (after the run dir), one per line
@@ -91,25 +101,30 @@ leg_rows() { # leg_rows <host>: the row arguments the gate gave that host's leg 
     done
   done
 }
+selected_first() { # every fake ssh/scp contact came after exactly one ROWS_SELECTED line, which the gate printed once
+  [ "$(grep -c '^ROWS_SELECTED' <<<"$OUT")" -eq 1 ] && [ -s "$T/ctl/transcript" ] \
+    && ! grep -qv $'^CONTACT\t\(ssh\|scp\)\t1$' "$T/ctl/transcript"
+}
 row_of() { local r; for r in "${ROWS[@]}"; do [ "${r##*|}" = "$1" ] && printf '%s\n' "$r"; done; }
 
 run_gate __UNSET__   # S1
-if [ "$(leg_rows "$INTEL")" = "$(printf '%s\n' "${ROWS[@]}")" ] && [ "$(leg_rows "$ARM")" = "$(printf '%s\n' "${ROWS[@]}")" ]; then
-  ok "S1 unset: each leg gets all ${#ROWS[@]} rows in ROWS order"
+if [ "$(leg_rows "$INTEL")" = "$(printf '%s\n' "${ROWS[@]}")" ] && [ "$(leg_rows "$ARM")" = "$(printf '%s\n' "${ROWS[@]}")" ] \
+   && selected_first; then
+  ok "S1 unset: each leg gets all ${#ROWS[@]} rows in ROWS order; ROWS_SELECTED once, before every contact"
 else bad "S1 unset: rc=$RC intel legs got $(leg_rows "$INTEL" | wc -l) rows, arm $(leg_rows "$ARM" | wc -l)"; fi
 
 run_gate "ms2c-recover-slow-server ms2a-load-fail-no-quit"   # S2, named out of order
 want=$(row_of ms2a-load-fail-no-quit; row_of ms2c-recover-slow-server)
 if [ "$RC" -eq 0 ] && [ "$(leg_rows "$INTEL")" = "$want" ] && [ "$(leg_rows "$ARM")" = "$want" ] \
-   && grep -qx $'ROWS_SELECTED\tms2a-load-fail-no-quit\tms2c-recover-slow-server' <<<"$OUT"; then
-  ok "S2 a selection: each leg gets exactly those rows in ROWS order, and ROWS_SELECTED names them"
+   && grep -qx $'ROWS_SELECTED\tms2a-load-fail-no-quit\tms2c-recover-slow-server' <<<"$OUT" && selected_first; then
+  ok "S2 a selection: each leg gets exactly those rows in ROWS order; ROWS_SELECTED names them, once, before every contact"
 else bad "S2 selection: rc=$RC intel=[$(leg_rows "$INTEL" | tr '\n' ' ')] $(grep ROWS_SELECTED <<<"$OUT")"; fi
 
 for case in "S3 unknown id|ms2a-load-fail-no-quit no-such-row" "S4 duplicate id|ms2a-load-fail-no-quit ms2a-load-fail-no-quit" \
             "S5 empty selection|" "S5 blank selection|   "; do
   name=${case%%|*} sel=${case#*|}
   run_gate "$sel"
-  if [ "$RC" -eq 1 ] && [ "$N" -eq 0 ] && grep -q '^NOT RUN' <<<"$OUT"; then ok "$name: NOT RUN, exit 1, no ssh/scp call"
+  if [ "$RC" -eq 1 ] && [ "$N" -eq 0 ] && [ ! -s "$T/ctl/transcript" ] && grep -q '^NOT RUN' <<<"$OUT"; then ok "$name: NOT RUN, exit 1, no ssh/scp call"
   else bad "$name: rc=$RC calls=$N $(head -2 <<<"$OUT" | tr '\n' ' ')"; fi
 done
 
@@ -185,15 +200,45 @@ leg_marked() { # leg_marked <rows...>: as leg, and records whether a RUNNING mar
 mkdir -p "$CR/Locked" && chmod 0 "$CR/Locked"   # L4
 leg_marked "tests/e2e/mac_v_red_ok_test.py|red|v-red"
 chmod 700 "$CR/Locked" && rmdir -- "$CR/Locked"
-if grep -q $'^CRASHREPORTS\tINCONCLUSIVE\tbegin refused' <<<"$LOUT"; then no_start L4 "a refused crash-report begin"
+if grep -q $'CRASHREPORTS\tINCONCLUSIVE\tbegin refused' <<<"$LOUT"; then no_start L4 "a refused crash-report begin"
 else bad "L4: no crash-report begin refusal line: rc=$LRC $(grep -E '^CRASHREPORTS' <<<"$LOUT" | tr '\n' ' ')"; fi
 
 leg_marked "tests/e2e/mac_v_red_ok_test.py|red|v-red"   # L5
 first_row=$(grep -n $'^ROW\t' <<<"$LOUT" | head -1 | cut -d: -f1)
-self_end=$(grep -n $'^SELFAUDIT\tVARFOLDERS\tCOMPLETE\t0$' <<<"$LOUT" | head -1 | cut -d: -f1)
-if [ "$LRC" -eq 0 ] && [ -n "$self_end" ] && [ -n "$first_row" ] && [ "$self_end" -lt "$first_row" ]; then
-  ok "L5 the helper self-audit runs first and its outer end is COMPLETE 0"
-else bad "L5: rc=$LRC self-audit end line ${self_end:-none}, first ROW ${first_row:-none}"; fi
+last_self=$(grep -n '^SELFAUDIT' <<<"$LOUT" | tail -1 | cut -d: -f1)
+statuses=$(grep '^SELFAUDIT_STATUS' <<<"$LOUT")
+want_status=$(printf 'SELFAUDIT_STATUS\t%s\t0\n' outer-begin inner-varfolders inner-crashreports outer-end)
+step_last() { grep $'^SELFAUDIT\t'"$1"$'\t' <<<"$LOUT" | tail -1 | cut -f3-; }
+if [ "$LRC" -eq 0 ] && [ "$statuses" = "$want_status" ] && [ -z "$(grep $'^SELFAUDIT\touter-begin\t' <<<"$LOUT")" ] \
+   && [ "$(step_last inner-varfolders)" = $'VARFOLDERS\tCOMPLETE\t0' ] \
+   && [ "$(step_last inner-crashreports)" = $'CRASHREPORTS\tCOMPLETE\t0' ] \
+   && [ "$(step_last outer-end)" = $'VARFOLDERS\tCOMPLETE\t0' ] \
+   && [ -n "$first_row" ] && [ -n "$last_self" ] && [ "$last_self" -lt "$first_row" ]; then
+  ok "L5 the self-audit ran first: a silent outer begin, a full inner /var/folders and crash-report cycle each COMPLETE 0, then an outer COMPLETE 0"
+else bad "L5: rc=$LRC statuses=[$(tr '\n' ' ' <<<"$statuses")] inner-vf=[$(step_last inner-varfolders)] inner-cr=[$(step_last inner-crashreports)] outer=[$(step_last outer-end)]"; fi
+
+inject() { # inject <helper file> <function line> <code>: a fake run root helper that misbehaves only in the self-audit
+  cp "$LH/$RRD/tests/mac/$1" "$T/$1.real"
+  awk -v fn="$2" -v code="$3" '{print} index($0, fn) == 1 {print code}' "$T/$1.real" > "$LH/$RRD/tests/mac/$1"
+  grep -q 'selftest' "$LH/$RRD/tests/mac/$1" || bad "could not inject into $1"
+}
+restore() { cp "$T/$1.real" "$LH/$RRD/tests/mac/$1"; }
+for case in "inner /var/folders begin refused|mac_varfolders_audit.sh|varfolders_begin() {|  case \"\$1\" in */selfaudit/inner) __vf_refuse \"selftest\"; return ;; esac" \
+            "inner /var/folders end not COMPLETE|mac_varfolders_audit.sh|varfolders_end() {|  case \"\$1\" in */selfaudit/inner) printf 'VARFOLDERS\\tINCONCLUSIVE\\tselftest\\n'; return 0 ;; esac" \
+            "inner crash-report begin refused|mac_crashreports_audit.sh|crashreports_begin() {|  case \"\$1\" in */selfaudit/crash) __cr_refuse \"selftest\"; return ;; esac"; do
+  IFS='|' read -r name file fn code <<<"$case"
+  inject "$file" "$fn" "$code"
+  leg_marked "tests/e2e/mac_v_red_ok_test.py|red|v-red"   # L7
+  restore "$file"
+  no_start L7 "an $name in the self-audit"
+done
+
+rm -rf -- "${LH:?}/${RRD:?}/evidence/crashreports"   # L8: the crash-report evidence path is a file
+mkdir -p "$LH/$RRD/evidence" && : > "$LH/$RRD/evidence/crashreports"
+leg_marked "tests/e2e/mac_v_red_ok_test.py|red|v-red"
+rm -f -- "$LH/$RRD/evidence/crashreports"
+if [ "$(grep -c $'^CRASHREPORTS\tINCONCLUSIVE\tbegin refused' <<<"$LOUT")" -eq 1 ]; then no_start L8 "a crash-report evidence dir that cannot be made"
+else bad "L8: want exactly one crash-report begin refusal: rc=$LRC $(grep -E '^CRASHREPORTS' <<<"$LOUT" | tr '\n' ' ')"; fi
 
 cp "$LH/$RRD/tests/mac/mac_varfolders_audit.sh" "$T/vf-helper.real"   # L6: a helper that writes under T itself
 awk '{print} /^  \[ "\$pt" != "\$pc" \]/{print "  : > \"$pt/zb-helper-wrote\""}' "$T/vf-helper.real" \
@@ -201,7 +246,7 @@ awk '{print} /^  \[ "\$pt" != "\$pc" \]/{print "  : > \"$pt/zb-helper-wrote\""}'
 grep -q zb-helper-wrote "$LH/$RRD/tests/mac/mac_varfolders_audit.sh" || bad "L6: could not build the writing helper"
 leg_marked "tests/e2e/mac_v_red_ok_test.py|red|v-red"
 cp "$T/vf-helper.real" "$LH/$RRD/tests/mac/mac_varfolders_audit.sh"; rm -f -- "$T/vf/T/zb-helper-wrote"
-if grep -q $'^SELFAUDIT\tVARFOLDERS-DELTA\t[a-z]*\tT\tzb-helper-wrote\t' <<<"$LOUT"; then no_start L6 "a helper that writes under T"
+if grep -q $'^SELFAUDIT\t[a-z-]*\tVARFOLDERS-DELTA\t[a-z]*\tT\tzb-helper-wrote\t' <<<"$LOUT"; then no_start L6 "a helper that writes under T"
 else bad "L6: the self-audit did not show the helper's own write: rc=$LRC $(grep -E '^SELFAUDIT' <<<"$LOUT" | tail -3 | tr '\n' ' ')"; fi
 
 if [ "$fails" -eq 0 ]; then printf 'PASS\tms-runtime-rows-select-selftest\n'; exit 0; fi

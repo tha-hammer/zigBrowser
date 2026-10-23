@@ -33,6 +33,12 @@ reports dir itself, so any temp file the helper made would land inside the bound
 - CR7 the mutation boundary (Linux inotify, as tests/e2e/mac_varfolders_audit_test.py): around every helper call,
   on ~/Library and every directory below it, the helper itself creates, deletes, moves, writes or changes nothing;
   the watch is first proven live. Every entry is also unchanged after the helper ran.
+- CR3b a missing reports dir that becomes an empty dir during the run: the dir's own line (CRASHREPORT<TAB>added<TAB>.
+  <TAB>-) and INCONCLUSIVE, though no report file appeared. The reports dir itself is the path . in every listing.
+- CR10 incompleteness that appears only after begin (an unreadable report or subdirectory; a tab, newline or
+  non-UTF-8 name): the end is one bounded INCONCLUSIVE with no CRASHREPORT line, never COMPLETE or a partial listing.
+- CR11 an evidence dir that cannot be made: begin refuses once (one INCONCLUSIVE line, exit 2); the end is
+  INCONCLUSIVE.
 - CR9 fail closed (as varfolders_begin, SilverRidge 3661c9b8): when the before listing is incomplete (CR4, CR6),
   crashreports_begin refuses: exit 2 and exactly one CRASHREPORTS<TAB>INCONCLUSIVE<TAB><nonempty reason> line.
 - CR8 a tripwire: the helper has no here-document (macOS /bin/bash 3.2 writes each one to a temp file in $TMPDIR).
@@ -126,6 +132,7 @@ def listing(top: Path) -> dict:
     out = {}
     if not top.is_dir():
         return out
+    out["."] = ("d", "-")  # the reports dir itself
     for dirpath, dirs, names in os.walk(top):
         for n in dirs + names:
             p = Path(dirpath) / n
@@ -247,10 +254,20 @@ def run_rows(helper: Path) -> list[str]:
             b.dir.mkdir()
             (b.dir / "zigBrowser.ips").write_text("z\n")
         rc, out = box.cycle(create)
-        want = [f"CRASHREPORT\tadded\tzigBrowser.ips\t{hashlib.sha256(b'z' + bytes([10])).hexdigest()}"]
+        want = ["CRASHREPORT\tadded\t.\t-",
+                f"CRASHREPORT\tadded\tzigBrowser.ips\t{hashlib.sha256(b'z' + bytes([10])).hexdigest()}"]
         got = structure("CR3 created dir", rc, out)
         if got is not None and got != ("INCONCLUSIVE", want):
             bad(f"CR3 a report in a dir created during the run: want {want!r} then INCONCLUSIVE, got {out!r}")
+    finally:
+        box.close()
+
+    box = Box(helper, make_dir=False)
+    try:  # CR3b a missing reports dir that becomes an empty one: an observed change, INCONCLUSIVE with no file line
+        rc, out = box.cycle(lambda b: b.dir.mkdir())
+        got = structure("CR3b an empty dir created", rc, out)
+        if got is not None and got != ("INCONCLUSIVE", ["CRASHREPORT\tadded\t.\t-"]):
+            bad(f"CR3b a missing reports dir that becomes empty: want the dir's own line then INCONCLUSIVE, got {out!r}")
     finally:
         box.close()
 
@@ -297,6 +314,35 @@ def run_rows(helper: Path) -> list[str]:
         finally:
             box.close()
 
+    def unreadable_report(b):
+        (b.dir / "old.ips").chmod(0)
+
+    def unreadable_dir(b):
+        (b.dir / "Retired").chmod(0)
+
+    def bad_name(raw):
+        return lambda b: os.close(os.open(os.fsencode(b.dir) + b"/" + raw, os.O_CREAT | os.O_WRONLY, 0o644))
+    for name, damage in (("an unreadable report", unreadable_report), ("an unreadable subdirectory", unreadable_dir),
+                         ("a tab name", bad_name(b"a\tb.ips")), ("a newline name", bad_name(b"a\nb.ips")),
+                         ("a non-UTF-8 name", bad_name(b"a\xff.ips"))):
+        box = Box(helper)
+        try:  # CR10 incomplete only AFTER begin: the end is one bounded INCONCLUSIVE, never COMPLETE or a partial listing
+            if os.geteuid() == 0:
+                bad("CR10 needs a non-root user (root reads a mode-000 entry): run it as yourself")
+                break
+            rc, out = box.cycle(damage)
+            inconclusive_bare(f"CR10 {name} appearing during the run", rc, out)
+        finally:
+            box.close()
+
+    box = Box(helper)
+    try:  # CR11 an evidence dir that cannot be made: begin refuses once, and the end is INCONCLUSIVE
+        box.ev.write_text("a file where the evidence dir must go\n")
+        rc, out = box.refused("CR11 an evidence dir that cannot be made:")
+        inconclusive_bare("CR11 an evidence dir that cannot be made", rc, out)
+    finally:
+        box.close()
+
     if re.search(r"<<-?\s*['\"]?\w", helper.read_text()):  # CR8
         bad("CR8 the helper uses a here-document: macOS /bin/bash 3.2 writes each one to a temp file in $TMPDIR")
     if hits:
@@ -312,7 +358,7 @@ def main(argv: list[str]) -> int:
     if problems:
         print(f"FAIL\tmac-crashreports-audit\t{len(problems)} problem(s)")
         return 1
-    print("PASS\tmac-crashreports-audit\tCR1-CR9")
+    print("PASS\tmac-crashreports-audit\tCR1-CR11")
     return 0
 
 
