@@ -1901,3 +1901,19 @@ Exact fix-forward minimum:
 4. Bind the root identity across the run. Record each resolved root's device/inode at begin, re-resolve at end, and make changed getconf output, a replaced root or a symlink retarget INCONCLUSIVE. Add rows/mutants for each. Preserve the current failing/empty/missing/same-root and unreadable-directory controls.
 
 The green must then add the one shared sourced helper, register this strengthened oracle and mutant pass without a skip mapping, and drive both consumers: the runtime-rows Mac leg and the MS1c gate. Each consumer must treat INCONCLUSIVE as non-pass and include the complete unfiltered output in copied evidence. This review does not approve either consumer or any Mac run.
+
+## 2026-10-23 — 4pa.56 cookie-INFLIGHT hostless GREEN `46950f35`
+
+**APPROVED ON ITS OWN CONTENT AS THE HOSTLESS GREEN; MAC CLOSURE REMAINS PENDING.** Exact `46950f35b7c80bdce710c8172d0db267fcbf5167` satisfies the hostless production and registration conditions recorded for red fix-forward `0907b353` in `4dbc8378`. This ruling does not approve a Mac run or cure the blocked intervening ancestry.
+
+The production placement is correct in all three functions. `zb_cookies_get_all`, `zb_cookies_add` and `zb_cookies_delete` each call `zb_job_inflight(job)` exactly once, immediately after the complete `WKHTTPCookieStore` submit, inside the same unique main-queue block and after its negated `zb_job_claim_dispatch(job)` guard. The transition closes the actual wait hole: the waiter can remain unbounded only while the job is DISPATCHING, whereas the post-submit INFLIGHT state is deadline-bound. It is also safe if a completion happens before the new line: `zb_job_complete` may move DISPATCHING directly to DONE, and the later `zb_job_inflight` changes only DISPATCHING to INFLIGHT, so it cannot overwrite DONE or resurrect an abandoned job.
+
+Registration is additive and fail-closed. `test-cookie-inflight-binding` runs the approved real-shim oracle, declares the oracle, imported lexer and shim as file inputs, and is a direct dependency of aggregate `test`; the red oracle's executable assertions are unchanged, with only its registration documentation updated. No existing step input was removed.
+
+From a clean exact archive under `env -i`, private HOME/TMP/XDG paths, Zig's default caches and a private current-user/network/PID/mount namespace, `zig build -j4 test-cookie-inflight-binding test-native-close-binding test-load-failure-policy cross-check --summary all` exited 0 with **32/32 steps and 7/7 tests**. The named cookie oracle passed K1–K3 for all three operations; the adjacent native-close and load-failure checks remained green; cross-check compiled both Mac architectures and Windows at its existing contract boundary. No Mac or external network was contacted.
+
+Two independent production probes through the registered step confirm causality. Removing only the get-all release made K1 and K2 fail. Inverting only the add operation's claim guard made K3 fail. Both commands exited 1 at the named rows, demonstrating that the registered proof binds both the transition and its guarded main-queue context rather than accepting the intended text elsewhere.
+
+4pa.56 remains open for the mandatory Mac proof: compile the real Objective-C shim on both Mac architectures and run `mac_cookie_timeout_test.py` on both hosts from a separately reviewed exact ancestry. Any browser-launching request must use the accepted shared physical `/var/folders` audit boundary, report every added or changed path, delete nothing there, and retain the standing no-keychain, no-SIGKILL, no-install and per-run release requirements.
+
+This commit descends through blocked reds `143a12f6` and `d22a985c`; approving its own content does not make that ancestry push-safe. No new global tip is named. The last named push-safe Mac tip remains `1a52e4cc`.
