@@ -15,6 +15,7 @@ from pathlib import Path
 from slice2_common import (
     SKIP_EXIT,
     RunResult,
+    browser_profile_dir,
     eprint,
     print_fail_context,
     require_file,
@@ -30,7 +31,8 @@ param(
     [Parameter(Mandatory=$true)][string]$Uri,
     [Parameter(Mandatory=$true)][string]$CapturePath,
     [Parameter(Mandatory=$true)][string]$BrowserStdoutPath,
-    [Parameter(Mandatory=$true)][string]$BrowserStderrPath
+    [Parameter(Mandatory=$true)][string]$BrowserStderrPath,
+    [Parameter(Mandatory=$true)][string]$ProfileDir
 )
 
 $ErrorActionPreference = "Stop"
@@ -66,7 +68,7 @@ Ensure-Parent $CapturePath
 Ensure-Parent $BrowserStdoutPath
 Ensure-Parent $BrowserStderrPath
 
-$browserArgs = @($Uri, "--e2e-protocol", "--print-title")
+$browserArgs = @($Uri, "--e2e-protocol", "--print-title", "--profile-dir", ('"' + $ProfileDir + '"'))
 $proc = $null
 $bitmap = $null
 $graphics = $null
@@ -258,6 +260,7 @@ def capture_render_png(
     browser_stdout_path = work_dir / "browser_stdout.txt"
     browser_stderr_path = work_dir / "browser_stderr.txt"
     script_path.write_text(RENDER_CAPTURE_PS1, encoding="utf-8")
+    profile = browser_profile_dir(Path.cwd(), "render")  # its own WebView2 folder (NavyCanyon e80e0352)
 
     task_result = run_windows_interactive_to_exit(
         [
@@ -277,6 +280,8 @@ def capture_render_png(
             str(browser_stdout_path),
             "-BrowserStderrPath",
             str(browser_stderr_path),
+            "-ProfileDir",
+            str(profile),
         ],
         dict(os.environ),
         timeout_sec,

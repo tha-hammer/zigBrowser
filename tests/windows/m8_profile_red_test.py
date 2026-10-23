@@ -18,6 +18,9 @@ Pinned:
     `WEBVIEW2_USER_DATA\t<label>\t<d>\WebView2`, the effective folder; no launch env carries a WEBVIEW2_USER_DATA_FOLDER;
   - the runners (ps1 and cmd) refuse an env that carries WEBVIEW2_USER_DATA_FOLDER: a failing result naming it, and
     no scheduled task is created;
+  - the render capture script passes its -ProfileDir on as `--profile-dir` (a tripwire on the script text: no
+    PowerShell here; the Win11 run proves it);
+  - browser_profile_dir refuses a label that would leave the run root, and creates nothing outside it;
   - the generated task wrapper refuses, on the host, a WEBVIEW2_USER_DATA_FOLDER in the task's own environment and a
     WebView2 UserDataFolder policy (HKCU/HKLM Software\Policies\Microsoft\Edge\WebView2\UserDataFolder) before it
     launches anything. This is a tripwire on the generated text; the Win11 run proves it.
@@ -72,7 +75,9 @@ except SystemExit as e:
     rc = e.code
 except Exception as e:
     rc = "raised " + repr(e)
-print("LAUNCHES " + json.dumps({"rc": rc, "launches": launches}))
+render_args = [l.strip() for l in getattr(mod, "RENDER_CAPTURE_PS1", "").splitlines()
+               if l.strip().startswith("$browserArgs")]
+print("LAUNCHES " + json.dumps({"rc": rc, "launches": launches, "render_args": render_args}))
 """
 
 _FAKE_SCHTASKS = r"""#!/usr/bin/env bash
@@ -111,6 +116,20 @@ else:
 print(json.dumps({"returncode": r.returncode, "stderr": r.stderr_lines}))
 """
 
+_HELPER_CHILD = r"""
+import json, pathlib, sys
+sys.path.insert(0, sys.argv[1])
+import slice2_common as s
+out = {}
+for label in ("../../escape", "../../../escape", "a/../../../escape", ""):
+    try:
+        s.browser_profile_dir(pathlib.Path(sys.argv[2]), label)
+        out[label] = "accepted"
+    except ValueError:
+        out[label] = "refused"
+print(json.dumps(out))
+"""
+
 TESTS = {"m8_render_test": 1, "m8_reply_channel_test": 2, "m8_load_fail_test": 2}
 
 
@@ -133,7 +152,13 @@ class M8ProfilesRed(unittest.TestCase):
         detail = f"\n{which}: rc={proc.returncode}\nstdout:\n{proc.stdout[-3000:]}\nstderr:\n{proc.stderr[-3000:]}"
         rows = [l for l in proc.stdout.splitlines() if l.startswith("LAUNCHES ")]
         self.assertEqual(len(rows), 1, "the capture child must report its launches" + detail)
-        return json.loads(rows[0][len("LAUNCHES "):])["launches"], proc.stdout, detail
+        report = json.loads(rows[0][len("LAUNCHES "):])
+        if which == "m8_render_test":
+            args = report["render_args"]
+            self.assertEqual(len(args), 1, "one $browserArgs line in the render capture script" + detail)
+            self.assertIn('"--profile-dir", (\'"\' + $ProfileDir + \'"\')', args[0],
+                          "the capture script passes -ProfileDir on to the browser" + detail)
+        return report["launches"], proc.stdout, detail
 
     def test_every_m8_browser_launch_gets_its_own_profile_under_the_run_root(self):
         with tempfile.TemporaryDirectory() as t:
@@ -154,6 +179,22 @@ class M8ProfilesRed(unittest.TestCase):
                     seen.append(profile)
             self.assertEqual(len(seen), 5, "render 1 + reply 2 + load-fail 2" + details)
             self.assertEqual(len(set(seen)), 5, f"all five profile dirs are distinct: {seen}" + details)
+
+    def test_the_profile_helper_refuses_a_label_that_leaves_the_run_root(self):
+        with tempfile.TemporaryDirectory() as t:
+            outer = pathlib.Path(t).resolve()
+            run_root = outer / "runs" / "r1"
+            run_root.mkdir(parents=True)
+            proc = subprocess.run(["python3", "-I", "-c", _HELPER_CHILD, str(E2E), str(run_root)], cwd=outer,
+                                  env={"PATH": "/usr/bin:/bin", "HOME": str(outer), "TMPDIR": str(outer)},
+                                  capture_output=True, text=True, timeout=120, stdin=subprocess.DEVNULL)
+            detail = f"\nrc={proc.returncode}\nstdout:\n{proc.stdout}\nstderr:\n{proc.stderr}"
+            self.assertEqual(proc.returncode, 0, detail)
+            verdicts = json.loads(proc.stdout.strip().splitlines()[-1])
+            self.assertEqual(set(verdicts.values()), {"refused"}, f"{verdicts}" + detail)
+            outside = sorted(str(q.relative_to(outer)) for q in outer.rglob("*")
+                             if q != run_root and run_root not in q.parents and q not in run_root.parents)
+            self.assertEqual(outside, [], "nothing is created outside the run root" + detail)
 
     def _runner(self, which, override):
         with tempfile.TemporaryDirectory() as t:

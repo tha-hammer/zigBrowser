@@ -14,6 +14,7 @@ from pathlib import Path
 from slice2_common import (
     SKIP_EXIT,
     RunResult,
+    browser_profile_dir,
     eprint,
     harness_exit_code,
     protocol_rows,
@@ -182,7 +183,8 @@ def assert_failure_contract(label: str, result: RunResult, uri: str, expected_lo
 
 
 def run_case(browser: Path, uri: str, expected_load_code: int, timeout_sec: float, label: str) -> bool:
-    cmd = [str(browser), uri, "--e2e-protocol"]
+    profile = browser_profile_dir(Path.cwd(), label)  # its own WebView2 folder (NavyCanyon e80e0352)
+    cmd = [str(browser), uri, "--e2e-protocol", "--profile-dir", str(profile)]
     env = dict(os.environ)
 
     def condition(stdout_lines: list[str], _stderr: list[str], _proc) -> bool:

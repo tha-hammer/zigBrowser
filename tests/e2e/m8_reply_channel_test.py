@@ -10,6 +10,7 @@ from pathlib import Path
 
 from slice2_common import (
     SKIP_EXIT,
+    browser_profile_dir,
     eprint,
     print_fail_context,
     protocol_rows,
@@ -52,8 +53,10 @@ def run_case(
     timeout_sec: float,
     ok_condition,
     label: str,
+    profile_label: str,
 ) -> tuple[bool, int]:
-    cmd = [str(binary), uri, "--e2e-protocol"]
+    profile = browser_profile_dir(Path.cwd(), profile_label)  # its own WebView2 folder (NavyCanyon e80e0352)
+    cmd = [str(binary), uri, "--e2e-protocol", "--profile-dir", str(profile)]
     matched, result = run_windows_interactive_until(cmd, env, timeout_sec, ok_condition)
     if not matched:
         print(f"FAIL\t{label}")
@@ -106,6 +109,7 @@ def main() -> int:
         args.timeout_sec,
         success_condition,
         "m8-echo-success-not-observed",
+        "reply-echo",
     )
     if not ok_success:
         return code_success
@@ -117,6 +121,7 @@ def main() -> int:
         args.timeout_sec,
         error_condition,
         "m8-echo-badargs-not-observed",
+        "reply-badargs",
     )
     if not ok_error:
         return code_error

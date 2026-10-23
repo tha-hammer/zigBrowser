@@ -384,6 +384,42 @@ def _read_int_file(path: Path) -> int | None:
         return None
 
 
+# Every m8 browser launch gets its own WebView2 user-data folder (NavyCanyon e80e0352): without --profile-dir the
+# shim leaves WebView2 on the one shared `<exe>.WebView2` folder beside the staged exe, and a second launch on that
+# folder failed CreateCoreWebView2Controller with 0x800700AA (ERROR_BUSY) on Win11. An inherited
+# WEBVIEW2_USER_DATA_FOLDER (or the WebView2 UserDataFolder policy) would redirect every launch to one folder, so the
+# runners and the task wrapper refuse it.
+WEBVIEW2_OVERRIDE_ENV = "WEBVIEW2_USER_DATA_FOLDER"
+_PROFILE_LABEL = re.compile(r"^[a-z0-9][a-z0-9-]{0,39}$")
+
+
+def browser_profile_dir(run_root: Path, label: str) -> Path:
+    """A fresh profile directory for ONE browser launch, under `run_root/profiles` (the run's own folder). Prints the
+    effective WebView2 user-data folder (`<dir>\\WebView2`, src/webview2_shim.cpp) as a WEBVIEW2_USER_DATA row."""
+    if not _PROFILE_LABEL.fullmatch(label):
+        raise ValueError(f"profile label {label!r} is not a plain lowercase token")
+    base = run_root.resolve()
+    path = (base / "profiles" / f"{label}-{uuid.uuid4().hex[:12]}").resolve()
+    if base not in path.parents:
+        raise ValueError(f"profile {path} escapes the run root {base}")
+    path.mkdir(parents=True, exist_ok=False)
+    print(f"WEBVIEW2_USER_DATA\t{label}\t{path}\\WebView2", flush=True)
+    return path
+
+
+def _webview2_override_refused(env: dict[str, str]) -> RunResult | None:
+    """A failing result when `env` would redirect the WebView2 user-data folder; None when it is clean."""
+    keys = [k for k in env if k.upper() == WEBVIEW2_OVERRIDE_ENV]
+    if not keys:
+        return None
+    return RunResult(
+        returncode=1,
+        stdout_lines=[],
+        stderr_lines=[f"runner: refused: {keys[0]} is set; it would redirect every launch's WebView2 user-data folder"],
+        tracked_children=set(),
+    )
+
+
 # The task's process tree is owned by a kill-on-close job (Windows plan WS0.4; NavyCanyon 7eafbae option (a), wait
 # only). The wrapper creates the program SUSPENDED and BORN INTO the job, the drawer harness's launch that ran on the
 # Win11 VM (tests/windows/win_drawer_test.py LaunchOwned), so every descendant, msedgewebview2.exe included, is a job
@@ -584,6 +620,12 @@ def _write_windows_task_wrapper(
             "try {",
             f"  Set-Location -LiteralPath {_ps_quote(str(cwd))}",
             *[f"  {line}" for line in env_lines],
+            # NavyCanyon e80e0352: nothing on the host may redirect the WebView2 user-data folder
+            f"  if ($env:{WEBVIEW2_OVERRIDE_ENV}) {{ throw 'refused: {WEBVIEW2_OVERRIDE_ENV} is set in the task environment' }}",
+            "  foreach ($root in @('HKCU:', 'HKLM:')) {",
+            "    $policy = Get-Item -LiteralPath \"$root\\Software\\Policies\\Microsoft\\Edge\\WebView2\\UserDataFolder\" -ErrorAction SilentlyContinue",
+            "    if ($null -ne $policy -and $policy.ValueCount -gt 0) { throw \"refused: the WebView2 UserDataFolder policy is set under $root\" }",
+            "  }",
             "  Add-Type -TypeDefinition @'",
             *_JOB_CS.strip("\n").splitlines(),
             "'@",
@@ -753,6 +795,9 @@ def run_windows_interactive_until(
 ) -> tuple[bool, RunResult]:
     if os.name != "nt":
         raise RuntimeError("interactive scheduled-task runner is Windows-only")
+    refused = _webview2_override_refused(env)
+    if refused is not None:
+        return False, refused
 
     task_name = f"zb_m8_{os.getpid()}_{uuid.uuid4().hex[:8]}"
     work_dir = Path(tempfile.mkdtemp(prefix="zb_m8_task_"))
@@ -859,6 +904,9 @@ def run_windows_interactive_cmd_until(
 ) -> tuple[bool, RunResult]:
     if os.name != "nt":
         raise RuntimeError("interactive scheduled-task cmd runner is Windows-only")
+    refused = _webview2_override_refused(env)
+    if refused is not None:
+        return False, refused
 
     task_name = f"zb_m8_cmd_{os.getpid()}_{uuid.uuid4().hex[:8]}"
     work_dir = Path(tempfile.mkdtemp(prefix="zb_m8_cmd_"))

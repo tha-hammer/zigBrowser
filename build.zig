@@ -337,6 +337,15 @@ pub fn build(b: *std.Build) void {
     windows_gate_step.dependOn(&windows_gate_selftest.step);
     windows_gate_step.dependOn(&windows_runner_job_selftest.step);
 
+    // m8 per-launch WebView2 profile (NavyCanyon e80e0352): the red m8_profile_red_test.py, with the green's two added
+    // checks. Its children import the m8 tests and slice2_common (which default to real transport values), so the step
+    // runs it inside an empty network namespace: nothing in it can reach a host.
+    const windows_m8_profile_selftest = b.addSystemCommand(&.{
+        "unshare", "--user", "--map-current-user", "--net", "--", "python3", "-I", "tests/windows/m8_profile_red_test.py",
+    });
+    const windows_m8_profile_step = b.step("windows-m8-profile-selftest", "Run the m8 per-launch WebView2 profile selftest (netns)");
+    windows_m8_profile_step.dependOn(&windows_m8_profile_selftest.step);
+
     // (WS0.5 remote-path fence removed — resolve_path.sh / resolve_live_test.py deleted; bead
     // zigBrowser-q92. A future remote file op uses the held-handle check-and-use design, its own milestone.)
 
@@ -3846,6 +3855,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&windows_twohost_selftest.step);
     test_step.dependOn(&windows_host_live_optin.step);
     test_step.dependOn(&windows_m8_run_selftest.step);
+    test_step.dependOn(&windows_m8_profile_selftest.step);
     test_step.dependOn(&windows_incident_cleanup_selftest.step);
     test_step.dependOn(&windows_incident_cleanup_r2.step);
     test_step.dependOn(&windows_win10_probe_selftest.step);
