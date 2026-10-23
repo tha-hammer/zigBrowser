@@ -15,9 +15,13 @@ makes the 60 s deadline instant. Cases (6dd7fda):
   * census failure: the census cannot be read at cleanup -> failure, NO rmdir;
   * deletion failure: the folder survives the one rmdir -> failure, no second rmdir.
 cc8f0b0 R2 cases: a slow or stalled census probe cannot outlast the ONE 60 s deadline (every cleanup census gets only
-the remaining budget as its timeout; a timeout is a census failure); an unreadable start time (`na`) deletes nothing;
+the remaining budget as its timeout; a first probe that times out is a census failure); an unreadable start time
+(`na`) deletes nothing;
 `runs\.` and every other non-caller path shape are refused without contacting the host.
 Dropping or bypassing the wait makes the transient, survivor and census-failure cases red.
+649755f7 (the m8 1032dbb incident): a remaining-budget probe that expires at the deadline after a census that did
+not match reports deadline exhaustion with the last survivor set (helper and both callers), never a generic
+census failure, and deletes nothing; losing that diagnostic makes those cases red.
 
 Run:  python3 -I tests/windows/webview2_cleanup_test.py   (registered: windows-webview2-cleanup-selftest)
 """
@@ -39,6 +43,7 @@ import webview2_cleanup as wc  # noqa: E402
 
 BASE = {("msedgewebview2", 6772, "638966399451927630"), ("msedgewebview2", 6988, "638966399472423174")}
 HELPERS = {("msedgewebview2", 4244, "638967035511111111"), ("msedgewebview2", 5632, "638967035522222222")}
+SURVIVORS = [f"('msedgewebview2', {pid}, '{ticks}')" for _, pid, ticks in sorted(HELPERS)]
 MARKER = "zb-test-marker"
 
 
@@ -148,6 +153,13 @@ class Case(unittest.TestCase):
         self.assertLess(last_census, rm_at)
         self.assertEqual(len(vm.rm_targets), 1, "exactly one rmdir")
 
+    def assert_deadline_exhaustion(self, why, vm):
+        self.assertIn("did not return to the pre-run identities", why)
+        for s in SURVIVORS:
+            self.assertIn(s, why, "the last known survivor set is reported")
+        self.assertNotIn("census failed", why)
+        self.assertEqual(vm.rm_targets, [], "nothing is deleted")
+
 
 # ---- the helper itself ---------------------------------------------------------------------------------------
 class Helper(Case):
@@ -195,13 +207,21 @@ class Helper(Case):
         self.assertEqual(vm.rm_targets, [self.DIR], "exactly one rmdir, no retry")
 
     def test_stalled_probe_cannot_exceed_the_total_deadline(self):
-        vm = FakeVM(linger=None, clock=self.clock, stall_at=3)
+        vm = FakeVM(linger=None, clock=self.clock, stall_at=3)  # read 2 sees the survivors, read 3 never answers
+        start = self.clock.now
+        ok, why = self.go(vm)
+        self.assertFalse(ok)
+        self.assert_deadline_exhaustion(why, vm)
+        self.assertLessEqual(self.clock.now - start, wc.DEADLINE_S + 1e-6, "a stalled probe outlasted the deadline")
+
+    def test_a_first_probe_that_stalls_is_a_census_failure(self):
+        vm = FakeVM(linger=None, clock=self.clock, stall_at=2)  # no census succeeded: no survivor set to report
         start = self.clock.now
         ok, why = self.go(vm)
         self.assertFalse(ok)
         self.assertIn("census failed", why)
         self.assertEqual(vm.rm_targets, [])
-        self.assertLessEqual(self.clock.now - start, wc.DEADLINE_S + 1e-6, "a stalled probe outlasted the deadline")
+        self.assertLessEqual(self.clock.now - start, wc.DEADLINE_S + 1e-6)
 
     def test_slow_probes_share_the_one_total_deadline(self):
         vm = FakeVM(linger=None, clock=self.clock, slow_s=25.0)
@@ -213,6 +233,7 @@ class Helper(Case):
         cleanup = vm.census_timeouts[1:]  # [0] is the before-run census
         self.assertTrue(all(t is not None and 0 < t <= wc.DEADLINE_S for t in cleanup), cleanup)
         self.assertLess(cleanup[-1], cleanup[0], "each census gets only the remaining budget")
+        self.assert_deadline_exhaustion(why, vm)  # 25 s, 25 s, then the 10 s left run out
 
     def test_unreadable_start_time_deletes_nothing(self):
         vm = FakeVM(linger=2, na_at=2)
@@ -304,6 +325,12 @@ class SpikeDriverCaller(Case):
         self.assertEqual(vm.rm_targets, [])
         self.assertLessEqual(self.clock.now - start, wc.DEADLINE_S + 1e-6, "the 300 s ssh probe timeout leaked")
 
+    def test_a_probe_out_of_budget_after_a_nonmatching_census_reports_the_survivors(self):
+        vm = FakeVM(linger=None, clock=self.clock, stall_at=3)
+        rc, _, text = self.go(vm)
+        self.assertEqual(rc, 1, text)
+        self.assert_deadline_exhaustion(text, vm)
+
     def test_unreadable_start_time_deletes_nothing(self):
         vm = FakeVM(linger=2, na_at=2)
         rc, _, text = self.go(vm)
@@ -371,6 +398,12 @@ class M8Caller(Case):
         self.assertFalse(ok, text)
         self.assertEqual(vm.rm_targets, [])
         self.assertLessEqual(self.clock.now - start, wc.DEADLINE_S + 1e-6, "the 120 s ssh probe timeout leaked")
+
+    def test_a_probe_out_of_budget_after_a_nonmatching_census_reports_the_survivors(self):
+        vm = FakeVM(linger=None, clock=self.clock, stall_at=3)
+        ok, text = self.go(vm)
+        self.assertFalse(ok, text)
+        self.assert_deadline_exhaustion(text, vm)
 
     def test_unreadable_start_time_deletes_nothing(self):
         vm = FakeVM(linger=2, na_at=2)

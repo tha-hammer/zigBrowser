@@ -10,7 +10,9 @@ its user-data folder, which sits inside the run folder; deleting at once leaves 
     unparsable answer, or a start time that cannot be read (`na`) raises CensusError (fail closed).
   * remove_after_webview2(run, win_dir, before) waits, within ONE monotonic total deadline of at most 60 s, until
     the census equals the `before` census taken before the run; every census gets only the REMAINING part of that
-    deadline as its probe timeout, so a slow or stalled probe cannot outlast it; it never kills anything. Only then, if the folder
+    deadline as its probe timeout, so a slow or stalled probe cannot outlast it; it never kills anything. A probe that
+    runs out of that remaining budget at the deadline after a census that did not match reports the last survivor set as
+    deadline exhaustion (NavyCanyon 649755f7), not as a census failure. Only then, if the folder
     is a plain directory (not a reparse point), it calls ordinary `rmdir /s /q` exactly once and checks both the
     command status and the folder's absence. Any probe, parse, timeout, reparse or deletion failure returns
     (False, why) and deletes nothing more; there is no retry.
@@ -21,6 +23,7 @@ callers' ssh runners raise subprocess.TimeoutExpired). Only the two caller run-f
 %USERPROFILE%\zb\build\run-<40 hex> (spike_driver) and %USERPROFILE%\zb\runs\m8-<pid>-<12 hex> (m8_live_test).
 """
 import re
+import subprocess
 import time
 
 DEADLINE_S = 60.0
@@ -94,6 +97,9 @@ def remove_after_webview2(run, win_dir, before, deadline_s=DEADLINE_S, poll_s=PO
         try:
             now = census(run, timeout=remaining)
         except CensusError as e:
+            if last is not None and isinstance(e.__cause__, subprocess.TimeoutExpired) and time.monotonic() >= end:
+                ok, why = timed_out(last)  # the probe used up the remaining budget: report what the census last saw
+                return ok, f"{why} (the last probe ran out of the remaining {remaining:.3f}s)"
             return False, f"census failed: {e}; nothing deleted"
         if now == before:
             break
