@@ -404,7 +404,12 @@ def _write_windows_task_wrapper(
             continue
         env_lines.append(f"$env:{key} = {_ps_quote(value)}")
 
-    file_path = str(cmd[0])
+    # Start-Process resolves a bare FilePath against the process directory and PATH, never the Set-Location below
+    # (a relative `zigBrowser.exe` was "not found" on the Win11 VM), so a program in the run's cwd goes in absolute.
+    program = Path(cmd[0])
+    if not program.is_absolute() and (cwd / program).is_file():
+        program = cwd / program
+    file_path = str(program)
     arg_string = subprocess.list2cmdline([str(item) for item in cmd[1:]])
     script = "\r\n".join(
         [
