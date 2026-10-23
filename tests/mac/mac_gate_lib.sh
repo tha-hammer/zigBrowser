@@ -27,9 +27,10 @@ mac_scp_opts() { # $1=key
 mac_build() { # $1=host $2=key [$3=timeout seconds, 0 = none]
   local host="$1" key="$2" limit="${3:-0}" out rc rdir passed
   MAC_RDIR=
-  out=$(set -o pipefail; ZB_MAC_HOST="$host" ZB_MAC_KEY="$key" ZB_KEEP_REMOTE_DIR=1 \
-          timeout "$limit" bash tests/mac/build-on-mac.sh | tee /dev/stderr)
+  # Captured, then printed: `tee /dev/stderr` reopens a stderr that is redirected to a log file and truncates it (bd 3ui.10).
+  out=$(ZB_MAC_HOST="$host" ZB_MAC_KEY="$key" ZB_KEEP_REMOTE_DIR=1 timeout "$limit" bash tests/mac/build-on-mac.sh)
   rc=$?
+  printf '%s\n' "$out" >&2
   rdir=$(awk -F'\t' '$1 == "ZB_REMOTE_DIR" { print $2; exit }' <<<"$out")
   if [[ "$rdir" =~ ^zb-gate-[0-9a-f]{40}-[0-9a-f]+$ ]]; then
     MAC_RUN_DIRS+=("$host"$'\t'"$key"$'\t'"$rdir")   # removed at exit even when the build fails

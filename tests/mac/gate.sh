@@ -142,8 +142,9 @@ verify_host() { # $1=host  $2=key  $3=expect_arch
   local local_png="zig-out/m9-render-${expect}.png"
   # M9 visible e2es on the universal binary (the loader runs this host's slice), then the MS1.2
   # exec-arch readback. The probe writes nothing on failure, so MS1.2 fails closed.
-  local m9_out
-  m9_out=$("${SSH[@]}" "$host" /bin/bash -s "$rd" <<'REMOTE' | tee /dev/stderr
+  # Each remote test's output is captured, then printed: `tee /dev/stderr` would truncate a log file (bd 3ui.10).
+  local m9_out rc
+  m9_out=$("${SSH[@]}" "$host" /bin/bash -s "$rd" <<'REMOTE'
 set -euo pipefail
 cd "$HOME/${1:?}"
 test -f tests/fixtures/app/index.html && test -f tests/fixtures/app/zbhost.js
@@ -155,7 +156,9 @@ python3 tests/e2e/m9_load_fail_test.py --browser zig-out/bin/zigBrowser
 rm -f zig-out/exec-arch.txt
 python3 tests/mac/exec_arch_probe.py --browser zig-out/bin/zigBrowser --out zig-out/exec-arch.txt
 REMOTE
-  ) || return 1
+  ); rc=$?
+  printf '%s\n' "$m9_out" >&2
+  [ "$rc" -eq 0 ] || return 1
   require_lines "$expect M9" "$m9_out" $'PASS\tm9-render-webview-screenshot\t' $'PASS\tm9-reply-channel-contract' \
     $'PASS\tm9-load-fail-contract' 'exec_arch_probe: build.exec_arch=' || return 1
 
@@ -177,7 +180,7 @@ REMOTE
   # copy's entitlements via static `codesign -d`, --signed-binary) run ON the Mac
   # (lipo/codesign/sysctl/uname live there).
   local mu_out
-  mu_out=$("${SSH[@]}" "$host" /bin/bash -s "$expect" "$rd" <<REMOTE | tee /dev/stderr
+  mu_out=$("${SSH[@]}" "$host" /bin/bash -s "$expect" "$rd" <<REMOTE
 set -euo pipefail
 cd "\$HOME/\${2:?}"
 python3 tests/e2e/mac_universal_test.py \
@@ -189,7 +192,9 @@ python3 tests/e2e/mac_universal_test.py \
   --signed-binary "\$HOME/\$2/zigBrowser-universal-signed" \
   ${reported_arg[*]+${reported_arg[*]}}
 REMOTE
-  ) || return 1
+  ); rc=$?
+  printf '%s\n' "$mu_out" >&2
+  [ "$rc" -eq 0 ] || return 1
   grep -qE $'^PASS\tmac-universal\t[1-9][0-9]* assertions$' <<<"$mu_out" \
     || { echo "FAIL: $expect mac_universal: no \"PASS mac-universal <N >= 1> assertions\" line (zero recorded assertions)" >&2; return 1; }
   printf 'PASS\tmac-leg\t%s\t%s\n' "$host" "$expect"

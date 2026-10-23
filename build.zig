@@ -3929,6 +3929,17 @@ pub fn build(b: *std.Build) void {
     }) |input| mac_transport_selftest.addFileInput(b.path(input));
     mac_build_script_step.dependOn(&mac_transport_selftest.step);
     test_step.dependOn(&mac_transport_selftest.step);
+    // A Mac run logged to a file keeps every evidence line: no `tee /dev/stderr` truncation (bd 3ui.10).
+    const mac_log_integrity_selftest = b.addSystemCommand(&.{ "bash", "tests/mac/mac_log_integrity_selftest.sh" });
+    for ([_][]const u8{
+        "tests/mac/mac_log_integrity_selftest.sh", "tests/mac/gate.sh",               "tests/mac/ms2b_gate.sh",
+        "tests/mac/build-on-mac.sh",               "tests/mac/mac_gate_lib.sh",       "tests/mac/known_hosts",
+        "tests/e2e/mac_resource_compat.py",        "tests/e2e/mac_universal_test.py", "packaging/macos/universal_components.json",
+        "packaging/macos/entitlements.plist",      "packaging/macos/build-dmg.sh",    "packaging/macos/Info.plist",
+        "packaging/assets/zigBrowser.png",
+    }) |input| mac_log_integrity_selftest.addFileInput(b.path(input));
+    mac_build_script_step.dependOn(&mac_log_integrity_selftest.step);
+    test_step.dependOn(&mac_log_integrity_selftest.step);
     test_step.dependOn(&windows_gate_selftest.step);
     test_step.dependOn(&windows_twohost_selftest.step);
     test_step.dependOn(&windows_build_selftest.step);
