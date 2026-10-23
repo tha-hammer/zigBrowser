@@ -9,23 +9,28 @@ and process group, and either quits on SIGTERM or ignores it):
   A  exec_arch_probe.main (the exec-arch readback).
 Each case runs in its own child process with os.kill and os.killpg wrapped to record every signal (they still
 deliver it), and must show:
-  - the browser ran in its own process group (not the case process's group);
-  - no signal other than SIGTERM (or the 0 probe) was sent, so no SIGKILL by os.kill, os.killpg, Popen.kill,
-    Popen.send_signal or a subprocess.run timeout;
-  - SIGTERM reached the browser's whole group through os.killpg;
-  - the only signal sent (not 0) is exactly one killpg(<browser pgid>, SIGTERM): no direct kill, no other process or
-    group, no second TERM; signal 0 only probes the browser's pid or group;
+  - the browser leads its own process group: pgid == pid, a decimal > 1 (never group 1), not the case's group;
+  - the only signal sent (not 0) is exactly one killpg(<browser pid>, SIGTERM): no SIGKILL by os.kill, os.killpg,
+    Popen.kill, Popen.send_signal or a subprocess.run timeout, no direct kill, no other process or group, no second
+    TERM; signal 0 only probes the browser's pid or group;
   - obey: the browser is gone and reaped afterwards, with no LEAK and exit 0;
   - ignore: the browser is LEFT running, exactly one LEAK<TAB><pid><TAB><pgid><TAB><start><TAB><command> record
-    names it, with its pid, its pgid and the start time and command ps shows for it, and the case process exits 1
-    with exactly one FAIL<TAB>mac-teardown-leak.
-J (first) checks the judge itself: a safe transcript of each kind passes, and each unsafe variant is refused: an
-extra direct TERM, a TERM to the wrong group, a second TERM, a direct TERM instead, a SIGKILL, a probe of another
-process, a duplicate LEAK, a LEAK with the wrong pgid, start or command, no LEAK, two leak FAIL lines, exit 0 after
-a leak, an unread identity, a LEAK for a browser that quit, and a browser that quit but is a zombie.
-Cases: J, then G1 G2, S1 S2, A1 A2 (1 = obeys SIGTERM, 2 = ignores it).
-It signals real children, so it runs ONLY in a private PID (and network) namespace under a reaping shell; run plainly
-it re-runs itself there with unshare, and as anything else it prints FAIL and exits 1 before spawning anything.
+    names it, with its pid as pid and pgid and the start time and command ps shows for it, and the case process
+    exits 1 with exactly one FAIL<TAB>mac-teardown-leak.
+R (first) drives the namespace guard: a case run whose launcher record is missing, or names this PID or network
+namespace as the host's, is refused (exit 1, one refusal line) before it creates the fake browser or sends a signal.
+J checks the judge itself: a safe transcript of each kind passes, and each unsafe variant is refused: an extra
+direct TERM, a TERM to the wrong group, a second TERM, a direct TERM instead, a SIGKILL, a probe of another process,
+a duplicate LEAK, a LEAK with the wrong pgid, start or command, no LEAK, two leak FAIL lines, exit 0 after a leak, an
+unread identity, a browser group that is not its pid and group 1 (each as a consistent transcript, and field-isolated
+with only the recorded pgid wrong), group 1 for a browser that quit, a LEAK for a browser that quit, and a browser
+that quit but is a zombie.
+Rows: R, J, then G1 G2, S1 S2, A1 A2 (1 = obeys SIGTERM, 2 = ignores it).
+It signals real children, so every case runs ONLY behind namespace_problem(): the top-level launcher records the
+host's PID and network namespace inodes, re-runs this file under unshare (private user, PID with a reaping shell,
+mount for /proc, and network namespaces), and each --inner or --case process verifies that both of its namespaces
+differ from the recorded ones and that its pid is small and not 1, before anything else. A --case or --inner call
+from anywhere else prints FAIL and exits 1 before it creates anything or sends any signal.
 Run: python3 tests/e2e/mac_m9_term_only_test.py
 """
 import os
@@ -48,6 +53,26 @@ with open(os.environ["ZB_FAKE_INFO"], "w") as f:
 while True:
     time.sleep(0.1)
 """
+
+
+def namespace_problem():
+    """None only inside the private PID and network namespaces this file's own launcher made; else the reason.
+    The launcher records the host's pid and net namespace inodes in the environment before unshare; here both of this
+    process's namespaces must differ from them, and its pid must be a small one of the new PID namespace (not 1)."""
+    try:
+        host_pid = int(os.environ["ZB_M9_TERM_HOST_PIDNS"])
+        host_net = int(os.environ["ZB_M9_TERM_HOST_NETNS"])
+        own_pid = os.stat("/proc/self/ns/pid").st_ino
+        own_net = os.stat("/proc/self/ns/net").st_ino
+    except (KeyError, ValueError, OSError) as exc:
+        return f"the launcher's namespace record is missing or unreadable ({exc!r})"
+    if own_pid == host_pid:
+        return f"not in a private PID namespace (pid ns {own_pid} is the host's)"
+    if own_net == host_net:
+        return f"not in a private network namespace (net ns {own_net} is the host's)"
+    if os.getpid() > 50 or os.getpid() == 1:
+        return f"not under a reaping init in the private PID namespace (pid {os.getpid()})"
+    return None
 
 
 def alive(pid: int) -> bool:
@@ -73,7 +98,12 @@ def ps_identity(pid: int) -> tuple:
 
 
 def run_case(name: str) -> int:
-    """One case in this process: record every signal, drive the real path, report the browser's fate."""
+    """One case in this process: record every signal, drive the real path, report the browser's fate. It runs only
+    behind namespace_problem() (checked by main() before it gets here, and again here before anything is created)."""
+    why = namespace_problem()
+    if why:
+        print(f"FAIL\t{NAME}\tcase {name} refused: {why}; nothing was run", flush=True)
+        return 1
     sys.path[:0] = [HERE, MAC]
     real_kill, real_killpg = os.kill, os.killpg
 
@@ -138,18 +168,21 @@ def judge(name: str, rc: int, out: str) -> list:
     _, bpid, bpgid, own, state, start, command = info[0]
     sigs = [l.split("\t") for l in lines if l.startswith("SIG\t")]
     probs = []
-    if not bpid.isdigit() or int(bpid) <= 1 or not bpgid.isdigit():
+    if not bpid.isdigit() or int(bpid) <= 1:
         return [f"{name}: the fake browser never started"]
+    # The browser leads its own group: pgid == pid, a decimal > 1 (never group 1, init's), not the case's group.
+    if not bpgid.isdigit() or int(bpgid) <= 1 or bpgid != bpid:
+        probs.append(f"the browser's process group {bpgid!r} is not its own pid {bpid}")
     if bpgid == own:
         probs.append(f"the browser ran in the case's own process group {own}")
     if any(len(s) != 4 for s in sigs):
         probs.append(f"a malformed SIG line: {sigs}")
     # The one allowed send: SIGTERM to the browser's whole group, exactly once. Signal 0 only probes the browser.
     sends = [s[1:] for s in sigs if len(s) == 4 and s[3] != "0"]
-    if sends != [["killpg", bpgid, str(int(signal.SIGTERM))]]:
-        probs.append(f"the sends were {sends}, not exactly one killpg({bpgid}, SIGTERM)")
+    if sends != [["killpg", bpid, str(int(signal.SIGTERM))]]:
+        probs.append(f"the sends were {sends}, not exactly one killpg({bpid}, SIGTERM)")
     probes = [s[1:] for s in sigs if len(s) == 4 and s[3] == "0"]
-    stray = [p for p in probes if p not in (["kill", bpid, "0"], ["killpg", bpgid, "0"])]
+    stray = [p for p in probes if p not in (["kill", bpid, "0"], ["killpg", bpid, "0"])]
     if stray:
         probs.append(f"liveness probes of another process or group: {stray}")
     leaks = [l.split("\t") for l in lines if l.startswith("LEAK\t")]
@@ -164,7 +197,7 @@ def judge(name: str, rc: int, out: str) -> list:
             probs.append(f"the browser that ignores SIGTERM is {state}, not left running")
         if not LSTART.match(start) or not command or command == "-":
             probs.append(f"the browser's own identity was not read (start {start!r}, command {command!r})")
-        want = ["LEAK", bpid, bpgid, start, command]
+        want = ["LEAK", bpid, bpid, start, command]
         if len(leaks) != 1 or leaks[0] != want:
             probs.append(f"the LEAK records were {leaks}, not exactly one {want}")
         if rc != 1 or len(fails) != 1:
@@ -175,11 +208,11 @@ def judge(name: str, rc: int, out: str) -> list:
 def judge_controls() -> list:
     """The oracle itself: one good transcript per kind passes, and every unsafe variant of it is refused."""
     start, cmd = "Thu Oct 23 10:00:00 2026", "python3 /tmp/w/zigBrowser about:blank"
-    info_i = f"INFO\t40\t39\t1\talive\t{start}\t{cmd}"
-    term, probe = "SIG\tkillpg\t39\t15", "SIG\tkillpg\t39\t0"
-    leak, fail = f"LEAK\t40\t39\t{start}\t{cmd}", "FAIL\tmac-teardown-leak\t1"
+    info_i = f"INFO\t40\t40\t1\talive\t{start}\t{cmd}"
+    term, probe = "SIG\tkillpg\t40\t15", "SIG\tkillpg\t40\t0"
+    leak, fail = f"LEAK\t40\t40\t{start}\t{cmd}", "FAIL\tmac-teardown-leak\t1"
     good_i = [probe, term, probe, leak, info_i, fail]
-    good_o = [term, "SIG\tkill\t40\t0", "INFO\t40\t39\t1\tgone\t-\t-"]
+    good_o = [term, "SIG\tkill\t40\t0", "INFO\t40\t40\t1\tgone\t-\t-"]
     probs = []
     for label, text, rc in (("good ignore", good_i, 1), ("good obey", good_o, 0)):
         got = judge(label + "2" if "ignore" in label else label + "1", rc, "\n".join(text))
@@ -190,45 +223,94 @@ def judge_controls() -> list:
         "a TERM to the wrong group": ([probe, "SIG\tkillpg\t38\t15", leak, info_i, fail], 1),
         "a second TERM": ([probe, term, term, leak, info_i, fail], 1),
         "a direct TERM instead": ([probe, "SIG\tkill\t40\t15", leak, info_i, fail], 1),
-        "a SIGKILL": ([probe, term, "SIG\tkillpg\t39\t9", leak, info_i, fail], 1),
+        "a SIGKILL": ([probe, term, "SIG\tkillpg\t40\t9", leak, info_i, fail], 1),
         "a probe of another process": ([probe, term, "SIG\tkill\t41\t0", leak, info_i, fail], 1),
         "a duplicate LEAK": ([probe, term, leak, leak, info_i, fail], 1),
         "a LEAK with the wrong pgid": ([probe, term, f"LEAK\t40\t38\t{start}\t{cmd}", info_i, fail], 1),
-        "a LEAK with the wrong start": ([probe, term, f"LEAK\t40\t39\tThu Oct 23 10:00:01 2026\t{cmd}", info_i, fail], 1),
-        "a LEAK with the wrong command": ([probe, term, f"LEAK\t40\t39\t{start}\tpython3 other", info_i, fail], 1),
+        "a LEAK with the wrong start": ([probe, term, f"LEAK\t40\t40\tThu Oct 23 10:00:01 2026\t{cmd}", info_i, fail], 1),
+        "a LEAK with the wrong command": ([probe, term, f"LEAK\t40\t40\t{start}\tpython3 other", info_i, fail], 1),
         "no LEAK": ([probe, term, info_i, fail], 1),
         "two leak FAIL lines": ([probe, term, leak, info_i, fail, fail], 1),
         "exit 0 after a leak": ([probe, term, leak, info_i, fail], 0),
-        "an unread identity": ([probe, term, "LEAK\t40\t39\t-\t-", "INFO\t40\t39\t1\talive\t-\t-", fail], 1),
+        "an unread identity": ([probe, term, "LEAK\t40\t40\t-\t-", "INFO\t40\t40\t1\talive\t-\t-", fail], 1),
+        # The group itself, each transcript consistent with it, so only the pgid rule can refuse it:
+        "a browser group that is not its pid": (["SIG\tkillpg\t39\t0", "SIG\tkillpg\t39\t15", f"LEAK\t40\t39\t{start}\t{cmd}",
+                                                f"INFO\t40\t39\t1\talive\t{start}\t{cmd}", fail], 1),
+        "group 1": (["SIG\tkillpg\t1\t0", "SIG\tkillpg\t1\t15", f"LEAK\t40\t1\t{start}\t{cmd}",
+                     f"INFO\t40\t1\t7\talive\t{start}\t{cmd}", fail], 1),
+        # Field-isolated: everything names the pid 40, and only the browser's recorded pgid is wrong.
+        "only the recorded pgid differs from the pid": ([probe, term, probe, leak, f"INFO\t40\t39\t1\talive\t{start}\t{cmd}", fail], 1),
+        "only the recorded pgid is 1": ([probe, term, probe, leak, f"INFO\t40\t1\t7\talive\t{start}\t{cmd}", fail], 1),
     }
     for label, (text, rc) in variants.items():
         if not judge("J2", rc, "\n".join(text)):
             probs.append(f"J: {label} is accepted")
     for label, text in (("a LEAK for a browser that quit", good_o + [leak]),
-                        ("a browser that quit but is a zombie", [term, "INFO\t40\t39\t1\tzombie\t-\t-"])):
+                        ("a browser that quit but is a zombie", [term, "INFO\t40\t40\t1\tzombie\t-\t-"]),
+                        ("an obeying browser in group 1", ["SIG\tkillpg\t1\t15", "INFO\t40\t1\t7\tgone\t-\t-"])):
         if not judge("J1", 0, "\n".join(text)):
             probs.append(f"J: {label} is accepted")
     return probs
 
 
+def refusal_controls() -> list:
+    """R: a case run that is not behind this file's own private namespaces is refused before it creates the fake
+    browser or sends a signal. Driven here, inside the namespaces, by spoiling the launcher's record three ways."""
+    probs = []
+    own_pid = str(os.stat("/proc/self/ns/pid").st_ino)
+    own_net = str(os.stat("/proc/self/ns/net").st_ino)
+    spoils = {"no namespace record": {"ZB_M9_TERM_HOST_PIDNS": None, "ZB_M9_TERM_HOST_NETNS": None},
+              "the PID namespace recorded as the host's": {"ZB_M9_TERM_HOST_PIDNS": own_pid},
+              "the network namespace recorded as the host's": {"ZB_M9_TERM_HOST_NETNS": own_net}}
+    for label, change in spoils.items():
+        env = dict(os.environ)
+        for k, v in change.items():
+            if v is None:
+                env.pop(k, None)
+            else:
+                env[k] = v
+        with tempfile.TemporaryDirectory() as tmp:
+            env["TMPDIR"] = tmp
+            p = subprocess.run([sys.executable, "-B", os.path.abspath(__file__), "--case", "G1"], env=env,
+                               capture_output=True, text=True, timeout=60, stdin=subprocess.DEVNULL)
+            made = os.listdir(tmp)
+        out = p.stdout + p.stderr
+        refused = [l for l in out.splitlines() if l.startswith(f"FAIL\t{NAME}\tcase G1 refused: ")]
+        if p.returncode != 1 or len(refused) != 1 or "SIG\t" in out or "INFO\t" in out or made:
+            probs.append(f"R: {label}: exit {p.returncode}, created {made}, output {out[-300:]!r}")
+    return probs
+
+
 def main() -> int:
-    if len(sys.argv) == 3 and sys.argv[1] == "--case":
-        return run_case(sys.argv[2])
-    if sys.argv[1:] != ["--inner"]:
+    args = sys.argv[1:]
+    if args[:1] == ["--case"]:
+        why = namespace_problem()   # before anything else: no fake browser, no signal, outside the namespaces
+        if len(args) != 2 or why:
+            label = args[1] if len(args) == 2 else repr(args[1:])
+            print(f"FAIL\t{NAME}\tcase {label} refused: {why or 'bad arguments'}; nothing was run", flush=True)
+            return 1
+        return run_case(args[1])
+    if not args:   # the launcher: record the host's namespaces, then re-run inside fresh private ones
+        env = dict(os.environ, ZB_M9_TERM_HOST_PIDNS=str(os.stat("/proc/self/ns/pid").st_ino),
+                   ZB_M9_TERM_HOST_NETNS=str(os.stat("/proc/self/ns/net").st_ino))
         cmd = f"python3 -B {os.path.abspath(__file__)} --inner; exit $?"
         return subprocess.run(["unshare", "--user", "--map-root-user", "--pid", "--fork", "--mount-proc", "--net",
-                               "bash", "-c", cmd]).returncode
-    if os.getpid() > 50 or os.getpid() == 1:
-        print(f"FAIL\t{NAME}\tnot under a reaping init in a private PID namespace (pid {os.getpid()}); nothing was run")
+                               "bash", "-c", cmd], env=env).returncode
+    why = namespace_problem()
+    if args != ["--inner"] or why:
+        print(f"FAIL\t{NAME}\t{why or 'bad arguments'}; nothing was run")
         return 1
     fails = 0
-    controls = judge_controls()
-    for msg in controls:
-        print(f"FAIL {msg}")
-    if controls:
-        fails += 1
-    else:
-        print("ok   J: the judge passes 2 safe transcripts and refuses all 16 unsafe variants")
+    for row, probs, good in (("R", refusal_controls(), "a case outside this file's private namespaces is refused, "
+                              "nothing created, no signal (3 controls)"),
+                             ("J", judge_controls(), "the judge passes 2 safe transcripts and refuses all 21 unsafe "
+                              "variants")):
+        for msg in probs:
+            print(f"FAIL {msg}")
+        if probs:
+            fails += 1
+        else:
+            print(f"ok   {row}: {good}")
     for name in ("G1", "G2", "S1", "S2", "A1", "A2"):
         # Output goes to a file and the driver waits for the case process, not for EOF: a browser that is left
         # running (the leak cases) inherits the case's descriptors and would hold a pipe open.
@@ -243,10 +325,10 @@ def main() -> int:
             for msg in probs:
                 print(f"FAIL {msg}")
         else:
-            print(f"ok   {name}: own process group, SIGTERM only, "
+            print(f"ok   {name}: its own process group (pgid == pid), one killpg SIGTERM, "
                   + ("the browser is gone" if name.endswith("1") else "the browser is left running with one LEAK"))
     if fails:
-        print(f"FAIL\t{NAME}\t{fails} case(s)")
+        print(f"FAIL\t{NAME}\t{fails} row(s)")
         return 1
     print(f"PASS\t{NAME}")
     return 0
