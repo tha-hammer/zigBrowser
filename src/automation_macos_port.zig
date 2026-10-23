@@ -23,6 +23,12 @@ const c = @cImport({
 
 const PagePort = page_port.PagePort;
 const PortError = page_port.PortError;
+/// The shim-answer parsers and the ZB_AUTO_* map are shared with the other adapter (4pa.62, V03-F14).
+const port_parse = @import("automation_port_parse.zig");
+const parseDialogs = port_parse.parseDialogs;
+const parseWindows = port_parse.parseWindows;
+const parseRecovered = port_parse.parseRecovered;
+const mapCode = port_parse.mapCode;
 
 pub const supported = builtin.os.tag == .macos;
 
@@ -202,29 +208,6 @@ fn listDialogs(_: *anyopaque, gpa: std.mem.Allocator, timeout_ms: u64) PortError
     return parseDialogs(gpa, std.mem.span(out));
 }
 
-/// Shim dialog JSON [{window, type, message, default_text?}] -> DialogInfo (mirrors the GTK port).
-fn parseDialogs(gpa: std.mem.Allocator, json: []const u8) PortError![]page_port.DialogInfo {
-    const Wire = struct { window: u32, type: page_port.DialogType, message: []const u8, default_text: ?[]const u8 = null };
-    const parsed = std.json.parseFromSlice([]const Wire, gpa, json, .{}) catch |e| switch (e) {
-        error.OutOfMemory => return error.OutOfMemory,
-        else => return error.EvalFailed,
-    };
-    defer parsed.deinit();
-    const dialogs = try gpa.alloc(page_port.DialogInfo, parsed.value.len);
-    var filled: usize = 0;
-    errdefer page_port.freeDialogs(gpa, dialogs[0..filled]);
-    for (parsed.value, dialogs) |wire, *info| {
-        const message = try gpa.dupe(u8, wire.message);
-        const default_text: ?[]u8 = if (wire.default_text) |text| gpa.dupe(u8, text) catch |e| {
-            gpa.free(message);
-            return e;
-        } else null;
-        info.* = .{ .window = wire.window, .type = wire.type, .message = message, .default_text = default_text };
-        filled += 1;
-    }
-    return dialogs;
-}
-
 /// MS2b.2: answer window `id`'s dialog (accept = OK/Leave, else Cancel/Stay; `text` answers an accepted
 /// prompt, null = its default). An embedded NUL in `text` is refused before the ABI (EvalFailed).
 fn respondDialog(_: *anyopaque, id: page_port.WindowId, accept: bool, text: ?[]const u8, timeout_ms: u64) PortError!void {
@@ -246,71 +229,6 @@ fn listWindows(_: *anyopaque, gpa: std.mem.Allocator, timeout_ms: u64) PortError
     try mapCode(rc);
     if (out == null) return error.EvalFailed;
     return parseWindows(gpa, std.mem.span(out));
-}
-
-/// Shim window JSON [{id,url,title,primary,opener,crashed?,health...}] -> WindowInfo (mirrors the GTK port).
-fn parseWindows(gpa: std.mem.Allocator, json: []const u8) PortError![]page_port.WindowInfo {
-    const Wire = struct {
-        id: u32,
-        url: []const u8,
-        title: []const u8,
-        primary: bool,
-        opener: u32,
-        crashed: ?[]const u8 = null,
-        responsive: bool = true,
-        unresponsive_ms: u64 = 0,
-        loading: bool = false,
-        dialog_open: bool = false,
-        incident: u32 = 0,
-        process_group: u32 = 0,
-        load_serial: u64 = 0,
-    };
-    const parsed = std.json.parseFromSlice([]const Wire, gpa, json, .{}) catch |e| switch (e) {
-        error.OutOfMemory => return error.OutOfMemory,
-        else => return error.EvalFailed,
-    };
-    defer parsed.deinit();
-    const windows = try gpa.alloc(page_port.WindowInfo, parsed.value.len);
-    var filled: usize = 0;
-    errdefer {
-        for (windows[0..filled]) |w| {
-            gpa.free(w.url);
-            gpa.free(w.title);
-        }
-        gpa.free(windows);
-    }
-    for (parsed.value, windows) |wire, *info| {
-        const url_copy = try gpa.dupe(u8, wire.url);
-        const title_copy = gpa.dupe(u8, wire.title) catch |e| {
-            gpa.free(url_copy);
-            return e;
-        };
-        const terminated: ?page_port.Termination = if (wire.crashed) |reason|
-            std.meta.stringToEnum(page_port.Termination, reason) orelse {
-                gpa.free(url_copy);
-                gpa.free(title_copy);
-                return error.EvalFailed;
-            }
-        else
-            null;
-        info.* = .{
-            .id = wire.id,
-            .url = url_copy,
-            .title = title_copy,
-            .primary = wire.primary,
-            .opener = if (wire.opener == 0) null else wire.opener,
-            .terminated = terminated,
-            .web_process_responsive = wire.responsive,
-            .unresponsive_ms = wire.unresponsive_ms,
-            .loading = wire.loading,
-            .dialog_open = wire.dialog_open,
-            .incident = wire.incident,
-            .process_group = wire.process_group,
-            .load_serial = wire.load_serial,
-        };
-        filled += 1;
-    }
-    return windows;
 }
 
 /// MS2c: a PagePort bound to window `id` — a pure, non-blocking handle (no page work). Accepts an id
@@ -337,41 +255,6 @@ fn recoverWindows(_: *anyopaque, gpa: std.mem.Allocator, ids: []const page_port.
     try mapCode(rc);
     if (out == null) return error.EvalFailed;
     return parseRecovered(gpa, std.mem.span(out));
-}
-
-fn parseRecovered(gpa: std.mem.Allocator, json: []const u8) PortError![]page_port.RecoveredWindow {
-    const Wire = struct { id: u32, url: []const u8, ended: bool, reloaded: bool };
-    const parsed = std.json.parseFromSlice([]const Wire, gpa, json, .{}) catch |e| switch (e) {
-        error.OutOfMemory => return error.OutOfMemory,
-        else => return error.EvalFailed,
-    };
-    defer parsed.deinit();
-    const windows = try gpa.alloc(page_port.RecoveredWindow, parsed.value.len);
-    var filled: usize = 0;
-    errdefer {
-        for (windows[0..filled]) |w| gpa.free(w.url);
-        gpa.free(windows);
-    }
-    for (parsed.value, windows) |wire, *w| {
-        w.* = .{ .id = wire.id, .url = try gpa.dupe(u8, wire.url), .ended = wire.ended, .reloaded = wire.reloaded };
-        filled += 1;
-    }
-    return windows;
-}
-
-fn mapCode(rc: c_int) PortError!void {
-    return switch (rc) {
-        c.ZB_AUTO_OK => {},
-        c.ZB_AUTO_ERR_TIMEOUT => error.Timeout,
-        c.ZB_AUTO_ERR_NO_WINDOW => error.NoPage,
-        c.ZB_AUTO_ERR_NAV_FAILED => error.NavigationFailed,
-        c.ZB_AUTO_ERR_NO_LOOP, c.ZB_AUTO_ERR_CANCELLED => error.Cancelled,
-        c.ZB_AUTO_ERR_DOC_CHANGED => error.DocumentChanged,
-        c.ZB_AUTO_ERR_DIALOG_OPEN => error.DialogOpen,
-        c.ZB_AUTO_ERR_NO_DIALOG => error.NoDialog,
-        c.ZB_AUTO_ERR_DIALOG_DISMISSED => error.BeforeUnloadDismissed,
-        else => error.EvalFailed,
-    };
 }
 
 fn clampMs(timeout_ms: u64) c_uint {

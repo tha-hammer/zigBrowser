@@ -18,6 +18,12 @@ const c = @cImport({
 
 const PagePort = page_port.PagePort;
 const PortError = page_port.PortError;
+/// The shim-answer parsers and the ZB_AUTO_* map are shared with the other adapter (4pa.62, V03-F14).
+const port_parse = @import("automation_port_parse.zig");
+const parseDialogs = port_parse.parseDialogs;
+const parseWindows = port_parse.parseWindows;
+const parseRecovered = port_parse.parseRecovered;
+const mapCode = port_parse.mapCode;
 
 pub const supported = builtin.os.tag == .linux;
 
@@ -89,28 +95,6 @@ fn listDialogs(_: *anyopaque, gpa: std.mem.Allocator, timeout_ms: u64) PortError
     try mapCode(rc);
     if (out == null) return error.EvalFailed;
     return parseDialogs(gpa, std.mem.span(out));
-}
-
-fn parseDialogs(gpa: std.mem.Allocator, json: []const u8) PortError![]page_port.DialogInfo {
-    const Wire = struct { window: u32, type: page_port.DialogType, message: []const u8, default_text: ?[]const u8 = null };
-    const parsed = std.json.parseFromSlice([]const Wire, gpa, json, .{}) catch |e| switch (e) {
-        error.OutOfMemory => return error.OutOfMemory,
-        else => return error.EvalFailed, // malformed shim JSON
-    };
-    defer parsed.deinit();
-    const dialogs = try gpa.alloc(page_port.DialogInfo, parsed.value.len);
-    var filled: usize = 0;
-    errdefer page_port.freeDialogs(gpa, dialogs[0..filled]);
-    for (parsed.value, dialogs) |wire, *info| {
-        const message = try gpa.dupe(u8, wire.message);
-        const default_text: ?[]u8 = if (wire.default_text) |text| gpa.dupe(u8, text) catch |e| {
-            gpa.free(message);
-            return e;
-        } else null;
-        info.* = .{ .window = wire.window, .type = wire.type, .message = message, .default_text = default_text };
-        filled += 1;
-    }
-    return dialogs;
 }
 
 test "shim window JSON becomes WindowInfo with the web-process termination reason; an unknown reason is EvalFailed" {
@@ -193,72 +177,6 @@ fn listWindows(_: *anyopaque, gpa: std.mem.Allocator, timeout_ms: u64) PortError
     return parseWindows(gpa, std.mem.span(out));
 }
 
-/// The shim's window list JSON as WindowInfo (owned by `gpa`). Malformed
-/// JSON or an unknown termination reason is EvalFailed.
-fn parseWindows(gpa: std.mem.Allocator, json: []const u8) PortError![]page_port.WindowInfo {
-    const Wire = struct {
-        id: u32,
-        url: []const u8,
-        title: []const u8,
-        primary: bool,
-        opener: u32,
-        crashed: ?[]const u8 = null,
-        responsive: bool = true,
-        unresponsive_ms: u64 = 0,
-        loading: bool = false,
-        dialog_open: bool = false,
-        incident: u32 = 0,
-        process_group: u32 = 0,
-        load_serial: u64 = 0,
-    };
-    const parsed = std.json.parseFromSlice([]const Wire, gpa, json, .{}) catch |e| switch (e) {
-        error.OutOfMemory => return error.OutOfMemory,
-        else => return error.EvalFailed, // malformed shim JSON
-    };
-    defer parsed.deinit();
-    const windows = try gpa.alloc(page_port.WindowInfo, parsed.value.len);
-    var filled: usize = 0;
-    errdefer {
-        for (windows[0..filled]) |w| {
-            gpa.free(w.url);
-            gpa.free(w.title);
-        }
-        gpa.free(windows);
-    }
-    for (parsed.value, windows) |wire, *info| {
-        const url_copy = try gpa.dupe(u8, wire.url);
-        const title_copy = gpa.dupe(u8, wire.title) catch |e| {
-            gpa.free(url_copy);
-            return e;
-        };
-        const terminated: ?page_port.Termination = if (wire.crashed) |reason|
-            std.meta.stringToEnum(page_port.Termination, reason) orelse {
-                gpa.free(url_copy);
-                gpa.free(title_copy);
-                return error.EvalFailed;
-            }
-        else
-            null;
-        info.* = .{
-            .id = wire.id,
-            .url = url_copy,
-            .title = title_copy,
-            .primary = wire.primary,
-            .opener = if (wire.opener == 0) null else wire.opener,
-            .terminated = terminated,
-            .web_process_responsive = wire.responsive,
-            .unresponsive_ms = wire.unresponsive_ms,
-            .loading = wire.loading,
-            .dialog_open = wire.dialog_open,
-            .incident = wire.incident,
-            .process_group = wire.process_group,
-            .load_serial = wire.load_serial,
-        };
-        filled += 1;
-    }
-    return windows;
-}
-
 /// page.recover: the shim ends ids[0]'s web process, waits for it, clears
 /// the pointer of each window it ended and reloads them. Then their native
 /// acknowledgement state goes too (the old document owes nothing); a
@@ -279,26 +197,6 @@ fn recoverWindows(_: *anyopaque, gpa: std.mem.Allocator, ids: []const page_port.
         for (recovered) |w| if (w.ended) dropAcks(w.id);
     } else |_| {}
     return recovered;
-}
-
-fn parseRecovered(gpa: std.mem.Allocator, json: []const u8) PortError![]page_port.RecoveredWindow {
-    const Wire = struct { id: u32, url: []const u8, ended: bool, reloaded: bool };
-    const parsed = std.json.parseFromSlice([]const Wire, gpa, json, .{}) catch |e| switch (e) {
-        error.OutOfMemory => return error.OutOfMemory,
-        else => return error.EvalFailed,
-    };
-    defer parsed.deinit();
-    const windows = try gpa.alloc(page_port.RecoveredWindow, parsed.value.len);
-    var filled: usize = 0;
-    errdefer {
-        for (windows[0..filled]) |w| gpa.free(w.url);
-        gpa.free(windows);
-    }
-    for (parsed.value, windows) |wire, *w| {
-        w.* = .{ .id = wire.id, .url = try gpa.dupe(u8, wire.url), .ended = wire.ended, .reloaded = wire.reloaded };
-        filled += 1;
-    }
-    return windows;
 }
 
 test "shim recovery JSON becomes RecoveredWindow; malformed JSON is EvalFailed" {
@@ -334,21 +232,6 @@ fn closeWindow(_: *anyopaque, id: page_port.WindowId, timeout_ms: u64) PortError
     txn_lock.lockUntil(deadline) catch return; // closed; the stale tracker is harmless
     defer txn_lock.unlock();
     dropAcks(id);
-}
-
-fn mapCode(rc: c_int) PortError!void {
-    return switch (rc) {
-        c.ZB_AUTO_OK => {},
-        c.ZB_AUTO_ERR_TIMEOUT => error.Timeout,
-        c.ZB_AUTO_ERR_NO_WINDOW => error.NoPage,
-        c.ZB_AUTO_ERR_NAV_FAILED => error.NavigationFailed,
-        c.ZB_AUTO_ERR_NO_LOOP, c.ZB_AUTO_ERR_CANCELLED => error.Cancelled,
-        c.ZB_AUTO_ERR_DOC_CHANGED => error.DocumentChanged,
-        c.ZB_AUTO_ERR_DIALOG_OPEN => error.DialogOpen,
-        c.ZB_AUTO_ERR_NO_DIALOG => error.NoDialog,
-        c.ZB_AUTO_ERR_DIALOG_DISMISSED => error.BeforeUnloadDismissed,
-        else => error.EvalFailed,
-    };
 }
 
 /// The C ABI takes 32-bit milliseconds; larger deadlines saturate.

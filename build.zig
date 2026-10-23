@@ -1906,6 +1906,27 @@ pub fn build(b: *std.Build) void {
     const automation_cookie_tests = b.addTest(.{ .root_module = automation_cookie_tests_module });
     const run_automation_cookie_tests = b.addRunArtifact(automation_cookie_tests);
     run_automation_cookie_tests.skip_foreign_checks = true;
+    // 4pa.62 (Linux shared-parser half) + V03-F14: the window, dialog and recovery parsers and the ZB_AUTO_* map that
+    // both PagePort adapters use (src/automation_port_parse.zig), run on Linux on every gate; the macOS port's copies
+    // had no test. The macOS runtime of these paths is still proven only by a released Mac run.
+    const automation_port_parse_module = b.createModule(.{
+        .root_source_file = b.path("src/automation_port_parse.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    automation_port_parse_module.addIncludePath(b.path("src"));
+    const automation_port_parse_tests_module = b.createModule(.{
+        .root_source_file = b.path("tests/automation_port_parse_test.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    automation_port_parse_tests_module.addIncludePath(b.path("src"));
+    automation_port_parse_tests_module.addImport("automation_port_parse", automation_port_parse_module);
+    const run_automation_port_parse_tests = b.addRunArtifact(b.addTest(.{ .root_module = automation_port_parse_tests_module }));
+    const automation_port_parse_step = b.step("test-automation-port-parse", "4pa.62: the shared shim-answer parsers both PagePort adapters use");
+    automation_port_parse_step.dependOn(&run_automation_port_parse_tests.step);
 
     const automation_x_tests_module = b.createModule(.{
         .root_source_file = b.path("tests/automation_x_test.zig"),
@@ -4074,6 +4095,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_automation_telemetry_tests.step);
     test_step.dependOn(&run_automation_social_tests.step);
     test_step.dependOn(&run_automation_cookie_tests.step);
+    test_step.dependOn(automation_port_parse_step);
     test_step.dependOn(&run_x_tests.step);
     test_step.dependOn(&run_automation_x_tests.step);
     test_step.dependOn(&run_automation_server_tests.step);
