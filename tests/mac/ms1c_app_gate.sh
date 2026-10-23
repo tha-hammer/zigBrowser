@@ -50,7 +50,27 @@ BUILD_TIMEOUT="${ZB_MAC_BUILD_TIMEOUT:-900}"
 LEG_TIMEOUT="${ZB_MAC_LEG_TIMEOUT:-1200}"
 STAGE=$(mktemp -d "${TMPDIR:-/tmp}/zb-ms1c-stage-XXXXXX") || exit 2
 EV=$(mktemp -d "${TMPDIR:-/tmp}/zb-ms1c-evidence-XXXXXX") || exit 2
-trap 'mac_remove_run_dirs; rm -rf -- "${STAGE:?}"' EXIT
+declare -A LEGV=() LEGSHA=() EVSTATE=()   # EVSTATE[host<TAB>run dir]: "launched" once its leg starts, "copied" once its
+                                          # evidence is back here
+keep_uncopied() { # a run root whose leg started but whose evidence never came back is kept, never removed
+  local entry h k d
+  for entry in "${MAC_RUN_DIRS[@]+"${MAC_RUN_DIRS[@]}"}"; do
+    IFS=$'\t' read -r h k d <<<"$entry"
+    if [ "${EVSTATE[$h$TAB$d]:-}" = launched ]; then mac_keep_run_dir "$h" "$d" "its leg ran but its evidence was not copied back"; fi
+  done
+}
+on_exit() { # an early exit keeps every root without copied evidence; any other root's removal must be confirmed
+  local st=$?
+  keep_uncopied
+  if ! mac_remove_run_dirs; then
+    echo "INCONCLUSIVE: a run root's removal was not confirmed (RETAINED above)" >&2
+    [ "$st" -ne 0 ] || st=2
+  fi
+  rm -rf -- "${STAGE:?}"
+  exit "$st"
+}
+trap on_exit EXIT
+trap 'echo "INCONCLUSIVE: interrupted by a signal" >&2; exit 2' HUP INT TERM
 printf 'EVIDENCE\t%s\n' "$EV"
 printf 'COMMIT\t%s\n' "$COMMIT" | tee "$EV/commit"
 
@@ -81,18 +101,6 @@ cp -- "$dmg_path" "$STAGE/zigBrowser.dmg" || exit 2
 DMG_SHA=$(sha256sum "$STAGE/zigBrowser.dmg" | awk '{ print $1 }')
 printf 'DMG\t%s\t%s\n' "$DMG_SHA" "${dmg_path##*/}" | tee -a "$EV/dmg"
 
-declare -A LEGV=() LEGSHA=()
-
-mac_keep_run_dir() { # $1=host $2=run dir: drop it from every cleanup (mac_gate_lib.sh MAC_RUN_DIRS)
-  local entry h k d
-  local -a keep=()
-  for entry in "${MAC_RUN_DIRS[@]+"${MAC_RUN_DIRS[@]}"}"; do
-    IFS=$'\t' read -r h k d <<<"$entry"
-    if [ "$h" = "$1" ] && [ "$d" = "$2" ]; then continue; fi
-    keep+=("$entry")
-  done
-  MAC_RUN_DIRS=("${keep[@]+"${keep[@]}"}")
-}
 
 leg() { # $1=host $2=key $3=arch
   local host="$1" key="$2" arch="$3" rd rc st line v sha
@@ -108,6 +116,7 @@ leg() { # $1=host $2=key $3=arch
   "${SCP[@]}" "$STAGE/zigBrowser.dmg" "$host:$rd/zigBrowser.dmg" >/dev/null
   st=$?
   [ "$st" -eq 0 ] || { printf 'LEG\t%s\tINCONCLUSIVE\tthe dmg did not reach %s\n' "$arch" "$host"; return; }
+  EVSTATE[$host$TAB$rd]=launched
   timeout "$LEG_TIMEOUT" "${SSH[@]}" "$host" /bin/bash -s "$rd" "$DMG_SHA" "$arch" > "$EV/$arch.leg.out" 2>&1 <<'REMOTE'
 set -uo pipefail
 RDN=${1:?} WANT_SHA=${2:?} ARCH=${3:?}
@@ -487,6 +496,11 @@ REMOTE
   "${SCP[@]}" "$host:$rd/evidence.tar" "$EV/$arch.evidence.tar" >/dev/null
   st=$?
   if [ "$st" -eq 0 ]; then mkdir -p "$EV/$arch" && tar -C "$EV/$arch" -xf "$EV/$arch.evidence.tar"; st=$?; fi
+  if [ "$st" -eq 0 ] && [ -f "$EV/$arch/evidence/leg.log" ]; then
+    EVSTATE[$host$TAB$rd]=copied
+    printf 'EVIDENCE-ARCHIVE\t%s\t%s\t%s\n' "$arch" "$(sha256sum "$EV/$arch.evidence.tar" | awk '{ print $1 }')" \
+      "$(wc -c < "$EV/$arch.evidence.tar")"
+  fi
   sed "s/^/  $arch: /" "$EV/$arch.leg.out" >&2
   line=$(grep "^LEG${TAB}$arch${TAB}" "$EV/$arch.leg.out" | tail -n 1)
   v=$(cut -f3 <<<"$line")
@@ -494,7 +508,7 @@ REMOTE
   LEGSHA[$arch]=$sha
   case "$rc" in
     3|5|124)
-      mac_keep_run_dir "$host" "$rd"
+      mac_keep_run_dir "$host" "$rd" "leg exit $rc (leak, detach failure or timeout)"
       echo "STOPPED: $host ($arch): exit $rc. Run dir ~/$rd is KEPT. A person must stop the reported process or" \
         "detach the reported image before any cleanup of it or further work on $host." >&2
       v=INCONCLUSIVE ;;
@@ -503,7 +517,10 @@ REMOTE
     1) [ "$v" = FAIL ] || v=INCONCLUSIVE ;;
     *) v=INCONCLUSIVE ;;
   esac
-  if [ "$st" -ne 0 ] || [ ! -f "$EV/$arch/evidence/leg.log" ]; then v=INCONCLUSIVE; echo "INCONCLUSIVE: no evidence from $host" >&2; fi
+  if [ "${EVSTATE[$host$TAB$rd]}" != copied ]; then
+    v=INCONCLUSIVE; echo "INCONCLUSIVE: no evidence from $host" >&2
+    case "$rc" in 3|5|124) ;; *) mac_keep_run_dir "$host" "$rd" "its evidence was not copied back" ;; esac
+  fi
   LEGV[$arch]=$v
   printf 'LEG\t%s\t%s\texit %s\n' "$arch" "$v" "$rc"
 }
@@ -520,7 +537,7 @@ for entry in "${MAC_RUN_DIRS[@]+"${MAC_RUN_DIRS[@]}"}"; do
     "[ ! -d \"\$d\" ] || find \"\$d\" -delete; [ ! -e \"\$d\" ]" </dev/null
   st=$?
   printf 'CLEANUP\t%s\t%s\trc=%s\n' "$host" "$rdir" "$st" | tee -a "$EV/cleanup"
-  [ "$st" -eq 0 ] || clean=1
+  if [ "$st" -ne 0 ]; then clean=1; printf 'RETAINED\t%s\t%s\tits removal was refused or not confirmed (rc=%s)\n' "$host" "$rdir" "$st" >&2; fi
 done
 MAC_RUN_DIRS=()
 

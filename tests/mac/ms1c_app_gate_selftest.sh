@@ -59,12 +59,24 @@
 #       (no workload row, no control), INCONCLUSIVE;
 #   F25 a subtree that becomes unreadable during the run: "HOMEAUDIT INCONCLUSIVE the after snapshot is incomplete",
 #       INCONCLUSIVE;
-#   F26 a ctime-only change (a mode changed and put back): HOME-DELTA CHANGED for it, INCONCLUSIVE.
-# No Mac, no signal: it re-runs itself in a private user+network namespace; HOME/TMPDIR live in its temp tree.
+#   F26 a ctime-only change (a mode changed and put back): HOME-DELTA CHANGED for it, INCONCLUSIVE;
+#   F27 an early exit (the gate gets SIGTERM while the arm leg runs, after the Intel evidence came back): the EXIT trap
+#       keeps the arm root (RETAINED, never contacted for removal), removes the Intel root through the shared verified
+#       mac_remove_run_dirs (REMOVED), keeps the copied Intel evidence here, exit 2, no PASS;
+#   F28 the same early exit while the Intel removal claims success but leaves the root: RETAINED for it as well, the
+#       root and its evidence stay, exit 2, no PASS;
+#   F29 the Intel evidence copy fails: that root is RETAINED and never removed, INCONCLUSIVE, no PASS.
+# No Mac. It re-runs itself in a private user+network+PID namespace; the one signal (F27/F28) is sent only inside it,
+# by a fake that refuses unless its PID namespace differs from the outer one. HOME/TMPDIR live in its temp tree.
 # Run: bash tests/mac/ms1c_app_gate_selftest.sh [repo root]
 set -uo pipefail
 if [ "${ZB_MS1C_SELFTEST_INNER:-}" != 1 ]; then
-  ZB_MS1C_SELFTEST_INNER=1 exec unshare --user --map-current-user --net bash "$(realpath "$0")" "$@"
+  ZB_MS1C_OUTER_PIDNS=$(readlink /proc/self/ns/pid) || exit 1
+  export ZB_MS1C_OUTER_PIDNS
+  ZB_MS1C_SELFTEST_INNER=1 exec unshare --user --map-current-user --net --pid --fork --mount-proc bash "$(realpath "$0")" "$@"
+fi
+if [ -z "${ZB_MS1C_OUTER_PIDNS:-}" ] || [ "$(readlink /proc/self/ns/pid)" = "$ZB_MS1C_OUTER_PIDNS" ]; then
+  printf 'FAIL\tmac-ms1c-app-gate-selftest\tnot in a private PID namespace\n'; exit 1
 fi
 ROOT=$(realpath "${1:-.}")
 BASE=$(mktemp -d "${TMPDIR:-/tmp}/zb-ms1c-selftest-XXXXXX")
@@ -103,6 +115,18 @@ for a in "\$@"; do
   host=\$a; break
 done
 case "\$host" in $INTEL) role=intel ;; $ARM) role=arm ;; *) echo "stub ssh: unexpected host \$host" >&2; exit 99 ;; esac
+if [ "\$role" = arm ] && [ -e "$C/mode_early_exit" ] && [ "\${*:k+1:2}" = "/bin/bash -s" ] && [ "\${@: -1}" = arm64 ]; then
+  # F27/F28: the gate stops early while the arm leg runs; the signal stays inside this selftest's own PID namespace
+  [ "\$(readlink /proc/self/ns/pid)" != "$ZB_MS1C_OUTER_PIDNS" ] || { echo refused > "$C/pidns_refused"; exit 97; }
+  p=\$PPID
+  while [ "\$p" -gt 1 ]; do
+    if tr '\0' ' ' < "/proc/\$p/cmdline" | grep -q 'tests/mac/ms1c_app_gate\.sh'; then
+      kill -TERM "\$p"; echo "\$p" > "$C/early_exit_sent"; exit 0
+    fi
+    p=\$(awk '/^PPid:/ { print \$2 }' "/proc/\$p/status")
+  done
+  echo "no gate ancestor" > "$C/early_exit_missing"; exit 98
+fi
 cd "$X/hosts/\$role" && exec env -i HOME="$X/hosts/\$role" ZB_ROLE=\$role PATH="$X/hostbin:/usr/bin:/bin" bash -c "\${*:k+1}"
 EOF
 cat > "$X/bin/scp" <<EOF
@@ -117,7 +141,9 @@ done
 dst=\${pos[\${#pos[@]}-1]}; unset 'pos[\${#pos[@]}-1]'
 remote() { case "\$1" in $INTEL:*) echo "$X/hosts/intel/\${1#*:}" ;; $ARM:*) echo "$X/hosts/arm/\${1#*:}" ;; *) return 1 ;; esac; }
 for src in "\${pos[@]}"; do
-  if r=\$(remote "\$src"); then cp "\$r" "\$dst" || exit 1
+  if r=\$(remote "\$src"); then
+    case "\$src" in $INTEL:*/evidence.tar) if [ -e "$C/mode_evidence_copy_fail" ]; then echo "scp: lost connection" >&2; exit 1; fi ;; esac
+    cp "\$r" "\$dst" || exit 1
   elif r=\$(remote "\$dst"); then
     cp "\$src" "\$r" || exit 1
     case "\$dst" in $ARM:*.dmg) if [ -e "$C/mode_corrupt_dmg.arm" ]; then printf x >> "\$r"; fi ;; esac
@@ -639,6 +665,36 @@ run_gate ctimeonly ctime_only.intel
   && grep -q "^HOME-DELTA${TB}CHANGED${TB}$X/hosts/intel/Library/Preferences/keep2.plist${TB}" "$EV/x86_64/evidence/leg.log" 2>/dev/null; } \
   && ok "F26: a ctime-only change in the home: HOME-DELTA, INCONCLUSIVE" || bad "F26: exit $rc: $(tailout)"
 chmod 700 "$X/hosts/intel/Library/Lockable" 2>/dev/null
+
+# ── Early exit and evidence-copy failure (the shared verified removal, SilverRidge 0632602f) ──
+retained() { grep -qE "^RETAINED$TB$1$TB$2$TB" "$OUT"; }
+one_root() { # one_root <role>: the only run root left on that Mac (the arm leg is stopped before it attaches anything)
+  local -a r=("$X/hosts/$1"/zb-gate-*)
+  [ "${#r[@]}" -eq 1 ] && [ -d "${r[0]}" ] && printf '%s\n' "${r[0]}"
+}
+run_gate earlyexit early_exit
+ird=$(rd_of intel); ard=$(one_root arm); irn=${ird##*/}; arn=${ard##*/}
+{ [ "$rc" -eq 2 ] && no_pass && [ -s "$C/early_exit_sent" ] && [ ! -e "$C/pidns_refused" ] && [ -n "$irn" ] && [ -n "$arn" ] \
+  && grep -qxF "REMOVED$TB$INTEL$TB$irn" "$OUT" && [ ! -e "$ird" ] \
+  && retained "$ARM" "$arn" && [ -d "$ard" ] && ! grep -q "$TB$ard$TB" "$C/find_delete" \
+  && [ -f "$EV/x86_64/evidence/leg.log" ] && grep -q "^EVIDENCE-ARCHIVE${TB}x86_64$TB" "$OUT"; } \
+  && ok "F27: an early exit keeps the arm root (no removal sent) and the copied Intel evidence; the Intel removal is verified" \
+  || bad "F27: exit $rc, intel '$irn' arm '$arn': $(tailout)"
+run_gate earlyexitnoop early_exit remove_noop.intel
+ird=$(rd_of intel); ard=$(one_root arm); irn=${ird##*/}; arn=${ard##*/}
+{ [ "$rc" -eq 2 ] && no_pass && [ -s "$C/early_exit_sent" ] && [ -n "$irn" ] && [ -n "$arn" ] \
+  && retained "$INTEL" "$irn" && [ -f "$ird/evidence.tar" ] && ! grep -q "^REMOVED$TB$INTEL$TB" "$OUT" \
+  && retained "$ARM" "$arn" && [ -d "$ard" ] && [ -f "$EV/x86_64/evidence/leg.log" ]; } \
+  && ok "F28: an early exit refuses an unverified removal: the Intel root is RETAINED with its evidence, exit 2" \
+  || bad "F28: exit $rc, intel '$irn' arm '$arn': $(tailout)"
+run_gate evcopyfail evidence_copy_fail
+ird=$(rd_of intel); irn=${ird##*/}
+{ [ "$rc" -eq 2 ] && no_pass && leg_is x86_64 INCONCLUSIVE && leg_is arm64 PASS && [ -n "$irn" ] \
+  && retained "$INTEL" "$irn" && [ -f "$ird/evidence.tar" ] && ! grep -q "$TB$ird$TB" "$C/find_delete" \
+  && ! grep -q "^CLEANUP$TB$INTEL$TB" "$OUT" && grep -q "^CLEANUP$TB$ARM$TB.*${TB}rc=0$" "$OUT"; } \
+  && ok "F29: a failed evidence copy keeps that root (RETAINED, no removal); the other root is still removed" \
+  || bad "F29: exit $rc, intel '$irn': $(tailout)"
+for role in intel arm; do find "$X/hosts/$role" -mindepth 1 -maxdepth 1 -name 'zb-gate-*' -exec rm -rf {} +; done
 
 if [ "$fails" -eq 0 ]; then printf 'PASS\tmac-ms1c-app-gate-selftest\n'; exit 0; fi
 printf 'FAIL\tmac-ms1c-app-gate-selftest\t%s failure(s)\n' "$fails"
