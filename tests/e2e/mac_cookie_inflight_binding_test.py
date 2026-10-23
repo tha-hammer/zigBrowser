@@ -2,8 +2,9 @@
 """bd zigBrowser-4pa.56 (plan R30-MS3, MS3.3): every macOS cookie call releases its waiter into the deadline-bound
 INFLIGHT state as soon as its WKHTTPCookieStore call is issued, so the caller's timeout_ms bounds the round trip.
 
-RED, UNREGISTERED, fix-forward for SilverRidge 72424397: K3 is bound to the dispatched block and to the exact guard
-shape, not to text order. The green registers it beside test-load-failure-policy's binding oracle.
+Registered (step test-cookie-inflight-binding, beside test-load-failure-policy's binding oracle; red debfc606,
+fix-forward 0907b353 for SilverRidge 72424397): K3 is bound to the dispatched block and to the exact guard shape, not
+to text order.
 
 In the shim's job state machine, zb_job_wait has no deadline while a job is DISPATCHING. zb_job_inflight moves the job
 to INFLIGHT, where timeout_ms applies. The other async ops call it right after their submit; the three cookie ops
@@ -26,7 +27,7 @@ Rows, one per operation (zb_cookies_get_all, zb_cookies_add, zb_cookies_delete):
   So an inverted guard, a bare claim, a claim outside the block, or a plain local block in place of the dispatch is
   red.
 
-Run: python3 tests/e2e/mac_cookie_inflight_binding_test.py [shim path]
+Run: python3 tests/e2e/mac_cookie_inflight_binding_test.py [shim path]   (registered: zig build test-cookie-inflight-binding)
 """
 from __future__ import annotations
 

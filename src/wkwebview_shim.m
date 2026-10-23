@@ -2134,6 +2134,7 @@ int zb_cookies_get_all(uint32_t win, const char *url, unsigned int timeout_ms, c
       zb_job_complete(job, ZB_AUTO_OK, result, NULL);
       zb_job_unref(job);
     }); }];
+    zb_job_inflight(job);  // 4pa.56: the store call is issued: DISPATCHING -> INFLIGHT, so timeout_ms bounds the wait
   });
   int rc = zb_job_wait(job, timeout_ms);
   if (rc == ZB_AUTO_OK && out_json != NULL) { *out_json = job->result; job->result = NULL; }
@@ -2180,6 +2181,7 @@ int zb_cookies_add(uint32_t win, const ZbCookie *cookie, unsigned int timeout_ms
       zb_job_complete(job, ZB_AUTO_OK, NULL, NULL);
       zb_job_unref(job);
     }); }];
+    zb_job_inflight(job);  // 4pa.56: the store call is issued: DISPATCHING -> INFLIGHT, so timeout_ms bounds the wait
   });
   int rc = zb_job_wait(job, timeout_ms);
   zb_job_unref(job);
@@ -2226,6 +2228,7 @@ int zb_cookies_delete(uint32_t win, const char *name, const char *domain, unsign
         }];
       }
     }); }];
+    zb_job_inflight(job);  // 4pa.56: the store call is issued: DISPATCHING -> INFLIGHT, so timeout_ms bounds the wait
   });
   int rc = zb_job_wait(job, timeout_ms);
   zb_job_unref(job);

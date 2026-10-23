@@ -725,6 +725,15 @@ pub fn build(b: *std.Build) void {
         "src/wkwebview_shim.m",
     }) |input| native_close_binding.addFileInput(b.path(input));
     b.step("test-native-close-binding", "4pa.58: the native close control reaches the registry through the one window-event destroy path").dependOn(&native_close_binding.step);
+    // 4pa.56: each WKHTTPCookieStore call releases its job (DISPATCHING -> INFLIGHT) right after the submit, inside the
+    // guarded main-queue block, so timeout_ms bounds the wait. The runtime proof is the held mac_cookie_timeout_test.py.
+    const cookie_inflight_binding = b.addSystemCommand(&.{ "python3", "tests/e2e/mac_cookie_inflight_binding_test.py" });
+    for ([_][]const u8{
+        "tests/e2e/mac_cookie_inflight_binding_test.py",
+        "tests/e2e/mac_load_exit_timer_binding_test.py",
+        "src/wkwebview_shim.m",
+    }) |input| cookie_inflight_binding.addFileInput(b.path(input));
+    b.step("test-cookie-inflight-binding", "4pa.56: every cookie call is released to INFLIGHT after its submit, so its timeout applies").dependOn(&cookie_inflight_binding.step);
 
     // Hook 16 inert row (SilverRidge 8721b6d, option B): the data-store selection decision of the e2e-only hook
     // ZB_DEBUG_EPHEMERAL_DATA_STORE, probed through src/zb_test_hook_gate.h with no AppKit and no WebKit store.
@@ -4260,6 +4269,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&load_failure_policy_mutants.step);
     test_step.dependOn(&run_hook16_tests.step);
     test_step.dependOn(&native_close_binding.step);
+    test_step.dependOn(&cookie_inflight_binding.step);
     test_step.dependOn(&run_hook14_tests.step);
     test_step.dependOn(&run_app_profile_dir_tests.step);
     test_step.dependOn(&run_agent_drawer_tests.step);
