@@ -30,11 +30,21 @@
 #   K8 a sandbox denial in verify that also prints a sealed-resource message, under data_in_frameworks: INCONCLUSIVE,
 #      never EXPECTED-FAIL; a denied signing tool: INCONCLUSIVE, no verify;
 #   K9 a staged symlink that resolves outside the root: INCONCLUSIVE before any signing;
-#   K10 an outside write during the leg (audit noise): INCONCLUSIVE, naming the path;
+#   K10 the audit: on each arch, an addition, a content change, a mode-only change or a deletion outside the sandbox
+#      during the leg, across the getconf temp root, the getconf cache root, ~/Library/Caches and the shallow home, is
+#      INCONCLUSIVE on that leg, naming the path (K4 also requires path|type|mode|inode|size|mtime for all four
+#      surfaces in both snapshots);
 #   K11 an unsealed verify on the arm leg: LAYOUT-FINDING there, LAYOUT-OK on Intel, exit 0; a verify failure with no
 #      diagnostic: INCONCLUSIVE, exit 2;
 #   K12 no arm64 host, inputs that do not match inputs.sha256, an unknown mutant: exit 1 and no ssh/scp;
-#   K13 the driver refuses a regular file as stdout before any sandbox-exec call.
+#   K13 an inherited regular-file descriptor outside the root (fd 1, fd 2, fd 9) is NOT RUN before any sandbox-exec or
+#      tool call; a root-local fd 9 and a pipe on fd 9 run the whole leg;
+#   K14 every ssh/scp call is classified: per leg only create, one scp of the committed source tar and the two
+#      hash-pinned prep inputs into <rd>/inputs/, run, one scp of <rd>/evidence.tar into <prep>/evidence/, and remove,
+#      each ssh carrying the committed leg driver; anything else is a failure. A run root swapped for a symlink to an
+#      outside directory, and a pre-existing symlink at the controlled name, are refused before any sandbox-exec or
+#      tool call with the target unchanged.
+# K5 and K6 require the whole Mac tool log to be empty and assert both legs' verdicts.
 # No Mac, no signal, no network: it re-runs itself in a private user+mount+network namespace.
 # Run: bash tests/mac/bundle_layout_spike_containment_selftest.sh [repo root]
 set -uo pipefail
@@ -78,9 +88,22 @@ scen=$(cat "$C/scenario")
 [ "$scen" = parse_error ] && { echo "sandbox-exec: syntax error in the profile" >&2; exit 65; }
 [ "$scen" = positive_fail ] && [ "$1" = /bin/mkdir ] && exit 1
 H=$(cd "$HOME" && pwd -P)
-if [ "$scen" = noise ] && [ "$1" = /bin/bash ] && [ ! -e "$C/noise.$ZB_ROLE" ]; then
-  : > "$C/noise.$ZB_ROLE"; echo noise > "$H/Library/Caches/com.example.noise"
-fi
+# audit:<role>:<op>:<surface> changes one audited surface outside the sandbox, between the two audits (at the first
+# outer command), as another process on the Mac would.
+case "$scen" in audit:*)
+  IFS=: read -r _ arole op surf <<<"$scen"
+  if [ "$arole" = "$ZB_ROLE" ] && [ "$1" = /bin/bash ] && [ ! -e "$C/audit.done" ]; then
+    : > "$C/audit.done"
+    case "$surf" in
+      temp) d="$H/var/folders/zz/zyxw/T" f=resident ;; cache) d="$H/var/folders/zz/zyxw/C" f=resident ;;
+      caches) d="$H/Library/Caches/com.apple.existing" f=data ;; shallow) d="$H" f=.profile ;;
+    esac
+    case "$op" in
+      add) echo added > "$d/zb-audit-added" ;; change) echo changed-and-longer >> "$d/$f" ;;
+      chmod) chmod 600 "$d/$f" ;; delete) rm -f "$d/$f" ;;
+    esac
+  fi ;;
+esac
 [ "$scen" = no_enforce ] && exec env ZB_FAKE_SANDBOXED=1 "$@"
 mapfile -t allow < <(grep -oE '\(subpath "[^"]*"\)' <<<"$prof" | sed -E 's/^\(subpath "(.*)"\)$/\1/')
 exec unshare --mount --propagation private /bin/bash -c '
@@ -93,7 +116,7 @@ done
 exec env ZB_FAKE_SANDBOXED=1 "$@"' _ "$H" "${#allow[@]}" "${allow[@]+"${allow[@]}"}" "$@"
 EOF
 fake "$P/usrbin/python3" <<EOF
-NAME=python3; $rec
+NAME=python3; [ -z "\${ZB_ROLE:-}" ] || $rec
 exec "\$P/realusrbin/python3" "\$@"
 EOF
 mount --bind "$P/usrbin" /usr/bin || { echo "FAIL could not overlay /usr/bin"; exit 1; }
@@ -101,6 +124,7 @@ mount --bind "$P/usrbin" /usr/bin || { echo "FAIL could not overlay /usr/bin"; e
 # --- Linux-side stub ssh/scp: run the command in the host's fake home, through a symlinked HOME, behind pipes ---
 fake "$X/bin/ssh" <<EOF
 echo "ssh \$*" >> "\$C/calls"
+n=\$(cat "\$C/xport.count" 2>/dev/null || echo 0); echo \$((n + 1)) > "\$C/xport.count"
 host= skip= k=0
 for a in "\$@"; do
   k=\$((k + 1))
@@ -109,12 +133,15 @@ for a in "\$@"; do
   host=\$a; break
 done
 case "\$host" in $INTEL) role=intel arch=x86_64 ;; $ARM) role=arm arch=arm64 ;; *) echo "stub ssh: unexpected host \$host" >&2; exit 99 ;; esac
+printf 'ssh\t%s\t%s\n' "\$host" "\${*:k+1}" > "\$C/xport.\$n"
 cd "\$X/homes/\$role" || exit 98
-env -i HOME="\$X/homes/\$role" ZB_ROLE=\$role ZB_ARCH=\$arch PATH="\$X/hostbin:/usr/bin:/bin" bash -c "\${*:k+1}" 2> >(cat >&2) | cat
-exit "\${PIPESTATUS[0]}"
+tee "\$C/xport.\$n.stdin" | env -i HOME="\$X/homes/\$role" ZB_ROLE=\$role ZB_ARCH=\$arch PATH="\$X/hostbin:/usr/bin:/bin" \
+  bash -c "\${*:k+1}" 2> >(cat >&2) | cat
+exit "\${PIPESTATUS[1]}"
 EOF
 fake "$X/bin/scp" <<EOF
 echo "scp \$*" >> "\$C/calls"
+n=\$(cat "\$C/xport.count" 2>/dev/null || echo 0); echo \$((n + 1)) > "\$C/xport.count"
 pos=() skip=
 for a in "\$@"; do
   if [ -n "\$skip" ]; then skip=; continue; fi
@@ -123,9 +150,16 @@ for a in "\$@"; do
 done
 role_of() { case "\$1" in $INTEL:*) echo intel ;; $ARM:*) echo arm ;; *) echo "stub scp: bad host in \$1" >&2; exit 99 ;; esac; }
 dst=\${pos[\${#pos[@]}-1]}; unset 'pos[\${#pos[@]}-1]'
+printf 'scp\t%s\t%s\n' "\$dst" "\${#pos[@]}" > "\$C/xport.\$n"; printf '%s\n' "\${pos[@]}" > "\$C/xport.\$n.srcs"
+i=0; for src in "\${pos[@]}"; do [[ "\$src" == *:* ]] || cp "\$src" "\$C/xport.\$n.src.\$i"; i=\$((i + 1)); done
 if [[ "\$dst" == *:* ]]; then
   role=\$(role_of "\$dst") || exit 99
   for src in "\${pos[@]}"; do cp "\$src" "\$X/homes/\$role/\${dst#*:}" || exit 1; done
+  # swap_root: after the inputs land, another process replaces the run root with a symlink to an outside directory.
+  if [ "\$(cat "\$C/scenario")" = swap_root ] && [ ! -e "\$C/swapped.\$role" ]; then
+    r=\${dst#*:}; r=\${r%%/*}; : > "\$C/swapped.\$role"
+    mv "\$X/hosts/\$role/\$r" "\$X/swapped-aside-\$role" && ln -s "\$X/outside" "\$X/hosts/\$role/\$r"
+  fi
 else
   for src in "\${pos[@]}"; do role=\$(role_of "\$src") || exit 99; cp "\$X/homes/\$role/\${src#*:}" "\$dst" || exit 1; done
 fi
@@ -184,6 +218,7 @@ for role in intel arm; do
   h="$X/hosts/$role"
   mkdir -p "$h/.local/bin" "$h/Library/Caches/com.apple.existing" "$h/var/folders/zz/zyxw/T/old" "$h/var/folders/zz/zyxw/C/old"
   echo resident > "$h/Library/Caches/com.apple.existing/data"; echo profile > "$h/.profile"
+  echo resident > "$h/var/folders/zz/zyxw/T/resident"; echo resident > "$h/var/folders/zz/zyxw/C/resident"
   ln -s "$h" "$X/homes/$role"
   fake "$h/.local/bin/zig" <<EOF
 NAME=zig; $rec
@@ -195,6 +230,108 @@ printf 'MACHO libwkwebview_shim stand-in\n' > zig-out/Frameworks/libwkwebview_sh
 echo "build ok"
 EOF
 done
+
+mkdir -p "$X/outside"; echo sentinel > "$X/outside/sentinel"   # the target of a symlinked run root
+outside_snapshot() { (cd "$X/outside" && find . -printf '%p|%y|%m|%s|%T@\n' | sort); }
+outside_snapshot > "$T/outside.want"
+
+# Every ssh/scp call the runner makes, classified. Admitted per leg, in order: create (the committed leg driver on
+# stdin), one scp of exactly the committed source tar + the two hash-pinned prep inputs into <rd>/inputs/, run (same
+# driver, this arch, the pin, the mutant), one scp of <rd>/evidence.tar into <prep>/evidence/, remove. Anything else,
+# a different driver, an extra or unpinned local file, a path outside <rd>, or another run dir, is printed as BAD.
+cat > "$T/xport_check.py" <<'PY'
+import hashlib, io, os, re, subprocess, sys, tarfile
+C, R, SHA, PIN, INTEL, ARM, SUMS, IN, MUT = sys.argv[1:10]
+hosts = {INTEL: ("intel", "x86_64"), ARM: ("arm", "arm64")}
+drv = subprocess.run(["git", "-C", R, "show", f"{SHA}:tests/mac/bundle_layout_spike_leg.sh"], capture_output=True).stdout
+drv_sha = hashlib.sha256(drv).hexdigest() if drv else None
+blobs = {}
+for line in subprocess.run(["git", "-C", R, "ls-tree", "-r", SHA], capture_output=True, text=True).stdout.splitlines():
+    meta, path = line.split("\t", 1)
+    blobs[path] = meta.split()[2]
+pinned = {}
+for line in open(SUMS):
+    h, name = line.split()
+    pinned[h] = name
+def committed_tar(data):
+    try:
+        t = tarfile.open(fileobj=io.BytesIO(data))
+        regs = 0
+        for m in t.getmembers():
+            if m.isdir() or m.type == tarfile.XGLTYPE:
+                continue
+            if not m.isfile():
+                return False
+            body = t.extractfile(m).read()
+            if hashlib.sha1(b"blob %d\0" % len(body) + body).hexdigest() != blobs.get(m.name):
+                return False
+            regs += 1
+        return regs > 0
+    except Exception:
+        return False
+tokens = {"intel": [], "arm": []}
+bad = []
+rds = {}
+rd_re = re.compile(r"zb-gate-%s-[0-9a-f]+" % SHA)
+ns = sorted(int(f.split(".")[1]) for f in os.listdir(C) if re.fullmatch(r"xport\.\d+", f))
+for n in ns:
+    kind, a, b = open(f"{C}/xport.{n}").read().rstrip("\n").split("\t", 2)
+    if kind == "ssh":
+        if a not in hosts:
+            bad.append(f"{n}: ssh to unknown host {a}"); continue
+        role, arch = hosts[a]
+        w = b.split(" ")
+        stdin = open(f"{C}/xport.{n}.stdin", "rb").read()
+        if drv_sha is None or hashlib.sha256(stdin).hexdigest() != drv_sha:
+            bad.append(f"{n}: ssh {role} '{b}' does not send the committed leg driver"); continue
+        if len(w) < 4 or w[:2] != ["/bin/bash", "-s"] or not rd_re.fullmatch(w[3]):
+            bad.append(f"{n}: ssh {role} unknown command '{b}'"); continue
+        if w[2] == "create" and len(w) == 4 and role not in rds:
+            rds[role] = w[3]; tokens[role].append("create")
+        elif w[2] == "run" and w[3:] == [rds.get(role), arch, PIN, MUT]:
+            tokens[role].append("run")
+        elif w[2] == "remove" and len(w) == 4 and w[3] == rds.get(role):
+            tokens[role].append("remove")
+        else:
+            bad.append(f"{n}: ssh {role} unadmitted command '{b}'")
+    elif kind == "scp":
+        srcs = open(f"{C}/xport.{n}.srcs").read().splitlines()
+        if ":" in a:
+            host, path = a.split(":", 1)
+            role = hosts.get(host, ("?",))[0]
+            if role == "?" or path != f"{rds.get(role)}/inputs/":
+                bad.append(f"{n}: scp to unadmitted destination {a}"); continue
+            kinds = []
+            for i, src in enumerate(srcs):
+                if ":" in src:
+                    kinds.append("remote:" + src); continue
+                data = open(f"{C}/xport.{n}.src.{i}", "rb").read()
+                h = hashlib.sha256(data).hexdigest()
+                if h in pinned and os.path.basename(src) == pinned[h]:
+                    kinds.append(pinned[h])
+                elif committed_tar(data):
+                    kinds.append("committed-source")
+                else:
+                    kinds.append("UNPINNED:" + src)
+            if sorted(kinds) == ["committed-source", "py.pkg", "sites.tar"]:
+                tokens[role].append("inputs")
+            else:
+                bad.append(f"{n}: scp {role} inputs are {sorted(kinds)}")
+        else:
+            ok = len(srcs) == 1 and ":" in srcs[0]
+            host, path = srcs[0].split(":", 1) if ok else ("", "")
+            role = hosts.get(host, ("?",))[0]
+            if ok and role != "?" and path == f"{rds.get(role)}/evidence.tar" and os.path.realpath(a).startswith(IN + "/evidence/"):
+                tokens[role].append("evidence")
+            else:
+                bad.append(f"{n}: scp from the Mac unadmitted: {srcs} -> {a}")
+    else:
+        bad.append(f"{n}: unknown call {kind}")
+print("intel " + " ".join(tokens["intel"]))
+print("arm " + " ".join(tokens["arm"]))
+for b_ in bad:
+    print("BAD " + b_)
+PY
 
 # --- the scratch repo: the real spike, leg driver, transport and host keys, the stand-in stager, a committed agent tree ---
 R="$T/repo"
@@ -263,7 +400,16 @@ check_removed() { # <label>
 }
 leg_class() { awk -F'\t' -v a="$1" '$1 == "LEG" && $2 == a { print $4 }' <<<"$out" | tail -n 1; }
 leg_detail() { awk -F'\t' -v a="$1" '$1 == "LEG" && $2 == a { print $5 }' <<<"$out" | tail -n 1; }
-product_calls() { grep -cE '^(zig|stager|codesign)	' "$C/tools.log" 2>/dev/null || true; }
+mac_tool_calls() { cat "$C/tools.log" 2>/dev/null | wc -l; }   # every recorded Mac-side tool call, of any kind
+spike_result() { awk -F'\t' '$1 == "SPIKE-RESULT" { print $4 " " $5 }' <<<"$out" | tail -n 1; }
+xport() { python3 "$T/xport_check.py" "$C" "$R" "$SHA" "$PIN" "$INTEL" "$ARM" "$IN/inputs.sha256" "$IN" "$1"; }
+check_xport() { # <label> <mutant> <intel tokens> <arm tokens>
+  local got want
+  got=$(xport "$2"); want=$(printf 'intel %s\narm %s' "$3" "$4")
+  [ "$got" = "$want" ] && ok "$1: every ssh/scp call is admitted (intel: $3; arm: ${4:-none})" \
+    || bad "$1: ssh/scp calls are '$(tr '\n' ';' <<<"$got")', want '$(tr '\n' ';' <<<"$want")'"
+}
+LEG5="create inputs run evidence remove"
 root_of() { # <role>: the physical run root named in the sandbox-exec calls
   local f
   for f in "$C"/sbx.*.role; do
@@ -415,6 +561,19 @@ for role in intel arm; do
     && ok "clean K4 $role: driver output, logs and both audits are in $IN/evidence" || bad "clean K4 $role: evidence '$ev' lacks: $missing"
 done
 check_removed "clean K4"
+check_xport "clean K14" none "$LEG5" "$LEG5"
+for role in intel arm; do
+  arch=x86_64; [ "$role" = arm ] && arch=arm64
+  H="$X/hosts/$role" missing=
+  for f in "$IN"/evidence/"$arch"-*/evidence/audit.before "$IN"/evidence/"$arch"-*/evidence/audit.after; do
+    for want in "$H/var/folders/zz/zyxw/T/resident" "$H/var/folders/zz/zyxw/C/resident" "$H/Library/Caches/com.apple.existing/data" "$H/.profile"; do
+      grep -qE "^$want\|[^|]+\|[0-7]+\|[0-9]+\|[0-9]+\|[0-9]+$" "$f" 2>/dev/null || missing+="${f##*/}:${want#$H/} "
+    done
+    grep -q '/zb-gate-' "$f" 2>/dev/null && missing+="${f##*/}:the-run-root "
+  done
+  [ -z "$missing" ] && ok "clean K4 $role: both audits hold path|type|mode|inode|size|mtime for the getconf temp and cache roots, ~/Library/Caches and the shallow home, never the root" \
+    || bad "clean K4 $role: audit lines missing or wrong: $missing"
+done
 homes_snapshot > "$T/homes.after"
 cmp -s "$T/homes.before" "$T/homes.after" && ok "clean K2: the fake Mac homes are exactly as before (outside the removed roots)" \
   || bad "clean K2: the fake homes changed: $(diff "$T/homes.before" "$T/homes.after" | grep -E '^[<>]' | head -n 4 | tr '\n' ' ')"
@@ -426,10 +585,12 @@ for scen in missing parse_error positive_fail; do
   [ "$scen" = missing ] && chmod +x "$P/usrbin/sandbox-exec"
   case "$scen" in missing|parse_error) want=preflight ;; positive_fail) want=positive ;; esac
   if [ "$rc" -eq 2 ] && [ "$(leg_class x86_64)" = INCONCLUSIVE ] && [ "$(leg_class arm64)" = INCONCLUSIVE ] \
-     && [[ "$(leg_detail x86_64)" == "$want: "* ]] && [ "$(product_calls)" = 0 ]; then
-    ok "$scen K5: INCONCLUSIVE ($(leg_detail x86_64)) on both legs, exit 2, no product tool ran"
-  else bad "$scen K5: exit $rc, intel '$(leg_class x86_64): $(leg_detail x86_64)', product calls $(product_calls)"; fi
+     && [[ "$(leg_detail x86_64)" == "$want: "* ]] && [[ "$(leg_detail arm64)" == "$want: "* ]] \
+     && [ "$(spike_result)" = "x86_64=INCONCLUSIVE arm64=INCONCLUSIVE" ] && [ "$(mac_tool_calls)" -eq 0 ]; then
+    ok "$scen K5: INCONCLUSIVE ($(leg_detail x86_64) / $(leg_detail arm64)) on both legs, exit 2, the Mac tool log is empty"
+  else bad "$scen K5: exit $rc, intel '$(leg_class x86_64): $(leg_detail x86_64)', arm '$(leg_class arm64): $(leg_detail arm64)', Mac tool calls $(mac_tool_calls)"; fi
   check_removed "$scen K5"
+  check_xport "$scen K14" none "$LEG5" "$LEG5"
 done
 
 # ===== K6: a non-refused canary is a BREACH =====
@@ -437,9 +598,11 @@ run_spike breach no_enforce clean both
 canary=$(ls -A "$X/hosts/intel" | grep '^\.zb-spike-canary-' | head -n 1)
 if [ "$rc" -eq 4 ] && [ "$(leg_class x86_64)" = BREACH ] && [ -z "$(leg_class arm64)" ] && [ -n "$canary" ] \
    && [[ "$(leg_detail x86_64)" == "$X/hosts/intel/$canary (root "* ]] && grep -q 'CONTAINMENT BREACH' <<<"$out" \
-   && ! grep -q "$ARM" "$C/calls" && [ "$(product_calls)" = 0 ] && [ -d "$(roots_left | head -n 1)" ]; then
-  ok "breach K6: BREACH names $canary, exit 4; the canary and the root are kept; arm64 never contacted; no product tool ran"
-else bad "breach K6: exit $rc, intel '$(leg_class x86_64): $(leg_detail x86_64)', arm '$(leg_class arm64)', canary '$canary', roots '$(roots_left)'"; fi
+   && ! grep -q "$ARM" "$C/calls" && [ "$(mac_tool_calls)" -eq 0 ] && [ -d "$(roots_left | head -n 1)" ] \
+   && [ "$(spike_result)" = "x86_64=BREACH arm64=NOT-RUN" ]; then
+  ok "breach K6: BREACH names $canary, exit 4, x86_64=BREACH arm64=NOT-RUN; the canary and the root are kept; arm64 never contacted; the Mac tool log is empty"
+else bad "breach K6: exit $rc, intel '$(leg_class x86_64): $(leg_detail x86_64)', arm '$(leg_class arm64)', result '$(spike_result)', canary '$canary', roots '$(roots_left)', Mac tool calls $(mac_tool_calls)"; fi
+check_xport "breach K14" none "create inputs run" ""
 rm -rf "$X/hosts/intel/"zb-gate-* "$X/hosts/intel/".zb-spike-canary-*
 
 # ===== K7: the data_in_frameworks mutant =====
@@ -449,6 +612,7 @@ if [ "$rc" -eq 0 ] && [ "$(leg_class x86_64)" = EXPECTED-FAIL ] && [ "$(leg_clas
    && [ "$(grep -hP '^SPIKE\tcensus\t' "$IN"/evidence/*/driver.out | sort -u)" = "$(printf 'SPIKE\tcensus\t%d' $((DATA + 1)))" ]; then
   ok "mutant K7: EXPECTED-FAIL on both legs; stray-data.txt in the verified tree, census $((DATA + 1))"
 else bad "mutant K7: exit $rc, '$(leg_class x86_64)' '$(leg_class arm64)'"; fi
+check_xport "mutant K14" data_in_frameworks "$LEG5" "$LEG5"
 run_spike mutant_clean none clean both ZB_SPIKE_MUTANT=data_in_frameworks
 { [ "$rc" -eq 2 ] && [ "$(leg_class x86_64)" = INCONCLUSIVE ] && [[ "$(leg_detail x86_64)" == *"accepted the data_in_frameworks mutant"* ]]; } \
   && ok "mutant_clean K7: a verify that accepts the mutant is INCONCLUSIVE, exit 2" || bad "mutant_clean K7: exit $rc, '$(leg_class x86_64): $(leg_detail x86_64)'"
@@ -474,12 +638,35 @@ nsign=$(grep -c '^codesign	' "$C/tools.log" 2>/dev/null || true)
   || bad "escape K9: exit $rc, '$(leg_class x86_64): $(leg_detail x86_64)', codesign calls $nsign"
 check_removed "escape K9"
 
-# ===== K10: an outside write during the leg =====
-run_spike noise noise clean both
-{ [ "$rc" -eq 2 ] && [ "$(leg_class x86_64)" = INCONCLUSIVE ] && [[ "$(leg_detail x86_64)" == "audit delta"*com.example.noise* ]]; } \
-  && ok "noise K10: an outside write during the leg is an audit delta, INCONCLUSIVE" \
-  || bad "noise K10: exit $rc, '$(leg_class x86_64): $(leg_detail x86_64)'"
-rm -f "$X/hosts/intel/Library/Caches/com.example.noise" "$X/hosts/arm/Library/Caches/com.example.noise"
+# ===== K10: every audited surface, both arches: an addition, a content change, a mode-only change or a deletion =====
+restore_homes() {
+  local role h d
+  for role in intel arm; do
+    h="$X/hosts/$role"
+    for d in "$h/var/folders/zz/zyxw/T" "$h/var/folders/zz/zyxw/C"; do echo resident > "$d/resident"; chmod 644 "$d/resident"; rm -f "$d/zb-audit-added"; done
+    echo resident > "$h/Library/Caches/com.apple.existing/data"; chmod 644 "$h/Library/Caches/com.apple.existing/data"
+    rm -f "$h/Library/Caches/com.apple.existing/zb-audit-added" "$h/zb-audit-added"
+    echo profile > "$h/.profile"; chmod 644 "$h/.profile"
+  done
+}
+restore_homes
+for row in intel:add:temp intel:chmod:cache intel:change:caches intel:delete:shallow \
+           arm:delete:temp arm:add:cache arm:chmod:caches arm:change:shallow; do
+  IFS=: read -r role op surf <<<"$row"
+  H="$X/hosts/$role"
+  case "$surf" in
+    temp) d="$H/var/folders/zz/zyxw/T" f=resident ;; cache) d="$H/var/folders/zz/zyxw/C" f=resident ;;
+    caches) d="$H/Library/Caches/com.apple.existing" f=data ;; shallow) d="$H" f=.profile ;;
+  esac
+  [ "$op" = add ] && f=zb-audit-added
+  hit=x86_64 other=arm64; [ "$role" = arm ] && hit=arm64 other=x86_64
+  run_spike "audit-$role-$op-$surf" "audit:$role:$op:$surf" clean both
+  if [ "$rc" -eq 2 ] && [ "$(leg_class "$hit")" = INCONCLUSIVE ] && [[ "$(leg_detail "$hit")" == "audit delta outside the root: "*"$d/$f "* ]] \
+     && [ "$(leg_class "$other")" = LAYOUT-OK ]; then
+    ok "audit K10 $role $op $surf: INCONCLUSIVE on $hit naming ${d#$X/hosts/}/$f; $other LAYOUT-OK"
+  else bad "audit K10 $role $op $surf: exit $rc, $hit '$(leg_class "$hit"): $(leg_detail "$hit")', $other '$(leg_class "$other")'"; fi
+  restore_homes
+done
 
 # ===== K11: findings and inconclusive verify =====
 run_spike finding none unsealed arm
@@ -504,18 +691,60 @@ run_spike tampered none clean both
   && ok "tampered K12: inputs that do not match inputs.sha256 are refused, no ssh/scp" || bad "tampered K12: exit $rc"
 cp "$T/py.pkg.good" "$IN/py.pkg"
 
-# ===== K13: no regular file as the driver's stdout =====
-rm -rf "${C:?}"/*; echo none > "$C/scenario"
-RDX="zb-gate-$SHA-0123abcd"
+# ===== K13: no inherited regular-file descriptor outside the root (fd 1, fd 2, fd 9); pipes and root-local are fine =====
 DRV="$R/tests/mac/bundle_layout_spike_leg.sh"
-(cd "$X/homes/intel" && env -i HOME="$X/homes/intel" ZB_ROLE=intel ZB_ARCH=x86_64 PATH="$X/hostbin:/usr/bin:/bin" \
-   bash -s create "$RDX" < "$DRV" | cat >/dev/null
- env -i HOME="$X/homes/intel" ZB_ROLE=intel ZB_ARCH=x86_64 PATH="$X/hostbin:/usr/bin:/bin" \
-   bash -s run "$RDX" x86_64 "$PIN" none < "$DRV" > "$T/k13.out" 2>/dev/null)
-k13=$?
-{ [ "$k13" -eq 3 ] && grep -qP '^PHASE\tdescriptors\tNOT-RUN\tfd 1 is a regular file$' "$T/k13.out" && [ ! -e "$C/sbx.0.argv" ]; } \
-  && ok "fd K13: a regular-file stdout is NOT RUN before any sandbox-exec call" || bad "fd K13: exit $k13: $(cat "$T/k13.out" 2>/dev/null)"
-rm -rf "$X/hosts/intel/$RDX"
+HENV=(env -i HOME="$X/homes/intel" ZB_ROLE=intel ZB_ARCH=x86_64 PATH="$X/hostbin:/usr/bin:/bin")
+k=0
+direct_root() { # a fresh root with the runner's inputs: sets RDX, RT
+  k=$((k + 1)); RDX="zb-gate-$SHA-0123abc$k" RT="$X/hosts/intel/zb-gate-$SHA-0123abc$k"
+  rm -rf "${C:?}"/*; echo none > "$C/scenario"; echo clean > "$C/verify_mode"; echo both > "$C/verify_where"
+  (cd "$X/homes/intel" && "${HENV[@]}" bash -s create "$RDX" < "$DRV" | cat >/dev/null)
+  "${G[@]}" archive --format=tar -o "$RT/inputs/src.tar" "$SHA" && cp "$IN/py.pkg" "$IN/sites.tar" "$RT/inputs/"
+}
+drun() { (cd "$X/homes/intel" && "${HENV[@]}" bash -s run "$RDX" x86_64 "$PIN" none < "$DRV"); }
+refused_before_sbx() { # <label> <rc> <output> <fd>
+  if [ "$2" -eq 3 ] && grep -qP "^PHASE\tdescriptors\tNOT-RUN\tfd $4 is a regular file outside the run root$" <<<"$3" \
+     && [ ! -e "$C/sbx.0.argv" ] && [ "$(mac_tool_calls)" -eq 0 ]; then
+    ok "$1: NOT RUN before any sandbox-exec or tool call"
+  else bad "$1: exit $2, sandbox-exec calls $(cat "$C/sbx.count" 2>/dev/null || echo 0): $(tr '\n' ' ' <<<"$3" | cut -c1-200)"; fi
+}
+direct_root; drun > "$T/outside-fd1" 2>/dev/null; r=$?
+refused_before_sbx "fd K13 fd1-outside" "$r" "$(cat "$T/outside-fd1")" 1; rm -rf "${RT:?}"
+direct_root; o=$(drun 2> "$T/outside-fd2"); r=$?
+refused_before_sbx "fd K13 fd2-outside" "$r" "$o" 2; rm -rf "${RT:?}"
+direct_root; o=$(drun 2>/dev/null 9> "$T/outside-fd9"); r=$?
+refused_before_sbx "fd K13 fd9-outside" "$r" "$o" 9; rm -rf "${RT:?}"
+direct_root; o=$(drun 2>/dev/null 9> "$RT/inputs/fd9-root-local"); r=$?
+{ [ "$r" -eq 0 ] && grep -qx LEGDONE <<<"$o" && grep -qP '^PHASE\tpreflight\tok$' <<<"$o"; } \
+  && ok "fd K13 fd9-root-local: a root-local fd 9 with pipe stdout/stderr runs the whole leg" || bad "fd K13 fd9-root-local: exit $r: $(tr '\n' ' ' <<<"$o" | cut -c1-200)"
+rm -rf "${RT:?}"
+direct_root; o=$(drun 2>/dev/null 9> >(cat >/dev/null)); r=$?
+{ [ "$r" -eq 0 ] && grep -qx LEGDONE <<<"$o"; } \
+  && ok "fd K13 fd9-pipe: a pipe on fd 9 runs the whole leg" || bad "fd K13 fd9-pipe: exit $r: $(tr '\n' ' ' <<<"$o" | cut -c1-200)"
+rm -rf "${RT:?}"
+
+# ===== K14: a run root that is a symlink to an outside directory is refused before any sandbox or tool =====
+run_spike swap_root swap_root clean both
+if [ "$rc" -eq 2 ] && [[ "$(leg_detail x86_64)" == "root: "* ]] && [[ "$(leg_detail arm64)" == "root: "* ]] \
+   && [ ! -e "$C/sbx.0.argv" ] && [ "$(mac_tool_calls)" -eq 0 ] && outside_snapshot | cmp -s - "$T/outside.want"; then
+  ok "swap_root K14: a root swapped for a symlink after transfer is INCONCLUSIVE (root) on both legs, no sandbox-exec or tool call, the target unchanged"
+else bad "swap_root K14: exit $rc, '$(leg_class x86_64): $(leg_detail x86_64)' '$(leg_class arm64): $(leg_detail arm64)', sandbox-exec calls $(cat "$C/sbx.count" 2>/dev/null || echo 0)"; fi
+check_xport "swap_root K14" none "$LEG5" "$LEG5"
+for role in intel arm; do
+  find "$X/hosts/$role" -maxdepth 1 -name 'zb-gate-*' -type l -delete
+  case "$X/swapped-aside-$role" in "$X"/swapped-aside-*) rm -rf "${X:?}/swapped-aside-$role" ;; esac
+done
+rm -rf "${C:?}"/*; echo none > "$C/scenario"
+RDX="zb-gate-$SHA-0123abcf"
+ln -s "$X/outside" "$X/hosts/intel/$RDX"
+o=$( (cd "$X/homes/intel" && "${HENV[@]}" bash -s create "$RDX" < "$DRV") ); r1=$?
+o2=$( (cd "$X/homes/intel" && "${HENV[@]}" bash -s remove "$RDX" < "$DRV") ); r2=$?
+o3=$(drun 2>/dev/null); r3=$?
+if [ "$r1" -eq 3 ] && [ "$r2" -eq 3 ] && [ "$r3" -eq 3 ] && grep -qP '^PHASE\troot\tNOT-RUN\t' <<<"$o3" && [ ! -e "$C/sbx.0.argv" ] \
+   && [ "$(mac_tool_calls)" -eq 0 ] && [ -L "$X/hosts/intel/$RDX" ] && outside_snapshot | cmp -s - "$T/outside.want"; then
+  ok "symlink-root K14: a pre-existing symlink at the controlled name is refused by create, remove and run; the target is unchanged"
+else bad "symlink-root K14: create $r1, remove $r2, run $r3 ($(tr '\n' ' ' <<<"$o $o2 $o3" | cut -c1-200))"; fi
+rm -f "$X/hosts/intel/$RDX"
 
 if [ "$fails" -eq 0 ]; then printf 'PASS\tmac-bundle-layout-spike-containment-selftest\n'; exit 0; fi
 printf 'FAIL\tmac-bundle-layout-spike-containment-selftest\t%s failure(s)\n' "$fails"
