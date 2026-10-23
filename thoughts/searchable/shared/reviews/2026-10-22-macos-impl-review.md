@@ -2094,3 +2094,19 @@ The exact fix-forward minimum is small:
 3. Run a production mutant restoring the `otool | grep -qF` pipeline through `test-mac-dmg-script` and require it to fail. Re-run that step with ordinary default caches and parallelism, plus `test-mac-build-script`, before requesting a new aggregate push-safe ruling.
 
 All other ancestry blocks named in this audit have reviewed fix-forwards: the temporary fail-open `1362d73a` interval is repaired by `9c33b3c3`; the 4pa.58 and 4pa.56 greens and their registered hostless gates are green; the MS1c, 4pa.59 and `/var/folders` reds remain unregistered with their approved corrections; and the universal/provenance content remains approved apart from this newly discovered inherited DMG pipeline defect. The standing per-run Mac release rules and owner exceptions are unchanged.
+
+## 2026-10-23 — `/var/folders` parent-census RED `a74766dd`
+
+**BLOCKED ON ONE NARROW COVERAGE GAP.** Exact `a74766dd8ac839bcbf5a71413cc73816ccda1750` is an honest, unregistered hostless red and otherwise satisfies the sibling-census shape required by `5f1ce9a5`. It adds only `tests/e2e/mac_varfolders_census_test.py`, is absent from `build.zig`, and is clean under `git diff --check`. This ruling authorizes no Mac contact and does not change the standing push-safety block.
+
+From a clean exact archive under `env -i`, private HOME/TMP paths and a private current-user/network/PID/mount namespace, the new oracle exited 1 with exactly **13 problems**, all attributable to the current helper's missing parent header, sibling census, common-parent refusal and unreadable-sibling handling. The unchanged exact registered helper oracle then passed V1–V15. PC1–PC6 independently bind the exact common-parent header; T/C-only completion; full, ordered P/T delta reporting followed by INCONCLUSIVE; distinct-parent refusal; unreadable sibling refusal at begin and non-pass at end; and an inotify boundary over the entire fake per-user tree. The supplied draft shape is satisfiable and the six submitted ordinary-entry mutants are causal.
+
+The remaining gap is directly inside the approved minimum rather than optional hardening. The test's own contract says every entry below the common parent must be recorded with the same record format as T/C and that missing or incomplete parent evidence must be non-pass, but PC1–PC6 use only representable sibling names. An implementation may silently skip or normalize a P entry whose name cannot be represented in the tab-delimited evidence and still pass every submitted row. V11 binds tab/newline/non-UTF-8 names under T/C, but it does not causally bind the new P walk.
+
+The complete fix-forward minimum is one field-isolated parent-census row:
+
+1. Put a sibling entry under P whose name is unrepresentable by the evidence format (cover tab or newline and a non-UTF-8 byte, either as subcases of one row or equivalent closed cases). If it exists before `varfolders_begin`, begin must refuse with the existing bounded INCONCLUSIVE form. If it appears between begin and end, end must be INCONCLUSIVE and must not emit a misleading COMPLETE or partial parent census.
+2. Add a focused helper mutant that silently skips or normalizes that P entry; the new row must turn it red.
+3. Preserve PC1–PC6, the honest baseline count (updated if the new subcases add failures), the six current census mutants, unregistered status, and the unchanged V1–V15 green control.
+
+No other property is being added to this red review. There remains **no currently valid push-safe Mac SHA** because the independent registered-DMG pipefail defect recorded in `2e8e0190` is still unresolved.
