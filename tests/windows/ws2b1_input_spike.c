@@ -93,6 +93,23 @@ static const char kAllTrusted[] =
     "return String(l.length > 0 && l.every(e => e.endsWith(':true')));";
 static const char kLogged[] = "return JSON.stringify(window.trustLog.filter(e => e.startsWith(arg)));";
 
+/* The move target, measured fresh (NavyCanyon 0fc5f8b): the wheel row scrolls #menu (document y 40..80) out of
+ * the viewport, so put it back (scroll to the top), wait two frames for scroll and layout to settle, clear the
+ * hover log, then measure once. "in <cx>,<cy> ..." only when the centre is inside the viewport, else "out ...";
+ * both carry the scroll, rect and viewport. tests/windows/ws2b1_spike_move_test.py runs this exact body. */
+static const char kMoveTarget[] =
+    "window.scrollTo(0, 0);"
+    "await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));"
+    "window.__scroll.hovers.length = 0;"
+    "const r = document.getElementById('menu').getBoundingClientRect();"
+    "const cx = r.left + r.width / 2, cy = r.top + r.height / 2;"
+    "const inside = cx >= 0 && cx < innerWidth && cy >= 0 && cy < innerHeight;"
+    "return (inside ? 'in ' : 'out ') + cx + ',' + cy + ' scrollY=' + scrollY + ' rect=' + r.left + ',' + r.top +"
+    " ',' + r.width + 'x' + r.height + ' viewport=' + innerWidth + 'x' + innerHeight;";
+/* "true" only when at least one hover event was logged and every one is trusted (an empty log is not trust). */
+static const char kHoverTrust[] =
+    "const h = window.__scroll.hovers; return String(h.length > 0 && h.every(e => e.endsWith(':true')));";
+
 static void input_page_checks(void) {
   double x = 0, y = 0;
   char why[512];
@@ -250,24 +267,31 @@ static void scroll_page_checks(void) {
           WAIT_MS, "scroll: the wheel events are trusted");
   wait_is(NULL, "return String(window.scrollY > 0);", NULL, "true", WAIT_MS, "scroll: the page scrolled");
 
-  /* pointer move: a trusted move reaches the hover target */
+  /* pointer move: a trusted move reaches the hover target, measured back in the viewport (kMoveTarget); a centre
+   * outside it fails the move row and nothing is sent */
   double x = 0, y = 0;
-  if (centre("#menu", &x, &y)) {
+  char target_why[512];
+  char *target = eval(NULL, kMoveTarget, NULL, target_why, sizeof target_why);
+  const int inside = target != NULL && sscanf(target, "in %lf,%lf", &x, &y) == 2;
+  if (target != NULL) {
+    snprintf(target_why, sizeof target_why, "move target: %s", target);
+    zb_automation_free(target);
+  }
+  if (inside) {
     err = NULL;
     rc = zb_native_move(0, x, y, NULL, 10000, &err);
     note_rc("zb_native_move", rc, err);
     check(rc == ZB_AUTO_OK, "move: zb_native_move returns OK", NULL);
     wait_is(NULL, "return String(window.__scroll.hovers.indexOf('mousemove:true') >= 0);", NULL, "true", WAIT_MS,
             "move: a trusted mousemove reaches the hover target");
-    eval_is(NULL, "return String(window.__scroll.hovers.every(h => h.endsWith(':true')));", NULL, "true",
-            "move: every hover event is trusted");
+    eval_is(NULL, kHoverTrust, NULL, "true", "move: every hover event is trusted");
     double px = -1, py = -1;
     int have = zb_native_pointer(0, &px, &py);
     snprintf(why, sizeof why, "have=%d at %.1f,%.1f want %.1f,%.1f", have, px, py, x, y);
     check(have == 1 && px > x - 0.5 && px < x + 0.5 && py > y - 0.5 && py < y + 0.5,
           "move: zb_native_pointer reports the move point", why);
   } else {
-    check(0, "move: zb_native_move returns OK", "no #menu centre");
+    check(0, "move: zb_native_move returns OK", target_why); /* fail closed: the target is not in the viewport */
   }
 }
 

@@ -488,6 +488,10 @@ pub fn build(b: *std.Build) void {
     // build has them; the MinGW headers here do not).
     const windows_msvc_minmax = b.addSystemCommand(&.{ "python3", "-I", "tests/windows/msvc_minmax_test.py", "--zig", b.graph.zig_exe });
     b.step("windows-msvc-minmax", "WS2b.1: no Windows source uses min/max where the MSVC SDK macros expand (hermetic)").dependOn(&windows_msvc_minmax.step);
+    // WS2b.1 (NavyCanyon 0fc5f8b): the spike's move target is measured back in the viewport and its hover trust row is
+    // non-vacuous; runs the spike's own JavaScript in node on a fake page (a hostless tripwire).
+    const windows_ws2b1_spike_move = b.addSystemCommand(&.{ "python3", "-I", "tests/windows/ws2b1_spike_move_test.py" });
+    b.step("windows-ws2b1-spike-move", "WS2b.1: the spike moves only to a target measured inside the viewport; an empty hover log is not trusted (hermetic)").dependOn(&windows_ws2b1_spike_move.step);
 
     // NavyCanyon 6dd7fda: the ONE shared WebView2 run-folder cleanup (tests/windows/webview2_cleanup.py) through the
     // real helper and both real callers (spike_driver.run_spike, m8_live_test.run_on_host), on a fake VM (hermetic).
@@ -3808,6 +3812,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&windows_live_step_skip.step);
     test_step.dependOn(&windows_ws2a3_seam_gating.step);
     test_step.dependOn(&windows_msvc_minmax.step);
+    test_step.dependOn(&windows_ws2b1_spike_move.step);
     test_step.dependOn(&windows_webview2_cleanup_selftest.step);
     test_step.dependOn(&windows_transport_scp_selftest.step);
     test_step.dependOn(&windows_scp_callers_selftest.step);
