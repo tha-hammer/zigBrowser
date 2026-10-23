@@ -3892,7 +3892,8 @@ pub fn build(b: *std.Build) void {
     }) |input| mac_bundle_layout_spike_prep_selftest.addFileInput(b.path(input));
     mac_bundle_layout_spike_step.dependOn(&mac_bundle_layout_spike_prep_selftest.step);
     test_step.dependOn(&mac_bundle_layout_spike_prep_selftest.step);
-    // The MS2b, MS2c and MS3 gates are real steps that run their scripts and pass a gate failure through (bd 4pa.62).
+    // The Mac gates are real steps that run their scripts and pass a gate failure through, each with an approved-run
+    // manifest (bd 4pa.62, R29-REG).
     const mac_gate_steps_selftest = b.addSystemCommand(&.{ "bash", "tests/mac/gate_steps_selftest.sh" });
     mac_gate_steps_selftest.setEnvironmentVariable("ZIG", b.graph.zig_exe);
     for ([_][]const u8{
@@ -3909,8 +3910,14 @@ pub fn build(b: *std.Build) void {
         "tests/mac/approved_runs/ms3-gate.json",
         "tests/mac/ms2a_gate.sh",
         "tests/mac/approved_runs/ms2a-gate.json",
+        "tests/mac/gate.sh",
+        "tests/mac/ms1b_signed_gate.sh",
+        "tests/mac/approved_runs/mac-gate.json",
+        "tests/mac/approved_runs/ms1b-gate.json",
+        "tests/e2e/mac_resource_compat.py",
+        "packaging/macos/universal_components.json",
     }) |input| mac_gate_steps_selftest.addFileInput(b.path(input));
-    b.step("test-mac-gate-steps", "Run the hostless selftest of the ms2b/ms2c/ms3 gate steps (4pa.62)").dependOn(&mac_gate_steps_selftest.step);
+    b.step("test-mac-gate-steps", "Run the hostless selftest of the Mac gate steps (mac-gate, ms1b-gate, ms2a/2b/2c/3-gate) and their approved-run manifests").dependOn(&mac_gate_steps_selftest.step);
     test_step.dependOn(&mac_gate_steps_selftest.step);
     // Every remote zig invocation keeps both zig caches inside its run dir (bd 3ui.5).
     const mac_zig_cache_selftest = b.addSystemCommand(&.{ "bash", "tests/mac/zig_cache_isolation_selftest.sh" });

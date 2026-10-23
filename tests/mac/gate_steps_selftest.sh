@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
-# Hostless selftest: the MS2b, MS2c and MS3 Mac gates are real `zig build` steps (bd zigBrowser-4pa.62, plan R30-MS2 and
-# R29-REG: tests/mac/ms2b_gate.sh, ms2c_gate.sh and ms3_gate.sh were hand-run, with no step and no record of an approved
-# run). A scratch git copy of the repo runs `zig build <step>` for real, with a stub ssh/scp on PATH that records every
-# call and answers like a passing Mac. For each of ms2a-gate, ms2b-gate, ms2c-gate and ms3-gate (ms2a-gate's step is
-# older; its manifest row was added for R29-REG, SilverRidge b3b3620):
-#   S1 with both Mac hosts configured, `zig build <step>` exits 0 and prints that gate's own
-#      "PASS<TAB><step><TAB>both-arches" line, after ssh calls to both hosts (the step runs that script to its end);
+# Hostless selftest: the Mac gates are real `zig build` steps, each with a committed record of its last approved run
+# (plan R29-REG; bd zigBrowser-4pa.62 made ms2b/ms2c/ms3 steps of the hand-run gates). A scratch git copy of the repo
+# runs `zig build <step>` for real, with a stub ssh/scp on PATH that records every call and answers like a passing Mac
+# (including the remote tests' PASS lines that tests/mac/gate.sh requires). For each of mac-gate, ms1b-gate, ms2a-gate,
+# ms2b-gate, ms2c-gate and ms3-gate (the manifest rows of the older mac-gate, ms1b-gate and ms2a-gate steps were added
+# for R29-REG, SilverRidge b3b3620 and fb8e6ff):
+#   S1 with both Mac hosts configured, `zig build <step>` exits 0 and prints that gate's own both-arches PASS line
+#      (mac-gate's is "PASS<TAB>mac-universal-gate<TAB>both-arches"), after ssh calls to both hosts (the step runs that
+#      script to its end);
 #   S2 with no arm64 host, `zig build <step>` exits non-zero with the gate's "NOT RUN: arm64 host not configured" and
 #      makes zero ssh/scp calls (the step passes the gate's failure through; it never turns it into a pass);
 #   S3 TRIPWIRE (not proof): tests/mac/approved_runs/<step>.json names the step and its script, and its
@@ -35,7 +37,26 @@ cat > "$T/bin/ssh" <<EOF
 #!/bin/bash
 i=\$(cat "$T/ctl/n" 2>/dev/null || echo 0); echo \$((i + 1)) > "$T/ctl/n"
 printf '%s\0' ssh "\$@" > "$T/ctl/call.\$i"
-cat > /dev/null
+s=\$(cat)
+# The answers of a passing Mac where a gate reads the remote output (tests/mac/gate.sh, MS1.4).
+host= skip=
+for a in "\$@"; do
+  if [ -n "\$skip" ]; then skip=; continue; fi
+  case "\$a" in -i|-o|-F|-p|-l) skip=1; continue ;; -*) continue ;; esac
+  host=\$a; break
+done
+arch=x86_64; [ "\$host" = "$ARM" ] && arch=arm64
+case "\$*" in
+  *"cat "*exec-arch.txt*) echo "\$arch"; exit 0 ;;
+  *"pillow_tools.py nonuniform"*) echo '{"stddev": 41.5, "distinct": 913, "width": 800, "height": 600}'; exit 0 ;;
+esac
+case "\$s" in
+  *'lipo -create'*) echo "universal archs: x86_64 arm64"; echo "shim dylib archs: x86_64 arm64" ;;
+  *m9_render_test.py*)
+    printf 'PASS\tm9-render-webview-screenshot\tzig-out/m9-render.png\tstub\nPASS\tm9-reply-channel-contract\n'
+    printf 'PASS\tm9-load-fail-contract\nexec_arch_probe: build.exec_arch=%s\n' "\$arch" ;;
+  *mac_universal_test.py*) printf 'PASS\tmac-universal\t12 assertions\n' ;;
+esac
 exit 0
 EOF
 cat > "$T/bin/scp" <<EOF
@@ -70,13 +91,15 @@ run_step() { # run_step <step> <arm host>: sets rc, calls, hosts; output in $T/o
   hosts=$(for f in "$T/ctl"/call.*; do [ -e "$f" ] && tr '\0' '\n' < "$f" | grep -oxE "$INTEL|$ARM|($INTEL|$ARM):.*" | cut -d: -f1; done | sort -u | tr '\n' ' ')
 }
 
-for row in "ms2a-gate tests/mac/ms2a_gate.sh" "ms2b-gate tests/mac/ms2b_gate.sh" "ms2c-gate tests/mac/ms2c_gate.sh" "ms3-gate tests/mac/ms3_gate.sh"; do
-  read -r step script <<<"$row"
+for row in "mac-gate tests/mac/gate.sh mac-universal-gate" "ms1b-gate tests/mac/ms1b_signed_gate.sh ms1b-signed-gate" \
+           "ms2a-gate tests/mac/ms2a_gate.sh ms2a-gate" "ms2b-gate tests/mac/ms2b_gate.sh ms2b-gate" \
+           "ms2c-gate tests/mac/ms2c_gate.sh ms2c-gate" "ms3-gate tests/mac/ms3_gate.sh ms3-gate"; do
+  read -r step script passname <<<"$row"
   run_step "$step" "$ARM"
-  if [ "$rc" -eq 0 ] && grep -qP "^PASS\t$step\tboth-arches$" "$T/out" && [ "$hosts" = "$ARM $INTEL " ]; then
+  if [ "$rc" -eq 0 ] && grep -qP "^PASS\t$passname\tboth-arches$" "$T/out" && [ "$hosts" = "$ARM $INTEL " ]; then
     ok "$step S1: zig build $step runs $script to its PASS line on both hosts ($calls ssh/scp calls)"
   else
-    bad "$step S1: zig build $step: exit $rc, hosts '$hosts', want 0 with \"PASS $step both-arches\": $(grep -E 'error|FAIL|PASS|no step' "$T/out" | head -n 3 | tr '\n' ' ')"
+    bad "$step S1: zig build $step: exit $rc, hosts '$hosts', want 0 with \"PASS $passname both-arches\": $(grep -E 'error|FAIL|PASS|no step' "$T/out" | head -n 3 | tr '\n' ' ')"
   fi
   run_step "$step" ""
   if [ "$rc" -ne 0 ] && grep -q 'NOT RUN: arm64 host not configured' "$T/out" && [ "$calls" -eq 0 ]; then
