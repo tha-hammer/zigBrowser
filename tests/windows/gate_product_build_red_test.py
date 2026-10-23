@@ -31,6 +31,13 @@ order prefix, plus a build prefix (the driver's stage ssh saves the streamed arc
 -EncodedCommand), and an scp that writes an `MZ` file (or fails, or writes a non-PE file). TEST-NET hosts only;
 fake_transport.problem is checked on every ssh/scp argv.
 
+R2 (NavyCanyon b3f95193): a real-driver failure names its exact propagated rc (stage 5, build 6, fetch 7, non-PE 3);
+two successful runs against the same repository and TMPDIR get two distinct owned work directories and executables,
+and a pre-existing decoy sibling stays byte-identical; a fake `rm` intercepts ONLY the exact
+$TMPDIR/zb-gate-product.* target (delegating every other rm, the real driver's included) so the gate makes exactly one
+cleanup attempt on exactly its own directory, and a failed or no-op removal fails an otherwise successful run (naming
+the cleanup) or is reported beside an earlier build/Win10 failure, which keeps its own diagnostic.
+
 Run alone:  unshare --user --map-current-user --net python3 -I tests/windows/gate_product_build_red_test.py -v
 """
 import json
@@ -81,6 +88,29 @@ dest="${@: -1}"
 if [ -n "${ZB_FAKE_SCP_NONPE:-}" ]; then printf 'XXnot a pe\n' > "$dest"; else printf 'MZ fake zigBrowser.exe\n' > "$dest"; fi
 exit 0
 '''
+# Intercepts ONLY removal of an exact direct child $ZB_FAKE_RM_TMP/zb-gate-product.*; every other rm is delegated.
+_RM = r'''#!/usr/bin/env bash
+hit=""
+if [ -n "${ZB_FAKE_RM_TMP:-}" ]; then
+  tmp=$(realpath -m -- "$ZB_FAKE_RM_TMP")
+  for a in "$@"; do
+    case "$a" in -*) continue ;; esac
+    r=$(realpath -m -- "$a")
+    if [ "$(dirname -- "$r")" = "$tmp" ]; then
+      case "$(basename -- "$r")" in zb-gate-product.*) hit="$r" ;; esac
+    fi
+  done
+fi
+if [ -n "$hit" ]; then
+  printf 'RM %s\n' "$hit" >> "$ZB_FAKE_RM_LOG"
+  case "${ZB_FAKE_RM_MODE:-}" in
+    fail) echo "fake rm: cannot remove '$hit': Operation not permitted" >&2; exit 1 ;;
+    noop) exit 0 ;;
+  esac
+fi
+exec /usr/bin/rm "$@"
+'''
+CLEANUP = "cleanup"  # the gate's cleanup-failure diagnostic names the cleanup and the work directory
 # A fake live row: records what it was given.
 _ROW = r'''
 import json, os, sys
@@ -130,7 +160,8 @@ class _World:
         (td / "bin" / "ssh").write_text("#!/usr/bin/env bash\n" + _BUILD_PREFIX + g8._ORDER_PREFIX + gts._SSH_STUB)
         (td / "bin" / "virsh").write_text("#!/usr/bin/env bash\n" + gts._VIRSH_STUB)
         (td / "bin" / "scp").write_text(_SCP)
-        for f in ("ssh", "virsh", "scp"):
+        (td / "bin" / "rm").write_text(_RM)
+        for f in ("ssh", "virsh", "scp", "rm"):
             (td / "bin" / f).chmod(0o755)
         self.repo = td / "repo"
         self.root = self.repo / "sub" if sub else self.repo
@@ -159,11 +190,13 @@ class _World:
         self.sshlog = td / "guard-ssh.log"
         self.stage_tar = td / "stage.tar"
         self.build_ps = td / "build.ps1"
+        self.rmlog = td / "rm.log"; self.rmlog.write_text("")
 
     def env(self, extra=None):
         env = {
             "ZB_GATE_ROOT": str(self.root), "ZB_FAKE_RAN_LOG": str(self.ran), "ZB_SELFTEST_ORDER_LOG": str(self.order),
             "ZB_FAKE_STAGE_TAR": str(self.stage_tar), "ZB_FAKE_BUILD_PS": str(self.build_ps),
+            "ZB_FAKE_RM_TMP": str(self.td / "tmp"), "ZB_FAKE_RM_LOG": str(self.rmlog),
             "PATH": f"{self.td / 'bin'}:/usr/bin:/bin", "HOME": str(self.td / "home"), "TMPDIR": str(self.td / "tmp"),
             "LANG": "C.UTF-8",
             "ZB_WIN11_HOST": gts.FAKE_WIN11_HOST, "ZB_WIN11_PORT": "2222", "ZB_WIN11_DOMAIN": "win11-m8",
@@ -180,15 +213,32 @@ class _World:
 
 
 class _Case(gts._TwoHostCase):
-    def gate(self, world, extra=None, args=("--product",)):
+    def gate(self, world, extra=None, args=("--product",), check_leak=True):
         env = world.env(extra)
+        before = {x.name for x in (world.td / "tmp").glob("zb-gate-product.*")}
         self._check_transport(env, before=True)
         proc = subprocess.run(["bash", str(world.root / "tests" / "windows" / "gate.sh"), *args], cwd=world.td,
                               env=env, capture_output=True, text=True, timeout=180, stdin=subprocess.DEVNULL)
         self._check_transport(env)
-        leaked = sorted(x.name for x in (world.td / "tmp").glob("zb-gate-product.*"))
-        self.assertEqual(leaked, [], f"the gate left its work directory behind{self.detail(proc, world)}")
+        if check_leak:
+            leaked = sorted({x.name for x in (world.td / "tmp").glob("zb-gate-product.*")} - before)
+            self.assertEqual(leaked, [], f"the gate left its work directory behind{self.detail(proc, world)}")
         return proc
+
+    @staticmethod
+    def rm_targets(world):
+        return [l.split(" ", 1)[1] for l in world.rmlog.read_text().splitlines() if l.startswith("RM ")]
+
+    @staticmethod
+    def plant_decoy(world):
+        decoy = world.td / "tmp" / "zb-gate-product.decoy"
+        decoy.mkdir()
+        (decoy / "keep").write_bytes(b"decoy bytes\n")
+        return decoy
+
+    def assertDecoyIntact(self, decoy, detail=""):
+        self.assertTrue(decoy.is_dir() and (decoy / "keep").read_bytes() == b"decoy bytes\n",
+                        "the pre-existing decoy sibling is untouched" + detail)
 
     @staticmethod
     def rows(world):
@@ -327,17 +377,75 @@ class BuildAndFetch(_Case):
             self.assertEqual({r["sha"] for r in self.rows(w)}, {w.sha}, d)
 
     def test_a_real_driver_failure_stops_before_win10_and_any_row(self):
-        for what, extra in (("stage", {"ZB_FAKE_STAGE_RC": "5"}), ("build", {"ZB_FAKE_BUILD_RC": "6"}),
-                            ("fetch", {"ZB_FAKE_SCP_RC": "7"}), ("non-PE", {"ZB_FAKE_SCP_NONPE": "1"})):
+        for what, extra, rc in (("stage", {"ZB_FAKE_STAGE_RC": "5"}, 5), ("build", {"ZB_FAKE_BUILD_RC": "6"}, 6),
+                                ("fetch", {"ZB_FAKE_SCP_RC": "7"}, 7), ("non-PE", {"ZB_FAKE_SCP_NONPE": "1"}, 3)):
             with self.subTest(failing=what), tempfile.TemporaryDirectory() as t:
                 w = _World(pathlib.Path(t))
-                self.assertStopsBeforeWin10(self.gate(w, extra), w, BUILD_FAILED)
+                # b3f95193: the exact propagated driver rc, never a discarded or hard-coded status
+                self.assertStopsBeforeWin10(self.gate(w, extra), w, f"{BUILD_FAILED} (rc={rc})")
 
     def test_a_bad_published_exe_is_refused_before_any_row(self):
         for driver in ("bad_sha", "missing", "outside"):
             with self.subTest(driver=driver), tempfile.TemporaryDirectory() as t:
                 w = _World(pathlib.Path(t), driver=driver)
                 self.assertStopsBeforeWin10(self.gate(w), w, BAD_EXE)
+
+
+class OwnedPerInvocation(_Case):
+    def test_two_runs_use_two_distinct_owned_work_directories(self):
+        # b3f95193: the publish path belongs to THIS invocation, not to any matching-looking directory
+        with tempfile.TemporaryDirectory() as t:
+            w = _World(pathlib.Path(t))
+            decoy = self.plant_decoy(w)
+            tmp = os.path.realpath(w.td / "tmp")
+            seen = []
+            for n in (1, 2):
+                for log in (w.ran, w.order, w.rmlog):
+                    log.write_text("")
+                proc = self.gate(w)
+                d = self.detail(proc, w) + f"\nrun {n}"
+                self.assertEqual(proc.returncode, 0, d)
+                rows = self.rows(w)
+                self.assertTrue(rows and all(r["exe"] for r in rows), d)
+                self.assertTrue(all(r["exists"] and r["mz"] and r["sha"] == w.sha for r in rows), d)
+                real = rows[0]["real"]
+                work = os.path.join(tmp, os.path.relpath(real, tmp).split(os.sep)[0])
+                self.assertTrue(os.path.basename(work).startswith("zb-gate-product.") and work != str(decoy), d)
+                self.assertEqual(self.rm_targets(w), [work], "exactly one cleanup, of exactly this run's directory" + d)
+                self.assertFalse(os.path.lexists(work), "this run's work directory is gone" + d)
+                self.assertDecoyIntact(decoy, d)
+                seen.append((real, work))
+            self.assertNotEqual(seen[0][0], seen[1][0], f"two runs, two executables: {seen}")
+            self.assertNotEqual(seen[0][1], seen[1][1], f"two runs, two work directories: {seen}")
+
+
+class CleanupFailureSurfaced(_Case):
+    def test_a_failed_or_no_op_cleanup_is_reported_and_keeps_an_earlier_failure(self):
+        cases = (
+            ("success, rm fails", {"ZB_FAKE_RM_MODE": "fail"}, None),
+            ("success, rm leaves the directory", {"ZB_FAKE_RM_MODE": "noop"}, None),
+            ("build failure, rm fails", {"ZB_FAKE_RM_MODE": "fail", "ZB_FAKE_STAGE_RC": "5"}, f"{BUILD_FAILED} (rc=5)"),
+            ("Win10 session failure, rm leaves the directory",
+             {"ZB_FAKE_RM_MODE": "noop", "ZB_SELFTEST_SESSION_RESULT_WIN10": "RESULT=TIMEOUT"}, g8.SESSION_STOP),
+        )
+        for what, extra, earlier in cases:
+            with self.subTest(case=what), tempfile.TemporaryDirectory() as t:
+                w = _World(pathlib.Path(t))
+                decoy = self.plant_decoy(w)
+                proc = self.gate(w, extra, check_leak=False)
+                d = self.detail(proc, w) + f"\nrm: {self.rm_targets(w)}"
+                left = sorted(str(x) for x in (w.td / "tmp").glob("zb-gate-product.*") if x != decoy)
+                self.assertNotEqual(proc.returncode, 0, "a cleanup failure is a failure" + d)
+                self.assertEqual(len(left), 1, "the fake rm really left exactly the owned directory" + d)
+                self.assertEqual(self.rm_targets(w), [os.path.realpath(left[0])], "exactly one cleanup attempt" + d)
+                diag = [l for l in proc.stderr.splitlines() if CLEANUP in l and os.path.realpath(left[0]) in l]
+                self.assertTrue(diag, "the cleanup failure is reported, naming the work directory" + d)
+                if earlier:
+                    self.assertIn(earlier, proc.stderr, "the earlier failure keeps its own diagnostic" + d)
+                else:
+                    self.assertNotIn("product run PASSED", proc.stderr, d)
+                self.assertDecoyIntact(decoy, d)
+                shutil.rmtree(left[0])  # the harness removes its own exact leftover
 
 
 class CleanupOnEveryPath(_Case):
