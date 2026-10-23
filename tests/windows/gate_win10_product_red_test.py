@@ -20,9 +20,11 @@ Win10 session separately, and can answer (or fail) a Win10 probe only once a liv
     failed test plus a post-run transport failure, report BOTH; a post-run transport failure names Win10;
     product-pre refuses each bad Win10 root/free_gb/webview2_pv/interactive_session/locked before any test; an
     unsuccessful Win10 session result stops before any test; the Win10 trigger carries its own fresh nonce;
-  - guards (pass today, must stay): a healthy run (Win10 free_gb exactly 20, root differing only in case and a
-    trailing backslash) passes and runs every test; `--probe-only` stays readiness-only and zero-write (Win10 at
-    free_gb 0 with no session and no root passes, and no Win10 session is triggered); an unset Win10 host is named.
+  - guards (pass today, must stay): a healthy run (Win10 free_gb exactly 20, root `c:\users\ZBTEST\stage\..\zb\`,
+    equal only after normpath and a case-insensitive compare) passes and runs every test; every product run, on every
+    return path, leaves no `zb-gate-product.*` work directory in its TMPDIR (checked right after the gate returns);
+    `--probe-only` stays readiness-only and zero-write (Win10 at free_gb 0 with no session and no root passes, and no
+    Win10 session is triggered); an unset Win10 host is named.
 
 Run alone:  unshare --user --map-current-user --net python3 -I tests/windows/gate_win10_product_red_test.py -v
 """
@@ -96,6 +98,10 @@ class _Case(gts._TwoHostCase):
         env = {"ZB_SELFTEST_ORDER_LOG": str(order), "ZB_SELFTEST_PROBE_WIN10": fs()}
         env.update(extra or {})
         proc, ran = gts.WS09ProductRun._run_product(self, td, tests, extra=env, args=args)
+        # da01ae8c: the gate's work directory is gone on EVERY return path (TMPDIR is exactly td), checked here,
+        # before TemporaryDirectory teardown could hide a leak.
+        leaked = sorted(x.name for x in td.glob("zb-gate-product.*"))
+        self.assertEqual(leaked, [], f"the gate left its work directory behind\nrc={proc.returncode}\nstderr:\n{proc.stderr}")
         rows = [dict(kv.split("=", 1) for kv in l.split()[2:]) | {"host": l.split()[0], "kind": l.split()[1]}
                 for l in order.read_text().splitlines() if l.strip()]
         return proc, ran, rows
@@ -227,7 +233,8 @@ class ProductPreconditions(_Case):
 
 
 class Guards(_Case):
-    HEALTHY_WIN10 = fs(free_gb=20, root="c:\\users\\ZBTEST\\zb\\")
+    # da01ae8c: equal to C:\Users\zbtest\zb only after ntpath.normpath (the reducible stage\..) AND a case-insensitive compare.
+    HEALTHY_WIN10 = fs(free_gb=20, root="c:\\users\\ZBTEST\\stage\\..\\zb\\")
 
     def test_a_healthy_product_run_passes_and_runs_every_test(self):
         with tempfile.TemporaryDirectory() as t:
