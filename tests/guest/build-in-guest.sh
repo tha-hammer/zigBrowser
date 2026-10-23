@@ -42,31 +42,52 @@ STEP="${1:-}"
 
 cd "$(git rev-parse --show-toplevel)"
 
-# bd zigBrowser-ong.24 (NavyCanyon 82565522): stage the archive in a fresh directory only this run owns, never a
-# fixed shared path, and delete exactly that directory on every exit.
+# bd zigBrowser-ong.24 (NavyCanyon 82565522 / f1d64033): stage the archive in a fresh directory only this run owns,
+# never a fixed shared path, and delete exactly that directory on every exit. mktemp, each probe and the delete run
+# as named serial steps whose status and output are kept; the branches only test those stored results.
 stage_root="${TMPDIR:-/tmp}"
-[ "$stage_root" = / ] || stage_root="${stage_root%/}"
-if ! stage=$(mktemp -d "$stage_root/zb-guest-stage.XXXXXXXXXX"); then
+if [ "$stage_root" != / ]; then
+  stage_root="${stage_root%/}"
+fi
+set +e
+stage=$(mktemp -d "$stage_root/zb-guest-stage.XXXXXXXXXX")
+mktemp_rc=$?
+set -e
+if [ "$mktemp_rc" -ne 0 ] || [ -z "$stage" ]; then
   echo "refused: could not create a private staging directory under $stage_root" >&2
   exit 2
 fi
 # Only a new, empty, private, non-symlink directory of ours directly under the stage root is used, and only then
 # deleted; anything else is left alone.
-if [ -L "$stage" ] || [ ! -d "$stage" ] || [ ! -O "$stage" ] || [ "$(stat -c %a -- "$stage")" != 700 ] ||
-   [ -n "$(ls -A -- "$stage")" ] || [ "$(dirname -- "$stage")" != "$stage_root" ]; then
+set +e
+stage_mode=$(stat -c %a -- "$stage")
+stat_rc=$?
+stage_entries=$(ls -A -- "$stage")
+ls_rc=$?
+stage_parent=$(dirname -- "$stage")
+dirname_rc=$?
+set -e
+if [ -L "$stage" ] || [ ! -d "$stage" ] || [ ! -O "$stage" ] || [ "$stat_rc" -ne 0 ] || [ "$stage_mode" != 700 ] ||
+   [ "$ls_rc" -ne 0 ] || [ -n "$stage_entries" ] || [ "$dirname_rc" -ne 0 ] || [ "$stage_parent" != "$stage_root" ]; then
   echo "refused: mktemp gave $stage, which is not a new private directory under $stage_root; leaving it alone" >&2
   exit 2
 fi
 
 # Runs once, on the EXIT trap: keeps a failing status, and fails an otherwise successful run if the stage survives.
 cleanup() {
-  local rc=$? left=0
+  local rc=$? rm_rc=0 left=0
   trap - EXIT INT TERM
-  rm -rf -- "${stage:?}" || left=1
-  if [ -e "$stage" ] || [ -L "$stage" ]; then left=1; fi
-  if [ "$left" -ne 0 ]; then
-    echo "build-in-guest: cleanup failed: the staging directory $stage is still there; remove it by hand" >&2
-    [ "$rc" -ne 0 ] || rc=1
+  set +e
+  rm -rf -- "${stage:?}"
+  rm_rc=$?
+  if [ -e "$stage" ] || [ -L "$stage" ]; then
+    left=1
+  fi
+  if [ "$rm_rc" -ne 0 ] || [ "$left" -ne 0 ]; then
+    echo "build-in-guest: cleanup failed (rm status $rm_rc): the staging directory $stage is still there; remove it by hand" >&2
+    if [ "$rc" -eq 0 ]; then
+      rc=1
+    fi
   fi
   exit "$rc"
 }

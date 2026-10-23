@@ -35,7 +35,10 @@ Pinned:
     into a failure naming the stage, and keeps a prior failure's status;
   - a selector or pin refusal makes no mktemp call and leaves TMPDIR alone;
   - a source tripwire (supporting only): the stage delete is the guarded `rm -rf -- "${stage:?}"` in a named
-    cleanup function on the EXIT trap, and the tar line keeps its stderr.
+    cleanup function on the EXIT trap, and the tar line keeps its stderr;
+  - green R2 (NavyCanyon f1d64033), source only, the ong.24 block alone: mktemp, the stat/ls/dirname probes and the
+    rm run as named serial steps with a stored `<name>_rc=$?`; no assignment after `||`/`&&`, no `if [!] x=$(...)`,
+    and no command substitution inside a `[ ]` test.
 Everything else runs inside `unshare --user --map-current-user --net`. No real host value is ever passed.
 
 Run alone:  unshare --user --map-current-user --net python3 -I tests/windows/build_in_guest_staging_red_test.py -v
@@ -450,6 +453,24 @@ class SourceTripwire(unittest.TestCase):
         tar_lines = [l for l in text.splitlines() if re.search(r"\btar -c", l) and not l.lstrip().startswith("#")]
         self.assertTrue(tar_lines, text)
         self.assertFalse([l for l in tar_lines if "2>/dev/null" in l], f"tar keeps its stderr: {tar_lines}")
+
+    def test_staging_runs_serial_steps_and_branches_on_stored_results(self):
+        # f1d64033: scoped to the ong.24 block (the ong.22/ong.23 refusals above it are out of scope)
+        text = SCRIPT.read_text()
+        marker = "# bd zigBrowser-ong.24"
+        self.assertEqual(text.count(marker), 1, "the ong.24 block is marked once")
+        block = text[text.index(marker):]
+        for step in ("mktemp", "stat", "ls", "dirname", "rm"):
+            self.assertRegex(block, rf"(?m)^\s*{step}_rc=\$\?$", f"{step} runs as a named step with a stored status")
+        code = "\n".join(l for l in block.splitlines() if not l.lstrip().startswith("#"))
+        forbidden = (
+            (r"(\|\||&&)\s*[A-Za-z_]\w*(\[[^\]]*\])?\+?=", "an assignment after || or &&"),
+            (r"\bif\s+(!\s*)?[A-Za-z_]\w*=\$\(", "work inside an if condition"),
+            (r"\[[^\]\n]*\$\(", "a command substitution inside a [ ] test"),
+        )
+        for pattern, what in forbidden:
+            hits = [l for l in code.splitlines() if re.search(pattern, l)]
+            self.assertFalse(hits, f"{what}: {hits}")
 
 
 if __name__ == "__main__":
