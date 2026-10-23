@@ -20,6 +20,9 @@
 #      the given identity with --options runtime on all three, and --entitlements packaging/macos/entitlements.plist
 #      (the committed manifest) on the exe and the .app, never on the dylib;
 #   D6 check the bundle: otool -L reads the bundled exe (its shim reference must resolve inside the bundle).
+#   D7 (a third and fourth run, ad hoc and release) an otool that prints the valid matching output and then exits
+#      non-zero stops the script with "ERROR: otool -L <exe> failed": exit non-zero, no "does not load", no signing
+#      call, no hdiutil call, no dmg.
 # With ZB_DMG_SELFTEST_OTOOL_LATE=1 (tests/mac/dmg_otool_late_write_selftest.sh) the fake otool writes its later
 # dependency line after a pause, so a check that closes otool's pipe early (grep -q under pipefail) fails D1.
 # Plus a TRIPWIRE (not proof): the header calls the output an ad-hoc dev dmg, not a distributable artifact.
@@ -102,6 +105,8 @@ printf '%s:\n\t@executable_path/../Frameworks/libwkwebview_shim.dylib (compatibi
 # shim line has already been read. A reader that stops at the first match (grep -q) has closed the pipe by then.
 [ "${ZB_DMG_SELFTEST_OTOOL_LATE:-}" = 1 ] && sleep 0.5
 printf '\t/usr/lib/libSystem.B.dylib (compatibility version 1.0.0, current version 1345.0.0)\n'
+# D7: valid, matching output, then a failing exit (otool's own status must count, not only its text).
+if [ -e "$C/otool_fail" ]; then exit 3; fi
 EOF
 cat > "$T/hostbin/lipo" <<EOF
 #!/bin/bash
@@ -230,8 +235,26 @@ run_dmg() { # run_dmg <label> <identity or empty>: D1-D6 for one run
   else bad "$label D6: no otool -L on the bundled exe $EXE (otool calls: ${otools:-none})"; fi
 }
 
+run_otool_fail() { # run_otool_fail <label> <identity or empty>: D7
+  local label=$1 ident=$2 rc hd
+  rm -rf "${C:?}"/* "$R/zigBrowser_0.2.0_macos.dmg"
+  touch "$C/otool_fail"
+  (cd "$R" && env -i PATH="$T/bin:/usr/bin:/bin" HOME="$T/home" TMPDIR="$T/tmp" ZB_MAC_HOST="$HOST" ZB_MAC_ARM_HOST="$ARM" \
+     ZB_MAC_KEY="$T/fake_mac_key" ${ident:+ZB_DMG_SIGN_IDENTITY="$ident"} \
+     timeout 120 bash packaging/macos/build-dmg.sh >"$T/out.$label" 2>&1 </dev/null)
+  rc=$?
+  read_signs
+  hd=$(ls "$C" | grep -cE '^hdiutil\.[0-9]+$')
+  if [ "$rc" -ne 0 ] && grep -qxF "ERROR: otool -L $EXE failed" "$T/out.$label" && ! grep -q 'does not load' "$T/out.$label" \
+     && [ "${#signs[@]}" -eq 0 ] && [ "$hd" -eq 0 ] && [ ! -e "$R/zigBrowser_0.2.0_macos.dmg" ]; then
+    ok "$label D7: a failing otool (valid output, exit 3) stops the script with its own reason, before any signing or dmg"
+  else bad "$label D7: exit $rc, ${#signs[@]} signing call(s), $hd hdiutil call(s), dmg $( [ -e "$R/zigBrowser_0.2.0_macos.dmg" ] && echo copied || echo absent): $(tail -n 2 "$T/out.$label" | tr '\n' ' ')"; fi
+}
+
 run_dmg adhoc ""
 run_dmg release "Developer ID Application: Selftest (SELFTEST01)"
+run_otool_fail otoolfail-adhoc ""
+run_otool_fail otoolfail-release "Developer ID Application: Selftest (SELFTEST01)"
 if [ "$(sed -n 2p "$R/packaging/macos/build-dmg.sh")" = "# Build an ad-hoc dev dmg, not a distributable artifact, on the M9 build host over Tailscale SSH." ]; then
   ok "TRIPWIRE: the header calls it an ad-hoc dev dmg, not a distributable artifact"
 else bad "TRIPWIRE: header line 2 is '$(sed -n 2p "$R/packaging/macos/build-dmg.sh")'"; fi
