@@ -34,8 +34,8 @@ const RecordingBinder = struct {
     default: ?[]const u8 = null, // Linux's default profile directory, if one resolves
     cleared: u32 = 0,
 
-    pub fn bind(self: *RecordingBinder, arena: std.mem.Allocator, dir: []const u8) bool {
-        _ = arena;
+    pub fn bind(self: *RecordingBinder, arena: std.mem.Allocator, dir: []const u8) error{OutOfMemory}!bool {
+        _ = try arena.dupeZ(u8, dir); // copies the path like the shim binder (an injected allocator can fail it)
         self.calls += 1;
         self.dir_existed_at_bind = if (std.Io.Dir.cwd().access(std.testing.io, dir, .{})) |_| true else |_| false;
         @memcpy(self.bound[0..dir.len], dir);
@@ -144,4 +144,20 @@ test "the Linux branch: explicit dir, else the default, else clear; only an expl
     try std.testing.expectError(error.WriteFailed, profile_step.apply(.linux, arena, io, "/explicit/profile", &refused_explicit));
     var refused_default: RecordingBinder = .{ .fail = true, .default = "/default/profile" };
     try std.testing.expectEqual(@as(?[]const u8, null), try profile_step.apply(.linux, arena, io, null, &refused_default));
+}
+
+test "an allocation failure binding the Linux default profile is an error, never a run without a profile" {
+    // SilverRidge c78a1f6: a failed copy of the default path must stay error.WriteFailed (the old behavior), while a
+    // shim refusal of that optional default still falls back to no profile (the previous test).
+    var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 0 });
+    var arena_state = std.heap.ArenaAllocator.init(failing.allocator());
+    defer arena_state.deinit();
+    var binder: RecordingBinder = .{ .default = "/default/profile" };
+    try std.testing.expectError(error.WriteFailed, profile_step.apply(.linux, arena_state.allocator(), std.testing.io, null, &binder));
+    try std.testing.expectEqual(@as(u32, 0), binder.cleared);
+    // The same failure on an explicit directory, and on the macOS and Windows branches, is an error too.
+    var explicit: RecordingBinder = .{};
+    try std.testing.expectError(error.WriteFailed, profile_step.apply(.linux, arena_state.allocator(), std.testing.io, "/explicit", &explicit));
+    var win: RecordingBinder = .{};
+    try std.testing.expectError(error.WriteFailed, profile_step.apply(.windows, arena_state.allocator(), std.testing.io, "/explicit", &win));
 }

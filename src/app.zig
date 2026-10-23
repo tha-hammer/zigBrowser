@@ -512,8 +512,8 @@ fn applyProfileDir(arena: std.mem.Allocator, io: std.Io, spec: OpenSpec) errors.
 /// failure; on failure the shim already cleared any previous profile), Linux's default profile directory, and
 /// clearing any earlier profile.
 const ShimProfileBinder = struct {
-    pub fn bind(_: ShimProfileBinder, arena: std.mem.Allocator, dir: []const u8) bool {
-        const dir_z = arena.dupeZ(u8, dir) catch return false;
+    pub fn bind(_: ShimProfileBinder, arena: std.mem.Allocator, dir: []const u8) error{OutOfMemory}!bool {
+        const dir_z = try arena.dupeZ(u8, dir); // an allocation failure is error.WriteFailed, never "no profile"
         var err: [*c]u8 = null;
         if (c.zb_app_set_profile_dir(dir_z.ptr, &err) == c.ZB_AUTO_OK) return true;
         defer c.zb_automation_free(err);

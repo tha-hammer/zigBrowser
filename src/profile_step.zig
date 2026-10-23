@@ -18,9 +18,11 @@ pub fn pacingStatePath(allocator: std.mem.Allocator, profile_dir: ?[]const u8) !
 }
 
 /// app.applyProfileDir for `os`: persistent profile for cookies and site data. The binder gives
-/// `bind(arena, dir) bool` (the shim's zb_app_set_profile_dir) and, for Linux, `defaultDir(arena) ?[]const u8`
-/// (the default under $XDG_DATA_HOME or ~/.local/share) and `clear()` (no profile at all). Returns the profile
-/// directory in use, or null when there is none.
+/// `bind(arena, dir) error{OutOfMemory}!bool` (the shim's zb_app_set_profile_dir: false is the shim refusing the
+/// directory, OutOfMemory is the arena failing to copy it) and, for Linux, `defaultDir(arena) ?[]const u8` (the
+/// default under $XDG_DATA_HOME or ~/.local/share) and `clear()` (no profile at all). An allocation failure is
+/// error.WriteFailed on every path, the optional Linux default included (SilverRidge c78a1f6); only a shim refusal
+/// of that default falls back to running without a profile. Returns the profile directory in use, or null.
 pub fn apply(comptime os: std.Target.Os.Tag, arena: std.mem.Allocator, io: std.Io, profile_dir: ?[]const u8, binder: anytype) error{WriteFailed}!?[]const u8 {
     switch (os) {
         // MS3.1 + 4pa.60: create the profile directory, then bind the WebKit store.
@@ -30,7 +32,7 @@ pub fn apply(comptime os: std.Target.Os.Tag, arena: std.mem.Allocator, io: std.I
         // icon's position survive a restart (zb_drawer_remember -> save; zb_drawer_start_ratios -> load).
         .windows => {
             const dir = profile_dir orelse return null;
-            if (binder.bind(arena, dir)) return dir;
+            if (binder.bind(arena, dir) catch return error.WriteFailed) return dir;
             return error.WriteFailed;
         },
         // Linux's shim creates the directory itself. An explicit directory that cannot be bound is an error; when
@@ -40,9 +42,9 @@ pub fn apply(comptime os: std.Target.Os.Tag, arena: std.mem.Allocator, io: std.I
                 binder.clear(); // no profile resolved: make sure no earlier run's profile lingers
                 return null;
             };
-            if (binder.bind(arena, dir)) return dir;
+            if (binder.bind(arena, dir) catch return error.WriteFailed) return dir;
             if (profile_dir != null) return error.WriteFailed;
-            return null;
+            return null; // the shim refused the optional default: run on WebKit's default context
         },
         else => return null,
     }
@@ -57,6 +59,6 @@ pub fn applyMacos(arena: std.mem.Allocator, io: std.Io, profile_dir: ?[]const u8
         std.debug.print("profile: cannot create {s}: {s}\n", .{ dir, @errorName(err) });
         return error.WriteFailed;
     };
-    if (binder.bind(arena, dir)) return dir;
+    if (binder.bind(arena, dir) catch return error.WriteFailed) return dir;
     return error.WriteFailed;
 }
