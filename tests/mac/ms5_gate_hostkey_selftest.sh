@@ -6,7 +6,8 @@
 #   H1 StrictHostKeyChecking is given and every value is "yes" (no "no", "accept-new" or "off");
 #   H2 UserKnownHostsFile is given exactly once and is the repo's tests/mac/known_hosts (not /dev/null, not ~/.ssh);
 #   H3 BatchMode=yes and IdentitiesOnly=yes are given (no password or askpass prompt can open);
-#   H4 ssh/scp run without DISPLAY, WAYLAND_DISPLAY or XAUTHORITY, although the gate itself was launched with them;
+#   H4 ssh/scp run without DISPLAY, WAYLAND_DISPLAY, XAUTHORITY or SSH_ASKPASS, although the gate itself was launched
+#      with all four (an inherited askpass could open a password window on the owner's desktop; SilverRidge fe4542e);
 #   H5 the host is one of the two configured Macs;
 #   H6 the run reaches its end (exit 0, the both-arches PASS line) with at least one ssh and one scp per Mac, so
 #      the checks cannot pass vacuously.
@@ -34,8 +35,8 @@ for tool in ssh scp; do
 #!/bin/bash
 i=\$(cat "$T/ctl/n" 2>/dev/null || echo 0); echo \$((i + 1)) > "$T/ctl/n"
 printf '%s\0' $tool "\$@" > "$T/ctl/call.\$i"
-printf 'DISPLAY=%s WAYLAND_DISPLAY=%s XAUTHORITY=%s\n' "\${DISPLAY-<unset>}" "\${WAYLAND_DISPLAY-<unset>}" \
-  "\${XAUTHORITY-<unset>}" > "$T/ctl/env.\$i"
+printf 'DISPLAY=%s WAYLAND_DISPLAY=%s XAUTHORITY=%s SSH_ASKPASS=%s\n' "\${DISPLAY-<unset>}" "\${WAYLAND_DISPLAY-<unset>}" \
+  "\${XAUTHORITY-<unset>}" "\${SSH_ASKPASS-<unset>}" > "$T/ctl/env.\$i"
 cat > /dev/null
 exit 0
 EOF
@@ -56,7 +57,7 @@ PINNED=$(realpath "$R/tests/mac/known_hosts")
 
 (cd "$R" && env -i PATH="$T/bin:/usr/bin:/bin" HOME="$T/home" TMPDIR="$T/tmp" ZB_MAC_HOST="$INTEL" \
    ZB_MAC_ARM_HOST="$ARM" ZB_MAC_KEY="$T/home/no_such_key" DISPLAY=:99 WAYLAND_DISPLAY=wayland-selftest \
-   XAUTHORITY="$T/home/.Xauthority" timeout 120 bash tests/mac/ms5_gate.sh >"$T/out" 2>&1 </dev/null)
+   XAUTHORITY="$T/home/.Xauthority" SSH_ASKPASS="$T/bin/askpass-must-not-run" timeout 120 bash tests/mac/ms5_gate.sh >"$T/out" 2>&1 </dev/null)
 rc=$?
 if [ "$rc" -eq 0 ] && grep -q $'^PASS\tms5-gate\tboth-arches$' "$T/out"; then ok "the gate runs to its end"
 else bad "H6: exit $rc, want 0 with the both-arches PASS line: $(tail -n 2 "$T/out" | tr '\n' ' ')"; fi
@@ -94,15 +95,15 @@ for ((i = 0; i < n; i++)); do
   else bad "H2: $where UserKnownHostsFile is '${khf[*]}', want exactly the pinned $PINNED"; fi
   [ "${batch[*]}" = yes ] || bad "H3: $where BatchMode is '${batch[*]}', want yes"
   [ "${ident[*]}" = yes ] || bad "H3: $where IdentitiesOnly is '${ident[*]}', want yes"
-  grep -qx 'DISPLAY=<unset> WAYLAND_DISPLAY=<unset> XAUTHORITY=<unset>' "$T/ctl/env.$i" \
-    || bad "H4: $where runs with a display: $(cat "$T/ctl/env.$i")"
+  grep -qx 'DISPLAY=<unset> WAYLAND_DISPLAY=<unset> XAUTHORITY=<unset> SSH_ASKPASS=<unset>' "$T/ctl/env.$i" \
+    || bad "H4: $where runs with a display or askpass: $(cat "$T/ctl/env.$i")"
 done
 for host in "$INTEL" "$ARM"; do
   for tool in ssh scp; do
     [ -n "${seen[$tool:$host]:-}" ] || bad "H6: no $tool call reached $host (the checks would be vacuous)"
   done
 done
-[ "$fails" -eq 0 ] && ok "all $n ssh/scp calls use the pinned host keys, BatchMode, and no display"
+[ "$fails" -eq 0 ] && ok "all $n ssh/scp calls use the pinned host keys, BatchMode, and no display or askpass"
 
 if [ "$fails" -eq 0 ]; then printf 'PASS\tmac-ms5-gate-hostkey-selftest\n'; exit 0; fi
 printf 'FAIL\tmac-ms5-gate-hostkey-selftest\t%s failure(s)\n' "$fails"

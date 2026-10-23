@@ -18,9 +18,9 @@ cd "$(git rev-parse --show-toplevel)"
 # the same options as tests/mac/mac_gate_lib.sh). Hostless selftest: tests/mac/ms5_gate_hostkey_selftest.sh.
 KNOWN_HOSTS="$PWD/tests/mac/known_hosts"
 export SSH_ASKPASS_REQUIRE=never
-ssh_opts() { printf '%s\0' env -u DISPLAY -u WAYLAND_DISPLAY -u XAUTHORITY ssh -i "$1" -o IdentitiesOnly=yes -o BatchMode=yes \
+ssh_opts() { printf '%s\0' env -u DISPLAY -u WAYLAND_DISPLAY -u XAUTHORITY -u SSH_ASKPASS ssh -i "$1" -o IdentitiesOnly=yes -o BatchMode=yes \
   -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$KNOWN_HOSTS" -o ConnectTimeout=15 -o ServerAliveInterval=10; }
-scp_opts() { printf '%s\0' env -u DISPLAY -u WAYLAND_DISPLAY -u XAUTHORITY scp -i "$1" -o IdentitiesOnly=yes -o BatchMode=yes \
+scp_opts() { printf '%s\0' env -u DISPLAY -u WAYLAND_DISPLAY -u XAUTHORITY -u SSH_ASKPASS scp -i "$1" -o IdentitiesOnly=yes -o BatchMode=yes \
   -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$KNOWN_HOSTS" -o ConnectTimeout=15; }
 
 if [ -z "$ARM_HOST" ]; then
