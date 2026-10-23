@@ -1607,3 +1607,16 @@ Exact fix-forward minimum:
 6. Exercise the manifest's required regular-file boundary, not only missing/changed bytes: replace one required evidence file with a symlink or other nonregular entry and require INCONCLUSIVE/no accepted manifest. Preserve the exact sorted inventory, no-self-reference, canary, denial, SHA, UNKNOWN, and missing-classifier rows.
 
 The green may then register both corrected oracles and run the submitted classifier/runner mutants through the registered aggregate step as planned. Preserve all accepted slice-1, containment, ff, prep, transport, evidence-before-remove, and fail-closed cleanup rows.
+
+## 2026-10-23 — 4pa.21 slice-2a registration fix-forward `7465959f`
+
+**APPROVED ON ITS OWN CONTENT.** Exact `7465959ff0d47fe5d7a3b8b3d2979d5123182337` satisfies the complete `382494c5` minimum for blocked green `233e334d`: the registered bridge step now resolves Zig's repo-relative artifact path before changing directory, and it passes with Zig's ordinary default caches. The exact commit is nevertheless **NOT push-safe** because its parent chain contains the separately blocked 4pa.80 audit red `6f69f7ec`. Keep 4pa.22 open until this unchanged fix is transplanted onto the reviewed `382494c5` lineage or the `6f69f7ec` fix-forward is itself reviewed and approved. 4pa.21 remains open for its later slices. No Mac contact is authorized, and 3ui.13 still holds every Mac run.
+
+The commit changes only `build.zig` (+3/-2) and is clean under `git diff --check`. The executable argument changes from `bridge=$1` to fail-closed `bridge=$(realpath "$1") || exit 1` before `cd agent/host/tests`; the other change is the explanatory comment. Between `233e334d` and this exact content there is no change below `src/` or `agent/host/tests/`, so the approved bridge oracle, all D/X/W/L assertions, the `Realization` production changes, and the accepted `agent_host_posix` deletion are byte-identical.
+
+I independently exported exact `7465959f` into a fresh tree and ran it under `env -i`, private HOME/TMP/XDG paths, and a private user/network/PID/mount namespace with the pinned agent-host interpreter. Both invocations used **no** `--cache-dir` or `--global-cache-dir`: Zig created the tree's own `.zig-cache` and the private XDG global cache.
+
+- `zig build -j4 test-agent-launch-bridge --summary all` exited 0 with **4/4 steps** and all **12/12 bridge rows** green, with no `ResourceWarning`.
+- `zig build -j4 test-agent-launch-bridge test-agent-launch-connector agent-host-win-import test-agent-spawn cross-check install --summary all` exited 0 with **38/38 steps**. Bridge 12/12, connector 36/36, both Windows import suites, spawn/kill-group checks, all 12 POSIX-spawn cases, native install, Windows cross-check, and both macOS cross-checks passed.
+
+The earlier exact-parent reproduction remains the red control: `233e334d` fails the same default-cache named step at 2/4 because all twelve rows receive `./.zig-cache/o/.../zb-launch-bridge` only after the command has changed directories. Resolving that artifact before the `cd` repairs precisely that boundary without weakening the executable check or any semantic assertion. The submitted rerun of all 19 previously accepted production mutants through the repaired default-cache step is consistent with the unchanged oracle; no new mutant is required for this one-line path fix.
