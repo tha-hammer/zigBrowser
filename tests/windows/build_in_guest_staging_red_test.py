@@ -126,7 +126,9 @@ with open(spec["out"], "w") as out, open(spec["err"], "w") as err:
     try:
         rc = p.wait(timeout=30)
     except subprocess.TimeoutExpired:
-        os.killpg(p.pid, signal.SIGKILL); rc = p.wait()
+        if p.pid > 1:
+            os.killpg(p.pid, signal.SIGKILL)
+        rc = p.wait()
 print("DRIVER " + json.dumps({"ready": ready, "rc": rc}))
 """
 
@@ -260,20 +262,32 @@ class Success(_Case):
         # narrow claim (82565522): collision-free LOCAL staging through the scp source boundary
         with tempfile.TemporaryDirectory() as t:
             world = _World(pathlib.Path(t))
-            procs = []
-            for tag in ("cA", "cB"):
-                log = world.td / f"calls-{tag}.log"
-                log.write_text("")
-                env = world.env(log, ZB_RUN_TAG=tag, ZB_FAKE_TAR_SLEEP="1")
-                procs.append((tag, log, subprocess.Popen([*NETNS, "bash", str(SCRIPT)], cwd=world.work, env=env,
-                                                         stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-                                                         stdin=subprocess.DEVNULL)))
+            procs, results = [], []
+            try:
+                for tag in ("cA", "cB"):
+                    log = world.td / f"calls-{tag}.log"
+                    log.write_text("")
+                    env = world.env(log, ZB_RUN_TAG=tag, ZB_FAKE_TAR_SLEEP="1")
+                    procs.append((tag, log, subprocess.Popen([*NETNS, "bash", str(SCRIPT)], cwd=world.work, env=env,
+                                                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                                                             stdin=subprocess.DEVNULL)))
+                # collect BOTH children before asserting on either (4c1c348d)
+                for tag, log, p in procs:
+                    _, err = p.communicate(timeout=120)
+                    results.append((tag, log, p.returncode, err))
+            finally:
+                for _, _, p in procs:  # only each exact child we started, never a group
+                    if p.returncode is None and isinstance(p.pid, int) and p.pid > 1:
+                        p.kill()
+                    p.wait()
+                    for f in (p.stdout, p.stderr):
+                        if f and not f.closed:
+                            f.close()
             stages = []
-            for tag, log, p in procs:
-                out, err = p.communicate(timeout=120)
+            for tag, log, rc, err in results:
                 rows = _read_log(log)
-                detail = f"\n[{tag}] rc={p.returncode}\nstderr:\n{err}\nlog: {rows}"
-                self.assertEqual(p.returncode, 0, detail)
+                detail = f"\n[{tag}] rc={rc}\nstderr:\n{err}\nlog: {rows}"
+                self.assertEqual(rc, 0, detail)
                 stage = self._stage(rows, detail)
                 stages.append(stage)
                 src = [r for r in rows if r and r[0] == "SCPSRC"]
