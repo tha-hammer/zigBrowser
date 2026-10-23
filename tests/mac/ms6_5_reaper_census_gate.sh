@@ -16,6 +16,8 @@ LEG_TIMEOUT="${ZB_MAC_LEG_TIMEOUT:-240}"
 export SSH_ASKPASS_REQUIRE=never
 
 cd "$(git rev-parse --show-toplevel)"
+# The Macs' host keys are pinned (bd 4pa.77): every ssh/scp below uses this file, never ~/.ssh/known_hosts.
+KNOWN_HOSTS="$PWD/tests/mac/known_hosts"
 if [ -z "$ARM_HOST" ]; then
   echo "NOT RUN: arm64 host not configured (set ZB_MAC_ARM_HOST=user@host)" >&2
   exit 1
@@ -28,8 +30,8 @@ done
 
 leg() { # $1=host $2=expected uname -m $3=key
   local host="$1" arch="$2" key="$3"
-  local SSH=(env -u DISPLAY -u WAYLAND_DISPLAY -u XAUTHORITY ssh -i "$key" -o IdentitiesOnly=yes -o BatchMode=yes
-             -o StrictHostKeyChecking=yes -o ConnectTimeout=15 -o ServerAliveInterval=10)
+  local SSH=(env -u DISPLAY -u WAYLAND_DISPLAY -u XAUTHORITY -u SSH_ASKPASS ssh -i "$key" -o IdentitiesOnly=yes -o BatchMode=yes
+             -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$KNOWN_HOSTS" -o ConnectTimeout=15 -o ServerAliveInterval=10)
   local rdir="zb-reaper-census-$(date +%s)-$$-$RANDOM"
   tar -C "${stage:?}" -cf - . | "${SSH[@]}" "$host" "mkdir \"\$HOME/${rdir:?}\" && tar -xf - -C \"\$HOME/${rdir}\"" \
     || { "${SSH[@]}" "$host" "d=\"\$HOME/${rdir:?}\"; [ -d \"\$d\" ] && find \"\$d\" -delete" || true

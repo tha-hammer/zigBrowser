@@ -31,6 +31,8 @@ LEG_TIMEOUT="${ZB_MAC_LEG_TIMEOUT:-2400}"
 export SSH_ASKPASS_REQUIRE=never
 
 cd "$(git rev-parse --show-toplevel)"
+# The Macs' host keys are pinned (bd 4pa.77): every ssh/scp below uses this file, never ~/.ssh/known_hosts.
+KNOWN_HOSTS="$PWD/tests/mac/known_hosts"
 fail() { printf 'FAIL\tms7-appkit-gate\t%s\n' "$*" >&2; exit 1; }
 REV="${1:-HEAD}"
 SHA=$(git rev-parse --verify --quiet "${REV}^{commit}") || fail "revision $REV is not a commit"
@@ -55,10 +57,10 @@ echo "== shipped tree identity: commit $SHA, src.tar sha256 $(sha256sum "$L/src.
 
 leg() { # $1=host $2=expected uname -m $3=key
   local host="$1" arch="$2" key="$3" rdir="zb-ms7gate-$(date +%s)-$$-$RANDOM"
-  local SSH=(env -u DISPLAY -u WAYLAND_DISPLAY -u XAUTHORITY ssh -i "$key" -o IdentitiesOnly=yes -o BatchMode=yes
-             -o StrictHostKeyChecking=yes -o ConnectTimeout=15 -o ServerAliveInterval=10)
-  local SCP=(env -u DISPLAY -u WAYLAND_DISPLAY -u XAUTHORITY scp -i "$key" -o IdentitiesOnly=yes -o BatchMode=yes
-             -o StrictHostKeyChecking=yes -o ConnectTimeout=15)
+  local SSH=(env -u DISPLAY -u WAYLAND_DISPLAY -u XAUTHORITY -u SSH_ASKPASS ssh -i "$key" -o IdentitiesOnly=yes -o BatchMode=yes
+             -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$KNOWN_HOSTS" -o ConnectTimeout=15 -o ServerAliveInterval=10)
+  local SCP=(env -u DISPLAY -u WAYLAND_DISPLAY -u XAUTHORITY -u SSH_ASKPASS scp -i "$key" -o IdentitiesOnly=yes -o BatchMode=yes
+             -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$KNOWN_HOSTS" -o ConnectTimeout=15)
   "${SSH[@]}" "$host" "mkdir \"\$HOME/${rdir:?}\"" || { echo "FAIL: mkdir on $host" >&2; return 1; }
   if ! "${SCP[@]}" "$L/src.tar" "$host:${rdir}/" >/dev/null; then
     "${SSH[@]}" "$host" "d=\"\$HOME/${rdir:?}\"; [ -d \"\$d\" ] && find \"\$d\" -delete" || true

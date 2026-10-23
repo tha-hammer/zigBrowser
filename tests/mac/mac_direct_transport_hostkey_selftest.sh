@@ -24,7 +24,7 @@
 #      missed script fails here instead of slipping past.
 # No Mac, no signal, no network: HOME/TMPDIR in this test's temp tree; the test re-runs itself in a private
 # user+network namespace and runs each script under its own `unshare --user --map-current-user --net`.
-# Run: bash tests/mac/mac_direct_transport_hostkey_selftest.sh [repo root]
+# Run: bash tests/mac/mac_direct_transport_hostkey_selftest.sh [repo root]   (step: zig build test-mac-build-script)
 set -uo pipefail
 if [ "${ZB_DIRECT_HOSTKEY_SELFTEST_INNER:-}" != 1 ]; then
   ZB_DIRECT_HOSTKEY_SELFTEST_INNER=1 exec unshare --user --map-current-user --net bash "$(realpath "$0")" "$@"

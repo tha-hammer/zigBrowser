@@ -58,6 +58,8 @@ ARM_KEY="${ZB_MAC_ARM_KEY:-$KEY}"
 export SSH_ASKPASS_REQUIRE=never
 
 TOP=$(git rev-parse --show-toplevel)
+# The Macs' host keys are pinned (bd 4pa.77): every ssh/scp below uses this file, never ~/.ssh/known_hosts.
+KNOWN_HOSTS="$TOP/tests/mac/known_hosts"
 cd "$TOP"
 REV="${1:-HEAD}"
 SHA=$(git rev-parse --verify --quiet "${REV}^{commit}") || fail "revision $REV is not a commit"
@@ -301,8 +303,9 @@ leg() { # $1=host $2=expected uname -m $3=key: one ssh session, the leg script t
   local host="$1" arch="$2" key="$3" r="zb-compile-$(date +%s)-$$-$RANDOM"
   echo "== leg $arch on $host, run root ~/$r"
   { printf '%s\n' "$REMOTE"; printf 'main\n'; cat "$L/src.tar"; } \
-    | env -u DISPLAY -u WAYLAND_DISPLAY -u XAUTHORITY ssh -i "$key" -o IdentitiesOnly=yes -o BatchMode=yes \
-        -o StrictHostKeyChecking=yes -o ConnectTimeout=15 -o ServerAliveInterval=10 -o ServerAliveCountMax=6 \
+    | env -u DISPLAY -u WAYLAND_DISPLAY -u XAUTHORITY -u SSH_ASKPASS ssh -i "$key" -o IdentitiesOnly=yes -o BatchMode=yes \
+        -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$KNOWN_HOSTS" -o ConnectTimeout=15 -o ServerAliveInterval=10 \
+        -o ServerAliveCountMax=6 \
         "$host" "ZB_R='$r' ZB_ARCH='$arch' ZB_SHA='$SHA' ZB_TAR_SHA='$TAR_SHA' ZB_TAR_BYTES='$TAR_BYTES' /bin/bash -s"
 }
 

@@ -4087,6 +4087,12 @@ pub fn build(b: *std.Build) void {
     }) |input| mac_ms5_setup_hostkey_selftest.addFileInput(b.path(input));
     mac_build_script_step.dependOn(&mac_ms5_setup_hostkey_selftest.step);
     test_step.dependOn(&mac_ms5_setup_hostkey_selftest.step);
+    // Every Mac gate with its own ssh/scp line pins tests/mac/known_hosts, BatchMode, no display or askpass (bd 4pa.77,
+    // 3ui.9 parts 2+3). Its census reads the tests/mac and packaging/macos directories, so it runs every time.
+    const mac_direct_hostkey_selftest = b.addSystemCommand(&.{ "bash", "tests/mac/mac_direct_transport_hostkey_selftest.sh" });
+    mac_direct_hostkey_selftest.has_side_effects = true;
+    mac_build_script_step.dependOn(&mac_direct_hostkey_selftest.step);
+    test_step.dependOn(&mac_direct_hostkey_selftest.step);
     // The shared transport (build-on-mac.sh, mac_gate_lib.sh) passes no display or askpass to ssh/scp (bd 3ui.9).
     const mac_transport_selftest = b.addSystemCommand(&.{ "bash", "tests/mac/mac_transport_selftest.sh" });
     for ([_][]const u8{

@@ -48,6 +48,8 @@ LEG_TIMEOUT="${ZB_MAC_LEG_TIMEOUT:-1800}"
 export SSH_ASKPASS_REQUIRE=never
 
 cd "$(git rev-parse --show-toplevel)"
+# The Macs' host keys are pinned (bd 4pa.77): every ssh/scp below uses this file, never ~/.ssh/known_hosts.
+KNOWN_HOSTS="$PWD/tests/mac/known_hosts"
 PINS=packaging/macos/agent_runtime_pins.json
 MANIFEST=tests/mac/hard_gate/MANIFEST.json
 fail() { printf 'FAIL\tms6-hard-gate\t%s\n' "$*" >&2; exit 1; }
@@ -131,10 +133,10 @@ bash packaging/macos/build_site_packages.sh agent/host "$L/sites" >/dev/null
 
 leg() { # $1=host $2=expected uname -m $3=key
   local host="$1" arch="$2" key="$3" rdir="zb-hardgate-$(date +%s)-$$-$RANDOM"
-  local SSH=(env -u DISPLAY -u WAYLAND_DISPLAY -u XAUTHORITY ssh -i "$key" -o IdentitiesOnly=yes -o BatchMode=yes
-             -o StrictHostKeyChecking=yes -o ConnectTimeout=15 -o ServerAliveInterval=10)
-  local SCP=(env -u DISPLAY -u WAYLAND_DISPLAY -u XAUTHORITY scp -i "$key" -o IdentitiesOnly=yes -o BatchMode=yes
-             -o StrictHostKeyChecking=yes -o ConnectTimeout=15)
+  local SSH=(env -u DISPLAY -u WAYLAND_DISPLAY -u XAUTHORITY -u SSH_ASKPASS ssh -i "$key" -o IdentitiesOnly=yes -o BatchMode=yes
+             -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$KNOWN_HOSTS" -o ConnectTimeout=15 -o ServerAliveInterval=10)
+  local SCP=(env -u DISPLAY -u WAYLAND_DISPLAY -u XAUTHORITY -u SSH_ASKPASS scp -i "$key" -o IdentitiesOnly=yes -o BatchMode=yes
+             -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$KNOWN_HOSTS" -o ConnectTimeout=15)
   "${SSH[@]}" "$host" "mkdir \"\$HOME/${rdir:?}\"" || { echo "FAIL: mkdir on $host" >&2; return 1; }
   if ! "${SCP[@]}" "$L/py.pkg" "$L/src.tar" "$L/sites.tar" "$host:${rdir}/" >/dev/null; then
     "${SSH[@]}" "$host" "d=\"\$HOME/${rdir:?}\"; [ -d \"\$d\" ] && find \"\$d\" -delete" || true
