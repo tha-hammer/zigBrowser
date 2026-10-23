@@ -90,6 +90,12 @@ sys.exit(rc)
 """
 
 
+def census_end(lines):
+    """Index just past the build (or the m8 run): where the post-run cleanup starts."""
+    marks = [i for i, l in enumerate(lines) if l.startswith(("BUILD argv", "M8 ran"))]
+    return (marks[-1] + 1) if marks else 0
+
+
 class M8RunDriver(unittest.TestCase):
     def _run(self, **over):
         t = tempfile.mkdtemp(prefix="zb-m8run-")
@@ -148,6 +154,13 @@ class M8RunDriver(unittest.TestCase):
         rm = self._rmdirs(lines)
         self.assertEqual(len(rm), 1, "exactly one deletion, through the shared helper" + detail)
         self.assertIn(f'rmdir /s /q "{BUILD_DIR}"', rm[0], "it removes the build folder of the full sha" + detail)
+        # the shared helper's own sequence: a census after the run, the folder probe, the one rmdir, the absence
+        # check (a hand `rmdir` has none of these around it)
+        at = lines.index(rm[0])
+        self.assertTrue(any("Get-Process" in l for l in lines[census_end(lines):at]),
+                        "the helper re-takes the census before deleting" + detail)
+        self.assertIn("Get-Item", lines[at - 1], "the helper probes the folder kind just before the rmdir" + detail)
+        self.assertTrue(at + 1 < len(lines) and "if exist" in lines[at + 1], "then checks it is gone" + detail)
 
     def test_happy_run_checks_provenance_runs_m8_on_the_resolved_exe_and_cleans_the_build_folder(self):
         proc, lines, m8, td, detail = self._run()

@@ -360,6 +360,12 @@ pub fn build(b: *std.Build) void {
     windows_twohost_step.dependOn(&windows_twohost_selftest.step);
     windows_twohost_step.dependOn(&windows_host_live_optin.step);
 
+    // WS1.2 m8 run driver selftest (NavyCanyon f52ef80): tests/windows/m8_run.py against a fake build/m8 tree —
+    // census before the build, a sha-checked exe, the build folder removed only through the shared helper, no
+    // Win10/legacy selector reaching a child. Hermetic: TEST-NET fakes inside a network namespace.
+    const windows_m8_run_selftest = b.addSystemCommand(&.{ "python3", "-I", "tests/windows/m8_run_selftest.py" });
+    b.step("windows-m8-run-selftest", "Run the WS1.2 m8 run driver selftest (fake build/ssh, netns)").dependOn(&windows_m8_run_selftest.step);
+
     // WS1 build-driver selftest: drives build-on-windows.sh against fake git/ssh/scp/timeout — clean
     // git-archive source, injection-safe EncodedCommand, fail-closed stage/build/fetch, outer deadlines,
     // atomic validated fetch, display scrub. Hermetic — no Windows host, network or display.
@@ -3796,6 +3802,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&windows_gate_selftest.step);
     test_step.dependOn(&windows_twohost_selftest.step);
     test_step.dependOn(&windows_host_live_optin.step);
+    test_step.dependOn(&windows_m8_run_selftest.step);
     test_step.dependOn(&windows_build_selftest.step);
     test_step.dependOn(&windows_pe_census_selftest.step);
     test_step.dependOn(&windows_png_census_selftest.step);
