@@ -272,6 +272,10 @@ pub fn build(b: *std.Build) void {
         ws2b1_run.addFileArg(b.path("src/automation_script/automation.js"));
         b.step("ws2b1-input-spike-win", "WS2b.1: native input through CDP reaches the page as trusted events on Windows")
             .dependOn(&ws2b1_run.step);
+        // WS2b.1-W10: the same spike exe built and installed (zig-out/bin) but NOT run, for
+        // tests/windows/win10_spike_run.py to fetch from the Win11 VM and run on the Win10 box (no toolchain there).
+        b.step("ws2b1-input-spike-exe-win", "WS2b.1-W10: build and install the trusted-input spike exe on Windows without running it")
+            .dependOn(&b.addInstallArtifact(ws2b1_exe, .{}).step);
     }
 
     // WS2.0 (Windows plan rev 2.6): the owner-only seam's DACLs read back from Windows. Windows-target
@@ -370,6 +374,8 @@ pub fn build(b: *std.Build) void {
     // Win10/legacy selector reaching a child. Hermetic: TEST-NET fakes inside a network namespace.
     const windows_m8_run_selftest = b.addSystemCommand(&.{ "python3", "-I", "tests/windows/m8_run_selftest.py" });
     b.step("windows-m8-run-selftest", "Run the WS1.2 m8 run driver selftest (fake build/ssh, netns)").dependOn(&windows_m8_run_selftest.step);
+    const windows_win10_spike_run_selftest = b.addSystemCommand(&.{ "python3", "-I", "tests/windows/win10_spike_run_selftest.py" });
+    b.step("windows-win10-spike-run-selftest", "Run the WS2b.1-W10 copy-to-Win10 spike driver selftest (fake build/ssh/scp, netns)").dependOn(&windows_win10_spike_run_selftest.step);
 
     // WS1 build-driver selftest: drives build-on-windows.sh against fake git/ssh/scp/timeout — clean
     // git-archive source, injection-safe EncodedCommand, fail-closed stage/build/fetch, outer deadlines,
@@ -3817,6 +3823,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&windows_twohost_selftest.step);
     test_step.dependOn(&windows_host_live_optin.step);
     test_step.dependOn(&windows_m8_run_selftest.step);
+    test_step.dependOn(&windows_win10_spike_run_selftest.step);
     test_step.dependOn(&windows_build_selftest.step);
     test_step.dependOn(&windows_pe_census_selftest.step);
     test_step.dependOn(&windows_png_census_selftest.step);
@@ -4284,7 +4291,7 @@ fn guardDisplay(b: *std.Build) void {
     guard.has_side_effects = true; // the environment is read on every run, never cached
     // ws3-shim-test-win and owner-only-test-win exist only in Windows-target builds and run on
     // Windows, which has no X display to guard (and no python3 to run the guard).
-    const unguarded = [_][]const u8{ "install", "uninstall", "agent-runtime", "mac-gate", "ms1b-gate", "ms2a-gate", "ws3-shim-test-win", "owner-only-test-win", "ws2a0-world-spike-win", "ws2a3-async-ownership-win", "ws2b1-input-spike-win" };
+    const unguarded = [_][]const u8{ "install", "uninstall", "agent-runtime", "mac-gate", "ms1b-gate", "ms2a-gate", "ws3-shim-test-win", "owner-only-test-win", "ws2a0-world-spike-win", "ws2a3-async-ownership-win", "ws2b1-input-spike-win", "ws2b1-input-spike-exe-win" };
     next: for (b.top_level_steps.keys(), b.top_level_steps.values()) |name, top| {
         for (unguarded) |skip| if (std.mem.eql(u8, name, skip)) continue :next;
         for (top.step.dependencies.items) |dep| dep.dependOn(&guard.step);

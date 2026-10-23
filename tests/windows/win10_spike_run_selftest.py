@@ -20,8 +20,8 @@ the Win10 box. The driver (the shape of GrayHarbor's m8_run.py and the shared we
 
 Drives the REAL win10_spike_run.py and its entry tests/e2e/win_trusted_input_matrix_w10.py (with the real
 win_trusted_input_matrix.REQUIRED, spike_driver, webview2_cleanup and scp_legacy), copied into a temp tree next to a
-fake build-on-windows.sh, with recording fake ssh/scp/git first on PATH. Every fake host is TEST-NET with keys that
-do not exist (fake_transport.problem checks the env and every logged ssh/scp argv), and every driver run is inside
+fake build-on-windows.sh, with recording fake ssh/scp/git first on PATH (the fake `git show` answers the commit's
+version of each input, which differs from the working tree). Every fake host is TEST-NET with keys that do not exist (fake_transport.problem checks the env and every logged ssh/scp argv), and every driver run is inside
 `unshare --user --map-current-user --net`. No Windows host is ever contacted.
 
 Run alone:  python3 -I tests/windows/win10_spike_run_selftest.py -v
@@ -88,7 +88,7 @@ exit 0
 _FAKE_GIT = r"""#!/usr/bin/env bash
 case "$1" in
   rev-parse) echo "$ZB_FAKE_SHA"; exit 0 ;;
-  show) spec="$2"; [ "${spec%%:*}" = "$ZB_FAKE_SHA" ] || exit 128; cat "$ZB_FAKE_REPO/${spec#*:}"; exit $? ;;
+  show) spec="$2"; [ "${spec%%:*}" = "$ZB_FAKE_SHA" ] || exit 128; cat "$ZB_FAKE_COMMIT/${spec#*:}"; exit $? ;;
 esac
 exit 0
 """
@@ -116,6 +116,11 @@ class Win10SpikeRun(unittest.TestCase):
             if src.exists():
                 (root / rel).parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(src, root / rel)
+        # the commit's version of each input differs from the working tree, so staging the tree is caught
+        self.commit = td / "commit"
+        for rel in INPUTS:
+            (self.commit / rel).parent.mkdir(parents=True, exist_ok=True)
+            (self.commit / rel).write_bytes(b"<!-- at the commit -->\n" + (REPO / rel).read_bytes())
         build = root / "tests" / "windows" / "build-on-windows.sh"
         build.parent.mkdir(parents=True, exist_ok=True)
         build.write_text(_FAKE_BUILD)
@@ -148,7 +153,7 @@ class Win10SpikeRun(unittest.TestCase):
             "ZB_WIN10_PYTHON": r"C:\py\python.exe", "ZB_WIN10_LISTEN": FAKE_WIN10_HOST,
             "ZB_WIN_KEY": str(td / "no-such-legacy"), "ZB_WIN_KNOWN_HOSTS": str(td / "no-such-legacy-kh"),
             "ZB_HOST_LIVE": "1",
-            "ZB_FAKE_LOG": str(self.log), "ZB_FAKE_SHA": SHA, "ZB_FAKE_REPO": str(root), "ZB_FAKE_W10FS": str(self.w10fs),
+            "ZB_FAKE_LOG": str(self.log), "ZB_FAKE_SHA": SHA, "ZB_FAKE_COMMIT": str(td / "commit"), "ZB_FAKE_W10FS": str(self.w10fs),
             "ZB_FAKE_MARKER11": M11, "ZB_FAKE_MARKER10": M10, "ZB_FAKE_SPIKE_OUT": str(spike),
         }
         env.update(over)
@@ -199,6 +204,7 @@ class Win10SpikeRun(unittest.TestCase):
         fetch = [a for a in self._scp() if any(x.endswith(f":{REL_DIR}/zig-out/bin/{EXE}") for x in a)]
         self.assertEqual(len(fetch), 1, self._scp())
         self.assertIn(f"zbtext@{FAKE_WIN11_HOST}:{REL_DIR}/zig-out/bin/{EXE}", fetch[0])
+        self.assertIn("-O", fetch[0], "the fetch must use the legacy scp protocol")
         self.assertLess(fetch[0].index("-O"), next(i for i, x in enumerate(fetch[0]) if "@" in x))
 
     def test_the_win11_build_folder_is_removed_after_the_fetch_and_before_win10_staging(self):
@@ -216,12 +222,13 @@ class Win10SpikeRun(unittest.TestCase):
         self.assertEqual(staged, want)
         for rel in INPUTS:
             self.assertEqual((self.w10fs / REL_DIR / pathlib.PurePosixPath(rel).name).read_bytes(),
-                             (REPO / rel).read_bytes(), f"{rel} is not the commit's file")
+                             (self.commit / rel).read_bytes(), f"{rel} is not the commit's file")
         for argv in self._scp():
             dests = [x for x in argv if x.startswith(f"zbtest@{FAKE_WIN10_HOST}:")]
             for d in dests:
                 self.assertTrue(d.startswith(f"zbtest@{FAKE_WIN10_HOST}:{REL_DIR}/"), d)
             if dests or any("@" in x for x in argv):
+                self.assertIn("-O", argv, "every copy must use the legacy scp protocol")
                 self.assertLess(argv.index("-O"), next(i for i, x in enumerate(argv) if "@" in x), argv)
         mk = self._ssh(10, "mkdir")
         self.assertEqual(len(mk), 1)
