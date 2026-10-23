@@ -17,8 +17,12 @@ records, build-on-windows.sh, gate.sh --selftest-stage and gate.sh --probe-only 
     and known_hosts paths under the test's temp dir that do not exist), with the same bait: at least one call per
     configured host, and every call carries exactly that host's user, host, port, key and known_hosts.
 wsl_live_test's live entry needs the sha-pinned Alpine rootfs and the PID-1 backstop before its first ssh, so its
-complete-config control drives that module's own ssh() helper instead; its partial-config cases drive the entry.
-win_transport_test also uses a second account (ZB_WIN11_OTHER_USER); the matrix sets it explicitly.
+complete-config control drives that module's own ssh() helper instead (approved 456c9420; the green routes that helper
+through the shared resolver); its partial-config cases drive the entry.
+R2 (NavyCanyon 456c9420): win_transport_test's second account ZB_WIN11_OTHER_USER is a sixth selector for that test
+only: with the primary five complete and it missing, a named non-skip failure and no transport. The gate stage's
+transport user is ZB_WIN11_USER; ZB_GUEST_USER (the lexical-fence identity) is set to a deliberately different bait
+and is never required to equal it.
 
 Separately: fake_transport.problem() must itself reject default, legacy and cross-host resolution; and a source
 tripwire (NOT the behavioural proof) checks every caller names the shared resolver tests/windows/live_transport.py
@@ -48,6 +52,7 @@ HOSTS = {"ZB_WIN11": fake_transport.FAKE_WIN11_HOST, "ZB_WIN10": fake_transport.
 PORTS = {"ZB_WIN11": "2201", "ZB_WIN10": "2210"}
 USERS = {"ZB_WIN11": "zbuser11", "ZB_WIN10": "zbuser10"}
 OTHER_USER = "zbother11"
+FENCE_USER_BAIT = "zbfence-bait"  # ZB_GUEST_USER: the fence identity, never the transport user
 
 _FAKE = r"""#!/usr/bin/env bash
 { printf 'ARGV:'; printf ' %q' "$@"; printf '\n'; } >> "$ZB_RED_CALLS"
@@ -135,7 +140,7 @@ class _Matrix(unittest.TestCase):
                         "ZB_SELFTEST_GIT_LOG": str(td / "git.log"), "ZB_SELFTEST_TIMEOUT_LOG": str(td / "timeout.log")})
         elif kind == "gate":
             env.update({"PATH": gtw._fakes(bindir) + ":/usr/bin:/bin", "ZB_GATE_ROOT": str(REPO),
-                        "ZB_SELFTEST_SSH_LOG": str(td / "calls.log"), "ZB_GUEST_USER": USERS["ZB_WIN11"],
+                        "ZB_SELFTEST_SSH_LOG": str(td / "calls.log"), "ZB_GUEST_USER": FENCE_USER_BAIT,
                         "ZB_WIN11_DOMAIN": "win11-m8", "ZB_WIN11_MARKER": gtw.VM_MARKER,
                         "ZB_WIN11_SNAPSHOT": "pre-4dr-toolchain-2026-10-20", "ZB_WIN10_MARKER": gtw.FS_MARKER,
                         "ZB_SELFTEST_WIN10_CALLS": str(td / "win10.calls"),
@@ -180,7 +185,7 @@ class _Matrix(unittest.TestCase):
         return (f"\n[{label}] rc={proc.returncode}\nenv={shown}\nstdout:\n{proc.stdout[-2500:]}\n"
                 f"stderr:\n{proc.stderr[-2500:]}\ncalls: {calls[:6]}")
 
-    def _partial(self, label, kind, script, args, prefix, needs, missing):
+    def _partial(self, label, kind, script, args, prefix, needs, missing, drop=()):
         with tempfile.TemporaryDirectory() as t:
             td = pathlib.Path(t)
             env = self._world(td, label, kind)
@@ -191,12 +196,14 @@ class _Matrix(unittest.TestCase):
             env.update(_values(td, prefix))
             for name in missing:
                 env.pop(f"{prefix}_{name}")
+            for name in drop:
+                env.pop(name)
             proc = self._run(label, kind, script, args, env, td)
             calls = self._calls(td)
         detail = self._detail(label, env, proc, calls)
         self.assertEqual(calls, [], "no ssh/scp call before the selectors are complete" + detail)
         text = proc.stdout + proc.stderr
-        wanted = [f"{prefix}_{n}" for n in missing]
+        wanted = [f"{prefix}_{n}" for n in missing] + list(drop)
         if kind == "unittest":
             self.assertNotEqual(proc.returncode, 0, "a partial configuration fails the test" + detail)
             self.assertNotRegex(text, r"skipped=|\bskipped\b", "never a skip" + detail)
@@ -266,6 +273,15 @@ for _c in CALLERS:
     _add(*_c)
 
 
+def _win_transport_other_user(self):
+    """R2: the primary five complete, ZB_WIN11_OTHER_USER missing."""
+    label, kind, script, args, prefix, needs = next(c for c in CALLERS if c[0] == "win_transport")
+    self._partial(label, kind, script, args, prefix, needs, [], drop=["ZB_WIN11_OTHER_USER"])
+
+
+_Matrix.test_win_transport_missing_other_user_is_refused_before_transport = _win_transport_other_user
+
+
 class FakeTransportModel(unittest.TestCase):
     """fake_transport.problem() rejects default, legacy and cross-host resolution, even inside a netns."""
 
@@ -300,7 +316,7 @@ class FakeTransportModel(unittest.TestCase):
 class SourceTripwire(unittest.TestCase):
     """A tripwire only (the matrix above is the behavioural proof): the scoped callers use the one resolver."""
 
-    _DEFAULT_PY = re.compile(r"""ZB_WIN(1[01])?_(PORT|USER|KEY|KNOWN_HOSTS)["']\s*,\s*["']""")
+    _DEFAULT_PY = re.compile(r"""ZB_WIN(1[01])?_(PORT|USER|OTHER_USER|KEY|KNOWN_HOSTS)["']\s*,\s*["']""")
     _DEFAULT_SH = re.compile(r"\$\{ZB_WIN(1[01])?_(PORT|USER|KEY|KNOWN_HOSTS):-")
 
     def test_the_shared_resolver_exists(self):
