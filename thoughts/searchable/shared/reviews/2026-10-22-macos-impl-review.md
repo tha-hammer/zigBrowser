@@ -1429,3 +1429,28 @@ For slice 2b, defer the green to that actual production caller. At that point th
 Readiness remains exactly two derived facts, not a new flag: Zig's eventual production boundary uses `agent_setup.seatbelt_ready` through the existing platform gate before netd/helper/profile/spawn work, and Python uses `sandbox_macos.LAUNCH_SPEC_CONSUMABLE()` before its lease. The cross-language invariant keeps those facts aligned. Slice 3 still owns the VM-containment refusal at the actual launch boundary.
 
 Finally, the shared ancestry is still not push-safe because it contains blocked `6ea4ea94` (HEAD advanced after the mail, but that ancestry fact did not change). Keep slice 2 scratch-only until that ancestry is repaired or transplant the work to a reviewed base; do not add another product or test commit to the blocked shared lineage. No red or green from this ruling is approved to push.
+
+## 2026-10-23 — 4pa.77 / 3ui.9 exact-commit host-key GREEN `101d0ec6`
+
+**APPROVED ON ITS OWN CONTENT.** Exact `101d0ec67459c39d46c1aa0a97a02728cc2a536f` satisfies the `7f58dd72` fix-forward minimum for blocked `75b1e882`, against approved red `7271c5b0`. The 4pa.77 / 3ui.9 parts 2–3 direct-transport host-key hold is lifted for this content: every direct transport now pins the reviewed host keys, and the three launchers that execute a commit's bytes take those keys from the same commit export. The exact ancestry tip is nevertheless **NOT push-safe**, because `6ea4ea94` is still an ancestor and remains blocked by `fa57a8f9`; transplant this unchanged content onto reviewed ancestry or land the reviewed 4pa.80 fix-forward and resubmit the resulting exact tip. No Mac contact is authorized, and the independent 3ui.13 no-default-host/key hold still blocks every Mac run request.
+
+The commit changes exactly the nine disclosed files and no modes. Its `build.zig` hunk only registers `mac_exact_commit_hostkey_selftest.sh` in `test-mac-build-script` and aggregate `test`, with `has_side_effects = true`. The three fixture edits only add committed `tests/mac/known_hosts` bytes to scratch repositories so the corrected launchers reach their existing rows; no fixture assertion is removed or weakened. `git diff --check` is clean.
+
+The production boundary is exact. `mac_compile_only.sh`, `ms6_hard_gate.sh`, and `ms7_appkit_gate.sh` each export the selected SHA first, use `<export>/tests/mac/known_hosts`, require a regular non-symlink, and compare `git hash-object --no-filters` with the exact `SHA:tests/mac/known_hosts` blob before the first transport call. `ms6_hard_gate.sh` retains its earlier NOT-ARMED/pin/arm64/manifest/symlink refusal order and performs the new check immediately before its first download. No mutable outer-working-tree host-key path remains in those launchers.
+
+From a clean detached checkout at the exact commit, under `env -i` with private HOME/TMP and fresh caches, the required registered command
+
+`zig build -j4 test-mac-build-script test-mac-compile-only test-mac-reaper-gate-guard --summary all`
+
+exited 0 with **17/17 steps**. The exact-commit oracle passed all six launcher/state combinations: dirty outer file and outer-file replacement by a `/dev/null` symlink, for `mac_compile_only` (two calls), `ms6_hard_gate` (six), and `ms7_appkit_gate` (six). The direct-transport oracle passed H1–H7 across all driven scripts; the destructive reaper gate was definition-evaluated only and was never run. Both registered reaper refusal suites remained fail-closed. All executions used fake hosts and private user/network namespaces; no Mac or external network was contacted.
+
+I independently restored the old outer path in each launcher. The registered exact-commit oracle turned red at the intended K2/K3 boundary in both outer states: X1 produced 8 failures, X2 24, and X3 24. I also reran the preserved direct-transport mutants: M1 `ms6_gate` no+/dev/null (12 failures), M2 unpinned hard-gate scp (2), M3 stage ssh retaining askpass (6), M4 reaper `accept-new` (2), M5 compile-only `/dev/null` (2), M6 spawn gate using `~/.ssh/known_hosts` (8), M7 a new uncovered direct script (one H7 failure), and M8 reaper retaining askpass (2). Thus the H1/H2/H4/H7 coverage was not displaced by the new exact-commit rule.
+
+The independently recomputed exact blob SHA-256 values are:
+
+- `tests/mac/mac_compile_only.sh`: `01dee720a95fe4b24c953f185149de011ada5674eef4d6a9605fd0995a5deb56`
+- `tests/mac/ms6_hard_gate.sh`: `fb072cd04942ee853cc07beb7582dea352919131df9eda42e5b961ef609192e9`
+- `tests/mac/ms7_appkit_gate.sh`: `e08798c8d42e5b121b85c0a8b34535e08da27ce66a4df67d31cb5cc4089464df`
+- `tests/mac/known_hosts`: `15e45024f0e0f9c82743b1095739bf7d8d2c5ab61028255bcae6dc7522595221`
+
+The reported full-gate additions inside a forced no-network namespace (`test_provision`, `agent_setup`, and `agent_secrets`) are not blockers for this change: none reads the changed files, all three pass outside that artificial namespace, and the exact registered transport/compile/reaper scope passes under its intended hermetic isolation. This ruling does not convert that unrelated environmental limitation into evidence for any Mac run.
