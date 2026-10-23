@@ -424,7 +424,7 @@ class MacSeatbeltBackend:
         # The CLI's fd-3 token contract is cross-platform; macOS writes the token to fd 3 via zb_mac_token_to_fd.
         return _sb().Channel(fd=3, env="CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR")
 
-    def launch_spec(self, home, *, seccomp_fd=None, ro_paths=(), state_dirs=(), claude_writable=False,
+    def launch_spec(self, home, *, seccomp_fd=None, ro_paths=(), state_dirs=None, claude_writable=False,
                     net_dir=None, network=None):
         """The CLI/helper launch as a ``sandbox-exec`` prefix + the semantic ``LaunchSpec`` (MS0 rev 6).
 
@@ -437,11 +437,20 @@ class MacSeatbeltBackend:
         (never interpolated into source). The semantic fields state the backend-neutral meaning: macOS has no
         namespaces (``unshare=()`` — Seatbelt is the isolation), ``network``/``lifetime``/``channel`` are this
         backend's, and ``mounts`` is the enforced write-grant contract (the scratchpad). The Linux-only kwargs
-        (``seccomp_fd``, ``state_dirs``, ``claude_writable``, ``net_dir``, ``ro_paths``) are accepted for the
-        Protocol and not used here; per-path read mounts (``ro_paths``/``state_dirs``) arrive with the
-        deny-default read-curation increment.
+        (``seccomp_fd``, ``net_dir``, ``claude_writable=True`` and a nonempty ``state_dirs``) cannot be honoured
+        here and raise ``sandbox.UnsupportedLaunchInput`` before any profile exists (bd 4pa.22). ``ro_paths`` is
+        accepted: the BROAD profile allows every read; the deny-default read curation (MS6.7) must bind them.
         """
         sb = _sb()
+        state_dirs = () if state_dirs is None else state_dirs  # None: this backend's default
+        if seccomp_fd is not None:
+            raise sb.UnsupportedLaunchInput("macOS has no seccomp: seccomp_fd must be None")
+        if net_dir is not None:
+            raise sb.UnsupportedLaunchInput("macOS reaches netd by port, not a socket dir: net_dir must be None")
+        if claude_writable:
+            raise sb.UnsupportedLaunchInput("macOS cannot grant all of .claude writable")
+        if state_dirs:
+            raise sb.UnsupportedLaunchInput("macOS grants no state directories yet")
         net = network if network is not None else self.network()
         scratch = dparams(scratchpad=str(home.scratchpad))[SCRATCHPAD_PARAM]  # validated canonical non-root
         # Materialize the per-launch profile SECURELY (O_EXCL + 0400 + fd check) in its own 0700 dir OUTSIDE

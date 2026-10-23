@@ -19,7 +19,7 @@ same launch without reusing a bwrap argv.
 
 import os
 import signal
-from typing import NamedTuple, Protocol
+from typing import NamedTuple, Optional, Protocol
 
 from . import relay  # the Linux net topology: egress + bridge loopback ports (one source of truth)
 
@@ -29,6 +29,10 @@ BWRAP = "/usr/bin/bwrap"
 
 class SandboxError(Exception):
     """The agent home is not laid out as setup leaves it."""
+
+
+class UnsupportedLaunchInput(SandboxError):
+    """A launch input this backend cannot honour (bd 4pa.22), refused before any side effect."""
 ETC_FILES = ("/etc/ssl", "/etc/ca-certificates", "/etc/resolv.conf", "/etc/hosts", "/etc/nsswitch.conf",
              "/etc/passwd", "/etc/group", "/etc/localtime")
 USR_LINKS = (("usr/bin", "/bin"), ("usr/sbin", "/sbin"), ("usr/lib", "/lib"), ("usr/lib64", "/lib64"))
@@ -207,10 +211,12 @@ class SandboxBackend(Protocol):
     port rules; Linux supplies netd's fixed private-netns ports + relays.
     """
 
-    def launch_spec(self, home, *, seccomp_fd=None, ro_paths=(), state_dirs=STATE_DIRS,
-                    claude_writable=False, net_dir=None) -> "LaunchSpec": ...
+    # state_dirs=None is the backend-default sentinel (4pa.22): each backend turns only None into its own default,
+    # and an explicit () means no state directories.
+    def launch_spec(self, home, *, seccomp_fd=None, ro_paths=(), state_dirs=None,
+                    claude_writable=False, net_dir=None, network=None) -> "LaunchSpec": ...
 
-    def network(self) -> "Network": ...
+    def network(self, session=None) -> "Network": ...
 
     def login_network(self) -> "Network": ...
 
@@ -222,7 +228,7 @@ class SandboxBackend(Protocol):
 
     def egress_endpoint(self, session=None) -> "Endpoint": ...
 
-    def egress_dir(self) -> str: ...
+    def egress_dir(self) -> Optional[str]: ...
 
     def bridge_policy(self) -> "BridgePolicy": ...
 
@@ -238,7 +244,7 @@ class LinuxBwrapBackend:
     51091/31337), so a wrong constant can never silently diverge from the relay.
     """
 
-    def launch_spec(self, home, *, seccomp_fd=None, ro_paths=(), state_dirs=STATE_DIRS,
+    def launch_spec(self, home, *, seccomp_fd=None, ro_paths=(), state_dirs=None,
                     claude_writable=False, net_dir=None, network=None):
         """The bwrap prefix for a helper rooted at `home` (an options.AgentHome).
 
@@ -252,6 +258,7 @@ class LinuxBwrapBackend:
         the sign-in passes :meth:`login_network`, whose netd has no bridges/, so
         only egress/ is bound).
         """
+        state_dirs = STATE_DIRS if state_dirs is None else state_dirs  # None: this backend's default
         network = network if network is not None else self.network()
         # netd's egress/bridges binds, validated here (before the .claude state
         # checks below), so a missing net dir refuses in exactly the old order.

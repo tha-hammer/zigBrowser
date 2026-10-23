@@ -3432,6 +3432,15 @@ pub fn build(b: *std.Build) void {
         "-c",
         "py=$(tools/agent_host_env.sh --check) || exit 1; cd agent/host/tests && env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 ZB_AGENT_HOST_PYTHON=\"$py\" \"$py\" -m unittest -v test_backend_contract",
     });
+    // bd 4pa.22 (plan R29-MS6 I1, SilverRidge 6fde992b): both backends conform to the SandboxBackend Protocol, with
+    // state_dirs=None as the backend-default sentinel, the macOS refusals and the network= sentinel; fails closed
+    // without the venv. The signature rows are a tripwire: MS6.8's launch.build_launch is the production proof.
+    const agent_host_backend_conformance = b.addSystemCommand(&.{
+        "sh",
+        "-c",
+        "py=$(tools/agent_host_env.sh --check) || exit 1; cd agent/host/tests && env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 ZB_AGENT_HOST_PYTHON=\"$py\" \"$py\" -m unittest -v test_backend_conformance",
+    });
+    b.step("test-agent-backend-conformance", "4pa.22: both sandbox backends conform to the SandboxBackend Protocol").dependOn(&agent_host_backend_conformance.step);
     // MS6 macOS Seatbelt backend — the profile generator's content rules, unit-tested on Linux (pure
     // Python; the kernel enforcement is the MS6.1-6.5 Mac gate). Pins the token-isolation belt measured on
     // both arches: explicit (deny process-info*) + curated sysctl-read, scratchpad-only writes, hook bridges-only.
@@ -4410,6 +4419,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&agent_host_launch.step);
     test_step.dependOn(&agent_host_contract.step);
     test_step.dependOn(&agent_host_backend_contract.step);
+    test_step.dependOn(&agent_host_backend_conformance.step);
     test_step.dependOn(&agent_host_sandbox_macos.step);
     test_step.dependOn(pidns_launcher_status_step);
     test_step.dependOn(seatbelt_readiness_step);

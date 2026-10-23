@@ -1,7 +1,8 @@
 """bd zigBrowser-4pa.22 (plan R29-MS6 I1; SilverRidge 6fde992b ruling): LinuxBwrapBackend and MacSeatbeltBackend
 both conform to the ``SandboxBackend`` Protocol.
 
-RED, UNREGISTERED: the green registers it in aggregate ``test`` (no skip-to-green).
+Red 8939353b (SilverRidge 03fe3c09). Registered: ``zig build test-agent-backend-conformance``, in aggregate ``test``
+(no skip-to-green).
 
 ``state_dirs=None`` is the explicit backend-default sentinel, on the Protocol and both backends alike. Linux turns only
 ``None`` into its frozen ``STATE_DIRS``; macOS turns only ``None`` into ``()``. An explicit ``()`` means "no state
