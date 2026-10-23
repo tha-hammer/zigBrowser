@@ -8,14 +8,19 @@
 # the whole test re-run in its own user+network namespace). AFTER the commit, every tracked file a gate could ship
 # (src, tests, packaging, agent, tools, build.zig*; the gate scripts, the helper, the shared library and the pinned
 # host keys aside) gets one appended marker line in the working tree only. The scp stub keeps a copy of every local
-# file it ships; the ssh stub keeps its stdin. Per gate:
-#   P1 no shipped byte comes from the dirty working tree: the marker is in no scp'd file, no ssh stdin, and no file
-#      inside a tar shipped either way;
-#   P2 the run dir is fresh: no `mkdir -p` creates the exact $HOME/zb-* run root (only a plain mkdir, which fails on
-#      an existing dir);
+# file it ships; the ssh stub keeps its stdin. Per gate, on BOTH independent invocations:
+#   P1 every tracked file and every tracked member of every shipped or embedded tar is path-and-byte equal to
+#      `git show "$SHA:<path>"`; generated and pinned payloads have closed allowlists, and unknown payloads fail;
+#      the dirty-tree marker remains a separate, preserved diagnostic within the same row;
+#   P2 the fake remote starts with the selected run root already present and the gate must refuse before extraction,
+#      build or any other product work (a textual `mkdir` spelling is not proof);
 #   P3 two runs of the same gate use different run dirs;
-#   P4 the gate prints the exact commit it shipped (the full SHA of the scratch repo's HEAD);
-#   P0 non-vacuous: each run reaches every configured fake Mac and ships at least one payload.
+#   P4 the gate prints the full SHA in one of the documented, line-bounded commit/result formats;
+#   P0 non-vacuous: each run reaches every configured fake Mac, ships payloads, and binds at least one exact tracked
+#      payload to each configured host.
+# Oracle controls cover a marker-free wrong member appended to one tar, a clean first + wrong second tar, an
+# indirect `d=...; mkdir -p "$d"` reuse, and a dirty payload introduced only on invocation two. The historical
+# marker/lexical/printed-SHA control remains exactly 26 failures at the pre-green tree.
 # tests/mac/ms6_5_reaper_gate.sh is never run (session brief); it is covered by its own registered guard selftests.
 # Run: bash tests/mac/mac_gate_provenance_selftest.sh [repo root]
 set -uo pipefail
@@ -26,10 +31,10 @@ ROOT=$(realpath "${1:-.}")
 BASE=$(mktemp -d "${TMPDIR:-/tmp}/zb-gate-provenance-selftest-XXXXXX")
 T=$(realpath "$BASE")
 cleanup() {
-  case "$T" in "$(realpath "${TMPDIR:-/tmp}")"/zb-gate-provenance-selftest-??????) rm -rf "${T:?}" ;; esac
+  case "$T" in "$(realpath "${TMPDIR:-/tmp}")"/zb-gate-provenance-selftest-??????) rm -rf -- "${T:?}" ;; esac
 }
 trap cleanup EXIT
-fails=0
+fails=0 legacy_fails=0
 ok() { printf 'ok   %s\n' "$*"; }
 bad() { printf 'FAIL %s\n' "$*"; fails=$((fails + 1)); }
 INTEL=intel@10.0.0.1 ARM=arm@10.0.0.2
@@ -77,33 +82,91 @@ LIBS=(tests/mac/mac_config.sh tests/mac/mac_gate_lib.sh)
 HELPER=tests/mac/mac_config.sh
 
 mkdir -p "$T/bin" "$T/prov" "$T/home" "$T/keys"
+cat > "$T/remote_model.py" <<'PY'
+import pathlib
+import re
+import shlex
+import sys
+
+call = pathlib.Path(sys.argv[1])
+stdin = pathlib.Path(sys.argv[2])
+ctl = pathlib.Path(sys.argv[3])
+host, target, idx = sys.argv[4:7]
+argv = call.read_bytes().split(b"\0")
+text = b" ".join(argv[1:]).replace(b"\\$", b"$") + b"\n" + stdin.read_bytes()
+roots = sorted(set(m.decode() for m in re.findall(rb"zb-[A-Za-z0-9._-]+", text)
+                   if re.search(rb"[0-9a-f]{6,}", m)))
+(ctl / f"roots.{idx}").write_text("\n".join(roots) + ("\n" if roots else ""))
+if not target or host != target or not roots or (ctl / f"preexisting.{host}").exists():
+    print("allow")
+    raise SystemExit
+shell_text = "\n".join(line for line in text.decode("utf-8", "replace").splitlines()
+                       if not line.lstrip().startswith("#"))
+mkdir_args = re.findall(r"\bmkdir\s+([^;&|\n]+)", shell_text)
+if not mkdir_args:
+    print("allow")
+    raise SystemExit
+(ctl / f"preexisting.{host}").write_text(roots[0] + "\n")
+try:
+    words = shlex.split(mkdir_args[0], posix=True)
+except ValueError:
+    words = mkdir_args[0].split()
+exclusive = "-p" not in words and "--parents" not in words
+if exclusive:
+    (ctl / f"refused.{host}").write_text(roots[0] + "\n")
+    print("refuse")
+else:
+    (ctl / f"reused.{host}").write_text(roots[0] + "\n")
+    (ctl / f"product.{host}").write_text(f"unsafe root creation in call {idx}\n")
+    print("allow")
+PY
 for tool in ssh scp; do
-  cat > "$T/bin/$tool" <<EOF
+  cat > "$T/bin/$tool" <<'EOF'
 #!/bin/bash
-c=\${ZB_SELFTEST_CTL:?}
-i=\$(cat "\$c/n" 2>/dev/null || echo 0); echo \$((i + 1)) > "\$c/n"
-printf '%s\0' $tool "\$@" > "\$c/call.\$i"
-if [ $tool = ssh ]; then
-  cat > "\$c/stdin.\$i"
+set -u
+tool=$(basename "$0") c=${ZB_SELFTEST_CTL:?}
+i=$(cat "$c/n" 2>/dev/null || echo 0); echo $((i + 1)) > "$c/n"
+printf '%s\0' "$tool" "$@" > "$c/call.$i"
+pos=() skip=
+for a in "$@"; do
+  if [ -n "$skip" ]; then skip=; continue; fi
+  case "$a" in -i|-o|-F|-p|-P|-l|-c|-J) skip=1 ;; -*) ;; *) pos+=("$a") ;; esac
+done
+host=
+if [ "$tool" = ssh ]; then host=${pos[0]:-}; else for a in "${pos[@]}"; do case "$a" in *:*) host=${a%%:*} ;; esac; done; fi
+printf '%s\n' "$host" > "$c/host.$i"
+if [ "$tool" = ssh ]; then
+  cat > "$c/stdin.$i"
+  decision=$(/usr/bin/python3 -I "$ZB_SELFTEST_MODEL" "$c/call.$i" "$c/stdin.$i" "$c" "$host" \
+    "${ZB_SELFTEST_PREEXIST_HOST:-}" "$i") || exit 90
+  [ "$decision" != refuse ] || exit 73
   # Answer like a passing Mac where gate.sh and ms1b_signed_gate.sh require each remote test's PASS line.
-  if grep -q m9_render_test.py "\$c/stdin.\$i"; then
+  if grep -q m9_render_test.py "$c/stdin.$i"; then
     printf 'PASS\tm9-render-webview-screenshot\tzig-out/m9-render.png\tstub\nPASS\tm9-reply-channel-contract\n'
     printf 'PASS\tm9-load-fail-contract\nexec_arch_probe: build.exec_arch=stub\n'
-  elif grep -q mac_universal_test.py "\$c/stdin.\$i"; then
+  elif grep -q mac_universal_test.py "$c/stdin.$i"; then
     printf 'PASS\tmac-universal\t12 assertions\n'
   fi
-  # the bundle-layout spike's leg driver answers `create <run dir>` with its ROOT line
-  case " \$* " in *" /bin/bash -s create "*) printf 'ROOT\t/Users/stub/%s\n' "\${@: -1}" ;; esac
+  # The bundle-layout spike's leg driver answers its create subcommand with the physical-root row.
+  case " $* " in *" /bin/bash -s create "*) printf 'ROOT\t/Users/stub/%s\n' "${@: -1}" ;; esac
 else
-  dst="\${@: -1}" src="\${@: -2:1}"
-  case "\$dst" in
-    *:*) mkdir -p "\$c/shipped.\$i"   # a copy to a Mac: keep the exact bytes it ships
-         skip=; for a in "\${@:1:\$((\$# - 1))}"; do
-           if [ -n "\$skip" ]; then skip=; continue; fi
-           case "\$a" in -i|-o|-F|-P|-l|-c|-J) skip=1 ;; -*) ;; *:*) ;; *) cp -R -- "\$a" "\$c/shipped.\$i/" ;; esac
+  dst="${@: -1}" src="${@: -2:1}"
+  case "$dst" in
+    *:*) mkdir -p "$c/shipped.$i"   # a copy to a Mac: keep the exact bytes it ships
+         [ ! -f "$c/reused.$host" ] || printf 'upload in call %s\n' "$i" > "$c/product.$host"
+         k=0 skip= last=$(( $# - 1 )); for a in "${@:1:$last}"; do
+           if [ -n "$skip" ]; then skip=; continue; fi
+           case "$a" in
+             -i|-o|-F|-P|-l|-c|-J) skip=1 ;;
+             -*) ;;
+             *:*) ;;
+             *) printf '%s\0' "$a" > "$c/origin.$i.$k"
+                cp -Rf -- "$a" "$c/shipped.$i/$k"
+                k=$((k + 1)) ;;
+           esac
          done ;;
     *)   # a fetch: leave a stub file where the remote file lands
-    if [ -d "\$dst" ]; then echo stub > "\$dst/\$(basename "\${src#*:}")"; else echo stub > "\$dst"; fi ;;
+    if [ -d "$dst" ]; then echo stub > "$dst/$(basename "${src#*:}")"; else echo stub > "$dst"; fi ;;
   esac
 fi
 exit 0
@@ -160,7 +223,7 @@ case_env() { # case_env <hosts one|two> <case>: the Mac variables that case sets
     hosts_missing) echo "ZB_MAC_KEY=$KEYF" ;;
     primary_missing) echo "ZB_MAC_ARM_HOST=$ARM"; echo "ZB_MAC_KEY=$KEYF" ;;
     arm_missing) echo "ZB_MAC_HOST=$INTEL"; echo "ZB_MAC_KEY=$KEYF" ;;
-    full|again) echo "ZB_MAC_HOST=$INTEL"; echo "ZB_MAC_KEY=$KEYF"; [ "$1" = two ] && echo "ZB_MAC_ARM_HOST=$ARM" ;;
+    full*|again*) echo "ZB_MAC_HOST=$INTEL"; echo "ZB_MAC_KEY=$KEYF"; [ "$1" = two ] && echo "ZB_MAC_ARM_HOST=$ARM" ;;
   esac
 }
 case_var() { # the variable a refusal must name
@@ -172,12 +235,13 @@ run_case() { # run_case <row> <case> -> sets C (ctl dir) and RC
   IFS='|' read -r s launch prov hosts args <<<"$1"
   name=$(basename "$s" .sh)
   C="$T/ctl.$name.$2"; mkdir -p "$C/tmp" "$C/home"
-  local -a ex=(ZB_SELFTEST_CTL="$C") cmd=() argv=()
+  local -a ex=(ZB_SELFTEST_CTL="$C" ZB_SELFTEST_MODEL="$T/remote_model.py" ZB_SELFTEST_GATE="$s") cmd=() argv=()
   pb="$T/bin"
   case "$prov" in
     pin) pb="$T/prov:$T/bin"; ex+=(ZB_STUB_SHA256="$(sed -n 's/^PIN=\([0-9a-f]\{64\}\)$/\1/p' "$R/$s" | head -n 1)") ;;
     empty) pb="$T/prov:$T/bin"; ex+=(ZB_STUB_SHA256=) ;;
   esac
+  case "$2" in *.pre.intel) ex+=(ZB_SELFTEST_PREEXIST_HOST="$INTEL") ;; *.pre.arm) ex+=(ZB_SELFTEST_PREEXIST_HOST="$ARM") ;; esac
   while IFS= read -r a; do [ -n "$a" ] && ex+=("$a"); done < <(case_env "$hosts" "$2")
   for a in $args; do
     if [ "$a" = PREP ]; then   # a fresh, complete spike prep dir per case (the spike allows one attempt per dir)
@@ -230,7 +294,7 @@ done < <("${G[@]}" ls-files -- src tests packaging agent tools build.zig build.z
 [ "$dirtied" -gt 100 ] && ok "the working tree is dirty past the commit ($dirtied files marked)" \
   || bad "only $dirtied files could be marked dirty"
 
-scan_payloads() { # scan_payloads <ctl>: "<payloads> <first marked payload or ->"; tars embedded in stdin included
+scan_payloads() { # legacy marker control: "<payloads> <first marked payload or ->"
   python3 -I - "$1" "$MARK" <<'PY'
 import io, pathlib, sys, tarfile
 ctl, mark = pathlib.Path(sys.argv[1]), sys.argv[2].encode()
@@ -261,6 +325,217 @@ for f in sorted([*ctl.glob("shipped.*/**/*"), *ctl.glob("stdin.*")]):
 print(count, hit or "-")
 PY
 }
+exact_payloads() { # exact_payloads <ctl> <gate>: summary + diagnostics; nonzero on any unknown or wrong byte
+  /usr/bin/python3 -I - "$1" "$R" "$SHA" "$2" "$MARK" <<'PY'
+import io
+import pathlib
+import subprocess
+import sys
+import tarfile
+
+ctl, repo = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2])
+sha, gate, mark = sys.argv[3], sys.argv[4], sys.argv[5].encode()
+git = ["/usr/bin/git", "-C", str(repo)]
+paths = subprocess.check_output(git + ["ls-tree", "-r", "--name-only", sha]).decode().splitlines()
+path_set = set(paths)
+by_base = {}
+for path in paths:
+    by_base.setdefault(pathlib.PurePosixPath(path).name, []).append(path)
+cache = {}
+def blob(path):
+    if path not in cache:
+        cache[path] = subprocess.check_output(git + ["show", f"{sha}:{path}"])
+    return cache[path]
+
+# Paths flattened by a gate before transport. Everything not listed here must resolve uniquely by its committed path
+# or basename. Generated and pinned allowlists below are intentionally closed.
+flat = {
+    "ms5_kill_group_gate": {
+        "kill_group_test.c": "tests/kill_group/kill_group_test.c",
+        "kill_group_fake.c": "tests/kill_group/kill_group_fake.c",
+        "agent_spawn_posix.c": "src/agent_spawn_posix.c",
+        "agent_spawn_posix.h": "src/agent_spawn_posix.h",
+    },
+    "ms6_5_reaper_census_gate": {
+        "agent_run_reaper.c": "src/agent_run_reaper.c",
+        "agent_run_reaper.h": "src/agent_run_reaper.h",
+        "ms6_5_reaper_census_probe.c": "tests/mac/ms6_5_reaper_census_probe.c",
+    },
+    "ms5_spawn_gate": {
+        "__init__.py": "agent/host/zb_agent_host/__init__.py",
+        "parent_watch.py": "agent/host/zb_agent_host/parent_watch.py",
+        "spawn_group_test.c": "tests/mac/spawn_group_test.c",
+        "watch_stub.py": "tests/mac/watch_stub.py",
+        "agent_spawn_posix.c": "src/agent_spawn_posix.c",
+        "agent_spawn_posix.h": "src/agent_spawn_posix.h",
+    },
+}
+pinned_files = {
+    "bundle_layout_spike", "ms5_deps_gate", "ms5_relocate_gate", "ms5_stage_gate", "ms6_hard_gate",
+}
+generated_names = {
+    "gate": {"zigBrowser-universal", "zigBrowser-universal-signed", "libwkwebview_shim-universal.dylib"},
+    "ms1b_signed_gate": {"zigBrowser-universal-signed", "libwkwebview_shim-signed.dylib"},
+}
+errors, payloads, exact = [], 0, {}
+def err(where, why): errors.append(f"{where}: {why}")
+def add_exact(host): exact[host] = exact.get(host, 0) + 1
+def mapped(name, body):
+    norm = name.lstrip("./")
+    if norm in path_set:
+        return norm
+    base = pathlib.PurePosixPath(norm).name
+    if base in flat.get(gate, {}):
+        return flat[gate][base]
+    candidates = by_base.get(base, [])
+    if len(candidates) == 1:
+        return candidates[0]
+    byte_matches = [p for p in candidates if blob(p) == body]
+    return byte_matches[0] if len(byte_matches) == 1 else None
+def bind(where, name, body, host):
+    path = mapped(name, body)
+    if path is None:
+        err(where, f"unknown tracked payload path {name!r}")
+        return
+    want = blob(path)
+    if body != want:
+        err(where, f"{name!r} differs from git show {sha}:{path}")
+        return
+    if mark in body:
+        err(where, f"{name!r} contains the dirty-tree marker")
+        return
+    add_exact(host)
+def tar_sets(data):
+    candidates, at = [], 0
+    while True:
+        at = data.find(b"ustar", at)
+        if at < 0: break
+        if at >= 257: candidates.append(at - 257)
+        at += 5
+    covered = set()
+    for start in sorted(set(candidates)):
+        if start in covered: continue
+        try:
+            tf = tarfile.open(fileobj=io.BytesIO(data[start:]), mode="r:")
+            members = tf.getmembers()
+        except (tarfile.TarError, EOFError, OSError, ValueError):
+            continue
+        if not members: continue
+        rows = []
+        for member in members:
+            covered.add(start + member.offset)
+            if member.isfile():
+                src = tf.extractfile(member)
+                rows.append((member.name, src.read() if src else b""))
+            elif member.issym():
+                rows.append((member.name, member.linkname.encode()))
+        tf.close()
+        yield start, rows
+def inspect_bytes(where, data, host, origin_name, stdin=False):
+    sets = list(tar_sets(data))
+    if sets:
+        for number, (_, rows) in enumerate(sets, 1):
+            if origin_name == "sites.tar":
+                bad = [name for name, _ in rows if not name.lstrip("./").startswith(("site-x86_64/", "site-aarch64/"))]
+                if bad: err(where, f"generated sites.tar has unknown members: {bad[:3]}")
+                continue
+            for name, body in rows:
+                bind(f"{where} archive#{number}", name, body, host)
+        return
+    if stdin:
+        # A non-archive stdin must be a committed remote-program fragment. The only expanded heredoc is gate.sh's
+        # bounded universal-test program; ms5_setup_e2e prepends a separately exact-bound committed helper.
+        if gate == "ms5_setup_e2e":
+            helper = blob("tests/mac/lib_group_cleanup.sh")
+            if not data.startswith(helper):
+                err(where, "remote helper prefix differs from git show tests/mac/lib_group_cleanup.sh")
+            else:
+                tail = data[len(helper):].strip()
+                if tail and tail in blob("tests/mac/ms5_setup_e2e.sh"):
+                    add_exact(host)
+                else:
+                    err(where, "bytes after the helper are not the committed ms5_setup_e2e remote body")
+            return
+        candidates = [p for p in (f"tests/mac/{gate}.sh", f"packaging/macos/{gate}.sh") if p in path_set]
+        if gate == "bundle_layout_spike":
+            candidates.append("tests/mac/bundle_layout_spike_leg.sh")
+        if any(data.strip() in blob(path) for path in candidates):
+            add_exact(host)
+            return
+        if gate == "gate" and b"mac_universal_test.py" in data and b"ZB_EXPECT_ARCH" in data:
+            return  # documented generated heredoc: local shell expands its committed gate.sh template
+        err(where, "unknown non-archive ssh stdin (not committed remote-program bytes)")
+        return
+    base = pathlib.PurePath(origin_name).name
+    if base == "py.pkg" and gate in pinned_files:
+        return
+    if base == "sites.tar" and gate in pinned_files:
+        return
+    if base in generated_names.get(gate, set()):
+        return
+    if gate in {"gate", "ms1b_signed_gate"} and (
+        base.startswith(("zigBrowser-x86_64", "zigBrowser-arm64", "shim-x86_64", "shim-arm64"))
+    ):
+        return
+    bind(where, base, data, host)
+
+for origin in sorted(ctl.glob("origin.*.*")):
+    _, call_no, item_no = origin.name.split(".")
+    host_file = ctl / f"host.{call_no}"
+    host = host_file.read_text().strip() if host_file.exists() else ""
+    source = origin.read_bytes().rstrip(b"\0").decode(errors="surrogateescape")
+    captured = ctl / f"shipped.{call_no}" / item_no
+    if not captured.exists():
+        err(origin.name, "captured upload is missing")
+        continue
+    payloads += 1
+    if captured.is_dir():
+        for child in sorted(p for p in captured.rglob("*") if p.is_file()):
+            rel_child = child.relative_to(captured).as_posix()
+            try:
+                rel_source = pathlib.Path(source).resolve().relative_to(repo.resolve()).as_posix()
+                name = f"{rel_source}/{rel_child}"
+            except ValueError:
+                name = rel_child
+            inspect_bytes(f"{origin.name}/{rel_child}", child.read_bytes(), host, name)
+    elif captured.is_file():
+        try:
+            name = pathlib.Path(source).resolve().relative_to(repo.resolve()).as_posix()
+        except ValueError:
+            name = pathlib.Path(source).name
+        inspect_bytes(origin.name, captured.read_bytes(), host, name)
+    else:
+        err(origin.name, "captured upload is not a regular file or directory")
+for stdin_path in sorted(ctl.glob("stdin.*")):
+    if not stdin_path.stat().st_size: continue
+    call_no = stdin_path.name.split(".")[1]
+    host_file = ctl / f"host.{call_no}"
+    host = host_file.read_text().strip() if host_file.exists() else ""
+    data = stdin_path.read_bytes()
+    if list(tar_sets(data)):
+        payloads += 1
+    inspect_bytes(stdin_path.name, data, host, "stdin", stdin=True)
+for host in sorted(exact): print(f"EXACT\t{host}\t{exact[host]}")
+print(f"PAYLOADS\t{payloads}")
+for problem in errors: print(f"ERROR\t{problem}")
+raise SystemExit(1 if errors else 0)
+PY
+}
+commit_line() { # bounded documented identity/result lines only; a free SHA elsewhere does not count
+  /usr/bin/python3 -I - "$1" "$SHA" <<'PY'
+import pathlib, re, sys
+lines, sha = pathlib.Path(sys.argv[1]).read_text(errors="replace").splitlines(), re.escape(sys.argv[2])
+patterns = [
+    rf"== commit {sha}(?:, mutant [A-Za-z0-9._-]+)?",
+    rf"== hard gate at commit {sha}",
+    rf"== ms7 appkit gate at commit {sha}",
+    rf"== mac compile-only at commit {sha}, harness sha256 [0-9a-f]{{64}}",
+    rf"PASS\tbuild-on-mac\t{sha}\tzb-gate-{sha}-[0-9a-f]+",
+    rf"PASS\tms5-setup-e2e\tboth-arches\t{sha}",
+]
+raise SystemExit(0 if any(any(re.fullmatch(p, line) for p in patterns) for line in lines) else 1)
+PY
+}
 run_dirs() { # run_dirs <ctl>: every zb-* run root carrying a 6+ hex/digit nonce in its ssh/scp argv and stdin scripts
   python3 -I - "$1" <<'PY'
 import pathlib, re, sys
@@ -276,28 +551,112 @@ for f in [*ctl.glob("call.*"), *ctl.glob("stdin.*")]:
 print("\n".join(sorted(names)))
 PY
 }
+controls=0
 for row in "${DRIVEN[@]}"; do
   IFS='|' read -r s launch prov hosts args <<<"$row"
   name=$(basename "$s" .sh) before=$fails
   run_case "$row" full; c1=$C
-  n=$(calls_of "$c1")
-  declare -A seen=()
-  for ((i = 0; i < n; i++)); do read -r tool host key < <(call_host_key "$c1" "$i"); seen[$host]=1; done
-  read -r payloads hit < <(scan_payloads "$c1")
-  { [ -n "${seen[$INTEL]:-}" ] && { [ "$hosts" = one ] || [ -n "${seen[$ARM]:-}" ]; } && [ "$payloads" -gt 0 ]; } \
-    || bad "P0 $name: vacuous run (ssh to the Macs: ${!seen[*]}; payloads $payloads)"
-  unset seen
-  [ "$hit" = - ] || bad "P1 $name ships working-tree bytes, not the commit's: $hit"
-  mk=$(cat "$c1"/call.* "$c1"/stdin.* 2>/dev/null | tr '\0' '\n' \
-       | grep -aoE 'mkdir -p ("?\$HOME/|~/)zb-[A-Za-z0-9._-]+"?([[:space:];&|)]|$)' | head -n 1)
-  [ -z "$mk" ] || bad "P2 $name creates its run root with mkdir -p (an old dir would be reused): $mk"
-  grep -qF "$SHA" "$c1/out" || bad "P4 $name never prints the exact commit it shipped ($SHA)"
   run_case "$row" again; c2=$C
+  n=$(calls_of "$c1")
+  p0= p1= p4=
+  hit1=- legacy_mk= legacy_sha=0
+  for spec in "$c1 first" "$c2 second"; do
+    ctl=${spec% *} label=${spec##* }
+    exact_payloads "$ctl" "$name" > "$ctl/exact" 2>&1; exact_rc=$?
+    read -r payloads hit < <(scan_payloads "$ctl")
+    [ "$label" != first ] || hit1=$hit
+    expected=("$INTEL"); [ "$hosts" = one ] || expected+=("$ARM")
+    for expected_host in "${expected[@]}"; do
+      grep -qxF "$expected_host" "$ctl"/host.* 2>/dev/null \
+        || p0+="$label invocation never reached $expected_host; "
+      awk -F '\t' -v h="$expected_host" '$1 == "EXACT" && $2 == h && $3 > 0 { found=1 } END { exit !found }' "$ctl/exact" \
+        || p0+="$label invocation bound no exact tracked payload to $expected_host; "
+    done
+    [ "$payloads" -gt 0 ] || p0+="$label invocation captured no payload; "
+    if [ "$hit" != - ]; then p1+="$label invocation marker at $hit; "; fi
+    if [ "$exact_rc" -ne 0 ]; then
+      why=$(awk -F '\t' '$1 == "ERROR" { print $2; exit }' "$ctl/exact")
+      p1+="$label invocation exact-byte audit: ${why:-unknown failure}; "
+    fi
+    commit_line "$ctl/out" || p4+="$label invocation has no bounded commit/result line; "
+  done
+  [ -z "$p0" ] || bad "P0 $name: $p0"
+  [ -z "$p1" ] || bad "P1 $name: $p1"
+  [ -z "$p4" ] || bad "P4 $name: $p4"
+
+  # Preserve the reviewed pre-green 26-row control independently of the stronger proof above.
+  [ "$hit1" = - ] || legacy_fails=$((legacy_fails + 1))
+  legacy_mk=$(cat "$c1"/call.* "$c1"/stdin.* 2>/dev/null | tr '\0' '\n' \
+    | grep -aoE 'mkdir -p ("?\$HOME/|~/)zb-[A-Za-z0-9._-]+"?([[:space:];&|)]|$)' | head -n 1)
+  [ -z "$legacy_mk" ] || legacy_fails=$((legacy_fails + 1))
+  grep -qF "$SHA" "$c1/out" && legacy_sha=1
+  [ "$legacy_sha" -eq 1 ] || legacy_fails=$((legacy_fails + 1))
+
+  # A selected root that already exists must be refused before any product work, on each host and for both invocations.
+  p2=
+  expected_specs=("intel $INTEL"); [ "$hosts" = one ] || expected_specs+=("arm $ARM")
+  for invocation in full again; do
+    for host_spec in "${expected_specs[@]}"; do
+      tag=${host_spec%% *} expected_host=${host_spec#* }
+      run_case "$row" "$invocation.pre.$tag"; pre=$C pre_rc=$RC
+      if [ "$pre_rc" -eq 0 ] || [ ! -f "$pre/refused.$expected_host" ] || [ -f "$pre/product.$expected_host" ]; then
+        p2+="$invocation/$tag did not refuse the pre-existing root before product work; "
+      fi
+    done
+  done
+  [ -z "$p2" ] || bad "P2 $name: $p2"
+
   d1=$(run_dirs "$c1") d2=$(run_dirs "$c2")
-  if [ -z "$d1" ]; then bad "P3 $name: no zb-* run dir found in its calls"
-  elif [ -n "$(comm -12 <(echo "$d1") <(echo "$d2"))" ]; then bad "P3 $name reuses a run dir across runs: $(comm -12 <(echo "$d1") <(echo "$d2") | head -n 1)"; fi
-  [ "$fails" -eq "$before" ] && ok "$name: ships only commit $SHA, into a fresh run dir ($n calls)"
+  if [ -z "$d1" ] || [ -z "$d2" ]; then bad "P3 $name: one invocation named no zb-* run dir"
+  elif [ -n "$(comm -12 <(echo "$d1") <(echo "$d2"))" ]; then
+    bad "P3 $name reuses a run dir across runs: $(comm -12 <(echo "$d1") <(echo "$d2") | head -n 1)"
+  fi
+
+  # Causal exact-byte controls use build-on-mac's otherwise-clean source tar. One appends a marker-free duplicate
+  # member to the same tar; the other changes invocation two only by concatenating a clean-first, wrong-second tar.
+  if [ "$name" = build-on-mac ]; then
+    wrong="$T/wrong-member"; mkdir "$wrong"; printf 'marker-free wrong build bytes\n' > "$wrong/build.zig"
+    same="$T/control.same-archive"; cp -Rf -- "$c1" "$same"
+    same_stream=$(for f in "$same"/stdin.*; do grep -aq ustar "$f" && { echo "$f"; break; }; done)
+    tar -rf "$same_stream" -C "$wrong" build.zig
+    if ! commit_line "$same/out"; then
+      bad "CONTROL marker-free member mutant lost the bounded commit line"
+    elif exact_payloads "$same" "$name" > "$same/exact.control" 2>&1; then
+      bad "CONTROL marker-free duplicate archive member was accepted"
+    else ok "marker-free duplicate archive member is rejected"; controls=$((controls + 1)); fi
+
+    second="$T/control.second-archive"; cp -Rf -- "$c2" "$second"
+    second_stream=$(for f in "$second"/stdin.*; do grep -aq ustar "$f" && { echo "$f"; break; }; done)
+    tar -cf "$T/wrong-second.tar" -C "$wrong" build.zig
+    cat "$T/wrong-second.tar" >> "$second_stream"
+    if ! commit_line "$c1/out" || ! commit_line "$second/out"; then
+      bad "CONTROL second-invocation mutant lost a bounded commit line"
+    elif ! exact_payloads "$c1" "$name" > "$T/control.first.clean" 2>&1; then
+      bad "CONTROL first invocation is not exact before the second-only mutant"
+    elif exact_payloads "$second" "$name" > "$second/exact.control" 2>&1; then
+      bad "CONTROL clean-first, wrong-second archive on invocation two was accepted"
+    else ok "second-invocation-only clean-first/wrong-second archive is rejected"; controls=$((controls + 1)); fi
+  fi
+  [ "$fails" -eq "$before" ] && ok "$name: both invocations ship only commit $SHA into refused-if-existing, disjoint roots ($n first-run calls)"
 done
+
+# The fake remote must interpret an indirect mkdir -p as unsafe reuse; changing a reviewed plain mkdir to this form
+# therefore reaches product work and makes P2 red without depending on a particular $HOME spelling.
+indirect="$T/control.indirect-mkdir"; mkdir -p "$indirect/tmp" "$indirect/home"
+set +e
+env -i PATH="$T/bin:/usr/bin:/bin" HOME="$indirect/home" TMPDIR="$indirect/tmp" ZB_SELFTEST_CTL="$indirect" \
+  ZB_SELFTEST_MODEL="$T/remote_model.py" ZB_SELFTEST_PREEXIST_HOST="$INTEL" \
+  "$T/bin/ssh" "$INTEL" 'd="$HOME/zb-control-123abc"; mkdir -p "$d"; echo product' </dev/null
+indirect_rc=$?
+if [ "$indirect_rc" -eq 0 ] && [ -f "$indirect/reused.$INTEL" ] && [ -f "$indirect/product.$INTEL" ] \
+   && [ ! -f "$indirect/refused.$INTEL" ]; then
+  ok "indirect d=...; mkdir -p \"\$d\" mutant is unsafe and fails P2"; controls=$((controls + 1))
+else
+  bad "CONTROL indirect mkdir -p mutant was not modeled as unsafe reuse"
+fi
+[ "$controls" -eq 3 ] || bad "CONTROL expected 3 causal oracle controls, got $controls"
+[ "$legacy_fails" -eq 26 ] && ok "legacy marker/lexical/printed-SHA control remains exactly 26 failures" \
+  || bad "CONTROL legacy failure count changed: expected 26, got $legacy_fails"
 
 if [ "$fails" -eq 0 ]; then printf 'PASS\tmac-gate-provenance-selftest\n'; exit 0; fi
 printf 'FAIL\tmac-gate-provenance-selftest\t%s failure(s)\n' "$fails"
