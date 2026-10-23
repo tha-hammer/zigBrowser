@@ -369,6 +369,11 @@ pub fn build(b: *std.Build) void {
     // (the inherited variables gdk would unset are removed; a hang ends as a named failure). The two probes and the
     // selftest below prove that configuration on Linux.
     const run_unit_tests = runInProcessGtkTests(b, unit_tests, gtk_test_timeout_s);
+    // 3ui.11 scope row (SilverRidge 99a44f3): prints how the root unit-test run is configured for this -Dtarget,
+    // read from the run step; test-gtk-test-env checks it for Linux, both macOS arches and Windows.
+    b.step("gtk-test-scope", "3ui.11: print how the root unit-test run step is configured for this target").dependOn(
+        &b.addSystemCommand(&.{ "echo", gtkTestScopeLine(b, run_unit_tests, unit_tests.rootModuleTarget()) }).step,
+    );
     if (backend == .gtk_backend) {
         inline for (.{
             .{ "gtk-env-failure-probe", "tests/gtk_env_failure_probe_test.zig", gtk_test_timeout_s },
@@ -4528,20 +4533,41 @@ const gtk_inherited_env = [_][]const u8{ "DESKTOP_STARTUP_ID", "GIO_LAUNCHED_DES
 /// beside many other steps (-j4, VMs alongside), so 600 s is far above a slow normal run, and still ends a hang.
 const gtk_test_timeout_s = "600";
 
-/// A test binary that runs GTK in-process: without the variables gdk would unset (so a failure is reported), and on a
-/// Linux host, for a native binary, under `timeout` (Zig 0.16 has no per-step test timeout, only `zig build --test-timeout`), so a hang
-/// ends as a failure named after the running test. The binary still speaks the build runner's test protocol.
+/// A test binary that runs GTK in-process. Only a native Linux (GTK) binary changes: it runs without the variables gdk
+/// would unset (so a failure is reported) and under `timeout` (Zig 0.16 has no per-step test timeout, only
+/// `zig build --test-timeout`), so a hang ends as a failure named after the running test; the binary still speaks the
+/// build runner's test protocol. Every other binary (macOS, Windows, a foreign Linux arch, which skip_foreign_checks
+/// must still skip) gets the exact plain `b.addRunArtifact`: the same command and the same environment as before.
+/// SilverRidge 99a44f3: the environment removals and the timeout share this one Linux/GTK boundary.
 fn runInProcessGtkTests(b: *std.Build, tests: *std.Build.Step.Compile, timeout_s: []const u8) *std.Build.Step.Run {
-    // Only for a binary this Linux host runs natively: a foreign one must still be skipped by skip_foreign_checks,
-    // which a `timeout` argv[0] would hide (the spawn succeeds and the exec inside it fails).
     const host = b.graph.host.result;
     const built = tests.rootModuleTarget();
-    if (host.os.tag == .linux and built.os.tag == .linux and built.cpu.arch == host.cpu.arch) {
-        tests.setExecCmd(&.{ "timeout", "-k", "10", timeout_s, null });
-    }
+    const native_linux = host.os.tag == .linux and built.os.tag == .linux and built.cpu.arch == host.cpu.arch;
+    if (!native_linux) return b.addRunArtifact(tests);
+    tests.setExecCmd(&.{ "timeout", "-k", "10", timeout_s, null });
     const run = b.addRunArtifact(tests);
     for (gtk_inherited_env) |name| run.removeEnvironmentVariable(name);
     return run;
+}
+
+/// 3ui.11 scope row: what the configured run step really holds, read from the Run step itself. `wrapped`: its argv
+/// starts with `timeout`; `env`: unchanged (no environment of its own, the plain run) or its own copy, and how many
+/// of gtk_inherited_env that copy lacks.
+fn gtkTestScopeLine(b: *std.Build, run: *std.Build.Step.Run, built: std.Target) []const u8 {
+    const wrapped = switch (run.argv.items[0]) {
+        .bytes => |text| std.mem.eql(u8, text, "timeout"),
+        else => false,
+    };
+    var stripped: usize = 0;
+    const env: []const u8 = if (run.environ_map) |map| blk: {
+        for (gtk_inherited_env) |name| {
+            if (map.get(name) == null) stripped += 1;
+        }
+        break :blk "own";
+    } else "unchanged";
+    return b.fmt("GTK-TEST-SCOPE\tos={s}\tarch={s}\twrapped={d}\tenv={s}\tstripped={d}", .{
+        @tagName(built.os.tag), @tagName(built.cpu.arch), @intFromBool(wrapped), env, stripped,
+    });
 }
 
 fn configureBackend(

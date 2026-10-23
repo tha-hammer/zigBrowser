@@ -8,6 +8,10 @@ Two probe steps go through the SAME build.zig helper as the root.zig unit tests:
     timeout and no "attempt to use null value", within the outer bound.
   * gtk-hang-probe (tests/gtk_hang_probe_test.zig): GTK starts, then a test never returns. Required: exit 1 with that
     test named, within the outer bound (the step's own time bound ends it).
+  * gtk-test-scope (SilverRidge 99a44f3 scope row): for the native Linux target and for x86_64-macos, aarch64-macos
+    and x86_64-windows, the root unit-test run step as build.zig configured it. Required: only Linux is wrapped in
+    `timeout` with its own environment lacking the four variables; macOS and Windows keep the exact plain run (no
+    wrapper, environment unchanged). Configuring only, so it needs no Mac and no Windows host.
 Each nested `zig build` runs under a private Xvfb (GTK only removes the variables once it reaches a display), a
 private HOME and XDG dirs, and a hard outer timeout. The test relaunches itself below a held PID namespace (bwrap
 --unshare-net + unshare) and proves it with pidns_guard before it starts Xvfb or a build, so every process it starts
@@ -84,7 +88,7 @@ def start_xvfb(scratch):
     raise RuntimeError("no free X display in 170..249")
 
 
-def nested_build(args, step, display, scratch):
+def nested_build(args, step, display, scratch, extra=()):
     """`zig build <step>` with the inherited variables set; returns (rc or None on the outer timeout, seconds, text)."""
     home = Path(scratch) / f"home-{step}"
     for d in (home / ".cache", home / ".config", home / ".local/share", home / "run"):
@@ -93,7 +97,7 @@ def nested_build(args, step, display, scratch):
     env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "LANG": "C.UTF-8", "HOME": str(home), "DISPLAY": display,
            "XDG_CACHE_HOME": str(home / ".cache"), "XDG_CONFIG_HOME": str(home / ".config"),
            "XDG_DATA_HOME": str(home / ".local/share"), "XDG_RUNTIME_DIR": str(home / "run"), **INHERITED}
-    argv = [args.zig, "build", step, "-j4", "--summary", "none", "--cache-dir", args.cache_dir,
+    argv = [args.zig, "build", step, *extra, "-j4", "--summary", "none", "--cache-dir", args.cache_dir,
             "--global-cache-dir", args.global_cache_dir]
     start = time.monotonic()
     proc = subprocess.Popen(argv, cwd=ROOT, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
@@ -137,6 +141,33 @@ def check_hang_probe(rc, secs, text):
     return problems
 
 
+SCOPE_ROWS = (
+    # (label, extra zig build args, the required fields of the GTK-TEST-SCOPE line)
+    ("linux-native", (), {"os": "linux", "wrapped": "1", "env": "own", "stripped": "4"}),
+    ("x86_64-macos", ("-Dtarget=x86_64-macos",), {"os": "macos", "arch": "x86_64", "wrapped": "0", "env": "unchanged", "stripped": "0"}),
+    ("aarch64-macos", ("-Dtarget=aarch64-macos",), {"os": "macos", "arch": "aarch64", "wrapped": "0", "env": "unchanged", "stripped": "0"}),
+    ("x86_64-windows", ("-Dtarget=x86_64-windows",), {"os": "windows", "arch": "x86_64", "wrapped": "0", "env": "unchanged", "stripped": "0"}),
+)
+
+
+def check_scope(args, display, scratch):
+    """The scope row: the root unit-test run step's configuration per target, read from build.zig's own graph."""
+    problems = []
+    for label, extra, want in SCOPE_ROWS:
+        rc, secs, text = nested_build(args, "gtk-test-scope", display, scratch, extra)
+        lines = [l for l in text.splitlines() if l.startswith("GTK-TEST-SCOPE\t")]
+        print(f"gtk-test-scope {label}: rc={rc} after {secs:.0f} s: {lines[0] if lines else '(no line)'}", flush=True)
+        if rc != 0 or len(lines) != 1:
+            problems.append(f"scope {label}: rc={rc}, {len(lines)} GTK-TEST-SCOPE lines (want rc=0 and one line); "
+                            f"output tail: {text.strip()[-300:]}")
+            continue
+        got = dict(field.split("=", 1) for field in lines[0].split("\t")[1:])
+        wrong = {k: (got.get(k), v) for k, v in want.items() if got.get(k) != v}
+        if wrong:
+            problems.append(f"scope {label}: {wrong} (got, want)")
+    return problems
+
+
 def main():
     if "--sealed-child" not in sys.argv:
         return subprocess.run(["sh", "-c", LAUNCH, sys.executable, str(Path(__file__).resolve()), *sys.argv[1:]]).returncode
@@ -159,6 +190,7 @@ def main():
     try:
         xvfb, display = start_xvfb(scratch)
         try:
+            failures += check_scope(args, display, scratch)
             for step, check in (("gtk-env-failure-probe", check_failure_probe), ("gtk-hang-probe", check_hang_probe)):
                 rc, secs, text = nested_build(args, step, display, scratch)
                 problems = check(rc, secs, text)
