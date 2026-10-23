@@ -5,17 +5,20 @@ zb\runs\<id>).
 WebView2's helper processes (msedgewebview2) outlive the program that started them by seconds and hold files in
 its user-data folder, which sits inside the run folder; deleting at once leaves files behind (WS2a.3a red
 2264489). So:
-  * census(run) reads the stable identities (name, pid, start time) of every process that can hold a run folder:
-    msedgewebview2, zigBrowser and the ws<N>... slice executables. A failed probe or an unparsable answer raises
-    CensusError (fail closed).
+  * census(run, timeout) reads the stable identities (name, pid, start ticks) of every process that can hold a run
+    folder: msedgewebview2, zigBrowser and the ws<N>... slice executables. A failed, timed-out or raising probe, an
+    unparsable answer, or a start time that cannot be read (`na`) raises CensusError (fail closed).
   * remove_after_webview2(run, win_dir, before) waits, within ONE monotonic total deadline of at most 60 s, until
-    the census equals the `before` census taken before the run; it never kills anything. Only then, if the folder
+    the census equals the `before` census taken before the run; every census gets only the REMAINING part of that
+    deadline as its probe timeout, so a slow or stalled probe cannot outlast it; it never kills anything. Only then, if the folder
     is a plain directory (not a reparse point), it calls ordinary `rmdir /s /q` exactly once and checks both the
     command status and the folder's absence. Any probe, parse, timeout, reparse or deletion failure returns
     (False, why) and deletes nothing more; there is no retry.
 
 `run(command)` sends one command to the Windows account's shell (cmd.exe) and returns an object with
-`returncode`, `stdout` and `stderr` (subprocess.CompletedProcess). Only paths under %USERPROFILE%\zb are accepted.
+`returncode`, `stdout` and `stderr` (subprocess.CompletedProcess); `run(command, timeout=seconds)` must bound it (the
+callers' ssh runners raise subprocess.TimeoutExpired). Only the two caller run-folder shapes are accepted, exactly:
+%USERPROFILE%\zb\build\run-<40 hex> (spike_driver) and %USERPROFILE%\zb\runs\m8-<pid>-<12 hex> (m8_live_test).
 """
 import re
 import time
@@ -30,17 +33,20 @@ CENSUS_CMD = (
     "$_.ProcessName + [char]9 + $_.Id + [char]9 + $(try { $_.StartTime.ToUniversalTime().Ticks } catch { 'na' }) }; "
     "'END'\""
 )
-_LINE = re.compile(r"^([A-Za-z0-9-]+)\t([0-9]+)\t([0-9]+|na)$")
-_DIR = re.compile(r"^(%USERPROFILE%|[A-Za-z]:\\Users\\[A-Za-z0-9._-]+)\\zb\\(build\\run-[0-9a-f]{40}|runs\\[A-Za-z0-9._-]+)$")
+_LINE = re.compile(r"^([A-Za-z0-9-]+)\t([0-9]+)\t([0-9]+)$")  # name, pid, start ticks (a readable start time only)
+_DIR = re.compile(r"^%USERPROFILE%\\zb\\(build\\run-[0-9a-f]{40}|runs\\m8-[0-9]+-[0-9a-f]{12})$")
 
 
 class CensusError(Exception):
     pass
 
 
-def census(run):
-    """The set of (name, pid, start) identities of the processes that can hold a run folder."""
-    r = run(CENSUS_CMD)
+def census(run, timeout=None):
+    """The set of (name, pid, start ticks) identities of the processes that can hold a run folder."""
+    try:
+        r = run(CENSUS_CMD) if timeout is None else run(CENSUS_CMD, timeout=timeout)
+    except Exception as e:  # subprocess.TimeoutExpired, OSError, ...: the probe itself failed
+        raise CensusError(f"probe failed: {type(e).__name__}: {e}") from e
     if r.returncode != 0:
         raise CensusError(f"probe rc={r.returncode}: {r.stderr.strip()[:300]}")
     lines = [l.strip() for l in r.stdout.replace("\r", "").split("\n") if l.strip()]
@@ -50,15 +56,13 @@ def census(run):
     for line in lines[:-1]:
         m = _LINE.match(line)
         if not m or not re.match(_NAMES, m.group(1)):
-            raise CensusError(f"unparsable census line {line!r}")
+            raise CensusError(f"unparsable census line (or unreadable start time) {line!r}")
         found.add((m.group(1), int(m.group(2)), m.group(3)))
     return frozenset(found)
 
 
 def _ps_path(win_dir):
-    if win_dir.startswith("%USERPROFILE%\\"):
-        return "(Join-Path $env:USERPROFILE '" + win_dir[len("%USERPROFILE%\\"):] + "')"
-    return "'" + win_dir + "'"
+    return "(Join-Path $env:USERPROFILE '" + win_dir[len("%USERPROFILE%\\"):] + "')"
 
 
 def _kind_cmd(win_dir):
@@ -72,22 +76,30 @@ def _kind_cmd(win_dir):
 
 def remove_after_webview2(run, win_dir, before, deadline_s=DEADLINE_S, poll_s=POLL_S):
     """Wait (bounded, never kill) for the census to equal `before`, then delete `win_dir` once. -> (ok, why)."""
-    if not _DIR.match(win_dir) or ".." in win_dir:
+    if not _DIR.fullmatch(win_dir):
         return False, f"refused: {win_dir!r} is not a run folder under %USERPROFILE%\\zb"
     if not 0 < deadline_s <= DEADLINE_S:
         return False, f"refused: deadline {deadline_s}s is outside (0, {DEADLINE_S}]"
     start = time.monotonic()
     end = start + deadline_s
+    def timed_out(last):
+        return False, (f"census did not return to the pre-run identities within {deadline_s:g}s: "
+                       f"survivors {sorted(last - before)}, missing {sorted(before - last)}; nothing deleted")
+
+    last = None
     while True:
+        remaining = end - time.monotonic()
+        if remaining <= 0:
+            return timed_out(last) if last is not None else (False, "no time left for a census; nothing deleted")
         try:
-            now = census(run)
+            now = census(run, timeout=remaining)
         except CensusError as e:
             return False, f"census failed: {e}; nothing deleted"
         if now == before:
             break
+        last = now
         if time.monotonic() >= end:
-            return False, (f"census did not return to the pre-run identities within {deadline_s:g}s: "
-                           f"survivors {sorted(now - before)}, missing {sorted(before - now)}; nothing deleted")
+            return timed_out(now)
         time.sleep(max(0.0, min(poll_s, end - time.monotonic())))
     waited = time.monotonic() - start
 

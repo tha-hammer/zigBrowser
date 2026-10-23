@@ -14,6 +14,9 @@ makes the 60 s deadline instant. Cases (6dd7fda):
   * permanent survivor / timeout: a helper never leaves -> failure within the 60 s deadline, NO rmdir;
   * census failure: the census cannot be read at cleanup -> failure, NO rmdir;
   * deletion failure: the folder survives the one rmdir -> failure, no second rmdir.
+cc8f0b0 R2 cases: a slow or stalled census probe cannot outlast the ONE 60 s deadline (every cleanup census gets only
+the remaining budget as its timeout; a timeout is a census failure); an unreadable start time (`na`) deletes nothing;
+`runs\.` and every other non-caller path shape are refused without contacting the host.
 Dropping or bypassing the wait makes the transient, survivor and census-failure cases red.
 
 Run:  python3 -I tests/windows/webview2_cleanup_test.py   (registered: windows-webview2-cleanup-selftest)
@@ -58,10 +61,16 @@ class FakeTime:
 
 class FakeVM:
     """linger: census reads the run's helpers survive (None = forever); census_fail_at: the census read (1-based)
-    that fails; rm_fails: the folder survives rmdir even with no helper."""
+    that fails; rm_fails: the folder survives rmdir even with no helper; clock + stall_at / slow_s: from that census
+    read on, a probe never answers (or takes slow_s) and, like subprocess.run, uses up its timeout and raises
+    TimeoutExpired (a probe with no timeout is an error); na_at: from that census read on, a helper's start time is
+    unreadable (`na`)."""
 
-    def __init__(self, linger=0, census_fail_at=None, rm_fails=False):
+    def __init__(self, linger=0, census_fail_at=None, rm_fails=False, clock=None, stall_at=None, slow_s=None,
+                 na_at=None):
         self.linger, self.census_fail_at, self.rm_fails = linger, census_fail_at, rm_fails
+        self.clock, self.stall_at, self.slow_s, self.na_at = clock, stall_at, slow_s, na_at
+        self.census_timeouts = []
         self.census_calls = 0
         self.spawned_at = None  # census read count when the run started its helpers
         self.folders = set()
@@ -81,10 +90,24 @@ class FakeVM:
         self.log.append(cmd)
         if cmd == wc.CENSUS_CMD:
             self.census_calls += 1
+            self.census_timeouts.append(timeout)
             if self.census_fail_at is not None and self.census_calls >= self.census_fail_at:
                 return CP(1, "", "Get-Process : Access is denied")
+            takes = None
+            if self.stall_at is not None and self.census_calls >= self.stall_at:
+                takes = float("inf")
+            elif self.slow_s is not None and self.census_calls >= 2:  # read 1 is the before-run census
+                takes = self.slow_s
+            if takes is not None:
+                assert timeout is not None, "a census probe without a timeout"
+                if takes > timeout:
+                    self.clock.now += timeout
+                    raise subprocess.TimeoutExpired(cmd, timeout)
+                self.clock.now += takes
             procs = BASE | (HELPERS if self.helpers_alive() else set())
-            return CP(0, "".join(f"{n}\t{p}\t{t}\r\n" for n, p, t in sorted(procs)) + "END\r\n")
+            na = self.na_at is not None and self.census_calls >= self.na_at
+            return CP(0, "".join(f"{n}\t{p}\t{'na' if na and (n, p, t) in HELPERS else t}\r\n"
+                                 for n, p, t in sorted(procs)) + "END\r\n")
         if cmd.startswith("powershell") and "Get-Item" in cmd:
             target = next((f for f in self.folders if f.split("\\")[-1] in cmd), None)
             return CP(0, "DIR\r\n" if target else "ABSENT\r\n")
@@ -171,6 +194,37 @@ class Helper(Case):
         self.assertFalse(ok)
         self.assertEqual(vm.rm_targets, [self.DIR], "exactly one rmdir, no retry")
 
+    def test_stalled_probe_cannot_exceed_the_total_deadline(self):
+        vm = FakeVM(linger=None, clock=self.clock, stall_at=3)
+        start = self.clock.now
+        ok, why = self.go(vm)
+        self.assertFalse(ok)
+        self.assertIn("census failed", why)
+        self.assertEqual(vm.rm_targets, [])
+        self.assertLessEqual(self.clock.now - start, wc.DEADLINE_S + 1e-6, "a stalled probe outlasted the deadline")
+
+    def test_slow_probes_share_the_one_total_deadline(self):
+        vm = FakeVM(linger=None, clock=self.clock, slow_s=25.0)
+        start = self.clock.now
+        ok, why = self.go(vm)
+        self.assertFalse(ok)
+        self.assertEqual(vm.rm_targets, [])
+        self.assertLessEqual(self.clock.now - start, wc.DEADLINE_S + 1e-6, "slow probes outlasted the deadline")
+        cleanup = vm.census_timeouts[1:]  # [0] is the before-run census
+        self.assertTrue(all(t is not None and 0 < t <= wc.DEADLINE_S for t in cleanup), cleanup)
+        self.assertLess(cleanup[-1], cleanup[0], "each census gets only the remaining budget")
+
+    def test_unreadable_start_time_deletes_nothing(self):
+        vm = FakeVM(linger=2, na_at=2)
+        ok, why = self.go(vm)
+        self.assertFalse(ok)
+        self.assertIn("unreadable start time", why)
+        self.assertEqual(vm.rm_targets, [])
+
+    def test_unreadable_start_time_is_not_an_identity(self):
+        with self.assertRaises(wc.CensusError):
+            wc.census(lambda cmd: CP(0, "msedgewebview2\t12\tna\r\nEND\r\n"))
+
     def test_unparsable_census_fails_closed(self):
         vm = FakeVM()
         with mock.patch.object(vm, "run", return_value=CP(0, "msedgewebview2\t12\r\n")):  # no END line
@@ -179,7 +233,11 @@ class Helper(Case):
 
     def test_refuses_paths_outside_the_run_folders(self):
         vm = FakeVM()
-        for bad in (r"%USERPROFILE%\zb", r"C:\Windows\Temp\x", r"%USERPROFILE%\zb\runs\..\..\x", ""):
+        for bad in (r"%USERPROFILE%\zb", r"C:\Windows\Temp\x", r"%USERPROFILE%\zb\runs\..\..\x", "",
+                    r"%USERPROFILE%\zb\runs\.", r"%USERPROFILE%\zb\runs\..", r"%USERPROFILE%\zb\runs\x",
+                    r"%USERPROFILE%\zb\runs\m8-1-abc", r"%USERPROFILE%\zb\runs\m8-1-aaaaaaaaaaaa\.",
+                    r"%USERPROFILE%\zb\build\run-" + "a" * 39, r"%USERPROFILE%\zb\build\run-" + "a" * 40 + ".",
+                    r"C:\Users\zbtext\zb\build\run-" + "a" * 40, r"%USERPROFILE%\zb\build\run-" + "A" * 40):
             with self.subTest(path=bad):
                 ok, why = wc.remove_after_webview2(vm.run, bad, frozenset())
                 self.assertFalse(ok)
@@ -195,7 +253,7 @@ class SpikeDriverCaller(Case):
 
         def fake_run(argv, **kw):
             if argv[0] == "ssh":
-                r = vm.run(argv[-1])
+                r = vm.run(argv[-1], timeout=kw.get("timeout"))
                 return subprocess.CompletedProcess(argv, r.returncode, r.stdout, r.stderr)
             if argv[0] == "git":
                 return subprocess.CompletedProcess(argv, 0, sha + "\n", "")
@@ -238,6 +296,20 @@ class SpikeDriverCaller(Case):
         self.assertEqual(rc, 1, text)
         self.assertEqual(vm.rm_targets, [])
 
+    def test_stalled_probe_cannot_exceed_the_total_deadline(self):
+        vm = FakeVM(linger=None, clock=self.clock, stall_at=2)
+        start = self.clock.now
+        rc, _, text = self.go(vm)
+        self.assertEqual(rc, 1, text)
+        self.assertEqual(vm.rm_targets, [])
+        self.assertLessEqual(self.clock.now - start, wc.DEADLINE_S + 1e-6, "the 300 s ssh probe timeout leaked")
+
+    def test_unreadable_start_time_deletes_nothing(self):
+        vm = FakeVM(linger=2, na_at=2)
+        rc, _, text = self.go(vm)
+        self.assertEqual(rc, 1, text)
+        self.assertEqual(vm.rm_targets, [])
+
     def test_deletion_failure_fails_the_run(self):
         vm = FakeVM(linger=0, rm_fails=True)
         rc, target, text = self.go(vm)
@@ -251,7 +323,7 @@ class M8Caller(Case):
         env = {"ZB_WIN11_HOST": "fake.invalid", "ZB_WIN11_MARKER": MARKER}
         with mock.patch.dict(os.environ, env):
             h = m8_live_test.Host("win11", "ZB_WIN11", "2222", "zbtext", "k", "kh", r"C:\Python314\python.exe")
-        h.ssh = lambda command, timeout=120: vm.run(command)
+        h.ssh = lambda command, timeout=120: vm.run(command, timeout=timeout)
         h.scp_into = lambda sources, rel: CP(0)
         out, err = io.StringIO(), io.StringIO()
         with tempfile.TemporaryDirectory() as stage, mock.patch.dict(os.environ, env), \
@@ -291,6 +363,20 @@ class M8Caller(Case):
         ok, text = self.go(vm)
         self.assertFalse(ok, text)
         self.assertFalse(any(c.startswith(("mkdir", "rmdir")) for c in vm.log), "nothing staged, nothing deleted")
+
+    def test_stalled_probe_cannot_exceed_the_total_deadline(self):
+        vm = FakeVM(linger=None, clock=self.clock, stall_at=2)
+        start = self.clock.now
+        ok, text = self.go(vm)
+        self.assertFalse(ok, text)
+        self.assertEqual(vm.rm_targets, [])
+        self.assertLessEqual(self.clock.now - start, wc.DEADLINE_S + 1e-6, "the 120 s ssh probe timeout leaked")
+
+    def test_unreadable_start_time_deletes_nothing(self):
+        vm = FakeVM(linger=2, na_at=2)
+        ok, text = self.go(vm)
+        self.assertFalse(ok, text)
+        self.assertEqual(vm.rm_targets, [])
 
     def test_deletion_failure_fails_the_host(self):
         vm = FakeVM(linger=0, rm_fails=True)
