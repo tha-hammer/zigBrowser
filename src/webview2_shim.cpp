@@ -1035,8 +1035,9 @@ void world_evaluate(Job *job, AppState *app, bool in_world, const std::string &w
 // ---- WS2a.1: routed navigation and the first load ----
 
 // UI thread: runs `step` now when the window's first load has finished, else once it has. A job the waiter
-// gave up on meanwhile is finished without running (it leaves the in-flight list). If the first load fails
-// the browser quits, and loop end answers the waiting jobs ZB_AUTO_ERR_NO_LOOP.
+// gave up on meanwhile is finished without running (it leaves the in-flight list). If the run ends before the
+// first load (the window closed, or the load failed and the browser quit), loop end answers the waiting jobs
+// ZB_AUTO_ERR_NO_LOOP and run_core then runs these waiters, which only finish and give back their holds.
 void after_first_load(Job *job, AppState *app, std::function<void(Job *, AppState *)> step) {
   if (app->navigation_completed) {
     return step(job, app);
@@ -2977,6 +2978,9 @@ static int run_core(const char *uri, int print_title, int e2e_protocol, bool scr
     }
     release_nav_job(&app); // WS2a.3d: the routed navigation's hold, before loop end answers its caller
     loop_end();
+    // ong.20: calls still waiting for the first load (it never finished: the window closed, or the load failed and
+    // the browser quit). loop_end has answered them, so each waiter only finishes and gives back its hold.
+    run_first_load_waiters(&app);
   }
 
   // WS5.5b-2 (RoseCat 5a204f3 #1): tear down the e2e extra windows through the SAME path as an early close —

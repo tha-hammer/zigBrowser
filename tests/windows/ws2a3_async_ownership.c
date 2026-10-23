@@ -53,7 +53,12 @@
  *     shutdown).
  *   Red (no abandoned handling, no shutdown release): the navigate, reload and timeout-close rows FAIL. Mutants:
  *   no Stop() -> the navigate and reload rows; ownership guard dropped -> the overlap row only; no shutdown
- *   release -> the timeout-close row only. Exit 0 only when every check passes. */
+ *   release -> the timeout-close row only.
+ * ong.20, in a child process (--ws2a3-first-load-close): the first page is the slow /slow; a caller already waiting
+ * for the loop is parked for the first load (the WebView runs queued calls before its first Navigate), the window
+ * is closed once the server has the request, and the caller must get NO_LOOP and live jobs return to the
+ * baseline. Red and mutant (no shutdown drain of the first-load waiters): live jobs stay 1 above the baseline, so
+ * that row is the only FAIL line. Exit 0 only when every check passes. */
 
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -169,6 +174,7 @@ enum { kSlowMs = 2500, kScriptMs = 1500, kStallMs = 15000, kNavDeadlineMs = 800 
 static unsigned short slow_port = 0;
 static volatile LONG reload_hits = 0;
 static volatile LONG slow_dropped = 0;
+static volatile LONG slow_requests = 0; /* ong.20: GET /slow requests received */
 static volatile LONG slow_served = 0;
 
 /* Waits up to ms for the browser to close the connection; 1 if it did. */
@@ -201,6 +207,7 @@ static DWORD WINAPI slow_conn(LPVOID arg) {
   int body_len = -1;
   int late_ms = 0;
   if (strncmp(req, "GET /slow ", 10) == 0) {
+    InterlockedIncrement(&slow_requests);
     body_len = snprintf(body, sizeof body, "<!doctype html><title>Slow Page</title><p>slow</p>");
     late_ms = kSlowMs;
   } else if (strncmp(req, "GET /reload ", 12) == 0) {
@@ -419,6 +426,52 @@ static int timeout_close_child(void) {
   return loaded && served && rc == ZB_AUTO_ERR_TIMEOUT && own.hwnd != NULL && ended && live == baseline ? 0 : 1;
 }
 
+/* Child (ong.20): the first page is the slow /slow. A caller waiting for the loop is queued at loop start and parked
+ * for the first load when the WebView runs queued calls (before its first Navigate); once the server has the
+ * request the window is closed. The caller must get NO_LOOP and every job must be freed. */
+static int first_load_close_child(void) {
+  if (!slow_server_start()) {
+    printf("ws2a3 first-load child: the loopback server did not start\n");
+    return 3;
+  }
+  snprintf(index_uri, sizeof index_uri, "http://127.0.0.1:%u/slow", (unsigned)slow_port);
+  const int baseline = zb_automation_debug_live_jobs();
+  struct early_call call = {0};
+  HANDLE waiter = CreateThread(NULL, 0, early_title, &call, 0, NULL); /* waits for the loop, then the first load */
+  HANDLE loop = waiter != NULL ? CreateThread(NULL, 0, loop_main, NULL, 0, NULL) : NULL;
+  if (loop == NULL) {
+    printf("ws2a3 first-load child: CreateThread failed\n");
+    return 3;
+  }
+  const ULONGLONG give_up = GetTickCount64() + 20000;
+  while (InterlockedCompareExchange(&slow_requests, 0, 0) == 0 && GetTickCount64() < give_up) {
+    Sleep(10);
+  }
+  const int requested = InterlockedCompareExchange(&slow_requests, 0, 0) > 0;
+  Sleep(300); /* the parked call is the WebView's; nothing more is needed, this only spaces the close */
+  struct own_window own = {GetCurrentProcessId(), NULL};
+  EnumWindows(find_own_window, (LPARAM)&own);
+  const ULONGLONG closed_at = GetTickCount64();
+  if (own.hwnd != NULL) {
+    PostMessageA(own.hwnd, WM_CLOSE, 0, 0);
+  }
+  const int ended = WaitForSingleObject(loop, 20000) == WAIT_OBJECT_0;
+  const int joined = WaitForSingleObject(waiter, kEarlyMs + 5000) == WAIT_OBJECT_0;
+  CloseHandle(loop);
+  CloseHandle(waiter);
+  const int live = zb_automation_debug_live_jobs();
+  const ULONGLONG woke = joined && call.ended > closed_at ? call.ended - closed_at : 0;
+  printf("ws2a3 first-load child: first page requested %s; window %s; zb_app_run %s; waiter rc=%d result=%s woke %llums "
+         "after the close (want %d within %dms); live jobs %d (baseline %d)\n",
+         requested ? "yes" : "no", own.hwnd != NULL ? "closed" : "not found", ended ? "ended" : "still running", call.rc,
+         joined ? call.got : "(still waiting)", woke, ZB_AUTO_ERR_NO_LOOP, kAtOnceMs, live, baseline);
+  fflush(stdout);
+  return requested && own.hwnd != NULL && ended && joined && call.rc == ZB_AUTO_ERR_NO_LOOP &&
+                 strcmp(call.got, "(null)") == 0 && woke < kAtOnceMs && live == baseline
+             ? 0
+             : 1;
+}
+
 /* Runs this executable again as a WS2a.3c child (its lines go to the same stdout) and checks it exits 0.
  * A child still running after kChildMs is this test's own process: it is terminated and reported. */
 static void child_check(const char *flag, const char *fixture, const char *what) {
@@ -484,6 +537,9 @@ int main(int argc, char **argv) {
   if (argc == 3 && strcmp(argv[1], "--ws2a3c-immediate-quit") == 0) {
     return file_uri(argv[2], index_uri, sizeof index_uri) ? immediate_quit_child() : 3;
   }
+  if (argc == 2 && strcmp(argv[1], "--ws2a3-first-load-close") == 0) {
+    return first_load_close_child();
+  }
   if (argc == 3 && strcmp(argv[1], "--ws2a3d-timeout-close") == 0) {
     return file_uri(argv[2], index_uri, sizeof index_uri) ? timeout_close_child() : 3;
   }
@@ -499,6 +555,8 @@ int main(int argc, char **argv) {
               "an immediate quit wakes the waiting caller with NO_LOOP, frees its job and ends zb_app_run");
   child_check("--ws2a3d-timeout-close", argv[1],
               "a timed-out navigation then an immediate close frees every job (live jobs back to the baseline)");
+  child_check("--ws2a3-first-load-close", NULL,
+              "a call waiting for the first load is freed when the window closes before that load (live jobs back to the baseline)");
   HANDLE thread = CreateThread(NULL, 0, loop_main, NULL, 0, NULL);
   if (!check(thread != NULL, "zb_app_run starts on its own thread", NULL)) {
     return 1;

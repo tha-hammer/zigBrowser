@@ -27,6 +27,9 @@ page-initiated newer navigation that starts before the abandoned handling (seam 
 goes on and commits; a newer routed navigate loads normally; and a timed-out navigation followed by an immediate close
 frees every job (child process). Red: the navigate, reload and timeout-close rows FAIL. Mutants: no Stop() -> navigate
 and reload; ownership guard dropped -> the overlap row only; no shutdown release -> the timeout-close row only.
+ong.20 (child process): a call parked for a first load that never finishes (the window closes while the slow first page
+loads) gets NO_LOOP and gives back its hold (live jobs back to the baseline). Red and mutant (no shutdown drain of the
+first-load waiters): that row is the only FAIL line.
 
 Under ZB_WIN_GATE=1 a missing host or marker exits 1 ("no Windows host configured"); standalone it exits 77.
 A host run needs NavyCanyon's exact-commit approval and the orchestrator's release.
@@ -62,6 +65,7 @@ REQUIRED = (
     "a reload that times out stops its own load (the page stays, the late answer never shows)",
     "a page-initiated newer navigation that starts before the abandoned load is handled goes on and commits",
     "a newer navigate after a timed-out one loads normally",
+    "a call waiting for the first load is freed when the window closes before that load (live jobs back to the baseline)",
 )
 
 
