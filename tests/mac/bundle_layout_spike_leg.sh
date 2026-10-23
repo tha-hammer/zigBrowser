@@ -6,19 +6,26 @@
 # Outside the sandbox this script only creates and validates the fresh physical run root, reads (getconf, uname, the
 # audit listings, validation) and removes that exact root. Even its evidence is written by sandboxed commands, into
 # <root>/evidence. Verdicts go to stdout:
-#   PHASE<TAB><phase><TAB>ok|fail|NOT-RUN|BREACH<TAB>[detail]    SPIKE<TAB>census<TAB><non-Mach-O files under Frameworks>
-#   VERIFY<TAB>rc=<n><TAB>unsealed=yes|no<TAB>not-signed=yes|no<TAB>sealed-resource=yes|no<TAB>denied=yes|no
+#   PHASE<TAB><phase><TAB>ok|fail|finding|NOT-RUN|BREACH<TAB>[detail]
+#   SPIKE<TAB>census<TAB><non-Mach-O regular files under Frameworks outside the exact Python framework>
+#   SIGNFAIL<TAB><target below spike/><TAB>not-signed|other<TAB><subcomponent below the .app>|-<TAB>
+#     file-data|file-macho|link|dir|missing|-<TAB><lstat mode>|-<TAB><sha256>|-      (one per failed signing call)
+#   VERIFY<TAB>rc=<n>|skipped<TAB>unsealed=yes|no<TAB>not-signed=yes|no<TAB>sealed-resource=yes|no<TAB>denied=yes|no
 # Subcommands (bash 3.2, macOS):
 #   create <rd>   rd = zb-gate-<40 hex>-<hex> must not exist: mkdir ~/<rd> and <rd>/inputs, check that `pwd -P` of it is
 #                 <physical home>/<rd> and that it is no symlink, print ROOT<TAB><physical root>.
-#   run <rd> <arch> <pkg sha256> <none|data_in_frameworks>
+#   run <rd> <arch> <pkg sha256> <none|stray_in_frameworks>
 #                 preflight (sandbox-exec present, the profile parses, writes below the root and to /dev/null work under
 #                 it), the before-audit, three unique pre-absent negative canaries (the real home and both getconf Darwin
 #                 temp/cache dirs), each of which must be REFUSED (if one is not, that is a CONTAINMENT BREACH: exit 4, the
 #                 target is kept and named, nothing later runs), then exactly two sandboxed outer commands (1: unpack and
-#                 the native zig build; 2: staging with the real stager, the symlink check, the census, inside-out signing
-#                 and verification), the after-audit and <root>/evidence.tar. Exit 0 when every phase ran (verify may still
-#                 fail: that is the evidence), 3 NOT RUN or a failed phase, 4 BREACH.
+#                 the native zig build; 2: staging with the real stager, packaging/macos/relocate_agent_data.py relocate
+#                 (non-code data to Contents/Resources/agent-host behind relative links; 4pa.80 SilverRidge a365949c),
+#                 for stray_in_frameworks the pinned stray file Contents/Frameworks/agent-host/zb-4pa80-stray.txt, the
+#                 symlink check, the helper's census, inside-out signing of every target once with the .app last, and,
+#                 only when no signing call failed, verification), the after-audit and <root>/evidence.tar. Exit 0 when
+#                 every phase ran (signing or verify may still fail: that is the evidence), 3 NOT RUN or a failed phase,
+#                 4 BREACH.
 #   remove <rd>   find -delete of exactly that validated root.
 # Hostless proof: tests/mac/bundle_layout_spike_containment_selftest.sh (zig build test-mac-bundle-layout-spike).
 # The body is one function, read whole before it runs, so no sandboxed child can read the rest of it from stdin.
@@ -137,7 +144,6 @@ sed "s/__VERSION__/0.0.0-spike/g" repo/packaging/macos/Info.plist > "$C/Info.pli
 bash repo/packaging/macos/stage_agent_runtime.sh "$ROOT/inputs/py.pkg" "$PIN" "$C" "$ROOT/site-x86_64" "$ROOT/site-aarch64" \
   > "$E/stage.log" 2>&1 || { echo "PHASE	stage	fail	stage_agent_runtime.sh"; exit 1; }
 echo "PHASE	stage	ok"
-[ "$MUTANT" = data_in_frameworks ] && printf "stray data\n" > "$C/Frameworks/stray-data.txt"
 resolve() { # the physical target of a symlink, chains followed
   local p=$1 n=0 t d
   while [ -L "$p" ] && [ "$n" -lt 40 ]; do
@@ -147,33 +153,71 @@ resolve() { # the physical target of a symlink, chains followed
   d=$(cd -P "$(dirname "$p")" 2>/dev/null && pwd -P) || { echo "$p"; return 0; }
   echo "$d/$(basename "$p")"
 }
-escape=0
-while IFS= read -r l; do
-  r=$(resolve "$l")
-  case "$r" in "$ROOT"|"$ROOT"/*) ;; *) escape=$((escape + 1)); echo "escaping symlink: ${l#$ROOT/} -> $r" >> "$E/symlinks.log" ;; esac
-done < <(find "$ROOT" -type l)
-[ "$escape" -eq 0 ] || { printf "PHASE\tsymlinks\tfail\t%d escape the run root\n" "$escape"; exit 1; }
-echo "PHASE	symlinks	ok"
+check_links() { # $1=phase: every symlink below the root must resolve inside it
+  local l r escape=0
+  while IFS= read -r l; do
+    r=$(resolve "$l")
+    case "$r" in "$ROOT"|"$ROOT"/*) ;; *) escape=$((escape + 1)); echo "escaping symlink: ${l#$ROOT/} -> $r" >> "$E/symlinks.log" ;; esac
+  done < <(find "$ROOT" -type l)
+  [ "$escape" -eq 0 ] || { printf "PHASE\t%s\tfail\t%d escape the run root\n" "$1" "$escape"; exit 1; }
+  printf "PHASE\t%s\tok\n" "$1"
+}
+check_links symlinks
+HELPER=repo/packaging/macos/relocate_agent_data.py
+/usr/bin/python3 -I "$HELPER" relocate "$C" > "$E/relocate.log" 2>&1 \
+  || { printf "PHASE\trelocate\tfail\t%s\n" "$(tail -n 1 "$E/relocate.log")"; exit 1; }
+echo "PHASE	relocate	ok"
+if [ "$MUTANT" = stray_in_frameworks ]; then
+  S="$C/Frameworks/agent-host/zb-4pa80-stray.txt"
+  printf "zb-4pa80-control\n" > "$S" && chmod 644 "$S" || { echo "PHASE	control	fail	the stray file"; exit 1; }
+fi
+check_links relocated-symlinks
 is_macho() { file -b "$1" | grep -q Mach-O; }
-data=0
-while IFS= read -r f; do is_macho "$f" || data=$((data + 1)); done < <(find "$C/Frameworks" -type f)
-printf "SPIKE\tcensus\t%d\n" "$data"
+/usr/bin/python3 -I "$HELPER" census "$C" > "$E/census.log" 2>&1 || { echo "PHASE	census	fail"; exit 1; }
+last=$(tail -n 1 "$E/census.log")
+case "$last" in CENSUS?[0-9]*) printf "SPIKE\tcensus\t%s\n" "${last#CENSUS?}" ;; *) echo "PHASE	census	fail	no CENSUS line"; exit 1 ;; esac
+denied() { cat "$E"/*.log | grep -qE "Operation not permitted|Read-only file system|deny\(" && echo yes || echo no; }
 signfail=0
-sign() { codesign --force --sign - "$1" >> "$E/sign.log" 2>&1 || { signfail=$((signfail + 1)); echo "sign failed: $1" >> "$E/sign.log"; }; }
+sign() { # a failed call prints SIGNFAIL: target, diagnostic class, subcomponent and its lstat kind, mode and hash
+  local sub p kind=- mode=- sha=- diag=other
+  : > "$E/sign.one"
+  if codesign --force --sign - "$1" > "$E/sign.one" 2>&1; then cat "$E/sign.one" >> "$E/sign.log"; return 0; fi
+  cat "$E/sign.one" >> "$E/sign.log"; echo "sign failed: $1" >> "$E/sign.log"
+  signfail=$((signfail + 1))
+  grep -q "code object is not signed at all" "$E/sign.one" && diag=not-signed
+  sub=$(sed -n "s/^In subcomponent: //p" "$E/sign.one" | head -n 1)
+  case "$sub" in
+    "") sub=- ;;
+    "$APP"/*)
+      sub=${sub#"$APP"/}; p="$APP/$sub"
+      if [ -L "$p" ]; then kind=link; elif [ -d "$p" ]; then kind=dir
+      elif [ -f "$p" ]; then if is_macho "$p"; then kind=file-macho; else kind=file-data; fi; else kind=missing; fi
+      if [ -L "$p" ] || [ -e "$p" ]; then
+        if [ "$(uname -s)" = Darwin ]; then mode=$(stat -f %Lp "$p"); else mode=$(stat -c %a "$p"); fi
+      fi
+      case "$kind" in file-*) sha=$(shasum -a 256 < "$p" | cut -c1-64) ;; esac ;;
+    *) sub="outside-the-app:$sub" ;;
+  esac
+  printf "SIGNFAIL\t%s\t%s\t%s\t%s\t%s\t%s\n" "${1#"$ROOT/spike/"}" "$diag" "$sub" "$kind" "$mode" "$sha"
+}
 while IFS= read -r f; do is_macho "$f" && sign "$f"; done \
   < <(find "$C" -type f | awk -F/ "{ print NF \"\t\" \$0 }" | sort -t "$(printf "\t")" -k1,1nr -k2 | cut -f2-)
 while IFS= read -r fw; do
   for v in "$fw"/Versions/*; do [ -d "$v" ] && [ ! -L "$v" ] && sign "$v"; done
 done < <(find "$C" -type d -name "*.framework")
 sign "$APP"
-[ "$signfail" -eq 0 ] || { printf "PHASE\tsign\tfail\t%d\n" "$signfail"; exit 1; }
+if [ "$signfail" -ne 0 ]; then   # signing failures are evidence too: classified by the runner, no verify
+  printf "PHASE\tsign\tfinding\t%d\n" "$signfail"
+  printf "VERIFY\trc=skipped\tunsealed=no\tnot-signed=no\tsealed-resource=no\tdenied=%s\n" "$(denied)"
+  exit 0
+fi
 echo "PHASE	sign	ok"
 codesign --verify --strict --deep --verbose=4 "$APP" > "$E/verify.log" 2>&1; vrc=$?
 yn() { if grep -qE "$1" "$2"; then echo yes; else echo no; fi; }
 printf "VERIFY\trc=%d\tunsealed=%s\tnot-signed=%s\tsealed-resource=%s\tdenied=%s\n" "$vrc" \
   "$(yn "unsealed contents present" "$E/verify.log")" "$(yn "code object is not signed at all" "$E/verify.log")" \
   "$(yn "a sealed resource is missing or invalid" "$E/verify.log")" \
-  "$(cat "$E"/*.log | grep -qE "Operation not permitted|Read-only file system|deny\(" && echo yes || echo no)"
+  "$(denied)"
 ' bash "$ROOT" "$ARCH" "$PIN" "$MUTANT" </dev/null 2>/dev/null; prc=$?
 if [ "$prc" -eq 0 ]; then echo "PHASE	post	ok"; else printf 'PHASE\tpost\tfail\trc=%d\n' "$prc"; fi
 fi

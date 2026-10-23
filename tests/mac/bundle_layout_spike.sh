@@ -25,16 +25,26 @@
 #       the prep inputs into <root>/inputs; `run` checks /usr/bin/sandbox-exec, the exact profile (writes only below the
 #       root and to /dev/null), the positive writes and three refused negative canaries (the real home, both getconf
 #       Darwin temp/cache dirs), then runs the native zig build and the post-build work (the real stager, a refusal of
-#       any symlink that escapes the root, the census, ad hoc inside-out signing, never --deep, and
+#       any symlink that escapes the root, packaging/macos/relocate_agent_data.py relocate, the census, ad hoc inside-out
+#       signing of every target once with the .app last, never --deep, and, only when no signing call failed,
 #       `codesign --verify --strict --deep --verbose=4`) as two sandboxed commands, with before/after audits. Its stdout
 #       and <root>/evidence.tar are copied to <prep dir>/evidence/<arch>-<run dir>/ before `remove` deletes the root.
-#       Per leg it prints LEG<TAB><arch><TAB><mutant><TAB><class><TAB><detail>, where class is
-#         LAYOUT-OK        (normal: verify exit 0, no diagnostic)
-#         LAYOUT-FINDING   (normal: verify fails with an unsealed / not-signed / sealed-resource diagnostic)
-#         EXPECTED-FAIL    (ZB_SPIKE_MUTANT=data_in_frameworks: Contents/Frameworks/stray-data.txt signed cleanly, then
-#                          verify fails with such a diagnostic)
-#         INCONCLUSIVE     (any NOT RUN or failed phase, a sandbox denial anywhere, an escaping symlink, an audit delta,
-#                          a verify failure without the diagnostic, a mutant that verify accepts, missing evidence)
+#       The 4pa.80 hypothesis (SilverRidge a365949c): the logical Contents/Frameworks/agent-host stays, its non-code data
+#       moves physically to Contents/Resources/agent-host behind relative links. ZB_SPIKE_MUTANT=none (the default) is
+#       the candidate; ZB_SPIKE_MUTANT=stray_in_frameworks is the control: the same, plus one pinned stray file
+#       Contents/Frameworks/agent-host/zb-4pa80-stray.txt ("zb-4pa80-control\n", mode 644). Each run records its result
+#       in <prep dir>/evidence/SPIKE-RESULT.<mode> (STARTED until it ends); a mode that already has one is refused (one
+#       attempt, no retry), and the control is refused unless SPIKE-RESULT.none is the candidate's LAYOUT-OK line on
+#       both Macs at this commit. Per leg it prints LEG<TAB><arch><TAB><mutant><TAB><class><TAB><detail>, where class is
+#         LAYOUT-OK        (candidate: census 0, every signing call succeeded, verify exit 0, no diagnostic)
+#         LAYOUT-FINDING   (candidate: census 0, verify fails with an unsealed / not-signed / sealed-resource diagnostic)
+#         SIGN-FINDING     (candidate: census 0, signing failed, every SIGNFAIL line not-signed with a subcomponent)
+#         EXPECTED-FAIL    (control: census 1 and exactly two SIGNFAIL lines, the executable then the app, each not-signed
+#                          in the stray file, which is file-data, mode 644, with its pinned SHA-256)
+#         INCONCLUSIVE     (any NOT RUN or failed phase, a refused relocation, a sandbox denial anywhere, an escaping
+#                          symlink, an audit delta, a candidate census other than 0, a sign failure without the not-signed
+#                          diagnostic, a verify failure without the diagnostic, a control that signs cleanly or whose sign
+#                          failures are not exactly the predicted two, missing evidence)
 #         BREACH           (a canary write was not refused: the run stops, the root and the canary stay for the owner)
 #       then SPIKE-RESULT<TAB><sha><TAB><mutant><TAB>x86_64=<class><TAB>arm64=<class>. Exit 0 when both legs are
 #       conclusive, 2 when one is inconclusive, 4 on a breach, 1 when refused before any host is touched. A root whose
@@ -130,12 +140,23 @@ if [ -z "$ARM_HOST" ]; then
   exit 1
 fi
 MUTANT="${ZB_SPIKE_MUTANT:-none}"
-case "$MUTANT" in none|data_in_frameworks) ;; *) echo "REFUSED: unknown ZB_SPIKE_MUTANT=$MUTANT" >&2; exit 1 ;; esac
+case "$MUTANT" in none|stray_in_frameworks) ;; *) echo "REFUSED: unknown ZB_SPIKE_MUTANT=$MUTANT" >&2; exit 1 ;; esac
 IN=$(cd "$IN" && pwd)
 for f in py.pkg sites.tar inputs.sha256; do [ -s "$IN/$f" ] || { echo "FAIL: $IN/$f is missing (run prep first)" >&2; exit 1; }; done
 (cd "$IN" && sha256sum --quiet -c inputs.sha256) || { echo "FAIL: the prep inputs do not match inputs.sha256" >&2; exit 1; }
 
 COMMIT=$(git rev-parse --verify "${ZB_GATE_COMMIT:-HEAD}^{commit}")
+# One attempt per mode and prep dir, and the control only after the candidate is LAYOUT-OK on both Macs at this commit
+# (SilverRidge a365949c). Checked before any host is touched.
+RES="$IN/evidence/SPIKE-RESULT.$MUTANT"
+if [ -e "$RES" ] || [ -L "$RES" ]; then
+  echo "REFUSED: $IN already holds a $MUTANT result (one attempt, no retry): $(head -n 1 "$RES")" >&2; exit 1
+fi
+if [ "$MUTANT" = stray_in_frameworks ] \
+   && [ "$(cat "$IN/evidence/SPIKE-RESULT.none" 2>/dev/null)" != "$(printf 'SPIKE-RESULT\t%s\tnone\tx86_64=LAYOUT-OK\tarm64=LAYOUT-OK' "$COMMIT")" ]; then
+  echo "REFUSED: the control runs only after the candidate is LAYOUT-OK on both Macs at $COMMIT ($IN/evidence/SPIKE-RESULT.none)" >&2
+  exit 1
+fi
 . tests/mac/mac_gate_lib.sh
 L=$(mktemp -d "${TMPDIR:-/tmp}/zb-spike-run-XXXXXX")
 LIVE=()   # "host<TAB>key<TAB>run dir" of every root that exists and is ours to remove
@@ -175,31 +196,57 @@ git show "$COMMIT:tests/mac/bundle_layout_spike_leg.sh" > "$L/leg.sh"
 git show "$COMMIT:$PINS" > "$L/pins.json" && pinned=$(read_pins "$L/pins.json") || { echo "FAIL: $PINS at $COMMIT is malformed" >&2; exit 1; }
 read -r _ PIN _ <<<"$pinned"
 echo "== commit $COMMIT, mutant $MUTANT" >&2
+mkdir -p "$IN/evidence" && printf 'STARTED\t%s\t%s\n' "$COMMIT" "$MUTANT" > "$RES"
+STRAY=Contents/Frameworks/agent-host/zb-4pa80-stray.txt
+STRAY_SHA=$(printf 'zb-4pa80-control\n' | sha256sum | cut -c1-64)
 
 field() { # $1=driver output $2=key: the value of key=value in its VERIFY line
   awk -F'\t' -v k="$2" '$1 == "VERIFY" { for (i = 2; i <= NF; i++) { split($i, kv, "="); if (kv[1] == k) print kv[2] } }' <<<"$1" | tail -n 1
 }
+verdict_verify() { # $1=driver output: the candidate's verify verdict
+  local vrc diag
+  vrc=$(field "$1" rc)
+  diag=no
+  [ "$(field "$1" unsealed)$(field "$1" not-signed)$(field "$1" sealed-resource)" = nonono ] || diag=yes
+  if [ "$vrc" = 0 ] && [ "$diag" = no ]; then printf 'LAYOUT-OK\tverify rc 0\n'
+  elif [ "$vrc" != 0 ] && [ "$diag" = yes ]; then printf 'LAYOUT-FINDING\tverify rc %s with the code-signature diagnostic\n' "$vrc"
+  else printf 'INCONCLUSIVE\tverify rc %s, diagnostic %s\n' "$vrc" "$diag"; fi
+}
 classify() { # $1=driver output $2=evidence dir -> "<class><TAB><detail>"
-  local out=$1 ev=$2 nr vrc diag delta
+  local out=$1 ev=$2 nr vrc delta census sf nsf want first
   nr=$(awk -F'\t' '$1 == "PHASE" && ($3 == "NOT-RUN" || $3 == "fail") { print $2 ": " $4; exit }' <<<"$out")
   [ -z "$nr" ] || { printf 'INCONCLUSIVE\t%s\n' "$nr"; return; }
   grep -q '^LEGDONE$' <<<"$out" || { printf 'INCONCLUSIVE\tthe leg did not finish\n'; return; }
-  [ -s "$ev/evidence/audit.before" ] && [ -s "$ev/evidence/audit.after" ] && [ -s "$ev/evidence/verify.log" ] \
+  vrc=$(field "$out" rc)
+  [ -n "$vrc" ] || { printf 'INCONCLUSIVE\tno verify result\n'; return; }
+  [ -s "$ev/evidence/audit.before" ] && [ -s "$ev/evidence/audit.after" ] && [ -s "$ev/evidence/relocate.log" ] \
+    && [ -s "$ev/evidence/census.log" ] && { [ "$vrc" = skipped ] || [ -s "$ev/evidence/verify.log" ]; } \
     || { printf 'INCONCLUSIVE\tthe evidence is missing\n'; return; }
   delta=$(diff "$ev/evidence/audit.before" "$ev/evidence/audit.after" | grep -E '^[<>]' | cut -d'|' -f1 | sort -u | head -n 3 | tr '\n' ' ') || true
   [ -z "$delta" ] || { printf 'INCONCLUSIVE\taudit delta outside the root: %s\n' "$delta"; return; }
-  vrc=$(field "$out" rc)
-  [ -n "$vrc" ] || { printf 'INCONCLUSIVE\tno verify result\n'; return; }
   [ "$(field "$out" denied)" = no ] || { printf 'INCONCLUSIVE\tthe sandbox denied a tool (see the evidence logs)\n'; return; }
-  diag=no
-  [ "$(field "$out" unsealed)$(field "$out" not-signed)$(field "$out" sealed-resource)" = nonono ] || diag=yes
-  if [ "$MUTANT" = data_in_frameworks ]; then
-    if [ "$vrc" != 0 ] && [ "$diag" = yes ]; then printf 'EXPECTED-FAIL\tverify rc %s with the code-signature diagnostic\n' "$vrc"
-    elif [ "$vrc" = 0 ]; then printf 'INCONCLUSIVE\tverify accepted the data_in_frameworks mutant\n'
-    else printf 'INCONCLUSIVE\tverify rc %s without the code-signature diagnostic\n' "$vrc"; fi
-  elif [ "$vrc" = 0 ] && [ "$diag" = no ]; then printf 'LAYOUT-OK\tverify rc 0\n'
-  elif [ "$vrc" != 0 ] && [ "$diag" = yes ]; then printf 'LAYOUT-FINDING\tverify rc %s with the code-signature diagnostic\n' "$vrc"
-  else printf 'INCONCLUSIVE\tverify rc %s, diagnostic %s\n' "$vrc" "$diag"; fi
+  census=$(awk -F'\t' '$1 == "SPIKE" && $2 == "census" { print $3 }' <<<"$out" | tail -n 1)
+  sf=$(grep -P '^SIGNFAIL\t' <<<"$out") || true
+  nsf=0; [ -z "$sf" ] || nsf=$(wc -l <<<"$sf")
+  if [ "$MUTANT" = stray_in_frameworks ]; then
+    # exactly the executable, then the app, each naming the one pinned stray file as it is on disk
+    want=$(printf 'SIGNFAIL\t%s\tnot-signed\t%s\tfile-data\t644\t%s\nSIGNFAIL\t%s\tnot-signed\t%s\tfile-data\t644\t%s' \
+      zigBrowser.app/Contents/MacOS/zigBrowser "$STRAY" "$STRAY_SHA" zigBrowser.app "$STRAY" "$STRAY_SHA")
+    if [ "$census" != 1 ]; then printf 'INCONCLUSIVE\tcontrol census %s, want 1\n' "${census:-none}"
+    elif [ "$vrc" != skipped ]; then printf 'INCONCLUSIVE\tthe control signed cleanly (wrong stage: verify rc %s)\n' "$vrc"
+    elif [ "$sf" = "$want" ]; then printf 'EXPECTED-FAIL\tthe executable and the app failed to sign, each in %s\n' "$STRAY"
+    elif [ "$nsf" -ne 2 ]; then printf 'INCONCLUSIVE\t%s sign failures, want exactly the executable and the app\n' "$nsf"
+    else
+      first=$(diff <(printf '%s\n' "$sf") <(printf '%s\n' "$want") | grep '^<' | head -n 1 | cut -c3- | tr '\t' ' ')
+      printf 'INCONCLUSIVE\tnot the predicted sign failure: %s\n' "$first"
+    fi
+  elif [ "$census" != 0 ]; then printf 'INCONCLUSIVE\tcandidate census %s, want 0\n' "${census:-none}"
+  elif [ "$vrc" = skipped ]; then
+    if [ "$nsf" -gt 0 ] && [ -z "$(awk -F'\t' '$3 != "not-signed" || $4 == "-"' <<<"$sf")" ]; then
+      printf 'SIGN-FINDING\t%s sign failure(s), first in %s (%s)\n' "$nsf" "$(head -n 1 <<<"$sf" | cut -f4)" "$(head -n 1 <<<"$sf" | cut -f5)"
+    else printf 'INCONCLUSIVE\tsign failed without the not-signed diagnostic (%s failure(s))\n' "$nsf"; fi
+  elif [ "$nsf" -ne 0 ]; then printf 'INCONCLUSIVE\tSIGNFAIL lines beside a verify\n'
+  else verdict_verify "$out"; fi
 }
 
 leg() { # $1=host $2=key $3=expected uname -m; sets CLASS
@@ -252,7 +299,7 @@ leg() { # $1=host $2=key $3=expected uname -m; sets CLASS
 CLASS= INTEL_CLASS=NOT-RUN ARM_CLASS=NOT-RUN
 leg "$INTEL_HOST" "$KEY" x86_64; INTEL_CLASS=$CLASS
 if [ "$INTEL_CLASS" != BREACH ]; then leg "$ARM_HOST" "$ARM_KEY" arm64; ARM_CLASS=$CLASS; fi
-printf 'SPIKE-RESULT\t%s\t%s\tx86_64=%s\tarm64=%s\n' "$COMMIT" "$MUTANT" "$INTEL_CLASS" "$ARM_CLASS"
+printf 'SPIKE-RESULT\t%s\t%s\tx86_64=%s\tarm64=%s\n' "$COMMIT" "$MUTANT" "$INTEL_CLASS" "$ARM_CLASS" | tee "$RES"
 case "$INTEL_CLASS $ARM_CLASS" in
   *BREACH*) echo "CONTAINMENT BREACH: stop, keep the evidence and tell the owner; nothing was cleaned" >&2; exit 4 ;;
   *INCONCLUSIVE*|*NOT-RUN*) exit 2 ;;

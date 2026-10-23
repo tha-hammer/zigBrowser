@@ -4002,9 +4002,9 @@ pub fn build(b: *std.Build) void {
     // with every Mac-side write-capable phase under one Seatbelt profile (SilverRidge de82cf2).
     const mac_bundle_layout_spike_selftest = b.addSystemCommand(&.{ "bash", "tests/mac/bundle_layout_spike_containment_selftest.sh" });
     for ([_][]const u8{
-        "tests/mac/bundle_layout_spike_containment_selftest.sh", "tests/mac/bundle_layout_spike.sh", "tests/mac/bundle_layout_spike_leg.sh",
-        "tests/mac/build-on-mac.sh",                             "tests/mac/mac_gate_lib.sh",        "tests/mac/known_hosts",
-        "packaging/macos/Info.plist",
+        "tests/mac/bundle_layout_spike_containment_selftest.sh", "tests/mac/bundle_layout_spike.sh",       "tests/mac/bundle_layout_spike_leg.sh",
+        "tests/mac/build-on-mac.sh",                             "tests/mac/mac_gate_lib.sh",              "tests/mac/known_hosts",
+        "packaging/macos/Info.plist",                            "packaging/macos/relocate_agent_data.py",
     }) |input| mac_bundle_layout_spike_selftest.addFileInput(b.path(input));
     const mac_bundle_layout_spike_step = b.step("test-mac-bundle-layout-spike", "Run the hostless selftests of the 4pa.80 bundle-layout spike (prep and run)");
     mac_bundle_layout_spike_step.dependOn(&mac_bundle_layout_spike_selftest.step);
@@ -4017,9 +4017,31 @@ pub fn build(b: *std.Build) void {
         "tests/mac/bundle_layout_spike.sh",                         "tests/mac/bundle_layout_spike_leg.sh",
         "tests/mac/build-on-mac.sh",                                "tests/mac/mac_gate_lib.sh",
         "tests/mac/known_hosts",                                    "packaging/macos/Info.plist",
+        "packaging/macos/relocate_agent_data.py",
     }) |input| mac_bundle_layout_spike_ff_selftest.addFileInput(b.path(input));
     mac_bundle_layout_spike_step.dependOn(&mac_bundle_layout_spike_ff_selftest.step);
     test_step.dependOn(&mac_bundle_layout_spike_ff_selftest.step);
+    // The 4pa.80 relocated-layout hypothesis (SilverRidge a365949c): non-code agent-host data moves to
+    // Contents/Resources/agent-host behind relative links. The helper's own suite runs in a private user+mount
+    // namespace (its device row bind-mounts /dev/null); the layout rows drive the real runner and leg with a codesign
+    // that derives its verdict from the tree: candidate, gated control, SIGNFAIL evidence, one attempt.
+    const mac_relocate_agent_data_unit = b.addSystemCommand(&.{
+        "sh",
+        "-c",
+        "cd tests/e2e && out=$(env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 unshare --user --map-root-user --mount --net sh -c 'python3 -X dev -m unittest -v mac_relocate_agent_data_test' 2>&1); rc=$?; printf '%s\\n' \"$out\"; [ $rc -eq 0 ] || exit $rc; if printf '%s\\n' \"$out\" | grep -q ResourceWarning; then echo 'mac_relocate_agent_data_test: ResourceWarning' >&2; exit 1; fi",
+    });
+    mac_bundle_layout_spike_step.dependOn(&mac_relocate_agent_data_unit.step);
+    test_step.dependOn(&mac_relocate_agent_data_unit.step);
+    const mac_bundle_layout_spike_layout_selftest = b.addSystemCommand(&.{ "bash", "tests/mac/bundle_layout_spike_layout_selftest.sh" });
+    for ([_][]const u8{
+        "tests/mac/bundle_layout_spike_layout_selftest.sh", "tests/mac/bundle_layout_spike_containment_selftest.sh",
+        "tests/mac/bundle_layout_spike.sh",                 "tests/mac/bundle_layout_spike_leg.sh",
+        "tests/mac/build-on-mac.sh",                        "tests/mac/mac_gate_lib.sh",
+        "tests/mac/known_hosts",                            "packaging/macos/Info.plist",
+        "packaging/macos/relocate_agent_data.py",
+    }) |input| mac_bundle_layout_spike_layout_selftest.addFileInput(b.path(input));
+    mac_bundle_layout_spike_step.dependOn(&mac_bundle_layout_spike_layout_selftest.step);
+    test_step.dependOn(&mac_bundle_layout_spike_layout_selftest.step);
     // Its prep reads the commit's pins, installs the hash-locked verifier and keeps every cache in scratch (8f28c5d).
     const mac_bundle_layout_spike_prep_selftest = b.addSystemCommand(&.{ "bash", "tests/mac/bundle_layout_spike_prep_selftest.sh" });
     for ([_][]const u8{

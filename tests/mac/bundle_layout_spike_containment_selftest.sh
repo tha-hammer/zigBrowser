@@ -25,10 +25,13 @@
 #      2, no product tool runs, roots removed;
 #   K6 a sandbox-exec that does not enforce: the home canary is written, BREACH, exit 4; the canary and the root stay;
 #      the arm64 host is never contacted; no product tool runs;
-#   K7 ZB_SPIKE_MUTANT=data_in_frameworks with an unsealed verify: EXPECTED-FAIL on both legs, stray-data.txt in the
-#      verified tree, census + 1; with a clean verify it is INCONCLUSIVE (verify accepted the mutant);
-#   K8 a sandbox denial in verify that also prints a sealed-resource message, under data_in_frameworks: INCONCLUSIVE,
-#      never EXPECTED-FAIL; a denied signing tool: INCONCLUSIVE, no verify;
+#   K7 the control ZB_SPIKE_MUTANT=stray_in_frameworks (4pa.80, SilverRidge a365949c; it replaces data_in_frameworks):
+#      refused, exit 1, no ssh/scp, without the candidate's LAYOUT-OK result; after it, a control whose signing
+#      succeeds (this scaffold's codesign never fails a signing call) is INCONCLUSIVE (wrong stage), with the stray
+#      file in the verified tree and census 1, for a clean and for an unsealed verify, never EXPECTED-FAIL (the
+#      tree-derived control proof is tests/mac/bundle_layout_spike_layout_selftest.sh);
+#   K8 a sandbox denial in verify that also prints a sealed-resource message: INCONCLUSIVE, never LAYOUT-FINDING or
+#      EXPECTED-FAIL; a denied signing tool: INCONCLUSIVE naming the denial, no verify;
 #   K9 a staged symlink that resolves outside the root: INCONCLUSIVE before any signing;
 #   K10 the audit: on each arch, an addition, a content change, a mode-only change or a deletion outside the sandbox
 #      during the leg, across the getconf temp root, the getconf cache root, ~/Library/Caches and the shallow home, is
@@ -181,7 +184,7 @@ EOF
 fake "$X/hostbin/file" <<EOF
 NAME=file; $rec
 [ "\$1" = -b ] && shift
-if [ "\$(head -c 5 "\$1" 2>/dev/null)" = MACHO ]; then echo "Mach-O universal binary with 2 architectures"; else echo "ASCII text"; fi
+if [ "\$(od -An -tx1 -N4 "\$1" 2>/dev/null | tr -d ' \n')" = cffaedfe ]; then echo "Mach-O 64-bit executable"; else echo "ASCII text"; fi
 EOF
 fake "$X/hostbin/xcrun" <<EOF
 NAME=xcrun; $rec
@@ -225,8 +228,8 @@ NAME=zig; $rec
 xcrun --show-sdk-path >/dev/null
 { : > "\$HOME/Library/Caches/zig-was-here"; } 2>/dev/null   # an outside write: refused, silently
 mkdir -p zig-out/bin zig-out/Frameworks
-printf 'MACHO zigBrowser exe stand-in\n' > zig-out/bin/zigBrowser
-printf 'MACHO libwkwebview_shim stand-in\n' > zig-out/Frameworks/libwkwebview_shim.dylib
+printf '\\xcf\\xfa\\xed\\xfe zigBrowser exe stand-in\\n' > zig-out/bin/zigBrowser
+printf '\\xcf\\xfa\\xed\\xfe libwkwebview_shim stand-in\\n' > zig-out/Frameworks/libwkwebview_shim.dylib
 echo "build ok"
 EOF
 done
@@ -340,6 +343,7 @@ cp "$ROOT/tests/mac/bundle_layout_spike.sh" "$ROOT/tests/mac/mac_gate_lib.sh" "$
   "$ROOT/tests/mac/known_hosts" "$R/tests/mac/"
 [ -e "$ROOT/tests/mac/bundle_layout_spike_leg.sh" ] && cp "$ROOT/tests/mac/bundle_layout_spike_leg.sh" "$R/tests/mac/"
 cp "$ROOT/packaging/macos/Info.plist" "$R/packaging/macos/"
+[ -e "$ROOT/packaging/macos/relocate_agent_data.py" ] && cp "$ROOT/packaging/macos/relocate_agent_data.py" "$R/packaging/macos/"
 fake "$R/packaging/macos/stage_agent_runtime.sh" <<EOF
 # Selftest stand-in: records its arguments, resolves python like the real stager, stages the documented layout.
 NAME=stager; $rec
@@ -350,10 +354,14 @@ xcrun --find python3 >/dev/null
 /usr/bin/python3 -I -c 'import sys' || exit 1
 [ -s "\$1" ] && [ -d "\$4" ] && [ -d "\$5" ] || { echo "stand-in stager: missing input" >&2; exit 1; }
 A="\$3/Frameworks/agent-host"; V="\$A/Python.framework/Versions/3.12"
-mkdir -p "\$V/bin" "\$V/lib/python3.12" "\$A/zb_agent_host" "\$A/site-packages/claude_agent_sdk/_bundled" "\$A/site-packages/rpds"
-printf 'MACHO\n' > "\$V/Python"; printf 'MACHO\n' > "\$V/bin/python3.12"; printf 'import sys\n' > "\$V/lib/python3.12/os.py"
+mkdir -p "\$V/bin" "\$V/lib/python3.12" "\$V/Resources" "\$A/zb_agent_host" "\$A/site-packages/claude_agent_sdk/_bundled" "\$A/site-packages/rpds"
+M='\\xcf\\xfa\\xed\\xfe stand-in\\n'   # MH_MAGIC_64: code, by its magic bytes
+printf "\$M" > "\$V/Python"; printf "\$M" > "\$V/bin/python3.12"; printf 'import sys\n' > "\$V/lib/python3.12/os.py"
+printf '<plist/>\n' > "\$V/Resources/Info.plist"
+# the root of the python.org framework: the only Python.framework relocate_agent_data.py exempts
 ln -s 3.12 "\$A/Python.framework/Versions/Current"
-printf 'MACHO\n' > "\$A/site-packages/claude_agent_sdk/_bundled/claude"; printf 'MACHO\n' > "\$A/site-packages/rpds/rpds.so"
+for n in Headers Python Resources; do ln -s "Versions/Current/\$n" "\$A/Python.framework/\$n"; done
+printf "\$M" > "\$A/site-packages/claude_agent_sdk/_bundled/claude"; printf "\$M" > "\$A/site-packages/rpds/rpds.so"
 printf '# agent\n' > "\$A/zb_agent_host/__init__.py"; printf '{}\n' > "\$A/runtime.json"
 [ "\$(cat "\$C/scenario")" = escape ] && ln -s "\$HOME/.profile" "\$A/site-packages/escape-link"
 exit 0
@@ -373,7 +381,7 @@ G=(env -i PATH=/usr/bin:/bin HOME="$T/home" GIT_CONFIG_NOSYSTEM=1 git -C "$R")
   || { bad "could not build the scratch repo"; exit 1; }
 echo uncommitted > "$R/agent/host/marker"
 SHA=$("${G[@]}" rev-parse HEAD)
-DATA=3   # the stand-in's non-Mach-O files under Contents/Frameworks: os.py, __init__.py, runtime.json
+DATA=0   # non-Mach-O files under Contents/Frameworks outside Python.framework once relocate_agent_data.py has run
 
 IN="$T/prep"
 mkdir -p "$IN" "$T/sites/site-x86_64" "$T/sites/site-aarch64"
@@ -384,7 +392,8 @@ homes_snapshot() { (cd "$X/hosts" && find . -mindepth 2 ! -path './*/zb-gate-*' 
 
 run_spike() { # run_spike <label> <scenario> <verify mode> <where> [VAR=value ...]: sets rc, out
   local label=$1 scen=$2 mode=$3 where=$4; shift 4
-  rm -rf "${C:?}"/* "${IN:?}/evidence"
+  rm -rf "${C:?}"/*
+  [ -n "${KEEP_EV:-}" ] || rm -rf "${IN:?}/evidence"   # KEEP_EV=1: keep the prep evidence (the candidate's result)
   echo "$scen" > "$C/scenario"; echo "$mode" > "$C/verify_mode"; echo "$where" > "$C/verify_where"
   homes_snapshot > "$T/homes.before"
   (cd "$R" && env -i PATH="$X/bin:/usr/bin:/bin" HOME="$T/home" TMPDIR="$T/tmp" ZB_MAC_HOST="$INTEL" ZB_MAC_ARM_HOST="$ARM" \
@@ -548,16 +557,18 @@ for role in intel arm; do
   else bad "clean K3 $role: stager args '${sa[*]:-}', agent tree '$(cat "$C/agent-tree.$role" 2>/dev/null)'"; fi
   tree=$(cat "$C/tree.$role" 2>/dev/null)
   if grep -qx ./Contents/MacOS/zigBrowser <<<"$tree" && grep -qx ./Contents/Frameworks/libwkwebview_shim.dylib <<<"$tree" \
-     && grep -qx ./Contents/Frameworks/agent-host/runtime.json <<<"$tree" && ! grep -q stray-data <<<"$tree"; then
-    ok "clean K3 $role: the verified .app holds the exe, the shim and agent-host, and no stray data"
+     && grep -qx ./Contents/Frameworks/agent-host/runtime.json <<<"$tree" && grep -qx ./Contents/Resources/agent-host/runtime.json <<<"$tree" \
+     && ! grep -q zb-4pa80-stray <<<"$tree"; then
+    ok "clean K3 $role: the verified .app holds the exe, the shim and agent-host (runtime.json also in Resources), and no stray file"
   else bad "clean K3 $role: the verified tree is: $(tr '\n' ' ' <<<"$tree")"; fi
   check_signing clean "$role"
   grep -qP "^SPIKE\tcensus\t$DATA$" "$IN"/evidence/"$arch"-*/driver.out 2>/dev/null \
-    && ok "clean K3 $role: the census counts $DATA data files under Frameworks" || bad "clean K3 $role: census line missing or not $DATA"
+    && ok "clean K3 $role: the census counts $DATA data files under Frameworks after the relocation" || bad "clean K3 $role: census line missing or not $DATA"
   # K4
   ev=$(ls -d "$IN"/evidence/"$arch"-zb-gate-"$SHA"-* 2>/dev/null | head -n 1)
   missing=
-  for f in driver.out evidence/build.log evidence/verify.log evidence/audit.before evidence/audit.after evidence/profile; do
+  for f in driver.out evidence/build.log evidence/verify.log evidence/audit.before evidence/audit.after evidence/profile \
+           evidence/relocate.log evidence/census.log; do
     [ -s "$ev/$f" ] || missing+="$f "
   done
   for f in evidence/stage.log evidence/sign.log; do [ -e "$ev/$f" ] || missing+="$f "; done
@@ -609,28 +620,33 @@ else bad "breach K6: exit $rc, intel '$(leg_class x86_64): $(leg_detail x86_64)'
 check_xport "breach K14" none "create inputs run" ""
 rm -rf "$X/hosts/intel/"zb-gate-* "$X/hosts/intel/".zb-spike-canary-*
 
-# ===== K7: the data_in_frameworks mutant =====
-run_spike mutant none unsealed both ZB_SPIKE_MUTANT=data_in_frameworks
-if [ "$rc" -eq 0 ] && [ "$(leg_class x86_64)" = EXPECTED-FAIL ] && [ "$(leg_class arm64)" = EXPECTED-FAIL ] \
-   && grep -qx ./Contents/Frameworks/stray-data.txt "$C/tree.intel" && grep -qx ./Contents/Frameworks/stray-data.txt "$C/tree.arm" \
-   && [ "$(grep -hP '^SPIKE\tcensus\t' "$IN"/evidence/*/driver.out | sort -u)" = "$(printf 'SPIKE\tcensus\t%d' $((DATA + 1)))" ]; then
-  ok "mutant K7: EXPECTED-FAIL on both legs; stray-data.txt in the verified tree, census $((DATA + 1))"
-else bad "mutant K7: exit $rc, '$(leg_class x86_64)' '$(leg_class arm64)'"; fi
-check_xport "mutant K14" data_in_frameworks "$LEG5" "$LEG5"
-run_spike mutant_clean none clean both ZB_SPIKE_MUTANT=data_in_frameworks
-{ [ "$rc" -eq 2 ] && [ "$(leg_class x86_64)" = INCONCLUSIVE ] && [[ "$(leg_detail x86_64)" == *"accepted the data_in_frameworks mutant"* ]]; } \
-  && ok "mutant_clean K7: a verify that accepts the mutant is INCONCLUSIVE, exit 2" || bad "mutant_clean K7: exit $rc, '$(leg_class x86_64): $(leg_detail x86_64)'"
+# ===== K7: the control (stray_in_frameworks), gated on the candidate =====
+run_spike mutant_first none clean both ZB_SPIKE_MUTANT=stray_in_frameworks
+{ [ "$rc" -eq 1 ] && grep -q 'REFUSED: the control runs only after the candidate is LAYOUT-OK on both' <<<"$out" && [ ! -s "$C/calls" ]; } \
+  && ok "mutant_first K7: the control without the candidate's result is refused, exit 1, no ssh/scp" \
+  || bad "mutant_first K7: exit $rc: $(tail -n 2 <<<"$out" | tr '\n' ' ')"
+for vm in clean unsealed; do
+  run_spike "mutant_cand_$vm" none clean both
+  KEEP_EV=1 run_spike "mutant_$vm" none "$vm" both ZB_SPIKE_MUTANT=stray_in_frameworks
+  if [ "$rc" -eq 2 ] && [ "$(spike_result)" = "x86_64=INCONCLUSIVE arm64=INCONCLUSIVE" ] && [[ "$(leg_detail x86_64)" == *"wrong stage"* ]] \
+     && grep -qx ./Contents/Frameworks/agent-host/zb-4pa80-stray.txt "$C/tree.intel" && grep -qx ./Contents/Frameworks/agent-host/zb-4pa80-stray.txt "$C/tree.arm" \
+     && [ "$(grep -hP '^SPIKE\tcensus\t' "$IN"/evidence/*/driver.out | sort | uniq -c | awk '{ print $1 " " $NF }' | tr '\n' ' ')" = "2 0 2 1 " ] \
+     && ! grep -q EXPECTED-FAIL <<<"$out"; then
+    ok "mutant_$vm K7: a control whose signing succeeds is INCONCLUSIVE on both legs (wrong stage) with a $vm verify; the stray file in the verified tree, census 1"
+  else bad "mutant_$vm K7: exit $rc, '$(leg_class x86_64): $(leg_detail x86_64)' '$(leg_class arm64)'"; fi
+done
+check_xport "mutant K14" stray_in_frameworks "$LEG5" "$LEG5"
 
 # ===== K8: a sandbox denial is never product evidence =====
-run_spike deny_verify deny_verify clean both ZB_SPIKE_MUTANT=data_in_frameworks
+run_spike deny_verify deny_verify clean both
 { [ "$rc" -eq 2 ] && [ "$(leg_class x86_64)" = INCONCLUSIVE ] && [ "$(leg_class arm64)" = INCONCLUSIVE ] \
-  && [[ "$(leg_detail x86_64)" == *"denied"* ]] && ! grep -q EXPECTED-FAIL <<<"$out"; } \
-  && ok "deny_verify K8: a denied verify with a sealed-resource message is INCONCLUSIVE, never EXPECTED-FAIL" \
+  && [[ "$(leg_detail x86_64)" == *"denied"* ]] && ! grep -qE 'LAYOUT-FINDING|EXPECTED-FAIL' <<<"$out"; } \
+  && ok "deny_verify K8: a denied verify with a sealed-resource message is INCONCLUSIVE, never LAYOUT-FINDING or EXPECTED-FAIL" \
   || bad "deny_verify K8: exit $rc, '$(leg_class x86_64): $(leg_detail x86_64)'"
 check_removed "deny_verify K8"
 run_spike deny_tool deny_tool clean both
 nverify=$(grep -c -- '--verify' "$C/tools.log" 2>/dev/null || true)
-{ [ "$rc" -eq 2 ] && [ "$(leg_class x86_64)" = INCONCLUSIVE ] && [[ "$(leg_detail x86_64)" == "sign: "* ]] && [ "$nverify" = 0 ]; } \
+{ [ "$rc" -eq 2 ] && [ "$(leg_class x86_64)" = INCONCLUSIVE ] && [[ "$(leg_detail x86_64)" == *"denied"* ]] && [ "$nverify" = 0 ]; } \
   && ok "deny_tool K8: a denied signing tool is INCONCLUSIVE ($(leg_detail x86_64)), no verify" \
   || bad "deny_tool K8: exit $rc, '$(leg_class x86_64): $(leg_detail x86_64)', verify calls $nverify"
 

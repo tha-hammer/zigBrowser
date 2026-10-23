@@ -9,8 +9,9 @@
 #   - the stub ssh wrapped so a `remove` can fail at the transport (exit 255, nothing run) and every remove attempt
 #     is counted.
 # Rows:
-#   F1 a verify that reports "code object is not signed at all": on the normal run LAYOUT-FINDING on that leg
-#      (LAYOUT-OK on the other), exit 0; under data_in_frameworks EXPECTED-FAIL on both legs, exit 0;
+#   F1 a verify that reports "code object is not signed at all": on the candidate LAYOUT-FINDING on that leg
+#      (LAYOUT-OK on the other), exit 0; on the control (stray_in_frameworks, after a LAYOUT-OK candidate), whose
+#      signing succeeds in this scaffold, INCONCLUSIVE on both legs (wrong stage), never EXPECTED-FAIL, exit 2;
 #   F2 every `sort` on the Mac runs inside the sandbox with its temporary storage below the physical run root, at
 #      least three per leg (both audit snapshots and the signing order), and the snapshots are still complete;
 #   F3 a remove that keeps failing at the transport: the leg is INCONCLUSIVE naming the host and the root, the run
@@ -57,10 +58,12 @@ run_spike notsigned none notsigned arm
   && [ "$(spike_result)" = "x86_64=LAYOUT-OK arm64=LAYOUT-FINDING" ]; } \
   && ok "notsigned F1: a not-signed verify on arm64 is LAYOUT-FINDING, Intel LAYOUT-OK, exit 0" \
   || bad "notsigned F1: exit $rc, '$(leg_class x86_64): $(leg_detail x86_64)' '$(leg_class arm64): $(leg_detail arm64)'"
-run_spike notsigned_mutant none notsigned both ZB_SPIKE_MUTANT=data_in_frameworks
-{ [ "$rc" -eq 0 ] && [ "$(spike_result)" = "x86_64=EXPECTED-FAIL arm64=EXPECTED-FAIL" ] \
-  && grep -qx ./Contents/Frameworks/stray-data.txt "$C/tree.intel" && grep -qx ./Contents/Frameworks/stray-data.txt "$C/tree.arm"; } \
-  && ok "notsigned_mutant F1: data_in_frameworks with a not-signed verify is EXPECTED-FAIL on both legs, exit 0" \
+run_spike notsigned_candidate none clean both
+KEEP_EV=1 run_spike notsigned_mutant none notsigned both ZB_SPIKE_MUTANT=stray_in_frameworks
+{ [ "$rc" -eq 2 ] && [ "$(spike_result)" = "x86_64=INCONCLUSIVE arm64=INCONCLUSIVE" ] && ! grep -q EXPECTED-FAIL <<<"$out" \
+  && [[ "$(leg_detail x86_64)" == *"wrong stage"* ]] \
+  && grep -qx ./Contents/Frameworks/agent-host/zb-4pa80-stray.txt "$C/tree.intel" && grep -qx ./Contents/Frameworks/agent-host/zb-4pa80-stray.txt "$C/tree.arm"; } \
+  && ok "notsigned_mutant F1: the control with a not-signed verify after a clean signing is INCONCLUSIVE on both legs (wrong stage), exit 2" \
   || bad "notsigned_mutant F1: exit $rc, '$(leg_class x86_64): $(leg_detail x86_64)' '$(leg_class arm64): $(leg_detail arm64)'"
 
 # ===== F2: every sort on the Mac is sandboxed, its temporary storage in the root =====
