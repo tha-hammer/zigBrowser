@@ -3882,8 +3882,16 @@ pub fn build(b: *std.Build) void {
         "tests/mac/bundle_layout_spike_selftest.sh", "tests/mac/bundle_layout_spike.sh", "tests/mac/build-on-mac.sh",
         "tests/mac/mac_gate_lib.sh",                 "tests/mac/known_hosts",            "packaging/macos/Info.plist",
     }) |input| mac_bundle_layout_spike_selftest.addFileInput(b.path(input));
-    b.step("test-mac-bundle-layout-spike", "Run the hostless selftest of the 4pa.80 bundle-layout spike's run phase").dependOn(&mac_bundle_layout_spike_selftest.step);
+    const mac_bundle_layout_spike_step = b.step("test-mac-bundle-layout-spike", "Run the hostless selftests of the 4pa.80 bundle-layout spike (prep and run)");
+    mac_bundle_layout_spike_step.dependOn(&mac_bundle_layout_spike_selftest.step);
     test_step.dependOn(&mac_bundle_layout_spike_selftest.step);
+    // Its prep reads the commit's pins, installs the hash-locked verifier and keeps every cache in scratch (8f28c5d).
+    const mac_bundle_layout_spike_prep_selftest = b.addSystemCommand(&.{ "bash", "tests/mac/bundle_layout_spike_prep_selftest.sh" });
+    for ([_][]const u8{
+        "tests/mac/bundle_layout_spike_prep_selftest.sh", "tests/mac/bundle_layout_spike.sh", "packaging/macos/build_site_packages.sh",
+    }) |input| mac_bundle_layout_spike_prep_selftest.addFileInput(b.path(input));
+    mac_bundle_layout_spike_step.dependOn(&mac_bundle_layout_spike_prep_selftest.step);
+    test_step.dependOn(&mac_bundle_layout_spike_prep_selftest.step);
     // The MS2b, MS2c and MS3 gates are real steps that run their scripts and pass a gate failure through (bd 4pa.62).
     const mac_gate_steps_selftest = b.addSystemCommand(&.{ "bash", "tests/mac/gate_steps_selftest.sh" });
     mac_gate_steps_selftest.setEnvironmentVariable("ZIG", b.graph.zig_exe);

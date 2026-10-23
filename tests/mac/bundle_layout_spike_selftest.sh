@@ -8,8 +8,9 @@
 # extension module and the CLI); the real stager is proven by its own MS5 gates. The fake codesign answers --verify as
 # the scenario says and keeps a listing of the .app at that moment. Rows:
 #   B1 clean: exit 0, a PASS line per leg, then PASS bundle-layout-spike both-arches <the commit>;
-#   B2 the stager gets the leg's run-dir pkg, rev 15's pin, prefix <run dir>/spike/zigBrowser.app/Contents and both
-#      site trees, and the agent tree it stages from is the committed one (an uncommitted edit stays off the Mac);
+#   B2 the stager gets the leg's run-dir pkg, the pkg SHA-256 pinned in the commit's agent_runtime_pins.json (a
+#      fixture value, not rev 15's), prefix <run dir>/spike/zigBrowser.app/Contents and both site trees, and the agent
+#      tree it stages from is the committed one (an uncommitted edit stays off the Mac);
 #   B3 at verify time the .app holds the exe, the shim in Contents/Frameworks and the staged agent-host, and no
 #      stray-data.txt;
 #   B4 signing is ad hoc and inside out, never --deep: every Mach-O file once, deepest first, before any directory;
@@ -38,7 +39,7 @@ fails=0
 ok() { printf 'ok   %s\n' "$*"; }
 bad() { printf 'FAIL %s\n' "$*"; fails=$((fails + 1)); }
 INTEL=intel@10.0.0.1 ARM=arm@10.0.0.2 X="$T/x" C="$T/ctl"
-PIN=8373e58da4ea146b3eb1c1f9834f19a319440b6b679b06050b1f9ee3237aa8e4
+PIN=$(printf 'pkg stand-in\n' | sha256sum | cut -c1-64)   # the scratch commit's pinned pkg SHA-256 (not rev 15's)
 APP=spike/zigBrowser.app
 
 mkdir -p "$X/bin" "$X/hostbin" "$X/hosts/intel/.local/bin" "$X/hosts/arm/.local/bin" "$C" "$T/home" "$T/tmp"
@@ -129,6 +130,12 @@ printf '# agent\n' > "\$A/zb_agent_host/__init__.py"; printf '{}\n' > "\$A/runti
 EOF
 chmod +x "$R/packaging/macos/stage_agent_runtime.sh"
 echo committed > "$R/agent/host/marker"; echo "# host" > "$R/agent/host/zb_agent_host/__init__.py"
+cat > "$R/packaging/macos/agent_runtime_pins.json" <<EOF
+{"python_pkg": {"url": "https://www.python.org/ftp/python/3.12.10/python-3.12.10-macos11.pkg", "sha256": "$PIN",
+  "sigstore_identity": "selftest@python.org", "sigstore_issuer": "https://selftest.invalid"},
+ "uv_lock_sha256": "$(printf '%064d' 2)",
+ "sigstore_verifier": {"requirements": "packaging/macos/sigstore_verifier.txt", "sha256": "$(printf '%064d' 3)"}}
+EOF
 echo "// stand-in" > "$R/src/main.zig"
 echo build > "$R/build.zig"; echo zon > "$R/build.zig.zon"; echo '{}' > "$R/zigbrowser.json"
 G=(env -i PATH=/usr/bin:/bin HOME="$T/home" GIT_CONFIG_NOSYSTEM=1 git -C "$R")

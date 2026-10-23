@@ -6,9 +6,14 @@
 # answers that on both Macs BEFORE MS1c fixes the layout. It is evidence, not a gate: a FAIL is a finding.
 #
 #   bash tests/mac/bundle_layout_spike.sh prep <new dir>
-#       Linux only, network: the two per-arch site-packages trees from agent/host/uv.lock
-#       (packaging/macos/build_site_packages.sh) and the python.org pkg (rev 15's SHA-256 pin and its Sigstore
-#       identity), exactly as tests/mac/ms5_deps_gate.sh; writes py.pkg, sites.tar and inputs.sha256.
+#       Linux only, network. Everything comes from the exact commit (${ZB_GATE_COMMIT:-HEAD}), exported to a scratch tree,
+#       and its packaging/macos/agent_runtime_pins.json (SilverRidge 8f28c5d): before any network call it checks the
+#       pins and that the committed sigstore_verifier.txt and agent/host/uv.lock match their pinned SHA-256. It then
+#       fetches the pinned pkg, checks its pinned SHA-256, installs the verifier into a scratch venv with
+#       `pip install --require-hashes --no-deps -r <the committed requirements>`, checks the pkg's pinned Sigstore
+#       identity and issuer, and builds the two site trees from the lock (packaging/macos/build_site_packages.sh). HOME,
+#       XDG and the uv and pip caches stay in the scratch tree. Only a complete prep creates <new dir>, with py.pkg,
+#       sites.tar and inputs.sha256. Hostless selftest: tests/mac/bundle_layout_spike_prep_selftest.sh.
 #   bash tests/mac/bundle_layout_spike.sh run <prep dir>
 #       Both Macs, one after the other. Each leg builds ${ZB_GATE_COMMIT:-HEAD} with tests/mac/mac_gate_lib.sh's mac_build
 #       (git archive into a fresh ~/zb-gate-<sha>-<nonce>, pinned host keys, both zig caches in the run dir) and works
@@ -31,30 +36,63 @@ ARM_KEY="${ZB_MAC_ARM_KEY:-$KEY}"
 INTEL_HOST="${ZB_MAC_HOST:-maceojourdan@100.92.212.47}"
 ARM_HOST="${ZB_MAC_ARM_HOST:-}"
 LEG_TIMEOUT="${ZB_MAC_LEG_TIMEOUT:-1800}"
-PIN=8373e58da4ea146b3eb1c1f9834f19a319440b6b679b06050b1f9ee3237aa8e4
-URL=https://www.python.org/ftp/python/3.12.10/python-3.12.10-macos11.pkg
+PINS=packaging/macos/agent_runtime_pins.json
 
 cd "$(git rev-parse --show-toplevel)"
 MODE="${1:-}" IN="${2:-}"
 [ -n "$IN" ] || { echo "usage: bundle_layout_spike.sh prep <new dir> | run <prep dir>" >&2; exit 2; }
 
+read_pins() { # $1 = a pins file -> "url sha256 identity issuer uv_lock_sha256 requirements requirements_sha256"
+  python3 -I -B - "$1" <<'PY'
+import json, re, sys
+try:
+    pins = json.load(open(sys.argv[1]))
+    pkg = pins["python_pkg"]
+    assert set(pkg) == {"url", "sha256", "sigstore_identity", "sigstore_issuer"}, "python_pkg keys"
+    assert re.fullmatch(r"https://www\.python\.org/ftp/python/[0-9.]+/python-[0-9.]+-macos11\.pkg", pkg["url"]), "url"
+    assert re.fullmatch(r"[0-9a-f]{64}", pkg["sha256"]), "sha256"
+    assert re.fullmatch(r"[0-9a-f]{64}", pins["uv_lock_sha256"]), "uv_lock_sha256"
+    assert pkg["sigstore_identity"] and pkg["sigstore_issuer"].startswith("https://"), "sigstore"
+    ver = pins["sigstore_verifier"]
+    assert ver["requirements"] == "packaging/macos/sigstore_verifier.txt", "sigstore_verifier.requirements"
+    assert re.fullmatch(r"[0-9a-f]{64}", ver["sha256"]), "sigstore_verifier.sha256"
+except Exception as exc:
+    print(f"malformed pins: {exc!r}", file=sys.stderr)
+    sys.exit(1)
+print(pkg["url"], pkg["sha256"], pkg["sigstore_identity"], pkg["sigstore_issuer"], pins["uv_lock_sha256"],
+      ver["requirements"], ver["sha256"])
+PY
+}
+
 if [ "$MODE" = prep ]; then
   [ ! -e "$IN" ] || { echo "REFUSED: $IN exists (prep writes only a new dir)" >&2; exit 1; }
-  mkdir -p "$IN"; IN=$(cd "$IN" && pwd)
   COMMIT=$(git rev-parse --verify "${ZB_GATE_COMMIT:-HEAD}^{commit}")
   W=$(mktemp -d "${TMPDIR:-/tmp}/zb-spike-prep-XXXXXX")
   trap 'case "$W" in "${TMPDIR:-/tmp}"/zb-spike-prep-??????) rm -rf "${W:?}";; esac' EXIT
-  git archive --format=tar "$COMMIT" packaging/macos agent/host | tar -xf - -C "$W"
-  bash "$W/packaging/macos/build_site_packages.sh" "$W/agent/host" "$W/sites" >/dev/null
-  (cd "$W/sites" && tar -cf "$IN/sites.tar" site-x86_64 site-aarch64)
-  curl -fsSL --proto '=https' -o "$IN/py.pkg" "$URL"
-  curl -fsSL --proto '=https' -o "$W/py.pkg.sigstore" "$URL.sigstore"
-  [ "$(sha256sum "$IN/py.pkg" | cut -c1-64)" = "$PIN" ] || { echo "FAIL: pkg SHA-256 is not rev 15's pin" >&2; exit 1; }
-  python3 -m venv "$W/venv" >/dev/null && "$W/venv/bin/pip" -q install sigstore >/dev/null 2>&1
-  "$W/venv/bin/python" -m sigstore verify identity --bundle "$W/py.pkg.sigstore" --cert-identity thomas@python.org \
-    --cert-oidc-issuer https://accounts.google.com "$IN/py.pkg" || { echo "FAIL: Sigstore" >&2; exit 1; }
-  (cd "$IN" && sha256sum py.pkg sites.tar > inputs.sha256)
-  printf 'PREP\tbundle-layout-spike\t%s\t%s\n' "$COMMIT" "$IN"
+  mkdir "$W/repo" "$W/out" && git archive --format=tar "$COMMIT" packaging/macos agent/host | tar -xf - -C "$W/repo"
+  pinned=$(read_pins "$W/repo/$PINS") || { echo "FAIL: $PINS at $COMMIT is malformed" >&2; exit 1; }
+  read -r PKG_URL PKG_SHA SIG_ID SIG_ISSUER LOCK_SHA VREQ VREQ_SHA <<<"$pinned"
+  [ "$(sha256sum "$W/repo/$VREQ" | cut -c1-64)" = "$VREQ_SHA" ] || { echo "FAIL: $VREQ does not match its pin" >&2; exit 1; }
+  [ "$(sha256sum "$W/repo/agent/host/uv.lock" | cut -c1-64)" = "$LOCK_SHA" ] \
+    || { echo "FAIL: agent/host/uv.lock does not match its pin" >&2; exit 1; }
+  # No tool here reads or writes the real HOME's caches or config (uv, pip, the venv, curl).
+  mkdir "$W/home" "$W/xdg-cache" "$W/xdg-config" "$W/xdg-data" "$W/uv-cache" "$W/uv-python" "$W/pip-cache"
+  SCR=(env HOME="$W/home" XDG_CACHE_HOME="$W/xdg-cache" XDG_CONFIG_HOME="$W/xdg-config" XDG_DATA_HOME="$W/xdg-data"
+       UV_CACHE_DIR="$W/uv-cache" UV_PYTHON_INSTALL_DIR="$W/uv-python" PIP_CACHE_DIR="$W/pip-cache" PIP_CONFIG_FILE=/dev/null)
+  "${SCR[@]}" curl -fsSL --proto '=https' -o "$W/out/py.pkg" "$PKG_URL" || { echo "FAIL: pkg download" >&2; exit 1; }
+  "${SCR[@]}" curl -fsSL --proto '=https' -o "$W/py.pkg.sigstore" "$PKG_URL.sigstore" || { echo "FAIL: bundle download" >&2; exit 1; }
+  [ "$(sha256sum "$W/out/py.pkg" | cut -c1-64)" = "$PKG_SHA" ] || { echo "FAIL: the pkg's SHA-256 is not its pin" >&2; exit 1; }
+  "${SCR[@]}" python3 -m venv "$W/venv" >/dev/null \
+    && "${SCR[@]}" "$W/venv/bin/pip" -q install --require-hashes --no-deps -r "$W/repo/$VREQ" >/dev/null 2>&1 \
+    || { echo "FAIL: the hash-locked Sigstore verifier did not install" >&2; exit 1; }
+  "${SCR[@]}" "$W/venv/bin/python" -m sigstore verify identity --bundle "$W/py.pkg.sigstore" --cert-identity "$SIG_ID" \
+    --cert-oidc-issuer "$SIG_ISSUER" "$W/out/py.pkg" >/dev/null || { echo "FAIL: the pkg's Sigstore identity" >&2; exit 1; }
+  "${SCR[@]}" bash "$W/repo/packaging/macos/build_site_packages.sh" "$W/repo/agent/host" "$W/sites" >/dev/null \
+    || { echo "FAIL: the site trees" >&2; exit 1; }
+  (cd "$W/sites" && tar -cf "$W/out/sites.tar" site-x86_64 site-aarch64)
+  (cd "$W/out" && sha256sum py.pkg sites.tar > inputs.sha256)
+  mkdir "$IN" && mv "$W/out/py.pkg" "$W/out/sites.tar" "$W/out/inputs.sha256" "$IN/"
+  printf 'PREP\tbundle-layout-spike\t%s\t%s\n' "$COMMIT" "$(cd "$IN" && pwd)"
   exit 0
 fi
 [ "$MODE" = run ] || { echo "usage: bundle_layout_spike.sh prep <new dir> | run <prep dir>" >&2; exit 2; }
@@ -70,11 +108,13 @@ for f in py.pkg sites.tar inputs.sha256; do [ -s "$IN/$f" ] || { echo "FAIL: $IN
 (cd "$IN" && sha256sum --quiet -c inputs.sha256) || { echo "FAIL: the prep inputs do not match inputs.sha256" >&2; exit 1; }
 
 COMMIT=$(git rev-parse --verify "${ZB_GATE_COMMIT:-HEAD}^{commit}")
-export ZB_GATE_COMMIT=$COMMIT   # mac_build and the agent tree below both use this one commit
+export ZB_GATE_COMMIT=$COMMIT   # mac_build, the agent tree and the pins below all come from this one commit
 . tests/mac/mac_gate_lib.sh
 L=$(mktemp -d "${TMPDIR:-/tmp}/zb-spike-run-XXXXXX")
 trap 'mac_remove_run_dirs; case "$L" in "${TMPDIR:-/tmp}"/zb-spike-run-??????) rm -rf "${L:?}";; esac' EXIT
 git archive --format=tar -o "$L/agent.tar" "$COMMIT" agent/host
+git show "$COMMIT:$PINS" > "$L/pins.json" && pinned=$(read_pins "$L/pins.json") || { echo "FAIL: $PINS at $COMMIT is malformed" >&2; exit 1; }
+read -r _ PIN _ <<<"$pinned"   # the pkg's pinned SHA-256, which the Mac's stage_agent_runtime.sh checks again
 echo "== commit $COMMIT, mutant $MUTANT" >&2
 
 leg() { # $1=host $2=key $3=expected uname -m
