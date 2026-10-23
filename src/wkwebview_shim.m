@@ -1488,6 +1488,17 @@ static long zb_auto_test_cookie_delay_ms(void) {
   return zb_parse_nonneg(getenv("ZB_DEBUG_COOKIE_DELAY_MS"));
 }
 
+// Test-only (ZB_DEBUG_EPHEMERAL_DATA_STORE, hook 16): every window uses ONE non-persistent WKWebsiteDataStore
+// instead of the default store or the --profile-dir store (dataStoreForIdentifier). Both of those live in WebKit's
+// own location under the account Library, outside any e2e run directory; an ephemeral store writes no website data
+// to disk, so a Mac e2e run leaves nothing outside its run root (SilverRidge fe4542e). Inert without
+// --e2e-protocol. Main thread only (read from newConfiguredWebView).
+static BOOL zb_auto_test_ephemeral_store(void) {
+  if (!zb_auto_test_hooks_enabled()) return NO;
+  const char *v = getenv("ZB_DEBUG_EPHEMERAL_DATA_STORE");
+  return v != NULL && v[0] == '1';
+}
+
 // Run a cookie-store completion now, or after the e2e-only delay above (printing zb-cookie-delay-hit).
 static void zb_cookie_after_test_delay(void (^handle)(void)) {
   long ms = zb_auto_test_cookie_delay_ms();
@@ -2881,7 +2892,15 @@ int zb_app_set_profile_dir(const char *dir, char **out_err) {
 // keyed by the path; macOS 13 (or the forced seam) -> the default (shared) store, with one stderr line that
 // isolation needs macOS 14. Runs with g_active_app set, so the e2e availability seam is readable.
 static void zb_resolve_profile_store(void) {
-  if (g_profile_dir == nil || g_profile_resolved) return;
+  if (g_profile_resolved) return;
+  if (zb_auto_test_ephemeral_store()) {  // e2e-only hook 16: nothing on disk, with or without --profile-dir
+    g_profile_resolved = YES;
+    g_profile_data_store = [WKWebsiteDataStore nonPersistentDataStore];
+    fprintf(stderr, "zb-data-store=ephemeral\n");
+    fflush(stderr);
+    return;
+  }
+  if (g_profile_dir == nil) return;
   g_profile_resolved = YES;
   if (zb_profile_identifier_available()) {
     if (@available(macOS 14.0, *)) {
