@@ -18,6 +18,15 @@
 #   O3 one selected row's ROW line missing; O4 a ROW line twice; O5 MATCH turned to MISMATCH: refused (intel).
 #   O6 the VARFOLDERS COMPLETE line, O7 the CRASHREPORTS COMPLETE 0 line, O8 the outer-end self-audit status, O9
 #      EVIDENCE_ARMED missing: refused (intel).
+#   SilverRidge e5eb7d37, each on intel:
+#   O10 each of the five SELFAUDIT_STATUS <step> 0 records missing, and O11 each one twice.
+#   O12 VARFOLDERS COMPLETE, O13 CRASHREPORTS COMPLETE 0 and O14 EVIDENCE_ARMED each twice: every singular record is
+#      bound by count, not by presence.
+#   O15-O18 the full ROW tuple, one field at a time in the first ROW record: O15 another row's file, O16 the other
+#      verdict wanted, O17 a green row with rc=1, O18 a red row (ms2c-close-button) with rc=0.
+#   O19 an extra, otherwise well-formed ROW record for a row that was not selected.
+#   Every refusal: exit status exactly 1 (not 124 or any signal-shaped status), exactly one remote-success refusal for
+#   that host and none for the other.
 #   P1 positive control: the real legs: PASS for both legs and the gate, and no remote-success FAIL.
 #   P2 positive control, one selected row: PASS. The required ROW lines follow the selection.
 #   P3 positive control, a red row (ms2c-close-button, rc=1 and its RED_SHAPE): PASS. A red row's line is rc=1.
@@ -67,6 +76,22 @@ if [ -n "\$mode" ]; then   # the real leg runs; its completed output is altered 
     m == "nocr"     && /^CRASHREPORTS\tCOMPLETE\t0\$/ { next }
     m == "noself"   && /^SELFAUDIT_STATUS\touter-end\t0\$/ { next }
     m == "noarm"    && /^EVIDENCE_ARMED\$/ { next }
+    m ~ /^noself-/  && \$0 == "SELFAUDIT_STATUS\t" substr(m, 8) "\t0" { next }
+    m ~ /^dupself-/ && \$0 == "SELFAUDIT_STATUS\t" substr(m, 9) "\t0" { print }
+    m == "dupvf"    && /^VARFOLDERS\tCOMPLETE\t/ { print }
+    m == "dupcr"    && /^CRASHREPORTS\tCOMPLETE\t0\$/ { print }
+    m == "duparm"   && /^EVIDENCE_ARMED\$/ { print }
+    m ~ /^row(file|want|rc)\$/ && /^ROW\t/ && !r {   # one field of the first ROW record changed, the rest kept
+      r = 1; n = split(\$0, f, "\t")
+      if (m == "rowfile") f[2] = "tests/e2e/mac_ms2c_close_primary_test.py"
+      if (m == "rowwant") f[3] = (f[3] == "green" ? "red" : "green")
+      if (m == "rowrc")   f[4] = (f[4] == "rc=0" ? "rc=1" : "rc=0")
+      \$0 = f[1]; for (k = 2; k <= n; k++) \$0 = \$0 "\t" f[k]
+    }
+    m == "extrarow" && /^ROW\t/ && !x {   # an extra ROW record, for a row that was not selected, after the first
+      x = 1; print; n = split(\$0, f, "\t"); f[2] = "tests/e2e/mac_ms2c_close_primary_test.py"
+      \$0 = f[1]; for (k = 2; k <= n; k++) \$0 = \$0 "\t" f[k]
+    }
     { print }' "$T/ctl/raw.\$host"
   exit 0
 fi
@@ -151,11 +176,12 @@ run_gate() { # run_gate <selection>: a fresh evidence dir; sets OUT RC
 BOTH="ms2a-load-fail-no-quit ms2c-recover-slow-server"
 refused() { # refused <name> <host> <arch> <other host> <other arch>: only that host refused, by its exact line
   local name=$1 h=$2 a=$3 oh=$4 oa=$5
-  if [ "$RC" -ne 0 ] && grep -qxF "FAIL"$'\t'"remote-success"$'\t'"ms_runtime_rows_gate"$'\t'"$h"$'\t'"$a"$'\t'"missing" <<<"$OUT" \
+  if [ "$RC" -eq 1 ] && [ "$(grep -c $'^FAIL\tremote-success\tms_runtime_rows_gate\t'"$h"$'\t' <<<"$OUT")" -eq 1 ] \
+     && grep -qxF "FAIL"$'\t'"remote-success"$'\t'"ms_runtime_rows_gate"$'\t'"$h"$'\t'"$a"$'\t'"missing" <<<"$OUT" \
      && ! grep -q $'^PASS\tms-runtime-rows-leg\t'"$h"$'\t' <<<"$OUT" && ! grep -q $'^PASS\tms-runtime-rows-gate' <<<"$OUT" \
      && grep -qx $'PASS\tms-runtime-rows-leg\t'"$oh"$'\t'"$oa" <<<"$OUT" \
      && ! grep -q $'^FAIL\tremote-success\tms_runtime_rows_gate\t'"$oh"$'\t' <<<"$OUT"; then
-    ok "$name: $h refused (remote-success missing), no leg or gate PASS; $oh judged on its own and passed"
+    ok "$name: $h refused once (remote-success missing), exit 1, no leg or gate PASS; $oh judged on its own and passed"
   else bad "$name: rc=$RC $(grep -E $'^(FAIL\tremote-success|PASS\tms-runtime-rows)' <<<"$OUT" | tr '\n' ' ')"; fi
 }
 
@@ -170,6 +196,21 @@ for hl in "O3 one selected row's ROW line missing|onerow" "O4 a ROW line twice|d
   name=${hl%|*} mode=${hl#*|}
   fresh_macs; echo "$mode" > "$T/ctl/leg-$INTEL"; run_gate "$BOTH"; refused "$name" "$INTEL" x86_64 "$ARM" arm64
 done
+
+for step in outer-begin inner-varfolders inner-crashreports inner-evidence outer-end; do   # O10, O11
+  fresh_macs; echo "noself-$step" > "$T/ctl/leg-$INTEL"; run_gate "$BOTH"
+  refused "O10 no SELFAUDIT_STATUS $step 0" "$INTEL" x86_64 "$ARM" arm64
+  fresh_macs; echo "dupself-$step" > "$T/ctl/leg-$INTEL"; run_gate "$BOTH"
+  refused "O11 SELFAUDIT_STATUS $step 0 twice" "$INTEL" x86_64 "$ARM" arm64
+done
+for hl in "O12 VARFOLDERS COMPLETE twice|dupvf" "O13 CRASHREPORTS COMPLETE 0 twice|dupcr" "O14 EVIDENCE_ARMED twice|duparm" \
+          "O15 a ROW record naming another row's file|rowfile" "O16 a ROW record with the other verdict wanted|rowwant" \
+          "O17 a green ROW record with rc=1|rowrc" "O19 an extra ROW record for a row not selected|extrarow"; do
+  name=${hl%|*} mode=${hl#*|}
+  fresh_macs; echo "$mode" > "$T/ctl/leg-$INTEL"; run_gate "$BOTH"; refused "$name" "$INTEL" x86_64 "$ARM" arm64
+done
+fresh_macs; echo rowrc > "$T/ctl/leg-$INTEL"; run_gate ms2c-close-button   # O18
+refused "O18 a red ROW record with rc=0" "$INTEL" x86_64 "$ARM" arm64
 
 for pc in "P1 both rows|$BOTH" "P2 one selected row|ms2c-recover-slow-server" "P3 a red row|ms2c-close-button"; do
   name=${pc%|*} sel=${pc#*|}
