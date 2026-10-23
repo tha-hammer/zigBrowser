@@ -22,6 +22,11 @@ fails before its loop is answered NO_LOOP at once, as is every later call (ONE n
 as soon as it exists answers the waiting caller NO_LOOP at once, frees its job and ends zb_app_run. Red and mutant
 (no loop end on run_core's early-failure paths): the waiter sits out its whole deadline (TIMEOUT), so that one check
 is the only FAIL line.
+WS2a.3d: a navigate and a reload that time out (a loopback server answers late) each stop their own load; a
+page-initiated newer navigation that starts before the abandoned handling (seam zb_automation_debug_abandon_at_start)
+goes on and commits; a newer routed navigate loads normally; and a timed-out navigation followed by an immediate close
+frees every job (child process). Red: the navigate, reload and timeout-close rows FAIL. Mutants: no Stop() -> navigate
+and reload; ownership guard dropped -> the overlap row only; no shutdown release -> the timeout-close row only.
 
 Under ZB_WIN_GATE=1 a missing host or marker exits 1 ("no Windows host configured"); standalone it exits 77.
 A host run needs NavyCanyon's exact-commit approval and the orchestrator's release.
@@ -51,6 +56,12 @@ REQUIRED = (
     "closing the window ends zb_app_run",
     "a caller waiting for the loop is answered NO_LOOP at once when zb_app_run fails before its loop",
     "an immediate quit wakes the waiting caller with NO_LOOP, frees its job and ends zb_app_run",
+    "a timed-out navigation then an immediate close frees every job (live jobs back to the baseline)",
+    "the loopback slow server starts",
+    "a navigate that times out stops its own load (the page stays, the late answer never shows)",
+    "a reload that times out stops its own load (the page stays, the late answer never shows)",
+    "a page-initiated newer navigation that starts before the abandoned load is handled goes on and commits",
+    "a newer navigate after a timed-out one loads normally",
 )
 
 

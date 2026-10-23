@@ -38,14 +38,30 @@
  *   - closing the window as soon as it exists (before or while the WebView starts) answers the waiting caller
  *     NO_LOOP at once, frees its job, and ends zb_app_run.
  *   3c red and mutant (no loop end on the early-failure paths of run_core): the waiter sits out its whole
- *   8 s deadline and answers TIMEOUT, so that one assertion is the only FAIL line. Exit 0 only when every
- *   check passes. */
+ *   8 s deadline and answers TIMEOUT, so that one assertion is the only FAIL line.
+ * WS2a.3d (header: "on timeout ... a navigate/reload stops its own load (never a newer one)"), through a loopback
+ * HTTP server in this process (late answers: /slow and a reload of /reload 2.5 s, /slowscript 1.5 s; /stall never):
+ *   - a navigate that times out (800 ms) stops its own load: the page stays on App Index A;
+ *   - a reload that times out stops its own load: the page stays on Reload One;
+ *   - overlap (seam zb_automation_debug_abandon_at_start holds the abandoned handling until the next
+ *     NavigationStarting): a navigate to /slowscript times out; its late page commits while an image (/stall) keeps
+ *     it loading, and its inline script starts a page-initiated navigation to /newer. The abandoned handling then
+ *     runs inside that newer navigation's start, which must go on and commit (Newer Page);
+ *   - a newer routed navigate after them loads normally (App Page B);
+ *   - in a child process (--ws2a3d-timeout-close): a navigate times out while its abandoned handling is held, the
+ *     window is closed at once, and live jobs return to the baseline (the routed navigation's hold is released at
+ *     shutdown).
+ *   Red (no abandoned handling, no shutdown release): the navigate, reload and timeout-close rows FAIL. Mutants:
+ *   no Stop() -> the navigate and reload rows; ownership guard dropped -> the overlap row only; no shutdown
+ *   release -> the timeout-close row only. Exit 0 only when every check passes. */
 
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
 
 #include <windows.h>
+#include <winsock2.h>
+#include <ws2tcpip.h>
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -57,6 +73,7 @@
 void zb_automation_debug_complete_hold_ms(unsigned int ms);
 void zb_automation_debug_step_hold_ms(unsigned int ms);
 int zb_automation_debug_late_dispatches(void);
+void zb_automation_debug_abandon_at_start(int on);
 
 enum { kDeadlineMs = 300, kWaiterGraceMs = 250, kSlackMs = 300, kHoldMs = 3000, kStepHoldMs = 1200 };
 /* WS2a.3c: the early caller's deadline, how soon "at once" is, and how long a child may run. */
@@ -130,6 +147,138 @@ static int eval(const char *world, const char *body, unsigned int timeout_ms, ch
   zb_automation_free(out);
   zb_automation_free(err);
   return rc;
+}
+
+/* WS2a.3d: one routed navigate (url) or reload (url NULL), its code and how long it took. */
+static int navigate(const char *url, unsigned int timeout_ms, char *why, size_t cap, ULONGLONG *took_ms) {
+  char *err = NULL;
+  const ULONGLONG start = GetTickCount64();
+  const int rc = url != NULL ? zb_automation_navigate(0, url, timeout_ms, &err) : zb_automation_reload(0, timeout_ms, &err);
+  *took_ms = GetTickCount64() - start;
+  snprintf(why, cap, "%s", err != NULL ? err : "(null)");
+  zb_automation_free(err);
+  return rc;
+}
+
+/* WS2a.3d: a loopback HTTP server. GET /slow answers "Slow Page" kSlowMs late; GET /reload answers "Reload One"
+ * at once the first time and "Reload Two" kSlowMs late every later time; GET /slowscript answers kScriptMs late
+ * with "Slow Script", a page that keeps loading (an image from /stall) while its inline script navigates to
+ * /newer; GET /newer answers "Newer Page" at once; GET /stall never answers (held kStallMs); anything else is 404
+ * at once. A late answer is not sent if the browser closed the connection first (counted as dropped). */
+enum { kSlowMs = 2500, kScriptMs = 1500, kStallMs = 15000, kNavDeadlineMs = 800 };
+static unsigned short slow_port = 0;
+static volatile LONG reload_hits = 0;
+static volatile LONG slow_dropped = 0;
+static volatile LONG slow_served = 0;
+
+/* Waits up to ms for the browser to close the connection; 1 if it did. */
+static int closed_within(SOCKET s, int ms) {
+  fd_set readable;
+  FD_ZERO(&readable);
+  FD_SET(s, &readable);
+  struct timeval wait = {ms / 1000, (ms % 1000) * 1000};
+  char peek;
+  return select(0, &readable, NULL, NULL, &wait) == 1 && recv(s, &peek, 1, MSG_PEEK) <= 0;
+}
+
+static DWORD WINAPI slow_conn(LPVOID arg) {
+  SOCKET s = (SOCKET)(UINT_PTR)arg;
+  char req[4096];
+  int got = 0;
+  while (got < (int)sizeof req - 1) {
+    const int n = recv(s, req + got, (int)sizeof req - 1 - got, 0);
+    if (n <= 0) {
+      break;
+    }
+    got += n;
+    req[got] = '\0';
+    if (strstr(req, "\r\n\r\n") != NULL) {
+      break;
+    }
+  }
+  req[got] = '\0';
+  char body[512];
+  int body_len = -1;
+  int late_ms = 0;
+  if (strncmp(req, "GET /slow ", 10) == 0) {
+    body_len = snprintf(body, sizeof body, "<!doctype html><title>Slow Page</title><p>slow</p>");
+    late_ms = kSlowMs;
+  } else if (strncmp(req, "GET /reload ", 12) == 0) {
+    const int again = InterlockedIncrement(&reload_hits) > 1;
+    body_len = snprintf(body, sizeof body, "<!doctype html><title>%s</title><p>reload</p>",
+                        again ? "Reload Two" : "Reload One");
+    late_ms = again ? kSlowMs : 0;
+  } else if (strncmp(req, "GET /slowscript ", 16) == 0) {
+    body_len = snprintf(body, sizeof body,
+                        "<!doctype html><title>Slow Script</title><img src=\"/stall\">"
+                        "<script>location.href = '/newer';</script>");
+    late_ms = kScriptMs;
+  } else if (strncmp(req, "GET /newer ", 11) == 0) {
+    body_len = snprintf(body, sizeof body, "<!doctype html><title>Newer Page</title><p>newer</p>");
+  } else if (strncmp(req, "GET /stall ", 11) == 0) {
+    closed_within(s, kStallMs); /* never answered: keeps the page that asked for it loading */
+    closesocket(s);
+    return 0;
+  }
+  if (late_ms > 0 && closed_within(s, late_ms)) {
+    InterlockedIncrement(&slow_dropped); /* the browser closed first: it stopped this load */
+    closesocket(s);
+    return 0;
+  }
+  char resp[1024];
+  const int len = body_len >= 0
+                      ? snprintf(resp, sizeof resp,
+                                 "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nCache-Control: no-store\r\n"
+                                 "Connection: close\r\nContent-Length: %d\r\n\r\n%s",
+                                 body_len, body)
+                      : snprintf(resp, sizeof resp, "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+  if (send(s, resp, len, 0) == len && late_ms > 0) {
+    InterlockedIncrement(&slow_served);
+  }
+  shutdown(s, SD_SEND);
+  closesocket(s);
+  return 0;
+}
+
+static DWORD WINAPI slow_accept(LPVOID arg) {
+  SOCKET listener = (SOCKET)(UINT_PTR)arg;
+  for (;;) {
+    SOCKET s = accept(listener, NULL, NULL);
+    if (s == INVALID_SOCKET) {
+      return 0;
+    }
+    HANDLE t = CreateThread(NULL, 0, slow_conn, (LPVOID)(UINT_PTR)s, 0, NULL);
+    if (t == NULL) {
+      closesocket(s);
+    } else {
+      CloseHandle(t);
+    }
+  }
+}
+
+static int slow_server_start(void) {
+  WSADATA wsa;
+  if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) {
+    return 0;
+  }
+  SOCKET listener = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+  struct sockaddr_in addr;
+  int addr_len = sizeof addr;
+  memset(&addr, 0, sizeof addr);
+  addr.sin_family = AF_INET;
+  addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+  addr.sin_port = 0;
+  if (listener == INVALID_SOCKET || bind(listener, (struct sockaddr *)&addr, sizeof addr) != 0 ||
+      listen(listener, 16) != 0 || getsockname(listener, (struct sockaddr *)&addr, &addr_len) != 0) {
+    return 0;
+  }
+  slow_port = ntohs(addr.sin_port);
+  HANDLE t = CreateThread(NULL, 0, slow_accept, (LPVOID)(UINT_PTR)listener, 0, NULL);
+  if (t == NULL) {
+    return 0;
+  }
+  CloseHandle(t);
+  return 1;
 }
 
 /* WS2a.3c: one title read on its own thread, timed to the tick it returned. */
@@ -233,6 +382,43 @@ static int immediate_quit_child(void) {
              : 1;
 }
 
+/* Child (WS2a.3d): a navigate times out while its abandoned handling is held (seam), and the window is closed at
+ * once; shutdown must release every job (the routed navigation's hold included). */
+static int timeout_close_child(void) {
+  HANDLE loop = CreateThread(NULL, 0, loop_main, NULL, 0, NULL);
+  if (loop == NULL) {
+    printf("ws2a3d child: CreateThread failed\n");
+    return 3;
+  }
+  char got[256];
+  char err[256];
+  char url[128];
+  ULONGLONG took = 0;
+  const int loaded = title(30000, got, sizeof got, &took) == ZB_AUTO_OK && strcmp(got, "App Index A") == 0;
+  const int baseline = zb_automation_debug_live_jobs();
+  const int served = loaded && slow_server_start();
+  int rc = -1;
+  if (served) {
+    snprintf(url, sizeof url, "http://127.0.0.1:%u/slow", (unsigned)slow_port);
+    zb_automation_debug_abandon_at_start(1); /* shutdown wins: the abandoned handling never runs */
+    rc = navigate(url, kNavDeadlineMs, err, sizeof err, &took);
+  }
+  struct own_window own = {GetCurrentProcessId(), NULL};
+  EnumWindows(find_own_window, (LPARAM)&own);
+  if (own.hwnd != NULL) {
+    PostMessageA(own.hwnd, WM_CLOSE, 0, 0);
+  }
+  const int ended = WaitForSingleObject(loop, 20000) == WAIT_OBJECT_0;
+  CloseHandle(loop);
+  const int live = zb_automation_debug_live_jobs();
+  printf("ws2a3d child: first load %s; server %s; navigate rc=%d (want TIMEOUT=%d); window %s; zb_app_run %s; "
+         "live jobs %d (baseline %d)\n",
+         loaded ? "ok" : "FAILED", served ? "up" : "down", rc, ZB_AUTO_ERR_TIMEOUT,
+         own.hwnd != NULL ? "closed" : "not found", ended ? "ended" : "still running", live, baseline);
+  fflush(stdout);
+  return loaded && served && rc == ZB_AUTO_ERR_TIMEOUT && own.hwnd != NULL && ended && live == baseline ? 0 : 1;
+}
+
 /* Runs this executable again as a WS2a.3c child (its lines go to the same stdout) and checks it exits 0.
  * A child still running after kChildMs is this test's own process: it is terminated and reported. */
 static void child_check(const char *flag, const char *fixture, const char *what) {
@@ -298,6 +484,9 @@ int main(int argc, char **argv) {
   if (argc == 3 && strcmp(argv[1], "--ws2a3c-immediate-quit") == 0) {
     return file_uri(argv[2], index_uri, sizeof index_uri) ? immediate_quit_child() : 3;
   }
+  if (argc == 3 && strcmp(argv[1], "--ws2a3d-timeout-close") == 0) {
+    return file_uri(argv[2], index_uri, sizeof index_uri) ? timeout_close_child() : 3;
+  }
   if (!check(argc == 2, "usage: ws2a3-async-ownership <index.html>", NULL) ||
       !check(file_uri(argv[1], index_uri, sizeof index_uri), "fixture file exists", argv[1])) {
     return 1;
@@ -308,6 +497,8 @@ int main(int argc, char **argv) {
               "a caller waiting for the loop is answered NO_LOOP at once when zb_app_run fails before its loop");
   child_check("--ws2a3c-immediate-quit", argv[1],
               "an immediate quit wakes the waiting caller with NO_LOOP, frees its job and ends zb_app_run");
+  child_check("--ws2a3d-timeout-close", argv[1],
+              "a timed-out navigation then an immediate close frees every job (live jobs back to the baseline)");
   HANDLE thread = CreateThread(NULL, 0, loop_main, NULL, 0, NULL);
   if (!check(thread != NULL, "zb_app_run starts on its own thread", NULL)) {
     return 1;
@@ -380,6 +571,61 @@ int main(int argc, char **argv) {
     check(rc == ZB_AUTO_ERR_TIMEOUT && strcmp(got, "out=(null) err=(null)") == 0 && late == 0 &&
               zb_automation_debug_strings_live() == strings0 && zb_automation_debug_live_jobs() == jobs0,
           "a late completion after a timeout dispatches nothing more and returns no string", why);
+
+    /* WS2a.3d: a navigate/reload that times out stops its own load (never a newer one). */
+    if (check(slow_server_start(), "the loopback slow server starts", NULL)) {
+      char url[128];
+      char err[256];
+      ULONGLONG took2 = 0;
+      snprintf(url, sizeof url, "http://127.0.0.1:%u/slow", (unsigned)slow_port);
+      rc = navigate(url, kNavDeadlineMs, err, sizeof err, &took);
+      Sleep(kSlowMs + 1500); /* past the late answer */
+      int trc = title(5000, got, sizeof got, &took2);
+      snprintf(why, sizeof why,
+               "navigate rc=%d took=%llums (want TIMEOUT=%d); then title rc=%d %s (want App Index A); late answers "
+               "dropped %ld served %ld",
+               rc, took, ZB_AUTO_ERR_TIMEOUT, trc, got, (long)slow_dropped, (long)slow_served);
+      check(rc == ZB_AUTO_ERR_TIMEOUT && trc == ZB_AUTO_OK && strcmp(got, "App Index A") == 0,
+            "a navigate that times out stops its own load (the page stays, the late answer never shows)", why);
+
+      snprintf(url, sizeof url, "http://127.0.0.1:%u/reload", (unsigned)slow_port);
+      const int nrc = navigate(url, 10000, err, sizeof err, &took);
+      const int t1 = title(5000, got, sizeof got, &took2);
+      const int first = nrc == ZB_AUTO_OK && t1 == ZB_AUTO_OK && strcmp(got, "Reload One") == 0;
+      rc = navigate(NULL, kNavDeadlineMs, err, sizeof err, &took);
+      Sleep(kSlowMs + 1500);
+      trc = title(5000, got, sizeof got, &took2);
+      snprintf(why, sizeof why,
+               "first load %s (navigate rc=%d); reload rc=%d took=%llums (want TIMEOUT=%d); then title rc=%d %s (want "
+               "Reload One); late answers dropped %ld served %ld",
+               first ? "Reload One" : "FAILED", nrc, rc, took, ZB_AUTO_ERR_TIMEOUT, trc, got, (long)slow_dropped,
+               (long)slow_served);
+      check(first && rc == ZB_AUTO_ERR_TIMEOUT && trc == ZB_AUTO_OK && strcmp(got, "Reload One") == 0,
+            "a reload that times out stops its own load (the page stays, the late answer never shows)", why);
+
+      /* Overlap: the abandoned handling is held until the next NavigationStarting, which is the page-initiated
+       * /newer started by the late /slowscript page while it is still loading. */
+      snprintf(url, sizeof url, "http://127.0.0.1:%u/slowscript", (unsigned)slow_port);
+      zb_automation_debug_abandon_at_start(1);
+      rc = navigate(url, kNavDeadlineMs, err, sizeof err, &took);
+      Sleep(kScriptMs + 2500); /* past the late page, its script, and /newer */
+      trc = title(5000, got, sizeof got, &took2);
+      zb_automation_debug_abandon_at_start(0);
+      snprintf(why, sizeof why, "navigate rc=%d took=%llums (want TIMEOUT=%d); then title rc=%d %s (want Newer Page)",
+               rc, took, ZB_AUTO_ERR_TIMEOUT, trc, got);
+      check(rc == ZB_AUTO_ERR_TIMEOUT && trc == ZB_AUTO_OK && strcmp(got, "Newer Page") == 0,
+            "a page-initiated newer navigation that starts before the abandoned load is handled goes on and commits",
+            why);
+
+      char page_b[2048];
+      const char *slash = strrchr(index_uri, '/');
+      snprintf(page_b, sizeof page_b, "%.*s/page-b.html", (int)(slash != NULL ? slash - index_uri : 0), index_uri);
+      rc = navigate(page_b, 10000, err, sizeof err, &took);
+      trc = title(5000, got, sizeof got, &took2);
+      snprintf(why, sizeof why, "navigate rc=%d err=%s; title rc=%d %s (want App Page B)", rc, err, trc, got);
+      check(rc == ZB_AUTO_OK && trc == ZB_AUTO_OK && strcmp(got, "App Page B") == 0,
+            "a newer navigate after a timed-out one loads normally", why);
+    }
   }
 
   HWND hwnd = FindWindowA("zigBrowserWebView2Host", NULL);

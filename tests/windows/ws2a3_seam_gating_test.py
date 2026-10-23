@@ -2,7 +2,7 @@
 """WS2a.3 (Windows plan rev 2.21, NavyCanyon c36ba6a R2): the WS2a.3 debug seams are compiled ONLY into the
 ws2a3-async-ownership-win slice executable, never into the WebView2 product build.
 
-The seams (WS2a.3a: zb_automation_debug_complete_hold_ms, _live_jobs; WS2a.3b: _step_hold_ms, _waiter_grace,
+The seams (WS2a.3d: zb_automation_debug_abandon_at_start; WS2a.3a: zb_automation_debug_complete_hold_ms, _live_jobs; WS2a.3b: _step_hold_ms, _waiter_grace,
 _late_dispatches, _strings_live) and their hot-path instrumentation (the completion hold in job_complete, the
 live-job counter in job_submit / job_release, the step hold and late-dispatch count in cdp_job_call, the waiter
 grace in job_submit, the string count in dup_c / zb_automation_free) sit under
@@ -60,6 +60,13 @@ SEAMS = {
     "late-dispatch count in cdp_job_call": r"InterlockedIncrement\s*\(\s*&g_late_dispatches\s*\)",
     "string count in dup_c": r"InterlockedIncrement\s*\(\s*&g_strings_live\s*\)",
     "string count in zb_automation_free": r"InterlockedDecrement\s*\(\s*&g_strings_live\s*\)",
+    # WS2a.3d
+    "abandon-at-start seam export": r'extern\s+"C"\s+void\s+zb_automation_debug_abandon_at_start\s*\(',
+    "abandon-at-start state": r"volatile\s+LONG\s+g_debug_abandon_at_start\b",
+    "abandoned handling deferred in WM_ZB_ABANDONED":
+        r"case\s+WM_ZB_ABANDONED\s*:\s*if\s*\(\s*_?InterlockedCompareExchange\s*\(\s*&g_debug_abandon_at_start",
+    "abandoned handling at NavigationStarting":
+        r"&g_debug_abandon_at_start\s*,\s*0\s*,\s*0\s*\)\s*!=\s*0\s*\)\s*\{\s*stop_abandoned\s*\(\s*app\s*\)",
 }
 PRODUCTION = (r"\bzb_automation_eval_json\b", r"\bjob_submit\b", r"\bkWaiterGraceMs\b")
 

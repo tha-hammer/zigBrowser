@@ -241,6 +241,7 @@ pub fn build(b: *std.Build) void {
         ws2a3_module.addCMacro("ZB_WS2A3_SEAMS", "1");
         configureBackend(ws2a3_module, b, backend, webview2_paths);
         ws2a3_module.addCSourceFile(.{ .file = b.path("tests/windows/ws2a3_async_ownership.c"), .flags = &.{"-std=c11"} });
+        ws2a3_module.linkSystemLibrary("ws2_32", .{ .use_pkg_config = .no }); // WS2a.3d: the test's loopback HTTP server
         const ws2a3_drawer = b.addObject(.{ .name = "ws2a3-agent-drawer", .root_module = b.createModule(.{
             .root_source_file = b.path("src/agent_drawer.zig"),
             .target = target,

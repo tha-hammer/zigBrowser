@@ -50,6 +50,7 @@ constexpr int kFoldBtnMargin = 8;     // WS5.3: its inset from the open drawer's
 constexpr UINT kNavigationTimeoutMs = 15000;
 // WS3: wakes the UI thread to run the queued jobs (the queue, not the message, owns them).
 constexpr UINT WM_ZB_JOB = WM_APP + 1;
+constexpr UINT WM_ZB_ABANDONED = WM_APP + 2; // WS2a.3d: a waiter gave up on a started job (g_abandoned)
 
 // Portable drawer geometry types (src/agent_drawer.zig). Declared BEFORE AppState, which embeds them. Rect
 // matches Zig's `extern struct { x, y, w, h: c_int }`; Ratios matches `extern struct { x, y: f64 }`.
@@ -86,6 +87,12 @@ struct AppState {
   struct Job *nav_job = nullptr;
   UINT64 nav_id = 0;
   bool nav_id_known = false;
+  // WS2a.3d: the routed navigation's own (first) NavigationStarting has been seen; nav_id_known says whether its
+  // NavigationId could be read there. current_nav_* is the navigation the page is on now (routed or not), valid
+  // only when the latest NavigationStarting's id could be read.
+  bool nav_start_seen = false;
+  UINT64 current_nav_id = 0;
+  bool current_nav_known = false;
   std::vector<std::function<void(AppState *)>> first_load_waiters;
   std::wstring out_path;
 
@@ -613,6 +620,7 @@ struct Job {
 SRWLOCK g_jobs_lock = SRWLOCK_INIT;
 std::deque<Job *> g_jobs;     // under g_jobs_lock: not started yet
 std::vector<Job *> g_running; // under g_jobs_lock: started, not completed
+std::vector<Job *> g_abandoned; // under g_jobs_lock: started jobs a waiter gave up on (WS2a.3d), one ref each
 HWND g_job_hwnd = nullptr;    // under g_jobs_lock: the loop's window while it runs
 bool g_loop_ended = false;    // under g_jobs_lock
 DWORD g_loop_thread = 0;
@@ -636,6 +644,9 @@ volatile LONG g_live_jobs = 0;
 volatile LONG g_debug_step_hold_ms = 0;
 volatile LONG g_debug_waiter_grace_ms = 0;
 volatile LONG g_late_dispatches = 0;
+// WS2a.3d: while set, abandoned started jobs are handled at the next NavigationStarting (after it records its
+// NavigationId) instead of at once, so a newer navigation can start first (zb_automation_debug_abandon_at_start).
+volatile LONG g_debug_abandon_at_start = 0;
 #endif
 SRWLOCK g_parked_lock = SRWLOCK_INIT;
 std::vector<std::function<void()>> g_parked; // under g_parked_lock
@@ -765,9 +776,27 @@ void loop_end() {
     job_complete(job, ZB_AUTO_ERR_NO_LOOP);
     job_release(job);
   }
+  AcquireSRWLockExclusive(&g_jobs_lock);
+  std::vector<Job *> abandoned;
+  abandoned.swap(g_abandoned);
+  ReleaseSRWLockExclusive(&g_jobs_lock);
+  for (Job *job : abandoned) {
+    job_release(job);
+  }
   // WS2a.3c: a caller still waiting for the loop to start (a run that failed before loop_begin) wakes now,
   // finds the loop ended and answers ZB_AUTO_ERR_NO_LOOP, as does every later call.
   SetEvent(g_loop_started);
+}
+
+// WS2a.3d (caller side): a started job was abandoned; the UI thread stops what it started (stop_abandoned).
+void job_abandoned(Job *job) {
+  AcquireSRWLockExclusive(&g_jobs_lock);
+  if (!g_loop_ended && g_job_hwnd != nullptr) {
+    job_hold(job);
+    g_abandoned.push_back(job);
+    PostMessageW(g_job_hwnd, WM_ZB_ABANDONED, 0, 0);
+  }
+  ReleaseSRWLockExclusive(&g_jobs_lock);
 }
 
 // Plan WS2 "Deadlines": how long a waiter whose deadline passed waits for a completion already being written.
@@ -819,8 +848,12 @@ int job_submit(uint32_t win, unsigned int timeout_ms, std::function<void(Job *, 
     }
 #endif
     // The deadline passed: abandon the job before it starts, or its result while it runs.
-    if (InterlockedCompareExchange(&job->state, kAbandoned, kQueued) == kQueued ||
-        InterlockedCompareExchange(&job->state, kAbandoned, kRunning) == kRunning) {
+    if (InterlockedCompareExchange(&job->state, kAbandoned, kQueued) == kQueued) {
+      job_release(job);
+      return ZB_AUTO_ERR_TIMEOUT;
+    }
+    if (InterlockedCompareExchange(&job->state, kAbandoned, kRunning) == kRunning) {
+      job_abandoned(job); // WS2a.3d: a timed-out navigate/reload stops its own load
       job_release(job);
       return ZB_AUTO_ERR_TIMEOUT;
     }
@@ -1055,6 +1088,7 @@ void start_navigation(Job *job, AppState *app, const std::function<HRESULT(ICore
   }
   job_hold(job);
   app->nav_job = job;
+  app->nav_start_seen = false;
   app->nav_id_known = false;
   const HRESULT hr = go(app->webview.Get());
   if (FAILED(hr) && app->nav_job == job) {
@@ -1062,6 +1096,40 @@ void start_navigation(Job *job, AppState *app, const std::function<HRESULT(ICore
     char why[64];
     snprintf(why, sizeof why, "navigation did not start (hr 0x%08lx)", static_cast<unsigned long>(hr));
     job_finish(job, ZB_AUTO_ERR_NAV_FAILED, {}, why);
+    job_release(job);
+  }
+}
+
+// WS2a.3d (UI thread): for each started job a waiter gave up on, a routed navigation it still owns is dropped,
+// and its load is stopped only while it is still the page's navigation: before its own NavigationStarting, or
+// when that start's id and the current one are both known and equal. A newer navigation (routed or
+// page-initiated) goes on, and an unreadable id fails closed (no stop).
+void stop_abandoned(AppState *app) {
+  AcquireSRWLockExclusive(&g_jobs_lock);
+  std::vector<Job *> abandoned;
+  abandoned.swap(g_abandoned);
+  ReleaseSRWLockExclusive(&g_jobs_lock);
+  for (Job *job : abandoned) {
+    if (app != nullptr && app->nav_job == job) {
+      app->nav_job = nullptr;
+      const bool own = !app->nav_start_seen ||
+                       (app->nav_id_known && app->current_nav_known && app->current_nav_id == app->nav_id);
+      if (own && app->webview) {
+        app->webview->Stop();
+      }
+      job_finish(job, ZB_AUTO_ERR_TIMEOUT); // the waiter has gone: this only leaves the in-flight list
+      job_release(job);                    // the routed navigation's hold
+    }
+    job_release(job); // g_abandoned's hold
+  }
+}
+
+// WS2a.3d (UI thread, at shutdown): the routed navigation still waiting gives back its hold, exactly once (a
+// NavigationCompleted that answered it already cleared nav_job; loop_end then answers its caller if still there).
+void release_nav_job(AppState *app) {
+  if (Job *job = app->nav_job) {
+    app->nav_job = nullptr;
+    job_finish(job, ZB_AUTO_ERR_NO_LOOP);
     job_release(job);
   }
 }
@@ -2222,6 +2290,14 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam,
   case WM_ZB_JOB:
     drain_jobs(app);
     return 0;
+  case WM_ZB_ABANDONED:
+#ifdef ZB_WS2A3_SEAMS
+    if (InterlockedCompareExchange(&g_debug_abandon_at_start, 0, 0) != 0) {
+      return 0; // the seam: held for the next NavigationStarting
+    }
+#endif
+    stop_abandoned(app);
+    return 0;
   case WM_TIMER:
     if (app != nullptr && wparam == kNavigationTimerId &&
         !app->navigation_completed) {
@@ -2724,10 +2800,22 @@ HRESULT create_controller(AppState *app) {
                 Callback<ICoreWebView2NavigationStartingEventHandler>(
                     [app](ICoreWebView2 *sender, ICoreWebView2NavigationStartingEventArgs *args) -> HRESULT {
                       (void)sender;
-                      if (app->nav_job != nullptr && !app->nav_id_known && args != nullptr &&
-                          SUCCEEDED(args->get_NavigationId(&app->nav_id))) {
-                        app->nav_id_known = true;
+                      // WS2a.3d: every start replaces the current id (valid only if readable); the routed
+                      // navigation binds only to its own, first, start event.
+                      UINT64 started_id = 0;
+                      const bool id_ok = args != nullptr && SUCCEEDED(args->get_NavigationId(&started_id));
+                      app->current_nav_known = id_ok;
+                      app->current_nav_id = id_ok ? started_id : 0;
+                      if (app->nav_job != nullptr && !app->nav_start_seen) {
+                        app->nav_start_seen = true;
+                        app->nav_id_known = id_ok;
+                        app->nav_id = id_ok ? started_id : 0;
                       }
+#ifdef ZB_WS2A3_SEAMS
+                      if (InterlockedCompareExchange(&g_debug_abandon_at_start, 0, 0) != 0) {
+                        stop_abandoned(app); // the seam: abandoned jobs are handled here, after this start
+                      }
+#endif
                       return S_OK;
                     })
                     .Get(),
@@ -2887,6 +2975,7 @@ static int run_core(const char *uri, int print_title, int e2e_protocol, bool scr
     } else {
       rc = run_message_loop(&app);
     }
+    release_nav_job(&app); // WS2a.3d: the routed navigation's hold, before loop end answers its caller
     loop_end();
   }
 
@@ -3464,6 +3553,10 @@ extern "C" void zb_automation_debug_waiter_grace(unsigned int ms) {
 
 extern "C" int zb_automation_debug_late_dispatches(void) {
   return static_cast<int>(InterlockedCompareExchange(&g_late_dispatches, 0, 0));
+}
+
+extern "C" void zb_automation_debug_abandon_at_start(int on) {
+  InterlockedExchange(&g_debug_abandon_at_start, on != 0 ? 1 : 0);
 }
 
 extern "C" int zb_automation_debug_strings_live(void) {
