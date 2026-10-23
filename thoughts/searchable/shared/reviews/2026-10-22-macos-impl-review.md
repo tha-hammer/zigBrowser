@@ -2167,3 +2167,18 @@ The complete fix-forward minimum is narrow:
 3. Preserve the current completed-output implementation, delayed-write row, restore-pipeline mutant, ordinary D1–D6 and universal rows, registration, and the final-ancestry `test-mac-build-script` green result.
 
 The intervening `2aaa808f` changes only the two still-unregistered 4pa.55 red-oracle files and introduces no production or registered-gate prefix hazard. Nevertheless, because `3ec02a6f` does not meet the complete previously stated DMG green proof, `2e8e0190` is not cleared and there remains **no currently valid push-safe Mac SHA**.
+
+## 2026-10-23 — 4pa.55 runtime-row/crash/self-audit RED fix-forward `2aaa808f`
+
+**APPROVED AS THE UNREGISTERED HOSTLESS RED.** Exact `2aaa808ff5edfe08026d7c93cea018e5415db295` closes only the four-point minimum in `90151365` and preserves the bounded red contract stated there. It changes only `tests/e2e/mac_crashreports_audit_test.py` and `tests/mac/ms_runtime_rows_gate_select_selftest.sh`; neither is referenced by `build.zig`, no production file changes, and the commit is clean under `git diff --check`. This approves the failing-first oracle, not its production green or a Mac-run release.
+
+The exact clean-archive red reproduced under `env -i`, private HOME/TMP and a private current-user/network/PID/mount namespace. The crash oracle exited 1 only because `tests/mac/mac_crashreports_audit.sh` is absent. The gate oracle exited 1 with exactly **19 failures** across S1–S5, F1 and L1–L8. Against the byte-identical submitted oracles, the preserved scratch implementation passed CR1–CR11 and S1–S5/F1/L1–L8.
+
+The four blocked boundaries are now causal:
+
+1. S1/S2 require exactly one `ROWS_SELECTED` line and every fake ssh/scp contact records that one line already present in the same ordered transcript; S3–S5 require an empty transcript. I independently moved the line after both host legs: only S1 and S2 failed.
+2. L5 requires the exact ordered status records for silent outer-begin, complete inner-varfolders, complete inner-crashreports and complete outer-end, all before the first row. L7 separately makes each inner begin/end path refuse or return non-COMPLETE and requires exit 5 with no marker, row or browser invocation; L6 retains the helper-write boundary. I independently removed both inner cycles: L5 and all three L7 cases failed while unrelated rows remained green.
+3. CR10 introduces unreadable reports/directories and tab, newline and non-UTF-8 names only after begin; each must yield one bounded INCONCLUSIVE with no partial CRASHREPORT list. A field-isolated after-walk skip mutant independently failed CR10 for both unreadable shapes.
+4. CR3/CR3b require the DiagnosticReports root itself as `.` so missing-to-created, including an empty directory, is reported and INCONCLUSIVE. CR11 requires a single begin refusal when the evidence directory cannot be made, and L8 binds that refusal to zero rows, invocations and RUNNING marker. Independently deleting only the root record failed CR3/CR3b; making only evidence-directory creation fail open failed CR11.
+
+The existing CR1–CR9, S1–S5/F1/L1–L6 contracts, effective mutants and the disclosed redundant shell-only C8 check remain. At green, add the two shared production/helper implementations, register both oracles without a skip mapping, preserve these exact rows, and run the complete G1–G18 and effective C1–C17 mutant sets through the registered step. No Mac contact is authorized. The independent DMG status-proof block in `7b2b041d` remains, so there is still **no currently valid push-safe Mac SHA**.
