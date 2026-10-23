@@ -2,7 +2,8 @@
 # Hostless selftest: the MS2b, MS2c and MS3 Mac gates are real `zig build` steps (bd zigBrowser-4pa.62, plan R30-MS2 and
 # R29-REG: tests/mac/ms2b_gate.sh, ms2c_gate.sh and ms3_gate.sh were hand-run, with no step and no record of an approved
 # run). A scratch git copy of the repo runs `zig build <step>` for real, with a stub ssh/scp on PATH that records every
-# call and answers like a passing Mac. For each of ms2b-gate, ms2c-gate and ms3-gate:
+# call and answers like a passing Mac. For each of ms2a-gate, ms2b-gate, ms2c-gate and ms3-gate (ms2a-gate's step is
+# older; its manifest row was added for R29-REG, SilverRidge b3b3620):
 #   S1 with both Mac hosts configured, `zig build <step>` exits 0 and prints that gate's own
 #      "PASS<TAB><step><TAB>both-arches" line, after ssh calls to both hosts (the step runs that script to its end);
 #   S2 with no arm64 host, `zig build <step>` exits non-zero with the gate's "NOT RUN: arm64 host not configured" and
@@ -69,7 +70,7 @@ run_step() { # run_step <step> <arm host>: sets rc, calls, hosts; output in $T/o
   hosts=$(for f in "$T/ctl"/call.*; do [ -e "$f" ] && tr '\0' '\n' < "$f" | grep -oxE "$INTEL|$ARM|($INTEL|$ARM):.*" | cut -d: -f1; done | sort -u | tr '\n' ' ')
 }
 
-for row in "ms2b-gate tests/mac/ms2b_gate.sh" "ms2c-gate tests/mac/ms2c_gate.sh" "ms3-gate tests/mac/ms3_gate.sh"; do
+for row in "ms2a-gate tests/mac/ms2a_gate.sh" "ms2b-gate tests/mac/ms2b_gate.sh" "ms2c-gate tests/mac/ms2c_gate.sh" "ms3-gate tests/mac/ms3_gate.sh"; do
   read -r step script <<<"$row"
   run_step "$step" "$ARM"
   if [ "$rc" -eq 0 ] && grep -qP "^PASS\t$step\tboth-arches$" "$T/out" && [ "$hosts" = "$ARM $INTEL " ]; then

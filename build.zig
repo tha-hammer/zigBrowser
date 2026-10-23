@@ -3896,10 +3896,19 @@ pub fn build(b: *std.Build) void {
     const mac_gate_steps_selftest = b.addSystemCommand(&.{ "bash", "tests/mac/gate_steps_selftest.sh" });
     mac_gate_steps_selftest.setEnvironmentVariable("ZIG", b.graph.zig_exe);
     for ([_][]const u8{
-        "tests/mac/gate_steps_selftest.sh",       "build.zig",                             "tests/mac/ms2b_gate.sh",
-        "tests/mac/ms2c_gate.sh",                 "tests/mac/ms3_gate.sh",                 "tests/mac/build-on-mac.sh",
-        "tests/mac/mac_gate_lib.sh",              "tests/mac/known_hosts",                 "tests/mac/approved_runs/ms2b-gate.json",
-        "tests/mac/approved_runs/ms2c-gate.json", "tests/mac/approved_runs/ms3-gate.json",
+        "tests/mac/gate_steps_selftest.sh",
+        "build.zig",
+        "tests/mac/ms2b_gate.sh",
+        "tests/mac/ms2c_gate.sh",
+        "tests/mac/ms3_gate.sh",
+        "tests/mac/build-on-mac.sh",
+        "tests/mac/mac_gate_lib.sh",
+        "tests/mac/known_hosts",
+        "tests/mac/approved_runs/ms2b-gate.json",
+        "tests/mac/approved_runs/ms2c-gate.json",
+        "tests/mac/approved_runs/ms3-gate.json",
+        "tests/mac/ms2a_gate.sh",
+        "tests/mac/approved_runs/ms2a-gate.json",
     }) |input| mac_gate_steps_selftest.addFileInput(b.path(input));
     b.step("test-mac-gate-steps", "Run the hostless selftest of the ms2b/ms2c/ms3 gate steps (4pa.62)").dependOn(&mac_gate_steps_selftest.step);
     test_step.dependOn(&mac_gate_steps_selftest.step);
