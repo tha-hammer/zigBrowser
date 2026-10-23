@@ -2110,3 +2110,18 @@ The complete fix-forward minimum is one field-isolated parent-census row:
 3. Preserve PC1–PC6, the honest baseline count (updated if the new subcases add failures), the six current census mutants, unregistered status, and the unchanged V1–V15 green control.
 
 No other property is being added to this red review. There remains **no currently valid push-safe Mac SHA** because the independent registered-DMG pipefail defect recorded in `2e8e0190` is still unresolved.
+
+## 2026-10-23 — 4pa.55 runtime-row selection/crash/self-audit RED `1453f59e`
+
+**BLOCKED ON FOUR CAUSAL GAPS.** Exact `1453f59e0e164ec1beeefac4c8ef43fa5a23b574` is an honest, unregistered hostless red: it adds only `tests/e2e/mac_crashreports_audit_test.py` and `tests/mac/ms_runtime_rows_gate_select_selftest.sh`, neither appears in `build.zig`, and both pass syntax/diff checks. From a clean exact archive under `env -i`, private HOME/TMP and a private current-user/network/PID/mount namespace, the crash oracle failed only because `mac_crashreports_audit.sh` is absent; the gate oracle had exactly the submitted 13 failures while S1 stayed green. The supplied draft passes CR1–CR9 and S1–S5/F1/L1–L6, so the proposed interface is satisfiable.
+
+The red does not yet bind four claims it makes. I demonstrated independent survivors against the supplied draft: deleting both inner helper cycles from `selfaudit()` still passed the entire gate oracle; moving `ROWS_SELECTED` until after both host legs still passed; deleting the missing-before/directory-after root-state check from the crash helper still passed CR1–CR9, allowing an empty real DiagnosticReports directory to be created and reported as COMPLETE 0; and making the after walk silently ignore unreadable entries still passed CR1–CR9. These are not optional hardening: they respectively defeat the claimed real-Mac helper self-audit, pre-contact selection record, outside-root write accounting, and complete after listing.
+
+The complete fix-forward minimum is bounded to these points:
+
+1. Put `ROWS_SELECTED` and fake transport events in one ordered transcript. Require exactly one selection line, first and before every ssh/scp event; a mutant moving it after the first or both contacts must be red. Preserve S1/S2 success status and S3–S5 zero-contact refusals.
+2. Require exact evidence that one complete inner `/var/folders` cycle and one complete crash-report cycle actually ran on the leg, each returned its required COMPLETE 0 result, and the outer `/var/folders` cycle then returned COMPLETE 0, all before RUNNING or any row invocation. An inner refusal, nonzero status, non-COMPLETE terminal, skipped cycle, or ignored status must exit 5 with no marker, row, or browser call. Preserve L6's detection of helper writes.
+3. Add after-phase incompleteness cases: introduce an unreadable report/subdirectory and tab, newline and non-UTF-8 names between begin and end. End must return one bounded INCONCLUSIVE result, never a partial listing or COMPLETE; focused after-walk skip mutants must be red.
+4. Drive a missing DiagnosticReports directory that becomes an empty directory during the run. It is an observed outside-root change and must be INCONCLUSIVE even with no CRASHREPORT file line. Also drive a begin evidence-path creation/write failure: begin must refuse once, and the gate consumer must launch no row. The root-state and fail-open mutants must be red.
+
+Preserve the honest red shape, unregistered status, CR1–CR9, S1–S5/F1/L1–L6, the current 15 gate mutants, the 13 effective crash-helper mutants and the disclosed equivalence of the shell-only C8 check. No other property is added to this red ruling. No Mac contact is authorized, and there remains no valid push-safe Mac SHA while `2e8e0190` is open.
