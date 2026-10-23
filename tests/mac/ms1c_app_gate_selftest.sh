@@ -60,6 +60,8 @@
 #   F25 a subtree that becomes unreadable during the run: "HOMEAUDIT INCONCLUSIVE the after snapshot is incomplete",
 #       INCONCLUSIVE;
 #   F26 a ctime-only change (a mode changed and put back): HOME-DELTA CHANGED for it, INCONCLUSIVE;
+#   P10 a tracked file that .gitignore matches (the real repo tracks tests/e2e/__pycache__ and tests/e2e/.tmp files)
+#       stays in the clean tree: CLEANTREE names the commit's tree and the base run passes;
 #   F27 an early exit (the gate gets SIGTERM while the arm leg runs, after the Intel evidence came back): the EXIT trap
 #       keeps the arm root (RETAINED, never contacted for removal), removes the Intel root through the shared verified
 #       mac_remove_run_dirs (REMOVED), keeps the copied Intel evidence here, exit 2, no PASS;
@@ -426,8 +428,10 @@ STUB
 fi
 echo "// stand-in" > "$R/src/main.zig"
 echo build > "$R/build.zig"; echo zon > "$R/build.zig.zon"; echo '{}' > "$R/zigbrowser.json"
+# Like the real repo: a tracked file that .gitignore matches (P10).
+printf '__pycache__/\n' > "$R/.gitignore"; mkdir -p "$R/tests/e2e/__pycache__"; echo pyc > "$R/tests/e2e/__pycache__/tracked.pyc"
 GIT=(env -i PATH=/usr/bin:/bin HOME="$T/home" GIT_CONFIG_NOSYSTEM=1 git -C "$R")
-"${GIT[@]}" init -q && "${GIT[@]}" add -A \
+"${GIT[@]}" init -q && "${GIT[@]}" add -A && "${GIT[@]}" add -f tests/e2e/__pycache__/tracked.pyc \
   && "${GIT[@]}" -c user.name=selftest -c user.email=selftest@invalid commit -q -m staged \
   || { bad "could not build the scratch repo"; exit 1; }
 TREE=$("${GIT[@]}" rev-parse 'HEAD^{tree}')
@@ -665,6 +669,11 @@ run_gate ctimeonly ctime_only.intel
   && grep -q "^HOME-DELTA${TB}CHANGED${TB}$X/hosts/intel/Library/Preferences/keep2.plist${TB}" "$EV/x86_64/evidence/leg.log" 2>/dev/null; } \
   && ok "F26: a ctime-only change in the home: HOME-DELTA, INCONCLUSIVE" || bad "F26: exit $rc: $(tailout)"
 chmod 700 "$X/hosts/intel/Library/Lockable" 2>/dev/null
+
+if "${GIT[@]}" ls-files --error-unmatch tests/e2e/__pycache__/tracked.pyc >/dev/null 2>&1 \
+   && [ "$(cut -f2,3 <<<"$ct")" = "$TREE$TB$TREE" ] && grep -q "^PASS${TB}ms1c-app-gate${TB}both-arches$TB" "$T/out.pass"; then
+  ok "P10: a tracked file that .gitignore matches stays in the clean tree (CLEANTREE = the commit's tree), the base run passes"
+else bad "P10: clean tree '$ct' (want $TREE$TB$TREE)"; fi
 
 # ── Early exit and evidence-copy failure (the shared verified removal, SilverRidge 0632602f) ──
 retained() { grep -qE "^RETAINED$TB$1$TB$2$TB" "$OUT"; }

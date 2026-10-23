@@ -81,7 +81,7 @@ git archive "$COMMIT" | tar -x -C "$SRC"
 st=$?
 [ "$st" -eq 0 ] || { echo "INCONCLUSIVE: could not export $COMMIT" >&2; exit 2; }
 G=(git -C "$SRC" -c user.name=ms1c-gate -c user.email=ms1c-gate@invalid -c commit.gpgsign=false)
-"${G[@]}" init -q && "${G[@]}" add -A && "${G[@]}" commit -q -m "ms1c clean tree of $COMMIT"
+"${G[@]}" init -q && "${G[@]}" add -A -f && "${G[@]}" commit -q -m "ms1c clean tree of $COMMIT"   # -f: tracked files .gitignore matches
 st=$?
 SRC_COMMIT=$("${G[@]}" rev-parse HEAD)
 src_tree=$("${G[@]}" rev-parse "HEAD^{tree}")
