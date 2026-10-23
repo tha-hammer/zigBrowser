@@ -1,15 +1,21 @@
 #!/usr/bin/env python3
-"""Hostless selftest of the exact red vectors (red_shape.py) of the six Mac runtime red rows (SilverRidge cf7a783).
+"""Hostless selftest of the exact red vectors (red_shape.py) of the six Mac runtime red rows (SilverRidge cf7a783,
+8721b6d).
 
 No browser, no Mac, no signal. For each red test module, through its own TEST_ID and RED_VECTOR:
-  S1 the exact accepted vector -> FAIL and RED_SHAPE\t<test>, exit 1;
+  S1 the exact accepted vector (every Red with its accepted value) -> FAIL and RED_SHAPE\t<test>, exit 1;
   S2 every assertion passing -> PASS\t<test>, exit 0, no RED_SHAPE (the green);
   S3 each single assertion flipped, S4 each assertion missing, S5 one extra failing assertion, S6 a PRECONDITION
-     problem, S7 an assertion recorded twice -> no RED_SHAPE line and at least one RED_SHAPE_MISMATCH, exit 1.
-And the real row-3 check of mac_ms2a_load_fail_no_quit_test.check_alive, driven with a dead browser and
-  R3 ZERO matching LOAD_FAIL rows -> the row is recorded load-fail-once=fail, no RED_SHAPE;
-  R3x two matching LOAD_FAIL rows -> no RED_SHAPE;
-  R3ok one matching LOAD_FAIL row -> RED_SHAPE (the same driver accepts the accepted shape, so R3 is not vacuous).
+     problem, S7 an assertion recorded twice, S8 each Red failing with its same-polarity counter value, S9 each Red
+     failing with no observed value -> no RED_SHAPE line and at least one RED_SHAPE_MISMATCH, exit 1.
+And each test's own value code, driven with realistic inputs (D*): the observed value it records must be accepted
+for today's Mac red and rejected for a same-polarity wrong one:
+  D1 row 3 of mac_ms2a_load_fail_no_quit_test.check_alive with a dead browser: exit 5 -> RED_SHAPE; exit 8, ZERO or
+     two matching LOAD_FAIL rows -> mismatch;
+  D2 recovery: observe_exit(8, 15.2 s) accepted; observe_exit(5, 15.2 s) and observe_exit(8, 3.0 s) rejected;
+  D3 reply kinds (close 2, dialog 3, cookie 1): a result / error:no_window accepted where the red says so; another
+     reason rejected;
+  D4 pacing: observe_cap(default, default) accepted; a third cap rejected; the set cap 7 passes the assertion.
 Run: python3 tests/e2e/mac_red_shape_selftest.py   (called by tests/mac/mac_gate_callers_selftest.sh)
 """
 import contextlib
@@ -17,7 +23,7 @@ import importlib
 import io
 import sys
 
-from red_shape import FAIL, PASS, RedShape
+from red_shape import PASS, Red, RedShape, reply_kind
 
 RED_MODULES = (
     "mac_ms2a_load_fail_no_quit_test",
@@ -27,6 +33,7 @@ RED_MODULES = (
     "mac_cookie_timeout_test",
     "mac_profile_pacing_persist_test",
 )
+NO_VALUE = object()
 failures: list = []
 
 
@@ -50,17 +57,23 @@ def expect_mismatch(name: str, test_id: str, rc: int, lines: list) -> None:
         failures.append(f"{name}: want exit 1, no RED_SHAPE and a RED_SHAPE_MISMATCH, got rc={rc} {lines!r}")
 
 
-def feed_vector(vector: dict, skip=(), flip=(), extra=(), problem=None, twice=()):
+def feed_vector(vector: dict, skip=(), flip=(), extra=(), problem=None, twice=(), values=None):
+    """Record the vector's accepted outcome, with the listed changes; `values` overrides a Red's observed value."""
+    values = values or {}
+
     def feed(shape):
         for aid, want in vector.items():
             if aid in skip:
                 continue
             ok = (want == PASS) != (aid in flip)
-            shape.check(aid, ok, "selftest")
-            if aid in twice:
-                shape.check(aid, ok, "selftest again")
+            observed = values.get(aid, want.accepted if isinstance(want, Red) else None)
+            for _ in range(2 if aid in twice else 1):
+                if observed is NO_VALUE:
+                    shape.check(aid, ok, "selftest")
+                else:
+                    shape.check(aid, ok, "selftest", observed=observed)
         for aid in extra:
-            shape.check(aid, False, "selftest extra")
+            shape.check(aid, False, "selftest extra", observed="x")
         if problem:
             shape.problem(problem)
     return feed
@@ -76,12 +89,18 @@ def check_module(name: str) -> int:
     if rc != 0 or f"PASS\t{tid}" not in lines or any(l.startswith("RED_SHAPE") for l in lines):
         failures.append(f"{name} S2 all pass: want PASS exit 0, got rc={rc} {lines!r}")
     n += 1
-    for aid in vec:
+    for aid, want in vec.items():
         rc, lines = run(tid, vec, feed_vector(vec, flip={aid}))
         expect_mismatch(f"{name} S3 flip {aid}", tid, rc, lines)
         rc, lines = run(tid, vec, feed_vector(vec, skip={aid}))
         expect_mismatch(f"{name} S4 missing {aid}", tid, rc, lines)
         n += 2
+        if isinstance(want, Red):
+            rc, lines = run(tid, vec, feed_vector(vec, values={aid: want.counter}))
+            expect_mismatch(f"{name} S8 {aid} failing with {want.counter!r}", tid, rc, lines)
+            rc, lines = run(tid, vec, feed_vector(vec, values={aid: NO_VALUE}))
+            expect_mismatch(f"{name} S9 {aid} failing with no value", tid, rc, lines)
+            n += 2
     rc, lines = run(tid, vec, feed_vector(vec, extra={"selftest-extra"}))
     expect_mismatch(f"{name} S5 extra failure", tid, rc, lines)
     rc, lines = run(tid, vec, feed_vector(vec, problem="PRECONDITION selftest"))
@@ -93,41 +112,77 @@ def check_module(name: str) -> int:
 
 
 class _DeadProc:
+    def __init__(self, rc: int):
+        self.rc = rc
+
     def poll(self):
-        return 5  # the Mac today: the process has exited with ZB_EXIT_LOAD_FAILED
+        return self.rc
 
 
 class _FakeBrowser:
-    def __init__(self, load_fail_rows: int):
-        self.proc, self._n = _DeadProc(), load_fail_rows
+    def __init__(self, load_fail_rows: int, rc: int):
+        self.proc, self._n = _DeadProc(rc), load_fail_rows
 
     def load_fails(self, _match) -> int:
         return self._n
 
 
-def check_row3_driver() -> int:
+def drive_row3() -> int:
     mod = importlib.import_module("mac_ms2a_load_fail_no_quit_test")
     mod.ALIVE_GRACE_SEC = 0.0
     row3 = "row3-undisplayable-response"
     rest = {k: v for k, v in mod.RED_VECTOR.items() if not k.startswith(row3 + ".")}
-    for case, rows, want_red in (("R3 zero LOAD_FAIL", 0, False), ("R3x two LOAD_FAIL", 2, False),
-                                 ("R3ok one LOAD_FAIL", 1, True)):
-        def feed(shape, rows=rows):
+    cases = (("D1 one LOAD_FAIL, exit 5", 1, 5, True), ("D1 exit 8", 1, 8, False),
+             ("D1 zero LOAD_FAIL", 0, 5, False), ("D1 two LOAD_FAIL", 2, 5, False))
+    for case, rows, rc_value, want_red in cases:
+        def feed(shape, rows=rows, rc_value=rc_value):
             feed_vector(rest)(shape)
-            mod.check_alive(row3, _FakeBrowser(rows), None, shape, mod.is_attach_url)
+            mod.check_alive(row3, _FakeBrowser(rows, rc_value), None, shape, mod.is_attach_url)
         rc, lines = run(mod.TEST_ID, mod.RED_VECTOR, feed)
         name = f"mac_ms2a_load_fail_no_quit_test {case}"
-        if want_red:
-            expect_red(name, mod.TEST_ID, rc, lines)
-        else:
-            expect_mismatch(name, mod.TEST_ID, rc, lines)
-            if f"ASSERT\t{mod.TEST_ID}\t{row3}.load-fail-once\t{FAIL}" not in lines:
-                failures.append(f"{name}: the driven check did not record {row3}.load-fail-once as fail: {lines!r}")
-    return 3
+        (expect_red if want_red else expect_mismatch)(name, mod.TEST_ID, rc, lines)
+    return len(cases)
+
+
+def expect_accepts(name: str, red: Red, value, want: bool) -> None:
+    if red.accepts(value) != want:
+        failures.append(f"{name}: {red.desc} {'rejected' if want else 'accepted'} {value!r}")
+
+
+def drive_values() -> int:
+    slow = importlib.import_module("mac_ms2c_recover_slow_server_test")
+    alive = slow.RED_VECTOR["alive"]
+    expect_accepts("D2 recovery exit 8 at 15.2 s", alive, slow.observe_exit(8, 15.2), True)
+    expect_accepts("D2 recovery exit 5 at 15.2 s", alive, slow.observe_exit(5, 15.2), False)
+    expect_accepts("D2 recovery exit 8 at 3.0 s", alive, slow.observe_exit(8, 3.0), False)
+    expect_accepts("D2 recovery exit 8 at 40 s", alive, slow.observe_exit(8, 40.0), False)
+
+    result = {"jsonrpc": "2.0", "id": 1, "result": {"title": "POPUP"}}
+    no_window = {"jsonrpc": "2.0", "id": 1, "error": {"code": -32011, "message": "x", "data": {"reason": "no_window"}}}
+    timeout = {"jsonrpc": "2.0", "id": 1, "error": {"code": -32000, "message": "action_timeout"}}
+    close = importlib.import_module("mac_ms2c_close_button_test").RED_VECTOR["2-routed-no-window"]
+    expect_accepts("D3 close 2 result", close, reply_kind(result), True)
+    expect_accepts("D3 close 2 error:no_window", close, reply_kind(no_window), False)
+    expect_accepts("D3 close 2 action_timeout", close, reply_kind(timeout), False)
+    dialog = importlib.import_module("mac_ms2b_dialog_popup_id_test").RED_VECTOR["3-respond-listed-ok"]
+    expect_accepts("D3 dialog 3 error:no_window", dialog, reply_kind(no_window), True)
+    expect_accepts("D3 dialog 3 action_timeout", dialog, reply_kind(timeout), False)
+    expect_accepts("D3 dialog 3 result", dialog, reply_kind(result), False)
+    cookie = importlib.import_module("mac_cookie_timeout_test").RED_VECTOR["1-action-timeout cookies.set"]
+    expect_accepts("D3 cookie 1 result", cookie, reply_kind({"result": {"ok": True}}), True)
+    expect_accepts("D3 cookie 1 other error", cookie, reply_kind(no_window), False)
+
+    pacing = importlib.import_module("mac_profile_pacing_persist_test")
+    cap = pacing.RED_VECTOR["2-cap-restored"]
+    expect_accepts("D4 pacing back on the default cap", cap, pacing.observe_cap(100, 100), True)
+    expect_accepts("D4 pacing a third cap", cap, pacing.observe_cap(55, 100), False)
+    if pacing.observe_cap(pacing.NEW_CAP, 100) != "set-cap":
+        failures.append("D4 pacing: the set cap 7 is not observed as set-cap")
+    return 13
 
 
 def main() -> int:
-    cases = sum(check_module(m) for m in RED_MODULES) + check_row3_driver()
+    cases = sum(check_module(m) for m in RED_MODULES) + drive_row3() + drive_values()
     if failures:
         print("FAIL\tmac-red-shape-selftest")
         for f in failures:

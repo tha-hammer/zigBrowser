@@ -30,8 +30,8 @@ Rows (each in a fresh browser, because today the first failure ends the process)
     ZB_EXIT_LOAD_FAILED (5) and one LOAD_FAIL row. Flips if the owner picks option B.
 
 Failing assertions today (Mac), the accepted red vector RED_VECTOR (red_shape.py; the rows gate requires its
-RED_SHAPE line): rows 1-3 record their one LOAD_FAIL row (the shim emits it before requestExit:), then .alive and
-.page-list-answers fail (the process has exited with 5); row 5 passes. Any other outcome is a MISMATCH.
+RED_SHAPE line): rows 1-3 record their one LOAD_FAIL row (the shim emits it before requestExit:), then .alive fails
+with exit code 5 exactly and .page-list-answers is not asked; row 5 passes. Any other outcome is a MISMATCH.
 
 Isolation: every launch gets a private HOME and its own --profile-dir under a per-row temp dir, never the
 account's default profile.
@@ -49,15 +49,17 @@ from pathlib import Path
 
 from automation_core_test import RpcClient, _read_lines  # noqa: E402
 from mac_term_teardown import install_term_only_cleanup, leak_failures, stop_browser_term_only  # noqa: E402
-from red_shape import FAIL, PASS, RedShape  # noqa: E402
+from red_shape import PASS, Red, RedShape  # noqa: E402
 
 ZB_EXIT_LOAD_FAILED = 5
 DEAD_URL = "http://nonexistent.invalid/"
 ALIVE_GRACE_SEC = 2.0  # after the LOAD_FAIL row, today's exit lands well inside this
 TEST_ID = "ms2a-load-fail-no-quit"
 ROWS = ("row1-click-dead-link", "row2-routed-then-location", "row3-undisplayable-response")
+# A failing .alive must have exited with ZB_EXIT_LOAD_FAILED (5), not any other code (SilverRidge 8721b6d).
 RED_VECTOR = {f"{row}.{aid}": want for row in ROWS
-              for aid, want in (("load-fail-once", PASS), ("alive", FAIL), ("page-list-answers", FAIL))}
+              for aid, want in (("load-fail-once", PASS), ("alive", Red(5, 8, "exit code 5")),
+                                ("page-list-answers", Red("not-asked", "no-answer")))}
 RED_VECTOR.update({"row5.exit-code": PASS, "row5.load-fail-once": PASS})
 PAGES = {
     "/a": b"<!doctype html><html><head><meta charset='utf-8'><title>A</title></head><body><h1>A</h1>"
@@ -183,9 +185,11 @@ def check_alive(label: str, b: _Browser, rpc: RpcClient, shape: RedShape, fail_m
     shape.check(f"{label}.load-fail-once", n == 1, f"LOAD_FAIL rows for the failing load = {n}, want 1")
     rc = b.proc.poll()
     alive = shape.check(f"{label}.alive", rc is None,
-                        f"the browser exited (rc={rc}) after a post-first-finish load failure")
-    shape.check(f"{label}.page-list-answers", alive and page_list_answers(rpc),
-                "page.list did not answer after the load failure" if alive else "not asked: the browser had exited")
+                        f"the browser exited (rc={rc}) after a post-first-finish load failure", observed=rc)
+    answers = alive and page_list_answers(rpc)
+    shape.check(f"{label}.page-list-answers", answers,
+                "page.list did not answer after the load failure" if alive else "not asked: the browser had exited",
+                observed="answered" if answers else ("no-answer" if alive else "not-asked"))
 
 
 def run_row(label: str, browser: Path, fixture, proc_holder: list, timeout_sec: float, act, fail_match,

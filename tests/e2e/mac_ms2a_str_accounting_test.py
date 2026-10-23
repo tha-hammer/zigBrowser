@@ -24,6 +24,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from mac_term_teardown import run_term_only  # noqa: E402
+
 SKIP_EXIT = 77
 
 HARNESS_C = r"""
@@ -80,7 +82,7 @@ def main() -> int:
             print("FAIL\tms2a-str-accounting-harness-build-failed")
             eprint(build.stderr.strip()[-800:])
             return 1
-        run = subprocess.run([str(exe)], capture_output=True, text=True, timeout=30)
+        run = run_term_only([str(exe)], 30)  # a timeout stops the harness with SIGTERM only (3ui.7)
         eprint(f"harness: {run.stdout.strip()}  stderr={run.stderr.strip()[-200:]}")
         if run.returncode != 0:
             print("FAIL\tms2a-str-accounting")

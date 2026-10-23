@@ -20,8 +20,8 @@ and after the late completions have run:
   3 live_jobs returns to its baseline (no job leaked by the abandon) and the browser still runs.
 
 Failing assertions today (Mac), the accepted red vector RED_VECTOR (red_shape.py; the rows gate requires its
-RED_SHAPE line): 1 and 2 fail for every op (each returns OK after ~12.5 s); 3 (live_jobs back to baseline, and
-the browser still running) passes.
+RED_SHAPE line): 1 and 2 fail for every op, with exactly these values: 1 a result (no error), 2 returned 12.0-14.5 s
+after the call (the store's 12.5 s answer); 3 (live_jobs back to baseline, and the browser still running) passes.
 Target step: `ms3-gate` (TO BE ADDED by bd 4pa.62); until the green this file is in no gate script and no
 build.zig step. Every launch gets a private HOME and its own --profile-dir.
 """
@@ -39,14 +39,20 @@ from pathlib import Path
 
 from automation_core_test import RpcClient, _read_lines  # noqa: E402
 from mac_term_teardown import install_term_only_cleanup, leak_failures, stop_browser_term_only  # noqa: E402
-from red_shape import FAIL, PASS, RedShape  # noqa: E402
+from red_shape import PASS, Red, RedShape, reply_kind  # noqa: E402
 
 DELAY_MS = 12_500
 SERVER_DEADLINE_S = 10.0  # cookie_routes.port_timeout_ms
 LATE_BOUND_S = 11.5
 TEST_ID = "ms3-cookie-timeout"
 OPS = ("cookies.getAll", "cookies.set", "cookies.delete")
-RED_VECTOR = {f"{n} {op}": FAIL for op in OPS for n in ("1-action-timeout", "2-at-deadline")}
+# The accepted red values (SilverRidge 8721b6d): each op returns a RESULT (no error at all), 12.0-14.5 s after the
+# call, i.e. when the delayed store answers at 12.5 s, not at the 10 s deadline and not much later.
+RED_VECTOR = {}
+for _op in OPS:
+    RED_VECTOR[f"1-action-timeout {_op}"] = Red("result", "error:navigation_failed")
+    RED_VECTOR[f"2-at-deadline {_op}"] = Red(12.5, 20.0, "returned 12.0-14.5 s after the call",
+                                             accepts=lambda s: isinstance(s, float) and 12.0 <= s <= 14.5)
 RED_VECTOR.update({"3-live-jobs-baseline": PASS, "3-browser-running": PASS})
 PAGE = b"<!doctype html><html><head><meta charset='utf-8'><title>C</title></head><body>c</body></html>"
 
@@ -158,10 +164,10 @@ def main() -> int:
                     raise AssertionError(f"PRECONDITION {method}: the cookie-delay seam never fired")
                 message = (reply.get("error") or {}).get("message")
                 shape.check(f"1-action-timeout {method}", message == "action_timeout",
-                            f"want the action_timeout error, got {reply!r}")
+                            f"want the action_timeout error, got {reply!r}", observed=reply_kind(reply))
                 shape.check(f"2-at-deadline {method}", elapsed < LATE_BOUND_S,
                             f"returned after {elapsed:.1f}s, not at the {SERVER_DEADLINE_S:.0f}s deadline "
-                            f"(the store answered at {DELAY_MS / 1000:.1f}s)")
+                            f"(the store answered at {DELAY_MS / 1000:.1f}s)", observed=round(elapsed, 1))
 
             # Every late completion has run once the delay has passed since the last call was issued.
             settle_end = time.monotonic() + DELAY_MS / 1000.0 + 3.0

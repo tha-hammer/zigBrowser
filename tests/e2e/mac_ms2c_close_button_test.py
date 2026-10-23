@@ -22,7 +22,8 @@ Given a popup opened by window.open; When its NSWindow is closed through its clo
   5 the shared destroy path ran: the last WINCOUNT row is 1 (removeWindow:, as webViewDidClose: uses).
 
 Failing assertions today (Mac), the accepted red vector RED_VECTOR (red_shape.py; the rows gate requires its
-RED_SHAPE line): 1 `popup_id not in page_list_ids()`, 2 (the popup still answers) and 5 fail; 3 and 4 pass.
+RED_SHAPE line): 1 fails with the popup still listed, 2 with a result (the popup still answers), 5 with the last
+row WINCOUNT 2; 3 and 4 pass.
 Target step: `ms2c-gate` (TO BE ADDED by bd 4pa.62). Until the green this file is in no gate script and no
 build.zig step. Every launch gets a private HOME and its own --profile-dir.
 """
@@ -40,12 +41,15 @@ from pathlib import Path
 
 from automation_core_test import RpcClient, _read_lines  # noqa: E402
 from mac_term_teardown import install_term_only_cleanup, leak_failures, stop_browser_term_only  # noqa: E402
-from red_shape import FAIL, PASS, RedShape  # noqa: E402
+from red_shape import PASS, Red, RedShape, reply_kind  # noqa: E402
 
 CLOSE_TITLE = "zb-native-close"
 TEST_ID = "ms2c-close-button"
-RED_VECTOR = {"1-left-page-list": FAIL, "2-routed-no-window": FAIL, "3-live-jobs-baseline": PASS,
-              "4-opener-intact": PASS, "5-shared-destroy-path": FAIL}
+# The accepted red values (SilverRidge 8721b6d): the hidden popup is still listed, a command routed to it still gets
+# a result, and the last WINCOUNT row still counts it (2).
+RED_VECTOR = {"1-left-page-list": Red("listed", "not-listed"), "2-routed-no-window": Red("result", "error:timeout"),
+              "3-live-jobs-baseline": PASS, "4-opener-intact": PASS,
+              "5-shared-destroy-path": Red("WINCOUNT\t2", "WINCOUNT\t3")}
 PAGES = {
     "/a": b"<!doctype html><html><head><meta charset='utf-8'><title>OPENER</title></head>"
           b"<body><p id='t'>opener-dom</p></body></html>",
@@ -177,12 +181,14 @@ def main() -> int:
             wait_until(lambda: popup_id not in page_list_ids(), 3.0)
             ids = page_list_ids()
             shape.check("1-left-page-list", popup_id not in ids,
-                        f"the natively closed popup {popup_id} is still in page.list: {ids!r}")
+                        f"the natively closed popup {popup_id} is still in page.list: {ids!r}",
+                        observed="listed" if popup_id in ids else "not-listed")
 
             reply = rpc.raw("page.title", {"window_id": popup_id})
             reason = ((reply.get("error") or {}).get("data") or {}).get("reason")
             shape.check("2-routed-no-window", reason == "no_window",
-                        f"a command routed to the closed popup did not fail with no_window: {reply!r}")
+                        f"a command routed to the closed popup did not fail with no_window: {reply!r}",
+                        observed=reply_kind(reply))
 
             settled = wait_until(lambda: last_live_jobs(err) == baseline, 3.0)
             shape.check("3-live-jobs-baseline", settled,
@@ -198,7 +204,8 @@ def main() -> int:
 
             wincount = [l for l in list(out) if l.startswith("WINCOUNT\t")]
             shape.check("5-shared-destroy-path", bool(wincount) and wincount[-1] == "WINCOUNT\t1",
-                        f"the shared destroy path did not run (WINCOUNT rows {wincount[-4:]!r})")
+                        f"the shared destroy path did not run (WINCOUNT rows {wincount[-4:]!r})",
+                        observed=wincount[-1] if wincount else None)
         except Exception as exc:  # noqa: BLE001
             shape.problem(f"{exc!r} (rc={proc.poll()})")
         finally:

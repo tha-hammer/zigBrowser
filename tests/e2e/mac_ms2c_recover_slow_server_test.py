@@ -12,8 +12,8 @@ so only the timer can end the load. Target step: `ms2c-gate` (TO BE ADDED by bd 
 this file is in no gate script and no build.zig step.
 
 Failing assertions today (Mac), the accepted red vector RED_VECTOR (red_shape.py; the rows gate requires its
-RED_SHAPE line): at t = 20 s after phase 2, `alive` fails (the process has exited with ZB_EXIT_TIMEOUT at ~15 s)
-and so does `health-answers`. Every precondition (frozen, phase 1 incident, phase 2 reload, the reload reached
+RED_SHAPE line): at t = 20 s after phase 2, `alive` fails with exit code ZB_EXIT_TIMEOUT (8) 13-19 s after
+phase 2, and `health-answers` is not asked. Every precondition (frozen, phase 1 incident, phase 2 reload, the reload reached
 the down server) must hold, else the run is a MISMATCH.
 
 Isolation: the launch gets a private HOME and its own --profile-dir under the temp dir, never the account's
@@ -32,10 +32,22 @@ from pathlib import Path
 
 from automation_core_test import RpcClient, _read_lines  # noqa: E402
 from mac_term_teardown import install_term_only_cleanup, leak_failures, stop_browser_term_only  # noqa: E402
-from red_shape import FAIL, RedShape  # noqa: E402
+from red_shape import Red, RedShape  # noqa: E402
 
 TEST_ID = "ms2c-recover-slow-server"
-RED_VECTOR = {"alive": FAIL, "health-answers": FAIL}
+ZB_EXIT_TIMEOUT = 8
+# A failing `alive` must be the 15 s load timer's exit: code 8, 13-19 s after phase 2 (SilverRidge 8721b6d).
+RED_VECTOR = {
+    "alive": Red({"rc": ZB_EXIT_TIMEOUT, "after_s": 15}, {"rc": 5, "after_s": 15}, "exit code 8, 13-19 s after phase 2",
+                 accepts=lambda o: isinstance(o, dict) and o.get("rc") == ZB_EXIT_TIMEOUT
+                 and isinstance(o.get("after_s"), (int, float)) and 13 <= o["after_s"] <= 19),
+    "health-answers": Red("not-asked", "no-answer"),
+}
+
+
+def observe_exit(rc, elapsed: float):
+    """The observed value of `alive`: None while running, else the exit code and whole seconds after phase 2."""
+    return None if rc is None else {"rc": rc, "after_s": round(elapsed)}
 
 DOWN_FOR_SEC = 20.0  # longer than the shim's 15 s ZB_NAVIGATION_TIMEOUT_SECONDS
 PAGE = b"""<!doctype html><html><head><meta charset='utf-8'><title>R</title></head><body><h1>R</h1>
@@ -164,10 +176,12 @@ def main() -> int:
             elapsed = time.monotonic() - t0
             rc = proc.poll()
             alive = shape.check("alive", rc is None, f"the browser exited (rc={rc}) {elapsed:.1f}s after a recovery "
-                                f"reload on a server that stayed down (held requests={fixture.held})")
-            health = rpc.raw("page.health", {}) if alive else {"error": "not asked: the browser had exited"}
-            shape.check("health-answers", "error" not in health and bool((health.get("result") or {}).get("pages")),
-                        f"page.health did not answer at t={elapsed:.1f}s: {health!r}")
+                                f"reload on a server that stayed down (held requests={fixture.held})",
+                                observed=observe_exit(rc, elapsed))
+            health = rpc.raw("page.health", {}) if alive else None
+            answered = health is not None and "error" not in health and bool((health.get("result") or {}).get("pages"))
+            shape.check("health-answers", answered, f"page.health did not answer at t={elapsed:.1f}s: {health!r}",
+                        observed="answered" if answered else ("no-answer" if alive else "not-asked"))
             if fixture.held < 1:
                 shape.problem("PRECONDITION the recovery reload never reached the down server")
         except Exception as exc:  # noqa: BLE001

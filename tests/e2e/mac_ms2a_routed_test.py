@@ -17,8 +17,8 @@ so launch directly (no xvfb prefix, like tests/mac/gate.sh). Unregistered in bui
 (red-commits-outside-the-gate); the MS2a green registers the macOS routed-command gate.
 
 Process hygiene: the browser is launched in its OWN process group (start_new_session) and torn down
-by killpg (SIGTERM -> SIGKILL, reaped, bounded), including on SIGTERM/SIGINT, so a timed-out or
-killed gate cannot orphan the Mac browser.
+by SIGTERM to the whole group (reaped, bounded; NEVER SIGKILL on a Mac, bd zigBrowser-3ui.7), including on
+SIGTERM/SIGINT; a browser that does not quit is left running and fails the test (tests/e2e/mac_term_teardown.py).
 
 Mutation-resistant: it asserts the url, title AND the navigated page's DOM heading ACTUALLY become
 the new page's, so a stub that returns {"ok": true} without navigating, or a page.url that echoes
@@ -37,6 +37,7 @@ from pathlib import Path
 # Reuse the Linux harness pieces (shipped to the Mac by build-on-mac.sh under tests/e2e).
 from automation_core_test import RpcClient, _read_lines  # noqa: E402
 from automation_fixture_server import AutomationFixtureServer  # noqa: E402
+from mac_term_teardown import stop_browser_term_only  # noqa: E402
 
 SKIP_EXIT = 77
 
@@ -46,30 +47,12 @@ def eprint(*a):
 
 
 def stop_browser_macos(proc: subprocess.Popen) -> None:
-    """macOS-safe, orphan-safe teardown: kill the browser's whole process GROUP (no Linux /proc).
-
-    start_new_session makes the browser its own session/group leader, so the group id IS its pid and
-    killpg reaches every helper it spawned (WebKit web/network processes). CRITICAL (dd0b456/6206): do
-    NOT early-return when the leader has already exited — surviving group children would then leak.
-    Signal the WHOLE group (SIGTERM, brief grace, SIGKILL) regardless of leader state, and reap the
-    leader only AFTER (so the group id == proc.pid can't be reused by the OS mid-teardown). Idempotent."""
-    pgid = proc.pid  # group leader == pid (start_new_session); valid until we reap, below
-    for sig in (signal.SIGTERM, signal.SIGKILL):
-        try:
-            os.killpg(pgid, sig)
-        except (ProcessLookupError, OSError):
-            break  # the whole group is gone
-        if sig == signal.SIGTERM:
-            # Brief grace for the group to exit on SIGTERM before escalating; do not reap yet.
-            deadline = time.monotonic() + 2.0
-            while time.monotonic() < deadline and proc.poll() is None:
-                time.sleep(0.05)
-    # The group has been signalled (children included, even if the leader was already gone). Reap the
-    # leader now, bounded, so we never leave a zombie.
-    try:
-        proc.wait(timeout=5)
-    except subprocess.TimeoutExpired:
-        pass
+    """macOS-safe, orphan-safe teardown of the browser's whole process GROUP with SIGTERM only (the session brief
+    forbids SIGKILL on a Mac; bd zigBrowser-3ui.7). start_new_session makes the browser its own group leader, so the
+    group id IS its pid. CRITICAL (dd0b456/6206): the group is still signalled when the leader has already exited,
+    so surviving group children are reached. A leader or member still running after the grace is left running and
+    the test fails at exit (FAIL mac-teardown-leak). Idempotent. See tests/e2e/mac_term_teardown.py."""
+    stop_browser_term_only(proc)
 
 
 def _install_signal_cleanup(get_proc):

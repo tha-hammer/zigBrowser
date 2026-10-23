@@ -315,8 +315,34 @@ else
   bad "rows: the red-shape selftest failed: $shape"
 fi
 
+# The SIGTERM-only teardown itself (tests/e2e/mac_term_teardown_selftest.py, bd zigBrowser-3ui.7): it signals real
+# children, so it runs in a nested private PID namespace under a reaping shell, and refuses to run anywhere else.
+if td=$(cd "$ROOT/tests/e2e" && env -i PATH=/usr/bin:/bin HOME="$T/home" \
+    unshare --user --map-root-user --pid --fork --mount-proc bash -c 'python3 -B mac_term_teardown_selftest.py; exit $?' 2>&1) \
+  && grep -q $'^PASS\tmac-term-teardown-selftest\t' <<<"$td"; then
+  ok "teardown: $(grep $'^PASS\t' <<<"$td" | tr '\t' ' ')"
+else
+  bad "teardown: the SIGTERM-only teardown selftest failed: $td"
+fi
+# No ms2a/ms2b/ms2c gate test may send SIGKILL on a Mac (session brief; 3ui.7): the shared stop_browser_macos
+# delegates to the SIGTERM-only teardown, and no gate test names SIGKILL or a subprocess timeout (which SIGKILLs).
+grep -q '^    stop_browser_term_only(proc)$' "$ROOT/tests/e2e/mac_ms2a_routed_test.py" \
+  && ok "teardown: stop_browser_macos delegates to the SIGTERM-only teardown" \
+  || bad "teardown: stop_browser_macos does not delegate to stop_browser_term_only"
+sk=0 nk=0
+for g in ms2a ms2b ms2c; do
+  for f in $(grep -oE 'tests/e2e/[a-z0-9_]+\.py' "$R/tests/mac/${g}_gate.sh" | sort -u); do
+    nk=$((nk + 1))
+    if grep -qE 'signal\.SIGKILL|\.kill\(\)|subprocess\.(run|call|check_call|check_output)\(.*timeout=' "$ROOT/$f"; then
+      bad "teardown: $f ($g gate) can send SIGKILL"; sk=1
+    fi
+  done
+done
+[ "$sk" -eq 0 ] && [ "$nk" -gt 40 ] && ok "teardown: none of the $nk ms2a/ms2b/ms2c gate tests names SIGKILL, .kill() or a subprocess timeout" \
+  || { [ "$sk" -eq 1 ] || bad "teardown: only $nk ms2a/ms2b/ms2c gate tests found"; }
+
 # No row may send SIGKILL on a Mac (session brief): every row file stops its browser through mac_term_teardown
-# (SIGTERM only). Tripwire only; the teardown's behavior is proved in a private PID namespace (commit message).
+# (SIGTERM only). Tripwire only; the teardown's behavior is the selftest above.
 for f in $(awk -F'|' '/^  "tests\/e2e\/mac_[a-z0-9_]+_test\.py[|]/ { sub(/^  "/, "", $1); print $1 }' "$R/tests/mac/ms_runtime_rows_gate.sh"); do
   if grep -q 'from mac_term_teardown import' "$ROOT/$f" && ! grep -qE 'stop_browser_macos|signal\.SIGKILL|\.kill\(\)' "$ROOT/$f"; then
     ok "rows: $f stops its browser with SIGTERM only"

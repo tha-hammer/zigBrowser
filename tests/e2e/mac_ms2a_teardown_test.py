@@ -68,7 +68,7 @@ def main() -> int:
         if _alive(child_pid):
             failures.append(f"group child {child_pid} survived stop_browser_macos (exited-leader leak)")
             try:
-                os.kill(child_pid, signal.SIGKILL)  # don't leak it ourselves
+                os.kill(child_pid, signal.SIGTERM)  # don't leak it ourselves (never SIGKILL on a Mac)
             except OSError:
                 pass
 

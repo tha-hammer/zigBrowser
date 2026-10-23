@@ -23,6 +23,7 @@ from pathlib import Path
 
 from automation_core_test import RpcClient, _read_lines  # noqa: E402
 from mac_ms2a_routed_test import stop_browser_macos, _install_signal_cleanup  # noqa: E402
+from mac_term_teardown import run_term_only  # noqa: E402
 
 SKIP_EXIT = 77
 
@@ -94,7 +95,7 @@ def main() -> int:
         eprint(f"SKIP: shim dylib not found at {dylib}")
         return SKIP_EXIT
     try:
-        nm = subprocess.run(["nm", "-gU", str(dylib)], capture_output=True, text=True, timeout=30)
+        nm = run_term_only(["nm", "-gU", str(dylib)], 30)  # a timeout stops nm with SIGTERM only (3ui.7)
     except Exception as exc:  # noqa: BLE001
         print("FAIL\tms2a-abi-census")
         eprint(f"  nm failed: {exc}")

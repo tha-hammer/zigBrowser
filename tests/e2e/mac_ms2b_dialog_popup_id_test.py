@@ -14,7 +14,8 @@ Steps: open two popups (window-2, window-3), page.close window-2, raise a confir
   4 the page's confirm() returned true.
 
 Failing assertions today (Mac), the accepted red vector RED_VECTOR (red_shape.py; the rows gate requires its
-RED_SHAPE line): all four fail, 1 (listed as window-2), 2 ({open:false}), 3 (no_window), 4 (still unanswered).
+RED_SHAPE line): all four fail, with exactly these values: 1 listed as window-2, 2 open=False, 3 error:no_window,
+4 not-true (still unanswered).
 Target step: `ms2b-gate` (TO BE ADDED by bd 4pa.62); until the green this file is in no gate script and no
 build.zig step. Every launch gets a private HOME and its own --profile-dir.
 """
@@ -31,11 +32,14 @@ from pathlib import Path
 
 from automation_core_test import RpcClient, _read_lines  # noqa: E402
 from mac_term_teardown import install_term_only_cleanup, leak_failures, stop_browser_term_only  # noqa: E402
-from red_shape import FAIL, RedShape  # noqa: E402
+from red_shape import Red, RedShape, reply_kind  # noqa: E402
 
 TEST_ID = "ms2b-dialog-popup-id"
-RED_VECTOR = {"1-listed-under-stable-id": FAIL, "2-get-by-id-open": FAIL, "3-respond-listed-ok": FAIL,
-              "4-confirm-returned-true": FAIL}
+# The accepted red values (SilverRidge 8721b6d): listed under the registry POSITION window-2, dialog.get on window-3
+# says not open, answering window-2 fails with no_window, and the page's confirm() never returns true.
+RED_VECTOR = {"1-listed-under-stable-id": Red("window-2", "window-1"), "2-get-by-id-open": Red("open=False", "open=None"),
+              "3-respond-listed-ok": Red("error:no_window", "error:timeout"),
+              "4-confirm-returned-true": Red("not-true", "true")}
 
 PAGES = {
     "/a": b"<!doctype html><html><head><meta charset='utf-8'><title>OPENER</title></head><body>o</body></html>",
@@ -165,19 +169,22 @@ def main() -> int:
                 raise AssertionError(f"PRECONDITION the confirm never opened: {listed!r}")
 
             shape.check("1-listed-under-stable-id", listed.get("window_id") == third,
-                        f"dialog.get listed the confirm under {listed.get('window_id')!r}, page.list id is {third!r}")
+                        f"dialog.get listed the confirm under {listed.get('window_id')!r}, page.list id is {third!r}",
+                        observed=listed.get("window_id"))
 
             by_id = rpc.raw("dialog.get", {"window_id": third}).get("result")
             shape.check("2-get-by-id-open",
                         isinstance(by_id, dict) and bool(by_id.get("open")) and by_id.get("type") == "confirm",
-                        f"dialog.get on {third} did not report the open confirm: {by_id!r}")
+                        f"dialog.get on {third} did not report the open confirm: {by_id!r}",
+                        observed=f"open={by_id.get('open')!r}" if isinstance(by_id, dict) else repr(by_id))
 
             answered = rpc.raw("dialog.respond", {"window_id": listed.get("window_id") or third, "accept": True})
             shape.check("3-respond-listed-ok", answered.get("result") == {"ok": True},
-                        f"answering the listed window failed: {answered!r}")
+                        f"answering the listed window failed: {answered!r}", observed=reply_kind(answered))
 
             ok = wait_until(lambda: rpc.raw("page.evaluate", {"window_id": third, "expression": "window.__zbR === true"}).get("result") == {"result": True}, 3.0, 0.1)
-            shape.check("4-confirm-returned-true", ok, "the page's confirm() did not return true")
+            shape.check("4-confirm-returned-true", ok, "the page's confirm() did not return true",
+                        observed="true" if ok else "not-true")
         except Exception as exc:  # noqa: BLE001
             shape.problem(f"{exc!r} (rc={proc.poll()})")
         finally:
