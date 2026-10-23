@@ -20,7 +20,8 @@
 #      payload to each configured host.
 # Oracle controls cover a marker-free wrong member appended to one tar, a clean first + wrong second tar, an
 # indirect `d=...; mkdir -p "$d"` reuse, and a dirty payload introduced only on invocation two. The historical
-# marker/lexical/printed-SHA control remains exactly 26 failures at the pre-green tree.
+# marker/lexical/printed-SHA control remains exactly 25 failures at the pre-green tree (26 before the universal
+# build-dmg.sh stopped shipping the working-tree Info.plist).
 # tests/mac/ms6_5_reaper_gate.sh is never run (session brief); it is covered by its own registered guard selftests.
 # Run: bash tests/mac/mac_gate_provenance_selftest.sh [repo root]
 set -uo pipefail
@@ -42,7 +43,7 @@ INTEL=intel@10.0.0.1 ARM=arm@10.0.0.2
 # script | launch (file; commit: bash -c "$(git show)"; compile: plus ZB_COMPILE_HARNESS_SHA256) |
 # provenance stubs (-, pin = the script's PIN, empty) | hosts (one, two) | args (PREP = a fabricated spike prep dir)
 DRIVEN=(
-  "packaging/macos/build-dmg.sh|file|-|one|"
+  "packaging/macos/build-dmg.sh|file|-|two|"
   "tests/mac/build-on-mac.sh|file|-|one|"
   "tests/mac/bundle_layout_spike.sh|file|-|two|run PREP"
   "tests/mac/gate.sh|file|-|two|"
@@ -502,6 +503,8 @@ pinned_files = {
 generated_names = {
     "gate": {"zigBrowser-universal", "zigBrowser-universal-signed", "libwkwebview_shim-universal.dylib"},
     "ms1b_signed_gate": {"zigBrowser-universal-signed", "libwkwebview_shim-signed.dylib"},
+    # The universal dmg (4pa.73 MS1c): the arm64 build's exe and shim, fetched from the arm Mac to the Intel run dir.
+    "build-dmg": {"zigBrowser-arm64", "libwkwebview_shim-arm64.dylib"},
 }
 errors, payloads, exact = [], 0, {}
 def err(where, why): errors.append(f"{where}: {why}")
@@ -893,8 +896,10 @@ else
 fi
 
 [ "$controls" -eq 9 ] || bad "CONTROL expected 9 exact-byte/fresh-root controls, got $controls"
-[ "$legacy_fails" -eq 26 ] && ok "legacy marker/lexical/printed-SHA control remains exactly 26 failures" \
-  || bad "CONTROL legacy failure count changed: expected 26, got $legacy_fails"
+# 25, not 26, since the universal build-dmg.sh (4pa.73) reads Info.plist and the icon from the commit's tree in its run
+# dir: it no longer ships the dirty working-tree Info.plist, so its legacy marker failure is gone.
+[ "$legacy_fails" -eq 25 ] && ok "legacy marker/lexical/printed-SHA control remains exactly 25 failures" \
+  || bad "CONTROL legacy failure count changed: expected 25, got $legacy_fails"
 
 if [ "$fails" -eq 0 ]; then printf 'PASS\tmac-gate-provenance-selftest\n'; exit 0; fi
 printf 'FAIL\tmac-gate-provenance-selftest\t%s failure(s)\n' "$fails"
