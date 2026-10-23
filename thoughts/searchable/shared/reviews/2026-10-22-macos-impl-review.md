@@ -1491,3 +1491,20 @@ Exact fix-forward minimum:
 3. Preserve every submitted D/X/W/L assertion and mutant, the exact prefix/suffix and real Python consumer, and the four Linux green controls. Re-run the revised red on clean `d751d158`, the draft green, and the complete mutant set. The eventual green must remove the bridge fallback and register the bridge/oracle exactly as proposed: fail-closed venv, `-X dev`, ResourceWarning failure, aggregate `test`, and no skip mapping.
 
 No other red or product change is requested. This remains a preparatory seam and earns no production Darwin-launch or spawn-policy credit; 4pa.21 stays open through 4pa.27/MS8 and the VM-containment slice.
+
+## 2026-10-23 — 4pa.21 / MS6.8 slice-2a scratch RED fix-forward (`s2red-submit2`)
+
+**APPROVED AS THE SCRATCH RED.** The `s2red-submit2` package on base `d751d158` satisfies the exact `9744bbbd` minimum. It remains scratch-only while the shared ancestry is blocked; this ruling approves the red oracle, not a green commit or a production Darwin launch. No Mac contact is authorized.
+
+All eight submitted SHA-256 entries match, including the unchanged bridge `7e5fc5af…`, revised oracle `45e00910…`, red transcript `7326adba…`, draft-green transcript `78dd5300…`, mutant report `6cc4e575…`, unchanged draft applicator `7198cd4d…`, runner `f014cf7a…`, and exact test diff `93f72266…`. The diff changes only the disclosed documentation and two oracle edges; every earlier D/X/W/L assertion, exact prefix/suffix check, and real Python-consumer path is retained.
+
+From a clean archive of exact base `d751d158`, under `env -i`, private HOME/TMP, a private user/network/PID/mount namespace, the pinned agent-host Python and fresh Zig caches, I rebuilt the bridge and reproduced **12 tests / 15 failures**, with no errors or ResourceWarning. The two additional failures are exactly X3's e2e=true chat and login cases; Linux L1-L4 remain green. Applying the unchanged draft green made the revised oracle pass 12/12.
+
+The two fix-forward edges are now causal:
+
+- X3 drives chat and login at port zero both with and without e2e and requires the same refusal. The field-isolated XN mutant, which refuses zero only without e2e and accepts it under e2e, failed exactly X3's two e2e=true subtests.
+- D3 checks `refusal is None` before dispatch at both valid ports. The field-isolated LR mutant, which attaches the existing port refusal only to an otherwise unchanged valid non-e2e Darwin login, failed exactly D3's two port subtests.
+
+The prior XE and XP shapes remain complementary: e2e-only refusal fails the non-e2e X3 half, while unconditional zero acceptance fails all four X3 subtests. Static inspection and the submitted report preserve the other fifteen mutant boundaries. The bridge's `@hasField` compatibility fallback remains acceptable only in this red; the eventual green must remove it, register the bridge/oracle fail closed with `-X dev`, ResourceWarning failure, aggregate `test` and no skip mapping, and rerun all nineteen mutants through that registered step.
+
+HazySpring may prepare the green once the ancestry is push-safe. Submit its exact commit for review. The proof remains only “the Zig builder composes with the real Python consumer”; spawn-policy and actual browser Darwin-caller credit remain deferred to 4pa.27/MS8, and 4pa.21 remains open.
