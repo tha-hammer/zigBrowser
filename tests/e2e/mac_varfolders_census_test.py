@@ -25,6 +25,9 @@ beside T and C):
 - PC4 T and C in two different per-user dirs: begin refuses.
 - PC5 an unreadable sibling directory at begin: begin refuses; one made unreadable by the end: INCONCLUSIVE, no delta.
   As a non-root user.
+- PC7 a name beside T and C that the evidence format cannot hold (a tab, a newline, a byte that is not UTF-8), at the
+  parent's top level or deeper (in 0): present before begin, begin refuses; appearing between begin and end, the end
+  is INCONCLUSIVE with no delta (no COMPLETE and no partial census). SilverRidge 18390ec8.
 - PC6 the helper itself changes nothing beside T and C either (the boundary covers the whole fake /var/folders tree).
 
 Run: python3 -X dev tests/e2e/mac_varfolders_census_test.py [helper path]
@@ -191,6 +194,24 @@ def run_rows(helper: Path) -> list[str]:
         finally:
             box.close()
 
+    for name, fname in (("tab", b"a\tb"), ("newline", b"a\nb"), ("non-UTF-8 byte", b"a\xff")):
+        for where in (b"", b"0/"):
+            for when in ("begin", "end"):
+                row = f"PC7 a {name} in a name {'in 0' if where else 'beside T and C'}, present at {when}"
+                box = census_box(helper)
+                try:
+                    def put(b, fname=fname, where=where):
+                        os.close(os.open(os.fsencode(b.user) + b"/" + where + fname, os.O_CREAT | os.O_WRONLY, 0o644))
+                    if when == "begin":
+                        put(box)
+                        refused(row, box)
+                    else:
+                        rc, out = box.cycle(put)
+                        if verdict(row, box, rc, out) != ("INCONCLUSIVE", []):
+                            bad(f"{row}: want INCONCLUSIVE with no delta, got rc={rc} {out!r}")
+                finally:
+                    box.close()
+
     if base.hits:
         bad(f"PC6 the helper itself changed entries under the fake /var/folders ({len(base.hits)} inotify events): "
             f"{base.hits[:6]!r}")
@@ -205,7 +226,7 @@ def main(argv: list[str]) -> int:
     if problems:
         print(f"FAIL\tmac-varfolders-census\t{len(problems)} problem(s)")
         return 1
-    print("PASS\tmac-varfolders-census\tPC1-PC6")
+    print("PASS\tmac-varfolders-census\tPC1-PC7")
     return 0
 
 
