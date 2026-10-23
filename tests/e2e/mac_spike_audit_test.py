@@ -305,7 +305,8 @@ class Unknown(Base):
         return after
 
     def test_q7_pu_parent_type_and_mode(self):
-        """With one valid child and the right growth, a parent that stops being a directory, or changes mode, is UNKNOWN."""
+        """With one valid child and the right growth, a parent that stops being a directory, changes mode, or is not a
+        directory on either side, is UNKNOWN."""
         ok = "Regular File|100600|1|102|1792744060"
         for name, kw in (("parent type", {"parent_typ": "Regular File"}), ("parent mode", {"parent_mode": "40755"})):
             with self.subTest(name):
@@ -314,6 +315,19 @@ class Unknown(Base):
                 rows = [l.split("\t") for l in r.classified.splitlines() if l.startswith("DELTA\t") and USAGE in l]
                 self.assertEqual(len(rows), 2, rows)
                 self.assertTrue(all(x[6] == "UNKNOWN" for x in rows), rows)
+        # Field-isolated: the parent is the same non-Directory type on both sides, with the same mode and inode, the exact
+        # +32 growth and one valid child, so only the parent's Directory requirement can make it UNKNOWN (SilverRidge ceaf2f23).
+        with self.subTest("parent not a directory on both sides"):
+            parent = f"{self.A['CACHES']}/{USAGE}"
+            before = self.set_line(self.ab, parent, typ="Regular File")
+            b = meta(before, parent)
+            after = self.set_line(add(before, f"{parent}/{UUID1}|{ok}"), parent, size=str(int(b[3]) + 32), mtime="1792744060")
+            self.assertEqual((meta(after, parent)[0], meta(after, parent)[1], meta(after, parent)[2]), (b[0], b[1], b[2]))
+            r = self.run_audit(self.ar, before, after)
+            self.assertEqual(r.verdict, "AUDIT-UNKNOWN")
+            rows = [l.split("\t") for l in r.classified.splitlines() if l.startswith("DELTA\t") and USAGE in l]
+            self.assertEqual(len(rows), 2, rows)
+            self.assertTrue(all(x[6] == "UNKNOWN" for x in rows), rows)
 
     def test_q7_pu_shapes(self):
         ok = "Regular File|100600|1|102|1792744060"
