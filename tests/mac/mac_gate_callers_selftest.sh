@@ -232,9 +232,11 @@ check_caller build-dmg   packaging/macos/build-dmg.sh  '^==> Done: '            
 
 # The rows gate's Mac leg (tests/mac/ms_runtime_rows_gate.sh, SilverRidge fe4542e): the structural checks above
 # never run the leg script, so run it here, extracted from the real caller, in a fake run root with a stub python3.
-#   V1 a red with every required line matches; V2 a red of the wrong shape (FAIL, one required line missing), V3 a
-#   red with a PRECONDITION, V4 a "red" that passes, and V5 a green missing a required line each MISMATCH; every row
-#   runs and the leg exits 1 on any mismatch, 0 when all match;
+#   V1 a red printing exactly its own RED_SHAPE<TAB><id> (tests/e2e/red_shape.py) matches; each of these is a
+#   MISMATCH (SilverRidge cf7a783): V2 a red of the wrong shape (RED_SHAPE_MISMATCH), V2a row 3 with ZERO matching
+#   LOAD_FAIL rows (as the real red prints it), V2b an extra unexpected assertion failure next to a RED_SHAPE line,
+#   V2c another test's RED_SHAPE, V2d no RED_SHAPE at all, V3 a red with a PRECONDITION, V4 a "red" that passes, V5 a
+#   green whose PASS line names another test; every row runs and the leg exits 1 on any mismatch, 0 when all match;
 #   V6 the leg exports HOME, CFFIXED_USER_HOME, TMPDIR, the XDG dirs and ZB_E2E_SOCKET_DIR beneath the run root and
 #   ZB_DEBUG_EPHEMERAL_DATA_STORE=1, and writes nothing in the original HOME outside the run root.
 rows_leg() { # rows_leg <out var> <rows...>: run the extracted leg in $T/rows-home/$RRD; sets LEG_RC
@@ -248,11 +250,16 @@ awk "/<<'REMOTE'/{f=1;next} /^REMOTE\$/{f=0} f" "$R/tests/mac/ms_runtime_rows_ga
 cat > "$T/rows-bin/python3" <<'EOF'
 #!/bin/bash
 case "$1" in
-  *v_red_ok*)    printf 'FAIL\tx\n  need-a\n  need-b\n'; exit 1 ;;
-  *v_red_shape*) printf 'FAIL\tx\n  need-a\n'; exit 1 ;;
-  *v_red_pre*)   printf 'FAIL\tx\n  need-a\n  need-b\n  PRECONDITION seam never fired\n'; exit 1 ;;
-  *v_red_pass*)  printf 'PASS\tx\n  need-a\n  need-b\n'; exit 0 ;;
-  *v_green*)     printf 'PASS\tx\n  need-a\n'; exit 0 ;;
+  *v_red_ok*)    printf 'ASSERT\tv-red\ta\tfail\nFAIL\tv-red\nRED_SHAPE\tv-red\n'; exit 1 ;;
+  *v_red_shape*) printf 'ASSERT\tv-red\ta\tpass\nFAIL\tv-red\nRED_SHAPE_MISMATCH\tv-red\ta passed, the accepted red vector says fail\n'; exit 1 ;;
+  *v_red_row3*)  printf 'ASSERT\tv-red\trow3-undisplayable-response.load-fail-once\tfail\nASSERT\tv-red\trow3-undisplayable-response.alive\tfail\nFAIL\tv-red\n'
+                 printf 'RED_SHAPE_MISMATCH\tv-red\trow3-undisplayable-response.load-fail-once failed, the accepted red vector says pass\n'; exit 1 ;;
+  *v_red_extra*) printf 'ASSERT\tv-red\ta\tfail\nASSERT\tv-red\tz\tfail\nFAIL\tv-red\nRED_SHAPE\tv-red\nRED_SHAPE_MISMATCH\tv-red\tunexpected assertion z\n'; exit 1 ;;
+  *v_red_other*) printf 'FAIL\tv-red\nRED_SHAPE\tv-other\n'; exit 1 ;;
+  *v_red_none*)  printf 'FAIL\tv-red\n'; exit 1 ;;
+  *v_red_pre*)   printf 'FAIL\tv-red\nRED_SHAPE\tv-red\n  PRECONDITION seam never fired\n'; exit 1 ;;
+  *v_red_pass*)  printf 'PASS\tv-red\nRED_SHAPE\tv-red\n'; exit 0 ;;
+  *v_green*)     printf 'PASS\tv-other\n'; exit 0 ;;
   *v_env*)       printf 'ENV\t%s\n' "$HOME" "$CFFIXED_USER_HOME" "$TMPDIR" "$XDG_DATA_HOME" "$XDG_CACHE_HOME" \
                    "$XDG_CONFIG_HOME" "$XDG_RUNTIME_DIR" "$ZB_E2E_SOCKET_DIR"
                  printf 'EPH\t%s\n' "${ZB_DEBUG_EPHEMERAL_DATA_STORE:-}"
@@ -267,22 +274,22 @@ chmod +x "$T/rows-bin/python3"
 rows_verdict() { # rows_verdict <leg output> <file stem>: the ROW verdict word for that file
   awk -F'\t' -v f="tests/e2e/mac_$2_test.py" '$1 == "ROW" && $2 == f { print $5 }' <<<"$1"
 }
-rows_leg out "tests/e2e/mac_v_red_ok_test.py|red|need-a|need-b"
-[ "$(rows_verdict "$out" v_red_ok)" = MATCH ] && [ "$LEG_RC" -eq 0 ] && ok "rows V1: a red with every required line matches, leg exit 0" \
+rows_leg out "tests/e2e/mac_v_red_ok_test.py|red|v-red"
+[ "$(rows_verdict "$out" v_red_ok)" = MATCH ] && [ "$LEG_RC" -eq 0 ] && ok "rows V1: a red printing its own RED_SHAPE matches, leg exit 0" \
   || bad "rows V1: $(rows_verdict "$out" v_red_ok) rc=$LEG_RC"
-for v in v_red_shape v_red_pre v_red_pass; do
-  rows_leg out "tests/e2e/mac_${v}_test.py|red|need-a|need-b"
+for v in v_red_shape v_red_row3 v_red_extra v_red_other v_red_none v_red_pre v_red_pass; do
+  rows_leg out "tests/e2e/mac_${v}_test.py|red|v-red"
   [ "$(rows_verdict "$out" "$v")" = MISMATCH ] && [ "$LEG_RC" -eq 1 ] && ok "rows: $v is a MISMATCH, leg exit 1" \
     || bad "rows: $v gave $(rows_verdict "$out" "$v") rc=$LEG_RC"
 done
-rows_leg out "tests/e2e/mac_v_green_test.py|green|need-a|need-z"
-[ "$(rows_verdict "$out" v_green)" = MISMATCH ] && [ "$LEG_RC" -eq 1 ] && ok "rows V5: a green missing a required line is a MISMATCH" \
+rows_leg out "tests/e2e/mac_v_green_test.py|green|v-green"
+[ "$(rows_verdict "$out" v_green)" = MISMATCH ] && [ "$LEG_RC" -eq 1 ] && ok "rows V5: a green whose PASS names another test is a MISMATCH" \
   || bad "rows V5: $(rows_verdict "$out" v_green) rc=$LEG_RC"
-rows_leg out "tests/e2e/mac_v_red_ok_test.py|red|need-a" "tests/e2e/mac_v_red_shape_test.py|red|need-a|need-b" "tests/e2e/mac_v_green_test.py|green|need-a"
+rows_leg out "tests/e2e/mac_v_red_ok_test.py|red|v-red" "tests/e2e/mac_v_red_shape_test.py|red|v-red" "tests/e2e/mac_v_green_test.py|green|v-other"
 n=$(grep -c $'^ROW\t' <<<"$out")
 [ "$n" -eq 3 ] && [ "$LEG_RC" -eq 1 ] && ok "rows: all 3 rows ran around a mismatch, leg exit 1" || bad "rows: $n ROW lines, rc=$LEG_RC"
 before=$(cd "$T/rows-home" && find . -mindepth 1 -maxdepth 1 | sort)
-rows_leg out "tests/e2e/mac_v_env_test.py|green|"$'EPH\t1'
+rows_leg out "tests/e2e/mac_v_env_test.py|green|x"
 root="$T/rows-home/$RRD"
 envbad=0
 out=$(sed -n 's|^    tests/e2e/mac_v_env_test.py: ||p' <<<"$out")   # the leg prefixes each output line with its file
@@ -297,6 +304,27 @@ grep -qx $'EPH\t1' <<<"$out" || { envbad=1; bad "rows V6: ZB_DEBUG_EPHEMERAL_DAT
 after=$(cd "$T/rows-home" && find . -mindepth 1 -maxdepth 1 | sort)
 [ "$before" = "$after" ] || { envbad=1; bad "rows V6: the leg wrote outside the run root: $(comm -13 <(echo "$before") <(echo "$after") | tr '\n' ' ')"; }
 [ "$envbad" -eq 0 ] && [ "$LEG_RC" -eq 0 ] && ok "rows V6: private HOME/TMPDIR/XDG beneath the run root, ephemeral store on, nothing written outside it"
+
+# The red vectors themselves (tests/e2e/mac_red_shape_selftest.py, hostless): each red test's exact vector gives
+# RED_SHAPE, and a flipped, missing, extra, duplicated or precondition-broken outcome, or the real row-3 check driven
+# with zero or two matching LOAD_FAIL rows, gives none.
+if shape=$(cd "$ROOT/tests/e2e" && env -i PATH=/usr/bin:/bin HOME="$T/home" python3 -B mac_red_shape_selftest.py 2>&1) \
+  && grep -q $'^PASS\tmac-red-shape-selftest\t' <<<"$shape"; then
+  ok "rows: $(grep $'^PASS\t' <<<"$shape" | tr '\t' ' ')"
+else
+  bad "rows: the red-shape selftest failed: $shape"
+fi
+
+# No row may send SIGKILL on a Mac (session brief): every row file stops its browser through mac_term_teardown
+# (SIGTERM only). Tripwire only; the teardown's behavior is proved in a private PID namespace (commit message).
+for f in $(awk -F'|' '/^  "tests\/e2e\/mac_[a-z0-9_]+_test\.py[|]/ { sub(/^  "/, "", $1); print $1 }' "$R/tests/mac/ms_runtime_rows_gate.sh"); do
+  if grep -q 'from mac_term_teardown import' "$ROOT/$f" && ! grep -qE 'stop_browser_macos|signal\.SIGKILL|\.kill\(\)' "$ROOT/$f"; then
+    ok "rows: $f stops its browser with SIGTERM only"
+  else
+    bad "rows: $f does not use the SIGTERM-only teardown (or names SIGKILL)"
+  fi
+done
+grep -q 'signal\.SIGKILL' "$ROOT/tests/e2e/mac_term_teardown.py" && bad "rows: mac_term_teardown.py names SIGKILL"
 
 if [ "$fails" -eq 0 ]; then printf 'PASS\tmac-gate-callers-selftest\n'; exit 0; fi
 printf 'FAIL\tmac-gate-callers-selftest\t%s failure(s)\n' "$fails"

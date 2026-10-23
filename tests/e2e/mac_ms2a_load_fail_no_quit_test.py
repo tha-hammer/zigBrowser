@@ -29,7 +29,9 @@ Rows (each in a fresh browser, because today the first failure ends the process)
   5 the kept contract: the primary window's INITIAL load of a dead host, before any finish, still exits with
     ZB_EXIT_LOAD_FAILED (5) and one LOAD_FAIL row. Flips if the owner picks option B.
 
-Failing assertions today (Mac): rows 1-3 `proc.poll() is None` (the process has exited with 5).
+Failing assertions today (Mac), the accepted red vector RED_VECTOR (red_shape.py; the rows gate requires its
+RED_SHAPE line): rows 1-3 record their one LOAD_FAIL row (the shim emits it before requestExit:), then .alive and
+.page-list-answers fail (the process has exited with 5); row 5 passes. Any other outcome is a MISMATCH.
 
 Isolation: every launch gets a private HOME and its own --profile-dir under a per-row temp dir, never the
 account's default profile.
@@ -46,11 +48,17 @@ import time
 from pathlib import Path
 
 from automation_core_test import RpcClient, _read_lines  # noqa: E402
-from mac_ms2a_routed_test import stop_browser_macos, _install_signal_cleanup  # noqa: E402
+from mac_term_teardown import install_term_only_cleanup, leak_failures, stop_browser_term_only  # noqa: E402
+from red_shape import FAIL, PASS, RedShape  # noqa: E402
 
 ZB_EXIT_LOAD_FAILED = 5
 DEAD_URL = "http://nonexistent.invalid/"
 ALIVE_GRACE_SEC = 2.0  # after the LOAD_FAIL row, today's exit lands well inside this
+TEST_ID = "ms2a-load-fail-no-quit"
+ROWS = ("row1-click-dead-link", "row2-routed-then-location", "row3-undisplayable-response")
+RED_VECTOR = {f"{row}.{aid}": want for row in ROWS
+              for aid, want in (("load-fail-once", PASS), ("alive", FAIL), ("page-list-answers", FAIL))}
+RED_VECTOR.update({"row5.exit-code": PASS, "row5.load-fail-once": PASS})
 PAGES = {
     "/a": b"<!doctype html><html><head><meta charset='utf-8'><title>A</title></head><body><h1>A</h1>"
           b"<a id='dead' href='" + DEAD_URL.encode() + b"'>dead</a>"
@@ -150,7 +158,7 @@ class _Browser:
         return self.load_fails(is_dead_url)
 
     def stop(self):
-        stop_browser_macos(self.proc)
+        stop_browser_term_only(self.proc)
 
 
 def is_dead_url(u: str) -> bool:
@@ -169,41 +177,39 @@ def page_list_answers(rpc: RpcClient) -> bool:
     return "error" not in reply and reply.get("result") is not None
 
 
-def check_alive(label: str, b: _Browser, rpc: RpcClient, failures: list[str], fail_match):
+def check_alive(label: str, b: _Browser, rpc: RpcClient, shape: RedShape, fail_match):
     time.sleep(ALIVE_GRACE_SEC)
-    n = b.load_fails(fail_match)
-    if n != 1:  # the failure must be recorded exactly once (not swallowed, not doubled)
-        failures.append(f"{label}: LOAD_FAIL rows for the failing load = {n}, want 1")
+    n = b.load_fails(fail_match)  # the failure must be recorded exactly once (not swallowed, not doubled)
+    shape.check(f"{label}.load-fail-once", n == 1, f"LOAD_FAIL rows for the failing load = {n}, want 1")
     rc = b.proc.poll()
-    if rc is not None:
-        failures.append(f"{label}: the browser exited (rc={rc}) after a post-first-finish load failure")
-        return
-    if not page_list_answers(rpc):
-        failures.append(f"{label}: page.list did not answer after the load failure")
+    alive = shape.check(f"{label}.alive", rc is None,
+                        f"the browser exited (rc={rc}) after a post-first-finish load failure")
+    shape.check(f"{label}.page-list-answers", alive and page_list_answers(rpc),
+                "page.list did not answer after the load failure" if alive else "not asked: the browser had exited")
 
 
-def run_row(label: str, browser: Path, fixture, proc_holder: list, timeout_sec: float, act, fail_match):
-    failures: list[str] = []
+def run_row(label: str, browser: Path, fixture, proc_holder: list, timeout_sec: float, act, fail_match,
+            shape: RedShape):
     with tempfile.TemporaryDirectory(prefix="zb-loadfail-") as tmp:
         b = _Browser(browser, f"{fixture.base_url}/a", Path(tmp), proc_holder)
         rpc = None
         try:
             if not b.wait_row("NAV", lambda r: len(r) >= 2 and r[1].endswith("/a"), timeout_sec):
-                failures.append(f"{label}: PRECONDITION the primary window never finished its first load")
-                return failures, b
+                shape.problem(f"{label}: PRECONDITION the primary window never finished its first load")
+                return b
             rpc = RpcClient(b.socket_path, timeout_sec)
             act(rpc, fixture)
             b.wait_row("LOAD_FAIL", lambda r: len(r) >= 2 and fail_match(r[1]), 10.0)
             if fail_match is is_attach_url and "/attach" not in fixture.hits:
-                failures.append(f"{label}: PRECONDITION the page never requested /attach")  # else vacuous
-            check_alive(label, b, rpc, failures, fail_match)
+                shape.problem(f"{label}: PRECONDITION the page never requested /attach")  # else vacuous
+            check_alive(label, b, rpc, shape, fail_match)
         except Exception as exc:  # noqa: BLE001
-            failures.append(f"{label}: unexpected error: {exc!r} (rc={b.proc.poll()})")
+            shape.problem(f"{label}: unexpected error: {exc!r} (rc={b.proc.poll()})")
         finally:
             if rpc is not None:
                 rpc.close()
             b.stop()
-    return failures, b
+    return b
 
 
 def act_click_dead(rpc: RpcClient, fixture) -> None:
@@ -228,22 +234,21 @@ def act_click_attachment(rpc: RpcClient, fixture) -> None:
         pass
 
 
-def row5_initial_load_exits(browser: Path, proc_holder: list, timeout_sec: float) -> tuple[list[str], _Browser]:
-    failures: list[str] = []
+def row5_initial_load_exits(browser: Path, proc_holder: list, timeout_sec: float, shape: RedShape) -> _Browser:
     with tempfile.TemporaryDirectory(prefix="zb-loadfail-init-") as tmp:
         b = _Browser(browser, DEAD_URL, Path(tmp), proc_holder)
         try:
             rc = b.proc.wait(timeout=timeout_sec)
             time.sleep(0.2)  # let the reader threads drain stdout
-            if rc != ZB_EXIT_LOAD_FAILED:
-                failures.append(f"row5: initial-load failure exited rc={rc}, want {ZB_EXIT_LOAD_FAILED}")
-            if b.dead_load_fails() != 1:
-                failures.append(f"row5: LOAD_FAIL rows for {DEAD_URL} = {b.dead_load_fails()}, want 1")
+            shape.check("row5.exit-code", rc == ZB_EXIT_LOAD_FAILED,
+                        f"initial-load failure exited rc={rc}, want {ZB_EXIT_LOAD_FAILED}")
+            shape.check("row5.load-fail-once", b.dead_load_fails() == 1,
+                        f"LOAD_FAIL rows for {DEAD_URL} = {b.dead_load_fails()}, want 1")
         except subprocess.TimeoutExpired:
-            failures.append(f"row5: the primary window's initial-load failure did not exit within {timeout_sec}s")
+            shape.problem(f"row5: the primary window's initial-load failure did not exit within {timeout_sec}s")
         finally:
             b.stop()
-    return failures, b
+    return b
 
 
 def main() -> int:
@@ -258,40 +263,20 @@ def main() -> int:
         return 1
 
     proc_holder: list[subprocess.Popen] = []
-    _install_signal_cleanup(lambda: proc_holder[0] if proc_holder else None)
-    failures: list[str] = []
-    asserts = 0
+    install_term_only_cleanup(lambda: proc_holder[0] if proc_holder else None)
+    shape = RedShape(TEST_ID, RED_VECTOR)  # a missing row is a missing assertion (rule 7)
 
     with _FixtureServer() as fixture:
-        for label, act, want in (
-            ("row1-click-dead-link", act_click_dead, is_dead_url),
-            ("row2-routed-then-location", act_routed_then_location, is_dead_url),
-            ("row3-undisplayable-response", act_click_attachment, is_attach_url),
-        ):
-            f, b = run_row(label, browser, fixture, proc_holder, args.timeout_sec, act, want)
-            asserts += 1
-            if f:
-                eprint(f"{label} stderr={b.err[-12:]}")
-            else:
-                print(f"PASS\t{label}")
-            failures += f
-        f, b = row5_initial_load_exits(browser, proc_holder, args.timeout_sec)
-        asserts += 1
-        if f:
-            eprint(f"row5 stderr={b.err[-12:]}")
-        else:
-            print("PASS\trow5-initial-load-exits")
-        failures += f
+        for label, act, want in zip(ROWS, (act_click_dead, act_routed_then_location, act_click_attachment),
+                                    (is_dead_url, is_dead_url, is_attach_url)):
+            b = run_row(label, browser, fixture, proc_holder, args.timeout_sec, act, want, shape)
+            eprint(f"{label} stderr={b.err[-12:]}")
+        b = row5_initial_load_exits(browser, proc_holder, args.timeout_sec, shape)
+        eprint(f"row5 stderr={b.err[-12:]}")
 
-    if asserts != 4:
-        failures.append(f"ran {asserts} rows, want 4")  # zero or missing rows is a failure (rule 7)
-    if failures:
-        print("FAIL\tms2a-load-fail-no-quit")
-        for f in failures:
-            eprint(f"  {f}")
-        return 1
-    print("PASS\tms2a-load-fail-no-quit")
-    return 0
+    for msg in leak_failures():  # a browser SIGTERM did not end fails the row (no SIGKILL on a Mac)
+        shape.problem(msg)
+    return shape.report()
 
 
 if __name__ == "__main__":

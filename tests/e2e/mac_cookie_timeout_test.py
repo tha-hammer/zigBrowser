@@ -19,7 +19,9 @@ deadline. For each of cookies.getAll, cookies.set and cookies.delete:
 and after the late completions have run:
   3 live_jobs returns to its baseline (no job leaked by the abandon) and the browser still runs.
 
-Failing assertions today (Mac): 1 and 2 for every op (each returns OK after ~12.5 s).
+Failing assertions today (Mac), the accepted red vector RED_VECTOR (red_shape.py; the rows gate requires its
+RED_SHAPE line): 1 and 2 fail for every op (each returns OK after ~12.5 s); 3 (live_jobs back to baseline, and
+the browser still running) passes.
 Target step: `ms3-gate` (TO BE ADDED by bd 4pa.62); until the green this file is in no gate script and no
 build.zig step. Every launch gets a private HOME and its own --profile-dir.
 """
@@ -36,11 +38,16 @@ import time
 from pathlib import Path
 
 from automation_core_test import RpcClient, _read_lines  # noqa: E402
-from mac_ms2a_routed_test import stop_browser_macos, _install_signal_cleanup  # noqa: E402
+from mac_term_teardown import install_term_only_cleanup, leak_failures, stop_browser_term_only  # noqa: E402
+from red_shape import FAIL, PASS, RedShape  # noqa: E402
 
 DELAY_MS = 12_500
 SERVER_DEADLINE_S = 10.0  # cookie_routes.port_timeout_ms
 LATE_BOUND_S = 11.5
+TEST_ID = "ms3-cookie-timeout"
+OPS = ("cookies.getAll", "cookies.set", "cookies.delete")
+RED_VECTOR = {f"{n} {op}": FAIL for op in OPS for n in ("1-action-timeout", "2-at-deadline")}
+RED_VECTOR.update({"3-live-jobs-baseline": PASS, "3-browser-running": PASS})
 PAGE = b"<!doctype html><html><head><meta charset='utf-8'><title>C</title></head><body>c</body></html>"
 
 def e2e_socket_path(default):
@@ -108,9 +115,8 @@ def main() -> int:
         return 1
 
     proc_holder: list[subprocess.Popen] = []
-    _install_signal_cleanup(lambda: proc_holder[0] if proc_holder else None)
-    failures: list[str] = []
-    asserted = 0
+    install_term_only_cleanup(lambda: proc_holder[0] if proc_holder else None)
+    shape = RedShape(TEST_ID, RED_VECTOR)
 
     with _FixtureServer() as fixture, tempfile.TemporaryDirectory(prefix="zb-ms3-cktimeout-") as tmp:
         socket_path = e2e_socket_path(Path(tmp) / "automation.sock")
@@ -151,39 +157,30 @@ def main() -> int:
                 if delay_hits(err) <= hits_before:
                     raise AssertionError(f"PRECONDITION {method}: the cookie-delay seam never fired")
                 message = (reply.get("error") or {}).get("message")
-                asserted += 2
-                if message != "action_timeout":
-                    failures.append(f"1 {method}: want the action_timeout error, got {reply!r}")
-                if elapsed >= LATE_BOUND_S:
-                    failures.append(f"2 {method}: returned after {elapsed:.1f}s, not at the "
-                                    f"{SERVER_DEADLINE_S:.0f}s deadline (the store answered at {DELAY_MS / 1000:.1f}s)")
+                shape.check(f"1-action-timeout {method}", message == "action_timeout",
+                            f"want the action_timeout error, got {reply!r}")
+                shape.check(f"2-at-deadline {method}", elapsed < LATE_BOUND_S,
+                            f"returned after {elapsed:.1f}s, not at the {SERVER_DEADLINE_S:.0f}s deadline "
+                            f"(the store answered at {DELAY_MS / 1000:.1f}s)")
 
             # Every late completion has run once the delay has passed since the last call was issued.
             settle_end = time.monotonic() + DELAY_MS / 1000.0 + 3.0
             while time.monotonic() < settle_end and last_live_jobs(err) != baseline:
                 time.sleep(0.1)
-            asserted += 1
-            if last_live_jobs(err) != baseline:
-                failures.append(f"3: live_jobs {last_live_jobs(err)} did not return to baseline {baseline}")
-            if proc.poll() is not None:
-                failures.append(f"3: the browser exited (rc={proc.returncode})")
+            shape.check("3-live-jobs-baseline", last_live_jobs(err) == baseline,
+                        f"live_jobs {last_live_jobs(err)} did not return to baseline {baseline}")
+            shape.check("3-browser-running", proc.poll() is None, f"the browser exited (rc={proc.returncode})")
         except Exception as exc:  # noqa: BLE001
-            failures.append(f"{exc!r} (rc={proc.poll()})")
+            shape.problem(f"{exc!r} (rc={proc.poll()})")
         finally:
             if rpc is not None:
                 rpc.close()
-            stop_browser_macos(proc)
+            stop_browser_term_only(proc)
 
-    if asserted != 7 and not failures:
-        failures.append(f"ran {asserted} assertions, want 7")  # rule 7
-    if failures:
-        print("FAIL\tms3-cookie-timeout")
-        for f in failures:
-            eprint(f"  {f}")
-        eprint(f"stderr={err[-20:]}")
-        return 1
-    print("PASS\tms3-cookie-timeout")
-    return 0
+    for msg in leak_failures():  # a browser SIGTERM did not end fails the row (no SIGKILL on a Mac)
+        shape.problem(msg)
+    eprint(f"stderr={err[-20:]}")
+    return shape.report()  # a missing assertion is a failure (rule 7)
 
 
 if __name__ == "__main__":

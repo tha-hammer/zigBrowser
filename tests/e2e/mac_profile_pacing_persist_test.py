@@ -17,7 +17,8 @@ persisted config is restored on restart whatever the day (counts only on the sam
   run 2 on the same --profile-dir:
   2 social.rate_status reports daily_cap == 7 (today: D, because nothing was saved).
 
-Failing assertions today (Mac): 1 and 2. Target step: `ms3-gate` (TO BE ADDED by bd 4pa.62); until the green
+Failing assertions today (Mac), the accepted red vector RED_VECTOR (red_shape.py; the rows gate requires its
+RED_SHAPE line): 1-file-exists, 1-no-save-error and 2-cap-restored all fail. Target step: `ms3-gate` (TO BE ADDED by bd 4pa.62); until the green
 this file is in no gate script and no build.zig step. Every launch gets a private HOME.
 """
 import argparse
@@ -32,7 +33,11 @@ import time
 from pathlib import Path
 
 from automation_core_test import RpcClient, _read_lines  # noqa: E402
-from mac_ms2a_routed_test import stop_browser_macos, _install_signal_cleanup  # noqa: E402
+from mac_term_teardown import install_term_only_cleanup, leak_failures, stop_browser_term_only  # noqa: E402
+from red_shape import FAIL, RedShape  # noqa: E402
+
+TEST_ID = "ms3-profile-pacing-persist"
+RED_VECTOR = {"1-file-exists": FAIL, "1-no-save-error": FAIL, "2-cap-restored": FAIL}
 
 NEW_CAP = 7
 PAGE = b"<!doctype html><html><head><meta charset='utf-8'><title>P</title></head><body>p</body></html>"
@@ -101,7 +106,7 @@ def run_once(browser: Path, url: str, tmp: Path, profile: Path, run: str, proc_h
     finally:
         if rpc is not None:
             rpc.close()
-        stop_browser_macos(proc)
+        stop_browser_term_only(proc)
         time.sleep(0.2)  # let the stderr reader drain
 
 
@@ -117,9 +122,8 @@ def main() -> int:
         return 1
 
     proc_holder: list[subprocess.Popen] = []
-    _install_signal_cleanup(lambda: proc_holder[0] if proc_holder else None)
-    failures: list[str] = []
-    asserted = 0
+    install_term_only_cleanup(lambda: proc_holder[0] if proc_holder else None)
+    shape = RedShape(TEST_ID, RED_VECTOR)
 
     with _FixtureServer() as fixture, tempfile.TemporaryDirectory(prefix="zb-ms3-pacing-") as tmp_s:
         tmp = Path(tmp_s)
@@ -138,29 +142,20 @@ def main() -> int:
                 raise AssertionError(f"PRECONDITION default cap {default_cap!r} must differ from {NEW_CAP}, "
                                      f"set_pacing must return ok: {ok!r}")
             save_errors = [ln for ln in err1 if "could not save" in ln]
-            asserted += 1
-            if not pacing_file.is_file() or save_errors:
-                failures.append(f"1: after run 1 {pacing_file} exists={pacing_file.is_file()}; "
-                                f"save errors={save_errors[-2:]!r}")
+            shape.check("1-file-exists", pacing_file.is_file(), f"after run 1 {pacing_file} does not exist")
+            shape.check("1-no-save-error", not save_errors, f"after run 1 save errors={save_errors[-2:]!r}")
 
             cap2, _err2 = run_once(browser, f"{fixture.base_url}/", tmp, profile, "2", proc_holder,
                                    args.timeout_sec, lambda rpc: rpc.call("social.rate_status", {}).get("daily_cap"))
-            asserted += 1
-            if cap2 != NEW_CAP:
-                failures.append(f"2: after a restart on the same --profile-dir daily_cap is {cap2!r}, want {NEW_CAP} "
-                                f"(the default is {default_cap!r}: the pacing state did not persist)")
+            shape.check("2-cap-restored", cap2 == NEW_CAP,
+                        f"after a restart on the same --profile-dir daily_cap is {cap2!r}, want {NEW_CAP} "
+                        f"(the default is {default_cap!r}: the pacing state did not persist)")
         except Exception as exc:  # noqa: BLE001
-            failures.append(f"{exc!r}")
+            shape.problem(f"{exc!r}")
 
-    if asserted != 2 and not failures:
-        failures.append(f"ran {asserted} assertions, want 2")  # rule 7
-    if failures:
-        print("FAIL\tms3-profile-pacing-persist")
-        for f in failures:
-            eprint(f"  {f}")
-        return 1
-    print("PASS\tms3-profile-pacing-persist")
-    return 0
+    for msg in leak_failures():  # a browser SIGTERM did not end fails the row (no SIGKILL on a Mac)
+        shape.problem(msg)
+    return shape.report()  # a missing assertion is a failure (rule 7)
 
 
 if __name__ == "__main__":

@@ -23,7 +23,7 @@ import time
 from pathlib import Path
 
 from automation_core_test import RpcClient, _read_lines  # noqa: E402
-from mac_ms2a_routed_test import stop_browser_macos, _install_signal_cleanup  # noqa: E402
+from mac_term_teardown import install_term_only_cleanup, leak_failures, stop_browser_term_only  # noqa: E402
 
 PAGE = b"<!doctype html><html><head><meta charset='utf-8'><title>E</title></head><body>e</body></html>"
 COOKIE = "zbeph"
@@ -92,7 +92,7 @@ def run_once(browser: Path, url: str, tmp: Path, run: str, proc_holder: list, ti
     finally:
         if rpc is not None:
             rpc.close()
-        stop_browser_macos(proc)
+        stop_browser_term_only(proc)
         time.sleep(0.2)
 
 
@@ -112,7 +112,7 @@ def main() -> int:
         return 1
 
     proc_holder: list = []
-    _install_signal_cleanup(lambda: proc_holder[0] if proc_holder else None)
+    install_term_only_cleanup(lambda: proc_holder[0] if proc_holder else None)
     failures: list = []
     asserted = 0
 
@@ -142,6 +142,7 @@ def main() -> int:
 
     if asserted != 4 and not failures:
         failures.append(f"ran {asserted} assertions, want 4")  # rule 7
+    failures += leak_failures()  # a browser SIGTERM did not end fails the row (no SIGKILL on a Mac)
     if failures:
         print("FAIL\tms3-ephemeral-store")
         for f in failures:

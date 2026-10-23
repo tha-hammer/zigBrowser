@@ -21,7 +21,8 @@ Given a popup opened by window.open; When its NSWindow is closed through its clo
   4 the opener's URL and DOM survive and the browser keeps running,
   5 the shared destroy path ran: the last WINCOUNT row is 1 (removeWindow:, as webViewDidClose: uses).
 
-Failing assertions today (Mac): 1 `popup_id not in page_list_ids()` and 2 (the popup still answers), 5.
+Failing assertions today (Mac), the accepted red vector RED_VECTOR (red_shape.py; the rows gate requires its
+RED_SHAPE line): 1 `popup_id not in page_list_ids()`, 2 (the popup still answers) and 5 fail; 3 and 4 pass.
 Target step: `ms2c-gate` (TO BE ADDED by bd 4pa.62). Until the green this file is in no gate script and no
 build.zig step. Every launch gets a private HOME and its own --profile-dir.
 """
@@ -38,9 +39,13 @@ import time
 from pathlib import Path
 
 from automation_core_test import RpcClient, _read_lines  # noqa: E402
-from mac_ms2a_routed_test import stop_browser_macos, _install_signal_cleanup  # noqa: E402
+from mac_term_teardown import install_term_only_cleanup, leak_failures, stop_browser_term_only  # noqa: E402
+from red_shape import FAIL, PASS, RedShape  # noqa: E402
 
 CLOSE_TITLE = "zb-native-close"
+TEST_ID = "ms2c-close-button"
+RED_VECTOR = {"1-left-page-list": FAIL, "2-routed-no-window": FAIL, "3-live-jobs-baseline": PASS,
+              "4-opener-intact": PASS, "5-shared-destroy-path": FAIL}
 PAGES = {
     "/a": b"<!doctype html><html><head><meta charset='utf-8'><title>OPENER</title></head>"
           b"<body><p id='t'>opener-dom</p></body></html>",
@@ -118,9 +123,8 @@ def main() -> int:
         return 1
 
     proc_holder: list[subprocess.Popen] = []
-    _install_signal_cleanup(lambda: proc_holder[0] if proc_holder else None)
-    failures: list[str] = []
-    asserted = 0
+    install_term_only_cleanup(lambda: proc_holder[0] if proc_holder else None)
+    shape = RedShape(TEST_ID, RED_VECTOR)
 
     with _FixtureServer() as fixture, tempfile.TemporaryDirectory(prefix="zb-ms2c-closebtn-") as tmp:
         socket_path = e2e_socket_path(Path(tmp) / "automation.sock")
@@ -172,51 +176,40 @@ def main() -> int:
 
             wait_until(lambda: popup_id not in page_list_ids(), 3.0)
             ids = page_list_ids()
-            asserted += 1
-            if popup_id in ids:
-                failures.append(f"1: the natively closed popup {popup_id} is still in page.list: {ids!r}")
+            shape.check("1-left-page-list", popup_id not in ids,
+                        f"the natively closed popup {popup_id} is still in page.list: {ids!r}")
 
             reply = rpc.raw("page.title", {"window_id": popup_id})
             reason = ((reply.get("error") or {}).get("data") or {}).get("reason")
-            asserted += 1
-            if reason != "no_window":
-                failures.append(f"2: a command routed to the closed popup did not fail with no_window: {reply!r}")
+            shape.check("2-routed-no-window", reason == "no_window",
+                        f"a command routed to the closed popup did not fail with no_window: {reply!r}")
 
             settled = wait_until(lambda: last_live_jobs(err) == baseline, 3.0)
-            asserted += 1
-            if not settled:
-                failures.append(f"3: live_jobs {last_live_jobs(err)} did not return to baseline {baseline}")
+            shape.check("3-live-jobs-baseline", settled,
+                        f"live_jobs {last_live_jobs(err)} did not return to baseline {baseline}")
 
-            asserted += 1
             if proc.poll() is not None:
-                failures.append(f"4: the browser exited (rc={proc.returncode}) when a popup was closed")
+                shape.check("4-opener-intact", False, f"the browser exited (rc={proc.returncode}) when a popup was closed")
             else:
                 url_after = rpc.call("page.url", {"timeout_ms": 10000}).get("url")
                 dom_after = rpc.evaluate("document.getElementById('t').textContent")
-                if url_after != opener_url or dom_after != "opener-dom":
-                    failures.append(f"4: the opener changed: url {url_after!r} (was {opener_url!r}), dom {dom_after!r}")
+                shape.check("4-opener-intact", url_after == opener_url and dom_after == "opener-dom",
+                            f"the opener changed: url {url_after!r} (was {opener_url!r}), dom {dom_after!r}")
 
             wincount = [l for l in list(out) if l.startswith("WINCOUNT\t")]
-            asserted += 1
-            if not wincount or wincount[-1] != "WINCOUNT\t1":
-                failures.append(f"5: the shared destroy path did not run (WINCOUNT rows {wincount[-4:]!r})")
+            shape.check("5-shared-destroy-path", bool(wincount) and wincount[-1] == "WINCOUNT\t1",
+                        f"the shared destroy path did not run (WINCOUNT rows {wincount[-4:]!r})")
         except Exception as exc:  # noqa: BLE001
-            failures.append(f"{exc!r} (rc={proc.poll()})")
+            shape.problem(f"{exc!r} (rc={proc.poll()})")
         finally:
             if rpc is not None:
                 rpc.close()
-            stop_browser_macos(proc)
+            stop_browser_term_only(proc)
 
-    if asserted != 5 and not failures:
-        failures.append(f"ran {asserted} assertions, want 5")  # rule 7
-    if failures:
-        print("FAIL\tms2c-close-button")
-        for f in failures:
-            eprint(f"  {f}")
-        eprint(f"stderr={err[-20:]}")
-        return 1
-    print("PASS\tms2c-close-button")
-    return 0
+    for msg in leak_failures():  # a browser SIGTERM did not end fails the row (no SIGKILL on a Mac)
+        shape.problem(msg)
+    eprint(f"stderr={err[-20:]}")
+    return shape.report()  # a missing assertion is a failure (rule 7)
 
 
 if __name__ == "__main__":

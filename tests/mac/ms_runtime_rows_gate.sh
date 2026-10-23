@@ -12,11 +12,14 @@
 #   - ZB_DEBUG_EPHEMERAL_DATA_STORE=1 (e2e-only hook 16; every row launches with --e2e-protocol and an in-run
 #     --profile-dir) gives every window a non-persistent WKWebsiteDataStore, so no website data is written to
 #     WebKit's own location under the account Library.
-# A ROW is `<tests/e2e file>|<red|green>|<required line>...`, judged on the Mac:
-#   red   exit 1, its own FAIL<TAB> line, EVERY required line present as a substring of the output (the exact
-#         failing assertions, so a red that fails in another shape is a MISMATCH), and no PRECONDITION or
-#         binary-missing line;
-#   green exit 0, its own PASS<TAB> line, and every required line present.
+# A ROW is `<tests/e2e file>|<red|green>|<test id>`, judged on the Mac (SilverRidge cf7a783):
+#   red   exit 1 and exactly one `RED_SHAPE<TAB><test id>` line, which the test prints (tests/e2e/red_shape.py) only
+#         when every assertion of its accepted red vector ran and failed or passed exactly as that vector says,
+#         nothing else ran, and no precondition or unexpected error intervened; any RED_SHAPE_MISMATCH,
+#         PRECONDITION or binary-missing line is a MISMATCH;
+#   green exit 0, its own `PASS<TAB><test id>` line, and no FAIL<TAB> line.
+# Every browser launch in these rows stops the browser with SIGTERM only (tests/e2e/mac_term_teardown.py): the
+# session brief forbids SIGKILL on a Mac, so a browser that does not quit is left running and its row fails.
 # Every row runs (one row's result never stops the next); each prints its output and a
 # ROW<TAB><file><TAB><want><TAB>rc=<n><TAB>MATCH|MISMATCH line. The gate prints PASS<TAB>ms-runtime-rows-gate<TAB>both-arches
 # only when every row on both Macs matched. Console user, no xvfb (WKWebView needs the WindowServer), like ms2a/ms2c.
@@ -29,22 +32,21 @@ INTEL_HOST="${ZB_MAC_HOST:-maceojourdan@100.92.212.47}"
 ARM_HOST="${ZB_MAC_ARM_HOST:-}"
 ARM_KEY="${ZB_MAC_ARM_KEY:-$KEY}"
 
-T=$'\t'
-# The run request: one row per red, with the exact assertion lines each must fail on today, plus the coverage row
-# of the e2e-only ephemeral store (hook 16).
+# The run request: one row per red (its accepted vector is RED_VECTOR in the test file), plus the coverage row of
+# the e2e-only ephemeral store (hook 16).
 ROWS=(
-  "tests/e2e/mac_ephemeral_store_test.py|green|PASS${T}ms3-ephemeral-store"
-  "tests/e2e/mac_ms2a_load_fail_no_quit_test.py|red|row1-click-dead-link: the browser exited (rc=5)|row2-routed-then-location: the browser exited (rc=5)|PASS${T}row5-initial-load-exits"
-  "tests/e2e/mac_ms2c_recover_slow_server_test.py|red|the browser exited (rc=8)"
-  "tests/e2e/mac_ms2c_close_button_test.py|red|1: the natively closed popup|2: a command routed to the closed popup did not fail with no_window|5: the shared destroy path did not run"
-  "tests/e2e/mac_ms2b_dialog_popup_id_test.py|red|1: dialog.get listed the confirm under 'window-2', page.list id is 'window-3'|2: dialog.get on window-3 did not report the open confirm|3: answering the listed window failed"
-  "tests/e2e/mac_cookie_timeout_test.py|red|1 cookies.getAll: want the action_timeout error|2 cookies.getAll: returned after|1 cookies.set: want the action_timeout error|2 cookies.set: returned after|1 cookies.delete: want the action_timeout error|2 cookies.delete: returned after"
-  "tests/e2e/mac_profile_pacing_persist_test.py|red|1: after run 1|2: after a restart on the same --profile-dir daily_cap is"
+  "tests/e2e/mac_ephemeral_store_test.py|green|ms3-ephemeral-store"
+  "tests/e2e/mac_ms2a_load_fail_no_quit_test.py|red|ms2a-load-fail-no-quit"
+  "tests/e2e/mac_ms2c_recover_slow_server_test.py|red|ms2c-recover-slow-server"
+  "tests/e2e/mac_ms2c_close_button_test.py|red|ms2c-close-button"
+  "tests/e2e/mac_ms2b_dialog_popup_id_test.py|red|ms2b-dialog-popup-id"
+  "tests/e2e/mac_cookie_timeout_test.py|red|ms3-cookie-timeout"
+  "tests/e2e/mac_profile_pacing_persist_test.py|red|ms3-profile-pacing-persist"
 )
 
 cd "$(git rev-parse --show-toplevel)"
 for row in "${ROWS[@]}"; do   # fail closed on a malformed row, before any host is touched
-  [[ "$row" =~ ^tests/e2e/mac_[a-z0-9_]+_test\.py\|(red|green)\|[^|]+ ]] || { echo "FAIL: bad row $row" >&2; exit 1; }
+  [[ "$row" =~ ^tests/e2e/mac_[a-z0-9_]+_test\.py\|(red|green)\|[a-z0-9-]+$ ]] || { echo "FAIL: bad row $row" >&2; exit 1; }
 done
 . tests/mac/mac_gate_lib.sh
 trap mac_remove_run_dirs EXIT
@@ -75,22 +77,22 @@ export HOME="$root/run-env/home" CFFIXED_USER_HOME="$root/run-env/home" TMPDIR="
   XDG_DATA_HOME="$root/run-env/xdg-data" XDG_CACHE_HOME="$root/run-env/xdg-cache" \
   XDG_CONFIG_HOME="$root/run-env/xdg-config" XDG_RUNTIME_DIR="$root/run-env/xdg-runtime" \
   ZB_E2E_SOCKET_DIR="$root/s" ZB_DEBUG_EPHEMERAL_DATA_STORE=1
+T=$'\t'
 overall=0
 for row in "$@"; do
-  IFS='|' read -r -a part <<<"$row"
-  file=${part[0]} want=${part[1]}
+  IFS='|' read -r file want id <<<"$row"
   out=$(python3 "$file" --browser zig-out/bin/zigBrowser 2>&1); rc=$?
-  printf '%s\n' "$out" | tail -n 60 | sed "s|^|    $file: |"
+  { printf '%s\n' "$out" | grep -E "^(ASSERT|RED_SHAPE|RED_SHAPE_MISMATCH|PASS|FAIL)$T"; printf '%s\n' "$out" | tail -n 40; } \
+    | sed "s|^|    $file: |"
   verdict=MATCH
   case "$want" in
-    red) [ "$rc" -eq 1 ] && printf '%s\n' "$out" | grep -q $'^FAIL\t' || verdict=MISMATCH
-         if printf '%s\n' "$out" | grep -qE 'PRECONDITION|binary-missing'; then verdict=MISMATCH; fi ;;
-    green) [ "$rc" -eq 0 ] && printf '%s\n' "$out" | grep -q $'^PASS\t' || verdict=MISMATCH ;;
+    red) [ "$rc" -eq 1 ] || verdict=MISMATCH
+         [ "$(printf '%s\n' "$out" | grep -cxF "RED_SHAPE$T$id")" -eq 1 ] || verdict=MISMATCH
+         if printf '%s\n' "$out" | grep -qE 'RED_SHAPE_MISMATCH|PRECONDITION|binary-missing'; then verdict=MISMATCH; fi ;;
+    green) [ "$rc" -eq 0 ] && printf '%s\n' "$out" | grep -qxF "PASS$T$id" || verdict=MISMATCH
+           if printf '%s\n' "$out" | grep -q "^FAIL$T"; then verdict=MISMATCH; fi ;;
     *) verdict=MISMATCH ;;
   esac
-  for need in "${part[@]:2}"; do
-    printf '%s\n' "$out" | grep -qF -- "$need" || { verdict=MISMATCH; printf '    MISSING %s\n' "$need"; }
-  done
   printf 'ROW\t%s\t%s\trc=%s\t%s\n' "$file" "$want" "$rc" "$verdict"
   [ "$verdict" = MATCH ] || overall=1
 done
