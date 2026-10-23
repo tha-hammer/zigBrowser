@@ -216,7 +216,7 @@ run_layout() { # run_layout <label> <scenario> [VAR=value ...]: run_spike that k
   echo "$scen" > "$C/scenario"; echo clean > "$C/verify_mode"; echo both > "$C/verify_where"
   ls -d "$IN"/evidence/*-zb-gate-* 2>/dev/null | sort > "$T/ev.before"
   (cd "$R" && env -i PATH="$X/bin:/usr/bin:/bin" HOME="$T/home" TMPDIR="$T/tmp" ZB_MAC_HOST="$INTEL" ZB_MAC_ARM_HOST="$ARM" \
-     ZB_MAC_KEY="$T/home/no_such_key" ZB_SPIKE_REMOVE_SLEEP=0 "$@" timeout 300 bash tests/mac/bundle_layout_spike.sh run "$IN" \
+     ZB_MAC_KEY="$T/fake_mac_key" ZB_SPIKE_REMOVE_SLEEP=0 "$@" timeout 300 bash tests/mac/bundle_layout_spike.sh run "$IN" \
      >"$T/out.$label" 2>&1 </dev/null)
   rc=$?
   out=$(cat "$T/out.$label")

@@ -7,21 +7,15 @@
 # Linux over Tailscale SSH; fail-closed (arm64 host mandatory, explicit `|| return 1` per step).
 set -euo pipefail
 
-KEY="${ZB_MAC_KEY:-/home/maceo/vms/mac-m9/zb_mac_key}"
-INTEL_HOST="${ZB_MAC_HOST:-maceojourdan@100.92.212.47}"
-ARM_HOST="${ZB_MAC_ARM_HOST:-}"
-ARM_KEY="${ZB_MAC_ARM_KEY:-$KEY}"
 
 cd "$(git rev-parse --show-toplevel)"
+# The Macs and the key come only from the explicit environment, never a default (bd 3ui.13): NOT RUN otherwise.
+. tests/mac/mac_config.sh
+mac_config two
 # Builds one exact commit into a fresh per-run dir and works only there; pinned host keys (bd 4pa.59, 4pa.77).
 . tests/mac/mac_gate_lib.sh
 trap mac_remove_run_dirs EXIT
 
-if [ -z "$ARM_HOST" ]; then
-  echo "NOT RUN: arm64 host not configured (set ZB_MAC_ARM_HOST=user@host)" >&2
-  echo "        the MS2a two-arch gate is INCOMPLETE and cannot pass until it runs" >&2
-  exit 1
-fi
 
 # Build natively on the host, then run the MS2a e2e there (console user, no xvfb — WKWebView needs
 # the WindowServer, like tests/mac/gate.sh).

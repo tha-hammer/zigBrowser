@@ -26,6 +26,7 @@ fi
 ROOT=$(realpath "${1:-.}")
 BASE=$(mktemp -d "${TMPDIR:-/tmp}/zb-dmg-selftest-XXXXXX")
 T=$(realpath "$BASE")
+printf 'not a real key\n' > "$T/fake_mac_key"   # tests/mac/mac_config.sh needs a readable regular key file (bd 3ui.13)
 cleanup() {
   case "$T" in "$(realpath "${TMPDIR:-/tmp}")"/zb-dmg-selftest-??????) rm -rf "${T:?}" ;; esac
 }
@@ -117,7 +118,8 @@ chmod +x "$T/bin/ssh" "$T/bin/scp" "$MACHOME/.local/bin/zig" "$T"/hostbin/*
 # marker that is committed as "committed" and then edited (uncommitted) in the working tree, and stand-ins for the rest.
 R="$T/repo"
 mkdir -p "$R/tests/mac" "$R/packaging/macos" "$R/packaging/assets" "$R/src"
-cp "$ROOT/tests/mac/build-on-mac.sh" "$ROOT/tests/mac/mac_gate_lib.sh" "$ROOT/tests/mac/known_hosts" "$R/tests/mac/"
+cp "$ROOT/tests/mac/build-on-mac.sh" "$ROOT/tests/mac/mac_gate_lib.sh" "$ROOT/tests/mac/mac_config.sh" "$ROOT/tests/mac/known_hosts" \
+  "$R/tests/mac/"
 cp "$ROOT/packaging/macos/build-dmg.sh" "$ROOT/packaging/macos/Info.plist" "$ROOT/packaging/macos/entitlements.plist" \
   "$R/packaging/macos/"
 cp "$ROOT/packaging/assets/zigBrowser.png" "$R/packaging/assets/"
@@ -160,7 +162,7 @@ run_dmg() { # run_dmg <label> <identity or empty>: D1-D6 for one run
   local -a want=("$SHIM" "$EXE" zigBrowser.app)
   rm -rf "${C:?}"/* "$R/zigBrowser_0.2.0_macos.dmg"
   (cd "$R" && env -i PATH="$T/bin:/usr/bin:/bin" HOME="$T/home" TMPDIR="$T/tmp" ZB_MAC_HOST="$HOST" \
-     ZB_MAC_KEY="$T/home/no_such_key" ${ident:+ZB_DMG_SIGN_IDENTITY="$ident"} \
+     ZB_MAC_KEY="$T/fake_mac_key" ${ident:+ZB_DMG_SIGN_IDENTITY="$ident"} \
      timeout 120 bash packaging/macos/build-dmg.sh >"$T/out.$label" 2>&1 </dev/null)
   rc=$?
   if [ "$rc" -eq 0 ] && grep -q '^==> Done: ' "$T/out.$label" && [ -s "$R/zigBrowser_0.2.0_macos.dmg" ]; then

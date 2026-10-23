@@ -31,6 +31,7 @@ fi
 ROOT=$(realpath "${1:-.}")
 BASE=$(mktemp -d "${TMPDIR:-/tmp}/zb-spike-selftest-XXXXXX")
 T=$(realpath "$BASE")
+printf 'not a real key\n' > "$T/fake_mac_key"   # tests/mac/mac_config.sh needs a readable regular key file (bd 3ui.13)
 cleanup() {
   case "$T" in "$(realpath "${TMPDIR:-/tmp}")"/zb-spike-selftest-??????) rm -rf "${T:?}" ;; esac
 }
@@ -112,7 +113,7 @@ chmod +x "$X/bin"/* "$X/hostbin"/* "$X/hosts"/*/.local/bin/zig
 # marker is committed as "committed" and then edited (uncommitted).
 R="$T/repo"
 mkdir -p "$R/tests/mac" "$R/packaging/macos" "$R/agent/host/zb_agent_host" "$R/src"
-cp "$ROOT/tests/mac/bundle_layout_spike.sh" "$ROOT/tests/mac/build-on-mac.sh" "$ROOT/tests/mac/mac_gate_lib.sh" \
+cp "$ROOT/tests/mac/bundle_layout_spike.sh" "$ROOT/tests/mac/mac_config.sh" "$ROOT/tests/mac/build-on-mac.sh" "$ROOT/tests/mac/mac_gate_lib.sh" \
   "$ROOT/tests/mac/known_hosts" "$R/tests/mac/"
 cp "$ROOT/packaging/macos/Info.plist" "$R/packaging/macos/"
 cat > "$R/packaging/macos/stage_agent_runtime.sh" <<EOF
@@ -157,7 +158,7 @@ run_spike() { # run_spike <label> <verify mode> <where> [VAR=value ...]: sets rc
   local label=$1 mode=$2 where=$3; shift 3
   rm -rf "${C:?}"/*; echo "$mode" > "$C/verify_mode"; echo "$where" > "$C/verify_where"
   (cd "$R" && env -i PATH="$X/bin:/usr/bin:/bin" HOME="$T/home" TMPDIR="$T/tmp" ZB_MAC_HOST="$INTEL" ZB_MAC_ARM_HOST="$ARM" \
-     ZB_MAC_KEY="$T/home/no_such_key" "$@" timeout 300 bash tests/mac/bundle_layout_spike.sh run "$IN" \
+     ZB_MAC_KEY="$T/fake_mac_key" "$@" timeout 300 bash tests/mac/bundle_layout_spike.sh run "$IN" \
      >"$T/out.$label" 2>&1 </dev/null)
   rc=$?
   out=$(cat "$T/out.$label")

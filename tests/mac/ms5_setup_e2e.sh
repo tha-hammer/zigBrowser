@@ -11,13 +11,13 @@
 # Usage: bash tests/mac/ms5_setup_e2e.sh [commit]   (default HEAD). BatchMode, strict host keys, no askpass.
 set -euo pipefail
 
-KEY="${ZB_MAC_KEY:-/home/maceo/vms/mac-m9/zb_mac_key}"
-INTEL_HOST="${ZB_MAC_HOST:-maceojourdan@100.92.212.47}"
-ARM_HOST="${ZB_MAC_ARM_HOST:-jj@100.119.156.28}"
 LEG_TIMEOUT="${ZB_MAC_LEG_TIMEOUT:-1800}"
 export SSH_ASKPASS_REQUIRE=never
 
 cd "$(git rev-parse --show-toplevel)"
+# The Macs and the key come only from the explicit environment, never a default (bd 3ui.13): NOT RUN otherwise.
+. tests/mac/mac_config.sh
+mac_config two
 SHA=$(git rev-parse --verify "${1:-HEAD}^{commit}")
 # Only the pinned Mac host keys are trusted, with no askpass or display (bd 3ui.5.1; as tests/mac/mac_gate_lib.sh).
 # Hostless selftest: tests/mac/ms5_setup_hostkey_selftest.sh.

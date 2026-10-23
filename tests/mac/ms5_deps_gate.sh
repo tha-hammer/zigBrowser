@@ -16,21 +16,17 @@
 # usage: tests/mac/ms5_deps_gate.sh [commit]   (default HEAD)
 set -euo pipefail
 
-KEY="${ZB_MAC_KEY:-/home/maceo/vms/mac-m9/zb_mac_key}"
-INTEL_HOST="${ZB_MAC_HOST:-maceojourdan@100.92.212.47}"
-ARM_HOST="${ZB_MAC_ARM_HOST:-}"
 LEG_TIMEOUT="${ZB_MAC_LEG_TIMEOUT:-900}"
 PIN=8373e58da4ea146b3eb1c1f9834f19a319440b6b679b06050b1f9ee3237aa8e4
 URL=https://www.python.org/ftp/python/3.12.10/python-3.12.10-macos11.pkg
 export SSH_ASKPASS_REQUIRE=never
 
 cd "$(git rev-parse --show-toplevel)"
+# The Macs and the key come only from the explicit environment, never a default (bd 3ui.13): NOT RUN otherwise.
+. tests/mac/mac_config.sh
+mac_config two
 # The Macs' host keys are pinned (bd 4pa.77): every ssh/scp below uses this file, never ~/.ssh/known_hosts.
 KNOWN_HOSTS="$PWD/tests/mac/known_hosts"
-if [ -z "$ARM_HOST" ]; then
-  echo "NOT RUN: arm64 host not configured (set ZB_MAC_ARM_HOST=user@host)" >&2
-  exit 1
-fi
 SSH=(env -u DISPLAY -u WAYLAND_DISPLAY -u XAUTHORITY -u SSH_ASKPASS ssh -i "$KEY" -o IdentitiesOnly=yes -o BatchMode=yes
      -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$KNOWN_HOSTS" -o ConnectTimeout=15 -o ServerAliveInterval=10)
 SCP=(env -u DISPLAY -u WAYLAND_DISPLAY -u XAUTHORITY -u SSH_ASKPASS scp -i "$KEY" -o IdentitiesOnly=yes -o BatchMode=yes

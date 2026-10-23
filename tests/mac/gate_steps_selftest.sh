@@ -23,6 +23,7 @@ ROOT=$(realpath "${1:-.}")
 ZIG=$(command -v "${ZIG:-zig}") || { printf 'FAIL\tmac-gate-steps-selftest\tno zig (set ZIG)\n'; exit 1; }
 BASE=$(mktemp -d "${TMPDIR:-/tmp}/zb-gatesteps-selftest-XXXXXX")
 T=$(realpath "$BASE")
+printf 'not a real key\n' > "$T/fake_mac_key"   # tests/mac/mac_config.sh needs a readable regular key file (bd 3ui.13)
 cleanup() {
   case "$T" in "$(realpath "${TMPDIR:-/tmp}")"/zb-gatesteps-selftest-??????) rm -rf "${T:?}" ;; esac
 }
@@ -84,7 +85,7 @@ G=(env -i PATH=/usr/bin:/bin HOME="$T/home" GIT_CONFIG_NOSYSTEM=1 git -C "$R")
 run_step() { # run_step <step> <arm host>: sets rc, calls, hosts; output in $T/out
   rm -f "$T/ctl"/*
   (cd "$R" && env -i PATH="$T/bin:/usr/bin:/bin" HOME="$T/home" TMPDIR="$T/tmp" ZB_MAC_HOST="$INTEL" \
-     ZB_MAC_ARM_HOST="$2" ZB_MAC_KEY="$T/home/no_such_key" timeout 600 "$ZIG" build "$1" \
+     ZB_MAC_ARM_HOST="$2" ZB_MAC_KEY="$T/fake_mac_key" timeout 600 "$ZIG" build "$1" \
      --cache-dir "$T/zig-cache" --global-cache-dir "$T/zig-global-cache" >"$T/out" 2>&1 </dev/null)
   rc=$?
   calls=$(cat "$T/ctl/n" 2>/dev/null || echo 0)

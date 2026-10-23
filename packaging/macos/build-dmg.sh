@@ -20,8 +20,6 @@ APP_NAME="zigBrowser"
 BUNDLE_ID="com.cosmichq.zigBrowser"
 DMG_NAME="${APP_NAME}_${VERSION}_macos.dmg"
 
-KEY="${ZB_MAC_KEY:-/home/maceo/vms/mac-m9/zb_mac_key}"
-HOST="${ZB_MAC_HOST:-maceojourdan@100.92.212.47}"
 SIGN_IDENTITY="${ZB_DMG_SIGN_IDENTITY:--}"
 
 if [ "${1:-}" = "--skip-build" ]; then
@@ -30,6 +28,9 @@ if [ "${1:-}" = "--skip-build" ]; then
 fi
 
 cd "$REPO_ROOT"
+# The Macs and the key come only from the explicit environment, never a default (bd 3ui.13): NOT RUN otherwise.
+. tests/mac/mac_config.sh
+mac_config one
 . tests/mac/mac_gate_lib.sh
 trap mac_remove_run_dirs EXIT
 mapfile -d '' SSH < <(mac_ssh_opts "$KEY")

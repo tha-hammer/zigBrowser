@@ -57,6 +57,7 @@ fi
 ROOT=$(realpath "${1:-.}")
 BASE=$(mktemp -d "${TMPDIR:-/tmp}/zb-contain-selftest-XXXXXX")
 T=$(realpath "$BASE")
+printf 'not a real key\n' > "$T/fake_mac_key"   # tests/mac/mac_config.sh needs a readable regular key file (bd 3ui.13)
 P="$T/overlay"
 cleanup() {
   umount /usr/bin 2>/dev/null; umount "$P/realusrbin" 2>/dev/null
@@ -339,7 +340,7 @@ PY
 # --- the scratch repo: the real spike, leg driver, transport and host keys, the stand-in stager, a committed agent tree ---
 R="$T/repo"
 mkdir -p "$R/tests/mac" "$R/packaging/macos" "$R/agent/host/zb_agent_host" "$R/src"
-cp "$ROOT/tests/mac/bundle_layout_spike.sh" "$ROOT/tests/mac/mac_gate_lib.sh" "$ROOT/tests/mac/build-on-mac.sh" \
+cp "$ROOT/tests/mac/bundle_layout_spike.sh" "$ROOT/tests/mac/mac_config.sh" "$ROOT/tests/mac/mac_gate_lib.sh" "$ROOT/tests/mac/build-on-mac.sh" \
   "$ROOT/tests/mac/known_hosts" "$R/tests/mac/"
 [ -e "$ROOT/tests/mac/bundle_layout_spike_leg.sh" ] && cp "$ROOT/tests/mac/bundle_layout_spike_leg.sh" "$R/tests/mac/"
 cp "$ROOT/packaging/macos/Info.plist" "$R/packaging/macos/"
@@ -397,7 +398,7 @@ run_spike() { # run_spike <label> <scenario> <verify mode> <where> [VAR=value ..
   echo "$scen" > "$C/scenario"; echo "$mode" > "$C/verify_mode"; echo "$where" > "$C/verify_where"
   homes_snapshot > "$T/homes.before"
   (cd "$R" && env -i PATH="$X/bin:/usr/bin:/bin" HOME="$T/home" TMPDIR="$T/tmp" ZB_MAC_HOST="$INTEL" ZB_MAC_ARM_HOST="$ARM" \
-     ZB_MAC_KEY="$T/home/no_such_key" "$@" timeout 300 bash tests/mac/bundle_layout_spike.sh run "$IN" \
+     ZB_MAC_KEY="$T/fake_mac_key" "$@" timeout 300 bash tests/mac/bundle_layout_spike.sh run "$IN" \
      >"$T/out.$label" 2>&1 </dev/null)
   rc=$?
   out=$(cat "$T/out.$label")

@@ -8,14 +8,13 @@
 # usage: tests/mac/ms6_r1_kernel_gate.sh [commit]   (default: the working tree)
 set -euo pipefail
 
-KEY="${ZB_MAC_KEY:-/home/maceo/vms/mac-m9/zb_mac_key}"
-INTEL_HOST="${ZB_MAC_HOST:-maceojourdan@100.92.212.47}"
-ARM_HOST="${ZB_MAC_ARM_HOST:-}"   # no default: the two-arch gate fails closed without it (canonical MS6 handling)
-ARM_KEY="${ZB_MAC_ARM_KEY:-$KEY}"
 LEG_TIMEOUT="${ZB_MAC_LEG_TIMEOUT:-300}"
 export SSH_ASKPASS_REQUIRE=never
 
 cd "$(git rev-parse --show-toplevel)"
+# The Macs and the key come only from the explicit environment, never a default (bd 3ui.13): NOT RUN otherwise.
+. tests/mac/mac_config.sh
+mac_config two
 # The Macs' host keys are pinned (bd 4pa.77): every ssh/scp below uses this file, never ~/.ssh/known_hosts.
 KNOWN_HOSTS="$PWD/tests/mac/known_hosts"
 # Delete-guard oracle (RoseCat 7055): every rm COMMAND in this script (each one, up to its ; | & or end of line)
@@ -23,11 +22,6 @@ KNOWN_HOSTS="$PWD/tests/mac/known_hosts"
 if grep -v 'delete-guard-oracle' "$0" | grep -o 'rm -[a-z-]*[^;|&]*' | grep -v ':?}'; then  # delete-guard-oracle
   echo "FAIL: an unguarded rm in $0 (above)" >&2; exit 1  # delete-guard-oracle
 fi  # delete-guard-oracle
-if [ -z "$ARM_HOST" ]; then
-  echo "NOT RUN: arm64 host not configured (set ZB_MAC_ARM_HOST=user@host)" >&2
-  echo "        the R1 kernel gate is two-arch and cannot pass until it runs on both" >&2
-  exit 1
-fi
 ssh_cmd() { # $1=key
   SSH=(env -u DISPLAY -u WAYLAND_DISPLAY -u XAUTHORITY -u SSH_ASKPASS ssh -i "$1" -o IdentitiesOnly=yes -o BatchMode=yes
        -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$KNOWN_HOSTS" -o ConnectTimeout=15 -o ServerAliveInterval=10)

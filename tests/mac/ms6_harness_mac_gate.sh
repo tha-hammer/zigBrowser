@@ -9,22 +9,17 @@
 # usage: tests/mac/ms6_harness_mac_gate.sh [commit]   (default: the working tree)
 set -euo pipefail
 
-KEY="${ZB_MAC_KEY:-/home/maceo/vms/mac-m9/zb_mac_key}"
-INTEL_HOST="${ZB_MAC_HOST:-maceojourdan@100.92.212.47}"
-ARM_HOST="${ZB_MAC_ARM_HOST:-}"
-ARM_KEY="${ZB_MAC_ARM_KEY:-$KEY}"
 MAC_PY="${ZB_MAC_PY:-/Library/Frameworks/Python.framework/Versions/Current/bin/python3}"
 LEG_TIMEOUT="${ZB_MAC_LEG_TIMEOUT:-240}"
 EXPECTED_TESTS=19
 export SSH_ASKPASS_REQUIRE=never
 
 cd "$(git rev-parse --show-toplevel)"
+# The Macs and the key come only from the explicit environment, never a default (bd 3ui.13): NOT RUN otherwise.
+. tests/mac/mac_config.sh
+mac_config two
 # The Macs' host keys are pinned (bd 4pa.77): every ssh/scp below uses this file, never ~/.ssh/known_hosts.
 KNOWN_HOSTS="$PWD/tests/mac/known_hosts"
-if [ -z "$ARM_HOST" ]; then
-  echo "NOT RUN: arm64 host not configured (set ZB_MAC_ARM_HOST=user@host)" >&2
-  exit 1
-fi
 FILES=(tests/e2e/ms6_hard_gate_harness_test.py tests/e2e/ms6_hard_gate_harness_safety_test.py
        tests/mac/hard_gate/harness.py tests/mac/hard_gate/hard_gate_driver.py tests/mac/ms6_hard_gate.sh)
 stage=$(mktemp -d "${TMPDIR:-/tmp}/zb-hgmac-XXXXXX")

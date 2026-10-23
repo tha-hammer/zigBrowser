@@ -34,10 +34,6 @@
 # zig build test-mac-build-script).
 set -euo pipefail
 
-KEY="${ZB_MAC_KEY:-/home/maceo/vms/mac-m9/zb_mac_key}"
-INTEL_HOST="${ZB_MAC_HOST:-maceojourdan@100.92.212.47}"
-ARM_HOST="${ZB_MAC_ARM_HOST:-}"
-ARM_KEY="${ZB_MAC_ARM_KEY:-$KEY}"
 
 # The run request: one row per red (its accepted vector is RED_VECTOR in the test file), plus the coverage row of
 # the e2e-only ephemeral store (hook 16).
@@ -52,17 +48,15 @@ ROWS=(
 )
 
 cd "$(git rev-parse --show-toplevel)"
+# The Macs and the key come only from the explicit environment, never a default (bd 3ui.13): NOT RUN otherwise.
+. tests/mac/mac_config.sh
+mac_config two
 for row in "${ROWS[@]}"; do   # fail closed on a malformed row, before any host is touched
   [[ "$row" =~ ^tests/e2e/mac_[a-z0-9_]+_test\.py\|(red|green)\|[a-z0-9-]+$ ]] || { echo "FAIL: bad row $row" >&2; exit 1; }
 done
 . tests/mac/mac_gate_lib.sh
 trap mac_remove_run_dirs EXIT
 
-if [ -z "$ARM_HOST" ]; then
-  echo "NOT RUN: arm64 host not configured (set ZB_MAC_ARM_HOST=user@host)" >&2
-  echo "        the two-arch rows gate is INCOMPLETE and cannot pass until it runs" >&2
-  exit 1
-fi
 
 BUILD_TIMEOUT="${ZB_MAC_BUILD_TIMEOUT:-600}"
 LEG_TIMEOUT="${ZB_MAC_LEG_TIMEOUT:-900}"

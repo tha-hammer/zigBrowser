@@ -35,6 +35,7 @@ fi
 ROOT=$(realpath "${1:-.}")
 BASE=$(mktemp -d "${TMPDIR:-/tmp}/zb-direct-hostkey-selftest-XXXXXX")
 T=$(realpath "$BASE")
+printf 'not a real key\n' > "$T/fake_mac_key"   # tests/mac/mac_config.sh needs a readable regular key file (bd 3ui.13)
 cleanup() {
   case "$T" in "$(realpath "${TMPDIR:-/tmp}")"/zb-direct-hostkey-selftest-??????) rm -rf "${T:?}" ;; esac
 }
@@ -130,7 +131,7 @@ G=(env -i PATH=/usr/bin:/bin HOME="$T/home" GIT_CONFIG_NOSYSTEM=1 git -C "$R")
 PINNED=$(realpath "$R/tests/mac/known_hosts")
 WANT=$("${G[@]}" show HEAD:tests/mac/known_hosts | /usr/bin/sha256sum | cut -c1-64)
 LAUNCH_ENV=(PATH="$T/bin:/usr/bin:/bin" HOME="$T/home" TMPDIR="$T/tmp" ZB_MAC_HOST="$INTEL" ZB_MAC_ARM_HOST="$ARM"
-            ZB_MAC_KEY="$T/home/no_such_key" DISPLAY=:99 WAYLAND_DISPLAY=wayland-selftest XAUTHORITY="$T/home/.Xauthority"
+            ZB_MAC_KEY="$T/fake_mac_key" DISPLAY=:99 WAYLAND_DISPLAY=wayland-selftest XAUTHORITY="$T/home/.Xauthority"
             SSH_ASKPASS="$T/bin/askpass-must-not-run")
 
 check_calls() { # check_calls <name> <ctl dir> <scp|-> <launch> : H1-H6 over every recorded call
@@ -223,7 +224,7 @@ for s in "${EVALUATED[@]}"; do   # never run: its own definition lines, called o
      unshare --user --map-current-user --net timeout -s TERM 60 bash -c '
        leg() { local key=$2 KEY=$2; eval "$ZB_DEF"; "${SSH[@]}" "$1" true
                if [ -n "${SCP+x}" ]; then "${SCP[@]}" /dev/null "$1:x"; fi; }
-       eval "$ZB_KH"; leg "$1" "$3"; leg "$2" "$3"' evaluated "$INTEL" "$ARM" "$T/home/no_such_key" \
+       eval "$ZB_KH"; leg "$1" "$3"; leg "$2" "$3"' evaluated "$INTEL" "$ARM" "$T/fake_mac_key" \
      >"$c/out" 2>&1 </dev/null)
   check_calls "$name (evaluated, not run)" "$c" "$want_scp" || true
 done

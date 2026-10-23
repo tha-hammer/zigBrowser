@@ -57,10 +57,6 @@
 # tests/mac/bundle_layout_spike_containment_selftest.sh.
 set -euo pipefail
 
-KEY="${ZB_MAC_KEY:-/home/maceo/vms/mac-m9/zb_mac_key}"
-ARM_KEY="${ZB_MAC_ARM_KEY:-$KEY}"
-INTEL_HOST="${ZB_MAC_HOST:-maceojourdan@100.92.212.47}"
-ARM_HOST="${ZB_MAC_ARM_HOST:-}"
 LEG_TIMEOUT="${ZB_MAC_LEG_TIMEOUT:-1800}"
 PINS=packaging/macos/agent_runtime_pins.json
 
@@ -138,10 +134,9 @@ if [ "$MODE" = prep ]; then
 fi
 [ "$MODE" = run ] || { echo "usage: bundle_layout_spike.sh prep <new dir> | run <prep dir>" >&2; exit 2; }
 
-if [ -z "$ARM_HOST" ]; then
-  echo "NOT RUN: arm64 host not configured (set ZB_MAC_ARM_HOST=user@host)" >&2
-  exit 1
-fi
+# The Macs and the key come only from the explicit environment, never a default (bd 3ui.13): NOT RUN otherwise.
+. tests/mac/mac_config.sh
+mac_config two
 MUTANT="${ZB_SPIKE_MUTANT:-none}"
 case "$MUTANT" in none|stray_in_frameworks) ;; *) echo "REFUSED: unknown ZB_SPIKE_MUTANT=$MUTANT" >&2; exit 1 ;; esac
 IN=$(cd "$IN" && pwd)

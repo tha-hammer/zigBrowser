@@ -25,6 +25,7 @@ fi
 ROOT=$(realpath "${1:-.}")
 BASE=$(mktemp -d "${TMPDIR:-/tmp}/zb-zigdirect-selftest-XXXXXX")
 T=$(realpath "$BASE")
+printf 'not a real key\n' > "$T/fake_mac_key"   # tests/mac/mac_config.sh needs a readable regular key file (bd 3ui.13)
 cleanup() {
   case "$T" in "$(realpath "${TMPDIR:-/tmp}")"/zb-zigdirect-selftest-??????) rm -rf "${T:?}" ;; esac
 }
@@ -89,7 +90,7 @@ ZIGARGV
 # The scratch repo: the real scripts, their helper, and stand-ins for what they archive or copy.
 R="$T/repo"
 mkdir -p "$R/tests/mac" "$R/src" "$R/packaging" "$R/agent" "$R/tools"
-for f in ms5_setup_refusal_gate.sh ms5_setup_e2e.sh ms5_gate.sh lib_group_cleanup.sh; do cp "$ROOT/tests/mac/$f" "$R/tests/mac/"; done
+for f in ms5_setup_refusal_gate.sh ms5_setup_e2e.sh ms5_gate.sh lib_group_cleanup.sh mac_config.sh; do cp "$ROOT/tests/mac/$f" "$R/tests/mac/"; done
 for f in agent_secrets_mac.h agent_secrets_mac.m agent_secrets_mac.zig; do echo "// stand-in" > "$R/src/$f"; done
 echo "// stand-in" > "$R/tests/mac/keychain_seam_test.m"
 echo x > "$R/packaging/x"; echo x > "$R/agent/x"; echo x > "$R/tools/x"
@@ -104,7 +105,7 @@ check() { # check <label> <script>
   local -a a cmd prefixes
   rm -f "$T/ctl"/*
   (cd "$R" && env -i PATH="$T/bin:/usr/bin:/bin" HOME="$T/home" TMPDIR="$T/tmp" ZB_MAC_HOST="$INTEL" \
-     ZB_MAC_ARM_HOST="$ARM" ZB_MAC_KEY="$T/home/no_such_key" timeout 120 bash "$script" >"$T/out" 2>&1 </dev/null)
+     ZB_MAC_ARM_HOST="$ARM" ZB_MAC_KEY="$T/fake_mac_key" timeout 120 bash "$script" >"$T/out" 2>&1 </dev/null)
   rc=$?
   [ "$rc" -eq 0 ] || bad "$label: exit $rc (the run must reach its end): $(tail -n 2 "$T/out" | tr '\n' ' ')"
   n=$(cat "$T/ctl/n" 2>/dev/null || echo 0)
@@ -180,6 +181,7 @@ mkdir -p "$R7/tests/mac/hard_gate" "$R7/src" "$R7/packaging" "$R7/tools"
 cp "$ROOT/tests/mac/ms7_appkit_gate.sh" "$ROOT/tests/mac/ms7_appkit_case.py" "$ROOT/tests/mac/ms7_appkit_check.py" "$R7/tests/mac/"
 cp "$ROOT/tests/mac/hard_gate/harness.py" "$R7/tests/mac/hard_gate/"
 cp "$ROOT/tests/mac/known_hosts" "$R7/tests/mac/"   # the gate pins host keys from its export (bd 4pa.77)
+cp "$ROOT/tests/mac/mac_config.sh" "$R7/tests/mac/"   # and takes its hosts and key through it (bd 3ui.13)
 echo "// stand-in" > "$R7/src/wkwebview_shim.m"; echo x > "$R7/packaging/x"; echo x > "$R7/tools/x"
 echo build > "$R7/build.zig"; echo zon > "$R7/build.zig.zon"; echo '{}' > "$R7/zigbrowser.json"
 G7=(env -i PATH=/usr/bin:/bin HOME="$T/home" GIT_CONFIG_NOSYSTEM=1 git -C "$R7")
@@ -187,7 +189,7 @@ G7=(env -i PATH=/usr/bin:/bin HOME="$T/home" GIT_CONFIG_NOSYSTEM=1 git -C "$R7")
   && "${G7[@]}" -c user.name=selftest -c user.email=selftest@invalid commit -q -m staged \
   || { bad "could not build the ms7 scratch repo"; exit 1; }
 (cd "$R7" && env -i PATH="$X/bin:/usr/bin:/bin" HOME="$T/home" TMPDIR="$T/tmp" ZB_MAC_HOST="$INTEL" ZB_MAC_ARM_HOST="$ARM" \
-   ZB_MAC_KEY="$T/home/no_such_key" timeout 300 bash -c "$("${G7[@]}" show HEAD:tests/mac/ms7_appkit_gate.sh)" \
+   ZB_MAC_KEY="$T/fake_mac_key" timeout 300 bash -c "$("${G7[@]}" show HEAD:tests/mac/ms7_appkit_gate.sh)" \
    ms7-appkit-gate HEAD >"$T/out7" 2>&1 </dev/null)
 for role in intel arm; do
   mapfile -t recs < <(ls "$X/ctl" | grep "^zig\.$role\." || true)

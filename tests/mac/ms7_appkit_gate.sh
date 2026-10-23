@@ -23,10 +23,6 @@ if [ -z "${BASH_EXECUTION_STRING:-}" ]; then
 fi
 LAUNCHER=$(printf '%s' "$BASH_EXECUTION_STRING")
 
-KEY="${ZB_MAC_KEY:-/home/maceo/vms/mac-m9/zb_mac_key}"
-INTEL_HOST="${ZB_MAC_HOST:-maceojourdan@100.92.212.47}"
-ARM_HOST="${ZB_MAC_ARM_HOST:-}"
-ARM_KEY="${ZB_MAC_ARM_KEY:-$KEY}"
 LEG_TIMEOUT="${ZB_MAC_LEG_TIMEOUT:-2400}"
 export SSH_ASKPASS_REQUIRE=never
 
@@ -36,7 +32,6 @@ REV="${1:-HEAD}"
 SHA=$(git rev-parse --verify --quiet "${REV}^{commit}") || fail "revision $REV is not a commit"
 [ "$(git show "$SHA:tests/mac/ms7_appkit_gate.sh")" = "$LAUNCHER" ] \
   || fail "the running launcher is not the committed tests/mac/ms7_appkit_gate.sh at $SHA"
-[ -n "$ARM_HOST" ] || fail "no arm64 host (set ZB_MAC_ARM_HOST=user@host); the gate needs both Macs"
 L=$(mktemp -d "${TMPDIR:-/tmp}/zb-ms7gate-drv-XXXXXX")
 trap 'case "$L" in "${TMPDIR:-/tmp}"/zb-ms7gate-drv-??????) find "${L:?}" -delete;; esac' EXIT
 mkdir "$L/repo" && git archive "$SHA" | tar -x -C "$L/repo"
@@ -46,6 +41,10 @@ KNOWN_HOSTS="$L/repo/tests/mac/known_hosts"
 [ -f "$KNOWN_HOSTS" ] && [ ! -L "$KNOWN_HOSTS" ] \
   && [ "$(git hash-object --no-filters -- "$KNOWN_HOSTS")" = "$(git rev-parse --verify --quiet "$SHA:tests/mac/known_hosts")" ] \
   || fail "tests/mac/known_hosts in the export is missing or is not the blob at $SHA"
+# The Macs and the key come only from the explicit environment, never a default (bd 3ui.13): NOT RUN otherwise.
+. "$L/repo/tests/mac/mac_config.sh"
+mac_config two
+[ -n "$ARM_HOST" ] || fail "no arm64 host (set ZB_MAC_ARM_HOST=user@host); the gate needs both Macs"
 echo "== ms7 appkit gate at commit $SHA" >&2
 cd "$L/repo"
 

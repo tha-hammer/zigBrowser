@@ -19,6 +19,7 @@ fi
 ROOT=$(realpath "${1:-.}")
 BASE=$(mktemp -d "${TMPDIR:-/tmp}/zb-transport-selftest-XXXXXX")
 T=$(realpath "$BASE")
+printf 'not a real key\n' > "$T/fake_mac_key"   # tests/mac/mac_config.sh needs a readable regular key file (bd 3ui.13)
 cleanup() {
   case "$T" in "$(realpath "${TMPDIR:-/tmp}")"/zb-transport-selftest-??????) rm -rf "${T:?}" ;; esac
 }
@@ -48,7 +49,8 @@ done
 
 R="$T/repo"
 mkdir -p "$R/tests/mac" "$R/packaging/macos" "$R/packaging/assets" "$R/src"
-cp "$ROOT/tests/mac/build-on-mac.sh" "$ROOT/tests/mac/mac_gate_lib.sh" "$ROOT/tests/mac/known_hosts" "$R/tests/mac/"
+cp "$ROOT/tests/mac/build-on-mac.sh" "$ROOT/tests/mac/mac_gate_lib.sh" "$ROOT/tests/mac/mac_config.sh" "$ROOT/tests/mac/known_hosts" \
+  "$R/tests/mac/"
 cp "$ROOT/packaging/macos/build-dmg.sh" "$ROOT/packaging/macos/Info.plist" "$R/packaging/macos/"
 cp "$ROOT/packaging/assets/zigBrowser.png" "$R/packaging/assets/"
 echo "// stand-in" > "$R/src/main.zig"
@@ -64,7 +66,7 @@ check() { # check <label> <command> <its end line, as a grep -E pattern>
   local -a a strict khf batch ident
   rm -f "$T/ctl"/*
   (cd "$R" && env -i PATH="$T/bin:/usr/bin:/bin" HOME="$T/home" TMPDIR="$T/tmp" ZB_MAC_HOST="$HOST" \
-     ZB_MAC_KEY="$T/home/no_such_key" DISPLAY=:99 WAYLAND_DISPLAY=wayland-selftest XAUTHORITY="$T/home/.Xauthority" \
+     ZB_MAC_KEY="$T/fake_mac_key" DISPLAY=:99 WAYLAND_DISPLAY=wayland-selftest XAUTHORITY="$T/home/.Xauthority" \
      SSH_ASKPASS="$T/bin/askpass-must-not-run" timeout 120 bash $cmd >"$T/out" 2>&1 </dev/null)
   rc=$?
   n=$(cat "$T/ctl/n" 2>/dev/null || echo 0)

@@ -29,6 +29,7 @@ if [ "${1:-}" != --inner ]; then
   trap 'case "$T" in "$(realpath "${TMPDIR:-/tmp}")"/zb-bom-selftest-??????) rm -rf "${T:?}" ;; esac' EXIT
   cp "$SELF" "$T/self.sh" && cp "$SCRIPT" "$T/build-on-mac.sh" || exit 1
   [ -f "$(dirname "$SCRIPT")/known_hosts" ] && cp "$(dirname "$SCRIPT")/known_hosts" "$T/known_hosts"
+  [ -f "$(dirname "$SCRIPT")/mac_config.sh" ] && cp "$(dirname "$SCRIPT")/mac_config.sh" "$T/mac_config.sh"
   unshare --user --map-root-user --mount --net bash -c 'mount --bind "$1" /tmp && exec bash /tmp/self.sh --inner' _ "$T"
   exit $?
 fi
@@ -38,6 +39,7 @@ fails=0
 ok() { printf 'ok   %s\n' "$*"; }
 bad() { printf 'FAIL %s\n' "$*"; fails=$((fails + 1)); }
 mkdir -p /tmp/bin /tmp/ctl /tmp/home /tmp/tmp /tmp/repo/src /tmp/repo/tests/mac /tmp/repo/packaging/macos
+printf 'not a real key\n' > /tmp/fake_mac_key   # tests/mac/mac_config.sh needs a readable regular key file (bd 3ui.13)
 
 for tool in ssh scp; do
   cat > "/tmp/bin/$tool" <<EOF
@@ -63,6 +65,7 @@ done
 # The scratch repo: the real script, the pinned host keys if the script ships them, and the paths it sends.
 cp /tmp/build-on-mac.sh /tmp/repo/tests/mac/build-on-mac.sh
 [ -f /tmp/known_hosts ] && cp /tmp/known_hosts /tmp/repo/tests/mac/known_hosts
+[ -f /tmp/mac_config.sh ] && cp /tmp/mac_config.sh /tmp/repo/tests/mac/mac_config.sh
 echo 'committed a' > /tmp/repo/src/a.zig
 echo 'build' > /tmp/repo/build.zig
 echo 'zon' > /tmp/repo/build.zig.zon
@@ -79,7 +82,7 @@ echo 'untracked' > /tmp/repo/src/untracked.zig  # untracked: must never be sent
 run() { # run <label>: runs the real script; sets rc, out, ncalls
   rm -f /tmp/ctl/*
   out=$(cd /tmp/repo && env -i PATH=/tmp/bin:/usr/bin:/bin HOME=/tmp/home TMPDIR=/tmp/tmp \
-          ZB_MAC_HOST=intel@stub.invalid ZB_MAC_KEY=/tmp/home/no_such_key \
+          ZB_MAC_HOST=intel@stub.invalid ZB_MAC_KEY=/tmp/fake_mac_key \
           timeout 60 bash tests/mac/build-on-mac.sh 2>&1 </dev/null)
   rc=$?
   ncalls=$(cat /tmp/ctl/n 2>/dev/null || echo 0)

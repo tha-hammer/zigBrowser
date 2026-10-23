@@ -25,6 +25,7 @@ fi
 ROOT=$(realpath "${1:-.}")
 BASE=$(mktemp -d "${TMPDIR:-/tmp}/zb-dmguni-selftest-XXXXXX")
 T=$(realpath "$BASE")
+printf 'not a real key\n' > "$T/fake_mac_key"   # tests/mac/mac_config.sh needs a readable regular key file (bd 3ui.13)
 cleanup() {
   case "$T" in "$(realpath "${TMPDIR:-/tmp}")"/zb-dmguni-selftest-??????) rm -rf "${T:?}" ;; esac
 }
@@ -125,7 +126,8 @@ chmod +x "$X/bin"/* "$X/hostbin"/* "$X/hosts"/*/.local/bin/zig
 
 R="$T/repo"
 mkdir -p "$R/tests/mac" "$R/packaging/macos" "$R/packaging/assets" "$R/src"
-cp "$ROOT/tests/mac/build-on-mac.sh" "$ROOT/tests/mac/mac_gate_lib.sh" "$ROOT/tests/mac/known_hosts" "$R/tests/mac/"
+cp "$ROOT/tests/mac/build-on-mac.sh" "$ROOT/tests/mac/mac_gate_lib.sh" "$ROOT/tests/mac/mac_config.sh" "$ROOT/tests/mac/known_hosts" \
+  "$R/tests/mac/"
 cp "$ROOT/packaging/macos/build-dmg.sh" "$ROOT/packaging/macos/Info.plist" "$ROOT/packaging/macos/entitlements.plist" \
   "$R/packaging/macos/"
 cp "$ROOT/packaging/assets/zigBrowser.png" "$R/packaging/assets/"
@@ -141,7 +143,7 @@ run_dmg() { # run_dmg <label> [VAR=value ...]: sets rc
   rm -rf "${C:?}"/* "$R/$DMG"
   [ "$label" = lipo-drops-arm ] && touch "$C/lipo_drops_arm"
   (cd "$R" && env -i PATH="$X/bin:/usr/bin:/bin" HOME="$T/home" TMPDIR="$T/tmp" ZB_MAC_HOST="$INTEL" ZB_MAC_ARM_HOST="$ARM" \
-     ZB_MAC_KEY="$T/home/no_such_key" "$@" timeout 120 bash packaging/macos/build-dmg.sh >"$T/out.$label" 2>&1 </dev/null)
+     ZB_MAC_KEY="$T/fake_mac_key" "$@" timeout 120 bash packaging/macos/build-dmg.sh >"$T/out.$label" 2>&1 </dev/null)
   rc=$?
   local left
   left=$(find "$X/hosts" -maxdepth 2 -name 'zb-gate-*' 2>/dev/null)

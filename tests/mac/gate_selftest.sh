@@ -26,6 +26,7 @@ fi
 ROOT=$(realpath "${1:-.}")
 BASE=$(mktemp -d "${TMPDIR:-/tmp}/zb-gate-selftest-XXXXXX")
 T=$(realpath "$BASE")
+printf 'not a real key\n' > "$T/fake_mac_key"   # tests/mac/mac_config.sh needs a readable regular key file (bd 3ui.13)
 cleanup() {
   case "$T" in "$(realpath "${TMPDIR:-/tmp}")"/zb-gate-selftest-??????) rm -rf "${T:?}" ;; esac
 }
@@ -110,7 +111,7 @@ chmod +x "$T/bin/ssh" "$T/bin/scp"
 # check with its manifest, and stand-ins for every other path build-on-mac.sh archives.
 R="$T/repo"
 mkdir -p "$R/tests/mac" "$R/tests/e2e" "$R/src" "$R/packaging/macos"
-for f in gate.sh build-on-mac.sh mac_gate_lib.sh known_hosts; do
+for f in gate.sh build-on-mac.sh mac_gate_lib.sh mac_config.sh known_hosts; do
   [ -f "$ROOT/tests/mac/$f" ] && cp "$ROOT/tests/mac/$f" "$R/tests/mac/"
 done
 cp "$ROOT/tests/e2e/mac_resource_compat.py" "$ROOT/tests/e2e/mac_universal_test.py" "$R/tests/e2e/"
@@ -126,7 +127,7 @@ run_gate() { # run_gate <mode> <where> [arm host]: sets rc, out (stdout), err (s
   rm -f "$T/ctl"/*
   echo "$1" > "$T/ctl/mode"; echo "$2" > "$T/ctl/where"
   out=$(cd "$R" && env -i PATH="$T/bin:/usr/bin:/bin" HOME="$T/home" TMPDIR="$T/tmp" \
-          ZB_MAC_HOST="$INTEL" ZB_MAC_ARM_HOST="${3-$ARM}" ZB_MAC_KEY="$T/home/no_such_key" \
+          ZB_MAC_HOST="$INTEL" ZB_MAC_ARM_HOST="${3-$ARM}" ZB_MAC_KEY="$T/fake_mac_key" \
           timeout 120 bash tests/mac/gate.sh 2>"$T/ctl/err" </dev/null)
   rc=$?
   err=$(cat "$T/ctl/err")

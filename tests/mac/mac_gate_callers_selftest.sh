@@ -32,6 +32,7 @@ fi
 ROOT=$(realpath "${1:-.}")
 BASE=$(mktemp -d "${TMPDIR:-/tmp}/zb-callers-selftest-XXXXXX")
 T=$(realpath "$BASE")
+printf 'not a real key\n' > "$T/fake_mac_key"   # tests/mac/mac_config.sh needs a readable regular key file (bd 3ui.13)
 cleanup() {
   case "$T" in "$(realpath "${TMPDIR:-/tmp}")"/zb-callers-selftest-??????) rm -rf "${T:?}" ;; esac
 }
@@ -138,7 +139,7 @@ check_caller() { # check_caller <name> <script> <final line regex> <host...>
   declare -A RD=() XN=() BN=() DELS=() LASTDEL=() LASTCALL=()
   rm -f "$T/ctl"/*
   out=$(cd "$R" && env -i PATH="$T/bin:/usr/bin:/bin" HOME="$T/home" TMPDIR="$T/tmp" \
-          ZB_MAC_HOST="$INTEL" ZB_MAC_ARM_HOST="$ARM" ZB_MAC_KEY="$T/home/no_such_key" \
+          ZB_MAC_HOST="$INTEL" ZB_MAC_ARM_HOST="$ARM" ZB_MAC_KEY="$T/fake_mac_key" \
           timeout 120 bash "$script" 2>&1 </dev/null)
   rc=$?
   n=$(cat "$T/ctl/n" 2>/dev/null || echo 0)
@@ -361,7 +362,7 @@ for case in "3 0 STOPPED" "124 0 STOPPED" "4 1 HELD"; do
   read -r leg_rc want_del word <<<"$case"
   rm -f "$T/ctl"/*
   out=$(cd "$R" && env -i PATH="$T/bin:/usr/bin:/bin" HOME="$T/home" TMPDIR="$T/tmp" ZB_MAC_HOST="$INTEL" \
-          ZB_MAC_ARM_HOST="$ARM" ZB_MAC_KEY="$T/home/no_such_key" STUB_LEG_RC_HOST="$INTEL" STUB_LEG_RC="$leg_rc" \
+          ZB_MAC_ARM_HOST="$ARM" ZB_MAC_KEY="$T/fake_mac_key" STUB_LEG_RC_HOST="$INTEL" STUB_LEG_RC="$leg_rc" \
           timeout 120 bash tests/mac/ms_runtime_rows_gate.sh 2>&1 </dev/null)
   rc=$?
   n=$(cat "$T/ctl/n" 2>/dev/null || echo 0)

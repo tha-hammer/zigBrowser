@@ -22,6 +22,7 @@ fi
 ROOT=$(realpath "${1:-.}")
 BASE=$(mktemp -d "${TMPDIR:-/tmp}/zb-zigcache-selftest-XXXXXX")
 T=$(realpath "$BASE")
+printf 'not a real key\n' > "$T/fake_mac_key"   # tests/mac/mac_config.sh needs a readable regular key file (bd 3ui.13)
 cleanup() {
   case "$T" in "$(realpath "${TMPDIR:-/tmp}")"/zb-zigcache-selftest-??????) rm -rf "${T:?}" ;; esac
 }
@@ -120,7 +121,7 @@ check() { # check <label> <script> <host...>
   declare -A RD=() ZN=()
   rm -f "$T/ctl"/*
   (cd "$R" && env -i PATH="$T/bin:/usr/bin:/bin" HOME="$T/home" TMPDIR="$T/tmp" ZB_MAC_HOST="$INTEL" \
-     ZB_MAC_ARM_HOST="$ARM" ZB_MAC_KEY="$T/home/no_such_key" timeout 120 bash "$script" >"$T/out" 2>&1 </dev/null)
+     ZB_MAC_ARM_HOST="$ARM" ZB_MAC_KEY="$T/fake_mac_key" timeout 120 bash "$script" >"$T/out" 2>&1 </dev/null)
   rc=$?
   n=$(cat "$T/ctl/n" 2>/dev/null || echo 0)
   [ "$rc" -eq 0 ] || { bad "$label: exit $rc (the run must reach its end): $(tail -n 2 "$T/out" | tr '\n' ' ')"; }

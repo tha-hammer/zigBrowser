@@ -40,10 +40,6 @@ if [ -z "${BASH_EXECUTION_STRING:-}" ]; then
 fi
 LAUNCHER=$(printf '%s' "$BASH_EXECUTION_STRING")  # trailing newlines dropped, as $(git show ...) drops them
 
-KEY="${ZB_MAC_KEY:-/home/maceo/vms/mac-m9/zb_mac_key}"
-INTEL_HOST="${ZB_MAC_HOST:-maceojourdan@100.92.212.47}"
-ARM_HOST="${ZB_MAC_ARM_HOST:-}"
-ARM_KEY="${ZB_MAC_ARM_KEY:-$KEY}"
 LEG_TIMEOUT="${ZB_MAC_LEG_TIMEOUT:-1800}"
 export SSH_ASKPASS_REQUIRE=never
 
@@ -92,6 +88,9 @@ read -r PKG_URL PKG_SHA SIG_ID SIG_ISSUER LOCK_SHA VERIFIER_REQS VERIFIER_SHA <<
   || fail "$VERIFIER_REQS no longer matches its pinned SHA-256 ($PINS): re-pin after review"
 [ "$(sha256sum agent/host/uv.lock | cut -c1-64)" = "$LOCK_SHA" ] \
   || fail "agent/host/uv.lock no longer matches its pinned SHA-256 ($PINS): re-pin after review"
+# The Macs and the key come only from the explicit environment, never a default (bd 3ui.13): NOT RUN otherwise.
+. "$L/repo/tests/mac/mac_config.sh"
+mac_config two
 [ -n "$ARM_HOST" ] || fail "no arm64 host (set ZB_MAC_ARM_HOST=user@host); the gate needs both Macs"
 problem=$(python3 -I -B - "$MANIFEST" tests/mac/hard_gate <<'PY'
 import os, re, sys

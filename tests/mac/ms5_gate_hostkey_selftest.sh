@@ -20,6 +20,7 @@ fi
 ROOT=$(realpath "${1:-.}")
 BASE=$(mktemp -d "${TMPDIR:-/tmp}/zb-ms5hostkey-selftest-XXXXXX")
 T=$(realpath "$BASE")
+printf 'not a real key\n' > "$T/fake_mac_key"   # tests/mac/mac_config.sh needs a readable regular key file (bd 3ui.13)
 cleanup() {
   case "$T" in "$(realpath "${TMPDIR:-/tmp}")"/zb-ms5hostkey-selftest-??????) rm -rf "${T:?}" ;; esac
 }
@@ -46,7 +47,7 @@ done
 # The scratch repo: the real gate, the pinned host keys, and stand-ins for the sources it copies.
 R="$T/repo"
 mkdir -p "$R/tests/mac" "$R/src"
-cp "$ROOT/tests/mac/ms5_gate.sh" "$ROOT/tests/mac/known_hosts" "$R/tests/mac/"
+cp "$ROOT/tests/mac/ms5_gate.sh" "$ROOT/tests/mac/mac_config.sh" "$ROOT/tests/mac/known_hosts" "$R/tests/mac/"
 for f in agent_secrets_mac.h agent_secrets_mac.m agent_secrets_mac.zig; do echo "// stand-in" > "$R/src/$f"; done
 echo "// stand-in" > "$R/tests/mac/keychain_seam_test.m"
 G=(env -i PATH=/usr/bin:/bin HOME="$T/home" GIT_CONFIG_NOSYSTEM=1 git -C "$R")
@@ -56,7 +57,7 @@ G=(env -i PATH=/usr/bin:/bin HOME="$T/home" GIT_CONFIG_NOSYSTEM=1 git -C "$R")
 PINNED=$(realpath "$R/tests/mac/known_hosts")
 
 (cd "$R" && env -i PATH="$T/bin:/usr/bin:/bin" HOME="$T/home" TMPDIR="$T/tmp" ZB_MAC_HOST="$INTEL" \
-   ZB_MAC_ARM_HOST="$ARM" ZB_MAC_KEY="$T/home/no_such_key" DISPLAY=:99 WAYLAND_DISPLAY=wayland-selftest \
+   ZB_MAC_ARM_HOST="$ARM" ZB_MAC_KEY="$T/fake_mac_key" DISPLAY=:99 WAYLAND_DISPLAY=wayland-selftest \
    XAUTHORITY="$T/home/.Xauthority" SSH_ASKPASS="$T/bin/askpass-must-not-run" timeout 120 bash tests/mac/ms5_gate.sh >"$T/out" 2>&1 </dev/null)
 rc=$?
 if [ "$rc" -eq 0 ] && grep -q $'^PASS\tms5-gate\tboth-arches$' "$T/out"; then ok "the gate runs to its end"

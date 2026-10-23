@@ -15,8 +15,15 @@
 #   escaped process carrying the run marker; a file left in $HOME; an undeletable root; a failing build.
 # Stub processes that outlive a leg (the escape cases) end on their own; the selftest waits for them (it never
 # signals) and deletes its own temporary tree.
+# Hermetic (bd 3ui.13, SilverRidge a473a027): the selftest re-runs itself in a private user+network namespace, and its
+# first row proves it (its own namespace, not its launcher's, and no route at all) before any case runs; the fake
+# ssh first on PATH is defense in depth, not the network boundary.
 # Run: bash tests/mac/mac_compile_only_selftest.sh [harness path]   (registered: zig build test-mac-compile-only)
 set -uo pipefail
+if [ "${ZB_MCO_SELFTEST_INNER:-}" != 1 ]; then
+  ZB_MCO_SELFTEST_INNER=1 ZB_MCO_LAUNCHER_NETNS=$(readlink /proc/self/ns/net) \
+    exec unshare --user --map-current-user --net bash "$(realpath "$0")" "$@"
+fi
 HARNESS=$(realpath "${1:-tests/mac/mac_compile_only.sh}")
 BASE=$(mktemp -d "${TMPDIR:-/tmp}/zb-mco-selftest-XXXXXX")
 T=$(realpath "$BASE")
@@ -30,10 +37,23 @@ trap cleanup EXIT
 fails=0
 ok() { printf 'ok   %s\n' "$*"; }
 bad() { printf 'FAIL %s\n' "$*"; fails=$((fails + 1)); }
+own=$(readlink /proc/self/ns/net)
+v4=$(sed 1d /proc/net/route | wc -l)
+v6=$(grep -cv ' lo$' /proc/net/ipv6_route 2>/dev/null)
+routes=$(( ${v4:-0} + ${v6:-0} ))
+if [ -n "${ZB_MCO_LAUNCHER_NETNS:-}" ] && [ "$own" != "$ZB_MCO_LAUNCHER_NETNS" ] \
+   && [ "$own" != "${ZB_ORACLE_NETNS:-}" ] && [ "$routes" -eq 0 ]; then
+  ok "netns: own $own (launcher ${ZB_MCO_LAUNCHER_NETNS}), no route out"
+else
+  bad "netns: not in a private network namespace with no route (own $own, launcher ${ZB_MCO_LAUNCHER_NETNS:-unset}," \
+      "$routes route(s)); no case runs"
+  printf 'FAIL\tmac-compile-only-selftest\tno network boundary\n'; exit 1
+fi
 
 S="$T/stub"
 mkdir -p "$S" "$T/bin" "$T/ctl" "$T/dev/CommandLineTools/usr/bin" "$T/sys"
 echo keychain > "$T/sys/System.keychain"
+printf 'not a real key\n' > "$T/fake_mac_key"   # tests/mac/mac_config.sh needs a readable regular key file (bd 3ui.13)
 
 # --- the harness copy, with exactly the Mac tool paths replaced ---------------------------------------------------
 cp "$HARNESS" "$T/h.sh"
@@ -179,6 +199,7 @@ echo '{}' > "$R/zigbrowser.json"
 echo t > "$R/tests/t"; echo p > "$R/packaging/p"; echo o > "$R/tools/o"
 # The harness takes the Macs' pinned host keys from the exported commit (bd 4pa.77, SilverRidge 7f58dd72).
 mkdir -p "$R/tests/mac" && cp "$(dirname "$HARNESS")/known_hosts" "$R/tests/mac/known_hosts"
+cp "$(dirname "$HARNESS")/mac_config.sh" "$R/tests/mac/mac_config.sh"   # the hosts and key, from the export (bd 3ui.13)
 git -C "$R" init -q
 git -C "$R" -c user.email=t@t -c user.name=t add -A
 git -C "$R" -c user.email=t@t -c user.name=t commit -qm honest
@@ -198,7 +219,7 @@ reset() {
   for f in ssh ssh.calls permit broken rosetta zig lipo arch.intel arch.arm; do rm -f "$T/ctl/$f"; done
 }
 launch() { # launch <rev> [digest]: runs the harness copy as the committed bytes; status in $code
-  (cd "$R" && PATH="$T/bin:$PATH" ZB_MAC_HOST=intel@h1 ZB_MAC_ARM_HOST=arm@h2 ZB_MAC_KEY=/dev/null \
+  (cd "$R" && PATH="$T/bin:$PATH" ZB_MAC_HOST=intel@h1 ZB_MAC_ARM_HOST=arm@h2 ZB_MAC_KEY="$T/fake_mac_key" \
      ZB_COMPILE_HARNESS_SHA256="${2:-$DIGEST}" bash -c "$(cat "$T/h.sh")" mac-compile-only "$1") > "$OUT" 2>&1
   code=$?
 }

@@ -24,7 +24,7 @@
 #      reaper, or be one of the two libraries; a new uncensused transport script is red;
 #   H  tests/mac/mac_compile_only_selftest.sh proves, before its first case, that it runs in its own network namespace
 #      (not this test's) with no route out.
-# Run: bash tests/mac/mac_config_selftest.sh [repo root]
+# Run: bash tests/mac/mac_config_selftest.sh [repo root]   (step: zig build test-mac-build-script)
 set -uo pipefail
 if [ "${ZB_MAC_CONFIG_SELFTEST_INNER:-}" != 1 ]; then
   ZB_MAC_CONFIG_SELFTEST_INNER=1 exec unshare --user --map-current-user --net bash "$(realpath "$0")" "$@"

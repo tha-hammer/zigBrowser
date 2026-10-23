@@ -8,20 +8,15 @@
 # usage: tests/mac/ms5_spawn_io_gate.sh [commit]   (default: the working tree)
 set -euo pipefail
 
-KEY="${ZB_MAC_KEY:-/home/maceo/vms/mac-m9/zb_mac_key}"
-INTEL_HOST="${ZB_MAC_HOST:-maceojourdan@100.92.212.47}"
-ARM_HOST="${ZB_MAC_ARM_HOST:-}"
-ARM_KEY="${ZB_MAC_ARM_KEY:-$KEY}"
 LEG_TIMEOUT="${ZB_MAC_LEG_TIMEOUT:-240}"
 export SSH_ASKPASS_REQUIRE=never
 
 cd "$(git rev-parse --show-toplevel)"
+# The Macs and the key come only from the explicit environment, never a default (bd 3ui.13): NOT RUN otherwise.
+. tests/mac/mac_config.sh
+mac_config two
 # The Macs' host keys are pinned (bd 4pa.77): every ssh/scp below uses this file, never ~/.ssh/known_hosts.
 KNOWN_HOSTS="$PWD/tests/mac/known_hosts"
-if [ -z "$ARM_HOST" ]; then
-  echo "NOT RUN: arm64 host not configured (set ZB_MAC_ARM_HOST=user@host)" >&2
-  exit 1
-fi
 stage=$(mktemp -d "${TMPDIR:-/tmp}/zb-spawnio-XXXXXX")
 trap 'case "$stage" in */zb-spawnio-*) rm -rf -- "${stage:?}";; esac' EXIT
 for f in tests/mac/spawn_group_io_test.c src/agent_spawn_posix.c src/agent_spawn_posix.h; do

@@ -16,10 +16,6 @@
 # usage: tests/mac/ms6_5_reaper_gate.sh [commit]   (default: HEAD; never the working tree)
 set -euo pipefail
 
-KEY="${ZB_MAC_KEY:-/home/maceo/vms/mac-m9/zb_mac_key}"
-INTEL_HOST="${ZB_MAC_HOST:-maceojourdan@100.92.212.47}"
-ARM_HOST="${ZB_MAC_ARM_HOST:-}"
-ARM_KEY="${ZB_MAC_ARM_KEY:-$KEY}"
 LEG_TIMEOUT="${ZB_MAC_LEG_TIMEOUT:-240}"
 export SSH_ASKPASS_REQUIRE=never
 
@@ -33,10 +29,9 @@ commit=$(git rev-parse --verify --quiet "${1:-HEAD}^{commit}") || disabled "no s
 release="$HOME/.ntm/zb-release/reaper-gate-$commit"
 { [ -f "$release" ] && [ "$(head -n 1 "$release")" = "$commit" ]; } \
   || disabled "no orchestrator release token for $commit at $release"
-if [ -z "$ARM_HOST" ]; then
-  echo "NOT RUN: arm64 host not configured (set ZB_MAC_ARM_HOST=user@host)" >&2
-  exit 1
-fi
+# The Macs and the key come only from the explicit environment, never a default (bd 3ui.13): NOT RUN otherwise.
+. tests/mac/mac_config.sh
+mac_config two
 shared="$HOME/.ntm/zb-release/shared-mac-hosts"
 [ -f "$shared" ] && [ -r "$shared" ] || disabled "no shared-host list at $shared (fail closed)"
 for target in "$INTEL_HOST" "$ARM_HOST"; do

@@ -13,6 +13,7 @@ set -uo pipefail
 SCRIPT=$(realpath "${1:-tests/mac/ms6_5_reaper_gate.sh}")
 BASE=$(mktemp -d "${TMPDIR:-/tmp}/zb-reaper-guard-XXXXXX")
 T=$(realpath "$BASE")
+printf 'not a real key\n' > "$T/fake_mac_key"   # tests/mac/mac_config.sh needs a readable regular key file (bd 3ui.13)
 cleanup() {
   case "$T" in "$(realpath "${TMPDIR:-/tmp}")"/zb-reaper-guard-??????) rm -rf "${T:?}" ;; esac
 }
@@ -35,6 +36,7 @@ done
 
 # A scratch repo holding the real script and stand-ins for the three files it stages.
 cp "$SCRIPT" "$T/repo/tests/mac/ms6_5_reaper_gate.sh"
+cp "$(dirname "$SCRIPT")/mac_config.sh" "$T/repo/tests/mac/mac_config.sh"   # its hosts and key (bd 3ui.13)
 echo 'committed reaper' > "$T/repo/src/agent_run_reaper.c"
 echo 'committed header' > "$T/repo/src/agent_run_reaper.h"
 echo 'committed driver' > "$T/repo/tests/mac/ms6_5_reaper_test.c"
@@ -49,7 +51,8 @@ run() { # run <label> [VAR=value ...]: runs the real script; sets rc, out, calls
   local label=$1; shift
   rm -f "$T/ctl/calls" "$T/ctl"/stdin.*
   out=$(cd "$T/repo" && env -i PATH="$T/bin:/usr/bin:/bin" HOME="$T/home" TMPDIR="$T/tmp" \
-          ZB_MAC_ARM_HOST=arm@stub.invalid ZB_MAC_HOST=intel@stub.invalid ZB_MAC_LEG_TIMEOUT=5 "$@" \
+          ZB_MAC_ARM_HOST=arm@stub.invalid ZB_MAC_HOST=intel@stub.invalid ZB_MAC_KEY="$T/fake_mac_key" \
+          ZB_MAC_LEG_TIMEOUT=5 "$@" \
           timeout 60 bash tests/mac/ms6_5_reaper_gate.sh 2>&1 </dev/null)
   rc=$?
   calls=0; [ -f "$T/ctl/calls" ] && calls=$(wc -l < "$T/ctl/calls")

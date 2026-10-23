@@ -51,10 +51,6 @@ HARNESS_SHA256=$(printf '%s\n' "$BASH_EXECUTION_STRING" | sha256sum | cut -c1-64
 [ "$HARNESS_SHA256" = "${ZB_COMPILE_HARNESS_SHA256:-}" ] \
   || fail "this harness's digest $HARNESS_SHA256 is not the approved ZB_COMPILE_HARNESS_SHA256"
 
-KEY="${ZB_MAC_KEY:-/home/maceo/vms/mac-m9/zb_mac_key}"
-INTEL_HOST="${ZB_MAC_HOST:-maceojourdan@100.92.212.47}"
-ARM_HOST="${ZB_MAC_ARM_HOST:-jj@100.119.156.28}"
-ARM_KEY="${ZB_MAC_ARM_KEY:-$KEY}"
 export SSH_ASKPASS_REQUIRE=never
 
 TOP=$(git rev-parse --show-toplevel)
@@ -71,6 +67,9 @@ KNOWN_HOSTS="$L/repo/tests/mac/known_hosts"
 [ -f "$KNOWN_HOSTS" ] && [ ! -L "$KNOWN_HOSTS" ] \
   && [ "$(git hash-object --no-filters -- "$KNOWN_HOSTS")" = "$(git rev-parse --verify --quiet "$SHA:tests/mac/known_hosts")" ] \
   || fail "tests/mac/known_hosts in the export is missing or is not the blob at $SHA"
+# The Macs and the key come only from the explicit environment, never a default (bd 3ui.13): NOT RUN otherwise.
+. "$L/repo/tests/mac/mac_config.sh"
+mac_config two
 echo "== mac compile-only at commit $SHA, harness sha256 $HARNESS_SHA256" >&2
 cd "$L/repo"
 

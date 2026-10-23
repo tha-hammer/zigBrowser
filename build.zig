@@ -3976,6 +3976,7 @@ pub fn build(b: *std.Build) void {
     const mac_compile_only_selftest = b.addSystemCommand(&.{ "bash", "tests/mac/mac_compile_only_selftest.sh" });
     mac_compile_only_selftest.addFileInput(b.path("tests/mac/mac_compile_only.sh"));
     mac_compile_only_selftest.addFileInput(b.path("tests/mac/mac_compile_only_selftest.sh"));
+    mac_compile_only_selftest.addFileInput(b.path("tests/mac/mac_config.sh"));
     b.step("test-mac-compile-only", "Run the R4 compile-only Mac harness's hostless safety selftest").dependOn(&mac_compile_only_selftest.step);
     test_step.dependOn(&mac_compile_only_selftest.step);
     // Hostless selftest of the destructive reaper gate's disable-by-default guard (plan R29-SAFETY, bd 4pa.70).
@@ -3994,6 +3995,7 @@ pub fn build(b: *std.Build) void {
     const mac_build_script_selftest = b.addSystemCommand(&.{ "bash", "tests/mac/build_on_mac_selftest.sh" });
     mac_build_script_selftest.addFileInput(b.path("tests/mac/build-on-mac.sh"));
     mac_build_script_selftest.addFileInput(b.path("tests/mac/known_hosts"));
+    mac_build_script_selftest.addFileInput(b.path("tests/mac/mac_config.sh"));
     mac_build_script_selftest.addFileInput(b.path("tests/mac/build_on_mac_selftest.sh"));
     const mac_build_script_step = b.step("test-mac-build-script", "Run the hostless selftests of the shared Mac build step and its eight callers (exact commit, fresh run dir, pinned host keys)");
     mac_build_script_step.dependOn(&mac_build_script_selftest.step);
@@ -4002,7 +4004,7 @@ pub fn build(b: *std.Build) void {
     const mac_gate_callers_selftest = b.addSystemCommand(&.{ "bash", "tests/mac/mac_gate_callers_selftest.sh" });
     for ([_][]const u8{
         "tests/mac/mac_gate_callers_selftest.sh", "tests/mac/mac_gate_lib.sh",    "tests/mac/build-on-mac.sh",
-        "tests/mac/known_hosts",                  "tests/mac/gate.sh",            "tests/mac/ms1b_signed_gate.sh",
+        "tests/mac/known_hosts", "tests/mac/mac_config.sh",                  "tests/mac/gate.sh",            "tests/mac/ms1b_signed_gate.sh",
         "tests/mac/ms2a_gate.sh",                 "tests/mac/ms2b_gate.sh",       "tests/mac/ms2c_gate.sh",
         "tests/mac/ms3_gate.sh",                  "tests/mac/ms4_gate.sh",        "packaging/macos/build-dmg.sh",
     }) |input| mac_gate_callers_selftest.addFileInput(b.path(input));
@@ -4012,7 +4014,7 @@ pub fn build(b: *std.Build) void {
     const mac_gate_selftest = b.addSystemCommand(&.{ "bash", "tests/mac/gate_selftest.sh" });
     for ([_][]const u8{
         "tests/mac/gate_selftest.sh",      "tests/mac/gate.sh",                         "tests/mac/build-on-mac.sh",
-        "tests/mac/mac_gate_lib.sh",       "tests/mac/known_hosts",                     "tests/e2e/mac_resource_compat.py",
+        "tests/mac/mac_gate_lib.sh",       "tests/mac/known_hosts", "tests/mac/mac_config.sh",                     "tests/e2e/mac_resource_compat.py",
         "tests/e2e/mac_universal_test.py", "packaging/macos/universal_components.json",
     }) |input| mac_gate_selftest.addFileInput(b.path(input));
     b.step("test-mac-gate-selftest", "Run the hostless selftest of the MS1 two-host gate's fail-closed runner (MS1.4)").dependOn(&mac_gate_selftest.step);
@@ -4021,7 +4023,7 @@ pub fn build(b: *std.Build) void {
     const mac_dmg_script_selftest = b.addSystemCommand(&.{ "bash", "tests/mac/dmg_script_selftest.sh" });
     for ([_][]const u8{
         "tests/mac/dmg_script_selftest.sh",   "packaging/macos/build-dmg.sh",    "tests/mac/build-on-mac.sh",
-        "tests/mac/mac_gate_lib.sh",          "tests/mac/known_hosts",           "packaging/macos/Info.plist",
+        "tests/mac/mac_gate_lib.sh",          "tests/mac/known_hosts", "tests/mac/mac_config.sh",           "packaging/macos/Info.plist",
         "packaging/macos/entitlements.plist", "packaging/assets/zigBrowser.png",
     }) |input| mac_dmg_script_selftest.addFileInput(b.path(input));
     b.step("test-mac-dmg-script", "Run the hostless selftest of the dmg script: shim in Contents/Frameworks, inside-out signing (4pa.73)").dependOn(&mac_dmg_script_selftest.step);
@@ -4031,7 +4033,7 @@ pub fn build(b: *std.Build) void {
     const mac_bundle_layout_spike_selftest = b.addSystemCommand(&.{ "bash", "tests/mac/bundle_layout_spike_containment_selftest.sh" });
     for ([_][]const u8{
         "tests/mac/bundle_layout_spike_containment_selftest.sh", "tests/mac/bundle_layout_spike.sh",       "tests/mac/bundle_layout_spike_leg.sh",
-        "tests/mac/build-on-mac.sh",                             "tests/mac/mac_gate_lib.sh",              "tests/mac/known_hosts",
+        "tests/mac/build-on-mac.sh",                             "tests/mac/mac_gate_lib.sh",              "tests/mac/known_hosts", "tests/mac/mac_config.sh",
         "packaging/macos/Info.plist",                            "packaging/macos/relocate_agent_data.py",
     }) |input| mac_bundle_layout_spike_selftest.addFileInput(b.path(input));
     const mac_bundle_layout_spike_step = b.step("test-mac-bundle-layout-spike", "Run the hostless selftests of the 4pa.80 bundle-layout spike (prep and run)");
@@ -4044,7 +4046,7 @@ pub fn build(b: *std.Build) void {
         "tests/mac/bundle_layout_spike_containment_ff_selftest.sh", "tests/mac/bundle_layout_spike_containment_selftest.sh",
         "tests/mac/bundle_layout_spike.sh",                         "tests/mac/bundle_layout_spike_leg.sh",
         "tests/mac/build-on-mac.sh",                                "tests/mac/mac_gate_lib.sh",
-        "tests/mac/known_hosts",                                    "packaging/macos/Info.plist",
+        "tests/mac/known_hosts", "tests/mac/mac_config.sh",                                    "packaging/macos/Info.plist",
         "packaging/macos/relocate_agent_data.py",
     }) |input| mac_bundle_layout_spike_ff_selftest.addFileInput(b.path(input));
     mac_bundle_layout_spike_step.dependOn(&mac_bundle_layout_spike_ff_selftest.step);
@@ -4065,7 +4067,7 @@ pub fn build(b: *std.Build) void {
         "tests/mac/bundle_layout_spike_layout_selftest.sh", "tests/mac/bundle_layout_spike_containment_selftest.sh",
         "tests/mac/bundle_layout_spike.sh",                 "tests/mac/bundle_layout_spike_leg.sh",
         "tests/mac/build-on-mac.sh",                        "tests/mac/mac_gate_lib.sh",
-        "tests/mac/known_hosts",                            "packaging/macos/Info.plist",
+        "tests/mac/known_hosts", "tests/mac/mac_config.sh",                            "packaging/macos/Info.plist",
         "packaging/macos/relocate_agent_data.py",
     }) |input| mac_bundle_layout_spike_layout_selftest.addFileInput(b.path(input));
     mac_bundle_layout_spike_step.dependOn(&mac_bundle_layout_spike_layout_selftest.step);
@@ -4098,7 +4100,7 @@ pub fn build(b: *std.Build) void {
         "tests/mac/ms3_gate.sh",
         "tests/mac/build-on-mac.sh",
         "tests/mac/mac_gate_lib.sh",
-        "tests/mac/known_hosts",
+        "tests/mac/known_hosts", "tests/mac/mac_config.sh",
         "tests/mac/approved_runs/ms2b-gate.json",
         "tests/mac/approved_runs/ms2c-gate.json",
         "tests/mac/approved_runs/ms3-gate.json",
@@ -4117,7 +4119,7 @@ pub fn build(b: *std.Build) void {
     const mac_zig_cache_selftest = b.addSystemCommand(&.{ "bash", "tests/mac/zig_cache_isolation_selftest.sh" });
     for ([_][]const u8{
         "tests/mac/zig_cache_isolation_selftest.sh", "tests/mac/build-on-mac.sh",    "tests/mac/mac_gate_lib.sh",
-        "tests/mac/known_hosts",                     "tests/mac/gate.sh",            "tests/mac/ms1b_signed_gate.sh",
+        "tests/mac/known_hosts", "tests/mac/mac_config.sh",                     "tests/mac/gate.sh",            "tests/mac/ms1b_signed_gate.sh",
         "tests/mac/ms2a_gate.sh",                    "tests/mac/ms2b_gate.sh",       "tests/mac/ms2c_gate.sh",
         "tests/mac/ms3_gate.sh",                     "tests/mac/ms4_gate.sh",        "packaging/macos/build-dmg.sh",
     }) |input| mac_zig_cache_selftest.addFileInput(b.path(input));
@@ -4134,7 +4136,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&mac_zig_cache_direct_selftest.step);
     // ms5_gate.sh reaches the Macs only with the pinned host keys, BatchMode and no display (SilverRidge 1915e0d).
     const mac_ms5_gate_hostkey_selftest = b.addSystemCommand(&.{ "bash", "tests/mac/ms5_gate_hostkey_selftest.sh" });
-    for ([_][]const u8{ "tests/mac/ms5_gate_hostkey_selftest.sh", "tests/mac/ms5_gate.sh", "tests/mac/known_hosts" }) |input|
+    for ([_][]const u8{ "tests/mac/ms5_gate_hostkey_selftest.sh", "tests/mac/ms5_gate.sh", "tests/mac/known_hosts", "tests/mac/mac_config.sh", "tests/mac/mac_config.sh" }) |input|
         mac_ms5_gate_hostkey_selftest.addFileInput(b.path(input));
     mac_build_script_step.dependOn(&mac_ms5_gate_hostkey_selftest.step);
     test_step.dependOn(&mac_ms5_gate_hostkey_selftest.step);
@@ -4142,7 +4144,7 @@ pub fn build(b: *std.Build) void {
     const mac_ms5_setup_hostkey_selftest = b.addSystemCommand(&.{ "bash", "tests/mac/ms5_setup_hostkey_selftest.sh" });
     for ([_][]const u8{
         "tests/mac/ms5_setup_hostkey_selftest.sh", "tests/mac/ms5_setup_refusal_gate.sh", "tests/mac/ms5_setup_e2e.sh",
-        "tests/mac/lib_group_cleanup.sh",          "tests/mac/known_hosts",
+        "tests/mac/lib_group_cleanup.sh",          "tests/mac/known_hosts", "tests/mac/mac_config.sh",
     }) |input| mac_ms5_setup_hostkey_selftest.addFileInput(b.path(input));
     mac_build_script_step.dependOn(&mac_ms5_setup_hostkey_selftest.step);
     test_step.dependOn(&mac_ms5_setup_hostkey_selftest.step);
@@ -4158,11 +4160,18 @@ pub fn build(b: *std.Build) void {
     mac_exact_hostkey_selftest.has_side_effects = true;
     mac_build_script_step.dependOn(&mac_exact_hostkey_selftest.step);
     test_step.dependOn(&mac_exact_hostkey_selftest.step);
+    // No Mac script reaches a Mac unless ZB_MAC_HOST/ZB_MAC_KEY (and ZB_MAC_ARM_HOST) are named explicitly, through the one
+    // helper tests/mac/mac_config.sh (bd 3ui.13, SilverRidge a473a027). Its census reads tests/, packaging/ and tools/, so
+    // it runs every time; it drives every caller in a private network namespace.
+    const mac_config_selftest = b.addSystemCommand(&.{ "bash", "tests/mac/mac_config_selftest.sh" });
+    mac_config_selftest.has_side_effects = true;
+    mac_build_script_step.dependOn(&mac_config_selftest.step);
+    test_step.dependOn(&mac_config_selftest.step);
     // The shared transport (build-on-mac.sh, mac_gate_lib.sh) passes no display or askpass to ssh/scp (bd 3ui.9).
     const mac_transport_selftest = b.addSystemCommand(&.{ "bash", "tests/mac/mac_transport_selftest.sh" });
     for ([_][]const u8{
         "tests/mac/mac_transport_selftest.sh", "tests/mac/build-on-mac.sh",    "tests/mac/mac_gate_lib.sh",
-        "tests/mac/known_hosts",               "packaging/macos/build-dmg.sh", "packaging/macos/Info.plist",
+        "tests/mac/known_hosts", "tests/mac/mac_config.sh",               "packaging/macos/build-dmg.sh", "packaging/macos/Info.plist",
         "packaging/assets/zigBrowser.png",
     }) |input| mac_transport_selftest.addFileInput(b.path(input));
     mac_build_script_step.dependOn(&mac_transport_selftest.step);
@@ -4171,7 +4180,7 @@ pub fn build(b: *std.Build) void {
     const mac_log_integrity_selftest = b.addSystemCommand(&.{ "bash", "tests/mac/mac_log_integrity_selftest.sh" });
     for ([_][]const u8{
         "tests/mac/mac_log_integrity_selftest.sh", "tests/mac/gate.sh",               "tests/mac/ms2b_gate.sh",
-        "tests/mac/build-on-mac.sh",               "tests/mac/mac_gate_lib.sh",       "tests/mac/known_hosts",
+        "tests/mac/build-on-mac.sh",               "tests/mac/mac_gate_lib.sh",       "tests/mac/known_hosts", "tests/mac/mac_config.sh",
         "tests/e2e/mac_resource_compat.py",        "tests/e2e/mac_universal_test.py", "packaging/macos/universal_components.json",
         "packaging/macos/entitlements.plist",      "packaging/macos/build-dmg.sh",    "packaging/macos/Info.plist",
         "packaging/assets/zigBrowser.png",

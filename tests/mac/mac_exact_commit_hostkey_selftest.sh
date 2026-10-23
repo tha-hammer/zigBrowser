@@ -24,6 +24,7 @@ fi
 ROOT=$(realpath "${1:-.}")
 BASE=$(mktemp -d "${TMPDIR:-/tmp}/zb-exact-hostkey-selftest-XXXXXX")
 T=$(realpath "$BASE")
+printf 'not a real key\n' > "$T/fake_mac_key"   # tests/mac/mac_config.sh needs a readable regular key file (bd 3ui.13)
 cleanup() {
   case "$T" in "$(realpath "${TMPDIR:-/tmp}")"/zb-exact-hostkey-selftest-??????) rm -rf "${T:?}" ;; esac
 }
@@ -117,7 +118,7 @@ for state in dirty replaced; do
     launcher=$("${G[@]}" show "$SHA:$s")
     [ "$launch" = compile ] && env_extra+=(ZB_COMPILE_HARNESS_SHA256="$(printf '%s\n' "$launcher" | /usr/bin/sha256sum | cut -c1-64)")
     (cd "$R" && env -i PATH="$path_bin:/usr/bin:/bin" HOME="$T/home" TMPDIR="$run/tmp" ZB_MAC_HOST="$INTEL" \
-       ZB_MAC_ARM_HOST="$ARM" ZB_MAC_KEY="$T/home/no_such_key" "${env_extra[@]}" \
+       ZB_MAC_ARM_HOST="$ARM" ZB_MAC_KEY="$T/fake_mac_key" "${env_extra[@]}" \
        unshare --user --map-current-user --net timeout -s TERM 120 bash -c "$launcher" "$(basename "$s" .sh)" "$SHA" \
        >"$c/out" 2>&1 </dev/null)
     before=$fails

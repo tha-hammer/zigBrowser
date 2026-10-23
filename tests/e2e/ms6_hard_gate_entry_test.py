@@ -62,9 +62,9 @@ class ArmedEntry(unittest.TestCase):
     def setUp(self):
         self.repo = Path(tempfile.mkdtemp(prefix="zb-hardgate-entry-"))
         self.addCleanup(shutil.rmtree, self.repo, True)
-        for rel in ("tests/mac/ms6_hard_gate.sh", "tests/mac/known_hosts", "agent/host/uv.lock",
-                    "agent/host/pyproject.toml", "tests/mac/spawn_group_io_test.c", "src/agent_spawn_posix.c",
-                    "src/agent_spawn_posix.h"):
+        for rel in ("tests/mac/ms6_hard_gate.sh", "tests/mac/known_hosts", "tests/mac/mac_config.sh",
+                    "agent/host/uv.lock", "agent/host/pyproject.toml", "tests/mac/spawn_group_io_test.c",
+                    "src/agent_spawn_posix.c", "src/agent_spawn_posix.h"):
             (self.repo / rel).parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(REPO / rel, self.repo / rel)
         shutil.copytree(REPO / "tests/mac/hard_gate", self.repo / "tests/mac/hard_gate",
@@ -79,9 +79,14 @@ class ArmedEntry(unittest.TestCase):
         for tool in NET_TOOLS:
             (self.shims / tool).write_text(f"#!/bin/sh\necho {tool} \"$@\" >> '{self.record}'\nexit 99\n")
             (self.shims / tool).chmod(0o755)
+        # tests/mac/mac_config.sh needs a readable regular key file (bd 3ui.13); kept outside the fixture commit
+        keydir = Path(tempfile.mkdtemp(prefix="zb-hardgate-key-"))
+        self.addCleanup(shutil.rmtree, keydir, True)
+        key = keydir / "fake_mac_key"
+        key.write_text("not a real key\n")
         self.env = {"PATH": f"{self.shims}:/usr/bin:/bin", "LANG": "C.UTF-8", "HOME": str(self.repo),
                     "ZB_MAC_HOST": "canary-intel@192.0.2.10", "ZB_MAC_ARM_HOST": "canary-arm@192.0.2.11",
-                    "ZB_MAC_KEY": str(self.repo / "no-key"), "ZB_MAC_ARM_KEY": str(self.repo / "no-key")}
+                    "ZB_MAC_KEY": str(key), "ZB_MAC_ARM_KEY": str(key)}
         self.commit()
 
     def git(self, *args):

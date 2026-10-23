@@ -15,6 +15,7 @@ set -uo pipefail
 SCRIPT=$(realpath "${1:-tests/mac/ms6_5_reaper_gate.sh}")
 BASE=$(mktemp -d "${TMPDIR:-/tmp}/zb-reaper-shared-XXXXXX")
 T=$(realpath "$BASE")
+printf 'not a real key\n' > "$T/fake_mac_key"   # tests/mac/mac_config.sh needs a readable regular key file (bd 3ui.13)
 cleanup() {
   case "$T" in "$(realpath "${TMPDIR:-/tmp}")"/zb-reaper-shared-??????) rm -rf "${T:?}" ;; esac
 }
@@ -35,6 +36,7 @@ EOF
 done
 
 cp "$SCRIPT" "$T/repo/tests/mac/ms6_5_reaper_gate.sh"
+cp "$(dirname "$SCRIPT")/mac_config.sh" "$T/repo/tests/mac/mac_config.sh"   # its hosts and key (bd 3ui.13)
 echo 'committed reaper' > "$T/repo/src/agent_run_reaper.c"
 echo 'committed header' > "$T/repo/src/agent_run_reaper.h"
 echo 'committed driver' > "$T/repo/tests/mac/ms6_5_reaper_test.c"
@@ -50,7 +52,8 @@ INTEL=intel@10.0.0.1 ARM=arm@10.0.0.2
 run() { # run <label>: runs the real script, approved and released; sets rc, out, calls
   rm -f "$T/ctl/calls"
   out=$(cd "$T/repo" && env -i PATH="$T/bin:/usr/bin:/bin" HOME="$T/home" TMPDIR="$T/tmp" \
-          ZB_MAC_HOST="$INTEL" ZB_MAC_ARM_HOST="$ARM" ZB_MAC_LEG_TIMEOUT=5 ZB_REAPER_DESTRUCTIVE_APPROVED="$SHA" \
+          ZB_MAC_HOST="$INTEL" ZB_MAC_ARM_HOST="$ARM" ZB_MAC_KEY="$T/fake_mac_key" ZB_MAC_LEG_TIMEOUT=5 \
+          ZB_REAPER_DESTRUCTIVE_APPROVED="$SHA" \
           timeout 60 bash tests/mac/ms6_5_reaper_gate.sh 2>&1 </dev/null)
   rc=$?
   calls=0; [ -f "$T/ctl/calls" ] && calls=$(wc -l < "$T/ctl/calls")

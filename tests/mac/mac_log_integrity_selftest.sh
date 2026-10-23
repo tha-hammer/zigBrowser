@@ -19,6 +19,7 @@ fi
 ROOT=$(realpath "${1:-.}")
 BASE=$(mktemp -d "${TMPDIR:-/tmp}/zb-logintegrity-selftest-XXXXXX")
 T=$(realpath "$BASE")
+printf 'not a real key\n' > "$T/fake_mac_key"   # tests/mac/mac_config.sh needs a readable regular key file (bd 3ui.13)
 cleanup() {
   case "$T" in "$(realpath "${TMPDIR:-/tmp}")"/zb-logintegrity-selftest-??????) rm -rf "${T:?}" ;; esac
 }
@@ -70,7 +71,7 @@ chmod +x "$T/bin/ssh" "$T/bin/scp"
 
 R="$T/repo"
 mkdir -p "$R/tests/mac" "$R/tests/e2e" "$R/src" "$R/packaging/macos" "$R/packaging/assets"
-for f in gate.sh ms2b_gate.sh build-on-mac.sh mac_gate_lib.sh known_hosts; do cp "$ROOT/tests/mac/$f" "$R/tests/mac/"; done
+for f in gate.sh ms2b_gate.sh build-on-mac.sh mac_gate_lib.sh mac_config.sh known_hosts; do cp "$ROOT/tests/mac/$f" "$R/tests/mac/"; done
 cp "$ROOT/tests/e2e/mac_resource_compat.py" "$ROOT/tests/e2e/mac_universal_test.py" "$R/tests/e2e/"
 cp "$ROOT/packaging/macos/universal_components.json" "$ROOT/packaging/macos/entitlements.plist" \
   "$ROOT/packaging/macos/build-dmg.sh" "$ROOT/packaging/macos/Info.plist" "$R/packaging/macos/"
@@ -86,7 +87,7 @@ SHA=$("${G[@]}" rev-parse HEAD)
 check_log() { # check_log <label> <script> <first line, ERE> <end line, ERE> <hosts> [gate]
   local label=$1 script=$2 first=$3 end=$4 nhosts=$5 gate=${6:-} log="$T/log.$1" rc
   (cd "$R" && env -i PATH="$T/bin:/usr/bin:/bin" HOME="$T/home" TMPDIR="$T/tmp" ZB_MAC_HOST="$INTEL" ZB_MAC_ARM_HOST="$ARM" \
-     ZB_MAC_KEY="$T/home/no_such_key" timeout 120 bash "$script" > "$log" 2>&1 </dev/null)
+     ZB_MAC_KEY="$T/fake_mac_key" timeout 120 bash "$script" > "$log" 2>&1 </dev/null)
   rc=$?
   [ "$rc" -eq 0 ] || bad "$label: exit $rc, want 0 (a passing Mac): $(tr -d '\0' < "$log" | tail -n 2 | tr '\n' ' ')"
   if [ "$(tr -cd '\0' < "$log" | wc -c)" -eq 0 ]; then ok "$label L1: the log has no NUL byte"

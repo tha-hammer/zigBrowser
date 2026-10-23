@@ -19,13 +19,12 @@
 # would false-green MS1b — the one thing this gate must never do.
 set -euo pipefail
 
-KEY="${ZB_MAC_KEY:-/home/maceo/vms/mac-m9/zb_mac_key}"
-INTEL_HOST="${ZB_MAC_HOST:-maceojourdan@100.92.212.47}"
-ARM_HOST="${ZB_MAC_ARM_HOST:-}"
-ARM_KEY="${ZB_MAC_ARM_KEY:-$KEY}"
 ENTITLEMENTS="packaging/macos/entitlements.plist"
 
 cd "$(git rev-parse --show-toplevel)"
+# The Macs and the key come only from the explicit environment, never a default (bd 3ui.13): NOT RUN otherwise.
+. tests/mac/mac_config.sh
+mac_config two
 # Each host builds one exact commit into its own fresh run dir; every remote file of this gate lives there (never in
 # the shared home), and every ssh pins host keys (bd 4pa.59, 4pa.77).
 . tests/mac/mac_gate_lib.sh
@@ -35,11 +34,6 @@ declare -A RUN_DIR=()   # host -> its run dir
 # /tmp is reclaimed depth-first including the dir itself, even if a subpath is odd; the run dirs too.
 STAGING="$(mktemp -d)"; trap 'mac_remove_run_dirs; find "$STAGING" -depth -delete 2>/dev/null || true' EXIT
 
-if [ -z "$ARM_HOST" ]; then
-  echo "NOT RUN: arm64 host not configured (set ZB_MAC_ARM_HOST=user@host)" >&2
-  echo "        the MS1b signed two-arch gate is INCOMPLETE and cannot pass until it runs" >&2
-  exit 1
-fi
 
 # --- Phase 1: build each arch natively on its host (no -Dtarget) and fetch the slice. ---
 build_and_fetch() {

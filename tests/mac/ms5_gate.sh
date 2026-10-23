@@ -7,12 +7,11 @@
 # Driven from Linux over Tailscale SSH; fail-closed (arm64 host mandatory, explicit `|| return 1` per step).
 set -euo pipefail
 
-KEY="${ZB_MAC_KEY:-/home/maceo/vms/mac-m9/zb_mac_key}"
-INTEL_HOST="${ZB_MAC_HOST:-maceojourdan@100.92.212.47}"
-ARM_HOST="${ZB_MAC_ARM_HOST:-}"
-ARM_KEY="${ZB_MAC_ARM_KEY:-$KEY}"
 
 cd "$(git rev-parse --show-toplevel)"
+# The Macs and the key come only from the explicit environment, never a default (bd 3ui.13): NOT RUN otherwise.
+. tests/mac/mac_config.sh
+mac_config two
 
 # Only the pinned Mac host keys are trusted, and no password, askpass or display can be used (SilverRidge 1915e0d;
 # the same options as tests/mac/mac_gate_lib.sh). Hostless selftest: tests/mac/ms5_gate_hostkey_selftest.sh.
@@ -23,11 +22,6 @@ ssh_opts() { printf '%s\0' env -u DISPLAY -u WAYLAND_DISPLAY -u XAUTHORITY -u SS
 scp_opts() { printf '%s\0' env -u DISPLAY -u WAYLAND_DISPLAY -u XAUTHORITY -u SSH_ASKPASS scp -i "$1" -o IdentitiesOnly=yes -o BatchMode=yes \
   -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$KNOWN_HOSTS" -o ConnectTimeout=15; }
 
-if [ -z "$ARM_HOST" ]; then
-  echo "NOT RUN: arm64 host not configured (set ZB_MAC_ARM_HOST=user@host)" >&2
-  echo "        the MS5 two-arch gate is INCOMPLETE and cannot pass until it runs" >&2
-  exit 1
-fi
 
 LEG_TIMEOUT="${ZB_MAC_LEG_TIMEOUT:-180}"
 

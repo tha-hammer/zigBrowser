@@ -22,12 +22,13 @@
 #   - Laptop must have `caffeinate -dimsu` running or it sleeps off the tailnet.
 set -euo pipefail
 
-KEY="${ZB_MAC_KEY:-/home/maceo/vms/mac-m9/zb_mac_key}"
-HOST="${ZB_MAC_HOST:-maceojourdan@100.92.212.47}"
 ZIG='$HOME/.local/bin/zig'
 STEP="${1:-}"
 
 cd "$(git rev-parse --show-toplevel)"
+# The Macs and the key come only from the explicit environment, never a default (bd 3ui.13): NOT RUN otherwise.
+. tests/mac/mac_config.sh
+mac_config one
 KNOWN_HOSTS="$PWD/tests/mac/known_hosts"
 # BatchMode=yes: agents have no terminal but inherit DISPLAY=:0 with ssh-askpass installed, so a brief key-auth
 # refusal would otherwise pop a graphical password window on the user's Linux desktop.

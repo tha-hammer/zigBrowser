@@ -22,6 +22,7 @@ fi
 ROOT=$(realpath "${1:-.}")
 BASE=$(mktemp -d "${TMPDIR:-/tmp}/zb-ms5setuphostkey-selftest-XXXXXX")
 T=$(realpath "$BASE")
+printf 'not a real key\n' > "$T/fake_mac_key"   # tests/mac/mac_config.sh needs a readable regular key file (bd 3ui.13)
 cleanup() {
   case "$T" in "$(realpath "${TMPDIR:-/tmp}")"/zb-ms5setuphostkey-selftest-??????) rm -rf "${T:?}" ;; esac
 }
@@ -48,7 +49,7 @@ done
 # The scratch repo: the real scripts, their helper, the pinned host keys, and stand-ins for what they archive.
 R="$T/repo"
 mkdir -p "$R/tests/mac" "$R/src" "$R/packaging" "$R/agent" "$R/tools"
-for f in ms5_setup_refusal_gate.sh ms5_setup_e2e.sh lib_group_cleanup.sh known_hosts; do cp "$ROOT/tests/mac/$f" "$R/tests/mac/"; done
+for f in ms5_setup_refusal_gate.sh ms5_setup_e2e.sh lib_group_cleanup.sh mac_config.sh known_hosts; do cp "$ROOT/tests/mac/$f" "$R/tests/mac/"; done
 echo "// stand-in" > "$R/src/main.zig"
 echo x > "$R/packaging/x"; echo x > "$R/agent/x"; echo x > "$R/tools/x"
 echo build > "$R/build.zig"; echo zon > "$R/build.zig.zon"; echo '{}' > "$R/zigbrowser.json"
@@ -64,7 +65,7 @@ check() { # check <label> <script> <its both-arches PASS line's start>
   local -A seen=()
   rm -f "$T/ctl"/*
   (cd "$R" && env -i PATH="$T/bin:/usr/bin:/bin" HOME="$T/home" TMPDIR="$T/tmp" ZB_MAC_HOST="$INTEL" \
-     ZB_MAC_ARM_HOST="$ARM" ZB_MAC_KEY="$T/home/no_such_key" DISPLAY=:99 WAYLAND_DISPLAY=wayland-selftest \
+     ZB_MAC_ARM_HOST="$ARM" ZB_MAC_KEY="$T/fake_mac_key" DISPLAY=:99 WAYLAND_DISPLAY=wayland-selftest \
      XAUTHORITY="$T/home/.Xauthority" SSH_ASKPASS="$T/bin/askpass-must-not-run" \
      timeout 120 bash "$script" >"$T/out" 2>&1 </dev/null)
   rc=$?
