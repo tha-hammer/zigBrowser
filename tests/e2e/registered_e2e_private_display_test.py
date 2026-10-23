@@ -12,11 +12,14 @@ private HOME/TMPDIR inside a private network namespace.
 
 from __future__ import annotations
 
+import io
 import os
 import re
+import shlex
 import sys
 import tempfile
 import unittest
+from contextlib import redirect_stderr
 from pathlib import Path
 from unittest import mock
 
@@ -51,6 +54,7 @@ REGISTERED = {
 }
 IPC_CONTROL = "ipc_roundtrip_e2e"
 FAKE_DISPLAY = ":59999"
+STRICT_SKIP = "SKIP: --prefer-xvfb requires Xvfb and xauth"
 
 COMMAND = re.compile(r"const (\w+) = b\.addSystemCommand\(&\.\{(.*?)\}\);", re.S)
 STRING = re.compile(r'"((?:[^"\\]|\\.)*)"')
@@ -69,6 +73,25 @@ def commands(source: str) -> dict[str, list[str]]:
     }
 
 
+def shell_commands(program: str) -> list[list[str]]:
+    """Lex one shell program into simple commands without executing it."""
+    lexer = shlex.shlex(program, posix=True, punctuation_chars=";&|")
+    lexer.whitespace_split = True
+    lexer.commenters = "#"
+    result: list[list[str]] = []
+    current: list[str] = []
+    for token in lexer:
+        if token and set(token) <= set(";&|"):
+            if current:
+                result.append(current)
+                current = []
+        else:
+            current.append(token)
+    if current:
+        result.append(current)
+    return result
+
+
 class RegisteredE2EPrivateDisplay(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
@@ -81,12 +104,46 @@ class RegisteredE2EPrivateDisplay(unittest.TestCase):
         cls.fake_x1.parent.mkdir(parents=True, exist_ok=True)
         cls.fake_x1.touch()
 
-    def preference(self, variable: str) -> bool:
-        argv = self.commands[variable]
+    def target_invocations(
+        self, variable: str, command_map: dict[str, list[str]] | None = None
+    ) -> list[list[str]]:
+        command_map = self.commands if command_map is None else command_map
+        argv = command_map[variable]
         self.assertEqual(argv[:2], ["sh", "-c"], f"{variable}: expected the registered sh -c command")
-        return re.search(r"(?:^|\s)--prefer-xvfb(?:\s|$)", argv[2]) is not None
+        script = REGISTERED[variable]
+        return [part for part in shell_commands(argv[2]) if part[:2] == ["python3", script]]
 
-    def detect(self, prefer_xvfb: bool, x1: bool):
+    def target_argv(self, variable: str, command_map: dict[str, list[str]] | None = None) -> list[str]:
+        targets = self.target_invocations(variable, command_map)
+        self.assertGreaterEqual(len(targets), 1, f"{variable}: no python3 {REGISTERED[variable]} command")
+        return targets[0]
+
+    def preference(self, variable: str, command_map: dict[str, list[str]] | None = None) -> bool:
+        return "--prefer-xvfb" in self.target_argv(variable, command_map)
+
+    def preference_offenders(self, command_map: dict[str, list[str]]) -> list[str]:
+        return [variable for variable in REGISTERED if not self.preference(variable, command_map)]
+
+    def strict_fixture(self) -> dict[str, list[str]]:
+        result = {variable: list(argv) for variable, argv in self.commands.items()}
+        for variable, script in REGISTERED.items():
+            if self.preference(variable, result):
+                continue
+            needle = f"python3 {script}"
+            replaced = result[variable][2].replace(needle, f"{needle} --prefer-xvfb", 1)
+            self.assertNotEqual(replaced, result[variable][2], f"{variable}: fixture could not add target flag")
+            result[variable][2] = replaced
+        return result
+
+    def without_target_flag(self, command_map: dict[str, list[str]], variable: str) -> dict[str, list[str]]:
+        result = {name: list(argv) for name, argv in command_map.items()}
+        needle = f"python3 {REGISTERED[variable]} --prefer-xvfb"
+        replaced = result[variable][2].replace(needle, f"python3 {REGISTERED[variable]}", 1)
+        self.assertNotEqual(replaced, result[variable][2], f"{variable}: fixture could not remove target flag")
+        result[variable][2] = replaced
+        return result
+
+    def detect(self, prefer_xvfb: bool, x1: bool, missing_tools: frozenset[str] = frozenset()):
         real_exists = Path.exists
 
         def fake_exists(path: Path) -> bool:
@@ -100,7 +157,11 @@ class RegisteredE2EPrivateDisplay(unittest.TestCase):
             mock.patch.object(
                 slice2_common.shutil,
                 "which",
-                side_effect=lambda tool: f"/fake-not-executed/{tool}" if tool in ("Xvfb", "xauth") else None,
+                side_effect=lambda tool: (
+                    f"/fake-not-executed/{tool}"
+                    if tool in ("Xvfb", "xauth") and tool not in missing_tools
+                    else None
+                ),
             ),
             mock.patch.object(slice2_common.subprocess, "Popen", side_effect=AssertionError("process launch forbidden")),
             mock.patch.object(slice2_common.subprocess, "run", side_effect=AssertionError("process launch forbidden")),
@@ -109,7 +170,10 @@ class RegisteredE2EPrivateDisplay(unittest.TestCase):
                 os.environ.pop("DISPLAY", None)
             os.environ.pop("WAYLAND_DISPLAY", None)
             os.environ.pop("XAUTHORITY", None)
-            return slice2_common.detect_runner(prefer_xvfb)
+            stderr = io.StringIO()
+            with redirect_stderr(stderr):
+                result = slice2_common.detect_runner(prefer_xvfb)
+            return result, stderr.getvalue()
 
     @staticmethod
     def private(result) -> bool:
@@ -133,17 +197,52 @@ class RegisteredE2EPrivateDisplay(unittest.TestCase):
             if f"test_step.dependOn(&{variable}.step);" in self.build:
                 discovered[variable] = script
         self.assertEqual(discovered, REGISTERED)
+        for variable in REGISTERED:
+            self.assertEqual(
+                len(self.target_invocations(variable)),
+                1,
+                f"{variable}: expected exactly one registered target invocation",
+            )
 
     def test_c2_existing_explicit_preference_control_is_private(self) -> None:
         self.assertTrue(self.preference(IPC_CONTROL))
         for x1 in (False, True):
             with self.subTest(mode="x1" if x1 else "inherited"):
-                self.assertTrue(self.private(self.detect(True, x1)))
+                result, stderr = self.detect(True, x1)
+                self.assertEqual(stderr, "")
+                self.assertTrue(self.private(result))
+
+    def test_c3_only_the_first_target_python_argv_can_supply_the_flag(self) -> None:
+        strict = self.strict_fixture()
+        victim = "automation_api_e2e"
+        script = REGISTERED[victim]
+        controls = {}
+
+        controls["comment-only"] = self.without_target_flag(strict, victim)
+        controls["comment-only"][victim][2] += " # --prefer-xvfb"
+
+        controls["unrelated-command"] = self.without_target_flag(strict, victim)
+        controls["unrelated-command"][victim][2] = (
+            "echo --prefer-xvfb; " + controls["unrelated-command"][victim][2]
+        )
+
+        controls["second-invocation"] = self.without_target_flag(strict, victim)
+        controls["second-invocation"][victim][2] += f"; python3 {script} --prefer-xvfb --binary ignored"
+
+        controls["one-command-drop"] = self.without_target_flag(strict, victim)
+
+        for name, command_map in controls.items():
+            with self.subTest(control=name):
+                self.assertEqual(self.preference_offenders(command_map), [victim])
+
+    def test_d0_every_first_target_invocation_requests_strict_private_x(self) -> None:
+        offenders = self.preference_offenders(self.commands)
+        self.assertEqual(offenders, [], f"first target invocation lacks --prefer-xvfb: {offenders}")
 
     def assert_registered_private(self, x1: bool) -> None:
         offenders = []
         for variable in REGISTERED:
-            result = self.detect(self.preference(variable), x1)
+            result, _stderr = self.detect(self.preference(variable), x1)
             if not self.private(result):
                 prefix, env, note = result if result is not None else ([], {}, "none")
                 offenders.append(
@@ -160,6 +259,19 @@ class RegisteredE2EPrivateDisplay(unittest.TestCase):
 
     def test_d2_fake_x1_socket_is_never_selected(self) -> None:
         self.assert_registered_private(x1=True)
+
+    def assert_strict_unavailable_refuses(self, x1: bool) -> None:
+        for missing in ("Xvfb", "xauth"):
+            with self.subTest(mode="x1" if x1 else "inherited", missing=missing):
+                result, stderr = self.detect(True, x1, frozenset({missing}))
+                self.assertIsNone(result, f"strict request used a live display with {missing} unavailable: {result}")
+                self.assertEqual(stderr.strip(), STRICT_SKIP)
+
+    def test_d3_inherited_display_is_refused_without_a_complete_private_server(self) -> None:
+        self.assert_strict_unavailable_refuses(x1=False)
+
+    def test_d4_x1_is_refused_without_a_complete_private_server(self) -> None:
+        self.assert_strict_unavailable_refuses(x1=True)
 
 
 if __name__ == "__main__":
