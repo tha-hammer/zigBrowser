@@ -29,6 +29,14 @@
 #       signing of every target once with the .app last, never --deep, and, only when no signing call failed,
 #       `codesign --verify --strict --deep --verbose=4`) as two sandboxed commands, with before/after audits. Its stdout
 #       and <root>/evidence.tar are copied to <prep dir>/evidence/<arch>-<run dir>/ before `remove` deletes the root.
+#       The outside-the-root audit is classified on Linux from the raw evidence/audit.roots, audit.before and
+#       audit.after by the commit's tests/mac/bundle_layout_spike_audit.py (SilverRidge 7f3b4c70, 1950c0bb), which
+#       writes <ev>/audit.classified: AUDIT-CLEAN, AUDIT-AMBIENT (every delta matches a reviewed pathname/metadata
+#       shape; nothing about which process wrote it) or AUDIT-UNKNOWN. AMBIENT is accepted only beside exactly one
+#       canary proof line, no denial, the complete raw evidence, a zero classifier exit and the printed SHA-256 of
+#       audit.classified; it then adds "; audit AMBIENT <n>" to a conclusive leg's detail. After classification,
+#       <ev>/manifest.sha256 holds the SHA-256 of every required regular evidence file once, in byte order (never
+#       itself), and MANIFEST<TAB><arch><TAB><its SHA-256> is printed.
 #       The 4pa.80 hypothesis (SilverRidge a365949c): the logical Contents/Frameworks/agent-host stays, its non-code data
 #       moves physically to Contents/Resources/agent-host behind relative links. ZB_SPIKE_MUTANT=none (the default) is
 #       the candidate; ZB_SPIKE_MUTANT=stray_in_frameworks is the control: the same, plus one pinned stray file
@@ -44,7 +52,9 @@
 #         EXPECTED-FAIL    (control: census 1 and exactly two SIGNFAIL lines, the executable then the app, each not-signed
 #                          in the stray file, which is file-data, mode 644, with its pinned SHA-256)
 #         INCONCLUSIVE     (any NOT RUN or failed phase, a refused relocation, a sandbox denial anywhere, an escaping
-#                          symlink, an audit delta, a candidate census other than 0, a sign failure without the not-signed
+#                          symlink, no single canary proof line, a classifier error, a changed audit.classified, an
+#                          AUDIT-UNKNOWN delta, a required evidence file missing or not regular, a candidate census
+#                          other than 0, a sign failure without the not-signed
 #                          diagnostic, candidate sign failures that are not exactly that SIGN-FINDING shape, a verify
 #                          failure without the diagnostic, a control that signs cleanly or whose sign failures are not
 #                          exactly the predicted two, missing evidence)
@@ -191,6 +201,8 @@ trap 'exit 143' TERM INT HUP
 # Committed bytes only: the source the Mac builds, the leg driver it runs, and the pkg pin the stager checks again.
 git archive --format=tar -o "$L/src.tar" "$COMMIT" src build.zig build.zig.zon zigbrowser.json tests packaging agent/host
 git show "$COMMIT:tests/mac/bundle_layout_spike_leg.sh" > "$L/leg.sh"
+git show "$COMMIT:tests/mac/bundle_layout_spike_audit.py" > "$L/audit.py" 2>/dev/null \
+  || { echo "REFUSED: the audit classifier tests/mac/bundle_layout_spike_audit.py is missing at $COMMIT" >&2; exit 1; }
 git show "$COMMIT:$PINS" > "$L/pins.json" && pinned=$(read_pins "$L/pins.json") || { echo "FAIL: $PINS at $COMMIT is malformed" >&2; exit 1; }
 read -r _ PIN _ <<<"$pinned"
 echo "== commit $COMMIT, mutant $MUTANT" >&2
@@ -228,19 +240,46 @@ signfail_problem() { # $1=exactly two SIGNFAIL lines: '' when they are the execu
     inspected "$kind" "$mode" "$sha" || { echo "subcomponent $sub not inspected: $kind $mode $sha"; return; }
   done <<<"$1"
 }
+write_manifest() { # $1=evidence dir $2=verify rc: after classification, one sorted inventory of the required regular files
+  local ev=$1 f
+  local -a req=(audit.classified driver.out evidence/audit.after evidence/audit.before evidence/audit.roots evidence/build.log
+    evidence/census.log evidence/profile evidence/relocate.log evidence/sign.log evidence/stage.log)
+  [ "$2" = skipped ] || req+=(evidence/verify.log)
+  for f in "${req[@]}"; do [ -f "$ev/$f" ] && [ ! -L "$ev/$f" ] || { echo "$f"; return 1; }; done
+  (cd "$ev" && printf '%s\n' "${req[@]}" | LC_ALL=C sort | xargs -d '\n' sha256sum --) > "$ev/manifest.sha256"
+}
 classify() { # $1=driver output $2=evidence dir -> "<class><TAB><detail>"
-  local out=$1 ev=$2 nr vrc delta census sf nsf want first
+  local out=$1 ev=$2 nr vrc aout arc av asha amb missing v
   nr=$(awk -F'\t' '$1 == "PHASE" && ($3 == "NOT-RUN" || $3 == "fail") { print $2 ": " $4; exit }' <<<"$out")
   [ -z "$nr" ] || { printf 'INCONCLUSIVE\t%s\n' "$nr"; return; }
   grep -q '^LEGDONE$' <<<"$out" || { printf 'INCONCLUSIVE\tthe leg did not finish\n'; return; }
   vrc=$(field "$out" rc)
   [ -n "$vrc" ] || { printf 'INCONCLUSIVE\tno verify result\n'; return; }
-  [ -s "$ev/evidence/audit.before" ] && [ -s "$ev/evidence/audit.after" ] && [ -s "$ev/evidence/relocate.log" ] \
-    && [ -s "$ev/evidence/census.log" ] && { [ "$vrc" = skipped ] || [ -s "$ev/evidence/verify.log" ]; } \
+  [ "$(grep -cP '^PHASE\tcanaries\tok\t3 refused$' <<<"$out")" = 1 ] \
+    || { printf 'INCONCLUSIVE\tthe driver output does not hold exactly one canary proof\n'; return; }
+  [ -s "$ev/evidence/audit.roots" ] && [ -s "$ev/evidence/audit.before" ] && [ -s "$ev/evidence/audit.after" ] \
+    && [ -s "$ev/evidence/relocate.log" ] && [ -s "$ev/evidence/census.log" ] && { [ "$vrc" = skipped ] || [ -s "$ev/evidence/verify.log" ]; } \
     || { printf 'INCONCLUSIVE\tthe evidence is missing\n'; return; }
-  delta=$(diff "$ev/evidence/audit.before" "$ev/evidence/audit.after" | grep -E '^[<>]' | cut -d'|' -f1 | sort -u | head -n 3 | tr '\n' ' ') || true
-  [ -z "$delta" ] || { printf 'INCONCLUSIVE\taudit delta outside the root: %s\n' "$delta"; return; }
   [ "$(field "$out" denied)" = no ] || { printf 'INCONCLUSIVE\tthe sandbox denied a tool (see the evidence logs)\n'; return; }
+  # the outside-the-root audit, classified from the raw snapshots by the commit's classifier (SilverRidge 7f3b4c70)
+  aout=$(python3 -I "$L/audit.py" "$ev" 2>&1) && arc=0 || arc=$?
+  [ "$arc" -eq 0 ] || { printf 'INCONCLUSIVE\tthe audit classifier failed (rc %s): %s\n' "$arc" "$(head -n 1 <<<"$aout" | tr '\t' ' ')"; return; }
+  IFS=$'\t' read -r _ av asha _ <<<"$(head -n 1 <<<"$aout")"
+  [ -f "$ev/audit.classified" ] && [ ! -L "$ev/audit.classified" ] && [ "$(sha256sum < "$ev/audit.classified" | cut -c1-64)" = "$asha" ] \
+    || { printf 'INCONCLUSIVE\taudit.classified does not match the SHA-256 the classifier printed\n'; return; }
+  missing=$(write_manifest "$ev" "$vrc") || { printf 'INCONCLUSIVE\tthe evidence manifest lacks %s\n' "$missing"; return; }
+  case "$av" in
+    AUDIT-CLEAN) amb= ;;
+    AUDIT-AMBIENT) amb="; audit AMBIENT $(awk -F'\t' '$1 == "COUNT" { sub(/^TOTAL=/, "", $NF); print $NF }' "$ev/audit.classified")" ;;
+    AUDIT-UNKNOWN) printf 'INCONCLUSIVE\taudit UNKNOWN: %s\n' "$(awk -F'\t' '$1 == "FIRST-UNKNOWN" { print $2 " " $3 }' <<<"$aout")"; return ;;
+    *) printf 'INCONCLUSIVE\tthe audit classifier printed no verdict\n'; return ;;
+  esac
+  v=$(verdict_layout "$out")
+  case "$v" in INCONCLUSIVE*) printf '%s\n' "$v" ;; *) printf '%s%s\n' "$v" "$amb" ;; esac
+}
+verdict_layout() { # $1=driver output -> "<class><TAB><detail>": census, SIGNFAIL and verify, once the evidence holds
+  local out=$1 vrc census sf nsf want first
+  vrc=$(field "$out" rc)
   census=$(awk -F'\t' '$1 == "SPIKE" && $2 == "census" { print $3 }' <<<"$out" | tail -n 1)
   sf=$(grep -P '^SIGNFAIL\t' <<<"$out") || true
   nsf=0; [ -z "$sf" ] || nsf=$(wc -l <<<"$sf")
@@ -310,6 +349,7 @@ leg() { # $1=host $2=key $3=expected uname -m; sets CLASS
   # A root that will not go stays live (the EXIT trap tries once more and names it) and the leg is not conclusive.
   if remove_retry "$host" "$key" "$rd"; then LIVE=("${LIVE[@]:0:${#LIVE[@]}-1}"); removed=yes; fi
   verdict=$(classify "$out" "$ev")
+  [ ! -f "$ev/manifest.sha256" ] || printf 'MANIFEST\t%s\t%s\n' "$arch" "$(sha256sum < "$ev/manifest.sha256" | cut -c1-64)"
   [ "$rc" -eq 0 ] || [ "${verdict%%$'\t'*}" = INCONCLUSIVE ] || verdict=$(printf 'INCONCLUSIVE\tthe leg exited %s' "$rc")
   if [ "$removed" != yes ]; then
     local why="remove failed $REMOVE_TRIES times: root $rd is kept on $host"

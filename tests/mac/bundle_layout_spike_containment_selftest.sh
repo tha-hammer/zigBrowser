@@ -6,11 +6,14 @@
 # /usr/bin/sandbox-exec and a recording /usr/bin/python3. The fake sandbox-exec records the profile and argv of every
 # call and ENFORCES the profile it is given: it runs the command in a nested mount namespace where the fake home is
 # read-only except each (subpath "...") the profile allows, so a write the profile does not admit fails (EROFS) and a
-# write it admits works. Fake Mac tools (zig, xcrun, file, codesign, uname, getconf) and a stand-in stager (records its
+# write it admits works. The fake getconf names the Darwin user dirs through an alias outside the home (alias-<role>
+# -> private/<role>/var, as macOS resolves /var through /private/var), and the fake sandbox keeps that tree read-only
+# too. Fake Mac tools (zig, xcrun, file, codesign, uname, getconf) and a stand-in stager (records its
 # arguments, calls /usr/bin/python3 and xcrun, stages the documented layout) record whether they ran inside it.
 # Rows:
 #   K1 clean: exit 0, LAYOUT-OK on both legs, SPIKE-RESULT; per host the sandbox-exec calls are exactly: the profile
-#      parse, mkdir <root>/evidence, the positive write, the /dev/null write, the profile and before-audit evidence,
+#      parse, mkdir <root>/evidence, the positive write, the /dev/null write, the profile, the audit roots and the
+#      before-audit evidence,
 #      the three canaries, then exactly two /bin/bash outer commands (the native build, then the post-build work), then
 #      the after-audit and the evidence tar; every profile is the exact four-line profile naming the PHYSICAL root
 #      (not the symlinked home) and /dev/null and nothing else; every recorded tool call on the Mac (zig, xcrun,
@@ -20,7 +23,8 @@
 #   K3 (the old B2-B5) the stager gets <root>/inputs/py.pkg, the commit's pin, the app's Contents and both site trees
 #      from the committed agent tree; the verified .app holds the exe, the shim and agent-host; signing is ad hoc,
 #      inside out, never --deep; the census counts the non-Mach-O files under Contents/Frameworks;
-#   K4 the evidence (driver output, build/stage/sign/verify logs, both audits) is on Linux, the roots are removed;
+#   K4 the evidence (driver output, build/stage/sign/verify logs, the audit roots and both audits, audit.classified and
+#      manifest.sha256) is on Linux, the roots are removed;
 #   K5 a missing sandbox-exec, a profile parse error, a failed positive write: INCONCLUSIVE NOT RUN on both legs, exit
 #      2, no product tool runs, roots removed;
 #   K6 a sandbox-exec that does not enforce: the home canary is written, BREACH, exit 4; the canary and the root stay;
@@ -35,8 +39,8 @@
 #   K9 a staged symlink that resolves outside the root: INCONCLUSIVE before any signing;
 #   K10 the audit: on each arch, an addition, a content change, a mode-only change or a deletion outside the sandbox
 #      during the leg, across the getconf temp root, the getconf cache root, ~/Library/Caches and the shallow home, is
-#      INCONCLUSIVE on that leg, naming the path (K4 also requires path|type|mode|inode|size|mtime for all four
-#      surfaces in both snapshots);
+#      INCONCLUSIVE "audit UNKNOWN" on that leg, with that path an UNKNOWN delta in audit.classified (K4 also requires
+#      path|type|mode|inode|size|mtime in the macOS stat form for all four physical surfaces in both snapshots);
 #   K11 an unsealed verify on the arm leg: LAYOUT-FINDING there, LAYOUT-OK on Intel, exit 0; a verify failure with no
 #      diagnostic: INCONCLUSIVE, exit 2;
 #   K12 no arm64 host, inputs that do not match inputs.sha256, an unknown mutant: exit 1 and no ssh/scp;
@@ -99,7 +103,7 @@ case "$scen" in audit:*)
   if [ "$arole" = "$ZB_ROLE" ] && [ "$1" = /bin/bash ] && [ ! -e "$C/audit.done" ]; then
     : > "$C/audit.done"
     case "$surf" in
-      temp) d="$H/var/folders/zz/zyxw/T" f=resident ;; cache) d="$H/var/folders/zz/zyxw/C" f=resident ;;
+      temp) d="$X/private/$ZB_ROLE/var/folders/zz/zyxw/T" f=resident ;; cache) d="$X/private/$ZB_ROLE/var/folders/zz/zyxw/C" f=resident ;;
       caches) d="$H/Library/Caches/com.apple.existing" f=data ;; shallow) d="$H" f=.profile ;;
     esac
     case "$op" in
@@ -111,13 +115,14 @@ esac
 [ "$scen" = no_enforce ] && exec env ZB_FAKE_SANDBOXED=1 "$@"
 mapfile -t allow < <(grep -oE '\(subpath "[^"]*"\)' <<<"$prof" | sed -E 's/^\(subpath "(.*)"\)$/\1/')
 exec unshare --mount --propagation private /bin/bash -c '
-H=$1 k=$2; shift 2; allow=("${@:1:k}"); shift "$k"
+H=$1 V=$2 k=$3; shift 3; allow=("${@:1:k}"); shift "$k"
 mount --bind "$H" "$H" && mount -o remount,bind,ro "$H" || exit 70
+if [ -d "$V" ]; then mount --bind "$V" "$V" && mount -o remount,bind,ro "$V" || exit 70; fi
 for p in "${allow[@]+"${allow[@]}"}"; do
   [ -d "$p" ] || continue
   mount --bind "$p" "$p" && mount -o remount,bind,rw "$p" || exit 70
 done
-exec env ZB_FAKE_SANDBOXED=1 "$@"' _ "$H" "${#allow[@]}" "${allow[@]+"${allow[@]}"}" "$@"
+exec env ZB_FAKE_SANDBOXED=1 "$@"' _ "$H" "$X/private/${ZB_ROLE:-none}" "${#allow[@]}" "${allow[@]+"${allow[@]}"}" "$@"
 EOF
 fake "$P/usrbin/python3" <<EOF
 NAME=python3; [ -z "\${ZB_ROLE:-}" ] || $rec
@@ -177,8 +182,8 @@ EOF
 fake "$X/hostbin/getconf" <<'EOF'
 H=$(cd "$HOME" && pwd -P)
 case "${1:-}" in
-  DARWIN_USER_TEMP_DIR) echo "$H/var/folders/zz/zyxw/T/" ;;
-  DARWIN_USER_CACHE_DIR) echo "$H/var/folders/zz/zyxw/C/" ;;
+  DARWIN_USER_TEMP_DIR) echo "$X/alias-$ZB_ROLE/folders/zz/zyxw/T/" ;;   # alias-<role> -> private/<role>/var, like /var
+  DARWIN_USER_CACHE_DIR) echo "$X/alias-$ZB_ROLE/folders/zz/zyxw/C/" ;;
   *) exec /usr/bin/getconf "$@" ;;
 esac
 EOF
@@ -220,9 +225,11 @@ EOF
 mkdir -p "$X/homes"
 for role in intel arm; do
   h="$X/hosts/$role"
-  mkdir -p "$h/.local/bin" "$h/Library/Caches/com.apple.existing" "$h/var/folders/zz/zyxw/T/old" "$h/var/folders/zz/zyxw/C/old"
+  v="$X/private/$role/var/folders/zz/zyxw"   # the Darwin user dirs: outside the home, reached through an alias
+  mkdir -p "$h/.local/bin" "$h/Library/Caches/com.apple.existing" "$v/T/old" "$v/C/old"
   echo resident > "$h/Library/Caches/com.apple.existing/data"; echo profile > "$h/.profile"
-  echo resident > "$h/var/folders/zz/zyxw/T/resident"; echo resident > "$h/var/folders/zz/zyxw/C/resident"
+  echo resident > "$v/T/resident"; echo resident > "$v/C/resident"
+  ln -s "$X/private/$role/var" "$X/alias-$role"
   ln -s "$h" "$X/homes/$role"
   fake "$h/.local/bin/zig" <<EOF
 NAME=zig; $rec
@@ -345,6 +352,7 @@ cp "$ROOT/tests/mac/bundle_layout_spike.sh" "$ROOT/tests/mac/mac_config.sh" "$RO
 [ -e "$ROOT/tests/mac/bundle_layout_spike_leg.sh" ] && cp "$ROOT/tests/mac/bundle_layout_spike_leg.sh" "$R/tests/mac/"
 cp "$ROOT/packaging/macos/Info.plist" "$R/packaging/macos/"
 [ -e "$ROOT/packaging/macos/relocate_agent_data.py" ] && cp "$ROOT/packaging/macos/relocate_agent_data.py" "$R/packaging/macos/"
+[ -e "$ROOT/tests/mac/bundle_layout_spike_audit.py" ] && cp "$ROOT/tests/mac/bundle_layout_spike_audit.py" "$R/tests/mac/"
 fake "$R/packaging/macos/stage_agent_runtime.sh" <<EOF
 # Selftest stand-in: records its arguments, resolves python like the real stager, stages the documented layout.
 NAME=stager; $rec
@@ -389,7 +397,7 @@ mkdir -p "$IN" "$T/sites/site-x86_64" "$T/sites/site-aarch64"
 echo "pkg stand-in" > "$IN/py.pkg"
 (cd "$T/sites" && tar -cf "$IN/sites.tar" site-x86_64 site-aarch64)
 (cd "$IN" && sha256sum py.pkg sites.tar > inputs.sha256)
-homes_snapshot() { (cd "$X/hosts" && find . -mindepth 2 ! -path './*/zb-gate-*' -printf '%p|%y|%m|%s|%T@\n' | sort); }
+homes_snapshot() { (cd "$X" && find hosts private -mindepth 2 ! -path 'hosts/*/zb-gate-*' -printf '%p|%y|%m|%s|%T@\n' | sort); }
 
 run_spike() { # run_spike <label> <scenario> <verify mode> <where> [VAR=value ...]: sets rc, out
   local label=$1 scen=$2 mode=$3 where=$4; shift 4
@@ -442,14 +450,15 @@ sbx_sequence() {
         "/bin/sh|: > \"\$1\"|$rt/evidence/positive") seq+=(positive) ;;
         "/bin/sh|: > /dev/null|: > /dev/null") seq+=(devnull) ;;
         "/bin/sh|cat > \"\$1\"|$rt/evidence/profile") seq+=(profile) ;;
+        "/bin/sh|cat > \"\$1\"|$rt/evidence/audit.roots") seq+=(audit-roots) ;;
         "/bin/sh|$SNAP|$rt/audit-tmp")   # the snapshot: sorted under the profile, temporary files in the root
           case "${#a[@]}|${a[4]:-}" in
             "6|$rt/evidence/audit.before") seq+=(audit-before) ;; "6|$rt/evidence/audit.after") seq+=(audit-after) ;;
             *) seq+=(audit-bad) ;;
           esac ;;
         "/bin/sh|: > \"\$1\"|$H/.zb-spike-canary-"*) seq+=(canary-home) ;;
-        "/bin/sh|: > \"\$1\"|$H/var/folders/zz/zyxw/T/zb-spike-canary-"*) seq+=(canary-temp) ;;
-        "/bin/sh|: > \"\$1\"|$H/var/folders/zz/zyxw/C/zb-spike-canary-"*) seq+=(canary-cache) ;;
+        "/bin/sh|: > \"\$1\"|$X/alias-$role/folders/zz/zyxw/T/zb-spike-canary-"*) seq+=(canary-temp) ;;
+        "/bin/sh|: > \"\$1\"|$X/alias-$role/folders/zz/zyxw/C/zb-spike-canary-"*) seq+=(canary-cache) ;;
         "/bin/sh|cd \"\$1\" && tar -cf evidence.tar evidence|$rt") seq+=(evidence-tar) ;;
         "/bin/bash|"*) if [ "${a[3]:-}" = bash ] && [ "${a[4]:-}" = "$rt" ]; then
                          case "${a[2]}" in *'zig" build'*) seq+=(build) ;; *stage_agent_runtime.sh*) seq+=(post) ;; *) seq+=(bash-other) ;; esac
@@ -462,7 +471,7 @@ sbx_sequence() {
   echo "${seq[*]}"
 }
 SNAP='mkdir -p "$2" && LC_ALL=C TMPDIR="$2" sort -T "$2" > "$1"'
-WANT_SEQ="parse mkdir-evidence positive devnull profile audit-before canary-home canary-temp canary-cache build post audit-after evidence-tar"
+WANT_SEQ="parse mkdir-evidence positive devnull profile audit-roots audit-before canary-home canary-temp canary-cache build post audit-after evidence-tar"
 
 US=$'\x1f'
 check_signing() { # check_signing <label> <role>: the old B4 on the recorded codesign calls
@@ -544,7 +553,7 @@ for role in intel arm; do
     [ -e "$C/sbx.$n.role" ] && [ "$(cat "$C/sbx.$n.role")" = "$role" ] || continue
     mapfile -d '' a < "$C/sbx.$n.argv"; case "${a[${#a[@]}-1]}" in *zb-spike-canary-*) can+=("${a[${#a[@]}-1]}") ;; esac
   done
-  wantc="$H/.zb-spike-canary-$nonce $H/var/folders/zz/zyxw/T/zb-spike-canary-$nonce $H/var/folders/zz/zyxw/C/zb-spike-canary-$nonce"
+  wantc="$H/.zb-spike-canary-$nonce $X/alias-$role/folders/zz/zyxw/T/zb-spike-canary-$nonce $X/alias-$role/folders/zz/zyxw/C/zb-spike-canary-$nonce"
   if [ "${can[*]+"${can[*]}"}" = "$wantc" ] && grep -qP '^PHASE\tcanaries\tok\t3 refused$' "$IN"/evidence/"$arch"-*/driver.out 2>/dev/null \
      && ! ls "${can[@]}" >/dev/null 2>&1; then
     ok "clean K2 $role: the three canaries (home, getconf temp, getconf cache) were refused and are absent"
@@ -569,7 +578,7 @@ for role in intel arm; do
   ev=$(ls -d "$IN"/evidence/"$arch"-zb-gate-"$SHA"-* 2>/dev/null | head -n 1)
   missing=
   for f in driver.out evidence/build.log evidence/verify.log evidence/audit.before evidence/audit.after evidence/profile \
-           evidence/relocate.log evidence/census.log; do
+           evidence/relocate.log evidence/census.log evidence/audit.roots audit.classified manifest.sha256; do
     [ -s "$ev/$f" ] || missing+="$f "
   done
   for f in evidence/stage.log evidence/sign.log; do [ -e "$ev/$f" ] || missing+="$f "; done
@@ -582,12 +591,13 @@ for role in intel arm; do
   arch=x86_64; [ "$role" = arm ] && arch=arm64
   H="$X/hosts/$role" missing=
   for f in "$IN"/evidence/"$arch"-*/evidence/audit.before "$IN"/evidence/"$arch"-*/evidence/audit.after; do
-    for want in "$H/var/folders/zz/zyxw/T/resident" "$H/var/folders/zz/zyxw/C/resident" "$H/Library/Caches/com.apple.existing/data" "$H/.profile"; do
-      grep -qE "^$want\|[^|]+\|[0-7]+\|[0-9]+\|[0-9]+\|[0-9]+$" "$f" 2>/dev/null || missing+="${f##*/}:${want#$H/} "
+    for want in "$X/private/$role/var/folders/zz/zyxw/T/resident" "$X/private/$role/var/folders/zz/zyxw/C/resident" \
+                "$H/Library/Caches/com.apple.existing/data" "$H/.profile"; do
+      grep -qE "^$want\|(Regular File|Directory)\|[0-7]+\|[0-9]+\|[0-9]+\|[0-9]+$" "$f" 2>/dev/null || missing+="${f##*/}:${want#$X/} "
     done
     grep -q '/zb-gate-' "$f" 2>/dev/null && missing+="${f##*/}:the-run-root "
   done
-  [ -z "$missing" ] && ok "clean K4 $role: both audits hold path|type|mode|inode|size|mtime for the getconf temp and cache roots, ~/Library/Caches and the shallow home, never the root" \
+  [ -z "$missing" ] && ok "clean K4 $role: both audits hold path|type|mode|inode|size|mtime (macOS stat form) for the physical getconf temp and cache roots, ~/Library/Caches and the shallow home, never the root" \
     || bad "clean K4 $role: audit lines missing or wrong: $missing"
 done
 homes_snapshot > "$T/homes.after"
@@ -664,7 +674,7 @@ restore_homes() {
   local role h d
   for role in intel arm; do
     h="$X/hosts/$role"
-    for d in "$h/var/folders/zz/zyxw/T" "$h/var/folders/zz/zyxw/C"; do echo resident > "$d/resident"; chmod 644 "$d/resident"; rm -f "$d/zb-audit-added"; done
+    for d in "$X/private/$role/var/folders/zz/zyxw/T" "$X/private/$role/var/folders/zz/zyxw/C"; do echo resident > "$d/resident"; chmod 644 "$d/resident"; rm -f "$d/zb-audit-added"; done
     echo resident > "$h/Library/Caches/com.apple.existing/data"; chmod 644 "$h/Library/Caches/com.apple.existing/data"
     rm -f "$h/Library/Caches/com.apple.existing/zb-audit-added" "$h/zb-audit-added"
     echo profile > "$h/.profile"; chmod 644 "$h/.profile"
@@ -676,15 +686,18 @@ for row in intel:add:temp intel:chmod:cache intel:change:caches intel:delete:sha
   IFS=: read -r role op surf <<<"$row"
   H="$X/hosts/$role"
   case "$surf" in
-    temp) d="$H/var/folders/zz/zyxw/T" f=resident ;; cache) d="$H/var/folders/zz/zyxw/C" f=resident ;;
+    temp) d="$X/private/$role/var/folders/zz/zyxw/T" f=resident ;; cache) d="$X/private/$role/var/folders/zz/zyxw/C" f=resident ;;
     caches) d="$H/Library/Caches/com.apple.existing" f=data ;; shallow) d="$H" f=.profile ;;
   esac
   [ "$op" = add ] && f=zb-audit-added
+  case "$surf" in temp) tok=TEMP rel=$f ;; cache) tok=CACHE rel=$f ;; caches) tok=CACHES rel=com.apple.existing/$f ;; shallow) tok=HOME rel=$f ;; esac
   hit=x86_64 other=arm64; [ "$role" = arm ] && hit=arm64 other=x86_64
   run_spike "audit-$role-$op-$surf" "audit:$role:$op:$surf" clean both
-  if [ "$rc" -eq 2 ] && [ "$(leg_class "$hit")" = INCONCLUSIVE ] && [[ "$(leg_detail "$hit")" == "audit delta outside the root: "*"$d/$f "* ]] \
+  cls=$(ls "$IN"/evidence/"$hit"-*/audit.classified 2>/dev/null | head -n 1)
+  if [ "$rc" -eq 2 ] && [ "$(leg_class "$hit")" = INCONCLUSIVE ] && [[ "$(leg_detail "$hit")" == "audit UNKNOWN: "* ]] \
+     && grep -qP "^DELTA\t$tok\t\Q$rel\E\t.*\tNONE\tUNKNOWN$" "$cls" 2>/dev/null && grep -qxP 'VERDICT\tAUDIT-UNKNOWN' "$cls" \
      && [ "$(leg_class "$other")" = LAYOUT-OK ]; then
-    ok "audit K10 $role $op $surf: INCONCLUSIVE on $hit naming ${d#$X/hosts/}/$f; $other LAYOUT-OK"
+    ok "audit K10 $role $op $surf: INCONCLUSIVE on $hit ($(leg_detail "$hit")), audit.classified has $tok $rel UNKNOWN; $other LAYOUT-OK"
   else bad "audit K10 $role $op $surf: exit $rc, $hit '$(leg_class "$hit"): $(leg_detail "$hit")', $other '$(leg_class "$other")'"; fi
   restore_homes
 done

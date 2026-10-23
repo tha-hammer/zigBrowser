@@ -16,7 +16,9 @@
 #                 <physical home>/<rd> and that it is no symlink, print ROOT<TAB><physical root>.
 #   run <rd> <arch> <pkg sha256> <none|stray_in_frameworks>
 #                 preflight (sandbox-exec present, the profile parses, writes below the root and to /dev/null work under
-#                 it), the before-audit, three unique pre-absent negative canaries (the real home and both getconf Darwin
+#                 it), evidence/audit.roots (each audited surface's given path, physical path, whether the root entry
+#                 itself is a symlink, and the inode its given path resolves to), the before-audit of the physical
+#                 surfaces, three unique pre-absent negative canaries (the real home and both getconf Darwin
 #                 temp/cache dirs), each of which must be REFUSED (if one is not, that is a CONTAINMENT BREACH: exit 4, the
 #                 target is kept and named, nothing later runs), then exactly two sandboxed outer commands (1: unpack and
 #                 the native zig build; 2: staging with the real stager, packaging/macos/relocate_agent_data.py relocate
@@ -76,6 +78,14 @@ for fd in 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19; do eval "exec $fd>&-" 2>/
 TD=$(getconf DARWIN_USER_TEMP_DIR) && CD=$(getconf DARWIN_USER_CACHE_DIR) || notrun getconf "no Darwin user dirs"
 case "$TD" in /?*) ;; *) notrun getconf "DARWIN_USER_TEMP_DIR is not absolute: $TD" ;; esac
 case "$CD" in /?*) ;; *) notrun getconf "DARWIN_USER_CACHE_DIR is not absolute: $CD" ;; esac
+# The audited surfaces by their physical paths (macOS resolves /var through /private/var); link=yes only when the root
+# entry itself is a symlink, which the classifier refuses (SilverRidge 7f3b4c70). id= is the inode the given path
+# resolves to, which the classifier binds to the physical root's own snapshot entry (SilverRidge 1950c0bb).
+phys() { (cd "$1" 2>/dev/null && pwd -P); }
+islink() { if [ -L "$1" ]; then echo yes; else echo no; fi; }
+rid() { if [ "$(uname -s)" = Darwin ]; then stat -L -f %i "$1"; else stat -L -c %i "$1"; fi; }
+PTD=$(phys "${TD%/}") && PCD=$(phys "${CD%/}") && PCS=$(phys "$H/Library/Caches") \
+  || notrun audit "an audited surface does not resolve"
 
 PROFILE="(version 1)
 (allow default)
@@ -94,15 +104,35 @@ printf '%s\n' "$PROFILE" | sbx /bin/sh -c 'cat > "$1"' sh "$E/profile" || notrun
 echo "PHASE	preflight	ok"
 
 # --- the read-only audit: path plus stable metadata, both Darwin user dirs, ~/Library/Caches, the shallow home ---
-audit() {
-  local -a st
-  if [ "$(uname -s)" = Darwin ]; then st=(stat -f '%N|%HT|%p|%i|%z|%m'); else st=(stat -c '%n|%F|%a|%i|%s|%Y'); fi
-  for d in "${TD%/}" "${CD%/}" "$H/Library/Caches"; do
-    [ -d "$d" ] && find "$d" -xdev -print0 2>/dev/null | xargs -0 "${st[@]}" 2>/dev/null
+# Lines are path|type|mode|inode|size|mtime as macOS stat -f '%N|%HT|%p|%i|%z|%m' prints them; off macOS (the hostless
+# selftests) GNU stat's output is printed the same way.
+darwin_fmt() {
+  local t a i s m n tb
+  while IFS='|' read -r t a i s m n; do
+    case "$t" in
+      "regular file"|"regular empty file") t="Regular File" tb=0100000 ;; directory) t=Directory tb=0040000 ;;
+      "symbolic link") t="Symbolic Link" tb=0120000 ;; fifo) t="Fifo File" tb=0010000 ;; socket) t=Socket tb=0140000 ;;
+      *) tb=0 ;;
+    esac
+    printf '%s|%s|%o|%s|%s|%s\n' "$n" "$t" $((tb + 8#$a)) "$i" "$s" "$m"
   done
-  find "$H" -mindepth 1 -maxdepth 1 ! -path "$ROOT" -print0 2>/dev/null | xargs -0 "${st[@]}" 2>/dev/null
+}
+lst() {
+  if [ "$(uname -s)" = Darwin ]; then xargs -0 stat -f '%N|%HT|%p|%i|%z|%m' 2>/dev/null
+  else xargs -0 stat -c '%F|%a|%i|%s|%Y|%n' 2>/dev/null | darwin_fmt; fi
+}
+audit() {
+  local d
+  for d in "$PTD" "$PCD" "$PCS"; do
+    [ -d "$d" ] && find "$d" -xdev -print0 2>/dev/null | lst
+  done
+  find "$H" -mindepth 1 -maxdepth 1 ! -path "$ROOT" -print0 2>/dev/null | lst
   return 0
 }
+printf 'ROOT\t%s\t%s\t%s\tlink=%s\tid=%s\n' \
+  TEMP "${TD%/}" "$PTD" "$(islink "${TD%/}")" "$(rid "${TD%/}")" CACHE "${CD%/}" "$PCD" "$(islink "${CD%/}")" "$(rid "${CD%/}")" \
+  CACHES "$H/Library/Caches" "$PCS" "$(islink "$H/Library/Caches")" "$(rid "$H/Library/Caches")" HOME "$H" "$H" no - RUN "$ROOT" "$ROOT" no - \
+  | sbx /bin/sh -c 'cat > "$1"' sh "$E/audit.roots" || notrun audit "the audit roots could not be stored"
 # The listing is read outside (find/stat); sort, which may spill temporary files, runs under the profile with them in
 # the root (SilverRidge 0d0656f4).
 snapshot() { audit | sbx /bin/sh -c 'mkdir -p "$2" && LC_ALL=C TMPDIR="$2" sort -T "$2" > "$1"' sh "$1" "$ROOT/audit-tmp"; }

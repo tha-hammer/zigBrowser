@@ -4034,7 +4034,7 @@ pub fn build(b: *std.Build) void {
     for ([_][]const u8{
         "tests/mac/bundle_layout_spike_containment_selftest.sh", "tests/mac/bundle_layout_spike.sh",       "tests/mac/bundle_layout_spike_leg.sh",
         "tests/mac/build-on-mac.sh",                             "tests/mac/mac_gate_lib.sh",              "tests/mac/known_hosts", "tests/mac/mac_config.sh",
-        "packaging/macos/Info.plist",                            "packaging/macos/relocate_agent_data.py",
+        "packaging/macos/Info.plist",                            "packaging/macos/relocate_agent_data.py", "tests/mac/bundle_layout_spike_audit.py",
     }) |input| mac_bundle_layout_spike_selftest.addFileInput(b.path(input));
     const mac_bundle_layout_spike_step = b.step("test-mac-bundle-layout-spike", "Run the hostless selftests of the 4pa.80 bundle-layout spike (prep and run)");
     mac_bundle_layout_spike_step.dependOn(&mac_bundle_layout_spike_selftest.step);
@@ -4047,7 +4047,7 @@ pub fn build(b: *std.Build) void {
         "tests/mac/bundle_layout_spike.sh",                         "tests/mac/bundle_layout_spike_leg.sh",
         "tests/mac/build-on-mac.sh",                                "tests/mac/mac_gate_lib.sh",
         "tests/mac/known_hosts", "tests/mac/mac_config.sh",                                    "packaging/macos/Info.plist",
-        "packaging/macos/relocate_agent_data.py",
+        "packaging/macos/relocate_agent_data.py",                   "tests/mac/bundle_layout_spike_audit.py",
     }) |input| mac_bundle_layout_spike_ff_selftest.addFileInput(b.path(input));
     mac_bundle_layout_spike_step.dependOn(&mac_bundle_layout_spike_ff_selftest.step);
     test_step.dependOn(&mac_bundle_layout_spike_ff_selftest.step);
@@ -4068,10 +4068,39 @@ pub fn build(b: *std.Build) void {
         "tests/mac/bundle_layout_spike.sh",                 "tests/mac/bundle_layout_spike_leg.sh",
         "tests/mac/build-on-mac.sh",                        "tests/mac/mac_gate_lib.sh",
         "tests/mac/known_hosts", "tests/mac/mac_config.sh",                            "packaging/macos/Info.plist",
-        "packaging/macos/relocate_agent_data.py",
+        "packaging/macos/relocate_agent_data.py",           "tests/mac/bundle_layout_spike_audit.py",
     }) |input| mac_bundle_layout_spike_layout_selftest.addFileInput(b.path(input));
     mac_bundle_layout_spike_step.dependOn(&mac_bundle_layout_spike_layout_selftest.step);
     test_step.dependOn(&mac_bundle_layout_spike_layout_selftest.step);
+    // The 4pa.80 audit classifier (SilverRidge 7f3b4c70, 1950c0bb): the outside-the-root deltas, classified from the raw
+    // snapshots by literal reviewed shapes (AUDIT-CLEAN/AMBIENT/UNKNOWN), against fixtures normalized from the released
+    // Stage B evidence; then the runner boundary: physical roots, the canary proof, the classified SHA-256, the manifest.
+    const mac_spike_audit_unit = b.addSystemCommand(&.{
+        "sh",
+        "-c",
+        "cd tests/e2e && out=$(env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 unshare --user --map-current-user --net sh -c 'python3 -X dev -m unittest -v mac_spike_audit_test' 2>&1); rc=$?; printf '%s\\n' \"$out\"; [ $rc -eq 0 ] || exit $rc; if printf '%s\\n' \"$out\" | grep -q ResourceWarning; then echo 'mac_spike_audit_test: ResourceWarning' >&2; exit 1; fi",
+    });
+    for ([_][]const u8{
+        "tests/e2e/mac_spike_audit_test.py",              "tests/mac/bundle_layout_spike_audit.py",
+        "tests/mac/fixtures/4pa80_audit/provenance.txt",  "tests/mac/fixtures/4pa80_audit/intel.roots",
+        "tests/mac/fixtures/4pa80_audit/intel.before",    "tests/mac/fixtures/4pa80_audit/intel.after",
+        "tests/mac/fixtures/4pa80_audit/intel.synthetic", "tests/mac/fixtures/4pa80_audit/arm.roots",
+        "tests/mac/fixtures/4pa80_audit/arm.before",      "tests/mac/fixtures/4pa80_audit/arm.after",
+        "tests/mac/fixtures/4pa80_audit/arm.synthetic",
+    }) |input| mac_spike_audit_unit.addFileInput(b.path(input));
+    mac_bundle_layout_spike_step.dependOn(&mac_spike_audit_unit.step);
+    test_step.dependOn(&mac_spike_audit_unit.step);
+    const mac_bundle_layout_spike_audit_selftest = b.addSystemCommand(&.{ "bash", "tests/mac/bundle_layout_spike_audit_selftest.sh" });
+    for ([_][]const u8{
+        "tests/mac/bundle_layout_spike_audit_selftest.sh", "tests/mac/bundle_layout_spike_containment_selftest.sh",
+        "tests/mac/bundle_layout_spike.sh",                "tests/mac/bundle_layout_spike_leg.sh",
+        "tests/mac/build-on-mac.sh",                       "tests/mac/mac_gate_lib.sh",
+        "tests/mac/known_hosts",                           "tests/mac/mac_config.sh",
+        "packaging/macos/Info.plist",                      "packaging/macos/relocate_agent_data.py",
+        "tests/mac/bundle_layout_spike_audit.py",
+    }) |input| mac_bundle_layout_spike_audit_selftest.addFileInput(b.path(input));
+    mac_bundle_layout_spike_step.dependOn(&mac_bundle_layout_spike_audit_selftest.step);
+    test_step.dependOn(&mac_bundle_layout_spike_audit_selftest.step);
     // Its prep reads the commit's pins, installs the hash-locked verifier and keeps every cache in scratch (8f28c5d).
     const mac_bundle_layout_spike_prep_selftest = b.addSystemCommand(&.{ "bash", "tests/mac/bundle_layout_spike_prep_selftest.sh" });
     for ([_][]const u8{
