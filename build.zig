@@ -450,6 +450,11 @@ pub fn build(b: *std.Build) void {
     const windows_ws2a3_seam_gating = b.addSystemCommand(&.{ "python3", "-I", "tests/windows/ws2a3_seam_gating_test.py", "--zig", b.graph.zig_exe });
     b.step("windows-ws2a3-seam-gating", "WS2a.3: the debug seams are in the slice build only, never in the WebView2 product build (hermetic)").dependOn(&windows_ws2a3_seam_gating.step);
 
+    // NavyCanyon 6dd7fda: the ONE shared WebView2 run-folder cleanup (tests/windows/webview2_cleanup.py) through the
+    // real helper and both real callers (spike_driver.run_spike, m8_live_test.run_on_host), on a fake VM (hermetic).
+    const windows_webview2_cleanup_selftest = b.addSystemCommand(&.{ "python3", "-I", "tests/windows/webview2_cleanup_test.py" });
+    b.step("windows-webview2-cleanup-selftest", "6dd7fda: WebView2 run folders are removed once, only after the process census returns (hermetic)").dependOn(&windows_webview2_cleanup_selftest.step);
+
     // bd zigBrowser-ong.12: the transport harness stages every file over the legacy scp protocol (-O); the Win10
     // box's sshd has no sftp subsystem. Hermetic (fake ssh/scp first on PATH; no host contacted).
     const windows_transport_scp_selftest = b.addSystemCommand(&.{ "python3", "-I", "tests/windows/transport_scp_legacy_test.py" });
@@ -3761,6 +3766,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&windows_refusal_live.step);
     test_step.dependOn(&windows_live_step_skip.step);
     test_step.dependOn(&windows_ws2a3_seam_gating.step);
+    test_step.dependOn(&windows_webview2_cleanup_selftest.step);
     test_step.dependOn(&windows_transport_scp_selftest.step);
     test_step.dependOn(&windows_scp_callers_selftest.step);
     test_step.dependOn(&run_ipc_tests.step);

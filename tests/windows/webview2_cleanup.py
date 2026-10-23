@@ -77,7 +77,18 @@ def remove_after_webview2(run, win_dir, before, deadline_s=DEADLINE_S, poll_s=PO
     if not 0 < deadline_s <= DEADLINE_S:
         return False, f"refused: deadline {deadline_s}s is outside (0, {DEADLINE_S}]"
     start = time.monotonic()
-    # RED (bd/6dd7fda): no wait for the census yet; the folder is deleted at once, as the callers did before.
+    end = start + deadline_s
+    while True:
+        try:
+            now = census(run)
+        except CensusError as e:
+            return False, f"census failed: {e}; nothing deleted"
+        if now == before:
+            break
+        if time.monotonic() >= end:
+            return False, (f"census did not return to the pre-run identities within {deadline_s:g}s: "
+                           f"survivors {sorted(now - before)}, missing {sorted(before - now)}; nothing deleted")
+        time.sleep(max(0.0, min(poll_s, end - time.monotonic())))
     waited = time.monotonic() - start
 
     kind = run(_kind_cmd(win_dir))
