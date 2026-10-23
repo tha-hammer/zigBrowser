@@ -59,6 +59,7 @@ if body.startswith("# ZB_WIN10_PROBE"):
         for name in ("marker", "zb_dir", "webview2_pv", "c_free_bytes", "python", "powershell_ok", "os", "user"):
             out.append("FIELD\t%s\t%s" % (name, f[name]))
         out.append("END")
+        rc = k.get("probe_rc_after_answer", 0)
 elif cmd.startswith("if exist "):
     d = re.search(r'if exist "([^"]+)"', cmd).group(1)
     if d == "%USERPROFILE%\\zb\\":
@@ -225,6 +226,12 @@ class Win10Probe(unittest.TestCase):
         self.assertEqual(proc.returncode, 1, detail)
         self.assertEqual([c for c in calls if c["tool"] == "scp"], [], detail)
         self.assertEqual(final.get("dels", []), [], detail)
+
+    def test_a_nonzero_read_probe_stops_even_with_a_full_answer(self):
+        proc, calls, final, fields, detail = self._run(probe_rc_after_answer=1)
+        self.assertEqual(proc.returncode, 1, "the probe's exit status is part of the read" + detail)
+        self.assertIn("STOPPED", proc.stdout, detail)
+        self.assertEqual([c for c in calls if c["tool"] == "scp"], [], detail)
 
 
 if __name__ == "__main__":

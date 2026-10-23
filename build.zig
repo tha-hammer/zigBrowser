@@ -385,6 +385,12 @@ pub fn build(b: *std.Build) void {
     const windows_incident_cleanup_step = b.step("windows-incident-cleanup-selftest", "Run the m8 1032dbb incident cleanup selftest (fake VM, netns)");
     windows_incident_cleanup_step.dependOn(&windows_incident_cleanup_selftest.step);
     windows_incident_cleanup_step.dependOn(&windows_incident_cleanup_r2.step);
+
+    // The first read-only Win10 probe (orchestrator 2026-10-23): tests/windows/win10_probe.py against a fake box — the
+    // pinned host key checked before any contact, named fields, one guarded `scp -O` file in zb\ only. The step runs
+    // python3 directly; the selftest itself starts every probe run under `unshare --user --map-current-user --net`.
+    const windows_win10_probe_selftest = b.addSystemCommand(&.{ "python3", "-I", "tests/windows/win10_probe_selftest.py" });
+    b.step("windows-win10-probe-selftest", "Run the Win10 read-only probe selftest (fake box, netns)").dependOn(&windows_win10_probe_selftest.step);
     const windows_win10_spike_run_selftest = b.addSystemCommand(&.{ "python3", "-I", "tests/windows/win10_spike_run_selftest.py" });
     b.step("windows-win10-spike-run-selftest", "Run the WS2b.1-W10 copy-to-Win10 spike driver selftest (fake build/ssh/scp, netns)").dependOn(&windows_win10_spike_run_selftest.step);
 
@@ -3836,6 +3842,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&windows_m8_run_selftest.step);
     test_step.dependOn(&windows_incident_cleanup_selftest.step);
     test_step.dependOn(&windows_incident_cleanup_r2.step);
+    test_step.dependOn(&windows_win10_probe_selftest.step);
     test_step.dependOn(&windows_win10_spike_run_selftest.step);
     test_step.dependOn(&windows_build_selftest.step);
     test_step.dependOn(&windows_pe_census_selftest.step);
