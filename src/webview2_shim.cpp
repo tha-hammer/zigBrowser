@@ -557,10 +557,19 @@ constexpr wchar_t kMediaSourceHideJs[] =
     L"for (const name of ['MediaSource', 'ManagedMediaSource', 'SourceBuffer', "
     L"'SourceBufferList', 'ManagedSourceBuffer']) { try { delete globalThis[name]; } catch (e) {} }";
 
+#ifdef ZB_WS2A3_SEAMS
+// WS2a.3b test seam (the slice executable only): caller-returned strings currently live (dup_c +1,
+// zb_automation_free -1).
+volatile LONG g_strings_live = 0;
+#endif
+
 char *dup_c(const std::string &text) {
   char *p = static_cast<char *>(malloc(text.size() + 1));
   if (p != nullptr) {
     memcpy(p, text.c_str(), text.size() + 1);
+#ifdef ZB_WS2A3_SEAMS
+    InterlockedIncrement(&g_strings_live);
+#endif
   }
   return p;
 }
@@ -620,6 +629,13 @@ volatile LONG g_debug_park = 0;
 // and the number of jobs allocated.
 volatile LONG g_debug_complete_hold_ms = 0;
 volatile LONG g_live_jobs = 0;
+// WS2a.3b: a CDP step's answer is held this long on the UI thread before the chain decides whether to go on;
+// a waiter whose deadline passed sleeps this long once more before giving up (header:
+// zb_automation_debug_waiter_grace); CDP steps started for a job that is no longer RUNNING. (The caller-string
+// counter, g_strings_live, sits beside dup_c.)
+volatile LONG g_debug_step_hold_ms = 0;
+volatile LONG g_debug_waiter_grace_ms = 0;
+volatile LONG g_late_dispatches = 0;
 #endif
 SRWLOCK g_parked_lock = SRWLOCK_INIT;
 std::vector<std::function<void()>> g_parked; // under g_parked_lock
@@ -793,6 +809,12 @@ int job_submit(uint32_t win, unsigned int timeout_ms, std::function<void(Job *, 
   const ULONGLONG now = GetTickCount64();
   const DWORD left = now >= deadline ? 0 : static_cast<DWORD>(deadline - now);
   if (WaitForSingleObject(job->done, left) != WAIT_OBJECT_0) {
+#ifdef ZB_WS2A3_SEAMS
+    const LONG waiter_grace = InterlockedCompareExchange(&g_debug_waiter_grace_ms, 0, 0);
+    if (waiter_grace > 0) {
+      Sleep(static_cast<DWORD>(waiter_grace));
+    }
+#endif
     // The deadline passed: abandon the job before it starts, or its result while it runs.
     if (InterlockedCompareExchange(&job->state, kAbandoned, kQueued) == kQueued ||
         InterlockedCompareExchange(&job->state, kAbandoned, kRunning) == kRunning) {
@@ -878,8 +900,19 @@ void cdp_call(AppState *app, const char *method, const std::string &params_json,
 // or loop end) runs no further step.
 void cdp_job_call(Job *job, AppState *app, const char *method, const std::string &params_json,
                   CdpThen then = nullptr, int error_code = 0) {
+#ifdef ZB_WS2A3_SEAMS
+  if (InterlockedCompareExchange(&job->state, 0, 0) != kRunning) {
+    InterlockedIncrement(&g_late_dispatches);
+  }
+#endif
   job_hold(job);
   cdp_call(app, method, params_json, [job, app, then = std::move(then), error_code](int code, std::string text) {
+#ifdef ZB_WS2A3_SEAMS
+    const LONG step_hold = InterlockedCompareExchange(&g_debug_step_hold_ms, 0, 0);
+    if (step_hold > 0) {
+      Sleep(static_cast<DWORD>(step_hold));
+    }
+#endif
     if (code != ZB_AUTO_OK && error_code != 0) {
       code = error_code;
     }
@@ -3001,7 +3034,14 @@ extern "C" void zb_app_set_media_source(int enabled) {
 
 extern "C" int zb_app_get_media_source(void) { return InterlockedCompareExchange(&g_media_source, 0, 0); }
 
-extern "C" void zb_automation_free(char *p) { free(p); }
+extern "C" void zb_automation_free(char *p) {
+#ifdef ZB_WS2A3_SEAMS
+  if (p != nullptr) {
+    InterlockedDecrement(&g_strings_live);
+  }
+#endif
+  free(p);
+}
 
 extern "C" void zb_automation_set_script(const char *source, size_t len) {
   std::string copy = source != nullptr ? std::string(source, len) : std::string();
@@ -3405,6 +3445,22 @@ extern "C" void zb_automation_debug_complete_hold_ms(unsigned int ms) {
 }
 
 extern "C" int zb_automation_debug_live_jobs(void) { return static_cast<int>(InterlockedCompareExchange(&g_live_jobs, 0, 0)); }
+
+extern "C" void zb_automation_debug_step_hold_ms(unsigned int ms) {
+  InterlockedExchange(&g_debug_step_hold_ms, static_cast<LONG>(ms));
+}
+
+extern "C" void zb_automation_debug_waiter_grace(unsigned int ms) {
+  InterlockedExchange(&g_debug_waiter_grace_ms, static_cast<LONG>(ms));
+}
+
+extern "C" int zb_automation_debug_late_dispatches(void) {
+  return static_cast<int>(InterlockedCompareExchange(&g_late_dispatches, 0, 0));
+}
+
+extern "C" int zb_automation_debug_strings_live(void) {
+  return static_cast<int>(InterlockedCompareExchange(&g_strings_live, 0, 0));
+}
 #endif
 
 // ---- WS3 test seams (tests/windows/ws3_shim_test.c only; inert until called) ----

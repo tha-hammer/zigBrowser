@@ -18,7 +18,16 @@
  *     within 300 + 250 ms (+ 300 ms slack) and not before its deadline;
  *   - the held job is released once its completion ends (live jobs back to the baseline: no leak);
  *   - the loop still answers afterwards.
- * Red (the leg before the green) and mutant (plan WS2a.3: restore the INFINITE wait): job_submit waits for a
+ * WS2a.3b (seams: zb_automation_debug_strings_live, _waiter_grace, _step_hold_ms, _late_dispatches):
+ *   - a result string and an error string are each issued once and freed once (strings live back to 0);
+ *   - a late completion the waiter still sees (waiter grace) is reported once and its string freed once;
+ *   - ONE named assertion: an automation-world eval whose caller gave up after the first CDP step starts no
+ *     further step (late dispatches 0), returns no string, and releases its job.
+ *   Red (the 3b leg before the green) and mutant (plan WS2a.3: drop the generation guard, i.e. the chain's
+ *   "job still RUNNING" check in cdp_job_call): the chain dispatches createIsolatedWorld and Runtime.evaluate
+ *   for the abandoned job (late dispatches 2), so that one assertion is the only FAIL line.
+ *
+ * 3a red and mutant (plan WS2a.3: restore the INFINITE wait): job_submit waits for a
  * COMPLETING job with WaitForSingleObject(job->done, INFINITE), so the call answers OK with "App Index A" after
  * the 3 s hold; that one assertion is the only FAIL line. Exit 0 only when every check passes. */
 
@@ -34,10 +43,12 @@
 
 #include "webkit_shim.h"
 
-/* The shim's WS2a.3 test seam (src/webview2_shim.cpp; not in webkit_shim.h). */
+/* The shim's WS2a.3 test seams that webkit_shim.h does not declare (src/webview2_shim.cpp). */
 void zb_automation_debug_complete_hold_ms(unsigned int ms);
+void zb_automation_debug_step_hold_ms(unsigned int ms);
+int zb_automation_debug_late_dispatches(void);
 
-enum { kDeadlineMs = 300, kWaiterGraceMs = 250, kSlackMs = 300, kHoldMs = 3000 };
+enum { kDeadlineMs = 300, kWaiterGraceMs = 250, kSlackMs = 300, kHoldMs = 3000, kStepHoldMs = 1200 };
 
 int zb_ipc_dispatch(const char *cmd, const char *args_json, const char **out_result,
                     const char **out_err) {
@@ -96,6 +107,19 @@ static int title(unsigned int timeout_ms, char *got, size_t cap, ULONGLONG *took
   return rc;
 }
 
+/* One eval; *rc, the result or error text (freed here with zb_automation_free), and the time taken. */
+static int eval(const char *world, const char *body, unsigned int timeout_ms, char *got, size_t cap, ULONGLONG *took_ms) {
+  char *out = NULL;
+  char *err = NULL;
+  const ULONGLONG start = GetTickCount64();
+  const int rc = zb_automation_eval_json(0, body, NULL, world, timeout_ms, &out, &err);
+  *took_ms = GetTickCount64() - start;
+  snprintf(got, cap, "out=%s err=%s", out != NULL ? out : "(null)", err != NULL ? err : "(null)");
+  zb_automation_free(out);
+  zb_automation_free(err);
+  return rc;
+}
+
 static int wait_live_jobs(int want, DWORD ms) {
   const ULONGLONG end = GetTickCount64() + ms;
   while (GetTickCount64() < end) {
@@ -147,6 +171,46 @@ int main(int argc, char **argv) {
     rc = title(5000, got, sizeof got, &took);
     snprintf(why, sizeof why, "rc=%d title=%s", rc, got);
     check(rc == ZB_AUTO_OK && strcmp(got, "App Index A") == 0, "the loop still answers afterwards", why);
+
+    /* WS2a.3b: strings are freed exactly once, and a late completion dispatches nothing more. */
+    const int strings0 = zb_automation_debug_strings_live();
+    snprintf(why, sizeof why, "strings live %d", strings0);
+    check(strings0 == 0, "no caller string is live between calls", why);
+
+    rc = eval(NULL, "return 'ok-' + (1 + 1);", 5000, got, sizeof got, &took);
+    snprintf(why, sizeof why, "rc=%d %s strings live %d", rc, got, zb_automation_debug_strings_live());
+    check(rc == ZB_AUTO_OK && strstr(got, "out=ok-2 ") == got && zb_automation_debug_strings_live() == strings0,
+          "a result string is issued once and freed once", why);
+    rc = eval(NULL, "throw new Error('boom');", 5000, got, sizeof got, &took);
+    snprintf(why, sizeof why, "rc=%d %s strings live %d", rc, got, zb_automation_debug_strings_live());
+    check(rc == ZB_AUTO_ERR_JS && strstr(got, "boom") != NULL && zb_automation_debug_strings_live() == strings0,
+          "an error string is issued once and freed once", why);
+
+    /* The waiter sleeps past its deadline (waiter grace seam) while the 800 ms promise settles, so the late
+     * completion is what it reports: one string, freed once. */
+    zb_automation_debug_waiter_grace(1500);
+    rc = eval(NULL, "await new Promise((r) => setTimeout(r, 800)); return 'late';", kDeadlineMs, got, sizeof got, &took);
+    zb_automation_debug_waiter_grace(0);
+    snprintf(why, sizeof why, "rc=%d %s took=%llums strings live %d", rc, got, took, zb_automation_debug_strings_live());
+    check(rc == ZB_AUTO_OK && strstr(got, "out=late ") == got && zb_automation_debug_strings_live() == strings0,
+          "a late completion the waiter still sees is reported once and its string freed once", why);
+
+    /* An automation-world eval is three CDP steps (getFrameTree, createIsolatedWorld, evaluate). Each step's
+     * answer is held 1.2 s, so the 300 ms caller gives up after the first; the chain must then start no
+     * further step, and the late answer must reach no caller (no string issued). ONE named assertion. */
+    const int late0 = zb_automation_debug_late_dispatches();
+    const int jobs0 = zb_automation_debug_live_jobs();
+    zb_automation_debug_step_hold_ms(kStepHoldMs);
+    rc = eval(ZB_AUTOMATION_WORLD, "return 'never';", kDeadlineMs, got, sizeof got, &took);
+    Sleep(kStepHoldMs * 3 + 1000); /* every step the chain might still start has answered by now */
+    zb_automation_debug_step_hold_ms(0);
+    wait_live_jobs(jobs0, 3000);
+    const int late = zb_automation_debug_late_dispatches() - late0;
+    snprintf(why, sizeof why, "rc=%d %s late dispatches %d strings live %d (want %d) live jobs %d (want %d)", rc,
+             got, late, zb_automation_debug_strings_live(), strings0, zb_automation_debug_live_jobs(), jobs0);
+    check(rc == ZB_AUTO_ERR_TIMEOUT && strcmp(got, "out=(null) err=(null)") == 0 && late == 0 &&
+              zb_automation_debug_strings_live() == strings0 && zb_automation_debug_live_jobs() == jobs0,
+          "a late completion after a timeout dispatches nothing more and returns no string", why);
   }
 
   HWND hwnd = FindWindowA("zigBrowserWebView2Host", NULL);

@@ -2,8 +2,10 @@
 """WS2a.3 (Windows plan rev 2.21, NavyCanyon c36ba6a R2): the WS2a.3 debug seams are compiled ONLY into the
 ws2a3-async-ownership-win slice executable, never into the WebView2 product build.
 
-The seams (zb_automation_debug_complete_hold_ms, zb_automation_debug_live_jobs) and their hot-path
-instrumentation (the completion hold in job_complete, the live-job counter in job_submit / job_release) sit under
+The seams (WS2a.3a: zb_automation_debug_complete_hold_ms, _live_jobs; WS2a.3b: _step_hold_ms, _waiter_grace,
+_late_dispatches, _strings_live) and their hot-path instrumentation (the completion hold in job_complete, the
+live-job counter in job_submit / job_release, the step hold and late-dispatch count in cdp_job_call, the waiter
+grace in job_submit, the string count in dup_c / zb_automation_free) sit under
 `#ifdef ZB_WS2A3_SEAMS` in src/webview2_shim.cpp, and build.zig defines ZB_WS2A3_SEAMS on that one module.
 
 Hostless: the real compiler preprocesses the real shim for x86_64-windows-gnu twice, as the product build sees it
@@ -44,6 +46,20 @@ SEAMS = {
     "completion hold in job_complete": r"InterlockedCompareExchange\s*\(\s*&g_debug_complete_hold_ms",
     "live-job count on allocation": r"InterlockedIncrement\s*\(\s*&g_live_jobs\s*\)",
     "live-job count on release": r"InterlockedDecrement\s*\(\s*&g_live_jobs\s*\)",
+    # WS2a.3b
+    "step-hold seam export": r'extern\s+"C"\s+void\s+zb_automation_debug_step_hold_ms\s*\(',
+    "waiter-grace seam export": r'extern\s+"C"\s+void\s+zb_automation_debug_waiter_grace\s*\(',
+    "late-dispatches seam export": r'extern\s+"C"\s+int\s+zb_automation_debug_late_dispatches\s*\(',
+    "strings-live seam export": r'extern\s+"C"\s+int\s+zb_automation_debug_strings_live\s*\(',
+    "step-hold state": r"volatile\s+LONG\s+g_debug_step_hold_ms\b",
+    "waiter-grace state": r"volatile\s+LONG\s+g_debug_waiter_grace_ms\b",
+    "late-dispatches state": r"volatile\s+LONG\s+g_late_dispatches\b",
+    "strings-live state": r"volatile\s+LONG\s+g_strings_live\b",
+    "step hold in cdp_job_call": r"InterlockedCompareExchange\s*\(\s*&g_debug_step_hold_ms",
+    "waiter grace in job_submit": r"InterlockedCompareExchange\s*\(\s*&g_debug_waiter_grace_ms",
+    "late-dispatch count in cdp_job_call": r"InterlockedIncrement\s*\(\s*&g_late_dispatches\s*\)",
+    "string count in dup_c": r"InterlockedIncrement\s*\(\s*&g_strings_live\s*\)",
+    "string count in zb_automation_free": r"InterlockedDecrement\s*\(\s*&g_strings_live\s*\)",
 }
 PRODUCTION = (r"\bzb_automation_eval_json\b", r"\bjob_submit\b", r"\bkWaiterGraceMs\b")
 

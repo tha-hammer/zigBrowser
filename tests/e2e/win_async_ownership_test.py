@@ -12,6 +12,9 @@ FAIL line, and an `ok` line for every REQUIRED check below; it prints `ASSERTS <
 Plan assertion (ONE named check): a call whose job is still completing gives up within deadline + waiter grace
 (250 ms) with TIMEOUT and no result; no INFINITE wait remains in the marshal. Red and mutant (the INFINITE wait):
 the call answers OK with the title after the held completion, so that one check is the only FAIL line.
+WS2a.3b: strings are issued and freed exactly once (result, error, late-but-seen), and an automation-world eval
+whose caller gave up starts no further CDP step (ONE named check). Red and mutant (drop the generation guard):
+the chain dispatches the next steps for the abandoned job, so that one check is the only FAIL line.
 
 Under ZB_WIN_GATE=1 a missing host or marker exits 1 ("no Windows host configured"); standalone it exits 77.
 A host run needs NavyCanyon's exact-commit approval and the orchestrator's release.
@@ -37,6 +40,11 @@ REQUIRED = (
     "a call whose completion is held gives up within deadline + waiter grace (TIMEOUT, no result)",
     "the held job is released once its completion ends (no leak)",
     "the loop still answers afterwards",
+    "no caller string is live between calls",
+    "a result string is issued once and freed once",
+    "an error string is issued once and freed once",
+    "a late completion the waiter still sees is reported once and its string freed once",
+    "a late completion after a timeout dispatches nothing more and returns no string",
     "closing the window ends zb_app_run",
 )
 
