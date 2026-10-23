@@ -7,13 +7,14 @@
 # read-only. On top, four test seams, each selected only by the scenario name:
 #   - sandbox-exec: ambient:<role> / ambient_deny:<role> touch only the mtime of that host's ~/Library/Caches between
 #     the audits (a reviewed TS shape); linkroot:<role> has the TEMP root entry itself replaced by a symlink first;
+#     symlinkev:<role> turns evidence/stage.log into a symlink just before the evidence tar is made;
 #   - codesign: ambient_deny:<role> also prints a denial in that host's verify log;
 #   - python3: tamper changes audit.classified after the classifier has printed its SHA-256;
 #   - ssh: nocanary / twocanary drop or double the driver's canary proof line.
 # Rows:
 #   A1 a clean run: LAYOUT-OK on both legs with no AMBIENT; each leg's evidence/audit.roots is exactly TEMP and CACHE
-#      (given: the alias path, physical: the resolved one, link=no), CACHES, HOME and RUN; both snapshots use only the
-#      physical Darwin user paths; audit.classified says AUDIT-CLEAN;
+#      (given: the alias path, physical: the resolved one, link=no, id= the inode the alias resolves to), CACHES (id=
+#      its inode), HOME and RUN (id=-); both snapshots use only the physical Darwin user paths; AUDIT-CLEAN;
 #   A2 an ambient-only delta on Intel: exit 0, Intel LAYOUT-OK with "audit AMBIENT 1", arm64 without; audit.classified
 #      has the CACHES root as TS-CACHES-ROOT AMBIENT and AUDIT-AMBIENT; the runner's MANIFEST line is the SHA-256 of
 #      <ev>/manifest.sha256, which lists exactly the required evidence files once each in byte order (never itself)
@@ -24,7 +25,8 @@
 #   A5 a TEMP root that is itself a symlink: link=yes, the classifier refuses (rc 2): INCONCLUSIVE, no audit.classified;
 #   A6 audit.classified changed after the classifier printed its SHA-256: INCONCLUSIVE;
 #   A7 no canary proof line, or two: INCONCLUSIVE;
-#   A8 a commit without the classifier: refused before any host is touched (exit 1, no ssh/scp).
+#   A8 a commit without the classifier: refused before any host is touched (exit 1, no ssh/scp);
+#   A9 a required evidence file that arrives as a symlink: INCONCLUSIVE naming it, and no manifest.
 # No Mac, no signal, no network. Run: bash tests/mac/bundle_layout_spike_audit_selftest.sh [repo root]
 set -uo pipefail
 if [ "${ZB_CONTAIN_SELFTEST_INNER:-}" != 1 ]; then
@@ -42,6 +44,10 @@ case "$scen" in
   ambient:*|ambient_deny:*)   # once, at the first outer command: only the mtime of ~/Library/Caches changes
     if [ "${scen#*:}" = "${ZB_ROLE:-}" ] && [ "${3:-}" = /bin/bash ] && [ ! -e "$C/ambient.done" ]; then
       : > "$C/ambient.done"; touch -m -d @1799999999 "$H/Library/Caches"
+    fi ;;
+  symlinkev:*)   # the evidence tar call: a required evidence file becomes a symlink to a copy of itself
+    if [ "${scen#*:}" = "${ZB_ROLE:-}" ] && [ "${3:-}" = /bin/sh ] && [[ "${5:-}" == *"tar -cf evidence.tar"* ]]; then
+      e="${@: -1}/evidence"; mv "$e/stage.log" "$e/stage.log.real" && ln -s stage.log.real "$e/stage.log"
     fi ;;
   linkroot:*)   # before anything: the TEMP root entry itself becomes a symlink to a real directory beside it
     t="$X/private/${ZB_ROLE:-none}/var/folders/zz/zyxw/T"
@@ -84,9 +90,10 @@ else bad "clean A1: exit $rc, '$(leg_class x86_64): $(leg_detail x86_64)' '$(leg
 for role in intel arm; do
   arch=x86_64; [ "$role" = arm ] && arch=arm64
   ev=$(evd "$arch") H="$X/hosts/$role" rt=$(root_of "$role")
-  want=$(printf 'ROOT\t%s\t%s\t%s\tlink=no\n' TEMP "$X/alias-$role/folders/zz/zyxw/T" "$X/private/$role/var/folders/zz/zyxw/T" \
-    CACHE "$X/alias-$role/folders/zz/zyxw/C" "$X/private/$role/var/folders/zz/zyxw/C" CACHES "$H/Library/Caches" "$H/Library/Caches" \
-    HOME "$H" "$H" RUN "$rt" "$rt")
+  want=$(printf 'ROOT\t%s\t%s\t%s\tlink=no\tid=%s\n' \
+    TEMP "$X/alias-$role/folders/zz/zyxw/T" "$X/private/$role/var/folders/zz/zyxw/T" "$(stat -L -c %i "$X/alias-$role/folders/zz/zyxw/T")" \
+    CACHE "$X/alias-$role/folders/zz/zyxw/C" "$X/private/$role/var/folders/zz/zyxw/C" "$(stat -L -c %i "$X/alias-$role/folders/zz/zyxw/C")" \
+    CACHES "$H/Library/Caches" "$H/Library/Caches" "$(stat -c %i "$H/Library/Caches")" HOME "$H" "$H" - RUN "$rt" "$rt" -)
   if [ -n "$ev" ] && [ "$(cat "$ev/evidence/audit.roots" 2>/dev/null)" = "$want" ] \
      && grep -q "^$X/private/$role/var/folders/zz/zyxw/T/resident|" "$ev/evidence/audit.before" \
      && grep -q "^$X/private/$role/var/folders/zz/zyxw/C/resident|" "$ev/evidence/audit.after" \
@@ -140,7 +147,7 @@ for role in intel arm; do d="$X/hosts/$role/Library/Caches/com.apple.existing/da
 run_spike linkroot linkroot:intel clean both
 ev=$(evd x86_64)
 { [ "$rc" -eq 2 ] && [ "$(leg_class x86_64)" = INCONCLUSIVE ] && [[ "$(leg_detail x86_64)" == "the audit classifier failed (rc 2): AUDIT-ERROR"*"symlink"* ]] \
-  && grep -qP '^ROOT\tTEMP\t.*\tlink=yes$' "$ev/evidence/audit.roots" && [ ! -e "$ev/audit.classified" ] && [ "$(leg_class arm64)" = LAYOUT-OK ]; } \
+  && grep -qP '^ROOT\tTEMP\t.*\tlink=yes\tid=[0-9]+$' "$ev/evidence/audit.roots" && [ ! -e "$ev/audit.classified" ] && [ "$(leg_class arm64)" = LAYOUT-OK ]; } \
   && ok "linkroot A5: link=yes is refused by the classifier: INCONCLUSIVE ($(leg_detail x86_64)), no audit.classified" \
   || bad "linkroot A5: exit $rc, '$(leg_class x86_64): $(leg_detail x86_64)', roots: $(tr '\t\n' ' ;' < "$ev/evidence/audit.roots" 2>/dev/null)"
 restore_temp
@@ -158,6 +165,14 @@ for scen in nocanary twocanary; do
     && [ "$(leg_detail arm64)" = "the driver output does not hold exactly one canary proof" ]; } \
     && ok "$scen A7: INCONCLUSIVE on both legs ($(leg_detail arm64))" || bad "$scen A7: exit $rc, '$(leg_detail arm64)'"
 done
+
+# ===== A9: required evidence must be regular files =====
+run_spike symlinkev symlinkev:intel clean both
+ev=$(evd x86_64)
+{ [ "$rc" -eq 2 ] && [ "$(leg_detail x86_64)" = "the evidence manifest lacks evidence/stage.log" ] && [ -L "$ev/evidence/stage.log" ] \
+  && [ ! -e "$ev/manifest.sha256" ] && ! grep -qP '^MANIFEST\tx86_64\t' <<<"$out" && [ "$(leg_class arm64)" = LAYOUT-OK ]; } \
+  && ok "symlinkev A9: a symlinked required evidence file is INCONCLUSIVE ($(leg_detail x86_64)), no manifest" \
+  || bad "symlinkev A9: exit $rc, '$(leg_class x86_64): $(leg_detail x86_64)', manifest: $(ls "$ev/manifest.sha256" 2>&1)"
 
 # ===== A8: the classifier comes from the commit =====
 "${G[@]}" rm -q tests/mac/bundle_layout_spike_audit.py && "${G[@]}" -c user.name=selftest -c user.email=selftest@invalid commit -q -m 'no classifier' \

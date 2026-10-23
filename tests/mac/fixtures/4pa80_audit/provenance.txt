@@ -13,3 +13,5 @@ SYNTHETIC	arm.synthetic
 # entries for coverage, and entries that separate the recorded diff hunks. Every other line is a recorded one.
 RUN	zb-gate-d80dd3ee5f9b57c5453a33236df6a0092e1c8aa5-0123456789abcdef
 # RUN: the run root in <arch>.roots: the Stage B commit, with a synthetic 16-hex nonce.
+# <arch>.roots id=: the inode each bound root's given path resolves to, which is its physical root entry's inode in
+# both snapshots (TEMP and CACHE: synthetic root entries; CACHES: the recorded Library/Caches inode); - for HOME and RUN.

@@ -22,17 +22,22 @@ Rules (closed, literal):
   PU  parsecd Usage additions: each child a new regular file CACHES/com.apple.parsecd/CustomFeedback/Usage/<UPPERCASE
       UUID>, mode 100600, size 102 or 115; the Usage directory keeps type, mode and inode and grows by exactly 32*N,
       1 <= N <= 5; no other change below Usage. Otherwise every Usage delta is UNKNOWN.
-Roots: exactly one each of TEMP, CACHE, CACHES, HOME, RUN; given and physical absolute and normalized; given may differ
-from physical (macOS resolves /var through /private/var); link=yes (the root entry itself a symlink) is refused;
+Roots: ROOT<TAB>token<TAB>given<TAB>physical<TAB>link=no|yes<TAB>id=<inode>|-, exactly one each of TEMP, CACHE, CACHES,
+HOME, RUN; given and physical absolute and normalized; given may differ from physical (macOS resolves /var through
+/private/var), but a bound root's id (the inode the leg's stat -L of the given path saw) must be its physical root
+entry's inode in both snapshots, and HOME and RUN carry id=- with given == physical (SilverRidge 1950c0bb); link=yes
+(the root entry itself a symlink) is refused;
 CACHES == HOME/Library/Caches; RUN a direct child of HOME named zb-gate-<40 hex>-<16 hex>; RUN disjoint from TEMP,
 CACHE, CACHES; TEMP and CACHE disjoint from HOME, CACHES and each other. Snapshots: path|type|mode|inode|size|mtime,
 byte-sorted, unique, every path under exactly the most specific physical root (CACHES before HOME), HOME entries only
 at depth 1, nothing at or under RUN, and each snapshot covers TEMP, CACHE and CACHES (their root entries) and at least
 one HOME entry.
-Rows: Q1 provenance (the fixtures give back the recorded Stage B diff lines and their bead hashes); Q2 Intel and Q3
+Rows: Q1 provenance (the fixtures give back the recorded Stage B diff lines and their bead hashes, and every line they
+share is a declared synthetic one); Q2 Intel and Q3
 arm64 real fixtures: AUDIT-AMBIENT with the pinned family counts; Q4 identical pairs: AUDIT-CLEAN; Q5 determinism,
-output shape and the printed SHA-256; Q6 each family alone; Q7 every UNKNOWN shape; Q8 root refusals and the accepted
-/var alias; Q9 snapshot refusals; Q10 FIRST-UNKNOWN.
+output shape and the printed SHA-256; Q6 each family alone; Q7 every UNKNOWN shape; Q8 root refusals, the accepted
+/var alias and the given/physical binding; Q9 snapshot refusals (every metadata column, a sibling-prefix path, a
+missing surface root entry); Q10 FIRST-UNKNOWN.
 Run: cd tests/e2e && python3 -X dev -m unittest -v mac_spike_audit_test
 """
 import hashlib
@@ -132,8 +137,10 @@ class Provenance(unittest.TestCase):
                                      env=dict(os.environ, LC_ALL="C")).stdout
                 got = "".join(l + "\n" for l in out.splitlines() if l[:2] in ("< ", "> "))
                 self.assertEqual((len(got.splitlines()), hashlib.sha256(got.encode()).hexdigest()), (n, sha), arch)
-                syn = set(fx(f"{arch}.synthetic").splitlines())
-                self.assertTrue(syn <= set(fx(f"{arch}.before").splitlines()) & set(fx(f"{arch}.after").splitlines()))
+                syn = fx(f"{arch}.synthetic").splitlines()
+                shared = set(fx(f"{arch}.before").splitlines()) & set(fx(f"{arch}.after").splitlines())
+                self.assertEqual(len(syn), len(set(syn)), arch)
+                self.assertEqual(shared, set(syn), f"{arch}: the lines both snapshots share must be exactly the declared synthetic ones")
 
 
 class RealFixtures(Base):
@@ -288,13 +295,25 @@ class Unknown(Base):
         b = self.set_line(self.ib, p, typ="Directory", mode="40700")
         self.assertUnknown(self.ir, b, self.set_line(b, p, ino="7777777"), "CACHES", "com.apple.nsservicescache.plist")
 
-    def pu(self, children, parent_size=None, parent_ino=None, parent_touched=False):
+    def pu(self, children, parent_size=None, parent_ino=None, parent_touched=False, parent_typ=None, parent_mode=None):
         """arm before -> after with the given Usage children and parent size growth."""
         C = self.A["CACHES"]
         after = add(self.ab, *[f"{C}/{USAGE}/{name}|{rest}" for name, rest in children])
-        if parent_size is not None or parent_ino is not None or parent_touched:
-            after = self.set_line(after, f"{C}/{USAGE}", size=parent_size, ino=parent_ino, mtime="1792744060")
+        if parent_size is not None or parent_ino is not None or parent_touched or parent_typ or parent_mode:
+            after = self.set_line(after, f"{C}/{USAGE}", size=parent_size, ino=parent_ino, mtime="1792744060",
+                                  typ=parent_typ, mode=parent_mode)
         return after
+
+    def test_q7_pu_parent_type_and_mode(self):
+        """With one valid child and the right growth, a parent that stops being a directory, or changes mode, is UNKNOWN."""
+        ok = "Regular File|100600|1|102|1792744060"
+        for name, kw in (("parent type", {"parent_typ": "Regular File"}), ("parent mode", {"parent_mode": "40755"})):
+            with self.subTest(name):
+                r = self.run_audit(self.ar, self.ab, self.pu([(UUID1, ok)], "96", **kw))
+                self.assertEqual(r.verdict, "AUDIT-UNKNOWN")
+                rows = [l.split("\t") for l in r.classified.splitlines() if l.startswith("DELTA\t") and USAGE in l]
+                self.assertEqual(len(rows), 2, rows)
+                self.assertTrue(all(x[6] == "UNKNOWN" for x in rows), rows)
 
     def test_q7_pu_shapes(self):
         ok = "Regular File|100600|1|102|1792744060"
@@ -350,6 +369,28 @@ class Roots(Base):
             out.append("\t".join(f))
         return "".join(l + "\n" for l in out)
 
+    def test_q8_binding(self):
+        """given/physical are bound by the inode the given path resolves to (SilverRidge 1950c0bb)."""
+        I = self.I
+        T, new = I["TEMP"], "/private/not-the-real-alias-target/T"
+        root_line = [l for l in self.ib.splitlines() if l.startswith(T + "|")][0]
+        # an unrelated physical root reported for the same given path: its own root entry is another directory
+        moved = lambda text: "".join(
+            l.replace(T, new, 1) + "\n" if l.startswith(T + "|") or l.startswith(T + "/") else l + "\n"
+            for l in text.splitlines())
+        unrelated_b = edit(moved(self.ib), new, (new + root_line[len(T):]).replace("|900009|", "|4242|"))
+        unrelated_a = edit(moved(self.ia), new, (new + root_line[len(T):]).replace("|900009|", "|4242|"))
+        roots = self.ir.replace("\t" + T + "\t", "\t" + new + "\t")
+        self.assertError(roots, "".join(sorted(unrelated_b.splitlines(True), key=lambda x: x.encode())),
+                         "".join(sorted(unrelated_a.splitlines(True), key=lambda x: x.encode())),
+                         "audit.before: root TEMP is given by a path that resolves to inode 900009, not to the physical root's 4242")
+        # the same physical root, a recorded id that is not its inode
+        self.assertError(self.ir.replace("id=900009", "id=1"), self.ib, self.ia,
+                         "audit.before: root TEMP is given by a path that resolves to inode 1, not to the physical root's 900009")
+        # the after snapshot's root entry is another inode
+        a = edit(self.ia, T, root_line.replace("|900009|", "|7|"))
+        self.assertError(self.ir, self.ib, a, "audit.after: root TEMP is given by a path that resolves to inode 900009, not to the physical root's 7")
+
     def test_q8_var_alias_accepted(self):
         r = self.ir.splitlines()[0].split("\t")
         self.assertTrue(r[2].startswith("/var/folders/") and r[3] == "/private" + r[2])
@@ -359,16 +400,26 @@ class Roots(Base):
         I = self.I
         H, T = I["HOME"], I["TEMP"]
         run = I["RUN"].rsplit("/", 1)[1]
-        R = lambda tok, g, p=None: ["ROOT", tok, g, g if p is None else p, "link=no"]
+        ids = {l.split("\t")[1]: l.split("\t")[5] for l in self.ir.splitlines()}
+        R = lambda tok, g, p=None: ["ROOT", tok, g, g if p is None else p, "link=no", ids[tok]]
         bad = {
             "missing CACHE": (self.roots(CACHE=None), "missing roots: CACHE"),
             "duplicate TEMP": (self.ir + self.ir.splitlines()[0] + "\n", "duplicate root TEMP"),
             "malformed line": (self.ir + "ROOT\tTEMP\n", "malformed root line"),
-            "unknown token": (self.ir + f"ROOT\tOTHER\t{T}x\t{T}x\tlink=no\n", "malformed root line"),
+            "unknown token": (self.ir + f"ROOT\tOTHER\t{T}x\t{T}x\tlink=no\tid=-\n", "malformed root line"),
+            "no id field": (self.roots(TEMP=["ROOT", "TEMP", I["TEMP"].replace("/private", ""), T, "link=no"]), "malformed root line"),
+            "malformed id": (self.roots(TEMP=["ROOT", "TEMP", T, T, "link=no", "id=x9"]), "malformed root line"),
+            "bound root without an id": (self.roots(TEMP=["ROOT", "TEMP", T, T, "link=no", "id=-"]), "root TEMP has id=-, want an inode"),
+            "HOME with an id": (self.roots(HOME=["ROOT", "HOME", H, H, "link=no", "id=5"]), "root HOME has id=5, want -"),
+            "HOME given elsewhere": (self.roots(HOME=["ROOT", "HOME", "/Users/elsewhere", H, "link=no", "id=-"]),
+                                     "root HOME is not given by its physical path"),
+            "RUN given elsewhere": (self.roots(RUN=["ROOT", "RUN", f"/Users/elsewhere/{run}", I["RUN"], "link=no", "id=-"]),
+                                    "root RUN is not given by its physical path"),
+            "CACHE inside HOME": (self.roots(CACHE=R("CACHE", f"{H}/C")), "roots CACHE and HOME overlap"),
             "relative physical": (self.roots(TEMP=R("TEMP", "var/T", "private/var/T")), "not absolute and normalized"),
             "trailing slash": (self.roots(TEMP=R("TEMP", T + "/")), "not absolute and normalized"),
             "dot segment": (self.roots(TEMP=R("TEMP", T, T + "/./x")), "not absolute and normalized"),
-            "link=yes": (self.roots(TEMP=["ROOT", "TEMP", T, T, "link=yes"]), "itself a symlink"),
+            "link=yes": (self.roots(TEMP=["ROOT", "TEMP", T, T, "link=yes", ids["TEMP"]]), "itself a symlink"),
             "CACHES not HOME/Library/Caches": (self.roots(CACHES=R("CACHES", H + "/Caches")), "CACHES is not HOME/Library/Caches"),
             "RUN 15-hex nonce": (self.roots(RUN=R("RUN", f"{H}/{run[:-1]}")), "RUN is not HOME/zb-gate"),
             "RUN uppercase": (self.roots(RUN=R("RUN", f"{H}/{run.upper()}")), "RUN is not HOME/zb-gate"),
@@ -397,6 +448,9 @@ class Snapshots(Base):
             "unknown type": (add(self.ib, f"{T}/x|Weird|100644|1|1|1"), "malformed metadata"),
             "bad mode": (add(self.ib, f"{T}/x|Regular File|644x|1|1|1"), "malformed metadata"),
             "bad inode": (add(self.ib, f"{T}/x|Regular File|100644|one|1|1"), "malformed metadata"),
+            "bad size": (add(self.ib, f"{T}/x|Regular File|100644|1|1x|1"), "malformed metadata"),
+            "bad mtime": (add(self.ib, f"{T}/x|Regular File|100644|1|1|-5"), "malformed metadata"),
+            "sibling prefix": (add(self.ib, f"{T}-other/x|Regular File|100644|1|1|1"), "a path under no physical surface root"),
             "unsorted": ("".join(l + "\n" for l in reversed(self.ib.splitlines())), "not sorted or duplicated"),
             "duplicate path": (add(self.ib, first.rsplit("|", 1)[0] + "|1"), "duplicate path"),
             "unowned path": (add(self.ib, "/opt/zb|Directory|40755|1|1|1"), "a path under no physical surface root"),
@@ -411,6 +465,17 @@ class Snapshots(Base):
                 self.assertError(self.ir, snap, self.ia, "audit.before: " + reason)
             with self.subTest(name, side="after"):
                 self.assertError(self.ir, self.ib, snap, "audit.after: " + reason)
+
+    def test_q9_root_entry_required(self):
+        """Children alone do not cover a surface: dropping only its root entry is a structural error."""
+        for token in ("TEMP", "CACHE", "CACHES"):
+            root = self.I[token]
+            self.assertTrue(any(l.startswith(root + "/") for l in self.ib.splitlines()), token)
+            drop = lambda text: edit(text, root)
+            with self.subTest(token, side="before"):
+                self.assertError(self.ir, drop(self.ib), self.ia, f"audit.before: does not cover {token}")
+            with self.subTest(token, side="after"):
+                self.assertError(self.ir, self.ib, drop(self.ia), f"audit.after: does not cover {token}")
 
     def test_q9_coverage(self):
         """Each snapshot must cover every surface: an identical omission is never AUDIT-CLEAN."""
