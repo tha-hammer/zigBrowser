@@ -716,6 +716,15 @@ pub fn build(b: *std.Build) void {
         "src/wkwebview_shim.m",
     }) |input| load_failure_policy_mutants.addFileInput(b.path(input));
     load_failure_policy_step.dependOn(&load_failure_policy_mutants.step);
+    // 4pa.58 MS2c.6: the native close control's hostless binding oracle (the 4pa.55 lexer, over the real shim). The
+    // runtime proof is the held Mac rows (mac_ms2c_close_button_test.py, mac_ms2c_close_primary_test.py).
+    const native_close_binding = b.addSystemCommand(&.{ "python3", "tests/e2e/mac_native_close_binding_test.py" });
+    for ([_][]const u8{
+        "tests/e2e/mac_native_close_binding_test.py",
+        "tests/e2e/mac_load_exit_timer_binding_test.py",
+        "src/wkwebview_shim.m",
+    }) |input| native_close_binding.addFileInput(b.path(input));
+    b.step("test-native-close-binding", "4pa.58: the native close control reaches the registry through the one window-event destroy path").dependOn(&native_close_binding.step);
 
     // Hook 16 inert row (SilverRidge 8721b6d, option B): the data-store selection decision of the e2e-only hook
     // ZB_DEBUG_EPHEMERAL_DATA_STORE, probed through src/zb_test_hook_gate.h with no AppKit and no WebKit store.
@@ -731,6 +740,21 @@ pub fn build(b: *std.Build) void {
     const run_hook16_tests = b.addRunArtifact(b.addTest(.{ .root_module = hook16_tests_module }));
     run_hook16_tests.skip_foreign_checks = true;
     b.step("test-hook16-decision", "Hook 16 is inert without --e2e-protocol: the store decision stays persistent").dependOn(&run_hook16_tests.step);
+
+    // Hook 14 inert row (4pa.58, SilverRidge 7f8b217, the hook-16 option B shape): the close-title decision of the
+    // e2e-only hook ZB_DEBUG_NATIVE_CLOSE_ON_TITLE, probed through src/zb_test_hook_gate.h with no AppKit and no window.
+    // Portable: runs on every host. The Mac half is row 5 of tests/e2e/mac_ms2a_hook_inert_test.py.
+    const hook14_tests_module = b.createModule(.{
+        .root_source_file = b.path("tests/hook14_decision_test.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    hook14_tests_module.addIncludePath(b.path("src"));
+    hook14_tests_module.addAnonymousImport("wkwebview_shim_src", .{ .root_source_file = b.path("src/wkwebview_shim.m") });
+    const run_hook14_tests = b.addRunArtifact(b.addTest(.{ .root_module = hook14_tests_module }));
+    run_hook14_tests.skip_foreign_checks = true;
+    b.step("test-hook14-decision", "Hook 14 is inert without --e2e-protocol: no page title closes a window").dependOn(&run_hook14_tests.step);
 
     // macOS plan R30-MS3 Red 1 (bd 4pa.60): the macOS profile step (profile_step.applyMacos, the macOS branch of
     // app.applyProfileDir, with the WebKit binder injected) creates a fresh --profile-dir before the bind, so the
@@ -4235,6 +4259,8 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&load_exit_timer_binding.step);
     test_step.dependOn(&load_failure_policy_mutants.step);
     test_step.dependOn(&run_hook16_tests.step);
+    test_step.dependOn(&native_close_binding.step);
+    test_step.dependOn(&run_hook14_tests.step);
     test_step.dependOn(&run_app_profile_dir_tests.step);
     test_step.dependOn(&run_agent_drawer_tests.step);
     test_step.dependOn(&run_agent_drawer_breaks_tests.step);

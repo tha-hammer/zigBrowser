@@ -3,17 +3,20 @@
 
 RoseCat: a test hook read from the ambient environment must not change production behavior. Every
 ZB_DEBUG_* hook is gated on the app's e2e flag (zb_auto_test_hooks_enabled -> g_active_app.e2eProtocol).
-This launches WITHOUT --e2e-protocol but with ALL FOUR hook envs set, and proves each production call
+This launches WITHOUT --e2e-protocol but with ALL FIVE hook envs set, and proves each production call
 site ignores them:
   1. ZB_DEBUG_DISPATCH_HOLD_MS → a routed eval returns promptly (not held).
   2. ZB_DEBUG_REFUSE_NEXT_NAV  → a routed navigation SUCCEEDS (not refused with navigation_failed).
   3. ZB_DEBUG_ACK_FAIL         → a native click SUCCEEDS (not returning Evaluation failed).
   4. ZB_DEBUG_QUIT_AFTER_MS    → the app does NOT quit early; it is still responsive well past the delay
                                  (RoseCat 41c683a #4 — the immediate-quit hook must honor the e2e gate too).
+  5. ZB_DEBUG_NATIVE_CLOSE_ON_TITLE (hook 14, 4pa.58; SilverRidge 7f8b217) → a popup whose page title is the hook's
+                                 value is NOT closed: it stays in page.list and still answers a routed page.title.
+                                 Its hostless guard-drop proof is tests/hook14_decision_test.zig.
 
 Each is a distinct call site, so removing the gate from any one is caught here. (The dispatch-race,
-refused-start, ack-error and immediate-quit tests prove the SAME hooks DO fire WITH --e2e-protocol, so
-together they pin the gate both ways.)
+refused-start, ack-error, immediate-quit and close-button tests prove the SAME hooks DO fire WITH --e2e-protocol,
+so together they pin the gate both ways.)
 """
 import argparse
 import http.server
@@ -31,10 +34,12 @@ from mac_ms2a_routed_test import stop_browser_macos, _install_signal_cleanup  # 
 SKIP_EXIT = 77
 HOLD_MS = 1500
 QUIT_INERT_MS = 1500  # ZB_DEBUG_QUIT_AFTER_MS: without --e2e-protocol the app must NOT quit after this
+CLOSE_TITLE = "zb-native-close"  # ZB_DEBUG_NATIVE_CLOSE_ON_TITLE: without --e2e-protocol this title closes nothing
 BTN = b"<button id='btn' style='width:240px;height:90px'>b</button>"
 PAGES = {
     b"/a": b"<!doctype html><html><head><meta charset='utf-8'><title>A</title></head><body><h1 id='h'>A</h1>" + BTN + b"</body></html>",
     b"/b": b"<!doctype html><html><head><meta charset='utf-8'><title>B</title></head><body><h1 id='h'>B</h1>" + BTN + b"</body></html>",
+    b"/c": b"<!doctype html><html><head><meta charset='utf-8'><title>" + CLOSE_TITLE.encode() + b"</title></head><body>C</body></html>",
 }
 
 
@@ -88,10 +93,11 @@ def main() -> int:
         socket_path = Path(tmp) / "automation.sock"
         env = dict(os.environ)
         env["ZIGBROWSER_SOCKET"] = str(socket_path)
-        env["ZB_DEBUG_DISPATCH_HOLD_MS"] = str(HOLD_MS)  # all four hook envs set in the ambient env...
+        env["ZB_DEBUG_DISPATCH_HOLD_MS"] = str(HOLD_MS)  # all five hook envs set in the ambient env...
         env["ZB_DEBUG_REFUSE_NEXT_NAV"] = "1"
         env["ZB_DEBUG_ACK_FAIL"] = "1"
         env["ZB_DEBUG_QUIT_AFTER_MS"] = str(QUIT_INERT_MS)
+        env["ZB_DEBUG_NATIVE_CLOSE_ON_TITLE"] = CLOSE_TITLE
         proc = subprocess.Popen(
             # ...but NO --e2e-protocol, so every hook must stay inert.
             [str(browser), f"{fixture.base_url}/a", "--automation-api"],
@@ -136,6 +142,34 @@ def main() -> int:
             resp = rpc.raw("dom.click", {"selector": "css=#btn", "options": {"input": "native", "timeout_ms": 10000}})
             if resp.get("result") != {"ok": True}:
                 failures.append(f"dom.click (native) did not succeed with hooks inert (ack-fail hook fired?): {resp.get('error') or resp}")
+
+            # 5. native-close-on-title inert (hook 14): open a popup whose title is the hook's value. With the
+            #    guard dropped its title KVO would -performClose: it and it would leave page.list.
+            def ids():
+                return [pg.get("window_id") for pg in (rpc.call("page.list", {}) or {}).get("pages") or []]
+
+            opened_before = ids()
+            rpc.raw("page.evaluate", {"window_id": "window-1", "expression": "(window.open('/c'), true)"})
+            popup = None
+            seen_title = None
+            end = time.monotonic() + 10.0
+            while time.monotonic() < end and seen_title != CLOSE_TITLE:
+                popup = popup or next((i for i in ids() if i not in opened_before), None)
+                if popup is not None:
+                    seen_title = (rpc.raw("page.title", {"window_id": popup}).get("result") or {}).get("title")
+                if seen_title != CLOSE_TITLE:
+                    time.sleep(0.05)
+            if seen_title != CLOSE_TITLE:
+                failures.append(f"PRECONDITION the popup never showed the hook-14 title (popup {popup}, title {seen_title!r})")
+            else:
+                time.sleep(1.0)  # past the seam's deferred main-queue close
+                if popup not in ids():
+                    failures.append(f"the popup titled {CLOSE_TITLE!r} left page.list — the native-close hook fired "
+                                    "without --e2e-protocol")
+                else:
+                    resp = rpc.raw("page.title", {"window_id": popup})
+                    if (resp.get("result") or {}).get("title") != CLOSE_TITLE:
+                        failures.append(f"the hook-14-titled popup no longer answers page.title: {resp.get('error') or resp}")
 
             # 4. quit-after inert: wait past ZB_DEBUG_QUIT_AFTER_MS (from launch), then the app must still be
             #    alive and responsive. If the quit hook fired without --e2e-protocol, the process would have

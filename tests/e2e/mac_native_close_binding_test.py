@@ -2,10 +2,10 @@
 """bd zigBrowser-4pa.58 (plan R30-MS2, sub-slice MS2c.6): a popup's native close control must reach the automation
 registry through the same destroy path as a page's window.close().
 
-RED, UNREGISTERED, fix-forward for SilverRidge c6125315: N1 is order-exact, and the primary's native close matches
-Linux (owner default R30.3 #3): the shared destroy path removes a primary too, while a page's window.close() and
-automation page.close still ignore or refuse it (N3, N5). The green registers it beside test-load-failure-policy's
-binding oracle.
+Registered (step test-native-close-binding, beside test-load-failure-policy's binding oracle; red 50f215e5, fix-forward
+5628b746 for SilverRidge c6125315): N1 is order-exact, and the primary's native close matches Linux (owner default
+R30.3 #3): the shared destroy path removes a primary too, while a page's window.close() and automation page.close
+still ignore or refuse it (N3, N5).
 
 No Objective-C runtime exists on the Linux gate, so the binding is read from the real src/wkwebview_shim.m,
 lexically, with the 4pa.55 oracle's lexer: comments are removed and string/character literals blanked, so a name in a
@@ -31,7 +31,7 @@ Rows (each one bounded assertion; a failure names its row):
   so a later AppKit close of the NSWindow can never message a torn-down host.
 - N5 the automation contract: zb_automation_close_window still refuses the primary (NO_WINDOW) before it closes.
 
-Run: python3 tests/e2e/mac_native_close_binding_test.py [shim path]
+Run: python3 tests/e2e/mac_native_close_binding_test.py [shim path]   (registered: zig build test-native-close-binding)
 """
 from __future__ import annotations
 

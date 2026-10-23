@@ -1,5 +1,5 @@
 #include "webkit_shim.h"
-#include "zb_test_hook_gate.h"  // hook 16: the pure data-store decision (tests/hook16_decision_test.zig)
+#include "zb_test_hook_gate.h"  // hooks 16 and 14: pure decisions (tests/hook16_decision_test.zig, tests/hook14_decision_test.zig)
 
 #import <Cocoa/Cocoa.h>
 #import <WebKit/WebKit.h>
@@ -280,7 +280,7 @@ static void handle_signal(int signo) {
   });
 }
 
-@interface ZBWindowHost : NSObject <WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandlerWithReply>
+@interface ZBWindowHost : NSObject <WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandlerWithReply, NSWindowDelegate>
 @property(nonatomic, assign) ZBAppHost *app;
 @property(nonatomic, strong) NSWindow *window;
 @property(nonatomic, strong) WKWebView *webView;
@@ -485,6 +485,7 @@ static void *ZBWebViewKVOContext = &ZBWebViewKVOContext;
                                           backing:NSBackingStoreBuffered
                                             defer:NO];
   _window.releasedWhenClosed = NO;
+  _window.delegate = self;  // 4pa.58 MS2c.6: the close control reaches -windowWillClose:
   _window.title = @"zigBrowser";
   _window.contentView = _webView;
   return self;
@@ -628,6 +629,7 @@ static int64_t zb_now_us(void) { return (int64_t)([[NSProcessInfo processInfo] s
   self.webView.navigationDelegate = nil;
   self.webView.UIDelegate = nil;
   [self.webView stopLoading:nil];
+  self.window.delegate = nil;  // 4pa.58: a later AppKit close of this NSWindow never messages a torn-down host
   self.window.contentView = nil;
   [self.window orderOut:nil];
   if (self.cWindow != NULL) {
@@ -901,14 +903,26 @@ static int64_t zb_now_us(void) { return (int64_t)([[NSProcessInfo processInfo] s
   return child.webView;
 }
 
-// MS2c: a page called window.close(). Honor it for a POPUP with the same teardown as an automation
-// page.close (so the opener survives, DOM intact); never for the primary (browsers ignore window.close()
-// on the main window). Deferred to the main queue so we never tear the webView down inside its own
-// UI-delegate callback; the registry check drops a double-close.
+// MS2c: a page called window.close(). Honor it for a POPUP (browsers ignore window.close() on the main window).
 - (void)webViewDidClose:(WKWebView *)webView {
   (void)webView;
+  if (self.app == nil || self == self.app.mainWindow) return;
+  [self zbCloseFromWindowEvent];
+}
+
+// 4pa.58 MS2c.6: the NSWindow's close control (and -performClose:), for any window. As on Linux (owner default R30.3
+// #3), the primary leaves the registry too, and removeWindow: exits after the last window.
+- (void)windowWillClose:(NSNotification *)notification {
+  (void)notification;
+  [self zbCloseFromWindowEvent];
+}
+
+// The one destroy path for a window event (a popup's window.close() and the native close control): the same teardown
+// as an automation page.close, so a remaining window survives with its DOM intact. Deferred to the main queue so the
+// webView is never torn down inside its own callback; the registry check drops a double close.
+- (void)zbCloseFromWindowEvent {
   ZBAppHost *app = self.app;
-  if (app == nil || self == app.mainWindow) return;
+  if (app == nil) return;
   ZBWindowHost *host = self;
   dispatch_async(dispatch_get_main_queue(), ^{
     if (![app.windows containsObject:host]) return;  // already removed
@@ -1502,9 +1516,7 @@ static int zb_auto_test_synth_crash(void) {
 // through -[NSWindow performClose:] (see zbTestNativeCloseIfTitled), so a red can drive the native close
 // control without Accessibility/TCC. NULL when unset or without --e2e-protocol. Main thread only.
 static const char *zb_auto_test_native_close_title(void) {
-  if (!zb_auto_test_hooks_enabled()) return NULL;
-  const char *v = getenv("ZB_DEBUG_NATIVE_CLOSE_ON_TITLE");
-  return (v != NULL && v[0] != '\0') ? v : NULL;
+  return zb_hook14_native_close_title(zb_auto_test_hooks_enabled());  // zb_test_hook_gate.h
 }
 
 // Test-only (ZB_DEBUG_COOKIE_DELAY_MS, 4pa.56): hold every WKHTTPCookieStore completion this many ms before
