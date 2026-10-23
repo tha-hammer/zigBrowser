@@ -6,6 +6,7 @@ const cli = @import("cli.zig");
 const errors = @import("errors.zig");
 const uri = @import("uri.zig");
 const webkit = @import("webkit.zig");
+const environ_guard = @import("environ_guard.zig");
 
 /// MS1 (2026-10-19): zig 0.16's segfault handler mishandles the x86_64 macOS signal
 /// `ucontext_t` — `std.debug.cpu_context.fromPosixSignalContext` panics "incorrect alignment"
@@ -24,6 +25,8 @@ comptime {
 }
 
 pub fn main(init: std.process.Init) !void {
+    // 3ui.12: before any C code can unsetenv() an inherited variable (gdk, in gtk_init).
+    environ_guard.prime(init.io);
     const arena = init.arena.allocator();
     const args = try init.minimal.args.toSlice(arena);
     const command = cli.parseArgs(args);

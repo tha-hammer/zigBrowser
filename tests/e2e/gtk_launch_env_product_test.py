@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""RED (UNREGISTERED; bd zigBrowser-3ui.12): the shipped Linux browser must not hang on its first Zig environment
+"""bd zigBrowser-3ui.12 (red cccb08fa): the shipped Linux browser must not hang on its first Zig environment
 scan after GTK start when it was launched from a desktop.
 
 Zig 0.16's start code hands main the libc envp array, and both Io instances (the app's and std.debug's) keep that
@@ -21,10 +21,12 @@ agent-drawer.json, so the startup load is silent. After the drawer icon row (GTK
 agent-drawer.json a directory, so the save after a drag fails, and drags the icon: zb_drawer_remember prints
 "agent-drawer.json not saved" with std.debug.print, the first Zig print after GTK start. Required: that line
 appears, no panic is printed, the icon moves on a second drag (the GTK thread is alive), and the browser runs.
-  late-inherited          the four variables set, both startup setenvs skipped: RED today (the panic, then the hang)
+  late-inherited          the four variables set, both startup setenvs skipped: the panic, then the hang, before
+                          src/environ_guard.zig primed std.debug's scan first in main
   late-clean              the control: the same launch without the four variables (gdk unsets nothing)
   late-inherited-default  the four variables set, the default setenvs run: passes today by the accident above
 Run: python3 tests/e2e/gtk_launch_env_product_test.py --binary zig-out/bin/zigBrowser [--only a,b]
+     (registered: zig build test-gtk-launch-env, in test)
 """
 from __future__ import annotations
 

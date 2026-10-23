@@ -3832,6 +3832,40 @@ pub fn build(b: *std.Build) void {
         const gtk_test_env_step = b.step("test-gtk-test-env", "3ui.11: GTK-in-process test steps fail cleanly and fast, never hang");
         gtk_test_env_step.dependOn(&gtk_test_env_selftest.step);
         test_step.dependOn(&gtk_test_env_selftest.step);
+        // bd zigBrowser-3ui.12: a desktop-launched browser (DESKTOP_STARTUP_ID etc. inherited, no startup setenv)
+        // does not hang on its first Zig environ scan after GTK start. The real browser on a private Xvfb, below a
+        // proven PID namespace with no network; a missing requirement fails it (no skip to green). The unit test
+        // proves the guard also primes main's init.io, which no product path scans today.
+        const gtk_launch_env_e2e = b.addSystemCommand(&.{
+            "sh",
+            "-c",
+            "python3 tests/e2e/gtk_launch_env_product_test.py --binary \"$1\"",
+            "gtk-launch-env-e2e",
+        });
+        gtk_launch_env_e2e.addArtifactArg(exe);
+        for ([_][]const u8{
+            "tests/e2e/gtk_launch_env_product_test.py", "tests/e2e/agent_common.py",
+            "tests/e2e/slice2_common.py",               "tests/e2e/xsession.py",
+            "agent/host/tests/pidns_guard.py",
+        }) |input| gtk_launch_env_e2e.addFileInput(b.path(input));
+        const environ_guard_tests = b.addTest(.{ .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/environ_guard_test.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+            .imports = &.{.{ .name = "environ_guard", .module = b.createModule(.{
+                .root_source_file = b.path("src/environ_guard.zig"),
+                .target = target,
+                .optimize = optimize,
+                .link_libc = true,
+            }) }},
+        }) });
+        const run_environ_guard_tests = b.addRunArtifact(environ_guard_tests);
+        const gtk_launch_env_step = b.step("test-gtk-launch-env", "3ui.12: a desktop-launched browser does not hang on its first Zig environ scan after GTK start");
+        gtk_launch_env_step.dependOn(&gtk_launch_env_e2e.step);
+        gtk_launch_env_step.dependOn(&run_environ_guard_tests.step);
+        test_step.dependOn(&gtk_launch_env_e2e.step);
+        test_step.dependOn(&run_environ_guard_tests.step);
     }
     // WS5 (RoseCat 05f2549): register the agent_drawer.zig geometry property tests so deleting a portable
     // helper (incl. zb_drawer_anim_ms_from_env / animMsFromEnv) reds the gate. Host-run, link libc (atomic_file).
