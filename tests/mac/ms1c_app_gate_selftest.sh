@@ -49,7 +49,11 @@
 #   F17 build-dmg.sh fails: FAIL, exit 1, no leg ran;
 #   F18 the control prints dyld's exact load failure but exits 0: FAIL (the exit and the text are both required);
 #   F19 exec_arch_probe writes the right arch but exits 77: FAIL (a skip is never a pass);
-#   F20 the home snapshot is incomplete (a stat error on a file that is there before and after): INCONCLUSIVE.
+#   F20 the home snapshot is incomplete (a stat error on a file that is there before and after): INCONCLUSIVE;
+#   F21 the removal of a run root fails (find -delete exits 1): CLEANUP rc != 0 for it, both legs still PASS, the root
+#       is still there, the evidence came back, INCONCLUSIVE, exit 2, no PASS;
+#   F22 the removal claims success but leaves the root (find -delete exits 0, deletes nothing): the absence check
+#       catches it, the same verdict as F21.
 # No Mac, no signal: it re-runs itself in a private user+network namespace; HOME/TMPDIR live in its temp tree.
 # Run: bash tests/mac/ms1c_app_gate_selftest.sh [repo root]
 set -uo pipefail
@@ -250,10 +254,16 @@ echo sleep >> "$C/sleeps"
 EOF
 cat > "$X/hostbin/find" <<EOF
 #!/bin/bash
+$on
 for a in "\$@"; do
   if [ "\$a" = -delete ]; then
     m=unmounted; [ -e "\$1/mnt/.zb-mounted" ] && m=mounted
     printf '%s\t%s\t%s\n' "\$ZB_ROLE" "\$1" "\$m" >> "$C/find_delete"
+    # F21/F22: the removal of a gate run root (the one holding evidence.tar) fails, or claims success and leaves it.
+    if [ -e "\$1/evidence.tar" ]; then
+      if on remove_fails; then echo "find: \$1: Directory not empty" >&2; exit 1; fi
+      if on remove_noop; then exit 0; fi
+    fi
   fi
 done
 exec /usr/bin/find "\$@"
@@ -595,6 +605,17 @@ run_gate ctlrc0 control_rc0.arm
 { [ "$rc" -eq 1 ] && leg_is arm64 FAIL && no_pass; } && ok "F18: a control with dyld's exact text that exits 0: FAIL" || bad "F18: exit $rc: $(tailout)"
 run_gate skiparch skip_arch.intel
 { [ "$rc" -eq 1 ] && leg_is x86_64 FAIL && no_pass; } && ok "F19: exec_arch_probe exits 77 with the right arch written: FAIL" || bad "F19: exit $rc: $(tailout)"
+
+for mode in remove_fails remove_noop; do
+  row=F21; [ "$mode" = remove_noop ] && row=F22
+  run_gate "$mode" "$mode.arm"
+  rd=$(rd_of arm)
+  if [ "$rc" -eq 2 ] && leg_is x86_64 PASS && leg_is arm64 PASS && no_pass && grep -q "^INCONCLUSIVE${TB}ms1c-app-gate\$" "$OUT" \
+     && grep -qE "^CLEANUP${TB}$ARM${TB}${rd##*/}${TB}rc=[1-9][0-9]*\$" "$OUT" && [ -n "$rd" ] && [ -d "$rd" ] \
+     && [ -f "$EV/arm64/evidence/leg.log" ] && grep -qE "^CLEANUP${TB}$INTEL${TB}zb-gate-[^${TB}]*${TB}rc=0\$" "$OUT"; then
+    ok "$row: a run root that is not removed ($mode) is a CLEANUP failure: INCONCLUSIVE, exit 2, evidence kept"
+  else bad "$row: exit $rc, root '$rd' $( [ -d "$rd" ] && echo kept || echo gone): $(grep '^CLEANUP' "$OUT" | tr '\n' '|') $(tailout)"; fi
+done
 
 if [ "$fails" -eq 0 ]; then printf 'PASS\tmac-ms1c-app-gate-selftest\n'; exit 0; fi
 printf 'FAIL\tmac-ms1c-app-gate-selftest\t%s failure(s)\n' "$fails"
