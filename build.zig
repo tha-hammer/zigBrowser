@@ -4045,13 +4045,19 @@ pub fn build(b: *std.Build) void {
     mac_build_script_step.dependOn(&mac_gate_callers_selftest.step);
     test_step.dependOn(&mac_gate_callers_selftest.step);
     // The owner's /var/folders rule (2026-10-23; SilverRidge 94ebe76b): the one shared audit helper that every Mac gate
-    // launching the browser sources (the runtime rows gate, the MS1c .app gate), and its helper mutants. Hostless: a
+    // launching the browser sources (the runtime rows gate, the MS1c .app gate), its per-user parent census (the
+    // entries beside T and C; any change there is INCONCLUSIVE, SilverRidge 3661c9b8), and its helper mutants. Hostless: a
     // getconf stub and private temp roots. V7 and the mutants need a non-root user (root reads a mode-000 directory).
     const mac_varfolders_audit_step = b.step("test-mac-varfolders-audit", "The /var/folders audit helper: physical roots, every delta unfiltered, INCONCLUSIVE when incomplete, nothing deleted");
-    for ([_][]const u8{ "tests/e2e/mac_varfolders_audit_test.py", "tests/e2e/mac_varfolders_audit_mutant_selftest.py" }) |script| {
+    for ([_][]const u8{
+        "tests/e2e/mac_varfolders_audit_test.py",
+        "tests/e2e/mac_varfolders_census_test.py",
+        "tests/e2e/mac_varfolders_audit_mutant_selftest.py",
+    }) |script| {
         const run = b.addSystemCommand(&.{ "python3", script });
         for ([_][]const u8{
             "tests/e2e/mac_varfolders_audit_test.py",
+            "tests/e2e/mac_varfolders_census_test.py",
             "tests/e2e/mac_varfolders_audit_mutant_selftest.py",
             "tests/mac/mac_varfolders_audit.sh",
         }) |input| run.addFileInput(b.path(input));

@@ -57,6 +57,13 @@ itself from lstat and the file bytes):
 - V15 fail closed (SilverRidge 3661c9b8): when the roots cannot be resolved (V6) or the initial tree cannot be
   snapshotted completely (V7, V11), varfolders_begin refuses: exit 2 and exactly one VARFOLDERS<TAB>INCONCLUSIVE<TAB>
   <nonempty reason> line, so a caller never starts a browser without a complete before snapshot.
+- V16 the parent line: exactly one VARFOLDERS_PARENT<TAB><the physical common parent of T and C> after the roots
+  line; T and C in two different per-user dirs refuse at begin (V6).
+- V17 a change beside T and C (in the per-user parent, root token P): every delta, exact and in order, then
+  INCONCLUSIVE, exit 2 (the verdict OUTSIDE); never COMPLETE. The census itself is
+  tests/e2e/mac_varfolders_census_test.py.
+- V18 an unreadable sibling: begin refuses; one made unreadable by the end gives INCONCLUSIVE with no delta.
+- V19 an evidence dir that cannot be made: begin refuses with exactly one line (no stray mkdir message).
 - V14 a tripwire for what a Linux bash cannot show (it pipes small here-documents): the helper has no here-document,
   because macOS /bin/bash 3.2 writes each one to a temp file in $TMPDIR, the audited temp root by default.
 tests/e2e/mac_varfolders_audit_mutant_selftest.py runs these rows against altered copies of the helper.
@@ -158,6 +165,9 @@ class Box:
         (self.C / "sub" / "inner").write_text("i\n")
         (self.T / "xattr.txt").write_text("x\n")
         (self.C / "linked.txt").write_text("l\n")
+        for d, f, body in (("0", "zz.db", "zz\n"), ("X", "x.bin", "x1\n")):  # the siblings of T and C (census only)
+            (self.user / d).mkdir()
+            (self.user / d / f).write_text(body)
         (self.C / "link").symlink_to("target-a")
         (self.tmp / "link").symlink_to(self.user)  # macOS /var -> /private/var: the getconf answer is not physical
         self.bin = self.tmp / "bin"
@@ -235,6 +245,14 @@ def observe(box: Box) -> dict:
             for n in dirs + names:
                 p = Path(dirpath) / n
                 out[(token, str(p.relative_to(base)))] = record(p)
+    out[("P", ".")] = record(box.user)
+    for dirpath, dirs, names in os.walk(box.user):
+        if Path(dirpath) == box.user:
+            dirs[:] = [d for d in dirs if d not in ("T", "C")]
+            names = [n for n in names if n not in ("T", "C")]
+        for n in dirs + names:
+            p = Path(dirpath) / n
+            out[("P", str(p.relative_to(box.user)))] = record(p)
     return out
 
 
@@ -252,17 +270,19 @@ def want_deltas(before: dict, after: dict) -> list[tuple]:
     return rows
 
 
-def parse(row: str, rc: int, out: list[str], want_roots: str, required: bool) -> tuple[str, list[tuple]] | None:
-    """The end output's exact structure; returns (final word, deltas), or records a problem under `row`. The roots
-    line, when present (always, when `required`), is the first line and exactly `want_roots`, the recorded roots."""
+def parse(row: str, rc: int, out: list[str], want_head: list[str], required: bool) -> tuple[str, list[tuple]] | None:
+    """The end output's exact structure; returns (verdict, deltas), or records a problem under `row`. The header (the
+    roots line, then the parent line), when present (always, when `required`), is first and exactly `want_head`, the
+    recorded roots. Verdicts: COMPLETE (T/C deltas only), OUTSIDE (every delta, at least one of the parent P, then
+    INCONCLUSIVE) and INCONCLUSIVE (no delta at all)."""
     rest = list(out)
-    if rest and rest[0] == want_roots:
-        rest = rest[1:]
+    if rest[:2] == want_head:
+        rest = rest[2:]
     elif required:
-        bad(f"{row} want the first line {want_roots!r}, got {rest[:1]!r}")
+        bad(f"{row} want the first lines {want_head!r}, got {rest[:2]!r}")
         return None
-    if any(l.startswith("VARFOLDERS_ROOTS") for l in rest):
-        bad(f"{row} a roots line must be exactly {want_roots!r}, once and first, got {out!r}")
+    if any(l.startswith(("VARFOLDERS_ROOTS", "VARFOLDERS_PARENT")) for l in rest):
+        bad(f"{row} the roots and parent lines must be exactly {want_head!r}, once and first, got {out!r}")
         return None
     if not rest or not rest[-1].startswith("VARFOLDERS\t"):
         bad(f"{row} want a final VARFOLDERS line, got {out[-3:]!r}")
@@ -284,22 +304,34 @@ def parse(row: str, rc: int, out: list[str], want_roots: str, required: bool) ->
                 return None
         return "COMPLETE", deltas
     if final[1] == "INCONCLUSIVE":
-        if rc != 2 or deltas or len(final) != 3 or not final[2].strip():
-            bad(f"{row} INCONCLUSIVE must exit 2 with exactly one nonempty reason and no delta, got rc={rc} {rest!r}")
+        if rc != 2 or len(final) != 3 or not final[2].strip():
+            bad(f"{row} INCONCLUSIVE must exit 2 with exactly one nonempty reason, got rc={rc} {rest!r}")
             return None
-        return "INCONCLUSIVE", []
+        if not deltas:
+            return "INCONCLUSIVE", []
+        for d in deltas:  # OUTSIDE: complete deltas are allowed only when one is beside T and C
+            kind, before, after = d[1], d[4], d[5]
+            if kind not in ("added", "changed", "removed") or d[2] not in ("T", "C", "P") \
+                    or (before == "-") != (kind == "added") or (after == "-") != (kind == "removed"):
+                bad(f"{row} malformed delta {d!r}")
+                return None
+        if not any(d[2] == "P" for d in deltas):
+            bad(f"{row} INCONCLUSIVE with deltas but none outside T/C (a partial result): {rest!r}")
+            return None
+        return "OUTSIDE", deltas
     bad(f"{row} unknown final line {rest[-1]!r}")
     return None
 
 
-def roots_line(box: Box) -> str:
-    return f"VARFOLDERS_ROOTS\tT\t{box.T}\tC\t{box.C}"
+def roots_line(box: Box) -> list[str]:
+    """The exact header: the recorded physical roots, then their common per-user parent."""
+    return [f"VARFOLDERS_ROOTS\tT\t{box.T}\tC\t{box.C}", f"VARFOLDERS_PARENT\t{box.user}"]
 
 
 def inconclusive(row: str, box: Box, rc: int, out: list[str]) -> None:
     got = parse(row, rc, out, roots_line(box), False)
-    if got is not None and got[0] != "INCONCLUSIVE":
-        bad(f"{row} want INCONCLUSIVE exit 2, got rc={rc} {out[-3:]!r}")
+    if got is not None and got != ("INCONCLUSIVE", []):
+        bad(f"{row} want INCONCLUSIVE exit 2 with no delta, got rc={rc} {out[-3:]!r}")
 
 
 def exact_row(row: str, box: Box, change, named: list[tuple]) -> None:
@@ -417,7 +449,8 @@ def run_rows(helper: Path) -> list[str]:
             box.close()
 
     for name, args in (("getconf fails", (None, None, 1)), ("empty answer", ("", "", 0)),
-                       ("missing directory", ("/nonexistent/zb-vf/T/", None, 0)), ("same directory", (None, None, 0))):
+                       ("missing directory", ("/nonexistent/zb-vf/T/", None, 0)), ("same directory", (None, None, 0)),
+                       ("no common parent", (None, None, 0))):
         box = Box(helper)
         try:  # V6
             temp, cache, code = args
@@ -425,6 +458,9 @@ def run_rows(helper: Path) -> list[str]:
                 temp = cache = f"{box.T}/"
             elif name == "missing directory":
                 cache = f"{box.C}/"
+            elif name == "no common parent":  # V16: T and C in two different per-user dirs
+                (box.var / "folders" / "zz" / "other" / "C").mkdir(parents=True)
+                temp, cache = f"{box.T}/", f"{box.var}/folders/zz/other/C/"
             box.stub(temp, cache, code)
             rc, out = box.refused(f"V6 {name}:")
             inconclusive(f"V6 {name}:", box, rc, out)
@@ -500,6 +536,58 @@ def run_rows(helper: Path) -> list[str]:
         finally:
             box.close()
 
+    box = Box(helper)
+    try:  # V17 a change beside T and C: every delta, exact, then INCONCLUSIVE (never a pass)
+        state = {}
+
+        def siblings(b):
+            state["before"] = observe(b)
+            (b.user / "0" / "new.db").write_text("n\n")
+            (b.user / "X" / "x.bin").write_text("x2\n")  # same size, new bytes
+            (b.user / "Z").mkdir()
+            (b.user / "Z" / "z").write_text("z\n")
+            b.user.chmod(0o750)
+            (b.T / "t.txt").write_text("t\n")  # and a T change in the same run, reported as ever
+            state["after"] = observe(b)
+        rc, out = box.cycle(siblings)
+        exact = want_deltas(state["before"], state["after"])
+        named = sorted([("added", "P", "0/new.db"), ("changed", "P", "0"), ("changed", "P", "X/x.bin"),
+                        ("added", "P", "Z"), ("added", "P", "Z/z"), ("changed", "P", "."),
+                        ("added", "T", "t.txt"), ("changed", "T", ".")])
+        if sorted((d[1], d[2], d[3]) for d in exact) != named:
+            bad(f"V17 this test's own records missed a change: want {named!r}, got {exact!r}")
+        got = parse("V17", rc, out, roots_line(box), True)
+        if got is not None and got != ("OUTSIDE", exact):
+            bad(f"V17 a change beside T and C: want all {len(exact)} exact deltas then INCONCLUSIVE, got {out!r}")
+    finally:
+        box.close()
+
+    for name, when in (("at begin", "begin"), ("by the end", "end")):
+        box = Box(helper)
+        try:  # V18 an unreadable sibling: begin refuses, or the end is INCONCLUSIVE with no delta
+            if os.geteuid() == 0:
+                bad("V18 needs a non-root user (root reads a mode-000 directory): run it as yourself")
+                break
+            def lock(b):
+                (b.user / "X" / "locked").mkdir()
+                (b.user / "X" / "locked").chmod(0)
+            if when == "begin":
+                lock(box)
+                rc, out = box.refused(f"V18 an unreadable sibling {name}:")
+            else:
+                rc, out = box.cycle(lock)
+            inconclusive(f"V18 an unreadable sibling {name}:", box, rc, out)
+        finally:
+            box.close()
+
+    box = Box(helper)
+    try:  # V19 an evidence dir that cannot be made: begin refuses with exactly one line, and the end is INCONCLUSIVE
+        box.ev.write_text("a file where the evidence dir must go\n")
+        rc, out = box.refused("V19 an evidence dir that cannot be made:")
+        inconclusive("V19 an evidence dir that cannot be made:", box, rc, out)
+    finally:
+        box.close()
+
     text = helper.read_text()  # V14 (a tripwire for what a Linux bash cannot show: it pipes small here-documents)
     if re.search(r"<<-?\s*['\"]?\w", text):
         bad("V14 the helper uses a here-document: macOS /bin/bash 3.2 writes each one to a temp file in $TMPDIR, "
@@ -518,7 +606,7 @@ def main(argv: list[str]) -> int:
     if problems:
         print(f"FAIL\tmac-varfolders-audit\t{len(problems)} problem(s)")
         return 1
-    print("PASS\tmac-varfolders-audit\tV1-V15")
+    print("PASS\tmac-varfolders-audit\tV1-V19")
     return 0
 
 

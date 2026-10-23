@@ -3,7 +3,8 @@
 audit rows reject every helper that hides, guesses, mis-records, or writes under the roots itself.
 
 Each case writes an altered copy of tests/mac/mac_varfolders_audit.sh to a private temporary directory (the repository
-is never edited), runs the REAL rows of tests/e2e/mac_varfolders_audit_test.py against it, and requires them to fail;
+is never edited), runs the REAL rows of tests/e2e/mac_varfolders_audit_test.py and
+tests/e2e/mac_varfolders_census_test.py against it, and requires them to fail;
 the unaltered helper (the control) and K1 must pass. Each substitution must occur exactly once, so a drifted helper
 fails here instead of passing vacuously. The mutants:
 - B1-B6 the helper itself makes a change under a root and undoes it: a transient file (in root discovery), directory,
@@ -19,6 +20,10 @@ fails here instead of passing vacuously. The mutants:
 - U1 a name that is not UTF-8 silently skipped;
 - H1 a here-document (macOS /bin/bash 3.2 writes it to a temp file in $TMPDIR, the temp root by default);
 - H2 a python3 child without the helper's TMPDIR override that makes a temp file;
+- SP1-SP6 the parent census broken: the parent's entries not walked, a change beside T/C still COMPLETE, the parent's
+  deltas hidden with the INCONCLUSIVE kept, no common-parent check, no parent line, T and C counted again in it;
+- PS1, PS2 a parent entry whose name cannot be recorded silently skipped, or normalized and recorded;
+- F2 an evidence dir that cannot be made fails open (V19);
 - F1 begin fails open again (1362d73a's ignore-and-run: a failed root discovery or an incomplete before snapshot
   still exits 0, so a caller would launch a browser without a complete before image; V15, SilverRidge 3661c9b8);
 - K1 (a control that must pass): that same temp file WITH the override lands outside the roots.
@@ -34,6 +39,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import mac_varfolders_audit_test as audit  # noqa: E402
+import mac_varfolders_census_test as census  # noqa: E402
 
 ROOTS_OK = '  [ "$pt" != "$pc" ] || { echo "temp and cache roots are the same directory $pt" >&2; return 1; }\n'
 BEGIN_SNAP = ("""    __vf_refuse "$(grep -m 3 '^ERROR' "$ev/varfolders-before.tsv" 2>/dev/null || cat "$ev/varfolders-before.err")"\n"""
@@ -103,12 +109,44 @@ MUTANTS.append(("F1 begin fails open (ignore and run)", [
     ('    __vf_refuse "$(cat "$ev/varfolders-roots.err" 2>/dev/null)"\n    return\n', "    return 0\n"),
     ("""    __vf_refuse "$(grep -m 3 '^ERROR' "$ev/varfolders-before.tsv" 2>/dev/null || cat "$ev/varfolders-before.err")"\n    return\n""",
      "    return 0\n")]))
+BS = "\\"
+UTF_ERR = ('        errors.append("%s' + BS + 't%r' + BS + 'ta name or link target that is not UTF-8 cannot be recorded" '
+           '% (token, rel))\n        return\n')
+TAB_ERR = ('        errors.append("%s' + BS + 't%r' + BS + 'ta tab or newline in the name or link target cannot be recorded" '
+           '% (token, rel))\n        return\n')
+P_SKIP = '        if token == "P":\n            return\n'
+
+
+def indented(block: str) -> str:
+    return "".join("    " + line if line.strip() else line for line in block.splitlines(True))
+
+
+MUTANTS += [
+    ("SP1 the parent's entries not walked", [
+        ("            dirs[:] = [d for d in dirs if d not in skip]\n            names = [n for n in names if n not in skip]\n",
+         "            dirs[:] = []\n            names = []\n")]),
+    ("SP2 a change beside T/C still COMPLETE", [("if outside:", "if False:")]),
+    ("SP3 the parent's deltas hidden, INCONCLUSIVE kept", [("for r in rows:\n    print(r)\n",
+                                                           'for r in rows:\n    if r.split("\\t")[2] != "P":\n        print(r)\n')]),
+    ("SP4 no common-parent check", [('  [ -n "$pp" ] && [ "${pc%/*}" = "$pp" ] \\\n'
+                                     '    || { echo "temp root $pt and cache root $pc have no common parent" >&2; return 1; }\n', "")]),
+    ("SP5 no parent line", [("  printf 'VARFOLDERS_PARENT\\t%s\\n' \"${rp#P$'\\t'}\"\n", "")]),
+    ("SP6 the census counts T and C again", [('skip = {os.path.basename(r) for t, r in roots if t in ("T", "C")}', "skip = set()")]),
+    ("PS1 a P entry with an unrecordable name silently skipped", [(UTF_ERR, P_SKIP + UTF_ERR), (TAB_ERR, P_SKIP + TAB_ERR)]),
+    ("PS2 a P entry with an unrecordable name normalized and recorded", [
+        (UTF_ERR, '        if token == "P":\n            rel = rel.encode("utf-8", "replace").decode("utf-8")\n        else:\n'
+         + indented(UTF_ERR)),
+        (TAB_ERR, '        if token == "P":\n            rel = rel.replace("' + BS + 't", " ").replace("' + BS + 'n", " ")\n'
+         '        else:\n' + indented(TAB_ERR))]),
+    ("F2 an evidence dir that cannot be made fails open", [
+        ('    || { __vf_refuse "the evidence dir $1 cannot be made"; return; }   # one line only', "    || return 0   # one line only")]),
+]
 CONTROLS = [("K1 the same temp file WITH the TMPDIR override", [(SNAP_IMPORTS, TEMP_FILE)])]
 
 
 def main() -> int:
     problems: list[str] = []
-    control = audit.run_rows(audit.HELPER)
+    control = audit.run_rows(audit.HELPER) + census.run_rows(audit.HELPER)
     if control:
         problems.append(f"control: the unaltered helper fails its rows: {control}")
     src = audit.HELPER.read_text()
@@ -124,7 +162,7 @@ def main() -> int:
                 else:
                     mutant = Path(tmp) / "mutant.sh"
                     mutant.write_text(text)
-                    failed = audit.run_rows(mutant)
+                    failed = audit.run_rows(mutant) + census.run_rows(mutant)  # both registered oracles
                     rows = sorted({f.split()[0] for f in failed})
                     if bool(failed) != want_red:
                         problems.append(f"{name}: {'survived' if want_red else 'failed'}: {failed[:3]}")

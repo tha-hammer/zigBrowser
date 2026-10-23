@@ -9,13 +9,18 @@
 #                                    VARFOLDERS<TAB>INCONCLUSIVE<TAB><reason>, and the caller must start nothing
 #   varfolders_end <evidence dir>    re-resolves the roots, takes the after snapshot and prints exactly:
 #     VARFOLDERS_ROOTS<TAB>T<TAB><temp root><TAB>C<TAB><cache root>
-#     VARFOLDERS-DELTA<TAB><added|changed|removed><TAB><T|C><TAB><path><TAB><before><TAB><after>
-#         one per changed path (the root itself is the path .), ordered by root token then path bytes; <before> is -
+#     VARFOLDERS_PARENT<TAB><their common per-user parent>   (SilverRidge 3661c9b8: its other entries, such as 0 and X,
+#         are a census only, outside the owner's exception; the root token P is that parent without T and C)
+#     VARFOLDERS-DELTA<TAB><added|changed|removed><TAB><C|P|T><TAB><path><TAB><before><TAB><after>
+#         one per changed path (each root itself is the path .), ordered by root token then path bytes; <before> is -
 #         for an added path and <after> is - for a removed one
-#     VARFOLDERS<TAB>COMPLETE<TAB><n>   exit 0: n deltas; a delta alone is reportable and may coexist with PASS
-#   or [the roots line] VARFOLDERS<TAB>INCONCLUSIVE<TAB><reason>   exit 2, no delta: the roots are unusable or changed
-#         identity (getconf answer, symlink target, or the directory's device/inode), or a snapshot is missing or
-#         incomplete
+#     VARFOLDERS<TAB>COMPLETE<TAB><n>   exit 0: n deltas, all of T or C; a delta alone is reportable and may coexist
+#         with PASS
+#   or every delta, at least one of P, then VARFOLDERS<TAB>INCONCLUSIVE<TAB><reason>   exit 2: a change beside T and C
+#         is reported in full and is never a pass
+#   or [the roots and parent lines] VARFOLDERS<TAB>INCONCLUSIVE<TAB><reason>   exit 2, no delta: the roots are unusable
+#         or changed identity (getconf answer, symlink target, or a directory's device/inode), T and C have no common
+#         parent, or a snapshot (of T, C or the parent census) is missing or incomplete
 # A snapshot is ROOT<TAB>token<TAB>path<TAB>device<TAB>inode per root, then one line per path, the root (.) and every
 # entry below it: token<TAB>path<TAB>"type mode uid gid nlink size mtime_ns ctime_ns inode sha256 link" (type f d l p
 # s c b o; sha256 of a regular file's bytes, else -; a symlink's target, else -; ctime catches every other inode
@@ -59,6 +64,7 @@ def entry(token, root, p, rel):
     meta = "%s %o %d %d %d %d %d %d %d %s %s" % (kind, stat.S_IMODE(st.st_mode), st.st_uid, st.st_gid, st.st_nlink,
                                                 st.st_size, st.st_mtime_ns, st.st_ctime_ns, st.st_ino, sha, link)
     rows.append((token, os.fsencode(rel), "%s\t%s\t%s" % (token, rel, meta)))
+skip = {os.path.basename(r) for t, r in roots if t in ("T", "C")}  # the census of P leaves T and C to their own
 for token, root in roots:
     def err(e, token=token, root=root):
         rel = os.path.relpath(e.filename, root) if e.filename else "?"
@@ -74,6 +80,9 @@ for token, root in roots:
     heads.append("ROOT\t%s\t%s\t%d\t%d" % (token, root, rst.st_dev, rst.st_ino))
     entry(token, root, root, ".")
     for dirpath, dirs, names in os.walk(root, onerror=err, followlinks=False):
+        if token == "P" and dirpath == root:
+            dirs[:] = [d for d in dirs if d not in skip]
+            names = [n for n in names if n not in skip]
         dirs.sort()
         for n in sorted(dirs + names):
             p = os.path.join(dirpath, n)
@@ -103,7 +112,7 @@ def load(path):
     errs = [l for l in body if l.startswith("ERROR\t")]
     if errs:
         return None, None, "incomplete: " + "; ".join(errs)
-    if len(heads) != 2 or lines[-1] != "END\t%d" % len(body):
+    if len(heads) != 3 or lines[-1] != "END\t%d" % len(body):
         return None, None, "truncated"
     out = {}
     for l in body:
@@ -128,18 +137,24 @@ for key in sorted(set(before) | set(after), key=lambda k: (k[0], os.fsencode(k[1
     rows.append("VARFOLDERS-DELTA\t%s\t%s\t%s\t%s\t%s" % (kind, key[0], key[1], b or "-", a or "-"))
 for r in rows:
     print(r)
+outside = sum(1 for r in rows if r.split("\t")[2] == "P")
+if outside:  # every delta is printed above; a change outside the reviewed T/C roots is never a pass
+    inconclusive("%d change(s) outside the reviewed T/C roots, beside them in the per-user parent" % outside)
 print("VARFOLDERS\tCOMPLETE\t%d" % len(rows))
 '
 
-__vf_roots() { # prints "T<TAB><physical temp>\nC<TAB><physical cache>", or a reason on stderr and returns 1
-  local t c pt pc
+__vf_roots() { # prints "T<TAB><temp>\nC<TAB><cache>\nP<TAB><their parent>" (physical), or a reason on stderr; 1
+  local t c pt pc pp
   t=$(getconf DARWIN_USER_TEMP_DIR 2>/dev/null) || { echo "getconf DARWIN_USER_TEMP_DIR failed" >&2; return 1; }
   c=$(getconf DARWIN_USER_CACHE_DIR 2>/dev/null) || { echo "getconf DARWIN_USER_CACHE_DIR failed" >&2; return 1; }
   [ -n "$t" ] && [ -n "$c" ] || { echo "getconf gave an empty root" >&2; return 1; }
   pt=$(cd -- "$t" 2>/dev/null && pwd -P) || { echo "temp root $t is not a directory" >&2; return 1; }
   pc=$(cd -- "$c" 2>/dev/null && pwd -P) || { echo "cache root $c is not a directory" >&2; return 1; }
   [ "$pt" != "$pc" ] || { echo "temp and cache roots are the same directory $pt" >&2; return 1; }
-  printf 'T\t%s\nC\t%s\n' "$pt" "$pc"
+  pp=${pt%/*}   # the per-user parent: its other entries (0, X, ...) are census-only, outside the exception
+  [ -n "$pp" ] && [ "${pc%/*}" = "$pp" ] \
+    || { echo "temp root $pt and cache root $pc have no common parent" >&2; return 1; }
+  printf 'T\t%s\nC\t%s\nP\t%s\n' "$pt" "$pc" "$pp"
 }
 
 __vf_python() { # $1=evidence dir, then the python3 arguments: a child that never writes under the audited roots
@@ -156,7 +171,8 @@ __vf_refuse() { # $1=reason: the one bounded line of a refused begin (fail close
 
 varfolders_begin() { # $1=evidence dir; exit 0 with a complete before snapshot, else 2 (refused: start nothing)
   local ev="${1:?evidence dir}"
-  mkdir -p -- "$ev" && ev=$(cd -- "$ev" && pwd -P) || { __vf_refuse "the evidence dir $1 cannot be made"; return; }
+  mkdir -p -- "$ev" 2>/dev/null && ev=$(cd -- "$ev" 2>/dev/null && pwd -P) \
+    || { __vf_refuse "the evidence dir $1 cannot be made"; return; }   # one line only: mkdir's own message is dropped
   if ! __vf_roots > "$ev/varfolders-roots" 2> "$ev/varfolders-roots.err"; then
     __vf_refuse "$(cat "$ev/varfolders-roots.err" 2>/dev/null)"
     return
@@ -169,7 +185,7 @@ varfolders_begin() { # $1=evidence dir; exit 0 with a complete before snapshot, 
 }
 
 varfolders_end() { # $1=evidence dir; exit 0 COMPLETE, 2 INCONCLUSIVE
-  local ev="${1:?evidence dir}" now why rt rc
+  local ev="${1:?evidence dir}" now why rt rc rp
   if ! ev=$(cd -- "$ev" 2>/dev/null && pwd -P) || ! [ -s "$ev/varfolders-roots" ]; then
     why=$(tr '\n' ' ' 2>/dev/null < "$ev/varfolders-roots.err")
     printf 'VARFOLDERS\tINCONCLUSIVE\tno recorded roots: %s\n' "${why:-the evidence dir or its roots file is missing}"
@@ -180,8 +196,9 @@ varfolders_end() { # $1=evidence dir; exit 0 COMPLETE, 2 INCONCLUSIVE
     printf 'VARFOLDERS\tINCONCLUSIVE\tthe roots changed during the run\n'
     return 2
   fi
-  { IFS= read -r rt && IFS= read -r rc; } < "$ev/varfolders-roots"   # plain bash: BSD sed and tr differ
+  { IFS= read -r rt && IFS= read -r rc && IFS= read -r rp; } < "$ev/varfolders-roots"   # plain bash: BSD sed, tr differ
   printf 'VARFOLDERS_ROOTS\t%s\t%s\n' "$rt" "$rc"
+  printf 'VARFOLDERS_PARENT\t%s\n' "${rp#P$'\t'}"
   __vf_python "$ev" -c "$__VF_SNAPSHOT_PY" "$ev/varfolders-roots" "$ev/varfolders-after.tsv" \
     2> "$ev/varfolders-after.err"
   __vf_python "$ev" -c "$__VF_DIFF_PY" "$ev/varfolders-before.tsv" "$ev/varfolders-after.tsv"

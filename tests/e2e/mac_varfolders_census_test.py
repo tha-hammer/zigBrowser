@@ -4,8 +4,9 @@ covers only the physical T and C roots, so the entries beside them in their comm
 other) are a census only. Before a browser-launching request, a change there must be reported in full and be
 INCONCLUSIVE, never a pass, and a missing or incomplete parent census must be non-pass.
 
-RED, UNREGISTERED: tests/mac/mac_varfolders_audit.sh has no parent census yet. The green adds it, teaches the
-registered oracle tests/e2e/mac_varfolders_audit_test.py the parent line and this verdict, and registers this file.
+Registered (step test-mac-varfolders-audit; red a74766dd, fix-forward 9b70e08c, approved 8726efa8): the helper
+tests/mac/mac_varfolders_audit.sh records the parent census, and the registered oracle
+tests/e2e/mac_varfolders_audit_test.py knows its parent line and this verdict (V16-V18).
 
 The helper's added contract, on top of the registered oracle's:
 - the roots line is followed by exactly one VARFOLDERS_PARENT<TAB><the physical common parent of T and C>;
@@ -30,7 +31,7 @@ beside T and C):
   is INCONCLUSIVE with no delta (no COMPLETE and no partial census). SilverRidge 18390ec8.
 - PC6 the helper itself changes nothing beside T and C either (the boundary covers the whole fake /var/folders tree).
 
-Run: python3 -X dev tests/e2e/mac_varfolders_census_test.py [helper path]
+Run: python3 -X dev tests/e2e/mac_varfolders_census_test.py [helper path]   (zig build test-mac-varfolders-audit)
 """
 from __future__ import annotations
 
@@ -51,7 +52,7 @@ def bad(msg: str) -> None:
 def census_box(helper: Path) -> "base.Box":
     box = base.Box(helper)
     for d, f, body in (("0", "zz.db", "zz\n"), ("X", "x.bin", "x1\n")):
-        (box.user / d).mkdir()
+        (box.user / d).mkdir(exist_ok=True)  # the registered oracle's Box places the same siblings
         (box.user / d / f).write_text(body)
     return box
 
