@@ -503,41 +503,14 @@ fn runOpen(arena: std.mem.Allocator, io: std.Io, spec: OpenSpec) errors.BrowserE
 /// created, the browser runs on WebKit's default context. Returns the
 /// profile directory in use, or null when there is none.
 fn applyProfileDir(arena: std.mem.Allocator, io: std.Io, spec: OpenSpec) errors.BrowserError!?[]const u8 {
-    // MS3.1 + 4pa.60: create the profile directory, then bind the WebKit store (profile_step.zig).
-    if (comptime builtin.os.tag == .macos) return profile_step.applyMacos(arena, io, spec.profile_dir, ShimProfileBinder{});
-    if (comptime builtin.os.tag == .windows) {
-        // WS5.2: an explicit --profile-dir binds the drawer's persistence store (<profile>/agent-drawer.json)
-        // on Windows, like macOS; without one there is no persistent store (configure gets null). This lets the
-        // "S" icon's position survive a restart (zb_drawer_remember -> save; zb_drawer_start_ratios -> load).
-        const dir = spec.profile_dir orelse return null;
-        const dir_z = arena.dupeZ(u8, dir) catch return error.WriteFailed;
-        var werr: [*c]u8 = null;
-        if (c.zb_app_set_profile_dir(dir_z.ptr, &werr) == c.ZB_AUTO_OK) return dir;
-        defer c.zb_automation_free(werr);
-        std.debug.print("profile: {s}\n", .{if (werr != null) std.mem.span(werr) else dir});
-        return error.WriteFailed;
-    }
-    if (comptime builtin.os.tag != .linux) return null;
-    const explicit = spec.profile_dir != null;
-    const dir = spec.profile_dir orelse
-        (cli.defaultProfileDir(arena, getenvOwned(arena, "XDG_DATA_HOME"), getenvOwned(arena, "HOME")) catch null) orelse {
-        // No profile resolved: make sure no earlier run's profile lingers.
-        _ = c.zb_app_set_profile_dir(null, null);
-        return null;
-    };
-    const dir_z = arena.dupeZ(u8, dir) catch return error.WriteFailed;
-
-    var err: [*c]u8 = null;
-    if (c.zb_app_set_profile_dir(dir_z.ptr, &err) == c.ZB_AUTO_OK) return dir;
-    defer c.zb_automation_free(err);
-    // On failure the shim already cleared any previous profile.
-    std.debug.print("profile: {s}\n", .{if (err != null) std.mem.span(err) else dir});
-    if (explicit) return error.WriteFailed;
-    return null;
+    // MS3.1, 4pa.60, WS5.2: every OS branch lives in profile_step.apply, driven by
+    // tests/app_profile_dir_macos_test.zig with a recording binder.
+    return profile_step.apply(builtin.os.tag, arena, io, spec.profile_dir, ShimProfileBinder{});
 }
 
-/// The macOS shim's profile-store binder for profile_step.applyMacos: zb_app_set_profile_dir, reporting the
-/// shim's error on failure.
+/// The shim's profile-store binder for profile_step.apply: zb_app_set_profile_dir (reporting the shim's error on
+/// failure; on failure the shim already cleared any previous profile), Linux's default profile directory, and
+/// clearing any earlier profile.
 const ShimProfileBinder = struct {
     pub fn bind(_: ShimProfileBinder, arena: std.mem.Allocator, dir: []const u8) bool {
         const dir_z = arena.dupeZ(u8, dir) catch return false;
@@ -546,6 +519,14 @@ const ShimProfileBinder = struct {
         defer c.zb_automation_free(err);
         std.debug.print("profile: {s}\n", .{if (err != null) std.mem.span(err) else dir});
         return false;
+    }
+
+    pub fn defaultDir(_: ShimProfileBinder, arena: std.mem.Allocator) ?[]const u8 {
+        return cli.defaultProfileDir(arena, getenvOwned(arena, "XDG_DATA_HOME"), getenvOwned(arena, "HOME")) catch null;
+    }
+
+    pub fn clear(_: ShimProfileBinder) void {
+        _ = c.zb_app_set_profile_dir(null, null);
     }
 };
 
