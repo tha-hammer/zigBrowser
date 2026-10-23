@@ -1,7 +1,13 @@
 #!/usr/bin/env bash
-# Build a signed .dmg for macOS on the M9 build host over Tailscale SSH.
+# Build an ad-hoc dev dmg, not a distributable artifact, on the M9 build host over Tailscale SSH.
 # Usage:
 #   bash packaging/macos/build-dmg.sh            # build ${ZB_GATE_COMMIT:-HEAD} + sign + package
+# The .app ships the WKWebView shim in Contents/Frameworks (the exe loads @executable_path/../Frameworks/
+# libwkwebview_shim.dylib; otool -L proves the reference resolves inside the bundle) and is signed inside out: the
+# dylib, then the exe, then the .app, never --deep (bd 4pa.73). Ad hoc (identity "-") by default; with
+# ZB_DMG_SIGN_IDENTITY set, each signature adds the hardened runtime and the exe and .app get the committed
+# packaging/macos/entitlements.plist. It is one native x86_64 build, not universal (MS1c), and not notarized (MS9).
+# Hostless selftest: tests/mac/dmg_script_selftest.sh (zig build test-mac-dmg-script).
 # It builds one exact commit into a fresh per-run dir on the Mac and works only there, with pinned host keys (bd 4pa.59,
 # 4pa.77). The old --skip-build (repackage a binary left in a shared dir) is refused: there is no shared dir any more.
 set -euo pipefail
@@ -16,6 +22,7 @@ DMG_NAME="${APP_NAME}_${VERSION}_macos.dmg"
 
 KEY="${ZB_MAC_KEY:-/home/maceo/vms/mac-m9/zb_mac_key}"
 HOST="${ZB_MAC_HOST:-maceojourdan@100.92.212.47}"
+SIGN_IDENTITY="${ZB_DMG_SIGN_IDENTITY:--}"
 
 if [ "${1:-}" = "--skip-build" ]; then
   echo "REFUSED: --skip-build is gone; every dmg builds one exact commit in a fresh per-run dir" >&2
@@ -42,18 +49,23 @@ echo "==> Syncing packaging assets..."
 
 # ── Step 3: Assemble .app bundle, sign, and create .dmg on the Mac ──
 echo "==> Assembling .app bundle, signing, and creating .dmg..."
-"${SSH[@]}" "$HOST" /bin/bash -s "$VERSION" "$APP_NAME" "$DMG_NAME" "$RUN_DIR" <<'REMOTE'
+# ssh joins its arguments into one remote command line, so the identity (a Developer ID name has spaces and
+# parentheses) travels single-quoted.
+SIGN_IDENTITY_Q="'${SIGN_IDENTITY//\'/\'\\\'\'}'"
+"${SSH[@]}" "$HOST" /bin/bash -s "$VERSION" "$APP_NAME" "$DMG_NAME" "$RUN_DIR" "$SIGN_IDENTITY_Q" <<'REMOTE'
 set -euo pipefail
 VERSION="$1"
 APP_NAME="$2"
 DMG_NAME="$3"
+SIGN_IDENTITY="${5:?}"
 
 cd "$HOME/${4:?}"
 BINARY="zig-out/bin/zigBrowser"
-if [ ! -f "$BINARY" ]; then
-  echo "ERROR: binary not found: $BINARY" >&2
-  exit 1
-fi
+SHIM_NAME="libwkwebview_shim.dylib"
+SHIM="zig-out/Frameworks/$SHIM_NAME"
+for f in "$BINARY" "$SHIM"; do
+  [ -f "$f" ] || { echo "ERROR: build output not found: $f" >&2; exit 1; }
+done
 
 APP_BUNDLE="${APP_NAME}.app"
 CONTENTS="$APP_BUNDLE/Contents"
@@ -64,10 +76,19 @@ rm -rf "$APP_BUNDLE" "$DMG_NAME" dmg_staging
 # Create .app structure
 mkdir -p "$CONTENTS/MacOS"
 mkdir -p "$CONTENTS/Resources"
+mkdir -p "$CONTENTS/Frameworks"
 
-# Copy binary
+# Copy the binary and the shim it loads
 cp "$BINARY" "$CONTENTS/MacOS/$APP_NAME"
 chmod 755 "$CONTENTS/MacOS/$APP_NAME"
+cp "$SHIM" "$CONTENTS/Frameworks/$SHIM_NAME"
+
+# The exe's shim reference must resolve inside the bundle, or the app cannot start.
+SHIM_REF="@executable_path/../Frameworks/$SHIM_NAME"
+otool -L "$CONTENTS/MacOS/$APP_NAME" | grep -qF "$SHIM_REF " \
+  || { echo "ERROR: $CONTENTS/MacOS/$APP_NAME does not load $SHIM_REF" >&2; exit 1; }
+[ -f "$CONTENTS/MacOS/${SHIM_REF#@executable_path/}" ] \
+  || { echo "ERROR: $SHIM_REF does not resolve inside $APP_BUNDLE" >&2; exit 1; }
 
 # Stamp version into Info.plist
 sed "s/__VERSION__/$VERSION/g" Info.plist > "$CONTENTS/Info.plist"
@@ -86,11 +107,20 @@ sips -z 256 256   zigBrowser.png --out "$ICONSET/icon_256x256.png"    >/dev/null
 iconutil -c icns "$ICONSET" -o "$CONTENTS/Resources/${APP_NAME}.icns"
 rm -rf "$ICONSET"
 
-# Ad-hoc code sign
-codesign --force --sign - --deep "$APP_BUNDLE"
+# Sign inside out (the dylib, then the exe, then the .app), never --deep. A release identity adds the hardened
+# runtime, and the exe and the .app get the committed entitlements manifest.
+RUNTIME=() ENTITLEMENTS=()
+if [ "$SIGN_IDENTITY" != - ]; then
+  RUNTIME=(--options runtime)
+  ENTITLEMENTS=(--entitlements packaging/macos/entitlements.plist)
+fi
+codesign --force --sign "$SIGN_IDENTITY" ${RUNTIME[@]+"${RUNTIME[@]}"} "$CONTENTS/Frameworks/$SHIM_NAME"
+codesign --force --sign "$SIGN_IDENTITY" ${RUNTIME[@]+"${RUNTIME[@]}"} ${ENTITLEMENTS[@]+"${ENTITLEMENTS[@]}"} \
+  "$CONTENTS/MacOS/$APP_NAME"
+codesign --force --sign "$SIGN_IDENTITY" ${RUNTIME[@]+"${RUNTIME[@]}"} ${ENTITLEMENTS[@]+"${ENTITLEMENTS[@]}"} "$APP_BUNDLE"
 
 # Verify signature
-codesign --verify --verbose "$APP_BUNDLE"
+codesign --verify --strict --verbose "$APP_BUNDLE"
 
 # Create DMG with drag-to-Applications layout
 mkdir dmg_staging

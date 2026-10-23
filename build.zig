@@ -3835,6 +3835,15 @@ pub fn build(b: *std.Build) void {
     }) |input| mac_gate_selftest.addFileInput(b.path(input));
     b.step("test-mac-gate-selftest", "Run the hostless selftest of the MS1 two-host gate's fail-closed runner (MS1.4)").dependOn(&mac_gate_selftest.step);
     test_step.dependOn(&mac_gate_selftest.step);
+    // The dmg script ships the shim in Contents/Frameworks and signs inside out, never --deep (bd 4pa.73).
+    const mac_dmg_script_selftest = b.addSystemCommand(&.{ "bash", "tests/mac/dmg_script_selftest.sh" });
+    for ([_][]const u8{
+        "tests/mac/dmg_script_selftest.sh",   "packaging/macos/build-dmg.sh",    "tests/mac/build-on-mac.sh",
+        "tests/mac/mac_gate_lib.sh",          "tests/mac/known_hosts",           "packaging/macos/Info.plist",
+        "packaging/macos/entitlements.plist", "packaging/assets/zigBrowser.png",
+    }) |input| mac_dmg_script_selftest.addFileInput(b.path(input));
+    b.step("test-mac-dmg-script", "Run the hostless selftest of the dmg script: shim in Contents/Frameworks, inside-out signing (4pa.73)").dependOn(&mac_dmg_script_selftest.step);
+    test_step.dependOn(&mac_dmg_script_selftest.step);
     // Every remote zig invocation keeps both zig caches inside its run dir (bd 3ui.5).
     const mac_zig_cache_selftest = b.addSystemCommand(&.{ "bash", "tests/mac/zig_cache_isolation_selftest.sh" });
     for ([_][]const u8{
