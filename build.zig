@@ -564,7 +564,7 @@ pub fn build(b: *std.Build) void {
     // MS7.6 / MS7.8 (RoseCat 8079 / 2796d94): the card's one minter proven on the real Darwin objects, by symbol and
     // relocation (tests/e2e/mac_card_authority_objects_test.py). The shipped executable's own root module, Debug so
     // no inlining hides a call, for both arches. Pure compile — no SDK, no link.
-    // RED until the macOS build defines the minters and the bridge; not in `test` until the green.
+    // Green since the macOS build defines the minters (MS8.0) and the bridge (2aa1abb); in `test` (bd 4pa.29).
     const card_authority_mac_step = b.step("check-card-authority-mac", "MS7.6/7.8: the card's one minter, on both Darwin objects' relocations");
     const card_authority_mac = b.addSystemCommand(&.{ "python3", "tests/e2e/mac_card_authority_objects_test.py" });
     card_authority_mac.addFileInput(b.path("tests/e2e/mac_card_authority_objects_test.py"));
@@ -4075,6 +4075,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_agent_drawer_breaks_tests.step);
     test_step.dependOn(&run_agent_drawer_appkit_tests.step);
     test_step.dependOn(&run_agent_drawer_card_press_tests.step);
+    test_step.dependOn(&card_authority_mac.step); // 4pa.29: the card's one minter on both Darwin objects (green)
     if (target.result.os.tag == .linux) test_step.dependOn(&secrets_window_headers_obj.step); // 4pa.76 tripwire
     test_step.dependOn(&run_agent_drawer_appkit_text_tests.step);
     test_step.dependOn(&run_agent_net_tests.step);

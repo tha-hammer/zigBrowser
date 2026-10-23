@@ -13,13 +13,19 @@ faked with its real signature and setup's census answered clean:
 - a ::1 listener already at the port setup's v4 listener gets (forced by the test) makes probe_r1 refuse: False,
   nothing enters the seam or runs, and every socket setup made is closed.
 
-Run like the gate: cd agent/host/tests && python -X dev -m unittest -v test_setup_darwin_r1_v6. Unregistered until
-the green.
+A gate host without IPv6 loopback FAILS this module by name (IPV6_MISSING; bd 4pa.29, CR11), never skips it to
+green; MissingIpv6IsAFailure proves that with IPv6 forced off.
+
+Run like the gate: cd agent/host/tests && python -X dev -m unittest -v test_setup_darwin_r1_v6 (registered: the
+agent-setup-ms5 step's setup-darwin-r1-v6 command, in `zig build test`).
 """
 import errno
+import io
 import socket
 import unittest
 from unittest import mock
+
+import ipv6_gate
 
 import support  # noqa: F401  (puts the helper package on sys.path)
 
@@ -42,8 +48,12 @@ def bind_errno(family, addr, reuse=False):
         return 0
 
 
-@unittest.skipUnless(socket.has_ipv6, "needs IPv6 loopback")
 class V6Reservation(Base):
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        ipv6_gate.require_ipv6_loopback("setup's [::1] reservation test")
+
     def setUp(self):
         super().setUp()
         mock.patch.object(setup, "PLATFORM", "darwin").start()
@@ -139,6 +149,33 @@ class V6Reservation(Base):
         self.assertEqual([s.fileno() for s in made], [-1] * len(made), "every socket setup made is closed")
         self.assertTrue(any(s.family == socket.AF_INET6 for s in made), "setup tried to reserve ::1")
 
+
+class MissingIpv6IsAFailure(unittest.TestCase):
+    """A gate host without IPv6 loopback FAILS V6Reservation by name (bd 4pa.29, CR11): the class is run here with
+    IPv6 forced off, and must end in an IPV6_MISSING error with no test run and nothing skipped. Nothing is started:
+    the precondition stops the class before any test."""
+
+    def run_v6_reservation(self):
+        result = unittest.TextTestRunner(stream=io.StringIO(), verbosity=0).run(
+            unittest.defaultTestLoader.loadTestsFromTestCase(V6Reservation))
+        problems = [tb for _, tb in result.errors + result.failures]
+        self.assertFalse(result.wasSuccessful(), "a host without IPv6 must not pass the reservation tests")
+        self.assertEqual(result.skipped, [], "a host without IPv6 must not skip them to green")
+        self.assertEqual(result.testsRun, 0, "no reservation test runs without IPv6")
+        self.assertTrue(any("IPV6_MISSING" in tb for tb in problems), f"the failure names the cause: {problems!r}")
+        return problems
+
+    def test_has_ipv6_false_is_a_named_failure(self):
+        with mock.patch.object(socket, "has_ipv6", False):
+            problems = self.run_v6_reservation()
+        self.assertTrue(any("socket.has_ipv6 is False" in tb for tb in problems), problems)
+
+    def test_an_unbindable_v6_loopback_is_a_named_failure(self):
+        refused = OSError(errno.EADDRNOTAVAIL, "Cannot assign requested address")
+        with mock.patch.object(socket, "has_ipv6", True), \
+                mock.patch.object(ipv6_gate, "_bind_v6_loopback", side_effect=refused):
+            problems = self.run_v6_reservation()
+        self.assertTrue(any("[::1] cannot be bound" in tb for tb in problems), problems)
 
 if __name__ == "__main__":
     unittest.main()

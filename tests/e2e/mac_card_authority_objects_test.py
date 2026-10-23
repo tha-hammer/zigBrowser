@@ -36,8 +36,8 @@ outer /proc/self/ns/pid fd and re-runs the module under `unshare --map-current-u
 one, and it refuses on an absent, unreadable or equal state (rows cover each, and that nothing is spawned or
 signalled then).
 Run (self-check, the only supported way): python3 tests/e2e/mac_card_authority_objects_test.py --self-check
-Run (real objects): zig build check-card-authority-mac (unregistered; RED until the macOS build defines the minters
-and the bridge)."""
+Run (real objects): zig build check-card-authority-mac (registered in `zig build test`, bd 4pa.29; green since the
+macOS build defines the minters, MS8.0, and the bridge, 2aa1abb)."""
 import bisect
 import collections
 import os

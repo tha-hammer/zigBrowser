@@ -15,11 +15,15 @@ launcher):
 - `--test-port` (the e2e seam; the app passes --test-* only under --e2e-protocol) is Darwin-only and exact: ASCII
   decimal 1-65535, no sign, leading zero or whitespace, given once.
 
-Run like the gate: cd agent/host/tests && python -X dev -m unittest -v test_netd_darwin_v6. Unregistered until the
-green.
+A gate host without IPv6 loopback FAILS this module by name (IPV6_MISSING; bd 4pa.29, CR11), never skips it to
+green; MissingIpv6IsAFailure proves that with IPv6 forced off.
+
+Run like the gate: cd agent/host/tests && python -X dev -m unittest -v test_netd_darwin_v6 (registered: the
+agent-host netd-darwin-v6 step of `zig build test`).
 """
 import ctypes
 import errno
+import io
 import json
 import os
 import signal
@@ -28,7 +32,9 @@ import socket
 import subprocess
 import sys
 import unittest
+from unittest import mock
 
+import ipv6_gate
 from test_netd import child_env
 from test_netd_darwin import LAUNCH, DarwinNetd, listening_inet_sockets
 
@@ -64,8 +70,12 @@ def bind_errno(family, addr, reuse=False):
         return 0
 
 
-@unittest.skipUnless(socket.has_ipv6, "needs IPv6 loopback")
 class V6Reservation(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        ipv6_gate.require_ipv6_loopback("netd's [::1] reservation test")
+
     def test_a_planted_v6_listener_makes_netd_refuse(self):
         port = free_port()
         planted = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
@@ -135,8 +145,13 @@ def held_v6_reservations(pid, port):
     return found
 
 
-@unittest.skipUnless(socket.has_ipv6 and sys.platform == "linux", "reads the live socket with pidfd_getfd")
+@unittest.skipUnless(sys.platform == "linux", "reads the live socket with pidfd_getfd (Linux only)")
 class ReservationShape(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        ipv6_gate.require_ipv6_loopback("netd's [::1] reservation shape test")
+
     def test_the_reservation_is_exactly_v6only_bound_non_listening_no_reuse_cloexec(self):
         # Two views. The kernel's, read from netd's own fd: bound, never listening, no reuse flags, close-on-exec.
         # And what netd ASKED for, recorded by a socket subclass in netd's process: Linux forces IPV6_V6ONLY on any
@@ -206,6 +221,36 @@ class TestPortGrammar(unittest.TestCase):
         self.assertNotEqual(linux, LAUNCH)
         code, out = self.run_netd(linux, "--sockdir", "/nonexistent-zb/s", "--test-port", "40001")
         self.assertEqual((code, out), (2, ""))
+
+
+class MissingIpv6IsAFailure(unittest.TestCase):
+    """A gate host without IPv6 loopback FAILS V6Reservation and ReservationShape by name (bd 4pa.29, CR11): both
+    classes are run here with IPv6 forced off, and must end in IPV6_MISSING errors with no test run and nothing
+    skipped. Nothing is started: the precondition stops each class before any test."""
+
+    def run_v6_reservation(self):
+        loader = unittest.defaultTestLoader
+        classes = [V6Reservation] + ([ReservationShape] if sys.platform == "linux" else [])  # its Linux-only skip stays
+        suite = unittest.TestSuite([loader.loadTestsFromTestCase(c) for c in classes])
+        result = unittest.TextTestRunner(stream=io.StringIO(), verbosity=0).run(suite)
+        problems = [tb for _, tb in result.errors + result.failures]
+        self.assertFalse(result.wasSuccessful(), "a host without IPv6 must not pass the reservation tests")
+        self.assertEqual(result.skipped, [], "a host without IPv6 must not skip them to green")
+        self.assertEqual(result.testsRun, 0, "no reservation test runs without IPv6")
+        self.assertTrue(any("IPV6_MISSING" in tb for tb in problems), f"the failure names the cause: {problems!r}")
+        return problems
+
+    def test_has_ipv6_false_is_a_named_failure(self):
+        with mock.patch.object(socket, "has_ipv6", False):
+            problems = self.run_v6_reservation()
+        self.assertTrue(any("socket.has_ipv6 is False" in tb for tb in problems), problems)
+
+    def test_an_unbindable_v6_loopback_is_a_named_failure(self):
+        refused = OSError(errno.EADDRNOTAVAIL, "Cannot assign requested address")
+        with mock.patch.object(socket, "has_ipv6", True), \
+                mock.patch.object(ipv6_gate, "_bind_v6_loopback", side_effect=refused):
+            problems = self.run_v6_reservation()
+        self.assertTrue(any("[::1] cannot be bound" in tb for tb in problems), problems)
 
 
 if __name__ == "__main__":
