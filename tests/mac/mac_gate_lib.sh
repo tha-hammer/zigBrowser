@@ -2,7 +2,8 @@
 # Shared by every caller of tests/mac/build-on-mac.sh: the seven Mac gates and packaging/macos/build-dmg.sh (plan
 # R30-MS1, bd 4pa.59 + 4pa.77). Source it from the repo top. It gives:
 #   mac_ssh_opts KEY / mac_scp_opts KEY  NUL-delimited ssh/scp argv pinned to tests/mac/known_hosts
-#                                        (StrictHostKeyChecking=yes, BatchMode=yes, IdentitiesOnly=yes, no askpass);
+#                                        (StrictHostKeyChecking=yes, BatchMode=yes, IdentitiesOnly=yes, no askpass:
+#                                        SSH_ASKPASS unset and SSH_ASKPASS_REQUIRE=never; bd 3ui.9);
 #   mac_build HOST KEY [TIMEOUT]         build ${ZB_GATE_COMMIT:-HEAD} on HOST into a fresh ~/zb-gate-<sha>-<nonce>,
 #                                        keep it, set MAC_RDIR to it and record it; non-zero on any failure;
 #   mac_remove_run_dirs                  remove every run dir mac_build recorded (call it from the EXIT trap).
@@ -15,11 +16,11 @@ MAC_RUN_DIRS=()   # "host<TAB>key<TAB>dir" for every run dir this gate owns
 MAC_RDIR=
 
 mac_ssh_opts() { # $1=key
-  printf '%s\0' env -u DISPLAY -u WAYLAND_DISPLAY -u XAUTHORITY ssh -i "$1" -o IdentitiesOnly=yes -o BatchMode=yes \
+  printf '%s\0' env -u DISPLAY -u WAYLAND_DISPLAY -u XAUTHORITY -u SSH_ASKPASS ssh -i "$1" -o IdentitiesOnly=yes -o BatchMode=yes \
     -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$MAC_KNOWN_HOSTS" -o ConnectTimeout=15 -o ServerAliveInterval=10
 }
 mac_scp_opts() { # $1=key
-  printf '%s\0' env -u DISPLAY -u WAYLAND_DISPLAY -u XAUTHORITY scp -i "$1" -o IdentitiesOnly=yes -o BatchMode=yes \
+  printf '%s\0' env -u DISPLAY -u WAYLAND_DISPLAY -u XAUTHORITY -u SSH_ASKPASS scp -i "$1" -o IdentitiesOnly=yes -o BatchMode=yes \
     -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$MAC_KNOWN_HOSTS" -o ConnectTimeout=15
 }
 

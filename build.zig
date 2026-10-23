@@ -3920,6 +3920,15 @@ pub fn build(b: *std.Build) void {
     }) |input| mac_ms5_setup_hostkey_selftest.addFileInput(b.path(input));
     mac_build_script_step.dependOn(&mac_ms5_setup_hostkey_selftest.step);
     test_step.dependOn(&mac_ms5_setup_hostkey_selftest.step);
+    // The shared transport (build-on-mac.sh, mac_gate_lib.sh) passes no display or askpass to ssh/scp (bd 3ui.9).
+    const mac_transport_selftest = b.addSystemCommand(&.{ "bash", "tests/mac/mac_transport_selftest.sh" });
+    for ([_][]const u8{
+        "tests/mac/mac_transport_selftest.sh", "tests/mac/build-on-mac.sh",    "tests/mac/mac_gate_lib.sh",
+        "tests/mac/known_hosts",               "packaging/macos/build-dmg.sh", "packaging/macos/Info.plist",
+        "packaging/assets/zigBrowser.png",
+    }) |input| mac_transport_selftest.addFileInput(b.path(input));
+    mac_build_script_step.dependOn(&mac_transport_selftest.step);
+    test_step.dependOn(&mac_transport_selftest.step);
     test_step.dependOn(&windows_gate_selftest.step);
     test_step.dependOn(&windows_twohost_selftest.step);
     test_step.dependOn(&windows_build_selftest.step);
