@@ -1454,3 +1454,19 @@ The independently recomputed exact blob SHA-256 values are:
 - `tests/mac/known_hosts`: `15e45024f0e0f9c82743b1095739bf7d8d2c5ab61028255bcae6dc7522595221`
 
 The reported full-gate additions inside a forced no-network namespace (`test_provision`, `agent_setup`, and `agent_secrets`) are not blockers for this change: none reads the changed files, all three pass outside that artificial namespace, and the exact registered transport/compile/reaper scope passes under its intended hermetic isolation. This ruling does not convert that unrelated environmental limitation into evidence for any Mac run.
+
+## 2026-10-23 — 4pa.80 relocated-layout slice-1 fix-forward `363e5cb5`
+
+**BLOCK.** Exact `363e5cb51652616d01452cea53f1ed066b04d5bc` repairs the candidate count, target, bundle-root, and composite inspection behavior from `fa57a8f9`, and it makes the previously required control-kind mutant R8 red. It does **not** meet the remaining explicit requirement for a field-isolated candidate-kind mutant. Consequently this commit does not repair blocked ancestor `6ea4ea94`, and the ancestry through content-approved `eddfda36` and `101d0ec6` remains not push-safe. This review authorizes no Mac contact; 3ui.13 remains in force.
+
+The commit changes exactly the two disclosed files and no modes. Static inspection confirms that a candidate sign finding now requires two `not-signed` rows, in executable-then-app order, with each subcomponent under `Contents/`, no `.` or `..` path segment, an octal mode, and a kind-consistent hash. The new registered rows reject app-only, executable-only, wrong-target, absolute-outside, lexical-escape, and missing-inspection shapes. The control-only wrong-kind row rejects `file-macho` while keeping its expected path, diagnostic, mode, and hash. `git diff --check` is clean.
+
+From a clean detached checkout at the exact commit, under `env -i`, private HOME/TMP, a private user/network namespace, and fresh Zig caches, `zig build -j4 test-mac-bundle-layout-spike --summary all` exited 0 with **8/8 steps**: relocation 26/26, layout 44/44, containment 65/65, containment-ff 9/9, and both prep suites 12/12. All new L8 rows produced the intended `INCONCLUSIVE` result on both fake-Mac legs. No Mac or external network was contacted.
+
+The remaining gap is directly demonstrated. In a private copy of exact `363e5cb5`, I changed only the candidate inspection predicate so that it still required an octal mode and still required either `-` or a 64-hex hash, but stopped restricting the candidate kind to `{file-data, file-macho, link, dir}`. I did not remove mode or hash validation. The complete registered step still exited 0 with **8/8 steps**, including all 44 layout rows. The submitted R27 removes the entire composite inspection predicate; it therefore does not establish the separately required candidate-kind edge. The new `ctl_stray_as_macho` row establishes only the control's exact-vector kind check and cannot cover candidate classification.
+
+Exact fix-forward minimum:
+
+1. Add a registered **candidate** row with exactly two `not-signed` rows, correct executable/app targets and order, bundle-relative subcomponents, accepted octal modes, and accepted hash shapes, but an unaccepted kind. It must be `INCONCLUSIVE` on both legs and pin the kind/inspection reason. The row may use a test seam to alter only the recorded kind; it need not invent a production filesystem state.
+2. Add a production mutant that removes only the candidate kind restriction while preserving candidate mode and hash validation. It must turn the registered step red on that row. R27 may remain as the broader composite mutant; no new separate mode-only or hash-only mutant is required by this ruling.
+3. Preserve every current helper, L1-L8, K/F, prep, registration, cleanup, and containment row and rerun the exact registered step under the same hostless isolation. No other production change is requested.
