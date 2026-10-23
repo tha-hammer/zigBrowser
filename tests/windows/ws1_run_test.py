@@ -41,6 +41,9 @@ import subprocess
 import sys
 import unittest
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # `python3 -I` drops the script dir
+import scp_legacy  # noqa: E402  bd zigBrowser-ong.12: every copy over the legacy scp protocol (-O)
+
 ZB_EXIT_RUNTIME_MISSING = 9
 # The EXACT documented missing-runtime line (plan:865). Asserted verbatim on STDERR, never stdout.
 RUNTIME_MISSING_MSG = "zigBrowser: the Microsoft Edge WebView2 Runtime is not installed"
@@ -84,13 +87,13 @@ def _ssh(remote_cmd, timeout=60):
 
 
 def _scp_from(remote_rel, local, timeout=120):
-    # remote_rel is resolved by SFTP relative to the user's home — the proven cross-OS path the working
-    # live tests use (never a hard-coded /home/<user>/... Linux assumption).
+    # remote_rel is resolved relative to the user's home — the proven cross-OS path the working live tests
+    # use (never a hard-coded /home/<user>/... Linux assumption); legacy scp protocol (-O, ong.12).
     return subprocess.run(
-        ["scp", "-p", "-P", PORT, "-i", KEY, "-o", "IdentitiesOnly=yes", "-o", "BatchMode=yes",
+        scp_legacy.scp_argv("-p", "-P", PORT, "-i", KEY, "-o", "IdentitiesOnly=yes", "-o", "BatchMode=yes",
          "-o", "StrictHostKeyChecking=yes", "-o", f"UserKnownHostsFile={KH}",
          "-o", "ConnectTimeout=15", "-o", "ConnectionAttempts=3",
-         f"{USER}@{HOST}:{remote_rel}", local],
+         f"{USER}@{HOST}:{remote_rel}", local),
         capture_output=True, text=True, timeout=timeout)
 
 

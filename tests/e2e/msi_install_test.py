@@ -8,11 +8,15 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import tarfile
 import tempfile
 from pathlib import Path
 
 from slice2_common import SKIP_EXIT, eprint
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "windows"))
+import scp_legacy  # noqa: E402  bd zigBrowser-ong.12: every copy over the legacy scp protocol (-O)
 
 # Never let a refused key open a graphical SSH password prompt on the user's DISPLAY :0.
 os.environ.setdefault("SSH_ASKPASS_REQUIRE", "never")
@@ -69,8 +73,8 @@ def ssh_base(key: Path) -> list[str]:
 
 
 def scp_base(key: Path) -> list[str]:
-    return ["scp", "-i", str(key), "-o", "IdentitiesOnly=yes", "-o", "StrictHostKeyChecking=no",
-            "-o", "BatchMode=yes"]
+    return scp_legacy.scp_argv("-i", str(key), "-o", "IdentitiesOnly=yes", "-o", "StrictHostKeyChecking=no",
+            "-o", "BatchMode=yes")
 
 
 def sync_to_guest(root: Path, host: str, key: Path) -> bool:

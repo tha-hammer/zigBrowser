@@ -30,6 +30,7 @@ import unittest
 import sys
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "windows"))
 import live_gate  # noqa: E402  ZB_WIN_GATE=1: a missing host fails instead of skipping; prints ASSERTS <n>
+import scp_legacy  # noqa: E402  bd zigBrowser-ong.12: every copy over the legacy scp protocol (-O)
 
 REFUSAL = "zigBrowser: --renderer=shm is not supported on Windows"
 PROFILE_RE = re.compile(r"\A[A-Za-z]:(\\[A-Za-z0-9._-]+)+\Z")
@@ -84,7 +85,7 @@ class RefusalStderrLive(unittest.TestCase):
                               capture_output=True, text=True, timeout=180, env=self._env(), stdin=subprocess.DEVNULL)
 
     def _scp(self, local, remote):
-        return subprocess.run(["scp", *self._opts(), "-P", self.port, local, f"{self.user}@{self.host}:{remote}"],
+        return subprocess.run(scp_legacy.scp_argv(*self._opts(), "-P", self.port, local, f"{self.user}@{self.host}:{remote}"),
                               capture_output=True, text=True, timeout=180, env=self._env(), stdin=subprocess.DEVNULL)
 
     def _profile(self):

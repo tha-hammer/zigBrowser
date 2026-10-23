@@ -94,7 +94,7 @@ class Host:
         return subprocess.run(argv, env=self._env(), capture_output=True, text=True, timeout=timeout)
 
     def scp_into(self, sources: list[str], remote_rel: str) -> subprocess.CompletedProcess:
-        argv = ["scp", *self._opts(), "-P", self.port, "-r", *sources, f"{self.user}@{self.host}:{remote_rel}"]
+        argv = ["scp", "-O", *self._opts(), "-P", self.port, "-r", *sources, f"{self.user}@{self.host}:{remote_rel}"]
         return subprocess.run(argv, env=self._env(), capture_output=True, text=True, timeout=300)
 
 

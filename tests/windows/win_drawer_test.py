@@ -46,6 +46,7 @@ import unittest
 import sys
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "windows"))
 import live_gate  # noqa: E402  ZB_WIN_GATE=1: a missing host fails instead of skipping; prints ASSERTS <n>
+import scp_legacy  # noqa: E402  bd zigBrowser-ong.12: every copy over the legacy scp protocol (-O)
 
 # A trivial local page; the drawer is independent of page content.
 _HTML = "<!doctype html><html><head><meta charset=\"utf-8\"><title>drawer</title></head><body>d</body></html>\n"
@@ -974,9 +975,9 @@ class WinDrawerLive(unittest.TestCase):
         return subprocess.run(self._scrub(*base, *args), capture_output=True, text=True, timeout=timeout)
 
     def _scp(self, local, remote):
-        base = ["scp", "-i", self.key, "-o", "IdentitiesOnly=yes", "-o", "StrictHostKeyChecking=yes",
+        base = scp_legacy.scp_argv("-i", self.key, "-o", "IdentitiesOnly=yes", "-o", "StrictHostKeyChecking=yes",
                 "-o", f"UserKnownHostsFile={self.kh}", "-o", "BatchMode=yes", "-o", "ConnectTimeout=15",
-                "-o", "ConnectionAttempts=3", "-P", self.port, local, f"{self.user}@{self.host}:{remote}"]
+                "-o", "ConnectionAttempts=3", "-P", self.port, local, f"{self.user}@{self.host}:{remote}")
         return subprocess.run(self._scrub(*base), capture_output=True, text=True, timeout=120).returncode
 
     def _run_drawer(self, fail_mode="", force_mode="", body=None, extra_env=None):

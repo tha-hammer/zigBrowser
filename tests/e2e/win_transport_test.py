@@ -42,6 +42,7 @@ import unittest
 import sys
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "windows"))
 import live_gate  # noqa: E402  ZB_WIN_GATE=1: a missing host fails instead of skipping; prints ASSERTS <n>
+import scp_legacy  # noqa: E402  bd zigBrowser-ong.12: every copy over the legacy scp protocol (-O)
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
 PROBE_SRC = REPO / "tests" / "windows" / "transport_probe.zig"
@@ -192,9 +193,7 @@ class WinTransport(unittest.TestCase):
                               env=self._env(), stdin=subprocess.DEVNULL)
 
     def _scp(self, user, local, remote):
-        # -O: the legacy scp protocol. The Win10 box's sshd has no sftp subsystem, which scp uses by default
-        # (bd zigBrowser-ong.12; the harness is fixed, never the host's sshd).
-        return subprocess.run(["scp", "-O", *self._opts(), "-P", self.port, local, f"{user}@{self.host}:{remote}"],
+        return subprocess.run(scp_legacy.scp_argv(*self._opts(), "-P", self.port, local, f"{user}@{self.host}:{remote}"),
                               capture_output=True, text=True, timeout=180, env=self._env(), stdin=subprocess.DEVNULL)
 
     def _profile(self, user):
