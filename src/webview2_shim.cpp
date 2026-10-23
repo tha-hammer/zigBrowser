@@ -741,6 +741,9 @@ void loop_end() {
   }
 }
 
+// Plan WS2 "Deadlines": how long a waiter whose deadline passed waits for a completion already being written.
+constexpr DWORD kWaiterGraceMs = 250;
+
 // Caller side: `run` already holds copies of the inputs.
 int job_submit(uint32_t win, unsigned int timeout_ms, std::function<void(Job *, AppState *)> run,
                char **out_json, char **out_err) {
@@ -784,7 +787,12 @@ int job_submit(uint32_t win, unsigned int timeout_ms, std::function<void(Job *, 
       job_release(job);
       return ZB_AUTO_ERR_TIMEOUT;
     }
-    WaitForSingleObject(job->done, INFINITE); // completing now: its answer is being written
+    // COMPLETING: its answer is being written. Wait for it at most the waiter grace, never without a bound;
+    // past that the call is a TIMEOUT and the completion's own reference frees the answer with the job.
+    if (WaitForSingleObject(job->done, kWaiterGraceMs) != WAIT_OBJECT_0) {
+      job_release(job);
+      return ZB_AUTO_ERR_TIMEOUT;
+    }
   }
   const int code = job->code;
   if (code == ZB_AUTO_OK && out_json != nullptr) {
