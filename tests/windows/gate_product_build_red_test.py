@@ -38,6 +38,13 @@ $TMPDIR/zb-gate-product.* target (delegating every other rm, the real driver's i
 cleanup attempt on exactly its own directory, and a failed or no-op removal fails an otherwise successful run (naming
 the cleanup) or is reported beside an earlier build/Win10 failure, which keeps its own diagnostic.
 
+R3 (NavyCanyon b5776a41): the build-side fakes (the driver's stage/build ssh and its scp) take NO test variable: their
+log and control paths are absolute paths outside the repository, embedded when the fixture is written, and the
+harness writes per-run control files there. Each records its own environment, and a passing build's child env must
+hold exactly the ZB_* names ZB_WIN11_{HOST,PORT,USER,KEY,KNOWN_HOSTS}, ZB_BUILD_COMMIT, ZB_WIN_EXE and ZB_BUILD_MODE,
+with no ZB_FAKE_*, ZB_SELFTEST_*, legacy or Win10 selector, display or askpass name. The gate-side Win11/Win10 fakes
+and the scoped cleanup wrapper are unchanged.
+
 Run alone:  unshare --user --map-current-user --net python3 -I tests/windows/gate_product_build_red_test.py -v
 """
 import json
@@ -60,34 +67,48 @@ GATE_FILES = (*gts._GATE_FILES, "build-on-windows.sh")
 BUILD_FAILED = "the Win11 build/fetch failed"
 BAD_EXE = "the built exe"
 
-# Before the ong.8 prefix: answer (and record) build-on-windows.sh's own stage and build ssh calls.
+# Before the ong.8 prefix: answer (and record) build-on-windows.sh's own stage and build ssh calls. b5776a41: no test
+# variable crosses the build boundary, so @CTL@/@RAN@/@ORDER@/@SSHLOG@ are absolute paths (outside the repository)
+# written in when the fixture is created; per-run behaviour comes from control files the harness writes in @CTL@.
 _BUILD_PREFIX = r'''
 __a="$*"
 __ran0=0
-if [ -n "${ZB_FAKE_RAN_LOG:-}" ] && [ -s "$ZB_FAKE_RAN_LOG" ]; then __ran0=$(grep -c . "$ZB_FAKE_RAN_LOG"); fi
+if [ -s '@RAN@' ]; then __ran0=$(grep -c . '@RAN@'); fi
 case "$__a" in
   *"tar -x -f -"*)
-    [ -n "${ZB_SELFTEST_SSH_LOG:-}" ] && printf 'ARGV: %s\n' "$*" >> "$ZB_SELFTEST_SSH_LOG"
-    printf 'win11 stage ran=%s nonce=\n' "$__ran0" >> "$ZB_SELFTEST_ORDER_LOG"
-    cat > "$ZB_FAKE_STAGE_TAR"
-    exit "${ZB_FAKE_STAGE_RC:-0}" ;;
+    printf 'ARGV: %s\n' "$*" >> '@SSHLOG@'
+    printf 'win11 stage ran=%s nonce=\n' "$__ran0" >> '@ORDER@'
+    env > '@CTL@/env-stage'
+    cat > '@CTL@/stage.tar'
+    __rc=0; [ -f '@CTL@/stage_rc' ] && __rc=$(cat '@CTL@/stage_rc')
+    exit "$__rc" ;;
   *"-EncodedCommand "*)
-    [ -n "${ZB_SELFTEST_SSH_LOG:-}" ] && printf 'ARGV: %s\n' "$*" >> "$ZB_SELFTEST_SSH_LOG"
-    printf 'win11 build ran=%s nonce=\n' "$__ran0" >> "$ZB_SELFTEST_ORDER_LOG"
-    printf '%s' "${__a##*-EncodedCommand }" | base64 -d | iconv -f UTF-16LE -t UTF-8 > "$ZB_FAKE_BUILD_PS"
-    exit "${ZB_FAKE_BUILD_RC:-0}" ;;
+    printf 'ARGV: %s\n' "$*" >> '@SSHLOG@'
+    printf 'win11 build ran=%s nonce=\n' "$__ran0" >> '@ORDER@'
+    env > '@CTL@/env-build'
+    printf '%s' "${__a##*-EncodedCommand }" | base64 -d | iconv -f UTF-16LE -t UTF-8 > '@CTL@/build.ps1'
+    __rc=0; [ -f '@CTL@/build_rc' ] && __rc=$(cat '@CTL@/build_rc')
+    exit "$__rc" ;;
 esac
 '''
 _SCP = r'''#!/usr/bin/env bash
-[ -n "${ZB_SELFTEST_SSH_LOG:-}" ] && printf 'ARGV: %s\n' "$*" >> "$ZB_SELFTEST_SSH_LOG"
+printf 'ARGV: %s\n' "$*" >> '@SSHLOG@'
 __ran0=0
-if [ -n "${ZB_FAKE_RAN_LOG:-}" ] && [ -s "$ZB_FAKE_RAN_LOG" ]; then __ran0=$(grep -c . "$ZB_FAKE_RAN_LOG"); fi
-printf 'win11 fetch ran=%s nonce=\n' "$__ran0" >> "$ZB_SELFTEST_ORDER_LOG"
+if [ -s '@RAN@' ]; then __ran0=$(grep -c . '@RAN@'); fi
+printf 'win11 fetch ran=%s nonce=\n' "$__ran0" >> '@ORDER@'
+env > '@CTL@/env-fetch'
 dest="${@: -1}"
-[ -n "${ZB_FAKE_SCP_RC:-}" ] && exit "$ZB_FAKE_SCP_RC"
-if [ -n "${ZB_FAKE_SCP_NONPE:-}" ]; then printf 'XXnot a pe\n' > "$dest"; else printf 'MZ fake zigBrowser.exe\n' > "$dest"; fi
+if [ -f '@CTL@/scp_rc' ]; then exit "$(cat '@CTL@/scp_rc')"; fi
+if [ -f '@CTL@/scp_nonpe' ]; then printf 'XXnot a pe\n' > "$dest"; else printf 'MZ fake zigBrowser.exe\n' > "$dest"; fi
 exit 0
 '''
+# Test controls the harness turns into control files (never environment) for the build-side fakes.
+_CONTROLS = {"ZB_FAKE_STAGE_RC": "stage_rc", "ZB_FAKE_BUILD_RC": "build_rc", "ZB_FAKE_SCP_RC": "scp_rc",
+             "ZB_FAKE_SCP_NONPE": "scp_nonpe"}
+# b5776a41: the build child's ZB_* names, exactly.
+BUILD_CHILD_ZB = {"ZB_WIN11_HOST", "ZB_WIN11_PORT", "ZB_WIN11_USER", "ZB_WIN11_KEY", "ZB_WIN11_KNOWN_HOSTS",
+                  "ZB_BUILD_COMMIT", "ZB_WIN_EXE", "ZB_BUILD_MODE"}
+BUILD_CHILD_FORBIDDEN = {"DISPLAY", "WAYLAND_DISPLAY", "XAUTHORITY", "SSH_ASKPASS", "SSH_ASKPASS_REQUIRE"}
 # Intercepts ONLY removal of an exact direct child $ZB_FAKE_RM_TMP/zb-gate-product.*; every other rm is delegated.
 _RM = r'''#!/usr/bin/env bash
 hit=""
@@ -141,7 +162,9 @@ _POISON = {"ZB_ZIG": "C:\\poison\\zig.exe", "ZB_WEBVIEW2_INCLUDE": "C:\\poison\\
            "ZB_WINRT_INCLUDE": "C:\\poison\\winrt", "ZB_BUILD_MODE": "Debug",
            "ZB_BUILD_COMMIT": "1111111111111111111111111111111111111111", "ZB_STAGE_TIMEOUT": "0",
            "ZB_BUILD_TIMEOUT": "0", "ZB_FETCH_TIMEOUT": "0", "ZB_SELFTEST_CUT_PUBLISH": "1",
-           "ZB_PUBLISH_LOCK_WAIT": "0"}
+           "ZB_PUBLISH_LOCK_WAIT": "0", "ZB_WIN_KEY": "/nonexistent/poison", "ZB_WIN_KNOWN_HOSTS": "/nonexistent/poison",
+           "DISPLAY": ":99", "WAYLAND_DISPLAY": "poison", "XAUTHORITY": "/nonexistent/poison",
+           "SSH_ASKPASS": "/nonexistent/poison", "SSH_ASKPASS_REQUIRE": "force"}
 
 
 def _git(root, *args):
@@ -155,11 +178,19 @@ def _git(root, *args):
 class _World:
     def __init__(self, td: pathlib.Path, rows=(("a_test.py", ""), ("b_test.py", "")), driver=None, sub=False):
         self.td = td
-        for d in ("bin", "home", "tmp", "githome", "outside"):
+        for d in ("bin", "home", "tmp", "githome", "outside", "ctl"):
             (td / d).mkdir()
-        (td / "bin" / "ssh").write_text("#!/usr/bin/env bash\n" + _BUILD_PREFIX + g8._ORDER_PREFIX + gts._SSH_STUB)
+        self.ctl = td / "ctl"
+        self.ran = td / "ran.log"; self.ran.write_text("")
+        self.order = td / "order.log"; self.order.write_text("")
+        self.sshlog = td / "guard-ssh.log"
+
+        def bake(s):
+            return (s.replace("@CTL@", str(self.ctl)).replace("@RAN@", str(self.ran))
+                    .replace("@ORDER@", str(self.order)).replace("@SSHLOG@", str(self.sshlog)))
+        (td / "bin" / "ssh").write_text("#!/usr/bin/env bash\n" + bake(_BUILD_PREFIX) + g8._ORDER_PREFIX + gts._SSH_STUB)
         (td / "bin" / "virsh").write_text("#!/usr/bin/env bash\n" + gts._VIRSH_STUB)
-        (td / "bin" / "scp").write_text(_SCP)
+        (td / "bin" / "scp").write_text(bake(_SCP))
         (td / "bin" / "rm").write_text(_RM)
         for f in ("ssh", "virsh", "scp", "rm"):
             (td / "bin" / f).chmod(0o755)
@@ -185,17 +216,13 @@ class _World:
             r = _git(self.repo, *args)
             assert r.returncode == 0, (args, r.stdout, r.stderr)
         self.sha = _git(self.repo, "rev-parse", "--verify", "HEAD^{commit}").stdout.strip()
-        self.ran = td / "ran.log"; self.ran.write_text("")
-        self.order = td / "order.log"; self.order.write_text("")
-        self.sshlog = td / "guard-ssh.log"
-        self.stage_tar = td / "stage.tar"
-        self.build_ps = td / "build.ps1"
+        self.stage_tar = self.ctl / "stage.tar"
+        self.build_ps = self.ctl / "build.ps1"
         self.rmlog = td / "rm.log"; self.rmlog.write_text("")
 
     def env(self, extra=None):
         env = {
             "ZB_GATE_ROOT": str(self.root), "ZB_FAKE_RAN_LOG": str(self.ran), "ZB_SELFTEST_ORDER_LOG": str(self.order),
-            "ZB_FAKE_STAGE_TAR": str(self.stage_tar), "ZB_FAKE_BUILD_PS": str(self.build_ps),
             "ZB_FAKE_RM_TMP": str(self.td / "tmp"), "ZB_FAKE_RM_LOG": str(self.rmlog),
             "PATH": f"{self.td / 'bin'}:/usr/bin:/bin", "HOME": str(self.td / "home"), "TMPDIR": str(self.td / "tmp"),
             "LANG": "C.UTF-8",
@@ -214,6 +241,12 @@ class _World:
 
 class _Case(gts._TwoHostCase):
     def gate(self, world, extra=None, args=("--product",), check_leak=True):
+        extra = dict(extra or {})
+        for name in (*_CONTROLS.values(), "env-stage", "env-build", "env-fetch"):
+            (world.ctl / name).unlink(missing_ok=True)
+        for var, name in _CONTROLS.items():  # build-side controls go to files, never to the gate's environment
+            if var in extra:
+                (world.ctl / name).write_text(extra.pop(var))
         env = world.env(extra)
         before = {x.name for x in (world.td / "tmp").glob("zb-gate-product.*")}
         self._check_transport(env, before=True)
@@ -252,6 +285,16 @@ class _Case(gts._TwoHostCase):
                 host, kind, ran = l.split()[:3]
                 out.append((host, kind, int(ran.split("=", 1)[1])))
         return out
+
+    def assertBuildChildEnvIsExact(self, world, detail=""):
+        files = sorted(world.ctl.glob("env-*"))
+        self.assertEqual([f.name for f in files], ["env-build", "env-fetch", "env-stage"],
+                         "every build-side call recorded its environment" + detail)
+        for f in files:
+            names = {l.split("=", 1)[0] for l in f.read_text().splitlines() if "=" in l}
+            zb = {n for n in names if n.startswith("ZB_")}
+            self.assertEqual(zb, BUILD_CHILD_ZB, f"{f.name}: the build child's ZB_* names" + detail)
+            self.assertEqual(names & BUILD_CHILD_FORBIDDEN, set(), f"{f.name}: display/askpass reached the build" + detail)
 
     def detail(self, proc, world):
         return (f"\nrc={proc.returncode}\nstdout:\n{proc.stdout[-3000:]}\nstderr:\n{proc.stderr[-4000:]}"
@@ -362,6 +405,7 @@ class BuildAndFetch(_Case):
             ps = w.build_ps.read_text()
             self.assertIn(f"run-{w.sha}", ps, d)
             self.assertIn("'-Doptimize=ReleaseSafe'", ps, d)
+            self.assertBuildChildEnvIsExact(w, d)
 
     def test_ambient_build_overrides_cannot_reach_the_build(self):
         with tempfile.TemporaryDirectory() as t:
@@ -375,6 +419,7 @@ class BuildAndFetch(_Case):
             self.assertIn("'-Doptimize=ReleaseSafe'", ps, d)
             self.assertIn(f"run-{w.sha}", ps, "a bait ZB_BUILD_COMMIT is not the build" + d)
             self.assertEqual({r["sha"] for r in self.rows(w)}, {w.sha}, d)
+            self.assertBuildChildEnvIsExact(w, d)
 
     def test_a_real_driver_failure_stops_before_win10_and_any_row(self):
         for what, extra, rc in (("stage", {"ZB_FAKE_STAGE_RC": "5"}, 5), ("build", {"ZB_FAKE_BUILD_RC": "6"}, 6),
