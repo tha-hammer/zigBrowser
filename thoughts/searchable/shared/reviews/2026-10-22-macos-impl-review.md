@@ -1708,3 +1708,9 @@ Exact fix-forward minimum:
 3. Rerun the exact registered `test-mac-bundle-layout-spike` step. No product-policy change, new red commit, full 55-mutant rerun, or Mac contact is required for this narrow oracle repair.
 
 Even after that slice-specific fix is approved, no exact ancestry containing blocked `e4b524e6` is push-safe and no Mac request may be released until the separate 3ui.13 minimum is satisfied.
+
+## 2026-10-23 — Owner `/var/folders` exception for browser-launching Mac runs
+
+**STANDING OWNER DECISION.** A reviewed and released Mac test run that launches the browser may write under that Mac user's own `/var/folders` for macOS/WebKit cache and temporary data. The run must snapshot that user's `/var/folders` before and after and retain in its evidence every added or changed path. The harness must perform no cleanup or deletion there. Every write outside this explicit exception must remain inside the run folder.
+
+This exception removes the former owner-decision blocker for browser-launching requests such as 4pa.55, but it does not itself approve or release any run. Every request still requires SilverRidge approval of the exact commit and complete harness SHA-256 manifest, followed by the orchestrator's one-run release. The remaining Mac rules are unchanged: 3ui.13 holds **every** Mac run until its fix-forward is approved; never use the login keychain, SIGKILL, or installs; preserve the applicable pinned transport, cache confinement, teardown, cleanup, evidence, and accepted-outcome-vector requirements. Future browser-launch rulings must apply this exception explicitly and require the before/after `/var/folders` evidence.
