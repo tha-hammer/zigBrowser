@@ -4,8 +4,8 @@ for a crash report covers only the MS1c missing-dylib control, so every other ru
 ~/Library/Logs/DiagnosticReports before and after, read-only (never deleting or changing anything there), reports
 each new, changed or removed report with its name and sha256, and is INCONCLUSIVE, never a pass, when any appears.
 
-RED, UNREGISTERED: tests/mac/mac_crashreports_audit.sh, the shared sourced helper (first used by the runtime rows
-gate's Mac leg), does not exist yet.
+Registered (step test-mac-crashreports-audit; red 1453f59e, fix-forward 2aaa808f, approved c7c5a483):
+tests/mac/mac_crashreports_audit.sh is the shared sourced helper (first used by the runtime rows gate's Mac leg).
 
 The helper's contract under test (sourced by bash):
   crashreports_begin <evidence dir> <reports dir>   the before listing, in <evidence dir>: prints nothing and exits 0
@@ -43,7 +43,7 @@ reports dir itself, so any temp file the helper made would land inside the bound
   crashreports_begin refuses: exit 2 and exactly one CRASHREPORTS<TAB>INCONCLUSIVE<TAB><nonempty reason> line.
 - CR8 a tripwire: the helper has no here-document (macOS /bin/bash 3.2 writes each one to a temp file in $TMPDIR).
 
-Run: python3 -X dev tests/e2e/mac_crashreports_audit_test.py [helper path]
+Run: python3 -X dev tests/e2e/mac_crashreports_audit_test.py [helper path]   (zig build test-mac-crashreports-audit)
 """
 from __future__ import annotations
 

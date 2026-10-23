@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# RED, UNREGISTERED (orchestrator 2026-10-23, the 4pa.55 run request): the runtime rows gate,
+# Registered in zig build test-mac-build-script (red 1453f59e, fix-forward 2aaa808f, approved c7c5a483; orchestrator
+# 2026-10-23, the 4pa.55 run request): the runtime rows gate,
 # tests/mac/ms_runtime_rows_gate.sh, runs only the rows a request names, runs the 4pa.55 rows as greens, and makes a
 # new crash report in the Mac user's real ~/Library/Logs/DiagnosticReports INCONCLUSIVE, never a pass.
 #   S1 ZB_RUNTIME_ROWS unset: the leg on each Mac gets every ROWS entry, in ROWS order.

@@ -4050,6 +4050,7 @@ pub fn build(b: *std.Build) void {
         "tests/mac/ms2a_gate.sh",                 "tests/mac/ms2b_gate.sh",       "tests/mac/ms2c_gate.sh",
         "tests/mac/ms3_gate.sh",                  "tests/mac/ms4_gate.sh",        "packaging/macos/build-dmg.sh",
         "tests/mac/ms_runtime_rows_gate.sh",      "tests/mac/mac_varfolders_audit.sh",
+        "tests/mac/mac_crashreports_audit.sh",
     }) |input| mac_gate_callers_selftest.addFileInput(b.path(input));
     mac_build_script_step.dependOn(&mac_gate_callers_selftest.step);
     test_step.dependOn(&mac_gate_callers_selftest.step);
@@ -4073,6 +4074,28 @@ pub fn build(b: *std.Build) void {
         mac_varfolders_audit_step.dependOn(&run.step);
         test_step.dependOn(&run.step);
     }
+    // The crash-report rule (orchestrator 2026-10-23): the shared, read-only DiagnosticReports listing helper that the
+    // runtime rows gate sources (a new, changed or removed report is INCONCLUSIVE), proven hostlessly with the same
+    // inotify boundary. Non-root, as its unreadable-entry rows need.
+    const mac_crashreports_audit = b.addSystemCommand(&.{ "python3", "tests/e2e/mac_crashreports_audit_test.py" });
+    for ([_][]const u8{
+        "tests/e2e/mac_crashreports_audit_test.py",
+        "tests/e2e/mac_varfolders_audit_test.py",
+        "tests/mac/mac_crashreports_audit.sh",
+    }) |input| mac_crashreports_audit.addFileInput(b.path(input));
+    b.step("test-mac-crashreports-audit", "The crash-report listing helper: read-only, every report change INCONCLUSIVE, fails closed").dependOn(&mac_crashreports_audit.step);
+    test_step.dependOn(&mac_crashreports_audit.step);
+    // The runtime rows gate's request controls (4pa.55): ZB_RUNTIME_ROWS selection before any contact, the 4pa.55 rows
+    // as greens, the crash-report listing, the helper self-audit before any row, all driven hostlessly.
+    const mac_rows_select_selftest = b.addSystemCommand(&.{ "bash", "tests/mac/ms_runtime_rows_gate_select_selftest.sh" });
+    for ([_][]const u8{
+        "tests/mac/ms_runtime_rows_gate_select_selftest.sh", "tests/mac/ms_runtime_rows_gate.sh",
+        "tests/mac/mac_varfolders_audit.sh",                 "tests/mac/mac_crashreports_audit.sh",
+        "tests/mac/mac_config.sh",                           "tests/mac/mac_gate_lib.sh",
+        "tests/mac/build-on-mac.sh",                         "tests/mac/known_hosts",
+    }) |input| mac_rows_select_selftest.addFileInput(b.path(input));
+    mac_build_script_step.dependOn(&mac_rows_select_selftest.step);
+    test_step.dependOn(&mac_rows_select_selftest.step);
     // MS1.4: the two-host gate fails closed on no GUI session, wrong arch, a missing SDK and zero recorded assertions.
     const mac_gate_selftest = b.addSystemCommand(&.{ "bash", "tests/mac/gate_selftest.sh" });
     for ([_][]const u8{

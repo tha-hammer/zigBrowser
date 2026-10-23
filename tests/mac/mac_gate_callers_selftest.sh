@@ -121,6 +121,9 @@ home_paths_ok() { # home_paths_ok <text> <rd> [positionals...]: every "$HOME/...
   local tok rest n=0 k
   while IFS= read -r tok; do
     [ -n "$tok" ] || continue
+    # The one reviewed path outside RD (orchestrator 2026-10-23): the rows gate lists the Mac user's real crash-report
+    # dir read-only (tests/mac/mac_crashreports_audit.sh, its CR7 boundary). Exactly this token, only for that caller.
+    if [ -n "${C4_READ_ONLY:-}" ] && [ "$tok" = "$C4_READ_ONLY" ]; then continue; fi
     rest=${tok#\$HOME/}
     if [ "$rest" = "$rd" ] || [[ "$rest" == "$rd"/* ]]; then n=$((n + 1)); continue; fi
     if [[ "$rest" =~ ^\$\{?([0-9])(:\?)?\}?(/.*)?$ ]]; then
@@ -230,7 +233,8 @@ check_caller ms2b        tests/mac/ms2b_gate.sh        $'^PASS\tms2b-gate\tboth-
 check_caller ms2c        tests/mac/ms2c_gate.sh        $'^PASS\tms2c-gate\tboth-arches$'          "$INTEL" "$ARM"
 check_caller ms3         tests/mac/ms3_gate.sh         $'^PASS\tms3-gate\tboth-arches$'           "$INTEL" "$ARM"
 check_caller ms4         tests/mac/ms4_gate.sh         $'^PASS\tms4-gate\tboth-arches$'           "$INTEL" "$ARM"
-check_caller rows        tests/mac/ms_runtime_rows_gate.sh $'^PASS\tms-runtime-rows-gate\tboth-arches$' "$INTEL" "$ARM"
+C4_READ_ONLY='$HOME/Library/Logs/DiagnosticReports' \
+  check_caller rows      tests/mac/ms_runtime_rows_gate.sh $'^PASS\tms-runtime-rows-gate\tboth-arches$' "$INTEL" "$ARM"
 check_caller build-dmg   packaging/macos/build-dmg.sh  '^==> Done: '                             "$INTEL" "$ARM"
 
 # The rows gate's Mac leg (tests/mac/ms_runtime_rows_gate.sh, SilverRidge fe4542e): the structural checks above
@@ -250,7 +254,8 @@ rows_leg() { # rows_leg <out var> <rows...>: run the extracted leg in $T/rows-ho
   LEG_RC=$?
 }
 rows_root() { # rows_root <run dir name>: a fake run root holding the exact helper the leg sources
-  mkdir -p "$T/rows-home/$1/tests/mac" && cp "$R/tests/mac/mac_varfolders_audit.sh" "$T/rows-home/$1/tests/mac/"
+  mkdir -p "$T/rows-home/$1/tests/mac" && cp "$R/tests/mac/mac_varfolders_audit.sh" "$R/tests/mac/mac_crashreports_audit.sh" \
+    "$T/rows-home/$1/tests/mac/"
 }
 RRD=zb-gate-0000000000000000000000000000000000000000-1
 mkdir -p "$T/rows-bin" "$T/vf/T" "$T/vf/C"
@@ -276,6 +281,8 @@ case "$1" in
   *v_red_none*)  printf 'FAIL\tv-red\n'; exit 1 ;;
   *v_red_pre*)   printf 'FAIL\tv-red\nRED_SHAPE\tv-red\n  PRECONDITION seam never fired\n'; exit 1 ;;
   *v_red_pass*)  printf 'PASS\tv-red\nRED_SHAPE\tv-red\n'; exit 0 ;;
+  *v_late_leak*) printf 'FAIL\tv-red\nLEAK\t4243\t4243\tThu Oct 22 21:00:00 2026\t/x/zigBrowser --e2e-protocol\n'
+                 yes 'output after the LEAK line, more than a pipe buffer holds' | head -n 40000; exit 1 ;;   # V7b
   *v_leak*)      printf 'FAIL\tv-red\nLEAK\t4242\t4242\tThu Oct 22 21:00:00 2026\t/x/zigBrowser --e2e-protocol\n'; exit 1 ;;
   *v_hang*)      exec sleep 30 ;;   # a row that never returns (V9: the leg times out)
   *v_green*)     printf 'PASS\tv-other\n'; exit 0 ;;
@@ -378,6 +385,18 @@ rows_leg out "tests/e2e/mac_v_red_ok_test.py|red|v-red"
 [ "$LEG_RC" -eq 0 ] && [ ! -e "$T/rows-home/$RRD/LEAKED" ] && ok "rows V10: a leg that finishes cleanly removes its RUNNING marker" \
   || bad "rows V10: rc=$LEG_RC, marker $( [ -e "$T/rows-home/$RRD/LEAKED" ] && echo left || echo gone)"
 
+# V7b (bd 3ui.16): a LEAK line followed by about 2 MB of output (far more than a pipe buffer) still stops the leg. The
+# leg searches the row's collected output file, so no early-exiting `grep -q` can SIGPIPE its producer under pipefail
+# and miss the leak; the row after it never runs.
+rows_leg out "tests/e2e/mac_v_late_leak_test.py|red|v-red" "tests/e2e/mac_v_red_ok_test.py|red|v-red"
+if [ "$LEG_RC" -eq 3 ] && [ "$(grep -c $'^ROW\t' <<<"$out")" -eq 1 ] && grep -q $'^HOST_STOPPED\ttests/e2e/mac_v_late_leak_test.py\t' <<<"$out" \
+   && grep -qx $'LEAKED\t4243\t4243\tThu Oct 22 21:00:00 2026\t/x/zigBrowser --e2e-protocol' "$T/rows-home/$RRD/LEAKED" 2>/dev/null; then
+  ok "rows V7b: a LEAK line followed by 2 MB of output still stops the leg (exit 3, one ROW, the exact process kept)"
+else
+  bad "rows V7b: a late-output leak was missed: rc=$LEG_RC ROW lines $(grep -c $'^ROW\t' <<<"$out")"
+fi
+rm -f -- "${T:?}/rows-home/${RRD:?}/LEAKED"
+
 # VF (the owner's /var/folders rule, SilverRidge 94ebe76b): VF1 the leg prints the physical roots, the path a row wrote
 # there and the temp root's own changed record (unfiltered) and COMPLETE, exits 0 and deletes nothing there; VF3 a leak
 # stop still reports the audit, and exits 3. Fail closed (SilverRidge 3661c9b8): VF2 a failing getconf, VF4 an empty
@@ -396,7 +415,7 @@ fi
 rows_leg out "tests/e2e/mac_v_red_ok_test.py|red|v-red"
 rm -f -- "${T:?}/vf/fail"
 refused_leg() { # refused_leg <row name> <why>: the leg after a refused begin
-  if [ "$LEG_RC" -eq 5 ] && grep -q $'^VARFOLDERS\tINCONCLUSIVE\tbegin refused' <<<"$out" \
+  if [ "$LEG_RC" -eq 5 ] && grep -q $'VARFOLDERS\tINCONCLUSIVE\tbegin refused' <<<"$out" \
      && [ "$(grep -c $'^ROW\t' <<<"$out")" -eq 0 ] && [ ! -s "$T/rows-calls" ] && [ ! -e "$T/rows-home/$RRD/LEAKED" ] \
      && ! grep -q $'^VARFOLDERS\tCOMPLETE' <<<"$out"; then
     ok "rows $1: $2: begin refuses, the leg exits 5 with zero rows, zero browser launches and no RUNNING marker"
