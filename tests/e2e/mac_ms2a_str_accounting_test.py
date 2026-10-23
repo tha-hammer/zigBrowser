@@ -13,9 +13,9 @@ against the shim dylib, reading the balance through `zb_automation_debug_strings
 Mutant: make the error a plain `strdup` (untracked) -> after the set the balance stays at baseline (not +1),
 and after the free it is baseline-1 (negative) -> red.
 
-A compiled harness (not ctypes): the shim is built with `-undefined dynamic_lookup` and references two host
-symbols (zb_ipc_dispatch, zb_policy_decide) that a standalone dlopen cannot resolve. The harness DEFINES
-those as no-ops and links the shim, so @executable_path/../Frameworks resolves it when run next to zigBrowser.
+A compiled harness (not ctypes): the shim is built with `-undefined dynamic_lookup` and references four host
+symbols (zb_ipc_dispatch, zb_policy_decide, and since 4pa.55 zb_load_failure_action and zb_load_exit_timer_armed)
+that a standalone dlopen cannot resolve. The harness DEFINES those as no-ops and links the shim, so @executable_path/../Frameworks resolves it when run next to zigBrowser.
 
 Runs ON a Mac; pure in-process, no window, no xvfb.
 """
@@ -30,9 +30,11 @@ SKIP_EXIT = 77
 
 HARNESS_C = r"""
 #include <stdio.h>
-/* The two HOST symbols the shim references via -undefined dynamic_lookup; never called on this path. */
+/* The HOST symbols the shim references via -undefined dynamic_lookup; never called on this path. */
 void zb_ipc_dispatch(void) {}
 void zb_policy_decide(void) {}
+void zb_load_failure_action(void) {}
+void zb_load_exit_timer_armed(void) {}
 extern int  zb_automation_debug_strings_live(void);
 extern int  zb_app_set_profile_dir(const char *dir, char **out_err);
 extern void zb_automation_free(char *p);

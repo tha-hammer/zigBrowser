@@ -253,6 +253,9 @@ static void stop_nsapp_run_loop(void) {
 @property(nonatomic, copy) NSString *appBase;
 @property(nonatomic, strong) NSMutableArray<ZBWindowHost *> *windows;
 @property(nonatomic, assign) ZBWindowHost *mainWindow;
+// 4pa.55: the primary window has finished a load at least once (load_failure_policy: after that no failed load
+// ends the session).
+@property(nonatomic, assign) BOOL primaryFinished;
 @property(nonatomic, assign) uint32_t nextWindowId;  // MS2c: monotonic STABLE window ids, never reused
 - (instancetype)initWithURI:(NSString *)uri printTitle:(BOOL)printTitle e2eProtocol:(BOOL)e2eProtocol;
 - (ZBWindowHost *)createWindowWithWebView:(WKWebView *)webView child:(BOOL)child uri:(NSString *)uri opener:(ZBWindowHost *)opener;
@@ -284,6 +287,8 @@ static void handle_signal(int signo) {
 @property(nonatomic, assign) ZbWindow *cWindow;
 @property(nonatomic, assign) BOOL child;
 @property(nonatomic, assign) BOOL finishedOrFailed;
+// 4pa.55: the load in flight is page.recover's reload (load_failure_policy: no exit timer, never an exit).
+@property(nonatomic, assign) BOOL recoveryLoad;
 @property(nonatomic, strong) NSTimer *timeoutTimer;
 @property(nonatomic, copy) NSString *requestedURI;
 // Routed (automation) navigation tracking. routedNav is the in-flight WKNavigation a routed
@@ -518,20 +523,31 @@ static void *ZBWebViewKVOContext = &ZBWebViewKVOContext;
   return [[WKWebView alloc] initWithFrame:NSMakeRect(0, 0, 1024, 768) configuration:configuration];
 }
 
+- (BOOL)isPrimaryWindow {
+  return self.app.mainWindow == self;
+}
+
 - (void)loadURI:(NSString *)uri {
   self.finishedOrFailed = NO;
   self.requestedURI = uri ?: @"";
   [self.timeoutTimer invalidate];
-  self.timeoutTimer = [NSTimer scheduledTimerWithTimeInterval:ZB_NAVIGATION_TIMEOUT_SECONDS
-                                                       target:self
-                                                     selector:@selector(onNavigationTimeout:)
-                                                     userInfo:nil
-                                                      repeats:NO];
+  self.timeoutTimer = nil;
+  // 4pa.55: the 15 s exit timer guards only the primary window's initial load (load_failure_policy).
+  if (zb_load_exit_timer_armed([self isPrimaryWindow], self.app.primaryFinished, self.recoveryLoad)) {
+    self.timeoutTimer = [NSTimer scheduledTimerWithTimeInterval:ZB_NAVIGATION_TIMEOUT_SECONDS
+                                                         target:self
+                                                       selector:@selector(onNavigationTimeout:)
+                                                       userInfo:nil
+                                                        repeats:NO];
+  }
   NSURL *url = [NSURL URLWithString:uri];
   if (url == nil) {
     [self.timeoutTimer invalidate];
+    self.timeoutTimer = nil;
     [self.app emitLoadFailForURI:uri code:NSURLErrorBadURL];
-    [self.app requestExit:ZB_EXIT_LOAD_FAILED];
+    int action = zb_load_failure_action(0, [self isPrimaryWindow], self.app.primaryFinished, self.recoveryLoad);
+    self.recoveryLoad = NO;
+    if (action == ZB_LOADFAIL_EXIT) [self.app requestExit:ZB_EXIT_LOAD_FAILED];
     return;
   }
   self.currentNav = [self.webView loadRequest:[NSURLRequest requestWithURL:url]];  // pin synchronously
@@ -661,6 +677,8 @@ static int64_t zb_now_us(void) { return (int64_t)([[NSProcessInfo processInfo] s
   if (navigation != nil && navigation == self.routedNav) {
     self.routedOutcome = 1;  // success for THIS routed navigation
   }
+  if ([self isPrimaryWindow]) self.app.primaryFinished = YES;  // 4pa.55: the initial-load contract is over
+  self.recoveryLoad = NO;
   [self.timeoutTimer invalidate];
   self.timeoutTimer = nil;
   zb_publish_window_snapshot();  // MS2c #6: a real commit refreshes url/title and clears crashed at once (all windows)
@@ -753,6 +771,7 @@ static int64_t zb_now_us(void) { return (int64_t)([[NSProcessInfo processInfo] s
   self.showingCrashDoc = NO;
   [self startHealthWatchdog];
 
+  self.recoveryLoad = YES;  // 4pa.55: a recovery reload arms no exit timer and its failure is recorded
   [self loadURI:committed];
   return committed;
 }
@@ -777,11 +796,14 @@ static int64_t zb_now_us(void) { return (int64_t)([[NSProcessInfo processInfo] s
   self.timeoutTimer = nil;
   // A routed (automation) navigation that fails is reported to the caller as navigation_failed and
   // must NOT bring the whole browser down — the session stays usable on its previous document
-  // (RoseCat 6227.2). Only a user-initiated load failure exits.
-  // Scoped by navigation identity: a tagged (routed) navigation never exits the browser. The CURRENT
-  // routed navigation reports navigation_failed; a superseded routed navigation's late failure is
-  // swallowed. An untagged navigation (user/page-initiated/initial load) falls through to the exit path.
-  if (navigation != nil && objc_getAssociatedObject(navigation, kZBRoutedNavKey) != nil) {
+  // (RoseCat 6227.2). Scoped by navigation identity: the CURRENT routed navigation reports
+  // navigation_failed; a superseded routed navigation's late failure is swallowed.
+  // 4pa.55 (load_failure_policy): an untagged failure is recorded (LOAD_FAIL) and the browser keeps running,
+  // except the primary window's initial load before its first finish (the M9 single-load contract).
+  BOOL routed = navigation != nil && objc_getAssociatedObject(navigation, kZBRoutedNavKey) != nil;
+  int action = zb_load_failure_action(routed, [self isPrimaryWindow], self.app.primaryFinished, self.recoveryLoad);
+  self.recoveryLoad = NO;
+  if (action == ZB_LOADFAIL_REPORT_ROUTED) {
     if (navigation == self.routedNav) {
       self.routedOutcome = 2;
     }
@@ -790,7 +812,7 @@ static int64_t zb_now_us(void) { return (int64_t)([[NSProcessInfo processInfo] s
   NSString *uri = [self failingURIForWebView:webView error:error];
   NSInteger code = error != nil ? error.code : -1;
   [self.app emitLoadFailForURI:uri code:code];
-  [self.app requestExit:ZB_EXIT_LOAD_FAILED];
+  if (action == ZB_LOADFAIL_EXIT) [self.app requestExit:ZB_EXIT_LOAD_FAILED];
 }
 
 - (NSString *)failingURIForWebView:(WKWebView *)webView error:(NSError *)error {

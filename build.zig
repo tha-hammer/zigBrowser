@@ -671,6 +671,27 @@ pub fn build(b: *std.Build) void {
     const nav_policy_tests = b.addTest(.{ .root_module = nav_policy_tests_module });
     const run_nav_policy_tests = b.addRunArtifact(nav_policy_tests);
     run_nav_policy_tests.skip_foreign_checks = true;
+    // bd zigBrowser-4pa.55 (V03-F1; R30.3 #1 option C): whether a load failure quits the macOS browser, and whether
+    // the 15 s exit timer is armed, decided in portable Zig that wkwebview_shim.m calls back (as zb_policy_decide),
+    // driven here through its C ABI and webkit_shim.h's constants. The macOS call sites are compile-only on Linux.
+    const load_failure_policy_module = b.createModule(.{
+        .root_source_file = b.path("src/load_failure_policy.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    const load_failure_policy_tests_module = b.createModule(.{
+        .root_source_file = b.path("tests/load_failure_policy_test.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    load_failure_policy_tests_module.addIncludePath(b.path("src"));
+    load_failure_policy_tests_module.addImport("load_failure_policy", load_failure_policy_module);
+    const run_load_failure_policy_tests = b.addRunArtifact(b.addTest(.{ .root_module = load_failure_policy_tests_module }));
+    run_load_failure_policy_tests.skip_foreign_checks = true;
+    const load_failure_policy_step = b.step("test-load-failure-policy", "4pa.55: a failed or recovered load quits the macOS browser only on the primary window's initial load");
+    load_failure_policy_step.dependOn(&run_load_failure_policy_tests.step);
 
     // Hook 16 inert row (SilverRidge 8721b6d, option B): the data-store selection decision of the e2e-only hook
     // ZB_DEBUG_EPHEMERAL_DATA_STORE, probed through src/zb_test_hook_gate.h with no AppKit and no WebKit store.
@@ -4021,6 +4042,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&windows_refusal_live.step);
     test_step.dependOn(&run_ipc_tests.step);
     test_step.dependOn(&run_nav_policy_tests.step);
+    test_step.dependOn(&run_load_failure_policy_tests.step);
     test_step.dependOn(&run_hook16_tests.step);
     test_step.dependOn(&run_app_profile_dir_tests.step);
     test_step.dependOn(&run_agent_drawer_tests.step);
@@ -4660,13 +4682,14 @@ fn configureMacosBackend(module: *std.Build.Module, b: *std.Build) void {
     // LC_DYLD_CHAINED_FIXUPS, so the shim's ObjC metadata lives in a chained-fixups image and the
     // signed binary runs. Built NATIVE for the host arch (no -arch); the two-host gate lipos the two
     // per-arch dylibs into one fat dylib, exactly like the exe.
-    // The shim calls back into two zig-exported symbols (zb_ipc_dispatch in src/ipc.zig,
-    // zb_policy_decide in src/nav_policy.zig). As a separate dylib it resolves them at LOAD from the
+    // The shim calls back into zig-exported symbols (zb_ipc_dispatch in src/ipc.zig,
+    // zb_policy_decide in src/nav_policy.zig, and since 4pa.55 zb_load_failure_action and
+    // zb_load_exit_timer_armed in src/load_failure_policy.zig). As a separate dylib it resolves them at LOAD from the
     // main executable via flat-namespace dynamic lookup; the exe exports them (rdynamic, set
     // macOS-only at the exe below). This is the standard host-provides-symbols plugin pattern.
     // -Wl,-fixup_chains is REQUIRED: -undefined dynamic_lookup otherwise makes ld64 fall back to the
     // classic LC_DYLD_INFO_ONLY scheme, which is the very thing that crashes a signed x86_64 ObjC
-    // __DATA_CONST. Forcing chained fixups keeps dynamic_lookup for the two back-ref symbols AND puts
+    // __DATA_CONST. Forcing chained fixups keeps dynamic_lookup for the back-ref symbols AND puts
     // the shim's ObjC metadata in a chained-fixups image, so the signed binary runs.
     const shim = b.addSystemCommand(&.{ "xcrun", "clang", "-dynamiclib", "-fobjc-arc", "-Wl,-undefined,dynamic_lookup", "-Wl,-fixup_chains" });
     shim.addArg("-I");

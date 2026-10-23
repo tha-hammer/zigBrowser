@@ -431,6 +431,11 @@ int zb_automation_debug_native_skipped(void);
 
 /* Track-B owned exports; hard-linked into the Zig binary. */
 int zb_policy_decide(const char *base, const char *candidate, int dtype);
+/* 4pa.55 (src/load_failure_policy.zig): what a failed load does, and whether loadURI: arms the 15 s exit timer.
+ * Only the primary window's initial load, before its first finish, exits; other failures are recorded. */
+enum { ZB_LOADFAIL_REPORT_ROUTED = 0, ZB_LOADFAIL_RECORD = 1, ZB_LOADFAIL_EXIT = 2 };
+int zb_load_failure_action(int routed, int primary, int primary_finished, int recovery);
+int zb_load_exit_timer_armed(int primary, int primary_finished, int recovery);
 int zb_ipc_dispatch(const char *cmd, const char *args_json, const char **out_result,
                     const char **out_err);
 

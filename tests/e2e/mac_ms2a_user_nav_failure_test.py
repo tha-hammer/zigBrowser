@@ -1,14 +1,18 @@
 #!/usr/bin/env python3
-"""MS2a RED (registered) — a page-initiated nav failure is NOT suppressed after a routed nav.
+"""MS2a (registered in ms2a-gate) — a page-initiated nav failure after a routed nav is RECORDED, and the browser stays.
 
 RoseCat 38d121a #4: failure suppression must be scoped to the ROUTED navigation's identity, not to the
 window. So in a window that has already run a routed navigation, an UNtagged (page-initiated / user)
-navigation that fails must still be handled as a real load failure (the browser exits), not silently
-swallowed. (With the earlier per-window boolean it was swallowed forever.)
+navigation that fails must still be handled as a real load failure, not silently swallowed.
 
-Oracle: after a successful routed page.navigate, a page-initiated navigation to an unreachable host
-(set via evaluate) makes the browser exit (the failure is not swallowed). A bridge that suppressed it
-per window would keep the browser alive and reach the timeout — the red.
+bd zigBrowser-4pa.55 (V03-F1; owner decision R30.3 #1, option C): "handled" no longer means "the browser
+exits". The old oracle asserted the exit, which was the defect: only the primary window's initial load, before
+its first finish, may end the session (src/load_failure_policy.zig). Rewritten in the commit that fixes the shim.
+
+Oracle: after a successful routed page.navigate, a page-initiated navigation to an unreachable host (set via
+evaluate) is recorded as exactly one LOAD_FAIL row naming that host (not swallowed, not doubled), the browser is
+still running after a grace period, and page.list still answers. Each run has a private HOME and its own
+--profile-dir.
 """
 import argparse
 import http.server
@@ -17,12 +21,15 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 from pathlib import Path
 
 from automation_core_test import RpcClient, _read_lines  # noqa: E402
 from mac_ms2a_routed_test import stop_browser_macos, _install_signal_cleanup  # noqa: E402
 
 SKIP_EXIT = 77
+DEAD_HOST = "nonexistent.invalid"
+ALIVE_GRACE_SEC = 2.0  # before 4pa.55 the exit followed the LOAD_FAIL row well inside this
 PAGES = {
     b"/a": b"<!doctype html><html><head><meta charset='utf-8'><title>A</title></head><body><h1>A</h1></body></html>",
     b"/b": b"<!doctype html><html><head><meta charset='utf-8'><title>B</title></head><body><h1>B</h1></body></html>",
@@ -79,8 +86,12 @@ def main() -> int:
         socket_path = Path(tmp) / "automation.sock"
         env = dict(os.environ)
         env["ZIGBROWSER_SOCKET"] = str(socket_path)
+        env["HOME"] = str(Path(tmp) / "home")  # private HOME: never the account's own profile or caches
+        env["ZB_DEBUG_EPHEMERAL_DATA_STORE"] = "1"  # e2e-only hook 16: no website data written outside the run
+        (Path(tmp) / "home").mkdir()
         proc = subprocess.Popen(
-            [str(browser), f"{fixture.base_url}/a", "--automation-api"],
+            [str(browser), f"{fixture.base_url}/a", "--automation-api", "--e2e-protocol",
+             "--profile-dir", str(Path(tmp) / "profile")],
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env,
             start_new_session=True,
         )
@@ -103,18 +114,37 @@ def main() -> int:
             # Run a routed navigation first, so the window has been under automation.
             rpc.call("page.navigate", {"url": f"{fixture.base_url}/b", "timeout_ms": 10000})
 
-            # Now a PAGE-INITIATED (untagged) navigation to an unreachable host. This must be treated as
-            # a real load failure (browser exits), not swallowed because the window ran automation.
+            # Now a PAGE-INITIATED (untagged) navigation to an unreachable host. It must be recorded as a real
+            # load failure (one LOAD_FAIL row), not swallowed because the window ran automation, and it must not
+            # end the session (4pa.55).
             try:
-                rpc.evaluate("location.href = 'https://nonexistent.invalid/'")
+                rpc.evaluate(f"location.href = 'https://{DEAD_HOST}/'")
             except Exception:
                 pass  # the eval may not round-trip cleanly as the page navigates away
 
-            try:
-                proc.wait(timeout=8)  # the untagged load failure should bring the browser down
-            except subprocess.TimeoutExpired:
-                failures.append("browser stayed alive after an untagged page-initiated nav failure "
-                                "(it was suppressed because the window had run a routed nav)")
+            def dead_load_fails() -> int:
+                rows = [line.split("\t") for line in list(out)]
+                return sum(1 for r in rows if r[0] == "LOAD_FAIL" and len(r) >= 2 and DEAD_HOST in r[1])
+
+            end = time.monotonic() + 10
+            while time.monotonic() < end and dead_load_fails() == 0 and proc.poll() is None:
+                time.sleep(0.05)
+            time.sleep(ALIVE_GRACE_SEC)
+            n = dead_load_fails()
+            if n != 1:
+                failures.append(f"LOAD_FAIL rows for the untagged failure = {n}, want 1 "
+                                "(0: swallowed because the window had run a routed nav)")
+            rc = proc.poll()
+            if rc is not None:
+                failures.append(f"the browser exited (rc={rc}) after an untagged page-initiated nav failure "
+                                "past its first finish (4pa.55: only the initial load may end the session)")
+            else:
+                try:
+                    reply = rpc.raw("page.list", {})
+                    if "error" in reply or reply.get("result") is None:
+                        failures.append(f"page.list did not answer after the failure: {reply}")
+                except Exception as exc:  # noqa: BLE001 - a closed socket is the defect being caught
+                    failures.append(f"page.list did not answer after the failure: {exc}")
         except Exception as exc:  # noqa: BLE001
             failures.append(f"unexpected error: {exc}")
         finally:

@@ -20,6 +20,7 @@ pub const std_options: std.Options = .{
 comptime {
     _ = @import("ipc.zig");
     _ = @import("nav_policy.zig");
+    _ = @import("load_failure_policy.zig"); // 4pa.55: zb_load_failure_action / zb_load_exit_timer_armed for the macOS shim
 }
 
 pub fn main(init: std.process.Init) !void {
