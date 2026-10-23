@@ -192,7 +192,9 @@ class WinTransport(unittest.TestCase):
                               env=self._env(), stdin=subprocess.DEVNULL)
 
     def _scp(self, user, local, remote):
-        return subprocess.run(["scp", *self._opts(), "-P", self.port, local, f"{user}@{self.host}:{remote}"],
+        # -O: the legacy scp protocol. The Win10 box's sshd has no sftp subsystem, which scp uses by default
+        # (bd zigBrowser-ong.12; the harness is fixed, never the host's sshd).
+        return subprocess.run(["scp", "-O", *self._opts(), "-P", self.port, local, f"{user}@{self.host}:{remote}"],
                               capture_output=True, text=True, timeout=180, env=self._env(), stdin=subprocess.DEVNULL)
 
     def _profile(self, user):

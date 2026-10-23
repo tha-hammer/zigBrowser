@@ -413,6 +413,11 @@ pub fn build(b: *std.Build) void {
     const windows_live_step_skip = b.addSystemCommand(&.{ "python3", "-I", "tests/windows/live_step_skip_test.py" });
     b.step("windows-live-step-skip", "WS0.9: every live Windows step fails under ZB_WIN_GATE=1 with no host (hermetic)").dependOn(&windows_live_step_skip.step);
 
+    // bd zigBrowser-ong.12: the transport harness stages every file over the legacy scp protocol (-O); the Win10
+    // box's sshd has no sftp subsystem. Hermetic (fake ssh/scp first on PATH; no host contacted).
+    const windows_transport_scp_selftest = b.addSystemCommand(&.{ "python3", "-I", "tests/windows/transport_scp_legacy_test.py" });
+    b.step("windows-transport-scp-selftest", "ong.12: the Windows transport harness stages every file over legacy scp -O (hermetic)").dependOn(&windows_transport_scp_selftest.step);
+
     const run_step = b.step("run", "Run zigBrowser");
     const run_cmd = b.addRunArtifact(exe);
     run_cmd.step.dependOn(b.getInstallStep());
@@ -3715,6 +3720,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&windows_capabilities_live.step);
     test_step.dependOn(&windows_refusal_live.step);
     test_step.dependOn(&windows_live_step_skip.step);
+    test_step.dependOn(&windows_transport_scp_selftest.step);
     test_step.dependOn(&run_ipc_tests.step);
     test_step.dependOn(&run_nav_policy_tests.step);
     test_step.dependOn(&run_agent_drawer_tests.step);
