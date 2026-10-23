@@ -13,6 +13,9 @@ Locating a step's command reads build.zig (a labelled lookup, a tripwire): it fo
 `const <var> = b.addSystemCommand(&.{ ... })`, and a step whose command cannot be found fails. The proof is the
 EXECUTION of that argv (rule 1).
 
+PhaseListMembership (zigBrowser-ong.10, a labelled tripwire): every live step's test file is a phase entry unless
+the step is on the reviewed NOT_IN_PHASES list, so no live test silently drops out of the gate.
+
 Also drives the two helpers: `tests/windows/live_gate.py` (`main()` prints the count of EXECUTED assertions and
 fails a skip or zero assertions under the gate) and `slice2_common.gate_skip_exit`, the exit-code helper of the live
 tests that run on Windows (m8).
@@ -43,6 +46,12 @@ KNOWN_LIVE_STEPS = {
     "windows-transport-live", "windows-refusal-live", "windows-drawer-live", "windows-drawer-behaviors",
 }
 GATE_SAYS = ("ZB_WIN_GATE", "no Windows host configured")
+# Live steps deliberately NOT in the phase list, each with its reason (zigBrowser-ong.10).
+NOT_IN_PHASES = {
+    "windows-wincontain-argv-live": "Job Object model dropped (OD-W4); D.6(a) retires it",
+    "windows-wincontain-resolve-live": "Job Object model dropped (OD-W4); D.6(a) retires it",
+    "windows-wincontain-job-live": "Job Object model dropped (OD-W4); D.6(a) retires it",
+}
 
 _STR = re.compile(r'"((?:[^"\\]|\\.)*)"')
 
@@ -73,6 +82,10 @@ def step_argv(build_zig: str, step: str) -> list[str]:
 
 def in_zig_build_test(build_zig: str, step: str) -> bool:
     return re.search(r"test_step\.dependOn\(&" + re.escape(_step_var(build_zig, step)) + r"\.step\)", build_zig) is not None
+
+
+def step_test_files(argv: list[str]) -> list[str]:
+    return sorted({m for a in argv for m in re.findall(r"tests/[\w/.-]+\.py", a)})
 
 
 def phase_entries() -> list[str]:
@@ -136,6 +149,37 @@ class LiveStepSkipIsFailure(unittest.TestCase):
                 proc = run(argv, gate=False)
                 self.assertEqual(proc.returncode, 0,
                                  f"{step}: without ZB_WIN_GATE a hostless run is a human's standalone skip" + detail(argv, proc))
+
+
+class PhaseListMembership(unittest.TestCase):
+    """zigBrowser-ong.10: every live step's test file is a phase entry, so none drops out of `zig build windows-live`
+    and `gate.sh --product` unseen. Compares registration text: a labelled TRIPWIRE (rule 5); what the gate actually
+    runs is proven by the hostless windows-live and gate.sh --product runs."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.build_zig = (REPO / "build.zig").read_text()
+        cls.steps = live_steps(cls.build_zig)
+        cls.phases = phase_entries()
+
+    def test_every_live_step_test_file_is_a_phase_entry(self):
+        for step in self.steps:
+            if step in NOT_IN_PHASES:
+                continue
+            with self.subTest(step=step):
+                files = step_test_files(step_argv(self.build_zig, step))
+                self.assertTrue(files, f"{step}: no tests/*.py file in its registered argv")
+                for f in files:
+                    self.assertIn(f, self.phases, f"{step}: {f} is registered but missing from {PHASES.name}, so "
+                                  "`zig build windows-live` and `gate.sh --product` would never run it")
+
+    def test_every_exclusion_names_a_registered_step(self):
+        self.assertEqual(sorted(set(NOT_IN_PHASES) - set(self.steps)), [], "a stale exclusion hides nothing; remove it")
+
+    def test_every_phase_entry_exists(self):
+        for entry in self.phases:
+            with self.subTest(entry=entry):
+                self.assertTrue((REPO / entry).is_file(), f"phase entry {entry} does not exist")
 
 
 class GateSkipExit(unittest.TestCase):
