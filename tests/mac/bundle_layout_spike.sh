@@ -15,20 +15,28 @@
 #       XDG and the uv and pip caches stay in the scratch tree. Only a complete prep creates <new dir>, with py.pkg,
 #       sites.tar and inputs.sha256. Hostless selftest: tests/mac/bundle_layout_spike_prep_selftest.sh.
 #   bash tests/mac/bundle_layout_spike.sh run <prep dir>
-#       Both Macs, one after the other. Each leg builds ${ZB_GATE_COMMIT:-HEAD} with tests/mac/mac_gate_lib.sh's mac_build
-#       (git archive into a fresh ~/zb-gate-<sha>-<nonce>, pinned host keys, both zig caches in the run dir) and works
-#       only in that dir: it stages zigBrowser.app (the exe, the shim in Contents/Frameworks) plus the real agent
-#       runtime (stage_agent_runtime.sh with the prep inputs, prefix = the app's Contents), signs it ad hoc inside out
-#       (every Mach-O deepest first, then each framework version, then the .app; never --deep), then runs
-#       `codesign --verify --strict --deep --verbose=4` on the .app. It prints, per leg:
-#         SPIKE<TAB><arch><TAB>data-files-under-Frameworks<TAB><n>      (non-Mach-O files in that code location)
-#         SPIKE<TAB><arch><TAB>sign-failures<TAB><n>
-#         SPIKE<TAB><arch><TAB>verify-rc<TAB><rc><TAB>unsealed<TAB>yes|no<TAB>not-signed<TAB>yes|no
-#         PASS<TAB>bundle-layout-spike<TAB><arch>   (verify exit 0, neither message, no sign failure) or FAIL<TAB>...
-#       and finally PASS<TAB>bundle-layout-spike<TAB>both-arches<TAB><sha> only when both legs pass.
-#       ZB_SPIKE_MUTANT=data_in_frameworks adds Contents/Frameworks/stray-data.txt before signing; that run must FAIL.
-# No browser is launched and nothing is installed; every run dir is removed at exit (mac_remove_run_dirs). The arm64
-# host is mandatory. BatchMode, pinned host keys, no askpass or display (the shared transport).
+#       Both Macs, one after the other, everything Mac-side under write containment (SilverRidge de82cf2): each leg
+#       sends the committed tests/mac/bundle_layout_spike_leg.sh over ssh (pinned host keys, BatchMode, no askpass or
+#       display: mac_gate_lib.sh's transport). `create` makes one fresh physical run root ~/zb-gate-<sha>-<nonce>; scp puts
+#       the committed source (git archive of ${ZB_GATE_COMMIT:-HEAD}: src, build files, tests, packaging, agent/host) and
+#       the prep inputs into <root>/inputs; `run` checks /usr/bin/sandbox-exec, the exact profile (writes only below the
+#       root and to /dev/null), the positive writes and three refused negative canaries (the real home, both getconf
+#       Darwin temp/cache dirs), then runs the native zig build and the post-build work (the real stager, a refusal of
+#       any symlink that escapes the root, the census, ad hoc inside-out signing, never --deep, and
+#       `codesign --verify --strict --deep --verbose=4`) as two sandboxed commands, with before/after audits. Its stdout
+#       and <root>/evidence.tar are copied to <prep dir>/evidence/<arch>-<run dir>/ before `remove` deletes the root.
+#       Per leg it prints LEG<TAB><arch><TAB><mutant><TAB><class><TAB><detail>, where class is
+#         LAYOUT-OK        (normal: verify exit 0, no diagnostic)
+#         LAYOUT-FINDING   (normal: verify fails with an unsealed / not-signed / sealed-resource diagnostic)
+#         EXPECTED-FAIL    (ZB_SPIKE_MUTANT=data_in_frameworks: Contents/Frameworks/stray-data.txt signed cleanly, then
+#                          verify fails with such a diagnostic)
+#         INCONCLUSIVE     (any NOT RUN or failed phase, a sandbox denial anywhere, an escaping symlink, an audit delta,
+#                          a verify failure without the diagnostic, a mutant that verify accepts, missing evidence)
+#         BREACH           (a canary write was not refused: the run stops, the root and the canary stay for the owner)
+#       then SPIKE-RESULT<TAB><sha><TAB><mutant><TAB>x86_64=<class><TAB>arm64=<class>. Exit 0 when both legs are
+#       conclusive, 2 when one is inconclusive, 4 on a breach, 1 when refused before any host is touched.
+# No browser is launched and nothing is installed. The arm64 host is mandatory. Hostless proof:
+# tests/mac/bundle_layout_spike_containment_selftest.sh.
 set -euo pipefail
 
 KEY="${ZB_MAC_KEY:-/home/maceo/vms/mac-m9/zb_mac_key}"
@@ -108,74 +116,103 @@ for f in py.pkg sites.tar inputs.sha256; do [ -s "$IN/$f" ] || { echo "FAIL: $IN
 (cd "$IN" && sha256sum --quiet -c inputs.sha256) || { echo "FAIL: the prep inputs do not match inputs.sha256" >&2; exit 1; }
 
 COMMIT=$(git rev-parse --verify "${ZB_GATE_COMMIT:-HEAD}^{commit}")
-export ZB_GATE_COMMIT=$COMMIT   # mac_build, the agent tree and the pins below all come from this one commit
 . tests/mac/mac_gate_lib.sh
 L=$(mktemp -d "${TMPDIR:-/tmp}/zb-spike-run-XXXXXX")
-trap 'mac_remove_run_dirs; case "$L" in "${TMPDIR:-/tmp}"/zb-spike-run-??????) rm -rf "${L:?}";; esac' EXIT
-git archive --format=tar -o "$L/agent.tar" "$COMMIT" agent/host
+LIVE=()   # "host<TAB>key<TAB>run dir" of every root that exists and is ours to remove
+remove_root() { # $1=host $2=key $3=run dir
+  local -a SSH
+  mapfile -d '' SSH < <(mac_ssh_opts "$2")
+  "${SSH[@]}" "$1" /bin/bash -s remove "$3" < "$L/leg.sh" >/dev/null || echo "WARN: could not remove $3 on $1" >&2
+}
+cleanup() {
+  local e h k r
+  for e in "${LIVE[@]+"${LIVE[@]}"}"; do IFS=$'\t' read -r h k r <<<"$e"; remove_root "$h" "$k" "$r"; done
+  case "$L" in "${TMPDIR:-/tmp}"/zb-spike-run-??????) rm -rf "${L:?}" ;; esac
+}
+trap cleanup EXIT
+trap 'exit 143' TERM INT HUP
+# Committed bytes only: the source the Mac builds, the leg driver it runs, and the pkg pin the stager checks again.
+git archive --format=tar -o "$L/src.tar" "$COMMIT" src build.zig build.zig.zon zigbrowser.json tests packaging agent/host
+git show "$COMMIT:tests/mac/bundle_layout_spike_leg.sh" > "$L/leg.sh"
 git show "$COMMIT:$PINS" > "$L/pins.json" && pinned=$(read_pins "$L/pins.json") || { echo "FAIL: $PINS at $COMMIT is malformed" >&2; exit 1; }
-read -r _ PIN _ <<<"$pinned"   # the pkg's pinned SHA-256, which the Mac's stage_agent_runtime.sh checks again
+read -r _ PIN _ <<<"$pinned"
 echo "== commit $COMMIT, mutant $MUTANT" >&2
 
-leg() { # $1=host $2=key $3=expected uname -m
-  local host="$1" key="$2" arch="$3" rd out rc
+field() { # $1=driver output $2=key: the value of key=value in its VERIFY line
+  awk -F'\t' -v k="$2" '$1 == "VERIFY" { for (i = 2; i <= NF; i++) { split($i, kv, "="); if (kv[1] == k) print kv[2] } }' <<<"$1" | tail -n 1
+}
+classify() { # $1=driver output $2=evidence dir -> "<class><TAB><detail>"
+  local out=$1 ev=$2 nr vrc diag delta
+  nr=$(awk -F'\t' '$1 == "PHASE" && ($3 == "NOT-RUN" || $3 == "fail") { print $2 ": " $4; exit }' <<<"$out")
+  [ -z "$nr" ] || { printf 'INCONCLUSIVE\t%s\n' "$nr"; return; }
+  grep -q '^LEGDONE$' <<<"$out" || { printf 'INCONCLUSIVE\tthe leg did not finish\n'; return; }
+  [ -s "$ev/evidence/audit.before" ] && [ -s "$ev/evidence/audit.after" ] && [ -s "$ev/evidence/verify.log" ] \
+    || { printf 'INCONCLUSIVE\tthe evidence is missing\n'; return; }
+  delta=$(diff "$ev/evidence/audit.before" "$ev/evidence/audit.after" | grep -E '^[<>]' | cut -d'|' -f1 | sort -u | head -n 3 | tr '\n' ' ') || true
+  [ -z "$delta" ] || { printf 'INCONCLUSIVE\taudit delta outside the root: %s\n' "$delta"; return; }
+  vrc=$(field "$out" rc)
+  [ -n "$vrc" ] || { printf 'INCONCLUSIVE\tno verify result\n'; return; }
+  [ "$(field "$out" denied)" = no ] || { printf 'INCONCLUSIVE\tthe sandbox denied a tool (see the evidence logs)\n'; return; }
+  diag=no
+  [ "$(field "$out" unsealed)$(field "$out" not-signed)$(field "$out" sealed-resource)" = nonono ] || diag=yes
+  if [ "$MUTANT" = data_in_frameworks ]; then
+    if [ "$vrc" != 0 ] && [ "$diag" = yes ]; then printf 'EXPECTED-FAIL\tverify rc %s with the code-signature diagnostic\n' "$vrc"
+    elif [ "$vrc" = 0 ]; then printf 'INCONCLUSIVE\tverify accepted the data_in_frameworks mutant\n'
+    else printf 'INCONCLUSIVE\tverify rc %s without the code-signature diagnostic\n' "$vrc"; fi
+  elif [ "$vrc" = 0 ] && [ "$diag" = no ]; then printf 'LAYOUT-OK\tverify rc 0\n'
+  elif [ "$vrc" != 0 ] && [ "$diag" = yes ]; then printf 'LAYOUT-FINDING\tverify rc %s with the code-signature diagnostic\n' "$vrc"
+  else printf 'INCONCLUSIVE\tverify rc %s, diagnostic %s\n' "$vrc" "$diag"; fi
+}
+
+leg() { # $1=host $2=key $3=expected uname -m; sets CLASS
+  local host="$1" key="$2" arch="$3" rd ev out rc root
   local -a SSH SCP
   mapfile -d '' SSH < <(mac_ssh_opts "$key")
   mapfile -d '' SCP < <(mac_scp_opts "$key")
-  echo "== $arch on $host ==" >&2
-  mac_build "$host" "$key" || return 1
-  rd=$MAC_RDIR
-  "${SCP[@]}" "$IN/py.pkg" "$IN/sites.tar" "$L/agent.tar" "$host:$rd/" >/dev/null || { echo "FAIL: scp to $host" >&2; return 1; }
+  rd="zb-gate-$COMMIT-$(od -An -N8 -tx1 /dev/urandom | tr -d ' \n')"
+  ev="$IN/evidence/$arch-$rd"
+  mkdir -p "${ev:?}"
+  echo "== $arch on $host, $rd ==" >&2
+  out=$("${SSH[@]}" "$host" /bin/bash -s create "$rd" < "$L/leg.sh") && rc=0 || rc=$?
+  printf '%s\n' "$out" > "$ev/create.out"
+  root=$(awk -F'\t' '$1 == "ROOT" { print $2; exit }' <<<"$out")
+  if [ "$rc" -ne 0 ] || [ -z "$root" ]; then
+    CLASS=INCONCLUSIVE; printf 'LEG\t%s\t%s\tINCONCLUSIVE\tcreate: %s\n' "$arch" "$MUTANT" "$(tail -n 1 <<<"$out")"; return
+  fi
+  LIVE+=("$host"$'\t'"$key"$'\t'"$rd")
+  if ! "${SCP[@]}" "$L/src.tar" "$IN/py.pkg" "$IN/sites.tar" "$host:$rd/inputs/" >/dev/null; then
+    CLASS=INCONCLUSIVE; printf 'LEG\t%s\t%s\tINCONCLUSIVE\tscp of the inputs failed\n' "$arch" "$MUTANT"; return
+  fi
   # Captured, then printed to stderr: `tee /dev/stderr` would reopen (and truncate) a stderr redirected to a file.
-  out=$(timeout "$LEG_TIMEOUT" "${SSH[@]}" "$host" /bin/bash -s "$rd" "$arch" "$PIN" "$MUTANT" <<'REMOTE'
-set -uo pipefail
-cd "$HOME/${1:?}" || exit 1
-ARCH=$2 PIN=$3 MUTANT=$4
-[ "$(uname -m)" = "$ARCH" ] || { echo "FAIL: this leg is $(uname -m), expected $ARCH" >&2; exit 1; }
-mkdir -p tmp && export TMPDIR="$PWD/tmp" PYTHONDONTWRITEBYTECODE=1
-tar -xf agent.tar && tar -xf sites.tar || { echo "FAIL: unpack" >&2; exit 1; }
-APP=spike/zigBrowser.app; C=$APP/Contents
-mkdir -p "$C/MacOS" "$C/Frameworks" "$C/Resources"
-cp zig-out/bin/zigBrowser "$C/MacOS/zigBrowser" && cp zig-out/Frameworks/libwkwebview_shim.dylib "$C/Frameworks/" \
-  || { echo "FAIL: build output" >&2; exit 1; }
-sed "s/__VERSION__/0.0.0-spike/g" packaging/macos/Info.plist > "$C/Info.plist"
-bash packaging/macos/stage_agent_runtime.sh "$PWD/py.pkg" "$PIN" "$PWD/$C" "$PWD/site-x86_64" "$PWD/site-aarch64" \
-  > stage.log 2>&1 || { tail -8 stage.log; printf 'FAIL\tbundle-layout-spike\t%s\tstaging\n' "$ARCH"; exit 1; }
-[ "$MUTANT" = data_in_frameworks ] && printf 'stray data\n' > "$C/Frameworks/stray-data.txt"
-is_macho() { file -b "$1" | grep -q Mach-O; }
-data=0
-while IFS= read -r f; do is_macho "$f" || data=$((data + 1)); done < <(find "$C/Frameworks" -type f)
-printf 'SPIKE\t%s\tdata-files-under-Frameworks\t%d\n' "$ARCH" "$data"
-signfail=0
-sign() { codesign --force --sign - "$1" >> sign.log 2>&1 || { signfail=$((signfail + 1)); echo "sign failed: $1" >> sign.log; }; }
-while IFS= read -r f; do is_macho "$f" && sign "$f"; done \
-  < <(find "$C" -type f | awk -F/ '{ print NF "\t" $0 }' | sort -t "$(printf '\t')" -k1,1nr -k2 | cut -f2-)
-while IFS= read -r fw; do
-  for v in "$fw"/Versions/*; do [ -d "$v" ] && [ ! -L "$v" ] && sign "$v"; done
-done < <(find "$C" -type d -name '*.framework')
-sign "$APP"
-printf 'SPIKE\t%s\tsign-failures\t%d\n' "$ARCH" "$signfail"
-[ "$signfail" = 0 ] || sed -n 1,20p sign.log
-codesign --verify --strict --deep --verbose=4 "$APP" > verify.log 2>&1; vrc=$?
-sed -n 1,40p verify.log | sed 's/^/    /'
-unsealed=no notsigned=no
-grep -q 'unsealed contents present' verify.log && unsealed=yes
-grep -q 'code object is not signed at all' verify.log && notsigned=yes
-printf 'SPIKE\t%s\tverify-rc\t%d\tunsealed\t%s\tnot-signed\t%s\n' "$ARCH" "$vrc" "$unsealed" "$notsigned"
-if [ "$vrc" = 0 ] && [ "$unsealed" = no ] && [ "$notsigned" = no ] && [ "$signfail" = 0 ]; then
-  printf 'PASS\tbundle-layout-spike\t%s\n' "$ARCH"
-else
-  printf 'FAIL\tbundle-layout-spike\t%s\tverify\n' "$ARCH"; exit 1
-fi
-REMOTE
-  ); rc=$?
+  out=$(timeout "$LEG_TIMEOUT" "${SSH[@]}" "$host" /bin/bash -s run "$rd" "$arch" "$PIN" "$MUTANT" < "$L/leg.sh") && rc=0 || rc=$?
+  printf '%s\n' "$out" > "$ev/driver.out"
   printf '%s\n' "$out" >&2
-  [ "$rc" -eq 0 ] || return 1
-  grep -qP "^PASS\tbundle-layout-spike\t$arch$" <<<"$out" || { echo "FAIL: $arch printed no PASS line" >&2; return 1; }
+  if [ "$rc" -eq 4 ] || grep -qP '^PHASE\tcanaries\tBREACH\t' <<<"$out"; then
+    LIVE=("${LIVE[@]:0:${#LIVE[@]}-1}")   # never cleaned: the root and the canary stay for the owner
+    CLASS=BREACH
+    printf 'LEG\t%s\t%s\tBREACH\t%s (root %s kept on %s)\n' "$arch" "$MUTANT" \
+      "$(awk -F'\t' '$1 == "PHASE" && $3 == "BREACH" { print $4; exit }' <<<"$out")" "$root" "$host"
+    return
+  fi
+  mkdir -p "$ev/evidence"
+  if "${SCP[@]}" "$host:$rd/evidence.tar" "$ev/" >/dev/null 2>&1; then
+    tar --no-same-owner -xf "$ev/evidence.tar" -C "${ev:?}" evidence 2>/dev/null || true
+  fi
+  remove_root "$host" "$key" "$rd"
+  LIVE=("${LIVE[@]:0:${#LIVE[@]}-1}")
+  local verdict
+  verdict=$(classify "$out" "$ev")
+  [ "$rc" -eq 0 ] || [ "${verdict%%$'\t'*}" = INCONCLUSIVE ] || verdict=$(printf 'INCONCLUSIVE\tthe leg exited %s' "$rc")
+  CLASS=${verdict%%$'\t'*}
+  printf 'LEG\t%s\t%s\t%s\n' "$arch" "$MUTANT" "$verdict"
 }
 
-overall=0
-leg "$INTEL_HOST" "$KEY" x86_64 || { echo "FAIL: x86_64 leg" >&2; overall=1; }
-leg "$ARM_HOST" "$ARM_KEY" arm64 || { echo "FAIL: arm64 leg" >&2; overall=1; }
-[ "$overall" -eq 0 ] && printf 'PASS\tbundle-layout-spike\tboth-arches\t%s\n' "$COMMIT"
-exit "$overall"
+CLASS= INTEL_CLASS=NOT-RUN ARM_CLASS=NOT-RUN
+leg "$INTEL_HOST" "$KEY" x86_64; INTEL_CLASS=$CLASS
+if [ "$INTEL_CLASS" != BREACH ]; then leg "$ARM_HOST" "$ARM_KEY" arm64; ARM_CLASS=$CLASS; fi
+printf 'SPIKE-RESULT\t%s\t%s\tx86_64=%s\tarm64=%s\n' "$COMMIT" "$MUTANT" "$INTEL_CLASS" "$ARM_CLASS"
+case "$INTEL_CLASS $ARM_CLASS" in
+  *BREACH*) echo "CONTAINMENT BREACH: stop, keep the evidence and tell the owner; nothing was cleaned" >&2; exit 4 ;;
+  *INCONCLUSIVE*|*NOT-RUN*) exit 2 ;;
+esac
+exit 0

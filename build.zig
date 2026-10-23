@@ -3955,11 +3955,13 @@ pub fn build(b: *std.Build) void {
     }) |input| mac_dmg_script_selftest.addFileInput(b.path(input));
     b.step("test-mac-dmg-script", "Run the hostless selftest of the dmg script: shim in Contents/Frameworks, inside-out signing (4pa.73)").dependOn(&mac_dmg_script_selftest.step);
     test_step.dependOn(&mac_dmg_script_selftest.step);
-    // The 4pa.80 bundle-layout spike stages the real .app, signs it inside out and reports strict verification per Mac.
-    const mac_bundle_layout_spike_selftest = b.addSystemCommand(&.{ "bash", "tests/mac/bundle_layout_spike_selftest.sh" });
+    // The 4pa.80 bundle-layout spike stages the real .app, signs it inside out and reports strict verification per Mac,
+    // with every Mac-side write-capable phase under one Seatbelt profile (SilverRidge de82cf2).
+    const mac_bundle_layout_spike_selftest = b.addSystemCommand(&.{ "bash", "tests/mac/bundle_layout_spike_containment_selftest.sh" });
     for ([_][]const u8{
-        "tests/mac/bundle_layout_spike_selftest.sh", "tests/mac/bundle_layout_spike.sh", "tests/mac/build-on-mac.sh",
-        "tests/mac/mac_gate_lib.sh",                 "tests/mac/known_hosts",            "packaging/macos/Info.plist",
+        "tests/mac/bundle_layout_spike_containment_selftest.sh", "tests/mac/bundle_layout_spike.sh", "tests/mac/bundle_layout_spike_leg.sh",
+        "tests/mac/build-on-mac.sh",                             "tests/mac/mac_gate_lib.sh",        "tests/mac/known_hosts",
+        "packaging/macos/Info.plist",
     }) |input| mac_bundle_layout_spike_selftest.addFileInput(b.path(input));
     const mac_bundle_layout_spike_step = b.step("test-mac-bundle-layout-spike", "Run the hostless selftests of the 4pa.80 bundle-layout spike (prep and run)");
     mac_bundle_layout_spike_step.dependOn(&mac_bundle_layout_spike_selftest.step);
