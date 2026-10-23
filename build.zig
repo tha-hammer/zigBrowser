@@ -2252,7 +2252,7 @@ pub fn build(b: *std.Build) void {
     const automation_api_e2e = b.addSystemCommand(&.{
         "sh",
         "-c",
-        "python3 tests/e2e/automation_api_lifecycle_test.py --prefer-xvfb --binary \"$1\"; rc=$?; if [ \"$rc\" = 77 ]; then exit 0; fi; exit \"$rc\"",
+        "python3 tests/e2e/automation_api_lifecycle_test.py --prefer-xvfb --binary \"$1\"; rc=$?; if [ \"$rc\" = 77 ]; then echo \"$0: skipped, and a skip is a failure under the gate\" >&2; exit 1; fi; exit \"$rc\"",
         "automation-api-e2e",
     });
     automation_api_e2e.addArtifactArg(exe);
@@ -2261,7 +2261,7 @@ pub fn build(b: *std.Build) void {
     const automation_core_e2e = b.addSystemCommand(&.{
         "sh",
         "-c",
-        "python3 tests/e2e/automation_core_test.py --prefer-xvfb --binary \"$1\"; rc=$?; if [ \"$rc\" = 77 ]; then exit 0; fi; exit \"$rc\"",
+        "python3 tests/e2e/automation_core_test.py --prefer-xvfb --binary \"$1\"; rc=$?; if [ \"$rc\" = 77 ]; then echo \"$0: skipped, and a skip is a failure under the gate\" >&2; exit 1; fi; exit \"$rc\"",
         "automation-core-e2e",
     });
     automation_core_e2e.addArtifactArg(exe);
@@ -2270,7 +2270,7 @@ pub fn build(b: *std.Build) void {
     const automation_readiness_e2e = b.addSystemCommand(&.{
         "sh",
         "-c",
-        "python3 tests/e2e/automation_readiness_test.py --prefer-xvfb --binary \"$1\"; rc=$?; if [ \"$rc\" = 77 ]; then exit 0; fi; exit \"$rc\"",
+        "python3 tests/e2e/automation_readiness_test.py --prefer-xvfb --binary \"$1\"; rc=$?; if [ \"$rc\" = 77 ]; then echo \"$0: skipped, and a skip is a failure under the gate\" >&2; exit 1; fi; exit \"$rc\"",
         "automation-readiness-e2e",
     });
     automation_readiness_e2e.addArtifactArg(exe);
@@ -2279,7 +2279,7 @@ pub fn build(b: *std.Build) void {
     const sdk_python_live_e2e = b.addSystemCommand(&.{
         "sh",
         "-c",
-        "python3 tests/e2e/sdk_python_live_test.py --prefer-xvfb --binary \"$1\"; rc=$?; if [ \"$rc\" = 77 ]; then exit 0; fi; exit \"$rc\"",
+        "python3 tests/e2e/sdk_python_live_test.py --prefer-xvfb --binary \"$1\"; rc=$?; if [ \"$rc\" = 77 ]; then echo \"$0: skipped, and a skip is a failure under the gate\" >&2; exit 1; fi; exit \"$rc\"",
         "sdk-python-live-e2e",
     });
     sdk_python_live_e2e.addArtifactArg(exe);
@@ -2288,7 +2288,7 @@ pub fn build(b: *std.Build) void {
     const x_flows_e2e = b.addSystemCommand(&.{
         "sh",
         "-c",
-        "python3 tests/e2e/x_flows_test.py --prefer-xvfb --binary \"$1\"; rc=$?; if [ \"$rc\" = 77 ]; then exit 0; fi; exit \"$rc\"",
+        "python3 tests/e2e/x_flows_test.py --prefer-xvfb --binary \"$1\"; rc=$?; if [ \"$rc\" = 77 ]; then echo \"$0: skipped, and a skip is a failure under the gate\" >&2; exit 1; fi; exit \"$rc\"",
         "x-flows-e2e",
     });
     x_flows_e2e.addArtifactArg(exe);
@@ -2297,7 +2297,7 @@ pub fn build(b: *std.Build) void {
     const x_native_e2e = b.addSystemCommand(&.{
         "sh",
         "-c",
-        "python3 tests/e2e/x_native_test.py --prefer-xvfb --binary \"$1\"; rc=$?; if [ \"$rc\" = 77 ]; then exit 0; fi; exit \"$rc\"",
+        "python3 tests/e2e/x_native_test.py --prefer-xvfb --binary \"$1\"; rc=$?; if [ \"$rc\" = 77 ]; then echo \"$0: skipped, and a skip is a failure under the gate\" >&2; exit 1; fi; exit \"$rc\"",
         "x-native-e2e",
     });
     x_native_e2e.addArtifactArg(exe);
@@ -2306,7 +2306,7 @@ pub fn build(b: *std.Build) void {
     const social_flows_e2e = b.addSystemCommand(&.{
         "sh",
         "-c",
-        "python3 tests/e2e/social_flows_test.py --prefer-xvfb --binary \"$1\"; rc=$?; if [ \"$rc\" = 77 ]; then exit 0; fi; exit \"$rc\"",
+        "python3 tests/e2e/social_flows_test.py --prefer-xvfb --binary \"$1\"; rc=$?; if [ \"$rc\" = 77 ]; then echo \"$0: skipped, and a skip is a failure under the gate\" >&2; exit 1; fi; exit \"$rc\"",
         "social-flows-e2e",
     });
     social_flows_e2e.addArtifactArg(exe);
@@ -2330,7 +2330,7 @@ pub fn build(b: *std.Build) void {
     const automation_expect_flow_e2e = b.addSystemCommand(&.{
         "sh",
         "-c",
-        "python3 tests/e2e/automation_expect_flow_test.py --prefer-xvfb --binary \"$1\"; rc=$?; if [ \"$rc\" = 77 ]; then exit 0; fi; exit \"$rc\"",
+        "python3 tests/e2e/automation_expect_flow_test.py --prefer-xvfb --binary \"$1\"; rc=$?; if [ \"$rc\" = 77 ]; then echo \"$0: skipped, and a skip is a failure under the gate\" >&2; exit 1; fi; exit \"$rc\"",
         "automation-expect-flow-e2e",
     });
     automation_expect_flow_e2e.addArtifactArg(exe);
@@ -2338,7 +2338,7 @@ pub fn build(b: *std.Build) void {
     const automation_expect_x_flow_e2e = b.addSystemCommand(&.{
         "sh",
         "-c",
-        "python3 tests/e2e/automation_expect_x_flow_test.py --prefer-xvfb --binary \"$1\"; rc=$?; if [ \"$rc\" = 77 ]; then exit 0; fi; exit \"$rc\"",
+        "python3 tests/e2e/automation_expect_x_flow_test.py --prefer-xvfb --binary \"$1\"; rc=$?; if [ \"$rc\" = 77 ]; then echo \"$0: skipped, and a skip is a failure under the gate\" >&2; exit 1; fi; exit \"$rc\"",
         "automation-expect-x-flow-e2e",
     });
     automation_expect_x_flow_e2e.addArtifactArg(exe);
@@ -2346,7 +2346,7 @@ pub fn build(b: *std.Build) void {
     const automation_recipient_guard_e2e = b.addSystemCommand(&.{
         "sh",
         "-c",
-        "python3 tests/e2e/automation_recipient_guard_test.py --prefer-xvfb --binary \"$1\"; rc=$?; if [ \"$rc\" = 77 ]; then exit 0; fi; exit \"$rc\"",
+        "python3 tests/e2e/automation_recipient_guard_test.py --prefer-xvfb --binary \"$1\"; rc=$?; if [ \"$rc\" = 77 ]; then echo \"$0: skipped, and a skip is a failure under the gate\" >&2; exit 1; fi; exit \"$rc\"",
         "automation-recipient-guard-e2e",
     });
     automation_recipient_guard_e2e.addArtifactArg(exe);
@@ -2354,7 +2354,7 @@ pub fn build(b: *std.Build) void {
     const automation_recipient_owner_e2e = b.addSystemCommand(&.{
         "sh",
         "-c",
-        "python3 tests/e2e/automation_recipient_owner_test.py --prefer-xvfb --binary \"$1\"; rc=$?; if [ \"$rc\" = 77 ]; then exit 0; fi; exit \"$rc\"",
+        "python3 tests/e2e/automation_recipient_owner_test.py --prefer-xvfb --binary \"$1\"; rc=$?; if [ \"$rc\" = 77 ]; then echo \"$0: skipped, and a skip is a failure under the gate\" >&2; exit 1; fi; exit \"$rc\"",
         "automation-recipient-owner-e2e",
     });
     automation_recipient_owner_e2e.addArtifactArg(exe);
@@ -2362,7 +2362,7 @@ pub fn build(b: *std.Build) void {
     const automation_thread_document_e2e = b.addSystemCommand(&.{
         "sh",
         "-c",
-        "python3 tests/e2e/automation_thread_document_test.py --prefer-xvfb --binary \"$1\"; rc=$?; if [ \"$rc\" = 77 ]; then exit 0; fi; exit \"$rc\"",
+        "python3 tests/e2e/automation_thread_document_test.py --prefer-xvfb --binary \"$1\"; rc=$?; if [ \"$rc\" = 77 ]; then echo \"$0: skipped, and a skip is a failure under the gate\" >&2; exit 1; fi; exit \"$rc\"",
         "automation-thread-document-e2e",
     });
     automation_thread_document_e2e.addArtifactArg(exe);
@@ -2372,7 +2372,7 @@ pub fn build(b: *std.Build) void {
     const automation_scroll_e2e = b.addSystemCommand(&.{
         "sh",
         "-c",
-        "python3 tests/e2e/automation_scroll_test.py --prefer-xvfb --binary \"$1\"; rc=$?; if [ \"$rc\" = 77 ]; then exit 0; fi; exit \"$rc\"",
+        "python3 tests/e2e/automation_scroll_test.py --prefer-xvfb --binary \"$1\"; rc=$?; if [ \"$rc\" = 77 ]; then echo \"$0: skipped, and a skip is a failure under the gate\" >&2; exit 1; fi; exit \"$rc\"",
         "automation-scroll-e2e",
     });
     automation_scroll_e2e.addArtifactArg(exe);
@@ -2392,7 +2392,7 @@ pub fn build(b: *std.Build) void {
     const automation_native_ports_e2e = b.addSystemCommand(&.{
         "sh",
         "-c",
-        "python3 tests/e2e/automation_native_ports_test.py --prefer-xvfb --binary \"$1\"; rc=$?; if [ \"$rc\" = 77 ]; then exit 0; fi; exit \"$rc\"",
+        "python3 tests/e2e/automation_native_ports_test.py --prefer-xvfb --binary \"$1\"; rc=$?; if [ \"$rc\" = 77 ]; then echo \"$0: skipped, and a skip is a failure under the gate\" >&2; exit 1; fi; exit \"$rc\"",
         "automation-native-ports-e2e",
     });
     automation_native_ports_e2e.addArtifactArg(exe);
@@ -2401,7 +2401,7 @@ pub fn build(b: *std.Build) void {
     const automation_pacing_e2e = b.addSystemCommand(&.{
         "sh",
         "-c",
-        "python3 tests/e2e/automation_pacing_persist_test.py --prefer-xvfb --binary \"$1\"; rc=$?; if [ \"$rc\" = 77 ]; then exit 0; fi; exit \"$rc\"",
+        "python3 tests/e2e/automation_pacing_persist_test.py --prefer-xvfb --binary \"$1\"; rc=$?; if [ \"$rc\" = 77 ]; then echo \"$0: skipped, and a skip is a failure under the gate\" >&2; exit 1; fi; exit \"$rc\"",
         "automation-pacing-e2e",
     });
     automation_pacing_e2e.addArtifactArg(exe);
@@ -2411,7 +2411,7 @@ pub fn build(b: *std.Build) void {
     const http2_goaway_e2e = b.addSystemCommand(&.{
         "sh",
         "-c",
-        "python3 tests/e2e/http2_goaway_test.py --binary \"$1\"; rc=$?; if [ \"$rc\" = 77 ]; then exit 0; fi; exit \"$rc\"",
+        "python3 tests/e2e/http2_goaway_test.py --binary \"$1\"; rc=$?; if [ \"$rc\" = 77 ]; then echo \"$0: skipped, and a skip is a failure under the gate\" >&2; exit 1; fi; exit \"$rc\"",
         "http2-goaway-e2e",
     });
     http2_goaway_e2e.addArtifactArg(exe);
@@ -2421,7 +2421,7 @@ pub fn build(b: *std.Build) void {
     const harness_group_e2e = b.addSystemCommand(&.{
         "sh",
         "-c",
-        "python3 tests/e2e/harness_group_test.py --binary \"$1\"; rc=$?; if [ \"$rc\" = 77 ]; then exit 0; fi; exit \"$rc\"",
+        "python3 tests/e2e/harness_group_test.py --binary \"$1\"; rc=$?; if [ \"$rc\" = 77 ]; then echo \"$0: skipped, and a skip is a failure under the gate\" >&2; exit 1; fi; exit \"$rc\"",
         "harness-group-e2e",
     });
     harness_group_e2e.addArtifactArg(exe);
@@ -2430,7 +2430,7 @@ pub fn build(b: *std.Build) void {
     const web_process_crash_e2e = b.addSystemCommand(&.{
         "sh",
         "-c",
-        "python3 tests/e2e/web_process_crash_test.py --binary \"$1\"; rc=$?; if [ \"$rc\" = 77 ]; then exit 0; fi; exit \"$rc\"",
+        "python3 tests/e2e/web_process_crash_test.py --binary \"$1\"; rc=$?; if [ \"$rc\" = 77 ]; then echo \"$0: skipped, and a skip is a failure under the gate\" >&2; exit 1; fi; exit \"$rc\"",
         "web-process-crash-e2e",
     });
     web_process_crash_e2e.addArtifactArg(exe);
@@ -2439,7 +2439,7 @@ pub fn build(b: *std.Build) void {
     const render_config_e2e = b.addSystemCommand(&.{
         "sh",
         "-c",
-        "python3 tests/e2e/render_config_test.py --binary \"$1\"; rc=$?; if [ \"$rc\" = 77 ]; then exit 0; fi; exit \"$rc\"",
+        "python3 tests/e2e/render_config_test.py --binary \"$1\"; rc=$?; if [ \"$rc\" = 77 ]; then echo \"$0: skipped, and a skip is a failure under the gate\" >&2; exit 1; fi; exit \"$rc\"",
         "render-config-e2e",
     });
     render_config_e2e.addArtifactArg(exe);
@@ -2449,7 +2449,7 @@ pub fn build(b: *std.Build) void {
     const slow_load_watchdog_e2e = b.addSystemCommand(&.{
         "sh",
         "-c",
-        "python3 tests/e2e/slow_load_watchdog_test.py --binary \"$1\"; rc=$?; if [ \"$rc\" = 77 ]; then exit 0; fi; exit \"$rc\"",
+        "python3 tests/e2e/slow_load_watchdog_test.py --binary \"$1\"; rc=$?; if [ \"$rc\" = 77 ]; then echo \"$0: skipped, and a skip is a failure under the gate\" >&2; exit 1; fi; exit \"$rc\"",
         "slow-load-watchdog-e2e",
     });
     slow_load_watchdog_e2e.addArtifactArg(exe);
@@ -2459,7 +2459,7 @@ pub fn build(b: *std.Build) void {
     const media_source_e2e = b.addSystemCommand(&.{
         "sh",
         "-c",
-        "python3 tests/e2e/media_source_test.py --binary \"$1\"; rc=$?; if [ \"$rc\" = 77 ]; then exit 0; fi; exit \"$rc\"",
+        "python3 tests/e2e/media_source_test.py --binary \"$1\"; rc=$?; if [ \"$rc\" = 77 ]; then echo \"$0: skipped, and a skip is a failure under the gate\" >&2; exit 1; fi; exit \"$rc\"",
         "media-source-e2e",
     });
     media_source_e2e.addArtifactArg(exe);
@@ -2699,7 +2699,7 @@ pub fn build(b: *std.Build) void {
     const ipc_roundtrip_e2e = b.addSystemCommand(&.{
         "sh",
         "-c",
-        "python3 tests/e2e/ipc_roundtrip_test.py --prefer-xvfb --binary \"$1\"; rc=$?; if [ \"$rc\" = 77 ]; then exit 0; fi; exit \"$rc\"",
+        "python3 tests/e2e/ipc_roundtrip_test.py --prefer-xvfb --binary \"$1\"; rc=$?; if [ \"$rc\" = 77 ]; then echo \"$0: skipped, and a skip is a failure under the gate\" >&2; exit 1; fi; exit \"$rc\"",
         "ipc-roundtrip-e2e",
     });
     ipc_roundtrip_e2e.addArtifactArg(exe);
@@ -2709,7 +2709,7 @@ pub fn build(b: *std.Build) void {
     const page_health_e2e = b.addSystemCommand(&.{
         "sh",
         "-c",
-        "python3 tests/e2e/page_health_test.py --binary \"$1\"; rc=$?; if [ \"$rc\" = 77 ]; then exit 0; fi; exit \"$rc\"",
+        "python3 tests/e2e/page_health_test.py --binary \"$1\"; rc=$?; if [ \"$rc\" = 77 ]; then echo \"$0: skipped, and a skip is a failure under the gate\" >&2; exit 1; fi; exit \"$rc\"",
         "page-health-e2e",
     });
     page_health_e2e.addArtifactArg(exe);
@@ -2719,7 +2719,7 @@ pub fn build(b: *std.Build) void {
     const page_recover_e2e = b.addSystemCommand(&.{
         "sh",
         "-c",
-        "python3 tests/e2e/page_recover_test.py --binary \"$1\"; rc=$?; if [ \"$rc\" = 77 ]; then exit 0; fi; exit \"$rc\"",
+        "python3 tests/e2e/page_recover_test.py --binary \"$1\"; rc=$?; if [ \"$rc\" = 77 ]; then echo \"$0: skipped, and a skip is a failure under the gate\" >&2; exit 1; fi; exit \"$rc\"",
         "page-recover-e2e",
     });
     page_recover_e2e.addArtifactArg(exe);
@@ -3674,7 +3674,7 @@ pub fn build(b: *std.Build) void {
     const automation_dialogs_e2e = b.addSystemCommand(&.{
         "sh",
         "-c",
-        "python3 tests/e2e/automation_dialogs_test.py --binary \"$1\"; rc=$?; if [ \"$rc\" = 77 ]; then exit 0; fi; exit \"$rc\"",
+        "python3 tests/e2e/automation_dialogs_test.py --binary \"$1\"; rc=$?; if [ \"$rc\" = 77 ]; then echo \"$0: skipped, and a skip is a failure under the gate\" >&2; exit 1; fi; exit \"$rc\"",
         "automation-dialogs-e2e",
     });
     automation_dialogs_e2e.addArtifactArg(exe);
@@ -3684,7 +3684,7 @@ pub fn build(b: *std.Build) void {
     const automation_windows_e2e = b.addSystemCommand(&.{
         "sh",
         "-c",
-        "python3 tests/e2e/automation_windows_test.py --prefer-xvfb --binary \"$1\"; rc=$?; if [ \"$rc\" = 77 ]; then exit 0; fi; exit \"$rc\"",
+        "python3 tests/e2e/automation_windows_test.py --prefer-xvfb --binary \"$1\"; rc=$?; if [ \"$rc\" = 77 ]; then echo \"$0: skipped, and a skip is a failure under the gate\" >&2; exit 1; fi; exit \"$rc\"",
         "automation-windows-e2e",
     });
     automation_windows_e2e.addArtifactArg(exe);
@@ -3733,7 +3733,7 @@ pub fn build(b: *std.Build) void {
     const automation_input_e2e = b.addSystemCommand(&.{
         "sh",
         "-c",
-        "python3 tests/e2e/automation_input_test.py --prefer-xvfb --binary \"$1\"; rc=$?; if [ \"$rc\" = 77 ]; then exit 0; fi; exit \"$rc\"",
+        "python3 tests/e2e/automation_input_test.py --prefer-xvfb --binary \"$1\"; rc=$?; if [ \"$rc\" = 77 ]; then echo \"$0: skipped, and a skip is a failure under the gate\" >&2; exit 1; fi; exit \"$rc\"",
         "automation-input-e2e",
     });
     automation_input_e2e.addArtifactArg(exe);
@@ -3742,7 +3742,7 @@ pub fn build(b: *std.Build) void {
     const automation_profile_e2e = b.addSystemCommand(&.{
         "sh",
         "-c",
-        "python3 tests/e2e/automation_profile_test.py --prefer-xvfb --binary \"$1\"; rc=$?; if [ \"$rc\" = 77 ]; then exit 0; fi; exit \"$rc\"",
+        "python3 tests/e2e/automation_profile_test.py --prefer-xvfb --binary \"$1\"; rc=$?; if [ \"$rc\" = 77 ]; then echo \"$0: skipped, and a skip is a failure under the gate\" >&2; exit 1; fi; exit \"$rc\"",
         "automation-profile-e2e",
     });
     automation_profile_e2e.addArtifactArg(exe);
@@ -3751,7 +3751,7 @@ pub fn build(b: *std.Build) void {
     const automation_cookies_e2e = b.addSystemCommand(&.{
         "sh",
         "-c",
-        "python3 tests/e2e/automation_cookies_test.py --prefer-xvfb --binary \"$1\"; rc=$?; if [ \"$rc\" = 77 ]; then exit 0; fi; exit \"$rc\"",
+        "python3 tests/e2e/automation_cookies_test.py --prefer-xvfb --binary \"$1\"; rc=$?; if [ \"$rc\" = 77 ]; then echo \"$0: skipped, and a skip is a failure under the gate\" >&2; exit 1; fi; exit \"$rc\"",
         "automation-cookies-e2e",
     });
     automation_cookies_e2e.addArtifactArg(exe);
@@ -3896,6 +3896,28 @@ pub fn build(b: *std.Build) void {
 
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_unit_tests.step);
+    // bd zigBrowser-4pa.81: these 29 E2Es execute the native GTK/WebKit binary through Linux Xvfb/xsession
+    // (some also inspect /proc or Linux WebKit processes). Do not schedule them for a foreign or non-Linux artifact;
+    // when they are scheduled on native Linux, exit 77 is a gate failure rather than a passing skip.
+    const native_linux_browser_e2e = b.graph.host.result.os.tag == .linux and
+        target.result.os.tag == .linux and
+        b.graph.host.result.cpu.arch == target.result.cpu.arch;
+    const skip_is_failure_census = b.addSystemCommand(&.{
+        "sh",
+        "-c",
+        "set -eu; py=$(command -v python3); t=$(mktemp -d \"${TMPDIR:-/tmp}/zb-skip-census-XXXXXX\"); trap 'case \"$t\" in */zb-skip-census-??????) rm -rf -- \"$t\";; esac' EXIT; mkdir -p \"$t/home\" \"$t/tmp\" \"$t/xdg-cache\" \"$t/xdg-data\"; env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 HOME=\"$t/home\" TMPDIR=\"$t/tmp\" XDG_CACHE_HOME=\"$t/xdg-cache\" XDG_DATA_HOME=\"$t/xdg-data\" \"$py\" -X dev -m unittest -v tests/e2e/skip_is_failure_census_test.py",
+    });
+    skip_is_failure_census.has_side_effects = true;
+    for ([_][]const u8{
+        "build.zig",
+        "tests/e2e/skip_is_failure_census_test.py",
+    }) |input| skip_is_failure_census.addFileInput(b.path(input));
+    const skip_is_failure_census_step = b.step(
+        "test-skip-is-failure-census",
+        "Registered E2E wrappers fail on skip; nonportable browser E2Es are host-gated",
+    );
+    skip_is_failure_census_step.dependOn(&skip_is_failure_census.step);
+    test_step.dependOn(skip_is_failure_census_step);
     // bd zigBrowser-4pa.82: every registered detect_runner E2E requests a private Xvfb on its real target argv,
     // and a strict request refuses rather than falling back to an inherited display or the conventional X1 socket.
     const registered_e2e_private_display = b.addSystemCommand(&.{
@@ -4617,15 +4639,15 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_automation_expect_flow_prenav_tests.step);
     test_step.dependOn(&run_automation_expect_flow_server_tests.step);
     test_step.dependOn(&run_automation_expect_x_flow_server_tests.step);
-    test_step.dependOn(&automation_expect_flow_e2e.step);
+    if (native_linux_browser_e2e) test_step.dependOn(&automation_expect_flow_e2e.step);
     test_step.dependOn(&run_automation_expect_x_flow_tests.step);
-    test_step.dependOn(&automation_expect_x_flow_e2e.step);
+    if (native_linux_browser_e2e) test_step.dependOn(&automation_expect_x_flow_e2e.step);
     test_step.dependOn(&run_automation_recipient_guard_tests.step);
-    test_step.dependOn(&automation_recipient_guard_e2e.step);
+    if (native_linux_browser_e2e) test_step.dependOn(&automation_recipient_guard_e2e.step);
     test_step.dependOn(&run_automation_recipient_owner_tests.step);
-    test_step.dependOn(&automation_recipient_owner_e2e.step);
+    if (native_linux_browser_e2e) test_step.dependOn(&automation_recipient_owner_e2e.step);
     test_step.dependOn(&run_automation_thread_document_tests.step);
-    test_step.dependOn(&automation_thread_document_e2e.step);
+    if (native_linux_browser_e2e) test_step.dependOn(&automation_thread_document_e2e.step);
     test_step.dependOn(&run_owner_only_tests.step);
     test_step.dependOn(&run_agent_setup_ms5_tests.step);
     test_step.dependOn(&run_agent_setup_ms5_python_tests.step);
@@ -4634,17 +4656,17 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&mac_group_cleanup.step);
     test_step.dependOn(&run_transport_ws20_tests.step);
     for (s7a_runs) |run| test_step.dependOn(run);
-    test_step.dependOn(&automation_api_e2e.step);
-    test_step.dependOn(&automation_core_e2e.step);
-    test_step.dependOn(&automation_readiness_e2e.step);
-    test_step.dependOn(&sdk_python_live_e2e.step);
-    test_step.dependOn(&x_flows_e2e.step);
-    test_step.dependOn(&x_native_e2e.step);
-    test_step.dependOn(&social_flows_e2e.step);
+    if (native_linux_browser_e2e) test_step.dependOn(&automation_api_e2e.step);
+    if (native_linux_browser_e2e) test_step.dependOn(&automation_core_e2e.step);
+    if (native_linux_browser_e2e) test_step.dependOn(&automation_readiness_e2e.step);
+    if (native_linux_browser_e2e) test_step.dependOn(&sdk_python_live_e2e.step);
+    if (native_linux_browser_e2e) test_step.dependOn(&x_flows_e2e.step);
+    if (native_linux_browser_e2e) test_step.dependOn(&x_native_e2e.step);
+    if (native_linux_browser_e2e) test_step.dependOn(&social_flows_e2e.step);
     if (target.result.os.tag == .linux) test_step.dependOn(&ms4_4_login_gate_e2e.step);
     if (target.result.os.tag == .linux) test_step.dependOn(&ms4_4_login_gate_cleanup_unit.step);
-    test_step.dependOn(&automation_input_e2e.step);
-    test_step.dependOn(&automation_windows_e2e.step);
+    if (native_linux_browser_e2e) test_step.dependOn(&automation_input_e2e.step);
+    if (native_linux_browser_e2e) test_step.dependOn(&automation_windows_e2e.step);
     test_step.dependOn(&run_automation_guard_tests.step);
     test_step.dependOn(&automation_guard_e2e.step);
     test_step.dependOn(&run_automation_guard_chunks_tests.step);
@@ -4655,17 +4677,17 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_automation_guard_press_tests.step);
     test_step.dependOn(&automation_guard_insert_e2e.step);
     test_step.dependOn(&automation_load_serial_e2e.step);
-    test_step.dependOn(&automation_scroll_e2e.step);
-    test_step.dependOn(&automation_native_ports_e2e.step);
-    test_step.dependOn(&automation_pacing_e2e.step);
-    test_step.dependOn(&automation_profile_e2e.step);
-    test_step.dependOn(&automation_cookies_e2e.step);
-    test_step.dependOn(&http2_goaway_e2e.step);
-    test_step.dependOn(&harness_group_e2e.step);
-    test_step.dependOn(&web_process_crash_e2e.step);
-    test_step.dependOn(&render_config_e2e.step);
-    test_step.dependOn(&slow_load_watchdog_e2e.step);
-    test_step.dependOn(&media_source_e2e.step);
+    if (native_linux_browser_e2e) test_step.dependOn(&automation_scroll_e2e.step);
+    if (native_linux_browser_e2e) test_step.dependOn(&automation_native_ports_e2e.step);
+    if (native_linux_browser_e2e) test_step.dependOn(&automation_pacing_e2e.step);
+    if (native_linux_browser_e2e) test_step.dependOn(&automation_profile_e2e.step);
+    if (native_linux_browser_e2e) test_step.dependOn(&automation_cookies_e2e.step);
+    if (native_linux_browser_e2e) test_step.dependOn(&http2_goaway_e2e.step);
+    if (native_linux_browser_e2e) test_step.dependOn(&harness_group_e2e.step);
+    if (native_linux_browser_e2e) test_step.dependOn(&web_process_crash_e2e.step);
+    if (native_linux_browser_e2e) test_step.dependOn(&render_config_e2e.step);
+    if (native_linux_browser_e2e) test_step.dependOn(&slow_load_watchdog_e2e.step);
+    if (native_linux_browser_e2e) test_step.dependOn(&media_source_e2e.step);
     test_step.dependOn(&agent_drawer_icon_e2e.step);
     test_step.dependOn(&agent_drawer_e2e.step);
     test_step.dependOn(&agent_drawer_copy_e2e.step);
@@ -4692,9 +4714,9 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&agent_default_on_e2e.step);
     test_step.dependOn(&agent_config_check_e2e.step);
     test_step.dependOn(&agent_isolation_e2e.step);
-    test_step.dependOn(&ipc_roundtrip_e2e.step);
-    test_step.dependOn(&page_health_e2e.step);
-    test_step.dependOn(&page_recover_e2e.step);
+    if (native_linux_browser_e2e) test_step.dependOn(&ipc_roundtrip_e2e.step);
+    if (native_linux_browser_e2e) test_step.dependOn(&page_health_e2e.step);
+    if (native_linux_browser_e2e) test_step.dependOn(&page_recover_e2e.step);
     test_step.dependOn(&agent_host_unit.step);
     test_step.dependOn(&agent_host_launcher_contract.step); // WS7.3 [L] portable launcher contract
     test_step.dependOn(&agent_host_wincontain.step);
@@ -4766,7 +4788,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&xinput_vanished_server.step);
     test_step.dependOn(&run_step_unit.step);
     test_step.dependOn(&gate_step_wrappers_unit.step);
-    test_step.dependOn(&automation_dialogs_e2e.step);
+    if (native_linux_browser_e2e) test_step.dependOn(&automation_dialogs_e2e.step);
     test_step.dependOn(&ipc_windows_compile.step);
     test_step.dependOn(&cross_check.step);
     test_step.dependOn(&cross_drawer_win.step);

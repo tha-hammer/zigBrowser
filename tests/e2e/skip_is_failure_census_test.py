@@ -77,10 +77,11 @@ def mapped(source):
 
 def run_step_script(script, name, binary):
     # The step's `python3` is this interpreter (the gate's), first on PATH; the SDK the e2e tests import needs 3.14.
-    env = {"PATH": f"{os.path.dirname(sys.executable)}:/usr/bin:/bin", "LANG": "C.UTF-8", "PYTHONDONTWRITEBYTECODE": "1",
-           "HOME": tempfile.mkdtemp(prefix="zb-skip-home-"), "TMPDIR": tempfile.gettempdir()}
-    return subprocess.run(["sh", "-c", script, name, binary], cwd=ROOT, env=env, stdout=subprocess.PIPE,
-                          stderr=subprocess.STDOUT, timeout=120, check=False)
+    with tempfile.TemporaryDirectory(prefix="zb-skip-home-") as home:
+        env = {"PATH": f"{os.path.dirname(sys.executable)}:/usr/bin:/bin", "LANG": "C.UTF-8",
+               "PYTHONDONTWRITEBYTECODE": "1", "HOME": home, "TMPDIR": tempfile.gettempdir()}
+        return subprocess.run(["sh", "-c", script, name, binary], cwd=ROOT, env=env, stdout=subprocess.PIPE,
+                              stderr=subprocess.STDOUT, timeout=120, check=False)
 
 
 class SkipIsFailure(unittest.TestCase):
