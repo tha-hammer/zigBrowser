@@ -2252,7 +2252,7 @@ pub fn build(b: *std.Build) void {
     const automation_api_e2e = b.addSystemCommand(&.{
         "sh",
         "-c",
-        "python3 tests/e2e/automation_api_lifecycle_test.py --binary \"$1\"; rc=$?; if [ \"$rc\" = 77 ]; then exit 0; fi; exit \"$rc\"",
+        "python3 tests/e2e/automation_api_lifecycle_test.py --prefer-xvfb --binary \"$1\"; rc=$?; if [ \"$rc\" = 77 ]; then exit 0; fi; exit \"$rc\"",
         "automation-api-e2e",
     });
     automation_api_e2e.addArtifactArg(exe);
@@ -2261,7 +2261,7 @@ pub fn build(b: *std.Build) void {
     const automation_core_e2e = b.addSystemCommand(&.{
         "sh",
         "-c",
-        "python3 tests/e2e/automation_core_test.py --binary \"$1\"; rc=$?; if [ \"$rc\" = 77 ]; then exit 0; fi; exit \"$rc\"",
+        "python3 tests/e2e/automation_core_test.py --prefer-xvfb --binary \"$1\"; rc=$?; if [ \"$rc\" = 77 ]; then exit 0; fi; exit \"$rc\"",
         "automation-core-e2e",
     });
     automation_core_e2e.addArtifactArg(exe);
@@ -2270,7 +2270,7 @@ pub fn build(b: *std.Build) void {
     const automation_readiness_e2e = b.addSystemCommand(&.{
         "sh",
         "-c",
-        "python3 tests/e2e/automation_readiness_test.py --binary \"$1\"; rc=$?; if [ \"$rc\" = 77 ]; then exit 0; fi; exit \"$rc\"",
+        "python3 tests/e2e/automation_readiness_test.py --prefer-xvfb --binary \"$1\"; rc=$?; if [ \"$rc\" = 77 ]; then exit 0; fi; exit \"$rc\"",
         "automation-readiness-e2e",
     });
     automation_readiness_e2e.addArtifactArg(exe);
@@ -2279,7 +2279,7 @@ pub fn build(b: *std.Build) void {
     const sdk_python_live_e2e = b.addSystemCommand(&.{
         "sh",
         "-c",
-        "python3 tests/e2e/sdk_python_live_test.py --binary \"$1\"; rc=$?; if [ \"$rc\" = 77 ]; then exit 0; fi; exit \"$rc\"",
+        "python3 tests/e2e/sdk_python_live_test.py --prefer-xvfb --binary \"$1\"; rc=$?; if [ \"$rc\" = 77 ]; then exit 0; fi; exit \"$rc\"",
         "sdk-python-live-e2e",
     });
     sdk_python_live_e2e.addArtifactArg(exe);
@@ -2288,7 +2288,7 @@ pub fn build(b: *std.Build) void {
     const x_flows_e2e = b.addSystemCommand(&.{
         "sh",
         "-c",
-        "python3 tests/e2e/x_flows_test.py --binary \"$1\"; rc=$?; if [ \"$rc\" = 77 ]; then exit 0; fi; exit \"$rc\"",
+        "python3 tests/e2e/x_flows_test.py --prefer-xvfb --binary \"$1\"; rc=$?; if [ \"$rc\" = 77 ]; then exit 0; fi; exit \"$rc\"",
         "x-flows-e2e",
     });
     x_flows_e2e.addArtifactArg(exe);
@@ -2297,7 +2297,7 @@ pub fn build(b: *std.Build) void {
     const x_native_e2e = b.addSystemCommand(&.{
         "sh",
         "-c",
-        "python3 tests/e2e/x_native_test.py --binary \"$1\"; rc=$?; if [ \"$rc\" = 77 ]; then exit 0; fi; exit \"$rc\"",
+        "python3 tests/e2e/x_native_test.py --prefer-xvfb --binary \"$1\"; rc=$?; if [ \"$rc\" = 77 ]; then exit 0; fi; exit \"$rc\"",
         "x-native-e2e",
     });
     x_native_e2e.addArtifactArg(exe);
@@ -2306,7 +2306,7 @@ pub fn build(b: *std.Build) void {
     const social_flows_e2e = b.addSystemCommand(&.{
         "sh",
         "-c",
-        "python3 tests/e2e/social_flows_test.py --binary \"$1\"; rc=$?; if [ \"$rc\" = 77 ]; then exit 0; fi; exit \"$rc\"",
+        "python3 tests/e2e/social_flows_test.py --prefer-xvfb --binary \"$1\"; rc=$?; if [ \"$rc\" = 77 ]; then exit 0; fi; exit \"$rc\"",
         "social-flows-e2e",
     });
     social_flows_e2e.addArtifactArg(exe);
@@ -2330,7 +2330,7 @@ pub fn build(b: *std.Build) void {
     const automation_expect_flow_e2e = b.addSystemCommand(&.{
         "sh",
         "-c",
-        "python3 tests/e2e/automation_expect_flow_test.py --binary \"$1\"; rc=$?; if [ \"$rc\" = 77 ]; then exit 0; fi; exit \"$rc\"",
+        "python3 tests/e2e/automation_expect_flow_test.py --prefer-xvfb --binary \"$1\"; rc=$?; if [ \"$rc\" = 77 ]; then exit 0; fi; exit \"$rc\"",
         "automation-expect-flow-e2e",
     });
     automation_expect_flow_e2e.addArtifactArg(exe);
@@ -2338,7 +2338,7 @@ pub fn build(b: *std.Build) void {
     const automation_expect_x_flow_e2e = b.addSystemCommand(&.{
         "sh",
         "-c",
-        "python3 tests/e2e/automation_expect_x_flow_test.py --binary \"$1\"; rc=$?; if [ \"$rc\" = 77 ]; then exit 0; fi; exit \"$rc\"",
+        "python3 tests/e2e/automation_expect_x_flow_test.py --prefer-xvfb --binary \"$1\"; rc=$?; if [ \"$rc\" = 77 ]; then exit 0; fi; exit \"$rc\"",
         "automation-expect-x-flow-e2e",
     });
     automation_expect_x_flow_e2e.addArtifactArg(exe);
@@ -2346,7 +2346,7 @@ pub fn build(b: *std.Build) void {
     const automation_recipient_guard_e2e = b.addSystemCommand(&.{
         "sh",
         "-c",
-        "python3 tests/e2e/automation_recipient_guard_test.py --binary \"$1\"; rc=$?; if [ \"$rc\" = 77 ]; then exit 0; fi; exit \"$rc\"",
+        "python3 tests/e2e/automation_recipient_guard_test.py --prefer-xvfb --binary \"$1\"; rc=$?; if [ \"$rc\" = 77 ]; then exit 0; fi; exit \"$rc\"",
         "automation-recipient-guard-e2e",
     });
     automation_recipient_guard_e2e.addArtifactArg(exe);
@@ -2354,7 +2354,7 @@ pub fn build(b: *std.Build) void {
     const automation_recipient_owner_e2e = b.addSystemCommand(&.{
         "sh",
         "-c",
-        "python3 tests/e2e/automation_recipient_owner_test.py --binary \"$1\"; rc=$?; if [ \"$rc\" = 77 ]; then exit 0; fi; exit \"$rc\"",
+        "python3 tests/e2e/automation_recipient_owner_test.py --prefer-xvfb --binary \"$1\"; rc=$?; if [ \"$rc\" = 77 ]; then exit 0; fi; exit \"$rc\"",
         "automation-recipient-owner-e2e",
     });
     automation_recipient_owner_e2e.addArtifactArg(exe);
@@ -2362,7 +2362,7 @@ pub fn build(b: *std.Build) void {
     const automation_thread_document_e2e = b.addSystemCommand(&.{
         "sh",
         "-c",
-        "python3 tests/e2e/automation_thread_document_test.py --binary \"$1\"; rc=$?; if [ \"$rc\" = 77 ]; then exit 0; fi; exit \"$rc\"",
+        "python3 tests/e2e/automation_thread_document_test.py --prefer-xvfb --binary \"$1\"; rc=$?; if [ \"$rc\" = 77 ]; then exit 0; fi; exit \"$rc\"",
         "automation-thread-document-e2e",
     });
     automation_thread_document_e2e.addArtifactArg(exe);
@@ -2372,7 +2372,7 @@ pub fn build(b: *std.Build) void {
     const automation_scroll_e2e = b.addSystemCommand(&.{
         "sh",
         "-c",
-        "python3 tests/e2e/automation_scroll_test.py --binary \"$1\"; rc=$?; if [ \"$rc\" = 77 ]; then exit 0; fi; exit \"$rc\"",
+        "python3 tests/e2e/automation_scroll_test.py --prefer-xvfb --binary \"$1\"; rc=$?; if [ \"$rc\" = 77 ]; then exit 0; fi; exit \"$rc\"",
         "automation-scroll-e2e",
     });
     automation_scroll_e2e.addArtifactArg(exe);
@@ -2392,7 +2392,7 @@ pub fn build(b: *std.Build) void {
     const automation_native_ports_e2e = b.addSystemCommand(&.{
         "sh",
         "-c",
-        "python3 tests/e2e/automation_native_ports_test.py --binary \"$1\"; rc=$?; if [ \"$rc\" = 77 ]; then exit 0; fi; exit \"$rc\"",
+        "python3 tests/e2e/automation_native_ports_test.py --prefer-xvfb --binary \"$1\"; rc=$?; if [ \"$rc\" = 77 ]; then exit 0; fi; exit \"$rc\"",
         "automation-native-ports-e2e",
     });
     automation_native_ports_e2e.addArtifactArg(exe);
@@ -2401,7 +2401,7 @@ pub fn build(b: *std.Build) void {
     const automation_pacing_e2e = b.addSystemCommand(&.{
         "sh",
         "-c",
-        "python3 tests/e2e/automation_pacing_persist_test.py --binary \"$1\"; rc=$?; if [ \"$rc\" = 77 ]; then exit 0; fi; exit \"$rc\"",
+        "python3 tests/e2e/automation_pacing_persist_test.py --prefer-xvfb --binary \"$1\"; rc=$?; if [ \"$rc\" = 77 ]; then exit 0; fi; exit \"$rc\"",
         "automation-pacing-e2e",
     });
     automation_pacing_e2e.addArtifactArg(exe);
@@ -3684,7 +3684,7 @@ pub fn build(b: *std.Build) void {
     const automation_windows_e2e = b.addSystemCommand(&.{
         "sh",
         "-c",
-        "python3 tests/e2e/automation_windows_test.py --binary \"$1\"; rc=$?; if [ \"$rc\" = 77 ]; then exit 0; fi; exit \"$rc\"",
+        "python3 tests/e2e/automation_windows_test.py --prefer-xvfb --binary \"$1\"; rc=$?; if [ \"$rc\" = 77 ]; then exit 0; fi; exit \"$rc\"",
         "automation-windows-e2e",
     });
     automation_windows_e2e.addArtifactArg(exe);
@@ -3733,7 +3733,7 @@ pub fn build(b: *std.Build) void {
     const automation_input_e2e = b.addSystemCommand(&.{
         "sh",
         "-c",
-        "python3 tests/e2e/automation_input_test.py --binary \"$1\"; rc=$?; if [ \"$rc\" = 77 ]; then exit 0; fi; exit \"$rc\"",
+        "python3 tests/e2e/automation_input_test.py --prefer-xvfb --binary \"$1\"; rc=$?; if [ \"$rc\" = 77 ]; then exit 0; fi; exit \"$rc\"",
         "automation-input-e2e",
     });
     automation_input_e2e.addArtifactArg(exe);
@@ -3742,7 +3742,7 @@ pub fn build(b: *std.Build) void {
     const automation_profile_e2e = b.addSystemCommand(&.{
         "sh",
         "-c",
-        "python3 tests/e2e/automation_profile_test.py --binary \"$1\"; rc=$?; if [ \"$rc\" = 77 ]; then exit 0; fi; exit \"$rc\"",
+        "python3 tests/e2e/automation_profile_test.py --prefer-xvfb --binary \"$1\"; rc=$?; if [ \"$rc\" = 77 ]; then exit 0; fi; exit \"$rc\"",
         "automation-profile-e2e",
     });
     automation_profile_e2e.addArtifactArg(exe);
@@ -3751,7 +3751,7 @@ pub fn build(b: *std.Build) void {
     const automation_cookies_e2e = b.addSystemCommand(&.{
         "sh",
         "-c",
-        "python3 tests/e2e/automation_cookies_test.py --binary \"$1\"; rc=$?; if [ \"$rc\" = 77 ]; then exit 0; fi; exit \"$rc\"",
+        "python3 tests/e2e/automation_cookies_test.py --prefer-xvfb --binary \"$1\"; rc=$?; if [ \"$rc\" = 77 ]; then exit 0; fi; exit \"$rc\"",
         "automation-cookies-e2e",
     });
     automation_cookies_e2e.addArtifactArg(exe);
@@ -3896,6 +3896,45 @@ pub fn build(b: *std.Build) void {
 
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_unit_tests.step);
+    // bd zigBrowser-4pa.82: every registered detect_runner E2E requests a private Xvfb on its real target argv,
+    // and a strict request refuses rather than falling back to an inherited display or the conventional X1 socket.
+    const registered_e2e_private_display = b.addSystemCommand(&.{
+        "sh",
+        "-c",
+        "set -eu; t=$(mktemp -d \"${TMPDIR:-/tmp}/zb-private-display-XXXXXX\"); trap 'case \"$t\" in */zb-private-display-??????) rm -rf -- \"$t\";; esac' EXIT; mkdir -p \"$t/home\" \"$t/tmp\" \"$t/xdg-cache\" \"$t/xdg-data\"; env -i PATH=/usr/local/bin:/usr/bin:/bin HOME=\"$t/home\" TMPDIR=\"$t/tmp\" XDG_CACHE_HOME=\"$t/xdg-cache\" XDG_DATA_HOME=\"$t/xdg-data\" DISPLAY=:59999 python3 -I -B tests/e2e/registered_e2e_private_display_test.py -v",
+    });
+    registered_e2e_private_display.has_side_effects = true;
+    for ([_][]const u8{
+        "build.zig",
+        "tests/e2e/slice2_common.py",
+        "tests/e2e/registered_e2e_private_display_test.py",
+        "tests/e2e/automation_api_lifecycle_test.py",
+        "tests/e2e/automation_core_test.py",
+        "tests/e2e/automation_readiness_test.py",
+        "tests/e2e/sdk_python_live_test.py",
+        "tests/e2e/x_flows_test.py",
+        "tests/e2e/x_native_test.py",
+        "tests/e2e/social_flows_test.py",
+        "tests/e2e/automation_expect_flow_test.py",
+        "tests/e2e/automation_expect_x_flow_test.py",
+        "tests/e2e/automation_recipient_guard_test.py",
+        "tests/e2e/automation_recipient_owner_test.py",
+        "tests/e2e/automation_thread_document_test.py",
+        "tests/e2e/automation_scroll_test.py",
+        "tests/e2e/automation_native_ports_test.py",
+        "tests/e2e/automation_pacing_persist_test.py",
+        "tests/e2e/automation_windows_test.py",
+        "tests/e2e/automation_input_test.py",
+        "tests/e2e/automation_profile_test.py",
+        "tests/e2e/automation_cookies_test.py",
+        "tests/e2e/ipc_roundtrip_test.py",
+    }) |input| registered_e2e_private_display.addFileInput(b.path(input));
+    const registered_e2e_private_display_step = b.step(
+        "test-registered-e2e-private-display",
+        "Registered detect_runner E2E steps use only a private Xvfb or refuse",
+    );
+    registered_e2e_private_display_step.dependOn(&registered_e2e_private_display.step);
+    test_step.dependOn(registered_e2e_private_display_step);
     // bd zigBrowser-3ui.11: a failure after GTK start is reported, not a hang, and a hanging test is named.
     if (backend == .gtk_backend) {
         const gtk_test_env_selftest = b.addSystemCommand(&.{
@@ -4856,7 +4895,11 @@ fn guardDisplay(b: *std.Build) void {
     const unguarded = [_][]const u8{ "install", "uninstall", "agent-runtime", "mac-gate", "ms1b-gate", "ms2a-gate", "ms2b-gate", "ms2c-gate", "ms3-gate", "ws3-shim-test-win", "owner-only-test-win" };
     next: for (b.top_level_steps.keys(), b.top_level_steps.values()) |name, top| {
         for (unguarded) |skip| if (std.mem.eql(u8, name, skip)) continue :next;
-        for (top.step.dependencies.items) |dep| dep.dependOn(&guard.step);
+        for (top.step.dependencies.items) |dep| {
+            // Aggregate test may depend on another top-level step that already received this guard.
+            if (dep == &guard.step) continue;
+            dep.dependOn(&guard.step);
+        }
     }
 }
 

@@ -225,24 +225,22 @@ def detect_runner(prefer_xvfb: bool) -> tuple[list[str], dict[str, str], str] | 
     xvfb = shutil.which("Xvfb") is not None and shutil.which("xauth") is not None
     display = env.get("DISPLAY")
 
+    # A strict private request never falls back to the caller's display.
+    if prefer_xvfb:
+        if xvfb:
+            return xsession_prefix(True), env, "xvfb"
+        eprint("SKIP: --prefer-xvfb requires Xvfb and xauth")
+        return None
+
     # Local default: live display first.
-    if not prefer_xvfb:
-        if display:
-            return xsession_prefix(False), env, f"DISPLAY={display}"
-        if Path("/tmp/.X11-unix/X1").exists():
-            env["DISPLAY"] = ":1"
-            return xsession_prefix(False), env, "DISPLAY=:1"
-
-    # CI / explicit xvfb preference: a private Xvfb owned by xsession.py.
-    if xvfb:
-        return xsession_prefix(True), env, "xvfb"
-
-    # Fallback to live display when xvfb is requested but unavailable.
     if display:
         return xsession_prefix(False), env, f"DISPLAY={display}"
     if Path("/tmp/.X11-unix/X1").exists():
         env["DISPLAY"] = ":1"
         return xsession_prefix(False), env, "DISPLAY=:1"
+
+    if xvfb:
+        return xsession_prefix(True), env, "xvfb"
 
     eprint("SKIP: no DISPLAY and no Xvfb/xauth; install xvfb or export DISPLAY")
     return None
