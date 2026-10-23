@@ -734,6 +734,15 @@ pub fn build(b: *std.Build) void {
         "src/wkwebview_shim.m",
     }) |input| cookie_inflight_binding.addFileInput(b.path(input));
     b.step("test-cookie-inflight-binding", "4pa.56: every cookie call is released to INFLIGHT after its submit, so its timeout applies").dependOn(&cookie_inflight_binding.step);
+    // 4pa.57 MS2b.2: dialog.get, page.list and dialog.respond share the same stable windowId even after a middle
+    // popup closes. The runtime proof is the held Mac row mac_ms2b_dialog_popup_id_test.py.
+    const dialog_window_id_binding = b.addSystemCommand(&.{ "python3", "tests/e2e/mac_dialog_window_id_binding_test.py" });
+    for ([_][]const u8{
+        "tests/e2e/mac_dialog_window_id_binding_test.py",
+        "tests/e2e/mac_load_exit_timer_binding_test.py",
+        "src/wkwebview_shim.m",
+    }) |input| dialog_window_id_binding.addFileInput(b.path(input));
+    b.step("test-dialog-window-id-binding", "4pa.57: dialogs retain the page.list window id after another popup closes").dependOn(&dialog_window_id_binding.step);
 
     // Hook 16 inert row (SilverRidge 8721b6d, option B): the data-store selection decision of the e2e-only hook
     // ZB_DEBUG_EPHEMERAL_DATA_STORE, probed through src/zb_test_hook_gate.h with no AppKit and no WebKit store.
@@ -4317,6 +4326,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_hook16_tests.step);
     test_step.dependOn(&native_close_binding.step);
     test_step.dependOn(&cookie_inflight_binding.step);
+    test_step.dependOn(&dialog_window_id_binding.step);
     test_step.dependOn(&run_hook14_tests.step);
     test_step.dependOn(&run_app_profile_dir_tests.step);
     test_step.dependOn(&run_agent_drawer_tests.step);

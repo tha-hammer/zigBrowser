@@ -1861,12 +1861,13 @@ int zb_automation_list_dialogs(unsigned int timeout_ms, char **out_json) {
         NSArray<ZBWindowHost *> *hosts = app.windows != nil ? app.windows
                                        : (app.mainWindow != nil ? @[ app.mainWindow ] : @[]);
         [hosts enumerateObjectsUsingBlock:^(ZBWindowHost *h, NSUInteger idx, BOOL *stop) {
+          (void)idx;
           (void)stop;
           if (h == nil || h.pendingDialogKind == 0) return;
           NSString *type = h.pendingDialogKind == 1 ? @"alert"
                          : h.pendingDialogKind == 2 ? @"confirm"
                          : h.pendingDialogKind == 3 ? @"prompt" : @"beforeunload";
-          NSMutableDictionary *d = [@{ @"window": @(idx + 1), @"type": type,
+          NSMutableDictionary *d = [@{ @"window": @(h.windowId), @"type": type,
                                        @"message": (h.pendingDialogMessage ?: @"") } mutableCopy];
           if (h.pendingDialogKind == 3) d[@"default_text"] = h.pendingDialogDefault ?: @"";
           [arr addObject:d];

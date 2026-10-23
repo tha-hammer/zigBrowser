@@ -2,8 +2,8 @@
 """bd zigBrowser-4pa.57 (plan R30-MS2, MS2b.2): dialog.get and page.list must name a window with the
 same stable id, and dialog.respond must resolve that id through the same stable-id lookup.
 
-RED, UNREGISTERED. The green registers this oracle beside the 4pa.55/4pa.58/4pa.56 shim-binding
-oracles. The real runtime red is tests/e2e/mac_ms2b_dialog_popup_id_test.py: it opens windows 1, 2 and
+Registered beside the 4pa.55/4pa.58/4pa.56 shim-binding oracles (red 220e8276, approved by SilverRidge
+8aff5a93). The real runtime red is tests/e2e/mac_ms2b_dialog_popup_id_test.py: it opens windows 1, 2 and
 3, closes 2, opens a confirm in 3, and requires dialog.get/list/respond to keep naming window 3.
 
 No Objective-C runtime exists on the Linux gate, so this hostless oracle reads the real
@@ -24,6 +24,7 @@ Rows (each failure names its row):
   zb_auto_window_for_id(win), then responds on that returned host.
 
 Run: python3 tests/e2e/mac_dialog_window_id_binding_test.py [shim path]
+Registered: zig build test-dialog-window-id-binding
 """
 from __future__ import annotations
 
