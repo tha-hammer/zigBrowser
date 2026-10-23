@@ -391,7 +391,12 @@ pub fn build(b: *std.Build) void {
     // pinned host key checked before any contact, named fields, one guarded `scp -O` file in zb\ only. The step runs
     // python3 directly; the selftest itself starts every probe run under `unshare --user --map-current-user --net`.
     const windows_win10_probe_selftest = b.addSystemCommand(&.{ "python3", "-I", "tests/windows/win10_probe_selftest.py" });
-    b.step("windows-win10-probe-selftest", "Run the Win10 read-only probe selftest (fake box, netns)").dependOn(&windows_win10_probe_selftest.step);
+    // R2 (NavyCanyon 13a73828): its red is registered as it is (read-only discovery; the separate marker-gated,
+    // fail-closed --scp-check mode).
+    const windows_win10_probe_r2 = b.addSystemCommand(&.{ "python3", "-I", "tests/windows/win10_probe_r2_red_test.py" });
+    const windows_win10_probe_step = b.step("windows-win10-probe-selftest", "Run the Win10 read-only probe selftest (fake box, netns)");
+    windows_win10_probe_step.dependOn(&windows_win10_probe_selftest.step);
+    windows_win10_probe_step.dependOn(&windows_win10_probe_r2.step);
     const windows_win10_spike_run_selftest = b.addSystemCommand(&.{ "python3", "-I", "tests/windows/win10_spike_run_selftest.py" });
     b.step("windows-win10-spike-run-selftest", "Run the WS2b.1-W10 copy-to-Win10 spike driver selftest (fake build/ssh/scp, netns)").dependOn(&windows_win10_spike_run_selftest.step);
 
@@ -3844,6 +3849,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&windows_incident_cleanup_selftest.step);
     test_step.dependOn(&windows_incident_cleanup_r2.step);
     test_step.dependOn(&windows_win10_probe_selftest.step);
+    test_step.dependOn(&windows_win10_probe_r2.step);
     test_step.dependOn(&windows_win10_spike_run_selftest.step);
     test_step.dependOn(&windows_build_selftest.step);
     test_step.dependOn(&windows_pe_census_selftest.step);

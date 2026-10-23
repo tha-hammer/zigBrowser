@@ -160,13 +160,15 @@ class Win10Probe(unittest.TestCase):
         return proc, calls, final, fields, detail
 
     def test_happy_probe_reports_every_field_and_proves_legacy_scp_then_removes_its_file(self):
-        proc, calls, final, fields, detail = self._run()
+        # 13a73828: the copy lives only in the marker-gated --scp-check mode
+        proc, calls, final, fields, detail = self._run(args=("--scp-check", "zb-win10-fs-2026-10-23"),
+                                                       facts={"marker": "zb-win10-fs-2026-10-23"})
         self.assertEqual(proc.returncode, 0, detail)
         for name in ("hostkey", "marker", "zb_dir", "webview2_pv", "c_free_bytes", "python", "powershell_ok", "os",
                      "user", "cmd_if_exist", "scp_legacy", "scp_cleanup"):
             self.assertIn(name, fields, f"field {name}" + detail)
         self.assertEqual(fields["hostkey"], FP, detail)
-        self.assertEqual(fields["marker"], "absent", detail)
+        self.assertEqual(fields["marker"], "zb-win10-fs-2026-10-23", detail)
         self.assertEqual(fields["webview2_pv"], "155.0.4283.62", detail)
         self.assertEqual(fields["cmd_if_exist"], "PRESENT", detail)
         self.assertEqual(fields["scp_legacy"], "ok", detail)
@@ -198,26 +200,29 @@ class Win10Probe(unittest.TestCase):
     def test_no_zb_dir_skips_the_scp_and_writes_nothing(self):
         proc, calls, final, fields, detail = self._run(facts={"zb_dir": "absent"})
         self.assertEqual(proc.returncode, 0, detail)
-        self.assertEqual(fields["scp_legacy"], "skipped: no zb dir", detail)
+        self.assertEqual(fields["scp_legacy"], "not run: read-only discovery", detail)
         self.assertEqual([c for c in calls if c["tool"] == "scp"], [], "no write at all" + detail)
         self.assertEqual(final.get("dels", []), [], detail)
 
     def test_a_failed_scp_is_reported_and_nothing_is_deleted(self):
-        proc, calls, final, fields, detail = self._run(scp_fail=True)
-        self.assertEqual(proc.returncode, 0, detail)
+        proc, calls, final, fields, detail = self._run(args=("--scp-check", "zb-win10-fs-2026-10-23"),
+                                                       facts={"marker": "zb-win10-fs-2026-10-23"}, scp_fail=True)
+        self.assertEqual(proc.returncode, 1, "13a73828: a failed copy is a failed check" + detail)
         self.assertTrue(fields["scp_legacy"].startswith("fail"), detail)
         self.assertEqual(fields["scp_cleanup"], "gone", detail)
         self.assertEqual(final.get("dels", []), [], "no file, no delete" + detail)
 
     def test_a_readback_mismatch_is_a_failed_scp_and_the_file_is_still_removed(self):
-        proc, calls, final, fields, detail = self._run(readback="garbage")
-        self.assertEqual(proc.returncode, 0, detail)
+        proc, calls, final, fields, detail = self._run(args=("--scp-check", "zb-win10-fs-2026-10-23"),
+                                                       facts={"marker": "zb-win10-fs-2026-10-23"}, readback="garbage")
+        self.assertEqual(proc.returncode, 1, "13a73828: a mismatched read-back is a failed check" + detail)
         self.assertTrue(fields["scp_legacy"].startswith("fail"), detail)
         self.assertEqual(fields["scp_cleanup"], "gone", detail)
         self.assertEqual(final["files"], {}, detail)
 
     def test_a_probe_file_left_behind_fails_the_run(self):
-        proc, calls, final, fields, detail = self._run(del_fail=True)
+        proc, calls, final, fields, detail = self._run(args=("--scp-check", "zb-win10-fs-2026-10-23"),
+                                                       facts={"marker": "zb-win10-fs-2026-10-23"}, del_fail=True)
         self.assertEqual(proc.returncode, 1, detail)
         self.assertEqual(fields["scp_cleanup"], "left", detail)
 
