@@ -26,10 +26,17 @@ Win10 session separately, and can answer (or fail) a Win10 probe only once a liv
     `--probe-only` stays readiness-only and zero-write (Win10 at free_gb 0 with no session and no root passes, and no
     Win10 session is triggered); an unset Win10 host is named.
 
+Fix-forward (NavyCanyon 43ff3a9e): both combined cases also require the exact `1 of 2 live tests` summary; a
+session-helper result passes, on either host, only as the one exact record `RESULT=OK interactive=True locked=False`
+(optionally after verify_task.ps1's `VERIFY=OK` line, which it always prints first; Windows CRLF normalized) from a
+zero-rc transport, so OKAY, prefixes, suffixes, duplicates, contradictions, a failed VERIFY and a nonzero transport
+stop before any live row; and the two registered selftests scrub one identical, complete set of host variables.
+
 Run alone:  unshare --user --map-current-user --net python3 -I tests/windows/gate_win10_product_red_test.py -v
 """
 import json
 import pathlib
+import re
 import sys
 import tempfile
 import unittest
@@ -50,8 +57,11 @@ __kind=other
 case "$__body" in *schtasks*) __kind=session ;; "") ;; *) __kind=probe ;; esac
 __nonce=$(printf '%s' "$__body" | grep -o "ws0-[A-Za-z0-9-]*" | head -n1)
 if [ -n "${ZB_SELFTEST_ORDER_LOG:-}" ]; then printf '%s %s ran=%s nonce=%s\n' "$__host" "$__kind" "$__ran" "$__nonce" >> "$ZB_SELFTEST_ORDER_LOG"; fi
-if [ "$__host" = win10 ] && [ "$__kind" = session ] && [ -n "${ZB_SELFTEST_SESSION_RESULT_WIN10+x}" ]; then
-  printf '%s' "$ZB_SELFTEST_SESSION_RESULT_WIN10"; exit 0
+if [ "$__kind" = session ] && [ "$__host" = win10 ] && [ -n "${ZB_SELFTEST_SESSION_RESULT_WIN10+x}" ]; then
+  printf '%s' "$ZB_SELFTEST_SESSION_RESULT_WIN10"; exit "${ZB_SELFTEST_SESSION_RC_WIN10:-0}"
+fi
+if [ "$__kind" = session ] && [ "$__host" = win11 ] && [ -n "${ZB_SELFTEST_SESSION_RESULT_WIN11+x}" ]; then
+  printf '%s' "$ZB_SELFTEST_SESSION_RESULT_WIN11"; exit "${ZB_SELFTEST_SESSION_RC_WIN11:-0}"
 fi
 if [ "$__host" = win10 ] && [ "$__kind" = probe ] && [ "$__ran" -gt 0 ]; then
   if [ -n "${ZB_SELFTEST_FAIL_WIN10_AFTER_RUN:-}" ]; then exit "$ZB_SELFTEST_FAIL_WIN10_AFTER_RUN"; fi
@@ -87,6 +97,23 @@ def fs(drop=(), **over):
 
 PASS2 = [("a_test.py", "pass"), ("b_test.py", "pass")]
 FAIL_ROW = "FAIL tests/windows/fake/f_test.py: failed (exit 1)"
+LIVE_SUMMARY = "gate: product run FAILED: 1 of 2 live tests: tests/windows/fake/f_test.py"  # 43ff3a9e (m14)
+OK_RECORD = "RESULT=OK interactive=True locked=False"
+# Each must stop the run before any live row, on either host (43ff3a9e): (result, transport rc).
+BAD_SESSIONS = {
+    "nonzero transport": (OK_RECORD, "255"),
+    "OKAY": ("RESULT=OKAY interactive=True locked=False", "0"),
+    "prefixed garbage": ("garbage " + OK_RECORD, "0"),
+    "suffix": (OK_RECORD + " extra", "0"),
+    "duplicate success": (OK_RECORD + "\n" + OK_RECORD, "0"),
+    "duplicate after VERIFY": ("VERIFY=OK\n" + OK_RECORD + "\n" + OK_RECORD, "0"),
+    "not interactive": ("RESULT=OK interactive=False locked=False", "0"),
+    "locked": ("RESULT=OK interactive=True locked=True", "0"),
+    "failed VERIFY then OK": ("VERIFY=TASK_MISSING\n" + OK_RECORD, "0"),
+    "bare CR inside the record": (OK_RECORD + "\rjunk", "0"),
+}
+# What the real helper prints on success: verify_task.ps1's VERIFY line, then the record, CRLF-terminated.
+REAL_OK = "VERIFY=OK\r\n" + OK_RECORD + "\r\n"
 POST_TRANSPORT = "Win10 post-run probe transport failed"
 SESSION_STOP = "Win10 in-console session helper"
 
@@ -183,13 +210,13 @@ class PostRunFence(_Case):
         with tempfile.TemporaryDirectory() as t:
             proc, ran, rows = self.product(pathlib.Path(t), [("f_test.py", "fail1"), ("a_test.py", "pass")],
                                            {"ZB_SELFTEST_PROBE_WIN10_AFTER_RUN": fs(fw_rules_hash="changed")})
-            self.assertFailsAfterTests(proc, ran, rows, 2, FAIL_ROW, "firewall rules changed")
+            self.assertFailsAfterTests(proc, ran, rows, 2, FAIL_ROW, LIVE_SUMMARY, "firewall rules changed")
 
     def test_a_failed_test_and_a_post_transport_failure_are_both_reported(self):
         with tempfile.TemporaryDirectory() as t:
             proc, ran, rows = self.product(pathlib.Path(t), [("f_test.py", "fail1"), ("a_test.py", "pass")],
                                            {"ZB_SELFTEST_FAIL_WIN10_AFTER_RUN": "255"})
-            self.assertFailsAfterTests(proc, ran, rows, 2, FAIL_ROW, POST_TRANSPORT)
+            self.assertFailsAfterTests(proc, ran, rows, 2, FAIL_ROW, LIVE_SUMMARY, POST_TRANSPORT)
 
     def test_a_post_run_transport_failure_names_win10(self):
         with tempfile.TemporaryDirectory() as t:
@@ -230,6 +257,67 @@ class ProductPreconditions(_Case):
             with self.subTest(result=result), tempfile.TemporaryDirectory() as t:
                 proc, ran, rows = self.product(pathlib.Path(t), PASS2, {"ZB_SELFTEST_SESSION_RESULT_WIN10": result})
                 self.assertStopsBeforeTests(proc, ran, rows, SESSION_STOP)
+
+
+class StrictSessionRecord(_Case):
+    """43ff3a9e: one strict parser for both session paths."""
+
+    def test_a_malformed_or_failed_win10_session_stops_before_any_row(self):
+        for what, (result, rc) in BAD_SESSIONS.items():
+            with self.subTest(win10=what), tempfile.TemporaryDirectory() as t:
+                proc, ran, rows = self.product(pathlib.Path(t), PASS2, {
+                    "ZB_SELFTEST_SESSION_RESULT_WIN10": result, "ZB_SELFTEST_SESSION_RC_WIN10": rc})
+                self.assertStopsBeforeTests(proc, ran, rows, SESSION_STOP)
+                self.assertEqual(self.win10(rows, "probe"), [], "no Win10 probe after a refused session" + self.detail(proc, ran, rows))
+
+    def test_a_malformed_or_failed_vm_session_stops_before_any_row(self):
+        for what, (result, rc) in BAD_SESSIONS.items():
+            with self.subTest(vm=what), tempfile.TemporaryDirectory() as t:
+                proc, ran, rows = self.product(pathlib.Path(t), PASS2, {
+                    "ZB_SELFTEST_SESSION_RESULT_WIN11": result, "ZB_SELFTEST_SESSION_RC_WIN11": rc})
+                self.assertStopsBeforeTests(proc, ran, rows, "VM in-console session helper")
+                self.assertEqual([r for r in rows if r["host"] == "win10"], [],
+                                 "the Win10 box is not contacted after a refused VM session" + self.detail(proc, ran, rows))
+
+    def test_a_malformed_vm_session_also_fails_probe_only(self):
+        for what, (result, rc) in BAD_SESSIONS.items():
+            with self.subTest(vm=what), tempfile.TemporaryDirectory() as t:
+                proc = gts._TwoHostCase._run_probe_only(self, pathlib.Path(t), {
+                    "ZB_SELFTEST_ORDER_LOG": str(pathlib.Path(t) / "order.log"),
+                    "ZB_SELFTEST_SESSION_RESULT_WIN11": result, "ZB_SELFTEST_SESSION_RC_WIN11": rc})
+                self._assert_fail_closed(proc, "VM in-console session helper")
+
+    def test_the_real_helper_output_passes_on_both_hosts(self):
+        with tempfile.TemporaryDirectory() as t:
+            proc, ran, rows = self.product(pathlib.Path(t), PASS2, {
+                "ZB_SELFTEST_SESSION_RESULT_WIN10": REAL_OK, "ZB_SELFTEST_SESSION_RESULT_WIN11": REAL_OK})
+            d = self.detail(proc, ran, rows)
+            self.assertEqual(proc.returncode, 0, "VERIFY=OK then the exact record, CRLF-terminated, is a success" + d)
+            self.assertEqual(len(ran), 2, d)
+
+
+class ScrubRegistration(unittest.TestCase):
+    """43ff3a9e (supporting, a source tripwire): both registered selftests remove one identical, complete set of host
+    variables before python3 runs."""
+
+    @staticmethod
+    def _removed(src, const):
+        m = re.search(r"const " + const + r" = b\.addSystemCommand\(&\.\{(.*?)\}\);", src, re.S)
+        if not m:
+            raise AssertionError(f"build.zig declares no `const {const} = b.addSystemCommand(...)`")
+        argv = re.findall(r'"((?:[^"\\]|\\.)*)"', m.group(1))
+        head = argv[:argv.index("python3")]
+        return {head[i + 1] for i, a in enumerate(head[:-1]) if a == "-u"}
+
+    def test_both_registrations_scrub_the_same_complete_set(self):
+        src = (gts.REPO / "build.zig").read_text()
+        twohost = self._removed(src, "windows_twohost_selftest")
+        product = self._removed(src, "windows_win10_product_selftest")
+        self.assertEqual(twohost, product, "the two registered selftests scrub different variable sets")
+        gate_reads = set(re.findall(r"ZB_WIN(?:11|10)_[A-Z0-9_]+", (gts.REPO / "tests/windows/gate.sh").read_text()))
+        required = gate_reads | {"ZB_HOST_LIVE", "ZB_WIN_KEY", "ZB_WIN_KNOWN_HOSTS", "ZB_WIN11_MARKER",
+                                 "ZB_WIN11_OTHER_USER", "ZB_WIN10_MARKER", "ZB_WIN10_PYTHON"}
+        self.assertEqual(sorted(required - twohost), [], "a host variable is not removed before the selftests run")
 
 
 class Guards(_Case):

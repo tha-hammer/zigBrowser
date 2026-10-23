@@ -233,6 +233,29 @@ PS
     'powershell -NoProfile -NonInteractive -Command "$input | Out-String | iex"' <<<"$ps"
 }
 
+# bd zigBrowser-ong.8 (NavyCanyon 43ff3a9e): the ONE parser for a session-helper result, on both hosts. Success is
+# exactly the record below, optionally after verify_task.ps1's `VERIFY=OK` line (it always prints its verdict first),
+# with Windows CRLF normalized and blank lines dropped; anything else fails: OKAY, a prefix or suffix, a duplicate, a
+# contradictory field, a failed VERIFY, a bare CR. The caller checks the transport rc separately.
+SESSION_OK_RECORD="RESULT=OK interactive=True locked=False"
+session_result_ok() { # $1 = the helper's stdout ; returns 0 only for the exact success record
+  local out="${1//$'\r\n'/$'\n'}" line
+  local -a lines=()
+  out="${out%$'\r'}"
+  while IFS= read -r line; do
+    if [ -n "$line" ]; then
+      lines+=("$line")
+    fi
+  done <<<"$out"
+  if [ "${#lines[@]}" -eq 1 ] && [ "${lines[0]}" = "$SESSION_OK_RECORD" ]; then
+    return 0
+  fi
+  if [ "${#lines[@]}" -eq 2 ] && [ "${lines[0]}" = "VERIFY=OK" ] && [ "${lines[1]}" = "$SESSION_OK_RECORD" ]; then
+    return 0
+  fi
+  return 1
+}
+
 # RoseCat be655f3 (2): the one owner-approved Win10 share exception (single source of truth for the pin
 # check AND the schema validator). Unset ZB_WIN10_SHARE_EXCEPTIONS means no exception.
 ZB_FS_EXC_PINNED='K:\=exFAT, no ACL possible; owner accepted 2026-10-21'
@@ -576,15 +599,16 @@ vm_readiness() { # WS0.6 (VM identity, snapshot) + WS0.1 (VM session) + the VM p
   # WS0.1: trigger the in-console session helper on the VM with a fresh per-run nonce and AWAIT a
   # nonce-matching session.json (bounded). No manual console step. If it does not return OK, fail closed
   # before any probe — a VM with no fresh, nonce-correlated session result is not ready.
-  local nonce sres sess_sha
+  local nonce sres sess_sha sess_rc parse_rc
   nonce="ws0-$(date -u +%Y%m%dT%H%M%SZ)-$$-${RANDOM}${RANDOM}"
   sess_sha=$(sha256sum "$HERE/session_probe.ps1" | awk '{print $1}')
-  sres=$(run_session_probe "$ZB_WIN11_USER" "$ZB_WIN11_HOST" "$ZB_WIN11_PORT" "$vm_key" "$vm_kh" "$nonce" "$sess_sha")
-  echo "WS0.1: VM session-probe -> $sres" >&2
-  case "$sres" in
-    *RESULT=OK*) : ;;
-    *) echo "NOT RUN: VM in-console session helper did not return a fresh nonce-matching result ($sres)" >&2; return 1 ;;
-  esac
+  sres=$(run_session_probe "$ZB_WIN11_USER" "$ZB_WIN11_HOST" "$ZB_WIN11_PORT" "$vm_key" "$vm_kh" "$nonce" "$sess_sha"); sess_rc=$?
+  echo "WS0.1: VM session-probe (rc=$sess_rc) -> $sres" >&2
+  session_result_ok "$sres"; parse_rc=$?
+  if [ "$sess_rc" -ne 0 ] || [ "$parse_rc" -ne 0 ]; then
+    echo "NOT RUN: VM in-console session helper did not return a fresh nonce-matching result (rc=$sess_rc: $sres)" >&2
+    return 1
+  fi
   # EXPLICIT transport rc checks: an unreachable host or an ssh host-key refusal (StrictHostKeyChecking=yes
   # => rc 255) must fail the gate HERE, before any success row is accepted — never rely on empty JSON failing
   # later in validation. (probe_host's rc is ssh's rc.)
@@ -648,16 +672,16 @@ product_run() {
   if [ "$ready_rc" -ne 0 ]; then
     echo "$not_ready" >&2; return 1
   fi
-  local fs_key="$ZB_WIN10_KEY" fs_kh="$ZB_WIN10_KNOWN_HOSTS" nonce10 sess_sha sres10
+  local fs_key="$ZB_WIN10_KEY" fs_kh="$ZB_WIN10_KNOWN_HOSTS" nonce10 sess_sha sres10 sess10_rc parse10_rc
   nonce10="ws0-w10-$(date -u +%Y%m%dT%H%M%SZ)-$$-${RANDOM}${RANDOM}"
   sess_sha=$(sha256sum "$HERE/session_probe.ps1" | awk '{print $1}')
-  sres10=$(run_session_probe "$ZB_WIN10_USER" "$ZB_WIN10_HOST" "$ZB_WIN10_PORT" "$fs_key" "$fs_kh" "$nonce10" "$sess_sha")
-  echo "WS0.9-W10: Win10 session-probe -> $sres10" >&2
-  case "$sres10" in
-    *RESULT=OK*) : ;;
-    *) echo "NOT RUN: Win10 in-console session helper did not return a fresh nonce-matching result ($sres10)" >&2
-       echo "$not_ready" >&2; return 1 ;;
-  esac
+  sres10=$(run_session_probe "$ZB_WIN10_USER" "$ZB_WIN10_HOST" "$ZB_WIN10_PORT" "$fs_key" "$fs_kh" "$nonce10" "$sess_sha"); sess10_rc=$?
+  echo "WS0.9-W10: Win10 session-probe (rc=$sess10_rc) -> $sres10" >&2
+  session_result_ok "$sres10"; parse10_rc=$?
+  if [ "$sess10_rc" -ne 0 ] || [ "$parse10_rc" -ne 0 ]; then
+    echo "NOT RUN: Win10 in-console session helper did not return a fresh nonce-matching result (rc=$sess10_rc: $sres10)" >&2
+    echo "$not_ready" >&2; return 1
+  fi
   local fs_pre pre_rc pre_valid_rc
   fs_pre=$(probe_host "$ZB_WIN10_USER" "$ZB_WIN10_HOST" "$ZB_WIN10_PORT" "$fs_key" "$fs_kh" "$GATE_FS_EXC"); pre_rc=$?
   if [ "$pre_rc" -ne 0 ]; then

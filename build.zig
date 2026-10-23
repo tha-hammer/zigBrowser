@@ -413,13 +413,21 @@ pub fn build(b: *std.Build) void {
         "-u",      "ZB_WIN10_KEY",
         "-u",      "ZB_WIN10_KNOWN_HOSTS",
         "-u",      "ZB_WIN10_LISTEN",
+        "-u",      "ZB_WIN11_MARKER",
+        "-u",      "ZB_WIN11_OTHER_USER",
+        "-u",      "ZB_WIN11_DOMAIN",
+        "-u",      "ZB_WIN11_SNAPSHOT",
+        "-u",      "ZB_WIN10_MARKER",
+        "-u",      "ZB_WIN10_PYTHON",
+        "-u",      "ZB_WIN10_SHARE_EXCEPTIONS",
         "python3", "-I",
         "tests/windows/gate_twohost_selftest.py",
     });
     const windows_host_live_optin = b.addSystemCommand(&.{ "python3", "-I", "tests/windows/host_live_optin_test.py" });
     // bd zigBrowser-ong.8 (WS0.9-W10, NavyCanyon b6ff5c68): the product run's Win10 stages (session trigger, pre
     // probe, product-pre, every phase entry, post probe, product-post). Its red gate_win10_product_red_test.py
-    // (58f1bbee) runs unchanged against the same fakes, in an empty network namespace with every host variable removed.
+    // (58f1bbee) runs against the same fakes, in an empty network namespace. Both selftests remove the same, complete
+    // set of host variables (43ff3a9e); ScrubRegistration in that suite asserts the two sets are identical.
     const windows_win10_product_selftest = b.addSystemCommand(&.{
         "unshare", "--user", "--map-current-user", "--net", "--",
         "env",
@@ -437,6 +445,13 @@ pub fn build(b: *std.Build) void {
         "-u",      "ZB_WIN10_KEY",
         "-u",      "ZB_WIN10_KNOWN_HOSTS",
         "-u",      "ZB_WIN10_LISTEN",
+        "-u",      "ZB_WIN11_MARKER",
+        "-u",      "ZB_WIN11_OTHER_USER",
+        "-u",      "ZB_WIN11_DOMAIN",
+        "-u",      "ZB_WIN11_SNAPSHOT",
+        "-u",      "ZB_WIN10_MARKER",
+        "-u",      "ZB_WIN10_PYTHON",
+        "-u",      "ZB_WIN10_SHARE_EXCEPTIONS",
         "python3", "-I",
         "tests/windows/gate_win10_product_red_test.py",
     });
