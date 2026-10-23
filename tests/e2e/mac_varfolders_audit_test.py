@@ -6,8 +6,9 @@ snapshots, report EVERY added, changed or removed path there without filtering, 
 there itself. A /var/folders delta alone is reportable and may coexist with PASS; a missing or incomplete snapshot, or a
 root that changed identity during the run, is INCONCLUSIVE.
 
-RED, UNREGISTERED, fix-forward for SilverRidge 30a7a1e8 (on 143a12f6): tests/mac/mac_varfolders_audit.sh, the one
-shared sourced helper (the Mac rows gate and the MS1c .app gate both use it), does not exist yet.
+RED, UNREGISTERED, second fix-forward for SilverRidge c65d61e0 (on 23d8b313, itself for 30a7a1e8 on 143a12f6):
+tests/mac/mac_varfolders_audit.sh, the one shared sourced helper (the Mac rows gate and the MS1c .app gate both use
+it), does not exist yet.
 
 The helper's contract under test (sourced by bash):
   varfolders_begin <evidence dir>   prints nothing and exits 0; resolves and records the roots (path, device, inode),
@@ -16,19 +17,23 @@ The helper's contract under test (sourced by bash):
       VARFOLDERS_ROOTS<TAB>T<TAB><physical temp root><TAB>C<TAB><physical cache root>
       VARFOLDERS-DELTA<TAB><added|changed|removed><TAB><T|C><TAB><relative path><TAB><before><TAB><after>
       VARFOLDERS<TAB>COMPLETE<TAB><delta count>                                    -> exit 0
-   or [the VARFOLDERS_ROOTS line] VARFOLDERS<TAB>INCONCLUSIVE<TAB><reason>, no delta  -> exit 2
-  A delta's <before>/<after> is the path's record "type mode size mtime_ns inode sha256 link" (type f d l p s c b o;
-  mode in octal; sha256 of a regular file's bytes, else -; a symlink's target, else -), and - alone on the absent side.
-  Deltas are ordered by root token, then by path bytes.
+   or [the VARFOLDERS_ROOTS line] VARFOLDERS<TAB>INCONCLUSIVE<TAB><nonempty reason>, no delta  -> exit 2
+  The roots line, when present, is the first line, exactly once, with the roots recorded at begin. Each root itself is
+  the path `.`. A delta's <before>/<after> is the path's record "type mode uid gid nlink size mtime_ns ctime_ns inode
+  sha256 link" (type f d l p s c b o; mode in octal; sha256 of a regular file's bytes, else -; a symlink's target, else
+  -; ctime witnesses every other inode change), and - alone on the absent side. Deltas are ordered by root token, then
+  by path bytes.
 
 Rows (hostless; getconf is a stub first on PATH; the roots are directories in a private temp dir, the temp root reached
-through a symlink; this test computes every record itself from lstat and the file bytes):
+through a symlink; TMPDIR is the physical temp root, as a Mac user's default is; this test computes every record
+itself from lstat and the file bytes):
 - V1 roots: one VARFOLDERS_ROOTS line with the physical roots.
 - V2 no change: begin is silent, end gives exactly the roots line and COMPLETE 0.
 - V3 every delta, unfiltered, exact: added files and a nested directory, a changed size, names that look like system
   noise (com.apple.*, .DS_Store) or like the product (zigBrowser*), a same-size rewrite with its mtime and inode
-  restored, a symlink retarget, a file replaced by a directory, and a mode change each give exactly one delta, whose six
-  fields equal this test's own before/after records, in order, with COMPLETE equal to the count.
+  restored, a symlink retarget, a file replaced by a directory, and a mode change each give exactly one delta, and so do
+  both roots, whose own records change with their direct children; the six fields equal this test's own before/after
+  records, in order, with COMPLETE equal to the count.
 - V4 a removed path is a delta (after -): a regular file and a FIFO.
 - V5 a dropped before snapshot, a truncated one, or a missing evidence dir is INCONCLUSIVE with no delta.
 - V6 unusable roots: getconf fails, prints nothing, names a missing directory, or both name the same directory:
@@ -43,7 +48,13 @@ through a symlink; this test computes every record itself from lstat and the fil
   live: a create and delete by this test while armed must be seen.
 - V10 root identity: between begin and end, the getconf answer changes, the physical temp root is replaced by another
   directory at the same path, or the symlink the temp answer goes through is retargeted: each is INCONCLUSIVE.
-- V11 a name holding a newline or a tab cannot be recorded unambiguously: INCONCLUSIVE with no delta.
+- V11 a name holding a newline or a tab, or a byte that is not UTF-8, cannot be recorded unambiguously: INCONCLUSIVE
+  with no delta. In every INCONCLUSIVE row the reason is nonempty and a roots line, if any, is the recorded one.
+- V12 a root-only mode change and a root-only mtime change each give exactly the one delta of that root's `.`.
+- V13 an extended attribute alone, and a hard link made outside the roots, each give exactly the one delta of that
+  file (ctime, and nlink, are in its record).
+- V14 a tripwire for what a Linux bash cannot show (it pipes small here-documents): the helper has no here-document,
+  because macOS /bin/bash 3.2 writes each one to a temp file in $TMPDIR, the audited temp root by default.
 The green adds the helper and a mutant check, which runs these rows against altered copies of the helper.
 
 Run: python3 -X dev tests/e2e/mac_varfolders_audit_test.py [helper path]
@@ -54,12 +65,14 @@ import ctypes
 import errno
 import hashlib
 import os
+import re
 import shutil
 import stat
 import struct
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -139,6 +152,8 @@ class Box:
         (self.C / "mode.txt").write_text("m\n")
         (self.C / "mode.txt").chmod(0o600)
         (self.C / "sub" / "inner").write_text("i\n")
+        (self.T / "xattr.txt").write_text("x\n")
+        (self.C / "linked.txt").write_text("l\n")
         (self.C / "link").symlink_to("target-a")
         (self.tmp / "link").symlink_to(self.user)  # macOS /var -> /private/var: the getconf answer is not physical
         self.bin = self.tmp / "bin"
@@ -161,7 +176,8 @@ class Box:
     def call(self, fn: str) -> tuple[int, list[str]]:
         if self.boundary is not None:
             self.boundary.arm()
-        env = {"PATH": f"{self.bin}:/usr/bin:/bin", "LANG": "C.UTF-8", "HOME": str(self.tmp / "home")}
+        env = {"PATH": f"{self.bin}:/usr/bin:/bin", "LANG": "C.UTF-8", "HOME": str(self.tmp / "home"),
+               "TMPDIR": f"{self.T}/"}  # a Mac user's default TMPDIR is the temp root itself
         r = subprocess.run(["bash", "-c", f'. "$1" && {fn} "$2"', "_", str(self.helper), str(self.ev)],
                            cwd=self.tmp, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=60)
         if self.boundary is not None:
@@ -193,12 +209,14 @@ def record(p: Path) -> str:
     kind = next((k for test, k in KIND if test(st.st_mode)), "o")
     sha = hashlib.sha256(p.read_bytes()).hexdigest() if kind == "f" else "-"
     link = os.readlink(p) if kind == "l" else "-"
-    return f"{kind} {stat.S_IMODE(st.st_mode):o} {st.st_size} {st.st_mtime_ns} {st.st_ino} {sha} {link}"
+    return (f"{kind} {stat.S_IMODE(st.st_mode):o} {st.st_uid} {st.st_gid} {st.st_nlink} {st.st_size} {st.st_mtime_ns} "
+            f"{st.st_ctime_ns} {st.st_ino} {sha} {link}")
 
 
 def observe(box: Box) -> dict:
     out = {}
     for token, base in (("T", box.T), ("C", box.C)):
+        out[(token, ".")] = record(base)
         for dirpath, dirs, names in os.walk(base):
             for n in dirs + names:
                 p = Path(dirpath) / n
@@ -220,16 +238,18 @@ def want_deltas(before: dict, after: dict) -> list[tuple]:
     return rows
 
 
-def parse(row: str, rc: int, out: list[str], want_roots: str | None) -> tuple[str, list[tuple]] | None:
-    """The end output's exact structure; returns (final word, deltas), or records a problem under `row`."""
+def parse(row: str, rc: int, out: list[str], want_roots: str, required: bool) -> tuple[str, list[tuple]] | None:
+    """The end output's exact structure; returns (final word, deltas), or records a problem under `row`. The roots
+    line, when present (always, when `required`), is the first line and exactly `want_roots`, the recorded roots."""
     rest = list(out)
-    if want_roots is not None:
-        if not rest or rest[0] != want_roots:
-            bad(f"{row} want the first line {want_roots!r}, got {rest[:1]!r}")
-            return None
+    if rest and rest[0] == want_roots:
         rest = rest[1:]
-    elif rest and rest[0].startswith("VARFOLDERS_ROOTS\t"):
-        rest = rest[1:]
+    elif required:
+        bad(f"{row} want the first line {want_roots!r}, got {rest[:1]!r}")
+        return None
+    if any(l.startswith("VARFOLDERS_ROOTS") for l in rest):
+        bad(f"{row} a roots line must be exactly {want_roots!r}, once and first, got {out!r}")
+        return None
     if not rest or not rest[-1].startswith("VARFOLDERS\t"):
         bad(f"{row} want a final VARFOLDERS line, got {out[-3:]!r}")
         return None
@@ -250,18 +270,40 @@ def parse(row: str, rc: int, out: list[str], want_roots: str | None) -> tuple[st
                 return None
         return "COMPLETE", deltas
     if final[1] == "INCONCLUSIVE":
-        if rc != 2 or deltas or len(final) < 3:
-            bad(f"{row} INCONCLUSIVE must exit 2 with a reason and no delta, got rc={rc} {rest!r}")
+        if rc != 2 or deltas or len(final) != 3 or not final[2].strip():
+            bad(f"{row} INCONCLUSIVE must exit 2 with exactly one nonempty reason and no delta, got rc={rc} {rest!r}")
             return None
         return "INCONCLUSIVE", []
     bad(f"{row} unknown final line {rest[-1]!r}")
     return None
 
 
+def roots_line(box: Box) -> str:
+    return f"VARFOLDERS_ROOTS\tT\t{box.T}\tC\t{box.C}"
+
+
 def inconclusive(row: str, box: Box, rc: int, out: list[str]) -> None:
-    got = parse(row, rc, out, None)
+    got = parse(row, rc, out, roots_line(box), False)
     if got is not None and got[0] != "INCONCLUSIVE":
         bad(f"{row} want INCONCLUSIVE exit 2, got rc={rc} {out[-3:]!r}")
+
+
+def exact_row(row: str, box: Box, change, named: list[tuple]) -> None:
+    """One begin/change/end cycle whose deltas must be exactly this test's own records of `change`."""
+    state = {}
+
+    def between(b):
+        state["before"] = observe(b)
+        change(b)
+        state["after"] = observe(b)
+    rc, out = box.cycle(between)
+    exact = want_deltas(state["before"], state["after"])
+    if sorted((d[1], d[2], d[3]) for d in exact) != sorted(named):
+        bad(f"{row}: this test's own records missed the change: want {sorted(named)!r}, got {exact!r}")
+        return
+    got = parse(row, rc, out, roots_line(box), True)
+    if got is not None and got != ("COMPLETE", exact):
+        bad(f"{row}: want exactly the deltas {exact!r}, got {out[1:-1]!r} {out[-1:]!r}")
 
 
 def run_rows(helper: Path) -> list[str]:
@@ -289,10 +331,7 @@ def run_rows(helper: Path) -> list[str]:
         rc, out = box.cycle()
         if observe(box) != untouched:
             bad("V8 a begin/end cycle changed, added or deleted an entry under a root")
-        want = f"VARFOLDERS_ROOTS\tT\t{box.T}\tC\t{box.C}"
-        if sum(1 for l in out if l.startswith("VARFOLDERS_ROOTS\t")) != 1:
-            bad(f"V1 want exactly one VARFOLDERS_ROOTS line, got {out!r}")
-        got = parse("V1/V2", rc, out, want)
+        got = parse("V1/V2", rc, out, roots_line(box), True)
         if got is not None and got != ("COMPLETE", []):
             bad(f"V2 no change: want COMPLETE 0 and no delta, got {out[-3:]!r}")
     finally:
@@ -331,11 +370,11 @@ def run_rows(helper: Path) -> list[str]:
                         ("added", "C", "com.apple.WebKit.Networking"), ("added", "C", ".DS_Store"),
                         ("added", "T", "zigBrowser-run.log"), ("removed", "T", "old.txt"),
                         ("changed", "T", "same.txt"), ("changed", "C", "link"), ("changed", "T", "kind"),
-                        ("changed", "C", "mode.txt"), ("removed", "T", "pipe")])
+                        ("changed", "C", "mode.txt"), ("removed", "T", "pipe"),
+                        ("changed", "T", "."), ("changed", "C", ".")])  # the roots' own records change too
         if paths != named:  # this test's own records must see every change it made (not size/mtime only)
             bad(f"V3 this test's own records missed a change: want {named!r}, got {paths!r}")
-        want = f"VARFOLDERS_ROOTS\tT\t{box.T}\tC\t{box.C}"
-        got = parse("V3", rc, out, want)
+        got = parse("V3", rc, out, roots_line(box), True)
         if got is not None:
             exact = want_deltas(state["before"], state["after"])
             if got[0] != "COMPLETE" or got[1] != exact:
@@ -414,14 +453,43 @@ def run_rows(helper: Path) -> list[str]:
         finally:
             box.close()
 
-    for name, fname in (("newline", "a\nb"), ("tab", "a\tb")):
+    for name, fname in (("newline", b"a\nb"), ("tab", b"a\tb"), ("non-UTF-8 byte", b"a\xff")):
         box = Box(helper)
         try:  # V11
-            (box.C / fname).write_text("x")
+            os.close(os.open(os.fsencode(box.C) + b"/" + fname, os.O_CREAT | os.O_WRONLY, 0o644))
             rc, out = box.cycle()
             inconclusive(f"V11 a name with a {name}:", box, rc, out)
         finally:
             box.close()
+
+    def root_mode(b):  # V12a: only the temp root's mode
+        b.T.chmod(0o700)
+
+    def root_mtime(b):  # V12b: only the cache root's mtime
+        st = os.lstat(b.C)
+        os.utime(b.C, ns=(st.st_atime_ns, st.st_mtime_ns - 10**10))
+
+    def xattr(b):  # V13a: only an extended attribute (ctime is the record's witness)
+        time.sleep(0.05)  # past the filesystem's coarse timestamp tick
+        os.setxattr(b.T / "xattr.txt", "user.zb", b"1")
+
+    def hard_link(b):  # V13b: a hard link made outside the roots (nlink and ctime)
+        time.sleep(0.05)
+        os.link(b.C / "linked.txt", b.tmp / "outside-link")
+    for row, change, named in (("V12 a root-only mode change", root_mode, [("changed", "T", ".")]),
+                               ("V12 a root-only mtime change", root_mtime, [("changed", "C", ".")]),
+                               ("V13 an extended attribute only", xattr, [("changed", "T", "xattr.txt")]),
+                               ("V13 a hard link made elsewhere", hard_link, [("changed", "C", "linked.txt")])):
+        box = Box(helper)
+        try:
+            exact_row(row, box, change, named)
+        finally:
+            box.close()
+
+    text = helper.read_text()  # V14 (a tripwire for what a Linux bash cannot show: it pipes small here-documents)
+    if re.search(r"<<-?\s*['\"]?\w", text):
+        bad("V14 the helper uses a here-document: macOS /bin/bash 3.2 writes each one to a temp file in $TMPDIR, "
+            "which is the audited temp root by default")
 
     if hits:
         bad(f"V9 the helper itself changed entries under a root ({len(hits)} inotify events): {hits[:6]!r}")
@@ -436,7 +504,7 @@ def main(argv: list[str]) -> int:
     if problems:
         print(f"FAIL\tmac-varfolders-audit\t{len(problems)} problem(s)")
         return 1
-    print("PASS\tmac-varfolders-audit\tV1-V11")
+    print("PASS\tmac-varfolders-audit\tV1-V14")
     return 0
 
 
