@@ -17,6 +17,7 @@ const automation_macos_port = @import("automation_macos_port.zig");
 const automation_server = @import("automation_server.zig");
 const automation_transport = @import("automation_transport.zig");
 const cli = @import("cli.zig");
+const profile_step = @import("profile_step.zig");
 const render_config = @import("render_config.zig");
 const owner_only = @import("owner_only.zig");
 const backend_flag = @import("backend_flag.zig");
@@ -433,7 +434,7 @@ fn runOpen(arena: std.mem.Allocator, io: std.Io, spec: OpenSpec) errors.BrowserE
     // before zb_app_run builds the first window (every window reads it when created).
     var sink: OpenSink = .{};
     backend_flag.startup(&sink, spec.hw_policy, spec.renderer, spec.media_source) catch return error.Usage;
-    const profile_dir = try applyProfileDir(arena, spec);
+    const profile_dir = try applyProfileDir(arena, io, spec);
     // At quit, after the main loop (a no-op when netd never started). Linux
     // only: agent_host.c is GTK-only, and the cross builds must not name it.
     defer if (comptime builtin.os.tag == .linux) c.zb_agent_net_stop();
@@ -494,18 +495,9 @@ fn runOpen(arena: std.mem.Allocator, io: std.Io, spec: OpenSpec) errors.BrowserE
 /// cannot be created is an error; when the default cannot be resolved or
 /// created, the browser runs on WebKit's default context. Returns the
 /// profile directory in use, or null when there is none.
-fn applyProfileDir(arena: std.mem.Allocator, spec: OpenSpec) errors.BrowserError!?[]const u8 {
-    if (comptime builtin.os.tag == .macos) {
-        // MS3.1: only an explicit --profile-dir binds a profile store on macOS (the path is the identity
-        // seed; the shim maps it to an isolated persistent store on macOS 14+, else the shared default).
-        const dir = spec.profile_dir orelse return null;
-        const dir_z = arena.dupeZ(u8, dir) catch return error.WriteFailed;
-        var err: [*c]u8 = null;
-        if (c.zb_app_set_profile_dir(dir_z.ptr, &err) == c.ZB_AUTO_OK) return dir;
-        defer c.zb_automation_free(err);
-        std.debug.print("profile: {s}\n", .{if (err != null) std.mem.span(err) else dir});
-        return error.WriteFailed;
-    }
+fn applyProfileDir(arena: std.mem.Allocator, io: std.Io, spec: OpenSpec) errors.BrowserError!?[]const u8 {
+    // MS3.1 + 4pa.60: create the profile directory, then bind the WebKit store (profile_step.zig).
+    if (comptime builtin.os.tag == .macos) return profile_step.applyMacos(arena, io, spec.profile_dir, ShimProfileBinder{});
     if (comptime builtin.os.tag == .windows) {
         // WS5.2: an explicit --profile-dir binds the drawer's persistence store (<profile>/agent-drawer.json)
         // on Windows, like macOS; without one there is no persistent store (configure gets null). This lets the
@@ -537,13 +529,20 @@ fn applyProfileDir(arena: std.mem.Allocator, spec: OpenSpec) errors.BrowserError
     return null;
 }
 
-/// N21: the pacing state lives with the profile it belongs to
-/// ("<profile>/automation-pacing.json"); without a profile it stays in
-/// memory ("").
-fn pacingStatePath(allocator: std.mem.Allocator, profile_dir: ?[]const u8) ![]const u8 {
-    const dir = profile_dir orelse return "";
-    return std.fs.path.join(allocator, &.{ dir, "automation-pacing.json" });
-}
+/// The macOS shim's profile-store binder for profile_step.applyMacos: zb_app_set_profile_dir, reporting the
+/// shim's error on failure.
+const ShimProfileBinder = struct {
+    pub fn bind(_: ShimProfileBinder, arena: std.mem.Allocator, dir: []const u8) bool {
+        const dir_z = arena.dupeZ(u8, dir) catch return false;
+        var err: [*c]u8 = null;
+        if (c.zb_app_set_profile_dir(dir_z.ptr, &err) == c.ZB_AUTO_OK) return true;
+        defer c.zb_automation_free(err);
+        std.debug.print("profile: {s}\n", .{if (err != null) std.mem.span(err) else dir});
+        return false;
+    }
+};
+
+const pacingStatePath = profile_step.pacingStatePath;
 
 test "the pacing state file sits in the profile in use, or nowhere without one" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);

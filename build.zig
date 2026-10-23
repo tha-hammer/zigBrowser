@@ -658,6 +658,26 @@ pub fn build(b: *std.Build) void {
     run_hook16_tests.skip_foreign_checks = true;
     b.step("test-hook16-decision", "Hook 16 is inert without --e2e-protocol: the store decision stays persistent").dependOn(&run_hook16_tests.step);
 
+    // macOS plan R30-MS3 Red 1 (bd 4pa.60): the macOS profile step (profile_step.applyMacos, the macOS branch of
+    // app.applyProfileDir, with the WebKit binder injected) creates a fresh --profile-dir before the bind, so the
+    // pacing state saves there. Portable: runs on every host.
+    const profile_step_module = b.createModule(.{
+        .root_source_file = b.path("src/profile_step.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    const app_profile_dir_tests_module = b.createModule(.{
+        .root_source_file = b.path("tests/app_profile_dir_macos_test.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    app_profile_dir_tests_module.addImport("profile_step", profile_step_module);
+    const run_app_profile_dir_tests = b.addRunArtifact(b.addTest(.{ .root_module = app_profile_dir_tests_module }));
+    run_app_profile_dir_tests.skip_foreign_checks = true;
+    b.step("test-app-profile-dir-macos", "The macOS profile step creates a fresh --profile-dir before the WebKit bind (4pa.60)").dependOn(&run_app_profile_dir_tests.step);
+
     // Chat drawer S3.3: the native validator of helper frames.
     const agent_protocol_module = b.createModule(.{
         .root_source_file = b.path("src/agent_protocol.zig"),
@@ -3846,6 +3866,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_ipc_tests.step);
     test_step.dependOn(&run_nav_policy_tests.step);
     test_step.dependOn(&run_hook16_tests.step);
+    test_step.dependOn(&run_app_profile_dir_tests.step);
     test_step.dependOn(&run_agent_drawer_tests.step);
     test_step.dependOn(&run_agent_drawer_breaks_tests.step);
     test_step.dependOn(&run_agent_drawer_appkit_tests.step);

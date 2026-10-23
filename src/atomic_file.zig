@@ -6,6 +6,13 @@
 const std = @import("std");
 const builtin = @import("builtin");
 
+/// The directory the profile's state files live in (4pa.60): created with its parents; one that already
+/// exists is fine. replaceJson never creates parents, so a profile step that only binds a WebKit store
+/// (macOS) calls this first, or every save into a fresh --profile-dir fails.
+pub fn ensureDir(io: std.Io, path: []const u8) !void {
+    try std.Io.Dir.cwd().createDirPath(io, path);
+}
+
 pub fn replaceJson(io: std.Io, path: []const u8, value: anytype) !void {
     var nonce: [8]u8 = undefined;
     io.random(&nonce);

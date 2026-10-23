@@ -1,4 +1,4 @@
-//! RED (UNREGISTERED; bd zigBrowser-4pa.60, plan R30-MS3 Red 1, MS3.1) — on macOS a fresh --profile-dir
+//! bd zigBrowser-4pa.60, plan R30-MS3 Red 1, MS3.1 — on macOS a fresh --profile-dir
 //! must exist, before the WebKit store is bound, so the pacing (daily-cap) state can be saved into it.
 //!
 //! The macOS branch of app.applyProfileDir only binds the WebKit store (the shim says "No directory is
@@ -19,8 +19,8 @@
 //! from profile_step.applyMacos. Each must make this test fail. The one-line app.zig call is covered by the
 //! Mac Red 2 (tests/e2e/mac_profile_pacing_persist_test.py) and compiled by `cross-check`.
 //!
-//! Red today: the module profile_step does not exist. Built and run only in a scratch export, in no
-//! build.zig step until the green registers it in `test`.
+//! Registered in `test` (step test-app-profile-dir-macos) by the green; it was red while the module
+//! profile_step did not exist.
 const std = @import("std");
 const profile_step = @import("profile_step");
 
