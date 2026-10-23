@@ -13,6 +13,9 @@ tar writes nothing, git only names the cwd as the top level):
   - an explicit host and key (TEST-NET 192.0.2.1, a key file under the test's own temp dir) still reach the transport:
     the first ssh/scp call carries exactly that key and that host.
 Run it, and every mutant, inside `unshare --user --map-current-user --net`. No real host value is ever passed.
+ong.23 (8ab66913) added a third required selector, ZB_GUEST_KNOWN_HOSTS (its own suite is
+build_in_guest_hostkey_red_test.py). Here the host/key cases carry a readable pin ({PIN}), so each still tests the
+variable it is named for; the bare run names all three; the explicit control sets all three.
 
 Run alone:  unshare --user --map-current-user --net python3 -I tests/windows/build_in_guest_default_red_test.py -v
 """
@@ -50,10 +53,12 @@ class BuildInGuestNoDefaultHost(unittest.TestCase):
             log.write_text("")
             key = td / "explicit_key"
             key.write_text("not a key\n")
+            pin = td / "known_hosts"
+            pin.write_text("192.0.2.1 ssh-ed25519 AAAA\n")
             work = td / "work"
             work.mkdir()
             env = {"PATH": f"{bindir}:/usr/bin:/bin", "HOME": str(td), "TMPDIR": str(td), "ZB_FAKE_LOG": str(log)}
-            env.update({k: v.replace("{KEY}", str(key)) for k, v in (extra_env or {}).items()})
+            env.update({k: v.replace("{KEY}", str(key)).replace("{PIN}", str(pin)) for k, v in (extra_env or {}).items()})
             proc = subprocess.run(["bash", str(SCRIPT)], cwd=work, env=env, capture_output=True, text=True,
                                   timeout=120, stdin=subprocess.DEVNULL)
             calls = [shlex.split(c) for c in log.read_text().splitlines()]
@@ -70,17 +75,19 @@ class BuildInGuestNoDefaultHost(unittest.TestCase):
             self.assertIn(name, refused[0], detail)
 
     def test_a_bare_run_contacts_nothing_and_is_refused(self):
-        self._assert_refused(None, ["ZB_GUEST_HOST", "ZB_GUEST_KEY"])
-        self._assert_refused({"ZB_GUEST_HOST": "", "ZB_GUEST_KEY": ""}, ["ZB_GUEST_HOST", "ZB_GUEST_KEY"])
+        self._assert_refused(None, ["ZB_GUEST_HOST", "ZB_GUEST_KEY", "ZB_GUEST_KNOWN_HOSTS"])
+        self._assert_refused({"ZB_GUEST_HOST": "", "ZB_GUEST_KEY": "", "ZB_GUEST_KNOWN_HOSTS": ""},
+                             ["ZB_GUEST_HOST", "ZB_GUEST_KEY", "ZB_GUEST_KNOWN_HOSTS"])
 
     def test_a_host_without_a_key_is_refused(self):
-        self._assert_refused({"ZB_GUEST_HOST": HOST}, ["ZB_GUEST_KEY"])
+        self._assert_refused({"ZB_GUEST_HOST": HOST, "ZB_GUEST_KNOWN_HOSTS": "{PIN}"}, ["ZB_GUEST_KEY"])
 
     def test_a_key_without_a_host_is_refused(self):
-        self._assert_refused({"ZB_GUEST_KEY": "{KEY}"}, ["ZB_GUEST_HOST"])
+        self._assert_refused({"ZB_GUEST_KEY": "{KEY}", "ZB_GUEST_KNOWN_HOSTS": "{PIN}"}, ["ZB_GUEST_HOST"])
 
     def test_an_explicit_host_and_key_reach_the_transport(self):
-        _, _, calls, key, detail = self._run({"ZB_GUEST_HOST": HOST, "ZB_GUEST_KEY": "{KEY}"})
+        _, _, calls, key, detail = self._run({"ZB_GUEST_HOST": HOST, "ZB_GUEST_KEY": "{KEY}",
+                                              "ZB_GUEST_KNOWN_HOSTS": "{PIN}"})
         transport = [c for c in calls if c[0] in ("ssh", "scp")]
         self.assertTrue(transport, "the explicit host is reached" + detail)
         first = transport[0]

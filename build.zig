@@ -361,8 +361,15 @@ pub fn build(b: *std.Build) void {
     const windows_guest_default_selftest = b.addSystemCommand(&.{
         "unshare", "--user", "--map-current-user", "--net", "--", "python3", "-I", "tests/windows/build_in_guest_default_red_test.py",
     });
-    const windows_guest_default_step = b.step("windows-guest-default-selftest", "Run the build-in-guest no-default-host selftest (netns)");
+    // bd zigBrowser-ong.23 (NavyCanyon 8ab66913): the guest's host key is pinned too (ZB_GUEST_KNOWN_HOSTS, a readable
+    // regular file; StrictHostKeyChecking=yes on every scp/ssh). Its red build_in_guest_hostkey_red_test.py
+    // (3c999e5f) runs unchanged in the same empty network namespace.
+    const windows_guest_hostkey_selftest = b.addSystemCommand(&.{
+        "unshare", "--user", "--map-current-user", "--net", "--", "python3", "-I", "tests/windows/build_in_guest_hostkey_red_test.py",
+    });
+    const windows_guest_default_step = b.step("windows-guest-default-selftest", "Run the build-in-guest no-default-host and pinned-host-key selftests (netns)");
     windows_guest_default_step.dependOn(&windows_guest_default_selftest.step);
+    windows_guest_default_step.dependOn(&windows_guest_hostkey_selftest.step);
 
     // bd zigBrowser-ong.25 (NavyCanyon fb4d56d1 / 456c9420): once a Windows host is set, all its transport selectors
     // are explicit (tests/windows/live_transport.py for the Python callers; build-on-windows.sh and gate.sh check
@@ -3886,6 +3893,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&windows_m8_profile_selftest.step);
     test_step.dependOn(&windows_msi_default_selftest.step);
     test_step.dependOn(&windows_guest_default_selftest.step);
+    test_step.dependOn(&windows_guest_hostkey_selftest.step);
     test_step.dependOn(&windows_transport_selectors_selftest.step);
     test_step.dependOn(&windows_incident_cleanup_selftest.step);
     test_step.dependOn(&windows_incident_cleanup_r2.step);
