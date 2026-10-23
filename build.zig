@@ -355,6 +355,15 @@ pub fn build(b: *std.Build) void {
     const windows_msi_default_step = b.step("windows-msi-default-selftest", "Run the MSI gate no-default-host selftest (netns)");
     windows_msi_default_step.dependOn(&windows_msi_default_selftest.step);
 
+    // bd zigBrowser-ong.22: tests/guest/build-in-guest.sh has no default guest or key either; the red
+    // build_in_guest_default_red_test.py runs the real script against fake ssh/scp/tar/git, inside an empty network
+    // namespace.
+    const windows_guest_default_selftest = b.addSystemCommand(&.{
+        "unshare", "--user", "--map-current-user", "--net", "--", "python3", "-I", "tests/windows/build_in_guest_default_red_test.py",
+    });
+    const windows_guest_default_step = b.step("windows-guest-default-selftest", "Run the build-in-guest no-default-host selftest (netns)");
+    windows_guest_default_step.dependOn(&windows_guest_default_selftest.step);
+
     // (WS0.5 remote-path fence removed — resolve_path.sh / resolve_live_test.py deleted; bead
     // zigBrowser-q92. A future remote file op uses the held-handle check-and-use design, its own milestone.)
 
@@ -3866,6 +3875,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&windows_m8_run_selftest.step);
     test_step.dependOn(&windows_m8_profile_selftest.step);
     test_step.dependOn(&windows_msi_default_selftest.step);
+    test_step.dependOn(&windows_guest_default_selftest.step);
     test_step.dependOn(&windows_incident_cleanup_selftest.step);
     test_step.dependOn(&windows_incident_cleanup_r2.step);
     test_step.dependOn(&windows_win10_probe_selftest.step);
