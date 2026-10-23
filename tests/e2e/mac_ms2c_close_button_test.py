@@ -97,6 +97,28 @@ class _FixtureServer:
         self._srv.server_close()
 
 
+# The row-owned recording functions (SilverRidge cf16730): main hands each the RAW observation; the hostless
+# selftest (mac_red_shape_selftest.py) drives the same functions with today's Mac observations and with wrong ones.
+def record_listed(shape: RedShape, popup_id: str, ids: list) -> None:
+    shape.check("1-left-page-list", popup_id not in ids,
+                f"the natively closed popup {popup_id} is still in page.list: {ids!r}",
+                observed="listed" if popup_id in ids else "not-listed")
+
+
+def record_routed(shape: RedShape, reply: dict) -> None:
+    reason = ((reply.get("error") or {}).get("data") or {}).get("reason") if isinstance(reply, dict) else None
+    shape.check("2-routed-no-window", reason == "no_window",
+                f"a command routed to the closed popup did not fail with no_window: {reply!r}",
+                observed=reply_kind(reply))
+
+
+def record_destroy(shape: RedShape, out_lines: list) -> None:
+    wincount = [l for l in list(out_lines) if l.startswith("WINCOUNT\t")]
+    shape.check("5-shared-destroy-path", bool(wincount) and wincount[-1] == "WINCOUNT\t1",
+                f"the shared destroy path did not run (WINCOUNT rows {wincount[-4:]!r})",
+                observed=wincount[-1] if wincount else None)
+
+
 def last_live_jobs(err_lines):
     val = None
     for ln in list(err_lines):
@@ -179,16 +201,8 @@ def main() -> int:
                 raise AssertionError("PRECONDITION the native close seam never fired (no NATIVE_CLOSE row)")
 
             wait_until(lambda: popup_id not in page_list_ids(), 3.0)
-            ids = page_list_ids()
-            shape.check("1-left-page-list", popup_id not in ids,
-                        f"the natively closed popup {popup_id} is still in page.list: {ids!r}",
-                        observed="listed" if popup_id in ids else "not-listed")
-
-            reply = rpc.raw("page.title", {"window_id": popup_id})
-            reason = ((reply.get("error") or {}).get("data") or {}).get("reason")
-            shape.check("2-routed-no-window", reason == "no_window",
-                        f"a command routed to the closed popup did not fail with no_window: {reply!r}",
-                        observed=reply_kind(reply))
+            record_listed(shape, popup_id, page_list_ids())
+            record_routed(shape, rpc.raw("page.title", {"window_id": popup_id}))
 
             settled = wait_until(lambda: last_live_jobs(err) == baseline, 3.0)
             shape.check("3-live-jobs-baseline", settled,
@@ -202,10 +216,7 @@ def main() -> int:
                 shape.check("4-opener-intact", url_after == opener_url and dom_after == "opener-dom",
                             f"the opener changed: url {url_after!r} (was {opener_url!r}), dom {dom_after!r}")
 
-            wincount = [l for l in list(out) if l.startswith("WINCOUNT\t")]
-            shape.check("5-shared-destroy-path", bool(wincount) and wincount[-1] == "WINCOUNT\t1",
-                        f"the shared destroy path did not run (WINCOUNT rows {wincount[-4:]!r})",
-                        observed=wincount[-1] if wincount else None)
+            record_destroy(shape, out)
         except Exception as exc:  # noqa: BLE001
             shape.problem(f"{exc!r} (rc={proc.poll()})")
         finally:

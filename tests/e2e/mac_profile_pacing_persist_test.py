@@ -18,13 +18,14 @@ persisted config is restored on restart whatever the day (counts only on the sam
   2 social.rate_status reports daily_cap == 7 (today: D, because nothing was saved).
 
 Failing assertions today (Mac), the accepted red vector RED_VECTOR (red_shape.py; the rows gate requires its
-RED_SHAPE line): all three fail, with exactly these values: 1-file-exists missing, 1-no-save-error at least one
-"could not save" line, 2-cap-restored back on run 1's default cap. Target step: `ms3-gate` (TO BE ADDED by bd 4pa.62); until the green
+RED_SHAPE line): all three fail, with exactly these values: 1-file-exists missing, 1-no-save-error every "could not
+save" line naming the pacing file with FileNotFound, 2-cap-restored back on run 1's default cap. Target step: `ms3-gate` (TO BE ADDED by bd 4pa.62); until the green
 this file is in no gate script and no build.zig step. Every launch gets a private HOME.
 """
 import argparse
 import http.server
 import os
+import re
 import secrets
 import subprocess
 import sys
@@ -38,16 +39,43 @@ from mac_term_teardown import install_term_only_cleanup, leak_failures, stop_bro
 from red_shape import Red, RedShape  # noqa: E402
 
 TEST_ID = "ms3-profile-pacing-persist"
-# The accepted red values (SilverRidge 8721b6d): no pacing file, at least one "could not save" line, and run 2 back
-# on run 1's default cap (not 7, and not any third value).
+# The accepted red values (SilverRidge 8721b6d, cf16730): no pacing file; every "could not save" line names the
+# pacing file and fails with FileNotFound (its parent, the fresh --profile-dir, does not exist), at least one; and
+# run 2 back on run 1's default cap (not 7, and not any third value).
 RED_VECTOR = {"1-file-exists": Red("missing", "present"),
-              "1-no-save-error": Red(1, 0, "at least one save error", accepts=lambda n: isinstance(n, int) and n >= 1),
+              "1-no-save-error": Red(("pacing-file:FileNotFound",), ("pacing-file:AccessDenied",)),
               "2-cap-restored": Red("default-cap", "other-cap")}
+SAVE_ERROR = re.compile(r"automation pacing: could not save (.+): (\w+)$")
+
+
+def observe_save_errors(save_errors: list, pacing_file) -> tuple:
+    """The distinct save failures as '<pacing-file|other-path>:<error name>' ('unparsed' for any other form)."""
+    kinds = set()
+    for line in save_errors:
+        m = SAVE_ERROR.search(line)
+        kinds.add(f"{'pacing-file' if m.group(1) == str(pacing_file) else 'other-path'}:{m.group(2)}" if m else "unparsed")
+    return tuple(sorted(kinds))
 
 
 def observe_cap(cap2, default_cap) -> str:
     """The observed value of 2-cap-restored: run 2's cap relative to run 1's default."""
     return "set-cap" if cap2 == NEW_CAP else ("default-cap" if cap2 == default_cap else "other-cap")
+
+
+# The row-owned recording functions (SilverRidge cf16730): main hands each the RAW observation; the hostless
+# selftest (mac_red_shape_selftest.py) drives the same functions with today's Mac observations and with wrong ones.
+def record_saved(shape: RedShape, pacing_file_exists: bool, save_errors: list, pacing_file) -> None:
+    shape.check("1-file-exists", pacing_file_exists, f"after run 1 {pacing_file} does not exist",
+                observed="present" if pacing_file_exists else "missing")
+    shape.check("1-no-save-error", not save_errors, f"after run 1 save errors={save_errors[-2:]!r}",
+                observed=observe_save_errors(save_errors, pacing_file))
+
+
+def record_restored(shape: RedShape, cap2, default_cap) -> None:
+    shape.check("2-cap-restored", cap2 == NEW_CAP,
+                f"after a restart on the same --profile-dir daily_cap is {cap2!r}, want {NEW_CAP} "
+                f"(the default is {default_cap!r}: the pacing state did not persist)",
+                observed=observe_cap(cap2, default_cap))
 
 NEW_CAP = 7
 PAGE = b"<!doctype html><html><head><meta charset='utf-8'><title>P</title></head><body>p</body></html>"
@@ -152,17 +180,11 @@ def main() -> int:
                 raise AssertionError(f"PRECONDITION default cap {default_cap!r} must differ from {NEW_CAP}, "
                                      f"set_pacing must return ok: {ok!r}")
             save_errors = [ln for ln in err1 if "could not save" in ln]
-            shape.check("1-file-exists", pacing_file.is_file(), f"after run 1 {pacing_file} does not exist",
-                        observed="present" if pacing_file.is_file() else "missing")
-            shape.check("1-no-save-error", not save_errors, f"after run 1 save errors={save_errors[-2:]!r}",
-                        observed=len(save_errors))
+            record_saved(shape, pacing_file.is_file(), save_errors, pacing_file)
 
             cap2, _err2 = run_once(browser, f"{fixture.base_url}/", tmp, profile, "2", proc_holder,
                                    args.timeout_sec, lambda rpc: rpc.call("social.rate_status", {}).get("daily_cap"))
-            shape.check("2-cap-restored", cap2 == NEW_CAP,
-                        f"after a restart on the same --profile-dir daily_cap is {cap2!r}, want {NEW_CAP} "
-                        f"(the default is {default_cap!r}: the pacing state did not persist)",
-                        observed=observe_cap(cap2, default_cap))
+            record_restored(shape, cap2, default_cap)
         except Exception as exc:  # noqa: BLE001
             shape.problem(f"{exc!r}")
 

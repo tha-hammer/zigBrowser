@@ -88,6 +88,31 @@ class _FixtureServer:
         self._srv.server_close()
 
 
+# The row-owned recording functions (SilverRidge cf16730): main hands each the RAW observation; the hostless
+# selftest (mac_red_shape_selftest.py) drives the same functions with today's Mac observations and with wrong ones.
+def record_listed(shape: RedShape, listed: dict, third: str) -> None:
+    shape.check("1-listed-under-stable-id", listed.get("window_id") == third,
+                f"dialog.get listed the confirm under {listed.get('window_id')!r}, page.list id is {third!r}",
+                observed=listed.get("window_id"))
+
+
+def record_by_id(shape: RedShape, by_id, third: str) -> None:
+    shape.check("2-get-by-id-open",
+                isinstance(by_id, dict) and bool(by_id.get("open")) and by_id.get("type") == "confirm",
+                f"dialog.get on {third} did not report the open confirm: {by_id!r}",
+                observed=f"open={by_id.get('open')!r}" if isinstance(by_id, dict) else repr(by_id))
+
+
+def record_respond(shape: RedShape, answered: dict) -> None:
+    shape.check("3-respond-listed-ok", answered.get("result") == {"ok": True},
+                f"answering the listed window failed: {answered!r}", observed=reply_kind(answered))
+
+
+def record_confirm(shape: RedShape, ok: bool) -> None:
+    shape.check("4-confirm-returned-true", ok, "the page's confirm() did not return true",
+                observed="true" if ok else "not-true")
+
+
 def wait_until(pred, timeout_sec: float, step: float = 0.05) -> bool:
     end = time.monotonic() + timeout_sec
     while time.monotonic() < end:
@@ -168,23 +193,13 @@ def main() -> int:
             if not (isinstance(listed, dict) and listed.get("open") and listed.get("type") == "confirm"):
                 raise AssertionError(f"PRECONDITION the confirm never opened: {listed!r}")
 
-            shape.check("1-listed-under-stable-id", listed.get("window_id") == third,
-                        f"dialog.get listed the confirm under {listed.get('window_id')!r}, page.list id is {third!r}",
-                        observed=listed.get("window_id"))
-
-            by_id = rpc.raw("dialog.get", {"window_id": third}).get("result")
-            shape.check("2-get-by-id-open",
-                        isinstance(by_id, dict) and bool(by_id.get("open")) and by_id.get("type") == "confirm",
-                        f"dialog.get on {third} did not report the open confirm: {by_id!r}",
-                        observed=f"open={by_id.get('open')!r}" if isinstance(by_id, dict) else repr(by_id))
-
-            answered = rpc.raw("dialog.respond", {"window_id": listed.get("window_id") or third, "accept": True})
-            shape.check("3-respond-listed-ok", answered.get("result") == {"ok": True},
-                        f"answering the listed window failed: {answered!r}", observed=reply_kind(answered))
+            record_listed(shape, listed, third)
+            record_by_id(shape, rpc.raw("dialog.get", {"window_id": third}).get("result"), third)
+            record_respond(shape, rpc.raw("dialog.respond", {"window_id": listed.get("window_id") or third,
+                                                             "accept": True}))
 
             ok = wait_until(lambda: rpc.raw("page.evaluate", {"window_id": third, "expression": "window.__zbR === true"}).get("result") == {"result": True}, 3.0, 0.1)
-            shape.check("4-confirm-returned-true", ok, "the page's confirm() did not return true",
-                        observed="true" if ok else "not-true")
+            record_confirm(shape, ok)
         except Exception as exc:  # noqa: BLE001
             shape.problem(f"{exc!r} (rc={proc.poll()})")
         finally:

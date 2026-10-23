@@ -96,6 +96,17 @@ class _FixtureServer:
         self._srv.server_close()
 
 
+# The row-owned recording function (SilverRidge cf16730): main hands it the RAW reply and elapsed time; the
+# hostless selftest (mac_red_shape_selftest.py) drives it with today's Mac observations and with wrong ones.
+def record_op(shape: RedShape, method: str, reply: dict, elapsed: float) -> None:
+    message = (reply.get("error") or {}).get("message") if isinstance(reply, dict) else None
+    shape.check(f"1-action-timeout {method}", message == "action_timeout",
+                f"want the action_timeout error, got {reply!r}", observed=reply_kind(reply))
+    shape.check(f"2-at-deadline {method}", elapsed < LATE_BOUND_S,
+                f"returned after {elapsed:.1f}s, not at the {SERVER_DEADLINE_S:.0f}s deadline "
+                f"(the store answered at {DELAY_MS / 1000:.1f}s)", observed=round(elapsed, 1))
+
+
 def last_live_jobs(err_lines):
     val = None
     for ln in list(err_lines):
@@ -162,12 +173,7 @@ def main() -> int:
                 elapsed = time.monotonic() - t0
                 if delay_hits(err) <= hits_before:
                     raise AssertionError(f"PRECONDITION {method}: the cookie-delay seam never fired")
-                message = (reply.get("error") or {}).get("message")
-                shape.check(f"1-action-timeout {method}", message == "action_timeout",
-                            f"want the action_timeout error, got {reply!r}", observed=reply_kind(reply))
-                shape.check(f"2-at-deadline {method}", elapsed < LATE_BOUND_S,
-                            f"returned after {elapsed:.1f}s, not at the {SERVER_DEADLINE_S:.0f}s deadline "
-                            f"(the store answered at {DELAY_MS / 1000:.1f}s)", observed=round(elapsed, 1))
+                record_op(shape, method, reply, elapsed)
 
             # Every late completion has run once the delay has passed since the last call was issued.
             settle_end = time.monotonic() + DELAY_MS / 1000.0 + 3.0

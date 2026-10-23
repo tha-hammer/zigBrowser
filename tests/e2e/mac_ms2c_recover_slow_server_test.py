@@ -49,6 +49,18 @@ def observe_exit(rc, elapsed: float):
     """The observed value of `alive`: None while running, else the exit code and whole seconds after phase 2."""
     return None if rc is None else {"rc": rc, "after_s": round(elapsed)}
 
+
+# The row-owned recording function (SilverRidge cf16730): main hands it the RAW exit code (None while running),
+# the seconds since phase 2, and the page.health reply (None when not asked); the hostless selftest
+# (mac_red_shape_selftest.py) drives it with today's Mac observations and with wrong ones.
+def record_after_recovery(shape: RedShape, rc, elapsed: float, health, held: int) -> None:
+    alive = shape.check("alive", rc is None, f"the browser exited (rc={rc}) {elapsed:.1f}s after a recovery "
+                        f"reload on a server that stayed down (held requests={held})",
+                        observed=observe_exit(rc, elapsed))
+    answered = health is not None and "error" not in health and bool((health.get("result") or {}).get("pages"))
+    shape.check("health-answers", answered, f"page.health did not answer at t={elapsed:.1f}s: {health!r}",
+                observed="answered" if answered else ("no-answer" if alive else "not-asked"))
+
 DOWN_FOR_SEC = 20.0  # longer than the shim's 15 s ZB_NAVIGATION_TIMEOUT_SECONDS
 PAGE = b"""<!doctype html><html><head><meta charset='utf-8'><title>R</title></head><body><h1>R</h1>
 <script>function freeze(){ setTimeout(function(){ while(true){} }, 100); }</script></body></html>"""
@@ -175,13 +187,7 @@ def main() -> int:
                 time.sleep(0.1)
             elapsed = time.monotonic() - t0
             rc = proc.poll()
-            alive = shape.check("alive", rc is None, f"the browser exited (rc={rc}) {elapsed:.1f}s after a recovery "
-                                f"reload on a server that stayed down (held requests={fixture.held})",
-                                observed=observe_exit(rc, elapsed))
-            health = rpc.raw("page.health", {}) if alive else None
-            answered = health is not None and "error" not in health and bool((health.get("result") or {}).get("pages"))
-            shape.check("health-answers", answered, f"page.health did not answer at t={elapsed:.1f}s: {health!r}",
-                        observed="answered" if answered else ("no-answer" if alive else "not-asked"))
+            record_after_recovery(shape, rc, elapsed, rpc.raw("page.health", {}) if rc is None else None, fixture.held)
             if fixture.held < 1:
                 shape.problem("PRECONDITION the recovery reload never reached the down server")
         except Exception as exc:  # noqa: BLE001

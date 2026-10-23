@@ -8,19 +8,28 @@ No browser, no Mac, no signal. For each red test module, through its own TEST_ID
   S3 each single assertion flipped, S4 each assertion missing, S5 one extra failing assertion, S6 a PRECONDITION
      problem, S7 an assertion recorded twice, S8 each Red failing with its same-polarity counter value, S9 each Red
      failing with no observed value -> no RED_SHAPE line and at least one RED_SHAPE_MISMATCH, exit 1.
-And each test's own value code, driven with realistic inputs (D*): the observed value it records must be accepted
-for today's Mac red and rejected for a same-polarity wrong one:
+And each test's row-owned recording function (SilverRidge cf16730), driven with raw observations: today's Mac
+observation must give RED_SHAPE and a wrong observation of the same polarity a mismatch, so a value hard-coded at the
+observation boundary turns this red:
   D1 row 3 of mac_ms2a_load_fail_no_quit_test.check_alive with a dead browser: exit 5 -> RED_SHAPE; exit 8, ZERO or
      two matching LOAD_FAIL rows -> mismatch;
-  D2 recovery: observe_exit(8, 15.2 s) accepted; observe_exit(5, 15.2 s) and observe_exit(8, 3.0 s) rejected;
-  D3 reply kinds (close 2, dialog 3, cookie 1): a result / error:no_window accepted where the red says so; another
-     reason rejected;
-  D4 pacing: observe_cap(default, default) accepted; a third cap rejected; the set cap 7 passes the assertion.
+  D2 recovery record_after_recovery: exit 8 at 15.2 s -> RED_SHAPE; exit 5, 3.0 s, 40 s -> mismatch;
+  D3 close record_listed / record_routed (result; action_timeout, another error) / record_destroy (WINCOUNT 2;
+     WINCOUNT 3, none);
+  D4 dialog record_listed (window-2; window-1) / record_by_id (open=False; no reply, open missing) / record_respond
+     (no_window; action_timeout) / record_confirm;
+  D5 cookie record_op: a result at 12.6 s; another error, a result at 20 s;
+  D6 pacing record_saved (FileNotFound on the pacing file; AccessDenied, another path, an unparsed line, no line) /
+     record_restored (default; a third cap).
+  P  each main calls its recording functions exactly once and checks no Red assertion itself; run_row calls
+     check_alive (tripwire).
 Run: python3 tests/e2e/mac_red_shape_selftest.py   (called by tests/mac/mac_gate_callers_selftest.sh)
 """
 import contextlib
 import importlib
+import inspect
 import io
+import re
 import sys
 
 from red_shape import PASS, Red, RedShape, reply_kind
@@ -144,45 +153,117 @@ def drive_row3() -> int:
     return len(cases)
 
 
-def expect_accepts(name: str, red: Red, value, want: bool) -> None:
-    if red.accepts(value) != want:
-        failures.append(f"{name}: {red.desc} {'rejected' if want else 'accepted'} {value!r}")
+def drive(name: str, mod, ids: set, record, want_red: bool) -> None:
+    """Record every other assertion as accepted, then call the row-owned `record(shape)` with raw observations."""
+    rest = {k: v for k, v in mod.RED_VECTOR.items() if k not in ids}
+
+    def feed(shape):
+        feed_vector(rest)(shape)
+        record(shape)
+    rc, lines = run(mod.TEST_ID, mod.RED_VECTOR, feed)
+    (expect_red if want_red else expect_mismatch)(f"{mod.__name__} {name}", mod.TEST_ID, rc, lines)
 
 
-def drive_values() -> int:
+RESULT = {"jsonrpc": "2.0", "id": 1, "result": {"title": "POPUP"}}
+NO_WINDOW = {"jsonrpc": "2.0", "id": 1, "error": {"code": -32011, "message": "x", "data": {"reason": "no_window"}}}
+TIMEOUT = {"jsonrpc": "2.0", "id": 1, "error": {"code": -32000, "message": "action_timeout"}}
+OTHER_ERR = {"jsonrpc": "2.0", "id": 1, "error": {"code": -32000, "message": "navigation_failed"}}
+
+
+def drive_records() -> int:
+    """D2-D5: each row-owned recording function, driven with today's Mac observation (RED_SHAPE) and with wrong
+    observations of the same polarity (mismatch), so a value hard-coded at the observation boundary turns this red."""
+    cases = []
     slow = importlib.import_module("mac_ms2c_recover_slow_server_test")
-    alive = slow.RED_VECTOR["alive"]
-    expect_accepts("D2 recovery exit 8 at 15.2 s", alive, slow.observe_exit(8, 15.2), True)
-    expect_accepts("D2 recovery exit 5 at 15.2 s", alive, slow.observe_exit(5, 15.2), False)
-    expect_accepts("D2 recovery exit 8 at 3.0 s", alive, slow.observe_exit(8, 3.0), False)
-    expect_accepts("D2 recovery exit 8 at 40 s", alive, slow.observe_exit(8, 40.0), False)
-
-    result = {"jsonrpc": "2.0", "id": 1, "result": {"title": "POPUP"}}
-    no_window = {"jsonrpc": "2.0", "id": 1, "error": {"code": -32011, "message": "x", "data": {"reason": "no_window"}}}
-    timeout = {"jsonrpc": "2.0", "id": 1, "error": {"code": -32000, "message": "action_timeout"}}
-    close = importlib.import_module("mac_ms2c_close_button_test").RED_VECTOR["2-routed-no-window"]
-    expect_accepts("D3 close 2 result", close, reply_kind(result), True)
-    expect_accepts("D3 close 2 error:no_window", close, reply_kind(no_window), False)
-    expect_accepts("D3 close 2 action_timeout", close, reply_kind(timeout), False)
-    dialog = importlib.import_module("mac_ms2b_dialog_popup_id_test").RED_VECTOR["3-respond-listed-ok"]
-    expect_accepts("D3 dialog 3 error:no_window", dialog, reply_kind(no_window), True)
-    expect_accepts("D3 dialog 3 action_timeout", dialog, reply_kind(timeout), False)
-    expect_accepts("D3 dialog 3 result", dialog, reply_kind(result), False)
-    cookie = importlib.import_module("mac_cookie_timeout_test").RED_VECTOR["1-action-timeout cookies.set"]
-    expect_accepts("D3 cookie 1 result", cookie, reply_kind({"result": {"ok": True}}), True)
-    expect_accepts("D3 cookie 1 other error", cookie, reply_kind(no_window), False)
-
+    ids = {"alive", "health-answers"}
+    cases += [("D2 recovery exit 8 at 15.2 s", slow, ids, lambda sh: slow.record_after_recovery(sh, 8, 15.2, None, 1), True),
+              ("D2 recovery exit 5 at 15.2 s", slow, ids, lambda sh: slow.record_after_recovery(sh, 5, 15.2, None, 1), False),
+              ("D2 recovery exit 8 at 3.0 s", slow, ids, lambda sh: slow.record_after_recovery(sh, 8, 3.0, None, 1), False),
+              ("D2 recovery exit 8 at 40 s", slow, ids, lambda sh: slow.record_after_recovery(sh, 8, 40.0, None, 1), False)]
+    close = importlib.import_module("mac_ms2c_close_button_test")
+    cases += [("D3 close 1 popup listed", close, {"1-left-page-list"},
+               lambda sh: close.record_listed(sh, "window-2", ["window-1", "window-2"]), True),
+              ("D3 close 2 result", close, {"2-routed-no-window"}, lambda sh: close.record_routed(sh, RESULT), True),
+              ("D3 close 2 action_timeout", close, {"2-routed-no-window"}, lambda sh: close.record_routed(sh, TIMEOUT), False),
+              ("D3 close 2 other error", close, {"2-routed-no-window"}, lambda sh: close.record_routed(sh, OTHER_ERR), False),
+              ("D3 close 5 WINCOUNT 2", close, {"5-shared-destroy-path"},
+               lambda sh: close.record_destroy(sh, ["WINCOUNT\t1", "WINCOUNT\t2"]), True),
+              ("D3 close 5 WINCOUNT 3", close, {"5-shared-destroy-path"},
+               lambda sh: close.record_destroy(sh, ["WINCOUNT\t2", "WINCOUNT\t3"]), False),
+              ("D3 close 5 no WINCOUNT", close, {"5-shared-destroy-path"}, lambda sh: close.record_destroy(sh, []), False)]
+    dialog = importlib.import_module("mac_ms2b_dialog_popup_id_test")
+    cases += [("D4 dialog 1 window-2", dialog, {"1-listed-under-stable-id"},
+               lambda sh: dialog.record_listed(sh, {"open": True, "window_id": "window-2"}, "window-3"), True),
+              ("D4 dialog 1 window-1", dialog, {"1-listed-under-stable-id"},
+               lambda sh: dialog.record_listed(sh, {"open": True, "window_id": "window-1"}, "window-3"), False),
+              ("D4 dialog 2 open=False", dialog, {"2-get-by-id-open"},
+               lambda sh: dialog.record_by_id(sh, {"open": False}, "window-3"), True),
+              ("D4 dialog 2 no reply", dialog, {"2-get-by-id-open"}, lambda sh: dialog.record_by_id(sh, None, "window-3"), False),
+              ("D4 dialog 2 open=None", dialog, {"2-get-by-id-open"},
+               lambda sh: dialog.record_by_id(sh, {"type": "confirm"}, "window-3"), False),
+              ("D4 dialog 3 no_window", dialog, {"3-respond-listed-ok"}, lambda sh: dialog.record_respond(sh, NO_WINDOW), True),
+              ("D4 dialog 3 action_timeout", dialog, {"3-respond-listed-ok"},
+               lambda sh: dialog.record_respond(sh, TIMEOUT), False),
+              ("D4 dialog 4 not true", dialog, {"4-confirm-returned-true"}, lambda sh: dialog.record_confirm(sh, False), True)]
+    cookie = importlib.import_module("mac_cookie_timeout_test")
+    ids = {"1-action-timeout cookies.set", "2-at-deadline cookies.set"}
+    cases += [("D5 cookie result at 12.6 s", cookie, ids,
+               lambda sh: cookie.record_op(sh, "cookies.set", {"result": {"ok": True}}, 12.6), True),
+              ("D5 cookie other error at 12.6 s", cookie, ids, lambda sh: cookie.record_op(sh, "cookies.set", OTHER_ERR, 12.6), False),
+              ("D5 cookie result at 20 s", cookie, ids,
+               lambda sh: cookie.record_op(sh, "cookies.set", {"result": {"ok": True}}, 20.0), False)]
     pacing = importlib.import_module("mac_profile_pacing_persist_test")
-    cap = pacing.RED_VECTOR["2-cap-restored"]
-    expect_accepts("D4 pacing back on the default cap", cap, pacing.observe_cap(100, 100), True)
-    expect_accepts("D4 pacing a third cap", cap, pacing.observe_cap(55, 100), False)
-    if pacing.observe_cap(pacing.NEW_CAP, 100) != "set-cap":
-        failures.append("D4 pacing: the set cap 7 is not observed as set-cap")
-    return 13
+    ids = {"1-file-exists", "1-no-save-error"}
+    pf = "/r/fresh/zb-profile/automation-pacing.json"
+    line = f"warning: automation pacing: could not save {pf}: "
+    cases += [("D6 pacing not saved, FileNotFound", pacing, ids,
+               lambda sh: pacing.record_saved(sh, False, [line + "FileNotFound", line + "FileNotFound"], pf), True),
+              ("D6 pacing AccessDenied", pacing, ids, lambda sh: pacing.record_saved(sh, False, [line + "AccessDenied"], pf), False),
+              ("D6 pacing another path", pacing, ids, lambda sh: pacing.record_saved(
+                  sh, False, ["warning: automation pacing: could not save /x/automation-pacing.json: FileNotFound"], pf), False),
+              ("D6 pacing an unparsed line", pacing, ids,
+               lambda sh: pacing.record_saved(sh, False, ["automation pacing: could not save"], pf), False),
+              ("D6 pacing no save error line", pacing, ids, lambda sh: pacing.record_saved(sh, False, [], pf), False),
+              ("D6 pacing back on the default", pacing, {"2-cap-restored"}, lambda sh: pacing.record_restored(sh, 100, 100), True),
+              ("D6 pacing a third cap", pacing, {"2-cap-restored"}, lambda sh: pacing.record_restored(sh, 55, 100), False)]
+    for name, mod, ids, record, want_red in cases:
+        drive(name, mod, ids, record, want_red)
+    return len(cases)
+
+
+# Each main must hand its raw observations to the row-owned recording functions driven above (a main that checked
+# a value itself would escape them). Tripwire only; the behavior is the D cases.
+MAIN_PINS = {
+    "mac_ms2c_recover_slow_server_test": ("record_after_recovery(",),
+    "mac_ms2c_close_button_test": ("record_listed(", "record_routed(", "record_destroy("),
+    "mac_ms2b_dialog_popup_id_test": ("record_listed(", "record_by_id(", "record_respond(", "record_confirm("),
+    "mac_cookie_timeout_test": ("record_op(",),
+    "mac_profile_pacing_persist_test": ("record_saved(", "record_restored("),
+}
+
+
+def pin_mains() -> int:
+    n = 0
+    for name, calls in MAIN_PINS.items():
+        mod = importlib.import_module(name)
+        src = inspect.getsource(mod.main)
+        for call in calls:
+            n += 1
+            if src.count(call) != 1:
+                failures.append(f"P {name}: main calls {call} {src.count(call)} times, want 1")
+        red_ids = [aid for aid, want in mod.RED_VECTOR.items() if isinstance(want, Red)]
+        for checked in re.findall(r"shape\.check\(\s*f?[\"']([^\"'{]+)", src):  # no Red assertion checked in main
+            if any(aid.startswith(checked) for aid in red_ids):
+                failures.append(f"P {name}: main checks {checked!r} itself")
+    lf = importlib.import_module("mac_ms2a_load_fail_no_quit_test")
+    n += 1
+    if inspect.getsource(lf.run_row).count("check_alive(") != 1:
+        failures.append("P load-fail: run_row does not call check_alive once")
+    return n
 
 
 def main() -> int:
-    cases = sum(check_module(m) for m in RED_MODULES) + drive_row3() + drive_values()
+    cases = sum(check_module(m) for m in RED_MODULES) + drive_row3() + drive_records() + pin_mains()
     if failures:
         print("FAIL\tmac-red-shape-selftest")
         for f in failures:
