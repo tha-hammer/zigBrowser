@@ -43,6 +43,31 @@ bad() { printf 'FAIL %s\n' "$*"; fails=$((fails + 1)); }
 INTEL=intel@10.0.0.1 ARM=arm@10.0.0.2
 
 mkdir -p "$T/bin" "$T/ctl" "$T/home" "$T/tmp"
+cat > "$T/bin/silent-gate-success" <<'EOF'
+#!/bin/bash
+# Completed remote-test output for the five build-on-mac callers covered by this older fixture. The exact causal
+# delivery boundary and each gate's own subset are proved separately by mac_gate_empty_output_selftest.sh.
+printf '%s\n' \
+  $'PASS\tms2a-routed-commands' $'PASS\tms2a-private-world' $'PASS\tms2a-abi-census' \
+  $'PASS\tms2a-late-completion' $'PASS\tms2a-string-ownership' $'PASS\tms2a-str-accounting' \
+  $'PASS\tms2a-hang-guard' $'PASS\tms2a.2-nav-failure' $'PASS\tms2a-dispatch-race' \
+  $'PASS\tms2a-immediate-quit' $'PASS\tms2a-teardown-reap' $'PASS\tms2a-refused-start' \
+  $'PASS\tms2a-user-nav-failure' $'PASS\tms2a-hook-inert' $'PASS\tms2a-stale-callback' \
+  $'PASS\tms2a-stale-failure' \
+  $'PASS\tms2b-key-table-parity\t(31 names)' $'PASS\tms2b.1a-native-click' \
+  $'PASS\tms2b.1b-key-text' $'PASS\tms2b-key-coverage' $'PASS\tms2b-ack-error' \
+  $'PASS\tms2b-doc-changed' $'PASS\tms2b-text-doc-changed-selftest' \
+  $'PASS\tms2b-text-doc-changed' $'PASS\tms2b-partial-type' $'PASS\tms2b-pair-race' \
+  $'PASS\tms2b-ack-hang' $'PASS\tms2b-dialogs' $'PASS\tms2b-eval-dialog' \
+  $'PASS\tms2c-list-windows' $'PASS\tms2c-stable-ids' $'PASS\tms2c-window-fifo' \
+  $'PASS\tms2c-popup-chain' $'PASS\tms2c-loading' $'PASS\tms2c-process-group' \
+  $'PASS\tms2c-oob-during-stuck' $'PASS\tms2c-snapshot-oob' $'PASS\tms2c-dialog-snapshot' \
+  $'PASS\tms2c-script-close' $'PASS\tms2c-health' $'PASS\tms2c-close-window' \
+  $'PASS\tms2c-crash' $'PASS\tms2c-crash-controls' $'PASS\tms2c-recover' \
+  $'PASS\tms2c-recover-dialog' $'PASS\tms2c-recover-stale-health' \
+  $'PASS\tms3-cookie' $'PASS\tms3-config-flags' $'PASS\tms3-profile-persist' \
+  $'PASS\tms3-profile-cwd-isolation' $'PASS\tms4-load-serial' $'PASS\tms4.4-login-gate'
+EOF
 cat > "$T/bin/ssh" <<EOF
 #!/bin/bash
 i=\$(cat "$T/ctl/n" 2>/dev/null || echo 0); echo \$((i + 1)) > "$T/ctl/n"
@@ -54,6 +79,9 @@ if grep -q m9_render_test.py "$T/ctl/stdin.\$i"; then
   printf 'PASS\tm9-load-fail-contract\nexec_arch_probe: build.exec_arch=stub\n'
 elif grep -q mac_universal_test.py "$T/ctl/stdin.\$i"; then
   printf 'PASS\tmac-universal\t12 assertions\n'
+fi
+if [[ " \$* " == *' /bin/bash -s '* ]]; then
+  case "\${ZB_CALLERS_GATE:-}" in ms2a|ms2b|ms2c|ms3|ms4) "$T/bin/silent-gate-success" ;; esac
 fi
 # the rows gate's leak path (rows L): the leg on STUB_LEG_RC_HOST exits STUB_LEG_RC
 if [ -n "\${STUB_LEG_RC_HOST:-}" ] && [[ " \$* " == *" \$STUB_LEG_RC_HOST /bin/bash -s "* ]]; then exit "\${STUB_LEG_RC:-0}"; fi
@@ -75,7 +103,7 @@ cat > "$T/bin/python3" <<EOF
 printf '%s\n' "\$*" >> "$T/ctl/python3"
 exit 0
 EOF
-chmod +x "$T/bin/ssh" "$T/bin/scp" "$T/bin/python3"
+chmod +x "$T/bin/ssh" "$T/bin/scp" "$T/bin/python3" "$T/bin/silent-gate-success"
 
 # The scratch repo: the real callers, build-on-mac.sh, the shared gate library, the pinned host keys, plus stand-ins
 # for every path build-on-mac.sh archives.
@@ -143,6 +171,7 @@ check_caller() { # check_caller <name> <script> <final line regex> <host...>
   rm -f "$T/ctl"/*
   out=$(cd "$R" && env -i PATH="$T/bin:/usr/bin:/bin" HOME="$T/home" TMPDIR="$T/tmp" \
           ZB_MAC_HOST="$INTEL" ZB_MAC_ARM_HOST="$ARM" ZB_MAC_KEY="$T/fake_mac_key" \
+          ZB_CALLERS_GATE="$name" \
           timeout 120 bash "$script" 2>&1 </dev/null)
   rc=$?
   n=$(cat "$T/ctl/n" 2>/dev/null || echo 0)

@@ -39,6 +39,9 @@ printf '%s\0' $tool "\$@" > "$T/ctl/call.\$i"
 printf 'DISPLAY=%s WAYLAND_DISPLAY=%s XAUTHORITY=%s SSH_ASKPASS=%s\n' "\${DISPLAY-<unset>}" "\${WAYLAND_DISPLAY-<unset>}" \
   "\${XAUTHORITY-<unset>}" "\${SSH_ASKPASS-<unset>}" > "$T/ctl/env.\$i"
 cat > /dev/null
+if [ $tool = ssh ] && [[ " \$* " == *' /bin/bash -s '* ]]; then
+  printf 'PASS\tms5-keychain-seam\nPASS\tms5-keychain-zigport\n'
+fi
 exit 0
 EOF
   chmod +x "$T/bin/$tool"
@@ -47,7 +50,8 @@ done
 # The scratch repo: the real gate, the pinned host keys, and stand-ins for the sources it copies.
 R="$T/repo"
 mkdir -p "$R/tests/mac" "$R/src"
-cp "$ROOT/tests/mac/ms5_gate.sh" "$ROOT/tests/mac/mac_config.sh" "$ROOT/tests/mac/known_hosts" "$R/tests/mac/"
+cp "$ROOT/tests/mac/ms5_gate.sh" "$ROOT/tests/mac/mac_gate_output.sh" "$ROOT/tests/mac/mac_config.sh" \
+  "$ROOT/tests/mac/known_hosts" "$R/tests/mac/"
 for f in agent_secrets_mac.h agent_secrets_mac.m agent_secrets_mac.zig; do echo "// stand-in" > "$R/src/$f"; done
 echo "// stand-in" > "$R/tests/mac/keychain_seam_test.m"
 G=(env -i PATH=/usr/bin:/bin HOME="$T/home" GIT_CONFIG_NOSYSTEM=1 git -C "$R")

@@ -56,6 +56,14 @@ if [ "\${cmd[0]:-}" = /bin/bash ] && [ "\${cmd[1]:-}" = -s ]; then
       printf 'PASS\tm9-reply-channel-contract\nPASS\tm9-load-fail-contract\nexec_arch_probe: build.exec_arch=%s\n' "\$arch" ;;
     *mac_universal_test.py*) printf 'PASS\tmac-universal\t12 assertions\n' ;;
   esac
+  if [ "\${ZB_LOG_GATE:-}" = ms2b ]; then
+    printf '%s\n' \
+      \$'PASS\tms2b-key-table-parity\t(31 names)' \$'PASS\tms2b.1a-native-click' \
+      \$'PASS\tms2b.1b-key-text' \$'PASS\tms2b-key-coverage' \$'PASS\tms2b-ack-error' \
+      \$'PASS\tms2b-doc-changed' \$'PASS\tms2b-text-doc-changed-selftest' \
+      \$'PASS\tms2b-text-doc-changed' \$'PASS\tms2b-partial-type' \$'PASS\tms2b-pair-race' \
+      \$'PASS\tms2b-ack-hang' \$'PASS\tms2b-dialogs' \$'PASS\tms2b-eval-dialog'
+  fi
 fi
 exit 0
 EOF
@@ -71,7 +79,9 @@ chmod +x "$T/bin/ssh" "$T/bin/scp"
 
 R="$T/repo"
 mkdir -p "$R/tests/mac" "$R/tests/e2e" "$R/src" "$R/packaging/macos" "$R/packaging/assets"
-for f in gate.sh ms2b_gate.sh build-on-mac.sh mac_gate_lib.sh mac_config.sh known_hosts; do cp "$ROOT/tests/mac/$f" "$R/tests/mac/"; done
+for f in gate.sh ms2b_gate.sh build-on-mac.sh mac_gate_lib.sh mac_gate_output.sh mac_config.sh known_hosts; do
+  cp "$ROOT/tests/mac/$f" "$R/tests/mac/"
+done
 cp "$ROOT/tests/e2e/mac_resource_compat.py" "$ROOT/tests/e2e/mac_universal_test.py" "$R/tests/e2e/"
 cp "$ROOT/packaging/macos/universal_components.json" "$ROOT/packaging/macos/entitlements.plist" \
   "$ROOT/packaging/macos/build-dmg.sh" "$ROOT/packaging/macos/Info.plist" "$R/packaging/macos/"
@@ -87,7 +97,7 @@ SHA=$("${G[@]}" rev-parse HEAD)
 check_log() { # check_log <label> <script> <first line, ERE> <end line, ERE> <hosts> [gate]
   local label=$1 script=$2 first=$3 end=$4 nhosts=$5 gate=${6:-} log="$T/log.$1" rc
   (cd "$R" && env -i PATH="$T/bin:/usr/bin:/bin" HOME="$T/home" TMPDIR="$T/tmp" ZB_MAC_HOST="$INTEL" ZB_MAC_ARM_HOST="$ARM" \
-     ZB_MAC_KEY="$T/fake_mac_key" timeout 120 bash "$script" > "$log" 2>&1 </dev/null)
+     ZB_MAC_KEY="$T/fake_mac_key" ZB_LOG_GATE="$label" timeout 120 bash "$script" > "$log" 2>&1 </dev/null)
   rc=$?
   [ "$rc" -eq 0 ] || bad "$label: exit $rc, want 0 (a passing Mac): $(tr -d '\0' < "$log" | tail -n 2 | tr '\n' ' ')"
   if [ "$(tr -cd '\0' < "$log" | wc -c)" -eq 0 ]; then ok "$label L1: the log has no NUL byte"

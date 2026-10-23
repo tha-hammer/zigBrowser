@@ -41,6 +41,10 @@ printf '%s\0' $tool "\$@" > "$T/ctl/call.\$i"
 printf 'DISPLAY=%s WAYLAND_DISPLAY=%s XAUTHORITY=%s SSH_ASKPASS=%s\n' "\${DISPLAY-<unset>}" "\${WAYLAND_DISPLAY-<unset>}" \
   "\${XAUTHORITY-<unset>}" "\${SSH_ASKPASS-<unset>}" > "$T/ctl/env.\$i"
 cat > /dev/null
+if [ $tool = ssh ] && [[ " \$* " == *' /bin/bash -s '* ]]; then
+  arch=x86_64; [[ " \$* " != *' $ARM '* ]] || arch=arm64
+  printf 'PASS\tms5-setup-refusal\t%s\nPASS\tms5-setup-e2e\t%s\n' "\$arch" "\$arch"
+fi
 exit 0
 EOF
   chmod +x "$T/bin/$tool"
@@ -49,7 +53,9 @@ done
 # The scratch repo: the real scripts, their helper, the pinned host keys, and stand-ins for what they archive.
 R="$T/repo"
 mkdir -p "$R/tests/mac" "$R/src" "$R/packaging" "$R/agent" "$R/tools"
-for f in ms5_setup_refusal_gate.sh ms5_setup_e2e.sh lib_group_cleanup.sh mac_config.sh known_hosts; do cp "$ROOT/tests/mac/$f" "$R/tests/mac/"; done
+for f in ms5_setup_refusal_gate.sh ms5_setup_e2e.sh lib_group_cleanup.sh mac_gate_output.sh mac_config.sh known_hosts; do
+  cp "$ROOT/tests/mac/$f" "$R/tests/mac/"
+done
 echo "// stand-in" > "$R/src/main.zig"
 echo x > "$R/packaging/x"; echo x > "$R/agent/x"; echo x > "$R/tools/x"
 echo build > "$R/build.zig"; echo zon > "$R/build.zig.zon"; echo '{}' > "$R/zigbrowser.json"

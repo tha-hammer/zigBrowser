@@ -273,6 +273,15 @@ if [ "$tool" = ssh ]; then
   elif grep -q mac_universal_test.py "$c/stdin.$i"; then
     printf 'PASS\tmac-universal\t12 assertions\n'
   fi
+  # ms5_setup_e2e prints its only bounded commit/result line after both remote legs prove their exact result. The
+  # provenance fixture must let those intended leg calls finish, just as it already does for the m9 gate above.
+  if [ "${ZB_SELFTEST_GATE:-}" = tests/mac/ms5_setup_e2e.sh ]; then
+    case " $* " in
+      *' /bin/bash -s '*) arch=x86_64
+        [ "$host" != "${ZB_MAC_ARM_HOST:-}" ] || arch=arm64
+        printf 'PASS\tms5-setup-e2e\t%s\n' "$arch" ;;
+    esac
+  fi
   # The bundle-layout spike's leg driver answers its create subcommand with the physical-root row.
   case " $* " in *" /bin/bash -s create "*) printf 'ROOT\t/Users/stub/%s\n' "${@: -1}" ;; esac
 else
@@ -409,6 +418,7 @@ call_host_key() { # call_host_key <ctl> <i>: prints "tool host key"
 }
 
 MARK="ZB_DIRTY_WORK""TREE_MARKER_4pa59"   # assembled, so this file's own committed bytes never carry it
+DIRTY_SOURCE_HELPER=tests/mac/mac_gate_output.sh
 skip_dirty=" $HELPER tests/mac/mac_gate_lib.sh tests/mac/build-on-mac.sh tests/mac/known_hosts $REAPER "
 for row in "${DRIVEN[@]}"; do skip_dirty+="${row%%|*} "; done
 dirtied=0
@@ -416,10 +426,21 @@ while IFS= read -r rel; do
   [[ "$skip_dirty" == *" $rel "* ]] && continue
   f="$R/$rel"
   [ -f "$f" ] && [ ! -L "$f" ] && grep -Iq . "$f" 2>/dev/null || continue   # text files only
-  printf '\n%s\n' "$MARK" >> "$f"; dirtied=$((dirtied + 1))
+  # The 3ui.14 gates source this helper before transport. Keep that working-tree copy dirty and executable so the
+  # gates reach their transports; the payload audit below must still reject its marker from every captured byte.
+  if [ "$rel" = "$DIRTY_SOURCE_HELPER" ]; then printf '\n# %s\n' "$MARK" >> "$f"
+  else printf '\n%s\n' "$MARK" >> "$f"
+  fi
+  dirtied=$((dirtied + 1))
 done < <("${G[@]}" ls-files -- src tests packaging agent tools build.zig build.zig.zon)
 [ "$dirtied" -gt 100 ] && ok "the working tree is dirty past the commit ($dirtied files marked)" \
   || bad "only $dirtied files could be marked dirty"
+if grep -qxF "# $MARK" "$R/$DIRTY_SOURCE_HELPER" \
+   && (cd "$R" && bash -c 'set -euo pipefail; . tests/mac/mac_gate_output.sh; declare -F mac_require_lines >/dev/null'); then
+  ok "the sourced output helper remains dirty and executable"
+else
+  bad "the sourced output helper is not both dirty and executable"
+fi
 
 scan_payloads() { # legacy marker control: "<payloads> <first marked payload or ->"
   python3 -I - "$1" "$MARK" <<'PY'

@@ -42,6 +42,11 @@ for tool in ssh scp; do
 i=\$(cat "$T/ctl/n" 2>/dev/null || echo 0); echo \$((i + 1)) > "$T/ctl/n"
 printf '%s\0' $tool "\$@" > "$T/ctl/call.\$i"
 cat > "$T/ctl/stdin.\$i"
+if [ $tool = ssh ] && [[ " \$* " == *' /bin/bash -s '* ]]; then
+  arch=x86_64; [[ " \$* " != *' $ARM '* ]] || arch=arm64
+  printf 'PASS\tms5-setup-refusal\t%s\nPASS\tms5-setup-e2e\t%s\n' "\$arch" "\$arch"
+  printf 'PASS\tms5-keychain-seam\nPASS\tms5-keychain-zigport\n'
+fi
 exit 0
 EOF
   chmod +x "$T/bin/$tool"
@@ -90,7 +95,9 @@ ZIGARGV
 # The scratch repo: the real scripts, their helper, and stand-ins for what they archive or copy.
 R="$T/repo"
 mkdir -p "$R/tests/mac" "$R/src" "$R/packaging" "$R/agent" "$R/tools"
-for f in ms5_setup_refusal_gate.sh ms5_setup_e2e.sh ms5_gate.sh lib_group_cleanup.sh mac_config.sh; do cp "$ROOT/tests/mac/$f" "$R/tests/mac/"; done
+for f in ms5_setup_refusal_gate.sh ms5_setup_e2e.sh ms5_gate.sh lib_group_cleanup.sh mac_gate_output.sh mac_config.sh; do
+  cp "$ROOT/tests/mac/$f" "$R/tests/mac/"
+done
 for f in agent_secrets_mac.h agent_secrets_mac.m agent_secrets_mac.zig; do echo "// stand-in" > "$R/src/$f"; done
 echo "// stand-in" > "$R/tests/mac/keychain_seam_test.m"
 echo x > "$R/packaging/x"; echo x > "$R/agent/x"; echo x > "$R/tools/x"
