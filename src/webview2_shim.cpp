@@ -1243,7 +1243,7 @@ constexpr int kCdpShift = 8;
 size_t utf8_char_len(const std::string &text, size_t i) {
   const unsigned char lead = static_cast<unsigned char>(text[i]);
   const size_t len = lead < 0x80 ? 1 : (lead >> 5) == 0x6 ? 2 : (lead >> 4) == 0xE ? 3 : 4;
-  return std::min(len, text.size() - i);
+  return i + len <= text.size() ? len : text.size() - i; // no std::min: the MSVC SDK's min macro
 }
 
 // One character (UTF-8, one code point) as a key: '\n' is Enter; otherwise the key and text are the character,

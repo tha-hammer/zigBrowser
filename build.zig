@@ -452,6 +452,10 @@ pub fn build(b: *std.Build) void {
     // ws2a3-async-ownership-win slice only; the real compiler preprocesses the real shim both ways (hermetic).
     const windows_ws2a3_seam_gating = b.addSystemCommand(&.{ "python3", "-I", "tests/windows/ws2a3_seam_gating_test.py", "--zig", b.graph.zig_exe });
     b.step("windows-ws2a3-seam-gating", "WS2a.3: the debug seams are in the slice build only, never in the WebView2 product build (hermetic)").dependOn(&windows_ws2a3_seam_gating.step);
+    // WS2b.1: no src/ Windows source uses min/max where the MSVC SDK's minwindef.h macros expand (the VM's MSVC
+    // build has them; the MinGW headers here do not).
+    const windows_msvc_minmax = b.addSystemCommand(&.{ "python3", "-I", "tests/windows/msvc_minmax_test.py", "--zig", b.graph.zig_exe });
+    b.step("windows-msvc-minmax", "WS2b.1: no Windows source uses min/max where the MSVC SDK macros expand (hermetic)").dependOn(&windows_msvc_minmax.step);
 
     // NavyCanyon 6dd7fda: the ONE shared WebView2 run-folder cleanup (tests/windows/webview2_cleanup.py) through the
     // real helper and both real callers (spike_driver.run_spike, m8_live_test.run_on_host), on a fake VM (hermetic).
@@ -3770,6 +3774,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&windows_refusal_live.step);
     test_step.dependOn(&windows_live_step_skip.step);
     test_step.dependOn(&windows_ws2a3_seam_gating.step);
+    test_step.dependOn(&windows_msvc_minmax.step);
     test_step.dependOn(&windows_webview2_cleanup_selftest.step);
     test_step.dependOn(&windows_transport_scp_selftest.step);
     test_step.dependOn(&windows_scp_callers_selftest.step);
