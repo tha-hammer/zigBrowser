@@ -199,6 +199,9 @@ class IncidentCleanup(unittest.TestCase):
         self.assertNotIn(752, final.get("stopped", []), "the imposter is not stopped" + detail)
         self.assertEqual(final["procs"]["752"], imposter, detail)
         self.assertEqual(final.get("rmdirs", []), [], detail)
+        # NavyCanyon 9b8b94e0: the failed stop ends the step; the later pinned target 5796 is untouched
+        self.assertNotIn(5796, self._stop_targets(calls), "no stop after the first failed stop" + detail)
+        self.assertEqual(final["procs"].get("5796"), IDS[5796], "the later target is still alive" + detail)
         # tripwire on the PowerShell the fake cannot execute (the Win11 run proves it): the stop re-reads the
         # object, re-checks name and start, and stops that object
         body = next(c["body"] for c in calls if c["kind"] == "stop")
@@ -226,6 +229,10 @@ class IncidentCleanup(unittest.TestCase):
         self.assertEqual(proc.returncode, 1, detail)
         self.assertIn("stop failed", proc.stdout, detail)
         self.assertEqual(final.get("rmdirs", []), [], detail)
+        # NavyCanyon 9b8b94e0: the failed stop ends the step; the later pinned target 5796 is untouched
+        self.assertNotIn(5796, self._stop_targets(calls), "no stop after the first failed stop" + detail)
+        self.assertNotIn(5796, final.get("stopped", []), detail)
+        self.assertEqual(final["procs"].get("5796"), IDS[5796], "the later target is still alive" + detail)
 
     def test_a_survivor_after_the_bounded_wait_stops_the_script(self):
         proc, calls, final, detail = self._run(survive=["5796"])

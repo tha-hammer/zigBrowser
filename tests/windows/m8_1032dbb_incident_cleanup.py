@@ -8,12 +8,16 @@ identities from the run's evidence, and the two folders. It reads no host, key, 
 
 Order (each step must succeed, or the script STOPS at once, with no retry and nothing further done):
   1. the identity marker in %USERPROFILE%\zb\.gate-identity is the literal Win11 marker;
-  2. a read-only snapshot of %LOCALAPPDATA%\zig and zb\zig-global-cache (file count, bytes, listing sha256);
+  2. a read-only snapshot of %LOCALAPPDATA%\zig and zb\zig-global-cache (file count, bytes, listing sha256); a
+     %LOCALAPPDATA%\zig that is not the pinned baseline stops the script here, before anything is stopped or
+     deleted (NavyCanyon 9b8b94e0);
   3. every one of the nine identities is read and validated. An original that is gone is reported (ABSENT). A pid
      that now holds a different name or start time (MISMATCH), or one whose start time cannot be read, is NEVER
      stopped: the script stops before stopping anything;
-  4. only the still-matching process objects are force-stopped. Each is re-read and re-checked right before
-     `Stop-Process -InputObject` (never by name, never taskkill);
+  4. only the still-matching process objects are force-stopped, one remote probe per target in the pinned order.
+     Each is re-read and re-checked right before `Stop-Process -InputObject` (never by name, never taskkill); the
+     first answer that is not STOPPED or ABSENT (a MISMATCH or an ERROR) ends the step, and no later target is sent
+     a stop (NavyCanyon 9b8b94e0);
   5. a wait of at most STOP_WAIT_S (60 s, one monotonic budget) for those exact identities to disappear;
   6. no zb_m8_* scheduled task may exist;
   7. a fresh webview2_cleanup census, then webview2_cleanup.remove_after_webview2 exactly once for each of the two
@@ -183,17 +187,14 @@ def stop_matching(state):
     if not targets:
         say("STOP\tnothing to stop: every pinned identity is already gone")
         return
-    outcome = {}
-    for line in probe("stop", stop_body(targets)):
-        row = line.split("\t")
-        if len(row) < 2 or not row[1].isdigit() or int(row[1]) not in {pid for _, pid, _ in targets}:
-            raise Stop(f"stop probe answered an unexpected line {line!r}")
-        outcome[int(row[1])] = row
+    for name, pid, ticks in targets:  # one probe per target: a failure ends the step before any later target
+        lines = probe("stop", stop_body([(name, pid, ticks)]))
+        row = lines[0].split("\t") if len(lines) == 1 else []
+        if len(row) < 2 or row[1] != str(pid):
+            raise Stop(f"stop probe for {pid} answered {lines!r}; no later target is attempted")
         say("STOP\t" + "\t".join(row))
-    bad = [r for r in outcome.values() if r[0] not in ("STOPPED", "ABSENT")]
-    missing = sorted({pid for _, pid, _ in targets} - set(outcome))
-    if bad or missing:
-        raise Stop(f"stop failed: {bad} no answer for {missing}")
+        if row[0] not in ("STOPPED", "ABSENT"):
+            raise Stop(f"stop failed at {pid}: {row}; no later target is attempted")
 
 
 def wait_gone():
@@ -234,6 +235,9 @@ def cleanup():
     pre = snapshots()
     say(f"PRE\tlocalappdata_zig\t{pre['localappdata_zig']}")
     say(f"PRE\tzb_zig_global_cache\t{pre['zb_zig_global_cache']}")
+    if pre["localappdata_zig"] != LOCALAPPDATA_ZIG_BASELINE:
+        raise Stop(f"%LOCALAPPDATA%\\zig {pre['localappdata_zig']} is not the pinned baseline "
+                   f"{LOCALAPPDATA_ZIG_BASELINE}: nothing is stopped or deleted")
     state = read_identities()
     for name, pid, ticks in IDENTITIES:
         say(f"IDENTITY\t{name}\t{pid}\t{ticks}\t{state[pid]}")
