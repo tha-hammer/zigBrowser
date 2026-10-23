@@ -59,7 +59,7 @@ case "\$c" in
   cd\ \"\\\$HOME/zb-gate-*\"\ \&\&\ *zig\ build*)
     if [ "\$hit" = nosdk ]; then echo "error: unable to find framework 'WebKit'; searched paths: none" >&2; exit 1; fi
     echo "build ok"; exit 0 ;;
-  cd\ /\ \&\&\ *-delete*) exit 0 ;;
+  cd\ /\ \&\&\ *-delete*) printf 'ZB_ROOT_ABSENT\t%s\n' "\${c##* }"; exit 0 ;;   # the verified cleanup confirms
   mkdir\ -p\ *) exit 0 ;;
   test\ -s\ *exec-arch.txt*) exit 0 ;;
   cat\ *exec-arch.txt*) if [ "\$hit" = wrongarch ]; then echo "\$other"; else echo "\$arch"; fi; exit 0 ;;

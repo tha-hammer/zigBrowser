@@ -22,7 +22,8 @@
 #   L6 a /var/folders helper that itself writes under the temp root during its cycle: the self-audit shows that delta,
 #      and the leg exits 5 with zero rows, zero row invocations and no RUNNING marker.
 #   L5 is exact (SilverRidge 90151365): SELFAUDIT_STATUS<TAB><step><TAB>0 for outer-begin, inner-varfolders,
-#      inner-crashreports and outer-end, in that order; outer-begin silent; each other step's last line COMPLETE 0; all
+#      inner-crashreports, inner-evidence (the evidence packer, SilverRidge 0632602f) and outer-end, in that order;
+#      outer-begin and inner-evidence silent; each other step's last line COMPLETE 0; all
 #      before the first ROW line. L7 an inner refusal or a non-COMPLETE inner result (each injected into the fake run
 #      root's helper, for the self-audit's evidence dir only): exit 5, zero rows, zero row invocations, no marker.
 #   L8 a crash-report evidence dir that cannot be made: exactly one begin refusal, and the leg starts nothing.
@@ -56,6 +57,8 @@ printf 'CONTACT\tssh\t%s\n' "\$(grep -c '^ROWS_SELECTED' "$T/gate.out" 2>/dev/nu
 i=\$(cat "$T/ctl/n" 2>/dev/null || echo 0); echo \$((i + 1)) > "$T/ctl/n"
 printf '%s\0' ssh "\$@" > "$T/ctl/call.\$i"
 cat > "$T/ctl/stdin.\$i"
+case "\$*" in *ZB_ROOT_ABSENT*) last="\${@: -1}"; printf 'ZB_ROOT_ABSENT\t%s\n' "\${last##* }" ;; esac   # the verified cleanup
+[[ " \$* " == *" /bin/bash -s "* ]] && printf 'EVIDENCE_ARMED\n'   # the leg arms its evidence archive
 exit 0
 EOF
 cat > "$T/bin/scp" <<EOF
@@ -63,6 +66,11 @@ cat > "$T/bin/scp" <<EOF
 printf 'CONTACT\tscp\t%s\n' "\$(grep -c '^ROWS_SELECTED' "$T/gate.out" 2>/dev/null)" >> "$T/ctl/transcript"
 i=\$(cat "$T/ctl/n" 2>/dev/null || echo 0); echo \$((i + 1)) > "$T/ctl/n"
 printf '%s\0' scp "\$@" > "$T/ctl/call.\$i"
+dst="\${@: -1}" src="\${@: -2:1}"
+case "\$src" in   # a fetch of the leg's evidence: the archive and its matching sha256
+  *.sha256) printf '%s  evidence.tar\n' "\$(printf 'stub\n' | sha256sum | cut -d' ' -f1)" > "\$dst" ;;
+  *:*) echo stub > "\$dst" ;;
+esac
 exit 0
 EOF
 chmod +x "$T/bin/ssh" "$T/bin/scp"
@@ -83,21 +91,26 @@ run_gate() { # run_gate <selection or __UNSET__>: sets OUT RC N; $T/ctl/transcri
   rm -f "$T/ctl"/* "$T/gate.out"
   local -a sel=()
   [ "$1" = __UNSET__ ] || sel=(ZB_RUNTIME_ROWS="$1")
+  local ev
+  ev=$(mktemp -d "$T/evidence-XXXXXX")   # ZB_MAC_EVIDENCE_DIR: a fresh empty dir per run
   (cd "$R" && env -i PATH="$T/bin:/usr/bin:/bin" HOME="$T/home" TMPDIR="$T/tmp" ZB_MAC_HOST="$INTEL" \
-     ZB_MAC_ARM_HOST="$ARM" ZB_MAC_KEY="$T/fake_mac_key" "${sel[@]}" timeout 120 bash "$GATE" > "$T/gate.out" 2>&1 </dev/null)
+     ZB_MAC_ARM_HOST="$ARM" ZB_MAC_KEY="$T/fake_mac_key" ZB_MAC_EVIDENCE_DIR="$ev" "${sel[@]}" \
+     timeout 120 bash "$GATE" > "$T/gate.out" 2>&1 </dev/null)
   RC=$?
   OUT=$(cat "$T/gate.out")
   N=$(cat "$T/ctl/n" 2>/dev/null || echo 0)
 }
-leg_rows() { # leg_rows <host>: the row arguments the gate gave that host's leg (after the run dir), one per line
+leg_rows() { # leg_rows <host>: the row arguments that host's leg gets (after the run dir), one per line, as the
+  # remote login shell parses the one command string ssh sends it (so a row must arrive quoted)
   local i
-  local -a a
+  local -a a w
   for ((i = 0; i < N; i++)); do
     mapfile -d '' a < "$T/ctl/call.$i"
     local j
     for ((j = 1; j < ${#a[@]}; j++)); do
       if [ "${a[j]}" = "$1" ] && [ "${a[j+1]:-}" = /bin/bash ] && [ "${a[j+2]:-}" = -s ]; then
-        printf '%s\n' "${a[@]:j+4}"
+        mapfile -t w < <(bash -c "printf '%s\\n' ${a[*]:j+4}" 2>/dev/null)
+        printf '%s\n' "${w[@]}"
       fi
     done
   done
@@ -208,9 +221,10 @@ leg_marked "tests/e2e/mac_v_red_ok_test.py|red|v-red"   # L5
 first_row=$(grep -n $'^ROW\t' <<<"$LOUT" | head -1 | cut -d: -f1)
 last_self=$(grep -n '^SELFAUDIT' <<<"$LOUT" | tail -1 | cut -d: -f1)
 statuses=$(grep '^SELFAUDIT_STATUS' <<<"$LOUT")
-want_status=$(printf 'SELFAUDIT_STATUS\t%s\t0\n' outer-begin inner-varfolders inner-crashreports outer-end)
+want_status=$(printf 'SELFAUDIT_STATUS\t%s\t0\n' outer-begin inner-varfolders inner-crashreports inner-evidence outer-end)
 step_last() { grep $'^SELFAUDIT\t'"$1"$'\t' <<<"$LOUT" | tail -1 | cut -f3-; }
 if [ "$LRC" -eq 0 ] && [ "$statuses" = "$want_status" ] && [ -z "$(grep $'^SELFAUDIT\touter-begin\t' <<<"$LOUT")" ] \
+   && [ -z "$(grep $'^SELFAUDIT\tinner-evidence\t' <<<"$LOUT")" ] \
    && [ "$(step_last inner-varfolders)" = $'VARFOLDERS\tCOMPLETE\t0' ] \
    && [ "$(step_last inner-crashreports)" = $'CRASHREPORTS\tCOMPLETE\t0' ] \
    && [ "$(step_last outer-end)" = $'VARFOLDERS\tCOMPLETE\t0' ] \

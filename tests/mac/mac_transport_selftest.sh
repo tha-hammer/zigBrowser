@@ -42,6 +42,7 @@ if [ $tool = scp ]; then   # a fetch: leave a stub file where the remote file la
   dst="\${@: -1}" src="\${@: -2:1}"
   case "\$dst" in *:*) ;; *) if [ -d "\$dst" ]; then echo stub > "\$dst/\$(basename "\${src#*:}")"; else echo stub > "\$dst"; fi ;; esac
 fi
+case "\$*" in *ZB_ROOT_ABSENT*) last="\${@: -1}"; printf 'ZB_ROOT_ABSENT\t%s\n' "\${last##* }" ;; esac   # the verified cleanup (mac_gate_lib.sh) confirms
 exit 0
 EOF
   chmod +x "$T/bin/$tool"

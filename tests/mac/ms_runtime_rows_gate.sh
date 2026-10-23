@@ -42,6 +42,15 @@
 # last (also before a leak stop) through tests/mac/mac_crashreports_audit.sh, read-only, and prints each new, changed
 # or removed report (CRASHREPORT<TAB>kind<TAB>name<TAB>sha256); any of them makes the leg exit 5, INCONCLUSIVE. A
 # refused crash-report begin also exits 5 before the RUNNING marker.
+# Evidence and cleanup (SilverRidge 0632602f): after its self-audit the leg arms an EXIT trap that packs
+# <run root>/evidence (every row's whole output, the self-audit, /var/folders and crash-report records) into a
+# deterministic evidence.tar (sorted names, fixed mtimes, ustar) with its sha256 beside it; the packer itself is a
+# self-audit step. This side keeps the leg's output in $ZB_MAC_EVIDENCE_DIR/<arch>/leg.out, copies both files there
+# and verifies the sha256 (EVIDENCE<TAB>host<TAB>arch<TAB>sha256<TAB>bytes<TAB>path, else FAILED or NONE). A run dir is
+# removed only after its evidence is verified (or when no leg ran in it, a failed build), through the shared,
+# verified mac_remove_run_dirs, before the gate's PASS line: REMOVED, or RETAINED and no PASS. A leak stop, a timeout
+# or unverified evidence keeps the dir (RETAINED). ZB_MAC_EVIDENCE_DIR must be an existing, empty, absolute dir that
+# is not a symlink, or the gate is NOT RUN before any contact.
 # Every row runs (one row's result never stops the next); each prints its output and a
 # ROW<TAB><file><TAB><want><TAB>rc=<n><TAB>MATCH|MISMATCH line. The gate prints PASS<TAB>ms-runtime-rows-gate<TAB>both-arches
 # only when every row on both Macs matched. Console user, no xvfb (WKWebView needs the WindowServer), like ms2a/ms2c.
@@ -89,6 +98,11 @@ if [ -n "${ZB_RUNTIME_ROWS+set}" ]; then
   [ "${#RUN_ROWS[@]}" -gt 0 ] || { echo "NOT RUN: ZB_RUNTIME_ROWS selects no row" >&2; exit 1; }
 fi
 printf 'ROWS_SELECTED'; for row in "${RUN_ROWS[@]}"; do printf '\t%s' "${row##*|}"; done; printf '\n'
+EVD=${ZB_MAC_EVIDENCE_DIR:-}   # where each leg's evidence lands on this side, checked before any host is touched
+if [[ "$EVD" != /* ]] || [ ! -d "$EVD" ] || [ -L "$EVD" ] || [ -n "$(ls -A -- "$EVD" 2>/dev/null)" ]; then
+  echo "NOT RUN: ZB_MAC_EVIDENCE_DIR must be an existing, empty, absolute directory that is not a symlink (got '$EVD')" >&2
+  exit 1
+fi
 . tests/mac/mac_gate_lib.sh
 trap mac_remove_run_dirs EXIT
 
@@ -101,8 +115,12 @@ verify_host() { # $1=host $2=key $3=label
   local -a SSH; mapfile -d '' SSH < <(mac_ssh_opts "$key")
   echo "== build + runtime rows on $host ($label) ==" >&2
   mac_build "$host" "$key" "$BUILD_TIMEOUT" || { echo "FAIL: build on $host timed out/failed" >&2; return 1; }
-  local leg_rc=0
-  timeout "$LEG_TIMEOUT" "${SSH[@]}" "$host" /bin/bash -s "$MAC_RDIR" "${RUN_ROWS[@]}" <<'REMOTE' || leg_rc=$?
+  local leg_rc=0 row legout="$EVD/$label/leg.out"
+  local -a qrows=()
+  # ssh hands the remote command to the login shell as ONE string: quote each row, or its `|` would be a pipe there.
+  for row in "${RUN_ROWS[@]}"; do qrows+=("$(printf '%q' "$row")"); done
+  mkdir -m 700 -- "$EVD/$label" || { echo "FAIL: cannot make $EVD/$label" >&2; return 1; }
+  timeout "$LEG_TIMEOUT" "${SSH[@]}" "$host" /bin/bash -s "$MAC_RDIR" "${qrows[@]}" > "$legout" 2>&1 <<'REMOTE' || leg_rc=$?
 set -uo pipefail
 cd "$HOME/${1:?}"
 shift
@@ -110,6 +128,15 @@ shift
 root=$PWD
 crash_dir="$HOME/Library/Logs/DiagnosticReports"   # the Mac user's REAL home: listed read-only, never changed
 T=$'\t'
+pack_evidence() { # pack_evidence <dir>: <dir>.tar (sorted names, every mtime 2000-01-01 00:00 UTC, ustar) and
+  # <dir>.tar.sha256 beside it; silent, and non-zero with neither file left on any failure
+  local d=${1:?} p n
+  p=${d%/*} n=${d##*/}
+  ( export LC_ALL=C TZ=UTC && cd "$p" && /usr/bin/find "$n" -exec /usr/bin/touch -h -t 200001010000 {} + \
+      && /usr/bin/find "$n" -print | /usr/bin/sort > "$n.list" \
+      && /usr/bin/tar --format=ustar --no-recursion -cf "$n.tar" -T "$n.list" \
+      && /usr/bin/shasum -a 256 "$n.tar" > "$n.tar.sha256" ) || { rm -f -- "$d.tar" "$d.tar.sha256"; return 1; }
+}
 for m in ../zb-gate-*/LEAKED; do   # a host whose earlier run left a process running is held until a person acts
   if [ -e "$m" ]; then printf 'HOST_HELD\t%s\n' "$m"; sed 's/^/    /' "$m"; exit 4; fi
 done
@@ -141,13 +168,18 @@ selfstep() { # selfstep <step> <terminal it must end with, or - for silent> <com
 }
 vf_cycle() { varfolders_begin "$1" && varfolders_end "$1"; }
 cr_cycle() { crashreports_begin "$1" "$crash_dir" && crashreports_end "$1" "$crash_dir"; }
+ev_cycle() { mkdir -p "$1/sample" && printf 'sample\n' > "$1/sample/a" && pack_evidence "$1/sample"; }
 selfaudit() { # every step must succeed with its exact terminal, in this order, or the leg starts nothing
   selfstep outer-begin - varfolders_begin "$self_ev/outer" || return 5
   selfstep inner-varfolders "VARFOLDERS${T}COMPLETE${T}0" vf_cycle "$self_ev/inner" || return 5
   selfstep inner-crashreports "CRASHREPORTS${T}COMPLETE${T}0" cr_cycle "$self_ev/crash" || return 5
+  selfstep inner-evidence - ev_cycle "$self_ev/pack" || return 5
   selfstep outer-end "VARFOLDERS${T}COMPLETE${T}0" varfolders_end "$self_ev/outer" || return 5
 }
 selfaudit || exit 5   # a helper changed something there or did not complete: no RUNNING marker, no row, no browser
+# From here every exit packs the evidence first (the packer is proven above); this side copies it back.
+trap 'pack_evidence "$root/evidence" || printf "EVIDENCE_PACK_FAILED\n"' EXIT
+printf 'EVIDENCE_ARMED\n'
 varfolders_begin "$root/evidence/varfolders" || exit 5   # refused (fail closed): no RUNNING marker, no row, no browser
 # The crash-report listing (orchestrator 2026-10-23): any new report there makes this leg INCONCLUSIVE, never a pass.
 crashreports_begin "$root/evidence/crashreports" "$crash_dir" || exit 5   # refused, as above
@@ -193,10 +225,16 @@ crashreports_end "$root/evidence/crashreports" "$crash_dir" || audit=5
 [ "$audit" -eq 0 ] || exit 5   # INCONCLUSIVE: the rows are not judged
 exit "$overall"
 REMOTE
+  cat -- "$legout"
+  local ev=0
+  fetch_evidence "$host" "$key" "$label" "$legout" && ev=1
+  case "$leg_rc" in   # which run dirs stay: a leak stop or a timeout always, any other leg without verified evidence
+    3|124) mac_keep_run_dir "$host" "$MAC_RDIR" "leg exit $leg_rc: a process may be left running; kept and held for a person" ;;
+    *) [ "$ev" -eq 1 ] || mac_keep_run_dir "$host" "$MAC_RDIR" "its evidence was not copied and verified; kept for a person" ;;
+  esac
   case "$leg_rc" in
     0) ;;
     3|124)
-      mac_keep_run_dir "$host" "$MAC_RDIR"
       echo "STOPPED: $host ($label): $([ "$leg_rc" -eq 3 ] && echo 'a row left a process running (LEAKED lines above)' \
         || echo 'the leg timed out; processes may be left running'). Run dir ~/$MAC_RDIR is KEPT. A person must stop" \
         "exactly the reported process before any cleanup of it or further work on $host." >&2
@@ -206,24 +244,37 @@ REMOTE
          "is INCONCLUSIVE (above); its rows are not judged" >&2; return 1 ;;
     *) echo "FAIL: rows leg on $host failed (exit $leg_rc)" >&2; return 1 ;;
   esac
+  [ "$ev" -eq 1 ] || { echo "FAIL: $host ($label): no verified evidence archive (EVIDENCE above)" >&2; return 1; }
   printf 'PASS\tms-runtime-rows-leg\t%s\t%s\n' "$host" "$label"
 }
 
-mac_keep_run_dir() { # $1=host $2=run dir: drop it from the EXIT-trap cleanup (mac_gate_lib.sh MAC_RUN_DIRS)
-  local entry h k d
-  local -a keep=()
-  for entry in "${MAC_RUN_DIRS[@]+"${MAC_RUN_DIRS[@]}"}"; do
-    IFS=$'\t' read -r h k d <<<"$entry"
-    if [ "$h" = "$1" ] && [ "$d" = "$2" ]; then continue; fi
-    keep+=("$entry")
+fetch_evidence() { # $1=host $2=key $3=arch $4=leg output: copy the leg's evidence archive and its sha256 into
+  # $EVD/<arch> and verify it; prints one EVIDENCE line; non-zero unless the copy matches the Mac's sha256
+  local host=$1 key=$2 dst="$EVD/$3" want got f
+  local -a SCP
+  if ! grep -qx 'EVIDENCE_ARMED' "$4"; then
+    printf 'EVIDENCE\t%s\t%s\tNONE\tthe leg ended before it armed its evidence archive\n' "$host" "$3"; return 1
+  fi
+  mapfile -d '' SCP < <(mac_scp_opts "$key")
+  for f in evidence.tar evidence.tar.sha256; do
+    if ! "${SCP[@]}" "$host:$MAC_RDIR/$f" "$dst/$f" </dev/null; then
+      printf 'EVIDENCE\t%s\t%s\tFAILED\tcould not copy %s\n' "$host" "$3" "$f"; return 1
+    fi
   done
-  MAC_RUN_DIRS=("${keep[@]+"${keep[@]}"}")
+  want=$(awk 'NR == 1 { print $1 }' "$dst/evidence.tar.sha256")
+  got=$(sha256sum "$dst/evidence.tar" | awk '{ print $1 }')
+  if ! [[ "$want" =~ ^[0-9a-f]{64}$ ]] || [ "$want" != "$got" ]; then
+    printf 'EVIDENCE\t%s\t%s\tFAILED\tthe copy (%s) is not the Mac archive (%s)\n' "$host" "$3" "$got" "$want"; return 1
+  fi
+  printf 'EVIDENCE\t%s\t%s\t%s\t%s\t%s\n' "$host" "$3" "$got" "$(wc -c < "$dst/evidence.tar")" "$dst/evidence.tar"
 }
 
 overall=0
 if ! verify_host "$INTEL_HOST" "$KEY" "x86_64"; then echo "FAIL: intel/x86_64 rows leg" >&2; overall=1; fi
 if ! verify_host "$ARM_HOST" "$ARM_KEY" "arm64"; then echo "FAIL: arm64 rows leg" >&2; overall=1; fi
 
+# Every evidence copy is done: remove the run dirs and verify each is gone (a dir that may remain is no PASS).
+mac_remove_run_dirs || { echo "FAIL: a run dir was not confirmed removed (RETAINED above)" >&2; overall=1; }
 if [ "$overall" -eq 0 ]; then
   printf 'PASS\tms-runtime-rows-gate\tboth-arches\n'
 else

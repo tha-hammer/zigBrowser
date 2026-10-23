@@ -235,8 +235,9 @@ run_case() { # run_case <row> <case> -> sets C (ctl dir) and RC
   local s launch prov hosts args name pb a
   IFS='|' read -r s launch prov hosts args <<<"$1"
   name=$(basename "$s" .sh)
-  C="$T/ctl.$name.$2"; mkdir -p "$C/tmp" "$C/home"
-  local -a ex=(ZB_SELFTEST_CTL="$C") cmd=() argv=()
+  C="$T/ctl.$name.$2"; mkdir -p "$C/tmp" "$C/home" "$C/evidence"
+  # ZB_MAC_EVIDENCE_DIR: the runtime rows gate's fresh, empty local evidence dir (SilverRidge 0632602f); others ignore it
+  local -a ex=(ZB_SELFTEST_CTL="$C" ZB_MAC_EVIDENCE_DIR="$C/evidence") cmd=() argv=()
   pb="$T/bin"
   case "$prov" in
     pin) pb="$T/prov:$T/bin"; ex+=(ZB_STUB_SHA256="$(sed -n 's/^PIN=\([0-9a-f]\{64\}\)$/\1/p' "$R/$s" | head -n 1)") ;;

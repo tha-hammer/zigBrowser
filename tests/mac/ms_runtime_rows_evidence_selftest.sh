@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# RED, UNREGISTERED (SilverRidge 0632602f, the blocked 4pa.55 request): the runtime rows gate copies a deterministic
-# evidence archive of each leg back to Linux before any remote cleanup, and the shared run-dir removal in
-# tests/mac/mac_gate_lib.sh is verified and fails closed.
+# Registered in zig build test-mac-build-script (red 5a75586a; SilverRidge 0632602f, the blocked 4pa.55 request): the
+# runtime rows gate copies a deterministic evidence archive of each leg back to Linux before any remote cleanup, and
+# the shared run-dir removal in tests/mac/mac_gate_lib.sh is verified and fails closed.
 #
 # Shared removal (mac_remove_run_dirs, mac_keep_run_dir), driven with a fake Mac whose ssh runs each remote command
 # with bash -c in a private per-host home, as sshd hands it to the login shell:

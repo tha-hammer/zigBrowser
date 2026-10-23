@@ -48,6 +48,7 @@ for a in "\$@"; do
 done
 arch=x86_64; [ "\$host" = "$ARM" ] && arch=arm64
 case "\$*" in
+  *ZB_ROOT_ABSENT*) last="\${@: -1}"; printf 'ZB_ROOT_ABSENT\t%s\n' "\${last##* }"; exit 0 ;;   # the verified cleanup (mac_gate_lib.sh) confirms
   *"cat "*exec-arch.txt*) echo "\$arch"; exit 0 ;;
   *"pillow_tools.py nonuniform"*) echo '{"stddev": 41.5, "distinct": 913, "width": 800, "height": 600}'; exit 0 ;;
 esac

@@ -14,8 +14,9 @@
 #      cd "$HOME/${N:?}" with positional N == RD, or an inline command; in both, every "$HOME/..." path is
 #      "$HOME/RD[/...]" (or "$HOME/${N...}"/"$HOME/$N" with positional N == RD) and there is at least one;
 #   C5 every scp remote path is RD or RD/... (nothing in the shared home or anywhere else);
-#   C6 no call deletes anything except one final cleanup per host, which is exactly the shared library's
-#      cd / && d="$HOME/RD"; [ -d "$d" ] && find "$d" -delete; true   as that host's LAST call (an early delete, e.g.
+#   C6 no call deletes anything except one final cleanup per host, which is exactly the shared library's verified
+#      cd / && d="$HOME/RD" && { [ ! -e "$d" ] || find "$d" -delete; } && [ ! -e "$d" ] && [ ! -L "$d" ] &&
+#      printf 'ZB_ROOT_ABSENT\t%s\n' RD   as that host's LAST call (an early delete, e.g.
 #      build-on-mac.sh removing RD before the caller's work, or a fake cleanup, fails);
 #   C7 every call pins host keys (StrictHostKeyChecking=yes, BatchMode=yes, IdentitiesOnly=yes,
 #      UserKnownHostsFile=<repo>/tests/mac/known_hosts), never StrictHostKeyChecking=no or /dev/null.
@@ -83,6 +84,13 @@ fi
 if [[ " \$* " == *' /bin/bash -s '* ]]; then
   case "\${ZB_CALLERS_GATE:-}" in ms2a|ms2b|ms2c|ms3|ms4) "$T/bin/silent-gate-success" ;; esac
 fi
+# The shared verified cleanup (mac_gate_lib.sh): a passing Mac confirms the run dir is gone.
+case "\$*" in *ZB_ROOT_ABSENT*) last="\${@: -1}"; printf 'ZB_ROOT_ABSENT\t%s\n' "\${last##* }" ;; esac
+# The rows gate's leg arms its evidence archive after its self-audit; a held leg (exit 4) stops before that.
+if [[ " \$* " == *" /bin/bash -s "* ]]; then
+  held=0; [ -n "\${STUB_LEG_RC_HOST:-}" ] && [[ " \$* " == *" \$STUB_LEG_RC_HOST /bin/bash -s "* ]] && [ "\${STUB_LEG_RC:-0}" = 4 ] && held=1
+  [ "\$held" -eq 1 ] || printf 'EVIDENCE_ARMED\n'
+fi
 # the rows gate's leak path (rows L): the leg on STUB_LEG_RC_HOST exits STUB_LEG_RC
 if [ -n "\${STUB_LEG_RC_HOST:-}" ] && [[ " \$* " == *" \$STUB_LEG_RC_HOST /bin/bash -s "* ]]; then exit "\${STUB_LEG_RC:-0}"; fi
 exit 0
@@ -93,8 +101,12 @@ i=\$(cat "$T/ctl/n" 2>/dev/null || echo 0); echo \$((i + 1)) > "$T/ctl/n"
 printf '%s\0' scp "\$@" > "$T/ctl/call.\$i"
 : > "$T/ctl/stdin.\$i"
 dst="\${@: -1}" src="\${@: -2:1}"
-case "\$dst" in *:*) ;; *)   # a fetch: leave a stub file where the remote file lands
-  if [ -d "\$dst" ]; then echo stub > "\$dst/\$(basename "\${src#*:}")"; else echo stub > "\$dst"; fi ;;
+case "\$dst" in *:*) ;; *)   # a fetch: leave a stub file where the remote file lands (a .sha256 names the stub's digest)
+  [ -d "\$dst" ] && dst="\$dst/\$(basename "\${src#*:}")"
+  case "\$src" in
+    *.sha256) printf '%s  evidence.tar\n' "\$(printf 'stub\n' | sha256sum | cut -d' ' -f1)" > "\$dst" ;;
+    *) echo stub > "\$dst" ;;
+  esac ;;
 esac
 exit 0
 EOF
@@ -166,11 +178,12 @@ home_paths_ok() { # home_paths_ok <text> <rd> [positionals...]: every "$HOME/...
 check_caller() { # check_caller <name> <script> <final line regex> <host...>
   local name=$1 script=$2 final=$3; shift 3
   local -a hosts=("$@")
-  local i h n rc out c script_in rd res k last before=$fails
+  local i h n rc out c script_in rd res k last ev before=$fails
   declare -A RD=() XN=() BN=() DELS=() LASTDEL=() LASTCALL=()
   rm -f "$T/ctl"/*
+  ev=$(mktemp -d "$T/evidence-XXXXXX")   # the rows gate's ZB_MAC_EVIDENCE_DIR: a fresh empty dir per run
   out=$(cd "$R" && env -i PATH="$T/bin:/usr/bin:/bin" HOME="$T/home" TMPDIR="$T/tmp" \
-          ZB_MAC_HOST="$INTEL" ZB_MAC_ARM_HOST="$ARM" ZB_MAC_KEY="$T/fake_mac_key" \
+          ZB_MAC_HOST="$INTEL" ZB_MAC_ARM_HOST="$ARM" ZB_MAC_KEY="$T/fake_mac_key" ZB_MAC_EVIDENCE_DIR="$ev" \
           ZB_CALLERS_GATE="$name" \
           timeout 120 bash "$script" 2>&1 </dev/null)
   rc=$?
@@ -216,7 +229,7 @@ check_caller() { # check_caller <name> <script> <final line regex> <host...>
     # C6: deletes
     if [[ "$c" == *-delete* || "$c" =~ $RM_RE ]]; then
       DELS[$h]=$(( ${DELS[$h]:-0} + 1 )); LASTDEL[$h]=$i
-      if [ "$c" != "cd / && d=\"\$HOME/$rd\"; [ -d \"\$d\" ] && find \"\$d\" -delete; true" ]; then
+      if [ "$c" != "cd / && d=\"\$HOME/$rd\" && { [ ! -e \"\$d\" ] || find \"\$d\" -delete; } && [ ! -e \"\$d\" ] && [ ! -L \"\$d\" ] && printf 'ZB_ROOT_ABSENT\\t%s\\n' $rd" ]; then
         bad "$name C6: call $i deletes but is not the exact final cleanup of $rd: $(cut -c1-140 <<<"$c")"
       fi
       continue
@@ -471,13 +484,16 @@ fi
 rm -f -- "${T:?}/rows-home/${RRD:?}/LEAKED"
 
 # L: this side of the leak path, the real rows caller with stub ssh. A leaked leg (exit 3) or a timed-out leg (124) on
-# intel keeps intel's run dir (no delete call to intel) while arm is still cleaned; a held leg (exit 4) or an
-# INCONCLUSIVE /var/folders audit (exit 5) keeps nothing.
-for case in "3 0 STOPPED" "124 0 STOPPED" "4 1 HELD" "5 1 INCONCLUSIVE"; do
+# intel keeps intel's run dir (no delete call to intel) while arm is still cleaned; an INCONCLUSIVE leg (exit 5),
+# whose evidence is copied and verified, keeps nothing. A held leg (exit 4) stops before it arms its evidence archive,
+# so its run dir is kept too (SilverRidge 0632602f: no removal without verified evidence).
+for case in "3 0 STOPPED" "124 0 STOPPED" "4 0 HELD" "5 1 INCONCLUSIVE"; do
   read -r leg_rc want_del word <<<"$case"
   rm -f "$T/ctl"/*
+  ev=$(mktemp -d "$T/evidence-XXXXXX")
   out=$(cd "$R" && env -i PATH="$T/bin:/usr/bin:/bin" HOME="$T/home" TMPDIR="$T/tmp" ZB_MAC_HOST="$INTEL" \
           ZB_MAC_ARM_HOST="$ARM" ZB_MAC_KEY="$T/fake_mac_key" STUB_LEG_RC_HOST="$INTEL" STUB_LEG_RC="$leg_rc" \
+          ZB_MAC_EVIDENCE_DIR="$ev" \
           timeout 120 bash tests/mac/ms_runtime_rows_gate.sh 2>&1 </dev/null)
   rc=$?
   n=$(cat "$T/ctl/n" 2>/dev/null || echo 0)

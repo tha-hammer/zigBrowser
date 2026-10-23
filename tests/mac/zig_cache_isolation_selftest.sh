@@ -72,6 +72,7 @@ fi
 if [[ " \$* " == *' /bin/bash -s '* ]]; then
   case "\${ZB_ZIGCACHE_GATE:-}" in ms2a|ms2b|ms2c|ms3|ms4) "$T/bin/silent-gate-success" ;; esac
 fi
+case "\$*" in *ZB_ROOT_ABSENT*) last="\${@: -1}"; printf 'ZB_ROOT_ABSENT\t%s\n' "\${last##* }" ;; esac   # the verified cleanup (mac_gate_lib.sh) confirms
 exit 0
 EOF
 cat > "$T/bin/scp" <<EOF

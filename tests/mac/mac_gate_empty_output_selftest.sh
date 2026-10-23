@@ -137,6 +137,10 @@ if [ "$tool" = ssh ]; then
     timeout) if [ "$kind" = leg ]; then printf 'timeout\n' > "$c/emit.$i"; exit 124; fi ;;
     *) exit 91 ;;
   esac
+  # A Mac that answers (any mode but empty or a fault) also confirms the shared verified cleanup (mac_gate_lib.sh).
+  if [ "$mode" != empty ] && [ "$mode" != timeout ]; then
+    case "$*" in *ZB_ROOT_ABSENT*) last="${@: -1}"; printf 'ZB_ROOT_ABSENT\t%s\n' "${last##* }" ;; esac
+  fi
   printf '%s\n' "$emit" > "$c/emit.$i"
 else
   dst="${@: -1}"

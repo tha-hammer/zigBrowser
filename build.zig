@@ -4189,6 +4189,18 @@ pub fn build(b: *std.Build) void {
     }) |input| mac_rows_select_selftest.addFileInput(b.path(input));
     mac_build_script_step.dependOn(&mac_rows_select_selftest.step);
     test_step.dependOn(&mac_rows_select_selftest.step);
+    // The runtime rows gate's evidence and cleanup (SilverRidge 0632602f): each leg's deterministic evidence archive is
+    // copied back and verified before any removal, and the shared mac_remove_run_dirs verifies every removal and fails
+    // closed (REMOVED or RETAINED), driven on two fake Macs whose ssh runs each command as the remote shell does.
+    const mac_rows_evidence_selftest = b.addSystemCommand(&.{ "bash", "tests/mac/ms_runtime_rows_evidence_selftest.sh" });
+    for ([_][]const u8{
+        "tests/mac/ms_runtime_rows_evidence_selftest.sh", "tests/mac/ms_runtime_rows_gate.sh",
+        "tests/mac/mac_varfolders_audit.sh",              "tests/mac/mac_crashreports_audit.sh",
+        "tests/mac/mac_config.sh",                        "tests/mac/mac_gate_lib.sh",
+        "tests/mac/build-on-mac.sh",                      "tests/mac/known_hosts",
+    }) |input| mac_rows_evidence_selftest.addFileInput(b.path(input));
+    mac_build_script_step.dependOn(&mac_rows_evidence_selftest.step);
+    test_step.dependOn(&mac_rows_evidence_selftest.step);
     // MS1.4: the two-host gate fails closed on no GUI session, wrong arch, a missing SDK and zero recorded assertions.
     const mac_gate_selftest = b.addSystemCommand(&.{ "bash", "tests/mac/gate_selftest.sh" });
     for ([_][]const u8{

@@ -65,6 +65,7 @@ if [ "\${cmd[0]:-}" = /bin/bash ] && [ "\${cmd[1]:-}" = -s ]; then
       \$'PASS\tms2b-ack-hang' \$'PASS\tms2b-dialogs' \$'PASS\tms2b-eval-dialog'
   fi
 fi
+case "\$*" in *ZB_ROOT_ABSENT*) last="\${@: -1}"; printf 'ZB_ROOT_ABSENT\t%s\n' "\${last##* }" ;; esac   # the verified cleanup (mac_gate_lib.sh) confirms
 exit 0
 EOF
 cat > "$T/bin/scp" <<EOF
