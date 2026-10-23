@@ -1,0 +1,6 @@
+{
+  "gate": "ms2c-gate",
+  "script": "tests/mac/ms2c_gate.sh",
+  "last_approved_run": null,
+  "note": "No approved run is recorded, so the slice stays BUILT-HANDRUN (UNPROVEN). After a run that the reviewer approved for an exact commit and the orchestrator released passes on both Macs, replace null with {commit, hosts, date, approver, release}."
+}

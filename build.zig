@@ -253,6 +253,17 @@ pub fn build(b: *std.Build) void {
     const ms2a_gate = b.addSystemCommand(&.{ "bash", "tests/mac/ms2a_gate.sh" });
     b.step("ms2a-gate", "Run the macOS MS2a routed-command gate (WKWebView port on both Macs)").dependOn(&ms2a_gate.step);
 
+    // MS2b, MS2c and MS3 (bd 4pa.62, R29-REG): the hand-run Mac gates as named Mac-only steps; `test` never depends on
+    // them. Each records its last approved run in tests/mac/approved_runs/<step>.json. Driven from Linux over SSH.
+    for ([_][3][]const u8{
+        .{ "ms2b-gate", "tests/mac/ms2b_gate.sh", "Run the macOS MS2b native-input gate (nativeKey/nativeText on both Macs)" },
+        .{ "ms2c-gate", "tests/mac/ms2c_gate.sh", "Run the macOS MS2c gate (multi-window, freeze and recovery on both Macs)" },
+        .{ "ms3-gate", "tests/mac/ms3_gate.sh", "Run the macOS MS3 gate (cookies, config and profile persistence on both Macs)" },
+    }) |gate| {
+        const gate_run = b.addSystemCommand(&.{ "bash", gate[1] });
+        b.step(gate[0], gate[2]).dependOn(&gate_run.step);
+    }
+
     // WS0: the Windows gate's Linux-side selftest drives tests/windows/gate.sh against fake
     // ssh/virsh/tar on PATH (fail-closed, lexical path-shape check, display scrub, transport
     // hygiene). Hermetic
@@ -3844,6 +3855,17 @@ pub fn build(b: *std.Build) void {
     }) |input| mac_dmg_script_selftest.addFileInput(b.path(input));
     b.step("test-mac-dmg-script", "Run the hostless selftest of the dmg script: shim in Contents/Frameworks, inside-out signing (4pa.73)").dependOn(&mac_dmg_script_selftest.step);
     test_step.dependOn(&mac_dmg_script_selftest.step);
+    // The MS2b, MS2c and MS3 gates are real steps that run their scripts and pass a gate failure through (bd 4pa.62).
+    const mac_gate_steps_selftest = b.addSystemCommand(&.{ "bash", "tests/mac/gate_steps_selftest.sh" });
+    mac_gate_steps_selftest.setEnvironmentVariable("ZIG", b.graph.zig_exe);
+    for ([_][]const u8{
+        "tests/mac/gate_steps_selftest.sh",       "build.zig",                             "tests/mac/ms2b_gate.sh",
+        "tests/mac/ms2c_gate.sh",                 "tests/mac/ms3_gate.sh",                 "tests/mac/build-on-mac.sh",
+        "tests/mac/mac_gate_lib.sh",              "tests/mac/known_hosts",                 "tests/mac/approved_runs/ms2b-gate.json",
+        "tests/mac/approved_runs/ms2c-gate.json", "tests/mac/approved_runs/ms3-gate.json",
+    }) |input| mac_gate_steps_selftest.addFileInput(b.path(input));
+    b.step("test-mac-gate-steps", "Run the hostless selftest of the ms2b/ms2c/ms3 gate steps (4pa.62)").dependOn(&mac_gate_steps_selftest.step);
+    test_step.dependOn(&mac_gate_steps_selftest.step);
     // Every remote zig invocation keeps both zig caches inside its run dir (bd 3ui.5).
     const mac_zig_cache_selftest = b.addSystemCommand(&.{ "bash", "tests/mac/zig_cache_isolation_selftest.sh" });
     for ([_][]const u8{
@@ -4336,7 +4358,7 @@ fn guardDisplay(b: *std.Build) void {
     guard.has_side_effects = true; // the environment is read on every run, never cached
     // ws3-shim-test-win and owner-only-test-win exist only in Windows-target builds and run on
     // Windows, which has no X display to guard (and no python3 to run the guard).
-    const unguarded = [_][]const u8{ "install", "uninstall", "agent-runtime", "mac-gate", "ms1b-gate", "ms2a-gate", "ws3-shim-test-win", "owner-only-test-win" };
+    const unguarded = [_][]const u8{ "install", "uninstall", "agent-runtime", "mac-gate", "ms1b-gate", "ms2a-gate", "ms2b-gate", "ms2c-gate", "ms3-gate", "ws3-shim-test-win", "owner-only-test-win" };
     next: for (b.top_level_steps.keys(), b.top_level_steps.values()) |name, top| {
         for (unguarded) |skip| if (std.mem.eql(u8, name, skip)) continue :next;
         for (top.step.dependencies.items) |dep| dep.dependOn(&guard.step);
