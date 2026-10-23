@@ -354,6 +354,9 @@ pub fn build(b: *std.Build) void {
     // WS1.3/6c771ff screenshot-diagnostic source pin: each exact screenshot failure line in the shim.
     const windows_screenshot_diag_selftest = b.addSystemCommand(&.{ "python3", "-I", "tests/windows/screenshot_diag_selftest.py" });
     b.step("windows-screenshot-diag-selftest", "Pin the exact screenshot failure diagnostics in webview2_shim.cpp").dependOn(&windows_screenshot_diag_selftest.step);
+    // WS2b.1: every VM-run *-win step is in guardDisplay's `unguarded` list (the VM has no python3); a source tripwire.
+    const windows_vm_steps_unguarded = b.addSystemCommand(&.{ "python3", "-I", "tests/windows/vm_steps_unguarded_test.py" });
+    b.step("windows-vm-steps-unguarded", "WS2b.1: every VM-run *-win step is left out of the display guard (source tripwire)").dependOn(&windows_vm_steps_unguarded.step);
 
     // WS item b (live): join_argv round-trips through the real CommandLineToArgvW on the Win11 VM — the
     // independent argv oracle the Linux reference parser cannot be. Skips cleanly without ZB_WIN11_HOST.
@@ -3756,6 +3759,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&windows_pe_census_selftest.step);
     test_step.dependOn(&windows_png_census_selftest.step);
     test_step.dependOn(&windows_screenshot_diag_selftest.step);
+    test_step.dependOn(&windows_vm_steps_unguarded.step);
     test_step.dependOn(&windows_wincontain_argv_live.step);
     test_step.dependOn(&windows_wincontain_resolve_live.step);
     test_step.dependOn(&windows_wincontain_job_live.step);
@@ -4216,7 +4220,7 @@ fn guardDisplay(b: *std.Build) void {
     guard.has_side_effects = true; // the environment is read on every run, never cached
     // ws3-shim-test-win and owner-only-test-win exist only in Windows-target builds and run on
     // Windows, which has no X display to guard (and no python3 to run the guard).
-    const unguarded = [_][]const u8{ "install", "uninstall", "agent-runtime", "mac-gate", "ms1b-gate", "ms2a-gate", "ws3-shim-test-win", "owner-only-test-win", "ws2a0-world-spike-win", "ws2a3-async-ownership-win" };
+    const unguarded = [_][]const u8{ "install", "uninstall", "agent-runtime", "mac-gate", "ms1b-gate", "ms2a-gate", "ws3-shim-test-win", "owner-only-test-win", "ws2a0-world-spike-win", "ws2a3-async-ownership-win", "ws2b1-input-spike-win" };
     next: for (b.top_level_steps.keys(), b.top_level_steps.values()) |name, top| {
         for (unguarded) |skip| if (std.mem.eql(u8, name, skip)) continue :next;
         for (top.step.dependencies.items) |dep| dep.dependOn(&guard.step);
