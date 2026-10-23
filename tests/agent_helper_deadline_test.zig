@@ -12,7 +12,7 @@ const has = @hasField(helper.Inputs, "tool_deadline") and @hasField(helper.Hello
 const refusal = "zigBrowser: agent: test tool deadline must be an integer from 1 to 120";
 
 fn base(e2e: bool) helper.Inputs {
-    return .{ .python = "/rt/venv/bin/python", .home = "/d/agent-home", .net_dir = "/run/user/1000/zigbrowser-agent-7-00", .e2e_protocol = e2e };
+    return .{ .python = "/rt/venv/bin/python", .home = "/d/agent-home", .realization = .{ .linux = "/run/user/1000/zigbrowser-agent-7-00" }, .e2e_protocol = e2e };
 }
 
 fn launchWith(a: std.mem.Allocator, e2e: bool, deadline: ?[]const u8, base_url: ?[]const u8) !helper.Launch {

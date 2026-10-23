@@ -3450,6 +3450,24 @@ pub fn build(b: *std.Build) void {
         "py=$(tools/agent_host_env.sh --check) || exit 1; cd agent/host/tests && out=$(env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 ZB_AGENT_HOST_PYTHON=\"$py\" \"$py\" -X dev -m unittest -v test_launch_connector 2>&1); rc=$?; printf '%s\\n' \"$out\"; [ $rc -eq 0 ] || exit $rc; if printf '%s\\n' \"$out\" | grep -q ResourceWarning; then echo 'test_launch_connector: ResourceWarning' >&2; exit 1; fi",
     });
     b.step("test-agent-launch-connector", "4pa.21: the MS6.8 launch connector over the backend Protocol").dependOn(&agent_host_launch_connector.step);
+    // bd 4pa.21 (plan MS6.8 slice 2a, SilverRidge d751d158/e39f6c90): the Zig launch builders compose with the real
+    // Python consumer. A test-only bridge (src/agent_launch_bridge.zig) prints the REAL agent_helper/agent_login launch
+    // argv; test_launch_bridge hands it to the real launch.main (Darwin lease/spawn, Linux exec). A preparatory seam:
+    // no browser Darwin caller until 4pa.27/MS8. Fails closed without the venv and on a ResourceWarning.
+    const agent_launch_bridge_exe = b.addExecutable(.{ .name = "zb-launch-bridge", .root_module = b.createModule(.{
+        .root_source_file = b.path("src/agent_launch_bridge.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    }) });
+    const agent_host_launch_bridge = b.addSystemCommand(&.{
+        "sh",
+        "-c",
+        "bridge=$1; py=$(tools/agent_host_env.sh --check) || exit 1; cd agent/host/tests && out=$(env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 ZB_AGENT_HOST_PYTHON=\"$py\" ZB_LAUNCH_BRIDGE=\"$bridge\" \"$py\" -X dev -m unittest -v test_launch_bridge 2>&1); rc=$?; printf '%s\\n' \"$out\"; [ $rc -eq 0 ] || exit $rc; if printf '%s\\n' \"$out\" | grep -q ResourceWarning; then echo 'test_launch_bridge: ResourceWarning' >&2; exit 1; fi",
+        "zb-launch-bridge",
+    });
+    agent_host_launch_bridge.addArtifactArg(agent_launch_bridge_exe);
+    b.step("test-agent-launch-bridge", "4pa.21: the Zig launch builders compose with the real Python launch consumer").dependOn(&agent_host_launch_bridge.step);
     // MS6 macOS Seatbelt backend — the profile generator's content rules, unit-tested on Linux (pure
     // Python; the kernel enforcement is the MS6.1-6.5 Mac gate). Pins the token-isolation belt measured on
     // both arches: explicit (deny process-info*) + curated sysctl-read, scratchpad-only writes, hook bridges-only.
@@ -4458,6 +4476,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&agent_host_backend_contract.step);
     test_step.dependOn(&agent_host_backend_conformance.step);
     test_step.dependOn(&agent_host_launch_connector.step);
+    test_step.dependOn(&agent_host_launch_bridge.step);
     test_step.dependOn(&agent_host_sandbox_macos.step);
     test_step.dependOn(pidns_launcher_status_step);
     test_step.dependOn(seatbelt_readiness_step);

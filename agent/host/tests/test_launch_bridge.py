@@ -1,8 +1,8 @@
 """bd zigBrowser-4pa.21, plan MS6.8 slice 2a (SilverRidge d751d158 ruling): the Zig launch builders compose with the
 real Python consumer.
 
-RED, UNREGISTERED, scratch fix-forward for SilverRidge 9744bbbd (X3 drives zero with and without e2e; D3 requires no
-refusal): the green registers it in aggregate ``test`` with no skip mapping, and builds the bridge there.
+Registered (the slice-2a green; red approved by SilverRidge e39f6c90): the named step ``test-agent-launch-bridge``
+builds the bridge and runs this module, and aggregate ``test`` depends on it, with no skip mapping.
 
 This is a PREPARATORY connector proof, not proof of a production Darwin launch: the browser's Darwin helper and login
 path does not call these builders until 4pa.27/MS8 (configureAgentHelper/Login return on non-Linux), and the Darwin
@@ -36,8 +36,8 @@ dir. Rows (each its own test):
   - L3 login with the e2e CLI equals ``test_launch_connector.reference_login_argv``;
   - L4 the e2e host-command override still replaces the whole Linux argv (unchanged behaviour).
 
-Run (red, from a scratch tree): build the bridge, then
-    ZB_LAUNCH_BRIDGE=<bridge> python3 -X dev -m unittest -v test_launch_bridge
+Run: zig build test-agent-launch-bridge (or, by hand: ZB_LAUNCH_BRIDGE=<bridge> python3 -X dev -m unittest -v
+test_launch_bridge).
 """
 
 import json

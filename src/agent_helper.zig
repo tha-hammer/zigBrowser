@@ -34,12 +34,24 @@ pub const tool_deadline_env = "ZIGBROWSER_AGENT_TEST_TOOL_DEADLINE_S";
 const tool_deadline_refusal = std.fmt.comptimePrint("zigBrowser: agent: test tool deadline must be an integer from 1 to {d}", .{protocol.tool_deadline_s});
 pub const max_prompt: usize = 64 * 1024;
 
+/// How the helper's sandbox reaches netd (MS6.8 slice 2a, SilverRidge d751d158): one backend's realization. Linux
+/// binds netd's socket directory into bwrap (`launch --net-dir`); macOS hands the inner helper netd's loopback egress
+/// port (`launch --egress-port`), and refuses 0. The Darwin arm has no browser caller until 4pa.27/MS8.
+pub const Realization = union(enum) {
+    linux: []const u8,
+    darwin: u16,
+};
+
+pub const bwrap_refusal = "zigBrowser: agent: " ++ bwrap_env ++ " is the Linux sandbox's only";
+pub const host_cmd_refusal = "zigBrowser: agent: " ++ host_cmd_env ++ " would bypass the macOS launch";
+pub const port_refusal = "zigBrowser: agent: the macOS egress port must be 1..65535";
+
 pub const Inputs = struct {
     /// The runtime's venv python (agent_setup.defaultRuntime or its override).
     python: []const u8,
     home: []const u8,
-    /// netd's socket directory, once it is ready.
-    net_dir: []const u8,
+    /// netd's socket directory (Linux) or loopback egress port (macOS), once netd is ready.
+    realization: Realization,
     /// runtime/path.json: the hook command directories.
     path_dirs: []const []const u8 = &.{},
     lang: ?[]const u8 = null,
@@ -115,17 +127,26 @@ pub fn launch(a: std.mem.Allocator, in: Inputs) !Launch {
         }
         if (e2e.test_base_url != null or e2e.tool_deadline_s != null) hello_e2e = e2e;
     }
+    // macOS consumes or refuses every Linux-only input before dispatch: the bwrap override has no sandbox to name,
+    // and the whole-host-command override would bypass `zb_agent_host launch` and its Seatbelt profile.
+    const darwin = in.realization == .darwin;
+    if (darwin) {
+        if (in.e2e_protocol and in.bwrap != null) refusal = bwrap_refusal;
+        if (in.e2e_protocol and in.host_cmd != null) refusal = host_cmd_refusal;
+        if (in.realization.darwin == 0) refusal = port_refusal;
+    }
 
     var argv: std.ArrayList([]const u8) = .empty;
-    if (in.e2e_protocol and in.host_cmd != null) {
+    if (in.e2e_protocol and in.host_cmd != null and !darwin) {
         try argv.append(a, in.host_cmd.?);
     } else {
-        try argv.appendSlice(a, &.{
-            in.python,  "-m",      "zb_agent_host", "launch",   "--home", in.home,
-            "--python", in.python, "--net-dir",     in.net_dir,
-        });
+        try argv.appendSlice(a, &.{ in.python, "-m", "zb_agent_host", "launch", "--home", in.home, "--python", in.python });
+        switch (in.realization) {
+            .linux => |dir| try argv.appendSlice(a, &.{ "--net-dir", dir }),
+            .darwin => |port| try argv.appendSlice(a, &.{ "--egress-port", try std.fmt.allocPrint(a, "{d}", .{port}) }),
+        }
         if (in.e2e_protocol) {
-            if (in.bwrap) |path| try argv.appendSlice(a, &.{ "--bwrap", path });
+            if (!darwin) if (in.bwrap) |path| try argv.appendSlice(a, &.{ "--bwrap", path });
             if (in.test_ca) |path| try argv.appendSlice(a, &.{ "--test-ca", path });
         }
     }

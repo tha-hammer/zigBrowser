@@ -15,8 +15,8 @@ pub const claude_cli_env = agent_setup.claude_cli_env;
 pub const Inputs = struct {
     python: []const u8,
     home: []const u8,
-    /// The login netd's socket directory (`<chat sockdir>-login`).
-    login_net_dir: []const u8,
+    /// The login netd's realization: its socket directory (`<chat sockdir>-login`) on Linux, its egress port on macOS.
+    realization: agent_helper.Realization,
     path_dirs: []const []const u8 = &.{},
     lang: ?[]const u8 = null,
     lc_all: ?[]const u8 = null,
@@ -31,6 +31,9 @@ pub const Launch = struct {
     env: []const []const u8,
     /// One stderr line when a seam was ignored or refused.
     warning: ?[]const u8 = null,
+    /// When set, the one stderr line that refuses the sign-in (the chat launch's refusal: a macOS bwrap override or
+    /// a zero port); nothing is dispatched.
+    refusal: ?[]const u8 = null,
 };
 
 pub const Error = error{ RelativeCliPath, OutOfMemory };
@@ -43,7 +46,7 @@ pub fn launch(a: std.mem.Allocator, in: Inputs) Error!Launch {
     const chat = try agent_helper.launch(a, .{
         .python = in.python,
         .home = in.home,
-        .net_dir = in.login_net_dir,
+        .realization = in.realization,
         .path_dirs = in.path_dirs,
         .lang = in.lang,
         .lc_all = in.lc_all,
@@ -62,7 +65,7 @@ pub fn launch(a: std.mem.Allocator, in: Inputs) Error!Launch {
             try argv.appendSlice(a, &.{ "--e2e-claude-cli", cli });
         }
     }
-    return .{ .argv = try argv.toOwnedSlice(a), .env = chat.env, .warning = warning };
+    return .{ .argv = try argv.toOwnedSlice(a), .env = chat.env, .warning = warning, .refusal = chat.refusal };
 }
 
 /// `<chat sockdir>-login`; it fits sun_path whenever the chat one does with
@@ -225,11 +228,11 @@ test "launch: --command login, the login netd dir, and the CLI seam only with --
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
-    const on = try launch(a, .{ .python = "/v/bin/python", .home = "/h", .login_net_dir = "/r/zb-1-login", .e2e_protocol = true, .claude_cli = "/t/fake" });
+    const on = try launch(a, .{ .python = "/v/bin/python", .home = "/h", .realization = .{ .linux = "/r/zb-1-login" }, .e2e_protocol = true, .claude_cli = "/t/fake" });
     try std.testing.expectEqualStrings("--e2e-claude-cli", on.argv[on.argv.len - 2]);
     try std.testing.expectEqualStrings("/t/fake", on.argv[on.argv.len - 1]);
     try std.testing.expect(on.warning == null);
-    const off = try launch(a, .{ .python = "/v/bin/python", .home = "/h", .login_net_dir = "/r/zb-1-login", .e2e_protocol = false, .claude_cli = "/t/fake" });
+    const off = try launch(a, .{ .python = "/v/bin/python", .home = "/h", .realization = .{ .linux = "/r/zb-1-login" }, .e2e_protocol = false, .claude_cli = "/t/fake" });
     for (off.argv) |arg| try std.testing.expect(!std.mem.eql(u8, arg, "--e2e-claude-cli"));
     try std.testing.expectEqualStrings("zigBrowser: ZIGBROWSER_AGENT_CLAUDE_CLI ignored without --e2e-protocol", off.warning.?);
     try std.testing.expectEqualStrings("login", off.argv[off.argv.len - 1]);
@@ -238,5 +241,5 @@ test "launch: --command login, the login netd dir, and the CLI seam only with --
         if (std.mem.eql(u8, arg, "--net-dir")) net = std.mem.eql(u8, off.argv[i + 1], "/r/zb-1-login");
     }
     try std.testing.expect(net);
-    try std.testing.expectError(error.RelativeCliPath, launch(a, .{ .python = "/p", .home = "/h", .login_net_dir = "/d", .e2e_protocol = true, .claude_cli = "rel/fake" }));
+    try std.testing.expectError(error.RelativeCliPath, launch(a, .{ .python = "/p", .home = "/h", .realization = .{ .linux = "/d" }, .e2e_protocol = true, .claude_cli = "rel/fake" }));
 }

@@ -311,7 +311,7 @@ fn configureAgentHelper(arena: std.mem.Allocator, io: std.Io, e2e: bool, net: Ag
     const launch = try agent_helper.launch(arena, .{
         .python = net.python,
         .home = net.home,
-        .net_dir = net.sockdir,
+        .realization = .{ .linux = net.sockdir },
         .path_dirs = path_dirs,
         .lang = getenvOwned(arena, "LANG"),
         .lc_all = getenvOwned(arena, "LC_ALL"),
@@ -346,7 +346,7 @@ fn configureAgentLogin(arena: std.mem.Allocator, io: std.Io, e2e: bool, net: Age
     const launch = agent_login.launch(arena, .{
         .python = net.python,
         .home = net.home,
-        .login_net_dir = login_dir,
+        .realization = .{ .linux = login_dir },
         .path_dirs = path_dirs,
         .lang = getenvOwned(arena, "LANG"),
         .lc_all = getenvOwned(arena, "LC_ALL"),

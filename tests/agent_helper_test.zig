@@ -10,7 +10,7 @@ fn base() helper.Inputs {
     return .{
         .python = "/rt/venv/bin/python",
         .home = "/d/agent-home",
-        .net_dir = "/run/user/1000/zigbrowser-agent-7-00",
+        .realization = .{ .linux = "/run/user/1000/zigbrowser-agent-7-00" },
         .path_dirs = &.{ "/usr/bin", "/home/u/.bun/bin", "/rt/venv/bin" },
         .lang = "C.UTF-8",
         .e2e_protocol = false,

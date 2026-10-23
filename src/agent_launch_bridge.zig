@@ -15,11 +15,6 @@ const std = @import("std");
 const agent_helper = @import("agent_helper.zig");
 const agent_login = @import("agent_login.zig");
 
-/// The builders' realization API (slice 2a). Before it exists the builders take only a socket dir, and the bridge
-/// drives the only form they have: a Darwin request then carries this placeholder as its --net-dir.
-const has_realization = @hasField(agent_helper.Inputs, "realization");
-const no_darwin_form = "/zb-bridge-no-darwin-form";
-
 const Request = struct {
     command: []const u8 = "",
     python: []const u8 = "",
@@ -72,34 +67,18 @@ fn parse(a: std.mem.Allocator, args: []const [:0]const u8, dirs: *std.ArrayList(
 
 fn build(a: std.mem.Allocator, r: Request, dirs: []const []const u8) !Out {
     if (std.mem.eql(u8, r.command, "chat")) {
-        var in: agent_helper.Inputs = undefined;
-        if (has_realization) {
-            in = .{ .python = r.python, .home = r.home, .realization = realization(r), .path_dirs = dirs,
-                .e2e_protocol = r.e2e, .bwrap = r.bwrap, .host_cmd = r.host_cmd, .test_ca = r.test_ca };
-        } else {
-            in = .{ .python = r.python, .home = r.home, .net_dir = r.linux orelse no_darwin_form, .path_dirs = dirs,
-                .e2e_protocol = r.e2e, .bwrap = r.bwrap, .host_cmd = r.host_cmd, .test_ca = r.test_ca };
-        }
-        const run = try agent_helper.launch(a, in);
+        const run = try agent_helper.launch(a, .{ .python = r.python, .home = r.home, .realization = realization(r),
+            .path_dirs = dirs, .e2e_protocol = r.e2e, .bwrap = r.bwrap, .host_cmd = r.host_cmd, .test_ca = r.test_ca });
         return .{ .argv = run.argv, .env = run.env, .warnings = run.warnings, .refusal = run.refusal };
     }
-    var in: agent_login.Inputs = undefined;
-    if (has_realization) {
-        in = .{ .python = r.python, .home = r.home, .realization = realization(r), .path_dirs = dirs,
-            .e2e_protocol = r.e2e, .claude_cli = r.claude_cli, .bwrap = r.bwrap };
-    } else {
-        in = .{ .python = r.python, .home = r.home, .login_net_dir = r.linux orelse no_darwin_form, .path_dirs = dirs,
-            .e2e_protocol = r.e2e, .claude_cli = r.claude_cli, .bwrap = r.bwrap };
-    }
-    const run = try agent_login.launch(a, in);
+    const run = try agent_login.launch(a, .{ .python = r.python, .home = r.home, .realization = realization(r),
+        .path_dirs = dirs, .e2e_protocol = r.e2e, .claude_cli = r.claude_cli, .bwrap = r.bwrap });
     var warnings: std.ArrayList([]const u8) = .empty;
     if (run.warning) |line| try warnings.append(a, line);
-    const refusal: ?[]const u8 = if (@hasField(agent_login.Launch, "refusal")) run.refusal else null;
-    return .{ .argv = run.argv, .env = run.env, .warnings = try warnings.toOwnedSlice(a), .refusal = refusal };
+    return .{ .argv = run.argv, .env = run.env, .warnings = try warnings.toOwnedSlice(a), .refusal = run.refusal };
 }
 
-fn realization(r: Request) if (has_realization) agent_helper.Realization else void {
-    if (!has_realization) return;
+fn realization(r: Request) agent_helper.Realization {
     if (r.linux) |dir| return .{ .linux = dir };
     return .{ .darwin = r.darwin.? };
 }
