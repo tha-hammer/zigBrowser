@@ -16,6 +16,7 @@ set -euo pipefail
 export SSH_ASKPASS_REQUIRE=never
 
 cd "$(git rev-parse --show-toplevel)"
+. tests/mac/mac_gate_output.sh
 # The Macs and the key come only from the explicit environment, never a default (bd 3ui.13): NOT RUN otherwise.
 . tests/mac/mac_config.sh
 mac_config two
@@ -53,7 +54,8 @@ verify_host() { # $1=host $2=key $3=label (the label is the EXPECTED uname -m, a
   "${SSH[@]}" "$host" "mkdir \"\$HOME/${rdir}\"" || { echo "FAIL: mkdir ${rdir} on $host" >&2; return 1; }
   "${SCP[@]}" "${STAGED_FILES[@]}" "$host":"${rdir}"/ >/dev/null \
     || { echo "FAIL: scp MS6 sources to $host" >&2; "${SSH[@]}" "$host" "$rm_rdir" >/dev/null 2>&1 || true; return 1; }
-  timeout "$LEG_TIMEOUT" "${SSH[@]}" "$host" "ZB_EXPECT_ARCH='${label}' ZB_RDIR='${rdir}' /bin/bash -s" <<'REMOTE' || { echo "FAIL: MS6 leg on $host timed out/failed" >&2; "${SSH[@]}" "$host" "$rm_rdir" >/dev/null 2>&1 || true; return 1; }
+  local out rc=0
+  out=$(timeout "$LEG_TIMEOUT" "${SSH[@]}" "$host" "ZB_EXPECT_ARCH='${label}' ZB_RDIR='${rdir}' /bin/bash -s" <<'REMOTE'
 set -euo pipefail
 d="$HOME/${ZB_RDIR:?}"
 trap 'rm -rf "$HOME/${ZB_RDIR:?}"' EXIT
@@ -68,6 +70,13 @@ fi
 /bin/sh "$d/ms6_3_fd3_reopen_test.sh" "$d"
 /bin/sh "$d/ms6_4_egress_test.sh" "$d"
 REMOTE
+  ) || rc=$?
+  printf '%s\n' "$out" >&2
+  [ "$rc" -eq 0 ] || { echo "FAIL: MS6 leg on $host timed out/failed" >&2; "${SSH[@]}" "$host" "$rm_rdir" >/dev/null 2>&1 || true; return 1; }
+  mac_require_lines ms6_gate "$host" "$label" "$out" $'PASS\tms6-containment' $'PASS\tms6.1-token-isolation' \
+    $'PASS\tms6-generated-profiles' \
+    $'PASS\tms6-3-fd3-reopen-PROBE (partial; MS6.3 real-CLI hard gate pending the MS5-gated harness)' \
+    $'PASS\tms6-4-egress' || return 1
   printf 'PASS\tms6-leg\t%s\t%s\n' "$host" "$label"
 }
 

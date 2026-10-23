@@ -8,6 +8,7 @@ set -euo pipefail
 
 
 cd "$(git rev-parse --show-toplevel)"
+. tests/mac/mac_gate_output.sh
 # The Macs and the key come only from the explicit environment, never a default (bd 3ui.13): NOT RUN otherwise.
 . tests/mac/mac_config.sh
 mac_config two
@@ -24,7 +25,8 @@ verify_host() { # $1=host $2=key $3=label
   local -a SSH; mapfile -d '' SSH < <(mac_ssh_opts "$key")
   echo "== build + MS3 e2e on $host ($label) ==" >&2
   mac_build "$host" "$key" "$BUILD_TIMEOUT" || { echo "FAIL: build on $host timed out/failed" >&2; return 1; }
-  timeout "$LEG_TIMEOUT" "${SSH[@]}" "$host" /bin/bash -s "$MAC_RDIR" <<'REMOTE' || { echo "FAIL: MS3 leg on $host timed out/failed" >&2; return 1; }
+  local out rc=0
+  out=$(timeout "$LEG_TIMEOUT" "${SSH[@]}" "$host" /bin/bash -s "$MAC_RDIR" <<'REMOTE'
 set -euo pipefail
 cd "$HOME/${1:?}"
 python3 tests/e2e/mac_cookie_test.py --browser zig-out/bin/zigBrowser
@@ -32,6 +34,11 @@ python3 tests/e2e/mac_config_flags_test.py --browser zig-out/bin/zigBrowser
 python3 tests/e2e/mac_profile_persist_test.py --browser zig-out/bin/zigBrowser
 python3 tests/e2e/mac_profile_cwd_isolation_test.py --browser zig-out/bin/zigBrowser
 REMOTE
+  ) || rc=$?
+  printf '%s\n' "$out" >&2
+  [ "$rc" -eq 0 ] || { echo "FAIL: MS3 leg on $host timed out/failed" >&2; return 1; }
+  mac_require_lines ms3_gate "$host" "$label" "$out" $'PASS\tms3-cookie' $'PASS\tms3-config-flags' \
+    $'PASS\tms3-profile-persist' $'PASS\tms3-profile-cwd-isolation' || return 1
   printf 'PASS\tms3-leg\t%s\t%s\n' "$host" "$label"
 }
 

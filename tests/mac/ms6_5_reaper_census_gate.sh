@@ -12,6 +12,7 @@ LEG_TIMEOUT="${ZB_MAC_LEG_TIMEOUT:-240}"
 export SSH_ASKPASS_REQUIRE=never
 
 cd "$(git rev-parse --show-toplevel)"
+. tests/mac/mac_gate_output.sh
 # The Macs and the key come only from the explicit environment, never a default (bd 3ui.13): NOT RUN otherwise.
 . tests/mac/mac_config.sh
 mac_config two
@@ -32,7 +33,8 @@ leg() { # $1=host $2=expected uname -m $3=key
   tar -C "${stage:?}" -cf - . | "${SSH[@]}" "$host" "mkdir \"\$HOME/${rdir:?}\" && tar -xf - -C \"\$HOME/${rdir}\"" \
     || { "${SSH[@]}" "$host" "d=\"\$HOME/${rdir:?}\"; [ -d \"\$d\" ] && find \"\$d\" -delete" || true
          echo "FAIL: staging on $host" >&2; return 1; }
-  timeout "$LEG_TIMEOUT" "${SSH[@]}" "$host" "ZB_RDIR='${rdir}' ZB_ARCH='${arch}' /bin/bash -s" <<'REMOTE'
+  local out rc=0
+  out=$(timeout "$LEG_TIMEOUT" "${SSH[@]}" "$host" "ZB_RDIR='${rdir}' ZB_ARCH='${arch}' /bin/bash -s" <<'REMOTE'
 set -euo pipefail
 d="$HOME/${ZB_RDIR:?}"
 case "$ZB_RDIR" in zb-reaper-census-*) ;; *) echo "FAIL: bad run dir $ZB_RDIR" >&2; exit 1;; esac
@@ -43,6 +45,10 @@ xcrun clang -std=gnu11 -Wall -Wextra -Werror -Isrc src/agent_run_reaper.c \
   tests/mac/ms6_5_reaper_census_probe.c -o census_probe
 ./census_probe </dev/null
 REMOTE
+  ) || rc=$?
+  printf '%s\n' "$out" >&2
+  [ "$rc" -eq 0 ] || { echo "FAIL: ms6-5-reaper-census $arch leg on $host timed out/failed" >&2; return 1; }
+  mac_require_lines ms6_5_reaper_census_gate "$host" "$arch" "$out" 'PASS ms6-5-reaper-census 18 checks' || return 1
 }
 
 overall=0

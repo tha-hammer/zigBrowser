@@ -12,6 +12,7 @@ LEG_TIMEOUT="${ZB_MAC_LEG_TIMEOUT:-300}"
 export SSH_ASKPASS_REQUIRE=never
 
 cd "$(git rev-parse --show-toplevel)"
+. tests/mac/mac_gate_output.sh
 # The Macs and the key come only from the explicit environment, never a default (bd 3ui.13): NOT RUN otherwise.
 . tests/mac/mac_config.sh
 mac_config two
@@ -51,7 +52,8 @@ leg() { # $1=host $2=expected uname -m $3=key
     "${SSH[@]}" "$host" "rm -rf \"\$HOME/${rdir:?}\"" || true
     echo "FAIL: scp to $host" >&2; return 1
   fi
-  timeout "$LEG_TIMEOUT" "${SSH[@]}" "$host" "ZB_RDIR='${rdir}' ZB_ARCH='${arch}' /bin/bash -s" <<'REMOTE'
+  local out rc=0
+  out=$(timeout "$LEG_TIMEOUT" "${SSH[@]}" "$host" "ZB_RDIR='${rdir}' ZB_ARCH='${arch}' /bin/bash -s" <<'REMOTE'
 set -euo pipefail
 d="$HOME/${ZB_RDIR:?}"
 trap 'rm -rf "$HOME/${ZB_RDIR:?}"' EXIT
@@ -63,6 +65,10 @@ cp sleeper sibling  # the same code at another path: the census matches the CLI 
 echo "== $(uname -m) macOS $(sw_vers -productVersion)"
 /usr/bin/python3 -I "$d/r1_kernel_driver.py" "$d/sleeper" "$d/sibling"
 REMOTE
+  ) || rc=$?
+  printf '%s\n' "$out" >&2
+  [ "$rc" -eq 0 ] || { echo "FAIL: ms6-r1-kernel $arch leg on $host timed out/failed" >&2; return 1; }
+  mac_require_lines ms6_r1_kernel_gate "$host" "$arch" "$out" $'PASS\tms6-r1-kernel\tkernel properties' || return 1
 }
 
 overall=0

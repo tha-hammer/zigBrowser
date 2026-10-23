@@ -15,6 +15,7 @@ LEG_TIMEOUT="${ZB_MAC_LEG_TIMEOUT:-1800}"
 export SSH_ASKPASS_REQUIRE=never
 
 cd "$(git rev-parse --show-toplevel)"
+. tests/mac/mac_gate_output.sh
 # The Macs and the key come only from the explicit environment, never a default (bd 3ui.13): NOT RUN otherwise.
 . tests/mac/mac_config.sh
 mac_config two
@@ -37,7 +38,8 @@ leg() { # $1=host $2=expected uname -m
   "${SCP[@]}" "$TAR" "$host:${rdir}/src.tar" >/dev/null || { "${SSH[@]}" "$host" "rm -rf \"\$HOME/${rdir:?}\""; return 1; }
   # The guarded cleanup and child pick (tests/mac/lib_group_cleanup.sh, tested locally by lib_group_cleanup_test.sh)
   # travel with the remote body on stdin.
-  { cat "$stage/tests/mac/lib_group_cleanup.sh"; cat <<'REMOTE'; } | timeout "$LEG_TIMEOUT" "${SSH[@]}" "$host" "ZB_RDIR='${rdir}' ZB_ARCH='${arch}' /bin/bash -s"
+  local out rc=0
+  out=$({ cat "$stage/tests/mac/lib_group_cleanup.sh"; cat <<'REMOTE'; } | timeout "$LEG_TIMEOUT" "${SSH[@]}" "$host" "ZB_RDIR='${rdir}' ZB_ARCH='${arch}' /bin/bash -s"
 set -euo pipefail
 d="$HOME/${ZB_RDIR:?}"; trap 'zb_kill_saved_group "$d/pgid" >/dev/null; rm -rf "$HOME/${ZB_RDIR:?}"' EXIT
 [ "$(uname -m)" = "$ZB_ARCH" ] || { echo "FAIL: leg is $(uname -m), expected $ZB_ARCH" >&2; exit 1; }
@@ -75,6 +77,10 @@ for _ in $(seq 1 20); do live=$(ps -o stat= -g "$PG" | grep -vc '^Z' || true); [
 echo "  FAIL case (b), the check-to-register barrier: setup.py's --e2e-watch-barrier seam is not built yet"; fails=$((fails+1))
 if [ "$fails" -eq 0 ]; then printf 'PASS\tms5-setup-e2e\t%s\n' "$ZB_ARCH"; else printf 'FAIL\tms5-setup-e2e\t%s\t%d\n' "$ZB_ARCH" "$fails"; exit 1; fi
 REMOTE
+  ) || rc=$?
+  printf '%s\n' "$out" >&2
+  [ "$rc" -eq 0 ] || return "$rc"
+  mac_require_lines ms5_setup_e2e "$host" "$arch" "$out" $'PASS\tms5-setup-e2e\t'"$arch" || return 1
 }
 
 overall=0; armed=1

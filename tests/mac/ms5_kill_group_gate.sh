@@ -15,6 +15,7 @@ LEG_TIMEOUT="${ZB_MAC_LEG_TIMEOUT:-240}"
 export SSH_ASKPASS_REQUIRE=never
 
 cd "$(git rev-parse --show-toplevel)"
+. tests/mac/mac_gate_output.sh
 # The Macs and the key come only from the explicit environment, never a default (bd 3ui.13): NOT RUN otherwise.
 . tests/mac/mac_config.sh
 mac_config two
@@ -41,7 +42,8 @@ leg() { # $1=host $2=expected uname -m $3=key
   tar -C "${stage:?}" -cf - . | "${SSH[@]}" "$host" "mkdir \"\$HOME/${rdir:?}\" && tar -xf - -C \"\$HOME/${rdir}\"" \
     || { "${SSH[@]}" "$host" "d=\"\$HOME/${rdir:?}\"; [ -d \"\$d\" ] && find \"\$d\" -delete" || true
          echo "FAIL: staging on $host" >&2; return 1; }
-  timeout "$LEG_TIMEOUT" "${SSH[@]}" "$host" "ZB_RDIR='${rdir}' ZB_ARCH='${arch}' /bin/bash -s" <<'REMOTE'
+  local out rc=0
+  out=$(timeout "$LEG_TIMEOUT" "${SSH[@]}" "$host" "ZB_RDIR='${rdir}' ZB_ARCH='${arch}' /bin/bash -s" <<'REMOTE'
 set -euo pipefail
 d="$HOME/${ZB_RDIR:?}"
 case "$ZB_RDIR" in zb-killgroup-*) ;; *) echo "FAIL: bad run dir $ZB_RDIR" >&2; exit 1;; esac
@@ -54,6 +56,10 @@ CC=(xcrun clang -std=gnu11 -Wall -Wextra -Werror)
 "${CC[@]}" -Isrc -o kill_group_test tests/kill_group/kill_group_test.c -L. -lzbfake -lzbspawn -Wl,-rpath,@executable_path
 ./kill_group_test </dev/null
 REMOTE
+  ) || rc=$?
+  printf '%s\n' "$out" >&2
+  [ "$rc" -eq 0 ] || { echo "FAIL: kill-group $arch leg on $host timed out/failed" >&2; return 1; }
+  mac_require_lines ms5_kill_group_gate "$host" "$arch" "$out" $'PASS\tkill-group\t8 cases' || return 1
 }
 
 overall=0

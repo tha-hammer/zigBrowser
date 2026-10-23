@@ -17,6 +17,7 @@ COMMIT="${1:-HEAD}"
 export SSH_ASKPASS_REQUIRE=never
 
 cd "$(git rev-parse --show-toplevel)"
+. tests/mac/mac_gate_output.sh
 # The Macs and the key come only from the explicit environment, never a default (bd 3ui.13): NOT RUN otherwise.
 . tests/mac/mac_config.sh
 mac_config two
@@ -39,7 +40,8 @@ leg() { # $1=host $2=expected uname -m
     "${SSH[@]}" "$host" "rm -rf \"\$HOME/${rdir:?}\"" || true
     echo "FAIL: scp to $host" >&2; return 1
   fi
-  timeout "$LEG_TIMEOUT" "${SSH[@]}" "$host" "ZB_RDIR='${rdir}' ZB_ARCH='${arch}' /bin/bash -s" <<'REMOTE'
+  local out rc=0
+  out=$(timeout "$LEG_TIMEOUT" "${SSH[@]}" "$host" "ZB_RDIR='${rdir}' ZB_ARCH='${arch}' /bin/bash -s" <<'REMOTE'
 set -euo pipefail
 d="$HOME/${ZB_RDIR:?}"
 trap 'rm -rf "$HOME/${ZB_RDIR:?}"' EXIT
@@ -64,6 +66,10 @@ fails=0
 [ ! -e "$marker" ] || { echo "  FAIL the canary interpreter ran"; fails=$((fails+1)); }
 if [ "$fails" -eq 0 ]; then printf 'PASS\tms5-setup-refusal\t%s\n' "$ZB_ARCH"; else printf 'FAIL\tms5-setup-refusal\t%s\t%d\n' "$ZB_ARCH" "$fails"; exit 1; fi
 REMOTE
+  ) || rc=$?
+  printf '%s\n' "$out" >&2
+  [ "$rc" -eq 0 ] || { echo "FAIL: ms5-setup-refusal $arch leg on $host timed out/failed" >&2; return 1; }
+  mac_require_lines ms5_setup_refusal_gate "$host" "$arch" "$out" $'PASS\tms5-setup-refusal\t'"$arch" || return 1
 }
 
 echo "== commit $SHA" >&2

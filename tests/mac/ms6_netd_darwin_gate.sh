@@ -11,6 +11,7 @@ LEG_TIMEOUT="${ZB_MAC_LEG_TIMEOUT:-240}"
 export SSH_ASKPASS_REQUIRE=never
 
 cd "$(git rev-parse --show-toplevel)"
+. tests/mac/mac_gate_output.sh
 # The Macs and the key come only from the explicit environment, never a default (bd 3ui.13): NOT RUN otherwise.
 . tests/mac/mac_config.sh
 mac_config two
@@ -36,7 +37,8 @@ leg() { # $1=host $2=expected uname -m
     "${SSH[@]}" "$host" "rm -rf \"\$HOME/${rdir:?}\"" || true
     echo "FAIL: scp to $host" >&2; return 1
   fi
-  timeout "$LEG_TIMEOUT" "${SSH[@]}" "$host" "ZB_RDIR='${rdir}' ZB_ARCH='${arch}' /bin/bash -s" <<'REMOTE'
+  local out rc=0
+  out=$(timeout "$LEG_TIMEOUT" "${SSH[@]}" "$host" "ZB_RDIR='${rdir}' ZB_ARCH='${arch}' /bin/bash -s" <<'REMOTE'
 set -euo pipefail
 d="$HOME/${ZB_RDIR:?}"
 trap 'rm -rf "$HOME/${ZB_RDIR:?}"' EXIT
@@ -44,6 +46,10 @@ trap 'rm -rf "$HOME/${ZB_RDIR:?}"' EXIT
 echo "== $(uname -m) macOS $(sw_vers -productVersion) $(/usr/bin/python3 -V 2>&1)"
 /usr/bin/python3 -I "$d/netd_darwin_driver.py"
 REMOTE
+  ) || rc=$?
+  printf '%s\n' "$out" >&2
+  [ "$rc" -eq 0 ] || { echo "FAIL: ms6-netd-darwin $arch leg on $host timed out/failed" >&2; return 1; }
+  mac_require_lines ms6_netd_darwin_gate "$host" "$arch" "$out" $'PASS\tms6-netd-darwin\t7 cases' || return 1
 }
 
 overall=0

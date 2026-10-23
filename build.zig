@@ -4053,6 +4053,27 @@ pub fn build(b: *std.Build) void {
     mac_build_script_step.dependOn(&mac_build_script_selftest.step);
     mac_build_script_step.dependOn(&mac_pipefail_producer_selftest.step);
     test_step.dependOn(&mac_build_script_selftest.step);
+    // Every in-scope two-host Mac gate requires the remote test's own exact PASS line at the intended leg call;
+    // successful transport with missing, wrong-call, wrong-marker or one-architecture evidence is a failure (3ui.14).
+    const mac_gate_empty_output_selftest = b.addSystemCommand(&.{ "bash", "tests/mac/mac_gate_empty_output_selftest.sh" });
+    mac_gate_empty_output_selftest.has_side_effects = true;
+    for ([_][]const u8{
+        "tests/mac/mac_gate_empty_output_selftest.sh", "tests/mac/mac_gate_output.sh",
+        "tests/mac/mac_config.sh",                      "tests/mac/build-on-mac.sh",
+        "tests/mac/ms2a_gate.sh",                      "tests/mac/ms2b_gate.sh",
+        "tests/mac/ms2c_gate.sh",                      "tests/mac/ms3_gate.sh",
+        "tests/mac/ms4_gate.sh",                       "tests/mac/ms5_gate.sh",
+        "tests/mac/ms5_deps_gate.sh",                  "tests/mac/ms5_kill_group_gate.sh",
+        "tests/mac/ms5_r1_env_gate.sh",                "tests/mac/ms5_relocate_gate.sh",
+        "tests/mac/ms5_setup_e2e.sh",                  "tests/mac/ms5_setup_refusal_gate.sh",
+        "tests/mac/ms5_spawn_gate.sh",                 "tests/mac/ms5_spawn_io_gate.sh",
+        "tests/mac/ms5_token_fd_gate.sh",              "tests/mac/ms6_5_reaper_census_gate.sh",
+        "tests/mac/ms6_gate.sh",                       "tests/mac/ms6_harness_mac_gate.sh",
+        "tests/mac/ms6_netd_darwin_gate.sh",           "tests/mac/ms6_r1_kernel_gate.sh",
+    }) |input| mac_gate_empty_output_selftest.addFileInput(b.path(input));
+    b.step("test-mac-gate-empty-output", "Mac gates causally require their remote tests' exact PASS evidence").dependOn(&mac_gate_empty_output_selftest.step);
+    mac_build_script_step.dependOn(&mac_gate_empty_output_selftest.step);
+    test_step.dependOn(&mac_gate_empty_output_selftest.step);
     // Every caller of build-on-mac.sh works only in its fresh run dir (bd 4pa.59, 4pa.77; GREEN B).
     const mac_gate_callers_selftest = b.addSystemCommand(&.{ "bash", "tests/mac/mac_gate_callers_selftest.sh" });
     for ([_][]const u8{

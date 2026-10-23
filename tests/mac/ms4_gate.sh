@@ -11,6 +11,7 @@ set -euo pipefail
 
 
 cd "$(git rev-parse --show-toplevel)"
+. tests/mac/mac_gate_output.sh
 # The Macs and the key come only from the explicit environment, never a default (bd 3ui.13): NOT RUN otherwise.
 . tests/mac/mac_config.sh
 mac_config two
@@ -27,12 +28,17 @@ verify_host() { # $1=host $2=key $3=label
   local -a SSH; mapfile -d '' SSH < <(mac_ssh_opts "$key")
   echo "== build + MS4 e2e on $host ($label) ==" >&2
   mac_build "$host" "$key" "$BUILD_TIMEOUT" || { echo "FAIL: build on $host timed out/failed" >&2; return 1; }
-  timeout "$LEG_TIMEOUT" "${SSH[@]}" "$host" /bin/bash -s "$MAC_RDIR" <<'REMOTE' || { echo "FAIL: MS4 leg on $host timed out/failed" >&2; return 1; }
+  local out rc=0
+  out=$(timeout "$LEG_TIMEOUT" "${SSH[@]}" "$host" /bin/bash -s "$MAC_RDIR" <<'REMOTE'
 set -euo pipefail
 cd "$HOME/${1:?}"
 python3 tests/e2e/mac_ms4_load_serial_test.py --browser zig-out/bin/zigBrowser
 python3 tests/e2e/ms4_4_login_gate_test.py --binary zig-out/bin/zigBrowser
 REMOTE
+  ) || rc=$?
+  printf '%s\n' "$out" >&2
+  [ "$rc" -eq 0 ] || { echo "FAIL: MS4 leg on $host timed out/failed" >&2; return 1; }
+  mac_require_lines ms4_gate "$host" "$label" "$out" $'PASS\tms4-load-serial' $'PASS\tms4.4-login-gate' || return 1
   printf 'PASS\tms4-leg\t%s\t%s\n' "$host" "$label"
 }
 

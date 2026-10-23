@@ -21,6 +21,7 @@ URL=https://www.python.org/ftp/python/3.12.10/python-3.12.10-macos11.pkg
 export SSH_ASKPASS_REQUIRE=never
 
 cd "$(git rev-parse --show-toplevel)"
+. tests/mac/mac_gate_output.sh
 # The Macs and the key come only from the explicit environment, never a default (bd 3ui.13): NOT RUN otherwise.
 . tests/mac/mac_config.sh
 mac_config two
@@ -49,7 +50,8 @@ leg() { # $1=host $2=expected uname -m
     "${SSH[@]}" "$host" "d=\"\$HOME/${rdir:?}\"; [ -d \"\$d\" ] && find \"\$d\" -delete" || true
     echo "FAIL: scp to $host" >&2; return 1
   fi
-  timeout "$LEG_TIMEOUT" "${SSH[@]}" "$host" "ZB_RDIR='${rdir}' ZB_ARCH='${arch}' ZB_PIN='${PIN}' /bin/bash -s" <<'REMOTE'
+  local out rc=0
+  out=$(timeout "$LEG_TIMEOUT" "${SSH[@]}" "$host" "ZB_RDIR='${rdir}' ZB_ARCH='${arch}' ZB_PIN='${PIN}' /bin/bash -s" <<'REMOTE'
 set -uo pipefail
 case "$ZB_RDIR" in zb-reloc-*) ;; *) echo "FAIL: bad run dir $ZB_RDIR" >&2; exit 1;; esac
 d="$HOME/${ZB_RDIR:?}"
@@ -117,6 +119,10 @@ probe "$A" "staged"
 mv "$A" "$d/moved-agent-host" && probe "$d/moved-agent-host" "after moving the whole agent-host"
 if [ "$fails" -eq 0 ]; then printf 'PASS\tms5-relocate\t%s\n' "$ZB_ARCH"; else printf 'FAIL\tms5-relocate\t%s\t%d\n' "$ZB_ARCH" "$fails"; exit 1; fi
 REMOTE
+  ) || rc=$?
+  printf '%s\n' "$out" >&2
+  [ "$rc" -eq 0 ] || { echo "FAIL: ms5-relocate $arch leg on $host timed out/failed" >&2; return 1; }
+  mac_require_lines ms5_relocate_gate "$host" "$arch" "$out" $'PASS\tms5-relocate\t'"$arch" || return 1
 }
 
 overall=0

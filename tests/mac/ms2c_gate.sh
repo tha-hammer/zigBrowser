@@ -8,6 +8,7 @@ set -euo pipefail
 
 
 cd "$(git rev-parse --show-toplevel)"
+. tests/mac/mac_gate_output.sh
 # The Macs and the key come only from the explicit environment, never a default (bd 3ui.13): NOT RUN otherwise.
 . tests/mac/mac_config.sh
 mac_config two
@@ -24,7 +25,8 @@ verify_host() { # $1=host $2=key $3=label
   local -a SSH; mapfile -d '' SSH < <(mac_ssh_opts "$key")
   echo "== build + MS2c e2e on $host ($label) ==" >&2
   mac_build "$host" "$key" "$BUILD_TIMEOUT" || { echo "FAIL: build on $host timed out/failed" >&2; return 1; }
-  timeout "$LEG_TIMEOUT" "${SSH[@]}" "$host" /bin/bash -s "$MAC_RDIR" <<'REMOTE' || { echo "FAIL: MS2c leg on $host timed out/failed" >&2; return 1; }
+  local out rc=0
+  out=$(timeout "$LEG_TIMEOUT" "${SSH[@]}" "$host" /bin/bash -s "$MAC_RDIR" <<'REMOTE'
 set -euo pipefail
 cd "$HOME/${1:?}"
 python3 tests/e2e/mac_ms2c_list_windows_test.py --browser zig-out/bin/zigBrowser
@@ -45,6 +47,16 @@ python3 tests/e2e/mac_ms2c_recover_test.py --browser zig-out/bin/zigBrowser
 python3 tests/e2e/mac_ms2c_recover_dialog_test.py --browser zig-out/bin/zigBrowser
 python3 tests/e2e/mac_ms2c_recover_stale_health_test.py --browser zig-out/bin/zigBrowser
 REMOTE
+  ) || rc=$?
+  printf '%s\n' "$out" >&2
+  [ "$rc" -eq 0 ] || { echo "FAIL: MS2c leg on $host timed out/failed" >&2; return 1; }
+  mac_require_lines ms2c_gate "$host" "$label" "$out" \
+    $'PASS\tms2c-list-windows' $'PASS\tms2c-stable-ids' $'PASS\tms2c-window-fifo' \
+    $'PASS\tms2c-popup-chain' $'PASS\tms2c-loading' $'PASS\tms2c-process-group' \
+    $'PASS\tms2c-oob-during-stuck' $'PASS\tms2c-snapshot-oob' $'PASS\tms2c-dialog-snapshot' \
+    $'PASS\tms2c-script-close' $'PASS\tms2c-health' $'PASS\tms2c-close-window' \
+    $'PASS\tms2c-crash' $'PASS\tms2c-crash-controls' $'PASS\tms2c-recover' \
+    $'PASS\tms2c-recover-dialog' $'PASS\tms2c-recover-stale-health' || return 1
   printf 'PASS\tms2c-leg\t%s\t%s\n' "$host" "$label"
 }
 
