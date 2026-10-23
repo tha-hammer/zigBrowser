@@ -15,8 +15,10 @@ The Win10 box (zbtest) has no build toolchain, so run_on_win10(build_step, exe, 
      %USERPROFILE%\zb\build\run-<sha> on Win10, the only folder it writes there, each copy over scp -O;
   5. runs `<exe> <input names>` in that folder over ssh, requires exit 0, no FAIL line and an `ok` line for every
      name in `required`, and prints `ASSERTS <number of ok lines>`;
-  6. always removes the Win10 run folder through remove_after_webview2 with the Win10 before census once staging
-     began; it deletes nothing else, never kills, never retries; a failed cleanup on either host fails the run.
+  6. removes the Win10 run folder through remove_after_webview2 with the Win10 before census, always once THIS run
+     created it (an explicit ownership flag, set only after its `mkdir` of the previously absent folder succeeded);
+     a failed create stages, runs and deletes nothing there (NavyCanyon 8974649e). It deletes nothing else, never
+     kills, never retries; a failed cleanup on either host fails the run.
 Then `PASS\t<tag>`, exit 0. A missing precondition is 1 under ZB_WIN_GATE=1, else 77.
 
 A host run needs NavyCanyon's exact-commit approval and the orchestrator's release; the first Win10 build run also
@@ -173,11 +175,15 @@ def run_on_win10(build_step: str, exe_name: str, inputs: tuple, required: tuple,
             staged.append(path)
 
         rc = 1
-        try:  # Win10: stage and run; the run folder is always removed once staging began
+        owned = False  # True only once THIS run created the (previously absent) Win10 run folder
+        removed10, why10 = False, ""
+        try:  # Win10: create, stage and run; only a folder this run created is ever removed
             made = win10.run(f'mkdir "{win_dir}"', timeout=120)
             if made.returncode != 0:
-                say(f"FAIL: mkdir {win_dir} on {win10.name}: rc={made.returncode} {made.stderr.strip()}")
+                say(f"FAIL: mkdir {win_dir} on {win10.name}: rc={made.returncode} {made.stderr.strip()}; this run did "
+                    "not create it, so nothing is staged, run or deleted there")
             else:
+                owned = True
                 for path in staged:
                     cp = win10.copy(str(path), win10.remote(f"{rel_dir}/{path.name}"))
                     if cp.returncode != 0:
@@ -190,8 +196,11 @@ def run_on_win10(build_step: str, exe_name: str, inputs: tuple, required: tuple,
                     sys.stderr.write(run.stderr)
                     rc = verdict(run, required)
         finally:
-            removed10, why10 = webview2_cleanup.remove_after_webview2(win10.run, win_dir, before10)
-            say(f"win10 run folder cleanup: {why10}")
+            if owned:
+                removed10, why10 = webview2_cleanup.remove_after_webview2(win10.run, win_dir, before10)
+                say(f"win10 run folder cleanup: {why10}")
+        if not owned:
+            return 1
         if not removed10:
             say(f"FAIL: the Win10 run folder cleanup failed: {why10}")
             return 1

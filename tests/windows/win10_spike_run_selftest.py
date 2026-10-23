@@ -15,8 +15,9 @@ the Win10 box. The driver (the shape of GrayHarbor's m8_run.py and the shared we
      %USERPROFILE%\zb\build\run-<sha> on Win10 (the only folder it writes there), each copy over scp -O;
   5. runs the exe there over ssh, requires exit 0, no FAIL line and an `ok` line for every required row, prints
      `ASSERTS <n>` and `PASS\t<tag>`;
-  6. always removes the Win10 run folder through remove_after_webview2 with the Win10 before census, once staging
-     began; a failed cleanup on either host fails the run.
+  6. always removes the Win10 run folder through remove_after_webview2 with the Win10 before census once THIS run
+     created it; a failed create (the folder appeared after the absence check) stages, runs and deletes nothing
+     there (NavyCanyon 8974649e); a failed cleanup on either host fails the run.
 
 Drives the REAL win10_spike_run.py and its entry tests/e2e/win_trusted_input_matrix_w10.py (with the real
 win_trusted_input_matrix.REQUIRED, spike_driver, webview2_cleanup and scp_legacy), copied into a temp tree next to a
@@ -68,7 +69,7 @@ case "$cmd" in
   *Get-Process*) [ "${ZB_FAKE_CENSUS_FAIL:-}" = "$side" ] && { echo denied >&2; exit 1; }; printf 'END\r\n'; exit 0 ;;
   *Get-Item*) printf 'DIR\r\n'; exit 0 ;;
   *PRESENT*) if [ "$side" = 10 ] && [ -n "${ZB_FAKE_W10_PRESENT:-}" ]; then printf 'PRESENT\r\n'; else printf 'ABSENT\r\n'; fi; exit 0 ;;
-  mkdir*) exit 0 ;;
+  mkdir*) [ -n "${ZB_FAKE_MKDIR_FAIL:-}" ] && { echo "A subdirectory or file already exists." >&2; exit 1; }; exit 0 ;;
   rmdir*) exit 0 ;;
   if\ exist*) if [ "${ZB_FAKE_LEFT:-}" = "$side" ]; then printf 'LEFT\r\n'; else printf 'GONE\r\n'; fi; exit 0 ;;
   *ws2b1-input-spike.exe*) cat "$ZB_FAKE_SPIKE_OUT"; exit "${ZB_FAKE_SPIKE_RC:-0}" ;;
@@ -269,6 +270,20 @@ class Win10SpikeRun(unittest.TestCase):
         self.assertEqual(proc.returncode, 1, self.out)
         self.assertEqual(len(self._ssh(11, "rmdir")), 1)
         self.assertEqual(self._ssh(10, "mkdir") + self._ssh(10, "rmdir") + self._ssh(10, EXE), [])
+
+    def test_a_failed_create_of_an_appeared_folder_deletes_nothing(self):
+        proc = self._run(ZB_FAKE_MKDIR_FAIL="1")  # absent at the check, present at the create: mkdir fails
+        self.assertEqual(proc.returncode, 1, self.out)
+        self.assertIn("mkdir", self.out)
+        mk = self._idx(lambda l: l.startswith("SSH10 ") and "mkdir" in l)
+        self.assertGreaterEqual(mk, 0, "the create was attempted")
+        after = self.lines[mk + 1:]
+        self.assertEqual([l for l in after if l.startswith("SSH10 ")], [],
+                         "after a failed create: no staging, no run, no helper census, no rmdir on Win10")
+        self.assertEqual([l for l in after if l.startswith("SCP ")], [], "nothing staged")
+        self.assertEqual(self._ssh(10, "rmdir"), [], "the folder this run did not create is not deleted")
+        self.assertEqual(list(self.w10fs.iterdir()), [], "nothing reached the Win10 folder")
+        self.assertEqual(len(self._ssh(11, "rmdir")), 1, "the Win11 build folder is still removed")
 
     def test_a_failed_staging_copy_still_cleans_the_win10_folder(self):
         proc = self._run(ZB_FAKE_SCP_FAIL=f"{REL_DIR}/scroll.html")
