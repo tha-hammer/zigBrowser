@@ -4,6 +4,7 @@
 # (no coordinator round-trip). Usage (all three variables are required; there is no default guest, key or pin):
 #   ZB_GUEST_HOST=<user@host> ZB_GUEST_KEY=<key> ZB_GUEST_KNOWN_HOSTS=<pinned known_hosts> \
 #     bash tests/guest/build-in-guest.sh [<build step, e.g. ipc-test-win>]
+# The archive is staged locally in a fresh private directory under ${TMPDIR:-/tmp}, removed on every exit.
 set -euo pipefail
 
 # Never let a refused key open a graphical SSH password prompt on the user's DISPLAY :0.
@@ -41,9 +42,42 @@ STEP="${1:-}"
 
 cd "$(git rev-parse --show-toplevel)"
 
+# bd zigBrowser-ong.24 (NavyCanyon 82565522): stage the archive in a fresh directory only this run owns, never a
+# fixed shared path, and delete exactly that directory on every exit.
+stage_root="${TMPDIR:-/tmp}"
+[ "$stage_root" = / ] || stage_root="${stage_root%/}"
+if ! stage=$(mktemp -d "$stage_root/zb-guest-stage.XXXXXXXXXX"); then
+  echo "refused: could not create a private staging directory under $stage_root" >&2
+  exit 2
+fi
+# Only a new, empty, private, non-symlink directory of ours directly under the stage root is used, and only then
+# deleted; anything else is left alone.
+if [ -L "$stage" ] || [ ! -d "$stage" ] || [ ! -O "$stage" ] || [ "$(stat -c %a -- "$stage")" != 700 ] ||
+   [ -n "$(ls -A -- "$stage")" ] || [ "$(dirname -- "$stage")" != "$stage_root" ]; then
+  echo "refused: mktemp gave $stage, which is not a new private directory under $stage_root; leaving it alone" >&2
+  exit 2
+fi
+
+# Runs once, on the EXIT trap: keeps a failing status, and fails an otherwise successful run if the stage survives.
+cleanup() {
+  local rc=$? left=0
+  trap - EXIT INT TERM
+  rm -rf -- "${stage:?}" || left=1
+  if [ -e "$stage" ] || [ -L "$stage" ]; then left=1; fi
+  if [ "$left" -ne 0 ]; then
+    echo "build-in-guest: cleanup failed: the staging directory $stage is still there; remove it by hand" >&2
+    [ "$rc" -ne 0 ] || rc=1
+  fi
+  exit "$rc"
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+archive="$stage/zb_worktree.tar"
+
 # Push the working tree (committed or not) as a tarball, extract in the guest.
-tar -cf /tmp/zb_worktree.tar src build.zig build.zig.zon tests 2>/dev/null
-scp "${SSH_OPTS[@]}" /tmp/zb_worktree.tar "$HOST":zb_worktree.tar >/dev/null
+tar -cf "$archive" src build.zig build.zig.zon tests
+scp "${SSH_OPTS[@]}" "$archive" "$HOST":zb_worktree.tar >/dev/null
 ssh "${SSH_OPTS[@]}" "$HOST" 'powershell -NoProfile -Command "$d=$env:USERPROFILE+'"'"'\zigBrowser'"'"'; if(!(Test-Path $d)){New-Item -ItemType Directory $d|Out-Null}; tar -xf $env:USERPROFILE\zb_worktree.tar -C $d"'
 
 # Build in the guest.
