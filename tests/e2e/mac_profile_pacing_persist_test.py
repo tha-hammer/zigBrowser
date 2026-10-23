@@ -34,8 +34,8 @@ import threading
 import time
 from pathlib import Path
 
-from automation_core_test import RpcClient, _read_lines  # noqa: E402
-from mac_term_teardown import install_term_only_cleanup, leak_failures, stop_browser_term_only  # noqa: E402
+from mac_row_session import launch  # noqa: E402
+from mac_term_teardown import install_term_only_cleanup, leak_failures  # noqa: E402
 from red_shape import Red, RedShape  # noqa: E402
 
 TEST_ID = "ms3-profile-pacing-persist"
@@ -120,6 +120,9 @@ class _FixtureServer:
         self._srv.server_close()
 
 
+LAUNCH = launch  # the browser source; the hostless selftest injects a scripted fake (SilverRidge c78a1f6)
+
+
 def run_once(browser: Path, url: str, tmp: Path, profile: Path, run: str, proc_holder: list, timeout_sec: float, act):
     """One browser lifetime on `profile`; `act(rpc)` returns a value. Returns (value, stderr lines)."""
     socket_path = e2e_socket_path(tmp / f"automation-{run}.sock")
@@ -127,32 +130,23 @@ def run_once(browser: Path, url: str, tmp: Path, profile: Path, run: str, proc_h
     env["ZIGBROWSER_SOCKET"] = str(socket_path)
     env["HOME"] = str(tmp / "home")  # private HOME: never the account's own profile or caches
     env["ZB_DEBUG_EPHEMERAL_DATA_STORE"] = "1"  # e2e-only hook 16: no website data written outside the run (SilverRidge fe4542e)
-    proc = subprocess.Popen(
-        [str(browser), url, "--automation-api", "--e2e-protocol", "--profile-dir", str(profile)],
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env, start_new_session=True,
-    )
-    proc_holder[:] = [proc]
-    out: list[str] = []
-    err: list[str] = []
-    for stream, buf in ((proc.stdout, out), (proc.stderr, err)):
-        threading.Thread(target=_read_lines, args=(stream, buf), daemon=True).start()
-    rpc = None
+    session = LAUNCH([str(browser), url, "--automation-api", "--e2e-protocol", "--profile-dir", str(profile)],
+                     env, socket_path, timeout_sec)
+    proc_holder[:] = [session.proc]
     try:
-        rpc = RpcClient(socket_path, timeout_sec)
+        rpc = session.connect()
         rpc.call("page.url", {"timeout_ms": 10000})
-        return act(rpc), err
+        return act(rpc), session.err
     finally:
-        if rpc is not None:
-            rpc.close()
-        stop_browser_term_only(proc)
+        session.stop()
         time.sleep(0.2)  # let the stderr reader drain
 
 
-def main() -> int:
+def main(argv=None) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--browser", default="zig-out/bin/zigBrowser")
     ap.add_argument("--timeout-sec", type=float, default=25.0)
-    args = ap.parse_args()
+    args = ap.parse_args(argv)
     browser = Path(args.browser)
     if not browser.is_file():
         print("FAIL\tms3-profile-pacing-persist-binary-missing")  # rule 7: a skip is a failure

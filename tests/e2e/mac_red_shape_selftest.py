@@ -23,6 +23,9 @@ observation boundary turns this red:
      record_restored (default; a third cap).
   P  each main calls its recording functions exactly once and checks no Red assertion itself; run_row calls
      check_alive (tripwire).
+  M  each row's REAL main end to end against a scripted fake browser and clock (mac_fake_browser.py; the rows' LAUNCH
+     and `time` are swapped): today's Mac behavior -> RED_SHAPE; a fixed browser -> PASS; a wrong observation of
+     the same polarity -> mismatch (SilverRidge c78a1f6: an accepted constant at a main call site turns this red).
 Run: python3 tests/e2e/mac_red_shape_selftest.py   (called by tests/mac/mac_gate_callers_selftest.sh)
 """
 import contextlib
@@ -262,8 +265,59 @@ def pin_mains() -> int:
     return n
 
 
+# M: each row's REAL main, run end to end against a scripted fake browser (mac_fake_browser.py; SilverRidge
+# c78a1f6): every value main observes comes from the injected process, RPC and output source, so today's Mac behavior
+# must give RED_SHAPE, a fixed browser PASS, and a wrong observation of the same polarity a mismatch. An accepted
+# constant written into main in place of an observation therefore turns this red.
+MAIN_SCENARIOS = (
+    ("mac_ms2c_close_button_test", "CloseButtonBrowser", (
+        ("today", {}, "red"), ("fixed", {"fixed": True}, "pass"),
+        ("routed reply action_timeout", {"routed": "timeout"}, "mismatch"),
+        ("last WINCOUNT 3", {"wincount": "WINCOUNT\t3"}, "mismatch"))),
+    ("mac_ms2b_dialog_popup_id_test", "DialogBrowser", (
+        ("today", {}, "red"), ("fixed", {"fixed": True}, "pass"),
+        ("listed under window-1", {"listed": "window-1"}, "mismatch"),
+        ("dialog.get on window-3 without open", {"by_id": {"type": "confirm"}}, "mismatch"),
+        ("respond action_timeout", {"respond": "timeout"}, "mismatch"))),
+    ("mac_cookie_timeout_test", "CookieBrowser", (
+        ("today", {}, "red"), ("fixed", {"fixed": True}, "pass"),
+        ("another error at 12.5 s", {"reply": {"error": {"code": -32000, "message": "navigation_failed"}}}, "mismatch"),
+        ("a result after 20 s", {"takes": 20.0}, "mismatch"))),
+    ("mac_ms2c_recover_slow_server_test", "RecoverBrowser", (
+        ("today", {}, "red"), ("fixed", {"fixed": True}, "pass"),
+        ("exit 5", {"rc": 5}, "mismatch"), ("exit at 3 s", {"after": 3.0}, "mismatch"))),
+    ("mac_profile_pacing_persist_test", "PacingBrowser", (
+        ("today", {}, "red"), ("fixed", {"fixed": True}, "pass"),
+        ("save AccessDenied", {"save_error": "AccessDenied"}, "mismatch"), ("run 2 on a third cap", {"cap2": 55}, "mismatch"))),
+    ("mac_ms2a_load_fail_no_quit_test", "LoadFailBrowser", (
+        ("today", {}, "red"), ("fixed", {"fixed": True}, "pass"),
+        ("exit 8", {"rc": 8}, "mismatch"), ("two LOAD_FAIL rows", {"load_fails": 2}, "mismatch"))),
+)
+
+
+def drive_mains() -> int:
+    import mac_fake_browser as fb
+    n = 0
+    for modname, cls, scenarios in MAIN_SCENARIOS:
+        mod = importlib.import_module(modname)
+        for name, knobs, want in scenarios:
+            knobs = {k: (fb.error(v) if k in ("routed", "respond") else v) for k, v in knobs.items()}
+            rc, lines, fake = fb.run_main(mod, getattr(fb, cls), sys.executable, **knobs)
+            label = f"M {modname} {name}"
+            n += 1
+            if not fake.launches or fake.stopped != len(fake.launches):
+                failures.append(f"{label}: {len(fake.launches)} launches, {fake.stopped} stops")
+            if want == "red":
+                expect_red(label, mod.TEST_ID, rc, lines)
+            elif want == "mismatch":
+                expect_mismatch(label, mod.TEST_ID, rc, lines)
+            elif rc != 0 or f"PASS\t{mod.TEST_ID}" not in lines:
+                failures.append(f"{label}: want PASS exit 0, got rc={rc} {lines[-4:]!r}")
+    return n
+
+
 def main() -> int:
-    cases = sum(check_module(m) for m in RED_MODULES) + drive_row3() + drive_records() + pin_mains()
+    cases = sum(check_module(m) for m in RED_MODULES) + drive_row3() + drive_records() + pin_mains() + drive_mains()
     if failures:
         print("FAIL\tmac-red-shape-selftest")
         for f in failures:

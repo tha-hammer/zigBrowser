@@ -47,8 +47,9 @@ import threading
 import time
 from pathlib import Path
 
-from automation_core_test import RpcClient, _read_lines  # noqa: E402
-from mac_term_teardown import install_term_only_cleanup, leak_failures, stop_browser_term_only  # noqa: E402
+from automation_core_test import RpcClient  # noqa: E402  (annotations)
+from mac_row_session import launch  # noqa: E402
+from mac_term_teardown import install_term_only_cleanup, leak_failures  # noqa: E402
 from red_shape import PASS, Red, RedShape  # noqa: E402
 
 ZB_EXIT_LOAD_FAILED = 5
@@ -122,23 +123,20 @@ class _FixtureServer:
 class _Browser:
     """One browser process with --automation-api and --e2e-protocol (the LOAD_FAIL/NAV rows)."""
 
-    def __init__(self, browser: Path, url: str, tmp: Path, proc_holder: list):
+    def __init__(self, browser: Path, url: str, tmp: Path, proc_holder: list, timeout_sec: float):
         self.socket_path = e2e_socket_path(tmp / "automation.sock")
         env = dict(os.environ)
         env["ZIGBROWSER_SOCKET"] = str(self.socket_path)
         env["HOME"] = str(tmp / "home")  # private HOME: never the account's own profile or caches
         env["ZB_DEBUG_EPHEMERAL_DATA_STORE"] = "1"  # e2e-only hook 16: no website data written outside the run (SilverRidge fe4542e)
         (tmp / "home").mkdir()
-        self.proc = subprocess.Popen(
-            [str(browser), url, "--automation-api", "--e2e-protocol", "--profile-dir", str(tmp / "profile")],
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env,
-            start_new_session=True,
-        )
+        self.session = LAUNCH([str(browser), url, "--automation-api", "--e2e-protocol", "--profile-dir",
+                               str(tmp / "profile")], env, self.socket_path, timeout_sec)
+        self.proc, self.out, self.err = self.session.proc, self.session.out, self.session.err
         proc_holder[:] = [self.proc]
-        self.out: list[str] = []
-        self.err: list[str] = []
-        for stream, buf in ((self.proc.stdout, self.out), (self.proc.stderr, self.err)):
-            threading.Thread(target=_read_lines, args=(stream, buf), daemon=True).start()
+
+    def connect(self):
+        return self.session.connect()
 
     def rows(self, tag: str) -> list[list[str]]:
         return [line.split("\t") for line in list(self.out) if line.split("\t", 1)[0] == tag]
@@ -160,7 +158,7 @@ class _Browser:
         return self.load_fails(is_dead_url)
 
     def stop(self):
-        stop_browser_term_only(self.proc)
+        self.session.stop()
 
 
 def is_dead_url(u: str) -> bool:
@@ -195,13 +193,13 @@ def check_alive(label: str, b: _Browser, rpc: RpcClient, shape: RedShape, fail_m
 def run_row(label: str, browser: Path, fixture, proc_holder: list, timeout_sec: float, act, fail_match,
             shape: RedShape):
     with tempfile.TemporaryDirectory(prefix="zb-loadfail-") as tmp:
-        b = _Browser(browser, f"{fixture.base_url}/a", Path(tmp), proc_holder)
+        b = _Browser(browser, f"{fixture.base_url}/a", Path(tmp), proc_holder, timeout_sec)
         rpc = None
         try:
             if not b.wait_row("NAV", lambda r: len(r) >= 2 and r[1].endswith("/a"), timeout_sec):
                 shape.problem(f"{label}: PRECONDITION the primary window never finished its first load")
                 return b
-            rpc = RpcClient(b.socket_path, timeout_sec)
+            rpc = b.connect()
             act(rpc, fixture)
             b.wait_row("LOAD_FAIL", lambda r: len(r) >= 2 and fail_match(r[1]), 10.0)
             if fail_match is is_attach_url and "/attach" not in fixture.hits:
@@ -240,7 +238,7 @@ def act_click_attachment(rpc: RpcClient, fixture) -> None:
 
 def row5_initial_load_exits(browser: Path, proc_holder: list, timeout_sec: float, shape: RedShape) -> _Browser:
     with tempfile.TemporaryDirectory(prefix="zb-loadfail-init-") as tmp:
-        b = _Browser(browser, DEAD_URL, Path(tmp), proc_holder)
+        b = _Browser(browser, DEAD_URL, Path(tmp), proc_holder, timeout_sec)
         try:
             rc = b.proc.wait(timeout=timeout_sec)
             time.sleep(0.2)  # let the reader threads drain stdout
@@ -255,11 +253,14 @@ def row5_initial_load_exits(browser: Path, proc_holder: list, timeout_sec: float
     return b
 
 
-def main() -> int:
+LAUNCH = launch  # the browser source; the hostless selftest injects a scripted fake (SilverRidge c78a1f6)
+
+
+def main(argv=None) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--browser", default="zig-out/bin/zigBrowser")
     ap.add_argument("--timeout-sec", type=float, default=25.0)
-    args = ap.parse_args()
+    args = ap.parse_args(argv)
     browser = Path(args.browser)
     if not browser.is_file():
         print("FAIL\tms2a-load-fail-no-quit-binary-missing")  # rule 7: a skip is a failure

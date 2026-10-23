@@ -30,8 +30,8 @@ import threading
 import time
 from pathlib import Path
 
-from automation_core_test import RpcClient, _read_lines  # noqa: E402
-from mac_term_teardown import install_term_only_cleanup, leak_failures, stop_browser_term_only  # noqa: E402
+from mac_row_session import launch  # noqa: E402
+from mac_term_teardown import install_term_only_cleanup, leak_failures  # noqa: E402
 from red_shape import Red, RedShape, reply_kind  # noqa: E402
 
 TEST_ID = "ms2b-dialog-popup-id"
@@ -122,11 +122,14 @@ def wait_until(pred, timeout_sec: float, step: float = 0.05) -> bool:
     return pred()
 
 
-def main() -> int:
+LAUNCH = launch  # the browser source; the hostless selftest injects a scripted fake (SilverRidge c78a1f6)
+
+
+def main(argv=None) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--browser", default="zig-out/bin/zigBrowser")
     ap.add_argument("--timeout-sec", type=float, default=25.0)
-    args = ap.parse_args()
+    args = ap.parse_args(argv)
     browser = Path(args.browser)
     if not browser.is_file():
         print("FAIL\tms2b-dialog-popup-id-binary-missing")  # rule 7: a skip is a failure
@@ -144,22 +147,14 @@ def main() -> int:
         env["HOME"] = str(Path(tmp) / "home")  # private HOME: never the account's own profile or caches
         env["ZB_DEBUG_EPHEMERAL_DATA_STORE"] = "1"  # e2e-only hook 16: no website data written outside the run (SilverRidge fe4542e)
         (Path(tmp) / "home").mkdir()
-        proc = subprocess.Popen(
-            [str(browser), f"{fixture.base_url}/a", "--automation-api", "--e2e-protocol",
-             "--profile-dir", str(Path(tmp) / "profile")],
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env,
-            start_new_session=True,
-        )
+        session = LAUNCH([str(browser), f"{fixture.base_url}/a", "--automation-api", "--e2e-protocol", "--profile-dir", str(Path(tmp) / "profile")], env, socket_path, args.timeout_sec)
+        proc, out, err = session.proc, session.out, session.err
         proc_holder.append(proc)
-        out: list[str] = []
-        err: list[str] = []
-        for stream, buf in ((proc.stdout, out), (proc.stderr, err)):
-            threading.Thread(target=_read_lines, args=(stream, buf), daemon=True).start()
 
         rpc = None
         third = None
         try:
-            rpc = RpcClient(socket_path, args.timeout_sec)
+            rpc = session.connect()
 
             def pages():
                 return (rpc.call("page.list", {}) or {}).get("pages") or []
@@ -209,8 +204,7 @@ def main() -> int:
                         rpc.raw("dialog.respond", {"window_id": third, "accept": False})
                     except Exception:  # noqa: BLE001
                         pass
-                rpc.close()
-            stop_browser_term_only(proc)
+            session.stop()
 
     for msg in leak_failures():  # a browser SIGTERM did not end fails the row (no SIGKILL on a Mac)
         shape.problem(msg)

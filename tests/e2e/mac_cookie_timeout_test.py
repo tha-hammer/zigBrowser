@@ -37,8 +37,8 @@ import threading
 import time
 from pathlib import Path
 
-from automation_core_test import RpcClient, _read_lines  # noqa: E402
-from mac_term_teardown import install_term_only_cleanup, leak_failures, stop_browser_term_only  # noqa: E402
+from mac_row_session import launch  # noqa: E402
+from mac_term_teardown import install_term_only_cleanup, leak_failures  # noqa: E402
 from red_shape import PASS, Red, RedShape, reply_kind  # noqa: E402
 
 DELAY_MS = 12_500
@@ -120,11 +120,14 @@ def delay_hits(err_lines) -> int:
     return sum(1 for ln in list(err_lines) if ln.startswith("zb-cookie-delay-hit="))
 
 
-def main() -> int:
+LAUNCH = launch  # the browser source; the hostless selftest injects a scripted fake (SilverRidge c78a1f6)
+
+
+def main(argv=None) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--browser", default="zig-out/bin/zigBrowser")
     ap.add_argument("--timeout-sec", type=float, default=30.0)  # > DELAY_MS, so today's slow OK is observed
-    args = ap.parse_args()
+    args = ap.parse_args(argv)
     browser = Path(args.browser)
     if not browser.is_file():
         print("FAIL\tms3-cookie-timeout-binary-missing")  # rule 7: a skip is a failure
@@ -143,21 +146,13 @@ def main() -> int:
         env["ZB_DEBUG_EPHEMERAL_DATA_STORE"] = "1"  # e2e-only hook 16: no website data written outside the run (SilverRidge fe4542e)
         (Path(tmp) / "home").mkdir()
         env["ZB_DEBUG_COOKIE_DELAY_MS"] = str(DELAY_MS)
-        proc = subprocess.Popen(
-            [str(browser), f"{fixture.base_url}/", "--automation-api", "--e2e-protocol",
-             "--profile-dir", str(Path(tmp) / "profile")],
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env,
-            start_new_session=True,
-        )
+        session = LAUNCH([str(browser), f"{fixture.base_url}/", "--automation-api", "--e2e-protocol", "--profile-dir", str(Path(tmp) / "profile")], env, socket_path, args.timeout_sec)
+        proc, out, err = session.proc, session.out, session.err
         proc_holder.append(proc)
-        out: list[str] = []
-        err: list[str] = []
-        for stream, buf in ((proc.stdout, out), (proc.stderr, err)):
-            threading.Thread(target=_read_lines, args=(stream, buf), daemon=True).start()
 
         rpc = None
         try:
-            rpc = RpcClient(socket_path, args.timeout_sec)
+            rpc = session.connect()
             rpc.call("page.url", {"timeout_ms": 10000})
             time.sleep(0.5)
             baseline = last_live_jobs(err)
@@ -185,9 +180,7 @@ def main() -> int:
         except Exception as exc:  # noqa: BLE001
             shape.problem(f"{exc!r} (rc={proc.poll()})")
         finally:
-            if rpc is not None:
-                rpc.close()
-            stop_browser_term_only(proc)
+            session.stop()
 
     for msg in leak_failures():  # a browser SIGTERM did not end fails the row (no SIGKILL on a Mac)
         shape.problem(msg)
