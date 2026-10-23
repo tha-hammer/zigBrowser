@@ -7,8 +7,10 @@
 # pkg and bundle), uv, and python3 (real, except `-m venv`, which makes a venv whose pip and python record their calls).
 #   P1 prep exits 0 and leaves exactly py.pkg (the fixture bytes), sites.tar (both site trees) and a valid inputs.sha256;
 #   P2 curl fetches exactly the pinned url and url.sigstore, each with --proto =https;
-#   P3 the verifier installs exactly once as `pip install --require-hashes --no-deps -r <export>/<pinned requirements>`
-#      (-q allowed), and that file is the committed one;
+#   P3 the verifier installs exactly once as `uv pip install` with --python <scratch venv>/bin/python, --require-hashes,
+#      --no-deps, --no-config, --default-index https://pypi.org/simple and -r <export>/<pinned requirements>, and that
+#      file is the committed one (SilverRidge
+#      5894aef0 Stage A: Debian's python3 has no ensurepip, so prep no longer uses `python3 -m venv` + pip);
 #   P4 the pkg is verified exactly once as `python -m sigstore verify identity --bundle <its .sigstore> --cert-identity
 #      <pinned identity> --cert-oidc-issuer <pinned issuer> <the downloaded pkg>`;
 #   P5 every curl, uv, pip and sigstore call runs with HOME, XDG_CACHE_HOME, XDG_CONFIG_HOME, XDG_DATA_HOME,
@@ -50,17 +52,22 @@ rec() { # rec <tool>: the shell lines that record one call of <tool> as ctl/<too
     "$C" "$1" "$C" "$1" "$envrec" "$C" "$1"
 }
 { echo '#!/bin/bash'; rec curl; cat <<EOF
-out= url=
-while [ \$# -gt 0 ]; do case "\$1" in -o) out=\$2; shift 2 ;; --proto) shift 2 ;; -*) shift ;; *) url=\$1; shift ;; esac; done
+out= url= wfmt=
+while [ \$# -gt 0 ]; do
+  case "\$1" in -o) out=\$2; shift 2 ;; -w|--proto|--proto-redir|--max-redirs) [ "\$1" = -w ] && wfmt=\$2; shift 2 ;; -*) shift ;; *) url=\$1; shift ;; esac
+done
 case "\$url" in
   $URL) if [ -e "$C/serve_bad" ]; then cp "$F/py.pkg.bad" "\$out"; else cp "$F/py.pkg" "\$out"; fi ;;
   $URL.sigstore) echo '{"bundle": "stand-in"}' > "\$out" ;;
   *) echo "stub curl: unexpected url \$url" >&2; exit 22 ;;
 esac
+s=\$wfmt; s=\${s//%\{http_code\}/200}; s=\${s//%\{url_effective\}/\$url}; s=\${s//%\{remote_ip\}/2a04:4e42:400::223}; printf '%b' "\$s"
 EOF
 } > "$T/bin/curl"
 { echo '#!/bin/bash'; rec uv; cat <<'EOF'
-if [ "$1" = export ]; then
+if [ "$1" = venv ]; then
+  d=${@: -1}; mkdir -p "$d/bin"; cp "$PYSTUB" "$d/bin/python"; chmod +x "$d/bin/python"
+elif [ "$1" = export ]; then
   while [ $# -gt 0 ]; do [ "$1" = -o ] && { echo "pinned==1.0 --hash=sha256:00" > "$2"; break; }; shift; done
 elif [ "$1" = pip ] && [ "$2" = install ]; then
   while [ $# -gt 0 ]; do [ "$1" = --target ] && { mkdir -p "$2"; echo wheel > "$2/stand-in.py"; break; }; shift; done
@@ -68,6 +75,8 @@ fi
 exit 0
 EOF
 } > "$T/bin/uv"
+sed -i "2i PYSTUB='$T/bin/venv-python'" "$T/bin/uv"
+{ echo '#!/bin/bash'; rec sigstore; echo "exit \$(cat '$C/sigstore_rc' 2>/dev/null || echo 0)"; } > "$T/bin/venv-python"
 { echo '#!/bin/bash'; cat <<EOF
 if [ "\$1" = -m ] && [ "\$2" = venv ]; then
   d=\${@: -1}; mkdir -p "\$d/bin"
@@ -134,12 +143,14 @@ c0=$(argv_of curl.0 2>/dev/null) c1=$(argv_of curl.1 2>/dev/null)
 if [ "$(calls curl)" -eq 2 ] && grep -q -- "--proto =https .*$URL \$" <<<"$c0" && grep -q -- "--proto =https .*$URL.sigstore \$" <<<"$c1"; then
   ok "P2: curl fetches exactly the pinned url and url.sigstore, with --proto =https"
 else bad "P2: $(calls curl) curl call(s): '$c0' | '$c1'"; fi
-p=$(argv_of pip.0 2>/dev/null)
+p=$(for f in $(ls "$C" | grep -E '^uv\.[0-9]+$'); do a=$(argv_of "$f"); [[ "$a" == "pip install "* && "$a" != *--target* ]] && echo "$a"; done)
 req=$(grep -oE -- '-r [^ ]+' <<<"$p" | cut -d' ' -f2)
-if [ "$(calls pip)" -eq 1 ] && [[ "$p" =~ ^(-q\ )?install\ (-q\ )?--require-hashes\ --no-deps\ -r\ [^\ ]+/packaging/macos/sigstore_verifier\.txt\ $ ]] \
+if [ "$(grep -c . <<<"$p")" -eq 1 ] && [ "$(calls pip)" -eq 0 ] \
+   && [[ "$p" == "pip install "* && " $p" == *" --python "*/venv/bin/python" "* && " $p" == *" --require-hashes "* && " $p" == *" --no-deps "* ]] \
+   && [[ " $p" == *" --no-config "* && " $p" == *" --default-index https://pypi.org/simple "* && "$p" == *" -r "*/packaging/macos/sigstore_verifier.txt" " ]] \
    && [[ "$req" == "$T/tmp/zb-spike-prep-"*/packaging/macos/sigstore_verifier.txt ]]; then
-  ok "P3: the verifier installs once as pip install --require-hashes --no-deps -r <export>/packaging/macos/sigstore_verifier.txt"
-else bad "P3: $(calls pip) pip call(s): '$p'"; fi
+  ok "P3: the verifier installs once as uv pip install --python <venv>/bin/python --require-hashes --no-deps -r <export>/packaging/macos/sigstore_verifier.txt"
+else bad "P3: verifier install call(s): '$p', pip executable calls $(calls pip)"; fi
 s=$(argv_of sigstore.0 2>/dev/null)
 if [ "$(calls sigstore)" -eq 1 ] && [[ "$s" =~ ^-m\ sigstore\ verify\ identity\ --bundle\ [^\ ]+\.sigstore\ --cert-identity\ $ID\ --cert-oidc-issuer\ $ISSUER\ [^\ ]+/py\.pkg\ $ ]]; then
   ok "P4: the pkg is verified once with the pinned identity and issuer"
@@ -153,9 +164,9 @@ for e in $(ls "$C" | grep -E '^(curl|uv|pip|sigstore)\.[0-9]+\.env$'); do
   done < "$C/$e"
 done
 [ "$conf" -eq 0 ] && [ -n "$W" ] && ok "P5: every curl, uv, pip and sigstore call keeps HOME, XDG and the uv/pip caches in prep's scratch tree"
-u=$(argv_of uv.0 2>/dev/null)
-[[ "$u" == "export --project $T/tmp/zb-spike-prep-"*"/agent/host "* ]] && ok "P6: the site trees are built from the export's agent/host" \
-  || bad "P6: the first uv call is '$u'"
+u=$(for f in $(ls "$C" | grep -E '^uv\.[0-9]+$'); do a=$(argv_of "$f"); [[ "$a" == "export "* ]] && echo "$a"; done)
+[[ "$(grep -c . <<<"$u")" -eq 1 && "$u" == "export --project $T/tmp/zb-spike-prep-"*"/agent/host "* ]] && ok "P6: the site trees are built from the export's agent/host" \
+  || bad "P6: the uv export call(s): '$u'"
 
 # P8: refused before any network call.
 for row in "bad-requirements $BADREQ" "bad-lock $BADLOCK" "no-identity $NOID"; do

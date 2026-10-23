@@ -9,11 +9,14 @@
 #       Linux only, network. Everything comes from the exact commit (${ZB_GATE_COMMIT:-HEAD}), exported to a scratch tree,
 #       and its packaging/macos/agent_runtime_pins.json (SilverRidge 8f28c5d): before any network call it checks the
 #       pins and that the committed sigstore_verifier.txt and agent/host/uv.lock match their pinned SHA-256. It then
-#       fetches the pinned pkg, checks its pinned SHA-256, installs the verifier into a scratch venv with
-#       `pip install --require-hashes --no-deps -r <the committed requirements>`, checks the pkg's pinned Sigstore
-#       identity and issuer, and builds the two site trees from the lock (packaging/macos/build_site_packages.sh). HOME,
+#       fetches the pinned pkg and its bundle (no redirect followed; a FETCH line gives each final URL, remote IP and
+#       status), checks the pkg's pinned SHA-256, makes a scratch venv with `uv venv --offline --no-project --no-config
+#       --python /usr/bin/python3` and installs the verifier into it with `uv pip install --no-config --default-index
+#       https://pypi.org/simple --python <venv>/bin/python --require-hashes --no-deps -r <the committed requirements>`,
+#       checks the pkg's pinned Sigstore identity and issuer, and builds the two site trees from the lock (packaging/macos/build_site_packages.sh). HOME,
 #       XDG and the uv and pip caches stay in the scratch tree. Only a complete prep creates <new dir>, with py.pkg,
-#       sites.tar and inputs.sha256. Hostless selftest: tests/mac/bundle_layout_spike_prep_selftest.sh.
+#       sites.tar and inputs.sha256. Hostless selftests: tests/mac/bundle_layout_spike_prep_selftest.sh and
+#       tests/mac/bundle_layout_spike_prep_fetch_venv_selftest.sh.
 #   bash tests/mac/bundle_layout_spike.sh run <prep dir>
 #       Both Macs, one after the other, everything Mac-side under write containment (SilverRidge de82cf2): each leg
 #       sends the committed tests/mac/bundle_layout_spike_leg.sh over ssh (pinned host keys, BatchMode, no askpass or
@@ -89,12 +92,27 @@ if [ "$MODE" = prep ]; then
   mkdir "$W/home" "$W/xdg-cache" "$W/xdg-config" "$W/xdg-data" "$W/uv-cache" "$W/uv-python" "$W/pip-cache"
   SCR=(env HOME="$W/home" XDG_CACHE_HOME="$W/xdg-cache" XDG_CONFIG_HOME="$W/xdg-config" XDG_DATA_HOME="$W/xdg-data"
        UV_CACHE_DIR="$W/uv-cache" UV_PYTHON_INSTALL_DIR="$W/uv-python" PIP_CACHE_DIR="$W/pip-cache" PIP_CONFIG_FILE=/dev/null)
-  "${SCR[@]}" curl -fsSL --proto '=https' -o "$W/out/py.pkg" "$PKG_URL" || { echo "FAIL: pkg download" >&2; exit 1; }
-  "${SCR[@]}" curl -fsSL --proto '=https' -o "$W/py.pkg.sigstore" "$PKG_URL.sigstore" || { echo "FAIL: bundle download" >&2; exit 1; }
+  # Each download follows no redirect (curl -L --max-redirs 0 refuses one) and must answer 200 at exactly its URL; its
+  # final URL, remote IP and status are printed as FETCH lines, so the host list is checked, not inferred.
+  fetch() { # fetch <url> <out file>
+    local w code eff ip
+    w=$("${SCR[@]}" curl -fsS -L --max-redirs 0 --proto '=https' --proto-redir '=https' \
+          -w '%{http_code}\t%{url_effective}\t%{remote_ip}' -o "$2" "$1") \
+      || { printf 'FETCH\t%s\tREFUSED\t%s\n' "$1" "$w"; echo "FAIL: $1 failed or tried to redirect (no redirect is followed)" >&2; return 1; }
+    IFS=$'\t' read -r code eff ip <<<"$w"
+    printf 'FETCH\t%s\t%s\t%s\t%s\n' "$1" "$eff" "$ip" "$code"
+    [ "$code" = 200 ] && [ "$eff" = "$1" ] || { echo "FAIL: $1 answered $code at $eff (a redirect or an error; nothing is followed)" >&2; return 1; }
+  }
+  fetch "$PKG_URL" "$W/out/py.pkg" || { echo "FAIL: pkg download" >&2; exit 1; }
+  fetch "$PKG_URL.sigstore" "$W/py.pkg.sigstore" || { echo "FAIL: bundle download" >&2; exit 1; }
   [ "$(sha256sum "$W/out/py.pkg" | cut -c1-64)" = "$PKG_SHA" ] || { echo "FAIL: the pkg's SHA-256 is not its pin" >&2; exit 1; }
-  "${SCR[@]}" python3 -m venv "$W/venv" >/dev/null \
-    && "${SCR[@]}" "$W/venv/bin/pip" -q install --require-hashes --no-deps -r "$W/repo/$VREQ" >/dev/null 2>&1 \
-    || { echo "FAIL: the hash-locked Sigstore verifier did not install" >&2; exit 1; }
+  # uv makes the venv from Debian's /usr/bin/python3, which has no ensurepip (so `python3 -m venv` cannot), offline, with
+  # no project discovery, no config and no managed-Python fetch; then installs the hash-locked verifier into exactly that
+  # environment from the pinned index (SilverRidge 6ea4636b). Each step fails with its own message; errors stay visible.
+  "${SCR[@]}" uv venv --quiet --offline --no-project --no-config --python /usr/bin/python3 "$W/venv" \
+    || { echo "FAIL: the verifier venv could not be created (uv venv from /usr/bin/python3)" >&2; exit 1; }
+  "${SCR[@]}" uv pip install --quiet --no-config --default-index https://pypi.org/simple --python "$W/venv/bin/python" \
+    --require-hashes --no-deps -r "$W/repo/$VREQ" || { echo "FAIL: the hash-locked Sigstore verifier did not install" >&2; exit 1; }
   "${SCR[@]}" "$W/venv/bin/python" -m sigstore verify identity --bundle "$W/py.pkg.sigstore" --cert-identity "$SIG_ID" \
     --cert-oidc-issuer "$SIG_ISSUER" "$W/out/py.pkg" >/dev/null || { echo "FAIL: the pkg's Sigstore identity" >&2; exit 1; }
   "${SCR[@]}" bash "$W/repo/packaging/macos/build_site_packages.sh" "$W/repo/agent/host" "$W/sites" >/dev/null \

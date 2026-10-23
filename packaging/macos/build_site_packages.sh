@@ -13,8 +13,10 @@ mkdir -p "$out"
 uv export --project "$host" --frozen --no-emit-project --format requirements-txt -o "$out/requirements-macos.txt" \
   >/dev/null
 for plat in x86_64 aarch64; do
-  uv pip install --quiet --target "$out/site-$plat" --python-platform "$plat-apple-darwin" --python-version 3.12 \
-    --only-binary :all: --require-hashes --no-deps -r "$out/requirements-macos.txt"
+  # no ambient uv configuration, and the index named explicitly (SilverRidge 6ea4636b)
+  uv pip install --quiet --no-config --default-index https://pypi.org/simple --target "$out/site-$plat" \
+    --python-platform "$plat-apple-darwin" --python-version 3.12 --only-binary :all: --require-hashes --no-deps \
+    -r "$out/requirements-macos.txt"
   # uv's own lock file for the target dir: not part of any distribution (no RECORD claims it), never staged
   rm -f -- "$out/site-$plat/.lock"
 done

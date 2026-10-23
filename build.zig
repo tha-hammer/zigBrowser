@@ -4018,6 +4018,15 @@ pub fn build(b: *std.Build) void {
     }) |input| mac_bundle_layout_spike_prep_selftest.addFileInput(b.path(input));
     mac_bundle_layout_spike_step.dependOn(&mac_bundle_layout_spike_prep_selftest.step);
     test_step.dependOn(&mac_bundle_layout_spike_prep_selftest.step);
+    // Its prep against the real /usr/bin/python3 and the real uv, offline, with an executing curl: the verifier venv,
+    // the hash-locked install and the refused redirect (SilverRidge 6ea4636b).
+    const mac_bundle_layout_spike_prep_fv_selftest = b.addSystemCommand(&.{ "bash", "tests/mac/bundle_layout_spike_prep_fetch_venv_selftest.sh" });
+    for ([_][]const u8{
+        "tests/mac/bundle_layout_spike_prep_fetch_venv_selftest.sh", "tests/mac/bundle_layout_spike_prep_selftest.sh",
+        "tests/mac/bundle_layout_spike.sh",                          "packaging/macos/build_site_packages.sh",
+    }) |input| mac_bundle_layout_spike_prep_fv_selftest.addFileInput(b.path(input));
+    mac_bundle_layout_spike_step.dependOn(&mac_bundle_layout_spike_prep_fv_selftest.step);
+    test_step.dependOn(&mac_bundle_layout_spike_prep_fv_selftest.step);
     // The Mac gates are real steps that run their scripts and pass a gate failure through, each with an approved-run
     // manifest (bd 4pa.62, R29-REG).
     const mac_gate_steps_selftest = b.addSystemCommand(&.{ "bash", "tests/mac/gate_steps_selftest.sh" });
