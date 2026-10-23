@@ -605,3 +605,15 @@ Risk rulings: **(1) BLOCK / OWNER DECISION REQUIRED.** Setting `TMPDIR` is worth
 **(3) ACCEPTED.** Red values are hypotheses to establish on the Macs. The runner correctly treats any different rc/value/timing/precondition as `MISMATCH`, exits nonzero, and never upgrades it to a pass. A mismatch requires a new code/plan review; it is not permission to edit the expected vector after the fact.
 
 The ancestry tip through `bb6a50b` is **not push-safe as a reviewed closure** because `44f9261` remains blocked and the 4pa.60 outer wiring/TDD observation is not established. No Mac was contacted or authorized.
+
+## 2026-10-22 — PID-namespace launcher exit-status proof (`zigBrowser-3ui.4`)
+
+### `eb8913d` red + `a3b6e8e` green
+
+**APPROVED; BOTH SHAS ARE SAFE TO PUSH FOR `zigBrowser-3ui.4`, AND THE ISSUE MAY CLOSE.** The unregistered red adds only `tests/e2e/pidns_launcher_status_test.py`. From an exact archive of `eb8913d75f193b765fcd767295438ee77c8436b4`, its direct `python3 -I` run exited 1: all launcher controls returning 0 passed, while exactly the four launchers ending in `; :` returned 0 for an exit-7 stub and were reported at `build.zig` lines 1190, 1212, 2700, and 2706. The test drives the actual shell strings extracted from `build.zig`; it is not a behavioral mirror.
+
+The green `a3b6e8e15902f3fa0e0f21a62ca0e900dfb5d9be` changes only `build.zig`. Its only edits to existing behavior are the four intended launcher substitutions from `; :` to `rc=$?; exit $rc`; the remaining additions are the eight-line named-step/input declaration and one aggregate-`test` dependency. No other existing `build.zig` line changed. The registered `zig build test-pidns-launcher-status --summary all` passed 3/3 steps and drove all **six** fd-9 launcher strings present at the exact green—both artifact and agent-host forms—on exit-7 and exit-0 stubs. The commit message's “5 launchers” wording is stale, but the executable enumeration found and passed the sixth existing launcher too.
+
+Independent exact-green affected-step runs all exited 0 with the reported counts: `test-agent-run-ledger-recovery-busy` 4/4, manual `test-agent-run-recovery-txn` 6/6, and `test-agent-setup-ms5` 34/34 steps with 14/14 tests. Thus preserving failure status exposed no latent failure in those suites. Three independent scratch production mutants each made the registered launcher step exit 1: restoring `; :` at an artifact launcher, restoring it at an agent-host launcher, and replacing the preserved status with `exit 0`. Each failure named the mutated launcher and observed rc 0 instead of 7.
+
+The full `zig build test` aggregate was not run and is not claimed green. That does not block this narrow hostless fix: the new proof is registered in the aggregate, its named step is green, every affected step is green at the exact commit, and the branch's independently recorded aggregate baseline is already red for unrelated failures. `git diff --check` passed for both commits. Non-blocking hygiene SHOULD: remove the unused `os` import if this test is next touched. No Mac was contacted or required.
