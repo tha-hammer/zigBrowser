@@ -7,13 +7,13 @@ import argparse
 import os
 import platform
 import shlex
-import signal
 import subprocess
 import tempfile
 import time
 from pathlib import Path
 from typing import Callable
 
+from mac_term_teardown import stop_browser_term_only
 from slice2_common import (
     HARNESS_EXIT_PREFIX,
     SKIP_EXIT,
@@ -92,19 +92,6 @@ def env_exports(env: dict[str, str]) -> list[str]:
     return lines
 
 
-def terminate_process(pid: int | None) -> None:
-    if pid is None:
-        return
-    for sig in (signal.SIGTERM, signal.SIGKILL):
-        try:
-            os.kill(pid, sig)
-        except ProcessLookupError:
-            return
-        except PermissionError:
-            return
-        time.sleep(0.2)
-
-
 def write_gui_runner_script(
     script_path: Path,
     cmd: list[str],
@@ -123,13 +110,8 @@ def write_gui_runner_script(
             *env_exports(env),
             f": > {shlex.quote(str(stdout_path))}",
             f": > {shlex.quote(str(stderr_path))}",
-            f"{command} >> {shlex.quote(str(stdout_path))} 2>> {shlex.quote(str(stderr_path))} &",
-            "pid=$!",
-            f"printf '%s\\n' \"$pid\" > {shlex.quote(str(pid_path))}",
-            "wait \"$pid\"",
-            "rc=$?",
-            f"printf '{HARNESS_EXIT_PREFIX}\\t%s\\n' \"$rc\" >> {shlex.quote(str(stdout_path))}",
-            "exit \"$rc\"",
+            f"printf '%s\\n' \"$$\" > {shlex.quote(str(pid_path))}",
+            f"exec {command} >> {shlex.quote(str(stdout_path))} 2>> {shlex.quote(str(stderr_path))}",
             "",
         ]
     )
@@ -160,6 +142,7 @@ def run_macos_gui_until(
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
+        start_new_session=True,
     )
 
     matched = False
@@ -175,6 +158,12 @@ def run_macos_gui_until(
             stderr_lines = read_file_lines(stderr_path)
             pid = read_int_file(pid_path) or pid
             harness_code = harness_exit_code(stdout_lines)
+            ended = proc.poll()
+            if harness_code is None and ended is not None:  # the browser is the leader: its exit is the harness exit
+                harness_code = 128 - ended if ended < 0 else ended
+                with open(stdout_path, "a", encoding="utf-8") as fh:
+                    fh.write(f"{HARNESS_EXIT_PREFIX}\t{harness_code}\n")
+                stdout_lines = read_file_lines(stdout_path)
             gui_proc = MacGuiProcess(pid=pid, returncode=harness_code)
             if condition(stdout_lines, stderr_lines, gui_proc):
                 matched = True
@@ -186,12 +175,11 @@ def run_macos_gui_until(
             timed_out = True
     finally:
         if harness_exit_code(stdout_lines) is None:
-            terminate_process(pid)
+            stop_browser_term_only(proc)
         try:
             launch_stdout, launch_stderr = proc.communicate(timeout=5)
         except subprocess.TimeoutExpired:
-            proc.kill()
-            launch_stdout, launch_stderr = proc.communicate(timeout=5)
+            launch_stdout, launch_stderr = "", ""  # left running and recorded as a LEAK: never SIGKILL on a Mac
 
     stdout_lines = read_file_lines(stdout_path)
     stderr_lines = read_file_lines(stderr_path)

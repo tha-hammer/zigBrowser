@@ -16,6 +16,7 @@ from m9_reply_channel_test import (
     hw_gate_ready,
     run_macos_gui_until,
 )
+from mac_term_teardown import run_term_only
 from slice2_common import SKIP_EXIT, RunResult, eprint, print_fail_context, protocol_rows, require_file
 
 
@@ -66,13 +67,7 @@ def run_protocol_window(browser: Path, uri: str, expected_title: str, timeout_se
 
 def run_screenshot_capture(browser: Path, uri: str, capture_path: Path, timeout_sec: float) -> RunResult:
     try:
-        proc = subprocess.run(
-            [str(browser), "--screenshot", str(capture_path), uri, "--print-title"],
-            capture_output=True,
-            text=True,
-            timeout=timeout_sec,
-            check=False,
-        )
+        proc = run_term_only([str(browser), "--screenshot", str(capture_path), uri, "--print-title"], timeout_sec)
     except subprocess.TimeoutExpired as exc:
         return RunResult(
             returncode=1,

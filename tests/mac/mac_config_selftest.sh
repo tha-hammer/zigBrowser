@@ -65,6 +65,7 @@ DRIVEN=(
   "tests/mac/gate.sh|file|-|two|"
   "tests/mac/mac_compile_only.sh|compile|-|two|"
   "tests/mac/ms1b_signed_gate.sh|file|-|two|"
+  "tests/mac/ms1c_app_gate.sh|file|-|two|"
   "tests/mac/ms2a_gate.sh|file|-|two|"
   "tests/mac/ms2b_gate.sh|file|-|two|"
   "tests/mac/ms2c_gate.sh|file|-|two|"

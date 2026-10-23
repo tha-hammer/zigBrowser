@@ -29,6 +29,9 @@ import sys
 import tempfile
 import time
 
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "e2e"))
+from mac_term_teardown import stop_browser_term_only  # noqa: E402  (SIGTERM-only teardown; no SIGKILL on a Mac)
+
 
 def _recv_exact(sock, n):
     buf = b""
@@ -112,18 +115,14 @@ def main():
     sock_path = os.path.join(tmp, "automation.sock")
     env = dict(os.environ)
     env["ZIGBROWSER_SOCKET"] = sock_path
-    proc = subprocess.Popen([args.browser, args.url, "--automation-api"], env=env)
+    proc = subprocess.Popen([args.browser, args.url, "--automation-api"], env=env, start_new_session=True)
     try:
         arch = read_exec_arch(sock_path, args.timeout)
     except Exception as exc:  # noqa: BLE001 - any failure is fail-closed (write nothing)
         print(f"exec_arch_probe: FAIL ({exc})", file=sys.stderr)
         return 2
     finally:
-        proc.terminate()
-        try:
-            proc.wait(timeout=10)
-        except subprocess.TimeoutExpired:
-            proc.kill()
+        stop_browser_term_only(proc)
         for name in ("automation.sock", "automation.sock.token"):
             try:
                 os.unlink(os.path.join(tmp, name))
