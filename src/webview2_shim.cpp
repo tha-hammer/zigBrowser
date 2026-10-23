@@ -21,8 +21,10 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cmath>
 #include <deque>
 #include <functional>
+#include <iterator>
 #include <memory>
 #include <vector>
 #include <string>
@@ -871,13 +873,16 @@ void cdp_call(AppState *app, const char *method, const std::string &params_json,
 }
 
 // One step of a job: holds the job's callback reference across the call. An error finishes the job with
-// the wrapper's code and text; success runs `then` (which chains another step or job_finish), or finishes
-// OK with the result JSON when `then` is empty. A job already answered (abandoned, or loop end) runs no
-// further step.
+// the wrapper's code (or `error_code` when not 0) and text; success runs `then` (which chains another step or
+// job_finish), or finishes OK with the result JSON when `then` is empty. A job already answered (abandoned,
+// or loop end) runs no further step.
 void cdp_job_call(Job *job, AppState *app, const char *method, const std::string &params_json,
-                  CdpThen then = nullptr) {
+                  CdpThen then = nullptr, int error_code = 0) {
   job_hold(job);
-  cdp_call(app, method, params_json, [job, app, then = std::move(then)](int code, std::string text) {
+  cdp_call(app, method, params_json, [job, app, then = std::move(then), error_code](int code, std::string text) {
+    if (code != ZB_AUTO_OK && error_code != 0) {
+      code = error_code;
+    }
     if (code != ZB_AUTO_OK || !then || InterlockedCompareExchange(&job->state, 0, 0) != kRunning) {
       return callback_done(job, code, code == ZB_AUTO_OK ? std::move(text) : std::string(),
                            code == ZB_AUTO_OK ? std::string() : std::move(text));
@@ -923,6 +928,39 @@ void finish_evaluate(Job *job, const std::string &json) {
     return job_finish(job, ZB_AUTO_ERR_INTERNAL, {}, "cdp Runtime.evaluate: no string result");
   }
   job_finish(job, ZB_AUTO_OK, value);
+}
+
+// UI thread: Runtime.evaluate of `expression` in the page's main world, or (in_world) in the main frame's
+// isolated world `world_name` (Page.createIsolatedWorld returns its context for this document); `then` gets
+// the evaluate answer. Every failure on the way answers the job `fail_code`. Used by zb_automation_eval_json
+// and by the native-input document guard (WS2b.1).
+void world_evaluate(Job *job, AppState *app, bool in_world, const std::string &world_name,
+                    const std::string &expression, CdpThen then, int fail_code) {
+  if (!in_world) {
+    return cdp_job_call(job, app, "Runtime.evaluate", evaluate_params(expression, false, 0), std::move(then),
+                        fail_code);
+  }
+  cdp_job_call(
+      job, app, "Page.getFrameTree", "{}",
+      [world_name, expression, then = std::move(then), fail_code](Job *j, AppState *a, std::string tree) {
+        std::string frame;
+        if (!cdp_json_string(tree, {"frameTree", "frame", "id"}, &frame)) {
+          return job_finish(j, fail_code, {}, "cdp Page.getFrameTree: no main frame id");
+        }
+        const std::string params =
+            "{\"frameId\":" + cdp_json_quote(frame) + ",\"worldName\":" + cdp_json_quote(world_name) + "}";
+        cdp_job_call(
+            j, a, "Page.createIsolatedWorld", params,
+            [expression, then, fail_code](Job *j2, AppState *a2, std::string made) {
+              long long context = 0;
+              if (!cdp_json_int(made, {"executionContextId"}, &context)) {
+                return job_finish(j2, fail_code, {}, "cdp Page.createIsolatedWorld: no executionContextId");
+              }
+              cdp_job_call(j2, a2, "Runtime.evaluate", evaluate_params(expression, true, context), then, fail_code);
+            },
+            fail_code);
+      },
+      fail_code);
 }
 
 // ---- WS2a.1: routed navigation and the first load ----
@@ -990,6 +1028,287 @@ void start_navigation(Job *job, AppState *app, const std::function<HRESULT(ICore
     job_finish(job, ZB_AUTO_ERR_NAV_FAILED, {}, why);
     job_release(job);
   }
+}
+
+// ---- WS2b.1: native (trusted) input as CDP Input.dispatch* events, on the WS2a.0 wrapper ----
+
+struct InputEvent {
+  const char *method;
+  std::string params;
+};
+using InputEvents = std::vector<InputEvent>;
+
+// UI thread: sends `events` in order from `next`, then runs `sent`. The first event goes out only while the
+// waiter still wants the job; once one went out the rest follow, so a press is never left without its
+// release. A CDP error stops the events and answers the job.
+void send_input(Job *job, AppState *app, std::shared_ptr<const InputEvents> events, size_t next,
+                std::function<void(Job *, AppState *)> sent) {
+  if (next == 0 && InterlockedCompareExchange(&job->state, 0, 0) != kRunning) {
+    return job_finish(job, ZB_AUTO_ERR_TIMEOUT); // abandoned: nothing is sent
+  }
+  if (next == events->size()) {
+    return sent(job, app);
+  }
+  const InputEvent &event = (*events)[next];
+  job_hold(job);
+  cdp_call(app, event.method, event.params, [job, app, events, next, sent](int code, std::string text) {
+    if (code != ZB_AUTO_OK) {
+      return callback_done(job, code, {}, std::move(text));
+    }
+    send_input(job, app, events, next + 1, sent);
+    job_release(job); // this event's reference
+  });
+}
+
+constexpr char kDocumentTokenExpression[] =
+    "globalThis.__zbAutomation ? globalThis.__zbAutomation.documentToken : null";
+
+// UI thread, after the window's first load: the document guard when `guarded` (the automation world's
+// __zbAutomation.documentToken must equal `expected_doc`; anything else, a failed read included, is
+// ZB_AUTO_ERR_DOC_CHANGED with nothing sent), focus for keys (as GTK focuses the view), then the events.
+// Unlike GTK the guard's answer and the first event are two CDP calls, so a navigation that commits
+// between them is not refused by this call's guard; the next guarded call refuses it.
+void native_input(Job *job, AppState *app, bool guarded, const std::string &expected_doc, bool focus,
+                  std::shared_ptr<const InputEvents> events, std::function<void(Job *, AppState *)> sent) {
+  after_first_load(job, app, [guarded, expected_doc, focus, events, sent](Job *j, AppState *a) {
+    auto send = [focus, events, sent](Job *j2, AppState *a2) {
+      if (focus && a2->controller) {
+        a2->controller->MoveFocus(COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC); // in-process; best effort
+      }
+      send_input(j2, a2, events, 0, sent);
+    };
+    if (!guarded) {
+      return send(j, a);
+    }
+    world_evaluate(
+        j, a, true, ZB_AUTOMATION_WORLD, kDocumentTokenExpression,
+        [expected_doc, send](Job *j2, AppState *a2, std::string json) {
+          std::string token;
+          if (!cdp_json_string(json, {"result", "value"}, &token) || token != expected_doc) {
+            return job_finish(j2, ZB_AUTO_ERR_DOC_CHANGED, {}, "the page is no longer the expected document");
+          }
+          send(j2, a2);
+        },
+        ZB_AUTO_ERR_DOC_CHANGED);
+  });
+}
+
+// Caller side of one native op: copies the inputs; `after` (may be empty) runs on the UI thread once every
+// event went out, before the job is answered OK.
+int native_submit(uint32_t win, const char *expected_doc, bool focus, unsigned int timeout_ms, InputEvents events,
+                  std::function<void()> after, char **out_err) {
+  const bool guarded = expected_doc != nullptr;
+  const std::string expected = guarded ? expected_doc : "";
+  auto shared = std::make_shared<const InputEvents>(std::move(events));
+  return job_submit(
+      win, timeout_ms,
+      [guarded, expected, focus, shared, after](Job *job, AppState *app) {
+        native_input(job, app, guarded, expected, focus, shared, [after](Job *j, AppState *) {
+          if (after) {
+            after();
+          }
+          job_finish(j, ZB_AUTO_OK);
+        });
+      },
+      nullptr, out_err);
+}
+
+// The last pointer position a native move or click dispatched (zb_native_pointer).
+SRWLOCK g_pointer_lock = SRWLOCK_INIT;
+bool g_pointer_known = false; // under g_pointer_lock
+double g_pointer_x = 0;       // under g_pointer_lock
+double g_pointer_y = 0;       // under g_pointer_lock
+
+void remember_pointer(double x, double y) {
+  AcquireSRWLockExclusive(&g_pointer_lock);
+  g_pointer_known = true;
+  g_pointer_x = x;
+  g_pointer_y = y;
+  ReleaseSRWLockExclusive(&g_pointer_lock);
+}
+
+std::string json_number(double v) {
+  char buf[32];
+  snprintf(buf, sizeof buf, "%.17g", v);
+  return buf;
+}
+
+// Input.dispatchMouseEvent params; `clicks` 0 leaves clickCount out.
+std::string mouse_params(const char *type, double x, double y, const char *button, int buttons, int clicks) {
+  std::string params = std::string("{\"type\":\"") + type + "\",\"x\":" + json_number(x) + ",\"y\":" + json_number(y) +
+                       ",\"button\":\"" + button + "\",\"buttons\":" + std::to_string(buttons);
+  if (clicks > 0) {
+    params += ",\"clickCount\":" + std::to_string(clicks);
+  }
+  return params + "}";
+}
+
+// GDK button numbers (the ABI's: 1 = left) -> the CDP button and its `buttons` bit.
+struct MouseButton {
+  int number;
+  const char *name;
+  int bit;
+};
+constexpr MouseButton kMouseButtons[] = {{1, "left", 1}, {2, "middle", 4}, {3, "right", 2}};
+
+// One key as CDP sends it: the DOM key, its code, the Windows virtual-key code (0: none) and the text a press
+// inserts ("" none).
+struct KeySpec {
+  std::string key;
+  std::string code;
+  int vk = 0;
+  std::string text;
+};
+
+// The DOM key names GTK's zb_named_keys accepts (src/webkit_shim.c), plus F1..F12 and single characters.
+struct NamedKey {
+  const char *name;
+  const char *key;
+  const char *code;
+  int vk;
+  const char *text;
+};
+constexpr NamedKey kNamedKeys[] = {
+    {"Enter", "Enter", "Enter", VK_RETURN, "\r"},
+    {"Tab", "Tab", "Tab", VK_TAB, ""},
+    {"Escape", "Escape", "Escape", VK_ESCAPE, ""},
+    {"Backspace", "Backspace", "Backspace", VK_BACK, ""},
+    {"Delete", "Delete", "Delete", VK_DELETE, ""},
+    {"Insert", "Insert", "Insert", VK_INSERT, ""},
+    {"ArrowLeft", "ArrowLeft", "ArrowLeft", VK_LEFT, ""},
+    {"ArrowRight", "ArrowRight", "ArrowRight", VK_RIGHT, ""},
+    {"ArrowUp", "ArrowUp", "ArrowUp", VK_UP, ""},
+    {"ArrowDown", "ArrowDown", "ArrowDown", VK_DOWN, ""},
+    {"Home", "Home", "Home", VK_HOME, ""},
+    {"End", "End", "End", VK_END, ""},
+    {"PageUp", "PageUp", "PageUp", VK_PRIOR, ""},
+    {"PageDown", "PageDown", "PageDown", VK_NEXT, ""},
+    {"Space", " ", "Space", VK_SPACE, " "},
+    {"Shift", "Shift", "ShiftLeft", VK_SHIFT, ""},
+    {"Control", "Control", "ControlLeft", VK_CONTROL, ""},
+    {"Alt", "Alt", "AltLeft", VK_MENU, ""},
+    {"Meta", "Meta", "MetaLeft", VK_LWIN, ""},
+};
+
+// ZB_NATIVE_MOD_* in GTK's press order, with the CDP modifier bit (Alt 1, Ctrl 2, Meta 4, Shift 8) and key.
+struct ModifierKey {
+  int zb;
+  int cdp;
+  const char *key;
+  const char *code;
+  int vk;
+};
+constexpr ModifierKey kModifierKeys[] = {
+    {ZB_NATIVE_MOD_SHIFT, 8, "Shift", "ShiftLeft", VK_SHIFT},
+    {ZB_NATIVE_MOD_CONTROL, 2, "Control", "ControlLeft", VK_CONTROL},
+    {ZB_NATIVE_MOD_ALT, 1, "Alt", "AltLeft", VK_MENU},
+    {ZB_NATIVE_MOD_META, 4, "Meta", "MetaLeft", VK_LWIN},
+};
+constexpr int kCdpShift = 8;
+
+// The byte length of the UTF-8 code point at `i` (the text was validated already).
+size_t utf8_char_len(const std::string &text, size_t i) {
+  const unsigned char lead = static_cast<unsigned char>(text[i]);
+  const size_t len = lead < 0x80 ? 1 : (lead >> 5) == 0x6 ? 2 : (lead >> 4) == 0xE ? 3 : 4;
+  return std::min(len, text.size() - i);
+}
+
+// One character (UTF-8, one code point) as a key: '\n' is Enter; otherwise the key and text are the character,
+// and the current keyboard layout (VkKeyScanW) gives its virtual key and whether it needs Shift.
+KeySpec char_key(const std::string &ch, bool *needs_shift) {
+  *needs_shift = false;
+  if (ch == "\n") {
+    return KeySpec{"Enter", "Enter", VK_RETURN, "\r"};
+  }
+  KeySpec spec{ch, "", 0, ch};
+  const std::wstring wide = utf8_to_wide(ch.c_str());
+  if (wide.size() == 1) {
+    const SHORT scan = VkKeyScanW(wide[0]);
+    if (scan != -1) {
+      spec.vk = LOBYTE(scan);
+      *needs_shift = (HIBYTE(scan) & 1) != 0;
+    }
+  }
+  if (spec.vk >= 'A' && spec.vk <= 'Z') {
+    spec.code = std::string("Key") + static_cast<char>(spec.vk);
+  } else if (spec.vk >= '0' && spec.vk <= '9') {
+    spec.code = std::string("Digit") + static_cast<char>(spec.vk);
+  }
+  return spec;
+}
+
+// A DOM key name -> its key; false when unknown (GTK's auto_keyval_for accepts the same names).
+bool key_for(const char *name, KeySpec *out) {
+  for (const NamedKey &k : kNamedKeys) {
+    if (strcmp(name, k.name) == 0) {
+      *out = KeySpec{k.key, k.code, k.vk, k.text};
+      return true;
+    }
+  }
+  // F1..F12, exactly ("F1x" and "F13" are not keys).
+  if (name[0] == 'F' && name[1] >= '1' && name[1] <= '9') {
+    int n = name[1] - '0';
+    if (name[2] != '\0') {
+      n = name[2] >= '0' && name[2] <= '9' && name[3] == '\0' ? n * 10 + (name[2] - '0') : 0;
+    }
+    if (n < 1 || n > 12) {
+      return false;
+    }
+    *out = KeySpec{name, name, VK_F1 + n - 1, ""};
+    return true;
+  }
+  const std::string text = name;
+  if (text.empty() || utf8_to_wide(name).empty() || utf8_char_len(text, 0) != text.size()) {
+    return false;
+  }
+  bool unused = false;
+  *out = char_key(text, &unused);
+  return true;
+}
+
+std::string key_params(const char *type, const std::string &key, const std::string &code, int vk,
+                       const std::string &text, int modifiers) {
+  std::string params = std::string("{\"type\":\"") + type + "\",\"modifiers\":" + std::to_string(modifiers) +
+                       ",\"key\":" + cdp_json_quote(key);
+  if (!code.empty()) {
+    params += ",\"code\":" + cdp_json_quote(code);
+  }
+  if (vk != 0) {
+    params += ",\"windowsVirtualKeyCode\":" + std::to_string(vk) + ",\"nativeVirtualKeyCode\":" + std::to_string(vk);
+  }
+  if (!text.empty()) {
+    params += ",\"text\":" + cdp_json_quote(text) + ",\"unmodifiedText\":" + cdp_json_quote(text);
+  }
+  return params + "}";
+}
+
+// As GTK's auto_native_press: modifiers down (accumulating), the key down and up, modifiers up in reverse
+// order; returns the key releases sent. A key that inserts text is a keyDown carrying it, else a rawKeyDown;
+// with Control, Alt or Meta held it inserts nothing.
+int press_key(InputEvents *out, KeySpec key, int zb_modifiers) {
+  int cdp = 0;
+  for (const ModifierKey &m : kModifierKeys) {
+    if (zb_modifiers & m.zb) {
+      cdp |= m.cdp;
+      out->push_back({"Input.dispatchKeyEvent", key_params("rawKeyDown", m.key, m.code, m.vk, "", cdp)});
+    }
+  }
+  if ((cdp & ~kCdpShift) != 0) {
+    key.text.clear();
+  }
+  out->push_back({"Input.dispatchKeyEvent",
+                  key_params(key.text.empty() ? "rawKeyDown" : "keyDown", key.key, key.code, key.vk, key.text, cdp)});
+  out->push_back({"Input.dispatchKeyEvent", key_params("keyUp", key.key, key.code, key.vk, "", cdp)});
+  int releases = 1;
+  for (size_t i = std::size(kModifierKeys); i > 0; i--) {
+    const ModifierKey &m = kModifierKeys[i - 1];
+    if (zb_modifiers & m.zb) {
+      cdp &= ~m.cdp;
+      out->push_back({"Input.dispatchKeyEvent", key_params("keyUp", m.key, m.code, m.vk, "", cdp)});
+      releases++;
+    }
+  }
+  return releases;
 }
 
 // ---- WS3: the cookie store (the WebView's profile) ----
@@ -2708,29 +3027,8 @@ extern "C" int zb_automation_eval_json(uint32_t win, const char *function_body, 
   return job_submit(
       win, timeout_ms,
       [expression, in_world, world_name](Job *job, AppState *app) {
-        auto evaluate = [](Job *j, AppState *, std::string json) { finish_evaluate(j, json); };
-        if (!in_world) {
-          return cdp_job_call(job, app, "Runtime.evaluate", evaluate_params(expression, false, 0), evaluate);
-        }
-        cdp_job_call(job, app, "Page.getFrameTree", "{}",
-                     [expression, world_name, evaluate](Job *j, AppState *a, std::string tree) {
-                       std::string frame;
-                       if (!cdp_json_string(tree, {"frameTree", "frame", "id"}, &frame)) {
-                         return job_finish(j, ZB_AUTO_ERR_INTERNAL, {}, "cdp Page.getFrameTree: no main frame id");
-                       }
-                       const std::string params = "{\"frameId\":" + cdp_json_quote(frame) +
-                                                  ",\"worldName\":" + cdp_json_quote(world_name) + "}";
-                       cdp_job_call(j, a, "Page.createIsolatedWorld", params,
-                                    [expression, evaluate](Job *j2, AppState *a2, std::string made) {
-                                      long long context = 0;
-                                      if (!cdp_json_int(made, {"executionContextId"}, &context)) {
-                                        return job_finish(j2, ZB_AUTO_ERR_INTERNAL, {},
-                                                          "cdp Page.createIsolatedWorld: no executionContextId");
-                                      }
-                                      cdp_job_call(j2, a2, "Runtime.evaluate",
-                                                   evaluate_params(expression, true, context), evaluate);
-                                    });
-                     });
+        world_evaluate(job, app, in_world, world_name, expression,
+                       [](Job *j, AppState *, std::string json) { finish_evaluate(j, json); }, ZB_AUTO_ERR_INTERNAL);
       },
       out_result, out_err);
 }
@@ -2805,6 +3103,145 @@ extern "C" int zb_automation_get_url(uint32_t win, unsigned int timeout_ms, char
 
 extern "C" int zb_automation_get_title(uint32_t win, unsigned int timeout_ms, char **out_title) {
   return read_page_string(win, timeout_ms, out_title, true);
+}
+
+// WS2b.1: native (trusted) input (webkit_shim.h "Native (trusted) input") as CDP Input.dispatch* events. Each
+// op waits for the window's first load; it returns once the page's renderer has taken every event.
+extern "C" int zb_native_move(uint32_t win, double x, double y, const char *expected_doc, unsigned int timeout_ms,
+                              char **out_err) {
+  if (!std::isfinite(x) || !std::isfinite(y)) {
+    return fail_with(out_err, "coordinates are not finite");
+  }
+  InputEvents events{{"Input.dispatchMouseEvent", mouse_params("mouseMoved", x, y, "none", 0, 0)}};
+  return native_submit(win, expected_doc, false, timeout_ms, std::move(events), [x, y] { remember_pointer(x, y); },
+                       out_err);
+}
+
+extern "C" int zb_native_click(uint32_t win, double x, double y, int button, const char *expected_doc,
+                               unsigned int timeout_ms, char **out_err) {
+  if (!std::isfinite(x) || !std::isfinite(y)) {
+    return fail_with(out_err, "coordinates are not finite");
+  }
+  const int number = button > 0 ? button : 1;
+  const MouseButton *pressed = nullptr;
+  for (const MouseButton &b : kMouseButtons) {
+    if (b.number == number) {
+      pressed = &b;
+    }
+  }
+  if (pressed == nullptr) {
+    return fail_with(out_err, "unsupported mouse button");
+  }
+  InputEvents events{
+      {"Input.dispatchMouseEvent", mouse_params("mouseMoved", x, y, "none", 0, 0)},
+      {"Input.dispatchMouseEvent", mouse_params("mousePressed", x, y, pressed->name, pressed->bit, 1)},
+      {"Input.dispatchMouseEvent", mouse_params("mouseReleased", x, y, pressed->name, 0, 1)},
+  };
+  return native_submit(win, expected_doc, false, timeout_ms, std::move(events), [x, y] { remember_pointer(x, y); },
+                       out_err);
+}
+
+extern "C" int zb_native_scroll(uint32_t win, double x, double y, double delta_x, double delta_y,
+                                const char *expected_doc, unsigned int timeout_ms, char **out_err) {
+  if (!std::isfinite(x) || !std::isfinite(y) || !std::isfinite(delta_x) || !std::isfinite(delta_y)) {
+    return fail_with(out_err, "coordinates are not finite");
+  }
+  const std::string params = "{\"type\":\"mouseWheel\",\"x\":" + json_number(x) + ",\"y\":" + json_number(y) +
+                             ",\"deltaX\":" + json_number(delta_x) + ",\"deltaY\":" + json_number(delta_y) + "}";
+  return native_submit(win, expected_doc, false, timeout_ms, InputEvents{{"Input.dispatchMouseEvent", params}},
+                       nullptr, out_err);
+}
+
+extern "C" int zb_native_pointer(uint32_t win, double *out_x, double *out_y) {
+  if (win != 0) {
+    return 0; // the Windows shell has one window
+  }
+  AcquireSRWLockShared(&g_jobs_lock);
+  const bool ended = g_loop_ended; // the window is gone with the loop, and its pointer with it
+  ReleaseSRWLockShared(&g_jobs_lock);
+  AcquireSRWLockShared(&g_pointer_lock);
+  const bool known = g_pointer_known && !ended;
+  if (known && out_x != nullptr) {
+    *out_x = g_pointer_x;
+  }
+  if (known && out_y != nullptr) {
+    *out_y = g_pointer_y;
+  }
+  ReleaseSRWLockShared(&g_pointer_lock);
+  return known ? 1 : 0;
+}
+
+extern "C" int zb_native_key(uint32_t win, const char *key, int modifiers, const char *expected_doc,
+                             unsigned int timeout_ms, int *out_releases, char **out_err) {
+  if (out_releases != nullptr) {
+    *out_releases = 0;
+  }
+  KeySpec spec;
+  if (key == nullptr || !key_for(key, &spec)) {
+    return fail_with(out_err, "unknown key");
+  }
+  // Shift turns a letter into its upper case, as a keyboard would (GTK's auto_native_press).
+  if ((modifiers & ZB_NATIVE_MOD_SHIFT) != 0 && spec.key.size() == 1 && spec.key[0] >= 'a' && spec.key[0] <= 'z') {
+    spec.key[0] = static_cast<char>(spec.key[0] - 'a' + 'A');
+    spec.text = spec.key;
+  }
+  InputEvents events;
+  const int releases = press_key(&events, spec, modifiers);
+  const int code = native_submit(win, expected_doc, true, timeout_ms, std::move(events), nullptr, out_err);
+  if (code == ZB_AUTO_OK && out_releases != nullptr) {
+    *out_releases = releases;
+  }
+  return code;
+}
+
+// One job per character, the deadline checked before each (so the text can be partially typed, and
+// *out_chars / *out_releases count exactly what went out). A character already submitted gets the waiter
+// grace beyond the deadline to finish, so one that reached the page is never left uncounted.
+extern "C" int zb_native_text(uint32_t win, const char *text, const char *expected_doc, unsigned int timeout_ms,
+                              int *out_releases, int *out_chars, char **out_err) {
+  if (out_releases != nullptr) {
+    *out_releases = 0;
+  }
+  if (out_chars != nullptr) {
+    *out_chars = 0;
+  }
+  if (out_err != nullptr) {
+    *out_err = nullptr;
+  }
+  if (text == nullptr || (text[0] != '\0' && utf8_to_wide(text).empty())) {
+    return fail_with(out_err, "text is not valid UTF-8");
+  }
+  const std::string all = text;
+  const ULONGLONG deadline = GetTickCount64() + timeout_ms;
+  int releases = 0;
+  int chars = 0;
+  int code = ZB_AUTO_OK;
+  for (size_t i = 0; i < all.size() && code == ZB_AUTO_OK;) {
+    const ULONGLONG now = GetTickCount64();
+    if (now >= deadline) {
+      code = ZB_AUTO_ERR_TIMEOUT;
+      break;
+    }
+    const size_t len = utf8_char_len(all, i);
+    bool shift = false;
+    const KeySpec spec = char_key(all.substr(i, len), &shift);
+    InputEvents events;
+    const int sent = press_key(&events, spec, shift ? ZB_NATIVE_MOD_SHIFT : 0);
+    code = native_submit(win, expected_doc, true, static_cast<unsigned int>(deadline - now) + kWaiterGraceMs,
+                         std::move(events), nullptr, out_err);
+    if (code == ZB_AUTO_OK) {
+      releases += sent;
+      chars++;
+      i += len;
+    }
+  }
+  if (out_releases != nullptr) {
+    *out_releases = releases;
+  }
+  if (out_chars != nullptr) {
+    *out_chars = chars;
+  }
+  return code;
 }
 
 extern "C" int zb_cookies_get_all(uint32_t win, const char *url, unsigned int timeout_ms,
