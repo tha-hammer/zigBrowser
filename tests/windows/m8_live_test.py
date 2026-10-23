@@ -37,6 +37,9 @@ import subprocess
 import sys
 import tempfile
 
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))  # `python3 -I` drops the script dir
+import webview2_cleanup  # noqa: E402  the ONE shared WebView2 run-folder cleanup (NavyCanyon 6dd7fda)
+
 REPO = pathlib.Path(__file__).resolve().parents[2]
 M8_TESTS = ("m8_render_test.py", "m8_reply_channel_test.py", "m8_load_fail_test.py")
 STAGED_E2E = (*M8_TESTS, "slice2_common.py")
@@ -135,6 +138,14 @@ def run_on_host(h: Host, stage: pathlib.Path) -> tuple[bool, int]:
         say(f"FAIL: {h.python_var} unset: no Windows Python known for {h.label}")
         return False, 0
 
+    # The census of WebView2 helpers (and zigBrowser) before anything of this run starts; the run folder is removed
+    # only once the census is back to it (webview2_cleanup). A census that cannot be read fails the host closed.
+    try:
+        before = webview2_cleanup.census(h.ssh)
+    except webview2_cleanup.CensusError as e:
+        say(f"FAIL: {h.label}: process census before the run: {e}")
+        return False, 0
+
     run_id = f"m8-{os.getpid()}-{secrets.token_hex(6)}"
     assert RUN_ID_RE.match(run_id), run_id
     rel = f"zb/runs/{run_id}"
@@ -176,9 +187,10 @@ def run_on_host(h: Host, stage: pathlib.Path) -> tuple[bool, int]:
             say(f"FAIL: {h.label}: leftover scheduled tasks (rc={tasks.returncode}): {left}")
             ok = False
     finally:
-        rm = h.ssh(f'rmdir /s /q "{win_dir}" & if exist "{win_dir}" (echo LEFT) else (echo GONE)')
-        if "GONE" not in rm.stdout:
-            say(f"FAIL: {h.label}: {win_dir} survived cleanup: {rm.stdout.strip()} {rm.stderr.strip()}")
+        removed, why = webview2_cleanup.remove_after_webview2(h.ssh, win_dir, before)
+        say(f"{h.label}: cleanup: {why}")
+        if not removed:
+            say(f"FAIL: {h.label}: {win_dir} cleanup failed: {why}")
             ok = False
     return ok, total
 

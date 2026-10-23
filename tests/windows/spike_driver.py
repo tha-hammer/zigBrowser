@@ -5,7 +5,9 @@ tests/e2e/win_trusted_input_matrix.py).
 run_spike(step, required, tag): checks the host identity marker (%USERPROFILE%\\zb\\.gate-identity ==
 ZB_WIN11_MARKER), builds and runs the spike step on the VM (a clean `git archive` of ZB_BUILD_COMMIT, default
 HEAD), then requires exit 0, no FAIL line, and an `ok` line for every name in `required`; it prints
-`ASSERTS <number of ok lines>`. Under ZB_WIN_GATE=1 a missing host or marker exits 1 ("no Windows host
+`ASSERTS <number of ok lines>`. Afterwards it removes the run's own folder, %USERPROFILE%\zb\build\run-<sha>, through
+the ONE shared WebView2 cleanup (tests/windows/webview2_cleanup.py, NavyCanyon 6dd7fda): a process census taken
+before the build, a bounded wait for it to return, then one plain rmdir; a cleanup failure fails the run. Under ZB_WIN_GATE=1 a missing host or marker exits 1 ("no Windows host
 configured"); standalone it exits 77. A host run needs the reviewer's exact-commit approval and the
 orchestrator's release.
 """
@@ -14,6 +16,9 @@ import pathlib
 import re
 import subprocess
 import sys
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import webview2_cleanup  # noqa: E402
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
 BUILD = REPO / "tests" / "windows" / "build-on-windows.sh"
@@ -48,14 +53,34 @@ def run_spike(step: str, required: tuple, tag: str) -> int:
            "-o", f"UserKnownHostsFile={kh}", "-o", "ConnectTimeout=15", "-p", env.get("ZB_WIN11_PORT", "2222"),
            f"{env.get('ZB_WIN11_USER', 'zbtext')}@{host}", r'type "%USERPROFILE%\zb\.gate-identity"']
     ident = subprocess.run(ssh, env=env, capture_output=True, text=True, timeout=120, stdin=subprocess.DEVNULL)
+
+    def on_host(command, timeout=300):
+        return subprocess.run(ssh[:-1] + [command], env=env, capture_output=True, text=True, timeout=timeout,
+                              stdin=subprocess.DEVNULL)
+
     seen = ident.stdout.strip() if ident.returncode == 0 else ""
     print(f"HOST\twin11\tidentity_marker={seen or '<unreadable>'}", flush=True)
     if seen != marker:
         say(f"FAIL: wrong host: marker {seen!r} != ZB_WIN11_MARKER (ssh rc={ident.returncode} {ident.stderr.strip()})")
         return 1
 
-    run = subprocess.run(["bash", str(BUILD), step], cwd=REPO, env=env, capture_output=True, text=True,
-                         timeout=1800, stdin=subprocess.DEVNULL)
+    rev = subprocess.run(["git", "rev-parse", "--verify", env.get("ZB_BUILD_COMMIT", "HEAD") + "^{commit}"], cwd=REPO,
+                         env=env, capture_output=True, text=True, timeout=60, stdin=subprocess.DEVNULL)
+    sha = rev.stdout.strip()
+    if rev.returncode != 0 or not re.fullmatch(r"[0-9a-f]{40}", sha):
+        say(f"FAIL: cannot resolve ZB_BUILD_COMMIT: {rev.stderr.strip()}")
+        return 1
+    try:
+        before = webview2_cleanup.census(on_host)
+    except webview2_cleanup.CensusError as e:
+        say(f"FAIL: process census before the run: {e}")
+        return 1
+    try:
+        run = subprocess.run(["bash", str(BUILD), step], cwd=REPO, env=env, capture_output=True, text=True,
+                             timeout=1800, stdin=subprocess.DEVNULL)
+    finally:
+        removed, why = webview2_cleanup.remove_after_webview2(on_host, rf"%USERPROFILE%\zb\build\run-{sha}", before)
+        say(f"cleanup: {why}")
     sys.stderr.write(run.stderr)
     sys.stdout.write(run.stdout)
     out = run.stdout + "\n" + run.stderr  # zig build may relay the spike's lines on either stream
@@ -65,6 +90,9 @@ def run_spike(step: str, required: tuple, tag: str) -> int:
     print(f"ASSERTS {len(oks)}", flush=True)
     if run.returncode != 0 or fails or missing or not oks:
         say(f"FAIL: spike rc={run.returncode}; {len(fails)} FAIL line(s); missing ok: {missing}")
+        return 1
+    if not removed:
+        say(f"FAIL: the run folder cleanup failed: {why}")
         return 1
     print(f"PASS\t{tag}", flush=True)
     return 0
