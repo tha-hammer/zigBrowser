@@ -19,7 +19,12 @@ Contract (the Python half of the runner; the PowerShell job wrapper is proven on
     passes; a timeout stays a failure;
   - a missing census, an unknown verdict, a malformed line or a count that contradicts its verdict FAILS;
   - there is no pid taskkill, ever (not as a fallback when the wrapper does not answer);
-  - the cmd runner uses the same wrapper and the same rules.
+  - the cmd runner uses the same wrapper and the same rules;
+  - `stopped` is valid only after the runner asked for the stop: `stopped` after a NORMAL test exit FAILS;
+  - the generated PowerShell wrapper consumes JOB_DRAIN_DEADLINE_SEC as ONE wait budget: one line
+    `$ZbDrainBudgetSec = <JOB_DRAIN_DEADLINE_SEC>`, one `$ZbDrainEnd = ...` computed from it once (never reset in
+    the wait loop), and the wait compares against $ZbDrainEnd. This is a tripwire on the generated text; the
+    bounded Win11 job-object run proves the behaviour (NavyCanyon f52ef80).
   PinkOwl's shared WebView2 helper (tests/windows/webview2_cleanup.py, 0c48276) follows the same shape: bounded
   wait of at most 60 s, never kill, fail closed.
 
@@ -31,6 +36,7 @@ Run alone:  python3 -I tests/windows/runner_ws04_job_red_test.py -v
 """
 import json
 import pathlib
+import re
 import shlex
 import subprocess
 import tempfile
@@ -100,9 +106,9 @@ class _WindowsName:
 
 s.os = _WindowsName()
 real_deadline = getattr(s, "JOB_DRAIN_DEADLINE_SEC", None)
-s.JOB_DRAIN_DEADLINE_SEC = 3.0          # the wrapper's drain deadline, shortened for a hostless run
-s.JOB_CENSUS_GRACE_SEC = 1.0
 which, until, timeout = sys.argv[2], sys.argv[3], float(sys.argv[4])
+s.JOB_DRAIN_DEADLINE_SEC = float(sys.argv[5])   # the wrapper's drain deadline (shortened for a hostless run)
+s.JOB_CENSUS_GRACE_SEC = 1.0
 cond = {
     "exit": lambda o, e, p: p.returncode is not None,
     "ready": lambda o, e, p: any(l.startswith("READY") for l in o),
@@ -118,7 +124,7 @@ RUNNERS = ("ps1", "cmd")
 
 
 class RunnerWaitsForItsJobRed(unittest.TestCase):
-    def _run(self, which, job, until="exit", timeout=20.0):
+    def _run(self, which, job, until="exit", timeout=20.0, deadline=3.0):
         with tempfile.TemporaryDirectory() as t:
             td = pathlib.Path(t)
             bindir = td / "bin"; bindir.mkdir()
@@ -129,10 +135,11 @@ class RunnerWaitsForItsJobRed(unittest.TestCase):
             env = {"PATH": f"{bindir}:/usr/bin:/bin", "HOME": str(td), "TMPDIR": str(td),
                    "ZB_FAKE_LOG": str(log), "ZB_FAKE_STATE": str(state), "ZB_FAKE_JOB": job}
             proc = subprocess.run(["python3", "-I", "-c", _CHILD, str(REPO / "tests" / "e2e"), which, until,
-                                   str(timeout)], cwd=td, env=env, capture_output=True, text=True, timeout=120,
-                                  stdin=subprocess.DEVNULL)
+                                   str(timeout), str(deadline)], cwd=td, env=env, capture_output=True, text=True,
+                                  timeout=120, stdin=subprocess.DEVNULL)
             calls = [shlex.split(c) for c in log.read_text().splitlines()]
             stops = list(td.glob("zb_m8_*/stop.txt"))
+            self.wrappers = [w.read_text() for w in td.glob("zb_m8_*/*.ps1")]
         detail = (f"\nchild rc={proc.returncode}\nstdout:\n{proc.stdout}\nstderr:\n{proc.stderr}\ncalls:\n"
                   + "\n".join(map(shlex.join, calls)))
         self.assertEqual(proc.returncode, 0, "the child driver itself must not crash" + detail)
@@ -168,6 +175,27 @@ class RunnerWaitsForItsJobRed(unittest.TestCase):
     def test_a_kill_after_a_normal_exit_is_not_a_pass(self):
         # 25fa071's `killed` verdict is gone: after a normal exit only a natural drain passes
         self._fails_with(r"census:ZB_RUNNER_JOB\tkilled\t2", "invalid job census")
+
+    def test_stopped_after_a_normal_exit_fails(self):
+        # the test exited by itself; nobody asked for a stop, so `stopped` cannot be a pass
+        self._fails_with(r"census:ZB_RUNNER_JOB\tstopped\t1", "invalid job census")
+
+    def test_the_wrapper_consumes_the_deadline_as_one_wait_budget(self):
+        for which in RUNNERS:
+            with self.subTest(runner=which):
+                _, _, _, detail = self._run(which, r"census:ZB_RUNNER_JOB\tdrained\t0", deadline=41.0)
+                self.assertEqual(len(self.wrappers), 1, "one generated PowerShell job wrapper" + detail)
+                lines = self.wrappers[0].replace("\r", "").split("\n")
+                budget = [l for l in lines if re.match(r"^\s*\$ZbDrainBudgetSec\s*=", l)]
+                self.assertEqual(len(budget), 1, "one $ZbDrainBudgetSec assignment" + detail)
+                m = re.match(r"^\s*\$ZbDrainBudgetSec\s*=\s*([0-9]+(?:\.[0-9]+)?)\s*$", budget[0])
+                self.assertTrue(m and float(m.group(1)) == 41.0,
+                                f"the budget is JOB_DRAIN_DEADLINE_SEC (41): {budget[0]!r}" + detail)
+                end = [l for l in lines if re.match(r"^\s*\$ZbDrainEnd\s*=", l)]
+                self.assertEqual(len(end), 1, "the deadline is computed once, never reset" + detail)
+                self.assertIn("$ZbDrainBudgetSec", end[0], "the deadline comes from the budget" + detail)
+                waits = [l for l in lines if "$ZbDrainEnd" in l and l not in end]
+                self.assertTrue(waits, "the drain wait compares against $ZbDrainEnd" + detail)
 
     def test_a_missing_census_fails(self):
         self._fails_with("none", "no job census")
