@@ -3453,7 +3453,8 @@ pub fn build(b: *std.Build) void {
     // bd 4pa.21 (plan MS6.8 slice 2a, SilverRidge d751d158/e39f6c90): the Zig launch builders compose with the real
     // Python consumer. A test-only bridge (src/agent_launch_bridge.zig) prints the REAL agent_helper/agent_login launch
     // argv; test_launch_bridge hands it to the real launch.main (Darwin lease/spawn, Linux exec). A preparatory seam:
-    // no browser Darwin caller until 4pa.27/MS8. Fails closed without the venv and on a ResourceWarning.
+    // no browser Darwin caller until 4pa.27/MS8. Fails closed without the venv and on a ResourceWarning. The bridge's
+    // artifact path is resolved before the cd: Zig passes it relative to the build root (SilverRidge 382494c5).
     const agent_launch_bridge_exe = b.addExecutable(.{ .name = "zb-launch-bridge", .root_module = b.createModule(.{
         .root_source_file = b.path("src/agent_launch_bridge.zig"),
         .target = target,
@@ -3463,7 +3464,7 @@ pub fn build(b: *std.Build) void {
     const agent_host_launch_bridge = b.addSystemCommand(&.{
         "sh",
         "-c",
-        "bridge=$1; py=$(tools/agent_host_env.sh --check) || exit 1; cd agent/host/tests && out=$(env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 ZB_AGENT_HOST_PYTHON=\"$py\" ZB_LAUNCH_BRIDGE=\"$bridge\" \"$py\" -X dev -m unittest -v test_launch_bridge 2>&1); rc=$?; printf '%s\\n' \"$out\"; [ $rc -eq 0 ] || exit $rc; if printf '%s\\n' \"$out\" | grep -q ResourceWarning; then echo 'test_launch_bridge: ResourceWarning' >&2; exit 1; fi",
+        "bridge=$(realpath \"$1\") || exit 1; py=$(tools/agent_host_env.sh --check) || exit 1; cd agent/host/tests && out=$(env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 ZB_AGENT_HOST_PYTHON=\"$py\" ZB_LAUNCH_BRIDGE=\"$bridge\" \"$py\" -X dev -m unittest -v test_launch_bridge 2>&1); rc=$?; printf '%s\\n' \"$out\"; [ $rc -eq 0 ] || exit $rc; if printf '%s\\n' \"$out\" | grep -q ResourceWarning; then echo 'test_launch_bridge: ResourceWarning' >&2; exit 1; fi",
         "zb-launch-bridge",
     });
     agent_host_launch_bridge.addArtifactArg(agent_launch_bridge_exe);
