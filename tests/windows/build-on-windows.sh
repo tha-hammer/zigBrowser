@@ -100,8 +100,10 @@ fi
 host="${ZB_WIN11_HOST:?set ZB_WIN11_HOST (see tests/windows/hosts.env)}"
 port="${ZB_WIN11_PORT:-2222}"
 user="${ZB_WIN11_USER:-zbtext}"
-key="${ZB_WIN_KEY:-/home/maceo/vms/win11-m8/zb_win_key}"
-kh="${ZB_WIN_KNOWN_HOSTS:-/home/maceo/vms/win11-m8/known_hosts}"
+# WS0.8: one key name with the gate — ZB_WIN11_KEY / ZB_WIN11_KNOWN_HOSTS first (hosts.env.example), then the
+# legacy ZB_WIN_KEY / ZB_WIN_KNOWN_HOSTS, then the built-in default.
+key="${ZB_WIN11_KEY:-${ZB_WIN_KEY:-/home/maceo/vms/win11-m8/zb_win_key}}"
+kh="${ZB_WIN11_KNOWN_HOSTS:-${ZB_WIN_KNOWN_HOSTS:-/home/maceo/vms/win11-m8/known_hosts}}"
 # bead zigBrowser-4dr (option B): zig 0.16.0 and the WebView2 SDK nuget are installed MACHINE-WIDE under
 # C:\tools (readable+executable by all users), so these default to the known layout; override only for an
 # off-standard host. zig => C:\tools\zig\zig.exe; the WebView2 nuget unzips to C:\tools\webview2 with its

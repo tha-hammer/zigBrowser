@@ -19,6 +19,7 @@ Run alone:  python3 -I tests/windows/build_on_windows_selftest.py -v
 """
 import base64
 import fcntl
+import ipaddress
 import os
 import pathlib
 import re
@@ -33,6 +34,66 @@ SCRIPT = os.environ.get("ZB_SELFTEST_SCRIPT", str(REPO / "tests" / "windows" / "
 _BASE_PATH = "/usr/bin:/bin"
 
 FAKE_SHA = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+
+# WS0.8 fail-safe fake transport. The fake ssh/scp first on PATH are the only thing between these cases and a
+# real host, so every fake case aims at TEST-NET-1 (RFC 5737, never routed) with a key and known_hosts that do
+# not exist. A case that needs the driver's built-in key default (the REAL key) runs with netns=True, inside
+# `unshare --user --map-current-user --net`, so no packet can leave. _check_transport enforces both, before
+# the run (the env) and after it (every ssh/scp argv the fakes logged).
+FAKE_HOST = "192.0.2.1"
+_TEST_NETS = [ipaddress.ip_network(n) for n in ("192.0.2.0/24", "198.51.100.0/24", "203.0.113.0/24")]
+_NETNS = ["unshare", "--user", "--map-current-user", "--net"]
+DEFAULT_KEY = "/home/maceo/vms/win11-m8/zb_win_key"
+DEFAULT_KNOWN_HOSTS = "/home/maceo/vms/win11-m8/known_hosts"
+
+
+def _fake_transport(td):
+    return {
+        "ZB_WIN11_HOST": FAKE_HOST, "ZB_WIN11_PORT": "2222", "ZB_WIN11_USER": "zbtext",
+        "ZB_WIN_KEY": str(td / "no-such-key"), "ZB_WIN_KNOWN_HOSTS": str(td / "no-such-kh"),
+        "ZB_SELFTEST_SSH_LOG": str(td / "ssh.log"), "ZB_SELFTEST_SCP_LOG": str(td / "scp.log"),
+    }
+
+
+def _unreachable(host):
+    try:
+        return any(ipaddress.ip_address(host) in n for n in _TEST_NETS)
+    except ValueError:
+        return False
+
+
+def _transport_calls(td):
+    calls = []
+    for name in ("ssh.log", "scp.log"):
+        p = td / name
+        for line in (p.read_text().splitlines() if p.exists() else []):
+            if line.startswith("ARGV: "):
+                calls.append(line[len("ARGV: "):].split())
+    return calls
+
+
+def _call_hosts_and_keys(argv):
+    hosts = [a.split("@", 1)[1].split(":", 1)[0] for a in argv if "@" in a and not a.startswith("-")]
+    keys = [argv[i + 1] for i, a in enumerate(argv[:-1]) if a == "-i"]
+    return hosts, keys
+
+
+def _transport_problem(env, calls, netns):
+    """None when a fake run cannot reach a real host with a real key, else what is wrong."""
+    host = env.get("ZB_WIN11_HOST", "")
+    if not _unreachable(host):
+        return f"ZB_WIN11_HOST={host!r} is not a TEST-NET address"
+    key = env.get("ZB_WIN11_KEY") or env.get("ZB_WIN_KEY") or DEFAULT_KEY
+    if not netns and (key == DEFAULT_KEY or os.path.exists(key)):
+        return f"the run resolves to a real key {key!r} outside a network namespace"
+    for argv in calls:
+        hosts, keys = _call_hosts_and_keys(argv)
+        if not hosts or not all(_unreachable(h) for h in hosts):
+            return f"a transport call targets {hosts!r}: {' '.join(argv)}"
+        for k in keys:
+            if not netns and (k == DEFAULT_KEY or os.path.exists(k)):
+                return f"a transport call uses a real key {k!r} outside a network namespace"
+    return None
 
 _GIT_STUB = r"""
 [ -n "${ZB_SELFTEST_GIT_LOG:-}" ] && printf '%s\n' "$*" >> "$ZB_SELFTEST_GIT_LOG"
@@ -115,7 +176,11 @@ def _fakes(bindir):
 
 
 class _Case(unittest.TestCase):
-    def _run(self, td, extra=None, args=None, unset=None, pre=None):
+    def _check_transport(self, env, td, netns=False, calls=None):
+        problem = _transport_problem(env, _transport_calls(td) if calls is None else calls, netns)
+        self.assertIsNone(problem, "fake harness is not fail-safe")
+
+    def _run(self, td, extra=None, args=None, unset=None, pre=None, netns=False):
         bindir = td / "bin"; bindir.mkdir(exist_ok=True)
         root = td / "root"; root.mkdir(exist_ok=True)
         out = td / "out" / "current" / "zigBrowser.exe"   # ZB_WIN_EXE IS the stable .../current/<base> surface
@@ -123,28 +188,26 @@ class _Case(unittest.TestCase):
             "PATH": _fakes(bindir) + os.pathsep + _BASE_PATH,
             "HOME": str(td / "home"),
             "ZB_SELFTEST_ROOT": str(root),
-            "ZB_WIN11_HOST": "127.0.0.1", "ZB_WIN11_PORT": "2222", "ZB_WIN11_USER": "zbtext",
-            "ZB_WIN_KEY": str(td / "key"), "ZB_WIN_KNOWN_HOSTS": str(td / "kh"),
+            **_fake_transport(td),
             "ZB_WEBVIEW2_INCLUDE": r"C:\wv2\include", "ZB_WEBVIEW2_LIB": r"C:\wv2\lib\x64",
             "ZB_ZIG": r"C:\tools\zig.exe",
             "ZB_WIN_EXE": str(out),
-            "ZB_SELFTEST_SSH_LOG": str(td / "ssh.log"),
-            "ZB_SELFTEST_SCP_LOG": str(td / "scp.log"),
             "ZB_SELFTEST_GIT_LOG": str(td / "git.log"),
             "ZB_SELFTEST_TIMEOUT_LOG": str(td / "timeout.log"),
             # a real display in the parent, to prove it is scrubbed from children
             "DISPLAY": ":99", "WAYLAND_DISPLAY": "wayland-9", "XAUTHORITY": "/tmp/parent.Xauth",
         }
         (td / "home").mkdir(exist_ok=True)
-        (td / "key").write_text("x"); (td / "kh").write_text("#")
         if extra:
             env.update(extra)
         for k in (unset or []):
             env.pop(k, None)
         if pre:
             pre(td, out)
-        cmd = ["bash", SCRIPT] + (args or [])
+        self._check_transport(env, td, netns, calls=[])
+        cmd = (_NETNS if netns else []) + ["bash", SCRIPT] + (args or [])
         proc = subprocess.run(cmd, env=env, capture_output=True, text=True, timeout=90)
+        self._check_transport(env, td, netns)
         proc.out_path = out                                 # ZB_WIN_EXE == the single consumer surface
         proc.sha_path = out.parent / (out.name + ".sha")    # current/zigBrowser.exe.sha
         proc.outdir = td / "out"                            # publish root (holds gen/, current, .fetch-*.part)
@@ -476,21 +539,20 @@ class PublishContract(_Case):
             td = pathlib.Path(t)
             bindir = td / "bin"; bindir.mkdir(); _fakes(bindir)
             (td / "root").mkdir(); (td / "home").mkdir()
-            (td / "key").write_text("x"); (td / "kh").write_text("#")
             outdir = td / "out"; outdir.mkdir()
             marker = td / "marker"; marker.mkdir()
             outside = td / "outside"; outside.mkdir()
             env = {
                 "PATH": str(bindir) + os.pathsep + _BASE_PATH, "HOME": str(td / "home"),
                 "ZB_SELFTEST_ROOT": str(td / "root"),
-                "ZB_WIN11_HOST": "127.0.0.1", "ZB_WIN11_PORT": "2222", "ZB_WIN11_USER": "zbtext",
-                "ZB_WIN_KEY": str(td / "key"), "ZB_WIN_KNOWN_HOSTS": str(td / "kh"),
+                **_fake_transport(td),
                 "ZB_WEBVIEW2_INCLUDE": r"C:\wv2\include", "ZB_WEBVIEW2_LIB": r"C:\wv2\lib\x64",
                 "ZB_ZIG": r"C:\tools\zig.exe",
                 "ZB_WIN_EXE": str(outdir / "current" / "zigBrowser.exe"),
                 "ZB_SELFTEST_SCP_PAUSE": str(marker),
                 "DISPLAY": ":99", "WAYLAND_DISPLAY": "wayland-9", "XAUTHORITY": "/tmp/parent.Xauth",
             }
+            self._check_transport(env, td, calls=[])
             p = subprocess.Popen(["bash", SCRIPT], env=env, stdout=subprocess.PIPE,
                                  stderr=subprocess.PIPE, text=True)
             try:
@@ -506,6 +568,7 @@ class PublishContract(_Case):
             finally:
                 if p.poll() is None:
                     p.kill(); p.communicate()
+            self._check_transport(env, td)
             detail = f"\nrc={p.returncode}\nstdout:\n{out}\nstderr:\n{err}"
             self.assertEqual(list(outside.iterdir()), [],
                              "nothing may be published under a planted 'gen' symlink" + detail)
@@ -521,21 +584,20 @@ class PublishContract(_Case):
             td = pathlib.Path(t)
             bindir = td / "bin"; bindir.mkdir(); _fakes(bindir)
             (td / "root").mkdir(); (td / "home").mkdir()
-            (td / "key").write_text("x"); (td / "kh").write_text("#")
             outdir = td / "out"; outdir.mkdir()
             marker = td / "marker"; marker.mkdir()
             victim = td / "victim.txt"; victim.write_text("precious")
             env = {
                 "PATH": str(bindir) + os.pathsep + _BASE_PATH, "HOME": str(td / "home"),
                 "ZB_SELFTEST_ROOT": str(td / "root"),
-                "ZB_WIN11_HOST": "127.0.0.1", "ZB_WIN11_PORT": "2222", "ZB_WIN11_USER": "zbtext",
-                "ZB_WIN_KEY": str(td / "key"), "ZB_WIN_KNOWN_HOSTS": str(td / "kh"),
+                **_fake_transport(td),
                 "ZB_WEBVIEW2_INCLUDE": r"C:\wv2\include", "ZB_WEBVIEW2_LIB": r"C:\wv2\lib\x64",
                 "ZB_ZIG": r"C:\tools\zig.exe",
                 "ZB_WIN_EXE": str(outdir / "current" / "zigBrowser.exe"),
                 "ZB_SELFTEST_SCP_PAUSE": str(marker),
                 "DISPLAY": ":99", "WAYLAND_DISPLAY": "wayland-9", "XAUTHORITY": "/tmp/parent.Xauth",
             }
+            self._check_transport(env, td, calls=[])
             p = subprocess.Popen(["bash", SCRIPT], env=env, stdout=subprocess.PIPE,
                                  stderr=subprocess.PIPE, text=True)
             try:
@@ -551,6 +613,7 @@ class PublishContract(_Case):
             finally:
                 if p.poll() is None:
                     p.kill(); p.communicate()
+            self._check_transport(env, td)
             detail = f"\nrc={p.returncode}\nstdout:\n{out}\nstderr:\n{err}"
             self.assertEqual(victim.read_text(), "precious",
                              "a lock-leaf symlink planted mid-fetch must not be followed/truncated" + detail)
@@ -593,20 +656,19 @@ class PublishContract(_Case):
             bindir = td / "bin"; bindir.mkdir()
             _fakes(bindir)
             (td / "root").mkdir(); (td / "home").mkdir()
-            (td / "key").write_text("x"); (td / "kh").write_text("#")
             outdir = td / "out"; marker = td / "marker"; marker.mkdir()
             outside = td / "outside"; outside.mkdir()   # a real writable dir the attacker redirects to
             env = {
                 "PATH": str(bindir) + os.pathsep + _BASE_PATH, "HOME": str(td / "home"),
                 "ZB_SELFTEST_ROOT": str(td / "root"),
-                "ZB_WIN11_HOST": "127.0.0.1", "ZB_WIN11_PORT": "2222", "ZB_WIN11_USER": "zbtext",
-                "ZB_WIN_KEY": str(td / "key"), "ZB_WIN_KNOWN_HOSTS": str(td / "kh"),
+                **_fake_transport(td),
                 "ZB_WEBVIEW2_INCLUDE": r"C:\wv2\include", "ZB_WEBVIEW2_LIB": r"C:\wv2\lib\x64",
                 "ZB_ZIG": r"C:\tools\zig.exe",
                 "ZB_WIN_EXE": str(outdir / "current" / "zigBrowser.exe"),
                 "ZB_SELFTEST_SCP_PAUSE": str(marker),
                 "DISPLAY": ":99", "WAYLAND_DISPLAY": "wayland-9", "XAUTHORITY": "/tmp/parent.Xauth",
             }
+            self._check_transport(env, td, calls=[])
             p = subprocess.Popen(["bash", SCRIPT], env=env, stdout=subprocess.PIPE,
                                  stderr=subprocess.PIPE, text=True)
             try:
@@ -623,6 +685,7 @@ class PublishContract(_Case):
             finally:
                 if p.poll() is None:
                     p.kill(); p.communicate()
+            self._check_transport(env, td)
             detail = f"\nrc={p.returncode}\nstdout:\n{out}\nstderr:\n{err}"
             self.assertFalse((outside / "current").exists(),
                              "publish escaped to the swapped-in symlink target" + detail)
@@ -733,6 +796,91 @@ class AtomicPublish(_Case):
                                 "GC must not delete an in-flight generation while a publish holds the lock" + detail)
             finally:
                 fcntl.flock(dirfd, fcntl.LOCK_UN); os.close(dirfd)
+
+
+class KeyNames(_Case):
+    """WS0.8 (plan rev 2.21 OPEN list): the driver reads the gate's key names. ZB_WIN11_KEY /
+    ZB_WIN11_KNOWN_HOSTS first, then the legacy ZB_WIN_KEY / ZB_WIN_KNOWN_HOSTS, then the built-in default.
+    Read from the -i and UserKnownHostsFile of every ssh/scp call the driver made."""
+
+    def _used(self, extra, unset, netns=False):
+        with tempfile.TemporaryDirectory() as t:
+            td = pathlib.Path(t)
+            proc = self._run(td, extra=extra(td), unset=unset, netns=netns)
+            calls = _transport_calls(td)
+            detail = (f"\nrc={proc.returncode}\nstderr:\n{proc.stderr}\ncalls:\n"
+                      + "\n".join(" ".join(c) for c in calls))
+            self.assertEqual(proc.returncode, 0, "the faked build must still succeed" + detail)
+            self.assertTrue(calls, "the driver made ssh/scp calls" + detail)
+            keys, khs = set(), set()
+            for c in calls:
+                keys |= set(_call_hosts_and_keys(c)[1])
+                khs |= {a.split("=", 1)[1] for a in c if a.startswith("UserKnownHostsFile=")}
+            return keys, khs, td, detail
+
+    @staticmethod
+    def _win11(td):
+        return {"ZB_WIN11_KEY": str(td / "no-such-k11"), "ZB_WIN11_KNOWN_HOSTS": str(td / "no-such-kh11")}
+
+    def test_zb_win11_key_and_known_hosts_are_used(self):
+        keys, khs, td, detail = self._used(self._win11, unset=["ZB_WIN_KEY", "ZB_WIN_KNOWN_HOSTS"])
+        self.assertEqual(keys, {str(td / "no-such-k11")}, "every ssh/scp must use ZB_WIN11_KEY" + detail)
+        self.assertEqual(khs, {str(td / "no-such-kh11")}, "every ssh/scp must pin ZB_WIN11_KNOWN_HOSTS" + detail)
+
+    def test_zb_win11_names_win_over_the_legacy_names(self):
+        keys, khs, td, detail = self._used(self._win11, unset=[])   # ZB_WIN_KEY / ZB_WIN_KNOWN_HOSTS also set
+        self.assertEqual(keys, {str(td / "no-such-k11")}, "ZB_WIN11_KEY takes precedence, as in the gate" + detail)
+        self.assertEqual(khs, {str(td / "no-such-kh11")}, detail)
+
+    def test_legacy_names_still_work_alone(self):
+        keys, khs, td, detail = self._used(lambda td: {}, unset=[])
+        self.assertEqual(keys, {str(td / "no-such-key")}, "the legacy ZB_WIN_KEY stays a fallback" + detail)
+        self.assertEqual(khs, {str(td / "no-such-kh")}, detail)
+
+    def test_built_in_default_when_no_name_is_set(self):
+        # the REAL default key: only inside an empty network namespace
+        keys, khs, _, detail = self._used(lambda td: {}, netns=True,
+                                          unset=["ZB_WIN_KEY", "ZB_WIN_KNOWN_HOSTS"])
+        self.assertEqual(keys, {DEFAULT_KEY}, detail)
+        self.assertEqual(khs, {DEFAULT_KNOWN_HOSTS}, detail)
+
+
+class FakeTransportGuard(unittest.TestCase):
+    """WS0.8: _transport_problem refuses every fake run that could reach a real host with a real key."""
+
+    def _env(self, td, **kw):
+        env = _fake_transport(td); env.update(kw)
+        return {k: v for k, v in env.items() if v is not None}
+
+    def test_safe_fake_run_passes(self):
+        td = pathlib.Path("/nonexistent-zb-td")
+        argv = ["-i", str(td / "no-such-key"), "-p", "2222", f"zbtext@{FAKE_HOST}", "cmd"]
+        self.assertIsNone(_transport_problem(self._env(td), [argv], netns=False))
+
+    def test_real_vm_address_is_refused(self):
+        td = pathlib.Path("/nonexistent-zb-td")
+        self.assertIn("TEST-NET", _transport_problem(self._env(td, ZB_WIN11_HOST="127.0.0.1"), [], False))
+
+    def test_default_key_outside_a_namespace_is_refused(self):
+        td = pathlib.Path("/nonexistent-zb-td")
+        env = self._env(td, ZB_WIN_KEY=None)
+        self.assertIn("real key", _transport_problem(env, [], netns=False))
+        self.assertIsNone(_transport_problem(env, [], netns=True))
+
+    def test_existing_key_file_is_refused(self):
+        with tempfile.TemporaryDirectory() as t:
+            td = pathlib.Path(t); (td / "k").write_text("x")
+            self.assertIn("real key", _transport_problem(self._env(td, ZB_WIN11_KEY=str(td / "k")), [], False))
+
+    def test_logged_call_to_a_routable_host_is_refused(self):
+        td = pathlib.Path("/nonexistent-zb-td")
+        argv = ["-i", str(td / "no-such-key"), "-P", "2222", "zbtext@127.0.0.1:C:/zb/x.exe", "/tmp/x"]
+        self.assertIn("targets", _transport_problem(self._env(td), [argv], netns=False))
+
+    def test_logged_call_with_the_default_key_is_refused(self):
+        td = pathlib.Path("/nonexistent-zb-td")
+        argv = ["-i", DEFAULT_KEY, f"zbtext@{FAKE_HOST}", "cmd"]
+        self.assertIn("real key", _transport_problem(self._env(td), [argv], netns=False))
 
 
 class StagePrepGatesBuild(_Case):
