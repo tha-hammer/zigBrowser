@@ -3798,6 +3798,14 @@ pub fn build(b: *std.Build) void {
         mac_ms5_gate_hostkey_selftest.addFileInput(b.path(input));
     mac_build_script_step.dependOn(&mac_ms5_gate_hostkey_selftest.step);
     test_step.dependOn(&mac_ms5_gate_hostkey_selftest.step);
+    // ms5_setup_refusal_gate.sh and ms5_setup_e2e.sh use the same pinned transport (bd 3ui.5.1).
+    const mac_ms5_setup_hostkey_selftest = b.addSystemCommand(&.{ "bash", "tests/mac/ms5_setup_hostkey_selftest.sh" });
+    for ([_][]const u8{
+        "tests/mac/ms5_setup_hostkey_selftest.sh", "tests/mac/ms5_setup_refusal_gate.sh", "tests/mac/ms5_setup_e2e.sh",
+        "tests/mac/lib_group_cleanup.sh",          "tests/mac/known_hosts",
+    }) |input| mac_ms5_setup_hostkey_selftest.addFileInput(b.path(input));
+    mac_build_script_step.dependOn(&mac_ms5_setup_hostkey_selftest.step);
+    test_step.dependOn(&mac_ms5_setup_hostkey_selftest.step);
     test_step.dependOn(&windows_gate_selftest.step);
     test_step.dependOn(&windows_twohost_selftest.step);
     test_step.dependOn(&windows_build_selftest.step);
