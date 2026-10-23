@@ -13,6 +13,9 @@
 # For EVERY recorded ssh/scp call ("-o Key=Value" and "-oKey=Value" both read; keys are case-insensitive):
 #   H1 StrictHostKeyChecking is given and every value is "yes" (no "no", "accept-new" or "off");
 #   H2 UserKnownHostsFile is given exactly once and is the repo's tests/mac/known_hosts (not /dev/null, not ~/.ssh);
+#      for the three exact-commit launchers (commit/compile rows) it is instead a file inside the launcher's own run
+#      tree whose bytes, hashed by the stub at the moment of the call, are the committed blob (SilverRidge 7f58dd72;
+#      tests/mac/mac_exact_commit_hostkey_selftest.sh changes the outer file to prove it is never read);
 #   H3 BatchMode=yes and IdentitiesOnly=yes are given;
 #   H4 ssh/scp run without DISPLAY, WAYLAND_DISPLAY, XAUTHORITY or SSH_ASKPASS, although the script was launched with
 #      all four (an inherited askpass can open a password window on the owner's desktop);
@@ -73,6 +76,13 @@ for tool in ssh scp; do
 c=\${ZB_SELFTEST_CTL:?}
 i=\$(cat "\$c/n" 2>/dev/null || echo 0); echo \$((i + 1)) > "\$c/n"
 printf '%s\0' $tool "\$@" > "\$c/call.\$i"
+khf= prev=
+for a in "\$@"; do
+  if [ "\$prev" = -o ]; then case "\${a,,}" in userknownhostsfile=*) khf=\${a#*=} ;; esac; fi
+  case "\${a,,}" in -ouserknownhostsfile=*) khf=\${a#*=} ;; esac
+  prev=\$a
+done
+if [ -n "\$khf" ] && [ -r "\$khf" ]; then /usr/bin/sha256sum < "\$khf" | cut -c1-64 > "\$c/khsha.\$i"; else echo unreadable > "\$c/khsha.\$i"; fi
 printf 'DISPLAY=%s WAYLAND_DISPLAY=%s XAUTHORITY=%s SSH_ASKPASS=%s\n' "\${DISPLAY-<unset>}" "\${WAYLAND_DISPLAY-<unset>}" \\
   "\${XAUTHORITY-<unset>}" "\${SSH_ASKPASS-<unset>}" > "\$c/env.\$i"
 cat > /dev/null
@@ -118,12 +128,13 @@ G=(env -i PATH=/usr/bin:/bin HOME="$T/home" GIT_CONFIG_NOSYSTEM=1 git -C "$R")
   && "${G[@]}" -c user.name=selftest -c user.email=selftest@invalid commit -q -m staged \
   || { bad "could not build the scratch repo"; exit 1; }
 PINNED=$(realpath "$R/tests/mac/known_hosts")
+WANT=$("${G[@]}" show HEAD:tests/mac/known_hosts | /usr/bin/sha256sum | cut -c1-64)
 LAUNCH_ENV=(PATH="$T/bin:/usr/bin:/bin" HOME="$T/home" TMPDIR="$T/tmp" ZB_MAC_HOST="$INTEL" ZB_MAC_ARM_HOST="$ARM"
             ZB_MAC_KEY="$T/home/no_such_key" DISPLAY=:99 WAYLAND_DISPLAY=wayland-selftest XAUTHORITY="$T/home/.Xauthority"
             SSH_ASKPASS="$T/bin/askpass-must-not-run")
 
-check_calls() { # check_calls <name> <ctl dir> <scp|-> : H1-H6 over every recorded call
-  local name=$1 c=$2 want_scp=$3 n i j tool host skip opt key val where p before=$fails
+check_calls() { # check_calls <name> <ctl dir> <scp|-> <launch> : H1-H6 over every recorded call
+  local name=$1 c=$2 want_scp=$3 launch=${4:-file} n i j tool host skip opt key val where p before=$fails
   local -a a strict khf batch ident pos
   declare -A seen=()
   n=$(cat "$c/n" 2>/dev/null || echo 0)
@@ -157,8 +168,12 @@ check_calls() { # check_calls <name> <ctl dir> <scp|-> : H1-H6 over every record
     seen[$tool:$host]=1
     if [ "${#strict[@]}" -ge 1 ] && [ -z "$(printf '%s\n' "${strict[@]}" | grep -vx yes)" ]; then :
     else bad "H1: $where StrictHostKeyChecking is '${strict[*]}', want yes"; fi
-    if [ "${#khf[@]}" -eq 1 ] && [ "$(realpath -m "${khf[0]}")" = "$PINNED" ]; then :
-    else bad "H2: $where UserKnownHostsFile is '${khf[*]}', want exactly the pinned tests/mac/known_hosts"; fi
+    if [ "$launch" = file ]; then
+      if [ "${#khf[@]}" -eq 1 ] && [ "$(realpath -m "${khf[0]}")" = "$PINNED" ]; then :
+      else bad "H2: $where UserKnownHostsFile is '${khf[*]}', want exactly the pinned tests/mac/known_hosts"; fi
+    elif [ "${#khf[@]}" -eq 1 ] && [[ "$(realpath -m "${khf[0]}")" == "$T/tmp/"* ]] \
+         && [ "$(cat "$c/khsha.$i")" = "$WANT" ]; then :
+    else bad "H2: $where UserKnownHostsFile is '${khf[*]}' (bytes $(cat "$c/khsha.$i")), want the commit's blob in the run tree"; fi
     [ "${batch[*]}" = yes ] || bad "H3: $where BatchMode is '${batch[*]}', want yes"
     [ "${ident[*]}" = yes ] || bad "H3: $where IdentitiesOnly is '${ident[*]}', want yes"
     grep -qx 'DISPLAY=<unset> WAYLAND_DISPLAY=<unset> XAUTHORITY=<unset> SSH_ASKPASS=<unset>' "$c/env.$i" \
@@ -193,7 +208,7 @@ for row in "${DRIVEN[@]}"; do
   esac
   (cd "$R" && env -i "${LAUNCH_ENV[@]}" "${env_extra[@]}" PATH="$path_bin:/usr/bin:/bin" \
      unshare --user --map-current-user --net timeout -s TERM 120 "${cmd[@]}" >"$c/out" 2>&1 </dev/null)
-  check_calls "$name" "$c" "$want_scp" || true
+  check_calls "$name" "$c" "$want_scp" "$launch" || true
   [ "$fails" -eq "$row_before" ] || tail -n 3 "$c/out" | sed "s|^|    $name: |"
 done
 

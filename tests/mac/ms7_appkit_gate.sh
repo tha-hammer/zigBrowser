@@ -31,8 +31,6 @@ LEG_TIMEOUT="${ZB_MAC_LEG_TIMEOUT:-2400}"
 export SSH_ASKPASS_REQUIRE=never
 
 cd "$(git rev-parse --show-toplevel)"
-# The Macs' host keys are pinned (bd 4pa.77): every ssh/scp below uses this file, never ~/.ssh/known_hosts.
-KNOWN_HOSTS="$PWD/tests/mac/known_hosts"
 fail() { printf 'FAIL\tms7-appkit-gate\t%s\n' "$*" >&2; exit 1; }
 REV="${1:-HEAD}"
 SHA=$(git rev-parse --verify --quiet "${REV}^{commit}") || fail "revision $REV is not a commit"
@@ -42,6 +40,12 @@ SHA=$(git rev-parse --verify --quiet "${REV}^{commit}") || fail "revision $REV i
 L=$(mktemp -d "${TMPDIR:-/tmp}/zb-ms7gate-drv-XXXXXX")
 trap 'case "$L" in "${TMPDIR:-/tmp}"/zb-ms7gate-drv-??????) find "${L:?}" -delete;; esac' EXIT
 mkdir "$L/repo" && git archive "$SHA" | tar -x -C "$L/repo"
+# The Macs' host keys are pinned (bd 4pa.77) and come from the exported commit, never the mutable working tree
+# (SilverRidge 7f58dd72): every ssh/scp below uses this file, checked against the commit's blob first.
+KNOWN_HOSTS="$L/repo/tests/mac/known_hosts"
+[ -f "$KNOWN_HOSTS" ] && [ ! -L "$KNOWN_HOSTS" ] \
+  && [ "$(git hash-object --no-filters -- "$KNOWN_HOSTS")" = "$(git rev-parse --verify --quiet "$SHA:tests/mac/known_hosts")" ] \
+  || fail "tests/mac/known_hosts in the export is missing or is not the blob at $SHA"
 echo "== ms7 appkit gate at commit $SHA" >&2
 cd "$L/repo"
 

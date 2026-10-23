@@ -58,8 +58,6 @@ ARM_KEY="${ZB_MAC_ARM_KEY:-$KEY}"
 export SSH_ASKPASS_REQUIRE=never
 
 TOP=$(git rev-parse --show-toplevel)
-# The Macs' host keys are pinned (bd 4pa.77): every ssh/scp below uses this file, never ~/.ssh/known_hosts.
-KNOWN_HOSTS="$TOP/tests/mac/known_hosts"
 cd "$TOP"
 REV="${1:-HEAD}"
 SHA=$(git rev-parse --verify --quiet "${REV}^{commit}") || fail "revision $REV is not a commit"
@@ -67,6 +65,12 @@ L=$(mktemp -d "${TMPDIR:-/tmp}/zb-compile-drv-XXXXXX")
 trap 'case "$L" in "${TMPDIR:-/tmp}"/zb-compile-drv-??????) find "${L:?}" -delete;; esac' EXIT
 SHIP=(src build.zig build.zig.zon zigbrowser.json tests packaging tools)
 mkdir "$L/repo" && git archive "$SHA" -- "${SHIP[@]}" | tar -x -C "$L/repo"
+# The Macs' host keys are pinned (bd 4pa.77) and come from the exported commit, never the mutable working tree
+# (SilverRidge 7f58dd72): every ssh/scp below uses this file, checked against the commit's blob first.
+KNOWN_HOSTS="$L/repo/tests/mac/known_hosts"
+[ -f "$KNOWN_HOSTS" ] && [ ! -L "$KNOWN_HOSTS" ] \
+  && [ "$(git hash-object --no-filters -- "$KNOWN_HOSTS")" = "$(git rev-parse --verify --quiet "$SHA:tests/mac/known_hosts")" ] \
+  || fail "tests/mac/known_hosts in the export is missing or is not the blob at $SHA"
 echo "== mac compile-only at commit $SHA, harness sha256 $HARNESS_SHA256" >&2
 cd "$L/repo"
 

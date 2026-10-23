@@ -177,6 +177,8 @@ printf 'const s = b.step("mac-compile-only", "x");\n' > "$R/build.zig"
 printf '.{\n    // .url = "https://example.com/x.tar.gz",\n    .dependencies = .{},\n}\n' > "$R/build.zig.zon"
 echo '{}' > "$R/zigbrowser.json"
 echo t > "$R/tests/t"; echo p > "$R/packaging/p"; echo o > "$R/tools/o"
+# The harness takes the Macs' pinned host keys from the exported commit (bd 4pa.77, SilverRidge 7f58dd72).
+mkdir -p "$R/tests/mac" && cp "$(dirname "$HARNESS")/known_hosts" "$R/tests/mac/known_hosts"
 git -C "$R" init -q
 git -C "$R" -c user.email=t@t -c user.name=t add -A
 git -C "$R" -c user.email=t@t -c user.name=t commit -qm honest

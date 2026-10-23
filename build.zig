@@ -4133,6 +4133,12 @@ pub fn build(b: *std.Build) void {
     mac_direct_hostkey_selftest.has_side_effects = true;
     mac_build_script_step.dependOn(&mac_direct_hostkey_selftest.step);
     test_step.dependOn(&mac_direct_hostkey_selftest.step);
+    // The three exact-commit launchers take known_hosts from their own export, never the outer checkout (SilverRidge
+    // 7f58dd72): the outer file is changed after the commit and must not reach any ssh/scp call.
+    const mac_exact_hostkey_selftest = b.addSystemCommand(&.{ "bash", "tests/mac/mac_exact_commit_hostkey_selftest.sh" });
+    mac_exact_hostkey_selftest.has_side_effects = true;
+    mac_build_script_step.dependOn(&mac_exact_hostkey_selftest.step);
+    test_step.dependOn(&mac_exact_hostkey_selftest.step);
     // The shared transport (build-on-mac.sh, mac_gate_lib.sh) passes no display or askpass to ssh/scp (bd 3ui.9).
     const mac_transport_selftest = b.addSystemCommand(&.{ "bash", "tests/mac/mac_transport_selftest.sh" });
     for ([_][]const u8{

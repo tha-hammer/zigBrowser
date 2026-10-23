@@ -62,8 +62,9 @@ class ArmedEntry(unittest.TestCase):
     def setUp(self):
         self.repo = Path(tempfile.mkdtemp(prefix="zb-hardgate-entry-"))
         self.addCleanup(shutil.rmtree, self.repo, True)
-        for rel in ("tests/mac/ms6_hard_gate.sh", "agent/host/uv.lock", "agent/host/pyproject.toml",
-                    "tests/mac/spawn_group_io_test.c", "src/agent_spawn_posix.c", "src/agent_spawn_posix.h"):
+        for rel in ("tests/mac/ms6_hard_gate.sh", "tests/mac/known_hosts", "agent/host/uv.lock",
+                    "agent/host/pyproject.toml", "tests/mac/spawn_group_io_test.c", "src/agent_spawn_posix.c",
+                    "src/agent_spawn_posix.h"):
             (self.repo / rel).parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(REPO / rel, self.repo / rel)
         shutil.copytree(REPO / "tests/mac/hard_gate", self.repo / "tests/mac/hard_gate",

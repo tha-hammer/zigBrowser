@@ -16,7 +16,7 @@
 #   K4 per launcher and outer state, at least one ssh call reached each Mac, so K1-K3 cannot pass vacuously.
 # No Mac, no signal, no network: HOME/TMPDIR in this test's temp tree; the test re-runs itself in a private
 # user+network namespace and runs each launcher under its own `unshare --user --map-current-user --net`.
-# Run: bash tests/mac/mac_exact_commit_hostkey_selftest.sh [repo root]
+# Run: bash tests/mac/mac_exact_commit_hostkey_selftest.sh [repo root]   (step: zig build test-mac-build-script)
 set -uo pipefail
 if [ "${ZB_EXACT_HOSTKEY_SELFTEST_INNER:-}" != 1 ]; then
   ZB_EXACT_HOSTKEY_SELFTEST_INNER=1 exec unshare --user --map-current-user --net bash "$(realpath "$0")" "$@"

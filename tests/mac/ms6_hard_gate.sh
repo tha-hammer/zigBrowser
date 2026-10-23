@@ -48,8 +48,6 @@ LEG_TIMEOUT="${ZB_MAC_LEG_TIMEOUT:-1800}"
 export SSH_ASKPASS_REQUIRE=never
 
 cd "$(git rev-parse --show-toplevel)"
-# The Macs' host keys are pinned (bd 4pa.77): every ssh/scp below uses this file, never ~/.ssh/known_hosts.
-KNOWN_HOSTS="$PWD/tests/mac/known_hosts"
 PINS=packaging/macos/agent_runtime_pins.json
 MANIFEST=tests/mac/hard_gate/MANIFEST.json
 fail() { printf 'FAIL\tms6-hard-gate\t%s\n' "$*" >&2; exit 1; }
@@ -60,6 +58,7 @@ SHA=$(git rev-parse --verify --quiet "${REV}^{commit}") || fail "revision $REV i
 L=$(mktemp -d "${TMPDIR:-/tmp}/zb-hardgate-drv-XXXXXX")
 trap 'case "$L" in "${TMPDIR:-/tmp}"/zb-hardgate-drv-??????) find "${L:?}" -delete;; esac' EXIT
 mkdir "$L/repo" && git archive "$SHA" | tar -x -C "$L/repo"
+KH_BLOB=$(git rev-parse --verify --quiet "$SHA:tests/mac/known_hosts") || KH_BLOB=  # checked below, offline
 echo "== hard gate at commit $SHA" >&2
 cd "$L/repo"  # from here on, only the exported commit is read
 if [ ! -f "$PINS" ]; then
@@ -117,6 +116,12 @@ while IFS= read -r f; do echo "== ship $(sha256sum "$f" | cut -c1-64) $f" >&2; d
 if [ -n "${ZB_HG_EVIDENCE_DIR:-}" ] && [ -d "$ZB_HG_EVIDENCE_DIR" ]; then cp "$L/src.tar" "$ZB_HG_EVIDENCE_DIR/"; fi
 echo "== staged tree identity: commit $SHA, src.tar sha256 $(sha256sum "$L/src.tar" | cut -c1-64)" >&2
 
+# The Macs' host keys are pinned (bd 4pa.77) and come from the exported commit, never the mutable working tree
+# (SilverRidge 7f58dd72): every ssh/scp below uses this file, checked against the commit's blob first.
+KNOWN_HOSTS="$L/repo/tests/mac/known_hosts"
+[ -f "$KNOWN_HOSTS" ] && [ ! -L "$KNOWN_HOSTS" ] \
+  && [ -n "$KH_BLOB" ] && [ "$(git hash-object --no-filters -- "$KNOWN_HOSTS")" = "$KH_BLOB" ] \
+  || fail "tests/mac/known_hosts in the export is missing or is not the blob at $SHA"
 # --- network: the pinned pkg, its provenance, the lock-built trees ---
 curl -fsSL --proto '=https' -o "$L/py.pkg" "$PKG_URL"
 curl -fsSL --proto '=https' -o "$L/py.pkg.sigstore" "$PKG_URL.sigstore"

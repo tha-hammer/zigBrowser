@@ -179,6 +179,7 @@ chmod +x "$X/bin/ssh" "$X/bin/scp" "$X/hostbin/uname" "$X/hosts/intel/.local/bin
 mkdir -p "$R7/tests/mac/hard_gate" "$R7/src" "$R7/packaging" "$R7/tools"
 cp "$ROOT/tests/mac/ms7_appkit_gate.sh" "$ROOT/tests/mac/ms7_appkit_case.py" "$ROOT/tests/mac/ms7_appkit_check.py" "$R7/tests/mac/"
 cp "$ROOT/tests/mac/hard_gate/harness.py" "$R7/tests/mac/hard_gate/"
+cp "$ROOT/tests/mac/known_hosts" "$R7/tests/mac/"   # the gate pins host keys from its export (bd 4pa.77)
 echo "// stand-in" > "$R7/src/wkwebview_shim.m"; echo x > "$R7/packaging/x"; echo x > "$R7/tools/x"
 echo build > "$R7/build.zig"; echo zon > "$R7/build.zig.zon"; echo '{}' > "$R7/zigbrowser.json"
 G7=(env -i PATH=/usr/bin:/bin HOME="$T/home" GIT_CONFIG_NOSYSTEM=1 git -C "$R7")
