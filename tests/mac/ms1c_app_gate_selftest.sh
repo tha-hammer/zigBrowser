@@ -11,12 +11,14 @@
 # for the control writes a crash report naming the exe under the fake ~/Library/Logs/DiagnosticReports.
 # Base run (both Macs fine):
 #   P1 exit 0, PASS<TAB>ms1c-app-gate<TAB>both-arches<TAB><dmg sha256>, both legs PASS;
-#   P2 ONE dmg: build-dmg.sh made one image, from a clean tree whose tree id is the commit's, and each leg saw exactly
-#      its bytes (DMG lines equal the printed sha256 and the local file's);
+#   P2 ONE dmg: the full commit SHA is named (COMMIT line and evidence); build-dmg.sh made exactly one image, from a
+#      clean tree whose tree id is that commit's; its digest at creation equals the printed DMG sha256, and each leg's
+#      DMG line equals it;
 #   P3 hdiutil attach -readonly -nobrowse -noautoopen -mountpoint <run root>/mnt <run root>/zigBrowser.dmg on each Mac,
 #      then a detach of the attached device, before any workload command;
 #   P4 codesign --verify --strict --deep on the unpacked .app; otool -L on its exe; every Mach-O census line fat;
-#   P5 every workload command got --browser <run root>/app/zigBrowser.app/Contents/MacOS/zigBrowser, ran with no
+#   P5 each of m9_render_test.py, m9_reply_channel_test.py, m9_load_fail_test.py and exec_arch_probe.py ran exactly
+#      once per Mac; every one got --browser <run root>/app/zigBrowser.app/Contents/MacOS/zigBrowser, ran with no
 #      zig-out left, and with HOME, CFFIXED_USER_HOME, TMPDIR, the XDG dirs and the socket dir under the run root and
 #      ZB_DEBUG_EPHEMERAL_DATA_STORE=1;
 #   P6 the control ran the exe of <run root>/control/zigBrowser.app while that copy had no dylib and the unpacked .app
@@ -33,8 +35,10 @@
 #   F3 other dmg bytes on one Mac: that leg INCONCLUSIVE, nothing attached there, exit 2;
 #   F4 codesign verify fails: FAIL;   F5 no shim reference in otool -L: FAIL;
 #   F6 m9_render fails: FAIL, and the later rows still ran;   F7 m9_load_fail skips (77): FAIL;
-#   F8 m9_reply_channel leaks a process: HOST_STOPPED, no later row or control on that Mac, LEAKED marker kept with the
-#      LEAKED line, its run root KEPT: no cleanup is attempted on it and it never reaches find -delete; exit 2;
+#   F8 m9_reply_channel leaks a process: HOST_STOPPED, no later row or control on that Mac, the kept LEAKED marker is
+#      exactly one line with the four identity fields the workload printed (pid, pgid, start, command), its run root
+#      KEPT (no cleanup attempted, never given to find -delete); exit 2; the next run on that Mac is HOST_HELD by it,
+#      attaches nothing there and leaves the marker as it was;
 #   F9 detach fails: INCONCLUSIVE, no workload there, the run root KEPT with its MOUNTED marker, no cleanup attempted; exit 2;
 #   F10 the workload writes ~/Library/Caches/zigBrowser in the real home: HOME-DELTA, INCONCLUSIVE, the file stays;
 #   F11 the control starts: FAIL;   F12 the control fails with another library's error: FAIL;
@@ -171,8 +175,8 @@ case "\$1" in
     on dmg_build_fail && { echo "hdiutil: create failed - stub" >&2; exit 1; }
     src=
     for ((i = 1; i <= \$#; i++)); do [ "\${!i}" = -srcfolder ] && { j=\$((i + 1)); src=\${!j}; }; done
-    echo x >> "$C/dmg_created"
-    tar -C "\$src" -cf "\${@: -1}" . ;;
+    tar -C "\$src" -cf "\${@: -1}" . || exit 1
+    sha256sum "\${@: -1}" | cut -d' ' -f1 >> "$C/dmg_created" ;;
   attach)
     mp= img=\${@: -1}
     for ((i = 1; i <= \$#; i++)); do [ "\${!i}" = -mountpoint ] && { j=\$((i + 1)); mp=\${!j}; }; done
@@ -303,7 +307,10 @@ case "\$name" in
     on fail_render && { printf '%b\n' "FAIL\tm9-render-title-or-nav-not-observed"; exit 1; }
     : > "\$out"; printf '%b\n' "PASS\tm9-render-webview-screenshot\t\$out\tuniformity deferred to the caller's PIL host" ;;
   m9_reply_channel_test.py)
-    on leak_reply && { printf 'LEAK\t4242\t4242\tThu Oct 23 10:00:00 2026\t%s\n' "\$browser"; printf '%b\n' "FAIL\tmac-teardown-leak\t1"; exit 1; }
+    if on leak_reply; then   # this fake's own identity, as mac_term_teardown prints a process it left running
+      printf 'LEAK\t%s\t%s\t%s\t%s about:blank\n' "\$\$" "\$\$" "\$(date '+%a %b %e %H:%M:%S %Y')" "\$browser" | tee "$C/leak_line.\$ZB_ROLE"
+      printf '%b\n' "FAIL\tmac-teardown-leak\t1"; exit 1
+    fi
     printf '%b\n' "PASS\tm9-reply-channel-contract" ;;
   m9_load_fail_test.py)
     on skip_loadfail && { echo "SKIP: hw gate"; exit 77; }
@@ -387,15 +394,16 @@ GIT=(env -i PATH=/usr/bin:/bin HOME="$T/home" GIT_CONFIG_NOSYSTEM=1 git -C "$R")
   && "${GIT[@]}" -c user.name=selftest -c user.email=selftest@invalid commit -q -m staged \
   || { bad "could not build the scratch repo"; exit 1; }
 TREE=$("${GIT[@]}" rev-parse 'HEAD^{tree}')
+COMMITSHA=$("${GIT[@]}" rev-parse HEAD)
 
-run_gate() { # run_gate <label> [mode files...] [-- VAR=value ...]: sets rc, OUT, EV
+run_gate() { # run_gate <label> [mode files...] [-- VAR=value ...]: sets rc, OUT, EV (leaknext keeps the run dirs)
   local label=$1; shift
   rm -rf "${C:?}"/*
   : > "$C/seq"; : > "$C/py.log"; : > "$C/find_delete"; : > "$C/dmg_created"; : > "$C/calls"
   while [ $# -gt 0 ] && [ "$1" != -- ]; do touch "$C/mode_$1"; shift; done
   [ "${1:-}" = -- ] && shift
   for role in intel arm; do
-    find "$X/hosts/$role" -mindepth 1 -maxdepth 1 -name 'zb-gate-*' -exec rm -rf {} +
+    [ "$label" = leaknext ] || find "$X/hosts/$role" -mindepth 1 -maxdepth 1 -name 'zb-gate-*' -exec rm -rf {} +
     rm -rf "$X/hosts/$role/Library/Caches/zigBrowser"
     find "$X/hosts/$role/Library/Logs/DiagnosticReports" -name 'zigBrowser-*' -delete
     rm -f "$X/private/var/folders/$role/T/zigBrowser-render.tmp" "$X/hosts/$role/zb-stat-error"
@@ -427,13 +435,13 @@ DSHA=$(sed -n "s/^DMG$TB\([0-9a-f]*\)$TB.*/\1/p" "$OUT" | head -n 1)
 if [ "$rc" -eq 0 ] && grep -qxF "PASS${TB}ms1c-app-gate${TB}both-arches${TB}$DSHA" "$OUT" && [ -n "$DSHA" ] \
    && leg_is x86_64 PASS && leg_is arm64 PASS; then ok "P1: exit 0, PASS with the dmg sha256, both legs PASS"
 else bad "P1: exit $rc: $(tailout)"; fi
-ldsha=$(sha256sum "$T/tmp"/zb-ms1c-stage-*/zigBrowser.dmg 2>/dev/null | awk '{ print $1 }' | head -n 1)
 ct=$(sed -n "s/^CLEANTREE$TB//p" "$OUT" | head -n 1)
-legsha=$(for a in x86_64 arm64; do sed -n "s/^DMG$TB//p" "$EV/$a/evidence/leg.log" 2>/dev/null; done | sort -u | tr '\n' ' ')
-if [ "$(wc -l < "$C/dmg_created" 2>/dev/null)" = 1 ] && [ "$(cut -f2,3 <<<"$ct")" = "$TREE$TB$TREE" ] && [ "$legsha" = "$DSHA " ] \
-   && { [ -z "$ldsha" ] || [ "$ldsha" = "$DSHA" ]; }; then
-  ok "P2: one dmg from a clean tree of the commit's tree; both legs saw its exact bytes"
-else bad "P2: images made $(wc -l < "$C/dmg_created" 2>/dev/null || echo 0), clean tree '$ct', leg digests '$legsha', printed '$DSHA'"; fi
+legsha=$(for a in x86_64 arm64; do sed -n "s/^DMG$TB//p" "$EV/$a/evidence/leg.log" 2>/dev/null; done | tr '\n' ' ')
+made=$(cat "$C/dmg_created" 2>/dev/null)
+if [ "$(sed -n "s/^COMMIT$TB//p" "$OUT")" = "$COMMITSHA" ] && [ "$(cat "$EV/commit" 2>/dev/null)" = "COMMIT$TB$COMMITSHA" ] \
+   && [ "$(cut -f2,3 <<<"$ct")" = "$TREE$TB$TREE" ] && [ "$made" = "$DSHA" ] && [ "$legsha" = "$DSHA $DSHA " ]; then
+  ok "P2: commit $COMMITSHA (tree $TREE) named in full; one dmg built from that tree; both legs saw its digest"
+else bad "P2: COMMIT '$(sed -n "s/^COMMIT$TB//p" "$OUT")' (want $COMMITSHA), clean tree '$ct' (want $TREE), images made '$made', leg digests '$legsha', printed '$DSHA'"; fi
 p3=ok
 for role in intel arm; do
   rd=$(rd_of $role)
@@ -461,13 +469,15 @@ p5=ok
 for role in intel arm; do
   rd=$(rd_of $role)
   rows=$(awk -F'\t' -v r=$role '$1 == r && $2 != "control"' "$C/py.log" 2>/dev/null)
-  [ "$(wc -l <<<"$rows")" -eq 4 ] && [ -n "$rows" ] || { p5="$role ran $(wc -l <<<"$rows") rows"; continue; }
+  names=$(cut -f2 <<<"$rows" | LC_ALL=C sort | tr '\n' ' ')
+  [ "$names" = "exec_arch_probe.py m9_load_fail_test.py m9_render_test.py m9_reply_channel_test.py " ] \
+    || { p5="$role ran '$names', not each of the four exactly once"; continue; }
   wantenv="HOME=$rd/run-env/home|CF=$rd/run-env/home|TMPDIR=$rd/run-env/tmp/|XD=$rd/run-env/xdg-data|XC=$rd/run-env/xdg-cache|XG=$rd/run-env/xdg-config|XR=$rd/run-env/xdg-runtime|S=$rd/s|E=1"
   while IFS=$'\t' read -r _ name br zo envl; do
     [ "$br" = "$rd/$APPEXE" ] && [ "$zo" = absent ] && [ "$envl" = "$wantenv" ] || p5="$role $name: browser '$br' zig-out $zo env '$envl'"
   done <<<"$rows"
 done
-[ "$p5" = ok ] && ok "P5: four rows per Mac on the unpacked exe, no zig-out, private env under the run root, ephemeral store" || bad "P5: $p5"
+[ "$p5" = ok ] && ok "P5: each of the four workload scripts exactly once per Mac, on the unpacked exe, no zig-out, private env under the run root, ephemeral store" || bad "P5: $p5"
 p6=ok
 for role in intel arm; do
   rd=$(rd_of $role)
@@ -529,12 +539,20 @@ run_gate skip skip_loadfail.arm
 
 run_gate leak leak_reply.intel
 rd=$(rd_of intel)
-if [ "$rc" -eq 2 ] && leg_is x86_64 INCONCLUSIVE && leg_is arm64 PASS && no_pass && grep -q "HOST_STOPPED" "$OUT" \
-   && [ "$(pyrows intel)" = "m9_render_test.py m9_reply_channel_test.py " ] && [ -n "$rd" ] && [ -d "$rd" ] \
-   && grep -qx "LEAKED${TB}4242${TB}4242${TB}.*" "$rd/LEAKED" 2>/dev/null && ! grep -qF "$rd" "$C/find_delete" 2>/dev/null \
-   && ! grep "^CLEANUP" "$OUT" | grep -qF "${rd##*/}"; then
-  ok "F8: a leak stops that Mac: no later row or control, LEAKED kept, the run root KEPT, exit 2"
-else bad "F8: exit $rc, intel rows '$(pyrows intel)', root '$rd' $( [ -d "$rd" ] && echo kept || echo gone): $(tailout)"; fi
+seen=$(cat "$C/leak_line.intel" 2>/dev/null)   # the identity the workload actually printed
+want="LEAKED${TB}$(cut -f2- <<<"$seen")"
+f8=ok
+[ "$(grep -c "^LEAK$TB" <<<"$seen")" -eq 1 ] && [ "$(cut -f2 <<<"$seen")" -gt 1 ] 2>/dev/null || f8="the workload printed no single LEAK identity: '$seen'"
+[ "$rc" -eq 2 ] && leg_is x86_64 INCONCLUSIVE && leg_is arm64 PASS && no_pass && grep -q "HOST_STOPPED" "$OUT" || f8="exit $rc: $(tailout)"
+[ "$(pyrows intel)" = "m9_render_test.py m9_reply_channel_test.py " ] || f8="intel rows '$(pyrows intel)'"
+[ -n "$rd" ] && [ -d "$rd" ] || f8="the run root '$rd' was not kept"
+[ "$(cat "$rd/LEAKED" 2>/dev/null)" = "$want" ] || f8="LEAKED holds '$(cat "$rd/LEAKED" 2>/dev/null)', not exactly '$want'"
+! grep -qF "$rd" "$C/find_delete" 2>/dev/null && ! grep "^CLEANUP" "$OUT" | grep -qF "${rd##*/}" || f8="a cleanup reached the kept run root"
+run_gate leaknext   # the next run on that Mac: held by the kept marker, nothing attached, the marker untouched
+{ [ "$rc" -eq 2 ] && leg_is x86_64 INCONCLUSIVE && leg_is arm64 PASS && grep -q "HOST_HELD${TB}$rd/LEAKED" "$OUT" \
+  && ! grep -q "^intel${TB}attach" "$C/seq" && [ "$(cat "$rd/LEAKED" 2>/dev/null)" = "$want" ]; } || f8="the next run was not held: exit $rc: $(tailout)"
+[ "$f8" = ok ] && ok "F8: a leak stops that Mac: no later row or control, exactly the printed identity in the kept LEAKED, no cleanup, the next run HOST_HELD" \
+  || bad "F8: $f8"
 
 run_gate detach detach_fail.arm
 rd=$(rd_of arm)
