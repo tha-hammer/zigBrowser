@@ -22,14 +22,26 @@ SCP=(env -u DISPLAY -u WAYLAND_DISPLAY -u XAUTHORITY -u SSH_ASKPASS scp -i "$KEY
      -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$KNOWN_HOSTS" -o ConnectTimeout=15)
 
 FILES=(tests/mac/spawn_group_test.c tests/mac/watch_stub.py)
-[ -f src/agent_spawn_posix.c ] && FILES+=(src/agent_spawn_posix.c src/agent_spawn_posix.h)
+SHA=$(git rev-parse --verify "${1:-HEAD}^{commit}")
+echo "== commit $SHA" >&2
+git cat-file -e "$SHA:src/agent_spawn_posix.c" 2>/dev/null \
+  && FILES+=(src/agent_spawn_posix.c src/agent_spawn_posix.h)
+stage=$(mktemp -d "${TMPDIR:-/tmp}/zb-spawn-drv-XXXXXX")
+trap 'case "$stage" in "${TMPDIR:-/tmp}"/zb-spawn-drv-??????) rm -rf -- "${stage:?}";; esac' EXIT
+git archive "$SHA" -- "${FILES[@]}" agent/host/zb_agent_host/__init__.py \
+  agent/host/zb_agent_host/parent_watch.py | tar -x -C "$stage"
 
 leg() { # $1=host $2=expected uname -m
   local host="$1" arch="$2"
   local rdir="zb-spawn-$(date +%s)-$$-$RANDOM"
-  "${SSH[@]}" "$host" "mkdir -p \"\$HOME/${rdir:?}/host/zb_agent_host\"" || { echo "FAIL: mkdir on $host" >&2; return 1; }
-  if ! "${SCP[@]}" "${FILES[@]}" "$host:${rdir}/" >/dev/null ||
-     ! "${SCP[@]}" agent/host/zb_agent_host/__init__.py agent/host/zb_agent_host/parent_watch.py "$host:${rdir}/host/zb_agent_host/" >/dev/null; then
+  "${SSH[@]}" "$host" "mkdir \"\$HOME/${rdir:?}\" && mkdir -p \"\$HOME/${rdir:?}/host/zb_agent_host\"" \
+    || { echo "FAIL: mkdir on $host" >&2; return 1; }
+  local -a staged_files=()
+  local f
+  for f in "${FILES[@]}"; do staged_files+=("$stage/$f"); done
+  if ! "${SCP[@]}" "${staged_files[@]}" "$host:${rdir}/" >/dev/null ||
+     ! "${SCP[@]}" "$stage/agent/host/zb_agent_host/__init__.py" \
+       "$stage/agent/host/zb_agent_host/parent_watch.py" "$host:${rdir}/host/zb_agent_host/" >/dev/null; then
     "${SSH[@]}" "$host" "rm -rf \"\$HOME/${rdir:?}\"" || true
     echo "FAIL: scp to $host" >&2; return 1
   fi

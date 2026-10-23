@@ -31,22 +31,23 @@ ssh_cmd() { # $1=key
 
 stage=$(mktemp -d "${TMPDIR:-/tmp}/zb-r1kmac-XXXXXX")
 trap 'case "$stage" in */zb-r1kmac-*) rm -rf -- "${stage:?}";; esac' EXIT
-pick() { # $1=path in the repo, $2=name in the stage; a missing file stays missing (the red says so)
-  if [ -n "${COMMIT:-}" ]; then git show "$COMMIT:$1" > "${stage:?}/$2" 2>/dev/null || rm -f -- "${stage:?}/$2"
-  elif [ -f "$1" ]; then cp "$1" "$stage/$2"; fi
-}
-COMMIT="${1:-}"
-pick tests/mac/r1_kernel_driver.py r1_kernel_driver.py
-pick tests/mac/r1_kernel_inner.py r1_kernel_inner.py
-pick agent/host/zb_agent_host/sandbox_macos.py sandbox_macos.py
-pick agent/host/zb_agent_host/proc_darwin.py proc_darwin.py
+SHA=$(git rev-parse --verify "${1:-HEAD}^{commit}")
+echo "== commit $SHA" >&2
+FILES=(tests/mac/r1_kernel_driver.py tests/mac/r1_kernel_inner.py agent/host/zb_agent_host/sandbox_macos.py)
+git cat-file -e "$SHA:agent/host/zb_agent_host/proc_darwin.py" 2>/dev/null \
+  && FILES+=(agent/host/zb_agent_host/proc_darwin.py)
+git archive "$SHA" -- "${FILES[@]}" | tar -x -C "$stage"
+STAGED_FILES=("$stage/tests/mac/r1_kernel_driver.py" "$stage/tests/mac/r1_kernel_inner.py"
+              "$stage/agent/host/zb_agent_host/sandbox_macos.py")
+[ ! -f "$stage/agent/host/zb_agent_host/proc_darwin.py" ] \
+  || STAGED_FILES+=("$stage/agent/host/zb_agent_host/proc_darwin.py")
 
 leg() { # $1=host $2=expected uname -m $3=key
   local host="$1" arch="$2"
   ssh_cmd "$3"
   local rdir="zb-r1kmac-$(date +%s)-$$-$RANDOM"
   "${SSH[@]}" "$host" "mkdir \"\$HOME/${rdir:?}\"" || { echo "FAIL: mkdir on $host" >&2; return 1; }
-  if ! "${SCP[@]}" "$stage"/*.py "$host:${rdir}/" >/dev/null; then
+  if ! "${SCP[@]}" "${STAGED_FILES[@]}" "$host:${rdir}/" >/dev/null; then
     "${SSH[@]}" "$host" "rm -rf \"\$HOME/${rdir:?}\"" || true
     echo "FAIL: scp to $host" >&2; return 1
   fi

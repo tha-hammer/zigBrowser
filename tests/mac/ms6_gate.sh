@@ -31,6 +31,18 @@ scp_opts() { printf '%s\0' env -u DISPLAY -u WAYLAND_DISPLAY -u XAUTHORITY -u SS
 
 
 LEG_TIMEOUT="${ZB_MAC_LEG_TIMEOUT:-180}"
+SHA=$(git rev-parse --verify "${1:-HEAD}^{commit}")
+echo "== commit $SHA" >&2
+stage=$(mktemp -d "${TMPDIR:-/tmp}/zb-ms6-drv-XXXXXX")
+trap 'case "$stage" in "${TMPDIR:-/tmp}"/zb-ms6-drv-??????) rm -rf -- "${stage:?}";; esac' EXIT
+FILES=(tests/mac/agent_sandbox_containment_spike.sb tests/mac/sandbox_containment_test.sh
+       tests/mac/agent_sandbox_ms6_1_token_isolation.sb tests/mac/ms6_1_token_isolation_test.sh
+       tests/mac/ms6_1_procinfo_probe.c tests/mac/ms6_generated_profile_test.sh
+       tests/mac/ms6_3_fd3_reopen_test.sh tests/mac/ms6_3_fd3_reopen.c tests/mac/ms6_4_egress_test.sh
+       tests/mac/ms6_4_connect_probe.c agent/host/zb_agent_host/sandbox_macos.py agent/host/zb_agent_host/netd.py)
+git archive "$SHA" -- "${FILES[@]}" | tar -x -C "$stage"
+STAGED_FILES=()
+for f in "${FILES[@]}"; do STAGED_FILES+=("$stage/$f"); done
 
 verify_host() { # $1=host $2=key $3=label (the label is the EXPECTED uname -m, asserted on the host)
   local host="$1" key="$2" label="$3"
@@ -38,13 +50,8 @@ verify_host() { # $1=host $2=key $3=label (the label is the EXPECTED uname -m, a
   echo "== MS6 Seatbelt containment on $host ($label) ==" >&2
   local rdir="zb-ms6-$(date +%s)-$$-$RANDOM"
   local rm_rdir="rm -rf \"\$HOME/${rdir:?}\""
-  "${SSH[@]}" "$host" "mkdir -p \"\$HOME/${rdir}\"" || { echo "FAIL: mkdir ${rdir} on $host" >&2; return 1; }
-  "${SCP[@]}" tests/mac/agent_sandbox_containment_spike.sb tests/mac/sandbox_containment_test.sh \
-    tests/mac/agent_sandbox_ms6_1_token_isolation.sb tests/mac/ms6_1_token_isolation_test.sh tests/mac/ms6_1_procinfo_probe.c \
-    tests/mac/ms6_generated_profile_test.sh tests/mac/ms6_3_fd3_reopen_test.sh tests/mac/ms6_3_fd3_reopen.c \
-    tests/mac/ms6_4_egress_test.sh tests/mac/ms6_4_connect_probe.c \
-    agent/host/zb_agent_host/sandbox_macos.py agent/host/zb_agent_host/netd.py \
-    "$host":"${rdir}"/ >/dev/null \
+  "${SSH[@]}" "$host" "mkdir \"\$HOME/${rdir}\"" || { echo "FAIL: mkdir ${rdir} on $host" >&2; return 1; }
+  "${SCP[@]}" "${STAGED_FILES[@]}" "$host":"${rdir}"/ >/dev/null \
     || { echo "FAIL: scp MS6 sources to $host" >&2; "${SSH[@]}" "$host" "$rm_rdir" >/dev/null 2>&1 || true; return 1; }
   timeout "$LEG_TIMEOUT" "${SSH[@]}" "$host" "ZB_EXPECT_ARCH='${label}' ZB_RDIR='${rdir}' /bin/bash -s" <<'REMOTE' || { echo "FAIL: MS6 leg on $host timed out/failed" >&2; "${SSH[@]}" "$host" "$rm_rdir" >/dev/null 2>&1 || true; return 1; }
 set -euo pipefail

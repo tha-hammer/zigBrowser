@@ -4,7 +4,7 @@
 # 127.0.0.1 (lsof), the CONNECT/SNI allowlist against a private fake on 127.0.0.1, and a clean exit on EOF. No display,
 # no browser, no install, no network beyond loopback: each leg copies the two files into a per-run nonce dir under
 # $HOME and deletes that exact dir. Every ssh/scp: BatchMode=yes, strict host keys, no askpass.
-# usage: tests/mac/ms6_netd_darwin_gate.sh [commit]   (default: the working tree)
+# usage: tests/mac/ms6_netd_darwin_gate.sh [commit]   (default: HEAD)
 set -euo pipefail
 
 LEG_TIMEOUT="${ZB_MAC_LEG_TIMEOUT:-240}"
@@ -23,18 +23,16 @@ SCP=(env -u DISPLAY -u WAYLAND_DISPLAY -u XAUTHORITY -u SSH_ASKPASS scp -i "$KEY
 
 stage=$(mktemp -d "${TMPDIR:-/tmp}/zb-netdmac-XXXXXX")
 trap 'case "$stage" in */zb-netdmac-*) rm -rf -- "${stage:?}";; esac' EXIT
-if [ -n "${1:-}" ]; then
-  git show "$1:tests/mac/netd_darwin_driver.py" > "$stage/netd_darwin_driver.py"
-  git show "$1:agent/host/zb_agent_host/netd.py" > "$stage/netd.py"
-else
-  cp tests/mac/netd_darwin_driver.py agent/host/zb_agent_host/netd.py "$stage/"
-fi
+SHA=$(git rev-parse --verify "${1:-HEAD}^{commit}")
+echo "== commit $SHA" >&2
+git archive "$SHA" -- tests/mac/netd_darwin_driver.py agent/host/zb_agent_host/netd.py | tar -x -C "$stage"
 
 leg() { # $1=host $2=expected uname -m
   local host="$1" arch="$2"
   local rdir="zb-netdmac-$(date +%s)-$$-$RANDOM"
   "${SSH[@]}" "$host" "mkdir \"\$HOME/${rdir:?}\"" || { echo "FAIL: mkdir on $host" >&2; return 1; }
-  if ! "${SCP[@]}" "$stage/netd.py" "$stage/netd_darwin_driver.py" "$host:${rdir}/" >/dev/null; then
+  if ! "${SCP[@]}" "$stage/agent/host/zb_agent_host/netd.py" "$stage/tests/mac/netd_darwin_driver.py" \
+    "$host:${rdir}/" >/dev/null; then
     "${SSH[@]}" "$host" "rm -rf \"\$HOME/${rdir:?}\"" || true
     echo "FAIL: scp to $host" >&2; return 1
   fi

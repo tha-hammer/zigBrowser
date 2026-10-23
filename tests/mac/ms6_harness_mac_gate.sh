@@ -6,7 +6,7 @@
 # every SpawnGroup test through kqueue. The run must end in exactly "OK" with the expected count, and no
 # ResourceWarning. Per-run ~/zb-hgmac-<nonce>, deleted on exit; nothing installed. BatchMode, strict host keys, no
 # askpass; the arm64 host is required (no default).
-# usage: tests/mac/ms6_harness_mac_gate.sh [commit]   (default: the working tree)
+# usage: tests/mac/ms6_harness_mac_gate.sh [commit]   (default: HEAD)
 set -euo pipefail
 
 MAC_PY="${ZB_MAC_PY:-/Library/Frameworks/Python.framework/Versions/Current/bin/python3}"
@@ -24,10 +24,9 @@ FILES=(tests/e2e/ms6_hard_gate_harness_test.py tests/e2e/ms6_hard_gate_harness_s
        tests/mac/hard_gate/harness.py tests/mac/hard_gate/hard_gate_driver.py tests/mac/ms6_hard_gate.sh)
 stage=$(mktemp -d "${TMPDIR:-/tmp}/zb-hgmac-XXXXXX")
 trap 'case "$stage" in */zb-hgmac-*) rm -rf -- "${stage:?}";; esac' EXIT
-for f in "${FILES[@]}"; do
-  mkdir -p "${stage:?}/$(dirname "$f")"
-  if [ -n "${1:-}" ]; then git show "$1:$f" > "${stage:?}/$f"; else cp "$f" "${stage:?}/$f"; fi
-done
+SHA=$(git rev-parse --verify "${1:-HEAD}^{commit}")
+echo "== commit $SHA" >&2
+git archive "$SHA" -- "${FILES[@]}" | tar -x -C "$stage"
 
 leg() { # $1=host $2=expected uname -m $3=key
   local host="$1" arch="$2" key="$3"

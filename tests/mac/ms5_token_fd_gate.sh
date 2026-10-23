@@ -21,13 +21,21 @@ SCP=(env -u DISPLAY -u WAYLAND_DISPLAY -u XAUTHORITY -u SSH_ASKPASS scp -i "$KEY
      -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$KNOWN_HOSTS" -o ConnectTimeout=15)
 
 FILES=(src/agent_secrets_mac.h src/agent_secrets_mac.m tests/mac/token_fd_test.m)
-[ -f src/agent_token_fd_mac.c ] && FILES+=(src/agent_token_fd_mac.c src/agent_token_fd_mac.h)
+SHA=$(git rev-parse --verify "${1:-HEAD}^{commit}")
+echo "== commit $SHA" >&2
+git cat-file -e "$SHA:src/agent_token_fd_mac.c" 2>/dev/null \
+  && FILES+=(src/agent_token_fd_mac.c src/agent_token_fd_mac.h)
+stage=$(mktemp -d "${TMPDIR:-/tmp}/zb-tokenfd-drv-XXXXXX")
+trap 'case "$stage" in "${TMPDIR:-/tmp}"/zb-tokenfd-drv-??????) rm -rf -- "${stage:?}";; esac' EXIT
+git archive "$SHA" -- "${FILES[@]}" | tar -x -C "$stage"
+STAGED_FILES=()
+for f in "${FILES[@]}"; do STAGED_FILES+=("$stage/$f"); done
 
 leg() { # $1=host $2=expected uname -m
   local host="$1" arch="$2"
   local rdir="zb-tokfd-$(date +%s)-$$-$RANDOM"
   "${SSH[@]}" "$host" "mkdir \"\$HOME/${rdir:?}\"" || { echo "FAIL: mkdir on $host" >&2; return 1; }
-  if ! "${SCP[@]}" "${FILES[@]}" "$host:${rdir}/" >/dev/null; then
+  if ! "${SCP[@]}" "${STAGED_FILES[@]}" "$host:${rdir}/" >/dev/null; then
     "${SSH[@]}" "$host" "rm -rf \"\$HOME/${rdir:?}\"" || true
     echo "FAIL: scp to $host" >&2; return 1
   fi

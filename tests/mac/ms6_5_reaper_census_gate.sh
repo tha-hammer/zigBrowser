@@ -5,7 +5,7 @@
 # run-dir fd names that dir, and that a decoy (cwd /tmp) and a scrubber (cwd /) do NOT classify once the pinned
 # fd is not leaked to them. Per-run ~/zb-reaper-census-<nonce>, deleted on exit; nothing installed. BatchMode,
 # strict host keys, no askpass; the arm64 host is required (no default).
-# usage: tests/mac/ms6_5_reaper_census_gate.sh [commit]   (default: the working tree)
+# usage: tests/mac/ms6_5_reaper_census_gate.sh [commit]   (default: HEAD)
 set -euo pipefail
 
 LEG_TIMEOUT="${ZB_MAC_LEG_TIMEOUT:-240}"
@@ -19,9 +19,10 @@ mac_config two
 KNOWN_HOSTS="$PWD/tests/mac/known_hosts"
 stage=$(mktemp -d "${TMPDIR:-/tmp}/zb-reaper-census-XXXXXX")
 trap 'case "$stage" in "${TMPDIR:-/tmp}"/zb-reaper-census-??????) find "${stage:?}" -delete;; esac' EXIT
-for f in src/agent_run_reaper.c src/agent_run_reaper.h tests/mac/ms6_5_reaper_census_probe.c; do
-  if [ -n "${1:-}" ]; then git show "$1:$f" > "${stage:?}/$(basename "$f")"; else cp "$f" "${stage:?}/"; fi
-done
+SHA=$(git rev-parse --verify "${1:-HEAD}^{commit}")
+echo "== commit $SHA" >&2
+FILES=(src/agent_run_reaper.c src/agent_run_reaper.h tests/mac/ms6_5_reaper_census_probe.c)
+git archive "$SHA" -- "${FILES[@]}" | tar -x -C "$stage"
 
 leg() { # $1=host $2=expected uname -m $3=key
   local host="$1" arch="$2" key="$3"
@@ -38,7 +39,8 @@ case "$ZB_RDIR" in zb-reaper-census-*) ;; *) echo "FAIL: bad run dir $ZB_RDIR" >
 trap 'cd / && find "$HOME/${ZB_RDIR:?}" -delete' EXIT
 [ "$(uname -m)" = "$ZB_ARCH" ] || { echo "FAIL: this leg is $(uname -m), expected $ZB_ARCH" >&2; exit 1; }
 cd "$d"
-xcrun clang -std=gnu11 -Wall -Wextra -Werror -I. agent_run_reaper.c ms6_5_reaper_census_probe.c -o census_probe
+xcrun clang -std=gnu11 -Wall -Wextra -Werror -Isrc src/agent_run_reaper.c \
+  tests/mac/ms6_5_reaper_census_probe.c -o census_probe
 ./census_probe </dev/null
 REMOTE
 }

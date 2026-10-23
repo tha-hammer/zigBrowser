@@ -5,7 +5,7 @@
 # 0..2 is EINVAL; one duplex socket may be both streams; the census reaches past fd 300 (RoseCat 7150). Per-run
 # ~/zb-spawnio-<nonce>, deleted on exit; nothing installed. BatchMode, strict host keys, no askpass; the arm64 host
 # is required (no default).
-# usage: tests/mac/ms5_spawn_io_gate.sh [commit]   (default: the working tree)
+# usage: tests/mac/ms5_spawn_io_gate.sh [commit]   (default: HEAD)
 set -euo pipefail
 
 LEG_TIMEOUT="${ZB_MAC_LEG_TIMEOUT:-240}"
@@ -19,10 +19,15 @@ mac_config two
 KNOWN_HOSTS="$PWD/tests/mac/known_hosts"
 stage=$(mktemp -d "${TMPDIR:-/tmp}/zb-spawnio-XXXXXX")
 trap 'case "$stage" in */zb-spawnio-*) rm -rf -- "${stage:?}";; esac' EXIT
-for f in tests/mac/spawn_group_io_test.c src/agent_spawn_posix.c src/agent_spawn_posix.h; do
-  if [ -n "${1:-}" ]; then git show "$1:$f" > "${stage:?}/$(basename "$f")" 2>/dev/null || rm -f -- "${stage:?}/$(basename "$f")"
-  elif [ -f "$f" ]; then cp "$f" "${stage:?}/"; fi
-done
+SHA=$(git rev-parse --verify "${1:-HEAD}^{commit}")
+echo "== commit $SHA" >&2
+FILES=(tests/mac/spawn_group_io_test.c)
+git cat-file -e "$SHA:src/agent_spawn_posix.c" 2>/dev/null \
+  && FILES+=(src/agent_spawn_posix.c src/agent_spawn_posix.h)
+git archive "$SHA" -- "${FILES[@]}" | tar -x -C "$stage"
+STAGED_FILES=("$stage/tests/mac/spawn_group_io_test.c")
+[ ! -f "$stage/src/agent_spawn_posix.c" ] \
+  || STAGED_FILES+=("$stage/src/agent_spawn_posix.c" "$stage/src/agent_spawn_posix.h")
 
 leg() { # $1=host $2=expected uname -m $3=key
   local host="$1" arch="$2" key="$3"
@@ -32,7 +37,7 @@ leg() { # $1=host $2=expected uname -m $3=key
              -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$KNOWN_HOSTS" -o ConnectTimeout=15)
   local rdir="zb-spawnio-$(date +%s)-$$-$RANDOM"
   "${SSH[@]}" "$host" "mkdir \"\$HOME/${rdir:?}\"" || { echo "FAIL: mkdir on $host" >&2; return 1; }
-  if ! "${SCP[@]}" "${stage:?}"/* "$host:${rdir}/" >/dev/null; then
+  if ! "${SCP[@]}" "${STAGED_FILES[@]}" "$host:${rdir}/" >/dev/null; then
     "${SSH[@]}" "$host" "rm -rf \"\$HOME/${rdir:?}\"" || true
     echo "FAIL: scp to $host" >&2; return 1
   fi

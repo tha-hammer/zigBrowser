@@ -4254,6 +4254,12 @@ pub fn build(b: *std.Build) void {
     mac_config_selftest.has_side_effects = true;
     mac_build_script_step.dependOn(&mac_config_selftest.step);
     test_step.dependOn(&mac_config_selftest.step);
+    // Every Mac gate ships only the exact commit it prints, into a fresh per-run directory (bd 4pa.59). This drives
+    // all gates with fake transports inside its own user+network namespace and must re-run as a filesystem census.
+    const mac_gate_provenance_selftest = b.addSystemCommand(&.{ "bash", "tests/mac/mac_gate_provenance_selftest.sh" });
+    mac_gate_provenance_selftest.has_side_effects = true;
+    mac_build_script_step.dependOn(&mac_gate_provenance_selftest.step);
+    test_step.dependOn(&mac_gate_provenance_selftest.step);
     // The shared transport (build-on-mac.sh, mac_gate_lib.sh) passes no display or askpass to ssh/scp (bd 3ui.9).
     const mac_transport_selftest = b.addSystemCommand(&.{ "bash", "tests/mac/mac_transport_selftest.sh" });
     for ([_][]const u8{

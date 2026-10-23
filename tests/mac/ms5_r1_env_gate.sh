@@ -5,7 +5,7 @@
 # xcrun clang (ad-hoc signed, plus a hardened-runtime copy), starts one sleeper that is NOT the driver's descendant,
 # runs the driver with the system python3 (-I), kills what it started and deletes that exact dir.
 # Every ssh/scp: BatchMode=yes, strict host keys, no askpass (no prompt on the user's desktop).
-# usage: tests/mac/ms5_r1_env_gate.sh [commit]   (default: the working tree)
+# usage: tests/mac/ms5_r1_env_gate.sh [commit]   (default: HEAD)
 set -euo pipefail
 
 LEG_TIMEOUT="${ZB_MAC_LEG_TIMEOUT:-240}"
@@ -24,20 +24,21 @@ SCP=(env -u DISPLAY -u WAYLAND_DISPLAY -u XAUTHORITY -u SSH_ASKPASS scp -i "$KEY
 
 stage=$(mktemp -d "${TMPDIR:-/tmp}/zb-r1env-XXXXXX")
 trap 'case "$stage" in */zb-r1env-*) rm -rf -- "${stage:?}";; esac' EXIT
-if [ -n "${1:-}" ]; then
-  git show "$1:tests/mac/r1_env_driver.py" > "$stage/r1_env_driver.py"
-  git show "$1:agent/host/zb_agent_host/proc_darwin.py" > "$stage/proc_darwin.py" 2>/dev/null || rm -f "$stage/proc_darwin.py"
-else
-  cp tests/mac/r1_env_driver.py "$stage/"
-  [ -f agent/host/zb_agent_host/proc_darwin.py ] && cp agent/host/zb_agent_host/proc_darwin.py "$stage/"
-fi
-FILES=("$stage"/*.py)
+SHA=$(git rev-parse --verify "${1:-HEAD}^{commit}")
+echo "== commit $SHA" >&2
+FILES=(tests/mac/r1_env_driver.py)
+git cat-file -e "$SHA:agent/host/zb_agent_host/proc_darwin.py" 2>/dev/null \
+  && FILES+=(agent/host/zb_agent_host/proc_darwin.py)
+git archive "$SHA" -- "${FILES[@]}" | tar -x -C "$stage"
+STAGED_FILES=("$stage/tests/mac/r1_env_driver.py")
+[ ! -f "$stage/agent/host/zb_agent_host/proc_darwin.py" ] \
+  || STAGED_FILES+=("$stage/agent/host/zb_agent_host/proc_darwin.py")
 
 leg() { # $1=host $2=expected uname -m
   local host="$1" arch="$2"
   local rdir="zb-r1env-$(date +%s)-$$-$RANDOM"
   "${SSH[@]}" "$host" "mkdir \"\$HOME/${rdir:?}\"" || { echo "FAIL: mkdir on $host" >&2; return 1; }
-  if ! "${SCP[@]}" "${FILES[@]}" "$host:${rdir}/" >/dev/null; then
+  if ! "${SCP[@]}" "${STAGED_FILES[@]}" "$host:${rdir}/" >/dev/null; then
     "${SSH[@]}" "$host" "rm -rf \"\$HOME/${rdir:?}\"" || true
     echo "FAIL: scp to $host" >&2; return 1
   fi

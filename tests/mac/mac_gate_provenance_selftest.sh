@@ -20,8 +20,8 @@
 #      payload to each configured host.
 # Oracle controls cover a marker-free wrong member appended to one tar, a clean first + wrong second tar, an
 # indirect `d=...; mkdir -p "$d"` reuse, and a dirty payload introduced only on invocation two. The historical
-# marker/lexical/printed-SHA control remains exactly 25 failures at the pre-green tree (26 before the universal
-# build-dmg.sh stopped shipping the working-tree Info.plist).
+# marker/lexical/printed-SHA predicates had exactly 25 failures at approved red a33bd0d3 (26 before the universal
+# build-dmg.sh stopped shipping the working-tree Info.plist) and must all be green here.
 # tests/mac/ms6_5_reaper_gate.sh is never run (session brief); it is covered by its own registered guard selftests.
 # Run: bash tests/mac/mac_gate_provenance_selftest.sh [repo root]
 set -uo pipefail
@@ -758,7 +758,7 @@ for row in "${DRIVEN[@]}"; do
   [ -z "$p1" ] || bad "P1 $name: $p1"
   [ -z "$p4" ] || bad "P4 $name: $p4"
 
-  # Preserve the reviewed pre-green 26-row control independently of the stronger proof above.
+  # Keep the reviewed pre-green marker/lexical/printed-SHA predicates independently of the stronger proof above.
   [ "$hit1" = - ] || legacy_fails=$((legacy_fails + 1))
   legacy_mk=$(cat "$c1"/call.* "$c1"/stdin.* 2>/dev/null | tr '\0' '\n' \
     | grep -aoE 'mkdir -p ("?\$HOME/|~/)zb-[A-Za-z0-9._-]+"?([[:space:];&|)]|$)' | head -n 1)
@@ -896,10 +896,8 @@ else
 fi
 
 [ "$controls" -eq 9 ] || bad "CONTROL expected 9 exact-byte/fresh-root controls, got $controls"
-# 25, not 26, since the universal build-dmg.sh (4pa.73) reads Info.plist and the icon from the commit's tree in its run
-# dir: it no longer ships the dirty working-tree Info.plist, so its legacy marker failure is gone.
-[ "$legacy_fails" -eq 25 ] && ok "legacy marker/lexical/printed-SHA control remains exactly 25 failures" \
-  || bad "CONTROL legacy failure count changed: expected 25, got $legacy_fails"
+[ "$legacy_fails" -eq 0 ] && ok "legacy marker/lexical/printed-SHA predicates are all green (red baseline: 25)" \
+  || bad "CONTROL legacy predicates still fail: expected 0, got $legacy_fails"
 
 if [ "$fails" -eq 0 ]; then printf 'PASS\tmac-gate-provenance-selftest\n'; exit 0; fi
 printf 'FAIL\tmac-gate-provenance-selftest\t%s failure(s)\n' "$fails"

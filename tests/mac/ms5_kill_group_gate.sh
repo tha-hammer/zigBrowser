@@ -8,7 +8,7 @@
 #   (the red) is never executed on a Mac: the red is shown on Linux only, inside a PID namespace.
 # Per-run ~/zb-killgroup-<nonce>, deleted on exit; nothing installed. BatchMode, strict host keys, no askpass; the
 # arm64 host is required (no default).
-# usage: tests/mac/ms5_kill_group_gate.sh [commit]   (default: the working tree)
+# usage: tests/mac/ms5_kill_group_gate.sh [commit]   (default: HEAD)
 set -euo pipefail
 
 LEG_TIMEOUT="${ZB_MAC_LEG_TIMEOUT:-240}"
@@ -23,11 +23,12 @@ KNOWN_HOSTS="$PWD/tests/mac/known_hosts"
 stage=$(mktemp -d "${TMPDIR:-/tmp}/zb-killgroup-XXXXXX")
 # Validated cleanup (RoseCat 7186): only our own mktemp dirs, by find -delete, never an unguarded rm -rf.
 trap 'case "$stage" in "${TMPDIR:-/tmp}"/zb-killgroup-??????) find "${stage:?}" -delete;; esac' EXIT
-for f in tests/kill_group/kill_group_test.c tests/kill_group/kill_group_fake.c src/agent_spawn_posix.c \
-         src/agent_spawn_posix.h; do
-  if [ -n "${1:-}" ]; then git show "$1:$f" > "${stage:?}/$(basename "$f")"; else cp "$f" "${stage:?}/"; fi
-done
-if ! grep -q 'pid <= 1' "${stage:?}/agent_spawn_posix.c"; then
+SHA=$(git rev-parse --verify "${1:-HEAD}^{commit}")
+echo "== commit $SHA" >&2
+FILES=(tests/kill_group/kill_group_test.c tests/kill_group/kill_group_fake.c src/agent_spawn_posix.c
+       src/agent_spawn_posix.h)
+git archive "$SHA" -- "${FILES[@]}" | tar -x -C "$stage"
+if ! grep -q 'pid <= 1' "${stage:?}/src/agent_spawn_posix.c"; then
   echo "NOT RUN: agent_spawn_posix.c has no 'pid <= 1' refusal; the unguarded kill is never run on a Mac" >&2
   exit 1
 fi
@@ -48,9 +49,9 @@ trap 'cd / && find "$HOME/${ZB_RDIR:?}" -delete' EXIT
 [ "$(uname -m)" = "$ZB_ARCH" ] || { echo "FAIL: this leg is $(uname -m), expected $ZB_ARCH" >&2; exit 1; }
 cd "$d"
 CC=(xcrun clang -std=gnu11 -Wall -Wextra -Werror)
-"${CC[@]}" -dynamiclib -o libzbspawn.dylib agent_spawn_posix.c -install_name @rpath/libzbspawn.dylib
-"${CC[@]}" -dynamiclib -o libzbfake.dylib kill_group_fake.c -install_name @rpath/libzbfake.dylib
-"${CC[@]}" -o kill_group_test kill_group_test.c -L. -lzbfake -lzbspawn -Wl,-rpath,@executable_path
+"${CC[@]}" -Isrc -dynamiclib -o libzbspawn.dylib src/agent_spawn_posix.c -install_name @rpath/libzbspawn.dylib
+"${CC[@]}" -Isrc -dynamiclib -o libzbfake.dylib tests/kill_group/kill_group_fake.c -install_name @rpath/libzbfake.dylib
+"${CC[@]}" -Isrc -o kill_group_test tests/kill_group/kill_group_test.c -L. -lzbfake -lzbspawn -Wl,-rpath,@executable_path
 ./kill_group_test </dev/null
 REMOTE
 }

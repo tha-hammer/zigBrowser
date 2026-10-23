@@ -25,8 +25,11 @@ SSH=(env -u DISPLAY -u WAYLAND_DISPLAY -u XAUTHORITY -u SSH_ASKPASS ssh -i "$KEY
      -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$PWD/tests/mac/known_hosts" -o ConnectTimeout=15 -o ServerAliveInterval=10)
 SCP=(env -u DISPLAY -u WAYLAND_DISPLAY -u XAUTHORITY -u SSH_ASKPASS scp -i "$KEY" -o IdentitiesOnly=yes -o BatchMode=yes
      -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$PWD/tests/mac/known_hosts" -o ConnectTimeout=15)
-TAR=$(mktemp "${TMPDIR:-/tmp}/zb-ms5e2e-XXXXXX.tar"); trap 'rm -f -- "$TAR"' EXIT
+stage=$(mktemp -d "${TMPDIR:-/tmp}/zb-ms5e2e-XXXXXX")
+trap 'case "$stage" in "${TMPDIR:-/tmp}"/zb-ms5e2e-??????) rm -rf -- "${stage:?}";; esac' EXIT
+TAR="$stage/src.tar"
 git archive --format=tar -o "$TAR" "$SHA" src build.zig build.zig.zon zigbrowser.json tests packaging agent tools
+tar -xf "$TAR" -C "$stage" tests/mac/lib_group_cleanup.sh
 
 leg() { # $1=host $2=expected uname -m
   local host="$1" arch="$2" rdir="zb-ms5e2e-$(date +%s)-$$-$RANDOM"
@@ -34,7 +37,7 @@ leg() { # $1=host $2=expected uname -m
   "${SCP[@]}" "$TAR" "$host:${rdir}/src.tar" >/dev/null || { "${SSH[@]}" "$host" "rm -rf \"\$HOME/${rdir:?}\""; return 1; }
   # The guarded cleanup and child pick (tests/mac/lib_group_cleanup.sh, tested locally by lib_group_cleanup_test.sh)
   # travel with the remote body on stdin.
-  { cat tests/mac/lib_group_cleanup.sh; cat <<'REMOTE'; } | timeout "$LEG_TIMEOUT" "${SSH[@]}" "$host" "ZB_RDIR='${rdir}' ZB_ARCH='${arch}' /bin/bash -s"
+  { cat "$stage/tests/mac/lib_group_cleanup.sh"; cat <<'REMOTE'; } | timeout "$LEG_TIMEOUT" "${SSH[@]}" "$host" "ZB_RDIR='${rdir}' ZB_ARCH='${arch}' /bin/bash -s"
 set -euo pipefail
 d="$HOME/${ZB_RDIR:?}"; trap 'zb_kill_saved_group "$d/pgid" >/dev/null; rm -rf "$HOME/${ZB_RDIR:?}"' EXIT
 [ "$(uname -m)" = "$ZB_ARCH" ] || { echo "FAIL: leg is $(uname -m), expected $ZB_ARCH" >&2; exit 1; }
