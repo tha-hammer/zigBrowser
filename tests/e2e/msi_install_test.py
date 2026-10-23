@@ -22,8 +22,9 @@ import scp_legacy  # noqa: E402  bd zigBrowser-ong.12: every copy over the legac
 os.environ.setdefault("SSH_ASKPASS_REQUIRE", "never")
 
 
-DEFAULT_KEY = Path("/home/maceo/vms/win11-m8/zb_guest_key")
-DEFAULT_HOST = "maceo@100.103.8.90"
+# bd zigBrowser-ong.16: there is no default host or key. A run names both (--host/--key or ZB_GUEST_HOST/ZB_GUEST_KEY);
+# anything less is refused before any ssh or scp call.
+REFUSED_EXIT = 2
 REMOTE_ROOT = r"$env:USERPROFILE\zigBrowser"
 
 
@@ -126,12 +127,17 @@ def copy_back_artifacts(root: Path, host: str, key: Path) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--host", default=os.environ.get("ZB_GUEST_HOST", DEFAULT_HOST))
-    parser.add_argument("--key", type=Path, default=Path(os.environ.get("ZB_GUEST_KEY", str(DEFAULT_KEY))))
+    parser.add_argument("--host", default=os.environ.get("ZB_GUEST_HOST", ""))
+    parser.add_argument("--key", default=os.environ.get("ZB_GUEST_KEY", ""))
     parser.add_argument("--url", default="")
     parser.add_argument("--keep-installed", action="store_true")
     parser.add_argument("--skip-build", action="store_true")
     args = parser.parse_args()
+    missing = [name for name, value in (("ZB_GUEST_HOST", args.host), ("ZB_GUEST_KEY", args.key)) if not value]
+    if missing:
+        eprint(f"refused: no Win11 guest named: set {' and '.join(missing)} (or --host/--key); there is no default")
+        return REFUSED_EXIT
+    args.key = Path(args.key)
 
     root = repo_root()
     if not args.key.exists():
