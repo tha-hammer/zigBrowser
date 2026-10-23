@@ -236,6 +236,9 @@ pub fn build(b: *std.Build) void {
         // builds only; run on the Win11 VM by `bash tests/windows/build-on-windows.sh ws2a3-async-ownership-win`
         // (tests/e2e/win_async_ownership_test.py).
         const ws2a3_module = b.createModule(.{ .target = target, .optimize = optimize, .link_libc = true });
+        // The WS2a.3 test seams (hold a completion, count live jobs) are compiled into THIS executable's shim
+        // only; every other build of webview2_shim.cpp omits them (tests/windows/ws2a3_seam_gating_test.py).
+        ws2a3_module.addCMacro("ZB_WS2A3_SEAMS", "1");
         configureBackend(ws2a3_module, b, backend, webview2_paths);
         ws2a3_module.addCSourceFile(.{ .file = b.path("tests/windows/ws2a3_async_ownership.c"), .flags = &.{"-std=c11"} });
         const ws2a3_drawer = b.addObject(.{ .name = "ws2a3-agent-drawer", .root_module = b.createModule(.{
@@ -441,6 +444,11 @@ pub fn build(b: *std.Build) void {
     // nonzero; the hostless ones still exit 0 standalone. Hermetic (every ZB_WIN* var removed; no host contacted).
     const windows_live_step_skip = b.addSystemCommand(&.{ "python3", "-I", "tests/windows/live_step_skip_test.py" });
     b.step("windows-live-step-skip", "WS0.9: every live Windows step fails under ZB_WIN_GATE=1 with no host (hermetic)").dependOn(&windows_live_step_skip.step);
+
+    // WS2a.3 (NavyCanyon c36ba6a R2): the WS2a.3 debug seams and their instrumentation are compiled into the
+    // ws2a3-async-ownership-win slice only; the real compiler preprocesses the real shim both ways (hermetic).
+    const windows_ws2a3_seam_gating = b.addSystemCommand(&.{ "python3", "-I", "tests/windows/ws2a3_seam_gating_test.py", "--zig", b.graph.zig_exe });
+    b.step("windows-ws2a3-seam-gating", "WS2a.3: the debug seams are in the slice build only, never in the WebView2 product build (hermetic)").dependOn(&windows_ws2a3_seam_gating.step);
 
     // bd zigBrowser-ong.12: the transport harness stages every file over the legacy scp protocol (-O); the Win10
     // box's sshd has no sftp subsystem. Hermetic (fake ssh/scp first on PATH; no host contacted).
@@ -3752,6 +3760,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&windows_capabilities_live.step);
     test_step.dependOn(&windows_refusal_live.step);
     test_step.dependOn(&windows_live_step_skip.step);
+    test_step.dependOn(&windows_ws2a3_seam_gating.step);
     test_step.dependOn(&windows_transport_scp_selftest.step);
     test_step.dependOn(&windows_scp_callers_selftest.step);
     test_step.dependOn(&run_ipc_tests.step);

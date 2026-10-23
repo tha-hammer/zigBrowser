@@ -6,20 +6,21 @@
  * `bash tests/windows/build-on-windows.sh ws2a3-async-ownership-win` (driven from Linux by
  * tests/e2e/win_async_ownership_test.py).
  *
- * Production entry points: zb_app_run on its own thread, zb_automation_get_title from this thread. Test seams
- * (webview2_shim.cpp, inert at 0): zb_automation_debug_complete_hold_ms holds a completion after it claimed
- * its job and before it writes the answer; zb_automation_debug_live_jobs counts allocated jobs.
+ * Production entry points: zb_app_run on its own thread, zb_automation_get_title from this thread. Test seams,
+ * compiled into this executable's shim ONLY (build.zig sets ZB_WS2A3_SEAMS on this step alone; the product
+ * build omits them, tests/windows/ws2a3_seam_gating_test.py): zb_automation_debug_complete_hold_ms holds a
+ * completion after it claimed its job and before it writes the answer; zb_automation_debug_live_jobs counts
+ * allocated jobs.
  *
  * Checks, one line each ("ok   <name>" or "FAIL <name>: ..."):
  *   - the fixture loads, and an ordinary call answers at once (OK);
- *   - with the completion held 3 s, a 300 ms call answers TIMEOUT, with no result, within 300 + 250 ms
- *     (+ 300 ms slack) and not before its deadline;
+ *   - ONE named assertion: with the completion held 3 s, a 300 ms call answers TIMEOUT, with no result,
+ *     within 300 + 250 ms (+ 300 ms slack) and not before its deadline;
  *   - the held job is released once its completion ends (live jobs back to the baseline: no leak);
  *   - the loop still answers afterwards.
- * Mutant (plan WS2a.3): restore the INFINITE wait -> the call answers only after the 3 s hold -> red.
- *
- * RED today: job_submit waits for a COMPLETING job with WaitForSingleObject(job->done, INFINITE), so the call
- * answers OK after the hold. Exit 0 only when every check passes. */
+ * Red (the leg before the green) and mutant (plan WS2a.3: restore the INFINITE wait): job_submit waits for a
+ * COMPLETING job with WaitForSingleObject(job->done, INFINITE), so the call answers OK with "App Index A" after
+ * the 3 s hold; that one assertion is the only FAIL line. Exit 0 only when every check passes. */
 
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -135,9 +136,10 @@ int main(int argc, char **argv) {
     zb_automation_debug_complete_hold_ms(0);
     snprintf(why, sizeof why, "rc=%d took=%llums result=%s (want TIMEOUT=%d within %d..%dms)", rc, took, got,
              ZB_AUTO_ERR_TIMEOUT, kDeadlineMs, kDeadlineMs + kWaiterGraceMs + kSlackMs);
-    check(rc == ZB_AUTO_ERR_TIMEOUT && took >= kDeadlineMs && took < kDeadlineMs + kWaiterGraceMs + kSlackMs,
-          "a call whose completion is held gives up within deadline + waiter grace (TIMEOUT)", why);
-    check(strcmp(got, "(null)") == 0, "the timed-out call returns no result", got);
+    /* ONE assertion: TIMEOUT, no result, and the elapsed bound together. */
+    check(rc == ZB_AUTO_ERR_TIMEOUT && strcmp(got, "(null)") == 0 && took >= kDeadlineMs &&
+              took < kDeadlineMs + kWaiterGraceMs + kSlackMs,
+          "a call whose completion is held gives up within deadline + waiter grace (TIMEOUT, no result)", why);
 
     const int drained = wait_live_jobs(baseline, kHoldMs + 3000);
     snprintf(why, sizeof why, "live jobs %d (want %d)", zb_automation_debug_live_jobs(), baseline);

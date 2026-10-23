@@ -9,9 +9,9 @@ production ABI (zb_app_run, zb_automation_get_title) plus the shim's inert WS2a.
 checks the host identity marker (%USERPROFILE%\zb\.gate-identity == ZB_WIN11_MARKER), then requires: exit 0, no
 FAIL line, and an `ok` line for every REQUIRED check below; it prints `ASSERTS <number of ok lines>`.
 
-Plan assertion: a call whose job is still completing gives up within deadline + waiter grace (250 ms) with
-TIMEOUT; no INFINITE wait remains in the marshal. Mutant: restore the INFINITE wait -> the call answers only
-after the held completion -> red.
+Plan assertion (ONE named check): a call whose job is still completing gives up within deadline + waiter grace
+(250 ms) with TIMEOUT and no result; no INFINITE wait remains in the marshal. Red and mutant (the INFINITE wait):
+the call answers OK with the title after the held completion, so that one check is the only FAIL line.
 
 Under ZB_WIN_GATE=1 a missing host or marker exits 1 ("no Windows host configured"); standalone it exits 77.
 A host run needs NavyCanyon's exact-commit approval and the orchestrator's release.
@@ -34,8 +34,7 @@ REQUIRED = (
     "the fixture loads",
     "an ordinary call answers at once",
     "no job is live between calls",
-    "a call whose completion is held gives up within deadline + waiter grace (TIMEOUT)",
-    "the timed-out call returns no result",
+    "a call whose completion is held gives up within deadline + waiter grace (TIMEOUT, no result)",
     "the held job is released once its completion ends (no leak)",
     "the loop still answers afterwards",
     "closing the window ends zb_app_run",
