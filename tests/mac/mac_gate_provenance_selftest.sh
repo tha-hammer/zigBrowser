@@ -12,8 +12,8 @@
 #   P1 every tracked file and every tracked member of every shipped or embedded tar is path-and-byte equal to
 #      `git show "$SHA:<path>"`; generated and pinned payloads have closed allowlists, and unknown payloads fail;
 #      the dirty-tree marker remains a separate, preserved diagnostic within the same row;
-#   P2 the fake remote starts with the selected run root already present and the gate must refuse before extraction,
-#      build or any other product work (a textual `mkdir` spelling is not proof);
+#   P2 an executing fake remote filesystem starts with the selected run root already present and the gate must refuse
+#      before extraction, build or any other product work (a textual `mkdir` spelling is not proof);
 #   P3 two runs of the same gate use different run dirs;
 #   P4 the gate prints the full SHA in one of the documented, line-bounded commit/result formats;
 #   P0 non-vacuous: each run reaches every configured fake Mac, ships payloads, and binds at least one exact tracked
@@ -81,45 +81,168 @@ EXACT=" tests/mac/mac_compile_only.sh tests/mac/ms6_hard_gate.sh tests/mac/ms7_a
 LIBS=(tests/mac/mac_config.sh tests/mac/mac_gate_lib.sh)
 HELPER=tests/mac/mac_config.sh
 
-mkdir -p "$T/bin" "$T/prov" "$T/home" "$T/keys"
-cat > "$T/remote_model.py" <<'PY'
-import pathlib
-import re
-import shlex
-import sys
-
-call = pathlib.Path(sys.argv[1])
-stdin = pathlib.Path(sys.argv[2])
-ctl = pathlib.Path(sys.argv[3])
-host, target, idx = sys.argv[4:7]
-argv = call.read_bytes().split(b"\0")
-text = b" ".join(argv[1:]).replace(b"\\$", b"$") + b"\n" + stdin.read_bytes()
-roots = sorted(set(m.decode() for m in re.findall(rb"zb-[A-Za-z0-9._-]+", text)
-                   if re.search(rb"[0-9a-f]{6,}", m)))
-(ctl / f"roots.{idx}").write_text("\n".join(roots) + ("\n" if roots else ""))
-if not target or host != target or not roots or (ctl / f"preexisting.{host}").exists():
-    print("allow")
-    raise SystemExit
-shell_text = "\n".join(line for line in text.decode("utf-8", "replace").splitlines()
-                       if not line.lstrip().startswith("#"))
-mkdir_args = re.findall(r"\bmkdir\s+([^;&|\n]+)", shell_text)
-if not mkdir_args:
-    print("allow")
-    raise SystemExit
-(ctl / f"preexisting.{host}").write_text(roots[0] + "\n")
-try:
-    words = shlex.split(mkdir_args[0], posix=True)
-except ValueError:
-    words = mkdir_args[0].split()
-exclusive = "-p" not in words and "--parents" not in words
-if exclusive:
-    (ctl / f"refused.{host}").write_text(roots[0] + "\n")
-    print("refuse")
-else:
-    (ctl / f"reused.{host}").write_text(roots[0] + "\n")
-    (ctl / f"product.{host}").write_text(f"unsafe root creation in call {idx}\n")
-    print("allow")
-PY
+mkdir -p "$T/bin" "$T/prov" "$T/home" "$T/keys" "$T/remote-bin"
+cat > "$T/remote_exec.sh" <<'EOF'
+#!/bin/bash
+# Execute the selected fake-host command against a real scratch filesystem whose chosen run root already exists.
+# mkdir and tar are real/wrapped operations, and later calls after a reuse are recorded as product work.
+set -uo pipefail
+call=${1:?} stdin=${2:?} ctl=${3:?} host=${4:?} idx=${5:?}
+argv=() remote=() skip= seen_host=0
+mapfile -d '' argv < "$call"
+for ((j = 1; j < ${#argv[@]}; j++)); do
+  if [ "$seen_host" -eq 1 ]; then remote+=("${argv[j]}"); continue; fi
+  if [ -n "$skip" ]; then skip=; continue; fi
+  case "${argv[j]}" in
+    -i|-o|-F|-p|-P|-l|-c|-J) skip=1 ;;
+    -*) ;;
+    *) seen_host=1 ;;
+  esac
+done
+[ "${#remote[@]}" -gt 0 ] || exit 0
+command=${remote[0]}
+for ((j = 1; j < ${#remote[@]}; j++)); do command+=" ${remote[j]}"; done
+root=$(printf '%s\n' "$command" | grep -aoE 'zb-[A-Za-z0-9._-]+' \
+  | awk '/[0-9a-f]{6,}/ { print; exit }')
+[ -n "$root" ] || exit 0
+safe_host=${host//[^A-Za-z0-9_.@-]/_}
+remote_home="$ctl/remote.$safe_host/home"
+selected_file="$ctl/selected.$host"
+if [ ! -f "$selected_file" ]; then
+  /usr/bin/mkdir -p -- "$remote_home/$root"
+  printf '%s\n' "$root" > "$selected_file"
+  printf '%s\n' "$root" > "$ctl/preexisting.$host"
+fi
+selected="/Users/stub/$(cat "$selected_file")"
+printf '%s\n' "$root" > "$ctl/roots.$idx"
+if [ -f "$ctl/reused.$host" ]; then
+  printf 'later remote call %s after selected-root reuse\n' "$idx" > "$ctl/product.$host"
+  exit 0
+fi
+out="$ctl/exec-out.$idx"
+set +e
+/usr/bin/bwrap --unshare-user --unshare-pid --unshare-uts --unshare-ipc --die-with-parent \
+  --tmpfs / --dir /usr --ro-bind /usr /usr --dir /bin --ro-bind /bin /bin \
+  --ro-bind "${ZB_SELFTEST_REMOTE_BIN:?}/uname" /usr/bin/uname \
+  --dir /lib --ro-bind /lib /lib --dir /lib64 --ro-bind /lib64 /lib64 \
+  --dir /dev --dev /dev --dir /proc --proc /proc --dir /Users --dir /Users/stub \
+  --bind "$remote_home" /Users/stub --dir /ctl --bind "$ctl" /ctl \
+  --dir /remote-bin --ro-bind "${ZB_SELFTEST_REMOTE_BIN:?}" /remote-bin \
+  /usr/bin/env -i PATH=/remote-bin:/usr/bin:/bin HOME=/Users/stub ZB_REMOTE_COMMAND="$command" \
+  ZB_SELFTEST_CTL=/ctl ZB_REMOTE_HOST="$host" ZB_SELECTED_ROOT="$selected" ZB_OP_LOG="/ctl/ops.$host" \
+  /bin/bash -c 'source /remote-bin/remote_env.sh; export -f _zb_note_guard test "[" ls mkdir tar; eval "$ZB_REMOTE_COMMAND"' \
+  < "$stdin" > "$out" 2>&1
+rc=$?
+set -e
+cat "$out"
+if grep -qxF product "$out"; then
+  printf 'product output in call %s\n' "$idx" > "$ctl/product.$host"
+fi
+if [ "$rc" -ne 0 ] && [ -f "$ctl/guard.$host" ] \
+   && [ ! -f "$ctl/reused.$host" ] && [ ! -f "$ctl/product.$host" ]; then
+  printf 'selected pre-existing root refused in call %s\n' "$idx" > "$ctl/refused.$host"
+fi
+exit "$rc"
+EOF
+cat > "$T/remote-bin/remote_env.sh" <<'EOF'
+# Shell-level `[ ! -e/-L selected-root ]` and `test -e/-d/-L selected-root` are executed pre-existence guards, not
+# parsed commands. Functions override the corresponding Bash builtins while delegating their actual result.
+_zb_note_guard() {
+  local previous= argument resolved
+  for argument in "$@"; do
+    case "$previous" in
+      -e|-d|-L|-f)
+        resolved=$(/usr/bin/realpath -m -- "$argument")
+        case "$resolved" in
+          "${ZB_SELECTED_ROOT:?}")
+            printf '%s selected root\n' "$previous" > "$ZB_SELFTEST_CTL/guard.$ZB_REMOTE_HOST"
+            ;;
+        esac
+        previous=
+        ;;
+      *)
+        case "$argument" in -e|-d|-L|-f) previous=$argument ;; esac
+        ;;
+    esac
+  done
+}
+function [ { _zb_note_guard "$@"; builtin [ "$@"; }
+test() { _zb_note_guard "$@"; builtin test "$@"; }
+# Exported functions keep the operation wrappers active even when a committed remote body resets PATH.
+ls() { /remote-bin/ls "$@"; }
+mkdir() { /remote-bin/mkdir "$@"; }
+tar() { /remote-bin/tar "$@"; }
+EOF
+cat > "$T/remote-bin/mkdir" <<'EOF'
+#!/bin/bash
+set -u
+parents=0 operands=()
+for arg in "$@"; do
+  case "$arg" in
+    -p|--parents|-[^-]*p*) parents=1 ;;
+    --) ;;
+    -*) ;;
+    *) operands+=("$arg") ;;
+  esac
+done
+printf 'mkdir' >> "${ZB_OP_LOG:?}"
+printf ' <%s>' "$@" >> "$ZB_OP_LOG"
+printf '\n' >> "$ZB_OP_LOG"
+set +e
+/usr/bin/mkdir "$@"
+rc=$?
+set -e
+for operand in "${operands[@]}"; do
+  resolved=$(/usr/bin/realpath -m -- "$operand")
+  case "$resolved" in
+    "${ZB_SELECTED_ROOT:?}")
+      if [ "$rc" -ne 0 ] && [ "$parents" -eq 0 ]; then
+        printf 'exclusive mkdir refused selected root\n' > "$ZB_SELFTEST_CTL/refused.$ZB_REMOTE_HOST"
+      elif [ "$rc" -eq 0 ]; then
+        printf 'selected root reused by mkdir\n' > "$ZB_SELFTEST_CTL/reused.$ZB_REMOTE_HOST"
+      fi
+      ;;
+    "${ZB_SELECTED_ROOT:?}"/*)
+      if [ "$rc" -eq 0 ]; then
+        printf 'selected root reused by descendant mkdir\n' > "$ZB_SELFTEST_CTL/reused.$ZB_REMOTE_HOST"
+        printf 'descendant mkdir is product work\n' > "$ZB_SELFTEST_CTL/product.$ZB_REMOTE_HOST"
+      fi
+      ;;
+  esac
+done
+exit "$rc"
+EOF
+cat > "$T/remote-bin/ls" <<'EOF'
+#!/bin/bash
+set -u
+for operand in "$@"; do
+  case "$operand" in -*) continue ;; esac
+  resolved=$(/usr/bin/realpath -m -- "$operand")
+  [ "$resolved" != "${ZB_SELECTED_ROOT:?}" ] \
+    || printf 'ls selected root\n' > "$ZB_SELFTEST_CTL/guard.$ZB_REMOTE_HOST"
+done
+exec /usr/bin/ls "$@"
+EOF
+cat > "$T/remote-bin/tar" <<'EOF'
+#!/bin/bash
+set -u
+printf 'tar' >> "${ZB_OP_LOG:?}"
+printf ' <%s>' "$@" >> "$ZB_OP_LOG"
+printf '\n' >> "$ZB_OP_LOG"
+printf 'tar/extraction reached after selected-root reuse\n' > "$ZB_SELFTEST_CTL/product.$ZB_REMOTE_HOST"
+cat > /dev/null
+exit 0
+EOF
+cat > "$T/remote-bin/uname" <<'EOF'
+#!/bin/bash
+# The fake host must satisfy each configured leg's architecture check before reaching its root guard.
+case "${1:-}" in
+  -m) printf '%s\n' "${ZB_ARCH:-${ZB_EXPECT_ARCH:-x86_64}}" ;;
+  -s) printf 'Darwin\n' ;;
+  *) printf 'Darwin fake-host\n' ;;
+esac
+EOF
+chmod +x "$T/remote_exec.sh" "$T/remote-bin"/mkdir "$T/remote-bin"/ls "$T/remote-bin"/tar "$T/remote-bin"/uname
 for tool in ssh scp; do
   cat > "$T/bin/$tool" <<'EOF'
 #!/bin/bash
@@ -137,9 +260,11 @@ if [ "$tool" = ssh ]; then host=${pos[0]:-}; else for a in "${pos[@]}"; do case 
 printf '%s\n' "$host" > "$c/host.$i"
 if [ "$tool" = ssh ]; then
   cat > "$c/stdin.$i"
-  decision=$(/usr/bin/python3 -I "$ZB_SELFTEST_MODEL" "$c/call.$i" "$c/stdin.$i" "$c" "$host" \
-    "${ZB_SELFTEST_PREEXIST_HOST:-}" "$i") || exit 90
-  [ "$decision" != refuse ] || exit 73
+  if [ -n "${ZB_SELFTEST_PREEXIST_HOST:-}" ] && [ "$host" = "$ZB_SELFTEST_PREEXIST_HOST" ]; then
+    "${ZB_SELFTEST_EXEC:?}" "$c/call.$i" "$c/stdin.$i" "$c" "$host" "$i"
+    exec_rc=$?
+    [ "$exec_rc" -eq 0 ] || exit "$exec_rc"
+  fi
   # Answer like a passing Mac where gate.sh and ms1b_signed_gate.sh require each remote test's PASS line.
   if grep -q m9_render_test.py "$c/stdin.$i"; then
     printf 'PASS\tm9-render-webview-screenshot\tzig-out/m9-render.png\tstub\nPASS\tm9-reply-channel-contract\n'
@@ -235,7 +360,8 @@ run_case() { # run_case <row> <case> -> sets C (ctl dir) and RC
   IFS='|' read -r s launch prov hosts args <<<"$1"
   name=$(basename "$s" .sh)
   C="$T/ctl.$name.$2"; mkdir -p "$C/tmp" "$C/home"
-  local -a ex=(ZB_SELFTEST_CTL="$C" ZB_SELFTEST_MODEL="$T/remote_model.py" ZB_SELFTEST_GATE="$s") cmd=() argv=()
+  local -a ex=(ZB_SELFTEST_CTL="$C" ZB_SELFTEST_EXEC="$T/remote_exec.sh"
+               ZB_SELFTEST_REMOTE_BIN="$T/remote-bin" ZB_SELFTEST_GATE="$s") cmd=() argv=()
   pb="$T/bin"
   case "$prov" in
     pin) pb="$T/prov:$T/bin"; ex+=(ZB_STUB_SHA256="$(sed -n 's/^PIN=\([0-9a-f]\{64\}\)$/\1/p' "$R/$s" | head -n 1)") ;;
@@ -405,46 +531,90 @@ def bind(where, name, body, host):
         err(where, f"{name!r} contains the dirty-tree marker")
         return
     add_exact(host)
-def tar_sets(data):
-    candidates, at = [], 0
-    while True:
-        at = data.find(b"ustar", at)
-        if at < 0: break
-        if at >= 257: candidates.append(at - 257)
-        at += 5
-    covered = set()
-    for start in sorted(set(candidates)):
-        if start in covered: continue
+BLOCK = 512
+ZERO = bytes(BLOCK)
+def tar_header_at(data, at):
+    return len(data) >= at + BLOCK and data[at + 257:at + 262] == b"ustar"
+def tar_stream(data):
+    """Consume a whole stream of one or more tar archives, including only structural zero padding.
+
+    None means the bytes do not begin as a tar and must be classified by the non-archive rules. A list means tar
+    classification was selected; in that case every byte is consumed or the returned framing error is fatal.
+    """
+    if not tar_header_at(data, 0):
+        return None, None
+    archives, at = [], 0
+    while at < len(data):
+        if not tar_header_at(data, at):
+            return archives, f"unclassified bytes at tar-stream offset {at}"
         try:
-            tf = tarfile.open(fileobj=io.BytesIO(data[start:]), mode="r:")
+            tf = tarfile.open(fileobj=io.BytesIO(data[at:]), mode="r:")
             members = tf.getmembers()
-        except (tarfile.TarError, EOFError, OSError, ValueError):
-            continue
-        if not members: continue
+        except (tarfile.TarError, EOFError, OSError, ValueError) as exc:
+            return archives, f"invalid tar framing at offset {at}: {exc}"
+        if not members:
+            tf.close()
+            return archives, f"empty tar archive at offset {at}"
         rows = []
         for member in members:
-            covered.add(start + member.offset)
             if member.isfile():
                 src = tf.extractfile(member)
                 rows.append((member.name, src.read() if src else b""))
             elif member.issym():
                 rows.append((member.name, member.linkname.encode()))
+        payload_end = at + tf.offset
         tf.close()
-        yield start, rows
+        if payload_end + 2 * BLOCK > len(data) \
+           or data[payload_end:payload_end + BLOCK] != ZERO \
+           or data[payload_end + BLOCK:payload_end + 2 * BLOCK] != ZERO:
+            return archives, f"tar at offset {at} has no complete two-block terminator"
+        end = payload_end + 2 * BLOCK
+        while end + BLOCK <= len(data) and data[end:end + BLOCK] == ZERO:
+            end += BLOCK
+        archives.append((at, end, rows))
+        if end == len(data):
+            return archives, None
+        if len(data) - end < BLOCK:
+            return archives, f"unclassified {len(data) - end}-byte suffix after tar framing"
+        at = end
+    return archives, None
 def inspect_bytes(where, data, host, origin_name, stdin=False):
-    sets = list(tar_sets(data))
-    if sets:
-        for number, (_, rows) in enumerate(sets, 1):
+    sets, framing_error = tar_stream(data)
+    if sets is not None:
+        for number, (_, _, rows) in enumerate(sets, 1):
             if origin_name == "sites.tar":
                 bad = [name for name, _ in rows if not name.lstrip("./").startswith(("site-x86_64/", "site-aarch64/"))]
                 if bad: err(where, f"generated sites.tar has unknown members: {bad[:3]}")
                 continue
             for name, body in rows:
                 bind(f"{where} archive#{number}", name, body, host)
+        if framing_error:
+            err(where, framing_error)
         return
     if stdin:
         # A non-archive stdin must be a committed remote-program fragment. The only expanded heredoc is gate.sh's
-        # bounded universal-test program; ms5_setup_e2e prepends a separately exact-bound committed helper.
+        # bounded universal-test program. mac_compile_only has one explicitly bounded generated envelope: the exact
+        # quoted REMOTE_EOF body from its committed harness, then literal `main\n`, then a whole exact tar stream.
+        if gate == "mac_compile_only":
+            harness = blob("tests/mac/mac_compile_only.sh")
+            begin = b"IFS= read -r -d '' REMOTE <<'REMOTE_EOF' || true\n"
+            finish = b"\nREMOTE_EOF\n"
+            if harness.count(begin) != 1:
+                err(where, "committed compile harness has no unique REMOTE_EOF opener")
+                return
+            remote_and_rest = harness.split(begin, 1)[1]
+            if remote_and_rest.count(finish) != 1:
+                err(where, "committed compile harness has no unique REMOTE_EOF closer")
+                return
+            # `read -d ''` retains the here-doc's final newline; printf adds one more before literal `main\n`.
+            expected_prefix = remote_and_rest.split(finish, 1)[0] + b"\n\nmain\n"
+            if not data.startswith(expected_prefix):
+                err(where, "compile remote-program prefix differs from the committed REMOTE_EOF body plus main")
+                return
+            add_exact(host)
+            inspect_bytes(f"{where} compile archive", data[len(expected_prefix):], host, "src.tar")
+            return
+        # ms5_setup_e2e prepends a separately exact-bound committed helper.
         if gate == "ms5_setup_e2e":
             helper = blob("tests/mac/lib_group_cleanup.sh")
             if not data.startswith(helper):
@@ -512,7 +682,8 @@ for stdin_path in sorted(ctl.glob("stdin.*")):
     host_file = ctl / f"host.{call_no}"
     host = host_file.read_text().strip() if host_file.exists() else ""
     data = stdin_path.read_bytes()
-    if list(tar_sets(data)):
+    sets, _ = tar_stream(data)
+    if sets is not None:
         payloads += 1
     inspect_bytes(stdin_path.name, data, host, "stdin", stdin=True)
 for host in sorted(exact): print(f"EXACT\t{host}\t{exact[host]}")
@@ -600,7 +771,8 @@ for row in "${DRIVEN[@]}"; do
       tag=${host_spec%% *} expected_host=${host_spec#* }
       run_case "$row" "$invocation.pre.$tag"; pre=$C pre_rc=$RC
       if [ "$pre_rc" -eq 0 ] || [ ! -f "$pre/refused.$expected_host" ] || [ -f "$pre/product.$expected_host" ]; then
-        p2+="$invocation/$tag did not refuse the pre-existing root before product work; "
+        why=$(tail -n 1 "$pre"/exec-out.* 2>/dev/null | tail -n 1)
+        p2+="$invocation/$tag did not refuse the pre-existing root before product work (${why:-no executed operation}); "
       fi
     done
   done
@@ -612,10 +784,43 @@ for row in "${DRIVEN[@]}"; do
     bad "P3 $name reuses a run dir across runs: $(comm -12 <(echo "$d1") <(echo "$d2") | head -n 1)"
   fi
 
-  # Causal exact-byte controls use build-on-mac's otherwise-clean source tar. One appends a marker-free duplicate
-  # member to the same tar; the other changes invocation two only by concatenating a clean-first, wrong-second tar.
+  # Causal exact-byte controls use build-on-mac's otherwise-clean source tar. Unknown bytes before, after or between
+  # archives must fail closed; so must a marker-free duplicate member and an invocation-two-only wrong archive.
   if [ "$name" = build-on-mac ]; then
     wrong="$T/wrong-member"; mkdir "$wrong"; printf 'marker-free wrong build bytes\n' > "$wrong/build.zig"
+    clean_stream=$(for f in "$c1"/stdin.*; do grep -aq ustar "$f" && { echo "$f"; break; }; done)
+
+    prefix="$T/control.unknown-prefix"; cp -Rf -- "$c1" "$prefix"
+    prefix_stream="$prefix/$(basename "$clean_stream")"
+    { printf 'marker-free-unclassified-prefix\n'; cat "$prefix_stream"; } > "$prefix_stream.new"
+    mv -f -- "$prefix_stream.new" "$prefix_stream"
+    if ! commit_line "$prefix/out"; then
+      bad "CONTROL unknown-prefix mutant lost the bounded commit line"
+    elif exact_payloads "$prefix" "$name" > "$prefix/exact.control" 2>&1; then
+      bad "CONTROL marker-free unknown prefix before an exact archive was accepted"
+    else ok "marker-free unknown prefix before an exact archive is rejected"; controls=$((controls + 1)); fi
+
+    suffix="$T/control.unknown-suffix"; cp -Rf -- "$c1" "$suffix"
+    suffix_stream="$suffix/$(basename "$clean_stream")"
+    printf 'marker-free-unclassified-suffix\n' >> "$suffix_stream"
+    if ! commit_line "$suffix/out"; then
+      bad "CONTROL unknown-suffix mutant lost the bounded commit line"
+    elif exact_payloads "$suffix" "$name" > "$suffix/exact.control" 2>&1; then
+      bad "CONTROL marker-free unknown suffix after an exact archive was accepted"
+    else ok "marker-free unknown suffix after an exact archive is rejected"; controls=$((controls + 1)); fi
+
+    between="$T/control.unknown-between"; cp -Rf -- "$c1" "$between"
+    between_stream="$between/$(basename "$clean_stream")"
+    cp -f -- "$between_stream" "$T/clean-build-stream.tar"
+    { cat "$T/clean-build-stream.tar"; printf 'marker-free-unclassified-between\n';
+      cat "$T/clean-build-stream.tar"; } > "$between_stream.new"
+    mv -f -- "$between_stream.new" "$between_stream"
+    if ! commit_line "$between/out"; then
+      bad "CONTROL unknown-between mutant lost the bounded commit line"
+    elif exact_payloads "$between" "$name" > "$between/exact.control" 2>&1; then
+      bad "CONTROL marker-free unknown bytes between exact archives were accepted"
+    else ok "marker-free unknown bytes between exact archives are rejected"; controls=$((controls + 1)); fi
+
     same="$T/control.same-archive"; cp -Rf -- "$c1" "$same"
     same_stream=$(for f in "$same"/stdin.*; do grep -aq ustar "$f" && { echo "$f"; break; }; done)
     tar -rf "$same_stream" -C "$wrong" build.zig
@@ -640,21 +845,54 @@ for row in "${DRIVEN[@]}"; do
   [ "$fails" -eq "$before" ] && ok "$name: both invocations ship only commit $SHA into refused-if-existing, disjoint roots ($n first-run calls)"
 done
 
-# The fake remote must interpret an indirect mkdir -p as unsafe reuse; changing a reviewed plain mkdir to this form
-# therefore reaches product work and makes P2 red without depending on a particular $HOME spelling.
-indirect="$T/control.indirect-mkdir"; mkdir -p "$indirect/tmp" "$indirect/home"
-set +e
-env -i PATH="$T/bin:/usr/bin:/bin" HOME="$indirect/home" TMPDIR="$indirect/tmp" ZB_SELFTEST_CTL="$indirect" \
-  ZB_SELFTEST_MODEL="$T/remote_model.py" ZB_SELFTEST_PREEXIST_HOST="$INTEL" \
-  "$T/bin/ssh" "$INTEL" 'd="$HOME/zb-control-123abc"; mkdir -p "$d"; echo product' </dev/null
-indirect_rc=$?
-if [ "$indirect_rc" -eq 0 ] && [ -f "$indirect/reused.$INTEL" ] && [ -f "$indirect/product.$INTEL" ] \
-   && [ ! -f "$indirect/refused.$INTEL" ]; then
-  ok "indirect d=...; mkdir -p \"\$d\" mutant is unsafe and fails P2"; controls=$((controls + 1))
+# These controls execute against the same fake filesystem as P2. The selected root exists before the shell starts;
+# wrappers record the actual mkdir operands and any extraction/later-call product work.
+run_root_control() { # name command; sets ROOT_CTL and ROOT_RC
+  local name=${1:?} command=${2:?}
+  ROOT_CTL="$T/control.$name"; mkdir -p "$ROOT_CTL/tmp" "$ROOT_CTL/home"
+  set +e
+  env -i PATH="$T/bin:/usr/bin:/bin" HOME="$ROOT_CTL/home" TMPDIR="$ROOT_CTL/tmp" \
+    ZB_SELFTEST_CTL="$ROOT_CTL" ZB_SELFTEST_EXEC="$T/remote_exec.sh" ZB_SELFTEST_REMOTE_BIN="$T/remote-bin" \
+    ZB_SELFTEST_PREEXIST_HOST="$INTEL" "$T/bin/ssh" "$INTEL" "$command" </dev/null
+  ROOT_RC=$?
+  set -e
+}
+
+run_root_control indirect-mkdir 'd="$HOME/zb-control-123abc"; mkdir -p "$d"; echo product'
+if [ "$ROOT_RC" -eq 0 ] && [ -f "$ROOT_CTL/reused.$INTEL" ] && [ -f "$ROOT_CTL/product.$INTEL" ] \
+   && [ ! -f "$ROOT_CTL/refused.$INTEL" ] && grep -qF 'mkdir <-p>' "$ROOT_CTL/ops.$INTEL"; then
+  ok "indirect d=...; mkdir -p \"\$d\" mutant executes unsafe reuse and product work"; controls=$((controls + 1))
 else
-  bad "CONTROL indirect mkdir -p mutant was not modeled as unsafe reuse"
+  bad "CONTROL indirect mkdir -p mutant did not execute unsafe reuse and product work"
 fi
-[ "$controls" -eq 3 ] || bad "CONTROL expected 3 causal oracle controls, got $controls"
+
+run_root_control unrelated-first \
+  'mkdir "$HOME/unrelated-abcdef"; d="$HOME/zb-control-123abc"; mkdir -p "$d"; echo product'
+if [ "$ROOT_RC" -eq 0 ] && [ -f "$ROOT_CTL/reused.$INTEL" ] && [ -f "$ROOT_CTL/product.$INTEL" ] \
+   && [ ! -f "$ROOT_CTL/refused.$INTEL" ] && [ "$(grep -c '^mkdir' "$ROOT_CTL/ops.$INTEL")" -eq 2 ]; then
+  ok "earlier unrelated exclusive mkdir cannot mask later selected-root reuse"; controls=$((controls + 1))
+else
+  bad "CONTROL unrelated exclusive mkdir masked later selected-root reuse"
+fi
+
+run_root_control exclusive-positive 'd="$HOME/zb-control-123abc"; mkdir "$d" && echo product'
+if [ "$ROOT_RC" -ne 0 ] && [ -f "$ROOT_CTL/refused.$INTEL" ] && [ ! -f "$ROOT_CTL/reused.$INTEL" ] \
+   && [ ! -f "$ROOT_CTL/product.$INTEL" ] && grep -qF 'mkdir <' "$ROOT_CTL/ops.$INTEL"; then
+  ok "plain exclusive mkdir refuses the pre-existing selected root before product work"; controls=$((controls + 1))
+else
+  bad "CONTROL plain exclusive mkdir did not prove selected-root refusal"
+fi
+
+run_root_control guarded-positive \
+  'd="$HOME/zb-control-123abc"; if test -e "$d"; then exit 73; fi; mkdir -p "$d"; echo product'
+if [ "$ROOT_RC" -eq 73 ] && [ -f "$ROOT_CTL/refused.$INTEL" ] && [ ! -f "$ROOT_CTL/reused.$INTEL" ] \
+   && [ ! -f "$ROOT_CTL/product.$INTEL" ] && [ ! -f "$ROOT_CTL/ops.$INTEL" ]; then
+  ok "explicit pre-existence guard refuses before its later mkdir -p and product work"; controls=$((controls + 1))
+else
+  bad "CONTROL explicit pre-existence guard was not accepted as safe refusal"
+fi
+
+[ "$controls" -eq 9 ] || bad "CONTROL expected 9 exact-byte/fresh-root controls, got $controls"
 [ "$legacy_fails" -eq 26 ] && ok "legacy marker/lexical/printed-SHA control remains exactly 26 failures" \
   || bad "CONTROL legacy failure count changed: expected 26, got $legacy_fails"
 
