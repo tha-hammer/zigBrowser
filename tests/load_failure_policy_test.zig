@@ -7,7 +7,8 @@
 //! reload arms no exit timer and never exits; 5 the primary window's INITIAL load, before its first finish, still
 //! exits (the M9 single-load contract; flips if the owner picks option B). A policy-opened window never exits, and a
 //! routed (automation) navigation is reported to its caller as before.
-//! The macOS call sites are proven compile-only here (cross-check); their runtime proof is a released Mac run.
+//! The macOS call sites are bound by tests/e2e/mac_load_exit_timer_binding_test.py (lexical, hostless); their runtime
+//! proof is a released Mac run. tests/e2e/load_failure_policy_mutant_selftest.py makes both proofs reject the old rules.
 const std = @import("std");
 const policy = @import("load_failure_policy");
 const c = @cImport({

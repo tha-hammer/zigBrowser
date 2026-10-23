@@ -527,12 +527,12 @@ static void *ZBWebViewKVOContext = &ZBWebViewKVOContext;
   return self.app.mainWindow == self;
 }
 
-- (void)loadURI:(NSString *)uri {
-  self.finishedOrFailed = NO;
-  self.requestedURI = uri ?: @"";
+// 4pa.55 (SilverRidge 58c6543): the ONE place a browser window arms its 15 s exit timer. loadURI: and
+// reloadBypassingCache: both come here, so the timer guards only the primary window's initial load
+// (load_failure_policy); any other load or reload has none. tests/e2e/mac_load_exit_timer_binding_test.py binds it.
+- (void)armLoadExitTimer {
   [self.timeoutTimer invalidate];
   self.timeoutTimer = nil;
-  // 4pa.55: the 15 s exit timer guards only the primary window's initial load (load_failure_policy).
   if (zb_load_exit_timer_armed([self isPrimaryWindow], self.app.primaryFinished, self.recoveryLoad)) {
     self.timeoutTimer = [NSTimer scheduledTimerWithTimeInterval:ZB_NAVIGATION_TIMEOUT_SECONDS
                                                          target:self
@@ -540,6 +540,12 @@ static void *ZBWebViewKVOContext = &ZBWebViewKVOContext;
                                                        userInfo:nil
                                                         repeats:NO];
   }
+}
+
+- (void)loadURI:(NSString *)uri {
+  self.finishedOrFailed = NO;
+  self.requestedURI = uri ?: @"";
+  [self armLoadExitTimer];
   NSURL *url = [NSURL URLWithString:uri];
   if (url == nil) {
     [self.timeoutTimer invalidate];
@@ -556,12 +562,7 @@ static void *ZBWebViewKVOContext = &ZBWebViewKVOContext;
 - (void)reloadBypassingCache:(BOOL)bypassCache {
   self.finishedOrFailed = NO;
   self.requestedURI = self.webView.URL.absoluteString ?: self.requestedURI ?: @"";
-  [self.timeoutTimer invalidate];
-  self.timeoutTimer = [NSTimer scheduledTimerWithTimeInterval:ZB_NAVIGATION_TIMEOUT_SECONDS
-                                                       target:self
-                                                     selector:@selector(onNavigationTimeout:)
-                                                     userInfo:nil
-                                                      repeats:NO];
+  [self armLoadExitTimer];
   self.currentNav = bypassCache ? [self.webView reloadFromOrigin] : [self.webView reload];  // pin synchronously
 }
 
@@ -645,7 +646,11 @@ static int64_t zb_now_us(void) { return (int64_t)([[NSProcessInfo processInfo] s
   NSString *uri = self.webView.URL.absoluteString ?: self.requestedURI ?: @"";
   [self.webView stopLoading:nil];
   [self.app emitLoadFailForURI:uri code:NSURLErrorTimedOut];
-  [self.app requestExit:ZB_EXIT_TIMEOUT];
+  // 4pa.55: only the initial load's expiry ends the session; any other is recorded (the row above) and the
+  // browser keeps running.
+  int action = zb_load_failure_action(0, [self isPrimaryWindow], self.app.primaryFinished, self.recoveryLoad);
+  self.recoveryLoad = NO;
+  if (action == ZB_LOADFAIL_EXIT) [self.app requestExit:ZB_EXIT_TIMEOUT];
 }
 
 - (void)webView:(WKWebView *)webView didStartProvisionalNavigation:(WKNavigation *)navigation {

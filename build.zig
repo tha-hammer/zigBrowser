@@ -678,7 +678,8 @@ pub fn build(b: *std.Build) void {
     run_nav_policy_tests.skip_foreign_checks = true;
     // bd zigBrowser-4pa.55 (V03-F1; R30.3 #1 option C): whether a load failure quits the macOS browser, and whether
     // the 15 s exit timer is armed, decided in portable Zig that wkwebview_shim.m calls back (as zb_policy_decide),
-    // driven here through its C ABI and webkit_shim.h's constants. The macOS call sites are compile-only on Linux.
+    // driven here through its C ABI and webkit_shim.h's constants. The shim's timer call sites are bound to it
+    // lexically (no Objective-C runtime on Linux; SilverRidge 58c6543), and each proof rejects its production mutants.
     const load_failure_policy_module = b.createModule(.{
         .root_source_file = b.path("src/load_failure_policy.zig"),
         .target = target,
@@ -697,6 +698,24 @@ pub fn build(b: *std.Build) void {
     run_load_failure_policy_tests.skip_foreign_checks = true;
     const load_failure_policy_step = b.step("test-load-failure-policy", "4pa.55: a failed or recovered load quits the macOS browser only on the primary window's initial load");
     load_failure_policy_step.dependOn(&run_load_failure_policy_tests.step);
+    const load_exit_timer_binding = b.addSystemCommand(&.{ "python3", "tests/e2e/mac_load_exit_timer_binding_test.py" });
+    load_exit_timer_binding.addFileInput(b.path("tests/e2e/mac_load_exit_timer_binding_test.py"));
+    load_exit_timer_binding.addFileInput(b.path("src/wkwebview_shim.m"));
+    load_failure_policy_step.dependOn(&load_exit_timer_binding.step);
+    const load_failure_policy_mutants = b.addSystemCommand(&.{
+        "python3",            "tests/e2e/load_failure_policy_mutant_selftest.py",
+        "--zig",              b.graph.zig_exe,
+        "--global-cache-dir", b.graph.global_cache_root.path orelse ".zig-cache",
+    });
+    for ([_][]const u8{
+        "tests/e2e/load_failure_policy_mutant_selftest.py",
+        "tests/e2e/mac_load_exit_timer_binding_test.py",
+        "tests/load_failure_policy_test.zig",
+        "src/load_failure_policy.zig",
+        "src/webkit_shim.h",
+        "src/wkwebview_shim.m",
+    }) |input| load_failure_policy_mutants.addFileInput(b.path(input));
+    load_failure_policy_step.dependOn(&load_failure_policy_mutants.step);
 
     // Hook 16 inert row (SilverRidge 8721b6d, option B): the data-store selection decision of the e2e-only hook
     // ZB_DEBUG_EPHEMERAL_DATA_STORE, probed through src/zb_test_hook_gate.h with no AppKit and no WebKit store.
@@ -4048,6 +4067,8 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_ipc_tests.step);
     test_step.dependOn(&run_nav_policy_tests.step);
     test_step.dependOn(&run_load_failure_policy_tests.step);
+    test_step.dependOn(&load_exit_timer_binding.step);
+    test_step.dependOn(&load_failure_policy_mutants.step);
     test_step.dependOn(&run_hook16_tests.step);
     test_step.dependOn(&run_app_profile_dir_tests.step);
     test_step.dependOn(&run_agent_drawer_tests.step);
