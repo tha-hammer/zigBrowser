@@ -365,7 +365,25 @@ pub fn build(b: *std.Build) void {
     const unit_tests = b.addTest(.{ .root_module = test_module });
     unit_tests.step.dependOn(pkg_guard);
 
-    const run_unit_tests = b.addRunArtifact(unit_tests);
+    // bd zigBrowser-3ui.11: the root.zig unit tests start GTK in-process, so they run through runInProcessGtkTests
+    // (the inherited variables gdk would unset are removed; a hang ends as a named failure). The two probes and the
+    // selftest below prove that configuration on Linux.
+    const run_unit_tests = runInProcessGtkTests(b, unit_tests, gtk_test_timeout_s);
+    if (backend == .gtk_backend) {
+        inline for (.{
+            .{ "gtk-env-failure-probe", "tests/gtk_env_failure_probe_test.zig", gtk_test_timeout_s },
+            .{ "gtk-hang-probe", "tests/gtk_hang_probe_test.zig", "20" },
+        }) |probe| {
+            const probe_tests = b.addTest(.{ .root_module = b.createModule(.{
+                .root_source_file = b.path(probe[1]),
+                .target = target,
+                .optimize = optimize,
+                .link_libc = true,
+            }) });
+            probe_tests.root_module.linkSystemLibrary("gtk+-3.0", .{ .use_pkg_config = .force });
+            b.step(probe[0], "3ui.11 probe (fails on purpose; run by test-gtk-test-env)").dependOn(&runInProcessGtkTests(b, probe_tests, probe[2]).step);
+        }
+    }
     run_unit_tests.skip_foreign_checks = true;
 
     const ipc_module = b.createModule(.{
@@ -3754,6 +3772,22 @@ pub fn build(b: *std.Build) void {
 
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_unit_tests.step);
+    // bd zigBrowser-3ui.11: a failure after GTK start is reported, not a hang, and a hanging test is named.
+    if (backend == .gtk_backend) {
+        const gtk_test_env_selftest = b.addSystemCommand(&.{
+            "python3",                                "tests/e2e/gtk_test_env_selftest.py",
+            "--zig",                                  b.graph.zig_exe,
+            "--cache-dir",                            b.cache_root.path orelse ".zig-cache",
+            "--global-cache-dir",                     b.graph.global_cache_root.path orelse ".zig-cache",
+        });
+        gtk_test_env_selftest.addFileInput(b.path("tests/e2e/gtk_test_env_selftest.py"));
+        gtk_test_env_selftest.addFileInput(b.path("tests/gtk_env_failure_probe_test.zig"));
+        gtk_test_env_selftest.addFileInput(b.path("tests/gtk_hang_probe_test.zig"));
+        gtk_test_env_selftest.addFileInput(b.path("build.zig"));
+        const gtk_test_env_step = b.step("test-gtk-test-env", "3ui.11: GTK-in-process test steps fail cleanly and fast, never hang");
+        gtk_test_env_step.dependOn(&gtk_test_env_selftest.step);
+        test_step.dependOn(&gtk_test_env_selftest.step);
+    }
     // WS5 (RoseCat 05f2549): register the agent_drawer.zig geometry property tests so deleting a portable
     // helper (incl. zb_drawer_anim_ms_from_env / animMsFromEnv) reds the gate. Host-run, link libc (atomic_file).
     const drawer_props_dep = b.createModule(.{
@@ -4461,6 +4495,31 @@ fn resolveBackend(target: std.Build.ResolvedTarget) Backend {
         .macos => .macos_backend,
         else => std.debug.panic("NoBackendLinked: no backend for target os '{s}'", .{@tagName(target.result.os.tag)}),
     };
+}
+
+/// bd zigBrowser-3ui.11: gdk removes DESKTOP_STARTUP_ID, GIO_LAUNCHED_DESKTOP_FILE(_PID) and XDG_ACTIVATION_TOKEN
+/// at startup when they are inherited (any shell launched from a desktop has them). unsetenv shifts libc's environ
+/// array in place, so Zig 0.16's startup copy of it gains a null entry; the test runner's first stderr lock then
+/// panics in Environ.scan and the panic handler deadlocks on the same mutex, so a failing test hangs the step.
+const gtk_inherited_env = [_][]const u8{ "DESKTOP_STARTUP_ID", "GIO_LAUNCHED_DESKTOP_FILE", "GIO_LAUNCHED_DESKTOP_FILE_PID", "XDG_ACTIVATION_TOKEN" };
+/// The whole test binary's time bound. The root.zig unit tests take about 20 s on this machine and the gate runs them
+/// beside many other steps (-j4, VMs alongside), so 600 s is far above a slow normal run, and still ends a hang.
+const gtk_test_timeout_s = "600";
+
+/// A test binary that runs GTK in-process: without the variables gdk would unset (so a failure is reported), and on a
+/// Linux host, for a native binary, under `timeout` (Zig 0.16 has no per-step test timeout, only `zig build --test-timeout`), so a hang
+/// ends as a failure named after the running test. The binary still speaks the build runner's test protocol.
+fn runInProcessGtkTests(b: *std.Build, tests: *std.Build.Step.Compile, timeout_s: []const u8) *std.Build.Step.Run {
+    // Only for a binary this Linux host runs natively: a foreign one must still be skipped by skip_foreign_checks,
+    // which a `timeout` argv[0] would hide (the spawn succeeds and the exec inside it fails).
+    const host = b.graph.host.result;
+    const built = tests.rootModuleTarget();
+    if (host.os.tag == .linux and built.os.tag == .linux and built.cpu.arch == host.cpu.arch) {
+        tests.setExecCmd(&.{ "timeout", "-k", "10", timeout_s, null });
+    }
+    const run = b.addRunArtifact(tests);
+    for (gtk_inherited_env) |name| run.removeEnvironmentVariable(name);
+    return run;
 }
 
 fn configureBackend(
