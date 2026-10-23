@@ -577,7 +577,15 @@ pub fn build(b: *std.Build) void {
     // WS0.9 / D.1 (rule 7): every registered live step's real command, run hostless with ZB_WIN_GATE=1, exits
     // nonzero; the hostless ones still exit 0 standalone. Hermetic (every ZB_WIN* var removed; no host contacted).
     const windows_live_step_skip = b.addSystemCommand(&.{ "python3", "-I", "tests/windows/live_step_skip_test.py" });
-    b.step("windows-live-step-skip", "WS0.9: every live Windows step fails under ZB_WIN_GATE=1 with no host (hermetic)").dependOn(&windows_live_step_skip.step);
+    // bd zigBrowser-ong.15 (NavyCanyon 0fe01513): the parser suite for its build.zig step lookup (string-only, no
+    // command launched) runs as a second dependency, in an empty network namespace. It is not a live step and not a
+    // phase entry.
+    const windows_live_step_lookup = b.addSystemCommand(&.{
+        "unshare", "--user", "--map-current-user", "--net", "--", "python3", "-I", "tests/windows/live_step_lookup_red_test.py",
+    });
+    const windows_live_step_skip_step = b.step("windows-live-step-skip", "WS0.9: every live Windows step fails under ZB_WIN_GATE=1 with no host (hermetic), and its step lookup parser selftest (netns)");
+    windows_live_step_skip_step.dependOn(&windows_live_step_skip.step);
+    windows_live_step_skip_step.dependOn(&windows_live_step_lookup.step);
 
     // WS2a.3 (NavyCanyon c36ba6a R2): the WS2a.3 debug seams and their instrumentation are compiled into the
     // ws2a3-async-ownership-win slice only; the real compiler preprocesses the real shim both ways (hermetic).
@@ -3922,6 +3930,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&windows_capabilities_live.step);
     test_step.dependOn(&windows_refusal_live.step);
     test_step.dependOn(&windows_live_step_skip.step);
+    test_step.dependOn(&windows_live_step_lookup.step);
     test_step.dependOn(&windows_ws2a3_seam_gating.step);
     test_step.dependOn(&windows_msvc_minmax.step);
     test_step.dependOn(&windows_ws2b1_spike_move.step);

@@ -62,10 +62,14 @@ def live_steps(build_zig: str) -> list[str]:
 
 
 def _step_var(build_zig: str, step: str) -> str:
-    m = re.search(r'b\.step\(\s*"' + re.escape(step) + r'"[^;]*?\)\.dependOn\(&(\w+)\.step\)', build_zig, re.S)
+    # bd zigBrowser-ong.15 (NavyCanyon 0fe01513): one directly chained registration at a code line start, its
+    # description one ordinary Zig string; anything else (a variable-held step, a later statement, a multiline or
+    # computed description) is a LookupError, never a guess.
+    m = re.search(r'(?m)^[ \t]*b\.step\(\s*"' + re.escape(step) + r'"\s*,\s*"(?:[^"\\\r\n]|\\[^\r\n])*"\s*,?\s*\)'
+                  r'\s*\.dependOn\s*\(\s*&(?P<var>\w+)\.step\s*,?\s*\)', build_zig)
     if not m:
-        raise LookupError(f"no b.step({step!r}).dependOn(&<var>.step) in build.zig")
-    return m.group(1)
+        raise LookupError(f"no b.step({step!r}, \"...\").dependOn(&<var>.step) in build.zig")
+    return m.group("var")
 
 
 def step_argv(build_zig: str, step: str) -> list[str]:
