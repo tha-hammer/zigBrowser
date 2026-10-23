@@ -1187,10 +1187,18 @@ pub fn build(b: *std.Build) void {
     // that runs the test (orphans adopt to pid 1, as in production). No signal is reachable outside the namespace.
     const run_ledger_recovery_busy_tests = b.addSystemCommand(&.{
         "sh", "-c",
-        "exec 9</proc/self/ns/pid; exec unshare --user --map-root-user --pid --fork --mount-proc sh -c '\"$@\"; :' sh \"$1\"",
+        "exec 9</proc/self/ns/pid; exec unshare --user --map-root-user --pid --fork --mount-proc sh -c '\"$@\"; rc=$?; exit $rc' sh \"$1\"",
         "sh",
     });
     run_ledger_recovery_busy_tests.addArtifactArg(ledger_recovery_busy_exe);
+    // bd zigBrowser-3ui.4: every fd-9 PID-namespace launcher string in this file is driven on a stub test that exits 7
+    // and one that exits 0, and must report 7, then 0 (a launcher ending `; :` exited 0 whatever its test returned).
+    const pidns_launcher_status = b.addSystemCommand(&.{ "python3", "-I", "tests/e2e/pidns_launcher_status_test.py" });
+    pidns_launcher_status.addFileInput(b.path("tests/e2e/pidns_launcher_status_test.py"));
+    pidns_launcher_status.addFileInput(b.path("build.zig"));
+    pidns_launcher_status.addFileInput(b.path("tools/agent_host_env.sh"));
+    const pidns_launcher_status_step = b.step("test-pidns-launcher-status", "3ui.4: every PID-namespace launcher passes its test's exit status through");
+    pidns_launcher_status_step.dependOn(&pidns_launcher_status.step);
     const ledger_recovery_busy_step = b.step("test-agent-run-ledger-recovery-busy", "MS6.5.1 bounded acquire fails closed on a stalled live flock holder (SCOPED, not whole-recovery; PID-ns sentinel)");
     ledger_recovery_busy_step.dependOn(&run_ledger_recovery_busy_tests.step);
     // MS6.5.1 bd zigBrowser-3gl (RoseCat 9f62ea4 #1 / mail 7806): the CONCRETE recovery lease over the reviewed
@@ -1209,7 +1217,7 @@ pub fn build(b: *std.Build) void {
     const recovery_concrete_exe = b.addTest(.{ .root_module = recovery_concrete_test_mod });
     const run_recovery_concrete = b.addSystemCommand(&.{
         "sh", "-c",
-        "exec 9</proc/self/ns/pid; exec unshare --user --map-root-user --pid --fork --mount-proc sh -c '\"$@\"; :' sh \"$1\"",
+        "exec 9</proc/self/ns/pid; exec unshare --user --map-root-user --pid --fork --mount-proc sh -c '\"$@\"; rc=$?; exit $rc' sh \"$1\"",
         "sh",
     });
     run_recovery_concrete.addArtifactArg(recovery_concrete_exe);
@@ -2697,13 +2705,13 @@ pub fn build(b: *std.Build) void {
     const agent_host_owned_group = b.addSystemCommand(&.{
         "sh",
         "-c",
-        "py=$(tools/agent_host_env.sh --check) || exit 1; cd agent/host/tests && out=$(sh -c 'exec 9</proc/self/ns/pid; exec unshare --user --map-root-user --pid --fork --mount-proc sh -c \"\\\"\\$@\\\"; :\" sh env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 ZB_AGENT_HOST_PYTHON=\"$1\" ZB_OUTER_PIDNS_FD=9 \"$1\" -X dev -m unittest -v test_owned_group' sh \"$py\" 2>&1); rc=$?; printf '%s\\n' \"$out\"; [ $rc -eq 0 ] || exit $rc; if printf '%s\\n' \"$out\" | grep -q ResourceWarning; then echo 'test_owned_group: ResourceWarning' >&2; exit 1; fi; if printf '%s\\n' \"$out\" | grep -q 'skipped'; then echo 'test_owned_group: real-signal rows skipped: not armed' >&2; exit 1; fi",
+        "py=$(tools/agent_host_env.sh --check) || exit 1; cd agent/host/tests && out=$(sh -c 'exec 9</proc/self/ns/pid; exec unshare --user --map-root-user --pid --fork --mount-proc sh -c \"\\\"\\$@\\\"; rc=\\$?; exit \\$rc\" sh env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 ZB_AGENT_HOST_PYTHON=\"$1\" ZB_OUTER_PIDNS_FD=9 \"$1\" -X dev -m unittest -v test_owned_group' sh \"$py\" 2>&1); rc=$?; printf '%s\\n' \"$out\"; [ $rc -eq 0 ] || exit $rc; if printf '%s\\n' \"$out\" | grep -q ResourceWarning; then echo 'test_owned_group: ResourceWarning' >&2; exit 1; fi; if printf '%s\\n' \"$out\" | grep -q 'skipped'; then echo 'test_owned_group: real-signal rows skipped: not armed' >&2; exit 1; fi",
     });
     agent_setup_ms5_step.dependOn(&agent_host_owned_group.step);
     const agent_host_setup_sandbox_lifetime = b.addSystemCommand(&.{
         "sh",
         "-c",
-        "py=$(tools/agent_host_env.sh --check) || exit 1; cd agent/host/tests && out=$(sh -c 'exec 9</proc/self/ns/pid; exec unshare --user --map-root-user --pid --fork --mount-proc sh -c \"\\\"\\$@\\\"; :\" sh env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 ZB_AGENT_HOST_PYTHON=\"$1\" ZB_OUTER_PIDNS_FD=9 \"$1\" -X dev -m unittest -v test_setup_sandbox_lifetime' sh \"$py\" 2>&1); rc=$?; printf '%s\\n' \"$out\"; [ $rc -eq 0 ] || exit $rc; if printf '%s\\n' \"$out\" | grep -q ResourceWarning; then echo 'test_setup_sandbox_lifetime: ResourceWarning' >&2; exit 1; fi; if printf '%s\\n' \"$out\" | grep -q 'skipped'; then echo 'test_setup_sandbox_lifetime: real-signal rows skipped: not armed' >&2; exit 1; fi",
+        "py=$(tools/agent_host_env.sh --check) || exit 1; cd agent/host/tests && out=$(sh -c 'exec 9</proc/self/ns/pid; exec unshare --user --map-root-user --pid --fork --mount-proc sh -c \"\\\"\\$@\\\"; rc=\\$?; exit \\$rc\" sh env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 ZB_AGENT_HOST_PYTHON=\"$1\" ZB_OUTER_PIDNS_FD=9 \"$1\" -X dev -m unittest -v test_setup_sandbox_lifetime' sh \"$py\" 2>&1); rc=$?; printf '%s\\n' \"$out\"; [ $rc -eq 0 ] || exit $rc; if printf '%s\\n' \"$out\" | grep -q ResourceWarning; then echo 'test_setup_sandbox_lifetime: ResourceWarning' >&2; exit 1; fi; if printf '%s\\n' \"$out\" | grep -q 'skipped'; then echo 'test_setup_sandbox_lifetime: real-signal rows skipped: not armed' >&2; exit 1; fi",
     });
     agent_setup_ms5_step.dependOn(&agent_host_setup_sandbox_lifetime.step);
     const agent_host_pidns_guard = b.addSystemCommand(&.{
@@ -4142,6 +4150,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&agent_host_contract.step);
     test_step.dependOn(&agent_host_backend_contract.step);
     test_step.dependOn(&agent_host_sandbox_macos.step);
+    test_step.dependOn(pidns_launcher_status_step);
     test_step.dependOn(seatbelt_readiness_step);
     test_step.dependOn(&agent_host_sandbox_macos_scratch_real.step);
     test_step.dependOn(&agent_host_provision_unit.step);
