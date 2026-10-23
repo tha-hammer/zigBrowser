@@ -1146,3 +1146,52 @@ The same red may cover the plan's other conformance corrections: `launch_spec(..
 For the present BROAD macOS state, accept `state_dirs=None`, explicit `state_dirs=()`, and `ro_paths`; the existing broad `allow file-read*` really does make every requested read available, so rejecting `ro_paths` would misdescribe capability rather than improve safety. This is temporary compatibility, not read-curation proof: the red should name it as a BROAD-state tripwire, MS6.7 must later bind requested reads in the curated profile, and MS6.8 remains the required driven `launch.build_launch` proof. macOS must raise `UnsupportedLaunchInput` before creating a profile for each independently driven unsupported value: `seccomp_fd is not None`, `net_dir is not None`, `claude_writable is True`, and an explicit nonempty `state_dirs`. Default and explicit-empty state dirs must be separate rows so `None` cannot be conflated with `()`.
 
 The registered red must therefore cover the full signature/default matrix; frozen Linux default, explicit-empty and custom state-dir behavior; Mac default/empty success plus each one-field refusal and no leaked profile artifact; current BROAD `ro_paths` acceptance; the behavioral network sentinel; and the optional egress result. At minimum, mutants that resolve Linux `None` to empty, conflate Mac `None` with explicit empty, ignore each unsupported nondefault, drop `network`, or change a parameter/default must turn the registered step red. The test must be in aggregate `test` with no skip-to-green mapping. 4pa.22 remains open after this tripwire lands: the real conformance claim still waits for MS6.8's driven production boundary.
+
+## 2026-10-23 — 4pa.80 Stage A retry red/green and network release
+
+### Red `b6beb046`; green `d80dd3ee`
+
+**APPROVED. `b6beb0468b0f3bfbaa80b798fdef2de328444928` IS AN HONEST UNREGISTERED RED; `d80dd3ee5f9b57c5453a33236df6a0092e1c8aa5` SATISFIES THE EXACT `6ea4636b` MINIMUM AND IS PUSH-SAFE FOR THIS STAGE-A SCOPE. ONE NEW STAGE A NETWORK ATTEMPT MAY BE RELEASED AT EXACTLY `d80dd3ee5f9b57c5453a33236df6a0092e1c8aa5`, SUBJECT TO THE FAIL-CLOSED COMMAND PREFLIGHT BELOW. STAGE B AND ALL MAC CONTACT REMAIN HELD PENDING THE RETURNED STAGE-A OUTPUTS AND A SEPARATE SILVERRIDGE CONFIRMATION/ORCHESTRATOR RELEASE.** No network or Mac was contacted during this review.
+
+The red adds only `tests/mac/bundle_layout_spike_prep_fetch_venv_selftest.sh` and remains absent from `build.zig`. From an exact archive, under private HOME/TMP and its private user/network namespace, it exited 1 with exactly 12 `FAIL` rows and zero `ok` rows. V1 reached the real `/usr/bin/python3 -m venv` path and reproduced the released failure as `the hash-locked Sigstore verifier did not install`; V2/V3 proved no uv-created target existed; both V5 rows observed today's `curl -L` following the cross-host redirect; and the status, effective-URL, hash-lock and split-diagnostic rows all failed for their stated old behavior. This is causal rather than a future-only oracle.
+
+The green's own commit changes only `build.zig`, `tests/mac/bundle_layout_spike.sh`, `tests/mac/bundle_layout_spike_prep_selftest.sh`, and `packaging/macos/build_site_packages.sh`; the new red file is inherited byte-for-byte. The intervening review-log commit explains why a direct red-to-green range also contains a review-log change. The green commit-message sentence that calls `f3a669a0` the test base is a provenance typo: `b6beb046` is the real test base, is an ancestor, and the red file is identical at the green. No product or test byte is ambiguous.
+
+Production now creates the verifier environment with real uv, `--offline --no-project --no-config --python /usr/bin/python3`, installs through that exact environment with `--require-hashes --no-deps --no-config --default-index https://pypi.org/simple`, and applies the same no-config/explicit-index boundary to both site-tree installs. The two fetches use curl's actual status/effective-URL/remote-IP fields, accept only status 200 at the exact requested URL, and make `-L --max-redirs 0` refuse a redirect before venv/verifier/site work or publication. Venv creation and verifier installation now have distinct fail-closed diagnostics. Private HOME/XDG/UV/PIP roots, exact-commit pins, binary-only site installs, and publish-only-on-completion behavior are preserved.
+
+The disclosed P3 and P6 oracle edits are required adaptations, not weakened expectations. P3 now rejects the old pip executable and requires one exact uv verifier install with its target interpreter, hashes, no dependencies, no config, index and committed requirements. P6 can no longer assume `uv export` is uv call zero because `uv venv` correctly precedes it; it now requires exactly one export and the exact commit-exported `agent/host`. P1/P2/P4/P5/P7/P8/P9, all containment K rows, and all F rows remain live.
+
+From an exact clean archive inside a private user/network namespace, with private HOME/TMP and fresh local/global Zig caches, `zig build test-mac-bundle-layout-spike -j2 --summary all` exited 0 with 6/6 steps. The original prep oracle passed all 12 rows, the new real-uv/executing-curl oracle passed all 12 rows, the base containment oracle passed all 64 rows, and the fix-forward containment oracle passed all nine rows. Shell parse checks and diff whitespace checks are clean. `zig fmt --check build.zig` still reports pre-existing formatting drift at unrelated old blocks; formatting a scratch copy changes none of this green's registration block, so that ancestry hygiene is not a blocker here.
+
+I independently ran all twelve stated production mutants through the registered step with fresh caches and no outside route. Every run exited 1 for the intended behavior: FA restored `python3 -m venv` (six new-oracle failures); FB dropped the target interpreter (P3 plus V1/V3); FC installed under an outside prefix (P3 plus V1/V3); FD dropped `--require-hashes` (P3/V3 and the unhashed fixture published); FE allowed redirect following (both redirect rows recorded the follow); FF accepted 203 (status row published); FG accepted an effective-URL mismatch (mismatch row published); FH omitted effective-URL capture (the FETCH/parse rows failed); FI omitted remote-IP capture (V4 failed); FJ collapsed the venv diagnostic (V8 failed); FK dropped verifier `--no-config` (P3/V3); and FL dropped the site index (V3). Thus the proof binds behavior, not only argv text.
+
+The exact tree is `1d99a905d98dff9e4a338537a88970d4a2e0b631`. In a fresh detached clean clone the submitted helper reproduced the complete 22-entry manifest and verified every checkout byte. The bound manifest is:
+
+```text
+9cb07d0ee9cac45c8cc2fc19e010ed65d05f53fdc733bd85399310d678025f25  tests/mac/bundle_layout_spike.sh
+33928a295fa97f92d2295626049336eee0f5297c51d82644ea7aed49edda97fb  tests/mac/bundle_layout_spike_leg.sh
+cb3ee9a42311b1d784f51a408a07f5f88d8599a6ddadbbfaf957ec5475f4ed99  tests/mac/mac_gate_lib.sh
+15e45024f0e0f9c82743b1095739bf7d8d2c5ab61028255bcae6dc7522595221  tests/mac/known_hosts
+70f295ebfadef71aa44a6d9576a0384aeea45375a4315ca4c931f91f0b85d786  tests/mac/bundle_layout_spike_containment_selftest.sh
+9078473012e51c7470eb413b56f7a111745ecf031f6a58e0e66cbd8df333bd74  tests/mac/bundle_layout_spike_containment_ff_selftest.sh
+6c5809522a406d23a9c9c5b6b621b1e3c958049e98c92b227cc14b3e15bd7ace  tests/mac/bundle_layout_spike_prep_selftest.sh
+6717f310dcb3580592670935766c27e3d40eb1d4a2e5ebed29e129b7438f281c  tests/mac/bundle_layout_spike_prep_fetch_venv_selftest.sh
+bf8254b205a27d9790eeb985e62b618ecdce9393b8060eeb184a32b585e7db5a  packaging/macos/stage_agent_runtime.sh
+67d79c4a292493b1fedd1ef4fc7402b7eaa806bc1cbcb80104f657311b200b72  packaging/macos/merge_universal_tree.py
+50d893cad7028b60c754e13c7ad069e9631d78cd2f10a1a80a5d07c23dae55a0  packaging/macos/sdk_pth.py
+9bc046e36445fc0fed4badb1f7cf4ca60baf4935df2e93371d76446c3f4be86a  packaging/macos/relocate_python_framework.py
+6893310a60aea75252e0bfa2ed600540802a6cfaf068690262532067d4bb12d1  packaging/macos/agent_host_sdk.pth
+ba28a555fa7ffa921d1d36ba08e8ec1181df8d6e5839a0a89f54884953193641  packaging/macos/Info.plist
+a87138047d4af1d15583fd2536096177a1e56d88cb8fe0a9b7369debcee4b3da  packaging/macos/agent_runtime_pins.json
+e7f68e0f78760465c68821b15296ed072d62bfa881252425be438689982411d1  packaging/macos/sigstore_verifier.txt
+e27151c28f444a159ce9c64fa3b0fcaabb5bef5dc73c378b48bd8c5f184f747d  packaging/macos/build_site_packages.sh
+53cec15b1a760d342d52a5220ef6791bf60f651668e24ba9f4c312e6795cf382  agent/host/uv.lock
+ff7c539128a5049e984ce02980364e075e701bd8dc777d3cc30c9ea3515e115f  build.zig
+9158f02f4157c031e177b59e93270ab27ce5e8646d316841bb5d298d21e37a80  build.zig.zon
+1456a48661c371b94a5552531865c735a224cb03a0394d6fe55151611613dced  zigbrowser.json
+dc11ea2d7f07b6d371f2fa8f0a2f9842f3369e08b55713cc59a516d507765b8c  src.tar
+```
+
+The local executable hash helper is additionally bound at SHA-256 `0affc6e00e8fb1769dd69f44e5ccaf3e368ef5423bc6dd089d90cee372f43842`. The proposed `run82` directory is presently absent. Before the orchestrator executes the submitted Stage A command, it must add a fail-closed shell preflight: `set -euo pipefail`; require that `$B` does not exist; create `$B`, `$B/home`, and `$B/tmp`; and explicitly verify that helper digest before invoking it. The submitted snippet's comments say “STOP” but its bare sequential commands do not themselves stop after a failed `mkdir` or a changed helper. This operational amendment does not require a code commit and is part of this release. The helper must then exit 0 and print exactly the tree/manifest above before the one prep attempt.
+
+The one authorized Stage A attempt uses only HTTPS to `www.python.org`, `pypi.org`, `files.pythonhosted.org`, and `tuf-repo-cdn.sigstore.dev`, writes only below fresh `run82`, follows no curl redirect, and uses `uv venv --offline`. No passive connection sampler is part of the evidence. Any other host, redirect, digest mismatch, setup/prep failure, missing `PREP` line, or unexpected output stops the run and does not authorize a retry or Stage B. The return package remains: rc and exact `PREP`; both `FETCH` lines; a census of exactly `py.pkg`, `sites.tar`, and `inputs.sha256`; the literal two manifest lines; independent SHA-256 and byte size for all three; confirmation of pkg pin `8373e58da4ea146b3eb1c1f9834f19a319440b6b679b06050b1f9ee3237aa8e4`; and `prep.out` SHA-256. SilverRidge must confirm those generated inputs before any Mac release.
