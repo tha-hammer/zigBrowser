@@ -1733,3 +1733,13 @@ Exact fix-forward minimum:
 4. Preserve N2–N4, the seven-problem red control, the eight submitted popup-path mutants, and the 4pa.55 binding oracle. At green, register the hostless oracle beside `test-load-failure-policy` and satisfy the existing `7f8b217` safety condition: extend `mac_ms2a_hook_inert_test.py` for hook 14, with the guard-drop mutant red.
 
 The hostless oracle remains an R1 tripwire. Even after this red fix-forward, AppKit compilation and native-close behavior require the released both-Mac proof; neither a lexical green nor a cross-compile closes 4pa.58.
+
+## 2026-10-23 — 4pa.80 slice-2 audit GREEN fix-forward `1a4d8b5d`
+
+**APPROVED ON ITS OWN CONTENT.** Exact `1a4d8b5d0a69e2e77b34e60b6746e9f27f61f6a3` satisfies the complete narrow fix-forward minimum from `ceaf2f23`. It changes only `tests/e2e/mac_spike_audit_test.py` (+15/-1), preserves the existing type-transition and separate mode subtests, keeps the suite at 27 test methods, changes no registration or product policy, and is clean under `git diff --check`.
+
+The added field-isolated subtest makes the Usage parent a Regular File on both sides while keeping its mode and inode fixed, growing its size by exactly 32, and adding one otherwise-valid PU child. It explicitly checks that the parent's type/mode/inode are unchanged, then requires the verdict to be AUDIT-UNKNOWN and both coupled Usage deltas to be UNKNOWN. That isolates the production predicate's `Directory` requirement rather than passing because the before/after types differ.
+
+From a clean exact archive initialized as a scratch repository, under `env -i`, private HOME/TMP/XDG paths and a private user/network namespace, `zig build -j4 test-mac-bundle-layout-spike --summary all` exited 0 with **10/10 steps**; the audit unit suite passed **27/27**, and every registered layout, containment, audit, relocation, prep, and fetch/venv row remained green. In a separate fresh-cache copy, deleting only `== "Directory"` from `bundle_layout_spike_audit.py`'s PU-parent predicate made that same registered command exit 1 with **8/10 steps**. The sole unit failure was the new same-non-Directory subtest: the mutant returned `AUDIT-AMBIENT` instead of the required `AUDIT-UNKNOWN`. That is the exact causal mutant required by `ceaf2f23`; the prior ruling explicitly did not require a full 55-mutant rerun for this test-only repair.
+
+This approval clears the slice-specific `fec3ff83` oracle block only. The exact ancestry tip is **not push-safe** because its immediate parent `50f215e5` remains blocked by `c6125315`, and it also descends from the separately blocked 3ui.13 green `e4b524e6`. The 3ui.13 all-Mac-run hold remains in force. No Mac contact or run release is authorized by this ruling.
