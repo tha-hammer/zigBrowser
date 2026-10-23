@@ -3876,6 +3876,14 @@ pub fn build(b: *std.Build) void {
     }) |input| mac_dmg_script_selftest.addFileInput(b.path(input));
     b.step("test-mac-dmg-script", "Run the hostless selftest of the dmg script: shim in Contents/Frameworks, inside-out signing (4pa.73)").dependOn(&mac_dmg_script_selftest.step);
     test_step.dependOn(&mac_dmg_script_selftest.step);
+    // The 4pa.80 bundle-layout spike stages the real .app, signs it inside out and reports strict verification per Mac.
+    const mac_bundle_layout_spike_selftest = b.addSystemCommand(&.{ "bash", "tests/mac/bundle_layout_spike_selftest.sh" });
+    for ([_][]const u8{
+        "tests/mac/bundle_layout_spike_selftest.sh", "tests/mac/bundle_layout_spike.sh", "tests/mac/build-on-mac.sh",
+        "tests/mac/mac_gate_lib.sh",                 "tests/mac/known_hosts",            "packaging/macos/Info.plist",
+    }) |input| mac_bundle_layout_spike_selftest.addFileInput(b.path(input));
+    b.step("test-mac-bundle-layout-spike", "Run the hostless selftest of the 4pa.80 bundle-layout spike's run phase").dependOn(&mac_bundle_layout_spike_selftest.step);
+    test_step.dependOn(&mac_bundle_layout_spike_selftest.step);
     // The MS2b, MS2c and MS3 gates are real steps that run their scripts and pass a gate failure through (bd 4pa.62).
     const mac_gate_steps_selftest = b.addSystemCommand(&.{ "bash", "tests/mac/gate_steps_selftest.sh" });
     mac_gate_steps_selftest.setEnvironmentVariable("ZIG", b.graph.zig_exe);
