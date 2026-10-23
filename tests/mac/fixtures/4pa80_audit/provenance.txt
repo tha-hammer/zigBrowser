@@ -1,0 +1,15 @@
+# 4pa.80 slice-2 audit fixtures (SilverRidge 7f3b4c70). Normalized from real evidence; checked by
+# tests/e2e/mac_spike_audit_test.py (test_q1_provenance).
+SOURCE	bead zigBrowser-4pa.73 notes: the released Stage B run at d80dd3ee5f9b57c5453a33236df6a0092e1c8aa5, evidence manifest d4faf2bf1f70721f1a42f1a8907ef8f3ee3ac413b9a0e0b340967e2eb60207f9
+SET	intel	22	d1e6d603d292983dedded0b99a58a9b4df7754449dd031cb283b226570fd0c36
+SET	arm	31	f1eac3878f0fe6b144b1f3ba3ec806a45465d9e4b6f3d148acde2141859317ec
+# SET: <arch> <lines> <sha256 of the recorded `diff audit.before audit.after | grep -E '^[<>]'` output, newline-terminated>
+SUBST	/private/var/folders/	/var/folders/
+# SUBST: the only substitution, fixture -> recorded. The Stage B leg snapshotted the getconf paths (/var/folders/...);
+# these fixtures use the physical paths macOS resolves (/private/var/folders/...), as the slice-2 leg does.
+SYNTHETIC	intel.synthetic
+SYNTHETIC	arm.synthetic
+# SYNTHETIC: unchanged entries, identical in <arch>.before and <arch>.after: the surface roots and shallow-home
+# entries for coverage, and entries that separate the recorded diff hunks. Every other line is a recorded one.
+RUN	zb-gate-d80dd3ee5f9b57c5453a33236df6a0092e1c8aa5-0123456789abcdef
+# RUN: the run root in <arch>.roots: the Stage B commit, with a synthetic 16-hex nonce.
