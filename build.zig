@@ -4086,6 +4086,16 @@ pub fn build(b: *std.Build) void {
     }) |input| mac_dmg_universal_selftest.addFileInput(b.path(input));
     mac_dmg_script_step.dependOn(&mac_dmg_universal_selftest.step);
     test_step.dependOn(&mac_dmg_universal_selftest.step);
+    // Its otool check holds however otool's output is timed: a later write after the shim line (SilverRidge 2e8e0190).
+    const mac_dmg_otool_late_selftest = b.addSystemCommand(&.{ "bash", "tests/mac/dmg_otool_late_write_selftest.sh" });
+    for ([_][]const u8{
+        "tests/mac/dmg_otool_late_write_selftest.sh", "tests/mac/dmg_script_selftest.sh", "packaging/macos/build-dmg.sh",
+        "tests/mac/build-on-mac.sh",                  "tests/mac/mac_gate_lib.sh",        "tests/mac/known_hosts",
+        "tests/mac/mac_config.sh",                    "packaging/macos/Info.plist",       "packaging/macos/entitlements.plist",
+        "packaging/assets/zigBrowser.png",
+    }) |input| mac_dmg_otool_late_selftest.addFileInput(b.path(input));
+    mac_dmg_script_step.dependOn(&mac_dmg_otool_late_selftest.step);
+    test_step.dependOn(&mac_dmg_otool_late_selftest.step);
     // The 4pa.80 bundle-layout spike stages the real .app, signs it inside out and reports strict verification per Mac,
     // with every Mac-side write-capable phase under one Seatbelt profile (SilverRidge de82cf2).
     const mac_bundle_layout_spike_selftest = b.addSystemCommand(&.{ "bash", "tests/mac/bundle_layout_spike_containment_selftest.sh" });

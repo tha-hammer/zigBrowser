@@ -100,10 +100,16 @@ for f in "$CONTENTS/MacOS/$APP_NAME" "$CONTENTS/Frameworks/$SHIM_NAME"; do
   [ "$archs" = "arm64 x86_64 " ] || { echo "ERROR: $f holds '${archs% }', not exactly x86_64 and arm64" >&2; exit 1; }
 done
 
-# The exe's shim reference must resolve inside the bundle, or the app cannot start.
+# The exe's shim reference must resolve inside the bundle, or the app cannot start. otool's whole output is collected
+# and its own status checked first, then searched: a pipe into grep -q would close at the first match, and an otool
+# still writing would die of SIGPIPE under pipefail, failing a valid package (SilverRidge 2e8e0190).
 SHIM_REF="@executable_path/../Frameworks/$SHIM_NAME"
-otool -L "$CONTENTS/MacOS/$APP_NAME" | grep -qF "$SHIM_REF " \
-  || { echo "ERROR: $CONTENTS/MacOS/$APP_NAME does not load $SHIM_REF" >&2; exit 1; }
+OTOOL_OUT=$(otool -L "$CONTENTS/MacOS/$APP_NAME") \
+  || { echo "ERROR: otool -L $CONTENTS/MacOS/$APP_NAME failed" >&2; exit 1; }
+case "$OTOOL_OUT" in
+  *"$SHIM_REF "*) ;;
+  *) echo "ERROR: $CONTENTS/MacOS/$APP_NAME does not load $SHIM_REF" >&2; exit 1 ;;
+esac
 [ -f "$CONTENTS/MacOS/${SHIM_REF#@executable_path/}" ] \
   || { echo "ERROR: $SHIM_REF does not resolve inside $APP_BUNDLE" >&2; exit 1; }
 
