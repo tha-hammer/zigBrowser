@@ -20,6 +20,8 @@
 #      the given identity with --options runtime on all three, and --entitlements packaging/macos/entitlements.plist
 #      (the committed manifest) on the exe and the .app, never on the dylib;
 #   D6 check the bundle: otool -L reads the bundled exe (its shim reference must resolve inside the bundle).
+# With ZB_DMG_SELFTEST_OTOOL_LATE=1 (tests/mac/dmg_otool_late_write_selftest.sh) the fake otool writes its later
+# dependency line after a pause, so a check that closes otool's pipe early (grep -q under pipefail) fails D1.
 # Plus a TRIPWIRE (not proof): the header calls the output an ad-hoc dev dmg, not a distributable artifact.
 # No Mac, no signal: it re-runs itself in a private user+network namespace; HOME/TMPDIR live in its temp tree.
 # Run: bash tests/mac/dmg_script_selftest.sh [repo root]
@@ -96,6 +98,9 @@ cat > "$T/hostbin/otool" <<EOF
 $rec
 [ "\$1" = -L ] || exit 0
 printf '%s:\n\t@executable_path/../Frameworks/libwkwebview_shim.dylib (compatibility version 0.0.0, current version 0.0.0)\n' "\$2"
+# ZB_DMG_SELFTEST_OTOOL_LATE=1: the later dependency line comes after a pause, as a real otool can write it after the
+# shim line has already been read. A reader that stops at the first match (grep -q) has closed the pipe by then.
+[ "${ZB_DMG_SELFTEST_OTOOL_LATE:-}" = 1 ] && sleep 0.5
 printf '\t/usr/lib/libSystem.B.dylib (compatibility version 1.0.0, current version 1345.0.0)\n'
 EOF
 cat > "$T/hostbin/lipo" <<EOF
