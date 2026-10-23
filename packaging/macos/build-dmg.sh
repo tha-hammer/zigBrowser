@@ -6,8 +6,13 @@
 # libwkwebview_shim.dylib; otool -L proves the reference resolves inside the bundle) and is signed inside out: the
 # dylib, then the exe, then the .app, never --deep (bd 4pa.73). Ad hoc (identity "-") by default; with
 # ZB_DMG_SIGN_IDENTITY set, each signature adds the hardened runtime and the exe and .app get the committed
-# packaging/macos/entitlements.plist. It is one native x86_64 build, not universal (MS1c), and not notarized (MS9).
-# Hostless selftest: tests/mac/dmg_script_selftest.sh (zig build test-mac-dmg-script).
+# packaging/macos/entitlements.plist. Not notarized (MS9).
+# The .app is UNIVERSAL (MS1c, bd 4pa.73): each Mac builds the commit natively (arm64 on ZB_MAC_ARM_HOST, x86_64 on
+# ZB_MAC_HOST), the arm64 exe and shim go to the Intel run dir, and lipo joins each pair; both bundled Mach-O files must
+# then hold exactly x86_64 and arm64 (lipo -archs) before anything is signed. Info.plist and the icon come from the
+# commit's own tree in that run dir, never from this working tree.
+# Hostless selftests: tests/mac/dmg_universal_selftest.sh and tests/mac/dmg_script_selftest.sh (zig build
+# test-mac-dmg-script).
 # It builds one exact commit into a fresh per-run dir on the Mac and works only there, with pinned host keys (bd 4pa.59,
 # 4pa.77). The old --skip-build (repackage a binary left in a shared dir) is refused: there is no shared dir any more.
 set -euo pipefail
@@ -30,23 +35,28 @@ fi
 cd "$REPO_ROOT"
 # The Macs and the key come only from the explicit environment, never a default (bd 3ui.13): NOT RUN otherwise.
 . tests/mac/mac_config.sh
-mac_config one
+mac_config two
 . tests/mac/mac_gate_lib.sh
-trap mac_remove_run_dirs EXIT
+SLICES=$(mktemp -d "${TMPDIR:-/tmp}/zb-dmg-slices-XXXXXX")
+trap 'mac_remove_run_dirs; rm -rf -- "${SLICES:?}"' EXIT
 mapfile -d '' SSH < <(mac_ssh_opts "$KEY")
 mapfile -d '' SCP < <(mac_scp_opts "$KEY")
+mapfile -d '' ARM_SCP < <(mac_scp_opts "$ARM_KEY")
 
-# ── Step 1: Build on the Mac, into a fresh run dir ──
+# ── Step 1: Build on each Mac, each into a fresh run dir ──
 echo "==> Building on macOS host..."
+mac_build "$ARM_HOST" "$ARM_KEY"
+ARM_DIR=$MAC_RDIR
 mac_build "$HOST" "$KEY"
 RUN_DIR=$MAC_RDIR
 
-# ── Step 2: Sync assets to the Mac ──
-echo "==> Syncing packaging assets..."
-"${SCP[@]}" \
-  packaging/assets/zigBrowser.png \
-  packaging/macos/Info.plist \
-  "$HOST:$RUN_DIR/" >/dev/null
+# ── Step 2: The arm64 exe and shim go to the Intel run dir ──
+echo "==> Fetching the arm64 slices..."
+"${ARM_SCP[@]}" "$ARM_HOST:$ARM_DIR/zig-out/bin/zigBrowser" "$SLICES/zigBrowser-arm64" >/dev/null
+"${ARM_SCP[@]}" "$ARM_HOST:$ARM_DIR/zig-out/Frameworks/libwkwebview_shim.dylib" "$SLICES/libwkwebview_shim-arm64.dylib" >/dev/null
+[ -s "$SLICES/zigBrowser-arm64" ] && [ -s "$SLICES/libwkwebview_shim-arm64.dylib" ] \
+  || { echo "ERROR: the arm64 build output did not arrive" >&2; exit 1; }
+"${SCP[@]}" "$SLICES/zigBrowser-arm64" "$SLICES/libwkwebview_shim-arm64.dylib" "$HOST:$RUN_DIR/" >/dev/null
 
 # ── Step 3: Assemble .app bundle, sign, and create .dmg on the Mac ──
 echo "==> Assembling .app bundle, signing, and creating .dmg..."
@@ -64,7 +74,9 @@ cd "$HOME/${4:?}"
 BINARY="zig-out/bin/zigBrowser"
 SHIM_NAME="libwkwebview_shim.dylib"
 SHIM="zig-out/Frameworks/$SHIM_NAME"
-for f in "$BINARY" "$SHIM"; do
+ARM_BINARY="zigBrowser-arm64"
+ARM_SHIM="libwkwebview_shim-arm64.dylib"
+for f in "$BINARY" "$SHIM" "$ARM_BINARY" "$ARM_SHIM"; do
   [ -f "$f" ] || { echo "ERROR: build output not found: $f" >&2; exit 1; }
 done
 
@@ -79,10 +91,14 @@ mkdir -p "$CONTENTS/MacOS"
 mkdir -p "$CONTENTS/Resources"
 mkdir -p "$CONTENTS/Frameworks"
 
-# Copy the binary and the shim it loads
-cp "$BINARY" "$CONTENTS/MacOS/$APP_NAME"
+# Join each native pair into the universal exe and the universal shim it loads
+lipo -create "$BINARY" "$ARM_BINARY" -output "$CONTENTS/MacOS/$APP_NAME"
 chmod 755 "$CONTENTS/MacOS/$APP_NAME"
-cp "$SHIM" "$CONTENTS/Frameworks/$SHIM_NAME"
+lipo -create "$SHIM" "$ARM_SHIM" -output "$CONTENTS/Frameworks/$SHIM_NAME"
+for f in "$CONTENTS/MacOS/$APP_NAME" "$CONTENTS/Frameworks/$SHIM_NAME"; do
+  archs=$(lipo -archs "$f" | tr ' ' '\n' | LC_ALL=C sort | tr '\n' ' ')
+  [ "$archs" = "arm64 x86_64 " ] || { echo "ERROR: $f holds '${archs% }', not exactly x86_64 and arm64" >&2; exit 1; }
+done
 
 # The exe's shim reference must resolve inside the bundle, or the app cannot start.
 SHIM_REF="@executable_path/../Frameworks/$SHIM_NAME"
@@ -91,20 +107,20 @@ otool -L "$CONTENTS/MacOS/$APP_NAME" | grep -qF "$SHIM_REF " \
 [ -f "$CONTENTS/MacOS/${SHIM_REF#@executable_path/}" ] \
   || { echo "ERROR: $SHIM_REF does not resolve inside $APP_BUNDLE" >&2; exit 1; }
 
-# Stamp version into Info.plist
-sed "s/__VERSION__/$VERSION/g" Info.plist > "$CONTENTS/Info.plist"
+# Stamp version into Info.plist (the commit's own, from this run dir's tree)
+sed "s/__VERSION__/$VERSION/g" packaging/macos/Info.plist > "$CONTENTS/Info.plist"
 
 # Generate .icns from PNG
 ICONSET="${APP_NAME}.iconset"
 rm -rf "$ICONSET"
 mkdir "$ICONSET"
-sips -z 16 16     zigBrowser.png --out "$ICONSET/icon_16x16.png"      >/dev/null
-sips -z 32 32     zigBrowser.png --out "$ICONSET/icon_16x16@2x.png"   >/dev/null
-sips -z 32 32     zigBrowser.png --out "$ICONSET/icon_32x32.png"      >/dev/null
-sips -z 64 64     zigBrowser.png --out "$ICONSET/icon_32x32@2x.png"   >/dev/null
-sips -z 128 128   zigBrowser.png --out "$ICONSET/icon_128x128.png"    >/dev/null
-sips -z 256 256   zigBrowser.png --out "$ICONSET/icon_128x128@2x.png" >/dev/null
-sips -z 256 256   zigBrowser.png --out "$ICONSET/icon_256x256.png"    >/dev/null
+sips -z 16 16     packaging/assets/zigBrowser.png --out "$ICONSET/icon_16x16.png"      >/dev/null
+sips -z 32 32     packaging/assets/zigBrowser.png --out "$ICONSET/icon_16x16@2x.png"   >/dev/null
+sips -z 32 32     packaging/assets/zigBrowser.png --out "$ICONSET/icon_32x32.png"      >/dev/null
+sips -z 64 64     packaging/assets/zigBrowser.png --out "$ICONSET/icon_32x32@2x.png"   >/dev/null
+sips -z 128 128   packaging/assets/zigBrowser.png --out "$ICONSET/icon_128x128.png"    >/dev/null
+sips -z 256 256   packaging/assets/zigBrowser.png --out "$ICONSET/icon_128x128@2x.png" >/dev/null
+sips -z 256 256   packaging/assets/zigBrowser.png --out "$ICONSET/icon_256x256.png"    >/dev/null
 iconutil -c icns "$ICONSET" -o "$CONTENTS/Resources/${APP_NAME}.icns"
 rm -rf "$ICONSET"
 

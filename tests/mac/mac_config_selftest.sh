@@ -59,7 +59,7 @@ INTEL=intel@10.0.0.1 ARM=arm@10.0.0.2
 # script | launch (file; commit: bash -c "$(git show)"; compile: plus ZB_COMPILE_HARNESS_SHA256) |
 # provenance stubs (-, pin = the script's PIN, empty) | hosts (one, two) | args (PREP = a fabricated spike prep dir)
 DRIVEN=(
-  "packaging/macos/build-dmg.sh|file|-|one|"
+  "packaging/macos/build-dmg.sh|file|-|two|"
   "tests/mac/build-on-mac.sh|file|-|one|"
   "tests/mac/bundle_layout_spike.sh|file|-|two|run PREP"
   "tests/mac/gate.sh|file|-|two|"

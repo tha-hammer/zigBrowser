@@ -4,7 +4,7 @@
 # reopened that file and truncated it, so each mac_build or remote test wiped what came before). Three real runs
 # against a stub ssh/scp that answers like a passing Mac, each with stdout and stderr in one log file:
 #   tests/mac/gate.sh (mac_build on both hosts, then the M9 and mac_universal remote tests on both),
-#   tests/mac/ms2b_gate.sh (mac_build on both hosts), and packaging/macos/build-dmg.sh (one mac_build).
+#   tests/mac/ms2b_gate.sh (mac_build on both hosts), and packaging/macos/build-dmg.sh (mac_build on both hosts: the universal .app).
 # For each log:
 #   L1 it has no NUL byte (a truncated file written at the old offset leaves a hole of NULs);
 #   L2 it still holds the run's first line and its end line;
@@ -107,7 +107,7 @@ check_log() { # check_log <label> <script> <first line, ERE> <end line, ERE> <ho
 
 check_log gate      tests/mac/gate.sh              '^== build x86_64 on intel@10\.0\.0\.1 ==$' $'^PASS\tmac-universal-gate\tboth-arches$' 2 gate
 check_log ms2b      tests/mac/ms2b_gate.sh         '^== build \+ MS2b e2e on intel@10\.0\.0\.1 \(x86_64\) ==$' $'^PASS\tms2b-gate\tboth-arches$'          2
-check_log build-dmg packaging/macos/build-dmg.sh   '^==> Building on macOS host\.\.\.$'        '^==> Done: '                               1
+check_log build-dmg packaging/macos/build-dmg.sh   '^==> Building on macOS host\.\.\.$'        '^==> Done: '                               2
 
 if [ "$fails" -eq 0 ]; then printf 'PASS\tmac-log-integrity-selftest\n'; exit 0; fi
 printf 'FAIL\tmac-log-integrity-selftest\t%s failure(s)\n' "$fails"

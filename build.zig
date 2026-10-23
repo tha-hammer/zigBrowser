@@ -4074,8 +4074,18 @@ pub fn build(b: *std.Build) void {
         "tests/mac/mac_gate_lib.sh",          "tests/mac/known_hosts", "tests/mac/mac_config.sh",           "packaging/macos/Info.plist",
         "packaging/macos/entitlements.plist", "packaging/assets/zigBrowser.png",
     }) |input| mac_dmg_script_selftest.addFileInput(b.path(input));
-    b.step("test-mac-dmg-script", "Run the hostless selftest of the dmg script: shim in Contents/Frameworks, inside-out signing (4pa.73)").dependOn(&mac_dmg_script_selftest.step);
+    const mac_dmg_script_step = b.step("test-mac-dmg-script", "Run the hostless selftests of the dmg script: a universal .app (both Macs, lipo), shim in Contents/Frameworks, inside-out signing (4pa.73)");
+    mac_dmg_script_step.dependOn(&mac_dmg_script_selftest.step);
     test_step.dependOn(&mac_dmg_script_selftest.step);
+    // Its .app is universal: built on both Macs, joined with lipo, every Mach-O fat (MS1c, bd 4pa.73; red 89fa9c2).
+    const mac_dmg_universal_selftest = b.addSystemCommand(&.{ "bash", "tests/mac/dmg_universal_selftest.sh" });
+    for ([_][]const u8{
+        "tests/mac/dmg_universal_selftest.sh", "packaging/macos/build-dmg.sh",       "tests/mac/build-on-mac.sh",
+        "tests/mac/mac_gate_lib.sh",           "tests/mac/known_hosts",              "tests/mac/mac_config.sh",
+        "packaging/macos/Info.plist",          "packaging/macos/entitlements.plist", "packaging/assets/zigBrowser.png",
+    }) |input| mac_dmg_universal_selftest.addFileInput(b.path(input));
+    mac_dmg_script_step.dependOn(&mac_dmg_universal_selftest.step);
+    test_step.dependOn(&mac_dmg_universal_selftest.step);
     // The 4pa.80 bundle-layout spike stages the real .app, signs it inside out and reports strict verification per Mac,
     // with every Mac-side write-capable phase under one Seatbelt profile (SilverRidge de82cf2).
     const mac_bundle_layout_spike_selftest = b.addSystemCommand(&.{ "bash", "tests/mac/bundle_layout_spike_containment_selftest.sh" });

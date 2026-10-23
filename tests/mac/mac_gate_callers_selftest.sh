@@ -231,7 +231,7 @@ check_caller ms2c        tests/mac/ms2c_gate.sh        $'^PASS\tms2c-gate\tboth-
 check_caller ms3         tests/mac/ms3_gate.sh         $'^PASS\tms3-gate\tboth-arches$'           "$INTEL" "$ARM"
 check_caller ms4         tests/mac/ms4_gate.sh         $'^PASS\tms4-gate\tboth-arches$'           "$INTEL" "$ARM"
 check_caller rows        tests/mac/ms_runtime_rows_gate.sh $'^PASS\tms-runtime-rows-gate\tboth-arches$' "$INTEL" "$ARM"
-check_caller build-dmg   packaging/macos/build-dmg.sh  '^==> Done: '                             "$INTEL"
+check_caller build-dmg   packaging/macos/build-dmg.sh  '^==> Done: '                             "$INTEL" "$ARM"
 
 # The rows gate's Mac leg (tests/mac/ms_runtime_rows_gate.sh, SilverRidge fe4542e): the structural checks above
 # never run the leg script, so run it here, extracted from the real caller, in a fake run root with a stub python3.

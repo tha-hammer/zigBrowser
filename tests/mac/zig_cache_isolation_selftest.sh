@@ -166,7 +166,7 @@ check ms2b          tests/mac/ms2b_gate.sh         "$INTEL" "$ARM"
 check ms2c          tests/mac/ms2c_gate.sh         "$INTEL" "$ARM"
 check ms3           tests/mac/ms3_gate.sh          "$INTEL" "$ARM"
 check ms4           tests/mac/ms4_gate.sh          "$INTEL" "$ARM"
-check build-dmg     packaging/macos/build-dmg.sh   "$INTEL"
+check build-dmg     packaging/macos/build-dmg.sh   "$INTEL" "$ARM"
 
 if [ "$fails" -eq 0 ]; then printf 'PASS\tmac-zig-cache-isolation-selftest\n'; exit 0; fi
 printf 'FAIL\tmac-zig-cache-isolation-selftest\t%s failure(s)\n' "$fails"

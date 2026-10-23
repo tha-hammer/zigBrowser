@@ -2,14 +2,18 @@
 # Hostless selftest of the dmg script, packaging/macos/build-dmg.sh (bd zigBrowser-4pa.73, plan R30-MS1 Red 1: it copied
 # only the executable, so libwkwebview_shim.dylib never reached Contents/Frameworks, and it signed ad hoc with --deep).
 # The REAL script (with the real tests/mac/build-on-mac.sh and mac_gate_lib.sh) runs in a scratch git repo. Its ssh/scp
-# are EXECUTING stubs: every remote command and remote script runs for real in a fake Mac home, with fake Mac tools
-# (zig, codesign, otool, lipo, sips, iconutil, hdiutil) that record their argv. The fake zig builds the real output
-# layout (zig-out/bin/zigBrowser and zig-out/Frameworks/libwkwebview_shim.dylib); the fake hdiutil keeps a copy of the
-# exact tree the dmg is made from. Two runs: ad hoc (the default) and release (ZB_DMG_SIGN_IDENTITY set). Each must:
+# are EXECUTING stubs: every remote command and remote script runs for real in a fake Mac home per host (the script
+# builds on both Macs and joins the slices, bd 4pa.73 MS1c), with fake Mac tools (zig, codesign, otool, lipo, sips,
+# iconutil, hdiutil) that record their argv. The fake zig builds the real output layout (zig-out/bin/zigBrowser and
+# zig-out/Frameworks/libwkwebview_shim.dylib) with host-specific bytes; the fake lipo joins its inputs; the fake
+# hdiutil keeps a copy of the exact tree the dmg is made from. Two runs: ad hoc (the default) and release
+# (ZB_DMG_SIGN_IDENTITY set). Each must:
 #   D1 reach its end: exit 0, "==> Done: ", and the dmg copied back;
-#   D2 build the committed tree: the Mac's copy of an uncommitted edit in the working tree still reads "committed";
+#   D2 build the committed tree: each Mac's copy of an uncommitted edit in the working tree still reads "committed",
+#      and the app's Info.plist is the committed one (an uncommitted edit of it never reaches the app);
 #   D3 ship the shim: the dmg tree holds zigBrowser.app/Contents/MacOS/zigBrowser and
-#      zigBrowser.app/Contents/Frameworks/libwkwebview_shim.dylib, byte-identical to what the build made;
+#      zigBrowser.app/Contents/Frameworks/libwkwebview_shim.dylib, each byte for byte the lipo join of the two
+#      hosts' builds (x86_64, then arm64);
 #   D4 sign inside out: exactly three signing calls, on the dylib, then the exe, then the .app, each target present
 #      when it is signed, and none with --deep;
 #   D5 sign as the run asks: ad hoc uses identity "-" with no --options runtime and no --entitlements; release uses
@@ -34,10 +38,10 @@ trap cleanup EXIT
 fails=0
 ok() { printf 'ok   %s\n' "$*"; }
 bad() { printf 'FAIL %s\n' "$*"; fails=$((fails + 1)); }
-HOST=intel@10.0.0.1 MACHOME="$T/mac" C="$T/ctl"
+HOST=intel@10.0.0.1 MACHOME="$T/mac" ARM=arm@10.0.0.2 ARMHOME="$T/mac-arm" C="$T/ctl"
 SHIM=zigBrowser.app/Contents/Frameworks/libwkwebview_shim.dylib EXE=zigBrowser.app/Contents/MacOS/zigBrowser
 
-mkdir -p "$T/bin" "$T/hostbin" "$MACHOME/.local/bin" "$C" "$T/home" "$T/tmp"
+mkdir -p "$T/bin" "$T/hostbin" "$MACHOME/.local/bin" "$ARMHOME/.local/bin" "$C" "$T/home" "$T/tmp"
 cat > "$T/bin/ssh" <<EOF
 #!/bin/bash
 host= skip= k=0
@@ -47,8 +51,8 @@ for a in "\$@"; do
   case "\$a" in -i|-o|-F|-p|-l) skip=1; continue ;; -*) continue ;; esac
   host=\$a; break
 done
-[ "\$host" = "$HOST" ] || { echo "stub ssh: unexpected host \$host" >&2; exit 99; }
-cd "$MACHOME" && exec env -i HOME="$MACHOME" PATH="$T/hostbin:/usr/bin:/bin" bash -c "\${*:k+1}"
+case "\$host" in $HOST) home="$MACHOME" ;; $ARM) home="$ARMHOME" ;; *) echo "stub ssh: unexpected host \$host" >&2; exit 99 ;; esac
+cd "\$home" && exec env -i HOME="\$home" PATH="$T/hostbin:/usr/bin:/bin" bash -c "\${*:k+1}"
 EOF
 cat > "$T/bin/scp" <<EOF
 #!/bin/bash
@@ -60,22 +64,27 @@ for a in "\$@"; do
 done
 dst=\${pos[\${#pos[@]}-1]}; unset 'pos[\${#pos[@]}-1]'
 for src in "\${pos[@]}"; do
-  case "\$src" in $HOST:*) cp "$MACHOME/\${src#*:}" "\$dst" || exit 1; continue ;; *:*) echo "stub scp: bad source \$src" >&2; exit 99 ;; esac
-  case "\$dst" in $HOST:*) cp "\$src" "$MACHOME/\${dst#*:}" || exit 1 ;; *) echo "stub scp: bad target \$dst" >&2; exit 99 ;; esac
+  case "\$src" in $HOST:*) cp "$MACHOME/\${src#*:}" "\$dst" || exit 1; continue ;; $ARM:*) cp "$ARMHOME/\${src#*:}" "\$dst" || exit 1; continue ;;
+    *:*) echo "stub scp: bad source \$src" >&2; exit 99 ;; esac
+  case "\$dst" in $HOST:*) cp "\$src" "$MACHOME/\${dst#*:}" || exit 1 ;; $ARM:*) cp "\$src" "$ARMHOME/\${dst#*:}" || exit 1 ;;
+    *) echo "stub scp: bad target \$dst" >&2; exit 99 ;; esac
 done
 EOF
 # The fake Mac tools. Each records its argv (NUL-separated) as ctl/<tool>.<n>.
 rec='n=$(ls "'"$C"'" | grep -c "^$(basename "$0")\.[0-9]*$" || true); printf "%s\0" "$@" > "'"$C"'/$(basename "$0").$n"'
-cat > "$MACHOME/.local/bin/zig" <<EOF
+for home in "$MACHOME" "$ARMHOME"; do
+  role=intel; [ "$home" = "$ARMHOME" ] && role=arm
+  cat > "$home/.local/bin/zig" <<EOF
 #!/bin/bash
 [ "\$1" = version ] && { echo 0.16.0; exit 0; }
-cat packaging/macos/marker > "$C/built-from"   # which tree the Mac built: the committed one or the working tree
+cat packaging/macos/marker > "$C/built-from.$role"   # which tree this Mac built: the committed one or the working tree
 mkdir -p zig-out/bin zig-out/Frameworks
-printf 'zigBrowser exe stand-in\n' > zig-out/bin/zigBrowser; chmod 755 zig-out/bin/zigBrowser
-printf 'libwkwebview_shim stand-in\n' > zig-out/Frameworks/libwkwebview_shim.dylib
-cp zig-out/bin/zigBrowser zig-out/Frameworks/libwkwebview_shim.dylib "$C/"
+printf 'zigBrowser exe stand-in built on $role\n' > zig-out/bin/zigBrowser; chmod 755 zig-out/bin/zigBrowser
+printf 'libwkwebview_shim stand-in built on $role\n' > zig-out/Frameworks/libwkwebview_shim.dylib
+cp zig-out/bin/zigBrowser "$C/zigBrowser.$role"; cp zig-out/Frameworks/libwkwebview_shim.dylib "$C/libwkwebview_shim.dylib.$role"
 echo "build ok"
 EOF
+done
 cat > "$T/hostbin/codesign" <<EOF
 #!/bin/bash
 $rec
@@ -92,7 +101,14 @@ EOF
 cat > "$T/hostbin/lipo" <<EOF
 #!/bin/bash
 $rec
-case "\$1" in -archs) echo x86_64 ;; -info) echo "Non-fat file: \$2 is architecture: x86_64" ;; esac
+case "\$1" in   # -create joins its inputs in order; a joined file answers both slices
+  -create)
+    shift; ins=() out=
+    while [ \$# -gt 0 ]; do [ "\$1" = -output ] && { out=\$2; shift 2; continue; }; ins+=("\$1"); shift; done
+    { echo "FAT x86_64 arm64"; for f in "\${ins[@]}"; do echo "--slice--"; cat "\$f"; done; } > "\$out" ;;
+  -archs) if [ "\$(head -n 1 "\$2")" = "FAT x86_64 arm64" ]; then echo "x86_64 arm64"; else echo x86_64; fi ;;
+  -info) echo "Architectures in the fat file: \$2" ;;
+esac
 exit 0
 EOF
 cat > "$T/hostbin/sips" <<EOF
@@ -112,7 +128,7 @@ src=
 for ((i = 1; i <= \$#; i++)); do [ "\${!i}" = -srcfolder ] && { j=\$((i + 1)); src=\${!j}; }; done
 rm -rf "$C/dmg-tree" && cp -a "\$src" "$C/dmg-tree" && echo dmg > "\${@: -1}"
 EOF
-chmod +x "$T/bin/ssh" "$T/bin/scp" "$MACHOME/.local/bin/zig" "$T"/hostbin/*
+chmod +x "$T/bin/ssh" "$T/bin/scp" "$MACHOME/.local/bin/zig" "$ARMHOME/.local/bin/zig" "$T"/hostbin/*
 
 # The scratch repo: the real script, its build step and library, the pinned host keys, the real packaging inputs, a
 # marker that is committed as "committed" and then edited (uncommitted) in the working tree, and stand-ins for the rest.
@@ -131,6 +147,8 @@ G=(env -i PATH=/usr/bin:/bin HOME="$T/home" GIT_CONFIG_NOSYSTEM=1 git -C "$R")
   && "${G[@]}" -c user.name=selftest -c user.email=selftest@invalid commit -q -m staged \
   || { bad "could not build the scratch repo"; exit 1; }
 echo uncommitted > "$R/packaging/macos/marker"
+PLIST_COMMITTED=$(sed 's/__VERSION__/0.2.0/g' "$R/packaging/macos/Info.plist")
+echo "<!-- uncommitted working-tree edit -->" >> "$R/packaging/macos/Info.plist"
 
 US=$'\x1f'   # the field separator: not whitespace, so an empty field survives `read`
 signs=() # per signing call: target, identity, deep, runtime, entitlements, present (US-separated)
@@ -161,20 +179,24 @@ run_dmg() { # run_dmg <label> <identity or empty>: D1-D6 for one run
   local label=$1 ident=$2 rc s tgt id deep rt ent present i want_id
   local -a want=("$SHIM" "$EXE" zigBrowser.app)
   rm -rf "${C:?}"/* "$R/zigBrowser_0.2.0_macos.dmg"
-  (cd "$R" && env -i PATH="$T/bin:/usr/bin:/bin" HOME="$T/home" TMPDIR="$T/tmp" ZB_MAC_HOST="$HOST" \
+  (cd "$R" && env -i PATH="$T/bin:/usr/bin:/bin" HOME="$T/home" TMPDIR="$T/tmp" ZB_MAC_HOST="$HOST" ZB_MAC_ARM_HOST="$ARM" \
      ZB_MAC_KEY="$T/fake_mac_key" ${ident:+ZB_DMG_SIGN_IDENTITY="$ident"} \
      timeout 120 bash packaging/macos/build-dmg.sh >"$T/out.$label" 2>&1 </dev/null)
   rc=$?
   if [ "$rc" -eq 0 ] && grep -q '^==> Done: ' "$T/out.$label" && [ -s "$R/zigBrowser_0.2.0_macos.dmg" ]; then
     ok "$label D1: the run reaches its end and copies the dmg back"
   else bad "$label D1: exit $rc, want 0 with \"==> Done: \" and the dmg: $(tail -n 3 "$T/out.$label" | tr '\n' ' ')"; fi
-  if [ "$(cat "$C/built-from" 2>/dev/null)" = committed ]; then ok "$label D2: the Mac built the committed tree"
-  else bad "$label D2: the Mac built '$(cat "$C/built-from" 2>/dev/null)', want the committed tree"; fi
-  if [ -f "$C/dmg-tree/$EXE" ] && cmp -s "$C/zigBrowser" "$C/dmg-tree/$EXE"; then ok "$label D3: the dmg holds the built exe"
-  else bad "$label D3: the dmg tree has no built exe at $EXE"; fi
-  if [ -f "$C/dmg-tree/$SHIM" ] && cmp -s "$C/libwkwebview_shim.dylib" "$C/dmg-tree/$SHIM"; then
-    ok "$label D3: the dmg holds the built shim at Contents/Frameworks"
-  else bad "$label D3: the dmg tree has no built shim at $SHIM ($(cd "$C/dmg-tree" 2>/dev/null && find . -type f | tr '\n' ' '))"; fi
+  if [ "$(cat "$C/built-from.intel" 2>/dev/null)" = committed ] && [ "$(cat "$C/built-from.arm" 2>/dev/null)" = committed ] \
+     && [ "$(cat "$C/dmg-tree/zigBrowser.app/Contents/Info.plist" 2>/dev/null)" = "$PLIST_COMMITTED" ]; then
+    ok "$label D2: both Macs built the committed tree, and the app's Info.plist is the committed one"
+  else bad "$label D2: built '$(cat "$C/built-from.intel" 2>/dev/null)' and '$(cat "$C/built-from.arm" 2>/dev/null)', Info.plist $(cmp -s <(printf '%s\n' "$PLIST_COMMITTED") "$C/dmg-tree/zigBrowser.app/Contents/Info.plist" && echo committed || echo 'not the committed one'); want the committed tree"; fi
+  joined() { printf 'FAT x86_64 arm64\n--slice--\n'; cat "$1"; printf -- '--slice--\n'; cat "$2"; }
+  if [ -f "$C/dmg-tree/$EXE" ] && cmp -s <(joined "$C/zigBrowser.intel" "$C/zigBrowser.arm") "$C/dmg-tree/$EXE"; then
+    ok "$label D3: the dmg holds the lipo join of both hosts' exe builds"
+  else bad "$label D3: the dmg tree has no joined exe at $EXE"; fi
+  if [ -f "$C/dmg-tree/$SHIM" ] && cmp -s <(joined "$C/libwkwebview_shim.dylib.intel" "$C/libwkwebview_shim.dylib.arm") "$C/dmg-tree/$SHIM"; then
+    ok "$label D3: the dmg holds the lipo join of both hosts' shim builds at Contents/Frameworks"
+  else bad "$label D3: the dmg tree has no joined shim at $SHIM ($(cd "$C/dmg-tree" 2>/dev/null && find . -type f | tr '\n' ' '))"; fi
   read_signs
   if [ "${#signs[@]}" -eq 3 ]; then ok "$label D4: three signing calls"
   else bad "$label D4: ${#signs[@]} signing call(s), want 3 (dylib, exe, .app): $(printf '%s | ' "${signs[@]%%"$US"*}")"; fi

@@ -27,7 +27,7 @@ trap cleanup EXIT
 fails=0
 ok() { printf 'ok   %s\n' "$*"; }
 bad() { printf 'FAIL %s\n' "$*"; fails=$((fails + 1)); }
-HOST=intel@10.0.0.1
+HOST=intel@10.0.0.1 ARM=arm@10.0.0.2   # build-dmg.sh builds on both Macs (the universal .app)
 
 mkdir -p "$T/bin" "$T/ctl" "$T/home" "$T/tmp"
 for tool in ssh scp; do
@@ -65,7 +65,7 @@ check() { # check <label> <command> <its end line, as a grep -E pattern>
   local label=$1 cmd=$2 want=$3 rc n i j tool skip opt key val where before=$fails nssh=0 nscp=0
   local -a a strict khf batch ident
   rm -f "$T/ctl"/*
-  (cd "$R" && env -i PATH="$T/bin:/usr/bin:/bin" HOME="$T/home" TMPDIR="$T/tmp" ZB_MAC_HOST="$HOST" \
+  (cd "$R" && env -i PATH="$T/bin:/usr/bin:/bin" HOME="$T/home" TMPDIR="$T/tmp" ZB_MAC_HOST="$HOST" ZB_MAC_ARM_HOST="$ARM" \
      ZB_MAC_KEY="$T/fake_mac_key" DISPLAY=:99 WAYLAND_DISPLAY=wayland-selftest XAUTHORITY="$T/home/.Xauthority" \
      SSH_ASKPASS="$T/bin/askpass-must-not-run" timeout 120 bash $cmd >"$T/out" 2>&1 </dev/null)
   rc=$?
