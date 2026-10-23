@@ -25,14 +25,17 @@ token descriptor (fd 3) passes through untouched. Exit 3 when bwrap is missing
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 import re
 import stat
+import subprocess
 import sys
 from dataclasses import dataclass
+from typing import NamedTuple
 
-from . import options, sandbox, seccomp
+from . import options, sandbox, sandbox_macos, seccomp
 from .platforms import posix_only
 
 PLATFORM = sys.platform
@@ -50,7 +53,7 @@ class Session:
     `egress_port` is the netd loopback port on macOS (from `--egress-port`), and None on Linux."""
     home: str
     python: str
-    net_dir: str
+    net_dir: str | None  # Linux-required, refused on macOS (main)
     command: str
     egress_port: int | None
 
@@ -86,33 +89,113 @@ CHAT_BOOT = ("import runpy, sys; sys.path.insert(0, sys.argv.pop(1)); "
              "runpy.run_module('zb_agent_host', run_name='__main__', alter_sys=True)")
 
 
-def build_argv(home, seccomp_fd, python, *, net_dir, bwrap=sandbox.BWRAP, test_ca=None, command="chat",
-               claude_cli=None):
+@dataclass(frozen=True)
+class LaunchRequest:
+    """One helper launch, backend-neutral (MS6.8; SilverRidge a365949c): what to run (home, python, command), the
+    read paths it needs, and its command's e2e inputs. The realization fields are one backend's: Linux requires the
+    seccomp fd and netd's socket dir and may take a bwrap override; macOS takes none of them."""
+    home: options.AgentHome
+    python: str
+    command: str = "chat"
+    read_paths: tuple = ()
+    test_ca: str | None = None  # chat only
+    claude_cli: str | None = None  # login only
+    seccomp_fd: int | None = None
+    net_dir: str | None = None
+    bwrap: str | None = None
+
+
+class LaunchPlan(NamedTuple):
+    argv: tuple
+    spec: sandbox.LaunchSpec
+
+
+def requested_reads(home, python, claude_cli=None):
+    """The helper's read paths: the venv, the hook command directories (runtime/path.json, /usr dropped), and the
+    login CLI's directory."""
     venv = os.path.dirname(os.path.dirname(python))
     extra = [venv] + [d for d in json.loads((home.runtime / "path.json").read_text())
                       if d != "/usr" and not d.startswith("/usr/")]
-    if command == "login":
-        if claude_cli is not None:
-            extra.append(os.path.dirname(claude_cli))
-        argv = list(sandbox._LINUX_BACKEND.login_launch_spec(home, seccomp_fd=seccomp_fd, ro_paths=extra,
-                                                             net_dir=net_dir).argv)
-        argv[0] = bwrap
-        runtime = str(home.runtime)
-        login = [python, "-I", "-c", CHAT_BOOT, f"{runtime}/host", "login", "--home", str(home.root)]
-        if claude_cli is not None:
-            login += ["--e2e-claude-cli", claude_cli]
-        relay = ["/usr/bin/python3", "-I", "-S", f"{runtime}/bin/zb-net-relay", "--egress", sandbox.egress_dir()]
-        return argv + relay + ["--", *login]
-    argv = sandbox.helper_argv(home, seccomp_fd=seccomp_fd, ro_paths=extra, net_dir=net_dir)
-    argv[0] = bwrap
-    if test_ca is not None:
-        argv[-1:-1] = ["--ro-bind", str(test_ca), TEST_CA]  # before the trailing "--"
-    runtime = str(home.runtime)
-    chat = [python, "-I", "-c", CHAT_BOOT, f"{runtime}/host", "chat", "--home", str(home.root)]
-    if test_ca is not None:
-        chat += ["--test-ca", TEST_CA]
-    relay = ["/usr/bin/python3", "-I", "-S", f"{runtime}/bin/zb-net-relay", "--egress", sandbox.egress_dir()]
-    return argv + relay + ["--", *chat]
+    if claude_cli is not None:
+        extra.append(os.path.dirname(claude_cli))
+    return tuple(extra)
+
+
+@contextlib.contextmanager
+def build_launch(backend, request):
+    """The helper's launch over the backend Protocol (MS6.8), for exactly the extent of the spawn: the backend's
+    lease, then the outer relay when the spec has a relay socket dir, else the spec's direct loopback port handed to
+    the inner helper. Yields a LaunchPlan."""
+    binds = getattr(backend, "SANDBOX_PROGRAM", None) == sandbox.BWRAP
+    if request.bwrap is not None and not binds:
+        raise sandbox.UnsupportedLaunchInput("--bwrap is the Linux sandbox's only")
+    network = backend.login_network() if request.command == "login" else None
+    with backend.launch(request.home, seccomp_fd=request.seccomp_fd, ro_paths=request.read_paths,
+                        net_dir=request.net_dir, network=network) as spec:
+        argv = list(spec.argv)
+        if request.bwrap is not None:
+            argv[0] = request.bwrap
+        runtime = str(request.home.runtime)
+        inner = [request.python, "-I", "-c", CHAT_BOOT, f"{runtime}/host", request.command,
+                 "--home", str(request.home.root)]
+        if request.command == "chat" and request.test_ca is not None:
+            if binds:
+                argv[-1:-1] = ["--ro-bind", str(request.test_ca), TEST_CA]  # before the trailing "--"
+            inner += ["--test-ca", TEST_CA if binds else str(request.test_ca)]
+        if request.command == "login" and request.claude_cli is not None:
+            inner += ["--e2e-claude-cli", request.claude_cli]
+        egress = spec.network.egress
+        if egress.dir is not None:
+            argv += ["/usr/bin/python3", "-I", "-S", f"{runtime}/bin/zb-net-relay", "--egress", egress.dir, "--"]
+        else:
+            inner += ["--egress-port", str(egress.endpoint.port)]
+        yield LaunchPlan(tuple(argv + inner), spec)
+
+
+def build_argv(home, seccomp_fd, python, *, net_dir, bwrap=sandbox.BWRAP, test_ca=None, command="chat",
+               claude_cli=None):
+    """The Linux launch argv (the compatibility wrapper): build_launch over an explicit LinuxBwrapBackend."""
+    request = LaunchRequest(home=home, python=python, command=command,
+                            read_paths=requested_reads(home, python, claude_cli if command == "login" else None),
+                            test_ca=test_ca, claude_cli=claude_cli, seccomp_fd=seccomp_fd, net_dir=net_dir,
+                            bwrap=bwrap)
+    with build_launch(sandbox.LinuxBwrapBackend(), request) as plan:
+        return list(plan.argv)
+
+
+def _token_fds():
+    """The helper's token descriptors that are open here (chat's fd 3, login's fd 4), passed through to it."""
+    fds = []
+    for fd in (3, 4):
+        try:
+            os.fstat(fd)
+        except OSError:
+            continue
+        fds.append(fd)
+    return tuple(fds)
+
+
+def spawn_helper(argv, env):
+    """Runs the sandboxed helper as a child and returns its status (macOS: the lease must outlive the spawn, so the
+    launch cannot exec in place)."""
+    return subprocess.run(list(argv), env=env, pass_fds=_token_fds(), check=False).returncode
+
+
+def _launch_darwin(session, args):
+    home = options.AgentHome(session.home)
+    request = LaunchRequest(home=home, python=session.python, command=session.command,
+                            read_paths=requested_reads(home, session.python, args.e2e_claude_cli),
+                            test_ca=args.test_ca, claude_cli=args.e2e_claude_cli)
+    try:
+        with build_launch(sandbox_macos.MacSeatbeltBackend(session.egress_port), request) as plan:
+            try:
+                return spawn_helper(plan.argv, options.helper_environ(home, os.environ))
+            except OSError as exc:
+                print(f"zigBrowser: agent: sandbox unavailable ({exc})", file=sys.stderr)
+                return EXIT_NO_SANDBOX
+    except (sandbox.SandboxError, OSError, ValueError) as exc:
+        print(f"zigBrowser: agent: {exc}", file=sys.stderr)
+        return EXIT_USAGE
 
 
 def _regular_file(path):
@@ -127,8 +210,8 @@ def main(argv):
     parser = argparse.ArgumentParser(prog="zb_agent_host launch")
     parser.add_argument("--home", required=True)
     parser.add_argument("--python", required=True)
-    parser.add_argument("--net-dir", required=True)
-    parser.add_argument("--bwrap", default=sandbox.BWRAP)
+    parser.add_argument("--net-dir")  # Linux-required, refused on macOS
+    parser.add_argument("--bwrap")  # Linux only (default sandbox.BWRAP)
     parser.add_argument("--test-ca")
     parser.add_argument("--command", choices=("chat", "login"), default="chat")
     parser.add_argument("--e2e-claude-cli")
@@ -152,21 +235,30 @@ def main(argv):
         print(f"zigBrowser: agent: {exc}", file=sys.stderr)
         return EXIT_USAGE
     if PLATFORM == "darwin":
-        # The port parses onto session.egress_port, but nothing reaches MacSeatbeltBackend until the lease/
-        # dispatch slice (7027/7035) threads it in. Until then the macOS launch refuses, fail closed.
-        print("zigBrowser: agent: the macOS launch is not ready", file=sys.stderr)
+        # The readiness gate: the derived LAUNCH_SPEC_CONSUMABLE (the profile is CURATED), never a hand-set flag.
+        if not sandbox_macos.LAUNCH_SPEC_CONSUMABLE():
+            print("zigBrowser: agent: the macOS launch is not ready", file=sys.stderr)
+            return EXIT_USAGE
+        for flag, value in (("--net-dir", args.net_dir), ("--bwrap", args.bwrap)):
+            if value is not None:
+                print(f"zigBrowser: agent: {flag} is the Linux launch's only", file=sys.stderr)
+                return EXIT_USAGE
+        return _launch_darwin(session, args)
+    if session.net_dir is None:
+        print("zigBrowser: agent: --net-dir is required", file=sys.stderr)
         return EXIT_USAGE
-    if not os.access(args.bwrap, os.X_OK):
+    bwrap = args.bwrap if args.bwrap is not None else sandbox.BWRAP
+    if not os.access(bwrap, os.X_OK):
         print("zigBrowser: agent: sandbox unavailable (bwrap)", file=sys.stderr)
         return EXIT_NO_SANDBOX
     home = options.AgentHome(session.home)
     fd = seccomp.seccomp_fd()
     try:
-        command = build_argv(home, fd, session.python, net_dir=session.net_dir, bwrap=args.bwrap, test_ca=args.test_ca,
+        command = build_argv(home, fd, session.python, net_dir=session.net_dir, bwrap=bwrap, test_ca=args.test_ca,
                              command=session.command, claude_cli=args.e2e_claude_cli)
     except (sandbox.SandboxError, OSError, ValueError) as exc:
         print(f"zigBrowser: agent: {exc}", file=sys.stderr)
         return EXIT_USAGE
     os.set_inheritable(fd, True)
-    os.execve(args.bwrap, command, options.helper_environ(home, os.environ))
+    os.execve(bwrap, command, options.helper_environ(home, os.environ))
     return EXIT_NO_SANDBOX

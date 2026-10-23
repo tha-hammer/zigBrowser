@@ -16,7 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import test_chat  # noqa: E402 - its Helper, provisioned home and the fake API
 from test_chat import FakeAnthropicApi, Helper, provisioned  # noqa: E402
-from zb_agent_host import chat, options  # noqa: E402
+from zb_agent_host import chat, options, sandbox  # noqa: E402
 
 SERVER_CANARY = "zb-server-error-canary-unit"
 API_ERRORS = {401: "authentication_error", 429: "rate_limit_error", 529: "overloaded_error"}
@@ -72,7 +72,8 @@ class RetrySettingTest(unittest.TestCase):
 
     def env(self, e2e):
         box = provisioned(self)
-        opts = chat.session_options(box.home, route_env={}, cli_path=None, e2e=e2e, test_ca=None)
+        opts = chat.session_options(box.home, route_env={}, cli_path=None, e2e=e2e, test_ca=None,
+                                    proxy=sandbox.linux_helper_proxy())
         return opts.env
 
     def test_production_keeps_the_cli_retries(self):

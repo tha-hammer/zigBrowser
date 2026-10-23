@@ -6,7 +6,7 @@ CLAUDE_CODE_TMPDIR, so the CLI fell back to /tmp for its temp files and for its 
 (`claude-<uid>`): under the macOS sign-in profile, whose only write root is the home's scratchpad, those writes are
 denied, as the chat CLI's `mkdir /tmp/claude-501` was on both Macs (BlueBeaver 7714).
 
-login.cli_env(home):
+login.cli_env(home, proxy):
 - sets TMPDIR to the home's scratchpad/tmp (options.AgentHome(home).tmp);
 - sets CLAUDE_CODE_TMPDIR to exactly the same directory;
 - both are inside the scratchpad (the profile's only write root);
@@ -22,7 +22,7 @@ from unittest import mock
 
 import support  # noqa: F401  (puts the helper package on sys.path)
 
-from zb_agent_host import login, options
+from zb_agent_host import login, options, sandbox
 
 
 class LoginCliTmpdir(unittest.TestCase):
@@ -33,21 +33,21 @@ class LoginCliTmpdir(unittest.TestCase):
         self.want = str(options.AgentHome(self.home).tmp)
 
     def test_tmpdir_is_the_scratchpads_tmp(self):
-        self.assertEqual(login.cli_env(self.home).get("TMPDIR"), self.want)
+        self.assertEqual(login.cli_env(self.home, sandbox.linux_helper_proxy()).get("TMPDIR"), self.want)
 
     def test_the_clis_own_temp_dir_is_the_same_directory(self):
-        self.assertEqual(login.cli_env(self.home).get("CLAUDE_CODE_TMPDIR"), self.want)
+        self.assertEqual(login.cli_env(self.home, sandbox.linux_helper_proxy()).get("CLAUDE_CODE_TMPDIR"), self.want)
 
     def test_both_are_inside_the_scratchpad(self):
         scratchpad = str(options.AgentHome(self.home).scratchpad) + os.sep
-        env = login.cli_env(self.home)
+        env = login.cli_env(self.home, sandbox.linux_helper_proxy())
         for name in ("TMPDIR", "CLAUDE_CODE_TMPDIR"):
             with self.subTest(name=name):
                 self.assertTrue((env.get(name) or "").startswith(scratchpad), env.get(name))
 
     def test_no_ambient_value_is_used(self):
         with mock.patch.dict(os.environ, {"TMPDIR": "/elsewhere", "CLAUDE_CODE_TMPDIR": "/elsewhere"}):
-            env = login.cli_env(self.home)
+            env = login.cli_env(self.home, sandbox.linux_helper_proxy())
         self.assertEqual((env.get("TMPDIR"), env.get("CLAUDE_CODE_TMPDIR")), (self.want, self.want))
 
 

@@ -379,6 +379,8 @@ class MacSeatbeltBackend:
     hook the bridges only.
     """
 
+    SANDBOX_PROGRAM = "/usr/bin/sandbox-exec"
+
     def __init__(self, egress_port):
         self._egress_port = _validate_port(egress_port)
 
@@ -471,14 +473,16 @@ class MacSeatbeltBackend:
                                 network=self.login_network())
 
     @contextlib.contextmanager
-    def launch(self, home, *, seccomp_fd=None, ro_paths=(), net_dir=None, network=None):
+    def launch(self, home, *, seccomp_fd=None, ro_paths=(), state_dirs=None, claude_writable=False, net_dir=None,
+               network=None):
         """The production launch LEASE (RoseCat 6984): yields the :class:`sandbox.LaunchSpec` and OWNS the
         materialized profile's 0700 temp directory, GUARD-removing it after the caller has spawned (so the
         spawn has consumed the ``-f`` profile). A bare :meth:`launch_spec`/:meth:`login_launch_spec` leaves
         the dir for the caller; the production chain goes through this lease so nothing leaks. Pass
         ``network=login_network()`` for the sign-in.
         """
-        spec = self.launch_spec(home, seccomp_fd=seccomp_fd, ro_paths=ro_paths, net_dir=net_dir, network=network)
+        spec = self.launch_spec(home, seccomp_fd=seccomp_fd, ro_paths=ro_paths, state_dirs=state_dirs,
+                                claude_writable=claude_writable, net_dir=net_dir, network=network)
         try:
             yield spec
         finally:

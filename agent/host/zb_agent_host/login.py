@@ -138,15 +138,9 @@ def valid_code(code):
     return isinstance(code, str) and 3 <= len(code) <= MAX_CODE and CODE.fullmatch(code) is not None
 
 
-def relay_proxy():
-    """The chat helper's HTTPS_PROXY (options.RELAY_PROXY), from the same backend
-    endpoint; read here directly so the login helper does not import the SDK."""
-    ep = sandbox.egress_endpoint()
-    return f"http://{ep.host}:{ep.port}"
-
-
-def cli_env(home):
-    proxy = relay_proxy()
+def cli_env(home, proxy):
+    """The setup-token CLI's environment; `proxy` is the helper's (sandbox.helper_proxy: the macOS spec's direct port,
+    else sandbox.linux_helper_proxy, the Linux relay's listener)."""
     # The CLI's temp files and its own per-uid temp dir (claude-<uid>) go to the home's scratchpad tmp, the macOS
     # sign-in profile's only write root (options.AgentHome.tmp's layout; options itself imports the SDK). Unset,
     # both fall back to /tmp, which Seatbelt denies (24f8d49: mkdir /tmp/claude-501 EPERM; RoseCat 0c476b8).
@@ -263,8 +257,9 @@ def ensure_private_tmp(home):
 
 
 class Login:
-    def __init__(self, home, cli, out, token_fd, timeout_s=TIMEOUT_S, exchange_s=EXCHANGE_S):
+    def __init__(self, home, cli, out, token_fd, timeout_s=TIMEOUT_S, exchange_s=EXCHANGE_S, proxy=None):
         self.home, self.cli, self.out, self.token_fd = home, cli, out, token_fd
+        self.proxy = proxy if proxy is not None else sandbox.helper_proxy()
         self.deadline = time.monotonic() + timeout_s
         self.exchange_s = exchange_s
         self.exchange_by = None  # set when a code is typed; cleared when the CLI asks again
@@ -291,7 +286,7 @@ class Login:
     def spawn(self):
         held = ensure_private_tmp(self.home)  # before anything starts: an invalid temp dir launches nothing
         try:
-            env = cli_env(self.home)
+            env = cli_env(self.home, self.proxy)
             self.master, slave = pty.openpty()
             try:
                 fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 50, COLUMNS, 0, 0))
@@ -517,6 +512,7 @@ def main(argv):
     parser = argparse.ArgumentParser(prog="zb_agent_host login")
     parser.add_argument("--home", required=True)
     parser.add_argument("--e2e-claude-cli")
+    parser.add_argument("--egress-port", type=sandbox.loopback_port)  # a relay-less backend's direct port (macOS)
     args = parser.parse_args(argv)
     if args.e2e_claude_cli:
         cli = args.e2e_claude_cli
@@ -528,7 +524,7 @@ def main(argv):
     except OSError:
         print("zb_agent_host login: no fd 4", file=sys.stderr)
         return 2
-    return Login(args.home, cli, Emitter(), TOKEN_FD).run(sys.stdin)
+    return Login(args.home, cli, Emitter(), TOKEN_FD, proxy=sandbox.helper_proxy(args.egress_port)).run(sys.stdin)
 
 
 if __name__ == "__main__":

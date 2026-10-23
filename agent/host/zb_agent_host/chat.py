@@ -112,7 +112,8 @@ class Session:
     def _new_client(self):
         self.route = Route(self.chat.home, self.chat.token, self.chat.fifo_dir)
         self.opts = session_options(self.chat.home, route_env=self.route.env, cli_path=self.route.cli_path,
-                                    e2e=self.chat.e2e, test_ca=self.chat.test_ca, bridge=self.bridge,
+                                    e2e=self.chat.e2e, test_ca=self.chat.test_ca, proxy=self.chat.proxy,
+                                    bridge=self.bridge,
                                     stderr=lambda _line: None)  # drained, never reprinted (T6, RoseCat 6442)
         self.client = ClaudeSDKClient(options=self.opts)
 
@@ -208,7 +209,7 @@ class Session:
             self.chat.out.emit("session_ended", session=self.id, reason=reason)
 
 
-def session_options(home, *, route_env, cli_path, e2e, test_ca, stderr=None, bridge=None):
+def session_options(home, *, route_env, cli_path, e2e, test_ca, proxy, stderr=None, bridge=None):
     """One session's ClaudeAgentOptions: the relay is the CLI's only proxy, whatever
     hello carried; hello's e2e object (§7 seams) may name only the test base URL."""
     base_url = (e2e or {}).get("test_base_url")
@@ -216,13 +217,14 @@ def session_options(home, *, route_env, cli_path, e2e, test_ca, stderr=None, bri
                                      "can_use_tool": deny_all}  # S7b: the six read tools, nothing else approved
     return options.build(home, route_env=route_env, cli_path=cli_path, base_url=base_url,
                          max_retries=0 if base_url else None,
-                         proxy=options.relay_proxy_url(), ca_file=test_ca, stderr=stderr, **mcp)
+                         proxy=proxy, ca_file=test_ca, stderr=stderr, **mcp)
 
 
 class Chat:
-    def __init__(self, home, token_value, fifo_dir=sandbox.TOKEN_DIR, test_ca=None):
+    def __init__(self, home, token_value, fifo_dir=sandbox.TOKEN_DIR, test_ca=None, proxy=None):
         self.home, self.token = home, token_value
         self.fifo_dir, self.test_ca = fifo_dir, test_ca
+        self.proxy = proxy if proxy is not None else sandbox.helper_proxy()  # the CLI's HTTPS_PROXY/HTTP_PROXY
         self.e2e = None
         self.tool_deadline_s = TOOL_DEADLINE_S  # hello.e2e.tool_deadline_s may shorten it (S7.0.6)
         self.out = Emitter()
@@ -405,6 +407,7 @@ def main(argv):
     parser.add_argument("--home", required=True)
     parser.add_argument("--test-ca")
     parser.add_argument("--fifo-dir", default=sandbox.TOKEN_DIR)  # only tests outside the sandbox move it
+    parser.add_argument("--egress-port", type=sandbox.loopback_port)  # a relay-less backend's direct port (macOS)
     args = parser.parse_args(argv)
     home = options.AgentHome(args.home)
     route = recorded_route(home)
@@ -422,5 +425,5 @@ def main(argv):
     except (OSError, ValueError):
         out.emit("error", session=None, code="auth", message="no usable token")
         return 2
-    asyncio.run(Chat(home, value, args.fifo_dir, args.test_ca).run())
+    asyncio.run(Chat(home, value, args.fifo_dir, args.test_ca, sandbox.helper_proxy(args.egress_port)).run())
     return 0

@@ -26,7 +26,7 @@ sys.path.insert(0, str(REPO / "tests" / "e2e"))
 
 from fake_anthropic_api import FakeAnthropicApi  # noqa: E402
 from test_provision import Sandbox  # noqa: E402
-from zb_agent_host import chat, launch, options, relay  # noqa: E402
+from zb_agent_host import chat, launch, options, relay, sandbox  # noqa: E402
 
 CANARY = "zb-canary-" + "c" * 32
 
@@ -391,7 +391,7 @@ class SessionOptionsTest(unittest.TestCase):
 
     def env(self, **kw):
         args = dict(route_env={"ZB_TOKEN_FIFO": "/run/zb-token/x"}, cli_path="/h/runtime/bin/zb-claude",
-                    e2e=None, test_ca=None)
+                    e2e=None, test_ca=None, proxy=sandbox.linux_helper_proxy())
         args.update(kw)
         return chat.session_options(self.home, **args).env
 

@@ -1,7 +1,8 @@
 """bd zigBrowser-4pa.21, plan MS6.8 slice 1 (SilverRidge a365949c ruling; fix-forward of red 2b84e825 for the
 4420d805 block): the production launch connector.
 
-RED, UNREGISTERED: the green registers it in aggregate ``test`` (no skip-to-green).
+Registered (the 4pa.21 slice-1 green): the named step ``test-agent-launch-connector`` and aggregate ``test``, with
+no skip mapping.
 
 One function over the backend Protocol, ``launch.build_launch(backend, request)``, composes the helper's launch for
 LinuxBwrapBackend and MacSeatbeltBackend alike. The private ``sandbox._LINUX_BACKEND`` is POISONED in every row that
@@ -34,6 +35,9 @@ Rows (each its own test; a failure names it):
   - P4: ``chat.session_options`` puts the given proxy in HTTPS_PROXY and HTTP_PROXY.
   - P5-P7: the same for login (``login.main`` -> ``Login.proxy`` -> ``login.cli_env``).
   - P8, P9: the real call sites (``chat.Session``'s options, ``Login.spawn``'s CLI environment) carry that proxy.
+  - P10: without a port, both parsers take ``sandbox.linux_helper_proxy()``, the Linux relay's own topology
+    (``relay.EGRESS``), so a changed relay port is followed and no ``:3128`` is hard-coded.
+  - P11: with zero or two relay egress ports, that default and both parsers refuse (a SandboxError).
 - M ``launch.main`` through injected seams:
   - M1: Linux execs bwrap in place with the frozen argv.
   - M2: Linux without ``--net-dir`` is a usage error.
@@ -77,7 +81,7 @@ HOST_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(HOST_DIR))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from zb_agent_host import chat, launch, login, options, sandbox, sandbox_macos  # noqa: E402
+from zb_agent_host import chat, launch, login, options, relay, sandbox, sandbox_macos  # noqa: E402
 from test_backend_contract import REF_BWRAP, REF_NET_DIR, reference_build_argv, reference_launch  # noqa: E402
 
 MAC_PORT = 51234
@@ -464,6 +468,23 @@ class Connector(unittest.TestCase):
         env = seen.get("env") or {}
         self.assertEqual((env.get("HTTPS_PROXY"), env.get("HTTP_PROXY")), (want, want),
                          "P9: Login.spawn must give the CLI the Login's proxy")
+
+    def test_p10_without_a_port_both_parsers_follow_the_linux_relay_topology(self):
+        with mock.patch.dict(relay.EGRESS, {4128: "proxy.sock"}, clear=True):
+            self.assertEqual(sandbox.linux_helper_proxy(), "http://127.0.0.1:4128", "P10: the Linux-scoped default")
+            self.assert_chat_proxy("P10", (), "http://127.0.0.1:4128")
+            obj = self.login_main()
+        self.assertEqual(getattr(obj, "proxy", None), "http://127.0.0.1:4128", "P10: the Login's proxy")
+
+    def test_p11_without_a_port_both_parsers_refuse_unless_the_relay_has_exactly_one_egress_port(self):
+        for ports in ({}, {3128: "proxy.sock", 3129: "proxy2.sock"}):
+            with self.subTest(ports=ports), mock.patch.dict(relay.EGRESS, ports, clear=True):
+                with self.assertRaises(sandbox.SandboxError, msg="P11: the Linux-scoped default"):
+                    sandbox.linux_helper_proxy()
+                with self.assertRaises(sandbox.SandboxError, msg="P11: chat without --egress-port"):
+                    self.chat_main()
+                with self.assertRaises(sandbox.SandboxError, msg="P11: login without --egress-port"):
+                    self.login_main()
 
     # --- M: launch.main ---------------------------------------------------------------------------------------------
     def base(self, *extra):

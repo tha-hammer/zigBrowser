@@ -50,7 +50,7 @@ try:  # launch.py is the chat-drawer launch command MS0 also refactors.
 except Exception:  # noqa: BLE001 - absence is just one fewer golden to check
     launch = None
 
-from zb_agent_host import chat, hook_run, setup, token  # noqa: E402 - the real consumers of the network/channel
+from zb_agent_host import chat, hook_run, login, setup, token  # noqa: E402 - the real consumers of the network/channel
 
 # ---------------------------------------------------------------------------
 # The FROZEN policy. These are copied here on purpose (not imported from
@@ -299,18 +299,23 @@ class RealLaunchBuildArgvMatchesReference(unittest.TestCase):
         self.assertEqual(got, expected, "MS0: the --test-ca branch of build_argv must match the reference too")
 
     def test_a_changed_egress_dir_changes_the_outer_relay_in_build_argv(self):
-        """#2 real-consumer injection: launch.build_argv binds --egress from the backend."""
+        """#2 real-consumer injection: the launch binds --egress from the backend's spec. MS6.8 (4pa.21): the
+        connector takes an explicit backend, so the changed dir is injected into one, through launch.build_launch."""
         self._require_build_argv()
         base = launch.build_argv(self.home, 17, self.python, net_dir=str(self.net_dir))
         self.assertEqual(base[base.index("--egress") + 1], "/run/zb-net/egress")
-        orig = sandbox._LINUX_BACKEND.egress_dir
-        try:
-            sandbox._LINUX_BACKEND.egress_dir = lambda: "/run/zb-net/EGRESS-X"
-            changed = launch.build_argv(self.home, 17, self.python, net_dir=str(self.net_dir))
-        finally:
-            sandbox._LINUX_BACKEND.egress_dir = orig
+        backend = sandbox.LinuxBwrapBackend()
+        default = backend.network()
+        changed_net = default._replace(egress=default.egress._replace(dir="/run/zb-net/EGRESS-X"))
+        backend.network = lambda session=None: changed_net
+        request = launch.LaunchRequest(home=self.home, python=self.python,
+                                       read_paths=launch.requested_reads(self.home, self.python),
+                                       seccomp_fd=17, net_dir=str(self.net_dir))
+        with launch.build_launch(backend, request) as plan:
+            changed, spec = list(plan.argv), plan.spec
+        self.assertEqual(spec.network, changed_net, "#2: the lease's LaunchSpec must carry the changed network")
         self.assertEqual(changed[changed.index("--egress") + 1], "/run/zb-net/EGRESS-X",
-                         "#2: a changed backend egress dir must change the outer relay's --egress in build_argv")
+                         "#2: a changed backend egress dir must change the outer relay's --egress in the launch")
 
 
 class NetworkCapabilityConsumedByRealPaths(unittest.TestCase):
@@ -319,20 +324,24 @@ class NetworkCapabilityConsumedByRealPaths(unittest.TestCase):
     the exact production environment/argv, not merely a parallel description."""
 
     def test_a_changed_egress_endpoint_changes_the_cli_proxy(self):
+        """MS6.8 (4pa.21): the helper's proxy is handed to the CLI's real environment builders (chat's
+        session_options, login's cli_env), so a changed endpoint is passed to them explicitly."""
         home = options.AgentHome("/h")
         kw = dict(route_env={"ZB_TOKEN_FIFO": "/run/zb-token/x"},
                   cli_path="/h/runtime/bin/zb-claude", e2e=None, test_ca=None)
-        base = chat.session_options(home, **kw).env
-        self.assertEqual(base["HTTPS_PROXY"], "http://127.0.0.1:3128", "default egress proxy unchanged")
-        orig = sandbox._LINUX_BACKEND.egress_endpoint
-        try:
-            sandbox._LINUX_BACKEND.egress_endpoint = lambda session=None: sandbox.Endpoint("127.0.0.1", 4999)
-            changed = chat.session_options(home, **kw).env
-        finally:
-            sandbox._LINUX_BACKEND.egress_endpoint = orig
+        base = chat.session_options(home, proxy=sandbox.linux_helper_proxy(), **kw).env
+        self.assertEqual((base["HTTPS_PROXY"], base["HTTP_PROXY"]), ("http://127.0.0.1:3128", "http://127.0.0.1:3128"),
+                         "default egress proxy unchanged")
+        ep = sandbox.Endpoint("127.0.0.1", 4999)
+        changed = chat.session_options(home, proxy=f"http://{ep.host}:{ep.port}", **kw).env
         self.assertEqual((changed["HTTPS_PROXY"], changed["HTTP_PROXY"]),
                          ("http://127.0.0.1:4999", "http://127.0.0.1:4999"),
                          "#2: a changed backend egress endpoint must change the CLI's real proxy env")
+        with tempfile.TemporaryDirectory() as tmp:
+            login_env = login.cli_env(tmp, f"http://{ep.host}:{ep.port}")
+        self.assertEqual((login_env["HTTPS_PROXY"], login_env["HTTP_PROXY"]),
+                         ("http://127.0.0.1:4999", "http://127.0.0.1:4999"),
+                         "#2: a changed backend egress endpoint must change the sign-in CLI's real proxy env")
 
     def test_the_hook_bridges_come_from_the_backend_via_net_json(self):
         """#2: zb-hook-run is stdlib-only, so setup writes the backend's bridges dir to
@@ -476,8 +485,15 @@ class NetworkIsAnImmutableLaunchSpecField(unittest.TestCase):
             # 1) the CLI's real HTTPS_PROXY (options/chat project the endpoint)
             self.assertEqual(options.relay_proxy_url(), "http://127.0.0.1:4999",
                              "#D: a changed backend egress endpoint must change the CLI proxy")
-            # 2) launch.build_argv projects the egress dir
-            argv = launch.build_argv(self.home, 17, self.python, net_dir=str(self.net_dir))
+            # 2) the launch projects the egress dir; MS6.8 (4pa.21): through launch.build_launch over an explicit
+            #    backend carrying the changed network (the connector never reads the private global)
+            backend = sandbox.LinuxBwrapBackend()
+            backend.network = lambda session=None: changed
+            request = launch.LaunchRequest(home=self.home, python=self.python,
+                                           read_paths=launch.requested_reads(self.home, self.python),
+                                           seccomp_fd=17, net_dir=str(self.net_dir))
+            with launch.build_launch(backend, request) as plan:
+                argv = list(plan.argv)
             self.assertEqual(argv[argv.index("--egress") + 1], "/run/zb-net/EGRESS-X",
                              "#D: a changed backend egress dir must change launch's --egress")
             # 3) the REAL setup producer (setup.net_manifest, what stage() writes — not a hand-written net.json)

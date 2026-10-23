@@ -19,7 +19,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from test_bridge import Out  # noqa: E402
 
-from zb_agent_host import chat, options  # noqa: E402
+from zb_agent_host import chat, options, sandbox  # noqa: E402
 from zb_agent_host.bridge import Bridge, deny_all  # noqa: E402
 
 
@@ -116,7 +116,7 @@ class SessionOptionsTest(unittest.TestCase):
         b = bridge()
         with tempfile.TemporaryDirectory() as tmp:
             opts = chat.session_options(options.AgentHome(tmp), route_env={}, cli_path=None, e2e=None, test_ca=None,
-                                        bridge=b)
+                                        proxy=sandbox.linux_helper_proxy(), bridge=b)
         self.assertEqual(list(opts.mcp_servers), ["zigbrowser"])
         self.assertEqual(opts.mcp_servers["zigbrowser"]["name"], "zigbrowser")
         self.assertEqual(sorted(opts.allowed_tools), NAMES)

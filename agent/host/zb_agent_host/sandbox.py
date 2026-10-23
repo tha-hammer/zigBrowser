@@ -17,6 +17,7 @@ is a projection of that contract, so a macOS Seatbelt backend can satisfy the
 same launch without reusing a bwrap argv.
 """
 
+import contextlib
 import os
 import signal
 from typing import NamedTuple, Optional, Protocol
@@ -216,6 +217,11 @@ class SandboxBackend(Protocol):
     def launch_spec(self, home, *, seccomp_fd=None, ro_paths=(), state_dirs=None,
                     claude_writable=False, net_dir=None, network=None) -> "LaunchSpec": ...
 
+    # The launch LEASE (MS6.8): a context manager yielding launch_spec's result for exactly the extent of the spawn;
+    # it owns whatever that spec needs on disk (macOS: the profile) and removes it on every exit.
+    def launch(self, home, *, seccomp_fd=None, ro_paths=(), state_dirs=None,
+               claude_writable=False, net_dir=None, network=None) -> "contextlib.AbstractContextManager[LaunchSpec]": ...
+
     def network(self, session=None) -> "Network": ...
 
     def login_network(self) -> "Network": ...
@@ -332,6 +338,20 @@ class LinuxBwrapBackend:
         return Network(egress=chat.egress._replace(allow=LOGIN_EGRESS_ALLOW),
                        bridges=BridgePolicy(ports=(), hooks_get_egress=False))
 
+    SANDBOX_PROGRAM = BWRAP  # launch.build_launch may replace argv[0] with a --bwrap override and bind paths into it
+
+    @contextlib.contextmanager
+    def launch(self, home, *, seccomp_fd=None, ro_paths=(), state_dirs=None, claude_writable=False, net_dir=None,
+               network=None):
+        """The launch lease (MS6.8): Linux owns nothing beyond its argv, so this yields :meth:`launch_spec`. A
+        production launch carries the outer seccomp filter and netd's socket dir, so both are required here."""
+        if seccomp_fd is None:
+            raise SandboxError("the Linux launch needs the seccomp filter descriptor")
+        if net_dir is None:
+            raise SandboxError("the Linux launch needs netd's socket directory")
+        yield self.launch_spec(home, seccomp_fd=seccomp_fd, ro_paths=ro_paths, state_dirs=state_dirs,
+                               claude_writable=claude_writable, net_dir=net_dir, network=network)
+
     def login_launch_spec(self, home, *, seccomp_fd=None, ro_paths=(), net_dir=None):
         """The login helper's launch: :meth:`launch_spec` carrying
         :meth:`login_network`, so only the login netd's egress/ is bound."""
@@ -409,6 +429,31 @@ def channel():
 def egress_endpoint(session=None):
     """The CLI's HTTPS_PROXY target, from the backend (one source of truth)."""
     return _LINUX_BACKEND.egress_endpoint(session)
+
+
+def linux_helper_proxy():
+    """The inner helper's proxy under the Linux backend: the outer relay's one listener, from relay's own topology
+    (relay.EGRESS, which LinuxBwrapBackend.network projects too; :3128). Linux-scoped: a relay-less backend hands its
+    helper ``--egress-port`` instead. Never the private default backend."""
+    ports = tuple(relay.EGRESS)
+    if len(ports) != 1:
+        raise SandboxError(f"the Linux relay must listen on exactly one egress port, not {ports!r}")
+    return f"http://127.0.0.1:{ports[0]}"
+
+
+def helper_proxy(egress_port=None):
+    """The inner chat/login helper's HTTPS_PROXY and HTTP_PROXY (MS6.8), as its parser builds it: the direct loopback
+    port a relay-less backend hands it (``--egress-port``, the macOS spec's endpoint), else :func:`linux_helper_proxy`."""
+    if egress_port is None:
+        return linux_helper_proxy()
+    return f"http://127.0.0.1:{egress_port}"
+
+
+def loopback_port(text):
+    """``--egress-port`` for the inner helpers: a decimal 1..65535 with no leading zero."""
+    if not text.isdigit() or text.startswith("0") or not 1 <= int(text) <= 65535:
+        raise ValueError(f"bad port {text!r}")
+    return int(text)
 
 
 def egress_dir():
