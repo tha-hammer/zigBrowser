@@ -2151,3 +2151,19 @@ I independently ran the requested registered step outside the submitter's manage
 The production mutant is causal. Against preserved inputs byte-identical to this green, changing only `ms5_gate.sh` to ship working-tree sources, reuse the selected root with `mkdir -p`, and omit the bounded commit line made the provenance oracle exit 1: P1, P2 and P4 failed for both invocations, the legacy count was exactly 3, and every other gate plus all nine controls stayed green.
 
 This is content approval, not a Mac-run release and not a push-safety repair. The independent registered-DMG `otool -L | grep -qF` pipefail defect recorded in `2e8e0190` remains unresolved in this ancestry, so there is still **no currently valid push-safe Mac SHA**.
+
+## 2026-10-23 — build-dmg delayed-`otool` GREEN `3ec02a6f`
+
+**BLOCKED ON ONE OMITTED CAUSAL ROW; NO PUSH-SAFE SHA IS NAMED.** Exact `3ec02a6fd5333d583753fa1464d9f96b6ef11b19` contains the right production repair for the pipefail race: it captures all `otool -L` output, checks `otool`'s status, then matches the same fixed shim reference in the completed text, while retaining the resolved-regular-file check. It also correctly registers the approved delayed-write oracle under `test-mac-dmg-script` and aggregate `test`. The restore-the-pipeline mutant is causal. The block is only that the registered proof never exercises the newly separate nonzero-`otool` status path required by the `9e5c0b45` green conditions.
+
+The submitted green evidence reproduced independently. From a clean exact archive under `env -i`, private HOME/TMP/XDG and Zig's default repository-relative cache, `zig build -j4 test-mac-dmg-script test-mac-build-script --summary all` exited 0 with **18/18 steps**. The delayed-output row passed for ad-hoc and release builds; the ordinary and universal DMG oracles passed; the final-ancestry 4pa.59 provenance oracle passed all 30 gates and nine controls; and the config/caller suites passed. On a second clean exact tree, restoring only `otool -L ... | grep -qF ...` made the registered DMG step red **3/5**, solely through the delayed-output oracle, while the ordinary and universal oracles stayed green.
+
+The missing causal boundary is demonstrated, not inferred. On a third clean exact tree I changed only the new status branch from `OTOOL_OUT=$(otool ...) || { error; exit 1; }` to `OTOOL_OUT=$(otool ...) || :`. The registered `test-mac-dmg-script` step still exited 0 with **5/5 steps**. Every fake `otool` currently returns zero, so an implementation that accepts matching output from a failed `otool` satisfies every registered row. This violates the already-stated requirement that the green separately preserve a nonzero real-`otool` failure.
+
+The complete fix-forward minimum is narrow:
+
+1. Add a registered fake-`otool` mode that prints the otherwise valid matching dependency output and then exits nonzero. Production must stop before signing/DMG creation with the distinct `otool -L ... failed` reason; cover both signing modes or otherwise prove the shared branch.
+2. Run the field-isolated status-ignore mutant (`|| :`, or equivalent acceptance of nonzero output) through `test-mac-dmg-script`; the new row must turn it red.
+3. Preserve the current completed-output implementation, delayed-write row, restore-pipeline mutant, ordinary D1–D6 and universal rows, registration, and the final-ancestry `test-mac-build-script` green result.
+
+The intervening `2aaa808f` changes only the two still-unregistered 4pa.55 red-oracle files and introduces no production or registered-gate prefix hazard. Nevertheless, because `3ec02a6f` does not meet the complete previously stated DMG green proof, `2e8e0190` is not cleared and there remains **no currently valid push-safe Mac SHA**.
