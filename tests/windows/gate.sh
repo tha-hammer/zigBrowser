@@ -162,8 +162,8 @@ selftest_stage() {
 
 # ---- WS0.6 + WS0.7 two-host --probe-only -------------------------------------------------
 probe_host() { # $1=user $2=host $3=port $4=key $5=known_hosts [$6=share_exceptions_record] -> host_probe.ps1 JSON
-  # The probe script is STREAMED over ssh stdin; it is NEVER copied onto the host. This keeps the Win10
-  # file server strictly read-only — nothing is written there, not even in zb\ — and needs no host shell
+  # The probe script is STREAMED over ssh stdin; it is NEVER copied onto the host. The probe itself is zero-write on
+  # both hosts (WS0.1c) — it writes nothing, not even in zb\ — and needs no host shell
   # reconfiguration (works with the default cmd.exe DefaultShell, so no cmd.exe 8191-char cap applies).
   # We do NOT use `powershell -Command -`: reading commands from stdin mis-tokenizes multi-line
   # constructs and can silently drop the rest of the script (verified on the VM: empty output, exit 0,
@@ -185,13 +185,15 @@ probe_host() { # $1=user $2=host $3=port $4=key $5=known_hosts [$6=share_excepti
     'powershell -NoProfile -NonInteractive -Command "$input | Out-String | iex"'
 }
 
-# ---- WS0.1 in-console session helper (VM ONLY) -------------------------------------------
+# ---- WS0.1 in-console session helper (the VM; the Win10 box in a product run) --------------
 # A network (SSH) logon cannot read the console's input-desktop lock state, so interactive_session/locked
 # come from session_probe.ps1, which must run IN the console session. The gate writes a fresh per-run
 # NONCE to the VM, triggers the pre-registered console scheduled task (zb-session-probe), and waits for a
 # session.json carrying that exact nonce (bounded timeout). host_probe then trusts interactive/locked only
-# when session.json's nonce matches nonce.txt. This is VM-only: the read-only file server runs no helper,
-# so run_session_probe is never called against it and nothing is written there.
+# when session.json's nonce matches nonce.txt. --probe-only triggers it on the VM only, so --probe-only writes nothing
+# on the Win10 box. A product run also triggers it on the Win10 box, with its own fresh nonce (bd zigBrowser-ong.8;
+# owner ruling 2026-10-22: a writable test host, work confined to C:\Users\zbtest\zb); that nonce.txt write lands
+# inside that root and is part of readiness, not a license for other writes.
 SESSION_TIMEOUT="${ZB_SESSION_TIMEOUT:-60}"
 run_session_probe() { # $1=user $2=host $3=port $4=key $5=known_hosts $6=nonce $7=expected session_probe.ps1 sha256
   local -a SSH; mapfile -d '' SSH < <(ssh_opts "$4" "$5")
@@ -235,10 +237,22 @@ PS
 # check AND the schema validator). Unset ZB_WIN10_SHARE_EXCEPTIONS means no exception.
 ZB_FS_EXC_PINNED='K:\=exFAT, no ACL possible; owner accepted 2026-10-21'
 
-validate_probes() { # $1=vm_json $2=fs_pre $3=fs_post ; ALLOW to stdout, fail reason to stderr
-  python3 - "$1" "$2" "$3" "${ZB_WIN11_MARKER:-}" "$ZB_WIN10_USER" "${ZB_WIN10_MARKER:-}" "$ZB_WIN11_USER" "${ZB_WIN10_LISTEN:-${ZB_WIN10_HOST:-}}" "$ZB_FS_EXC_PINNED" <<'PY'
+validate_probes() { # $1=stage (probe|product-pre|product-post) $2=vm_json $3=fs_pre [$4=fs_post] ; ALLOW to stdout, fail reason to stderr
+  python3 - "$1" "$2" "$3" "${4:-}" "${ZB_WIN11_MARKER:-}" "$ZB_WIN10_USER" "${ZB_WIN10_MARKER:-}" "$ZB_WIN11_USER" "${ZB_WIN10_LISTEN:-${ZB_WIN10_HOST:-}}" "$ZB_FS_EXC_PINNED" <<'PY'
 import sys, json, math, ntpath
-vm, fs_pre, fs_post, win11_marker, win10_user, win10_marker, win11_user, win10_listen, fs_exc_pinned = sys.argv[1:10]
+stage, vm, fs_pre, fs_post, win11_marker, win10_user, win10_marker, win11_user, win10_listen, fs_exc_pinned = sys.argv[1:11]
+# bd zigBrowser-ong.8 (NavyCanyon b6ff5c68): `probe` is --probe-only (readiness; the immediate pre/post pair);
+# `product-pre` judges the real VM record and the real Win10 pre record before any live test (there is no post
+# record yet); `product-post` judges the real post record and compares the ORIGINAL pre with it.
+if stage not in ("probe", "product-pre", "product-post"):
+    sys.stderr.write("FAIL: unknown validation stage %r\n" % stage); sys.exit(1)
+if (stage == "product-pre") != (fs_post == ""):
+    sys.stderr.write("FAIL: stage %s %s a post record\n" % (stage, "takes no" if stage == "product-pre" else "needs")); sys.exit(1)
+# Free-space floors, GB. The Win11 VM: 10 (see the VM check). The Win10 box: 20, judged in a product run only; its C:
+# read about 0 GB free on 2026-10-20, a recorded capacity precondition the owner must clear before a live Win10
+# product run (bd zigBrowser-ong.27), never a reason to lower the floor.
+WIN11_FREE_GB_FLOOR = 10
+WIN10_FREE_GB_FLOOR = 20
 # The one approved exception as (path, reason); exact match only.
 _pe = fs_exc_pinned.split("=", 1)
 PIN_PATH, PIN_REASON = (_pe[0], _pe[1]) if len(_pe) == 2 else (fs_exc_pinned, "")
@@ -258,7 +272,7 @@ def load(s, who):
         return json.loads(s)
     except Exception:
         sys.stderr.write("FAIL: probe (%s) returned bad JSON\n" % who); sys.exit(1)
-v = load(vm, "win11"); a = load(fs_pre, "win10 pre"); b = load(fs_post, "win10 post")
+v = load(vm, "win11"); a = load(fs_pre, "win10 pre"); b = None if stage == "product-pre" else load(fs_post, "win10 post")
 
 # WS0.6: the VM's identity marker must match the pinned nonce (missing/empty/wrong => wrong host).
 m = v.get("identity_marker")
@@ -289,9 +303,9 @@ if not isinstance(v.get("webview2_pv"), str) or not v.get("webview2_pv").strip()
     sys.stderr.write("win11: webview2_pv missing or empty\n"); sys.exit(1)
 # VM free-space bar is 10 GB, not 20: the KVM host disk is ~97% full so the VM image cannot grow, and a
 # zigBrowser build plus the WebView2 runtime fit comfortably in ~13 GB (orchestrator decision 2026-10-20;
-# see the plan's WS0 free-space note). The physical file server keeps the 20 GB bar (it has ample disk).
-if not _is_finite_num(v.get("free_gb")) or v.get("free_gb") < 10:
-    sys.stderr.write("win11: free_gb %r is not a finite number >= 10\n" % v.get("free_gb")); sys.exit(1)
+# see the plan's WS0 free-space note). The Win10 box's floor is 20 GB, in a product run (WIN10_FREE_GB_FLOOR).
+if not _is_finite_num(v.get("free_gb")) or v.get("free_gb") < WIN11_FREE_GB_FLOOR:
+    sys.stderr.write("win11: free_gb %r is not a finite number >= %s\n" % (v.get("free_gb"), WIN11_FREE_GB_FLOOR)); sys.exit(1)
 vm_root_expected = "C:\\Users\\%s\\zb" % win11_user
 if not isinstance(v.get("root"), str) or v.get("root").strip().rstrip("\\").lower() != vm_root_expected.lower():
     sys.stderr.write("win11: root %r is not the pinned %r\n" % (v.get("root"), vm_root_expected)); sys.exit(1)
@@ -332,9 +346,9 @@ def _no_dup_shares(x, who):
 def _share_key(s):
     return (str(s.get("name")).strip().lower(), ntpath.normpath(str(s.get("path"))).lower())
 def require_schema(probe, who):
-    # identity: the physical file server is pinned by its SSH host key ALONE (StrictHostKeyChecking=yes +
-    # the pinned known_hosts), per the orchestrator's read-only rule — no nonce file is ever written there,
-    # so there is no identity_marker to check. The host-key pin is enforced by ssh before this probe runs.
+    # identity: the Win10 box is pinned by its SSH host key ALONE (StrictHostKeyChecking=yes + the pinned
+    # known_hosts): the zero-write probe writes no nonce file there, so there is no identity_marker to check. The
+    # host-key pin is enforced by ssh before this probe runs.
     if not isinstance(probe.get("groups"), list):
         sys.stderr.write("file-server (%s): groups missing or not a list\n" % who); sys.exit(1)
     cu = probe.get("console_user")
@@ -401,10 +415,10 @@ def require_schema(probe, who):
         sys.stderr.write("file-server (%s): native_arch %r, expected x64\n" % (who, probe.get("native_arch"))); sys.exit(1)
     if _build_int(probe.get("os_build")) < 19045:
         sys.stderr.write("file-server (%s): os_build %r is below the Windows 10 22H2 floor (19045)\n" % (who, probe.get("os_build"))); sys.exit(1)
-    # root and free_gb are NOT applicable on the physical file server (orchestrator real-FS check): the
-    # read-only rule means C:\Users\<user>\zb is never created there, and the box gets no writes so its
-    # free space is irrelevant (C: was ~0 GB). Both are VM-only requirements. The probe may still report
-    # them for visibility, but the gate does not judge the file server on them.
+    # root and free_gb are judged on the Win10 box only in a product run (require_product below, bd
+    # zigBrowser-ong.8); --probe-only is readiness-only and reports them without judging them. (The old reason, a
+    # read-only file server, was withdrawn by the owner on 2026-10-22: the Win10 box is a writable test host, work
+    # confined to C:\Users\zbtest\zb.)
     # sshd network fence: ListenAddress must be EXACTLY the pinned tailnet address (not just a non-wildcard),
     # and AllowUsers must be EXACTLY the test user — enforce the values, not just the list type.
     sl = probe.get("sshd_listen")
@@ -422,10 +436,35 @@ def require_schema(probe, who):
         au_users |= {u.strip().split("\\")[-1].lower() for u in str(e).split() if u.strip()}
     if au_users != {win10_user.lower()}:
         sys.stderr.write("file-server (%s): sshd AllowUsers %r is not exactly [%s]\n" % (who, au, win10_user)); sys.exit(1)
-    # interactive_session / locked are not_applicable on the physical file server: it runs no GUI and no
-    # in-console helper under the read-only rule. console_user (network-safe, checked above) proves the
-    # test user owns its console; an active unlocked interactive session is the VM's requirement, not the FS's.
-require_schema(a, "pre"); require_schema(b, "post")
+    # interactive_session / locked come only from the nonce-matched in-console helper, which --probe-only never
+    # triggers on the Win10 box, so --probe-only does not judge them there; a product run does (require_product).
+    # console_user (network-safe, checked above) proves the test user owns its console.
+require_schema(a, "pre")
+if b is not None:
+    require_schema(b, "post")
+
+def require_product(probe, who):
+    # WS0.9-W10 (bd zigBrowser-ong.8, NavyCanyon b6ff5c68): a product run judges the Win10 box like the VM, on the
+    # pre record before any live test and again on the post record.
+    expected = "C:\\Users\\%s\\zb" % win10_user
+    r = probe.get("root")
+    if not isinstance(r, str) or not r.strip() or \
+            ntpath.normpath(r.strip()).rstrip("\\").lower() != ntpath.normpath(expected).lower():
+        sys.stderr.write("win10 (%s): root %r is not the pinned %r\n" % (who, r, expected)); sys.exit(1)
+    fg = probe.get("free_gb")
+    if not _is_finite_num(fg) or fg < WIN10_FREE_GB_FLOOR:
+        sys.stderr.write("win10 (%s): free_gb %r is not a finite number >= %s\n" % (who, fg, WIN10_FREE_GB_FLOOR)); sys.exit(1)
+    wv = probe.get("webview2_pv")
+    if not isinstance(wv, str) or not wv.strip():
+        sys.stderr.write("win10 (%s): webview2_pv missing or empty\n" % who); sys.exit(1)
+    if probe.get("interactive_session") is not True:
+        sys.stderr.write("win10 (%s): no active interactive session (interactive_session=%r)\n" % (who, probe.get("interactive_session"))); sys.exit(1)
+    if probe.get("locked") is not False:
+        sys.stderr.write("win10 (%s): session is locked or its lock state is unknown (locked=%r)\n" % (who, probe.get("locked"))); sys.exit(1)
+if stage in ("product-pre", "product-post"):
+    require_product(a, "pre")
+if stage == "product-post":
+    require_product(b, "post")
 
 # WS0.7: the file server must be undisturbed.
 FORBIDDEN = {"administrators", "backup operators", "remote desktop users", "remote management users"}
@@ -436,7 +475,7 @@ if bad:
 # WS0.7 (owner decision 2026-10-21): a writable served path fails in EITHER the pre or the post probe, so
 # an absent-volume share that LATER exists and is writable is still caught. Absent-volume paths and the
 # owner's exact-match exceptions are printed (never silently passed); a writable path NOT excepted fails.
-for who2, probe2 in (("pre", a), ("post", b)):
+for who2, probe2 in [(w, p) for w, p in (("pre", a), ("post", b)) if p is not None]:
     for p in (probe2.get("absent_paths") or []):
         sys.stderr.write("file-server (%s): NOTE share path on an ABSENT volume (not writable now): %s\n" % (who2, p))
     for ex in (probe2.get("share_exceptions") or []):
@@ -448,6 +487,8 @@ for who2, probe2 in (("pre", a), ("post", b)):
 cu = str(a.get("console_user", "")).split("\\")[-1].lower()
 if cu != win10_user.lower():
     sys.stderr.write("file-server: console user is %r, not %s\n" % (a.get("console_user"), win10_user)); sys.exit(1)
+if b is None:  # product-pre: no post record yet, so nothing to compare
+    print("ALLOW"); sys.exit(0)
 # WS0.7 listeners pre/post, by PID-OWNERSHIP (bead zigBrowser-bdq), so genuine OS dynamic-port churn does
 # not false-fail while a real disturbance still does. SERVICE ports (< 49152) are compared as a strict SET
 # — any added/dropped service port is a disturbance. EPHEMERAL ports (>= 49152) may churn, but ONLY among
@@ -473,7 +514,10 @@ print("ALLOW")
 PY
 }
 
-probe_only() { # WS0.6 (VM identity) + WS0.7 (file-server fence) across both hosts
+GATE_VM_JSON=""
+GATE_FS_EXC=""
+vm_readiness() { # WS0.6 (VM identity, snapshot) + WS0.1 (VM session) + the VM probe; sets GATE_VM_JSON, GATE_FS_EXC.
+  # Shared by --probe-only and the product run (bd zigBrowser-ong.8); it never contacts the Win10 box.
   local domain="${ZB_WIN11_DOMAIN:-win11-m8}"
   local state; state=$(virsh domstate "$domain" 2>/dev/null)
   if [ "$state" != "running" ]; then
@@ -515,15 +559,10 @@ probe_only() { # WS0.6 (VM identity) + WS0.7 (file-server fence) across both hos
     return 1
   fi
   echo "WS0.6: Win11 snapshot '$want' state=$sstate created_epoch=$screated ($(date -d @"$screated" 2>/dev/null))" >&2
-  local vm_json fs_pre fs_post
   # Per-host key + known_hosts, each host's own explicit ZB_WIN11_* / ZB_WIN10_* (bd zigBrowser-ong.25; checked by
   # require_selectors before this runs). The VM and the file server pin DIFFERENT host keys.
   local vm_key="$ZB_WIN11_KEY"
   local vm_kh="$ZB_WIN11_KNOWN_HOSTS"
-  # The Win10 file server may use the same private key file as the VM, but only through its own explicit
-  # ZB_WIN10_KEY: it never borrows a Win11 value (bd zigBrowser-ong.25).
-  local fs_key="$ZB_WIN10_KEY"
-  local fs_kh="$ZB_WIN10_KNOWN_HOSTS"
   # RoseCat be655f3 (2): the owner approved exactly ONE share exception. Pin it: ZB_WIN10_SHARE_EXCEPTIONS,
   # if set, MUST equal this record EXACTLY (no extra/duplicate/other-path/malformed entries) before any SSH;
   # unset means no exception. Only this record is carried to Win10 (via probe_host's base64 prelude).
@@ -533,6 +572,7 @@ probe_only() { # WS0.6 (VM identity) + WS0.7 (file-server fence) across both hos
     echo "         $ZB_FS_EXC_PINNED" >&2
     return 1
   fi
+  GATE_FS_EXC="$fs_exc"
   # WS0.1: trigger the in-console session helper on the VM with a fresh per-run nonce and AWAIT a
   # nonce-matching session.json (bounded). No manual console step. If it does not return OK, fail closed
   # before any probe — a VM with no fresh, nonce-correlated session result is not ready.
@@ -549,15 +589,26 @@ probe_only() { # WS0.6 (VM identity) + WS0.7 (file-server fence) across both hos
   # => rc 255) must fail the gate HERE, before any success row is accepted — never rely on empty JSON failing
   # later in validation. (probe_host's rc is ssh's rc.)
   local rc
-  vm_json=$(probe_host "$ZB_WIN11_USER" "$ZB_WIN11_HOST" "$ZB_WIN11_PORT" "$vm_key" "$vm_kh"); rc=$?
+  GATE_VM_JSON=$(probe_host "$ZB_WIN11_USER" "$ZB_WIN11_HOST" "$ZB_WIN11_PORT" "$vm_key" "$vm_kh"); rc=$?
   [ "$rc" -ne 0 ] && { echo "NOT RUN: Win11 probe transport failed (ssh rc=$rc — unreachable or host-key refusal)" >&2; return 1; }
-  fs_pre=$(probe_host "$ZB_WIN10_USER" "$ZB_WIN10_HOST" "$ZB_WIN10_PORT" "$fs_key" "$fs_kh" "$fs_exc"); rc=$?
+  return 0
+}
+
+probe_only() { # WS0.6 (VM identity) + WS0.7 (Win10 fence) across both hosts: readiness only, zero-write on Win10
+  local ready_rc rc fs_pre fs_post
+  vm_readiness; ready_rc=$?
+  [ "$ready_rc" -ne 0 ] && return 1
+  # The Win10 box may use the same private key file as the VM, but only through its own explicit ZB_WIN10_KEY: it
+  # never borrows a Win11 value (bd zigBrowser-ong.25).
+  local fs_key="$ZB_WIN10_KEY"
+  local fs_kh="$ZB_WIN10_KNOWN_HOSTS"
+  fs_pre=$(probe_host "$ZB_WIN10_USER" "$ZB_WIN10_HOST" "$ZB_WIN10_PORT" "$fs_key" "$fs_kh" "$GATE_FS_EXC"); rc=$?
   [ "$rc" -ne 0 ] && { echo "NOT RUN: Win10 probe transport failed (ssh rc=$rc — unreachable or host-key refusal)" >&2; return 1; }
-  # A full gate runs the product tests here; --probe-only re-probes to catch any change (WS0.7).
-  fs_post=$(probe_host "$ZB_WIN10_USER" "$ZB_WIN10_HOST" "$ZB_WIN10_PORT" "$fs_key" "$fs_kh" "$fs_exc"); rc=$?
+  # --probe-only re-probes at once to catch any change (WS0.7); a product run re-probes after its live tests.
+  fs_post=$(probe_host "$ZB_WIN10_USER" "$ZB_WIN10_HOST" "$ZB_WIN10_PORT" "$fs_key" "$fs_kh" "$GATE_FS_EXC"); rc=$?
   [ "$rc" -ne 0 ] && { echo "NOT RUN: Win10 re-probe transport failed (ssh rc=$rc)" >&2; return 1; }
-  validate_probes "$vm_json" "$fs_pre" "$fs_post" >/dev/null || return 1
-  printf 'WIN11 %s\nWIN10 %s\n' "$vm_json" "$fs_post"
+  validate_probes probe "$GATE_VM_JSON" "$fs_pre" "$fs_post" >/dev/null || return 1
+  printf 'WIN11 %s\nWIN10 %s\n' "$GATE_VM_JSON" "$fs_post"
   return 0
 }
 
@@ -588,21 +639,74 @@ product_run() {
     echo "NOT RUN: no live tests in the phase list $PHASES (zero rows is a failure)" >&2
     return 1
   fi
-  probe_only || { echo "gate: product run FAILED: readiness failed; no live test was run" >&2; return 1; }
-  local work; work=$(mktemp -d "${TMPDIR:-/tmp}/zb-gate-product.XXXXXX") || { echo "gate: mktemp failed" >&2; return 1; }
-  local t rc verdict total=0; local -a failed=()
+  # bd zigBrowser-ong.8 (WS0.9-W10, NavyCanyon b6ff5c68): Win11 readiness; a fresh-nonce Win10 session trigger; the
+  # Win10 pre probe; product-pre; every phase entry; the Win10 post probe; product-post. Each effecting step runs on
+  # its own and keeps its status; the branches after it only test what was kept.
+  local not_ready="gate: product run FAILED: readiness failed; no live test was run"
+  local ready_rc
+  vm_readiness; ready_rc=$?
+  if [ "$ready_rc" -ne 0 ]; then
+    echo "$not_ready" >&2; return 1
+  fi
+  local fs_key="$ZB_WIN10_KEY" fs_kh="$ZB_WIN10_KNOWN_HOSTS" nonce10 sess_sha sres10
+  nonce10="ws0-w10-$(date -u +%Y%m%dT%H%M%SZ)-$$-${RANDOM}${RANDOM}"
+  sess_sha=$(sha256sum "$HERE/session_probe.ps1" | awk '{print $1}')
+  sres10=$(run_session_probe "$ZB_WIN10_USER" "$ZB_WIN10_HOST" "$ZB_WIN10_PORT" "$fs_key" "$fs_kh" "$nonce10" "$sess_sha")
+  echo "WS0.9-W10: Win10 session-probe -> $sres10" >&2
+  case "$sres10" in
+    *RESULT=OK*) : ;;
+    *) echo "NOT RUN: Win10 in-console session helper did not return a fresh nonce-matching result ($sres10)" >&2
+       echo "$not_ready" >&2; return 1 ;;
+  esac
+  local fs_pre pre_rc pre_valid_rc
+  fs_pre=$(probe_host "$ZB_WIN10_USER" "$ZB_WIN10_HOST" "$ZB_WIN10_PORT" "$fs_key" "$fs_kh" "$GATE_FS_EXC"); pre_rc=$?
+  if [ "$pre_rc" -ne 0 ]; then
+    echo "NOT RUN: Win10 probe transport failed (ssh rc=$pre_rc — unreachable or host-key refusal)" >&2
+    echo "$not_ready" >&2; return 1
+  fi
+  validate_probes product-pre "$GATE_VM_JSON" "$fs_pre" >/dev/null; pre_valid_rc=$?
+  if [ "$pre_valid_rc" -ne 0 ]; then
+    echo "$not_ready" >&2; return 1
+  fi
+  local work mktemp_rc
+  work=$(mktemp -d "${TMPDIR:-/tmp}/zb-gate-product.XXXXXX"); mktemp_rc=$?
+  if [ "$mktemp_rc" -ne 0 ]; then
+    echo "gate: mktemp failed" >&2; return 1
+  fi
+  local t rc verdict judge_rc total=0; local -a failed=()
   for t in "${tests[@]}"; do
     env ZB_WIN_GATE=1 timeout "$LIVE_TIMEOUT" python3 -I "$t" >"$work/out" 2>"$work/err" </dev/null; rc=$?
     sed "s|^|  [$t] |" "$work/out" "$work/err" >&2
-    if verdict=$(judge_live "$rc" "$work/out" "$work/err"); then
+    verdict=$(judge_live "$rc" "$work/out" "$work/err"); judge_rc=$?
+    if [ "$judge_rc" -eq 0 ]; then
       echo "PASS $t ASSERTS $verdict" >&2; total=$((total + verdict))
     else
       echo "FAIL $t: $verdict" >&2; failed+=("$t")
     fi
   done
-  rm -rf "${work:?}"
+  local rm_rc
+  rm -rf "${work:?}"; rm_rc=$?
+  # After every row outcome (passed, failed, skipped, malformed or timed out): the Win10 post probe, then the
+  # original pre against that post. Each failure is reported; none overwrites another.
+  local fs_post post_rc post_valid_rc=0 failures=0
+  fs_post=$(probe_host "$ZB_WIN10_USER" "$ZB_WIN10_HOST" "$ZB_WIN10_PORT" "$fs_key" "$fs_kh" "$GATE_FS_EXC"); post_rc=$?
+  if [ "$post_rc" -eq 0 ]; then
+    validate_probes product-post "$GATE_VM_JSON" "$fs_pre" "$fs_post" >/dev/null; post_valid_rc=$?
+  fi
   if [ "${#failed[@]}" -ne 0 ]; then
-    echo "gate: product run FAILED: ${#failed[@]} of ${#tests[@]} live tests: ${failed[*]}" >&2
+    echo "gate: product run FAILED: ${#failed[@]} of ${#tests[@]} live tests: ${failed[*]}" >&2; failures=$((failures + 1))
+  fi
+  if [ "$post_rc" -ne 0 ]; then
+    echo "gate: product run FAILED: Win10 post-run probe transport failed (ssh rc=$post_rc — unreachable or host-key refusal)" >&2
+    failures=$((failures + 1))
+  fi
+  if [ "$post_valid_rc" -ne 0 ]; then
+    echo "gate: product run FAILED: the Win10 post-run check failed (reason above)" >&2; failures=$((failures + 1))
+  fi
+  if [ "$rm_rc" -ne 0 ]; then
+    echo "gate: product run FAILED: could not remove its work directory $work" >&2; failures=$((failures + 1))
+  fi
+  if [ "$failures" -ne 0 ]; then
     return 1
   fi
   echo "gate: product run PASSED: ${#tests[@]} live tests, ASSERTS $total" >&2

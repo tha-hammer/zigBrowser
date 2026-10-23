@@ -185,14 +185,15 @@ try {
 
 # interactive_session / locked need the console's INPUT DESKTOP lock state, which a network logon cannot
 # read, so they come from the in-console session helper's session.json. Absent => $null. The VM readiness
-# requires them (GUI host, helper registered post-snapshot); the physical file server runs no GUI and no
-# helper under the read-only rule, so there they are not_applicable (the FS schema does not require them).
+# requires them (GUI host, helper registered post-snapshot). On the Win10 box the gate triggers the helper only in a
+# product run (bd zigBrowser-ong.8), which then requires them; --probe-only never triggers it there and does not
+# judge them. This probe itself stays zero-write on both hosts (WS0.1c).
 #
 # NONCE CORRELATION: the gate writes a fresh per-run nonce to zb\runs\session\nonce.txt, then triggers the
 # in-console task which writes that same nonce into session.json. We trust interactive/locked ONLY when the
 # session result carries the EXACT nonce the gate wrote (and is fresh). A stale, replayed, or future
 # session.json has a different/absent nonce and is ignored (interactive stays $null => the gate fails
-# closed). On the file server there is no nonce.txt (no session helper), so these stay $null = not_applicable.
+# closed). Without a product run's nonce.txt on the Win10 box these stay $null, which --probe-only does not judge.
 $interactive = $null; $locked = $null
 $expectedNonce = $null
 try { $expectedNonce = (Get-Content -LiteralPath (Join-Path $env:USERPROFILE 'zb\runs\session\nonce.txt') -Raw -ErrorAction Stop).Trim() } catch {}

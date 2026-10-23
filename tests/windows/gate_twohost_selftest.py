@@ -139,7 +139,7 @@ def _fs_probe(**over):
          "listeners": [{"port": 22, "pid": 4}, {"port": 135, "pid": 900}, {"port": 139, "pid": 4},
                        {"port": 445, "pid": 4}, {"port": 3389, "pid": 500}],
          "fw_rules_hash": "abc123", "shares": [],
-         "root": "C:\\Users\\zbtest\\zb", "free_gb": 500.0,
+         "root": "C:\\Users\\zbtest\\zb", "free_gb": 500.0, "interactive_session": True, "locked": False,
          "sshd_listen": ["198.51.100.15"], "sshd_allowusers": ["zbtest"]}
     p.update(over)
     return json.dumps(p)
@@ -470,7 +470,8 @@ class WS0CompletionReadiness(_TwoHostCase):
 
     def test_fs_wrong_console_user_fails_closed(self):
         # The file server's own fence: console_user must be the test user (zbtest), proving no real
-        # operator is mid-session. interactive_session/locked are not_applicable on the physical FS.
+        # operator is mid-session. --probe-only does not judge Win10 interactive_session/locked (a product run does,
+        # bd zigBrowser-ong.8, gate_win10_product_red_test.py).
         with tempfile.TemporaryDirectory() as t:
             bad = _fs_probe(console_user="BOSS\\realperson")
             proc = self._run_probe_only(pathlib.Path(t),
@@ -553,9 +554,8 @@ class WS0CompletionReadiness(_TwoHostCase):
             proc = self._run_probe_only(pathlib.Path(t), {"ZB_SELFTEST_PROBE_WIN11": _vm_probe(root="")})
             self._assert_fail_closed(proc, "root")
 
-    # NOTE: FS root and free_gb are not_applicable on the read-only file server (no writes; C:\Users\<u>\zb
-    # is never created; C: ~0 GB) — the gate does not judge the FS on them, so there are no FS root/free_gb
-    # fail-closed cases here. The VM root/free_gb cases remain below.
+    # NOTE: --probe-only does not judge the Win10 box's root or free_gb (it is readiness-only); a product run does
+    # (bd zigBrowser-ong.8; its cases are in gate_win10_product_red_test.py). The VM root/free_gb cases remain below.
 
     def test_fs_sshd_listen_missing_fails_closed(self):
         with tempfile.TemporaryDirectory() as t:

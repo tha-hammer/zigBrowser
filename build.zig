@@ -417,9 +417,33 @@ pub fn build(b: *std.Build) void {
         "tests/windows/gate_twohost_selftest.py",
     });
     const windows_host_live_optin = b.addSystemCommand(&.{ "python3", "-I", "tests/windows/host_live_optin_test.py" });
-    const windows_twohost_step = b.step("windows-twohost-selftest", "Run the Windows two-host gate selftest (WS0.6/WS0.7, fake ssh/virsh)");
+    // bd zigBrowser-ong.8 (WS0.9-W10, NavyCanyon b6ff5c68): the product run's Win10 stages (session trigger, pre
+    // probe, product-pre, every phase entry, post probe, product-post). Its red gate_win10_product_red_test.py
+    // (58f1bbee) runs unchanged against the same fakes, in an empty network namespace with every host variable removed.
+    const windows_win10_product_selftest = b.addSystemCommand(&.{
+        "unshare", "--user", "--map-current-user", "--net", "--",
+        "env",
+        "-u",      "ZB_HOST_LIVE",
+        "-u",      "ZB_WIN11_HOST",
+        "-u",      "ZB_WIN11_PORT",
+        "-u",      "ZB_WIN11_USER",
+        "-u",      "ZB_WIN11_KEY",
+        "-u",      "ZB_WIN11_KNOWN_HOSTS",
+        "-u",      "ZB_WIN_KEY",
+        "-u",      "ZB_WIN_KNOWN_HOSTS",
+        "-u",      "ZB_WIN10_HOST",
+        "-u",      "ZB_WIN10_PORT",
+        "-u",      "ZB_WIN10_USER",
+        "-u",      "ZB_WIN10_KEY",
+        "-u",      "ZB_WIN10_KNOWN_HOSTS",
+        "-u",      "ZB_WIN10_LISTEN",
+        "python3", "-I",
+        "tests/windows/gate_win10_product_red_test.py",
+    });
+    const windows_twohost_step = b.step("windows-twohost-selftest", "Run the Windows two-host gate selftest (WS0.6/WS0.7, WS0.9-W10, fake ssh/virsh)");
     windows_twohost_step.dependOn(&windows_twohost_selftest.step);
     windows_twohost_step.dependOn(&windows_host_live_optin.step);
+    windows_twohost_step.dependOn(&windows_win10_product_selftest.step);
 
     // WS1.2 m8 run driver selftest (NavyCanyon f52ef80): tests/windows/m8_run.py against a fake build/m8 tree —
     // census before the build, a sha-checked exe, the build folder removed only through the shared helper, no
@@ -3918,6 +3942,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&windows_runner_job_selftest.step);
     test_step.dependOn(&windows_twohost_selftest.step);
     test_step.dependOn(&windows_host_live_optin.step);
+    test_step.dependOn(&windows_win10_product_selftest.step);
     test_step.dependOn(&windows_m8_run_selftest.step);
     test_step.dependOn(&windows_m8_profile_selftest.step);
     test_step.dependOn(&windows_msi_default_selftest.step);
