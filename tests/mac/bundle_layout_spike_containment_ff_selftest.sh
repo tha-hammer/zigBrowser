@@ -16,7 +16,10 @@
 #   F3 a remove that keeps failing at the transport: the leg is INCONCLUSIVE naming the host and the root, the run
 #      exits 2, the root is still there, the evidence was copied before, remove was retried (2-5 attempts, so bounded)
 #      and a RETAINED<TAB><host><TAB><run dir> line names it; a remove that fails once then succeeds: the leg keeps
-#      its verdict, exit 0, the root is gone, exactly 2 attempts.
+#      its verdict, exit 0, the root is gone, exactly 2 attempts; Intel's remove keeps failing while the later arm64
+#      remove succeeds (SilverRidge 50160137): exit 2, x86_64=INCONCLUSIVE arm64=LAYOUT-OK, exactly one Intel root kept
+#      and named by exactly one RETAINED line, no arm64 root, exactly 4 Intel attempts (3 retries + the EXIT attempt)
+#      and 1 arm64 attempt, the Intel evidence copied (the arm success must not drop Intel's live entry).
 # No Mac, no signal, no network. Run: bash tests/mac/bundle_layout_spike_containment_ff_selftest.sh [repo root]
 set -uo pipefail
 if [ "${ZB_CONTAIN_SELFTEST_INNER:-}" != 1 ]; then
@@ -42,6 +45,7 @@ case " $* " in
     case "$(cat "$C/scenario")" in
       remove_fail_always) echo "ssh: connect to host port 22: Connection reset by peer" >&2; exit 255 ;;
       remove_fail_once) [ "$n" -gt 0 ] || { echo "ssh: connect to host port 22: Connection reset by peer" >&2; exit 255; } ;;
+      remove_fail_intel) [ "$role" = arm ] || { echo "ssh: connect to host port 22: Connection reset by peer" >&2; exit 255; } ;;
     esac ;;
 esac
 exec "$X/bin/ssh.inner" "$@"
@@ -88,6 +92,18 @@ for role in intel arm; do
 done
 [ "$(spike_result)" = "x86_64=INCONCLUSIVE arm64=INCONCLUSIVE" ] && ok "remove_always F3: SPIKE-RESULT is INCONCLUSIVE on both legs" \
   || bad "remove_always F3: SPIKE-RESULT '$(spike_result)'"
+find "${X:?}/hosts" -maxdepth 2 -name 'zb-gate-*' -type d -exec rm -rf {} +
+run_spike remove_mixed remove_fail_intel clean both ZB_SPIKE_REMOVE_SLEEP=0
+left_i=$(find "$X/hosts/intel" -maxdepth 1 -name "zb-gate-$SHA-*" -type d); rd_i=${left_i##*/}
+left_a=$(find "$X/hosts/arm" -maxdepth 1 -name 'zb-gate-*')
+ret=$(grep '^RETAINED' <<<"$out")
+if [ "$rc" -eq 2 ] && [ "$(spike_result)" = "x86_64=INCONCLUSIVE arm64=LAYOUT-OK" ] && [ -n "$rd_i" ] && [ "$(wc -l <<<"$left_i")" -eq 1 ] \
+   && [ -z "$left_a" ] && [ "$ret" = "$(printf 'RETAINED\t%s\t%s' "$INTEL" "$rd_i")" ] \
+   && [ "$(cat "$C/remove.intel" 2>/dev/null)" = 4 ] && [ "$(cat "$C/remove.arm" 2>/dev/null)" = 1 ] \
+   && [[ "$(leg_detail x86_64)" == *"$rd_i"*"$INTEL"* ]] && grep -qx LEGDONE "$IN/evidence/x86_64-$rd_i/driver.out" 2>/dev/null \
+   && [ -s "$IN/evidence/x86_64-$rd_i/evidence/audit.after" ]; then
+  ok "remove_mixed F3: Intel kept failing, arm64 removed: exit 2, x86_64=INCONCLUSIVE arm64=LAYOUT-OK, one RETAINED line for the one Intel root, no arm64 root, 4+1 attempts, Intel evidence copied"
+else bad "remove_mixed F3: exit $rc, result '$(spike_result)', intel roots '$left_i', arm roots '$left_a', RETAINED '$(tr '\n' ';' <<<"$ret")', attempts $(cat "$C/remove.intel" 2>/dev/null)/$(cat "$C/remove.arm" 2>/dev/null)"; fi
 find "${X:?}/hosts" -maxdepth 2 -name 'zb-gate-*' -type d -exec rm -rf {} +
 run_spike remove_once remove_fail_once clean both ZB_SPIKE_REMOVE_SLEEP=0
 { [ "$rc" -eq 0 ] && [ "$(spike_result)" = "x86_64=LAYOUT-OK arm64=LAYOUT-OK" ] && [ -z "$(roots_left)" ] \
