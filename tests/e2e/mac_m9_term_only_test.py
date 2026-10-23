@@ -17,8 +17,10 @@ deliver it), and must show:
   - ignore: the browser is LEFT running, exactly one LEAK<TAB><pid><TAB><pgid><TAB><start><TAB><command> record
     names it, with its pid as pid and pgid and the start time and command ps shows for it, and the case process
     exits 1 with exactly one FAIL<TAB>mac-teardown-leak.
-R (first) drives the namespace guard: a case run whose launcher record is missing, or names this PID or network
-namespace as the host's, is refused (exit 1, one refusal line) before it creates the fake browser or sends a signal.
+R (first) drives the namespace guard from inside the namespaces: a --case or --inner run without the launcher's
+descriptors, with the old fabricated environment (0/0) from an unrelated private namespace (both --case and --inner),
+with descriptors of the current namespaces, with closed descriptor numbers, or with descriptors that are not
+namespaces, is refused: exit 1, exactly one bounded refusal line, no SIG or INFO line, its TMPDIR unchanged.
 J checks the judge itself: a safe transcript of each kind passes, and each unsafe variant is refused: an extra
 direct TERM, a TERM to the wrong group, a second TERM, a direct TERM instead, a SIGKILL, a probe of another process,
 a duplicate LEAK, a LEAK with the wrong pgid, start or command, no LEAK, two leak FAIL lines, exit 0 after a leak, an
@@ -26,11 +28,13 @@ unread identity, a browser group that is not its pid and group 1 (each as a cons
 with only the recorded pgid wrong), group 1 for a browser that quit, a LEAK for a browser that quit, and a browser
 that quit but is a zombie.
 Rows: R, J, then G1 G2, S1 S2, A1 A2 (1 = obeys SIGTERM, 2 = ignores it).
-It signals real children, so every case runs ONLY behind namespace_problem(): the top-level launcher records the
-host's PID and network namespace inodes, re-runs this file under unshare (private user, PID with a reaping shell,
-mount for /proc, and network namespaces), and each --inner or --case process verifies that both of its namespaces
-differ from the recorded ones and that its pid is small and not 1, before anything else. A --case or --inner call
-from anywhere else prints FAIL and exits 1 before it creates anything or sends any signal.
+It signals real children, so every case runs ONLY behind namespace_problem(): the top-level launcher opens its own
+/proc/self/ns/pid and /proc/self/ns/net and passes those OPEN descriptors (a causal capability, not numbers in the
+environment) through unshare (private user, PID with a reaping shell, mount for /proc, and network namespaces),
+--inner and every --case. Each --inner and --case process checks, before anything else, that both are still open
+namespace descriptors (readlink and fstat agree), that its own namespaces differ from them, and that its pid is small
+and not 1. A --case or --inner call from anywhere else prints one refusal line and exits 1 before it creates anything
+or sends any signal.
 Run: python3 tests/e2e/mac_m9_term_only_test.py
 """
 import os
@@ -55,24 +59,55 @@ while True:
 """
 
 
+FD_VARS = {"pid": "ZB_M9_TERM_LAUNCHER_PIDNS_FD", "net": "ZB_M9_TERM_LAUNCHER_NETNS_FD"}
+
+
+def launcher_namespace(kind: str) -> int:
+    """The inode of the launcher's own `kind` namespace, read from the OPEN descriptor the launcher passed down (a
+    causal capability: only a process descended from the launcher holds it). Raises on a missing, closed or fake one."""
+    fd = int(os.environ[FD_VARS[kind]])
+    if fd < 3:
+        raise ValueError(f"descriptor {fd} is not a passed namespace")
+    link = os.readlink(f"/proc/self/fd/{fd}")
+    m = re.fullmatch(rf"{kind}:\[([0-9]+)\]", link)
+    if not m:
+        raise ValueError(f"descriptor {fd} is {link[:60]!r}, not a {kind} namespace")
+    ino = os.fstat(fd).st_ino
+    if ino != int(m.group(1)):
+        raise ValueError(f"descriptor {fd} does not stat as {link}")
+    return ino
+
+
 def namespace_problem():
     """None only inside the private PID and network namespaces this file's own launcher made; else the reason.
-    The launcher records the host's pid and net namespace inodes in the environment before unshare; here both of this
-    process's namespaces must differ from them, and its pid must be a small one of the new PID namespace (not 1)."""
+    The launcher opens its own /proc/self/ns/pid and /proc/self/ns/net and passes those descriptors down through
+    unshare, --inner and every --case; here both must still be open namespace descriptors (readlink and fstat agree),
+    both of this process's namespaces must differ from them, and its pid must be a small one of the new PID namespace
+    (not 1). Environment numbers alone prove nothing."""
     try:
-        host_pid = int(os.environ["ZB_M9_TERM_HOST_PIDNS"])
-        host_net = int(os.environ["ZB_M9_TERM_HOST_NETNS"])
+        launcher_pid = launcher_namespace("pid")
+        launcher_net = launcher_namespace("net")
         own_pid = os.stat("/proc/self/ns/pid").st_ino
         own_net = os.stat("/proc/self/ns/net").st_ino
     except (KeyError, ValueError, OSError) as exc:
-        return f"the launcher's namespace record is missing or unreadable ({exc!r})"
-    if own_pid == host_pid:
-        return f"not in a private PID namespace (pid ns {own_pid} is the host's)"
-    if own_net == host_net:
-        return f"not in a private network namespace (net ns {own_net} is the host's)"
+        return f"the launcher's namespace descriptors are missing, closed or fake ({type(exc).__name__}: {exc})"
+    if own_pid == launcher_pid:
+        return f"not in a private PID namespace (pid ns {own_pid} is the launcher's)"
+    if own_net == launcher_net:
+        return f"not in a private network namespace (net ns {own_net} is the launcher's)"
     if os.getpid() > 50 or os.getpid() == 1:
         return f"not under a reaping init in the private PID namespace (pid {os.getpid()})"
     return None
+
+
+def refusal(what: str, why: str) -> str:
+    """The one refusal line: bounded, one line, no tab inside the reason."""
+    reason = " ".join(why.split())[:300]
+    return f"FAIL\t{NAME}\t{what} refused: {reason}; nothing was run"
+
+
+def passed_fds() -> tuple:
+    return tuple(int(os.environ[v]) for v in FD_VARS.values())
 
 
 def alive(pid: int) -> bool:
@@ -102,7 +137,7 @@ def run_case(name: str) -> int:
     behind namespace_problem() (checked by main() before it gets here, and again here before anything is created)."""
     why = namespace_problem()
     if why:
-        print(f"FAIL\t{NAME}\tcase {name} refused: {why}; nothing was run", flush=True)
+        print(refusal(f"case {name}", why), flush=True)
         return 1
     sys.path[:0] = [HERE, MAC]
     real_kill, real_killpg = os.kill, os.killpg
@@ -254,55 +289,75 @@ def judge_controls() -> list:
 
 
 def refusal_controls() -> list:
-    """R: a case run that is not behind this file's own private namespaces is refused before it creates the fake
-    browser or sends a signal. Driven here, inside the namespaces, by spoiling the launcher's record three ways."""
+    """R: a --case or --inner run that is not a descendant of this file's own launcher is refused, with one bounded
+    line, before it creates a temp file, spawns or signals. Driven from inside the namespaces: no descriptors; the old
+    fabricated environment form (0/0) from an unrelated private namespace, for --case and for --inner; descriptors of
+    the current namespaces; closed descriptor numbers; and descriptors that are not namespaces."""
     probs = []
-    own_pid = str(os.stat("/proc/self/ns/pid").st_ino)
-    own_net = str(os.stat("/proc/self/ns/net").st_ino)
-    spoils = {"no namespace record": {"ZB_M9_TERM_HOST_PIDNS": None, "ZB_M9_TERM_HOST_NETNS": None},
-              "the PID namespace recorded as the host's": {"ZB_M9_TERM_HOST_PIDNS": own_pid},
-              "the network namespace recorded as the host's": {"ZB_M9_TERM_HOST_NETNS": own_net}}
-    for label, change in spoils.items():
-        env = dict(os.environ)
-        for k, v in change.items():
-            if v is None:
-                env.pop(k, None)
-            else:
-                env[k] = v
-        with tempfile.TemporaryDirectory() as tmp:
-            env["TMPDIR"] = tmp
-            p = subprocess.run([sys.executable, "-B", os.path.abspath(__file__), "--case", "G1"], env=env,
-                               capture_output=True, text=True, timeout=60, stdin=subprocess.DEVNULL)
-            made = os.listdir(tmp)
-        out = p.stdout + p.stderr
-        refused = [l for l in out.splitlines() if l.startswith(f"FAIL\t{NAME}\tcase G1 refused: ")]
-        if p.returncode != 1 or len(refused) != 1 or "SIG\t" in out or "INFO\t" in out or made:
-            probs.append(f"R: {label}: exit {p.returncode}, created {made}, output {out[-300:]!r}")
+    me = os.path.abspath(__file__)
+    keep = {k: v for k, v in os.environ.items() if k not in FD_VARS.values()}
+    nested = ["unshare", "--user", "--map-root-user", "--pid", "--fork", "--kill-child", "--mount-proc", "--net"]
+    own = [os.open("/proc/self/ns/pid", os.O_RDONLY), os.open("/proc/self/ns/net", os.O_RDONLY)]
+    null = [os.open(os.devnull, os.O_RDONLY), os.open(os.devnull, os.O_RDONLY)]
+    fake = {FD_VARS["pid"]: "0", FD_VARS["net"]: "0", "ZB_M9_TERM_HOST_PIDNS": "0", "ZB_M9_TERM_HOST_NETNS": "0"}
+    controls = [
+        ("no descriptors", "case G1", [sys.executable, "-B", me, "--case", "G1"], {}, ()),
+        # Under a reaping shell, so the pid rule passes and only the descriptor capability can refuse it.
+        ("fabricated 0/0 from an unrelated private namespace", "case G1",
+         nested + ["bash", "-c", f"{sys.executable} -B {me} --case G1; exit $?"], fake, ()),
+        ("fabricated 0/0 from an unrelated private namespace", "inner",
+         nested + ["bash", "-c", f"{sys.executable} -B {me} --inner; exit $?"], fake, ()),
+        ("descriptors of the current namespaces", "case G1", [sys.executable, "-B", me, "--case", "G1"],
+         {FD_VARS["pid"]: str(own[0]), FD_VARS["net"]: str(own[1])}, tuple(own)),
+        ("closed descriptor numbers", "case G1", [sys.executable, "-B", me, "--case", "G1"],
+         {FD_VARS["pid"]: "250", FD_VARS["net"]: "251"}, ()),
+        ("descriptors that are not namespaces", "case G1", [sys.executable, "-B", me, "--case", "G1"],
+         {FD_VARS["pid"]: str(null[0]), FD_VARS["net"]: str(null[1])}, tuple(null)),
+    ]
+    try:
+        for label, what, argv, extra, fds in controls:
+            with tempfile.TemporaryDirectory() as tmp:
+                env = dict(keep, TMPDIR=tmp, **extra)
+                try:
+                    p = subprocess.run(argv, env=env, pass_fds=fds, capture_output=True, text=True, timeout=30,
+                                       stdin=subprocess.DEVNULL)
+                    rc, out = p.returncode, p.stdout + p.stderr
+                except subprocess.TimeoutExpired as exc:
+                    rc, out = "timeout", f"{exc.stdout or ''}{exc.stderr or ''}"
+                made = os.listdir(tmp)
+            lines = out.splitlines()
+            want = f"FAIL\t{NAME}\t{what} refused: "
+            if rc != 1 or len(lines) != 1 or not lines[0].startswith(want) or len(lines[0]) > 400 \
+               or "SIG\t" in out or "INFO\t" in out or made:
+                probs.append(f"R: {label} ({what}): exit {rc}, created {made}, output {out[-300:]!r}")
+    finally:
+        for fd in own + null:
+            os.close(fd)
     return probs
 
 
 def main() -> int:
     args = sys.argv[1:]
     if args[:1] == ["--case"]:
-        why = namespace_problem()   # before anything else: no fake browser, no signal, outside the namespaces
+        why = namespace_problem()   # before anything else: no temp file, no fake browser, no signal
         if len(args) != 2 or why:
-            label = args[1] if len(args) == 2 else repr(args[1:])
-            print(f"FAIL\t{NAME}\tcase {label} refused: {why or 'bad arguments'}; nothing was run", flush=True)
+            print(refusal(f"case {args[1] if len(args) == 2 else repr(args[1:])}", why or "bad arguments"), flush=True)
             return 1
         return run_case(args[1])
-    if not args:   # the launcher: record the host's namespaces, then re-run inside fresh private ones
-        env = dict(os.environ, ZB_M9_TERM_HOST_PIDNS=str(os.stat("/proc/self/ns/pid").st_ino),
-                   ZB_M9_TERM_HOST_NETNS=str(os.stat("/proc/self/ns/net").st_ino))
+    if not args:   # the launcher: open its own namespaces and pass them down, then re-run inside fresh private ones
+        fds = (os.open("/proc/self/ns/pid", os.O_RDONLY), os.open("/proc/self/ns/net", os.O_RDONLY))
+        env = {k: v for k, v in os.environ.items() if not k.startswith("ZB_M9_TERM_")}
+        env.update({FD_VARS["pid"]: str(fds[0]), FD_VARS["net"]: str(fds[1])})
         cmd = f"python3 -B {os.path.abspath(__file__)} --inner; exit $?"
         return subprocess.run(["unshare", "--user", "--map-root-user", "--pid", "--fork", "--mount-proc", "--net",
-                               "bash", "-c", cmd], env=env).returncode
+                               "bash", "-c", cmd], env=env, pass_fds=fds).returncode
     why = namespace_problem()
     if args != ["--inner"] or why:
-        print(f"FAIL\t{NAME}\t{why or 'bad arguments'}; nothing was run")
+        print(refusal("inner", why or "bad arguments"), flush=True)
         return 1
     fails = 0
-    for row, probs, good in (("R", refusal_controls(), "a case outside this file's private namespaces is refused, "
-                              "nothing created, no signal (3 controls)"),
+    for row, probs, good in (("R", refusal_controls(), "a --case or --inner run that does not hold the launcher's "
+                              "namespace descriptors is refused, nothing created, no signal (6 controls)"),
                              ("J", judge_controls(), "the judge passes 2 safe transcripts and refuses all 21 unsafe "
                               "variants")):
         for msg in probs:
@@ -315,7 +370,7 @@ def main() -> int:
         # Output goes to a file and the driver waits for the case process, not for EOF: a browser that is left
         # running (the leak cases) inherits the case's descriptors and would hold a pipe open.
         with tempfile.TemporaryFile("w+") as log:
-            p = subprocess.Popen([sys.executable, "-B", os.path.abspath(__file__), "--case", name],
+            p = subprocess.Popen([sys.executable, "-B", os.path.abspath(__file__), "--case", name], pass_fds=passed_fds(),
                                  stdout=log, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL)
             rc = p.wait(timeout=120)
             log.seek(0)
