@@ -262,6 +262,7 @@ case "$1" in
   *v_red_pre*)   printf 'FAIL\tv-red\nRED_SHAPE\tv-red\n  PRECONDITION seam never fired\n'; exit 1 ;;
   *v_red_pass*)  printf 'PASS\tv-red\nRED_SHAPE\tv-red\n'; exit 0 ;;
   *v_leak*)      printf 'FAIL\tv-red\nLEAK\t4242\t4242\tThu Oct 22 21:00:00 2026\t/x/zigBrowser --e2e-protocol\n'; exit 1 ;;
+  *v_hang*)      exec sleep 30 ;;   # a row that never returns (V9: the leg times out)
   *v_green*)     printf 'PASS\tv-other\n'; exit 0 ;;
   *v_env*)       printf 'ENV\t%s\n' "$HOME" "$CFFIXED_USER_HOME" "$TMPDIR" "$XDG_DATA_HOME" "$XDG_CACHE_HOME" \
                    "$XDG_CONFIG_HOME" "$XDG_RUNTIME_DIR" "$ZB_E2E_SOCKET_DIR"
@@ -328,6 +329,32 @@ else
 fi
 RRD=$RRD_FIRST
 
+# V9 (SilverRidge c78a1f6): the marker is durable. A first leg whose row hangs is killed by `timeout` (exit 124) in a
+# nested private PID namespace (it signals its own children only); it must leave <root>/LEAKED as RUNNING, and a
+# second leg on that host must then run zero rows (HOST_HELD naming that root). V7's marker is removed first, so only
+# the timed-out leg can hold the second one.
+rm -f -- "${T:?}/rows-home/${RRD_FIRST:?}/LEAKED"
+RRD_T1=zb-gate-0000000000000000000000000000000000000000-3 RRD_T2=zb-gate-0000000000000000000000000000000000000000-4
+mkdir -p "$T/rows-home/$RRD_T1" "$T/rows-home/$RRD_T2"
+t1=$(cd / && env -i PATH="$T/rows-bin:/usr/bin:/bin" HOME="$T/rows-home" \
+       unshare --user --map-root-user --pid --fork --mount-proc bash -c \
+       'timeout 3 bash "$1" "$2" "tests/e2e/mac_v_hang_test.py|red|v-red"; echo "LEG1_RC=$?"' _ "$T/rows-leg.sh" "$RRD_T1" 2>&1)
+RRD_SAVED=$RRD RRD=$RRD_T2
+rows_leg out "tests/e2e/mac_v_red_ok_test.py|red|v-red"
+RRD=$RRD_SAVED
+if grep -qx 'LEG1_RC=124' <<<"$t1" && head -n 1 "$T/rows-home/$RRD_T1/LEAKED" 2>/dev/null | grep -q $'^RUNNING\t' \
+   && [ "$LEG_RC" -eq 4 ] && [ "$(grep -c $'^ROW\t' <<<"$out")" -eq 0 ] && grep -q $'^HOST_HELD\t../'"$RRD_T1"'/LEAKED' <<<"$out"; then
+  ok "rows V9: a timed-out leg (124) leaves RUNNING in its root; the next leg on that host runs zero rows (HOST_HELD)"
+else
+  bad "rows V9: first leg $(grep LEG1_RC <<<"$t1"), marker $(head -c 60 "$T/rows-home/$RRD_T1/LEAKED" 2>/dev/null || echo none), second leg rc=$LEG_RC ROW lines $(grep -c $'^ROW\t' <<<"$out")"
+fi
+for d in "$RRD_T1" "$RRD_T2" "$RRD_FIRST"; do   # a clean leg removes its own marker
+  [ -e "$T/rows-home/$d/LEAKED" ] && rm -f -- "${T:?}/rows-home/${d:?}/LEAKED"
+done
+rows_leg out "tests/e2e/mac_v_red_ok_test.py|red|v-red"
+[ "$LEG_RC" -eq 0 ] && [ ! -e "$T/rows-home/$RRD/LEAKED" ] && ok "rows V10: a leg that finishes cleanly removes its RUNNING marker" \
+  || bad "rows V10: rc=$LEG_RC, marker $( [ -e "$T/rows-home/$RRD/LEAKED" ] && echo left || echo gone)"
+
 # L: this side of the leak path, the real rows caller with stub ssh. A leaked leg (exit 3) or a timed-out leg (124) on
 # intel keeps intel's run dir (no delete call to intel) while arm is still cleaned; a held leg (exit 4) keeps nothing.
 for case in "3 0 STOPPED" "124 0 STOPPED" "4 1 HELD"; do
@@ -355,7 +382,10 @@ done
 # The red vectors themselves (tests/e2e/mac_red_shape_selftest.py, hostless): each red test's exact vector gives
 # RED_SHAPE, and a flipped, missing, extra, duplicated or precondition-broken outcome, or the real row-3 check driven
 # with zero or two matching LOAD_FAIL rows, gives none.
-if shape=$(cd "$ROOT/tests/e2e" && env -i PATH=/usr/bin:/bin HOME="$T/home" python3 -B mac_red_shape_selftest.py 2>&1) \
+# Its M section runs each row's real main against a fake browser and the row's own local HTTP fixture, so it needs a
+# loopback interface: a nested private network namespace with only lo up (still no outside network).
+if shape=$(cd "$ROOT/tests/e2e" && env -i PATH=/usr/bin:/bin HOME="$T/home" \
+    unshare --user --map-root-user --net bash -c 'ip link set lo up && python3 -B mac_red_shape_selftest.py' 2>&1) \
   && grep -q $'^PASS\tmac-red-shape-selftest\t' <<<"$shape"; then
   ok "rows: $(grep $'^PASS\t' <<<"$shape" | tr '\t' ' ')"
 else

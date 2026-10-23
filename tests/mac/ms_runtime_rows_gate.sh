@@ -23,8 +23,10 @@
 # A LEAK STOPS THAT HOST (SilverRidge cf16730): the leg runs no further row, prints HOST_STOPPED and the exact
 # identity of each process left running (LEAKED<TAB>pid<TAB>pgid<TAB>start<TAB>command), writes them to
 # <run root>/LEAKED and exits 3; this side then KEEPS that run root (no cleanup of it) for a person to stop exactly
-# that process first. A leg that finds any ~/zb-gate-*/LEAKED on its host runs nothing (HOST_HELD, exit 4). A leg
-# that timed out is treated as a leak of unknown processes: its run root is kept too.
+# that process first. A leg that finds any ~/zb-gate-*/LEAKED on its host runs nothing (HOST_HELD, exit 4). The
+# marker is DURABLE (SilverRidge c78a1f6): the leg writes <run root>/LEAKED as RUNNING before its first row and
+# removes it only after every row finished with no leak, so a leg that timed out or died leaves it and the next run
+# on that host is held; this side keeps a timed-out leg's run root too.
 # Every row runs (one row's result never stops the next); each prints its output and a
 # ROW<TAB><file><TAB><want><TAB>rc=<n><TAB>MATCH|MISMATCH line. The gate prints PASS<TAB>ms-runtime-rows-gate<TAB>both-arches
 # only when every row on both Macs matched. Console user, no xvfb (WKWebView needs the WindowServer), like ms2a/ms2c.
@@ -87,6 +89,9 @@ export HOME="$root/run-env/home" CFFIXED_USER_HOME="$root/run-env/home" TMPDIR="
   XDG_DATA_HOME="$root/run-env/xdg-data" XDG_CACHE_HOME="$root/run-env/xdg-cache" \
   XDG_CONFIG_HOME="$root/run-env/xdg-config" XDG_RUNTIME_DIR="$root/run-env/xdg-runtime" \
   ZB_E2E_SOCKET_DIR="$root/s" ZB_DEBUG_EPHEMERAL_DATA_STORE=1
+# Durable before any row: only a clean finish below removes it, so a timeout or a death holds this host.
+printf 'RUNNING\t%s\tthe leg did not finish; processes may be left running\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+  > "$root/LEAKED" || exit 1
 overall=0
 for row in "$@"; do
   IFS='|' read -r file want id <<<"$row"
@@ -111,6 +116,7 @@ for row in "$@"; do
   fi
   [ "$verdict" = MATCH ] || overall=1
 done
+rm -f -- "${root:?}/LEAKED"   # every row finished and none left a process running
 exit "$overall"
 REMOTE
   case "$leg_rc" in
