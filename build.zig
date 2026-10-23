@@ -325,7 +325,12 @@ pub fn build(b: *std.Build) void {
     // hygiene). Hermetic
     // — no Windows host, display or live socket. The [W] gate.sh --probe-only runs separately.
     const windows_gate_selftest = b.addSystemCommand(&.{ "python3", "-I", "tests/windows/gate_selftest.py" });
-    b.step("windows-gate-selftest", "Run the Windows gate's Linux-side selftest (fake ssh/virsh/tar)").dependOn(&windows_gate_selftest.step);
+    // WS0.4 job green (NavyCanyon 7eafbae option (a), wait only): the approved red runner_ws04_job_red_test.py
+    // (d8dc915 + R2 290a8ae) is registered as it is; its file name keeps the red's history.
+    const windows_runner_job_selftest = b.addSystemCommand(&.{ "python3", "-I", "tests/windows/runner_ws04_job_red_test.py" });
+    const windows_gate_step = b.step("windows-gate-selftest", "Run the Windows gate's Linux-side selftest (fake ssh/virsh/tar)");
+    windows_gate_step.dependOn(&windows_gate_selftest.step);
+    windows_gate_step.dependOn(&windows_runner_job_selftest.step);
 
     // (WS0.5 remote-path fence removed — resolve_path.sh / resolve_live_test.py deleted; bead
     // zigBrowser-q92. A future remote file op uses the held-handle check-and-use design, its own milestone.)
@@ -3808,6 +3813,7 @@ pub fn build(b: *std.Build) void {
     b.step("test-mac-compile-only", "Run the R4 compile-only Mac harness's hostless safety selftest").dependOn(&mac_compile_only_selftest.step);
     test_step.dependOn(&mac_compile_only_selftest.step);
     test_step.dependOn(&windows_gate_selftest.step);
+    test_step.dependOn(&windows_runner_job_selftest.step);
     test_step.dependOn(&windows_twohost_selftest.step);
     test_step.dependOn(&windows_host_live_optin.step);
     test_step.dependOn(&windows_m8_run_selftest.step);

@@ -529,6 +529,7 @@ case "$verb" in
     script=$(sed -E 's/.*"([^"]+)"[^"]*$/\1/' "$ZB_FAKE_STATE/$tn.tr"); dir=$(dirname "$script")
     printf 'PASS\tfake\nZB_HARNESS_EXIT\t0\n' > "$dir/stdout.txt"; : > "$dir/stderr.txt"
     case "$script" in *.ps1) echo 4242 > "$dir/pid.txt"; echo 0 > "$dir/exit.txt" ;; esac
+    printf 'ZB_RUNNER_JOB\tdrained\t0\n' > "$dir/job.txt"   # the job wrapper's census: the tree drained by itself
     echo "SUCCESS: Attempted to run the scheduled task \"$tn\"."; exit 0 ;;
   /end) exit "${ZB_FAKE_END_RC:-0}" ;;
   /delete)
@@ -672,13 +673,13 @@ class WS04RunnerStartsRelativeProgramFromCwd(unittest.TestCase):
 
     def test_relative_program_in_cwd_is_started_by_absolute_path(self):
         script, work, detail = self._wrapper_for("zigBrowser.exe", make_file=True)
-        want = f"Start-Process -FilePath '{work / 'zigBrowser.exe'}' "
+        want = f"[ZbJob]::Launch('{work / 'zigBrowser.exe'} "
         self.assertIn(want, script, "a program found in the run's cwd must be started by its absolute path" + detail
                       + "\nwrapper:\n" + script)
 
     def test_path_program_not_in_cwd_is_left_as_given(self):
         script, _, detail = self._wrapper_for("powershell.exe", make_file=False)
-        self.assertIn("Start-Process -FilePath 'powershell.exe' ", script, detail + "\nwrapper:\n" + script)
+        self.assertIn("[ZbJob]::Launch('powershell.exe ", script, detail + "\nwrapper:\n" + script)
 
 if __name__ == "__main__":
     unittest.main()

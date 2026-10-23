@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import atexit
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -383,6 +384,160 @@ def _read_int_file(path: Path) -> int | None:
         return None
 
 
+# The task's process tree is owned by a kill-on-close job (Windows plan WS0.4; NavyCanyon 7eafbae option (a), wait
+# only). The wrapper creates the program SUSPENDED and BORN INTO the job, the drawer harness's launch that ran on the
+# Win11 VM (tests/windows/win_drawer_test.py LaunchOwned), so every descendant, msedgewebview2.exe included, is a job
+# member. After a normal exit the wrapper waits, within ONE budget of JOB_DRAIN_DEADLINE_SEC, for the job to drain by
+# itself; only an empty job passes. Survivors at the deadline are recorded, then contained by closing the job, and
+# the run fails. The runner may end its own still-running test through the job (stop.txt) after a matched stop
+# condition or a hard timeout; a timeout stays a failure. No process is ever killed by pid. The wrapper writes one
+# census line to job.txt: `ZB_RUNNER_JOB\t<drained|survivors|left|stopped>\t<n>`.
+JOB_PREFIX = "ZB_RUNNER_JOB"
+JOB_DRAIN_DEADLINE_SEC = 60.0  # the one drain budget (at most 60 s, as tests/windows/webview2_cleanup.DEADLINE_S)
+JOB_CENSUS_GRACE_SEC = 15.0  # past the budget: the job close (an 8 s settle) and the census write
+
+_JOB_CS = r"""
+using System;
+using System.Runtime.InteropServices;
+public static class ZbJob {
+  [StructLayout(LayoutKind.Sequential, CharSet=CharSet.Unicode)]
+  struct STARTUPINFO { public int cb; public string lpReserved, lpDesktop, lpTitle;
+    public int dwX,dwY,dwXSize,dwYSize,dwXCountChars,dwYCountChars,dwFillAttribute,dwFlags;
+    public short wShowWindow, cbReserved2; public IntPtr lpReserved2, hStdInput, hStdOutput, hStdError; }
+  [StructLayout(LayoutKind.Sequential, CharSet=CharSet.Unicode)]
+  struct STARTUPINFOEX { public STARTUPINFO si; public IntPtr lpAttributeList; }
+  [StructLayout(LayoutKind.Sequential)] struct PROCESS_INFORMATION { public IntPtr hProcess, hThread; public int dwProcessId, dwThreadId; }
+  [StructLayout(LayoutKind.Sequential)] struct SECURITY_ATTRIBUTES { public int nLength; public IntPtr lpSD; public int bInherit; }
+  [StructLayout(LayoutKind.Sequential)] struct JOBOBJECT_BASIC_LIMIT_INFORMATION { public long per; public long job; public uint flags; public UIntPtr minws; public UIntPtr maxws; public UIntPtr pa; public UIntPtr count; public long sched; }
+  [StructLayout(LayoutKind.Sequential)] struct IO_COUNTERS { public ulong r,w,o,rb,wb,ob; }
+  [StructLayout(LayoutKind.Sequential)] struct JOBOBJECT_EXTENDED_LIMIT_INFORMATION { public JOBOBJECT_BASIC_LIMIT_INFORMATION basic; public IO_COUNTERS io; public UIntPtr pmem, jmem, ppmem, jpmem; }
+  [DllImport("kernel32", SetLastError=true, CharSet=CharSet.Unicode)]
+  static extern bool CreateProcess(string app, string cmd, ref SECURITY_ATTRIBUTES pa, ref SECURITY_ATTRIBUTES ta,
+    bool inherit, uint flags, IntPtr env, string cwd, ref STARTUPINFOEX si, out PROCESS_INFORMATION pi);
+  [DllImport("kernel32", SetLastError=true)]
+  static extern bool InitializeProcThreadAttributeList(IntPtr list, int count, int flags, ref IntPtr size);
+  [DllImport("kernel32", SetLastError=true)]
+  static extern bool UpdateProcThreadAttribute(IntPtr list, uint flags, IntPtr attr, IntPtr value, IntPtr size, IntPtr prev, IntPtr ret);
+  [DllImport("kernel32", SetLastError=true)]
+  static extern bool DeleteProcThreadAttributeList(IntPtr list);
+  [DllImport("kernel32", SetLastError=true, CharSet=CharSet.Unicode)]
+  static extern IntPtr CreateFile(string name, uint access, uint share, ref SECURITY_ATTRIBUTES sa, uint disp, uint flags, IntPtr tmpl);
+  [DllImport("kernel32", SetLastError=true)] static extern uint ResumeThread(IntPtr t);
+  [DllImport("kernel32", SetLastError=true)] static extern IntPtr CreateJobObject(IntPtr a, string n);
+  [DllImport("kernel32", SetLastError=true)] static extern bool TerminateJobObject(IntPtr j, uint c);
+  [DllImport("kernel32", SetLastError=true)] static extern bool SetInformationJobObject(IntPtr j, int cls, IntPtr info, uint len);
+  [DllImport("kernel32", SetLastError=true)] static extern bool QueryInformationJobObject(IntPtr j, int cls, IntPtr info, uint len, IntPtr ret);
+  [DllImport("kernel32", SetLastError=true)] static extern bool CloseHandle(IntPtr h);
+  [DllImport("kernel32", SetLastError=true)] static extern uint WaitForSingleObject(IntPtr h, uint ms);
+  [DllImport("kernel32", SetLastError=true)] static extern bool GetExitCodeProcess(IntPtr h, out uint code);
+  const uint CREATE_SUSPENDED = 0x4, GENERIC_WRITE = 0x40000000, FILE_SHARE_READ = 1, FILE_SHARE_WRITE = 2, CREATE_ALWAYS = 2;
+  const uint KILL_ON_CLOSE = 0x2000, GENERIC_READ = 0x80000000, OPEN_EXISTING = 3, STARTF_USESTDHANDLES = 0x100;
+  const uint WAIT_OBJECT_0 = 0, WAIT_TIMEOUT = 258, EXTENDED_STARTUPINFO_PRESENT = 0x00080000;
+  static readonly IntPtr PROC_THREAD_ATTRIBUTE_JOB_LIST = (IntPtr)0x0002000D;
+  static void Fail(string op) { throw new Exception(op + " failed: " + Marshal.GetLastWin32Error()); }
+  static IntPtr OpenWrite(string path) {
+    var sa = new SECURITY_ATTRIBUTES(); sa.nLength = Marshal.SizeOf(typeof(SECURITY_ATTRIBUTES)); sa.bInherit = 1;
+    IntPtr h = CreateFile(path, GENERIC_WRITE, FILE_SHARE_READ|FILE_SHARE_WRITE, ref sa, CREATE_ALWAYS, 0, IntPtr.Zero);
+    if (h == new IntPtr(-1)) Fail("CreateFile " + path); return h;
+  }
+  static IntPtr OpenNul() {
+    var sa = new SECURITY_ATTRIBUTES(); sa.nLength = Marshal.SizeOf(typeof(SECURITY_ATTRIBUTES)); sa.bInherit = 1;
+    IntPtr h = CreateFile("NUL", GENERIC_READ, FILE_SHARE_READ|FILE_SHARE_WRITE, ref sa, OPEN_EXISTING, 0, IntPtr.Zero);
+    if (h == new IntPtr(-1)) Fail("CreateFile NUL"); return h;
+  }
+  static IntPtr Job, _hProc, _hThread;
+  public static bool Stopped;
+  // The kill-on-close job, then the program SUSPENDED and born into it (STARTUPINFOEX + PROC_THREAD_ATTRIBUTE_JOB_LIST),
+  // membership checked, then resumed. Returns the program's pid.
+  public static int Launch(string cmdline, string cwd, string outPath, string errPath) {
+    Job = CreateJobObject(IntPtr.Zero, null); if (Job == IntPtr.Zero) Fail("CreateJobObject");
+    var eli = new JOBOBJECT_EXTENDED_LIMIT_INFORMATION(); eli.basic.flags = KILL_ON_CLOSE;
+    int sz = Marshal.SizeOf(typeof(JOBOBJECT_EXTENDED_LIMIT_INFORMATION)); IntPtr pe = Marshal.AllocHGlobal(sz);
+    try { Marshal.StructureToPtr(eli, pe, false);
+      if (!SetInformationJobObject(Job, 9, pe, (uint)sz)) Fail("SetInformationJobObject"); }
+    finally { Marshal.FreeHGlobal(pe); }
+    IntPtr hOut = OpenWrite(outPath), hErr = OpenWrite(errPath), hIn = OpenNul();
+    IntPtr alSize = IntPtr.Zero; InitializeProcThreadAttributeList(IntPtr.Zero, 1, 0, ref alSize);
+    IntPtr attrList = Marshal.AllocHGlobal(alSize);
+    IntPtr jobArr = Marshal.AllocHGlobal(IntPtr.Size); Marshal.WriteIntPtr(jobArr, Job);
+    var six = new STARTUPINFOEX();
+    six.si.cb = Marshal.SizeOf(typeof(STARTUPINFOEX));
+    six.si.dwFlags = (int)STARTF_USESTDHANDLES; six.si.hStdInput = hIn; six.si.hStdOutput = hOut; six.si.hStdError = hErr;
+    var pa = new SECURITY_ATTRIBUTES(); pa.nLength = Marshal.SizeOf(typeof(SECURITY_ATTRIBUTES));
+    var ta = new SECURITY_ATTRIBUTES(); ta.nLength = Marshal.SizeOf(typeof(SECURITY_ATTRIBUTES));
+    PROCESS_INFORMATION pi = new PROCESS_INFORMATION(); bool ok = false;
+    try {
+      if (!InitializeProcThreadAttributeList(attrList, 1, 0, ref alSize)) Fail("InitializeProcThreadAttributeList");
+      if (!UpdateProcThreadAttribute(attrList, 0, PROC_THREAD_ATTRIBUTE_JOB_LIST, jobArr, (IntPtr)IntPtr.Size, IntPtr.Zero, IntPtr.Zero)) Fail("UpdateProcThreadAttribute");
+      six.lpAttributeList = attrList;
+      ok = CreateProcess(null, cmdline, ref pa, ref ta, true, CREATE_SUSPENDED | EXTENDED_STARTUPINFO_PRESENT, IntPtr.Zero, cwd, ref six, out pi);
+      if (ok) { _hProc = pi.hProcess; _hThread = pi.hThread; }
+    } finally {
+      if (attrList != IntPtr.Zero) DeleteProcThreadAttributeList(attrList);
+      Marshal.FreeHGlobal(attrList); Marshal.FreeHGlobal(jobArr);
+    }
+    bool cOut = CloseHandle(hOut), cErr = CloseHandle(hErr), cIn = CloseHandle(hIn);
+    if (!ok) Fail("CreateProcess");
+    if (!cOut || !cErr || !cIn) { TerminateJobObject(Job, 1); Fail("CloseHandle(std)"); }
+    if (Count() < 1) { TerminateJobObject(Job, 1); throw new Exception("job membership not verified"); }
+    if (ResumeThread(pi.hThread) == 0xFFFFFFFF) { TerminateJobObject(Job, 1); Fail("ResumeThread"); }
+    return pi.dwProcessId;
+  }
+  // Processes the job owns now (the owned-tree census; not a machine-wide name count).
+  public static int Count() {
+    if (Job == IntPtr.Zero) return 0;
+    int sz = 8 + IntPtr.Size * 512; IntPtr buf = Marshal.AllocHGlobal(sz);
+    try {
+      if (!QueryInformationJobObject(Job, 3 /*BasicProcessIdList*/, buf, (uint)sz, IntPtr.Zero)) Fail("QueryInformationJobObject");
+      return Marshal.ReadInt32(buf, 4); // NumberOfProcessIdsInList
+    } finally { Marshal.FreeHGlobal(buf); }
+  }
+  // The program's exit code, or -1 once the runner asked to stop (stopPath exists).
+  public static int Wait(string stopPath) {
+    while (true) {
+      uint w = WaitForSingleObject(_hProc, 200);
+      if (w == WAIT_OBJECT_0) { uint code; if (!GetExitCodeProcess(_hProc, out code)) Fail("GetExitCodeProcess"); return unchecked((int)code); }
+      if (w != WAIT_TIMEOUT) Fail("WaitForSingleObject");
+      if (System.IO.File.Exists(stopPath)) { Stopped = true; return -1; }
+    }
+  }
+  // Waits (bounded) for the job to hold no process; returns what is still in it.
+  static int Settle(int ms) {
+    var sw = System.Diagnostics.Stopwatch.StartNew(); int n = Count();
+    while (n > 0 && sw.ElapsedMilliseconds < ms) { System.Threading.Thread.Sleep(100); n = Count(); }
+    return n;
+  }
+  static void Close() {
+    if (Job != IntPtr.Zero) CloseHandle(Job);  // KILL_ON_CLOSE: the backstop for anything the count missed
+    Job = IntPtr.Zero;
+    if (_hThread != IntPtr.Zero) CloseHandle(_hThread);
+    if (_hProc != IntPtr.Zero) CloseHandle(_hProc);
+    _hThread = IntPtr.Zero; _hProc = IntPtr.Zero;
+  }
+  // The runner asked to stop its still-running test: end the job's tree, close the job. "stopped\t<n>" (n ended) or
+  // "left\t<n>" (n outlived the end).
+  public static string Stop() {
+    int n = Count();
+    if (!TerminateJobObject(Job, 1)) Fail("TerminateJobObject");
+    int left = Settle(8000);
+    Close();
+    return left > 0 ? "left\t" + left : "stopped\t" + n;
+  }
+  // After the drain budget (the wrapper's one $ZbDrainEnd): an empty job is "drained\t0". Survivors are recorded
+  // ("survivors\t<n>"), THEN contained by ending the job; the runner fails the run either way. "left\t<n>" if even
+  // that leaves processes.
+  public static string Finish() {
+    int n = Count();
+    if (n == 0) { Close(); return "drained\t0"; }
+    if (!TerminateJobObject(Job, 1)) Fail("TerminateJobObject");
+    int left = Settle(8000);
+    Close();
+    return left > 0 ? "left\t" + left : "survivors\t" + n;
+  }
+}
+"""
+
+
 def _write_windows_task_wrapper(
     script_path: Path,
     cmd: list[str],
@@ -392,6 +547,8 @@ def _write_windows_task_wrapper(
     exit_path: Path,
     pid_path: Path,
     cwd: Path,
+    job_path: Path,
+    stop_path: Path,
 ) -> None:
     if not cmd:
         raise ValueError("scheduled task command must not be empty")
@@ -404,42 +561,55 @@ def _write_windows_task_wrapper(
             continue
         env_lines.append(f"$env:{key} = {_ps_quote(value)}")
 
-    # Start-Process resolves a bare FilePath against the process directory and PATH, never the Set-Location below
-    # (a relative `zigBrowser.exe` was "not found" on the Win11 VM), so a program in the run's cwd goes in absolute.
+    # CreateProcess resolves a bare program name against the wrapper's process directory and PATH, never the
+    # Set-Location below (a relative `zigBrowser.exe` was "not found" on the Win11 VM), so a program in the run's cwd
+    # goes in absolute.
     program = Path(cmd[0])
     if not program.is_absolute() and (cwd / program).is_file():
         program = cwd / program
-    file_path = str(program)
-    arg_string = subprocess.list2cmdline([str(item) for item in cmd[1:]])
-    script = "\r\n".join(
+    cmdline = subprocess.list2cmdline([str(program), *[str(item) for item in cmd[1:]]])
+    # "\n" here: write_text(newline="\r\n") makes it CRLF; a "\r\n" join would give "\r\r\n", which the here-string
+    # opener `@'` below must not meet.
+    script = "\n".join(
         [
             "$ErrorActionPreference = 'Stop'",
             f"$stdoutPath = {_ps_quote(str(stdout_path))}",
             f"$stderrPath = {_ps_quote(str(stderr_path))}",
             f"$exitPath = {_ps_quote(str(exit_path))}",
             f"$pidPath = {_ps_quote(str(pid_path))}",
+            f"$jobPath = {_ps_quote(str(job_path))}",
+            f"$stopPath = {_ps_quote(str(stop_path))}",
+            f"$ZbDrainBudgetSec = {JOB_DRAIN_DEADLINE_SEC:g}",
+            "$census = $null",
             "try {",
             f"  Set-Location -LiteralPath {_ps_quote(str(cwd))}",
             *[f"  {line}" for line in env_lines],
-            (
-                f"  $p = Start-Process -FilePath {_ps_quote(file_path)} "
-                f"-ArgumentList {_ps_quote(arg_string)} "
-                "-RedirectStandardOutput $stdoutPath "
-                "-RedirectStandardError $stderrPath "
-                "-PassThru"
-            ),
-            "  $p.Id | Set-Content -LiteralPath $pidPath -Encoding ASCII",
-            "  $p.WaitForExit()",
-            "  $p.Refresh()",
-            "  if ($null -eq $p.ExitCode) { $exitCode = 0 } else { $exitCode = [int]$p.ExitCode }",
+            "  Add-Type -TypeDefinition @'",
+            *_JOB_CS.strip("\n").splitlines(),
+            "'@",
+            f"  $p = [ZbJob]::Launch({_ps_quote(cmdline)}, {_ps_quote(str(cwd))}, $stdoutPath, $stderrPath)",
+            "  $p | Set-Content -LiteralPath $pidPath -Encoding ASCII",
+            "  $exitCode = [ZbJob]::Wait($stopPath)",
+            "  if ([ZbJob]::Stopped) { $exitCode = 1 }",
             "  $exitCode | Set-Content -LiteralPath $exitPath -Encoding ASCII",
             f"  Add-Content -LiteralPath $stdoutPath -Encoding UTF8 -Value (\"{HARNESS_EXIT_PREFIX}`t{{0}}\" -f $exitCode)",
+            "  if ([ZbJob]::Stopped) {",
+            "    $census = [ZbJob]::Stop()",
+            "  } else {",
+            "    $ZbDrainEnd = [DateTime]::UtcNow.AddSeconds($ZbDrainBudgetSec)",
+            "    while ([ZbJob]::Count() -gt 0 -and [DateTime]::UtcNow -lt $ZbDrainEnd) { Start-Sleep -Milliseconds 200 }",
+            "    $census = [ZbJob]::Finish()",
+            "  }",
             "} catch {",
             "  $_ | Out-String | Add-Content -LiteralPath $stderrPath -Encoding UTF8",
-            "  1 | Set-Content -LiteralPath $exitPath -Encoding ASCII",
-            f"  Add-Content -LiteralPath $stdoutPath -Encoding UTF8 -Value \"{HARNESS_EXIT_PREFIX}`t1\"",
-            "  throw",
+            "  if (-not (Test-Path -LiteralPath $exitPath)) {",
+            "    1 | Set-Content -LiteralPath $exitPath -Encoding ASCII",
+            f"    Add-Content -LiteralPath $stdoutPath -Encoding UTF8 -Value \"{HARNESS_EXIT_PREFIX}`t1\"",
+            "  }",
             "}",
+            # no census after a failure inside the wrapper: the runner fails the run (the job handle closes with
+            # this process, so KILL_ON_CLOSE still contains the tree)
+            f"if ($null -ne $census) {{ Set-Content -LiteralPath $jobPath -Encoding ASCII -Value (\"{JOB_PREFIX}`t\" + $census) }}",
             "",
         ]
     )
@@ -504,17 +674,53 @@ def _failed(what: str, proc: subprocess.CompletedProcess[str]) -> str:
     return f"runner: {what} failed (rc={proc.returncode}): {(proc.stderr or proc.stdout).strip()}"
 
 
-def _stop_windows_task(task_name: str, pid: int | None) -> list[str]:
-    """Ends the task's process tree and the task. Returns a diagnostic per failed step: either can fail for a
-    process that already exited, so these are reported in the result, not judged here (WS0.4 item 5 does)."""
-    steps = [] if pid is None else [("taskkill", ["taskkill", "/PID", str(pid), "/T", "/F"])]
-    steps.append(("schtasks /end", ["schtasks", "/end", "/tn", task_name]))
-    notes = []
-    for what, args in steps:
-        proc = _run_schtasks(args)
-        if proc.returncode != 0:
-            notes.append(_failed(what, proc))
-    return notes
+def _end_windows_task(task_name: str) -> list[str]:
+    """Ends the task (its wrapper) when the wrapper never answered with a census: closing the wrapper closes its
+    kill-on-close job. Never a pid kill. Returns a diagnostic if the end failed; the run fails on the missing census."""
+    proc = _run_schtasks(["schtasks", "/end", "/tn", task_name])
+    return [] if proc.returncode == 0 else [_failed("schtasks /end", proc)]
+
+
+def _read_job_census(path: Path) -> str | None:
+    """The wrapper's census text once completely written (it ends with a newline), else None."""
+    try:
+        raw = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    return raw if raw.endswith("\n") else None
+
+
+def _settle_job(task_name: str, job_path: Path, stop_path: Path, stop_requested: bool) -> tuple[str | None, list[str]]:
+    """Asks a still-running test to stop through its job (stop.txt), then waits for the wrapper's census within one
+    deadline: the drain budget plus the job close. No census in time: the task is ended (never by pid)."""
+    if stop_requested:
+        stop_path.write_text("stop\n", encoding="ascii")
+    deadline = time.monotonic() + JOB_DRAIN_DEADLINE_SEC + JOB_CENSUS_GRACE_SEC
+    census = _read_job_census(job_path)
+    while census is None and time.monotonic() < deadline:
+        time.sleep(0.1)
+        census = _read_job_census(job_path)
+    return census, ([] if census is not None else _end_windows_task(task_name))
+
+
+def _census_problem(raw: str | None, stop_requested: bool) -> str | None:
+    """None when the census proves the run's tree gone the right way, else why the run fails."""
+    if raw is None:
+        return "runner: no job census from the task wrapper: the run's process tree is not proven gone"
+    lines = [line for line in raw.lstrip("\ufeff").replace("\r", "").split("\n") if line]
+    row = lines[0].split("\t") if len(lines) == 1 else []
+    if len(row) == 3 and row[0] == JOB_PREFIX and re.fullmatch(r"[0-9]+", row[2]):
+        verdict, n = row[1], int(row[2], 10)
+        if verdict == "drained" and n == 0:
+            return None
+        if verdict == "stopped" and n > 0 and stop_requested:
+            return None
+        if verdict == "survivors" and n > 0:
+            return (f"runner: {n} process(es) of the run were still alive at the {JOB_DRAIN_DEADLINE_SEC:g} s drain "
+                    "deadline; closing the job contained them, and the run fails")
+        if verdict == "left" and n > 0:
+            return f"runner: {n} process(es) of the run survived the job close"
+    return f"runner: invalid job census {raw.strip()!r}"
 
 
 def _delete_windows_task(task_name: str) -> str | None:
@@ -523,12 +729,15 @@ def _delete_windows_task(task_name: str) -> str | None:
     return None if proc.returncode == 0 else _failed(f"schtasks /delete /tn {task_name}", proc)
 
 
-def _fail_on_cleanup(matched: bool, result: RunResult, notes: list[str], delete_error: str | None) -> bool:
-    """Adds the cleanup diagnostics to the result; a failed delete makes the run fail. Returns `matched`."""
+def _fail_on_cleanup(matched: bool, result: RunResult, notes: list[str], delete_error: str | None,
+                     census_problem: str | None = None) -> bool:
+    """Adds the cleanup diagnostics to the result; a failed delete or a job census that does not prove the run's tree
+    gone (see _census_problem) makes the run fail. Returns `matched`."""
     result.stderr_lines.extend(notes)
-    if delete_error is None:
+    errors = [e for e in (delete_error, census_problem) if e is not None]
+    if not errors:
         return matched
-    result.stderr_lines.append(delete_error)
+    result.stderr_lines.extend(errors)
     if result.returncode == 0:
         result.returncode = 1
     return False
@@ -551,9 +760,12 @@ def run_windows_interactive_until(
     stderr_path = work_dir / "stderr.txt"
     exit_path = work_dir / "exit.txt"
     pid_path = work_dir / "pid.txt"
+    job_path = work_dir / "job.txt"
+    stop_path = work_dir / "stop.txt"
     script_path = work_dir / "run.ps1"
     cwd_path = (cwd or Path.cwd()).resolve()
-    _write_windows_task_wrapper(script_path, cmd, env, stdout_path, stderr_path, exit_path, pid_path, cwd_path)
+    _write_windows_task_wrapper(script_path, cmd, env, stdout_path, stderr_path, exit_path, pid_path, cwd_path,
+                                job_path, stop_path)
 
     task_cmd = f'powershell.exe -NoProfile -ExecutionPolicy Bypass -File "{script_path}"'
     create = _run_schtasks(
@@ -618,12 +830,11 @@ def run_windows_interactive_until(
         else:
             timed_out = True
     finally:
-        stop_notes: list[str] = []
-        if returncode is None:
-            stop_notes = _stop_windows_task(task_name, pid)
-            time.sleep(0.2)
-            returncode = _read_int_file(exit_path)
+        stop_requested = returncode is None
+        census, stop_notes = _settle_job(task_name, job_path, stop_path, stop_requested)
         delete_error = _delete_windows_task(task_name)
+    if stop_requested:
+        returncode = None  # the runner ended it: its exit code is the stop, not the program's answer
 
     stdout_lines = _read_file_lines(stdout_path)
     stderr_lines = _read_file_lines(stderr_path)
@@ -636,7 +847,7 @@ def run_windows_interactive_until(
         timed_out=timed_out,
         pid=pid,
     )
-    return _fail_on_cleanup(matched, result, stop_notes, delete_error), result
+    return _fail_on_cleanup(matched, result, stop_notes, delete_error, _census_problem(census, stop_requested)), result
 
 
 def run_windows_interactive_cmd_until(
@@ -653,11 +864,19 @@ def run_windows_interactive_cmd_until(
     work_dir = Path(tempfile.mkdtemp(prefix="zb_m8_cmd_"))
     stdout_path = work_dir / "stdout.txt"
     stderr_path = work_dir / "stderr.txt"
-    script_path = work_dir / "run.cmd"
+    pid_path = work_dir / "pid.txt"
+    job_path = work_dir / "job.txt"
+    stop_path = work_dir / "stop.txt"
+    cmd_script_path = work_dir / "run.cmd"
+    script_path = work_dir / "run.ps1"
     cwd_path = (cwd or Path.cwd()).resolve()
-    _write_windows_cmd_wrapper(script_path, cmd, env, stdout_path, stderr_path, cwd_path)
+    _write_windows_cmd_wrapper(cmd_script_path, cmd, env, stdout_path, stderr_path, cwd_path)
+    # run.cmd keeps the program's own exit code (its ZB_HARNESS_EXIT row in stdout.txt); the job wrapper owns its tree.
+    _write_windows_task_wrapper(script_path, ["cmd.exe", "/d", "/c", "call", str(cmd_script_path)], {},
+                                work_dir / "task_stdout.txt", work_dir / "task_stderr.txt", work_dir / "exit.txt",
+                                pid_path, cwd_path, job_path, stop_path)
 
-    task_cmd = f'cmd.exe /d /c call "{script_path}"'
+    task_cmd = f'powershell.exe -NoProfile -ExecutionPolicy Bypass -File "{script_path}"'
     create = _run_schtasks(
         [
             "schtasks",
@@ -714,15 +933,14 @@ def run_windows_interactive_cmd_until(
         else:
             timed_out = True
     finally:
-        stop_notes: list[str] = []
-        if not matched and harness_exit_code(stdout_lines) is None:
-            stop_notes = _stop_windows_task(task_name, None)
-            time.sleep(0.2)
+        # still running (matched or not): end it through its job, as the ps1 runner does
+        stop_requested = harness_exit_code(stdout_lines) is None
+        census, stop_notes = _settle_job(task_name, job_path, stop_path, stop_requested)
         delete_error = _delete_windows_task(task_name)
 
     stdout_lines = _read_file_lines(stdout_path)
     stderr_lines = _read_file_lines(stderr_path)
-    returncode = harness_exit_code(stdout_lines)
+    returncode = None if stop_requested else harness_exit_code(stdout_lines)
     result = RunResult(
         returncode=returncode if returncode is not None else (0 if matched else 1),
         stdout_lines=stdout_lines,
@@ -730,7 +948,7 @@ def run_windows_interactive_cmd_until(
         tracked_children=set(),
         timed_out=timed_out,
     )
-    return _fail_on_cleanup(matched, result, stop_notes, delete_error), result
+    return _fail_on_cleanup(matched, result, stop_notes, delete_error, _census_problem(census, stop_requested)), result
 
 
 def run_windows_interactive_to_exit(
