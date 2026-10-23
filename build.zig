@@ -376,6 +376,13 @@ pub fn build(b: *std.Build) void {
     const windows_routed_live = b.addSystemCommand(&.{ "python3", "-I", "tests/e2e/win_routed_test.py" });
     windows_routed_live.has_side_effects = true;
     b.step("windows-routed-live", "Live Windows WS2a.1: routed page.* commands drive the WebView2 page over the socket (skips without ZB_WIN11_HOST)").dependOn(&windows_routed_live.step);
+    // WS2a.2: dom.* run in the automation script's private CDP world, so a hostile page (its own __zbAutomation,
+    // overridden click, frozen querySelector, lying text getters) gets the same dom.* answers as a clean page.
+    // Skips without ZB_WIN11_HOST/ZB_WIN_EXE when run by hand; under ZB_WIN_GATE=1 (windows-live) it fails.
+    // Not part of `zig build test`.
+    const windows_private_world_live = b.addSystemCommand(&.{ "python3", "-I", "tests/e2e/win_private_world_test.py" });
+    windows_private_world_live.has_side_effects = true;
+    b.step("windows-private-world-live", "Live Windows WS2a.2: dom.* run in the private world, a hostile page gets the clean page's answers (skips without ZB_WIN11_HOST)").dependOn(&windows_private_world_live.step);
 
     // WS2a.0 spike: the automation script's private CDP world on the VM (tests/e2e/win_private_world_spike.py
     // builds and runs ws2a0-world-spike-win there). Gated (ZB_WIN_GATE=1): with no host or marker it FAILS,
