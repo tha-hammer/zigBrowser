@@ -16,7 +16,8 @@
 #      DMG line equals it;
 #   P3 hdiutil attach -readonly -nobrowse -noautoopen -mountpoint <run root>/mnt <run root>/zigBrowser.dmg on each Mac,
 #      then a detach of the attached device, before any workload command;
-#   P4 codesign --verify --strict --deep on the unpacked .app; otool -L on its exe; every Mach-O census line fat;
+#   P4 codesign --verify --strict --deep on the unpacked .app; separate otool -arch <slice> -L calls on its exe; every
+#      Mach-O census line fat;
 #   P5 each of m9_render_test.py, m9_reply_channel_test.py, m9_load_fail_test.py and exec_arch_probe.py ran exactly
 #      once per Mac; every one got --browser <run root>/app/zigBrowser.app/Contents/MacOS/zigBrowser, ran with no
 #      zig-out left, and with HOME, CFFIXED_USER_HOME, TMPDIR, the XDG dirs and the socket dir under the run root and
@@ -192,11 +193,17 @@ cat > "$X/hostbin/otool" <<EOF
 #!/bin/bash
 $rec
 $on
-[ "\$1" = -L ] || exit 0
+slice=
+case "\${1:-}" in
+  -arch) [ "\$#" -eq 4 ] && [ "\$3" = -L ] || exit 64; slice=\$2; target=\$4 ;;
+  -L) [ "\$#" -eq 2 ] || exit 64; target=\$2 ;;
+  *) exit 64 ;;
+esac
 ref='\t@executable_path/../Frameworks/libwkwebview_shim.dylib (compatibility version 0.0.0, current version 0.0.0)\n'
-case "\$2" in */app/zigBrowser.app/*) on otool_noref && ref= ;; esac
+case "\$target" in */app/zigBrowser.app/*) on otool_noref && ref= ;; esac
 # One write, so a reader that stops early (grep -q under pipefail) never meets a half-written pipe.
-printf "%s:\n\$ref\t/usr/lib/libSystem.B.dylib (compatibility version 1.0.0, current version 1345.0.0)\n" "\$2"
+if [ -n "\$slice" ]; then header="\$target (architecture \$slice)"; else header=\$target; fi
+printf "%s:\n\$ref\t/usr/lib/libSystem.B.dylib (compatibility version 1.0.0, current version 1345.0.0)\n" "\$header"
 EOF
 cat > "$X/hostbin/sips" <<EOF
 #!/bin/bash
@@ -506,11 +513,14 @@ for role in intel arm; do
   cs=$(for f in $(ls "$C" | grep -E '^codesign\.[0-9]+$'); do tr '\0' ' ' < "$C/$f"; echo; done)
   grep -qxF -- "--verify --strict --deep --verbose=2 $rd/app/zigBrowser.app " <<<"$cs" || p4="$role codesign calls: $(grep -- --verify <<<"$cs" | tr '\n' '|')"
   ot=$(for f in $(ls "$C" | grep -E '^otool\.[0-9]+$'); do tr '\0' ' ' < "$C/$f"; echo; done)
-  grep -qxF -- "-L $rd/$APPEXE " <<<"$ot" || p4="$role otool calls: $(tr '\n' '|' <<<"$ot")"
+  for slice in x86_64 arm64; do
+    [ "$(grep -cxF -- "-arch $slice -L $rd/$APPEXE " <<<"$ot")" -eq 1 ] \
+      || p4="$role $slice otool calls: $(tr '\n' '|' <<<"$ot")"
+  done
 done
 cen=$(cat "$EV"/*/evidence/census 2>/dev/null)
 { [ "$(grep -c "^MACHO$TB" <<<"$cen")" -ge 4 ] && ! grep "^MACHO$TB" <<<"$cen" | grep -qv "${TB}arm64 x86_64\$"; } || p4="census '$(tr '\n' '|' <<<"$cen")'"
-[ "$p4" = ok ] && ok "P4: codesign --verify --strict --deep on the unpacked .app, otool -L on its exe, every Mach-O fat" || bad "P4: $p4"
+[ "$p4" = ok ] && ok "P4: codesign --verify --strict --deep on the unpacked .app, per-slice otool -arch checks on its exe, every Mach-O fat" || bad "P4: $p4"
 p5=ok
 for role in intel arm; do
   rd=$(rd_of $role)

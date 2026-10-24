@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# RED, UNREGISTERED (zigBrowser-4pa.73): query each universal executable slice independently. The MS1c gate must run
+# REGISTERED GREEN ORACLE (zigBrowser-4pa.73): query each universal executable slice independently. The MS1c gate must run
 # exactly one `otool -arch <slice> -L <exe>` for x86_64 and arm64, retain separate output/status/ref evidence, and
-# require status zero plus exactly one exact shim dependency from each call. This stays absent from build.zig until
-# the green. Fix-forward minimum: SilverRidge 9bb0737e (the first red allowed a combined-output parser to survive).
+# require status zero plus exactly one exact shim dependency from each call. Registered by the green approved from
+# eb214b4e. Fix-forward minimum: SilverRidge 9bb0737e (the first red allowed a combined-output parser to survive).
 #
 # This reuses the registered MS1c executing fake-Mac fixture only through its setup boundary, replaces that fixture's
 # otool with the executing slice/status/output shapes below, and drives the real gate for every row.

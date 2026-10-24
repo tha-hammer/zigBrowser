@@ -217,11 +217,13 @@ codesign --verify --strict --deep --verbose=2 "$APP" > "$EV/codesign.out" 2>&1
 st=$?
 log "CODESIGN${T}rc=$st"
 [ "$st" -eq 0 ] || fail "codesign --verify --strict --deep failed"
-otool -L "$EXE" > "$EV/otool.out" 2>&1
-st=$?
-ref=$(grep -cF "${T}$SHIM_REF (" "$EV/otool.out")
-log "OTOOL${T}rc=$st${T}refs=$ref"
-[ "$st" -eq 0 ] && [ "$ref" -eq 1 ] || fail "the exe does not load $SHIM_REF"
+for slice in x86_64 arm64; do
+  otool -arch "$slice" -L "$EXE" > "$EV/otool.$slice.out" 2>&1
+  st=$?
+  ref=$(grep -cF "${T}$SHIM_REF (" "$EV/otool.$slice.out")
+  log "OTOOL${T}$slice${T}rc=$st${T}refs=$ref"
+  [ "$st" -eq 0 ] && [ "$ref" -eq 1 ] || fail "the $slice exe slice does not load $SHIM_REF"
+done
 if [ ! -f "$APP/Contents/Frameworks/libwkwebview_shim.dylib" ] || [ -L "$APP/Contents/Frameworks/libwkwebview_shim.dylib" ]; then
   fail "$SHIM_REF does not resolve to the bundled regular file"
 fi
