@@ -10,7 +10,9 @@
 #
 # This reuses the registered MS1c executing fake-Mac fixture only through its setup boundary, commits the reviewed
 # data file into that fixture's clean source tree, drives the real gate, and directly drives its embedded snapshot/
-# diff programs for side, errno, exact-match, readable-path, metadata and transition boundaries.
+# diff programs for side, errno, exhaustive exact-match, readable-path, metadata and transition boundaries. The
+# direct driver also exposes six field-isolated broad-match mutants so the intended green must reject prefix, family
+# and glob matching independently at both the early FileProvider entry and a CoreSpotlight entry.
 set -uo pipefail
 
 ROOT=$(realpath "${1:-.}")
@@ -146,6 +148,26 @@ def extract(name: str) -> str:
 snap_source = extract("HOME_SNAP_PY")
 diff_source = extract("HOME_DIFF_PY")
 
+# These are causal controls for the literal-membership oracle. Each changes only the intended green predicate and is
+# run by the outer driver after the candidate passes. The two sites are deliberately far apart in the reviewed set:
+# its first FileProvider entry and its first CoreSpotlight entry.
+mutant = os.environ.get("ZB_MS1C_HOME_MATCH_MUTANT", "")
+mutant_predicates = {
+    "prefix-fileprovider": 'rel.startswith("Library/Application Support/FileProvider/6C899D1B-D76E-47F6-840A-186D246B9E1E/wharf/tombstone/")',
+    "family-fileprovider": 'rel.startswith("Library/Application Support/FileProvider/")',
+    "glob-fileprovider": '__import__("fnmatch").fnmatchcase(rel, "Library/Application Support/FileProvider/*/wharf/tombstone/*")',
+    "prefix-corespotlight": 'rel.startswith("Library/Metadata/CoreSpotlight/NSFileProtectionComplete/index.spotlightV3/")',
+    "family-corespotlight": 'rel.startswith("Library/Metadata/CoreSpotlight/")',
+    "glob-corespotlight": '__import__("fnmatch").fnmatchcase(rel, "Library/Metadata/CoreSpotlight/*/index.spotlightV3/*")',
+}
+if mutant:
+    predicate = mutant_predicates.get(mutant)
+    anchor = "if rel in protected and reason:"
+    if predicate is None or snap_source.count(anchor) != 1:
+        print(f"FAIL mutant setup: mode={mutant!r}, anchor-count={snap_source.count(anchor)}")
+        raise SystemExit(2)
+    snap_source = snap_source.replace(anchor, f"if (rel in protected or ({predicate})) and reason:")
+
 
 def meta(path: Path, digest: str) -> str:
     st = path.lstat()
@@ -185,15 +207,28 @@ class Fixture:
             self.locked_dirs.append(path)
         return path
 
-    def snapshot(self, side: str, forced: tuple[Path, int] | None = None, name: str | None = None) -> tuple[int, Path]:
+    def snapshot(
+        self,
+        side: str,
+        forced: tuple[Path, int] | None = None,
+        name: str | None = None,
+        forced_many: dict[Path, int] | None = None,
+    ) -> tuple[int, Path]:
         output = self.work / (name or ("home." + side.lower()))
         list_copy = self.work / ("list-" + output.name)
         shutil.copyfile(reviewed, list_copy)
         real_open = os.open
+        forced_errors = {}
         if forced is not None:
             target, number = forced
+            forced_errors[os.path.abspath(target)] = number
+        if forced_many is not None:
+            forced_errors.update((os.path.abspath(target), number) for target, number in forced_many.items())
+        if forced_errors:
             def replacement(path, flags, *args, **kwargs):
-                if os.path.abspath(os.fspath(path)) == os.path.abspath(target):
+                absolute = os.path.abspath(os.fspath(path))
+                if absolute in forced_errors:
+                    number = forced_errors[absolute]
                     raise OSError(number, os.strerror(number), os.fspath(path))
                 return real_open(path, flags, *args, **kwargs)
             os.open = replacement
@@ -252,12 +287,34 @@ def expect_error(row: str, setup, expected_rel: str, forced: int | None = None) 
     fixture = Fixture()
     try:
         target = setup(fixture)
-        rc, output = fixture.snapshot("BEFORE", (target, forced) if forced is not None else None, row.replace(" ", "-"))
+        output_name = row.replace(" ", "-").replace("/", "-")
+        rc, output = fixture.snapshot("BEFORE", (target, forced) if forced is not None else None, output_name)
         body = lines(output)
         if rc != 3 or any(line.startswith("SKIPPED-PROTECTED\t") for line in body):
             bad(row, f"wanted incomplete non-skip, got rc={rc} tail={body[-5:]!r}")
-        if not any(line.startswith("ERROR\t" + expected_rel + "\t") for line in body):
-            bad(row, f"missing exact ERROR for {expected_rel!r}: {body[-5:]!r}")
+        expected = f"ERROR\t{expected_rel}\t{os.strerror(forced)}" if forced is not None else None
+        if expected is not None and body.count(expected) != 1:
+            bad(row, f"wanted one exact {expected!r}, got {[line for line in body if line.startswith('ERROR')]!r}")
+        elif expected is None and not any(line.startswith("ERROR\t" + expected_rel + "\t") for line in body):
+            bad(row, f"missing exact ERROR path for {expected_rel!r}: {body[-5:]!r}")
+    finally:
+        fixture.close()
+
+
+def expect_error_batch(row: str, rels: list[str]) -> None:
+    fixture = Fixture()
+    try:
+        targets = {fixture.file(rel): errno.EACCES for rel in rels}
+        rc, output = fixture.snapshot("BEFORE", name=row.replace(" ", "-"), forced_many=targets)
+        body = lines(output)
+        actual = sorted(line for line in body if line.startswith("ERROR\t"))
+        wanted = sorted(f"ERROR\t{rel}\t{os.strerror(errno.EACCES)}" for rel in rels)
+        skips = [line for line in body if line.startswith("SKIPPED-PROTECTED\t")]
+        if rc != 3 or skips or actual != wanted:
+            missing = sorted(set(wanted) - set(actual))[:5]
+            extra = sorted(set(actual) - set(wanted))[:5]
+            bad(row, f"wanted incomplete exact errors={len(wanted)}, got rc={rc} errors={len(actual)} "
+                     f"skips={len(skips)} missing={missing!r} extra={extra!r}")
     finally:
         fixture.close()
 
@@ -299,25 +356,49 @@ for side in ("BEFORE", "AFTER"):
     finally:
         fixture.close()
 
-# D4: literal paths only: sibling/suffix, one-character change, same basename elsewhere, parent, child and family.
-chosen = paths[-1]
-variants = (
-    chosen + ".unreviewed",
-    chosen[:-1] + ("x" if chosen[-1] != "x" else "y"),
-    "Library/Unreviewed/" + Path(chosen).name,
-    "Library/Metadata/CoreSpotlight/unreviewed-family-file",
-)
-for index, rel in enumerate(variants):
-    expect_error(f"D4 literal file {index}", lambda f, rel=rel: f.file(rel, 0), rel)
+# D4: literal paths only. For every reviewed entry, batch four flat variants (suffix, a one-character substitution,
+# same basename elsewhere and a sibling) and a child. Drive each immediate parent in its own fixture because many
+# reviewed leaves share or nest parent directories. Every one of these paths is checked against the reviewed set
+# before execution, then must produce its one exact ERROR, no protected marker and an incomplete snapshot.
+reviewed_set = set(paths)
+flat_variants: list[str] = []
+child_variants: list[str] = []
+parent_variants: list[str] = []
+for index, rel in enumerate(paths):
+    item = Path(rel)
+    replacement = "x" if rel[-1] != "x" else "y"
+    flat_variants.extend((
+        rel + ".unlisted-suffix",
+        rel[:-1] + replacement,
+        f".ms1c-unlisted/same-basename/{index:03d}/{item.name}",
+        str(item.parent / f"{item.name}.unlisted-sibling-{index:03d}"),
+    ))
+    child_variants.append(rel + "/unlisted-child")
+    if str(item.parent) not in ("", "."):
+        parent_variants.append(str(item.parent))
+
+all_variants = flat_variants + child_variants + parent_variants
+if len(flat_variants) != 4 * len(paths) or len(child_variants) != len(paths) \
+        or len(parent_variants) != len(paths):
+    bad("D4 exhaustive setup", "not every reviewed entry produced all six required variant classes")
+if any(rel in reviewed_set for rel in all_variants):
+    bad("D4 exhaustive setup", "a generated negative is itself present in the reviewed set")
+if len(flat_variants) != len(set(flat_variants)) or len(child_variants) != len(set(child_variants)):
+    bad("D4 exhaustive setup", "generated flat or child negatives are not unique")
+if any(right.startswith(left + "/") for left in paths for right in paths if left != right):
+    bad("D4 exhaustive setup", "reviewed entries unexpectedly nest, so child batching is ambiguous")
+
+expect_error_batch("D4 exhaustive flat variants", flat_variants)
+expect_error_batch("D4 exhaustive child variants", child_variants)
+for index, parent in enumerate(parent_variants):
+    expect_error(
+        f"D4 exhaustive parent {index + 1}/{len(parent_variants)}",
+        lambda fixture, parent=parent: fixture.file(parent),
+        parent,
+        errno.EACCES,
+    )
 
 deep = "Library/Metadata/CoreSpotlight/NSFileProtectionComplete/index.spotlightV3/store.db"
-parent = str(Path(deep).parent)
-expect_error("D4 literal parent", lambda f: f.directory(parent, 0), parent)
-child = deep + "/unreviewed-child"
-def child_setup(fixture: Fixture) -> Path:
-    fixture.directory(deep)
-    return fixture.file(child, 0)
-expect_error("D4 literal child", child_setup, child)
 
 # D5: an unrecordable descendant beneath a readable listed path is not a permission exception.
 def unrecordable(fixture: Fixture) -> Path:
@@ -379,8 +460,27 @@ PY
 
 /usr/bin/python3 -I -B -X utf8 "$DIRECT" "$R/tests/mac/ms1c_app_gate.sh" "$LIST" "$T/tmp"
 drc=$?
-if [ "$drc" -eq 0 ]; then ok "H4: direct HOME recorder/differ literal path, side, errno, metadata and transition contract"
-else bad "H4: direct HOME contract exited $drc"; fi
+mutants_ok=1
+if [ "$drc" -eq 0 ]; then
+  for mutant in prefix-fileprovider family-fileprovider glob-fileprovider \
+                 prefix-corespotlight family-corespotlight glob-corespotlight; do
+    mout="$T/mutant.$mutant.out"
+    if ZB_MS1C_HOME_MATCH_MUTANT="$mutant" \
+       /usr/bin/python3 -I -B -X utf8 "$DIRECT" "$R/tests/mac/ms1c_app_gate.sh" "$LIST" "$T/tmp" > "$mout" 2>&1; then
+      mutants_ok=0
+      printf 'FAIL broad-match mutant survived: %s\n' "$mutant" >&2
+    elif ! grep -q '^FAIL D4 exhaustive ' "$mout"; then
+      mutants_ok=0
+      printf 'FAIL broad-match mutant was not killed by exhaustive D4: %s: %s\n' \
+        "$mutant" "$(tail -n 2 "$mout" | tr '\n' ' ')" >&2
+    fi
+  done
+fi
+if [ "$drc" -eq 0 ] && [ "$mutants_ok" -eq 1 ]; then
+  ok "H4: direct HOME recorder/differ exhaustive literal path, side, errno, metadata and transition contract; six broad-match mutants red"
+else
+  bad "H4: direct HOME contract exited $drc, broad-match-mutants=$mutants_ok"
+fi
 
 if [ "$fails" -eq 0 ]; then
   printf 'PASS\tms1c-home-protected-red\t4/4\n'
