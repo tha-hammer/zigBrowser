@@ -9,7 +9,9 @@ Reports appear only after the control starts, so the scan must be final rather
 than row-local.
 
 The fixtures are minimal faithful macOS 15 ``.ips`` files: a metadata JSON
-record followed by a distinct incident JSON object.  Their shapes are derived
+record followed by a distinct, pretty-printed/multiline incident JSON object;
+the parser contract consumes the complete second value rather than one line.
+Their shapes are derived
 from retained run ``733135f6`` control report SHA-256
 ``5c28369e19a58b4f2d4dc40a90f0f98fead2a3a9ecbf0b915ff51436270bf0ec``
 and product report SHA-256
@@ -34,7 +36,10 @@ evidence, two exact control reports, and missing/duplicate/conflicting process
 records.  A valid unrelated report proves enumeration is not filename-filtered
 and is AMBIENT under the owner's policy.  Together those rows kill the required
 early-scan, raw-substring, report-filter, abnormal/status/diagnostic-ignore,
-one-sided-identity, arch-only and extra-report mutants.
+one-sided-identity, arch-only and extra-report mutants.  A direct fake-Popen
+driver also invokes the real production teardown helpers with status unavailable
+until wait completes, forged stdout and forged gate-side reconstruction values;
+both control and normal browser paths must write exactly once from the helper.
 
 The file is intentionally unregistered until the production behavior exists.
 It contacts no Mac.  Its shell driver re-execs itself in the existing fixture's
@@ -130,6 +135,7 @@ case "\${script##*/}" in
   exec_arch_probe.py)
     terminal=0
     [ -e "$C/mode_detect_abnormal.\$role" ] && terminal=-11
+    [ -e "$C/mode_detect_positive.\$role" ] && terminal=7
     status arch \$((base + 5)) "\$terminal"
     ;;
   -)
@@ -144,7 +150,7 @@ case "\${script##*/}" in
         "\$2" "\$3" >> "\$1"
     }
     product_incident() { # product_incident <file> <pid> <path>
-      printf '{"uptime":43,"procRole":"Foreground","version":2,"userID":501,"deployVersion":210,"modelCode":"Mac15,6","coalitionID":701,"osVersion":{"train":"macOS 15.7.1","build":"24G231","releaseType":"User"},"captureTime":"2026-10-24 16:05:41.5678 -0400","incident":"PRODUCT-733135F6","pid":%s,"translated":false,"cpuType":"ARM-64","procLaunch":"2026-10-24 16:05:40.0000 -0400","procName":"zigBrowser","procPath":"%s","bundleInfo":{"CFBundleIdentifier":"com.cosmichq.zigBrowser"},"parentProc":"Python","parentPid":4000,"exception":{"codes":"0x1, 0x0","rawCodes":[1,0],"type":"EXC_BREAKPOINT","signal":"SIGTRAP"},"termination":{"flags":0,"code":5,"namespace":"SIGNAL","indicator":"Trace/BPT trap: 5","byProc":"exc handler","byPid":4000},"diagnosticNotes":["raw decoy only: pid=%s procPath=%s DYLD Library missing"],"faultingThread":0,"threads":[],"usedImages":[]}\n' \
+      printf '{\n  "uptime": 43,\n  "procRole": "Foreground",\n  "version": 2,\n  "userID": 501,\n  "deployVersion": 210,\n  "modelCode": "Mac15,6",\n  "coalitionID": 701,\n  "osVersion": {"train":"macOS 15.7.1","build":"24G231","releaseType":"User"},\n  "captureTime": "2026-10-24 16:05:41.5678 -0400",\n  "incident": "PRODUCT-733135F6",\n  "pid": %s,\n  "translated": false,\n  "cpuType": "ARM-64",\n  "procLaunch": "2026-10-24 16:05:40.0000 -0400",\n  "procName": "zigBrowser",\n  "procPath": "%s",\n  "bundleInfo": {"CFBundleIdentifier":"com.cosmichq.zigBrowser"},\n  "parentProc": "Python",\n  "parentPid": 4000,\n  "exception": {"codes":"0x1, 0x0","rawCodes":[1,0],"type":"EXC_BREAKPOINT","signal":"SIGTRAP"},\n  "termination": {"flags":0,"code":5,"namespace":"SIGNAL","indicator":"Trace/BPT trap: 5","byProc":"exc handler","byPid":4000},\n  "diagnosticNotes": ["raw decoy only: pid=%s procPath=%s DYLD Library missing"],\n  "faultingThread": 0,\n  "threads": [],\n  "usedImages": []\n}\n' \
         "\$2" "\$3" "\$((base + 6))" "\$browser" >> "\$1"
     }
     other_incident() { # other_incident <file>
@@ -196,6 +202,20 @@ case "\${script##*/}" in
       file="\$reports/zigBrowser-malformed-incident.ips"
       metadata "\$file" zigBrowser com.cosmichq.zigBrowser MALFORMED-733135F6 "raw decoy only: pid=\$((base + 6)) procPath=\$browser DYLD Library missing"
       printf '{"pid":"%s","procPath":["%s"],"exception":"EXC_CRASH","termination":{"namespace":"DYLD","indicator":"Library missing"}}\n' "\$((base + 6))" "\$browser" >> "\$file"
+    elif [ -e "$C/mode_detect_metadata_only.\$role" ]; then
+      file="\$reports/zigBrowser-metadata-only.ips"
+      metadata "\$file" zigBrowser com.cosmichq.zigBrowser METAONLY-733135F6 "raw decoy only: pid=\$((base + 6)) procPath=\$browser DYLD Library missing"
+    elif [ -e "$C/mode_detect_trailing_value.\$role" ]; then
+      file="\$reports/zigBrowser-trailing-value.ips"
+      metadata "\$file" zigBrowser com.cosmichq.zigBrowser TRAILING-733135F6 "raw decoy only: pid=\$((base + 6)) procPath=\$browser DYLD Library missing"
+      product_incident "\$file" \$((base + 5)) "\$app"
+      printf '{"unexpected":"third JSON value"}\n' >> "\$file"
+    elif [ -e "$C/mode_detect_whitespace_incident.\$role" ]; then
+      file="\$reports/zigBrowser-whitespace-product.ips"
+      metadata "\$file" zigBrowser com.cosmichq.zigBrowser WHITESPACE-733135F6 "raw decoy only: pid=\$((base + 6)) procPath=\$browser DYLD Library missing"
+      printf '\n \t\n' >> "\$file"
+      product_incident "\$file" \$((base + 3)) "\$app"
+      printf '\n \t\n' >> "\$file"
     elif [ -e "$C/mode_detect_unreadable.\$role" ]; then
       printf unreadable > "\$reports/zigBrowser-unreadable.ips"
       chmod 000 "\$reports/zigBrowser-unreadable.ips"
@@ -235,6 +255,8 @@ clean_detection_artifacts() {
       "$reports/zigBrowser-wrong-status.ips" "$reports/zigBrowser-wrong-termination.ips" \
       "$reports/zigBrowser-wrong-diagnostic.ips" "$reports/zigBrowser-malformed.ips" \
       "$reports/zigBrowser-truncated-incident.ips" "$reports/zigBrowser-malformed-incident.ips" \
+      "$reports/zigBrowser-metadata-only.ips" "$reports/zigBrowser-trailing-value.ips" \
+      "$reports/zigBrowser-whitespace-product.ips" \
       "$reports/zigBrowser-unreadable.ips" "$reports/zigBrowser-unverified-control.ips" \
       "$reports/zigBrowser-control-a.ips" "$reports/zigBrowser-control-b.ips" \
       "$reports/Other-application.ips" "$X/hosts/$role/Library/Preferences/d-detection-ambient"
@@ -248,12 +270,13 @@ leg_log() { # leg_log <intel|arm>
 }
 intel_log() { leg_log intel; }
 
-process_contract() { # process_contract <intel|arm> <normal|abnormal|control-wrong>
+process_contract() { # process_contract <intel|arm> <normal|abnormal|positive|control-wrong>
   local role=$1 kind=$2 base rd log app ctl arch_status=0 control_status=-6 expected actual
   if [ "$role" = intel ]; then base=5100; else base=6100; fi
   rd=$(rd_of "$role"); log=$(leg_log "$role")
   app=$(field "$rd/$APPEXE"); ctl=$(field "$rd/control/zigBrowser.app/Contents/MacOS/zigBrowser")
   [ "$kind" = abnormal ] && arch_status=-11
+  [ "$kind" = positive ] && arch_status=7
   [ "$kind" = control-wrong ] && control_status=-9
   expected="PROCESS${TB}render${TB}$((base + 1))${TB}0${TB}$app
 PROCESS${TB}render${TB}$((base + 2))${TB}0${TB}$app
@@ -265,11 +288,12 @@ PROCESS${TB}control${TB}$((base + 6))${TB}$control_status${TB}$ctl"
   [ "$actual" = "$expected" ]
 }
 
-raw_processes() { # raw_processes <intel|arm> <normal|abnormal|control-wrong>
+raw_processes() { # raw_processes <intel|arm> <normal|abnormal|positive|control-wrong>
   local role=$1 kind=$2 base rd app ctl arch_status=0 control_status=-6
   if [ "$role" = intel ]; then base=5100; else base=6100; fi
   rd=$(rd_of "$role"); app="$rd/$APPEXE"; ctl="$rd/control/zigBrowser.app/Contents/MacOS/zigBrowser"
   [ "$kind" = abnormal ] && arch_status=-11
+  [ "$kind" = positive ] && arch_status=7
   [ "$kind" = control-wrong ] && control_status=-9
   printf 'render\t%s\t0\t%s\nrender\t%s\t0\t%s\nreply\t%s\t0\t%s\nloadfail\t%s\t0\t%s\narch\t%s\t%s\t%s\ncontrol\t%s\t%s\t%s\n' \
     "$((base + 1))" "$app" "$((base + 2))" "$app" "$((base + 3))" "$app" \
@@ -277,7 +301,7 @@ raw_processes() { # raw_processes <intel|arm> <normal|abnormal|control-wrong>
     "$((base + 6))" "$control_status" "$ctl"
 }
 
-boundary_contract() { # boundary_contract <intel|arm> <normal|abnormal|control-wrong> <normal|missing|duplicate|conflict>
+boundary_contract() { # boundary_contract <intel|arm> <normal|abnormal|positive|control-wrong> <normal|missing|duplicate|conflict>
   local role=$1 kind=$2 shape=$3 rd path copied calls want actual
   rd=$(rd_of "$role"); path="$rd/evidence/browser-processes"
   copied="$(dirname "$(leg_log "$role")")/browser-processes"
@@ -325,9 +349,10 @@ BROWSER-STATUS${TB}$((base + 2 + 90000))${TB}77${TB}/forged/browser/stdout" ;;
   done
 }
 
-all_processes() { # all_processes <normal|abnormal-intel|control-wrong-intel>
+all_processes() { # all_processes <normal|abnormal-intel|positive-intel|control-wrong-intel>
   local intel_kind=normal
   [ "$1" = abnormal-intel ] && intel_kind=abnormal
+  [ "$1" = positive-intel ] && intel_kind=positive
   [ "$1" = control-wrong-intel ] && intel_kind=control-wrong
   stdout_poison_contract intel && stdout_poison_contract arm \
     && boundary_contract intel "$intel_kind" normal && boundary_contract arm normal normal \
@@ -344,16 +369,25 @@ raise SystemExit(0 if all(len(line.encode()) <= 1000 for line in lines) else 1)
 PY
 }
 
-faithful_report() { # faithful_report <file> <pid> <procPath> <exception-type> <termination-namespace> <indicator>
+faithful_report() { # faithful_report <file> <pid> <procPath> <exception-type> <termination-namespace> <indicator> [pretty]
   /usr/bin/python3 -I -B - "$@" <<'PY'
 import json
 from pathlib import Path
 import sys
-path, pid, proc_path, exception_type, namespace, indicator = sys.argv[1:]
-lines = Path(path).read_text(encoding="utf-8").splitlines()
-if len(lines) != 2:
+path, pid, proc_path, exception_type, namespace, indicator = sys.argv[1:7]
+pretty = sys.argv[7:] == ["pretty"]
+source = Path(path).read_text(encoding="utf-8")
+decoder = json.JSONDecoder()
+try:
+    meta, meta_end = decoder.raw_decode(source)
+    incident_start = meta_end
+    while incident_start < len(source) and source[incident_start].isspace():
+        incident_start += 1
+    incident, incident_end = decoder.raw_decode(source, incident_start)
+except (json.JSONDecodeError, TypeError):
     raise SystemExit(1)
-meta, incident = map(json.loads, lines)
+if source[incident_end:].strip() or (pretty and "\n" not in source[incident_start:incident_end]):
+    raise SystemExit(1)
 required_meta = {"app_name", "timestamp", "slice_uuid", "bundleID", "bug_type", "os_version", "name", "incident_id"}
 if not required_meta <= set(meta) or "pid" in meta or "procPath" in meta:
     raise SystemExit(1)
@@ -377,8 +411,16 @@ import json
 from pathlib import Path
 import sys
 path, causal_pid, causal_path, control_pid, control_path = sys.argv[1:]
-meta_raw, incident_raw = Path(path).read_text(encoding="utf-8").splitlines()
-meta, incident = json.loads(meta_raw), json.loads(incident_raw)
+source = Path(path).read_text(encoding="utf-8")
+decoder = json.JSONDecoder()
+meta, meta_end = decoder.raw_decode(source)
+incident_start = meta_end
+while incident_start < len(source) and source[incident_start].isspace():
+    incident_start += 1
+incident, incident_end = decoder.raw_decode(source, incident_start)
+if source[incident_end:].strip():
+    raise SystemExit(1)
+meta_raw, incident_raw = source[:meta_end], source[incident_start:incident_end]
 if incident.get("pid") != int(causal_pid) or incident.get("procPath") != causal_path:
     raise SystemExit(1)
 if meta.get("pid") is not None or meta.get("procPath") is not None:
@@ -389,24 +431,39 @@ if not all(token in meta_raw for token in need) or not all(token in incident_raw
 PY
 }
 
-bad_incident_fixture() { # bad_incident_fixture <file> <truncated|malformed>
+bad_incident_fixture() { # bad_incident_fixture <file> <metadata|truncated|malformed|trailing>
   /usr/bin/python3 -I -B - "$@" <<'PY'
 import json
 from pathlib import Path
 import sys
-lines = Path(sys.argv[1]).read_text(encoding="utf-8").splitlines()
-if len(lines) != 2:
+source = Path(sys.argv[1]).read_text(encoding="utf-8")
+decoder = json.JSONDecoder()
+try:
+    meta, meta_end = decoder.raw_decode(source)
+except json.JSONDecodeError:
     raise SystemExit(1)
-meta = json.loads(lines[0])
 if "incident_id" not in meta or "pid" in meta or "procPath" in meta:
     raise SystemExit(1)
-if sys.argv[2] == "truncated":
+incident_start = meta_end
+while incident_start < len(source) and source[incident_start].isspace():
+    incident_start += 1
+mode = sys.argv[2]
+if mode == "metadata":
+    raise SystemExit(0 if incident_start == len(source) else 1)
+if mode == "truncated":
     try:
-        json.loads(lines[1])
+        decoder.raw_decode(source, incident_start)
     except json.JSONDecodeError:
         raise SystemExit(0)
     raise SystemExit(1)
-incident = json.loads(lines[1])
+try:
+    incident, incident_end = decoder.raw_decode(source, incident_start)
+except json.JSONDecodeError:
+    raise SystemExit(1)
+if mode == "trailing":
+    raise SystemExit(0 if source[incident_end:].strip() else 1)
+if source[incident_end:].strip():
+    raise SystemExit(1)
 valid = (isinstance(incident.get("pid"), int) and isinstance(incident.get("procPath"), str)
          and isinstance(incident.get("exception"), dict) and isinstance(incident.get("termination"), dict))
 raise SystemExit(1 if valid else 0)
@@ -496,10 +553,10 @@ log=$(intel_log); rd=$(rd_of intel)
 control=$(report_row zigBrowser-control.ips "$(sha "$reports/zigBrowser-control.ips")" CONTROL 5106 "$rd/control/zigBrowser.app/Contents/MacOS/zigBrowser")
 product=$(report_row zigBrowser-delayed-product.ips "$(sha "$reports/zigBrowser-delayed-product.ips")" PRODUCT 5105 "$rd/$APPEXE")
 actual=$(grep "^CRASHREPORT${TB}" "$log" 2>/dev/null || :)
-fixture_check D2-shape faithful_report "$reports/zigBrowser-delayed-product.ips" 5105 "$rd/$APPEXE" EXC_BREAKPOINT SIGNAL "Trace/BPT trap: 5"
+fixture_check D2-shape faithful_report "$reports/zigBrowser-delayed-product.ips" 5105 "$rd/$APPEXE" EXC_BREAKPOINT SIGNAL "Trace/BPT trap: 5" pretty
 fixture_check D2-decoys raw_decoys_only "$reports/zigBrowser-delayed-product.ips" 5105 "$rd/$APPEXE" 5106 "$rd/control/zigBrowser.app/Contents/MacOS/zigBrowser"
 if faithful_report "$reports/zigBrowser-control.ips" 5106 "$rd/control/zigBrowser.app/Contents/MacOS/zigBrowser" EXC_CRASH DYLD "Library missing" \
-   && faithful_report "$reports/zigBrowser-delayed-product.ips" 5105 "$rd/$APPEXE" EXC_BREAKPOINT SIGNAL "Trace/BPT trap: 5" \
+   && faithful_report "$reports/zigBrowser-delayed-product.ips" 5105 "$rd/$APPEXE" EXC_BREAKPOINT SIGNAL "Trace/BPT trap: 5" pretty \
    && raw_decoys_only "$reports/zigBrowser-delayed-product.ips" 5105 "$rd/$APPEXE" 5106 "$rd/control/zigBrowser.app/Contents/MacOS/zigBrowser" \
    && [ "$rc" -eq 2 ] && leg_is x86_64 INCONCLUSIVE && no_pass && all_processes normal \
    && [ "$actual" = "$control
@@ -598,6 +655,40 @@ if bad_incident_fixture "$reports/zigBrowser-malformed-incident.ips" malformed \
   ok "D5d/M-first-record: valid metadata plus malformed incident is hashed MALFORMED/INCONCLUSIVE"
 else bad "D5d: malformed incident supplied identity or escaped: exit $rc $(tailout)"; fi
 
+run_detection d-metadata-only detect_metadata_only.intel
+log=$(intel_log)
+want=$(report_row zigBrowser-metadata-only.ips "$(sha "$reports/zigBrowser-metadata-only.ips")" MALFORMED - -)
+fixture_check D5e bad_incident_fixture "$reports/zigBrowser-metadata-only.ips" metadata
+if bad_incident_fixture "$reports/zigBrowser-metadata-only.ips" metadata \
+   && [ "$rc" -eq 2 ] && leg_is x86_64 INCONCLUSIVE && no_pass && all_processes normal \
+   && [ "$(grep "^CRASHREPORT${TB}" "$log" 2>/dev/null)" = "$want" ] \
+   && ! grep -q Traceback "$log" && bounded_reports "$log"; then
+  ok "D5e: metadata without a second JSON value is MALFORMED/INCONCLUSIVE"
+else bad "D5e: metadata-only report supplied raw identity or escaped: exit $rc $(tailout)"; fi
+
+run_detection d-trailing-value detect_trailing_value.intel
+log=$(intel_log)
+want=$(report_row zigBrowser-trailing-value.ips "$(sha "$reports/zigBrowser-trailing-value.ips")" MALFORMED - -)
+fixture_check D5f bad_incident_fixture "$reports/zigBrowser-trailing-value.ips" trailing
+if bad_incident_fixture "$reports/zigBrowser-trailing-value.ips" trailing \
+   && [ "$rc" -eq 2 ] && leg_is x86_64 INCONCLUSIVE && no_pass && all_processes normal \
+   && [ "$(grep "^CRASHREPORT${TB}" "$log" 2>/dev/null)" = "$want" ] \
+   && ! grep -q Traceback "$log" && bounded_reports "$log"; then
+  ok "D5f: a third non-whitespace JSON value is MALFORMED/INCONCLUSIVE"
+else bad "D5f: trailing JSON value was ignored or supplied identity: exit $rc $(tailout)"; fi
+
+run_detection d-whitespace-incident detect_whitespace_incident.intel
+log=$(intel_log); rd=$(rd_of intel)
+want=$(report_row zigBrowser-whitespace-product.ips "$(sha "$reports/zigBrowser-whitespace-product.ips")" PRODUCT 5103 "$rd/$APPEXE")
+fixture_check D5g faithful_report "$reports/zigBrowser-whitespace-product.ips" 5103 "$rd/$APPEXE" EXC_BREAKPOINT SIGNAL "Trace/BPT trap: 5" pretty
+if faithful_report "$reports/zigBrowser-whitespace-product.ips" 5103 "$rd/$APPEXE" EXC_BREAKPOINT SIGNAL "Trace/BPT trap: 5" pretty \
+   && raw_decoys_only "$reports/zigBrowser-whitespace-product.ips" 5103 "$rd/$APPEXE" 5106 "$rd/control/zigBrowser.app/Contents/MacOS/zigBrowser" \
+   && [ "$rc" -eq 1 ] && leg_is x86_64 FAIL && no_pass && all_processes normal \
+   && [ "$(grep "^CRASHREPORT${TB}" "$log" 2>/dev/null)" = "$want" ] \
+   && product_named "$log" zigBrowser-whitespace-product.ips && bounded_reports "$log"; then
+  ok "D5g: harmless whitespace and a multiline incident remain a valid PRODUCT"
+else bad "D5g: complete multiline remainder was not parsed as one product incident: exit $rc $(tailout)"; fi
+
 # D6/M-report-filter: every new .ips is printed even when it is unrelated.
 run_detection d-other detect_other.intel
 log=$(intel_log)
@@ -634,6 +725,15 @@ if [ "$rc" -eq 1 ] && leg_is x86_64 FAIL && no_pass && all_processes abnormal-in
   ok "D8/M-abnormal: negative terminal status fails the owning row"
 else bad "D8: abnormal-exit-ignore survived: exit $rc $(tailout)"; fi
 
+run_detection d-positive-status detect_positive.intel
+log=$(intel_log)
+failure="PRODUCT-FAIL${TB}abnormal-exit${TB}arch${TB}5105${TB}7"
+if [ "$rc" -eq 1 ] && leg_is x86_64 FAIL && no_pass && all_processes positive-intel \
+   && grep -qxF "$failure" "$log" && grep -qxF "ROW${TB}arch${TB}rc=1" "$log" \
+   && ! grep -q "^CRASHREPORT${TB}" "$log" && bounded_reports "$log"; then
+  ok "D8a/M-positive: positive nonzero terminal status fails the owning row"
+else bad "D8a: status<0-only implementation ignored positive nonzero exit: exit $rc $(tailout)"; fi
+
 # D9: incomplete or contradictory boundary evidence cannot authorize the otherwise exact control report.
 for shape in missing duplicate conflict; do
   run_detection "d-process-$shape" "detect_process_$shape.intel"
@@ -651,6 +751,113 @@ for shape in missing duplicate conflict; do
     ok "D9-$shape: $shape Popen/wait record is INCONCLUSIVE and cannot authorize CONTROL"
   else bad "D9-$shape: invalid process evidence did not fail closed: exit $rc $(tailout)"; fi
 done
+
+# D10: bind provenance to the real Popen/wait helpers, not to workload/browser stdout or a gate-side reconstruction.
+if /usr/bin/python3 -I -B - "$ROOT" "$T/direct-boundary-ledger" <<'PY'
+import importlib.util
+import os
+from pathlib import Path
+import sys
+
+root, ledger = Path(sys.argv[1]), Path(sys.argv[2])
+helper_path = root / "tests" / "e2e" / "mac_term_teardown.py"
+spec = importlib.util.spec_from_file_location("d_boundary_teardown", helper_path)
+helper = importlib.util.module_from_spec(spec)
+assert spec.loader is not None
+spec.loader.exec_module(helper)
+
+events = []
+
+class FakeProc:
+    def __init__(self, pid, terminal, argv, poison=""):
+        self.pid, self.terminal, self.args = pid, terminal, argv
+        self._returncode = None
+        self.poison = poison
+        self.stdout = self.stderr = None
+    @property
+    def returncode(self):
+        events.append(f"returncode:{self._returncode}")
+        return self._returncode
+    @returncode.setter
+    def returncode(self, value):
+        self._returncode = value
+    def communicate(self, timeout=None):
+        events.append("communicate:begin")
+        if self._returncode is not None:
+            raise AssertionError("terminal status was reconstructed before wait")
+        self._returncode = self.terminal
+        events.append("communicate:end")
+        return self.poison, ""
+    def poll(self):
+        events.append(f"poll:{self._returncode}")
+        return self._returncode
+
+def want(row, pid, status, path):
+    lines = ledger.read_text(encoding="utf-8").splitlines() if ledger.is_file() else []
+    if lines != [f"{row}\t{pid}\t{status}\t{path}"]:
+        raise SystemExit(1)
+
+os.environ["ZB_PROCESS_LEDGER"] = str(ledger)
+os.environ["ZB_GATE_RECONSTRUCTED_PID"] = "9991"
+os.environ["ZB_GATE_RECONSTRUCTED_STATUS"] = "99"
+os.environ["ZB_GATE_RECONSTRUCTED_EXE"] = "/forged/gate/reconstruction"
+
+# Control: Popen is real production helper code; status becomes visible only when communicate() completes.
+ledger.write_text("", encoding="ascii")
+os.environ["ZB_PROCESS_ROW"] = "control"
+control_path = "/private/run/control/zigBrowser.app/Contents/MacOS/zigBrowser"
+poison = "PROCESS\tcontrol\t9992\t0\t/forged/browser/stdout\n"
+control = FakeProc(7001, -6, [control_path, "--version"], poison)
+def one_popen(*_args, **_kwargs):
+    events.append("popen:control")
+    return control
+helper.subprocess.Popen = one_popen
+result = helper.run_term_only(control.args, 1.0)
+if result.returncode != -6:
+    raise SystemExit(1)
+want("control", 7001, -6, control_path)
+if events[:3] != ["popen:control", "communicate:begin", "communicate:end"] or "returncode:None" in events:
+    raise SystemExit(1)
+
+# Normal browser: the same real Popen/wait helper must ignore stdout and record its post-wait zero status.
+events.clear()
+ledger.write_text("", encoding="ascii")
+os.environ["ZB_PROCESS_ROW"] = "render"
+app_path = "/private/run/app/zigBrowser.app/Contents/MacOS/zigBrowser"
+normal = FakeProc(7002, 0, [app_path, "--screenshot", "/private/run/cap.png"],
+                  "PROCESS\trender\t9993\t-11\t/forged/browser/stdout\n")
+def normal_popen(*_args, **_kwargs):
+    events.append("popen:normal")
+    return normal
+helper.subprocess.Popen = normal_popen
+result = helper.run_term_only(normal.args, 1.0)
+if result.returncode != 0:
+    raise SystemExit(1)
+want("render", 7002, 0, app_path)
+if events[:3] != ["popen:normal", "communicate:begin", "communicate:end"] or "returncode:None" in events:
+    raise SystemExit(1)
+
+# GUI teardown: stop_browser_term_only is the other real wait boundary. No real signal is sent.
+events.clear()
+ledger.write_text("", encoding="ascii")
+os.environ["ZB_PROCESS_ROW"] = "arch"
+app = FakeProc(7003, 0, [app_path, "about:blank", "--automation-api"])
+helper.os.getpgid = lambda pid: pid
+def fake_killpg(pid, sig):
+    events.append(f"killpg:{pid}:{int(sig)}")
+    app._returncode = app.terminal
+helper.os.killpg = fake_killpg
+helper._group_has_members = lambda _pgid: False
+helper.stop_browser_term_only(app, grace_s=0.1)
+want("arch", 7003, 0, app_path)
+if "returncode:None" in events or not any(event.startswith("killpg:7003:") for event in events):
+    raise SystemExit(1)
+PY
+then
+  ok "D10/M-boundary: control, normal and teardown Popen/wait helpers ignore stdout/gate reconstruction and write post-wait records"
+else
+  bad "D10: helper-write/stdout/pre-wait/gate-reconstruction provenance contract failed"
+fi
 
 if [ "$fails" -eq 0 ]; then
   printf 'PASS\tms1c-crash-attribution-red\tmacOS-15 reports, boundary ledger and attribution mutants\n'
