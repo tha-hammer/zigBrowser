@@ -5,7 +5,9 @@ The production differ must keep the complete canonical before/after census and
 emit every delta exactly once in original-byte order.  Complete unrelated churn
 is AMBIENT/0, while bundle-owned paths, the exact Saved Application State
 subtree, and every crash report beyond one D-attributed missing-dylib control
-are FAIL/2.  Incomplete or unverifiable evidence remains INCONCLUSIVE/3.
+are FAIL/2.  Incomplete or unverifiable evidence remains INCONCLUSIVE/3.  In
+particular, DiagnosticReports directory metadata is ambient only as the bounded
+companion of the permitted control report; standing alone it is unverifiable.
 
 This oracle extracts and executes ``HOME_DIFF_PY`` from the real gate, then
 drives the real gate at its fake-host execution boundary.  It is deliberately
@@ -125,7 +127,16 @@ def extract_home_diff() -> str:
         raise ValueError("HOME_DIFF_PY assignment is not unique")
     start = source.index(start_marker) + len(start_marker)
     end = source.index(end_marker, start)
-    return source[start:end]
+    code = source[start:end]
+    mutant = os.environ.get("ZB_MS1C_HOME_OWNER_MUTANT", "")
+    if mutant:
+        if mutant != "ignore-diagnostic-directory-metadata":
+            raise ValueError("unknown owner-policy mutant %r" % mutant)
+        anchor = "for rel in sorted(set(a) | set(b)):\n"
+        if code.count(anchor) != 1:
+            raise ValueError("owner-policy mutant anchor count is %d" % code.count(anchor))
+        code = code.replace(anchor, anchor + "    if rel == diag_raw:\n        continue\n")
+    return code
 
 
 FILE_A = "f 600 501 20 1 11 100 100 110 %s -"
@@ -704,10 +715,11 @@ def main() -> int:
             before, after = pair_for(kind, DIAG + b"/pre-existing.ips")
             check_complete(differ, "C5-preexisting-report-%s" % kind.lower(), before, after)
 
-        # The DiagnosticReports directory is never hidden wholesale.
+        # The directory metadata is ambient only beside one verified control.
+        # Standing alone it cannot be attributed to that bounded exception.
         before, after = base_rows(), base_rows()
         before[DIAG], after[DIAG] = DIR_A, DIR_B
-        check_complete(differ, "C5-diagnostic-directory-metadata-recorded", before, after)
+        check_inconclusive(differ, "C5-standalone-diagnostic-directory-is-unverifiable", before, after)
 
         # Missing/unreadable/malformed or disagreeing D attribution is fail closed, never guessed.
         before, after = base_rows(), base_rows()
@@ -747,6 +759,34 @@ def main() -> int:
                     gate.returncode, failures[-10:], gate.stderr[-600:]))
         except (OSError, ValueError, subprocess.TimeoutExpired) as exc:
             bad("C7-real-gate-integration", "SETUP/timeout %s" % exc)
+
+        mutant_mode = os.environ.get("ZB_MS1C_HOME_OWNER_MUTANT", "")
+        if not problems and not mutant_mode:
+            mutant_env = os.environ.copy()
+            mutant_env["ZB_MS1C_HOME_OWNER_MUTANT"] = "ignore-diagnostic-directory-metadata"
+            try:
+                mutant = subprocess.run(
+                    [sys.executable, os.path.realpath(__file__)],
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                    env=mutant_env, timeout=300,
+                )
+            except subprocess.TimeoutExpired:
+                bad("M-diagnostic-directory-blanket-ignore", "mutant timed out")
+            else:
+                causal = any(
+                    line.startswith("FAIL\tms1c-home-owner-policy-red\tC5-one-control-is-ambient:")
+                    or line.startswith(
+                        "FAIL\tms1c-home-owner-policy-red\t"
+                        "C5-standalone-diagnostic-directory-is-unverifiable:"
+                    )
+                    for line in mutant.stdout.splitlines()
+                )
+                if mutant.returncode == 0 or not causal or mutant.stderr or "SETUP" in mutant.stdout:
+                    bad("M-diagnostic-directory-blanket-ignore",
+                        "mutant was not causally red: rc=%s causal=%s stderr=%r tail=%r" % (
+                            mutant.returncode, causal, mutant.stderr[-300:], mutant.stdout.splitlines()[-5:]))
+                else:
+                    ok("M-diagnostic-directory-blanket-ignore: field-isolated mutant is red")
 
         if problems:
             for problem in problems:
