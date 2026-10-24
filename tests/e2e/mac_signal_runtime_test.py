@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """RED, UNREGISTERED: prove the macOS signal path in the live application.
 
-The eventual green row is run by ``tests/mac/ms_runtime_rows_gate.sh`` on both Macs.  It launches the exact
-built browser afresh for a guard case and for SIGHUP, SIGINT and SIGTERM.  Before sending a signal it proves
+The eventual green row is run by ``tests/mac/ms_runtime_rows_gate.sh`` on both Macs.  It launches the unpacked
+packaged exact-commit ``zigBrowser.app`` executable afresh for a guard case and for SIGHUP, SIGINT and SIGTERM;
+a build-tree browser is refused.  Before sending a signal it proves
 bounded automation readiness and records an exact, live process identity.  The e2e-only disposition seam must
 report the result of ``sigaction(signo, NULL, ...)`` as SIG_IGN for all three signals; without
 ``--e2e-protocol`` that report must be absent.  SIGHUP must reload exactly once and leave the app responsive.
@@ -15,7 +16,7 @@ and gate contracts intentionally make this file exit 1.
 
 Hostless red command (the outer namespace is mandatory even though the model never calls os.kill)::
 
-  unshare --user --map-root-user --pid --fork --mount-proc \
+  unshare --user --map-root-user --pid --fork --mount-proc --net \
     python3 -X dev tests/e2e/mac_signal_runtime_test.py --selftest
 """
 from __future__ import annotations
@@ -42,6 +43,7 @@ SHIM = ROOT / "src" / "wkwebview_shim.m"
 GATE = ROOT / "tests" / "mac" / "ms_runtime_rows_gate.sh"
 EVIDENCE_SELFTEST = ROOT / "tests" / "mac" / "ms_runtime_rows_evidence_selftest.sh"
 OUTPUT_SELFTEST = ROOT / "tests" / "mac" / "ms_runtime_rows_output_selftest.sh"
+GATE_INTEGRATION = ROOT / "tests" / "mac" / "ms_signal_runtime_gate_red.sh"
 ROW_FILE = "tests/e2e/mac_signal_runtime_test.py"
 ROW_ID = "mac-signal-runtime"
 ROW_SPEC = f'"{ROW_FILE}|green|{ROW_ID}"'
@@ -51,6 +53,7 @@ REPORT_PREFIX = "SIGNAL_DISPOSITION\t"
 REPORT = "SIGNAL_DISPOSITION\tSIGINT=SIG_IGN\tSIGTERM=SIG_IGN\tSIGHUP=SIG_IGN"
 SIGNAL_CASES = (("HUP", signal.SIGHUP), ("INT", signal.SIGINT), ("TERM", signal.SIGTERM))
 HUP_QUIT_AFTER_MS = 8000
+APP_SUFFIX = ("zigBrowser.app", "Contents", "MacOS", "zigBrowser")
 
 
 @dataclass(frozen=True)
@@ -89,9 +92,14 @@ class FixtureServer:
                 self.send_response(200)
                 self.send_header("Content-Type", "text/html; charset=utf-8")
                 self.send_header("Cache-Control", "no-store")
-                self.send_header("Content-Length", str(len(body)))
+                # The no-e2e GUARD has no disposition report by design, so it must never receive a cleanup signal.
+                # Keep its initial load unfinished: the production 15 s initial-load timer exits normally with 8.
+                self.send_header("Content-Length", str(len(body) + (4096 if label == "GUARD" else 0)))
                 self.end_headers()
                 self.wfile.write(body)
+                self.wfile.flush()
+                if label == "GUARD":
+                    time.sleep(30.0)
 
             def log_message(self, *_args):
                 pass
@@ -153,6 +161,15 @@ class ActualSession:
             self.rpc = RpcClient(self.socket_path, self.timeout_sec)
             title = self.rpc.call("page.title", {"timeout_ms": 10000}).get("title")
             return title == f"{self.label}-1"
+        except Exception:
+            return False
+
+    def guard_ready(self) -> bool:
+        """The hanging guard load cannot finish; the OOB window census proves the live app/socket instead."""
+        try:
+            self.rpc = RpcClient(self.socket_path, self.timeout_sec)
+            pages = (self.rpc.call("page.list", {}) or {}).get("pages") or []
+            return len(pages) == 1
         except Exception:
             return False
 
@@ -291,15 +308,29 @@ class FakeSession:
         self.rc: int | None = None
         self.reloads = 0
         self.rpc = None
+        self.leaks: list[tuple[str, bool]] = []
 
     def ready(self) -> bool:
+        return True
+
+    def guard_ready(self) -> bool:
         return True
 
     def disposition_lines(self, _wait_sec: float) -> list[str]:
         if not self.e2e:
             return [REPORT] if self.factory.variant == "unguarded" else []
-        if self.factory.variant == "old-handler":
-            return ["SIGNAL_DISPOSITION\tSIGINT=CUSTOM\tSIGTERM=CUSTOM\tSIGHUP=CUSTOM"]
+        reports = {
+            "old-handler": ["SIGNAL_DISPOSITION\tSIGINT=CUSTOM\tSIGTERM=CUSTOM\tSIGHUP=CUSTOM"],
+            "disp-missing": [],
+            "disp-duplicate": [REPORT, REPORT],
+            "disp-sigint-dfl": ["SIGNAL_DISPOSITION\tSIGINT=SIG_DFL\tSIGTERM=SIG_IGN\tSIGHUP=SIG_IGN"],
+            "disp-sigterm-custom": ["SIGNAL_DISPOSITION\tSIGINT=SIG_IGN\tSIGTERM=CUSTOM\tSIGHUP=SIG_IGN"],
+            "disp-sighup-error": ["SIGNAL_DISPOSITION\tSIGINT=SIG_IGN\tSIGTERM=SIG_IGN\tSIGHUP=ERROR"],
+            "disp-malformed": ["SIGNAL_DISPOSITION\tSIGINT=SIG_IGN\tSIGTERM\tSIGHUP=SIG_IGN"],
+            "disp-mixed": ["SIGNAL_DISPOSITION\tSIGINT=SIG_IGN\tSIGTERM=SIG_DFL\tSIGHUP=CUSTOM"],
+        }
+        if self.factory.variant in reports:
+            return reports[self.factory.variant]
         return [REPORT]
 
     def identity(self) -> Identity:
@@ -330,6 +361,9 @@ class FakeSession:
         return self.reloads, self.reloads == 1 and self.alive, self.alive
 
     def wait_exit(self, _timeout_sec: float) -> int | None:
+        if self.label == "GUARD":
+            self.alive, self.rc = False, 8  # production initial-load timeout: no signal used for guard teardown
+            return self.rc
         if self.label == "HUP" and self.factory.variant != "swap-hup-exit":
             self.alive, self.rc = False, 0  # the independent e2e quit hook ends the successful HUP launch
         return self.rc
@@ -337,15 +371,15 @@ class FakeSession:
     def teardown_clean(self, _timeout_sec: float) -> bool:
         return not self.alive
 
-    def leak(self, _reason: str) -> None:
-        pass
+    def leak(self, reason: str) -> None:
+        self.leaks.append((reason, self.alive))
 
     def close(self) -> None:
         pass
 
 
 class FakeFactory:
-    browser = "/exact/zigBrowser"
+    browser = "/run/unpacked/zigBrowser.app/Contents/MacOS/zigBrowser"
 
     def __init__(self, variant: str):
         self.variant = variant
@@ -402,20 +436,21 @@ def exercise(factory, emit: Callable[[str], None]) -> list[str]:
 
     guard = factory.launch("GUARD", False)
     try:
-        if not guard.ready():
-            verdict.fail("GUARD-READY", "browser did not become automation-ready")
+        if not guard.guard_ready():
+            verdict.fail("GUARD-READY", "browser did not expose its live OOB window census")
             guard.leak("guard readiness failed")
         lines = guard.disposition_lines(0.5)
         if lines:
             verdict.fail("GUARD-INERT", f"disposition seam emitted without --e2e-protocol: {lines!r}")
-        if deliver_once(guard, factory, "GUARD", signal.SIGTERM, verdict):
-            rc = guard.wait_exit(10.0)
-            if rc != 130:
-                verdict.fail("GUARD-EXIT", f"SIGTERM exit={rc!r}, want normal 130")
-                if rc is None:
-                    guard.leak("guard SIGTERM timed out")
-            if rc is not None and not guard.teardown_clean(10.0):
-                verdict.fail("GUARD-TEARDOWN", "process group did not return to its before-set")
+        rc = guard.wait_exit(25.0)
+        if rc != 8:
+            verdict.fail("GUARD-EXIT", f"initial-load timeout exit={rc!r}, want normal 8 without any signal")
+            if rc is None:
+                guard.leak("guard initial-load timeout did not exit")
+        if guard.sent:
+            verdict.fail("GUARD-NO-SEND", f"guard sent a signal: {guard.sent!r}")
+        if rc is not None and not guard.teardown_clean(10.0):
+            verdict.fail("GUARD-TEARDOWN", "process group did not return to its before-set")
     finally:
         guard.close()
 
@@ -429,8 +464,13 @@ def exercise(factory, emit: Callable[[str], None]) -> list[str]:
             lines = session.disposition_lines(5.0)
             if lines != [REPORT]:
                 verdict.fail(f"{label}-DISPOSITION", f"got {lines!r}, want exactly {[REPORT]!r}")
-            if not ready or not deliver_once(session, factory, label, signo, verdict):
-                continue
+                session.leak(f"{label} disposition precondition refused before signal")
+                return verdict.failures
+            verdict.emit(f"SIGNAL_DISPOSITION\t{label}\tSIGINT=SIG_IGN\tSIGTERM=SIG_IGN\tSIGHUP=SIG_IGN")
+            if not ready:
+                return verdict.failures
+            if not deliver_once(session, factory, label, signo, verdict):
+                return verdict.failures
             if label == "HUP":
                 reloads, responsive, alive = session.observe_hup()
                 if reloads != 1:
@@ -537,6 +577,9 @@ def gate_problems() -> list[str]:
         return [f"GC0 could not read the named gate/fake-host tests: {exc}"]
     if gate.count(ROW_SPEC) != 1:
         problems.append(f"GC1 named gate must contain exactly one {ROW_SPEC}")
+    packaged_arg = 'python3 "$file" --browser "$root/app/zigBrowser.app/Contents/MacOS/zigBrowser"'
+    if gate.count(packaged_arg) != 1 or 'python3 "$file" --browser zig-out/bin/zigBrowser' in gate:
+        problems.append("GC5 signal row must receive only the unpacked .app executable, never the build-tree browser")
     mapping = f"{ROW_FILE}) id={ROW_ID} ;;"
     for name, text in (("evidence", evidence), ("output", output)):
         if mapping not in " ".join(text.split()):
@@ -548,6 +591,21 @@ def gate_problems() -> list[str]:
         if token not in coverage:
             problems.append(f"GC4 named-gate fake-host coverage is missing {token}")
     return problems
+
+
+def gate_integration_problems() -> list[str]:
+    """Execute the real named gate against two fake hosts; comments and inert lexical tokens cannot satisfy this."""
+    try:
+        result = subprocess.run(
+            ["bash", str(GATE_INTEGRATION), str(ROOT)], capture_output=True, text=True, timeout=180,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return [f"GI0 fake-host integration could not run: {exc}"]
+    if result.returncode == 0 and result.stdout.splitlines()[-1:] == ["PASS\tms-signal-runtime-gate-red"]:
+        print(f"ASSERT\t{ROW_ID}\treal-fake-host-integration\tpass")
+        return []
+    tail = " | ".join((result.stdout + result.stderr).splitlines()[-12:])
+    return [f"GI1 real fake-host integration is red (rc={result.returncode}): {tail}"]
 
 
 def fake_selftest_problems() -> list[str]:
@@ -574,10 +632,34 @@ def fake_selftest_problems() -> list[str]:
             print(f"ASSERT\t{ROW_ID}\tmutant-{variant}\tred")
         if variant == "bad-identity":
             hup = next(session for session in factory.sessions if session.label == "HUP")
-            if hup.sent:
-                problems.append(f"T3 bad identity reached signal delivery: {hup.sent!r}")
+            if hup.sent or not hup.leaks or not hup.leaks[0][1]:
+                problems.append(f"T3 bad identity must leak live before delivery: sent={hup.sent!r} leaks={hup.leaks!r}")
             else:
                 print(f"ASSERT\t{ROW_ID}\tbad-identity-no-send\tpass")
+    disposition_variants = (
+        "disp-missing", "disp-duplicate", "disp-sigint-dfl", "disp-sigterm-custom",
+        "disp-sighup-error", "disp-malformed", "disp-mixed",
+    )
+    for variant in disposition_variants:
+        factory = FakeFactory(variant)
+        got = exercise(factory, lambda _line: None)
+        sent = [signo for session in factory.sessions for signo in session.sent]
+        hup = next(session for session in factory.sessions if session.label == "HUP")
+        if not any("HUP-DISPOSITION" in failure for failure in got) or sent or not hup.leaks or not hup.leaks[0][1]:
+            problems.append(f"T4 {variant} must leak live and stop before every send: "
+                            f"failures={got!r} sent={sent!r} leaks={hup.leaks!r}")
+        else:
+            print(f"ASSERT\t{ROW_ID}\t{variant}-no-send\tpass")
+    old = FakeFactory("old-handler")
+    old_failures = exercise(old, lambda _line: None)
+    old_sent = [signo for session in old.sessions for signo in session.sent]
+    old_hup = next(session for session in old.sessions if session.label == "HUP")
+    if (not any("HUP-DISPOSITION" in failure for failure in old_failures) or old_sent
+            or not old_hup.leaks or not old_hup.leaks[0][1]):
+        problems.append(f"T5 old-handler must leak live, be red and signal-free: "
+                        f"failures={old_failures!r} sent={old_sent!r} leaks={old_hup.leaks!r}")
+    else:
+        print(f"ASSERT\t{ROW_ID}\told-handler-no-send\tpass")
     return problems
 
 
@@ -597,6 +679,7 @@ def selftest() -> int:
     problems += registration_failures
     if not registration_failures:
         print(f"ASSERT\t{ROW_ID}\tnamed-gate-fake-host-coverage\tpass")
+    problems += gate_integration_problems()
     for problem in problems:
         print(f"FAIL {problem}")
     if problems:
@@ -613,6 +696,10 @@ def real_row(browser: Path, timeout_sec: float) -> int:
     if not browser.is_file():
         print(f"FAIL\t{ROW_ID}\tbinary-missing")
         return 1
+    resolved = browser.resolve()
+    if tuple(resolved.parts[-4:]) != APP_SUFFIX or "zig-out" in resolved.parts:
+        print(f"FAIL\t{ROW_ID}\tpackaged-app-required\t{resolved}")
+        return 1
     problems: list[str] = []
     try:
         problems += source_problems(SHIM.read_text())
@@ -625,7 +712,7 @@ def real_row(browser: Path, timeout_sec: float) -> int:
         print(f"FAIL\t{ROW_ID}\tprecondition")
         return 1
     with FixtureServer() as fixture:
-        runtime = ActualFactory(browser, fixture, timeout_sec)
+        runtime = ActualFactory(resolved, fixture, timeout_sec)
         problems += exercise(runtime, lambda line: print(line, flush=True))
     if problems:
         for problem in problems:
@@ -639,7 +726,7 @@ def real_row(browser: Path, timeout_sec: float) -> int:
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--selftest", action="store_true")
-    parser.add_argument("--browser", type=Path, default=Path("zig-out/bin/zigBrowser"))
+    parser.add_argument("--browser", type=Path, default=Path("app/zigBrowser.app/Contents/MacOS/zigBrowser"))
     parser.add_argument("--timeout-sec", type=float, default=25.0)
     args = parser.parse_args(argv[1:])
     return selftest() if args.selftest else real_row(args.browser, args.timeout_sec)
