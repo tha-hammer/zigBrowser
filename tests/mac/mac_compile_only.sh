@@ -307,7 +307,7 @@ leg() { # $1=host $2=expected uname -m $3=key: one ssh session, the leg script t
   local host="$1" arch="$2" key="$3" r="zb-compile-$(date +%s)-$$-$RANDOM"
   echo "== leg $arch on $host, run root ~/$r"
   { printf '%s\n' "$REMOTE"; printf 'main\n'; cat "$L/src.tar"; } \
-    | env -u DISPLAY -u WAYLAND_DISPLAY -u XAUTHORITY -u SSH_ASKPASS ssh -i "$key" -o IdentitiesOnly=yes -o BatchMode=yes \
+    | env -u DISPLAY -u WAYLAND_DISPLAY -u XAUTHORITY -u SSH_ASKPASS ssh -F none -i "$key" -o IdentitiesOnly=yes -o BatchMode=yes \
         -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$KNOWN_HOSTS" -o ConnectTimeout=15 -o ServerAliveInterval=10 \
         -o ServerAliveCountMax=6 \
         "$host" "ZB_R='$r' ZB_ARCH='$arch' ZB_SHA='$SHA' ZB_TAR_SHA='$TAR_SHA' ZB_TAR_BYTES='$TAR_BYTES' /bin/bash -s"

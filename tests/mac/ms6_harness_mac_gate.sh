@@ -31,7 +31,7 @@ git archive "$SHA" -- "${FILES[@]}" | tar -x -C "$stage"
 
 leg() { # $1=host $2=expected uname -m $3=key
   local host="$1" arch="$2" key="$3"
-  local SSH=(env -u DISPLAY -u WAYLAND_DISPLAY -u XAUTHORITY -u SSH_ASKPASS ssh -i "$key" -o IdentitiesOnly=yes -o BatchMode=yes
+  local SSH=(env -u DISPLAY -u WAYLAND_DISPLAY -u XAUTHORITY -u SSH_ASKPASS ssh -F none -i "$key" -o IdentitiesOnly=yes -o BatchMode=yes
              -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$KNOWN_HOSTS" -o ConnectTimeout=15 -o ServerAliveInterval=10)
   local rdir="zb-hgmac-$(date +%s)-$$-$RANDOM"
   tar -C "${stage:?}" -cf - tests | "${SSH[@]}" "$host" "mkdir \"\$HOME/${rdir:?}\" && tar -xf - -C \"\$HOME/${rdir}\"" \

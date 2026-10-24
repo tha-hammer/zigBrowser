@@ -24,9 +24,9 @@ if grep -v 'delete-guard-oracle' "$0" | grep -o 'rm -[a-z-]*[^;|&]*' | grep -v '
   echo "FAIL: an unguarded rm in $0 (above)" >&2; exit 1  # delete-guard-oracle
 fi  # delete-guard-oracle
 ssh_cmd() { # $1=key
-  SSH=(env -u DISPLAY -u WAYLAND_DISPLAY -u XAUTHORITY -u SSH_ASKPASS ssh -i "$1" -o IdentitiesOnly=yes -o BatchMode=yes
+  SSH=(env -u DISPLAY -u WAYLAND_DISPLAY -u XAUTHORITY -u SSH_ASKPASS ssh -F none -i "$1" -o IdentitiesOnly=yes -o BatchMode=yes
        -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$KNOWN_HOSTS" -o ConnectTimeout=15 -o ServerAliveInterval=10)
-  SCP=(env -u DISPLAY -u WAYLAND_DISPLAY -u XAUTHORITY -u SSH_ASKPASS scp -i "$1" -o IdentitiesOnly=yes -o BatchMode=yes
+  SCP=(env -u DISPLAY -u WAYLAND_DISPLAY -u XAUTHORITY -u SSH_ASKPASS scp -F none -i "$1" -o IdentitiesOnly=yes -o BatchMode=yes
        -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$KNOWN_HOSTS" -o ConnectTimeout=15)
 }
 

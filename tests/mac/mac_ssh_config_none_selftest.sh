@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# RED, UNREGISTERED hostless argv oracle (SilverRidge a8bac4d6): every production Mac ssh/scp construction must
+# Registered hostless argv oracle (SilverRidge a8bac4d6, 353222dc): every production Mac ssh/scp construction must
 # ignore both user and system ssh configuration by passing the two real arguments `-F none`.  This oracle augments
 # the existing executing transport fixtures rather than parsing production source: their ssh/scp stubs record NUL-
 # delimited argv from the real scripts, including the exact-commit launchers.  It retains their full direct-command

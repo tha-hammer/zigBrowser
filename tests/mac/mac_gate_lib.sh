@@ -21,11 +21,11 @@ MAC_RUN_DIRS=()   # "host<TAB>key<TAB>dir" for every run dir this gate owns
 MAC_RDIR=
 
 mac_ssh_opts() { # $1=key
-  printf '%s\0' env -u DISPLAY -u WAYLAND_DISPLAY -u XAUTHORITY -u SSH_ASKPASS ssh -i "$1" -o IdentitiesOnly=yes -o BatchMode=yes \
+  printf '%s\0' env -u DISPLAY -u WAYLAND_DISPLAY -u XAUTHORITY -u SSH_ASKPASS ssh -F none -i "$1" -o IdentitiesOnly=yes -o BatchMode=yes \
     -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$MAC_KNOWN_HOSTS" -o ConnectTimeout=15 -o ServerAliveInterval=10
 }
 mac_scp_opts() { # $1=key
-  printf '%s\0' env -u DISPLAY -u WAYLAND_DISPLAY -u XAUTHORITY -u SSH_ASKPASS scp -i "$1" -o IdentitiesOnly=yes -o BatchMode=yes \
+  printf '%s\0' env -u DISPLAY -u WAYLAND_DISPLAY -u XAUTHORITY -u SSH_ASKPASS scp -F none -i "$1" -o IdentitiesOnly=yes -o BatchMode=yes \
     -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$MAC_KNOWN_HOSTS" -o ConnectTimeout=15
 }
 

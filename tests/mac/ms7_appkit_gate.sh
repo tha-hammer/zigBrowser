@@ -60,9 +60,9 @@ echo "== shipped tree identity: commit $SHA, src.tar sha256 $(sha256sum "$L/src.
 
 leg() { # $1=host $2=expected uname -m $3=key
   local host="$1" arch="$2" key="$3" rdir="zb-ms7gate-$(date +%s)-$$-$RANDOM"
-  local SSH=(env -u DISPLAY -u WAYLAND_DISPLAY -u XAUTHORITY -u SSH_ASKPASS ssh -i "$key" -o IdentitiesOnly=yes -o BatchMode=yes
+  local SSH=(env -u DISPLAY -u WAYLAND_DISPLAY -u XAUTHORITY -u SSH_ASKPASS ssh -F none -i "$key" -o IdentitiesOnly=yes -o BatchMode=yes
              -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$KNOWN_HOSTS" -o ConnectTimeout=15 -o ServerAliveInterval=10)
-  local SCP=(env -u DISPLAY -u WAYLAND_DISPLAY -u XAUTHORITY -u SSH_ASKPASS scp -i "$key" -o IdentitiesOnly=yes -o BatchMode=yes
+  local SCP=(env -u DISPLAY -u WAYLAND_DISPLAY -u XAUTHORITY -u SSH_ASKPASS scp -F none -i "$key" -o IdentitiesOnly=yes -o BatchMode=yes
              -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$KNOWN_HOSTS" -o ConnectTimeout=15)
   "${SSH[@]}" "$host" "mkdir \"\$HOME/${rdir:?}\"" || { echo "FAIL: mkdir on $host" >&2; return 1; }
   if ! "${SCP[@]}" "$L/src.tar" "$host:${rdir}/" >/dev/null; then

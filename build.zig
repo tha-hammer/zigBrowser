@@ -4457,6 +4457,44 @@ pub fn build(b: *std.Build) void {
     }) |input| mac_transport_selftest.addFileInput(b.path(input));
     mac_build_script_step.dependOn(&mac_transport_selftest.step);
     test_step.dependOn(&mac_transport_selftest.step);
+    // Every Mac ssh/scp construction ignores user and system ssh configuration: exactly one separated `-F none`
+    // appears before its first operand. The executing census covers all direct definitions, build-on-mac and the
+    // shared helper; the destructive reaper definition is evaluated but its gate is never run (SilverRidge 353222dc).
+    const mac_ssh_config_none_selftest = b.addSystemCommand(&.{ "bash", "tests/mac/mac_ssh_config_none_selftest.sh" });
+    mac_ssh_config_none_selftest.has_side_effects = true;
+    for ([_][]const u8{
+        "tests/mac/mac_ssh_config_none_selftest.sh",
+        "tests/mac/mac_direct_transport_hostkey_selftest.sh",
+        "tests/mac/ms5_gate_hostkey_selftest.sh",
+        "tests/mac/ms5_setup_hostkey_selftest.sh",
+        "tests/mac/mac_transport_selftest.sh",
+        "tests/mac/build-on-mac.sh",
+        "tests/mac/mac_compile_only.sh",
+        "tests/mac/mac_gate_lib.sh",
+        "tests/mac/ms5_deps_gate.sh",
+        "tests/mac/ms5_gate.sh",
+        "tests/mac/ms5_kill_group_gate.sh",
+        "tests/mac/ms5_r1_env_gate.sh",
+        "tests/mac/ms5_relocate_gate.sh",
+        "tests/mac/ms5_setup_e2e.sh",
+        "tests/mac/ms5_setup_refusal_gate.sh",
+        "tests/mac/ms5_spawn_gate.sh",
+        "tests/mac/ms5_spawn_io_gate.sh",
+        "tests/mac/ms5_stage_gate.sh",
+        "tests/mac/ms5_token_fd_gate.sh",
+        "tests/mac/ms6_5_reaper_census_gate.sh",
+        "tests/mac/ms6_5_reaper_gate.sh",
+        "tests/mac/ms6_gate.sh",
+        "tests/mac/ms6_hard_gate.sh",
+        "tests/mac/ms6_harness_mac_gate.sh",
+        "tests/mac/ms6_netd_darwin_gate.sh",
+        "tests/mac/ms6_r1_kernel_gate.sh",
+        "tests/mac/ms7_appkit_gate.sh",
+    }) |input| mac_ssh_config_none_selftest.addFileInput(b.path(input));
+    const mac_ssh_config_none_step = b.step("test-mac-ssh-config-none", "Run the full hostless Mac ssh/scp -F none argv census");
+    mac_ssh_config_none_step.dependOn(&mac_ssh_config_none_selftest.step);
+    mac_build_script_step.dependOn(&mac_ssh_config_none_selftest.step);
+    test_step.dependOn(&mac_ssh_config_none_selftest.step);
     // A Mac run logged to a file keeps every evidence line: no `tee /dev/stderr` truncation (bd 3ui.10).
     const mac_log_integrity_selftest = b.addSystemCommand(&.{ "bash", "tests/mac/mac_log_integrity_selftest.sh" });
     for ([_][]const u8{

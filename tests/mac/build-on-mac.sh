@@ -32,7 +32,7 @@ mac_config one
 KNOWN_HOSTS="$PWD/tests/mac/known_hosts"
 # BatchMode=yes: agents have no terminal but inherit DISPLAY=:0 with ssh-askpass installed, so a brief key-auth
 # refusal would otherwise pop a graphical password window on the user's Linux desktop.
-SSH=(env -u DISPLAY -u WAYLAND_DISPLAY -u XAUTHORITY -u SSH_ASKPASS ssh -i "$KEY" -o IdentitiesOnly=yes -o BatchMode=yes
+SSH=(env -u DISPLAY -u WAYLAND_DISPLAY -u XAUTHORITY -u SSH_ASKPASS ssh -F none -i "$KEY" -o IdentitiesOnly=yes -o BatchMode=yes
      -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$KNOWN_HOSTS" -o ConnectTimeout=15 -o ServerAliveInterval=10)
 export SSH_ASKPASS_REQUIRE=never
 
