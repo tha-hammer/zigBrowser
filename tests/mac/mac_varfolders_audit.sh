@@ -63,8 +63,10 @@ KIND = ((stat.S_ISREG, "f"), (stat.S_ISDIR, "d"), (stat.S_ISLNK, "l"), (stat.S_I
 def unreadable(token, rel, e):
     if side in ("BEFORE", "AFTER") and (token, rel) in PROTECTED and e.errno in (errno.EACCES, errno.EPERM):
         skipped[(token, rel)] = errno.errorcode[e.errno]
+        return True
     else:
         errors.append("%s\t%s\t%s" % (token, rel, " ".join((e.strerror or type(e).__name__).split())))
+        return False
 def digest(p):
     fd = os.open(p, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
     h = hashlib.sha256()
@@ -77,10 +79,15 @@ def entry(token, root, p, rel):
         st = os.lstat(p)
         kind = next((k for test, k in KIND if test(st.st_mode)), "o")
         link = os.readlink(p) if kind == "l" else "-"
-        sha = digest(p) if kind == "f" else "-"
     except OSError as e:
         unreadable(token, rel, e)
         return
+    try:
+        sha = digest(p) if kind == "f" else "-"
+    except OSError as e:
+        if not unreadable(token, rel, e):
+            return
+        sha = "-"
     try:
         rel.encode("utf-8")
         link.encode("utf-8")

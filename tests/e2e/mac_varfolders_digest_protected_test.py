@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""RED, UNREGISTERED (SilverRidge f69c8dad): a protected regular file whose lstat succeeds but whose
+"""GREEN, REGISTERED (red 68141527; SilverRidge 82ecec84): a protected regular file whose lstat succeeds but whose
 contents cannot be opened must keep its ordinary metadata row, with SHA ``-``, as well as its side-tagged
 SKIPPED-PROTECTED marker.
 
 The embedded snapshotter is exercised directly on both BEFORE and AFTER for EACCES and EPERM. Each pair must
 produce complete snapshots that the embedded differ accepts. Changing the normalized reason across the boundary
-must remain INCONCLUSIVE. This file deliberately stays out of build.zig until the production green.
+must remain INCONCLUSIVE. It is registered directly under test-mac-varfolders-audit and the aggregate test.
 
 Run: python3 -X dev tests/e2e/mac_varfolders_digest_protected_test.py [helper path]
 """
