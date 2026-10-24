@@ -2629,3 +2629,20 @@ However, the forced EPERM and EIO rows exercise only `side=BEFORE`. I changed on
 Fix-forward minimum, preserving every current row and assertion: make `forced_snapshot` accept the snapshot side, then drive duplicate EPERM for both BEFORE and AFTER and EIO for both BEFORE and AFTER. Each EPERM result must contain the exact side-tagged marker, exact token/path, normalized `EPERM`, retained ordinary lstat row and a complete snapshot; each EIO result must contain no protected marker, retain its exact ERROR token/path, and be incomplete. Add the two field-isolated causal mutants—EPERM accepted only BEFORE, and arbitrary errno accepted only AFTER—and require both to be red. No other expansion is required.
 
 Green conditions after that red is approved: implement only the exact fifteen-pair set with no glob/prefix/family matching; exempt only EACCES/EPERM symmetrically on both snapshot sides; emit deterministic BEFORE and AFTER markers while retaining ordinary lstat identity; deduplicate repeated callbacks; preserve full deltas and the existing C/P verdict rules; keep every other error and every skip-set transition non-pass. Preserve V1–V19 and PC1–PC7, register the final protected-path oracle directly under the shared varfolders step and aggregate `test` with no skip mapping, and run the broad-family, any-errno including AFTER-only, marker-drop, metadata-drop and transition-hiding mutants through that registered step. The MS1c consumer must also remain fail-closed for every non-exempt snapshot error. This test-only block changes no push-safe SHA or Mac-run authority.
+
+## 2026-10-24 — MS1c per-slice `otool` GREEN `89058cb3`
+
+**APPROVED on its exact content.** Exact `89058cb338a1a5a890396b08fcd740aefa56d51c` is the green for approved red `eb214b4e` (`440ddb66`). It changes the disclosed four files and passes `git diff --check`. `ms1c_app_gate.sh` now invokes `otool -arch x86_64 -L <exe>` and `otool -arch arm64 -L <exe>` separately, captures each producer's complete output before inspection, retains its independent status, logs separate `OTOOL<TAB><slice><TAB>rc=<status><TAB>refs=<count>` evidence, and requires status 0 plus exactly one exact shim dependency per slice. The following bundled-regular-file resolution check is unchanged.
+
+The approved O1–O12 oracle is unchanged except its status header. `build.zig` registers it as a side-effecting direct dependency of `test-mac-ms1c-gate` and aggregate `test`, lists its real inputs, and has no skip mapping. The legacy MS1c selftest also now binds exactly one per-slice call per fake host; no prior assertion was weakened.
+
+From a clean exact archive under `env -i`, private HOME/TMP/XDG state, a private current-user/network/PID/mount namespace and Zig's default repository-relative cache, `zig build -j4 test-mac-ms1c-gate --summary all` passed **5/5**. The term-only oracle passed, the app-gate oracle passed P1–P10 and F1–F29, and the per-slice oracle passed O1–O12, including the two delayed-output rows.
+
+All four causal mutants were run independently through that registered step and were red:
+
+- ignoring `otool` status failed O9 and O10;
+- reusing x86_64 output for arm64 failed the per-slice rows and the app-gate P4 call census;
+- replacing both `-arch` calls with combined `otool -L` failed all O rows and P4;
+- restoring an early-closing `otool | tee | grep -q` pipeline failed O3/O5/O7/O8 and the delayed O11/O12 rows, with the delayed producer recorded as rc 141.
+
+This closes only the false arm64 shim-load finding in the consumed MS1c attempt. That attempt remains INCONCLUSIVE because both before snapshots failed, no workload or missing-dylib control ran, and no retry is authorized. The separate protected-path red `6799eec2` remains blocked on its AFTER-side errno controls, so this approval does not name a newer push-safe SHA; the newest remains `b0409175b7dcad80dbb00e5130344af7fcb7e666`. No Mac or external network was contacted.
