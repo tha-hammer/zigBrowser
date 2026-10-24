@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""RED, UNREGISTERED: MS1c must attribute every new crash report and browser exit.
+"""GREEN, REGISTERED: MS1c attributes every new crash report and browser exit.
 
 This oracle extends the real fake-Mac execution fixture and drives the real
 ``ms1c_app_gate.sh``.  Its launcher writes process identity and terminal status
@@ -41,8 +41,7 @@ driver also invokes the real production teardown helpers with status unavailable
 until wait completes, forged stdout and forged gate-side reconstruction values;
 both control and normal browser paths must write exactly once from the helper.
 
-The file is intentionally unregistered until the production behavior exists.
-It contacts no Mac.  Its shell driver re-execs itself in the existing fixture's
+The registered oracle contacts no Mac.  Its shell driver re-execs itself in the existing fixture's
 private user/network/PID namespace before any fake host or browser is run.
 """
 
@@ -108,7 +107,7 @@ if [ "\$script" = - ]; then
 else
   out=\$(mktemp "\${TMPDIR:?}/d-detect-out.XXXXXX") || exit 97
   err=\$(mktemp "\${TMPDIR:?}/d-detect-err.XXXXXX") || exit 97
-  "$X/hostbin/python3.fixture" "\$@" >"\$out" 2>"\$err"; rc=\$?
+  ZB_FIXTURE_NO_PROCESS_RECORD=1 "$X/hostbin/python3.fixture" "\$@" >"\$out" 2>"\$err"; rc=\$?
   cat "\$out"; cat "\$err" >&2; rm -f "\$out" "\$err"
 fi
 
@@ -561,7 +560,7 @@ if faithful_report "$reports/zigBrowser-control.ips" 5106 "$rd/control/zigBrowse
    && [ "$rc" -eq 2 ] && leg_is x86_64 INCONCLUSIVE && no_pass && all_processes normal \
    && [ "$actual" = "$control
 $product" ] && product_named "$log" zigBrowser-delayed-product.ips \
-   && grep -q "^HOME-DELTA${TB}.*$(field Library/Preferences/d-detection-ambient)" "$log" \
+   && grep -q "^HOME-DELTA${TB}.*$(field "$X/hosts/intel/Library/Preferences/d-detection-ambient")" "$log" \
    && bounded_reports "$log"; then
   ok "D2/M-delayed/M-raw: delayed product stays named under unrelated HOME ambiguity"
 else bad "D2: delayed/raw-substring product contract: exit $rc $(tailout)"; fi

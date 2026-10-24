@@ -4319,8 +4319,8 @@ pub fn build(b: *std.Build) void {
     // d22a985c, 0036b11b, 1164c172, 9a545a20); its workload stops every browser with one group SIGTERM.
     const mac_ms1c_gate_selftest = b.addSystemCommand(&.{ "bash", "tests/mac/ms1c_app_gate_selftest.sh" });
     for ([_][]const u8{
-        "tests/mac/ms1c_app_gate_selftest.sh", "tests/mac/ms1c_app_gate.sh",         "tests/mac/ms1c_home_protected_paths.txt",
-        "packaging/macos/build-dmg.sh",
+        "tests/mac/ms1c_app_gate_selftest.sh", "tests/mac/ms1c_app_gate.sh",         "tests/mac/ms1c_crash_audit.py",
+        "tests/mac/ms1c_home_protected_paths.txt", "packaging/macos/build-dmg.sh",
         "tests/mac/build-on-mac.sh",           "tests/mac/mac_gate_lib.sh",          "tests/mac/mac_config.sh",
         "tests/mac/known_hosts",               "tests/mac/mac_varfolders_audit.sh",  "tests/mac/exec_arch_probe.py",
         "tests/e2e/m9_render_test.py",         "tests/e2e/m9_reply_channel_test.py", "tests/e2e/m9_load_fail_test.py",
@@ -4376,6 +4376,19 @@ pub fn build(b: *std.Build) void {
         "tests/fixtures/app/index.html",     "packaging/macos/Info.plist",           "packaging/macos/entitlements.plist",
         "packaging/assets/zigBrowser.png",
     }) |input| mac_ms1c_term_eperm.addFileInput(b.path(input));
+    // MS1c item D: process identity/status comes from the real helper wait boundary, and retained macOS 15 two-value
+    // report shapes are attributed only after every workload and the missing-dylib control have completed.
+    const mac_ms1c_crash_attribution = b.addSystemCommand(&.{ "python3", "-B", "tests/mac/ms1c_crash_attribution_red.py" });
+    mac_ms1c_crash_attribution.has_side_effects = true;
+    for ([_][]const u8{
+        "tests/mac/ms1c_crash_attribution_red.py", "tests/mac/ms1c_crash_audit.py",      "tests/mac/ms1c_app_gate.sh",
+        "tests/mac/ms1c_app_gate_selftest.sh",      "tests/e2e/mac_term_teardown.py",    "tests/e2e/m9_render_test.py",
+        "tests/e2e/m9_reply_channel_test.py",      "tests/e2e/m9_load_fail_test.py",    "tests/mac/exec_arch_probe.py",
+        "tests/mac/ms1c_home_protected_paths.txt", "tests/mac/mac_varfolders_audit.sh", "packaging/macos/build-dmg.sh",
+        "tests/mac/build-on-mac.sh",               "tests/mac/mac_gate_lib.sh",          "tests/mac/mac_config.sh",
+        "tests/mac/known_hosts",                   "tests/fixtures/app/index.html",      "packaging/macos/Info.plist",
+        "packaging/macos/entitlements.plist",      "packaging/assets/zigBrowser.png",
+    }) |input| mac_ms1c_crash_attribution.addFileInput(b.path(input));
     const mac_ms1c_term_only = b.addSystemCommand(&.{ "python3", "-B", "tests/e2e/mac_m9_term_only_test.py" });
     for ([_][]const u8{
         "tests/e2e/mac_m9_term_only_test.py", "tests/e2e/m9_reply_channel_test.py", "tests/e2e/m9_render_test.py",
@@ -4388,6 +4401,7 @@ pub fn build(b: *std.Build) void {
     mac_ms1c_gate_step.dependOn(&mac_ms1c_home_codec.step);
     mac_ms1c_gate_step.dependOn(&mac_ms1c_exec_arch_socket.step);
     mac_ms1c_gate_step.dependOn(&mac_ms1c_term_eperm.step);
+    mac_ms1c_gate_step.dependOn(&mac_ms1c_crash_attribution.step);
     mac_ms1c_gate_step.dependOn(&mac_ms1c_term_only.step);
     test_step.dependOn(&mac_ms1c_gate_selftest.step);
     test_step.dependOn(&mac_ms1c_otool_slices.step);
@@ -4395,6 +4409,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&mac_ms1c_home_codec.step);
     test_step.dependOn(&mac_ms1c_exec_arch_socket.step);
     test_step.dependOn(&mac_ms1c_term_eperm.step);
+    test_step.dependOn(&mac_ms1c_crash_attribution.step);
     test_step.dependOn(&mac_ms1c_term_only.step);
     // The 4pa.80 bundle-layout spike stages the real .app, signs it inside out and reports strict verification per Mac,
     // with every Mac-side write-capable phase under one Seatbelt profile (SilverRidge de82cf2).

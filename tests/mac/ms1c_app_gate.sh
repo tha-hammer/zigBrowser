@@ -347,8 +347,9 @@ sys.exit(3 if errors else 0)
 # 2 for any other delta, 3 when either snapshot is incomplete (HOMEAUDIT INCONCLUSIVE, no delta judged).
 HOME_DIFF_PY='
 import base64, binascii, os, sys
-before, after, root, diag, ctl, protected_file = sys.argv[1:7]
-root_raw, diag_raw, ctl_raw = os.fsencode(root), os.fsencode(diag), os.fsencode(ctl)
+before, after, root, diag, _control, protected_file = sys.argv[1:7]
+ignored_file = sys.argv[7] if len(sys.argv) > 7 else None
+root_raw, diag_raw = os.fsencode(root), os.fsencode(diag)
 with open(protected_file, encoding="utf-8") as source:
     protected = {os.fsencode(line) for line in source.read().splitlines()}
 def evidence_field(value):
@@ -432,30 +433,27 @@ if b_loaded[1] != a_loaded[1]:
 if b_loaded[2] != a_loaded[2] or b_loaded[2][0] != root_raw:
     print("HOMEAUDIT\tINCONCLUSIVE\tthe snapshot roots changed")
     sys.exit(3)
-crash = []
-for rel in sorted(set(a) - set(b)):
-    if os.path.dirname(rel) == diag_raw and a[rel].split(" ")[0] == "f":
-        try:
-            with open(os.path.join(root_raw, rel), "rb") as f:
-                named = ctl_raw in f.read()
-        except OSError:
-            named = False
-        if named:
-            crash.append(rel)
+try:
+    ignored_fields = open(ignored_file, encoding="ascii").read().splitlines() if ignored_file else []
+    ignored = {decode_field(value) for value in ignored_fields}
+except (OSError, UnicodeError, ValueError, binascii.Error):
+    print("HOMEAUDIT\tINCONCLUSIVE\tthe crash-report census is incomplete")
+    sys.exit(3)
+if len(ignored) != len(ignored_fields) or any(os.path.dirname(rel) != diag_raw or not rel.endswith(b".ips") for rel in ignored):
+    print("HOMEAUDIT\tINCONCLUSIVE\tthe crash-report census is invalid")
+    sys.exit(3)
 deltas = []
 for rel in sorted(set(a) | set(b)):
     if rel in a and rel in b and a[rel] == b[rel]:
         continue
-    if rel in crash:
+    if rel in ignored:
         continue
     kind = "ADDED" if rel not in b else "DELETED" if rel not in a else "CHANGED"
-    if kind == "CHANGED" and rel == diag_raw and crash:
+    if kind == "CHANGED" and rel == diag_raw and ignored:
         bf, af = b[rel].split(" "), a[rel].split(" ")
         if [bf[i] for i in (0, 1, 2, 3, 8, 9, 10)] == [af[i] for i in (0, 1, 2, 3, 8, 9, 10)]:
             continue
     deltas.append((kind, rel))
-for rel in crash:
-    print("CRASHREPORT\t%s\t%s" % (evidence_field(os.path.basename(rel)), a[rel].split(" ")[9]))
 for kind, rel in deltas:
     path = root_raw if rel == b"." else os.path.join(root_raw, rel)
     print("HOME-DELTA\t%s\t%s\t%s\t%s" % (kind, evidence_field(path), b.get(rel, "-"), a.get(rel, "-")))
@@ -493,14 +491,18 @@ export HOME="$RD/run-env/home" CFFIXED_USER_HOME="$RD/run-env/home" TMPDIR="$RD/
   XDG_CONFIG_HOME="$RD/run-env/xdg-config" XDG_RUNTIME_DIR="$RD/run-env/xdg-runtime" \
   ZB_E2E_SOCKET_DIR="$RD/s" ZB_DEBUG_EPHEMERAL_DATA_STORE=1 ZB_ENABLE_M9_E2E=1 PYTHONDONTWRITEBYTECODE=1
 unset ZB_M9_GUI_RUNNER
+: > "$EV/browser-processes" || { inconclusive "no process ledger"; finish; }
+chmod 600 "$EV/browser-processes" || { inconclusive "the process ledger is not private"; finish; }
+export ZB_PROCESS_LEDGER="$EV/browser-processes"
 
 row() { # $1=name $2=PASS id ('' = none) argv...: one status line per row; a LEAK stops the host
-  local name="$1" pass="$2" rc
+  local name="$1" pass="$2" rc pst count=1
   shift 2
-  "$@" > "$EV/row-$name.out" 2>&1
+  [ "$name" = render ] && count=2
+  ZB_PROCESS_ROW="$name" "$@" > "$EV/row-$name.out" 2>&1
   rc=$?
-  log "ROW${T}$name${T}rc=$rc"
   if grep -q "^LEAK${T}" "$EV/row-$name.out"; then
+    log "ROW${T}$name${T}rc=$rc"
     grep "^LEAK${T}" "$EV/row-$name.out" | sed 's/^LEAK/LEAKED/' > "$RD/LEAKED"
     log "HOST_STOPPED${T}$name"
     cat "$RD/LEAKED" | tee -a "$EV/leg.log"
@@ -508,23 +510,43 @@ row() { # $1=name $2=PASS id ('' = none) argv...: one status line per row; a LEA
     inconclusive "$name left a process running"
     return 1
   fi
+  /usr/bin/python3 -I -B "$RD/tests/mac/ms1c_crash_audit.py" row \
+    --ledger "$EV/browser-processes" --audit-marker "$EV/process-audit" --row "$name" \
+    --expected-count "$count" --expected-exe "$EXE" --allow-status 0 > "$EV/process-$name" 2>&1
+  pst=$?
+  tee -a "$EV/leg.log" < "$EV/process-$name"
+  if [ "$pst" -eq 1 ]; then rc=1
+  elif [ "$pst" -ne 0 ]; then rc=2; inconclusive "$name process evidence is incomplete or contradictory"; fi
+  log "ROW${T}$name${T}rc=$rc"
   if [ "$rc" -ne 0 ] || grep -q "^FAIL${T}" "$EV/row-$name.out"; then fail "$name exited $rc"; return 0; fi
   if [ -n "$pass" ] && ! grep -qE "^PASS${T}$pass(${T}|\$)" "$EV/row-$name.out"; then fail "$name printed no PASS${T}$pass"; fi
   return 0
 }
 after() { # the after snapshots and every delta
-  local st
+  local st crash_st
   take after   # an incomplete after snapshot is INCONCLUSIVE; the diff below still says which one and why
   [ "$audit_ok" -eq 0 ] || return
+  /usr/bin/python3 -I -B "$RD/tests/mac/ms1c_crash_audit.py" reports \
+    --ledger "$EV/browser-processes" --audit-marker "$EV/process-audit" --before "$EV/home.before" \
+    --diag "$DIAG" --diag-rel Library/Logs/DiagnosticReports --control-exe "$CTL_EXE" \
+    --control-err "$EV/control.err" --ignore-out "$EV/crash.ignore" > "$EV/crash.delta" 2>&1
+  crash_st=$?
+  tee -a "$EV/leg.log" < "$EV/crash.delta"
+  grep "^CRASHREPORT${T}" "$EV/crash.delta" > "$EV/crashreports"
   /usr/bin/python3 -I -B -X utf8 -c "$HOME_DIFF_PY" "$EV/home.before" "$EV/home.after" "$REAL_HOME" \
-    Library/Logs/DiagnosticReports "$CTL_EXE" "$RD/tests/mac/ms1c_home_protected_paths.txt" > "$EV/home.delta" 2>&1
+    Library/Logs/DiagnosticReports "$CTL_EXE" "$RD/tests/mac/ms1c_home_protected_paths.txt" \
+    "$EV/crash.ignore" > "$EV/home.delta" 2>&1
   st=$?
   tee -a "$EV/leg.log" < "$EV/home.delta"
-  grep "^CRASHREPORT${T}" "$EV/home.delta" > "$EV/crashreports"
   case "$st" in
     0) ;;
     2) inconclusive "the account home changed outside the run root (HOME-DELTA lines)" ;;
     *) inconclusive "the home audit is incomplete or failed (exit $st)" ;;
+  esac
+  case "$crash_st" in
+    0) ;;
+    2) fail "a launched zigBrowser process produced a crash report" ;;
+    *) inconclusive "the process or crash-report evidence is incomplete (exit $crash_st)" ;;
   esac
 }
 
@@ -555,7 +577,7 @@ if [ "$st" -ne 0 ] || [ -e "$CTL/Contents/Frameworks/libwkwebview_shim.dylib" ] 
   inconclusive "the control copy could not be made"
   after; finish
 fi
-python3 - "$CTL_EXE" > "$EV/control.out" 2> "$EV/control.err" <<'PY'
+ZB_PROCESS_ROW=control python3 - "$CTL_EXE" > "$EV/control.out" 2> "$EV/control.err" <<'PY'
 import sys
 sys.path.insert(0, "tests/e2e")
 from mac_term_teardown import run_term_only
@@ -566,6 +588,16 @@ print(f"CONTROL_RC\t{r.returncode}")
 PY
 st=$?
 crc=$(sed -n "s/^CONTROL_RC${T}//p" "$EV/control.out" | tail -n 1)
+/usr/bin/python3 -I -B "$RD/tests/mac/ms1c_crash_audit.py" row \
+  --ledger "$EV/browser-processes" --audit-marker "$EV/process-audit" --row control \
+  --expected-count 1 --expected-exe "$CTL_EXE" --allow-status -6 > "$EV/process-control" 2>&1
+pst=$?
+tee -a "$EV/leg.log" < "$EV/process-control"
+case "$pst" in
+  0) ;;
+  1) fail "the control had an unexpected terminal status" ;;
+  *) inconclusive "the control process evidence is incomplete or contradictory" ;;
+esac
 log "CONTROL${T}rc=$st${T}exe=${crc:--}"
 if grep -q "^LEAK${T}" "$EV/control.out"; then
   grep "^LEAK${T}" "$EV/control.out" | sed 's/^LEAK/LEAKED/' > "$RD/LEAKED"

@@ -43,7 +43,7 @@
 #   F9 detach fails: INCONCLUSIVE, no workload there, the run root KEPT with its MOUNTED marker, no cleanup attempted; exit 2;
 #   F10 the workload writes ~/Library/Caches/zigBrowser in the real home: HOME-DELTA, INCONCLUSIVE, the file stays;
 #   F11 the control starts: FAIL;   F12 the control fails with another library's error: FAIL;
-#   F13 a crash report that names another exe: HOME-DELTA, INCONCLUSIVE;
+#   F13 a valid crash report for an unrelated executable: CRASHREPORT OTHER, AMBIENT/PASS;
 #   F14 the app reports the other arch: FAIL;
 #   F15 an unreadable directory under /var/folders: the audit says INCONCLUSIVE, and so does the leg;
 #   F16 a run dir of an earlier run holds a LEAKED marker: HOST_HELD, nothing attached there, the marker untouched;
@@ -316,6 +316,19 @@ dyld_fail() {
   echo "  Referenced from: <6A1B2C3D-0000-0000-0000-000000000000> \$1" >&2
   echo "  Reason: tried: '\$(dirname "\$1")/../Frameworks/libwkwebview_shim.dylib' (no such file)" >&2
 }
+base=4100; [ "\$ZB_ROLE" = arm ] && base=4200
+record_status() {
+  [ -n "\${ZB_PROCESS_LEDGER:-}" ] && [ -n "\${ZB_PROCESS_ROW:-}" ] \
+    && [ "\${ZB_FIXTURE_NO_PROCESS_RECORD:-}" != 1 ] || return 0
+  case "\$ZB_PROCESS_ROW" in
+    render) printf 'render\t%s\t0\t%s\nrender\t%s\t0\t%s\n' "\$((base + 1))" "\$browser" "\$((base + 2))" "\$browser" ;;
+    reply) printf 'reply\t%s\t0\t%s\n' "\$((base + 3))" "\$browser" ;;
+    loadfail) printf 'loadfail\t%s\t0\t%s\n' "\$((base + 4))" "\$browser" ;;
+    arch) printf 'arch\t%s\t0\t%s\n' "\$((base + 5))" "\$browser" ;;
+    control) printf 'control\t%s\t%s\t%s\n' "\$((base + 6))" "\${control_terminal:--6}" "\$first" ;;
+  esac >> "\$ZB_PROCESS_LEDGER"
+}
+trap record_status EXIT
 if [ "\$script" = - ]; then   # the control
   cat > /dev/null
   exe=\$first
@@ -323,17 +336,25 @@ if [ "\$script" = - ]; then   # the control
   c=absent; [ -e "\$(dirname "\$exe")/../Frameworks/libwkwebview_shim.dylib" ] && c=present
   a=absent; [ -e "\$(dirname "\$app")/../Frameworks/libwkwebview_shim.dylib" ] && a=present
   printf '%s\tcontrol\t%s\t%s\t%s\t%s\n' "\$ZB_ROLE" "\$exe" "\$c" "\$a" "\$env_line" >> "$C/py.log"
-  if on control_starts || loads "\$exe"; then echo "zigBrowser 0.2.0"; printf 'CONTROL_RC\t0\n'; exit 0; fi
+  if on control_starts || loads "\$exe"; then control_terminal=0; echo "zigBrowser 0.2.0"; printf 'CONTROL_RC\t0\n'; exit 0; fi
   if on control_wrongdiag; then
     echo "dyld[4242]: Library not loaded: @rpath/libother.dylib" >&2
     echo "  Referenced from: <6A1B2C3D-0000-0000-0000-000000000000> \$exe" >&2
   else
     dyld_fail "\$exe"
   fi
-  proc=\$exe; on crash_other && proc=/Applications/Other.app/Contents/MacOS/Other
-  printf '{"procPath":"%s","exception":"EXC_CRASH (SIGABRT)","termination":"DYLD"}\n' "\$proc" \
-    > "\$REAL/Library/Logs/DiagnosticReports/zigBrowser-2026-10-23-100000.ips"
-  if on control_rc0; then printf 'CONTROL_RC\t0\n'; else printf 'CONTROL_RC\t-6\n'; fi
+  proc=\$exe; app_name=zigBrowser; bundle=com.cosmichq.zigBrowser
+  if on crash_other; then proc=/Applications/Other.app/Contents/MacOS/Other; app_name=Other; bundle=invalid.example.Other; fi
+  report="\$REAL/Library/Logs/DiagnosticReports/zigBrowser-2026-10-23-100000.ips"
+  printf '{"app_name":"%s","timestamp":"2026-10-24 16:05:15.00 -0400","slice_uuid":"6A1B2C3D-0000-0000-0000-000000000000","bundleID":"%s","bug_type":"309","os_version":"macOS 15.7.1 (24G231)","name":"%s","incident_id":"BASE-CONTROL"}\n' \
+    "\$app_name" "\$bundle" "\$app_name" > "\$report"
+  if on crash_other; then
+    printf '{"pid":7999,"procName":"Other","procPath":"%s","bundleInfo":{"CFBundleIdentifier":"%s"},"exception":{"type":"EXC_CRASH","signal":"SIGABRT"},"termination":{"namespace":"SIGNAL","indicator":"Abort trap: 6"}}\n' "\$proc" "\$bundle" >> "\$report"
+  else
+    printf '{"pid":%s,"procName":"zigBrowser","procPath":"%s","bundleInfo":{"CFBundleIdentifier":"%s"},"exception":{"type":"EXC_CRASH","signal":"SIGABRT"},"termination":{"namespace":"DYLD","indicator":"Library missing","details":["Library not loaded: @executable_path/../Frameworks/libwkwebview_shim.dylib"]}}\n' \
+      "\$((base + 6))" "\$proc" "\$bundle" >> "\$report"
+  fi
+  if on control_rc0; then control_terminal=0; printf 'CONTROL_RC\t0\n'; else control_terminal=-6; printf 'CONTROL_RC\t-6\n'; fi
   exit 0
 fi
 name=\${script##*/}
@@ -373,7 +394,7 @@ chmod +x "$X/bin"/* "$X/hostbin"/* "$X/hosts"/*/.local/bin/zig
 
 R="$T/repo"
 mkdir -p "$R/tests/mac" "$R/tests/e2e" "$R/tests/fixtures/app" "$R/packaging/macos" "$R/packaging/assets" "$R/src"
-for f in tests/mac/ms1c_app_gate.sh tests/mac/build-on-mac.sh tests/mac/mac_gate_lib.sh tests/mac/mac_config.sh \
+for f in tests/mac/ms1c_app_gate.sh tests/mac/ms1c_crash_audit.py tests/mac/build-on-mac.sh tests/mac/mac_gate_lib.sh tests/mac/mac_config.sh \
   tests/mac/known_hosts tests/mac/mac_varfolders_audit.sh tests/mac/exec_arch_probe.py tests/e2e/m9_render_test.py tests/e2e/m9_reply_channel_test.py \
   tests/e2e/m9_load_fail_test.py tests/e2e/mac_term_teardown.py tests/fixtures/app/index.html \
   packaging/macos/build-dmg.sh packaging/macos/Info.plist packaging/macos/entitlements.plist packaging/assets/zigBrowser.png; do
@@ -550,7 +571,7 @@ for role in intel arm; do
   [ "$(cut -f3-5 <<<"$ctl")" = "$rd/control/zigBrowser.app/Contents/MacOS/zigBrowser${TB}absent${TB}present" ] || p6="$role control '$ctl'"
   arch=x86_64; [ $role = arm ] && arch=arm64
   ips="$X/hosts/$role/Library/Logs/DiagnosticReports/zigBrowser-2026-10-23-100000.ips"
-  want="CRASHREPORT${TB}$(home_field zigBrowser-2026-10-23-100000.ips)${TB}$(sha256sum "$ips" 2>/dev/null | awk '{ print $1 }')"
+  want="CRASHREPORT${TB}$(home_field zigBrowser-2026-10-23-100000.ips)${TB}$(sha256sum "$ips" 2>/dev/null | awk '{ print $1 }')${TB}CONTROL${TB}$([ "$role" = intel ] && echo 4106 || echo 4206)${TB}$(home_field "$rd/control/zigBrowser.app/Contents/MacOS/zigBrowser")"
   [ -f "$ips" ] && grep -qxF "$want" "$EV/$arch/evidence/leg.log" 2>/dev/null || p6="$role: no '$want' (report $( [ -f "$ips" ] && echo kept || echo gone))"
 done
 [ "$p6" = ok ] && ok "P6: the control ran a private copy without its dylib; CRASHREPORT name and sha256; the report is kept" || bad "P6: $p6"
@@ -637,10 +658,10 @@ run_gate ctlstarts control_starts.arm
 run_gate wrongdiag control_wrongdiag.arm
 { [ "$rc" -eq 1 ] && leg_is arm64 FAIL && no_pass; } && ok "F12: a control with another library's error: FAIL" || bad "F12: exit $rc: $(tailout)"
 run_gate crashother crash_other.intel
-crashother_field=$(home_field "$X/hosts/intel/Library/Logs/DiagnosticReports/zigBrowser-2026-10-23-100000.ips")
-{ [ "$rc" -eq 2 ] && leg_is x86_64 INCONCLUSIVE && no_pass \
-  && grep -q "^HOME-DELTA${TB}ADDED${TB}$crashother_field${TB}" "$EV/x86_64/evidence/leg.log" 2>/dev/null; } \
-  && ok "F13: a crash report of another exe: HOME-DELTA, INCONCLUSIVE" || bad "F13: exit $rc: $(tailout)"
+other_report="CRASHREPORT${TB}$(home_field zigBrowser-2026-10-23-100000.ips)${TB}$(sha256sum "$X/hosts/intel/Library/Logs/DiagnosticReports/zigBrowser-2026-10-23-100000.ips" 2>/dev/null | awk '{ print $1 }')${TB}OTHER${TB}7999${TB}$(home_field /Applications/Other.app/Contents/MacOS/Other)"
+{ [ "$rc" -eq 0 ] && leg_is x86_64 PASS && leg_is arm64 PASS \
+  && grep -qxF "$other_report" "$EV/x86_64/evidence/leg.log" 2>/dev/null; } \
+  && ok "F13: an unrelated valid crash report is recorded OTHER and remains AMBIENT" || bad "F13: exit $rc: $(tailout)"
 run_gate arch arch_wrong.arm
 { [ "$rc" -eq 1 ] && leg_is arm64 FAIL && no_pass; } && ok "F14: the other arch reported: FAIL" || bad "F14: exit $rc: $(tailout)"
 run_gate varlocked var_unreadable.intel

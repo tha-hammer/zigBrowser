@@ -19,12 +19,42 @@ import atexit
 import errno
 import os
 import signal
+import stat
 import subprocess
 import sys
 import time
 
 GRACE_S = 10.0
 _leaks: list = []
+
+
+def _record_terminal_process(proc: subprocess.Popen, status=None) -> None:
+    """Append one gate-owned process record, but only after this Popen has a terminal status."""
+    ledger = os.environ.get("ZB_PROCESS_LEDGER")
+    if ledger is None or getattr(proc, "_zb_process_recorded", False):
+        return
+    row = os.environ.get("ZB_PROCESS_ROW")
+    pid = proc.pid
+    if status is None:
+        status = proc.poll()
+    argv = proc.args
+    executable = argv[0] if isinstance(argv, (list, tuple)) and argv else None
+    if (not row or any(c in row for c in "\t\r\n") or isinstance(pid, bool) or not isinstance(pid, int) or pid <= 1
+            or isinstance(status, bool) or not isinstance(status, int)
+            or not isinstance(executable, str) or not executable or any(c in executable for c in "\t\r\n")):
+        raise RuntimeError("invalid MS1c process-ledger record")
+    flags = os.O_WRONLY | os.O_APPEND | getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(ledger, flags)
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode):
+            raise RuntimeError("MS1c process ledger is not a regular file")
+        line = f"{row}\t{pid}\t{status}\t{executable}\n".encode("utf-8", "strict")
+        if os.write(fd, line) != len(line):
+            raise RuntimeError("short write to MS1c process ledger")
+        proc._zb_process_recorded = True
+    finally:
+        os.close(fd)
 
 
 def _fail_at_exit() -> None:
@@ -91,6 +121,7 @@ def stop_browser_term_only(proc: subprocess.Popen, grace_s: float = GRACE_S) -> 
         pgid = pid
     deadline = time.monotonic() + grace_s
     if status is not None and not _group_has_members(pgid):
+        _record_terminal_process(proc, status)
         return  # reaped, and nothing left in its group: nothing to signal
     try:
         os.killpg(pgid, signal.SIGTERM)
@@ -114,6 +145,9 @@ def stop_browser_term_only(proc: subprocess.Popen, grace_s: float = GRACE_S) -> 
             _leak(f"LEAK process group {pgid} still has members {grace_s:.0f}s after SIGTERM (left running)", pgid)
             return
         time.sleep(0.05)
+    status = proc.poll()
+    if status is not None:
+        _record_terminal_process(proc, status)
 
 
 def install_term_only_cleanup(get_proc) -> None:
@@ -140,6 +174,7 @@ def run_term_only(argv: list, timeout_s: float) -> subprocess.CompletedProcess:
         for stream in (proc.stdout, proc.stderr):
             stream.close()
         raise
+    _record_terminal_process(proc)
     return subprocess.CompletedProcess(argv, proc.returncode, out, err)
 
 
