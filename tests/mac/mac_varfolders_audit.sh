@@ -40,7 +40,7 @@ __VF_SNAPSHOT_PY='
 import errno, hashlib, os, stat, sys
 roots = [l.rstrip("\n").split("\t", 1) for l in open(sys.argv[1], encoding="utf-8") if l.strip()]
 side = sys.argv[3] if len(sys.argv) == 4 else ""
-heads, rows, errors, skipped = [], [], [], {}
+heads, rows, row_keys, errors, skipped = [], [], set(), [], {}
 PROTECTED = frozenset((
     ("C", "com.apple.WebKit.GPU.Sandbox"),
     ("C", "com.apple.WebKit.Networking.Sandbox"),
@@ -75,12 +75,15 @@ def digest(p):
             h.update(chunk)
     return h.hexdigest()
 def entry(token, root, p, rel):
+    key = (token, os.fsencode(rel))
+    if key in row_keys:
+        return
     try:
         st = os.lstat(p)
         kind = next((k for test, k in KIND if test(st.st_mode)), "o")
         link = os.readlink(p) if kind == "l" else "-"
     except OSError as e:
-        unreadable(token, rel, e)
+        errors.append("%s\t%s\t%s" % (token, rel, " ".join((e.strerror or type(e).__name__).split())))
         return
     try:
         sha = digest(p) if kind == "f" else "-"
@@ -100,11 +103,13 @@ def entry(token, root, p, rel):
     meta = "%s %o %d %d %d %d %d %d %d %s %s" % (kind, stat.S_IMODE(st.st_mode), st.st_uid, st.st_gid, st.st_nlink,
                                                 st.st_size, st.st_mtime_ns, st.st_ctime_ns, st.st_ino, sha, link)
     rows.append((token, os.fsencode(rel), "%s\t%s\t%s" % (token, rel, meta)))
+    row_keys.add(key)
 skip = {os.path.basename(r) for t, r in roots if t in ("T", "C")}  # the census of P leaves T and C to their own
 for token, root in roots:
     def err(e, token=token, root=root):
         rel = os.path.relpath(e.filename, root) if e.filename else "?"
-        unreadable(token, rel, e)
+        if unreadable(token, rel, e):
+            entry(token, root, e.filename, rel)
     try:
         rst = os.lstat(root)
     except OSError as e:

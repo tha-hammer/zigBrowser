@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""RED, UNREGISTERED (SilverRidge 6806513a item A).
+"""GREEN, REGISTERED (red 140bad47; SilverRidge f96e194c item A).
 
 An EACCES/EPERM traversal failure at each exact reviewed C/P directory is
 supplementary evidence: the embedded snapshotter must lstat the directory and
@@ -10,7 +10,7 @@ parent enumeration already recorded it.  Stable pairs are accepted; reason or
 marker-presence transitions remain INCONCLUSIVE.  Broad paths and other errno
 remain incomplete.
 
-This file deliberately stays out of build.zig until the production green.
+This oracle is a side-effecting direct dependency of test-mac-varfolders-audit and the aggregate test.
 Run: python3 -X dev tests/e2e/mac_varfolders_directory_protected_test.py [helper]
 """
 from __future__ import annotations
