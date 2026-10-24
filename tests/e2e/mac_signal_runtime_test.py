@@ -61,8 +61,8 @@ APP_SUFFIX = ("zigBrowser.app", "Contents", "MacOS", "zigBrowser")
 SHIM_REL = Path("Contents/Frameworks/libwkwebview_shim.dylib")
 SHIM_REF = "@executable_path/../Frameworks/libwkwebview_shim.dylib"
 PACKAGE_TAGS = (
-    "PACKAGE_COMMIT", "PACKAGE_FLOW", "PACKAGE_DMG", "PACKAGE_APP", "PACKAGE_EXECUTABLE",
-    "PACKAGE_BUILD_EXECUTABLE", "PACKAGE_SHIM", "PACKAGE_SHIM_REF",
+    "PACKAGE_COMMIT", "PACKAGE_PRODUCER", "PACKAGE_FLOW", "PACKAGE_DMG", "PACKAGE_APP", "PACKAGE_EXECUTABLE",
+    "PACKAGE_BUILD_EXECUTABLE", "PACKAGE_SHIM", "PACKAGE_UNIVERSAL", "PACKAGE_CODESIGN", "PACKAGE_SHIM_REF",
 )
 
 
@@ -125,7 +125,7 @@ def package_problems(browser: Path, evidence: Path | None, expected_commit: str 
     fields = [line.split("\t") for line in lines]
     if len(fields) != len(PACKAGE_TAGS) or [row[0] if row else "" for row in fields] != list(PACKAGE_TAGS):
         return [f"PK3 package evidence must contain the exact ordered {PACKAGE_TAGS!r} records"], None
-    commit, flow, dmg_row, app_row, exe_row, build_row, shim_row, ref_row = fields
+    commit, producer, flow, dmg_row, app_row, exe_row, build_row, shim_row, universal, codesign, ref_row = fields
     if commit != ["PACKAGE_COMMIT", expected_commit]:
         problems.append("PK4 package evidence is not for the requested exact commit")
     if flow != ["PACKAGE_FLOW", "hdiutil-attach-readonly", "ditto"]:
@@ -135,8 +135,16 @@ def package_problems(browser: Path, evidence: Path | None, expected_commit: str 
     for row, size, name in shaped:
         if len(row) != size or not re.fullmatch(r"[0-9a-f]{64}", row[1]):
             problems.append(f"PK6 malformed PACKAGE_{name} evidence")
-    if ref_row != ["PACKAGE_SHIM_REF", SHIM_REF, "refs=1"]:
-        problems.append("PK7 package has no exact single executable-relative shim reference")
+    dmg_digest = dmg_row[1] if len(dmg_row) == 4 else ""
+    if (len(producer) != 4 or producer[1] != "packaging/macos/build-dmg.sh" or producer[2] != expected_commit
+            or not re.fullmatch(r"[0-9a-f]{64}", producer[3]) or producer[3] != dmg_digest):
+        problems.append("PK7 DMG digest is not bound to the real exact-commit package producer")
+    if universal != ["PACKAGE_UNIVERSAL", "executable=arm64,x86_64", "shim=arm64,x86_64"]:
+        problems.append("PK8 package executable and shim are not the reviewed universal pair")
+    if codesign != ["PACKAGE_CODESIGN", "--verify --strict --deep", "rc=0"]:
+        problems.append("PK9 unpacked app lacks strict package verification")
+    if ref_row != ["PACKAGE_SHIM_REF", SHIM_REF, "x86_64=1", "arm64=1"]:
+        problems.append("PK10 package has no exact per-slice executable-relative shim reference")
     if problems:
         return problems, None
     try:
@@ -149,29 +157,29 @@ def package_problems(browser: Path, evidence: Path | None, expected_commit: str 
         run_root = browser.parents[4].resolve(strict=True)
         expected_app = run_root / "app/zigBrowser.app"
         if not re.fullmatch(rf"zb-gate-{expected_commit}-[0-9a-f]+", run_root.name):
-            problems.append("PK8 browser is not in the exact-commit gate run root")
+            problems.append("PK11 browser is not in the exact-commit gate run root")
         if (evidence.resolve(strict=True) != run_root / "evidence/package.manifest"
                 or raw_app != expected_app or raw_dmg.parent != run_root
                 or build_exe != run_root / "zig-out/bin/zigBrowser"
                 or shim != expected_app / SHIM_REL):
-            problems.append("PK9 package evidence names a path outside the exact run-root layout")
+            problems.append("PK12 package evidence names a path outside the exact run-root layout")
         app = raw_app.resolve(strict=True)
         dmg = raw_dmg.resolve(strict=True)
         if app != resolved.parents[2] or resolved != packaged_exe.resolve(strict=True):
-            problems.append("PK10 browser/app paths do not name the evidenced unpacked package")
+            problems.append("PK13 browser/app paths do not name the evidenced unpacked package")
         if tuple(resolved.parts[-4:]) != APP_SUFFIX or "zig-out" in resolved.parts:
-            problems.append("PK11 browser is not the unpacked packaged executable")
+            problems.append("PK14 browser is not the unpacked packaged executable")
         for path, name in ((raw_app, "app"), (packaged_exe, "executable"), (shim, "shim"), (raw_dmg, "dmg")):
             if path.is_symlink():
-                problems.append(f"PK12 evidenced {name} is a symlink")
+                problems.append(f"PK15 evidenced {name} is a symlink")
         if not packaged_exe.is_file() or packaged_exe.stat().st_size <= 0 or not os.access(packaged_exe, os.X_OK):
-            problems.append("PK13 packaged executable is empty, missing or not executable")
+            problems.append("PK16 packaged executable is empty, missing or not executable")
         if not shim.is_file() or shim.stat().st_size <= 0 or shim.resolve() != app / SHIM_REL:
-            problems.append("PK14 package shim is absent or outside the app")
+            problems.append("PK17 package shim is absent or outside the app")
         if not dmg.is_file() or dmg.stat().st_size <= 0:
-            problems.append("PK15 package DMG is absent or empty")
+            problems.append("PK18 package DMG is absent or empty")
         if not build_exe.is_file() or tuple(build_exe.parts[-3:]) != ("zig-out", "bin", "zigBrowser"):
-            problems.append("PK16 exact-commit build executable evidence is absent")
+            problems.append("PK19 exact-commit build executable evidence is absent")
         actual_dmg = file_sha256(dmg)
         actual_app = app_tree_sha256(app)
         actual_exe = file_sha256(packaged_exe)
@@ -185,17 +193,17 @@ def package_problems(browser: Path, evidence: Path | None, expected_commit: str 
         )
         for actual_sha, actual_size, row, name in checks:
             if row[1] != actual_sha or row[2] != str(actual_size):
-                problems.append(f"PK17 {name} digest/size does not match package evidence")
+                problems.append(f"PK20 {name} digest/size does not match package evidence")
         if app_row[1] != actual_app:
-            problems.append("PK18 unpacked app tree digest does not match package evidence")
+            problems.append("PK21 unpacked app tree digest does not match package evidence")
         if actual_exe == actual_build or os.path.samefile(packaged_exe, build_exe):
-            problems.append("PK19 packaged executable is a renamed, copied or linked build-tree binary")
+            problems.append("PK22 packaged executable is a renamed, copied or linked build-tree binary")
     except (OSError, ValueError, IndexError) as exc:
-        problems.append(f"PK20 package verification failed closed: {exc}")
+        problems.append(f"PK23 package verification failed closed: {exc}")
         return problems, None
     if problems:
         return problems, None
-    package_line = (f"PACKAGE\t{expected_commit}\tdmg={dmg_row[1]}\tapp={app_row[1]}\t"
+    package_line = (f"PACKAGE\t{expected_commit}\tproducer=packaging/macos/build-dmg.sh\tdmg={dmg_row[1]}\tapp={app_row[1]}\t"
                     f"exe={exe_row[1]}\tshim={shim_row[1]}\tshim-ref={SHIM_REF}")
     return [], package_line
 
@@ -728,11 +736,14 @@ def gate_problems() -> list[str]:
                     '--package-evidence "$root/evidence/package.manifest" --package-commit "$commit"')
     if gate.count(packaged_arg) != 1 or 'python3 "$file" --browser zig-out/bin/zigBrowser' in gate:
         problems.append("GC5 signal row must receive the evidenced exact-commit DMG/ditto app, never the build-tree browser")
-    package_tokens = ("packaging/macos/build-dmg.sh", "hdiutil attach -readonly", "ditto", "otool -L",
-                      "PACKAGE_DMG", "PACKAGE_APP", "PACKAGE_SHIM_REF")
+    producer_call = 'ZB_GATE_COMMIT="$COMMIT" bash packaging/macos/build-dmg.sh'
+    if gate.count(producer_call) != 1:
+        problems.append("GC6 named gate must execute the real exact-commit build-dmg producer exactly once")
+    package_tokens = ("hdiutil attach -readonly", "ditto", "codesign --verify --strict --deep", "lipo -archs", "otool -arch",
+                      "PRODUCER_DMG", "PACKAGE_PRODUCER", "PACKAGE_DMG", "PACKAGE_APP", "PACKAGE_SHIM_REF")
     for token in package_tokens:
         if token not in gate:
-            problems.append(f"GC6 named gate package flow is missing {token!r}")
+            problems.append(f"GC7 named gate package flow is missing {token!r}")
     mapping = f"{ROW_FILE}) id={ROW_ID} ;;"
     for name, text in (("evidence", evidence), ("output", output)):
         if mapping not in " ".join(text.split()):
@@ -877,13 +888,16 @@ def write_package_fixture(root: Path, variant: str) -> tuple[Path, Path, str]:
     build_size = build.stat().st_size if build.exists() else original_build_size
     lines = (
         ["PACKAGE_COMMIT", commit],
+        ["PACKAGE_PRODUCER", "packaging/macos/build-dmg.sh", commit, file_sha256(dmg)],
         flow,
         ["PACKAGE_DMG", file_sha256(dmg), str(dmg.stat().st_size), str(dmg)],
         ["PACKAGE_APP", app_tree_sha256(app), str(app)],
         ["PACKAGE_EXECUTABLE", file_sha256(browser), str(browser.stat().st_size), str(browser)],
         ["PACKAGE_BUILD_EXECUTABLE", build_sha, str(build_size), str(build)],
         ["PACKAGE_SHIM", file_sha256(shim), str(shim.stat().st_size), str(shim)],
-        ["PACKAGE_SHIM_REF", SHIM_REF, "refs=0" if variant == "missing-shim-ref" else "refs=1"],
+        ["PACKAGE_UNIVERSAL", "executable=arm64,x86_64", "shim=arm64,x86_64"],
+        ["PACKAGE_CODESIGN", "--verify --strict --deep", "rc=0"],
+        ["PACKAGE_SHIM_REF", SHIM_REF, "x86_64=0" if variant == "missing-shim-ref" else "x86_64=1", "arm64=1"],
     )
     evidence.write_text("".join("\t".join(row) + "\n" for row in lines), encoding="utf-8")
     if variant == "wrong-dmg-digest":

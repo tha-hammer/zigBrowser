@@ -52,21 +52,12 @@ case "\$cmd" in
     rd=\$(/usr/bin/find "\$h" -mindepth 1 -maxdepth 1 -type d -name 'zb-gate-*' | head -n 1)
     [ -n "\$rd" ] || exit 1
     commit=\${rd##*/zb-gate-}; commit=\${commit%%-*}
-    mkdir -p "\$rd/zig-out/bin" "\$rd/zig-out/Frameworks" \
-      "\$rd/package-source/zigBrowser.app/Contents/MacOS" \
-      "\$rd/package-source/zigBrowser.app/Contents/Frameworks" \
-      "\$rd/package-source/zigBrowser.app/Contents/Resources"
+    mkdir -p "\$rd/zig-out/bin" "\$rd/zig-out/Frameworks"
     printf 'thin build-tree executable %s %s\n' "\$commit" "\$host" > "\$rd/zig-out/bin/zigBrowser"
     printf 'thin build-tree shim %s %s\n' "\$commit" "\$host" > "\$rd/zig-out/Frameworks/libwkwebview_shim.dylib"
-    printf 'packaged exact-commit executable %s %s with two joined slices\n' "\$commit" "\$host" \
-      > "\$rd/package-source/zigBrowser.app/Contents/MacOS/zigBrowser"
-    printf 'packaged exact-commit shim %s %s with two joined slices\n' "\$commit" "\$host" \
-      > "\$rd/package-source/zigBrowser.app/Contents/Frameworks/libwkwebview_shim.dylib"
-    printf '%s\n' "\$commit" > "\$rd/package-source/zigBrowser.app/Contents/Resources/exact-commit"
-    printf 'plist %s\n' "\$commit" > "\$rd/package-source/zigBrowser.app/Contents/Info.plist"
-    chmod 755 "\$rd/zig-out/bin/zigBrowser" "\$rd/package-source/zigBrowser.app/Contents/MacOS/zigBrowser"
-    /usr/bin/tar -C "\$rd/package-source" -cf "\$rd/zigBrowser-exact.dmg" zigBrowser.app
-    rm -rf -- "\${rd:?}/package-source"
+    chmod 755 "\$rd/zig-out/bin/zigBrowser"
+    printf 'GENERIC_BUILD\t%s\t%s\n' "\$host" "\$rd" >> "$T/ctl/builds"
+    /usr/bin/find "\$rd" -maxdepth 2 \( -name '*.dmg' -o -name '*.app' \) -print > "\$rd/generic-package-output"
     exit 0 ;;
 esac
 env -i PATH="$T/macbin:/usr/bin:/bin" HOME="\$h" ZB_FAKE_MAC="\$h" LANG=C.UTF-8 /bin/bash -c "\$cmd"
@@ -76,11 +67,23 @@ cat > "$T/bin/scp" <<EOF
 #!/bin/bash
 i=\$(cat "$T/ctl/n" 2>/dev/null || echo 0); echo \$((i + 1)) > "$T/ctl/n"
 printf '%s\0' scp "\$@" > "$T/ctl/call.\$i"
-while [ \$# -gt 2 ]; do shift; done
-src=\$1 dst=\$2
-case "\$src" in *:*) ;; *) exit 1 ;; esac
-host=\${src%%:*}; path=\${src#*:}
-cp -- "$T/mac/\$host/\$path" "\$dst"
+args=()
+while [ \$# -gt 0 ]; do
+  case "\$1" in -i|-o|-F|-P|-S|-c|-l) shift 2 ;; -*) shift ;; *) args+=("\$1"); shift ;; esac
+done
+[ "\${#args[@]}" -ge 2 ] || exit 1
+last=\$((\${#args[@]} - 1)); dst=\${args[\$last]}; unset 'args[\$last]'
+case "\$dst" in
+  *:*)
+    host=\${dst%%:*}; path=\${dst#*:}; target="$T/mac/\$host/\$path"
+    if [ "\${#args[@]}" -gt 1 ] || [[ "\$path" = */ ]]; then mkdir -p "\$target"; fi
+    for src in "\${args[@]}"; do cp -f -- "\$src" "\$target"; done ;;
+  *)
+    [ "\${#args[@]}" -eq 1 ] || exit 1
+    src=\${args[0]}; case "\$src" in *:*) ;; *) exit 1 ;; esac
+    host=\${src%%:*}; path=\${src#*:}
+    cp -f -- "$T/mac/\$host/\$path" "\$dst" ;;
+esac
 EOF
 
 cat > "$T/macbin/getconf" <<'EOF'
@@ -97,10 +100,68 @@ cat > "$T/macbin/find" <<'EOF'
 exec /usr/bin/find "$@"
 EOF
 
+cat > "$T/macbin/lipo" <<'EOF'
+#!/bin/bash
+case "$1" in
+  -create)
+    shift; inputs=()
+    while [ $# -gt 0 ]; do
+      case "$1" in -output) out=$2; shift 2 ;; *) inputs+=("$1"); shift ;; esac
+    done
+    [ "${#inputs[@]}" -eq 2 ] && [ -n "${out:-}" ] || exit 1
+    { printf 'FAKE-UNIVERSAL-MACHO arm64 x86_64\n'; cat "${inputs[@]}"; } > "$out" ;;
+  -archs)
+    case "$2" in */app/zigBrowser.app/*) printf 'LIPO_ARCHS\t%s\n' "$2" >> "$ZB_FAKE_MAC/package-tools" ;;
+      *) printf 'PRODUCER_LIPO_ARCHS\t%s\n' "$2" >> "$ZB_FAKE_MAC/producer-tools" ;; esac
+    grep -q '^FAKE-UNIVERSAL-MACHO arm64 x86_64$' "$2" && printf 'x86_64 arm64\n' || printf 'x86_64\n' ;;
+  *) exit 2 ;;
+esac
+EOF
+
+cat > "$T/macbin/codesign" <<'EOF'
+#!/bin/bash
+case " $* " in
+  *" --verify "*)
+    case "${@: -1}" in */app/zigBrowser.app) printf 'CODESIGN_VERIFY\t%s\n' "$*" >> "$ZB_FAKE_MAC/package-tools" ;;
+      *) printf 'PRODUCER_CODESIGN_VERIFY\t%s\n' "$*" >> "$ZB_FAKE_MAC/producer-tools" ;; esac ;;
+esac
+exit 0
+EOF
+
+cat > "$T/macbin/sips" <<'EOF'
+#!/bin/bash
+while [ $# -gt 0 ]; do case "$1" in --out) out=$2; shift 2 ;; *) shift ;; esac; done
+[ -n "${out:-}" ] || exit 1
+printf 'fake resized icon\n' > "$out"
+EOF
+
+cat > "$T/macbin/iconutil" <<'EOF'
+#!/bin/bash
+while [ $# -gt 0 ]; do case "$1" in -o) out=$2; shift 2 ;; *) shift ;; esac; done
+[ -n "${out:-}" ] || exit 1
+printf 'fake icns\n' > "$out"
+EOF
+
 cat > "$T/macbin/hdiutil" <<'EOF'
 #!/bin/bash
 op=$1; shift
 case "$op" in
+  create)
+    src= out=
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        -srcfolder) src=$2; shift 2 ;;
+        -volname|-format) shift 2 ;;
+        -ov) shift ;;
+        -*) shift ;;
+        *) out=$1; shift ;;
+      esac
+    done
+    [ -d "$src" ] && [ -n "$out" ] || exit 1
+    /usr/bin/tar -C "$src" -cf "$out" . || exit 1
+    sha=$(sha256sum "$out" | cut -d' ' -f1)
+    commit=${PWD##*/zb-gate-}; commit=${commit%%-*}
+    printf 'PRODUCER_CREATE\t%s\t%s\t%s\n' "$commit" "$sha" "$out" >> "$ZB_FAKE_MAC/producer-tools" ;;
   attach)
     mp= dmg=
     while [ $# -gt 0 ]; do
@@ -149,14 +210,20 @@ EOF
 
 cat > "$T/macbin/otool" <<'EOF'
 #!/bin/bash
-printf 'OTOOL\t%s\n' "$*" >> "$ZB_FAKE_MAC/package-tools"
 target=${@: -1}
+case "$target" in
+  */app/zigBrowser.app/*)
+    printf 'OTOOL\t%s\n' "$*" >> "$ZB_FAKE_MAC/package-tools"
+    runtime=1 ;;
+  *) printf 'PRODUCER_OTOOL\t%s\n' "$*" >> "$ZB_FAKE_MAC/producer-tools" ;;
+esac
 printf '%s:\n' "$target"
-[ "$(cat "$ZB_FAKE_MAC/package-mode" 2>/dev/null || echo good)" = missing-shim-ref ] \
+[ "${runtime:-0}:$(cat "$ZB_FAKE_MAC/package-mode" 2>/dev/null || echo good)" = 1:missing-shim-ref ] \
   || printf '\t@executable_path/../Frameworks/libwkwebview_shim.dylib (compatibility version 0.0.0, current version 0.0.0)\n'
 EOF
 
-chmod +x "$T/macbin/hdiutil" "$T/macbin/ditto" "$T/macbin/otool"
+chmod +x "$T/macbin/lipo" "$T/macbin/codesign" "$T/macbin/sips" "$T/macbin/iconutil" \
+  "$T/macbin/hdiutil" "$T/macbin/ditto" "$T/macbin/otool"
 
 cat > "$T/macbin/python3" <<'EOF'
 #!/bin/bash
@@ -189,32 +256,39 @@ if [ "$(sha256sum "$browser" | cut -d' ' -f1)" = "$(sha256sum "$build" | cut -d'
   printf 'FAIL\tmac-signal-runtime\tbuild-tree-substitution\n'; exit 1
 fi
 mapfile -t package < "$manifest"
-[ "${#package[@]}" -eq 8 ] \
+[ "${#package[@]}" -eq 11 ] \
   && [ "${package[0]}" = "PACKAGE_COMMIT"$'\t'"$commit" ] \
-  && [ "${package[1]}" = $'PACKAGE_FLOW\thdiutil-attach-readonly\tditto' ] \
+  && [ "${package[2]}" = $'PACKAGE_FLOW\thdiutil-attach-readonly\tditto' ] \
   && grep -q $'^PACKAGE_DMG\t[0-9a-f]\{64\}\t[1-9][0-9]*\t' "$manifest" \
   && grep -q $'^PACKAGE_APP\t[0-9a-f]\{64\}\t' "$manifest" \
   && grep -q $'^PACKAGE_EXECUTABLE\t[0-9a-f]\{64\}\t[1-9][0-9]*\t' "$manifest" \
   && grep -q $'^PACKAGE_BUILD_EXECUTABLE\t[0-9a-f]\{64\}\t[1-9][0-9]*\t' "$manifest" \
   && grep -q $'^PACKAGE_SHIM\t[0-9a-f]\{64\}\t[1-9][0-9]*\t' "$manifest" \
-  && grep -qx $'PACKAGE_SHIM_REF\t@executable_path/../Frameworks/libwkwebview_shim.dylib\trefs=1' "$manifest" \
+  && grep -qx $'PACKAGE_UNIVERSAL\texecutable=arm64,x86_64\tshim=arm64,x86_64' "$manifest" \
+  && grep -qx $'PACKAGE_CODESIGN\t--verify --strict --deep\trc=0' "$manifest" \
+  && grep -qx $'PACKAGE_SHIM_REF\t@executable_path/../Frameworks/libwkwebview_shim.dylib\tx86_64=1\tarm64=1' "$manifest" \
   || { printf 'FAIL\tmac-signal-runtime\tmalformed-package-evidence\n'; exit 1; }
 dmg_sha=$(sha256sum "$dmg" | cut -d' ' -f1); exe_sha=$(sha256sum "$browser" | cut -d' ' -f1)
 build_sha=$(sha256sum "$build" | cut -d' ' -f1); shim_sha=$(sha256sum "$shim" | cut -d' ' -f1)
-grep -qx "PACKAGE_DMG${TAB:-$'\t'}$dmg_sha${TAB:-$'\t'}$(wc -c < "$dmg")${TAB:-$'\t'}$dmg" "$manifest" \
+grep -qx "PACKAGE_PRODUCER${TAB:-$'\t'}packaging/macos/build-dmg.sh${TAB:-$'\t'}$commit${TAB:-$'\t'}$dmg_sha" "$manifest" \
+  && grep -qx "PACKAGE_DMG${TAB:-$'\t'}$dmg_sha${TAB:-$'\t'}$(wc -c < "$dmg")${TAB:-$'\t'}$dmg" "$manifest" \
   && grep -qx "PACKAGE_EXECUTABLE${TAB:-$'\t'}$exe_sha${TAB:-$'\t'}$(wc -c < "$browser")${TAB:-$'\t'}$browser" "$manifest" \
   && grep -qx "PACKAGE_BUILD_EXECUTABLE${TAB:-$'\t'}$build_sha${TAB:-$'\t'}$(wc -c < "$build")${TAB:-$'\t'}$build" "$manifest" \
   && grep -qx "PACKAGE_SHIM${TAB:-$'\t'}$shim_sha${TAB:-$'\t'}$(wc -c < "$shim")${TAB:-$'\t'}$shim" "$manifest" \
   || { printf 'FAIL\tmac-signal-runtime\tpackage-digest-mismatch\n'; exit 1; }
 mapfile -t tools < "$ZB_FAKE_MAC/package-tools"
-[ "${#tools[@]}" -eq 4 ] \
+[ "${#tools[@]}" -eq 8 ] \
   && [ "${tools[0]}" = "ATTACH${TAB:-$'\t'}$dmg${TAB:-$'\t'}$PWD/mnt" ] \
   && [ "${tools[1]}" = "DITTO${TAB:-$'\t'}$PWD/mnt/zigBrowser.app${TAB:-$'\t'}$PWD/app/zigBrowser.app" ] \
   && [ "${tools[2]}" = "DETACH${TAB:-$'\t'}/dev/disk7" ] \
-  && [ "${tools[3]}" = "OTOOL${TAB:-$'\t'}-L $browser" ] \
+  && [ "${tools[3]}" = "LIPO_ARCHS${TAB:-$'\t'}$browser" ] \
+  && [ "${tools[4]}" = "LIPO_ARCHS${TAB:-$'\t'}$shim" ] \
+  && [ "${tools[5]}" = "CODESIGN_VERIFY${TAB:-$'\t'}--verify --strict --deep --verbose=2 $PWD/app/zigBrowser.app" ] \
+  && [ "${tools[6]}" = "OTOOL${TAB:-$'\t'}-arch x86_64 -L $browser" ] \
+  && [ "${tools[7]}" = "OTOOL${TAB:-$'\t'}-arch arm64 -L $browser" ] \
   || { printf 'FAIL\tmac-signal-runtime\tpackage-flow-not-observed\n'; exit 1; }
-app_sha=$(cut -f2 <<<"${package[3]}")
-printf 'PACKAGE\t%s\tdmg=%s\tapp=%s\texe=%s\tshim=%s\tshim-ref=@executable_path/../Frameworks/libwkwebview_shim.dylib\n' \
+app_sha=$(cut -f2 <<<"${package[4]}")
+printf 'PACKAGE\t%s\tproducer=packaging/macos/build-dmg.sh\tdmg=%s\tapp=%s\texe=%s\tshim=%s\tshim-ref=@executable_path/../Frameworks/libwkwebview_shim.dylib\n' \
   "$commit" "$dmg_sha" "$app_sha" "$exe_sha" "$shim_sha"
 mode=$(cat "$ZB_FAKE_MAC/row-mode" 2>/dev/null || echo good)
 case "$mode" in
@@ -260,11 +334,14 @@ fresh_macs() {
 }
 
 R="$T/repo"
-mkdir -p "$R/tests/mac" "$R/tests/e2e" "$R/src" "$R/packaging/macos"
+mkdir -p "$R/tests/mac" "$R/tests/e2e" "$R/src" "$R/packaging/macos" "$R/packaging/assets"
 for f in "$ROOT"/tests/mac/*; do [ -f "$f" ] && cp -f "$f" "$R/tests/mac/"; done
 cp -f "$ROOT/tests/e2e/mac_signal_runtime_test.py" "$R/tests/e2e/"
+cp -f "$ROOT/packaging/macos/build-dmg.sh" "$R/packaging/macos/build-dmg.sh"
+cp -f "$ROOT/packaging/macos/Info.plist" "$R/packaging/macos/Info.plist"
+cp -f "$ROOT/packaging/macos/entitlements.plist" "$R/packaging/macos/entitlements.plist"
+cp -f "$ROOT/packaging/assets/zigBrowser.png" "$R/packaging/assets/zigBrowser.png"
 printf 'src\n' > "$R/src/main.zig"
-printf 'plist\n' > "$R/packaging/macos/Info.plist"
 printf 'build\n' > "$R/build.zig"
 printf 'zon\n' > "$R/build.zig.zon"
 printf '{}\n' > "$R/zigbrowser.json"
@@ -274,13 +351,32 @@ G=(env -i PATH=/usr/bin:/bin HOME="$T/controller-home" GIT_CONFIG_NOSYSTEM=1 git
   || { bad "could not create exact fake-host repo"; exit 1; }
 COMMIT=$("${G[@]}" rev-parse HEAD)
 
+# Mutant transport only: unlike the good generic-build fake above, this one
+# fabricates a tar bearing a .dmg name after any ordinary `zig build`.  It must
+# never be accepted as evidence that the real package producer ran.
+mkdir "$T/fabricating-bin"
+cat > "$T/fabricating-bin/ssh" <<EOF
+#!/bin/bash
+"$T/bin/ssh" "\$@"
+rc=\$?
+[ "\$rc" -eq 0 ] || exit "\$rc"
+case "\$*" in
+  *"zig build"*)
+    /usr/bin/tar -C "$R" -cf "$R/zigBrowser_0.2.0_macos.dmg" build.zig || exit 1
+    sha256sum "$R/zigBrowser_0.2.0_macos.dmg" > "$T/ctl/generic-fabricated-dmg"
+    printf '==> Done: %s\n' "$R/zigBrowser_0.2.0_macos.dmg" ;;
+esac
+EOF
+chmod +x "$T/fabricating-bin/ssh"
+
 EVD="$T/evidence"
 OUT= RC=0
 run_gate() { # existing fake Mac state is preserved; the evidence destination is always fresh
+  local transport=${1:-$T/bin}
   chmod -R u+rwx "$EVD" 2>/dev/null
   rm -rf -- "${EVD:?}"
   mkdir -m 700 "$EVD"
-  (cd "$R" && env -i PATH="$T/bin:/usr/bin:/bin" HOME="$T/controller-home" TMPDIR="$T/tmp" \
+  (cd "$R" && env -i PATH="$transport:$T/bin:/usr/bin:/bin" HOME="$T/controller-home" TMPDIR="$T/tmp" \
      ZB_MAC_HOST="$INTEL" ZB_MAC_ARM_HOST="$ARM" ZB_MAC_KEY="$T/fake_mac_key" \
      ZB_RUNTIME_ROWS="$ID" ZB_MAC_EVIDENCE_DIR="$EVD" ZB_MAC_BUILD_TIMEOUT=60 ZB_MAC_LEG_TIMEOUT=60 \
      timeout 120 bash "$GATE" > "$T/gate.out" 2>&1 </dev/null)
@@ -302,7 +398,7 @@ run_dirs() { find "$T/mac/$1" -mindepth 1 -maxdepth 1 -type d -name 'zb-gate-*' 
 row_has_exact_evidence() { # $1 = extracted row-output file
   local f=$1 label package disposition
   [ "$(grep -c $'^PACKAGE\t' "$f")" -eq 1 ] || return 1
-  grep -q "^PACKAGE${TAB:-$'\t'}$COMMIT${TAB:-$'\t'}dmg=[0-9a-f]\{64\}${TAB:-$'\t'}app=[0-9a-f]\{64\}${TAB:-$'\t'}exe=[0-9a-f]\{64\}${TAB:-$'\t'}shim=[0-9a-f]\{64\}${TAB:-$'\t'}shim-ref=@executable_path/../Frameworks/libwkwebview_shim.dylib$" "$f" || return 1
+  grep -q "^PACKAGE${TAB:-$'\t'}$COMMIT${TAB:-$'\t'}producer=packaging/macos/build-dmg.sh${TAB:-$'\t'}dmg=[0-9a-f]\{64\}${TAB:-$'\t'}app=[0-9a-f]\{64\}${TAB:-$'\t'}exe=[0-9a-f]\{64\}${TAB:-$'\t'}shim=[0-9a-f]\{64\}${TAB:-$'\t'}shim-ref=@executable_path/../Frameworks/libwkwebview_shim.dylib$" "$f" || return 1
   package=$(line_no $'^PACKAGE\t' "$(cat "$f")")
   disposition=$(line_no $'^SIGNAL_DISPOSITION\t' "$(cat "$f")")
   [ -n "$package" ] && [ -n "$disposition" ] && [ "$package" -lt "$disposition" ] || return 1
@@ -317,17 +413,32 @@ row_has_exact_evidence() { # $1 = extracted row-output file
   grep -qx $'PASS\tmac-signal-runtime' "$f"
 }
 
+row_dmg() { sed -n 's/^PACKAGE\t[^\t]*\tproducer=packaging\/macos\/build-dmg.sh\tdmg=\([0-9a-f]*\)\t.*/\1/p' "$1"; }
+
 judge_success() { # $1 output file, $2 x86 row file, $3 arm row file; current fake roots must be absent
-  local of=$1 xf=$2 af=$3 text h a ev rm pass
+  local of=$1 xf=$2 af=$3 text h a ev rm pass producer_line producer_sha
   text=$(cat "$of")
   [ "$(grep -cx $'ROWS_SELECTED\tmac-signal-runtime' <<<"$text")" -eq 1 ] || return 1
   [ "$(grep -cx $'ROW\ttests/e2e/mac_signal_runtime_test.py\tgreen\trc=0\tMATCH' <<<"$text")" -eq 2 ] || return 1
   grep -qx $'PASS\tms-runtime-rows-gate\tboth-arches' <<<"$text" || return 1
   row_has_exact_evidence "$xf" && row_has_exact_evidence "$af" || return 1
+  producer_line=$(grep $'^PRODUCER_DMG\t' <<<"$text")
+  [ "$(grep -c $'^PRODUCER_DMG\t' <<<"$text")" -eq 1 ] || return 1
+  producer_sha=$(cut -f4 <<<"$producer_line")
+  [ "$(cut -f1 <<<"$producer_line")" = PRODUCER_DMG ] \
+    && [ "$(cut -f2 <<<"$producer_line")" = packaging/macos/build-dmg.sh ] \
+    && [ "$(cut -f3 <<<"$producer_line")" = "$COMMIT" ] \
+    && [[ "$producer_sha" =~ ^[0-9a-f]{64}$ ]] \
+    && [[ "$(cut -f5 <<<"$producer_line")" =~ ^[1-9][0-9]*$ ]] || return 1
+  [ "$(row_dmg "$xf")" = "$producer_sha" ] && [ "$(row_dmg "$af")" = "$producer_sha" ] || return 1
+  grep -qx "PRODUCER_CREATE${TAB:-$'\t'}$COMMIT${TAB:-$'\t'}$producer_sha${TAB:-$'\t'}.*zigBrowser_0.2.0_macos.dmg" \
+    "$T/mac/$INTEL/producer-tools" || return 1
+  [ "$(grep -c '^GENERIC_BUILD' "$T/ctl/builds")" -eq 4 ] || return 1
   for ha in "$INTEL|x86_64" "$ARM|arm64"; do
     h=${ha%|*}; a=${ha#*|}
     grep -q "^EVIDENCE${TAB:-$'\t'}$h${TAB:-$'\t'}$a${TAB:-$'\t'}[0-9a-f]\{64\}${TAB:-$'\t'}" <<<"$text" || return 1
-    ev=$(line_no $'^EVIDENCE\t'"$h" "$text"); rm=$(line_no $'^REMOVED\t'"$h" "$text")
+    ev=$(line_no $'^EVIDENCE\t'"$h" "$text")
+    rm=$(grep -n $'^REMOVED\t'"$h" <<<"$text" | tail -n 1 | cut -d: -f1)
     pass=$(line_no $'^PASS\tms-runtime-rows-gate\t' "$text")
     [ -n "$ev" ] && [ -n "$rm" ] && [ -n "$pass" ] && [ "$ev" -lt "$rm" ] && [ "$rm" -lt "$pass" ] || return 1
     [ -z "$(run_dirs "$h")" ] || return 1
@@ -335,7 +446,7 @@ judge_success() { # $1 output file, $2 x86 row file, $3 arm row file; current fa
     [ "$(grep -c '^tests/e2e/mac_signal_runtime_test.py' <<<"$args")" -eq 1 ] || return 1
     grep -q $'\t--browser .*/app/zigBrowser.app/Contents/MacOS/zigBrowser --package-evidence .*/evidence/package.manifest --package-commit [0-9a-f]\{40\}$' <<<"$args" || return 1
     ! grep -q 'zig-out/bin/zigBrowser' <<<"$args" || return 1
-    [ "$(cut -f1 "$T/mac/$h/package-tools")" = $'ATTACH\nDITTO\nDETACH\nOTOOL' ] || return 1
+    [ "$(cut -f1 "$T/mac/$h/package-tools")" = $'ATTACH\nDITTO\nDETACH\nLIPO_ARCHS\nLIPO_ARCHS\nCODESIGN_VERIFY\nOTOOL\nOTOOL' ] || return 1
   done
 }
 
@@ -351,6 +462,15 @@ fake_state_mutants() { # base success was real; each one-field evidence/transcri
   ! judge_success "$state/gate.out" "$state/no-identity.row" "$state/arm.row" || bad "M4 dropped identity evidence survived"
   sed '0,/^PACKAGE/{/^PACKAGE/d;}' "$state/x86.row" > "$state/no-package.row"
   ! judge_success "$state/gate.out" "$state/no-package.row" "$state/arm.row" || bad "M4b dropped package identity survived"
+  sed '/^PRODUCER_DMG/d' "$state/gate.out" > "$state/no-producer.out"
+  ! judge_success "$state/no-producer.out" "$state/x86.row" "$state/arm.row" || bad "M4c dropped producer digest survived"
+  sed 's/\tdmg=[0-9a-f]\{64\}\t/\tdmg=0000000000000000000000000000000000000000000000000000000000000000\t/' \
+    "$state/arm.row" > "$state/other-leg-dmg.row"
+  ! judge_success "$state/gate.out" "$state/x86.row" "$state/other-leg-dmg.row" || bad "M4d other leg digest survived"
+  cp -f "$T/mac/$INTEL/producer-tools" "$state/producer-tools"
+  sed '/^PRODUCER_CREATE/d' "$state/producer-tools" > "$T/mac/$INTEL/producer-tools"
+  ! judge_success "$state/gate.out" "$state/x86.row" "$state/arm.row" || bad "M4e unexecuted producer survived"
+  cp -f "$state/producer-tools" "$T/mac/$INTEL/producer-tools"
   sed "/^EVIDENCE${TAB:-$'\t'}$INTEL${TAB:-$'\t'}/d" "$state/gate.out" > "$state/no-evidence.out"
   ! judge_success "$state/no-evidence.out" "$state/x86.row" "$state/arm.row" || bad "M5 dropped evidence copy survived"
   mkdir -p "$T/mac/$INTEL/zb-gate-0000000000000000000000000000000000000000-dead"
@@ -375,6 +495,61 @@ else
   else
     bad "G1 success state lacks selection/output/evidence/cleanup proof"
   fi
+fi
+
+if [ "$fails" -ne 0 ]; then
+  printf 'FAIL\tms-signal-runtime-gate-red\t%s failure(s)\n' "$fails"
+  exit 1
+fi
+
+# The good run above proves that the real script can traverse the executing
+# transports.  These four controls replace only that producer boundary and
+# must all stop before the browser row, with no real PRODUCER_CREATE trace.
+GOOD_GATE="$T/ms_runtime_rows_gate.good"
+cp -f "$R/$GATE" "$GOOD_GATE"
+PRODUCER_LINE=$(grep -nF 'ZB_GATE_COMMIT="$COMMIT" bash packaging/macos/build-dmg.sh' "$GOOD_GATE" | cut -d: -f1)
+[ "$(grep -cF 'ZB_GATE_COMMIT="$COMMIT" bash packaging/macos/build-dmg.sh' "$GOOD_GATE")" -eq 1 ] \
+  || { bad "P0 good gate lacks one exact producer call"; PRODUCER_LINE=0; }
+mutate_producer_line() { # $1 replacement for only the real producer invocation
+  sed "${PRODUCER_LINE}c\\$1" "$GOOD_GATE" > "$R/$GATE"
+}
+check_producer_control() { # $1 name $2 transport $3 expected builds $4 expected attaches $5 fabricated-DMG event
+  local name=$1 transport=$2 want_builds=$3 want_attach=$4 want_fabricated=$5
+  local row_calls=0 creates=0 builds=0 attaches=0 fabricated=0 h
+  fresh_macs
+  run_gate "$transport"
+  for h in "$INTEL" "$ARM"; do
+    [ ! -f "$T/mac/$h/row-args" ] || row_calls=$((row_calls + $(wc -l < "$T/mac/$h/row-args")))
+    [ ! -f "$T/mac/$h/producer-tools" ] \
+      || creates=$((creates + $(grep -c '^PRODUCER_CREATE' "$T/mac/$h/producer-tools")))
+    [ ! -f "$T/mac/$h/package-tools" ] \
+      || attaches=$((attaches + $(grep -c '^ATTACH' "$T/mac/$h/package-tools")))
+  done
+  [ ! -f "$T/ctl/builds" ] || builds=$(grep -c '^GENERIC_BUILD' "$T/ctl/builds")
+  [ ! -f "$T/ctl/generic-fabricated-dmg" ] || fabricated=1
+  if [ "$RC" -ne 0 ] && [ "$row_calls" -eq 0 ] && [ "$creates" -eq 0 ] \
+     && [ "$builds" -eq "$want_builds" ] && [ "$attaches" -eq "$want_attach" ] \
+     && [ "$fabricated" -eq "$want_fabricated" ] \
+     && ! grep -q $'^PASS\tms-runtime-rows-gate' <<<"$OUT"; then
+    ok "producer-control-$name-red-before-row"
+  else
+    bad "P0 producer control $name survived/wrong boundary: rc=$RC rows=$row_calls creates=$creates builds=$builds attaches=$attaches fabricated=$fabricated"
+  fi
+  cp -f "$GOOD_GATE" "$R/$GATE"
+}
+
+if [ "$PRODUCER_LINE" -gt 0 ]; then
+  mutate_producer_line '# ZB_GATE_COMMIT="$COMMIT" bash packaging/macos/build-dmg.sh (name only; producer is not run)'
+  check_producer_control comment-only "$T/bin" 0 0 0
+
+  mutate_producer_line 'printf '\''%s\n'\'' '\''ZB_GATE_COMMIT="$COMMIT" bash packaging/macos/build-dmg.sh'\'' > "$PACKAGE_LOG"'
+  check_producer_control unrelated-command "$T/bin" 0 0 0
+
+  mutate_producer_line 'ZB_GATE_COMMIT="$COMMIT" bash tests/mac/build-on-mac.sh > "$PACKAGE_LOG" 2>&1 || package_rc=$?'
+  check_producer_control ordinary-build-fabricates-dmg "$T/fabricating-bin" 3 2 1
+
+  mutate_producer_line '/usr/bin/tar -cf "$PACKAGE_DMG" build.zig && printf '\''==> Done: %s\n'\'' "$PACKAGE_DMG" > "$PACKAGE_LOG" || package_rc=$?'
+  check_producer_control arbitrary-tar-renamed-dmg "$T/bin" 2 2 0
 fi
 
 if [ "$fails" -ne 0 ]; then
@@ -415,7 +590,7 @@ judge_refusal() { # $1 transcript, $2 row output, $3 host, $4 arch, $5 retained 
   grep -q $'^HOST_STOPPED\ttests/e2e/mac_signal_runtime_test.py\t' <<<"$text" \
     && grep -q $'^RETAINED\t'"$h"$'\t'"$rd"$'\t' <<<"$text" \
     && grep -q $'^EVIDENCE\t'"$h"$'\t'"$a"$'\t' <<<"$text" \
-    && ! grep -q $'^REMOVED\t'"$h" <<<"$text" \
+    && ! grep -qx "REMOVED${TAB:-$'\t'}$h${TAB:-$'\t'}$rd" <<<"$text" \
     && ! grep -q $'^PASS\tms-runtime-rows-gate' <<<"$text" \
     && grep -q $'^PACKAGE\t' <<<"$row" && grep -q $'^LEAK\t' <<<"$row" && [ "$send_ok" -eq 1 ]
 }
