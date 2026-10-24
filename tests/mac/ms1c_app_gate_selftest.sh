@@ -483,6 +483,12 @@ pyrows() { awk -F'\t' -v r="$1" '$1 == r { print $2 }' "$C/py.log" 2>/dev/null |
 tailout() { tail -n 3 "$OUT" | tr '\n' ' '; }
 
 # ── Base run ──
+cp -f -- "$ROOT/tests/mac/ms1c_home_protected_paths.txt" "$R/tests/mac/ms1c_home_protected_paths.txt" \
+  && "${GIT[@]}" add -- tests/mac/ms1c_home_protected_paths.txt \
+  && "${GIT[@]}" -c user.name=selftest -c user.email=selftest@invalid commit -q -m protected-data \
+  || { bad "could not add protected-path data to the scratch repo"; exit 1; }
+TREE=$("${GIT[@]}" rev-parse 'HEAD^{tree}')
+COMMITSHA=$("${GIT[@]}" rev-parse HEAD)
 run_gate pass
 DSHA=$(sed -n "s/^DMG$TB\([0-9a-f]*\)$TB.*/\1/p" "$OUT" | head -n 1)
 if [ "$rc" -eq 0 ] && grep -qxF "PASS${TB}ms1c-app-gate${TB}both-arches${TB}$DSHA" "$OUT" && [ -n "$DSHA" ] \

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# RED, UNREGISTERED (zigBrowser-4pa.73; owner decision 2026-10-24): the MS1c HOME snapshots may skip only the exact
+# REGISTERED GREEN ORACLE (zigBrowser-4pa.73; owner decision 2026-10-24): the MS1c HOME snapshots may skip only the exact
 # paths in tests/mac/ms1c_home_protected_paths.txt, and only for EACCES/EPERM. Every accepted observation records
 # SKIPPED-PROTECTED<TAB><BEFORE|AFTER><TAB>HOME<TAB><path><TAB><EACCES|EPERM> plus its available lstat identity.
 # Every other path, errno or unrecordable name remains incomplete, and the integration starts no workload for it.

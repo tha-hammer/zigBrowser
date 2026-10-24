@@ -235,12 +235,18 @@ DIAG="$REAL_HOME/Library/Logs/DiagnosticReports"
 # The account home is recorded the way the shared /var/folders helper records its roots (SilverRidge 0be64570): every
 # entry's lstat identity "type mode uid gid nlink size mtime_ns ctime_ns inode sha256 link" (sha256 of a regular file's
 # bytes, a symlink's target), in path byte order, with only the exact run root left out (matched by device and inode,
-# not by name). Any traversal, stat or read failure, or a name that cannot be recorded (not UTF-8, a tab or newline),
-# is an ERROR line: the snapshot is incomplete. The before snapshot then starts nothing; the after one is INCONCLUSIVE.
+# not by name). Only EACCES/EPERM while reading an exact path in the committed reviewed list retains the ordinary
+# lstat row plus a side-tagged SKIPPED-PROTECTED marker. Any other traversal, stat or read failure, or a name that
+# cannot be recorded (not UTF-8, a tab or newline), is an ERROR line: the snapshot is incomplete. The before snapshot
+# then starts nothing; the after one is INCONCLUSIVE.
 HOME_SNAP_PY='
-import hashlib, os, stat, sys
-root, exclude, out = sys.argv[1:4]
-rows, errors = [], []
+import errno, hashlib, os, stat, sys
+root, exclude, protected_file, side, out = sys.argv[1:6]
+rows, errors, skipped = [], [], []
+with open(protected_file, encoding="utf-8") as source:
+    protected = set(source.read().splitlines())
+if side not in ("BEFORE", "AFTER"):
+    raise SystemExit("invalid snapshot side")
 KIND = ((stat.S_ISREG, "f"), (stat.S_ISDIR, "d"), (stat.S_ISLNK, "l"), (stat.S_ISFIFO, "p"), (stat.S_ISSOCK, "s"),
         (stat.S_ISCHR, "c"), (stat.S_ISBLK, "b"))
 def digest(p):
@@ -258,10 +264,20 @@ def entry(p, rel):
         st = os.lstat(p)
         kind = next((k for test, k in KIND if test(st.st_mode)), "o")
         link = os.readlink(p) if kind == "l" else "-"
-        sha = digest(p) if kind == "f" else "-"
     except OSError as e:
         err(e)
         return
+    sha = "-"
+    if kind == "f":
+        try:
+            sha = digest(p)
+        except OSError as e:
+            reason = {errno.EACCES: "EACCES", errno.EPERM: "EPERM"}.get(e.errno)
+            if rel in protected and reason:
+                skipped.append((os.fsencode(rel), "SKIPPED-PROTECTED\t%s\tHOME\t%s\t%s" % (side, rel, reason)))
+            else:
+                err(e)
+                return
     try:
         rel.encode("utf-8")
         link.encode("utf-8")
@@ -309,6 +325,8 @@ with open(out, "w", encoding="utf-8") as f:
     f.write("ROOT\t%s\t%s\n" % (root, exclude))
     for _k, line in sorted(rows):
         f.write(line + "\n")
+    for _k, line in sorted(set(skipped)):
+        f.write(line + "\n")
     for e in errors:
         f.write("ERROR\t" + e + "\n")
     f.write("END\t%d\n" % len(rows))
@@ -321,7 +339,7 @@ sys.exit(3 if errors else 0)
 HOME_DIFF_PY='
 import os, sys
 before, after, root, diag, ctl = sys.argv[1:6]
-def load(p):
+def load(p, side):
     try:
         lines = open(p, encoding="utf-8").read().split("\n")
     except OSError:
@@ -331,15 +349,31 @@ def load(p):
     if len(lines) < 2 or not lines[0].startswith("ROOT\t") or not lines[-1].startswith("END\t"):
         return None
     body = lines[1:-1]
-    if any(l.startswith("ERROR\t") for l in body) or lines[-1] != "END\t%d" % len(body):
+    if any(l.startswith("ERROR\t") for l in body):
         return None
-    rows = dict(l.split("\t", 1) for l in body)
-    return rows if len(rows) == len(body) else None
-b, a = load(before), load(after)
+    markers, row_lines = [], []
+    for line in body:
+        if line.startswith("SKIPPED-PROTECTED\t"):
+            fields = line.split("\t")
+            if len(fields) != 5 or fields[1] != side or fields[2] != "HOME" or fields[4] not in ("EACCES", "EPERM"):
+                return None
+            markers.append((fields[3], fields[4]))
+        else:
+            row_lines.append(line)
+    if lines[-1] != "END\t%d" % len(row_lines):
+        return None
+    rows = dict(l.split("\t", 1) for l in row_lines)
+    return (rows, tuple(markers)) if len(rows) == len(row_lines) and len(markers) == len(set(markers)) else None
+b_loaded, a_loaded = load(before, "BEFORE"), load(after, "AFTER")
+b = b_loaded[0] if b_loaded else None
+a = a_loaded[0] if a_loaded else None
 for name, snap in (("before", b), ("after", a)):
     if snap is None:
         print("HOMEAUDIT\tINCONCLUSIVE\tthe %s snapshot is incomplete" % name)
         sys.exit(3)
+if b_loaded[1] != a_loaded[1]:
+    print("HOMEAUDIT\tINCONCLUSIVE\tthe protected-path skip set changed")
+    sys.exit(3)
 crash = []
 for rel in sorted(set(a) - set(b), key=os.fsencode):
     if os.path.dirname(rel) == diag and a[rel].split(" ")[0] == "f":
@@ -371,7 +405,8 @@ print("HOMEAUDIT\t%s\t%d" % ("CHANGED" if deltas else "CLEAN", len(deltas)))
 sys.exit(2 if deltas else 0)
 '
 take() { # $1=before|after
-  local st=0
+  local st=0 side=BEFORE
+  [ "$1" = after ] && side=AFTER
   if [ "$1" = before ]; then
     varfolders_begin "$EV/varfolders" > "$EV/varfolders.begin" 2>&1 || st=1
   else
@@ -379,8 +414,9 @@ take() { # $1=before|after
     tee -a "$EV/leg.log" < "$EV/varfolders.end"
   fi
   if [ "$st" -eq 0 ] || [ "$1" = after ]; then   # the after home snapshot is always taken: the diff reports it
-    /usr/bin/python3 -I -B -X utf8 -c "$HOME_SNAP_PY" "$REAL_HOME" "$RD" "$EV/home.$1" || st=1
-    grep "^ERROR${T}" "$EV/home.$1" >> "$EV/leg.log" 2>/dev/null
+    /usr/bin/python3 -I -B -X utf8 -c "$HOME_SNAP_PY" "$REAL_HOME" "$RD" \
+      "$RD/tests/mac/ms1c_home_protected_paths.txt" "$side" "$EV/home.$1" || st=1
+    grep -E "^(ERROR|SKIPPED-PROTECTED)${T}" "$EV/home.$1" >> "$EV/leg.log" 2>/dev/null
   fi
   log "SNAPSHOT${T}$1${T}rc=$st"
   [ "$st" -eq 0 ] || inconclusive "the $1 snapshot is missing or incomplete"

@@ -23,6 +23,15 @@ DRIVER="$BASE/driver.sh"
 head -n "$marker" "$SOURCE" > "$DRIVER" || exit 1
 cat >> "$DRIVER" <<'DRIVER'
 
+# The production gate consumes the reviewed HOME list from its exact committed run tree. This derivative fixture
+# branches before the base fixture's manifest commit, so reproduce that commit before driving the otool rows.
+cp -f -- "$ROOT/tests/mac/ms1c_home_protected_paths.txt" "$R/tests/mac/ms1c_home_protected_paths.txt" \
+  && "${GIT[@]}" add -- tests/mac/ms1c_home_protected_paths.txt \
+  && "${GIT[@]}" -c user.name=selftest -c user.email=selftest@invalid commit -q -m protected-data \
+  || { bad "could not add protected-path data to the scratch repo"; exit 1; }
+TREE=$("${GIT[@]}" rev-parse 'HEAD^{tree}')
+COMMITSHA=$("${GIT[@]}" rev-parse HEAD)
+
 # Replace only the fake otool. All transports, packaging, app-gate control flow, evidence and cleanup remain the real
 # executing MS1c fixture. Every invocation is recorded with its fake-host role. A required per-slice invocation gets
 # output and status unique to that requested slice; the legacy -L branch models a surviving combined-output parser.
