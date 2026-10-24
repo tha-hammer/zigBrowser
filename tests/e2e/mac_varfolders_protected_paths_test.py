@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""RED, UNREGISTERED, fix-forward (owner decision 2026-10-24; SilverRidge d33e4393): the shared /var/folders
+"""RED, UNREGISTERED, fix-forward (owner decision 2026-10-24; SilverRidge 61be7323): the shared /var/folders
 audit may treat only the 15 evidence-derived exact (token, relative-path) pairs below as permission-protected.
 
 An accepted observation is deterministic evidence:
@@ -109,7 +109,8 @@ def exact_snapshot(row: str, box: base.Box, path: Path, side: str,
     errors = [line for line in lines if line.startswith("ERROR\t")]
     if errors:
         bad(f"{row}: accepted protected pairs must leave no ERROR rows, got {errors!r}")
-    exact_markers(row, [line for line in lines if line.startswith("SKIPPED-PROTECTED\t")], side, expected, reason)
+    marker_lines = [line for line in lines if line.startswith("SKIPPED-PROTECTED\t")]
+    exact_markers(row, marker_lines, side, expected, reason)
     ordinary: dict[tuple[str, str], list[str]] = {}
     for line in lines:
         fields = line.split("\t", 2)
@@ -120,6 +121,9 @@ def exact_snapshot(row: str, box: base.Box, path: Path, side: str,
         got = ordinary.get(pair, [])
         if got != [want]:
             bad(f"{row}: protected {pair!r} must retain its one exact lstat row {want!r}, got {got!r}")
+    want_end = f"END\t{sum(len(values) for values in ordinary.values()) + len(marker_lines)}"
+    if lines[-1:] != [want_end] or sum(line.startswith("END\t") for line in lines) != 1:
+        bad(f"{row}: complete snapshot must end once with {want_end!r}, got {lines[-3:]!r}")
 
 
 def expect_refused(row: str, box: base.Box) -> None:
@@ -148,19 +152,21 @@ def extract_snapshotter(row: str, box: base.Box, helper: Path) -> Path | None:
     return source
 
 
-def forced_snapshot(row: str, box: base.Box, helper: Path, pair: tuple[str, str], error_number: int,
+def forced_snapshot(row: str, box: base.Box, helper: Path, side: str, pair: tuple[str, str], error_number: int,
                     repeats: int) -> tuple[int, Path] | None:
     """Execute the embedded snapshotter with os.walk delivering a selected errno, optionally twice like the Mac."""
+    if side not in ("BEFORE", "AFTER"):
+        raise ValueError(f"invalid snapshot side {side!r}")
     source = extract_snapshotter(row, box, helper)
     if source is None:
         return None
     roots = box.tmp / "roots"
     roots.write_text(f"T\t{box.T}\nC\t{box.C}\nP\t{box.user}\n")
-    output = box.tmp / "forced-snapshot.tsv"
+    output = box.tmp / f"forced-snapshot-{side.lower()}.tsv"
     wrapper = box.tmp / "forced-onerror.py"
     wrapper.write_text("""import os, sys
 real_walk = os.walk
-error_number, repeats = int(sys.argv[1]), int(sys.argv[2])
+error_number, repeats, side = int(sys.argv[1]), int(sys.argv[2]), sys.argv[3]
 def walk(top, topdown=True, onerror=None, followlinks=False):
     def forced(error):
         replacement = OSError(error_number, os.strerror(error_number), error.filename)
@@ -168,12 +174,12 @@ def walk(top, topdown=True, onerror=None, followlinks=False):
             onerror(replacement)
     return real_walk(top, topdown=topdown, onerror=forced if onerror else None, followlinks=followlinks)
 os.walk = walk
-source, roots, output = sys.argv[3:]
-sys.argv = [source, roots, output, "BEFORE"]
+source, roots, output = sys.argv[4:]
+sys.argv = [source, roots, output, side]
 exec(compile(open(source, encoding="utf-8").read(), source, "exec"), {"__name__": "__main__"})
 """)
-    result = subprocess.run([sys.executable, str(wrapper), str(error_number), str(repeats), str(source), str(roots),
-                             str(output)], stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30)
+    result = subprocess.run([sys.executable, str(wrapper), str(error_number), str(repeats), side, str(source),
+                             str(roots), str(output)], stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30)
     if result.stderr:
         bad(f"{row}: forced snapshot wrote stderr {result.stderr.decode(errors='replace')!r}")
     return result.returncode, output
@@ -213,35 +219,43 @@ def run_rows(helper: Path) -> list[str]:
     finally:
         box.close()
 
-    box = base.Box(helper)
-    try:  # R1b: actual duplicate EPERM callbacks collapse to one normalized marker, retaining lstat identity.
-        pair = PROTECTED[0]
-        locked(box, pair)
-        result = forced_snapshot("R1b duplicate EPERM", box, helper, pair, errno.EPERM, 2)
-        if result is not None:
-            rc, output = result
-            if rc != 0:
-                bad(f"R1b duplicate EPERM must remain a complete snapshot, got rc={rc}")
-            elif output.is_file():
-                exact_snapshot("R1b duplicate EPERM", box, output, "BEFORE", (pair,), "EPERM")
-            else:
-                bad("R1b duplicate EPERM returned success without a snapshot")
-    finally:
-        box.close()
+    for side in ("BEFORE", "AFTER"):
+        box = base.Box(helper)
+        try:  # R1b: duplicate EPERM callbacks collapse on each side, retaining lstat identity.
+            pair = PROTECTED[0]
+            locked(box, pair)
+            row = f"R1b duplicate EPERM {side}"
+            result = forced_snapshot(row, box, helper, side, pair, errno.EPERM, 2)
+            if result is not None:
+                rc, output = result
+                if rc != 0:
+                    bad(f"{row} must remain a complete snapshot, got rc={rc}")
+                elif output.is_file():
+                    exact_snapshot(row, box, output, side, (pair,), "EPERM")
+                else:
+                    bad(f"{row} returned success without a snapshot")
+        finally:
+            box.close()
 
-    box = base.Box(helper)
-    try:  # R1c: exact pair plus non-permission errno is still an ERROR and incomplete.
-        pair = PROTECTED[0]
-        locked(box, pair)
-        result = forced_snapshot("R1c EIO", box, helper, pair, errno.EIO, 1)
-        if result is not None:
-            rc, output = result
-            lines = snapshot_rows(output) if output.is_file() else []
-            if rc != 3 or any(line.startswith("SKIPPED-PROTECTED\t") for line in lines) \
-                    or not any(line.startswith(f"ERROR\t{pair[0]}\t{pair[1]}\t") for line in lines):
-                bad(f"R1c EIO must remain a non-exempt ERROR, got rc={rc} {lines[-4:]!r}")
-    finally:
-        box.close()
+    for side in ("BEFORE", "AFTER"):
+        box = base.Box(helper)
+        try:  # R1c: an exact pair plus EIO is an exact ERROR and incomplete on each side.
+            pair = PROTECTED[0]
+            locked(box, pair)
+            row = f"R1c EIO {side}"
+            result = forced_snapshot(row, box, helper, side, pair, errno.EIO, 1)
+            if result is not None:
+                rc, output = result
+                lines = snapshot_rows(output) if output.is_file() else []
+                markers = [line for line in lines if line.startswith("SKIPPED-PROTECTED\t")]
+                errors = [line for line in lines if line.startswith("ERROR\t")]
+                want_error = f"ERROR\t{pair[0]}\t{pair[1]}\t{os.strerror(errno.EIO)}"
+                ends = [line for line in lines if line.startswith("END\t")]
+                if rc != 3 or markers or errors != [want_error] or len(ends) != 1:
+                    bad(f"{row} must retain one exact non-exempt ERROR in an incomplete snapshot, got rc={rc} "
+                        f"markers={markers!r} errors={errors!r} ends={ends!r}")
+        finally:
+            box.close()
 
     # R2: exact strings only. Suffix, one-character change, parent and same basename elsewhere remain fail closed.
     for index, pair in enumerate(PROTECTED):
