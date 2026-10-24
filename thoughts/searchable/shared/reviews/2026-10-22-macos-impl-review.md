@@ -6,6 +6,18 @@
 
 The normative plan is `thoughts/searchable/shared/plans/2026-10-14-14-30-macos-launch-tdd-plan.md`, rev 32. Its REVIEW, three milestone VALIDATION files, and RULE-AUDIT are required review context. Every commit review records its verdict, the exact first minimum if blocked, evidence and command exit codes, mutant results, Mac-run authorization if any, and whether the SHA is safe to push.
 
+## 2026-10-24 — MS1c exec-arch short-socket GREEN `696ce52c`
+
+**APPROVED on its exact content.** Exact `696ce52ccfff11d928066cfc4c2d6721122a3bfd` is the green for complete red `484cc6ba`, approved in review `2d882fcd`. It changes exactly four files. The real probe now accepts an explicit `--socket-dir`, uses the short basename `a.sock`, and independently rejects the socket or token path at 104 bytes or more before `Popen`. It removes stale output before that refusal, cleans both endpoint artifacts on every launched path, removes only a fallback directory it created itself, and retains the same preflight and cleanup for legacy callers. The real MS1c gate supplies exactly `--socket-dir "$RD/s"`; its existing private mode-0700 run-root directory remains caller-owned. The registered oracle's only edit is its RED/UNREGISTERED-to-GREEN/REGISTERED status text, so none of the approved assertions was weakened.
+
+Registration is complete and fail-closed: the new side-effecting command is a direct dependency of both `test-mac-ms1c-gate` and aggregate `test`, has no skip mapping, and names the oracle, probe, TERM-only helper, real gate, fake-Mac gate fixture and all of that fixture's packaging/transport/workload inputs. `git diff --check` is clean.
+
+From a clean archive of the exact commit under `env -i`, private HOME/TMP/XDG state and private user/network/PID/mount namespaces, `zig build -j4 test-mac-ms1c-gate --summary all` passed **8/8**. The complete app-gate P1–P10/F1–F29 matrix, HOME codec/protected rows, otool O1–O12 and TERM-only R/J/G/S/A rows remained green; the new oracle printed `PASS<TAB>ms1c-exec-arch-socket-red<TAB>short-path, real caller, preflight, cleanup and six mutants`.
+
+I independently reconstructed four one-change production mutants from the exact commit and ran each through the real registered `test-mac-ms1c-gate` step with its own caches. All four exited 1 for the intended causal row: dropping only the socket preflight produced the token diagnostic instead of the bounded socket diagnostic; dropping only the token preflight launched the reader/browser and missed the bounded token refusal; omitting only socket cleanup or only token cleanup left the corresponding endpoint behind. Together with the oracle's six embedded restore-TMPDIR and real-caller mutants, this satisfies every green condition in `2d882fcd`.
+
+This closes consumed-run item 3 hostlessly. Item 4—the SIGTERM-only `killpg` EPERM/LEAK fail-closed path—remains open. This approval does not authorize a Mac retry/contact, retroactively alter the consumed `7f29758e` result, or advance the reviewer-named push-safe SHA.
+
 ## R1–R4 review rules
 
 ### R1 — behavior proof versus source tripwires
