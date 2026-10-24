@@ -4241,6 +4241,41 @@ pub fn build(b: *std.Build) void {
     }) |input| mac_rows_output_selftest.addFileInput(b.path(input));
     mac_build_script_step.dependOn(&mac_rows_output_selftest.step);
     test_step.dependOn(&mac_rows_output_selftest.step);
+    // Item D (SilverRidge 0b4c44bd): the shim installs only ignored dispositions plus main-queue dispatch signal
+    // sources, and the packaged exact-commit app's live signal row is driven through two executing fake Macs.
+    // Both hostless oracles are side-effecting and always run inside a private user/PID/mount/network namespace.
+    const mac_signal_delivery = b.addSystemCommand(&.{
+        "unshare", "--user", "--map-root-user", "--pid", "--fork", "--mount-proc", "--net",
+        "python3", "-X", "dev", "tests/e2e/mac_signal_delivery_test.py",
+    });
+    mac_signal_delivery.has_side_effects = true;
+    for ([_][]const u8{
+        "tests/e2e/mac_signal_delivery_test.py", "src/wkwebview_shim.m",
+    }) |input| mac_signal_delivery.addFileInput(b.path(input));
+    const mac_signal_runtime = b.addSystemCommand(&.{
+        "unshare", "--user", "--map-root-user", "--pid", "--fork", "--mount-proc", "--net",
+        "python3", "-X", "dev", "tests/e2e/mac_signal_runtime_test.py", "--selftest",
+    });
+    mac_signal_runtime.has_side_effects = true;
+    for ([_][]const u8{
+        "tests/e2e/mac_signal_runtime_test.py",      "tests/e2e/automation_core_test.py",
+        "tests/e2e/mac_signal_delivery_test.py",     "src/wkwebview_shim.m",
+        "tests/mac/ms_signal_runtime_gate_red.sh",   "tests/mac/ms_runtime_rows_gate.sh",
+        "tests/mac/ms_runtime_rows_evidence_selftest.sh",
+        "tests/mac/ms_runtime_rows_output_selftest.sh",
+        "tests/mac/mac_varfolders_audit.sh",         "tests/mac/mac_crashreports_audit.sh",
+        "tests/mac/mac_config.sh",                   "tests/mac/mac_gate_lib.sh",
+        "tests/mac/mac_gate_output.sh",              "tests/mac/build-on-mac.sh",
+        "tests/mac/known_hosts",                     "packaging/macos/build-dmg.sh",
+        "packaging/macos/Info.plist",                "packaging/macos/entitlements.plist",
+        "packaging/assets/zigBrowser.png",
+    }) |input| mac_signal_runtime.addFileInput(b.path(input));
+    const mac_signal_runtime_step = b.step("test-mac-signal-runtime", "Dispatch-source delivery and exact-package signal runtime gate (hostless)");
+    mac_signal_runtime_step.dependOn(&mac_signal_delivery.step);
+    mac_signal_runtime_step.dependOn(&mac_signal_runtime.step);
+    mac_build_script_step.dependOn(&mac_signal_runtime.step);
+    test_step.dependOn(&mac_signal_delivery.step);
+    test_step.dependOn(&mac_signal_runtime.step);
     // MS1.4: the two-host gate fails closed on no GUI session, wrong arch, a missing SDK and zero recorded assertions.
     const mac_gate_selftest = b.addSystemCommand(&.{ "bash", "tests/mac/gate_selftest.sh" });
     for ([_][]const u8{

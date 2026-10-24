@@ -63,6 +63,7 @@ set -euo pipefail
 # green), plus the coverage row of the e2e-only ephemeral store (hook 16). A run request names its rows with
 # ZB_RUNTIME_ROWS="<test id> ..." (unset: every row); the want of each stays here.
 ROWS=(
+  "tests/e2e/mac_signal_runtime_test.py|green|mac-signal-runtime"
   "tests/e2e/mac_ephemeral_store_test.py|green|ms3-ephemeral-store"
   "tests/e2e/mac_ms2a_load_fail_no_quit_test.py|green|ms2a-load-fail-no-quit"
   "tests/e2e/mac_ms2c_recover_slow_server_test.py|green|ms2c-recover-slow-server"
@@ -105,7 +106,57 @@ if [[ "$EVD" != /* ]] || [ ! -d "$EVD" ] || [ -L "$EVD" ] || [ -n "$(ls -A -- "$
 fi
 . tests/mac/mac_gate_lib.sh
 . tests/mac/mac_gate_output.sh
-trap mac_remove_run_dirs EXIT
+
+# The signal row consumes one universal DMG made by the repository's real package entry point in a fresh,
+# exact-commit controller checkout. The ordinary per-host builds below may create build outputs only; neither they
+# nor either runtime leg may create a DMG or substitute an app directory for this producer artifact.
+NEED_SIGNAL=0
+for row in "${RUN_ROWS[@]}"; do [ "${row##*|}" = mac-signal-runtime ] && NEED_SIGNAL=1; done
+COMMIT=$(git rev-parse --verify "${ZB_GATE_COMMIT:-HEAD}^{commit}")
+PRODUCER_ROOT=
+PACKAGE_DMG=
+PACKAGE_IDENTITY=
+cleanup_controller() {
+  local rc=$?
+  mac_remove_run_dirs
+  if [ -n "$PRODUCER_ROOT" ]; then
+    case "$PRODUCER_ROOT" in "${TMPDIR:-/tmp}"/zb-runtime-package-*)
+      rm -rf -- "${PRODUCER_ROOT:?}"
+    esac
+  fi
+  return "$rc"
+}
+trap cleanup_controller EXIT
+if [ "$NEED_SIGNAL" -eq 1 ]; then
+  PRODUCER_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/zb-runtime-package-XXXXXX")
+  PRODUCER_REPO="$PRODUCER_ROOT/repo"
+  PACKAGE_LOG="$EVD/package-producer.log"
+  git clone -q --no-local --no-checkout "$PWD" "$PRODUCER_REPO"
+  git -C "$PRODUCER_REPO" checkout -q --detach "$COMMIT"
+  [ "$(git -C "$PRODUCER_REPO" rev-parse HEAD)" = "$COMMIT" ] \
+    && [ -z "$(git -C "$PRODUCER_REPO" status --porcelain)" ] \
+    || { echo "FAIL: package producer checkout is not clean exact commit $COMMIT" >&2; exit 1; }
+  PACKAGE_DMG="$PRODUCER_REPO/zigBrowser_0.2.0_macos.dmg"
+  PACKAGE_IDENTITY="$PRODUCER_ROOT/signal-package.identity"
+  [ ! -e "$PACKAGE_DMG" ] && [ ! -L "$PACKAGE_DMG" ] \
+    || { echo "FAIL: fresh producer checkout already contains the fixed-name DMG" >&2; exit 1; }
+  package_rc=0
+  (cd "$PRODUCER_REPO" && ZB_GATE_COMMIT="$COMMIT" bash packaging/macos/build-dmg.sh) > "$PACKAGE_LOG" 2>&1 || package_rc=$?
+  cat -- "$PACKAGE_LOG"
+  [ "$package_rc" -eq 0 ] || { echo "FAIL: packaging/macos/build-dmg.sh failed (exit $package_rc)" >&2; exit 1; }
+  package_done=$(sed -n 's/^==> Done: //p' "$PACKAGE_LOG")
+  [ "$(printf '%s\n' "$package_done" | grep -c .)" -eq 1 ] && [ "$package_done" = "$PACKAGE_DMG" ] \
+    || { echo "FAIL: package producer did not name exactly $PACKAGE_DMG" >&2; exit 1; }
+  [ -f "$PACKAGE_DMG" ] && [ ! -L "$PACKAGE_DMG" ] && [ -s "$PACKAGE_DMG" ] \
+    || { echo "FAIL: package producer did not create a regular nonempty DMG" >&2; exit 1; }
+  PACKAGE_SHA=$(sha256sum "$PACKAGE_DMG" | awk '{print $1}')
+  PACKAGE_BYTES=$(wc -c < "$PACKAGE_DMG")
+  [[ "$PACKAGE_SHA" =~ ^[0-9a-f]{64}$ ]] && [ "$PACKAGE_BYTES" -gt 0 ] \
+    || { echo "FAIL: package producer DMG digest/size is invalid" >&2; exit 1; }
+  printf '%s\t%s\n' "$COMMIT" "$PACKAGE_SHA" > "$PACKAGE_IDENTITY"
+  printf 'PRODUCER_DMG\tpackaging/macos/build-dmg.sh\t%s\t%s\t%s\n' \
+    "$COMMIT" "$PACKAGE_SHA" "$PACKAGE_BYTES"
+fi
 
 
 BUILD_TIMEOUT="${ZB_MAC_BUILD_TIMEOUT:-600}"
@@ -114,8 +165,15 @@ LEG_TIMEOUT="${ZB_MAC_LEG_TIMEOUT:-900}"
 verify_host() { # $1=host $2=key $3=label
   local host="$1" key="$2" label="$3"
   local -a SSH; mapfile -d '' SSH < <(mac_ssh_opts "$key")
+  local -a SCP; mapfile -d '' SCP < <(mac_scp_opts "$key")
   echo "== build + runtime rows on $host ($label) ==" >&2
   mac_build "$host" "$key" "$BUILD_TIMEOUT" || { echo "FAIL: build on $host timed out/failed" >&2; return 1; }
+  if [ "$NEED_SIGNAL" -eq 1 ]; then
+    "${SCP[@]}" "$PACKAGE_DMG" "$host:$MAC_RDIR/zigBrowser-exact.dmg" </dev/null \
+      || { echo "FAIL: could not stage the producer DMG on $host" >&2; return 1; }
+    "${SCP[@]}" "$PACKAGE_IDENTITY" "$host:$MAC_RDIR/signal-package.identity" </dev/null \
+      || { echo "FAIL: could not stage the producer identity on $host" >&2; return 1; }
+  fi
   local leg_rc=0 row legout="$EVD/$label/leg.out"
   local -a qrows=()
   # ssh hands the remote command to the login shell as ONE string: quote each row, or its `|` would be a pipe there.
@@ -184,6 +242,108 @@ printf 'EVIDENCE_ARMED\n'
 varfolders_begin "$root/evidence/varfolders" || exit 5   # refused (fail closed): no RUNNING marker, no row, no browser
 # The crash-report listing (orchestrator 2026-10-23): any new report there makes this leg INCONCLUSIVE, never a pass.
 crashreports_begin "$root/evidence/crashreports" "$crash_dir" || exit 5   # refused, as above
+
+# Only the signal row needs the package. Its DMG and controller identity arrive before this leg starts; verify that
+# exact digest before attach, preserve it through read-only attach/ditto/detach, and bind the universal executable,
+# shim reference, signature and exact commit into one fixed manifest before the runtime row can launch.
+app_digest() {
+  local app=${1:?}
+  /usr/bin/python3 - "$app" <<'PY'
+import hashlib, os, stat, sys
+from pathlib import Path
+app = Path(sys.argv[1])
+entries = []
+for dirpath, dirs, names in os.walk(app, followlinks=False):
+    dirs.sort(key=os.fsencode); names.sort(key=os.fsencode); base = Path(dirpath)
+    for name in dirs + names:
+        path = base / name
+        entries.append((os.fsencode(os.path.relpath(path, app)), path))
+digest = hashlib.sha256()
+for rel, path in sorted(entries):
+    info = path.lstat()
+    if stat.S_ISREG(info.st_mode):
+        item = hashlib.sha256()
+        with path.open("rb") as source:
+            for chunk in iter(lambda: source.read(1024 * 1024), b""): item.update(chunk)
+        kind, payload = b"f", item.digest()
+    elif stat.S_ISDIR(info.st_mode): kind, payload = b"d", b""
+    elif stat.S_ISLNK(info.st_mode): kind, payload = b"l", os.fsencode(os.readlink(path))
+    else: raise SystemExit(1)
+    for field in (rel, kind, ("%o" % stat.S_IMODE(info.st_mode)).encode(), payload):
+        digest.update(len(field).to_bytes(8, "big")); digest.update(field)
+print(digest.hexdigest())
+PY
+}
+prepare_signal_package() {
+  local identity commit want_dmg extra dmg dmg_before dmg_after dmg_bytes att dev mp mounted_app mounted_sha
+  local app app_sha exe build shim exe_sha build_sha shim_sha exe_archs shim_archs x86_refs arm_refs
+  identity="$root/signal-package.identity"
+  [ -f "$identity" ] && [ ! -L "$identity" ] || return 1
+  IFS=$'\t' read -r commit want_dmg extra < "$identity" || return 1
+  [ -z "${extra:-}" ] && [[ "$commit" =~ ^[0-9a-f]{40}$ ]] && [[ "$want_dmg" =~ ^[0-9a-f]{64}$ ]] \
+    || return 1
+  [ "$(wc -l < "$identity")" -eq 1 ] || return 1
+  local run_commit=${root##*/zb-gate-}; run_commit=${run_commit%%-*}
+  [ "$run_commit" = "$commit" ] || return 1
+  dmg="$root/zigBrowser-exact.dmg"
+  [ -f "$dmg" ] && [ ! -L "$dmg" ] && [ -s "$dmg" ] || return 1
+  dmg_before=$(shasum -a 256 "$dmg" | awk '{print $1}') || return 1
+  [ "$dmg_before" = "$want_dmg" ] || return 1
+  dmg_bytes=$(wc -c < "$dmg")
+  [ "$dmg_bytes" -gt 0 ] || return 1
+  mkdir "$root/mnt" "$root/app" || return 1
+  att=$(hdiutil attach -readonly -nobrowse -noautoopen -mountpoint "$root/mnt" "$dmg") || return 1
+  dev=$(printf '%s\n' "$att" | awk '$1 ~ /^\/dev\/disk[0-9]+$/ {print $1; exit}')
+  mp=$(printf '%s\n' "$att" | awk -F'\t' -v m="$root/mnt" '$NF == m {print $NF; exit}')
+  [ -n "$dev" ] && [ "$mp" = "$root/mnt" ] || return 1
+  mounted_app="$root/mnt/zigBrowser.app"
+  [ -d "$mounted_app" ] && [ ! -L "$mounted_app" ] || { hdiutil detach "$dev"; return 1; }
+  mounted_sha=$(app_digest "$mounted_app") || { hdiutil detach "$dev"; return 1; }
+  ditto "$mounted_app" "$root/app/zigBrowser.app" || { hdiutil detach "$dev"; return 1; }
+  app="$root/app/zigBrowser.app"
+  app_sha=$(app_digest "$app") || { hdiutil detach "$dev"; return 1; }
+  hdiutil detach "$dev" || return 1
+  dmg_after=$(shasum -a 256 "$dmg" | awk '{print $1}') || return 1
+  [ "$dmg_before" = "$dmg_after" ] && [ "$mounted_sha" = "$app_sha" ] || return 1
+  exe="$app/Contents/MacOS/zigBrowser"
+  build="$root/zig-out/bin/zigBrowser"
+  shim="$app/Contents/Frameworks/libwkwebview_shim.dylib"
+  [ -f "$exe" ] && [ ! -L "$exe" ] && [ -s "$exe" ] && [ -x "$exe" ] || return 1
+  [ -f "$build" ] && [ ! -L "$build" ] && [ -s "$build" ] || return 1
+  [ -f "$shim" ] && [ ! -L "$shim" ] && [ -s "$shim" ] || return 1
+  exe_sha=$(shasum -a 256 "$exe" | awk '{print $1}')
+  build_sha=$(shasum -a 256 "$build" | awk '{print $1}')
+  shim_sha=$(shasum -a 256 "$shim" | awk '{print $1}')
+  [ "$exe_sha" != "$build_sha" ] && ! [ "$exe" -ef "$build" ] || return 1
+  exe_archs=$(lipo -archs "$exe" | tr ' ' '\n' | LC_ALL=C sort | tr '\n' ' ') || return 1
+  shim_archs=$(lipo -archs "$shim" | tr ' ' '\n' | LC_ALL=C sort | tr '\n' ' ') || return 1
+  [ "$exe_archs" = 'arm64 x86_64 ' ] && [ "$shim_archs" = 'arm64 x86_64 ' ] || return 1
+  codesign --verify --strict --deep --verbose=2 "$app" > "$root/evidence/package.codesign" 2>&1 || return 1
+  otool -arch x86_64 -L "$exe" > "$root/evidence/package.otool-x86_64" 2>&1 || return 1
+  otool -arch arm64 -L "$exe" > "$root/evidence/package.otool-arm64" 2>&1 || return 1
+  x86_refs=$(grep -cF "${T}@executable_path/../Frameworks/libwkwebview_shim.dylib (" \
+    "$root/evidence/package.otool-x86_64")
+  arm_refs=$(grep -cF "${T}@executable_path/../Frameworks/libwkwebview_shim.dylib (" \
+    "$root/evidence/package.otool-arm64")
+  [ "$x86_refs" -eq 1 ] && [ "$arm_refs" -eq 1 ] || return 1
+  {
+    printf 'PACKAGE_COMMIT\t%s\n' "$commit"
+    printf 'PACKAGE_PRODUCER\tpackaging/macos/build-dmg.sh\t%s\t%s\n' "$commit" "$want_dmg"
+    printf 'PACKAGE_FLOW\thdiutil-attach-readonly\tditto\n'
+    printf 'PACKAGE_DMG\t%s\t%s\t%s\n' "$dmg_after" "$dmg_bytes" "$dmg"
+    printf 'PACKAGE_APP\t%s\t%s\n' "$app_sha" "$app"
+    printf 'PACKAGE_EXECUTABLE\t%s\t%s\t%s\n' "$exe_sha" "$(wc -c < "$exe")" "$exe"
+    printf 'PACKAGE_BUILD_EXECUTABLE\t%s\t%s\t%s\n' "$build_sha" "$(wc -c < "$build")" "$build"
+    printf 'PACKAGE_SHIM\t%s\t%s\t%s\n' "$shim_sha" "$(wc -c < "$shim")" "$shim"
+    printf 'PACKAGE_UNIVERSAL\texecutable=arm64,x86_64\tshim=arm64,x86_64\n'
+    printf 'PACKAGE_CODESIGN\t--verify --strict --deep\trc=0\n'
+    printf 'PACKAGE_SHIM_REF\t%s\tx86_64=1\tarm64=1\n' \
+      '@executable_path/../Frameworks/libwkwebview_shim.dylib'
+  } > "$root/evidence/package.manifest"
+}
+need_signal=0
+for selected in "$@"; do [ "${selected##*|}" = mac-signal-runtime ] && need_signal=1; done
+if [ "$need_signal" -eq 1 ]; then prepare_signal_package || { printf 'PACKAGE_REFUSED\n'; exit 1; }; fi
 # Durable before any row: only a clean finish below removes it, so a timeout or a death holds this host.
 printf 'RUNNING\t%s\tthe leg did not finish; processes may be left running\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
   > "$root/LEAKED" || exit 1
@@ -195,7 +355,12 @@ for row in "$@"; do
   # pipe holds would be missed). A search that cannot read the file stops the host as a possible leak.
   rowlog="$root/evidence/rows/${id}.out"
   mkdir -p "$root/evidence/rows" || exit 1
-  python3 "$file" --browser zig-out/bin/zigBrowser > "$rowlog" 2>&1; rc=$?
+  if [ "$id" = mac-signal-runtime ]; then
+    commit=${root##*/zb-gate-}; commit=${commit%%-*}
+    python3 "$file" --browser "$root/app/zigBrowser.app/Contents/MacOS/zigBrowser" --package-evidence "$root/evidence/package.manifest" --package-commit "$commit" > "$rowlog" 2>&1; rc=$?
+  else
+    python3 "$file" --browser "$root/zig-out/bin/zigBrowser" > "$rowlog" 2>&1; rc=$?
+  fi
   { grep -E "^(ASSERT|RED_SHAPE|RED_SHAPE_MISMATCH|PASS|FAIL)$T" "$rowlog"; tail -n 40 "$rowlog"; } | sed "s|^|    $file: |"
   verdict=MATCH
   case "$want" in

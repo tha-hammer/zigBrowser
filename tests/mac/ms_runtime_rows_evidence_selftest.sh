@@ -100,10 +100,12 @@ cat > "$T/macbin/python3" <<'EOF'
 # A row (each would launch a browser): its whole output is longer than the leg's 40-line console tail.
 printf '%s\n' "$1" >> "$ZB_FAKE_MAC/row-calls"
 case "$1" in
+  tests/e2e/mac_signal_runtime_test.py) id=mac-signal-runtime ;;
   tests/e2e/mac_ms2a_load_fail_no_quit_test.py) id=ms2a-load-fail-no-quit ;;
   tests/e2e/mac_ms2c_recover_slow_server_test.py) id=ms2c-recover-slow-server ;;
   *) printf 'unexpected row %s\n' "$1"; exit 2 ;;
 esac
+# The executing package/signal fake-host path for mac-signal-runtime is tests/mac/ms_signal_runtime_gate_red.sh.
 printf 'FIRST\t%s\n' "$id"; for n in $(seq 1 60); do printf 'line %d of %s\n' "$n" "$id"; done
 if [ -e "$ZB_FAKE_MAC/ctl-leak" ]; then printf 'FAIL\t%s\nLEAK\t4242\t4242\tThu Oct 22 21:00:00 2026\t/x/zigBrowser --e2e-protocol\n' "$id"; exit 1; fi
 if [ -e "$ZB_FAKE_MAC/ctl-lock" ]; then mkdir -p locked/x && : > locked/x/f && chmod 500 locked/x; fi

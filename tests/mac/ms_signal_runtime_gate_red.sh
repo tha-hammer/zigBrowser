@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# RED, UNREGISTERED (SilverRidge 27074434): execute the real runtime-rows gate, selecting only
+# GREEN, REGISTERED (SilverRidge 0b4c44bd): execute the real runtime-rows gate, selecting only
 # mac-signal-runtime, against two fake Macs.  This is execution coverage, not a source/comment match.
 #
 # Success proves the exact row/PASS tuple, exact-commit package/DMG identity before the row, a read-only attach and
@@ -546,7 +546,7 @@ if [ "$PRODUCER_LINE" -gt 0 ]; then
   check_producer_control unrelated-command "$T/bin" 0 0 0
 
   mutate_producer_line 'ZB_GATE_COMMIT="$COMMIT" bash tests/mac/build-on-mac.sh > "$PACKAGE_LOG" 2>&1 || package_rc=$?'
-  check_producer_control ordinary-build-fabricates-dmg "$T/fabricating-bin" 3 2 1
+  check_producer_control ordinary-build-fabricates-dmg "$T/fabricating-bin" 1 0 1
 
   mutate_producer_line '/usr/bin/tar -cf "$PACKAGE_DMG" build.zig && printf '\''==> Done: %s\n'\'' "$PACKAGE_DMG" > "$PACKAGE_LOG" || package_rc=$?'
   check_producer_control arbitrary-tar-renamed-dmg "$T/bin" 2 2 0

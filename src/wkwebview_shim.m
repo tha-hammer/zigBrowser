@@ -68,7 +68,6 @@ static void zb_resolve_profile_store(void);  // defined below; called lazily fro
 // navigation failure in the same window still exits (RoseCat 6227.2 #4, identity not a per-window bit).
 // The tag lives on the WKNavigation and is freed with it (no set to prune, no leak).
 static const void *const kZBRoutedNavKey = &kZBRoutedNavKey;
-static void handle_signal(int signo);
 
 static void emit_safe_field(const char *text) {
   const char *p = text != NULL ? text : "";
@@ -266,19 +265,82 @@ static void stop_nsapp_run_loop(void) {
 - (void)reloadMainWindowBypassingCache:(BOOL)bypassCache;
 @end
 
-static void handle_signal(int signo) {
-  ZBAppHost *app = g_active_app;
-  if (app == nil) {
-    _exit(signo == SIGINT ? ZB_EXIT_CANCELLED : ZB_EXIT_SUCCESS);
+// ZB_SIGNAL_DELIVERY_BEGIN
+// POSIX dispositions stay ignored while dispatch sources consume the signals on the main queue. The handlers may
+// message the Objective-C host because they run in ordinary dispatch context, never in an asynchronous signal frame.
+static dispatch_source_t g_sigint_source = NULL;
+static dispatch_source_t g_sigterm_source = NULL;
+static dispatch_source_t g_sighup_source = NULL;
+
+static dispatch_source_t zb_make_signal_source(int signo, ZBAppHost *app) {
+  dispatch_source_t source = dispatch_source_create(DISPATCH_SOURCE_TYPE_SIGNAL, (uintptr_t)signo, 0,
+                                                     dispatch_get_main_queue());
+  if (source == NULL) {
+    return NULL;
   }
-  dispatch_async(dispatch_get_main_queue(), ^{
+  dispatch_source_set_event_handler(source, ^{
     if (signo == SIGHUP) {
       [app reloadMainWindowBypassingCache:NO];
     } else {
       [app requestExit:ZB_EXIT_CANCELLED];
     }
   });
+  dispatch_resume(source);
+  return source;
 }
+
+static void zb_remove_signal_sources(void) {
+  if (g_sigint_source != NULL) {
+    dispatch_source_cancel(g_sigint_source);
+    g_sigint_source = NULL;
+  }
+  if (g_sigterm_source != NULL) {
+    dispatch_source_cancel(g_sigterm_source);
+    g_sigterm_source = NULL;
+  }
+  if (g_sighup_source != NULL) {
+    dispatch_source_cancel(g_sighup_source);
+    g_sighup_source = NULL;
+  }
+  signal(SIGINT, SIG_DFL);
+  signal(SIGTERM, SIG_DFL);
+  signal(SIGHUP, SIG_DFL);
+}
+
+static BOOL zb_install_signal_sources(ZBAppHost *app) {
+  signal(SIGINT, SIG_IGN);
+  signal(SIGTERM, SIG_IGN);
+  signal(SIGHUP, SIG_IGN);
+  g_sigint_source = zb_make_signal_source(SIGINT, app);
+  g_sigterm_source = zb_make_signal_source(SIGTERM, app);
+  g_sighup_source = zb_make_signal_source(SIGHUP, app);
+  if (g_sigint_source == NULL || g_sigterm_source == NULL || g_sighup_source == NULL) {
+    zb_remove_signal_sources();
+    return NO;
+  }
+  return YES;
+}
+// ZB_SIGNAL_DELIVERY_END
+
+// ZB_SIGNAL_DISPOSITION_SEAM_BEGIN
+static const char *zb_debug_signal_disposition_name(int signo) {
+  struct sigaction action;
+  if (sigaction(signo, NULL, &action) != 0) return "ERROR";
+  if (action.sa_handler == SIG_IGN) return "SIG_IGN";
+  if (action.sa_handler == SIG_DFL) return "SIG_DFL";
+  return "CUSTOM";
+}
+
+static void zb_debug_report_signal_dispositions(BOOL hooks_enabled) {
+  if (!hooks_enabled) return;
+  const char *enabled = getenv("ZB_DEBUG_SIGNAL_DISPOSITIONS");
+  if (enabled == NULL || strcmp(enabled, "1") != 0) return;
+  fprintf(stderr, "SIGNAL_DISPOSITION\tSIGINT=%s\tSIGTERM=%s\tSIGHUP=%s\n",
+          zb_debug_signal_disposition_name(SIGINT), zb_debug_signal_disposition_name(SIGTERM),
+          zb_debug_signal_disposition_name(SIGHUP));
+  fflush(stderr);
+}
+// ZB_SIGNAL_DISPOSITION_SEAM_END
 
 @interface ZBWindowHost : NSObject <WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandlerWithReply, NSWindowDelegate>
 @property(nonatomic, assign) ZBAppHost *app;
@@ -3024,12 +3086,17 @@ int zb_app_run(const char *uri, int print_title, int e2e_protocol) {
     c_app.host = (__bridge void *)host;
 
     g_active_app = host;
-    signal(SIGINT, handle_signal);
-    signal(SIGTERM, handle_signal);
-    signal(SIGHUP, handle_signal);
+    if (!zb_install_signal_sources(host)) {
+      g_active_app = nil;
+      zb_publish_window_snapshot();
+      application.delegate = nil;
+      return ZB_EXIT_WEBVIEW_INIT_FAILED;
+    }
+    zb_debug_report_signal_dispositions(zb_auto_test_hooks_enabled());
 
     ZbWindow *window = zb_window_new(&c_app, NULL);
     if (window == NULL) {
+      zb_remove_signal_sources();
       g_active_app = nil;
       zb_publish_window_snapshot();  // RoseCat 6556: a read after the app clears gets [], never a stale live snapshot
       return ZB_EXIT_WEBVIEW_INIT_FAILED;
@@ -3041,9 +3108,7 @@ int zb_app_run(const char *uri, int print_title, int e2e_protocol) {
     [application run];
     zb_auto_on_loop_ended();  // app loop ended: drain queued jobs so their refs release (no leak)
 
-    signal(SIGINT, SIG_DFL);
-    signal(SIGTERM, SIG_DFL);
-    signal(SIGHUP, SIG_DFL);
+    zb_remove_signal_sources();
     g_active_app = nil;
     zb_publish_window_snapshot();  // RoseCat 6556: a read after the app clears gets [], never a stale live snapshot
     application.delegate = nil;

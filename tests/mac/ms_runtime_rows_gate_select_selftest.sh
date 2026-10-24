@@ -84,10 +84,15 @@ cat > "$T/bin/scp" <<EOF
 printf 'CONTACT\tscp\t%s\n' "\$(grep -c '^ROWS_SELECTED' "$T/gate.out" 2>/dev/null)" >> "$T/ctl/transcript"
 i=\$(cat "$T/ctl/n" 2>/dev/null || echo 0); echo \$((i + 1)) > "$T/ctl/n"
 printf '%s\0' scp "\$@" > "$T/ctl/call.\$i"
-dst="\${@: -1}" src="\${@: -2:1}"
+args=()
+while [ \$# -gt 0 ]; do case "\$1" in -i|-o|-F|-P|-S|-c|-l) shift 2 ;; -*) shift ;; *) args+=("\$1"); shift ;; esac; done
+[ "\${#args[@]}" -ge 2 ] || exit 1
+dst="\${args[\${#args[@]}-1]}"; src="\${args[0]}"
+case "\$dst" in *:*) exit 0 ;; esac   # controller/package uploads are accepted by this selection-only transport
 case "\$src" in   # a fetch of the leg's evidence: the archive and its matching sha256
   *.sha256) printf '%s  evidence.tar\n' "\$(printf 'stub\n' | sha256sum | cut -d' ' -f1)" > "\$dst" ;;
   *:*) echo stub > "\$dst" ;;
+  *) exit 1 ;;
 esac
 exit 0
 EOF
@@ -95,6 +100,7 @@ chmod +x "$T/bin/ssh" "$T/bin/scp"
 R="$T/repo"
 mkdir -p "$R/tests/mac" "$R/tests/e2e" "$R/src" "$R/packaging/macos" "$R/packaging/assets"
 for f in "$ROOT"/tests/mac/*.sh "$ROOT"/tests/mac/known_hosts; do [ -f "$f" ] && cp "$f" "$R/tests/mac/"; done
+cp "$ROOT/packaging/macos/build-dmg.sh" "$R/packaging/macos/build-dmg.sh"
 echo plist > "$R/packaging/macos/Info.plist"; echo png > "$R/packaging/assets/zigBrowser.png"
 echo src > "$R/src/main.zig"; echo e2e > "$R/tests/e2e/placeholder.py"
 echo build > "$R/build.zig"; echo zon > "$R/build.zig.zon"; echo '{}' > "$R/zigbrowser.json"
@@ -126,7 +132,8 @@ leg_rows() { # leg_rows <host>: the row arguments that host's leg gets (after th
     mapfile -d '' a < "$T/ctl/call.$i"
     local j
     for ((j = 1; j < ${#a[@]}; j++)); do
-      if [ "${a[j]}" = "$1" ] && [ "${a[j+1]:-}" = /bin/bash ] && [ "${a[j+2]:-}" = -s ]; then
+      if [ "${a[j]}" = "$1" ] && [ "${a[j+1]:-}" = /bin/bash ] && [ "${a[j+2]:-}" = -s ] \
+         && [[ "${a[j+3]:-}" =~ ^zb-gate-[0-9a-f]{40}-[0-9a-f]+$ ]]; then
         mapfile -t w < <(bash -c "printf '%s\\n' ${a[*]:j+4}" 2>/dev/null)
         printf '%s\n' "${w[@]}"
       fi
@@ -143,7 +150,7 @@ run_gate __UNSET__   # S1
 if [ "$(leg_rows "$INTEL")" = "$(printf '%s\n' "${ROWS[@]}")" ] && [ "$(leg_rows "$ARM")" = "$(printf '%s\n' "${ROWS[@]}")" ] \
    && selected_first; then
   ok "S1 unset: each leg gets all ${#ROWS[@]} rows in ROWS order; ROWS_SELECTED once, before every contact"
-else bad "S1 unset: rc=$RC intel legs got $(leg_rows "$INTEL" | wc -l) rows, arm $(leg_rows "$ARM" | wc -l)"; fi
+else bad "S1 unset: rc=$RC intel legs got $(leg_rows "$INTEL" | wc -l) rows, arm $(leg_rows "$ARM" | wc -l): $(tail -n 12 <<<"$OUT" | tr '\n' ' ')"; fi
 
 run_gate "ms2c-recover-slow-server ms2a-load-fail-no-quit"   # S2, named out of order
 want=$(row_of ms2a-load-fail-no-quit; row_of ms2c-recover-slow-server)

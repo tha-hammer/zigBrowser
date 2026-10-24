@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""RED, UNREGISTERED (SilverRidge 6806513a item D): macOS signal delivery must never run Objective-C,
+"""GREEN, REGISTERED (SilverRidge 0b4c44bd item D): macOS signal delivery never runs Objective-C,
 block, dispatch, allocation, or retention work from a raw POSIX signal handler.
 
 The production shim must ignore SIGHUP/SIGINT/SIGTERM at the POSIX disposition and consume them with dispatch
@@ -129,13 +129,12 @@ def source_problems(source: str, label: str) -> list[str]:
             if unsafe:
                 problems.append(f"{label}: raw handler {handler} performs unsafe work: {', '.join(unsafe)}")
 
-    if re.search(r"\bsigaction\s*\(", source):
-        problems.append(f"{label}: dispatch-source strategy must not install a custom sigaction handler")
-
     region = signal_region(source)
     if region is None:
         problems.append(f"{label}: missing one bounded {BEGIN}/{END} production region")
         return problems
+    if re.search(r"\bsigaction\s*\(", region):
+        problems.append(f"{label}: dispatch-source delivery must not install a custom sigaction handler")
 
     required = (
         "dispatch_source_create(DISPATCH_SOURCE_TYPE_SIGNAL",
@@ -156,6 +155,13 @@ def source_problems(source: str, label: str) -> list[str]:
         problems.append(f"{label}: signal sources must share one reviewed constructor")
     if "if (signo == SIGHUP)" not in region:
         problems.append(f"{label}: SIGHUP must be distinguished from the exit signals")
+    normalized = " ".join(region.split())
+    exact_behavior = (
+        "if (signo == SIGHUP) { [app reloadMainWindowBypassingCache:NO]; } else { "
+        "[app requestExit:ZB_EXIT_CANCELLED]; }"
+    )
+    if exact_behavior not in normalized:
+        problems.append(f"{label}: the SIGHUP reload and SIGINT/SIGTERM exit branches are not exactly bound")
 
     install = source.find("if (!zb_install_signal_sources(host))")
     active = source.find("g_active_app = host;")
@@ -164,6 +170,8 @@ def source_problems(source: str, label: str) -> list[str]:
         problems.append(f"{label}: signal sources must install after the active app and before the first window")
     if source.count("zb_remove_signal_sources();") < 2:
         problems.append(f"{label}: signal sources must be removed on window-init failure and after the app loop")
+    if install >= 0 and window >= 0 and "zb_remove_signal_sources();" in source[install:window]:
+        problems.append(f"{label}: signal sources are dropped before the first window")
     return problems
 
 

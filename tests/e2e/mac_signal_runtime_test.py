@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""RED, UNREGISTERED: prove the macOS signal path in the live application.
+"""GREEN, REGISTERED: prove the macOS signal path in the live application.
 
-The eventual green row is run by ``tests/mac/ms_runtime_rows_gate.sh`` on both Macs.  It verifies exact-commit DMG,
+The green row is run by ``tests/mac/ms_runtime_rows_gate.sh`` on both Macs.  It verifies exact-commit DMG,
 read-only attach, ditto-unpack, app/executable/shim digests and the executable-relative shim reference, then launches
 that unpacked ``zigBrowser.app`` executable afresh for a guard case and for SIGHUP, SIGINT and SIGTERM. Empty/fake
 apps and renamed, copied or linked build-tree browsers are refused before launch. Before sending a signal it proves
@@ -12,10 +12,9 @@ SIGINT and SIGTERM must each exit normally with code 130.  No timeout path sends
 
 ``--selftest`` is hostless.  It drives the same verdict code with a model of the good implementation and the
 required old-handler, HUP/exit-swap, dropped-source, guard-drop and per-launch disposition/identity mutants. It also
-binds package-substitution mutants, the live-query source seam and future named-gate/fake-host registration. Until
-the green lands, those production and gate contracts intentionally make this file exit 1.
+binds package-substitution mutants, the live-query source seam and named-gate/fake-host registration.
 
-Hostless red command (the outer namespace is mandatory even though the model never calls os.kill)::
+Hostless command (the outer namespace is mandatory even though the model never calls os.kill)::
 
   unshare --user --map-root-user --pid --fork --mount-proc --net \
     python3 -X dev tests/e2e/mac_signal_runtime_test.py --selftest
