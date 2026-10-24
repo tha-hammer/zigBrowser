@@ -481,6 +481,9 @@ leg_is() { grep -qE "^LEG$TB$1$TB$2($TB|$)" "$OUT"; }
 no_pass() { ! grep -q "^PASS${TB}ms1c-app-gate" "$OUT"; }
 pyrows() { awk -F'\t' -v r="$1" '$1 == r { print $2 }' "$C/py.log" 2>/dev/null | tr '\n' ' '; }
 tailout() { tail -n 3 "$OUT" | tr '\n' ' '; }
+home_field() {
+  /usr/bin/python3 -I -B -c 'import base64,os,sys; print("b64:" + base64.urlsafe_b64encode(os.fsencode(sys.argv[1])).decode("ascii"))' "$1"
+}
 
 # ── Base run ──
 cp -f -- "$ROOT/tests/mac/ms1c_home_protected_paths.txt" "$R/tests/mac/ms1c_home_protected_paths.txt" \
@@ -547,7 +550,7 @@ for role in intel arm; do
   [ "$(cut -f3-5 <<<"$ctl")" = "$rd/control/zigBrowser.app/Contents/MacOS/zigBrowser${TB}absent${TB}present" ] || p6="$role control '$ctl'"
   arch=x86_64; [ $role = arm ] && arch=arm64
   ips="$X/hosts/$role/Library/Logs/DiagnosticReports/zigBrowser-2026-10-23-100000.ips"
-  want="CRASHREPORT${TB}zigBrowser-2026-10-23-100000.ips${TB}$(sha256sum "$ips" 2>/dev/null | awk '{ print $1 }')"
+  want="CRASHREPORT${TB}$(home_field zigBrowser-2026-10-23-100000.ips)${TB}$(sha256sum "$ips" 2>/dev/null | awk '{ print $1 }')"
   [ -f "$ips" ] && grep -qxF "$want" "$EV/$arch/evidence/leg.log" 2>/dev/null || p6="$role: no '$want' (report $( [ -f "$ips" ] && echo kept || echo gone))"
 done
 [ "$p6" = ok ] && ok "P6: the control ran a private copy without its dylib; CRASHREPORT name and sha256; the report is kept" || bad "P6: $p6"
@@ -624,8 +627,9 @@ if [ "$rc" -eq 2 ] && leg_is arm64 INCONCLUSIVE && no_pass && [ -z "$(pyrows arm
 else bad "F9: exit $rc, arm rows '$(pyrows arm)', root '$rd': $(tailout)"; fi
 
 run_gate homewrite home_write.intel
+homewrite_field=$(home_field "$X/hosts/intel/Library/Caches/zigBrowser/cache.db")
 { [ "$rc" -eq 2 ] && leg_is x86_64 INCONCLUSIVE && no_pass && [ -f "$X/hosts/intel/Library/Caches/zigBrowser/cache.db" ] \
-  && grep -q "^HOME-DELTA${TB}ADDED${TB}$X/hosts/intel/Library/Caches/zigBrowser/cache.db${TB}" "$EV/x86_64/evidence/leg.log" 2>/dev/null; } \
+  && grep -q "^HOME-DELTA${TB}ADDED${TB}$homewrite_field${TB}" "$EV/x86_64/evidence/leg.log" 2>/dev/null; } \
   && ok "F10: a write in the real home: HOME-DELTA, INCONCLUSIVE, the file stays" || bad "F10: exit $rc: $(tailout)"
 
 run_gate ctlstarts control_starts.arm
@@ -633,8 +637,9 @@ run_gate ctlstarts control_starts.arm
 run_gate wrongdiag control_wrongdiag.arm
 { [ "$rc" -eq 1 ] && leg_is arm64 FAIL && no_pass; } && ok "F12: a control with another library's error: FAIL" || bad "F12: exit $rc: $(tailout)"
 run_gate crashother crash_other.intel
+crashother_field=$(home_field "$X/hosts/intel/Library/Logs/DiagnosticReports/zigBrowser-2026-10-23-100000.ips")
 { [ "$rc" -eq 2 ] && leg_is x86_64 INCONCLUSIVE && no_pass \
-  && grep -q "^HOME-DELTA${TB}ADDED${TB}$X/hosts/intel/Library/Logs/DiagnosticReports/zigBrowser-2026-10-23-100000.ips" "$EV/x86_64/evidence/leg.log" 2>/dev/null; } \
+  && grep -q "^HOME-DELTA${TB}ADDED${TB}$crashother_field${TB}" "$EV/x86_64/evidence/leg.log" 2>/dev/null; } \
   && ok "F13: a crash report of another exe: HOME-DELTA, INCONCLUSIVE" || bad "F13: exit $rc: $(tailout)"
 run_gate arch arch_wrong.arm
 { [ "$rc" -eq 1 ] && leg_is arm64 FAIL && no_pass; } && ok "F14: the other arch reported: FAIL" || bad "F14: exit $rc: $(tailout)"
@@ -670,8 +675,9 @@ for mode in remove_fails remove_noop; do
 done
 
 run_gate rewrite same_size_rewrite.intel
+rewrite_field=$(home_field "$X/hosts/intel/Library/Preferences/keep.plist")
 { [ "$rc" -eq 2 ] && leg_is x86_64 INCONCLUSIVE && leg_is arm64 PASS && no_pass \
-  && grep -q "^HOME-DELTA${TB}CHANGED${TB}$X/hosts/intel/Library/Preferences/keep.plist${TB}" "$EV/x86_64/evidence/leg.log" 2>/dev/null; } \
+  && grep -q "^HOME-DELTA${TB}CHANGED${TB}$rewrite_field${TB}" "$EV/x86_64/evidence/leg.log" 2>/dev/null; } \
   && ok "F23: a same-size rewrite with its mtime put back: HOME-DELTA, INCONCLUSIVE" || bad "F23: exit $rc: $(tailout)"
 run_gate lockedbefore
 { [ "$rc" -eq 2 ] && leg_is x86_64 INCONCLUSIVE && leg_is arm64 PASS && no_pass && [ -z "$(pyrows intel)" ]; } \
@@ -681,8 +687,9 @@ run_gate lockafter lock_after.intel
   && grep -qx "HOMEAUDIT${TB}INCONCLUSIVE${TB}the after snapshot is incomplete" "$EV/x86_64/evidence/leg.log" 2>/dev/null; } \
   && ok "F25: a home subtree unreadable after the run: the after snapshot is incomplete, INCONCLUSIVE" || bad "F25: exit $rc: $(tailout)"
 run_gate ctimeonly ctime_only.intel
+ctime_field=$(home_field "$X/hosts/intel/Library/Preferences/keep2.plist")
 { [ "$rc" -eq 2 ] && leg_is x86_64 INCONCLUSIVE && leg_is arm64 PASS && no_pass \
-  && grep -q "^HOME-DELTA${TB}CHANGED${TB}$X/hosts/intel/Library/Preferences/keep2.plist${TB}" "$EV/x86_64/evidence/leg.log" 2>/dev/null; } \
+  && grep -q "^HOME-DELTA${TB}CHANGED${TB}$ctime_field${TB}" "$EV/x86_64/evidence/leg.log" 2>/dev/null; } \
   && ok "F26: a ctime-only change in the home: HOME-DELTA, INCONCLUSIVE" || bad "F26: exit $rc: $(tailout)"
 chmod 700 "$X/hosts/intel/Library/Lockable" 2>/dev/null
 

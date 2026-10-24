@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # REGISTERED GREEN ORACLE (zigBrowser-4pa.73; owner decision 2026-10-24): the MS1c HOME snapshots may skip only the exact
 # paths in tests/mac/ms1c_home_protected_paths.txt, and only for EACCES/EPERM. Every accepted observation records
-# SKIPPED-PROTECTED<TAB><BEFORE|AFTER><TAB>HOME<TAB><path><TAB><EACCES|EPERM> plus its available lstat identity.
-# Every other path, errno or unrecordable name remains incomplete, and the integration starts no workload for it.
+# SKIPPED-PROTECTED<TAB><BEFORE|AFTER><TAB>HOME<TAB><canonical-path><TAB><EACCES|EPERM> plus its available lstat
+# identity. Every other path or errno remains incomplete, while arbitrary filename bytes remain ordinary audited
+# entries rather than permission skips.
 #
 # The data file is the byte-sorted set of all 98 Permission-denied/Operation-not-permitted HOME ERROR paths in the
 # released b0409175 arm64 evidence. Its one filename-format ERROR is intentionally excluded: it was not an unreadable
@@ -68,17 +69,48 @@ protected_files() { # protected_files <mode>: create every reviewed path unreada
   done < "$LIST"
 }
 snapshot_has_all_skips() { # snapshot_has_all_skips <file>
-  local snap=$1 side=$2 rel n=0
+  local snap=$1 side=$2
   [ -f "$snap" ] || return 1
-  [ "$(grep -c "^SKIPPED-PROTECTED${TB}" "$snap")" -eq 98 ] || return 1
-  ! grep -q "^ERROR${TB}" "$snap" || return 1
-  while IFS= read -r rel; do
-    grep -qxF "SKIPPED-PROTECTED${TB}$side${TB}HOME${TB}$rel${TB}EACCES" "$snap" || return 1
-    awk -F '\t' -v p="$rel" '$1 == p { n++; split($2, m, " "); ok += (m[1] == "f" && m[2] == "0" && m[10] == "-" && m[11] == "-") } END { exit !(n == 1 && ok == 1) }' "$snap" \
-      || return 1
-    n=$((n + 1))
-  done < "$LIST"
-  [ "$n" -eq 98 ]
+  /usr/bin/python3 -I -B -X utf8 - "$snap" "$LIST" "$side" <<'PY'
+import base64, binascii, os, sys
+snapshot, reviewed, side = sys.argv[1:4]
+def field(value):
+    return "b64:" + base64.urlsafe_b64encode(os.fsencode(value)).decode("ascii")
+def decode(value):
+    if not value.startswith("b64:") or not value.isascii():
+        raise ValueError
+    raw = base64.b64decode(value[4:].encode("ascii"), altchars=b"-_", validate=True)
+    if field(raw) != value:
+        raise ValueError
+    return raw
+try:
+    lines = open(snapshot, encoding="ascii").read().splitlines()
+    wanted = open(reviewed, "rb").read().splitlines()
+    rows, markers = {}, []
+    for line in lines[1:-1]:
+        if line.startswith("ERROR\t"):
+            raise ValueError
+        if line.startswith("SKIPPED-PROTECTED\t"):
+            parts = line.split("\t")
+            if len(parts) != 5 or parts[:3] != ["SKIPPED-PROTECTED", side, "HOME"] or parts[4] != "EACCES":
+                raise ValueError
+            markers.append(decode(parts[3]))
+        else:
+            path, meta = line.split("\t", 1)
+            rows.setdefault(decode(path), []).append(meta)
+    if markers != wanted or lines[-1:] != [f"END\t{len(rows)}"]:
+        raise ValueError
+    for path in wanted:
+        meta = rows.get(path, [])
+        parts = meta[0].split(" ") if len(meta) == 1 else []
+        if len(parts) != 11 or parts[0] != "f" or parts[1] != "0" or parts[9:] != ["-", "-"]:
+            raise ValueError
+except (OSError, UnicodeError, ValueError, binascii.Error):
+    raise SystemExit(1)
+PY
+}
+home_field() {
+  /usr/bin/python3 -I -B -c 'import base64,os,sys; print("b64:" + base64.urlsafe_b64encode(os.fsencode(sys.argv[1])).decode("ascii"))' "$1"
 }
 
 # Every reviewed path is exercised, not merely sampled. A complete before and after snapshot must each report all
@@ -99,13 +131,14 @@ fi
 # must stop this Mac before any workload or control is launched.
 protected_files unlock || { bad "H3: could not restore the protected-path fixture"; exit 1; }
 UNLISTED='Library/Preferences/com.apple.morphology.not-reviewed.plist'
+UNLISTED_FIELD=$(home_field "$UNLISTED") || exit 1
 printf 'unlisted\n' > "$X/hosts/intel/$UNLISTED" && chmod 000 "$X/hosts/intel/$UNLISTED" || exit 1
 run_gate unlisted-protected
 HL="$EV/x86_64/evidence/leg.log"
 if [ "$rc" -eq 2 ] && leg_is x86_64 INCONCLUSIVE && leg_is arm64 PASS && no_pass \
    && [ -z "$(pyrows intel)" ] \
-   && grep -qxF "ERROR${TB}$UNLISTED${TB}Permission denied" "$EV/x86_64/evidence/home.before" 2>/dev/null \
-   && ! grep -qF "SKIPPED-PROTECTED${TB}$UNLISTED${TB}" "$HL" 2>/dev/null; then
+   && grep -qxF "ERROR${TB}$UNLISTED_FIELD${TB}Permission denied" "$EV/x86_64/evidence/home.before" 2>/dev/null \
+   && ! grep -qF "SKIPPED-PROTECTED${TB}BEFORE${TB}HOME${TB}$UNLISTED_FIELD${TB}" "$HL" 2>/dev/null; then
   ok "H3: an unlisted unreadable sibling stays ERROR and INCONCLUSIVE before workload"
 else
   bad "H3: unlisted unreadable path did not fail closed; exit $rc, intel rows '$(pyrows intel)': $(tailout)"
@@ -113,11 +146,13 @@ fi
 
 # Directly exercise the embedded recorder and differ. This binds the future production interface used by take():
 #   HOME_SNAP_PY <home> <excluded-run-root> <reviewed-list> <BEFORE|AFTER> <output>
-# and preserves HOME_DIFF_PY's existing arguments. The subprocess stays inside this selftest's private namespaces.
+# and preserves HOME_DIFF_PY's existing inputs plus the reviewed protected list. The subprocess stays inside this selftest's private namespaces.
 DIRECT="$T/home-direct.py"
 cat > "$DIRECT" <<'PY'
 from __future__ import annotations
 
+import base64
+import binascii
 import errno
 import hashlib
 import os
@@ -138,6 +173,19 @@ def bad(row: str, why: str) -> None:
     problems.append(f"{row}: {why}")
 
 
+def field(value) -> str:
+    return "b64:" + base64.urlsafe_b64encode(os.fsencode(value)).decode("ascii")
+
+
+def decode(value: str) -> bytes:
+    if not value.startswith("b64:") or not value.isascii():
+        raise ValueError("not a canonical evidence field")
+    raw = base64.b64decode(value[4:].encode("ascii"), altchars=b"-_", validate=True)
+    if field(raw) != value:
+        raise ValueError("not a canonical evidence field")
+    return raw
+
+
 def extract(name: str) -> str:
     mark = name + "='\n"
     start = text.index(mark) + len(mark)
@@ -153,20 +201,20 @@ diff_source = extract("HOME_DIFF_PY")
 # its first FileProvider entry and its first CoreSpotlight entry.
 mutant = os.environ.get("ZB_MS1C_HOME_MATCH_MUTANT", "")
 mutant_predicates = {
-    "prefix-fileprovider": 'rel.startswith("Library/Application Support/FileProvider/6C899D1B-D76E-47F6-840A-186D246B9E1E/wharf/tombstone/")',
-    "family-fileprovider": 'rel.startswith("Library/Application Support/FileProvider/")',
-    "glob-fileprovider": '__import__("fnmatch").fnmatchcase(rel, "Library/Application Support/FileProvider/*/wharf/tombstone/*")',
-    "prefix-corespotlight": 'rel.startswith("Library/Metadata/CoreSpotlight/NSFileProtectionComplete/index.spotlightV3/")',
-    "family-corespotlight": 'rel.startswith("Library/Metadata/CoreSpotlight/")',
-    "glob-corespotlight": '__import__("fnmatch").fnmatchcase(rel, "Library/Metadata/CoreSpotlight/*/index.spotlightV3/*")',
+    "prefix-fileprovider": 'rel_raw.startswith(b"Library/Application Support/FileProvider/6C899D1B-D76E-47F6-840A-186D246B9E1E/wharf/tombstone/")',
+    "family-fileprovider": 'rel_raw.startswith(b"Library/Application Support/FileProvider/")',
+    "glob-fileprovider": '__import__("fnmatch").fnmatchcase(os.fsdecode(rel_raw), "Library/Application Support/FileProvider/*/wharf/tombstone/*")',
+    "prefix-corespotlight": 'rel_raw.startswith(b"Library/Metadata/CoreSpotlight/NSFileProtectionComplete/index.spotlightV3/")',
+    "family-corespotlight": 'rel_raw.startswith(b"Library/Metadata/CoreSpotlight/")',
+    "glob-corespotlight": '__import__("fnmatch").fnmatchcase(os.fsdecode(rel_raw), "Library/Metadata/CoreSpotlight/*/index.spotlightV3/*")',
 }
 if mutant:
     predicate = mutant_predicates.get(mutant)
-    anchor = "if rel in protected and reason:"
+    anchor = "if rel_raw in protected and reason:"
     if predicate is None or snap_source.count(anchor) != 1:
         print(f"FAIL mutant setup: mode={mutant!r}, anchor-count={snap_source.count(anchor)}")
         raise SystemExit(2)
-    snap_source = snap_source.replace(anchor, f"if (rel in protected or ({predicate})) and reason:")
+    snap_source = snap_source.replace(anchor, f"if (rel_raw in protected or ({predicate})) and reason:")
 
 
 def meta(path: Path, digest: str) -> str:
@@ -256,15 +304,25 @@ class Fixture:
 
 
 def lines(path: Path) -> list[str]:
-    return path.read_text().splitlines() if path.is_file() else []
+    return path.read_text(encoding="ascii").splitlines() if path.is_file() else []
 
 
 def marker(side: str, rel: str, reason: str) -> str:
-    return f"SKIPPED-PROTECTED\t{side}\tHOME\t{rel}\t{reason}"
+    return f"SKIPPED-PROTECTED\t{side}\tHOME\t{field(rel)}\t{reason}"
 
 
 def row_for(body: list[str], rel: str) -> list[str]:
-    return [line.split("\t", 1)[1] for line in body if line.startswith(rel + "\t")]
+    found = []
+    for line in body:
+        if line.startswith(("ROOT\t", "ERROR\t", "END\t", "SKIPPED-PROTECTED\t")):
+            continue
+        try:
+            path, meta = line.split("\t", 1)
+            if decode(path) == os.fsencode(rel):
+                found.append(meta)
+        except (ValueError, binascii.Error):
+            pass
+    return found
 
 
 def expect_skip(row: str, fixture: Fixture, side: str, rel: str, reason: str, forced: int | None = None) -> Path:
@@ -292,10 +350,10 @@ def expect_error(row: str, setup, expected_rel: str, forced: int | None = None) 
         body = lines(output)
         if rc != 3 or any(line.startswith("SKIPPED-PROTECTED\t") for line in body):
             bad(row, f"wanted incomplete non-skip, got rc={rc} tail={body[-5:]!r}")
-        expected = f"ERROR\t{expected_rel}\t{os.strerror(forced)}" if forced is not None else None
+        expected = f"ERROR\t{field(expected_rel)}\t{os.strerror(forced)}" if forced is not None else None
         if expected is not None and body.count(expected) != 1:
             bad(row, f"wanted one exact {expected!r}, got {[line for line in body if line.startswith('ERROR')]!r}")
-        elif expected is None and not any(line.startswith("ERROR\t" + expected_rel + "\t") for line in body):
+        elif expected is None and not any(line.startswith("ERROR\t" + field(expected_rel) + "\t") for line in body):
             bad(row, f"missing exact ERROR path for {expected_rel!r}: {body[-5:]!r}")
     finally:
         fixture.close()
@@ -308,7 +366,7 @@ def expect_error_batch(row: str, rels: list[str]) -> None:
         rc, output = fixture.snapshot("BEFORE", name=row.replace(" ", "-"), forced_many=targets)
         body = lines(output)
         actual = sorted(line for line in body if line.startswith("ERROR\t"))
-        wanted = sorted(f"ERROR\t{rel}\t{os.strerror(errno.EACCES)}" for rel in rels)
+        wanted = sorted(f"ERROR\t{field(rel)}\t{os.strerror(errno.EACCES)}" for rel in rels)
         skips = [line for line in body if line.startswith("SKIPPED-PROTECTED\t")]
         if rc != 3 or skips or actual != wanted:
             missing = sorted(set(wanted) - set(actual))[:5]
@@ -351,7 +409,7 @@ for side in ("BEFORE", "AFTER"):
         rc, output = fixture.snapshot(side, (target, errno.EIO), "D3-EIO-" + side)
         body = lines(output)
         if rc != 3 or any(line.startswith("SKIPPED-PROTECTED\t") for line in body) \
-                or not any(line.startswith(f"ERROR\t{rel}\t") for line in body):
+                or not any(line.startswith(f"ERROR\t{field(rel)}\t") for line in body):
             bad(f"D3 EIO {side}", f"rc={rc} tail={body[-5:]!r}")
     finally:
         fixture.close()
@@ -400,20 +458,32 @@ for index, parent in enumerate(parent_variants):
 
 deep = "Library/Metadata/CoreSpotlight/NSFileProtectionComplete/index.spotlightV3/store.db"
 
-# D5: an unrecordable descendant beneath a readable listed path is not a permission exception.
-def unrecordable(fixture: Fixture) -> Path:
+# D5: an arbitrary-byte descendant beneath a readable listed path is an ordinary audited entry, never a permission
+# exception. This preserves the old filename boundary under the lossless evidence codec.
+def arbitrary_name(fixture: Fixture) -> tuple[Path, bytes]:
     base = fixture.directory(deep)
-    raw = os.fsencode(base) + b"/bad\nname"
+    raw = os.fsencode(base) + b"/bad\n\t\x02-\xff-name"
     fd = os.open(raw, os.O_CREAT | os.O_WRONLY, 0o600)
     os.close(fd)
-    return Path(os.fsdecode(raw))
-expect_error("D5 unrecordable", unrecordable, repr(deep + "/bad\nname"))
+    return Path(os.fsdecode(raw)), os.path.relpath(raw, os.fsencode(fixture.root))
+
+
+fixture = Fixture()
+try:
+    target, rel_raw = arbitrary_name(fixture)
+    rc, output = fixture.snapshot("BEFORE", name="D5-arbitrary-name")
+    body = lines(output)
+    got = row_for(body, os.fsdecode(rel_raw))
+    if rc != 0 or len(got) != 1 or any(line.startswith(("ERROR\t", "SKIPPED-PROTECTED\t")) for line in body):
+        bad("D5 arbitrary name", f"wanted one ordinary row and complete snapshot, got rc={rc} row={got!r} tail={body[-5:]!r}")
+finally:
+    fixture.close()
 
 
 def run_diff(row: str, fixture: Fixture, before: Path, after: Path) -> tuple[int, list[str]]:
     result = subprocess.run(
         [sys.executable, "-I", "-B", "-X", "utf8", "-c", diff_source, str(before), str(after),
-         str(fixture.root), "Library/Logs/DiagnosticReports", "/control/zigBrowser"],
+         str(fixture.root), "Library/Logs/DiagnosticReports", "/control/zigBrowser", str(reviewed)],
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=30,
     )
     if result.stderr:
@@ -430,7 +500,7 @@ try:
     target.chmod(0o100)
     after = expect_skip("D6 AFTER", fixture, "AFTER", rel, "EACCES")
     rc, out = run_diff("D6 metadata", fixture, before, after)
-    if rc != 2 or not any(line.startswith(f"HOME-DELTA\tCHANGED\t{target}\t") for line in out):
+    if rc != 2 or not any(line.startswith(f"HOME-DELTA\tCHANGED\t{field(target)}\t") for line in out):
         bad("D6 metadata", f"wanted CHANGED/2, got rc={rc} {out!r}")
 finally:
     fixture.close()
@@ -454,13 +524,13 @@ for direction in ("unreadable-to-readable", "readable-to-unreadable"):
 # retained lstat row and END count; only the side-tagged protected marker's presence or reviewed reason changes.
 def marker_only_snapshot(path: Path, fixture: Fixture, side: str, rel: str, reason: str | None) -> None:
     body = [
-        f"ROOT\t{fixture.root}\t{fixture.exclude}",
-        f"{rel}\t{meta(fixture.path(rel), '-')}",
+        f"ROOT\t{field(fixture.root)}\t{field(fixture.exclude)}",
+        f"{field(rel)}\t{meta(fixture.path(rel), '-')}",
     ]
     if reason is not None:
         body.append(marker(side, rel, reason))
     body.append("END\t1")
-    path.write_text("\n".join(body) + "\n")
+    path.write_text("\n".join(body) + "\n", encoding="ascii")
 
 
 for label, before_reason, after_reason in (

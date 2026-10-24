@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# UNREGISTERED RED ORACLE (zigBrowser-4pa.73; SilverRidge f69c8dad): HOME evidence uses one canonical reversible
+# REGISTERED GREEN ORACLE (zigBrowser-4pa.73; SilverRidge 54dd191b): HOME evidence uses one canonical reversible
 # ASCII encoding for every filesystem path and symlink target. The recorder must preserve arbitrary filename bytes,
 # including CR, LF, tab, U+0002 and non-UTF-8, without record splitting or collisions; such names are audited and are
 # never protected-path skips. The differ must decode the evidence before applying path semantics, accept identical
@@ -89,7 +89,7 @@ if mutant:
             "for _k, line in sorted(set(skipped), key=lambda item: item[1]):",
     }
     diff_anchors = {
-        "for rel in sorted(set(a) | set(b), key=os.fsencode):":
+        "for rel in sorted(set(a) | set(b)):":
             "for rel in sorted(set(a) | set(b), key=lambda value: evidence_field(os.fsencode(value))):",
     }
     for anchor, replacement in snap_anchors.items():
@@ -294,7 +294,7 @@ def differ(row: str, before: Path, after: Path) -> tuple[int, list[str]]:
     rc = 0
     try:
         sys.argv = ["home-diff", str(before), str(after), str(root), "Library/Logs/DiagnosticReports",
-                    "/control/zigBrowser"]
+                    "/control/zigBrowser", str(reviewed)]
         with contextlib.redirect_stdout(output):
             try:
                 exec(compile(diff_source, "HOME_DIFF_PY", "exec"), {"__name__": "__main__"})

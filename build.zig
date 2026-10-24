@@ -4305,6 +4305,11 @@ pub fn build(b: *std.Build) void {
         "tests/fixtures/app/index.html",       "packaging/macos/Info.plist",             "packaging/macos/entitlements.plist",
         "packaging/assets/zigBrowser.png",
     }) |input| mac_ms1c_home_protected.addFileInput(b.path(input));
+    const mac_ms1c_home_codec = b.addSystemCommand(&.{ "bash", "tests/mac/ms1c_home_codec_red.sh" });
+    mac_ms1c_home_codec.has_side_effects = true;
+    for ([_][]const u8{
+        "tests/mac/ms1c_home_codec_red.sh", "tests/mac/ms1c_app_gate.sh", "tests/mac/ms1c_home_protected_paths.txt",
+    }) |input| mac_ms1c_home_codec.addFileInput(b.path(input));
     const mac_ms1c_term_only = b.addSystemCommand(&.{ "python3", "-B", "tests/e2e/mac_m9_term_only_test.py" });
     for ([_][]const u8{
         "tests/e2e/mac_m9_term_only_test.py", "tests/e2e/m9_reply_channel_test.py", "tests/e2e/m9_render_test.py",
@@ -4314,10 +4319,12 @@ pub fn build(b: *std.Build) void {
     mac_ms1c_gate_step.dependOn(&mac_ms1c_gate_selftest.step);
     mac_ms1c_gate_step.dependOn(&mac_ms1c_otool_slices.step);
     mac_ms1c_gate_step.dependOn(&mac_ms1c_home_protected.step);
+    mac_ms1c_gate_step.dependOn(&mac_ms1c_home_codec.step);
     mac_ms1c_gate_step.dependOn(&mac_ms1c_term_only.step);
     test_step.dependOn(&mac_ms1c_gate_selftest.step);
     test_step.dependOn(&mac_ms1c_otool_slices.step);
     test_step.dependOn(&mac_ms1c_home_protected.step);
+    test_step.dependOn(&mac_ms1c_home_codec.step);
     test_step.dependOn(&mac_ms1c_term_only.step);
     // The 4pa.80 bundle-layout spike stages the real .app, signs it inside out and reports strict verification per Mac,
     // with every Mac-side write-capable phase under one Seatbelt profile (SilverRidge de82cf2).

@@ -235,20 +235,31 @@ DIAG="$REAL_HOME/Library/Logs/DiagnosticReports"
 # The account home is recorded the way the shared /var/folders helper records its roots (SilverRidge 0be64570): every
 # entry's lstat identity "type mode uid gid nlink size mtime_ns ctime_ns inode sha256 link" (sha256 of a regular file's
 # bytes, a symlink's target), in path byte order, with only the exact run root left out (matched by device and inode,
-# not by name). Only EACCES/EPERM while reading an exact path in the committed reviewed list retains the ordinary
-# lstat row plus a side-tagged SKIPPED-PROTECTED marker. Any other traversal, stat or read failure, or a name that
-# cannot be recorded (not UTF-8, a tab or newline), is an ERROR line: the snapshot is incomplete. The before snapshot
-# then starts nothing; the after one is INCONCLUSIVE.
+# not by name). Every path and symlink target is a canonical b64: field (padded URL-safe Base64 of its os.fsencode
+# bytes), while ordering and exact protected-list membership use the decoded original bytes. Only EACCES/EPERM while
+# reading an exact path in the committed reviewed list retains the ordinary lstat row plus a side-tagged
+# SKIPPED-PROTECTED marker. Any other traversal, stat or read failure is an ERROR line: the snapshot is incomplete.
+# The before snapshot then starts nothing; the after one is INCONCLUSIVE.
 HOME_SNAP_PY='
-import errno, hashlib, os, stat, sys
+import base64, binascii, errno, hashlib, os, stat, sys
 root, exclude, protected_file, side, out = sys.argv[1:6]
 rows, errors, skipped = [], [], []
 with open(protected_file, encoding="utf-8") as source:
-    protected = set(source.read().splitlines())
+    protected = {os.fsencode(line) for line in source.read().splitlines()}
 if side not in ("BEFORE", "AFTER"):
     raise SystemExit("invalid snapshot side")
 KIND = ((stat.S_ISREG, "f"), (stat.S_ISDIR, "d"), (stat.S_ISLNK, "l"), (stat.S_ISFIFO, "p"), (stat.S_ISSOCK, "s"),
         (stat.S_ISCHR, "c"), (stat.S_ISBLK, "b"))
+def evidence_field(value):
+    raw = os.fsencode(value)
+    return "b64:" + base64.urlsafe_b64encode(raw).decode("ascii")
+def decode_field(field):
+    if not field.startswith("b64:") or not field.isascii():
+        raise ValueError("not a canonical evidence field")
+    raw = base64.b64decode(field[4:].encode("ascii"), altchars=b"-_", validate=True)
+    if evidence_field(raw) != field:
+        raise ValueError("not a canonical evidence field")
+    return raw
 def digest(p):
     fd = os.open(p, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
     h = hashlib.sha256()
@@ -258,8 +269,14 @@ def digest(p):
     return h.hexdigest()
 def err(e):
     rel = os.path.relpath(e.filename, root) if e.filename else "?"
-    errors.append("%s\t%s" % (rel, e.strerror))
+    errors.append("%s\t%s" % (evidence_field(rel), " ".join((e.strerror or type(e).__name__).split())))
 def entry(p, rel):
+    rel_field = evidence_field(rel)
+    try:
+        rel_raw = decode_field(rel_field)
+    except (ValueError, binascii.Error):
+        errors.append("%s\tthe path codec did not round trip" % rel_field)
+        return
     try:
         st = os.lstat(p)
         kind = next((k for test, k in KIND if test(st.st_mode)), "o")
@@ -273,23 +290,15 @@ def entry(p, rel):
             sha = digest(p)
         except OSError as e:
             reason = {errno.EACCES: "EACCES", errno.EPERM: "EPERM"}.get(e.errno)
-            if rel in protected and reason:
-                skipped.append((os.fsencode(rel), "SKIPPED-PROTECTED\t%s\tHOME\t%s\t%s" % (side, rel, reason)))
+            if rel_raw in protected and reason:
+                skipped.append((rel_raw, "SKIPPED-PROTECTED\t%s\tHOME\t%s\t%s" % (side, rel_field, reason)))
             else:
                 err(e)
                 return
-    try:
-        rel.encode("utf-8")
-        link.encode("utf-8")
-    except UnicodeEncodeError:
-        errors.append("%r\ta name or link target that is not UTF-8 cannot be recorded" % rel)
-        return
-    if any(ch in t for t in (rel, link) for ch in "\t\n"):
-        errors.append("%r\ta tab or newline in the name or link target cannot be recorded" % rel)
-        return
+    link_field = evidence_field(link) if kind == "l" else "-"
     meta = "%s %o %d %d %d %d %d %d %d %s %s" % (kind, stat.S_IMODE(st.st_mode), st.st_uid, st.st_gid, st.st_nlink,
-                                                st.st_size, st.st_mtime_ns, st.st_ctime_ns, st.st_ino, sha, link)
-    rows.append((os.fsencode(rel), "%s\t%s" % (rel, meta)))
+                                                st.st_size, st.st_mtime_ns, st.st_ctime_ns, st.st_ino, sha, link_field)
+    rows.append((rel_raw, "%s\t%s" % (rel_field, meta)))
 try:
     ex = os.lstat(exclude)
     rst = os.lstat(root)
@@ -297,7 +306,7 @@ except OSError as e:
     err(e)
 else:
     if not stat.S_ISDIR(rst.st_mode):
-        errors.append(".\tthe home is not a directory")
+        errors.append("%s\tthe home is not a directory" % evidence_field(b"."))
     else:
         entry(root, ".")
         excluded = 0
@@ -320,9 +329,9 @@ else:
                 q = os.path.join(dirpath, n)
                 entry(q, os.path.relpath(q, root))
         if excluded != 1:
-            errors.append(".\tthe run root was not found exactly once directly under the home")
+            errors.append("%s\tthe run root was not found exactly once directly under the home" % evidence_field(b"."))
 with open(out, "w", encoding="utf-8") as f:
-    f.write("ROOT\t%s\t%s\n" % (root, exclude))
+    f.write("ROOT\t%s\t%s\n" % (evidence_field(root), evidence_field(exclude)))
     for _k, line in sorted(rows):
         f.write(line + "\n")
     for _k, line in sorted(set(skipped)):
@@ -337,16 +346,36 @@ sys.exit(3 if errors else 0)
 # (a CRASHREPORT line with its recorded sha256), with that folder changing only its nlink, size and times. Exit 0 clean,
 # 2 for any other delta, 3 when either snapshot is incomplete (HOMEAUDIT INCONCLUSIVE, no delta judged).
 HOME_DIFF_PY='
-import os, sys
-before, after, root, diag, ctl = sys.argv[1:6]
+import base64, binascii, os, sys
+before, after, root, diag, ctl, protected_file = sys.argv[1:7]
+root_raw, diag_raw, ctl_raw = os.fsencode(root), os.fsencode(diag), os.fsencode(ctl)
+with open(protected_file, encoding="utf-8") as source:
+    protected = {os.fsencode(line) for line in source.read().splitlines()}
+def evidence_field(value):
+    raw = os.fsencode(value)
+    return "b64:" + base64.urlsafe_b64encode(raw).decode("ascii")
+def decode_field(field):
+    if not field.startswith("b64:") or not field.isascii():
+        raise ValueError("not a canonical evidence field")
+    raw = base64.b64decode(field[4:].encode("ascii"), altchars=b"-_", validate=True)
+    if evidence_field(raw) != field:
+        raise ValueError("not a canonical evidence field")
+    return raw
 def load(p, side):
     try:
-        lines = open(p, encoding="utf-8").read().split("\n")
-    except OSError:
+        lines = open(p, encoding="ascii").read().split("\n")
+    except (OSError, UnicodeError):
         return None
     if lines and lines[-1] == "":
         lines.pop()
-    if len(lines) < 2 or not lines[0].startswith("ROOT\t") or not lines[-1].startswith("END\t"):
+    if len(lines) < 2 or not lines[-1].startswith("END\t"):
+        return None
+    roots = lines[0].split("\t")
+    try:
+        if len(roots) != 3 or roots[0] != "ROOT":
+            return None
+        decoded_roots = (decode_field(roots[1]), decode_field(roots[2]))
+    except (ValueError, binascii.Error):
         return None
     body = lines[1:-1]
     if any(l.startswith("ERROR\t") for l in body):
@@ -357,13 +386,39 @@ def load(p, side):
             fields = line.split("\t")
             if len(fields) != 5 or fields[1] != side or fields[2] != "HOME" or fields[4] not in ("EACCES", "EPERM"):
                 return None
-            markers.append((fields[3], fields[4]))
+            try:
+                marker_path = decode_field(fields[3])
+            except (ValueError, binascii.Error):
+                return None
+            if marker_path not in protected:
+                return None
+            markers.append((marker_path, fields[4]))
         else:
             row_lines.append(line)
     if lines[-1] != "END\t%d" % len(row_lines):
         return None
-    rows = dict(l.split("\t", 1) for l in row_lines)
-    return (rows, tuple(markers)) if len(rows) == len(row_lines) and len(markers) == len(set(markers)) else None
+    rows, order = {}, []
+    try:
+        for line in row_lines:
+            path_field, meta = line.split("\t", 1)
+            rel = decode_field(path_field)
+            fields = meta.split(" ", 10)
+            if len(fields) != 11:
+                return None
+            if fields[0] == "l":
+                decode_field(fields[10])
+            elif fields[10] != "-":
+                return None
+            if rel in rows:
+                return None
+            rows[rel] = meta
+            order.append(rel)
+    except (ValueError, binascii.Error):
+        return None
+    if order != sorted(order) or markers != sorted(markers, key=lambda item: item[0]):
+        return None
+    marker_paths = {path for path, _reason in markers}
+    return (rows, tuple(markers), decoded_roots) if len(markers) == len(marker_paths) else None
 b_loaded, a_loaded = load(before, "BEFORE"), load(after, "AFTER")
 b = b_loaded[0] if b_loaded else None
 a = a_loaded[0] if a_loaded else None
@@ -374,33 +429,36 @@ for name, snap in (("before", b), ("after", a)):
 if b_loaded[1] != a_loaded[1]:
     print("HOMEAUDIT\tINCONCLUSIVE\tthe protected-path skip set changed")
     sys.exit(3)
+if b_loaded[2] != a_loaded[2] or b_loaded[2][0] != root_raw:
+    print("HOMEAUDIT\tINCONCLUSIVE\tthe snapshot roots changed")
+    sys.exit(3)
 crash = []
-for rel in sorted(set(a) - set(b), key=os.fsencode):
-    if os.path.dirname(rel) == diag and a[rel].split(" ")[0] == "f":
+for rel in sorted(set(a) - set(b)):
+    if os.path.dirname(rel) == diag_raw and a[rel].split(" ")[0] == "f":
         try:
-            with open(os.path.join(root, rel), "rb") as f:
-                named = ctl.encode() in f.read()
+            with open(os.path.join(root_raw, rel), "rb") as f:
+                named = ctl_raw in f.read()
         except OSError:
             named = False
         if named:
             crash.append(rel)
 deltas = []
-for rel in sorted(set(a) | set(b), key=os.fsencode):
+for rel in sorted(set(a) | set(b)):
     if rel in a and rel in b and a[rel] == b[rel]:
         continue
     if rel in crash:
         continue
     kind = "ADDED" if rel not in b else "DELETED" if rel not in a else "CHANGED"
-    if kind == "CHANGED" and rel == diag and crash:
+    if kind == "CHANGED" and rel == diag_raw and crash:
         bf, af = b[rel].split(" "), a[rel].split(" ")
         if [bf[i] for i in (0, 1, 2, 3, 8, 9, 10)] == [af[i] for i in (0, 1, 2, 3, 8, 9, 10)]:
             continue
     deltas.append((kind, rel))
 for rel in crash:
-    print("CRASHREPORT\t%s\t%s" % (os.path.basename(rel), a[rel].split(" ")[9]))
+    print("CRASHREPORT\t%s\t%s" % (evidence_field(os.path.basename(rel)), a[rel].split(" ")[9]))
 for kind, rel in deltas:
-    path = root if rel == "." else os.path.join(root, rel)
-    print("HOME-DELTA\t%s\t%s\t%s\t%s" % (kind, path, b.get(rel, "-"), a.get(rel, "-")))
+    path = root_raw if rel == b"." else os.path.join(root_raw, rel)
+    print("HOME-DELTA\t%s\t%s\t%s\t%s" % (kind, evidence_field(path), b.get(rel, "-"), a.get(rel, "-")))
 print("HOMEAUDIT\t%s\t%d" % ("CHANGED" if deltas else "CLEAN", len(deltas)))
 sys.exit(2 if deltas else 0)
 '
@@ -459,7 +517,7 @@ after() { # the after snapshots and every delta
   take after   # an incomplete after snapshot is INCONCLUSIVE; the diff below still says which one and why
   [ "$audit_ok" -eq 0 ] || return
   /usr/bin/python3 -I -B -X utf8 -c "$HOME_DIFF_PY" "$EV/home.before" "$EV/home.after" "$REAL_HOME" \
-    Library/Logs/DiagnosticReports "$CTL_EXE" > "$EV/home.delta" 2>&1
+    Library/Logs/DiagnosticReports "$CTL_EXE" "$RD/tests/mac/ms1c_home_protected_paths.txt" > "$EV/home.delta" 2>&1
   st=$?
   tee -a "$EV/leg.log" < "$EV/home.delta"
   grep "^CRASHREPORT${T}" "$EV/home.delta" > "$EV/crashreports"
