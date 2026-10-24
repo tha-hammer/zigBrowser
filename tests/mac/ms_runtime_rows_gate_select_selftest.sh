@@ -230,14 +230,21 @@ no_start() { # no_start <row> <why>: the leg refused before its RUNNING marker
 }
 leg_marked() { # leg_marked <rows...>: as leg, and records whether a RUNNING marker was written (MARK)
   : > "$T/rows-calls"
-  LOUT=$(cd / && env -i PATH="$T/rows-bin:/usr/bin:/bin" HOME="$LH" bash "$T/rows-leg.sh" "$RRD" "$@" 2>&1)
+  if [ "${LEG_UNPRIVILEGED:-0}" = 1 ]; then
+    # The required outer namespace maps the test process to root. Remap that same underlying user to uid 1000 so
+    # mode-000 remains genuinely unreadable without granting any external access.
+    LOUT=$(cd / && unshare --user --map-user=1000 --map-group=1000 \
+      env -i PATH="$T/rows-bin:/usr/bin:/bin" HOME="$LH" bash "$T/rows-leg.sh" "$RRD" "$@" 2>&1)
+  else
+    LOUT=$(cd / && env -i PATH="$T/rows-bin:/usr/bin:/bin" HOME="$LH" bash "$T/rows-leg.sh" "$RRD" "$@" 2>&1)
+  fi
   LRC=$?
   MARK=no; [ -e "$LH/$RRD/LEAKED" ] && MARK=yes
   rm -f -- "${LH:?}/${RRD:?}/LEAKED"
 }
 
 mkdir -p "$CR/Locked" && chmod 0 "$CR/Locked"   # L4
-leg_marked "tests/e2e/mac_v_red_ok_test.py|red|v-red"
+LEG_UNPRIVILEGED=1 leg_marked "tests/e2e/mac_v_red_ok_test.py|red|v-red"
 chmod 700 "$CR/Locked" && rmdir -- "$CR/Locked"
 if grep -q $'CRASHREPORTS\tINCONCLUSIVE\tbegin refused' <<<"$LOUT"; then no_start L4 "a refused crash-report begin"
 else bad "L4: no crash-report begin refusal line: rc=$LRC $(grep -E '^CRASHREPORTS' <<<"$LOUT" | tr '\n' ' ')"; fi

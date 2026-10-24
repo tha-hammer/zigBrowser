@@ -24,6 +24,11 @@ SHIM = ROOT / "src" / "wkwebview_shim.m"
 BEGIN = "// ZB_SIGNAL_DELIVERY_BEGIN"
 END = "// ZB_SIGNAL_DELIVERY_END"
 SIGNALS = ("SIGINT", "SIGTERM", "SIGHUP")
+SOURCE_FOR_SIGNAL = {
+    "SIGINT": "g_sigint_source",
+    "SIGTERM": "g_sigterm_source",
+    "SIGHUP": "g_sighup_source",
+}
 failures: list[str] = []
 
 PRELUDE = r"""
@@ -163,13 +168,51 @@ def source_problems(source: str, label: str) -> list[str]:
     if exact_behavior not in normalized:
         problems.append(f"{label}: the SIGHUP reload and SIGINT/SIGTERM exit branches are not exactly bound")
 
+    cleanup = function_body(source, "zb_remove_signal_sources")
+    if cleanup is None:
+        problems.append(f"{label}: missing inspectable zb_remove_signal_sources cleanup")
+    else:
+        for signo, global_name in SOURCE_FOR_SIGNAL.items():
+            unit = re.compile(
+                r"if\s*\(\s*" + re.escape(global_name) + r"\s*!=\s*NULL\s*\)\s*\{\s*"
+                r"dispatch_source_cancel\(\s*" + re.escape(global_name) + r"\s*\)\s*;\s*"
+                + re.escape(global_name) + r"\s*=\s*NULL\s*;\s*\}\s*"
+                r"signal\(\s*" + signo + r"\s*,\s*SIG_DFL\s*\)\s*;"
+            )
+            if len(unit.findall(cleanup)) != 1:
+                problems.append(
+                    f"{label}: {signo} cleanup must be one guarded cancel of {global_name}, then clear that "
+                    "global, then restore SIG_DFL"
+                )
+            if len(re.findall(r"dispatch_source_cancel\(\s*" + re.escape(global_name) + r"\s*\)", cleanup)) != 1:
+                problems.append(f"{label}: {signo} cleanup must cancel {global_name} exactly once")
+            if len(re.findall(r"\b" + re.escape(global_name) + r"\s*=\s*NULL\s*;", cleanup)) != 1:
+                problems.append(f"{label}: {signo} cleanup must clear {global_name} exactly once")
+        if cleanup.count("dispatch_source_cancel(") != 3:
+            problems.append(f"{label}: cleanup must contain exactly three dispatch-source cancels")
+        if len(re.findall(r"signal\(\s*(?:SIGINT|SIGTERM|SIGHUP)\s*,\s*SIG_DFL\s*\)", cleanup)) != 3:
+            problems.append(f"{label}: cleanup must contain exactly three default-disposition restores")
+
     install = source.find("if (!zb_install_signal_sources(host))")
     active = source.find("g_active_app = host;")
     window = source.find("ZbWindow *window = zb_window_new", active + 1)
     if active < 0 or install < active or window < install:
         problems.append(f"{label}: signal sources must install after the active app and before the first window")
-    if source.count("zb_remove_signal_sources();") < 2:
-        problems.append(f"{label}: signal sources must be removed on window-init failure and after the app loop")
+    if source.count("zb_remove_signal_sources();") != 3:
+        problems.append(
+            f"{label}: cleanup must run exactly on partial install, first-window failure and normal loop exit"
+        )
+    source_compact = " ".join(source.split())
+    paths = (
+        ("partial-install", r"if \(g_sigint_source == NULL \|\| g_sigterm_source == NULL \|\| "
+                            r"g_sighup_source == NULL\) \{ zb_remove_signal_sources\(\); return NO; \}"),
+        ("first-window", r"if \(window == NULL\) \{ zb_remove_signal_sources\(\);"),
+        ("normal-loop-exit", r"\[application run\]; zb_auto_on_loop_ended\(\); .*? "
+                             r"zb_remove_signal_sources\(\); g_active_app = nil;"),
+    )
+    for path_name, pattern in paths:
+        if re.search(pattern, source_compact) is None:
+            problems.append(f"{label}: cleanup is not bound to {path_name}")
     if install >= 0 and window >= 0 and "zb_remove_signal_sources();" in source[install:window]:
         problems.append(f"{label}: signal sources are dropped before the first window")
     return problems
@@ -218,6 +261,28 @@ def restored_old_handler(source: str) -> str | None:
     return mutant
 
 
+def cleanup_mutants(source: str) -> list[tuple[str, str]]:
+    """One field-isolated removal, source mismatch and clear/restore reorder per signal."""
+    mutants: list[tuple[str, str]] = []
+    next_source = {
+        "SIGINT": "g_sigterm_source",
+        "SIGTERM": "g_sighup_source",
+        "SIGHUP": "g_sigint_source",
+    }
+    for index, (signo, global_name) in enumerate(SOURCE_FOR_SIGNAL.items(), 2):
+        cancel = f"    dispatch_source_cancel({global_name});\n"
+        clear = f"    {global_name} = NULL;\n  }}\n  signal({signo}, SIG_DFL);"
+        if source.count(cancel) == 1:
+            mutants.append((f"M{index} {signo}-cancel-removed", source.replace(cancel, "", 1)))
+        if source.count(cancel) == 1:
+            wrong = f"    dispatch_source_cancel({next_source[signo]});\n"
+            mutants.append((f"M{index + 3} {signo}-cancel-mismatch", source.replace(cancel, wrong, 1)))
+        if source.count(clear) == 1:
+            reordered = f"    signal({signo}, SIG_DFL);\n    {global_name} = NULL;\n  }}"
+            mutants.append((f"M{index + 6} {signo}-clear-restore-reordered", source.replace(clear, reordered, 1)))
+    return mutants
+
+
 def run_rows(shim: Path) -> list[str]:
     global failures
     failures = []
@@ -236,6 +301,13 @@ def run_rows(shim: Path) -> list[str]:
         mutant_problems = source_problems(mutant, "M1 restore-old-handler")
         if not any("raw handler handle_signal performs unsafe work" in problem for problem in mutant_problems):
             bad(f"M1 restored raw handler survived the unsafe-context oracle: {mutant_problems!r}")
+    mutants = cleanup_mutants(source)
+    if len(mutants) != 9:
+        bad(f"M2-M10 constructed {len(mutants)} teardown mutants, want exactly 9")
+    for label, teardown_mutant in mutants:
+        mutant_problems = source_problems(teardown_mutant, label)
+        if not any("cleanup" in problem for problem in mutant_problems):
+            bad(f"{label} survived the per-source teardown oracle: {mutant_problems!r}")
     return list(failures)
 
 
@@ -247,7 +319,7 @@ def main(argv: list[str]) -> int:
     if problems:
         print(f"FAIL\tmac-signal-delivery\t{len(problems)} problem(s)")
         return 1
-    print("PASS\tmac-signal-delivery\tS1-S3 C1-C2 M1")
+    print("PASS\tmac-signal-delivery\tS1-S3 C1-C2 M1-M10")
     return 0
 
 

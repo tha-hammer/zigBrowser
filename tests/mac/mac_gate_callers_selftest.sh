@@ -106,11 +106,14 @@ fi
 case "\$*" in *ZB_ROOT_ABSENT*) last="\${@: -1}"; printf 'ZB_ROOT_ABSENT\t%s\n' "\${last##* }" ;; esac
 # The rows gate's leg arms its evidence archive after its self-audit; a held leg (exit 4) stops before that.
 if [[ " \$* " == *" /bin/bash -s "* ]]; then
-  held=0; [ -n "\${STUB_LEG_RC_HOST:-}" ] && [[ " \$* " == *" \$STUB_LEG_RC_HOST /bin/bash -s "* ]] && [ "\${STUB_LEG_RC:-0}" = 4 ] && held=1
+  runtime=0; grep -q 'varfolders_begin' "$T/ctl/stdin.\$i" && runtime=1
+  held=0; [ "\$runtime" -eq 1 ] && [ -n "\${STUB_LEG_RC_HOST:-}" ] \
+    && [[ " \$* " == *" \$STUB_LEG_RC_HOST /bin/bash -s "* ]] && [ "\${STUB_LEG_RC:-0}" = 4 ] && held=1
   [ "\$held" -eq 1 ] || "$T/bin/zb-leg-success" "\$@"   # a passing leg's exact lines (3ui.14)
 fi
 # the rows gate's leak path (rows L): the leg on STUB_LEG_RC_HOST exits STUB_LEG_RC
-if [ -n "\${STUB_LEG_RC_HOST:-}" ] && [[ " \$* " == *" \$STUB_LEG_RC_HOST /bin/bash -s "* ]]; then exit "\${STUB_LEG_RC:-0}"; fi
+if [ "\${runtime:-0}" -eq 1 ] && [ -n "\${STUB_LEG_RC_HOST:-}" ] \
+   && [[ " \$* " == *" \$STUB_LEG_RC_HOST /bin/bash -s "* ]]; then exit "\${STUB_LEG_RC:-0}"; fi
 exit 0
 EOF
 cat > "$T/bin/scp" <<EOF
@@ -196,8 +199,11 @@ home_paths_ok() { # home_paths_ok <text> <rd> [positionals...]: every "$HOME/...
 check_caller() { # check_caller <name> <script> <final line regex> <host...>
   local name=$1 script=$2 final=$3; shift 3
   local -a hosts=("$@")
-  local i h n rc out c script_in rd res k last ev before=$fails
-  declare -A RD=() XN=() BN=() DELS=() LASTDEL=() LASTCALL=()
+  local i h n rc out c script_in rd res k ev key root_count root_sha matches role known_hosts before=$fails
+  local expected_sha
+  expected_sha=$("${G[@]}" rev-parse HEAD)
+  declare -A RDS=() OWNER=() ROLE=() XN=() BN=() DELS=() LASTDEL=() LASTUSE=() EVIDENCE=() EVIDENCE_LAST=()
+  declare -A PRODUCER_KEYS=()
   rm -f "$T/ctl"/*
   ev=$(mktemp -d "$T/evidence-XXXXXX")   # the rows gate's ZB_MAC_EVIDENCE_DIR: a fresh empty dir per run
   out=$(cd "$R" && env -i PATH="$T/bin:/usr/bin:/bin" HOME="$T/home" TMPDIR="$T/tmp" \
@@ -218,35 +224,77 @@ check_caller() { # check_caller <name> <script> <final line regex> <host...>
     h=$HOST
     # C2: one of this caller's hosts
     case " ${hosts[*]} " in *" $h "*) ;; *) bad "$name C2: call $i targets unexpected host \"$h\""; continue ;; esac
-    LASTCALL[$h]=$i
     # C7: pinned host keys
     c=$(tr '\0' ' ' < "$T/ctl/call.$i")
-    for want in StrictHostKeyChecking=yes BatchMode=yes IdentitiesOnly=yes "UserKnownHostsFile=$R/tests/mac/known_hosts"; do
+    for want in StrictHostKeyChecking=yes BatchMode=yes IdentitiesOnly=yes; do
       case "$c" in *"$want"*) ;; *) bad "$name C7: call $i lacks $want" ;; esac
     done
+    known_hosts=$(sed -nE 's/.*UserKnownHostsFile=([^ ]+).*/\1/p' <<<"$c")
+    if [ "$known_hosts" = "$R/tests/mac/known_hosts" ]; then :
+    elif [ "$name" = rows ]; then
+      case "$known_hosts" in
+        "$T/tmp"/zb-runtime-package-??????/repo/tests/mac/known_hosts) PRODUCER_KEYS[$known_hosts]=1 ;;
+        *) bad "$name C7: call $i has unowned producer/runtime known-hosts path '$known_hosts'" ;;
+      esac
+    else
+      bad "$name C7: call $i lacks UserKnownHostsFile=$R/tests/mac/known_hosts"
+    fi
     case "$c" in *StrictHostKeyChecking=no*|*UserKnownHostsFile=/dev/null*) bad "$name C7: call $i turns host-key checking off" ;; esac
-    rd=${RD[$h]:-}
+
+    # C3: the extraction call comes first and names one exact run dir; then exactly one build call
+    if [ "$TOOL" = ssh ] && [[ "${CMD[*]}" =~ $EXTRACT_RE ]] \
+       && [ "${BASH_REMATCH[1]}" = "${BASH_REMATCH[2]}" ]; then
+      rd=${BASH_REMATCH[1]}
+      root_count=$(wc -w <<<"${RDS[$h]:-}")
+      if [ "$name" = rows ]; then
+        [ "$root_count" -lt 2 ] || bad "$name C3: a third extraction call ($i) on $h"
+        [ "$root_count" -eq 0 ] && role=producer || role=runtime
+      else
+        [ "$root_count" -eq 0 ] || bad "$name C3: a second extraction call ($i) on $h"
+        role=runtime
+      fi
+      if [ -n "${OWNER[$rd]:-}" ]; then
+        bad "$name C3: run root $rd is shared by ${OWNER[$rd]} and $h/$role"
+      else
+        OWNER[$rd]="$h/$role"
+      fi
+      RDS[$h]="${RDS[$h]:-} $rd"
+      key="$h|$rd"; ROLE[$key]=$role; XN[$key]=$(( ${XN[$key]:-0} + 1 )); LASTUSE[$key]=$i
+      continue
+    fi
+
+    # Every post-extraction call belongs to exactly one already-selected root on that host. This separates the
+    # rows gate's exact-commit package producer from its later runtime leg instead of merging both lifecycles.
+    rd= matches=0
+    for k in ${RDS[$h]:-}; do
+      if [[ "$c" == *"$k"* ]]; then rd=$k; matches=$((matches + 1)); fi
+    done
+    if [ "$matches" -ne 1 ]; then
+      bad "$name C3: call $i to $h names $matches owned run roots, want exactly one: $(cut -c1-120 <<<"$c")"
+      continue
+    fi
+    key="$h|$rd"; LASTUSE[$key]=$i; role=${ROLE[$key]}
 
     if [ "$TOOL" = scp ]; then   # C5
-      [ -n "$rd" ] || { bad "$name C3: scp call $i to $h before its run dir exists"; continue; }
       for k in "${REMOTES[@]}"; do
-        case "${k#*:}" in "$rd"|"$rd"/*) ;; *) bad "$name C5: scp call $i uses $k outside $rd" ;; esac
+        case "${k#*:}" in
+          "$rd"|"$rd"/*) ;;
+          *) bad "$name C5: scp call $i uses $k outside its $role root $rd" ;;
+        esac
+        case "${k#*:}" in
+          "$rd/evidence.tar"|"$rd/evidence.tar.sha256")
+            EVIDENCE[$key]=$(( ${EVIDENCE[$key]:-0} + 1 )); EVIDENCE_LAST[$key]=$i ;;
+        esac
       done
       continue
     fi
 
     c="${CMD[*]}"
-    # C3: the extraction call comes first and names one exact run dir; then exactly one build call
-    if [[ "$c" =~ $EXTRACT_RE ]] && [ "${BASH_REMATCH[1]}" = "${BASH_REMATCH[2]}" ]; then
-      if [ -n "$rd" ]; then bad "$name C3: a second extraction call ($i) on $h"; else RD[$h]=${BASH_REMATCH[1]}; fi
-      XN[$h]=$(( ${XN[$h]:-0} + 1 )); continue
-    fi
-    [ -n "$rd" ] || { bad "$name C3: ssh call $i to $h before its run dir exists: $(cut -c1-120 <<<"$c")"; continue; }
     build_re='^cd "\$HOME/'"$rd"'" && [^;|&]*zig build( |$)'
-    if [[ "$c" =~ $build_re ]]; then BN[$h]=$(( ${BN[$h]:-0} + 1 )); continue; fi
+    if [[ "$c" =~ $build_re ]]; then BN[$key]=$(( ${BN[$key]:-0} + 1 )); continue; fi
     # C6: deletes
     if [[ "$c" == *-delete* || "$c" =~ $RM_RE ]]; then
-      DELS[$h]=$(( ${DELS[$h]:-0} + 1 )); LASTDEL[$h]=$i
+      DELS[$key]=$(( ${DELS[$key]:-0} + 1 )); LASTDEL[$key]=$i
       if [ "$c" != "cd / && d=\"\$HOME/$rd\" && { [ ! -e \"\$d\" ] || find \"\$d\" -delete; } && [ ! -e \"\$d\" ] && [ ! -L \"\$d\" ] && printf 'ZB_ROOT_ABSENT\\t%s\\n' $rd" ]; then
         bad "$name C6: call $i deletes but is not the exact final cleanup of $rd: $(cut -c1-140 <<<"$c")"
       fi
@@ -276,13 +324,44 @@ check_caller() { # check_caller <name> <script> <final line regex> <host...>
   done
 
   for h in "${hosts[@]}"; do
-    rd=${RD[$h]:-}
-    if [ -z "$rd" ]; then bad "$name C3: $h has no extraction call"; continue; fi
-    [ "${XN[$h]:-0}" -eq 1 ] && [ "${BN[$h]:-0}" -eq 1 ] && ok "$name C3: $h extracted into and built in \$HOME/$rd" \
-      || bad "$name C3: $h has ${XN[$h]:-0} extraction and ${BN[$h]:-0} build calls, want 1 and 1"
-    if [ "${DELS[$h]:-0}" -eq 1 ] && [ "${LASTDEL[$h]}" = "${LASTCALL[$h]}" ]; then ok "$name C6: one cleanup of $rd, the last call to $h"
-    else bad "$name C6: $h has ${DELS[$h]:-0} deleting calls (want exactly 1, as its last call)"; fi
+    root_count=$(wc -w <<<"${RDS[$h]:-}")
+    if { [ "$name" = rows ] && [ "$root_count" -ne 2 ]; } \
+       || { [ "$name" != rows ] && [ "$root_count" -ne 1 ]; }; then
+      bad "$name C3: $h has $root_count owned run roots"
+    fi
+    local producer_count=0 runtime_count=0
+    for rd in ${RDS[$h]:-}; do
+      key="$h|$rd"; role=${ROLE[$key]}
+      [ "$role" = producer ] && producer_count=$((producer_count + 1)) || runtime_count=$((runtime_count + 1))
+      root_sha=${rd#zb-gate-}; root_sha=${root_sha%%-*}
+      [ "$root_sha" = "$expected_sha" ] \
+        || bad "$name C3: $h/$role root $rd is not bound to exact commit $expected_sha"
+      [ "${XN[$key]:-0}" -eq 1 ] && [ "${BN[$key]:-0}" -eq 1 ] \
+        && ok "$name C3: $h/$role extracted and built once in \$HOME/$rd" \
+        || bad "$name C3: $h/$role has ${XN[$key]:-0} extraction and ${BN[$key]:-0} build calls, want 1 and 1"
+      if [ "${DELS[$key]:-0}" -eq 1 ] && [ "${LASTDEL[$key]:--1}" = "${LASTUSE[$key]:--2}" ]; then
+        ok "$name C6: $h/$role cleaned its own root once, after its last use"
+      else
+        bad "$name C6: $h/$role has ${DELS[$key]:-0} cleanups or uses its root after cleanup"
+      fi
+      if [ "$name" = rows ] && [ "$role" = runtime ]; then
+        [ "${EVIDENCE[$key]:-0}" -eq 2 ] && [ "${EVIDENCE_LAST[$key]:--1}" -lt "${LASTDEL[$key]:--2}" ] \
+          && ok "$name C5: $h/runtime copied evidence and digest before confirmed cleanup" \
+          || bad "$name C5: $h/runtime did not copy both evidence files before cleanup"
+      fi
+    done
+    if [ "$name" = rows ]; then
+      [ "$producer_count" -eq 1 ] && [ "$runtime_count" -eq 1 ] \
+        || bad "$name C3: $h needs one disjoint producer root and one runtime root"
+    fi
   done
+  if [ "$name" = rows ]; then
+    [ "${#PRODUCER_KEYS[@]}" -eq 1 ] \
+      || bad "$name C7: package-producer calls use ${#PRODUCER_KEYS[@]} owned known-hosts files, want one"
+    grep -qE $'^PRODUCER_DMG\tpackaging/macos/build-dmg.sh\t'"$expected_sha"$'\t[0-9a-f]{64}\t[1-9][0-9]*$' <<<"$out" \
+      && ok "$name C1: package producer reports an exact-commit nonempty DMG before runtime legs" \
+      || bad "$name C1: missing exact-commit package-producer identity"
+  fi
   [ "$fails" -eq "$before" ] && ok "$name: C2 C4 C5 C7 hold on all $n calls"
 }
 
@@ -325,6 +404,10 @@ cat > "$T/rows-bin/getconf" <<EOF
 #!/bin/bash
 [ -e "$T/vf/fail" ] && exit 1   # VF2: the per-user roots cannot be resolved
 [ -e "$T/vf/empty" ] && exit 0  # VF4: getconf answers nothing
+[ -e "$T/vf/unreadable" ] && {  # VF5: user-namespace root still cannot enumerate this initial procfs tree
+  case "\$1" in DARWIN_USER_TEMP_DIR) echo /proc/1/fd/ ;; DARWIN_USER_CACHE_DIR) echo /proc/1/map_files/ ;; *) exit 1 ;; esac
+  exit 0
+}
 case "\$1" in DARWIN_USER_TEMP_DIR) echo "$T/vf/T/" ;; DARWIN_USER_CACHE_DIR) echo "$T/vf/C/" ;; *) exit 1 ;; esac
 EOF
 chmod +x "$T/rows-bin/getconf"
@@ -489,9 +572,9 @@ refused_leg VF2 "a failing getconf"
 rows_leg out "tests/e2e/mac_v_red_ok_test.py|red|v-red"
 rm -f -- "${T:?}/vf/empty"
 refused_leg VF4 "an empty getconf answer"
-: > "$T/rows-calls"; mkdir -p "$T/vf/C/locked" && : > "$T/vf/C/locked/x" && chmod 0 "$T/vf/C/locked"
+: > "$T/rows-calls"; : > "$T/vf/unreadable"
 rows_leg out "tests/e2e/mac_v_red_ok_test.py|red|v-red"
-chmod 700 "$T/vf/C/locked" && rm -f -- "$T/vf/C/locked/x" && rmdir -- "$T/vf/C/locked"
+rm -f -- "$T/vf/unreadable"
 refused_leg VF5 "an unreadable initial tree"
 rows_leg out "tests/e2e/mac_v_leak_test.py|red|v-red"
 if [ "$LEG_RC" -eq 3 ] && grep -q $'^HOST_STOPPED\t' <<<"$out" && grep -q $'^VARFOLDERS\tCOMPLETE\t' <<<"$out"; then
@@ -515,27 +598,44 @@ for case in "3 0 STOPPED" "124 0 STOPPED" "4 0 HELD" "5 1 INCONCLUSIVE"; do
           timeout 120 bash tests/mac/ms_runtime_rows_gate.sh 2>&1 </dev/null)
   rc=$?
   n=$(cat "$T/ctl/n" 2>/dev/null || echo 0)
-  di=0 da=0
+  pi=0 pa=0 ri=0 ra=0
+  declare -A lroots=() lcount=()
   for ((i = 0; i < n; i++)); do
     parse "$i"
-    [ "$TOOL" = ssh ] && [[ "${CMD[*]}" == *-delete* ]] || continue
-    [ "$HOST" = "$INTEL" ] && di=$((di + 1))
-    [ "$HOST" = "$ARM" ] && da=$((da + 1))
+    c="${CMD[*]}"
+    if [ "$TOOL" = ssh ] && [[ "$c" =~ $EXTRACT_RE ]] && [ "${BASH_REMATCH[1]}" = "${BASH_REMATCH[2]}" ]; then
+      rd=${BASH_REMATCH[1]}; lcount[$HOST]=$(( ${lcount[$HOST]:-0} + 1 ))
+      lroots["$HOST|$rd"]=$([ "${lcount[$HOST]}" -eq 1 ] && echo producer || echo runtime)
+      continue
+    fi
+    [ "$TOOL" = ssh ] && [[ "$c" == *-delete* ]] || continue
+    for key in "${!lroots[@]}"; do
+      [[ "$key" == "$HOST|"* ]] || continue
+      rd=${key#*|}; [[ "$c" == *"$rd"* ]] || continue
+      role=${lroots[$key]}
+      case "$HOST/$role" in
+        "$INTEL/producer") pi=$((pi + 1)) ;; "$ARM/producer") pa=$((pa + 1)) ;;
+        "$INTEL/runtime") ri=$((ri + 1)) ;; "$ARM/runtime") ra=$((ra + 1)) ;;
+      esac
+    done
   done
-  if [ "$rc" -eq 1 ] && [ "$di" -eq "$want_del" ] && [ "$da" -eq 1 ] && grep -q "^$word: $INTEL" <<<"$out"; then
-    ok "rows L: intel leg exit $leg_rc -> $word, $di delete call(s) to intel, arm cleaned, gate exit 1"
+  unset lroots lcount
+  if [ "$rc" -eq 1 ] && [ "$pi" -eq 1 ] && [ "$pa" -eq 1 ] \
+     && [ "$ri" -eq "$want_del" ] && [ "$ra" -eq 1 ] && grep -q "^$word: $INTEL" <<<"$out"; then
+    ok "rows L: producer roots cleaned; intel runtime exit $leg_rc -> $word with $ri cleanup(s), arm runtime cleaned"
   else
-    bad "rows L: intel leg exit $leg_rc: rc=$rc intel deletes $di (want $want_del), arm deletes $da: $(grep -E '^(STOPPED|HELD|FAIL)' <<<"$out" | head -2)"
+    bad "rows L: intel runtime exit $leg_rc: rc=$rc producer deletes $pi/$pa, runtime $ri/$ra (want $want_del/1): $(grep -E '^(STOPPED|HELD|FAIL)' <<<"$out" | head -2)"
   fi
 done
 
 # The red vectors themselves (tests/e2e/mac_red_shape_selftest.py, hostless): each red test's exact vector gives
 # RED_SHAPE, and a flipped, missing, extra, duplicated or precondition-broken outcome, or the real row-3 check driven
 # with zero or two matching LOAD_FAIL rows, gives none.
-# Its M section runs each row's real main against a fake browser and the row's own local HTTP fixture, so it needs a
-# loopback interface: a nested private network namespace with only lo up (still no outside network).
+# Its M section runs each row's real main against a fake browser and the row's own local HTTP fixture, so it needs
+# loopback up. This selftest is already re-executing in its own private network namespace; creating a nested network
+# namespace is both redundant and unavailable on kernels that forbid nesting an additional user namespace.
 if shape=$(cd "$ROOT/tests/e2e" && env -i PATH=/usr/bin:/bin HOME="$T/home" \
-    unshare --user --map-root-user --net bash -c 'ip link set lo up && python3 -B mac_red_shape_selftest.py' 2>&1) \
+    bash -c 'ip link set lo up && python3 -B mac_red_shape_selftest.py' 2>&1) \
   && grep -q $'^PASS\tmac-red-shape-selftest\t' <<<"$shape"; then
   ok "rows: $(grep $'^PASS\t' <<<"$shape" | tr '\t' ' ')"
 else
@@ -571,7 +671,15 @@ done
 # No row may send SIGKILL on a Mac (session brief): every row file stops its browser through mac_term_teardown
 # (SIGTERM only). Tripwire only; the teardown's behavior is the selftest above.
 for f in $(awk -F'|' '/^  "tests\/e2e\/mac_[a-z0-9_]+_test\.py[|]/ { sub(/^  "/, "", $1); print $1 }' "$R/tests/mac/ms_runtime_rows_gate.sh"); do
-  if grep -q 'from mac_term_teardown import' "$ROOT/$f" && ! grep -qE 'stop_browser_macos|signal\.SIGKILL|\.kill\(\)' "$ROOT/$f"; then
+  if [ "$f" = tests/e2e/mac_signal_runtime_test.py ]; then
+    if grep -q 'SIGNAL_CASES = (("HUP", signal.SIGHUP), ("INT", signal.SIGINT), ("TERM", signal.SIGTERM))' "$ROOT/$f" \
+       && grep -q 'os.kill(current.pid, signo)' "$ROOT/$f" \
+       && ! grep -qE 'signal\.SIGKILL|\.kill\(\)|subprocess\.(run|call|check_call|check_output)\(.*timeout=' "$ROOT/$f"; then
+      ok "rows: $f has the dedicated HUP/INT/TERM delivery contract and names no SIGKILL path"
+    else
+      bad "rows: $f does not retain the dedicated three-signal/no-SIGKILL contract"
+    fi
+  elif grep -q 'from mac_term_teardown import' "$ROOT/$f" && ! grep -qE 'stop_browser_macos|signal\.SIGKILL|\.kill\(\)' "$ROOT/$f"; then
     ok "rows: $f stops its browser with SIGTERM only"
   else
     bad "rows: $f does not use the SIGTERM-only teardown (or names SIGKILL)"

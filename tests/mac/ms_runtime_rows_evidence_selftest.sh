@@ -88,6 +88,7 @@ EOF
 cat > "$T/macbin/find" <<EOF
 #!/bin/bash
 [ -e "$T/ctl/find-noop" ] && exit 0   # a delete that reports success and removes nothing
+[ -e "\${ZB_FAKE_MAC:?}/ctl-find-noop" ] && exit 0   # the same failure, isolated to one fake host
 exec /usr/bin/find "\$@"
 EOF
 cat > "$T/macbin/getconf" <<'EOF'
@@ -108,7 +109,7 @@ esac
 # The executing package/signal fake-host path for mac-signal-runtime is tests/mac/ms_signal_runtime_gate_red.sh.
 printf 'FIRST\t%s\n' "$id"; for n in $(seq 1 60); do printf 'line %d of %s\n' "$n" "$id"; done
 if [ -e "$ZB_FAKE_MAC/ctl-leak" ]; then printf 'FAIL\t%s\nLEAK\t4242\t4242\tThu Oct 22 21:00:00 2026\t/x/zigBrowser --e2e-protocol\n' "$id"; exit 1; fi
-if [ -e "$ZB_FAKE_MAC/ctl-lock" ]; then mkdir -p locked/x && : > locked/x/f && chmod 500 locked/x; fi
+if [ -e "$ZB_FAKE_MAC/ctl-lock" ]; then : > "$ZB_FAKE_MAC/ctl-find-noop"; fi
 printf 'ASSERT\t%s\tstub\tpass\nPASS\t%s\n' "$id" "$id"
 exit 0
 EOF
@@ -155,7 +156,7 @@ if [ "$KRC" -eq 0 ] && grep -qx $'REMOVED\t'"$INTEL"$'\t'"$RDA" <<<"$KOUT" && gr
 else bad "K1: rc=$KRC $(tr '\n' ' ' <<<"$KOUT")"; fi
 
 fresh_macs; two_roots
-mkdir -p "$T/mac/$ARM/$RDB/locked/x" && : > "$T/mac/$ARM/$RDB/locked/x/f" && chmod 500 "$T/mac/$ARM/$RDB/locked/x"
+: > "$T/mac/$ARM/ctl-find-noop"
 lib "$REC; mac_remove_run_dirs"
 chmod -R u+rwx "$T/mac/$ARM" 2>/dev/null
 if [ "$KRC" -ne 0 ] && grep -q $'^RETAINED\t'"$ARM"$'\t'"$RDB"$'\t.' <<<"$KOUT" && ! grep -q $'^REMOVED\t'"$ARM" <<<"$KOUT" \
@@ -247,7 +248,8 @@ if [ -s "$T/pack.sh" ] && [ "$p1" = rc=0 ] && [ "$p2" = rc=0 ] && cmp -s "$T/p1/
   ok "E2 the archive is deterministic: equal bytes for equal evidence, C-ordered members, fixed mtimes, its sha256 beside it"
 else bad "E2: pack=[$p1|$p2] names=[$(tr '\n' ' ' <<<"$names")] times=[$times]"; fi
 mkdir -p "$T/p3/evidence" && printf 'x\n' > "$T/p3/evidence/a" && printf 'y\n' > "$T/p3/evidence/locked" && chmod 000 "$T/p3/evidence/locked"
-p3=$(bash -c '. "$1"; pack_evidence "$2/evidence"' _ "$T/pack.sh" "$T/p3" 2>/dev/null; echo "rc=$?")
+p3=$(unshare --user --map-user=1000 --map-group=1000 \
+  bash -c '. "$1"; pack_evidence "$2/evidence"' _ "$T/pack.sh" "$T/p3" 2>/dev/null; echo "rc=$?")
 chmod 600 "$T/p3/evidence/locked"
 if [ -s "$T/pack.sh" ] && [ "$p3" != rc=0 ] && [ ! -e "$T/p3/evidence.tar" ] && [ ! -e "$T/p3/evidence.tar.sha256" ]; then
   ok "E2b a pack that cannot read an entry: non-zero, no archive and no sha256 left"

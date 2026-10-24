@@ -91,6 +91,10 @@ DRIVEN=(
   "tests/mac/ms7_appkit_gate.sh|commit|-|two|"
   "tests/mac/ms_runtime_rows_gate.sh|file|-|two|"
 )
+# This registered selftest is itself the executing fake transport: it enters a private user/PID/mount/network
+# namespace, installs only fake ssh/scp ahead of PATH, and drives ms_runtime_rows_gate.sh against the two literal
+# documentation-net hosts below.  It is driven separately in H instead of pretending it is a production caller.
+HERMETIC=(tests/mac/ms_signal_runtime_gate_red.sh)
 REAPER=tests/mac/ms6_5_reaper_gate.sh
 TRANSPORT_RE='(^|[^A-Za-z0-9_./$-])(ssh|scp|sftp)([^A-Za-z0-9_.-]|$)|mac_ssh_opts|mac_scp_opts|(^|[[:space:]])mac_build([[:space:]]|$)'
 PY_TRANSPORT_RE="[\"'](ssh|scp|sftp)([\"'[:space:]])"
@@ -168,7 +172,9 @@ SHA=$("${G[@]}" rev-parse HEAD)
 
 # ---- C: the helper's contract, driven directly ----------------------------------------------------------------
 ln -s "$KEYF" "$T/keys/link_key"; mkdir "$T/keys/dir_key"
-printf 'k\n' > "$T/keys/unreadable_key"; chmod 000 "$T/keys/unreadable_key"
+UNREADABLE_KEY=/proc/1/mem   # regular, but unreadable even to root in the required outer user namespace
+[ -f "$UNREADABLE_KEY" ] && [ ! -r "$UNREADABLE_KEY" ] \
+  || bad "C unreadable-key fixture is not a regular unreadable file: $UNREADABLE_KEY"
 helper() { # helper <mode> [VAR=value...]: source the helper in a clean subshell; prints rc, then its output
   local mode=$1; shift
   (cd "$R" && env -i PATH="$T/bin:/usr/bin:/bin" HOME="$T/home" ZB_SELFTEST_CTL="$T/ctl.helper" "$@" \
@@ -191,7 +197,7 @@ refuses "one, relative key" ZB_MAC_KEY one ZB_MAC_HOST="$INTEL" ZB_MAC_KEY=keys/
 refuses "one, missing key file" ZB_MAC_KEY one ZB_MAC_HOST="$INTEL" ZB_MAC_KEY="$T/keys/no_such_key"
 refuses "one, symlink key" ZB_MAC_KEY one ZB_MAC_HOST="$INTEL" ZB_MAC_KEY="$T/keys/link_key"
 refuses "one, directory key" ZB_MAC_KEY one ZB_MAC_HOST="$INTEL" ZB_MAC_KEY="$T/keys/dir_key"
-refuses "one, unreadable key" ZB_MAC_KEY one ZB_MAC_HOST="$INTEL" ZB_MAC_KEY="$T/keys/unreadable_key"
+refuses "one, unreadable key" ZB_MAC_KEY one ZB_MAC_HOST="$INTEL" ZB_MAC_KEY="$UNREADABLE_KEY"
 refuses "one, option-like host" ZB_MAC_HOST one ZB_MAC_HOST=-oProxyCommand=true ZB_MAC_KEY="$KEYF"
 refuses "one, host with a space" ZB_MAC_HOST one "ZB_MAC_HOST=intel@10.0.0.1 -v" ZB_MAC_KEY="$KEYF"
 refuses "one, host with a colon" ZB_MAC_HOST one ZB_MAC_HOST=intel@10.0.0.1:/x ZB_MAC_KEY="$KEYF"
@@ -392,7 +398,7 @@ done
 
 # ---- N: census of every Mac transport entry at the tested commit -----------------------------------------------
 n_before=$fails
-known=" $REAPER ${LIBS[*]} "
+known=" $REAPER ${LIBS[*]} ${HERMETIC[*]} "
 for row in "${DRIVEN[@]}"; do known+="${row%%|*} "; done
 census=0
 while IFS= read -r rel; do
@@ -416,7 +422,7 @@ done < <(cd "$R" && "${G[@]}" ls-files -- tests packaging tools | LC_ALL=C sort)
 [ "$census" -ge "${#DRIVEN[@]}" ] || bad "N the census found $census transport entries, fewer than the ${#DRIVEN[@]} driven"
 [ "$fails" -eq "$n_before" ] && ok "N census: $census Mac transport entries, every one driven, the reaper, or a library"
 
-# ---- H: the compile-only selftest is hermetic -------------------------------------------------------------------
+# ---- H: transport selftests are executing and hermetic ----------------------------------------------------------
 mine=$(readlink /proc/self/ns/net)
 out=$(cd "$R" && env -i PATH=/usr/bin:/bin HOME="$T/home" TMPDIR="$T/tmp.h" ZB_ORACLE_NETNS="$mine" \
         bash -c 'mkdir -p "$TMPDIR" && exec bash tests/mac/mac_compile_only_selftest.sh' 2>&1)
@@ -426,6 +432,22 @@ if [ -n "$got" ] && [ "$got" != "$mine" ] && grep -q 'no route out' <<<"$line" \
    && [ "$(grep -nE '^(ok|FAIL) ' <<<"$out" | head -n 1 | cut -d: -f2- | cut -c1-10)" = "ok   netns" ]; then
   ok "H the compile-only selftest proves its own network namespace ($got, not $mine) with no route out, first"
 else bad "H the compile-only selftest shows no first-line proof of its own network namespace: '${line}'"; fi
+
+for hermetic in "${HERMETIC[@]}"; do
+  out=$(cd "$R" && env -i PATH=/usr/local/bin:/usr/bin:/bin HOME="$T/home" TMPDIR="$T/tmp.h" \
+        XDG_DATA_HOME="$T/xdg-data" XDG_CACHE_HOME="$T/xdg-cache" XDG_CONFIG_HOME="$T/xdg-config" \
+        XDG_RUNTIME_DIR="$T/xdg-runtime" bash "$hermetic" "$R" 2>&1)
+  rc=$?
+  pass=$(case "$hermetic" in
+    tests/mac/ms_signal_runtime_gate_red.sh) printf '%s' $'PASS\tms-signal-runtime-gate-red' ;;
+    *) printf '%s' impossible ;;
+  esac)
+  if [ "$rc" -eq 0 ] && [ "$(grep -cFx "$pass" <<<"$out")" -eq 1 ]; then
+    ok "H $hermetic executes its fake-host private-netns oracle"
+  else
+    bad "H $hermetic is not a passing executing fake-host oracle (exit $rc): $(tail -n 2 <<<"$out" | tr '\n' ' ')"
+  fi
+done
 
 if [ "$fails" -eq 0 ]; then printf 'PASS\tmac-config-selftest\n'; exit 0; fi
 printf 'FAIL\tmac-config-selftest\t%s failure(s)\n' "$fails"

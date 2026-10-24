@@ -294,16 +294,16 @@ static void zb_remove_signal_sources(void) {
     dispatch_source_cancel(g_sigint_source);
     g_sigint_source = NULL;
   }
+  signal(SIGINT, SIG_DFL);
   if (g_sigterm_source != NULL) {
     dispatch_source_cancel(g_sigterm_source);
     g_sigterm_source = NULL;
   }
+  signal(SIGTERM, SIG_DFL);
   if (g_sighup_source != NULL) {
     dispatch_source_cancel(g_sighup_source);
     g_sighup_source = NULL;
   }
-  signal(SIGINT, SIG_DFL);
-  signal(SIGTERM, SIG_DFL);
   signal(SIGHUP, SIG_DFL);
 }
 

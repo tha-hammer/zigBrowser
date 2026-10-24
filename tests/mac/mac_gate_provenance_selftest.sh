@@ -527,6 +527,9 @@ generated_names = {
     "ms1b_signed_gate": {"zigBrowser-universal-signed", "libwkwebview_shim-signed.dylib"},
     # The universal dmg (4pa.73 MS1c): the arm64 build's exe and shim, fetched from the arm Mac to the Intel run dir.
     "build-dmg": {"zigBrowser-arm64", "libwkwebview_shim-arm64.dylib"},
+    # The signal rows caller executes that same exact-commit build-dmg producer before it stages the resulting DMG.
+    # Attribute the producer's two arm64 slices to that nested package flow; no other generated payload is accepted.
+    "ms_runtime_rows_gate": {"zigBrowser-arm64", "libwkwebview_shim-arm64.dylib"},
 }
 errors, payloads, exact = [], 0, {}
 def err(where, why): errors.append(f"{where}: {why}")
@@ -654,6 +657,9 @@ def inspect_bytes(where, data, host, origin_name, stdin=False):
         candidates = [p for p in (f"tests/mac/{gate}.sh", f"packaging/macos/{gate}.sh") if p in path_set]
         if gate == "bundle_layout_spike":
             candidates.append("tests/mac/bundle_layout_spike_leg.sh")
+        if gate == "ms_runtime_rows_gate":
+            # The signal selection first executes the committed package producer in a clean exact-commit clone.
+            candidates.append("packaging/macos/build-dmg.sh")
         if any(data.strip() in blob(path) for path in candidates):
             add_exact(host)
             return
