@@ -29,6 +29,9 @@ import sys
 import tempfile
 import time
 
+MACOS_SUN_PATH_BYTES = 104
+SOCKET_BASENAME = "a.sock"
+
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "e2e"))
 from mac_term_teardown import stop_browser_term_only  # noqa: E402  (SIGTERM-only teardown; no SIGKILL on a Mac)
 
@@ -97,12 +100,28 @@ def read_exec_arch(sock_path, timeout):
         sock.close()
 
 
+def preflight_socket_paths(sock_path):
+    for kind, path in (("socket", sock_path), ("token", sock_path + ".token")):
+        size = len(os.fsencode(path))
+        if size >= MACOS_SUN_PATH_BYTES:
+            raise ValueError(f"automation {kind} path is {size} bytes; macOS Unix-domain limit is 103 bytes")
+
+
+def remove_endpoints(sock_path):
+    for path in (sock_path, sock_path + ".token"):
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--browser", required=True, help="the built browser binary")
     ap.add_argument("--out", required=True, help="file to write the reported arch into (only on success)")
     ap.add_argument("--url", default="about:blank", help="page to load before the probe command")
     ap.add_argument("--timeout", type=float, default=30.0)
+    ap.add_argument("--socket-dir", help="existing private directory for the automation socket")
     args = ap.parse_args()
 
     # Never leave a stale value: the gate's fail-closed depends on the file being absent on failure.
@@ -111,27 +130,41 @@ def main():
     except FileNotFoundError:
         pass
 
-    tmp = tempfile.mkdtemp(prefix="zb-exec-arch-")
-    sock_path = os.path.join(tmp, "automation.sock")
-    env = dict(os.environ)
-    env["ZIGBROWSER_SOCKET"] = sock_path
-    proc = subprocess.Popen([args.browser, args.url, "--automation-api"], env=env, start_new_session=True)
+    tmp = args.socket_dir if args.socket_dir is not None else tempfile.mkdtemp(prefix="zb-exec-arch-")
+    created_tmp = args.socket_dir is None
+    sock_path = os.path.join(tmp, SOCKET_BASENAME)
     try:
-        arch = read_exec_arch(sock_path, args.timeout)
-    except Exception as exc:  # noqa: BLE001 - any failure is fail-closed (write nothing)
+        preflight_socket_paths(sock_path)
+    except ValueError as exc:
         print(f"exec_arch_probe: FAIL ({exc})", file=sys.stderr)
-        return 2
-    finally:
-        stop_browser_term_only(proc)
-        for name in ("automation.sock", "automation.sock.token"):
+        if created_tmp:
             try:
-                os.unlink(os.path.join(tmp, name))
+                os.rmdir(tmp)
             except OSError:
                 pass
+        return 2
+
+    env = dict(os.environ)
+    env["ZIGBROWSER_SOCKET"] = sock_path
+    proc = None
+    try:
+        proc = subprocess.Popen([args.browser, args.url, "--automation-api"], env=env, start_new_session=True)
         try:
-            os.rmdir(tmp)
-        except OSError:
-            pass
+            arch = read_exec_arch(sock_path, args.timeout)
+        except Exception as exc:  # noqa: BLE001 - any failure is fail-closed (write nothing)
+            print(f"exec_arch_probe: FAIL ({exc})", file=sys.stderr)
+            return 2
+    finally:
+        try:
+            if proc is not None:
+                stop_browser_term_only(proc)
+        finally:
+            remove_endpoints(sock_path)
+            if created_tmp:
+                try:
+                    os.rmdir(tmp)
+                except OSError:
+                    pass
 
     with open(args.out, "w", encoding="ascii") as fh:
         fh.write(arch + "\n")

@@ -535,7 +535,7 @@ row render m9-render-webview-screenshot python3 tests/e2e/m9_render_test.py --br
 row reply m9-reply-channel-contract python3 tests/e2e/m9_reply_channel_test.py --browser "$EXE" || { after; finish; }
 row loadfail m9-load-fail-contract python3 tests/e2e/m9_load_fail_test.py --browser "$EXE" || { after; finish; }
 rm -f -- "$RD/cap/exec-arch.txt"
-row arch '' python3 tests/mac/exec_arch_probe.py --browser "$EXE" --out "$RD/cap/exec-arch.txt" || { after; finish; }
+row arch '' python3 tests/mac/exec_arch_probe.py --browser "$EXE" --out "$RD/cap/exec-arch.txt" --socket-dir "$RD/s" || { after; finish; }
 norm() { case "$1" in aarch64|arm64) echo arm64 ;; *) echo "$1" ;; esac; }
 uname_m=$(uname -m)
 reported=$(tr -d '[:space:]' < "$RD/cap/exec-arch.txt" 2>/dev/null)

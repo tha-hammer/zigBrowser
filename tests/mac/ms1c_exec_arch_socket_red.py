@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""RED, UNREGISTERED (SilverRidge f69c8dad): MS1c must give the real exec-arch probe a short socket path.
+"""GREEN, REGISTERED (red 484cc6ba; SilverRidge 2d882fcd): MS1c gives exec-arch a short socket path.
 
 The consumed Intel run placed ``automation.sock`` under its long private TMPDIR and produced a 135-byte pathname,
 which cannot fit in macOS's 104-byte ``sockaddr_un.sun_path`` field.  This oracle drives the real probe main path,
@@ -11,7 +11,7 @@ launch when they are not shorter than the macOS bound.  Finally, a field-isolate
 also records the gate-to-probe argv and directory state for both legs, preserving P5/F19 while rejecting dropped,
 TMPDIR, outside, duplicate and other-run-root caller arguments.
 
-This file stays out of build.zig until the production green.
+This oracle is registered directly under test-mac-ms1c-gate and aggregate test.
 """
 
 from __future__ import annotations
