@@ -2510,3 +2510,19 @@ Fix-forward minimum, preserving the exact one-file/unregistered scope, four exec
 - at the green, add the option in option position to every censused construction, register the final oracle under `test-mac-build-script` and aggregate `test` with `has_side_effects` and no skip mapping, and run deletion plus late-pair production mutants for direct, evaluated-reaper, MS5, `build-on-mac` and shared-library sites.
 
 This block changes no product, registered gate, push-safe SHA or Mac-run authority. Production still lacks the required isolation, so no MS1c or other Mac release may proceed on this ancestry. The newest exact push-safe Mac tip remains `08ae295e3138cd9a1c8869f66a07dbc8861b0afa`.
+
+## 2026-10-23 — 3ui.14 runtime-rows exact-output GREEN `79bc41c0` and R3 audit
+
+**APPROVED ON ITS EXACT CONTENT.** Exact `79bc41c06518389d458bfbcc1d627d03430de32b` satisfies the complete approved red `11894873` + `0a3fd03e` + `df2c183b` (`d9f0970d`). It changes only the five disclosed files and passes `git diff --check`; `build.zig` adds thirteen lines without removing any. The final oracle is a direct dependency of `test-mac-build-script` and aggregate `test`, declares the gate, output/config/audit helpers, build driver and known-hosts inputs, and has no skip mapping. The only change to the approved oracle itself is its registration header.
+
+For a status-zero Mac leg, `verify_host` now calls `leg_output_exact` before `fetch_evidence`. The validator constructs the exact ROW record for every selected `(file, verdict, id)` with the verdict-derived rc, requires the total ROW count to equal the selection, requires each of the five named self-audit statuses exactly once, requires exactly one VARFOLDERS COMPLETE record, and requires CRASHREPORTS COMPLETE 0 and EVIDENCE_ARMED exactly once. A mismatch produces the one bounded host/arch remote-success refusal and ordinary status 1 before evidence retrieval; evidence is still fetched and retained afterward. Nonzero leg handling, leak/timeout retention and verified cleanup remain unchanged. The two older fake-transport fixtures now emit the same complete success vocabulary rather than weakening the production check.
+
+From a neutral clean exact archive under `env -i`, external private HOME/TMP/XDG, a private current-user/network/PID/mount namespace and Zig's default repo-relative cache, the direct oracle passed all **O1–O19 and P1–P3**. I independently moved validation after `fetch_evidence`; the unchanged oracle exited 1 with all **29** negative cases red while P1–P3 stayed green. That closes the causal order boundary in `3add0d33` rather than merely matching the final output.
+
+The requested exact-prefix R3 gates all passed:
+
+- `zig build -j4 test-mac-gate-steps --summary all`: **3/3**;
+- `zig build -j4 test-mac-gate-empty-output --summary all`: **3/3**, all **20/20** gates causal;
+- `zig build -j4 test-mac-build-script --summary all`: **19/19**, including exact-commit provenance, 32-caller configuration, host-key/askpass, pipefail, evidence/removal, exact-output, leak/hold, audit and cache boundaries.
+
+No Mac or external network was contacted. This closes the runtime-rows portion of 3ui.14 hostlessly. **R3 nevertheless names no newer push-safe Mac SHA:** exact `79bc41c0` descends from blocked transport red `d82d12dc`, and production on this ancestry still lacks the required causally proven `-F none` isolation from user/system ssh configuration. That is a known safety condition, even though its red remains unregistered. The newest exact push-safe Mac tip therefore remains **`08ae295e3138cd9a1c8869f66a07dbc8861b0afa`**. No Mac-run authority changes.
