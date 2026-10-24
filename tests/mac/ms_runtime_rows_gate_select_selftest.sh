@@ -51,6 +51,24 @@ GATE=tests/mac/ms_runtime_rows_gate.sh
 # Stub ssh/scp that record every call and succeed; the scratch repo holds the real gate, its library and helpers.
 mkdir -p "$T/bin" "$T/ctl" "$T/home" "$T/tmp"
 printf 'not a real key\n' > "$T/fake_mac_key"
+cat > "$T/bin/zb-leg-success" <<'EOF'
+#!/bin/bash
+# The exact success lines of a passing rows-gate leg (bd 3ui.14), for the rows after `/bin/bash -s <run dir>`, as the
+# remote shell unquotes them.
+seen=0 prev=
+for a in "$@"; do
+  if [ "$seen" = 2 ]; then
+    w=${a//\\|/|}; IFS='|' read -r f want id <<<"$w"; rc=1; [ "$want" = green ] && rc=0
+    printf 'ROW\t%s\t%s\trc=%s\tMATCH\n' "$f" "$want" "$rc"; continue
+  fi
+  if [ "$seen" = 1 ]; then seen=2; continue; fi   # the run dir
+  [ "$a" = -s ] && [ "$prev" = /bin/bash ] && seen=1
+  prev=$a
+done
+printf 'SELFAUDIT_STATUS\t%s\t0\n' outer-begin inner-varfolders inner-crashreports inner-evidence outer-end
+printf 'VARFOLDERS\tCOMPLETE\t0\nCRASHREPORTS\tCOMPLETE\t0\nEVIDENCE_ARMED\n'
+EOF
+chmod +x "$T/bin/zb-leg-success"
 cat > "$T/bin/ssh" <<EOF
 #!/bin/bash
 printf 'CONTACT\tssh\t%s\n' "\$(grep -c '^ROWS_SELECTED' "$T/gate.out" 2>/dev/null)" >> "$T/ctl/transcript"
@@ -58,7 +76,7 @@ i=\$(cat "$T/ctl/n" 2>/dev/null || echo 0); echo \$((i + 1)) > "$T/ctl/n"
 printf '%s\0' ssh "\$@" > "$T/ctl/call.\$i"
 cat > "$T/ctl/stdin.\$i"
 case "\$*" in *ZB_ROOT_ABSENT*) last="\${@: -1}"; printf 'ZB_ROOT_ABSENT\t%s\n' "\${last##* }" ;; esac   # the verified cleanup
-[[ " \$* " == *" /bin/bash -s "* ]] && printf 'EVIDENCE_ARMED\n'   # the leg arms its evidence archive
+[[ " \$* " == *" /bin/bash -s "* ]] && "$T/bin/zb-leg-success" "\$@"   # a passing leg's exact lines (3ui.14)
 exit 0
 EOF
 cat > "$T/bin/scp" <<EOF

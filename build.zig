@@ -4201,6 +4201,19 @@ pub fn build(b: *std.Build) void {
     }) |input| mac_rows_evidence_selftest.addFileInput(b.path(input));
     mac_build_script_step.dependOn(&mac_rows_evidence_selftest.step);
     test_step.dependOn(&mac_rows_evidence_selftest.step);
+    // 3ui.14 (SilverRidge 917b7c7e, e5eb7d37): the runtime rows gate judges each Mac by its exact remote success lines
+    // (every selected ROW record, the five self-audit statuses, the audit completions and EVIDENCE_ARMED, each exactly
+    // once); an empty or altered leg output is refused on that host with one remote-success line, exit 1.
+    const mac_rows_output_selftest = b.addSystemCommand(&.{ "bash", "tests/mac/ms_runtime_rows_output_selftest.sh" });
+    for ([_][]const u8{
+        "tests/mac/ms_runtime_rows_output_selftest.sh", "tests/mac/ms_runtime_rows_gate.sh",
+        "tests/mac/mac_gate_output.sh",                 "tests/mac/mac_varfolders_audit.sh",
+        "tests/mac/mac_crashreports_audit.sh",          "tests/mac/mac_config.sh",
+        "tests/mac/mac_gate_lib.sh",                    "tests/mac/build-on-mac.sh",
+        "tests/mac/known_hosts",
+    }) |input| mac_rows_output_selftest.addFileInput(b.path(input));
+    mac_build_script_step.dependOn(&mac_rows_output_selftest.step);
+    test_step.dependOn(&mac_rows_output_selftest.step);
     // MS1.4: the two-host gate fails closed on no GUI session, wrong arch, a missing SDK and zero recorded assertions.
     const mac_gate_selftest = b.addSystemCommand(&.{ "bash", "tests/mac/gate_selftest.sh" });
     for ([_][]const u8{

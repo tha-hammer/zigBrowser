@@ -69,6 +69,24 @@ printf '%s\n' \
   $'PASS\tms3-cookie' $'PASS\tms3-config-flags' $'PASS\tms3-profile-persist' \
   $'PASS\tms3-profile-cwd-isolation' $'PASS\tms4-load-serial' $'PASS\tms4.4-login-gate'
 EOF
+cat > "$T/bin/zb-leg-success" <<'EOF'
+#!/bin/bash
+# The exact success lines of a passing rows-gate leg (bd 3ui.14), for the rows after `/bin/bash -s <run dir>`, as the
+# remote shell unquotes them.
+seen=0 prev=
+for a in "$@"; do
+  if [ "$seen" = 2 ]; then
+    w=${a//\\|/|}; IFS='|' read -r f want id <<<"$w"; rc=1; [ "$want" = green ] && rc=0
+    printf 'ROW\t%s\t%s\trc=%s\tMATCH\n' "$f" "$want" "$rc"; continue
+  fi
+  if [ "$seen" = 1 ]; then seen=2; continue; fi   # the run dir
+  [ "$a" = -s ] && [ "$prev" = /bin/bash ] && seen=1
+  prev=$a
+done
+printf 'SELFAUDIT_STATUS\t%s\t0\n' outer-begin inner-varfolders inner-crashreports inner-evidence outer-end
+printf 'VARFOLDERS\tCOMPLETE\t0\nCRASHREPORTS\tCOMPLETE\t0\nEVIDENCE_ARMED\n'
+EOF
+chmod +x "$T/bin/zb-leg-success"
 cat > "$T/bin/ssh" <<EOF
 #!/bin/bash
 i=\$(cat "$T/ctl/n" 2>/dev/null || echo 0); echo \$((i + 1)) > "$T/ctl/n"
@@ -89,7 +107,7 @@ case "\$*" in *ZB_ROOT_ABSENT*) last="\${@: -1}"; printf 'ZB_ROOT_ABSENT\t%s\n' 
 # The rows gate's leg arms its evidence archive after its self-audit; a held leg (exit 4) stops before that.
 if [[ " \$* " == *" /bin/bash -s "* ]]; then
   held=0; [ -n "\${STUB_LEG_RC_HOST:-}" ] && [[ " \$* " == *" \$STUB_LEG_RC_HOST /bin/bash -s "* ]] && [ "\${STUB_LEG_RC:-0}" = 4 ] && held=1
-  [ "\$held" -eq 1 ] || printf 'EVIDENCE_ARMED\n'
+  [ "\$held" -eq 1 ] || "$T/bin/zb-leg-success" "\$@"   # a passing leg's exact lines (3ui.14)
 fi
 # the rows gate's leak path (rows L): the leg on STUB_LEG_RC_HOST exits STUB_LEG_RC
 if [ -n "\${STUB_LEG_RC_HOST:-}" ] && [[ " \$* " == *" \$STUB_LEG_RC_HOST /bin/bash -s "* ]]; then exit "\${STUB_LEG_RC:-0}"; fi

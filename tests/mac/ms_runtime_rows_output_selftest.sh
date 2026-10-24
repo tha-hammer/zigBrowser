@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# RED, UNREGISTERED (bd zigBrowser-3ui.14; SilverRidge 917b7c7e, orchestrator 2026-10-23): the runtime rows gate judges
+# Registered in zig build test-mac-build-script (bd zigBrowser-3ui.14; red 11894873, fix-forwards 0a3fd03e and df2c183b;
+# SilverRidge 917b7c7e, e5eb7d37, 3add0d33, d9f0970d): the runtime rows gate judges
 # each Mac by its exact remote success lines, never by the ssh exit status and the evidence copy alone.
 #
 # A leg passes only when its completed output (kept in <evidence>/<arch>/leg.out) has, for that host:

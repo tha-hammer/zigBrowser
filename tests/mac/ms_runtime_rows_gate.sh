@@ -104,6 +104,7 @@ if [[ "$EVD" != /* ]] || [ ! -d "$EVD" ] || [ -L "$EVD" ] || [ -n "$(ls -A -- "$
   exit 1
 fi
 . tests/mac/mac_gate_lib.sh
+. tests/mac/mac_gate_output.sh
 trap mac_remove_run_dirs EXIT
 
 
@@ -226,14 +227,17 @@ crashreports_end "$root/evidence/crashreports" "$crash_dir" || audit=5
 exit "$overall"
 REMOTE
   cat -- "$legout"
-  local ev=0
+  local ev=0 exact=1
+  # The exact remote success lines are judged first (bd 3ui.14), before any evidence retrieval; the evidence is still
+  # fetched after a refusal, so a refused leg keeps it.
+  if [ "$leg_rc" -eq 0 ]; then leg_output_exact "$host" "$label" "$legout" || exact=0; fi
   fetch_evidence "$host" "$key" "$label" "$legout" && ev=1
   case "$leg_rc" in   # which run dirs stay: a leak stop or a timeout always, any other leg without verified evidence
     3|124) mac_keep_run_dir "$host" "$MAC_RDIR" "leg exit $leg_rc: a process may be left running; kept and held for a person" ;;
     *) [ "$ev" -eq 1 ] || mac_keep_run_dir "$host" "$MAC_RDIR" "its evidence was not copied and verified; kept for a person" ;;
   esac
   case "$leg_rc" in
-    0) ;;
+    0) [ "$exact" -eq 1 ] || return 1 ;;
     3|124)
       echo "STOPPED: $host ($label): $([ "$leg_rc" -eq 3 ] && echo 'a row left a process running (LEAKED lines above)' \
         || echo 'the leg timed out; processes may be left running'). Run dir ~/$MAC_RDIR is KEPT. A person must stop" \
@@ -248,6 +252,26 @@ REMOTE
   printf 'PASS\tms-runtime-rows-leg\t%s\t%s\n' "$host" "$label"
 }
 
+leg_output_exact() { # $1=host $2=arch $3=leg output: the exact remote success lines of this leg (bd 3ui.14), else
+  # FAIL<TAB>remote-success<TAB>ms_runtime_rows_gate<TAB>host<TAB>arch<TAB>missing and non-zero
+  local host=$1 arch=$2 f=$3 row file want id step
+  local -a need=()
+  for row in "${RUN_ROWS[@]}"; do
+    IFS='|' read -r file want id <<<"$row"
+    need+=("ROW"$'\t'"$file"$'\t'"$want"$'\t'"rc=$([ "$want" = green ] && echo 0 || echo 1)"$'\t'"MATCH")
+  done
+  for step in outer-begin inner-varfolders inner-crashreports inner-evidence outer-end; do
+    need+=("SELFAUDIT_STATUS"$'\t'"$step"$'\t'"0")
+  done
+  need+=($'CRASHREPORTS\tCOMPLETE\t0' EVIDENCE_ARMED)
+  local line bad=0   # every required record exactly once (a duplicate is no pass), then mac_require_lines for presence
+  [ "$(grep -c $'^ROW\t' "$f")" -eq "${#RUN_ROWS[@]}" ] && [ "$(grep -cE $'^VARFOLDERS\tCOMPLETE\t[0-9]+$' "$f")" -eq 1 ] || bad=1
+  for line in "${need[@]}"; do [ "$(grep -cxF -- "$line" "$f")" -le 1 ] || bad=1; done
+  if [ "$bad" -ne 0 ]; then
+    printf 'FAIL\tremote-success\t%s\t%s\t%s\tmissing\n' ms_runtime_rows_gate "$host" "$arch" >&2; return 1
+  fi
+  mac_require_lines ms_runtime_rows_gate "$host" "$arch" "$(cat -- "$f")" "${need[@]}"
+}
 fetch_evidence() { # $1=host $2=key $3=arch $4=leg output: copy the leg's evidence archive and its sha256 into
   # $EVD/<arch> and verify it; prints one EVIDENCE line; non-zero unless the copy matches the Mac's sha256
   local host=$1 key=$2 dst="$EVD/$3" want got f
