@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""RED, UNREGISTERED, fix-forward (owner decision 2026-10-24; SilverRidge 61be7323): the shared /var/folders
+"""GREEN, REGISTERED (owner decision 2026-10-24; SilverRidge 93228b3a): the shared /var/folders
 audit may treat only the 15 evidence-derived exact (token, relative-path) pairs below as permission-protected.
 
 An accepted observation is deterministic evidence:

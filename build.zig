@@ -4167,6 +4167,15 @@ pub fn build(b: *std.Build) void {
         mac_varfolders_audit_step.dependOn(&run.step);
         test_step.dependOn(&run.step);
     }
+    const mac_varfolders_protected_paths = b.addSystemCommand(&.{ "python3", "tests/e2e/mac_varfolders_protected_paths_test.py" });
+    mac_varfolders_protected_paths.has_side_effects = true;
+    for ([_][]const u8{
+        "tests/e2e/mac_varfolders_protected_paths_test.py",
+        "tests/e2e/mac_varfolders_audit_test.py",
+        "tests/mac/mac_varfolders_audit.sh",
+    }) |input| mac_varfolders_protected_paths.addFileInput(b.path(input));
+    mac_varfolders_audit_step.dependOn(&mac_varfolders_protected_paths.step);
+    test_step.dependOn(&mac_varfolders_protected_paths.step);
     // The crash-report rule (orchestrator 2026-10-23): the shared, read-only DiagnosticReports listing helper that the
     // runtime rows gate sources (a new, changed or removed report is INCONCLUSIVE), proven hostlessly with the same
     // inotify boundary. Non-root, as its unreadable-entry rows need.

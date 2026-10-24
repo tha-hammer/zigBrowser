@@ -44,7 +44,7 @@ import mac_varfolders_census_test as census  # noqa: E402
 ROOTS_OK = '  [ "$pt" != "$pc" ] || { echo "temp and cache roots are the same directory $pt" >&2; return 1; }\n'
 BEGIN_SNAP = ("""    __vf_refuse "$(grep -m 3 '^ERROR' "$ev/varfolders-before.tsv" 2>/dev/null || cat "$ev/varfolders-before.err")"\n"""
               "    return\n  fi\n")  # the end of begin, after a complete before snapshot
-END_SNAP = '  __vf_python "$ev" -c "$__VF_SNAPSHOT_PY" "$ev/varfolders-roots" "$ev/varfolders-after.tsv" \\\n'
+END_SNAP = '  __vf_python "$ev" -c "$__VF_SNAPSHOT_PY" "$ev/varfolders-roots" "$ev/varfolders-after.tsv" AFTER \\\n'
 EACH = '  while IFS=$\'\\t\' read -r _ r; do %s; done < "$ev/varfolders-roots"\n'
 REWRITE = ('/usr/bin/python3 -c "import os,sys\nfor n in os.listdir(sys.argv[1]):\n p=os.path.join(sys.argv[1],n)\n'
            " if os.path.isfile(p) and not os.path.islink(p):\n  st=os.stat(p); b=open(p,'rb').read(); open(p,'wb').write(b)"
@@ -56,7 +56,7 @@ FINAL = 'print("VARFOLDERS\\tCOMPLETE\\t%d" % len(rows))\n'
 ROOTS_LINE = "  printf 'VARFOLDERS_ROOTS\\t%s\\t%s\\n' \"$rt\" \"$rc\"\n"
 SHELL_CHECK = '  if [ "$now" != "$(cat "$ev/varfolders-roots")" ]; then\n'
 DIFF_CALL = '  __vf_python "$ev" -c "$__VF_DIFF_PY" "$ev/varfolders-before.tsv" "$ev/varfolders-after.tsv"\n'
-SNAP_IMPORTS = "import hashlib, os, stat, sys\n"
+SNAP_IMPORTS = "import errno, hashlib, os, stat, sys\n"
 TEMP_FILE = SNAP_IMPORTS + "import tempfile\ntempfile.NamedTemporaryFile().close()\n"
 
 MUTANTS = [
@@ -68,7 +68,8 @@ MUTANTS = [
     ("B6 chmod to the same mode in begin", [(BEGIN_SNAP, BEGIN_SNAP + EACH % RECHMOD)]),
     ("MF filtered delta (com.apple)", [("    if b == a:\n        continue\n",
                                         '    if b == a or key[1].startswith("com.apple"):\n        continue\n')]),
-    ("MD missing before read as empty", [('        return None, None, "missing"\n', '        return "SAME", {}, ""\n'),
+    ("MD missing before read as empty", [('        return None, None, None, "missing"\n',
+                                           '        return "SAME", {}, [], ""\n'),
                                          ("if hb != ha:", 'if hb != ha and hb != "SAME":')]),
     ("MB delete in begin", [(BEGIN_SNAP, BEGIN_SNAP + EACH % 'rm -f -- "${r:?}/cache.db"')]),
     ("ME delete in end", [(END_SNAP, EACH % 'rm -f -- "${r:?}/zigBrowser-run.log"' + END_SNAP)]),

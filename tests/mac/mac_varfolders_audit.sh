@@ -1,5 +1,6 @@
 # shellcheck shell=bash
-# The owner's /var/folders rule (2026-10-23; SilverRidge 94ebe76b, 30a7a1e8, c65d61e0), one shared helper for every
+# The owner's /var/folders rules (2026-10-23/24; SilverRidge 94ebe76b, 30a7a1e8, c65d61e0, 93228b3a), one shared
+# helper for every
 # Mac gate that launches the browser (the runtime rows gate, the MS1c .app gate). Sourced, never run. A run may write
 # under the user's own /var/folders; this records exactly what changed there and writes, changes or deletes nothing
 # there itself:
@@ -11,6 +12,9 @@
 #     VARFOLDERS_ROOTS<TAB>T<TAB><temp root><TAB>C<TAB><cache root>
 #     VARFOLDERS_PARENT<TAB><their common per-user parent>   (SilverRidge 3661c9b8: its other entries, such as 0 and X,
 #         are a census only, outside the owner's exception; the root token P is that parent without T and C)
+#     SKIPPED-PROTECTED<TAB><BEFORE|AFTER><TAB><C|P><TAB><exact path><TAB><EACCES|EPERM>
+#         once per exact evidence-derived protected path that cannot be enumerated, ordered by token then path bytes;
+#         the path's available lstat identity remains in the snapshot
 #     VARFOLDERS-DELTA<TAB><added|changed|removed><TAB><C|P|T><TAB><path><TAB><before><TAB><after>
 #         one per changed path (each root itself is the path .), ordered by root token then path bytes; <before> is -
 #         for an added path and <after> is - for a removed one
@@ -25,17 +29,42 @@
 # entry below it: token<TAB>path<TAB>"type mode uid gid nlink size mtime_ns ctime_ns inode sha256 link" (type f d l p
 # s c b o; sha256 of a regular file's bytes, else -; a symlink's target, else -; ctime catches every other inode
 # change, such as an extended attribute or a hard link), in path byte order, then END<TAB><path count>. An entry that
-# cannot be read, or recorded unambiguously (not UTF-8, or a tab or newline in its name or link target), makes it
-# incomplete. Nothing here uses a here-document (macOS /bin/bash 3.2 writes each to a temp file in $TMPDIR, by default
+# cannot be read makes the snapshot incomplete except for EACCES/EPERM at the exact six C and nine P protected pairs;
+# any other error or path, or a name/link target that is not UTF-8 or contains a tab/newline, remains incomplete. A
+# protected pair must be skipped on both sides with the same normalized reason. Nothing here uses a here-document
+# (macOS /bin/bash 3.2 writes each to a temp file in $TMPDIR, by default
 # the audited temp root), and every python3 child runs with TMPDIR set to the evidence dir. /usr/bin/python3 is named
 # explicitly (-I -B -X utf8: no user site, no bytecode written anywhere, UTF-8 whatever the locale).
 
 __VF_SNAPSHOT_PY='
-import hashlib, os, stat, sys
+import errno, hashlib, os, stat, sys
 roots = [l.rstrip("\n").split("\t", 1) for l in open(sys.argv[1], encoding="utf-8") if l.strip()]
-heads, rows, errors = [], [], []
+side = sys.argv[3] if len(sys.argv) == 4 else ""
+heads, rows, errors, skipped = [], [], [], {}
+PROTECTED = frozenset((
+    ("C", "com.apple.WebKit.GPU.Sandbox"),
+    ("C", "com.apple.WebKit.Networking.Sandbox"),
+    ("C", "com.apple.WebKit.WebContent.Sandbox"),
+    ("C", "com.apple.WorkflowKit.BackgroundShortcutRunner/ShortcutsSandboxCache"),
+    ("C", "com.apple.quicklook.ThumbnailsAgent/com.apple.QuickLook.thumbnailcache"),
+    ("C", "com.apple.siriactionsd/ShortcutsSandboxCache"),
+    ("P", "0/com.apple.LaunchServices.dv"),
+    ("P", "0/com.apple.ScreenTimeAgent/Store"),
+    ("P", "0/com.apple.SharedWebCredentials"),
+    ("P", "0/com.apple.exchangesync"),
+    ("P", "0/com.apple.lockoutagent"),
+    ("P", "0/com.apple.nsurlsessiond"),
+    ("P", "0/com.apple.progressd/ClassKit"),
+    ("P", "0/com.apple.routined/dv"),
+    ("P", "0/dmd"),
+))
 KIND = ((stat.S_ISREG, "f"), (stat.S_ISDIR, "d"), (stat.S_ISLNK, "l"), (stat.S_ISFIFO, "p"), (stat.S_ISSOCK, "s"),
         (stat.S_ISCHR, "c"), (stat.S_ISBLK, "b"))
+def unreadable(token, rel, e):
+    if side in ("BEFORE", "AFTER") and (token, rel) in PROTECTED and e.errno in (errno.EACCES, errno.EPERM):
+        skipped[(token, rel)] = errno.errorcode[e.errno]
+    else:
+        errors.append("%s\t%s\t%s" % (token, rel, " ".join((e.strerror or type(e).__name__).split())))
 def digest(p):
     fd = os.open(p, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
     h = hashlib.sha256()
@@ -50,7 +79,7 @@ def entry(token, root, p, rel):
         link = os.readlink(p) if kind == "l" else "-"
         sha = digest(p) if kind == "f" else "-"
     except OSError as e:
-        errors.append("%s\t%s\t%s" % (token, rel, e.strerror))
+        unreadable(token, rel, e)
         return
     try:
         rel.encode("utf-8")
@@ -68,7 +97,7 @@ skip = {os.path.basename(r) for t, r in roots if t in ("T", "C")}  # the census 
 for token, root in roots:
     def err(e, token=token, root=root):
         rel = os.path.relpath(e.filename, root) if e.filename else "?"
-        errors.append("%s\t%s\t%s" % (token, rel, e.strerror))
+        unreadable(token, rel, e)
     try:
         rst = os.lstat(root)
     except OSError as e:
@@ -92,35 +121,67 @@ with open(sys.argv[2], "w", encoding="utf-8") as f:
         f.write(h + "\n")
     for _t, _r, line in sorted(rows):
         f.write(line + "\n")
+    for (token, rel), reason in sorted(skipped.items(), key=lambda item: (item[0][0], os.fsencode(item[0][1]))):
+        f.write("SKIPPED-PROTECTED\t%s\t%s\t%s\t%s\n" % (side, token, rel, reason))
     for e in errors:
         f.write("ERROR\t" + e + "\n")
-    f.write("END\t%d\n" % len(rows))
+    f.write("END\t%d\n" % (len(rows) + len(skipped)))
 sys.exit(3 if errors else 0)
 '
 
 __VF_DIFF_PY='
 import os, sys
-def load(path):
+PROTECTED = frozenset((
+    ("C", "com.apple.WebKit.GPU.Sandbox"),
+    ("C", "com.apple.WebKit.Networking.Sandbox"),
+    ("C", "com.apple.WebKit.WebContent.Sandbox"),
+    ("C", "com.apple.WorkflowKit.BackgroundShortcutRunner/ShortcutsSandboxCache"),
+    ("C", "com.apple.quicklook.ThumbnailsAgent/com.apple.QuickLook.thumbnailcache"),
+    ("C", "com.apple.siriactionsd/ShortcutsSandboxCache"),
+    ("P", "0/com.apple.LaunchServices.dv"),
+    ("P", "0/com.apple.ScreenTimeAgent/Store"),
+    ("P", "0/com.apple.SharedWebCredentials"),
+    ("P", "0/com.apple.exchangesync"),
+    ("P", "0/com.apple.lockoutagent"),
+    ("P", "0/com.apple.nsurlsessiond"),
+    ("P", "0/com.apple.progressd/ClassKit"),
+    ("P", "0/com.apple.routined/dv"),
+    ("P", "0/dmd"),
+))
+def load(path, side):
     try:
         lines = open(path, encoding="utf-8").read().splitlines()
     except (OSError, UnicodeError):
-        return None, None, "missing"
+        return None, None, None, "missing"
     if not lines or not lines[-1].startswith("END\t"):
-        return None, None, "truncated"
+        return None, None, None, "truncated"
     heads = [l for l in lines[:-1] if l.startswith("ROOT\t")]
-    body = [l for l in lines[:-1] if not l.startswith("ROOT\t")]
+    all_body = [l for l in lines[:-1] if not l.startswith("ROOT\t")]
+    marker_lines = [l for l in all_body if l.startswith("SKIPPED-PROTECTED\t")]
+    body = [l for l in all_body if not l.startswith("SKIPPED-PROTECTED\t")]
     errs = [l for l in body if l.startswith("ERROR\t")]
     if errs:
-        return None, None, "incomplete: " + "; ".join(errs)
-    if len(heads) != 3 or lines[-1] != "END\t%d" % len(body):
-        return None, None, "truncated"
+        return None, None, None, "incomplete: " + "; ".join(errs)
     out = {}
     for l in body:
         token, rel, meta = l.split("\t", 2)
         out[(token, rel)] = meta
-    return heads, out, ""
-hb, before, why_b = load(sys.argv[1])
-ha, after, why_a = load(sys.argv[2])
+    markers, seen = [], set()
+    for line in marker_lines:
+        fields = line.split("\t")
+        key = (fields[2], fields[3]) if len(fields) == 5 else None
+        if len(fields) != 5 or fields[1] != side or key not in PROTECTED or fields[4] not in ("EACCES", "EPERM") \
+                or key in seen or key not in out:
+            return None, None, None, "malformed protected-skip record"
+        seen.add(key)
+        markers.append((key[0], key[1], fields[4], line))
+    if markers != sorted(markers, key=lambda item: (item[0], os.fsencode(item[1]))):
+        return None, None, None, "unordered protected-skip records"
+    if len(heads) != 3 or lines[-1] != "END\t%d" % (len(body) + len(markers)):
+        return None, None, None, "truncated"
+    return heads, out, markers, ""
+hb, before, sb, why_b = load(sys.argv[1], "BEFORE")
+ha, after, sa, why_a = load(sys.argv[2], "AFTER")
 def inconclusive(reason):  # exactly three fields: a reason never holds a tab
     print("VARFOLDERS\tINCONCLUSIVE\t" + " ".join(reason.split()))
     sys.exit(2)
@@ -128,6 +189,10 @@ if before is None or after is None:
     inconclusive("before snapshot %s, after snapshot %s" % (why_b or "ok", why_a or "ok"))
 if hb != ha:
     inconclusive("a root changed identity during the run: %s -> %s" % (hb, ha))
+if [(t, p, r) for t, p, r, _line in sb] != [(t, p, r) for t, p, r, _line in sa]:
+    inconclusive("the protected-skip set changed during the run")
+for _t, _p, _r, line in sb + sa:
+    print(line)
 rows = []
 for key in sorted(set(before) | set(after), key=lambda k: (k[0], os.fsencode(k[1]))):
     b, a = before.get(key), after.get(key)
@@ -177,7 +242,7 @@ varfolders_begin() { # $1=evidence dir; exit 0 with a complete before snapshot, 
     __vf_refuse "$(cat "$ev/varfolders-roots.err" 2>/dev/null)"
     return
   fi
-  if ! __vf_python "$ev" -c "$__VF_SNAPSHOT_PY" "$ev/varfolders-roots" "$ev/varfolders-before.tsv" \
+  if ! __vf_python "$ev" -c "$__VF_SNAPSHOT_PY" "$ev/varfolders-roots" "$ev/varfolders-before.tsv" BEFORE \
       2> "$ev/varfolders-before.err"; then
     __vf_refuse "$(grep -m 3 '^ERROR' "$ev/varfolders-before.tsv" 2>/dev/null || cat "$ev/varfolders-before.err")"
     return
@@ -199,7 +264,7 @@ varfolders_end() { # $1=evidence dir; exit 0 COMPLETE, 2 INCONCLUSIVE
   { IFS= read -r rt && IFS= read -r rc && IFS= read -r rp; } < "$ev/varfolders-roots"   # plain bash: BSD sed, tr differ
   printf 'VARFOLDERS_ROOTS\t%s\t%s\n' "$rt" "$rc"
   printf 'VARFOLDERS_PARENT\t%s\n' "${rp#P$'\t'}"
-  __vf_python "$ev" -c "$__VF_SNAPSHOT_PY" "$ev/varfolders-roots" "$ev/varfolders-after.tsv" \
+  __vf_python "$ev" -c "$__VF_SNAPSHOT_PY" "$ev/varfolders-roots" "$ev/varfolders-after.tsv" AFTER \
     2> "$ev/varfolders-after.err"
   __vf_python "$ev" -c "$__VF_DIFF_PY" "$ev/varfolders-before.tsv" "$ev/varfolders-after.tsv"
 }
