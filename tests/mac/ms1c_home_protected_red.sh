@@ -450,6 +450,38 @@ for direction in ("unreadable-to-readable", "readable-to-unreadable"):
     finally:
         fixture.close()
 
+# Bind the skip-tuple comparison independently of ordinary metadata/content deltas. Each pair has the same ROOT,
+# retained lstat row and END count; only the side-tagged protected marker's presence or reviewed reason changes.
+def marker_only_snapshot(path: Path, fixture: Fixture, side: str, rel: str, reason: str | None) -> None:
+    body = [
+        f"ROOT\t{fixture.root}\t{fixture.exclude}",
+        f"{rel}\t{meta(fixture.path(rel), '-')}",
+    ]
+    if reason is not None:
+        body.append(marker(side, rel, reason))
+    body.append("END\t1")
+    path.write_text("\n".join(body) + "\n")
+
+
+for label, before_reason, after_reason in (
+    ("presence", "EACCES", None),
+    ("reason", "EACCES", "EPERM"),
+):
+    fixture = Fixture()
+    try:
+        rel = paths[-1]
+        fixture.file(rel)
+        before = fixture.work / f"D7-marker-only-{label}-before"
+        after = fixture.work / f"D7-marker-only-{label}-after"
+        marker_only_snapshot(before, fixture, "BEFORE", rel, before_reason)
+        marker_only_snapshot(after, fixture, "AFTER", rel, after_reason)
+        rc, out = run_diff("D7 marker-only " + label, fixture, before, after)
+        want = ["HOMEAUDIT\tINCONCLUSIVE\tthe protected-path skip set changed"]
+        if rc != 3 or out != want or any(line.startswith("HOME-DELTA\t") or "\tCLEAN\t" in line for line in out):
+            bad("D7 marker-only " + label, f"wanted exact skip-set refusal/3 with no delta or CLEAN, got rc={rc} {out!r}")
+    finally:
+        fixture.close()
+
 for problem in problems:
     print("FAIL " + problem)
 if problems:
