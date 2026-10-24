@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""RED, UNREGISTERED (SilverRidge 7f4c874b fix-forward): SIGTERM EPERM must retain the MS1c host fail-closed.
+"""GREEN, REGISTERED (SilverRidge 5f964248): SIGTERM EPERM must retain the MS1c host fail-closed.
 
 This drives the real ``stop_browser_term_only`` helper with an unconfirmed live browser group whose SIGTERM raises
 EPERM, with a browser whose actual pgid is not its spawned pid, and with all three required getpgid failures.  Poll,
@@ -10,7 +10,7 @@ The real exec-arch probe then combines its original socket-timeout diagnostic wi
 the established fake-Mac fixture drives every real MS1c gate row: rc is nonzero, the one LEAK becomes a durable
 LEAKED marker, the run root is retained, and the next attempt is HOST_HELD.  The oracle re-execs itself behind
 causally verified private user/PID/network namespaces before creating any workload process or timeout, and traps all
-direct/group/Popen signal APIs.  This file stays out of build.zig until green.
+direct/group/Popen signal APIs.  It is registered under the MS1c gate and aggregate test.
 """
 
 from __future__ import annotations

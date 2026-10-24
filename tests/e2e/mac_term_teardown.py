@@ -16,6 +16,7 @@ run_term_only: subprocess.run(capture_output=True, text=True) whose timeout uses
 subprocess.run's own timeout SIGKILLs the child.
 """
 import atexit
+import errno
 import os
 import signal
 import subprocess
@@ -71,18 +72,36 @@ def _group_has_members(pgid: int) -> bool:
 
 def stop_browser_term_only(proc: subprocess.Popen, grace_s: float = GRACE_S) -> None:
     """SIGTERM the browser's process group, wait, reap. Never SIGKILL; a survivor is a LEAK (the test fails)."""
-    pgid = proc.pid
-    if isinstance(pgid, bool) or not isinstance(pgid, int) or pgid <= 1:
-        _leak(f"teardown refused to signal pid {pgid!r}")
+    pid = proc.pid
+    if isinstance(pid, bool) or not isinstance(pid, int) or pid <= 1:
+        _leak(f"teardown refused to signal pid {pid!r}")
         return
+    status = proc.poll()
+    if status is None:
+        try:
+            pgid = os.getpgid(pid)
+        except OSError as exc:
+            _leak(f"LEAK browser pid {pid}: actual process group could not be confirmed ({exc}; left running)", pid)
+            return
+        if pgid != pid:
+            _leak(f"LEAK browser pid {pid}: actual process group {pgid} is not its spawned pid; no signal sent", pgid)
+            return
+    else:
+        # A reaped start_new_session leader may still have children in its pid-named group.
+        pgid = pid
     deadline = time.monotonic() + grace_s
-    if proc.returncode is not None and not _group_has_members(pgid):
+    if status is not None and not _group_has_members(pgid):
         return  # reaped, and nothing left in its group: nothing to signal
     try:
         os.killpg(pgid, signal.SIGTERM)
     except ProcessLookupError:
         pass  # the whole group is already gone
-    if proc.returncode is None:
+    except PermissionError as exc:
+        if exc.errno != errno.EPERM:
+            raise
+        _leak(f"LEAK process group {pgid}: SIGTERM was refused with EPERM (left running unconfirmed)", pgid)
+        return
+    if proc.poll() is None:
         try:
             proc.wait(timeout=max(0.0, deadline - time.monotonic()))
         except subprocess.TimeoutExpired:
