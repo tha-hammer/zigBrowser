@@ -2,7 +2,8 @@
 # RED, UNREGISTERED (SilverRidge 27074434): execute the real runtime-rows gate, selecting only
 # mac-signal-runtime, against two fake Macs.  This is execution coverage, not a source/comment match.
 #
-# Success proves the exact row/PASS tuple, packaged .app executable argument, three disposition and identity/send
+# Success proves the exact row/PASS tuple, exact-commit package/DMG identity before the row, a read-only attach and
+# ditto unpack, a non-build-tree executable with the expected shim reference, three disposition and identity/send
 # evidence records in each copied archive, verified evidence before confirmed cleanup, and no retained run root.
 # Refusal cases prove unsafe disposition and unsafe identity send nothing, print a live LEAK, stop the host, copy
 # evidence, retain the run root, and make the next run HOST_HELD before another row starts.  Transcript mutants drop
@@ -46,7 +47,28 @@ printf '%s\0' ssh "\$@" > "$T/ctl/call.\$i"
 while [ \$# -gt 0 ]; do case "\$1" in -i|-o|-F|-p|-l) shift 2 ;; -*) shift ;; *) break ;; esac; done
 host=\$1; shift; cmd="\$*"; h="$T/mac/\$host"
 mkdir -p "\$h" && cd "\$h" || exit 1
-case "\$cmd" in *"zig build"*) cat >/dev/null; exit 0 ;; esac
+case "\$cmd" in
+  *"zig build"*)
+    rd=\$(/usr/bin/find "\$h" -mindepth 1 -maxdepth 1 -type d -name 'zb-gate-*' | head -n 1)
+    [ -n "\$rd" ] || exit 1
+    commit=\${rd##*/zb-gate-}; commit=\${commit%%-*}
+    mkdir -p "\$rd/zig-out/bin" "\$rd/zig-out/Frameworks" \
+      "\$rd/package-source/zigBrowser.app/Contents/MacOS" \
+      "\$rd/package-source/zigBrowser.app/Contents/Frameworks" \
+      "\$rd/package-source/zigBrowser.app/Contents/Resources"
+    printf 'thin build-tree executable %s %s\n' "\$commit" "\$host" > "\$rd/zig-out/bin/zigBrowser"
+    printf 'thin build-tree shim %s %s\n' "\$commit" "\$host" > "\$rd/zig-out/Frameworks/libwkwebview_shim.dylib"
+    printf 'packaged exact-commit executable %s %s with two joined slices\n' "\$commit" "\$host" \
+      > "\$rd/package-source/zigBrowser.app/Contents/MacOS/zigBrowser"
+    printf 'packaged exact-commit shim %s %s with two joined slices\n' "\$commit" "\$host" \
+      > "\$rd/package-source/zigBrowser.app/Contents/Frameworks/libwkwebview_shim.dylib"
+    printf '%s\n' "\$commit" > "\$rd/package-source/zigBrowser.app/Contents/Resources/exact-commit"
+    printf 'plist %s\n' "\$commit" > "\$rd/package-source/zigBrowser.app/Contents/Info.plist"
+    chmod 755 "\$rd/zig-out/bin/zigBrowser" "\$rd/package-source/zigBrowser.app/Contents/MacOS/zigBrowser"
+    /usr/bin/tar -C "\$rd/package-source" -cf "\$rd/zigBrowser-exact.dmg" zigBrowser.app
+    rm -rf -- "\${rd:?}/package-source"
+    exit 0 ;;
+esac
 env -i PATH="$T/macbin:/usr/bin:/bin" HOME="\$h" ZB_FAKE_MAC="\$h" LANG=C.UTF-8 /bin/bash -c "\$cmd"
 EOF
 
@@ -75,6 +97,67 @@ cat > "$T/macbin/find" <<'EOF'
 exec /usr/bin/find "$@"
 EOF
 
+cat > "$T/macbin/hdiutil" <<'EOF'
+#!/bin/bash
+op=$1; shift
+case "$op" in
+  attach)
+    mp= dmg=
+    while [ $# -gt 0 ]; do
+      case "$1" in -mountpoint) mp=$2; shift 2 ;; -*) shift ;; *) dmg=$1; shift ;; esac
+    done
+    printf 'ATTACH\t%s\t%s\n' "$dmg" "$mp" >> "$ZB_FAKE_MAC/package-tools"
+    [ -f "$dmg" ] && [ -d "$mp" ] || exit 1
+    before=$(sha256sum "$dmg" | cut -d' ' -f1)
+    /usr/bin/tar -C "$mp" -xf "$dmg" || exit 1
+    mode=$(cat "$ZB_FAKE_MAC/package-mode" 2>/dev/null || echo good)
+    exe="$mp/zigBrowser.app/Contents/MacOS/zigBrowser"
+    case "$mode" in
+      placeholder) : > "$exe" ;;
+      wrong-dmg-digest) printf 'changed after attach\n' >> "$dmg" ;;
+    esac
+    printf '%s\n' "$before" > "$ZB_FAKE_MAC/dmg-before-attach"
+    printf '/dev/disk7\tApple_HFS\t%s\n' "$mp" ;;
+  detach)
+    printf 'DETACH\t%s\n' "$1" >> "$ZB_FAKE_MAC/package-tools" ;;
+  *) exit 2 ;;
+esac
+EOF
+
+cat > "$T/macbin/ditto" <<'EOF'
+#!/bin/bash
+src=$1 dst=$2
+printf 'DITTO\t%s\t%s\n' "$src" "$dst" >> "$ZB_FAKE_MAC/package-tools"
+mode=$(cat "$ZB_FAKE_MAC/package-mode" 2>/dev/null || echo good)
+case "$mode" in
+  fake-app)
+    mkdir -p "$dst/Contents/MacOS" "$dst/Contents/Frameworks"
+    printf 'arbitrary fake app executable\n' > "$dst/Contents/MacOS/zigBrowser"
+    printf 'arbitrary fake shim\n' > "$dst/Contents/Frameworks/libwkwebview_shim.dylib"
+    chmod 755 "$dst/Contents/MacOS/zigBrowser" ;;
+  *) cp -R "$src" "$dst" ;;
+esac
+exe="$dst/Contents/MacOS/zigBrowser"
+build="$PWD/zig-out/bin/zigBrowser"
+case "$mode" in
+  renamed-build) rm -f -- "$exe"; mv "$build" "$exe" ;;
+  copied-build) cp -f "$build" "$exe" ;;
+  symlinked-build) rm -f -- "$exe"; ln -s "$build" "$exe" ;;
+  hardlinked-build) rm -f -- "$exe"; ln "$build" "$exe" ;;
+esac
+EOF
+
+cat > "$T/macbin/otool" <<'EOF'
+#!/bin/bash
+printf 'OTOOL\t%s\n' "$*" >> "$ZB_FAKE_MAC/package-tools"
+target=${@: -1}
+printf '%s:\n' "$target"
+[ "$(cat "$ZB_FAKE_MAC/package-mode" 2>/dev/null || echo good)" = missing-shim-ref ] \
+  || printf '\t@executable_path/../Frameworks/libwkwebview_shim.dylib (compatibility version 0.0.0, current version 0.0.0)\n'
+EOF
+
+chmod +x "$T/macbin/hdiutil" "$T/macbin/ditto" "$T/macbin/otool"
+
 cat > "$T/macbin/python3" <<'EOF'
 #!/bin/bash
 row=$1
@@ -88,7 +171,51 @@ case "$browser" in
   *) printf 'FAIL\tmac-signal-runtime\tpackaged-app-required\t%s\n' "$browser"; exit 1 ;;
 esac
 case "$browser" in *zig-out*) printf 'FAIL\tmac-signal-runtime\tbuild-tree-browser\n'; exit 1 ;; esac
-[ -f "$browser" ] || { printf 'FAIL\tmac-signal-runtime\tbinary-missing\n'; exit 1; }
+[ "${3:-}" = --package-evidence ] && manifest=${4:-} \
+  || { printf 'FAIL\tmac-signal-runtime\tmissing-package-evidence\n'; exit 1; }
+[ "${5:-}" = --package-commit ] && commit=${6:-} \
+  || { printf 'FAIL\tmac-signal-runtime\tmissing-package-commit\n'; exit 1; }
+case "$PWD" in *"/zb-gate-$commit-"*) ;; *) printf 'FAIL\tmac-signal-runtime\twrong-package-commit\n'; exit 1 ;; esac
+[ -f "$manifest" ] && [ ! -L "$manifest" ] || { printf 'FAIL\tmac-signal-runtime\tbad-package-evidence\n'; exit 1; }
+[ -f "$browser" ] && [ ! -L "$browser" ] && [ -s "$browser" ] && [ -x "$browser" ] \
+  || { printf 'FAIL\tmac-signal-runtime\tbinary-not-packaged\n'; exit 1; }
+build=$PWD/zig-out/bin/zigBrowser
+shim=$PWD/app/zigBrowser.app/Contents/Frameworks/libwkwebview_shim.dylib
+dmg=$PWD/zigBrowser-exact.dmg
+[ -f "$build" ] && [ -f "$shim" ] && [ ! -L "$shim" ] && [ -s "$shim" ] && [ -f "$dmg" ] \
+  || { printf 'FAIL\tmac-signal-runtime\tpackage-input-missing\n'; exit 1; }
+if [ "$(sha256sum "$browser" | cut -d' ' -f1)" = "$(sha256sum "$build" | cut -d' ' -f1)" ] \
+   || [ "$browser" -ef "$build" ]; then
+  printf 'FAIL\tmac-signal-runtime\tbuild-tree-substitution\n'; exit 1
+fi
+mapfile -t package < "$manifest"
+[ "${#package[@]}" -eq 8 ] \
+  && [ "${package[0]}" = "PACKAGE_COMMIT"$'\t'"$commit" ] \
+  && [ "${package[1]}" = $'PACKAGE_FLOW\thdiutil-attach-readonly\tditto' ] \
+  && grep -q $'^PACKAGE_DMG\t[0-9a-f]\{64\}\t[1-9][0-9]*\t' "$manifest" \
+  && grep -q $'^PACKAGE_APP\t[0-9a-f]\{64\}\t' "$manifest" \
+  && grep -q $'^PACKAGE_EXECUTABLE\t[0-9a-f]\{64\}\t[1-9][0-9]*\t' "$manifest" \
+  && grep -q $'^PACKAGE_BUILD_EXECUTABLE\t[0-9a-f]\{64\}\t[1-9][0-9]*\t' "$manifest" \
+  && grep -q $'^PACKAGE_SHIM\t[0-9a-f]\{64\}\t[1-9][0-9]*\t' "$manifest" \
+  && grep -qx $'PACKAGE_SHIM_REF\t@executable_path/../Frameworks/libwkwebview_shim.dylib\trefs=1' "$manifest" \
+  || { printf 'FAIL\tmac-signal-runtime\tmalformed-package-evidence\n'; exit 1; }
+dmg_sha=$(sha256sum "$dmg" | cut -d' ' -f1); exe_sha=$(sha256sum "$browser" | cut -d' ' -f1)
+build_sha=$(sha256sum "$build" | cut -d' ' -f1); shim_sha=$(sha256sum "$shim" | cut -d' ' -f1)
+grep -qx "PACKAGE_DMG${TAB:-$'\t'}$dmg_sha${TAB:-$'\t'}$(wc -c < "$dmg")${TAB:-$'\t'}$dmg" "$manifest" \
+  && grep -qx "PACKAGE_EXECUTABLE${TAB:-$'\t'}$exe_sha${TAB:-$'\t'}$(wc -c < "$browser")${TAB:-$'\t'}$browser" "$manifest" \
+  && grep -qx "PACKAGE_BUILD_EXECUTABLE${TAB:-$'\t'}$build_sha${TAB:-$'\t'}$(wc -c < "$build")${TAB:-$'\t'}$build" "$manifest" \
+  && grep -qx "PACKAGE_SHIM${TAB:-$'\t'}$shim_sha${TAB:-$'\t'}$(wc -c < "$shim")${TAB:-$'\t'}$shim" "$manifest" \
+  || { printf 'FAIL\tmac-signal-runtime\tpackage-digest-mismatch\n'; exit 1; }
+mapfile -t tools < "$ZB_FAKE_MAC/package-tools"
+[ "${#tools[@]}" -eq 4 ] \
+  && [ "${tools[0]}" = "ATTACH${TAB:-$'\t'}$dmg${TAB:-$'\t'}$PWD/mnt" ] \
+  && [ "${tools[1]}" = "DITTO${TAB:-$'\t'}$PWD/mnt/zigBrowser.app${TAB:-$'\t'}$PWD/app/zigBrowser.app" ] \
+  && [ "${tools[2]}" = "DETACH${TAB:-$'\t'}/dev/disk7" ] \
+  && [ "${tools[3]}" = "OTOOL${TAB:-$'\t'}-L $browser" ] \
+  || { printf 'FAIL\tmac-signal-runtime\tpackage-flow-not-observed\n'; exit 1; }
+app_sha=$(cut -f2 <<<"${package[3]}")
+printf 'PACKAGE\t%s\tdmg=%s\tapp=%s\texe=%s\tshim=%s\tshim-ref=@executable_path/../Frameworks/libwkwebview_shim.dylib\n' \
+  "$commit" "$dmg_sha" "$app_sha" "$exe_sha" "$shim_sha"
 mode=$(cat "$ZB_FAKE_MAC/row-mode" 2>/dev/null || echo good)
 case "$mode" in
   bad-disposition)
@@ -99,6 +226,15 @@ case "$mode" in
     printf 'SIGNAL_DISPOSITION\tHUP\tSIGINT=SIG_IGN\tSIGTERM=SIG_IGN\tSIGHUP=SIG_IGN\n'
     printf 'REFUSED_IDENTITY\tHUP\tpid=1\nFAIL\tmac-signal-runtime\n'
     printf 'LEAK\t4243\t4243\tFri Oct 24 12:00:00 2026\t%s --automation-api --e2e-protocol\n' "$browser"
+    exit 1 ;;
+  bad-term-disposition)
+    for label in HUP INT; do
+      printf 'SIGNAL_DISPOSITION\t%s\tSIGINT=SIG_IGN\tSIGTERM=SIG_IGN\tSIGHUP=SIG_IGN\n' "$label"
+      printf 'SIGNAL_IDENTITY\t%s\tpid=4242\tpgid=4242\tstart=Fri Oct 24 12:00:00 2026\tcommand=%s --automation-api --e2e-protocol\n' "$label" "$browser"
+      printf 'SIGNAL_SEND\t%s\tpid=4242\tsignal=SIG%s\tcount=1\n' "$label" "$label"
+    done
+    printf 'REFUSED_DISPOSITION\tTERM\tSIGTERM=CUSTOM\nFAIL\tmac-signal-runtime\n'
+    printf 'LEAK\t4244\t4244\tFri Oct 24 12:00:00 2026\t%s --automation-api --e2e-protocol\n' "$browser"
     exit 1 ;;
 esac
 for label in HUP INT TERM; do
@@ -118,6 +254,7 @@ fresh_macs() {
     mkdir -p "$T/mac/$h/vf/0/T" "$T/mac/$h/vf/0/C" "$T/mac/$h/Library/Logs/DiagnosticReports"
     printf 'old report\n' > "$T/mac/$h/Library/Logs/DiagnosticReports/old.ips"
     printf 'good\n' > "$T/mac/$h/row-mode"
+    printf 'good\n' > "$T/mac/$h/package-mode"
   done
   rm -f "$T/ctl"/*
 }
@@ -135,6 +272,7 @@ G=(env -i PATH=/usr/bin:/bin HOME="$T/controller-home" GIT_CONFIG_NOSYSTEM=1 git
 "${G[@]}" init -q && "${G[@]}" add -A && \
   "${G[@]}" -c user.name=selftest -c user.email=selftest@invalid commit -q -m signal-gate-red \
   || { bad "could not create exact fake-host repo"; exit 1; }
+COMMIT=$("${G[@]}" rev-parse HEAD)
 
 EVD="$T/evidence"
 OUT= RC=0
@@ -162,7 +300,12 @@ line_no() { grep -n -m1 -- "$1" <<<"$2" | cut -d: -f1; }
 run_dirs() { find "$T/mac/$1" -mindepth 1 -maxdepth 1 -type d -name 'zb-gate-*' -printf '%f\n' | sort; }
 
 row_has_exact_evidence() { # $1 = extracted row-output file
-  local f=$1 label
+  local f=$1 label package disposition
+  [ "$(grep -c $'^PACKAGE\t' "$f")" -eq 1 ] || return 1
+  grep -q "^PACKAGE${TAB:-$'\t'}$COMMIT${TAB:-$'\t'}dmg=[0-9a-f]\{64\}${TAB:-$'\t'}app=[0-9a-f]\{64\}${TAB:-$'\t'}exe=[0-9a-f]\{64\}${TAB:-$'\t'}shim=[0-9a-f]\{64\}${TAB:-$'\t'}shim-ref=@executable_path/../Frameworks/libwkwebview_shim.dylib$" "$f" || return 1
+  package=$(line_no $'^PACKAGE\t' "$(cat "$f")")
+  disposition=$(line_no $'^SIGNAL_DISPOSITION\t' "$(cat "$f")")
+  [ -n "$package" ] && [ -n "$disposition" ] && [ "$package" -lt "$disposition" ] || return 1
   [ "$(grep -c $'^SIGNAL_DISPOSITION\t' "$f")" -eq 3 ] || return 1
   [ "$(grep -c $'^SIGNAL_IDENTITY\t' "$f")" -eq 3 ] || return 1
   [ "$(grep -c $'^SIGNAL_SEND\t' "$f")" -eq 3 ] || return 1
@@ -190,8 +333,9 @@ judge_success() { # $1 output file, $2 x86 row file, $3 arm row file; current fa
     [ -z "$(run_dirs "$h")" ] || return 1
     args=$(cat "$T/mac/$h/row-args" 2>/dev/null)
     [ "$(grep -c '^tests/e2e/mac_signal_runtime_test.py' <<<"$args")" -eq 1 ] || return 1
-    grep -q $'\t--browser .*/app/zigBrowser.app/Contents/MacOS/zigBrowser$' <<<"$args" || return 1
+    grep -q $'\t--browser .*/app/zigBrowser.app/Contents/MacOS/zigBrowser --package-evidence .*/evidence/package.manifest --package-commit [0-9a-f]\{40\}$' <<<"$args" || return 1
     ! grep -q 'zig-out/bin/zigBrowser' <<<"$args" || return 1
+    [ "$(cut -f1 "$T/mac/$h/package-tools")" = $'ATTACH\nDITTO\nDETACH\nOTOOL' ] || return 1
   done
 }
 
@@ -205,11 +349,13 @@ fake_state_mutants() { # base success was real; each one-field evidence/transcri
   ! judge_success "$state/gate.out" "$state/no-disposition.row" "$state/arm.row" || bad "M3 dropped disposition evidence survived"
   sed '0,/^SIGNAL_IDENTITY/{/^SIGNAL_IDENTITY/d;}' "$state/x86.row" > "$state/no-identity.row"
   ! judge_success "$state/gate.out" "$state/no-identity.row" "$state/arm.row" || bad "M4 dropped identity evidence survived"
+  sed '0,/^PACKAGE/{/^PACKAGE/d;}' "$state/x86.row" > "$state/no-package.row"
+  ! judge_success "$state/gate.out" "$state/no-package.row" "$state/arm.row" || bad "M4b dropped package identity survived"
   sed "/^EVIDENCE${TAB:-$'\t'}$INTEL${TAB:-$'\t'}/d" "$state/gate.out" > "$state/no-evidence.out"
   ! judge_success "$state/no-evidence.out" "$state/x86.row" "$state/arm.row" || bad "M5 dropped evidence copy survived"
   mkdir -p "$T/mac/$INTEL/zb-gate-0000000000000000000000000000000000000000-dead"
   ! judge_success "$state/gate.out" "$state/x86.row" "$state/arm.row" || bad "M6 dropped cleanup verification survived"
-  rm -rf -- "$T/mac/$INTEL/zb-gate-0000000000000000000000000000000000000000-dead"
+  rm -rf -- "${T:?}/mac/$INTEL/zb-gate-0000000000000000000000000000000000000000-dead"
   [ "$fails" -eq 0 ] && ok "integration-success-mutants"
 }
 
@@ -236,30 +382,58 @@ if [ "$fails" -ne 0 ]; then
   exit 1
 fi
 
-judge_refusal() { # $1 transcript, $2 row output, $3 host, $4 arch, $5 retained root
-  local text=$1 row=$2 h=$3 a=$4 rd=$5
+check_package_rejection() { # exact package-flow substitution must stop before the signal row begins
+  local mode=$1 h=$INTEL a=x86_64 row_calls tools
+  fresh_macs
+  printf '%s\n' "$mode" > "$T/mac/$h/package-mode"
+  run_gate
+  if [ -f "$T/mac/$h/row-args" ]; then row_calls=$(wc -l < "$T/mac/$h/row-args"); else row_calls=0; fi
+  tools=$(cut -f1 "$T/mac/$h/package-tools" 2>/dev/null | tr '\n' ' ')
+  if [ "$RC" -ne 0 ] && [ "$row_calls" -eq 0 ] && [[ "$tools" == ATTACH* ]] \
+     && ! grep -q $'^PASS\tms-runtime-rows-gate' <<<"$OUT" && ev_ok "$h" "$a" \
+     && [ -z "$(run_dirs "$h")" ]; then
+    ok "package-mutant-$mode-red-before-row"
+  else
+    bad "P1 package mutant $mode survived or failed outside its boundary: rc=$RC rows=$row_calls tools=[$tools]"
+  fi
+}
+
+for package_mode in placeholder renamed-build copied-build symlinked-build hardlinked-build fake-app wrong-dmg-digest missing-shim-ref; do
+  check_package_rejection "$package_mode"
+done
+
+judge_refusal() { # $1 transcript, $2 row output, $3 host, $4 arch, $5 retained root, $6 sends before refusal
+  local text=$1 row=$2 h=$3 a=$4 rd=$5 sends=$6 send_ok=0
+  case "$sends" in
+    none) ! grep -q $'^SIGNAL_SEND\t' <<<"$row" && send_ok=1 ;;
+    hup-int)
+      [ "$(grep -c $'^SIGNAL_SEND\t' <<<"$row")" -eq 2 ] \
+        && grep -qx $'SIGNAL_SEND\tHUP\tpid=4242\tsignal=SIGHUP\tcount=1' <<<"$row" \
+        && grep -qx $'SIGNAL_SEND\tINT\tpid=4242\tsignal=SIGINT\tcount=1' <<<"$row" \
+        && ! grep -q $'^SIGNAL_SEND\tTERM\t' <<<"$row" && send_ok=1 ;;
+  esac
   grep -q $'^HOST_STOPPED\ttests/e2e/mac_signal_runtime_test.py\t' <<<"$text" \
     && grep -q $'^RETAINED\t'"$h"$'\t'"$rd"$'\t' <<<"$text" \
     && grep -q $'^EVIDENCE\t'"$h"$'\t'"$a"$'\t' <<<"$text" \
     && ! grep -q $'^REMOVED\t'"$h" <<<"$text" \
     && ! grep -q $'^PASS\tms-runtime-rows-gate' <<<"$text" \
-    && grep -q $'^LEAK\t' <<<"$row" && ! grep -q $'^SIGNAL_SEND\t' <<<"$row"
+    && grep -q $'^PACKAGE\t' <<<"$row" && grep -q $'^LEAK\t' <<<"$row" && [ "$send_ok" -eq 1 ]
 }
 
 judge_hold() { # $1 transcript, $2 retained root
   grep -q $'^HOST_HELD\t../'"$2"'/LEAKED' <<<"$1" && ! grep -q $'^PASS\tms-runtime-rows-gate' <<<"$1"
 }
 
-check_refusal_and_hold() { # $1 host, $2 arch, $3 mode, $4 refusal marker
-  local h=$1 a=$2 mode=$3 marker=$4 before rd row rc1 out1 held_before out2 rc2
+check_refusal_and_hold() { # $1 host, $2 arch, $3 mode, $4 refusal marker, $5 sends before refusal
+  local h=$1 a=$2 mode=$3 marker=$4 sends=$5 before rd row rc1 out1 held_before out2 rc2
   fresh_macs
   printf '%s\n' "$mode" > "$T/mac/$h/row-mode"
   run_gate; rc1=$RC; out1=$OUT
   rd=$(run_dirs "$h" | head -n 1)
   row=$(member "$a" "evidence/rows/$ID.out")
   if [ "$rc1" -ne 0 ] && [ -n "$rd" ] && [ -f "$T/mac/$h/$rd/LEAKED" ] \
-     && grep -q "^$marker" <<<"$row" && grep -q $'^LEAK\t' <<<"$row" && ! grep -q $'^SIGNAL_SEND\t' <<<"$row" \
-     && ev_ok "$h" "$a" && judge_refusal "$out1" "$row" "$h" "$a" "$rd"; then
+     && grep -q "^$marker" <<<"$row" && grep -q $'^LEAK\t' <<<"$row" \
+     && ev_ok "$h" "$a" && judge_refusal "$out1" "$row" "$h" "$a" "$rd" "$sends"; then
     ok "integration-$mode-refusal-leak-retain"
   else
     bad "G2 $mode refusal/retention failed: rc=$rc1 rd=$rd $(grep -E '^(HOST_STOPPED|EVIDENCE|RETAINED|REMOVED)' <<<"$out1" | tr '\n' ' ') row=[$(tr '\n' ' ' <<<"$row")]"
@@ -267,9 +441,9 @@ check_refusal_and_hold() { # $1 host, $2 arch, $3 mode, $4 refusal marker
   fi
   printf '%s\n' "$out1" > "$T/refusal.out"
   sed '/^RETAINED/d' "$T/refusal.out" > "$T/no-retained.out"
-  ! judge_refusal "$(cat "$T/no-retained.out")" "$row" "$h" "$a" "$rd" || bad "M7 dropped retention survived"
+  ! judge_refusal "$(cat "$T/no-retained.out")" "$row" "$h" "$a" "$rd" "$sends" || bad "M7 dropped retention survived"
   sed '/^HOST_STOPPED/d' "$T/refusal.out" > "$T/no-stop.out"
-  ! judge_refusal "$(cat "$T/no-stop.out")" "$row" "$h" "$a" "$rd" || bad "M8 dropped HOST_STOPPED survived"
+  ! judge_refusal "$(cat "$T/no-stop.out")" "$row" "$h" "$a" "$rd" "$sends" || bad "M8 dropped HOST_STOPPED survived"
   before=$(wc -l < "$T/mac/$h/row-args")
   run_gate; rc2=$RC; out2=$OUT
   if [ "$rc2" -ne 0 ] && judge_hold "$out2" "$rd" \
@@ -283,8 +457,9 @@ check_refusal_and_hold() { # $1 host, $2 arch, $3 mode, $4 refusal marker
   ! judge_hold "$(cat "$T/no-hold.out")" "$rd" || bad "M9 dropped next-run hold survived"
 }
 
-check_refusal_and_hold "$INTEL" x86_64 bad-disposition REFUSED_DISPOSITION
-check_refusal_and_hold "$ARM" arm64 bad-identity REFUSED_IDENTITY
+check_refusal_and_hold "$INTEL" x86_64 bad-disposition REFUSED_DISPOSITION none
+check_refusal_and_hold "$ARM" arm64 bad-identity REFUSED_IDENTITY none
+check_refusal_and_hold "$INTEL" x86_64 bad-term-disposition $'REFUSED_DISPOSITION\tTERM' hup-int
 
 if [ "$fails" -eq 0 ]; then
   printf 'PASS\tms-signal-runtime-gate-red\n'

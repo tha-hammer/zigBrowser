@@ -1,18 +1,19 @@
 #!/usr/bin/env python3
 """RED, UNREGISTERED: prove the macOS signal path in the live application.
 
-The eventual green row is run by ``tests/mac/ms_runtime_rows_gate.sh`` on both Macs.  It launches the unpacked
-packaged exact-commit ``zigBrowser.app`` executable afresh for a guard case and for SIGHUP, SIGINT and SIGTERM;
-a build-tree browser is refused.  Before sending a signal it proves
+The eventual green row is run by ``tests/mac/ms_runtime_rows_gate.sh`` on both Macs.  It verifies exact-commit DMG,
+read-only attach, ditto-unpack, app/executable/shim digests and the executable-relative shim reference, then launches
+that unpacked ``zigBrowser.app`` executable afresh for a guard case and for SIGHUP, SIGINT and SIGTERM. Empty/fake
+apps and renamed, copied or linked build-tree browsers are refused before launch. Before sending a signal it proves
 bounded automation readiness and records an exact, live process identity.  The e2e-only disposition seam must
 report the result of ``sigaction(signo, NULL, ...)`` as SIG_IGN for all three signals; without
 ``--e2e-protocol`` that report must be absent.  SIGHUP must reload exactly once and leave the app responsive.
 SIGINT and SIGTERM must each exit normally with code 130.  No timeout path sends SIGKILL.
 
 ``--selftest`` is hostless.  It drives the same verdict code with a model of the good implementation and the
-required old-handler, HUP/exit-swap, dropped-source, guard-drop and bad-identity mutants.  It also binds the
-live-query source seam and its future named-gate/fake-host registration.  Until the green lands, those production
-and gate contracts intentionally make this file exit 1.
+required old-handler, HUP/exit-swap, dropped-source, guard-drop and per-launch disposition/identity mutants. It also
+binds package-substitution mutants, the live-query source seam and future named-gate/fake-host registration. Until
+the green lands, those production and gate contracts intentionally make this file exit 1.
 
 Hostless red command (the outer namespace is mandatory even though the model never calls os.kill)::
 
@@ -22,11 +23,14 @@ Hostless red command (the outer namespace is mandatory even though the model nev
 from __future__ import annotations
 
 import argparse
+import hashlib
 import http.server
 import os
+import re
 import secrets
 import signal
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -54,6 +58,12 @@ REPORT = "SIGNAL_DISPOSITION\tSIGINT=SIG_IGN\tSIGTERM=SIG_IGN\tSIGHUP=SIG_IGN"
 SIGNAL_CASES = (("HUP", signal.SIGHUP), ("INT", signal.SIGINT), ("TERM", signal.SIGTERM))
 HUP_QUIT_AFTER_MS = 8000
 APP_SUFFIX = ("zigBrowser.app", "Contents", "MacOS", "zigBrowser")
+SHIM_REL = Path("Contents/Frameworks/libwkwebview_shim.dylib")
+SHIM_REF = "@executable_path/../Frameworks/libwkwebview_shim.dylib"
+PACKAGE_TAGS = (
+    "PACKAGE_COMMIT", "PACKAGE_FLOW", "PACKAGE_DMG", "PACKAGE_APP", "PACKAGE_EXECUTABLE",
+    "PACKAGE_BUILD_EXECUTABLE", "PACKAGE_SHIM", "PACKAGE_SHIM_REF",
+)
 
 
 @dataclass(frozen=True)
@@ -62,6 +72,132 @@ class Identity:
     pgid: int
     start: str
     command: str
+
+
+def file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        for chunk in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def app_tree_sha256(app: Path) -> str:
+    """Hash path bytes, type, mode and contents so post-unpack substitutions cannot reuse package evidence."""
+    if app.is_symlink() or not app.is_dir():
+        raise ValueError("the packaged app root is not a real directory")
+    entries: list[tuple[bytes, Path]] = []
+    for dirpath, dirs, names in os.walk(app, followlinks=False):
+        dirs.sort(key=os.fsencode)
+        names.sort(key=os.fsencode)
+        base = Path(dirpath)
+        for name in dirs + names:
+            path = base / name
+            entries.append((os.fsencode(os.path.relpath(path, app)), path))
+    digest = hashlib.sha256()
+    for rel, path in sorted(entries):
+        info = path.lstat()
+        if stat.S_ISREG(info.st_mode):
+            kind, payload = b"f", bytes.fromhex(file_sha256(path))
+        elif stat.S_ISDIR(info.st_mode):
+            kind, payload = b"d", b""
+        elif stat.S_ISLNK(info.st_mode):
+            kind, payload = b"l", os.fsencode(os.readlink(path))
+        else:
+            raise ValueError(f"special file in packaged app: {os.fsdecode(rel)!r}")
+        for field in (rel, kind, f"{stat.S_IMODE(info.st_mode):o}".encode(), payload):
+            digest.update(len(field).to_bytes(8, "big"))
+            digest.update(field)
+    return digest.hexdigest()
+
+
+def package_problems(browser: Path, evidence: Path | None, expected_commit: str | None) -> tuple[list[str], str | None]:
+    """Validate the exact DMG -> read-only attach -> ditto artifact before any browser process exists."""
+    problems: list[str] = []
+    if evidence is None or expected_commit is None:
+        return ["PK0 package evidence and exact commit are required"], None
+    if not re.fullmatch(r"[0-9a-f]{40}", expected_commit):
+        return [f"PK1 invalid exact package commit {expected_commit!r}"], None
+    try:
+        lines = evidence.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeError) as exc:
+        return [f"PK2 could not read package evidence: {exc}"], None
+    fields = [line.split("\t") for line in lines]
+    if len(fields) != len(PACKAGE_TAGS) or [row[0] if row else "" for row in fields] != list(PACKAGE_TAGS):
+        return [f"PK3 package evidence must contain the exact ordered {PACKAGE_TAGS!r} records"], None
+    commit, flow, dmg_row, app_row, exe_row, build_row, shim_row, ref_row = fields
+    if commit != ["PACKAGE_COMMIT", expected_commit]:
+        problems.append("PK4 package evidence is not for the requested exact commit")
+    if flow != ["PACKAGE_FLOW", "hdiutil-attach-readonly", "ditto"]:
+        problems.append("PK5 package did not come through read-only DMG attach and ditto")
+    shaped = ((dmg_row, 4, "DMG"), (app_row, 3, "APP"), (exe_row, 4, "EXECUTABLE"),
+              (build_row, 4, "BUILD_EXECUTABLE"), (shim_row, 4, "SHIM"))
+    for row, size, name in shaped:
+        if len(row) != size or not re.fullmatch(r"[0-9a-f]{64}", row[1]):
+            problems.append(f"PK6 malformed PACKAGE_{name} evidence")
+    if ref_row != ["PACKAGE_SHIM_REF", SHIM_REF, "refs=1"]:
+        problems.append("PK7 package has no exact single executable-relative shim reference")
+    if problems:
+        return problems, None
+    try:
+        raw_dmg = Path(dmg_row[3])
+        raw_app = Path(app_row[2])
+        packaged_exe = Path(exe_row[3])
+        build_exe = Path(build_row[3])
+        shim = Path(shim_row[3])
+        resolved = browser.resolve(strict=True)
+        run_root = browser.parents[4].resolve(strict=True)
+        expected_app = run_root / "app/zigBrowser.app"
+        if not re.fullmatch(rf"zb-gate-{expected_commit}-[0-9a-f]+", run_root.name):
+            problems.append("PK8 browser is not in the exact-commit gate run root")
+        if (evidence.resolve(strict=True) != run_root / "evidence/package.manifest"
+                or raw_app != expected_app or raw_dmg.parent != run_root
+                or build_exe != run_root / "zig-out/bin/zigBrowser"
+                or shim != expected_app / SHIM_REL):
+            problems.append("PK9 package evidence names a path outside the exact run-root layout")
+        app = raw_app.resolve(strict=True)
+        dmg = raw_dmg.resolve(strict=True)
+        if app != resolved.parents[2] or resolved != packaged_exe.resolve(strict=True):
+            problems.append("PK10 browser/app paths do not name the evidenced unpacked package")
+        if tuple(resolved.parts[-4:]) != APP_SUFFIX or "zig-out" in resolved.parts:
+            problems.append("PK11 browser is not the unpacked packaged executable")
+        for path, name in ((raw_app, "app"), (packaged_exe, "executable"), (shim, "shim"), (raw_dmg, "dmg")):
+            if path.is_symlink():
+                problems.append(f"PK12 evidenced {name} is a symlink")
+        if not packaged_exe.is_file() or packaged_exe.stat().st_size <= 0 or not os.access(packaged_exe, os.X_OK):
+            problems.append("PK13 packaged executable is empty, missing or not executable")
+        if not shim.is_file() or shim.stat().st_size <= 0 or shim.resolve() != app / SHIM_REL:
+            problems.append("PK14 package shim is absent or outside the app")
+        if not dmg.is_file() or dmg.stat().st_size <= 0:
+            problems.append("PK15 package DMG is absent or empty")
+        if not build_exe.is_file() or tuple(build_exe.parts[-3:]) != ("zig-out", "bin", "zigBrowser"):
+            problems.append("PK16 exact-commit build executable evidence is absent")
+        actual_dmg = file_sha256(dmg)
+        actual_app = app_tree_sha256(app)
+        actual_exe = file_sha256(packaged_exe)
+        actual_build = file_sha256(build_exe)
+        actual_shim = file_sha256(shim)
+        checks = (
+            (actual_dmg, dmg.stat().st_size, dmg_row, "DMG"),
+            (actual_exe, packaged_exe.stat().st_size, exe_row, "executable"),
+            (actual_build, build_exe.stat().st_size, build_row, "build executable"),
+            (actual_shim, shim.stat().st_size, shim_row, "shim"),
+        )
+        for actual_sha, actual_size, row, name in checks:
+            if row[1] != actual_sha or row[2] != str(actual_size):
+                problems.append(f"PK17 {name} digest/size does not match package evidence")
+        if app_row[1] != actual_app:
+            problems.append("PK18 unpacked app tree digest does not match package evidence")
+        if actual_exe == actual_build or os.path.samefile(packaged_exe, build_exe):
+            problems.append("PK19 packaged executable is a renamed, copied or linked build-tree binary")
+    except (OSError, ValueError, IndexError) as exc:
+        problems.append(f"PK20 package verification failed closed: {exc}")
+        return problems, None
+    if problems:
+        return problems, None
+    package_line = (f"PACKAGE\t{expected_commit}\tdmg={dmg_row[1]}\tapp={app_row[1]}\t"
+                    f"exe={exe_row[1]}\tshim={shim_row[1]}\tshim-ref={SHIM_REF}")
+    return [], package_line
 
 
 class Verdict:
@@ -331,11 +467,22 @@ class FakeSession:
         }
         if self.factory.variant in reports:
             return reports[self.factory.variant]
+        later_reports = {
+            ("int-disp-malformed", "INT"): ["SIGNAL_DISPOSITION\tSIGINT=SIG_IGN\tSIGTERM\tSIGHUP=SIG_IGN"],
+            ("int-disp-nonign", "INT"): ["SIGNAL_DISPOSITION\tSIGINT=CUSTOM\tSIGTERM=SIG_IGN\tSIGHUP=SIG_IGN"],
+            ("term-disp-malformed", "TERM"): ["SIGNAL_DISPOSITION\tSIGINT=SIG_IGN\tSIGTERM=SIG_IGN\tSIGHUP"],
+            ("term-disp-nonign", "TERM"): ["SIGNAL_DISPOSITION\tSIGINT=SIG_IGN\tSIGTERM=SIG_DFL\tSIGHUP=SIG_IGN"],
+        }
+        if (self.factory.variant, self.label) in later_reports:
+            return later_reports[(self.factory.variant, self.label)]
         return [REPORT]
 
     def identity(self) -> Identity:
-        if self.factory.variant == "bad-identity" and self.label == "HUP":
-            return Identity(1, 1, "Fri Oct 24 12:00:00 2026", self.factory.browser + " /HUP")
+        bad_label = {"bad-identity": "HUP", "bad-identity-int": "INT", "bad-identity-term": "TERM"}.get(
+            self.factory.variant
+        )
+        if self.label == bad_label:
+            return Identity(1, 1, "Fri Oct 24 12:00:00 2026", self.factory.browser + f" /{self.label}")
         return Identity(4242 + len(self.factory.sessions), 4242 + len(self.factory.sessions),
                         "Fri Oct 24 12:00:00 2026", self.factory.browser + f" /{self.label}")
 
@@ -577,9 +724,15 @@ def gate_problems() -> list[str]:
         return [f"GC0 could not read the named gate/fake-host tests: {exc}"]
     if gate.count(ROW_SPEC) != 1:
         problems.append(f"GC1 named gate must contain exactly one {ROW_SPEC}")
-    packaged_arg = 'python3 "$file" --browser "$root/app/zigBrowser.app/Contents/MacOS/zigBrowser"'
+    packaged_arg = ('python3 "$file" --browser "$root/app/zigBrowser.app/Contents/MacOS/zigBrowser" '
+                    '--package-evidence "$root/evidence/package.manifest" --package-commit "$commit"')
     if gate.count(packaged_arg) != 1 or 'python3 "$file" --browser zig-out/bin/zigBrowser' in gate:
-        problems.append("GC5 signal row must receive only the unpacked .app executable, never the build-tree browser")
+        problems.append("GC5 signal row must receive the evidenced exact-commit DMG/ditto app, never the build-tree browser")
+    package_tokens = ("packaging/macos/build-dmg.sh", "hdiutil attach -readonly", "ditto", "otool -L",
+                      "PACKAGE_DMG", "PACKAGE_APP", "PACKAGE_SHIM_REF")
+    for token in package_tokens:
+        if token not in gate:
+            problems.append(f"GC6 named gate package flow is missing {token!r}")
     mapping = f"{ROW_FILE}) id={ROW_ID} ;;"
     for name, text in (("evidence", evidence), ("output", output)):
         if mapping not in " ".join(text.split()):
@@ -660,11 +813,113 @@ def fake_selftest_problems() -> list[str]:
                         f"failures={old_failures!r} sent={old_sent!r} leaks={old_hup.leaks!r}")
     else:
         print(f"ASSERT\t{ROW_ID}\told-handler-no-send\tpass")
+    later_cases = (
+        ("int-disp-malformed", "INT", "INT-DISPOSITION", [signal.SIGHUP]),
+        ("int-disp-nonign", "INT", "INT-DISPOSITION", [signal.SIGHUP]),
+        ("term-disp-malformed", "TERM", "TERM-DISPOSITION", [signal.SIGHUP, signal.SIGINT]),
+        ("term-disp-nonign", "TERM", "TERM-DISPOSITION", [signal.SIGHUP, signal.SIGINT]),
+        ("bad-identity-int", "INT", "INT-IDENTITY", [signal.SIGHUP]),
+        ("bad-identity-term", "TERM", "TERM-IDENTITY", [signal.SIGHUP, signal.SIGINT]),
+    )
+    for variant, affected_label, marker, want_sent in later_cases:
+        factory = FakeFactory(variant)
+        got = exercise(factory, lambda _line: None)
+        sent = [signo for session in factory.sessions for signo in session.sent]
+        affected = next(session for session in factory.sessions if session.label == affected_label)
+        if (not any(marker in failure for failure in got) or sent != want_sent or affected.sent
+                or len(affected.leaks) != 1 or not affected.leaks[0][1]):
+            problems.append(f"T6 {variant} must refuse only {affected_label} live after legitimate earlier sends: "
+                            f"failures={got!r} sent={sent!r} leaks={affected.leaks!r}")
+        else:
+            print(f"ASSERT\t{ROW_ID}\t{variant}-later-launch-refusal\tpass")
+    return problems
+
+
+def write_package_fixture(root: Path, variant: str) -> tuple[Path, Path, str]:
+    """Construct one package-evidence model. Mutants may regenerate truthful digests; policy must still refuse them."""
+    commit = "1" * 40
+    build = root / "zig-out/bin/zigBrowser"
+    app = root / ("fake/zigBrowser.app" if variant == "fake-app" else "app/zigBrowser.app")
+    browser = app / "Contents/MacOS/zigBrowser"
+    shim = app / SHIM_REL
+    dmg = root / "zigBrowser-exact.dmg"
+    evidence = root / "evidence/package.manifest"
+    build.parent.mkdir(parents=True)
+    browser.parent.mkdir(parents=True)
+    shim.parent.mkdir(parents=True)
+    evidence.parent.mkdir(parents=True)
+    build.write_bytes(b"thin exact-commit build executable\n")
+    build.chmod(0o755)
+    browser.write_bytes(b"fat executable produced by exact-commit package flow\n")
+    browser.chmod(0o755)
+    shim.write_bytes(b"fat packaged wkwebview shim\n")
+    (app / "Contents/Info.plist").write_text("exact package metadata\n", encoding="utf-8")
+    dmg.write_bytes(b"exact-commit dmg bytes containing the reviewed app\n")
+    original_build_sha, original_build_size = file_sha256(build), build.stat().st_size
+    if variant == "placeholder":
+        browser.write_bytes(b"")
+    elif variant == "renamed-build":
+        browser.unlink()
+        build.rename(browser)
+    elif variant == "copied-build":
+        shutil.copyfile(build, browser)
+        browser.chmod(0o755)
+    elif variant == "symlinked-build":
+        browser.unlink()
+        browser.symlink_to(build)
+    elif variant == "hardlinked-build":
+        browser.unlink()
+        os.link(build, browser)
+    flow = ["PACKAGE_FLOW", "mkdir-only", "none"] if variant == "fake-app" else [
+        "PACKAGE_FLOW", "hdiutil-attach-readonly", "ditto"
+    ]
+    build_sha = file_sha256(build) if build.exists() else original_build_sha
+    build_size = build.stat().st_size if build.exists() else original_build_size
+    lines = (
+        ["PACKAGE_COMMIT", commit],
+        flow,
+        ["PACKAGE_DMG", file_sha256(dmg), str(dmg.stat().st_size), str(dmg)],
+        ["PACKAGE_APP", app_tree_sha256(app), str(app)],
+        ["PACKAGE_EXECUTABLE", file_sha256(browser), str(browser.stat().st_size), str(browser)],
+        ["PACKAGE_BUILD_EXECUTABLE", build_sha, str(build_size), str(build)],
+        ["PACKAGE_SHIM", file_sha256(shim), str(shim.stat().st_size), str(shim)],
+        ["PACKAGE_SHIM_REF", SHIM_REF, "refs=0" if variant == "missing-shim-ref" else "refs=1"],
+    )
+    evidence.write_text("".join("\t".join(row) + "\n" for row in lines), encoding="utf-8")
+    if variant == "wrong-dmg-digest":
+        with dmg.open("ab") as target:
+            target.write(b"mutated after package evidence\n")
+    return browser, evidence, commit
+
+
+def package_selftest_problems() -> list[str]:
+    problems: list[str] = []
+    with tempfile.TemporaryDirectory(prefix="zb-signal-package-") as temp:
+        good_root = Path(temp) / "good" / f"zb-gate-{'1' * 40}-deadbeef"
+        browser, evidence, commit = write_package_fixture(good_root, "good")
+        got, line = package_problems(browser, evidence, commit)
+        if got or line is None:
+            problems.append(f"PKT1 good exact-commit package model failed: {got!r}")
+        else:
+            print(f"ASSERT\t{ROW_ID}\tpackage-model-good\tpass")
+        variants = (
+            "placeholder", "renamed-build", "copied-build", "symlinked-build", "hardlinked-build",
+            "fake-app", "wrong-dmg-digest", "missing-shim-ref",
+        )
+        for variant in variants:
+            root = Path(temp) / variant / f"zb-gate-{'1' * 40}-deadbeef"
+            browser, evidence, commit = write_package_fixture(root, variant)
+            got, line = package_problems(browser, evidence, commit)
+            if not got or line is not None:
+                problems.append(f"PKT2 package substitution {variant} survived: {got!r}")
+            else:
+                print(f"ASSERT\t{ROW_ID}\tpackage-mutant-{variant}\tred")
     return problems
 
 
 def selftest() -> int:
     problems = fake_selftest_problems()
+    problems += package_selftest_problems()
     try:
         source = SHIM.read_text()
     except OSError as exc:
@@ -689,17 +944,20 @@ def selftest() -> int:
     return 0
 
 
-def real_row(browser: Path, timeout_sec: float) -> int:
+def real_row(browser: Path, timeout_sec: float, package_evidence: Path | None, package_commit: str | None) -> int:
     if sys.platform != "darwin":
         print(f"FAIL\t{ROW_ID}\trequires-darwin")
         return 1
     if not browser.is_file():
         print(f"FAIL\t{ROW_ID}\tbinary-missing")
         return 1
-    resolved = browser.resolve()
-    if tuple(resolved.parts[-4:]) != APP_SUFFIX or "zig-out" in resolved.parts:
-        print(f"FAIL\t{ROW_ID}\tpackaged-app-required\t{resolved}")
+    package_failures, package_line = package_problems(browser, package_evidence, package_commit)
+    if package_failures:
+        for problem in package_failures:
+            print(f"FAIL {problem}")
+        print(f"FAIL\t{ROW_ID}\tpackage-precondition")
         return 1
+    resolved = browser.resolve()
     problems: list[str] = []
     try:
         problems += source_problems(SHIM.read_text())
@@ -711,6 +969,7 @@ def real_row(browser: Path, timeout_sec: float) -> int:
             print(f"FAIL {problem}")
         print(f"FAIL\t{ROW_ID}\tprecondition")
         return 1
+    print(package_line, flush=True)
     with FixtureServer() as fixture:
         runtime = ActualFactory(resolved, fixture, timeout_sec)
         problems += exercise(runtime, lambda line: print(line, flush=True))
@@ -727,9 +986,13 @@ def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--selftest", action="store_true")
     parser.add_argument("--browser", type=Path, default=Path("app/zigBrowser.app/Contents/MacOS/zigBrowser"))
+    parser.add_argument("--package-evidence", type=Path)
+    parser.add_argument("--package-commit")
     parser.add_argument("--timeout-sec", type=float, default=25.0)
     args = parser.parse_args(argv[1:])
-    return selftest() if args.selftest else real_row(args.browser, args.timeout_sec)
+    return selftest() if args.selftest else real_row(
+        args.browser, args.timeout_sec, args.package_evidence, args.package_commit,
+    )
 
 
 if __name__ == "__main__":
