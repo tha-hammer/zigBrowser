@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""RED, UNREGISTERED: bind Apple's control-report path redaction to all proof.
+"""GREEN, REGISTERED: bind Apple's control-report path redaction to all proof.
 
 The consumed arm64 MS1c run retained this exact report identity::
 

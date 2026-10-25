@@ -24,6 +24,8 @@ STATUS_POLICY = {
     "control": (-6,),
 }
 SHIM_REF = "@executable_path/../Frameworks/libwkwebview_shim.dylib"
+APPLE_REDACTED_CONTROL_PATH = "/Users/USER/*/zigBrowser.app/Contents/MacOS/zigBrowser"
+APPLE_REDACTED_CONTROL_TAIL = ("zigBrowser.app", "Contents", "MacOS", "zigBrowser")
 
 
 def field(value: Union[str, bytes]) -> str:
@@ -286,6 +288,20 @@ def structured_zigbrowser(metadata: dict, incident: dict) -> bool:
             or incident.get("procName") == "zigBrowser")
 
 
+def control_proc_path_matches(report_path: str, control_exe: str) -> bool:
+    """Accept only the recorded path or Apple's one exact redacted spelling."""
+    if report_path == control_exe:
+        return True
+    if report_path != APPLE_REDACTED_CONTROL_PATH:
+        return False
+    parts = control_exe.split("/")
+    return (len(parts) >= 8
+            and parts[0] == ""
+            and parts[1] == "Users"
+            and all(parts[2:-4])
+            and tuple(parts[-4:]) == APPLE_REDACTED_CONTROL_TAIL)
+
+
 def report_records(args: argparse.Namespace) -> int:
     before = load_snapshot_rows(args.before)
     records, table_error = process_table(args.ledger)
@@ -389,7 +405,9 @@ def report_records(args: argparse.Namespace) -> int:
                     inconclusive = True
                 else:
                     assert control is not None
-                    exact_control = (pid == control[1] and proc_path == control[3] and control[2] == -6
+                    exact_control = (pid == control[1]
+                                     and control_proc_path_matches(proc_path, control[3])
+                                     and control[2] == -6
                                      and missing_shim_incident(incident) and control_ok)
                     if exact_control and not exact_control_used:
                         kind = "CONTROL"
