@@ -126,11 +126,16 @@ def exact_snapshot(
     for line in lines:
         fields = line.split("\t", 2)
         if len(fields) == 3 and fields[0] in ("C", "P", "T"):
-            ordinary.setdefault((fields[0], fields[1]), []).append(fields[2])
+            try:
+                rel = os.fsdecode(base.decode_field(fields[1]))
+            except ValueError as error:
+                bad(f"{row}: malformed ordinary-row path: {error}: {line!r}")
+                continue
+            ordinary.setdefault((fields[0], rel), []).append(fields[2])
     got_rows = ordinary.get(PAIR, [])
     if got_rows != [want_record]:
         bad(f"{row}: want one ordinary row with SHA '-', got {got_rows!r}")
-    want_marker = f"SKIPPED-PROTECTED\t{side}\t{PAIR[0]}\t{PAIR[1]}\t{reason}"
+    want_marker = f"SKIPPED-PROTECTED\t{side}\t{PAIR[0]}\t{base.evidence_field(PAIR[1])}\t{reason}"
     markers = [line for line in lines if line.startswith("SKIPPED-PROTECTED\t")]
     if markers != [want_marker]:
         bad(f"{row}: want exactly side-tagged marker {want_marker!r}, got {markers!r}")
@@ -171,7 +176,8 @@ def run_rows(helper: Path) -> list[str]:
         target.write_text("protected bytes\n")
         want_record = sha_unavailable_record(target)
         roots = box.tmp / "roots.tsv"
-        roots.write_text(f"T\t{box.T}\nC\t{box.C}\nP\t{box.user}\n")
+        roots.write_text(f"T\t{base.evidence_field(box.T)}\nC\t{base.evidence_field(box.C)}\n"
+                         f"P\t{base.evidence_field(box.user)}\n")
         snapshotter = extract("D0", box, helper, "__VF_SNAPSHOT_PY", "snapshot.py")
         differ = extract("D0", box, helper, "__VF_DIFF_PY", "diff.py")
         if snapshotter is None or differ is None:
@@ -200,8 +206,8 @@ def run_rows(helper: Path) -> list[str]:
                 row = f"D2 accepted diff {reason}"
                 rc, out = run_diff(row, differ, before, after)
                 want = [
-                    f"SKIPPED-PROTECTED\tBEFORE\t{PAIR[0]}\t{PAIR[1]}\t{reason}",
-                    f"SKIPPED-PROTECTED\tAFTER\t{PAIR[0]}\t{PAIR[1]}\t{reason}",
+                    f"SKIPPED-PROTECTED\tBEFORE\t{PAIR[0]}\t{base.evidence_field(PAIR[1])}\t{reason}",
+                    f"SKIPPED-PROTECTED\tAFTER\t{PAIR[0]}\t{base.evidence_field(PAIR[1])}\t{reason}",
                     "VARFOLDERS\tCOMPLETE\t0",
                 ]
                 if rc != 0 or out != want:

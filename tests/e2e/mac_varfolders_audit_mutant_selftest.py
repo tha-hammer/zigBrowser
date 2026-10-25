@@ -17,12 +17,12 @@ fails here instead of passing vacuously. The mutants:
 - R1, R3, R4 no device/inode binding, no identity check at all, no record of the root itself;
 - C1, C2 a record without ctime or without nlink;
 - P1-P5 an empty INCONCLUSIVE reason; a malformed, duplicate, or re-resolved roots line; a reason holding tabs;
-- U1 a name that is not UTF-8 silently skipped;
+- U1 a non-UTF-8 name silently skipped instead of encoded;
 - H1 a here-document (macOS /bin/bash 3.2 writes it to a temp file in $TMPDIR, the temp root by default);
 - H2 a python3 child without the helper's TMPDIR override that makes a temp file;
 - SP1-SP6 the parent census broken: the parent's entries not walked, a change beside T/C still COMPLETE, the parent's
   deltas hidden with the INCONCLUSIVE kept, no common-parent check, no parent line, T and C counted again in it;
-- PS1, PS2 a parent entry whose name cannot be recorded silently skipped, or normalized and recorded;
+- PS1, PS2 a parent entry with arbitrary name bytes silently skipped, or lossily normalized;
 - F2 an evidence dir that cannot be made fails open (V19);
 - F1 begin fails open again (1362d73a's ignore-and-run: a failed root discovery or an incomplete before snapshot
   still exits 0, so a caller would launch a browser without a complete before image; V15, SilverRidge 3661c9b8);
@@ -45,7 +45,10 @@ ROOTS_OK = '  [ "$pt" != "$pc" ] || { echo "temp and cache roots are the same di
 BEGIN_SNAP = ("""    __vf_refuse "$(grep -m 3 '^ERROR' "$ev/varfolders-before.tsv" 2>/dev/null || cat "$ev/varfolders-before.err")"\n"""
               "    return\n  fi\n")  # the end of begin, after a complete before snapshot
 END_SNAP = '  __vf_python "$ev" -c "$__VF_SNAPSHOT_PY" "$ev/varfolders-roots" "$ev/varfolders-after.tsv" AFTER \\\n'
-EACH = '  while IFS=$\'\\t\' read -r _ r; do %s; done < "$ev/varfolders-roots"\n'
+EACH = ('  while IFS=$\'\\t\' read -r _ f; do '
+        'r=$(__vf_python "$ev" -c \'import base64,os,sys; '
+        'os.write(1,base64.b64decode(sys.argv[1][4:].encode("ascii"),altchars=b"-_",validate=True))\' "$f") '
+        '|| return; %s; done < "$ev/varfolders-roots"\n')
 REWRITE = ('/usr/bin/python3 -c "import os,sys\nfor n in os.listdir(sys.argv[1]):\n p=os.path.join(sys.argv[1],n)\n'
            " if os.path.isfile(p) and not os.path.islink(p):\n  st=os.stat(p); b=open(p,'rb').read(); open(p,'wb').write(b)"
            '; os.utime(p, ns=(st.st_atime_ns, st.st_mtime_ns))" "$r"')
@@ -56,7 +59,7 @@ FINAL = 'print("VARFOLDERS\\tCOMPLETE\\t%d" % len(rows))\n'
 ROOTS_LINE = "  printf 'VARFOLDERS_ROOTS\\t%s\\t%s\\n' \"$rt\" \"$rc\"\n"
 SHELL_CHECK = '  if [ "$now" != "$(cat "$ev/varfolders-roots")" ]; then\n'
 DIFF_CALL = '  __vf_python "$ev" -c "$__VF_DIFF_PY" "$ev/varfolders-before.tsv" "$ev/varfolders-after.tsv"\n'
-SNAP_IMPORTS = "import errno, hashlib, os, stat, sys\n"
+SNAP_IMPORTS = "import base64, binascii, errno, hashlib, os, stat, sys\n"
 TEMP_FILE = SNAP_IMPORTS + "import tempfile\ntempfile.NamedTemporaryFile().close()\n"
 
 MUTANTS = [
@@ -67,28 +70,29 @@ MUTANTS = [
     ("B5 write then restore (bytes, mtime) in end", [(END_SNAP, EACH % REWRITE + END_SNAP)]),
     ("B6 chmod to the same mode in begin", [(BEGIN_SNAP, BEGIN_SNAP + EACH % RECHMOD)]),
     ("MF filtered delta (com.apple)", [("    if b == a:\n        continue\n",
-                                        '    if b == a or key[1].startswith("com.apple"):\n        continue\n')]),
+                                        '    if b == a or key[1].startswith(b"com.apple"):\n        continue\n')]),
     ("MD missing before read as empty", [('        return None, None, None, "missing"\n',
                                            '        return "SAME", {}, [], ""\n'),
                                          ("if hb != ha:", 'if hb != ha and hb != "SAME":')]),
     ("MB delete in begin", [(BEGIN_SNAP, BEGIN_SNAP + EACH % 'rm -f -- "${r:?}/cache.db"')]),
     ("ME delete in end", [(END_SNAP, EACH % 'rm -f -- "${r:?}/zigBrowser-run.log"' + END_SNAP)]),
     ("MU unreadable directory skipped", [("onerror=err, followlinks=False", "onerror=None, followlinks=False")]),
-    ("S1 no content digest", [('        sha = digest(p) if kind == "f" else "-"\n', '        sha = "-"\n')]),
-    ("S2 no symlink target", [('        link = os.readlink(p) if kind == "l" else "-"\n', '        link = "-"\n')]),
+    ("S1 no content digest", [('        sha = digest(path) if kind == "f" else "-"\n', '        sha = "-"\n')]),
+    ("S2 no symlink target", [('        link = os.readlink(path) if kind == "l" else None\n', '        link = None\n')]),
     ("S3 no mode", [("(kind, stat.S_IMODE(st.st_mode), st.st_uid", "(kind, 0, st.st_uid")]),
-    ("S4 types collapsed (f/d/l only)", [('kind = next((k for test, k in KIND if test(st.st_mode)), "o")',
+    ("S4 types collapsed (f/d/l only)", [('kind = next((name for test, name in KIND if test(st.st_mode)), "o")',
                                           'kind = "d" if stat.S_ISDIR(st.st_mode) else "l" if stat.S_ISLNK(st.st_mode) '
                                           'else "f" if stat.S_ISREG(st.st_mode) else "d"')]),
     ("D1 before and after swapped", [('b or "-", a or "-"', 'a or "-", b or "-"')]),
     ("D2 absent side empty, not -", [('b or "-", a or "-"', 'b or "", a or ""')]),
-    ("D3 ordered by delta kind first", [("for r in rows:\n", "for r in sorted(rows):\n")]),
+    ("D3 ordered by delta kind first", [("for _token, row in rows:\n    print(row)\n",
+                                           "for _token, row in sorted(rows, key=lambda item: item[1]):\n    print(row)\n")]),
     ("D4 count off by one", [(FINAL, 'print("VARFOLDERS\\tCOMPLETE\\t%d" % (len(rows) + 1))\n')]),
     ("D5 an extra output line", [(FINAL, 'print("VARFOLDERS-NOTE\\tsnapshot taken")\n' + FINAL)]),
     ("D6 deltas printed before an identity INCONCLUSIVE", [(IDENT, ""), (FINAL, IDENT + FINAL)]),
     ("R1 no device/inode binding", [(IDENT, "")]),
     ("R3 no identity checks at all", [(IDENT, ""), (SHELL_CHECK, "  if false; then\n")]),
-    ("R4 no record of the root itself", [('    entry(token, root, root, ".")\n', "")]),
+    ("R4 no record of the root itself", [('    entry(token, root, root, b".")\n', "")]),
     ("C1 no ctime", [("st.st_mtime_ns, st.st_ctime_ns, st.st_ino", "st.st_mtime_ns, 0, st.st_ino")]),
     ("C2 no nlink", [("st.st_gid, st.st_nlink,", "st.st_gid, 1,")]),
     ("P1 empty INCONCLUSIVE reason", [("  printf 'VARFOLDERS\\tINCONCLUSIVE\\tthe roots changed during the run\\n'\n",
@@ -99,8 +103,7 @@ MUTANTS = [
      [(SHELL_CHECK, "  printf 'VARFOLDERS_ROOTS\\t%s\\n' \"${now//$'\\n'/$'\\t'}\"\n" + SHELL_CHECK)]),
     ("P5 a reason holding tabs", [('" ".join(reason.split())', "reason")]),
     ("U1 a non-UTF-8 name silently skipped",
-     [('        errors.append("%s\\t%r\\ta name or link target that is not UTF-8 cannot be recorded" % (token, rel))\n',
-       "")]),
+     [('    rel = os.fsencode(rel)\n', '    rel = os.fsencode(rel)\n    if b"\\xff" in rel:\n        return\n')]),
     ("H1 a here-document", [(DIFF_CALL, '  __vf_python "$ev" - "$ev/varfolders-before.tsv" "$ev/varfolders-after.tsv"'
                                         ' <<EOF\n$__VF_DIFF_PY\nEOF\n')]),
     ("H2 a python3 child without the TMPDIR override makes a temp file",
@@ -110,35 +113,24 @@ MUTANTS.append(("F1 begin fails open (ignore and run)", [
     ('    __vf_refuse "$(cat "$ev/varfolders-roots.err" 2>/dev/null)"\n    return\n', "    return 0\n"),
     ("""    __vf_refuse "$(grep -m 3 '^ERROR' "$ev/varfolders-before.tsv" 2>/dev/null || cat "$ev/varfolders-before.err")"\n    return\n""",
      "    return 0\n")]))
-BS = "\\"
-UTF_ERR = ('        errors.append("%s' + BS + 't%r' + BS + 'ta name or link target that is not UTF-8 cannot be recorded" '
-           '% (token, rel))\n        return\n')
-TAB_ERR = ('        errors.append("%s' + BS + 't%r' + BS + 'ta tab or newline in the name or link target cannot be recorded" '
-           '% (token, rel))\n        return\n')
-P_SKIP = '        if token == "P":\n            return\n'
-
-
-def indented(block: str) -> str:
-    return "".join("    " + line if line.strip() else line for line in block.splitlines(True))
-
-
 MUTANTS += [
     ("SP1 the parent's entries not walked", [
-        ("            dirs[:] = [d for d in dirs if d not in skip]\n            names = [n for n in names if n not in skip]\n",
+        ("            dirs[:] = [name for name in dirs if name not in skip]\n            names = [name for name in names if name not in skip]\n",
          "            dirs[:] = []\n            names = []\n")]),
     ("SP2 a change beside T/C still COMPLETE", [("if outside:", "if False:")]),
-    ("SP3 the parent's deltas hidden, INCONCLUSIVE kept", [("for r in rows:\n    print(r)\n",
-                                                           'for r in rows:\n    if r.split("\\t")[2] != "P":\n        print(r)\n')]),
+    ("SP3 the parent's deltas hidden, INCONCLUSIVE kept", [("for _token, row in rows:\n    print(row)\n",
+                                                           'for token, row in rows:\n    if token != "P":\n        print(row)\n')]),
     ("SP4 no common-parent check", [('  [ -n "$pp" ] && [ "${pc%/*}" = "$pp" ] \\\n'
                                      '    || { echo "temp root $pt and cache root $pc have no common parent" >&2; return 1; }\n', "")]),
     ("SP5 no parent line", [("  printf 'VARFOLDERS_PARENT\\t%s\\n' \"${rp#P$'\\t'}\"\n", "")]),
-    ("SP6 the census counts T and C again", [('skip = {os.path.basename(r) for t, r in roots if t in ("T", "C")}', "skip = set()")]),
-    ("PS1 a P entry with an unrecordable name silently skipped", [(UTF_ERR, P_SKIP + UTF_ERR), (TAB_ERR, P_SKIP + TAB_ERR)]),
-    ("PS2 a P entry with an unrecordable name normalized and recorded", [
-        (UTF_ERR, '        if token == "P":\n            rel = rel.encode("utf-8", "replace").decode("utf-8")\n        else:\n'
-         + indented(UTF_ERR)),
-        (TAB_ERR, '        if token == "P":\n            rel = rel.replace("' + BS + 't", " ").replace("' + BS + 'n", " ")\n'
-         '        else:\n' + indented(TAB_ERR))]),
+    ("SP6 the census counts T and C again", [
+        ('skip = {os.path.basename(root) for token, root in roots if token in ("T", "C")}', "skip = set()")]),
+    ("PS1 a P entry with arbitrary bytes silently skipped", [
+        ('    rel = os.fsencode(rel)\n',
+         '    rel = os.fsencode(rel)\n    if token == "P" and any(byte < 32 or byte > 126 for byte in rel):\n        return\n')]),
+    ("PS2 a P entry with arbitrary bytes lossily normalized", [
+        ('    rel = os.fsencode(rel)\n',
+         '    rel = os.fsencode(rel)\n    if token == "P":\n        rel = os.fsdecode(rel).encode("utf-8", errors="replace")\n')]),
     ("F2 an evidence dir that cannot be made fails open", [
         ('    || { __vf_refuse "the evidence dir $1 cannot be made"; return; }   # one line only', "    || return 0   # one line only")]),
 ]

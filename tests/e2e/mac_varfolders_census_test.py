@@ -26,9 +26,9 @@ beside T and C):
 - PC4 T and C in two different per-user dirs: begin refuses.
 - PC5 an unreadable sibling directory at begin: begin refuses; one made unreadable by the end: INCONCLUSIVE, no delta.
   As a non-root user.
-- PC7 a name beside T and C that the evidence format cannot hold (a tab, a newline, a byte that is not UTF-8), at the
-  parent's top level or deeper (in 0): present before begin, begin refuses; appearing between begin and end, the end
-  is INCONCLUSIVE with no delta (no COMPLETE and no partial census). SilverRidge 18390ec8.
+- PC7 a name beside T and C containing a tab, newline or non-UTF-8 byte, at the parent's top level or deeper (in 0),
+  is represented losslessly: present before begin it is stable; appearing between begin and end it produces the
+  exact encoded parent-census deltas and the ordinary OUTSIDE verdict. SilverRidge cfccc8e7.
 - PC6 the helper itself changes nothing beside T and C either (the boundary covers the whole fake /var/folders tree).
 
 Run: python3 -X dev tests/e2e/mac_varfolders_census_test.py [helper path]   (zig build test-mac-varfolders-audit)
@@ -72,7 +72,8 @@ def observe(box) -> dict:
 
 
 def head(box) -> list[str]:
-    return [f"VARFOLDERS_ROOTS\tT\t{box.T}\tC\t{box.C}", f"VARFOLDERS_PARENT\t{box.user}"]
+    return [f"VARFOLDERS_ROOTS\tT\t{base.evidence_field(box.T)}\tC\t{base.evidence_field(box.C)}",
+            f"VARFOLDERS_PARENT\t{base.evidence_field(box.user)}"]
 
 
 def verdict(row: str, box, rc: int, out: list[str]) -> tuple[str, list[tuple]] | None:
@@ -87,6 +88,12 @@ def verdict(row: str, box, rc: int, out: list[str]) -> tuple[str, list[tuple]] |
     final, deltas = rest[-1].split("\t"), [tuple(l.split("\t")) for l in rest[:-1]]
     if any(len(d) != 6 or d[0] != "VARFOLDERS-DELTA" or d[2] not in ("C", "P", "T") for d in deltas):
         bad(f"{row}: malformed delta lines {rest[:-1]!r}")
+        return None
+    try:
+        for delta in deltas:
+            base.decode_field(delta[3])
+    except ValueError as error:
+        bad(f"{row}: malformed encoded delta path: {error}: {delta!r}")
         return None
     if final == ["VARFOLDERS", "COMPLETE", str(len(deltas))] and rc == 0 and out[:2] == head(box):
         return ("COMPLETE", deltas) if all(d[2] != "P" for d in deltas) else None
@@ -108,7 +115,7 @@ def exact(row: str, box, change, named: list[tuple], want: str) -> None:
         state["after"] = observe(b)
     rc, out = box.cycle(between)
     deltas = base.want_deltas(state["before"], state["after"])
-    if sorted((d[1], d[2], d[3]) for d in deltas) != sorted(named):
+    if sorted(base.delta_identity(d) for d in deltas) != sorted(named):
         bad(f"{row}: this test's own records missed a change: want {sorted(named)!r}, got {deltas!r}")
         return
     got = verdict(row, box, rc, out)
@@ -205,11 +212,14 @@ def run_rows(helper: Path) -> list[str]:
                         os.close(os.open(os.fsencode(b.user) + b"/" + where + fname, os.O_CREAT | os.O_WRONLY, 0o644))
                     if when == "begin":
                         put(box)
-                        refused(row, box)
+                        rc, out = box.cycle()
+                        if verdict(row, box, rc, out) != ("COMPLETE", []):
+                            bad(f"{row}: pre-existing arbitrary byte name must be stable, got rc={rc} {out!r}")
                     else:
-                        rc, out = box.cycle(put)
-                        if verdict(row, box, rc, out) != ("INCONCLUSIVE", []):
-                            bad(f"{row}: want INCONCLUSIVE with no delta, got rc={rc} {out!r}")
+                        decoded = os.fsdecode(where + fname)
+                        named = [("added", "P", decoded),
+                                 ("changed", "P", os.fsdecode(where[:-1]) if where else ".")]
+                        exact(row, box, put, named, "OUTSIDE")
                 finally:
                     box.close()
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""RED, UNREGISTERED (SilverRidge 6806513a item B).
+"""GREEN, REGISTERED (red 0d028aab; SilverRidge cfccc8e7 item B).
 
 Every path-bearing /var/folders evidence field uses canonical padded URL-safe
 Base64 of its ``os.fsencode`` bytes, prefixed ``b64:``.  The real embedded
@@ -9,11 +9,12 @@ targets containing slashes and control bytes.  Ordering and literal protected
 matching use decoded raw bytes.  Malformed evidence produces one bounded
 INCONCLUSIVE record, no traceback and no partial delta.
 
-This file deliberately stays out of build.zig until the production green.
+This side-effecting oracle is a direct dependency of test-mac-varfolders-audit and the aggregate test.
 Run: python3 -X dev tests/e2e/mac_varfolders_path_codec_test.py [helper]
 """
 from __future__ import annotations
 
+import ast
 import base64
 import binascii
 import contextlib
@@ -384,6 +385,11 @@ def run_rows(helper: Path) -> list[str]:
     diff_source = extract("B0", helper, "__VF_DIFF_PY")
     if snap_source is None or diff_source is None:
         return list(failures)
+    for name, source in (("snapshotter", snap_source), ("differ", diff_source)):
+        try:
+            ast.parse(source, filename=name, mode="exec", feature_version=(3, 9))
+        except SyntaxError as error:
+            bad("B0 Python 3.9", f"embedded {name} is not Python 3.9 syntax: {error}")
 
     public_cycle(helper)
     fixture = Fixture()

@@ -406,8 +406,10 @@ if [ ! -e "$R/tests/mac/mac_varfolders_audit.sh" ]; then
   cat > "$R/tests/mac/mac_varfolders_audit.sh" <<'STUB'
 # STUB of tests/mac/mac_varfolders_audit.sh for tests/mac/ms1c_app_gate_selftest.sh only (its contract, 143a12f6).
 varfolders__py() { /usr/bin/python3 -I -B - "$@" <<'PY'
-import os, sys
+import base64, os, sys
 mode, ev = sys.argv[1], sys.argv[2]
+def field(value):
+    return "b64:" + base64.urlsafe_b64encode(os.fsencode(value)).decode("ascii")
 def snap(root):
     out, bad = [], []
     for d, dirs, files in os.walk(root, onerror=lambda e: bad.append(e.filename)):
@@ -422,7 +424,7 @@ if mode == "begin":
         lines, bad = snap(r)
         open(os.path.join(ev, f"{tok}.before"), "w").write("\n".join(lines + [f"#BAD {b}" for b in bad]) + "\nEND\n")
     sys.exit(0)
-print(f"VARFOLDERS_ROOTS\tT\t{roots[0]}\tC\t{roots[1]}")
+print(f"VARFOLDERS_ROOTS\tT\t{field(roots[0])}\tC\t{field(roots[1])}")
 deltas, why = [], ""
 for tok, r in zip("TC", roots):
     try: before = open(os.path.join(ev, f"{tok}.before")).read().splitlines()
@@ -433,9 +435,9 @@ for tok, r in zip("TC", roots):
     b = {l.split("|", 1)[0]: l.split("|", 1)[1] for l in before[:-1]}
     a = {l.split("|", 1)[0]: l.split("|", 1)[1] for l in after}
     for k in sorted(set(a) | set(b)):
-        if k not in b: deltas.append(f"VARFOLDERS-DELTA\tadded\t{tok}\t{k}\t-\t{a[k]}")
-        elif k not in a: deltas.append(f"VARFOLDERS-DELTA\tremoved\t{tok}\t{k}\t{b[k]}\t-")
-        elif a[k] != b[k]: deltas.append(f"VARFOLDERS-DELTA\tchanged\t{tok}\t{k}\t{b[k]}\t{a[k]}")
+        if k not in b: deltas.append(f"VARFOLDERS-DELTA\tadded\t{tok}\t{field(k)}\t-\t{a[k]}")
+        elif k not in a: deltas.append(f"VARFOLDERS-DELTA\tremoved\t{tok}\t{field(k)}\t{b[k]}\t-")
+        elif a[k] != b[k]: deltas.append(f"VARFOLDERS-DELTA\tchanged\t{tok}\t{field(k)}\t{b[k]}\t{a[k]}")
 if why: print(f"VARFOLDERS\tINCONCLUSIVE\t{why}"); sys.exit(2)
 for d in sorted(deltas): print(d)
 print(f"VARFOLDERS\tCOMPLETE\t{len(deltas)}")
@@ -582,9 +584,10 @@ p7=ok
 for role in intel arm; do
   arch=x86_64; [ $role = arm ] && arch=arm64
   L="$EV/$arch/evidence/leg.log"
-  grep -qxF "VARFOLDERS_ROOTS${TB}T${TB}$X/private/var/folders/$role/T${TB}C${TB}$X/private/var/folders/$role/C" "$L" 2>/dev/null \
+  grep -qxF "VARFOLDERS_ROOTS${TB}T${TB}$(home_field "$X/private/var/folders/$role/T")${TB}C${TB}$(home_field "$X/private/var/folders/$role/C")" "$L" 2>/dev/null \
     || p7="$role: no VARFOLDERS_ROOTS line with both physical roots"
-  grep -qE "^VARFOLDERS-DELTA${TB}added${TB}T${TB}zigBrowser-render.tmp${TB}" "$L" 2>/dev/null || p7="$role: the workload's /var/folders file is not reported"
+  grep -qF "VARFOLDERS-DELTA${TB}added${TB}T${TB}$(home_field zigBrowser-render.tmp)${TB}" "$L" 2>/dev/null \
+    || p7="$role: the workload's /var/folders file is not reported"
   grep -qE "^VARFOLDERS${TB}COMPLETE${TB}[1-9][0-9]*\$" "$L" 2>/dev/null || p7="$role: no VARFOLDERS COMPLETE line"
   [ -f "$X/private/var/folders/$role/T/sentinel" ] && [ -f "$X/private/var/folders/$role/C/sentinel" ] || p7="$role: a sentinel was deleted"
 done

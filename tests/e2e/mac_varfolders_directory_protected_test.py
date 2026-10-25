@@ -59,7 +59,7 @@ def path_for(box: base.Box, pair: tuple[str, str]) -> Path:
 
 
 def marker(side: str, pair: tuple[str, str], reason: str) -> str:
-    return f"SKIPPED-PROTECTED\t{side}\t{pair[0]}\t{pair[1]}\t{reason}"
+    return f"SKIPPED-PROTECTED\t{side}\t{pair[0]}\t{base.evidence_field(pair[1])}\t{reason}"
 
 
 def extract(row: str, box: base.Box, helper: Path, variable: str, name: str) -> Path | None:
@@ -107,11 +107,11 @@ def forced_snapshot(
 error_number, identity_error = int(sys.argv[1]), int(sys.argv[2])
 callback_order, source, roots, output, side, target, trace = sys.argv[3:]
 real_lstat, real_scandir, real_walk = os.lstat, os.scandir, os.walk
-target = os.path.normpath(target)
+target = os.fsencode(os.path.normpath(target))
 parent, basename = os.path.dirname(target), os.path.basename(target)
 counts = {"lstat": 0, "enumerate": 0}
 def same(path, wanted):
-    return os.path.normpath(os.fsdecode(os.fspath(path))) == wanted
+    return os.path.normpath(os.fsencode(os.fspath(path))) == wanted
 def lstat(path, *args, **kwargs):
     if same(path, target):
         counts["lstat"] += 1
@@ -198,7 +198,12 @@ def exact_complete_snapshot(
     for line in lines:
         fields = line.split("\t", 2)
         if len(fields) == 3 and fields[0] in ("C", "P", "T"):
-            ordinary.setdefault((fields[0], fields[1]), []).append(fields[2])
+            try:
+                rel = os.fsdecode(base.decode_field(fields[1]))
+            except ValueError as error:
+                bad(f"{row}: malformed ordinary-row path: {error}: {line!r}")
+                continue
+            ordinary.setdefault((fields[0], rel), []).append(fields[2])
     got_rows = ordinary.get(pair, [])
     if got_rows != [want_record]:
         bad(f"{row}: want one exact ordinary directory row, got {got_rows!r}")
@@ -221,7 +226,8 @@ def exact_incomplete_snapshot(row: str, output: Path, pair: tuple[str, str]) -> 
     lines = output.read_text().splitlines() if output.is_file() else []
     markers = [line for line in lines if line.startswith("SKIPPED-PROTECTED\t")]
     errors = [line for line in lines if line.startswith("ERROR\t")]
-    if markers or len(errors) != 1 or errors[0].split("\t")[:3] != ["ERROR", pair[0], pair[1]]:
+    if markers or len(errors) != 1 \
+            or errors[0].split("\t")[:3] != ["ERROR", pair[0], base.evidence_field(pair[1])]:
         bad(f"{row}: non-exempt failure must have one exact-path ERROR and no marker, got {lines[-4:]!r}")
     if len([line for line in lines if line.startswith("END\t")]) != 1:
         bad(f"{row}: incomplete snapshot must still have one END record, got {lines[-4:]!r}")
@@ -235,12 +241,12 @@ def exact_unavailable_identity(
     counts: tuple[int, int],
 ) -> None:
     lines = output.read_text().splitlines() if output.is_file() else []
-    ordinary = [line for line in lines if line.startswith(f"{pair[0]}\t{pair[1]}\t")]
+    ordinary = [line for line in lines if line.startswith(f"{pair[0]}\t{base.evidence_field(pair[1])}\t")]
     markers = [line for line in lines if line.startswith("SKIPPED-PROTECTED\t")]
     errors = [line for line in lines if line.startswith("ERROR\t")]
     want_marker = marker(side, pair, "EACCES")
     if ordinary or markers != [want_marker] or len(errors) != 1 \
-            or errors[0].split("\t")[:3] != ["ERROR", pair[0], pair[1]]:
+            or errors[0].split("\t")[:3] != ["ERROR", pair[0], base.evidence_field(pair[1])]:
         bad(f"{row}: unavailable lstat identity must be incomplete with one marker/error and no row, got {lines[-5:]!r}")
     if counts != (1, 1):
         bad(f"{row}: wanted one failed lstat after one traversal error, got {counts!r}")
@@ -279,7 +285,8 @@ def run_rows(helper: Path) -> list[str]:
         for pair in PROTECTED:
             path_for(box, pair).mkdir(parents=True, exist_ok=True)
         roots = box.tmp / "roots.tsv"
-        roots.write_text(f"T\t{box.T}\nC\t{box.C}\nP\t{box.user}\n")
+        roots.write_text(f"T\t{base.evidence_field(box.T)}\nC\t{base.evidence_field(box.C)}\n"
+                         f"P\t{base.evidence_field(box.user)}\n")
         snapshotter = extract("A0", box, helper, "__VF_SNAPSHOT_PY", "snapshot.py")
         differ = extract("A0", box, helper, "__VF_DIFF_PY", "diff.py")
         if snapshotter is None or differ is None:

@@ -9,8 +9,8 @@
 #                                    when it is complete, else refuses (fails closed): exit 2 and one line
 #                                    VARFOLDERS<TAB>INCONCLUSIVE<TAB><reason>, and the caller must start nothing
 #   varfolders_end <evidence dir>    re-resolves the roots, takes the after snapshot and prints exactly:
-#     VARFOLDERS_ROOTS<TAB>T<TAB><temp root><TAB>C<TAB><cache root>
-#     VARFOLDERS_PARENT<TAB><their common per-user parent>   (SilverRidge 3661c9b8: its other entries, such as 0 and X,
+#     VARFOLDERS_ROOTS<TAB>T<TAB><encoded temp root><TAB>C<TAB><encoded cache root>
+#     VARFOLDERS_PARENT<TAB><encoded common per-user parent>   (SilverRidge 3661c9b8: its other entries, such as 0 and X,
 #         are a census only, outside the owner's exception; the root token P is that parent without T and C)
 #     SKIPPED-PROTECTED<TAB><BEFORE|AFTER><TAB><C|P><TAB><exact path><TAB><EACCES|EPERM>
 #         once per exact evidence-derived protected path that cannot be enumerated, ordered by token then path bytes;
@@ -30,167 +30,237 @@
 # s c b o; sha256 of a regular file's bytes, else -; a symlink's target, else -; ctime catches every other inode
 # change, such as an extended attribute or a hard link), in path byte order, then END<TAB><path count>. An entry that
 # cannot be read makes the snapshot incomplete except for EACCES/EPERM at the exact six C and nine P protected pairs;
-# any other error or path, or a name/link target that is not UTF-8 or contains a tab/newline, remains incomplete. A
+# any other error or path remains incomplete. Every path-bearing field is ``b64:`` plus canonical padded URL-safe
+# Base64 of the filesystem bytes, including arbitrary control and non-UTF-8 bytes; decoded bytes determine identity,
+# policy and order. A
 # protected pair must be skipped on both sides with the same normalized reason. Nothing here uses a here-document
 # (macOS /bin/bash 3.2 writes each to a temp file in $TMPDIR, by default
 # the audited temp root), and every python3 child runs with TMPDIR set to the evidence dir. /usr/bin/python3 is named
-# explicitly (-I -B -X utf8: no user site, no bytecode written anywhere, UTF-8 whatever the locale).
+# explicitly (-I -B -X utf8: no user site, no bytecode written anywhere, UTF-8 whatever the locale). The embedded
+# sources remain Python 3.9 syntax and the registered codec oracle executes them under Python development warnings.
 
 __VF_SNAPSHOT_PY='
-import errno, hashlib, os, stat, sys
-roots = [l.rstrip("\n").split("\t", 1) for l in open(sys.argv[1], encoding="utf-8") if l.strip()]
+import base64, binascii, errno, hashlib, os, stat, sys
+def evidence_field(value):
+    return "b64:" + base64.urlsafe_b64encode(os.fsencode(value)).decode("ascii")
+def decode_field(field):
+    if not field.startswith("b64:") or not field.isascii():
+        raise ValueError("not a canonical evidence field")
+    raw = base64.b64decode(field[4:].encode("ascii"), altchars=b"-_", validate=True)
+    if evidence_field(raw) != field:
+        raise ValueError("not a canonical evidence field")
+    return raw
+roots, root_errors = [], []
+try:
+    with open(sys.argv[1], encoding="ascii") as source:
+        root_lines = source.read().splitlines()
+    for line in root_lines:
+        token, field = line.split("\t")
+        if token not in ("T", "C", "P"):
+            raise ValueError("invalid root token")
+        roots.append((token, decode_field(field)))
+    if [token for token, _root in roots] != ["T", "C", "P"]:
+        raise ValueError("invalid root set")
+except (OSError, UnicodeError, ValueError, binascii.Error):
+    roots = []
+    root_errors.append("P\t%s\tmalformed roots evidence" % evidence_field(b"."))
 side = sys.argv[3] if len(sys.argv) == 4 else ""
-heads, rows, row_keys, errors, skipped = [], [], set(), [], {}
+heads, rows, row_keys, errors, skipped = [], [], set(), list(root_errors), {}
 PROTECTED = frozenset((
-    ("C", "com.apple.WebKit.GPU.Sandbox"),
-    ("C", "com.apple.WebKit.Networking.Sandbox"),
-    ("C", "com.apple.WebKit.WebContent.Sandbox"),
-    ("C", "com.apple.WorkflowKit.BackgroundShortcutRunner/ShortcutsSandboxCache"),
-    ("C", "com.apple.quicklook.ThumbnailsAgent/com.apple.QuickLook.thumbnailcache"),
-    ("C", "com.apple.siriactionsd/ShortcutsSandboxCache"),
-    ("P", "0/com.apple.LaunchServices.dv"),
-    ("P", "0/com.apple.ScreenTimeAgent/Store"),
-    ("P", "0/com.apple.SharedWebCredentials"),
-    ("P", "0/com.apple.exchangesync"),
-    ("P", "0/com.apple.lockoutagent"),
-    ("P", "0/com.apple.nsurlsessiond"),
-    ("P", "0/com.apple.progressd/ClassKit"),
-    ("P", "0/com.apple.routined/dv"),
-    ("P", "0/dmd"),
+    ("C", b"com.apple.WebKit.GPU.Sandbox"),
+    ("C", b"com.apple.WebKit.Networking.Sandbox"),
+    ("C", b"com.apple.WebKit.WebContent.Sandbox"),
+    ("C", b"com.apple.WorkflowKit.BackgroundShortcutRunner/ShortcutsSandboxCache"),
+    ("C", b"com.apple.quicklook.ThumbnailsAgent/com.apple.QuickLook.thumbnailcache"),
+    ("C", b"com.apple.siriactionsd/ShortcutsSandboxCache"),
+    ("P", b"0/com.apple.LaunchServices.dv"),
+    ("P", b"0/com.apple.ScreenTimeAgent/Store"),
+    ("P", b"0/com.apple.SharedWebCredentials"),
+    ("P", b"0/com.apple.exchangesync"),
+    ("P", b"0/com.apple.lockoutagent"),
+    ("P", b"0/com.apple.nsurlsessiond"),
+    ("P", b"0/com.apple.progressd/ClassKit"),
+    ("P", b"0/com.apple.routined/dv"),
+    ("P", b"0/dmd"),
 ))
 KIND = ((stat.S_ISREG, "f"), (stat.S_ISDIR, "d"), (stat.S_ISLNK, "l"), (stat.S_ISFIFO, "p"), (stat.S_ISSOCK, "s"),
         (stat.S_ISCHR, "c"), (stat.S_ISBLK, "b"))
+def error_row(token, rel, e):
+    errors.append("%s\t%s\t%s" % (token, evidence_field(rel), " ".join((e.strerror or type(e).__name__).split())))
 def unreadable(token, rel, e):
     if side in ("BEFORE", "AFTER") and (token, rel) in PROTECTED and e.errno in (errno.EACCES, errno.EPERM):
         skipped[(token, rel)] = errno.errorcode[e.errno]
         return True
-    else:
-        errors.append("%s\t%s\t%s" % (token, rel, " ".join((e.strerror or type(e).__name__).split())))
-        return False
-def digest(p):
-    fd = os.open(p, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    error_row(token, rel, e)
+    return False
+def digest(path):
+    fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
     h = hashlib.sha256()
-    with os.fdopen(fd, "rb") as f:
-        for chunk in iter(lambda: f.read(1048576), b""):
+    with os.fdopen(fd, "rb") as stream:
+        for chunk in iter(lambda: stream.read(1048576), b""):
             h.update(chunk)
     return h.hexdigest()
-def entry(token, root, p, rel):
-    key = (token, os.fsencode(rel))
+def entry(token, root, path, rel):
+    rel = os.fsencode(rel)
+    key = (token, rel)
     if key in row_keys:
         return
     try:
-        st = os.lstat(p)
-        kind = next((k for test, k in KIND if test(st.st_mode)), "o")
-        link = os.readlink(p) if kind == "l" else "-"
+        st = os.lstat(path)
+        kind = next((name for test, name in KIND if test(st.st_mode)), "o")
+        link = os.readlink(path) if kind == "l" else None
     except OSError as e:
-        errors.append("%s\t%s\t%s" % (token, rel, " ".join((e.strerror or type(e).__name__).split())))
+        error_row(token, rel, e)
         return
     try:
-        sha = digest(p) if kind == "f" else "-"
+        sha = digest(path) if kind == "f" else "-"
     except OSError as e:
         if not unreadable(token, rel, e):
             return
         sha = "-"
-    try:
-        rel.encode("utf-8")
-        link.encode("utf-8")
-    except UnicodeEncodeError:
-        errors.append("%s\t%r\ta name or link target that is not UTF-8 cannot be recorded" % (token, rel))
-        return
-    if any(ch in s for s in (rel, link) for ch in "\t\n"):
-        errors.append("%s\t%r\ta tab or newline in the name or link target cannot be recorded" % (token, rel))
-        return
+    link_field = evidence_field(link) if kind == "l" else "-"
     meta = "%s %o %d %d %d %d %d %d %d %s %s" % (kind, stat.S_IMODE(st.st_mode), st.st_uid, st.st_gid, st.st_nlink,
-                                                st.st_size, st.st_mtime_ns, st.st_ctime_ns, st.st_ino, sha, link)
-    rows.append((token, os.fsencode(rel), "%s\t%s\t%s" % (token, rel, meta)))
+                                                st.st_size, st.st_mtime_ns, st.st_ctime_ns, st.st_ino, sha, link_field)
+    rows.append((token, rel, "%s\t%s\t%s" % (token, evidence_field(rel), meta)))
     row_keys.add(key)
-skip = {os.path.basename(r) for t, r in roots if t in ("T", "C")}  # the census of P leaves T and C to their own
+skip = {os.path.basename(root) for token, root in roots if token in ("T", "C")}
 for token, root in roots:
     def err(e, token=token, root=root):
-        rel = os.path.relpath(e.filename, root) if e.filename else "?"
+        named = os.fsencode(e.filename) if e.filename else b"?"
+        rel = os.path.relpath(named, root)
         if unreadable(token, rel, e):
-            entry(token, root, e.filename, rel)
+            entry(token, root, named, rel)
     try:
         rst = os.lstat(root)
     except OSError as e:
         err(e)
         continue
     if not stat.S_ISDIR(rst.st_mode):
-        errors.append("%s\t.\tthe root is not a directory" % token)
+        errors.append("%s\t%s\tthe root is not a directory" % (token, evidence_field(b".")))
         continue
-    heads.append("ROOT\t%s\t%s\t%d\t%d" % (token, root, rst.st_dev, rst.st_ino))
-    entry(token, root, root, ".")
+    heads.append("ROOT\t%s\t%s\t%d\t%d" % (token, evidence_field(root), rst.st_dev, rst.st_ino))
+    entry(token, root, root, b".")
     for dirpath, dirs, names in os.walk(root, onerror=err, followlinks=False):
         if token == "P" and dirpath == root:
-            dirs[:] = [d for d in dirs if d not in skip]
-            names = [n for n in names if n not in skip]
+            dirs[:] = [name for name in dirs if name not in skip]
+            names = [name for name in names if name not in skip]
         dirs.sort()
-        for n in sorted(dirs + names):
-            p = os.path.join(dirpath, n)
-            entry(token, root, p, os.path.relpath(p, root))
-with open(sys.argv[2], "w", encoding="utf-8") as f:
-    for h in heads:
-        f.write(h + "\n")
-    for _t, _r, line in sorted(rows):
-        f.write(line + "\n")
-    for (token, rel), reason in sorted(skipped.items(), key=lambda item: (item[0][0], os.fsencode(item[0][1]))):
-        f.write("SKIPPED-PROTECTED\t%s\t%s\t%s\t%s\n" % (side, token, rel, reason))
-    for e in errors:
-        f.write("ERROR\t" + e + "\n")
-    f.write("END\t%d\n" % (len(rows) + len(skipped)))
+        for name in sorted(dirs + names):
+            path = os.path.join(dirpath, name)
+            entry(token, root, path, os.path.relpath(path, root))
+with open(sys.argv[2], "w", encoding="ascii") as stream:
+    for head in heads:
+        stream.write(head + "\n")
+    for _token, _rel, line in sorted(rows):
+        stream.write(line + "\n")
+    for (token, rel), reason in sorted(skipped.items()):
+        stream.write("SKIPPED-PROTECTED\t%s\t%s\t%s\t%s\n" % (side, token, evidence_field(rel), reason))
+    for error in errors:
+        stream.write("ERROR\t" + error + "\n")
+    stream.write("END\t%d\n" % (len(rows) + len(skipped)))
 sys.exit(3 if errors else 0)
 '
 
 __VF_DIFF_PY='
-import os, sys
+import base64, binascii, os, sys
 PROTECTED = frozenset((
-    ("C", "com.apple.WebKit.GPU.Sandbox"),
-    ("C", "com.apple.WebKit.Networking.Sandbox"),
-    ("C", "com.apple.WebKit.WebContent.Sandbox"),
-    ("C", "com.apple.WorkflowKit.BackgroundShortcutRunner/ShortcutsSandboxCache"),
-    ("C", "com.apple.quicklook.ThumbnailsAgent/com.apple.QuickLook.thumbnailcache"),
-    ("C", "com.apple.siriactionsd/ShortcutsSandboxCache"),
-    ("P", "0/com.apple.LaunchServices.dv"),
-    ("P", "0/com.apple.ScreenTimeAgent/Store"),
-    ("P", "0/com.apple.SharedWebCredentials"),
-    ("P", "0/com.apple.exchangesync"),
-    ("P", "0/com.apple.lockoutagent"),
-    ("P", "0/com.apple.nsurlsessiond"),
-    ("P", "0/com.apple.progressd/ClassKit"),
-    ("P", "0/com.apple.routined/dv"),
-    ("P", "0/dmd"),
+    ("C", b"com.apple.WebKit.GPU.Sandbox"),
+    ("C", b"com.apple.WebKit.Networking.Sandbox"),
+    ("C", b"com.apple.WebKit.WebContent.Sandbox"),
+    ("C", b"com.apple.WorkflowKit.BackgroundShortcutRunner/ShortcutsSandboxCache"),
+    ("C", b"com.apple.quicklook.ThumbnailsAgent/com.apple.QuickLook.thumbnailcache"),
+    ("C", b"com.apple.siriactionsd/ShortcutsSandboxCache"),
+    ("P", b"0/com.apple.LaunchServices.dv"),
+    ("P", b"0/com.apple.ScreenTimeAgent/Store"),
+    ("P", b"0/com.apple.SharedWebCredentials"),
+    ("P", b"0/com.apple.exchangesync"),
+    ("P", b"0/com.apple.lockoutagent"),
+    ("P", b"0/com.apple.nsurlsessiond"),
+    ("P", b"0/com.apple.progressd/ClassKit"),
+    ("P", b"0/com.apple.routined/dv"),
+    ("P", b"0/dmd"),
 ))
+def evidence_field(value):
+    return "b64:" + base64.urlsafe_b64encode(os.fsencode(value)).decode("ascii")
+def decode_field(field):
+    if not field.startswith("b64:") or not field.isascii():
+        raise ValueError("not a canonical evidence field")
+    raw = base64.b64decode(field[4:].encode("ascii"), altchars=b"-_", validate=True)
+    if evidence_field(raw) != field:
+        raise ValueError("not a canonical evidence field")
+    return raw
 def load(path, side):
     try:
-        lines = open(path, encoding="utf-8").read().splitlines()
+        with open(path, encoding="ascii") as source:
+            lines = source.read().splitlines()
     except (OSError, UnicodeError):
         return None, None, None, "missing"
     if not lines or not lines[-1].startswith("END\t"):
         return None, None, None, "truncated"
-    heads = [l for l in lines[:-1] if l.startswith("ROOT\t")]
-    all_body = [l for l in lines[:-1] if not l.startswith("ROOT\t")]
-    marker_lines = [l for l in all_body if l.startswith("SKIPPED-PROTECTED\t")]
-    body = [l for l in all_body if not l.startswith("SKIPPED-PROTECTED\t")]
-    errs = [l for l in body if l.startswith("ERROR\t")]
-    if errs:
-        return None, None, None, "incomplete: " + "; ".join(errs)
-    out = {}
-    for l in body:
-        token, rel, meta = l.split("\t", 2)
-        out[(token, rel)] = meta
-    markers, seen = [], set()
-    for line in marker_lines:
-        fields = line.split("\t")
-        key = (fields[2], fields[3]) if len(fields) == 5 else None
-        if len(fields) != 5 or fields[1] != side or key not in PROTECTED or fields[4] not in ("EACCES", "EPERM") \
-                or key in seen or key not in out:
-            return None, None, None, "malformed protected-skip record"
-        seen.add(key)
-        markers.append((key[0], key[1], fields[4], line))
-    if markers != sorted(markers, key=lambda item: (item[0], os.fsencode(item[1]))):
-        return None, None, None, "unordered protected-skip records"
-    if len(heads) != 3 or lines[-1] != "END\t%d" % (len(body) + len(markers)):
-        return None, None, None, "truncated"
+    try:
+        heads, index = [], 0
+        while index < len(lines) - 1 and lines[index].startswith("ROOT\t"):
+            fields = lines[index].split("\t")
+            if len(fields) != 5 or fields[1] not in ("T", "C", "P"):
+                raise ValueError("malformed root")
+            heads.append((fields[1], decode_field(fields[2]), int(fields[3]), int(fields[4])))
+            index += 1
+        if [head[0] for head in heads] != ["T", "C", "P"]:
+            raise ValueError("malformed root set")
+        out, row_order, markers, marker_order, seen = {}, [], [], [], set()
+        marker_phase = False
+        errors = []
+        for line in lines[index:-1]:
+            if line.startswith("ERROR\t"):
+                fields = line.split("\t", 3)
+                if len(fields) != 4 or fields[1] not in ("T", "C", "P") or not fields[3]:
+                    raise ValueError("malformed error")
+                decode_field(fields[2])
+                errors.append(line)
+                continue
+            if line.startswith("SKIPPED-PROTECTED\t"):
+                marker_phase = True
+                fields = line.split("\t")
+                if len(fields) != 5 or fields[1] != side or fields[2] not in ("C", "P") \
+                        or fields[4] not in ("EACCES", "EPERM"):
+                    raise ValueError("malformed marker")
+                rel = decode_field(fields[3])
+                key = (fields[2], rel)
+                if key not in PROTECTED or key in seen:
+                    raise ValueError("malformed marker identity")
+                seen.add(key)
+                markers.append((key[0], key[1], fields[4]))
+                marker_order.append(key)
+                continue
+            if marker_phase:
+                raise ValueError("ordinary row after marker")
+            fields = line.split("\t", 2)
+            if len(fields) != 3 or fields[0] not in ("T", "C", "P"):
+                raise ValueError("malformed row")
+            rel = decode_field(fields[1])
+            key = (fields[0], rel)
+            meta = fields[2].split(" ", 10)
+            if len(meta) != 11:
+                raise ValueError("malformed metadata")
+            if meta[0] == "l":
+                decode_field(meta[10])
+            elif meta[10] != "-":
+                raise ValueError("unexpected link target")
+            if key in out:
+                raise ValueError("duplicate row")
+            out[key] = fields[2]
+            row_order.append(key)
+        if errors:
+            return None, None, None, "incomplete: " + "; ".join(errors[:3])
+        if row_order != sorted(row_order, key=lambda key: (key[0], key[1])) \
+                or marker_order != sorted(marker_order, key=lambda key: (key[0], key[1])):
+            raise ValueError("unordered evidence")
+        if any((token, rel) not in out for token, rel, _reason in markers):
+            raise ValueError("marker without row")
+        if lines[-1] != "END\t%d" % (len(out) + len(markers)):
+            raise ValueError("wrong end count")
+    except (ValueError, binascii.Error):
+        return None, None, None, "malformed"
     return heads, out, markers, ""
 hb, before, sb, why_b = load(sys.argv[1], "BEFORE")
 ha, after, sa, why_a = load(sys.argv[2], "AFTER")
@@ -201,27 +271,29 @@ if before is None or after is None:
     inconclusive("before snapshot %s, after snapshot %s" % (why_b or "ok", why_a or "ok"))
 if hb != ha:
     inconclusive("a root changed identity during the run: %s -> %s" % (hb, ha))
-if [(t, p, r) for t, p, r, _line in sb] != [(t, p, r) for t, p, r, _line in sa]:
+if sb != sa:
     inconclusive("the protected-skip set changed during the run")
-for _t, _p, _r, line in sb + sa:
-    print(line)
+for side, markers in (("BEFORE", sb), ("AFTER", sa)):
+    for token, rel, reason in markers:
+        print("SKIPPED-PROTECTED\t%s\t%s\t%s\t%s" % (side, token, evidence_field(rel), reason))
 rows = []
-for key in sorted(set(before) | set(after), key=lambda k: (k[0], os.fsencode(k[1]))):
+for key in sorted(set(before) | set(after), key=lambda item: (item[0], item[1])):
     b, a = before.get(key), after.get(key)
     if b == a:
         continue
     kind = "added" if b is None else "removed" if a is None else "changed"
-    rows.append("VARFOLDERS-DELTA\t%s\t%s\t%s\t%s\t%s" % (kind, key[0], key[1], b or "-", a or "-"))
-for r in rows:
-    print(r)
-outside = sum(1 for r in rows if r.split("\t")[2] == "P")
+    rows.append((key[0], "VARFOLDERS-DELTA\t%s\t%s\t%s\t%s\t%s" %
+                 (kind, key[0], evidence_field(key[1]), b or "-", a or "-")))
+for _token, row in rows:
+    print(row)
+outside = sum(1 for token, _row in rows if token == "P")
 if outside:  # every delta is printed above; a change outside the reviewed T/C roots is never a pass
     inconclusive("%d change(s) outside the reviewed T/C roots, beside them in the per-user parent" % outside)
 print("VARFOLDERS\tCOMPLETE\t%d" % len(rows))
 '
 
-__vf_roots() { # prints "T<TAB><temp>\nC<TAB><cache>\nP<TAB><their parent>" (physical), or a reason on stderr; 1
-  local t c pt pc pp
+__vf_roots() { # $1=evidence dir; prints tokens plus canonical encoded physical paths, or a reason on stderr; 1
+  local ev="${1:?evidence dir}" t c pt pc pp et ec ep
   t=$(getconf DARWIN_USER_TEMP_DIR 2>/dev/null) || { echo "getconf DARWIN_USER_TEMP_DIR failed" >&2; return 1; }
   c=$(getconf DARWIN_USER_CACHE_DIR 2>/dev/null) || { echo "getconf DARWIN_USER_CACHE_DIR failed" >&2; return 1; }
   [ -n "$t" ] && [ -n "$c" ] || { echo "getconf gave an empty root" >&2; return 1; }
@@ -231,12 +303,19 @@ __vf_roots() { # prints "T<TAB><temp>\nC<TAB><cache>\nP<TAB><their parent>" (phy
   pp=${pt%/*}   # the per-user parent: its other entries (0, X, ...) are census-only, outside the exception
   [ -n "$pp" ] && [ "${pc%/*}" = "$pp" ] \
     || { echo "temp root $pt and cache root $pc have no common parent" >&2; return 1; }
-  printf 'T\t%s\nC\t%s\nP\t%s\n' "$pt" "$pc" "$pp"
+  et=$(__vf_field "$ev" "$pt") && ec=$(__vf_field "$ev" "$pc") && ep=$(__vf_field "$ev" "$pp") \
+    || { echo "root path encoding failed" >&2; return 1; }
+  printf 'T\t%s\nC\t%s\nP\t%s\n' "$et" "$ec" "$ep"
 }
 
 __vf_python() { # $1=evidence dir, then the python3 arguments: a child that never writes under the audited roots
   local ev="$1"; shift
   TMPDIR="$ev/" /usr/bin/python3 -I -B -X utf8 "$@"
+}
+
+__vf_field() { # $1=evidence dir, $2=one filesystem path; canonical padded URL-safe Base64 over os.fsencode bytes
+  local ev="$1" value="$2"
+  __vf_python "$ev" -c 'import base64, os, sys; print("b64:" + base64.urlsafe_b64encode(os.fsencode(sys.argv[1])).decode("ascii"))' "$value"
 }
 
 __vf_refuse() { # $1=reason: the one bounded line of a refused begin (fail closed, SilverRidge 3661c9b8)
@@ -250,7 +329,7 @@ varfolders_begin() { # $1=evidence dir; exit 0 with a complete before snapshot, 
   local ev="${1:?evidence dir}"
   mkdir -p -- "$ev" 2>/dev/null && ev=$(cd -- "$ev" 2>/dev/null && pwd -P) \
     || { __vf_refuse "the evidence dir $1 cannot be made"; return; }   # one line only: mkdir's own message is dropped
-  if ! __vf_roots > "$ev/varfolders-roots" 2> "$ev/varfolders-roots.err"; then
+  if ! __vf_roots "$ev" > "$ev/varfolders-roots" 2> "$ev/varfolders-roots.err"; then
     __vf_refuse "$(cat "$ev/varfolders-roots.err" 2>/dev/null)"
     return
   fi
@@ -268,7 +347,7 @@ varfolders_end() { # $1=evidence dir; exit 0 COMPLETE, 2 INCONCLUSIVE
     printf 'VARFOLDERS\tINCONCLUSIVE\tno recorded roots: %s\n' "${why:-the evidence dir or its roots file is missing}"
     return 2
   fi
-  now=$(__vf_roots 2>&1) || { printf 'VARFOLDERS\tINCONCLUSIVE\troots now unusable: %s\n' "${now//$'\t'/ }"; return 2; }
+  now=$(__vf_roots "$ev" 2>&1) || { printf 'VARFOLDERS\tINCONCLUSIVE\troots now unusable: %s\n' "${now//$'\t'/ }"; return 2; }
   if [ "$now" != "$(cat "$ev/varfolders-roots")" ]; then
     printf 'VARFOLDERS\tINCONCLUSIVE\tthe roots changed during the run\n'
     return 2

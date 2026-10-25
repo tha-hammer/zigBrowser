@@ -34,6 +34,10 @@ fi
 ROOT=$(realpath "${1:-.}")
 BASE=$(mktemp -d "${TMPDIR:-/tmp}/zb-callers-selftest-XXXXXX")
 T=$(realpath "$BASE")
+
+vf_field() {
+  /usr/bin/python3 -I -B -c 'import base64,os,sys; print("b64:" + base64.urlsafe_b64encode(os.fsencode(sys.argv[1])).decode("ascii"))' "$1"
+}
 printf 'not a real key\n' > "$T/fake_mac_key"   # tests/mac/mac_config.sh needs a readable regular key file (bd 3ui.13)
 cleanup() {
   case "$T" in "$(realpath "${TMPDIR:-/tmp}")"/zb-callers-selftest-??????) rm -rf "${T:?}" ;; esac
@@ -554,9 +558,12 @@ rm -f -- "${T:?}/rows-home/${RRD:?}/LEAKED"
 # getconf answer and VF5 an unreadable initial tree each make varfolders_begin refuse, and the leg exits 5 at once: its
 # refusal line, zero ROW lines, zero row (browser) invocations and no RUNNING marker.
 rows_leg out "tests/e2e/mac_v_vf_test.py|green|v-vf"
+vf_t=$(vf_field "$T/vf/T"); vf_c=$(vf_field "$T/vf/C")
+vf_dot=$(vf_field .); vf_wrote=$(vf_field zb-row-wrote)
 if [ "$LEG_RC" -eq 0 ] && [ "$(rows_verdict "$out" v_vf)" = MATCH ] \
-   && [ "$(grep -c $'^VARFOLDERS_ROOTS\t' <<<"$out")" -eq 1 ] && grep -qx $'VARFOLDERS_ROOTS\tT\t'"$T/vf/T"$'\tC\t'"$T/vf/C" <<<"$out" \
-   && [ "$(grep $'^VARFOLDERS-DELTA\t' <<<"$out" | cut -f2-4)" = $'changed\tT\t.\nadded\tT\tzb-row-wrote' ] \
+   && [ "$(grep -c $'^VARFOLDERS_ROOTS\t' <<<"$out")" -eq 1 ] \
+   && grep -qx $'VARFOLDERS_ROOTS\tT\t'"$vf_t"$'\tC\t'"$vf_c" <<<"$out" \
+   && [ "$(grep $'^VARFOLDERS-DELTA\t' <<<"$out" | cut -f2-4)" = $'changed\tT\t'"$vf_dot"$'\nadded\tT\t'"$vf_wrote" ] \
    && grep -qx $'VARFOLDERS\tCOMPLETE\t2' <<<"$out" && [ -e "$T/vf/C/keep" ] && [ -e "$T/vf/T/zb-row-wrote" ]; then
   ok "rows VF1: the leg reports the roots and the row's /var/folders write (the temp root and its new file), exit 0, nothing deleted there"
 else

@@ -8,8 +8,9 @@ An accepted observation is deterministic evidence:
 
 Both snapshot sides are printed by varfolders_end. The protected directory's ordinary lstat row remains in the
 snapshot, so metadata changes while its contents stay unreadable remain full deltas. Only EACCES/EPERM at an exact
-pair is exempt; another errno, another token, a parent/child/sibling/suffix/one-character variant, an unrecordable
-descendant name, or any other unreadable path remains INCONCLUSIVE. A readable listed path is audited normally, and a
+pair is exempt; another errno, another token, a parent/child/sibling/suffix/one-character variant, or any other
+unreadable path remains INCONCLUSIVE. Arbitrary descendant name bytes are encoded and audited normally. A readable
+listed path is audited normally, and a
 before/after skip-boundary transition is never COMPLETE.
 
 This file remains absent from build.zig until the green. Run directly from a clean archive as a non-root user.
@@ -71,7 +72,7 @@ def locked(box: base.Box, pair: tuple[str, str]) -> Path:
 
 
 def marker(side: str, pair: tuple[str, str], reason: str) -> str:
-    return f"SKIPPED-PROTECTED\t{side}\t{pair[0]}\t{pair[1]}\t{reason}"
+    return f"SKIPPED-PROTECTED\t{side}\t{pair[0]}\t{base.evidence_field(pair[1])}\t{reason}"
 
 
 def marker_fields(row: str, line: str) -> tuple[str, str, str, str] | None:
@@ -80,7 +81,12 @@ def marker_fields(row: str, line: str) -> tuple[str, str, str, str] | None:
             or fields[2] not in ("C", "P") or not fields[3] or fields[4] not in ("EACCES", "EPERM"):
         bad(f"{row}: malformed protected-skip marker {line!r}")
         return None
-    return fields[1], fields[2], fields[3], fields[4]
+    try:
+        path = os.fsdecode(base.decode_field(fields[3]))
+    except ValueError as error:
+        bad(f"{row}: malformed encoded marker path: {error}: {line!r}")
+        return None
+    return fields[1], fields[2], path, fields[4]
 
 
 def exact_markers(row: str, lines: list[str], side: str, expected: tuple[tuple[str, str], ...] = PROTECTED,
@@ -115,7 +121,12 @@ def exact_snapshot(row: str, box: base.Box, path: Path, side: str,
     for line in lines:
         fields = line.split("\t", 2)
         if len(fields) == 3 and fields[0] in ("C", "P", "T"):
-            ordinary.setdefault((fields[0], fields[1]), []).append(fields[2])
+            try:
+                rel = os.fsdecode(base.decode_field(fields[1]))
+            except ValueError as error:
+                bad(f"{row}: malformed ordinary-row path: {error}: {line!r}")
+                continue
+            ordinary.setdefault((fields[0], rel), []).append(fields[2])
     for pair in expected:
         want = base.record(path_for(box, pair))
         got = ordinary.get(pair, [])
@@ -161,7 +172,8 @@ def forced_snapshot(row: str, box: base.Box, helper: Path, side: str, pair: tupl
     if source is None:
         return None
     roots = box.tmp / "roots"
-    roots.write_text(f"T\t{box.T}\nC\t{box.C}\nP\t{box.user}\n")
+    roots.write_text(f"T\t{base.evidence_field(box.T)}\nC\t{base.evidence_field(box.C)}\n"
+                     f"P\t{base.evidence_field(box.user)}\n")
     output = box.tmp / f"forced-snapshot-{side.lower()}.tsv"
     wrapper = box.tmp / "forced-onerror.py"
     wrapper.write_text("""import os, sys
@@ -249,7 +261,7 @@ def run_rows(helper: Path) -> list[str]:
                 lines = snapshot_rows(output) if output.is_file() else []
                 markers = [line for line in lines if line.startswith("SKIPPED-PROTECTED\t")]
                 errors = [line for line in lines if line.startswith("ERROR\t")]
-                want_error = f"ERROR\t{pair[0]}\t{pair[1]}\t{os.strerror(errno.EIO)}"
+                want_error = f"ERROR\t{pair[0]}\t{base.evidence_field(pair[1])}\t{os.strerror(errno.EIO)}"
                 ends = [line for line in lines if line.startswith("END\t")]
                 if rc != 3 or markers or errors != [want_error] or len(ends) != 1:
                     bad(f"{row} must retain one exact non-exempt ERROR in an incomplete snapshot, got rc={rc} "
@@ -294,11 +306,16 @@ def run_rows(helper: Path) -> list[str]:
 
     for pair in (PROTECTED[0], next(pair for pair in PROTECTED if pair[0] == "P")):
         box = base.Box(helper)
-        try:  # R4b: unrecordable name beneath a readable listed directory stays fail closed.
+        try:  # R4b: arbitrary name bytes beneath a readable listed directory are audited losslessly.
             path = path_for(box, pair)
             path.mkdir(parents=True, exist_ok=True)
             os.close(os.open(os.fsencode(path) + b"/bad\nname", os.O_CREAT | os.O_WRONLY, 0o644))
-            expect_refused(f"R4b unrecordable descendant of {pair!r}", box)
+            rc, out = box.cycle()
+            got = base.parse(f"R4b arbitrary-byte descendant of {pair!r}", rc, out, base.roots_line(box), True)
+            if got != ("COMPLETE", []):
+                bad(f"R4b arbitrary-byte descendant of {pair!r}: want COMPLETE 0, got rc={rc} {out!r}")
+            if any(line.startswith("SKIPPED-PROTECTED\t") for line in out):
+                bad(f"R4b readable arbitrary-byte descendant was incorrectly skipped: {out!r}")
         finally:
             box.close()
 
@@ -321,7 +338,8 @@ def run_rows(helper: Path) -> list[str]:
             if rc != 2 or not out or out[-1].split("\t")[:2] != ["VARFOLDERS", "INCONCLUSIVE"]:
                 bad(f"R5 readable listed P change must be INCONCLUSIVE, got rc={rc} {out!r}")
             for pair in changed:
-                prefix = f"VARFOLDERS-DELTA\tchanged\t{pair[0]}\t{pair[1]}/audited.txt\t"
+                prefix = (f"VARFOLDERS-DELTA\tchanged\t{pair[0]}\t"
+                          f"{base.evidence_field(pair[1] + '/audited.txt')}\t")
                 if not any(line.startswith(prefix) for line in out):
                     bad(f"R5 readable listed path change {pair!r} is absent: {out!r}")
             if any(line.startswith("SKIPPED-PROTECTED\t") for line in out):
@@ -341,7 +359,8 @@ def run_rows(helper: Path) -> list[str]:
                 path.chmod(0o100)  # still cannot be listed, but mode/ctime identity changed
                 after_meta = base.record(path)
                 rc, out = box.call("varfolders_end")
-                delta = f"VARFOLDERS-DELTA\tchanged\t{pair[0]}\t{pair[1]}\t{before_meta}\t{after_meta}"
+                delta = (f"VARFOLDERS-DELTA\tchanged\t{pair[0]}\t{base.evidence_field(pair[1])}\t"
+                         f"{before_meta}\t{after_meta}")
                 if pair[0] == "C":
                     final_ok = rc == 0 and bool(out) and out[-1] == "VARFOLDERS\tCOMPLETE\t1"
                 else:

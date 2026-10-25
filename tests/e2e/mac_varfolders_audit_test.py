@@ -15,8 +15,8 @@ The helper's contract under test (sourced by bash):
                                     all inside <evidence dir>: prints nothing and exits 0 when that snapshot is
                                     complete; otherwise refuses with exit 2 and one INCONCLUSIVE line (V15)
   varfolders_end <evidence dir>     the after snapshot, then exactly these lines and nothing else:
-      VARFOLDERS_ROOTS<TAB>T<TAB><physical temp root><TAB>C<TAB><physical cache root>
-      VARFOLDERS-DELTA<TAB><added|changed|removed><TAB><T|C><TAB><relative path><TAB><before><TAB><after>
+      VARFOLDERS_ROOTS<TAB>T<TAB><encoded physical temp root><TAB>C<TAB><encoded physical cache root>
+      VARFOLDERS-DELTA<TAB><added|changed|removed><TAB><T|C><TAB><encoded relative path><TAB><before><TAB><after>
       VARFOLDERS<TAB>COMPLETE<TAB><delta count>                                    -> exit 0
    or [the VARFOLDERS_ROOTS line] VARFOLDERS<TAB>INCONCLUSIVE<TAB><nonempty reason>, no delta  -> exit 2
   The roots line, when present, is the first line, exactly once, with the roots recorded at begin. Each root itself is
@@ -49,13 +49,14 @@ itself from lstat and the file bytes):
   live: a create and delete by this test while armed must be seen.
 - V10 root identity: between begin and end, the getconf answer changes, the physical temp root is replaced by another
   directory at the same path, or the symlink the temp answer goes through is retargeted: each is INCONCLUSIVE.
-- V11 a name holding a newline or a tab, or a byte that is not UTF-8, cannot be recorded unambiguously: INCONCLUSIVE
-  with no delta. In every INCONCLUSIVE row the reason is nonempty and a roots line, if any, is the recorded one.
+- V11 a name holding a newline or a tab, or a byte that is not UTF-8, is recorded losslessly: a pre-existing name is
+  stable and an introduced name produces its exact canonical encoded delta. In every INCONCLUSIVE row the reason is
+  nonempty and a roots line, if any, is the recorded one.
 - V12 a root-only mode change and a root-only mtime change each give exactly the one delta of that root's `.`.
 - V13 an extended attribute alone, and a hard link made outside the roots, each give exactly the one delta of that
   file (ctime, and nlink, are in its record).
 - V15 fail closed (SilverRidge 3661c9b8): when the roots cannot be resolved (V6) or the initial tree cannot be
-  snapshotted completely (V7, V11), varfolders_begin refuses: exit 2 and exactly one VARFOLDERS<TAB>INCONCLUSIVE<TAB>
+  snapshotted completely (V7), varfolders_begin refuses: exit 2 and exactly one VARFOLDERS<TAB>INCONCLUSIVE<TAB>
   <nonempty reason> line, so a caller never starts a browser without a complete before snapshot.
 - V16 the parent line: exactly one VARFOLDERS_PARENT<TAB><the physical common parent of T and C> after the roots
   line; T and C in two different per-user dirs refuse at begin (V6).
@@ -72,6 +73,8 @@ Run: python3 -X dev tests/e2e/mac_varfolders_audit_test.py [helper path]   (zig 
 """
 from __future__ import annotations
 
+import base64
+import binascii
 import ctypes
 import errno
 import hashlib
@@ -227,12 +230,32 @@ class Box:
         shutil.rmtree(self.tmp)
 
 
+def evidence_field(value) -> str:
+    """The canonical path-bearing field used by the audit wire format."""
+    raw = value if isinstance(value, bytes) else os.fsencode(value)
+    return "b64:" + base64.urlsafe_b64encode(raw).decode("ascii")
+
+
+def decode_field(field: str) -> bytes:
+    """Strictly decode and re-canonicalize one audit path field."""
+    if not field.startswith("b64:"):
+        raise ValueError("missing b64: prefix")
+    try:
+        text = field[4:].encode("ascii")
+        raw = base64.b64decode(text, altchars=b"-_", validate=True)
+    except (UnicodeEncodeError, binascii.Error, ValueError) as error:
+        raise ValueError("invalid URL-safe Base64") from error
+    if evidence_field(raw) != field:
+        raise ValueError("non-canonical URL-safe Base64")
+    return raw
+
+
 def record(p: Path) -> str:
     """This test's own record of one path, in the contract's form."""
     st = os.lstat(p)
     kind = next((k for test, k in KIND if test(st.st_mode)), "o")
     sha = hashlib.sha256(p.read_bytes()).hexdigest() if kind == "f" else "-"
-    link = os.readlink(p) if kind == "l" else "-"
+    link = evidence_field(os.readlink(p)) if kind == "l" else "-"
     return (f"{kind} {stat.S_IMODE(st.st_mode):o} {st.st_uid} {st.st_gid} {st.st_nlink} {st.st_size} {st.st_mtime_ns} "
             f"{st.st_ctime_ns} {st.st_ino} {sha} {link}")
 
@@ -266,7 +289,7 @@ def want_deltas(before: dict, after: dict) -> list[tuple]:
         b, a = before.get(key), after.get(key)
         if b != a:
             rows.append(("VARFOLDERS-DELTA", "added" if b is None else "removed" if a is None else "changed",
-                         key[0], key[1], b or "-", a or "-"))
+                         key[0], evidence_field(key[1]), b or "-", a or "-"))
     return rows
 
 
@@ -291,6 +314,12 @@ def parse(row: str, rc: int, out: list[str], want_head: list[str], required: boo
     deltas = [tuple(l.split("\t")) for l in rest[:-1]]
     if any(len(d) != 6 or d[0] != "VARFOLDERS-DELTA" for d in deltas):
         bad(f"{row} every line between the roots and the final line must be a six-field delta, got {rest[:-1]!r}")
+        return None
+    try:
+        for d in deltas:
+            decode_field(d[3])
+    except ValueError as error:
+        bad(f"{row} malformed encoded delta path: {error}: {d!r}")
         return None
     if final[1] == "COMPLETE":
         if rc != 0 or len(final) != 3 or final[2] != str(len(deltas)):
@@ -325,7 +354,12 @@ def parse(row: str, rc: int, out: list[str], want_head: list[str], required: boo
 
 def roots_line(box: Box) -> list[str]:
     """The exact header: the recorded physical roots, then their common per-user parent."""
-    return [f"VARFOLDERS_ROOTS\tT\t{box.T}\tC\t{box.C}", f"VARFOLDERS_PARENT\t{box.user}"]
+    return [f"VARFOLDERS_ROOTS\tT\t{evidence_field(box.T)}\tC\t{evidence_field(box.C)}",
+            f"VARFOLDERS_PARENT\t{evidence_field(box.user)}"]
+
+
+def delta_identity(delta: tuple) -> tuple[str, str, str]:
+    return delta[1], delta[2], os.fsdecode(decode_field(delta[3]))
 
 
 def inconclusive(row: str, box: Box, rc: int, out: list[str]) -> None:
@@ -344,7 +378,7 @@ def exact_row(row: str, box: Box, change, named: list[tuple]) -> None:
         state["after"] = observe(b)
     rc, out = box.cycle(between)
     exact = want_deltas(state["before"], state["after"])
-    if sorted((d[1], d[2], d[3]) for d in exact) != sorted(named):
+    if sorted(delta_identity(d) for d in exact) != sorted(named):
         bad(f"{row}: this test's own records missed the change: want {sorted(named)!r}, got {exact!r}")
         return
     got = parse(row, rc, out, roots_line(box), True)
@@ -410,7 +444,7 @@ def run_rows(helper: Path) -> list[str]:
             (b.T / "pipe").unlink()  # a FIFO's record (type p) is exact too
             state["after"] = observe(b)
         rc, out = box.cycle(change)
-        paths = sorted((d[1], d[2], d[3]) for d in want_deltas(state["before"], state["after"]))
+        paths = sorted(delta_identity(d) for d in want_deltas(state["before"], state["after"]))
         named = sorted([("added", "T", "new.txt"), ("added", "T", "d"), ("added", "T", "d/e"),
                         ("added", "T", "d/e/f.bin"), ("changed", "C", "cache.db"),
                         ("added", "C", "com.apple.WebKit.Networking"), ("added", "C", ".DS_Store"),
@@ -505,10 +539,21 @@ def run_rows(helper: Path) -> list[str]:
 
     for name, fname in (("newline", b"a\nb"), ("tab", b"a\tb"), ("non-UTF-8 byte", b"a\xff")):
         box = Box(helper)
-        try:  # V11
+        try:  # V11: a pre-existing arbitrary byte name remains unambiguous and stable.
             os.close(os.open(os.fsencode(box.C) + b"/" + fname, os.O_CREAT | os.O_WRONLY, 0o644))
-            rc, out = box.refused(f"V11 a name with a {name}:")
-            inconclusive(f"V11 a name with a {name}:", box, rc, out)
+            rc, out = box.cycle()
+            got = parse(f"V11 pre-existing name with a {name}", rc, out, roots_line(box), True)
+            if got != ("COMPLETE", []):
+                bad(f"V11 pre-existing name with a {name}: want COMPLETE 0, got rc={rc} {out!r}")
+        finally:
+            box.close()
+        box = Box(helper)
+        try:  # V11: a newly introduced arbitrary byte name has one exact encoded delta plus its root delta.
+            weird = os.fsdecode(fname)
+            def add_weird(b, fname=fname):
+                os.close(os.open(os.fsencode(b.C) + b"/" + fname, os.O_CREAT | os.O_WRONLY, 0o644))
+            exact_row(f"V11 introduced name with a {name}", box, add_weird,
+                      [("added", "C", weird), ("changed", "C", ".")])
         finally:
             box.close()
 
@@ -554,7 +599,7 @@ def run_rows(helper: Path) -> list[str]:
         named = sorted([("added", "P", "0/new.db"), ("changed", "P", "0"), ("changed", "P", "X/x.bin"),
                         ("added", "P", "Z"), ("added", "P", "Z/z"), ("changed", "P", "."),
                         ("added", "T", "t.txt"), ("changed", "T", ".")])
-        if sorted((d[1], d[2], d[3]) for d in exact) != named:
+        if sorted(delta_identity(d) for d in exact) != named:
             bad(f"V17 this test's own records missed a change: want {named!r}, got {exact!r}")
         got = parse("V17", rc, out, roots_line(box), True)
         if got is not None and got != ("OUTSIDE", exact):

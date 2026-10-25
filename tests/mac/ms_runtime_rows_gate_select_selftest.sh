@@ -38,6 +38,10 @@ fi
 ROOT=$(realpath "${1:-.}")
 BASE=$(mktemp -d "${TMPDIR:-/tmp}/zb-select-selftest-XXXXXX")
 T=$(realpath "$BASE")
+
+vf_field() {
+  /usr/bin/python3 -I -B -c 'import base64,os,sys; print("b64:" + base64.urlsafe_b64encode(os.fsencode(sys.argv[1])).decode("ascii"))' "$1"
+}
 cleanup() {
   case "$T" in "$(realpath "${TMPDIR:-/tmp}")"/zb-select-selftest-??????) chmod -R u+rwx "${T:?}" 2>/dev/null; rm -rf "${T:?}" ;; esac
 }
@@ -293,7 +297,7 @@ awk '{print} /^  \[ "\$pt" != "\$pc" \]/{print "  : > \"$pt/zb-helper-wrote\""}'
 grep -q zb-helper-wrote "$LH/$RRD/tests/mac/mac_varfolders_audit.sh" || bad "L6: could not build the writing helper"
 leg_marked "tests/e2e/mac_v_red_ok_test.py|red|v-red"
 cp "$T/vf-helper.real" "$LH/$RRD/tests/mac/mac_varfolders_audit.sh"; rm -f -- "$T/vf/T/zb-helper-wrote"
-if grep -q $'^SELFAUDIT\t[a-z-]*\tVARFOLDERS-DELTA\t[a-z]*\tT\tzb-helper-wrote\t' <<<"$LOUT"; then no_start L6 "a helper that writes under T"
+if grep -q $'^SELFAUDIT\t[a-z-]*\tVARFOLDERS-DELTA\t[a-z]*\tT\t'"$(vf_field zb-helper-wrote)"$'\t' <<<"$LOUT"; then no_start L6 "a helper that writes under T"
 else bad "L6: the self-audit did not show the helper's own write: rc=$LRC $(grep -E '^SELFAUDIT' <<<"$LOUT" | tail -3 | tr '\n' ' ')"; fi
 
 if [ "$fails" -eq 0 ]; then printf 'PASS\tms-runtime-rows-select-selftest\n'; exit 0; fi
