@@ -164,6 +164,7 @@ def run_snapshot(
     side: str,
     denied: bytes | None,
     error_number: int = errno.EACCES,
+    roots_file: Path | None = None,
 ) -> int:
     old_argv, real_scandir = sys.argv, os.scandir
     stdout, stderr = io.StringIO(), io.StringIO()
@@ -176,7 +177,7 @@ def run_snapshot(
     rc = 0
     try:
         os.scandir = scandir
-        sys.argv = ["snapshot", str(fixture.roots), str(output), side]
+        sys.argv = ["snapshot", str(roots_file or fixture.roots), str(output), side]
         with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
             try:
                 exec(compile(source, "__VF_SNAPSHOT_PY", "exec"), {"__name__": "__main__"})
@@ -400,6 +401,32 @@ def run_rows(helper: Path) -> list[str]:
         if sorted(raw_pair) == sorted(raw_pair, key=encode):
             bad("setup", "delta names do not invert raw-byte and encoded-text ordering")
 
+        # The snapshotter has its own decoder. A decoder-equivalent roots field with a wrong prefix must fail closed
+        # before it accepts any root, ordinary row, protected marker or partial evidence.
+        bad_roots = fixture.tmp / "roots-wrong-prefix.tsv"
+        bad_root_lines = fixture.roots.read_text(encoding="ascii").splitlines()
+        root_fields = bad_root_lines[0].split("\t")
+        if len(root_fields) != 2 or not root_fields[1].startswith("b64:"):
+            bad("B7 snapshot roots", f"fixture has no canonical first root: {bad_root_lines[:1]!r}")
+        else:
+            root_fields[1] = "bad:" + root_fields[1][4:]
+            bad_root_lines[0] = "\t".join(root_fields)
+            bad_roots.write_text("\n".join(bad_root_lines) + "\n", encoding="ascii")
+            refused = fixture.tmp / "wrong-prefix-refused.tsv"
+            refused_rc = run_snapshot(
+                "B7 snapshot roots", snap_source, fixture, refused, "BEFORE", fixture.protected,
+                roots_file=bad_roots,
+            )
+            refused_lines = refused.read_text(encoding="ascii").splitlines() if refused.is_file() else []
+            want_refused = [
+                f"ERROR\tP\t{encode(b'.')}\tmalformed roots evidence",
+                "END\t0",
+            ]
+            if refused_rc != 3 or refused_lines != want_refused \
+                    or sum(len(line) + 1 for line in refused_lines) > 500:
+                bad("B7 snapshot roots", "wrong-prefix roots field must produce one bounded refusal and END 0, "
+                    f"with no accepted evidence; got rc={refused_rc} {refused_lines!r}")
+
         before, same = fixture.tmp / "before.tsv", fixture.tmp / "same.tsv"
         before_rc = run_snapshot("B2 BEFORE", snap_source, fixture, before, "BEFORE", fixture.protected)
         same_rc = run_snapshot("B2 AFTER", snap_source, fixture, same, "AFTER", fixture.protected)
@@ -490,7 +517,7 @@ def main(argv: list[str]) -> int:
     if problems:
         print(f"FAIL\tmac-varfolders-path-codec\t{len(problems)} problem(s)")
         return 1
-    print("PASS\tmac-varfolders-path-codec\tB1-B6")
+    print("PASS\tmac-varfolders-path-codec\tB1-B7")
     return 0
 
 
