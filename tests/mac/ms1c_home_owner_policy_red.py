@@ -26,6 +26,7 @@ from __future__ import annotations
 import base64
 import binascii
 import hashlib
+import json
 import os
 from pathlib import Path
 import shutil
@@ -178,10 +179,40 @@ def snapshot_bytes(
     return ("\n".join(out) + "\n").encode("ascii")
 
 
-def report_row(name: bytes, digest: str, kind: str, pid: int, proc_path: bytes) -> str:
-    return "CRASHREPORT\t%s\t%s\t%s\t%s\t%s" % (
+def report_row(
+    name: bytes,
+    digest: str,
+    kind: str,
+    pid: int,
+    proc_path: bytes,
+    reason: Optional[str] = None,
+) -> str:
+    report = "CRASHREPORT\t%s\t%s\t%s\t%s\t%s" % (
         field(name), digest, kind, pid if pid >= 0 else "-", field(proc_path) if proc_path else "-"
     )
+    if kind in ("MALFORMED", "UNREADABLE") or (kind == "UNVERIFIED" and pid < 0):
+        return report
+    if reason is None:
+        reason = {
+            "CONTROL": "exact-control",
+            "PRODUCT": "structured-product",
+            "OTHER": "unrelated-process",
+            "UNVERIFIED": "process-evidence-incomplete",
+        }[kind]
+    details = json.dumps(
+        ["Library not loaded: @executable_path/../Frameworks/libwkwebview_shim.dylib"],
+        separators=(",", ":"),
+    ).encode("utf-8")
+    reasons = json.dumps([], separators=(",", ":")).encode("utf-8")
+    incident = "CRASHINCIDENT\t%s\t%s\t%s\t%s\t1\t%s\t%s\t%s" % (
+        field(name), field(b"EXC_CRASH"), field(b"SIGABRT"), field(b"DYLD"),
+        field(b"Library missing"), field(details), field(reasons),
+    )
+    attribution = "CRASHATTRIBUTION\t%s\t%s\t%s" % (field(name), kind, reason)
+    rows = [report, incident, attribution]
+    if kind == "PRODUCT":
+        rows.append("PRODUCT-FAIL\tcrash-report\t%s" % field(name))
+    return "\n".join(rows)
 
 
 def derive_deltas(root: bytes, before: Mapping[bytes, str], after: Mapping[bytes, str]) -> List[str]:
@@ -409,14 +440,15 @@ def retained_pair(arch: str) -> Tuple[bytes, Dict[bytes, str], Dict[bytes, str],
     control_sha = ("55a497f17d8b40ce501ac2465fa3c60b490a48aa196bf4a56936a8e1a726126d"
                    if arch == "x86_64" else "5c28369e19a58b4f2d4dc40a90f0f98fead2a3a9ecbf0b915ff51436270bf0ec")
     control_path = b"/private/run/control/zigBrowser.app/Contents/MacOS/zigBrowser"
-    reports = [report_row(control_name, control_sha, "CONTROL", 9006, control_path)]
+    reports = [report_row(control_name, control_sha, "CONTROL", 9006, control_path, "exact-control")]
     crash_kinds = {control_name: "CONTROL"}
     if arch == "arm64":
         product_name = b"zigBrowser-2026-10-24-160541.ips"
         reports.append(report_row(product_name,
                                   "ed0266139ae1ac83416e7d2ee54a7ed817ffeb2dc4008fc8ba4d3575b8c72e13",
                                   "PRODUCT", 9005,
-                                  b"/private/run/app/zigBrowser.app/Contents/MacOS/zigBrowser"))
+                                  b"/private/run/app/zigBrowser.app/Contents/MacOS/zigBrowser",
+                                  "launched-product"))
         crash_kinds[product_name] = "PRODUCT"
     return root, before, after, crash_kinds, reports
 
@@ -673,21 +705,21 @@ def main() -> int:
         before, after = base_rows(), base_rows()
         before[DIAG], after[DIAG] = diag_meta_before, diag_meta_after
         after[DIAG + b"/" + control] = file_meta(control, b"after", control_sha)
-        reports = [report_row(control, control_sha, "CONTROL", 7006, ctl_path)]
+        reports = [report_row(control, control_sha, "CONTROL", 7006, ctl_path, "exact-control")]
         check_complete(differ, "C5-one-control-is-ambient", before, after, reports, {control: "CONTROL"})
 
         before, after = base_rows(), base_rows()
         before[DIAG], after[DIAG] = diag_meta_before, diag_meta_after
         after[DIAG + b"/" + product] = file_meta(product, b"after", product_sha)
-        reports = [report_row(product, product_sha, "PRODUCT", 7005, app_path)]
+        reports = [report_row(product, product_sha, "PRODUCT", 7005, app_path, "structured-product")]
         check_complete(differ, "C5-product-only-fails", before, after, reports, {product: "PRODUCT"})
 
         before, after = base_rows(), base_rows()
         before[DIAG], after[DIAG] = diag_meta_before, diag_meta_after
         after[DIAG + b"/" + control] = file_meta(control, b"after", control_sha)
         after[DIAG + b"/" + product] = file_meta(product, b"after", product_sha)
-        reports = [report_row(control, control_sha, "CONTROL", 7006, ctl_path),
-                   report_row(product, product_sha, "PRODUCT", 7005, app_path)]
+        reports = [report_row(control, control_sha, "CONTROL", 7006, ctl_path, "exact-control"),
+                   report_row(product, product_sha, "PRODUCT", 7005, app_path, "structured-product")]
         check_complete(differ, "C5-control-plus-delayed-product-fails-once", before, after, reports,
                        {control: "CONTROL", product: "PRODUCT"})
 
@@ -697,8 +729,8 @@ def main() -> int:
         before[DIAG], after[DIAG] = diag_meta_before, diag_meta_after
         after[DIAG + b"/" + control] = file_meta(control, b"after", control_sha)
         after[DIAG + b"/" + second] = file_meta(second, b"after", second_sha)
-        reports = [report_row(control, control_sha, "CONTROL", 7006, ctl_path),
-                   report_row(second, second_sha, "PRODUCT", 7006, ctl_path)]
+        reports = [report_row(control, control_sha, "CONTROL", 7006, ctl_path, "exact-control"),
+                   report_row(second, second_sha, "PRODUCT", 7006, ctl_path, "control-slot-consumed")]
         check_complete(differ, "C5-second-control-is-product", before, after, reports,
                        {control: "CONTROL", second: "PRODUCT"})
 
@@ -707,7 +739,10 @@ def main() -> int:
         before, after = base_rows(), base_rows()
         before[DIAG], after[DIAG] = diag_meta_before, diag_meta_after
         after[DIAG + b"/" + other] = file_meta(other, b"after", other_sha)
-        reports = [report_row(other, other_sha, "OTHER", 7999, b"/Applications/Other.app/Contents/MacOS/Other")]
+        reports = [report_row(
+            other, other_sha, "OTHER", 7999, b"/Applications/Other.app/Contents/MacOS/Other",
+            "unrelated-process",
+        )]
         check_complete(differ, "C5-noncontrol-report-is-policy-failure", before, after, reports, {other: "OTHER"})
 
         for kind in ("CHANGED", "DELETED"):
@@ -729,7 +764,9 @@ def main() -> int:
             row = report_row(b"unverified.ips", "5" * 64 if d_kind != "UNREADABLE" else "-",
                              d_kind, -1, b"")
             check_inconclusive(differ, "C5-%s-attribution" % d_kind.lower(), before, after, [row])
-        mismatch = report_row(b"unverified.ips", "6" * 64, "CONTROL", 7006, ctl_path)
+        mismatch = report_row(
+            b"unverified.ips", "6" * 64, "CONTROL", 7006, ctl_path, "exact-control",
+        )
         check_inconclusive(differ, "C5-control-digest-disagreement", before, after, [mismatch])
 
         # C6: retain codec, protected-marker and incomplete-snapshot fail-closed contracts.

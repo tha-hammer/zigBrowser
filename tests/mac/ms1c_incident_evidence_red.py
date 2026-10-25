@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""RED, UNREGISTERED: retain bounded typed crash fields and attribution reasons.
+"""GREEN, REGISTERED: retain bounded typed crash fields and attribution reasons.
 
 The consumed arm64 run named and hashed a report but retained no report body.
 Its pid, status, diagnostic and Apple-redacted path match the missing-dylib

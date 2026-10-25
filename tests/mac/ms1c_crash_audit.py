@@ -26,6 +26,11 @@ STATUS_POLICY = {
 SHIM_REF = "@executable_path/../Frameworks/libwkwebview_shim.dylib"
 APPLE_REDACTED_CONTROL_PATH = "/Users/USER/*/zigBrowser.app/Contents/MacOS/zigBrowser"
 APPLE_REDACTED_CONTROL_TAIL = ("zigBrowser.app", "Contents", "MacOS", "zigBrowser")
+INCIDENT_TEXT_MAX = 96
+INCIDENT_LIST_MAX = 8
+INCIDENT_ELEMENT_MAX = 256
+INCIDENT_LIST_JSON_MAX = 512
+INCIDENT_LISTS_JSON_MAX = 800
 
 
 def field(value: Union[str, bytes]) -> str:
@@ -253,11 +258,48 @@ def parse_incident(raw: bytes) -> tuple[dict, dict]:
             or not isinstance(termination.get("namespace"), str)
             or not isinstance(termination.get("indicator"), str)):
         raise ValueError("incident has a missing or mistyped field")
-    if termination["namespace"] == "DYLD":
-        details = termination.get("details")
-        if not isinstance(details, list) or any(not isinstance(item, str) for item in details):
-            raise ValueError("DYLD incident details are mistyped")
+    typed = (exception["type"], exception["signal"], termination["namespace"], termination["indicator"])
+    try:
+        if any(len(item.encode("utf-8")) > INCIDENT_TEXT_MAX for item in typed):
+            raise ValueError("incident typed field is too large")
+    except UnicodeError as error:
+        raise ValueError("incident typed field is not encodable") from error
+    code = termination.get("code")
+    if ("code" in termination
+            and (isinstance(code, bool) or not isinstance(code, int) or abs(code) > 2147483647)):
+        raise ValueError("incident termination code is mistyped or too large")
+    encoded_lists = []
+    for key in ("details", "reasons"):
+        values = termination.get(key, [])
+        if (not isinstance(values, list) or len(values) > INCIDENT_LIST_MAX
+                or any(not isinstance(item, str) for item in values)):
+            raise ValueError(f"incident {key} are mistyped")
+        try:
+            if any(len(item.encode("utf-8")) > INCIDENT_ELEMENT_MAX for item in values):
+                raise ValueError(f"incident {key} element is too large")
+            encoded = json.dumps(values, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        except UnicodeError as error:
+            raise ValueError(f"incident {key} are not encodable") from error
+        if len(encoded) > INCIDENT_LIST_JSON_MAX:
+            raise ValueError(f"incident {key} are too large")
+        encoded_lists.append(encoded)
+    if sum(map(len, encoded_lists)) > INCIDENT_LISTS_JSON_MAX:
+        raise ValueError("incident lists are too large")
+    if termination["namespace"] == "DYLD" and not (termination.get("details") or termination.get("reasons")):
+        raise ValueError("DYLD incident evidence is missing")
     return metadata, incident
+
+
+def incident_record(name: bytes, incident: dict) -> str:
+    exception, termination = incident["exception"], incident["termination"]
+    details_json = json.dumps(termination.get("details", []), ensure_ascii=False, separators=(",", ":"))
+    reasons_json = json.dumps(termination.get("reasons", []), ensure_ascii=False, separators=(",", ":"))
+    return "\t".join((
+        "CRASHINCIDENT", field(name), field(exception["type"]), field(exception["signal"]),
+        field(termination["namespace"]),
+        "-" if "code" not in termination else str(termination["code"]),
+        field(termination["indicator"]), field(details_json), field(reasons_json),
+    ))
 
 
 def observed_control_diagnostic(path: Path, control_exe: str) -> bool:
@@ -273,11 +315,14 @@ def observed_control_diagnostic(path: Path, control_exe: str) -> bool:
 
 def missing_shim_incident(incident: dict) -> bool:
     exception, termination = incident["exception"], incident["termination"]
-    details = termination.get("details", [])
+    missing = f"Library not loaded: {SHIM_REF}"
+    legacy = missing in termination.get("details", [])
+    macos15 = termination.get("code") == 1 and missing in termination.get("reasons", [])
     return (exception.get("type") == "EXC_CRASH"
+            and exception.get("signal") == "SIGABRT"
             and termination.get("namespace") == "DYLD"
             and termination.get("indicator") == "Library missing"
-            and any(SHIM_REF in item for item in details))
+            and (legacy or macos15))
 
 
 def structured_zigbrowser(metadata: dict, incident: dict) -> bool:
@@ -359,6 +404,8 @@ def report_records(args: argparse.Namespace) -> int:
     for name, _rel, path in new_entries:
         digest = "-"
         kind, pid, proc_path = "UNREADABLE", "-", "-"
+        retained_incident = None
+        attribution_reason = None
         try:
             fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
             try:
@@ -400,25 +447,51 @@ def report_records(args: argparse.Namespace) -> int:
                     inconclusive = True
                     print(f"CRASHREPORT\t{field(name)}\t{digest}\t{kind}\t{pid}\t{proc_path}")
                     continue
+                retained_incident = incident_record(name, incident)
                 if table_error is not None:
                     kind = "UNVERIFIED"
+                    attribution_reason = "process-evidence-incomplete"
                     inconclusive = True
                 else:
                     assert control is not None
-                    exact_control = (pid == control[1]
-                                     and control_proc_path_matches(proc_path, control[3])
-                                     and control[2] == -6
-                                     and missing_shim_incident(incident) and control_ok)
+                    pid_ok = pid == control[1]
+                    path_ok = control_proc_path_matches(proc_path, control[3])
+                    status_ok = control[2] == -6
+                    incident_ok = missing_shim_incident(incident)
+                    exact_control = pid_ok and path_ok and status_ok and incident_ok and control_ok
                     if exact_control and not exact_control_used:
                         kind = "CONTROL"
+                        attribution_reason = "exact-control"
                         exact_control_used = True
+                    elif exact_control:
+                        kind = "PRODUCT"
+                        attribution_reason = "control-slot-consumed"
+                        product = True
+                    elif pid_ok:
+                        kind = "PRODUCT"
+                        product = True
+                        if not status_ok:
+                            attribution_reason = "control-status-mismatch"
+                        elif not path_ok:
+                            attribution_reason = "control-path-mismatch"
+                        elif not incident_ok:
+                            attribution_reason = "control-incident-mismatch"
+                        else:
+                            attribution_reason = "control-diagnostic-mismatch"
                     elif (pid, proc_path) in launched or structured_zigbrowser(metadata, incident):
                         kind = "PRODUCT"
+                        attribution_reason = ("launched-product" if (pid, proc_path) in launched
+                                              else "structured-product")
                         product = True
                     else:
                         kind = "OTHER"
+                        attribution_reason = "unrelated-process"
         encoded_path = field(proc_path) if proc_path != "-" else "-"
         print(f"CRASHREPORT\t{field(name)}\t{digest}\t{kind}\t{pid}\t{encoded_path}")
+        if retained_incident is not None:
+            print(retained_incident)
+        if attribution_reason is not None:
+            print(f"CRASHATTRIBUTION\t{field(name)}\t{kind}\t{attribution_reason}")
         if kind == "PRODUCT":
             print(f"PRODUCT-FAIL\tcrash-report\t{field(name)}")
 

@@ -177,9 +177,9 @@ def diagnostic(executable: str = CONTROL_EXE, library: str = SHIM) -> str:
     )
 
 
-def expected_lines(reports: list[tuple[str, bytes, str]]) -> list[str]:
+def expected_lines(reports: list[tuple[str, bytes, str, str]]) -> list[str]:
     lines: list[str] = []
-    for name, raw, kind in sorted(reports):
+    for name, raw, kind, reason in sorted(reports):
         text = raw.decode("utf-8")
         decoder = json.JSONDecoder()
         _metadata, end = decoder.raw_decode(text)
@@ -192,6 +192,17 @@ def expected_lines(reports: list[tuple[str, bytes, str]]) -> list[str]:
             f"CRASHREPORT\t{field(name)}\t{hashlib.sha256(raw).hexdigest()}\t"
             f"{kind}\t{pid}\t{field(proc_path)}"
         )
+        exception = incident["exception"]
+        termination = incident["termination"]
+        details = json.dumps(termination.get("details", []), ensure_ascii=False, separators=(",", ":"))
+        reasons = json.dumps(termination.get("reasons", []), ensure_ascii=False, separators=(",", ":"))
+        code = str(termination["code"]) if "code" in termination else "-"
+        lines.append(
+            f"CRASHINCIDENT\t{field(name)}\t{field(exception['type'])}\t"
+            f"{field(exception['signal'])}\t{field(termination['namespace'])}\t{code}\t"
+            f"{field(termination['indicator'])}\t{field(details)}\t{field(reasons)}"
+        )
+        lines.append(f"CRASHATTRIBUTION\t{field(name)}\t{kind}\t{reason}")
         if kind == "PRODUCT":
             lines.append(f"PRODUCT-FAIL\tcrash-report\t{field(name)}")
     return lines
@@ -199,7 +210,7 @@ def expected_lines(reports: list[tuple[str, bytes, str]]) -> list[str]:
 
 def run_case(
     label: str,
-    reports: list[tuple[str, bytes, str]],
+    reports: list[tuple[str, bytes, str, str]],
     expected_rc: int,
     *,
     rows: tuple[tuple[str, int, int, str], ...] = ROWS,
@@ -209,7 +220,7 @@ def run_case(
         tmp = Path(tmp_text)
         diag = tmp / "home" / "Library" / "Logs" / "DiagnosticReports"
         diag.mkdir(parents=True)
-        for name, raw, _kind in reports:
+        for name, raw, _kind, _reason in reports:
             (diag / name).write_bytes(raw)
 
         ledger = tmp / "browser-processes"
@@ -258,7 +269,8 @@ def run_case(
         actual = completed.stdout.splitlines()
         expected = expected_lines(reports)
         expected_ignore = [
-            field(f"Library/Logs/DiagnosticReports/{name}") for name, _raw, _kind in sorted(reports)
+            field(f"Library/Logs/DiagnosticReports/{name}")
+            for name, _raw, _kind, _reason in sorted(reports)
         ]
         try:
             actual_ignore = ignore.read_text(encoding="ascii").splitlines()
@@ -281,8 +293,12 @@ def main() -> int:
 
     exact = report_bytes(proc_path=CONTROL_EXE)
     redacted = report_bytes()
-    run_case("C0-exact-control", [(RETAINED_NAME, exact, "CONTROL")], 0)
-    run_case("C1-canonical-redacted-control", [(RETAINED_NAME, redacted, "CONTROL")], 0)
+    run_case("C0-exact-control", [(RETAINED_NAME, exact, "CONTROL", "exact-control")], 0)
+    run_case(
+        "C1-canonical-redacted-control",
+        [(RETAINED_NAME, redacted, "CONTROL", "exact-control")],
+        0,
+    )
 
     near_paths = {
         "C2-redaction-without-suffix": "/Users/USER/*",
@@ -294,34 +310,43 @@ def main() -> int:
         "C2-wrong-executable-suffix": "/Users/USER/*/zigBrowser.app/Contents/MacOS/Other",
     }
     for label, path in near_paths.items():
-        run_case(label, [(RETAINED_NAME, report_bytes(proc_path=path), "PRODUCT")], 2)
+        run_case(
+            label,
+            [(RETAINED_NAME, report_bytes(proc_path=path), "PRODUCT", "control-path-mismatch")],
+            2,
+        )
 
     run_case(
         "C3-product-pid",
-        [(RETAINED_NAME, report_bytes(pid=62284), "PRODUCT")],
+        [(RETAINED_NAME, report_bytes(pid=62284), "PRODUCT", "structured-product")],
         2,
     )
     run_case(
         "C3-control-pid-product-path",
-        [(RETAINED_NAME, report_bytes(proc_path=PRODUCT_EXE), "PRODUCT")],
+        [(RETAINED_NAME, report_bytes(proc_path=PRODUCT_EXE), "PRODUCT", "control-path-mismatch")],
         2,
     )
     wrong_status = ROWS[:-1] + (("control", RETAINED_PID, -5, CONTROL_EXE),)
     run_case(
         "C3-wrong-control-status",
-        [(RETAINED_NAME, redacted, "PRODUCT")],
+        [(RETAINED_NAME, redacted, "PRODUCT", "control-status-mismatch")],
         2,
         rows=wrong_status,
     )
     run_case(
         "C3-wrong-diagnostic-executable",
-        [(RETAINED_NAME, redacted, "PRODUCT")],
+        [(RETAINED_NAME, redacted, "PRODUCT", "control-diagnostic-mismatch")],
         2,
         diag_text=diagnostic(PRODUCT_EXE),
     )
     run_case(
         "C3-other-DYLD-library",
-        [(RETAINED_NAME, report_bytes(detail="Library not loaded: @rpath/libother.dylib"), "PRODUCT")],
+        [(
+            RETAINED_NAME,
+            report_bytes(detail="Library not loaded: @rpath/libother.dylib"),
+            "PRODUCT",
+            "control-incident-mismatch",
+        )],
         2,
     )
     run_case(
@@ -330,6 +355,7 @@ def main() -> int:
             RETAINED_NAME,
             report_bytes(namespace="SIGNAL", indicator="Abort trap: 6", detail="signal 6"),
             "PRODUCT",
+            "control-incident-mismatch",
         )],
         2,
     )
@@ -339,6 +365,7 @@ def main() -> int:
             RETAINED_NAME,
             report_bytes(pid=70001, proc_path="/Applications/Other.app/Contents/MacOS/Other", proc_name="Other"),
             "PRODUCT",
+            "structured-product",
         )],
         2,
     )
@@ -346,26 +373,26 @@ def main() -> int:
     run_case(
         "C4-second-redacted-control",
         [
-            ("zigBrowser-control-a.ips", redacted, "CONTROL"),
-            ("zigBrowser-control-b.ips", redacted, "PRODUCT"),
+            ("zigBrowser-control-a.ips", redacted, "CONTROL", "exact-control"),
+            ("zigBrowser-control-b.ips", redacted, "PRODUCT", "control-slot-consumed"),
         ],
         2,
     )
     run_case(
         "C5-missing-control-process",
-        [(RETAINED_NAME, redacted, "UNVERIFIED")],
+        [(RETAINED_NAME, redacted, "UNVERIFIED", "process-evidence-incomplete")],
         3,
         rows=ROWS[:-1],
     )
     run_case(
         "C5-absent-process-table",
-        [(RETAINED_NAME, redacted, "UNVERIFIED")],
+        [(RETAINED_NAME, redacted, "UNVERIFIED", "process-evidence-incomplete")],
         3,
         rows=(),
     )
     run_case(
         "C5-conflicting-control-process",
-        [(RETAINED_NAME, redacted, "UNVERIFIED")],
+        [(RETAINED_NAME, redacted, "UNVERIFIED", "process-evidence-incomplete")],
         3,
         rows=ROWS + (("control", RETAINED_PID, -6, CONTROL_EXE),),
     )

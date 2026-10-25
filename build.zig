@@ -4433,6 +4433,26 @@ pub fn build(b: *std.Build) void {
         "tests/mac/known_hosts",                   "tests/fixtures/app/index.html",      "packaging/macos/Info.plist",
         "packaging/macos/entitlements.plist",      "packaging/assets/zigBrowser.png",
     }) |input| mac_ms1c_crash_attribution.addFileInput(b.path(input));
+    // The final crash scan retains a bounded typed incident and its exact attribution reason. Missing-shim CONTROL
+    // accepts only the exact legacy details item or macOS 15 reasons item with code 1; both gate legs copy each ordered
+    // CONTROL/PRODUCT sequence into crash.delta, leg.log and crashreports.
+    const mac_ms1c_incident_evidence = b.addSystemCommand(&.{
+        "python3", "-X", "dev", "-W", "error", "-B", "tests/mac/ms1c_incident_evidence_red.py",
+    });
+    mac_ms1c_incident_evidence.has_side_effects = true;
+    for ([_][]const u8{
+        "tests/mac/ms1c_incident_evidence_red.py", "tests/mac/ms1c_crash_attribution_red.py",
+        "tests/mac/ms1c_crash_audit.py",           "tests/mac/ms1c_app_gate.sh",
+        "tests/mac/ms1c_app_gate_selftest.sh",     "tests/e2e/mac_term_teardown.py",
+        "tests/e2e/m9_render_test.py",             "tests/e2e/m9_reply_channel_test.py",
+        "tests/e2e/m9_load_fail_test.py",          "tests/mac/exec_arch_probe.py",
+        "tests/mac/ms1c_home_protected_paths.txt", "tests/mac/mac_varfolders_audit.sh",
+        "packaging/macos/build-dmg.sh",            "tests/mac/build-on-mac.sh",
+        "tests/mac/mac_gate_lib.sh",               "tests/mac/mac_config.sh",
+        "tests/mac/known_hosts",                   "tests/fixtures/app/index.html",
+        "packaging/macos/Info.plist",              "packaging/macos/entitlements.plist",
+        "packaging/assets/zigBrowser.png",
+    }) |input| mac_ms1c_incident_evidence.addFileInput(b.path(input));
     // The one macOS 15 privacy-redacted control procPath is accepted only inside the complete pid/status/DYLD/diagnostic proof.
     const mac_ms1c_control_redacted = b.addSystemCommand(&.{
         "python3", "-X", "dev", "-W", "error", "-B", "tests/mac/ms1c_control_redacted_path_red.py",
@@ -4493,6 +4513,7 @@ pub fn build(b: *std.Build) void {
     mac_ms1c_gate_step.dependOn(&mac_ms1c_exec_arch_socket.step);
     mac_ms1c_gate_step.dependOn(&mac_ms1c_term_eperm.step);
     mac_ms1c_gate_step.dependOn(&mac_ms1c_crash_attribution.step);
+    mac_ms1c_gate_step.dependOn(&mac_ms1c_incident_evidence.step);
     mac_ms1c_gate_step.dependOn(&mac_ms1c_control_redacted.step);
     mac_ms1c_gate_step.dependOn(&mac_ms1c_process_ledger.step);
     mac_ms1c_gate_step.dependOn(&mac_ms1c_process_status.step);
@@ -4505,6 +4526,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&mac_ms1c_exec_arch_socket.step);
     test_step.dependOn(&mac_ms1c_term_eperm.step);
     test_step.dependOn(&mac_ms1c_crash_attribution.step);
+    test_step.dependOn(&mac_ms1c_incident_evidence.step);
     test_step.dependOn(&mac_ms1c_control_redacted.step);
     test_step.dependOn(&mac_ms1c_process_ledger.step);
     test_step.dependOn(&mac_ms1c_process_status.step);

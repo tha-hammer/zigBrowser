@@ -346,7 +346,7 @@ sys.exit(3 if errors else 0)
 # exact Saved Application State subtree, or a crash report other than one D-attributed missing-dylib control is
 # attributable and FAIL/2. Incomplete, contradictory or unverifiable evidence is INCONCLUSIVE/3 with no partial delta.
 HOME_DIFF_PY='
-import base64, binascii, os, sys
+import base64, binascii, json, os, sys
 before, after, root, diag, _control, protected_file = sys.argv[1:7]
 crash_file = sys.argv[7] if len(sys.argv) > 7 else None
 root_raw, diag_raw = os.fsencode(root), os.fsencode(diag)
@@ -444,30 +444,61 @@ except (OSError, UnicodeError):
 reports, report_order, product_fail_names = {}, [], set()
 crash_invalid = False
 hex_digits = set("0123456789abcdef")
-for line in crash_lines:
-    fields = line.split("\t")
-    if fields[:2] == ["PRODUCT-FAIL", "crash-report"]:
-        if len(fields) != 3:
-            crash_invalid = True
-            continue
-        try:
-            product_fail_names.add(decode_field(fields[2]))
-        except (ValueError, binascii.Error):
-            crash_invalid = True
+reason_kind = {
+    "exact-control": "CONTROL",
+    "control-slot-consumed": "PRODUCT",
+    "control-status-mismatch": "PRODUCT",
+    "control-path-mismatch": "PRODUCT",
+    "control-incident-mismatch": "PRODUCT",
+    "control-diagnostic-mismatch": "PRODUCT",
+    "launched-product": "PRODUCT",
+    "structured-product": "PRODUCT",
+    "unrelated-process": "OTHER",
+    "process-evidence-incomplete": "UNVERIFIED",
+}
+def typed_text(field):
+    raw = decode_field(field)
+    raw.decode("utf-8", "strict")
+    if len(raw) > 96:
+        raise ValueError("typed incident field is too large")
+    return raw
+def typed_list(field):
+    raw = decode_field(field)
+    if len(raw) > 512:
+        raise ValueError("typed incident list is too large")
+    value = json.loads(raw.decode("utf-8", "strict"))
+    if (not isinstance(value, list) or len(value) > 8
+            or any(not isinstance(item, str) for item in value)
+            or any(len(item.encode("utf-8")) > 256 for item in value)):
+        raise ValueError("typed incident list is invalid")
+    canonical = json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    if canonical != raw:
+        raise ValueError("typed incident list is not canonical")
+    return raw
+i = 0
+while i < len(crash_lines):
+    line = crash_lines[i]
+    if len(line.encode("ascii")) > 2048:
+        crash_invalid = True
+        i += 1
         continue
+    fields = line.split("\t")
     if len(fields) != 6 or fields[0] != "CRASHREPORT":
         crash_invalid = True
+        i += 1
         continue
     try:
         name = decode_field(fields[1])
     except (ValueError, binascii.Error):
         crash_invalid = True
+        i += 1
         continue
     digest, report_kind, pid_field, path_field = fields[2:]
     if (not name or os.path.basename(name) != name or not name.endswith(b".ips")
             or name in reports or report_kind not in ("CONTROL", "PRODUCT", "OTHER", "MALFORMED", "UNREADABLE", "UNVERIFIED")
             or (digest != "-" and (len(digest) != 64 or any(c not in hex_digits for c in digest)))):
         crash_invalid = True
+        i += 1
         continue
     if report_kind in ("CONTROL", "PRODUCT", "OTHER"):
         try:
@@ -475,13 +506,16 @@ for line in crash_lines:
             proc_path = decode_field(path_field)
         except (ValueError, binascii.Error):
             crash_invalid = True
+            i += 1
             continue
         if pid <= 1 or not proc_path.startswith(b"/") or digest == "-":
             crash_invalid = True
+            i += 1
             continue
     elif report_kind in ("MALFORMED", "UNREADABLE"):
         if pid_field != "-" or path_field != "-":
             crash_invalid = True
+            i += 1
             continue
     else:
         if (pid_field == "-") != (path_field == "-"):
@@ -493,13 +527,66 @@ for line in crash_lines:
                     raise ValueError
             except (ValueError, binascii.Error):
                 crash_invalid = True
+                i += 1
                 continue
     reports[name] = (report_kind, digest)
     report_order.append(name)
+    has_incident = (report_kind in ("CONTROL", "PRODUCT", "OTHER")
+                    or (report_kind == "UNVERIFIED" and pid_field != "-"))
+    i += 1
+    if not has_incident:
+        continue
+    if i + 1 >= len(crash_lines):
+        crash_invalid = True
+        continue
+    incident_fields = crash_lines[i].split("\t")
+    attribution_fields = crash_lines[i + 1].split("\t")
+    try:
+        if (len(crash_lines[i].encode("ascii")) > 2048 or len(incident_fields) != 9
+                or incident_fields[0] != "CRASHINCIDENT" or decode_field(incident_fields[1]) != name):
+            raise ValueError("invalid incident record")
+        for encoded in incident_fields[2:5] + incident_fields[6:7]:
+            typed_text(encoded)
+        code = incident_fields[5]
+        if code != "-":
+            parsed_code = int(code)
+            if str(parsed_code) != code or abs(parsed_code) > 2147483647:
+                raise ValueError("invalid incident code")
+        details_raw = typed_list(incident_fields[7])
+        reasons_raw = typed_list(incident_fields[8])
+        if len(details_raw) + len(reasons_raw) > 800:
+            raise ValueError("typed incident lists are too large")
+        if (len(crash_lines[i + 1].encode("ascii")) > 2048 or len(attribution_fields) != 4
+                or attribution_fields[0] != "CRASHATTRIBUTION"
+                or decode_field(attribution_fields[1]) != name
+                or attribution_fields[2] != report_kind
+                or reason_kind.get(attribution_fields[3]) != report_kind):
+            raise ValueError("invalid attribution record")
+    except (ValueError, UnicodeError, binascii.Error, json.JSONDecodeError):
+        crash_invalid = True
+        i += 2
+        continue
+    i += 2
+    if report_kind == "PRODUCT":
+        if i >= len(crash_lines):
+            crash_invalid = True
+            continue
+        product_fields = crash_lines[i].split("\t")
+        try:
+            if (len(crash_lines[i].encode("ascii")) > 2048
+                    or len(product_fields) != 3 or product_fields[:2] != ["PRODUCT-FAIL", "crash-report"]
+                    or decode_field(product_fields[2]) != name):
+                raise ValueError("invalid product failure record")
+        except (ValueError, UnicodeError, binascii.Error):
+            crash_invalid = True
+            i += 1
+            continue
+        product_fail_names.add(name)
+        i += 1
 if report_order != sorted(report_order) or len([1 for kind, _digest in reports.values() if kind == "CONTROL"]) > 1:
     crash_invalid = True
 product_names = {name for name, (kind, _digest) in reports.items() if kind == "PRODUCT"}
-if product_fail_names and product_fail_names != product_names:
+if product_fail_names != product_names:
     crash_invalid = True
 if crash_invalid:
     print("HOMEAUDIT\tINCONCLUSIVE\tthe crash-report attribution is invalid")
@@ -645,7 +732,8 @@ after() { # the after snapshots and every delta
     --control-err "$EV/control.err" --ignore-out "$EV/crash.ignore" > "$EV/crash.delta" 2>&1
   crash_st=$?
   tee -a "$EV/leg.log" < "$EV/crash.delta"
-  grep "^CRASHREPORT${T}" "$EV/crash.delta" > "$EV/crashreports"
+  grep -E "^(CRASHREPORT|CRASHINCIDENT|CRASHATTRIBUTION)${T}|^PRODUCT-FAIL${T}crash-report${T}" \
+    "$EV/crash.delta" > "$EV/crashreports"
   /usr/bin/python3 -I -B -X utf8 -c "$HOME_DIFF_PY" "$EV/home.before" "$EV/home.after" "$REAL_HOME" \
     Library/Logs/DiagnosticReports "$CTL_EXE" "$RD/tests/mac/ms1c_home_protected_paths.txt" \
     "$EV/crash.delta" > "$EV/home.delta" 2>&1
