@@ -7,7 +7,9 @@ retain exactly one complete ordinary row (SHA/link ``-``), as well as exactly
 one side-tagged SKIPPED-PROTECTED marker.  This drives both callback orders:
 the traversal callback can arrive before an ordinary row exists, or after the
 parent enumeration already recorded it.  Stable pairs are accepted; reason or
-marker-presence transitions remain INCONCLUSIVE.  Broad paths and other errno
+marker-presence transitions remain INCONCLUSIVE.  If that exact follow-up
+lstat is also denied with EACCES/EPERM, the marker remains complete evidence
+without an invented ordinary identity or ERROR.  Broad paths and other errno
 remain incomplete.
 
 This oracle is a side-effecting direct dependency of test-mac-varfolders-audit and the aggregate test.
@@ -245,13 +247,18 @@ def exact_unavailable_identity(
     markers = [line for line in lines if line.startswith("SKIPPED-PROTECTED\t")]
     errors = [line for line in lines if line.startswith("ERROR\t")]
     want_marker = marker(side, pair, "EACCES")
-    if ordinary or markers != [want_marker] or len(errors) != 1 \
-            or errors[0].split("\t")[:3] != ["ERROR", pair[0], base.evidence_field(pair[1])]:
-        bad(f"{row}: unavailable lstat identity must be incomplete with one marker/error and no row, got {lines[-5:]!r}")
+    if ordinary or markers != [want_marker] or errors:
+        bad(f"{row}: approved unavailable lstat identity must retain one marker, no ERROR and no row, "
+            f"got {lines[-5:]!r}")
     if counts != (1, 1):
         bad(f"{row}: wanted one failed lstat after one traversal error, got {counts!r}")
-    if len([line for line in lines if line.startswith("END\t")]) != 1:
-        bad(f"{row}: unavailable-identity snapshot must retain one END record, got {lines[-4:]!r}")
+    ordinary_count = sum(
+        1 for line in lines
+        if len(line.split("\t", 2)) == 3 and line.split("\t", 2)[0] in ("C", "P", "T")
+    )
+    want_end = f"END\t{ordinary_count + 1}"
+    if lines[-1:] != [want_end] or [line for line in lines if line.startswith("END\t")] != [want_end]:
+        bad(f"{row}: marker-only snapshot must retain one exact {want_end!r}, got {lines[-4:]!r}")
 
 
 def run_diff(row: str, differ: Path, before: Path, after: Path) -> tuple[int, list[str]]:
@@ -361,15 +368,15 @@ def run_rows(helper: Path) -> list[str]:
                     if counts[1] != 1:
                         bad(f"{row}: the negative control did not drive one enumeration error: {counts!r}")
 
-        # A5: even an exact protected traversal error cannot excuse an unavailable lstat identity.
+        # A5: a second approved denial retains the marker without inventing an unavailable identity.
         for pair in (PROTECTED[0], next(item for item in PROTECTED if item[0] == "P")):
             for side in ("BEFORE", "AFTER"):
                 row = f"A5 unavailable identity {pair!r} {side}"
                 rc, output, counts = forced_snapshot(
                     row, box, snapshotter, roots, pair, side, errno.EACCES, "missing", errno.EACCES,
                 )
-                if rc != 3:
-                    bad(f"{row}: unavailable identity must make the snapshot incomplete, got rc={rc}")
+                if rc != 0:
+                    bad(f"{row}: approved unavailable identity must remain complete, got rc={rc}")
                 exact_unavailable_identity(row, output, pair, side, counts)
     finally:
         box.close()

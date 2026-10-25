@@ -14,7 +14,7 @@
 #         are a census only, outside the owner's exception; the root token P is that parent without T and C)
 #     SKIPPED-PROTECTED<TAB><BEFORE|AFTER><TAB><C|P><TAB><exact path><TAB><EACCES|EPERM>
 #         once per exact evidence-derived protected path that cannot be enumerated, ordered by token then path bytes;
-#         the path's available lstat identity remains in the snapshot
+#         the path's lstat identity remains when available; an approved lstat denial leaves only the marker
 #     VARFOLDERS-DELTA<TAB><added|changed|removed><TAB><C|P|T><TAB><path><TAB><before><TAB><after>
 #         one per changed path (each root itself is the path .), ordered by root token then path bytes; <before> is -
 #         for an added path and <after> is - for a removed one
@@ -110,6 +110,8 @@ def entry(token, root, path, rel):
         kind = next((name for test, name in KIND if test(st.st_mode)), "o")
         link = os.readlink(path) if kind == "l" else None
     except OSError as e:
+        if key in skipped and e.errno in (errno.EACCES, errno.EPERM):
+            return
         error_row(token, rel, e)
         return
     try:
@@ -255,8 +257,6 @@ def load(path, side):
         if row_order != sorted(row_order, key=lambda key: (key[0], key[1])) \
                 or marker_order != sorted(marker_order, key=lambda key: (key[0], key[1])):
             raise ValueError("unordered evidence")
-        if any((token, rel) not in out for token, rel, _reason in markers):
-            raise ValueError("marker without row")
         if lines[-1] != "END\t%d" % (len(out) + len(markers)):
             raise ValueError("wrong end count")
     except (ValueError, binascii.Error):
@@ -273,6 +273,9 @@ if hb != ha:
     inconclusive("a root changed identity during the run: %s -> %s" % (hb, ha))
 if sb != sa:
     inconclusive("the protected-skip set changed during the run")
+common_markers = set(sb).intersection(sa)
+if any(((token, rel) in before) != ((token, rel) in after) for token, rel, _reason in common_markers):
+    inconclusive("a protected path changed identity availability during the run")
 for side, markers in (("BEFORE", sb), ("AFTER", sa)):
     for token, rel, reason in markers:
         print("SKIPPED-PROTECTED\t%s\t%s\t%s\t%s" % (side, token, evidence_field(rel), reason))

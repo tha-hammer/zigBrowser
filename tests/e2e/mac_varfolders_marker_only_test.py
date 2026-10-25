@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""RED, UNREGISTERED (SilverRidge fac0064b item 1).
+"""Registered marker-only protected-directory oracle (SilverRidge 1589fb56).
 
 The released Intel evidence showed an exact reviewed C/P directory for which
 both enumeration and the follow-up lstat failed with EACCES/EPERM.  Such an
@@ -10,8 +10,8 @@ transitions remain INCONCLUSIVE.  The existing lstat-success case still keeps
 one complete directory row plus its marker.  Literal-policy and evidence-codec
 boundaries remain fail closed.
 
-This file must remain absent from build.zig until the production green.
-Run: python3 -X dev tests/e2e/mac_varfolders_marker_only_test.py [helper]
+Run: zig build test-mac-varfolders-audit
+Direct: python3 -X dev -W error tests/e2e/mac_varfolders_marker_only_test.py [helper]
 """
 from __future__ import annotations
 
