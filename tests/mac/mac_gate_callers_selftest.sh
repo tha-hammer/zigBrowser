@@ -28,7 +28,8 @@
 # Run: bash tests/mac/mac_gate_callers_selftest.sh [repo root]   (step: zig build test-mac-build-script)
 set -uo pipefail
 if [ "${ZB_CALLERS_SELFTEST_INNER:-}" != 1 ]; then
-  ZB_CALLERS_SELFTEST_INNER=1 exec unshare --user --map-current-user --net bash "$(realpath "$0")" "$@"
+  ZB_CALLERS_SELFTEST_INNER=1 exec unshare --user --map-root-user --net \
+    bash -c 'ip link set lo up && exec bash "$@"' _ "$(realpath "$0")" "$@"
 fi
 ROOT=$(realpath "${1:-.}")
 BASE=$(mktemp -d "${TMPDIR:-/tmp}/zb-callers-selftest-XXXXXX")
@@ -389,7 +390,14 @@ check_caller build-dmg   packaging/macos/build-dmg.sh  '^==> Done: '            
 # whose per-user roots are directories under $T/vf (rows VF below).
 rows_leg() { # rows_leg <out var> <rows...>: run the extracted leg in $T/rows-home/$RRD; sets LEG_RC
   local -n _o=$1; shift
-  _o=$(cd / && env -i PATH="$T/rows-bin:/usr/bin:/bin" HOME="$T/rows-home" bash "$T/rows-leg.sh" "$RRD" "$@" 2>&1)
+  if [ "${ROWS_LEG_UNPRIVILEGED:-0}" = 1 ]; then
+    # The private netns is owned by this selftest's root-mapped user namespace. Remap that same underlying user to
+    # uid 1000 for permission checks so namespace root cannot make an unreadable-path assertion vacuous.
+    _o=$(cd / && unshare --user --map-user=1000 --map-group=1000 \
+      env -i PATH="$T/rows-bin:/usr/bin:/bin" HOME="$T/rows-home" bash "$T/rows-leg.sh" "$RRD" "$@" 2>&1)
+  else
+    _o=$(cd / && env -i PATH="$T/rows-bin:/usr/bin:/bin" HOME="$T/rows-home" bash "$T/rows-leg.sh" "$RRD" "$@" 2>&1)
+  fi
   LEG_RC=$?
 }
 rows_root() { # rows_root <run dir name>: a fake run root holding the exact helper the leg sources
@@ -573,7 +581,7 @@ rows_leg out "tests/e2e/mac_v_red_ok_test.py|red|v-red"
 rm -f -- "${T:?}/vf/empty"
 refused_leg VF4 "an empty getconf answer"
 : > "$T/rows-calls"; : > "$T/vf/unreadable"
-rows_leg out "tests/e2e/mac_v_red_ok_test.py|red|v-red"
+ROWS_LEG_UNPRIVILEGED=1 rows_leg out "tests/e2e/mac_v_red_ok_test.py|red|v-red"
 rm -f -- "$T/vf/unreadable"
 refused_leg VF5 "an unreadable initial tree"
 rows_leg out "tests/e2e/mac_v_leak_test.py|red|v-red"
@@ -635,7 +643,7 @@ done
 # loopback up. This selftest is already re-executing in its own private network namespace; creating a nested network
 # namespace is both redundant and unavailable on kernels that forbid nesting an additional user namespace.
 if shape=$(cd "$ROOT/tests/e2e" && env -i PATH=/usr/bin:/bin HOME="$T/home" \
-    bash -c 'ip link set lo up && python3 -B mac_red_shape_selftest.py' 2>&1) \
+    python3 -B mac_red_shape_selftest.py 2>&1) \
   && grep -q $'^PASS\tmac-red-shape-selftest\t' <<<"$shape"; then
   ok "rows: $(grep $'^PASS\t' <<<"$shape" | tr '\t' ' ')"
 else
