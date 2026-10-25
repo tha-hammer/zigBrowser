@@ -446,6 +446,9 @@ def main() -> int:
     ], 0)
 
     acquired_noncontrols = [
+        ("wrong-exception-type", report_bytes(exception_type="EXC_BREAKPOINT",
+                                              details=real_shape_details,
+                                              reasons=real_shape_reasons)),
         ("wrong-code", report_bytes(code=2, details=real_shape_details,
                                     reasons=real_shape_reasons)),
         ("missing-code", report_bytes(code=MISSING, details=real_shape_details,
@@ -467,6 +470,9 @@ def main() -> int:
             reasons=[f"prefix Library not loaded: {SHIM} suffix"] + real_shape_reasons[1:],
         )),
         ("metadata-only", report_bytes(details=real_shape_details, reasons=[])),
+        ("legacy-details-substring", report_bytes(
+            details=[f"prefix Library not loaded: {SHIM} suffix"], reasons=[]
+        )),
     ]
     for label, raw in acquired_noncontrols:
         run_valid_case(label, [
