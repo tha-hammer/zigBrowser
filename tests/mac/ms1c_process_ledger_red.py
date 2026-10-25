@@ -37,10 +37,11 @@ class FakeProc:
         self.stdout = io.StringIO()
         self.stderr = io.StringIO()
         self._natural = natural
-        if argv and argv[0] == "/bin/sh":
+        if argv and argv[-1].endswith("/run.sh"):
             work = Path(argv[-1]).parent
             (work / "pid.txt").write_text(f"{pid}\n", encoding="ascii")
-            (work / "stdout.txt").write_text("\n".join(stdout_lines) + "\n", encoding="utf-8")
+            poison = f"PROCESS\tforged\t{pid + 90000}\t0\t/child/stdout/zigBrowser"
+            (work / "stdout.txt").write_text("\n".join([*stdout_lines, poison]) + "\n", encoding="utf-8")
             (work / "stderr.txt").write_text("", encoding="utf-8")
 
     def poll(self) -> int | None:
@@ -68,6 +69,9 @@ def main() -> int:
     browser.chmod(0o700)
     uri = "file:///private/ms1c-fixture.html"
     os.environ["ZB_PROCESS_LEDGER"] = str(ledger)
+    os.environ["ZB_GATE_RECONSTRUCTED_PID"] = "99991"
+    os.environ["ZB_GATE_RECONSTRUCTED_STATUS"] = "0"
+    os.environ["ZB_GATE_RECONSTRUCTED_EXE"] = "/gate/reconstructed/zigBrowser"
 
     specs = [
         (7101, 130, False, ["TITLE\tMS1c", f"NAV\t{uri}\tMS1c"]),
@@ -112,7 +116,9 @@ def main() -> int:
         problems.append(f"render screenshot helper returned {screenshot.returncode}, want 0")
 
     os.environ["ZB_PROCESS_ROW"] = "reply"
+    os.environ["ZB_M9_GUI_RUNNER"] = "launchctl-asuser"
     ok, _code = reply.run_case(browser, dict(os.environ), uri, 0.2, lambda *_args: True, "reply")
+    os.environ.pop("ZB_M9_GUI_RUNNER", None)
     if not ok:
         problems.append("reply helper did not reach its real condition/TERM boundary")
 
@@ -125,8 +131,8 @@ def main() -> int:
     if len(launched) != 4:
         problems.append(f"observed {len(launched)} launches, want render=2 reply=1 loadfail=1")
     gui_argv0 = [proc.args[0] for proc in launched if proc.pid in (7101, 7103, 7104)]
-    if gui_argv0 != ["/bin/sh", "/bin/sh", "/bin/sh"]:
-        problems.append(f"fixture did not exercise the shell-exec launch shape: {gui_argv0!r}")
+    if gui_argv0 != ["/bin/sh", "/bin/launchctl", "/bin/sh"]:
+        problems.append(f"fixture did not exercise shell/launchctl wrapper shapes: {gui_argv0!r}")
 
     expected = [
         f"render\t7101\t130\t{browser}",
@@ -139,6 +145,8 @@ def main() -> int:
         problems.append(f"ledger mismatch: got {actual!r}, want {expected!r}")
     if any("/bin/sh" in line for line in actual):
         problems.append("the wrapper executable, not the requested browser, entered the ledger")
+    if any("/bin/launchctl" in line or "/child/stdout/" in line or "/gate/reconstructed/" in line for line in actual):
+        problems.append("launcher/stdout/gate reconstruction entered the gate-owned ledger")
 
     if problems:
         for problem in problems:
