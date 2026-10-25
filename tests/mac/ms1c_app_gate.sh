@@ -341,14 +341,14 @@ with open(out, "w", encoding="utf-8") as f:
     f.write("END\t%d\n" % len(rows))
 sys.exit(3 if errors else 0)
 '
-# The home delta: added, changed or deleted entries, each a HOME-DELTA line. The only allowed change (owner decision
-# 2026-10-23) is a new regular file directly in ~/Library/Logs/DiagnosticReports whose bytes name the control's exe
-# (a CRASHREPORT line with its recorded sha256), with that folder changing only its nlink, size and times. Exit 0 clean,
-# 2 for any other delta, 3 when either snapshot is incomplete (HOMEAUDIT INCONCLUSIVE, no delta judged).
+# The complete home delta under the 2026-10-24 owner policy. Every added, changed or deleted entry is retained as a
+# HOME-DELTA in original-byte order. Unrelated churn is AMBIENT/0. A component belonging to the exact bundle id, its
+# exact Saved Application State subtree, or a crash report other than one D-attributed missing-dylib control is
+# attributable and FAIL/2. Incomplete, contradictory or unverifiable evidence is INCONCLUSIVE/3 with no partial delta.
 HOME_DIFF_PY='
 import base64, binascii, os, sys
 before, after, root, diag, _control, protected_file = sys.argv[1:7]
-ignored_file = sys.argv[7] if len(sys.argv) > 7 else None
+crash_file = sys.argv[7] if len(sys.argv) > 7 else None
 root_raw, diag_raw = os.fsencode(root), os.fsencode(diag)
 with open(protected_file, encoding="utf-8") as source:
     protected = {os.fsencode(line) for line in source.read().splitlines()}
@@ -433,32 +433,140 @@ if b_loaded[1] != a_loaded[1]:
 if b_loaded[2] != a_loaded[2] or b_loaded[2][0] != root_raw:
     print("HOMEAUDIT\tINCONCLUSIVE\tthe snapshot roots changed")
     sys.exit(3)
+
+# Consume D attribution as strict evidence. It is a join key for HOME report deltas, never a filename/body heuristic.
 try:
-    ignored_fields = open(ignored_file, encoding="ascii").read().splitlines() if ignored_file else []
-    ignored = {decode_field(value) for value in ignored_fields}
-except (OSError, UnicodeError, ValueError, binascii.Error):
-    print("HOMEAUDIT\tINCONCLUSIVE\tthe crash-report census is incomplete")
+    crash_lines = open(crash_file, encoding="ascii").read().splitlines() if crash_file else []
+except (OSError, UnicodeError):
+    print("HOMEAUDIT\tINCONCLUSIVE\tthe crash-report attribution is incomplete")
     sys.exit(3)
-if len(ignored) != len(ignored_fields) or any(os.path.dirname(rel) != diag_raw or not rel.endswith(b".ips") for rel in ignored):
-    print("HOMEAUDIT\tINCONCLUSIVE\tthe crash-report census is invalid")
+
+reports, report_order, product_fail_names = {}, [], set()
+crash_invalid = False
+hex_digits = set("0123456789abcdef")
+for line in crash_lines:
+    fields = line.split("\t")
+    if fields[:2] == ["PRODUCT-FAIL", "crash-report"]:
+        if len(fields) != 3:
+            crash_invalid = True
+            continue
+        try:
+            product_fail_names.add(decode_field(fields[2]))
+        except (ValueError, binascii.Error):
+            crash_invalid = True
+        continue
+    if len(fields) != 6 or fields[0] != "CRASHREPORT":
+        crash_invalid = True
+        continue
+    try:
+        name = decode_field(fields[1])
+    except (ValueError, binascii.Error):
+        crash_invalid = True
+        continue
+    digest, report_kind, pid_field, path_field = fields[2:]
+    if (not name or os.path.basename(name) != name or not name.endswith(b".ips")
+            or name in reports or report_kind not in ("CONTROL", "PRODUCT", "OTHER", "MALFORMED", "UNREADABLE", "UNVERIFIED")
+            or (digest != "-" and (len(digest) != 64 or any(c not in hex_digits for c in digest)))):
+        crash_invalid = True
+        continue
+    if report_kind in ("CONTROL", "PRODUCT", "OTHER"):
+        try:
+            pid = int(pid_field)
+            proc_path = decode_field(path_field)
+        except (ValueError, binascii.Error):
+            crash_invalid = True
+            continue
+        if pid <= 1 or not proc_path.startswith(b"/") or digest == "-":
+            crash_invalid = True
+            continue
+    elif report_kind in ("MALFORMED", "UNREADABLE"):
+        if pid_field != "-" or path_field != "-":
+            crash_invalid = True
+            continue
+    else:
+        if (pid_field == "-") != (path_field == "-"):
+            crash_invalid = True
+            continue
+        if pid_field != "-":
+            try:
+                if int(pid_field) <= 1 or not decode_field(path_field).startswith(b"/"):
+                    raise ValueError
+            except (ValueError, binascii.Error):
+                crash_invalid = True
+                continue
+    reports[name] = (report_kind, digest)
+    report_order.append(name)
+if report_order != sorted(report_order) or len([1 for kind, _digest in reports.values() if kind == "CONTROL"]) > 1:
+    crash_invalid = True
+product_names = {name for name, (kind, _digest) in reports.items() if kind == "PRODUCT"}
+if product_fail_names and product_fail_names != product_names:
+    crash_invalid = True
+if crash_invalid:
+    print("HOMEAUDIT\tINCONCLUSIVE\tthe crash-report attribution is invalid")
     sys.exit(3)
+
 deltas = []
 for rel in sorted(set(a) | set(b)):
     if rel in a and rel in b and a[rel] == b[rel]:
         continue
-    if rel in ignored:
-        continue
     kind = "ADDED" if rel not in b else "DELETED" if rel not in a else "CHANGED"
-    if kind == "CHANGED" and rel == diag_raw and ignored:
-        bf, af = b[rel].split(" "), a[rel].split(" ")
-        if [bf[i] for i in (0, 1, 2, 3, 8, 9, 10)] == [af[i] for i in (0, 1, 2, 3, 8, 9, 10)]:
-            continue
     deltas.append((kind, rel))
+
+new_reports = {}
+for kind, rel in deltas:
+    if kind == "ADDED" and os.path.dirname(rel) == diag_raw and rel.endswith(b".ips"):
+        new_reports[os.path.basename(rel)] = rel
+if set(new_reports) != set(reports):
+    print("HOMEAUDIT\tINCONCLUSIVE\tthe crash-report attribution does not match the HOME census")
+    sys.exit(3)
+for name, rel in new_reports.items():
+    report_kind, digest = reports[name]
+    fields = a[rel].split(" ", 10)
+    if fields[0] != "f" or digest == "-" or fields[9] != digest:
+        print("HOMEAUDIT\tINCONCLUSIVE\tthe crash-report attribution does not match the HOME census")
+        sys.exit(3)
+    if report_kind in ("MALFORMED", "UNREADABLE", "UNVERIFIED"):
+        print("HOMEAUDIT\tINCONCLUSIVE\tthe crash-report attribution is incomplete")
+        sys.exit(3)
+
+diag_deltas = [(kind, rel) for kind, rel in deltas if rel == diag_raw]
+if diag_deltas and (diag_deltas != [("CHANGED", diag_raw)] or not new_reports):
+    print("HOMEAUDIT\tINCONCLUSIVE\tthe DiagnosticReports directory change is not tied to a verified report")
+    sys.exit(3)
+
+attributable = []
+for kind, rel in deltas:
+    reason = None
+    if os.path.dirname(rel) == diag_raw and rel.endswith(b".ips"):
+        if kind in ("CHANGED", "DELETED"):
+            reason = "crash-report"
+        elif reports[os.path.basename(rel)][0] != "CONTROL":
+            reason = "crash-report"
+    else:
+        components = rel.split(b"/")
+        saved = (b"Library", b"Saved Application State", b"com.cosmichq.zigBrowser.savedState")
+        if tuple(components[:3]) == saved:
+            reason = "saved-state"
+        elif any(component == b"com.cosmichq.zigBrowser" or component.startswith(b"com.cosmichq.zigBrowser.")
+                 for component in components):
+            reason = "bundle-id"
+    if reason is not None:
+        attributable.append((kind, rel, reason))
+
 for kind, rel in deltas:
     path = root_raw if rel == b"." else os.path.join(root_raw, rel)
     print("HOME-DELTA\t%s\t%s\t%s\t%s" % (kind, evidence_field(path), b.get(rel, "-"), a.get(rel, "-")))
-print("HOMEAUDIT\t%s\t%d" % ("CHANGED" if deltas else "CLEAN", len(deltas)))
-sys.exit(2 if deltas else 0)
+for kind, rel, reason in attributable:
+    path = root_raw if rel == b"." else os.path.join(root_raw, rel)
+    print("HOME-ATTRIBUTABLE\t%s\t%s\t%s" % (kind, evidence_field(path), reason))
+if attributable:
+    print("HOMEAUDIT\tFAIL\t%d" % len(attributable))
+    sys.exit(2)
+if deltas:
+    print("HOMEAUDIT\tAMBIENT\t%d" % len(deltas))
+    sys.exit(0)
+print("HOMEAUDIT\tCLEAN\t0")
+sys.exit(0)
 '
 take() { # $1=before|after
   local st=0 side=BEFORE
@@ -535,12 +643,12 @@ after() { # the after snapshots and every delta
   grep "^CRASHREPORT${T}" "$EV/crash.delta" > "$EV/crashreports"
   /usr/bin/python3 -I -B -X utf8 -c "$HOME_DIFF_PY" "$EV/home.before" "$EV/home.after" "$REAL_HOME" \
     Library/Logs/DiagnosticReports "$CTL_EXE" "$RD/tests/mac/ms1c_home_protected_paths.txt" \
-    "$EV/crash.ignore" > "$EV/home.delta" 2>&1
+    "$EV/crash.delta" > "$EV/home.delta" 2>&1
   st=$?
   tee -a "$EV/leg.log" < "$EV/home.delta"
   case "$st" in
     0) ;;
-    2) inconclusive "the account home changed outside the run root (HOME-DELTA lines)" ;;
+    2) log "FAIL${T}home-audit${T}zigBrowser-attributable HOME change"; fail "zigBrowser changed the account home" ;;
     *) inconclusive "the home audit is incomplete or failed (exit $st)" ;;
   esac
   case "$crash_st" in

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""RED, UNREGISTERED: bind the owner-approved MS1c whole-HOME policy.
+"""GREEN, REGISTERED: bind the owner-approved MS1c whole-HOME policy.
 
 The production differ must keep the complete canonical before/after census and
 emit every delta exactly once in original-byte order.  Complete unrelated churn
@@ -10,8 +10,7 @@ particular, DiagnosticReports directory metadata is ambient only as the bounded
 companion of the permitted control report; standing alone it is unverifiable.
 
 This oracle extracts and executes ``HOME_DIFF_PY`` from the real gate, then
-drives the real gate at its fake-host execution boundary.  It is deliberately
-absent from ``build.zig`` until its red is reviewed.  The compact retained-run
+drives the real gate at its fake-host execution boundary.  The compact retained-run
 fixtures contain the exact kind/path sets from MS1c run ``733135f6`` and bind
 the source snapshot, leg-log and full-delta hashes.  Intel has 172 deltas and
 one permitted control report; arm64 has 222 deltas and one control plus the

@@ -500,8 +500,9 @@ try:
     target.chmod(0o100)
     after = expect_skip("D6 AFTER", fixture, "AFTER", rel, "EACCES")
     rc, out = run_diff("D6 metadata", fixture, before, after)
-    if rc != 2 or not any(line.startswith(f"HOME-DELTA\tCHANGED\t{field(target)}\t") for line in out):
-        bad("D6 metadata", f"wanted CHANGED/2, got rc={rc} {out!r}")
+    if rc != 0 or out[-1:] != ["HOMEAUDIT\tAMBIENT\t1"] \
+            or not any(line.startswith(f"HOME-DELTA\tCHANGED\t{field(target)}\t") for line in out):
+        bad("D6 metadata", f"wanted the exact CHANGED delta and AMBIENT/0, got rc={rc} {out!r}")
 finally:
     fixture.close()
 

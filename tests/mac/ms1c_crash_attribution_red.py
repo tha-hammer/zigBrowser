@@ -545,8 +545,8 @@ if faithful_report "$reports/zigBrowser-wrong-diagnostic.ips" 5106 "$rd/control/
   ok "D1c/M-diagnostic: wrong observed dyld diagnostic cannot authorize CONTROL"
 else bad "D1c: wrong observed diagnostic authorized CONTROL or lost attribution: exit $rc $(tailout)"; fi
 
-# D2: the product report is delayed until control time and contains the control path only in its body.
-# The unrelated Preferences delta keeps the aggregate verdict INCONCLUSIVE, but may not hide the named product.
+# D2: the product report is delayed until control time and contains the control path only in its body.  The unrelated
+# Preferences delta remains recorded as ambient evidence, while the product report makes the leg FAIL.
 run_detection d-delayed detect_delayed.intel
 log=$(intel_log); rd=$(rd_of intel)
 control=$(report_row zigBrowser-control.ips "$(sha "$reports/zigBrowser-control.ips")" CONTROL 5106 "$rd/control/zigBrowser.app/Contents/MacOS/zigBrowser")
@@ -557,12 +557,13 @@ fixture_check D2-decoys raw_decoys_only "$reports/zigBrowser-delayed-product.ips
 if faithful_report "$reports/zigBrowser-control.ips" 5106 "$rd/control/zigBrowser.app/Contents/MacOS/zigBrowser" EXC_CRASH DYLD "Library missing" \
    && faithful_report "$reports/zigBrowser-delayed-product.ips" 5105 "$rd/$APPEXE" EXC_BREAKPOINT SIGNAL "Trace/BPT trap: 5" pretty \
    && raw_decoys_only "$reports/zigBrowser-delayed-product.ips" 5105 "$rd/$APPEXE" 5106 "$rd/control/zigBrowser.app/Contents/MacOS/zigBrowser" \
-   && [ "$rc" -eq 2 ] && leg_is x86_64 INCONCLUSIVE && no_pass && all_processes normal \
+   && [ "$rc" -eq 1 ] && leg_is x86_64 FAIL && no_pass && all_processes normal \
    && [ "$actual" = "$control
 $product" ] && product_named "$log" zigBrowser-delayed-product.ips \
    && grep -q "^HOME-DELTA${TB}.*$(field "$X/hosts/intel/Library/Preferences/d-detection-ambient")" "$log" \
+   && grep -qxF "HOMEAUDIT${TB}FAIL${TB}1" "$log" \
    && bounded_reports "$log"; then
-  ok "D2/M-delayed/M-raw: delayed product stays named under unrelated HOME ambiguity"
+  ok "D2/M-delayed/M-raw: delayed product stays named and FAIL while unrelated HOME churn stays recorded"
 else bad "D2: delayed/raw-substring product contract: exit $rc $(tailout)"; fi
 
 # D3: a product-only report is a product failure, not generic HOME ambiguity.
@@ -688,16 +689,18 @@ if faithful_report "$reports/zigBrowser-whitespace-product.ips" 5103 "$rd/$APPEX
   ok "D5g: harmless whitespace and a multiline incident remain a valid PRODUCT"
 else bad "D5g: complete multiline remainder was not parsed as one product incident: exit $rc $(tailout)"; fi
 
-# D6/M-report-filter: every new .ips is printed even when it is unrelated.
+# D6/M-report-filter: every new .ips is printed even when D classifies it OTHER; C makes every non-control report fail.
 run_detection d-other detect_other.intel
 log=$(intel_log)
 want=$(report_row Other-application.ips "$(sha "$reports/Other-application.ips")" OTHER 7999 /Applications/Other.app/Contents/MacOS/Other)
 fixture_check D6 faithful_report "$reports/Other-application.ips" 7999 /Applications/Other.app/Contents/MacOS/Other EXC_CRASH SIGNAL "Abort trap: 6"
 if faithful_report "$reports/Other-application.ips" 7999 /Applications/Other.app/Contents/MacOS/Other EXC_CRASH SIGNAL "Abort trap: 6" \
-   && [ "$rc" -eq 0 ] && leg_is x86_64 PASS && leg_is arm64 PASS && all_processes normal \
+   && [ "$rc" -eq 1 ] && leg_is x86_64 FAIL && leg_is arm64 PASS && no_pass && all_processes normal \
    && [ "$(grep "^CRASHREPORT${TB}" "$log" 2>/dev/null)" = "$want" ] \
-   && ! grep -q "^PRODUCT-FAIL${TB}" "$log" && bounded_reports "$log"; then
-  ok "D6/M-filter: complete unrelated .ips is recorded OTHER and AMBIENT rc 0"
+   && ! grep -q "^PRODUCT-FAIL${TB}" "$log" \
+   && grep -q "^HOME-ATTRIBUTABLE${TB}ADDED${TB}.*${TB}crash-report$" "$log" \
+   && grep -qxF "HOMEAUDIT${TB}FAIL${TB}1" "$log" && bounded_reports "$log"; then
+  ok "D6/M-filter: complete unrelated .ips is recorded OTHER and C makes it an attributable FAIL"
 else bad "D6: report filtering or unrelated attribution survived: exit $rc $(tailout)"; fi
 
 # D7/M-extra: only one exact control report is permitted; the second is a named product failure.

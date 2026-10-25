@@ -41,9 +41,9 @@
 #      KEPT (no cleanup attempted, never given to find -delete); exit 2; the next run on that Mac is HOST_HELD by it,
 #      attaches nothing there and leaves the marker as it was;
 #   F9 detach fails: INCONCLUSIVE, no workload there, the run root KEPT with its MOUNTED marker, no cleanup attempted; exit 2;
-#   F10 the workload writes ~/Library/Caches/zigBrowser in the real home: HOME-DELTA, INCONCLUSIVE, the file stays;
+#   F10 unrelated workload churn in ~/Library/Caches/zigBrowser: HOME-DELTA, AMBIENT/PASS, the file stays;
 #   F11 the control starts: FAIL;   F12 the control fails with another library's error: FAIL;
-#   F13 a valid crash report for an unrelated executable: CRASHREPORT OTHER, AMBIENT/PASS;
+#   F13 a valid crash report for an unrelated executable: CRASHREPORT OTHER, attributable FAIL;
 #   F14 the app reports the other arch: FAIL;
 #   F15 an unreadable directory under /var/folders: the audit says INCONCLUSIVE, and so does the leg;
 #   F16 a run dir of an earlier run holds a LEAKED marker: HOST_HELD, nothing attached there, the marker untouched;
@@ -55,12 +55,12 @@
 #       is still there, the evidence came back, INCONCLUSIVE, exit 2, no PASS;
 #   F22 the removal claims success but leaves the root (find -delete exits 0, deletes nothing): the absence check
 #       catches it, the same verdict as F21;
-#   F23 a same-size rewrite of a home file with its mtime put back: HOME-DELTA CHANGED for it, INCONCLUSIVE;
+#   F23 a same-size rewrite of a home file with its mtime put back: HOME-DELTA CHANGED for it, AMBIENT/PASS;
 #   F24 an unreadable subtree in the home before the run: the before snapshot is incomplete, nothing is launched there
 #       (no workload row, no control), INCONCLUSIVE;
 #   F25 a subtree that becomes unreadable during the run: "HOMEAUDIT INCONCLUSIVE the after snapshot is incomplete",
 #       INCONCLUSIVE;
-#   F26 a ctime-only change (a mode changed and put back): HOME-DELTA CHANGED for it, INCONCLUSIVE;
+#   F26 a ctime-only change (a mode changed and put back): HOME-DELTA CHANGED for it, AMBIENT/PASS;
 #   P10 a tracked file that .gitignore matches (the real repo tracks tests/e2e/__pycache__ and tests/e2e/.tmp files)
 #       stays in the clean tree: CLEANTREE names the commit's tree and the base run passes;
 #   F27 an early exit (the gate gets SIGTERM while the arm leg runs, after the Intel evidence came back): the EXIT trap
@@ -573,8 +573,11 @@ for role in intel arm; do
   ips="$X/hosts/$role/Library/Logs/DiagnosticReports/zigBrowser-2026-10-23-100000.ips"
   want="CRASHREPORT${TB}$(home_field zigBrowser-2026-10-23-100000.ips)${TB}$(sha256sum "$ips" 2>/dev/null | awk '{ print $1 }')${TB}CONTROL${TB}$([ "$role" = intel ] && echo 4106 || echo 4206)${TB}$(home_field "$rd/control/zigBrowser.app/Contents/MacOS/zigBrowser")"
   [ -f "$ips" ] && grep -qxF "$want" "$EV/$arch/evidence/leg.log" 2>/dev/null || p6="$role: no '$want' (report $( [ -f "$ips" ] && echo kept || echo gone))"
+  [ "$(grep -c "^HOME-DELTA${TB}" "$EV/$arch/evidence/leg.log" 2>/dev/null)" -eq 2 ] \
+    && grep -qxF "HOMEAUDIT${TB}AMBIENT${TB}2" "$EV/$arch/evidence/leg.log" 2>/dev/null \
+    || p6="$role: the one-control HOME evidence was not retained exactly once as AMBIENT"
 done
-[ "$p6" = ok ] && ok "P6: the control ran a private copy without its dylib; CRASHREPORT name and sha256; the report is kept" || bad "P6: $p6"
+[ "$p6" = ok ] && ok "P6: the control ran a private copy without its dylib; its report and directory delta are kept once as AMBIENT" || bad "P6: $p6"
 p7=ok
 for role in intel arm; do
   arch=x86_64; [ $role = arm ] && arch=arm64
@@ -649,9 +652,10 @@ else bad "F9: exit $rc, arm rows '$(pyrows arm)', root '$rd': $(tailout)"; fi
 
 run_gate homewrite home_write.intel
 homewrite_field=$(home_field "$X/hosts/intel/Library/Caches/zigBrowser/cache.db")
-{ [ "$rc" -eq 2 ] && leg_is x86_64 INCONCLUSIVE && no_pass && [ -f "$X/hosts/intel/Library/Caches/zigBrowser/cache.db" ] \
-  && grep -q "^HOME-DELTA${TB}ADDED${TB}$homewrite_field${TB}" "$EV/x86_64/evidence/leg.log" 2>/dev/null; } \
-  && ok "F10: a write in the real home: HOME-DELTA, INCONCLUSIVE, the file stays" || bad "F10: exit $rc: $(tailout)"
+{ [ "$rc" -eq 0 ] && leg_is x86_64 PASS && leg_is arm64 PASS && [ -f "$X/hosts/intel/Library/Caches/zigBrowser/cache.db" ] \
+  && grep -q "^HOME-DELTA${TB}ADDED${TB}$homewrite_field${TB}" "$EV/x86_64/evidence/leg.log" 2>/dev/null \
+  && grep -q "^HOMEAUDIT${TB}AMBIENT${TB}" "$EV/x86_64/evidence/leg.log" 2>/dev/null; } \
+  && ok "F10: unrelated real-home churn is recorded as HOME-DELTA and remains AMBIENT/PASS" || bad "F10: exit $rc: $(tailout)"
 
 run_gate ctlstarts control_starts.arm
 { [ "$rc" -eq 1 ] && leg_is arm64 FAIL && no_pass; } && ok "F11: a control that starts: FAIL" || bad "F11: exit $rc: $(tailout)"
@@ -659,9 +663,11 @@ run_gate wrongdiag control_wrongdiag.arm
 { [ "$rc" -eq 1 ] && leg_is arm64 FAIL && no_pass; } && ok "F12: a control with another library's error: FAIL" || bad "F12: exit $rc: $(tailout)"
 run_gate crashother crash_other.intel
 other_report="CRASHREPORT${TB}$(home_field zigBrowser-2026-10-23-100000.ips)${TB}$(sha256sum "$X/hosts/intel/Library/Logs/DiagnosticReports/zigBrowser-2026-10-23-100000.ips" 2>/dev/null | awk '{ print $1 }')${TB}OTHER${TB}7999${TB}$(home_field /Applications/Other.app/Contents/MacOS/Other)"
-{ [ "$rc" -eq 0 ] && leg_is x86_64 PASS && leg_is arm64 PASS \
-  && grep -qxF "$other_report" "$EV/x86_64/evidence/leg.log" 2>/dev/null; } \
-  && ok "F13: an unrelated valid crash report is recorded OTHER and remains AMBIENT" || bad "F13: exit $rc: $(tailout)"
+{ [ "$rc" -eq 1 ] && leg_is x86_64 FAIL && leg_is arm64 PASS && no_pass \
+  && grep -qxF "$other_report" "$EV/x86_64/evidence/leg.log" 2>/dev/null \
+  && grep -q "^HOME-ATTRIBUTABLE${TB}ADDED${TB}.*${TB}crash-report$" "$EV/x86_64/evidence/leg.log" 2>/dev/null \
+  && grep -qxF "HOMEAUDIT${TB}FAIL${TB}1" "$EV/x86_64/evidence/leg.log" 2>/dev/null; } \
+  && ok "F13: a valid OTHER crash report is retained and is an attributable FAIL" || bad "F13: exit $rc: $(tailout)"
 run_gate arch arch_wrong.arm
 { [ "$rc" -eq 1 ] && leg_is arm64 FAIL && no_pass; } && ok "F14: the other arch reported: FAIL" || bad "F14: exit $rc: $(tailout)"
 run_gate varlocked var_unreadable.intel
@@ -697,9 +703,10 @@ done
 
 run_gate rewrite same_size_rewrite.intel
 rewrite_field=$(home_field "$X/hosts/intel/Library/Preferences/keep.plist")
-{ [ "$rc" -eq 2 ] && leg_is x86_64 INCONCLUSIVE && leg_is arm64 PASS && no_pass \
-  && grep -q "^HOME-DELTA${TB}CHANGED${TB}$rewrite_field${TB}" "$EV/x86_64/evidence/leg.log" 2>/dev/null; } \
-  && ok "F23: a same-size rewrite with its mtime put back: HOME-DELTA, INCONCLUSIVE" || bad "F23: exit $rc: $(tailout)"
+{ [ "$rc" -eq 0 ] && leg_is x86_64 PASS && leg_is arm64 PASS \
+  && grep -q "^HOME-DELTA${TB}CHANGED${TB}$rewrite_field${TB}" "$EV/x86_64/evidence/leg.log" 2>/dev/null \
+  && grep -q "^HOMEAUDIT${TB}AMBIENT${TB}" "$EV/x86_64/evidence/leg.log" 2>/dev/null; } \
+  && ok "F23: a same-size rewrite with its mtime put back is recorded and remains AMBIENT/PASS" || bad "F23: exit $rc: $(tailout)"
 run_gate lockedbefore
 { [ "$rc" -eq 2 ] && leg_is x86_64 INCONCLUSIVE && leg_is arm64 PASS && no_pass && [ -z "$(pyrows intel)" ]; } \
   && ok "F24: an unreadable home subtree before the run: nothing launched there, INCONCLUSIVE" || bad "F24: exit $rc, intel rows '$(pyrows intel)': $(tailout)"
@@ -709,9 +716,10 @@ run_gate lockafter lock_after.intel
   && ok "F25: a home subtree unreadable after the run: the after snapshot is incomplete, INCONCLUSIVE" || bad "F25: exit $rc: $(tailout)"
 run_gate ctimeonly ctime_only.intel
 ctime_field=$(home_field "$X/hosts/intel/Library/Preferences/keep2.plist")
-{ [ "$rc" -eq 2 ] && leg_is x86_64 INCONCLUSIVE && leg_is arm64 PASS && no_pass \
-  && grep -q "^HOME-DELTA${TB}CHANGED${TB}$ctime_field${TB}" "$EV/x86_64/evidence/leg.log" 2>/dev/null; } \
-  && ok "F26: a ctime-only change in the home: HOME-DELTA, INCONCLUSIVE" || bad "F26: exit $rc: $(tailout)"
+{ [ "$rc" -eq 0 ] && leg_is x86_64 PASS && leg_is arm64 PASS \
+  && grep -q "^HOME-DELTA${TB}CHANGED${TB}$ctime_field${TB}" "$EV/x86_64/evidence/leg.log" 2>/dev/null \
+  && grep -q "^HOMEAUDIT${TB}AMBIENT${TB}" "$EV/x86_64/evidence/leg.log" 2>/dev/null; } \
+  && ok "F26: a ctime-only home change is recorded and remains AMBIENT/PASS" || bad "F26: exit $rc: $(tailout)"
 chmod 700 "$X/hosts/intel/Library/Lockable" 2>/dev/null
 
 if "${GIT[@]}" ls-files --error-unmatch tests/e2e/__pycache__/tracked.pyc >/dev/null 2>&1 \

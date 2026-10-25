@@ -396,11 +396,11 @@ expected_deltas = [
     ("DELETED", os.path.join(root_b, old_name)),
     ("ADDED", os.path.join(root_b, new_name)),
 ]
-if rename_rc != 2 or rename_out[-1:] != ["HOMEAUDIT\tCHANGED\t2"] or len(got_deltas) != 2 \
+if rename_rc != 0 or rename_out[-1:] != ["HOMEAUDIT\tAMBIENT\t2"] or len(got_deltas) != 2 \
         or decoded_deltas != expected_deltas \
         or not got_deltas[0].startswith(f"HOME-DELTA\tDELETED\t{old_full}\t") \
         or not got_deltas[1].startswith(f"HOME-DELTA\tADDED\t{new_full}\t"):
-    bad("rename", f"wanted two complete encoded deltas/2, got rc={rename_rc} {rename_out!r}")
+    bad("rename", f"wanted two complete encoded deltas and AMBIENT/0, got rc={rename_rc} {rename_out!r}")
 if [path for _kind, path in decoded_deltas] != sorted(path for _kind, path in decoded_deltas):
     bad("rename", f"HOME-DELTA order is not raw-byte order: {decoded_deltas!r}")
 
