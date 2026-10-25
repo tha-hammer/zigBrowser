@@ -109,7 +109,7 @@ def entry(token, root, path, rel):
         kind = next((name for test, name in KIND if test(st.st_mode)), "o")
         link = os.readlink(path) if kind == "l" else None
     except OSError as e:
-        if key in skipped and e.errno in (errno.EACCES, errno.EPERM):
+        if side in ("BEFORE", "AFTER") and key in PROTECTED and e.errno in (errno.EACCES, errno.EPERM):
             return
         error_row(token, rel, e)
         return

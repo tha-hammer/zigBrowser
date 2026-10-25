@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""RED, UNREGISTERED: lstat-first protected-directory ordering (SilverRidge b55c3b5f).
+"""Registered lstat-first protected-directory ordering oracle (SilverRidge b55c3b5f).
 
 The consumed Intel run exposed the opposite callback order from the existing
 marker-only fixture: os.walk first yields an exact reviewed C directory, the
@@ -204,6 +204,7 @@ def exact_incomplete(
     pair: tuple[str, str],
     events: list[str],
     allow_marker: bool,
+    error_count: int,
 ) -> None:
     lines = read_lines(row, output)
     rows = ordinary(lines)
@@ -211,7 +212,7 @@ def exact_incomplete(
     errors = [line for line in lines if line.startswith("ERROR\t")]
     prefix = f"ERROR\t{pair[0]}\t{base.evidence_field(pair[1])}\t"
     marker_ok = len(markers) <= 1 if allow_marker else not markers
-    if not (rc == 3 and not rows.get(pair) and marker_ok and errors
+    if not (rc == 3 and not rows.get(pair) and marker_ok and len(errors) == error_count
             and all(line.startswith(prefix) for line in errors) and end_is_exact(lines, rows, markers)
             and events[0:1] == ["lstat"] and "enumerate" in events):
         bad(row, "non-exempt observation must stay bounded and incomplete; "
@@ -327,21 +328,21 @@ def run_rows(helper: Path) -> list[str]:
             rc, output, events = forced_snapshot(
                 row, box, snapshotter, roots, pair, "BEFORE", errno.EACCES, errno.EACCES,
             )
-            exact_incomplete(row, rc, output, pair, events, False)
+            exact_incomplete(row, rc, output, pair, events, False, 2)
 
         # Errno boundary, including each direction of an approved/unapproved mix.
         errno_cases = (
-            (errno.EIO, errno.EIO, False),
-            (errno.EACCES, errno.EIO, True),
-            (errno.EIO, errno.EPERM, False),
+            (errno.EIO, errno.EIO, False, 2),
+            (errno.EACCES, errno.EIO, True, 2),
+            (errno.EIO, errno.EPERM, False, 1),
         )
-        for enumeration_error, identity_error, allow_marker in errno_cases:
+        for enumeration_error, identity_error, allow_marker, error_count in errno_cases:
             row = (f"L5 errno {errno.errorcode[identity_error]}-first/"
                    f"{errno.errorcode[enumeration_error]}-enumeration")
             rc, output, events = forced_snapshot(
                 row, box, snapshotter, roots, PAIRS[0], "BEFORE", enumeration_error, identity_error,
             )
-            exact_incomplete(row, rc, output, PAIRS[0], events, allow_marker)
+            exact_incomplete(row, rc, output, PAIRS[0], events, allow_marker, error_count)
 
         # Strict marker syntax on the lstat-first marker-only boundary.
         clean_before = box.tmp / "strict-before.tsv"

@@ -4214,6 +4214,18 @@ pub fn build(b: *std.Build) void {
     }) |input| mac_varfolders_marker_only.addFileInput(b.path(input));
     mac_varfolders_audit_step.dependOn(&mac_varfolders_marker_only.step);
     test_step.dependOn(&mac_varfolders_marker_only.step);
+    const mac_varfolders_lstat_first_protected = b.addSystemCommand(&.{
+        "python3", "-X", "dev", "-W", "error", "-B",
+        "tests/e2e/mac_varfolders_lstat_first_protected_test.py",
+    });
+    mac_varfolders_lstat_first_protected.has_side_effects = true;
+    for ([_][]const u8{
+        "tests/e2e/mac_varfolders_lstat_first_protected_test.py",
+        "tests/e2e/mac_varfolders_audit_test.py",
+        "tests/mac/mac_varfolders_audit.sh",
+    }) |input| mac_varfolders_lstat_first_protected.addFileInput(b.path(input));
+    mac_varfolders_audit_step.dependOn(&mac_varfolders_lstat_first_protected.step);
+    test_step.dependOn(&mac_varfolders_lstat_first_protected.step);
     const mac_varfolders_parent_policy = b.addSystemCommand(&.{
         "python3", "-X", "dev", "-W", "error", "-B", "tests/e2e/mac_varfolders_parent_policy_test.py",
     });
