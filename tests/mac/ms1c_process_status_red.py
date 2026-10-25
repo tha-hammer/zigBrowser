@@ -91,7 +91,7 @@ cat > "$X/hostbin/python3" <<EOF
 script=\${1:-}
 args=("\$@")
 role=\${ZB_ROLE:-}
-case "\$role" in intel) base=8100 ;; arm) base=8200 ;; *) exec "$X/hostbin/python3.fixture" "\$@" ;; esac
+case "\$role" in intel) base=4100 ;; arm) base=4200 ;; *) exec "$X/hostbin/python3.fixture" "\$@" ;; esac
 browser=
 if [ "\$script" = - ]; then
   browser=\${2:-}
@@ -176,7 +176,7 @@ OUTBOX=$(realpath "$2")
 run_gate lifecycle
 printf '%s\n' "$rc" > "$OUTBOX/gate.rc"
 cp -f -- "$OUT" "$OUTBOX/gate.out"
-for spec in intel:x86_64:8100 arm:arm64:8200; do
+for spec in intel:x86_64:4100 arm:arm64:4200; do
   role=${spec%%:*}; rest=${spec#*:}; arch=${rest%%:*}; base=${rest##*:}
   rd=$(rd_of "$role")
   printf '%s\t%s\t%s\t%s\n' "$role" "$arch" "$base" "$rd/evidence/browser-lifecycle" >> "$OUTBOX/meta"

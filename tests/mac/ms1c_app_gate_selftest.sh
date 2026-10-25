@@ -321,12 +321,19 @@ record_status() {
   [ -n "\${ZB_PROCESS_LEDGER:-}" ] && [ -n "\${ZB_PROCESS_ROW:-}" ] \
     && [ "\${ZB_FIXTURE_NO_PROCESS_RECORD:-}" != 1 ] || return 0
   case "\$ZB_PROCESS_ROW" in
-    render) printf 'render\t%s\t0\t%s\nrender\t%s\t0\t%s\n' "\$((base + 1))" "\$browser" "\$((base + 2))" "\$browser" ;;
-    reply) printf 'reply\t%s\t0\t%s\n' "\$((base + 3))" "\$browser" ;;
-    loadfail) printf 'loadfail\t%s\t0\t%s\n' "\$((base + 4))" "\$browser" ;;
-    arch) printf 'arch\t%s\t0\t%s\n' "\$((base + 5))" "\$browser" ;;
+    render) printf 'render\t%s\t130\t%s\nrender\t%s\t0\t%s\n' "\$((base + 1))" "\$browser" "\$((base + 2))" "\$browser" ;;
+    reply) printf 'reply\t%s\t130\t%s\n' "\$((base + 3))" "\$browser" ;;
+    loadfail) printf 'loadfail\t%s\t5\t%s\n' "\$((base + 4))" "\$browser" ;;
+    arch) printf 'arch\t%s\t130\t%s\n' "\$((base + 5))" "\$browser" ;;
     control) printf 'control\t%s\t%s\t%s\n' "\$((base + 6))" "\${control_terminal:--6}" "\$first" ;;
   esac >> "\$ZB_PROCESS_LEDGER"
+  [ -n "\${ZB_PROCESS_LIFECYCLE_LEDGER:-}" ] || return 0
+  case "\$ZB_PROCESS_ROW" in
+    render) printf 'TERM\trender\t%s\t%s\n' "\$((base + 1))" "\$((base + 1))" ;;
+    reply) printf 'TERM\treply\t%s\t%s\n' "\$((base + 3))" "\$((base + 3))" ;;
+    arch) printf 'TERM\tarch\t%s\t%s\n' "\$((base + 5))" "\$((base + 5))" ;;
+    *) return 0 ;;
+  esac >> "\$ZB_PROCESS_LIFECYCLE_LEDGER"
 }
 trap record_status EXIT
 if [ "\$script" = - ]; then   # the control

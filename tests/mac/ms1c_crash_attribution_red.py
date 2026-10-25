@@ -127,15 +127,24 @@ status() { # status <row> <pid> <terminal-status>
     printf '%s\t%s\t0\t%s\n' "\$row" "\$pid" "\$app" >> "\$ledger"
   fi
 }
+term_marker() { # term_marker <row> <pid>
+  row=\$1 pid=\$2 lifecycle=\${ZB_PROCESS_LIFECYCLE_LEDGER:-}
+  [ -n "\$lifecycle" ] || return 0
+  printf 'TERM\t%s\t%s\t%s\n' "\$row" "\$pid" "\$pid" >> "\$lifecycle"
+}
 case "\${script##*/}" in
-  m9_render_test.py) status render \$((base + 1)) 0; status render \$((base + 2)) 0 ;;
-  m9_reply_channel_test.py) status reply \$((base + 3)) 0 ;;
-  m9_load_fail_test.py) status loadfail \$((base + 4)) 0 ;;
+  m9_render_test.py)
+    status render \$((base + 1)) 130; status render \$((base + 2)) 0
+    term_marker render \$((base + 1)) ;;
+  m9_reply_channel_test.py)
+    status reply \$((base + 3)) 130; term_marker reply \$((base + 3)) ;;
+  m9_load_fail_test.py) status loadfail \$((base + 4)) 5 ;;
   exec_arch_probe.py)
-    terminal=0
+    terminal=130
     [ -e "$C/mode_detect_abnormal.\$role" ] && terminal=-11
     [ -e "$C/mode_detect_positive.\$role" ] && terminal=7
     status arch \$((base + 5)) "\$terminal"
+    term_marker arch \$((base + 5))
     ;;
   -)
     status control \$((base + 6)) "\$control_rc"
@@ -270,17 +279,17 @@ leg_log() { # leg_log <intel|arm>
 intel_log() { leg_log intel; }
 
 process_contract() { # process_contract <intel|arm> <normal|abnormal|positive|control-wrong>
-  local role=$1 kind=$2 base rd log app ctl arch_status=0 control_status=-6 expected actual
+  local role=$1 kind=$2 base rd log app ctl arch_status=130 control_status=-6 expected actual
   if [ "$role" = intel ]; then base=5100; else base=6100; fi
   rd=$(rd_of "$role"); log=$(leg_log "$role")
   app=$(field "$rd/$APPEXE"); ctl=$(field "$rd/control/zigBrowser.app/Contents/MacOS/zigBrowser")
   [ "$kind" = abnormal ] && arch_status=-11
   [ "$kind" = positive ] && arch_status=7
   [ "$kind" = control-wrong ] && control_status=-9
-  expected="PROCESS${TB}render${TB}$((base + 1))${TB}0${TB}$app
+  expected="PROCESS${TB}render${TB}$((base + 1))${TB}130${TB}$app
 PROCESS${TB}render${TB}$((base + 2))${TB}0${TB}$app
-PROCESS${TB}reply${TB}$((base + 3))${TB}0${TB}$app
-PROCESS${TB}loadfail${TB}$((base + 4))${TB}0${TB}$app
+PROCESS${TB}reply${TB}$((base + 3))${TB}130${TB}$app
+PROCESS${TB}loadfail${TB}$((base + 4))${TB}5${TB}$app
 PROCESS${TB}arch${TB}$((base + 5))${TB}$arch_status${TB}$app
 PROCESS${TB}control${TB}$((base + 6))${TB}$control_status${TB}$ctl"
   actual=$(grep "^PROCESS${TB}" "$log" 2>/dev/null || :)
@@ -288,13 +297,13 @@ PROCESS${TB}control${TB}$((base + 6))${TB}$control_status${TB}$ctl"
 }
 
 raw_processes() { # raw_processes <intel|arm> <normal|abnormal|positive|control-wrong>
-  local role=$1 kind=$2 base rd app ctl arch_status=0 control_status=-6
+  local role=$1 kind=$2 base rd app ctl arch_status=130 control_status=-6
   if [ "$role" = intel ]; then base=5100; else base=6100; fi
   rd=$(rd_of "$role"); app="$rd/$APPEXE"; ctl="$rd/control/zigBrowser.app/Contents/MacOS/zigBrowser"
   [ "$kind" = abnormal ] && arch_status=-11
   [ "$kind" = positive ] && arch_status=7
   [ "$kind" = control-wrong ] && control_status=-9
-  printf 'render\t%s\t0\t%s\nrender\t%s\t0\t%s\nreply\t%s\t0\t%s\nloadfail\t%s\t0\t%s\narch\t%s\t%s\t%s\ncontrol\t%s\t%s\t%s\n' \
+  printf 'render\t%s\t130\t%s\nrender\t%s\t0\t%s\nreply\t%s\t130\t%s\nloadfail\t%s\t5\t%s\narch\t%s\t%s\t%s\ncontrol\t%s\t%s\t%s\n' \
     "$((base + 1))" "$app" "$((base + 2))" "$app" "$((base + 3))" "$app" \
     "$((base + 4))" "$app" "$((base + 5))" "$arch_status" "$app" \
     "$((base + 6))" "$control_status" "$ctl"

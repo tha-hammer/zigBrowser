@@ -28,6 +28,33 @@ GRACE_S = 10.0
 _leaks: list = []
 
 
+def record_term_lifecycle(proc: subprocess.Popen, pgid: int) -> None:
+    """Append one causal TERM marker after the identity-checked send succeeds."""
+    ledger = os.environ.get("ZB_PROCESS_LIFECYCLE_LEDGER")
+    if ledger is None:
+        return
+    if getattr(proc, "_zb_term_lifecycle_recorded", False):
+        raise RuntimeError("duplicate MS1c TERM lifecycle record")
+    row = os.environ.get("ZB_PROCESS_ROW")
+    pid = proc.pid
+    if (not row or any(c in row for c in "\t\r\n")
+            or isinstance(pid, bool) or not isinstance(pid, int) or pid <= 1
+            or isinstance(pgid, bool) or not isinstance(pgid, int) or pgid != pid):
+        raise RuntimeError("invalid MS1c TERM lifecycle record")
+    flags = os.O_WRONLY | os.O_APPEND | getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(ledger, flags)
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode) or stat.S_IMODE(st.st_mode) != 0o600:
+            raise RuntimeError("MS1c lifecycle ledger is not a private regular file")
+        line = f"TERM\t{row}\t{pid}\t{pgid}\n".encode("ascii", "strict")
+        if os.write(fd, line) != len(line):
+            raise RuntimeError("short write to MS1c lifecycle ledger")
+        proc._zb_term_lifecycle_recorded = True
+    finally:
+        os.close(fd)
+
+
 def record_terminal_process(proc: subprocess.Popen, executable=None) -> None:
     """Append one gate-owned terminal row from this Popen and the requested executable.
 
@@ -140,6 +167,10 @@ def stop_browser_term_only(proc: subprocess.Popen, grace_s: float = GRACE_S, exe
             raise
         _leak(f"LEAK process group {pgid}: SIGTERM was refused with EPERM (left running unconfirmed)", pgid)
         return
+    else:
+        # This is the only authority for a TERM marker.  It precedes every
+        # post-send poll/wait and is never inferred from a terminal status.
+        record_term_lifecycle(proc, pgid)
     if proc.poll() is None:
         try:
             proc.wait(timeout=max(0.0, deadline - time.monotonic()))

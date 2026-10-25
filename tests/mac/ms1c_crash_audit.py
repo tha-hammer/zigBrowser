@@ -16,6 +16,13 @@ from typing import Optional, Union
 
 
 ROWS = ("render", "render", "reply", "loadfail", "arch", "control")
+STATUS_POLICY = {
+    "render": (130, 0),
+    "reply": (130,),
+    "loadfail": (5,),
+    "arch": (130,),
+    "control": (-6,),
+}
 SHIM_REF = "@executable_path/../Frameworks/libwkwebview_shim.dylib"
 
 
@@ -53,26 +60,132 @@ def read_ledger(path: Path) -> tuple[list[tuple[str, int, int, str]], Optional[s
     return records, None
 
 
+def read_lifecycle(path: Path) -> tuple[list[tuple[str, int, int]], Optional[str]]:
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        fd = os.open(path, flags)
+        try:
+            st = os.fstat(fd)
+            if not stat.S_ISREG(st.st_mode) or stat.S_IMODE(st.st_mode) != 0o600:
+                return [], "conflict TERM lifecycle"
+            chunks, total = [], 0
+            while True:
+                chunk = os.read(fd, 65536)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > 1024 * 1024:
+                    return [], "conflict TERM lifecycle"
+                chunks.append(chunk)
+        finally:
+            os.close(fd)
+    except FileNotFoundError:
+        return [], "missing TERM lifecycle"
+    except OSError:
+        return [], "conflict TERM lifecycle"
+    raw = b"".join(chunks)
+    if raw and not raw.endswith(b"\n"):
+        return [], "conflict TERM lifecycle"
+    try:
+        lines = raw.decode("ascii", "strict").splitlines()
+    except UnicodeError:
+        return [], "conflict TERM lifecycle"
+    markers: list[tuple[str, int, int]] = []
+    for line in lines:
+        fields = line.split("\t")
+        if len(fields) != 4 or fields[0] != "TERM" or fields[1] not in STATUS_POLICY:
+            return [], "conflict TERM lifecycle"
+        try:
+            pid, pgid = int(fields[2]), int(fields[3])
+        except ValueError:
+            return [], "conflict TERM lifecycle"
+        if (pid <= 1 or pgid != pid or str(pid) != fields[2] or str(pgid) != fields[3]):
+            return [], "conflict TERM lifecycle"
+        marker = (fields[1], pid, pgid)
+        if marker in markers:
+            return [], "duplicate TERM lifecycle"
+        markers.append(marker)
+    return markers, None
+
+
+def lifecycle_verdict(
+    path: Path, records: list[tuple[str, int, int, str]]
+) -> tuple[Optional[str], bool]:
+    """Validate the whole causal ledger and return (incomplete, bad status)."""
+    if len(records) > len(ROWS) or tuple(record[0] for record in records) != ROWS[:len(records)]:
+        return "conflict TERM lifecycle", False
+    if len({record[1] for record in records}) != len(records):
+        return "conflict TERM lifecycle", False
+    markers, error = read_lifecycle(path)
+    if error is not None:
+        return error, False
+
+    ordinals: dict[str, int] = {}
+    expected: list[int] = []
+    allowed_markers: list[tuple[str, int, int]] = []
+    required_markers: list[tuple[str, int, int]] = []
+    for row, pid, status, _executable in records:
+        ordinal = ordinals.get(row, 0)
+        policy = STATUS_POLICY.get(row, ())
+        if ordinal >= len(policy):
+            return "conflict TERM lifecycle", False
+        wanted = policy[ordinal]
+        ordinals[row] = ordinal + 1
+        expected.append(wanted)
+        marker = (row, pid, pid)
+        if wanted == 130 or status == 130:
+            allowed_markers.append(marker)
+        if status == 130:
+            required_markers.append(marker)
+
+    allowed = set(allowed_markers)
+    if any(marker not in allowed for marker in markers):
+        return "conflict TERM lifecycle", False
+    # Markers for the policy's TERM-bound ordinals remain strictly ordered.
+    # A TERM marker attached to a wrong ordinal/status is retained only so the
+    # exact status policy can name it as a product failure instead of hiding it
+    # behind a parser verdict.
+    canonical_markers = [
+        (row, pid, pid)
+        for (row, pid, _status, _executable), wanted in zip(records, expected)
+        if wanted == 130
+    ]
+    marker_set = set(markers)
+    canonical_set = set(canonical_markers)
+    if ([marker for marker in markers if marker in canonical_set]
+            != [marker for marker in canonical_markers if marker in marker_set]):
+        return "conflict TERM lifecycle", False
+    if any(marker not in markers for marker in required_markers):
+        return "missing TERM lifecycle", False
+    return None, any(record[2] != wanted for record, wanted in zip(records, expected))
+
+
 def row_records(args: argparse.Namespace) -> int:
     records, error = read_ledger(args.ledger)
     selected = [record for record in records if record[0] == args.row]
     expected = args.expected_count
     if error is None:
-        if len(selected) < expected:
+        policy = STATUS_POLICY.get(args.row)
+        if policy is None or expected != len(policy):
+            error = "conflict process record"
+        elif len(selected) < expected:
             error = "missing process record"
         elif len(selected) > expected:
             error = ("duplicate process record" if len(set(selected)) < len(selected)
                      else "conflict process record")
         elif any(record[3] != args.expected_exe for record in selected):
             error = "conflict process record"
+    if error is None:
+        error, _policy_bad = lifecycle_verdict(args.lifecycle_ledger, records)
     if error is not None:
         print(f"PROCESSAUDIT\tINCONCLUSIVE\t{error}")
         args.audit_marker.write_text(error + "\n", encoding="ascii")
         return 3
     abnormal = False
-    for row, pid, status, executable in selected:
+    assert policy is not None
+    for ordinal, (row, pid, status, executable) in enumerate(selected):
         print(f"PROCESS\t{row}\t{pid}\t{status}\t{field(executable)}")
-        if status not in args.allow_status:
+        if status != policy[ordinal]:
             print(f"PRODUCT-FAIL\tabnormal-exit\t{row}\t{pid}\t{status}")
             abnormal = True
     return 1 if abnormal else 0
@@ -176,6 +289,11 @@ def structured_zigbrowser(metadata: dict, incident: dict) -> bool:
 def report_records(args: argparse.Namespace) -> int:
     before = load_snapshot_rows(args.before)
     records, table_error = process_table(args.ledger)
+    lifecycle_product = False
+    if table_error is None:
+        lifecycle_error, lifecycle_product = lifecycle_verdict(args.lifecycle_ledger, records)
+        if lifecycle_error is not None:
+            table_error = lifecycle_error
     marker_error = None
     try:
         marker_error = args.audit_marker.read_text(encoding="ascii").strip()
@@ -217,7 +335,7 @@ def report_records(args: argparse.Namespace) -> int:
 
     control_ok = observed_control_diagnostic(args.control_err, args.control_exe)
     exact_control_used = False
-    product = False
+    product = lifecycle_product
     inconclusive = scan_error or table_error is not None
     launched = {(pid, executable) for _row, pid, _status, executable in records}
     control = records[-1] if table_error is None else None
@@ -296,13 +414,14 @@ def parser() -> argparse.ArgumentParser:
     sub = result.add_subparsers(dest="command", required=True)
     row = sub.add_parser("row")
     row.add_argument("--ledger", type=Path, required=True)
+    row.add_argument("--lifecycle-ledger", type=Path, required=True)
     row.add_argument("--audit-marker", type=Path, required=True)
     row.add_argument("--row", required=True)
     row.add_argument("--expected-count", type=int, required=True)
     row.add_argument("--expected-exe", required=True)
-    row.add_argument("--allow-status", type=int, action="append", default=[])
     reports = sub.add_parser("reports")
     reports.add_argument("--ledger", type=Path, required=True)
+    reports.add_argument("--lifecycle-ledger", type=Path, required=True)
     reports.add_argument("--audit-marker", type=Path, required=True)
     reports.add_argument("--before", type=Path, required=True)
     reports.add_argument("--diag", required=True)

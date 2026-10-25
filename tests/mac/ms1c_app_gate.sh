@@ -602,6 +602,9 @@ unset ZB_M9_GUI_RUNNER
 : > "$EV/browser-processes" || { inconclusive "no process ledger"; finish; }
 chmod 600 "$EV/browser-processes" || { inconclusive "the process ledger is not private"; finish; }
 export ZB_PROCESS_LEDGER="$EV/browser-processes"
+: > "$EV/browser-lifecycle" || { inconclusive "no lifecycle ledger"; finish; }
+chmod 600 "$EV/browser-lifecycle" || { inconclusive "the lifecycle ledger is not private"; finish; }
+export ZB_PROCESS_LIFECYCLE_LEDGER="$EV/browser-lifecycle"
 
 row() { # $1=name $2=PASS id ('' = none) argv...: one status line per row; a LEAK stops the host
   local name="$1" pass="$2" rc pst count=1
@@ -619,8 +622,9 @@ row() { # $1=name $2=PASS id ('' = none) argv...: one status line per row; a LEA
     return 1
   fi
   /usr/bin/python3 -I -B "$RD/tests/mac/ms1c_crash_audit.py" row \
-    --ledger "$EV/browser-processes" --audit-marker "$EV/process-audit" --row "$name" \
-    --expected-count "$count" --expected-exe "$EXE" --allow-status 0 > "$EV/process-$name" 2>&1
+    --ledger "$EV/browser-processes" --lifecycle-ledger "$EV/browser-lifecycle" \
+    --audit-marker "$EV/process-audit" --row "$name" \
+    --expected-count "$count" --expected-exe "$EXE" > "$EV/process-$name" 2>&1
   pst=$?
   tee -a "$EV/leg.log" < "$EV/process-$name"
   if [ "$pst" -eq 1 ]; then rc=1
@@ -635,7 +639,8 @@ after() { # the after snapshots and every delta
   take after   # an incomplete after snapshot is INCONCLUSIVE; the diff below still says which one and why
   [ "$audit_ok" -eq 0 ] || return
   /usr/bin/python3 -I -B "$RD/tests/mac/ms1c_crash_audit.py" reports \
-    --ledger "$EV/browser-processes" --audit-marker "$EV/process-audit" --before "$EV/home.before" \
+    --ledger "$EV/browser-processes" --lifecycle-ledger "$EV/browser-lifecycle" \
+    --audit-marker "$EV/process-audit" --before "$EV/home.before" \
     --diag "$DIAG" --diag-rel Library/Logs/DiagnosticReports --control-exe "$CTL_EXE" \
     --control-err "$EV/control.err" --ignore-out "$EV/crash.ignore" > "$EV/crash.delta" 2>&1
   crash_st=$?
@@ -697,8 +702,9 @@ PY
 st=$?
 crc=$(sed -n "s/^CONTROL_RC${T}//p" "$EV/control.out" | tail -n 1)
 /usr/bin/python3 -I -B "$RD/tests/mac/ms1c_crash_audit.py" row \
-  --ledger "$EV/browser-processes" --audit-marker "$EV/process-audit" --row control \
-  --expected-count 1 --expected-exe "$CTL_EXE" --allow-status -6 > "$EV/process-control" 2>&1
+  --ledger "$EV/browser-processes" --lifecycle-ledger "$EV/browser-lifecycle" \
+  --audit-marker "$EV/process-audit" --row control \
+  --expected-count 1 --expected-exe "$CTL_EXE" > "$EV/process-control" 2>&1
 pst=$?
 tee -a "$EV/leg.log" < "$EV/process-control"
 case "$pst" in
