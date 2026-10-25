@@ -364,7 +364,8 @@ def decode_field(field):
     return raw
 def load(p, side):
     try:
-        lines = open(p, encoding="ascii").read().split("\n")
+        with open(p, encoding="ascii") as source:
+            lines = source.read().split("\n")
     except (OSError, UnicodeError):
         return None
     if lines and lines[-1] == "":
@@ -436,7 +437,11 @@ if b_loaded[2] != a_loaded[2] or b_loaded[2][0] != root_raw:
 
 # Consume D attribution as strict evidence. It is a join key for HOME report deltas, never a filename/body heuristic.
 try:
-    crash_lines = open(crash_file, encoding="ascii").read().splitlines() if crash_file else []
+    if crash_file:
+        with open(crash_file, encoding="ascii") as source:
+            crash_lines = source.read().splitlines()
+    else:
+        crash_lines = []
 except (OSError, UnicodeError):
     print("HOMEAUDIT\tINCONCLUSIVE\tthe crash-report attribution is incomplete")
     sys.exit(3)

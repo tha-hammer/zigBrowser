@@ -20,6 +20,17 @@ HERE = Path(__file__).resolve().parent
 GATE = HERE / "ms1c_app_gate.sh"
 PROTECTED = HERE / "ms1c_home_protected_paths.txt"
 EXPECTED = "HOMEAUDIT\tINCONCLUSIVE\tthe crash-report attribution is invalid\n"
+STRICT_WARNING_PROBE = """
+import sys as _probe_sys, warnings as _probe_warnings
+if not _probe_sys.flags.dev_mode:
+    raise RuntimeError("the HOME differ child must run in development mode")
+try:
+    _probe_warnings.warn("HOME differ warning-policy probe", ResourceWarning)
+except ResourceWarning:
+    pass
+else:
+    raise RuntimeError("the HOME differ child must promote ResourceWarning to an error")
+"""
 problems: list[str] = []
 
 
@@ -75,7 +86,8 @@ def run_case(label: str, pid_field: str, path_field: str, code: str, work: Path)
     }
     command = [
         "/usr/bin/timeout", "--signal=TERM", "2s",
-        sys.executable, "-I", "-B", "-X", "utf8", "-c", code,
+        sys.executable, "-I", "-X", "dev", "-W", "error", "-B", "-X", "utf8", "-c",
+        STRICT_WARNING_PROBE + code,
         str(before), str(after), os.fsdecode(root), "Library/Logs/DiagnosticReports",
         "/private/control/zigBrowser", str(PROTECTED), str(reports),
     ]
