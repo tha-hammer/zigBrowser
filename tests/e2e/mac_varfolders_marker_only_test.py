@@ -82,7 +82,8 @@ def forced_snapshot(
     existing row-plus-marker control.
     """
     target = path_for(box, pair)
-    tag = f"{pair[0]}-{side.lower()}-{enumeration_error}-{identity_error}-{repeats}"
+    pair_tag = base.evidence_field(pair[1])[4:].rstrip("=")
+    tag = f"{pair[0]}-{pair_tag}-{side.lower()}-{enumeration_error}-{identity_error}-{repeats}"
     output = box.tmp / f"snapshot-{tag}.tsv"
     trace = box.tmp / f"trace-{tag}.txt"
     wrapper = box.tmp / f"wrapper-{tag}.py"
@@ -230,6 +231,38 @@ def exact_non_exempt(row: str, output: Path, pair: tuple[str, str], counts: tupl
         bad(row, f"negative did not drive repeated enumeration, got {counts!r}")
 
 
+def exact_mixed_errno(
+    row: str,
+    output: Path,
+    pair: tuple[str, str],
+    side: str,
+    enumeration_error: int,
+    identity_error: int,
+    counts: tuple[int, int],
+) -> None:
+    lines = read_lines(row, output)
+    ordinary = ordinary_rows(row, lines)
+    markers = [line for line in lines if line.startswith("SKIPPED-PROTECTED\t")]
+    errors = [line for line in lines if line.startswith("ERROR\t")]
+    target = f"{pair[0]}\t{base.evidence_field(pair[1])}\t"
+    approved = (errno.EACCES, errno.EPERM)
+    want_markers = (
+        [marker(side, pair, errno.errorcode[enumeration_error])]
+        if enumeration_error in approved else []
+    )
+    if ordinary.get(pair):
+        bad(row, f"mixed errno path must have no invented/reused identity, got {ordinary[pair]!r}")
+    if markers != want_markers:
+        bad(row, f"mixed errno marker must reflect only an approved enumeration error, "
+            f"want {want_markers!r}, got {markers!r}")
+    if not errors or not all(line.startswith("ERROR\t" + target) for line in errors):
+        bad(row, f"mixed errno observation must retain exact-path ERROR evidence, got {errors!r}")
+    if counts[1] != 2:
+        bad(row, f"mixed errno row did not drive repeated enumeration, got {counts!r}")
+    if enumeration_error in approved and counts[0] < 1:
+        bad(row, f"approved enumeration did not reach the rejected lstat errno, got {counts!r}")
+
+
 def run_diff(row: str, differ: Path, before: Path, after: Path) -> tuple[int, list[str]]:
     result = subprocess.run(
         [sys.executable, str(differ), str(before), str(after)],
@@ -244,9 +277,10 @@ def run_diff(row: str, differ: Path, before: Path, after: Path) -> tuple[int, li
 
 def expect_inconclusive(row: str, differ: Path, before: Path, after: Path) -> None:
     rc, out = run_diff(row, differ, before, after)
-    if rc != 2 or not out or out[-1].split("\t")[:2] != ["VARFOLDERS", "INCONCLUSIVE"] \
+    if rc != 2 or len(out) != 1 or out[0].split("\t")[:2] != ["VARFOLDERS", "INCONCLUSIVE"] \
             or any(line.startswith(("VARFOLDERS-DELTA\t", "VARFOLDERS\tCOMPLETE\t")) for line in out):
-        bad(row, f"transition/malformed evidence must be INCONCLUSIVE with no partial delta, got rc={rc} {out!r}")
+        bad(row, f"transition/malformed evidence must be one bounded INCONCLUSIVE with no partial delta, "
+            f"got rc={rc} {out!r}")
 
 
 def corrupt_marker(source: Path, output: Path, kind: str) -> None:
@@ -266,6 +300,15 @@ def corrupt_marker(source: Path, output: Path, kind: str) -> None:
     else:
         raise AssertionError(kind)
     output.write_text("\n".join(lines) + "\n", encoding="ascii")
+
+
+def without_error_rows(source: Path, output: Path) -> None:
+    """Derive the marker-only parser fixture even while the producer is RED."""
+    lines = source.read_text(encoding="ascii").splitlines()
+    output.write_text(
+        "\n".join(line for line in lines if not line.startswith("ERROR\t")) + "\n",
+        encoding="ascii",
+    )
 
 
 def run_rows(helper: Path) -> list[str]:
@@ -363,6 +406,39 @@ def run_rows(helper: Path) -> list[str]:
             corrupt = box.tmp / f"corrupt-{kind}.tsv"
             corrupt_marker(clean_after, corrupt, kind)
             expect_inconclusive(f"M6 {kind}", differ, clean_before, corrupt)
+
+        # M7: parser strictness also applies when a protected path has no ordinary identity.
+        marker_before = box.tmp / "marker-only-before-clean.tsv"
+        marker_after = box.tmp / "marker-only-after-clean.tsv"
+        without_error_rows(marker_only[(PAIRS[0], errno.EACCES, "BEFORE")], marker_before)
+        without_error_rows(marker_only[(PAIRS[0], errno.EACCES, "AFTER")], marker_after)
+        for kind in ("duplicate", "noncanonical", "wrong-side"):
+            corrupt_before = box.tmp / f"marker-only-before-{kind}.tsv"
+            corrupt_marker(marker_before, corrupt_before, kind)
+            expect_inconclusive(f"M7 marker-only BEFORE {kind}", differ, corrupt_before, marker_after)
+            corrupt_after = box.tmp / f"marker-only-after-{kind}.tsv"
+            corrupt_marker(marker_after, corrupt_after, kind)
+            expect_inconclusive(f"M7 marker-only AFTER {kind}", differ, marker_before, corrupt_after)
+
+        # M8: each operation independently needs an approved errno for the marker-only exemption.
+        for pair in PAIRS:
+            for side in ("BEFORE", "AFTER"):
+                for enumeration_error, identity_error in (
+                    (errno.EACCES, errno.EIO),
+                    (errno.EPERM, errno.EIO),
+                    (errno.EIO, errno.EACCES),
+                    (errno.EIO, errno.EPERM),
+                ):
+                    row = (f"M8 mixed errno {pair!r} {side} "
+                           f"{errno.errorcode[enumeration_error]}/{errno.errorcode[identity_error]}")
+                    rc, output, counts = forced_snapshot(
+                        row, box, snapshotter, roots, pair, side, enumeration_error, identity_error,
+                    )
+                    if rc != 3:
+                        bad(row, f"mixed errno observation must remain incomplete, got rc={rc}")
+                    exact_mixed_errno(
+                        row, output, pair, side, enumeration_error, identity_error, counts,
+                    )
     finally:
         box.close()
     return list(failures)
@@ -376,7 +452,7 @@ def main(argv: list[str]) -> int:
     if problems:
         print(f"FAIL\tmac-varfolders-marker-only\t{len(problems)} problem(s)")
         return 1
-    print("PASS\tmac-varfolders-marker-only\tM1-M6")
+    print("PASS\tmac-varfolders-marker-only\tM1-M8")
     return 0
 
 
