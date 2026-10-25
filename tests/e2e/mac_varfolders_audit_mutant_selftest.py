@@ -20,8 +20,8 @@ fails here instead of passing vacuously. The mutants:
 - U1 a non-UTF-8 name silently skipped instead of encoded;
 - H1 a here-document (macOS /bin/bash 3.2 writes it to a temp file in $TMPDIR, the temp root by default);
 - H2 a python3 child without the helper's TMPDIR override that makes a temp file;
-- SP1-SP6 the parent census broken: the parent's entries not walked, a change beside T/C still COMPLETE, the parent's
-  deltas hidden with the INCONCLUSIVE kept, no common-parent check, no parent line, T and C counted again in it;
+- SP1-SP6 the parent census broken: the parent's entries not walked, a change beside T/C made INCONCLUSIVE, the
+  parent's deltas hidden, no common-parent check, no parent line, T and C counted again in it;
 - PS1, PS2 a parent entry with arbitrary name bytes silently skipped, or lossily normalized;
 - F2 an evidence dir that cannot be made fails open (V19);
 - F1 begin fails open again (1362d73a's ignore-and-run: a failed root discovery or an incomplete before snapshot
@@ -117,8 +117,10 @@ MUTANTS += [
     ("SP1 the parent's entries not walked", [
         ("            dirs[:] = [name for name in dirs if name not in skip]\n            names = [name for name in names if name not in skip]\n",
          "            dirs[:] = []\n            names = []\n")]),
-    ("SP2 a change beside T/C still COMPLETE", [("if outside:", "if False:")]),
-    ("SP3 the parent's deltas hidden, INCONCLUSIVE kept", [("for _token, row in rows:\n    print(row)\n",
+    ("SP2 a change beside T/C made INCONCLUSIVE", [(FINAL,
+        'if any(token == "P" for token, _row in rows):\n'
+        '    inconclusive("a parent change is not allowed")\n' + FINAL)]),
+    ("SP3 the parent's deltas hidden", [("for _token, row in rows:\n    print(row)\n",
                                                            'for token, row in rows:\n    if token != "P":\n        print(row)\n')]),
     ("SP4 no common-parent check", [('  [ -n "$pp" ] && [ "${pc%/*}" = "$pp" ] \\\n'
                                      '    || { echo "temp root $pt and cache root $pc have no common parent" >&2; return 1; }\n', "")]),

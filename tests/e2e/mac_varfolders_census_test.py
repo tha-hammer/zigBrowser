@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
-"""The per-user parent census of the /var/folders audit (SilverRidge 3661c9b8 and 5f1ce9a5): the owner's exception
-covers only the physical T and C roots, so the entries beside them in their common per-user parent (0, X and any
-other) are a census only. Before a browser-launching request, a change there must be reported in full and be
-INCONCLUSIVE, never a pass, and a missing or incomplete parent census must be non-pass.
+"""The per-user parent census of the /var/folders audit (SilverRidge 3661c9b8, 5f1ce9a5 and 0a7f52b1): every change
+inside the identity-bound common parent of the physical T and C roots (including 0, X and any other sibling) is
+recorded in full and is evidence-only. A missing or incomplete parent census remains non-pass.
 
 Registered (step test-mac-varfolders-audit; red a74766dd, fix-forward 9b70e08c, approved 8726efa8): the helper
 tests/mac/mac_varfolders_audit.sh records the parent census, and the registered oracle
@@ -13,7 +12,7 @@ The helper's added contract, on top of the registered oracle's:
 - the parent itself and every entry below it except T and C are recorded under the root token P, with the same
   records as T and C ("type mode uid gid nlink size mtime_ns ctime_ns inode sha256 link"; the parent is the path .);
 - a change under P is printed as an ordinary VARFOLDERS-DELTA with token P, among all the deltas of the run in their
-  usual order (token, then path bytes), and the end is then VARFOLDERS<TAB>INCONCLUSIVE<TAB><nonempty reason>, exit 2;
+  usual order (token, then path bytes), and the end is VARFOLDERS<TAB>COMPLETE<TAB><exact total>, exit 0;
 - T and C without a common parent, or an unreadable entry beside them, refuse at begin (exit 2, one INCONCLUSIVE line);
   one that becomes unreadable by the end is INCONCLUSIVE with no delta.
 
@@ -22,13 +21,13 @@ beside T and C):
 - PC1 no change: exactly the roots line, the parent line and COMPLETE 0.
 - PC2 a change in T and C only, with the siblings present: COMPLETE with exactly the T/C deltas, no P delta.
 - PC3 changes beside T and C (a file added in 0, a same-size rewrite in X, a new sibling directory with a file, the
-  parent's own mode) and a T change in the same run: every delta, exact and in order, then INCONCLUSIVE, exit 2.
+  parent's own mode) and a T change in the same run: every delta, exact and in order, then COMPLETE, exit 0.
 - PC4 T and C in two different per-user dirs: begin refuses.
 - PC5 an unreadable sibling directory at begin: begin refuses; one made unreadable by the end: INCONCLUSIVE, no delta.
   As a non-root user.
 - PC7 a name beside T and C containing a tab, newline or non-UTF-8 byte, at the parent's top level or deeper (in 0),
   is represented losslessly: present before begin it is stable; appearing between begin and end it produces the
-  exact encoded parent-census deltas and the ordinary OUTSIDE verdict. SilverRidge cfccc8e7.
+  exact encoded parent-census deltas and the ordinary COMPLETE verdict. SilverRidge cfccc8e7.
 - PC6 the helper itself changes nothing beside T and C either (the boundary covers the whole fake /var/folders tree).
 
 Run: python3 -X dev tests/e2e/mac_varfolders_census_test.py [helper path]   (zig build test-mac-varfolders-audit)
@@ -77,8 +76,8 @@ def head(box) -> list[str]:
 
 
 def verdict(row: str, box, rc: int, out: list[str]) -> tuple[str, list[tuple]] | None:
-    """COMPLETE (T/C deltas only, exit 0), OUTSIDE (every delta, one of P, then INCONCLUSIVE, exit 2) or
-    INCONCLUSIVE (no delta, exit 2); the header, when present, exactly head(box), once and first."""
+    """COMPLETE (every exact P/T/C delta, exit 0) or INCONCLUSIVE (no partial delta, exit 2); the header, when
+    present, is exactly head(box), once and first."""
     rest = list(out)
     if rest[:2] == head(box):
         rest = rest[2:]
@@ -96,13 +95,11 @@ def verdict(row: str, box, rc: int, out: list[str]) -> tuple[str, list[tuple]] |
         bad(f"{row}: malformed encoded delta path: {error}: {delta!r}")
         return None
     if final == ["VARFOLDERS", "COMPLETE", str(len(deltas))] and rc == 0 and out[:2] == head(box):
-        return ("COMPLETE", deltas) if all(d[2] != "P" for d in deltas) else None
+        return "COMPLETE", deltas
     if len(final) == 3 and final[:2] == ["VARFOLDERS", "INCONCLUSIVE"] and final[2].strip() and rc == 2:
         if not deltas:
             return "INCONCLUSIVE", []
-        if out[:2] == head(box) and any(d[2] == "P" for d in deltas):
-            return "OUTSIDE", deltas
-    bad(f"{row}: not a COMPLETE, OUTSIDE or INCONCLUSIVE result: rc={rc} {out[-3:]!r}")
+    bad(f"{row}: not a COMPLETE or bounded INCONCLUSIVE result: rc={rc} {out[-3:]!r}")
     return None
 
 
@@ -170,7 +167,7 @@ def run_rows(helper: Path) -> list[str]:
         exact("PC3 changes beside T and C", box, beside,
               [("added", "P", "0/new.db"), ("changed", "P", "0"), ("changed", "P", "X/x.bin"), ("added", "P", "Z"),
                ("added", "P", "Z/z"), ("changed", "P", "."), ("added", "T", "t.txt"), ("changed", "T", ".")],
-              "OUTSIDE")
+              "COMPLETE")
     finally:
         box.close()
 
@@ -219,7 +216,7 @@ def run_rows(helper: Path) -> list[str]:
                         decoded = os.fsdecode(where + fname)
                         named = [("added", "P", decoded),
                                  ("changed", "P", os.fsdecode(where[:-1]) if where else ".")]
-                        exact(row, box, put, named, "OUTSIDE")
+                        exact(row, box, put, named, "COMPLETE")
                 finally:
                     box.close()
 

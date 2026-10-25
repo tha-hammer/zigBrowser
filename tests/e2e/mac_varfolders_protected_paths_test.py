@@ -335,8 +335,9 @@ def run_rows(helper: Path) -> list[str]:
             for pair in changed:
                 (path_for(box, pair) / "audited.txt").write_text("after\n")
             rc, out = box.call("varfolders_end")
-            if rc != 2 or not out or out[-1].split("\t")[:2] != ["VARFOLDERS", "INCONCLUSIVE"]:
-                bad(f"R5 readable listed P change must be INCONCLUSIVE, got rc={rc} {out!r}")
+            got = base.parse("R5 readable listed paths", rc, out, base.roots_line(box), True)
+            if got is None or got[0] != "COMPLETE":
+                bad(f"R5 readable listed P change must be COMPLETE, got rc={rc} {out!r}")
             for pair in changed:
                 prefix = (f"VARFOLDERS-DELTA\tchanged\t{pair[0]}\t"
                           f"{base.evidence_field(pair[1] + '/audited.txt')}\t")
@@ -361,15 +362,12 @@ def run_rows(helper: Path) -> list[str]:
                 rc, out = box.call("varfolders_end")
                 delta = (f"VARFOLDERS-DELTA\tchanged\t{pair[0]}\t{base.evidence_field(pair[1])}\t"
                          f"{before_meta}\t{after_meta}")
-                if pair[0] == "C":
-                    final_ok = rc == 0 and bool(out) and out[-1] == "VARFOLDERS\tCOMPLETE\t1"
-                else:
-                    final_ok = rc == 2 and bool(out) and out[-1].split("\t")[:2] == ["VARFOLDERS", "INCONCLUSIVE"]
+                final_ok = rc == 0 and bool(out) and out[-1] == "VARFOLDERS\tCOMPLETE\t1"
                 before_line = marker("BEFORE", pair, "EACCES")
                 after_line = marker("AFTER", pair, "EACCES")
                 body = out[2:] if out[:2] == base.roots_line(box) else []
                 if not final_ok or body[:-1] != [before_line, after_line, delta]:
-                    bad(f"R5b metadata {pair!r}: want both markers, one full delta and token verdict, got rc={rc} "
+                    bad(f"R5b metadata {pair!r}: want both markers, one full delta and COMPLETE, got rc={rc} "
                         f"{out!r}")
         finally:
             box.close()

@@ -1,5 +1,6 @@
 # shellcheck shell=bash
-# The owner's /var/folders rules (2026-10-23/24; SilverRidge 94ebe76b, 30a7a1e8, c65d61e0, 93228b3a), one shared
+# The owner's /var/folders rules (2026-10-23/24/25; SilverRidge 94ebe76b, 30a7a1e8, c65d61e0, 93228b3a,
+# 0a7f52b1), one shared
 # helper for every
 # Mac gate that launches the browser (the runtime rows gate, the MS1c .app gate). Sourced, never run. A run may write
 # under the user's own /var/folders; this records exactly what changed there and writes, changes or deletes nothing
@@ -10,18 +11,16 @@
 #                                    VARFOLDERS<TAB>INCONCLUSIVE<TAB><reason>, and the caller must start nothing
 #   varfolders_end <evidence dir>    re-resolves the roots, takes the after snapshot and prints exactly:
 #     VARFOLDERS_ROOTS<TAB>T<TAB><encoded temp root><TAB>C<TAB><encoded cache root>
-#     VARFOLDERS_PARENT<TAB><encoded common per-user parent>   (SilverRidge 3661c9b8: its other entries, such as 0 and X,
-#         are a census only, outside the owner's exception; the root token P is that parent without T and C)
+#     VARFOLDERS_PARENT<TAB><encoded common per-user parent>   (the root token P is that exact identity-bound parent,
+#         including 0, X and other siblings but excluding the separately snapshotted T and C subtrees)
 #     SKIPPED-PROTECTED<TAB><BEFORE|AFTER><TAB><C|P><TAB><exact path><TAB><EACCES|EPERM>
 #         once per exact evidence-derived protected path that cannot be enumerated, ordered by token then path bytes;
 #         the path's lstat identity remains when available; an approved lstat denial leaves only the marker
 #     VARFOLDERS-DELTA<TAB><added|changed|removed><TAB><C|P|T><TAB><path><TAB><before><TAB><after>
 #         one per changed path (each root itself is the path .), ordered by root token then path bytes; <before> is -
 #         for an added path and <after> is - for a removed one
-#     VARFOLDERS<TAB>COMPLETE<TAB><n>   exit 0: n deltas, all of T or C; a delta alone is reportable and may coexist
-#         with PASS
-#   or every delta, at least one of P, then VARFOLDERS<TAB>INCONCLUSIVE<TAB><reason>   exit 2: a change beside T and C
-#         is reported in full and is never a pass
+#     VARFOLDERS<TAB>COMPLETE<TAB><n>   exit 0: n complete P/T/C deltas; every change is evidence-only and may
+#         coexist with PASS
 #   or [the roots and parent lines] VARFOLDERS<TAB>INCONCLUSIVE<TAB><reason>   exit 2, no delta: the roots are unusable
 #         or changed identity (getconf answer, symlink target, or a directory's device/inode), T and C have no common
 #         parent, or a snapshot (of T, C or the parent census) is missing or incomplete
@@ -289,9 +288,6 @@ for key in sorted(set(before) | set(after), key=lambda item: (item[0], item[1]))
                  (kind, key[0], evidence_field(key[1]), b or "-", a or "-")))
 for _token, row in rows:
     print(row)
-outside = sum(1 for token, _row in rows if token == "P")
-if outside:  # every delta is printed above; a change outside the reviewed T/C roots is never a pass
-    inconclusive("%d change(s) outside the reviewed T/C roots, beside them in the per-user parent" % outside)
 print("VARFOLDERS\tCOMPLETE\t%d" % len(rows))
 '
 
@@ -303,7 +299,7 @@ __vf_roots() { # $1=evidence dir; prints tokens plus canonical encoded physical 
   pt=$(cd -- "$t" 2>/dev/null && pwd -P) || { echo "temp root $t is not a directory" >&2; return 1; }
   pc=$(cd -- "$c" 2>/dev/null && pwd -P) || { echo "cache root $c is not a directory" >&2; return 1; }
   [ "$pt" != "$pc" ] || { echo "temp and cache roots are the same directory $pt" >&2; return 1; }
-  pp=${pt%/*}   # the per-user parent: its other entries (0, X, ...) are census-only, outside the exception
+  pp=${pt%/*}   # the exact per-user parent: record its other entries, excluding the separately snapshotted T and C
   [ -n "$pp" ] && [ "${pc%/*}" = "$pp" ] \
     || { echo "temp root $pt and cache root $pc have no common parent" >&2; return 1; }
   et=$(__vf_field "$ev" "$pt") && ec=$(__vf_field "$ev" "$pc") && ep=$(__vf_field "$ev" "$pp") \

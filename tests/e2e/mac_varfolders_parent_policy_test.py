@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""RED, UNREGISTERED: owner /var/folders policy (SilverRidge 56f84347, 22fa1dd5).
+"""Registered owner /var/folders record-all/fail-none policy (SilverRidge 56f84347, 22fa1dd5, 0a7f52b1).
 
 Every complete delta inside the identity-bound physical per-user parent is
 evidence-only: P itself, 0/, X/, arbitrary siblings, T and C are all reported
@@ -9,8 +9,7 @@ outside that boundary and are not part of this user's census.  Incomplete or
 malformed evidence remains fail closed; the registered legacy suites retain
 those safety checks.
 
-This file must remain absent from build.zig until the reviewed production green.
-Direct: python3 -X dev -W error tests/e2e/mac_varfolders_parent_policy_test.py [helper]
+Direct: python3 -X dev -W error -B tests/e2e/mac_varfolders_parent_policy_test.py [helper]
 """
 from __future__ import annotations
 

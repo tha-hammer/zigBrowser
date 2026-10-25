@@ -16,7 +16,7 @@ The helper's contract under test (sourced by bash):
                                     complete; otherwise refuses with exit 2 and one INCONCLUSIVE line (V15)
   varfolders_end <evidence dir>     the after snapshot, then exactly these lines and nothing else:
       VARFOLDERS_ROOTS<TAB>T<TAB><encoded physical temp root><TAB>C<TAB><encoded physical cache root>
-      VARFOLDERS-DELTA<TAB><added|changed|removed><TAB><T|C><TAB><encoded relative path><TAB><before><TAB><after>
+      VARFOLDERS-DELTA<TAB><added|changed|removed><TAB><P|T|C><TAB><encoded relative path><TAB><before><TAB><after>
       VARFOLDERS<TAB>COMPLETE<TAB><delta count>                                    -> exit 0
    or [the VARFOLDERS_ROOTS line] VARFOLDERS<TAB>INCONCLUSIVE<TAB><nonempty reason>, no delta  -> exit 2
   The roots line, when present, is the first line, exactly once, with the roots recorded at begin. Each root itself is
@@ -61,7 +61,7 @@ itself from lstat and the file bytes):
 - V16 the parent line: exactly one VARFOLDERS_PARENT<TAB><the physical common parent of T and C> after the roots
   line; T and C in two different per-user dirs refuse at begin (V6).
 - V17 a change beside T and C (in the per-user parent, root token P): every delta, exact and in order, then
-  INCONCLUSIVE, exit 2 (the verdict OUTSIDE); never COMPLETE. The census itself is
+  COMPLETE with its exact count, exit 0. The census itself is
   tests/e2e/mac_varfolders_census_test.py.
 - V18 an unreadable sibling: begin refuses; one made unreadable by the end gives INCONCLUSIVE with no delta.
 - V19 an evidence dir that cannot be made: begin refuses with exactly one line (no stray mkdir message).
@@ -296,8 +296,7 @@ def want_deltas(before: dict, after: dict) -> list[tuple]:
 def parse(row: str, rc: int, out: list[str], want_head: list[str], required: bool) -> tuple[str, list[tuple]] | None:
     """The end output's exact structure; returns (verdict, deltas), or records a problem under `row`. The header (the
     roots line, then the parent line), when present (always, when `required`), is first and exactly `want_head`, the
-    recorded roots. Verdicts: COMPLETE (T/C deltas only), OUTSIDE (every delta, at least one of the parent P, then
-    INCONCLUSIVE) and INCONCLUSIVE (no delta at all)."""
+    recorded roots. Verdicts: COMPLETE (every exact P/T/C delta) and INCONCLUSIVE (no partial delta)."""
     rest = list(out)
     if rest[:2] == want_head:
         rest = rest[2:]
@@ -327,7 +326,7 @@ def parse(row: str, rc: int, out: list[str], want_head: list[str], required: boo
             return None
         for d in deltas:
             kind, before, after = d[1], d[4], d[5]
-            if kind not in ("added", "changed", "removed") or d[2] not in ("T", "C") \
+            if kind not in ("added", "changed", "removed") or d[2] not in ("T", "C", "P") \
                     or (before == "-") != (kind == "added") or (after == "-") != (kind == "removed"):
                 bad(f"{row} malformed delta {d!r}")
                 return None
@@ -336,18 +335,10 @@ def parse(row: str, rc: int, out: list[str], want_head: list[str], required: boo
         if rc != 2 or len(final) != 3 or not final[2].strip():
             bad(f"{row} INCONCLUSIVE must exit 2 with exactly one nonempty reason, got rc={rc} {rest!r}")
             return None
-        if not deltas:
-            return "INCONCLUSIVE", []
-        for d in deltas:  # OUTSIDE: complete deltas are allowed only when one is beside T and C
-            kind, before, after = d[1], d[4], d[5]
-            if kind not in ("added", "changed", "removed") or d[2] not in ("T", "C", "P") \
-                    or (before == "-") != (kind == "added") or (after == "-") != (kind == "removed"):
-                bad(f"{row} malformed delta {d!r}")
-                return None
-        if not any(d[2] == "P" for d in deltas):
-            bad(f"{row} INCONCLUSIVE with deltas but none outside T/C (a partial result): {rest!r}")
+        if deltas:
+            bad(f"{row} INCONCLUSIVE must not publish partial deltas: {rest!r}")
             return None
-        return "OUTSIDE", deltas
+        return "INCONCLUSIVE", []
     bad(f"{row} unknown final line {rest[-1]!r}")
     return None
 
@@ -582,7 +573,7 @@ def run_rows(helper: Path) -> list[str]:
             box.close()
 
     box = Box(helper)
-    try:  # V17 a change beside T and C: every delta, exact, then INCONCLUSIVE (never a pass)
+    try:  # V17 a change beside T and C: every delta, exact, then COMPLETE
         state = {}
 
         def siblings(b):
@@ -602,8 +593,8 @@ def run_rows(helper: Path) -> list[str]:
         if sorted(delta_identity(d) for d in exact) != named:
             bad(f"V17 this test's own records missed a change: want {named!r}, got {exact!r}")
         got = parse("V17", rc, out, roots_line(box), True)
-        if got is not None and got != ("OUTSIDE", exact):
-            bad(f"V17 a change beside T and C: want all {len(exact)} exact deltas then INCONCLUSIVE, got {out!r}")
+        if got is not None and got != ("COMPLETE", exact):
+            bad(f"V17 a change beside T and C: want all {len(exact)} exact deltas then COMPLETE, got {out!r}")
     finally:
         box.close()
 
