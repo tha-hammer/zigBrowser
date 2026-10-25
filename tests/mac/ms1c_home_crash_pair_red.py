@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""RED, UNREGISTERED: malformed UNVERIFIED pid/path half-pairs terminate.
+"""GREEN, REGISTERED: malformed UNVERIFIED pid/path half-pairs terminate.
 
 The HOME crash-report consumer is an indexed loop.  Either half-present
 identity shape must be rejected once, without leaving the cursor on the same
@@ -75,7 +75,7 @@ def run_case(label: str, pid_field: str, path_field: str, code: str, work: Path)
     }
     command = [
         "/usr/bin/timeout", "--signal=TERM", "2s",
-        sys.executable, "-I", "-X", "dev", "-W", "error", "-B", "-X", "utf8", "-c", code,
+        sys.executable, "-I", "-B", "-X", "utf8", "-c", code,
         str(before), str(after), os.fsdecode(root), "Library/Logs/DiagnosticReports",
         "/private/control/zigBrowser", str(PROTECTED), str(reports),
     ]

@@ -520,6 +520,7 @@ while i < len(crash_lines):
     else:
         if (pid_field == "-") != (path_field == "-"):
             crash_invalid = True
+            i += 1
             continue
         if pid_field != "-":
             try:
