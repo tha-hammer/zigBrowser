@@ -4398,6 +4398,17 @@ pub fn build(b: *std.Build) void {
         "tests/mac/known_hosts",                   "tests/fixtures/app/index.html",      "packaging/macos/Info.plist",
         "packaging/macos/entitlements.plist",      "packaging/assets/zigBrowser.png",
     }) |input| mac_ms1c_crash_attribution.addFileInput(b.path(input));
+    // Real GUI launches use shell/launchctl envelopes; process evidence comes only from the common post-terminal
+    // Popen boundary, with the actual pid and explicit requested browser executable.
+    const mac_ms1c_process_ledger = b.addSystemCommand(&.{
+        "python3", "-X", "dev", "-W", "error", "-B", "tests/mac/ms1c_process_ledger_red.py",
+    });
+    mac_ms1c_process_ledger.has_side_effects = true;
+    for ([_][]const u8{
+        "tests/mac/ms1c_process_ledger_red.py", "tests/e2e/mac_term_teardown.py",    "tests/e2e/m9_render_test.py",
+        "tests/e2e/m9_reply_channel_test.py",  "tests/e2e/m9_load_fail_test.py",   "tests/e2e/slice2_common.py",
+        "tests/mac/ms1c_app_gate.sh",           "tests/mac/ms1c_crash_audit.py",    "tests/mac/exec_arch_probe.py",
+    }) |input| mac_ms1c_process_ledger.addFileInput(b.path(input));
     // MS1c item C: the complete canonical HOME census records every delta, while only bundle-owned paths, its exact
     // Saved Application State subtree and non-control crash reports fail the owner-policy verdict.
     const mac_ms1c_home_owner_policy = b.addSystemCommand(&.{ "python3", "-B", "tests/mac/ms1c_home_owner_policy_red.py" });
@@ -4424,6 +4435,7 @@ pub fn build(b: *std.Build) void {
     mac_ms1c_gate_step.dependOn(&mac_ms1c_exec_arch_socket.step);
     mac_ms1c_gate_step.dependOn(&mac_ms1c_term_eperm.step);
     mac_ms1c_gate_step.dependOn(&mac_ms1c_crash_attribution.step);
+    mac_ms1c_gate_step.dependOn(&mac_ms1c_process_ledger.step);
     mac_ms1c_gate_step.dependOn(&mac_ms1c_home_owner_policy.step);
     mac_ms1c_gate_step.dependOn(&mac_ms1c_term_only.step);
     test_step.dependOn(&mac_ms1c_gate_selftest.step);
@@ -4433,6 +4445,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&mac_ms1c_exec_arch_socket.step);
     test_step.dependOn(&mac_ms1c_term_eperm.step);
     test_step.dependOn(&mac_ms1c_crash_attribution.step);
+    test_step.dependOn(&mac_ms1c_process_ledger.step);
     test_step.dependOn(&mac_ms1c_home_owner_policy.step);
     test_step.dependOn(&mac_ms1c_term_only.step);
     // The 4pa.80 bundle-layout spike stages the real .app, signs it inside out and reports strict verification per Mac,

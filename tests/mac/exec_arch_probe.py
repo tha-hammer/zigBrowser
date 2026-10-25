@@ -157,7 +157,7 @@ def main():
     finally:
         try:
             if proc is not None:
-                stop_browser_term_only(proc)
+                stop_browser_term_only(proc, executable=args.browser)
         finally:
             remove_endpoints(sock_path)
             if created_tmp:

@@ -28,17 +28,25 @@ GRACE_S = 10.0
 _leaks: list = []
 
 
-def _record_terminal_process(proc: subprocess.Popen, status=None) -> None:
-    """Append one gate-owned process record, but only after this Popen has a terminal status."""
+def record_terminal_process(proc: subprocess.Popen, executable=None) -> None:
+    """Append one gate-owned terminal row from this Popen and the requested executable.
+
+    GUI launches use a shell or launchctl envelope which execs the requested
+    browser.  Those immutable launcher argv values are never process identity.
+    The status is read here from the same Popen object and must already be an
+    integer; callers cannot supply or reconstruct it.
+    """
     ledger = os.environ.get("ZB_PROCESS_LEDGER")
     if ledger is None or getattr(proc, "_zb_process_recorded", False):
         return
     row = os.environ.get("ZB_PROCESS_ROW")
     pid = proc.pid
-    if status is None:
-        status = proc.poll()
+    status = proc.poll()
     argv = proc.args
-    executable = argv[0] if isinstance(argv, (list, tuple)) and argv else None
+    if executable is None:
+        executable = argv[0] if isinstance(argv, (list, tuple)) and argv else None
+    if isinstance(executable, os.PathLike):
+        executable = os.fspath(executable)
     if (not row or any(c in row for c in "\t\r\n") or isinstance(pid, bool) or not isinstance(pid, int) or pid <= 1
             or isinstance(status, bool) or not isinstance(status, int)
             or not isinstance(executable, str) or not executable or any(c in executable for c in "\t\r\n")):
@@ -100,7 +108,7 @@ def _group_has_members(pgid: int) -> bool:
         return True  # a member we may not signal still holds the group
 
 
-def stop_browser_term_only(proc: subprocess.Popen, grace_s: float = GRACE_S) -> None:
+def stop_browser_term_only(proc: subprocess.Popen, grace_s: float = GRACE_S, executable=None) -> None:
     """SIGTERM the browser's process group, wait, reap. Never SIGKILL; a survivor is a LEAK (the test fails)."""
     pid = proc.pid
     if isinstance(pid, bool) or not isinstance(pid, int) or pid <= 1:
@@ -121,7 +129,7 @@ def stop_browser_term_only(proc: subprocess.Popen, grace_s: float = GRACE_S) -> 
         pgid = pid
     deadline = time.monotonic() + grace_s
     if status is not None and not _group_has_members(pgid):
-        _record_terminal_process(proc, status)
+        record_terminal_process(proc, executable)
         return  # reaped, and nothing left in its group: nothing to signal
     try:
         os.killpg(pgid, signal.SIGTERM)
@@ -147,7 +155,7 @@ def stop_browser_term_only(proc: subprocess.Popen, grace_s: float = GRACE_S) -> 
         time.sleep(0.05)
     status = proc.poll()
     if status is not None:
-        _record_terminal_process(proc, status)
+        record_terminal_process(proc, executable)
 
 
 def install_term_only_cleanup(get_proc) -> None:
@@ -166,15 +174,16 @@ def install_term_only_cleanup(get_proc) -> None:
 def run_term_only(argv: list, timeout_s: float) -> subprocess.CompletedProcess:
     """Like subprocess.run(argv, capture_output=True, text=True, timeout=timeout_s), but a timeout stops the child
     with stop_browser_term_only (SIGTERM only) before raising subprocess.TimeoutExpired."""
+    requested_executable = argv[0] if argv else None
     proc = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, start_new_session=True)
     try:
         out, err = proc.communicate(timeout=timeout_s)
     except subprocess.TimeoutExpired:
-        stop_browser_term_only(proc)
+        stop_browser_term_only(proc, executable=requested_executable)
         for stream in (proc.stdout, proc.stderr):
             stream.close()
         raise
-    _record_terminal_process(proc)
+    record_terminal_process(proc, requested_executable)
     return subprocess.CompletedProcess(argv, proc.returncode, out, err)
 
 

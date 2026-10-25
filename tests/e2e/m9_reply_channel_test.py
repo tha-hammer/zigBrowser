@@ -13,7 +13,7 @@ import time
 from pathlib import Path
 from typing import Callable
 
-from mac_term_teardown import stop_browser_term_only
+from mac_term_teardown import record_terminal_process, stop_browser_term_only
 from slice2_common import (
     HARNESS_EXIT_PREFIX,
     SKIP_EXIT,
@@ -144,6 +144,7 @@ def run_macos_gui_until(
         text=True,
         start_new_session=True,
     )
+    requested_executable = cmd[0]
 
     matched = False
     timed_out = False
@@ -175,11 +176,13 @@ def run_macos_gui_until(
             timed_out = True
     finally:
         if harness_exit_code(stdout_lines) is None:
-            stop_browser_term_only(proc)
+            stop_browser_term_only(proc, executable=requested_executable)
         try:
             launch_stdout, launch_stderr = proc.communicate(timeout=5)
         except subprocess.TimeoutExpired:
             launch_stdout, launch_stderr = "", ""  # left running and recorded as a LEAK: never SIGKILL on a Mac
+        if proc.poll() is not None:
+            record_terminal_process(proc, requested_executable)
 
     stdout_lines = read_file_lines(stdout_path)
     stderr_lines = read_file_lines(stderr_path)
