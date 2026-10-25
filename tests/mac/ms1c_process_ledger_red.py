@@ -80,6 +80,7 @@ def main() -> int:
         (7104, 5, True, [f"LOAD_FAIL\t{uri}\t-1009\t42"]),
     ]
     launched: list[FakeProc] = []
+    preterminal_checks: list[int] = []
 
     def fake_popen(argv, **_kwargs):
         if not specs:
@@ -95,6 +96,15 @@ def main() -> int:
         matches = [proc for proc in launched if proc.pid == pgid]
         if len(matches) != 1 or matches[0].returncode is not None:
             raise AssertionError(f"TERM did not name one live fake browser pid: {pgid}")
+        rows_before_terminal = [
+            line for line in ledger.read_text(encoding="utf-8").splitlines()
+            if len(line.split("\t")) >= 2 and line.split("\t")[1] == str(pgid)
+        ]
+        if rows_before_terminal:
+            problems.append(
+                f"pid {pgid} had ledger authority before TERM established terminal status: {rows_before_terminal!r}"
+            )
+        preterminal_checks.append(pgid)
         matches[0].returncode = matches[0]._terminal
 
     # The real helpers execute with these module globals.  Every pid is synthetic and
@@ -130,6 +140,8 @@ def main() -> int:
         problems.append(f"{len(specs)} launch specifications were not consumed")
     if len(launched) != 4:
         problems.append(f"observed {len(launched)} launches, want render=2 reply=1 loadfail=1")
+    if preterminal_checks != [7101, 7103]:
+        problems.append(f"TERM boundary checks were {preterminal_checks!r}, want [7101, 7103]")
     gui_argv0 = [proc.args[0] for proc in launched if proc.pid in (7101, 7103, 7104)]
     if gui_argv0 != ["/bin/sh", "/bin/launchctl", "/bin/sh"]:
         problems.append(f"fixture did not exercise shell/launchctl wrapper shapes: {gui_argv0!r}")
