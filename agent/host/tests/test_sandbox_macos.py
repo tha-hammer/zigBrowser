@@ -35,6 +35,24 @@ EGRESS = sandbox.Endpoint("127.0.0.1", 52346)
 BRIDGES = (51091, 31337)
 _DEVICES = ('(literal "/dev/null") (literal "/dev/zero") (literal "/dev/dtracehelper") '
             '(literal "/dev/tty") (literal "/dev/urandom") (literal "/dev/random")')
+_KEYCHAIN_DENIES = (
+    ";; token isolation (MS6.1): only the trusted parent reads Keychain before sandbox entry.",
+    '(deny file-read* (regex #"^/.*[.]keychain$"))',
+    '(deny file-read* (regex #"^/.*[.]keychain-db([.].*)?$"))',
+    '(deny file-read* (subpath "/Library/Keychains"))',
+    '(deny file-read* (regex #"^/Users/[^/]+/Library/Keychains(/|$)"))',
+    '(deny ipc-posix* (ipc-posix-name "com.apple.securityd"))',
+    '(deny mach-lookup (global-name "com.apple.securityd"))',
+    '(deny mach-lookup (global-name "com.apple.securityd.xpc"))',
+    '(deny mach-lookup (global-name "com.apple.securityd.general"))',
+    '(deny mach-lookup (global-name "com.apple.securityd.aps"))',
+    '(deny mach-lookup (global-name "com.apple.securityd.ckks"))',
+    '(deny mach-lookup (global-name "com.apple.securityd.octagon"))',
+    '(deny mach-lookup (global-name "com.apple.securityd.systemkeychain"))',
+    '(deny mach-lookup (global-name "com.apple.securitydservice"))',
+    '(deny mach-lookup (global-name "com.apple.keychainsharingmessagingd"))',
+    '(deny mach-lookup (global-name "com.apple.security.agent"))',
+)
 
 
 def reference_profile(*, egress, bridges, is_hook, is_login=False):
@@ -75,6 +93,7 @@ def reference_profile(*, egress, bridges, is_hook, is_login=False):
         "(deny process-info*)",
         "(allow process-info* (target self))",
         "(allow mach-lookup)",
+        *_KEYCHAIN_DENIES,
     ]) + "\n"
 
 
@@ -124,7 +143,10 @@ class NoUntrustedInterpolation(unittest.TestCase):
         p = sandbox_macos.render_profile(egress=EGRESS, bridges=BRIDGES, is_hook=False)
         self.assertIn('(subpath (param "SCRATCHPAD"))', p, "the scratchpad must be a -D param")
         # No write rule names a concrete absolute path (which would mean an interpolated, injectable value).
-        self.assertNotIn('(subpath "/', p, "no write rule may interpolate a concrete path")
+        # Static READ denials may name paths without widening the scratchpad's sole write grant.
+        write_rules = [line for line in p.splitlines() if line.startswith("(allow file-write*")]
+        self.assertEqual(len(write_rules), 1, "the profile must have exactly one write grant")
+        self.assertNotIn('(subpath "/', write_rules[0], "no write rule may interpolate a concrete path")
 
     def test_render_profile_takes_no_path_argument(self):
         # A path cannot be injected because render_profile does not accept one; it is bound via dparams/-D.
@@ -262,6 +284,7 @@ def reference_setup_profile(loopback_port=None):
         "(deny process-info*)",
         "(allow process-info* (target self))",
         "(allow mach-lookup)",
+        *_KEYCHAIN_DENIES,
     ]) + "\n"
 
 
