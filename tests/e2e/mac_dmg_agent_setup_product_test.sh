@@ -85,27 +85,34 @@ for shape in fresh existing; do
     exit 1
   }
   python="$d/install/zigBrowser.app/Contents/Frameworks/agent-host/Python.framework/Versions/3.12/bin/python3.12"
+  agent_host="$d/install/zigBrowser.app/Contents/Frameworks/agent-host"
   probe="$d/setup-profile-probe-$shape"
   mkdir -m 700 "$probe"
   set +e
   env -i PATH=/usr/bin:/bin HOME="$probe" TMPDIR="$probe" LANG=en_US.UTF-8 \
-    "$python" -I - "$probe" "$home/.ssh/id_test" <<'PY' >"$d/$shape.probe.out" 2>&1
+    "$python" -I - "$agent_host" "$probe" "$home/.ssh/id_test" <<'PY' >"$d/$shape.probe.out" 2>&1
 import subprocess
 import sys
+
+agent_host, scratch, canary = sys.argv[1:]
+sys.path.insert(0, agent_host)
 from zb_agent_host import sandbox_macos
 
-scratch, canary = sys.argv[1:]
 with sandbox_macos.setup_sandbox(scratch, [sys.prefix], ["/bin/cat", canary]) as argv:
     done = subprocess.run(argv, capture_output=True, timeout=20)
-raise SystemExit(0 if done.returncode != 0 and not done.stdout else 1)
+raise SystemExit(0 if done.returncode != 0 and not done.stdout else 10)
 PY
   probe_rc=$?
   set -e
-  [ "$probe_rc" -eq 0 ] || {
+  if [ "$probe_rc" -eq 10 ]; then
     printf 'FAIL mac-dmg-agent-setup: %s %s HOME allowed ~/.ssh/id_test\n' "$native" "$shape"
     sed -n '1,80p' "$d/$shape.probe.out"
     exit 1
-  }
+  elif [ "$probe_rc" -ne 0 ]; then
+    printf 'FAIL mac-dmg-agent-setup: %s %s HOME denial probe exited %s\n' "$native" "$shape" "$probe_rc"
+    sed -n '1,80p' "$d/$shape.probe.out"
+    exit 1
+  fi
   printf 'PASS mac-dmg-agent-setup: %s %s HOME provisioned current; denied ~/.ssh/id_test\n' "$native" "$shape"
 done
 REMOTE
