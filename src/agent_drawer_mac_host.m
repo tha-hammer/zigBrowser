@@ -9,6 +9,7 @@
 
 #import <objc/runtime.h>
 
+#include <math.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -25,6 +26,10 @@ int zb_drawer_classify(double dx, double dy);
 void zb_drawer_place(const void *ratios, int width, int height,
                      ZbMacDrawerRect *out);
 void zb_drawer_clamp(ZbMacDrawerRect *rect, int width, int height);
+void zb_drawer_lerp(const ZbMacDrawerRect *from, const ZbMacDrawerRect *to,
+                    double progress, ZbMacDrawerRect *out);
+double zb_drawer_ease(double progress);
+unsigned int zb_drawer_anim_ms(void);
 
 typedef struct {
   double x, y;
@@ -73,16 +78,28 @@ extern void zb_mac_agent_tools_e2e_start(unsigned int window_id)
 @property(nonatomic, strong) NSView *page;
 @property(nonatomic, strong) NSView *panel;
 @property(nonatomic, strong) ZBMacDrawerIcon *icon;
+@property(nonatomic, strong) NSView *foldView;
+@property(nonatomic, strong) NSTimer *foldTimer;
 @property(nonatomic, assign, getter=isOpen) BOOL open;
+@property(nonatomic, assign, getter=isFolding) BOOL folding;
 @property(nonatomic, assign) uint32_t identifier;
 @property(nonatomic, copy) NSString *pendingRowKind;
 @property(nonatomic, copy) NSString *pendingIconKind;
 @property(nonatomic, assign) BOOL hasRatios;
 @property(nonatomic, assign) ZbMacDrawerRatios ratios;
 @property(nonatomic, assign) ZbMacDrawerRect iconRect;
+@property(nonatomic, assign) ZbMacDrawerRect foldFrom;
+@property(nonatomic, assign) ZbMacDrawerRect foldTo;
+@property(nonatomic, assign) ZbMacDrawerRect foldReported;
+@property(nonatomic, assign) BOOL foldReportedValid;
+@property(nonatomic, assign) BOOL debugMinusClicked;
+@property(nonatomic, assign) NSTimeInterval foldStarted;
+@property(nonatomic, assign) NSUInteger foldFrames;
 @property(nonatomic, strong) id closeObserver;
 - (void)layoutViews;
 - (void)applyIconFrame;
+- (void)beginFold;
+- (void)cancelFold;
 @end
 
 @interface ZBMacDrawerIcon : NSButton
@@ -118,6 +135,36 @@ void zb_app_set_agent_drawer_status(const char *status) {
 static NSRect zb_nsrect(ZbMacDrawerRect rect) {
   return NSMakeRect((CGFloat)rect.x, (CGFloat)rect.y, (CGFloat)rect.w,
                     (CGFloat)rect.h);
+}
+
+static ZbMacDrawerRect zb_mac_rect(NSRect rect) {
+  return (ZbMacDrawerRect){
+      .x = (int)lround(NSMinX(rect)),
+      .y = (int)lround(NSMinY(rect)),
+      .w = (int)lround(NSWidth(rect)),
+      .h = (int)lround(NSHeight(rect)),
+  };
+}
+
+static BOOL zb_mac_fold_debug_enabled(void) {
+  const char *value = getenv("ZB_DEBUG_DRAWER_FOLD");
+  return zb_mac_drawer_e2e_enabled() && value != NULL &&
+         strcmp(value, "1") == 0;
+}
+
+static NSButton *zb_mac_find_minus(NSView *view) {
+  if ([view isKindOfClass:NSButton.class]) {
+    NSButton *button = (NSButton *)view;
+    if ([button.title isEqualToString:@"−"] &&
+        [button.accessibilityLabel isEqualToString:@"Minimize Claude Agent"]) {
+      return button;
+    }
+  }
+  for (NSView *child in view.subviews) {
+    NSButton *found = zb_mac_find_minus(child);
+    if (found != nil) return found;
+  }
+  return nil;
 }
 
 static ZBMacDrawerState *zb_state(NSWindow *window) {
@@ -335,6 +382,101 @@ static NSView *zb_make_panel(NSRect frame, ZBMacDrawerState *state) {
   self.icon.frame = zb_nsrect(frame);
 }
 
+- (void)updateFoldTarget {
+  int width = (int)NSWidth(self.host.bounds);
+  int height = (int)NSHeight(self.host.bounds);
+  zb_drawer_place(self.hasRatios ? &_ratios : NULL, width, height, &_iconRect);
+  [self applyIconFrame];
+  self.foldTo = zb_mac_rect(self.icon.frame);
+}
+
+- (void)cancelFold {
+  [self.foldTimer invalidate];
+  self.foldTimer = nil;
+  self.folding = NO;
+  self.foldView.hidden = YES;
+}
+
+- (void)advanceFold:(NSTimer *)timer {
+  if (timer != self.foldTimer || !self.folding) return;
+  [self updateFoldTarget];
+  NSTimeInterval elapsed = NSProcessInfo.processInfo.systemUptime - self.foldStarted;
+  unsigned int duration = zb_drawer_anim_ms();
+  double progress = duration == 0 ? 1.0 : elapsed * 1000.0 / duration;
+  ZbMacDrawerRect frame = {0};
+  zb_drawer_lerp(&_foldFrom, &_foldTo, zb_drawer_ease(progress), &frame);
+  self.foldFrames += 1;
+  self.foldView.frame = zb_nsrect(frame);
+  if (zb_mac_fold_debug_enabled() &&
+      (!self.foldReportedValid ||
+       memcmp(&_foldReported, &frame, sizeof(frame)) != 0)) {
+    self.foldReported = frame;
+    self.foldReportedValid = YES;
+    printf("DRAWER\t%u\tfold\t%lu\t%d,%d,%d,%d\ticon=hidden\tpanel=hidden\n",
+           self.identifier, (unsigned long)self.foldFrames, frame.x, frame.y,
+           frame.w, frame.h);
+    fflush(stdout);
+  }
+  if (progress < 1.0) return;
+
+  NSUInteger elapsed_ms = (NSUInteger)lround(elapsed * 1000.0);
+  [self.foldTimer invalidate];
+  self.foldTimer = nil;
+  self.folding = NO;
+  self.foldView.hidden = YES;
+  self.panel.hidden = YES;
+  self.icon.hidden = NO;
+  [self.icon.window makeFirstResponder:self.icon];
+  if (zb_mac_fold_debug_enabled()) {
+    printf("DRAWER\t%u\tanim\t%lu\t%lu\t%d,%d,%d,%d\t%d,%d,%d,%d\n",
+           self.identifier, (unsigned long)self.foldFrames,
+           (unsigned long)elapsed_ms, self.foldFrom.x, self.foldFrom.y,
+           self.foldFrom.w, self.foldFrom.h, self.foldTo.x, self.foldTo.y,
+           self.foldTo.w, self.foldTo.h);
+    printf("DRAWER\t%u\tminimized\t%d,%d,%d,%d\tpanel=hidden\ticon=visible\n",
+           self.identifier, self.foldTo.x, self.foldTo.y, self.foldTo.w,
+           self.foldTo.h);
+    fflush(stdout);
+  }
+}
+
+- (void)beginFold {
+  if (!self.open || self.folding) return;
+  self.foldFrom = zb_mac_rect(self.panel.frame);
+  [self updateFoldTarget];
+  self.foldFrames = 0;
+  self.foldReportedValid = NO;
+  self.foldStarted = NSProcessInfo.processInfo.systemUptime;
+  if (zb_mac_fold_debug_enabled()) {
+    printf("DRAWER\t%u\tfold-start\t%d,%d,%d,%d\t%d,%d,%d,%d\tpanel=visible\ticon=hidden\tminus=%s\n",
+           self.identifier, self.foldFrom.x, self.foldFrom.y, self.foldFrom.w,
+           self.foldFrom.h, self.foldTo.x, self.foldTo.y, self.foldTo.w,
+           self.foldTo.h, self.debugMinusClicked ? "clicked" : "not-clicked");
+    fflush(stdout);
+  }
+  self.debugMinusClicked = NO;
+  self.open = NO;
+  self.folding = YES;
+  self.panel.hidden = YES;
+  self.foldView.frame = zb_nsrect(self.foldFrom);
+  self.foldView.hidden = NO;
+  self.icon.hidden = YES;
+  if (zb_agent_tools_drawer_showing != NULL) {
+    zb_agent_tools_drawer_showing(self.identifier, 0);
+  }
+  if (self.window == zb_mac_drawer_menu_window()) {
+    g_zb_mac_drawer_menu_item.state = NSControlStateValueOff;
+  }
+  [self.host setNeedsLayout:YES];
+  [self.host layoutSubtreeIfNeeded];
+  self.foldTimer = [NSTimer timerWithTimeInterval:1.0 / 60.0
+                                           target:self
+                                         selector:@selector(advanceFold:)
+                                         userInfo:nil
+                                          repeats:YES];
+  [NSRunLoop.mainRunLoop addTimer:self.foldTimer forMode:NSRunLoopCommonModes];
+}
+
 - (void)layoutViews {
   NSRect bounds = self.host.bounds;
   int width = (int)NSWidth(bounds);
@@ -360,7 +502,7 @@ static NSView *zb_make_panel(NSRect frame, ZBMacDrawerState *state) {
 
   zb_drawer_place(self.hasRatios ? &_ratios : NULL, width, height, &_iconRect);
   [self applyIconFrame];
-  self.icon.hidden = self.open;
+  self.icon.hidden = self.open || self.folding;
 
   NSString *kind = self.pendingRowKind;
   if (kind != nil && zb_mac_drawer_e2e_enabled()) {
@@ -424,6 +566,14 @@ void zb_mac_drawer_attach(NSWindow *window, NSView *webview,
   state.panel = zb_make_panel(NSZeroRect, state);
   state.panel.translatesAutoresizingMaskIntoConstraints = NO;
   state.panel.hidden = YES;
+  NSView *fold_view = [[NSView alloc] initWithFrame:NSZeroRect];
+  fold_view.wantsLayer = YES;
+  fold_view.layer.backgroundColor = NSColor.windowBackgroundColor.CGColor;
+  fold_view.layer.cornerRadius = 12;
+  fold_view.layer.borderWidth = 1;
+  fold_view.layer.borderColor = NSColor.separatorColor.CGColor;
+  fold_view.hidden = YES;
+  state.foldView = fold_view;
   ZBMacDrawerIcon *icon = [[ZBMacDrawerIcon alloc] initWithFrame:NSZeroRect];
   icon.drawerState = state;
   icon.title = @"S";
@@ -447,7 +597,8 @@ void zb_mac_drawer_attach(NSWindow *window, NSView *webview,
   [webview removeFromSuperview];
   [host addSubview:webview];
   [host addSubview:state.panel positioned:NSWindowAbove relativeTo:webview];
-  [host addSubview:icon positioned:NSWindowAbove relativeTo:state.panel];
+  [host addSubview:fold_view positioned:NSWindowAbove relativeTo:state.panel];
+  [host addSubview:icon positioned:NSWindowAbove relativeTo:fold_view];
   objc_setAssociatedObject(window, kZBMacDrawerStateKey, state,
                            OBJC_ASSOCIATION_RETAIN_NONATOMIC);
   if (zb_agent_tools_window_opened != NULL) {
@@ -462,6 +613,7 @@ void zb_mac_drawer_attach(NSWindow *window, NSView *webview,
     (void)notification;
     ZBMacDrawerState *strong_state = weak_close_state;
     if (strong_state == nil) return;
+    [strong_state cancelFold];
     if (zb_agent_tools_window_closed != NULL) {
       zb_agent_tools_window_closed(strong_state.identifier);
     }
@@ -604,6 +756,23 @@ void zb_mac_drawer_attach(NSWindow *window, NSView *webview,
     }
   }
 
+  if (state.identifier == 1 && zb_mac_fold_debug_enabled()) {
+    __weak ZBMacDrawerState *weak_state = state;
+    dispatch_async(dispatch_get_main_queue(), ^{
+      ZBMacDrawerState *strong_state = weak_state;
+      if (strong_state == nil || strong_state.window == nil) return;
+      zb_mac_drawer_set_open(strong_state.window, 1);
+      dispatch_async(dispatch_get_main_queue(), ^{
+        ZBMacDrawerState *ready_state = weak_state;
+        if (ready_state == nil || ready_state.window == nil) return;
+        NSButton *minus = zb_mac_find_minus(ready_state.panel);
+        if (minus == nil) return;
+        ready_state.debugMinusClicked = YES;
+        [minus performClick:nil];
+      });
+    });
+  }
+
   if (status_shown && zb_mac_drawer_e2e_enabled()) {
     printf("DRAWER\t%u\tmsg\tsystem\t%s\n", state.identifier,
            g_zb_mac_drawer_status.UTF8String);
@@ -634,28 +803,31 @@ void zb_mac_drawer_set_open(NSWindow *window, int open) {
     return;
   }
   BOOL wanted = open != 0;
-  if (state.open == wanted) {
-    if (wanted && zb_mac_drawer_panel_focus_input != NULL) {
+  if (!wanted) {
+    if (state.open) [state beginFold];
+    return;
+  }
+  if (state.open && !state.folding) {
+    if (zb_mac_drawer_panel_focus_input != NULL) {
       zb_mac_drawer_panel_focus_input(state.panel);
     }
     return;
   }
-  state.open = wanted;
-  state.icon.hidden = wanted;
+  if (state.folding) [state cancelFold];
+  state.open = YES;
+  state.icon.hidden = YES;
   if (zb_agent_tools_drawer_showing != NULL) {
-    zb_agent_tools_drawer_showing(state.identifier, wanted ? 1 : 0);
+    zb_agent_tools_drawer_showing(state.identifier, 1);
   }
   if (window == zb_mac_drawer_menu_window()) {
-    g_zb_mac_drawer_menu_item.state = wanted ? NSControlStateValueOn
-                                              : NSControlStateValueOff;
+    g_zb_mac_drawer_menu_item.state = NSControlStateValueOn;
   }
   [state.host setNeedsLayout:YES];
   [state.host layoutSubtreeIfNeeded];
-  if (wanted && zb_mac_drawer_panel_focus_input != NULL) {
+  if (zb_mac_drawer_panel_focus_input != NULL) {
     zb_mac_drawer_panel_focus_input(state.panel);
   }
-  if (wanted && zb_mac_drawer_e2e_enabled() &&
-      zb_mac_agent_tools_e2e_start != NULL) {
+  if (zb_mac_drawer_e2e_enabled() && zb_mac_agent_tools_e2e_start != NULL) {
     zb_mac_agent_tools_e2e_start(state.identifier);
   }
 }
