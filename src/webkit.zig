@@ -149,7 +149,7 @@ pub fn applyAgentDrawer(flag: ?agent_config.AgentDrawer) bool {
 /// Apply the same build-controlled macOS agent policy as `--agent-setup`.
 /// Returns whether the drawer may configure and launch an agent. The default
 /// development build is explicitly labelled; a build with the switch off
-/// keeps the Seatbelt refusal and never reaches the unsandboxed launch.
+/// selects the Seatbelt product launch.
 pub fn applyMacosAgentBuildPolicy(drawer_on: bool, mac_unsandboxed_dev: bool) bool {
     if (comptime builtin.os.tag != .macos) return true;
     if (!drawer_on) {

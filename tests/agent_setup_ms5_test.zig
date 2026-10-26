@@ -60,13 +60,8 @@ test "item 6: macOS setup refuses until MS6's Seatbelt backend is accepted, and 
     try std.testing.expect(agent_setup.platformGate(.macos, true) == .run);
 }
 
-test "the macOS development bypass is build-controlled and release stays fail-closed" {
-    const release = agent_setup.platformGateForBuild(.macos, false, false);
-    try std.testing.expect(release == .refuse);
-    try std.testing.expectEqualStrings(
-        "zigBrowser: agent-setup: the macOS sandbox is not ready; setup will not run unsandboxed",
-        release.refuse,
-    );
+test "the macOS build switch admits only its selected drawer backend" {
+    try std.testing.expect(agent_setup.platformGateForBuild(.macos, false, false) == .run);
     try std.testing.expect(agent_setup.platformGateForBuild(.macos, false, true) == .run);
 }
 

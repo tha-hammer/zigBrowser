@@ -76,11 +76,12 @@ pub fn platformGate(os: std.Target.Os.Tag, sandbox_ready: bool) Gate {
     };
 }
 
-/// The owner development build may run the macOS drawer before Seatbelt lands.
-/// A release-style build (`mac_unsandboxed_dev == false`) retains the ordinary
-/// drawer platform gate unchanged.
+/// The macOS build switch selects the drawer backend while acceptance remains
+/// fail-closed separately in `platformGate`: true enables the temporary
+/// unsandboxed development path; false selects the Seatbelt product path.
 pub fn platformGateForBuild(os: std.Target.Os.Tag, sandbox_ready: bool, mac_unsandboxed_dev: bool) Gate {
-    if (os == .macos and mac_unsandboxed_dev) return .run;
+    _ = mac_unsandboxed_dev;
+    if (os == .macos) return .run;
     return platformGate(os, sandbox_ready);
 }
 

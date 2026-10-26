@@ -259,10 +259,11 @@ static void zb_terminate_owned_group(pid_t *pid) {
 
   NSString *script = [self.packageDirectory stringByAppendingPathComponent:@"zb_agent_host/netd.py"];
   NSString *manifest = [self.home stringByAppendingPathComponent:@"runtime/net.json"];
-  const char *const argv[] = {
+  const char *argv[8] = {
     self.python.fileSystemRepresentation, "-I", "-S", script.fileSystemRepresentation,
-    "--net-manifest", manifest.fileSystemRepresentation, NULL,
+    "--net-manifest", manifest.fileSystemRepresentation, NULL, NULL,
   };
+  if (zb_mac_drawer_e2e_enabled()) argv[6] = "--census";
   const char *const envp[] = {
     "PATH=/usr/bin:/bin", "LANG=C.UTF-8", "PYTHONDONTWRITEBYTECODE=1", NULL,
   };
@@ -444,6 +445,10 @@ static void zb_terminate_owned_group(pid_t *pid) {
   }
   self.inputSequence = sequence.unsignedLongLongValue;
   if ([type isEqualToString:@"ready"]) {
+    if (zb_mac_drawer_e2e_enabled()) {
+      fputs("DRAWER_AGENT_E2E\tready-fd3\n", stderr);
+      fflush(stderr);
+    }
     self.state = ZBMacHelperReady;
     NSDictionary *hello = @{
       @"type": @"hello", @"agent_home": self.home,
