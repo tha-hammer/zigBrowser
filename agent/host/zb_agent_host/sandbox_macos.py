@@ -155,7 +155,13 @@ def _keychain_mach_denies():
         ";; token isolation (MS6.1): only the trusted parent reads Keychain before sandbox entry.",
         '(deny mach-lookup (global-name "com.apple.securityd"))',
         '(deny mach-lookup (global-name "com.apple.securityd.xpc"))',
-        '(deny mach-lookup (global-name "com.apple.securityd.system"))',
+        '(deny mach-lookup (global-name "com.apple.securityd.general"))',
+        '(deny mach-lookup (global-name "com.apple.securityd.aps"))',
+        '(deny mach-lookup (global-name "com.apple.securityd.ckks"))',
+        '(deny mach-lookup (global-name "com.apple.securityd.octagon"))',
+        '(deny mach-lookup (global-name "com.apple.securityd.systemkeychain"))',
+        '(deny mach-lookup (global-name "com.apple.securitydservice"))',
+        '(deny mach-lookup (global-name "com.apple.keychainsharingmessagingd"))',
         '(deny mach-lookup (global-name "com.apple.security.agent"))',
     ]
 
