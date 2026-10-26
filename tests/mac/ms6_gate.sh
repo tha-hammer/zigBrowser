@@ -70,7 +70,7 @@ if [ "$got" != "$ZB_EXPECT_ARCH" ]; then
   exit 1
 fi
 /bin/sh "$d/sandbox_containment_test.sh" "$d/agent_sandbox_containment_spike.sb"
-/bin/sh "$d/ms6_1_token_isolation_test.sh" "$d/agent_sandbox_ms6_1_token_isolation.sb"
+/bin/sh "$d/ms6_1_token_isolation_test.sh" "$d"
 /bin/sh "$d/ms6_generated_profile_test.sh" "$d"
 /bin/sh "$d/ms6_3_fd3_reopen_test.sh" "$d"
 /bin/sh "$d/ms6_4_egress_test.sh" "$d"
