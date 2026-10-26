@@ -8,6 +8,7 @@ const agent_config = @import("agent_config.zig");
 const mac_vm_containment = @import("mac_vm_containment.zig");
 const agent_net = @import("agent_net.zig");
 const agent_helper = @import("agent_helper.zig");
+const agent_host_posix = @import("agent_host_posix.zig");
 const agent_frames = @import("agent_frames.zig");
 const agent_tools = @import("agent_tools.zig");
 const agent_login = @import("agent_login.zig");
@@ -224,6 +225,7 @@ fn runAgentSetupMacos(arena: std.mem.Allocator, spec: AgentSetupSpec) errors.Bro
 /// configured, and Send says the runtime is not set up (S5.5). Returns what
 /// the helper's launch needs (S3b), or null without a provisioned home.
 fn configureAgentNet(arena: std.mem.Allocator, io: std.Io, e2e: bool) !?AgentNet {
+    if (comptime builtin.os.tag == .macos) return configureAgentNetMacos(arena, e2e);
     if (comptime builtin.os.tag != .linux) return null;
     const home = (agent_setup.defaultHomeDir(arena, getenvOwned(arena, "XDG_DATA_HOME"), getenvOwned(arena, "HOME")) catch null) orelse return null;
     const current = try std.fs.path.joinZ(arena, &.{ home, "current" });
@@ -270,13 +272,41 @@ fn configureAgentNet(arena: std.mem.Allocator, io: std.Io, e2e: bool) !?AgentNet
     return .{ .home = home, .python = python, .package_dir = package_dir, .sockdir = sockdir, .test_ca = test_ca };
 }
 
+/// The macOS drawer owns one host-loopback netd for the app lifetime. It is
+/// started before the helper so the helper launch receives only the exact
+/// ephemeral port; failure has no guessed or unsandboxed fallback.
+fn configureAgentNetMacos(arena: std.mem.Allocator, e2e: bool) !?AgentNet {
+    if (comptime builtin.os.tag != .macos) return null;
+    const home = (agent_setup.defaultHomeDir(arena, getenvOwned(arena, "XDG_DATA_HOME"), getenvOwned(arena, "HOME")) catch null) orelse return null;
+    const current = try std.fs.path.joinZ(arena, &.{ home, "current" });
+    if (std.c.access(current.ptr, 0) != 0) return null;
+
+    var exe_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const exe = try self_exe.path(&exe_buf);
+    const runtime = try agent_setup.runtimeFor(arena, .macos, exe);
+    const manifest = try agent_net.netManifestPath(arena, home);
+    const argv = try agent_net.netdDarwinArgv(arena, runtime.python, runtime.package_dir, manifest, e2e);
+    const envp = try agent_net.netdEnv(arena, getenvOwned(arena, "LANG"), getenvOwned(arena, "LC_ALL"));
+    const owned = try arena.create(agent_host_posix.Netd);
+    owned.* = try agent_host_posix.spawnNetd(arena, argv, envp, agent_host_posix.ready_wait_ms);
+    return .{
+        .home = home,
+        .python = runtime.python,
+        .package_dir = runtime.package_dir,
+        .egress_port = owned.port,
+        .mac_netd = owned,
+    };
+}
+
 /// What configureAgentNet resolved, for the helper's launch (S3b).
 const AgentNet = struct {
     home: []const u8,
     python: []const u8,
     package_dir: []const u8,
-    sockdir: []const u8,
-    test_ca: ?[]const u8,
+    sockdir: []const u8 = "",
+    egress_port: ?u16 = null,
+    test_ca: ?[]const u8 = null,
+    mac_netd: ?*agent_host_posix.Netd = null,
 };
 
 /// Chat drawer S3b (plan D7, S3.2, S3.6; rev 16 §3c): with a provisioned agent
@@ -285,7 +315,7 @@ const AgentNet = struct {
 /// missing runtime or a changed one makes the agent unavailable up front; the
 /// e2e seams are read only with --e2e-protocol (agent_helper.zig).
 fn configureAgentHelper(arena: std.mem.Allocator, io: std.Io, e2e: bool, net: AgentNet) !void {
-    if (comptime builtin.os.tag != .linux) return;
+    if (comptime builtin.os.tag != .linux and builtin.os.tag != .macos) return;
     const runtime_dir = try std.fs.path.join(arena, &.{ net.home, "runtime" });
     var path_dirs: []const []const u8 = &.{};
     if (readSmall(arena, io, try std.fs.path.join(arena, &.{ runtime_dir, "path.json" }))) |text| {
@@ -310,10 +340,14 @@ fn configureAgentHelper(arena: std.mem.Allocator, io: std.Io, e2e: bool, net: Ag
             bubble = "Claude Agent runtime changed: run zigBrowser --agent-setup again";
         },
     }
+    const realization: agent_helper.Realization = if (comptime builtin.os.tag == .macos)
+        .{ .darwin = net.egress_port orelse return error.NetworkFailure }
+    else
+        .{ .linux = net.sockdir };
     const launch = try agent_helper.launch(arena, .{
         .python = net.python,
         .home = net.home,
-        .realization = .{ .linux = net.sockdir },
+        .realization = realization,
         .path_dirs = path_dirs,
         .lang = getenvOwned(arena, "LANG"),
         .lc_all = getenvOwned(arena, "LC_ALL"),
@@ -383,7 +417,7 @@ fn readSmall(arena: std.mem.Allocator, io: std.Io, path: []const u8) ?[]const u8
 // The helper's frame exports (src/agent_frames.zig) are linked where
 // agent_helper.c, which calls them, is built.
 comptime {
-    if (builtin.os.tag == .linux) _ = agent_frames;
+    if (builtin.os.tag == .linux or builtin.os.tag == .macos) _ = agent_frames;
     // A drawer's tool calls (src/agent_tools.zig), for agent_helper.c (S7b); on every OS, the
     // approval cards' minters and window lifecycle (MS8.0).
     _ = agent_tools;
@@ -438,11 +472,13 @@ fn runOpen(arena: std.mem.Allocator, io: std.Io, spec: OpenSpec) errors.BrowserE
     backend_flag.startup(&sink, spec.hw_policy, spec.renderer, spec.media_source) catch return error.Usage;
     const profile_dir = try applyProfileDir(arena, io, spec);
     // At quit, after the main loop (a no-op when netd never started). Linux
-    // only: agent_host.c is GTK-only, and the cross builds must not name it.
+    // uses agent_host.c; macOS owns the POSIX netd returned above.
+    var mac_netd: ?*agent_host_posix.Netd = null;
+    defer if (comptime builtin.os.tag == .macos) if (mac_netd) |netd| netd.stop();
     defer if (comptime builtin.os.tag == .linux) c.zb_agent_net_stop();
     // Before netd stops (defers run in reverse): the helper's shutdown, 2 s,
     // SIGTERM to its group, 1 s, SIGKILL (D7). A no-op when none started.
-    defer if (comptime builtin.os.tag == .linux) c.zb_agent_helper_stop();
+    defer if (comptime builtin.os.tag == .linux or builtin.os.tag == .macos) c.zb_agent_helper_stop();
     // Before zb_app_run builds the first window; the icon's saved position
     // lives with the profile (agent-drawer.json), read only when it is on.
     const drawer_on = webkit.applyAgentDrawer(spec.agent_drawer);
@@ -454,7 +490,10 @@ fn runOpen(arena: std.mem.Allocator, io: std.Io, spec: OpenSpec) errors.BrowserE
         }, spec.e2e_protocol);
         const net = configureAgentNet(arena, io, spec.e2e_protocol) catch return error.WriteFailed;
         configureAgentSecrets(arena, spec.agent_secret_store, spec.e2e_protocol) catch return error.WriteFailed;
-        if (net) |n| configureAgentHelper(arena, io, spec.e2e_protocol, n) catch return error.WriteFailed;
+        if (net) |n| {
+            mac_netd = n.mac_netd;
+            configureAgentHelper(arena, io, spec.e2e_protocol, n) catch return error.WriteFailed;
+        }
         if (net) |n| configureAgentLogin(arena, io, spec.e2e_protocol, n) catch return error.WriteFailed;
     }
 
