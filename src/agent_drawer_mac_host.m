@@ -53,6 +53,7 @@ extern void zb_mac_drawer_panel_append(NSView *panel, const char *role,
 
 @class ZBMacDrawerState;
 @class ZBMacDrawerIcon;
+@class ZBMacDrawerMenuTarget;
 
 @interface ZBMacDrawerHostView : NSView
 @property(nonatomic, weak) ZBMacDrawerState *drawerState;
@@ -83,6 +84,8 @@ static const void *const kZBMacDrawerStateKey = &kZBMacDrawerStateKey;
 static uint32_t g_zb_mac_drawer_next_identifier = 0;
 static BOOL g_zb_mac_drawer_enabled = NO;
 static NSString *g_zb_mac_drawer_status = nil;
+static ZBMacDrawerMenuTarget *g_zb_mac_drawer_menu_target = nil;
+static NSMenuItem *g_zb_mac_drawer_menu_item = nil;
 
 void zb_app_set_agent_drawer(int enabled) {
   g_zb_mac_drawer_enabled = enabled != 0;
@@ -112,6 +115,87 @@ static ZBMacDrawerState *zb_state(NSWindow *window) {
   return window != nil
              ? objc_getAssociatedObject(window, kZBMacDrawerStateKey)
              : nil;
+}
+
+static NSWindow *zb_mac_drawer_menu_window(void) {
+  if (zb_state(NSApp.keyWindow) != nil) {
+    return NSApp.keyWindow;
+  }
+  if (zb_state(NSApp.mainWindow) != nil) {
+    return NSApp.mainWindow;
+  }
+  for (NSWindow *window in NSApp.orderedWindows) {
+    if (zb_state(window) != nil) {
+      return window;
+    }
+  }
+  return nil;
+}
+
+@interface ZBMacDrawerMenuTarget : NSObject
+- (void)toggleDrawer:(id)sender;
+@end
+
+@implementation ZBMacDrawerMenuTarget
+
+- (void)toggleDrawer:(id)sender {
+  (void)sender;
+  NSWindow *window = zb_mac_drawer_menu_window();
+  if (window != nil) {
+    zb_mac_drawer_set_open(window, !zb_mac_drawer_is_open(window));
+  }
+}
+
+- (BOOL)validateMenuItem:(NSMenuItem *)menuItem {
+  if (menuItem == g_zb_mac_drawer_menu_item) {
+    menuItem.state = zb_mac_drawer_is_open(zb_mac_drawer_menu_window())
+                         ? NSControlStateValueOn
+                         : NSControlStateValueOff;
+  }
+  return YES;
+}
+
+@end
+
+static void zb_mac_drawer_ensure_menu(void) {
+  if (g_zb_mac_drawer_menu_item != nil) {
+    return;
+  }
+  NSMenu *main_menu = NSApp.mainMenu;
+  if (main_menu == nil) {
+    main_menu = [[NSMenu alloc] initWithTitle:@"Main"];
+    NSString *name = NSProcessInfo.processInfo.processName;
+    NSMenuItem *app_root = [[NSMenuItem alloc] initWithTitle:name
+                                                     action:nil
+                                              keyEquivalent:@""];
+    NSMenu *app_menu = [[NSMenu alloc] initWithTitle:name];
+    NSString *quit_title = [@"Quit " stringByAppendingString:name];
+    [app_menu addItemWithTitle:quit_title
+                        action:@selector(terminate:)
+                 keyEquivalent:@"q"];
+    app_root.submenu = app_menu;
+    [main_menu addItem:app_root];
+    NSApp.mainMenu = main_menu;
+  }
+
+  NSMenuItem *view_root = [main_menu itemWithTitle:@"View"];
+  if (view_root == nil) {
+    view_root = [[NSMenuItem alloc] initWithTitle:@"View"
+                                          action:nil
+                                   keyEquivalent:@""];
+    view_root.submenu = [[NSMenu alloc] initWithTitle:@"View"];
+    [main_menu addItem:view_root];
+  } else if (view_root.submenu == nil) {
+    view_root.submenu = [[NSMenu alloc] initWithTitle:@"View"];
+  }
+
+  g_zb_mac_drawer_menu_target = [[ZBMacDrawerMenuTarget alloc] init];
+  g_zb_mac_drawer_menu_item =
+      [[NSMenuItem alloc] initWithTitle:@"Agent Drawer"
+                                action:@selector(toggleDrawer:)
+                         keyEquivalent:@""];
+  g_zb_mac_drawer_menu_item.target = g_zb_mac_drawer_menu_target;
+  [view_root.submenu addItem:g_zb_mac_drawer_menu_item];
 }
 
 static void zb_mac_drawer_minimize(void *context) {
@@ -334,6 +418,29 @@ void zb_mac_drawer_attach(NSWindow *window, NSView *webview) {
   [window setContentSize:bounds.size];
   [host setNeedsLayout:YES];
   [host layoutSubtreeIfNeeded];
+  zb_mac_drawer_ensure_menu();
+
+  const char *menu_debug = getenv("ZB_DEBUG_DRAWER_MENU");
+  if (state.identifier == 1 && zb_mac_drawer_e2e_enabled() &&
+      menu_debug != NULL && strcmp(menu_debug, "1") == 0) {
+    __weak ZBMacDrawerState *weak_state = state;
+    dispatch_async(dispatch_get_main_queue(), ^{
+      ZBMacDrawerState *strong_state = weak_state;
+      NSMenuItem *item = g_zb_mac_drawer_menu_item;
+      if (strong_state == nil || strong_state.window == nil || item == nil) {
+        return;
+      }
+      printf("DRAWER\t%u\tmenu\tView > %s\n", strong_state.identifier,
+             item.title.UTF8String);
+      [NSApp sendAction:item.action to:item.target from:item];
+      printf("DRAWER\t%u\tmenu-open\t%d\n", strong_state.identifier,
+             zb_mac_drawer_is_open(strong_state.window));
+      [NSApp sendAction:item.action to:item.target from:item];
+      printf("DRAWER\t%u\tmenu-close\t%d\n", strong_state.identifier,
+             zb_mac_drawer_is_open(strong_state.window));
+      fflush(stdout);
+    });
+  }
 
   const char *icon_debug = getenv("ZB_DEBUG_DRAWER_ICON");
   if (zb_mac_drawer_e2e_enabled() && icon_debug != NULL &&
@@ -428,6 +535,10 @@ void zb_mac_drawer_set_open(NSWindow *window, int open) {
   }
   state.open = wanted;
   state.icon.hidden = wanted;
+  if (window == zb_mac_drawer_menu_window()) {
+    g_zb_mac_drawer_menu_item.state = wanted ? NSControlStateValueOn
+                                              : NSControlStateValueOff;
+  }
   [state.host setNeedsLayout:YES];
   [state.host layoutSubtreeIfNeeded];
   if (wanted && zb_mac_drawer_panel_focus_input != NULL) {
