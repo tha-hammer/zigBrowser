@@ -822,6 +822,21 @@ def cli_version(cli):
     return (out.strip().split() or ["unknown"])[0]
 
 
+def _bundled_cli_site_packages(cli):
+    """The logical site-packages root containing the bundled CLI, or None.
+
+    A packaged app relocates Python data into Contents/Resources and leaves
+    relative links under Contents/Frameworks.  PACKAGE_DIR names the resolved
+    Resources tree, but Seatbelt also checks the logical link spelling while
+    importing the SDK.  Grant that one package root only for the production
+    bundled-CLI layout; an arbitrary e2e CLI does not widen the profile.
+    """
+    path = Path(cli)
+    if tuple(path.parts[-3:]) != ("claude_agent_sdk", "_bundled", "claude"):
+        return None
+    return path.parents[2]
+
+
 _CENSUS_REQUEST = re.compile(rb"census (zb-probe-[0-9a-f]{48}) (http://127\.0\.0\.1:([1-9][0-9]{0,4}))\n")
 CENSUS_REQUEST_MAX = 256
 CENSUS_JOIN_S = 5
@@ -900,7 +915,11 @@ def probe_r1(wrapper, cli):
                                       args=(ours, cli, listener.getsockname()[1], result, PROBE_TIMEOUT_S + 30,
                                             handover))
             census.start()
-        out, ok = _sandboxed([sys.prefix, PACKAGE_DIR, runtime, cli],
+        read_paths = [sys.prefix, PACKAGE_DIR, runtime, cli]
+        site_packages = _bundled_cli_site_packages(cli)
+        if site_packages is not None:
+            read_paths.append(site_packages)
+        out, ok = _sandboxed(read_paths,
                              [sys.executable, "-m", "zb_agent_host", "probe-r1", "--wrapper", str(wrapper),
                               "--cli", str(cli)],
                              timeout=PROBE_TIMEOUT_S + 30,

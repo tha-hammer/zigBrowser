@@ -22,6 +22,7 @@ import os
 import re
 import socket
 import unittest
+from pathlib import Path
 from unittest import mock
 
 import support  # noqa: F401  (puts the helper package on sys.path)
@@ -53,7 +54,8 @@ class Base(unittest.TestCase):
     def fake_seam(self, refuse=False):
         @contextlib.contextmanager
         def setup_sandbox(scratch, ro_paths, command, *, loopback_port=None):
-            self.seam.append({"scratch": scratch, "command": list(command), "loopback_port": loopback_port})
+            self.seam.append({"scratch": scratch, "ro_paths": list(ro_paths), "command": list(command),
+                              "loopback_port": loopback_port})
             if refuse:
                 raise setup.SetupError("the macOS sandbox is not ready")
             yield ["/usr/bin/sandbox-exec", "-f", f"{scratch}/p.sb", *command]
@@ -137,6 +139,15 @@ class Darwin(Base):
         self.assertFalse(run["inheritable"], "setup's copy is not inheritable; pass_fds alone hands it on")
         self.assert_all_closed(made)
         self.assertTrue(_closed(fd), "setup closes its copy after the run")
+
+    def test_packaged_probe_reads_the_logical_site_packages_relocation_alias(self):
+        self.fake_seam()
+        self.fake_run()
+        cli = "/private/app/Contents/Frameworks/agent-host/site-packages/claude_agent_sdk/_bundled/claude"
+        self.assertIs(setup.probe_r1(WRAPPER, cli), True)
+        (seam,) = self.seam
+        self.assertIn(Path("/private/app/Contents/Frameworks/agent-host/site-packages"), seam["ro_paths"])
+        self.assertNotIn(Path("/private/app/Contents/Frameworks/agent-host"), seam["ro_paths"])
 
     def test_a_timeout_still_closes_setups_copy(self):
         self.fake_seam()
