@@ -181,13 +181,13 @@ def spawn_helper(argv, env):
     return subprocess.run(list(argv), env=env, pass_fds=_token_fds(), check=False).returncode
 
 
-def _launch_darwin(session, args):
+def _launch_darwin(session, args, backend):
     home = options.AgentHome(session.home)
     request = LaunchRequest(home=home, python=session.python, command=session.command,
                             read_paths=requested_reads(home, session.python, args.e2e_claude_cli),
                             test_ca=args.test_ca, claude_cli=args.e2e_claude_cli)
     try:
-        with build_launch(sandbox_macos.MacSeatbeltBackend(session.egress_port), request) as plan:
+        with build_launch(backend, request) as plan:
             try:
                 return spawn_helper(plan.argv, options.helper_environ(home, os.environ))
             except OSError as exc:
@@ -235,15 +235,18 @@ def main(argv):
         print(f"zigBrowser: agent: {exc}", file=sys.stderr)
         return EXIT_USAGE
     if PLATFORM == "darwin":
-        # The readiness gate: the derived LAUNCH_SPEC_CONSUMABLE (the profile is CURATED), never a hand-set flag.
-        if not sandbox_macos.LAUNCH_SPEC_CONSUMABLE():
-            print("zigBrowser: agent: the macOS launch is not ready", file=sys.stderr)
-            return EXIT_USAGE
         for flag, value in (("--net-dir", args.net_dir), ("--bwrap", args.bwrap)):
             if value is not None:
                 print(f"zigBrowser: agent: {flag} is the Linux launch's only", file=sys.stderr)
                 return EXIT_USAGE
-        return _launch_darwin(session, args)
+        # One backend selection point: the sandbox team replaces the development backend by making the reviewed
+        # Seatbelt LaunchSpec consumable. Until then macOS runs directly, with an unavoidable user-visible warning.
+        if sandbox_macos.LAUNCH_SPEC_CONSUMABLE():
+            backend = sandbox_macos.MacSeatbeltBackend(session.egress_port)
+        else:
+            print(sandbox_macos.UNSANDBOXED_DEV_STATUS, file=sys.stderr)
+            backend = sandbox_macos.MacUnsandboxedDevBackend(session.egress_port)
+        return _launch_darwin(session, args, backend)
     if session.net_dir is None:
         print("zigBrowser: agent: --net-dir is required", file=sys.stderr)
         return EXIT_USAGE

@@ -366,6 +366,58 @@ def LAUNCH_SPEC_CONSUMABLE():  # noqa: N802 - the plan's name; a function, so it
     return PROFILE_CURATION is Curation.CURATED
 
 
+UNSANDBOXED_DEV_STATUS = "agent running unsandboxed (dev build)"
+
+
+class MacUnsandboxedDevBackend:
+    """Temporary macOS development realization of the shared launch contract.
+
+    This backend deliberately contributes no command prefix: the helper runs directly on the host.  It keeps the
+    network, lifetime and token-channel values shaped like the future Seatbelt backend so replacing it is a backend
+    selection change, not a second launch path.  Linux-only realization inputs still fail closed.
+    """
+
+    SANDBOX_PROGRAM = None
+
+    def __init__(self, egress_port):
+        self._capabilities = MacSeatbeltBackend(egress_port)
+
+    def network(self, session=None):
+        return self._capabilities.network(session)
+
+    def login_network(self):
+        return self._capabilities.login_network()
+
+    def lifetime(self):
+        return self._capabilities.lifetime()
+
+    def channel(self):
+        return self._capabilities.channel()
+
+    def launch_spec(self, home, *, seccomp_fd=None, ro_paths=(), state_dirs=None, claude_writable=False,
+                    net_dir=None, network=None):
+        sb = _sb()
+        state_dirs = () if state_dirs is None else state_dirs
+        if seccomp_fd is not None:
+            raise sb.UnsupportedLaunchInput("macOS has no seccomp: seccomp_fd must be None")
+        if net_dir is not None:
+            raise sb.UnsupportedLaunchInput("macOS reaches netd by port, not a socket dir: net_dir must be None")
+        if claude_writable:
+            raise sb.UnsupportedLaunchInput("macOS cannot grant all of .claude writable")
+        if state_dirs:
+            raise sb.UnsupportedLaunchInput("macOS grants no state directories yet")
+        tuple(ro_paths)
+        net = network if network is not None else self.network()
+        return sb.LaunchSpec(argv=(), unshare=(), mounts=(), workdir=str(home.workspace), seccomp_fd=None,
+                             network=net, lifetime=self.lifetime(), channel=self.channel())
+
+    @contextlib.contextmanager
+    def launch(self, home, *, seccomp_fd=None, ro_paths=(), state_dirs=None, claude_writable=False,
+               net_dir=None, network=None):
+        yield self.launch_spec(home, seccomp_fd=seccomp_fd, ro_paths=ro_paths, state_dirs=state_dirs,
+                               claude_writable=claude_writable, net_dir=net_dir, network=network)
+
+
 class MacSeatbeltBackend:
     """macOS Seatbelt realization of the MS0 ``SandboxBackend`` seam (MS6).
 
