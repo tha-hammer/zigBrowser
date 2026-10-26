@@ -43,6 +43,33 @@ mapfile -d '' SSH < <(mac_ssh_opts "$KEY")
 mapfile -d '' SCP < <(mac_scp_opts "$KEY")
 mapfile -d '' ARM_SCP < <(mac_scp_opts "$ARM_KEY")
 
+# Prepare the runtime from the same commit the Macs build. The python.org installer is pinned by SHA-256 here and is
+# checked again for its PSF signature and Apple notarization by stage_agent_runtime.sh on the packaging Mac. The two
+# target site-packages trees come only from that commit's frozen uv.lock; the Mac stager merges their native code.
+COMMIT=$(git rev-parse --verify "${ZB_GATE_COMMIT:-HEAD}^{commit}")
+RUNTIME_REPO="$SLICES/runtime-repo"
+mkdir "$RUNTIME_REPO"
+git archive --format=tar "$COMMIT" packaging/macos agent/host | tar -xf - -C "$RUNTIME_REPO"
+read -r PYTHON_PKG_URL PYTHON_PKG_SHA < <(python3 -I - "$RUNTIME_REPO/packaging/macos/agent_runtime_pins.json" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as stream:
+    package = json.load(stream)["python_pkg"]
+print(package["url"], package["sha256"])
+PY
+)
+[[ "$PYTHON_PKG_URL" = https://www.python.org/* ]] && [[ "$PYTHON_PKG_SHA" =~ ^[0-9a-f]{64}$ ]] \
+  || { echo "ERROR: the selected commit has invalid agent runtime pins" >&2; exit 1; }
+echo "==> Preparing the universal agent runtime from $COMMIT..."
+curl --fail --show-error --silent --location --max-redirs 0 --proto '=https' --proto-redir '=https' \
+  --output "$SLICES/python.pkg" "$PYTHON_PKG_URL"
+[ "$(sha256sum "$SLICES/python.pkg" | cut -c1-64)" = "$PYTHON_PKG_SHA" ] \
+  || { echo "ERROR: the Python package does not match the selected commit's SHA-256" >&2; exit 1; }
+bash "$RUNTIME_REPO/packaging/macos/build_site_packages.sh" "$RUNTIME_REPO/agent/host" "$SLICES/sites"
+(cd "$SLICES/sites" && tar -cf "$SLICES/sites.tar" site-x86_64 site-aarch64)
+(cd "$RUNTIME_REPO" && tar -cf "$SLICES/agent-host-source.tar" agent/host)
+
 # ── Step 1: Build on each Mac, each into a fresh run dir ──
 echo "==> Building on macOS host..."
 mac_build "$ARM_HOST" "$ARM_KEY"
@@ -57,18 +84,21 @@ echo "==> Fetching the arm64 slices..."
 [ -s "$SLICES/zigBrowser-arm64" ] && [ -s "$SLICES/libwkwebview_shim-arm64.dylib" ] \
   || { echo "ERROR: the arm64 build output did not arrive" >&2; exit 1; }
 "${SCP[@]}" "$SLICES/zigBrowser-arm64" "$SLICES/libwkwebview_shim-arm64.dylib" "$HOST:$RUN_DIR/" >/dev/null
+"${SCP[@]}" "$SLICES/python.pkg" "$SLICES/sites.tar" "$SLICES/agent-host-source.tar" "$HOST:$RUN_DIR/" >/dev/null
 
 # ── Step 3: Assemble .app bundle, sign, and create .dmg on the Mac ──
 echo "==> Assembling .app bundle, signing, and creating .dmg..."
 # ssh joins its arguments into one remote command line, so the identity (a Developer ID name has spaces and
 # parentheses) travels single-quoted.
 SIGN_IDENTITY_Q="'${SIGN_IDENTITY//\'/\'\\\'\'}'"
-"${SSH[@]}" "$HOST" /bin/bash -s "$VERSION" "$APP_NAME" "$DMG_NAME" "$RUN_DIR" "$SIGN_IDENTITY_Q" <<'REMOTE'
+"${SSH[@]}" "$HOST" /bin/bash -s "$VERSION" "$APP_NAME" "$DMG_NAME" "$RUN_DIR" "$SIGN_IDENTITY_Q" \
+  "$PYTHON_PKG_SHA" <<'REMOTE'
 set -euo pipefail
 VERSION="$1"
 APP_NAME="$2"
 DMG_NAME="$3"
 SIGN_IDENTITY="${5:?}"
+PYTHON_PKG_SHA="${6:?}"
 
 cd "$HOME/${4:?}"
 BINARY="zig-out/bin/zigBrowser"
@@ -100,6 +130,16 @@ for f in "$CONTENTS/MacOS/$APP_NAME" "$CONTENTS/Frameworks/$SHIM_NAME"; do
   [ "$archs" = "arm64 x86_64 " ] || { echo "ERROR: $f holds '${archs% }', not exactly x86_64 and arm64" >&2; exit 1; }
 done
 
+# Stage the relocatable CPython framework, the agent-host package, and the two locked dependency trees before any
+# signature is made. Non-code files are physically moved to Resources while relative links preserve their reviewed
+# Frameworks/agent-host paths, so the signed Frameworks tree contains code only.
+mkdir runtime-sites
+tar -xf sites.tar -C runtime-sites
+tar -xf agent-host-source.tar
+bash packaging/macos/stage_agent_runtime.sh python.pkg "$PYTHON_PKG_SHA" "$CONTENTS" \
+  runtime-sites/site-x86_64 runtime-sites/site-aarch64
+/usr/bin/python3 -I packaging/macos/relocate_agent_data.py relocate "$CONTENTS"
+
 # The exe's shim reference must resolve inside the bundle, or the app cannot start. otool's whole output is collected
 # and its own status checked first, then searched: a pipe into grep -q would close at the first match, and an otool
 # still writing would die of SIGPIPE under pipefail, failing a valid package (SilverRidge 2e8e0190).
@@ -130,20 +170,34 @@ sips -z 256 256   packaging/assets/zigBrowser.png --out "$ICONSET/icon_256x256.p
 iconutil -c icns "$ICONSET" -o "$CONTENTS/Resources/${APP_NAME}.icns"
 rm -rf "$ICONSET"
 
-# Sign inside out (the dylib, then the exe, then the .app), never --deep. A release identity adds the hardened
-# runtime, and the exe and the .app get the committed entitlements manifest.
+# Sign inside out, never --deep. This includes every Mach-O in the staged Python framework and site-packages, then
+# each real framework version, then the app. A release identity adds the hardened runtime; only the browser executable
+# and app receive the committed entitlements manifest.
 RUNTIME=() ENTITLEMENTS=()
 if [ "$SIGN_IDENTITY" != - ]; then
   RUNTIME=(--options runtime)
   ENTITLEMENTS=(--entitlements packaging/macos/entitlements.plist)
 fi
-codesign --force --sign "$SIGN_IDENTITY" ${RUNTIME[@]+"${RUNTIME[@]}"} "$CONTENTS/Frameworks/$SHIM_NAME"
-codesign --force --sign "$SIGN_IDENTITY" ${RUNTIME[@]+"${RUNTIME[@]}"} ${ENTITLEMENTS[@]+"${ENTITLEMENTS[@]}"} \
-  "$CONTENTS/MacOS/$APP_NAME"
+is_macho() { file -b "$1" | grep -q Mach-O; }
+while IFS= read -r target; do
+  if [ "$target" = "$CONTENTS/MacOS/$APP_NAME" ]; then
+    codesign --force --sign "$SIGN_IDENTITY" ${RUNTIME[@]+"${RUNTIME[@]}"} \
+      ${ENTITLEMENTS[@]+"${ENTITLEMENTS[@]}"} "$target"
+  else
+    codesign --force --sign "$SIGN_IDENTITY" ${RUNTIME[@]+"${RUNTIME[@]}"} "$target"
+  fi
+done < <(while IFS= read -r file; do is_macho "$file" && printf '%s\n' "$file"; done \
+  < <(find "$CONTENTS" -type f) | awk -F/ '{ print NF "\t" $0 }' | sort -t $'\t' -k1,1nr -k2 | cut -f2-)
+while IFS= read -r framework; do
+  for version in "$framework"/Versions/*; do
+    [ -d "$version" ] && [ ! -L "$version" ] \
+      && codesign --force --sign "$SIGN_IDENTITY" ${RUNTIME[@]+"${RUNTIME[@]}"} "$version"
+  done
+done < <(find "$CONTENTS" -type d -name '*.framework')
 codesign --force --sign "$SIGN_IDENTITY" ${RUNTIME[@]+"${RUNTIME[@]}"} ${ENTITLEMENTS[@]+"${ENTITLEMENTS[@]}"} "$APP_BUNDLE"
 
 # Verify signature
-codesign --verify --strict --verbose "$APP_BUNDLE"
+codesign --verify --strict --deep --verbose "$APP_BUNDLE"
 
 # Create DMG with drag-to-Applications layout
 mkdir dmg_staging
