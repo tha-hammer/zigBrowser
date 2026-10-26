@@ -87,7 +87,7 @@ REMOTE
   [ "$rc" -eq 0 ] || { echo "FAIL: MS6 leg on $host timed out/failed" >&2; "${SSH[@]}" "$host" "$rm_rdir" >/dev/null 2>&1 || true; return 1; }
   mac_require_lines ms6_gate "$host" "$label" "$out" $'PASS\tms6-containment' $'PASS\tms6.1-token-isolation' \
     $'PASS\tms6-generated-profiles' \
-    $'PASS\tms6-3-fd3-reopen-PROBE (partial; MS6.3 real-CLI hard gate pending the MS5-gated harness)' \
+    $'PASS\tms6-3-fd3-reopen-product\tKeychain-to-sandbox-fd3' \
     $'PASS\tms6-4-egress' || return 1
   printf 'PASS\tms6-leg\t%s\t%s\n' "$host" "$label"
 }
