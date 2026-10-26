@@ -502,8 +502,16 @@ def stage(home, source, source_home, source_path, python, cli, staging, package_
     atomic_write(runtime / "net.json", json.dumps(net), 0o600)
     if PLATFORM == "darwin":  # zb-hook-run cannot import sandbox_macos: setup renders its Seatbelt profile (7929)
         from . import sandbox_macos  # Darwin only: never at module scope (agent-host-win-import)
-        hook_profile = sandbox_macos.render_profile(egress=None, bridges=tuple(net["ports"]), is_hook=True)
+        # The nested hook can only narrow the outer CLI profile. Give it the stable agent-home root plus any
+        # external hook-command directories; the outer curated CLI profile still withholds every unrequested
+        # sibling (including ~/.ssh). The stdlib-only hook runner reads these exact -D bindings at exec time.
+        hook_python = os.path.dirname(os.path.dirname(os.path.realpath(python)))
+        hook_reads = (root, hook_python, *dirs)
+        hook_profile = sandbox_macos.render_profile(
+            egress=None, bridges=tuple(net["ports"]), is_hook=True, read_paths=hook_reads)
         atomic_write(runtime / "hook.sb", hook_profile, 0o600)
+        atomic_write(runtime / hook_run.SEATBELT_BINDINGS,
+                     json.dumps(list(sandbox_macos.read_bindings(hook_reads))), 0o600)
     atomic_write(runtime / "net-login.json", json.dumps(login_net_manifest()), 0o600)
     atomic_write(runtime / "path.json", json.dumps(dirs), 0o600)
     atomic_write(runtime / "host.json", json.dumps({"python": str(python), "runtime_lock": runtime_lock(package_dir)}), 0o600)
@@ -894,7 +902,7 @@ def probe_r1(wrapper, cli):
             census.start()
         out, ok = _sandboxed([sys.prefix, PACKAGE_DIR, runtime, cli],
                              [sys.executable, "-m", "zb_agent_host", "probe-r1", "--wrapper", str(wrapper),
-                              "--cli", cli],
+                              "--cli", str(cli)],
                              timeout=PROBE_TIMEOUT_S + 30,
                              env={"PYTHONPATH": str(PACKAGE_DIR), "PYTHONDONTWRITEBYTECODE": "1"}, listener=listener,
                              census=theirs)

@@ -71,25 +71,17 @@ fn runAgentSetup(arena: std.mem.Allocator, spec: AgentSetupSpec) errors.BrowserE
             return 1;
         },
     }
-    // Owner development policy (2026-10-26): one build switch controls the temporary unsandboxed macOS exception
-    // for both setup and drawer launch. Turning it off restores the Seatbelt gate without changing Linux.
-    switch (agent_setup.platformGateForBuild(
-        builtin.os.tag,
-        agent_setup.seatbelt_ready,
-        build_options.mac_unsandboxed_dev,
-    )) {
+    // Setup has its own admission boundary: on macOS its untrusted CLI runs are
+    // already constrained by setup.py's production Seatbelt profile. The
+    // drawer remains on the accepted-commit/build-option gate in webkit.zig.
+    switch (agent_setup.setupPlatformGate(builtin.os.tag)) {
         .run => {},
         .refuse => |line| {
             std.debug.print("{s}\n", .{line});
             return 1;
         },
     }
-    if (comptime builtin.os.tag == .macos) {
-        if (build_options.mac_unsandboxed_dev) {
-            std.debug.print("zigBrowser: agent running unsandboxed (dev build)\n", .{});
-        }
-        return runAgentSetupMacos(arena, spec);
-    }
+    if (comptime builtin.os.tag == .macos) return runAgentSetupMacos(arena, spec);
     if (comptime builtin.os.tag != .linux) return 1;
     const user_home = getenvOwned(arena, "HOME");
     const home = (agent_setup.defaultHomeDir(arena, getenvOwned(arena, "XDG_DATA_HOME"), user_home) catch null) orelse {

@@ -128,7 +128,10 @@ class SetupSandbox(unittest.TestCase):
         self.assertEqual(argv[:2], ["/usr/bin/sandbox-exec", "-f"])
         self.assertEqual(os.path.dirname(profile), scratch, "the profile lives under setup's own scratch")
         self.assertTrue(os.path.basename(profile).startswith(".zb-setup-sandbox-") and profile.endswith(".sb"))
-        self.assertEqual(argv[3:], ["-D", f"SCRATCHPAD={scratch}", "/opt/claude", "--version"])
+        self.assertEqual(argv[3:5], ["-D", f"SCRATCHPAD={scratch}"])
+        self.assertEqual(argv[-2:], ["/opt/claude", "--version"])
+        self.assertTrue(any(arg.startswith("READ_") for arg in argv[5:-2]),
+                        "setup binds its curated scratch/runtime/CLI reads before the command")
         self.assertTrue(seen["profile_existed"])
         self.assertNotIn("network-outbound", seen["profile_text"].replace("deny network-outbound", ""),
                          "setup's profile grants no network")

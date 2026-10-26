@@ -128,5 +128,77 @@ class ParentWatchArm(unittest.TestCase):
         self.assertEqual(ops.killed, [("killpg", SELF, signal.SIGKILL)])
 
 
+class FakeSessionOps:
+    def __init__(self, pids=(), allowed=(), identities=None, available=True):
+        self.pids = list(pids)
+        self.allowed = set(allowed)
+        self.identities = {pid: list(values) for pid, values in (identities or {}).items()}
+        self.available = available
+        self.calls = []
+        self.killed = []
+        self.logs = []
+
+    def sandbox_check_available(self):
+        self.calls.append("available")
+        return self.available
+
+    def getpid(self):
+        return SELF
+
+    def list_pids(self):
+        self.calls.append("list")
+        return tuple(self.pids)
+
+    def unique_id(self, pid):
+        self.calls.append(("unique", pid))
+        values = self.identities.get(pid, [pid * 100])
+        if len(values) > 1:
+            return values.pop(0)
+        return values[0] if values else None
+
+    def sandbox_allows_canary(self, pid, path):
+        self.calls.append(("sandbox", pid, path))
+        return pid in self.allowed
+
+    def kill(self, pid, sig):
+        self.calls.append(("kill", pid, sig))
+        self.killed.append((pid, sig))
+        self.pids.remove(pid)
+
+    def sleep(self, _seconds):
+        pass
+
+    def log(self, message):
+        self.logs.append(message)
+
+
+class SessionReaperDecision(unittest.TestCase):
+    CANARY = "/private/tmp/zb-agent-session-0123456789abcdef0123456789abcdef"
+
+    def test_only_stable_sandbox_match_is_killed(self):
+        ops = FakeSessionOps(pids=(0, 1, BROWSER, SELF, 30, 40), allowed=(30,),
+                             identities={30: (700, 700, 700), 40: (800, 800)})
+        self.assertTrue(parent_watch.reap_session(BROWSER, self.CANARY, ops, reaper_pid=SELF))
+        self.assertEqual(ops.killed, [(30, signal.SIGKILL)])
+        kill_at = ops.calls.index(("kill", 30, signal.SIGKILL))
+        self.assertEqual(ops.calls[kill_at - 1], ("unique", 30),
+                         "p_uniqueid must be the operation immediately before kill")
+        self.assertNotIn(("sandbox", BROWSER, self.CANARY), ops.calls)
+        self.assertNotIn(("sandbox", SELF, self.CANARY), ops.calls)
+
+    def test_pid_reuse_after_classification_is_never_signalled(self):
+        ops = FakeSessionOps(pids=(30,), allowed=(30,), identities={30: (700, 700, 701)})
+        self.assertTrue(parent_watch.reap_session(BROWSER, self.CANARY, ops, reaper_pid=SELF,
+                                                  max_passes=1, empty_passes=1))
+        self.assertEqual(ops.killed, [])
+
+    def test_missing_sandbox_check_is_group_only_and_enumerates_nothing(self):
+        ops = FakeSessionOps(pids=(30,), allowed=(30,), available=False)
+        self.assertFalse(parent_watch.reap_session(BROWSER, self.CANARY, ops, reaper_pid=SELF))
+        self.assertEqual(ops.killed, [])
+        self.assertNotIn("list", ops.calls)
+        self.assertIn("process-group cleanup only", ops.logs[0])
+
+
 if __name__ == "__main__":
     unittest.main()

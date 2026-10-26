@@ -86,12 +86,7 @@ int zb_agent_spawn_group_io_fd3(const char *const *argv, const char *const *envp
 #ifdef __APPLE__
   return spawn_group_io(argv, envp, stdin_fd, stdout_fd, token_fd, out_pid);
 #else
-  (void)argv;
-  (void)envp;
-  (void)stdin_fd;
-  (void)stdout_fd;
-  (void)token_fd;
-  (void)out_pid;
+  (void)argv; (void)envp; (void)stdin_fd; (void)stdout_fd; (void)token_fd; (void)out_pid;
   return ENOTSUP;
 #endif
 }

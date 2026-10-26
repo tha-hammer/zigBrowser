@@ -9,6 +9,10 @@ spawned and its PR_SET_PDEATHSIG. bwrap's command is the outer relay (proxy-only
     python -m zb_agent_host launch --home H --python PY --net-dir DIR
         [--bwrap BWRAP] [--test-ca PEM] [--command chat|login] [--e2e-claude-cli CLI]
 
+On macOS the normal path always uses ``sandbox-exec`` through
+``MacSeatbeltBackend``.  A direct, unsandboxed launch exists only for local
+diagnostics and requires the explicit ``--unsandboxed-dev`` flag.
+
 `--command login` (S6b1, rev 16.18.3) runs the one-shot sign-in helper instead of
 `chat`: the backend's login launch spec (egress only: the login netd has no bridges)
 and the outer relay running `login`. The login helper's token pipe, fd 4, passes
@@ -110,14 +114,16 @@ class LaunchPlan(NamedTuple):
     spec: sandbox.LaunchSpec
 
 
-def requested_reads(home, python, claude_cli=None):
+def requested_reads(home, python, claude_cli=None, test_ca=None):
     """The helper's read paths: the venv, the hook command directories (runtime/path.json, /usr dropped), and the
-    login CLI's directory."""
+    optional login CLI/test CA inputs."""
     venv = os.path.dirname(os.path.dirname(python))
     extra = [venv] + [d for d in json.loads((home.runtime / "path.json").read_text())
                       if d != "/usr" and not d.startswith("/usr/")]
     if claude_cli is not None:
         extra.append(os.path.dirname(claude_cli))
+    if test_ca is not None:
+        extra.append(test_ca)
     return tuple(extra)
 
 
@@ -175,24 +181,78 @@ def _token_fds():
     return tuple(fds)
 
 
-def spawn_helper(argv, env):
+def spawn_helper(argv, env, *, pass_fds=None):
     """Runs the sandboxed helper as a child and returns its status (macOS: the lease must outlive the spawn, so the
     launch cannot exec in place)."""
-    return subprocess.run(list(argv), env=env, pass_fds=_token_fds(), check=False).returncode
+    token_fds = _token_fds() if pass_fds is None else tuple(pass_fds)
+    return subprocess.run(list(argv), env=env, pass_fds=token_fds, check=False).returncode
+
+
+def _arm_darwin_watches(session_canary=None):
+    """Arm the group kill and, for Seatbelt, the out-of-group sandbox-identity reaper.
+
+    The native browser spawner makes this process the leader of a fresh group;
+    direct diagnostic invocations do not have that ownership proof and keep
+    their existing behavior.  A launch already reparented to launchd is treated
+    as browser death by giving ``arm`` an impossible expected parent.
+    """
+    if sys.platform != "darwin":
+        return False, False
+    try:
+        if os.getpgid(0) != os.getpid():
+            return False, False
+    except OSError:
+        return False, False
+    browser_pid = os.getppid()
+    # Keep the Darwin watcher out of the portable launch module's import
+    # closure.  Diagnostic launches that do not own their process group do
+    # not arm it, while the native group leader loads the existing fail-closed
+    # kqueue implementation only after proving group ownership.
+    from . import parent_watch  # noqa: PLC0415
+    browser_pid = browser_pid if browser_pid > 1 else 0
+    reaper = False
+    if session_canary is not None and browser_pid > 1:
+        # Fork before DarwinOps starts its watcher thread. The child calls setsid(), so the accepted group
+        # SIGKILL cannot kill the only observer capable of finding a setsid/double-fork escapee.
+        reaper = parent_watch.spawn_session_reaper(browser_pid, os.getpid(), session_canary)
+    return parent_watch.arm(browser_pid, parent_watch.DarwinOps()), reaper
+
+
+def _arm_darwin_browser_watch():
+    """Compatibility wrapper for the accepted group-only watcher."""
+    watched, _reaper = _arm_darwin_watches()
+    return watched
 
 
 def _launch_darwin(session, args, backend):
+    # Capture the token channel before kqueue opens: when fd 3/4 is absent in a
+    # diagnostic run, kqueue may receive that number, but it is a lifetime
+    # observer and must never be mistaken for a token descriptor at exec.
+    token_fds = _token_fds()
     home = options.AgentHome(session.home)
     request = LaunchRequest(home=home, python=session.python, command=session.command,
-                            read_paths=requested_reads(home, session.python, args.e2e_claude_cli),
+                            read_paths=requested_reads(home, session.python, args.e2e_claude_cli, args.test_ca),
                             test_ca=args.test_ca, claude_cli=args.e2e_claude_cli)
     try:
         with build_launch(backend, request) as plan:
+            # build_launch has now materialized the real per-session canary, but no sandboxed child exists yet.
+            # Arm the forked observer before DarwinOps starts a thread, then retain the accepted group watcher.
+            session_canary = getattr(backend, "session_canary", None)
+            watched, reaper_armed = _arm_darwin_watches(session_canary)
             try:
-                return spawn_helper(plan.argv, options.helper_environ(home, os.environ))
+                env = options.helper_environ(home, os.environ)
+                if watched:
+                    return spawn_helper(plan.argv, env, pass_fds=token_fds)
+                return spawn_helper(plan.argv, env)
             except OSError as exc:
                 print(f"zigBrowser: agent: sandbox unavailable ({exc})", file=sys.stderr)
                 return EXIT_NO_SANDBOX
+            finally:
+                # A diagnostic/non-group launch has no observer. Do not leak its canary after the child returns.
+                if session_canary is not None and not reaper_armed:
+                    release = getattr(backend, "release_session_canary", None)
+                    if release is not None:
+                        release()
     except (sandbox.SandboxError, OSError, ValueError) as exc:
         print(f"zigBrowser: agent: {exc}", file=sys.stderr)
         return EXIT_USAGE
@@ -216,6 +276,7 @@ def main(argv):
     parser.add_argument("--command", choices=("chat", "login"), default="chat")
     parser.add_argument("--e2e-claude-cli")
     parser.add_argument("--egress-port", action="append")  # macOS only (netd's loopback port); refused off Darwin
+    parser.add_argument("--unsandboxed-dev", action="store_true")  # macOS-only, explicit unsafe development escape
     args = parser.parse_args(argv)
     if args.e2e_claude_cli is not None and (args.command != "login" or not os.path.isabs(args.e2e_claude_cli)
                                             or not _regular_file(args.e2e_claude_cli)):
@@ -239,14 +300,18 @@ def main(argv):
             if value is not None:
                 print(f"zigBrowser: agent: {flag} is the Linux launch's only", file=sys.stderr)
                 return EXIT_USAGE
-        # One backend selection point: the sandbox team replaces the development backend by making the reviewed
-        # Seatbelt LaunchSpec consumable. Until then macOS runs directly, with an unavoidable user-visible warning.
-        if sandbox_macos.LAUNCH_SPEC_CONSUMABLE():
-            backend = sandbox_macos.MacSeatbeltBackend(session.egress_port)
-        else:
+        if args.unsandboxed_dev:
             print(sandbox_macos.UNSANDBOXED_DEV_STATUS, file=sys.stderr)
-            backend = sandbox_macos.MacUnsandboxedDevBackend(session.egress_port)
+            backend = sandbox_macos.MacUnsandboxedDevBackend(
+                session.egress_port, explicit_dev=args.unsandboxed_dev)
+        else:
+            # The drawer's production default is always Seatbelt. PROFILE_CURATION still records whether the
+            # profile has reached release curation, but it must never select a host-rights launch.
+            backend = sandbox_macos.MacSeatbeltBackend(session.egress_port)
         return _launch_darwin(session, args, backend)
+    if args.unsandboxed_dev:
+        print("zigBrowser: agent: --unsandboxed-dev is macOS-only", file=sys.stderr)
+        return EXIT_USAGE
     if session.net_dir is None:
         print("zigBrowser: agent: --net-dir is required", file=sys.stderr)
         return EXIT_USAGE

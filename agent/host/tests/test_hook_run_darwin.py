@@ -3,12 +3,13 @@
 zb-hook-run (agent/host/zb_agent_host/hook_run.py) only knows bwrap, so on a Mac every SAI hook would fail to start.
 The contract under review:
 - setup, Darwin only: stage() also writes runtime/hook.sb, exactly
-  sandbox_macos.render_profile(egress=None, bridges=<net.json's ports>, is_hook=True), mode 0600; on Linux it writes
-  no hook.sb (zb-hook-run is a stdlib-only lone file and cannot import sandbox_macos, as it cannot import sandbox);
+  sandbox_macos.render_profile(egress=None, bridges=<net.json's ports>, is_hook=True, read_paths=<hook reads>), plus
+  its named read bindings, both mode 0600; on Linux it writes neither file (zb-hook-run is a stdlib-only lone file);
 - zb-hook-run, Darwin (hook_run.PLATFORM, a module value like setup.PLATFORM): the same hook-env.json allowlist (the
   exact allowlisted values pass; the REFUSED names never do, even planted in its own environment), then
   os.execve("/usr/bin/sandbox-exec", ["/usr/bin/sandbox-exec", "-f", <runtime>/hook.sb, "-D",
-  "SCRATCHPAD=<home/scratchpad>", <hook command...>], <that env>): no relay, no seccomp memfd, no bwrap;
+  "SCRATCHPAD=<home/scratchpad>", <curated read -D bindings>, <hook command...>], <that env>): no relay, no seccomp
+  memfd, no bwrap;
 - descriptors, close-except the run marker (MS6.5.1; RoseCat 7938 #1, #2): with no ZB_AGENT_RUN_MARKER_FD it closes
   exactly [3, SC_OPEN_MAX); with ZB_AGENT_RUN_MARKER_FD equal to the reserved number RUN_MARKER_FD (5: not the
   token's 3, the egress 4, nor the >= 10 memfd range) naming an open regular file, it closes exactly [3, 5) and
@@ -74,6 +75,9 @@ class HookRunDarwin(unittest.TestCase):
         self.profile = self.runtime / "hook.sb"
         self.profile.write_text("(version 1)\n(deny default)\n")
         os.chmod(self.profile, 0o600)
+        self.bindings = self.runtime / "hook-read-bindings.json"
+        self.bindings.write_text(json.dumps([["READ_0", str(self.home)]]))
+        os.chmod(self.bindings, 0o600)
         shutil.copyfile(HOOK_RUN, self.runtime / "bin" / "zb-hook-run")
         self.load(self.runtime / "bin" / "zb-hook-run")
         self.calls = []
@@ -156,7 +160,8 @@ class HookRunDarwin(unittest.TestCase):
         scratchpad = os.path.realpath(self.home / "scratchpad")
         self.assertEqual((path, argv), ("/usr/bin/sandbox-exec",
                                         ["/usr/bin/sandbox-exec", "-f", str(self.profile), "-D",
-                                         f"SCRATCHPAD={scratchpad}", "bun", "/srv/hook.ts"]))
+                                         f"SCRATCHPAD={scratchpad}", "-D", f"READ_0={self.home}",
+                                         "bun", "/srv/hook.ts"]))
         self.assertEqual(env, self.allowed_env(), "the hook's environment is not exactly the allowlisted values")
 
     def test_without_a_marker_every_descriptor_from_3_up_is_closed_before_the_exec(self):
@@ -269,13 +274,20 @@ class SetupHookProfile(unittest.TestCase):
         runtime = self.provision("darwin")
         ports = tuple(json.loads((runtime / "net.json").read_text())["ports"])
         profile = runtime / "hook.sb"
+        bindings_path = runtime / "hook-read-bindings.json"
         self.assertTrue(profile.is_file() and not profile.is_symlink(), "no runtime/hook.sb on Darwin")
         self.assertEqual(stat.S_IMODE(profile.stat().st_mode), 0o600)
-        self.assertEqual(profile.read_text(), sandbox_macos.render_profile(egress=None, bridges=ports, is_hook=True))
+        bindings = json.loads(bindings_path.read_text())
+        read_paths = tuple(value for name, value in bindings if name.startswith("READ_")
+                           and not name.startswith("READ_PARENT_"))
+        self.assertEqual(profile.read_text(), sandbox_macos.render_profile(
+            egress=None, bridges=ports, is_hook=True, read_paths=read_paths))
+        self.assertEqual(bindings, [list(pair) for pair in sandbox_macos.read_bindings(read_paths)])
 
     def test_linux_setup_writes_no_hook_profile(self):
         runtime = self.provision("linux")
         self.assertFalse(os.path.lexists(runtime / "hook.sb"))
+        self.assertFalse(os.path.lexists(runtime / "hook-read-bindings.json"))
 
 
 if __name__ == "__main__":

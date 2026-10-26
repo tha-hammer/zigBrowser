@@ -125,6 +125,18 @@ pub fn netdArgv(a: std.mem.Allocator, python: []const u8, package_dir: []const u
     return argv.toOwnedSlice(a);
 }
 
+/// macOS netd is the host-loopback TCP realization: no bwrap and no Unix
+/// socket directory. The browser reads its first stdout line to learn the
+/// ephemeral port. Under --e2e-protocol only, census writes fixed CONNECT
+/// verdicts to stderr; it never logs request bytes or credentials.
+pub fn netdDarwinArgv(a: std.mem.Allocator, python: []const u8, package_dir: []const u8, manifest: []const u8, census: bool) ![]const []const u8 {
+    const script = try std.fs.path.join(a, &.{ package_dir, "zb_agent_host", "netd.py" });
+    var argv: std.ArrayList([]const u8) = .empty;
+    try argv.appendSlice(a, &.{ python, "-I", "-S", script, "--net-manifest", manifest });
+    if (census) try argv.append(a, "--census");
+    return argv.toOwnedSlice(a);
+}
+
 /// The backend's network manifest in an agent home: setup writes it from the
 /// LaunchSpec network field, and netd reads it (its allow-list and bridge ports).
 pub fn netManifestPath(a: std.mem.Allocator, agent_home: []const u8) ![]const u8 {
@@ -139,6 +151,22 @@ pub fn netdEnv(a: std.mem.Allocator, lang: ?[]const u8, lc_all: ?[]const u8) ![]
     if (lang) |v| try env.append(a, try std.fmt.allocPrint(a, "LANG={s}", .{v}));
     if (lc_all) |v| try env.append(a, try std.fmt.allocPrint(a, "LC_ALL={s}", .{v}));
     return env.toOwnedSlice(a);
+}
+
+test "Darwin netd argv selects TCP mode and gates its census" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const plain = try netdDarwinArgv(a, "/p/python", "/pkg", "/h/runtime/net.json", false);
+    try std.testing.expectEqualSlices([]const u8, &.{
+        "/p/python", "-I", "-S", "/pkg/zb_agent_host/netd.py", "--net-manifest", "/h/runtime/net.json",
+    }, plain);
+    const observed = try netdDarwinArgv(a, "/p/python", "/pkg", "/h/runtime/net.json", true);
+    try std.testing.expectEqualStrings("--census", observed[observed.len - 1]);
+    for (observed) |arg| {
+        try std.testing.expect(!std.mem.eql(u8, arg, "--sockdir"));
+        try std.testing.expect(!std.mem.eql(u8, arg, "--bwrap"));
+    }
 }
 
 /// ZIGBROWSER_AGENT_NET_TEST_CA must name, by an absolute path, a regular file

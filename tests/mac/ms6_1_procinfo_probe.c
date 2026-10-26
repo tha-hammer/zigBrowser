@@ -9,6 +9,9 @@
  *      artifact that would stay denied regardless).
  *   2. task_for_pid    — acquiring the target's task port (would allow vm_read of its memory).
  *   3. proc_pidpath    — the target's executable path (a lesser info leak).
+ *   4. Security.framework — direct access to a disposable Keychain item. The
+ *      trusted test parent creates the item without putting its value in argv
+ *      or env; a sandboxed CLI/hook must not be able to read it.
  *
  * Exit code: 0 = BREACH (the canary leaked via procargs2, OR the task port was acquired); 1 = contained
  * (every path denied / no canary). Human-readable lines go to stdout for the harness to log.
@@ -21,6 +24,60 @@
 #include <sys/sysctl.h>
 #include <libproc.h>
 #include <mach/mach.h>
+#include <Security/Security.h>
+
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+
+static const char keychain_value[] = "zb-ms61-keychain-value-not-an-argv";
+
+static int seed_keychain(const char *path, const char *password, const char *service, const char *account) {
+    SecKeychainRef keychain = NULL;
+    OSStatus status = SecKeychainCreate(path, (UInt32)strlen(password), password, false, NULL, &keychain);
+    if (status == errSecDuplicateKeychain) {
+        status = SecKeychainOpen(path, &keychain);
+        if (status == errSecSuccess) {
+            status = SecKeychainUnlock(keychain, (UInt32)strlen(password), password, true);
+        }
+    }
+    if (status == errSecSuccess) {
+        status = SecKeychainAddGenericPassword(keychain, (UInt32)strlen(service), service,
+                                               (UInt32)strlen(account), account,
+                                               (UInt32)(sizeof keychain_value - 1), keychain_value, NULL);
+    }
+    if (keychain != NULL) CFRelease(keychain);
+    if (status != errSecSuccess) {
+        printf("KEYCHAIN-SEED-FAILED status=%d\n", (int)status);
+        return 1;
+    }
+    printf("KEYCHAIN-SEED-OK\n");
+    return 0;
+}
+
+static int keychain_readable(const char *path, const char *password, const char *service, const char *account) {
+    SecKeychainRef keychain = NULL;
+    OSStatus status = SecKeychainOpen(path, &keychain);
+    if (status == errSecSuccess) {
+        status = SecKeychainUnlock(keychain, (UInt32)strlen(password), password, true);
+    }
+    UInt32 length = 0;
+    void *data = NULL;
+    if (status == errSecSuccess) {
+        status = SecKeychainFindGenericPassword(keychain, (UInt32)strlen(service), service,
+                                                (UInt32)strlen(account), account,
+                                                &length, &data, NULL);
+    }
+    int readable = status == errSecSuccess && length == sizeof keychain_value - 1 &&
+                   data != NULL && memcmp(data, keychain_value, length) == 0;
+    if (data != NULL) SecKeychainItemFreeContent(NULL, data);
+    if (keychain != NULL) CFRelease(keychain);
+    if (readable) {
+        printf("keychain: READABLE\n");
+        return 1;
+    }
+    printf("keychain: denied status=%d\n", (int)status);
+    return 0;
+}
 
 static int procargs2_leaks_canary(pid_t target, const char *canary) {
     int argmax = 0;
@@ -67,13 +124,22 @@ static int proc_pidpath_leaks(pid_t target) {
 }
 
 int main(int argc, char **argv) {
-    if (argc < 3) { fprintf(stderr, "usage: %s <pid> <canary>\n", argv[0]); return 2; }
+    if (argc == 6 && strcmp(argv[1], "--seed-keychain") == 0) {
+        return seed_keychain(argv[2], argv[3], argv[4], argv[5]);
+    }
+    if (argc != 7) {
+        fprintf(stderr, "usage: %s <pid> <canary> <keychain> <password> <service> <account>\n", argv[0]);
+        return 2;
+    }
     pid_t target = (pid_t)atoi(argv[1]);
     const char *canary = argv[2];
     int breach = 0;
     if (procargs2_leaks_canary(target, canary)) breach = 1;  /* the token canary — the primary anchor */
     if (task_port_acquired(target)) breach = 1;
     if (proc_pidpath_leaks(target)) breach = 1;               /* any process-info leak is a breach too */
+    if (keychain_readable(argv[3], argv[4], argv[5], argv[6])) breach = 1;
     printf("RESULT: %s\n", breach ? "BREACH" : "CONTAINED");
     return breach ? 0 : 1;
 }
+
+#pragma clang diagnostic pop

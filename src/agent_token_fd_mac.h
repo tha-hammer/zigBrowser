@@ -13,12 +13,30 @@ extern "C" {
 #define ZB_MAC_FD_WRITE_FAILED 3
 #define ZB_MAC_HELPER_SPAWN_FAILED 4
 
-/* Looks up (service, account) with zb_keychain_lookup(keychain_path, unlock_password, ...), writes ALL of
- * the token to `fd` (looping over short writes and EINTR, with SIGPIPE off for that fd), then wipes and
- * frees its copy. Returns ZB_KC_OK, ZB_KC_ABSENT, ZB_KC_UNAVAILABLE or ZB_MAC_FD_WRITE_FAILED. out_err: NULL
- * on success, else a malloc'd fixed message (never the token) the caller frees with free(); may be NULL. */
-int zb_mac_token_to_fd(int fd, const char *keychain_path, const char *unlock_password, const char *service,
-                       const char *account, char **out_err);
+/* Production lookup: the default login Keychain only. Writes ALL token bytes to
+ * `fd`, then wipes and frees the Keychain copy. No path, password, token or
+ * error string can cross this API. */
+int zb_mac_token_to_fd(int fd, const char *service, const char *account);
+
+/* Disposable-keychain variant for platform tests only. out_err is NULL on
+ * success, otherwise a malloc'd fixed message that never contains the token. */
+int zb_mac_token_to_fd_for_test(int fd, const char *keychain_path, const char *unlock_password,
+                                const char *service, const char *account, char **out_err);
+
+/* Product helper boundary. Creates a private Unix socketpair, fills it from the
+ * default Keychain, and spawns argv with the read endpoint explicitly mapped to
+ * fd 3. stdin_fd/stdout_fd follow zb_agent_spawn_group_io; the child receives
+ * only 0, 1, 2 and 3 on Darwin. The token is never an argv/env/file value. */
+int zb_mac_helper_spawn_fd3(const char *const *argv, const char *const *envp,
+                            int stdin_fd, int stdout_fd, const char *service,
+                            const char *account, pid_t *out_pid);
+
+/* Same product handoff, but sourcing the token from a disposable Keychain. */
+int zb_mac_helper_spawn_fd3_for_test(const char *const *argv, const char *const *envp,
+                                     int stdin_fd, int stdout_fd,
+                                     const char *keychain_path, const char *unlock_password,
+                                     const char *service, const char *account,
+                                     pid_t *out_pid, char **out_err);
 
 /* Spawn a helper in its own process group with a private Keychain-backed
  * socket mapped only to fd 3. The test form selects a disposable Keychain. */

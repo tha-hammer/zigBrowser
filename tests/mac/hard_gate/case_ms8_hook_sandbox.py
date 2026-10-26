@@ -1,9 +1,9 @@
 """zb-hook-run's Darwin branch on a Mac (design 7929; RoseCat 7938/7951/7958), under the STAGED pinned runtime: the
-real setup.provision (route off) builds a home under the real path of the scratch (runtime/hook.sb,
-runtime/bin/zb-hook-run), and the REAL zb-hook-run runs a stand-in hook under sandbox-exec with that profile:
+real setup.provision (route off) copies a hook declared in the source ~/.claude/settings.json, wraps that copied
+command with runtime/bin/zb-hook-run, and builds runtime/hook.sb; the REAL wrapped command runs under that profile:
 - a tiny launcher puts a 0400 run.marker on fd 5 and leaves one unrelated descriptor open (not close-on-exec), then
   execs zb-hook-run with ZB_AGENT_RUN_MARKER_FD=5 and planted token / proxy / API names in its environment;
-- the stand-in hook (the staged python, writing only into the scratchpad) dumps its os.environ, connects to both
+- the copied stand-in hook (writing only into the scratchpad) dumps its os.environ, connects to both
   bridge ports of runtime/net.json (listeners this case holds), to an "API" listener on a port the profile does not
   name, and to a public address; it reports fd 5 and the unrelated descriptor, then double-forks + setsid; the
   detached grandchild re-checks fd 5, writes its own report and exits by itself;
@@ -27,6 +27,7 @@ import io
 import json
 import os
 import secrets
+import shlex
 import socket
 import sys
 import threading
@@ -40,8 +41,8 @@ HORIZON_S = 20.0
 REPORTER = "/usr/bin/env"  # no arguments: one NAME=VALUE line per entry; no CoreFoundation or Python startup
 
 LAUNCH = r"""
-import os, sys
-marker, stray_path = sys.argv[1], sys.argv[2]
+import json, os, sys
+marker, stray_path, config_path = sys.argv[1], sys.argv[2], sys.argv[3]
 fd = os.open(marker, os.O_RDONLY)
 if fd != 5:
     os.dup2(fd, 5)
@@ -49,14 +50,22 @@ if fd != 5:
 os.set_inheritable(5, True)  # also when the open itself returned 5 (PEP 446: not inheritable; RoseCat 7969 #2)
 stray = os.open(stray_path, os.O_RDONLY)
 os.set_inheritable(stray, True)
-argv = [str(stray) if a == "{STRAY}" else a for a in sys.argv[3:]]
+with open(config_path) as f:
+    config = json.load(f)
+config["stray"] = stray
+with open(config_path, "w") as f:
+    json.dump(config, f)
+argv = sys.argv[4:]
 os.execv(argv[0], argv)
 """
 
 HOOK = r"""
 import json, os, socket, stat, sys, time
-out, nonce = sys.argv[1], sys.argv[5]
-b1, b2, api, stray = int(sys.argv[2]), int(sys.argv[3]), int(sys.argv[4]), int(sys.argv[6])
+out = os.path.join(os.environ["HOME"], "scratchpad")
+with open(os.path.join(out, "ms8-hook-input.json")) as f:
+    config = json.load(f)
+nonce = config["nonce"]
+b1, b2, api, stray = (int(config[name]) for name in ("bridge1", "bridge2", "api", "stray"))
 def reach(host, port):
     try:
         s = socket.create_connection((host, port), timeout=5)
@@ -184,9 +193,16 @@ def run(h):
     scratch = os.path.realpath(h.scratch)
     source_home = os.path.join(scratch, "user")
     source = os.path.join(source_home, ".claude")
-    os.makedirs(source, 0o700)
+    source_hooks = os.path.join(source, "hooks")
+    os.makedirs(source_hooks, 0o700)
+    source_hook = os.path.join(source_hooks, "hook.py")
+    with open(source_hook, "w") as f:
+        f.write(HOOK)
     with open(os.path.join(source, "settings.json"), "w") as f:
-        f.write("{}\n")
+        json.dump({"hooks": {"Stop": [{"hooks": [{
+            "type": "command", "command": f"python3 {source_hook}",
+        }]}]}}, f)
+        f.write("\n")
     home = options.AgentHome(os.path.join(scratch, "data", "zigbrowser", "agent-home"))
     err = io.StringIO()
     try:
@@ -205,6 +221,16 @@ def run(h):
         b1, b2 = json.load(f)["ports"]
     with open(os.path.join(runtime, "hook-env.json")) as f:
         allowed = json.load(f)
+    with open(os.path.join(root, ".claude", "settings.json")) as f:
+        settings = json.load(f)
+    commands = [hook["command"] for entries in settings.get("hooks", {}).values()
+                for entry in entries for hook in entry.get("hooks", [])]
+    copied_hook = os.path.join(root, ".claude", "hooks", "hook.py")
+    expected_command = f"{runtime}/bin/zb-hook-run -- python3 {copied_hook}"
+    if not h.check(commands == [expected_command] and os.path.isfile(copied_hook),
+                   f"setup copies and wraps the declared hook ({commands!r}; copied={os.path.isfile(copied_hook)})"):
+        return
+    hook_command = shlex.split(commands[0])
 
     listeners = []
     try:
@@ -224,15 +250,13 @@ def run(h):
         stray_path = os.path.join(scratch, "stray")
         with open(stray_path, "w") as f:
             f.write("stray\n")
-        hook = os.path.join(scratch, "hook.py")
-        with open(hook, "w") as f:
-            f.write(HOOK)
+        config_path = os.path.join(scratchpad, "ms8-hook-input.json")
+        with open(config_path, "w") as f:
+            json.dump({"bridge1": b1, "bridge2": b2, "api": api.port, "nonce": nonce}, f)
         env = {"PATH": "/usr/bin:/bin", "HOME": root, "TMPDIR": os.path.join(scratchpad, "tmp"), "LANG": "C.UTF-8",
                "ZB_AGENT_RUN_MARKER_FD": "5", **PLANTED}
         expected_env = {k: v for k, v in env.items() if k in allowed}
-        argv = [h.python, "-I", "-S", "-c", LAUNCH, marker, stray_path,
-                h.python, "-I", os.path.join(runtime, "bin", "zb-hook-run"), "--",
-                h.python, "-I", "-S", hook, scratchpad, str(b1), str(b2), str(api.port), nonce, "{STRAY}"]
+        argv = [h.python, "-I", "-S", "-c", LAUNCH, marker, stray_path, config_path, *hook_command]
         code, out, errb = h.spawn_group(argv, env=env, timeout=60)
         h.check(code == 0, f"zb-hook-run runs the hook under sandbox-exec and exits 0 (rc={code}; "
                            f"stderr tail {errb[-300:]!r})")

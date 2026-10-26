@@ -21,9 +21,9 @@ every hook command is rewritten as `zb-hook-run -- <command>`. On Linux, in orde
    its own namespace and mount setup, and closes its descriptor: the relay and
    the hook run under it, on top of the helper's outer filter (§3c.6).
 On Darwin (design 7929; a dormant scaffold until seatbelt_ready) it checks the run marker, runtime/hook.sb and the
-scratchpad before closing anything (a refusal closes nothing and runs nothing), closes every descriptor >= 3 except
-the reviewed run marker on fd 5 (MS6.5.1), and execs sandbox-exec with the bridges-only hook profile setup rendered,
-from the same allowlisted environment: no bwrap, relay or seccomp filter.
+profile's curated read bindings before closing anything (a refusal closes nothing and runs nothing), closes every
+descriptor >= 3 except the reviewed run marker on fd 5 (MS6.5.1), and execs sandbox-exec with the bridges-only hook
+profile setup rendered, from the same allowlisted environment: no bwrap, relay or seccomp filter.
 Standard library only: it runs before, and outside of, the helper's venv.
 """
 
@@ -50,6 +50,7 @@ BWRAP = "/usr/bin/bwrap"
 # The platform the Darwin branch keys on (design 7929; a module value so tests inject it, like setup.PLATFORM).
 PLATFORM = sys.platform
 SANDBOX_EXEC = "/usr/bin/sandbox-exec"
+SEATBELT_BINDINGS = "hook-read-bindings.json"
 # MS6.5.1's run marker: the one descriptor a hook inherits on Darwin besides stdio, at its reserved number (not the
 # token's 3, the egress 4, nor the >= 10 memfd range), named by this variable; it is never passed into the hook's
 # environment.
@@ -193,6 +194,7 @@ def _run_darwin(home, runtime, names, command):
     try:
         marker = _run_marker()
         profile = _hook_profile(runtime)
+        bindings = _seatbelt_bindings(runtime)
         scratchpad = _scratchpad(home)
     except ValueError as exc:
         print(f"zb-hook-run: {exc}", file=sys.stderr)
@@ -204,7 +206,9 @@ def _run_darwin(home, runtime, names, command):
     else:
         os.closerange(3, marker)
         os.closerange(marker + 1, top)
-    os.execve(SANDBOX_EXEC, [SANDBOX_EXEC, "-f", profile, "-D", f"SCRATCHPAD={scratchpad}", *command], env)
+    definitions = [part for name, value in bindings for part in ("-D", f"{name}={value}")]
+    os.execve(SANDBOX_EXEC,
+              [SANDBOX_EXEC, "-f", profile, "-D", f"SCRATCHPAD={scratchpad}", *definitions, *command], env)
     return 127
 
 
@@ -235,6 +239,34 @@ def _hook_profile(runtime):
     if not stat.S_ISREG(st.st_mode) or st.st_uid != os.geteuid() or st.st_mode & 0o022:
         raise ValueError("runtime/hook.sb is not a private regular file")
     return path
+
+
+def _seatbelt_bindings(runtime):
+    """Validated named read parameters setup wrote beside the private hook profile."""
+    path = os.path.join(runtime, SEATBELT_BINDINGS)
+    try:
+        st = os.lstat(path)
+        if not stat.S_ISREG(st.st_mode) or st.st_uid != os.geteuid() or st.st_mode & 0o022:
+            raise ValueError
+        with open(path, encoding="utf-8") as stream:
+            raw = json.load(stream)
+    except (OSError, ValueError, TypeError):
+        raise ValueError(f"runtime/{SEATBELT_BINDINGS} is not a private bindings file") from None
+    if not isinstance(raw, list):
+        raise ValueError(f"runtime/{SEATBELT_BINDINGS} is not a private bindings file")
+    out, names = [], set()
+    for entry in raw:
+        if not isinstance(entry, list) or len(entry) != 2:
+            raise ValueError(f"runtime/{SEATBELT_BINDINGS} is not a private bindings file")
+        name, value = entry
+        prefix = "READ_PARENT_" if isinstance(name, str) and name.startswith("READ_PARENT_") else "READ_"
+        suffix = name[len(prefix):] if isinstance(name, str) and name.startswith(prefix) else ""
+        if (not suffix.isdigit() or name in names or not isinstance(value, str) or not value.startswith("/")
+                or value == "/" or "\0" in value or "//" in value or os.path.normpath(value) != value):
+            raise ValueError(f"runtime/{SEATBELT_BINDINGS} is not a private bindings file")
+        names.add(name)
+        out.append((name, value))
+    return tuple(out)
 
 
 def _scratchpad(home):

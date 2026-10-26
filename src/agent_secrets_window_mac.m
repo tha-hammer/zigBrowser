@@ -11,7 +11,6 @@
 #include <string.h>
 
 extern int zb_mac_drawer_e2e_enabled(void);
-
 int zb_agent_onboard_token(const char *keychain_path, const char *unlock_password,
                            const char *service, const char *account, const char *token, char **out_err);
 

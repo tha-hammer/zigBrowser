@@ -724,6 +724,14 @@ void zb_mac_drawer_panel_focus_input(NSView *panel) {
   [drawer.window makeFirstResponder:drawer.input];
 }
 
+void zb_mac_drawer_panel_e2e_send(NSView *panel, const char *utf8_text) {
+  NSCAssert([NSThread isMainThread], @"The AppKit drawer must be driven on the main thread");
+  if (![panel isKindOfClass:[ZBMacDrawerPanel class]] || utf8_text == NULL) return;
+  ZBMacDrawerPanel *drawer = (ZBMacDrawerPanel *)panel;
+  drawer.input.string = zb_mac_string(utf8_text);
+  [drawer sendInput];
+}
+
 void zb_mac_drawer_panel_append(NSView *panel, const char *role, const char *utf8_text) {
   NSCAssert([NSThread isMainThread], @"The AppKit drawer must be updated on the main thread");
   if (![panel isKindOfClass:[ZBMacDrawerPanel class]]) return;

@@ -78,11 +78,11 @@ class DarwinRefusesLaunch(unittest.TestCase):
                 rc = launch.main(argv)
         return rc, err.getvalue(), ex, access
 
-    def test_darwin_valid_port_refuses_not_ready_before_bwrap(self):
+    def test_darwin_refuses_linux_net_dir_before_bwrap(self):
         rc, err, ex, access = self._run_darwin(BASE + ["--egress-port", "3128"])
         self.assertEqual(rc, launch.EXIT_USAGE)
         self.assertNotEqual(rc, launch.EXIT_NO_SANDBOX)  # NOT the bwrap refusal
-        self.assertIn("macOS launch is not ready", err)
+        self.assertIn("--net-dir is the Linux launch's only", err)
         ex.assert_not_called()
         access.assert_not_called()  # bwrap must never be consulted on the Darwin path
 
@@ -115,6 +115,16 @@ class DarwinRefusesLaunch(unittest.TestCase):
         self.assertEqual(rc, launch.EXIT_USAGE)
         ex.assert_not_called()
         self.assertIn("macOS-only", err.getvalue())
+
+    def test_linux_refuses_the_unsandboxed_dev_flag(self):
+        with mock.patch.object(launch, "PLATFORM", "linux"), \
+                mock.patch.object(launch.os, "execve") as ex:
+            err = io.StringIO()
+            with redirect_stderr(err):
+                rc = launch.main(BASE + ["--unsandboxed-dev"])
+        self.assertEqual(rc, launch.EXIT_USAGE)
+        ex.assert_not_called()
+        self.assertIn("--unsandboxed-dev is macOS-only", err.getvalue())
 
 
 if __name__ == "__main__":

@@ -79,7 +79,10 @@ class FakeHarness:
 
     def hook(self, argv, env):
         hook_args = argv[argv.index("--") + 1:]
-        _py, _i, _s, _hook, scratchpad, b1, b2, api, nonce, _stray = hook_args
+        _python, copied_hook = hook_args
+        scratchpad = Path(argv[7]).parent
+        config = json.loads(Path(argv[7]).read_text())
+        b1, b2, api, nonce = (config[name] for name in ("bridge1", "bridge2", "api", "nonce"))
         self.nonce = nonce
         runtime = Path(argv[argv.index("--") - 1]).parent.parent
         allowed = json.loads((runtime / "hook-env.json").read_text())
@@ -165,13 +168,15 @@ class Ms8HookCase(unittest.TestCase):
         self.assertGreaterEqual(h.checks, 10)
         argv, env = next(r for r in h.runs if r[0][0] != "/bin/ps")
         self.assertEqual(argv[:5], [sys.executable, "-I", "-S", "-c", case.LAUNCH])
-        marker, stray = argv[5], argv[6]
+        marker, stray, config = argv[5], argv[6], argv[7]
         self.assertEqual(stat.S_IMODE(os.lstat(marker).st_mode), 0o400)
-        self.assertTrue(stat.S_ISREG(os.lstat(marker).st_mode) and os.path.isfile(stray))
-        zb_hook_run = argv[9]
-        self.assertEqual(argv[7:11], [sys.executable, "-I", zb_hook_run, "--"])
+        self.assertTrue(stat.S_ISREG(os.lstat(marker).st_mode) and os.path.isfile(stray)
+                        and os.path.isfile(config))
+        zb_hook_run = argv[8]
+        self.assertEqual(argv[8:10], [zb_hook_run, "--"])
         self.assertTrue(zb_hook_run.endswith("/runtime/bin/zb-hook-run") and os.path.isfile(zb_hook_run))
-        self.assertEqual(argv[-1], "{STRAY}")
+        self.assertEqual(argv[10], "python3")
+        self.assertTrue(argv[11].endswith("/.claude/hooks/hook.py") and os.path.isfile(argv[11]))
         self.assertEqual(env["ZB_AGENT_RUN_MARKER_FD"], "5")
         for name, value in case.PLANTED.items():
             self.assertEqual(env.get(name), value)
@@ -184,12 +189,14 @@ class Ms8HookCase(unittest.TestCase):
         os.chmod(marker, 0o400)
         stray = self.tmp / "stray"
         stray.write_text("x")
+        config = self.tmp / "config.json"
+        config.write_text("{}")
         checker = ("import os, stat, sys; st = os.fstat(5); "
                    "sys.stdout.write('reg' if stat.S_ISREG(st.st_mode) else 'other')")
         for label, opens in (("open returns 5", "exec 3</dev/null 4</dev/null; "), ("open returns 3", "")):
             with self.subTest(case=label):
                 done = subprocess.run(["/bin/sh", "-c", opens + 'exec "$@"', "sh", sys.executable, "-I", "-S", "-c",
-                                       case.LAUNCH, str(marker), str(stray), sys.executable, "-I", "-S", "-c",
+                                       case.LAUNCH, str(marker), str(stray), str(config), sys.executable, "-I", "-S", "-c",
                                        checker], capture_output=True, text=True, timeout=30)
                 self.assertEqual((done.returncode, done.stdout), (0, "reg"), done.stderr[-300:])
 

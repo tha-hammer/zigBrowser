@@ -140,6 +140,10 @@
     },
     {
       "role": "agent-host-package",
+      "path": "Frameworks/agent-host/zb_agent_host/seatbelt_rules.py"
+    },
+    {
+      "role": "agent-host-package",
       "path": "Frameworks/agent-host/zb_agent_host/seccomp.py"
     },
     {

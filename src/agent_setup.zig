@@ -76,13 +76,28 @@ pub fn platformGate(os: std.Target.Os.Tag, sandbox_ready: bool) Gate {
     };
 }
 
-/// The owner development build may run the macOS agent before Seatbelt lands.
-/// This is the single build-controlled exception used by both setup and the
-/// drawer launch. A release-style build (`mac_unsandboxed_dev == false`)
-/// retains the ordinary platform gate unchanged.
+/// The owner development build may run the macOS drawer before Seatbelt lands.
+/// A release-style build (`mac_unsandboxed_dev == false`) retains the ordinary
+/// drawer platform gate unchanged.
 pub fn platformGateForBuild(os: std.Target.Os.Tag, sandbox_ready: bool, mac_unsandboxed_dev: bool) Gate {
     if (os == .macos and mac_unsandboxed_dev) return .run;
     return platformGate(os, sandbox_ready);
+}
+
+/// Setup's macOS helper is trusted provisioning code, while every untrusted
+/// CLI execution it starts is constrained by setup.py's Seatbelt profile.
+/// Drawer admission remains on platformGateForBuild until MS6 is accepted.
+pub fn setupPlatformGate(os: std.Target.Os.Tag) Gate {
+    return switch (os) {
+        .linux, .macos => .run,
+        else => .{ .refuse = linux_only_refusal },
+    };
+}
+
+test "macOS setup reaches its Seatbelt-enforced helper before drawer acceptance" {
+    try std.testing.expect(setupPlatformGate(.linux) == .run);
+    try std.testing.expect(setupPlatformGate(.macos) == .run);
+    try std.testing.expectEqualStrings(linux_only_refusal, setupPlatformGate(.windows).refuse);
 }
 
 test "the runtime sits at <prefix>/lib/zigbrowser/agent-host beside <prefix>/bin/zigBrowser" {

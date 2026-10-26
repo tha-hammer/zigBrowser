@@ -24,8 +24,9 @@ int zb_agent_spawn_group(const char *const *argv, const char *const *envp, pid_t
 int zb_agent_spawn_group_io(const char *const *argv, const char *const *envp, int stdin_fd, int stdout_fd,
                             pid_t *out_pid);
 
-/* Darwin helper spawn: like zb_agent_spawn_group_io, with token_fd mapped to
- * descriptor 3. The stdio source descriptors must not be 3 or token_fd. */
+/* Darwin helper spawn: like zb_agent_spawn_group_io, with `token_fd` explicitly
+ * mapped to descriptor 3. POSIX_SPAWN_CLOEXEC_DEFAULT leaves the child exactly
+ * 0,1,2,3. The stdio source descriptors must not be 3 or token_fd. */
 int zb_agent_spawn_group_io_fd3(const char *const *argv, const char *const *envp,
                                 int stdin_fd, int stdout_fd, int token_fd, pid_t *out_pid);
 

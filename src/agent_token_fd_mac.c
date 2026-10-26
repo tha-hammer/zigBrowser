@@ -17,8 +17,8 @@ static void set_err(char **out_err, const char *text) {
   }
 }
 
-int zb_mac_token_to_fd(int fd, const char *keychain_path, const char *unlock_password, const char *service,
-                       const char *account, char **out_err) {
+int zb_mac_token_to_fd_for_test(int fd, const char *keychain_path, const char *unlock_password,
+                                const char *service, const char *account, char **out_err) {
   if (out_err != NULL) {
     *out_err = NULL;
   }
@@ -60,6 +60,12 @@ int zb_mac_token_to_fd(int fd, const char *keychain_path, const char *unlock_pas
   return ZB_KC_OK;
 }
 
+int zb_mac_token_to_fd(int fd, const char *service, const char *account) {
+  char *error = NULL;
+  int result = zb_mac_token_to_fd_for_test(fd, NULL, NULL, service, account, &error);
+  free(error);
+  return result;
+}
 static void close_pair(int pair[2]) {
   if (pair[0] >= 0) close(pair[0]);
   if (pair[1] >= 0) close(pair[1]);
@@ -68,6 +74,7 @@ static void close_pair(int pair[2]) {
 
 static int helper_spawn_fd3(const char *const *argv, const char *const *envp,
                             int stdin_fd, int stdout_fd,
+                            int use_test_keychain,
                             const char *keychain_path, const char *unlock_password,
                             const char *service, const char *account,
                             pid_t *out_pid, char **out_err) {
@@ -87,7 +94,19 @@ static int helper_spawn_fd3(const char *const *argv, const char *const *envp,
     }
   }
 
-  int result = zb_mac_token_to_fd(token[0], keychain_path, unlock_password, service, account, out_err);
+  /* Valid onboarded tokens are at most 512 bytes, below a socket buffer. Fill
+   * the channel before spawning so a missing/unavailable Keychain starts no
+   * child and the token never enters a process-creation structure. */
+  int result;
+  if (use_test_keychain) {
+    result = zb_mac_token_to_fd_for_test(token[0], keychain_path, unlock_password,
+                                          service, account, out_err);
+  } else {
+    result = zb_mac_token_to_fd(token[0], service, account);
+    if (result != ZB_KC_OK) {
+      set_err(out_err, "zigBrowser: agent: the token is unavailable");
+    }
+  }
   (void)shutdown(token[0], SHUT_WR);
   close(token[0]);
   token[0] = -1;
@@ -101,7 +120,7 @@ static int helper_spawn_fd3(const char *const *argv, const char *const *envp,
   token[1] = -1;
   if (spawn_error != 0) {
     if (out_pid != NULL) *out_pid = -1;
-    set_err(out_err, "zigBrowser: agent: the helper could not be started");
+    set_err(out_err, "zigBrowser: agent: the sandboxed helper could not be started");
     return ZB_MAC_HELPER_SPAWN_FAILED;
   }
   return ZB_KC_OK;
@@ -112,7 +131,7 @@ int zb_mac_helper_spawn_fd3_for_test(const char *const *argv, const char *const 
                                      const char *keychain_path, const char *unlock_password,
                                      const char *service, const char *account,
                                      pid_t *out_pid, char **out_err) {
-  return helper_spawn_fd3(argv, envp, stdin_fd, stdout_fd, keychain_path, unlock_password,
+  return helper_spawn_fd3(argv, envp, stdin_fd, stdout_fd, 1, keychain_path, unlock_password,
                           service, account, out_pid, out_err);
 }
 
@@ -120,7 +139,7 @@ int zb_mac_helper_spawn_fd3(const char *const *argv, const char *const *envp,
                             int stdin_fd, int stdout_fd, const char *service,
                             const char *account, pid_t *out_pid) {
   char *error = NULL;
-  int result = helper_spawn_fd3(argv, envp, stdin_fd, stdout_fd, NULL, NULL,
+  int result = helper_spawn_fd3(argv, envp, stdin_fd, stdout_fd, 0, NULL, NULL,
                                 service, account, out_pid, &error);
   free(error);
   return result;

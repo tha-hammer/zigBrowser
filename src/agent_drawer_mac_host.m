@@ -52,6 +52,8 @@ extern NSView *zb_mac_drawer_panel_create(NSRect frame,
                                            void *ctx) __attribute__((weak_import));
 extern void zb_mac_drawer_panel_focus_input(NSView *panel)
     __attribute__((weak_import));
+extern void zb_mac_drawer_panel_e2e_send(NSView *panel, const char *utf8_text)
+    __attribute__((weak_import));
 extern void zb_mac_drawer_panel_append(NSView *panel, const char *role,
                                        const char *utf8_text)
     __attribute__((weak_import));
@@ -777,6 +779,20 @@ void zb_mac_drawer_attach(NSWindow *window, NSView *webview,
     printf("DRAWER\t%u\tmsg\tsystem\t%s\n", state.identifier,
            g_zb_mac_drawer_status.UTF8String);
     fflush(stdout);
+  }
+
+  const char *agent_prompt = getenv("ZB_DEBUG_DRAWER_AGENT_SEND");
+  if (zb_mac_drawer_e2e_enabled() && agent_prompt != NULL && agent_prompt[0] != '\0' &&
+      zb_mac_drawer_panel_e2e_send != NULL) {
+    NSString *prompt = [NSString stringWithUTF8String:agent_prompt];
+    if (prompt == nil) prompt = @"";
+    zb_mac_drawer_set_open(window, 1);
+    __weak ZBMacDrawerState *weak_state = state;
+    dispatch_async(dispatch_get_main_queue(), ^{
+      ZBMacDrawerState *strong_state = weak_state;
+      if (strong_state == nil || strong_state.window == nil) return;
+      zb_mac_drawer_panel_e2e_send(strong_state.panel, prompt.UTF8String);
+    });
   }
 
   const char *debug = getenv("ZB_DEBUG_DRAWER_LAYOUT");

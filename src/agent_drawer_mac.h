@@ -18,6 +18,9 @@
 NSView *zb_mac_drawer_panel_create(NSRect frame, unsigned int window_id,
                                    void (*on_minimize)(void *ctx), void *ctx);
 void zb_mac_drawer_panel_focus_input(NSView *panel);
+/* Product e2e gesture: set the real input and invoke its normal Send action.
+ * The host calls this only while --e2e-protocol is active. */
+void zb_mac_drawer_panel_e2e_send(NSView *panel, const char *utf8_text);
 /* role is "user", "assistant" or "status"; text is UTF-8 and shown verbatim. */
 void zb_mac_drawer_panel_append(NSView *panel, const char *role, const char *utf8_text);
 
