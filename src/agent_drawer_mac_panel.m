@@ -12,6 +12,11 @@ extern void zb_agent_helper_send(unsigned int window_id, const char *text) __att
 #import "agent_helper.h"
 
 extern int zb_drawer_card_press(uint64_t card, int control, int own);
+extern void zb_agent_tools_call(unsigned int win, const char *session,
+                                int64_t prompt_id, const char *id, size_t id_len,
+                                const char *tool, size_t tool_len,
+                                const char *args, size_t args_len)
+    __attribute__((weak_import));
 
 enum {
   ZB_CARD_APPROVE = 1,
@@ -610,6 +615,30 @@ void zb_drawer_agent_capped(unsigned int windowId) {
 void zb_drawer_agent_end(unsigned int windowId) {
   ZBMacDrawerPanel *panel = zb_mac_panel_for_window(windowId);
   if (panel != nil) [panel finishStreamAsShown];
+}
+
+void zb_drawer_agent_tool_call(unsigned int windowId, const char *session,
+                               int64_t promptId, const char *requestId,
+                               size_t requestIdLength, const char *tool,
+                               size_t toolLength, const char *arguments,
+                               size_t argumentsLength) {
+  if (session == NULL || session[0] == '\0' || requestId == NULL ||
+      requestIdLength == 0 || tool == NULL || toolLength == 0 ||
+      (arguments == NULL && argumentsLength != 0)) return;
+
+  NSString *sessionText = [zb_mac_string(session) copy];
+  NSData *requestData = [NSData dataWithBytes:requestId length:requestIdLength];
+  NSData *toolData = [NSData dataWithBytes:tool length:toolLength];
+  NSData *argumentsData = argumentsLength == 0
+                              ? [NSData data]
+                              : [NSData dataWithBytes:arguments length:argumentsLength];
+  zb_mac_on_main(^{
+    if (zb_agent_tools_call == NULL) return;
+    zb_agent_tools_call(windowId, sessionText.UTF8String, promptId,
+                        requestData.bytes, requestData.length, toolData.bytes,
+                        toolData.length, argumentsData.bytes,
+                        argumentsData.length);
+  });
 }
 
 void zb_drawer_card_show(unsigned int mainWindow, uint64_t card, const char *verb,

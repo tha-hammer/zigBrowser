@@ -1,6 +1,8 @@
 #ifndef ZB_AGENT_HELPER_H
 #define ZB_AGENT_HELPER_H
 
+#include <stdint.h>
+
 /* The chat helper's process side (chat-drawer plan D7, D7b, S3.2-S3.4, S3.12;
  * rev 16 §3c.2; S3b). Linux (GTK backend) only, GTK main thread only.
  *
@@ -65,5 +67,13 @@ void zb_drawer_agent_capped(unsigned int win_id);
 /* Window `win_id`'s reply ended with no message ending its bubble: the bubble keeps the
  * text it streamed. */
 void zb_drawer_agent_end(unsigned int win_id);
+
+/* macOS helper callback: deliver one already-validated tool call to the
+ * in-process browser-tool broker.  The AppKit implementation copies every
+ * field and enters the broker on the main thread. */
+void zb_drawer_agent_tool_call(unsigned int win_id, const char *session,
+                               int64_t prompt_id, const char *id, size_t id_len,
+                               const char *tool, size_t tool_len,
+                               const char *args, size_t args_len);
 
 #endif

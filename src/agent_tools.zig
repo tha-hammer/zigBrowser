@@ -257,15 +257,18 @@ fn brokerFor(win: c_uint, session: []const u8) ?*Bound {
     return b;
 }
 
-/// GTK thread: a validated `tool_call` of `session`'s prompt `prompt_id`, open in window `win`.
-/// Linux only (MS8.0): its broker's sink and card callbacks are agent_helper.c's and agent_drawer.c's.
+/// UI thread: a validated `tool_call` of `session`'s prompt `prompt_id`, open in window `win`.
+/// Linux enters here from agent_helper.c; macOS enters through the AppKit drawer's copying
+/// main-thread bridge. Both use the same broker, approval cards and result sink.
 fn zb_agent_tools_call(win: c_uint, session: [*:0]const u8, prompt_id: i64, id: [*]const u8, id_len: usize, tool: [*]const u8, tool_len: usize, args: [*]const u8, args_len: usize) callconv(.c) void {
     const b = brokerFor(win, std.mem.span(session)) orelse return refuse(win, session, id[0..id_len]);
     b.broker.submitPrompt(prompt_id, id[0..id_len], tool[0..tool_len], args[0..args_len], .{ .ctx = b, .done = done });
 }
 
 comptime {
-    if (builtin.os.tag == .linux) @export(&zb_agent_tools_call, .{ .name = "zb_agent_tools_call" });
+    if (builtin.os.tag == .linux or builtin.os.tag == .macos) {
+        @export(&zb_agent_tools_call, .{ .name = "zb_agent_tools_call" });
+    }
 }
 
 /// GTK thread: window `win`'s session ended, or the window closed. Its broker detaches:
