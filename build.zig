@@ -4555,6 +4555,16 @@ pub fn build(b: *std.Build) void {
         "tests/mac/ms1c_home_crash_pair_red.py", "tests/mac/ms1c_app_gate.sh",
         "tests/mac/ms1c_home_protected_paths.txt",
     }) |input| mac_ms1c_home_crash_pair.addFileInput(b.path(input));
+    // The retained-root cleanup oracle is destructive only inside its private PID/mount/user/network namespace. It
+    // binds the sealed inventory to descriptor-relative no-follow deletion and rejects every preflight or identity drift.
+    const mac_exact_root_cleanup = b.addSystemCommand(&.{
+        "/usr/bin/unshare", "--user", "--map-root-user", "--net", "--pid", "--fork", "--mount-proc",
+        "python3", "-X", "dev", "-W", "error", "-B", "tests/mac/mac_exact_root_cleanup_red.py",
+    });
+    mac_exact_root_cleanup.has_side_effects = true;
+    for ([_][]const u8{
+        "tests/mac/mac_exact_root_cleanup_red.py", "tests/mac/mac_exact_root_cleanup.py",
+    }) |input| mac_exact_root_cleanup.addFileInput(b.path(input));
     const mac_ms1c_term_only = b.addSystemCommand(&.{ "python3", "-B", "tests/e2e/mac_m9_term_only_test.py" });
     for ([_][]const u8{
         "tests/e2e/mac_m9_term_only_test.py", "tests/e2e/m9_reply_channel_test.py", "tests/e2e/m9_render_test.py",
@@ -4574,6 +4584,7 @@ pub fn build(b: *std.Build) void {
     mac_ms1c_gate_step.dependOn(&mac_ms1c_process_status.step);
     mac_ms1c_gate_step.dependOn(&mac_ms1c_home_owner_policy.step);
     mac_ms1c_gate_step.dependOn(&mac_ms1c_home_crash_pair.step);
+    mac_ms1c_gate_step.dependOn(&mac_exact_root_cleanup.step);
     mac_ms1c_gate_step.dependOn(&mac_ms1c_term_only.step);
     test_step.dependOn(&mac_ms1c_gate_selftest.step);
     test_step.dependOn(&mac_ms1c_otool_slices.step);
@@ -4588,6 +4599,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&mac_ms1c_process_status.step);
     test_step.dependOn(&mac_ms1c_home_owner_policy.step);
     test_step.dependOn(&mac_ms1c_home_crash_pair.step);
+    test_step.dependOn(&mac_exact_root_cleanup.step);
     test_step.dependOn(&mac_ms1c_term_only.step);
     // The 4pa.80 bundle-layout spike stages the real .app, signs it inside out and reports strict verification per Mac,
     // with every Mac-side write-capable phase under one Seatbelt profile (SilverRidge de82cf2).
