@@ -49,7 +49,8 @@ with open(os.path.join(out, "setup.sb"), "w") as f:
 PY
 
 PROBE="$ALLOWED/probe"
-xcrun clang -o "$PROBE" "$DIR/ms6_1_procinfo_probe.c" 2>"$TMP/cc.err" || {
+xcrun clang -framework Security -framework CoreFoundation -o "$PROBE" \
+    "$DIR/ms6_1_procinfo_probe.c" 2>"$TMP/cc.err" || {
     echo "FAIL	ms6-generated-profiles (probe build failed)"; cat "$TMP/cc.err"; exit 1; }
 
 SCRATCH="$TMP/scratch"; mkdir -p "$SCRATCH"
