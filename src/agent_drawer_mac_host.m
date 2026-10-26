@@ -86,6 +86,7 @@ static BOOL g_zb_mac_drawer_enabled = NO;
 static NSString *g_zb_mac_drawer_status = nil;
 static ZBMacDrawerMenuTarget *g_zb_mac_drawer_menu_target = nil;
 static NSMenuItem *g_zb_mac_drawer_menu_item = nil;
+static id g_zb_mac_drawer_key_monitor = nil;
 
 void zb_app_set_agent_drawer(int enabled) {
   g_zb_mac_drawer_enabled = enabled != 0;
@@ -196,6 +197,31 @@ static void zb_mac_drawer_ensure_menu(void) {
                          keyEquivalent:@""];
   g_zb_mac_drawer_menu_item.target = g_zb_mac_drawer_menu_target;
   [view_root.submenu addItem:g_zb_mac_drawer_menu_item];
+}
+
+static void zb_mac_drawer_ensure_shortcuts(void) {
+  if (g_zb_mac_drawer_key_monitor != nil) {
+    return;
+  }
+  g_zb_mac_drawer_key_monitor = [NSEvent
+      addLocalMonitorForEventsMatchingMask:NSEventMaskKeyDown
+                                  handler:^NSEvent *(NSEvent *event) {
+    NSEventModifierFlags modifiers =
+        event.modifierFlags & NSEventModifierFlagDeviceIndependentFlagsMask;
+    BOOL escape = event.keyCode == 53 && modifiers == 0;
+    BOOL command_shift_space =
+        event.keyCode == 49 &&
+        modifiers == (NSEventModifierFlagCommand | NSEventModifierFlagShift);
+    if (!escape && !command_shift_space) {
+      return event;
+    }
+    NSWindow *window = event.window != nil ? event.window : NSApp.keyWindow;
+    if (zb_state(window) == nil || !zb_mac_drawer_is_open(window)) {
+      return event;
+    }
+    zb_mac_drawer_set_open(window, 0);
+    return nil;
+  }];
 }
 
 static void zb_mac_drawer_minimize(void *context) {
@@ -419,6 +445,57 @@ void zb_mac_drawer_attach(NSWindow *window, NSView *webview) {
   [host setNeedsLayout:YES];
   [host layoutSubtreeIfNeeded];
   zb_mac_drawer_ensure_menu();
+  zb_mac_drawer_ensure_shortcuts();
+
+  const char *shortcut_debug = getenv("ZB_DEBUG_DRAWER_SHORTCUTS");
+  if (state.identifier == 1 && zb_mac_drawer_e2e_enabled() &&
+      shortcut_debug != NULL && strcmp(shortcut_debug, "1") == 0) {
+    __weak ZBMacDrawerState *weak_state = state;
+    dispatch_async(dispatch_get_main_queue(), ^{
+      ZBMacDrawerState *strong_state = weak_state;
+      NSWindow *strong_window = strong_state.window;
+      if (strong_state == nil || strong_window == nil) {
+        return;
+      }
+      zb_mac_drawer_set_open(strong_window, 1);
+      printf("DRAWER\t%u\tshortcut-open-escape\t%d\n",
+             strong_state.identifier, zb_mac_drawer_is_open(strong_window));
+      NSTimeInterval now = NSProcessInfo.processInfo.systemUptime;
+      NSEvent *escape = [NSEvent keyEventWithType:NSEventTypeKeyDown
+                                         location:NSZeroPoint
+                                    modifierFlags:0
+                                        timestamp:now
+                                     windowNumber:strong_window.windowNumber
+                                          context:nil
+                                       characters:@"\x1b"
+                      charactersIgnoringModifiers:@"\x1b"
+                                         isARepeat:NO
+                                           keyCode:53];
+      [NSApp sendEvent:escape];
+      printf("DRAWER\t%u\tshortcut-escape\t%d\n", strong_state.identifier,
+             zb_mac_drawer_is_open(strong_window));
+
+      zb_mac_drawer_set_open(strong_window, 1);
+      printf("DRAWER\t%u\tshortcut-open-command-shift-space\t%d\n",
+             strong_state.identifier, zb_mac_drawer_is_open(strong_window));
+      NSEventModifierFlags modifiers =
+          NSEventModifierFlagCommand | NSEventModifierFlagShift;
+      NSEvent *space = [NSEvent keyEventWithType:NSEventTypeKeyDown
+                                        location:NSZeroPoint
+                                   modifierFlags:modifiers
+                                       timestamp:now + 0.01
+                                    windowNumber:strong_window.windowNumber
+                                         context:nil
+                                      characters:@" "
+                     charactersIgnoringModifiers:@" "
+                                        isARepeat:NO
+                                          keyCode:49];
+      [NSApp sendEvent:space];
+      printf("DRAWER\t%u\tshortcut-command-shift-space\t%d\n",
+             strong_state.identifier, zb_mac_drawer_is_open(strong_window));
+      fflush(stdout);
+    });
+  }
 
   const char *menu_debug = getenv("ZB_DEBUG_DRAWER_MENU");
   if (state.identifier == 1 && zb_mac_drawer_e2e_enabled() &&
