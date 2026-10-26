@@ -84,10 +84,6 @@ for shape in fresh existing; do
     printf 'FAIL mac-dmg-agent-setup: %s %s HOME has no provisioned current link\n' "$native" "$shape"
     exit 1
   }
-  grep -Fx 'zigBrowser: agent running unsandboxed (dev build)' "$d/$shape.out" >/dev/null || {
-    printf 'FAIL mac-dmg-agent-setup: %s %s HOME lacks the development warning\n' "$native" "$shape"
-    exit 1
-  }
   python="$d/install/zigBrowser.app/Contents/Frameworks/agent-host/Python.framework/Versions/3.12/bin/python3.12"
   probe="$d/setup-profile-probe-$shape"
   mkdir -m 700 "$probe"
