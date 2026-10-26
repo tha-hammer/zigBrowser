@@ -209,10 +209,10 @@ export HOME="$root/run-env/home" CFFIXED_USER_HOME="$root/run-env/home" TMPDIR="
 . "$root/tests/mac/mac_varfolders_audit.sh" || exit 1
 . "$root/tests/mac/mac_crashreports_audit.sh" || exit 1
 # Self-audit (SilverRidge 5f1ce9a5): on this Mac's own /bin/bash and /usr/bin/python3, one complete cycle of each
-# helper, inside an outer /var/folders audit, must change nothing there (outer COMPLETE 0); otherwise start nothing.
+# helper, inside an outer /var/folders audit, must complete and retain every reported delta; otherwise start nothing.
 # Its whole output is evidence: each step's lines as SELFAUDIT<TAB><step><TAB>..., then SELFAUDIT_STATUS<TAB><step><TAB>
 # <exit status>, for the steps outer-begin (silent), inner-varfolders and inner-crashreports (each a full cycle ending
-# COMPLETE 0) and outer-end (COMPLETE 0).
+# in a canonical COMPLETE count) and outer-end (a canonical COMPLETE count).
 self_ev="$root/evidence/selfaudit"
 mkdir -p "$self_ev" || exit 1
 selfstep() { # selfstep <step> <terminal it must end with, or - for silent> <command...>: run, record, judge
@@ -223,17 +223,29 @@ selfstep() { # selfstep <step> <terminal it must end with, or - for silent> <com
   sed "s/^/SELFAUDIT$T$step$T/" "$self_ev/$step.out"
   printf 'SELFAUDIT_STATUS\t%s\t%s\n' "$step" "$rc"
   [ "$rc" -eq 0 ] || return 5
-  if [ "$want" = - ]; then [ ! -s "$self_ev/$step.out" ] || return 5; else [ "$last" = "$want" ] || return 5; fi
+  if [ "$want" = - ]; then
+    [ ! -s "$self_ev/$step.out" ] || return 5
+  elif [ "$want" = VARFOLDERS-COMPLETE ]; then
+    local count deltas
+    [[ "$last" =~ ^VARFOLDERS${T}COMPLETE${T}(0|[1-9][0-9]*)$ ]] || return 5
+    [ "$(grep -c "^VARFOLDERS${T}COMPLETE${T}" "$self_ev/$step.out")" -eq 1 ] || return 5
+    ! grep -q "^VARFOLDERS${T}INCONCLUSIVE${T}" "$self_ev/$step.out" || return 5
+    count=${last##*"$T"}
+    deltas=$(grep -c "^VARFOLDERS-DELTA${T}" "$self_ev/$step.out")
+    [ "$deltas" = "$count" ] || return 5
+  else
+    [ "$last" = "$want" ] || return 5
+  fi
 }
 vf_cycle() { varfolders_begin "$1" && varfolders_end "$1"; }
 cr_cycle() { crashreports_begin "$1" "$crash_dir" && crashreports_end "$1" "$crash_dir"; }
 ev_cycle() { mkdir -p "$1/sample" && printf 'sample\n' > "$1/sample/a" && pack_evidence "$1/sample"; }
 selfaudit() { # every step must succeed with its exact terminal, in this order, or the leg starts nothing
   selfstep outer-begin - varfolders_begin "$self_ev/outer" || return 5
-  selfstep inner-varfolders "VARFOLDERS${T}COMPLETE${T}0" vf_cycle "$self_ev/inner" || return 5
+  selfstep inner-varfolders VARFOLDERS-COMPLETE vf_cycle "$self_ev/inner" || return 5
   selfstep inner-crashreports "CRASHREPORTS${T}COMPLETE${T}0" cr_cycle "$self_ev/crash" || return 5
   selfstep inner-evidence - ev_cycle "$self_ev/pack" || return 5
-  selfstep outer-end "VARFOLDERS${T}COMPLETE${T}0" varfolders_end "$self_ev/outer" || return 5
+  selfstep outer-end VARFOLDERS-COMPLETE varfolders_end "$self_ev/outer" || return 5
 }
 selfaudit || exit 5   # a helper changed something there or did not complete: no RUNNING marker, no row, no browser
 # From here every exit packs the evidence first (the packer is proven above); this side copies it back.
@@ -276,7 +288,8 @@ PY
 }
 prepare_signal_package() {
   local identity commit want_dmg extra dmg dmg_before dmg_after dmg_bytes att dev mp mounted_app mounted_sha
-  local app app_sha exe build shim exe_sha build_sha shim_sha exe_archs shim_archs x86_refs arm_refs
+  local app app_sha exe build shim exe_sha build_sha shim_sha exe_bytes build_bytes shim_bytes
+  local exe_archs shim_archs x86_refs arm_refs
   identity="$root/signal-package.identity"
   [ -f "$identity" ] && [ ! -L "$identity" ] || return 1
   IFS=$'\t' read -r commit want_dmg extra < "$identity" || return 1
@@ -289,8 +302,14 @@ prepare_signal_package() {
   [ -f "$dmg" ] && [ ! -L "$dmg" ] && [ -s "$dmg" ] || return 1
   dmg_before=$(shasum -a 256 "$dmg" | awk '{print $1}') || return 1
   [ "$dmg_before" = "$want_dmg" ] || return 1
-  dmg_bytes=$(wc -c < "$dmg")
-  [ "$dmg_bytes" -gt 0 ] || return 1
+  canonical_bytes() { # canonical_bytes <regular file>: one unpadded nonnegative decimal or nonzero
+    local raw
+    raw=$(wc -c < "${1:?}") || return 1
+    [[ "$raw" =~ ^[[:space:]]*(0|[1-9][0-9]*)[[:space:]]*$ ]] || return 1
+    printf '%s\n' "${BASH_REMATCH[1]}"
+  }
+  dmg_bytes=$(canonical_bytes "$dmg") || return 1
+  [[ "$dmg_bytes" =~ ^[1-9][0-9]*$ ]] || return 1
   mkdir "$root/mnt" "$root/app" || return 1
   att=$(hdiutil attach -readonly -nobrowse -noautoopen -mountpoint "$root/mnt" "$dmg") || return 1
   dev=$(printf '%s\n' "$att" | awk '$1 ~ /^\/dev\/disk[0-9]+$/ {print $1; exit}')
@@ -314,6 +333,11 @@ prepare_signal_package() {
   exe_sha=$(shasum -a 256 "$exe" | awk '{print $1}')
   build_sha=$(shasum -a 256 "$build" | awk '{print $1}')
   shim_sha=$(shasum -a 256 "$shim" | awk '{print $1}')
+  exe_bytes=$(canonical_bytes "$exe") || return 1
+  build_bytes=$(canonical_bytes "$build") || return 1
+  shim_bytes=$(canonical_bytes "$shim") || return 1
+  [[ "$exe_bytes" =~ ^[1-9][0-9]*$ ]] && [[ "$build_bytes" =~ ^[1-9][0-9]*$ ]] \
+    && [[ "$shim_bytes" =~ ^[1-9][0-9]*$ ]] || return 1
   [ "$exe_sha" != "$build_sha" ] && ! [ "$exe" -ef "$build" ] || return 1
   exe_archs=$(lipo -archs "$exe" | tr ' ' '\n' | LC_ALL=C sort | tr '\n' ' ') || return 1
   shim_archs=$(lipo -archs "$shim" | tr ' ' '\n' | LC_ALL=C sort | tr '\n' ' ') || return 1
@@ -332,9 +356,9 @@ prepare_signal_package() {
     printf 'PACKAGE_FLOW\thdiutil-attach-readonly\tditto\n'
     printf 'PACKAGE_DMG\t%s\t%s\t%s\n' "$dmg_after" "$dmg_bytes" "$dmg"
     printf 'PACKAGE_APP\t%s\t%s\n' "$app_sha" "$app"
-    printf 'PACKAGE_EXECUTABLE\t%s\t%s\t%s\n' "$exe_sha" "$(wc -c < "$exe")" "$exe"
-    printf 'PACKAGE_BUILD_EXECUTABLE\t%s\t%s\t%s\n' "$build_sha" "$(wc -c < "$build")" "$build"
-    printf 'PACKAGE_SHIM\t%s\t%s\t%s\n' "$shim_sha" "$(wc -c < "$shim")" "$shim"
+    printf 'PACKAGE_EXECUTABLE\t%s\t%s\t%s\n' "$exe_sha" "$exe_bytes" "$exe"
+    printf 'PACKAGE_BUILD_EXECUTABLE\t%s\t%s\t%s\n' "$build_sha" "$build_bytes" "$build"
+    printf 'PACKAGE_SHIM\t%s\t%s\t%s\n' "$shim_sha" "$shim_bytes" "$shim"
     printf 'PACKAGE_UNIVERSAL\texecutable=arm64,x86_64\tshim=arm64,x86_64\n'
     printf 'PACKAGE_CODESIGN\t--verify --strict --deep\trc=0\n'
     printf 'PACKAGE_SHIM_REF\t%s\tx86_64=1\tarm64=1\n' \

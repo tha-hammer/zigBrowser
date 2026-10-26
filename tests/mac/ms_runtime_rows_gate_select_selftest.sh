@@ -19,13 +19,15 @@
 #      with zero ROW lines, zero row (browser) invocations and no RUNNING marker.
 #   L5 the helper self-audit (SilverRidge 5f1ce9a5): before the first row, the leg prints SELFAUDIT<TAB>... lines whose
 #      outer /var/folders end is exactly SELFAUDIT<TAB>VARFOLDERS<TAB>COMPLETE<TAB>0.
-#   L6 a /var/folders helper that itself writes under the temp root during its cycle: the self-audit shows that delta,
-#      and the leg exits 5 with zero rows, zero row invocations and no RUNNING marker.
+#   L6 a /var/folders helper mutant that itself writes under the temp root during its cycle: the self-audit retains
+#      the one complete inner and outer delta and continues under record-all/fail-none. The helper's registered
+#      inotify suite remains the authoritative no-write proof.
 #   L5 is exact (SilverRidge 90151365): SELFAUDIT_STATUS<TAB><step><TAB>0 for outer-begin, inner-varfolders,
 #      inner-crashreports, inner-evidence (the evidence packer, SilverRidge 0632602f) and outer-end, in that order;
 #      outer-begin and inner-evidence silent; each other step's last line COMPLETE 0; all
-#      before the first ROW line. L7 an inner refusal or a non-COMPLETE inner result (each injected into the fake run
-#      root's helper, for the self-audit's evidence dir only): exit 5, zero rows, zero row invocations, no marker.
+#      before the first ROW line. L7 an inner nonzero status, INCONCLUSIVE, malformed or duplicate terminal, count
+#      mismatch, or crash-report refusal (each injected into the fake run root's helper, for the self-audit's evidence
+#      dir only): exit 5, zero rows, zero row invocations, no marker.
 #   L8 a crash-report evidence dir that cannot be made: exactly one begin refusal, and the leg starts nothing.
 #   S1/S2 also bind order: one transcript records, at each fake ssh/scp contact, how many ROWS_SELECTED lines the gate
 #      had printed by then; every contact must see exactly one. S3-S5 leave the transcript empty.
@@ -275,7 +277,11 @@ inject() { # inject <helper file> <function line> <code>: a fake run root helper
 }
 restore() { cp "$T/$1.real" "$LH/$RRD/tests/mac/$1"; }
 for case in "inner /var/folders begin refused|mac_varfolders_audit.sh|varfolders_begin() {|  case \"\$1\" in */selfaudit/inner) __vf_refuse \"selftest\"; return ;; esac" \
+            "inner /var/folders nonzero status|mac_varfolders_audit.sh|varfolders_end() {|  case \"\$1\" in */selfaudit/inner) return 2 ;; esac # selftest" \
             "inner /var/folders end not COMPLETE|mac_varfolders_audit.sh|varfolders_end() {|  case \"\$1\" in */selfaudit/inner) printf 'VARFOLDERS\\tINCONCLUSIVE\\tselftest\\n'; return 0 ;; esac" \
+            "inner /var/folders malformed count|mac_varfolders_audit.sh|varfolders_end() {|  case \"\$1\" in */selfaudit/inner) printf 'VARFOLDERS\\tCOMPLETE\\t01\\n'; return 0 ;; esac # selftest" \
+            "inner /var/folders duplicate terminal|mac_varfolders_audit.sh|varfolders_end() {|  case \"\$1\" in */selfaudit/inner) printf 'VARFOLDERS\\tCOMPLETE\\t0\\n' ;; esac # selftest" \
+            "inner /var/folders count mismatch|mac_varfolders_audit.sh|varfolders_end() {|  case \"\$1\" in */selfaudit/inner) printf 'VARFOLDERS-DELTA\\tchanged\\tT\\tb64:eA==\\t-\\t-\\nVARFOLDERS\\tCOMPLETE\\t0\\n'; return 0 ;; esac # selftest" \
             "inner crash-report begin refused|mac_crashreports_audit.sh|crashreports_begin() {|  case \"\$1\" in */selfaudit/crash) __cr_refuse \"selftest\"; return ;; esac"; do
   IFS='|' read -r name file fn code <<<"$case"
   inject "$file" "$fn" "$code"
@@ -297,8 +303,18 @@ awk '{print} /^  \[ "\$pt" != "\$pc" \]/{print "  : > \"$pt/zb-helper-wrote\""}'
 grep -q zb-helper-wrote "$LH/$RRD/tests/mac/mac_varfolders_audit.sh" || bad "L6: could not build the writing helper"
 leg_marked "tests/e2e/mac_v_red_ok_test.py|red|v-red"
 cp "$T/vf-helper.real" "$LH/$RRD/tests/mac/mac_varfolders_audit.sh"; rm -f -- "$T/vf/T/zb-helper-wrote"
-if grep -q $'^SELFAUDIT\t[a-z-]*\tVARFOLDERS-DELTA\t[a-z]*\tT\t'"$(vf_field zb-helper-wrote)"$'\t' <<<"$LOUT"; then no_start L6 "a helper that writes under T"
-else bad "L6: the self-audit did not show the helper's own write: rc=$LRC $(grep -E '^SELFAUDIT' <<<"$LOUT" | tail -3 | tr '\n' ' ')"; fi
+delta_lines=$(grep $'^SELFAUDIT\t.*\tVARFOLDERS-DELTA\t' <<<"$LOUT")
+if [ "$LRC" -eq 0 ] && [ "$MARK" = no ] && [ "$(wc -l < "$T/rows-calls")" -eq 1 ] \
+   && [ "$(grep -c $'^SELFAUDIT\tinner-varfolders\tVARFOLDERS-DELTA\tchanged\tT\t' <<<"$delta_lines")" -eq 1 ] \
+   && [ "$(grep -c $'^SELFAUDIT\touter-end\tVARFOLDERS-DELTA\tchanged\tT\t' <<<"$delta_lines")" -eq 1 ] \
+   && [ "$(grep -cF -- "$(vf_field zb-helper-wrote)" <<<"$delta_lines")" -eq 2 ] \
+   && [ "$(grep -cx $'SELFAUDIT\tinner-varfolders\tVARFOLDERS\tCOMPLETE\t1' <<<"$LOUT")" -eq 1 ] \
+   && [ "$(grep -cx $'SELFAUDIT\touter-end\tVARFOLDERS\tCOMPLETE\t1' <<<"$LOUT")" -eq 1 ] \
+   && [ "$(grep -cx $'ROW\ttests/e2e/mac_v_red_ok_test.py\tred\trc=1\tMATCH' <<<"$LOUT")" -eq 1 ]; then
+  ok "L6 a complete helper delta is retained in both self-audit cycles and the selected row runs"
+else
+  bad "L6: rc=$LRC rows=$(grep -c $'^ROW\t' <<<"$LOUT") calls=$(wc -l < "$T/rows-calls") marker=$MARK $(grep -E '^(SELFAUDIT.*(VARFOLDERS-DELTA|COMPLETE)|ROW)' <<<"$LOUT" | tr '\n' ' ')"
+fi
 
 if [ "$fails" -eq 0 ]; then printf 'PASS\tms-runtime-rows-select-selftest\n'; exit 0; fi
 printf 'FAIL\tms-runtime-rows-select-selftest\t%s failure(s)\n' "$fails"

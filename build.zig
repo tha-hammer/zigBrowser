@@ -4314,12 +4314,55 @@ pub fn build(b: *std.Build) void {
         "packaging/macos/Info.plist",                "packaging/macos/entitlements.plist",
         "packaging/assets/zigBrowser.png",
     }) |input| mac_signal_runtime.addFileInput(b.path(input));
+    // Consumed-run portability repairs: canonical nonzero varfolders COMPLETE counts and unpadded BSD wc sizes
+    // must both stay bound to the runtime-row gate and its aggregate Mac/default entry points.
+    const mac_runtime_selfaudit_complete = b.addSystemCommand(&.{
+        "bash", "tests/mac/ms_runtime_rows_selfaudit_complete_red.sh",
+    });
+    mac_runtime_selfaudit_complete.has_side_effects = true;
+    const mac_runtime_bsd_sizes = b.addSystemCommand(&.{
+        "bash", "tests/mac/ms_runtime_rows_bsd_sizes_red.sh",
+    });
+    mac_runtime_bsd_sizes.has_side_effects = true;
+    for ([_]*std.Build.Step.Run{ mac_runtime_selfaudit_complete, mac_runtime_bsd_sizes }) |run| {
+        for ([_][]const u8{
+            "tests/mac/ms_runtime_rows_selfaudit_complete_red.sh",
+            "tests/mac/ms_runtime_rows_bsd_sizes_red.sh",
+            "tests/mac/ms_signal_runtime_gate_red.sh",
+            "tests/mac/ms_runtime_rows_gate.sh",
+            "tests/e2e/mac_signal_runtime_test.py",
+            "tests/e2e/automation_core_test.py",
+            "tests/e2e/automation_fixture_server.py",
+            "tests/e2e/slice2_common.py",
+            "tests/e2e/mac_signal_delivery_test.py",
+            "src/wkwebview_shim.m",
+            "tests/mac/ms_runtime_rows_evidence_selftest.sh",
+            "tests/mac/ms_runtime_rows_output_selftest.sh",
+            "tests/mac/mac_varfolders_audit.sh",
+            "tests/mac/mac_crashreports_audit.sh",
+            "tests/mac/mac_config.sh",
+            "tests/mac/mac_gate_lib.sh",
+            "tests/mac/mac_gate_output.sh",
+            "tests/mac/build-on-mac.sh",
+            "tests/mac/known_hosts",
+            "packaging/macos/build-dmg.sh",
+            "packaging/macos/Info.plist",
+            "packaging/macos/entitlements.plist",
+            "packaging/assets/zigBrowser.png",
+        }) |input| run.addFileInput(b.path(input));
+    }
     const mac_signal_runtime_step = b.step("test-mac-signal-runtime", "Dispatch-source delivery and exact-package signal runtime gate (hostless)");
     mac_signal_runtime_step.dependOn(&mac_signal_delivery.step);
     mac_signal_runtime_step.dependOn(&mac_signal_runtime.step);
+    mac_signal_runtime_step.dependOn(&mac_runtime_selfaudit_complete.step);
+    mac_signal_runtime_step.dependOn(&mac_runtime_bsd_sizes.step);
     mac_build_script_step.dependOn(&mac_signal_runtime.step);
+    mac_build_script_step.dependOn(&mac_runtime_selfaudit_complete.step);
+    mac_build_script_step.dependOn(&mac_runtime_bsd_sizes.step);
     test_step.dependOn(&mac_signal_delivery.step);
     test_step.dependOn(&mac_signal_runtime.step);
+    test_step.dependOn(&mac_runtime_selfaudit_complete.step);
+    test_step.dependOn(&mac_runtime_bsd_sizes.step);
     // MS1.4: the two-host gate fails closed on no GUI session, wrong arch, a missing SDK and zero recorded assertions.
     const mac_gate_selftest = b.addSystemCommand(&.{ "bash", "tests/mac/gate_selftest.sh" });
     for ([_][]const u8{
