@@ -505,7 +505,8 @@ def stage(home, source, source_home, source_path, python, cli, staging, package_
         # The nested hook can only narrow the outer CLI profile. Give it the stable agent-home root plus any
         # external hook-command directories; the outer curated CLI profile still withholds every unrequested
         # sibling (including ~/.ssh). The stdlib-only hook runner reads these exact -D bindings at exec time.
-        hook_reads = (root, *dirs)
+        hook_python = os.path.dirname(os.path.dirname(os.path.realpath(python)))
+        hook_reads = (root, hook_python, *dirs)
         hook_profile = sandbox_macos.render_profile(
             egress=None, bridges=tuple(net["ports"]), is_hook=True, read_paths=hook_reads)
         atomic_write(runtime / "hook.sb", hook_profile, 0o600)
