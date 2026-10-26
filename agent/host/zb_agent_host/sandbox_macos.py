@@ -1,17 +1,16 @@
 """macOS Seatbelt backend (MS6) — the profile generator.
 
 `render_profile` emits the Seatbelt (.sb) text a `MacSeatbeltBackend` launch runs under
-`/usr/bin/sandbox-exec -f <profile> -D SCRATCHPAD=<path>`. It realizes, in profile form, the same semantic
+`/usr/bin/sandbox-exec -f <profile> -D SCRATCHPAD=<path> ...`. It realizes, in profile form, the same semantic
 launch contract the Linux `LinuxBwrapBackend` realizes as a bwrap argv (MS0 `SandboxBackend`): deny-default,
 a read-only workspace with a writable scratchpad, and the backend's network capability (the egress endpoint
 for the CLI/helper, the two bridge ports, and hooks reaching the bridges only).
 
 Security construction (RoseCat 6918; plan:1562-1566 "profile file + -D params, not inline"):
-  * NO untrusted value is interpolated into the profile source. The writable path is a NAMED `-D` parameter
-    `(subpath (param "SCRATCHPAD"))`; sandbox-exec binds the `-D` value as a literal (not re-parsed as
-    profile source), so a path containing a quote/newline/paren cannot add a rule. The workspace is not
-    referenced in the profile at all (broad reads cover it; it is simply absent from every write rule, so a
-    write fails closed under deny-default).
+  * NO untrusted value is interpolated into the profile source. The writable path and every caller-owned read
+    capability are NAMED `-D` parameters; sandbox-exec binds each value as a literal (not re-parsed as profile
+    source), so a path containing a quote/newline/paren cannot add a rule. The workspace is absent from every
+    write rule, so a write still fails closed under deny-default.
   * The only values placed in the source are the loopback endpoints, and they are VALIDATED first: the host
     must be a loopback literal and each port a plain integer 1..65535 — a validated integer is a proven, non-
     injectable encoding (it is digits), which is why a Seatbelt network filter, which takes no `-D` param,
@@ -21,9 +20,8 @@ Security construction (RoseCat 6918; plan:1562-1566 "profile file + -D params, n
 
 The token-isolation recipe was measured against the real kernel on both arches in the MS6.1 Mac gate: an
 EXPLICIT `(deny process-info*)` AND a CURATED `sysctl-read` (a blanket allow re-opens kern.procargs2); the
-task port is never granted. Reads stay broad and mach-lookup blanket here — the deny-default read curation
-and the tiny curated mach-lookup are a separate later MS6 increment. The drawer launch nevertheless enters
-Seatbelt now: PROFILE_CURATION remains the release-readiness fact, never permission to fall back to host rights.
+task port is never granted. Reads and Mach lookups come from the closed capabilities in `seatbelt_rules`; the
+drawer launch nevertheless enters Seatbelt whether or not the separate release-readiness fact has been accepted.
 Pure stdlib, so it unit-tests on Linux; the both-Mac `sandbox-exec` gate still applies.
 """
 
@@ -35,6 +33,11 @@ import shutil
 import signal
 import stat
 import tempfile
+
+if __package__:
+    from . import seatbelt_rules
+else:  # The Mac profile gate stages these two production modules side by side.
+    import seatbelt_rules
 
 # The egress endpoint's host is EXACTLY the loopback literal (plan :1581-1593) — not "localhost", not a
 # resolvable name. The bridges are EXACTLY the two named loopback ports; missing/extra/wrong is refused.
@@ -172,7 +175,7 @@ def _keychain_denies():
     ]
 
 
-def render_profile(*, egress, bridges, is_hook, is_login=False):
+def render_profile(*, egress, bridges, is_hook, is_login=False, read_paths=()):
     """Return the Seatbelt profile text for a CLI/helper (``is_hook=False``), a hook (``is_hook=True``), or the
     one-shot sign-in (``is_login=True``: egress endpoint only, no bridges).
 
@@ -182,6 +185,7 @@ def render_profile(*, egress, bridges, is_hook, is_login=False):
     no path is ever interpolated into the source.
     """
     eps = _endpoints(egress, bridges, is_hook, is_login)
+    reads = seatbelt_rules.file_read_rules(read_paths)
     net = " ".join(f'(remote tcp "{e}")' for e in eps)
     kind = "login" if is_login else ("hook" if is_hook else "cli/helper")
     net_note = ("egress only (sign-in; no bridges)" if is_login
@@ -194,7 +198,7 @@ def render_profile(*, egress, bridges, is_hook, is_login=False):
         "(deny default)",
         "(allow process-fork)",
         "(allow process-exec)",
-        "(allow file-read*)",  # broad reads (read curation is a later MS6 increment); workspace is readable
+        *reads.lines,
         _file_write_line(),
         f";; network: {net_note}",
         f"(allow network-outbound {net})",
@@ -204,13 +208,13 @@ def render_profile(*, egress, bridges, is_hook, is_login=False):
         ";; allowed so the runtime introspects itself at startup (code signature / exec path) without SIGILL (7045).",
         "(deny process-info*)",
         "(allow process-info* (target self))",
-        "(allow mach-lookup)",  # tiny curated mach-lookup is a separate later MS6 increment
+        *seatbelt_rules.mach_lookup_rules(),
         *_keychain_denies(),
     ]
     return "\n".join(lines) + "\n"
 
 
-def render_setup_profile(*, loopback_port=None):
+def render_setup_profile(*, loopback_port=None, read_paths=()):
     """Return the Seatbelt profile text for setup's OWN runs (`cli --version`, the R1 probe).
 
     It KEEPS the token-isolation belt (curated `sysctl-read` + explicit `(deny process-info*)`), exactly like
@@ -225,6 +229,7 @@ def render_setup_profile(*, loopback_port=None):
     listener's 127.0.0.1 port), exactly that one `localhost:<port>` is permitted and nothing else. No value is
     interpolated: the scratch is bound as the `SCRATCHPAD` `-D` param, and the port is range-validated here.
     """
+    reads = seatbelt_rules.file_read_rules(read_paths)
     net = [";; network: NONE — deny-default denies all outbound (setup reaches only its own loopback)."]
     if loopback_port is not None:
         _validate_port(loopback_port)
@@ -238,7 +243,7 @@ def render_setup_profile(*, loopback_port=None):
         "(deny default)",
         "(allow process-fork)",
         "(allow process-exec)",
-        "(allow file-read*)",  # broad reads (read curation to ro_paths+system is a later MS6 increment)
+        *reads.lines,
         _file_write_line(),
         *net,
         ";; sysctl-read CURATED (MS6.1): never blanket — a blanket allow re-opens kern.procargs2.",
@@ -248,7 +253,7 @@ def render_setup_profile(*, loopback_port=None):
         ";; so Python/the runtime introspects itself at startup without SIGILL (7045).",
         "(deny process-info*)",
         "(allow process-info* (target self))",
-        "(allow mach-lookup)",  # tiny curated mach-lookup is a separate later MS6 increment
+        *seatbelt_rules.mach_lookup_rules(),
         *_keychain_denies(),
     ]
     return "\n".join(lines) + "\n"
@@ -281,6 +286,39 @@ def dparams(*, scratchpad):
     return {SCRATCHPAD_PARAM: norm}
 
 
+def read_bindings(read_paths=()):
+    """The ordered named parameters for the curated caller-owned read capabilities."""
+    return seatbelt_rules.file_read_rules(read_paths).bindings
+
+
+def _binding_argv(bindings):
+    """Flatten validated ``(name, value)`` bindings into sandbox-exec ``-D`` arguments."""
+    return tuple(part for name, value in bindings for part in ("-D", f"{name}={value}"))
+
+
+def _resolved_read_paths(paths):
+    """Keep each canonical spelling and, when different, its resolved spelling.
+
+    The fixed agent-home links (``runtime`` and ``.claude``) are deliberate. Seatbelt compares filesystem access
+    against resolved paths, so the stable link spelling and the current immutable distribution target are both
+    capabilities; neither grants a sibling below the agent-home root.
+    """
+    raw = tuple(os.fspath(path) for path in paths)
+    seatbelt_rules.file_read_rules(raw)  # validate before realpath can normalize a rejected spelling
+    expanded = list(raw)
+    for path in raw:
+        resolved = os.path.realpath(path)
+        if resolved != path:
+            expanded.append(resolved)
+    return tuple(sorted(set(expanded)))
+
+
+def _launch_read_paths(home, ro_paths):
+    """Exact agent-home inputs plus the caller's backend-neutral read capabilities."""
+    owned = (home.claude_dir, home.workspace, home.scratchpad, home.runtime, home.state)
+    return _resolved_read_paths((*owned, *tuple(ro_paths)))
+
+
 _SETUP_PROFILE_PREFIX = ".zb-setup-sandbox-"
 
 
@@ -299,19 +337,21 @@ def setup_sandbox(scratch, ro_paths, command, *, loopback_port=None):
     time, so a command writing to scratch cannot change the applied policy afterwards. No `setsid`: sandbox-
     exec does not start a new session, so the child stays in setup's process group (BlueBeaver's contract).
 
-    `command` must be a non-empty list of strings. `ro_paths` is accepted for the contract but not yet used
-    (reads are broad this increment; the deny-default read curation to ro_paths+system is the later increment).
+    `command` must be a non-empty list of strings. Reads are the curated system allowlist plus the throwaway
+    scratch and the caller's `ro_paths`; every caller-owned path is a named ``-D`` binding.
     """
     scratch_norm = dparams(scratchpad=scratch)[SCRATCHPAD_PARAM]  # validate canonical non-root scratch
     if not isinstance(command, (list, tuple)) or not command or not all(isinstance(c, str) for c in command):
         raise ValueError("command must be a non-empty list of strings")
-    tuple(ro_paths)  # accepted; reserved for the read-curation increment
+    read_paths = _resolved_read_paths((scratch_norm, *tuple(ro_paths)))
+    bindings = read_bindings(read_paths)
 
     profile_path = os.path.join(scratch_norm, f"{_SETUP_PROFILE_PREFIX}{secrets.token_hex(8)}.sb")
     with open(profile_path, "w", encoding="utf-8") as f:
-        f.write(render_setup_profile(loopback_port=loopback_port))
+        f.write(render_setup_profile(loopback_port=loopback_port, read_paths=read_paths))
     try:
-        yield ["/usr/bin/sandbox-exec", "-f", profile_path, "-D", f"{SCRATCHPAD_PARAM}={scratch_norm}", *command]
+        yield ["/usr/bin/sandbox-exec", "-f", profile_path, "-D", f"{SCRATCHPAD_PARAM}={scratch_norm}",
+               *_binding_argv(bindings), *command]
     finally:
         base = os.path.basename(profile_path)  # guarded delete: only our per-run file, under the validated scratch
         if os.path.dirname(profile_path) == scratch_norm and base.startswith(_SETUP_PROFILE_PREFIX) and base.endswith(".sb"):
@@ -372,14 +412,13 @@ def _remove_profile_dir(d):
 
 
 class Curation(enum.Enum):
-    """How far the generated profiles are curated: BROAD (bare file-read*, process-exec and mach-lookup) or
-    CURATED (deny-default reads, curated exec and a tiny mach-lookup)."""
+    """Whether every release capability, including process-exec, has completed its acceptance gate."""
     BROAD = "broad"
     CURATED = "curated"
 
 
 # The ONE readiness source for the macOS profile (plan R29-MS6 D2, bd zigBrowser-4pa.66). Only the reviewed MS6
-# acceptance commit flips it, together with the curated renderers and src/seatbelt_gate.zig's accepted_commit;
+# acceptance commit flips it, after the curated renderers and src/seatbelt_gate.zig's accepted_commit agree;
 # tests/agent_seatbelt_readiness_invariant_test.zig fails if any one of the three moves alone.
 PROFILE_CURATION = Curation.BROAD
 
@@ -517,10 +556,10 @@ class MacSeatbeltBackend:
         and removes it after the spawn. The scratchpad is bound as the literal ``-D`` value
         (never interpolated into source). The semantic fields state the backend-neutral meaning: macOS has no
         namespaces (``unshare=()`` — Seatbelt is the isolation), ``network``/``lifetime``/``channel`` are this
-        backend's, and ``mounts`` is the enforced write-grant contract (the scratchpad). The Linux-only kwargs
+        backend's, and ``mounts`` records the enforced read grants plus the writable scratchpad. The Linux-only kwargs
         (``seccomp_fd``, ``net_dir``, ``claude_writable=True`` and a nonempty ``state_dirs``) cannot be honoured
-        here and raise ``sandbox.UnsupportedLaunchInput`` before any profile exists (bd 4pa.22). ``ro_paths`` is
-        accepted: the BROAD profile allows every read; the deny-default read curation (MS6.7) must bind them.
+        here and raise ``sandbox.UnsupportedLaunchInput`` before any profile exists (bd 4pa.22). ``ro_paths`` and
+        the fixed agent-home inputs are the profile's only caller-owned read capabilities.
         """
         sb = _sb()
         state_dirs = () if state_dirs is None else state_dirs  # None: this backend's default
@@ -534,15 +573,21 @@ class MacSeatbeltBackend:
             raise sb.UnsupportedLaunchInput("macOS grants no state directories yet")
         net = network if network is not None else self.network()
         scratch = dparams(scratchpad=str(home.scratchpad))[SCRATCHPAD_PARAM]  # validated canonical non-root
+        read_paths = _launch_read_paths(home, ro_paths)
+        bindings = read_bindings(read_paths)
         # Materialize the per-launch profile SECURELY (O_EXCL + 0400 + fd check) in its own 0700 dir OUTSIDE
         # the published dist — never current/runtime, never a shared/reused path (RoseCat 6972 #1/#2). The
         # login network carries no bridges, which selects the egress-only sign-in profile.
         is_login = not net.bridges.ports
         profile_path = _materialize_profile(render_profile(
-            egress=net.egress.endpoint, bridges=net.bridges.ports, is_hook=False, is_login=is_login))
-        argv = ("/usr/bin/sandbox-exec", "-f", profile_path, "-D", f"{SCRATCHPAD_PARAM}={scratch}")
-        mounts = (sb.Mount(source=scratch, target=scratch, writable=True),)
-        return sb.LaunchSpec(argv=argv, unshare=(), mounts=mounts, workdir=str(home.workspace),
+            egress=net.egress.endpoint, bridges=net.bridges.ports, is_hook=False, is_login=is_login,
+            read_paths=read_paths))
+        argv = ("/usr/bin/sandbox-exec", "-f", profile_path, "-D", f"{SCRATCHPAD_PARAM}={scratch}",
+                *_binding_argv(bindings))
+        mounts = [sb.Mount(source=scratch, target=scratch, writable=True)]
+        mounts.extend(sb.Mount(source=path, target=path, writable=False)
+                      for path in read_paths if path != scratch)
+        return sb.LaunchSpec(argv=argv, unshare=(), mounts=tuple(mounts), workdir=str(home.workspace),
                              seccomp_fd=None, network=net, lifetime=self.lifetime(), channel=self.channel())
 
     def login_launch_spec(self, home, *, seccomp_fd=None, ro_paths=(), net_dir=None):

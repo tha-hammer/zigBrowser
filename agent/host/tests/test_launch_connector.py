@@ -232,6 +232,10 @@ class Connector(unittest.TestCase):
         return [PYTHON, "-I", "-c", launch.CHAT_BOOT, f"{self.runtime}/host", command, "--home", str(self.home.root),
                 *extra]
 
+    def seatbelt_inner(self, argv):
+        """The helper command after sandbox-exec's variable number of curated -D read bindings."""
+        return list(argv)[list(argv).index(PYTHON, 5):]
+
     def relay(self, egress_dir):
         return ["/usr/bin/python3", "-I", "-S", f"{self.runtime}/bin/zb-net-relay", "--egress", egress_dir]
 
@@ -287,7 +291,7 @@ class Connector(unittest.TestCase):
             self.assertTrue(os.path.isfile(argv[2]), "B5: the profile exists while the launch is held")
             self.assertEqual(argv[3], "-D")
             self.assertEqual(argv[4], f"SCRATCHPAD={os.path.realpath(str(self.home.scratchpad))}")
-            self.assertEqual(argv[5:], self.inner("chat", "--egress-port", str(MAC_PORT)))
+            self.assertEqual(self.seatbelt_inner(argv), self.inner("chat", "--egress-port", str(MAC_PORT)))
             self.assertEqual(plan.spec.network.egress.endpoint.port, MAC_PORT)
         self.assertEqual(self.profile_dirs(), [])
 
@@ -538,7 +542,7 @@ class Connector(unittest.TestCase):
         self.assertEqual(err, "", "M3: the default launch emits no unsandboxed warning")
         self.assertEqual(seen["argv"][:2], ["/usr/bin/sandbox-exec", "-f"],
                          "M3: broad release curation must not select a host-rights launch")
-        self.assertEqual(seen["argv"][5:], self.inner("chat", "--egress-port", str(MAC_PORT)))
+        self.assertEqual(self.seatbelt_inner(seen["argv"]), self.inner("chat", "--egress-port", str(MAC_PORT)))
         self.assertEqual(counts["lease"].call_count, 1, "M3: the Seatbelt lease is held")
         self.assertEqual(counts["materialize"].call_count, 1, "M3: one Seatbelt profile is materialized")
         ex.assert_not_called()
@@ -590,7 +594,7 @@ class Connector(unittest.TestCase):
                          "M4: the helper environment at the spawn boundary")
         self.assertEqual(rc, 7, "M4: main returns the child's status")
         self.assertEqual(seen["argv"][:2], ["/usr/bin/sandbox-exec", "-f"])
-        self.assertEqual(seen["argv"][5:], self.inner("chat", "--egress-port", str(MAC_PORT)))
+        self.assertEqual(self.seatbelt_inner(seen["argv"]), self.inner("chat", "--egress-port", str(MAC_PORT)))
         self.assertEqual(seen["mode"], 0o400)
         self.assertIn(str(MAC_PORT), seen["profile"])
         self.assertEqual(len(seen["dirs"]), 1, "M4: exactly one live profile during the spawn")
@@ -625,7 +629,7 @@ class Connector(unittest.TestCase):
         rc, err, _ex, _, _, _ = self.darwin(self.base("--egress-port", str(MAC_PORT), "--command", "login"),
                                             ready=True, spawn=spawn)
         self.assertIn("argv", seen, f"M7: launch.spawn_helper was never called (rc={rc}, stderr={err!r})")
-        self.assertEqual(seen["argv"][5:], self.inner("login", "--egress-port", str(MAC_PORT)))
+        self.assertEqual(self.seatbelt_inner(seen["argv"]), self.inner("login", "--egress-port", str(MAC_PORT)))
         self.assertIn(str(MAC_PORT), seen["profile"])
 
 
@@ -643,7 +647,7 @@ class Connector(unittest.TestCase):
         self.assertEqual(len(popen.calls), 1, f"M8: one child (rc={rc}, stderr={err!r})")
         self.assertTrue(popen.calls[0].waited, "M8: the child must be waited for")
         self.assertTrue(seen.get("live"), "M8: the profile must still be present while the child is waited for")
-        self.assertEqual(seen["argv"][5:], self.inner("chat", "--egress-port", str(MAC_PORT)))
+        self.assertEqual(self.seatbelt_inner(seen["argv"]), self.inner("chat", "--egress-port", str(MAC_PORT)))
         self.assertEqual(seen["env"], want_env, "M8: the child gets options.helper_environ(home, os.environ)")
         self.assertEqual(rc, 7, "M8: main returns the child's exit status")
         ex.assert_not_called()

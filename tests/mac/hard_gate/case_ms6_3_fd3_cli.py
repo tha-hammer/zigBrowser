@@ -257,7 +257,7 @@ def run(h):
                     ours.close()  # read_token reads to end of stream
                 pass_fds, head = (theirs.fileno(),), ["/bin/sh", "-c", PLACE_FD3, "sh", str(theirs.fileno())]
             env = {"PATH": "/usr/bin:/bin", "PYTHONPATH": prefix, "PYTHONDONTWRITEBYTECODE": "1"}
-            with sandbox_macos.MacSeatbeltBackend(port).launch(home) as spec:
+            with sandbox_macos.MacSeatbeltBackend(port).launch(home, ro_paths=(prefix,)) as spec:
                 read_rc, read_out, _read_err = h.spawn_group(
                     list(spec.argv) + ["/bin/cat", str(sensitive_path)], env={"HOME": str(home.root)}, timeout=20)
                 sensitive_read = ("allowed" if read_rc == 0 and read_out == SSH_CANARY
