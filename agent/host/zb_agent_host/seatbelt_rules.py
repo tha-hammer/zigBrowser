@@ -42,6 +42,7 @@ SYSTEM_READ_ALLOW = (
     ("literal", "/dev/dtracehelper"),
     ("literal", "/dev/autofs_nowait"),
     ("literal", "/dev/fd"),
+    ("subpath", "/dev/fd"),
     ("literal", "/dev/null"),
     ("literal", "/dev/random"),
     ("literal", "/dev/tty"),
