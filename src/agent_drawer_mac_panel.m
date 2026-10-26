@@ -18,6 +18,7 @@ extern void zb_agent_helper_send(unsigned int window_id, const char *text) __att
 @interface ZBMacMessageBubble : NSView
 @property(nonatomic, readonly) NSTextView *textView;
 - (instancetype)initWithRole:(NSString *)role text:(NSString *)text;
+- (void)setPlainText:(NSString *)text;
 @end
 
 @interface ZBMacDrawerPanel : NSView
@@ -29,14 +30,29 @@ extern void zb_agent_helper_send(unsigned int window_id, const char *text) __att
 @property(nonatomic, strong) NSScrollView *messageScroll;
 @property(nonatomic, strong) NSStackView *messageStack;
 @property(nonatomic, strong) ZBMacInputTextView *input;
+@property(nonatomic, strong) NSMutableString *streamText;
+@property(nonatomic, strong) ZBMacMessageBubble *streamBubble;
+@property(nonatomic, assign) BOOL streamFull;
+- (void)addMessageView:(NSView *)view role:(NSString *)role;
 - (void)appendRole:(NSString *)role text:(NSString *)text;
+- (void)appendDelta:(NSString *)text;
+- (void)finishStreamWithText:(NSString *)text;
+- (void)finishStreamAsShown;
 - (void)requestMinimize;
 - (void)sendInput;
 @end
 
+static NSHashTable<ZBMacDrawerPanel *> *zb_mac_drawer_panels;
+
 static NSString *zb_mac_string(const char *text) {
   if (text == NULL) return @"";
   NSString *value = [[NSString alloc] initWithUTF8String:text];
+  return value != nil ? value : @"\uFFFD";
+}
+
+static NSString *zb_mac_string_n(const char *text, size_t length) {
+  if (text == NULL || length == 0) return @"";
+  NSString *value = [[NSString alloc] initWithBytes:text length:length encoding:NSUTF8StringEncoding];
   return value != nil ? value : @"\uFFFD";
 }
 
@@ -106,8 +122,8 @@ static void zb_mac_configure_plain_text(NSTextView *view) {
   _textView.textContainerInset = NSMakeSize(10.0, 7.0);
   _textView.font = [NSFont systemFontOfSize:13.0];
   _textView.textColor = [role isEqualToString:@"user"] ? NSColor.whiteColor : NSColor.labelColor;
-  _textView.string = text != nil ? text : @"";
   zb_mac_configure_plain_text(_textView);
+  [self setPlainText:text];
   [self addSubview:_textView];
   [NSLayoutConstraint activateConstraints:@[
     [_textView.leadingAnchor constraintEqualToAnchor:self.leadingAnchor],
@@ -118,6 +134,11 @@ static void zb_mac_configure_plain_text(NSTextView *view) {
   _heightConstraint = [self.heightAnchor constraintEqualToConstant:34.0];
   _heightConstraint.active = YES;
   return self;
+}
+
+- (void)setPlainText:(NSString *)text {
+  self.textView.string = text != nil ? text : @"";
+  [self setNeedsLayout:YES];
 }
 
 - (void)layout {
@@ -139,6 +160,7 @@ static void zb_mac_configure_plain_text(NSTextView *view) {
   self.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
   self.wantsLayer = YES;
   self.layer.backgroundColor = [NSColor colorWithSRGBRed:0.957 green:0.945 blue:0.914 alpha:1.0].CGColor;
+  self.streamText = [NSMutableString string];
 
   NSStackView *root = [[NSStackView alloc] initWithFrame:NSZeroRect];
   root.translatesAutoresizingMaskIntoConstraints = NO;
@@ -289,21 +311,25 @@ static void zb_mac_configure_plain_text(NSTextView *view) {
 - (void)appendRole:(NSString *)role text:(NSString *)text {
   NSString *shownRole = [role isEqualToString:@"user"] || [role isEqualToString:@"assistant"] ? role : @"status";
   ZBMacMessageBubble *bubble = [[ZBMacMessageBubble alloc] initWithRole:shownRole text:text];
+  [self addMessageView:bubble role:shownRole];
+}
+
+- (void)addMessageView:(NSView *)view role:(NSString *)role {
   NSView *row = [[NSView alloc] initWithFrame:NSZeroRect];
   row.translatesAutoresizingMaskIntoConstraints = NO;
-  [row addSubview:bubble];
+  [row addSubview:view];
   [NSLayoutConstraint activateConstraints:@[
-    [bubble.topAnchor constraintEqualToAnchor:row.topAnchor],
-    [bubble.bottomAnchor constraintEqualToAnchor:row.bottomAnchor],
-    [bubble.widthAnchor constraintLessThanOrEqualToAnchor:row.widthAnchor multiplier:0.82],
-    [bubble.widthAnchor constraintGreaterThanOrEqualToConstant:120.0],
+    [view.topAnchor constraintEqualToAnchor:row.topAnchor],
+    [view.bottomAnchor constraintEqualToAnchor:row.bottomAnchor],
+    [view.widthAnchor constraintLessThanOrEqualToAnchor:row.widthAnchor multiplier:0.82],
+    [view.widthAnchor constraintGreaterThanOrEqualToConstant:120.0],
   ]];
-  if ([shownRole isEqualToString:@"user"]) {
-    [bubble.trailingAnchor constraintEqualToAnchor:row.trailingAnchor].active = YES;
-    [bubble.leadingAnchor constraintGreaterThanOrEqualToAnchor:row.leadingAnchor].active = YES;
+  if ([role isEqualToString:@"user"]) {
+    [view.trailingAnchor constraintEqualToAnchor:row.trailingAnchor].active = YES;
+    [view.leadingAnchor constraintGreaterThanOrEqualToAnchor:row.leadingAnchor].active = YES;
   } else {
-    [bubble.leadingAnchor constraintEqualToAnchor:row.leadingAnchor].active = YES;
-    [bubble.trailingAnchor constraintLessThanOrEqualToAnchor:row.trailingAnchor].active = YES;
+    [view.leadingAnchor constraintEqualToAnchor:row.leadingAnchor].active = YES;
+    [view.trailingAnchor constraintLessThanOrEqualToAnchor:row.trailingAnchor].active = YES;
   }
   [self.messageStack addArrangedSubview:row];
   [row.widthAnchor constraintEqualToAnchor:self.messageStack.widthAnchor constant:-20.0].active = YES;
@@ -311,15 +337,53 @@ static void zb_mac_configure_plain_text(NSTextView *view) {
   NSView *document = self.messageScroll.documentView;
   if (document != nil) [document scrollPoint:NSMakePoint(0.0, MAX(0.0, NSMaxY(document.bounds)))];
 }
+
+- (void)appendDelta:(NSString *)text {
+  if (self.streamFull) return;
+  if (self.streamBubble == nil) {
+    self.streamBubble = [[ZBMacMessageBubble alloc] initWithRole:@"assistant" text:@""];
+    [self addMessageView:self.streamBubble role:@"assistant"];
+  }
+  [self.streamText appendString:text];
+  [self.streamBubble setPlainText:self.streamText];
+}
+
+- (void)finishStreamWithText:(NSString *)text {
+  if (self.streamBubble == nil) {
+    [self appendRole:@"assistant" text:text];
+  } else {
+    [self.streamBubble setPlainText:text];
+  }
+  self.streamBubble = nil;
+  self.streamFull = NO;
+  [self.streamText setString:@""];
+}
+
+- (void)finishStreamAsShown {
+  if (self.streamBubble != nil) [self finishStreamWithText:[self.streamText copy]];
+}
 @end
+
+static NSArray<ZBMacDrawerPanel *> *zb_mac_panel_snapshot(void) {
+  return zb_mac_drawer_panels != nil ? zb_mac_drawer_panels.allObjects : @[];
+}
+
+static ZBMacDrawerPanel *zb_mac_panel_for_window(unsigned int windowId) {
+  for (ZBMacDrawerPanel *panel in zb_mac_panel_snapshot()) {
+    if (panel.browserWindowId == windowId) return panel;
+  }
+  return nil;
+}
 
 NSView *zb_mac_drawer_panel_create(NSRect frame, unsigned int window_id,
                                    void (*on_minimize)(void *context), void *context) {
   NSCAssert([NSThread isMainThread], @"The AppKit drawer must be created on the main thread");
+  if (zb_mac_drawer_panels == nil) zb_mac_drawer_panels = [NSHashTable weakObjectsHashTable];
   ZBMacDrawerPanel *panel = [[ZBMacDrawerPanel alloc] initWithFrame:frame];
   panel.browserWindowId = window_id;
   panel.minimizeCallback = on_minimize;
   panel.minimizeContext = context;
+  [zb_mac_drawer_panels addObject:panel];
   return panel;
 }
 
@@ -334,4 +398,71 @@ void zb_mac_drawer_panel_append(NSView *panel, const char *role, const char *utf
   NSCAssert([NSThread isMainThread], @"The AppKit drawer must be updated on the main thread");
   if (![panel isKindOfClass:[ZBMacDrawerPanel class]]) return;
   [(ZBMacDrawerPanel *)panel appendRole:zb_mac_string(role) text:zb_mac_string(utf8_text)];
+}
+
+static NSString *zb_mac_status_text(NSString *state, NSString *reason) {
+  if ([state isEqualToString:@"starting"]) return @"Starting…";
+  if ([state isEqualToString:@"ready"]) return @"Ready";
+  if ([state isEqualToString:@"busy"]) return @"Working…";
+  if ([state isEqualToString:@"crashed"] || [state isEqualToString:@"stopped"]) return @"Stopped";
+  if ([state isEqualToString:@"unavailable"]) return [reason isEqualToString:@"no-token"] ? @"No token" : @"Unavailable";
+  return @"Not connected";
+}
+
+void zb_drawer_agent_status(unsigned int windowId, const char *state, const char *reason) {
+  NSString *stateText = zb_mac_string(state);
+  NSString *reasonText = zb_mac_string(reason);
+  for (ZBMacDrawerPanel *panel in zb_mac_panel_snapshot()) {
+    if (windowId != 0 && panel.browserWindowId != windowId) continue;
+    panel.statusLabel.stringValue = zb_mac_status_text(stateText, reasonText);
+    if ([reasonText isEqualToString:@"no-token"]) zb_mac_secrets_window_open(panel.window);
+  }
+}
+
+void zb_drawer_agent_message(unsigned int windowId, const char *role, const char *text, size_t length) {
+  NSString *roleText = zb_mac_string(role);
+  NSString *messageText = zb_mac_string_n(text, length);
+  for (ZBMacDrawerPanel *panel in zb_mac_panel_snapshot()) {
+    if (windowId != 0 && panel.browserWindowId != windowId) continue;
+    if (panel.streamBubble != nil && [roleText isEqualToString:@"assistant"]) {
+      if (panel.streamFull) {
+        [panel finishStreamAsShown];
+      } else {
+        [panel finishStreamWithText:messageText];
+      }
+      continue;
+    }
+    if (panel.streamBubble != nil) [panel finishStreamAsShown];
+    [panel appendRole:roleText text:messageText];
+  }
+}
+
+void zb_drawer_agent_delta(unsigned int windowId, const char *session, const char *text, size_t length) {
+  (void)session;
+  ZBMacDrawerPanel *panel = zb_mac_panel_for_window(windowId);
+  if (panel != nil) [panel appendDelta:zb_mac_string_n(text, length)];
+}
+
+void zb_drawer_agent_stopped(unsigned int windowId) {
+  ZBMacDrawerPanel *panel = zb_mac_panel_for_window(windowId);
+  if (panel == nil) return;
+  if (panel.streamBubble == nil) {
+    [panel appendRole:@"assistant" text:@"(stopped)"];
+    return;
+  }
+  NSString *space = panel.streamText.length != 0 && ![panel.streamText hasSuffix:@" "] ? @" " : @"";
+  [panel finishStreamWithText:[NSString stringWithFormat:@"%@%@(stopped)", panel.streamText, space]];
+}
+
+void zb_drawer_agent_capped(unsigned int windowId) {
+  ZBMacDrawerPanel *panel = zb_mac_panel_for_window(windowId);
+  if (panel == nil || panel.streamBubble == nil || panel.streamFull) return;
+  [panel.streamText appendString:@"\n[output truncated]"];
+  panel.streamFull = YES;
+  [panel.streamBubble setPlainText:panel.streamText];
+}
+
+void zb_drawer_agent_end(unsigned int windowId) {
+  ZBMacDrawerPanel *panel = zb_mac_panel_for_window(windowId);
+  if (panel != nil) [panel finishStreamAsShown];
 }
