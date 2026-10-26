@@ -14,10 +14,17 @@ set -eu
 DIR="${1:?usage: ms6_generated_profile_test.sh <dir-with-sandbox_macos.py-and-probe>}"
 [ -f "$DIR/sandbox_macos.py" ] || { echo "FAIL	ms6-generated-profiles (sandbox_macos.py not found in $DIR)"; exit 1; }
 [ -f "$DIR/ms6_1_procinfo_probe.c" ] || { echo "FAIL	ms6-generated-profiles (probe source not found in $DIR)"; exit 1; }
+DIR=$(cd "$DIR" && pwd -P)
 
-TMP=$(mktemp -d /tmp/zb-ms6gen.XXXXXX)
+TMP=$(mktemp -d "$DIR/zb-ms6gen.XXXXXX")
 TGT=""
-cleanup() { [ -n "$TGT" ] && kill "$TGT" 2>/dev/null || true; rm -rf "$TMP"; }
+cleanup() {
+    if [ -n "$TGT" ]; then
+        kill "$TGT" 2>/dev/null || true
+        wait "$TGT" 2>/dev/null || true
+    fi
+    case "$TMP" in "$DIR"/zb-ms6gen.??????) rm -rf -- "${TMP:?}" ;; esac
+}
 trap cleanup EXIT
 
 # Generate the three profiles from the PRODUCTION generator (a SimpleNamespace stands in for sandbox.Endpoint,
@@ -81,6 +88,30 @@ for prof in setup cli hook; do
         echo "FAIL	ms6-generated-$prof-python (the real runtime did not start under the generated profile — 7045 SIGILL? rc=$rc out=${out:-<none>})"; exit 1
     fi
     echo "generated $prof: python runtime starts (no 7045 SIGILL)"
+done
+
+# MS6.7 red/green: every generated profile must still read an immutable system file, but must not read private
+# user-home material. The canaries live only inside this run's owned work directory; HOME points at that stand-in,
+# so the two paths exercise the exact ~/.ssh and ~/Documents boundary without touching the Mac user's real files.
+USER_HOME="$TMP/user-home"
+mkdir -p "$USER_HOME/.ssh" "$USER_HOME/Documents"
+printf '%s\n' 'zb-ms6-private-ssh' > "$USER_HOME/.ssh/id_canary"
+printf '%s\n' 'zb-ms6-private-documents' > "$USER_HOME/Documents/canary.txt"
+for prof in setup cli hook; do
+    /usr/bin/sandbox-exec -f "$TMP/$prof.sb" -D SCRATCHPAD="$SCRATCH" /bin/cat /etc/hosts > "$TMP/$prof.system" 2>&1 || {
+        echo "FAIL	ms6-generated-$prof-system-read (/etc/hosts must remain readable)"; exit 1; }
+    for rel in .ssh/id_canary Documents/canary.txt; do
+        : > "$TMP/$prof.sensitive.out"
+        : > "$TMP/$prof.sensitive.err"
+        if HOME="$USER_HOME" /usr/bin/sandbox-exec -f "$TMP/$prof.sb" -D SCRATCHPAD="$SCRATCH" \
+                /bin/cat "$USER_HOME/$rel" > "$TMP/$prof.sensitive.out" 2> "$TMP/$prof.sensitive.err"; then
+            echo "FAIL	ms6-generated-$prof-sensitive-read (~/$rel is readable under the generated profile)"
+            exit 1
+        fi
+        [ ! -s "$TMP/$prof.sensitive.out" ] && grep -qi 'operation not permitted' "$TMP/$prof.sensitive.err" || {
+            echo "FAIL	ms6-generated-$prof-sensitive-read (~/$rel did not fail with Seatbelt EPERM)"; exit 1; }
+        echo "generated $prof: ~/$rel DENIED"
+    done
 done
 
 echo "PASS	ms6-generated-profiles"
