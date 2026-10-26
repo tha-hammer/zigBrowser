@@ -32,6 +32,9 @@ extern NSView *zb_mac_drawer_panel_create(NSRect frame,
                                            void *ctx) __attribute__((weak_import));
 extern void zb_mac_drawer_panel_focus_input(NSView *panel)
     __attribute__((weak_import));
+extern void zb_mac_drawer_panel_append(NSView *panel, const char *role,
+                                       const char *utf8_text)
+    __attribute__((weak_import));
 
 @class ZBMacDrawerState;
 
@@ -52,6 +55,27 @@ extern void zb_mac_drawer_panel_focus_input(NSView *panel)
 
 static const void *const kZBMacDrawerStateKey = &kZBMacDrawerStateKey;
 static uint32_t g_zb_mac_drawer_next_identifier = 0;
+static BOOL g_zb_mac_drawer_enabled = NO;
+static NSString *g_zb_mac_drawer_status = nil;
+
+void zb_app_set_agent_drawer(int enabled) {
+  g_zb_mac_drawer_enabled = enabled != 0;
+}
+
+int zb_app_get_agent_drawer(void) {
+  return g_zb_mac_drawer_enabled ? 1 : 0;
+}
+
+void zb_app_set_agent_drawer_status(const char *status) {
+  @autoreleasepool {
+    if (status == NULL) {
+      g_zb_mac_drawer_status = nil;
+      return;
+    }
+    NSString *value = [NSString stringWithUTF8String:status];
+    g_zb_mac_drawer_status = value != nil ? [value copy] : nil;
+  }
+}
 
 static NSRect zb_nsrect(ZbMacDrawerRect rect) {
   return NSMakeRect((CGFloat)rect.x, (CGFloat)rect.y, (CGFloat)rect.w,
@@ -129,7 +153,7 @@ static NSView *zb_make_panel(NSRect frame, ZBMacDrawerState *state) {
 
 
 void zb_mac_drawer_attach(NSWindow *window, NSView *webview) {
-  if (window == nil || webview == nil) {
+  if (!g_zb_mac_drawer_enabled || window == nil || webview == nil) {
     return;
   }
 
@@ -161,6 +185,12 @@ void zb_mac_drawer_attach(NSWindow *window, NSView *webview) {
   state.host = host;
   state.panel = zb_make_panel(NSZeroRect, state);
   state.panel.hidden = YES;
+  BOOL status_shown = NO;
+  if (g_zb_mac_drawer_status != nil && zb_mac_drawer_panel_append != NULL) {
+    zb_mac_drawer_panel_append(state.panel, "status",
+                               g_zb_mac_drawer_status.UTF8String);
+    status_shown = YES;
+  }
 
   [webview removeFromSuperview];
   [host addSubview:webview];
@@ -170,6 +200,12 @@ void zb_mac_drawer_attach(NSWindow *window, NSView *webview) {
   window.contentView = host;
   [host setNeedsLayout:YES];
   [host layoutSubtreeIfNeeded];
+
+  if (status_shown && zb_mac_drawer_e2e_enabled()) {
+    printf("DRAWER\t%u\tmsg\tsystem\t%s\n", state.identifier,
+           g_zb_mac_drawer_status.UTF8String);
+    fflush(stdout);
+  }
 
   const char *debug = getenv("ZB_DEBUG_DRAWER_LAYOUT");
   if (zb_mac_drawer_e2e_enabled() && debug != NULL && strcmp(debug, "1") == 0) {

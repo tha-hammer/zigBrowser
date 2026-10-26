@@ -444,6 +444,7 @@ fn runOpen(arena: std.mem.Allocator, io: std.Io, spec: OpenSpec) errors.BrowserE
     // Before zb_app_run builds the first window; the icon's saved position
     // lives with the profile (agent-drawer.json), read only when it is on.
     const drawer_on = webkit.applyAgentDrawer(spec.agent_drawer);
+    webkit.applyMacosUnsandboxedAgentStatus(drawer_on);
     if (drawer_on) {
         agent_drawer.configure(io, arena, profile_dir, .{
             .demo = getenvOwned(arena, agent_drawer.demo_env_name),

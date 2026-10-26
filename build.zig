@@ -433,12 +433,13 @@ pub fn build(b: *std.Build) void {
     // defines must be reported as exactly that one missing symbol.
     const cross_self_test = b.addSystemCommand(&.{ "python3", "tools/check_cross_symbols.py", "--require", "zb_app_run", "--expect-missing", "zb_cross_fixture_probe" });
     cross_self_test.addFileInput(b.path("tools/check_cross_symbols.py"));
+    const macos_shim_sources = "src/wkwebview_shim.m:src/agent_drawer_mac_host.m:src/agent_drawer_mac_panel.m:src/agent_secrets_mac.m:src/agent_secrets_window_mac.m:src/agent_home_lock.c:src/agent_spawn_posix.c";
     const cross_targets = [_]struct { query: std.Target.Query, shim: []const u8 }{
         // The shipped floor (windowsAfUnixFloor), so the object reaches the automation server's start.
         .{ .query = .{ .cpu_arch = .x86_64, .os_tag = .windows, .abi = .gnu, .os_version_min = .{ .windows = .win10_rs4 } }, .shim = "src/webview2_shim.cpp" },
         // macOS: the ObjC shim plus the plain C files compiled into the exe (MS5's lock and spawn).
-        .{ .query = .{ .cpu_arch = .aarch64, .os_tag = .macos }, .shim = "src/wkwebview_shim.m:src/agent_home_lock.c:src/agent_spawn_posix.c" },
-        .{ .query = .{ .cpu_arch = .x86_64, .os_tag = .macos }, .shim = "src/wkwebview_shim.m:src/agent_home_lock.c:src/agent_spawn_posix.c" },
+        .{ .query = .{ .cpu_arch = .aarch64, .os_tag = .macos }, .shim = macos_shim_sources },
+        .{ .query = .{ .cpu_arch = .x86_64, .os_tag = .macos }, .shim = macos_shim_sources },
     };
     for (cross_targets) |cross| {
         const cross_module = b.createModule(.{
@@ -523,7 +524,7 @@ pub fn build(b: *std.Build) void {
         for (drawer_portable_exports) |sym| cross_drawer_mac.addArgs(&.{ "--require-defined", sym });
         cross_drawer_mac.addFileInput(b.path("tools/check_cross_symbols.py"));
         cross_drawer_mac.addFileArg(cross_drawer_mac_obj.getEmittedBin());
-        addShimArg(b, cross_drawer_mac, "src/wkwebview_shim.m:src/agent_home_lock.c:src/agent_spawn_posix.c");
+        addShimArg(b, cross_drawer_mac, macos_shim_sources);
         cross_drawer_mac_step.dependOn(&cross_drawer_mac.step);
         cross_check_step.dependOn(&cross_drawer_mac.step);
     }
@@ -555,7 +556,7 @@ pub fn build(b: *std.Build) void {
         });
         cross_tools_mac.addFileInput(b.path("tools/check_cross_symbols.py"));
         cross_tools_mac.addFileArg(cross_tools_mac_obj.getEmittedBin());
-        addShimArg(b, cross_tools_mac, "src/wkwebview_shim.m:src/agent_home_lock.c:src/agent_spawn_posix.c");
+        addShimArg(b, cross_tools_mac, macos_shim_sources);
         cross_tools_mac_step.dependOn(&cross_tools_mac.step);
         cross_check_step.dependOn(&cross_tools_mac.step);
         cross_tools_mac_runs[i] = &cross_tools_mac.step;
@@ -5555,7 +5556,11 @@ fn configureMacosBackend(module: *std.Build.Module, b: *std.Build) void {
     shim.addArg("-I");
     shim.addDirectoryArg(b.path("src"));
     shim.addFileArg(b.path("src/wkwebview_shim.m"));
-    shim.addArgs(&.{ "-framework", "WebKit", "-framework", "Cocoa", "-framework", "Foundation" });
+    shim.addFileArg(b.path("src/agent_drawer_mac_host.m"));
+    shim.addFileArg(b.path("src/agent_drawer_mac_panel.m"));
+    shim.addFileArg(b.path("src/agent_secrets_mac.m"));
+    shim.addFileArg(b.path("src/agent_secrets_window_mac.m"));
+    shim.addArgs(&.{ "-framework", "WebKit", "-framework", "Cocoa", "-framework", "AppKit", "-framework", "Foundation", "-framework", "Security" });
     // install_name is @executable_path-anchored, NOT @rpath: a hardened-runtime process refuses a
     // relative LC_RPATH ("relative path not allowed in hardened program"), and zig normalizes a
     // `.cwd_relative` "@executable_path/.." rpath down to a bare relative "Frameworks". Anchoring the
@@ -5571,7 +5576,9 @@ fn configureMacosBackend(module: *std.Build.Module, b: *std.Build) void {
 
     module.linkFramework("WebKit", .{});
     module.linkFramework("Cocoa", .{});
+    module.linkFramework("AppKit", .{});
     module.linkFramework("Foundation", .{});
+    module.linkFramework("Security", .{});
 
     // Ship the dylib beside the binary, in the bundle's Frameworks/ (zig-out/Frameworks).
     const install_dylib = b.addInstallFileWithDir(dylib, .{ .custom = "Frameworks" }, "libwkwebview_shim.dylib");

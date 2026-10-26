@@ -127,11 +127,12 @@ pub fn applyMediaSource(flag: ?media_config.MediaSource) void {
 /// window created from now on, popups included, gets the floating "S" icon
 /// when on (src/agent_drawer.c). Call before zb_app_run. Prints the
 /// effective choice when it is not the default, and a variable that is not
-/// on or off. Returns whether the drawer is on (never on other platforms).
+/// on or off. Returns whether the drawer is on.
+pub const macos_unsandboxed_agent_status = "agent running unsandboxed (dev build)";
+
 pub fn applyAgentDrawer(flag: ?agent_config.AgentDrawer) bool {
-    // WS5 (OD-W6): the native Win32 drawer backend (src/webview2_shim.cpp) mounts on Windows too, so the
-    // switch applies on Linux AND Windows; macOS has no drawer backend yet.
-    if (comptime builtin.os.tag != .linux and builtin.os.tag != .windows) return false;
+    // The switch applies on every native drawer backend.
+    if (comptime builtin.os.tag != .linux and builtin.os.tag != .windows and builtin.os.tag != .macos) return false;
     const env = if (std.c.getenv(agent_config.env_name)) |v| std.mem.span(v) else null;
     const resolved = agent_config.resolve(flag, env);
     if (resolved.bad_env) |text| {
@@ -142,6 +143,19 @@ pub fn applyAgentDrawer(flag: ?agent_config.AgentDrawer) bool {
         std.debug.print("zigBrowser: agent-drawer={s}\n", .{@tagName(resolved.value)});
     }
     return resolved.value == .on;
+}
+
+/// The macOS development build currently launches its agent without Seatbelt.
+/// Keep that policy at the app boundary while this module binds its native
+/// status seam. The later Seatbelt backend can replace this one call.
+pub fn applyMacosUnsandboxedAgentStatus(drawer_on: bool) void {
+    if (comptime builtin.os.tag != .macos) return;
+    if (drawer_on) {
+        c.zb_app_set_agent_drawer_status(macos_unsandboxed_agent_status);
+        std.debug.print("{s}\n", .{macos_unsandboxed_agent_status});
+    } else {
+        c.zb_app_set_agent_drawer_status(null);
+    }
 }
 
 fn policyCode(policy: render_config.HwPolicy) c_int {

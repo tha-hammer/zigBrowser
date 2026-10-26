@@ -1,5 +1,6 @@
 #include "webkit_shim.h"
 #include "zb_test_hook_gate.h"  // hooks 16 and 14: pure decisions (tests/hook16_decision_test.zig, tests/hook14_decision_test.zig)
+#import "agent_drawer_mac.h"
 
 #import <Cocoa/Cocoa.h>
 #import <WebKit/WebKit.h>
@@ -47,10 +48,6 @@ static atomic_int zb_auto_e2e_enabled = 0;
 int zb_mac_drawer_e2e_enabled(void) {
   return atomic_load(&zb_auto_e2e_enabled) != 0;
 }
-
-/* build.zig's explicit source input is owned separately. Including the host
- * here keeps the native drawer shippable from this product commit. */
-#import "agent_drawer_mac_host.m"
 // MS2c (RoseCat 6508 #6): the window snapshot is a lock-backed cache. The main thread republishes it on
 // every window state change (create/remove/health tick); page.list/page.health read it under the lock and
 // NEVER dispatch to the main queue, so a backed-up/hung main queue cannot stall them.

@@ -123,6 +123,9 @@ int zb_app_get_media_source(void);
  * window exactly GtkWindow -> WebKitWebView. Call before zb_app_run. */
 void zb_app_set_agent_drawer(int enabled);
 int zb_app_get_agent_drawer(void);
+/* macOS development build: the one status line shown when the configured
+ * drawer is attached. NULL clears it. Other backends never call this seam. */
+void zb_app_set_agent_drawer_status(const char *status);
 
 /* Test hook: how many windows have a drawer attached right now (each
  * attach counts one up, each detach one down). */
