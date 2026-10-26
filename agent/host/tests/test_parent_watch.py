@@ -129,11 +129,12 @@ class ParentWatchArm(unittest.TestCase):
 
 
 class FakeSessionOps:
-    def __init__(self, pids=(), allowed=(), identities=None, available=True):
+    def __init__(self, pids=(), allowed=(), identities=None, available=True, signalable=None):
         self.pids = list(pids)
         self.allowed = set(allowed)
         self.identities = {pid: list(values) for pid, values in (identities or {}).items()}
         self.available = available
+        self.signalable = set(pids if signalable is None else signalable)
         self.calls = []
         self.killed = []
         self.logs = []
@@ -155,6 +156,10 @@ class FakeSessionOps:
         if len(values) > 1:
             return values.pop(0)
         return values[0] if values else None
+
+    def can_signal(self, pid):
+        self.calls.append(("can-signal", pid))
+        return pid in self.signalable
 
     def sandbox_allows_canary(self, pid, path):
         self.calls.append(("sandbox", pid, path))
@@ -191,6 +196,14 @@ class SessionReaperDecision(unittest.TestCase):
         self.assertTrue(parent_watch.reap_session(BROWSER, self.CANARY, ops, reaper_pid=SELF,
                                                   max_passes=1, empty_passes=1))
         self.assertEqual(ops.killed, [])
+
+    def test_a_foreign_sandbox_match_is_never_classified_or_signalled(self):
+        ops = FakeSessionOps(pids=(30,), allowed=(30,), signalable=())
+        self.assertTrue(parent_watch.reap_session(BROWSER, self.CANARY, ops, reaper_pid=SELF,
+                                                  max_passes=1, empty_passes=1))
+        self.assertEqual(ops.killed, [])
+        self.assertNotIn(("unique", 30), ops.calls)
+        self.assertNotIn(("sandbox", 30, self.CANARY), ops.calls)
 
     def test_missing_sandbox_check_is_group_only_and_enumerates_nothing(self):
         ops = FakeSessionOps(pids=(30,), allowed=(30,), available=False)

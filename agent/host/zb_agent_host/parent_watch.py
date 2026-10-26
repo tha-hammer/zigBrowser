@@ -78,6 +78,8 @@ def reap_session(browser_pid, canary_path, ops, *, reaper_pid=None, max_passes=1
         for pid in sorted(set(pids)):
             if pid <= 1 or pid in excluded:
                 continue
+            if not ops.can_signal(pid):
+                continue
             first = ops.unique_id(pid)
             if first is None:
                 continue
@@ -242,6 +244,15 @@ class DarwinSessionOps:
 
     def sandbox_check_available(self):
         return self._sandbox_check is not None
+
+    @staticmethod
+    def can_signal(pid):
+        """Probe signal authority without delivering a signal."""
+        try:
+            os.kill(pid, 0)
+        except OSError:
+            return False
+        return True
 
     def list_pids(self):
         ctypes = self._ctypes

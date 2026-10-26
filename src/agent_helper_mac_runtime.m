@@ -41,6 +41,8 @@ typedef NS_ENUM(NSInteger, ZBMacHelperState) {
 };
 
 static const NSUInteger ZBMacHelperLineMax = 1024 * 1024;
+static const char *const ZBMacTestKeychainPath = "ZB_DEBUG_MAC_AGENT_KEYCHAIN";
+static const char *const ZBMacTestKeychainPassword = "ZB_DEBUG_MAC_AGENT_KEYCHAIN_PASSWORD";
 static const char *const ZBMacPythonBoot =
     "import runpy,sys;sys.path.insert(0,sys.argv.pop(1));"
     "runpy.run_module('zb_agent_host',run_name='__main__',alter_sys=True)";
@@ -346,7 +348,16 @@ static void zb_terminate_owned_group(pid_t *pid) {
     homeEnv.UTF8String, tmpEnv.UTF8String, NULL,
   };
   pid_t pid = -1;
-  int result = zb_mac_agent_helper_spawn_fd3(argv, envp, input[0], output[1], &pid);
+  const char *testKeychain = getenv(ZBMacTestKeychainPath);
+  const char *testPassword = getenv(ZBMacTestKeychainPassword);
+  BOOL useTestKeychain = zb_mac_drawer_e2e_enabled() && testKeychain != NULL && testKeychain[0] == '/' &&
+                         testPassword != NULL && testPassword[0] != '\0';
+  char *spawnError = NULL;
+  int result = useTestKeychain
+      ? zb_mac_agent_helper_spawn_fd3_for_test(argv, envp, input[0], output[1],
+                                               testKeychain, testPassword, &pid, &spawnError)
+      : zb_mac_agent_helper_spawn_fd3(argv, envp, input[0], output[1], &pid);
+  free(spawnError);
   zb_close_fd(&input[0]);
   zb_close_fd(&output[1]);
   if (result != 0 || pid <= 1) {

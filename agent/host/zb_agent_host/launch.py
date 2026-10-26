@@ -115,11 +115,17 @@ class LaunchPlan(NamedTuple):
 
 
 def requested_reads(home, python, claude_cli=None, test_ca=None):
-    """The helper's read paths: the venv, the hook command directories (runtime/path.json, /usr dropped), and the
-    optional login CLI/test CA inputs."""
+    """The helper's read paths: Python packages, hook command directories, and optional login/test inputs."""
     venv = os.path.dirname(os.path.dirname(python))
-    extra = [venv] + [d for d in json.loads((home.runtime / "path.json").read_text())
-                      if d != "/usr" and not d.startswith("/usr/")]
+    extra = [venv]
+    # The macOS bundle places third-party packages beside Python.framework,
+    # rather than below Versions/<version>.  The inner helper imports those
+    # packages under Seatbelt, so grant that exact containing agent-host tree.
+    marker = f"{os.sep}Python.framework{os.sep}Versions{os.sep}"
+    if PLATFORM == "darwin" and marker in python:
+        extra.append(python.split(marker, 1)[0])
+    extra += [d for d in json.loads((home.runtime / "path.json").read_text())
+              if d != "/usr" and not d.startswith("/usr/")]
     if claude_cli is not None:
         extra.append(os.path.dirname(claude_cli))
     if test_ca is not None:
@@ -144,6 +150,11 @@ def build_launch(backend, request):
         runtime = str(request.home.runtime)
         inner = [request.python, "-I", "-c", CHAT_BOOT, f"{runtime}/host", request.command,
                  "--home", str(request.home.root)]
+        if request.command == "chat" and isinstance(
+                backend, (sandbox_macos.MacSeatbeltBackend, sandbox_macos.MacUnsandboxedDevBackend)):
+            # Linux supplies /run/zb-token inside bwrap.  A Mac has no /run
+            # bind and its only writable capability is the agent scratchpad.
+            inner += ["--fifo-dir", str(request.home.scratchpad / "token-fifo")]
         if request.command == "chat" and request.test_ca is not None:
             if binds:
                 argv[-1:-1] = ["--ro-bind", str(request.test_ca), TEST_CA]  # before the trailing "--"

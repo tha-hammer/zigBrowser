@@ -329,6 +329,20 @@ class SetupProfile(unittest.TestCase):
 
 
 class SetupSandboxArgv(unittest.TestCase):
+    def test_relative_published_links_keep_every_resolution_spelling(self):
+        with tempfile.TemporaryDirectory() as raw_root:
+            root = Path(os.path.realpath(raw_root))
+            (root / "dist-1/runtime/host").mkdir(parents=True)
+            (root / "current").symlink_to("dist-1")
+            (root / "runtime").symlink_to("current/runtime")
+            original = str(root / "runtime/host")
+            self.assertEqual(
+                sandbox_macos._resolved_read_paths((original,)),
+                tuple(sorted((original, str(root / "current/runtime/host"),
+                              str(root / "dist-1/runtime/host")))),
+                "Seatbelt needs the relative-link hop as well as the final realpath",
+            )
+
     def test_argv_and_profile_lifetime(self):
         with tempfile.TemporaryDirectory() as scratch:
             scratch = os.path.realpath(scratch)

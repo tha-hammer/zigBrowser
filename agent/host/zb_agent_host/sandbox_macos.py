@@ -365,21 +365,57 @@ def _binding_argv(bindings):
     return tuple(part for name, value in bindings for part in ("-D", f"{name}={value}"))
 
 
+def _symlink_spellings(path):
+    """Return intermediate target spellings needed to traverse a symlink chain.
+
+    ``realpath`` gives only the final target.  A relative link such as
+    ``runtime -> current/runtime`` still makes Seatbelt check ``current`` while
+    resolving it, before it reaches ``current -> dist-1``.  Preserve each such
+    spelling so ``file_read_rules`` emits the literal ancestor grants needed
+    for traversal without granting the agent-home root.
+    """
+    found = []
+    pending = [path]
+    seen = {path}
+    while pending:
+        spelling = pending.pop()
+        parts = spelling.split(os.sep)[1:]
+        prefix = os.sep
+        for index, part in enumerate(parts):
+            candidate = os.path.join(prefix, part)
+            try:
+                target = os.readlink(candidate)
+            except OSError:
+                prefix = candidate
+                continue
+            target = target if os.path.isabs(target) else os.path.join(os.path.dirname(candidate), target)
+            expanded = os.path.normpath(os.path.join(target, *parts[index + 1:]))
+            if expanded not in seen:
+                seen.add(expanded)
+                found.append(expanded)
+                pending.append(expanded)
+            break
+    return tuple(found)
+
+
 def _resolved_read_paths(paths):
-    """Keep each canonical spelling and, when different, its resolved spelling.
+    """Keep each canonical spelling, its symlink hops, and final resolved spelling.
 
     The fixed agent-home links (``runtime`` and ``.claude``) are deliberate. Seatbelt compares filesystem access
-    against resolved paths, so the stable link spelling and the current immutable distribution target are both
-    capabilities; neither grants a sibling below the agent-home root.
+    against every path used during resolution, so the stable link spelling, intermediate ``current`` spelling and
+    immutable distribution target are capabilities; none grants a sibling below the agent-home root.
     """
     raw = tuple(os.fspath(path) for path in paths)
     seatbelt_rules.file_read_rules(raw)  # validate before realpath can normalize a rejected spelling
     expanded = list(raw)
     for path in raw:
+        expanded.extend(_symlink_spellings(path))
         resolved = os.path.realpath(path)
         if resolved != path:
             expanded.append(resolved)
-    return tuple(sorted(set(expanded)))
+    result = tuple(sorted(set(expanded)))
+    seatbelt_rules.file_read_rules(result)
+    return result
 
 
 def _launch_read_paths(home, ro_paths):

@@ -4,8 +4,8 @@
 The caller supplies an exact committed source export plus the already pinned
 Python package and universal site-package inputs.  This test builds the app
 natively, provisions only a private agent home, places one disposable test
-token in the production login-Keychain item through stdin, and drives the
-real AppKit Send callback.  It never accepts an unsandboxed fallback.
+token in a disposable Keychain through stdin, and drives the real AppKit Send
+callback and fd-3 broker.  It never accepts an unsandboxed fallback.
 """
 
 from __future__ import annotations
@@ -28,22 +28,21 @@ import time
 from pathlib import Path
 
 
-SERVICE = "dev.zigbrowser.ClaudeAgentToken"
-ACCOUNT = "default"
 CONNECT = "zigBrowser: agent: netd census api.anthropic.com:443 allowed"
 READY = "DRAWER_AGENT_E2E\tready-fd3"
 COMMIT_RE = re.compile(r"[0-9a-f]{40}\Z")
 BROKER_SOURCE = r'''
 #include "agent_helper_mac.h"
 #include "agent_secrets_mac.h"
+#include <Security/Security.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 
-static int present(void) {
+static int present(const char *path, const char *password) {
   char *value = NULL, *error = NULL;
-  int rc = zb_keychain_lookup(NULL, NULL, ZB_MAC_AGENT_TOKEN_SERVICE,
+  int rc = zb_keychain_lookup(path, password, "dev.zigbrowser.MS63ProductTest",
                               ZB_MAC_AGENT_TOKEN_ACCOUNT, &value, &error);
   zb_keychain_free(value);
   free(error);
@@ -52,7 +51,8 @@ static int present(void) {
   return 2;
 }
 
-static int store(void) {
+static int store(const char *path, const char *password,
+                 const char *app_path, const char *broker_path) {
   char token[514];
   size_t used = 0;
   while (used < sizeof(token) - 1) {
@@ -63,27 +63,78 @@ static int store(void) {
   }
   if (used == 0 || used > 512) return 2;
   token[used] = '\0';
-  char *error = NULL;
-  int rc = zb_keychain_store(NULL, NULL, ZB_MAC_AGENT_TOKEN_SERVICE,
-                             ZB_MAC_AGENT_TOKEN_ACCOUNT, token, &error);
+  SecKeychainRef keychain = NULL;
+  SecTrustedApplicationRef app = NULL, broker = NULL;
+  SecAccessRef access = NULL;
+  SecKeychainItemRef item = NULL;
+  OSStatus status = SecKeychainOpen(path, &keychain);
+  if (status == errSecSuccess)
+    status = SecKeychainUnlock(keychain, (UInt32)strlen(password), password, true);
+  if (status == errSecSuccess) status = SecTrustedApplicationCreateFromPath(app_path, &app);
+  if (status == errSecSuccess) status = SecTrustedApplicationCreateFromPath(broker_path, &broker);
+  CFArrayRef trusted = NULL;
+  if (status == errSecSuccess) {
+    const void *values[] = {app, broker};
+    trusted = CFArrayCreate(NULL, values, 2, &kCFTypeArrayCallBacks);
+    if (trusted == NULL) status = errSecAllocate;
+  }
+  if (status == errSecSuccess)
+    status = SecAccessCreate(CFSTR("zigBrowser MS6 product test"), trusted, &access);
+  const char *service = "dev.zigbrowser.MS63ProductTest";
+  const char *account = ZB_MAC_AGENT_TOKEN_ACCOUNT;
+  SecKeychainAttribute attributes[] = {
+    {kSecServiceItemAttr, (UInt32)strlen(service), (void *)service},
+    {kSecAccountItemAttr, (UInt32)strlen(account), (void *)account},
+  };
+  SecKeychainAttributeList attribute_list = {2, attributes};
+  if (status == errSecSuccess)
+    status = SecKeychainItemCreateFromContent(
+        kSecGenericPasswordItemClass, &attribute_list, (UInt32)used, token,
+        keychain, access, &item);
   memset_s(token, sizeof(token), 0, sizeof(token));
-  free(error);
-  return rc == ZB_KC_OK ? 0 : 2;
+  if (item != NULL) CFRelease(item);
+  if (access != NULL) CFRelease(access);
+  if (trusted != NULL) CFRelease(trusted);
+  if (broker != NULL) CFRelease(broker);
+  if (app != NULL) CFRelease(app);
+  if (keychain != NULL) CFRelease(keychain);
+  return status == errSecSuccess ? 0 : 2;
 }
 
-static int clear_item(void) {
+static int clear_item(const char *path, const char *password) {
   char *error = NULL;
-  int rc = zb_keychain_clear(NULL, NULL, ZB_MAC_AGENT_TOKEN_SERVICE,
+  int rc = zb_keychain_clear(path, password, "dev.zigbrowser.MS63ProductTest",
                              ZB_MAC_AGENT_TOKEN_ACCOUNT, &error);
   free(error);
   return rc == ZB_KC_OK ? 0 : 2;
 }
 
+static int create_keychain(const char *path, const char *password) {
+  SecKeychainRef keychain = NULL;
+  OSStatus status = SecKeychainCreate(path, (UInt32)strlen(password), password,
+                                      false, NULL, &keychain);
+  if (keychain != NULL) CFRelease(keychain);
+  return status == errSecSuccess ? 0 : 2;
+}
+
+static int delete_keychain(const char *path, const char *password) {
+  SecKeychainRef keychain = NULL;
+  OSStatus status = SecKeychainOpen(path, &keychain);
+  if (status == errSecSuccess)
+    status = SecKeychainUnlock(keychain, (UInt32)strlen(password), password, true);
+  if (status == errSecSuccess) status = SecKeychainDelete(keychain);
+  if (keychain != NULL) CFRelease(keychain);
+  return status == errSecSuccess ? 0 : 2;
+}
+
 int main(int argc, char **argv) {
-  if (argc != 2) return 2;
-  if (strcmp(argv[1], "present") == 0) return present();
-  if (strcmp(argv[1], "store") == 0) return store();
-  if (strcmp(argv[1], "clear") == 0) return clear_item();
+  if (argc == 6 && strcmp(argv[1], "store") == 0)
+    return store(argv[2], argv[3], argv[4], argv[5]);
+  if (argc != 4) return 2;
+  if (strcmp(argv[1], "create") == 0) return create_keychain(argv[2], argv[3]);
+  if (strcmp(argv[1], "present") == 0) return present(argv[2], argv[3]);
+  if (strcmp(argv[1], "clear") == 0) return clear_item(argv[2], argv[3]);
+  if (strcmp(argv[1], "delete") == 0) return delete_keychain(argv[2], argv[3]);
   return 2;
 }
 '''
@@ -186,7 +237,7 @@ def provision(app, root):
     )
     if not (agent_home / "current").exists():
         raise Failure("built app private agent-home provisioning did not publish current")
-
+    sys.path.insert(0, str(host / "site-packages"))
     sys.path.insert(0, str(host))
     from zb_agent_host import sandbox_macos
 
@@ -208,7 +259,8 @@ def compile_broker(source, root):
     broker = root / "keychain-broker"
     broker_src.write_text(BROKER_SOURCE)
     require_ok(
-        ["/usr/bin/xcrun", "clang", "-fobjc-arc", "-I", source / "src", broker_src,
+        ["/usr/bin/xcrun", "clang", "-fobjc-arc", "-Wno-deprecated-declarations",
+         "-I", source / "src", broker_src,
          source / "src/agent_secrets_mac.m", "-framework", "Foundation", "-framework", "Security",
          "-o", broker],
         "Keychain stdin broker build", timeout=120,
@@ -216,19 +268,31 @@ def compile_broker(source, root):
     return broker
 
 
-def keychain_put(broker, token):
-    rc, _, _ = owned_run([broker, "present"], timeout=30)
-    if rc == 0:
-        raise Failure("production Keychain item already exists; refusing to overwrite it")
-    if rc != 10:
-        raise Failure("production login Keychain is unavailable")
-    rc, _, _ = owned_run([broker, "store"], stdin=token, timeout=30)
+def keychain_create(broker, path, password):
+    rc, _, _ = owned_run([broker, "create", path, password], timeout=30)
     if rc != 0:
-        raise Failure("format-valid test token could not be stored in the production login Keychain")
+        raise Failure("disposable test Keychain could not be created")
 
 
-def keychain_clear(broker):
-    rc, _, _ = owned_run([broker, "clear"], timeout=30)
+def keychain_put(broker, path, password, app_binary, token):
+    rc, _, _ = owned_run([broker, "present", path, password], timeout=30)
+    if rc == 0:
+        raise Failure("disposable test Keychain item already exists; refusing to overwrite it")
+    if rc != 10:
+        raise Failure("disposable test Keychain is unavailable")
+    rc, _, _ = owned_run([broker, "store", path, password, app_binary, broker],
+                         stdin=token, timeout=30)
+    if rc != 0:
+        raise Failure("format-valid test token could not be stored in the disposable Keychain")
+
+
+def keychain_clear(broker, path, password):
+    rc, _, _ = owned_run([broker, "clear", path, password], timeout=30)
+    return rc == 0
+
+
+def keychain_delete(broker, path, password):
+    rc, _, _ = owned_run([broker, "delete", path, password], timeout=30)
     return rc == 0
 
 
@@ -279,16 +343,8 @@ def descendant_snapshot(proc_darwin, root_pid, token):
     return parents, paths, token_found, unreadable
 
 
-def beneath_sandbox(cli_pid, parents, paths):
-    pid = cli_pid
-    while pid in parents:
-        pid = parents[pid]
-        if paths.get(pid) == "/usr/bin/sandbox-exec":
-            return True
-    return False
-
-
-def launch_drawer(app, private_home, xdg, temp, agent_home, host, python, token):
+def launch_drawer(app, private_home, xdg, temp, agent_home, host, python, token,
+                  keychain_path, keychain_password, denied_paths):
     browser = app / "Contents/MacOS/zigBrowser"
     cli = os.path.realpath(host / "site-packages/claude_agent_sdk/_bundled/claude")
     profile = temp.parent / "browser-profile"
@@ -297,6 +353,8 @@ def launch_drawer(app, private_home, xdg, temp, agent_home, host, python, token)
     env.update({
         "HOME": str(private_home), "XDG_DATA_HOME": str(xdg), "TMPDIR": str(temp),
         "ZB_DEBUG_DRAWER_AGENT_SEND": "Reply with one word.",
+        "ZB_DEBUG_MAC_AGENT_KEYCHAIN": str(keychain_path),
+        "ZB_DEBUG_MAC_AGENT_KEYCHAIN_PASSWORD": keychain_password,
     })
     proc = subprocess.Popen(
         [str(browser), "about:blank", "--agent-drawer", "on", "--e2e-protocol",
@@ -311,7 +369,12 @@ def launch_drawer(app, private_home, xdg, temp, agent_home, host, python, token)
     for thread in threads:
         thread.start()
     sys.path.insert(0, str(host))
-    from zb_agent_host import proc_darwin
+    from zb_agent_host import parent_watch, proc_darwin
+
+    sandbox_ops = parent_watch.DarwinSessionOps()
+    if not sandbox_ops.sandbox_check_available():
+        stop_browser(proc)
+        raise Failure("sandbox_check is unavailable for the live CLI proof")
 
     ready = connect = cli_seen = sandbox_seen = False
     census_fault = None
@@ -329,7 +392,7 @@ def launch_drawer(app, private_home, xdg, temp, agent_home, host, python, token)
                 text = line.decode("utf-8", "replace")
                 ready = ready or text == READY
                 connect = connect or text == CONNECT
-            parents, paths, leaked, unreadable = descendant_snapshot(proc_darwin, proc.pid, token_bytes)
+            _parents, paths, leaked, unreadable = descendant_snapshot(proc_darwin, proc.pid, token_bytes)
             if leaked:
                 raise Failure("test token appeared in a child argv or environment")
             if unreadable:
@@ -337,7 +400,16 @@ def launch_drawer(app, private_home, xdg, temp, agent_home, host, python, token)
             for pid, path in paths.items():
                 if path == cli:
                     cli_seen = True
-                    sandbox_seen = sandbox_seen or beneath_sandbox(pid, parents, paths)
+                    # sandbox-exec applies the profile and may exec-replace
+                    # itself, so process ancestry is not evidence.  Query the
+                    # live Claude PID instead: a named permitted executable
+                    # read plus all three sensitive-path denials proves the
+                    # restrictive Seatbelt profile is attached.
+                    sandbox_seen = sandbox_seen or (
+                        sandbox_ops.sandbox_allows_canary(pid, cli)
+                        and all(not sandbox_ops.sandbox_allows_canary(pid, path)
+                                for path in denied_paths)
+                    )
             if ready and connect and cli_seen and sandbox_seen and census_fault is None:
                 return proc, cli
             time.sleep(0.03)
@@ -351,7 +423,7 @@ def launch_drawer(app, private_home, xdg, temp, agent_home, host, python, token)
         if not cli_seen:
             missing.append("bundled CLI")
         if not sandbox_seen:
-            missing.append("sandbox-exec ancestry")
+            missing.append("live CLI Seatbelt policy")
         if not connect:
             missing.append("CONNECT api.anthropic.com:443")
         raise Failure("drawer launch did not reach " + ", ".join(missing))
@@ -387,14 +459,24 @@ def login_keychain_path():
 
 def denial_proofs(agent_home, host, python, private_home, targets):
     sys.path.insert(0, str(host))
-    from zb_agent_host import launch, options, sandbox_macos
+    from zb_agent_host import sandbox_macos
+
+    class ProbeHome:
+        root = agent_home
+        claude_dir = agent_home / ".claude"
+        workspace = agent_home / "workspace"
+        scratchpad = agent_home / "scratchpad"
+        runtime = agent_home / "runtime"
+        state = agent_home / "state"
 
     old_tempdir = tempfile.tempdir
     tempfile.tempdir = str(agent_home / "scratchpad/tmp")
     probe_started = datetime.datetime.now().astimezone()
     try:
-        home = options.AgentHome(str(agent_home))
-        reads = launch.requested_reads(home, str(python))
+        path_dirs = json.loads((agent_home / "runtime/path.json").read_text())
+        reads = (str(Path(python).parent.parent), str(host),
+                 *(path for path in path_dirs if path != "/usr" and not path.startswith("/usr/")))
+        home = ProbeHome()
         with sandbox_macos.MacSeatbeltBackend(1).launch(home, ro_paths=reads) as spec:
             probe_env = {
                 "PATH": "/usr/bin:/bin", "HOME": str(private_home),
@@ -483,12 +565,20 @@ def main():
             outside.write_text("outside agent home\n")
             login_keychain = login_keychain_path()
             broker = compile_broker(source, root)
+            test_keychain = root / "agent-test.keychain"
+            keychain_password = secrets.token_urlsafe(24)
+            keychain_create(broker, test_keychain, keychain_password)
+            keychain_owned = True
             token = ("sk-ant-oat01-" + secrets.token_urlsafe(48)).encode("ascii")
-            keychain_put(broker, token)
-            token_owned = True
+            token_owned = False
             browser = None
             try:
-                browser, _cli = launch_drawer(app, private_home, xdg, temp, agent_home, host, python, token)
+                keychain_put(broker, test_keychain, keychain_password,
+                             app / "Contents/MacOS/zigBrowser", token)
+                token_owned = True
+                browser, _cli = launch_drawer(app, private_home, xdg, temp, agent_home, host, python, token,
+                                               test_keychain, keychain_password,
+                                               (ssh_canary.resolve(), login_keychain, outside.resolve()))
                 denial_proofs(agent_home, host, python, private_home, (
                     ("~/.ssh", ssh_canary.resolve()),
                     ("login Keychain", login_keychain),
@@ -499,9 +589,13 @@ def main():
                 if browser is not None and not stop_browser(browser):
                     cleanup_ok = False
                 if token_owned:
-                    if not keychain_clear(broker):
+                    if not keychain_clear(broker, test_keychain, keychain_password):
                         cleanup_ok = False
                     token_owned = False
+                if keychain_owned:
+                    if not keychain_delete(broker, test_keychain, keychain_password):
+                        cleanup_ok = False
+                    keychain_owned = False
                 if not cleanup_ok:
                     raise Failure("owned browser or Keychain cleanup failed")
         print(f"PASS\t{label}\t{arch}\t{args.commit}\tsandboxed setup provisioned; denied ~/.ssh/id_test; "
