@@ -1,97 +1,61 @@
 #!/bin/sh
-# Seatbelt fd-3-reopen PROBE — the LOWER layer of MS6.3 (plan split, RoseCat 7038). NOT the MS6.3 hard gate.
-#
-#   $1 = a directory holding sandbox_macos.py (the production generator) + ms6_3_fd3_reopen.c.
-#
-# A C STAND-IN (ms6_3_fd3_reopen.c), NOT the real CLI, performs an `open("/dev/fd/3")` over a REGULAR FILE and
-# checks that open passes the Seatbelt profile's file-read check. This PROBE proves ONLY that the generated
-# profile permits/denies that reopen; it does NOT run the real pinned CLI and does NOT exercise production's
-# Unix-socketpair fd-3 channel. Whether the real macOS CLI actually reopens `/dev/fd/3` or reads the inherited
-# socket descriptor directly is UNSETTLED here (token.py:3-8) and is settled only by the hard gate's real-CLI
-# evidence. The MS6.3 HARD GATE (real pinned CLI consuming the canary via CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR
-# over the production socketpair under the generated profile, both arches, discriminating mutant) runs as a case
-# of the UNIFIED pre-seatbelt_ready harness (shared with MS6.6(B); imports production zb_agent_host from the
-# staged pinned runtime, gated on the MS5 pinned-tree decision) — NOT this probe, and NOT the armed MS5 e2e
-# (which cannot arm while seatbelt_ready is false; RoseCat 7120). This probe proves:
-#   - unsandboxed, the reopen reads the token (the fd plumbing + helper are sound — not a vacuous pass);
-#   - under the GENERATED cli profile (broad file-read*), the reopen reads the exact token;
-#   - under a deny-read-of-the-token profile (everything needed to exec the helper, but NOT read the token dir),
-#     the reopen is DENIED — so the cli-profile success is the file-read grant's doing, not a /dev/fd exemption.
-# sandbox-exec denials are silent EPERM; nothing appears on the Mac's screen.
+# MS5.3/MS6.3 product test. The production macOS Keychain-to-helper boundary
+# creates the unnamed socket, maps it explicitly to child fd 3, and spawns
+# sandbox-exec. The child reopens /dev/fd/3 like the Claude CLI. No token is
+# accepted in argv, env, output, or the generated profile.
 set -eu
 
-DIR="${1:?usage: ms6_3_fd3_reopen_test.sh <dir-with-sandbox_macos.py-and-helper>}"
-[ -f "$DIR/sandbox_macos.py" ] || { echo "FAIL	ms6-3-fd3-reopen (sandbox_macos.py not found in $DIR)"; exit 1; }
-[ -f "$DIR/ms6_3_fd3_reopen.c" ] || { echo "FAIL	ms6-3-fd3-reopen (helper source not found in $DIR)"; exit 1; }
+ROOT="${1:?usage: ms6_3_fd3_reopen_test.sh <repository-root>}"
+for file in \
+  "$ROOT/agent/host/zb_agent_host/sandbox_macos.py" \
+  "$ROOT/src/agent_secrets_mac.h" "$ROOT/src/agent_secrets_mac.m" \
+  "$ROOT/src/agent_token_fd_mac.h" "$ROOT/src/agent_token_fd_mac.c" \
+  "$ROOT/src/agent_spawn_posix.h" "$ROOT/src/agent_spawn_posix.c" \
+  "$ROOT/tests/mac/ms6_3_fd3_reopen.c"
+do
+  [ -f "$file" ] || { echo "FAIL\tms6-3-product-channel\tmissing product input"; exit 1; }
+done
 
 TMP=$(mktemp -d /tmp/zb-ms63.XXXXXX)
-trap 'rm -rf "$TMP"' EXIT
-BIN="$TMP/bin"; SECRET="$TMP/secret"; SCRATCH="$TMP/scratch"
-mkdir -p "$BIN" "$SECRET" "$SCRATCH"
+cleanup() {
+  case "$TMP" in /tmp/zb-ms63.??????) rm -rf -- "${TMP:?}" ;; esac
+}
+trap cleanup EXIT
+SCRATCH="$TMP/scratch"
+mkdir -p "$SCRATCH"
+SCRATCH=$(cd "$SCRATCH" && pwd -P)
+DRIVER="$TMP/ms6_3_product"
 
-# The token lives in its OWN dir, separate from the helper binary, so the deny profile can refuse the token dir
-# while still allowing the loader to read and exec the helper.
-TOKEN="zb-fd3-$(/usr/bin/uuidgen | tr -d - | tr 'A-Z' 'a-z')"
-printf '%s\n' "$TOKEN" > "$SECRET/token"
+xcrun clang -fobjc-arc -std=gnu11 -Wno-deprecated-declarations -I "$ROOT/src" \
+  "$ROOT/tests/mac/ms6_3_fd3_reopen.c" \
+  "$ROOT/src/agent_secrets_mac.m" "$ROOT/src/agent_token_fd_mac.c" "$ROOT/src/agent_spawn_posix.c" \
+  -framework Security -framework Foundation -o "$DRIVER" 2>"$TMP/cc.err" || {
+    echo "FAIL\tms6-3-product-channel\tproduct driver build failed"
+    cat "$TMP/cc.err"
+    exit 1
+  }
 
-HELPER="$BIN/ms6_3_fd3_reopen"
-xcrun clang -o "$HELPER" "$DIR/ms6_3_fd3_reopen.c" 2>"$TMP/cc.err" || {
-    echo "FAIL	ms6-3-fd3-reopen (helper build failed)"; cat "$TMP/cc.err"; exit 1; }
-
-# The GENERATED cli profile (the production generator; SimpleNamespace stands in for sandbox.Endpoint).
-python3 - "$DIR" "$TMP" <<'PY'
+python3 - "$ROOT/agent/host/zb_agent_host" "$TMP" <<'PY'
 import os, sys, types
-d, out = sys.argv[1], sys.argv[2]
-sys.path.insert(0, d)
+product, output = sys.argv[1], sys.argv[2]
+sys.path.insert(0, product)
 import sandbox_macos
-ep = types.SimpleNamespace(host="127.0.0.1", port=52346)
-with open(os.path.join(out, "cli.sb"), "w") as f:
-    f.write(sandbox_macos.render_profile(egress=ep, bridges=(51091, 31337), is_hook=False))
+endpoint = types.SimpleNamespace(host="127.0.0.1", port=52346)
+with open(os.path.join(output, "cli.sb"), "w", encoding="utf-8") as stream:
+    stream.write(sandbox_macos.render_profile(
+        egress=endpoint, bridges=(51091, 31337), is_hook=False))
 PY
 
-# The deny-read-of-token vacuity guard: file-read* is allowed broadly so the loader can exec the helper, then
-# the token dir AND /dev/fd are denied by trailing last-match-wins rules. Whichever path the kernel checks for
-# the reopen (the resolved token file, or the literal /dev/fd/3), it is refused. If the reopen still succeeds
-# here, /dev/fd/3 is NOT gated and the cli-profile pass would be vacuous — so this MUST be denied.
-cat > "$TMP/deny.sb" <<EOF
+cat >"$TMP/deny.sb" <<EOF
 (version 1)
 (deny default)
 (allow process-fork)
 (allow process-exec*)
 (allow file-read*)
-(deny file-read* (subpath "$SECRET"))
 (deny file-read* (subpath "/dev/fd"))
 EOF
 
-run() { # $1=label $2=profile-or-"none"; opens fd 3 on the token, runs the helper, prints its one line
-    label="$1"; prof="$2"
-    if [ "$prof" = none ]; then
-        out=$("$HELPER" 3<"$SECRET/token" 2>&1) || true
-    else
-        out=$(/usr/bin/sandbox-exec -f "$prof" -D SCRATCHPAD="$SCRATCH" "$HELPER" 3<"$SECRET/token" 2>&1) || true
-    fi
-    printf '%s| %s\n' "$label" "$out"
-    echo "$out"
-}
-
-uout=$(run "unsandboxed" none)
-echo "$uout" | grep -q "FD3-REOPEN-OK .* $TOKEN$" || {
-    echo "FAIL	ms6-3-positive-control (unsandboxed reopen did not read the token — vacuous/plumbing broken)"; exit 1; }
-echo "positive control: reopen reads the token unsandboxed"
-
-cout=$(run "cli-profile" "$TMP/cli.sb")
-echo "$cout" | grep -q "FD3-REOPEN-OK .* $TOKEN$" || {
-    echo "FAIL	ms6-3-fd3-reopen (the GENERATED cli profile BLOCKED the fd-3 reopen — MS6.3 gate)"; exit 1; }
-echo "cli profile: fd-3 reopen WORKS (reads the exact token)"
-
-dout=$(run "deny-token" "$TMP/deny.sb")
-if echo "$dout" | grep -q "FD3-REOPEN-OK"; then
-    echo "FAIL	ms6-3-vacuity (a profile denying the token dir STILL reopened /dev/fd/3 — the gate is vacuous)"; exit 1
-fi
-echo "$dout" | grep -q "FD3-REOPEN-FAILED" || {
-    echo "FAIL	ms6-3-vacuity (no verdict from the deny profile — did it parse?)"; exit 1; }
-echo "deny-token profile: fd-3 reopen DENIED (the gate is not vacuous)"
-
-# PROBE, not the hard gate: a green here means only that the generated profile permits/denies the C stand-in's
-# /dev/fd/3 reopen. MS6.3's real-CLI hard gate is a case of the unified pre-seatbelt_ready harness (RoseCat 7120).
-echo "PASS	ms6-3-fd3-reopen-PROBE (partial; MS6.3 real-CLI hard gate pending the MS5-gated harness)"
+"$DRIVER" --parent none "$SCRATCH"
+"$DRIVER" --parent "$TMP/cli.sb" "$SCRATCH"
+"$DRIVER" --parent "$TMP/deny.sb" "$SCRATCH"
+echo "PASS\tms6-3-fd3-reopen-product\tKeychain-to-sandbox-fd3"
