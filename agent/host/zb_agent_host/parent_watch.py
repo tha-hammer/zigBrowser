@@ -216,9 +216,11 @@ class DarwinSessionOps:
         address = self._lib.dlsym(ctypes.c_void_p(-2), b"sandbox_check")  # RTLD_DEFAULT on Darwin
         self._sandbox_check = None
         if address:
-            signature = ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_int, ctypes.c_char_p,
-                                         ctypes.c_int, ctypes.c_char_p)
-            self._sandbox_check = signature(address)
+            # Confirm the private symbol with dlsym, then use ctypes' variadic call path. A fixed four-argument
+            # CFUNCTYPE happens to work on x86_64 but violates Apple arm64's distinct variadic ABI.
+            self._sandbox_check = self._lib.sandbox_check
+            self._sandbox_check.argtypes = (ctypes.c_int, ctypes.c_char_p, ctypes.c_int)
+            self._sandbox_check.restype = ctypes.c_int
         no_report = self._lib.dlsym(ctypes.c_void_p(-2), b"SANDBOX_CHECK_NO_REPORT")
         self._no_report = ctypes.c_int.from_address(no_report).value if no_report else 0
         self._lib.proc_listallpids.argtypes = (ctypes.c_void_p, ctypes.c_int)
@@ -266,10 +268,11 @@ class DarwinSessionOps:
         if check is None:
             return False
         # A path allow alone is unsafe: an unsandboxed browser allows every path. First prove Seatbelt applies.
-        if check(pid, None, _SANDBOX_FILTER_NONE, None) != 1:
+        if check(pid, None, _SANDBOX_FILTER_NONE) != 1:
             return False
         encoded = os.fsencode(canary_path)
-        return check(pid, b"file-read-data", _SANDBOX_FILTER_PATH | self._no_report, encoded) == 0
+        return check(pid, b"file-read-data", _SANDBOX_FILTER_PATH | self._no_report,
+                     self._ctypes.c_char_p(encoded)) == 0
 
     def sleep(self, seconds):
         self._time.sleep(seconds)
