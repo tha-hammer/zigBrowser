@@ -3796,3 +3796,41 @@ CodexHeron may now write the production green and register this exact oracle. Th
 4. After the exact green is approved and push-safe, regenerate the specialized cleanup, validator, manifest, request and rehearsal from that commit. The blocked v1 release remains invalid; a new immutable exact-host, one-attempt/no-retry cleanup request needs a separate review and release.
 
 This approval authorizes no Intel contact, cleanup, signal, retry, release, push, or use of the prior v1 artifacts. The Intel host and retained root remain held. No Mac was contacted and no retained state changed during this review.
+
+## 2026-10-26 — BLOCK exact-root cleanup process GREEN `ea513919`
+
+**BLOCKED; exact `ea513919fec74a7a62df081f6f060f185cff0cff` fixes the cleanup's own root holder, but it removes the required harmless non-holding-ancestor exemption.** Its parent is the approving review `39469a23d51f86e9cda14b64001efd875e45f69e`, and its exact tree is `568c93609dd21a22185d02c02da3149e8585630f`. The commit changes only `build.zig` and one line in `tests/mac/mac_exact_root_cleanup.py`. The approved 10-case process oracle remains byte-identical to `2a82b858`, SHA-256 `1bf2611da3560c0042402106a3a1924b763188601dafd287c1a2ede55981accc`; the approved 43-case cleanup oracle remains SHA-256 `abe2da0bf2ca8fa91f23e0b394986e3b841ad4a77394ef21a0f4128c33f91acf`. `git diff-tree --check` is clean.
+
+The new registration is otherwise correct. `test-mac-exact-root-cleanup-process` runs under a 20-second hard timeout, private user/network/PID/mount namespaces, and a `/bin/sh` reaper that backgrounds and waits for the Python oracle so the test PID is greater than 1. It declares the oracle and implementation as inputs, is side-effecting, has no skip mapping, and is a direct dependency of `test-mac-ms1c-gate` and aggregate `test`. From a clean exact archive with fresh caches, the named step passed **3/3 steps** and printed `PASS mac-exact-root-cleanup-process-red 10 cases` with empty stderr.
+
+The four reviewed mutants are causal. Through the registered step, restoring the old self-holder behavior returned rc 1 at the two exact-self rows; dropping open-PID evidence returned rc 1 with 18 problems; exempting every ancestor returned rc 1 only at the real ancestor-holder row; and bypassing the production process probe returned rc 1 with 28 problems. The unmutated exact implementation passes those submitted rows.
+
+The blocker is the real launch composition omitted by the oracle. Production replaced
+
+```python
+if pid in ancestors and pid not in open_pids:
+    continue
+```
+
+with
+
+```python
+if pid == os.getpid():
+    continue
+```
+
+rather than adding the exact-self exemption alongside the old condition. Therefore any stable ancestor whose command line contains the retained-root basename is reported as live even when `lsof +D` proves that ancestor holds nothing under the root. A direct production `reconcile_processes` probe with the exact Intel basename returned the same live row for a non-holding parent shell and for that shell placed in `open_pids`; only the reason differed by `root-open`.
+
+The answer to the release question is **yes**: a non-exec'ing SSH login shell whose argv contains the basename makes this exact green refuse. The blocked v1 transport invokes `/usr/bin/python3 ... - <exact-basename>` through the remote account shell. A shell may optimize its final command with `exec`, but the cleanup safety contract cannot depend on that optimization. I reproduced the non-exec shape by running the exact registered oracle under a persistent `/bin/sh -c` parent whose argv contained the basename. The submitted green returned rc 1: `self-holder-main-success` received `CLEANUP INCONCLUSIVE process deleted=0` and the fixture root remained. This refusal is not intended: `39469a23` required an exact current-self exemption while preserving refusal of a **holding** ancestor and every non-self relevant process; it did not authorize making a harmless non-holding ancestor fatal.
+
+The complete fix-forward minimum is narrow:
+
+1. Add a causal row with a stable current cleanup process and a persistent parent shell whose command contains the root basename but whose PID is absent from `open_pids`. It must reach the complete exact BEGIN/DELETE/ABSENT transcript. The same stable parent added to `open_pids` must refuse before BEGIN. Keep the exact-self, unrelated root-command and zigBrowser-command refusals.
+2. Preserve the identity checks, then use both exemptions in this order: exempt only `pid == os.getpid()`; separately exempt `pid in ancestors and pid not in open_pids`. Do not exempt a holding ancestor, every ancestor, or arbitrary lsof PIDs.
+3. Add a field-isolated mutant that deletes only the non-holding-ancestor condition—the submitted `ea513919` behavior—and require the new row to turn red. Keep all four existing process mutants red and all 43 cleanup rows green.
+4. Because the process oracle is now registered, either land the new row and production correction atomically in the fix-forward or submit the additional row as a separate unregistered oracle first. Do not create a prefix with a registered red gate.
+5. After the fix-forward passes the named process step and `test-mac-ms1c-gate`, run the full six-step Mac R3 audit. Only then may a new push-safe SHA be named and the specialized cleanup, manifest, request and rehearsal be regenerated for separate review.
+
+I validated satisfiability in a scratch-only exact tree. Keeping the new `pid == os.getpid()` branch and restoring the old non-holding-ancestor branch made the registered process step pass **3/3**, and the persistent parent-shell composition pass all 10 cases. No repository production file was changed by this review.
+
+R3 was not run because this product/release compatibility defect is the first unsafe condition at the submitted prefix. **There is no new push-safe SHA; `ea513919` must not be pushed or used for cleanup.** The last reviewer-named push-safe Mac SHA remains `c67d0a1d7594da6e120a1a5b828ac26173f9bd7e`. The blocked v1 cleanup request remains invalid and must not be executed. No Mac was contacted, no signal or cleanup was sent, and the retained Intel root remains held.
