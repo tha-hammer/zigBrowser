@@ -4565,6 +4565,23 @@ pub fn build(b: *std.Build) void {
     for ([_][]const u8{
         "tests/mac/mac_exact_root_cleanup_red.py", "tests/mac/mac_exact_root_cleanup.py",
     }) |input| mac_exact_root_cleanup.addFileInput(b.path(input));
+    // The production entry's second real process probe sees its own open root descriptor.  A PID-1 shell reaps every
+    // helper while the exact stable cleanup PID alone is exempted; an outer timeout bounds every readiness handshake.
+    const mac_exact_root_cleanup_process = b.addSystemCommand(&.{
+        "/usr/bin/timeout", "--signal=TERM", "--kill-after=2s", "20s",
+        "/usr/bin/unshare", "--user", "--map-root-user", "--net", "--pid", "--fork", "--mount-proc",
+        "/bin/sh", "-c",
+        "set -eu; env PYTHONDONTWRITEBYTECODE=1 python3 -I -X dev -W error -B tests/mac/mac_exact_root_cleanup_process_red.py & child=$!; wait \"$child\"",
+    });
+    mac_exact_root_cleanup_process.has_side_effects = true;
+    for ([_][]const u8{
+        "tests/mac/mac_exact_root_cleanup_process_red.py", "tests/mac/mac_exact_root_cleanup.py",
+    }) |input| mac_exact_root_cleanup_process.addFileInput(b.path(input));
+    const mac_exact_root_cleanup_process_step = b.step(
+        "test-mac-exact-root-cleanup-process",
+        "Run the real process-boundary oracle for exact retained-root cleanup",
+    );
+    mac_exact_root_cleanup_process_step.dependOn(&mac_exact_root_cleanup_process.step);
     const mac_ms1c_term_only = b.addSystemCommand(&.{ "python3", "-B", "tests/e2e/mac_m9_term_only_test.py" });
     for ([_][]const u8{
         "tests/e2e/mac_m9_term_only_test.py", "tests/e2e/m9_reply_channel_test.py", "tests/e2e/m9_render_test.py",
@@ -4585,6 +4602,7 @@ pub fn build(b: *std.Build) void {
     mac_ms1c_gate_step.dependOn(&mac_ms1c_home_owner_policy.step);
     mac_ms1c_gate_step.dependOn(&mac_ms1c_home_crash_pair.step);
     mac_ms1c_gate_step.dependOn(&mac_exact_root_cleanup.step);
+    mac_ms1c_gate_step.dependOn(mac_exact_root_cleanup_process_step);
     mac_ms1c_gate_step.dependOn(&mac_ms1c_term_only.step);
     test_step.dependOn(&mac_ms1c_gate_selftest.step);
     test_step.dependOn(&mac_ms1c_otool_slices.step);
@@ -4600,6 +4618,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&mac_ms1c_home_owner_policy.step);
     test_step.dependOn(&mac_ms1c_home_crash_pair.step);
     test_step.dependOn(&mac_exact_root_cleanup.step);
+    test_step.dependOn(mac_exact_root_cleanup_process_step);
     test_step.dependOn(&mac_ms1c_term_only.step);
     // The 4pa.80 bundle-layout spike stages the real .app, signs it inside out and reports strict verification per Mac,
     // with every Mac-side write-capable phase under one Seatbelt profile (SilverRidge de82cf2).

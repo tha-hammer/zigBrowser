@@ -298,7 +298,7 @@ def reconcile_processes(before, open_pids, after, root, ancestors):
         reasons = command_reasons(root, right[3])
         if pid in open_pids:
             reasons.append(b"root-open")
-        if pid in ancestors and pid not in open_pids:
+        if pid == os.getpid():
             continue
         if reasons:
             result.append((pid, right[0], right[1], right[2], right[3], b",".join(reasons)))
