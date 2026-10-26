@@ -16,9 +16,10 @@ unregistered until its red has been reviewed.
 """
 
 import base64
-from collections import Counter
+import contextlib
 import hashlib
 import importlib.util
+import io
 import os
 from pathlib import Path
 import shutil
@@ -55,17 +56,22 @@ CASE_NAMES = (
     "inventory-added-entry",
     "marker-present",
     "relevant-process",
+    "late-process-final-boundary",
     "process-probe-error",
+    "main-real-process-probe",
     "process-open-missing-before",
     "process-open-missing-after",
     "process-open-changed-start",
     "process-open-changed-command",
     "process-stable-control",
     "mount-boundary",
+    "mount-boundary-traversal",
     "root-symlink-substitution",
     "root-replacement-after-process",
     "unsupported-entry",
     "failure-before-first-mutation",
+    "descendant-symlink-final-boundary",
+    "output-bound-before-mutation",
     "partial-after-first-mutation",
     "bounded-evidence",
 )
@@ -212,6 +218,49 @@ def tree_fingerprint(path):
     return tuple(rows)
 
 
+def fingerprint_by_rel(path):
+    value = tree_fingerprint(path)
+    if value is None:
+        return None
+    return {row[0]: row[1:] for row in value}
+
+
+def sealed_inventory(report):
+    inventory = {}
+    for line in report.splitlines():
+        fields = line.split(b"\t")
+        if fields[0] != b"INVENTORY":
+            continue
+        rel = base64.b64decode(fields[1][4:], altchars=b"-_", validate=True)
+        inventory[rel] = fields[2]
+    return inventory
+
+
+def expected_delete_lines(report):
+    inventory = sealed_inventory(report)
+    children = {}
+    for rel in inventory:
+        parent = rel.rsplit(b"/", 1)[0] if b"/" in rel else b""
+        children.setdefault(parent, []).append(rel)
+    for values in children.values():
+        values.sort(key=lambda rel: rel.rsplit(b"/", 1)[-1])
+
+    ordered = []
+
+    def visit(parent):
+        for rel in children.get(parent, ()):
+            if inventory[rel] == b"d":
+                visit(rel)
+            ordered.append(
+                "DELETE\t%s\t%s"
+                % (inventory[rel].decode("ascii"), b64(rel).decode("ascii"))
+            )
+
+    visit(b"")
+    ordered.append("DELETE\td\t" + b64(b".").decode("ascii"))
+    return ordered
+
+
 def fixture():
     base = Path(tempfile.mkdtemp(prefix="zb-cleanup-red-", dir=os.environ["TMPDIR"]))
     home = base / "account-home"
@@ -332,6 +381,19 @@ def success_case(module, case):
     item = fixture()
     try:
         install_seal(module, item.report)
+        root_raw = os.fsencode(item.root)
+        report_sha = hashlib.sha256(item.report).hexdigest()
+        planned_delete = expected_delete_lines(item.report)
+        planned_digest = hashlib.sha256(("\n".join(planned_delete) + "\n").encode("utf-8")).hexdigest()
+        planned_count = len(planned_delete)
+        inventory_count = planned_count - 1
+        expected_output = [
+            "CLEANUP\tBEGIN\t%s\treport_sha256=%s\tentries=%d"
+            % (b64(root_raw).decode("ascii"), report_sha, inventory_count),
+            *planned_delete,
+            "CLEANUP\tABSENT\t%s\tdeleted=%d\tevidence_sha256=%s"
+            % (b64(root_raw).decode("ascii"), planned_count, planned_digest),
+        ]
         poison = item.base / "poison-home"
         poison.mkdir()
         old_home = os.environ.get("HOME")
@@ -343,27 +405,18 @@ def success_case(module, case):
                 os.environ.pop("HOME", None)
             else:
                 os.environ["HOME"] = old_home
-        delete_lines = [line for line in output if line.startswith("DELETE\t")]
-        inventory_count = sum(line.startswith(b"INVENTORY\t") for line in item.report.splitlines())
         if status != 0 or item.root.exists() or item.root.is_symlink():
             problem(case, "rc=%r root_exists=%r output_tail=%r" % (status, os.path.lexists(item.root), output[-3:]))
         if not (item.outside / "sentinel").is_file() or (item.outside / "sentinel").read_bytes() != b"outside-must-survive\n":
             problem(case, "symlink target outside the exact root changed")
         if not poison.is_dir():
             problem("home-not-environment", "HOME environment path was touched")
-        if calls != [os.fsencode(item.root)]:
+        if calls != [root_raw, root_raw]:
             problem(case, "process probe calls were %r" % (calls,))
-        if len(delete_lines) != inventory_count + 1 or not delete_lines[-1].startswith("DELETE\td\tb64:Lg=="):
-            problem(case, "deletion rows did not cover every entry and the root exactly once")
-        if len(delete_lines) != len(set(delete_lines)):
-            problem(case, "deletion rows were duplicated")
-        if len(output) < 2 or not output[0].startswith("CLEANUP\tBEGIN\t") or not output[-1].startswith("CLEANUP\tABSENT\t"):
-            problem(case, "missing ordered BEGIN/ABSENT terminals")
-        digest = hashlib.sha256(("\n".join(delete_lines) + "\n").encode("utf-8")).hexdigest()
-        if "evidence_sha256=" + digest not in output[-1]:
-            problem(case, "final evidence digest does not bind deletion rows")
+        if output != expected_output:
+            problem(case, "complete ordered deletion transcript differs: %r" % output)
         output_bounded(case, output)
-        return tuple(delete_lines)
+        return tuple(planned_delete)
     finally:
         remove_fixture(item)
 
@@ -497,10 +550,92 @@ else:
 
             item = fixture()
             try:
+                install_seal(module, item.report)
+                before = tree_fingerprint(item.home)
+                late = {"live": False}
+                calls = []
+
+                def boundary_probe(root):
+                    calls.append(os.fsencode(root))
+                    if late["live"]:
+                        return ((7002, 7002, 1, b"Sat Oct 25 12:34:57 2026", b"/Applications/zigBrowser", b"zigBrowser-command"),)
+                    return ()
+
+                def start_at_boundary(event, _rel, deleted):
+                    if event == "before-first-mutation" and deleted == 0:
+                        late["live"] = True
+
+                status, output, _calls = call_cleanup(module, item, probe=boundary_probe, hook=start_at_boundary)
+                expected = ["CLEANUP\tINCONCLUSIVE\tprocess\tdeleted=0"]
+                if status != 3 or output != expected or calls != [os.fsencode(item.root), os.fsencode(item.root)]:
+                    problem("late-process-final-boundary", "rc=%r calls=%r output=%r" % (status, calls, output))
+                if before != tree_fingerprint(item.home):
+                    problem("late-process-final-boundary", "late process refusal changed the tree")
+                if any(line.startswith(("CLEANUP\tBEGIN\t", "DELETE\t", "CLEANUP\tABSENT\t")) for line in output):
+                    problem("late-process-final-boundary", "mutation evidence appeared before process refusal")
+            except Exception as error:
+                problem("late-process-final-boundary", "raised %s" % type(error).__name__)
+            finally:
+                remove_fixture(item)
+
+            item = fixture()
+            try:
                 def broken_probe(_root):
                     raise module.CleanupRefusal("process")
 
                 expect_refusal(module, "process-probe-error", item, "process", probe=broken_probe)
+            finally:
+                remove_fixture(item)
+
+            item = fixture()
+            try:
+                install_seal(module, item.report)
+                before = tree_fingerprint(item.home)
+                entry_calls = []
+                uid_calls = []
+                old_argv = module.sys.argv
+                old_process_rows = module.process_rows
+                old_getpwuid = module.pwd.getpwuid
+                old_getuid = module.os.getuid
+                old_home = os.environ.get("HOME")
+                poison = item.base / "entry-poison-home"
+                poison.mkdir()
+
+                def entry_process_rows(root):
+                    entry_calls.append(os.fsencode(root))
+                    return ((7003, 7003, 1, b"Sat Oct 25 12:34:58 2026", b"/Applications/zigBrowser", b"zigBrowser-command"),)
+
+                def entry_getuid():
+                    uid_calls.append(True)
+                    return 502
+
+                module.sys.argv = ["mac_exact_root_cleanup.py", BASENAME]
+                module.process_rows = entry_process_rows
+                module.pwd.getpwuid = lambda uid: SimpleNamespace(pw_dir=str(item.home)) if uid == 502 else None
+                module.os.getuid = entry_getuid
+                os.environ["HOME"] = str(poison)
+                captured = io.StringIO()
+                try:
+                    with contextlib.redirect_stdout(captured):
+                        status = module.main()
+                finally:
+                    module.sys.argv = old_argv
+                    module.process_rows = old_process_rows
+                    module.pwd.getpwuid = old_getpwuid
+                    module.os.getuid = old_getuid
+                    if old_home is None:
+                        os.environ.pop("HOME", None)
+                    else:
+                        os.environ["HOME"] = old_home
+                output = captured.getvalue().splitlines()
+                if status != 3 or output != ["CLEANUP\tINCONCLUSIVE\tprocess\tdeleted=0"]:
+                    problem("main-real-process-probe", "main rc=%r output=%r" % (status, output))
+                if entry_calls != [os.fsencode(item.root)] or uid_calls != [True]:
+                    problem("main-real-process-probe", "entry calls=%r uid calls=%r" % (entry_calls, uid_calls))
+                if before != tree_fingerprint(item.home) or not poison.is_dir():
+                    problem("main-real-process-probe", "main bypassed uid home or mutated the tree")
+            except Exception as error:
+                problem("main-real-process-probe", "raised %s" % type(error).__name__)
             finally:
                 remove_fixture(item)
 
@@ -540,6 +675,22 @@ else:
                 module.require_same_device(10, 10)
             except Exception as error:
                 problem("mount-boundary", "same-device control raised %s" % type(error).__name__)
+
+            item = fixture()
+            original_same_device = module.require_same_device
+            traversal_calls = []
+            try:
+                def poison_traversal(root_device, candidate_device):
+                    traversal_calls.append((root_device, candidate_device))
+                    raise module.CleanupRefusal("mount-boundary")
+
+                module.require_same_device = poison_traversal
+                expect_refusal(module, "mount-boundary-traversal", item, "mount-boundary")
+                if not traversal_calls:
+                    problem("mount-boundary-traversal", "run_cleanup never consulted the mount boundary")
+            finally:
+                module.require_same_device = original_same_device
+                remove_fixture(item)
 
             item = fixture()
             try:
@@ -587,6 +738,61 @@ else:
 
                 expect_refusal(module, "failure-before-first-mutation", item, "pre-mutation", hook=stop_before)
             finally:
+                remove_fixture(item)
+
+            item = fixture()
+            try:
+                install_seal(module, item.report)
+                before_root = fingerprint_by_rel(item.root)
+                before_outside = tree_fingerprint(item.outside)
+                target = item.root / "payload" / "alpha"
+                parent = target.parent
+                parent_stat = parent.stat()
+
+                def swap_descendant(event, _rel, deleted):
+                    if event == "before-first-mutation" and deleted == 0:
+                        target.unlink()
+                        os.symlink(os.fsencode(item.outside / "sentinel"), os.fsencode(target))
+                        os.utime(parent, ns=(parent_stat.st_atime_ns, parent_stat.st_mtime_ns))
+
+                status, output, _calls = call_cleanup(module, item, hook=swap_descendant)
+                if status != 3 or output != ["CLEANUP\tINCONCLUSIVE\tinventory\tdeleted=0"]:
+                    problem("descendant-symlink-final-boundary", "rc=%r output=%r" % (status, output))
+                if not target.is_symlink() or tree_fingerprint(item.outside) != before_outside:
+                    problem("descendant-symlink-final-boundary", "outside symlink target changed or link was followed")
+                after_root = fingerprint_by_rel(item.root)
+                if before_root is None or after_root is None:
+                    problem("descendant-symlink-final-boundary", "exact root disappeared")
+                else:
+                    before_root.pop(b"payload/alpha", None)
+                    after_root.pop(b"payload/alpha", None)
+                    if before_root != after_root:
+                        problem("descendant-symlink-final-boundary", "an unrelated planned entry changed")
+                if any(line.startswith(("CLEANUP\tBEGIN\t", "DELETE\t", "CLEANUP\tABSENT\t")) for line in output):
+                    problem("descendant-symlink-final-boundary", "mutation evidence appeared after descendant substitution")
+            except Exception as error:
+                problem("descendant-symlink-final-boundary", "raised %s" % type(error).__name__)
+            finally:
+                remove_fixture(item)
+
+            item = fixture()
+            original_bound = module.MAX_OUTPUT
+            try:
+                install_seal(module, item.report)
+                before = tree_fingerprint(item.home)
+                module.MAX_OUTPUT = 128
+                status, output, _calls = call_cleanup(module, item)
+                expected = ["CLEANUP\tINCONCLUSIVE\toutput-bound\tdeleted=0"]
+                if status != 3 or output != expected:
+                    problem("output-bound-before-mutation", "rc=%r output=%r" % (status, output))
+                if before != tree_fingerprint(item.home):
+                    problem("output-bound-before-mutation", "low output bound allowed mutation")
+                if any(line.startswith(("CLEANUP\tBEGIN\t", "DELETE\t", "CLEANUP\tABSENT\t")) for line in output):
+                    problem("output-bound-before-mutation", "output refusal occurred after mutation evidence")
+            except Exception as error:
+                problem("output-bound-before-mutation", "raised %s" % type(error).__name__)
+            finally:
+                module.MAX_OUTPUT = original_bound
                 remove_fixture(item)
 
             item = fixture()
