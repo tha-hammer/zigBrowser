@@ -5537,11 +5537,6 @@ fn addShimArg(b: *std.Build, run: *std.Build.Step.Run, shim: []const u8) void {
 
 fn configureMacosBackend(module: *std.Build.Module, b: *std.Build) void {
     module.addIncludePath(b.path("src"));
-    // macOS plan rev 14 items 4-5 (MS5): the POSIX owner lock and the process-group spawn behind macOS
-    // `--agent-setup` (plain C, compiled into the exe).
-    module.addCSourceFile(.{ .file = b.path("src/agent_home_lock.c"), .flags = &.{"-std=gnu11"} });
-    module.addCSourceFile(.{ .file = b.path("src/agent_spawn_posix.c"), .flags = &.{"-std=gnu11"} });
-
     // MS1b (option d): build the Objective-C shim with the APPLE toolchain (xcrun clang -> ld64) as
     // a separate dylib, NOT compiled into the zig exe. zig 0.16's self-hosted Mach-O linker emits
     // only classic LC_DYLD_INFO_ONLY fixups; a code-signed x86_64 binary with ObjC metadata in a
@@ -5569,6 +5564,11 @@ fn configureMacosBackend(module: *std.Build.Module, b: *std.Build) void {
     shim.addFileArg(b.path("src/agent_token_fd_mac.c"));
     shim.addFileArg(b.path("src/agent_helper_mac.c"));
     shim.addFileArg(b.path("src/agent_helper_mac_runtime.m"));
+    // Keep the Mac POSIX support in this Apple-linked image too. The Zig Mach-O linker can place C text before
+    // the end of the load commands in the large universal app (observed as zb_agent_home_lock beginning with
+    // header bytes on x86_64), while ld64 gives these plain-C functions ordinary, valid text placement.
+    shim.addFileArg(b.path("src/agent_home_lock.c"));
+    shim.addFileArg(b.path("src/agent_spawn_posix.c"));
     shim.addArgs(&.{ "-framework", "WebKit", "-framework", "Cocoa", "-framework", "AppKit", "-framework", "Foundation", "-framework", "Security" });
     // install_name is @executable_path-anchored, NOT @rpath: a hardened-runtime process refuses a
     // relative LC_RPATH ("relative path not allowed in hardened program"), and zig normalizes a

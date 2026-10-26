@@ -893,7 +893,8 @@ def probe_r1(wrapper, cli):
                                             handover))
             census.start()
         out, ok = _sandboxed([sys.prefix, PACKAGE_DIR, runtime, cli],
-                             [sys.executable, "-m", "zb_agent_host", "probe-r1", "--wrapper", wrapper, "--cli", cli],
+                             [sys.executable, "-m", "zb_agent_host", "probe-r1", "--wrapper", str(wrapper),
+                              "--cli", cli],
                              timeout=PROBE_TIMEOUT_S + 30,
                              env={"PYTHONPATH": str(PACKAGE_DIR), "PYTHONDONTWRITEBYTECODE": "1"}, listener=listener,
                              census=theirs)
