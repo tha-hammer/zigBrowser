@@ -41,6 +41,9 @@ static NSTextView *text_view_named(NSArray<NSView *> *views, NSString *text, BOO
 int main(void) {
   @autoreleasepool {
     [NSApplication sharedApplication];
+    [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
+    [NSApp finishLaunching];
+    [NSApp activateIgnoringOtherApps:YES];
     NSWindow *window = [[NSWindow alloc]
         initWithContentRect:NSMakeRect(0, 0, 760, 420)
                   styleMask:NSWindowStyleMaskTitled
@@ -51,6 +54,16 @@ int main(void) {
     if (panel == nil) fail("create returned nil");
     window.contentView = panel;
     [window makeKeyAndOrderFront:nil];
+    NSDate *activationDeadline = [NSDate dateWithTimeIntervalSinceNow:0.25];
+    while ([activationDeadline timeIntervalSinceNow] > 0) {
+      NSEvent *event = [NSApp nextEventMatchingMask:NSEventMaskAny
+                                          untilDate:activationDeadline
+                                             inMode:NSDefaultRunLoopMode
+                                            dequeue:YES];
+      if (event == nil) break;
+      [NSApp sendEvent:event];
+    }
+    [NSApp updateWindows];
     [panel layoutSubtreeIfNeeded];
 
     zb_mac_drawer_panel_append(panel, "user", "<b>literal user</b>");
