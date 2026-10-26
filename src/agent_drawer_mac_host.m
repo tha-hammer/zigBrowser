@@ -28,6 +28,7 @@ int zb_mac_drawer_e2e_enabled(void);
 /* The panel is landing independently. A weak import lets the host compile and
  * show its dock now; the real panel is used automatically once linked. */
 extern NSView *zb_mac_drawer_panel_create(NSRect frame,
+                                           unsigned int window_id,
                                            void (*on_minimize)(void *ctx),
                                            void *ctx) __attribute__((weak_import));
 extern void zb_mac_drawer_panel_focus_input(NSView *panel)
@@ -97,7 +98,8 @@ static void zb_mac_drawer_minimize(void *context) {
 
 static NSView *zb_make_panel(NSRect frame, ZBMacDrawerState *state) {
   if (zb_mac_drawer_panel_create != NULL) {
-    return zb_mac_drawer_panel_create(frame, zb_mac_drawer_minimize,
+    return zb_mac_drawer_panel_create(frame, state.identifier,
+                                      zb_mac_drawer_minimize,
                                       (__bridge void *)state);
   }
   return [[NSView alloc] initWithFrame:frame];

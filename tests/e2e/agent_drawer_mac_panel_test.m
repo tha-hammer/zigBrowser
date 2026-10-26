@@ -50,7 +50,7 @@ int main(void) {
                     backing:NSBackingStoreBuffered
                       defer:NO];
     int minimized = 0;
-    NSView *panel = zb_mac_drawer_panel_create(NSMakeRect(0, 0, 760, 420), record_minimize, &minimized);
+    NSView *panel = zb_mac_drawer_panel_create(NSMakeRect(0, 0, 760, 420), 1, record_minimize, &minimized);
     if (panel == nil) fail("create returned nil");
     window.contentView = panel;
     [window makeKeyAndOrderFront:nil];

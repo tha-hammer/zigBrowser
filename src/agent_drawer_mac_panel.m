@@ -21,6 +21,7 @@ extern void zb_agent_helper_send(unsigned int window_id, const char *text) __att
 @end
 
 @interface ZBMacDrawerPanel : NSView
+@property(nonatomic, assign) unsigned int browserWindowId;
 @property(nonatomic, assign) void (*minimizeCallback)(void *context);
 @property(nonatomic, assign) void *minimizeContext;
 @property(nonatomic, strong) NSTextField *statusLabel;
@@ -276,8 +277,7 @@ static void zb_mac_configure_plain_text(NSTextView *view) {
   [self appendRole:@"user" text:text];
   self.input.string = @"";
   if (zb_agent_helper_configured != NULL && zb_agent_helper_send != NULL && zb_agent_helper_configured()) {
-    NSInteger number = self.window.windowNumber;
-    zb_agent_helper_send(number > 0 ? (unsigned int)number : 0, text.UTF8String);
+    zb_agent_helper_send(self.browserWindowId, text.UTF8String);
     return;
   }
 
@@ -313,9 +313,11 @@ static void zb_mac_configure_plain_text(NSTextView *view) {
 }
 @end
 
-NSView *zb_mac_drawer_panel_create(NSRect frame, void (*on_minimize)(void *context), void *context) {
+NSView *zb_mac_drawer_panel_create(NSRect frame, unsigned int window_id,
+                                   void (*on_minimize)(void *context), void *context) {
   NSCAssert([NSThread isMainThread], @"The AppKit drawer must be created on the main thread");
   ZBMacDrawerPanel *panel = [[ZBMacDrawerPanel alloc] initWithFrame:frame];
+  panel.browserWindowId = window_id;
   panel.minimizeCallback = on_minimize;
   panel.minimizeContext = context;
   return panel;

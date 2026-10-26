@@ -15,7 +15,8 @@
 #import <AppKit/AppKit.h>
 
 /* Panel (agent_drawer_mac_panel.m). on_minimize is called for '-' and for Escape inside the panel. */
-NSView *zb_mac_drawer_panel_create(NSRect frame, void (*on_minimize)(void *ctx), void *ctx);
+NSView *zb_mac_drawer_panel_create(NSRect frame, unsigned int window_id,
+                                   void (*on_minimize)(void *ctx), void *ctx);
 void zb_mac_drawer_panel_focus_input(NSView *panel);
 /* role is "user", "assistant" or "status"; text is UTF-8 and shown verbatim. */
 void zb_mac_drawer_panel_append(NSView *panel, const char *role, const char *utf8_text);
