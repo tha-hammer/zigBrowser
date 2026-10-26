@@ -37,6 +37,9 @@ enum {
 
 @class ZBMacDrawerPanel;
 
+@interface ZBMacFlippedView : NSView
+@end
+
 @interface ZBMacInputTextView : NSTextView
 @property(nonatomic, weak) ZBMacDrawerPanel *drawerPanel;
 @end
@@ -65,6 +68,8 @@ enum {
 @property(nonatomic, strong) NSScrollView *messageScroll;
 @property(nonatomic, strong) NSStackView *messageStack;
 @property(nonatomic, strong) ZBMacInputTextView *input;
+@property(nonatomic, strong) NSScrollView *inputScroll;
+@property(nonatomic, strong) NSLayoutConstraint *inputHeightConstraint;
 @property(nonatomic, strong) NSMutableString *streamText;
 @property(nonatomic, strong) ZBMacMessageBubble *streamBubble;
 @property(nonatomic, assign) BOOL streamFull;
@@ -92,6 +97,7 @@ enum {
 - (void)endCard:(uint64_t)card ending:(NSString *)ending;
 - (void)requestMinimize;
 - (void)sendInput;
+- (void)updateInputHeight;
 - (void)startFirstRunSetup;
 - (void)runOwnerAcceptanceIfRequested;
 - (void)markOwnerAcceptanceReply;
@@ -154,8 +160,24 @@ static NSColor *zb_mac_bubble_color(NSString *role) {
   if ([role isEqualToString:@"user"]) {
     return [NSColor colorWithSRGBRed:0.851 green:0.467 blue:0.341 alpha:1.0];
   }
-  if ([role isEqualToString:@"assistant"]) return NSColor.textBackgroundColor;
-  return [NSColor colorWithSRGBRed:0.925 green:0.906 blue:0.863 alpha:1.0];
+  if ([role isEqualToString:@"assistant"]) {
+    return [NSColor colorWithName:@"ZBAssistantBubble"
+                  dynamicProvider:^NSColor *(NSAppearance *appearance) {
+      NSString *match = [appearance bestMatchFromAppearancesWithNames:
+          @[NSAppearanceNameDarkAqua, NSAppearanceNameAqua]];
+      return [match isEqualToString:NSAppearanceNameDarkAqua]
+                 ? [NSColor colorWithSRGBRed:0.165 green:0.165 blue:0.180 alpha:1.0]
+                 : NSColor.whiteColor;
+    }];
+  }
+  return [NSColor colorWithName:@"ZBStatusBubble"
+                dynamicProvider:^NSColor *(NSAppearance *appearance) {
+    NSString *match = [appearance bestMatchFromAppearancesWithNames:
+        @[NSAppearanceNameDarkAqua, NSAppearanceNameAqua]];
+    return [match isEqualToString:NSAppearanceNameDarkAqua]
+               ? [NSColor colorWithSRGBRed:0.225 green:0.210 blue:0.180 alpha:1.0]
+               : [NSColor colorWithSRGBRed:0.925 green:0.906 blue:0.863 alpha:1.0];
+  }];
 }
 
 static void zb_mac_configure_plain_text(NSTextView *view) {
@@ -172,6 +194,10 @@ static void zb_mac_configure_plain_text(NSTextView *view) {
   view.linkTextAttributes = @{};
 }
 
+@implementation ZBMacFlippedView
+- (BOOL)isFlipped { return YES; }
+@end
+
 @implementation ZBMacInputTextView
 - (void)keyDown:(NSEvent *)event {
   BOOL enter = event.keyCode == 36 || event.keyCode == 76 ||
@@ -187,6 +213,11 @@ static void zb_mac_configure_plain_text(NSTextView *view) {
 - (void)cancelOperation:(id)sender {
   (void)sender;
   [self.drawerPanel requestMinimize];
+}
+
+- (void)didChangeText {
+  [super didChangeText];
+  [self.drawerPanel updateInputHeight];
 }
 @end
 
@@ -290,61 +321,62 @@ static void zb_mac_configure_plain_text(NSTextView *view) {
 
   self.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
   self.wantsLayer = YES;
-  self.layer.backgroundColor = [NSColor colorWithSRGBRed:0.957 green:0.945 blue:0.914 alpha:1.0].CGColor;
+  self.layer.backgroundColor = NSColor.windowBackgroundColor.CGColor;
   self.streamText = [NSMutableString string];
   self.cards = [NSMutableDictionary dictionary];
 
-  NSStackView *root = [[NSStackView alloc] initWithFrame:NSZeroRect];
-  root.translatesAutoresizingMaskIntoConstraints = NO;
-  root.orientation = NSUserInterfaceLayoutOrientationVertical;
-  root.alignment = NSLayoutAttributeLeading;
-  root.spacing = 0.0;
-  [self addSubview:root];
-  [NSLayoutConstraint activateConstraints:@[
-    [root.leadingAnchor constraintEqualToAnchor:self.leadingAnchor],
-    [root.trailingAnchor constraintEqualToAnchor:self.trailingAnchor],
-    [root.topAnchor constraintEqualToAnchor:self.topAnchor],
-    [root.bottomAnchor constraintEqualToAnchor:self.bottomAnchor],
-  ]];
-
   NSStackView *header = [[NSStackView alloc] initWithFrame:NSZeroRect];
+  header.translatesAutoresizingMaskIntoConstraints = NO;
   header.orientation = NSUserInterfaceLayoutOrientationHorizontal;
   header.alignment = NSLayoutAttributeCenterY;
   header.spacing = 8.0;
   header.edgeInsets = NSEdgeInsetsMake(7.0, 10.0, 7.0, 8.0);
   NSTextField *title = [NSTextField labelWithString:@"Claude Agent"];
   title.font = [NSFont boldSystemFontOfSize:14.0];
+  title.selectable = YES;
   self.statusLabel = [NSTextField labelWithString:@"Not connected"];
   self.statusLabel.textColor = NSColor.secondaryLabelColor;
+  self.statusLabel.selectable = YES;
   [self.statusLabel setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow
                                              forOrientation:NSLayoutConstraintOrientationHorizontal];
-  self.setupButton = [NSButton buttonWithTitle:@"Set Up" target:self action:@selector(openSecrets:)];
+  self.setupButton = [NSButton buttonWithTitle:@"Sign in" target:self action:@selector(openSecrets:)];
   self.setupButton.bezelStyle = NSBezelStyleRounded;
-  self.setupButton.hidden = YES;
+  self.setupButton.hidden = NO;
+  self.setupButton.accessibilityLabel = @"Sign in to Claude";
+  NSView *headerSpacer = [[NSView alloc] initWithFrame:NSZeroRect];
+  [headerSpacer setContentHuggingPriority:1
+                          forOrientation:NSLayoutConstraintOrientationHorizontal];
+  [headerSpacer setContentCompressionResistancePriority:1
+                                         forOrientation:NSLayoutConstraintOrientationHorizontal];
   NSButton *minus = [NSButton buttonWithTitle:@"−" target:self action:@selector(minimize:)];
   minus.bezelStyle = NSBezelStyleTexturedRounded;
   minus.accessibilityLabel = @"Minimize Claude Agent";
+  [minus setContentHuggingPriority:NSLayoutPriorityRequired
+                    forOrientation:NSLayoutConstraintOrientationHorizontal];
+  [minus setContentCompressionResistancePriority:NSLayoutPriorityRequired
+                                   forOrientation:NSLayoutConstraintOrientationHorizontal];
   NSButton *send = [NSButton buttonWithTitle:@"Send" target:self action:@selector(send:)];
   send.bezelStyle = NSBezelStyleRounded;
   [header addArrangedSubview:title];
   [header addArrangedSubview:self.statusLabel];
   [header addArrangedSubview:self.setupButton];
+  [header addArrangedSubview:headerSpacer];
   [header addArrangedSubview:minus];
-  [root addArrangedSubview:header];
-  [header.widthAnchor constraintEqualToAnchor:root.widthAnchor].active = YES;
+  [self addSubview:header];
 
   NSBox *headerRule = [[NSBox alloc] initWithFrame:NSZeroRect];
+  headerRule.translatesAutoresizingMaskIntoConstraints = NO;
   headerRule.boxType = NSBoxSeparator;
-  [root addArrangedSubview:headerRule];
-  [headerRule.widthAnchor constraintEqualToAnchor:root.widthAnchor].active = YES;
+  [self addSubview:headerRule];
 
   self.messageScroll = [[NSScrollView alloc] initWithFrame:NSZeroRect];
+  self.messageScroll.translatesAutoresizingMaskIntoConstraints = NO;
   self.messageScroll.hasVerticalScroller = YES;
   self.messageScroll.hasHorizontalScroller = NO;
   self.messageScroll.autohidesScrollers = YES;
   self.messageScroll.borderType = NSNoBorder;
   self.messageScroll.drawsBackground = NO;
-  NSView *messageDocument = [[NSView alloc] initWithFrame:NSMakeRect(0.0, 0.0, frame.size.width, 1.0)];
+  NSView *messageDocument = [[ZBMacFlippedView alloc] initWithFrame:NSMakeRect(0.0, 0.0, frame.size.width, 1.0)];
   messageDocument.translatesAutoresizingMaskIntoConstraints = NO;
   self.messageStack = [[NSStackView alloc] initWithFrame:NSZeroRect];
   self.messageStack.translatesAutoresizingMaskIntoConstraints = NO;
@@ -356,31 +388,31 @@ static void zb_mac_configure_plain_text(NSTextView *view) {
   self.messageScroll.documentView = messageDocument;
   [NSLayoutConstraint activateConstraints:@[
     [messageDocument.widthAnchor constraintEqualToAnchor:self.messageScroll.contentView.widthAnchor],
+    [messageDocument.heightAnchor constraintGreaterThanOrEqualToAnchor:self.messageScroll.contentView.heightAnchor],
     [self.messageStack.leadingAnchor constraintEqualToAnchor:messageDocument.leadingAnchor],
     [self.messageStack.trailingAnchor constraintEqualToAnchor:messageDocument.trailingAnchor],
     [self.messageStack.topAnchor constraintEqualToAnchor:messageDocument.topAnchor],
     [self.messageStack.bottomAnchor constraintEqualToAnchor:messageDocument.bottomAnchor],
   ]];
-  [root addArrangedSubview:self.messageScroll];
-  [self.messageScroll.widthAnchor constraintEqualToAnchor:root.widthAnchor].active = YES;
+  [self addSubview:self.messageScroll];
   [self.messageScroll setContentHuggingPriority:NSLayoutPriorityDefaultLow
                                 forOrientation:NSLayoutConstraintOrientationVertical];
+  [self.messageScroll setContentCompressionResistancePriority:1
+                                               forOrientation:NSLayoutConstraintOrientationVertical];
 
   NSBox *inputRule = [[NSBox alloc] initWithFrame:NSZeroRect];
+  inputRule.translatesAutoresizingMaskIntoConstraints = NO;
   inputRule.boxType = NSBoxSeparator;
-  [root addArrangedSubview:inputRule];
-  [inputRule.widthAnchor constraintEqualToAnchor:root.widthAnchor].active = YES;
+  [self addSubview:inputRule];
 
-  NSStackView *inputRow = [[NSStackView alloc] initWithFrame:NSZeroRect];
-  inputRow.orientation = NSUserInterfaceLayoutOrientationHorizontal;
-  inputRow.alignment = NSLayoutAttributeBottom;
-  inputRow.spacing = 8.0;
-  inputRow.edgeInsets = NSEdgeInsetsMake(8.0, 10.0, 8.0, 10.0);
-  NSScrollView *inputScroll = [[NSScrollView alloc] initWithFrame:NSZeroRect];
-  inputScroll.hasVerticalScroller = YES;
-  inputScroll.hasHorizontalScroller = NO;
-  inputScroll.autohidesScrollers = YES;
-  inputScroll.borderType = NSBezelBorder;
+  NSView *inputRow = [[NSView alloc] initWithFrame:NSZeroRect];
+  inputRow.translatesAutoresizingMaskIntoConstraints = NO;
+  self.inputScroll = [[NSScrollView alloc] initWithFrame:NSZeroRect];
+  self.inputScroll.translatesAutoresizingMaskIntoConstraints = NO;
+  self.inputScroll.hasVerticalScroller = YES;
+  self.inputScroll.hasHorizontalScroller = NO;
+  self.inputScroll.autohidesScrollers = YES;
+  self.inputScroll.borderType = NSBezelBorder;
   self.input = [[ZBMacInputTextView alloc] initWithFrame:NSZeroRect];
   self.input.drawerPanel = self;
   self.input.minSize = NSMakeSize(0.0, 44.0);
@@ -394,15 +426,76 @@ static void zb_mac_configure_plain_text(NSTextView *view) {
   self.input.font = [NSFont systemFontOfSize:13.0];
   zb_mac_configure_plain_text(self.input);
   self.input.allowsUndo = YES;
-  inputScroll.documentView = self.input;
-  [inputScroll.heightAnchor constraintEqualToConstant:68.0].active = YES;
-  [inputRow addArrangedSubview:inputScroll];
-  [inputRow addArrangedSubview:send];
-  [inputScroll setContentHuggingPriority:NSLayoutPriorityDefaultLow
-                          forOrientation:NSLayoutConstraintOrientationHorizontal];
-  [root addArrangedSubview:inputRow];
-  [inputRow.widthAnchor constraintEqualToAnchor:root.widthAnchor].active = YES;
+  self.inputScroll.documentView = self.input;
+  self.inputHeightConstraint = [self.inputScroll.heightAnchor constraintEqualToConstant:68.0];
+  self.inputHeightConstraint.active = YES;
+  send.translatesAutoresizingMaskIntoConstraints = NO;
+  [inputRow addSubview:self.inputScroll];
+  [inputRow addSubview:send];
+  [self.inputScroll setContentHuggingPriority:1
+                               forOrientation:NSLayoutConstraintOrientationHorizontal];
+  [self.inputScroll setContentCompressionResistancePriority:1
+                                            forOrientation:NSLayoutConstraintOrientationHorizontal];
+  [send setContentHuggingPriority:NSLayoutPriorityRequired
+                   forOrientation:NSLayoutConstraintOrientationHorizontal];
+  [send setContentCompressionResistancePriority:NSLayoutPriorityRequired
+                                  forOrientation:NSLayoutConstraintOrientationHorizontal];
+  [NSLayoutConstraint activateConstraints:@[
+    [self.inputScroll.leadingAnchor constraintEqualToAnchor:inputRow.leadingAnchor constant:10.0],
+    [self.inputScroll.topAnchor constraintEqualToAnchor:inputRow.topAnchor constant:8.0],
+    [self.inputScroll.bottomAnchor constraintEqualToAnchor:inputRow.bottomAnchor constant:-8.0],
+    [send.leadingAnchor constraintEqualToAnchor:self.inputScroll.trailingAnchor constant:8.0],
+    /* NSButton's alignment rect excludes its bezel shadow. Keep the visible
+     * frame, not merely the alignment rect, inside the drawer edge. */
+    [send.trailingAnchor constraintEqualToAnchor:inputRow.trailingAnchor constant:-18.0],
+    [send.centerYAnchor constraintEqualToAnchor:self.inputScroll.centerYAnchor],
+  ]];
+  [self addSubview:inputRow];
+  [NSLayoutConstraint activateConstraints:@[
+    [header.leadingAnchor constraintEqualToAnchor:self.leadingAnchor],
+    [header.trailingAnchor constraintEqualToAnchor:self.trailingAnchor],
+    [header.topAnchor constraintEqualToAnchor:self.topAnchor],
+    [header.heightAnchor constraintEqualToConstant:44.0],
+    [headerRule.leadingAnchor constraintEqualToAnchor:self.leadingAnchor],
+    [headerRule.trailingAnchor constraintEqualToAnchor:self.trailingAnchor],
+    [headerRule.topAnchor constraintEqualToAnchor:header.bottomAnchor],
+    [headerRule.heightAnchor constraintEqualToConstant:1.0],
+    [inputRow.leadingAnchor constraintEqualToAnchor:self.leadingAnchor],
+    [inputRow.trailingAnchor constraintEqualToAnchor:self.trailingAnchor],
+    [inputRow.bottomAnchor constraintEqualToAnchor:self.bottomAnchor],
+    [inputRule.leadingAnchor constraintEqualToAnchor:self.leadingAnchor],
+    [inputRule.trailingAnchor constraintEqualToAnchor:self.trailingAnchor],
+    [inputRule.bottomAnchor constraintEqualToAnchor:inputRow.topAnchor],
+    [inputRule.heightAnchor constraintEqualToConstant:1.0],
+    [self.messageScroll.leadingAnchor constraintEqualToAnchor:self.leadingAnchor],
+    [self.messageScroll.trailingAnchor constraintEqualToAnchor:self.trailingAnchor],
+    [self.messageScroll.topAnchor constraintEqualToAnchor:headerRule.bottomAnchor],
+    [self.messageScroll.bottomAnchor constraintEqualToAnchor:inputRule.topAnchor],
+  ]];
+  [self updateInputHeight];
   return self;
+}
+
+- (void)layout {
+  [super layout];
+  [self updateInputHeight];
+}
+
+- (void)updateInputHeight {
+  if (self.input == nil || self.inputScroll == nil || self.inputHeightConstraint == nil) return;
+  CGFloat line = ceil([self.input.layoutManager defaultLineHeightForFont:self.input.font]);
+  CGFloat padding = self.input.textContainerInset.height * 2.0 + 6.0;
+  CGFloat minimum = ceil(line * 3.0 + padding);
+  CGFloat maximum = ceil(line * 6.0 + padding);
+  CGFloat width = MAX(1.0, NSWidth(self.inputScroll.contentView.bounds));
+  self.input.textContainer.containerSize = NSMakeSize(width, CGFLOAT_MAX);
+  [self.input.layoutManager ensureLayoutForTextContainer:self.input.textContainer];
+  CGFloat used = [self.input.layoutManager usedRectForTextContainer:self.input.textContainer].size.height;
+  CGFloat wanted = MIN(maximum, MAX(minimum, ceil(used + padding)));
+  if (fabs(self.inputHeightConstraint.constant - wanted) >= 0.5) {
+    self.inputHeightConstraint.constant = wanted;
+    [self setNeedsLayout:YES];
+  }
 }
 
 - (void)requestMinimize {
@@ -430,6 +523,7 @@ static void zb_mac_configure_plain_text(NSTextView *view) {
 
   [self appendRole:@"user" text:text];
   self.input.string = @"";
+  [self updateInputHeight];
   if (zb_agent_helper_configured != NULL && zb_agent_helper_send != NULL && zb_agent_helper_configured()) {
     zb_agent_helper_send(self.browserWindowId, text.UTF8String);
     return;
@@ -584,8 +678,7 @@ static void zb_mac_configure_plain_text(NSTextView *view) {
   [self.messageStack addArrangedSubview:row];
   [row.widthAnchor constraintEqualToAnchor:self.messageStack.widthAnchor constant:-20.0].active = YES;
   [self.messageStack layoutSubtreeIfNeeded];
-  NSView *document = self.messageScroll.documentView;
-  if (document != nil) [document scrollPoint:NSMakePoint(0.0, MAX(0.0, NSMaxY(document.bounds)))];
+  [row scrollRectToVisible:row.bounds];
 }
 
 - (void)appendDelta:(NSString *)text {
@@ -672,6 +765,7 @@ static void zb_mac_configure_plain_text(NSTextView *view) {
 
   cardView.outcome = [NSTextField labelWithString:@""];
   cardView.outcome.textColor = NSColor.secondaryLabelColor;
+  cardView.outcome.selectable = YES;
   cardView.outcome.hidden = YES;
   [content addArrangedSubview:cardView.outcome];
 
@@ -768,6 +862,9 @@ void zb_drawer_agent_status(unsigned int windowId, const char *state, const char
   for (ZBMacDrawerPanel *panel in zb_mac_panel_snapshot()) {
     if (windowId != 0 && panel.browserWindowId != windowId) continue;
     panel.statusLabel.stringValue = zb_mac_status_text(stateText, reasonText);
+    panel.setupButton.hidden = [stateText isEqualToString:@"starting"] ||
+                               [stateText isEqualToString:@"ready"] ||
+                               [stateText isEqualToString:@"busy"];
     if (failureText != nil && ![panel.lastFailureReason isEqualToString:reasonText]) {
       if (panel.streamBubble != nil) [panel finishStreamAsShown];
       [panel appendRole:@"status" text:failureText];
