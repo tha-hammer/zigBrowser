@@ -51,6 +51,54 @@ static NSMutableDictionary *zb_kc_query(const char *service, const char *account
   return q;
 }
 
+static int zb_ascii_space(unsigned char c) {
+  return c == ' ' || c == '\t' || c == '\r' || c == '\n' || c == '\v' || c == '\f';
+}
+
+/* The long-lived value printed by `claude setup-token`: the same product rule as
+ * agent_secrets_shape.zig, kept here because that Zig export is Linux-only. */
+static int zb_setup_token_slice(const char *text, const char **out_start, size_t *out_len) {
+  static const char prefix[] = "sk-ant-oat01-";
+  if (text == NULL) return 0;
+  const char *start = text;
+  const char *end = text + strlen(text);
+  while (start < end && zb_ascii_space((unsigned char)*start)) start++;
+  while (end > start && zb_ascii_space((unsigned char)end[-1])) end--;
+  size_t len = (size_t)(end - start);
+  if (len < 35 || len > 512 || memcmp(start, prefix, sizeof prefix - 1) != 0) return 0;
+  for (const char *p = start + sizeof prefix - 1; p < end; ++p) {
+    unsigned char c = (unsigned char)*p;
+    if (!((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_' || c == '-')) {
+      return 0;
+    }
+  }
+  *out_start = start;
+  *out_len = len;
+  return 1;
+}
+
+/* The production onboarding boundary: refuse malformed values before SecItem sees
+ * them, trim paste-only ASCII whitespace, and store only the validated token. */
+int zb_agent_onboard_token(const char *keychain_path, const char *unlock_password,
+                           const char *service, const char *account, const char *token, char **out_err) {
+  if (out_err != NULL) *out_err = NULL;
+  const char *start = NULL;
+  size_t len = 0;
+  if (!zb_setup_token_slice(token, &start, &len)) return 1;
+
+  char *clean = malloc(len + 1);
+  if (clean == NULL) {
+    if (out_err != NULL) *out_err = strdup("keychain store failed: out of memory");
+    return ZB_KC_UNAVAILABLE;
+  }
+  memcpy(clean, start, len);
+  clean[len] = '\0';
+  int result = zb_keychain_store(keychain_path, unlock_password, service, account, clean, out_err);
+  memset_s(clean, len, 0, len);
+  free(clean);
+  return result;
+}
+
 int zb_keychain_store(const char *keychain_path, const char *unlock_password,
                       const char *service, const char *account, const char *token, char **out_err) {
   if (out_err != NULL) *out_err = NULL;
