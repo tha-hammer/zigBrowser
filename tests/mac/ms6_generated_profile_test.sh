@@ -62,12 +62,13 @@ sandboxed() {
         -D READ_PARENT_3="$TMP" "$@"
 }
 CANARY="zb-gen-$(/usr/bin/uuidgen | tr -d - | tr 'A-Z' 'a-z')"
+KC="$TMP/missing.keychain"; KC_PASSWORD="zb-ms6gen-unused"; KC_SERVICE="zb-ms6gen"; KC_ACCOUNT="default"
 /usr/bin/perl -e 'sleep 100000' "$CANARY" &
 TGT=$!
 sleep 0.4
 
 # Positive control: unsandboxed must breach (so a green under a profile is the profile's doing).
-"$PROBE" "$TGT" "$CANARY" > "$TMP/pc.out" 2>&1 || true
+"$PROBE" "$TGT" "$CANARY" "$KC" "$KC_PASSWORD" "$KC_SERVICE" "$KC_ACCOUNT" > "$TMP/pc.out" 2>&1 || true
 grep -q "procargs2: rc=0 canary=FOUND" "$TMP/pc.out" || {
     echo "FAIL	ms6-generated-positive-control (unsandboxed did not expose the canary — vacuous)"
     sed 's/^/  pc| /' "$TMP/pc.out"; exit 1; }
@@ -75,7 +76,8 @@ echo "positive control: BREACH (canary exposed unsandboxed)"
 
 # The GENERATED cli + hook profiles must each CONTAIN the token.
 for prof in cli hook; do
-    sandboxed "$prof" "$PROBE" "$TGT" "$CANARY" > "$TMP/$prof.out" 2>&1 || true
+    sandboxed "$prof" "$PROBE" "$TGT" "$CANARY" "$KC" "$KC_PASSWORD" "$KC_SERVICE" "$KC_ACCOUNT" \
+        > "$TMP/$prof.out" 2>&1 || true
     if grep -q "RESULT: BREACH" "$TMP/$prof.out"; then
         echo "FAIL	ms6-generated-$prof (the GENERATED profile LEAKED the token)"; sed "s/^/  $prof| /" "$TMP/$prof.out"; exit 1
     fi
