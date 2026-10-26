@@ -20,6 +20,35 @@ primary_research: thoughts/searchable/shared/research/2026-10-14-14-19-macos-lau
 
 # macOS Launch Support for zigBrowser — TDD Implementation Plan
 
+## OWNER DIRECTIVE 2026-10-26 — SUPERSEDES EVERY PROCESS RULE IN THIS PLAN (READ FIRST)
+
+The owner, after a week in which the last two days produced no product code: build the APP, not test harnesses or tools.
+
+- **Goal now:** an unsigned zigBrowser .app the owner opens and uses on both Macs, then fixes for what the owner finds.
+  The MS1c app gate already passed on both Macs at `fae0dddf` (2026-10-25).
+- **Not doing (parked):** new gate, audit or cleanup tooling; HOME, /var/folders or crash-classifier audits; mutation suites;
+  tests-of-tests; per-run request, manifest or rehearsal documents; the verification-rule ceremony and the
+  BUILT-HANDRUN/REGISTERED status bookkeeping below.
+- **Tests:** only to show that a product feature works. Review covers product code only, at most 2 rounds per item.
+- **Mac runs:** the orchestrator runs them directly on the two test Macs.
+- **Hard safety rules that remain:**
+  - kill only PIDs you started;
+  - guard every rm;
+  - never use the owner's real display, profile or live socket on Linux;
+  - ssh BatchMode;
+  - no history rewrites, pathspec commits;
+  - on the Macs, touch only your work folder, the app, and ~/Desktop.
+- **Remaining product scope after the owner's hands-on test, in order:**
+  1. what the owner finds;
+  2. MS2b screenshot and input files;
+  3. MS4 macOS approval paths;
+  4. MS5 Keychain onboarding;
+  5. MS7 drawer;
+  6. MS6/MS8 Seatbelt agent.
+
+  MS9 signing waits on a Developer ID.
+
+
 > **LIVING PLAN, rev 32 (rev 29 re-baselined to HEAD `e4f705f`; rev 30 validated against code at `d0f1841`; rev 31 closed the 29 rule-audit gaps; rev 32 closed the 8 PARTLY gaps from the independent re-check `recheck-macos.md`, see "Audit gaps closed" at the end).** Rev 30 applies
 > the owner's verification rule (the section "Verification rule: prove it by running it", below) and the MS0-9 code validation;
 > the statuses and proofs in this plan are current as of rev 30. This revision is docs-only. The
