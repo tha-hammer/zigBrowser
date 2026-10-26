@@ -26,6 +26,7 @@ extern void zb_agent_tools_call(unsigned int win, const char *session,
                                 const char *args, size_t args_len)
     __attribute__((weak_import));
 extern int zb_mac_drawer_e2e_enabled(void);
+extern unsigned int zb_drawer_demo_messages(void) __attribute__((weak_import));
 
 enum {
   ZB_CARD_APPROVE = 1,
@@ -872,6 +873,13 @@ NSView *zb_mac_drawer_panel_create(NSRect frame, unsigned int window_id,
   panel.minimizeCallback = on_minimize;
   panel.minimizeContext = context;
   [zb_mac_drawer_panels addObject:panel];
+  unsigned int demo = zb_drawer_demo_messages != NULL ? zb_drawer_demo_messages() : 0;
+  if (window_id == 1 && demo != 0 && zb_mac_drawer_e2e_enabled()) {
+    for (unsigned int index = 1; index <= demo; index++) {
+      NSString *text = [NSString stringWithFormat:@"Message %u: visual scroll proof.", index];
+      [panel appendRole:index % 2 == 0 ? @"assistant" : @"user" text:text];
+    }
+  }
   return panel;
 }
 
