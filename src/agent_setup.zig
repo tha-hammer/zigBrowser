@@ -76,6 +76,15 @@ pub fn platformGate(os: std.Target.Os.Tag, sandbox_ready: bool) Gate {
     };
 }
 
+/// The owner development build may run the macOS agent before Seatbelt lands.
+/// This is the single build-controlled exception used by both setup and the
+/// drawer launch. A release-style build (`mac_unsandboxed_dev == false`)
+/// retains the ordinary platform gate unchanged.
+pub fn platformGateForBuild(os: std.Target.Os.Tag, sandbox_ready: bool, mac_unsandboxed_dev: bool) Gate {
+    if (os == .macos and mac_unsandboxed_dev) return .run;
+    return platformGate(os, sandbox_ready);
+}
+
 test "the runtime sits at <prefix>/lib/zigbrowser/agent-host beside <prefix>/bin/zigBrowser" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

@@ -1,5 +1,6 @@
 const std = @import("std");
 const builtin = @import("builtin");
+const build_options = @import("build_options");
 
 const agent_drawer = @import("agent_drawer.zig");
 const agent_setup = @import("agent_setup.zig");
@@ -70,19 +71,24 @@ fn runAgentSetup(arena: std.mem.Allocator, spec: AgentSetupSpec) errors.BrowserE
             return 1;
         },
     }
-    // Owner development policy (2026-10-26): the packaged macOS app runs the agent unsandboxed while the Seatbelt
-    // backend is built separately. Keep this as the one macOS branch so the future backend can replace it without
-    // changing the drawer's first-run path. Linux still uses its existing platform gate and sandboxed setup.
-    if (comptime builtin.os.tag == .macos) {
-        std.debug.print("zigBrowser: agent running unsandboxed (dev build)\n", .{});
-        return runAgentSetupMacos(arena, spec);
-    }
-    switch (agent_setup.platformGate(builtin.os.tag, agent_setup.seatbelt_ready)) {
+    // Owner development policy (2026-10-26): one build switch controls the temporary unsandboxed macOS exception
+    // for both setup and drawer launch. Turning it off restores the Seatbelt gate without changing Linux.
+    switch (agent_setup.platformGateForBuild(
+        builtin.os.tag,
+        agent_setup.seatbelt_ready,
+        build_options.mac_unsandboxed_dev,
+    )) {
         .run => {},
         .refuse => |line| {
             std.debug.print("{s}\n", .{line});
             return 1;
         },
+    }
+    if (comptime builtin.os.tag == .macos) {
+        if (build_options.mac_unsandboxed_dev) {
+            std.debug.print("zigBrowser: agent running unsandboxed (dev build)\n", .{});
+        }
+        return runAgentSetupMacos(arena, spec);
     }
     if (comptime builtin.os.tag != .linux) return 1;
     const user_home = getenvOwned(arena, "HOME");
@@ -448,8 +454,8 @@ fn runOpen(arena: std.mem.Allocator, io: std.Io, spec: OpenSpec) errors.BrowserE
     // Before zb_app_run builds the first window; the icon's saved position
     // lives with the profile (agent-drawer.json), read only when it is on.
     const drawer_on = webkit.applyAgentDrawer(spec.agent_drawer);
-    webkit.applyMacosUnsandboxedAgentStatus(drawer_on);
-    if (drawer_on) {
+    const agent_launch_allowed = webkit.applyMacosAgentBuildPolicy(drawer_on, build_options.mac_unsandboxed_dev);
+    if (drawer_on and agent_launch_allowed) {
         agent_drawer.configure(io, arena, profile_dir, .{
             .demo = getenvOwned(arena, agent_drawer.demo_env_name),
             .anim_ms = getenvOwned(arena, agent_drawer.anim_env_name),

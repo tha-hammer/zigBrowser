@@ -145,9 +145,15 @@ pub fn build(b: *std.Build) void {
         "Path to zigBrowser JSON site config (default: zigbrowser.json)",
     ) orelse "zigbrowser.json";
     const site_config = loadSiteConfig(b, site_config_path);
+    const mac_unsandboxed_dev = b.option(
+        bool,
+        "mac-unsandboxed-dev",
+        "Allow the macOS agent to run without Seatbelt in this development build",
+    ) orelse true;
     const site_options = b.addOptions();
     site_options.addOption([]const u8, "default_url", site_config.url);
     site_options.addOption([]const u8, "config_path", site_config_path);
+    site_options.addOption(bool, "mac_unsandboxed_dev", mac_unsandboxed_dev);
     const site_options_module = site_options.createModule();
 
     const pkg_guard: *std.Build.Step = switch (backend) {
