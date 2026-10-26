@@ -1,6 +1,8 @@
 #import "agent_drawer_mac.h"
 
+#import <dispatch/dispatch.h>
 #import <math.h>
+#import <stdint.h>
 
 /* The helper is optional until an agent home is provisioned on macOS.  Its
  * first declarations must carry weak_import; agent_helper.h then supplies the
@@ -8,6 +10,16 @@
 extern int zb_agent_helper_configured(void) __attribute__((weak_import));
 extern void zb_agent_helper_send(unsigned int window_id, const char *text) __attribute__((weak_import));
 #import "agent_helper.h"
+
+extern int zb_drawer_card_press(uint64_t card, int control, int own);
+
+enum {
+  ZB_CARD_APPROVE = 1,
+  ZB_CARD_DENY = 2,
+  ZB_CARD_APPROVED = 1,
+  ZB_CARD_DENIED = 2,
+  ZB_CARD_LOST = 3,
+};
 
 @class ZBMacDrawerPanel;
 
@@ -19,6 +31,15 @@ extern void zb_agent_helper_send(unsigned int window_id, const char *text) __att
 @property(nonatomic, readonly) NSTextView *textView;
 - (instancetype)initWithRole:(NSString *)role text:(NSString *)text;
 - (void)setPlainText:(NSString *)text;
+@end
+
+@interface ZBMacApprovalCard : NSView
+@property(nonatomic, assign) uint64_t cardId;
+@property(nonatomic, strong) NSStackView *buttonRow;
+@property(nonatomic, strong) NSButton *approveButton;
+@property(nonatomic, strong) NSButton *denyButton;
+@property(nonatomic, strong) NSTextField *outcome;
+- (void)settle:(NSString *)text;
 @end
 
 @interface ZBMacDrawerPanel : NSView
@@ -33,16 +54,31 @@ extern void zb_agent_helper_send(unsigned int window_id, const char *text) __att
 @property(nonatomic, strong) NSMutableString *streamText;
 @property(nonatomic, strong) ZBMacMessageBubble *streamBubble;
 @property(nonatomic, assign) BOOL streamFull;
+@property(nonatomic, strong) NSMutableDictionary<NSNumber *, ZBMacApprovalCard *> *cards;
 - (void)addMessageView:(NSView *)view role:(NSString *)role;
 - (void)appendRole:(NSString *)role text:(NSString *)text;
 - (void)appendDelta:(NSString *)text;
 - (void)finishStreamWithText:(NSString *)text;
 - (void)finishStreamAsShown;
+- (void)showCard:(uint64_t)card
+            verb:(NSString *)verb
+           bound:(unsigned int)bound
+             url:(NSString *)url
+          origin:(NSString *)origin;
+- (void)endCard:(uint64_t)card ending:(NSString *)ending;
 - (void)requestMinimize;
 - (void)sendInput;
 @end
 
 static NSHashTable<ZBMacDrawerPanel *> *zb_mac_drawer_panels;
+
+static void zb_mac_on_main(dispatch_block_t block) {
+  if ([NSThread isMainThread]) {
+    block();
+  } else {
+    dispatch_async(dispatch_get_main_queue(), block);
+  }
+}
 
 static NSString *zb_mac_string(const char *text) {
   if (text == NULL) return @"";
@@ -151,6 +187,34 @@ static void zb_mac_configure_plain_text(NSTextView *view) {
 }
 @end
 
+@implementation ZBMacApprovalCard
+- (void)settle:(NSString *)text {
+  self.approveButton.enabled = NO;
+  self.denyButton.enabled = NO;
+  self.buttonRow.hidden = YES;
+  self.outcome.stringValue = text != nil ? text : @"";
+  self.outcome.hidden = NO;
+}
+
+- (void)approve:(id)sender {
+  int result = zb_drawer_card_press(self.cardId, ZB_CARD_APPROVE, sender == self.approveButton);
+  if (result == ZB_CARD_APPROVED) {
+    [self settle:@"Approved. Waiting for the page…"];
+  } else if (result == ZB_CARD_LOST) {
+    [self settle:@"This approval is no longer pending."];
+  }
+}
+
+- (void)deny:(id)sender {
+  int result = zb_drawer_card_press(self.cardId, ZB_CARD_DENY, sender == self.denyButton);
+  if (result == ZB_CARD_DENIED) {
+    [self settle:@"Denied. Nothing was opened."];
+  } else if (result == ZB_CARD_LOST) {
+    [self settle:@"This approval is no longer pending."];
+  }
+}
+@end
+
 @implementation ZBMacDrawerPanel
 
 - (instancetype)initWithFrame:(NSRect)frame {
@@ -161,6 +225,7 @@ static void zb_mac_configure_plain_text(NSTextView *view) {
   self.wantsLayer = YES;
   self.layer.backgroundColor = [NSColor colorWithSRGBRed:0.957 green:0.945 blue:0.914 alpha:1.0].CGColor;
   self.streamText = [NSMutableString string];
+  self.cards = [NSMutableDictionary dictionary];
 
   NSStackView *root = [[NSStackView alloc] initWithFrame:NSZeroRect];
   root.translatesAutoresizingMaskIntoConstraints = NO;
@@ -362,6 +427,86 @@ static void zb_mac_configure_plain_text(NSTextView *view) {
 - (void)finishStreamAsShown {
   if (self.streamBubble != nil) [self finishStreamWithText:[self.streamText copy]];
 }
+
+- (void)showCard:(uint64_t)card
+            verb:(NSString *)verb
+           bound:(unsigned int)bound
+             url:(NSString *)url
+          origin:(NSString *)origin {
+  NSNumber *key = @(card);
+  if (self.cards[key] != nil) return;
+
+  NSString *summary;
+  if ([verb isEqualToString:@"navigate"]) {
+    summary = [NSString stringWithFormat:@"Claude wants to open %@ in window %u.",
+                                         url.length != 0 ? url : @"a link", bound];
+  } else if ([verb isEqualToString:@"reload"]) {
+    summary = [NSString stringWithFormat:@"Claude wants to reload window %u.", bound];
+  } else {
+    summary = [NSString stringWithFormat:@"Claude wants to %@ in window %u.",
+                                         verb.length != 0 ? verb : @"use the page", bound];
+  }
+  if (origin.length != 0) summary = [summary stringByAppendingFormat:@"\nFrom: %@", origin];
+
+  ZBMacApprovalCard *cardView = [[ZBMacApprovalCard alloc] initWithFrame:NSZeroRect];
+  cardView.translatesAutoresizingMaskIntoConstraints = NO;
+  cardView.cardId = card;
+  cardView.wantsLayer = YES;
+  cardView.layer.backgroundColor = [NSColor colorWithSRGBRed:1.0 green:0.961 blue:0.840 alpha:1.0].CGColor;
+  cardView.layer.cornerRadius = 10.0;
+
+  NSStackView *content = [[NSStackView alloc] initWithFrame:NSZeroRect];
+  content.translatesAutoresizingMaskIntoConstraints = NO;
+  content.orientation = NSUserInterfaceLayoutOrientationVertical;
+  content.alignment = NSLayoutAttributeLeading;
+  content.spacing = 8.0;
+  content.edgeInsets = NSEdgeInsetsMake(8.0, 8.0, 8.0, 8.0);
+  [cardView addSubview:content];
+  [NSLayoutConstraint activateConstraints:@[
+    [content.leadingAnchor constraintEqualToAnchor:cardView.leadingAnchor],
+    [content.trailingAnchor constraintEqualToAnchor:cardView.trailingAnchor],
+    [content.topAnchor constraintEqualToAnchor:cardView.topAnchor],
+    [content.bottomAnchor constraintEqualToAnchor:cardView.bottomAnchor],
+  ]];
+
+  ZBMacMessageBubble *message = [[ZBMacMessageBubble alloc] initWithRole:@"status" text:summary];
+  message.layer.backgroundColor = NSColor.clearColor.CGColor;
+  [content addArrangedSubview:message];
+  [message.widthAnchor constraintEqualToAnchor:content.widthAnchor constant:-16.0].active = YES;
+
+  cardView.buttonRow = [[NSStackView alloc] initWithFrame:NSZeroRect];
+  cardView.buttonRow.orientation = NSUserInterfaceLayoutOrientationHorizontal;
+  cardView.buttonRow.spacing = 8.0;
+  cardView.approveButton = [NSButton buttonWithTitle:@"Approve" target:cardView action:@selector(approve:)];
+  cardView.denyButton = [NSButton buttonWithTitle:@"Deny" target:cardView action:@selector(deny:)];
+  cardView.approveButton.bezelStyle = NSBezelStyleRounded;
+  cardView.denyButton.bezelStyle = NSBezelStyleRounded;
+  [cardView.buttonRow addArrangedSubview:cardView.approveButton];
+  [cardView.buttonRow addArrangedSubview:cardView.denyButton];
+  [content addArrangedSubview:cardView.buttonRow];
+
+  cardView.outcome = [NSTextField labelWithString:@""];
+  cardView.outcome.textColor = NSColor.secondaryLabelColor;
+  cardView.outcome.hidden = YES;
+  [content addArrangedSubview:cardView.outcome];
+
+  self.cards[key] = cardView;
+  [self addMessageView:cardView role:@"status"];
+}
+
+- (void)endCard:(uint64_t)card ending:(NSString *)ending {
+  ZBMacApprovalCard *cardView = self.cards[@(card)];
+  if (cardView == nil) return;
+  NSString *words = [ending isEqualToString:@"done"] ? @"Done."
+                    : [ending isEqualToString:@"failed"] ? @"Approved, but the browser could not do it."
+                    : [ending isEqualToString:@"denied"] ? @"Denied. Nothing was opened."
+                    : [ending isEqualToString:@"expired"] ? @"Not approved in time. Nothing was opened."
+                    : [ending isEqualToString:@"changed"] ? @"The page changed after approval. Nothing was opened."
+                    : [ending isEqualToString:@"crashed"] ? @"The page crashed. Nothing was opened."
+                    : @"Cancelled: its window closed. Nothing was opened.";
+  [cardView settle:words];
+  [self.cards removeObjectForKey:@(card)];
+}
 @end
 
 static NSArray<ZBMacDrawerPanel *> *zb_mac_panel_snapshot(void) {
@@ -465,4 +610,35 @@ void zb_drawer_agent_capped(unsigned int windowId) {
 void zb_drawer_agent_end(unsigned int windowId) {
   ZBMacDrawerPanel *panel = zb_mac_panel_for_window(windowId);
   if (panel != nil) [panel finishStreamAsShown];
+}
+
+void zb_drawer_card_show(unsigned int mainWindow, uint64_t card, const char *verb,
+                         unsigned int boundWindow, const char *params, size_t paramsLength,
+                         const char *url, const char *origin) {
+  (void)params;
+  (void)paramsLength;
+  NSString *verbText = [zb_mac_string(verb) copy];
+  NSString *urlText = [zb_mac_string(url) copy];
+  NSString *originText = [zb_mac_string(origin) copy];
+  zb_mac_on_main(^{
+    ZBMacDrawerPanel *panel = zb_mac_panel_for_window(mainWindow);
+    if (panel != nil) {
+      [panel showCard:card verb:verbText bound:boundWindow url:urlText origin:originText];
+    }
+  });
+}
+
+void zb_drawer_card_end(uint64_t card, const char *ending) {
+  NSString *endingText = [zb_mac_string(ending) copy];
+  zb_mac_on_main(^{
+    for (ZBMacDrawerPanel *panel in zb_mac_panel_snapshot()) {
+      [panel endCard:card ending:endingText];
+    }
+  });
+}
+
+void zb_drawer_card_notify(const char *title, const char *body) {
+  (void)title;
+  (void)body;
+  zb_mac_on_main(^{ [NSApp requestUserAttention:NSInformationalRequest]; });
 }
