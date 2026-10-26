@@ -473,7 +473,7 @@ def main():
             private_home, xdg, temp, agent_home, host, python = provision(app, root)
             ssh_canary = private_home / ".ssh/id_canary"
             outside = private_home / "outside-agent-home"
-            ssh_canary.parent.mkdir(mode=0o700)
+            ssh_canary.parent.mkdir(mode=0o700, exist_ok=True)
             ssh_canary.write_text("private ssh canary\n")
             outside.write_text("outside agent home\n")
             login_keychain = login_keychain_path()
