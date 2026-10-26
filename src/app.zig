@@ -70,6 +70,13 @@ fn runAgentSetup(arena: std.mem.Allocator, spec: AgentSetupSpec) errors.BrowserE
             return 1;
         },
     }
+    // Owner development policy (2026-10-26): the packaged macOS app runs the agent unsandboxed while the Seatbelt
+    // backend is built separately. Keep this as the one macOS branch so the future backend can replace it without
+    // changing the drawer's first-run path. Linux still uses its existing platform gate and sandboxed setup.
+    if (comptime builtin.os.tag == .macos) {
+        std.debug.print("zigBrowser: agent running unsandboxed (dev build)\n", .{});
+        return runAgentSetupMacos(arena, spec);
+    }
     switch (agent_setup.platformGate(builtin.os.tag, agent_setup.seatbelt_ready)) {
         .run => {},
         .refuse => |line| {
@@ -77,9 +84,6 @@ fn runAgentSetup(arena: std.mem.Allocator, spec: AgentSetupSpec) errors.BrowserE
             return 1;
         },
     }
-    // macOS (rev 14 items 2-5): reached only once MS6 flips agent_setup.seatbelt_ready (the gate above refuses
-    // until then, before any of this runs).
-    if (comptime builtin.os.tag == .macos) return runAgentSetupMacos(arena, spec);
     if (comptime builtin.os.tag != .linux) return 1;
     const user_home = getenvOwned(arena, "HOME");
     const home = (agent_setup.defaultHomeDir(arena, getenvOwned(arena, "XDG_DATA_HOME"), user_home) catch null) orelse {

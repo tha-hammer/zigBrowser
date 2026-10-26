@@ -60,6 +60,8 @@ enum {
 @property(nonatomic, strong) ZBMacMessageBubble *streamBubble;
 @property(nonatomic, assign) BOOL streamFull;
 @property(nonatomic, strong) NSMutableDictionary<NSNumber *, ZBMacApprovalCard *> *cards;
+@property(nonatomic, strong) NSTask *setupTask;
+@property(nonatomic, assign) BOOL setupRunning;
 - (void)addMessageView:(NSView *)view role:(NSString *)role;
 - (void)appendRole:(NSString *)role text:(NSString *)text;
 - (void)appendDelta:(NSString *)text;
@@ -73,6 +75,7 @@ enum {
 - (void)endCard:(uint64_t)card ending:(NSString *)ending;
 - (void)requestMinimize;
 - (void)sendInput;
+- (void)startFirstRunSetup;
 @end
 
 static NSHashTable<ZBMacDrawerPanel *> *zb_mac_drawer_panels;
@@ -373,9 +376,54 @@ static void zb_mac_configure_plain_text(NSTextView *view) {
     return;
   }
 
-  self.statusLabel.stringValue = @"Unavailable";
-  self.setupButton.hidden = NO;
-  [self appendRole:@"status" text:@ZB_AGENT_TEXT_RUNTIME];
+  [self startFirstRunSetup];
+}
+
+- (void)startFirstRunSetup {
+  if (self.setupRunning) return;
+  NSString *executable = NSBundle.mainBundle.executablePath;
+  if (executable.length == 0) {
+    self.statusLabel.stringValue = @"Setup failed";
+    self.setupButton.hidden = NO;
+    [self appendRole:@"status" text:@"Claude Agent setup could not start."];
+    return;
+  }
+
+  self.setupRunning = YES;
+  self.setupButton.hidden = YES;
+  self.statusLabel.stringValue = @"Setting up…";
+  [self appendRole:@"status" text:@"Setting up Claude Agent…"];
+
+  NSTask *task = [[NSTask alloc] init];
+  task.executableURL = [NSURL fileURLWithPath:executable];
+  task.arguments = @[@"--agent-setup"];
+  self.setupTask = task;
+  __weak ZBMacDrawerPanel *weakSelf = self;
+  task.terminationHandler = ^(NSTask *finished) {
+    dispatch_async(dispatch_get_main_queue(), ^{
+      ZBMacDrawerPanel *strongSelf = weakSelf;
+      if (strongSelf == nil || strongSelf.setupTask != finished) return;
+      strongSelf.setupTask = nil;
+      strongSelf.setupRunning = NO;
+      if (finished.terminationReason == NSTaskTerminationReasonExit && finished.terminationStatus == 0) {
+        strongSelf.statusLabel.stringValue = @"Setup complete";
+        [strongSelf appendRole:@"status"
+                           text:@"Claude Agent setup is complete. Restart zigBrowser to start chatting."];
+      } else {
+        strongSelf.statusLabel.stringValue = @"Setup failed";
+        strongSelf.setupButton.hidden = NO;
+        [strongSelf appendRole:@"status" text:@"Claude Agent setup failed. Open Account and try again."];
+      }
+    });
+  };
+  NSError *error = nil;
+  if (![task launchAndReturnError:&error]) {
+    self.setupTask = nil;
+    self.setupRunning = NO;
+    self.statusLabel.stringValue = @"Setup failed";
+    self.setupButton.hidden = NO;
+    [self appendRole:@"status" text:@"Claude Agent setup could not start."];
+  }
 }
 
 - (void)appendRole:(NSString *)role text:(NSString *)text {
