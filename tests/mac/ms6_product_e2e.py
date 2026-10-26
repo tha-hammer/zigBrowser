@@ -453,6 +453,7 @@ def main():
     parser.add_argument("--python-pkg", required=True, type=Path)
     parser.add_argument("--site-x86", required=True, type=Path)
     parser.add_argument("--site-arm", required=True, type=Path)
+    parser.add_argument("--setup-only", action="store_true")
     args = parser.parse_args()
     arch = subprocess.check_output(["/usr/bin/uname", "-m"], text=True).strip()
     label = "ms6-product-e2e"
@@ -471,6 +472,10 @@ def main():
             root = Path(raw).resolve()
             app = make_app(source, root, args.python_pkg.resolve(), args.site_x86.resolve(), args.site_arm.resolve())
             private_home, xdg, temp, agent_home, host, python = provision(app, root)
+            if args.setup_only:
+                print(f"PASS\tms6-sandboxed-setup\t{arch}\t{args.commit}\t"
+                      "built app provisioned agent-home; denied ~/.ssh/id_test")
+                return 0
             ssh_canary = private_home / ".ssh/id_canary"
             outside = private_home / "outside-agent-home"
             ssh_canary.parent.mkdir(mode=0o700, exist_ok=True)
