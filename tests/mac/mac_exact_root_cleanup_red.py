@@ -66,11 +66,14 @@ CASE_NAMES = (
     "process-stable-control",
     "mount-boundary",
     "mount-boundary-traversal",
+    "mount-boundary-real-device",
     "root-symlink-substitution",
     "root-replacement-after-process",
     "unsupported-entry",
     "failure-before-first-mutation",
     "descendant-symlink-final-boundary",
+    "delete-race-symlink",
+    "delete-race-new-inode",
     "output-bound-before-mutation",
     "partial-after-first-mutation",
     "bounded-evidence",
@@ -421,6 +424,94 @@ def success_case(module, case):
         remove_fixture(item)
 
 
+def deletion_race_case(module, case, replacement_kind):
+    item = fixture()
+    try:
+        install_seal(module, item.report)
+        target_rel = b"evidence/selfaudit/audit.log"
+        target = item.root / os.fsdecode(target_rel)
+        parent = target.parent
+        target_stat = os.lstat(target)
+        parent_stat = os.lstat(parent)
+        before_root = fingerprint_by_rel(item.root)
+        before_outside = tree_fingerprint(item.outside)
+        replacement_inode = None
+        staging = item.base / ("new-inode-" + case)
+        if replacement_kind == "new-inode":
+            staging.write_bytes(target.read_bytes())
+            os.chmod(staging, stat.S_IMODE(target_stat.st_mode))
+            os.utime(staging, ns=(target_stat.st_atime_ns, target_stat.st_mtime_ns))
+            replacement_inode = os.lstat(staging).st_ino
+            if replacement_inode == target_stat.st_ino:
+                problem(case, "fixture did not create a new inode")
+
+        seam_calls = []
+        deletion_stat_follow = []
+        original_stat = module.os.stat
+
+        def replace_at_entry(event, rel, deleted):
+            if event != "before-entry-identity" or rel != target_rel or seam_calls:
+                return
+            seam_calls.append((rel, deleted))
+            if replacement_kind == "symlink":
+                target.unlink()
+                os.symlink(os.fsencode(item.outside / "sentinel"), os.fsencode(target))
+            else:
+                os.replace(staging, target)
+            os.utime(parent, ns=(parent_stat.st_atime_ns, parent_stat.st_mtime_ns))
+
+        def record_deletion_stat(path, *args, **kwargs):
+            raw_path = os.fsencode(path) if isinstance(path, (str, bytes)) else b""
+            if seam_calls and raw_path == b"audit.log" and kwargs.get("dir_fd") is not None:
+                deletion_stat_follow.append(kwargs.get("follow_symlinks"))
+            return original_stat(path, *args, **kwargs)
+
+        module.os.stat = record_deletion_stat
+        try:
+            status, output, _calls = call_cleanup(module, item, hook=replace_at_entry)
+        finally:
+            module.os.stat = original_stat
+        report_sha = hashlib.sha256(item.report).hexdigest()
+        begin = "CLEANUP\tBEGIN\t%s\treport_sha256=%s\tentries=%d" % (
+            b64(os.fsencode(item.root)).decode("ascii"),
+            report_sha,
+            len(sealed_inventory(item.report)),
+        )
+        expected = [begin, "CLEANUP\tPARTIAL\tidentity-race\tdeleted=0"]
+        if status != 4 or output != expected:
+            problem(case, "rc=%r output=%r" % (status, output))
+        if seam_calls != [(target_rel, 0)]:
+            problem(case, "entry seam calls were %r" % (seam_calls,))
+        if not deletion_stat_follow or deletion_stat_follow[0] is not False:
+            problem(case, "deletion-time identity stat was not exact no-follow: %r" % (deletion_stat_follow,))
+        if any(line.startswith("DELETE\t") or line.startswith("CLEANUP\tABSENT\t") for line in output):
+            problem(case, "replacement race emitted deletion or absence evidence")
+        if tree_fingerprint(item.outside) != before_outside:
+            problem(case, "outside sentinel changed")
+        after_root = fingerprint_by_rel(item.root)
+        if before_root is None or after_root is None:
+            problem(case, "exact root disappeared")
+        else:
+            before_root.pop(target_rel, None)
+            after_root.pop(target_rel, None)
+            if before_root != after_root:
+                problem(case, "an unrelated planned entry changed")
+        if replacement_kind == "symlink":
+            if not target.is_symlink() or os.readlink(os.fsencode(target)) != os.fsencode(item.outside / "sentinel"):
+                problem(case, "symlink replacement did not remain exact")
+        else:
+            current = os.lstat(target)
+            if not stat.S_ISREG(current.st_mode) or current.st_ino != replacement_inode:
+                problem(case, "new-inode replacement did not remain exact")
+            if target.read_bytes() != b"audit\n":
+                problem(case, "new-inode replacement bytes changed")
+        output_bounded(case, output)
+    except Exception as error:
+        problem(case, "raised %s" % type(error).__name__)
+    finally:
+        remove_fixture(item)
+
+
 if not IMPL.is_file():
     for missing_case in CASE_NAMES:
         problem(missing_case, "implementation is absent")
@@ -442,6 +533,8 @@ else:
             order_b = success_case(module, "exact-success-b")
             if order_a != order_b:
                 problem("exact-success-b", "deletion evidence order is nondeterministic")
+            deletion_race_case(module, "delete-race-symlink", "symlink")
+            deletion_race_case(module, "delete-race-new-inode", "new-inode")
 
             item = fixture()
             try:
@@ -689,6 +782,36 @@ else:
                 if not traversal_calls:
                     problem("mount-boundary-traversal", "run_cleanup never consulted the mount boundary")
             finally:
+                module.require_same_device = original_same_device
+                remove_fixture(item)
+
+            item = fixture()
+            original_stat = module.os.stat
+            original_same_device = module.require_same_device
+            device_pairs = []
+            try:
+                root_device = os.lstat(item.root).st_dev
+
+                def mismatched_descendant_stat(path, *args, **kwargs):
+                    result = original_stat(path, *args, **kwargs)
+                    raw_path = os.fsencode(path) if isinstance(path, (str, bytes)) else b""
+                    if raw_path == b"alpha" and kwargs.get("dir_fd") is not None:
+                        values = list(result)
+                        values[2] = root_device + 1
+                        return os.stat_result(values)
+                    return result
+
+                def record_device_pair(root_value, candidate_value):
+                    device_pairs.append((root_value, candidate_value))
+                    return original_same_device(root_value, candidate_value)
+
+                module.os.stat = mismatched_descendant_stat
+                module.require_same_device = record_device_pair
+                expect_refusal(module, "mount-boundary-real-device", item, "mount-boundary")
+                if (root_device, root_device + 1) not in device_pairs:
+                    problem("mount-boundary-real-device", "real mismatched descendant pair was not checked: %r" % (device_pairs,))
+            finally:
+                module.os.stat = original_stat
                 module.require_same_device = original_same_device
                 remove_fixture(item)
 
