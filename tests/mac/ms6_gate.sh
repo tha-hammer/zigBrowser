@@ -41,7 +41,7 @@ FILES=(tests/mac/agent_sandbox_containment_spike.sb tests/mac/sandbox_containmen
        tests/mac/ms6_1_procinfo_probe.c tests/mac/ms6_generated_profile_test.sh
        tests/mac/ms6_3_fd3_reopen_test.sh tests/mac/ms6_3_fd3_reopen.c tests/mac/ms6_4_egress_test.sh
        tests/mac/ms6_4_connect_probe.c agent/host/zb_agent_host/__init__.py
-       agent/host/zb_agent_host/launch.py agent/host/zb_agent_host/options.py
+       agent/host/zb_agent_host/files.py agent/host/zb_agent_host/launch.py agent/host/zb_agent_host/options.py
        agent/host/zb_agent_host/platforms.py agent/host/zb_agent_host/relay.py
        agent/host/zb_agent_host/sandbox.py agent/host/zb_agent_host/sandbox_macos.py
        agent/host/zb_agent_host/seccomp.py agent/host/zb_agent_host/netd.py)
