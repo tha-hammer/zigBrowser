@@ -136,6 +136,7 @@ int main(int argc, char **argv) {
         initWithContentRect:NSMakeRect(40, 40, 640, 480)
                   styleMask:NSWindowStyleMaskTitled
                     backing:NSBackingStoreBuffered defer:NO];
+    parent.releasedWhenClosed = NO;
     zb_mac_secrets_window_open(parent);
     NSWindow *window = secrets_window();
     NSButton *signIn = window != nil ? button_named(window.contentView, @"Sign in with Claude.ai") : nil;

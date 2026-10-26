@@ -155,6 +155,23 @@ def _file_write_line():
     return f'(allow file-write* (subpath (param "{SCRATCHPAD_PARAM}")) {devices})'
 
 
+def _login_pty_lines(is_login):
+    """Grant login one terminal pair without exposing the device tree.
+
+    ``claude setup-token`` refuses non-terminal input. Current Darwin allocates
+    through ``/dev/ptmx`` with a hexadecimal ``/dev/ttys…`` slave; older Intel
+    Python scans the fixed BSD ``pty[p-w][0-f]``/``tty[p-w][0-f]`` pairs. Chat,
+    hooks, and setup do not receive any of these capabilities.
+    """
+    if not is_login:
+        return ()
+    endpoints = ('(literal "/dev/ptmx") '
+                 '(regex #"^/dev/(pty[p-w][0-9a-f]|tty[p-w][0-9a-f]|ttys[0-9a-f]+)$")')
+    return (f"(allow file-read* {endpoints})", f"(allow file-write* {endpoints})",
+            f"(allow file-ioctl {endpoints})", "(allow pseudo-tty)",
+            "(allow signal (target children))")
+
+
 def _keychain_denies():
     """Deny Security.framework's brokers and direct legacy-Keychain file path."""
     return [
@@ -209,6 +226,7 @@ def render_profile(*, egress, bridges, is_hook, is_login=False, read_paths=(), s
         "(allow process-exec)",
         *canary_line,
         *reads.lines,
+        *_login_pty_lines(is_login),
         _file_write_line(),
         f";; network: {net_note}",
         f"(allow network-outbound {net})",
