@@ -73,6 +73,7 @@ enum {
 @property(nonatomic, strong) NSMutableString *streamText;
 @property(nonatomic, strong) ZBMacMessageBubble *streamBubble;
 @property(nonatomic, assign) BOOL streamFull;
+@property(nonatomic, assign) NSUInteger scrollGeneration;
 @property(nonatomic, strong) NSMutableDictionary<NSNumber *, ZBMacApprovalCard *> *cards;
 @property(nonatomic, strong) NSTask *setupTask;
 @property(nonatomic, assign) BOOL setupRunning;
@@ -89,6 +90,8 @@ enum {
 - (void)appendDelta:(NSString *)text;
 - (void)finishStreamWithText:(NSString *)text;
 - (void)finishStreamAsShown;
+- (BOOL)isFollowingNewestMessage;
+- (void)scheduleScrollToNewestMessage;
 - (void)showCard:(uint64_t)card
             verb:(NSString *)verb
            bound:(unsigned int)bound
@@ -658,6 +661,64 @@ static void zb_mac_configure_plain_text(NSTextView *view) {
   });
 }
 
+- (BOOL)isFollowingNewestMessage {
+  NSView *document = self.messageScroll.documentView;
+  if (document == nil) return YES;
+  NSView *row = self.messageStack.arrangedSubviews.lastObject;
+  NSView *newest = row.subviews.lastObject ?: row;
+  if (newest == nil) return YES;
+  NSRect visible = self.messageScroll.documentVisibleRect;
+  NSRect newestRect = [document convertRect:newest.bounds fromView:newest];
+  /* The stack intentionally has bottom padding. A reader is following when
+   * the newest bubble is visible, even if that decorative padding is not. */
+  return NSMaxY(visible) >= NSMaxY(newestRect) - 2.0;
+}
+
+- (void)scheduleScrollToNewestMessage {
+  NSUInteger generation = ++self.scrollGeneration;
+  __weak ZBMacDrawerPanel *weakSelf = self;
+  dispatch_async(dispatch_get_main_queue(), ^{
+    ZBMacDrawerPanel *strongSelf = weakSelf;
+    if (strongSelf == nil || strongSelf.scrollGeneration != generation) return;
+    NSView *document = strongSelf.messageScroll.documentView;
+    NSView *newestRow = strongSelf.messageStack.arrangedSubviews.lastObject;
+    NSView *newest = newestRow.subviews.lastObject ?: newestRow;
+    if (document == nil || newestRow == nil || newest == nil) return;
+    /* The bubble's own layout changes its height constraint after measuring
+     * wrapped text. Give that inner pass a chance to settle before the stack
+     * and document recompute their bounds, then scroll using final geometry. */
+    for (NSUInteger pass = 0; pass < 2; pass++) {
+      [newest setNeedsLayout:YES];
+      [newest layoutSubtreeIfNeeded];
+      [newestRow setNeedsLayout:YES];
+      [newestRow layoutSubtreeIfNeeded];
+      [strongSelf.messageStack setNeedsLayout:YES];
+      [strongSelf.messageStack layoutSubtreeIfNeeded];
+      [document setNeedsLayout:YES];
+      [document layoutSubtreeIfNeeded];
+      [strongSelf setNeedsLayout:YES];
+      [strongSelf layoutSubtreeIfNeeded];
+    }
+    /* NSStackView propagates a changed arranged-subview height at the end of
+     * this run-loop turn. Scroll on the next turn, after that propagation,
+     * rather than targeting the old one-line row frame. */
+    dispatch_async(dispatch_get_main_queue(), ^{
+      ZBMacDrawerPanel *readySelf = weakSelf;
+      if (readySelf == nil || readySelf.scrollGeneration != generation) return;
+      NSView *readyDocument = readySelf.messageScroll.documentView;
+      NSView *readyRow = readySelf.messageStack.arrangedSubviews.lastObject;
+      NSView *readyNewest = readyRow.subviews.lastObject ?: readyRow;
+      if (readyDocument == nil || readyRow == nil || readyNewest == nil) return;
+      [readySelf layoutSubtreeIfNeeded];
+      [readyDocument layoutSubtreeIfNeeded];
+      [readySelf.messageStack layoutSubtreeIfNeeded];
+      NSRect target = [readyDocument convertRect:readyNewest.bounds fromView:readyNewest];
+      [readyDocument scrollRectToVisible:target];
+      [readySelf.messageScroll reflectScrolledClipView:readySelf.messageScroll.contentView];
+    });
+  });
+}
+
 - (void)addMessageView:(NSView *)view role:(NSString *)role {
   NSView *row = [[NSView alloc] initWithFrame:NSZeroRect];
   row.translatesAutoresizingMaskIntoConstraints = NO;
@@ -677,25 +738,28 @@ static void zb_mac_configure_plain_text(NSTextView *view) {
   }
   [self.messageStack addArrangedSubview:row];
   [row.widthAnchor constraintEqualToAnchor:self.messageStack.widthAnchor constant:-20.0].active = YES;
-  [self.messageStack layoutSubtreeIfNeeded];
-  [row scrollRectToVisible:row.bounds];
+  [self scheduleScrollToNewestMessage];
 }
 
 - (void)appendDelta:(NSString *)text {
   if (self.streamFull) return;
+  BOOL follow = self.streamBubble == nil || [self isFollowingNewestMessage];
   if (self.streamBubble == nil) {
     self.streamBubble = [[ZBMacMessageBubble alloc] initWithRole:@"assistant" text:@""];
     [self addMessageView:self.streamBubble role:@"assistant"];
   }
   [self.streamText appendString:text];
   [self.streamBubble setPlainText:self.streamText];
+  if (follow) [self scheduleScrollToNewestMessage];
 }
 
 - (void)finishStreamWithText:(NSString *)text {
+  BOOL follow = [self isFollowingNewestMessage];
   if (self.streamBubble == nil) {
     [self appendRole:@"assistant" text:text];
   } else {
     [self.streamBubble setPlainText:text];
+    if (follow) [self scheduleScrollToNewestMessage];
   }
   self.streamBubble = nil;
   self.streamFull = NO;
@@ -933,9 +997,11 @@ void zb_drawer_agent_stopped(unsigned int windowId) {
 void zb_drawer_agent_capped(unsigned int windowId) {
   ZBMacDrawerPanel *panel = zb_mac_panel_for_window(windowId);
   if (panel == nil || panel.streamBubble == nil || panel.streamFull) return;
+  BOOL follow = [panel isFollowingNewestMessage];
   [panel.streamText appendString:@"\n[output truncated]"];
   panel.streamFull = YES;
   [panel.streamBubble setPlainText:panel.streamText];
+  if (follow) [panel scheduleScrollToNewestMessage];
 }
 
 void zb_drawer_agent_end(unsigned int windowId) {
