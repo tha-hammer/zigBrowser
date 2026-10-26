@@ -153,7 +153,7 @@ class NoUntrustedInterpolation(unittest.TestCase):
         # Dynamic paths reach SBPL only through seatbelt_rules' validated named -D parameters.
         import inspect
         params = set(inspect.signature(sandbox_macos.render_profile).parameters)
-        self.assertEqual(params, {"egress", "bridges", "is_hook", "is_login", "read_paths"})
+        self.assertEqual(params, {"egress", "bridges", "is_hook", "is_login", "read_paths", "session_canary"})
 
     def test_dparams_validates_absolute_scratchpad(self):
         # An existing directory that is its own real path (RoseCat 7627; test_sandbox_macos_scratch_real).
@@ -456,6 +456,7 @@ class MacSeatbeltBackendLaunchSpec(unittest.TestCase):
         for d in (".claude", "workspace", "scratchpad", "runtime"):
             (root / d).mkdir(parents=True, exist_ok=True)
         self.backend = sandbox_macos.MacSeatbeltBackend(egress_port=52346)
+        self.addCleanup(self.backend.release_session_canary)
 
     def _profile_dir(self, spec):
         d = os.path.dirname(spec.argv[2])
@@ -469,14 +470,19 @@ class MacSeatbeltBackendLaunchSpec(unittest.TestCase):
         reads = sandbox_macos._launch_read_paths(self.home, ())
         definitions = sandbox_macos._binding_argv(sandbox_macos.read_bindings(reads))
         self.assertEqual(spec.argv[0:2], ("/usr/bin/sandbox-exec", "-f"))
-        self.assertEqual(spec.argv[3:], ("-D", f"SCRATCHPAD={scratch}", *definitions),
-                         "the argv binds the scratchpad and every curated caller-owned read")
+        canary = self.backend.session_canary
+        self.assertIsNotNone(canary)
+        self.assertEqual(spec.argv[3:], ("-D", f"SCRATCHPAD={scratch}", "-D",
+                                        f"SESSION_CANARY={canary}", *definitions),
+                         "the argv binds the scratchpad, session canary, and curated caller-owned reads")
         profile_path = spec.argv[2]
         self.assertEqual(os.path.basename(profile_path), "agent-cli.sb")
         with open(profile_path, encoding="utf-8") as f:
             self.assertEqual(f.read(), sandbox_macos.render_profile(
                 egress=self.backend.network().egress.endpoint, bridges=(51091, 31337), is_hook=False,
-                read_paths=reads))
+                read_paths=reads, session_canary=canary))
+        self.assertTrue(os.path.isfile(canary))
+        self.assertEqual(stat.S_IMODE(os.stat(canary).st_mode), 0o400)
         # the semantic LaunchSpec fields
         self.assertEqual(tuple(spec.unshare), (), "macOS has no namespaces — Seatbelt is the isolation")
         self.assertEqual(spec.workdir, str(self.home.workspace))
@@ -505,11 +511,17 @@ class MacSeatbeltBackendLaunchSpec(unittest.TestCase):
 
     def test_two_sessions_never_alias_one_profile(self):
         # RoseCat 6972 #2: a per-session port must not be overwritten under a shared path.
-        a = sandbox_macos.MacSeatbeltBackend(egress_port=52346).launch_spec(self.home)
+        backend_a = sandbox_macos.MacSeatbeltBackend(egress_port=52346)
+        backend_b = sandbox_macos.MacSeatbeltBackend(egress_port=52347)
+        self.addCleanup(backend_a.release_session_canary)
+        self.addCleanup(backend_b.release_session_canary)
+        a = backend_a.launch_spec(self.home)
         self._profile_dir(a)
-        b = sandbox_macos.MacSeatbeltBackend(egress_port=52347).launch_spec(self.home)
+        b = backend_b.launch_spec(self.home)
         self._profile_dir(b)
         self.assertNotEqual(a.argv[2], b.argv[2], "two live LaunchSpecs must never share a profile path")
+        self.assertNotEqual(backend_a.session_canary, backend_b.session_canary,
+                            "two live launches must never share a sandbox identity")
         with open(a.argv[2], encoding="utf-8") as f:
             atext = f.read()
         self.assertIn("localhost:52346", atext, "A's profile still carries A's port after B was created")

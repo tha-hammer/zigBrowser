@@ -61,6 +61,8 @@ _SYSCTL_ALLOW = (
 # The one named -D parameter the profile binds (the writable scratchpad). Kept as a constant so the launch
 # and the profile cannot drift.
 SCRATCHPAD_PARAM = "SCRATCHPAD"
+SESSION_CANARY_PARAM = "SESSION_CANARY"
+_SESSION_CANARY_PREFIX = "zb-agent-session-"
 
 
 def _validate_port(port):
@@ -175,7 +177,7 @@ def _keychain_denies():
     ]
 
 
-def render_profile(*, egress, bridges, is_hook, is_login=False, read_paths=()):
+def render_profile(*, egress, bridges, is_hook, is_login=False, read_paths=(), session_canary=None):
     """Return the Seatbelt profile text for a CLI/helper (``is_hook=False``), a hook (``is_hook=True``), or the
     one-shot sign-in (``is_login=True``: egress endpoint only, no bridges).
 
@@ -186,6 +188,13 @@ def render_profile(*, egress, bridges, is_hook, is_login=False, read_paths=()):
     """
     eps = _endpoints(egress, bridges, is_hook, is_login)
     reads = seatbelt_rules.file_read_rules(read_paths)
+    canary_line = []
+    if session_canary is not None:
+        _validated_session_canary(session_canary)
+        canary_line = [
+            ";; process identity: exact per-session path, queried only by the trusted browser-exit reaper.",
+            f'(allow file-read-data (literal (param "{SESSION_CANARY_PARAM}")))',
+        ]
     net = " ".join(f'(remote tcp "{e}")' for e in eps)
     kind = "login" if is_login else ("hook" if is_hook else "cli/helper")
     net_note = ("egress only (sign-in; no bridges)" if is_login
@@ -198,6 +207,7 @@ def render_profile(*, egress, bridges, is_hook, is_login=False, read_paths=()):
         "(deny default)",
         "(allow process-fork)",
         "(allow process-exec)",
+        *canary_line,
         *reads.lines,
         _file_write_line(),
         f";; network: {net_note}",
@@ -284,6 +294,65 @@ def dparams(*, scratchpad):
     if not os.path.isdir(norm) or os.path.realpath(norm) != norm:
         raise ValueError("SCRATCHPAD must be an existing directory that is its own real path (no symlink)")
     return {SCRATCHPAD_PARAM: norm}
+
+
+def _validated_session_canary(path):
+    """Validate the exact, existing regular file used only as one launch's Seatbelt identity."""
+    if not isinstance(path, str) or not path.startswith("/") or "\0" in path or "//" in path:
+        raise ValueError("SESSION_CANARY must be canonical absolute text")
+    if os.path.normpath(path) != path or os.path.realpath(path) != path:
+        raise ValueError("SESSION_CANARY must be canonical and contain no symlink")
+    base = os.path.basename(path)
+    suffix = base.removeprefix(_SESSION_CANARY_PREFIX)
+    if not base.startswith(_SESSION_CANARY_PREFIX) or len(suffix) != 32 \
+            or any(char not in "0123456789abcdef" for char in suffix):
+        raise ValueError("SESSION_CANARY must use the product's random basename")
+    try:
+        st = os.lstat(path)
+    except OSError:
+        raise ValueError("SESSION_CANARY must be an existing regular file") from None
+    if not stat.S_ISREG(st.st_mode) or stat.S_IMODE(st.st_mode) != 0o400:
+        raise ValueError("SESSION_CANARY must be a 0400 regular file")
+    return path
+
+
+def _materialize_session_canary():
+    """Create one unguessable, real path; sandbox_check denies even allowed paths that do not exist."""
+    parent = os.path.realpath(tempfile.gettempdir())
+    for _ in range(8):
+        path = os.path.join(parent, f"{_SESSION_CANARY_PREFIX}{secrets.token_hex(16)}")
+        try:
+            fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW, 0o400)
+        except FileExistsError:
+            continue
+        try:
+            os.fchmod(fd, 0o400)
+            st = os.fstat(fd)
+            if not stat.S_ISREG(st.st_mode) or stat.S_IMODE(st.st_mode) != 0o400 or st.st_size != 0:
+                raise OSError("Seatbelt session canary failed its post-create fd check")
+        except BaseException:
+            os.close(fd)
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+            raise
+        os.close(fd)
+        return _validated_session_canary(path)
+    raise FileExistsError("could not allocate a unique Seatbelt session canary")
+
+
+def remove_session_canary(path):
+    """Guard-delete exactly one product canary. Used by failed launches and the out-of-group reaper."""
+    try:
+        checked = _validated_session_canary(path)
+    except ValueError:
+        return False
+    try:
+        os.unlink(checked)
+    except OSError:
+        return False
+    return True
 
 
 def read_bindings(read_paths=()):
@@ -501,6 +570,23 @@ class MacSeatbeltBackend:
 
     def __init__(self, egress_port):
         self._egress_port = _validate_port(egress_port)
+        self._session_canary = None
+        self._session_canaries = set()
+
+    @property
+    def session_canary(self):
+        """The current launch's exact identity path, populated by ``launch_spec`` before spawn."""
+        return self._session_canary
+
+    def release_session_canary(self, path=None):
+        targets = tuple(self._session_canaries) if path is None else (path,)
+        removed = False
+        for target in targets:
+            removed = remove_session_canary(target) or removed
+            self._session_canaries.discard(target)
+        if path is None or self._session_canary == path:
+            self._session_canary = None
+        return removed
 
     def network(self, session=None):
         """The whole macOS network capability as one immutable ``sandbox.Network`` — the single source the
@@ -575,15 +661,22 @@ class MacSeatbeltBackend:
         scratch = dparams(scratchpad=str(home.scratchpad))[SCRATCHPAD_PARAM]  # validated canonical non-root
         read_paths = _launch_read_paths(home, ro_paths)
         bindings = read_bindings(read_paths)
+        canary = _materialize_session_canary()
+        self._session_canary = canary
+        self._session_canaries.add(canary)
         # Materialize the per-launch profile SECURELY (O_EXCL + 0400 + fd check) in its own 0700 dir OUTSIDE
         # the published dist — never current/runtime, never a shared/reused path (RoseCat 6972 #1/#2). The
         # login network carries no bridges, which selects the egress-only sign-in profile.
         is_login = not net.bridges.ports
-        profile_path = _materialize_profile(render_profile(
-            egress=net.egress.endpoint, bridges=net.bridges.ports, is_hook=False, is_login=is_login,
-            read_paths=read_paths))
+        try:
+            profile_path = _materialize_profile(render_profile(
+                egress=net.egress.endpoint, bridges=net.bridges.ports, is_hook=False, is_login=is_login,
+                read_paths=read_paths, session_canary=canary))
+        except BaseException:
+            self.release_session_canary(canary)
+            raise
         argv = ("/usr/bin/sandbox-exec", "-f", profile_path, "-D", f"{SCRATCHPAD_PARAM}={scratch}",
-                *_binding_argv(bindings))
+                "-D", f"{SESSION_CANARY_PARAM}={canary}", *_binding_argv(bindings))
         mounts = [sb.Mount(source=scratch, target=scratch, writable=True)]
         mounts.extend(sb.Mount(source=path, target=path, writable=False)
                       for path in read_paths if path != scratch)

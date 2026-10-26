@@ -188,8 +188,8 @@ def spawn_helper(argv, env, *, pass_fds=None):
     return subprocess.run(list(argv), env=env, pass_fds=token_fds, check=False).returncode
 
 
-def _arm_darwin_browser_watch():
-    """Make the product launch group die when its browser parent exits.
+def _arm_darwin_watches(session_canary=None):
+    """Arm the group kill and, for Seatbelt, the out-of-group sandbox-identity reaper.
 
     The native browser spawner makes this process the leader of a fresh group;
     direct diagnostic invocations do not have that ownership proof and keep
@@ -197,19 +197,31 @@ def _arm_darwin_browser_watch():
     as browser death by giving ``arm`` an impossible expected parent.
     """
     if sys.platform != "darwin":
-        return False
+        return False, False
     try:
         if os.getpgid(0) != os.getpid():
-            return False
+            return False, False
     except OSError:
-        return False
+        return False, False
     browser_pid = os.getppid()
     # Keep the Darwin watcher out of the portable launch module's import
     # closure.  Diagnostic launches that do not own their process group do
     # not arm it, while the native group leader loads the existing fail-closed
     # kqueue implementation only after proving group ownership.
     from . import parent_watch  # noqa: PLC0415
-    return parent_watch.arm(browser_pid if browser_pid > 1 else 0, parent_watch.DarwinOps())
+    browser_pid = browser_pid if browser_pid > 1 else 0
+    reaper = False
+    if session_canary is not None and browser_pid > 1:
+        # Fork before DarwinOps starts its watcher thread. The child calls setsid(), so the accepted group
+        # SIGKILL cannot kill the only observer capable of finding a setsid/double-fork escapee.
+        reaper = parent_watch.spawn_session_reaper(browser_pid, os.getpid(), session_canary)
+    return parent_watch.arm(browser_pid, parent_watch.DarwinOps()), reaper
+
+
+def _arm_darwin_browser_watch():
+    """Compatibility wrapper for the accepted group-only watcher."""
+    watched, _reaper = _arm_darwin_watches()
+    return watched
 
 
 def _launch_darwin(session, args, backend):
@@ -217,16 +229,16 @@ def _launch_darwin(session, args, backend):
     # diagnostic run, kqueue may receive that number, but it is a lifetime
     # observer and must never be mistaken for a token descriptor at exec.
     token_fds = _token_fds()
-    # Arm before the Seatbelt child exists.  If the browser has already gone,
-    # parent_watch kills this still-childless group; otherwise NOTE_EXIT kills
-    # the launch process, sandbox-exec, the CLI and its ordinary descendants.
-    watched = _arm_darwin_browser_watch()
     home = options.AgentHome(session.home)
     request = LaunchRequest(home=home, python=session.python, command=session.command,
                             read_paths=requested_reads(home, session.python, args.e2e_claude_cli, args.test_ca),
                             test_ca=args.test_ca, claude_cli=args.e2e_claude_cli)
     try:
         with build_launch(backend, request) as plan:
+            # build_launch has now materialized the real per-session canary, but no sandboxed child exists yet.
+            # Arm the forked observer before DarwinOps starts a thread, then retain the accepted group watcher.
+            session_canary = getattr(backend, "session_canary", None)
+            watched, reaper_armed = _arm_darwin_watches(session_canary)
             try:
                 env = options.helper_environ(home, os.environ)
                 if watched:
@@ -235,6 +247,12 @@ def _launch_darwin(session, args, backend):
             except OSError as exc:
                 print(f"zigBrowser: agent: sandbox unavailable ({exc})", file=sys.stderr)
                 return EXIT_NO_SANDBOX
+            finally:
+                # A diagnostic/non-group launch has no observer. Do not leak its canary after the child returns.
+                if session_canary is not None and not reaper_armed:
+                    release = getattr(backend, "release_session_canary", None)
+                    if release is not None:
+                        release()
     except (sandbox.SandboxError, OSError, ValueError) as exc:
         print(f"zigBrowser: agent: {exc}", file=sys.stderr)
         return EXIT_USAGE
