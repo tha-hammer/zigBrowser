@@ -10,6 +10,9 @@
 static const char *const ZBTokenService = "dev.zigbrowser.ClaudeAgentToken";
 static const char *const ZBTokenAccount = "default";
 
+int zb_agent_onboard_token(const char *keychain_path, const char *unlock_password,
+                           const char *service, const char *account, const char *token, char **out_err);
+
 @interface ZBMacSecretsWindowController : NSWindowController <NSWindowDelegate>
 @property(nonatomic, weak) NSWindow *browserWindow;
 @property(nonatomic, strong) NSSecureTextField *tokenField;
@@ -135,9 +138,35 @@ static NSTextField *zb_label(NSString *text, BOOL secondary) {
   }
 }
 
-/* Pair 3 drives these actions before their Keychain wiring is added. */
-- (void)save:(id)sender { (void)sender; }
-- (void)clear:(id)sender { (void)sender; }
+- (void)save:(id)sender {
+  (void)sender;
+  NSString *pasted = self.tokenField.stringValue ?: @"";
+  self.tokenField.stringValue = @"";
+  const char *token = pasted.UTF8String;
+  char *error = NULL;
+  int result = zb_agent_onboard_token(NULL, NULL, ZBTokenService, ZBTokenAccount,
+                                      token != NULL ? token : "", &error);
+  if (result == ZB_KC_OK) {
+    [self refreshStatus];
+  } else if (result == ZB_KC_ABSENT) {
+    self.statusLabel.stringValue = @"That doesn’t look like a long-lived token.";
+  } else {
+    self.statusLabel.stringValue = @"The token could not be saved in your login Keychain.";
+  }
+  free(error);
+}
+
+- (void)clear:(id)sender {
+  (void)sender;
+  char *error = NULL;
+  int result = zb_keychain_clear(NULL, NULL, ZBTokenService, ZBTokenAccount, &error);
+  if (result == ZB_KC_OK) {
+    [self refreshStatus];
+  } else {
+    self.statusLabel.stringValue = @"The token could not be removed from your login Keychain.";
+  }
+  free(error);
+}
 
 - (void)windowWillClose:(NSNotification *)notification {
   (void)notification;
