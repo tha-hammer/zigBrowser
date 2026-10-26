@@ -39,7 +39,7 @@ import sys
 from dataclasses import dataclass
 from typing import NamedTuple
 
-from . import options, parent_watch, sandbox, sandbox_macos, seccomp
+from . import options, sandbox, sandbox_macos, seccomp
 from .platforms import posix_only
 
 PLATFORM = sys.platform
@@ -204,6 +204,11 @@ def _arm_darwin_browser_watch():
     except OSError:
         return False
     browser_pid = os.getppid()
+    # Keep the Darwin watcher out of the portable launch module's import
+    # closure.  Diagnostic launches that do not own their process group do
+    # not arm it, while the native group leader loads the existing fail-closed
+    # kqueue implementation only after proving group ownership.
+    from . import parent_watch  # noqa: PLC0415
     return parent_watch.arm(browser_pid if browser_pid > 1 else 0, parent_watch.DarwinOps())
 
 
