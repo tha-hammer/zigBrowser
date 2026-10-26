@@ -93,6 +93,7 @@ int main(void) {
     [window close];
     [parent close];
     printf("PASS\tmac-secrets-window-product\topen-controls\n");
+    fprintf(stderr, "PASS\tmac-secrets-window-product\topen-controls\n");
     return 0;
   }
 }
