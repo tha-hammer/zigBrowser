@@ -3938,3 +3938,27 @@ The gate already exports the reviewed in-root socket directory, `ZB_E2E_SOCKET_D
 5. Only after that green is approved may a new immutable two-Mac signal-only request be prepared. The consumed `ab86263c` authority cannot be retried. The live packaged-signal acceptance remains open until one newly reviewed and released attempt passes both legs with complete evidence and cleanup.
 
 No Mac or other external host was contacted during this result review.
+
+## 2026-10-26 — APPROVE signal socket-path red `dc49ad35`
+
+**APPROVED; exact `dc49ad35a2cdf4f0b78de73af97dc59dcf927418` is red for the right reason and satisfies items 1-2 of `d6d0ec5e`.** Its parent is the result-review commit `d6d0ec5efbbf9c917a7120d53acd6cede7228af8`, and its tree is `23af8108d2ca2bdb2202d1607a352eb5fe91abc9`. It adds only unregistered `tests/e2e/mac_signal_socket_path_red.py`; `build.zig` is unchanged and `git diff-tree --check` is clean.
+
+The oracle calls the real `mac_signal_runtime_test.ActualSession` constructor. It substitutes only the nondeterministic/state seams and stops at that constructor's real `subprocess.Popen` boundary with a recording exception. It drives the observed 87-byte Intel and 83-byte arm64 socket directories, GUARD/HUP/INT/TERM, and two sessions per label. Every allowed result must reach the intercepted launch boundary, be a unique direct child of the supplied `ZB_E2E_SOCKET_DIR`, and be at most 103 bytes by `len(os.fsencode(path))`.
+
+The negative boundary is complete for this slice. A 104-byte ASCII directory must be refused before Popen. A 104-byte multibyte directory whose character count is below 103 must also be refused, so a `len(str(path))` implementation cannot pass. The expected Popen count is exactly 16; a removed guard cannot hide behind otherwise valid paths. The deterministic token seam proves per-session uniqueness instead of relying on chance.
+
+The safety boundary is real. `subprocess.Popen` is replaced before any constructor call and raises before a process can start. The row's signal primitive, `os.kill`, is replaced with a forbidden stub and must have zero calls. The exact constructor contains no other signal operation before Popen. The test runs correctly inside a private PID/network namespace and restores every patched global and environment value in `finally`.
+
+From a clean exact archive under `env -i`, a private HOME/TMPDIR, user/network/PID/mount namespaces, `PYTHONDONTWRITEBYTECODE=1`, `python3 -X dev`, and warnings as errors, the red returned rc 1 with empty stderr and no ResourceWarning. It reported the expected long-basename refusals: 109/107/107/108 bytes for the 87-byte root, 105/104 for the affected 83-byte labels, the encoded-byte survivor, and the non-16 Popen count. There was exactly one bounded terminal `FAIL<TAB>mac-signal-socket-path-red<TAB>20 problem(s)`.
+
+The red is satisfiable. A scratch-only green using a direct-child basename `s-<six hex>` and an `os.fsencode` byte guard passed exactly `PASS<TAB>mac-signal-socket-path-red`. Four field-isolated controls were red: ignoring the supplied directory failed B2 for every allowed construction; reusing a fixed socket failed B4/B5; restoring character-count validation failed B8/B10; and removing the guard failed B6/B8/B10. The submitted old long basename is the baseline red itself.
+
+Green conditions:
+
+1. Keep the submitted assertions and real-constructor boundary intact; only its status documentation and build registration may change mechanically.
+2. Change the production test row to allocate a compact, random, direct-child socket basename under the supplied `ZB_E2E_SOCKET_DIR` and enforce the 103-byte limit with `len(os.fsencode(path))`. Keep temp/profile state under the run root. Do not use global `/tmp`, shorten the exact run root, reuse one path, weaken GUARD, or bypass the limit.
+3. Register this oracle under `test-mac-signal-runtime` and aggregate `test`, with its source and `mac_signal_runtime_test.py` declared as inputs, side effects set consistently with the existing runtime step, no skip mapping, `-X dev`, and a ResourceWarning failure.
+4. Run the old-basename, outside-directory, reused-path, character-count and removed-guard mutants through the registered step. Preserve all existing signal runtime/package/disposition/identity mutants.
+5. After the registered green and full six-step Mac R3 audit pass, name a new push-safe SHA. A new immutable signal-only request then needs separate exact-artifact review and one-attempt orchestrator release. This red approves no Mac contact and does not revive the consumed `ab86263c` authority.
+
+No Mac or other external host was contacted during this review.
