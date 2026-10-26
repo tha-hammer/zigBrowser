@@ -44,6 +44,13 @@ static NSString *zb_auto_script = nil;  // MS2a automation.js (set by zb_automat
 // main-thread-only), so off-main callers (zb_job_new/unref run on server threads) read this atomic instead,
 // set ONCE on the main thread in -initWithURI... (RoseCat 6767 #3).
 static atomic_int zb_auto_e2e_enabled = 0;
+int zb_mac_drawer_e2e_enabled(void) {
+  return atomic_load(&zb_auto_e2e_enabled) != 0;
+}
+
+/* build.zig's explicit source input is owned separately. Including the host
+ * here keeps the native drawer shippable from this product commit. */
+#import "agent_drawer_mac_host.m"
 // MS2c (RoseCat 6508 #6): the window snapshot is a lock-backed cache. The main thread republishes it on
 // every window state change (create/remove/health tick); page.list/page.health read it under the lock and
 // NEVER dispatch to the main queue, so a backed-up/hung main queue cannot stall them.
@@ -441,6 +448,7 @@ static void zb_debug_report_signal_dispositions(BOOL hooks_enabled) {
     host.openerId = opener.windowId;        // so a popup never appears in page.list without its opener
     host.processGroup = opener.processGroup;
   }
+  zb_mac_drawer_attach(host.window, host.webView);
 
   ZbWindow *c_window = calloc(1, sizeof(ZbWindow));
   if (c_window == NULL) {
@@ -832,7 +840,7 @@ static int64_t zb_now_us(void) { return (int64_t)([[NSProcessInfo processInfo] s
   [fresh.configuration.userContentController addScriptMessageHandlerWithReply:self contentWorld:WKContentWorld.pageWorld name:@"zbHost"];
   self.webView = fresh;
   [self zbStartObserving];  // MS2c #6: observe the fresh webView
-  self.window.contentView = fresh;
+  zb_mac_drawer_attach(self.window, fresh);
 
   // Clear crash state; the held dialog (if any) was already answered above. startHealthWatchdog resets the
   // ping/unresponsive/incident counters.
