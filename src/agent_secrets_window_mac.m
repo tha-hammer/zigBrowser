@@ -3,12 +3,10 @@
 #import <AppKit/AppKit.h>
 
 #include "agent_drawer_mac.h"
+#include "agent_helper_mac.h"
 #include "agent_secrets_mac.h"
 
 #include <stdlib.h>
-
-static const char *const ZBTokenService = "dev.zigbrowser.ClaudeAgentToken";
-static const char *const ZBTokenAccount = "default";
 
 int zb_agent_onboard_token(const char *keychain_path, const char *unlock_password,
                            const char *service, const char *account, const char *token, char **out_err);
@@ -100,7 +98,8 @@ static NSTextField *zb_label(NSString *text, BOOL secondary) {
 - (void)refreshStatus {
   char *token = NULL;
   char *error = NULL;
-  int result = zb_keychain_lookup(NULL, NULL, ZBTokenService, ZBTokenAccount, &token, &error);
+  int result = zb_keychain_lookup(NULL, NULL, ZB_MAC_AGENT_TOKEN_SERVICE,
+                                  ZB_MAC_AGENT_TOKEN_ACCOUNT, &token, &error);
   if (result == ZB_KC_OK && token != NULL) {
     self.statusLabel.stringValue = @"Connected. A token is stored in your login Keychain.";
     self.clearButton.enabled = YES;
@@ -144,7 +143,8 @@ static NSTextField *zb_label(NSString *text, BOOL secondary) {
   self.tokenField.stringValue = @"";
   const char *token = pasted.UTF8String;
   char *error = NULL;
-  int result = zb_agent_onboard_token(NULL, NULL, ZBTokenService, ZBTokenAccount,
+  int result = zb_agent_onboard_token(NULL, NULL, ZB_MAC_AGENT_TOKEN_SERVICE,
+                                      ZB_MAC_AGENT_TOKEN_ACCOUNT,
                                       token != NULL ? token : "", &error);
   if (result == ZB_KC_OK) {
     [self refreshStatus];
@@ -159,7 +159,8 @@ static NSTextField *zb_label(NSString *text, BOOL secondary) {
 - (void)clear:(id)sender {
   (void)sender;
   char *error = NULL;
-  int result = zb_keychain_clear(NULL, NULL, ZBTokenService, ZBTokenAccount, &error);
+  int result = zb_keychain_clear(NULL, NULL, ZB_MAC_AGENT_TOKEN_SERVICE,
+                                 ZB_MAC_AGENT_TOKEN_ACCOUNT, &error);
   if (result == ZB_KC_OK) {
     [self refreshStatus];
   } else {
