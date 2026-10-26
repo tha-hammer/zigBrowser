@@ -4,7 +4,9 @@
 The test launches the real native ``zigBrowser`` under a private HOME, TMPDIR,
 and profile.  With ``--e2e-protocol`` the product-only layout seam opens the
 drawer, then resizes the real AppKit window from 1024x768 to 800x600.  The
-``DRAWER`` rows report the actual page and panel frames after AppKit layout.
+``DRAWER`` rows report the content bounds and the actual page and panel frames
+after AppKit layout.  The exact rows bind the panel to the bottom edge, full
+width and inside the content view, rather than trusting proposed geometry.
 
 Run on a Mac:
   python3 -B tests/e2e/mac_drawer_dock_test.py --browser zig-out/bin/zigBrowser
@@ -22,8 +24,8 @@ import time
 from pathlib import Path
 
 
-OPEN = "DRAWER\t1\topen\tpage=0,307,1024,461\tpanel=0,0,1024,307"
-RESIZE = "DRAWER\t1\tresize\tpage=0,240,800,360\tpanel=0,0,800,240"
+OPEN = "DRAWER\t1\topen\tcontent=0,0,1024,768\tpage=0,269,1024,499\tpanel=0,0,1024,269\tinside=1"
+RESIZE = "DRAWER\t1\tresize\tcontent=0,0,800,600\tpage=0,240,800,360\tpanel=0,0,800,240\tinside=1"
 
 
 def main() -> int:
@@ -96,7 +98,7 @@ def main() -> int:
         for line in lines[-20:]:
             print(f"OUTPUT\t{line}")
         return 1
-    print("PASS\tmac-drawer-dock\topen and resize use exact AppKit frames")
+    print("PASS\tmac-drawer-dock\tactual open and resize frames are docked inside content")
     return 0
 
 
