@@ -74,7 +74,10 @@ enum {
 @property(nonatomic, assign) BOOL acceptanceStarted;
 @property(nonatomic, assign) BOOL acceptanceSent;
 @property(nonatomic, assign) BOOL acceptanceReply;
+@property(nonatomic, assign) BOOL acceptanceWaitForReply;
+@property(nonatomic, assign) BOOL acceptanceExitScheduled;
 @property(nonatomic, copy) NSString *acceptancePrompt;
+@property(nonatomic, copy) NSString *acceptanceTokenPath;
 @property(nonatomic, copy) NSString *lastFailureReason;
 - (void)addMessageView:(NSView *)view role:(NSString *)role;
 - (void)appendRole:(NSString *)role text:(NSString *)text;
@@ -92,6 +95,7 @@ enum {
 - (void)startFirstRunSetup;
 - (void)runOwnerAcceptanceIfRequested;
 - (void)markOwnerAcceptanceReply;
+- (void)scheduleOwnerAcceptanceExit;
 @end
 
 static NSHashTable<ZBMacDrawerPanel *> *zb_mac_drawer_panels;
@@ -447,9 +451,11 @@ static void zb_mac_configure_plain_text(NSTextView *view) {
   NSNumber *version = action[@"version"];
   NSString *tokenPath = action[@"token_file"];
   NSString *prompt = action[@"prompt"];
+  NSNumber *expectReply = action[@"expect_reply"];
   if (![version isKindOfClass:NSNumber.class] || version.integerValue != 1 ||
       ![tokenPath isKindOfClass:NSString.class] ||
-      ![prompt isKindOfClass:NSString.class] || prompt.length == 0 || prompt.length > 65536) return;
+      ![prompt isKindOfClass:NSString.class] || prompt.length == 0 || prompt.length > 65536 ||
+      ![expectReply isKindOfClass:NSNumber.class]) return;
   NSMutableData *tokenData = zb_mac_read_private_file(tokenPath, 512);
   if (tokenData == nil) return;
   NSMutableData *terminated = [NSMutableData dataWithData:tokenData];
@@ -464,9 +470,12 @@ static void zb_mac_configure_plain_text(NSTextView *view) {
   }
   memset_s(terminated.mutableBytes, terminated.length, 0, terminated.length);
   memset_s(tokenData.mutableBytes, tokenData.length, 0, tokenData.length);
+  self.acceptanceWaitForReply = expectReply.boolValue;
   self.acceptancePrompt = prompt;
+  self.acceptanceTokenPath = tokenPath;
   self.input.string = prompt;
   [self sendInput];
+  if (self.acceptanceSent && !self.acceptanceWaitForReply) [self scheduleOwnerAcceptanceExit];
 }
 
 - (void)startFirstRunSetup {
@@ -533,6 +542,26 @@ static void zb_mac_configure_plain_text(NSTextView *view) {
   self.acceptanceReply = YES;
   puts("OWNER_ACCEPTANCE\treply-bubble\tassistant");
   fflush(stdout);
+  if (self.acceptanceWaitForReply) [self scheduleOwnerAcceptanceExit];
+}
+
+- (void)scheduleOwnerAcceptanceExit {
+  if (self.acceptanceExitScheduled || !zb_mac_drawer_e2e_enabled()) return;
+  self.acceptanceExitScheduled = YES;
+  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1000 * NSEC_PER_MSEC)),
+                 dispatch_get_main_queue(), ^{
+    NSMutableData *tokenData = zb_mac_read_private_file(self.acceptanceTokenPath, 512);
+    if (tokenData != nil) {
+      NSMutableData *terminated = [NSMutableData dataWithData:tokenData];
+      const unsigned char nul = 0;
+      [terminated appendBytes:&nul length:1];
+      zb_mac_secrets_window_acceptance_clear_if_matches(terminated.bytes);
+      memset_s(terminated.mutableBytes, terminated.length, 0, terminated.length);
+      memset_s(tokenData.mutableBytes, tokenData.length, 0, tokenData.length);
+    }
+    self.acceptanceTokenPath = nil;
+    [NSApp terminate:nil];
+  });
 }
 
 - (void)addMessageView:(NSView *)view role:(NSString *)role {

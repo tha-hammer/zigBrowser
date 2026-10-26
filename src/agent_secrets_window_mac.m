@@ -8,6 +8,7 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 extern int zb_mac_drawer_e2e_enabled(void);
 
@@ -24,6 +25,18 @@ int zb_agent_onboard_token(const char *keychain_path, const char *unlock_passwor
 @end
 
 static ZBMacSecretsWindowController *zbSecretsController;
+
+static int zb_mac_product_token_matches(const char *token) {
+  if (token == NULL) return 0;
+  char *stored = NULL;
+  char *error = NULL;
+  int result = zb_keychain_lookup(NULL, NULL, ZB_MAC_AGENT_TOKEN_SERVICE,
+                                  ZB_MAC_AGENT_TOKEN_ACCOUNT, &stored, &error);
+  int matches = result == ZB_KC_OK && stored != NULL && strcmp(stored, token) == 0;
+  zb_keychain_free(stored);
+  free(error);
+  return matches;
+}
 
 static NSTextField *zb_label(NSString *text, BOOL secondary) {
   NSTextField *label = [NSTextField labelWithString:text];
@@ -208,8 +221,31 @@ int zb_mac_secrets_window_acceptance_store(NSWindow *parent, const char *token) 
   [zbSecretsController save:nil];
   if (![zbSecretsController.statusLabel.stringValue
           isEqualToString:@"Connected. A token is stored in your login Keychain."] ||
-      !zbSecretsController.clearButton.enabled) return 0;
+      !zbSecretsController.clearButton.enabled || !zb_mac_product_token_matches(token)) return 0;
   puts("OWNER_ACCEPTANCE\tcredential-stored\tconnected");
+  fflush(stdout);
+  return 1;
+}
+
+int zb_mac_secrets_window_acceptance_clear_if_matches(const char *token) {
+  if (!zb_mac_drawer_e2e_enabled() || !NSThread.isMainThread ||
+      !zb_mac_product_token_matches(token)) return 0;
+
+  char *error = NULL;
+  int result = zb_keychain_clear(NULL, NULL, ZB_MAC_AGENT_TOKEN_SERVICE,
+                                 ZB_MAC_AGENT_TOKEN_ACCOUNT, &error);
+  free(error);
+  if (result != ZB_KC_OK) return 0;
+
+  char *stored = NULL;
+  error = NULL;
+  result = zb_keychain_lookup(NULL, NULL, ZB_MAC_AGENT_TOKEN_SERVICE,
+                              ZB_MAC_AGENT_TOKEN_ACCOUNT, &stored, &error);
+  zb_keychain_free(stored);
+  free(error);
+  if (result != ZB_KC_ABSENT) return 0;
+
+  puts("OWNER_ACCEPTANCE\tcredential-cleared\texact");
   fflush(stdout);
   return 1;
 }

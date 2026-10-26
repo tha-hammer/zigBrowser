@@ -16,9 +16,11 @@ Set ZB_TEST_CLAUDE_TOKEN to a real long-lived token to require a live assistant
 reply. Without it the test uses a format-valid test token and still runs every
 step through Send; only the live reply assertion is reported as skipped.
 
-The fixed product Keychain item must be absent before the run. The test refuses
-to overwrite an existing credential, never prints the token, and removes only
-the exact credential it inserted.
+The fixed product Keychain item must be absent before the run. The test checks
+only its presence status and refuses to overwrite it. The e2e-gated product
+path compares the value internally and removes it only while it still exactly
+matches the credential inserted by this run; token bytes never return to this
+process or appear in output.
 
 Run on the Intel Mac:
   python3 -B tests/e2e/mac_owner_acceptance_test.py --dmg zigBrowser_0.2.0_macos.dmg
@@ -32,7 +34,6 @@ import os
 import plistlib
 import re
 import shutil
-import signal
 import subprocess
 import tempfile
 import time
@@ -50,6 +51,7 @@ SECRETS_ROW = "OWNER_ACCEPTANCE\tsecrets-open\tClaude Agent account"
 STORED_ROW = "OWNER_ACCEPTANCE\tcredential-stored\tconnected"
 SENT_ROW = "OWNER_ACCEPTANCE\tmessage-sent\tuser-bubble"
 REPLY_ROW = "OWNER_ACCEPTANCE\treply-bubble\tassistant"
+CLEARED_ROW = "OWNER_ACCEPTANCE\tcredential-cleared\texact"
 ACTION_ENV = "ZB_DEBUG_OWNER_ACCEPTANCE_FILE"
 
 
@@ -75,39 +77,33 @@ def app_lines(path: Path) -> list[str]:
         return []
 
 
-def wait_for_rows(path: Path, wanted: set[str], timeout: float) -> list[str]:
+def wait_for_rows(
+    path: Path, wanted: set[str], timeout: float, proc: subprocess.Popen
+) -> list[str]:
     deadline = time.monotonic() + timeout
     lines: list[str] = []
     while time.monotonic() < deadline:
         lines = app_lines(path)
         if wanted.issubset(set(lines)):
             break
+        if proc.poll() is not None:
+            break
         time.sleep(0.25)
     return lines
 
 
-def keychain_read() -> tuple[str, bytes]:
+def keychain_state() -> str:
     done = subprocess.run(
-        ["/usr/bin/security", "find-generic-password", "-s", SERVICE, "-a", ACCOUNT, "-w"],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        check=False,
-    )
-    if done.returncode == 0:
-        return "present", done.stdout.rstrip(b"\r\n")
-    if done.returncode == 44 or b"could not be found" in done.stderr:
-        return "absent", b""
-    return "error", b""
-
-
-def keychain_delete() -> bool:
-    done = subprocess.run(
-        ["/usr/bin/security", "delete-generic-password", "-s", SERVICE, "-a", ACCOUNT],
+        ["/usr/bin/security", "find-generic-password", "-s", SERVICE, "-a", ACCOUNT],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
         check=False,
     )
-    return done.returncode == 0
+    if done.returncode == 0:
+        return "present"
+    if done.returncode == 44:
+        return "absent"
+    return "error"
 
 
 def attach_and_install(dmg: Path, root: Path) -> tuple[Optional[Path], Optional[str]]:
@@ -180,7 +176,7 @@ def attach_and_install(dmg: Path, root: Path) -> tuple[Optional[Path], Optional[
     binary = installed / "Contents" / "MacOS" / "zigBrowser"
     if not binary.is_file():
         return None, "installed app has no zigBrowser executable"
-    return binary, None
+    return installed, None
 
 
 def write_private(path: Path, data: bytes) -> None:
@@ -225,13 +221,11 @@ def main() -> int:
     root = Path(tempfile.mkdtemp(prefix="zb-owner-acceptance-", dir=home))
     proc: Optional[subprocess.Popen] = None
     browser_stopped = True
-    inserted = False
     may_store = False
+    cleanup_checked = False
     token_file: Optional[Path] = None
     action_file: Optional[Path] = None
     stdout_path, stderr_path = root / "browser.stdout", root / "browser.stderr"
-    stdout_file = None
-    stderr_file = None
     try:
         browser, install_error = attach_and_install(dmg, root)
         if browser is None:
@@ -239,7 +233,7 @@ def main() -> int:
             return 1
         results.passed("install", "mounted DMG read-only and copied zigBrowser.app")
 
-        key_state, _ = keychain_read()
+        key_state = keychain_state()
         may_store = key_state == "absent"
         if key_state == "present":
             results.failed_step("keychain-precondition", "existing product credential; refusing to overwrite it")
@@ -257,26 +251,38 @@ def main() -> int:
         action_file = root / "owner-action.json"
         write_private(token_file, token.encode("ascii"))
         action = json.dumps(
-            {"version": 1, "token_file": str(token_file), "prompt": PROMPT},
+            {
+                "version": 1,
+                "token_file": str(token_file),
+                "prompt": PROMPT,
+                "expect_reply": real_token is not None,
+            },
             separators=(",", ":"),
         ).encode("utf-8")
         write_private(action_file, action)
-
-        env = dict(os.environ)
-        env.pop("ZB_TEST_CLAUDE_TOKEN", None)
-        env.update(
-            {
-                "TMPDIR": str(temp),
-                "ZB_DEBUG_DRAWER_LAYOUT": "1",
-                "ZB_DEBUG_EPHEMERAL_DATA_STORE": "1",
-                ACTION_ENV: str(action_file),
-            }
-        )
-        stdout_file = stdout_path.open("wb")
-        stderr_file = stderr_path.open("wb")
+        write_private(stdout_path, b"")
+        write_private(stderr_path, b"")
         proc = subprocess.Popen(
             [
+                "/usr/bin/open",
+                "-n",
+                "-W",
+                "-o",
+                str(stdout_path),
+                "--stderr",
+                str(stderr_path),
+                "--env",
+                f"TMPDIR={temp}",
+                "--env",
+                "ZB_DEBUG_DRAWER_LAYOUT=1",
+                "--env",
+                "ZB_DEBUG_EPHEMERAL_DATA_STORE=1",
+                "--env",
+                "ZB_DEBUG_QUIT_AFTER_MS=60000",
+                "--env",
+                f"{ACTION_ENV}={action_file}",
                 str(browser),
+                "--args",
                 "about:blank",
                 "--agent-drawer",
                 "on",
@@ -284,10 +290,9 @@ def main() -> int:
                 "--profile-dir",
                 str(profile),
             ],
-            env=env,
             stdin=subprocess.DEVNULL,
-            stdout=stdout_file,
-            stderr=stderr_file,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
         )
         browser_stopped = False
         time.sleep(0.5)
@@ -296,10 +301,15 @@ def main() -> int:
             return 1
         results.passed("launch", "installed application is running with a private profile")
 
-        wanted = {SECRETS_ROW, STORED_ROW, SENT_ROW}
+        wanted = {SECRETS_ROW, STORED_ROW, SENT_ROW, CLEARED_ROW}
         if real_token is not None:
             wanted.add(REPLY_ROW)
-        lines = wait_for_rows(stdout_path, wanted, max(args.timeout, 120.0 if real_token else args.timeout))
+        lines = wait_for_rows(
+            stdout_path,
+            wanted,
+            max(args.timeout, 120.0 if real_token else args.timeout),
+            proc,
+        )
 
         open_rows = [line for line in lines if line.startswith(OPEN_ROW_PREFIX)]
         if len(open_rows) == 1:
@@ -321,15 +331,10 @@ def main() -> int:
             "credential-store-row",
             "Secrets Save showed the connected state",
         )
-        key_state, key_value = keychain_read()
-        stored = may_store and key_state == "present" and key_value == token.encode("ascii")
-        if stored:
-            inserted = True
-            results.passed("credential-store", "login Keychain contains the exact test credential")
-        elif may_store:
-            results.failed_step("credential-store", "login Keychain does not contain the exact test credential")
+        if stored_row:
+            results.passed("credential-store", "product verified the exact test credential inside the login Keychain")
         else:
-            results.failed_step("credential-store", "blocked by Keychain precondition")
+            results.failed_step("credential-store", "product did not verify the exact test credential")
 
         sent = record_exact_row(
             results,
@@ -353,44 +358,51 @@ def main() -> int:
                 "a visible assistant bubble appeared",
             )
 
+        cleared = record_exact_row(
+            results,
+            lines,
+            CLEARED_ROW,
+            "credential-clear-row",
+            "product removed the still-matching acceptance credential",
+        )
+        key_state = keychain_state()
+        cleanup_checked = True
+        if cleared and key_state == "absent":
+            results.passed("credential-cleanup", "product credential is absent after exact-match cleanup")
+        elif key_state == "present":
+            results.failed_step("credential-cleanup", "product credential remains; refusing external deletion")
+        else:
+            results.failed_step("credential-cleanup", "could not establish product credential absence")
+
         required_rows = [SECRETS_ROW, STORED_ROW, SENT_ROW]
+        if real_token is not None:
+            required_rows.append(REPLY_ROW)
+        required_rows.append(CLEARED_ROW)
         positions = [lines.index(row) for row in required_rows if row in lines]
-        if secrets_open and stored_row and sent and positions == sorted(positions):
-            results.passed("event-order", "Secrets, credential and Send rows are ordered")
+        if len(positions) == len(required_rows) and positions == sorted(positions):
+            results.passed("event-order", "Secrets, credential, Send, reply and cleanup rows are ordered")
         else:
             results.failed_step("event-order", "required product rows are missing or out of order")
 
     finally:
-        if may_store:
-            state, current = keychain_read()
-            if state == "present" and current == token.encode("ascii"):
-                if keychain_delete():
-                    inserted = False
-                    results.passed("credential-cleanup", "removed only the credential inserted by this run")
-                else:
-                    results.failed_step("credential-cleanup", "could not remove the credential inserted by this run")
-            elif state == "present":
-                results.failed_step("credential-cleanup", "credential changed during run; refusing to remove it")
-            elif inserted and state == "absent":
-                inserted = False
-                results.passed("credential-cleanup", "credential inserted by this run is absent")
+        if may_store and not cleanup_checked:
+            state = keychain_state()
+            if state == "present":
+                results.failed_step("credential-cleanup", "product credential remains; refusing external deletion")
+            elif state == "error":
+                results.failed_step("credential-cleanup", "could not establish product credential absence")
         if token_file is not None:
             token_file.unlink(missing_ok=True)
         if action_file is not None:
             action_file.unlink(missing_ok=True)
         if proc is not None and proc.poll() is None:
-            proc.send_signal(signal.SIGTERM)
             try:
-                proc.wait(timeout=10.0)
+                proc.wait(timeout=40.0)
                 browser_stopped = True
             except subprocess.TimeoutExpired:
-                results.failed_step("shutdown", f"owned application pid {proc.pid} ignored SIGTERM; run root retained")
+                results.failed_step("shutdown", "owned LaunchServices application did not exit; run root retained")
         elif proc is not None:
             browser_stopped = True
-        if stdout_file is not None:
-            stdout_file.close()
-        if stderr_file is not None:
-            stderr_file.close()
         if browser_stopped and root.parent == home and root.name.startswith("zb-owner-acceptance-"):
             shutil.rmtree(root)
 
