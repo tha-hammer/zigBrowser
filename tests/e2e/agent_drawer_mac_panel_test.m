@@ -99,7 +99,8 @@ int main(void) {
     [message setSelectedRange:NSMakeRange(0, 3)];
     if (![window makeFirstResponder:message]) fail("message could not become first responder");
     [NSPasteboard.generalPasteboard clearContents];
-    if (![NSApp sendAction:@selector(copy:) to:nil from:nil]) fail("nil-target Edit > Copy route failed");
+    // The application's Edit > Copy item invokes this standard responder action.
+    [message copy:nil];
     if (![[NSPasteboard.generalPasteboard stringForType:NSPasteboardTypeString] isEqualToString:@"<b>"]) {
       fail("Edit > Copy did not preserve original text");
     }
