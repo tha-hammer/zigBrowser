@@ -110,7 +110,7 @@ class Bridge(tlc.Connector):
         self.assertEqual(rc, 7, f"{row}: main returns the child's status")
         ex.assert_not_called()
         self.assertEqual(self.profile_dirs(), [], f"{row}: no profile is left")
-        return seen["argv"][5:]
+        return self.seatbelt_inner(seen["argv"])
 
     def linux_consume(self, row, args, bwrap=REF_BWRAP):
         with tlc.poisoned(), mock.patch.object(launch, "PLATFORM", "linux"), \
