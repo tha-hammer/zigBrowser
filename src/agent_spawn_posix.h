@@ -24,6 +24,11 @@ int zb_agent_spawn_group(const char *const *argv, const char *const *envp, pid_t
 int zb_agent_spawn_group_io(const char *const *argv, const char *const *envp, int stdin_fd, int stdout_fd,
                             pid_t *out_pid);
 
+/* Darwin helper spawn: like zb_agent_spawn_group_io, with token_fd mapped to
+ * descriptor 3. The stdio source descriptors must not be 3 or token_fd. */
+int zb_agent_spawn_group_io_fd3(const char *const *argv, const char *const *envp,
+                                int stdin_fd, int stdout_fd, int token_fd, pid_t *out_pid);
+
 /* SIGKILL the whole group led by `pid`, then reap `pid`; 0 when done. Only our own child (alive or an unreaped
  * zombie) that leads its own group is ever signalled (RoseCat 7172, 7182; killpg(1) is kill(-1)):
  * EINVAL for pid <= 1, our own pid or our own group; ECHILD when `pid` is not our child; EPERM when it is our child

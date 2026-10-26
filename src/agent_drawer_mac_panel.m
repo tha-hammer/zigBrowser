@@ -4,6 +4,14 @@
 #import <math.h>
 #import <stdint.h>
 
+#include <fcntl.h>
+#include <errno.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/stat.h>
+#include <unistd.h>
+
 /* The helper is optional until an agent home is provisioned on macOS.  Its
  * first declarations must carry weak_import; agent_helper.h then supplies the
  * shared ABI and missing-runtime text used by the Linux drawer too. */
@@ -17,6 +25,7 @@ extern void zb_agent_tools_call(unsigned int win, const char *session,
                                 const char *tool, size_t tool_len,
                                 const char *args, size_t args_len)
     __attribute__((weak_import));
+extern int zb_mac_drawer_e2e_enabled(void);
 
 enum {
   ZB_CARD_APPROVE = 1,
@@ -62,6 +71,10 @@ enum {
 @property(nonatomic, strong) NSMutableDictionary<NSNumber *, ZBMacApprovalCard *> *cards;
 @property(nonatomic, strong) NSTask *setupTask;
 @property(nonatomic, assign) BOOL setupRunning;
+@property(nonatomic, assign) BOOL acceptanceStarted;
+@property(nonatomic, assign) BOOL acceptanceSent;
+@property(nonatomic, assign) BOOL acceptanceReply;
+@property(nonatomic, copy) NSString *acceptancePrompt;
 - (void)addMessageView:(NSView *)view role:(NSString *)role;
 - (void)appendRole:(NSString *)role text:(NSString *)text;
 - (void)appendDelta:(NSString *)text;
@@ -76,9 +89,41 @@ enum {
 - (void)requestMinimize;
 - (void)sendInput;
 - (void)startFirstRunSetup;
+- (void)runOwnerAcceptanceIfRequested;
+- (void)markOwnerAcceptanceReply;
 @end
 
 static NSHashTable<ZBMacDrawerPanel *> *zb_mac_drawer_panels;
+
+static NSMutableData *zb_mac_read_private_file(NSString *path, size_t limit) {
+  if (path.length == 0 || !path.isAbsolutePath) return nil;
+  int fd = open(path.fileSystemRepresentation, O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
+  if (fd < 0) return nil;
+  struct stat st;
+  if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode) || st.st_uid != getuid() ||
+      (st.st_mode & 077) != 0 || st.st_size <= 0 || (uint64_t)st.st_size > limit) {
+    close(fd);
+    return nil;
+  }
+  NSMutableData *data = [NSMutableData dataWithLength:(NSUInteger)st.st_size];
+  size_t used = 0;
+  while (used < data.length) {
+    ssize_t count = read(fd, (unsigned char *)data.mutableBytes + used, data.length - used);
+    if (count < 0 && errno == EINTR) continue;
+    if (count <= 0) {
+      close(fd);
+      return nil;
+    }
+    used += (size_t)count;
+  }
+  unsigned char extra;
+  ssize_t tail;
+  do {
+    tail = read(fd, &extra, 1);
+  } while (tail < 0 && errno == EINTR);
+  close(fd);
+  return tail == 0 ? data : nil;
+}
 
 static void zb_mac_on_main(dispatch_block_t block) {
   if ([NSThread isMainThread]) {
@@ -224,6 +269,15 @@ static void zb_mac_configure_plain_text(NSTextView *view) {
 @end
 
 @implementation ZBMacDrawerPanel
+
+- (void)viewDidMoveToWindow {
+  [super viewDidMoveToWindow];
+  if (self.window == nil || self.acceptanceStarted || !zb_mac_drawer_e2e_enabled()) return;
+  const char *raw = getenv("ZB_DEBUG_OWNER_ACCEPTANCE_FILE");
+  if (raw == NULL || raw[0] == '\0') return;
+  self.acceptanceStarted = YES;
+  dispatch_async(dispatch_get_main_queue(), ^{ [self runOwnerAcceptanceIfRequested]; });
+}
 
 - (instancetype)initWithFrame:(NSRect)frame {
   self = [super initWithFrame:frame];
@@ -379,6 +433,41 @@ static void zb_mac_configure_plain_text(NSTextView *view) {
   [self startFirstRunSetup];
 }
 
+- (void)runOwnerAcceptanceIfRequested {
+  if (!zb_mac_drawer_e2e_enabled()) return;
+  const char *raw = getenv("ZB_DEBUG_OWNER_ACCEPTANCE_FILE");
+  NSString *path = raw != NULL ? [NSString stringWithUTF8String:raw] : nil;
+  NSMutableData *manifest = zb_mac_read_private_file(path, 16 * 1024);
+  if (manifest == nil) return;
+  NSError *error = nil;
+  id parsed = [NSJSONSerialization JSONObjectWithData:manifest options:0 error:&error];
+  if (error != nil || ![parsed isKindOfClass:NSDictionary.class]) return;
+  NSDictionary *action = parsed;
+  NSNumber *version = action[@"version"];
+  NSString *tokenPath = action[@"token_file"];
+  NSString *prompt = action[@"prompt"];
+  if (![version isKindOfClass:NSNumber.class] || version.integerValue != 1 ||
+      ![tokenPath isKindOfClass:NSString.class] ||
+      ![prompt isKindOfClass:NSString.class] || prompt.length == 0 || prompt.length > 65536) return;
+  NSMutableData *tokenData = zb_mac_read_private_file(tokenPath, 512);
+  if (tokenData == nil) return;
+  NSMutableData *terminated = [NSMutableData dataWithData:tokenData];
+  const unsigned char nul = 0;
+  [terminated appendBytes:&nul length:1];
+
+  [self openSecrets:nil];
+  if (!zb_mac_secrets_window_acceptance_store(self.window, terminated.bytes)) {
+    memset_s(terminated.mutableBytes, terminated.length, 0, terminated.length);
+    memset_s(tokenData.mutableBytes, tokenData.length, 0, tokenData.length);
+    return;
+  }
+  memset_s(terminated.mutableBytes, terminated.length, 0, terminated.length);
+  memset_s(tokenData.mutableBytes, tokenData.length, 0, tokenData.length);
+  self.acceptancePrompt = prompt;
+  self.input.string = prompt;
+  [self sendInput];
+}
+
 - (void)startFirstRunSetup {
   if (self.setupRunning) return;
   NSString *executable = NSBundle.mainBundle.executablePath;
@@ -430,6 +519,19 @@ static void zb_mac_configure_plain_text(NSTextView *view) {
   NSString *shownRole = [role isEqualToString:@"user"] || [role isEqualToString:@"assistant"] ? role : @"status";
   ZBMacMessageBubble *bubble = [[ZBMacMessageBubble alloc] initWithRole:shownRole text:text];
   [self addMessageView:bubble role:shownRole];
+  if (!self.acceptanceSent && [shownRole isEqualToString:@"user"] &&
+      self.acceptancePrompt != nil && [text isEqualToString:self.acceptancePrompt]) {
+    self.acceptanceSent = YES;
+    puts("OWNER_ACCEPTANCE\tmessage-sent\tuser-bubble");
+    fflush(stdout);
+  }
+}
+
+- (void)markOwnerAcceptanceReply {
+  if (!self.acceptanceSent || self.acceptanceReply) return;
+  self.acceptanceReply = YES;
+  puts("OWNER_ACCEPTANCE\treply-bubble\tassistant");
+  fflush(stdout);
 }
 
 - (void)addMessageView:(NSView *)view role:(NSString *)role {
@@ -628,17 +730,33 @@ void zb_drawer_agent_message(unsigned int windowId, const char *role, const char
       } else {
         [panel finishStreamWithText:messageText];
       }
+      if (messageText.length != 0) [panel markOwnerAcceptanceReply];
       continue;
     }
     if (panel.streamBubble != nil) [panel finishStreamAsShown];
     [panel appendRole:roleText text:messageText];
+    if ([roleText isEqualToString:@"assistant"] && messageText.length != 0) {
+      [panel markOwnerAcceptanceReply];
+    }
   }
 }
 
 void zb_drawer_agent_delta(unsigned int windowId, const char *session, const char *text, size_t length) {
   (void)session;
   ZBMacDrawerPanel *panel = zb_mac_panel_for_window(windowId);
-  if (panel != nil) [panel appendDelta:zb_mac_string_n(text, length)];
+  if (panel != nil) {
+    NSString *delta = zb_mac_string_n(text, length);
+    [panel appendDelta:delta];
+    if (delta.length != 0) [panel markOwnerAcceptanceReply];
+  }
+}
+
+void zb_drawer_post_system(unsigned int windowId, const char *text, size_t length) {
+  NSString *message = zb_mac_string_n(text, length);
+  zb_mac_on_main(^{
+    ZBMacDrawerPanel *panel = zb_mac_panel_for_window(windowId);
+    if (panel != nil) [panel appendRole:@"status" text:message];
+  });
 }
 
 void zb_drawer_agent_stopped(unsigned int windowId) {

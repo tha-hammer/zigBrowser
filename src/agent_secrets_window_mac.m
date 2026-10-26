@@ -3,12 +3,13 @@
 #import <AppKit/AppKit.h>
 
 #include "agent_drawer_mac.h"
+#include "agent_helper_mac.h"
 #include "agent_secrets_mac.h"
 
+#include <stdio.h>
 #include <stdlib.h>
 
-static const char *const ZBTokenService = "dev.zigbrowser.ClaudeAgentToken";
-static const char *const ZBTokenAccount = "default";
+extern int zb_mac_drawer_e2e_enabled(void);
 
 int zb_agent_onboard_token(const char *keychain_path, const char *unlock_password,
                            const char *service, const char *account, const char *token, char **out_err);
@@ -100,7 +101,8 @@ static NSTextField *zb_label(NSString *text, BOOL secondary) {
 - (void)refreshStatus {
   char *token = NULL;
   char *error = NULL;
-  int result = zb_keychain_lookup(NULL, NULL, ZBTokenService, ZBTokenAccount, &token, &error);
+  int result = zb_keychain_lookup(NULL, NULL, ZB_MAC_AGENT_TOKEN_SERVICE,
+                                  ZB_MAC_AGENT_TOKEN_ACCOUNT, &token, &error);
   if (result == ZB_KC_OK && token != NULL) {
     self.statusLabel.stringValue = @"Connected. A token is stored in your login Keychain.";
     self.clearButton.enabled = YES;
@@ -144,10 +146,12 @@ static NSTextField *zb_label(NSString *text, BOOL secondary) {
   self.tokenField.stringValue = @"";
   const char *token = pasted.UTF8String;
   char *error = NULL;
-  int result = zb_agent_onboard_token(NULL, NULL, ZBTokenService, ZBTokenAccount,
+  int result = zb_agent_onboard_token(NULL, NULL, ZB_MAC_AGENT_TOKEN_SERVICE,
+                                      ZB_MAC_AGENT_TOKEN_ACCOUNT,
                                       token != NULL ? token : "", &error);
   if (result == ZB_KC_OK) {
     [self refreshStatus];
+    zb_agent_helper_stop();
   } else if (result == ZB_KC_ABSENT) {
     self.statusLabel.stringValue = @"That doesn’t look like a long-lived token.";
   } else {
@@ -159,9 +163,11 @@ static NSTextField *zb_label(NSString *text, BOOL secondary) {
 - (void)clear:(id)sender {
   (void)sender;
   char *error = NULL;
-  int result = zb_keychain_clear(NULL, NULL, ZBTokenService, ZBTokenAccount, &error);
+  int result = zb_keychain_clear(NULL, NULL, ZB_MAC_AGENT_TOKEN_SERVICE,
+                                 ZB_MAC_AGENT_TOKEN_ACCOUNT, &error);
   if (result == ZB_KC_OK) {
     [self refreshStatus];
+    zb_agent_helper_stop();
   } else {
     self.statusLabel.stringValue = @"The token could not be removed from your login Keychain.";
   }
@@ -186,6 +192,26 @@ void zb_mac_secrets_window_open(NSWindow *parent) {
   } else {
     [zbSecretsController presentForBrowserWindow:parent];
   }
+}
+
+int zb_mac_secrets_window_acceptance_store(NSWindow *parent, const char *token) {
+  if (!zb_mac_drawer_e2e_enabled() || !NSThread.isMainThread || token == NULL) return 0;
+  zb_mac_secrets_window_open(parent);
+  if (zbSecretsController == nil || !zbSecretsController.window.visible ||
+      ![zbSecretsController.window.title isEqualToString:@"Claude Agent account"]) return 0;
+  puts("OWNER_ACCEPTANCE\tsecrets-open\tClaude Agent account");
+  fflush(stdout);
+
+  NSString *value = [NSString stringWithUTF8String:token];
+  if (value == nil) return 0;
+  zbSecretsController.tokenField.stringValue = value;
+  [zbSecretsController save:nil];
+  if (![zbSecretsController.statusLabel.stringValue
+          isEqualToString:@"Connected. A token is stored in your login Keychain."] ||
+      !zbSecretsController.clearButton.enabled) return 0;
+  puts("OWNER_ACCEPTANCE\tcredential-stored\tconnected");
+  fflush(stdout);
+  return 1;
 }
 
 /* Compatibility with the older standalone Mac Secrets header. The drawer's

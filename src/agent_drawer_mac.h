@@ -28,5 +28,7 @@ int zb_mac_drawer_is_open(NSWindow *window);
 
 /* Secrets window (agent_secrets_window_mac.m). Opened from the drawer when no credential is stored. */
 void zb_mac_secrets_window_open(NSWindow *parent);
+/* --e2e-protocol only: drives the real secure field and Save action. */
+int zb_mac_secrets_window_acceptance_store(NSWindow *parent, const char *token);
 
 #endif
