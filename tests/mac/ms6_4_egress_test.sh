@@ -24,7 +24,7 @@ DIR="${1:?usage: ms6_4_egress_test.sh <dir-with-sandbox_macos.py-and-probe>}"
 [ -f "$DIR/sandbox_macos.py" ] || { echo "FAIL	ms6-4-egress (sandbox_macos.py not found in $DIR)"; exit 1; }
 [ -f "$DIR/ms6_4_connect_probe.c" ] || { echo "FAIL	ms6-4-egress (probe source not found in $DIR)"; exit 1; }
 [ -f "$DIR/netd.py" ] || { echo "FAIL	ms6-4-egress (netd.py not found in $DIR)"; exit 1; }
-for f in __init__.py files.py launch.py options.py platforms.py relay.py sandbox.py seccomp.py; do
+for f in __init__.py files.py launch.py options.py platforms.py relay.py sandbox.py seatbelt_rules.py seccomp.py; do
     [ -f "$DIR/$f" ] || { echo "FAIL	ms6-4-egress ($f not found in $DIR)"; exit 1; }
 done
 
@@ -280,7 +280,7 @@ AGENT_HOME="$TMP/agent-home"
 FAKE_PYTHON="$TMP/venv/bin/python"
 mkdir -p "$HOST_PACKAGE" "$AGENT_HOME/workspace" "$AGENT_HOME/scratchpad/tmp" "$AGENT_HOME/runtime" \
     "$(dirname "$FAKE_PYTHON")"
-for f in __init__.py files.py launch.py options.py platforms.py relay.py sandbox.py sandbox_macos.py seccomp.py; do
+for f in __init__.py files.py launch.py options.py platforms.py relay.py sandbox.py sandbox_macos.py seatbelt_rules.py seccomp.py; do
     cp -f "$DIR/$f" "$HOST_PACKAGE/$f"
 done
 cat > "$HOST_ROOT/claude_agent_sdk.py" <<'PY'
