@@ -9,8 +9,10 @@ cd "$ROOT"
 mac_config two
 . tests/mac/mac_gate_lib.sh
 
-DMG=${ZB_DMG_PATH:-$ROOT/zigBrowser_0.2.0_macos.dmg}
-[ -s "$DMG" ] || { echo "FAIL mac-dmg-agent-setup: DMG is missing: $DMG" >&2; exit 1; }
+COMMIT=$(git rev-parse --verify HEAD^{commit})
+DMG=$ROOT/zigBrowser_0.2.0_macos.dmg
+[ ! -e "$DMG" ] || { echo "FAIL mac-dmg-agent-setup: refusing to replace existing $DMG" >&2; exit 1; }
+BUILT_DMG=0
 
 RUNS=()
 cleanup() {
@@ -26,8 +28,15 @@ cleanup() {
       find "$d" -depth -delete
     ' bash "$dir" </dev/null >/dev/null 2>&1 || true
   done
+  if [ "$BUILT_DMG" -eq 1 ] && [ "$DMG" = "$ROOT/zigBrowser_0.2.0_macos.dmg" ]; then
+    rm -f -- "$DMG"
+  fi
 }
 trap cleanup EXIT
+
+ZB_GATE_COMMIT="$COMMIT" bash packaging/macos/build-dmg.sh
+BUILT_DMG=1
+[ -s "$DMG" ] || { echo "FAIL mac-dmg-agent-setup: build-dmg.sh made no DMG" >&2; exit 1; }
 
 run_host() { # host key native-arch
   local host=$1 key=$2 native=$3 dir out rc=0
@@ -51,16 +60,23 @@ app="$d/install/zigBrowser.app/Contents/MacOS/zigBrowser"
 for shape in fresh existing; do
   home="$d/home-$shape"
   tmp="$d/tmp/$shape"
-  mkdir -m 700 "$home" "$tmp"
+  mkdir -m 700 "$home" "$tmp" "$home/.ssh"
+  printf 'private installed-DMG ssh canary\n' > "$home/.ssh/id_test"
   [ "$shape" != existing ] || mkdir -m 700 "$home/.claude"
+  started=$(/bin/date '+%Y-%m-%d %H:%M:%S%z')
   set +e
   env -i HOME="$home" PATH=/usr/bin:/bin TMPDIR="$tmp" LANG=en_US.UTF-8 \
     "$app" --agent-setup >"$d/$shape.out" 2>&1
   setup_rc=$?
   set -e
+  /usr/bin/log show --start "$started" --style compact --predicate 'sender == "Sandbox"' \
+    >"$d/$shape.sandbox.log" 2>&1 || true
   if [ "$setup_rc" -ne 0 ]; then
     printf 'FAIL mac-dmg-agent-setup: %s %s HOME exited %s\n' "$native" "$shape" "$setup_rc"
     sed -n '1,80p' "$d/$shape.out"
+    printf 'SANDBOX_LOG_BEGIN %s %s\n' "$native" "$shape"
+    grep -E 'deny|agent-host|Resources|Frameworks|claude|Python' "$d/$shape.sandbox.log" | tail -160 || true
+    printf 'SANDBOX_LOG_END %s %s\n' "$native" "$shape"
     exit 1
   fi
   current="$home/.local/share/zigbrowser/agent-home/current"
@@ -72,7 +88,29 @@ for shape in fresh existing; do
     printf 'FAIL mac-dmg-agent-setup: %s %s HOME lacks the development warning\n' "$native" "$shape"
     exit 1
   }
-  printf 'PASS mac-dmg-agent-setup: %s %s HOME provisioned current\n' "$native" "$shape"
+  python="$d/install/zigBrowser.app/Contents/Frameworks/agent-host/Python.framework/Versions/3.12/bin/python3.12"
+  probe="$d/setup-profile-probe-$shape"
+  mkdir -m 700 "$probe"
+  set +e
+  env -i PATH=/usr/bin:/bin HOME="$probe" TMPDIR="$probe" LANG=en_US.UTF-8 \
+    "$python" -I - "$probe" "$home/.ssh/id_test" <<'PY' >"$d/$shape.probe.out" 2>&1
+import subprocess
+import sys
+from zb_agent_host import sandbox_macos
+
+scratch, canary = sys.argv[1:]
+with sandbox_macos.setup_sandbox(scratch, [sys.prefix], ["/bin/cat", canary]) as argv:
+    done = subprocess.run(argv, capture_output=True, timeout=20)
+raise SystemExit(0 if done.returncode != 0 and not done.stdout else 1)
+PY
+  probe_rc=$?
+  set -e
+  [ "$probe_rc" -eq 0 ] || {
+    printf 'FAIL mac-dmg-agent-setup: %s %s HOME allowed ~/.ssh/id_test\n' "$native" "$shape"
+    sed -n '1,80p' "$d/$shape.probe.out"
+    exit 1
+  }
+  printf 'PASS mac-dmg-agent-setup: %s %s HOME provisioned current; denied ~/.ssh/id_test\n' "$native" "$shape"
 done
 REMOTE
   ) || rc=$?
