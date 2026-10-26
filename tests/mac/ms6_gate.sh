@@ -44,6 +44,7 @@ FILES=(tests/mac/agent_sandbox_containment_spike.sb tests/mac/sandbox_containmen
        agent/host/zb_agent_host/files.py agent/host/zb_agent_host/launch.py agent/host/zb_agent_host/options.py
        agent/host/zb_agent_host/platforms.py agent/host/zb_agent_host/relay.py
        agent/host/zb_agent_host/sandbox.py agent/host/zb_agent_host/sandbox_macos.py
+       agent/host/zb_agent_host/seatbelt_rules.py
        agent/host/zb_agent_host/seccomp.py agent/host/zb_agent_host/netd.py)
 git archive "$SHA" -- "${FILES[@]}" | tar -x -C "$stage"
 STAGED_FILES=()
