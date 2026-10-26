@@ -75,6 +75,7 @@ enum {
 @property(nonatomic, assign) BOOL acceptanceSent;
 @property(nonatomic, assign) BOOL acceptanceReply;
 @property(nonatomic, copy) NSString *acceptancePrompt;
+@property(nonatomic, copy) NSString *lastFailureReason;
 - (void)addMessageView:(NSView *)view role:(NSString *)role;
 - (void)appendRole:(NSString *)role text:(NSString *)text;
 - (void)appendDelta:(NSString *)text;
@@ -709,12 +710,37 @@ static NSString *zb_mac_status_text(NSString *state, NSString *reason) {
   return @"Not connected";
 }
 
+static NSString *zb_mac_failure_text(NSString *state, NSString *reason) {
+  if (![state isEqualToString:@"unavailable"] && ![state isEqualToString:@"crashed"]) return nil;
+  if ([reason isEqualToString:@"cli-not-found"] || [reason isEqualToString:@"runtime-missing"]) {
+    return @ZB_AGENT_TEXT_RUNTIME;
+  }
+  if ([reason isEqualToString:@"auth"] || [reason isEqualToString:@"auth-failed"]) {
+    return @"Claude rejected the saved token. Open Account to replace it.";
+  }
+  if ([reason isEqualToString:@"rate-limited"] || [reason isEqualToString:@"overloaded"]) {
+    return @"Claude is busy; try again shortly.";
+  }
+  return nil;
+}
+
 void zb_drawer_agent_status(unsigned int windowId, const char *state, const char *reason) {
   NSString *stateText = zb_mac_string(state);
   NSString *reasonText = zb_mac_string(reason);
+  NSString *failureText = zb_mac_failure_text(stateText, reasonText);
   for (ZBMacDrawerPanel *panel in zb_mac_panel_snapshot()) {
     if (windowId != 0 && panel.browserWindowId != windowId) continue;
     panel.statusLabel.stringValue = zb_mac_status_text(stateText, reasonText);
+    if (failureText != nil && ![panel.lastFailureReason isEqualToString:reasonText]) {
+      if (panel.streamBubble != nil) [panel finishStreamAsShown];
+      [panel appendRole:@"status" text:failureText];
+      panel.lastFailureReason = reasonText;
+    } else if (failureText == nil &&
+               ([stateText isEqualToString:@"starting"] ||
+                [stateText isEqualToString:@"ready"] ||
+                [stateText isEqualToString:@"busy"])) {
+      panel.lastFailureReason = nil;
+    }
     if ([reasonText isEqualToString:@"no-token"]) zb_mac_secrets_window_open(panel.window);
   }
 }
