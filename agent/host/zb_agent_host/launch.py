@@ -114,14 +114,16 @@ class LaunchPlan(NamedTuple):
     spec: sandbox.LaunchSpec
 
 
-def requested_reads(home, python, claude_cli=None):
+def requested_reads(home, python, claude_cli=None, test_ca=None):
     """The helper's read paths: the venv, the hook command directories (runtime/path.json, /usr dropped), and the
-    login CLI's directory."""
+    optional login CLI/test CA inputs."""
     venv = os.path.dirname(os.path.dirname(python))
     extra = [venv] + [d for d in json.loads((home.runtime / "path.json").read_text())
                       if d != "/usr" and not d.startswith("/usr/")]
     if claude_cli is not None:
         extra.append(os.path.dirname(claude_cli))
+    if test_ca is not None:
+        extra.append(test_ca)
     return tuple(extra)
 
 
@@ -179,10 +181,11 @@ def _token_fds():
     return tuple(fds)
 
 
-def spawn_helper(argv, env):
+def spawn_helper(argv, env, *, pass_fds=None):
     """Runs the sandboxed helper as a child and returns its status (macOS: the lease must outlive the spawn, so the
     launch cannot exec in place)."""
-    return subprocess.run(list(argv), env=env, pass_fds=_token_fds(), check=False).returncode
+    token_fds = _token_fds() if pass_fds is None else tuple(pass_fds)
+    return subprocess.run(list(argv), env=env, pass_fds=token_fds, check=False).returncode
 
 
 def _arm_darwin_browser_watch():
@@ -205,18 +208,25 @@ def _arm_darwin_browser_watch():
 
 
 def _launch_darwin(session, args, backend):
+    # Capture the token channel before kqueue opens: when fd 3/4 is absent in a
+    # diagnostic run, kqueue may receive that number, but it is a lifetime
+    # observer and must never be mistaken for a token descriptor at exec.
+    token_fds = _token_fds()
     # Arm before the Seatbelt child exists.  If the browser has already gone,
     # parent_watch kills this still-childless group; otherwise NOTE_EXIT kills
     # the launch process, sandbox-exec, the CLI and its ordinary descendants.
-    _arm_darwin_browser_watch()
+    watched = _arm_darwin_browser_watch()
     home = options.AgentHome(session.home)
     request = LaunchRequest(home=home, python=session.python, command=session.command,
-                            read_paths=requested_reads(home, session.python, args.e2e_claude_cli),
+                            read_paths=requested_reads(home, session.python, args.e2e_claude_cli, args.test_ca),
                             test_ca=args.test_ca, claude_cli=args.e2e_claude_cli)
     try:
         with build_launch(backend, request) as plan:
             try:
-                return spawn_helper(plan.argv, options.helper_environ(home, os.environ))
+                env = options.helper_environ(home, os.environ)
+                if watched:
+                    return spawn_helper(plan.argv, env, pass_fds=token_fds)
+                return spawn_helper(plan.argv, env)
             except OSError as exc:
                 print(f"zigBrowser: agent: sandbox unavailable ({exc})", file=sys.stderr)
                 return EXIT_NO_SANDBOX
