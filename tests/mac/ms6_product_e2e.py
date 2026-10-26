@@ -153,8 +153,6 @@ def make_app(source, root, python_pkg, site_x86, site_arm):
          pins["python_pkg"]["sha256"], contents, site_x86, site_arm],
         "bundled runtime staging", cwd=source, timeout=900,
     )
-    require_ok(["/usr/bin/codesign", "--force", "--deep", "--sign", "-", app],
-               "ad-hoc app signing", timeout=180)
     return app
 
 
