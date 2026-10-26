@@ -513,6 +513,16 @@ static void zb_debug_report_signal_dispositions(BOOL hooks_enabled) {
 }
 @end
 
+void zb_mac_drawer_debug_open_window(void) {
+  if (!zb_mac_drawer_e2e_enabled() || g_active_app == nil) {
+    return;
+  }
+  [g_active_app createWindowWithWebView:nil
+                                  child:YES
+                                    uri:@"about:blank"
+                                 opener:nil];
+}
+
 static int zb_auto_test_synth_crash(void);  // defined with the other e2e hooks below; used by didFinish
 static const char *zb_auto_test_native_close_title(void);  // e2e hook (defined below); used by the title KVO
 static long zb_auto_test_health_reply_hold_ms(void);  // e2e hook (defined below); used by healthTick
