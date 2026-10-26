@@ -149,10 +149,15 @@ def _file_write_line():
     return f'(allow file-write* (subpath (param "{SCRATCHPAD_PARAM}")) {devices})'
 
 
-def _keychain_mach_denies():
-    """Deny the Security framework's Keychain brokers after the temporary broad Mach grant."""
+def _keychain_denies():
+    """Deny Security.framework's brokers and direct legacy-Keychain file path."""
     return [
         ";; token isolation (MS6.1): only the trusted parent reads Keychain before sandbox entry.",
+        '(deny file-read* (regex #"^/.*[.]keychain$"))',
+        '(deny file-read* (regex #"^/.*[.]keychain-db([.].*)?$"))',
+        '(deny file-read* (subpath "/Library/Keychains"))',
+        '(deny file-read* (regex #"^/Users/[^/]+/Library/Keychains(/|$)"))',
+        '(deny ipc-posix* (ipc-posix-name "com.apple.securityd"))',
         '(deny mach-lookup (global-name "com.apple.securityd"))',
         '(deny mach-lookup (global-name "com.apple.securityd.xpc"))',
         '(deny mach-lookup (global-name "com.apple.securityd.general"))',
@@ -199,7 +204,7 @@ def render_profile(*, egress, bridges, is_hook, is_login=False):
         "(deny process-info*)",
         "(allow process-info* (target self))",
         "(allow mach-lookup)",  # tiny curated mach-lookup is a separate later MS6 increment
-        *_keychain_mach_denies(),
+        *_keychain_denies(),
     ]
     return "\n".join(lines) + "\n"
 
@@ -243,7 +248,7 @@ def render_setup_profile(*, loopback_port=None):
         "(deny process-info*)",
         "(allow process-info* (target self))",
         "(allow mach-lookup)",  # tiny curated mach-lookup is a separate later MS6 increment
-        *_keychain_mach_denies(),
+        *_keychain_denies(),
     ]
     return "\n".join(lines) + "\n"
 
