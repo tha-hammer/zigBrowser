@@ -149,6 +149,17 @@ def _file_write_line():
     return f'(allow file-write* (subpath (param "{SCRATCHPAD_PARAM}")) {devices})'
 
 
+def _keychain_mach_denies():
+    """Deny the Security framework's Keychain brokers after the temporary broad Mach grant."""
+    return [
+        ";; token isolation (MS6.1): only the trusted parent reads Keychain before sandbox entry.",
+        '(deny mach-lookup (global-name "com.apple.securityd"))',
+        '(deny mach-lookup (global-name "com.apple.securityd.xpc"))',
+        '(deny mach-lookup (global-name "com.apple.securityd.system"))',
+        '(deny mach-lookup (global-name "com.apple.security.agent"))',
+    ]
+
+
 def render_profile(*, egress, bridges, is_hook, is_login=False):
     """Return the Seatbelt profile text for a CLI/helper (``is_hook=False``), a hook (``is_hook=True``), or the
     one-shot sign-in (``is_login=True``: egress endpoint only, no bridges).
@@ -182,6 +193,7 @@ def render_profile(*, egress, bridges, is_hook, is_login=False):
         "(deny process-info*)",
         "(allow process-info* (target self))",
         "(allow mach-lookup)",  # tiny curated mach-lookup is a separate later MS6 increment
+        *_keychain_mach_denies(),
     ]
     return "\n".join(lines) + "\n"
 
@@ -225,6 +237,7 @@ def render_setup_profile(*, loopback_port=None):
         "(deny process-info*)",
         "(allow process-info* (target self))",
         "(allow mach-lookup)",  # tiny curated mach-lookup is a separate later MS6 increment
+        *_keychain_mach_denies(),
     ]
     return "\n".join(lines) + "\n"
 

@@ -433,7 +433,7 @@ pub fn build(b: *std.Build) void {
     // defines must be reported as exactly that one missing symbol.
     const cross_self_test = b.addSystemCommand(&.{ "python3", "tools/check_cross_symbols.py", "--require", "zb_app_run", "--expect-missing", "zb_cross_fixture_probe" });
     cross_self_test.addFileInput(b.path("tools/check_cross_symbols.py"));
-    const macos_shim_sources = "src/wkwebview_shim.m:src/agent_drawer_mac_host.m:src/agent_drawer_mac_panel.m:src/agent_secrets_mac.m:src/agent_secrets_window_mac.m:src/agent_home_lock.c:src/agent_spawn_posix.c";
+    const macos_shim_sources = "src/wkwebview_shim.m:src/agent_drawer_mac_host.m:src/agent_drawer_mac_panel.m:src/agent_secrets_mac.m:src/agent_secrets_window_mac.m:src/agent_token_fd_mac.c:src/agent_home_lock.c:src/agent_spawn_posix.c";
     const cross_targets = [_]struct { query: std.Target.Query, shim: []const u8 }{
         // The shipped floor (windowsAfUnixFloor), so the object reaches the automation server's start.
         .{ .query = .{ .cpu_arch = .x86_64, .os_tag = .windows, .abi = .gnu, .os_version_min = .{ .windows = .win10_rs4 } }, .shim = "src/webview2_shim.cpp" },
@@ -5560,6 +5560,7 @@ fn configureMacosBackend(module: *std.Build.Module, b: *std.Build) void {
     shim.addFileArg(b.path("src/agent_drawer_mac_panel.m"));
     shim.addFileArg(b.path("src/agent_secrets_mac.m"));
     shim.addFileArg(b.path("src/agent_secrets_window_mac.m"));
+    shim.addFileArg(b.path("src/agent_token_fd_mac.c"));
     shim.addArgs(&.{ "-framework", "WebKit", "-framework", "Cocoa", "-framework", "AppKit", "-framework", "Foundation", "-framework", "Security" });
     // install_name is @executable_path-anchored, NOT @rpath: a hardened-runtime process refuses a
     // relative LC_RPATH ("relative path not allowed in hardened program"), and zig normalizes a

@@ -32,9 +32,11 @@ int zb_agent_spawn_group(const char *const *argv, const char *const *envp, pid_t
   return err;
 }
 
-int zb_agent_spawn_group_io(const char *const *argv, const char *const *envp, int stdin_fd, int stdout_fd,
-                            pid_t *out_pid) {
+static int spawn_group_io(const char *const *argv, const char *const *envp,
+                          int stdin_fd, int stdout_fd, int token_fd, pid_t *out_pid) {
   if ((stdin_fd != -1 && stdin_fd <= 2) || (stdout_fd != -1 && stdout_fd <= 2)) return EINVAL;
+  if (token_fd >= 0 && (token_fd <= 2 || stdin_fd == 3 || stdout_fd == 3 ||
+                        token_fd == stdin_fd || token_fd == stdout_fd)) return EINVAL;
   posix_spawn_file_actions_t acts;
   posix_spawnattr_t attr;
   int err = posix_spawn_file_actions_init(&acts);
@@ -54,14 +56,17 @@ int zb_agent_spawn_group_io(const char *const *argv, const char *const *envp, in
    * original once: one duplex fd may be both streams (RoseCat 7150). For -1, keep the caller's own stream. */
   if (err == 0 && stdin_fd >= 0) err = posix_spawn_file_actions_adddup2(&acts, stdin_fd, 0);
   if (err == 0 && stdout_fd >= 0) err = posix_spawn_file_actions_adddup2(&acts, stdout_fd, 1);
+  if (err == 0 && token_fd >= 0 && token_fd != 3) err = posix_spawn_file_actions_adddup2(&acts, token_fd, 3);
   if (err == 0 && stdin_fd >= 0) err = posix_spawn_file_actions_addclose(&acts, stdin_fd);
   if (err == 0 && stdout_fd >= 0 && stdout_fd != stdin_fd) err = posix_spawn_file_actions_addclose(&acts, stdout_fd);
+  if (err == 0 && token_fd > 3) err = posix_spawn_file_actions_addclose(&acts, token_fd);
 #ifdef POSIX_SPAWN_CLOEXEC_DEFAULT
   /* Under CLOEXEC_DEFAULT an inherited stream must be named too, or it is closed: stderr always, and stdin or
    * stdout when the caller passed -1 for it. */
   if (err == 0 && stdin_fd < 0) err = posix_spawn_file_actions_addinherit_np(&acts, 0);
   if (err == 0 && stdout_fd < 0) err = posix_spawn_file_actions_addinherit_np(&acts, 1);
   if (err == 0) err = posix_spawn_file_actions_addinherit_np(&acts, 2);
+  if (err == 0 && token_fd == 3) err = posix_spawn_file_actions_addinherit_np(&acts, 3);
 #endif
   pid_t pid = -1;
   if (err == 0) err = posix_spawn(&pid, argv[0], &acts, &attr, (char *const *)argv, (char *const *)envp);
@@ -69,6 +74,21 @@ int zb_agent_spawn_group_io(const char *const *argv, const char *const *envp, in
   posix_spawn_file_actions_destroy(&acts);
   if (err == 0 && out_pid != NULL) *out_pid = pid;
   return err;
+}
+
+int zb_agent_spawn_group_io(const char *const *argv, const char *const *envp, int stdin_fd, int stdout_fd,
+                            pid_t *out_pid) {
+  return spawn_group_io(argv, envp, stdin_fd, stdout_fd, -1, out_pid);
+}
+
+int zb_agent_spawn_group_io_fd3(const char *const *argv, const char *const *envp,
+                                int stdin_fd, int stdout_fd, int token_fd, pid_t *out_pid) {
+#ifdef __APPLE__
+  return spawn_group_io(argv, envp, stdin_fd, stdout_fd, token_fd, out_pid);
+#else
+  (void)argv; (void)envp; (void)stdin_fd; (void)stdout_fd; (void)token_fd; (void)out_pid;
+  return ENOTSUP;
+#endif
 }
 
 /* `pid`'s parent, process group and whether it is a zombie, an unreaped zombie included; -1 if there is no such
