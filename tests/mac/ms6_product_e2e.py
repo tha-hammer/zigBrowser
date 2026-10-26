@@ -141,7 +141,7 @@ def make_app(source, root, python_pkg, site_x86, site_arm):
     })
     require_ok(
         [zig, "build", "--prefix", prefix, "--cache-dir", root / "zig-local-cache",
-         "--global-cache-dir", root / "zig-global-cache"],
+         "--global-cache-dir", root / "zig-global-cache", "-Dmac-unsandboxed-dev=false"],
         "native app build", cwd=source, env=build_env, timeout=900,
     )
     shutil.copy2(prefix / "bin/zigBrowser", macos / "zigBrowser")
@@ -158,14 +158,16 @@ def make_app(source, root, python_pkg, site_x86, site_arm):
 
 def provision(app, root):
     private_home = root / "private-home"
-    source_home = root / "source-home"
-    sai = source_home / ".claude"
+    sai = private_home / ".claude"
+    ssh = private_home / ".ssh"
     temp = root / "tmp"
     xdg = private_home / "data"
-    for directory in (private_home, sai, temp, xdg):
+    for directory in (private_home, sai, ssh, temp, xdg):
         directory.mkdir(mode=0o700, parents=True, exist_ok=True)
     (sai / "CLAUDE.md").write_text("MS6 product e2e private instructions.\n")
     (sai / "settings.json").write_text("{}\n")
+    ssh_canary = ssh / "id_test"
+    ssh_canary.write_text("private setup ssh canary\n")
     agent_home = xdg / "zigbrowser/agent-home"
     host = app / "Contents/Frameworks/agent-host"
     python = host / "Python.framework/Versions/3.12/bin/python3.12"
@@ -179,13 +181,25 @@ def provision(app, root):
         "PYTHONDONTWRITEBYTECODE": "1",
     }
     require_ok(
-        [python, "-m", "zb_agent_host", "setup", "--home", agent_home,
-         "--sai-source", sai, "--source-home", source_home, "--source-path", "/usr/bin:/bin",
-         "--python", python, "--browser-pid", str(os.getpid())],
-        "private agent-home provisioning", env=env, timeout=240,
+        [app / "Contents/MacOS/zigBrowser", "--agent-setup", "--e2e-protocol", "--sai-source", sai],
+        "built app private agent-home provisioning", env=env, timeout=240,
     )
     if not (agent_home / "current").exists():
-        raise Failure("private agent-home provisioning did not publish current")
+        raise Failure("built app private agent-home provisioning did not publish current")
+
+    sys.path.insert(0, str(host))
+    from zb_agent_host import sandbox_macos
+
+    setup_scratch = root / "setup-denial-scratch"
+    setup_scratch.mkdir(mode=0o700)
+    probe_started = datetime.datetime.now().astimezone()
+    with sandbox_macos.setup_sandbox(str(setup_scratch), [str(python), str(host)],
+                                     ["/bin/cat", str(ssh_canary.resolve())]) as argv:
+        rc, out, _err = owned_run(argv, env={"PATH": "/usr/bin:/bin", "HOME": str(setup_scratch),
+                                             "TMPDIR": str(setup_scratch), "LANG": "C.UTF-8"}, timeout=20)
+    if rc == 0 or out:
+        raise Failure("setup Seatbelt profile allowed ~/.ssh/id_test read")
+    require_log_denial(probe_started, "setup ~/.ssh/id_test", ssh_canary.resolve())
     return private_home, xdg, temp, agent_home, host, python
 
 
@@ -394,21 +408,22 @@ def denial_proofs(agent_home, host, python, private_home, targets):
         tempfile.tempdir = old_tempdir
 
     for label, path in targets:
-        escaped = str(path).replace("\\", "\\\\").replace('"', '\\"')
-        predicate = f'eventMessage CONTAINS "{escaped}" AND eventMessage CONTAINS[c] "deny"'
-        found = False
-        deadline = time.monotonic() + 20
-        while time.monotonic() < deadline:
-            rc, out, _ = owned_run(
-                ["/usr/bin/log", "show", "--start", probe_started.strftime("%Y-%m-%d %H:%M:%S%z"),
-                 "--style", "compact", "--predicate", predicate], timeout=30,
-            )
-            if rc == 0 and str(path).encode() in out and b"deny" in out.lower():
-                found = True
-                break
-            time.sleep(1)
-        if not found:
-            raise Failure(f"log show did not contain the {label} sandbox denial")
+        require_log_denial(probe_started, label, path)
+
+
+def require_log_denial(probe_started, label, path):
+    escaped = str(path).replace("\\", "\\\\").replace('"', '\\"')
+    predicate = f'eventMessage CONTAINS "{escaped}" AND eventMessage CONTAINS[c] "deny"'
+    deadline = time.monotonic() + 20
+    while time.monotonic() < deadline:
+        rc, out, _ = owned_run(
+            ["/usr/bin/log", "show", "--start", probe_started.strftime("%Y-%m-%d %H:%M:%S%z"),
+             "--style", "compact", "--predicate", predicate], timeout=30,
+        )
+        if rc == 0 and str(path).encode() in out and b"deny" in out.lower():
+            return
+        time.sleep(1)
+    raise Failure(f"log show did not contain the {label} sandbox denial")
 
 
 def assert_no_token_file(root, token):
@@ -484,8 +499,8 @@ def main():
                     token_owned = False
                 if not cleanup_ok:
                     raise Failure("owned browser or Keychain cleanup failed")
-        print(f"PASS\t{label}\t{arch}\t{args.commit}\tfd3-only; sandbox-exec bundled CLI; "
-              "CONNECT api.anthropic.com:443; denied ssh,keychain,outside-home")
+        print(f"PASS\t{label}\t{arch}\t{args.commit}\tsandboxed setup provisioned; denied ~/.ssh/id_test; "
+              "fd3-only; sandbox-exec bundled CLI; CONNECT api.anthropic.com:443; denied ssh,keychain,outside-home")
         return 0
     except Failure as exc:
         print(f"FAIL\t{label}\t{arch}\t{exc}")
