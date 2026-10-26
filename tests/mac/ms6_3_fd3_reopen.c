@@ -28,13 +28,13 @@
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wdeprecated-declarations"
 
-/* Weak so the committed red reaches one stable product assertion instead of
- * failing at link time before the test can identify the missing boundary. */
-extern int zb_mac_helper_spawn_fd3_for_test(
+/* The drawer-facing native launch entry. Its test form changes only the
+ * Keychain source; argv, environment, descriptors and process ownership are
+ * the production path. */
+extern int zb_mac_agent_helper_spawn_fd3_for_test(
     const char *const *argv, const char *const *envp, int stdin_fd, int stdout_fd,
     const char *keychain_path, const char *unlock_password,
-    const char *service, const char *account, pid_t *out_pid, char **out_err)
-    __attribute__((weak_import));
+    pid_t *out_pid, char **out_err);
 
 static void wipe(void *memory, size_t length) {
   volatile unsigned char *bytes = memory;
@@ -136,10 +136,6 @@ static int parent_main(int argc, char **argv) {
     fprintf(stderr, "usage: %s --parent <profile-or-none> <scratch>\n", argv[0]);
     return 2;
   }
-  if (zb_mac_helper_spawn_fd3_for_test == NULL) {
-    printf("FAIL\tms6-3-product-channel\tzb_mac_helper_spawn_fd3_for_test is missing\n");
-    return 1;
-  }
   const char *profile = argv[2], *scratch = argv[3];
   char keychain_path[1024];
   snprintf(keychain_path, sizeof keychain_path, "%s/ms63-%d.keychain", scratch, getpid());
@@ -197,8 +193,8 @@ static int parent_main(int argc, char **argv) {
     return 1;
   }
   pid_t pid = -1;
-  result = zb_mac_helper_spawn_fd3_for_test(child_argv, envp, -1, output[1],
-                                             keychain_path, password, service, account, &pid, &error);
+  result = zb_mac_agent_helper_spawn_fd3_for_test(child_argv, envp, -1, output[1],
+                                                   keychain_path, password, &pid, &error);
   close(output[1]);
   size_t output_len = 0;
   char *child_output = read_all(output[0], &output_len);
