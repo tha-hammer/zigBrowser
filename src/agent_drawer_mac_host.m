@@ -19,7 +19,6 @@ typedef struct {
   int x, y, w, h;
 } ZbMacDrawerRect;
 
-void zb_drawer_page_rect(int width, int height, int open, ZbMacDrawerRect *out);
 void zb_drawer_appkit_frame(const ZbMacDrawerRect *rect, int width, int height,
                             ZbMacDrawerRect *out);
 int zb_drawer_classify(double dx, double dy);
@@ -146,6 +145,21 @@ static ZbMacDrawerRect zb_mac_rect(NSRect rect) {
       .y = (int)lround(NSMinY(rect)),
       .w = (int)lround(NSWidth(rect)),
       .h = (int)lround(NSHeight(rect)),
+  };
+}
+
+static ZbMacDrawerRect zb_mac_drawer_panel_rect(int width, int height) {
+  int content_width = width > 0 ? width : 0;
+  int content_height = height > 0 ? height : 0;
+  int wanted = (int)floor((double)content_height * 0.35 + 0.5);
+  int maximum = (int)floor((double)content_height * 0.70);
+  int panel_height = wanted > 240 ? wanted : 240;
+  if (panel_height > maximum) panel_height = maximum;
+  return (ZbMacDrawerRect){
+      .x = 0,
+      .y = content_height - panel_height,
+      .w = content_width,
+      .h = panel_height,
   };
 }
 
@@ -485,22 +499,23 @@ static NSView *zb_make_panel(NSRect frame, ZBMacDrawerState *state) {
   int width = (int)NSWidth(bounds);
   int height = (int)NSHeight(bounds);
 
-  ZbMacDrawerRect page_top = {0};
+  ZbMacDrawerRect panel_top = zb_mac_drawer_panel_rect(width, height);
+  ZbMacDrawerRect page_top = {
+      .x = 0,
+      .y = 0,
+      .w = width > 0 ? width : 0,
+      .h = self.open ? panel_top.y : (height > 0 ? height : 0),
+  };
   ZbMacDrawerRect page_frame = {0};
-  zb_drawer_page_rect(width, height, self.open ? 1 : 0, &page_top);
   zb_drawer_appkit_frame(&page_top, width, height, &page_frame);
 
-  ZbMacDrawerRect panel_top = {
-      .x = 0,
-      .y = page_top.h,
-      .w = width,
-      .h = height - page_top.h,
-  };
   ZbMacDrawerRect panel_frame = {0};
   zb_drawer_appkit_frame(&panel_top, width, height, &panel_frame);
 
-  self.page.frame = zb_nsrect(page_frame);
-  self.panel.frame = zb_nsrect(panel_frame);
+  self.page.frame = NSOffsetRect(zb_nsrect(page_frame), NSMinX(bounds),
+                                 NSMinY(bounds));
+  self.panel.frame = NSOffsetRect(zb_nsrect(panel_frame), NSMinX(bounds),
+                                  NSMinY(bounds));
   self.panel.hidden = !self.open;
 
   zb_drawer_place(self.hasRatios ? &_ratios : NULL, width, height, &_iconRect);
@@ -510,10 +525,23 @@ static NSView *zb_make_panel(NSRect frame, ZBMacDrawerState *state) {
   NSString *kind = self.pendingRowKind;
   if (kind != nil && zb_mac_drawer_e2e_enabled()) {
     self.pendingRowKind = nil;
-    printf("DRAWER\t%u\t%s\tpage=%d,%d,%d,%d\tpanel=%d,%d,%d,%d\n",
-           self.identifier, kind.UTF8String, page_frame.x, page_frame.y,
-           page_frame.w, page_frame.h, panel_frame.x, panel_frame.y,
-           panel_frame.w, panel_frame.h);
+    ZbMacDrawerRect content = zb_mac_rect(bounds);
+    ZbMacDrawerRect actual_page = zb_mac_rect(self.page.frame);
+    ZbMacDrawerRect actual_panel = zb_mac_rect(self.panel.frame);
+    BOOL inside = actual_panel.x == content.x &&
+                  actual_panel.y == content.y &&
+                  actual_panel.w == content.w &&
+                  actual_panel.h >= 0 &&
+                  actual_page.x == content.x &&
+                  actual_page.w == content.w &&
+                  actual_page.y == actual_panel.y + actual_panel.h &&
+                  actual_page.h >= 0 &&
+                  actual_page.y + actual_page.h == content.y + content.h;
+    printf("DRAWER\t%u\t%s\tcontent=%d,%d,%d,%d\tpage=%d,%d,%d,%d\tpanel=%d,%d,%d,%d\tinside=%d\n",
+           self.identifier, kind.UTF8String, content.x, content.y, content.w,
+           content.h, actual_page.x, actual_page.y, actual_page.w,
+           actual_page.h, actual_panel.x, actual_panel.y, actual_panel.w,
+           actual_panel.h, inside ? 1 : 0);
     fflush(stdout);
   }
 
@@ -567,7 +595,7 @@ void zb_mac_drawer_attach(NSWindow *window, NSView *webview,
   host.drawerState = state;
   state.host = host;
   state.panel = zb_make_panel(NSZeroRect, state);
-  state.panel.translatesAutoresizingMaskIntoConstraints = NO;
+  state.panel.translatesAutoresizingMaskIntoConstraints = YES;
   state.panel.hidden = YES;
   NSView *fold_view = [[NSView alloc] initWithFrame:NSZeroRect];
   fold_view.wantsLayer = YES;
