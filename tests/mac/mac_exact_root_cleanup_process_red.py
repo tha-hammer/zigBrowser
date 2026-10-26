@@ -340,42 +340,68 @@ def external_holder_case(module):
         shutil.rmtree(base, ignore_errors=True)
 
 
-def ancestor_holder_case(module):
+PARENT_SHELL = r'''set -eu
+if [ "$ZB_PARENT_HOLD" = 1 ]; then
+    exec 9<"$ZB_PARENT_MEMBER"
+fi
+"$ZB_PARENT_PYTHON" -I -X dev -W error -B "$ZB_PARENT_ORACLE" --parent-shell-child &
+child=$!
+wait "$child"
+'''
+
+
+def call_through_parent_shell(home, root, report, hold):
+    env = dict(os.environ)
+    env.update(
+        {
+            "PYTHONDONTWRITEBYTECODE": "1",
+            "ZB_PARENT_HOLD": "1" if hold else "0",
+            "ZB_PARENT_MEMBER": str(root / "payload" / "item"),
+            "ZB_PARENT_PYTHON": sys.executable,
+            "ZB_PARENT_ORACLE": str(Path(__file__).resolve()),
+            "ZB_PARENT_HOME": str(home),
+            "ZB_PARENT_REPORT": base64.urlsafe_b64encode(report).decode("ascii"),
+        }
+    )
+    completed = subprocess.run(
+        ["/bin/sh", "-c", PARENT_SHELL, BASENAME],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env=env,
+        check=False,
+    )
+    if completed.returncode != 0 or completed.stderr:
+        raise RuntimeError(
+            "parent shell rc=%r stdout=%r stderr=%r"
+            % (completed.returncode, completed.stdout, completed.stderr)
+        )
+    return json.loads(completed.stdout.decode("utf-8"))
+
+
+def ancestor_holder_case(_module):
     base, home, root, report = fixture()
-    root_fd = None
     try:
-        install_seal(module, report)
-        before = fingerprint(root)
-        root_fd = os.open(root, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
-        read_fd, write_fd = os.pipe()
-        child = os.fork()
-        if child == 0:
-            os.close(read_fd)
-            try:
-                status, output = call_main(module, home)
-                payload = json.dumps({"status": status, "output": output}).encode("utf-8")
-                os.write(write_fd, payload)
-                os.close(write_fd)
-                os._exit(0)
-            except BaseException as error:
-                payload = json.dumps({"error": "%s: %s" % (type(error).__name__, error)}).encode("utf-8")
-                os.write(write_fd, payload)
-                os.close(write_fd)
-                os._exit(1)
-        os.close(write_fd)
-        with os.fdopen(read_fd, "rb", closefd=True) as stream:
-            payload = stream.read()
-        _waited, wait_status = os.waitpid(child, 0)
-        decoded = json.loads(payload.decode("utf-8"))
-        if not os.WIFEXITED(wait_status) or os.WEXITSTATUS(wait_status) != 0 or "error" in decoded:
-            problem("ancestor-root-holder", "child failed: %r status=%r" % (decoded, wait_status))
-        else:
-            assert_refusal("ancestor-root-holder", decoded["status"], decoded["output"], before, root)
+        decoded = call_through_parent_shell(home, root, report, False)
+        expected = expected_success(root, report)
+        if decoded.get("status") != 0 or decoded.get("output") != expected or os.path.lexists(root):
+            problem(
+                "ancestor-root-holder",
+                "non-holding parent blocked cleanup: rc=%r root_exists=%r output=%r"
+                % (decoded.get("status"), os.path.lexists(root), decoded.get("output")),
+            )
     except Exception as error:
-        problem("ancestor-root-holder", "raised %s: %s" % (type(error).__name__, error))
+        problem("ancestor-root-holder", "non-holding parent raised %s: %s" % (type(error).__name__, error))
     finally:
-        if root_fd is not None:
-            os.close(root_fd)
+        shutil.rmtree(base, ignore_errors=True)
+
+    base, home, root, report = fixture()
+    try:
+        before = fingerprint(root)
+        decoded = call_through_parent_shell(home, root, report, True)
+        assert_refusal("ancestor-root-holder", decoded.get("status"), decoded.get("output"), before, root)
+    except Exception as error:
+        problem("ancestor-root-holder", "holding parent raised %s: %s" % (type(error).__name__, error))
+    finally:
         shutil.rmtree(base, ignore_errors=True)
 
 
@@ -530,6 +556,14 @@ def reconcile_cases(module):
     )
 
 
+def parent_shell_child():
+    report = base64.b64decode(os.environ["ZB_PARENT_REPORT"], altchars=b"-_", validate=True)
+    module = load_impl()
+    install_seal(module, report)
+    status, output = call_main(module, Path(os.environ["ZB_PARENT_HOME"]))
+    print(json.dumps({"status": status, "output": output}, separators=(",", ":")))
+
+
 def run():
     if not IMPL.is_file():
         for case in CASES:
@@ -549,11 +583,14 @@ def run():
     zigbrowser_case(module)
 
 
-run()
-if problems:
-    for item in problems:
-        print("PROBLEM\t" + item)
-    print("FAIL\tmac-exact-root-cleanup-process-red\t%d problems" % len(problems))
-    raise SystemExit(1)
+if sys.argv[1:] == ["--parent-shell-child"]:
+    parent_shell_child()
+else:
+    run()
+    if problems:
+        for item in problems:
+            print("PROBLEM\t" + item)
+        print("FAIL\tmac-exact-root-cleanup-process-red\t%d problems" % len(problems))
+        raise SystemExit(1)
 
-print("PASS\tmac-exact-root-cleanup-process-red\t%d cases" % len(CASES))
+    print("PASS\tmac-exact-root-cleanup-process-red\t%d cases" % len(CASES))
