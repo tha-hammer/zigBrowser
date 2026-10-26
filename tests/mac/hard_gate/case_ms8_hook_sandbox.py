@@ -224,7 +224,7 @@ def run(h):
         stray_path = os.path.join(scratch, "stray")
         with open(stray_path, "w") as f:
             f.write("stray\n")
-        hook = os.path.join(scratch, "hook.py")
+        hook = os.path.join(scratchpad, "hook.py")
         with open(hook, "w") as f:
             f.write(HOOK)
         env = {"PATH": "/usr/bin:/bin", "HOME": root, "TMPDIR": os.path.join(scratchpad, "tmp"), "LANG": "C.UTF-8",
