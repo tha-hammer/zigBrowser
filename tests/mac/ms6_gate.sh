@@ -40,7 +40,9 @@ FILES=(tests/mac/agent_sandbox_containment_spike.sb tests/mac/sandbox_containmen
        tests/mac/agent_sandbox_ms6_1_token_isolation.sb tests/mac/ms6_1_token_isolation_test.sh
        tests/mac/ms6_1_procinfo_probe.c tests/mac/ms6_generated_profile_test.sh
        tests/mac/ms6_3_fd3_reopen_test.sh tests/mac/ms6_3_fd3_reopen.c tests/mac/ms6_4_egress_test.sh
-       tests/mac/ms6_4_connect_probe.c agent/host/zb_agent_host/__init__.py
+       tests/mac/ms6_4_connect_probe.c src/agent_secrets_mac.h src/agent_secrets_mac.m
+       src/agent_token_fd_mac.h src/agent_token_fd_mac.c src/agent_spawn_posix.h src/agent_spawn_posix.c
+       agent/host/zb_agent_host/__init__.py
        agent/host/zb_agent_host/files.py agent/host/zb_agent_host/launch.py agent/host/zb_agent_host/options.py
        agent/host/zb_agent_host/platforms.py agent/host/zb_agent_host/relay.py
        agent/host/zb_agent_host/sandbox.py agent/host/zb_agent_host/sandbox_macos.py
@@ -69,6 +71,11 @@ if [ "$got" != "$ZB_EXPECT_ARCH" ]; then
   echo "FAIL: arch oracle — uname -m=$got but this leg expected $ZB_EXPECT_ARCH (same machine run twice?)" >&2
   exit 1
 fi
+mkdir -p "$d/agent/host/zb_agent_host" "$d/src" "$d/tests/mac"
+cp -f "$d/sandbox_macos.py" "$d/seatbelt_rules.py" "$d/agent/host/zb_agent_host/"
+cp -f "$d/agent_secrets_mac.h" "$d/agent_secrets_mac.m" "$d/agent_token_fd_mac.h" \
+  "$d/agent_token_fd_mac.c" "$d/agent_spawn_posix.h" "$d/agent_spawn_posix.c" "$d/src/"
+cp -f "$d/ms6_3_fd3_reopen.c" "$d/tests/mac/"
 /bin/sh "$d/sandbox_containment_test.sh" "$d/agent_sandbox_containment_spike.sb"
 /bin/sh "$d/ms6_1_token_isolation_test.sh" "$d"
 /bin/sh "$d/ms6_generated_profile_test.sh" "$d"
