@@ -9,6 +9,10 @@ spawned and its PR_SET_PDEATHSIG. bwrap's command is the outer relay (proxy-only
     python -m zb_agent_host launch --home H --python PY --net-dir DIR
         [--bwrap BWRAP] [--test-ca PEM] [--command chat|login] [--e2e-claude-cli CLI]
 
+On macOS the normal path always uses ``sandbox-exec`` through
+``MacSeatbeltBackend``.  A direct, unsandboxed launch exists only for local
+diagnostics and requires the explicit ``--unsandboxed-dev`` flag.
+
 `--command login` (S6b1, rev 16.18.3) runs the one-shot sign-in helper instead of
 `chat`: the backend's login launch spec (egress only: the login netd has no bridges)
 and the outer relay running `login`. The login helper's token pipe, fd 4, passes
@@ -216,6 +220,7 @@ def main(argv):
     parser.add_argument("--command", choices=("chat", "login"), default="chat")
     parser.add_argument("--e2e-claude-cli")
     parser.add_argument("--egress-port", action="append")  # macOS only (netd's loopback port); refused off Darwin
+    parser.add_argument("--unsandboxed-dev", action="store_true")  # macOS-only, explicit unsafe development escape
     args = parser.parse_args(argv)
     if args.e2e_claude_cli is not None and (args.command != "login" or not os.path.isabs(args.e2e_claude_cli)
                                             or not _regular_file(args.e2e_claude_cli)):
@@ -239,14 +244,18 @@ def main(argv):
             if value is not None:
                 print(f"zigBrowser: agent: {flag} is the Linux launch's only", file=sys.stderr)
                 return EXIT_USAGE
-        # One backend selection point: the sandbox team replaces the development backend by making the reviewed
-        # Seatbelt LaunchSpec consumable. Until then macOS runs directly, with an unavoidable user-visible warning.
-        if sandbox_macos.LAUNCH_SPEC_CONSUMABLE():
-            backend = sandbox_macos.MacSeatbeltBackend(session.egress_port)
-        else:
+        if args.unsandboxed_dev:
             print(sandbox_macos.UNSANDBOXED_DEV_STATUS, file=sys.stderr)
-            backend = sandbox_macos.MacUnsandboxedDevBackend(session.egress_port)
+            backend = sandbox_macos.MacUnsandboxedDevBackend(
+                session.egress_port, explicit_dev=args.unsandboxed_dev)
+        else:
+            # The drawer's production default is always Seatbelt. PROFILE_CURATION still records whether the
+            # profile has reached release curation, but it must never select a host-rights launch.
+            backend = sandbox_macos.MacSeatbeltBackend(session.egress_port)
         return _launch_darwin(session, args, backend)
+    if args.unsandboxed_dev:
+        print("zigBrowser: agent: --unsandboxed-dev is macOS-only", file=sys.stderr)
+        return EXIT_USAGE
     if session.net_dir is None:
         print("zigBrowser: agent: --net-dir is required", file=sys.stderr)
         return EXIT_USAGE

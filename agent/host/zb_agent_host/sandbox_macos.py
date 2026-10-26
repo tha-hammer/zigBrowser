@@ -22,8 +22,9 @@ Security construction (RoseCat 6918; plan:1562-1566 "profile file + -D params, n
 The token-isolation recipe was measured against the real kernel on both arches in the MS6.1 Mac gate: an
 EXPLICIT `(deny process-info*)` AND a CURATED `sysctl-read` (a blanket allow re-opens kern.procargs2); the
 task port is never granted. Reads stay broad and mach-lookup blanket here — the deny-default read curation
-and the tiny curated mach-lookup are a separate later MS6 increment (do not wire this renderer until they
-land). Pure stdlib, so it unit-tests on Linux; the eventual both-Mac `sandbox-exec` gate still applies.
+and the tiny curated mach-lookup are a separate later MS6 increment. The drawer launch nevertheless enters
+Seatbelt now: PROFILE_CURATION remains the release-readiness fact, never permission to fall back to host rights.
+Pure stdlib, so it unit-tests on Linux; the both-Mac `sandbox-exec` gate still applies.
 """
 
 import contextlib
@@ -394,16 +395,19 @@ UNSANDBOXED_DEV_STATUS = "agent running unsandboxed (dev build)"
 
 
 class MacUnsandboxedDevBackend:
-    """Temporary macOS development realization of the shared launch contract.
+    """Explicitly requested macOS development realization of the shared launch contract.
 
-    This backend deliberately contributes no command prefix: the helper runs directly on the host.  It keeps the
-    network, lifetime and token-channel values shaped like the future Seatbelt backend so replacing it is a backend
-    selection change, not a second launch path.  Linux-only realization inputs still fail closed.
+    This backend deliberately contributes no command prefix: the helper runs directly on the host. Production must
+    never select it implicitly; ``launch.main`` reaches it only after parsing ``--unsandboxed-dev``. It keeps the
+    network, lifetime and token-channel values shaped like the Seatbelt backend. Linux-only realization inputs still
+    fail closed.
     """
 
     SANDBOX_PROGRAM = None
 
-    def __init__(self, egress_port):
+    def __init__(self, egress_port, *, explicit_dev):
+        if explicit_dev is not True:
+            raise ValueError("the unsandboxed macOS backend requires the explicit development flag")
         self._capabilities = MacSeatbeltBackend(egress_port)
 
     def network(self, session=None):
@@ -445,10 +449,9 @@ class MacUnsandboxedDevBackend:
 class MacSeatbeltBackend:
     """macOS Seatbelt realization of the MS0 ``SandboxBackend`` seam (MS6).
 
-    First increment: the network / lifetime / channel capability surface, stating the SAME contract values as
-    :class:`sandbox.LinuxBwrapBackend` in macOS terms. ``launch_spec`` — the ``sandbox-exec`` prefix built from
-    :func:`render_profile`/:func:`dparams` plus the semantic ``LaunchSpec`` (mounts as Seatbelt rules, the
-    network/lifetime/channel fields) — is a following increment.
+    This is the drawer launch's production default. ``launch_spec`` builds the ``sandbox-exec`` prefix from
+    :func:`render_profile`/:func:`dparams` plus the semantic ``LaunchSpec`` (mounts as Seatbelt rules and the
+    network/lifetime/channel fields). PROFILE_CURATION records release readiness; it does not disable Seatbelt.
 
     ``egress_port`` is the OS-selected, per-session loopback port netd listens on (the ephemeral host-loopback
     proxy; plan :1575-1581); the CLI/helper reach ``127.0.0.1:<egress_port>`` and the two canonical bridges, a
