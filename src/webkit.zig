@@ -1,5 +1,6 @@
 const std = @import("std");
 const builtin = @import("builtin");
+const agent_setup = @import("agent_setup.zig");
 const backend_flag = @import("backend_flag.zig");
 
 pub const c = @cImport({
@@ -145,16 +146,31 @@ pub fn applyAgentDrawer(flag: ?agent_config.AgentDrawer) bool {
     return resolved.value == .on;
 }
 
-/// The macOS development build currently launches its agent without Seatbelt.
-/// Keep that policy at the app boundary while this module binds its native
-/// status seam. The later Seatbelt backend can replace this one call.
-pub fn applyMacosUnsandboxedAgentStatus(drawer_on: bool) void {
-    if (comptime builtin.os.tag != .macos) return;
-    if (drawer_on) {
-        c.zb_app_set_agent_drawer_status(macos_unsandboxed_agent_status);
-        std.debug.print("{s}\n", .{macos_unsandboxed_agent_status});
-    } else {
+/// Apply the same build-controlled macOS agent policy as `--agent-setup`.
+/// Returns whether the drawer may configure and launch an agent. The default
+/// development build is explicitly labelled; a build with the switch off
+/// keeps the Seatbelt refusal and never reaches the unsandboxed launch.
+pub fn applyMacosAgentBuildPolicy(drawer_on: bool, mac_unsandboxed_dev: bool) bool {
+    if (comptime builtin.os.tag != .macos) return true;
+    if (!drawer_on) {
         c.zb_app_set_agent_drawer_status(null);
+        return false;
+    }
+    switch (agent_setup.platformGateForBuild(.macos, agent_setup.seatbelt_ready, mac_unsandboxed_dev)) {
+        .run => {
+            if (mac_unsandboxed_dev) {
+                c.zb_app_set_agent_drawer_status(macos_unsandboxed_agent_status);
+                std.debug.print("{s}\n", .{macos_unsandboxed_agent_status});
+            } else {
+                c.zb_app_set_agent_drawer_status(null);
+            }
+            return true;
+        },
+        .refuse => |line| {
+            c.zb_app_set_agent_drawer_status(agent_setup.macos_unsandboxed_refusal);
+            std.debug.print("{s}\n", .{line});
+            return false;
+        },
     }
 }
 
