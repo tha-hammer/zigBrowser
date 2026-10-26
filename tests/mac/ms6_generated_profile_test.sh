@@ -112,15 +112,17 @@ done
 
 # MS6.7 red/green: every generated profile must still read an immutable system file, but must not read private
 # user-home material. The canaries live only inside this run's owned work directory; HOME points at that stand-in,
-# so the two paths exercise the exact ~/.ssh and ~/Documents boundary without touching the Mac user's real files.
+# so the three paths exercise the exact ~/.ssh, ~/Documents, and ~/Library/Keychains boundaries without touching
+# the Mac user's real files.
 USER_HOME="$TMP/user-home"
-mkdir -p "$USER_HOME/.ssh" "$USER_HOME/Documents"
+mkdir -p "$USER_HOME/.ssh" "$USER_HOME/Documents" "$USER_HOME/Library/Keychains"
 printf '%s\n' 'zb-ms6-private-ssh' > "$USER_HOME/.ssh/id_canary"
 printf '%s\n' 'zb-ms6-private-documents' > "$USER_HOME/Documents/canary.txt"
+printf '%s\n' 'zb-ms6-private-keychain' > "$USER_HOME/Library/Keychains/canary.keychain-db"
 for prof in setup cli hook; do
     sandboxed "$prof" /bin/cat /etc/hosts > /dev/null 2>&1 || {
         echo "FAIL	ms6-generated-$prof-system-read (/etc/hosts must remain readable)"; exit 1; }
-    for rel in .ssh/id_canary Documents/canary.txt; do
+    for rel in .ssh/id_canary Documents/canary.txt Library/Keychains/canary.keychain-db; do
         : > "$SCRATCH/$prof.sensitive.out"
         : > "$SCRATCH/$prof.sensitive.err"
         if HOME="$USER_HOME" sandboxed "$prof" /bin/sh -c \
