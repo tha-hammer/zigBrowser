@@ -5,8 +5,6 @@
 #import <stdio.h>
 #import <stdlib.h>
 
-void zb_mac_drawer_panel_bind_window_id(NSView *panel, unsigned int window_id);
-
 int zb_agent_helper_configured(void) { return 0; }
 void zb_agent_helper_send(unsigned int window_id, const char *text) {
   (void)window_id;
@@ -45,9 +43,8 @@ static void require_messages(NSView *panel, NSArray<NSString *> *expected, const
 int main(void) {
   @autoreleasepool {
     [NSApplication sharedApplication];
-    NSView *panel = zb_mac_drawer_panel_create(NSMakeRect(0, 0, 760, 420), NULL, NULL);
+    NSView *panel = zb_mac_drawer_panel_create(NSMakeRect(0, 0, 760, 420), 77, NULL, NULL);
     if (panel == nil) fail("create returned nil");
-    zb_mac_drawer_panel_bind_window_id(panel, 77);
 
     zb_drawer_agent_delta(78, "other", "wrong", 5);
     require_messages(panel, @[], "a different window changed this drawer");
