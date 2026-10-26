@@ -14,9 +14,10 @@ private/tmp (11b3ac4 on both Macs: every write, the token-fifo inside the scratc
 7627). Each row checks its scratchpad is its own real path. Any other write the chain makes outside the scratchpad
 is left to fail visibly under the profile (measured evidence, not hidden).
 Rows:
- 1. positive: the canary on fd 3 -> rc 0, a result frame, and the server's bearer is exactly "Bearer <canary>";
- 2. decoy: a different token on fd 3 -> the bearer is exactly that token: it follows fd 3, not a cached credential,
-    an environment variable or a keychain item;
+ 1. positive: the exact generated profile denies a read of ~/.ssh/id_canary, then the real CLI starts, answers,
+    and sends exactly "Bearer <canary>" from fd 3;
+ 2. decoy: that profile again denies ~/.ssh/id_canary, then the real CLI sends the different token on fd 3: it
+    follows fd 3, not a cached credential, an environment variable or a keychain item;
  3. no channel: no fd 3 -> rc != 0 and no request at all (the canary never reaches the server).
 In rows 1 and 2, WHILE the CLI's request is being served, production's census (proc_darwin.cli_env_census over this
 process's descendants, outside Seatbelt) must say "ok", and the row records only that fixed reason (RoseCat 7986: a
@@ -42,6 +43,7 @@ NAME = "ms6.3-fd3-cli"
 PROMPT = "hi"
 CANARY = "sk-ant-oat01-ZBCANARY" + "q7x2" * 10  # fixed test tokens: 16-512 printable, never real credentials
 DECOY = "sk-ant-oat01-ZBDECOY" + "m3k9" * 10
+SSH_CANARY = b"zb-ms6-private-ssh\n"
 PLACE_FD3 = 'fd=$1; shift; [ "$fd" -eq 3 ] || eval "exec 3<&$fd $fd<&-"; exec "$@"'  # already 3: kept as is
 RUN_TIMEOUT_S = 120
 CHAIN_GRACE_S = 15  # a finished row's chain is gone within this
@@ -222,10 +224,20 @@ def run(h):
     root = os.path.realpath(h.scratch)  # never the /tmp spelling: the profile's write root must be a real path
 
     def one(label, tok):
-        """One contract-config turn with `tok` on fd 3 (None: no fd 3). (rc, out, err, bearer, census, port, home)."""
+        """One contract-config turn with `tok` on fd 3 (None: no fd 3).
+
+        The same generated profile first tries a fixed read from this row's synthetic ~/.ssh, then launches the
+        real CLI. Only the fixed verdict leaves this function; the canary bytes and Seatbelt diagnostic do not.
+        Returns (rc, out, err, bearer, census, sensitive_read, port, home).
+        """
         home = _home_layout(options, os.path.join(root, f"home-{label.replace(' ', '-')}"))
         h.check(str(home.scratchpad) == os.path.realpath(home.scratchpad),
                 f"{label}: the home's scratchpad is its own real path")
+        ssh_dir = home.root / ".ssh"
+        os.makedirs(ssh_dir, 0o700, exist_ok=True)
+        sensitive_path = ssh_dir / "id_canary"
+        with open(sensitive_path, "wb") as f:
+            f.write(SSH_CANARY)
         token.write_wrapper(home.runtime / "bin" / "zb-claude", h.cli)  # as setup.stage writes it
         server = route_probe._ProbeServer(CANARY, h.cli)
         port = int(server.url.rsplit(":", 1)[1])
@@ -246,9 +258,13 @@ def run(h):
                 pass_fds, head = (theirs.fileno(),), ["/bin/sh", "-c", PLACE_FD3, "sh", str(theirs.fileno())]
             env = {"PATH": "/usr/bin:/bin", "PYTHONPATH": prefix, "PYTHONDONTWRITEBYTECODE": "1"}
             with sandbox_macos.MacSeatbeltBackend(port).launch(home) as spec:
+                read_rc, read_out, _read_err = h.spawn_group(
+                    list(spec.argv) + ["/bin/cat", str(sensitive_path)], env={"HOME": str(home.root)}, timeout=20)
+                sensitive_read = ("allowed" if read_rc == 0 and read_out == SSH_CANARY
+                                  else "denied" if read_rc not in (0, None) and not read_out else "invalid")
                 rc, out, err = h.spawn_group(head + list(spec.argv) + command, env=env, pass_fds=pass_fds,
                                              timeout=RUN_TIMEOUT_S)
-            return rc, out, err, server.bearer, census, port, home
+            return rc, out, err, server.bearer, census, sensitive_read, port, home
         finally:
             if theirs is not None:
                 theirs.close()
@@ -267,7 +283,9 @@ def run(h):
 
     for label, tok in (("positive", CANARY), ("decoy", DECOY)):
         started = time.monotonic()
-        rc, out, err, bearer, census, port, home = one(label, tok)
+        rc, out, err, bearer, census, sensitive_read, port, home = one(label, tok)
+        h.check(sensitive_read == "denied", f"{label}: the real CLI's generated profile denies ~/.ssh/id_canary "
+                                             f"(verdict={sensitive_read})")
         h.check(rc == 0 and _turn_completed(out), f"{label}: the helper's turn completes ({diag(rc, out, err)})")
         h.check(bearer == "Bearer " + tok, f"{label}: the CLI's bearer is exactly the token on fd 3 "
                                            f"(bearer={'none' if bearer is None else 'other'})")
@@ -276,7 +294,7 @@ def run(h):
         released(label, port, home, started)
 
     started = time.monotonic()
-    rc, out, err, bearer, census, port, home = one("no channel", None)
+    rc, out, err, bearer, census, _sensitive_read, port, home = one("no channel", None)
     h.check(rc not in (0, None), f"no channel: the helper fails without fd 3 ({diag(rc, out, err)})")
     h.check(bearer is None and census == [], "no channel: no request reached the server, the canary never left")
     released("no channel", port, home, started)
