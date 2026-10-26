@@ -163,6 +163,10 @@ pub fn launch(a: std.mem.Allocator, in: Inputs) !Launch {
         try std.fmt.allocPrint(a, "PYTHONPATH={s}/runtime/host", .{in.home}),
         "PYTHONDONTWRITEBYTECODE=1",
     });
+    // launch.py materializes its short-lived Seatbelt profile through
+    // tempfile. Keep that file inside this agent home's writable scratchpad,
+    // never in the user's ambient HOME or /var/folders tree.
+    if (darwin) try env.append(a, try std.fmt.allocPrint(a, "TMPDIR={s}/scratchpad/tmp", .{in.home}));
     if (in.lang) |v| try env.append(a, try std.fmt.allocPrint(a, "LANG={s}", .{v}));
     if (in.lc_all) |v| try env.append(a, try std.fmt.allocPrint(a, "LC_ALL={s}", .{v}));
     return .{

@@ -5568,6 +5568,7 @@ fn configureMacosBackend(module: *std.Build.Module, b: *std.Build) void {
     shim.addFileArg(b.path("src/agent_secrets_window_mac.m"));
     shim.addFileArg(b.path("src/agent_token_fd_mac.c"));
     shim.addFileArg(b.path("src/agent_helper_mac.c"));
+    shim.addArg("-DZB_AGENT_HELPER_MAC_SESSION=1");
     shim.addArgs(&.{ "-framework", "WebKit", "-framework", "Cocoa", "-framework", "AppKit", "-framework", "Foundation", "-framework", "Security" });
     // install_name is @executable_path-anchored, NOT @rpath: a hardened-runtime process refuses a
     // relative LC_RPATH ("relative path not allowed in hardened program"), and zig normalizes a
