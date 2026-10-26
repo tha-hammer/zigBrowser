@@ -43,6 +43,7 @@ void zb_drawer_remember(const ZbMacDrawerRatios *ratios);
 /* Internal shim seam. It keeps every debug-only action behind --e2e-protocol. */
 int zb_mac_drawer_e2e_enabled(void);
 void zb_mac_drawer_debug_open_window(void);
+void zb_mac_e2e_snapshot_window(NSWindow *window, unsigned int window_id);
 
 /* The panel is landing independently. A weak import lets the host compile and
  * show its dock now; the real panel is used automatically once linked. */
@@ -811,6 +812,7 @@ void zb_mac_drawer_attach(NSWindow *window, NSView *webview,
       [strong_state.host layoutSubtreeIfNeeded];
     });
   }
+  zb_mac_e2e_snapshot_window(window, state.identifier);
 }
 
 void zb_mac_drawer_set_open(NSWindow *window, int open) {

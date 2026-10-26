@@ -48,6 +48,53 @@ static atomic_int zb_auto_e2e_enabled = 0;
 int zb_mac_drawer_e2e_enabled(void) {
   return atomic_load(&zb_auto_e2e_enabled) != 0;
 }
+static BOOL g_zb_window_snapshot_scheduled = NO;
+
+/* E2E-only visual proof: render this application's own content view. AppKit's
+ * cache-display path needs no Screen Recording permission and cannot capture
+ * another process's window. The host invokes this after it has queued its
+ * drawer-open/resize action, so the delayed block observes the settled frame. */
+void zb_mac_e2e_snapshot_window(NSWindow *window, unsigned int window_id) {
+  if (!zb_mac_drawer_e2e_enabled() || window == nil || window_id != 1 ||
+      g_zb_window_snapshot_scheduled) {
+    return;
+  }
+  const char *raw = getenv("ZB_DEBUG_WINDOW_SNAPSHOT_PNG");
+  if (raw == NULL || raw[0] != '/') return;
+  NSString *path = [NSString stringWithUTF8String:raw];
+  if (path.length == 0 || !path.isAbsolutePath) return;
+  g_zb_window_snapshot_scheduled = YES;
+
+  __weak NSWindow *weak_window = window;
+  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)),
+                 dispatch_get_main_queue(), ^{
+    NSWindow *strong_window = weak_window;
+    NSView *content = strong_window.contentView;
+    if (strong_window == nil || content == nil) return;
+    [content layoutSubtreeIfNeeded];
+    [content displayIfNeeded];
+    NSRect bounds = content.bounds;
+    if (NSIsEmptyRect(bounds)) return;
+    NSBitmapImageRep *bitmap =
+        [content bitmapImageRepForCachingDisplayInRect:bounds];
+    if (bitmap == nil) return;
+    [content cacheDisplayInRect:bounds toBitmapImageRep:bitmap];
+    NSData *png = [bitmap representationUsingType:NSBitmapImageFileTypePNG
+                                       properties:@{}];
+    NSError *error = nil;
+    if (png == nil || ![png writeToFile:path
+                              options:NSDataWritingAtomic
+                                error:&error]) {
+      fprintf(stderr, "zigBrowser: window snapshot could not be written\n");
+      fflush(stderr);
+      return;
+    }
+    printf("WINDOW_SNAPSHOT\t%u\t%ldx%ld\t%s\n", window_id,
+           (long)bitmap.pixelsWide, (long)bitmap.pixelsHigh,
+           path.fileSystemRepresentation);
+    fflush(stdout);
+  });
+}
 // MS2c (RoseCat 6508 #6): the window snapshot is a lock-backed cache. The main thread republishes it on
 // every window state change (create/remove/health tick); page.list/page.health read it under the lock and
 // NEVER dispatch to the main queue, so a backed-up/hung main queue cannot stall them.
