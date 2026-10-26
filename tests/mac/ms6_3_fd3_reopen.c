@@ -36,6 +36,11 @@ extern int zb_mac_helper_spawn_fd3_for_test(
     const char *service, const char *account, pid_t *out_pid, char **out_err)
     __attribute__((weak_import));
 
+static void wipe(void *memory, size_t length) {
+  volatile unsigned char *bytes = memory;
+  while (length-- > 0) *bytes++ = 0;
+}
+
 static void sha256_hex(const unsigned char *data, size_t length, char out[CC_SHA256_DIGEST_LENGTH * 2 + 1]) {
   unsigned char digest[CC_SHA256_DIGEST_LENGTH];
   CC_SHA256(data, (CC_LONG)length, digest);
@@ -77,13 +82,13 @@ static int child_main(int argc, char **argv) {
   close(fd);
   token[length] = '\0';
   if (length == 0 || vector_has(argv, token, length) || vector_has(*_NSGetEnviron(), token, length)) {
-    explicit_bzero(token, sizeof token);
+    wipe(token, sizeof token);
     printf("FD3-REOPEN-FAILED token-in-argv-or-env\n");
     return 1;
   }
   char digest[CC_SHA256_DIGEST_LENGTH * 2 + 1];
   sha256_hex((const unsigned char *)token, length, digest);
-  explicit_bzero(token, sizeof token);
+  wipe(token, sizeof token);
   if (strcmp(digest, argv[2]) != 0) {
     printf("FD3-REOPEN-FAILED digest-mismatch\n");
     return 1;
@@ -122,7 +127,7 @@ static int regular_file_has(const char *path, const char *token, size_t token_le
   char *text = read_all(fd, &length);
   close(fd);
   int found = text != NULL && length >= token_len && memmem(text, length, token, token_len) != NULL;
-  if (text != NULL) { explicit_bzero(text, length); free(text); }
+  if (text != NULL) { wipe(text, length); free(text); }
   return found;
 }
 
@@ -156,7 +161,7 @@ static int parent_main(int argc, char **argv) {
     printf("FAIL\tms6-3-product-channel\tdisposable Keychain store failed\n");
     free(error);
     SecKeychainDelete(keychain); CFRelease(keychain);
-    explicit_bzero(token, sizeof token);
+    wipe(token, sizeof token);
     return 1;
   }
   free(error); error = NULL;
@@ -168,7 +173,7 @@ static int parent_main(int argc, char **argv) {
   if (_NSGetExecutablePath(self, &self_len) != 0) {
     printf("FAIL\tms6-3-product-channel\texecutable path unavailable\n");
     SecKeychainDelete(keychain); CFRelease(keychain);
-    explicit_bzero(token, sizeof token);
+    wipe(token, sizeof token);
     return 1;
   }
   char define[1200], home[1200], temp[1200];
@@ -188,7 +193,7 @@ static int parent_main(int argc, char **argv) {
   if (pipe(output) != 0) {
     printf("FAIL\tms6-3-product-channel\toutput pipe failed\n");
     SecKeychainDelete(keychain); CFRelease(keychain);
-    explicit_bzero(token, sizeof token);
+    wipe(token, sizeof token);
     return 1;
   }
   pid_t pid = -1;
@@ -238,7 +243,7 @@ static int parent_main(int argc, char **argv) {
   if (child_output != NULL) free(child_output);
   SecKeychainDelete(keychain);
   CFRelease(keychain);
-  explicit_bzero(token, sizeof token);
+  wipe(token, sizeof token);
   return failed;
 }
 
