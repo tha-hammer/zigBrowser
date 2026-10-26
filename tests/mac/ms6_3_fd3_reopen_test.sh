@@ -29,7 +29,8 @@ DRIVER="$TMP/ms6_3_product"
 xcrun clang -fobjc-arc -std=gnu11 -Wno-deprecated-declarations -I "$ROOT/src" \
   "$ROOT/tests/mac/ms6_3_fd3_reopen.c" \
   "$ROOT/src/agent_secrets_mac.m" "$ROOT/src/agent_token_fd_mac.c" "$ROOT/src/agent_spawn_posix.c" \
-  -framework Security -framework Foundation -o "$DRIVER" 2>"$TMP/cc.err" || {
+  -framework Security -framework Foundation -Wl,-U,_zb_mac_helper_spawn_fd3_for_test \
+  -o "$DRIVER" 2>"$TMP/cc.err" || {
     echo "FAIL\tms6-3-product-channel\tproduct driver build failed"
     cat "$TMP/cc.err"
     exit 1

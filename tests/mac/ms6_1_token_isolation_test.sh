@@ -29,7 +29,7 @@ trap cleanup EXIT
 
 SCRATCH="$TMP/scratch"; PROT="$TMP/prot"; mkdir -p "$SCRATCH" "$PROT"
 PROBE="$TMP/probe"
-xcrun clang -framework Security -o "$PROBE" "$PROBE_SRC" 2>"$TMP/cc.err" || {
+xcrun clang -framework Security -framework CoreFoundation -o "$PROBE" "$PROBE_SRC" 2>"$TMP/cc.err" || {
   echo "FAIL	ms6.1-token-isolation (probe build failed)"; cat "$TMP/cc.err"; exit 1; }
 
 # Render the exact production CLI/helper profile. This test no longer accepts a hand-written profile.
