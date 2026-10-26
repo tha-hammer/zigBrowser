@@ -290,9 +290,26 @@ PY
 printf '[]\n' > "$AGENT_HOME/runtime/path.json"
 cat > "$FAKE_PYTHON" <<PY
 #!/usr/bin/python3
-import errno, socket, ssl, sys, time
+import errno, os, socket, ssl, sys, time
 
 DIRECT_PORT = $DECOY
+
+def write_verdict():
+    # This path is outside AGENT_HOME. The production launch must place this
+    # payload under Seatbelt, whose only write grant is AGENT_HOME/scratchpad.
+    outside = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "outside-write")
+    try:
+        fd = os.open(outside, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except PermissionError:
+        return "WRITE-DENIED"
+    except OSError as exc:
+        if exc.errno in (errno.EPERM, errno.EACCES):
+            return "WRITE-DENIED"
+        return "WRITE-ERROR-%s" % (exc.errno if exc.errno is not None else "unknown")
+    else:
+        os.close(fd)
+        os.unlink(outside)
+        return "WRITE-OK"
 
 def direct_verdict():
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -348,6 +365,7 @@ except (ValueError, IndexError):
     print("PRODUCTION-EGRESS-PORT %s MISSING" % mode, flush=True)
     raise SystemExit(0)
 
+print("PRODUCTION-WRITE %s %s" % (mode, write_verdict()), flush=True)
 print("PRODUCTION-DIRECT %s %s" % (mode, direct_verdict()), flush=True)
 print("PRODUCTION-PROXY %s api.anthropic.com %s" %
       (mode, through_proxy(egress_port, "api.anthropic.com")), flush=True)
@@ -401,6 +419,8 @@ wait_hits() { # <file> <minimum>
 
 run_launch chat "$NETD_PORT"
 chat_out="$LAST_LAUNCH_OUT"
+expect_launch_line "$chat_out" "PRODUCTION-WRITE chat WRITE-DENIED" \
+    "production-launched chat helper is DENIED a write outside agent home"
 expect_launch_line "$chat_out" "PRODUCTION-DIRECT chat CONNECT-DENIED" \
     "production-launched chat helper is DENIED direct outbound"
 expect_launch_line "$chat_out" "PRODUCTION-PROXY chat api.anthropic.com HTTP-200" \
@@ -418,6 +438,8 @@ start_netd "$TMP/netd-login" "$TMP/net-login.json" \
     --test-allow "api.anthropic.com=$API_UPSTREAM" --test-allow "platform.claude.com=$TOKEN_UPSTREAM"
 run_launch login "$NETD_PORT"
 login_out="$LAST_LAUNCH_OUT"
+expect_launch_line "$login_out" "PRODUCTION-WRITE login WRITE-DENIED" \
+    "production-launched sign-in helper is DENIED a write outside agent home"
 expect_launch_line "$login_out" "PRODUCTION-DIRECT login CONNECT-DENIED" \
     "production-launched sign-in helper is DENIED direct outbound"
 expect_launch_line "$login_out" "PRODUCTION-PROXY login api.anthropic.com HTTP-200" \
