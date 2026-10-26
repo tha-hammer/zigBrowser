@@ -41,9 +41,8 @@ Rows (each its own test; a failure names it):
 - M ``launch.main`` through injected seams:
   - M1: Linux execs bwrap in place with the frozen argv.
   - M2: Linux without ``--net-dir`` is a usage error.
-  - M3: Darwin still refuses "not ready" under the real BROAD derivation, needs no ``--net-dir``, and makes no
-    lease call and no profile. M3b: the refusal comes from ``sandbox_macos.LAUNCH_SPEC_CONSUMABLE()`` itself: patched
-    to False while the curation says CURATED, main still refuses and the function was called.
+  - M3: while the profile is BROAD, Darwin runs the helper through the explicit unsandboxed development backend,
+    needs no ``--net-dir``, emits its warning, and makes no Seatbelt lease or profile.
   - M4: with ``LAUNCH_SPEC_CONSUMABLE()`` patched to True (the curation left BROAD, so no copy of it can pass), Darwin
     calls ``launch.spawn_helper`` inside the lease (the profile present, 0400, with the port) with
     ``options.helper_environ(home, os.environ)``. It never calls execve or seccomp, and returns the child's status;
@@ -531,24 +530,26 @@ class Connector(unittest.TestCase):
             rc, err = self.run_main(argv)
         return rc, err, execve, seccomp_fd, consumable, counts
 
-    def test_m3_darwin_main_still_refuses_while_broad(self):
-        rc, err, ex, _, _, counts = self.darwin(self.base("--egress-port", str(MAC_PORT)), ready=None)
-        self.assertEqual(rc, launch.EXIT_USAGE)
-        self.assertIn("macOS launch is not ready", err, "M3: the BROAD refusal (and no --net-dir needed)")
-        ex.assert_not_called()
-        self.assertEqual(counts["lease"].call_count, 0, "M3: no lease call before the refusal")
-        self.assertEqual(counts["materialize"].call_count, 0, "M3: no profile before the refusal")
-        self.assertEqual(self.profile_dirs(), [])
+    def test_m3_darwin_broad_runs_the_unsandboxed_dev_backend_with_a_warning(self):
+        seen = {}
 
-    def test_m3b_darwin_readiness_is_launch_spec_consumable_itself(self):
-        rc, err, ex, _, consumable, counts = self.darwin(self.base("--egress-port", str(MAC_PORT)), ready=False,
-                                                         curation=sandbox_macos.Curation.CURATED)
-        self.assertGreaterEqual(consumable.call_count, 1, "M3b: main must consult LAUNCH_SPEC_CONSUMABLE()")
-        self.assertEqual(rc, launch.EXIT_USAGE)
-        self.assertIn("macOS launch is not ready", err, "M3b: its False refuses, whatever PROFILE_CURATION says")
+        def spawn(argv, env):
+            seen["argv"] = list(argv)
+            seen["env"] = dict(env)
+            return 7
+
+        rc, err, ex, seccomp_fd, _, counts = self.darwin(
+            self.base("--egress-port", str(MAC_PORT)), ready=None, spawn=spawn)
+        self.assertEqual(rc, 7, "M3: main returns the unsandboxed helper's status")
+        self.assertEqual(err, "agent running unsandboxed (dev build)\n", "M3: the exact development warning")
+        self.assertEqual(seen.get("argv"), self.inner("chat", "--egress-port", str(MAC_PORT)),
+                         "M3: the development backend adds no sandbox prefix")
+        self.assertEqual(seen.get("env"), options.helper_environ(self.home, os.environ))
         ex.assert_not_called()
-        self.assertEqual(counts["lease"].call_count, 0)
-        self.assertEqual(counts["materialize"].call_count, 0)
+        seccomp_fd.assert_not_called()
+        self.assertEqual(counts["lease"].call_count, 0, "M3: no Seatbelt lease")
+        self.assertEqual(counts["materialize"].call_count, 0, "M3: no Seatbelt profile")
+        self.assertEqual(self.profile_dirs(), [])
 
     def spawn_recorder(self, rc=7, fail=False):
         seen = {}
