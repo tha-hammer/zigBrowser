@@ -12,8 +12,10 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <signal.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -23,6 +25,12 @@ extern void zb_drawer_agent_message(unsigned int window_id, const char *role,
 extern void zb_drawer_agent_delta(unsigned int window_id, const char *session,
                                   const char *text, size_t length);
 extern void zb_drawer_agent_end(unsigned int window_id);
+extern void zb_drawer_agent_tool_call(unsigned int window_id, const char *session,
+                                      int64_t prompt_id, const char *request_id,
+                                      size_t request_id_length, const char *tool,
+                                      size_t tool_length, const char *arguments,
+                                      size_t arguments_length);
+extern int zb_mac_drawer_e2e_enabled(void);
 
 typedef NS_ENUM(NSInteger, ZBMacHelperState) {
   ZBMacHelperIdle,
@@ -36,6 +44,37 @@ static const NSUInteger ZBMacHelperLineMax = 1024 * 1024;
 static const char *const ZBMacPythonBoot =
     "import runpy,sys;sys.path.insert(0,sys.argv.pop(1));"
     "runpy.run_module('zb_agent_host',run_name='__main__',alter_sys=True)";
+
+static NSData *zb_read_private_action(const char *path) {
+  if (path == NULL || path[0] != '/') return nil;
+  int fd = open(path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
+  if (fd < 0) return nil;
+  struct stat st;
+  if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode) || st.st_uid != getuid() ||
+      (st.st_mode & 077) != 0 || st.st_size <= 0 || st.st_size > 65536) {
+    close(fd);
+    return nil;
+  }
+  NSMutableData *data = [NSMutableData dataWithLength:(NSUInteger)st.st_size];
+  size_t used = 0;
+  while (used < data.length) {
+    ssize_t count = read(fd, (unsigned char *)data.mutableBytes + used,
+                         data.length - used);
+    if (count < 0 && errno == EINTR) continue;
+    if (count <= 0) {
+      close(fd);
+      return nil;
+    }
+    used += (size_t)count;
+  }
+  unsigned char extra = 0;
+  ssize_t tail;
+  do {
+    tail = read(fd, &extra, 1);
+  } while (tail < 0 && errno == EINTR);
+  close(fd);
+  return tail == 0 ? data : nil;
+}
 
 static void zb_close_fd(int *fd) {
   if (*fd >= 0) close(*fd);
@@ -95,11 +134,17 @@ static void zb_terminate_owned_group(pid_t *pid) {
 @property(nonatomic, copy) NSString *home;
 @property(nonatomic, copy) NSString *python;
 @property(nonatomic, copy) NSString *packageDirectory;
+@property(nonatomic, strong) NSArray<NSDictionary *> *e2eToolSteps;
+@property(nonatomic, assign) NSUInteger e2eToolIndex;
+@property(nonatomic, assign) unsigned int e2eToolWindow;
+@property(nonatomic, copy) NSString *e2eToolSession;
 + (instancetype)shared;
 - (BOOL)isConfigured;
 - (void)sendWindow:(unsigned int)windowId text:(NSString *)text;
 - (void)postToolResultForWindow:(unsigned int)windowId session:(NSString *)session
                              id:(NSString *)toolId ok:(BOOL)ok body:(NSData *)body;
+- (void)startE2EToolsForWindow:(unsigned int)windowId;
+- (void)runNextE2ETool;
 - (void)stop;
 @end
 
@@ -386,7 +431,8 @@ static void zb_terminate_owned_group(pid_t *pid) {
 }
 
 - (void)receiveFrame:(NSDictionary *)frame pid:(pid_t)pid {
-  if (pid != self.helperPid || self.state == ZBMacHelperStopping) return;
+  BOOL e2eFrame = pid == 0 && self.e2eToolSteps != nil;
+  if ((!e2eFrame && pid != self.helperPid) || self.state == ZBMacHelperStopping) return;
   NSNumber *version = frame[@"v"];
   NSNumber *sequence = frame[@"seq"];
   NSString *type = frame[@"type"];
@@ -430,6 +476,29 @@ static void zb_terminate_owned_group(pid_t *pid) {
   } else if ([type isEqualToString:@"assistant_message"] && [text isKindOfClass:NSString.class]) {
     NSData *utf8 = [text dataUsingEncoding:NSUTF8StringEncoding];
     zb_drawer_agent_message(windowId, "assistant", utf8.bytes, utf8.length);
+  } else if ([type isEqualToString:@"tool_call"]) {
+    NSString *toolId = frame[@"id"];
+    NSString *tool = frame[@"tool"];
+    NSDictionary *arguments = frame[@"args"];
+    NSNumber *promptId = frame[@"prompt_id"];
+    if (![toolId isKindOfClass:NSString.class] || toolId.length == 0 || toolId.length > 128 ||
+        ![tool isKindOfClass:NSString.class] || tool.length == 0 || tool.length > 128 ||
+        ![arguments isKindOfClass:NSDictionary.class] ||
+        ![promptId isKindOfClass:NSNumber.class] || promptId.longLongValue < 1) {
+      [self failAll:@"Claude Agent sent an invalid tool request."];
+      return;
+    }
+    NSData *idData = [toolId dataUsingEncoding:NSUTF8StringEncoding];
+    NSData *toolData = [tool dataUsingEncoding:NSUTF8StringEncoding];
+    NSData *argumentData = [NSJSONSerialization dataWithJSONObject:arguments options:0 error:nil];
+    if (idData == nil || toolData == nil || argumentData == nil || argumentData.length > 65536) {
+      [self failAll:@"Claude Agent sent an invalid tool request."];
+      return;
+    }
+    zb_drawer_agent_tool_call(windowId, session.UTF8String,
+                              promptId.longLongValue, idData.bytes,
+                              idData.length, toolData.bytes, toolData.length,
+                              argumentData.bytes, argumentData.length);
   } else if ([type isEqualToString:@"result"]) {
     zb_drawer_agent_end(windowId);
     zb_drawer_agent_status(windowId, "ready", "-");
@@ -480,6 +549,26 @@ static void zb_terminate_owned_group(pid_t *pid) {
 
 - (void)postToolResultForWindow:(unsigned int)windowId session:(NSString *)session
                              id:(NSString *)toolId ok:(BOOL)ok body:(NSData *)body {
+  if (self.e2eToolSteps != nil && windowId == self.e2eToolWindow &&
+      [session isEqualToString:self.e2eToolSession] &&
+      self.e2eToolIndex < self.e2eToolSteps.count) {
+    NSDictionary *step = self.e2eToolSteps[self.e2eToolIndex];
+    if (![toolId isEqualToString:step[@"id"]]) return;
+    NSString *encoded = [body base64EncodedStringWithOptions:0];
+    printf("MAC_AGENT_TOOL\t%s\t%d\t%s\n", toolId.UTF8String,
+           ok ? 1 : 0, encoded.UTF8String);
+    fflush(stdout);
+    self.e2eToolIndex += 1;
+    if (self.e2eToolIndex < self.e2eToolSteps.count) {
+      dispatch_async(dispatch_get_main_queue(), ^{ [self runNextE2ETool]; });
+    } else {
+      [self.sessionWindows removeObjectForKey:self.e2eToolSession];
+      [self.windowSessions removeObjectForKey:@(self.e2eToolWindow)];
+      self.e2eToolSteps = nil;
+      self.e2eToolSession = nil;
+    }
+    return;
+  }
   if (self.state != ZBMacHelperReady ||
       ![self.windowSessions[@(windowId)] isEqualToString:session] || toolId.length == 0) return;
   NSMutableDictionary *frame = [@{
@@ -498,6 +587,55 @@ static void zb_terminate_owned_group(pid_t *pid) {
     frame[@"error"] = message.length != 0 ? message : @"tool failed";
   }
   if (![self writeFrame:frame]) [self failAll:@"Claude Agent could not receive a tool result."];
+}
+
+- (void)startE2EToolsForWindow:(unsigned int)windowId {
+  if (!zb_mac_drawer_e2e_enabled() || self.e2eToolSteps != nil) return;
+  NSData *data = zb_read_private_action(getenv("ZB_DEBUG_MAC_AGENT_TOOLS_FILE"));
+  if (data == nil) return;
+  id parsed = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
+  if (![parsed isKindOfClass:NSDictionary.class]) return;
+  NSDictionary *action = parsed;
+  NSNumber *version = action[@"version"];
+  NSArray *steps = action[@"steps"];
+  if (![version isKindOfClass:NSNumber.class] || version.integerValue != 1 ||
+      ![steps isKindOfClass:NSArray.class] || steps.count == 0 || steps.count > 8) return;
+  for (id item in steps) {
+    if (![item isKindOfClass:NSDictionary.class]) return;
+    NSDictionary *step = item;
+    NSString *toolId = step[@"id"];
+    NSString *tool = step[@"tool"];
+    NSDictionary *arguments = step[@"args"];
+    if (![toolId isKindOfClass:NSString.class] || toolId.length == 0 || toolId.length > 128 ||
+        ![tool isKindOfClass:NSString.class] || tool.length == 0 || tool.length > 128 ||
+        ![arguments isKindOfClass:NSDictionary.class]) return;
+  }
+  self.e2eToolSteps = [steps copy];
+  self.e2eToolIndex = 0;
+  self.e2eToolWindow = windowId;
+  self.e2eToolSession = [NSString stringWithFormat:@"e2e-tools-%u", windowId];
+  self.inputSequence = 0;
+  self.sessionWindows[self.e2eToolSession] = @(windowId);
+  self.windowSessions[@(windowId)] = self.e2eToolSession;
+  [self runNextE2ETool];
+}
+
+- (void)runNextE2ETool {
+  if (self.e2eToolSteps == nil || self.e2eToolIndex >= self.e2eToolSteps.count) return;
+  NSDictionary *step = self.e2eToolSteps[self.e2eToolIndex];
+  NSString *toolId = step[@"id"];
+  NSString *tool = step[@"tool"];
+  NSDictionary *frame = @{
+    @"v": @1,
+    @"seq": @(self.inputSequence + 1),
+    @"type": @"tool_call",
+    @"session": self.e2eToolSession,
+    @"prompt_id": @1,
+    @"id": toolId,
+    @"tool": tool,
+    @"args": step[@"args"],
+  };
+  [self receiveFrame:frame pid:0];
 }
 
 - (void)helperEnded:(pid_t)pid malformed:(BOOL)malformed {
@@ -554,6 +692,13 @@ void zb_agent_helper_stop(void) {
   } else {
     dispatch_sync(dispatch_get_main_queue(), ^{ [ZBMacAgentHelper.shared stop]; });
   }
+}
+
+void zb_mac_agent_tools_e2e_start(unsigned int window_id) {
+  dispatch_block_t start = ^{
+    [ZBMacAgentHelper.shared startE2EToolsForWindow:window_id];
+  };
+  if (NSThread.isMainThread) start(); else dispatch_async(dispatch_get_main_queue(), start);
 }
 
 const char *zb_agent_helper_home(void) {

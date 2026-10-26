@@ -24,6 +24,11 @@ int zb_agent_helper_configured(void);
 void zb_agent_helper_send(unsigned int window_id, const char *text);
 void zb_agent_helper_stop(void);
 
+/* --e2e-protocol only: start the private fake-agent tool script named by
+ * ZB_DEBUG_MAC_AGENT_TOOLS_FILE. The script still crosses the production
+ * agent_tools broker and native automation port. */
+void zb_mac_agent_tools_e2e_start(unsigned int window_id);
+
 #ifdef __cplusplus
 }
 #endif

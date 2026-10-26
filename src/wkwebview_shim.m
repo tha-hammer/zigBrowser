@@ -445,7 +445,7 @@ static void zb_debug_report_signal_dispositions(BOOL hooks_enabled) {
     host.openerId = opener.windowId;        // so a popup never appears in page.list without its opener
     host.processGroup = opener.processGroup;
   }
-  zb_mac_drawer_attach(host.window, host.webView);
+  zb_mac_drawer_attach(host.window, host.webView, host.windowId);
 
   ZbWindow *c_window = calloc(1, sizeof(ZbWindow));
   if (c_window == NULL) {
@@ -847,7 +847,7 @@ static int64_t zb_now_us(void) { return (int64_t)([[NSProcessInfo processInfo] s
   [fresh.configuration.userContentController addScriptMessageHandlerWithReply:self contentWorld:WKContentWorld.pageWorld name:@"zbHost"];
   self.webView = fresh;
   [self zbStartObserving];  // MS2c #6: observe the fresh webView
-  zb_mac_drawer_attach(self.window, fresh);
+  zb_mac_drawer_attach(self.window, fresh, self.windowId);
 
   // Clear crash state; the held dialog (if any) was already answered above. startHealthWatchdog resets the
   // ping/unresponsive/incident counters.

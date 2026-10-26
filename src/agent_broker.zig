@@ -142,10 +142,11 @@ fn gatedArgsOk(gpa: std.mem.Allocator, verb: approval.Verb, args_json: []const u
     }
 }
 
-/// S8 decision 12 (S8e part 1): the act-on-page tools that need no card. Like navigate and
-/// reload they exist only with the app's S8 wiring, but they never ask the selector.
-const ActKind = enum { hover, scroll };
+/// Act-on-page tools that need no card. Like navigate and reload they exist only with the
+/// app's S8 wiring, but they never ask the selector.
+const ActKind = enum { click, hover, scroll };
 const act_tools = [_]struct { name: []const u8, method: []const u8, kind: ActKind }{
+    .{ .name = "click", .method = "dom.click", .kind = .click },
     .{ .name = "hover", .method = "dom.hover", .kind = .hover },
     .{ .name = "scroll", .method = "dom.scroll", .kind = .scroll },
 };
@@ -159,7 +160,7 @@ fn actTool(tool: []const u8) ?@TypeOf(act_tools[0]) {
 
 const max_offset = 100_000;
 
-/// hover takes exactly {selector: non-empty string}; scroll exactly that, or a non-empty
+/// click and hover take exactly {selector: non-empty string}; scroll exactly that, or a non-empty
 /// subset of {x, y}, integers in [-100000, 100000]. Never `options`: native input would move
 /// the user's own pointer.
 fn actArgsOk(gpa: std.mem.Allocator, kind: ActKind, args_json: []const u8) error{OutOfMemory}!bool {
@@ -174,7 +175,7 @@ fn actArgsOk(gpa: std.mem.Allocator, kind: ActKind, args_json: []const u8) error
     if (object.get("selector")) |selector| {
         return object.count() == 1 and selector == .string and selector.string.len > 0;
     }
-    if (kind == .hover or object.count() == 0) return false;
+    if (kind != .scroll or object.count() == 0) return false;
     var it = object.iterator();
     while (it.next()) |entry| {
         const key = entry.key_ptr.*;

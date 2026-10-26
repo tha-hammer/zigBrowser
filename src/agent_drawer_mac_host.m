@@ -50,6 +50,14 @@ extern void zb_mac_drawer_panel_focus_input(NSView *panel)
 extern void zb_mac_drawer_panel_append(NSView *panel, const char *role,
                                        const char *utf8_text)
     __attribute__((weak_import));
+extern void zb_agent_tools_window_opened(unsigned int window_id)
+    __attribute__((weak_import));
+extern void zb_agent_tools_window_closed(unsigned int window_id)
+    __attribute__((weak_import));
+extern void zb_agent_tools_drawer_showing(unsigned int window_id, int shown)
+    __attribute__((weak_import));
+extern void zb_mac_agent_tools_e2e_start(unsigned int window_id)
+    __attribute__((weak_import));
 
 @class ZBMacDrawerState;
 @class ZBMacDrawerIcon;
@@ -72,6 +80,7 @@ extern void zb_mac_drawer_panel_append(NSView *panel, const char *role,
 @property(nonatomic, assign) BOOL hasRatios;
 @property(nonatomic, assign) ZbMacDrawerRatios ratios;
 @property(nonatomic, assign) ZbMacDrawerRect iconRect;
+@property(nonatomic, strong) id closeObserver;
 - (void)layoutViews;
 - (void)applyIconFrame;
 @end
@@ -81,7 +90,6 @@ extern void zb_mac_drawer_panel_append(NSView *panel, const char *role,
 @end
 
 static const void *const kZBMacDrawerStateKey = &kZBMacDrawerStateKey;
-static uint32_t g_zb_mac_drawer_next_identifier = 0;
 static BOOL g_zb_mac_drawer_enabled = NO;
 static NSString *g_zb_mac_drawer_status = nil;
 static ZBMacDrawerMenuTarget *g_zb_mac_drawer_menu_target = nil;
@@ -377,8 +385,10 @@ static NSView *zb_make_panel(NSRect frame, ZBMacDrawerState *state) {
 @end
 
 
-void zb_mac_drawer_attach(NSWindow *window, NSView *webview) {
-  if (!g_zb_mac_drawer_enabled || window == nil || webview == nil) {
+void zb_mac_drawer_attach(NSWindow *window, NSView *webview,
+                          unsigned int window_id) {
+  if (!g_zb_mac_drawer_enabled || window == nil || webview == nil ||
+      window_id == 0) {
     return;
   }
 
@@ -399,7 +409,7 @@ void zb_mac_drawer_attach(NSWindow *window, NSView *webview) {
   state = [[ZBMacDrawerState alloc] init];
   state.window = window;
   state.page = webview;
-  state.identifier = ++g_zb_mac_drawer_next_identifier;
+  state.identifier = window_id;
   ZbMacDrawerRatios start_ratios = {0};
   state.hasRatios = zb_drawer_start_ratios(&start_ratios) != 0;
   state.ratios = start_ratios;
@@ -440,6 +450,26 @@ void zb_mac_drawer_attach(NSWindow *window, NSView *webview) {
   [host addSubview:icon positioned:NSWindowAbove relativeTo:state.panel];
   objc_setAssociatedObject(window, kZBMacDrawerStateKey, state,
                            OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+  if (zb_agent_tools_window_opened != NULL) {
+    zb_agent_tools_window_opened(state.identifier);
+  }
+  __weak ZBMacDrawerState *weak_close_state = state;
+  state.closeObserver = [NSNotificationCenter.defaultCenter
+      addObserverForName:NSWindowWillCloseNotification
+                  object:window
+                   queue:NSOperationQueue.mainQueue
+              usingBlock:^(NSNotification *notification) {
+    (void)notification;
+    ZBMacDrawerState *strong_state = weak_close_state;
+    if (strong_state == nil) return;
+    if (zb_agent_tools_window_closed != NULL) {
+      zb_agent_tools_window_closed(strong_state.identifier);
+    }
+    if (strong_state.closeObserver != nil) {
+      [NSNotificationCenter.defaultCenter removeObserver:strong_state.closeObserver];
+      strong_state.closeObserver = nil;
+    }
+  }];
   window.contentView = host;
   [window setContentSize:bounds.size];
   [host setNeedsLayout:YES];
@@ -612,6 +642,9 @@ void zb_mac_drawer_set_open(NSWindow *window, int open) {
   }
   state.open = wanted;
   state.icon.hidden = wanted;
+  if (zb_agent_tools_drawer_showing != NULL) {
+    zb_agent_tools_drawer_showing(state.identifier, wanted ? 1 : 0);
+  }
   if (window == zb_mac_drawer_menu_window()) {
     g_zb_mac_drawer_menu_item.state = wanted ? NSControlStateValueOn
                                               : NSControlStateValueOff;
@@ -620,6 +653,10 @@ void zb_mac_drawer_set_open(NSWindow *window, int open) {
   [state.host layoutSubtreeIfNeeded];
   if (wanted && zb_mac_drawer_panel_focus_input != NULL) {
     zb_mac_drawer_panel_focus_input(state.panel);
+  }
+  if (wanted && zb_mac_drawer_e2e_enabled() &&
+      zb_mac_agent_tools_e2e_start != NULL) {
+    zb_mac_agent_tools_e2e_start(state.identifier);
   }
 }
 

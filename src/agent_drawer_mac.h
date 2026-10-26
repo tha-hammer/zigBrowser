@@ -22,7 +22,8 @@ void zb_mac_drawer_panel_focus_input(NSView *panel);
 void zb_mac_drawer_panel_append(NSView *panel, const char *role, const char *utf8_text);
 
 /* Host (agent_drawer_mac_host.m). Called by wkwebview_shim.m once per browser window. */
-void zb_mac_drawer_attach(NSWindow *window, NSView *webview);
+void zb_mac_drawer_attach(NSWindow *window, NSView *webview,
+                          unsigned int window_id);
 void zb_mac_drawer_set_open(NSWindow *window, int open);
 int zb_mac_drawer_is_open(NSWindow *window);
 
