@@ -39,7 +39,7 @@ import sys
 from dataclasses import dataclass
 from typing import NamedTuple
 
-from . import options, sandbox, sandbox_macos, seccomp
+from . import options, parent_watch, sandbox, sandbox_macos, seccomp
 from .platforms import posix_only
 
 PLATFORM = sys.platform
@@ -185,7 +185,30 @@ def spawn_helper(argv, env):
     return subprocess.run(list(argv), env=env, pass_fds=_token_fds(), check=False).returncode
 
 
+def _arm_darwin_browser_watch():
+    """Make the product launch group die when its browser parent exits.
+
+    The native browser spawner makes this process the leader of a fresh group;
+    direct diagnostic invocations do not have that ownership proof and keep
+    their existing behavior.  A launch already reparented to launchd is treated
+    as browser death by giving ``arm`` an impossible expected parent.
+    """
+    if sys.platform != "darwin":
+        return False
+    try:
+        if os.getpgid(0) != os.getpid():
+            return False
+    except OSError:
+        return False
+    browser_pid = os.getppid()
+    return parent_watch.arm(browser_pid if browser_pid > 1 else 0, parent_watch.DarwinOps())
+
+
 def _launch_darwin(session, args, backend):
+    # Arm before the Seatbelt child exists.  If the browser has already gone,
+    # parent_watch kills this still-childless group; otherwise NOTE_EXIT kills
+    # the launch process, sandbox-exec, the CLI and its ordinary descendants.
+    _arm_darwin_browser_watch()
     home = options.AgentHome(session.home)
     request = LaunchRequest(home=home, python=session.python, command=session.command,
                             read_paths=requested_reads(home, session.python, args.e2e_claude_cli),
