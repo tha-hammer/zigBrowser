@@ -125,6 +125,10 @@ def requested_reads(home, python, claude_cli=None, test_ca=None):
     if PLATFORM == "darwin" and marker in python:
         agent_host = python.split(marker, 1)[0]
         extra += [agent_host, os.path.join(agent_host, "site-packages")]
+        frameworks = os.path.dirname(agent_host)
+        if os.path.basename(frameworks) == "Frameworks":
+            extra.append(os.path.join(os.path.dirname(frameworks), "Resources",
+                                      os.path.basename(agent_host), "site-packages"))
     extra += [d for d in json.loads((home.runtime / "path.json").read_text())
               if d != "/usr" and not d.startswith("/usr/")]
     if claude_cli is not None:
