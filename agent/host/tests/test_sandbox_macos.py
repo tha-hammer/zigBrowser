@@ -142,6 +142,21 @@ class ProfileEqualsFrozenReference(unittest.TestCase):
             self.assertNotIn(f"localhost:{port}", p, "the login profile has NO bridges")
         self.assertIn("(deny process-info*)", p)  # the token-isolation belt still holds
 
+    def test_login_profile_allows_only_a_loopback_oauth_listener(self):
+        login = sandbox_macos.render_profile(egress=EGRESS, bridges=(), is_hook=False, is_login=True)
+        self.assertIn('(allow network-bind (local tcp "localhost:*"))', login,
+                      "the real setup-token CLI binds an OS-selected callback port on 127.0.0.1")
+        self.assertIn('(allow network-inbound (local tcp "localhost:*"))', login,
+                      "listen() needs a separate Seatbelt inbound capability after bind()")
+        self.assertNotIn("(allow network-bind)\n", login, "never grant non-loopback bind")
+        self.assertNotIn("(allow network-inbound)\n", login, "never grant non-loopback inbound")
+        for is_hook, egress in ((False, EGRESS), (True, None)):
+            profile = sandbox_macos.render_profile(egress=egress, bridges=BRIDGES, is_hook=is_hook)
+            self.assertNotIn("(allow network-bind", profile, "chat and hooks never listen")
+            self.assertNotIn("(allow network-inbound", profile, "chat and hooks never accept connections")
+        for deny in _KEYCHAIN_DENIES:
+            self.assertIn(deny, login, "the OAuth listener must not weaken Keychain isolation")
+
     def test_login_validation(self):
         with self.assertRaises(ValueError):  # login needs egress
             sandbox_macos.render_profile(egress=None, bridges=(), is_hook=False, is_login=True)

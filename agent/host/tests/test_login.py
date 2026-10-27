@@ -314,8 +314,8 @@ printf '%s\\n' '✓ Long-lived authentication token created successfully!' 'Your
         cli = self.script("env-cli", f"""
 cols=$(stty size | cut -d' ' -f2)
 names=$(env | cut -d= -f1 | sort | tr '\\n' '.')
-case "$HOME|$CLAUDE_CONFIG_DIR|$BROWSER" in
-  "{self.home}|{self.home}/scratchpad/tmp/.zb-login-config-"*"|/bin/true")
+case "$HOME|$CLAUDE_CONFIG_DIR|$CLAUDE_SECURESTORAGE_CONFIG_DIR|$CLAUDE_CODE_SIMPLE|$BROWSER" in
+  "{self.home}|{self.home}/scratchpad/tmp/.zb-login-config-"*"|{self.home}/scratchpad/tmp/.zb-login-config-"*"|1|/bin/true")
     if [ -d "$CLAUDE_CONFIG_DIR" ]; then ok=ok; else ok=bad; fi ;;
   *) ok=bad ;;
 esac
