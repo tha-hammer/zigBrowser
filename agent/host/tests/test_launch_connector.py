@@ -266,6 +266,7 @@ class Connector(unittest.TestCase):
         with mock.patch.object(launch, "PLATFORM", "darwin"):
             reads = launch.requested_reads(self.home, python)
         self.assertIn("/Applications/zigBrowser.app/Contents/Frameworks/agent-host", reads)
+        self.assertIn("/Applications/zigBrowser.app/Contents/Frameworks/agent-host/site-packages", reads)
         self.assertNotIn("/Applications/zigBrowser.app/Contents/Frameworks", reads)
 
     # --- B: the builder and the frozen Linux wrapper ----------------------------------------------------------------
