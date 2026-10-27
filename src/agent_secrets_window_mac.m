@@ -21,6 +21,8 @@ extern void zb_drawer_agent_status(unsigned int window_id, const char *state, co
 static const NSUInteger ZBMacLoginLineMax = 4096;
 static const NSUInteger ZBMacLoginTokenMax = 512;
 static const char *const ZBMacLoginTestService = "dev.zigbrowser.ClaudeAgentLoginTest";
+static NSString *const ZBMacFirstRunSetupText =
+    @"Setting up the Claude Agent (first time, about a minute)...";
 static const char *const ZBMacPythonBoot =
     "import runpy,sys;sys.path.insert(0,sys.argv.pop(1));"
     "runpy.run_module('zb_agent_host',run_name='__main__',alter_sys=True)";
@@ -65,6 +67,45 @@ static void zb_wipe_data(NSMutableData *data) {
   [data setLength:0];
 }
 
+static BOOL zb_write_secrets_snapshot(NSWindow *window, NSString *path) {
+  if (window == nil || path.length == 0 || !path.isAbsolutePath) return NO;
+  NSView *view = window.contentView.superview ?: window.contentView;
+  if (view == nil || NSIsEmptyRect(view.bounds)) return NO;
+  [window displayIfNeeded];
+  [view layoutSubtreeIfNeeded];
+
+  NSBitmapImageRep *cached = [view bitmapImageRepForCachingDisplayInRect:view.bounds];
+  if (cached == nil) return NO;
+  [view cacheDisplayInRect:view.bounds toBitmapImageRep:cached];
+  NSInteger width = cached.pixelsWide;
+  NSInteger height = cached.pixelsHigh;
+  if (width <= 0 || height <= 0 || cached.CGImage == NULL) return NO;
+
+  CGColorSpaceRef colorSpace = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
+  if (colorSpace == NULL) return NO;
+  CGContextRef context = CGBitmapContextCreate(NULL, (size_t)width, (size_t)height,
+                                               8, 0, colorSpace,
+                                               (CGBitmapInfo)kCGImageAlphaPremultipliedLast);
+  CGColorSpaceRelease(colorSpace);
+  if (context == NULL) return NO;
+
+  [window.effectiveAppearance performAsCurrentDrawingAppearance:^{
+    NSColor *color = [window.backgroundColor ?: NSColor.windowBackgroundColor
+        colorUsingColorSpace:NSColorSpace.sRGBColorSpace];
+    CGContextSetRGBFillColor(context, color.redComponent, color.greenComponent,
+                             color.blueComponent, 1.0);
+  }];
+  CGContextFillRect(context, CGRectMake(0, 0, width, height));
+  CGContextDrawImage(context, CGRectMake(0, 0, width, height), cached.CGImage);
+  CGImageRef composite = CGBitmapContextCreateImage(context);
+  CGContextRelease(context);
+  if (composite == NULL) return NO;
+  NSBitmapImageRep *bitmap = [[NSBitmapImageRep alloc] initWithCGImage:composite];
+  CGImageRelease(composite);
+  NSData *png = [bitmap representationUsingType:NSBitmapImageFileTypePNG properties:@{}];
+  return png != nil && [png writeToFile:path options:NSDataWritingAtomic error:nil];
+}
+
 @interface ZBMacSecretsWindowController : NSWindowController <NSWindowDelegate>
 @property(nonatomic, weak) NSWindow *browserWindow;
 @property(nonatomic, strong) NSSecureTextField *tokenField;
@@ -81,6 +122,7 @@ static void zb_wipe_data(NSMutableData *data) {
 @property(nonatomic, assign) BOOL loginDone;
 @property(nonatomic, assign) BOOL tokenEOF;
 @property(nonatomic, assign) BOOL loginFailed;
+@property(nonatomic, assign) BOOL setupActive;
 @property(nonatomic, assign) BOOL clearWasEnabled;
 @property(nonatomic, assign) pid_t loginPid;
 @property(nonatomic, assign) pid_t netPid;
@@ -89,6 +131,7 @@ static void zb_wipe_data(NSMutableData *data) {
 @property(nonatomic, assign) uint64_t inputSequence;
 @property(nonatomic, assign) uint64_t outputSequence;
 @property(nonatomic, assign) NSUInteger loginEpoch;
+@property(nonatomic, assign) NSUInteger setupEpoch;
 @property(nonatomic, strong) NSMutableData *capturedToken;
 @property(nonatomic, copy) NSString *home;
 @property(nonatomic, copy) NSString *python;
@@ -248,6 +291,68 @@ static NSTextField *zb_label(NSString *text, BOOL secondary) {
   if (running) [self.progress startAnimation:nil];
   else [self.progress stopAnimation:nil];
   if (needsCode) [self.codeField becomeFirstResponder];
+}
+
+- (void)scheduleSnapshotFromEnvironment:(NSString *)name status:(NSString *)status {
+  if (!zb_mac_drawer_e2e_enabled()) return;
+  NSString *path = NSProcessInfo.processInfo.environment[name];
+  if (path.length == 0 || !path.isAbsolutePath) return;
+  __weak ZBMacSecretsWindowController *weakSelf = self;
+  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 100 * NSEC_PER_MSEC),
+                 dispatch_get_main_queue(), ^{
+    ZBMacSecretsWindowController *strongSelf = weakSelf;
+    if (strongSelf != nil && [strongSelf.statusLabel.stringValue isEqualToString:status])
+      (void)zb_write_secrets_snapshot(strongSelf.window, path);
+  });
+}
+
+- (void)configureAgentPaths {
+  NSDictionary<NSString *, NSString *> *environment = NSProcessInfo.processInfo.environment;
+  NSString *base = environment[@"XDG_DATA_HOME"];
+  if (base.length == 0) base = [NSHomeDirectory() stringByAppendingPathComponent:@".local/share"];
+  self.home = [base stringByAppendingPathComponent:@"zigbrowser/agent-home"];
+  NSString *debugPackage = zb_mac_drawer_e2e_enabled() ? environment[@"ZB_DEBUG_MAC_AGENT_HOST"] : nil;
+  self.packageDirectory = debugPackage.length > 0 ? debugPackage :
+      [[NSBundle.mainBundle.bundlePath stringByAppendingPathComponent:@"Contents/Frameworks/agent-host"] copy];
+  self.python = [self.packageDirectory
+      stringByAppendingPathComponent:@"Python.framework/Versions/3.12/bin/python3.12"];
+}
+
+- (BOOL)packageReady {
+  NSFileManager *files = NSFileManager.defaultManager;
+  BOOL directory = NO;
+  NSString *netd = [self.packageDirectory stringByAppendingPathComponent:@"zb_agent_host/netd.py"];
+  BOOL ready = [files isExecutableFileAtPath:self.python] &&
+      [files fileExistsAtPath:netd isDirectory:&directory] && !directory;
+  const char *fake = zb_mac_drawer_e2e_enabled() ? getenv("ZIGBROWSER_AGENT_CLAUDE_CLI") : NULL;
+  if (fake != NULL && (fake[0] != '/' || access(fake, X_OK) != 0)) ready = NO;
+  return ready;
+}
+
+- (BOOL)agentHomeReady {
+  NSFileManager *files = NSFileManager.defaultManager;
+  BOOL directory = NO;
+  NSArray<NSString *> *required = @[
+    [self.home stringByAppendingPathComponent:@"runtime/host/zb_agent_host/__main__.py"],
+    [self.home stringByAppendingPathComponent:@"runtime/net-login.json"],
+  ];
+  for (NSString *path in required) {
+    if (![files fileExistsAtPath:path isDirectory:&directory] || directory) return NO;
+  }
+  return YES;
+}
+
+- (void)beginLogin {
+  zb_agent_helper_stop();
+  self.loginEpoch++;
+  self.loginActive = YES;
+  self.loginDone = NO;
+  self.tokenEOF = NO;
+  self.loginFailed = NO;
+  self.capturedToken = nil;
+  self.statusLabel.stringValue = @"Starting secure Claude sign-in…";
+  [self setSigningIn:YES needsCode:NO];
+  [self startLoginNetwork:self.loginEpoch];
 }
 
 - (BOOL)writeLoginFrame:(NSDictionary *)fields {
@@ -414,6 +519,8 @@ static NSTextField *zb_label(NSString *text, BOOL secondary) {
   } else if ([type isEqualToString:@"need_code"]) {
     self.statusLabel.stringValue = @"Paste the authorization code from your browser.";
     [self setSigningIn:YES needsCode:YES];
+    [self scheduleSnapshotFromEnvironment:@"ZB_DEBUG_MAC_SECRETS_CODE_PNG"
+                                   status:self.statusLabel.stringValue];
   } else if ([type isEqualToString:@"done"]) {
     self.loginDone = YES;
     [self finishLoginIfReady];
@@ -642,54 +749,47 @@ static NSTextField *zb_label(NSString *text, BOOL secondary) {
     self.browserWindow = parent;
     if (parent != nil) [parent addChildWindow:self.window ordered:NSWindowAbove];
   }
-  if (!self.loginActive) [self refreshStatus];
+  if (!self.loginActive && !self.setupActive) [self refreshStatus];
   if (parent == nil) [self.window center];
   [self showWindow:nil];
   [self.window makeKeyAndOrderFront:nil];
-  if (!self.loginActive) [self.tokenField becomeFirstResponder];
+  if (!self.loginActive && !self.setupActive) [self.tokenField becomeFirstResponder];
 }
 
 - (void)signIn:(id)sender {
   (void)sender;
-  if (self.loginActive || self.loginPid > 1 || self.netPid > 1) return;
-  NSDictionary<NSString *, NSString *> *environment = NSProcessInfo.processInfo.environment;
-  NSString *base = environment[@"XDG_DATA_HOME"];
-  if (base.length == 0) base = [NSHomeDirectory() stringByAppendingPathComponent:@".local/share"];
-  self.home = [base stringByAppendingPathComponent:@"zigbrowser/agent-home"];
-  NSString *debugPackage = zb_mac_drawer_e2e_enabled() ? environment[@"ZB_DEBUG_MAC_AGENT_HOST"] : nil;
-  self.packageDirectory = debugPackage.length > 0 ? debugPackage :
-      [[NSBundle.mainBundle.bundlePath stringByAppendingPathComponent:@"Contents/Frameworks/agent-host"] copy];
-  self.python = [self.packageDirectory
-      stringByAppendingPathComponent:@"Python.framework/Versions/3.12/bin/python3.12"];
-  NSFileManager *files = NSFileManager.defaultManager;
-  BOOL directory = NO;
-  NSArray<NSString *> *requiredFiles = @[
-    [self.packageDirectory stringByAppendingPathComponent:@"zb_agent_host/netd.py"],
-    [self.home stringByAppendingPathComponent:@"runtime/host/zb_agent_host/__main__.py"],
-    [self.home stringByAppendingPathComponent:@"runtime/net-login.json"],
-  ];
-  BOOL ready = [files isExecutableFileAtPath:self.python];
-  for (NSString *path in requiredFiles) {
-    ready = ready && [files fileExistsAtPath:path isDirectory:&directory] && !directory;
+  if (self.setupActive || self.loginActive || self.loginPid > 1 || self.netPid > 1) return;
+  [self configureAgentPaths];
+  if (![self packageReady]) {
+    self.statusLabel.stringValue = @"Claude Agent setup could not start.";
+    return;
   }
-  const char *fake = zb_mac_drawer_e2e_enabled() ? getenv("ZIGBROWSER_AGENT_CLAUDE_CLI") : NULL;
-  if (fake != NULL && (fake[0] != '/' || access(fake, X_OK) != 0)) ready = NO;
-  if (!ready) {
-    self.statusLabel.stringValue = @"Claude Agent setup must finish before sign-in.";
+  self.clearWasEnabled = self.clearButton.enabled;
+  if ([self agentHomeReady]) {
+    [self beginLogin];
     return;
   }
 
-  zb_agent_helper_stop();
-  self.loginEpoch++;
-  self.loginActive = YES;
-  self.loginDone = NO;
-  self.tokenEOF = NO;
-  self.loginFailed = NO;
-  self.clearWasEnabled = self.clearButton.enabled;
-  self.capturedToken = nil;
-  self.statusLabel.stringValue = @"Starting secure Claude sign-in…";
+  self.setupActive = YES;
+  NSUInteger epoch = ++self.setupEpoch;
+  self.statusLabel.stringValue = ZBMacFirstRunSetupText;
   [self setSigningIn:YES needsCode:NO];
-  [self startLoginNetwork:self.loginEpoch];
+  [self scheduleSnapshotFromEnvironment:@"ZB_DEBUG_MAC_SECRETS_SETUP_PNG"
+                                 status:ZBMacFirstRunSetupText];
+  __weak ZBMacSecretsWindowController *weakSelf = self;
+  zb_mac_agent_setup_start_or_join(^(BOOL success, NSString *errorLine) {
+    ZBMacSecretsWindowController *strongSelf = weakSelf;
+    if (strongSelf == nil || !strongSelf.setupActive || strongSelf.setupEpoch != epoch) return;
+    strongSelf.setupActive = NO;
+    if (!success || ![strongSelf agentHomeReady]) {
+      [strongSelf setSigningIn:NO needsCode:NO];
+      strongSelf.clearButton.enabled = strongSelf.clearWasEnabled;
+      strongSelf.statusLabel.stringValue = errorLine.length > 0
+          ? errorLine : @"Claude Agent setup failed.";
+      return;
+    }
+    [strongSelf beginLogin];
+  });
 }
 
 - (void)sendCode:(id)sender {
@@ -754,6 +854,10 @@ static NSTextField *zb_label(NSString *text, BOOL secondary) {
 
 - (void)windowWillClose:(NSNotification *)notification {
   (void)notification;
+  if (self.setupActive) {
+    self.setupActive = NO;
+    self.setupEpoch++;
+  }
   if (self.loginActive) {
     (void)[self writeLoginFrame:@{@"type": @"cancel"}];
     [self failLoginWithText:@"Claude sign-in was cancelled."];

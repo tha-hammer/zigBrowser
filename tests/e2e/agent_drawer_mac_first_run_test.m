@@ -3,7 +3,8 @@
  * The test executable doubles as the setup child: when relaunched with
  * --agent-setup it records that exact invocation and exits successfully.  The
  * parent drives a real ZBMacDrawerPanel Send with no configured helper and
- * requires visible progress, completion, and no terminal instruction. */
+ * requires visible progress, one shared setup task, completion, and no
+ * terminal instruction. */
 #import "agent_drawer_mac.h"
 #import "agent_helper.h"
 
@@ -14,11 +15,22 @@
 #import <unistd.h>
 
 int zb_agent_helper_configured(void) { return 0; }
+int zb_mac_drawer_e2e_enabled(void) { return 0; }
+unsigned int zb_drawer_demo_messages(void) { return 0; }
 void zb_agent_helper_send(unsigned int window_id, const char *text) {
   (void)window_id;
   (void)text;
 }
 void zb_mac_secrets_window_open(NSWindow *parent) { (void)parent; }
+int zb_mac_secrets_window_acceptance_store(NSWindow *parent, const char *token) {
+  (void)parent;
+  (void)token;
+  return 0;
+}
+int zb_mac_secrets_window_acceptance_clear_if_matches(const char *token) {
+  (void)token;
+  return 0;
+}
 int zb_drawer_card_press(uint64_t card, int control, int own) {
   (void)card;
   (void)control;
@@ -98,7 +110,7 @@ int main(int argc, char **argv) {
   const char *marker = getenv("ZB_FIRST_RUN_MARKER");
   if (argc == 2 && strcmp(argv[1], "--agent-setup") == 0) {
     if (marker == NULL) return 91;
-    FILE *stream = fopen(marker, "w");
+    FILE *stream = fopen(marker, "a");
     if (stream == NULL) return 92;
     fputs("--agent-setup\n", stream);
     fclose(stream);
@@ -124,13 +136,26 @@ int main(int argc, char **argv) {
         !has_text(panel, @"Setting up Claude Agent…")) {
       fail("Send did not show first-run setup progress");
     }
+    __block BOOL joined = NO;
+    __block BOOL joinSucceeded = NO;
+    zb_mac_agent_setup_start_or_join(^(BOOL success, NSString *errorLine) {
+      (void)errorLine;
+      joinSucceeded = success;
+      joined = YES;
+    });
     pump_until(^BOOL { return access(marker, F_OK) == 0; }, 5.0);
     if (access(marker, F_OK) != 0) fail("Send did not relaunch this app with --agent-setup");
     pump_until(^BOOL { return [status.stringValue isEqualToString:@"Setup complete"]; }, 5.0);
+    pump_until(^BOOL { return joined; }, 5.0);
     if (![status.stringValue isEqualToString:@"Setup complete"] ||
         !has_text(panel, @"Claude Agent setup is complete. Restart zigBrowser to start chatting.")) {
       fail("successful setup did not finish visibly");
     }
+    if (!joined || !joinSucceeded) fail("second setup caller did not join the running task");
+    NSString *invocations = [NSString stringWithContentsOfFile:
+        [NSString stringWithUTF8String:marker] encoding:NSUTF8StringEncoding error:nil];
+    if (![invocations isEqualToString:@"--agent-setup\n"])
+      fail("shared setup coordinator launched more than one task");
     if (has_text(panel, @ZB_AGENT_TEXT_RUNTIME)) fail("drawer still tells the user to run a terminal command");
     puts("PASS agent-drawer-mac-first-run Send launches setup and shows progress");
   }

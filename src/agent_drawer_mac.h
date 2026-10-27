@@ -24,6 +24,12 @@ void zb_mac_drawer_panel_e2e_send(NSView *panel, const char *utf8_text);
 /* role is "user", "assistant" or "status"; text is UTF-8 and shown verbatim. */
 void zb_mac_drawer_panel_append(NSView *panel, const char *role, const char *utf8_text);
 
+/* One application-wide first-run setup task. Callers that arrive while setup
+ * is running join it and receive the same result instead of spawning a second
+ * process that would lose the agent-home lock. Main thread only. */
+typedef void (^ZBMacAgentSetupCompletion)(BOOL success, NSString *error_line);
+void zb_mac_agent_setup_start_or_join(ZBMacAgentSetupCompletion completion);
+
 /* Host (agent_drawer_mac_host.m). Called by wkwebview_shim.m once per browser window. */
 void zb_mac_drawer_attach(NSWindow *window, NSView *webview,
                           unsigned int window_id);

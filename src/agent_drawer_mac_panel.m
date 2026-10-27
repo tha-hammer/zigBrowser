@@ -76,7 +76,6 @@ enum {
 @property(nonatomic, assign) BOOL streamFull;
 @property(nonatomic, assign) NSUInteger scrollGeneration;
 @property(nonatomic, strong) NSMutableDictionary<NSNumber *, ZBMacApprovalCard *> *cards;
-@property(nonatomic, strong) NSTask *setupTask;
 @property(nonatomic, assign) BOOL setupRunning;
 @property(nonatomic, assign) BOOL acceptanceStarted;
 @property(nonatomic, assign) BOOL acceptanceSent;
@@ -109,6 +108,68 @@ enum {
 @end
 
 static NSHashTable<ZBMacDrawerPanel *> *zb_mac_drawer_panels;
+static NSTask *zb_mac_agent_setup_task;
+static NSMutableArray *zb_mac_agent_setup_waiters;
+
+static NSString *zb_mac_agent_setup_error_line(NSData *data, NSError *launch_error) {
+  NSString *text = data.length > 0
+      ? [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding]
+      : nil;
+  __block NSString *last = nil;
+  [text enumerateLinesUsingBlock:^(NSString *line, BOOL *stop) {
+    (void)stop;
+    NSString *trimmed = [line stringByTrimmingCharactersInSet:
+        NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    if (trimmed.length > 0) last = trimmed;
+  }];
+  if (last.length > 0) return last;
+  if (launch_error.localizedDescription.length > 0) return launch_error.localizedDescription;
+  return @"Claude Agent setup failed.";
+}
+
+static void zb_mac_agent_setup_finish(BOOL success, NSString *error_line) {
+  NSArray *waiters = [zb_mac_agent_setup_waiters copy] ?: @[];
+  zb_mac_agent_setup_waiters = nil;
+  zb_mac_agent_setup_task = nil;
+  for (ZBMacAgentSetupCompletion completion in waiters) completion(success, error_line);
+}
+
+void zb_mac_agent_setup_start_or_join(ZBMacAgentSetupCompletion completion) {
+  if (![NSThread isMainThread] || completion == nil) return;
+  if (zb_mac_agent_setup_waiters == nil) zb_mac_agent_setup_waiters = [NSMutableArray array];
+  [zb_mac_agent_setup_waiters addObject:[completion copy]];
+  if (zb_mac_agent_setup_task != nil) return;
+
+  NSString *executable = NSBundle.mainBundle.executablePath;
+  if (executable.length == 0) {
+    zb_mac_agent_setup_finish(NO, @"Claude Agent setup could not start.");
+    return;
+  }
+  NSTask *task = [[NSTask alloc] init];
+  NSPipe *errors = [NSPipe pipe];
+  task.executableURL = [NSURL fileURLWithPath:executable];
+  task.arguments = @[@"--agent-setup"];
+  task.standardInput = NSFileHandle.fileHandleWithNullDevice;
+  task.standardOutput = NSFileHandle.fileHandleWithNullDevice;
+  task.standardError = errors;
+  zb_mac_agent_setup_task = task;
+  NSError *launch_error = nil;
+  if (![task launchAndReturnError:&launch_error]) {
+    zb_mac_agent_setup_finish(NO, zb_mac_agent_setup_error_line(nil, launch_error));
+    return;
+  }
+
+  dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+    NSData *error_data = [errors.fileHandleForReading readDataToEndOfFile];
+    [task waitUntilExit];
+    BOOL success = task.terminationReason == NSTaskTerminationReasonExit &&
+                   task.terminationStatus == 0;
+    NSString *line = success ? nil : zb_mac_agent_setup_error_line(error_data, nil);
+    dispatch_async(dispatch_get_main_queue(), ^{
+      if (zb_mac_agent_setup_task == task) zb_mac_agent_setup_finish(success, line);
+    });
+  });
+}
 
 static NSMutableData *zb_mac_read_private_file(NSString *path, size_t limit) {
   if (path.length == 0 || !path.isAbsolutePath) return nil;
@@ -578,49 +639,27 @@ static void zb_mac_configure_plain_text(NSTextView *view) {
 
 - (void)startFirstRunSetup {
   if (self.setupRunning) return;
-  NSString *executable = NSBundle.mainBundle.executablePath;
-  if (executable.length == 0) {
-    self.statusLabel.stringValue = @"Setup failed";
-    self.setupButton.hidden = NO;
-    [self appendRole:@"status" text:@"Claude Agent setup could not start."];
-    return;
-  }
-
   self.setupRunning = YES;
   self.setupButton.hidden = YES;
   self.statusLabel.stringValue = @"Setting up…";
   [self appendRole:@"status" text:@"Setting up Claude Agent…"];
 
-  NSTask *task = [[NSTask alloc] init];
-  task.executableURL = [NSURL fileURLWithPath:executable];
-  task.arguments = @[@"--agent-setup"];
-  self.setupTask = task;
   __weak ZBMacDrawerPanel *weakSelf = self;
-  task.terminationHandler = ^(NSTask *finished) {
-    dispatch_async(dispatch_get_main_queue(), ^{
-      ZBMacDrawerPanel *strongSelf = weakSelf;
-      if (strongSelf == nil || strongSelf.setupTask != finished) return;
-      strongSelf.setupTask = nil;
-      strongSelf.setupRunning = NO;
-      if (finished.terminationReason == NSTaskTerminationReasonExit && finished.terminationStatus == 0) {
-        strongSelf.statusLabel.stringValue = @"Setup complete";
-        [strongSelf appendRole:@"status"
-                           text:@"Claude Agent setup is complete. Restart zigBrowser to start chatting."];
-      } else {
-        strongSelf.statusLabel.stringValue = @"Setup failed";
-        strongSelf.setupButton.hidden = NO;
-        [strongSelf appendRole:@"status" text:@"Claude Agent setup failed. Open Account and try again."];
-      }
-    });
-  };
-  NSError *error = nil;
-  if (![task launchAndReturnError:&error]) {
-    self.setupTask = nil;
-    self.setupRunning = NO;
-    self.statusLabel.stringValue = @"Setup failed";
-    self.setupButton.hidden = NO;
-    [self appendRole:@"status" text:@"Claude Agent setup could not start."];
-  }
+  zb_mac_agent_setup_start_or_join(^(BOOL success, NSString *error_line) {
+    ZBMacDrawerPanel *strongSelf = weakSelf;
+    if (strongSelf == nil || !strongSelf.setupRunning) return;
+    strongSelf.setupRunning = NO;
+    if (success) {
+      strongSelf.statusLabel.stringValue = @"Setup complete";
+      [strongSelf appendRole:@"status"
+                         text:@"Claude Agent setup is complete. Restart zigBrowser to start chatting."];
+    } else {
+      strongSelf.statusLabel.stringValue = @"Setup failed";
+      strongSelf.setupButton.hidden = NO;
+      [strongSelf appendRole:@"status"
+                         text:error_line.length > 0 ? error_line : @"Claude Agent setup failed."];
+    }
+  });
 }
 
 - (void)appendRole:(NSString *)role text:(NSString *)text {

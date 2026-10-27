@@ -21,7 +21,7 @@ from pathlib import Path
 
 
 DEAD_END = "Claude Agent setup must finish before sign-in."
-SETTING_UP = "Setting up the Claude Agent (first time, about a minute)…"
+SETTING_UP = "Setting up the Claude Agent (first time, about a minute)..."
 NEED_CODE = "Paste the authorization code from your browser."
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 
