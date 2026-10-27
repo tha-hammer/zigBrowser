@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
-"""Installed macOS app: first-action Sign in provisions, then starts login.
+"""Installed macOS app: first-action Sign in provisions or refreshes, then starts login.
 
 The installed app gets a fresh XDG_DATA_HOME but keeps the real HOME, matching
-the owner's first-install path and allowing the login Keychain to work.  An
-offline setup-token fake stops the flow at the authorization-code field.
+the owner's first-install path and allowing the login Keychain to work. An
+optional older app provisions the stale runtime; login stops at the real or
+offline setup-token CLI's authorization-code field.
 """
 
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import signal
@@ -21,7 +23,7 @@ from pathlib import Path
 
 
 DEAD_END = "Claude Agent setup must finish before sign-in."
-SETTING_UP = "Setting up the Claude Agent (first time, about a minute)..."
+SETTING_UP = "Setting up the Claude Agent..."
 NEED_CODE = "Paste the authorization code from your browser."
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 
@@ -110,10 +112,19 @@ def write_private(path: Path, data: bytes) -> None:
         os.close(fd)
 
 
+def sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        while chunk := stream.read(1024 * 1024):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--app", required=True, type=Path)
-    parser.add_argument("--fake-cli", required=True, type=Path)
+    parser.add_argument("--old-app", type=Path)
+    parser.add_argument("--fake-cli", type=Path)
     parser.add_argument("--work-dir", required=True, type=Path)
     parser.add_argument("--setup-png", required=True, type=Path)
     parser.add_argument("--code-png", required=True, type=Path)
@@ -124,12 +135,18 @@ def main() -> int:
 
     app = args.app.resolve()
     executable = app / "Contents/MacOS/zigBrowser"
-    fake = args.fake_cli.resolve()
+    old_app = args.old_app.resolve() if args.old_app is not None else None
+    old_executable = old_app / "Contents/MacOS/zigBrowser" if old_app is not None else None
+    fake = args.fake_cli.resolve() if args.fake_cli is not None else None
     work_dir = args.work_dir.resolve()
     setup_png = args.setup_png.expanduser().resolve()
     code_png = args.code_png.expanduser().resolve()
-    if not executable.is_file() or not fake.is_file() or not os.access(fake, os.X_OK):
-        return fail("installed app or executable fake CLI is missing")
+    if not executable.is_file():
+        return fail("installed app is missing")
+    if old_executable is not None and not old_executable.is_file():
+        return fail("installed old app is missing")
+    if fake is not None and (not fake.is_file() or not os.access(fake, os.X_OK)):
+        return fail("executable fake CLI is missing")
     if not work_dir.is_dir():
         return fail("owned work directory is missing")
     for output in (setup_png, code_png):
@@ -137,7 +154,7 @@ def main() -> int:
             return fail(f"refusing snapshot output: {output}")
 
     root = Path(tempfile.mkdtemp(prefix="fresh-signin-", dir=work_dir))
-    for name in ("data", "profile", "tmp"):
+    for name in ("data", "profile", "source-home", "tmp"):
         (root / name).mkdir(mode=0o700)
     token_file = root / "invalid-token"
     action_file = root / "open-secrets.json"
@@ -155,39 +172,76 @@ def main() -> int:
         ).encode("utf-8"),
     )
 
+    home = root / "data/zigbrowser/agent-home"
+    old_current = None
+    old_login_hash = None
+    state_canary = home / "state/refresh-state-canary"
+    if old_executable is not None:
+        setup_env = {
+            "HOME": str(root / "source-home"),
+            "XDG_DATA_HOME": str(root / "data"),
+            "TMPDIR": str(root / "tmp"),
+            "PATH": "/usr/bin:/bin",
+            "LANG": "en_US.UTF-8",
+        }
+        setup = subprocess.run(
+            [str(old_executable), "--agent-setup"],
+            env=setup_env,
+            capture_output=True,
+            text=True,
+            timeout=args.timeout,
+            check=False,
+        )
+        if setup.returncode != 0:
+            return fail(f"old installed app setup exited {setup.returncode}: {setup.stderr.strip()}")
+        current = home / "current"
+        old_login = home / "runtime/host/zb_agent_host/login.py"
+        new_login = app / "Contents/Frameworks/agent-host/zb_agent_host/login.py"
+        if not current.is_symlink() or not old_login.is_file() or not new_login.is_file():
+            return fail("old installed app did not provision the expected runtime")
+        old_current = os.readlink(current)
+        old_login_hash = sha256(old_login)
+        if old_login_hash == sha256(new_login):
+            return fail("old and new applications do not carry different login.py content")
+        write_private(state_canary, b"preserve-owner-state\n")
+
     stdout_path = root / "browser.stdout"
     stderr_path = root / "browser.stderr"
     before = app_pids(executable)
-    proc = subprocess.Popen(
-        [
-            "/usr/bin/open",
-            "-n",
-            "-W",
-            "-o",
-            str(stdout_path),
-            "--stderr",
-            str(stderr_path),
-            "--env",
-            f"XDG_DATA_HOME={root / 'data'}",
-            "--env",
-            f"TMPDIR={root / 'tmp'}",
-            "--env",
-            f"ZB_DEBUG_OWNER_ACCEPTANCE_FILE={action_file}",
+    open_args = [
+        "/usr/bin/open",
+        "-n",
+        "-W",
+        "-o",
+        str(stdout_path),
+        "--stderr",
+        str(stderr_path),
+        "--env",
+        f"XDG_DATA_HOME={root / 'data'}",
+        "--env",
+        f"TMPDIR={root / 'tmp'}",
+        "--env",
+        f"ZB_DEBUG_OWNER_ACCEPTANCE_FILE={action_file}",
+        "--env",
+        f"ZB_DEBUG_MAC_SECRETS_SETUP_PNG={setup_png}",
+        "--env",
+        f"ZB_DEBUG_MAC_SECRETS_CODE_PNG={code_png}",
+        str(app),
+        "--args",
+        "about:blank",
+        "--agent-drawer",
+        "on",
+        "--e2e-protocol",
+        "--profile-dir",
+        str(root / "profile"),
+    ]
+    if fake is not None:
+        open_args[open_args.index(str(app)):open_args.index(str(app))] = [
             "--env",
             f"ZIGBROWSER_AGENT_CLAUDE_CLI={fake}",
-            "--env",
-            f"ZB_DEBUG_MAC_SECRETS_SETUP_PNG={setup_png}",
-            "--env",
-            f"ZB_DEBUG_MAC_SECRETS_CODE_PNG={code_png}",
-            str(app),
-            "--args",
-            "about:blank",
-            "--agent-drawer",
-            "on",
-            "--e2e-protocol",
-            "--profile-dir",
-            str(root / "profile"),
-        ],
+        ]
+    proc = subprocess.Popen(
+        open_args,
         stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
@@ -233,6 +287,9 @@ def main() -> int:
             saw_setup = saw_setup or SETTING_UP in text
             if NEED_CODE in text:
                 break
+            if "Claude sign-in failed" in text:
+                detail = f"; stale helper sha256={old_login_hash}" if old_login_hash is not None else ""
+                return fail(f"sign-in failed before authorization-code step{detail}")
             if proc.poll() is not None:
                 return fail(f"installed app exited before authorization-code step: {proc.returncode}")
             time.sleep(0.2)
@@ -240,7 +297,20 @@ def main() -> int:
             return fail("sign-in never reached the authorization-code step")
 
         if not saw_setup:
-            return fail("Secrets never showed first-time setup progress")
+            return fail("Secrets never showed runtime setup progress")
+        if old_current is not None:
+            current = home / "current"
+            current_login = home / "runtime/host/zb_agent_host/login.py"
+            bundled_login = app / "Contents/Frameworks/agent-host/zb_agent_host/login.py"
+            if not current.is_symlink() or os.readlink(current) == old_current:
+                return fail(f"current still selects stale distribution {old_current}")
+            if not current_login.is_file() or sha256(current_login) != sha256(bundled_login):
+                return fail("refreshed helper does not match the installed application")
+            if state_canary.read_bytes() != b"preserve-owner-state\n":
+                return fail("runtime refresh changed persistent owner state")
+            login_log = (home / "state/login.log").read_text(encoding="utf-8", errors="replace")
+            if "step=frame-need-code" not in login_log:
+                return fail("real CLI did not record frame-need-code after refresh")
         setup_size, code_size = png_size(setup_png), png_size(code_png)
         if setup_size is None:
             return fail("missing readable-size in-app setup PNG")
@@ -248,7 +318,7 @@ def main() -> int:
             return fail("missing readable-size in-app authorization-code PNG")
         print(
             "PASS\tmac-fresh-signin-setup\t"
-            f"setup-then-code\t{setup_size[0]}x{setup_size[1]}\t"
+            f"refresh-then-code\t{setup_size[0]}x{setup_size[1]}\t"
             f"{code_size[0]}x{code_size[1]}",
             flush=True,
         )
