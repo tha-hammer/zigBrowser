@@ -532,9 +532,11 @@ def case_clean_install(binary: Path, tmp: Path, check: Checks) -> None:
         return
     runtime = prefix / "lib" / "zigbrowser" / "agent-host"
     host = json.loads((w.agent / "runtime" / "host.json").read_text())
-    lock = hashlib.sha256((REPO / "agent" / "host" / "uv.lock").read_bytes()).hexdigest()
-    check(host == {"python": str(runtime / "venv" / "bin" / "python"), "runtime_lock": lock},
-          f"clean install: host.json names the installed runtime and its lock ({host})")
+    identity = json.loads((runtime / "runtime.json").read_text())
+    check(host == {"python": str(runtime / "venv" / "bin" / "python"),
+                   "runtime_lock": identity["lock_sha256"],
+                   "host_sha256": identity["host_sha256"]},
+          f"clean install: host.json names the installed runtime identity ({host})")
     route = json.loads((w.agent / "runtime" / "token-route.json").read_text())
     check(route["route"] == "R1", f"clean install: the probe selected R1 through the installed runtime ({route})")
     bare = tmp / "bare"

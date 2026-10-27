@@ -144,17 +144,22 @@ test "a prompt over 64 KiB is not sent" {
     try std.testing.expect((try helper.promptFrame(arena.allocator(), 1, "s-1-1", 1, big[0 .. 64 * 1024])) != null);
 }
 
-test "the runtime lock recorded by --agent-setup must match the installed runtime" {
+test "the runtime identity recorded by --agent-setup must match the installed runtime" {
     const gpa = std.testing.allocator;
     const lock = "ab" ** 32;
-    const host = "{\"python\": \"/rt/venv/bin/python\", \"runtime_lock\": \"" ++ lock ++ "\"}";
-    try std.testing.expectEqual(helper.RuntimeCheck.ok, helper.checkRuntime(gpa, host, "{\"lock_sha256\": \"" ++ lock ++ "\"}"));
-    try std.testing.expectEqual(helper.RuntimeCheck.changed, helper.checkRuntime(gpa, host, "{\"lock_sha256\": \"" ++ "cd" ** 32 ++ "\"}"));
+    const package = "cd" ** 32;
+    const host = "{\"python\": \"/rt/venv/bin/python\", \"runtime_lock\": \"" ++ lock ++
+        "\", \"host_sha256\": \"" ++ package ++ "\"}";
+    const installed = "{\"lock_sha256\": \"" ++ lock ++ "\", \"host_sha256\": \"" ++ package ++ "\"}";
+    try std.testing.expectEqual(helper.RuntimeCheck.ok, helper.checkRuntime(gpa, host, installed));
+    try std.testing.expectEqual(helper.RuntimeCheck.changed, helper.checkRuntime(gpa, host, "{\"lock_sha256\": \"" ++ lock ++ "\", \"host_sha256\": \"" ++ "ef" ** 32 ++ "\"}"));
+    try std.testing.expectEqual(helper.RuntimeCheck.changed, helper.checkRuntime(gpa, "{\"python\": \"/p\", \"runtime_lock\": \"" ++ lock ++ "\"}", installed));
     // A development checkout has no lock on either side.
     try std.testing.expectEqual(helper.RuntimeCheck.ok, helper.checkRuntime(gpa, "{\"python\": \"/p\", \"runtime_lock\": null}", null));
     try std.testing.expectEqual(helper.RuntimeCheck.changed, helper.checkRuntime(gpa, host, null));
     try std.testing.expectEqual(helper.RuntimeCheck.missing, helper.checkRuntime(gpa, null, null));
     try std.testing.expectEqual(helper.RuntimeCheck.missing, helper.checkRuntime(gpa, "not json", null));
+    try std.testing.expectEqual(@as(c_int, 1), helper.zb_agent_runtime_identity_matches(host.ptr, host.len, installed.ptr, installed.len));
 }
 
 test "restarts back off 1, 2, 4, then 8 s" {

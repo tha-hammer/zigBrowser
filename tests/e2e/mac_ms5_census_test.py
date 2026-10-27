@@ -4,7 +4,7 @@
   from the repo: the MS1 components, the python-runtime pair, and resources = runtime.json plus every regular file
   of agent/host/zb_agent_host/ (no __pycache__), each at its exact bundle path. The committed file must equal the
   generated one (drift is red).
-- runtime.json is exactly '{"lock_sha256": "<sha256 of agent/host/uv.lock>"}\\n' (tools/install_agent_runtime.sh's bytes).
+- runtime.json exactly identifies the dependency lock and helper-package content.
 - The exact-manifest walk over a staged Frameworks/agent-host/zb_agent_host/: every entry is a listed regular file
   or a directory implied by one; a missing file, an extra file, an extra directory, any symlink (also one to an
   outside canary) and any special file (a FIFO) are each a problem. It uses lstat: it never follows the symlink and
@@ -90,11 +90,16 @@ class RuntimeJson(unittest.TestCase):
 
     def test_runtime_json_is_exactly_the_installers_bytes(self):
         lock = (REPO / "agent" / "host" / "uv.lock").read_bytes()
-        want = ('{"lock_sha256": "%s"}\n' % hashlib.sha256(lock).hexdigest()).encode()
+        want = ('{"lock_sha256": "%s", "host_sha256": "%s"}\n' %
+                (hashlib.sha256(lock).hexdigest(), mac_ms5_census.package_sha256(PKG))).encode()
         self.assertEqual(mac_ms5_census.expected_runtime_json(lock), want)
         self.assertIsNone(mac_ms5_census.runtime_json_problem(want, lock))
-        other = ('{"lock_sha256": "%s"}\n' % ("0" * 64)).encode()
+        other = ('{"lock_sha256": "%s", "host_sha256": "%s"}\n' %
+                 ("0" * 64, mac_ms5_census.package_sha256(PKG))).encode()
         self.assertIsNotNone(mac_ms5_census.runtime_json_problem(other, lock), "another lock_sha256 is red")
+        stale = ('{"lock_sha256": "%s", "host_sha256": "%s"}\n' %
+                 (hashlib.sha256(lock).hexdigest(), "0" * 64)).encode()
+        self.assertIsNotNone(mac_ms5_census.runtime_json_problem(stale, lock), "another host_sha256 is red")
         self.assertIsNotNone(mac_ms5_census.runtime_json_problem(want.rstrip(b"\n"), lock), "no newline is red")
 
 

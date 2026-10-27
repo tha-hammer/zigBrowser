@@ -424,13 +424,19 @@ def manifest(claude):
     return out
 
 
-def runtime_lock(package_dir):
-    """The installed runtime's lock hash (runtime.json beside the package,
-    written by tools/install_agent_runtime.sh); None for a checkout."""
+def runtime_identity(package_dir):
+    """The installed dependency and host-package hashes, or ``(None, None)``
+    for a checkout or malformed manifest."""
     try:
-        return json.loads((Path(package_dir) / "runtime.json").read_text())["lock_sha256"]
+        record = json.loads((Path(package_dir) / "runtime.json").read_text())
+        lock = record["lock_sha256"]
+        host = record["host_sha256"]
+        if not all(isinstance(value, str) and re.fullmatch(r"[0-9a-f]{64}", value)
+                   for value in (lock, host)):
+            raise ValueError("invalid runtime identity")
+        return lock, host
     except (OSError, ValueError, KeyError, TypeError):
-        return None
+        return None, None
 
 
 def net_manifest():
@@ -514,7 +520,9 @@ def stage(home, source, source_home, source_path, python, cli, staging, package_
                      json.dumps(list(sandbox_macos.read_bindings(hook_reads))), 0o600)
     atomic_write(runtime / "net-login.json", json.dumps(login_net_manifest()), 0o600)
     atomic_write(runtime / "path.json", json.dumps(dirs), 0o600)
-    atomic_write(runtime / "host.json", json.dumps({"python": str(python), "runtime_lock": runtime_lock(package_dir)}), 0o600)
+    runtime_lock, host_sha256 = runtime_identity(package_dir)
+    atomic_write(runtime / "host.json", json.dumps({"python": str(python), "runtime_lock": runtime_lock,
+                                                     "host_sha256": host_sha256}), 0o600)
     shutil.copytree(Path(package_dir) / "zb_agent_host", runtime / "host" / "zb_agent_host",
                     ignore=shutil.ignore_patterns("__pycache__"))
     atomic_write(runtime / "config-manifest.json", json.dumps(manifest(claude), indent=1), 0o600)

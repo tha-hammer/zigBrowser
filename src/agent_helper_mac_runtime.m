@@ -150,6 +150,22 @@ static void zb_terminate_owned_group(pid_t *pid) {
 - (void)stop;
 @end
 
+int zb_agent_runtime_identity_current(const char *home_path, const char *package_path) {
+  if (home_path == NULL || package_path == NULL) return 0;
+  @autoreleasepool {
+    NSString *home = [NSString stringWithUTF8String:home_path];
+    NSString *package = [NSString stringWithUTF8String:package_path];
+    if (home == nil || package == nil) return 0;
+    NSData *recorded = [NSData dataWithContentsOfFile:
+        [home stringByAppendingPathComponent:@"runtime/host.json"]];
+    NSData *installed = [NSData dataWithContentsOfFile:
+        [package stringByAppendingPathComponent:@"runtime.json"]];
+    if (recorded.length == 0 || installed.length == 0) return 0;
+    return zb_agent_runtime_identity_matches(recorded.bytes, recorded.length,
+                                              installed.bytes, installed.length);
+  }
+}
+
 @implementation ZBMacAgentHelper
 
 + (instancetype)shared {
@@ -204,7 +220,9 @@ static void zb_terminate_owned_group(pid_t *pid) {
   return [files isExecutableFileAtPath:self.python] &&
          [files fileExistsAtPath:current] &&
          [files fileExistsAtPath:hostMain isDirectory:&directory] && !directory &&
-         [files fileExistsAtPath:manifest isDirectory:&directory] && !directory;
+         [files fileExistsAtPath:manifest isDirectory:&directory] && !directory &&
+         zb_agent_runtime_identity_current(self.home.fileSystemRepresentation,
+                                           self.packageDirectory.fileSystemRepresentation);
 }
 
 - (void)reportUnavailable:(unsigned int)windowId message:(NSString *)message {

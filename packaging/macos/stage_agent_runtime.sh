@@ -9,7 +9,7 @@
 #   * pkgutil --expand-full into a temporary directory; the installer is NEVER run, nothing goes to a system path;
 #   * Python_Framework.pkg/Payload -> agent-host/Python.framework, without Versions/3.12/bin/*-intel64;
 #   * agent/host/zb_agent_host/'s regular files (no __pycache__, no symlink) -> agent-host/zb_agent_host/;
-#   * agent-host/runtime.json = '{"lock_sha256": "<sha256 of agent/host/uv.lock>"}\n' (install_agent_runtime.sh's bytes);
+#   * agent-host/runtime.json identifies the locked dependencies and exact staged zb_agent_host content;
 #   * with the two per-arch site-packages trees (packaging/macos/build_site_packages.sh, from the lock): their strict
 #     universal2 merge (packaging/macos/merge_universal_tree.py) -> agent-host/site-packages, which holds the fat
 #     Claude CLI at claude_agent_sdk/_bundled/claude (token.bundled_cli()'s path); without them the staging is PARTIAL;
@@ -55,7 +55,25 @@ rm -f "$S/Python.framework/Versions/3.12/bin/"*-intel64
   mkdir -p "$S/$(dirname "$rel")"
   cp "$REPO/agent/host/$rel" "$S/$rel"
 done
-printf '{"lock_sha256": "%s"}\n' "$(shasum -a 256 "$REPO/agent/host/uv.lock" | cut -c1-64)" > "$S/runtime.json"
+host=$(/usr/bin/python3 -I - "$S/zb_agent_host" <<'PY'
+import hashlib
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+digest = hashlib.sha256()
+for path in sorted(p for p in root.rglob("*") if p.is_file() and not p.is_symlink()):
+    rel = path.relative_to(root).as_posix().encode("utf-8")
+    data = path.read_bytes()
+    digest.update(len(rel).to_bytes(4, "big"))
+    digest.update(rel)
+    digest.update(len(data).to_bytes(8, "big"))
+    digest.update(data)
+print(digest.hexdigest())
+PY
+)
+printf '{"lock_sha256": "%s", "host_sha256": "%s"}\n' \
+  "$(shasum -a 256 "$REPO/agent/host/uv.lock" | cut -c1-64)" "$host" > "$S/runtime.json"
 if [ -n "$SITE_X86" ]; then
   /usr/bin/python3 -I "$REPO/packaging/macos/merge_universal_tree.py" "$SITE_X86" "$SITE_ARM" "$S/site-packages" \
     >/dev/null || die "merging the two site-packages trees failed"

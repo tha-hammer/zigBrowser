@@ -24,6 +24,11 @@ static int readyCalls;
 
 int zb_mac_drawer_e2e_enabled(void) { return 1; }
 void zb_agent_helper_stop(void) {}
+int zb_agent_runtime_identity_current(const char *home, const char *packageDirectory) {
+  (void)home;
+  (void)packageDirectory;
+  return 1;
+}
 void zb_mac_agent_setup_start_or_join(ZBMacAgentSetupCompletion completion) {
   completion(NO, @"unexpected setup request");
 }

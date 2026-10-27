@@ -1,6 +1,6 @@
 """MS5.1c census checks beyond the MS1 census (macOS plan rev 17; RoseCat 6865, 6871).
 
-- runtime.json is exactly tools/install_agent_runtime.sh's bytes for the repo's uv.lock;
+- runtime.json is exactly the installer's dependency and helper-content identity;
 - the staged zb_agent_host/ is EXACT: every entry is a listed regular file or a directory implied by one; anything
   else (a missing or extra file, an extra directory, any symlink, any special file) is a problem. The walk uses
   lstat only: it never follows a symlink and never opens a FIFO or device.
@@ -10,9 +10,25 @@ import os
 import stat
 from pathlib import Path
 
+REPO = Path(__file__).resolve().parents[2]
+PACKAGE = REPO / "agent/host/zb_agent_host"
+
+
+def package_sha256(root: Path) -> str:
+    digest = hashlib.sha256()
+    for path in sorted(p for p in root.rglob("*") if p.is_file() and not p.is_symlink()):
+        rel = path.relative_to(root).as_posix().encode("utf-8")
+        data = path.read_bytes()
+        digest.update(len(rel).to_bytes(4, "big"))
+        digest.update(rel)
+        digest.update(len(data).to_bytes(8, "big"))
+        digest.update(data)
+    return digest.hexdigest()
+
 
 def expected_runtime_json(uv_lock: bytes) -> bytes:
-    return ('{"lock_sha256": "%s"}\n' % hashlib.sha256(uv_lock).hexdigest()).encode()
+    return ('{"lock_sha256": "%s", "host_sha256": "%s"}\n' %
+            (hashlib.sha256(uv_lock).hexdigest(), package_sha256(PACKAGE))).encode()
 
 
 def runtime_json_problem(content: bytes, uv_lock: bytes):

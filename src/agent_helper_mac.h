@@ -4,6 +4,7 @@
 #ifndef ZB_AGENT_HELPER_MAC_H
 #define ZB_AGENT_HELPER_MAC_H
 
+#include <stddef.h>
 #include <sys/types.h>
 
 #ifdef __cplusplus
@@ -25,6 +26,12 @@ int zb_mac_agent_helper_spawn_fd3_for_test(
     int stdin_fd, int stdout_fd,
     const char *keychain_path, const char *unlock_password,
     pid_t *out_pid, char **out_err);
+
+/* The portable Zig checker owns runtime-identity semantics. The path-level
+ * wrapper lets native sign-in and drawer admission share that exact decision. */
+int zb_agent_runtime_identity_matches(const unsigned char *host_json, size_t host_len,
+                                      const unsigned char *runtime_json, size_t runtime_len);
+int zb_agent_runtime_identity_current(const char *home, const char *package_directory);
 
 /* Native AppKit session owner retained from the integrated drawer. */
 int zb_agent_helper_configured(void);

@@ -76,6 +76,7 @@ enum {
 @property(nonatomic, assign) BOOL streamFull;
 @property(nonatomic, assign) NSUInteger scrollGeneration;
 @property(nonatomic, strong) NSMutableDictionary<NSNumber *, ZBMacApprovalCard *> *cards;
+@property(nonatomic, strong) NSMutableArray<NSString *> *pendingSetupMessages;
 @property(nonatomic, assign) BOOL setupRunning;
 @property(nonatomic, assign) BOOL acceptanceStarted;
 @property(nonatomic, assign) BOOL acceptanceSent;
@@ -389,6 +390,7 @@ static void zb_mac_configure_plain_text(NSTextView *view) {
   self.layer.backgroundColor = NSColor.windowBackgroundColor.CGColor;
   self.streamText = [NSMutableString string];
   self.cards = [NSMutableDictionary dictionary];
+  self.pendingSetupMessages = [NSMutableArray array];
 
   NSStackView *header = [[NSStackView alloc] initWithFrame:NSZeroRect];
   header.translatesAutoresizingMaskIntoConstraints = NO;
@@ -594,6 +596,7 @@ static void zb_mac_configure_plain_text(NSTextView *view) {
     return;
   }
 
+  [self.pendingSetupMessages addObject:text];
   [self startFirstRunSetup];
 }
 
@@ -641,19 +644,25 @@ static void zb_mac_configure_plain_text(NSTextView *view) {
   if (self.setupRunning) return;
   self.setupRunning = YES;
   self.setupButton.hidden = YES;
-  self.statusLabel.stringValue = @"Setting up…";
-  [self appendRole:@"status" text:@"Setting up Claude Agent…"];
+  self.statusLabel.stringValue = @"Setting up the Claude Agent...";
+  [self appendRole:@"status" text:@"Setting up the Claude Agent..."];
 
   __weak ZBMacDrawerPanel *weakSelf = self;
   zb_mac_agent_setup_start_or_join(^(BOOL success, NSString *error_line) {
     ZBMacDrawerPanel *strongSelf = weakSelf;
     if (strongSelf == nil || !strongSelf.setupRunning) return;
     strongSelf.setupRunning = NO;
-    if (success) {
-      strongSelf.statusLabel.stringValue = @"Setup complete";
-      [strongSelf appendRole:@"status"
-                         text:@"Claude Agent setup is complete. Restart zigBrowser to start chatting."];
+    if (success && zb_agent_helper_configured != NULL && zb_agent_helper_send != NULL &&
+        zb_agent_helper_configured()) {
+      NSArray<NSString *> *messages = [strongSelf.pendingSetupMessages copy];
+      [strongSelf.pendingSetupMessages removeAllObjects];
+      strongSelf.statusLabel.stringValue = @"Starting…";
+      [strongSelf appendRole:@"status" text:@"Claude Agent setup is complete."];
+      for (NSString *message in messages) {
+        zb_agent_helper_send(strongSelf.browserWindowId, message.UTF8String);
+      }
     } else {
+      [strongSelf.pendingSetupMessages removeAllObjects];
       strongSelf.statusLabel.stringValue = @"Setup failed";
       strongSelf.setupButton.hidden = NO;
       [strongSelf appendRole:@"status"

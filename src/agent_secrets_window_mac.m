@@ -25,7 +25,7 @@ static const NSUInteger ZBMacLoginTokenMax = 512;
 static const NSUInteger ZBMacLoginStderrMax = 16384;
 static const char *const ZBMacLoginTestService = "dev.zigbrowser.ClaudeAgentLoginTest";
 static NSString *const ZBMacFirstRunSetupText =
-    @"Setting up the Claude Agent (first time, about a minute)...";
+    @"Setting up the Claude Agent...";
 static const char *const ZBMacPythonBoot =
     "import runpy,sys;sys.path.insert(0,sys.argv.pop(1));"
     "runpy.run_module('zb_agent_host',run_name='__main__',alter_sys=True)";
@@ -444,7 +444,8 @@ static NSTextField *zb_label(NSString *text, BOOL secondary) {
   for (NSString *path in required) {
     if (![files fileExistsAtPath:path isDirectory:&directory] || directory) return NO;
   }
-  return YES;
+  return zb_agent_runtime_identity_current(self.home.fileSystemRepresentation,
+                                           self.packageDirectory.fileSystemRepresentation) != 0;
 }
 
 - (void)beginLogin {

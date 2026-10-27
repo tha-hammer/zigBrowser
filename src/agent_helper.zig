@@ -238,24 +238,38 @@ pub const RuntimeCheck = enum { ok, changed, missing };
 
 /// `host_json`: the home's runtime/host.json (null when unreadable);
 /// `runtime_json`: the installed runtime's runtime.json (null when absent, as
-/// in a development checkout). The recorded lock must equal the installed one.
+/// in a development checkout). Both recorded identities must equal the
+/// installed ones; a new field on only one side is a runtime change.
 pub fn checkRuntime(gpa: std.mem.Allocator, host_json: ?[]const u8, runtime_json: ?[]const u8) RuntimeCheck {
     const host_text = host_json orelse return .missing;
-    const Host = struct { python: []const u8, runtime_lock: ?[]const u8 = null };
+    const Host = struct { python: []const u8, runtime_lock: ?[]const u8 = null, host_sha256: ?[]const u8 = null };
     const host = std.json.parseFromSlice(Host, gpa, host_text, .{ .ignore_unknown_fields = true }) catch return .missing;
     defer host.deinit();
-    const Installed = struct { lock_sha256: ?[]const u8 = null };
+    const Installed = struct { lock_sha256: ?[]const u8 = null, host_sha256: ?[]const u8 = null };
     var installed_lock: ?[]const u8 = null;
+    var installed_host: ?[]const u8 = null;
     var installed: ?std.json.Parsed(Installed) = null;
     defer if (installed) |p| p.deinit();
     if (runtime_json) |text| {
         installed = std.json.parseFromSlice(Installed, gpa, text, .{ .ignore_unknown_fields = true }) catch return .changed;
         installed_lock = installed.?.value.lock_sha256;
+        installed_host = installed.?.value.host_sha256;
     }
-    const recorded = host.value.runtime_lock;
-    if (recorded == null and installed_lock == null) return .ok;
-    if (recorded == null or installed_lock == null) return .changed;
-    return if (std.mem.eql(u8, recorded.?, installed_lock.?)) .ok else .changed;
+    const recorded_lock = host.value.runtime_lock;
+    const recorded_host = host.value.host_sha256;
+    if (!sameOptional(recorded_lock, installed_lock) or !sameOptional(recorded_host, installed_host)) return .changed;
+    return .ok;
+}
+
+fn sameOptional(a: ?[]const u8, b: ?[]const u8) bool {
+    if (a == null or b == null) return a == null and b == null;
+    return std.mem.eql(u8, a.?, b.?);
+}
+
+/// Native macOS launch admission uses the portable checker above rather than
+/// maintaining a second JSON interpretation in Objective-C.
+pub export fn zb_agent_runtime_identity_matches(host_json: [*]const u8, host_len: usize, runtime_json: [*]const u8, runtime_len: usize) c_int {
+    return @intFromBool(checkRuntime(std.heap.page_allocator, host_json[0..host_len], runtime_json[0..runtime_len]) == .ok);
 }
 
 // --- supervision (D7) ---------------------------------------------------------

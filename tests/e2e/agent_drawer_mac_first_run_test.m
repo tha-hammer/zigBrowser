@@ -14,12 +14,19 @@
 #import <string.h>
 #import <unistd.h>
 
-int zb_agent_helper_configured(void) { return 0; }
+static int helperSends;
+static NSString *helperText;
+
+int zb_agent_helper_configured(void) {
+  const char *marker = getenv("ZB_FIRST_RUN_MARKER");
+  return marker != NULL && access(marker, F_OK) == 0;
+}
 int zb_mac_drawer_e2e_enabled(void) { return 0; }
 unsigned int zb_drawer_demo_messages(void) { return 0; }
 void zb_agent_helper_send(unsigned int window_id, const char *text) {
   (void)window_id;
-  (void)text;
+  helperSends++;
+  helperText = text != NULL ? [NSString stringWithUTF8String:text] : nil;
 }
 void zb_mac_secrets_window_open(NSWindow *parent) { (void)parent; }
 int zb_mac_secrets_window_acceptance_store(NSWindow *parent, const char *token) {
@@ -132,8 +139,8 @@ int main(int argc, char **argv) {
     [panel performSelector:@selector(sendInput)];
 #pragma clang diagnostic pop
 
-    if (![status.stringValue isEqualToString:@"Setting up…"] ||
-        !has_text(panel, @"Setting up Claude Agent…")) {
+    if (![status.stringValue isEqualToString:@"Setting up the Claude Agent..."] ||
+        !has_text(panel, @"Setting up the Claude Agent...")) {
       fail("Send did not show first-run setup progress");
     }
     __block BOOL joined = NO;
@@ -145,12 +152,14 @@ int main(int argc, char **argv) {
     });
     pump_until(^BOOL { return access(marker, F_OK) == 0; }, 5.0);
     if (access(marker, F_OK) != 0) fail("Send did not relaunch this app with --agent-setup");
-    pump_until(^BOOL { return [status.stringValue isEqualToString:@"Setup complete"]; }, 5.0);
+    pump_until(^BOOL { return helperSends == 1; }, 5.0);
     pump_until(^BOOL { return joined; }, 5.0);
-    if (![status.stringValue isEqualToString:@"Setup complete"] ||
-        !has_text(panel, @"Claude Agent setup is complete. Restart zigBrowser to start chatting.")) {
-      fail("successful setup did not finish visibly");
+    if (![status.stringValue isEqualToString:@"Starting…"] ||
+        !has_text(panel, @"Claude Agent setup is complete.")) {
+      fail("successful setup did not resume visibly");
     }
+    if (helperSends != 1 || ![helperText isEqualToString:@"hello"])
+      fail("successful setup did not resume the pending Send");
     if (!joined || !joinSucceeded) fail("second setup caller did not join the running task");
     NSString *invocations = [NSString stringWithContentsOfFile:
         [NSString stringWithUTF8String:marker] encoding:NSUTF8StringEncoding error:nil];

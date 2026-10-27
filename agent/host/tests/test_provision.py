@@ -437,19 +437,23 @@ class StateModeTest(unittest.TestCase):
 class RuntimeRecordTest(unittest.TestCase):
     """RoseCat 5331: host.json records which installed runtime set this home up."""
 
-    def test_host_json_records_the_runtime_lock_beside_the_package(self):
+    def test_host_json_records_the_runtime_identity_beside_the_package(self):
         box = Sandbox(self)
         runtime = box.tmp / "prefix" / "lib" / "zigbrowser" / "agent-host"
         shutil.copytree(HOST_DIR / "zb_agent_host", runtime / "zb_agent_host")
-        (runtime / "runtime.json").write_text(json.dumps({"lock_sha256": "ab" * 32}))
+        (runtime / "runtime.json").write_text(json.dumps({"lock_sha256": "ab" * 32,
+                                                           "host_sha256": "cd" * 32}))
         box.provision(package_dir=runtime)
         host = json.loads((box.home.runtime / "host.json").read_text())
-        self.assertEqual(host, {"python": "/usr/bin/python3", "runtime_lock": "ab" * 32})
+        self.assertEqual(host, {"python": "/usr/bin/python3", "runtime_lock": "ab" * 32,
+                                "host_sha256": "cd" * 32})
 
     def test_a_development_checkout_has_no_lock_record(self):
         box = Sandbox(self)
         box.provision()
-        self.assertIsNone(json.loads((box.home.runtime / "host.json").read_text())["runtime_lock"])
+        host = json.loads((box.home.runtime / "host.json").read_text())
+        self.assertIsNone(host["runtime_lock"])
+        self.assertIsNone(host["host_sha256"])
 
 
 class RuntimeRelayTest(unittest.TestCase):
