@@ -75,6 +75,15 @@ def reference_profile(*, egress, bridges, is_hook, is_login=False, read_paths=()
         "(allow process-fork)",
         "(allow process-exec)",
         *reads.lines,
+        *(['(allow file-read* (literal "/dev/ptmx") '
+           '(regex #"^/dev/(pty[p-w][0-9a-f]|tty[p-w][0-9a-f]|ttys[0-9a-f]+)$"))',
+           '(allow file-write* (literal "/dev/ptmx") '
+           '(regex #"^/dev/(pty[p-w][0-9a-f]|tty[p-w][0-9a-f]|ttys[0-9a-f]+)$"))',
+           '(allow file-ioctl (literal "/dev/ptmx") '
+           '(regex #"^/dev/(pty[p-w][0-9a-f]|tty[p-w][0-9a-f]|ttys[0-9a-f]+)$"))',
+           '(allow pseudo-tty)',
+           '(allow signal (target children))']
+          if is_login else []),
         f'(allow file-write* (subpath (param "SCRATCHPAD")) {_DEVICES})',
         f";; network: {note}",
         f"(allow network-outbound {net})",
@@ -122,6 +131,13 @@ class ProfileEqualsFrozenReference(unittest.TestCase):
     def test_login_profile_is_egress_only(self):
         p = sandbox_macos.render_profile(egress=EGRESS, bridges=(), is_hook=False, is_login=True)
         self.assertIn(f'(remote tcp "localhost:{EGRESS.port}")', p)
+        self.assertIn('(literal "/dev/ptmx")', p, "the terminal-only CLI gets its PTY master")
+        self.assertIn('(regex #"^/dev/(pty[p-w][0-9a-f]|tty[p-w][0-9a-f]|ttys[0-9a-f]+)$")', p,
+                      "only the Darwin PTY pairs are granted")
+        self.assertIn('(allow file-ioctl ', p, "the PTY ioctl stays path-filtered")
+        self.assertIn('(allow pseudo-tty)', p, "Darwin's PTY allocation operation is explicit")
+        self.assertIn('(allow signal (target children))', p, "login may stop only its CLI child")
+        self.assertNotIn('(subpath "/dev")', p, "login never gets the device tree")
         for port in BRIDGES:
             self.assertNotIn(f"localhost:{port}", p, "the login profile has NO bridges")
         self.assertIn("(deny process-info*)", p)  # the token-isolation belt still holds

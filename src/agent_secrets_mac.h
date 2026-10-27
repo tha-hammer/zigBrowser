@@ -39,6 +39,10 @@ int zb_keychain_lookup(const char *keychain_path, const char *unlock_password,
 int zb_keychain_clear(const char *keychain_path, const char *unlock_password,
                       const char *service, const char *account, char **out_err);
 
+/* Validate a setup-token result and store it in the selected Keychain item. */
+int zb_agent_onboard_token(const char *keychain_path, const char *unlock_password,
+                           const char *service, const char *account, const char *token, char **out_err);
+
 /* Wipe (zero) then free a token returned by zb_keychain_lookup. NULL is fine. */
 void zb_keychain_free(char *token);
 
