@@ -36,6 +36,12 @@ int zb_agent_spawn_group_io_fd3(const char *const *argv, const char *const *envp
 int zb_agent_spawn_group_io_fd4(const char *const *argv, const char *const *envp,
                                 int stdin_fd, int stdout_fd, int token_fd, pid_t *out_pid);
 
+/* The login-helper variant with stderr captured on a separate pipe. The
+ * stderr source is mapped to descriptor 2 and is not retained in the child. */
+int zb_agent_spawn_group_io_fd4_stderr(const char *const *argv, const char *const *envp,
+                                       int stdin_fd, int stdout_fd, int stderr_fd,
+                                       int token_fd, pid_t *out_pid);
+
 /* SIGKILL the whole group led by `pid`, then reap `pid`; 0 when done. Only our own child (alive or an unreaped
  * zombie) that leads its own group is ever signalled (RoseCat 7172, 7182; killpg(1) is kill(-1)):
  * EINVAL for pid <= 1, our own pid or our own group; ECHILD when `pid` is not our child; EPERM when it is our child

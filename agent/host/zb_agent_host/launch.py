@@ -123,7 +123,8 @@ def requested_reads(home, python, claude_cli=None, test_ca=None):
     # packages under Seatbelt, so grant that exact containing agent-host tree.
     marker = f"{os.sep}Python.framework{os.sep}Versions{os.sep}"
     if PLATFORM == "darwin" and marker in python:
-        extra.append(python.split(marker, 1)[0])
+        agent_host = python.split(marker, 1)[0]
+        extra += [agent_host, os.path.join(agent_host, "site-packages")]
     extra += [d for d in json.loads((home.runtime / "path.json").read_text())
               if d != "/usr" and not d.startswith("/usr/")]
     if claude_cli is not None:

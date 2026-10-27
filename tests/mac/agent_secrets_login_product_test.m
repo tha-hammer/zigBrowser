@@ -17,6 +17,8 @@
 #define TEST_SERVICE "dev.zigbrowser.ClaudeAgentLoginTest"
 #define TEST_ACCOUNT "default"
 
+extern NSString *zb_mac_login_safe_stderr(NSData *data);
+
 static NSURL *openedURL;
 static int readyCalls;
 
@@ -127,6 +129,13 @@ int main(int argc, char **argv) {
                                              attributes:@{NSFilePosixPermissions: @0700}
                                                   error:nil];
     NSString *canary = @"sk-ant-oat01-ZBCANARY-login-0123456789abcdef";
+    NSData *unsafeDiagnostic = [[@"fatal: " stringByAppendingString:canary]
+        dataUsingEncoding:NSUTF8StringEncoding];
+    NSString *safeDiagnostic = zb_mac_login_safe_stderr(unsafeDiagnostic);
+    if ([safeDiagnostic containsString:canary] ||
+        ![safeDiagnostic containsString:@"<redacted>"]) {
+      return fail("the last-stderr diagnostic did not redact a token-shaped value");
+    }
     [[canary stringByAppendingString:@"\n"] writeToFile:[fakeDir stringByAppendingPathComponent:@"token"]
                                                atomically:YES encoding:NSASCIIStringEncoding error:nil];
 
@@ -190,6 +199,28 @@ int main(int argc, char **argv) {
     zb_keychain_free(stored);
     free(error);
     if (result != ZB_KC_ABSENT) return fail("the test touched the product Keychain service");
+
+    NSString *logPath = [home stringByAppendingPathComponent:@"state/login.log"];
+    NSString *loginLog = nil;
+    deadline = [NSDate dateWithTimeIntervalSinceNow:5.0];
+    while ([deadline timeIntervalSinceNow] > 0) {
+      pump(0.05);
+      loginLog = [NSString stringWithContentsOfFile:logPath encoding:NSUTF8StringEncoding error:nil];
+      if ([loginLog containsString:@"step=helper-exit status=0"]) break;
+    }
+    for (NSString *step in @[
+      @"step=attempt-start", @"step=netd-start", @"step=netd-ready",
+      @"step=helper-start", @"step=frame-auth-url", @"step=frame-need-code",
+      @"step=code-submitted", @"step=frame-done", @"step=result-success",
+      @"step=helper-exit status=0",
+    ]) {
+      if (![loginLog containsString:step]) return fail("login.log is missing a sign-in step or exit status");
+    }
+    if ([loginLog containsString:canary] || [loginLog containsString:@"fakecode-0123"])
+      return fail("login.log contains token or authorization-code bytes");
+    struct stat logInfo;
+    if (stat(logPath.fileSystemRepresentation, &logInfo) != 0 ||
+        (logInfo.st_mode & 0777) != 0600) return fail("login.log is not a private regular log");
 
     [window close];
     [parent close];

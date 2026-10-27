@@ -33,9 +33,13 @@ int zb_agent_spawn_group(const char *const *argv, const char *const *envp, pid_t
 }
 
 static int spawn_group_io(const char *const *argv, const char *const *envp,
-                          int stdin_fd, int stdout_fd, int token_fd, int token_target,
+                          int stdin_fd, int stdout_fd, int stderr_fd,
+                          int token_fd, int token_target,
                           pid_t *out_pid) {
-  if ((stdin_fd != -1 && stdin_fd <= 2) || (stdout_fd != -1 && stdout_fd <= 2)) return EINVAL;
+  if ((stdin_fd != -1 && stdin_fd <= 2) || (stdout_fd != -1 && stdout_fd <= 2) ||
+      (stderr_fd != -1 && stderr_fd <= 2)) return EINVAL;
+  if (stderr_fd >= 0 && (stderr_fd == stdin_fd || stderr_fd == stdout_fd || stderr_fd == token_target ||
+                         stderr_fd == token_fd)) return EINVAL;
   if (token_fd >= 0 && (token_target <= 2 || token_fd <= 2 || stdin_fd == token_target ||
                         stdout_fd == token_target ||
                         token_fd == stdin_fd || token_fd == stdout_fd)) return EINVAL;
@@ -58,10 +62,12 @@ static int spawn_group_io(const char *const *argv, const char *const *envp,
    * original once: one duplex fd may be both streams (RoseCat 7150). For -1, keep the caller's own stream. */
   if (err == 0 && stdin_fd >= 0) err = posix_spawn_file_actions_adddup2(&acts, stdin_fd, 0);
   if (err == 0 && stdout_fd >= 0) err = posix_spawn_file_actions_adddup2(&acts, stdout_fd, 1);
+  if (err == 0 && stderr_fd >= 0) err = posix_spawn_file_actions_adddup2(&acts, stderr_fd, 2);
   if (err == 0 && token_fd >= 0 && token_fd != token_target)
     err = posix_spawn_file_actions_adddup2(&acts, token_fd, token_target);
   if (err == 0 && stdin_fd >= 0) err = posix_spawn_file_actions_addclose(&acts, stdin_fd);
   if (err == 0 && stdout_fd >= 0 && stdout_fd != stdin_fd) err = posix_spawn_file_actions_addclose(&acts, stdout_fd);
+  if (err == 0 && stderr_fd >= 0) err = posix_spawn_file_actions_addclose(&acts, stderr_fd);
   if (err == 0 && token_fd > 2 && token_fd != token_target)
     err = posix_spawn_file_actions_addclose(&acts, token_fd);
 #ifdef POSIX_SPAWN_CLOEXEC_DEFAULT
@@ -69,7 +75,7 @@ static int spawn_group_io(const char *const *argv, const char *const *envp,
    * stdout when the caller passed -1 for it. */
   if (err == 0 && stdin_fd < 0) err = posix_spawn_file_actions_addinherit_np(&acts, 0);
   if (err == 0 && stdout_fd < 0) err = posix_spawn_file_actions_addinherit_np(&acts, 1);
-  if (err == 0) err = posix_spawn_file_actions_addinherit_np(&acts, 2);
+  if (err == 0 && stderr_fd < 0) err = posix_spawn_file_actions_addinherit_np(&acts, 2);
   if (err == 0 && token_fd >= 0 && token_fd == token_target)
     err = posix_spawn_file_actions_addinherit_np(&acts, token_target);
 #endif
@@ -83,13 +89,13 @@ static int spawn_group_io(const char *const *argv, const char *const *envp,
 
 int zb_agent_spawn_group_io(const char *const *argv, const char *const *envp, int stdin_fd, int stdout_fd,
                             pid_t *out_pid) {
-  return spawn_group_io(argv, envp, stdin_fd, stdout_fd, -1, -1, out_pid);
+  return spawn_group_io(argv, envp, stdin_fd, stdout_fd, -1, -1, -1, out_pid);
 }
 
 int zb_agent_spawn_group_io_fd3(const char *const *argv, const char *const *envp,
                                 int stdin_fd, int stdout_fd, int token_fd, pid_t *out_pid) {
 #ifdef __APPLE__
-  return spawn_group_io(argv, envp, stdin_fd, stdout_fd, token_fd, 3, out_pid);
+  return spawn_group_io(argv, envp, stdin_fd, stdout_fd, -1, token_fd, 3, out_pid);
 #else
   (void)argv; (void)envp; (void)stdin_fd; (void)stdout_fd; (void)token_fd; (void)out_pid;
   return ENOTSUP;
@@ -99,9 +105,21 @@ int zb_agent_spawn_group_io_fd3(const char *const *argv, const char *const *envp
 int zb_agent_spawn_group_io_fd4(const char *const *argv, const char *const *envp,
                                 int stdin_fd, int stdout_fd, int token_fd, pid_t *out_pid) {
 #ifdef __APPLE__
-  return spawn_group_io(argv, envp, stdin_fd, stdout_fd, token_fd, 4, out_pid);
+  return spawn_group_io(argv, envp, stdin_fd, stdout_fd, -1, token_fd, 4, out_pid);
 #else
   (void)argv; (void)envp; (void)stdin_fd; (void)stdout_fd; (void)token_fd; (void)out_pid;
+  return ENOTSUP;
+#endif
+}
+
+int zb_agent_spawn_group_io_fd4_stderr(const char *const *argv, const char *const *envp,
+                                       int stdin_fd, int stdout_fd, int stderr_fd,
+                                       int token_fd, pid_t *out_pid) {
+#ifdef __APPLE__
+  return spawn_group_io(argv, envp, stdin_fd, stdout_fd, stderr_fd, token_fd, 4, out_pid);
+#else
+  (void)argv; (void)envp; (void)stdin_fd; (void)stdout_fd; (void)stderr_fd;
+  (void)token_fd; (void)out_pid;
   return ENOTSUP;
 #endif
 }

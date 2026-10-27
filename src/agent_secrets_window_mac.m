@@ -13,6 +13,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 extern int zb_mac_drawer_e2e_enabled(void);
@@ -20,6 +22,7 @@ extern void zb_drawer_agent_status(unsigned int window_id, const char *state, co
 
 static const NSUInteger ZBMacLoginLineMax = 4096;
 static const NSUInteger ZBMacLoginTokenMax = 512;
+static const NSUInteger ZBMacLoginStderrMax = 16384;
 static const char *const ZBMacLoginTestService = "dev.zigbrowser.ClaudeAgentLoginTest";
 static NSString *const ZBMacFirstRunSetupText =
     @"Setting up the Claude Agent (first time, about a minute)...";
@@ -65,6 +68,102 @@ static int zb_login_pipe(int fds[2]) {
 static void zb_wipe_data(NSMutableData *data) {
   if (data.length > 0) memset_s(data.mutableBytes, data.length, 0, data.length);
   [data setLength:0];
+}
+
+static NSString *zb_mac_login_redact_text(NSString *text) {
+  if (text.length == 0) return @"";
+  NSMutableString *safe = [text mutableCopy];
+  static NSArray<NSRegularExpression *> *patterns;
+  static dispatch_once_t once;
+  dispatch_once(&once, ^{
+    NSMutableArray<NSRegularExpression *> *built = [NSMutableArray array];
+    for (NSString *pattern in @[
+      @"(?i)sk-ant-[a-z0-9_-]{8,}",
+      @"(?i)bearer[ \\t]+[^ \\t\\r\\n]+",
+      @"(?<![A-Za-z0-9._~-])[A-Za-z0-9._~-]{3,}#[A-Za-z0-9._~-]{3,}(?![A-Za-z0-9._~-])",
+    ]) {
+      NSRegularExpression *expression = [NSRegularExpression regularExpressionWithPattern:pattern
+                                                                                  options:0 error:nil];
+      if (expression != nil) [built addObject:expression];
+    }
+    patterns = [built copy];
+  });
+  for (NSRegularExpression *pattern in patterns) {
+    [pattern replaceMatchesInString:safe options:0 range:NSMakeRange(0, safe.length)
+                       withTemplate:@"<redacted>"];
+  }
+  NSCharacterSet *controls = NSCharacterSet.controlCharacterSet;
+  for (NSInteger i = (NSInteger)safe.length - 1; i >= 0; --i) {
+    if ([controls characterIsMember:[safe characterAtIndex:(NSUInteger)i]])
+      [safe replaceCharactersInRange:NSMakeRange((NSUInteger)i, 1) withString:@" "];
+  }
+  if (safe.length > 320) [safe deleteCharactersInRange:NSMakeRange(320, safe.length - 320)];
+  return safe;
+}
+
+/* Internal product seam used by the Mac product test. Redaction happens
+ * before the diagnostic is bounded, so a long credential cannot leave a
+ * visible suffix. */
+NSString *zb_mac_login_safe_stderr(NSData *data) {
+  if (data.length == 0) return @"";
+  NSString *text = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
+  if (text == nil) return @"stderr was not valid UTF-8";
+  NSArray<NSString *> *lines = [text componentsSeparatedByCharactersInSet:
+      NSCharacterSet.newlineCharacterSet];
+  for (NSString *line in lines.reverseObjectEnumerator) {
+    NSString *trimmed = [line stringByTrimmingCharactersInSet:
+        NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    if (trimmed.length > 0) return zb_mac_login_redact_text(trimmed);
+  }
+  return @"";
+}
+
+static NSString *zb_mac_login_safe_code(id value) {
+  if (![value isKindOfClass:NSString.class]) return @"unknown";
+  NSString *code = value;
+  if (code.length == 0 || code.length > 64) return @"unknown";
+  NSCharacterSet *allowed = [NSCharacterSet characterSetWithCharactersInString:
+      @"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-"];
+  return [code rangeOfCharacterFromSet:allowed.invertedSet].location == NSNotFound ? code : @"unknown";
+}
+
+static NSInteger zb_mac_login_exit_value(int status) {
+  if (status < 0) return -1;
+  if (WIFEXITED(status)) return WEXITSTATUS(status);
+  if (WIFSIGNALED(status)) return 128 + WTERMSIG(status);
+  return -1;
+}
+
+static void zb_mac_login_log(NSString *home, NSUInteger attempt, NSString *step,
+                             NSInteger status) {
+  if (home.length == 0 || step.length == 0) return;
+  NSString *state = [home stringByAppendingPathComponent:@"state"];
+  int stateFD = open(state.fileSystemRepresentation, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+  if (stateFD < 0) return;
+  int logFD = openat(stateFD, "login.log", O_WRONLY | O_APPEND | O_CREAT | O_NOFOLLOW | O_CLOEXEC, 0600);
+  close(stateFD);
+  if (logFD < 0) return;
+  struct stat info;
+  if (fstat(logFD, &info) != 0 || !S_ISREG(info.st_mode) || info.st_uid != geteuid() || info.st_nlink != 1) {
+    close(logFD);
+    return;
+  }
+  (void)fchmod(logFD, 0600);
+  NSString *line = status != NSIntegerMin
+      ? [NSString stringWithFormat:@"attempt=%lu step=%@ status=%ld\n",
+          (unsigned long)attempt, step, (long)status]
+      : [NSString stringWithFormat:@"attempt=%lu step=%@\n", (unsigned long)attempt, step];
+  NSData *bytes = [line dataUsingEncoding:NSUTF8StringEncoding];
+  const unsigned char *cursor = bytes.bytes;
+  NSUInteger remaining = bytes.length;
+  while (remaining > 0) {
+    ssize_t wrote = write(logFD, cursor, remaining);
+    if (wrote < 0 && errno == EINTR) continue;
+    if (wrote <= 0) break;
+    cursor += wrote;
+    remaining -= (NSUInteger)wrote;
+  }
+  close(logFD);
 }
 
 static BOOL zb_write_secrets_snapshot(NSWindow *window, NSString *path) {
@@ -122,6 +221,9 @@ static BOOL zb_write_secrets_snapshot(NSWindow *window, NSString *path) {
 @property(nonatomic, assign) BOOL loginDone;
 @property(nonatomic, assign) BOOL tokenEOF;
 @property(nonatomic, assign) BOOL loginFailed;
+@property(nonatomic, assign) BOOL loginOutputEnded;
+@property(nonatomic, assign) BOOL loginExitKnown;
+@property(nonatomic, assign) NSInteger loginExitStatus;
 @property(nonatomic, assign) BOOL setupActive;
 @property(nonatomic, assign) BOOL clearWasEnabled;
 @property(nonatomic, assign) pid_t loginPid;
@@ -133,6 +235,9 @@ static BOOL zb_write_secrets_snapshot(NSWindow *window, NSString *path) {
 @property(nonatomic, assign) NSUInteger loginEpoch;
 @property(nonatomic, assign) NSUInteger setupEpoch;
 @property(nonatomic, strong) NSMutableData *capturedToken;
+@property(nonatomic, copy) NSString *loginLastStderr;
+@property(nonatomic, copy) NSString *loginErrorCode;
+@property(nonatomic, copy) NSString *loginErrorMessage;
 @property(nonatomic, copy) NSString *home;
 @property(nonatomic, copy) NSString *python;
 @property(nonatomic, copy) NSString *packageDirectory;
@@ -349,7 +454,14 @@ static NSTextField *zb_label(NSString *text, BOOL secondary) {
   self.loginDone = NO;
   self.tokenEOF = NO;
   self.loginFailed = NO;
+  self.loginOutputEnded = NO;
+  self.loginExitKnown = NO;
+  self.loginExitStatus = -1;
+  self.loginLastStderr = @"";
+  self.loginErrorCode = nil;
+  self.loginErrorMessage = nil;
   self.capturedToken = nil;
+  zb_mac_login_log(self.home, self.loginEpoch, @"attempt-start", NSIntegerMin);
   self.statusLabel.stringValue = @"Starting secure Claude sign-in…";
   [self setSigningIn:YES needsCode:NO];
   [self startLoginNetwork:self.loginEpoch];
@@ -402,6 +514,7 @@ static NSTextField *zb_label(NSString *text, BOOL secondary) {
 
 - (void)failLoginWithText:(NSString *)text {
   if (self.loginFailed) return;
+  if (self.loginActive) zb_mac_login_log(self.home, self.loginEpoch, @"result-failure", NSIntegerMin);
   self.loginFailed = YES;
   self.loginActive = NO;
   self.loginDone = NO;
@@ -413,9 +526,29 @@ static NSTextField *zb_label(NSString *text, BOOL secondary) {
   self.saveButton.enabled = YES;
   self.clearButton.enabled = self.clearWasEnabled;
   self.statusLabel.stringValue = text;
+  [self scheduleSnapshotFromEnvironment:@"ZB_DEBUG_MAC_SECRETS_ERROR_PNG" status:text];
   zb_wipe_data(self.capturedToken);
   self.capturedToken = nil;
   [self stopLoginProcesses];
+}
+
+- (void)finishLoginFailureIfReady {
+  if (!self.loginActive || self.loginDone || !self.loginOutputEnded || !self.loginExitKnown) return;
+  NSString *code = self.loginErrorCode;
+  NSString *message = self.loginErrorMessage;
+  if (code.length == 0) {
+    code = self.loginExitStatus == 0 ? @"protocol-eof" :
+        [NSString stringWithFormat:@"helper-exit-%ld", (long)self.loginExitStatus];
+  }
+  if (message.length == 0) message = @"the login helper stopped before completion";
+  NSString *text = [code isEqualToString:@"cancelled"]
+      ? [NSString stringWithFormat:@"Claude sign-in was cancelled (%@).", code]
+      : [NSString stringWithFormat:@"Claude sign-in failed (%@): %@.", code,
+          zb_mac_login_redact_text(message)];
+  if (self.loginLastStderr.length > 0) {
+    text = [text stringByAppendingFormat:@" Last detail: %@", self.loginLastStderr];
+  }
+  [self failLoginWithText:text];
 }
 
 - (BOOL)validAuthorizeURL:(NSURL *)url {
@@ -462,6 +595,7 @@ static NSTextField *zb_label(NSString *text, BOOL secondary) {
 
   self.loginActive = NO;
   self.loginFailed = NO;
+  zb_mac_login_log(self.home, self.loginEpoch, @"result-success", NSIntegerMin);
   self.codeField.stringValue = @"";
   self.codeControls.hidden = YES;
   [self.progress stopAnimation:nil];
@@ -509,6 +643,7 @@ static NSTextField *zb_label(NSString *text, BOOL secondary) {
   }
   self.inputSequence = sequence.unsignedLongLongValue;
   if ([type isEqualToString:@"auth_url"]) {
+    zb_mac_login_log(self.home, self.loginEpoch, @"frame-auth-url", NSIntegerMin);
     NSString *text = frame[@"url"];
     NSURL *url = [text isKindOfClass:NSString.class] ? [NSURL URLWithString:text] : nil;
     if (![self validAuthorizeURL:url] || ![NSWorkspace.sharedWorkspace openURL:url]) {
@@ -517,24 +652,29 @@ static NSTextField *zb_label(NSString *text, BOOL secondary) {
     }
     self.statusLabel.stringValue = @"Finish signing in in your browser.";
   } else if ([type isEqualToString:@"need_code"]) {
+    zb_mac_login_log(self.home, self.loginEpoch, @"frame-need-code", NSIntegerMin);
     self.statusLabel.stringValue = @"Paste the authorization code from your browser.";
     [self setSigningIn:YES needsCode:YES];
     [self scheduleSnapshotFromEnvironment:@"ZB_DEBUG_MAC_SECRETS_CODE_PNG"
                                    status:self.statusLabel.stringValue];
   } else if ([type isEqualToString:@"done"]) {
+    zb_mac_login_log(self.home, self.loginEpoch, @"frame-done", NSIntegerMin);
     self.loginDone = YES;
     [self finishLoginIfReady];
   } else if ([type isEqualToString:@"error"]) {
-    NSString *code = frame[@"code"];
-    [self failLoginWithText:[code isEqualToString:@"cancelled"]
-        ? @"Claude sign-in was cancelled."
-        : @"Claude sign-in could not be completed."];
+    self.loginErrorCode = zb_mac_login_safe_code(frame[@"code"]);
+    self.loginErrorMessage = [frame[@"message"] isKindOfClass:NSString.class]
+        ? zb_mac_login_redact_text(frame[@"message"]) : @"the login helper reported an error";
+    zb_mac_login_log(self.home, self.loginEpoch, @"frame-error", NSIntegerMin);
+    self.statusLabel.stringValue = @"Claude sign-in stopped; collecting details…";
+    [self finishLoginFailureIfReady];
   } else {
     [self failLoginWithText:@"Claude sign-in returned an invalid response."];
   }
 }
 
-- (void)readLoginOutput:(int)output token:(int)tokenFD pid:(pid_t)pid epoch:(NSUInteger)epoch {
+- (void)readLoginOutput:(int)output token:(int)tokenFD stderr:(int)stderrFD
+                     pid:(pid_t)pid epoch:(NSUInteger)epoch {
   __weak ZBMacSecretsWindowController *weakSelf = self;
   dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
     NSMutableData *pending = [NSMutableData data];
@@ -565,10 +705,15 @@ static NSTextField *zb_label(NSString *text, BOOL secondary) {
     }
     close(output);
     if (pending.length != 0) malformed = YES;
-    if (malformed) dispatch_async(dispatch_get_main_queue(), ^{
+    dispatch_async(dispatch_get_main_queue(), ^{
       ZBMacSecretsWindowController *strongSelf = weakSelf;
-      if (strongSelf.loginActive && strongSelf.loginEpoch == epoch)
-        [strongSelf failLoginWithText:@"Claude sign-in returned an invalid response."];
+      if (!strongSelf.loginActive || strongSelf.loginEpoch != epoch) return;
+      strongSelf.loginOutputEnded = YES;
+      if (malformed) {
+        strongSelf.loginErrorCode = @"protocol";
+        strongSelf.loginErrorMessage = @"the login helper returned an invalid response";
+      }
+      [strongSelf finishLoginFailureIfReady];
     });
   });
 
@@ -594,14 +739,36 @@ static NSTextField *zb_label(NSString *text, BOOL secondary) {
   });
 
   dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
-    int status = zb_agent_wait(pid);
+    NSMutableData *diagnostic = [NSMutableData data];
+    unsigned char bytes[1024];
+    BOOL tooLong = NO;
+    for (;;) {
+      ssize_t got = read(stderrFD, bytes, sizeof bytes);
+      if (got < 0 && errno == EINTR) continue;
+      if (got <= 0) break;
+      if (!tooLong && diagnostic.length + (NSUInteger)got <= ZBMacLoginStderrMax)
+        [diagnostic appendBytes:bytes length:(NSUInteger)got];
+      else {
+        tooLong = YES;
+        [diagnostic setLength:0];
+      }
+    }
+    close(stderrFD);
+    NSString *lastStderr = tooLong ? @"stderr exceeded the diagnostic limit"
+                                   : zb_mac_login_safe_stderr(diagnostic);
+    NSInteger exitStatus = zb_mac_login_exit_value(zb_agent_wait(pid));
     dispatch_async(dispatch_get_main_queue(), ^{
       ZBMacSecretsWindowController *strongSelf = weakSelf;
       if (strongSelf.loginPid != pid) return;
       strongSelf.loginPid = -1;
-      if (strongSelf.loginActive && !strongSelf.loginDone && status != 0)
-        [strongSelf failLoginWithText:@"Claude sign-in could not be completed."];
-      else if (!strongSelf.loginActive && strongSelf.netPid <= 1)
+      zb_mac_login_log(strongSelf.home, epoch, @"helper-exit", exitStatus);
+      if (strongSelf.loginEpoch == epoch) {
+        strongSelf.loginLastStderr = lastStderr;
+        strongSelf.loginExitStatus = exitStatus;
+        strongSelf.loginExitKnown = YES;
+        [strongSelf finishLoginFailureIfReady];
+      }
+      if (!strongSelf.loginActive && strongSelf.netPid <= 1)
         strongSelf.signInButton.enabled = YES;
     });
   });
@@ -612,10 +779,13 @@ static NSTextField *zb_label(NSString *text, BOOL secondary) {
   int input[2] = {-1, -1};
   int output[2] = {-1, -1};
   int token[2] = {-1, -1};
-  if (zb_login_pipe(input) != 0 || zb_login_pipe(output) != 0 || zb_login_pipe(token) != 0) {
+  int diagnostic[2] = {-1, -1};
+  if (zb_login_pipe(input) != 0 || zb_login_pipe(output) != 0 || zb_login_pipe(token) != 0 ||
+      zb_login_pipe(diagnostic) != 0) {
     zb_close_login_fd(&input[0]); zb_close_login_fd(&input[1]);
     zb_close_login_fd(&output[0]); zb_close_login_fd(&output[1]);
     zb_close_login_fd(&token[0]); zb_close_login_fd(&token[1]);
+    zb_close_login_fd(&diagnostic[0]); zb_close_login_fd(&diagnostic[1]);
     [self failLoginWithText:@"Claude sign-in could not start."];
     return;
   }
@@ -642,15 +812,21 @@ static NSTextField *zb_label(NSString *text, BOOL secondary) {
     homeEnv.UTF8String, tmpEnv.UTF8String, NULL,
   };
   pid_t pid = -1;
-  int result = zb_agent_spawn_group_io_fd4(argv, envp, input[0], output[1], token[1], &pid);
+  zb_mac_login_log(self.home, epoch, @"helper-start", NSIntegerMin);
+  int result = zb_agent_spawn_group_io_fd4_stderr(argv, envp, input[0], output[1],
+                                                   diagnostic[1], token[1], &pid);
   zb_close_login_fd(&input[0]);
   zb_close_login_fd(&output[1]);
   zb_close_login_fd(&token[1]);
+  zb_close_login_fd(&diagnostic[1]);
   if (result != 0 || pid <= 1) {
     zb_close_login_fd(&input[1]);
     zb_close_login_fd(&output[0]);
     zb_close_login_fd(&token[0]);
-    [self failLoginWithText:@"Claude sign-in could not start."];
+    zb_close_login_fd(&diagnostic[0]);
+    zb_mac_login_log(self.home, epoch, @"helper-spawn-error", result);
+    [self failLoginWithText:[NSString stringWithFormat:
+        @"Claude sign-in failed (helper-spawn-%d): %s.", result, strerror(result)]];
     return;
   }
   (void)fcntl(input[1], F_SETNOSIGPIPE, 1);
@@ -658,7 +834,8 @@ static NSTextField *zb_label(NSString *text, BOOL secondary) {
   self.loginInput = input[1];
   self.inputSequence = 0;
   self.outputSequence = 0;
-  [self readLoginOutput:output[0] token:token[0] pid:pid epoch:epoch];
+  zb_mac_login_log(self.home, epoch, @"helper-spawned", NSIntegerMin);
+  [self readLoginOutput:output[0] token:token[0] stderr:diagnostic[0] pid:pid epoch:epoch];
   if (![self writeLoginFrame:@{@"type": @"start"}])
     [self failLoginWithText:@"Claude sign-in could not start."];
 }
@@ -678,6 +855,7 @@ static NSTextField *zb_label(NSString *text, BOOL secondary) {
     [self failLoginWithText:@"Claude sign-in networking is unavailable."];
     return;
   }
+  zb_mac_login_log(self.home, epoch, @"netd-ready", NSIntegerMin);
   [self startLoginOnPort:(NSUInteger)port epoch:epoch];
 }
 
@@ -700,17 +878,21 @@ static NSTextField *zb_label(NSString *text, BOOL secondary) {
     "PATH=/usr/bin:/bin", "LANG=C.UTF-8", "PYTHONDONTWRITEBYTECODE=1", NULL,
   };
   pid_t pid = -1;
+  zb_mac_login_log(self.home, epoch, @"netd-start", NSIntegerMin);
   int result = zb_agent_spawn_group_io(argv, envp, input[0], output[1], &pid);
   zb_close_login_fd(&input[0]);
   zb_close_login_fd(&output[1]);
   if (result != 0 || pid <= 1) {
     zb_close_login_fd(&input[1]);
     zb_close_login_fd(&output[0]);
-    [self failLoginWithText:@"Claude sign-in networking could not start."];
+    zb_mac_login_log(self.home, epoch, @"netd-spawn-error", result);
+    [self failLoginWithText:[NSString stringWithFormat:
+        @"Claude sign-in failed (netd-spawn-%d): %s.", result, strerror(result)]];
     return;
   }
   self.netPid = pid;
   self.netInput = input[1];
+  zb_mac_login_log(self.home, epoch, @"netd-spawned", NSIntegerMin);
   int readyFD = output[0];
   __weak ZBMacSecretsWindowController *weakSelf = self;
   dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
@@ -730,13 +912,16 @@ static NSTextField *zb_label(NSString *text, BOOL secondary) {
     close(readyFD);
   });
   dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
-    (void)zb_agent_wait(pid);
+    NSInteger exitStatus = zb_mac_login_exit_value(zb_agent_wait(pid));
     dispatch_async(dispatch_get_main_queue(), ^{
       ZBMacSecretsWindowController *strongSelf = weakSelf;
       if (strongSelf.netPid != pid) return;
       strongSelf.netPid = -1;
+      zb_mac_login_log(strongSelf.home, epoch, @"netd-exit", exitStatus);
       if (strongSelf.loginActive && strongSelf.loginPid <= 1)
-        [strongSelf failLoginWithText:@"Claude sign-in networking stopped."];
+        [strongSelf failLoginWithText:[NSString stringWithFormat:
+            @"Claude sign-in failed (netd-exit-%ld): sign-in networking stopped.",
+            (long)exitStatus]];
       else if (!strongSelf.loginActive && strongSelf.loginPid <= 1)
         strongSelf.signInButton.enabled = YES;
     });
@@ -807,6 +992,7 @@ static NSTextField *zb_label(NSString *text, BOOL secondary) {
     [self failLoginWithText:@"The authorization code could not be sent."];
     return;
   }
+  zb_mac_login_log(self.home, self.loginEpoch, @"code-submitted", NSIntegerMin);
   self.codeControls.hidden = YES;
   self.statusLabel.stringValue = @"Completing Claude sign-in…";
 }
@@ -814,6 +1000,7 @@ static NSTextField *zb_label(NSString *text, BOOL secondary) {
 - (void)cancelSignIn:(id)sender {
   (void)sender;
   if (!self.loginActive) return;
+  zb_mac_login_log(self.home, self.loginEpoch, @"cancel-requested", NSIntegerMin);
   (void)[self writeLoginFrame:@{@"type": @"cancel"}];
   [self failLoginWithText:@"Claude sign-in was cancelled."];
 }
