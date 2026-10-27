@@ -2,8 +2,8 @@
 
     python -m zb_agent_host login --home H [--e2e-claude-cli CLI]   (fd 4: the token)
 
-It runs `claude setup-token` on a pty, with HOME and CLAUDE_CONFIG_DIR set to
-the agent home, as the real CLI (2.1.301, captured in
+It runs `claude setup-token` on a pty, with HOME set to the agent home and
+CLAUDE_CONFIG_DIR set to a fresh private directory below scratchpad/tmp, as the real CLI (2.1.301, captured in
 tests/fixtures/agent/setup_token_transcript.json) needs: it reads the sign-in
 code at "Paste code here if prompted >" only from a terminal, as
 `<code>#<state>`.
@@ -37,7 +37,9 @@ import json
 import os
 import re
 import select
+import secrets
 import signal
+import shutil
 import stat
 import struct
 import subprocess
@@ -138,7 +140,7 @@ def valid_code(code):
     return isinstance(code, str) and 3 <= len(code) <= MAX_CODE and CODE.fullmatch(code) is not None
 
 
-def cli_env(home, proxy):
+def cli_env(home, proxy, config_dir=None):
     """The setup-token CLI's environment; `proxy` is the helper's (sandbox.helper_proxy: the macOS spec's direct port,
     else sandbox.linux_helper_proxy, the Linux relay's listener)."""
     # The CLI's temp files and its own per-uid temp dir (claude-<uid>) go to the home's scratchpad tmp, the macOS
@@ -147,7 +149,11 @@ def cli_env(home, proxy):
     tmp = os.path.join(home, "scratchpad", "tmp")
     return {
         "HOME": home,
-        "CLAUDE_CONFIG_DIR": os.path.join(home, ".claude"),
+        "CLAUDE_CONFIG_DIR": config_dir if config_dir is not None else os.path.join(home, ".claude"),
+        # setup-token is a one-shot minting process.  Keep both its ordinary and secure-storage state in the
+        # private directory that kill() removes, and use the CLI's minimal mode so it never consults Keychain.
+        "CLAUDE_SECURESTORAGE_CONFIG_DIR": config_dir if config_dir is not None else os.path.join(home, ".claude"),
+        "CLAUDE_CODE_SIMPLE": "1",
         "TMPDIR": tmp,
         "CLAUDE_CODE_TMPDIR": tmp,
         "PATH": "/usr/bin:/bin",
@@ -204,6 +210,47 @@ class PrivateTmp:
 
     def __init__(self):
         self.held = []  # (path, fd)
+        self.config = None  # (name below tmp, path, held fd)
+
+    def make_login_config(self):
+        """Create and hold one unpredictable private directory below the checked tmp."""
+        tmp_path, tmp_fd = self.held[-1]
+        for _ in range(100):
+            name = ".zb-login-config-" + secrets.token_hex(12)
+            try:
+                os.mkdir(name, 0o700, dir_fd=tmp_fd)
+                break
+            except FileExistsError:
+                continue
+        else:
+            raise OSError(errno.EEXIST, "could not create a unique sign-in config directory")
+        path = os.path.join(tmp_path, name)
+        seen = os.lstat(name, dir_fd=tmp_fd)
+        fd = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=tmp_fd)
+        st = os.fstat(fd)
+        if not os.path.samestat(st, seen) or st.st_uid != os.geteuid() or stat.S_IMODE(st.st_mode) != 0o700:
+            os.close(fd)
+            os.rmdir(name, dir_fd=tmp_fd)
+            raise OSError(errno.EPERM, "the sign-in config directory is not private")
+        self.held.append((path, fd))
+        self.config = (name, path, fd)
+        return path
+
+    def remove_login_config(self):
+        """Remove only the exact directory made above, after the CLI has exited."""
+        if self.config is None:
+            return
+        name, _path, fd = self.config
+        tmp_fd = self.held[-2][1]
+        try:
+            seen = os.lstat(name, dir_fd=tmp_fd)
+        except FileNotFoundError:
+            self.config = None
+            return
+        if not os.path.samestat(seen, os.fstat(fd)) or not stat.S_ISDIR(seen.st_mode):
+            raise OSError(errno.EPERM, "the sign-in config directory changed before cleanup")
+        shutil.rmtree(name, dir_fd=tmp_fd)
+        self.config = None
 
     def recheck(self):
         for path, fd in self.held:
@@ -211,9 +258,12 @@ class PrivateTmp:
                 raise OSError(errno.EPERM, f"the sign-in's {os.path.basename(path)} changed after it was checked")
 
     def close(self):
-        held, self.held = self.held, []
-        for _, fd in held:
-            os.close(fd)
+        try:
+            self.remove_login_config()
+        finally:
+            held, self.held = self.held, []
+            for _, fd in held:
+                os.close(fd)
 
 
 def ensure_private_tmp(home):
@@ -281,12 +331,14 @@ class Login:
         self.outcome = None
         self.proc = None
         self.master = -1
+        self.private_tmp = None
 
     # ---- the CLI on a pty -------------------------------------------------
     def spawn(self):
         held = ensure_private_tmp(self.home)  # before anything starts: an invalid temp dir launches nothing
         try:
-            env = cli_env(self.home, self.proxy)
+            config_dir = held.make_login_config()
+            env = cli_env(self.home, self.proxy, config_dir)
             self.master, slave = pty.openpty()
             try:
                 fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 50, COLUMNS, 0, 0))
@@ -299,8 +351,10 @@ class Login:
                 raise
             finally:
                 os.close(slave)
+            self.private_tmp, held = held, None
         finally:
-            held.close()
+            if held is not None:
+                held.close()
 
     def kill(self):
         if self.proc and self.proc.poll() is None:
@@ -310,6 +364,9 @@ class Login:
                 pass
         if self.proc:
             self.proc.wait()
+        if self.private_tmp is not None:
+            held, self.private_tmp = self.private_tmp, None
+            held.close()
 
     def read_pty(self):
         chunk = bytearray(16384)

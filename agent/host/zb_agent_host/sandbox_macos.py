@@ -172,6 +172,20 @@ def _login_pty_lines(is_login):
             "(allow signal (target children))")
 
 
+def _login_listener_lines(is_login):
+    """Grant only the real setup-token CLI's ephemeral 127.0.0.1 OAuth listener.
+
+    Claude 2.1.294 creates an HTTP server with ``listen(0, "127.0.0.1")`` before
+    it prints the manual authorization URL.  Darwin checks bind and listen as
+    separate Seatbelt operations.  The local-tcp filter excludes non-loopback
+    interfaces; chat, hooks, and setup never receive either capability.
+    """
+    if not is_login:
+        return ()
+    loopback_tcp = '(local tcp "localhost:*")'
+    return (f"(allow network-bind {loopback_tcp})", f"(allow network-inbound {loopback_tcp})")
+
+
 def _keychain_denies():
     """Deny Security.framework's brokers and direct legacy-Keychain file path."""
     return [
@@ -214,7 +228,7 @@ def render_profile(*, egress, bridges, is_hook, is_login=False, read_paths=(), s
         ]
     net = " ".join(f'(remote tcp "{e}")' for e in eps)
     kind = "login" if is_login else ("hook" if is_hook else "cli/helper")
-    net_note = ("egress only (sign-in; no bridges)" if is_login
+    net_note = ("egress + loopback callback listener (sign-in; no bridges)" if is_login
                 else "bridges only (no egress — rev 16.2 §3c)" if is_hook else "egress + bridges")
 
     lines = [
@@ -228,6 +242,7 @@ def render_profile(*, egress, bridges, is_hook, is_login=False, read_paths=(), s
         *reads.lines,
         *_login_pty_lines(is_login),
         _file_write_line(),
+        *_login_listener_lines(is_login),
         f";; network: {net_note}",
         f"(allow network-outbound {net})",
         ";; sysctl-read CURATED (MS6.1): never blanket — a blanket allow re-opens kern.procargs2.",

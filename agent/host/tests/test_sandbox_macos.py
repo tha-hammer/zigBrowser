@@ -64,7 +64,7 @@ def reference_profile(*, egress, bridges, is_hook, is_login=False, read_paths=()
         eps = ([] if is_hook else [f"localhost:{egress.port}"]) + [f"localhost:{p}" for p in bridges]
     net = " ".join(f'(remote tcp "{e}")' for e in eps)
     kind = "login" if is_login else ("hook" if is_hook else "cli/helper")
-    note = ("egress only (sign-in; no bridges)" if is_login
+    note = ("egress + loopback callback listener (sign-in; no bridges)" if is_login
             else "bridges only (no egress — rev 16.2 §3c)" if is_hook else "egress + bridges")
     reads = seatbelt_rules.file_read_rules(read_paths)
     return "\n".join([
@@ -85,6 +85,8 @@ def reference_profile(*, egress, bridges, is_hook, is_login=False, read_paths=()
            '(allow signal (target children))']
           if is_login else []),
         f'(allow file-write* (subpath (param "SCRATCHPAD")) {_DEVICES})',
+        *(['(allow network-bind (local tcp "localhost:*"))',
+           '(allow network-inbound (local tcp "localhost:*"))'] if is_login else []),
         f";; network: {note}",
         f"(allow network-outbound {net})",
         ";; sysctl-read CURATED (MS6.1): never blanket — a blanket allow re-opens kern.procargs2.",
