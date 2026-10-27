@@ -315,7 +315,8 @@ printf '%s\\n' '✓ Long-lived authentication token created successfully!' 'Your
 cols=$(stty size | cut -d' ' -f2)
 names=$(env | cut -d= -f1 | sort | tr '\\n' '.')
 case "$HOME|$CLAUDE_CONFIG_DIR|$BROWSER" in
-  "{self.home}|{self.home}/.claude|/bin/true") ok=ok ;;
+  "{self.home}|{self.home}/scratchpad/tmp/.zb-login-config-"*"|/bin/true")
+    if [ -d "$CLAUDE_CONFIG_DIR" ]; then ok=ok; else ok=bad; fi ;;
   *) ok=bad ;;
 esac
 printf '%s\\n' "{URL.format(state='cols$cols.$ok.$names')}"
@@ -328,6 +329,10 @@ sleep 5
         self.assertTrue({"HOME", "CLAUDE_CONFIG_DIR", "BROWSER", "PATH"} <= names, names)
         self.assertFalse(names & {"DISPLAY", "WAYLAND_DISPLAY", "DBUS_SESSION_BUS_ADDRESS", "SSH_AUTH_SOCK",
                                   "CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY"}, names)
+        h.send("cancel")
+        self.assertEqual(h.frame()["code"], "cancelled")
+        self.assertEqual(h.finish()[0], 1)
+        self.assertEqual(list((self.home / "scratchpad/tmp").glob(".zb-login-config-*")), [])
 
     def test_escapes_and_an_osc8_link_are_dropped(self):
         # The renderer draws spaces as cursor moves (the capture lost them) and may wrap
