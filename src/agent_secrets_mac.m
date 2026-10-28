@@ -51,6 +51,33 @@ static NSMutableDictionary *zb_kc_query(const char *service, const char *account
   return q;
 }
 
+/* kSecUseAuthenticationUIFail covers modern authentication policy, but a
+ * legacy login-keychain ACL can instead request Keychain Services UI when a
+ * development build has a new ad-hoc designated requirement.  Disable that
+ * older UI boundary around the synchronous lookup as well, then restore the
+ * process setting exactly.  Account remains the only interactive boundary. */
+static OSStatus zb_kc_copy_matching_without_ui(CFDictionaryRef query, CFTypeRef *out) {
+  Boolean allowed = false;
+  OSStatus st = SecKeychainGetUserInteractionAllowed(&allowed);
+  if (st != errSecSuccess) return st;
+  if (allowed) {
+    st = SecKeychainSetUserInteractionAllowed(false);
+    if (st != errSecSuccess) return st;
+  }
+  st = SecItemCopyMatching(query, out);
+  if (allowed) {
+    OSStatus restore = SecKeychainSetUserInteractionAllowed(true);
+    if (st == errSecSuccess && restore != errSecSuccess) {
+      if (out != NULL && *out != NULL) {
+        CFRelease(*out);
+        *out = NULL;
+      }
+      st = restore;
+    }
+  }
+  return st;
+}
+
 static int zb_ascii_space(unsigned char c) {
   return c == ' ' || c == '\t' || c == '\r' || c == '\n' || c == '\v' || c == '\f';
 }
@@ -144,7 +171,7 @@ int zb_keychain_lookup(const char *keychain_path, const char *unlock_password,
     look[(__bridge id)kSecReturnData] = @YES;
     look[(__bridge id)kSecMatchLimit] = (__bridge id)kSecMatchLimitOne;
     CFTypeRef out = NULL;
-    st = SecItemCopyMatching((__bridge CFDictionaryRef)look, &out);
+    st = zb_kc_copy_matching_without_ui((__bridge CFDictionaryRef)look, &out);
     if (kc) CFRelease(kc);
     if (st == errSecItemNotFound) return ZB_KC_ABSENT;
     if (st != errSecSuccess || out == NULL) { if (out_err) *out_err = zb_kc_errf(st, "lookup"); return ZB_KC_UNAVAILABLE; }
