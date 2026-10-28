@@ -17,6 +17,12 @@ void zb_agent_helper_send(unsigned int window_id, const char *text) {
   (void)window_id;
   (void)text;
 }
+static unsigned int allow_window;
+static int allow_calls;
+void zb_agent_helper_allow_token(unsigned int window_id) {
+  allow_window = window_id;
+  allow_calls++;
+}
 void zb_mac_secrets_window_open(NSWindow *parent) { (void)parent; }
 int zb_mac_secrets_window_acceptance_store(NSWindow *parent, const char *token) {
   (void)parent;
@@ -67,6 +73,17 @@ static NSUInteger text_count(NSView *panel, NSString *text) {
   return count;
 }
 
+static NSButton *button_named(NSView *view, NSString *title) {
+  if ([view isKindOfClass:NSButton.class] && [((NSButton *)view).title isEqualToString:title]) {
+    return (NSButton *)view;
+  }
+  for (NSView *child in view.subviews) {
+    NSButton *found = button_named(child, title);
+    if (found != nil) return found;
+  }
+  return nil;
+}
+
 int main(void) {
   @autoreleasepool {
     [NSApplication sharedApplication];
@@ -87,6 +104,16 @@ int main(void) {
     NSString *auth = @"Claude rejected the saved token. Open Account to replace it.";
     zb_drawer_agent_status(77, "unavailable", "auth");
     if (text_count(panel, auth) != 1) fail("authentication status line missing");
+
+    NSString *permission = @"zigBrowser needs permission to use your saved Claude token";
+    zb_drawer_agent_status(78, "unavailable", "token-permission");
+    if (text_count(panel, permission) != 0) fail("another window's token permission reached this drawer");
+    zb_drawer_agent_status(77, "unavailable", "token-permission");
+    if (text_count(panel, permission) != 1) fail("saved-token permission status line missing");
+    NSButton *allow = button_named(panel, @"Allow");
+    if (allow == nil || allow.hidden || !allow.enabled) fail("saved-token Allow action missing");
+    [allow performClick:nil];
+    if (allow_calls != 1 || allow_window != 77) fail("Allow did not request one interactive read for this drawer");
 
     NSString *limited = @"Claude is busy; try again shortly.";
     zb_drawer_agent_status(77, "unavailable", "rate-limited");
