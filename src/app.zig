@@ -458,10 +458,11 @@ fn runOpen(arena: std.mem.Allocator, io: std.Io, spec: OpenSpec) errors.BrowserE
         if (net) |n| configureAgentLogin(arena, io, spec.e2e_protocol, n) catch return error.WriteFailed;
     }
 
-    // S7b: the drawer's tools need the automation core (Linux, like the drawer's helper). Kept
+    // S7b: the drawer's tools need the automation core on Linux and macOS. Kept
     // apart from drawer_on: folding the OS into it would drop the drawer branch, and with it
     // the portable drawer exports, from the Windows build (WS5's cross-check-drawer-win).
-    const drawer_core = drawer_on and builtin.os.tag == .linux;
+    const drawer_core_supported = builtin.os.tag == .linux or builtin.os.tag == .macos;
+    const drawer_core = drawer_on and drawer_core_supported;
     if (spec.automation_api or drawer_core) {
         // automation.js must be registered before zb_app_run builds the window. macOS uses the
         // WKWebView port (MS2a); every other target uses the GTK port.
@@ -483,12 +484,14 @@ fn runOpen(arena: std.mem.Allocator, io: std.Io, spec: OpenSpec) errors.BrowserE
             return error.WriteFailed;
         } else server.startCore() catch return error.WriteFailed;
         defer server.stop();
-        // After the GTK loop and before the core stops: the drawers' brokers detached and
-        // their Reaper joined (a call still waiting for GTK then gives up, NO_LOOP).
-        if (comptime builtin.os.tag == .linux) {
+        // After the native loop and before the core stops: the drawers' brokers detach and
+        // their Reaper joins (a call still waiting for the UI then gives up, NO_LOOP).
+        if (comptime drawer_core_supported) {
             if (drawer_core) agent_tools.start(&server);
         }
-        defer if (comptime builtin.os.tag == .linux) agent_tools.stop();
+        defer if (comptime drawer_core_supported) {
+            if (drawer_core) agent_tools.stop();
+        };
 
         const code = c.zb_app_run(valid_uri.ptr, if (spec.print_title) 1 else 0,
             if (spec.e2e_protocol) 1 else 0);

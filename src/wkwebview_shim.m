@@ -50,6 +50,19 @@ int zb_mac_drawer_e2e_enabled(void) {
 }
 static BOOL g_zb_window_snapshot_scheduled = NO;
 
+static int64_t zb_window_snapshot_delay(void) {
+  const int64_t fallback = (int64_t)(0.5 * NSEC_PER_SEC);
+  const char *raw = getenv("ZB_DEBUG_WINDOW_SNAPSHOT_DELAY_MS");
+  if (raw == NULL || raw[0] == '\0') return fallback;
+  errno = 0;
+  char *end = NULL;
+  long value = strtol(raw, &end, 10);
+  if (errno != 0 || end == raw || *end != '\0' || value < 100 || value > 55000) {
+    return fallback;
+  }
+  return (int64_t)value * NSEC_PER_MSEC;
+}
+
 /* E2E-only visual proof: render this application's own content view. AppKit's
  * cache-display path needs no Screen Recording permission and cannot capture
  * another process's window. The host invokes this after it has queued its
@@ -66,7 +79,7 @@ void zb_mac_e2e_snapshot_window(NSWindow *window, unsigned int window_id) {
   g_zb_window_snapshot_scheduled = YES;
 
   __weak NSWindow *weak_window = window;
-  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)),
+  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, zb_window_snapshot_delay()),
                  dispatch_get_main_queue(), ^{
     NSWindow *strong_window = weak_window;
     NSView *content = strong_window.contentView;

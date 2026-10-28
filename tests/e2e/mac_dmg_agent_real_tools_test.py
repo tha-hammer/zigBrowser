@@ -176,15 +176,19 @@ def app_pids(executable: Path) -> dict[int, str]:
     return found
 
 
-def stop_owned(pid: int | None, executable: Path) -> None:
+def stop_owned(pid: int | None, executable: Path) -> bool:
     if pid is None or pid not in app_pids(executable):
-        return
+        return True
     os.kill(pid, signal.SIGTERM)
     deadline = time.monotonic() + 8
     while time.monotonic() < deadline and pid in app_pids(executable):
         time.sleep(0.1)
     if pid in app_pids(executable):
         os.kill(pid, signal.SIGKILL)
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and pid in app_pids(executable):
+            time.sleep(0.1)
+    return pid not in app_pids(executable)
 
 
 def evidence_rows(path: Path) -> list[dict]:
@@ -289,6 +293,7 @@ def main() -> int:
         for command in (
             ["/usr/bin/security", "create-keychain", "-p", password, str(keychain)],
             ["/usr/bin/security", "unlock-keychain", "-p", password, str(keychain)],
+            ["/usr/bin/security", "set-keychain-settings", str(keychain)],
             ["/usr/bin/security", "add-generic-password", "-a", TOKEN_ACCOUNT, "-s", TOKEN_SERVICE,
              "-w", "sk-ant-oat01-FAKEPRODUCTTOOLS0123456789", "-A", str(keychain)],
         ):
@@ -310,7 +315,7 @@ def main() -> int:
                 "--env", f"ZB_DEBUG_MAC_AGENT_KEYCHAIN={keychain}",
                 "--env", f"ZB_DEBUG_MAC_AGENT_KEYCHAIN_PASSWORD={password}",
                 "--env", f"ZB_DEBUG_WINDOW_SNAPSHOT_PNG={png}",
-                "--env", "ZB_DEBUG_WINDOW_SNAPSHOT_DELAY_MS=8000",
+                "--env", "ZB_DEBUG_WINDOW_SNAPSHOT_DELAY_MS=35000",
                 "--env", "ZB_DEBUG_QUIT_AFTER_MS=60000",
                 str(app), "--args", f"{site.origin}/start", "--agent-drawer", "on",
                 "--e2e-protocol", "--profile-dir", str(root / "profile"),
@@ -377,7 +382,7 @@ def main() -> int:
         if f"{site.origin}/target" not in after:
             return fail(f"post-navigate window_info has the wrong URL: {after!r}")
 
-        deadline = time.monotonic() + 12
+        deadline = time.monotonic() + 45
         dimensions = None
         while time.monotonic() < deadline:
             dimensions = png_dimensions(png)
@@ -392,11 +397,19 @@ def main() -> int:
         print("PASS mac-agent-real-tools installed-cli-sdk-broker-card-navigate", flush=True)
         return 0
     finally:
-        if proc is not None:
-            stop_owned(app_pid, app / "Contents/MacOS/zigBrowser")
-        subprocess.run(["/usr/bin/security", "delete-keychain", str(keychain)],
-                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
-        shutil.rmtree(root, ignore_errors=True)
+        app_stopped = proc is None or stop_owned(app_pid, app / "Contents/MacOS/zigBrowser")
+        if app_stopped and proc is not None:
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                proc.terminate()
+                proc.wait(timeout=5)
+        if app_stopped:
+            subprocess.run(["/usr/bin/security", "delete-keychain", str(keychain)],
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+            shutil.rmtree(root, ignore_errors=True)
+        else:
+            print(f"LEAK mac-agent-real-tools pid={app_pid} retained={root}", flush=True)
 
 
 if __name__ == "__main__":
