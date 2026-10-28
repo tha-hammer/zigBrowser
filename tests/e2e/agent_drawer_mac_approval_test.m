@@ -158,9 +158,8 @@ int main(void) {
     NSArray<NSButton *> *approve = buttons_named(panel, @"Approve");
     NSArray<NSButton *> *deny = buttons_named(panel, @"Deny");
     if (approve.count != 2 || deny.count != 2) fail("approval controls were not rendered per card");
-    if (!has_text(panel, @"Claude wants to open https://example.test/path in window 88.\nFrom: https://origin.test")) {
-      fail("navigate card did not show its bounded request");
-    }
+    if (!has_text(panel, @"Claude wants to open https://example.test/path in window 88.") ||
+        !has_text(panel, @"From: https://origin.test")) fail("navigate card did not show its bounded request");
     if (!has_text(panel, @"Claude wants to reload window 99.")) fail("reload card summary missing");
 
     [approve[0] performClick:nil];

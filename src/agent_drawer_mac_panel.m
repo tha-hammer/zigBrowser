@@ -986,10 +986,13 @@ static void zb_mac_live_row(NSString *scenario, NSString *event, NSData *payload
   NSView *row = [[NSView alloc] initWithFrame:NSZeroRect];
   row.translatesAutoresizingMaskIntoConstraints = NO;
   [row addSubview:view];
+  NSLayoutConstraint *width = [view isKindOfClass:ZBMacApprovalCard.class]
+      ? [view.widthAnchor constraintEqualToAnchor:row.widthAnchor multiplier:0.82]
+      : [view.widthAnchor constraintLessThanOrEqualToAnchor:row.widthAnchor multiplier:0.82];
   [NSLayoutConstraint activateConstraints:@[
     [view.topAnchor constraintEqualToAnchor:row.topAnchor],
     [view.bottomAnchor constraintEqualToAnchor:row.bottomAnchor],
-    [view.widthAnchor constraintLessThanOrEqualToAnchor:row.widthAnchor multiplier:0.82],
+    width,
     [view.widthAnchor constraintGreaterThanOrEqualToConstant:120.0],
   ]];
   if ([role isEqualToString:@"user"]) {
@@ -1051,8 +1054,6 @@ static void zb_mac_live_row(NSString *scenario, NSString *event, NSData *payload
     summary = [NSString stringWithFormat:@"Claude wants to %@ in window %u.",
                                          verb.length != 0 ? verb : @"use the page", bound];
   }
-  if (origin.length != 0) summary = [summary stringByAppendingFormat:@"\nFrom: %@", origin];
-
   ZBMacApprovalCard *cardView = [[ZBMacApprovalCard alloc] initWithFrame:NSZeroRect];
   cardView.translatesAutoresizingMaskIntoConstraints = NO;
   cardView.cardId = card;
@@ -1074,10 +1075,29 @@ static void zb_mac_live_row(NSString *scenario, NSString *event, NSData *payload
     [content.bottomAnchor constraintEqualToAnchor:cardView.bottomAnchor],
   ]];
 
-  ZBMacMessageBubble *message = [[ZBMacMessageBubble alloc] initWithRole:@"status" text:summary];
-  message.layer.backgroundColor = NSColor.clearColor.CGColor;
-  [content addArrangedSubview:message];
-  [message.widthAnchor constraintEqualToAnchor:content.widthAnchor constant:-16.0].active = YES;
+  NSTextField *title = [NSTextField labelWithString:summary];
+  title.selectable = YES;
+  title.maximumNumberOfLines = 1;
+  title.usesSingleLineMode = YES;
+  title.lineBreakMode = NSLineBreakByTruncatingTail;
+  [title setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow
+                                  forOrientation:NSLayoutConstraintOrientationHorizontal];
+  [content addArrangedSubview:title];
+  [title.widthAnchor constraintEqualToAnchor:content.widthAnchor constant:-16.0].active = YES;
+
+  if (origin.length != 0) {
+    NSTextField *originLabel = [NSTextField labelWithString:
+        [NSString stringWithFormat:@"From: %@", origin]];
+    originLabel.selectable = YES;
+    originLabel.textColor = NSColor.secondaryLabelColor;
+    originLabel.maximumNumberOfLines = 1;
+    originLabel.usesSingleLineMode = YES;
+    originLabel.lineBreakMode = NSLineBreakByTruncatingMiddle;
+    [originLabel setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow
+                                          forOrientation:NSLayoutConstraintOrientationHorizontal];
+    [content addArrangedSubview:originLabel];
+    [originLabel.widthAnchor constraintEqualToAnchor:content.widthAnchor constant:-16.0].active = YES;
+  }
 
   cardView.buttonRow = [[NSStackView alloc] initWithFrame:NSZeroRect];
   cardView.buttonRow.orientation = NSUserInterfaceLayoutOrientationHorizontal;
