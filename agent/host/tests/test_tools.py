@@ -39,7 +39,7 @@ TOOLS = {
     "screenshot": schema({}),
 }
 ACT = ("hover", "scroll")  # S8 decision 12, no card: test_tools_hover_scroll.py
-GATED = ("click", "type_text", "navigate", "reload")  # S8 decision 16: test_tools_navigate.py
+GATED = ("click", "type_text", "press_key", "navigate", "reload")  # S8 decision 16
 NAMES = sorted(f"mcp__zigbrowser__{name}" for name in [*TOOLS, *ACT, *GATED])
 
 

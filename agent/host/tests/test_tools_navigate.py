@@ -44,7 +44,14 @@ TYPE_TEXT = {"type": "object", "properties": {
     "selector": {"type": "string", "minLength": 1},
     "text": {"type": "string", "minLength": 1},
 }, "required": ["selector", "text"], "additionalProperties": False}
-GATED = {"click": CLICK, "type_text": TYPE_TEXT, "navigate": NAVIGATE, "reload": RELOAD}
+PRESS_KEY = {"type": "object", "properties": {
+    "selector": {"type": "string", "minLength": 1},
+    "key": {"type": "string", "enum": [
+        "Enter", "Tab", "Escape", "ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown",
+    ]},
+}, "required": ["selector", "key"], "additionalProperties": False}
+GATED = {"click": CLICK, "type_text": TYPE_TEXT, "press_key": PRESS_KEY,
+         "navigate": NAVIGATE, "reload": RELOAD}
 NAMES = sorted(f"mcp__zigbrowser__{n}" for n in [*READ, *ACT, *GATED])
 
 
@@ -96,6 +103,7 @@ class ForwardTest(unittest.IsolatedAsyncioTestCase):
         tools = {t.name: t for t in b.tools()}
         for name, args in (("click", {"selector": "css=#send"}),
                            ("type_text", {"selector": "css=#message", "text": "hello"}),
+                           ("press_key", {"selector": "css=#message", "key": "Enter"}),
                            ("navigate", {"url": "https://example.com/next"}), ("reload", {})):
             task = asyncio.ensure_future(tools[name].handler(args))
             for _ in range(200):
@@ -140,6 +148,7 @@ class GatedDeadlineTest(unittest.IsolatedAsyncioTestCase):
     async def test_a_gated_call_waits_the_tool_deadline_plus_the_card(self):
         for name, args in (("click", {"selector": "css=#send"}),
                            ("type_text", {"selector": "css=#message", "text": "hello"}),
+                           ("press_key", {"selector": "css=#message", "key": "Enter"}),
                            ("navigate", {"url": "https://example.com/"}), ("reload", {})):
             out = Out()
             b = bridge(out, deadline_s=0.2, card_s=0.6)

@@ -113,6 +113,7 @@ fn endCard(gate: Approval, id: approval.CardId, ending: Ending) void {
 const gated_tools = [_]struct { name: []const u8, method: []const u8, verb: approval.Verb }{
     .{ .name = "click", .method = "dom.click", .verb = .click },
     .{ .name = "type_text", .method = "dom.type", .verb = .type_text },
+    .{ .name = "press_key", .method = "dom.press", .verb = .press_key },
     .{ .name = "navigate", .method = "page.navigate", .verb = .navigate },
     .{ .name = "reload", .method = "page.reload", .verb = .reload },
 };
@@ -135,6 +136,16 @@ fn gatedArgsOk(gpa: std.mem.Allocator, verb: approval.Verb, args_json: []const u
     if (parsed.value != .object) return false;
     const object = parsed.value.object;
     switch (verb) {
+        .press_key => {
+            if (object.count() != 2) return false;
+            const selector = object.get("selector") orelse return false;
+            const key = object.get("key") orelse return false;
+            if (selector != .string or selector.string.len == 0 or key != .string) return false;
+            for ([_][]const u8{ "Enter", "Tab", "Escape", "ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown" }) |allowed| {
+                if (std.mem.eql(u8, key.string, allowed)) return true;
+            }
+            return false;
+        },
         .type_text => {
             if (object.count() != 2) return false;
             const selector = object.get("selector") orelse return false;
@@ -725,7 +736,9 @@ const Job = struct {
         try expect.put(arena, "load_serial", .{ .integer = @intCast(load_serial) });
         var options: std.json.ObjectMap = .empty;
         try options.put(arena, "expect", .{ .object = expect });
-        if (std.mem.eql(u8, self.method, "dom.click") or std.mem.eql(u8, self.method, "dom.type")) {
+        if (std.mem.eql(u8, self.method, "dom.click") or std.mem.eql(u8, self.method, "dom.type") or
+            std.mem.eql(u8, self.method, "dom.press"))
+        {
             try options.put(arena, "input", .{ .string = "native" });
         }
         try args.value.object.put(arena, "options", .{ .object = options });
