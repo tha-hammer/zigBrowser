@@ -1058,6 +1058,7 @@ static void zb_mac_live_row(NSString *scenario, NSString *event, NSData *payload
   cardView.translatesAutoresizingMaskIntoConstraints = NO;
   cardView.cardId = card;
   cardView.wantsLayer = YES;
+  cardView.appearance = [NSAppearance appearanceNamed:NSAppearanceNameAqua];
   cardView.layer.backgroundColor = [NSColor colorWithSRGBRed:1.0 green:0.961 blue:0.840 alpha:1.0].CGColor;
   cardView.layer.cornerRadius = 10.0;
 
