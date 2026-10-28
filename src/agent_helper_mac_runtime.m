@@ -30,6 +30,9 @@ extern void zb_drawer_agent_tool_call(unsigned int window_id, const char *sessio
                                       size_t request_id_length, const char *tool,
                                       size_t tool_length, const char *arguments,
                                       size_t arguments_length);
+extern void zb_drawer_agent_tool_failure(unsigned int window_id,
+                                         const char *tool, size_t tool_length,
+                                         const char *message, size_t message_length);
 extern int zb_mac_drawer_e2e_enabled(void);
 
 typedef NS_ENUM(NSInteger, ZBMacHelperState) {
@@ -133,6 +136,7 @@ static void zb_terminate_owned_group(pid_t *pid) {
 @property(nonatomic, strong) NSMutableDictionary<NSNumber *, NSString *> *windowSessions;
 @property(nonatomic, strong) NSMutableDictionary<NSString *, NSNumber *> *sessionWindows;
 @property(nonatomic, strong) NSMutableSet<NSString *> *confirmedSessions;
+@property(nonatomic, strong) NSMutableDictionary<NSString *, NSMutableDictionary<NSString *, NSString *> *> *pendingToolNames;
 @property(nonatomic, copy) NSString *home;
 @property(nonatomic, copy) NSString *python;
 @property(nonatomic, copy) NSString *packageDirectory;
@@ -190,6 +194,7 @@ int zb_agent_runtime_identity_current(const char *home_path, const char *package
   _windowSessions = [NSMutableDictionary dictionary];
   _sessionWindows = [NSMutableDictionary dictionary];
   _confirmedSessions = [NSMutableSet set];
+  _pendingToolNames = [NSMutableDictionary dictionary];
 
   NSDictionary<NSString *, NSString *> *environment = NSProcessInfo.processInfo.environment;
   NSString *base = environment[@"XDG_DATA_HOME"];
@@ -529,6 +534,12 @@ int zb_agent_runtime_identity_current(const char *home_path, const char *package
       [self failAll:@"Claude Agent sent an invalid tool request."];
       return;
     }
+    NSMutableDictionary<NSString *, NSString *> *sessionTools = self.pendingToolNames[session];
+    if (sessionTools == nil) {
+      sessionTools = [NSMutableDictionary dictionary];
+      self.pendingToolNames[session] = sessionTools;
+    }
+    sessionTools[toolId] = tool;
     zb_drawer_agent_tool_call(windowId, session.UTF8String,
                               promptId.longLongValue, idData.bytes,
                               idData.length, toolData.bytes, toolData.length,
@@ -544,6 +555,7 @@ int zb_agent_runtime_identity_current(const char *home_path, const char *package
     zb_drawer_agent_message(windowId, "error", utf8.bytes, utf8.length);
     zb_drawer_agent_status(windowId, "ready", "-");
   } else if ([type isEqualToString:@"session_ended"]) {
+    [self.pendingToolNames removeObjectForKey:session];
     [self.confirmedSessions removeObject:session];
     [self.sessionWindows removeObjectForKey:session];
     [self.windowSessions removeObjectForKey:window];
@@ -583,6 +595,8 @@ int zb_agent_runtime_identity_current(const char *home_path, const char *package
 
 - (void)postToolResultForWindow:(unsigned int)windowId session:(NSString *)session
                              id:(NSString *)toolId ok:(BOOL)ok body:(NSData *)body {
+  NSMutableDictionary<NSString *, NSString *> *sessionTools = self.pendingToolNames[session];
+  NSString *toolName = sessionTools[toolId];
   if (self.e2eToolSteps != nil && windowId == self.e2eToolWindow &&
       [session isEqualToString:self.e2eToolSession] &&
       self.e2eToolIndex < self.e2eToolSteps.count) {
@@ -592,6 +606,15 @@ int zb_agent_runtime_identity_current(const char *home_path, const char *package
     printf("MAC_AGENT_TOOL\t%s\t%d\t%s\n", toolId.UTF8String,
            ok ? 1 : 0, encoded.UTF8String);
     fflush(stdout);
+    if (!ok && toolName.length != 0) {
+      NSString *message = [[NSString alloc] initWithData:body encoding:NSUTF8StringEncoding];
+      NSData *messageData = [(message.length != 0 ? message : @"tool failed")
+          dataUsingEncoding:NSUTF8StringEncoding];
+      NSData *toolData = [toolName dataUsingEncoding:NSUTF8StringEncoding];
+      zb_drawer_agent_tool_failure(windowId, toolData.bytes, toolData.length,
+                                   messageData.bytes, messageData.length);
+    }
+    [sessionTools removeObjectForKey:toolId];
     self.e2eToolIndex += 1;
     if (self.e2eToolIndex < self.e2eToolSteps.count) {
       dispatch_async(dispatch_get_main_queue(), ^{ [self runNextE2ETool]; });
@@ -619,6 +642,14 @@ int zb_agent_runtime_identity_current(const char *home_path, const char *package
   } else {
     NSString *message = [[NSString alloc] initWithData:body encoding:NSUTF8StringEncoding];
     frame[@"error"] = message.length != 0 ? message : @"tool failed";
+  }
+  [sessionTools removeObjectForKey:toolId];
+  if (![frame[@"ok"] boolValue] && toolName.length != 0) {
+    NSString *message = frame[@"error"];
+    NSData *messageData = [message dataUsingEncoding:NSUTF8StringEncoding];
+    NSData *toolData = [toolName dataUsingEncoding:NSUTF8StringEncoding];
+    zb_drawer_agent_tool_failure(windowId, toolData.bytes, toolData.length,
+                                 messageData.bytes, messageData.length);
   }
   if (![self writeFrame:frame]) [self failAll:@"Claude Agent could not receive a tool result."];
 }
@@ -694,6 +725,7 @@ int zb_agent_runtime_identity_current(const char *home_path, const char *package
   [self.windowSessions removeAllObjects];
   [self.sessionWindows removeAllObjects];
   [self.confirmedSessions removeAllObjects];
+  [self.pendingToolNames removeAllObjects];
   self.state = ZBMacHelperIdle;
 }
 

@@ -9,7 +9,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/file.h>
 #include <sys/stat.h>
+#include <time.h>
 #include <unistd.h>
 
 /* The helper is optional until an agent home is provisioned on macOS.  Its
@@ -17,6 +19,7 @@
  * shared ABI and missing-runtime text used by the Linux drawer too. */
 extern int zb_agent_helper_configured(void) __attribute__((weak_import));
 extern void zb_agent_helper_send(unsigned int window_id, const char *text) __attribute__((weak_import));
+extern const char *zb_agent_helper_home(void) __attribute__((weak_import));
 #import "agent_helper.h"
 
 extern int zb_drawer_card_press(uint64_t card, int control, int own);
@@ -35,6 +38,117 @@ enum {
   ZB_CARD_DENIED = 2,
   ZB_CARD_LOST = 3,
 };
+
+static const off_t ZB_DRAWER_LOG_MAX = 1024 * 1024;
+
+static NSString *zb_mac_redact_diagnostic(NSString *text) {
+  static NSRegularExpression *tokens;
+  static dispatch_once_t once;
+  dispatch_once(&once, ^{
+    tokens = [NSRegularExpression regularExpressionWithPattern:@"sk-ant-[A-Za-z0-9_-]+"
+                                                        options:0 error:nil];
+  });
+  return [tokens stringByReplacingMatchesInString:text ?: @""
+                                            options:0
+                                              range:NSMakeRange(0, (text ?: @"").length)
+                                       withTemplate:@"[REDACTED]"];
+}
+
+static BOOL zb_mac_write_all(int fd, const unsigned char *bytes, size_t length) {
+  size_t used = 0;
+  while (used < length) {
+    ssize_t count = write(fd, bytes + used, length - used);
+    if (count < 0 && errno == EINTR) continue;
+    if (count <= 0) return NO;
+    used += (size_t)count;
+  }
+  return YES;
+}
+
+static int zb_mac_open_drawer_log(int state_fd) {
+  int fd = openat(state_fd, "drawer.log",
+                  O_WRONLY | O_APPEND | O_CREAT | O_CLOEXEC | O_NOFOLLOW, 0600);
+  if (fd < 0) return -1;
+  struct stat st;
+  if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode) || st.st_uid != getuid() ||
+      fchmod(fd, 0600) != 0) {
+    close(fd);
+    return -1;
+  }
+  return fd;
+}
+
+static void zb_mac_append_diagnostic(NSString *kind, NSString *message) {
+  if (zb_agent_helper_home == NULL) return;
+  const char *home = zb_agent_helper_home();
+  if (home == NULL || home[0] != '/') return;
+  int home_fd = open(home, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+  if (home_fd < 0) return;
+  if (mkdirat(home_fd, "state", 0700) != 0 && errno != EEXIST) {
+    close(home_fd);
+    return;
+  }
+  int state_fd = openat(home_fd, "state", O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+  close(home_fd);
+  if (state_fd < 0) return;
+  struct stat state_st;
+  if (fstat(state_fd, &state_st) != 0 || !S_ISDIR(state_st.st_mode) ||
+      state_st.st_uid != getuid()) {
+    close(state_fd);
+    return;
+  }
+
+  NSString *safe = zb_mac_redact_diagnostic(message);
+  NSArray<NSString *> *lines = [safe componentsSeparatedByCharactersInSet:
+      NSCharacterSet.newlineCharacterSet];
+  for (NSString *source in lines) {
+    if (source.length == 0) continue;
+    NSString *line = source;
+    if (line.length > 8192) {
+      NSRange range = [line rangeOfComposedCharacterSequencesForRange:NSMakeRange(0, 8192)];
+      line = [[line substringWithRange:range] stringByAppendingString:@" [truncated]"];
+    }
+    time_t now = time(NULL);
+    struct tm utc;
+    char stamp[32];
+    if (gmtime_r(&now, &utc) == NULL ||
+        strftime(stamp, sizeof stamp, "%Y-%m-%dT%H:%M:%SZ", &utc) == 0) continue;
+    NSString *record = [NSString stringWithFormat:@"%s\t%@\t%@\n", stamp, kind, line];
+    NSData *data = [record dataUsingEncoding:NSUTF8StringEncoding];
+    if (data.length == 0 || data.length > 65536) continue;
+
+    int fd = zb_mac_open_drawer_log(state_fd);
+    if (fd < 0) continue;
+    if (flock(fd, LOCK_EX) != 0) {
+      close(fd);
+      continue;
+    }
+    struct stat log_st;
+    if (fstat(fd, &log_st) != 0) {
+      close(fd);
+      continue;
+    }
+    if (log_st.st_size + (off_t)data.length > ZB_DRAWER_LOG_MAX) {
+      if (unlinkat(state_fd, "drawer.log.1", 0) != 0 && errno != ENOENT) {
+        close(fd);
+        continue;
+      }
+      if (renameat(state_fd, "drawer.log", state_fd, "drawer.log.1") != 0) {
+        close(fd);
+        continue;
+      }
+      close(fd);
+      fd = zb_mac_open_drawer_log(state_fd);
+      if (fd < 0 || flock(fd, LOCK_EX) != 0) {
+        if (fd >= 0) close(fd);
+        continue;
+      }
+    }
+    (void)zb_mac_write_all(fd, data.bytes, data.length);
+    close(fd);
+  }
+  close(state_fd);
+}
 
 @class ZBMacDrawerPanel;
 
@@ -88,6 +202,7 @@ enum {
 @property(nonatomic, copy) NSString *lastFailureReason;
 - (void)addMessageView:(NSView *)view role:(NSString *)role;
 - (void)appendRole:(NSString *)role text:(NSString *)text;
+- (void)appendRole:(NSString *)role text:(NSString *)text diagnosticKind:(NSString *)kind;
 - (void)appendDelta:(NSString *)text;
 - (void)finishStreamWithText:(NSString *)text;
 - (void)finishStreamAsShown;
@@ -672,7 +787,15 @@ static void zb_mac_configure_plain_text(NSTextView *view) {
 }
 
 - (void)appendRole:(NSString *)role text:(NSString *)text {
+  NSString *kind = [role isEqualToString:@"user"] || [role isEqualToString:@"assistant"]
+                       ? nil
+                       : [role isEqualToString:@"error"] ? @"ERROR" : @"STATUS";
+  [self appendRole:role text:text diagnosticKind:kind];
+}
+
+- (void)appendRole:(NSString *)role text:(NSString *)text diagnosticKind:(NSString *)kind {
   NSString *shownRole = [role isEqualToString:@"user"] || [role isEqualToString:@"assistant"] ? role : @"status";
+  if (kind != nil) zb_mac_append_diagnostic(kind, text);
   ZBMacMessageBubble *bubble = [[ZBMacMessageBubble alloc] initWithRole:shownRole text:text];
   [self addMessageView:bubble role:shownRole];
   if (!self.acceptanceSent && [shownRole isEqualToString:@"user"] &&
@@ -987,7 +1110,7 @@ void zb_drawer_agent_status(unsigned int windowId, const char *state, const char
                                [stateText isEqualToString:@"busy"];
     if (failureText != nil && ![panel.lastFailureReason isEqualToString:reasonText]) {
       if (panel.streamBubble != nil) [panel finishStreamAsShown];
-      [panel appendRole:@"status" text:failureText];
+      [panel appendRole:@"status" text:failureText diagnosticKind:@"ERROR"];
       panel.lastFailureReason = reasonText;
     } else if (failureText == nil &&
                ([stateText isEqualToString:@"starting"] ||
@@ -1036,6 +1159,19 @@ void zb_drawer_post_system(unsigned int windowId, const char *text, size_t lengt
   zb_mac_on_main(^{
     ZBMacDrawerPanel *panel = zb_mac_panel_for_window(windowId);
     if (panel != nil) [panel appendRole:@"status" text:message];
+  });
+}
+
+void zb_drawer_agent_tool_failure(unsigned int windowId,
+                                  const char *tool, size_t toolLength,
+                                  const char *message, size_t messageLength) {
+  NSString *toolText = zb_mac_string_n(tool, toolLength);
+  NSString *messageText = zb_mac_string_n(message, messageLength);
+  zb_mac_on_main(^{
+    if (zb_mac_panel_for_window(windowId) == nil || toolText.length == 0) return;
+    NSString *line = [NSString stringWithFormat:@"tool=%@ %@", toolText,
+                                               messageText.length != 0 ? messageText : @"failed"];
+    zb_mac_append_diagnostic(@"ERROR", line);
   });
 }
 
