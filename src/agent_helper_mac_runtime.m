@@ -132,6 +132,7 @@ static void zb_terminate_owned_group(pid_t *pid) {
 @property(nonatomic, assign) uint64_t outputSequence;
 @property(nonatomic, assign) uint64_t inputSequence;
 @property(nonatomic, assign) uint64_t promptSequence;
+@property(nonatomic, assign) NSUInteger launchGeneration;
 @property(nonatomic, strong) NSMutableDictionary<NSNumber *, NSMutableArray<NSString *> *> *pending;
 @property(nonatomic, strong) NSMutableDictionary<NSNumber *, NSString *> *windowSessions;
 @property(nonatomic, strong) NSMutableDictionary<NSString *, NSNumber *> *sessionWindows;
@@ -355,48 +356,70 @@ int zb_agent_runtime_identity_current(const char *home_path, const char *package
     [self failAll:@"Claude Agent could not start."];
     return;
   }
-  NSString *host = [self.home stringByAppendingPathComponent:@"runtime/host"];
-  NSString *portText = [NSString stringWithFormat:@"%lu", (unsigned long)port];
-  const char *const argv[] = {
-    self.python.fileSystemRepresentation, "-I", "-c", ZBMacPythonBoot,
-    host.fileSystemRepresentation, "launch", "--home", self.home.fileSystemRepresentation,
-    "--python", self.python.fileSystemRepresentation, "--egress-port",
-    portText.UTF8String, NULL,
-  };
-  NSString *homeEnv = [@"HOME=" stringByAppendingString:self.home];
-  NSString *tmpEnv = [@"TMPDIR=" stringByAppendingString:
-      [self.home stringByAppendingPathComponent:@"scratchpad/tmp"]];
-  const char *const envp[] = {
-    "PATH=/usr/bin:/bin", "LANG=C.UTF-8", "PYTHONDONTWRITEBYTECODE=1",
-    homeEnv.UTF8String, tmpEnv.UTF8String, NULL,
-  };
-  pid_t pid = -1;
-  const char *testKeychain = getenv(ZBMacTestKeychainPath);
-  const char *testPassword = getenv(ZBMacTestKeychainPassword);
-  BOOL useTestKeychain = zb_mac_drawer_e2e_enabled() && testKeychain != NULL && testKeychain[0] == '/' &&
-                         testPassword != NULL && testPassword[0] != '\0';
-  char *spawnError = NULL;
-  int result = useTestKeychain
-      ? zb_mac_agent_helper_spawn_fd3_for_test(argv, envp, input[0], output[1],
-                                               testKeychain, testPassword, &pid, &spawnError)
-      : zb_mac_agent_helper_spawn_fd3(argv, envp, input[0], output[1], &pid);
-  free(spawnError);
-  zb_close_fd(&input[0]);
-  zb_close_fd(&output[1]);
-  if (result != 0 || pid <= 1) {
-    zb_close_fd(&input[1]);
-    zb_close_fd(&output[0]);
-    [self failAll:result == 1 ? @"Open Account and save a Claude token first."
-                              : @"Claude Agent could not start."];
-    return;
-  }
-  (void)fcntl(input[1], F_SETNOSIGPIPE, 1);
-  self.helperPid = pid;
-  self.helperInput = input[1];
   self.state = ZBMacHelperStartingChat;
-  self.inputSequence = 0;
-  self.outputSequence = 0;
-  [self readHelperFD:output[0] pid:pid];
+  NSUInteger generation = ++self.launchGeneration;
+  int childInput = input[0];
+  int parentInput = input[1];
+  int parentOutput = output[0];
+  int childOutput = output[1];
+
+  /* A login-Keychain item may require securityd to make an access decision.
+   * Never make that synchronous call on AppKit's main queue: it would prevent
+   * the ready UI, window close and controlled signal handlers from running. */
+  dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+    @autoreleasepool {
+      NSString *host = [self.home stringByAppendingPathComponent:@"runtime/host"];
+      NSString *portText = [NSString stringWithFormat:@"%lu", (unsigned long)port];
+      const char *const argv[] = {
+        self.python.fileSystemRepresentation, "-I", "-c", ZBMacPythonBoot,
+        host.fileSystemRepresentation, "launch", "--home", self.home.fileSystemRepresentation,
+        "--python", self.python.fileSystemRepresentation, "--egress-port",
+        portText.UTF8String, NULL,
+      };
+      NSString *homeEnv = [@"HOME=" stringByAppendingString:self.home];
+      NSString *tmpEnv = [@"TMPDIR=" stringByAppendingString:
+          [self.home stringByAppendingPathComponent:@"scratchpad/tmp"]];
+      const char *const envp[] = {
+        "PATH=/usr/bin:/bin", "LANG=C.UTF-8", "PYTHONDONTWRITEBYTECODE=1",
+        homeEnv.UTF8String, tmpEnv.UTF8String, NULL,
+      };
+      pid_t pid = -1;
+      const char *testKeychain = getenv(ZBMacTestKeychainPath);
+      const char *testPassword = getenv(ZBMacTestKeychainPassword);
+      BOOL useTestKeychain = zb_mac_drawer_e2e_enabled() && testKeychain != NULL && testKeychain[0] == '/' &&
+                             testPassword != NULL && testPassword[0] != '\0';
+      char *spawnError = NULL;
+      int result = useTestKeychain
+          ? zb_mac_agent_helper_spawn_fd3_for_test(argv, envp, childInput, childOutput,
+                                                   testKeychain, testPassword, &pid, &spawnError)
+          : zb_mac_agent_helper_spawn_fd3(argv, envp, childInput, childOutput, &pid);
+      free(spawnError);
+      close(childInput);
+      close(childOutput);
+      dispatch_async(dispatch_get_main_queue(), ^{
+        if (generation != self.launchGeneration || self.state != ZBMacHelperStartingChat) {
+          close(parentInput);
+          close(parentOutput);
+          pid_t stoppedPid = pid;
+          zb_terminate_owned_group(&stoppedPid);
+          return;
+        }
+        if (result != 0 || pid <= 1) {
+          close(parentInput);
+          close(parentOutput);
+          [self failAll:result == 1 ? @"Open Account and save a Claude token first."
+                                    : @"Claude Agent could not start."];
+          return;
+        }
+        (void)fcntl(parentInput, F_SETNOSIGPIPE, 1);
+        self.helperPid = pid;
+        self.helperInput = parentInput;
+        self.inputSequence = 0;
+        self.outputSequence = 0;
+        [self readHelperFD:parentOutput pid:pid];
+      });
+    }
+  });
 }
 
 - (void)readHelperFD:(int)fd pid:(pid_t)pid {
@@ -715,6 +738,7 @@ int zb_agent_runtime_identity_current(const char *home_path, const char *package
 - (void)stop {
   if (self.state == ZBMacHelperStopping) return;
   self.state = ZBMacHelperStopping;
+  self.launchGeneration += 1;
   if (self.helperInput >= 0) (void)[self writeFrame:@{@"type": @"shutdown"}];
   zb_close_fd(&_helperInput);
   zb_close_fd(&_netInput);
