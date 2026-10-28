@@ -100,30 +100,6 @@ def tool_rows(lines: list[str]) -> list[tuple[str, bool, str]]:
     return rows
 
 
-def press_approve(pid: int) -> tuple[bool, str]:
-    script = f'''
-tell application "System Events"
-  tell first process whose unix id is {pid}
-    repeat with candidate in entire contents of front window
-      try
-        if role of candidate is "AXButton" and name of candidate is "Approve" and enabled of candidate then
-          perform action "AXPress" of candidate
-          return "clicked"
-        end if
-      end try
-    end repeat
-  end tell
-end tell
-return "missing"
-'''
-    done = subprocess.run(
-        ["/usr/bin/osascript", "-e", script], capture_output=True, text=True, check=False
-    )
-    return done.returncode == 0 and done.stdout.strip() == "clicked", (
-        done.stderr or done.stdout
-    ).strip()
-
-
 def stop_owned(proc: subprocess.Popen) -> str | None:
     if proc.poll() is not None:
         return None
@@ -162,19 +138,6 @@ def main(site: Site) -> int:
         for directory in (private_home, data, cache, temp, profile):
             directory.mkdir(mode=0o700)
         action = root / "click-action.json"
-        private_json(
-            action,
-            {
-                "version": 1,
-                "steps": [
-                    {
-                        "id": "click",
-                        "tool": "mcp__zigbrowser__click",
-                        "args": {"selector": "css=#click-target"},
-                    }
-                ],
-            },
-        )
         socket_path = root / "automation.sock"
         env = {
             "HOME": str(private_home),
@@ -184,6 +147,8 @@ def main(site: Site) -> int:
             "PATH": "/usr/bin:/bin",
             "LANG": "en_US.UTF-8",
             "ZIGBROWSER_SOCKET": str(socket_path),
+            "ZB_DEBUG_DRAWER_ICON": "click",
+            "ZB_DEBUG_MAC_AGENT_TOOLS_APPROVE": "1",
             ACTION_ENV: str(action),
         }
         proc = subprocess.Popen(
@@ -204,16 +169,35 @@ def main(site: Site) -> int:
         threading.Thread(target=_read_lines, args=(proc.stderr, err), daemon=True).start()
         rpc = RpcClient(socket_path, min(args.timeout, 25.0))
 
+        ready_deadline = time.monotonic() + min(args.timeout, 20.0)
+        while time.monotonic() < ready_deadline:
+            if rpc.evaluate("window.clickState") == {"clicks": 0, "trusted": None}:
+                break
+            time.sleep(0.05)
+        else:
+            raise RuntimeError("local click page did not become ready")
+        private_json(
+            action,
+            {
+                "version": 1,
+                "steps": [
+                    {
+                        "id": "click",
+                        "tool": "mcp__zigbrowser__click",
+                        "args": {"selector": "css=#click-target"},
+                    }
+                ],
+            },
+        )
+
         deadline = time.monotonic() + args.timeout
         approved = False
-        approve_detail = "approval card never appeared"
         state = {"clicks": 0, "trusted": None}
         rows: list[tuple[str, bool, str]] = []
         while time.monotonic() < deadline:
             rows = tool_rows(out)
             state = rpc.evaluate("window.clickState") or state
-            if not approved:
-                approved, approve_detail = press_approve(proc.pid)
+            approved = "MAC_AGENT_TOOL_APPROVAL\tpressed" in out
             if approved and rows:
                 break
             if rows and state.get("clicks", 0) != 0 and not approved:
@@ -229,10 +213,9 @@ def main(site: Site) -> int:
             time.sleep(0.15)
 
         if not approved:
-            print(
-                f"FAIL mac-agent-click-direct: no enabled Approve button ({approve_detail})",
-                flush=True,
-            )
+            print("FAIL mac-agent-click-direct: real approval button was not pressed", flush=True)
+            print(f"STDOUT mac-agent-click-direct: {out!r}", flush=True)
+            print(f"STDERR mac-agent-click-direct: {err!r}", flush=True)
             print(f"EVIDENCE mac-agent-click-direct: {root}", flush=True)
             return 1
         if rows != [("click", True, rows[0][2] if rows else "")]:

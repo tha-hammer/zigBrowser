@@ -111,6 +111,10 @@ fn endCard(gate: Approval, id: approval.CardId, ending: Ending) void {
 
 /// S8 decision 16's tools: each one method, gated by the core.
 const gated_tools = [_]struct { name: []const u8, method: []const u8, verb: approval.Verb }{
+    .{ .name = "click", .method = "dom.click", .verb = .click },
+    .{ .name = "type_text", .method = "dom.type", .verb = .type_text },
+    .{ .name = "press_key", .method = "dom.press", .verb = .press_key },
+    .{ .name = "select_option", .method = "dom.selectOption", .verb = .select_option },
     .{ .name = "navigate", .method = "page.navigate", .verb = .navigate },
     .{ .name = "reload", .method = "page.reload", .verb = .reload },
 };
@@ -133,6 +137,34 @@ fn gatedArgsOk(gpa: std.mem.Allocator, verb: approval.Verb, args_json: []const u
     if (parsed.value != .object) return false;
     const object = parsed.value.object;
     switch (verb) {
+        .select_option => {
+            if (object.count() != 2) return false;
+            const selector = object.get("selector") orelse return false;
+            const value = object.get("value") orelse return false;
+            return selector == .string and selector.string.len > 0 and value == .string;
+        },
+        .press_key => {
+            if (object.count() != 2) return false;
+            const selector = object.get("selector") orelse return false;
+            const key = object.get("key") orelse return false;
+            if (selector != .string or selector.string.len == 0 or key != .string) return false;
+            for ([_][]const u8{ "Enter", "Tab", "Escape", "ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown" }) |allowed| {
+                if (std.mem.eql(u8, key.string, allowed)) return true;
+            }
+            return false;
+        },
+        .type_text => {
+            if (object.count() != 2) return false;
+            const selector = object.get("selector") orelse return false;
+            const value = object.get("text") orelse return false;
+            return selector == .string and selector.string.len > 0 and
+                value == .string and value.string.len > 0;
+        },
+        .click => {
+            if (object.count() != 1) return false;
+            const selector = object.get("selector") orelse return false;
+            return selector == .string and selector.string.len > 0;
+        },
         .reload => return object.count() == 0,
         .navigate => {
             if (object.count() != 1) return false;
@@ -144,9 +176,8 @@ fn gatedArgsOk(gpa: std.mem.Allocator, verb: approval.Verb, args_json: []const u
 
 /// Act-on-page tools that need no card. Like navigate and reload they exist only with the
 /// app's S8 wiring, but they never ask the selector.
-const ActKind = enum { click, hover, scroll };
+const ActKind = enum { hover, scroll };
 const act_tools = [_]struct { name: []const u8, method: []const u8, kind: ActKind }{
-    .{ .name = "click", .method = "dom.click", .kind = .click },
     .{ .name = "hover", .method = "dom.hover", .kind = .hover },
     .{ .name = "scroll", .method = "dom.scroll", .kind = .scroll },
 };
@@ -712,6 +743,11 @@ const Job = struct {
         try expect.put(arena, "load_serial", .{ .integer = @intCast(load_serial) });
         var options: std.json.ObjectMap = .empty;
         try options.put(arena, "expect", .{ .object = expect });
+        if (std.mem.eql(u8, self.method, "dom.click") or std.mem.eql(u8, self.method, "dom.type") or
+            std.mem.eql(u8, self.method, "dom.press"))
+        {
+            try options.put(arena, "input", .{ .string = "native" });
+        }
         try args.value.object.put(arena, "options", .{ .object = options });
         const params = try std.json.Stringify.valueAlloc(gpa, args.value, .{});
         gpa.free(self.params);

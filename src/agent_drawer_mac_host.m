@@ -184,6 +184,36 @@ static NSButton *zb_mac_find_minus(NSView *view) {
   return nil;
 }
 
+static NSButton *zb_mac_find_titled_button(NSView *view, NSString *title) {
+  if ([view isKindOfClass:NSButton.class]) {
+    NSButton *button = (NSButton *)view;
+    if ([button.title isEqualToString:title]) return button;
+  }
+  for (NSView *child in view.subviews) {
+    NSButton *found = zb_mac_find_titled_button(child, title);
+    if (found != nil) return found;
+  }
+  return nil;
+}
+
+static void zb_mac_e2e_start_and_approve_tool(NSView *panel,
+                                              unsigned int window_id,
+                                              NSUInteger attempts) {
+  if (panel == nil || attempts == 0) return;
+  zb_mac_agent_tools_e2e_start(window_id);
+  NSButton *approve = zb_mac_find_titled_button(panel, @"Approve");
+  if (approve != nil && approve.enabled) {
+    [approve performClick:nil];
+    puts("MAC_AGENT_TOOL_APPROVAL\tpressed");
+    fflush(stdout);
+    return;
+  }
+  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 50 * NSEC_PER_MSEC),
+                 dispatch_get_main_queue(), ^{
+    zb_mac_e2e_start_and_approve_tool(panel, window_id, attempts - 1);
+  });
+}
+
 static ZBMacDrawerState *zb_state(NSWindow *window) {
   return window != nil
              ? objc_getAssociatedObject(window, kZBMacDrawerStateKey)
@@ -951,6 +981,25 @@ void zb_mac_drawer_attach(NSWindow *window, NSView *webview,
       [strong_state.window setContentSize:NSMakeSize(800, 600)];
       [strong_state.host setNeedsLayout:YES];
       [strong_state.host layoutSubtreeIfNeeded];
+    });
+  }
+
+  const char *tool_action = getenv("ZB_DEBUG_MAC_AGENT_TOOLS_FILE");
+  if (zb_mac_drawer_e2e_enabled() && tool_action != NULL && tool_action[0] == '/' &&
+      zb_mac_agent_tools_e2e_start != NULL) {
+    __weak ZBMacDrawerState *weak_state = state;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 250 * NSEC_PER_MSEC),
+                   dispatch_get_main_queue(), ^{
+      ZBMacDrawerState *strong_state = weak_state;
+      if (strong_state == nil || strong_state.window == nil) return;
+      zb_mac_drawer_set_open(strong_state.window, 1);
+      const char *approve = getenv("ZB_DEBUG_MAC_AGENT_TOOLS_APPROVE");
+      if (approve != NULL && strcmp(approve, "1") == 0) {
+        zb_mac_e2e_start_and_approve_tool(strong_state.panel,
+                                          strong_state.identifier, 200);
+      } else {
+        zb_mac_agent_tools_e2e_start(strong_state.identifier);
+      }
     });
   }
   zb_mac_e2e_snapshot_window(window, state.identifier);

@@ -10,8 +10,8 @@
 //! - another origin: -32015, reason `origin_changed`;
 //! - another load_serial: -32015, reason `load_serial_changed`;
 //! and in each case nothing reaches the page (no eval, navigate, reload or native input).
-//! Refused at parse (-32602, nothing runs): `expect` without `window_id`, with `options.input`
-//! native or `options.humanize`, on a verb that does not act (dom.getText, dom.hover), or
+//! Refused at parse (-32602, nothing runs): `expect` without `window_id`, with
+//! `options.humanize`, on a verb that does not act (dom.getText, dom.hover), or
 //! malformed (a missing or mistyped field, an unknown key).
 //! (-32014 recovering is the queue's, before the ticket; it is covered by the recover tests.)
 //!
@@ -188,7 +188,6 @@ fn waitUntil(condition: anytype, max_ms: u32) bool {
 
 const refused = [_]struct { what: []const u8, method: []const u8, params: []const u8 }{
     .{ .what = "no window_id", .method = "dom.click", .params = "{\"selector\":\"css=#buy\"," ++ expect_ok ++ "}" },
-    .{ .what = "native input", .method = "dom.click", .params = "{\"selector\":\"css=#buy\",\"window_id\":\"window-2\",\"options\":{\"input\":\"native\",\"expect\":{\"origin\":\"https://shop.example\",\"load_serial\":4}}}" },
     .{ .what = "humanize", .method = "dom.type", .params = "{\"selector\":\"css=#q\",\"text\":\"hi\",\"window_id\":\"window-2\",\"options\":{\"input\":\"native\",\"humanize\":true,\"expect\":{\"origin\":\"https://shop.example\",\"load_serial\":4}}}" },
     .{ .what = "a verb that does not act (getText)", .method = "dom.getText", .params = "{\"selector\":\"css=#q\",\"window_id\":\"window-2\"," ++ expect_ok ++ "}" },
     .{ .what = "a verb that does not act (hover)", .method = "dom.hover", .params = "{\"selector\":\"css=#q\",\"window_id\":\"window-2\"," ++ expect_ok ++ "}" },

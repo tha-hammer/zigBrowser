@@ -37,7 +37,26 @@ from zb_agent_host.bridge import Bridge  # noqa: E402
 NAVIGATE = {"type": "object", "properties": {"url": {"type": "string", "minLength": 1}}, "required": ["url"],
             "additionalProperties": False}
 RELOAD = {"type": "object", "properties": {}, "required": [], "additionalProperties": False}
-GATED = {"navigate": NAVIGATE, "reload": RELOAD}
+CLICK = {"type": "object", "properties": {
+    "selector": {"type": "string", "minLength": 1},
+}, "required": ["selector"], "additionalProperties": False}
+TYPE_TEXT = {"type": "object", "properties": {
+    "selector": {"type": "string", "minLength": 1},
+    "text": {"type": "string", "minLength": 1},
+}, "required": ["selector", "text"], "additionalProperties": False}
+PRESS_KEY = {"type": "object", "properties": {
+    "selector": {"type": "string", "minLength": 1},
+    "key": {"type": "string", "enum": [
+        "Enter", "Tab", "Escape", "ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown",
+    ]},
+}, "required": ["selector", "key"], "additionalProperties": False}
+SELECT_OPTION = {"type": "object", "properties": {
+    "selector": {"type": "string", "minLength": 1},
+    "value": {"type": "string"},
+}, "required": ["selector", "value"], "additionalProperties": False}
+GATED = {"click": CLICK, "type_text": TYPE_TEXT, "press_key": PRESS_KEY,
+         "select_option": SELECT_OPTION,
+         "navigate": NAVIGATE, "reload": RELOAD}
 NAMES = sorted(f"mcp__zigbrowser__{n}" for n in [*READ, *ACT, *GATED])
 
 
@@ -67,7 +86,7 @@ class ListTest(unittest.TestCase):
     def test_no_schema_names_the_selector_the_mode_or_a_window(self):
         for t in bridge().tools():
             if t.name in GATED:
-                for field in ("window_id", "navigate_approval", "selector", "mode", "drawer_showing", "typed_prompt",
+                for field in ("window_id", "navigate_approval", "mode", "drawer_showing", "typed_prompt",
                               "approved"):
                     self.assertNotIn(field, t.input_schema["properties"], (t.name, field))
                 self.assertIs(t.input_schema["additionalProperties"], False, t.name)
@@ -87,7 +106,11 @@ class ForwardTest(unittest.IsolatedAsyncioTestCase):
         out = Out()
         b = bridge(out)
         tools = {t.name: t for t in b.tools()}
-        for name, args in (("navigate", {"url": "https://example.com/next"}), ("reload", {})):
+        for name, args in (("click", {"selector": "css=#send"}),
+                           ("type_text", {"selector": "css=#message", "text": "hello"}),
+                           ("press_key", {"selector": "css=#message", "key": "Enter"}),
+                           ("select_option", {"selector": "css=#provider", "value": "google"}),
+                           ("navigate", {"url": "https://example.com/next"}), ("reload", {})):
             task = asyncio.ensure_future(tools[name].handler(args))
             for _ in range(200):
                 await asyncio.sleep(0)
@@ -129,7 +152,11 @@ class GatedDeadlineTest(unittest.IsolatedAsyncioTestCase):
         self.assertLess(took, 0.6, took)
 
     async def test_a_gated_call_waits_the_tool_deadline_plus_the_card(self):
-        for name, args in (("navigate", {"url": "https://example.com/"}), ("reload", {})):
+        for name, args in (("click", {"selector": "css=#send"}),
+                           ("type_text", {"selector": "css=#message", "text": "hello"}),
+                           ("press_key", {"selector": "css=#message", "key": "Enter"}),
+                           ("select_option", {"selector": "css=#provider", "value": "google"}),
+                           ("navigate", {"url": "https://example.com/"}), ("reload", {})):
             out = Out()
             b = bridge(out, deadline_s=0.2, card_s=0.6)
             started_at = time.monotonic()

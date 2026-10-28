@@ -17,12 +17,12 @@ pub const default_selector: Selector = .conditional;
 /// How the run is being driven (the owner's definitions, rev 16.20.47).
 pub const Mode = enum { interactive, headless, full_automation };
 
-pub const Verb = enum { navigate, reload };
+pub const Verb = enum { click, type_text, press_key, select_option, navigate, reload };
 
 /// Whether navigate or reload asks the user first: `yes` always, `no` never, `conditional` only
 /// in headless or full automation. The verb does not change it.
 pub fn needsCard(verb: Verb, selector: Selector, mode: Mode) bool {
-    _ = verb;
+    if (verb == .click or verb == .type_text or verb == .press_key or verb == .select_option) return true;
     return switch (selector) {
         .yes => true,
         .no => false,
