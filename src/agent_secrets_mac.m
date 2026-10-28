@@ -136,6 +136,11 @@ int zb_keychain_lookup(const char *keychain_path, const char *unlock_password,
 
     NSMutableDictionary *look = zb_kc_query(service, account);
     if (kc != NULL) look[(__bridge id)kSecMatchSearchList] = @[(__bridge id)kc];
+    /* Drawer Send is never an authentication-UI boundary.  In particular, an
+     * ad-hoc development build must not put a password prompt on the owner's
+     * screen when its cdhash is not on an existing item's ACL.  Account owns
+     * the interactive credential flow; a background lookup fails closed. */
+    look[(__bridge id)kSecUseAuthenticationUI] = (__bridge id)kSecUseAuthenticationUIFail;
     look[(__bridge id)kSecReturnData] = @YES;
     look[(__bridge id)kSecMatchLimit] = (__bridge id)kSecMatchLimitOne;
     CFTypeRef out = NULL;
