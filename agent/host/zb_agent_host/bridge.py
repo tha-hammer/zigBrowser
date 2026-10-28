@@ -75,6 +75,8 @@ GATED_TOOLS = (  # S8 decision 16: each may wait for the user's card (plan rev 1
      _schema({"selector": _ACT_SELECTOR, "key": {"type": "string", "enum": [
          "Enter", "Tab", "Escape", "ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown",
      ]}}, ["selector", "key"])),
+    ("select_option", "Selects an option value after one approval.",
+     _schema({"selector": _ACT_SELECTOR, "value": {"type": "string"}}, ["selector", "value"])),
     ("navigate", "Opens a URL in this drawer's window. It may wait for the user's approval.",
      _schema({"url": {"type": "string", "minLength": 1, "description": "The URL to open."}}, ["url"])),
     ("reload", "Reloads this drawer's window. It may wait for the user's approval.", _schema({})),

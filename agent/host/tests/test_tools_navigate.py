@@ -50,7 +50,12 @@ PRESS_KEY = {"type": "object", "properties": {
         "Enter", "Tab", "Escape", "ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown",
     ]},
 }, "required": ["selector", "key"], "additionalProperties": False}
+SELECT_OPTION = {"type": "object", "properties": {
+    "selector": {"type": "string", "minLength": 1},
+    "value": {"type": "string"},
+}, "required": ["selector", "value"], "additionalProperties": False}
 GATED = {"click": CLICK, "type_text": TYPE_TEXT, "press_key": PRESS_KEY,
+         "select_option": SELECT_OPTION,
          "navigate": NAVIGATE, "reload": RELOAD}
 NAMES = sorted(f"mcp__zigbrowser__{n}" for n in [*READ, *ACT, *GATED])
 
@@ -104,6 +109,7 @@ class ForwardTest(unittest.IsolatedAsyncioTestCase):
         for name, args in (("click", {"selector": "css=#send"}),
                            ("type_text", {"selector": "css=#message", "text": "hello"}),
                            ("press_key", {"selector": "css=#message", "key": "Enter"}),
+                           ("select_option", {"selector": "css=#provider", "value": "google"}),
                            ("navigate", {"url": "https://example.com/next"}), ("reload", {})):
             task = asyncio.ensure_future(tools[name].handler(args))
             for _ in range(200):
@@ -149,6 +155,7 @@ class GatedDeadlineTest(unittest.IsolatedAsyncioTestCase):
         for name, args in (("click", {"selector": "css=#send"}),
                            ("type_text", {"selector": "css=#message", "text": "hello"}),
                            ("press_key", {"selector": "css=#message", "key": "Enter"}),
+                           ("select_option", {"selector": "css=#provider", "value": "google"}),
                            ("navigate", {"url": "https://example.com/"}), ("reload", {})):
             out = Out()
             b = bridge(out, deadline_s=0.2, card_s=0.6)

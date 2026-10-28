@@ -114,6 +114,7 @@ const gated_tools = [_]struct { name: []const u8, method: []const u8, verb: appr
     .{ .name = "click", .method = "dom.click", .verb = .click },
     .{ .name = "type_text", .method = "dom.type", .verb = .type_text },
     .{ .name = "press_key", .method = "dom.press", .verb = .press_key },
+    .{ .name = "select_option", .method = "dom.selectOption", .verb = .select_option },
     .{ .name = "navigate", .method = "page.navigate", .verb = .navigate },
     .{ .name = "reload", .method = "page.reload", .verb = .reload },
 };
@@ -136,6 +137,12 @@ fn gatedArgsOk(gpa: std.mem.Allocator, verb: approval.Verb, args_json: []const u
     if (parsed.value != .object) return false;
     const object = parsed.value.object;
     switch (verb) {
+        .select_option => {
+            if (object.count() != 2) return false;
+            const selector = object.get("selector") orelse return false;
+            const value = object.get("value") orelse return false;
+            return selector == .string and selector.string.len > 0 and value == .string;
+        },
         .press_key => {
             if (object.count() != 2) return false;
             const selector = object.get("selector") orelse return false;

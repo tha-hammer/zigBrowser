@@ -49,7 +49,7 @@ test "the 3x3 table decides a card, the same for navigate and reload" {
 }
 
 test "native page input actions always require approval" {
-    for ([_]approval.Verb{ .click, .type_text, .press_key }) |verb| {
+    for ([_]approval.Verb{ .click, .type_text, .press_key, .select_option }) |verb| {
         for ([_]Selector{ .yes, .no, .conditional }) |selector| {
             for ([_]Mode{ .interactive, .headless, .full_automation }) |mode| {
                 try testing.expect(approval.needsCard(verb, selector, mode));

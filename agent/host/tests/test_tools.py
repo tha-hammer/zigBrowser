@@ -39,7 +39,7 @@ TOOLS = {
     "screenshot": schema({}),
 }
 ACT = ("hover", "scroll")  # S8 decision 12, no card: test_tools_hover_scroll.py
-GATED = ("click", "type_text", "press_key", "navigate", "reload")  # S8 decision 16
+GATED = ("click", "type_text", "press_key", "select_option", "navigate", "reload")
 NAMES = sorted(f"mcp__zigbrowser__{name}" for name in [*TOOLS, *ACT, *GATED])
 
 
@@ -74,7 +74,7 @@ class ToolListTest(unittest.TestCase):
 
     def test_no_other_act_tool_is_offered(self):
         names = {t.name for t in bridge().tools()}
-        for act in ("type", "fill", "press", "select_option", "evaluate", "echo", "cookies_get"):
+        for act in ("type", "fill", "press", "evaluate", "echo", "cookies_get"):
             self.assertNotIn(act, names)
 
 
