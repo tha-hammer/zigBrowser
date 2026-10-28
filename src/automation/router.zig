@@ -50,7 +50,8 @@ pub const Locate = struct {
 /// S8 phase A (chat-drawer plan, "S8 in detail" decision 2): an approval card's state of the
 /// bound window, checked by the engine inside the run's own FIFO ticket before any page input.
 /// `options.expect` on dom.click, dom.fill, dom.type, dom.press, dom.selectOption, page.navigate
-/// and page.reload only, never with native input or humanize.
+/// and page.reload only. Approved native input is checked in the engine's FIFO ticket before
+/// the native target is located and is then bound to that document's token.
 pub const Expect = struct {
     /// The window's page origin as `engine.originOf` gives it.
     origin: []const u8,
@@ -320,8 +321,7 @@ pub fn parse(
             .dom_click, .dom_fill, .dom_type, .dom_press, .dom_select_option, .page_navigate, .page_reload => {},
             else => return error.BadArgs,
         }
-        // Only synthetic input is checked in the same task as its event (decision 4).
-        if (input == .native or command.humanize) return error.BadArgs;
+        if (command.humanize) return error.BadArgs;
     }
 
     command.guard = try parseGuard(arena_allocator, obj);
@@ -698,11 +698,11 @@ fn hasOption(obj: std.json.ObjectMap, key: []const u8) bool {
 
 /// Key names the native backend can press (mirrors the shim's table).
 pub const native_key_names = [_][]const u8{
-    "Enter",     "Tab",        "Escape",  "Backspace", "Delete",   "Insert",
-    "ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home",     "End",
-    "PageUp",    "PageDown",   "Space",   "Shift",     "Control",  "Alt",
-    "Meta",      "F1",         "F2",      "F3",        "F4",       "F5",
-    "F6",        "F7",         "F8",      "F9",        "F10",      "F11",
+    "Enter",     "Tab",        "Escape",  "Backspace", "Delete",  "Insert",
+    "ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home",    "End",
+    "PageUp",    "PageDown",   "Space",   "Shift",     "Control", "Alt",
+    "Meta",      "F1",         "F2",      "F3",        "F4",      "F5",
+    "F6",        "F7",         "F8",      "F9",        "F10",     "F11",
     "F12",
 };
 
