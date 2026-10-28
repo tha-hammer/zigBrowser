@@ -25,7 +25,8 @@ static NSButton *find_button(NSView *view, NSString *title) {
 }
 
 static NSSecureTextField *find_secure_field(NSView *view) {
-  if ([view isKindOfClass:NSSecureTextField.class]) {
+  if ([view isKindOfClass:NSSecureTextField.class] &&
+      [view.accessibilityLabel isEqualToString:@"Long-lived Claude token"]) {
     return (NSSecureTextField *)view;
   }
   for (NSView *child in view.subviews) {
