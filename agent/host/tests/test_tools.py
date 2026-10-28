@@ -39,7 +39,7 @@ TOOLS = {
     "screenshot": schema({}),
 }
 ACT = ("hover", "scroll")  # S8 decision 12, no card: test_tools_hover_scroll.py
-GATED = ("navigate", "reload")  # S8 decision 16: test_tools_navigate.py
+GATED = ("click", "type_text", "navigate", "reload")  # S8 decision 16: test_tools_navigate.py
 NAMES = sorted(f"mcp__zigbrowser__{name}" for name in [*TOOLS, *ACT, *GATED])
 
 
@@ -63,7 +63,7 @@ class ToolListTest(unittest.TestCase):
         """RoseCat 6575: the model is told the selector syntax the engine takes."""
         for t in bridge().tools():
             selector = t.input_schema["properties"].get("selector")
-            if t.name in ("window_info", "screenshot", *GATED):
+            if t.name in ("window_info", "screenshot", "navigate", "reload"):
                 self.assertIsNone(selector, t.name)
                 continue
             self.assertIn("css=", selector.get("description", ""), t.name)
@@ -74,7 +74,7 @@ class ToolListTest(unittest.TestCase):
 
     def test_no_other_act_tool_is_offered(self):
         names = {t.name for t in bridge().tools()}
-        for act in ("click", "type", "fill", "press", "select_option", "evaluate", "echo", "cookies_get"):
+        for act in ("type", "fill", "press", "select_option", "evaluate", "echo", "cookies_get"):
             self.assertNotIn(act, names)
 
 

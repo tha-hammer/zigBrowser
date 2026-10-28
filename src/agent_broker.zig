@@ -112,6 +112,7 @@ fn endCard(gate: Approval, id: approval.CardId, ending: Ending) void {
 /// S8 decision 16's tools: each one method, gated by the core.
 const gated_tools = [_]struct { name: []const u8, method: []const u8, verb: approval.Verb }{
     .{ .name = "click", .method = "dom.click", .verb = .click },
+    .{ .name = "type_text", .method = "dom.type", .verb = .type_text },
     .{ .name = "navigate", .method = "page.navigate", .verb = .navigate },
     .{ .name = "reload", .method = "page.reload", .verb = .reload },
 };
@@ -134,6 +135,13 @@ fn gatedArgsOk(gpa: std.mem.Allocator, verb: approval.Verb, args_json: []const u
     if (parsed.value != .object) return false;
     const object = parsed.value.object;
     switch (verb) {
+        .type_text => {
+            if (object.count() != 2) return false;
+            const selector = object.get("selector") orelse return false;
+            const value = object.get("text") orelse return false;
+            return selector == .string and selector.string.len > 0 and
+                value == .string and value.string.len > 0;
+        },
         .click => {
             if (object.count() != 1) return false;
             const selector = object.get("selector") orelse return false;
@@ -717,7 +725,9 @@ const Job = struct {
         try expect.put(arena, "load_serial", .{ .integer = @intCast(load_serial) });
         var options: std.json.ObjectMap = .empty;
         try options.put(arena, "expect", .{ .object = expect });
-        if (std.mem.eql(u8, self.method, "dom.click")) try options.put(arena, "input", .{ .string = "native" });
+        if (std.mem.eql(u8, self.method, "dom.click") or std.mem.eql(u8, self.method, "dom.type")) {
+            try options.put(arena, "input", .{ .string = "native" });
+        }
         try args.value.object.put(arena, "options", .{ .object = options });
         const params = try std.json.Stringify.valueAlloc(gpa, args.value, .{});
         gpa.free(self.params);

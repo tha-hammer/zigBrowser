@@ -21,7 +21,7 @@ from pathlib import Path
 
 from automation_core_test import RpcClient, _read_lines
 from mac_agent_click_direct_test import private_json, stop_owned, tool_rows
-from mac_live_agent_test import install_dmg
+from mac_live_agent_test import install_dmg, png_size
 
 
 ACTION_ENV = "ZB_DEBUG_MAC_AGENT_TOOLS_FILE"
@@ -76,14 +76,19 @@ for(const name of ['keydown','keyup','input']) target.addEventListener(name,even
 def main(site: Site) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--dmg", required=True, type=Path)
+    parser.add_argument("--png", required=True, type=Path)
     parser.add_argument("--timeout", type=float, default=35.0)
     args = parser.parse_args()
     if sys.platform != "darwin":
         print("FAIL mac-agent-type-text-direct: macOS is required", flush=True)
         return 1
     dmg = args.dmg.expanduser().resolve()
+    png = args.png.expanduser().resolve()
     if not dmg.is_file():
         print(f"FAIL mac-agent-type-text-direct: missing DMG {dmg}", flush=True)
+        return 1
+    if not png.is_absolute() or not png.parent.is_dir() or png.exists():
+        print(f"FAIL mac-agent-type-text-direct: invalid PNG output {png}", flush=True)
         return 1
 
     home = Path.home().resolve()
@@ -111,6 +116,8 @@ def main(site: Site) -> int:
             "ZIGBROWSER_SOCKET": str(socket_path),
             "ZB_DEBUG_DRAWER_ICON": "click",
             "ZB_DEBUG_MAC_AGENT_TOOLS_APPROVE": "1",
+            "ZB_DEBUG_WINDOW_SNAPSHOT_PNG": str(png),
+            "ZB_DEBUG_WINDOW_SNAPSHOT_DELAY_MS": "5000",
             ACTION_ENV: str(action),
         }
         proc = subprocess.Popen(
@@ -181,7 +188,19 @@ def main(site: Site) -> int:
             print(f"FAIL mac-agent-type-text-direct: untrusted event in {events!r}", flush=True)
             print(f"EVIDENCE mac-agent-type-text-direct: {root}", flush=True)
             return 1
+        png_deadline = time.monotonic() + min(args.timeout, 15.0)
+        dimensions = None
+        while time.monotonic() < png_deadline:
+            dimensions = png_size(png)
+            if dimensions is not None:
+                break
+            time.sleep(0.1)
+        if dimensions is None:
+            print(f"FAIL mac-agent-type-text-direct: in-app PNG is unreadable: {png}", flush=True)
+            print(f"EVIDENCE mac-agent-type-text-direct: {root}", flush=True)
+            return 1
         keep = False
+        print(f"PNG mac-agent-type-text-direct: {png} {dimensions[0]}x{dimensions[1]}", flush=True)
         print("PASS mac-agent-type-text-direct: approved trusted text reached local input", flush=True)
         return 0
     except Exception as error:

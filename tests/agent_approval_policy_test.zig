@@ -48,6 +48,16 @@ test "the 3x3 table decides a card, the same for navigate and reload" {
     try testing.expectEqual(Selector.conditional, approval.default_selector);
 }
 
+test "native page input actions always require approval" {
+    for ([_]approval.Verb{ .click, .type_text }) |verb| {
+        for ([_]Selector{ .yes, .no, .conditional }) |selector| {
+            for ([_]Mode{ .interactive, .headless, .full_automation }) |mode| {
+                try testing.expect(approval.needsCard(verb, selector, mode));
+            }
+        }
+    }
+}
+
 test "the mode: full automation without a typed prompt, else headless without a showing drawer, else interactive" {
     try testing.expectEqual(Mode.interactive, approval.modeOf(.{ .drawer_showing = true, .typed_prompt = true }));
     try testing.expectEqual(Mode.headless, approval.modeOf(.{ .drawer_showing = false, .typed_prompt = true }));
