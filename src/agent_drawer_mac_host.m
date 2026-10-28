@@ -230,13 +230,120 @@ static NSWindow *zb_mac_drawer_menu_window(void) {
 
 @end
 
-static void zb_mac_drawer_ensure_menu(void) {
-  if (g_zb_mac_drawer_menu_item != nil) {
-    return;
+static NSMenuItem *zb_mac_responder_menu_item(NSString *title, SEL action,
+                                               NSString *key,
+                                               NSEventModifierFlags modifiers) {
+  NSMenuItem *item = [[NSMenuItem alloc] initWithTitle:title
+                                               action:action
+                                        keyEquivalent:key];
+  item.target = nil;
+  item.keyEquivalentModifierMask = modifiers;
+  return item;
+}
+
+static BOOL zb_mac_menu_item_matches(NSMenu *menu, NSString *title, SEL action,
+                                     NSString *key,
+                                     NSEventModifierFlags modifiers) {
+  NSMenuItem *item = [menu itemWithTitle:title];
+  return item != nil && item.action == action && item.target == nil &&
+         [item.keyEquivalent isEqualToString:key] &&
+         (key.length == 0 ||
+          (item.keyEquivalentModifierMask &
+           NSEventModifierFlagDeviceIndependentFlagsMask) == modifiers);
+}
+
+static void zb_mac_ensure_edit_menu(NSMenu *main_menu) {
+  NSMenuItem *edit_root = [main_menu itemWithTitle:@"Edit"];
+  if (edit_root == nil) {
+    edit_root = [[NSMenuItem alloc] initWithTitle:@"Edit"
+                                          action:nil
+                                   keyEquivalent:@""];
+    [main_menu insertItem:edit_root atIndex:MIN((NSInteger)1, main_menu.numberOfItems)];
   }
+  NSMenu *edit_menu = edit_root.submenu;
+  if (edit_menu == nil) {
+    edit_menu = [[NSMenu alloc] initWithTitle:@"Edit"];
+    edit_root.submenu = edit_menu;
+  }
+  const NSEventModifierFlags command = NSEventModifierFlagCommand;
+  BOOL complete =
+      zb_mac_menu_item_matches(edit_menu, @"Undo", @selector(undo:), @"z", command) &&
+      zb_mac_menu_item_matches(edit_menu, @"Redo", @selector(redo:), @"z",
+                               command | NSEventModifierFlagShift) &&
+      zb_mac_menu_item_matches(edit_menu, @"Cut", @selector(cut:), @"x", command) &&
+      zb_mac_menu_item_matches(edit_menu, @"Copy", @selector(copy:), @"c", command) &&
+      zb_mac_menu_item_matches(edit_menu, @"Paste", @selector(paste:), @"v", command) &&
+      zb_mac_menu_item_matches(edit_menu, @"Paste and Match Style",
+                               @selector(pasteAsPlainText:), @"v",
+                               command | NSEventModifierFlagOption |
+                                   NSEventModifierFlagShift) &&
+      zb_mac_menu_item_matches(edit_menu, @"Delete", @selector(delete:), @"", 0) &&
+      zb_mac_menu_item_matches(edit_menu, @"Select All", @selector(selectAll:), @"a",
+                               command);
+  if (complete) return;
+
+  [edit_menu removeAllItems];
+  [edit_menu addItem:zb_mac_responder_menu_item(@"Undo", @selector(undo:), @"z",
+                                                command)];
+  [edit_menu addItem:zb_mac_responder_menu_item(@"Redo", @selector(redo:), @"z",
+                                                command | NSEventModifierFlagShift)];
+  [edit_menu addItem:NSMenuItem.separatorItem];
+  [edit_menu addItem:zb_mac_responder_menu_item(@"Cut", @selector(cut:), @"x",
+                                                command)];
+  [edit_menu addItem:zb_mac_responder_menu_item(@"Copy", @selector(copy:), @"c",
+                                                command)];
+  [edit_menu addItem:zb_mac_responder_menu_item(@"Paste", @selector(paste:), @"v",
+                                                command)];
+  [edit_menu addItem:zb_mac_responder_menu_item(
+                         @"Paste and Match Style", @selector(pasteAsPlainText:), @"v",
+                         command | NSEventModifierFlagOption |
+                             NSEventModifierFlagShift)];
+  [edit_menu addItem:zb_mac_responder_menu_item(@"Delete", @selector(delete:), @"", 0)];
+  [edit_menu addItem:NSMenuItem.separatorItem];
+  [edit_menu addItem:zb_mac_responder_menu_item(@"Select All", @selector(selectAll:),
+                                                @"a", command)];
+}
+
+static void zb_mac_ensure_window_menu(NSMenu *main_menu) {
+  NSMenuItem *window_root = [main_menu itemWithTitle:@"Window"];
+  if (window_root == nil) {
+    window_root = [[NSMenuItem alloc] initWithTitle:@"Window"
+                                            action:nil
+                                     keyEquivalent:@""];
+    [main_menu addItem:window_root];
+  }
+  NSMenu *window_menu = window_root.submenu;
+  if (window_menu == nil) {
+    window_menu = [[NSMenu alloc] initWithTitle:@"Window"];
+    window_root.submenu = window_menu;
+  }
+  const NSEventModifierFlags command = NSEventModifierFlagCommand;
+  BOOL complete =
+      zb_mac_menu_item_matches(window_menu, @"Minimize", @selector(performMiniaturize:),
+                               @"m", command) &&
+      zb_mac_menu_item_matches(window_menu, @"Zoom", @selector(performZoom:), @"", 0) &&
+      zb_mac_menu_item_matches(window_menu, @"Bring All to Front",
+                               @selector(arrangeInFront:), @"", 0);
+  if (!complete) {
+    [window_menu removeAllItems];
+    [window_menu addItem:zb_mac_responder_menu_item(
+                             @"Minimize", @selector(performMiniaturize:), @"m", command)];
+    [window_menu addItem:zb_mac_responder_menu_item(@"Zoom", @selector(performZoom:),
+                                                    @"", 0)];
+    [window_menu addItem:NSMenuItem.separatorItem];
+    [window_menu addItem:zb_mac_responder_menu_item(
+                             @"Bring All to Front", @selector(arrangeInFront:), @"", 0)];
+  }
+  NSApp.windowsMenu = window_menu;
+}
+
+static void zb_mac_drawer_ensure_menu(void) {
   NSMenu *main_menu = NSApp.mainMenu;
   if (main_menu == nil) {
     main_menu = [[NSMenu alloc] initWithTitle:@"Main"];
+    NSApp.mainMenu = main_menu;
+  }
+  if (main_menu.numberOfItems == 0) {
     NSString *name = NSProcessInfo.processInfo.processName;
     NSMenuItem *app_root = [[NSMenuItem alloc] initWithTitle:name
                                                      action:nil
@@ -248,8 +355,9 @@ static void zb_mac_drawer_ensure_menu(void) {
                  keyEquivalent:@"q"];
     app_root.submenu = app_menu;
     [main_menu addItem:app_root];
-    NSApp.mainMenu = main_menu;
   }
+
+  zb_mac_ensure_edit_menu(main_menu);
 
   NSMenuItem *view_root = [main_menu itemWithTitle:@"View"];
   if (view_root == nil) {
@@ -260,6 +368,11 @@ static void zb_mac_drawer_ensure_menu(void) {
     [main_menu addItem:view_root];
   } else if (view_root.submenu == nil) {
     view_root.submenu = [[NSMenu alloc] initWithTitle:@"View"];
+  }
+  zb_mac_ensure_window_menu(main_menu);
+
+  if (g_zb_mac_drawer_menu_item != nil) {
+    return;
   }
 
   g_zb_mac_drawer_menu_target = [[ZBMacDrawerMenuTarget alloc] init];
