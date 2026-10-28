@@ -200,6 +200,12 @@ static void zb_mac_append_diagnostic(NSString *kind, NSString *message) {
 @property(nonatomic, copy) NSString *acceptancePrompt;
 @property(nonatomic, copy) NSString *acceptanceTokenPath;
 @property(nonatomic, copy) NSString *lastFailureReason;
+@property(nonatomic, assign) BOOL liveAgentStarted;
+@property(nonatomic, assign) BOOL liveAgentApproveAll;
+@property(nonatomic, assign) BOOL liveAgentFinished;
+@property(nonatomic, copy) NSString *liveAgentScenario;
+@property(nonatomic, copy) NSString *liveAgentSnapshotPath;
+@property(nonatomic, copy) NSString *liveAgentAssistant;
 - (void)addMessageView:(NSView *)view role:(NSString *)role;
 - (void)appendRole:(NSString *)role text:(NSString *)text;
 - (void)appendRole:(NSString *)role text:(NSString *)text diagnosticKind:(NSString *)kind;
@@ -219,6 +225,10 @@ static void zb_mac_append_diagnostic(NSString *kind, NSString *message) {
 - (void)updateInputHeight;
 - (void)startFirstRunSetup;
 - (void)runOwnerAcceptanceIfRequested;
+- (void)runLiveAgentIfRequested;
+- (void)recordLiveTool:(NSString *)tool ok:(BOOL)ok body:(NSData *)body;
+- (void)recordLiveAssistant:(NSString *)text;
+- (void)finishLiveAgentWithAssistant:(NSString *)text;
 - (void)markOwnerAcceptanceReply;
 - (void)scheduleOwnerAcceptanceExit;
 @end
@@ -489,11 +499,15 @@ static void zb_mac_configure_plain_text(NSTextView *view) {
 
 - (void)viewDidMoveToWindow {
   [super viewDidMoveToWindow];
-  if (self.window == nil || self.acceptanceStarted || !zb_mac_drawer_e2e_enabled()) return;
+  if (self.window == nil || !zb_mac_drawer_e2e_enabled()) return;
+  if (!self.liveAgentStarted && getenv("ZB_DEBUG_LIVE_AGENT_FILE") != NULL) {
+    dispatch_async(dispatch_get_main_queue(), ^{ [self runLiveAgentIfRequested]; });
+  }
   const char *raw = getenv("ZB_DEBUG_OWNER_ACCEPTANCE_FILE");
-  if (raw == NULL || raw[0] == '\0') return;
-  self.acceptanceStarted = YES;
-  dispatch_async(dispatch_get_main_queue(), ^{ [self runOwnerAcceptanceIfRequested]; });
+  if (!self.acceptanceStarted && raw != NULL && raw[0] != '\0') {
+    self.acceptanceStarted = YES;
+    dispatch_async(dispatch_get_main_queue(), ^{ [self runOwnerAcceptanceIfRequested]; });
+  }
 }
 
 - (instancetype)initWithFrame:(NSRect)frame {
@@ -713,6 +727,83 @@ static void zb_mac_configure_plain_text(NSTextView *view) {
 
   [self.pendingSetupMessages addObject:text];
   [self startFirstRunSetup];
+}
+
+static void zb_mac_live_row(NSString *scenario, NSString *event, NSData *payload) {
+  if (scenario.length == 0 || event.length == 0) return;
+  NSString *encoded = payload != nil ? [payload base64EncodedStringWithOptions:0] : @"-";
+  printf("LIVE_AGENT\t%s\t%s\t%s\n", scenario.UTF8String, event.UTF8String,
+         encoded.UTF8String);
+  fflush(stdout);
+}
+
+- (void)runLiveAgentIfRequested {
+  if (self.liveAgentStarted || !zb_mac_drawer_e2e_enabled()) return;
+  const char *raw = getenv("ZB_DEBUG_LIVE_AGENT_FILE");
+  NSString *path = raw != NULL ? [NSString stringWithUTF8String:raw] : nil;
+  NSMutableData *manifest = zb_mac_read_private_file(path, 16 * 1024);
+  if (manifest == nil) return;
+  id parsed = [NSJSONSerialization JSONObjectWithData:manifest options:0 error:nil];
+  if (![parsed isKindOfClass:NSDictionary.class]) return;
+  NSDictionary *action = parsed;
+  NSNumber *version = action[@"version"];
+  NSString *scenario = action[@"scenario"];
+  NSString *prompt = action[@"prompt"];
+  NSString *approval = action[@"approve"];
+  NSString *snapshot = action[@"snapshot_png"];
+  if (![version isKindOfClass:NSNumber.class] || version.integerValue != 1 ||
+      ![scenario isKindOfClass:NSString.class] || scenario.length == 0 || scenario.length > 128 ||
+      ![prompt isKindOfClass:NSString.class] || prompt.length == 0 || prompt.length > 65536 ||
+      ![approval isKindOfClass:NSString.class] ||
+      (![approval isEqualToString:@"all"] && ![approval isEqualToString:@"none"]) ||
+      ![snapshot isKindOfClass:NSString.class] || !snapshot.isAbsolutePath) return;
+
+  self.liveAgentStarted = YES;
+  self.liveAgentApproveAll = [approval isEqualToString:@"all"];
+  self.liveAgentScenario = scenario;
+  self.liveAgentSnapshotPath = snapshot;
+  zb_mac_live_row(scenario, @"sent", nil);
+  self.input.string = prompt;
+  [self sendInput];
+}
+
+- (void)recordLiveTool:(NSString *)tool ok:(BOOL)ok body:(NSData *)body {
+  if (!self.liveAgentStarted || self.liveAgentFinished || tool.length == 0) return;
+  NSString *bodyText = [[NSString alloc] initWithData:body encoding:NSUTF8StringEncoding] ?: @"";
+  NSDictionary *record = @{@"tool": tool, @"ok": @(ok), @"body": bodyText};
+  NSData *json = [NSJSONSerialization dataWithJSONObject:record options:0 error:nil];
+  if (json != nil) zb_mac_live_row(self.liveAgentScenario, @"tool", json);
+}
+
+- (void)recordLiveAssistant:(NSString *)text {
+  if (!self.liveAgentStarted || self.liveAgentFinished || text.length == 0) return;
+  self.liveAgentAssistant = text;
+}
+
+- (void)finishLiveAgentWithAssistant:(NSString *)text {
+  if (!self.liveAgentStarted || self.liveAgentFinished || text.length == 0) return;
+  self.liveAgentFinished = YES;
+  zb_mac_live_row(self.liveAgentScenario, @"assistant",
+                  [text dataUsingEncoding:NSUTF8StringEncoding]);
+  NSString *scenario = self.liveAgentScenario;
+  NSString *snapshot = self.liveAgentSnapshotPath;
+  __weak ZBMacDrawerPanel *weakSelf = self;
+  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 500 * NSEC_PER_MSEC),
+                 dispatch_get_main_queue(), ^{
+    ZBMacDrawerPanel *strongSelf = weakSelf;
+    NSView *content = strongSelf.window.contentView;
+    if (strongSelf == nil || content == nil) return;
+    [content layoutSubtreeIfNeeded];
+    [content displayIfNeeded];
+    NSRect bounds = content.bounds;
+    NSBitmapImageRep *bitmap = [content bitmapImageRepForCachingDisplayInRect:bounds];
+    if (bitmap == nil) return;
+    [content cacheDisplayInRect:bounds toBitmapImageRep:bitmap];
+    NSData *png = [bitmap representationUsingType:NSBitmapImageFileTypePNG properties:@{}];
+    if (png == nil || ![png writeToFile:snapshot options:NSDataWritingAtomic error:nil]) return;
+    zb_mac_live_row(scenario, @"snapshot", [snapshot dataUsingEncoding:NSUTF8StringEncoding]);
+    zb_mac_live_row(scenario, @"complete", nil);
+  });
 }
 
 - (void)runOwnerAcceptanceIfRequested {
@@ -1007,6 +1098,14 @@ static void zb_mac_configure_plain_text(NSTextView *view) {
 
   self.cards[key] = cardView;
   [self addMessageView:cardView role:@"status"];
+  if (self.liveAgentStarted && !self.liveAgentFinished && self.liveAgentApproveAll) {
+    [cardView.approveButton performClick:nil];
+    if (cardView.buttonRow.hidden) {
+      NSDictionary *record = @{@"verb": verb ?: @"", @"outcome": @"approved"};
+      NSData *json = [NSJSONSerialization dataWithJSONObject:record options:0 error:nil];
+      if (json != nil) zb_mac_live_row(self.liveAgentScenario, @"approval", json);
+    }
+  }
 }
 
 - (void)endCard:(uint64_t)card ending:(NSString *)ending {
@@ -1133,12 +1232,16 @@ void zb_drawer_agent_message(unsigned int windowId, const char *role, const char
       } else {
         [panel finishStreamWithText:messageText];
       }
-      if (messageText.length != 0) [panel markOwnerAcceptanceReply];
+      if (messageText.length != 0) {
+        [panel recordLiveAssistant:messageText];
+        [panel markOwnerAcceptanceReply];
+      }
       continue;
     }
     if (panel.streamBubble != nil) [panel finishStreamAsShown];
     [panel appendRole:roleText text:messageText];
     if ([roleText isEqualToString:@"assistant"] && messageText.length != 0) {
+      [panel recordLiveAssistant:messageText];
       [panel markOwnerAcceptanceReply];
     }
   }
@@ -1198,7 +1301,21 @@ void zb_drawer_agent_capped(unsigned int windowId) {
 
 void zb_drawer_agent_end(unsigned int windowId) {
   ZBMacDrawerPanel *panel = zb_mac_panel_for_window(windowId);
-  if (panel != nil) [panel finishStreamAsShown];
+  if (panel != nil) {
+    [panel finishStreamAsShown];
+    [panel finishLiveAgentWithAssistant:panel.liveAgentAssistant];
+  }
+}
+
+void zb_mac_drawer_live_tool_result(unsigned int windowId,
+                                    const char *tool, size_t toolLength,
+                                    int ok, const char *body, size_t bodyLength) {
+  NSString *toolText = zb_mac_string_n(tool, toolLength);
+  NSData *bodyData = body != NULL ? [NSData dataWithBytes:body length:bodyLength] : NSData.data;
+  zb_mac_on_main(^{
+    ZBMacDrawerPanel *panel = zb_mac_panel_for_window(windowId);
+    if (panel != nil) [panel recordLiveTool:toolText ok:ok != 0 body:bodyData];
+  });
 }
 
 void zb_drawer_agent_tool_call(unsigned int windowId, const char *session,

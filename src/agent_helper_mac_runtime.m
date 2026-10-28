@@ -33,6 +33,9 @@ extern void zb_drawer_agent_tool_call(unsigned int window_id, const char *sessio
 extern void zb_drawer_agent_tool_failure(unsigned int window_id,
                                          const char *tool, size_t tool_length,
                                          const char *message, size_t message_length);
+extern void zb_mac_drawer_live_tool_result(unsigned int window_id,
+                                           const char *tool, size_t tool_length,
+                                           int ok, const char *body, size_t body_length);
 extern int zb_mac_drawer_e2e_enabled(void);
 
 typedef NS_ENUM(NSInteger, ZBMacHelperState) {
@@ -671,6 +674,9 @@ int zb_agent_runtime_identity_current(const char *home_path, const char *package
   }
   if (self.state != ZBMacHelperReady ||
       ![self.windowSessions[@(windowId)] isEqualToString:session] || toolId.length == 0) return;
+  NSData *liveTool = [toolName dataUsingEncoding:NSUTF8StringEncoding];
+  zb_mac_drawer_live_tool_result(windowId, liveTool.bytes, liveTool.length,
+                                 ok ? 1 : 0, body.bytes, body.length);
   NSMutableDictionary *frame = [@{
     @"type": @"tool_result", @"session": session, @"id": toolId, @"ok": @(ok),
   } mutableCopy];
