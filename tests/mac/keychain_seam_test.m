@@ -7,6 +7,7 @@
  *  - COMPOSITE IDENTITY: changing only account, or only service, is a different item (#2);
  *  - ISOLATION: overwrite/clear touch ONLY the target item — same-service and diff-service neighbors in
  *    the target keychain survive, and a COLLIDING (service,account) item in a SECOND keychain survives (#2);
+ *  - ACL DENIAL: a saved item trusted to another identity fails closed as PERMISSION without authentication UI;
  *  - DEFAULT PINNING: a production NULL op pins to the login keychain, NOT the search list — a disposable
  *    keychain (which SecKeychainCreate adds to the search list) must NOT satisfy a NULL lookup (#1). */
 #import <Foundation/Foundation.h>
@@ -39,6 +40,35 @@ static int seed(SecKeychainRef kc, const char *svc, const char *acct, const char
   return SecItemAdd((__bridge CFDictionaryRef)d, NULL) == errSecSuccess;
 }
 
+/* Seed an item whose ACL trusts another identity, never this test process. */
+static int seed_foreign(SecKeychainRef kc, const char *svc, const char *acct, const char *val) {
+  SecTrustedApplicationRef trusted = NULL;
+  SecAccessRef access = NULL;
+  SecKeychainItemRef item = NULL;
+  OSStatus st = SecTrustedApplicationCreateFromPath("/bin/echo", &trusted);
+  CFArrayRef trusted_apps = NULL;
+  if (st == errSecSuccess) {
+    const void *values[] = {trusted};
+    trusted_apps = CFArrayCreate(NULL, values, 1, &kCFTypeArrayCallBacks);
+    if (trusted_apps == NULL) st = errSecAllocate;
+  }
+  if (st == errSecSuccess)
+    st = SecAccessCreate(CFSTR("zigBrowser foreign identity test"), trusted_apps, &access);
+  SecKeychainAttribute attributes[] = {
+    {kSecServiceItemAttr, (UInt32)strlen(svc), (void *)svc},
+    {kSecAccountItemAttr, (UInt32)strlen(acct), (void *)acct},
+  };
+  SecKeychainAttributeList attribute_list = {2, attributes};
+  if (st == errSecSuccess)
+    st = SecKeychainItemCreateFromContent(kSecGenericPasswordItemClass, &attribute_list,
+                                           (UInt32)strlen(val), val, kc, access, &item);
+  if (item != NULL) CFRelease(item);
+  if (access != NULL) CFRelease(access);
+  if (trusted_apps != NULL) CFRelease(trusted_apps);
+  if (trusted != NULL) CFRelease(trusted);
+  return st == errSecSuccess;
+}
+
 /* Read a generic password directly from keychain kc; malloc'd NUL-terminated string, or NULL if absent. */
 static char *peek(SecKeychainRef kc, const char *svc, const char *acct) {
   NSDictionary *q = @{ (__bridge id)kSecClass:(__bridge id)kSecClassGenericPassword,
@@ -66,6 +96,7 @@ int main(void) {
     const char *pw = "zb-temp-pw";
     const char *SVC = "dev.zigbrowser.ClaudeAgentToken.test";
     const char *SVC2 = "dev.zigbrowser.OtherService.test";
+    const char *LOCKED_SVC = "dev.zigbrowser.ForeignIdentityToken.test";
     const char *ACCT = "default", *ACCT2 = "second-account";
     const char *canary = "zb-canary-TOKEN-7f3a", *canary2 = "zb-canary-TOKEN-second-c91e";
 
@@ -118,6 +149,22 @@ int main(void) {
     expect_peek(T, SVC, ACCT2, "neighbor-acct", "clear removed the same-service neighbor");
     expect_peek(T, SVC2, ACCT, "neighbor-svc", "clear removed the diff-service neighbor");
     expect_peek(O, SVC, ACCT, "other-keychain", "clear reached into the other keychain");
+
+    // A noninteractive drawer lookup of an item trusted to another code identity must expose the recoverable
+    // permission state. It must not collapse the saved item into generic unavailability or show authentication UI.
+    if (!seed_foreign(T, LOCKED_SVC, ACCT, "foreign-identity-canary")) {
+      fail("setup: could not seed foreign-identity ACL item");
+    } else {
+      int r = zb_keychain_lookup(tpath, pw, LOCKED_SVC, ACCT, &tok, &err);
+      if (r != ZB_KC_PERMISSION) {
+        char detail[256];
+        snprintf(detail, sizeof detail, "foreign-identity ACL returned %d (%s), want ZB_KC_PERMISSION",
+                 r, err != NULL ? err : "no error");
+        fail(detail);
+      }
+      if (tok != NULL) fail("foreign-identity ACL returned token bytes");
+      if (tok) { zb_keychain_free(tok); tok = NULL; } free(err); err = NULL;
+    }
 
     // #1 DEFAULT PINNING: a production NULL op must pin to the login keychain, not the default SEARCH LIST.
     // Bait: keychain O still holds a colliding (SVC,ACCT)="other-keychain". Add O to the GLOBAL search list
