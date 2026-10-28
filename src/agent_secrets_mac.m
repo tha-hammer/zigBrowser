@@ -176,7 +176,12 @@ static int zb_keychain_lookup_impl(const char *keychain_path, const char *unlock
         : zb_kc_copy_matching_without_ui((__bridge CFDictionaryRef)look, &out);
     if (kc) CFRelease(kc);
     if (st == errSecItemNotFound) return ZB_KC_ABSENT;
-    if (st == errSecInteractionNotAllowed) {
+    /* Legacy item ACLs report either status when authentication UI is
+     * disabled: login Keychains commonly use errSecInteractionNotAllowed,
+     * while macOS 15 file Keychains use errSecAuthFailed. The keychain was
+     * already opened and unlocked above, so errSecAuthFailed here is the
+     * item's recoverable code-identity mismatch, not a bad keychain password. */
+    if (st == errSecInteractionNotAllowed || st == errSecAuthFailed) {
       if (out_err) *out_err = zb_kc_errf(st, "lookup");
       return ZB_KC_PERMISSION;
     }
