@@ -32,7 +32,8 @@ class Site:
         body = b"""<!doctype html><meta charset=utf-8><title>Agent press key</title>
 <style>body{font:24px -apple-system;margin:40px}input{font:inherit;padding:12px}</style>
 <h1>Agent press key test</h1><form id=key-form><input id=key-target autocomplete=off>
-<input id=next-target></form><pre id=state>events=0 submits=0</pre>
+<input id=next-target><button id=submit-target type=submit>Submit</button></form>
+<pre id=state>events=0 submits=0</pre>
 <script>
 window.keyState={events:[],submits:0};
 for(const name of ['keydown','keyup']) document.addEventListener(name,event=>{
