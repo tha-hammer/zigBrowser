@@ -1,6 +1,7 @@
 #import "agent_drawer_mac.h"
 
 #import <AppKit/AppKit.h>
+#import <math.h>
 #import <stdint.h>
 #import <stdio.h>
 #import <stdlib.h>
@@ -16,11 +17,38 @@ static int pressed_owners[4];
 static int pressed_count;
 
 int zb_agent_helper_configured(void) { return 0; }
+const char *zb_agent_helper_home(void) { return NULL; }
 void zb_agent_helper_send(unsigned int window_id, const char *text) {
   (void)window_id;
   (void)text;
 }
 void zb_mac_secrets_window_open(NSWindow *parent) { (void)parent; }
+int zb_mac_secrets_window_acceptance_store(NSWindow *parent, const char *token) {
+  (void)parent;
+  (void)token;
+  return 0;
+}
+int zb_mac_secrets_window_acceptance_clear_if_matches(const char *token) {
+  (void)token;
+  return 0;
+}
+int zb_mac_drawer_e2e_enabled(void) { return 0; }
+unsigned int zb_drawer_demo_messages(void) { return 0; }
+void zb_agent_tools_call(unsigned int window_id, const char *session,
+                         int64_t prompt_id, const char *request_id,
+                         size_t request_id_length, const char *tool,
+                         size_t tool_length, const char *arguments,
+                         size_t arguments_length) {
+  (void)window_id;
+  (void)session;
+  (void)prompt_id;
+  (void)request_id;
+  (void)request_id_length;
+  (void)tool;
+  (void)tool_length;
+  (void)arguments;
+  (void)arguments_length;
+}
 
 int zb_drawer_card_press(uint64_t card, int control, int own) {
   if (pressed_count < 4) {
@@ -64,6 +92,57 @@ static BOOL has_text(NSView *panel, NSString *text) {
   return NO;
 }
 
+static void settle(NSView *panel) {
+  NSDate *until = [NSDate dateWithTimeIntervalSinceNow:0.15];
+  do {
+    [panel layoutSubtreeIfNeeded];
+    [panel.window displayIfNeeded];
+    [NSRunLoop.currentRunLoop runMode:NSDefaultRunLoopMode
+                           beforeDate:[NSDate dateWithTimeIntervalSinceNow:0.01]];
+  } while ([until timeIntervalSinceNow] > 0);
+  [panel layoutSubtreeIfNeeded];
+}
+
+static NSView *ancestor_of_class(NSView *view, Class kind) {
+  for (NSView *current = view; current != nil; current = current.superview) {
+    if ([current isKindOfClass:kind]) return current;
+  }
+  return nil;
+}
+
+static NSScrollView *scroll_containing(NSView *panel, NSView *descendant) {
+  NSMutableArray<NSView *> *views = [NSMutableArray array];
+  collect_views(panel, views);
+  for (NSView *view in views) {
+    if (![view isKindOfClass:NSScrollView.class]) continue;
+    NSScrollView *candidate = (NSScrollView *)view;
+    for (NSView *current = descendant; current != nil; current = current.superview) {
+      if (current == candidate.documentView) return candidate;
+    }
+  }
+  return nil;
+}
+
+static NSTextView *message_named(NSView *panel, NSString *text) {
+  NSMutableArray<NSView *> *views = [NSMutableArray array];
+  collect_views(panel, views);
+  for (NSView *view in views) {
+    if ([view isKindOfClass:NSTextView.class] &&
+        [((NSTextView *)view).string isEqualToString:text]) return (NSTextView *)view;
+  }
+  return nil;
+}
+
+static NSTextField *label_named(NSView *panel, NSString *text) {
+  NSMutableArray<NSView *> *views = [NSMutableArray array];
+  collect_views(panel, views);
+  for (NSView *view in views) {
+    if ([view isKindOfClass:NSTextField.class] &&
+        [((NSTextField *)view).stringValue isEqualToString:text]) return (NSTextField *)view;
+  }
+  return nil;
+}
+
 int main(void) {
   @autoreleasepool {
     [NSApplication sharedApplication];
@@ -101,6 +180,78 @@ int main(void) {
 
     zb_drawer_card_end(101, "done");
     if (!has_text(panel, @"Done.")) fail("card ending did not replace the pending outcome");
+
+    NSWindow *layoutWindow = [[NSWindow alloc]
+        initWithContentRect:NSMakeRect(100, 100, 640, 320)
+                  styleMask:NSWindowStyleMaskTitled
+                    backing:NSBackingStoreBuffered
+                      defer:NO];
+    NSView *layoutPanel = zb_mac_drawer_panel_create(NSMakeRect(0, 0, 640, 320), 303, NULL, NULL);
+    layoutWindow.contentView = layoutPanel;
+    [layoutWindow makeKeyAndOrderFront:nil];
+    NSString *lastMessage = nil;
+    for (NSUInteger index = 1; index <= 8; index++) {
+      lastMessage = [NSString stringWithFormat:
+          @"Assistant message %lu fills the list before the approval appears.",
+          (unsigned long)index];
+      zb_mac_drawer_panel_append(layoutPanel, "assistant", lastMessage.UTF8String);
+    }
+    NSString *origin = @"http://127.0.0.1:59256/a/very/long/path/that/must/truncate/in/the/middle";
+    NSString *title = @"Claude wants to type_text in window 1.";
+    NSString *originText = [@"From: " stringByAppendingString:origin];
+    zb_drawer_card_show(303, 303, "type_text", 1, "{}", 2, NULL, origin.UTF8String);
+    settle(layoutPanel);
+
+    NSButton *layoutApprove = buttons_named(layoutPanel, @"Approve").lastObject;
+    NSButton *layoutDeny = buttons_named(layoutPanel, @"Deny").lastObject;
+    Class cardClass = NSClassFromString(@"ZBMacApprovalCard");
+    NSView *cardView = cardClass != Nil ? ancestor_of_class(layoutApprove, cardClass) : nil;
+    NSView *row = cardView.superview;
+    NSStackView *list = [row.superview isKindOfClass:NSStackView.class]
+        ? (NSStackView *)row.superview : nil;
+    NSScrollView *scroll = scroll_containing(layoutPanel, cardView);
+    NSTextView *lastText = message_named(layoutPanel, lastMessage);
+    NSView *assistantBubble = lastText.superview;
+    if (layoutApprove == nil || layoutDeny == nil || cardView == nil || list == nil ||
+        scroll == nil || assistantBubble == nil) fail("approval layout views were not found");
+
+    CGFloat cardWidth = NSWidth(cardView.bounds);
+    CGFloat listWidth = NSWidth(list.bounds);
+    if (cardWidth < listWidth * 0.70) {
+      fail([NSString stringWithFormat:@"approval card width %.1f is below 70%% of list width %.1f",
+                                        cardWidth, listWidth].UTF8String);
+    }
+    if (fabs(cardWidth - NSWidth(assistantBubble.bounds)) > 2.0) {
+      fail("approval card does not use the assistant bubble width");
+    }
+
+    NSRect visible = scroll.documentVisibleRect;
+    NSRect approveRect = [scroll.documentView convertRect:layoutApprove.bounds fromView:layoutApprove];
+    NSRect denyRect = [scroll.documentView convertRect:layoutDeny.bounds fromView:layoutDeny];
+    NSRect tolerance = NSInsetRect(visible, -0.5, -0.5);
+    if (!NSContainsRect(tolerance, approveRect)) fail("Approve is outside the visible message rectangle");
+    if (!NSContainsRect(tolerance, denyRect)) fail("Deny is outside the visible message rectangle");
+    if (NSMidX(approveRect) >= NSMidX(denyRect)) fail("Approve is not to the left of Deny");
+
+    NSTextField *titleLabel = label_named(cardView, title);
+    NSTextField *originLabel = label_named(cardView, originText);
+    if (titleLabel == nil || originLabel == nil) fail("title and origin are not separate card lines");
+    if (titleLabel.maximumNumberOfLines != 1 || originLabel.maximumNumberOfLines != 1) {
+      fail("title or origin is allowed to wrap");
+    }
+    if (originLabel.lineBreakMode != NSLineBreakByTruncatingMiddle) {
+      fail("long origin does not truncate in the middle");
+    }
+    NSStackView *content = [layoutApprove.superview.superview isKindOfClass:NSStackView.class]
+        ? (NSStackView *)layoutApprove.superview.superview : nil;
+    if (content == nil || [content.arrangedSubviews indexOfObject:titleLabel] == NSNotFound ||
+        [content.arrangedSubviews indexOfObject:originLabel] == NSNotFound ||
+        [content.arrangedSubviews indexOfObject:layoutApprove.superview] == NSNotFound ||
+        [content.arrangedSubviews indexOfObject:titleLabel] >= [content.arrangedSubviews indexOfObject:originLabel] ||
+        [content.arrangedSubviews indexOfObject:originLabel] >= [content.arrangedSubviews indexOfObject:layoutApprove.superview]) {
+      fail("card text and action row are not vertically ordered");
+    }
+    [layoutWindow orderOut:nil];
     puts("PASS agent-drawer-mac-approval exact-card-minters");
   }
   return 0;
