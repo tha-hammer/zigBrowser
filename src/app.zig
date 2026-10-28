@@ -440,9 +440,11 @@ fn runOpen(arena: std.mem.Allocator, io: std.Io, spec: OpenSpec) errors.BrowserE
     // At quit, after the main loop (a no-op when netd never started). Linux
     // only: agent_host.c is GTK-only, and the cross builds must not name it.
     defer if (comptime builtin.os.tag == .linux) c.zb_agent_net_stop();
-    // Before netd stops (defers run in reverse): the helper's shutdown, 2 s,
-    // SIGTERM to its group, 1 s, SIGKILL (D7). A no-op when none started.
-    defer if (comptime builtin.os.tag == .linux) c.zb_agent_helper_stop();
+    // Before netd stops (defers run in reverse): the helper's bounded shutdown.
+    // The native macOS runtime owns both its helper and netd, so it needs the
+    // same post-main-loop stop even though AppKit's `stop:` does not emit
+    // NSApplicationWillTerminateNotification.
+    defer if (comptime builtin.os.tag == .linux or builtin.os.tag == .macos) c.zb_agent_helper_stop();
     // Before zb_app_run builds the first window; the icon's saved position
     // lives with the profile (agent-drawer.json), read only when it is on.
     const drawer_on = webkit.applyAgentDrawer(spec.agent_drawer);

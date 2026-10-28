@@ -118,8 +118,28 @@ static void zb_terminate_owned_group(pid_t *pid) {
   pid_t child = *pid;
   *pid = -1;
   if (child <= 1 || child == getpid() || child == getpgrp()) return;
-  if (getpgid(child) == child) (void)kill(-child, SIGTERM);
-  (void)waitpid(child, NULL, WNOHANG);
+  errno = 0;
+  pid_t group = getpgid(child);
+  if (group < 0 && errno == ESRCH) {
+    (void)waitpid(child, NULL, WNOHANG);
+    return;
+  }
+  if (group != child) return;
+  if (kill(-child, SIGTERM) != 0) {
+    if (errno == ESRCH) (void)waitpid(child, NULL, WNOHANG);
+    return;
+  }
+
+  /* The browser owns this process-group leader.  Give its stdin-EOF/SIGTERM
+   * cleanup a bounded grace period, reap it, then use the existing
+   * parent-and-group-checked hard stop so quit never leaves a helper behind. */
+  for (unsigned int attempt = 0; attempt < 100; ++attempt) {
+    pid_t waited = waitpid(child, NULL, WNOHANG);
+    if (waited == child || (waited < 0 && errno == ECHILD)) return;
+    if (waited < 0 && errno != EINTR) return;
+    usleep(10000);
+  }
+  (void)zb_agent_kill_group(child);
 }
 
 @interface ZBMacAgentHelper : NSObject
