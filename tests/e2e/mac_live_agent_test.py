@@ -137,6 +137,15 @@ class LiveRows:
     malformed: list[str]
 
 
+@dataclass(frozen=True)
+class ProcessIdentity:
+    pid: int
+    ppid: int
+    pgid: int
+    start: str
+    command: str
+
+
 def private_write(path: Path, data: bytes) -> None:
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     try:
@@ -217,23 +226,61 @@ def install_dmg(dmg: Path, root: Path) -> Path:
     return installed
 
 
-def executable_pids(executable: Path) -> dict[int, str]:
+def process_table() -> dict[int, ProcessIdentity]:
     done = subprocess.run(
-        ["/bin/ps", "-axo", "pid=,command="],
+        ["/bin/ps", "-axo", "pid=,ppid=,pgid=,lstart=,command="],
         capture_output=True,
         text=True,
         check=True,
     )
+    found: dict[int, ProcessIdentity] = {}
+    for raw in done.stdout.splitlines():
+        fields = raw.strip().split(None, 8)
+        if len(fields) != 9:
+            continue
+        try:
+            pid, ppid, pgid = (int(fields[index]) for index in range(3))
+        except ValueError:
+            continue
+        start = " ".join(fields[3:8])
+        found[pid] = ProcessIdentity(pid, ppid, pgid, start, fields[8])
+    return found
+
+
+def executable_pids(executable: Path) -> dict[int, str]:
     exact = str(executable)
     prefix = exact + " "
-    found: dict[int, str] = {}
-    for raw in done.stdout.splitlines():
-        fields = raw.strip().split(None, 1)
-        if len(fields) != 2:
+    return {
+        pid: process.command
+        for pid, process in process_table().items()
+        if process.command == exact or process.command.startswith(prefix)
+    }
+
+
+def owned_tree(root: int) -> dict[int, ProcessIdentity]:
+    table = process_table()
+    children: dict[int, list[int]] = {}
+    for process in table.values():
+        children.setdefault(process.ppid, []).append(process.pid)
+    found: dict[int, ProcessIdentity] = {}
+    pending = [root]
+    while pending:
+        pid = pending.pop()
+        process = table.get(pid)
+        if process is None or pid in found:
             continue
-        if fields[1] == exact or fields[1].startswith(prefix):
-            found[int(fields[0])] = fields[1]
+        found[pid] = process
+        pending.extend(children.get(pid, ()))
     return found
+
+
+def matching_survivors(expected: dict[int, ProcessIdentity]) -> list[ProcessIdentity]:
+    table = process_table()
+    return [
+        process
+        for pid, process in expected.items()
+        if table.get(pid) == process
+    ]
 
 
 def stop_owned(pid: Optional[int], executable: Path) -> Optional[str]:
@@ -242,13 +289,26 @@ def stop_owned(pid: Optional[int], executable: Path) -> Optional[str]:
     current = executable_pids(executable)
     if pid not in current:
         return None
+    owned = owned_tree(pid)
     os.kill(pid, signal.SIGTERM)
     deadline = time.monotonic() + 10.0
     while time.monotonic() < deadline:
         if pid not in executable_pids(executable):
-            return None
+            break
         time.sleep(0.1)
-    return f"owned application pid {pid} ignored SIGTERM; it was not killed"
+    else:
+        return f"owned application pid {pid} ignored SIGTERM; it was not killed"
+
+    descendants = {child: identity for child, identity in owned.items() if child != pid}
+    deadline = time.monotonic() + 5.0
+    survivors = matching_survivors(descendants)
+    while survivors and time.monotonic() < deadline:
+        time.sleep(0.1)
+        survivors = matching_survivors(descendants)
+    if survivors:
+        names = ",".join(f"{item.pid}:{Path(item.command.split()[0]).name}" for item in survivors[:8])
+        return f"owned application descendants survived controlled quit: {names}"
+    return None
 
 
 def read_lines(path: Path) -> list[str]:
