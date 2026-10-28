@@ -19,6 +19,7 @@
  * shared ABI and missing-runtime text used by the Linux drawer too. */
 extern int zb_agent_helper_configured(void) __attribute__((weak_import));
 extern void zb_agent_helper_send(unsigned int window_id, const char *text) __attribute__((weak_import));
+extern void zb_agent_helper_allow_token(unsigned int window_id) __attribute__((weak_import));
 extern const char *zb_agent_helper_home(void) __attribute__((weak_import));
 #import "agent_helper.h"
 
@@ -180,6 +181,7 @@ static void zb_mac_append_diagnostic(NSString *kind, NSString *message) {
 @property(nonatomic, assign) void *minimizeContext;
 @property(nonatomic, strong) NSTextField *statusLabel;
 @property(nonatomic, strong) NSButton *setupButton;
+@property(nonatomic, assign) BOOL tokenPermissionNeeded;
 @property(nonatomic, strong) NSScrollView *messageScroll;
 @property(nonatomic, strong) NSStackView *messageStack;
 @property(nonatomic, strong) ZBMacInputTextView *input;
@@ -708,6 +710,13 @@ static void zb_mac_configure_plain_text(NSTextView *view) {
   zb_mac_secrets_window_open(self.window);
 }
 
+- (void)allowSavedToken:(id)sender {
+  (void)sender;
+  if (!self.tokenPermissionNeeded || zb_agent_helper_allow_token == NULL) return;
+  self.setupButton.enabled = NO;
+  zb_agent_helper_allow_token(self.browserWindowId);
+}
+
 - (void)send:(id)sender {
   (void)sender;
   [self sendInput];
@@ -1200,7 +1209,11 @@ static NSString *zb_mac_status_text(NSString *state, NSString *reason) {
   if ([state isEqualToString:@"ready"]) return @"Ready";
   if ([state isEqualToString:@"busy"]) return @"Working…";
   if ([state isEqualToString:@"crashed"] || [state isEqualToString:@"stopped"]) return @"Stopped";
-  if ([state isEqualToString:@"unavailable"]) return [reason isEqualToString:@"no-token"] ? @"No token" : @"Unavailable";
+  if ([state isEqualToString:@"unavailable"]) {
+    if ([reason isEqualToString:@"no-token"]) return @"No token";
+    if ([reason isEqualToString:@"token-permission"]) return @"Permission needed";
+    return @"Unavailable";
+  }
   return @"Not connected";
 }
 
@@ -1211,6 +1224,9 @@ static NSString *zb_mac_failure_text(NSString *state, NSString *reason) {
   }
   if ([reason isEqualToString:@"auth"] || [reason isEqualToString:@"auth-failed"]) {
     return @"Claude rejected the saved token. Open Account to replace it.";
+  }
+  if ([reason isEqualToString:@"token-permission"]) {
+    return @"zigBrowser needs permission to use your saved Claude token";
   }
   if ([reason isEqualToString:@"rate-limited"] || [reason isEqualToString:@"overloaded"]) {
     return @"Claude is busy; try again shortly.";
@@ -1225,6 +1241,10 @@ void zb_drawer_agent_status(unsigned int windowId, const char *state, const char
   for (ZBMacDrawerPanel *panel in zb_mac_panel_snapshot()) {
     if (windowId != 0 && panel.browserWindowId != windowId) continue;
     panel.statusLabel.stringValue = zb_mac_status_text(stateText, reasonText);
+    panel.tokenPermissionNeeded = [reasonText isEqualToString:@"token-permission"];
+    panel.setupButton.title = panel.tokenPermissionNeeded ? @"Allow" : @"Sign in";
+    panel.setupButton.action = panel.tokenPermissionNeeded ? @selector(allowSavedToken:) : @selector(openSecrets:);
+    panel.setupButton.enabled = YES;
     panel.setupButton.hidden = [stateText isEqualToString:@"starting"] ||
                                [stateText isEqualToString:@"ready"] ||
                                [stateText isEqualToString:@"busy"];

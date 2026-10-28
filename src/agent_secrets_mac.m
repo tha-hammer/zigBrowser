@@ -152,8 +152,9 @@ int zb_keychain_store(const char *keychain_path, const char *unlock_password,
   }
 }
 
-int zb_keychain_lookup(const char *keychain_path, const char *unlock_password,
-                       const char *service, const char *account, char **out_token, char **out_err) {
+static int zb_keychain_lookup_impl(const char *keychain_path, const char *unlock_password,
+                                   const char *service, const char *account,
+                                   int interactive, char **out_token, char **out_err) {
   if (out_token != NULL) *out_token = NULL;
   if (out_err != NULL) *out_err = NULL;
   @autoreleasepool {
@@ -163,17 +164,22 @@ int zb_keychain_lookup(const char *keychain_path, const char *unlock_password,
 
     NSMutableDictionary *look = zb_kc_query(service, account);
     if (kc != NULL) look[(__bridge id)kSecMatchSearchList] = @[(__bridge id)kc];
-    /* Drawer Send is never an authentication-UI boundary.  In particular, an
-     * ad-hoc development build must not put a password prompt on the owner's
-     * screen when its cdhash is not on an existing item's ACL.  Account owns
-     * the interactive credential flow; a background lookup fails closed. */
-    look[(__bridge id)kSecUseAuthenticationUI] = (__bridge id)kSecUseAuthenticationUIFail;
+    /* Drawer Send is never an authentication-UI boundary. The sole exception
+     * is the explicit Allow action, which enters here with interactive=true. */
+    look[(__bridge id)kSecUseAuthenticationUI] = (__bridge id)(interactive
+        ? kSecUseAuthenticationUIAllow : kSecUseAuthenticationUIFail);
     look[(__bridge id)kSecReturnData] = @YES;
     look[(__bridge id)kSecMatchLimit] = (__bridge id)kSecMatchLimitOne;
     CFTypeRef out = NULL;
-    st = zb_kc_copy_matching_without_ui((__bridge CFDictionaryRef)look, &out);
+    st = interactive
+        ? SecItemCopyMatching((__bridge CFDictionaryRef)look, &out)
+        : zb_kc_copy_matching_without_ui((__bridge CFDictionaryRef)look, &out);
     if (kc) CFRelease(kc);
     if (st == errSecItemNotFound) return ZB_KC_ABSENT;
+    if (st == errSecInteractionNotAllowed) {
+      if (out_err) *out_err = zb_kc_errf(st, "lookup");
+      return ZB_KC_PERMISSION;
+    }
     if (st != errSecSuccess || out == NULL) { if (out_err) *out_err = zb_kc_errf(st, "lookup"); return ZB_KC_UNAVAILABLE; }
 
     NSData *data = (__bridge_transfer NSData *)out;
@@ -186,6 +192,19 @@ int zb_keychain_lookup(const char *keychain_path, const char *unlock_password,
     }
     return ZB_KC_OK;
   }
+}
+
+int zb_keychain_lookup(const char *keychain_path, const char *unlock_password,
+                       const char *service, const char *account, char **out_token, char **out_err) {
+  return zb_keychain_lookup_impl(keychain_path, unlock_password, service, account,
+                                 0, out_token, out_err);
+}
+
+int zb_keychain_lookup_interactive(const char *keychain_path, const char *unlock_password,
+                                   const char *service, const char *account,
+                                   char **out_token, char **out_err) {
+  return zb_keychain_lookup_impl(keychain_path, unlock_password, service, account,
+                                 1, out_token, out_err);
 }
 
 int zb_keychain_clear(const char *keychain_path, const char *unlock_password,

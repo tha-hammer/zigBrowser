@@ -7,6 +7,7 @@
 #include "agent_helper_mac.h"
 #include "agent_home_lock.h"
 #include "agent_image.h"
+#include "agent_secrets_mac.h"
 #include "agent_spawn_posix.h"
 
 #include <errno.h>
@@ -52,6 +53,16 @@ static const char *const ZBMacTestKeychainPassword = "ZB_DEBUG_MAC_AGENT_KEYCHAI
 static const char *const ZBMacPythonBoot =
     "import runpy,sys;sys.path.insert(0,sys.argv.pop(1));"
     "runpy.run_module('zb_agent_host',run_name='__main__',alter_sys=True)";
+
+static BOOL zb_mac_test_keychain(const char **path, const char **password) {
+  const char *candidate = getenv(ZBMacTestKeychainPath);
+  const char *secret = getenv(ZBMacTestKeychainPassword);
+  BOOL selected = zb_mac_drawer_e2e_enabled() && candidate != NULL && candidate[0] == '/' &&
+                  secret != NULL && secret[0] != '\0';
+  if (path != NULL) *path = selected ? candidate : NULL;
+  if (password != NULL) *password = selected ? secret : NULL;
+  return selected;
+}
 
 static NSData *zb_read_private_action(const char *path) {
   if (path == NULL || path[0] != '/') return nil;
@@ -171,6 +182,7 @@ static void zb_terminate_owned_group(pid_t *pid) {
 + (instancetype)shared;
 - (BOOL)isConfigured;
 - (void)sendWindow:(unsigned int)windowId text:(NSString *)text;
+- (void)allowTokenForWindow:(unsigned int)windowId;
 - (void)postToolResultForWindow:(unsigned int)windowId session:(NSString *)session
                              id:(NSString *)toolId ok:(BOOL)ok body:(NSData *)body;
 - (void)startE2EToolsForWindow:(unsigned int)windowId;
@@ -407,10 +419,9 @@ int zb_agent_runtime_identity_current(const char *home_path, const char *package
         homeEnv.UTF8String, tmpEnv.UTF8String, NULL,
       };
       pid_t pid = -1;
-      const char *testKeychain = getenv(ZBMacTestKeychainPath);
-      const char *testPassword = getenv(ZBMacTestKeychainPassword);
-      BOOL useTestKeychain = zb_mac_drawer_e2e_enabled() && testKeychain != NULL && testKeychain[0] == '/' &&
-                             testPassword != NULL && testPassword[0] != '\0';
+      const char *testKeychain = NULL;
+      const char *testPassword = NULL;
+      BOOL useTestKeychain = zb_mac_test_keychain(&testKeychain, &testPassword);
       char *spawnError = NULL;
       int result = useTestKeychain
           ? zb_mac_agent_helper_spawn_fd3_for_test(argv, envp, childInput, childOutput,
@@ -430,6 +441,14 @@ int zb_agent_runtime_identity_current(const char *home_path, const char *package
         if (result != 0 || pid <= 1) {
           close(parentInput);
           close(parentOutput);
+          if (result == ZB_KC_PERMISSION) {
+            NSArray<NSNumber *> *windows = self.pending.allKeys;
+            [self stop];
+            for (NSNumber *window in windows) {
+              zb_drawer_agent_status(window.unsignedIntValue, "unavailable", "token-permission");
+            }
+            return;
+          }
           [self failAll:result == 1 ? @"Open Account and save a Claude token first."
                                     : @"Claude Agent could not start."];
           return;
@@ -442,6 +461,31 @@ int zb_agent_runtime_identity_current(const char *home_path, const char *package
         [self readHelperFD:parentOutput pid:pid];
       });
     }
+  });
+}
+
+- (void)allowTokenForWindow:(unsigned int)windowId {
+  dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+    const char *keychain = NULL;
+    const char *password = NULL;
+    (void)zb_mac_test_keychain(&keychain, &password);
+    char *token = NULL;
+    char *error = NULL;
+    int result = zb_keychain_lookup_interactive(keychain, password,
+                                                ZB_MAC_AGENT_TOKEN_SERVICE,
+                                                ZB_MAC_AGENT_TOKEN_ACCOUNT,
+                                                &token, &error);
+    zb_keychain_free(token);
+    free(error);
+    dispatch_async(dispatch_get_main_queue(), ^{
+      if (result == ZB_KC_OK) {
+        zb_drawer_agent_status(windowId, "idle", "-");
+      } else if (result == ZB_KC_ABSENT) {
+        zb_drawer_agent_status(windowId, "unavailable", "no-token");
+      } else {
+        zb_drawer_agent_status(windowId, "unavailable", "token-permission");
+      }
+    });
   });
 }
 
@@ -800,6 +844,13 @@ void zb_agent_helper_send(unsigned int window_id, const char *text) {
     [ZBMacAgentHelper.shared sendWindow:window_id text:message];
   };
   if (NSThread.isMainThread) send(); else dispatch_async(dispatch_get_main_queue(), send);
+}
+
+void zb_agent_helper_allow_token(unsigned int window_id) {
+  dispatch_block_t allow = ^{
+    [ZBMacAgentHelper.shared allowTokenForWindow:window_id];
+  };
+  if (NSThread.isMainThread) allow(); else dispatch_async(dispatch_get_main_queue(), allow);
 }
 
 void zb_agent_helper_stop(void) {

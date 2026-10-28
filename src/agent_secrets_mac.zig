@@ -14,7 +14,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 
 /// Mirrors ZbKeychainResult in agent_secrets_mac.h.
-pub const Result = enum(c_int) { ok = 0, absent = 1, unavailable = 2 };
+pub const Result = enum(c_int) { ok = 0, absent = 1, unavailable = 2, permission = 3 };
 
 extern "c" fn zb_keychain_store(keychain_path: ?[*:0]const u8, unlock_password: ?[*:0]const u8, service: [*:0]const u8, account: [*:0]const u8, token: [*:0]const u8, out_err: ?*?[*:0]u8) c_int;
 extern "c" fn zb_keychain_lookup(keychain_path: ?[*:0]const u8, unlock_password: ?[*:0]const u8, service: [*:0]const u8, account: [*:0]const u8, out_token: ?*?[*:0]u8, out_err: ?*?[*:0]u8) c_int;
@@ -43,6 +43,7 @@ pub const LookupResult = union(enum) {
     ok: []u8,
     absent,
     unavailable,
+    permission,
 };
 
 /// Look up the token for (service, account). On `.ok` the returned slice is owned by `gpa`; free it once
@@ -68,6 +69,10 @@ pub fn lookup(gpa: std.mem.Allocator, keychain_path: ?[*:0]const u8, unlock_pass
         .unavailable => {
             if (ctok) |p| zb_keychain_free(p);
             return .unavailable;
+        },
+        .permission => {
+            if (ctok) |p| zb_keychain_free(p);
+            return .permission;
         },
     }
 }

@@ -19,6 +19,8 @@ typedef enum {
   ZB_KC_ABSENT = 1,
   /* The keychain could not be opened/unlocked, or a SecItem call failed (out_err names the OSStatus). */
   ZB_KC_UNAVAILABLE = 2,
+  /* The item exists, but its ACL requires a user-authorized interactive read. */
+  ZB_KC_PERMISSION = 3,
 } ZbKeychainResult;
 
 /* keychain_path: NULL = the default (login) keychain (production); non-NULL = a specific file keychain (tests).
@@ -34,6 +36,12 @@ int zb_keychain_store(const char *keychain_path, const char *unlock_password,
  * owns and must release with zb_keychain_free (it is wiped on free). *out_token is NULL otherwise. */
 int zb_keychain_lookup(const char *keychain_path, const char *unlock_password,
                        const char *service, const char *account, char **out_token, char **out_err);
+
+/* User-action boundary: perform one lookup that may show Keychain access UI.
+ * This must be called only in direct response to the drawer's Allow button. */
+int zb_keychain_lookup_interactive(const char *keychain_path, const char *unlock_password,
+                                   const char *service, const char *account,
+                                   char **out_token, char **out_err);
 
 /* Delete the item for (service, account). ZB_KC_OK whether it existed or not. */
 int zb_keychain_clear(const char *keychain_path, const char *unlock_password,

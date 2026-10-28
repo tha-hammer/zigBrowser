@@ -26,6 +26,7 @@ BUNDLE_ID="com.cosmichq.zigBrowser"
 DMG_NAME="${APP_NAME}_${VERSION}_macos.dmg"
 
 SIGN_IDENTITY="${ZB_DMG_SIGN_IDENTITY:--}"
+SIGN_KEYCHAIN="${ZB_DMG_SIGN_KEYCHAIN:-}"
 
 if [ "${1:-}" = "--skip-build" ]; then
   echo "REFUSED: --skip-build is gone; every dmg builds one exact commit in a fresh per-run dir" >&2
@@ -91,14 +92,16 @@ echo "==> Assembling .app bundle, signing, and creating .dmg..."
 # ssh joins its arguments into one remote command line, so the identity (a Developer ID name has spaces and
 # parentheses) travels single-quoted.
 SIGN_IDENTITY_Q="'${SIGN_IDENTITY//\'/\'\\\'\'}'"
+SIGN_KEYCHAIN_Q="'${SIGN_KEYCHAIN//\'/\'\\\'\'}'"
 "${SSH[@]}" "$HOST" /bin/bash -s "$VERSION" "$APP_NAME" "$DMG_NAME" "$RUN_DIR" "$SIGN_IDENTITY_Q" \
-  "$PYTHON_PKG_SHA" <<'REMOTE'
+  "$SIGN_KEYCHAIN_Q" "$PYTHON_PKG_SHA" <<'REMOTE'
 set -euo pipefail
 VERSION="$1"
 APP_NAME="$2"
 DMG_NAME="$3"
 SIGN_IDENTITY="${5:?}"
-PYTHON_PKG_SHA="${6:?}"
+SIGN_KEYCHAIN="${6:-}"
+PYTHON_PKG_SHA="${7:?}"
 
 cd "$HOME/${4:?}"
 BINARY="zig-out/bin/zigBrowser"
@@ -173,28 +176,38 @@ rm -rf "$ICONSET"
 # Sign inside out, never --deep. This includes every Mach-O in the staged Python framework and site-packages, then
 # each real framework version, then the app. A release identity adds the hardened runtime; only the browser executable
 # and app receive the committed entitlements manifest.
-RUNTIME=() ENTITLEMENTS=()
+RUNTIME=() ENTITLEMENTS=() SIGNING_KEYCHAIN=()
 if [ "$SIGN_IDENTITY" != - ]; then
   RUNTIME=(--options runtime)
   ENTITLEMENTS=(--entitlements packaging/macos/entitlements.plist)
 fi
+if [ -n "$SIGN_KEYCHAIN" ]; then
+  [ "$SIGN_IDENTITY" != - ] \
+    || { echo "ERROR: ZB_DMG_SIGN_KEYCHAIN requires ZB_DMG_SIGN_IDENTITY" >&2; exit 1; }
+  [ "${SIGN_KEYCHAIN#/}" != "$SIGN_KEYCHAIN" ] && [ -f "$SIGN_KEYCHAIN" ] \
+    || { echo "ERROR: signing keychain is not an absolute regular file: $SIGN_KEYCHAIN" >&2; exit 1; }
+  SIGNING_KEYCHAIN=(--keychain "$SIGN_KEYCHAIN")
+fi
 is_macho() { file -b "$1" | grep -q Mach-O; }
 while IFS= read -r target; do
   if [ "$target" = "$CONTENTS/MacOS/$APP_NAME" ]; then
-    codesign --force --sign "$SIGN_IDENTITY" ${RUNTIME[@]+"${RUNTIME[@]}"} \
+    codesign --force ${SIGNING_KEYCHAIN[@]+"${SIGNING_KEYCHAIN[@]}"} --sign "$SIGN_IDENTITY" ${RUNTIME[@]+"${RUNTIME[@]}"} \
       ${ENTITLEMENTS[@]+"${ENTITLEMENTS[@]}"} "$target"
   else
-    codesign --force --sign "$SIGN_IDENTITY" ${RUNTIME[@]+"${RUNTIME[@]}"} "$target"
+    codesign --force ${SIGNING_KEYCHAIN[@]+"${SIGNING_KEYCHAIN[@]}"} --sign "$SIGN_IDENTITY" \
+      ${RUNTIME[@]+"${RUNTIME[@]}"} "$target"
   fi
 done < <(while IFS= read -r file; do is_macho "$file" && printf '%s\n' "$file"; done \
   < <(find "$CONTENTS" -type f) | awk -F/ '{ print NF "\t" $0 }' | sort -t $'\t' -k1,1nr -k2 | cut -f2-)
 while IFS= read -r framework; do
   for version in "$framework"/Versions/*; do
     [ -d "$version" ] && [ ! -L "$version" ] \
-      && codesign --force --sign "$SIGN_IDENTITY" ${RUNTIME[@]+"${RUNTIME[@]}"} "$version"
+      && codesign --force ${SIGNING_KEYCHAIN[@]+"${SIGNING_KEYCHAIN[@]}"} --sign "$SIGN_IDENTITY" \
+        ${RUNTIME[@]+"${RUNTIME[@]}"} "$version"
   done
 done < <(find "$CONTENTS" -type d -name '*.framework')
-codesign --force --sign "$SIGN_IDENTITY" ${RUNTIME[@]+"${RUNTIME[@]}"} ${ENTITLEMENTS[@]+"${ENTITLEMENTS[@]}"} "$APP_BUNDLE"
+codesign --force ${SIGNING_KEYCHAIN[@]+"${SIGNING_KEYCHAIN[@]}"} --sign "$SIGN_IDENTITY" \
+  ${RUNTIME[@]+"${RUNTIME[@]}"} ${ENTITLEMENTS[@]+"${ENTITLEMENTS[@]}"} "$APP_BUNDLE"
 
 # Verify signature
 codesign --verify --strict --deep --verbose "$APP_BUNDLE"

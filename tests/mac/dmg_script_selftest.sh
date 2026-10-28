@@ -47,6 +47,8 @@ HOST=intel@10.0.0.1 MACHOME="$T/mac" ARM=arm@10.0.0.2 ARMHOME="$T/mac-arm" C="$T
 SHIM=zigBrowser.app/Contents/Frameworks/libwkwebview_shim.dylib EXE=zigBrowser.app/Contents/MacOS/zigBrowser
 
 mkdir -p "$T/bin" "$T/hostbin" "$MACHOME/.local/bin" "$ARMHOME/.local/bin" "$C" "$T/home" "$T/tmp"
+mkdir -p "$MACHOME/zb-signing"
+: > "$MACHOME/zb-signing/dev.keychain-db"
 printf 'selftest python package\n' > "$T/fake-python.pkg"
 FAKE_PYTHON_SHA=$(sha256sum "$T/fake-python.pkg" | cut -c1-64)
 cat > "$T/bin/ssh" <<EOF
@@ -297,9 +299,9 @@ run_otool_fail() { # run_otool_fail <label> <identity or empty> <keychain or emp
 }
 
 run_dmg adhoc "" ""
-run_dmg release "Developer ID Application: Selftest (SELFTEST01)" "/Users/selftest/zb-signing/dev.keychain-db"
+run_dmg release "Developer ID Application: Selftest (SELFTEST01)" "$MACHOME/zb-signing/dev.keychain-db"
 run_otool_fail otoolfail-adhoc "" ""
-run_otool_fail otoolfail-release "Developer ID Application: Selftest (SELFTEST01)" "/Users/selftest/zb-signing/dev.keychain-db"
+run_otool_fail otoolfail-release "Developer ID Application: Selftest (SELFTEST01)" "$MACHOME/zb-signing/dev.keychain-db"
 if [ "$(sed -n 2p "$R/packaging/macos/build-dmg.sh")" = "# Build an ad-hoc dev dmg, not a distributable artifact, on the M9 build host over Tailscale SSH." ]; then
   ok "TRIPWIRE: the header calls it an ad-hoc dev dmg, not a distributable artifact"
 else bad "TRIPWIRE: header line 2 is '$(sed -n 2p "$R/packaging/macos/build-dmg.sh")'"; fi

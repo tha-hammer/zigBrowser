@@ -36,6 +36,10 @@ int zb_agent_runtime_identity_current(const char *home, const char *package_dire
 /* Native AppKit session owner retained from the integrated drawer. */
 int zb_agent_helper_configured(void);
 void zb_agent_helper_send(unsigned int window_id, const char *text);
+
+/* Direct Allow-button boundary. Performs one interactive Keychain read and
+ * wipes the returned token; background startup never calls this function. */
+void zb_agent_helper_allow_token(unsigned int window_id);
 void zb_agent_helper_stop(void);
 
 /* --e2e-protocol only: start the private fake-agent tool script named by
