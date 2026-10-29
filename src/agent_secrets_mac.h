@@ -43,6 +43,25 @@ int zb_keychain_lookup_interactive(const char *keychain_path, const char *unlock
                                    const char *service, const char *account,
                                    char **out_token, char **out_err);
 
+/* Product-level macOS credential operations. Development builds selected by
+ * build_options.mac_unsandboxed_dev use <agent_home>/secrets/claude_token;
+ * release builds delegate to the unchanged Keychain operations above. */
+int zb_mac_agent_token_file_enabled(void);
+int zb_mac_agent_token_load(const char *agent_home,
+                            const char *keychain_path, const char *unlock_password,
+                            const char *service, const char *account,
+                            char **out_token, char **out_err);
+int zb_mac_agent_token_save(const char *agent_home,
+                            const char *keychain_path, const char *unlock_password,
+                            const char *service, const char *account,
+                            const char *token, char **out_err);
+int zb_mac_agent_token_allow(const char *agent_home,
+                             const char *keychain_path, const char *unlock_password,
+                             const char *service, const char *account, char **out_err);
+int zb_mac_agent_token_remove(const char *agent_home,
+                              const char *keychain_path, const char *unlock_password,
+                              const char *service, const char *account, char **out_err);
+
 /* Delete the item for (service, account). ZB_KC_OK whether it existed or not. */
 int zb_keychain_clear(const char *keychain_path, const char *unlock_password,
                       const char *service, const char *account, char **out_err);

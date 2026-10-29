@@ -17,14 +17,18 @@ static void set_err(char **out_err, const char *text) {
   }
 }
 
-int zb_mac_token_to_fd_for_test(int fd, const char *keychain_path, const char *unlock_password,
-                                const char *service, const char *account, char **out_err) {
+static int zb_mac_token_to_fd_from(int fd, const char *agent_home,
+                                   const char *keychain_path, const char *unlock_password,
+                                   const char *service, const char *account, char **out_err) {
   if (out_err != NULL) {
     *out_err = NULL;
   }
   char *token = NULL;
   char *lookup_err = NULL;
-  int result = zb_keychain_lookup(keychain_path, unlock_password, service, account, &token, &lookup_err);
+  int result = agent_home != NULL
+      ? zb_mac_agent_token_load(agent_home, keychain_path, unlock_password,
+                                service, account, &token, &lookup_err)
+      : zb_keychain_lookup(keychain_path, unlock_password, service, account, &token, &lookup_err);
   if (result != ZB_KC_OK) {
     zb_keychain_free(token);
     /* The lookup's text names an OSStatus, never a token. */
@@ -60,6 +64,12 @@ int zb_mac_token_to_fd_for_test(int fd, const char *keychain_path, const char *u
   return ZB_KC_OK;
 }
 
+int zb_mac_token_to_fd_for_test(int fd, const char *keychain_path, const char *unlock_password,
+                                const char *service, const char *account, char **out_err) {
+  return zb_mac_token_to_fd_from(fd, NULL, keychain_path, unlock_password,
+                                 service, account, out_err);
+}
+
 int zb_mac_token_to_fd(int fd, const char *service, const char *account) {
   char *error = NULL;
   int result = zb_mac_token_to_fd_for_test(fd, NULL, NULL, service, account, &error);
@@ -74,6 +84,7 @@ static void close_pair(int pair[2]) {
 
 static int helper_spawn_fd3(const char *const *argv, const char *const *envp,
                             int stdin_fd, int stdout_fd,
+                            const char *agent_home,
                             int use_test_keychain,
                             const char *keychain_path, const char *unlock_password,
                             const char *service, const char *account,
@@ -99,8 +110,11 @@ static int helper_spawn_fd3(const char *const *argv, const char *const *envp,
    * child and the token never enters a process-creation structure. */
   int result;
   if (use_test_keychain) {
-    result = zb_mac_token_to_fd_for_test(token[0], keychain_path, unlock_password,
-                                          service, account, out_err);
+    result = zb_mac_token_to_fd_from(token[0], NULL, keychain_path, unlock_password,
+                                     service, account, out_err);
+  } else if (agent_home != NULL) {
+    result = zb_mac_token_to_fd_from(token[0], agent_home, NULL, NULL,
+                                     service, account, out_err);
   } else {
     result = zb_mac_token_to_fd(token[0], service, account);
     if (result != ZB_KC_OK) {
@@ -131,16 +145,28 @@ int zb_mac_helper_spawn_fd3_for_test(const char *const *argv, const char *const 
                                      const char *keychain_path, const char *unlock_password,
                                      const char *service, const char *account,
                                      pid_t *out_pid, char **out_err) {
-  return helper_spawn_fd3(argv, envp, stdin_fd, stdout_fd, 1, keychain_path, unlock_password,
-                          service, account, out_pid, out_err);
+  return helper_spawn_fd3(argv, envp, stdin_fd, stdout_fd, NULL, 1,
+                          keychain_path, unlock_password, service, account,
+                          out_pid, out_err);
 }
 
 int zb_mac_helper_spawn_fd3(const char *const *argv, const char *const *envp,
                             int stdin_fd, int stdout_fd, const char *service,
                             const char *account, pid_t *out_pid) {
   char *error = NULL;
-  int result = helper_spawn_fd3(argv, envp, stdin_fd, stdout_fd, 0, NULL, NULL,
+  int result = helper_spawn_fd3(argv, envp, stdin_fd, stdout_fd, NULL, 0, NULL, NULL,
                                 service, account, out_pid, &error);
+  free(error);
+  return result;
+}
+
+int zb_mac_helper_spawn_fd3_for_home(const char *agent_home,
+                                     const char *const *argv, const char *const *envp,
+                                     int stdin_fd, int stdout_fd, const char *service,
+                                     const char *account, pid_t *out_pid) {
+  char *error = NULL;
+  int result = helper_spawn_fd3(argv, envp, stdin_fd, stdout_fd, agent_home,
+                                0, NULL, NULL, service, account, out_pid, &error);
   free(error);
   return result;
 }

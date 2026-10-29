@@ -247,12 +247,12 @@ static BOOL zb_write_secrets_snapshot(NSWindow *window, NSString *path) {
 
 static ZBMacSecretsWindowController *zbSecretsController;
 
-static int zb_mac_product_token_matches(const char *token) {
+static int zb_mac_product_token_matches(const char *home, const char *token) {
   if (token == NULL) return 0;
   char *stored = NULL;
   char *error = NULL;
-  int result = zb_keychain_lookup(NULL, NULL, ZB_MAC_AGENT_TOKEN_SERVICE,
-                                  ZB_MAC_AGENT_TOKEN_ACCOUNT, &stored, &error);
+  int result = zb_mac_agent_token_load(home, NULL, NULL, ZB_MAC_AGENT_TOKEN_SERVICE,
+                                       ZB_MAC_AGENT_TOKEN_ACCOUNT, &stored, &error);
   int matches = result == ZB_KC_OK && stored != NULL && strcmp(stored, token) == 0;
   zb_keychain_free(stored);
   free(error);
@@ -322,7 +322,9 @@ static NSTextField *zb_label(NSString *text, BOOL secondary) {
   buttons.orientation = NSUserInterfaceLayoutOrientationHorizontal;
   buttons.spacing = 8.0;
 
-  _statusLabel = zb_label(@"Checking the login Keychain…", YES);
+  _statusLabel = zb_label(zb_mac_agent_token_file_enabled()
+      ? @"Checking the private development token file…"
+      : @"Checking the login Keychain…", YES);
   _statusLabel.accessibilityLabel = @"Credential status";
 
   NSStackView *content = [NSStackView stackViewWithViews:@[
@@ -351,6 +353,7 @@ static NSTextField *zb_label(NSString *text, BOOL secondary) {
   _loginInput = -1;
   _netInput = -1;
 
+  [self configureAgentPaths];
   [self presentForBrowserWindow:parent];
   return self;
 }
@@ -370,11 +373,18 @@ static NSTextField *zb_label(NSString *text, BOOL secondary) {
 - (void)refreshStatus {
   char *token = NULL;
   char *error = NULL;
-  int result = zb_keychain_lookup(NULL, NULL, ZB_MAC_AGENT_TOKEN_SERVICE,
-                                  ZB_MAC_AGENT_TOKEN_ACCOUNT, &token, &error);
+  int result = zb_mac_agent_token_load(self.home.fileSystemRepresentation,
+                                       NULL, NULL, ZB_MAC_AGENT_TOKEN_SERVICE,
+                                       ZB_MAC_AGENT_TOKEN_ACCOUNT, &token, &error);
   if (result == ZB_KC_OK && token != NULL) {
-    self.statusLabel.stringValue = @"Connected. A token is stored in your login Keychain.";
+    self.statusLabel.stringValue = zb_mac_agent_token_file_enabled()
+        ? @"Connected. Token saved in a private file (dev build)."
+        : @"Connected. A token is stored in your login Keychain.";
     self.clearButton.enabled = YES;
+  } else if (result == ZB_KC_PERMISSION && zb_mac_agent_token_file_enabled()) {
+    self.statusLabel.stringValue =
+        @"Permission needed. Use Allow in the Claude Agent drawer to move your saved token into a private file.";
+    self.clearButton.enabled = NO;
   } else if (result == ZB_KC_ABSENT) {
     self.statusLabel.stringValue = @"No token is stored.";
     self.clearButton.enabled = NO;
@@ -580,8 +590,12 @@ static NSTextField *zb_label(NSString *text, BOOL secondary) {
   const char *service = NULL;
   BOOL testTarget = [self testKeychainPath:&path password:&password service:&service];
   char *error = NULL;
-  int result = zb_agent_onboard_token(path, password, service,
-                                      ZB_MAC_AGENT_TOKEN_ACCOUNT, token, &error);
+  int result = testTarget
+      ? zb_agent_onboard_token(path, password, service,
+                               ZB_MAC_AGENT_TOKEN_ACCOUNT, token, &error)
+      : zb_mac_agent_token_save(self.home.fileSystemRepresentation,
+                                NULL, NULL, ZB_MAC_AGENT_TOKEN_SERVICE,
+                                ZB_MAC_AGENT_TOKEN_ACCOUNT, token, &error);
   memset_s(token, length + 1, 0, length + 1);
   free(token);
   free(error);
@@ -590,7 +604,9 @@ static NSTextField *zb_label(NSString *text, BOOL secondary) {
   if (result != ZB_KC_OK) {
     [self failLoginWithText:result == ZB_KC_ABSENT
         ? @"Claude sign-in did not return a valid credential."
-        : @"The Claude credential could not be saved in your login Keychain."];
+        : (zb_mac_agent_token_file_enabled()
+            ? @"The Claude credential could not be saved in the private development file."
+            : @"The Claude credential could not be saved in your login Keychain.")];
     return;
   }
 
@@ -1012,16 +1028,19 @@ static NSTextField *zb_label(NSString *text, BOOL secondary) {
   self.tokenField.stringValue = @"";
   const char *token = pasted.UTF8String;
   char *error = NULL;
-  int result = zb_agent_onboard_token(NULL, NULL, ZB_MAC_AGENT_TOKEN_SERVICE,
-                                      ZB_MAC_AGENT_TOKEN_ACCOUNT,
-                                      token != NULL ? token : "", &error);
+  int result = zb_mac_agent_token_save(self.home.fileSystemRepresentation,
+                                       NULL, NULL, ZB_MAC_AGENT_TOKEN_SERVICE,
+                                       ZB_MAC_AGENT_TOKEN_ACCOUNT,
+                                       token != NULL ? token : "", &error);
   if (result == ZB_KC_OK) {
     [self refreshStatus];
     zb_agent_helper_stop();
   } else if (result == ZB_KC_ABSENT) {
     self.statusLabel.stringValue = @"That doesn’t look like a long-lived token.";
   } else {
-    self.statusLabel.stringValue = @"The token could not be saved in your login Keychain.";
+    self.statusLabel.stringValue = zb_mac_agent_token_file_enabled()
+        ? @"The token could not be saved in the private development file."
+        : @"The token could not be saved in your login Keychain.";
   }
   free(error);
 }
@@ -1029,13 +1048,16 @@ static NSTextField *zb_label(NSString *text, BOOL secondary) {
 - (void)clear:(id)sender {
   (void)sender;
   char *error = NULL;
-  int result = zb_keychain_clear(NULL, NULL, ZB_MAC_AGENT_TOKEN_SERVICE,
-                                 ZB_MAC_AGENT_TOKEN_ACCOUNT, &error);
+  int result = zb_mac_agent_token_remove(self.home.fileSystemRepresentation,
+                                         NULL, NULL, ZB_MAC_AGENT_TOKEN_SERVICE,
+                                         ZB_MAC_AGENT_TOKEN_ACCOUNT, &error);
   if (result == ZB_KC_OK) {
     [self refreshStatus];
     zb_agent_helper_stop();
   } else {
-    self.statusLabel.stringValue = @"The token could not be removed from your login Keychain.";
+    self.statusLabel.stringValue = zb_mac_agent_token_file_enabled()
+        ? @"The token could not be removed from the private development file."
+        : @"The token could not be removed from your login Keychain.";
   }
   free(error);
 }
@@ -1082,9 +1104,12 @@ int zb_mac_secrets_window_acceptance_store(NSWindow *parent, const char *token) 
   if (value == nil) return 0;
   zbSecretsController.tokenField.stringValue = value;
   [zbSecretsController save:nil];
-  if (![zbSecretsController.statusLabel.stringValue
-          isEqualToString:@"Connected. A token is stored in your login Keychain."] ||
-      !zbSecretsController.clearButton.enabled || !zb_mac_product_token_matches(token)) return 0;
+  NSString *connected = zb_mac_agent_token_file_enabled()
+      ? @"Connected. Token saved in a private file (dev build)."
+      : @"Connected. A token is stored in your login Keychain.";
+  if (![zbSecretsController.statusLabel.stringValue isEqualToString:connected] ||
+      !zbSecretsController.clearButton.enabled ||
+      !zb_mac_product_token_matches(zbSecretsController.home.fileSystemRepresentation, token)) return 0;
   puts("OWNER_ACCEPTANCE\tcredential-stored\tconnected");
   fflush(stdout);
   return 1;
@@ -1092,18 +1117,20 @@ int zb_mac_secrets_window_acceptance_store(NSWindow *parent, const char *token) 
 
 int zb_mac_secrets_window_acceptance_clear_if_matches(const char *token) {
   if (!zb_mac_drawer_e2e_enabled() || !NSThread.isMainThread ||
-      !zb_mac_product_token_matches(token)) return 0;
+      !zb_mac_product_token_matches(zbSecretsController.home.fileSystemRepresentation, token)) return 0;
 
   char *error = NULL;
-  int result = zb_keychain_clear(NULL, NULL, ZB_MAC_AGENT_TOKEN_SERVICE,
-                                 ZB_MAC_AGENT_TOKEN_ACCOUNT, &error);
+  int result = zb_mac_agent_token_remove(zbSecretsController.home.fileSystemRepresentation,
+                                         NULL, NULL, ZB_MAC_AGENT_TOKEN_SERVICE,
+                                         ZB_MAC_AGENT_TOKEN_ACCOUNT, &error);
   free(error);
   if (result != ZB_KC_OK) return 0;
 
   char *stored = NULL;
   error = NULL;
-  result = zb_keychain_lookup(NULL, NULL, ZB_MAC_AGENT_TOKEN_SERVICE,
-                              ZB_MAC_AGENT_TOKEN_ACCOUNT, &stored, &error);
+  result = zb_mac_agent_token_load(zbSecretsController.home.fileSystemRepresentation,
+                                   NULL, NULL, ZB_MAC_AGENT_TOKEN_SERVICE,
+                                   ZB_MAC_AGENT_TOKEN_ACCOUNT, &stored, &error);
   zb_keychain_free(stored);
   free(error);
   if (result != ZB_KC_ABSENT) return 0;

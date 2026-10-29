@@ -31,6 +31,13 @@ int zb_mac_helper_spawn_fd3(const char *const *argv, const char *const *envp,
                             int stdin_fd, int stdout_fd, const char *service,
                             const char *account, pid_t *out_pid);
 
+/* Product macOS path: development builds load from agent_home first; release
+ * builds retain the same Keychain lookup performed by zb_mac_helper_spawn_fd3. */
+int zb_mac_helper_spawn_fd3_for_home(const char *agent_home,
+                                     const char *const *argv, const char *const *envp,
+                                     int stdin_fd, int stdout_fd, const char *service,
+                                     const char *account, pid_t *out_pid);
+
 /* Same product handoff, but sourcing the token from a disposable Keychain. */
 int zb_mac_helper_spawn_fd3_for_test(const char *const *argv, const char *const *envp,
                                      int stdin_fd, int stdout_fd,

@@ -19,6 +19,11 @@ extern "C" {
 int zb_mac_agent_helper_spawn_fd3(const char *const *argv, const char *const *envp,
                                   int stdin_fd, int stdout_fd, pid_t *out_pid);
 
+/* Product launch with the concrete agent home used by development file storage. */
+int zb_mac_agent_helper_spawn_fd3_for_home(
+    const char *agent_home, const char *const *argv, const char *const *envp,
+    int stdin_fd, int stdout_fd, pid_t *out_pid);
+
 /* Product-test entry. It selects the disposable test Keychain item; argv,
  * environment, descriptor mapping and process-group spawn are unchanged. */
 int zb_mac_agent_helper_spawn_fd3_for_test(

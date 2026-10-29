@@ -39,6 +39,13 @@ const OpenSpec = @TypeOf(@as(cli.Command, .{ .open = undefined }).open);
 const ScreenshotSpec = @TypeOf(@as(cli.Command, .{ .screenshot = undefined }).screenshot);
 const AgentSetupSpec = @TypeOf(@as(cli.Command, .{ .agent_setup = undefined }).agent_setup);
 
+// The AppKit shim is an Apple-linked dylib, so it cannot import Zig's generated
+// build_options module directly. Export this one immutable build policy from
+// the executable for the macOS credential store.
+pub export fn zb_mac_unsandboxed_dev() c_int {
+    return @intFromBool(build_options.mac_unsandboxed_dev);
+}
+
 pub fn run(arena: std.mem.Allocator, command: cli.Command) errors.BrowserError!u8 {
     var threaded: std.Io.Threaded = .init(std.heap.smp_allocator, .{});
     defer threaded.deinit();
@@ -329,8 +336,7 @@ fn configureAgentHelper(arena: std.mem.Allocator, io: std.Io, e2e: bool, net: Ag
     const argv = try toCStrings(arena, launch.argv);
     const envp = try toCStrings(arena, launch.env);
     const refusal_z: ?[*:0]const u8 = if (launch.refusal) |line| (try arena.dupeZ(u8, line)).ptr else null;
-    c.zb_agent_helper_configure(argv.ptr, envp.ptr, (try arena.dupeZ(u8, net.home)).ptr,
-        if (unavailable) |s| s.ptr else null, if (bubble) |s| s.ptr else null, refusal_z, @intFromBool(e2e));
+    c.zb_agent_helper_configure(argv.ptr, envp.ptr, (try arena.dupeZ(u8, net.home)).ptr, if (unavailable) |s| s.ptr else null, if (bubble) |s| s.ptr else null, refusal_z, @intFromBool(e2e));
 }
 
 /// Chat drawer S6b1 (plan rev 16.18.3): the one-shot sign-in. Its own login netd
@@ -371,8 +377,7 @@ fn configureAgentLogin(arena: std.mem.Allocator, io: std.Io, e2e: bool, net: Age
     if (e2e) try netd_args.append(arena, "--census");
     const netd_argv = try toCStrings(arena, netd_args.items);
     const netd_env = try toCStrings(arena, try agent_net.netdEnv(arena, getenvOwned(arena, "LANG"), getenvOwned(arena, "LC_ALL")));
-    c.zb_login_configure(netd_argv.ptr, netd_env.ptr, (try arena.dupeZ(u8, login_dir)).ptr,
-        (try toCStrings(arena, launch.argv)).ptr, (try toCStrings(arena, launch.env)).ptr);
+    c.zb_login_configure(netd_argv.ptr, netd_env.ptr, (try arena.dupeZ(u8, login_dir)).ptr, (try toCStrings(arena, launch.argv)).ptr, (try toCStrings(arena, launch.env)).ptr);
 }
 
 /// A small file's bytes, or null when it cannot be read.
@@ -495,13 +500,11 @@ fn runOpen(arena: std.mem.Allocator, io: std.Io, spec: OpenSpec) errors.BrowserE
             if (drawer_core) agent_tools.stop();
         };
 
-        const code = c.zb_app_run(valid_uri.ptr, if (spec.print_title) 1 else 0,
-            if (spec.e2e_protocol) 1 else 0);
+        const code = c.zb_app_run(valid_uri.ptr, if (spec.print_title) 1 else 0, if (spec.e2e_protocol) 1 else 0);
         return @intCast(code);
     }
 
-    const code = c.zb_app_run(valid_uri.ptr, if (spec.print_title) 1 else 0,
-        if (spec.e2e_protocol) 1 else 0);
+    const code = c.zb_app_run(valid_uri.ptr, if (spec.print_title) 1 else 0, if (spec.e2e_protocol) 1 else 0);
     return @intCast(code);
 }
 

@@ -1,6 +1,6 @@
 /* Native macOS owner for netd and the Claude Agent chat helper. The browser
- * keeps the token in the login Keychain and hands it to the helper only on fd
- * 3; this file owns the remaining process lifetime and NDJSON session flow. */
+ * hands the selected development-file or release-Keychain token to the helper
+ * only on fd 3; this file owns the remaining process lifetime and NDJSON flow. */
 #import <AppKit/AppKit.h>
 #import <Foundation/Foundation.h>
 
@@ -426,7 +426,8 @@ int zb_agent_runtime_identity_current(const char *home_path, const char *package
       int result = useTestKeychain
           ? zb_mac_agent_helper_spawn_fd3_for_test(argv, envp, childInput, childOutput,
                                                    testKeychain, testPassword, &pid, &spawnError)
-          : zb_mac_agent_helper_spawn_fd3(argv, envp, childInput, childOutput, &pid);
+          : zb_mac_agent_helper_spawn_fd3_for_home(self.home.fileSystemRepresentation,
+                                                   argv, envp, childInput, childOutput, &pid);
       free(spawnError);
       close(childInput);
       close(childOutput);
@@ -469,13 +470,20 @@ int zb_agent_runtime_identity_current(const char *home_path, const char *package
     const char *keychain = NULL;
     const char *password = NULL;
     (void)zb_mac_test_keychain(&keychain, &password);
-    char *token = NULL;
     char *error = NULL;
-    int result = zb_keychain_lookup_interactive(keychain, password,
-                                                ZB_MAC_AGENT_TOKEN_SERVICE,
-                                                ZB_MAC_AGENT_TOKEN_ACCOUNT,
-                                                &token, &error);
-    zb_keychain_free(token);
+    int result;
+    if (keychain != NULL) {
+      char *token = NULL;
+      result = zb_keychain_lookup_interactive(keychain, password,
+                                              ZB_MAC_AGENT_TOKEN_SERVICE,
+                                              ZB_MAC_AGENT_TOKEN_ACCOUNT,
+                                              &token, &error);
+      zb_keychain_free(token);
+    } else {
+      result = zb_mac_agent_token_allow(self.home.fileSystemRepresentation,
+                                        NULL, NULL, ZB_MAC_AGENT_TOKEN_SERVICE,
+                                        ZB_MAC_AGENT_TOKEN_ACCOUNT, &error);
+    }
     free(error);
     dispatch_async(dispatch_get_main_queue(), ^{
       if (result == ZB_KC_OK) {

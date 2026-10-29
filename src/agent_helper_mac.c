@@ -10,6 +10,14 @@ int zb_mac_agent_helper_spawn_fd3(const char *const *argv, const char *const *en
                                  ZB_MAC_AGENT_TOKEN_ACCOUNT, out_pid);
 }
 
+int zb_mac_agent_helper_spawn_fd3_for_home(
+    const char *agent_home, const char *const *argv, const char *const *envp,
+    int stdin_fd, int stdout_fd, pid_t *out_pid) {
+  return zb_mac_helper_spawn_fd3_for_home(agent_home, argv, envp, stdin_fd, stdout_fd,
+                                          ZB_MAC_AGENT_TOKEN_SERVICE,
+                                          ZB_MAC_AGENT_TOKEN_ACCOUNT, out_pid);
+}
+
 int zb_mac_agent_helper_spawn_fd3_for_test(
     const char *const *argv, const char *const *envp,
     int stdin_fd, int stdout_fd,
