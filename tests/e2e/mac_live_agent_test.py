@@ -659,7 +659,8 @@ def run_fake_auth(
     ):
         directory.mkdir(mode=0o700, exist_ok=True)
     token = secrets / "claude_token"
-    private_write(token, FAKE_TOKEN.encode("ascii"))
+    if not token.exists():
+        private_write(token, FAKE_TOKEN.encode("ascii"))
     if stat.S_IMODE(token.stat().st_mode) != 0o600:
         return False, "private fake token is not mode 0600", [], True
 
@@ -684,6 +685,10 @@ def run_fake_auth(
         ).encode("utf-8"),
     )
     drawer_log = agent_home / "state/drawer.log"
+    try:
+        drawer_offset = drawer_log.stat().st_size
+    except OSError:
+        drawer_offset = 0
     before = set(executable_processes(executable))
     opener = subprocess.Popen(
         launch_command(
@@ -725,7 +730,7 @@ def run_fake_auth(
             reason = "version-2 real-control driver did not click Send"
 
         while reason is None and identity is not None and time.monotonic() < deadline:
-            drawer_text = "\n".join(safe_drawer_lines(drawer_log, 0))
+            drawer_text = "\n".join(safe_drawer_lines(drawer_log, drawer_offset))
             if auth_observed_ns is None and AUTH_FAILURE in drawer_text:
                 auth_observed_ns = time.time_ns()
             if auth_observed_ns is not None and png_size(output) is not None:
@@ -748,7 +753,11 @@ def run_fake_auth(
         )
         if reason is None and expected not in read_lines(stdout):
             reason = "WINDOW_SNAPSHOT product evidence row is missing"
-        combined = "\n".join(read_lines(stdout) + read_lines(stderr) + safe_drawer_lines(drawer_log, 0))
+        combined = "\n".join(
+            read_lines(stdout)
+            + read_lines(stderr)
+            + safe_drawer_lines(drawer_log, drawer_offset)
+        )
         if FAKE_TOKEN in combined:
             reason = "fake token leaked into app output or drawer diagnostics"
         if reason is None and "DRAWER_AGENT_E2E\tready-fd3" not in "\n".join(read_lines(stderr)):
@@ -759,7 +768,7 @@ def run_fake_auth(
         for error in (stop_error, opener_error):
             if error is not None:
                 reason = f"{reason}; {error}" if reason else error
-    drawer_lines = safe_drawer_lines(drawer_log, 0)
+    drawer_lines = safe_drawer_lines(drawer_log, drawer_offset)
     cleanup_safe = stop_error is None
     if reason is not None:
         err_tail = read_lines(stderr)[-1:] or ["<no stderr line>"]
@@ -907,10 +916,23 @@ def main() -> int:
         print(f"PASS\tmac-live-agent\tinstall\t{app}", flush=True)
         if args.fake_auth_proof:
             private_home = root / "private-home"
-            ok, detail, drawer_lines, safe = run_fake_auth(
-                app, root, private_home, output, args.timeout
+            warmup = root / "fake-auth-runtime-warmup.png"
+            warm_ok, warm_detail, warm_lines, warm_safe = run_fake_auth(
+                app, root, private_home, warmup, args.timeout
             )
-            cleanup_safe = cleanup_safe and safe
+            cleanup_safe = cleanup_safe and warm_safe
+            print(
+                f"{'PASS' if warm_ok else 'FAIL'}\tmac-live-agent\t"
+                f"fake-auth-runtime-warmup\t{warm_detail}",
+                flush=True,
+            )
+            if warm_ok:
+                ok, detail, drawer_lines, safe = run_fake_auth(
+                    app, root, private_home, output, args.timeout
+                )
+                cleanup_safe = cleanup_safe and safe
+            else:
+                ok, detail, drawer_lines = False, warm_detail, warm_lines
             for line in drawer_lines:
                 print(f"DRAWER_LOG\tmac-live-agent\tfake-auth\t{line}", flush=True)
             print(
