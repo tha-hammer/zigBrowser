@@ -106,6 +106,7 @@ extern void zb_mac_agent_tools_e2e_start(unsigned int window_id)
 
 @interface ZBMacDrawerIcon : NSButton
 @property(nonatomic, weak) ZBMacDrawerState *drawerState;
+- (void)openDrawer:(id)sender;
 @end
 
 static const void *const kZBMacDrawerStateKey = &kZBMacDrawerStateKey;
@@ -467,6 +468,14 @@ static NSView *zb_make_panel(NSRect frame, ZBMacDrawerState *state) {
 
 @implementation ZBMacDrawerIcon
 
+- (void)openDrawer:(id)sender {
+  (void)sender;
+  ZBMacDrawerState *state = self.drawerState;
+  if (state == nil || state.window == nil) return;
+  state.pendingRowKind = @"open";
+  zb_mac_drawer_set_open(state.window, 1);
+}
+
 - (void)mouseDown:(NSEvent *)event {
   ZBMacDrawerState *state = self.drawerState;
   NSWindow *window = state.window;
@@ -522,8 +531,7 @@ static NSView *zb_make_panel(NSRect frame, ZBMacDrawerState *state) {
           zb_mac_drawer_debug_open_window();
         }
       } else {
-        state.pendingRowKind = @"open";
-        zb_mac_drawer_set_open(window, 1);
+        [self performClick:nil];
       }
       return;
     }
@@ -750,6 +758,8 @@ void zb_mac_drawer_attach(NSWindow *window, NSView *webview,
   state.foldView = fold_view;
   ZBMacDrawerIcon *icon = [[ZBMacDrawerIcon alloc] initWithFrame:NSZeroRect];
   icon.drawerState = state;
+  icon.target = icon;
+  icon.action = @selector(openDrawer:);
   icon.title = @"S";
   icon.bordered = NO;
   icon.font = [NSFont boldSystemFontOfSize:24];
@@ -1043,4 +1053,12 @@ void zb_mac_drawer_set_open(NSWindow *window, int open) {
 int zb_mac_drawer_is_open(NSWindow *window) {
   ZBMacDrawerState *state = zb_state(window);
   return state != nil && state.open ? 1 : 0;
+}
+
+int zb_mac_drawer_e2e_open_control(NSWindow *window) {
+  if (!zb_mac_drawer_e2e_enabled()) return 0;
+  ZBMacDrawerState *state = zb_state(window);
+  if (state == nil || state.folding) return 0;
+  if (!state.open) [state.icon performClick:nil];
+  return state.open ? 1 : 0;
 }

@@ -30,6 +30,8 @@ extern void zb_agent_tools_call(unsigned int win, const char *session,
                                 const char *args, size_t args_len)
     __attribute__((weak_import));
 extern int zb_mac_drawer_e2e_enabled(void);
+extern int zb_mac_drawer_e2e_open_control(NSWindow *window)
+    __attribute__((weak_import));
 extern unsigned int zb_drawer_demo_messages(void) __attribute__((weak_import));
 
 enum {
@@ -769,6 +771,11 @@ static void zb_mac_live_row(NSString *scenario, NSString *event, NSData *payload
       ![approval isKindOfClass:NSString.class] ||
       (![approval isEqualToString:@"all"] && ![approval isEqualToString:@"none"]) ||
       ![snapshot isKindOfClass:NSString.class] || !snapshot.isAbsolutePath) return;
+
+  if (version.integerValue == 2) {
+    if (zb_mac_drawer_e2e_open_control == NULL ||
+        !zb_mac_drawer_e2e_open_control(self.window)) return;
+  }
 
   self.liveAgentStarted = YES;
   self.liveAgentApproveAll = [approval isEqualToString:@"all"];

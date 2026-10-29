@@ -35,6 +35,8 @@ void zb_mac_drawer_attach(NSWindow *window, NSView *webview,
                           unsigned int window_id);
 void zb_mac_drawer_set_open(NSWindow *window, int open);
 int zb_mac_drawer_is_open(NSWindow *window);
+/* --e2e-protocol only: invoke the real floating launcher's normal action. */
+int zb_mac_drawer_e2e_open_control(NSWindow *window);
 
 /* Secrets window (agent_secrets_window_mac.m). Opened from the drawer when no credential is stored. */
 void zb_mac_secrets_window_open(NSWindow *parent);
