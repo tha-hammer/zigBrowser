@@ -33,6 +33,18 @@ def fail(reason: str) -> int:
     return 1
 
 
+def diagnostic_tail(*paths: Path) -> str:
+    parts = []
+    for path in paths:
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")[-1200:]
+        except OSError:
+            continue
+        if text.strip():
+            parts.append(f"{path.name}={text.strip()}")
+    return "; ".join(parts)
+
+
 def private_write(path: Path, data: bytes) -> None:
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     try:
@@ -402,7 +414,11 @@ def main() -> int:
             "mcp__zigbrowser__click"
         ] * 8 + ["mcp__zigbrowser__navigate", "mcp__zigbrowser__wait_for"]
         if [row.get("tool") for row in results] != expected:
-            return fail(f"tool_result sequence was {[row.get('tool') for row in results]!r}")
+            diagnostics = diagnostic_tail(home / "state/drawer.log", stderr, stdout)
+            return fail(
+                f"tool_result sequence was {[row.get('tool') for row in results]!r}"
+                + (f"; diagnostics={diagnostics}" if diagnostics else "")
+            )
         expected_failure = "no element matched css=.missing-messages-control (element_not_found, -32001)"
         if not result_error(results[11]) or result_text(results[11]) != expected_failure:
             return fail(f"actionable selector failure was {result_text(results[11])!r}")

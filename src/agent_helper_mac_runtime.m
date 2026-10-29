@@ -548,7 +548,9 @@ int zb_agent_runtime_identity_current(const char *home_path, const char *package
   frame[@"seq"] = @(++self.outputSequence);
   NSError *error = nil;
   NSData *json = [NSJSONSerialization dataWithJSONObject:frame options:0 error:&error];
-  if (json == nil || error != nil || json.length > 65536) return NO;
+  // Tool results may contain a fitted screenshot. The helper's bridge accepts
+  // one MiB result frames, so use the same bound in this direction.
+  if (json == nil || error != nil || json.length > ZBMacHelperLineMax) return NO;
   NSMutableData *line = [json mutableCopy];
   const unsigned char newline = '\n';
   [line appendBytes:&newline length:1];
@@ -906,13 +908,27 @@ int zb_agent_image_fit(const unsigned char *png, size_t len, size_t max_b64,
       memcmp(png + len - sizeof iend, iend, sizeof iend) != 0) return ZB_IMAGE_FIT_UNREADABLE;
   @autoreleasepool {
     NSData *data = [NSData dataWithBytes:png length:len];
-    if ([NSBitmapImageRep imageRepWithData:data] == nil) return ZB_IMAGE_FIT_UNREADABLE;
-    if (((len + 2) / 3) * 4 > max_b64) return ZB_IMAGE_FIT_TOO_LARGE;
-    NSString *encoded = [data base64EncodedStringWithOptions:0];
-    *out_b64 = strdup(encoded.UTF8String);
-    if (*out_b64 == NULL) return ZB_IMAGE_FIT_TOO_LARGE;
-    *out_mime = "image/png";
-    return ZB_IMAGE_FIT_OK;
+    NSBitmapImageRep *decoded = [NSBitmapImageRep imageRepWithData:data];
+    if (decoded == nil) return ZB_IMAGE_FIT_UNREADABLE;
+    if (((len + 2) / 3) * 4 <= max_b64) {
+      NSString *encoded = [data base64EncodedStringWithOptions:0];
+      *out_b64 = strdup(encoded.UTF8String);
+      if (*out_b64 == NULL) return ZB_IMAGE_FIT_TOO_LARGE;
+      *out_mime = "image/png";
+      return ZB_IMAGE_FIT_OK;
+    }
+    static const double qualities[] = {0.85, 0.70, 0.50, 0.30};
+    for (size_t i = 0; i < sizeof qualities / sizeof qualities[0]; ++i) {
+      NSData *jpeg = [decoded representationUsingType:NSBitmapImageFileTypeJPEG
+                                           properties:@{NSImageCompressionFactor: @(qualities[i])}];
+      if (jpeg == nil || ((jpeg.length + 2) / 3) * 4 > max_b64) continue;
+      NSString *encoded = [jpeg base64EncodedStringWithOptions:0];
+      *out_b64 = strdup(encoded.UTF8String);
+      if (*out_b64 == NULL) return ZB_IMAGE_FIT_TOO_LARGE;
+      *out_mime = "image/jpeg";
+      return ZB_IMAGE_FIT_OK;
+    }
+    return ZB_IMAGE_FIT_TOO_LARGE;
   }
 }
 
