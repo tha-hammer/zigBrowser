@@ -840,7 +840,19 @@ def guarded_remove_live_root(root: Path, home: Path) -> None:
         or len(name) <= len("zb-live-")
     ):
         raise RuntimeError(f"refused unguarded cleanup target: {resolved_root}")
-    shutil.rmtree(resolved_root)
+
+    def restore_owned_access(function: Any, path: str, _: Any) -> None:
+        candidate = Path(path)
+        try:
+            candidate.relative_to(resolved_root)
+        except ValueError as error:
+            raise RuntimeError(f"refused cleanup outside {resolved_root}: {candidate}") from error
+        if candidate.is_symlink():
+            raise RuntimeError(f"refused permission repair through symlink: {candidate}")
+        os.chmod(candidate, 0o700)
+        function(path)
+
+    shutil.rmtree(resolved_root, onerror=restore_owned_access)
 
 
 def main() -> int:
