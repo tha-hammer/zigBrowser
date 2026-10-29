@@ -25,8 +25,6 @@ import time
 from pathlib import Path
 
 
-TOKEN_SERVICE = "dev.zigbrowser.MS63ProductTest"
-TOKEN_ACCOUNT = "default"
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 
 
@@ -101,16 +99,39 @@ def point_private_runtime_at_fake(home: Path, fake: Path) -> None:
 
 class Site:
     def __init__(self) -> None:
-        self.target_seen_ns = 0
+        self.clicked: set[str] = set()
         owner = self
 
         class Handler(http.server.BaseHTTPRequestHandler):
             def do_GET(self):  # noqa: N802
-                if self.path == "/start":
-                    body = b"<!doctype html><title>Before tools</title><p>Start page</p>"
-                elif self.path == "/target":
-                    owner.target_seen_ns = time.time_ns()
-                    body = b"<!doctype html><title>Tool target</title><h1>Real browser tool arrived</h1>"
+                if self.path.startswith("/clicked?"):
+                    owner.clicked.add(self.path.split("?", 1)[1])
+                    body = b"ok"
+                elif self.path == "/complex":
+                    body = b'''<!doctype html><meta charset="utf-8"><title>Complex selector page</title>
+<style>body{font:16px system-ui} #spacer{height:1400px} button{margin:8px;padding:8px}</style>
+<h1>LinkedIn-like selector fixture</h1><p id="state">waiting</p>
+<button class="artdeco-button"><span><span>Nested plain CSS action</span></span></button>
+<button id="css-action"><span>CSS action</span></button>
+<button id="text-action"><span><span>Text action</span></span></button>
+<button id="role-action" aria-label="Role action"><span>nested label</span></button>
+<div id="shadow-host"></div><iframe src="/frame" title="same-origin fixture"></iframe>
+<div id="spacer"></div><div id="delayed-slot"></div>
+<script>
+window.mark = name => { document.querySelector('#state').textContent += ' '+name; fetch('/clicked?'+name); };
+document.querySelector('.artdeco-button').onclick=()=>mark('plain-css');
+document.querySelector('#css-action').onclick=()=>mark('css-prefix');
+document.querySelector('#text-action').onclick=()=>mark('text');
+document.querySelector('#role-action').onclick=()=>mark('role');
+const shadow=document.querySelector('#shadow-host').attachShadow({mode:'open'});
+shadow.innerHTML='<button id="shadow-action" aria-label="Shadow action"><span>inside shadow</span></button>';
+shadow.querySelector('button').onclick=()=>mark('aria-shadow');
+setTimeout(()=>{const b=document.createElement('button');b.id='delayed-action';b.textContent='Delayed action';
+b.onclick=()=>mark('delayed-offscreen');document.querySelector('#delayed-slot').append(b)},1200);
+</script>'''
+                elif self.path == "/frame":
+                    body = b'''<!doctype html><meta charset="utf-8"><button id="frame-action"><span>Frame action</span></button>
+<script>document.querySelector('button').onclick=()=>parent.mark('same-origin-frame')</script>'''
                 else:
                     self.send_error(404)
                     return
@@ -184,10 +205,7 @@ def stop_owned(pid: int | None, executable: Path) -> bool:
     while time.monotonic() < deadline and pid in app_pids(executable):
         time.sleep(0.1)
     if pid in app_pids(executable):
-        os.kill(pid, signal.SIGKILL)
-        deadline = time.monotonic() + 5
-        while time.monotonic() < deadline and pid in app_pids(executable):
-            time.sleep(0.1)
+        return False
     return pid not in app_pids(executable)
 
 
@@ -217,24 +235,15 @@ def result_error(row: dict) -> bool:
         return True
 
 
-def press_approve(pid: int) -> tuple[bool, str]:
-    script = f'''
-tell application "System Events"
-  tell first process whose unix id is {pid}
-    repeat with candidate in entire contents of front window
-      try
-        if role of candidate is "AXButton" and name of candidate is "Approve" then
-          perform action "AXPress" of candidate
-          return "clicked"
-        end if
-      end try
-    end repeat
-  end tell
-end tell
-return "missing"
-'''
-    done = subprocess.run(["/usr/bin/osascript", "-e", script], capture_output=True, text=True, check=False)
-    return done.returncode == 0 and done.stdout.strip() == "clicked", (done.stderr or done.stdout).strip()
+def result_image(row: dict) -> bytes | None:
+    try:
+        content = row["response"]["response"]["mcp_response"]["result"]["content"]
+        block = next(item for item in content if item.get("type") == "image")
+        if block.get("mimeType") != "image/png":
+            return None
+        return base64.b64decode(block["data"], validate=True)
+    except (KeyError, TypeError, AttributeError, StopIteration, ValueError):
+        return None
 
 
 def png_dimensions(path: Path) -> tuple[int, int] | None:
@@ -264,8 +273,6 @@ def main() -> int:
     root = Path(tempfile.mkdtemp(prefix="zb-real-tools-", dir=owner_home))
     proc = None
     app_pid = None
-    keychain = root / "tools.keychain-db"
-    password = "zb-real-tools-keychain"
     try:
         app = attach_install(dmg, root)
         executable = app / "Contents/MacOS/zigBrowser"
@@ -284,40 +291,31 @@ def main() -> int:
         build_fake_cli(fake_source, runtime_fake)
         point_private_runtime_at_fake(home, runtime_fake)
         fake = runtime_fake
-        settings = home / "settings"
-        settings.mkdir(mode=0o700, exist_ok=True)
-        private_write(settings / "navigate_approval", b"yes\n")
-        private_write(home / "scratchpad/real-tools-target", f"{site.origin}/target\n".encode())
+        secrets = home / "secrets"
+        secrets.mkdir(mode=0o700, exist_ok=True)
+        private_write(secrets / "claude_token", b"sk-ant-oat01-FAKEPRODUCTTOOLS0123456789\n")
         evidence = home / "scratchpad/real-tools-evidence.jsonl"
 
-        for command in (
-            ["/usr/bin/security", "create-keychain", "-p", password, str(keychain)],
-            ["/usr/bin/security", "unlock-keychain", "-p", password, str(keychain)],
-            ["/usr/bin/security", "set-keychain-settings", str(keychain)],
-            ["/usr/bin/security", "add-generic-password", "-a", TOKEN_ACCOUNT, "-s", TOKEN_SERVICE,
-             "-w", "sk-ant-oat01-FAKEPRODUCTTOOLS0123456789", "-A", str(keychain)],
-        ):
-            done = subprocess.run(command, capture_output=True, text=True, check=False)
-            if done.returncode != 0:
-                return fail(f"disposable Keychain setup failed: {done.stderr.strip()}")
-
         stdout, stderr = root / "browser.stdout", root / "browser.stderr"
+        action = root / "live-action.json"
         private_write(stdout, b"")
         private_write(stderr, b"")
+        private_write(action, json.dumps({
+            "version": 2,
+            "scenario": "complex-selectors",
+            "prompt": "Capture the page, then exercise every requested selector form.",
+            "approve": "all",
+            "snapshot_png": str(png),
+        }, separators=(",", ":")).encode())
         before = app_pids(executable)
         proc = subprocess.Popen(
             [
                 "/usr/bin/open", "-n", "-W", "-o", str(stdout), "--stderr", str(stderr),
                 "--env", f"HOME={root / 'home'}", "--env", f"XDG_DATA_HOME={root / 'data'}",
-                "--env", f"TMPDIR={root / 'tmp'}", "--env", "ZB_DEBUG_DRAWER_LAYOUT=1",
-                "--env", "ZB_DEBUG_DRAWER_AGENT_SEND=Use the browser tools now.",
+                "--env", f"TMPDIR={root / 'tmp'}", "--env", f"ZB_DEBUG_LIVE_AGENT_FILE={action}",
                 "--env", f"ZIGBROWSER_AGENT_CLAUDE_CLI={fake}",
-                "--env", f"ZB_DEBUG_MAC_AGENT_KEYCHAIN={keychain}",
-                "--env", f"ZB_DEBUG_MAC_AGENT_KEYCHAIN_PASSWORD={password}",
-                "--env", f"ZB_DEBUG_WINDOW_SNAPSHOT_PNG={png}",
-                "--env", "ZB_DEBUG_WINDOW_SNAPSHOT_DELAY_MS=35000",
-                "--env", "ZB_DEBUG_QUIT_AFTER_MS=60000",
-                str(app), "--args", f"{site.origin}/start", "--agent-drawer", "on",
+                "--env", "ZB_DEBUG_QUIT_AFTER_MS=90000",
+                str(app), "--args", f"{site.origin}/complex", "--agent-drawer", "on",
                 "--e2e-protocol", "--profile-dir", str(root / "profile"),
             ],
             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
@@ -334,20 +332,12 @@ def main() -> int:
         if app_pid is None:
             return fail("installed application did not launch exactly once")
 
-        approved = False
-        approve_detail = "approval card never appeared"
         deadline = time.monotonic() + args.timeout
         rows = []
         while time.monotonic() < deadline:
             rows = evidence_rows(evidence)
-            if not approved and any(
-                row.get("event") == "tool-waiting"
-                and row.get("tool") == "mcp__zigbrowser__navigate"
-                for row in rows
-            ):
-                approved, approve_detail = press_approve(app_pid)
             results = [row for row in rows if row.get("event") == "tool-result"]
-            if len(results) >= 3:
+            if len(results) >= 9:
                 break
             if app_pid not in app_pids(executable):
                 break
@@ -367,20 +357,21 @@ def main() -> int:
                 + f"; evidence={rows!r}"
                 + (f"; diagnostics={diagnostics.strip()}" if diagnostics.strip() else "")
             )
-        expected = ["mcp__zigbrowser__window_info", "mcp__zigbrowser__navigate",
-                    "mcp__zigbrowser__window_info"]
+        expected = ["mcp__zigbrowser__window_info", "mcp__zigbrowser__screenshot"] + [
+            "mcp__zigbrowser__click"
+        ] * 7
         if [row.get("tool") for row in results] != expected:
             return fail(f"tool_result sequence was {[row.get('tool') for row in results]!r}")
         for row in results:
             if result_error(row):
                 return fail(f"{row['tool'].rsplit('__', 1)[-1]} tool_result: {result_text(row) or 'error'}")
-        if not approved:
-            return fail(f"Approve was not clicked through the visible card: {approve_detail}")
-        if site.target_seen_ns == 0:
-            return fail("approved navigate never requested the target page")
-        after = result_text(results[2])
-        if f"{site.origin}/target" not in after:
-            return fail(f"post-navigate window_info has the wrong URL: {after!r}")
+        screenshot = result_image(results[1])
+        if screenshot is None or len(screenshot) < 10_000 or not screenshot.startswith(PNG_SIGNATURE):
+            return fail("screenshot did not return a real PNG image block")
+        expected_clicks = {"plain-css", "css-prefix", "text", "role", "aria-shadow",
+                           "same-origin-frame", "delayed-offscreen"}
+        if site.clicked != expected_clicks:
+            return fail(f"browser click evidence was {sorted(site.clicked)!r}")
 
         deadline = time.monotonic() + 45
         dimensions = None
@@ -391,10 +382,8 @@ def main() -> int:
             time.sleep(0.1)
         if dimensions is None:
             return fail("readable in-app PNG was not produced")
-        if png.stat().st_mtime_ns < site.target_seen_ns:
-            return fail("in-app PNG was captured before navigation")
         print(f"PNG\t{png}\t{dimensions[0]}x{dimensions[1]}", flush=True)
-        print("PASS mac-agent-real-tools installed-cli-sdk-broker-card-navigate", flush=True)
+        print("PASS mac-agent-real-tools screenshot-complex-selectors-shadow-frame", flush=True)
         return 0
     finally:
         app_stopped = proc is None or stop_owned(app_pid, app / "Contents/MacOS/zigBrowser")
@@ -405,8 +394,6 @@ def main() -> int:
                 proc.terminate()
                 proc.wait(timeout=5)
         if app_stopped:
-            subprocess.run(["/usr/bin/security", "delete-keychain", str(keychain)],
-                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
             shutil.rmtree(root, ignore_errors=True)
         else:
             print(f"LEAK mac-agent-real-tools pid={app_pid} retained={root}", flush=True)

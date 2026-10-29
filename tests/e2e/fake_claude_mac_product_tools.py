@@ -160,12 +160,7 @@ def main() -> int:
         return probe_result
     home = Path(os.environ.get("HOME", ""))
     scratch = home / "scratchpad"
-    target_file = scratch / "real-tools-target"
     evidence = scratch / "real-tools-evidence.jsonl"
-    try:
-        target = target_file.read_text(encoding="utf-8").strip()
-    except OSError:
-        return 2
     append_evidence(evidence, {"event": "fake-start"})
 
     while True:
@@ -202,8 +197,18 @@ def main() -> int:
         {"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}},
     )
     call_tool(evidence, 1, "window_info", {})
-    call_tool(evidence, 2, "navigate", {"url": target})
-    call_tool(evidence, 3, "window_info", {})
+    call_tool(evidence, 2, "screenshot", {})
+    calls = (
+        ("button.artdeco-button", "plain-css"),
+        ("css=#css-action", "css-prefix"),
+        ("text=Text action", "text"),
+        ('role=button[name="Role action"]', "role"),
+        ("aria=Shadow action", "aria-shadow"),
+        ("#frame-action", "same-origin-frame"),
+        ("css=#delayed-action", "delayed-offscreen"),
+    )
+    for ordinal, (selector, _name) in enumerate(calls, 3):
+        call_tool(evidence, ordinal, "click", {"selector": selector})
 
     send(
         {
@@ -214,7 +219,7 @@ def main() -> int:
                 "id": "msg-done",
                 "model": "fake-network-model",
                 "role": "assistant",
-                "content": [{"type": "text", "text": "Browser tools completed."}],
+                "content": [{"type": "text", "text": "Screenshot and selector clicks completed."}],
                 "stop_reason": "end_turn",
                 "usage": {},
             },
@@ -230,7 +235,7 @@ def main() -> int:
             "num_turns": 1,
             "session_id": SESSION,
             "total_cost_usd": 0.0,
-            "result": "Browser tools completed.",
+            "result": "Screenshot and selector clicks completed.",
         }
     )
     for frame in iter(receive, None):
