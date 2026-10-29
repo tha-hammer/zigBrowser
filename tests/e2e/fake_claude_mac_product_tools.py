@@ -154,13 +154,26 @@ def call_tool(evidence: Path, ordinal: int, name: str, arguments: dict) -> dict:
     return response
 
 
+def tool_failed(response: dict) -> bool:
+    try:
+        mcp = response["response"]["mcp_response"]
+        return "error" in mcp or bool(mcp.get("result", {}).get("isError"))
+    except (KeyError, TypeError, AttributeError):
+        return True
+
+
 def main() -> int:
     probe_result = answer_setup_probe()
     if probe_result is not None:
         return probe_result
     home = Path(os.environ.get("HOME", ""))
     scratch = home / "scratchpad"
+    target_file = scratch / "real-tools-target"
     evidence = scratch / "real-tools-evidence.jsonl"
+    try:
+        target = target_file.read_text(encoding="utf-8").strip()
+    except OSError:
+        return 2
     append_evidence(evidence, {"event": "fake-start"})
 
     while True:
@@ -196,8 +209,10 @@ def main() -> int:
         "mcp-initialized",
         {"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}},
     )
-    call_tool(evidence, 1, "window_info", {})
-    call_tool(evidence, 2, "screenshot", {})
+    if tool_failed(call_tool(evidence, 1, "window_info", {})):
+        return 1
+    if tool_failed(call_tool(evidence, 2, "screenshot", {})):
+        return 1
     calls = (
         ("button.artdeco-button", "plain-css"),
         ("css=#css-action", "css-prefix"),
@@ -208,7 +223,12 @@ def main() -> int:
         ("css=#delayed-action", "delayed-offscreen"),
     )
     for ordinal, (selector, _name) in enumerate(calls, 3):
-        call_tool(evidence, ordinal, "click", {"selector": selector})
+        if tool_failed(call_tool(evidence, ordinal, "click", {"selector": selector})):
+            return 1
+    if tool_failed(call_tool(evidence, 10, "click", {"selector": "css=#nav-action"})):
+        return 1
+    if tool_failed(call_tool(evidence, 11, "navigate", {"url": target + "/heavy"})):
+        return 1
 
     send(
         {

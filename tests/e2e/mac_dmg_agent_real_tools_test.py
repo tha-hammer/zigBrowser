@@ -100,6 +100,8 @@ def point_private_runtime_at_fake(home: Path, fake: Path) -> None:
 class Site:
     def __init__(self) -> None:
         self.clicked: set[str] = set()
+        self.click_navigation_seen = False
+        self.heavy_seen = False
         owner = self
 
         class Handler(http.server.BaseHTTPRequestHandler):
@@ -116,6 +118,7 @@ class Site:
 <button id="text-action"><span><span>Text action</span></span></button>
 <button id="role-action" aria-label="Role action"><span>nested label</span></button>
 <div id="shadow-host"></div><iframe src="/frame" title="same-origin fixture"></iframe>
+<a id="nav-action" href="/after-click"><span><span>Open messages route</span></span></a>
 <div id="spacer"></div><div id="delayed-slot"></div>
 <script>
 window.mark = name => { document.querySelector('#state').textContent += ' '+name; fetch('/clicked?'+name); };
@@ -132,6 +135,22 @@ b.onclick=()=>mark('delayed-offscreen');document.querySelector('#delayed-slot').
                 elif self.path == "/frame":
                     body = b'''<!doctype html><meta charset="utf-8"><button id="frame-action"><span>Frame action</span></button>
 <script>document.querySelector('button').onclick=()=>parent.mark('same-origin-frame')</script>'''
+                elif self.path == "/after-click":
+                    owner.click_navigation_seen = True
+                    body = b"<!doctype html><title>After approved click</title><h1>Approved click navigated</h1>"
+                elif self.path == "/heavy":
+                    owner.heavy_seen = True
+                    body = b'''<!doctype html><meta charset="utf-8"><title>Heavy SPA route</title>
+<h1>Messages route interactive</h1><script>document.documentElement.dataset.spa='interactive'</script>
+<img src="/stall" alt="resource that keeps the load event pending">'''
+                elif self.path == "/stall":
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/octet-stream")
+                    self.send_header("Content-Length", "100")
+                    self.end_headers()
+                    self.wfile.flush()
+                    time.sleep(60)
+                    return
                 else:
                     self.send_error(404)
                     return
@@ -146,6 +165,7 @@ b.onclick=()=>mark('delayed-offscreen');document.querySelector('#delayed-slot').
                 return
 
         self.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.server.daemon_threads = True
         self.origin = f"http://127.0.0.1:{self.server.server_address[1]}"
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
 
@@ -246,6 +266,23 @@ def result_image(row: dict) -> bytes | None:
         return None
 
 
+def live_approvals(path: Path) -> list[dict]:
+    try:
+        lines = path.read_text(encoding="utf-8", errors="strict").splitlines()
+    except OSError:
+        return []
+    found = []
+    for line in lines:
+        fields = line.split("\t", 3)
+        if len(fields) != 4 or fields[:3] != ["LIVE_AGENT", "complex-selectors", "approval"]:
+            continue
+        try:
+            found.append(json.loads(base64.b64decode(fields[3], validate=True)))
+        except (ValueError, json.JSONDecodeError):
+            continue
+    return found
+
+
 def png_dimensions(path: Path) -> tuple[int, int] | None:
     try:
         data = path.read_bytes()
@@ -293,7 +330,8 @@ def main() -> int:
         fake = runtime_fake
         secrets = home / "secrets"
         secrets.mkdir(mode=0o700, exist_ok=True)
-        private_write(secrets / "claude_token", b"sk-ant-oat01-FAKEPRODUCTTOOLS0123456789\n")
+        private_write(secrets / "claude_token", b"sk-ant-oat01-FAKEPRODUCTTOOLS0123456789")
+        private_write(home / "scratchpad/real-tools-target", site.origin.encode())
         evidence = home / "scratchpad/real-tools-evidence.jsonl"
 
         stdout, stderr = root / "browser.stdout", root / "browser.stderr"
@@ -337,7 +375,7 @@ def main() -> int:
         while time.monotonic() < deadline:
             rows = evidence_rows(evidence)
             results = [row for row in rows if row.get("event") == "tool-result"]
-            if len(results) >= 9:
+            if any(result_error(row) for row in results) or len(results) >= 11:
                 break
             if app_pid not in app_pids(executable):
                 break
@@ -357,14 +395,14 @@ def main() -> int:
                 + f"; evidence={rows!r}"
                 + (f"; diagnostics={diagnostics.strip()}" if diagnostics.strip() else "")
             )
-        expected = ["mcp__zigbrowser__window_info", "mcp__zigbrowser__screenshot"] + [
-            "mcp__zigbrowser__click"
-        ] * 7
-        if [row.get("tool") for row in results] != expected:
-            return fail(f"tool_result sequence was {[row.get('tool') for row in results]!r}")
         for row in results:
             if result_error(row):
                 return fail(f"{row['tool'].rsplit('__', 1)[-1]} tool_result: {result_text(row) or 'error'}")
+        expected = ["mcp__zigbrowser__window_info", "mcp__zigbrowser__screenshot"] + [
+            "mcp__zigbrowser__click"
+        ] * 8 + ["mcp__zigbrowser__navigate"]
+        if [row.get("tool") for row in results] != expected:
+            return fail(f"tool_result sequence was {[row.get('tool') for row in results]!r}")
         screenshot = result_image(results[1])
         if screenshot is None or len(screenshot) < 10_000 or not screenshot.startswith(PNG_SIGNATURE):
             return fail("screenshot did not return a real PNG image block")
@@ -372,6 +410,13 @@ def main() -> int:
                            "same-origin-frame", "delayed-offscreen"}
         if site.clicked != expected_clicks:
             return fail(f"browser click evidence was {sorted(site.clicked)!r}")
+        if not site.click_navigation_seen:
+            return fail("approved click did not start its navigation")
+        if not site.heavy_seen:
+            return fail("navigate did not reach the heavy SPA route")
+        approvals = live_approvals(stdout)
+        if len(approvals) != 9 or {row.get("verb") for row in approvals} != {"click", "navigate"}:
+            return fail(f"visible Approve buttons clicked were {approvals!r}")
 
         deadline = time.monotonic() + 45
         dimensions = None
@@ -383,7 +428,7 @@ def main() -> int:
         if dimensions is None:
             return fail("readable in-app PNG was not produced")
         print(f"PNG\t{png}\t{dimensions[0]}x{dimensions[1]}", flush=True)
-        print("PASS mac-agent-real-tools screenshot-complex-selectors-shadow-frame", flush=True)
+        print("PASS mac-agent-real-tools screenshot-selectors-navigation-spa", flush=True)
         return 0
     finally:
         app_stopped = proc is None or stop_owned(app_pid, app / "Contents/MacOS/zigBrowser")
