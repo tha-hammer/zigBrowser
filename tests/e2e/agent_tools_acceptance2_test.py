@@ -8,10 +8,9 @@ namespace of its own, as agent_tools_acceptance_test.py (whose helpers this reus
 - all-tools (S7.4): with a cookie canary stored for the page's origin, the model runs all
   six read tools with ordinary selectors; no returned block, no decoded image and no saved
   transcript holds the cookie, the automation token or the stored token;
-- tool-error-bubble (S7.7): a get_text whose selector (holding the cookie canary) matches
-  nothing gives the model the fixed redacted text, and the drawer shows exactly one error
-  bubble "Browser tool failed: the browser could not do that (element_not_found, -32001)";
-  no drawer row holds the canary;
+- tool-error-bubble (S7.7): a get_text whose selector matches nothing gives the model the
+  actionable selector failure, and the drawer shows that same failure so the model and user
+  can retry; typed text is never included;
 - forbidden-exact (S7.8): secrets_get, cookies_get, evaluate, set_pacing and click each get
   exactly the CLI's fixed refusal "<tool_use_error>Error: No such tool available:
   mcp__zigbrowser__<name></tool_use_error>" (none is a tool of the server, so the CLI answers
@@ -46,9 +45,6 @@ import agent_tools_acceptance_test as acc  # noqa: E402 - launch, steps, answers
 import agent_tools_test as tools  # noqa: E402
 
 FORBIDDEN = ("secrets_get", "cookies_get", "evaluate", "set_pacing", "click")
-BUBBLE = "Browser tool failed: the browser could not do that (element_not_found, -32001)"
-
-
 def transcripts(w) -> str:
     """Every saved transcript of the agent home (its writable state)."""
     return "\n".join(p.read_text(errors="replace") for p in sorted((w.agent / "state").rglob("*.jsonl")))
@@ -104,12 +100,14 @@ def case_tool_error_bubble(binary: Path, tmp: Path, check) -> None:
         got = acc.answers(fake, 1)
         if not check(len(got) == 1, "the tool result reached the API", b):
             return
-        check(got[0].get("is_error") is True and tools.result_text(got[0]) == "the browser could not do that (element_not_found, -32001)",
-              f"the model got the fixed redacted text ({tools.result_text(got[0])!r})")
+        expected_error = f"no element matched css=#{cookie} (element_not_found, -32001)"
+        check(got[0].get("is_error") is True and tools.result_text(got[0]) == expected_error,
+              f"the model got the actionable selector failure ({tools.result_text(got[0])!r})")
         check(b.wait(lambda: ("assistant", acc.DONE) in life.bubbles(b), 60), "the final reply is shown", b)
         errors = [text for role, text in life.bubbles(b) if role == "error"]
-        check(errors == [BUBBLE], f"the drawer shows exactly the tool's error bubble ({errors})")
-        check(cookie not in acc.drawer_rows(b), "no drawer row holds the canary")
+        check(errors == [f"Browser tool failed: {expected_error}"],
+              f"the drawer shows exactly the tool's actionable error bubble ({errors})")
+        check(cookie in acc.drawer_rows(b), "the drawer row names the failed selector")
     finally:
         tools.finish(b, fake)
         site.close()

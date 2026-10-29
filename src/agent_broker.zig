@@ -620,14 +620,14 @@ const Job = struct {
     /// On the worker: the call's answer, published unless the deadline answered first.
     fn run(self: *Job, broker: *Broker) void {
         if (self.verb) |verb| {
-            if (self.awaitApproval(broker, verb)) |refused| return broker.publish(self, Outcome.fail(refused));
+            if (self.awaitApproval(broker, verb)) |refused| return broker.publish(self, contextualFailure(self.gpa, refused, self.params));
         }
         if (self.card) |card| {
             // The dispatch boundary (RoseCat f87368e #3): checked again after the approval was seen.
             if (broker.before_dispatch) |h| h.run(h.ctx);
             if (!broker.live(self)) {
                 endCard(broker.approval.?, card, .revoked);
-                return broker.publish(self, Outcome.fail(cancelled_text));
+                return broker.publish(self, contextualFailure(self.gpa, cancelled_text, self.params));
             }
         }
         var ending: Ending = .done;
@@ -635,7 +635,7 @@ const Job = struct {
             const reply = broker.call(self.method, self.params) catch break :blk Outcome.fail("out of memory");
             defer self.gpa.free(reply);
             if (self.card != null) ending = endingOf(self.gpa, reply);
-            break :blk answer(self.gpa, reply);
+            break :blk answer(self.gpa, reply, self.params);
         };
         if (self.card) |card| endCard(broker.approval.?, card, if (outcome.result == .content) .done else if (ending == .done) .failed else ending);
         broker.publish(self, outcome);
@@ -712,7 +712,7 @@ const Job = struct {
         defer gpa.free(reply);
         var parsed = (try parse(gpa, reply)) orelse return error.Unchecked;
         defer parsed.deinit();
-        const result = switch (replyOf(gpa, parsed.value)) {
+        const result = switch (replyOf(gpa, parsed.value, null)) {
             .result => |r| r,
             .failure => |f| {
                 f.deinit(gpa);
@@ -770,7 +770,7 @@ const Job = struct {
         defer gpa.free(health);
         var health_parsed = parse(gpa, health) catch return Outcome.fail("out of memory");
         defer if (health_parsed) |*p| p.deinit();
-        const health_result = switch (replyOf(gpa, if (health_parsed) |p| p.value else null)) {
+        const health_result = switch (replyOf(gpa, if (health_parsed) |p| p.value else null, null)) {
             .result => |r| r,
             .failure => |f| return f,
         };
@@ -790,7 +790,7 @@ const Job = struct {
         defer gpa.free(url_reply);
         var url_parsed = parse(gpa, url_reply) catch return Outcome.fail("out of memory");
         defer if (url_parsed) |*p| p.deinit();
-        const url = switch (replyOf(gpa, if (url_parsed) |p| p.value else null)) {
+        const url = switch (replyOf(gpa, if (url_parsed) |p| p.value else null, null)) {
             .result => |r| field(r, "url", .string) orelse return Outcome.fail(bad_answer),
             .failure => |f| return f,
         };
@@ -799,7 +799,7 @@ const Job = struct {
         defer gpa.free(title_reply);
         var title_parsed = parse(gpa, title_reply) catch return Outcome.fail("out of memory");
         defer if (title_parsed) |*p| p.deinit();
-        const title = switch (replyOf(gpa, if (title_parsed) |p| p.value else null)) {
+        const title = switch (replyOf(gpa, if (title_parsed) |p| p.value else null, null)) {
             .result => |r| field(r, "title", .string) orelse return Outcome.fail(bad_answer),
             .failure => |f| return f,
         };
@@ -824,7 +824,7 @@ const Job = struct {
         defer gpa.free(reply);
         var parsed = parse(gpa, reply) catch return Outcome.fail("out of memory");
         defer if (parsed) |*p| p.deinit();
-        const result = switch (replyOf(gpa, if (parsed) |p| p.value else null)) {
+        const result = switch (replyOf(gpa, if (parsed) |p| p.value else null, null)) {
             .result => |r| r,
             .failure => |f| return f,
         };
@@ -896,12 +896,12 @@ fn parse(gpa: std.mem.Allocator, reply: []const u8) error{OutOfMemory}!?std.json
 /// Rev 16.20.36 (RoseCat 6606): a reply is a genuine engine error (an `error` object and no
 /// `result`), mapped to its redacted text; a success (a `result` and no `error`); or anything
 /// else, the fixed bad answer.
-fn replyOf(gpa: std.mem.Allocator, reply: ?std.json.Value) union(enum) { result: std.json.Value, failure: Outcome } {
+fn replyOf(gpa: std.mem.Allocator, reply: ?std.json.Value, params: ?[]const u8) union(enum) { result: std.json.Value, failure: Outcome } {
     const obj = if (reply) |r| (if (r == .object) r.object else null) else null;
     const o = obj orelse return .{ .failure = Outcome.fail(bad_answer) };
     const result, const err = .{ o.get("result"), o.get("error") };
     if (result != null and err == null) return .{ .result = result.? };
-    if (result == null and err != null and err.? == .object) return .{ .failure = redacted(gpa, err.?.object) };
+    if (result == null and err != null and err.? == .object) return .{ .failure = redacted(gpa, err.?.object, params) };
     return .{ .failure = Outcome.fail(bad_answer) };
 }
 
@@ -923,22 +923,52 @@ fn textBlock(gpa: std.mem.Allocator, value: std.json.Value) Outcome {
 
 /// A single-method tool's answer for a JSON-RPC `reply`: its result as one text block, or the
 /// failure (S7.7: the error's data and message never reach the model).
-fn answer(gpa: std.mem.Allocator, reply: []const u8) Outcome {
+fn answer(gpa: std.mem.Allocator, reply: []const u8, params: []const u8) Outcome {
     var parsed = parse(gpa, reply) catch return Outcome.fail("out of memory");
     defer if (parsed) |*p| p.deinit();
-    return switch (replyOf(gpa, if (parsed) |p| p.value else null)) {
+    return switch (replyOf(gpa, if (parsed) |p| p.value else null, params)) {
         .result => |r| textBlock(gpa, r),
         .failure => |f| f,
     };
 }
 
-/// An engine error's fixed text: its name and code, never its data or message text.
-fn redacted(gpa: std.mem.Allocator, err: std.json.ObjectMap) Outcome {
+/// An engine error's safe text: its validated name/code and, for element calls,
+/// only the model-supplied selector. Page error data and typed text never pass.
+fn redacted(gpa: std.mem.Allocator, err: std.json.ObjectMap, params: ?[]const u8) Outcome {
     const code = if (err.get("code")) |c| (if (c == .integer) c.integer else 0) else 0;
     const name = if (err.get("message")) |m| (if (m == .string and isName(m.string)) m.string else "failed") else "failed";
     if (code == -32013) return Outcome.fail("the page has a dialog open");
+    if (code == -32007) return Outcome.fail("the page did not become interactive before navigation timed out (navigation_timeout, -32007)");
+    if (params) |json| {
+        var parsed = parse(gpa, json) catch return Outcome.fail("out of memory");
+        defer if (parsed) |*p| p.deinit();
+        if (parsed) |p| if (field(p.value, "selector", .string)) |selector| if (safeSelector(selector.string)) {
+            const text = if (code == -32001)
+                std.fmt.allocPrint(gpa, "no element matched {s} ({s}, {d})", .{ selector.string, name, code }) catch return Outcome.fail("out of memory")
+            else
+                std.fmt.allocPrint(gpa, "selector {s} failed ({s}, {d})", .{ selector.string, name, code }) catch return Outcome.fail("out of memory");
+            return .{ .result = .{ .failure = text }, .owned = text };
+        };
+    }
     const text = std.fmt.allocPrint(gpa, "the browser could not do that ({s}, {d})", .{ name, code }) catch return Outcome.fail("the browser could not do that");
     return .{ .result = .{ .failure = text }, .owned = text };
+}
+
+fn contextualFailure(gpa: std.mem.Allocator, base: []const u8, params: []const u8) Outcome {
+    var parsed = parse(gpa, params) catch return Outcome.fail("out of memory");
+    defer if (parsed) |*p| p.deinit();
+    if (parsed) |p| if (field(p.value, "selector", .string)) |selector| if (safeSelector(selector.string)) {
+        const action = if (std.mem.eql(u8, base, not_approved_text)) "The action was not approved in time." else if (std.mem.eql(u8, base, cancelled_text)) "The action was cancelled." else if (std.mem.eql(u8, base, denied_text)) "The action was denied." else base;
+        const text = std.fmt.allocPrint(gpa, "{s} selector={s}", .{ action, selector.string }) catch return Outcome.fail("out of memory");
+        return .{ .result = .{ .failure = text }, .owned = text };
+    };
+    return Outcome.fail(base);
+}
+
+fn safeSelector(text: []const u8) bool {
+    if (text.len == 0 or text.len > 512) return false;
+    for (text) |c| if (c < 0x20 or c == 0x7f) return false;
+    return true;
 }
 
 /// An engine error name: lowercase letters, digits, '_' and ' ' only, so no page text rides on it.

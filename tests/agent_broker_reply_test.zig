@@ -211,3 +211,14 @@ test "a single-method tool: any result is its text, an error is redacted, both o
         try expectFailure(&a, bad_answer);
     }
 }
+
+test "an element error names its sanitized selector, never engine data" {
+    var script: Script = .{ .other = "{\"error\":{\"code\":-32001,\"message\":\"element_not_found\",\"data\":{\"reason\":\"strict_zero\",\"page\":\"foreign_canary\"}}}" };
+    var a = try run(&script, "mcp__zigbrowser__get_text", "{\"selector\":\"css=.messages button\"}");
+    try expectFailure(&a, "no element matched css=.messages button (element_not_found, -32001)");
+    try testing.expect(std.mem.indexOf(u8, a.text[0..a.len], canary) == null);
+
+    script = .{ .other = "{\"error\":{\"code\":-32001,\"message\":\"element_not_found\"}}" };
+    a = try run(&script, "mcp__zigbrowser__get_text", "{\"selector\":\"css=.messages\\nbutton\"}");
+    try expectFailure(&a, "the browser could not do that (element_not_found, -32001)");
+}

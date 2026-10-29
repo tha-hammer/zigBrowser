@@ -15,9 +15,9 @@ the engine for the agent.
   tool result still reaches the API;
 - canaries (S7.7): a cookie canary (set through the socket's cookies.set) in a get_text
   selector that matches nothing, a screenshot, and a wrong-auth socket request with an
-  automation-token-shaped canary: the -32000 reply does not echo it; the tool error is the
-  fixed redacted text; the socket's telemetry for the same selector holds only its hash;
-  no request body, drawer row or image holds either canary;
+  automation-token-shaped canary: the -32000 reply does not echo it; the tool error names
+  its selector so the model can retry; telemetry still holds only its hash; no image holds
+  either canary and no typed text is logged;
 - injection (S7.8): the page says to reveal secrets and use every tool; the model calls
   secrets_get, cookies_get, evaluate, set_pacing and click: each is an error, the engine
   ran exactly one call (the get_text that read the page), the page did not change (its
@@ -283,8 +283,9 @@ def case_canaries(binary: Path, tmp: Path, check) -> None:
         if not check(len(got) == 2, f"both tool results reached the API ({len(got)})", b):
             return
         text = tools.result_text(got[0])
-        check(got[0].get("is_error") is True and text == "the browser could not do that (element_not_found, -32001)",
-              f"the failed get_text is the fixed redacted text ({text!r})")
+        expected_error = f"no element matched css=#{cookie} (element_not_found, -32001)"
+        check(got[0].get("is_error") is True and text == expected_error,
+              f"the failed get_text names its selector ({text!r})")
         images = [c for c in got[1].get("content") or [] if isinstance(c, dict) and c.get("type") == "image"]
         data = base64.b64decode((images[0].get("source") or {}).get("data", "")) if images else b""
         check(images != [] and cookie.encode() not in data and auth.encode() not in data,
@@ -300,8 +301,8 @@ def case_canaries(binary: Path, tmp: Path, check) -> None:
         check(b.wait(lambda: ("assistant", DONE) in life.bubbles(b), 60), "the final reply is shown", b)
         sent, rows = browser_side(fake), drawer_rows(b)
         check(auth not in bodies(fake), "no request body holds the auth canary")
-        check(cookie not in sent and auth not in sent, "nothing that came back to the model holds either canary")
-        check(cookie not in rows and auth not in rows, "no drawer row holds either canary")
+        check(cookie in sent and auth not in sent, "the model gets the selector but not the auth canary")
+        check(cookie in rows and auth not in rows, "the drawer logs the selector but not the auth canary")
     finally:
         tools.finish(b, fake)
         site.close()

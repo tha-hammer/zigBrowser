@@ -1336,10 +1336,14 @@ void zb_drawer_agent_tool_failure(unsigned int windowId,
   NSString *toolText = zb_mac_string_n(tool, toolLength);
   NSString *messageText = zb_mac_string_n(message, messageLength);
   zb_mac_on_main(^{
-    if (zb_mac_panel_for_window(windowId) == nil || toolText.length == 0) return;
+    ZBMacDrawerPanel *panel = zb_mac_panel_for_window(windowId);
+    if (panel == nil || toolText.length == 0) return;
     NSString *line = [NSString stringWithFormat:@"tool=%@ %@", toolText,
                                                messageText.length != 0 ? messageText : @"failed"];
     zb_mac_append_diagnostic(@"ERROR", line);
+    [panel appendRole:@"status"
+                 text:[NSString stringWithFormat:@"%@ failed: %@", toolText,
+                                                   messageText.length != 0 ? messageText : @"failed"]];
   });
 }
 

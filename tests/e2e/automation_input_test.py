@@ -398,8 +398,8 @@ def run_native(socket_path: Path, t: float) -> None:
 
 
 def run_shadow(socket_path: Path, t: float) -> None:
-    """pierce=<css|role|text|testid selector> also searches open shadow roots
-    (live: LinkedIn's invite dialog); every other engine is unchanged."""
+    """Ordinary model selectors and pierce= search open shadow roots
+    (live: LinkedIn's invite dialog); closed roots remain unreachable."""
     ids = iter(range(800, 900))
 
     def rpc(method: str, params: dict):
@@ -414,9 +414,11 @@ def run_shadow(socket_path: Path, t: float) -> None:
     def log() -> list[str]:
         return js("window.shadowLog.splice(0)")
 
-    # Only pierce= enters shadow roots, open ones only (nested ones too).
-    expect_equal("css= stays out of shadow roots", count("css=#sbtn"), 0)
-    expect_equal("role= stays out of shadow roots", count('role=button[name="Send without a note"]'), 0)
+    # Ordinary model forms enter open shadow roots, including nested roots.
+    expect_equal("plain CSS enters shadow roots", count("#sbtn"), 1)
+    expect_equal("css= enters shadow roots", count("css=#sbtn"), 1)
+    expect_equal("role= enters shadow roots", count('role=button[name="Send without a note"]'), 1)
+    expect_equal("aria= enters shadow roots", count("aria=Send without a note"), 1)
     expect_equal("pierce=css=", count("pierce=css=#sbtn"), 1)
     expect_equal("pierce=role= by text", rpc("dom.query", {"selector": 'pierce=role=button[name="Send without a note"]'})["elements"][0]["text"], "Send without a note")
     expect_equal("pierce=text= in a nested root", count("pierce=text=Nested"), 1)

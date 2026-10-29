@@ -450,6 +450,8 @@ static void zb_debug_report_signal_dispositions(BOOL hooks_enabled) {
 // must NOT exit the app (unlike a user-initiated load failure).
 @property(nonatomic, strong) WKNavigation *routedNav;
 @property(nonatomic, assign) int routedOutcome;
+@property(nonatomic, assign) BOOL routedCommitted;
+@property(nonatomic, assign) BOOL routedReadyProbe;
 // The latest navigation this window STARTED (set in didStartProvisionalNavigation). A finish/failure
 // callback for anything other than currentNav is STALE (a superseded navigation) and must not touch
 // finishedOrFailed, the timeout timer, or the outcome — otherwise a late stale callback corrupts the
@@ -829,6 +831,7 @@ static int64_t zb_now_us(void) { return (int64_t)([[NSProcessInfo processInfo] s
 - (void)webView:(WKWebView *)webView didCommitNavigation:(WKNavigation *)navigation {
   (void)webView;
   if (navigation != nil && navigation != self.currentNav) return;  // ignore a superseded navigation's late commit
+  if (navigation != nil && navigation == self.routedNav) self.routedCommitted = YES;
   self.loadSerial += 1;
   zb_publish_window_snapshot();
 }
@@ -1492,6 +1495,10 @@ typedef struct ZBAutoJob {
   int progress;  // guarded by mu: code points (keyDown/keyUp pairs) fully dispatched so far
   char *result;  // owned; moved out by the waiter on DONE
   char *err;     // owned; freed with the job
+  unsigned char *blob;  // owned; moved out by the screenshot waiter on DONE
+  size_t blob_len;
+  int blob_width;
+  int blob_height;
 } ZBAutoJob;
 
 static atomic_int zb_auto_live_jobs = 0;
@@ -1524,6 +1531,15 @@ static char *zb_auto_dup_tracked(const char *s) {
     if (atomic_load(&zb_auto_e2e_enabled)) { fprintf(stderr, "zb-str-live=%d\n", n); fflush(stderr); }
   }
   return c;
+}
+
+static void *zb_auto_alloc_tracked(size_t size) {
+  void *p = malloc(size);
+  if (p != NULL) {
+    int n = atomic_fetch_add(&zb_auto_strings_live, 1) + 1;
+    if (atomic_load(&zb_auto_e2e_enabled)) { fprintf(stderr, "zb-str-live=%d\n", n); fflush(stderr); }
+  }
+  return p;
 }
 
 // free a caller-returned string and account it (part B). Used at every free site of job->result/err / *out.
@@ -1761,6 +1777,7 @@ static void zb_job_unref(ZBAutoJob *job) {
   pthread_mutex_destroy(&job->mu);
   zb_auto_free_tracked(job->result);
   zb_auto_free_tracked(job->err);
+  zb_auto_free_tracked((char *)job->blob);
   free(job);
   int live_after_sub = atomic_fetch_sub(&zb_auto_live_jobs, 1) - 1;
   if (atomic_load(&zb_auto_e2e_enabled)) { fprintf(stderr, "zb-live-jobs=%d\n", live_after_sub); fflush(stderr); }  // e2e-only (atomic, off-main safe): observe the live-job count (MS2a.3 baseline)
@@ -1860,6 +1877,23 @@ static void zb_job_complete(ZBAutoJob *job, int code, char *result, char *err) {
     zb_auto_free_tracked(result);
     zb_auto_free_tracked(err);
   }
+}
+
+static void zb_job_complete_blob(ZBAutoJob *job, int code, unsigned char *blob,
+                                 size_t length, int width, int height) {
+  pthread_mutex_lock(&job->mu);
+  int recorded = (job->state == ZB_JOB_DISPATCHING || job->state == ZB_JOB_INFLIGHT);
+  if (recorded) {
+    job->code = code;
+    job->blob = blob;
+    job->blob_len = length;
+    job->blob_width = width;
+    job->blob_height = height;
+    job->state = ZB_JOB_DONE;
+    pthread_cond_broadcast(&job->cv);
+  }
+  pthread_mutex_unlock(&job->mu);
+  if (!recorded) zb_auto_free_tracked((char *)blob);
 }
 
 static void zb_abs_deadline(struct timespec *ts, unsigned int ms) {
@@ -2005,6 +2039,117 @@ int zb_automation_get_url(uint32_t win, unsigned int timeout_ms, char **out_url)
 
 int zb_automation_get_title(uint32_t win, unsigned int timeout_ms, char **out_title) {
   return zb_auto_get_string(win, timeout_ms, out_title, YES);
+}
+
+int zb_screenshot_png(uint32_t win, int full_page, size_t max_bytes,
+                      unsigned int timeout_ms, unsigned char **out_png,
+                      size_t *out_len, int *out_width, int *out_height,
+                      char **out_err) {
+  if (out_png == NULL || out_len == NULL || max_bytes == 0) return ZB_AUTO_ERR_INTERNAL;
+  *out_png = NULL;
+  *out_len = 0;
+  if (out_width != NULL) *out_width = 0;
+  if (out_height != NULL) *out_height = 0;
+  if (out_err != NULL) *out_err = NULL;
+  if ([NSThread isMainThread]) return ZB_AUTO_ERR_INTERNAL;
+
+  ZBAutoJob *job = zb_job_new();
+  if (job == NULL) return ZB_AUTO_ERR_INTERNAL;
+  NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:(double)timeout_ms / 1000.0];
+  zb_job_ref(job);
+  __block BOOL entered = NO;
+  __block void (^poll)(void) = nil;
+  poll = ^{
+    if (atomic_load(&zb_auto_loop_ended)) {
+      poll = nil;
+      if (zb_job_claim_dispatch(job)) zb_job_complete_blob(job, ZB_AUTO_ERR_NO_LOOP, NULL, 0, 0, 0);
+      zb_job_unref(job);
+      return;
+    }
+    if (!entered) {
+      entered = YES;
+      if (!zb_job_enter_preflight(job)) { poll = nil; zb_job_unref(job); return; }
+    } else if (!zb_job_in_preflight(job)) {
+      poll = nil;
+      zb_job_unref(job);
+      return;
+    }
+    ZBWindowHost *host = zb_auto_window_for_id(win);
+    if (host == nil) {
+      poll = nil;
+      if (zb_job_claim_dispatch(job)) zb_job_complete_blob(job, ZB_AUTO_ERR_NO_WINDOW, NULL, 0, 0, 0);
+      zb_job_unref(job);
+      return;
+    }
+    if (!host.finishedOrFailed) {
+      if ([[NSDate date] compare:deadline] != NSOrderedAscending) {
+        poll = nil;
+        if (zb_job_claim_dispatch(job)) zb_job_complete_blob(job, ZB_AUTO_ERR_TIMEOUT, NULL, 0, 0, 0);
+        zb_job_unref(job);
+        return;
+      }
+      dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 15 * NSEC_PER_MSEC), dispatch_get_main_queue(), poll);
+      return;
+    }
+    poll = nil;
+    if (!zb_job_claim_dispatch(job)) { zb_job_unref(job); return; }
+    WKSnapshotConfiguration *configuration = [[WKSnapshotConfiguration alloc] init];
+    NSRect capture = host.webView.bounds;
+    if (full_page != 0) {
+      NSView *documentView = host.webView.scrollView.documentView;
+      if (documentView != nil && NSWidth(documentView.bounds) > 0 && NSHeight(documentView.bounds) > 0) {
+        capture = documentView.bounds;
+      }
+    }
+    configuration.rect = capture;
+    [host.webView takeSnapshotWithConfiguration:configuration
+                              completionHandler:^(NSImage *image, NSError *error) {
+      @autoreleasepool {
+        if (image == nil || error != nil) {
+          zb_job_complete_blob(job, ZB_AUTO_ERR_INTERNAL, NULL, 0, 0, 0);
+          zb_job_unref(job);
+          return;
+        }
+        CGImageRef cg = [image CGImageForProposedRect:NULL context:nil hints:nil];
+        NSBitmapImageRep *bitmap = cg != NULL ? [[NSBitmapImageRep alloc] initWithCGImage:cg] : nil;
+        NSData *png = [bitmap representationUsingType:NSBitmapImageFileTypePNG properties:@{}];
+        if (png == nil || bitmap.pixelsWide <= 0 || bitmap.pixelsHigh <= 0) {
+          zb_job_complete_blob(job, ZB_AUTO_ERR_INTERNAL, NULL, 0, 0, 0);
+          zb_job_unref(job);
+          return;
+        }
+        if (png.length > max_bytes) {
+          zb_job_complete_blob(job, ZB_AUTO_ERR_TOO_LARGE, NULL, 0, 0, 0);
+          zb_job_unref(job);
+          return;
+        }
+        unsigned char *bytes = zb_auto_alloc_tracked(png.length);
+        if (bytes == NULL) {
+          zb_job_complete_blob(job, ZB_AUTO_ERR_INTERNAL, NULL, 0, 0, 0);
+          zb_job_unref(job);
+          return;
+        }
+        memcpy(bytes, png.bytes, png.length);
+        zb_job_complete_blob(job, ZB_AUTO_OK, bytes, png.length,
+                             (int)bitmap.pixelsWide, (int)bitmap.pixelsHigh);
+        zb_job_unref(job);
+      }
+    }];
+    zb_job_inflight(job);
+  };
+  dispatch_async(dispatch_get_main_queue(), poll);
+
+  int rc = zb_job_wait(job, timeout_ms);
+  if (rc == ZB_AUTO_OK) {
+    *out_png = job->blob;
+    *out_len = job->blob_len;
+    if (out_width != NULL) *out_width = job->blob_width;
+    if (out_height != NULL) *out_height = job->blob_height;
+    job->blob = NULL;
+    job->blob_len = 0;
+  }
+  zb_job_unref(job);
+  return rc;
 }
 
 // MS2b.2: every open page dialog as JSON [{window, type, message, default_text?}], the primary window's
@@ -2437,6 +2582,8 @@ static int zb_auto_routed_nav(uint32_t win, unsigned int timeout_ms, WKNavigatio
       host.timeoutTimer = nil;  // no user-load watchdog on a routed nav -> never self-exits
       host.finishedOrFailed = NO;
       host.routedOutcome = 0;
+      host.routedCommitted = NO;
+      host.routedReadyProbe = NO;
       host.routedNav = nav;
       host.currentNav = nav;  // pin SYNCHRONOUSLY with the submit: before WebKit delivers this nav's
                               // didStart, an old-nav callback must already fail the identity guard
@@ -2459,6 +2606,21 @@ static int zb_auto_routed_nav(uint32_t win, unsigned int timeout_ms, WKNavigatio
     if (host == nil) { poll = nil; zb_job_complete(job, ZB_AUTO_ERR_NO_WINDOW, NULL, NULL); zb_job_unref(job); return; }
     if (host.routedOutcome == 1) { poll = nil; zb_job_complete(job, ZB_AUTO_OK, NULL, NULL); zb_job_unref(job); return; }
     if (host.routedOutcome == 2) { poll = nil; zb_job_complete(job, ZB_AUTO_ERR_NAV_FAILED, NULL, NULL); zb_job_unref(job); return; }
+    if (host.routedCommitted && !host.routedReadyProbe) {
+      host.routedReadyProbe = YES;
+      WKNavigation *expected = host.routedNav;
+      [host.webView evaluateJavaScript:@"document.readyState" completionHandler:^(id value, NSError *error) {
+        if (host.routedNav == expected && host.routedOutcome == 0) {
+          NSString *state = [value isKindOfClass:NSString.class] ? value : nil;
+          if (error == nil && ([state isEqualToString:@"interactive"] || [state isEqualToString:@"complete"])) {
+            host.routedOutcome = 1;
+            host.finishedOrFailed = YES;
+            zb_publish_window_snapshot();
+          }
+        }
+        if (host.routedNav == expected) host.routedReadyProbe = NO;
+      }];
+    }
     if ([[NSDate date] compare:deadline] != NSOrderedAscending) { poll = nil; zb_job_complete(job, ZB_AUTO_ERR_TIMEOUT, NULL, NULL); zb_job_unref(job); return; }
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(15 * NSEC_PER_MSEC)), dispatch_get_main_queue(), poll);
   };

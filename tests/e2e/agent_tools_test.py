@@ -277,7 +277,8 @@ class CloseSignal:
 def from_browser(texts: list[str]) -> list[str]:
     """The tool_result texts only the browser gives: a JSON result or a redacted failure
     (the helper's and the CLI's own ending texts are none of these)."""
-    return [t for t in texts if t.startswith(("{", "[", "the browser could not do that", "the page has a dialog open"))]
+    return [t for t in texts if t.startswith(("{", "[", "no element matched", "selector ",
+                                                  "the browser could not do that", "the page has a dialog open"))]
 
 
 def window_count(b) -> int | None:

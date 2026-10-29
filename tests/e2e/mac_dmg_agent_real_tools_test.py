@@ -375,7 +375,7 @@ def main() -> int:
         while time.monotonic() < deadline:
             rows = evidence_rows(evidence)
             results = [row for row in rows if row.get("event") == "tool-result"]
-            if any(result_error(row) for row in results) or len(results) >= 11:
+            if any(result_error(row) for row in results) or len(results) >= 12:
                 break
             if app_pid not in app_pids(executable):
                 break
@@ -395,14 +395,17 @@ def main() -> int:
                 + f"; evidence={rows!r}"
                 + (f"; diagnostics={diagnostics.strip()}" if diagnostics.strip() else "")
             )
-        for row in results:
+        for row in results[:11]:
             if result_error(row):
                 return fail(f"{row['tool'].rsplit('__', 1)[-1]} tool_result: {result_text(row) or 'error'}")
         expected = ["mcp__zigbrowser__window_info", "mcp__zigbrowser__screenshot"] + [
             "mcp__zigbrowser__click"
-        ] * 8 + ["mcp__zigbrowser__navigate"]
+        ] * 8 + ["mcp__zigbrowser__navigate", "mcp__zigbrowser__wait_for"]
         if [row.get("tool") for row in results] != expected:
             return fail(f"tool_result sequence was {[row.get('tool') for row in results]!r}")
+        expected_failure = "no element matched css=.missing-messages-control (element_not_found, -32001)"
+        if not result_error(results[11]) or result_text(results[11]) != expected_failure:
+            return fail(f"actionable selector failure was {result_text(results[11])!r}")
         screenshot = result_image(results[1])
         if screenshot is None or len(screenshot) < 10_000 or not screenshot.startswith(PNG_SIGNATURE):
             return fail("screenshot did not return a real PNG image block")
@@ -417,6 +420,13 @@ def main() -> int:
         approvals = live_approvals(stdout)
         if len(approvals) != 9 or {row.get("verb") for row in approvals} != {"click", "navigate"}:
             return fail(f"visible Approve buttons clicked were {approvals!r}")
+        drawer_log = home / "state/drawer.log"
+        try:
+            logged = drawer_log.read_text(encoding="utf-8", errors="strict")
+        except OSError:
+            logged = ""
+        if "tool=mcp__zigbrowser__wait_for " + expected_failure not in logged:
+            return fail("drawer.log did not name the failed selector")
 
         deadline = time.monotonic() + 45
         dimensions = None

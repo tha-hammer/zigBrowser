@@ -41,7 +41,10 @@ def _schema(properties, required=()):
     return {"type": "object", "properties": properties, "required": list(required), "additionalProperties": False}
 
 
-_SELECTOR = {"type": "string", "description": "An engine selector: css=..., text=..., as the SDKs send it."}
+_SELECTOR = {"type": "string", "description": (
+    "An element selector. Use plain CSS or css=..., text=..., role=button[name=...], "
+    "aria=accessible name, or testid=.... Same-origin frames and open shadow roots are searched."
+)}
 READ_TOOLS = (  # S7.5's list (rev 16.20.34): (name, description, input schema)
     ("window_info", "This drawer's window: its page's health, URL and title.", _schema({})),
     ("query", "The elements a selector matches in this window's page.", _schema({"selector": _SELECTOR}, ["selector"])),

@@ -27,6 +27,7 @@
   // document whose counters start again at zero, which callers must treat as
   // delivered rather than wait for counts that will never come.
   const inputAck = { doc: randomDocumentId(), mouseup: 0, keyup: 0, click: 0, wheel: 0, moveX: -1, moveY: -1, scrolls: 0, lastScrollAt: -1, navigations: 0, pending: null };
+  const forwardedDocuments = new WeakSet();
   function randomDocumentId() {
     const bytes = new Uint8Array(8);
     globalScope.crypto.getRandomValues(bytes);
@@ -59,6 +60,27 @@
   globalScope.addEventListener('click', (event) => {
     if (event.isTrusted) inputAck.click += 1;
   }, true);
+
+  function forwardFrameAcks(doc) {
+    if (!doc || forwardedDocuments.has(doc)) return;
+    forwardedDocuments.add(doc);
+    doc.addEventListener('mouseup', (event) => { if (event.isTrusted) inputAck.mouseup += 1; }, true);
+    doc.addEventListener('keyup', (event) => { if (event.isTrusted) inputAck.keyup += 1; }, true);
+    doc.addEventListener('click', (event) => { if (event.isTrusted) inputAck.click += 1; }, true);
+    doc.addEventListener('wheel', (event) => { if (event.isTrusted) inputAck.wheel += 1; }, { capture: true, passive: true });
+    doc.addEventListener('mousemove', (event) => {
+      if (!event.isTrusted) return;
+      const frame = doc.defaultView && doc.defaultView.frameElement;
+      const rect = frame ? frame.getBoundingClientRect() : { left: 0, top: 0 };
+      inputAck.moveX = event.clientX + rect.left;
+      inputAck.moveY = event.clientY + rect.top;
+    }, { capture: true, passive: true });
+    doc.addEventListener('scroll', () => {
+      inputAck.scrolls += 1;
+      inputAck.lastScrollAt = globalScope.performance.now();
+    }, { capture: true, passive: true });
+    doc.addEventListener('submit', (event) => { if (event.isTrusted) inputAck.navigations += 1; }, true);
+  }
   // A cross-document navigation (form submission, link, location change)
   // fires 'navigate' in this document synchronously when it starts, before
   // later input is handled. `navigations` counts those starts: native text
@@ -296,6 +318,36 @@
     return success({ value: resolved.elements[0].getAttribute(command.name) }, resolved.telemetry);
   }
 
+  function scrollIntoViewDeep(element, block) {
+    if (typeof element.scrollIntoView === 'function') element.scrollIntoView({ block: block || 'nearest' });
+    let doc = element.ownerDocument;
+    while (doc && doc.defaultView && doc.defaultView !== globalScope) {
+      let frame = null;
+      try { frame = doc.defaultView.frameElement; } catch (_) { return; }
+      if (!frame) return;
+      if (typeof frame.scrollIntoView === 'function') frame.scrollIntoView({ block: block || 'nearest' });
+      doc = frame.ownerDocument;
+    }
+  }
+
+  function viewportRect(element) {
+    const local = element.getBoundingClientRect();
+    let left = local.left;
+    let top = local.top;
+    let doc = element.ownerDocument;
+    while (doc && doc.defaultView && doc.defaultView !== globalScope) {
+      let frame = null;
+      try { frame = doc.defaultView.frameElement; } catch (_) { break; }
+      if (!frame) break;
+      const frameRect = frame.getBoundingClientRect();
+      left += frameRect.left + frame.clientLeft;
+      top += frameRect.top + frame.clientTop;
+      doc = frame.ownerDocument;
+    }
+    return { left, top, x: left, y: top, width: local.width, height: local.height,
+      right: left + local.width, bottom: top + local.height };
+  }
+
   function runAction(command, action) {
     const resolved = resolveForCommand(Object.assign({}, command, { strict: command.strict !== false }));
     if (!resolved.ok) return resolved.response;
@@ -317,7 +369,7 @@
     if (!force) {
       // The receives-events check hit-tests the element's centre, which
       // fails outside the viewport: bring the target into view first.
-      if (typeof element.scrollIntoView === 'function') element.scrollIntoView({ block: 'nearest' });
+      scrollIntoViewDeep(element, 'nearest');
       const check = runActionabilityChecks(element, action);
       telemetry.push(actionabilitySpan(command, action, check));
       if (!check.passed) {
@@ -363,7 +415,7 @@
     const telemetry = resolved.telemetry.slice();
     const options = command.options || {};
     const force = options.force === true || command.force === true;
-    if (typeof element.scrollIntoView === 'function') element.scrollIntoView({ block: 'nearest' });
+    scrollIntoViewDeep(element, 'nearest');
     if (!force) {
       const check = runActionabilityChecks(element, action);
       telemetry.push(actionabilitySpan(command, action, check));
@@ -375,7 +427,7 @@
     }
 
     if (command.focus === true) focusForInput(element, action);
-    const rect = element.getBoundingClientRect();
+    const rect = viewportRect(element);
     // `document` binds the native dispatch to this document (PagePort v3.1).
     // viewport lets the engine pick an in-view start for humanized paths (N8).
     return success({
@@ -403,7 +455,7 @@
     const resolved = resolveForCommand(Object.assign({}, command, { strict: command.strict !== false }));
     if (!resolved.ok) return resolved.response;
     if (resolved.elements.length === 0) return failure('no_match', command, resolved.telemetry, true);
-    const rect = resolved.elements[0].getBoundingClientRect();
+    const rect = viewportRect(resolved.elements[0]);
     return answer(rect.left + rect.width / 2, rect.top + rect.height / 2, resolved.telemetry);
   }
 
@@ -454,7 +506,7 @@
     const telemetry = resolved.telemetry.slice();
     // The receives-events check hit-tests the element's centre, which fails
     // for anything outside the viewport: bring the control into view first.
-    if (typeof element.scrollIntoView === 'function') element.scrollIntoView({ block: 'nearest' });
+    scrollIntoViewDeep(element, 'nearest');
     const check = runActionabilityChecks(element, 'select');
     telemetry.push(actionabilitySpan(command, 'select', check));
     if (!check.passed) return actionFailure(check.error, check.check, telemetry);
@@ -483,7 +535,7 @@
     if (resolved.elements.length === 0) return failure('no_match', command, resolved.telemetry, true);
     const element = resolved.elements[0];
     const telemetry = resolved.telemetry.slice();
-    if (typeof element.scrollIntoView === 'function') element.scrollIntoView({ block: 'nearest' });
+    scrollIntoViewDeep(element, 'nearest');
     const check = runActionabilityChecks(element, 'hover');
     telemetry.push(actionabilitySpan(command, 'hover', check));
     if (!check.passed) return actionFailure(check.error, check.check, telemetry);
@@ -507,7 +559,7 @@
       const resolved = resolveForCommand(Object.assign({}, command, { strict: command.strict !== false }));
       if (!resolved.ok) return resolved.response;
       if (resolved.elements.length === 0) return failure('no_match', command, resolved.telemetry, true);
-      resolved.elements[0].scrollIntoView({ block: 'center', inline: 'center' });
+      scrollIntoViewDeep(resolved.elements[0], 'center');
       return success({ scrollX: globalScope.scrollX, scrollY: globalScope.scrollY }, resolved.telemetry);
     }
     const x = Number(command.x || 0);
@@ -634,7 +686,7 @@
     if (!option || !isElementVisibleEnough(option)) return failure('no_option', command, telemetry, true);
     if (option.getAttribute('aria-disabled') === 'true') return optionDisabled(telemetry);
     // The option is clicked, so it must pass the same checks as dom.click.
-    if (typeof option.scrollIntoView === 'function') option.scrollIntoView({ block: 'nearest' });
+    scrollIntoViewDeep(option, 'nearest');
     const check = runActionabilityChecks(option, 'click');
     telemetry.push(actionabilitySpan(command, 'click', check));
     if (!check.passed) return actionFailure(check.error, check.check, telemetry);
@@ -1016,7 +1068,7 @@
     if ((action === 'fill' || action === 'type') && !isEditable(element)) {
       return failedCheck(element, 'editable', 'element_not_editable');
     }
-    return { check: 'all', passed: true, error: null, bbox: element.getBoundingClientRect() };
+    return { check: 'all', passed: true, error: null, bbox: viewportRect(element) };
   }
 
   function failedCheck(element, check, error) {
@@ -1024,7 +1076,7 @@
       check,
       passed: false,
       error,
-      bbox: element ? element.getBoundingClientRect() : emptyRect()
+      bbox: element ? viewportRect(element) : emptyRect()
     };
   }
 
@@ -1033,19 +1085,36 @@
   // descends through shadow roots, and "inside" is the composed tree.
   function receivesEvents(element) {
     const rect = element.getBoundingClientRect();
-    const x = rect.left + rect.width / 2;
-    const y = rect.top + rect.height / 2;
-    let top = document.elementFromPoint(x, y);
-    while (top && top !== element && top.shadowRoot) {
+    let x = rect.left + rect.width / 2;
+    let y = rect.top + rect.height / 2;
+    let doc = element.ownerDocument;
+    if (!composedContains(element, deepestElementFromPoint(doc, x, y))) return false;
+    while (doc.defaultView && doc.defaultView !== globalScope) {
+      let frame = null;
+      try { frame = doc.defaultView.frameElement; } catch (_) { return false; }
+      if (!frame) return false;
+      const frameRect = frame.getBoundingClientRect();
+      x += frameRect.left + frame.clientLeft;
+      y += frameRect.top + frame.clientTop;
+      doc = frame.ownerDocument;
+      if (!composedContains(frame, deepestElementFromPoint(doc, x, y))) return false;
+    }
+    return true;
+  }
+
+  function deepestElementFromPoint(doc, x, y) {
+    let top = doc.elementFromPoint(x, y);
+    while (top && top.shadowRoot) {
       const inner = top.shadowRoot.elementFromPoint(x, y);
       if (!inner || inner === top) break;
       top = inner;
     }
-    return composedContains(element, top);
+    return top;
   }
 
   function composedContains(element, node) {
-    for (let current = node; current; current = current instanceof ShadowRoot ? current.host : current.parentNode) {
+    for (let current = node; current; current = current.nodeType === Node.DOCUMENT_FRAGMENT_NODE && current.host
+      ? current.host : current.parentNode) {
       if (current === element) return true;
     }
     return false;
@@ -1209,20 +1278,19 @@
     return { ok: true, elements, telemetry };
   }
 
-  // `pierce=<selector>` is an ordinary css=, role=, text= or testid= selector
-  // that also searches open shadow roots (XPath cannot enter them; closed
-  // roots stay out of reach).
-  const PIERCING_KINDS = ['role', 'testid', 'text', 'css'];
+  // Explicit prefixes remain supported, while an unprefixed selector is CSS
+  // (the form models most often produce). All ordinary selectors search the
+  // same-origin composed tree: documents, frames and open shadow roots.
+  const PIERCING_KINDS = ['role', 'aria', 'testid', 'text', 'css'];
+  const SELECTOR_KINDS = ['role', 'aria', 'testid', 'text', 'css', 'xpath', 'pierce'];
 
   function parseSelector(selector) {
-    if (typeof selector !== 'string') return { ok: false };
-    const index = selector.indexOf('=');
-    if (index <= 0) return { ok: false };
-    const kind = selector.slice(0, index);
-    const body = selector.slice(index + 1);
-    if (!['role', 'testid', 'text', 'css', 'xpath', 'pierce'].includes(kind) || body.length === 0) {
-      return { ok: false };
-    }
+    if (typeof selector !== 'string' || selector.length === 0) return { ok: false };
+    const explicit = selector.match(/^([a-z]+)=([\s\S]+)$/);
+    const kind = explicit && SELECTOR_KINDS.includes(explicit[1]) ? explicit[1] : 'css';
+    const body = kind === 'css' && (!explicit || !SELECTOR_KINDS.includes(explicit[1]))
+      ? selector : explicit[2];
+    if (body.length === 0) return { ok: false };
     if (kind === 'pierce') {
       const inner = parseSelector(body);
       if (!inner.ok || !PIERCING_KINDS.includes(inner.kind)) return { ok: false };
@@ -1231,15 +1299,16 @@
   }
 
   function resolveSelector(kind, body) {
+    const roots = searchRoots();
     switch (kind) {
       case 'xpath':
-        return resolveXPath(body);
+        return resolveXPath(body, roots);
       case 'pierce': {
         const inner = parseSelector(body);
-        return resolveIn(inner.kind, inner.body, searchRoots());
+        return resolveIn(inner.kind, inner.body, roots);
       }
       default:
-        return resolveIn(kind, body, [document]);
+        return resolveIn(kind, body, roots);
     }
   }
 
@@ -1247,10 +1316,12 @@
     switch (kind) {
       case 'role':
         return resolveRole(body, roots);
+      case 'aria':
+        return resolveAria(body, roots);
       case 'testid':
         return queryAll(roots, '[data-testid="' + cssEscape(body) + '"]');
       case 'text':
-        return candidateElements(roots).filter((element) => elementText(element) === body);
+        return preferActionable(candidateElements(roots).filter((element) => elementText(element) === body));
       case 'css':
         return queryAll(roots, body);
       default:
@@ -1258,13 +1329,27 @@
     }
   }
 
-  // The document, then every open shadow root, in the order found (a root
-  // inside a root comes after it).
+  // The document, then every same-origin frame document and open shadow root,
+  // in discovery order. Cross-origin frame access throws and is skipped.
   function searchRoots() {
     const roots = [document];
+    const seen = new Set(roots);
     for (let i = 0; i < roots.length; i += 1) {
       for (const element of roots[i].querySelectorAll('*')) {
-        if (element.shadowRoot) roots.push(element.shadowRoot);
+        if (element.shadowRoot && !seen.has(element.shadowRoot)) {
+          seen.add(element.shadowRoot);
+          roots.push(element.shadowRoot);
+        }
+        if (element.tagName === 'IFRAME' || element.tagName === 'FRAME') {
+          try {
+            const frameDocument = element.contentDocument;
+            if (frameDocument && !seen.has(frameDocument)) {
+              forwardFrameAcks(frameDocument);
+              seen.add(frameDocument);
+              roots.push(frameDocument);
+            }
+          } catch (_) {}
+        }
       }
     }
     return roots;
@@ -1301,25 +1386,36 @@
     });
   }
 
-  function resolveXPath(body) {
-    const snapshot = document.evaluate(
-      body,
-      document,
-      null,
-      XPathResult.ORDERED_NODE_SNAPSHOT_TYPE,
-      null
-    );
+  function resolveAria(body, roots) {
+    if (/^[a-zA-Z0-9_-]+\[name=/.test(body)) return resolveRole(body, roots);
+    return preferActionable(candidateElements(roots).filter((element) => accessibleName(element) === body));
+  }
+
+  function resolveXPath(body, roots) {
     const results = [];
-    for (let i = 0; i < snapshot.snapshotLength; i += 1) {
-      const node = snapshot.snapshotItem(i);
-      if (node && node.nodeType === Node.ELEMENT_NODE) results.push(node);
+    for (const root of roots) {
+      if (root.nodeType !== Node.DOCUMENT_NODE) continue;
+      const snapshot = root.evaluate(body, root, null, XPathResult.ORDERED_NODE_SNAPSHOT_TYPE, null);
+      for (let i = 0; i < snapshot.snapshotLength; i += 1) {
+        const node = snapshot.snapshotItem(i);
+        if (node && node.nodeType === Node.ELEMENT_NODE) results.push(node);
+      }
     }
-    return results;
+    return unique([results]);
   }
 
   // Elements in the document's body, then in each given shadow root.
   function candidateElements(roots) {
-    return unique(roots.map((root) => root.querySelectorAll(root === document ? 'body *' : '*')));
+    return unique(roots.map((root) => root.querySelectorAll(root.nodeType === Node.DOCUMENT_NODE ? 'body *' : '*')));
+  }
+
+  function preferActionable(elements) {
+    const interactive = elements.filter((element) => {
+      const tag = element.tagName.toLowerCase();
+      return element.hasAttribute('role') || ['button', 'a', 'input', 'select', 'textarea', 'summary'].includes(tag);
+    });
+    if (interactive.length > 0) return interactive;
+    return elements.filter((element) => !elements.some((other) => other !== element && composedContains(element, other)));
   }
 
   function elementRole(element) {
@@ -1341,7 +1437,7 @@
   }
 
   function summarizeElement(element) {
-    const rect = element.getBoundingClientRect();
+    const rect = viewportRect(element);
     return {
       id: elementId(element),
       tag: element.tagName.toLowerCase(),
@@ -1366,9 +1462,11 @@
   function isElementVisibleEnough(element) {
     if (element.hidden === true) return false;
     const rect = element.getBoundingClientRect();
-    const style = globalScope.getComputedStyle(element);
+    const view = element.ownerDocument && element.ownerDocument.defaultView;
+    const style = view ? view.getComputedStyle(element) : null;
     return rect.width > 0 &&
       rect.height > 0 &&
+      style !== null &&
       style.visibility !== 'hidden' &&
       style.display !== 'none';
   }

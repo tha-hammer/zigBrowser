@@ -10,7 +10,8 @@
 //! MS2a.1 implements the mandatory routed-command methods (evalJson, navigate[WithPolicy], reload,
 //! url, title). MS2b wires nativeClick (a trusted in-process NSEvent) now that the shim enforces its
 //! invariants — the phase-model ownership/no-late-dispatch guard, the documentToken DOC_CHANGED guard,
-//! and ack-error mapping. The rest of native input, windows, dialogs, screenshot etc. keep the
+//! and ack-error mapping. Screenshot uses WKWebView's public snapshot API. The rest of native input
+//! and browser features keep the
 //! PagePort `unsupported` defaults until their slices land.
 const std = @import("std");
 const builtin = @import("builtin");
@@ -64,6 +65,7 @@ const vtable: PagePort.VTable = .{
     .reload = reload,
     .url = url,
     .title = title,
+    .screenshot = screenshot,
     // nativeClick is wired now that its invariants are in the shim (RoseCat 6253/6244): the phase-model
     // ownership/no-late-dispatch guard, the documentToken DOC_CHANGED guard, and ack-error mapping.
     .nativeClick = nativeClick,
@@ -147,6 +149,23 @@ fn title(ptr: *anyopaque, gpa: std.mem.Allocator, timeout_ms: u64) PortError![]u
         return e;
     };
     return takeString(gpa, out);
+}
+
+/// PNG of the visible WKWebView viewport. The native shim owns the returned
+/// bytes until `zb_automation_free`; duplicate them into the engine allocator.
+fn screenshot(ptr: *anyopaque, gpa: std.mem.Allocator, full_page: bool, timeout_ms: u64) PortError!page_port.Screenshot {
+    var png: [*c]u8 = null;
+    var len: usize = 0;
+    var width: c_int = 0;
+    var height: c_int = 0;
+    var err: [*c]u8 = null;
+    const rc = c.zb_screenshot_png(windowOf(ptr), @intFromBool(full_page), page_port.max_screenshot_bytes, clampMs(timeout_ms), &png, &len, &width, &height, &err);
+    c.zb_automation_free(err);
+    defer c.zb_automation_free(png);
+    if (rc == c.ZB_AUTO_ERR_TOO_LARGE) return error.TooLarge;
+    try mapCode(rc);
+    if (png == null or len == 0 or width <= 0 or height <= 0) return error.EvalFailed;
+    return .{ .png = try gpa.dupe(u8, png[0..len]), .width = @intCast(width), .height = @intCast(height) };
 }
 
 /// MS2b 2b-i: a real left click at viewport CSS px (x, y). The shim synthesizes a trusted NSEvent
