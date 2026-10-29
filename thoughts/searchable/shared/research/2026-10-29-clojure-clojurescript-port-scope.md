@@ -5,7 +5,7 @@ git_commit: 14e0012f (base); parts at c3d0c7f2 (part 1) and 50e70a79 (part 2)
 branch: zb-clojure-scope-2026-10-29-10-21
 topic: "Scope of a zigBrowser port to Clojure and ClojureScript"
 tags: [research, scope, clojure, clojurescript, port, graalvm, native-host, contracts]
-status: merged, awaiting pane 2 review
+status: merged and reviewed by pane 2 (review findings applied)
 ---
 
 # Scope: porting zigBrowser to Clojure and ClojureScript
@@ -72,7 +72,8 @@ The recommendation is **two processes per OS**, plus the unchanged Python helper
  │ zb_ipc_dispatch · drawer geometry (24 zb_drawer_* exports)            │
  └───────────────▲──────────────────────────────────────────────────────┘
                  │ local socket, 4-byte length + JSON (same framing as today):
-                 │ PagePort (21) + CookiePort (3) + windows, drawer events, spawn control
+                 │ PagePort (21) + CookiePort (3) + windows, spawn control, drawer events
+                 │ (host→core: prompt, interrupt, approve/deny · core→host: messages, cards, status)
  ┌───────────────┴─────── Clojure core (GraalVM native image, no FFI) ───┐
  │ CLI · automation server (JSON-RPC, auth, queue, router, engine, errors,│
  │ telemetry) · cookie routes · site flows + pacing · agent broker, tools,│
@@ -83,7 +84,7 @@ The recommendation is **two processes per OS**, plus the unchanged Python helper
 ```
 
 **Why this shape and not one JVM process with Panama FFI** (section 3)
-- **The UI loop must own the main thread.** That is a hard rule for AppKit on macOS [V/I].
+- **The UI loop must own the main thread.** That is a hard rule for AppKit on macOS [I]. The Mac shim already marshals all work to the main queue (`src/wkwebview_shim.m:1702-1885`) [V].
 - **The shims call back into the core inline.** They call the core's exports synchronously (`src/webkit_shim.h:435-443`) [V].
 - **GraalVM's FFM support has a Mac Intel gap.** It documents FFM downcalls and upcalls for Linux x64, Windows x64, macOS AArch64 and Linux AArch64, but not macOS x64 [W] (https://www.graalvm.org/dev/reference-manual/native-image/native-code-interoperability/ffm-api/). The product ships a universal arm64 + x86_64 Mac build (`packaging/macos/build-dmg.sh:127-134`) [V].
 - **A socket avoids all three problems.** It also keeps the Claude token out of the core process and lets the core crash without closing windows [I].
@@ -107,7 +108,7 @@ The recommendation is **two processes per OS**, plus the unchanged Python helper
    - Every new Mach-O must be signed inside-out with hardened runtime.
    - A HotSpot JVM would likely need `com.apple.security.cs.allow-jit` [I]. The project deliberately holds that entitlement out (`packaging/macos/entitlements.plist:16-23`) [V].
 5. **Test loss against a moving product.**
-   - The repo has 2,964 commits since 2026-05-30 [V].
+   - The repo has 2,964 commits since 2026-05-30 [V] (`git rev-list --count 14e0012f`; first commit date from `git log --reverse`).
    - About 30,468 lines of top-level Zig unit tests do not carry over (part 2, section 7) [V count].
    - Some tests check source text, not behaviour (`tests/automation/js_contract_test.zig`) [V].
    - The Mac track is active and the Windows track is paused.
@@ -164,7 +165,7 @@ Subsections 2a-2e are pane 1's modules (native and platform side). Subsections 2
 | Path | Language | Lines | What it does | Target | Label |
 |---|---|---|---|---|---|
 | src/automation_server.zig | Zig | 1,718 | Socket server: 4-byte length framing, auth, dispatch, window/health/recover/dialog routes, in-process call for the drawer. | Clojure (JVM) | V |
-| src/automation_transport.zig | Zig | 144 | Socket path and base dir per OS. | Clojure (JVM) (Java 16+ has `UnixDomainSocketAddress`) | V / I |
+| src/automation_transport.zig | Zig | 144 | Socket path and base dir per OS. | Clojure (JVM) (Java 16+ has `UnixDomainSocketAddress`, JEP 380 [W] https://openjdk.org/jeps/380) | V / W |
 | src/automation_websocket.zig | Zig | 140 | WebSocket upgrade and one `automation.ready` frame. | Clojure (JVM) | V |
 | src/automation_otlp.zig | Zig | 149 | OTLP telemetry export config. | Clojure (JVM) | V |
 | src/automation_platform.zig | Zig | 1,254 (1,285 win) | Backend capability table (input mode, network support) per engine (`:77-98`). | Clojure (JVM) (data) | V |
@@ -299,7 +300,7 @@ target choice, not of the size.
 | Path | Language | Lines (wc -l) | What it does | Target | Label |
 |---|---|---|---|---|---|
 | src/automation_script/automation.js | JavaScript | 1,567 | The injected page script: selectors, actionability checks, input acks, waits, rate-limit scan, exposed as `__zbAutomation`. | keep as is (JavaScript) | inferred |
-| src/automation_script/js_embed.zig | Zig | 1 | Embeds automation.js into the binary (`@embedFile`). | Clojure (JVM): load as a classpath resource | inferred |
+| src/automation_script/js_embed.zig | Zig | 1 | Embeds automation.js into the binary (`@embedFile`). | stays native: the host embeds the script at build time, because the shims need it before `zb_app_run` (`src/wkwebview_shim.m:640`, `src/automation_gtk_port.zig:38`) | verified (order), inferred (target) |
 | src/dashboard/content/index.html | HTML + JS | 387 | A sequences dashboard page that calls `zbHost` message handlers. | drop (or ClojureScript later, see Q5) | verified (not used), inferred (target) |
 | src/dashboard/ipc.zig | Zig | 468 | Mock IPC answers for the dashboard (all `mock*` functions). | drop | verified (mock only) |
 | src/dashboard/embed.zig | Zig | 1 | Embeds the dashboard HTML. | drop | inferred |
@@ -402,7 +403,7 @@ The figures below carry [W] sources or are marked [U].
 |---|---|---|---|---|---|---|---|
 | **A. Panama FFM in one JVM** | Clojure (coffi) calls the shim C ABI in-process. The shims become shared libs. Upcall stubs supply `zb_policy_decide` etc. | JVM boot on the critical path before first window [I]. JDK 24 AOT cache cut one app from 4.5 s to 2.6 s [W] (https://openjdk.org/jeps/483). | One process. JVM heap plus engine [U, measure]. | + jlink runtime [U, measure] | JVM needs `allow-jit` under hardened runtime [I]. More dylibs to sign. | FFM in native-image is on by default from GraalVM 25 [W] (https://docs.oracle.com/en/graalvm/jdk/25/docs/reference-manual/native-image/native-code-interoperability/ffm-api). Listed platforms omit macOS x64 [W] (https://www.graalvm.org/dev/reference-manual/native-image/native-code-interoperability/ffm-api/). Descriptors must be known at build time [W] (same source). | Possible, but the riskiest for Mac Intel and main-thread rules. |
 | **B. JNI** | Same as A, with hand-written JNI C glue. | Same as A. | Same as A. | Same as A. | Same as A. | JNI works in native-image but needs config [I]. | Strictly worse than A. No reason to pick it. |
-| **C. Small native host over a socket (recommended)** | Keep the shims plus a thin native `main` as the app executable. It serves PagePort, CookiePort, window lifecycle, drawer events and spawn over a local socket using the same 4-byte length + JSON framing as today. The Clojure core is a separate native-image process. | Window paints with no wait on the core [I]. A Clojure native image starts in tens of ms; babashka starts in about 8 ms [W] (https://clojurians-log.clojureverse.org/babashka/2023-05-28). | Two processes. The core's native-image RSS is small [U, measure]. | Core binary tens of MB; babashka is about 73 MB uncompressed [W] (same source). | The core is one more Mach-O, AOT-compiled, so no JIT entitlement [I]. Two arches → build both and `lipo` like today. | No FFM, no AWT, so native-image is the easy case. graal-build-time handles Clojure init [W] (https://github.com/clj-easy/graal-build-time). Mac x64 GraalVM availability is not confirmed [U]. | **Recommended.** |
+| **C. Small native host over a socket (recommended)** | Keep the shims plus a thin native `main` as the app executable. It serves PagePort, CookiePort, window lifecycle, spawn control and drawer events (host→core: prompt, interrupt, card approve/deny; core→host: messages, cards, status) over a local socket using the same 4-byte length + JSON framing as today. The Clojure core is a separate native-image process. | Window paints with no wait on the core [I]. A Clojure native image starts in tens of ms; babashka starts in about 8 ms [W] (https://clojurians-log.clojureverse.org/babashka/2023-05-28). | Two processes. The core's native-image RSS is small [U, measure]. | Core binary tens of MB; babashka is about 73 MB uncompressed [W] (same source). | The core is one more Mach-O, AOT-compiled, so no JIT entitlement [I]. Two arches → build both and `lipo` like today. | No FFM, no AWT, so native-image is the easy case. graal-build-time handles Clojure init [W] (https://github.com/clj-easy/graal-build-time). Mac x64 GraalVM availability is not confirmed [U]. | **Recommended.** |
 | **D. JCEF (Chromium in the JVM)** | Replace all three engines with Chromium via JCEF. Automation over CDP. | JVM + Chromium boot [U]. | Chromium multi-process [U]. | +100 MB or more per OS [U]. | Many Chromium helpers to sign [I]. | No [I]. | Reject. It changes the engine users and sites see. It drops the WKWebsiteDataStore and WebView2 stores, so users lose cookies (section 6.4). It discards three working shims. |
 | **E. JavaFX WebView** | JavaFX's own WebKit 620.1 [W] (https://openjfx.io/highlights/25/). | JVM boot. | JVM. | JavaFX modules. | JIT entitlement [I]. | WebView is not supported in native-image [W] (https://bell-sw.com/blog/how-to-create-javafx-native-images/). | Reject. It has no isolated worlds, no profile store control and no native input equal to today's. |
 | **F. Electron + ClojureScript** | Rewrite the shell as Electron. Core in CLJS on Node. | Electron boot. | Chromium. | Real Electron builds of 201-290 MB [W] (https://hackernoon.com/six-months-with-tauri-the-benefits-and-the-bill). | Electron signing is well known. | n/a | Reject for the browser itself, for the same engine and data-loss reasons as D. Logseq shows CLJS on Electron works [W] (https://github.com/GQAdonis/logseq/blob/master/CODEBASE_OVERVIEW.md). |
@@ -425,7 +426,7 @@ The figures below carry [W] sources or are marked [U].
 6. **The core can crash and restart without killing the window** [I].
 
 **Costs of option C**
-- There is a new host protocol to design and test, about 30 messages: 21 PagePort + 3 CookiePort + window lifecycle + drawer events + spawn control [I].
+- There is a new host protocol to design and test, about 30 messages: 21 PagePort + 3 CookiePort + window lifecycle + spawn control + drawer events [I]. The drawer events must include prompt (Send), interrupt (Stop) and approval card approve/deny, because `zb_drawer_card_press` (`src/agent_drawer.zig:685-688`) calls `zb_agent_tools_approve` / `zb_agent_tools_deny` (`agent_drawer.zig:672-673`), which live in `src/agent_tools.zig:200,206` and move to the core [V].
 - Each automation call pays one extra local socket round trip [I]. That is small next to page work, but measure it in phase 0.
 - Two binaries per arch to build, sign and ship [I].
 
@@ -498,9 +499,12 @@ If B or C is chosen, how it is built, injected and tested [inferred]:
   anonymous function with no globals (shadow-cljs user guide, https://shadow-cljs.github.io/docs/UsersGuide.html).
   The code must still set `__zbAutomation` itself with
   `Object.defineProperty`, as today.
-- Injection: no change in the shims. The JVM core reads the compiled file
-  from the classpath and passes it to the same native calls
-  (`zb_automation_set_script` today).
+- Injection: no change in the shims. The native host embeds the file (or
+  the compiled output) at build time, as today, and sets it with
+  `zb_automation_set_script` before `zb_app_run` (`src/wkwebview_shim.m:640`,
+  `src/automation_gtk_port.zig:38`; win branch `src/webview2_shim.cpp:966`).
+  The core does not hand the script over, because the host paints without
+  waiting for the core (section 3).
 - Tests: point `e2e/automation_script.spec.ts:6` (`scriptPath`) at the
   compiled file. The spec loads it with `page.addScriptTag` and calls
   `__zbAutomation.handle` (`e2e/automation_script.spec.ts:20-28`), so it
@@ -533,7 +537,7 @@ Options:
 
 | Option | Gain | Cost | Label |
 |---|---|---|---|
-| A. Keep the three native UIs; port only `agent_drawer.zig` to `.cljc` (recommended for the first release) | No security change. Owner already accepted these UIs on real screens. | Three UIs to keep in step. | inferred |
+| A. Keep the three native UIs and `agent_drawer.zig` native in the host (recommended for the first release) | No security change. Owner acceptance status on real screens: unknown. | Three UIs to keep in step. Drawer events cross the host-to-core socket (section 3). | inferred |
 | B. One ClojureScript drawer in a second, privileged web view per window | One UI for 3 OSes. Long-line breaking, selection and copy become CSS and DOM work. | Reverses the "no web content" rule. Needs its own web view instance that pages cannot reach, no network, a strict CSP, and text set only with `textContent`. Adds a web content process per window (memory not measured: unknown). Every OS needs new native code to host and dock it. Needs owner sign-off on real screens again. | inferred |
 
 Recommendation: **A first**. Revisit B after the core port ships (Q2).
@@ -560,7 +564,7 @@ page itself, and the owner's real-screen check.
 - Optional new Clojure SDK as one `.cljc` library (Q6) [inferred]: JVM
   build with deps.edn; JVM Unix sockets through
   `java.nio.channels.SocketChannel` with `UnixDomainSocketAddress`
-  (Java 16 and later, inferred, not checked here); ClojureScript build with
+  (Java 16 and later, JEP 380, web: https://openjdk.org/jeps/380); ClojureScript build with
   shadow-cljs `:node-library` using `node:net`. It would reuse
   `tests/fixtures/automation/sdk_wire_cases.json` (82 cases [verified]) as
   its test data, like the other SDKs do
@@ -943,9 +947,8 @@ path under `/tmp` because of the 108-byte AF_UNIX limit.
   which move to Clojure. Their test names and cases become the spec for the
   Clojure code. Examples on the product side: `tests/linkedin_test.zig`,
   `tests/instagram_test.zig`, `tests/x_test.zig`, `tests/social_test.zig`,
-  the `tests/automation_expect*` and `tests/automation_guard*` families, and
-  the 5 `tests/agent_drawer*` files (logic parts only) [verified names,
-  inferred mapping].
+  and the `tests/automation_expect*` and `tests/automation_guard*` families
+  [verified names, inferred mapping].
 - `tests/automation/bezier_test.zig`, `gaussian_test.zig`,
   `pacing_test.zig`, `stealth_test.zig`: pure math and logic, easy ports.
 - Runner: Kaocha for the JVM (web (helper):
@@ -959,8 +962,9 @@ path under `/tmp` because of the 108-byte AF_UNIX limit.
 - Drop: `tests/automation/js_contract_test.zig` (it greps the JS source
   for strings), and `tests/dashboard/`, `tests/sequences/` if those
   modules are dropped.
-- Keep native: the 12 `tests/*.c` files and any Zig or C tests of code that
-  stays native (sections 2a-2e).
+- Keep native: the 12 `tests/*.c` files, the 5 `tests/agent_drawer*` files
+  (`agent_drawer.zig` stays in the host), and any Zig or C tests of code
+  that stays native (sections 2a-2e).
 
 ### New work the port needs
 
@@ -983,7 +987,7 @@ path under `/tmp` because of the 108-byte AF_UNIX limit.
 **Effort scale.** One agent-day is one focused agent working one day, with review.
 
 **Calibration**
-- The current product took about 5 months and 2,964 commits with multi-agent teams [V].
+- The current product took about 5 months and 2,964 commits with multi-agent teams [V] (`git rev-list --count 14e0012f`).
 - About 22,000 Zig lines move in total: about 17,100 in pane 1's scope and about 5,000 in the flows (section 2).
 - The estimates are [I] and come from both panes: pane 1's phases plus part 2's "phase inputs".
 
