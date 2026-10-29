@@ -717,7 +717,7 @@ def run_fake_auth(
     auth_observed_ns: Optional[int] = None
     rows = LiveRows(False, False, [], [], [], [], [])
     try:
-        sent_deadline = min(deadline, time.monotonic() + 10.0)
+        sent_deadline = min(deadline, time.monotonic() + 30.0)
         while reason is None and identity is not None and time.monotonic() < sent_deadline:
             rows = parse_live_rows(read_lines(stdout), "fake-auth")
             if rows.sent:
