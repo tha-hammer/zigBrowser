@@ -434,7 +434,10 @@ def main() -> int:
         if not site.heavy_seen:
             return fail("navigate did not reach the heavy SPA route")
         approvals = live_approvals(stdout)
-        if len(approvals) != 9 or {row.get("verb") for row in approvals} != {"click", "navigate"}:
+        # Interactive navigation uses the default conditional policy and needs
+        # no separate card. All eight clicks do, including the link click that
+        # starts a navigation.
+        if len(approvals) != 8 or {row.get("verb") for row in approvals} != {"click"}:
             return fail(f"visible Approve buttons clicked were {approvals!r}")
         drawer_log = home / "state/drawer.log"
         try:
