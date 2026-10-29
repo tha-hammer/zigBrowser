@@ -639,7 +639,7 @@ def run_fake_auth(
     data = private_home / ".local/share"
     agent_home = data / "zigbrowser/agent-home"
     secrets = agent_home / "secrets"
-    scenario_root = root / "fake-auth"
+    scenario_root = root / f"fake-auth-{output.stem}"
     profile, temp, cache = (
         scenario_root / "profile",
         scenario_root / "tmp",
