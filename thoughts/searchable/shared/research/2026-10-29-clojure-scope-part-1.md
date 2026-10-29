@@ -565,3 +565,269 @@ Sources: `automation_server.zig`; `engine.zig:26`.
 5. **Q-P1-5. May the port change any wire or disk contract (for example, add a protocol version field)?**
    - Recommendation: no. Freeze section 6 byte-for-byte until phase 8 is done.
    - Then version any change with a migration and a test.
+
+---
+
+## Option E: embedded Chromium in the JVM (pane 1, platform side; added 2026-10-29)
+
+**The question.** The owner pointed at Equo Chromium (https://docs.equo.dev/chromium/150.x/getting-started/swing.html). That is Chromium embedded in a Java Swing or SWT window. Under option E, one Chromium engine runs in one JVM app on Mac, Windows and Linux, and Clojure owns the app and the UI. This section compares three ways to do that: **Equo Chromium**, **JCEF** (java-cef, shipped as jcefmaven) and **JxBrowser** (TeamDev). Pane 2 covers the automation surface, the drawer, fingerprints, migration and the agent host in its part file.
+
+Labels are as before: [V] code, [I] inferred, [U] unknown, [W] web with URL.
+
+### E.1 Licensing and cost for a shipped closed-source app
+
+**Equo Chromium**
+- The Community Edition is GPLv3. Docs: "The Equo Chromium Community Edition is licensed entirely under the GPLv3." [W] (https://docs.equo.dev/chromium/150.x/getting-started/distribution.html)
+- Docs: "For commercial/closed-source apps, you need a commercial license from Equo." [W] (same page)
+- The paid tiers are Standard ("One project only", monthly releases) and Enterprise (unlimited projects, weekly releases, 5-year LTS). Both are "Custom pricing", so no public price [W] (https://www.equo.dev/pricing).
+- **Cost:** a commercial licence at an unknown price, plus a yearly subscription.
+
+**JCEF**
+- The java-cef licence is BSD-style 3-clause [W] (https://raw.githubusercontent.com/chromiumembedded/java-cef/master/LICENSE.txt). jcefmaven itself is Apache-2.0 [W] (https://github.com/jcefmaven/jcefmaven).
+- Default CEF builds leave out H.264 and AAC. Turning them on means a custom build with `proprietary_codecs=true`, which carries codec licensing questions [W] (https://github.com/chromiumembedded/cef/issues/3559).
+- **Cost:** no licence fee. We own the builds, signing and patch cadence.
+
+**JxBrowser**
+- It is commercial and perpetual, with free distribution inside your app. Each licence includes 1 year of updates and support. Prices exclude tax [W] (https://teamdev.com/jxbrowser/):
+  - **Indie**: $1,979 (one person, unlimited projects).
+  - **Project**: from $8,199 (a company, one Java package).
+  - **Enterprise**: from $29,599 (a company, unlimited projects).
+- Renewal costs 25% less than the licence price. After expiry the library keeps working, but newer versions are not available [W] (same page).
+- There is a 30-day trial [W] (same page).
+- **Cost:** about $8,199 up front, plus about $6,150 a year to keep getting Chromium security updates [I, from the 25% renewal discount].
+
+**Chromium itself** is BSD-licensed with many third-party notices that must ship with the app [I]. Codec licensing applies to every option that turns on H.264 or AAC [I].
+
+### E.2 Supported OS and CPU (our users: Mac Intel + Apple Silicon, Windows x64; Linux is dev-only)
+
+| | macOS arm64 | macOS x86_64 | Windows x64 | Windows arm64 | Linux x64 | Linux arm64 | Min macOS | JDK |
+|---|---|---|---|---|---|---|---|---|
+| **Equo (paid)** | yes | yes | yes | yes | yes | yes | 12 | 8+ (11+ on Apple Silicon, macOS 12-14) |
+| **Equo (Community, public Maven)** | **unconfirmed / likely no** | yes | yes | no | yes | no | 12 | 8+ |
+| **JCEF (jcefmaven)** | yes | yes | yes | yes (no off-screen) | yes | yes | 12 | 16+ needs `--add-opens` |
+| **JxBrowser** | yes | yes | yes | yes (Windows 11) | yes | yes (glibc 2.29+) | 13 | 17, 21, 25 |
+
+Sources for the table:
+- **Equo:** https://docs.equo.dev/chromium/150.x/reference/supported-platforms.html [W].
+  - The public Maven index lists only x86_64 native artifacts (https://storage.googleapis.com/equo-chromium-swt-ce/oss/mvn/index.html) [W].
+  - The pricing page lists "ARM Support" under the paid Standard tier (https://www.equo.dev/pricing) [W].
+- **JCEF:** https://github.com/jcefmaven/jcefmaven [W].
+- **JxBrowser:** https://teamdev.com/jxbrowser/docs/guides/introduction/requirements/ [W].
+- **Our own minimum:** the app's Mac minimum is 13.0 (`packaging/macos/Info.plist:21-22`) [V]. All three options cover it.
+
+**What this means for our users**
+- Most of our users are on Mac. The free Equo edition probably cannot serve Apple Silicon [I].
+- JCEF and JxBrowser cover both Mac architectures.
+
+### E.3 Chromium version cadence and security updates
+
+**Chromium's own pace**
+- Chromium ships a new stable major every 4 weeks (since Chrome 94) [W] (https://blog.chromium.org/2021/03/speeding-up-release-cycle.html).
+- Security fixes ship between majors [W, secondary summary] (https://chromium.googlesource.com/chromium/src/+show/bf91c9f15a735cbf40ad57504bd5f5df561fa09b/docs/process/release_cycle.md).
+
+**JxBrowser**
+- Version 9.5.5 shipped on 28 Oct 2026 on Chromium 156.0.8078.74, with 52 security fixes. 9.5.4 shipped on 21 Oct, and 9.5.3 on 7 Oct [W] (https://teamdev.com/jxbrowser/releases/index.xml).
+- That is a release every 1-3 weeks, tracking current stable [W/I].
+
+**JCEF (jcefmaven)**
+- The latest is 152.0.6 (Chromium 152.0.7977.83, 30 Sep 2026). Before it came 146 (5 May), 143 (16 Feb) and 141 (24 Nov) [W] (https://github.com/jcefmaven/jcefmaven/releases).
+- That is a release every 3-6 months, about 4 majors behind current [I].
+- Its releases are marked "untested" [W, same page].
+- To stay current, we would build CEF ourselves [I].
+
+**Equo**
+- Majors come about every 6 months, minors monthly, patches "typically weekly" [W] (https://docs.equo.dev/chromium/150.x/reference/versions.html).
+- Paid tiers get monthly (Standard) or weekly (Enterprise) releases. Community gets "community-driven releases" [W] (https://www.equo.dev/pricing).
+- The public Maven index shows majors 106, 116, 124, 128, 138, 144 and 150 [W] (Maven index above).
+
+**What changes for us compared with today**
+- Today the engines come from the OS. Apple ships WKWebView fixes, Microsoft ships evergreen WebView2, and Linux distros ship WebKitGTK [I].
+- The MSI only bundles the WebView2 bootstrapper (`packaging/windows/zigBrowser.wxs:75-85`) [V].
+- Under option E, **we ship the browser engine**. Every Chromium security fix becomes a zigBrowser release [I].
+- The repo has **no app auto-updater** today. The only hits for "autoupdate" disable the Claude CLI's own updater (`agent/host/zb_agent_host/options.py:101`) [V].
+- So option E needs a new updater on Mac (Sparkle-style) and Windows, plus a monthly release habit [I].
+
+### E.4 App size and memory
+
+**Size of the Chromium binaries**
+- JxBrowser platform JARs are about 85 MB or more, the core about 13 MB [W] (https://teamdev.com/jxbrowser/faq/).
+- Older per-platform figures: macOS Intel 88.5 MB, macOS ARM 78.1 MB, Win64 82.8 MB, Linux64 91.9 MB [W] (https://teamdev.cn/jxbrowser/faq).
+- JCEF and Equo sizes are not published [U]. They should be similar, since all of them carry a full Chromium [I].
+
+**Size of the Java runtime**
+- A jlink'ed runtime with `java.desktop` has no published figure [U].
+- A full JDK 23 `lib` is about 263 MiB, which is an upper bound [W] (https://fosdem.org/2025/events/attachments/fosdem-2025-4511-reduce-the-size-of-your-java-run-time-image/slides/236921/FOSDEM_20_Gna4Rcp.pdf).
+
+**Today's baseline**
+- The Mac bundle already carries about 632 MB of agent dependencies (`thoughts/searchable/shared/research/2026-10-20-ms5-deps-cli-macos-recommendation.md:90-91`) [V].
+- The engine itself costs us nothing today, because WKWebView is part of the OS [I].
+
+**Estimate**
+- Option E adds roughly **150-300 MB per architecture**: Chromium plus the JVM [I].
+- A universal Mac DMG carries both architectures' Chromium unless we ship two DMGs [I].
+- Option C adds only a native-image core, tens of MB [I].
+
+**Memory**
+- There is no primary measurement [U].
+- The default Electron app on Ubuntu measured 118 MB USS and 207 MB PSS [W] (https://github.com/tauri-apps/tauri/issues/5889).
+- The JVM heap comes on top [I].
+- WKWebView is also multi-process, and we have no measured baseline for it [U].
+- Measure both in phase 0.
+
+### E.5 Mac main thread and AppKit under Swing/AWT
+
+**How AWT uses the main thread**
+- AWT owns the macOS main thread, which it calls the "AppKit thread". Its native code asserts which thread it runs on and offers `performOnMainThreadWaiting:` helpers [W] (https://raw.githubusercontent.com/openjdk/jdk/master/src/java.desktop/macosx/native/libosxapp/ThreadUtilities.h).
+- `-XstartOnFirstThread` is for SWT. With AWT it hangs or skips AppKit init, so a Swing app must not use it [W] (https://mail.openjdk.org/pipermail/awt-dev/2013-January/004065.html, https://mail.openjdk.org/pipermail/awt-dev/2017-December/013469.html).
+
+**What each option needs on Mac**
+- **JCEF on Mac** needs `--add-opens` into `sun.awt`, `sun.lwawt` and `sun.lwawt.macosx`. It must set its app handler through the builder, because `CefApp.addAppHandler` breaks on macOS [W] (https://github.com/jcefmaven/jcefmaven). That ties us to JDK internals [I].
+- **JxBrowser** runs Chromium out of process, so a Chromium crash does not take down the JVM [W] (https://teamdev.com/jxbrowser/blog/jxbrowser-and-jcef/). Its main-thread rules are not documented in what we read [U].
+- **Equo** docs say nothing about the Mac main thread [U]. Its standalone mode blocks the calling thread unless `chromium.multi_threaded_message_loop=true` [W] (https://docs.equo.dev/chromium/150.x/features/multithread.html).
+
+**What this means for us** [I]
+- Today our Mac shim marshals every engine call to the main queue itself (`src/wkwebview_shim.m:1702-1885`) [V].
+- Under option E, AWT owns that loop. Our remaining AppKit-touching code (Keychain prompts, notifications) must go through AWT's main-thread helpers, never block the AWT event thread, and never block the AppKit thread.
+
+### E.6 Hardened runtime, entitlements, codesign and notarization
+
+**Entitlements Chromium needs** (Electron's osx-sign defaults)
+- Renderer helper: `com.apple.security.cs.allow-jit` [W] (https://raw.githubusercontent.com/electron/osx-sign/main/entitlements/default.darwin.renderer.plist).
+- GPU helper: `allow-jit` [W] (https://raw.githubusercontent.com/electron/osx-sign/main/entitlements/default.darwin.gpu.plist).
+- Plugin helper: `allow-jit`, `allow-unsigned-executable-memory` and `disable-library-validation` [W] (https://raw.githubusercontent.com/electron/osx-sign/main/entitlements/default.darwin.plugin.plist).
+- The exact CEF/JCEF helper names and entitlements are not documented officially [U].
+
+**Entitlements the JVM needs**
+- HotSpot is commonly given `allow-jit` and `allow-unsigned-executable-memory` [W, forum summary, partly unconfirmed] (https://developer.apple.com/forums/thread/776290).
+
+**What this reverses** [V]
+- Our entitlements file **deliberately holds out** `allow-jit`, `allow-unsigned-executable-memory` and `inherit` until proven necessary (`packaging/macos/entitlements.plist:16-23`).
+- It ships only `com.apple.security.network.client` (`:29`).
+- Option E needs at least `allow-jit` on the app and the helpers [I].
+
+**Signing and notarization**
+- JxBrowser's stock Mac binaries are notarized by TeamDev. A "branding" tool re-signs them with our identity and entitlements and can notarize them [W] (https://teamdev.com/jxbrowser/blog/branding-chromium-binaries/).
+- jcefbuild ships its own codesign and notarize scripts and an entitlements directory [W] (https://github.com/jcefmaven/jcefbuild).
+- Equo documents nothing about Mac signing [U].
+- Our pipeline already signs inside-out without `--deep` (`packaging/macos/build-dmg.sh:192-210`) [V]. It has no notarization yet (`:9`) [V].
+- Option E adds nested helper apps, a JVM and Chromium frameworks to that list. Notarization becomes mandatory and larger [I].
+
+### E.7 GraalVM native-image: possible or not?
+
+**Facts**
+- **Oracle GraalVM dropped macOS x64.** "Support for macOS x64 has been removed … Version 25.0.1 was the last release that supported this hardware architecture … GraalVM now only supports macOS on AArch64 (Apple Silicon)." [W] (https://www.graalvm.org/release-notes/JDK_25). This also affects option C (see below).
+- **Liberica NIK Full** says it builds AWT and Swing apps into native images on Linux, Windows and macOS [W] (https://docs.bell-sw.com/liberica-nik/latest/how-to/using-nik-with-desktop-applications/).
+- **JxBrowser** documents native-image support through a `jxbrowser-native-image` artifact and tests it with Liberica NIK. The platform list is not stated [W] (https://teamdev.com/jxbrowser/docs/guides/native-image/).
+- **JCEF + native-image:** we found no project that combined them [U]. **Equo:** no mention [U].
+
+**Verdict** [I]
+- Native-image for option E is **possible only with JxBrowser + Liberica NIK, and unproven on our platforms**, Intel Mac above all.
+- Plan for **jlink + a JDK 25 AOT cache**. JEP 483 cut one app's startup from 4.5 s to 2.6 s [W] (https://openjdk.org/jeps/483).
+- The real startup is JVM boot plus Chromium boot, and no published figure exists for a Swing + Chromium app [U]. Phase 0 must measure it.
+
+**Effect on option C (new fact)**
+- Option C's core assumed native-image on both Mac architectures.
+- With Oracle GraalVM gone from Intel Mac, option C's Intel build needs Liberica NIK (if it still supports macOS x64 [U]) or the jlink JVM fallback.
+- That narrows C's startup and size advantage on Intel Macs. It updates Q-P1-2 / main-doc Q10.
+
+### E.8 What option E means for the shim header and the PagePort / CookiePort seams
+
+**The 79-function shim header** `src/webkit_shim.h` [V by grep]
+- 31 are `zb_automation_debug_*` e2e test hooks.
+- 17 are `zb_automation_*`.
+- 9 are `zb_app_*`.
+- 6 are `zb_native_*` (trusted input).
+- 3 are `zb_cookies_*`.
+- The rest cover run, screenshot, reload, window, policy, load-failure, IPC, main-invoke and drawer.
+
+**What option E retires** [I]
+- All three shims would go: `webkit_shim.c` 5,718 lines, `wkwebview_shim.m` 3,249 lines, and `webview2_shim.cpp` 2,591 lines (3,596 on the win branch).
+- The header itself goes too.
+- The native drawer, Secrets and auth windows must be rewritten in Swing or HTML (pane 2).
+
+**The seams survive as Clojure protocols** [I]
+- `PagePort` (21 methods, `src/automation/page_port.zig:189-327`) and `CookiePort` (3, `src/automation/cookie_port.zig:19-29`) become Clojure protocols.
+- There is **one** implementation, a "ChromiumPort" over the embedding API and/or CDP, instead of three shims plus three Zig adapters.
+- There is no host socket. The engine is in the same process.
+
+**A design for that port already exists on the Windows branch**, which drives Chromium (WebView2) through CDP [V] (`git show zb-windows-impl-2026-10-22-15-03:src/webview2_shim.cpp`):
+- isolated-world eval: `Page.getFrameTree` → `Page.createIsolatedWorld` → `Runtime.evaluate` (`:1009-1028`);
+- script injection: `Page.addScriptToEvaluateOnNewDocument` with a world name (`:2567-2573`);
+- trusted input: `Input.dispatchKeyEvent` (`:1398-1412`) and `Input.dispatchMouseEvent` (`:3256-3292`).
+
+**What Chromium gives us that WebKit does not**
+- The capability table already shows the difference: WebView2 has `cdp_input` and network `supported`, while WebKitGTK and WKWebView have `js_synthetic` input and no network capability (`src/automation_platform.zig:77-98`) [V].
+- Moving to Chromium on every OS **would give trusted input and network events on Mac and Linux**, which WebKit lacks today [I].
+
+**How CDP access differs by option**
+- **JCEF** exposes `CefBrowser.getDevToolsClient()`. Its `executeJavaScript` returns void [W] (https://raw.githubusercontent.com/chromiumembedded/java-cef/master/java/org/cef/browser/CefBrowser.java).
+- **JxBrowser** returns JS values from `Frame.executeJavaScript` [W] (https://teamdev.com/jxbrowser/docs/guides/javascript/) and has `browser.dispatch(...)` input [W] (https://teamdev.com/jxbrowser/docs/guides/browser/). A direct CDP command API is unconfirmed [U].
+- **Equo** lists the Chrome DevTools Protocol only under its paid Standard tier [W] (https://www.equo.dev/pricing).
+
+**Native code that remains under option E** [I]
+- These pieces still need native calls:
+  - the Keychain, libsecret and Credential Manager;
+  - spawning the Python helper with the token on fd 3/4 (`src/agent_spawn_posix.c:35-88`) [V], which Java's `ProcessBuilder` cannot do;
+  - the libproc reaper (`src/agent_run_reaper.c`) [V];
+  - the Windows owner-only DACL (`src/owner_only.zig:51-58`) [V].
+- On HotSpot (not native-image), the FFM API is final since JDK 22 [W] (https://openjdk.org/jeps/454). That lets Clojure (via coffi) call `posix_spawn`, `SecItem*`, libsecret and the Win32 APIs directly, so no C needs to remain [I].
+- Our Python sandbox code is unaffected (pane 2).
+
+**Contracts in main-doc section 6** [I]
+- The wire, error and token-store contracts still hold.
+- The **engine-owned** on-disk formats do not survive. That covers the Linux `<profile>/data|cache|cookies.sqlite`, the Mac WKWebsiteDataStore UUID store and the Windows `<profile>\WebView2` (main-doc 6.4).
+- Users must be migrated (pane 2), or they lose cookies and site data.
+- Two Keychain notes:
+  - The Keychain item's ACL trusts the signing identity of the app that created it.
+  - Today's default build is ad-hoc signed (`packaging/macos/build-dmg.sh:28-29`) [V]. Any new binary may therefore trigger a Keychain prompt [I]. This applies to option C too.
+
+### E.9 Phase and effort changes (option E, JxBrowser assumed)
+
+| # | Phase | Agent-days | Confidence | Notes |
+|---|---|---|---|---|
+| E0 | Two-armed spike on both Macs (Intel + Apple Silicon) and Windows. Measure startup, RSS, size, notarization with JIT entitlements. Use the JxBrowser 30-day trial. | 8-12 | Medium | Replaces phase 0 if E is in play |
+| E1 | Contract harness (same as phase 1) | 8-12 | Medium | Unchanged |
+| E2 | Clojure automation core on the JVM (same as phase 3, no host protocol) | 25-35 | Low-medium | Phase 2 (host protocol, 10-15) is dropped |
+| E3 | ChromiumPort: PagePort + CookiePort over JxBrowser/CDP, modelled on the Windows branch CDP code | 12-20 | Low-medium | New |
+| E4 | Flows and pacing (same as phase 4) | 13-20 | Low-medium | Unchanged |
+| E5 | Agent core + FFM natives (spawn with fd 3/4, Keychain, libsecret, Credential Manager, reaper, DACL) | 25-35 | Low | Replaces phase 5. The native host no longer exists. |
+| E6 | Drawer, Secrets and auth windows in Swing or HTML (pane 2 decides) | 15-25 | Low | New; needs a real-screen check |
+| E7 | Packaging: jlink + AOT cache, Chromium per arch, Mac sign + notarize with JIT entitlements, MSI, deb, **new auto-updater** | 15-25 | Low | Replaces phases 6-7 |
+| E8 | User data migration: Mac WKWebsiteDataStore cookies → Chromium profile, Keychain re-trust; Windows WebView2 → Chromium profile | 8-12 | Low | New (pane 2 owns the design) |
+| E9 | Remove Zig, the shims and the native UI | 4-6 | Medium | Was phase 8 |
+
+**Totals**
+- Option E: about **133-202 agent-days**, low confidence, plus licence cost.
+- Option C: 110-168 agent-days (main doc, section 8).
+- Option E is larger now, but it leaves one engine and much less native code to maintain [I].
+
+### E.10 Verdict (pane 1)
+
+**Option E does not beat option C today.** It beats C only when all four of these hold [I]:
+1. **The owner accepts the Mac engine change.**
+   - Mac users move from WebKit to Chromium, with a data migration and a fingerprint change. Pane 2 judges the detection risk.
+2. **We buy a JxBrowser licence.**
+   - Equo's free edition is GPLv3 and likely lacks Apple Silicon. Its CDP sits in a paid tier and its price is not public.
+   - JCEF is free but trails Chromium by about 4 majors, runs in-process, and leaves builds and signing to us.
+3. **We ship an auto-updater and a monthly Chromium-update release habit.**
+4. **A phase E0 spike passes on both Mac architectures.**
+   - Startup and RSS are acceptable.
+   - Notarization with `allow-jit` passes.
+   - Swing and AppKit work together.
+
+**When those hold, E is the better long-term architecture.**
+- It deletes about 24,600 native lines and one host protocol.
+- It gives trusted CDP input and network events on every OS.
+- It lets Clojure own the whole app.
+
+**Recommendation**
+- Run phase 0 as a **two-armed spike (C and E/JxBrowser)**, and decide on measured numbers plus the owner's answers to the questions below.
+- Among the E variants, **JxBrowser** is the only one that documents everything we need: current Chromium, both Mac architectures, JS return values, an input API and native-image.
+
+**New questions for the main doc** (merge into section 9)
+- **Q-E1.** Will you pay for JxBrowser (about $8,199 + about $6,150 a year), or accept JCEF's lag and in-house builds?
+  - Recommendation: JxBrowser, if E is chosen.
+- **Q-E2.** Will you take on shipping Chromium security updates monthly, with a new auto-updater?
+  - Recommendation: only together with E. Without an updater, E is unsafe [I].
+- **Q-E3.** Will you accept moving Mac users from WebKit to Chromium, with migration and a fingerprint change?
+  - Recommendation: decide after pane 2's detection-risk evidence and the E0 spike.
