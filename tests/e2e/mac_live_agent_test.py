@@ -1,49 +1,40 @@
 #!/usr/bin/python3
-"""Live Intel-Mac product e2e for the real Claude drawer agent.
+"""Live Intel-Mac product e2e for the installed Claude drawer agent.
 
-This test never reads a credential.  The installed application receives the
-real login HOME and consumes its existing product Keychain item through the
-normal fd-3 launch path.  Browser state is isolated in a private XDG data home
-and one private WebKit profile per scenario.
+The test drives the installed application exactly through visible AppKit
+controls. System Events types each prompt into the focused drawer input,
+presses Send, and presses each visible Approve button. There is no prompt
+manifest, automatic approval hook, fake Claude executable, or fake model.
 
-The test drives visible product actions through a 0600 e2e action file.  That
-file contains prompts and approval policy, never a token.  The product emits
-``LIVE_AGENT`` rows only with ``--e2e-protocol`` and takes each PNG with
-``cacheDisplayInRect:toBitmapImageRep:``.  Screen Recording is never used.
+The owner credential stays at
+``~/.local/share/zigbrowser/agent-home/secrets/claude_token``. This test only
+stats that path; it never opens, copies, hashes, or prints the file. The app
+receives the owner's real HOME and reads the credential through its product
+path. Browser data uses a private ``--profile-dir`` below ``~/zb-live-<id>``.
 
-Action manifest, version 1::
+Scenarios 2 and 4 enable only the existing in-app observation hook which calls
+``cacheDisplayInRect:toBitmapImageRep:``. Its 55-second delay lets the test
+prove the PNG was written after the visible assistant answer. Screen capture
+APIs are never used.
 
-  {"version":1,"scenario":"window-info","prompt":"...",
-   "approve":"all","snapshot_png":"/absolute/private/path.png"}
+Run on the Intel Mac after the owner has provisioned the token file::
 
-Product rows::
+  python3 -B tests/e2e/mac_live_agent_test.py \
+    --dmg "$HOME/Downloads/zigBrowser_0.2.0_macos.dmg" --keep-going
 
-  LIVE_AGENT <scenario> sent -
-  LIVE_AGENT <scenario> tool <base64(JSON {tool,ok,body})>
-  LIVE_AGENT <scenario> approval <base64(JSON {verb,outcome})>
-  LIVE_AGENT <scenario> assistant <base64(UTF-8 text)>
-  LIVE_AGENT <scenario> snapshot <base64(absolute path)>
-  LIVE_AGENT <scenario> complete -
-
-Run on the Intel Mac with an owner-approved installed DMG::
-
-  python3 -B tests/e2e/mac_live_agent_test.py --dmg zigBrowser_0.2.0_macos.dmg
-
-Use ``--scenarios 1,2,5`` while the click/type/press tools are still landing.
-The default is fail-fast so one product regression does not spend more of the
-owner's Claude allowance.  ``--keep-going`` is for a reviewed full pass.
+The default is fail-fast to conserve live-account usage. Use
+``--scenarios 1,2,5`` for a reviewed subset.
 """
 
 from __future__ import annotations
 
 import argparse
-import base64
-import json
 import os
 import plistlib
 import re
 import shutil
 import signal
+import stat
 import struct
 import subprocess
 import sys
@@ -51,13 +42,17 @@ import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Optional
+from typing import Optional
 
 
-ACTION_ENV = "ZB_DEBUG_LIVE_AGENT_FILE"
-ROW_PREFIX = "LIVE_AGENT\t"
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 TOKEN_SHAPE = re.compile(r"sk-ant-[A-Za-z0-9_-]+")
+SECRET_ASSIGNMENT = re.compile(
+    r"(?i)((?:anthropic_api_key|claude_code_oauth_token|authorization|token)"
+    r"\s*[:=]\s*)([^\s,;]+)"
+)
+RECORD_SEPARATOR = "\x1e"
+UNIT_SEPARATOR = "\x1f"
 
 
 @dataclass(frozen=True)
@@ -66,10 +61,9 @@ class Scenario:
     name: str
     start_url: str
     prompt: str
-    tools: frozenset[str]
-    approval: bool
-    result_terms: tuple[str, ...]
     assistant_terms: tuple[str, ...]
+    approval_terms: tuple[str, ...] = ()
+    snapshot: bool = False
 
 
 SCENARIOS = (
@@ -77,64 +71,48 @@ SCENARIOS = (
         1,
         "window-info",
         "https://example.com/",
-        "What page is this window on?",
-        frozenset({"window_info"}),
-        False,
-        ("example.com", "example domain"),
+        "Use window_info to report the current window URL and title. Do not use another tool.",
         ("example.com", "example domain"),
     ),
     Scenario(
         2,
         "navigate-heading",
         "about:blank",
-        "Go to https://example.com and tell me the heading",
-        frozenset({"navigate", "get_text"}),
-        True,
+        "Use the browser tools to open https://example.com and report the page heading exactly.",
         ("example domain",),
-        ("example domain",),
+        snapshot=True,
     ),
     Scenario(
         3,
         "google-search",
         "https://www.google.com/",
-        "Search Google for zigbrowser and tell me the first result's title",
-        frozenset({"navigate", "get_text"}),
-        False,
+        "On the current Google page, use type_text to enter exactly \"zigbrowser test\" "
+        "in the search box, then use press_key with Enter. Report the first result title. "
+        "Do not navigate directly to a search URL.",
         ("zigbrowser",),
-        ("zigbrowser",),
+        ("type_text", "press_key"),
     ),
     Scenario(
         4,
         "form-submit",
-        "about:blank",
-        "Open https://httpbin.org/forms/post, fill the customer name with Test User and submit",
-        frozenset({"navigate", "type_text", "click", "get_text"}),
+        "https://httpbin.org/forms/post",
+        "On this httpbin form, use type_text to fill Customer name with Zig Browser Owner, "
+        "Telephone with 212-555-0142, and E-mail address with owner-live@zigbrowser.test. "
+        "Pick Medium as the Pizza Size, submit the form, then report the echoed values for "
+        "custname, custtel, custemail, and size.",
+        ("zig browser owner", "212-555-0142", "owner-live@zigbrowser.test", "medium"),
+        ("type_text", "click"),
         True,
-        ("test user",),
-        ("test user",),
     ),
     Scenario(
         5,
         "click-more",
         "https://example.com/",
-        "Click the 'More information...' link on example.com",
-        frozenset({"click"}),
-        True,
+        "On example.com, use click on the \"More information...\" link, then report the new URL.",
         ("iana.org",),
-        ("iana", "more information"),
+        ("click",),
     ),
 )
-
-
-@dataclass
-class LiveRows:
-    sent: bool
-    complete: bool
-    tools: list[dict[str, Any]]
-    approvals: list[dict[str, Any]]
-    assistants: list[str]
-    snapshots: list[str]
-    malformed: list[str]
 
 
 @dataclass(frozen=True)
@@ -144,6 +122,136 @@ class ProcessIdentity:
     pgid: int
     start: str
     command: str
+
+
+@dataclass(frozen=True)
+class UiItem:
+    role: str
+    value: str
+
+
+@dataclass
+class ScenarioResult:
+    ok: bool
+    detail: str
+    drawer_lines: list[str]
+    assistant: str
+    png: Optional[Path]
+    cleanup_safe: bool
+
+
+class PreconditionError(RuntimeError):
+    """A condition failed before the next product launch."""
+
+
+READ_UI_SCRIPT = r'''
+on run argv
+  set targetPid to item 1 of argv as integer
+  tell application "System Events"
+    set matches to every process whose unix id is targetPid
+    if (count of matches) is not 1 then error "target process is unavailable"
+    tell item 1 of matches
+      if (count of windows) is 0 then error "target process has no window"
+      set output to ""
+      repeat with candidate in entire contents of front window
+        try
+          set candidateRole to role of candidate as text
+          if candidateRole is "AXTextArea" or candidateRole is "AXStaticText" then
+            set candidateValue to value of candidate as text
+            set output to output & candidateRole & (ASCII character 31) & candidateValue & (ASCII character 30)
+          end if
+        end try
+      end repeat
+      return output
+    end tell
+  end tell
+end run
+'''
+
+
+SEND_PROMPT_SCRIPT = r'''
+on run argv
+  set targetPid to item 1 of argv as integer
+  set promptText to item 2 of argv
+  tell application "System Events"
+    set matches to every process whose unix id is targetPid
+    if (count of matches) is not 1 then error "target process is unavailable"
+    tell item 1 of matches
+      set frontmost to true
+      delay 0.2
+      set promptField to value of attribute "AXFocusedUIElement"
+      if (role of promptField as text) is not "AXTextArea" then
+        error "focused drawer control is not a text area"
+      end if
+      if (value of promptField as text) is not "" then
+        error "focused drawer input was not empty"
+      end if
+      keystroke promptText
+      delay 0.2
+      if (value of promptField as text) is not promptText then
+        error "typed prompt did not reach the drawer input"
+      end if
+      repeat with candidate in entire contents of front window
+        try
+          if (role of candidate as text) is "AXButton" and (name of candidate as text) is "Send" and enabled of candidate then
+            perform action "AXPress" of candidate
+            return "SENT"
+          end if
+        end try
+      end repeat
+      error "enabled Send button was not found"
+    end tell
+  end tell
+end run
+'''
+
+
+APPROVE_ONE_SCRIPT = r'''
+on run argv
+  set targetPid to item 1 of argv as integer
+  tell application "System Events"
+    set matches to every process whose unix id is targetPid
+    if (count of matches) is not 1 then error "target process is unavailable"
+    tell item 1 of matches
+      if (count of windows) is 0 then return ""
+      set summaries to {}
+      repeat with candidate in entire contents of front window
+        try
+          if (role of candidate as text) is "AXStaticText" then
+            set candidateValue to value of candidate as text
+            if candidateValue starts with "Claude wants to " then set end of summaries to candidateValue
+          end if
+        end try
+      end repeat
+      set summaryText to ""
+      repeat with summary in summaries
+        if summaryText is not "" then set summaryText to summaryText & (ASCII character 31)
+        set summaryText to summaryText & summary
+      end repeat
+      repeat with candidate in entire contents of front window
+        try
+          if (role of candidate as text) is "AXButton" and (name of candidate as text) is "Approve" and enabled of candidate then
+            perform action "AXPress" of candidate
+            return "CLICKED" & (ASCII character 30) & summaryText
+          end if
+        end try
+      end repeat
+      return ""
+    end tell
+  end tell
+end run
+'''
+
+
+ACCESSIBILITY_PREFLIGHT_SCRIPT = r'''
+tell application "System Events" to get unix id of every process
+'''
+
+
+def redact(text: str) -> str:
+    text = TOKEN_SHAPE.sub("[REDACTED]", text)
+    text = SECRET_ASSIGNMENT.sub(r"\1[REDACTED]", text)
+    return text.replace("\r", " ").replace("\n", " ")
 
 
 def private_write(path: Path, data: bytes) -> None:
@@ -247,23 +355,38 @@ def process_table() -> dict[int, ProcessIdentity]:
     return found
 
 
-def executable_pids(executable: Path) -> dict[int, str]:
+def is_zigbrowser_process(process: ProcessIdentity) -> bool:
+    executable = process.command.split(None, 1)[0]
+    return executable.endswith("/zigBrowser.app/Contents/MacOS/zigBrowser")
+
+
+def zigbrowser_processes() -> dict[int, ProcessIdentity]:
+    return {
+        pid: process
+        for pid, process in process_table().items()
+        if is_zigbrowser_process(process)
+    }
+
+
+def executable_processes(executable: Path) -> dict[int, ProcessIdentity]:
     exact = str(executable)
     prefix = exact + " "
     return {
-        pid: process.command
+        pid: process
         for pid, process in process_table().items()
         if process.command == exact or process.command.startswith(prefix)
     }
 
 
-def owned_tree(root: int) -> dict[int, ProcessIdentity]:
+def owned_tree(root: ProcessIdentity) -> dict[int, ProcessIdentity]:
     table = process_table()
+    if table.get(root.pid) != root:
+        return {}
     children: dict[int, list[int]] = {}
     for process in table.values():
         children.setdefault(process.ppid, []).append(process.pid)
     found: dict[int, ProcessIdentity] = {}
-    pending = [root]
+    pending = [root.pid]
     while pending:
         pid = pending.pop()
         process = table.get(pid)
@@ -276,39 +399,167 @@ def owned_tree(root: int) -> dict[int, ProcessIdentity]:
 
 def matching_survivors(expected: dict[int, ProcessIdentity]) -> list[ProcessIdentity]:
     table = process_table()
-    return [
-        process
-        for pid, process in expected.items()
-        if table.get(pid) == process
-    ]
+    return [process for pid, process in expected.items() if table.get(pid) == process]
 
 
-def stop_owned(pid: Optional[int], executable: Path) -> Optional[str]:
-    if pid is None:
+def stop_owned(identity: Optional[ProcessIdentity], executable: Path) -> Optional[str]:
+    if identity is None:
         return None
-    current = executable_pids(executable)
-    if pid not in current:
+    current = executable_processes(executable)
+    if current.get(identity.pid) != identity:
         return None
-    owned = owned_tree(pid)
-    os.kill(pid, signal.SIGTERM)
+    owned = owned_tree(identity)
+    try:
+        os.kill(identity.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        return None
     deadline = time.monotonic() + 10.0
     while time.monotonic() < deadline:
-        if pid not in executable_pids(executable):
+        if process_table().get(identity.pid) != identity:
             break
         time.sleep(0.1)
     else:
-        return f"owned application pid {pid} ignored SIGTERM; it was not killed"
+        current_identity = process_table().get(identity.pid)
+        if current_identity != identity:
+            return "owned application identity changed before forced quit"
+        try:
+            os.kill(identity.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            return None
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline and process_table().get(identity.pid) == identity:
+            time.sleep(0.1)
+        if process_table().get(identity.pid) == identity:
+            return f"owned application pid {identity.pid} survived TERM and KILL"
 
-    descendants = {child: identity for child, identity in owned.items() if child != pid}
-    deadline = time.monotonic() + 5.0
+    descendants = {pid: value for pid, value in owned.items() if pid != identity.pid}
+    deadline = time.monotonic() + 8.0
     survivors = matching_survivors(descendants)
     while survivors and time.monotonic() < deadline:
         time.sleep(0.1)
         survivors = matching_survivors(descendants)
     if survivors:
-        names = ",".join(f"{item.pid}:{Path(item.command.split()[0]).name}" for item in survivors[:8])
+        names = ",".join(
+            f"{item.pid}:{Path(item.command.split()[0]).name}" for item in survivors[:8]
+        )
         return f"owned application descendants survived controlled quit: {names}"
     return None
+
+
+def run_osascript(script: str, *arguments: str, timeout: float = 10.0) -> str:
+    done = subprocess.run(
+        ["/usr/bin/osascript", "-", *arguments],
+        input=script,
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+        check=False,
+    )
+    if done.returncode != 0:
+        detail = redact(done.stderr.strip() or done.stdout.strip() or "osascript failed")
+        raise RuntimeError(detail[:600])
+    return done.stdout.rstrip("\r\n")
+
+
+def read_ui(pid: int) -> list[UiItem]:
+    raw = run_osascript(READ_UI_SCRIPT, str(pid), timeout=15.0)
+    items: list[UiItem] = []
+    for record in raw.split(RECORD_SEPARATOR):
+        if not record or UNIT_SEPARATOR not in record:
+            continue
+        role, value = record.split(UNIT_SEPARATOR, 1)
+        items.append(UiItem(role, value))
+    return items
+
+
+def ui_values(items: list[UiItem], role: str) -> list[str]:
+    return [item.value.strip() for item in items if item.role == role and item.value.strip()]
+
+
+def wait_for_ready(pid: int, deadline: float) -> list[UiItem]:
+    last_error = "drawer did not expose its status"
+    failed_statuses = {"No token", "Permission needed", "Stopped", "Unavailable", "Setup failed"}
+    while time.monotonic() < deadline:
+        try:
+            items = read_ui(pid)
+        except RuntimeError as error:
+            last_error = str(error)
+            time.sleep(0.25)
+            continue
+        labels = set(ui_values(items, "AXStaticText"))
+        if "Ready" in labels:
+            return items
+        failed = sorted(labels & failed_statuses)
+        if failed:
+            raise RuntimeError(f"drawer status is {failed[0]}")
+        time.sleep(0.25)
+    raise RuntimeError(f"drawer was not Ready: {last_error}")
+
+
+def send_prompt(pid: int, prompt: str) -> None:
+    result = run_osascript(SEND_PROMPT_SCRIPT, str(pid), prompt, timeout=20.0)
+    if result != "SENT":
+        raise RuntimeError(f"drawer send returned {result!r}")
+
+
+def approve_one(pid: int) -> tuple[bool, list[str]]:
+    result = run_osascript(APPROVE_ONE_SCRIPT, str(pid), timeout=15.0)
+    if not result:
+        return False, []
+    marker = "CLICKED" + RECORD_SEPARATOR
+    if not result.startswith(marker):
+        raise RuntimeError(f"approval click returned {result!r}")
+    summaries = [part.strip() for part in result[len(marker) :].split(UNIT_SEPARATOR)]
+    return True, [part for part in summaries if part]
+
+
+def assistant_text(items: list[UiItem], baseline: set[str], prompt: str) -> str:
+    candidates = [
+        value
+        for value in ui_values(items, "AXTextArea")
+        if value != prompt and value not in baseline
+    ]
+    return candidates[-1] if candidates else ""
+
+
+def wait_for_answer(
+    pid: int, baseline: set[str], prompt: str, deadline: float
+) -> tuple[str, list[str], int]:
+    approvals: list[str] = []
+    last_answer = ""
+    stable = 0
+    while time.monotonic() < deadline:
+        clicked, summaries = approve_one(pid)
+        if clicked:
+            approvals.extend(summaries or ["<visible approval card>"])
+        items = read_ui(pid)
+        labels = set(ui_values(items, "AXStaticText"))
+        answer = assistant_text(items, baseline, prompt)
+        if answer and answer == last_answer and "Ready" in labels:
+            stable += 1
+        elif answer:
+            last_answer = answer
+            stable = 0
+        else:
+            stable = 0
+        if stable >= 3:
+            return answer, approvals, time.time_ns()
+        if "Stopped" in labels and not answer:
+            raise RuntimeError("agent stopped before producing an answer")
+        time.sleep(0.35)
+    raise RuntimeError("timed out waiting for a stable visible assistant answer")
+
+
+def safe_drawer_lines(path: Path, start_size: int) -> list[str]:
+    try:
+        with path.open("rb") as stream:
+            stream.seek(min(start_size, path.stat().st_size))
+            raw_lines = stream.read().splitlines()
+    except OSError:
+        return ["<no new drawer.log lines>"]
+    if not raw_lines:
+        return ["<no new drawer.log lines>"]
+    return [redact(line.decode("utf-8", errors="replace"))[:1200] for line in raw_lines]
 
 
 def read_lines(path: Path) -> list[str]:
@@ -318,207 +569,146 @@ def read_lines(path: Path) -> list[str]:
         return []
 
 
-def safe_drawer_line(path: Path, start_size: int) -> str:
-    try:
-        with path.open("rb") as stream:
-            stream.seek(min(start_size, path.stat().st_size))
-            new = stream.read()
-    except OSError:
-        return "<no drawer.log line>"
-    raw_lines = new.splitlines()
-    if not raw_lines:
-        return "<no drawer.log line>"
-    line = raw_lines[-1].decode("utf-8", errors="replace")
-    line = TOKEN_SHAPE.sub("[REDACTED]", line)
-    return line.replace("\t", " | ").replace("\r", " ").replace("\n", " ")[:1200]
-
-
-def decode_payload(payload: str) -> bytes:
-    return base64.b64decode(payload, validate=True)
-
-
-def parse_live_rows(lines: list[str], scenario: str) -> LiveRows:
-    parsed = LiveRows(False, False, [], [], [], [], [])
-    prefix = f"{ROW_PREFIX}{scenario}\t"
-    for line in lines:
-        if not line.startswith(prefix):
-            continue
-        fields = line.split("\t")
-        if len(fields) != 4 or fields[0] != "LIVE_AGENT" or fields[1] != scenario:
-            parsed.malformed.append(line)
-            continue
-        event, payload = fields[2], fields[3]
-        try:
-            if event == "sent" and payload == "-":
-                parsed.sent = True
-            elif event == "complete" and payload == "-":
-                parsed.complete = True
-            elif event == "tool":
-                value = json.loads(decode_payload(payload).decode("utf-8"))
-                if not isinstance(value, dict):
-                    raise ValueError("tool payload is not an object")
-                parsed.tools.append(value)
-            elif event == "approval":
-                value = json.loads(decode_payload(payload).decode("utf-8"))
-                if not isinstance(value, dict):
-                    raise ValueError("approval payload is not an object")
-                parsed.approvals.append(value)
-            elif event == "assistant":
-                parsed.assistants.append(decode_payload(payload).decode("utf-8"))
-            elif event == "snapshot":
-                parsed.snapshots.append(decode_payload(payload).decode("utf-8"))
-            else:
-                parsed.malformed.append(line)
-        except (ValueError, TypeError, UnicodeDecodeError, json.JSONDecodeError):
-            parsed.malformed.append(line)
-    return parsed
-
-
 def png_size(path: Path) -> Optional[tuple[int, int]]:
     try:
-        data = path.read_bytes()
+        with path.open("rb") as stream:
+            header = stream.read(24)
+        size = path.stat().st_size
     except OSError:
         return None
-    if len(data) < 10_000 or data[:8] != PNG_SIGNATURE or data[12:16] != b"IHDR":
+    if size < 10_000 or header[:8] != PNG_SIGNATURE or header[12:16] != b"IHDR":
         return None
-    width, height = struct.unpack(">II", data[16:24])
+    width, height = struct.unpack(">II", header[16:24])
     if width < 600 or height < 400:
         return None
     return width, height
 
 
-def tool_name(value: dict[str, Any]) -> str:
-    name = value.get("tool")
-    if not isinstance(name, str):
-        return ""
-    return name.rsplit("__", 1)[-1]
-
-
-def all_text(rows: LiveRows) -> str:
-    pieces = list(rows.assistants)
-    for tool in rows.tools:
-        body = tool.get("body")
-        if isinstance(body, str):
-            pieces.append(body)
-    return "\n".join(pieces).lower()
-
-
-def validate_scenario(scenario: Scenario, rows: LiveRows, png: Path) -> Optional[str]:
-    if rows.malformed:
-        return f"malformed live row: {rows.malformed[0]!r}"
-    if not rows.sent:
-        return "the action file did not produce the sent row"
-    if not rows.complete:
-        return "the action file did not produce the complete row"
-    failed_tools = [tool for tool in rows.tools if tool.get("ok") is not True]
-    if failed_tools:
-        return f"tool failed: {failed_tools[0]!r}"
-    used = {tool_name(tool) for tool in rows.tools}
-    missing = sorted(scenario.tools - used)
+def validate_answer(scenario: Scenario, answer: str, approvals: list[str]) -> Optional[str]:
+    lowered = answer.lower()
+    failure_phrases = ("couldn't", "could not", "unable", "failed", "can't", "cannot")
+    reported_failure = next((phrase for phrase in failure_phrases if phrase in lowered), None)
+    if reported_failure is not None:
+        return f"visible assistant answer reports failure ({reported_failure!r})"
+    missing = [term for term in scenario.assistant_terms if term not in lowered]
     if missing:
-        return f"missing required real tool calls {missing}; observed {sorted(used)!r}"
-    if scenario.approval and not any(
-        item.get("outcome") == "approved" for item in rows.approvals
-    ):
-        return f"no approved visible card; observed {rows.approvals!r}"
-    if len(rows.assistants) != 1 or not rows.assistants[0].strip():
-        return f"found {len(rows.assistants)} final assistant rows, want one nonempty row"
-    combined = all_text(rows)
-    if not all(term in combined for term in scenario.result_terms):
-        return f"page/tool evidence lacks {scenario.result_terms!r}"
-    assistant = rows.assistants[0].lower()
-    if not any(term in assistant for term in scenario.assistant_terms):
-        return f"assistant answer lacks one of {scenario.assistant_terms!r}"
-    if rows.snapshots != [str(png)]:
-        return f"snapshot rows are {rows.snapshots!r}, want exactly {str(png)!r}"
+        return f"visible assistant answer lacks {missing!r}"
+    approval_text = "\n".join(approvals).lower()
+    missing_approvals = [term for term in scenario.approval_terms if term not in approval_text]
+    if missing_approvals:
+        return (
+            f"visible approval cards lack {missing_approvals!r}; "
+            f"observed {[redact(item) for item in approvals]!r}"
+        )
+    return None
+
+
+def wait_for_snapshot(
+    png: Path, stdout: Path, completed_ns: int, deadline: float
+) -> tuple[Optional[str], Optional[tuple[int, int]]]:
+    while time.monotonic() < deadline and not png.is_file():
+        time.sleep(0.2)
     dimensions = png_size(png)
     if dimensions is None:
-        return f"in-app PNG is missing or invalid: {png}"
-    return None
+        return f"in-app cacheDisplayInRect PNG is missing or invalid: {png}", None
+    if png.stat().st_mtime_ns < completed_ns:
+        return "in-app PNG was written before the visible assistant answer completed", None
+    expected = f"WINDOW_SNAPSHOT\t1\t{dimensions[0]}x{dimensions[1]}\t{png}"
+    if expected not in read_lines(stdout):
+        return "WINDOW_SNAPSHOT product evidence row is missing", None
+    return None, dimensions
 
 
 def run_scenario(
     app: Path,
     root: Path,
-    real_home: Path,
-    xdg_data: Path,
-    xdg_cache: Path,
+    owner_home: Path,
+    owner_data: Path,
     scenario: Scenario,
     timeout: float,
-) -> tuple[bool, str, Path]:
+) -> ScenarioResult:
     executable = app / "Contents/MacOS/zigBrowser"
+    existing = zigbrowser_processes()
+    if existing:
+        rows = ", ".join(f"pid={pid} {redact(item.command)}" for pid, item in existing.items())
+        raise PreconditionError(f"zigBrowser appeared before scenario launch: {rows}")
+
     scenario_root = root / f"scenario-{scenario.number}-{scenario.name}"
     profile = scenario_root / "profile"
     temp = scenario_root / "tmp"
-    for directory in (scenario_root, profile, temp):
+    cache = scenario_root / "cache"
+    for directory in (scenario_root, profile, temp, cache):
         directory.mkdir(mode=0o700)
     stdout = scenario_root / "browser.stdout"
     stderr = scenario_root / "browser.stderr"
-    action = scenario_root / "live-action.json"
-    png = scenario_root / "drawer.png"
+    png = scenario_root / "window.png"
     private_write(stdout, b"")
     private_write(stderr, b"")
-    private_write(
-        action,
-        json.dumps(
-            {
-                "version": 1,
-                "scenario": scenario.name,
-                "prompt": scenario.prompt,
-                "approve": "all",
-                "snapshot_png": str(png),
-            },
-            separators=(",", ":"),
-        ).encode("utf-8"),
-    )
-    drawer_log = xdg_data / "zigbrowser/agent-home/state/drawer.log"
+    drawer_log = owner_data / "zigbrowser/agent-home/state/drawer.log"
     try:
         drawer_offset = drawer_log.stat().st_size
     except OSError:
         drawer_offset = 0
 
-    before = executable_pids(executable)
-    opener = subprocess.Popen(
+    command = [
+        "/usr/bin/open",
+        "-n",
+        "-W",
+        "-o",
+        str(stdout),
+        "--stderr",
+        str(stderr),
+        "--env",
+        f"HOME={owner_home}",
+        "--env",
+        f"XDG_DATA_HOME={owner_data}",
+        "--env",
+        f"XDG_CACHE_HOME={cache}",
+        "--env",
+        f"TMPDIR={temp}",
+    ]
+    if scenario.snapshot:
+        command.extend(
+            [
+                "--env",
+                f"ZB_DEBUG_WINDOW_SNAPSHOT_PNG={png}",
+                "--env",
+                "ZB_DEBUG_WINDOW_SNAPSHOT_DELAY_MS=55000",
+            ]
+        )
+    command.extend(
         [
-            "/usr/bin/open",
-            "-n",
-            "-W",
-            "-o",
-            str(stdout),
-            "--stderr",
-            str(stderr),
-            "--env",
-            f"HOME={real_home}",
-            "--env",
-            f"TMPDIR={temp}",
-            "--env",
-            f"XDG_DATA_HOME={xdg_data}",
-            "--env",
-            f"XDG_CACHE_HOME={xdg_cache}",
-            "--env",
-            f"{ACTION_ENV}={action}",
             str(app),
             "--args",
             scenario.start_url,
             "--agent-drawer",
             "on",
-            "--e2e-protocol",
             "--profile-dir",
             str(profile),
-        ],
+        ]
+    )
+    if scenario.snapshot:
+        command.append("--e2e-protocol")
+
+    before = executable_processes(executable)
+    opener = subprocess.Popen(
+        command,
         stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
-    pid = None
-    reason = None
-    rows = LiveRows(False, False, [], [], [], [], [])
+    identity: Optional[ProcessIdentity] = None
+    reason: Optional[str] = None
+    answer = ""
+    approvals: list[str] = []
+    dimensions: Optional[tuple[int, int]] = None
     deadline = time.monotonic() + timeout
     try:
         while time.monotonic() < deadline:
-            created = sorted(set(executable_pids(executable)) - set(before))
+            now = executable_processes(executable)
+            created = sorted(set(now) - set(before))
             if len(created) == 1:
-                pid = created[0]
+                identity = now[created[0]]
                 break
             if len(created) > 1:
                 reason = f"launch created {len(created)} matching app processes, want one"
@@ -528,39 +718,61 @@ def run_scenario(
                 break
             time.sleep(0.1)
 
-        while reason is None and pid is not None and time.monotonic() < deadline:
-            lines = read_lines(stdout)
-            rows = parse_live_rows(lines, scenario.name)
-            if rows.complete and rows.snapshots:
-                break
-            if pid not in executable_pids(executable):
-                reason = "owned installed application exited before completion"
-                break
-            time.sleep(0.2)
-
-        if reason is None:
-            reason = validate_scenario(scenario, rows, png)
-        if reason is None and time.monotonic() >= deadline:
-            reason = f"scenario exceeded {timeout:.0f}s"
+        if reason is None and identity is None:
+            reason = "installed app did not appear before timeout"
+        if reason is None and identity is not None:
+            initial_items = wait_for_ready(identity.pid, deadline)
+            baseline = set(ui_values(initial_items, "AXTextArea"))
+            send_prompt(identity.pid, scenario.prompt)
+            answer, approvals, completed_ns = wait_for_answer(
+                identity.pid, baseline, scenario.prompt, deadline
+            )
+            reason = validate_answer(scenario, answer, approvals)
+            if reason is None and scenario.snapshot:
+                reason, dimensions = wait_for_snapshot(png, stdout, completed_ns, deadline)
+    except (RuntimeError, subprocess.TimeoutExpired) as error:
+        reason = redact(str(error))
     finally:
-        stop_error = stop_owned(pid, executable)
+        stop_error = stop_owned(identity, executable)
         if stop_error is not None:
             reason = f"{reason}; {stop_error}" if reason else stop_error
         try:
             opener.wait(timeout=5)
         except subprocess.TimeoutExpired:
             reason = f"{reason}; open -W did not finish" if reason else "open -W did not finish"
+            opener.terminate()
+            try:
+                opener.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                opener.kill()
+                opener.wait(timeout=2)
 
-    detail = safe_drawer_line(drawer_log, drawer_offset)
+    drawer_lines = safe_drawer_lines(drawer_log, drawer_offset)
     if reason is not None:
         err_tail = read_lines(stderr)[-1:] or ["<no stderr line>"]
-        return False, f"{reason}; drawer.log={detail}; stderr={err_tail[0][:600]}", png
-    dimensions = png_size(png)
-    return True, f"tools={len(rows.tools)} approvals={len(rows.approvals)} png={dimensions}", png
+        detail = f"{reason}; stderr={redact(err_tail[0])[:600]}"
+        return ScenarioResult(
+            False,
+            detail,
+            drawer_lines,
+            redact(answer),
+            png if scenario.snapshot else None,
+            stop_error is None,
+        )
+    snapshot_detail = f" png={dimensions}" if dimensions is not None else ""
+    detail = f"approvals={len(approvals)}{snapshot_detail}"
+    return ScenarioResult(
+        True,
+        detail,
+        drawer_lines,
+        redact(answer),
+        png if scenario.snapshot else None,
+        stop_error is None,
+    )
 
 
 def selected_scenarios(raw: str) -> list[Scenario]:
-    values = []
+    values: list[Scenario] = []
     for item in raw.split(","):
         item = item.strip()
         if not item.isdigit():
@@ -573,66 +785,155 @@ def selected_scenarios(raw: str) -> list[Scenario]:
     return values
 
 
+def token_precondition(token: Path) -> Optional[str]:
+    try:
+        metadata = os.stat(token, follow_symlinks=False)
+    except OSError as error:
+        return f"token file stat failed: {error.strerror}"
+    if not stat.S_ISREG(metadata.st_mode):
+        return "token path is not a regular file"
+    if stat.S_IMODE(metadata.st_mode) != 0o600:
+        return f"token file mode is {stat.S_IMODE(metadata.st_mode):04o}, want 0600"
+    if metadata.st_uid != os.getuid():
+        return f"token file uid is {metadata.st_uid}, want {os.getuid()}"
+    return None
+
+
+def preflight(dmg: Path, owner_home: Path, token: Path) -> bool:
+    failures: list[str] = []
+    token_error = token_precondition(token)
+    if token_error is None:
+        print(f"PREFLIGHT\tmac-live-agent\ttoken-stat\tregular mode=0600 uid={os.getuid()}", flush=True)
+    else:
+        failures.append(token_error)
+
+    running = zigbrowser_processes()
+    if running:
+        for process in running.values():
+            failures.append(f"zigBrowser running pid={process.pid} command={redact(process.command)}")
+    else:
+        print("PREFLIGHT\tmac-live-agent\tprocess-list\tno zigBrowser process", flush=True)
+
+    if not dmg.is_file():
+        failures.append(f"DMG is missing: {dmg}")
+    if owner_home != Path.home().resolve():
+        failures.append("resolved owner HOME changed during preflight")
+
+    if not failures:
+        try:
+            run_osascript(ACCESSIBILITY_PREFLIGHT_SCRIPT, timeout=10.0)
+            print("PREFLIGHT\tmac-live-agent\taccessibility\tSystem Events available", flush=True)
+        except (RuntimeError, subprocess.TimeoutExpired) as error:
+            failures.append(f"System Events accessibility unavailable: {redact(str(error))}")
+
+    for failure in failures:
+        print(f"PRECONDITION\tmac-live-agent\t{failure}", flush=True)
+    return not failures
+
+
+def guarded_remove_live_root(root: Path, owner_home: Path) -> None:
+    resolved_root = root.resolve()
+    resolved_home = owner_home.resolve()
+    name = resolved_root.name
+    if (
+        resolved_root.parent != resolved_home
+        or not name.startswith("zb-live-")
+        or len(name) <= len("zb-live-")
+    ):
+        raise RuntimeError(f"refused unguarded cleanup target: {resolved_root}")
+    shutil.rmtree(resolved_root)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--dmg", required=True, type=Path)
     parser.add_argument("--scenarios", default="1,2,3,4,5")
-    parser.add_argument("--timeout", type=float, default=180.0)
+    parser.add_argument("--timeout", type=float, default=240.0)
     parser.add_argument("--keep-going", action="store_true")
     args = parser.parse_args()
     if sys.platform != "darwin":
-        print("FAIL\tmac-live-agent\tprecondition\tmacOS is required", flush=True)
-        return 1
-    if args.timeout < 15 or args.timeout > 600:
-        print("FAIL\tmac-live-agent\tprecondition\t--timeout must be 15..600", flush=True)
-        return 1
+        print("PRECONDITION\tmac-live-agent\tmacOS is required", flush=True)
+        return 2
+    if args.timeout < 60 or args.timeout > 600:
+        print("PRECONDITION\tmac-live-agent\t--timeout must be 60..600", flush=True)
+        return 2
     try:
         scenarios = selected_scenarios(args.scenarios)
     except ValueError as error:
-        print(f"FAIL\tmac-live-agent\tprecondition\t{error}", flush=True)
-        return 1
-    dmg = args.dmg.expanduser().resolve()
-    if not dmg.is_file():
-        print(f"FAIL\tmac-live-agent\tprecondition\tDMG is missing: {dmg}", flush=True)
-        return 1
+        print(f"PRECONDITION\tmac-live-agent\t{error}", flush=True)
+        return 2
 
-    real_home = Path.home().resolve()
-    root = Path(tempfile.mkdtemp(prefix="zb-live-agent-", dir=real_home))
-    xdg_data, xdg_cache = root / "data", root / "cache"
-    xdg_data.mkdir(mode=0o700)
-    xdg_cache.mkdir(mode=0o700)
+    owner_home = Path.home().resolve()
+    owner_data = owner_home / ".local/share"
+    agent_home = owner_data / "zigbrowser/agent-home"
+    token = agent_home / "secrets/claude_token"
+    dmg = args.dmg.expanduser().resolve()
+    if not preflight(dmg, owner_home, token):
+        return 2
+
+    root = Path(tempfile.mkdtemp(prefix="zb-live-", dir=owner_home))
     failed = False
-    retained = False
+    cleanup_allowed = True
     try:
         app = install_dmg(dmg, root)
         print(f"PASS\tmac-live-agent\tinstall\t{app}", flush=True)
-        for index, scenario in enumerate(scenarios):
+        for scenario in scenarios:
             if failed and not args.keep_going:
                 print(
                     f"FAIL\tmac-live-agent\t{scenario.name}\tnot run after earlier failure to conserve live account usage",
                     flush=True,
                 )
                 continue
-            ok, detail, png = run_scenario(
-                app, root, real_home, xdg_data, xdg_cache, scenario, args.timeout
-            )
-            if ok:
-                print(f"PASS\tmac-live-agent\t{scenario.name}\t{detail}\t{png}", flush=True)
+            try:
+                result = run_scenario(
+                    app, root, owner_home, owner_data, scenario, args.timeout
+                )
+            except PreconditionError as error:
+                failed = True
+                cleanup_allowed = not bool(zigbrowser_processes())
+                print(f"PRECONDITION\tmac-live-agent\t{redact(str(error))}", flush=True)
+                break
+            for line in result.drawer_lines:
+                print(f"DRAWER_LOG\tmac-live-agent\t{scenario.name}\t{line}", flush=True)
+            if result.assistant:
+                print(
+                    f"ASSISTANT\tmac-live-agent\t{scenario.name}\t{result.assistant[:1200]}",
+                    flush=True,
+                )
+            if result.ok:
+                png_detail = f"\t{result.png}" if result.png is not None else ""
+                print(
+                    f"PASS\tmac-live-agent\t{scenario.name}\t{result.detail}{png_detail}",
+                    flush=True,
+                )
             else:
                 failed = True
-                retained = True
-                print(f"FAIL\tmac-live-agent\t{scenario.name}\t{detail}", flush=True)
-        if retained:
-            print(f"EVIDENCE\tmac-live-agent\t{root}", flush=True)
-        return 1 if failed else 0
+                print(f"FAIL\tmac-live-agent\t{scenario.name}\t{result.detail}", flush=True)
+            if not result.cleanup_safe:
+                cleanup_allowed = False
+                break
     except Exception as error:  # fail closed with one bounded product-test row
-        retained = True
-        print(f"FAIL\tmac-live-agent\tsetup\t{type(error).__name__}: {error}", flush=True)
-        print(f"EVIDENCE\tmac-live-agent\t{root}", flush=True)
-        return 1
+        failed = True
+        cleanup_allowed = not bool(zigbrowser_processes())
+        print(
+            f"FAIL\tmac-live-agent\tsetup\t{type(error).__name__}: {redact(str(error))}",
+            flush=True,
+        )
     finally:
-        if not retained and not failed:
-            shutil.rmtree(root, ignore_errors=True)
+        if cleanup_allowed:
+            try:
+                guarded_remove_live_root(root, owner_home)
+                print(f"PASS\tmac-live-agent\tcleanup\tremoved {root}", flush=True)
+            except Exception as error:
+                failed = True
+                print(f"FAIL\tmac-live-agent\tcleanup\t{redact(str(error))}", flush=True)
+        else:
+            failed = True
+            print(
+                f"FAIL\tmac-live-agent\tcleanup\tretained guarded root because a zigBrowser process remains: {root}",
+                flush=True,
+            )
+    return 1 if failed else 0
 
 
 if __name__ == "__main__":
