@@ -15,6 +15,7 @@ import argparse
 import http.server
 import json
 import os
+import plistlib
 import signal
 import socket
 import struct
@@ -81,6 +82,7 @@ def html(body: str) -> bytes:
 class OAuthFixture:
     def __init__(self) -> None:
         self.events: list[str] = []
+        self.user_agents: list[tuple[str, str, str]] = []
         fixture = self
 
         class Opener(http.server.BaseHTTPRequestHandler):
@@ -88,6 +90,7 @@ class OAuthFixture:
                 route = urllib.parse.urlsplit(self.path)
                 query = urllib.parse.parse_qs(route.query)
                 fixture.events.append(f"opener:{route.path}")
+                fixture.user_agents.append(("opener", route.path, self.headers.get("User-Agent", "")))
                 if route.path == "/callback":
                     mode = query.get("mode", [""])[0]
                     cookie = query.get("cookie", [""])[0]
@@ -121,6 +124,9 @@ class OAuthFixture:
                         document.querySelector('#result').textContent = 'waiting:' + mode;
                         window.popup = window.open({json.dumps(self.server.auth_origin)} + '/authorize?mode=' + mode, 'oauth-provider');
                       }};
+                      window.startUaPopup = () => {{
+                        window.popup = window.open({json.dumps(self.server.auth_origin)} + '/ua-popup', 'ua-popup');
+                      }};
                     </script>"""
                 data = html(source)
                 self.send_response(200)
@@ -138,6 +144,15 @@ class OAuthFixture:
                 query = urllib.parse.parse_qs(route.query)
                 mode = query.get("mode", [""])[0]
                 fixture.events.append(f"auth:{route.path}:{'cookie' if 'oauth_session=ready' in (self.headers.get('Cookie') or '') else 'no-cookie'}")
+                fixture.user_agents.append(("auth", route.path, self.headers.get("User-Agent", "")))
+                if route.path == "/ua-popup":
+                    data = html("<title>User Agent Popup</title><h1 id=ua></h1><script>document.querySelector('#ua').textContent=navigator.userAgent</script>")
+                    self.send_response(200)
+                    self.send_header("Content-Type", "text/html; charset=utf-8")
+                    self.send_header("Content-Length", str(len(data)))
+                    self.end_headers()
+                    self.wfile.write(data)
+                    return
                 if route.path == "/authorize":
                     self.send_response(302)
                     self.send_header("Set-Cookie", "oauth_session=ready; Path=/; HttpOnly; SameSite=Lax")
@@ -212,6 +227,19 @@ def wait_until(label: str, timeout: float, read, wanted) -> None:
     raise AssertionError(f"{label}: last state {actual!r}")
 
 
+def safari_user_agent() -> str:
+    path = Path("/Applications/Safari.app/Contents/Info.plist")
+    with path.open("rb") as stream:
+        version = plistlib.load(stream).get("CFBundleShortVersionString")
+    if not isinstance(version, str) or not version:
+        raise RuntimeError("Safari CFBundleShortVersionString is missing")
+    return (
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+        "AppleWebKit/605.1.15 (KHTML, like Gecko) "
+        f"Version/{version} Safari/605.1.15"
+    )
+
+
 def executable_pids(executable: Path) -> set[int]:
     found: set[int] = set()
     prefix = f"{executable}"
@@ -250,6 +278,7 @@ def main() -> int:
         return 1
 
     failures: list[str] = []
+    observed_user_agent = "<not observed>"
     with OAuthFixture() as fixture, tempfile.TemporaryDirectory(prefix="zb-oauth-popup-") as raw:
         root = Path(raw)
         for name in ("home", "tmp", "data", "cache", "profile"):
@@ -309,6 +338,40 @@ def main() -> int:
             def result():
                 return rpc.call("dom.getText", {"selector": "css=#result"})["text"]
 
+            expected_user_agent = safari_user_agent()
+            observed_user_agent = rpc.call("page.evaluate", {"expression": "navigator.userAgent"})["result"]
+            if observed_user_agent != expected_user_agent:
+                raise AssertionError(
+                    f"main navigator.userAgent: got {observed_user_agent!r}, want {expected_user_agent!r}"
+                )
+            wait_until(
+                "main request User-Agent", args.timeout_sec,
+                lambda: [ua for origin, path, ua in fixture.user_agents if origin == "opener" and path == "/"],
+                lambda values: values == [expected_user_agent],
+            )
+
+            rpc.call("page.evaluate", {"expression": "startUaPopup()"})
+            wait_until(
+                "user-agent popup", args.timeout_sec, pages,
+                lambda values: len(values) == 2 and any((page.get("url") or "").endswith("/ua-popup") for page in values),
+            )
+            popup = next(page for page in pages() if (page.get("url") or "").endswith("/ua-popup"))
+            popup_user_agent = rpc.call(
+                "page.evaluate",
+                {"window_id": popup["window_id"], "expression": "navigator.userAgent"},
+            )["result"]
+            if popup_user_agent != expected_user_agent:
+                raise AssertionError(
+                    f"popup navigator.userAgent: got {popup_user_agent!r}, want {expected_user_agent!r}"
+                )
+            wait_until(
+                "popup request User-Agent", args.timeout_sec,
+                lambda: [ua for origin, path, ua in fixture.user_agents if origin == "auth" and path == "/ua-popup"],
+                lambda values: values == [expected_user_agent],
+            )
+            rpc.call("page.close", {"window_id": popup["window_id"]})
+            wait_until("user-agent popup close", args.timeout_sec, pages, lambda values: len(values) == 1)
+
             for mode in ("message", "third"):
                 rpc.call("page.evaluate", {"expression": f"startOAuth({json.dumps(mode)})"})
                 wait_until(f"{mode} callback result", args.timeout_sec, result, lambda value: value == "message:ready")
@@ -335,11 +398,13 @@ def main() -> int:
         if failures:
             print(f"FAIL\toauth-popup\t{failures[0]}")
             print("EVENTS\t" + " ".join(fixture.events))
+            print("USER_AGENTS\t" + " | ".join(f"{origin}:{path}:{ua}" for origin, path, ua in fixture.user_agents))
             print("STDOUT\t" + " | ".join(stdout_path.read_text(errors="replace").splitlines()[-12:]))
             print("STDERR\t" + " | ".join(stderr_path.read_text(errors="replace").splitlines()[-12:]))
             return 1
 
-    print(f"PASS\toauth-popup\tmessage close, third-window relay, opener navigation\t{png}")
+    print(f"USER_AGENT\t{observed_user_agent}")
+    print(f"PASS\toauth-popup\tSafari identity, message close, third-window relay, opener navigation\t{png}")
     return 0
 
 
