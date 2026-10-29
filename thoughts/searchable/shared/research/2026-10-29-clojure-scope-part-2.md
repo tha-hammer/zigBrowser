@@ -568,3 +568,358 @@ Each question has my recommendation.
   with the port.
 - **Q8. Upgrade the pinned SDK?** The repo pins 0.2.165; PyPI has 0.2.174.
   Recommendation: a separate task, not part of the port.
+
+---
+
+# Option E: embedded Chromium in the JVM (product side)
+
+Added 2026-10-29 for the owner's question about Equo Chromium
+(https://docs.equo.dev/chromium/150.x/getting-started/swing.html). Option E
+means one Chromium engine inside one JVM process on Mac, Windows and Linux,
+with Clojure owning the app and the UI. This section covers the product
+side. Pane 1 covers licensing, platforms, size, signing, native-image and
+the phases.
+
+Labels are as above. "web, checked" means I opened the page or the source
+file myself. "web (helper)" means a research helper read it and I did not
+re-open it.
+
+## E.0 Short answer
+
+1. **Equo Chromium does not meet our automation needs as documented.** It
+   has no documented way to inject a script into a private world at
+   document start, no API for trusted input, and no in-process DevTools
+   Protocol (CDP). Its only CDP route is a debug port, and its own docs
+   say: "This feature is intended for development purposes only. Do not
+   enable it in production environments" (web, checked:
+   https://docs.equo.dev/chromium/150.x/troubleshooting/devtools-and-debugging.html).
+2. **JCEF is the only one of the three with an in-process CDP client.**
+   `CefBrowser.getDevToolsClient()` returns a `CefDevToolsClient` with
+   `executeDevToolsMethod(method, parametersAsJson)`, which returns a
+   `CompletableFuture<String>` (web, checked:
+   https://raw.githubusercontent.com/chromiumembedded/java-cef/master/java/org/cef/browser/CefDevToolsClient.java,
+   lines 83-101; `CefBrowser.java` line 371). With it, the CDP design the
+   Windows branch already proved can be reused almost one to one (E.2).
+3. **JxBrowser has the richest high-level API** (profiles, all cookies,
+   dialogs, popups, downloads, screenshots). But its documented CDP access
+   is a remote debugging port, and whether its `Browser.dispatch` input is
+   trusted is unknown (web (helper), sources in E.2).
+4. **automation.js runs on Chromium almost unchanged.** It already runs in
+   a private CDP world on WebView2, which is Chromium, on the Windows
+   branch (E.3). Two WebKit-only hooks need a small replacement.
+5. **Option E changes three product decisions.** The drawer can become one
+   ClojureScript UI (E.4). Every Mac user needs a one-time cookie
+   migration (E.6). Site detection changes from a Safari fingerprint to an
+   embedded-Chromium fingerprint (E.5). The Python agent host does not
+   change (E.7).
+6. **It does not fix Google sign-in.** Google blocks sign-in from embedded
+   frameworks and names CEF by name (E.5). Equo and JCEF are both CEF.
+
+## E.1 What the product needs from the engine
+
+These are the engine features the product uses today. Each has a code
+citation.
+
+| Need | Where the product uses it | Label |
+|---|---|---|
+| Script at document start in a named private world | `zigbrowser-automation` world: `src/webkit_shim.h:140`; Linux `src/webkit_shim.c:1899-1908`; Mac `src/wkwebview_shim.m:640-647`; Windows CDP `Page.addScriptToEvaluateOnNewDocument` with `worldName` (win branch `src/webview2_shim.cpp:2558-2573`) | verified |
+| Eval in that world with a JSON result | `__zbAutomation.handle` (`src/automation_script/automation.js:112-125`); Windows `Page.createIsolatedWorld` + `Runtime.evaluate` (win branch `webview2_shim.cpp:1003-1028`) | verified |
+| Trusted (real) input: the page script counts only `isTrusted` events | `automation.js:21-62`; Windows `Input.dispatchKeyEvent` / `Input.dispatchMouseEvent` (win branch `webview2_shim.cpp:1398-1412,3256-3292`) | verified |
+| Cookies, HttpOnly included (flow login gates read `li_at` and `sessionid`) | `src/automation/social_flow_routes.zig:9-13`; cookie ports `src/automation_gtk_cookie_port.zig`, `src/automation_macos_cookie_port.zig` | verified |
+| Popups with a tracked opener | Mac `createWebViewWithConfiguration` keeps the opener (`src/wkwebview_shim.m:1022-1041`); a policy-opened subwindow has no opener (`wkwebview_shim.m:998-1001`); Linux `webkit_web_view_new_with_related_view` (`src/webkit_shim.c:796,810`) | verified |
+| JS dialogs | `page.dialogs` and dialog routes (bead zigBrowser-4pa.57 is about dialog window ids) | verified (bead), inferred (scope) |
+| File chooser for `chooseFiles` | the `zbFiles` handler (`automation.js:542-545`, `src/webkit_shim.c:1922-1928`) | verified |
+| Navigation-ended report to the page | the `zbNavigation` handler (`automation.js:94-104`, `src/webkit_shim.c:1910-1918`) | verified |
+| Screenshots | the `screenshot` agent tool (`agent/host/zb_agent_host/bridge.py:55`) | verified |
+| Per-profile storage | `--profile-dir`; Mac store by path-derived UUID (`src/wkwebview_shim.m:121-123,3013-3023`) | verified |
+
+I could not find a bead or a document for "our Google sign-in popup bug"
+[unknown]. The opener-less code path above (`wkwebview_shim.m:998-1001`) is
+one candidate [inferred]. See E.5 for the Google policy, which blocks
+embedded sign-in on any engine.
+
+## E.2 The automation surface of Equo, JCEF and JxBrowser
+
+"Yes" means a documented API. "Via CDP" means it works only if we can send
+CDP commands. Labels per cell: (c) web, checked; (h) web (helper);
+(u) unknown.
+
+| Need | Equo Chromium 150 | JCEF (java-cef) | JxBrowser 9.5.5 |
+|---|---|---|---|
+| Eval with a return value | SWT `Browser.evaluate(String)` returns a typed Java value; Swing `ChromiumBrowser.executeJavaScript` returns nothing (h) | `executeJavaScript` returns nothing (c, `CefBrowser.java:225`); a value comes back via `CefMessageRouter` / `window.cefQuery` (h) or CDP `Runtime.evaluate` (c) | `Frame.executeJavaScript` returns a value (h) |
+| Private world at document start | no API found (h, u) | via CDP `Page.addScriptToEvaluateOnNewDocument` with `worldName` (c) | `InjectJsCallback` injects Java objects, not scripts; no isolated world found (h, u) |
+| CDP | debug port only, "development purposes only" (c) | in-process `CefDevToolsClient` (c), and a debug port (h) | debug port via `EngineOptions.remoteDebuggingPort`; no in-process send API listed (h) |
+| Trusted input | no API found (h, u) | via CDP `Input.dispatch*` (c); `sendMouseEvent`/`sendKeyEvent` are protected upstream and public in the JetBrains fork (h) | `Browser.dispatch(KeyPressed, MousePressed, ...)`, which "generates a proper sequence of DOM events"; `isTrusted` unknown (h) |
+| Cookies, HttpOnly | get by name and URL, set, clear by pattern; no list-all (h) | `CefCookieManager.visitAllCookies`, `visitUrlCookies(url, includeHttpOnly, ...)`, `setCookie`, `deleteCookies` (h) | `CookieStore.cookies()`, `set`, `delete`, `Cookie.isHttpOnly()` (h) |
+| Popups, `window.opener` | `onBeforePopup` and SWT `OpenWindowListener`; opener unknown (h) | `CefLifeSpanHandler.onBeforePopup`; opener unknown (h) | `CreatePopupCallback` and `OpenPopupCallback`; opener unknown (h) |
+| Downloads | `onBeforeDownload`, `onDownloadUpdated` (h) | `CefDownloadHandler` (h) | `StartDownloadCallback` (h) |
+| JS dialogs | no alert/confirm/prompt handler found (h, u) | `CefJSDialogHandler.onJSDialog`, `onBeforeUnloadDialog` (h) | `AlertCallback`, `ConfirmCallback`, `PromptCallback`, `BeforeUnloadCallback` (h) |
+| Screenshots | `captureScreenshot()` returns `CompletableFuture<byte[]>` (h) | `createScreenshot` (h) or CDP `Page.captureScreenshot` (inferred) | `Browser.bitmap()` (h) |
+| Per-profile storage | `-Dchromium.cache_path`, one per instance; no profile API (h) | `CefSettings.cache_path` / `root_cache_path`; no per-context path found (h) | `Engine.profiles()`, `newProfile(name)`, one directory per profile (h) |
+| Chromium version | 150.0.7871.213; "It also uses CEF" (h) | CEF 152 / Chromium 152.0.7977.83 on master; no tagged releases (h) | 9.5.5, Chromium 156.0.8078.74, 2026-10-28 (h) |
+
+Sources for (h) cells:
+- Equo: https://docs.equo.dev/chromium/150.x/javadoc/com.equo.chromium/com/equo/chromium/swt/Browser.html,
+  https://docs.equo.dev/chromium/150.x/javadoc/com.equo.chromium/com/equo/chromium/ChromiumBrowser.html,
+  https://docs.equo.dev/chromium/150.x/features/subscribe.html,
+  https://docs.equo.dev/chromium/150.x/configuration/cache-path.html,
+  https://docs.equo.dev/chromium/150.x/reference/versions.html.
+- JCEF: source files under https://raw.githubusercontent.com/chromiumembedded/java-cef/master/java/org/cef/
+  (`network/CefCookieManager.java`, `handler/CefLifeSpanHandler.java`,
+  `handler/CefDownloadHandler.java`, `handler/CefJSDialogHandler.java`,
+  `CefSettings.java`), https://raw.githubusercontent.com/chromiumembedded/java-cef/master/CMakeLists.txt,
+  and the JetBrains fork https://github.com/JetBrains/jcef.
+- JxBrowser: https://teamdev.com/jxbrowser/docs/guides/javascript/,
+  .../guides/engine/, .../guides/browser/, .../guides/cookies/,
+  .../guides/popups/, .../guides/dialogs/, .../guides/content/,
+  .../guides/profile/, https://teamdev.com/jxbrowser/docs/release-notes/.
+- CDP `worldName`: https://raw.githubusercontent.com/ChromeDevTools/devtools-protocol/master/pdl/domains/Page.pdl.
+
+What the table means [inferred]:
+- **Our two hardest needs are the private world and trusted input.** On
+  Chromium both come from CDP, and the Windows branch proved both (E.3).
+  So the deciding question per library is: can we send CDP commands in
+  process, in production?
+  - JCEF: yes (checked).
+  - JxBrowser: only through a debug port as documented. In-process CDP is
+    unknown; ask TeamDev (QE2).
+  - Equo: only a debug port, which its docs forbid in production.
+- **A debug port is a security hole for our users.** Chrome's own team
+  says attackers use remote debugging to steal cookies, and Chrome 136
+  restricted it for that reason (web, checked:
+  https://developer.chrome.com/blog/remote-debugging-port). Our users'
+  LinkedIn, Instagram and X sessions are such cookies. Any embed that needs
+  a port in production fails this [inferred].
+- **`window.opener` in popups is unknown for all three.** It must be proven
+  with a Google-style OAuth popup fixture before any choice is final
+  (QE3).
+
+## E.3 Does automation.js run unchanged?
+
+Mostly yes [verified on WebView2, inferred for JCEF].
+
+- **Proven on Chromium already.** The Windows branch injects the real
+  automation.js into a private CDP world on WebView2, which is Chromium.
+  `win_private_world_test.py` passed its red, green and mutant series with
+  `ASSERTS 101`. A hostile page that overrides `Element.prototype.click`
+  and spoofs `window.__zbAutomation` got the same answers as a clean page
+  (win branch `tests/e2e/win_private_world_test.py:1-15`; review accepted at
+  win branch `thoughts/searchable/shared/reviews/2026-10-22-windows-impl-review.md:347`).
+- **Trusted input is proven on Chromium.** CDP `Input.dispatch*` events
+  arrived with `isTrusted` true in a 37-row matrix, accepted for Win11 only.
+  Win10 is not built (same review file, lines 619-621).
+- **The Playwright spec already runs on Chromium.** `playwright.config.ts`
+  has a `chromium` project next to `firefox` and `webkit` [verified].
+- **Two WebKit-only hooks degrade.** The script looks up
+  `globalScope.webkit.messageHandlers` for two channels. On Chromium that
+  object does not exist, so [verified in code, inferred on Chromium]:
+  - `zbNavigation` (`automation.js:94-104`) is skipped. The page then never
+    learns that a navigation ended without a new document (204, download,
+    policy block), so native text stays refused until the page navigates
+    (`src/webkit_shim.c:1912-1918` says exactly this).
+  - `zbFiles` (`automation.js:542-545`) is missing, so `chooseFiles`
+    answers `files_unavailable`.
+  - Fix [inferred]: either give the private world a small
+    `webkit.messageHandlers` stand-in backed by CDP `Runtime.addBinding`
+    (which takes an `executionContextName`), or change these two lookups to
+    a neutral channel name. On Chromium, files can be set directly with
+    CDP `DOM.setFileInputFiles`. Effort 1-2 agent-days. (web, checked: `addBinding` with
+    `executionContextName` at https://raw.githubusercontent.com/ChromeDevTools/devtools-protocol/master/pdl/js_protocol.pdl
+    line 1719-1735; `setFileInputFiles` at .../pdl/domains/DOM.pdl line 682.)
+- **No other engine-specific code.** A grep finds `webkit` only at those
+  two sites in automation.js [verified].
+
+## E.4 The drawer under option E: Swing or ClojureScript?
+
+Under option C (today's recommendation), the drawer stays native: GTK,
+AppKit and Win32 (section 4.2). Under option E there is no per-OS native
+UI code to keep. That changes the choice.
+
+| Choice | Gain | Cost | Label |
+|---|---|---|---|
+| E-a. Swing (or SWT) panel docked beside the browser component | Native-ish widgets, plain-text components keep model output inert, no web content. | Swing does not look like a Mac app without extra work. Owner accepts UI only from real-screen pixels (team memory). Swing inside an AppKit app has main-thread rules that pane 1 covers. | inferred |
+| E-b. ClojureScript drawer in a second, privileged Chromium browser per window (recommended if E is chosen) | One UI for 3 OSes. The CLJS code can share `.cljc` data shapes with the Clojure core. Long-line breaking, selection and copy become CSS and DOM work. | Reverses `docs/agent-drawer.md:92-94` ("no web content and no JavaScript"). Needs its own browser instance with its own request context, no network, a strict CSP, a custom app scheme, and text set only with `textContent`. One more renderer process per window (memory unknown, pane 1). | inferred |
+
+Recommendation if option E is chosen: **E-b**, with these rules
+[inferred]:
+- The drawer is a separate browser instance, never a frame in the page's
+  browser. Pages cannot reach it, because it has a different origin, its
+  own renderer and its own request context.
+- Its request handler refuses every network request except the bundled
+  drawer files.
+- The core talks to it through the library's JS bridge (JCEF
+  `CefMessageRouter`, JxBrowser injected objects). It is never reached
+  through the automation socket or the page's private world.
+- **Keep the Secrets window in Swing.** A token typed into a web view would
+  pass through a renderer process. A plain Swing password field keeps it in
+  the JVM. The token shape check stays as is
+  (`src/agent_secrets_shape.zig:9-35`, per section 6.4).
+- UI library: Replicant (no React), built with shadow-cljs `:browser`
+  (section 4.2).
+
+**Effect on section 4 and Q2.** Under option E, ClojureScript's role grows:
+- The drawer moves from optional to recommended.
+- The dashboard, if it returns, is the same kind of page.
+- The page script still stays JavaScript. Option E makes a ClojureScript
+  page script no more necessary than before.
+
+Q2 should become: "Under option C, keep the drawer native. Under option E,
+build it once in ClojureScript in a privileged browser, and keep the
+Secrets window in Swing."
+
+## E.5 Site-flow detection risk: Chromium vs WebKit
+
+- **What sites see today.** The app sets no custom user agent: a grep for
+  `user_agent`, `customUserAgent` and `applicationNameForUserAgent` in the
+  shims finds nothing [verified]. So Mac users present as WKWebView
+  (Safari-like) and Linux as WebKitGTK [inferred].
+- **What sites would see.** An embedded Chromium of the vendor's version:
+  Equo 150, JCEF 152, JxBrowser 156 (E.2). Its client hints brand list may
+  not say "Google Chrome" (unknown; no source found for CEF's
+  `navigator.userAgentData`).
+- **CDP itself is a known detection signal.** Anti-bot scripts detect the
+  side effects of CDP `Runtime.enable`. Tools such as Patchright avoid it by
+  running only in isolated contexts (web (helper):
+  https://scrappey.com/qa/anti-bot/what-is-cdp-detection,
+  https://pypi.org/p/patchright). Our design already evaluates only in a
+  private world. It never needs `Runtime.enable` in the page world, but
+  that must be kept true and tested [inferred]. `src/automation/stealth.zig:3-10`
+  already lists `cdp_usage` and `isolated_world` as detection surfaces
+  [verified].
+- **The Windows build already has this exposure.** It drives WebView2 over
+  CDP (pane 1's mail; win branch `webview2_shim.cpp:917`). So option E
+  adds no new class of signal for Windows. It does add one for Mac and
+  Linux [inferred].
+- **Google sign-in.** Google's 2019 post says: "we will be blocking
+  sign-ins from embedded browser frameworks starting in June", and names
+  "Chromium Embedded Framework - CEF". It calls this "similar to the
+  restriction on webview sign-ins announced in April 2016" (web, checked:
+  https://security.googleblog.com/2019/04/better-protection-against-man-in-middle.html).
+  Equo and JCEF are CEF, and JxBrowser is an embedded framework too.
+  WKWebView and WebKitGTK are webviews under the 2016 rule [inferred].
+  **So no option fixes Google sign-in inside the app.** The fix Google asks
+  for is browser-based OAuth in the system browser (same source, and
+  https://developers.google.com/identity/protocols/oauth2/policies).
+- **Net risk** [inferred]: medium. LinkedIn, Instagram and X are mostly
+  used from Chrome, so a Chromium fingerprint is common. But an *embedded*
+  Chromium that lags Chrome by a few versions (Equo 150), with possibly
+  missing brands and the CDP side effects, is a new profile for their
+  risk engines. Each flow must be re-checked live after the switch
+  (QE4).
+
+## E.6 User migration (today's Mac users)
+
+What a Mac user has today, all per section 6.4 of the main document
+[verified there]:
+- **Cookies and site data** in a `WKWebsiteDataStore` chosen by
+  `dataStoreForIdentifier:` with a UUID derived from the profile path
+  (`src/wkwebview_shim.m:3013-3023`). On macOS 13 it is the default shared
+  store (`wkwebview_shim.m:121-123`).
+- **The Claude token** in the login Keychain, service
+  `dev.zigbrowser.ClaudeAgentToken`, account `default`. In
+  unsandboxed dev builds it is a private file,
+  `<agent-home>/secrets/claude_token` (`src/agent_secrets_mac.m:23-31`).
+- **Profile JSON files**: `automation-pacing.json` and `agent-drawer.json`
+  (section 6.6). Their formats are engine-free.
+
+What option E needs [inferred unless marked]:
+1. **Cookies must be exported by WebKit code.** Chromium cannot read a
+   WebKit store. Two ways:
+   - The last Zig release adds an export step:
+     `WKHTTPCookieStore getAllCookies`, which includes HttpOnly cookies
+     (team memory: MS3 cookies, HttpOnly via `@"HttpOnly"`). It writes a
+     0600 file in the profile.
+   - Or the new app ships a tiny native WebKit exporter that opens the
+     same UUID store.
+
+   The importer then writes each cookie with CDP `Network.setCookies` or
+   the library's cookie API (E.2).
+2. **Everything else in the WebKit store is lost**: localStorage,
+   IndexedDB, service workers and caches. Sites that keep login state there
+   need a fresh sign-in. The flow login gates check cookies (`li_at`,
+   `sessionid`: `social_flow_routes.zig:9-13`), so those survive if the
+   cookie import works.
+3. **The Keychain token can stay where it is.** Reading it needs native
+   Security.framework calls from the JVM (pane 1). If the new app's code
+   signature differs from the one that created the item, macOS may ask the
+   user to allow access (unknown until tested on a real upgrade).
+4. **The JSON profile files carry over unchanged.**
+5. **Test it on a real upgrade**: install today's DMG, sign in to a test
+   site, upgrade to the option-E DMG, and check the cookies and the token.
+   This follows the team rule to test the installed DMG and the upgrade,
+   not hooks (team memory). Effort 6-10 agent-days, confidence low.
+
+## E.7 The Python agent host under option E
+
+**Unchanged** [inferred]. Four points:
+- The frames are engine-free (section 5). The Clojure core speaks them as
+  in option C.
+- **Spawn needs native help.** The app hands the token on fd 3 (a
+  socketpair on Mac: `src/agent_token_fd_mac.c:94-100`), and sign-in
+  returns it on fd 4 (`agent/host/zb_agent_host/login.py:59`). Java's
+  `ProcessBuilder` sets up only stdin, stdout and stderr (inferred from its
+  API: https://docs.oracle.com/en/java/javase/25/docs/api/java.base/java/lang/ProcessBuilder.html).
+  So the JVM needs `posix_spawn` through FFM, or a tiny native launcher
+  (today `src/agent_spawn_posix.c:15-26`). Pane 1 owns this.
+- The browser tools answer through the core's CDP PagePort instead of the
+  shims. Two tool descriptions say "with real Mac input"
+  (`bridge.py:70,72`). That is a text change if Windows and Linux get the
+  same tools.
+- The Mac Seatbelt sandbox and the Linux bwrap sandbox wrap the Python
+  helper, not the browser. They do not change.
+
+## E.8 Product-side verdict
+
+- **Library choice if option E goes ahead: JCEF first**, because it is the
+  only one with documented in-process CDP. That is what the private world
+  and trusted input need without a debug port. **JxBrowser second**, if
+  TeamDev confirms in-process CDP or trusted `dispatch` input (QE2) and
+  pane 1's licence review is acceptable. **Not Equo** as documented: no
+  production CDP, no input API, no isolated-world injection, no dialog
+  handler. Equo is built on CEF, so the gap is in Equo's Java API, not in
+  the engine [inferred].
+- **Does option E beat option C on the product side?** Only on the UI and
+  on keeping one engine: one drawer, one automation path, one set of
+  engine bugs. On automation it is a wash, because CDP on Chromium is
+  already proven on Windows. It costs a Mac cookie migration and a new
+  detection profile on Mac. It does not fix Google sign-in. Whether E wins
+  overall depends on pane 1's findings on the Mac main thread, signing and
+  size [inferred].
+
+## E.9 Product-side effort changes under option E
+
+| Work | Under option C | Under option E | Confidence |
+|---|---|---|---|
+| Flows and pacing (phase 4) | 13-20 | 13-20, unchanged: the flows call router commands, not the engine | medium |
+| automation.js | 0 | 1-2: the `zbNavigation` and `zbFiles` channels | medium |
+| Drawer UI | 0 (native kept) | 10-15: one ClojureScript drawer in a privileged browser, plus real-screen sign-off; replaces three native UIs | low |
+| Secrets window | 0 (native kept) | 2-3: Swing | medium |
+| Mac user migration | 0 | 6-10: cookie export and import, Keychain read, real DMG upgrade test | low |
+| Live re-check of every flow on Chromium | 0 | 3-5, plus the risk of selector changes if sites serve a different page to Chromium | low |
+| Agent host | 1-2 | 1-2 (spawn helper is pane 1's) | medium |
+| Tests | as section 7 | Tier 1 unchanged; Playwright `chromium` project becomes the main page-script check; add an OAuth-popup opener fixture and a "no `Runtime.enable` in the page world" check | medium |
+
+Product-side total under option E: about 36-57 agent-days, against about
+14-22 under option C (phase 4 plus the agent-host boundary) [inferred].
+
+## E.10 New questions for the owner (product side)
+
+- **QE1. If option E is chosen, may the drawer become web content?**
+  Recommendation: yes, as one ClojureScript UI in a separate, network-less
+  browser instance, with the Secrets window kept in Swing. It reverses
+  `docs/agent-drawer.md:92-94`, so it is your call.
+- **QE2. Ask TeamDev (and Equo) two questions before choosing a library:**
+  is there an in-process CDP API, and are `dispatch` input events
+  `isTrusted`? Recommendation: ask both, and prove the answers with the
+  Windows branch's trusted-input matrix and private-world test, ported to
+  the library. Until then, plan on JCEF.
+- **QE3. What is "our Google sign-in popup bug"?** I found no bead or
+  document for it. Recommendation: file it with steps. Google blocks
+  embedded sign-in on any engine (E.5), so the likely fix is to open
+  Google sign-in in the system browser, not to change engines.
+- **QE4. Accept a new site-detection profile on Mac?** Recommendation:
+  accept it only after a live re-check of each LinkedIn, Instagram and X
+  flow on the chosen library, run on a test account.
+- **QE5. Accept that Mac users lose non-cookie site data on the switch?**
+  Recommendation: yes, with a cookie import and a clear one-time notice.
+  Test it on a real DMG upgrade first.
