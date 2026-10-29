@@ -16,6 +16,10 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
+#include <dirent.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 #pragma clang diagnostic push
@@ -23,6 +27,24 @@
 
 static int failures = 0;
 static void fail(const char *msg) { fprintf(stderr, "  %s\n", msg); failures++; }
+
+static int dev_token_file_enabled = 0;
+int zb_mac_unsandboxed_dev(void) { return dev_token_file_enabled; }
+
+int zb_mac_agent_token_load(const char *agent_home,
+                            const char *keychain_path, const char *unlock_password,
+                            const char *service, const char *account,
+                            char **out_token, char **out_err);
+int zb_mac_agent_token_save(const char *agent_home,
+                            const char *keychain_path, const char *unlock_password,
+                            const char *service, const char *account,
+                            const char *token, char **out_err);
+int zb_mac_agent_token_allow(const char *agent_home,
+                             const char *keychain_path, const char *unlock_password,
+                             const char *service, const char *account, char **out_err);
+int zb_mac_agent_token_remove(const char *agent_home,
+                              const char *keychain_path, const char *unlock_password,
+                              const char *service, const char *account, char **out_err);
 
 static SecKeychainRef mk(const char *path, const char *pw) {
   SecKeychainRef kc = NULL;
@@ -87,6 +109,23 @@ static void expect_peek(SecKeychainRef kc, const char *svc, const char *acct, co
   free(g);
 }
 
+static int exact_error(const char *error) {
+  return error != NULL && strcmp(error, "token file has unsafe permissions") == 0;
+}
+
+static int no_temp_entries(const char *path, const char *allowed) {
+  DIR *dir = opendir(path);
+  if (dir == NULL) return 0;
+  int clean = 1;
+  struct dirent *entry;
+  while ((entry = readdir(dir)) != NULL) {
+    if (strcmp(entry->d_name, ".") != 0 && strcmp(entry->d_name, "..") != 0 &&
+        strcmp(entry->d_name, allowed) != 0) clean = 0;
+  }
+  closedir(dir);
+  return clean;
+}
+
 int main(void) {
   @autoreleasepool {
     int pid = getpid();
@@ -97,8 +136,11 @@ int main(void) {
     const char *SVC = "dev.zigbrowser.ClaudeAgentToken.test";
     const char *SVC2 = "dev.zigbrowser.OtherService.test";
     const char *LOCKED_SVC = "dev.zigbrowser.ForeignIdentityToken.test";
+    const char *MIGRATE_SVC = "dev.zigbrowser.MigrateToken.test";
+    const char *FILE_SVC = "dev.zigbrowser.FileToken.test";
     const char *ACCT = "default", *ACCT2 = "second-account";
     const char *canary = "zb-canary-TOKEN-7f3a", *canary2 = "zb-canary-TOKEN-second-c91e";
+    const char *VALID = "sk-ant-oat01-FILETOKEN0123456789abcdefghijklmnop";
 
     SecKeychainRef T = mk(tpath, pw), O = mk(opath, pw);
     if (T == NULL || O == NULL) { fprintf(stderr, "FAIL\tms5-keychain-seam\n  create disposable keychains failed\n"); return 1; }
@@ -149,6 +191,103 @@ int main(void) {
     expect_peek(T, SVC, ACCT2, "neighbor-acct", "clear removed the same-service neighbor");
     expect_peek(T, SVC2, ACCT, "neighbor-svc", "clear removed the diff-service neighbor");
     expect_peek(O, SVC, ACCT, "other-keychain", "clear reached into the other keychain");
+
+    // Development builds use one owner-only file and never depend on an ad-hoc code signature.
+    char home[256], secrets[320], token_path[384], canary_path[384];
+    snprintf(home, sizeof home, "/tmp/zb-ms5-dev-home-%d", pid);
+    snprintf(secrets, sizeof secrets, "%s/secrets", home);
+    snprintf(token_path, sizeof token_path, "%s/claude_token", secrets);
+    snprintf(canary_path, sizeof canary_path, "%s/not-the-token", home);
+    if (mkdir(home, 0700) != 0) fail("setup: create private development agent home");
+    dev_token_file_enabled = 1;
+
+    int result = zb_mac_agent_token_save(home, tpath, pw, FILE_SVC, ACCT, VALID, &err);
+    if (result != ZB_KC_OK) fail(err ? err : "development token file save failed");
+    free(err); err = NULL;
+    struct stat secrets_info, token_info;
+    if (lstat(secrets, &secrets_info) != 0 || !S_ISDIR(secrets_info.st_mode) ||
+        (secrets_info.st_mode & 0777) != 0700 || secrets_info.st_uid != geteuid())
+      fail("development secrets directory is not owned mode 0700");
+    if (lstat(token_path, &token_info) != 0 || !S_ISREG(token_info.st_mode) ||
+        (token_info.st_mode & 0777) != 0600 || token_info.st_uid != geteuid())
+      fail("development token file is not owned mode 0600");
+    if (!no_temp_entries(secrets, "claude_token")) fail("atomic save left a temporary file behind");
+    result = zb_mac_agent_token_load(home, tpath, pw, FILE_SVC, ACCT, &tok, &err);
+    if (result != ZB_KC_OK || tok == NULL || strcmp(tok, VALID) != 0)
+      fail("development token did not survive file reload");
+    if (tok) { zb_keychain_free(tok); tok = NULL; } free(err); err = NULL;
+
+    result = zb_mac_agent_token_remove(home, tpath, pw, FILE_SVC, ACCT, &err);
+    if (result != ZB_KC_OK || lstat(token_path, &token_info) == 0 || errno != ENOENT)
+      fail("development sign-out did not delete the token file");
+    free(err); err = NULL;
+
+    // A v7-style Keychain item is detected without reading its value. Allow performs the one migration read,
+    // persists the file, and removes the old item so later launches never touch Keychain.
+    if (zb_keychain_store(tpath, pw, MIGRATE_SVC, ACCT, VALID, &err) != ZB_KC_OK)
+      fail(err ? err : "setup: store migration Keychain item");
+    free(err); err = NULL;
+    result = zb_mac_agent_token_load(home, tpath, pw, MIGRATE_SVC, ACCT, &tok, &err);
+    if (result != ZB_KC_PERMISSION || tok != NULL) fail("migration candidate did not require explicit Allow");
+    if (tok) { zb_keychain_free(tok); tok = NULL; } free(err); err = NULL;
+    result = zb_mac_agent_token_allow(home, tpath, pw, MIGRATE_SVC, ACCT, &err);
+    if (result != ZB_KC_OK) fail(err ? err : "explicit Allow did not migrate the token");
+    free(err); err = NULL;
+    result = zb_keychain_lookup(tpath, pw, MIGRATE_SVC, ACCT, &tok, &err);
+    if (result != ZB_KC_ABSENT || tok != NULL) fail("migration left the old Keychain item behind");
+    if (tok) { zb_keychain_free(tok); tok = NULL; } free(err); err = NULL;
+    result = zb_mac_agent_token_load(home, tpath, pw, MIGRATE_SVC, ACCT, &tok, &err);
+    if (result != ZB_KC_OK || tok == NULL || strcmp(tok, VALID) != 0)
+      fail("migrated token did not load from the private file");
+    if (tok) { zb_keychain_free(tok); tok = NULL; } free(err); err = NULL;
+    (void)zb_mac_agent_token_remove(home, tpath, pw, MIGRATE_SVC, ACCT, &err);
+    free(err); err = NULL;
+
+    // Unsafe file metadata is rejected before open; neither a wide file nor a symlink may be consumed.
+    int unsafe = open(token_path, O_WRONLY | O_CREAT | O_EXCL, 0644);
+    if (unsafe < 0 || write(unsafe, VALID, strlen(VALID)) != (ssize_t)strlen(VALID))
+      fail("setup: create wide token file");
+    if (unsafe >= 0) close(unsafe);
+    result = zb_mac_agent_token_load(home, tpath, pw, FILE_SVC, ACCT, &tok, &err);
+    if (result != ZB_KC_UNAVAILABLE || tok != NULL || !exact_error(err))
+      fail("wide token file was not refused with the safe error");
+    if (tok) { zb_keychain_free(tok); tok = NULL; } free(err); err = NULL;
+    unlink(token_path);
+
+    int canary_fd = open(canary_path, O_WRONLY | O_CREAT | O_EXCL, 0600);
+    if (canary_fd < 0 || write(canary_fd, VALID, strlen(VALID)) != (ssize_t)strlen(VALID))
+      fail("setup: create symlink canary");
+    if (canary_fd >= 0) close(canary_fd);
+    if (symlink("../not-the-token", token_path) != 0) fail("setup: create token symlink");
+    result = zb_mac_agent_token_load(home, tpath, pw, FILE_SVC, ACCT, &tok, &err);
+    if (result != ZB_KC_UNAVAILABLE || tok != NULL || !exact_error(err))
+      fail("token symlink was not refused with the safe error");
+    if (tok) { zb_keychain_free(tok); tok = NULL; } free(err); err = NULL;
+    unlink(token_path);
+    unlink(canary_path);
+
+    if (chmod(secrets, 0755) != 0) fail("setup: widen secrets directory");
+    result = zb_mac_agent_token_load(home, tpath, pw, FILE_SVC, ACCT, &tok, &err);
+    if (result != ZB_KC_UNAVAILABLE || tok != NULL || !exact_error(err))
+      fail("wide secrets directory was not refused with the safe error");
+    if (tok) { zb_keychain_free(tok); tok = NULL; } free(err); err = NULL;
+    chmod(secrets, 0700);
+
+    // A release build remains exactly Keychain-backed and creates no token file.
+    dev_token_file_enabled = 0;
+    result = zb_mac_agent_token_save(home, tpath, pw, FILE_SVC, ACCT, VALID, &err);
+    if (result != ZB_KC_OK || lstat(token_path, &token_info) == 0)
+      fail("release token save did not remain Keychain-only");
+    free(err); err = NULL;
+    result = zb_mac_agent_token_load(home, tpath, pw, FILE_SVC, ACCT, &tok, &err);
+    if (result != ZB_KC_OK || tok == NULL || strcmp(tok, VALID) != 0)
+      fail("release token did not load from Keychain");
+    if (tok) { zb_keychain_free(tok); tok = NULL; } free(err); err = NULL;
+    result = zb_mac_agent_token_remove(home, tpath, pw, FILE_SVC, ACCT, &err);
+    if (result != ZB_KC_OK) fail("release token remove did not remain Keychain-backed");
+    free(err); err = NULL;
+    rmdir(secrets);
+    rmdir(home);
 
     // A noninteractive drawer lookup of an item trusted to another code identity must expose the recoverable
     // permission state. It must not collapse the saved item into generic unavailability or show authentication UI.
