@@ -1,11 +1,11 @@
 ---
 date: 2026-10-29
 researchers: pane 1 / CopperLynx (native and platform side, merge owner); pane 2 / TealCastle (product and UI side, reviewer)
-git_commit: 14e0012f (base); parts at c3d0c7f2 (part 1) and 50e70a79 (part 2)
+git_commit: 14e0012f (base); parts at c3d0c7f2 + bf7cb43c (part 1) and 50e70a79 + 9d2e28ad (part 2)
 branch: zb-clojure-scope-2026-10-29-10-21
 topic: "Scope of a zigBrowser port to Clojure and ClojureScript"
-tags: [research, scope, clojure, clojurescript, port, graalvm, native-host, contracts]
-status: merged and reviewed by pane 2 (review findings applied)
+tags: [research, scope, clojure, clojurescript, port, graalvm, native-host, contracts, chromium, jcef, jxbrowser, equo]
+status: merged; option E (embedded Chromium) added 2026-10-29, awaiting pane 2 review
 ---
 
 # Scope: porting zigBrowser to Clojure and ClojureScript
@@ -44,7 +44,7 @@ zigBrowser today has five layers [V].
 5. **A Python agent host** around the Claude Agent SDK. It is 8,701 lines with 20,339 lines of tests.
 
 A port cannot mean "everything in Clojure."
-- **The engines must stay native.** The web engines and their shims are C, Objective-C and C++ against OS frameworks.
+- **Under the recommended option C, the engines stay native.** The web engines and their shims are C, Objective-C and C++ against OS frameworks. Option E (below) replaces them with one embedded Chromium.
 - **The Agent SDK exists only for Python and TypeScript** [W] (https://code.claude.com/docs/en/agent-sdk/overview).
 - **So a realistic port replaces the Zig core with Clojure** and leaves the rest where it is.
 
@@ -101,7 +101,7 @@ The recommendation is **two processes per OS**, plus the unchanged Python helper
    - If any of these drift, SDK users break, or Mac users lose cookies and their saved token [I].
 3. **Startup, memory and size.**
    - A plain JVM adds seconds of startup. A Clojure uberjar is "not under 2 seconds" in old community reports [W] (https://ask.clojure.org/index.php/8292/has-anyone-benchmarked-cold-start-times-for-clojure-lambda).
-   - Native-image fixes startup but adds a build per OS and arch. GraalVM for macOS x64 is not confirmed [U].
+   - Native-image fixes startup but adds a build per OS and arch. Oracle GraalVM dropped macOS x64 after 25.0.1 [W] (https://www.graalvm.org/release-notes/JDK_25), so Intel Macs need Liberica NIK [U] or a JVM build (Q10).
    - The Mac bundle already carries about 632 MB of dependencies (`thoughts/searchable/shared/research/2026-10-20-ms5-deps-cli-macos-recommendation.md:90-91`) [V].
 4. **Mac signing and notarization.**
    - Today the DMG is ad-hoc signed by default and not notarized (`packaging/macos/build-dmg.sh:9,28-29`) [V].
@@ -118,6 +118,62 @@ The recommendation is **two processes per OS**, plus the unchanged Python helper
 - **Drawer security.** A web drawer reverses `docs/agent-drawer.md:92-94` (Q2).
 - **No JVM Agent SDK.** A Clojure agent host would have to own the CLI's stream-json protocol (Q4).
 - **ClojureScript `:advanced` renaming.** It would break page-script wire field names (Q3).
+
+### Option E: embedded Chromium in the JVM (added 2026-10-29)
+
+**What the owner asked.** The owner asked about Equo Chromium (https://docs.equo.dev/chromium/150.x/getting-started/swing.html). That is Chromium embedded in a Java Swing or SWT window. Under option E, one Chromium engine runs inside one JVM app on Mac, Windows and Linux, and Clojure owns the app and the UI. We compared three libraries: Equo Chromium, JCEF (java-cef) and JxBrowser. The details are in section 3 (option E) and in both part files ("Option E" sections).
+
+**Answer: option E does not beat option C today.** It beats C only when all five of these hold [I]:
+1. **The owner accepts Chromium on Mac.**
+   - Mac users move from WebKit to Chromium.
+   - Their cookies need a one-time migration. Other site data (localStorage, IndexedDB) is lost (part 2, E.6).
+   - Sites see a new embedded-Chromium fingerprint on Mac (part 2, E.5).
+2. **A library passes the in-process CDP test.**
+   - Our two hardest needs are a script in a private world at document start and trusted input. On Chromium both come from CDP, and the Windows branch already proved both on WebView2 (win branch `src/webview2_shim.cpp:1009-1028,1398-1412,2567-2573,3256-3292`) [V].
+   - **JCEF** has an in-process CDP client [W] (https://raw.githubusercontent.com/chromiumembedded/java-cef/master/java/org/cef/browser/CefDevToolsClient.java).
+   - **JxBrowser** documents only a remote-debugging port. A port is a cookie-theft risk in production [W] (https://developer.chrome.com/blog/remote-debugging-port).
+   - **Equo** offers only a debug port and says not to use it in production [W] (https://docs.equo.dev/chromium/150.x/troubleshooting/devtools-and-debugging.html).
+3. **We take on Chromium security updates.**
+   - Chromium ships a stable major every 4 weeks [W] (https://blog.chromium.org/2021/03/speeding-up-release-cycle.html).
+   - Today Apple, Microsoft and the Linux distros patch the engine [I].
+   - The repo has no app auto-updater (`agent/host/zb_agent_host/options.py:101` only disables the Claude CLI's own) [V].
+4. **The library cost is accepted.**
+   - JxBrowser costs from $8,199 per project plus about 25% a year for updates [W] (https://teamdev.com/jxbrowser/).
+   - JCEF is free (BSD) but trails Chromium by about 4 majors in jcefmaven, so we would build it ourselves [W] (https://github.com/jcefmaven/jcefmaven/releases).
+   - Equo's free edition is GPLv3. Closed-source apps need a custom-priced licence [W] (https://docs.equo.dev/chromium/150.x/getting-started/distribution.html).
+5. **A phase-0 spike passes on both Mac architectures.** The JVM with Chromium must start fast enough and use acceptable memory. It must also notarize under hardened runtime, which needs `allow-jit` (today deliberately held out, `packaging/macos/entitlements.plist:16-23`) [V]. And Swing must coexist with AppKit's main thread.
+
+**When those hold, E is the better long-term architecture** [I].
+- It retires all three shims and the 79-function header: about 24,600 native lines.
+- It needs no host protocol.
+- One Chromium PagePort, built over CDP, replaces three shims plus three Zig adapters.
+- It gives trusted input and network events on Mac and Linux, which WebKit lacks today (`src/automation_platform.zig:77-98`) [V].
+- The drawer can become one ClojureScript UI (part 2, E.4).
+
+**So:**
+- Keep option C as the plan.
+- Run phase 0 as a **two-armed spike (C vs E)**.
+- Decide on measured numbers and the owner's answers to Q14-Q19.
+
+**Which library, if E is chosen** [I]
+- **Never Equo** as documented. It has no production CDP, no input API and no private-world injection. Apple Silicon and CDP sit only in paid tiers (part 2 E.2, https://www.equo.dev/pricing).
+- **JxBrowser** if TeamDev confirms in-process CDP or trusted `dispatch` input (Q14). It tracks current Chromium (9.5.5 on Chromium 156, 2026-10-28), runs Chromium out of process, and ships notarized binaries [W] (https://teamdev.com/jxbrowser/releases/index.xml, https://teamdev.com/jxbrowser/blog/jxbrowser-and-jcef/).
+- **Otherwise JCEF**, built in-house against current CEF each month.
+
+**Top 3 risks of option E**
+1. **We become a browser vendor.**
+   - Every Chromium security fix becomes our release, every 4 weeks or sooner.
+   - That needs a new auto-updater and a release habit. A lapse leaves users on a vulnerable engine [I].
+   - JCEF's public builds already trail by about 4 majors [W] (https://github.com/jcefmaven/jcefmaven/releases).
+2. **Mac users pay for the switch.**
+   - Their cookies need a migration. Other site data is lost.
+   - The Keychain may prompt again, because today's default build is ad-hoc signed (`packaging/macos/build-dmg.sh:28-29`) [V/I].
+   - The LinkedIn, Instagram and X risk engines see a new embedded-Chromium profile on Mac (part 2, E.5).
+   - It does **not** fix Google sign-in. Google blocks sign-in from embedded frameworks and names CEF [W] (https://security.googleblog.com/2019/04/better-protection-against-man-in-middle.html).
+3. **Mac platform cost.**
+   - The JVM needs `allow-jit` and likely `allow-unsigned-executable-memory`. Chromium helpers need `allow-jit`, and the plugin helper needs more [W] (https://raw.githubusercontent.com/electron/osx-sign/main/entitlements/default.darwin.plugin.plist).
+   - Size grows by roughly 150-300 MB per architecture [I, from JxBrowser's 78-92 MB per platform, https://teamdev.cn/jxbrowser/faq].
+   - Native-image is unproven. Oracle GraalVM dropped macOS x64 [W] (https://www.graalvm.org/release-notes/JDK_25). So startup means JVM boot plus Chromium boot on a jlink runtime [U, measure].
 
 ### Merge reconciliation (pane 1 decided; pane 2 to confirm in review)
 
@@ -403,8 +459,8 @@ The figures below carry [W] sources or are marked [U].
 |---|---|---|---|---|---|---|---|
 | **A. Panama FFM in one JVM** | Clojure (coffi) calls the shim C ABI in-process. The shims become shared libs. Upcall stubs supply `zb_policy_decide` etc. | JVM boot on the critical path before first window [I]. JDK 24 AOT cache cut one app from 4.5 s to 2.6 s [W] (https://openjdk.org/jeps/483). | One process. JVM heap plus engine [U, measure]. | + jlink runtime [U, measure] | JVM needs `allow-jit` under hardened runtime [I]. More dylibs to sign. | FFM in native-image is on by default from GraalVM 25 [W] (https://docs.oracle.com/en/graalvm/jdk/25/docs/reference-manual/native-image/native-code-interoperability/ffm-api). Listed platforms omit macOS x64 [W] (https://www.graalvm.org/dev/reference-manual/native-image/native-code-interoperability/ffm-api/). Descriptors must be known at build time [W] (same source). | Possible, but the riskiest for Mac Intel and main-thread rules. |
 | **B. JNI** | Same as A, with hand-written JNI C glue. | Same as A. | Same as A. | Same as A. | Same as A. | JNI works in native-image but needs config [I]. | Strictly worse than A. No reason to pick it. |
-| **C. Small native host over a socket (recommended)** | Keep the shims plus a thin native `main` as the app executable. It serves PagePort, CookiePort, window lifecycle, spawn control and drawer events (host→core: prompt, interrupt, card approve/deny; core→host: messages, cards, status) over a local socket using the same 4-byte length + JSON framing as today. The Clojure core is a separate native-image process. | Window paints with no wait on the core [I]. A Clojure native image starts in tens of ms; babashka starts in about 8 ms [W] (https://clojurians-log.clojureverse.org/babashka/2023-05-28). | Two processes. The core's native-image RSS is small [U, measure]. | Core binary tens of MB; babashka is about 73 MB uncompressed [W] (same source). | The core is one more Mach-O, AOT-compiled, so no JIT entitlement [I]. Two arches → build both and `lipo` like today. | No FFM, no AWT, so native-image is the easy case. graal-build-time handles Clojure init [W] (https://github.com/clj-easy/graal-build-time). Mac x64 GraalVM availability is not confirmed [U]. | **Recommended.** |
-| **D. JCEF (Chromium in the JVM)** | Replace all three engines with Chromium via JCEF. Automation over CDP. | JVM + Chromium boot [U]. | Chromium multi-process [U]. | +100 MB or more per OS [U]. | Many Chromium helpers to sign [I]. | No [I]. | Reject. It changes the engine users and sites see. It drops the WKWebsiteDataStore and WebView2 stores, so users lose cookies (section 6.4). It discards three working shims. |
+| **C. Small native host over a socket (recommended)** | Keep the shims plus a thin native `main` as the app executable. It serves PagePort, CookiePort, window lifecycle, spawn control and drawer events (host→core: prompt, interrupt, card approve/deny; core→host: messages, cards, status) over a local socket using the same 4-byte length + JSON framing as today. The Clojure core is a separate native-image process. | Window paints with no wait on the core [I]. A Clojure native image starts in tens of ms; babashka starts in about 8 ms [W] (https://clojurians-log.clojureverse.org/babashka/2023-05-28). | Two processes. The core's native-image RSS is small [U, measure]. | Core binary tens of MB; babashka is about 73 MB uncompressed [W] (same source). | The core is one more Mach-O, AOT-compiled, so no JIT entitlement [I]. Two arches → build both and `lipo` like today. | No FFM, no AWT, so native-image is the easy case. graal-build-time handles Clojure init [W] (https://github.com/clj-easy/graal-build-time). Oracle GraalVM no longer supports macOS x64 [W] (https://www.graalvm.org/release-notes/JDK_25); Intel needs Liberica NIK [U] or the JVM fallback. | **Recommended.** |
+| **D. JCEF (Chromium in the JVM)** | Replace all three engines with Chromium via JCEF. Automation over CDP. | JVM + Chromium boot [U]. | Chromium multi-process [U]. | +100 MB or more per OS [U]. | Many Chromium helpers to sign [I]. | No [I]. | Re-opened as **option E** below (with Equo and JxBrowser). It changes the engine users and sites see, drops the WKWebsiteDataStore and WebView2 stores (section 6.4), and discards three working shims. |
 | **E. JavaFX WebView** | JavaFX's own WebKit 620.1 [W] (https://openjfx.io/highlights/25/). | JVM boot. | JVM. | JavaFX modules. | JIT entitlement [I]. | WebView is not supported in native-image [W] (https://bell-sw.com/blog/how-to-create-javafx-native-images/). | Reject. It has no isolated worlds, no profile store control and no native input equal to today's. |
 | **F. Electron + ClojureScript** | Rewrite the shell as Electron. Core in CLJS on Node. | Electron boot. | Chromium. | Real Electron builds of 201-290 MB [W] (https://hackernoon.com/six-months-with-tauri-the-benefits-and-the-bill). | Electron signing is well known. | n/a | Reject for the browser itself, for the same engine and data-loss reasons as D. Logseq shows CLJS on Electron works [W] (https://github.com/GQAdonis/logseq/blob/master/CODEBASE_OVERVIEW.md). |
 | **G. SWT Browser** (extra) | Eclipse SWT wraps WebKitGTK, WebKit (Mac) and Edge WebView2 (`SWT.EDGE`, since 4.19) [W] (https://bugs.openjdk.org/browse/JMC-7118). | JVM boot. | JVM. | SWT jars + JVM. | Needs `-XstartOnFirstThread` on Mac [I]. | Not tested [U]. | Reject. Same engines, but no access to isolated worlds, reply-capable script handlers, native trusted input or the Mac store identifier. |
@@ -440,7 +496,70 @@ The figures below carry [W] sources or are marked [U].
 - Reflection must be removed or declared. Run the native-image agent on the uberjar [W] (https://github.com/lread/clj-graal-docs).
 - graal-build-time is incompatible with single-segment namespaces [W] (same source).
 - There is no AWT/Swing/JavaFX. Not needed under option C.
-- The `macOS x64` build of GraalVM itself must be confirmed for the Intel half of the universal binary [U]. If it is missing, either cross-build is impossible and Intel needs the JVM fallback, or Intel support ends. That is open question Q10.
+- **Oracle GraalVM dropped macOS x64.** "Version 25.0.1 was the last release that supported this hardware architecture … GraalVM now only supports macOS on AArch64 (Apple Silicon)." [W] (https://www.graalvm.org/release-notes/JDK_25). Whether Liberica NIK still builds macOS x64 is [U]. So the Intel half of the universal binary needs Liberica NIK or the jlink JVM fallback (Q10).
+
+
+### Option E: embedded Chromium in the JVM (Equo, JCEF, JxBrowser)
+
+Option E re-opens option D with three concrete libraries. Details and every source are in part 1 (E.1-E.10) and part 2 (E.0-E.10).
+
+| | **Equo Chromium** | **JCEF (jcefmaven)** | **JxBrowser** |
+|---|---|---|---|
+| Licence for a closed-source app | Community is GPLv3. A commercial licence is needed, custom price [W] (https://docs.equo.dev/chromium/150.x/getting-started/distribution.html, https://www.equo.dev/pricing) | BSD-3 (java-cef) and Apache-2.0 (jcefmaven), free [W] (https://raw.githubusercontent.com/chromiumembedded/java-cef/master/LICENSE.txt, https://github.com/jcefmaven/jcefmaven) | Perpetual: $1,979 Indie, from $8,199 Project, from $29,599 Enterprise. Each includes 1 year of updates; renewal costs 25% less [W] (https://teamdev.com/jxbrowser/) |
+| macOS arm64 / x86_64 | Paid: both. Community: x86_64 only in public Maven [W] | Both [W] | Both, macOS 13-26 [W] (https://teamdev.com/jxbrowser/docs/guides/introduction/requirements/) |
+| Windows x64 / Linux x64 | yes / yes [W] | yes / yes [W] | yes / yes [W] |
+| Chromium today, cadence | 150. Majors about every 6 months; weekly patches only in paid tiers [W] (https://docs.equo.dev/chromium/150.x/reference/versions.html) | 152, released 30 Sep 2026. A release every 3-6 months, about 4 majors behind [W] (https://github.com/jcefmaven/jcefmaven/releases) | 156, released 28 Oct 2026. A release every 1-3 weeks [W] (https://teamdev.com/jxbrowser/releases/index.xml) |
+| Process model | CEF [W] | Chromium in-process: a crash can take down the JVM [W] (https://teamdev.com/jxbrowser/blog/jxbrowser-and-jcef/) | Chromium out of process [W] (same) |
+| In-process CDP (private world + trusted input) | No. Debug port only, "development purposes only" [W] | **Yes**, via `CefDevToolsClient` [W] | Unknown. Only a debug port is documented [W/U] |
+| JS eval with a return value | SWT `evaluate`: yes. Swing: no [W] | No (`executeJavaScript` returns void). Use CDP `Runtime.evaluate` [W] | Yes [W] (https://teamdev.com/jxbrowser/docs/guides/javascript/) |
+| Mac signing | Not documented [U] | jcefbuild has codesign and notarize scripts [W] (https://github.com/jcefmaven/jcefbuild) | Notarized stock binaries, plus a branding tool to re-sign [W] (https://teamdev.com/jxbrowser/blog/branding-chromium-binaries/) |
+| GraalVM native-image | Not mentioned [U] | No precedent found [U] | Documented with Liberica NIK. Platforms not stated [W] (https://teamdev.com/jxbrowser/docs/guides/native-image/) |
+| Binary size per platform | Not published [U] | Not published [U] | About 78-92 MB [W] (https://teamdev.cn/jxbrowser/faq) |
+
+**What option E means for the native side** [I unless marked]
+
+- **Retired.**
+  - The three shims: `webkit_shim.c`, `wkwebview_shim.m` and `webview2_shim.cpp` [V sizes].
+  - The 79-function header [V]. By prefix it holds 31 `zb_automation_debug_*` test hooks, 17 `zb_automation_*`, 9 `zb_app_*`, 6 `zb_native_*` and 3 `zb_cookies_*`.
+  - The Zig port adapters.
+  - The native drawer, Secrets and auth windows.
+  - The host protocol of option C.
+- **Kept.**
+  - `PagePort` (21) and `CookiePort` (3) survive as Clojure protocols, with one Chromium implementation over CDP.
+  - The Windows branch's CDP code is the template for it [V] (win branch `webview2_shim.cpp:917,1009-1028,1398-1412,2567-2573,3256-3292`).
+- **Still native, through FFM on HotSpot.**
+  - Spawning the helper with the token on fd 3/4 (`src/agent_spawn_posix.c:35-88`) [V]. Java's `ProcessBuilder` cannot pass extra fds.
+  - Keychain, libsecret and Credential Manager.
+  - The libproc reaper (`src/agent_run_reaper.c`) [V].
+  - The Windows DACL (`src/owner_only.zig:51-58`) [V].
+  - FFM is final since JDK 22 [W] (https://openjdk.org/jeps/454).
+- **Mac main thread.**
+  - AWT owns the AppKit main thread. `-XstartOnFirstThread` must not be used with AWT [W] (https://mail.openjdk.org/pipermail/awt-dev/2013-January/004065.html).
+  - JCEF needs `--add-opens` into `sun.lwawt.macosx` [W] (https://github.com/jcefmaven/jcefmaven).
+- **Signing.**
+  - The JVM and Chromium helpers need `allow-jit`, and some helpers need more [W] (https://raw.githubusercontent.com/electron/osx-sign/main/entitlements/default.darwin.renderer.plist).
+  - That reverses the current entitlement stance (`packaging/macos/entitlements.plist:16-23`) [V].
+- **Startup.**
+  - Native-image is unproven for E, so plan on jlink plus a JDK 25 AOT cache. JEP 483 cut one app from 4.5 s to 2.6 s [W] (https://openjdk.org/jeps/483).
+  - Startup is JVM boot plus Chromium boot [U, measure in phase 0].
+- **Contracts.**
+  - The wire, error and token-store contracts in section 6 still hold.
+  - The engine-owned stores in 6.4 do not: Linux `data|cache|cookies.sqlite`, the Mac UUID store and `<profile>\WebView2`. Users must be migrated (part 2, E.6).
+
+**Option E vs option C, side by side** [I]
+
+| | Option C (native host + Clojure core) | Option E (Chromium in the JVM) |
+|---|---|---|
+| Engines | System WebKit, WebKit and WebView2. The OS patches them | One bundled Chromium. We patch it, monthly |
+| Native code kept | About 24,600 lines (shims, native UI, spawn) | Near zero: FFM calls only |
+| Mac user impact | None | Cookie migration, other site data lost, new fingerprint |
+| Mac entitlements | No JIT (native-image core) | `allow-jit` and more |
+| Added size per architecture | Tens of MB (core binary) | About 150-300 MB (Chromium + JVM) |
+| Trusted input / network on Mac | No (`js_synthetic`, no network API) | Yes, via CDP |
+| Licence | None | JCEF free; JxBrowser from $8,199 + renewals; Equo custom |
+| Effort (section 8) | 110-168 agent-days | 132-200 agent-days |
+
+**Verdict.** Option E does not beat option C today. It beats C when the five conditions in section 1 hold. Run phase 0 as a two-armed spike and decide on the numbers.
 
 
 ---
@@ -552,6 +671,8 @@ not from a URL. The drawer talks to the core with a message handler
 `src/dashboard/content/index.html:132-140`), never with the page's
 automation world. Tests: `:browser-test` for logic, Playwright TS for the
 page itself, and the owner's real-screen check.
+
+**Under option E** there is no per-OS native UI to keep. The drawer recommendation then becomes one ClojureScript UI in a separate, network-less Chromium browser, with the Secrets window kept in Swing (part 2, E.4; Q18). The page script still stays JavaScript.
 
 ### 4.3 The SDKs
 
@@ -993,7 +1114,7 @@ path under `/tmp` because of the 108-byte AF_UNIX limit.
 
 | # | Phase | What ships | Agent-days | Confidence |
 |---|---|---|---|---|
-| 0 | **Spike and decision.** A host-protocol prototype on Linux for 3 PagePort methods (`evalJson`, `navigate`, `url`). A Clojure native-image core answers `page.url` through it. Measure start time, RSS, binary size and round-trip latency. Build and sign the core on both Macs (arm64 and x86_64) to confirm GraalVM availability. | A measured go/no-go memo. No user change. | 6-10 | Medium |
+| 0 | **Spike and decision.** A host-protocol prototype on Linux for 3 PagePort methods (`evalJson`, `navigate`, `url`). A Clojure native-image core answers `page.url` through it. Measure start time, RSS, binary size and round-trip latency. Build and sign the core on both Macs (arm64 and x86_64) to confirm GraalVM availability. | A measured go/no-go memo. No user change. While option E is open, run E0 (below) instead. | 6-10 | Medium |
 | 1 | **Contract harness.** One launcher seam so every e2e test can target either build. Golden transcripts of the automation socket and of the helper frames recorded on today's Zig build. Byte fixtures for section 6 (framing, errors, on-disk files). The tier-1 suite from section 7 runs against any core. | A suite green on today's Zig core. | 8-12 | Medium |
 | 2 | **Native host protocol, Linux.** Put the existing GTK PagePort and CookiePort behind a socket server inside today's binary, behind a flag such as `--core=external`. Covers window lifecycle, dialogs, screenshots and native input. | A Linux dev build that an external process can drive through PagePort. | 10-15 | Medium |
 | 3 | **Clojure automation core.** Transport, auth, framing, router, engine, queue, errors, telemetry, cookie routes, and the window, health, recover and dialog routes. | A Linux build where the Clojure core passes the tier-1 automation suite, behind a flag. | 25-35 | Low-medium |
@@ -1029,6 +1150,32 @@ path under `/tmp` because of the 108-byte AF_UNIX limit.
 | Dashboard in ClojureScript, only when the sequences service exists | 5-8 | Low | Q5 |
 | Rewrite the host glue (about 4,400 Zig lines) in C/ObjC/C++ | not estimated | — | Q9 |
 
+### Phases if option E is chosen (embedded Chromium in the JVM)
+
+The library is JxBrowser or JCEF, decided in E0 (Q14). The estimates join part 1 E.9 and part 2 E.9 [I].
+
+| # | Phase | What ships | Agent-days | Confidence |
+|---|---|---|---|---|
+| E0 | **Two-armed spike** (replaces phase 0 while E is open). Run C's phase 0 next to an E arm. The E arm is a Swing + Chromium + Clojure app on both Macs and Windows. It measures start time, RSS and size, notarizes with `allow-jit`, and passes the CDP private-world and trusted-input tests ported from the Windows branch. Use the JxBrowser 30-day trial. | A measured C-vs-E memo | 8-12 | Medium |
+| E1 | Contract harness (same as phase 1) | Suite green on today's build | 8-12 | Medium |
+| E2 | Clojure automation core on the JVM (same as phase 3, with no host protocol). Phase 2 is dropped. | Core passes the tier-1 suite against a stub port | 25-35 | Low-medium |
+| E3 | ChromiumPort: PagePort + CookiePort over CDP or the library API. Replace the `zbNavigation` / `zbFiles` channels in automation.js. | All page methods on Chromium | 13-22 | Low-medium |
+| E4 | Flows and pacing (same as phase 4), plus a live re-check of every flow on Chromium | All 52 methods, flows re-checked live | 16-25 | Low |
+| E5 | Agent core + FFM natives: spawn with fd 3/4, Keychain, libsecret, Credential Manager, reaper, DACL | Drawer works end to end | 25-35 | Low |
+| E6 | UI: the drawer as one ClojureScript page in a separate network-less browser, the Secrets window in Swing, the auth window | Real-screen sign-off | 12-18 | Low |
+| E7 | Packaging: jlink + AOT cache, Chromium per architecture, Mac sign + notarize with JIT entitlements, MSI, deb, **new auto-updater** | Signed, notarized, self-updating builds | 15-25 | Low |
+| E8 | User migration: export Mac WebKit cookies, import them into Chromium, check Keychain access, test a real DMG upgrade; Windows WebView2 profile | Upgrade keeps cookies and token | 6-10 | Low |
+| E9 | Remove Zig, the shims and the native UI | One codebase | 4-6 | Medium |
+
+**Totals for option E**
+- About **132-200 agent-days**, against 110-168 for option C.
+- Add the library licence (JxBrowser) or the monthly in-house CEF build work (JCEF).
+- Confidence: **low**.
+
+**What users see**
+- Mac users see the engine switch and the migration at E8, the first release on the new app [I].
+
+
 ---
 
 ## 9. Open questions for the owner
@@ -1043,6 +1190,7 @@ Each question has a recommendation. Q1-Q8 come from pane 2 and Q9-Q13 from pane 
    - Today it is native on purpose (`docs/agent-drawer.md:92-94`).
    - Recommendation: stay native for the first release. Its geometry code also stays native, because the UI calls it inline (section 1, reconciliation).
    - Decide on a web drawer after the core ships, with the owner's real-screen check.
+   - Under option E, the answer changes: build the drawer once in ClojureScript in a separate, network-less browser, and keep the Secrets window in Swing (Q18).
 3. **Q3. Should automation.js be rewritten?**
    - Recommendation: no.
    - If the owner wants Clojure syntax there, use Squint, with a size budget and the Playwright suite on all three engines.
@@ -1065,7 +1213,8 @@ Each question has a recommendation. Q1-Q8 come from pane 2 and Q9-Q13 from pane 
    - The host keeps about 4,400 lines of Zig glue: PagePort adapters, inline policies, drawer geometry and config apply (section 2).
    - Recommendation: keep Zig in the host during the port. Rewriting working glue adds risk and no user value. Revisit after phase 8.
 10. **Q10. If GraalVM native-image is not available for macOS x64, what happens to Intel Macs?**
-    - Recommendation: confirm in phase 0.
+    - New fact: Oracle GraalVM dropped macOS x64 after 25.0.1 (https://www.graalvm.org/release-notes/JDK_25). Whether Liberica NIK still supports it is unknown.
+    - Recommendation: check Liberica NIK in phase 0.
     - If it is missing, ship a jlink'ed JVM core for Intel only, with a JDK 25 AOT cache and the `allow-jit` entitlement. Or set an end date for Intel support.
     - Do not block arm64 on it.
 11. **Q11. Accept a second process (option C) instead of one JVM process (option A)?**
@@ -1076,3 +1225,27 @@ Each question has a recommendation. Q1-Q8 come from pane 2 and Q9-Q13 from pane 
 13. **Q13. May the port change any wire or disk contract (for example, add a protocol version field)?**
     - Recommendation: no. Freeze section 6 byte for byte until phase 8 is done.
     - After that, version any change with a migration and a test.
+
+**Questions added for option E** (Q14-Q19; from part 1 E.10 and part 2 E.10)
+
+14. **Q14. If option E is chosen, which library?**
+    - Recommendation: never Equo as documented.
+    - Before choosing, ask TeamDev two things: is there an in-process CDP API, and are `dispatch` input events `isTrusted`? Prove the answers in E0 with the Windows branch's private-world and trusted-input tests ported to the library.
+    - If yes, choose JxBrowser, at about $8,199 plus about $6,150 a year for updates.
+    - If no, choose JCEF and build it in-house against current CEF every month.
+15. **Q15. Will you take on shipping Chromium security updates every month, with a new auto-updater?**
+    - Recommendation: option E is only safe with this.
+    - Without it, stay on option C, where Apple and Microsoft patch the engine.
+16. **Q16. Accept a new site-detection profile on Mac (embedded Chromium instead of WebKit)?**
+    - Recommendation: only after a live re-check of each LinkedIn, Instagram and X flow on the chosen library, on a test account.
+17. **Q17. Accept that Mac users lose non-cookie site data on the switch?**
+    - Recommendation: yes, with a cookie import and a clear one-time notice.
+    - Test it on a real DMG upgrade first.
+18. **Q18. Under option E, may the drawer become web content?**
+    - Recommendation: yes, as one ClojureScript UI in a separate, network-less browser instance.
+    - Keep the Secrets window in Swing, so a typed token never passes through a renderer.
+    - It reverses `docs/agent-drawer.md:92-94`, so it is your call.
+19. **Q19. What is "our Google sign-in popup bug"?**
+    - No bead or document was found.
+    - Recommendation: file it with steps.
+    - Google blocks sign-in from embedded frameworks and webviews (https://security.googleblog.com/2019/04/better-protection-against-man-in-middle.html). So the fix is likely to open Google sign-in in the system browser, under any engine, not to switch engines.
