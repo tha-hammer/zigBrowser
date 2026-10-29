@@ -841,18 +841,13 @@ def guarded_remove_live_root(root: Path, home: Path) -> None:
     ):
         raise RuntimeError(f"refused unguarded cleanup target: {resolved_root}")
 
-    def restore_owned_access(function: Any, path: str, _: Any) -> None:
-        candidate = Path(path)
-        try:
-            candidate.relative_to(resolved_root)
-        except ValueError as error:
-            raise RuntimeError(f"refused cleanup outside {resolved_root}: {candidate}") from error
-        if candidate.is_symlink():
-            raise RuntimeError(f"refused permission repair through symlink: {candidate}")
-        os.chmod(candidate, 0o700)
-        function(path)
-
-    shutil.rmtree(resolved_root, onerror=restore_owned_access)
+    token_fifo = (
+        resolved_root
+        / "private-home/.local/share/zigbrowser/agent-home/scratchpad/token-fifo"
+    )
+    if token_fifo.is_dir() and not token_fifo.is_symlink():
+        os.chmod(token_fifo, 0o700)
+    shutil.rmtree(resolved_root)
 
 
 def main() -> int:
