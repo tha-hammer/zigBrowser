@@ -39,6 +39,9 @@ TOOL_DEADLINE_S = 120
 CARD_S = 120
 GATED_DEADLINE_S = TOOL_DEADLINE_S + CARD_S
 MCP_TOOL_TIMEOUT_MS = (GATED_DEADLINE_S + 10) * 1000
+# The CLI echoes each tool_result on one stdout line. With a screenshot (up to 1 MiB of
+# base64) that line outgrows the SDK's 1 MiB default, which fails it as CLIJSONDecodeError.
+CLI_LINE_MAX = 16 << 20
 
 
 @dataclass(frozen=True)
@@ -133,6 +136,7 @@ def build(home, *, route_env, cli_path=None, base_url=None, proxy=None, mcp_serv
         can_use_tool=can_use_tool,
         include_partial_messages=True,
         stderr=stderr,
+        max_buffer_size=CLI_LINE_MAX,
         # Only the in-process zigbrowser server may exist: MCP servers planted in
         # any settings or .claude.json are ignored.
         extra_args={"strict-mcp-config": None, **(extra_args or {})},

@@ -229,7 +229,9 @@ def main() -> int:
         return 1
     if tool_failed(call_tool(evidence, 11, "navigate", {"url": target + "/heavy"})):
         return 1
-    missing = call_tool(evidence, 12, "click", {
+    if tool_failed(call_tool(evidence, 12, "scroll", {"y": 600})):
+        return 1
+    missing = call_tool(evidence, 13, "click", {
         "selector": "css=.missing-messages-control",
     })
     if not tool_failed(missing):

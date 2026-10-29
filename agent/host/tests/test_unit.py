@@ -60,6 +60,30 @@ class OptionsBuilder(unittest.TestCase):
         self.assertEqual(options.TOOL_DEADLINE_S, 120)
         self.assertEqual(self.build().env["MCP_TOOL_TIMEOUT"], "250000")
 
+    def test_the_sdk_reads_a_screenshot_sized_cli_line(self):
+        # The owner's CLIJSONDecodeError (2026-10-29): the CLI's echo of a screenshot tool_result
+        # outgrew the SDK's 1 MiB line default. Run the real SDK transport against a CLI that
+        # prints one 3 MiB message.
+        import anyio
+        from claude_agent_sdk._internal.transport.subprocess_cli import SubprocessCLITransport
+        self.home.workspace.mkdir(parents=True, exist_ok=True)
+        cli = self.home.root / "cli"
+        cli.write_text("#!/bin/sh\nprintf '{\"type\":\"user\",\"data\":\"%s\"}\\n' "
+                       "\"$(head -c 3145728 /dev/zero | tr '\\0' A)\"\n")
+        cli.chmod(0o700)
+        os.environ.setdefault("CLAUDE_AGENT_SDK_SKIP_VERSION_CHECK", "1")
+
+        async def read():
+            transport = SubprocessCLITransport(prompt="hi", options=self.build(cli_path=str(cli)))
+            await transport.connect()
+            try:
+                return [message async for message in transport.read_messages()]
+            finally:
+                await transport.close()
+
+        messages = anyio.run(read)
+        self.assertEqual([len(m["data"]) for m in messages], [3 << 20])
+
     def test_strict_mcp_config_is_always_passed(self):
         self.assertIn("strict-mcp-config", self.build().extra_args)
 

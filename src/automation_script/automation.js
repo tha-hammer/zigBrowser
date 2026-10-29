@@ -552,8 +552,46 @@
     return success({}, telemetry);
   }
 
+  // Whether `element` is a scroll panel that can still move by (x, y).
+  function panelCanMove(element, x, y) {
+    const view = element.ownerDocument && element.ownerDocument.defaultView;
+    const style = view ? view.getComputedStyle(element) : null;
+    if (!style) return false;
+    const scrolls = value => value === 'auto' || value === 'scroll' || value === 'overlay';
+    const down = y !== 0 && scrolls(style.overflowY) && (y > 0
+      ? element.scrollTop + element.clientHeight < element.scrollHeight - 1 : element.scrollTop > 0);
+    const across = x !== 0 && scrolls(style.overflowX) && (x > 0
+      ? element.scrollLeft + element.clientWidth < element.scrollWidth - 1 : element.scrollLeft > 0);
+    return down || across;
+  }
+
+  // The panel to scroll when the page itself cannot move (LinkedIn Messages
+  // and most web apps keep their content in their own scroll panel): the
+  // one under the middle of the view, else the largest visible one.
+  function scrollPanel(x, y) {
+    const doc = globalScope.document;
+    for (let current = doc.elementFromPoint(globalScope.innerWidth / 2, globalScope.innerHeight / 2); current;
+      current = current.parentNode && current.parentNode.nodeType === Node.DOCUMENT_FRAGMENT_NODE
+        ? current.parentNode.host : current.parentElement) {
+      if (current !== doc.documentElement && current !== doc.body && panelCanMove(current, x, y)) return current;
+    }
+    let best = null;
+    let bestArea = 0;
+    for (const element of doc.querySelectorAll('*')) {
+      if (element.scrollHeight <= element.clientHeight && element.scrollWidth <= element.clientWidth) continue;
+      const rect = element.getBoundingClientRect();
+      const width = Math.min(rect.right, globalScope.innerWidth) - Math.max(rect.left, 0);
+      const height = Math.min(rect.bottom, globalScope.innerHeight) - Math.max(rect.top, 0);
+      if (width <= 0 || height <= 0 || width * height <= bestArea || !panelCanMove(element, x, y)) continue;
+      best = element;
+      bestArea = width * height;
+    }
+    return best;
+  }
+
   // dom.scroll (synthetic): a selector is scrolled into the middle of the
-  // view; {x, y} scrolls the page by that many CSS px.
+  // view; {x, y} scrolls the page by that many CSS px, or the page's scroll
+  // panel when the page itself cannot move.
   function scroll(command) {
     if (command.selector !== undefined && command.selector !== null) {
       const resolved = resolveForCommand(Object.assign({}, command, { strict: command.strict !== false }));
@@ -565,8 +603,17 @@
     const x = Number(command.x || 0);
     const y = Number(command.y || 0);
     if (!Number.isFinite(x) || !Number.isFinite(y)) return failure('malformed_command', command, [], false);
-    globalScope.scrollBy(x, y);
-    return success({ scrollX: globalScope.scrollX, scrollY: globalScope.scrollY }, []);
+    const beforeX = globalScope.scrollX;
+    const beforeY = globalScope.scrollY;
+    globalScope.scrollBy({ left: x, top: y, behavior: 'instant' });
+    if (globalScope.scrollX !== beforeX || globalScope.scrollY !== beforeY) {
+      return success({ scrollX: globalScope.scrollX, scrollY: globalScope.scrollY, moved: 'page' }, []);
+    }
+    const panel = scrollPanel(x, y);
+    if (panel === null) return success({ scrollX: beforeX, scrollY: beforeY, moved: 'nothing' }, []);
+    panel.scrollBy({ left: x, top: y, behavior: 'instant' });
+    return success({ scrollX: globalScope.scrollX, scrollY: globalScope.scrollY, moved: 'panel',
+      panelScrollLeft: panel.scrollLeft, panelScrollTop: panel.scrollTop }, []);
   }
 
   // dom.setInputFiles: click the file input so the browser opens its file

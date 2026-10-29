@@ -114,11 +114,15 @@ class Site:
         self.clicked: set[str] = set()
         self.click_navigation_seen = False
         self.heavy_seen = False
+        self.panel_scroll: str | None = None
         owner = self
 
         class Handler(http.server.BaseHTTPRequestHandler):
             def do_GET(self):  # noqa: N802
-                if self.path.startswith("/clicked?"):
+                if self.path.startswith("/panel-scrolled?"):
+                    owner.panel_scroll = owner.panel_scroll or self.path.split("?", 1)[1]
+                    body = b"ok"
+                elif self.path.startswith("/clicked?"):
                     owner.clicked.add(self.path.split("?", 1)[1])
                     body = b"ok"
                 elif self.path == "/complex":
@@ -153,7 +157,11 @@ b.onclick=()=>mark('delayed-offscreen');document.querySelector('#delayed-slot').
                 elif self.path == "/heavy":
                     owner.heavy_seen = True
                     body = b'''<!doctype html><meta charset="utf-8"><title>Heavy SPA route</title>
-<h1>Messages route interactive</h1><script>document.documentElement.dataset.spa='interactive'</script>
+<style>html,body{margin:0;height:100%;overflow:hidden} #panel{position:fixed;top:60px;bottom:0;left:0;right:0;overflow-y:auto}
+#panel div{height:4000px}</style>
+<h1>Messages route interactive</h1><div id="panel"><div>Messages panel, like LinkedIn's</div></div>
+<script>document.documentElement.dataset.spa='interactive';
+document.querySelector('#panel').addEventListener('scroll',e=>fetch('/panel-scrolled?'+Math.round(e.target.scrollTop)),{once:true})</script>
 <img src="/stall" alt="resource that keeps the load event pending">'''
                 elif self.path == "/stall":
                     self.send_response(200)
@@ -387,7 +395,7 @@ def main() -> int:
         while time.monotonic() < deadline:
             rows = evidence_rows(evidence)
             results = [row for row in rows if row.get("event") == "tool-result"]
-            if any(result_error(row) for row in results) or len(results) >= 12:
+            if any(result_error(row) for row in results) or len(results) >= 13:
                 break
             if app_pid not in app_pids(executable):
                 break
@@ -407,12 +415,12 @@ def main() -> int:
                 + f"; evidence={rows!r}"
                 + (f"; diagnostics={diagnostics.strip()}" if diagnostics.strip() else "")
             )
-        for row in results[:11]:
+        for row in results[:12]:
             if result_error(row):
                 return fail(f"{row['tool'].rsplit('__', 1)[-1]} tool_result: {result_text(row) or 'error'}")
         expected = ["mcp__zigbrowser__window_info", "mcp__zigbrowser__screenshot"] + [
             "mcp__zigbrowser__click"
-        ] * 8 + ["mcp__zigbrowser__navigate", "mcp__zigbrowser__click"]
+        ] * 8 + ["mcp__zigbrowser__navigate", "mcp__zigbrowser__scroll", "mcp__zigbrowser__click"]
         if [row.get("tool") for row in results] != expected:
             diagnostics = diagnostic_tail(home / "state/drawer.log", stderr, stdout)
             return fail(
@@ -420,8 +428,8 @@ def main() -> int:
                 + (f"; diagnostics={diagnostics}" if diagnostics else "")
             )
         expected_failure = "no element matched css=.missing-messages-control (element_not_found, -32001)"
-        if not result_error(results[11]) or result_text(results[11]) != expected_failure:
-            return fail(f"actionable selector failure was {result_text(results[11])!r}")
+        if not result_error(results[12]) or result_text(results[12]) != expected_failure:
+            return fail(f"actionable selector failure was {result_text(results[12])!r}")
         screenshot = result_image(results[1])
         if screenshot is None or len(screenshot) < 10_000 or not screenshot.startswith(PNG_SIGNATURE):
             return fail("screenshot did not return a real PNG image block")
@@ -433,6 +441,9 @@ def main() -> int:
             return fail("approved click did not start its navigation")
         if not site.heavy_seen:
             return fail("navigate did not reach the heavy SPA route")
+        # The page itself cannot scroll; its messages panel must (owner, 2026-10-29: LinkedIn).
+        if site.panel_scroll != "600" or '"moved":"panel"' not in result_text(results[11]).replace(" ", ""):
+            return fail(f"scroll moved panel={site.panel_scroll!r}; result {result_text(results[11])!r}")
         approvals = live_approvals(stdout)
         # Interactive navigation uses the default conditional policy and needs
         # no separate card. All nine clicks do, including the link click that
@@ -457,7 +468,7 @@ def main() -> int:
         if dimensions is None:
             return fail("readable in-app PNG was not produced")
         print(f"PNG\t{png}\t{dimensions[0]}x{dimensions[1]}", flush=True)
-        print("PASS mac-agent-real-tools screenshot-selectors-navigation-spa", flush=True)
+        print("PASS mac-agent-real-tools screenshot-selectors-navigation-spa-panel-scroll", flush=True)
         return 0
     finally:
         app_stopped = proc is None or stop_owned(app_pid, app / "Contents/MacOS/zigBrowser")

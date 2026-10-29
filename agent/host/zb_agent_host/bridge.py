@@ -62,7 +62,8 @@ _OFFSET = {"type": "integer", "minimum": -100000, "maximum": 100000}
 ACT_TOOLS = (  # S8 decision 12: they act on the page but need no card (S8e part 1)
     ("hover", "Moves the pointer over the element a selector matches, in this window's page.",
      _schema({"selector": _ACT_SELECTOR}, ["selector"])),
-    ("scroll", "Scrolls this window's page: to the element a selector matches, or by x and y CSS pixels.",
+    ("scroll", "Scrolls this window's page: to the element a selector matches, or by x and y CSS pixels. "
+     "When the page itself cannot move, the scroll panel in the middle of the view moves instead.",
      _schema({"selector": _ACT_SELECTOR, "x": {**_OFFSET, "description": "Pixels to the right (negative: left)."},
               "y": {**_OFFSET, "description": "Pixels down (negative: up)."}})
      # Exactly the broker contract: a selector alone, or a non-empty subset of x and y. Not a
