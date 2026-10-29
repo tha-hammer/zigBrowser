@@ -28,6 +28,32 @@ static const int ZB_DTYPE_RESPONSE = 2;
 static const int ZB_WK_LOAD_FAIL_DOMAIN = 3;
 static const NSTimeInterval ZB_NAVIGATION_TIMEOUT_SECONDS = 15.0;
 
+static NSString *zb_safari_application_name(void) {
+  static NSString *application_name;
+  static dispatch_once_t once;
+  dispatch_once(&once, ^{
+    NSString *version = nil;
+    NSDictionary *info = [NSDictionary dictionaryWithContentsOfFile:
+        @"/Applications/Safari.app/Contents/Info.plist"];
+    id candidate = info[@"CFBundleShortVersionString"];
+    if ([candidate isKindOfClass:NSString.class]) {
+      NSString *text = (NSString *)candidate;
+      NSCharacterSet *allowed = [NSCharacterSet characterSetWithCharactersInString:@"0123456789."];
+      if (text.length > 0 && text.length <= 64 &&
+          [text rangeOfCharacterFromSet:allowed.invertedSet].location == NSNotFound) {
+        version = text;
+      }
+    }
+    if (version == nil) version = @"18.0";
+    application_name = [NSString stringWithFormat:@"Version/%@ Safari/605.1.15", version];
+  });
+  return application_name;
+}
+
+static void zb_configure_safari_user_agent(WKWebViewConfiguration *configuration) {
+  configuration.applicationNameForUserAgent = zb_safari_application_name();
+}
+
 @class ZBAppHost;
 @class ZBWindowHost;
 
@@ -630,6 +656,7 @@ static void *ZBWebViewKVOContext = &ZBWebViewKVOContext;
 
 + (WKWebView *)newConfiguredWebView {
   WKWebViewConfiguration *configuration = [[WKWebViewConfiguration alloc] init];
+  zb_configure_safari_user_agent(configuration);
   configuration.preferences.javaScriptCanOpenWindowsAutomatically = YES;
   configuration.userContentController = [[WKUserContentController alloc] init];
   NSString *script = @"window.__zigBrowserBackend = 'wkwebview';";
@@ -1035,6 +1062,7 @@ static int64_t zb_now_us(void) { return (int64_t)([[NSProcessInfo processInfo] s
     return nil;
   }
 
+  zb_configure_safari_user_agent(configuration);
   WKWebView *childView = [[WKWebView alloc] initWithFrame:NSMakeRect(0, 0, 1024, 768)
                                            configuration:configuration];
   // opener:self — the shim sets the popup's stable opener id + inherited process group inside
@@ -1266,6 +1294,7 @@ static int64_t zb_now_us(void) { return (int64_t)([[NSProcessInfo processInfo] s
 
 - (int)run {
   WKWebViewConfiguration *configuration = [[WKWebViewConfiguration alloc] init];
+  zb_configure_safari_user_agent(configuration);
   self.webView = [[WKWebView alloc] initWithFrame:NSMakeRect(0, 0, 1024, 768) configuration:configuration];
   if (self.webView == nil) {
     return ZB_EXIT_WEBVIEW_INIT_FAILED;
