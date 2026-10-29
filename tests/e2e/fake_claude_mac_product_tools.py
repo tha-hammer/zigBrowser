@@ -229,8 +229,8 @@ def main() -> int:
         return 1
     if tool_failed(call_tool(evidence, 11, "navigate", {"url": target + "/heavy"})):
         return 1
-    missing = call_tool(evidence, 12, "wait_for", {
-        "selector": "css=.missing-messages-control", "state": "visible", "timeout_ms": 50,
+    missing = call_tool(evidence, 12, "click", {
+        "selector": "css=.missing-messages-control",
     })
     if not tool_failed(missing):
         return 1

@@ -412,7 +412,7 @@ def main() -> int:
                 return fail(f"{row['tool'].rsplit('__', 1)[-1]} tool_result: {result_text(row) or 'error'}")
         expected = ["mcp__zigbrowser__window_info", "mcp__zigbrowser__screenshot"] + [
             "mcp__zigbrowser__click"
-        ] * 8 + ["mcp__zigbrowser__navigate", "mcp__zigbrowser__wait_for"]
+        ] * 8 + ["mcp__zigbrowser__navigate", "mcp__zigbrowser__click"]
         if [row.get("tool") for row in results] != expected:
             diagnostics = diagnostic_tail(home / "state/drawer.log", stderr, stdout)
             return fail(
@@ -435,16 +435,16 @@ def main() -> int:
             return fail("navigate did not reach the heavy SPA route")
         approvals = live_approvals(stdout)
         # Interactive navigation uses the default conditional policy and needs
-        # no separate card. All eight clicks do, including the link click that
-        # starts a navigation.
-        if len(approvals) != 8 or {row.get("verb") for row in approvals} != {"click"}:
+        # no separate card. All nine clicks do, including the link click that
+        # starts a navigation and the final missing-selector proof.
+        if len(approvals) != 9 or {row.get("verb") for row in approvals} != {"click"}:
             return fail(f"visible Approve buttons clicked were {approvals!r}")
         drawer_log = home / "state/drawer.log"
         try:
             logged = drawer_log.read_text(encoding="utf-8", errors="strict")
         except OSError:
             logged = ""
-        if "tool=mcp__zigbrowser__wait_for " + expected_failure not in logged:
+        if "tool=mcp__zigbrowser__click " + expected_failure not in logged:
             return fail("drawer.log did not name the failed selector")
 
         deadline = time.monotonic() + 45
