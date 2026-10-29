@@ -996,8 +996,11 @@ static int64_t zb_now_us(void) { return (int64_t)([[NSProcessInfo processInfo] s
   }
 
   if (action == ZB_DECISION_OPEN_SUBWINDOW && dtype == ZB_DTYPE_NEW_WINDOW) {
-    decisionHandler(WKNavigationActionPolicyCancel);
-    [self.app createWindowWithWebView:nil child:YES uri:candidate opener:nil];  // policy-opened subwindow: no tracked opener (unchanged)
+    // Let WebKit continue into -createWebViewWithConfiguration:.  That callback supplies the related
+    // configuration and lets us return a child tied to this opener.  Cancelling here and loading the URL
+    // in a fresh view severs window.opener for named form/link targets, so OAuth callbacks cannot post
+    // their result or close the provider popup.
+    decisionHandler(WKNavigationActionPolicyAllow);
     return;
   }
 
