@@ -612,8 +612,11 @@ re-open it.
    migration (E.6). Site detection changes from a Safari fingerprint to an
    embedded-Chromium fingerprint (E.5). The Python agent host does not
    change (E.7).
-6. **It does not fix Google sign-in.** Google blocks sign-in from embedded
-   frameworks and names CEF by name (E.5). Equo and JCEF are both CEF.
+6. **It does not fix Google sign-in.** Google's OAuth policy forbids its
+   sign-in inside any embedded browser library, and names WKWebView (2021)
+   and CEF (2019) (E.5). Today's Mac app and all three option E libraries
+   fall under it. No engine choice makes a site's "Sign in with Google"
+   inside our app compliant.
 
 ## E.1 What the product needs from the engine
 
@@ -633,10 +636,19 @@ citation.
 | Screenshots | the `screenshot` agent tool (`agent/host/zb_agent_host/bridge.py:55`) | verified |
 | Per-profile storage | `--profile-dir`; Mac store by path-derived UUID (`src/wkwebview_shim.m:121-123,3013-3023`) | verified |
 
-I could not find a bead or a document for "our Google sign-in popup bug"
-[unknown]. The opener-less code path above (`wkwebview_shim.m:998-1001`) is
-one candidate [inferred]. See E.5 for the Google policy, which blocks
-embedded sign-in on any engine.
+**The Google sign-in popup bug** (context from the orchestrator, review
+round, 2026-10-29). The owner hit it in real use of the Mac v8 build on
+2026-10-29:
+- On linkedin.com, "Sign in with Google" opened a popup through
+  `createWebViewWithConfiguration` (`src/wkwebview_shim.m:1022-1040`).
+- After the password, the popup stuck on Google's "This may take a moment"
+  screen and never returned. A second try worked.
+- CodexHeron is investigating. There is no bead or doc yet [unknown cause].
+
+That path keeps the opener (`wkwebview_shim.m:1037-1039`), so a lost
+opener is not the obvious cause [inferred]. The symptom is also not Google's
+`disallowed_useragent` error page (E.5) [inferred]. See E.5 for the Google
+policy, which matters more than the opener question.
 
 ## E.2 The automation surface of Equo, JCEF and JxBrowser
 
@@ -790,16 +802,52 @@ Secrets window in Swing."
   CDP (pane 1's mail; win branch `webview2_shim.cpp:917`). So option E
   adds no new class of signal for Windows. It does add one for Mac and
   Linux [inferred].
-- **Google sign-in.** Google's 2019 post says: "we will be blocking
-  sign-ins from embedded browser frameworks starting in June", and names
-  "Chromium Embedded Framework - CEF". It calls this "similar to the
-  restriction on webview sign-ins announced in April 2016" (web, checked:
-  https://security.googleblog.com/2019/04/better-protection-against-man-in-middle.html).
-  Equo and JCEF are CEF, and JxBrowser is an embedded framework too.
-  WKWebView and WebKitGTK are webviews under the 2016 rule [inferred].
-  **So no option fixes Google sign-in inside the app.** The fix Google asks
-  for is browser-based OAuth in the system browser (same source, and
-  https://developers.google.com/identity/protocols/oauth2/policies).
+- **Google sign-in: Google's policy matters more than `window.opener`.**
+  Three Google sources, all checked:
+  - **OAuth policy, "Use secure browsers":** "A developer must not direct a
+    Google OAuth 2.0 authorization request to an embedded user-agent under
+    the developer's control." It continues: "Embedded user-agents include,
+    but are not limited to, software libraries that allow a developer to
+    insert arbitrary scripts, alter the default routing of a request to the
+    Google OAuth server, or access session cookies"
+    (https://developers.google.com/identity/protocols/oauth2/policies).
+  - **2021 webview block:** "All embedded webviews will be blocked starting
+    on September 30, 2021." For iOS and macOS: "Embedded webviews
+    implementing or extending WKWebView, or the deprecated UIWebView, do not
+    comply". Blocked requests "will see a disallowed_useragent error". Apps
+    are told to let "general, third-party links" go to the operating
+    system's default browser
+    (https://developers.googleblog.com/2021/06/upcoming-security-changes-to-googles-oauth-2.0-authorization-endpoint.html).
+  - **2019 sign-in block:** "we will be blocking sign-ins from embedded
+    browser frameworks starting in June", naming "Chromium Embedded
+    Framework - CEF", "similar to the restriction on webview sign-ins
+    announced in April 2016"
+    (https://security.googleblog.com/2019/04/better-protection-against-man-in-middle.html).
+- **How it applies** [inferred from those texts and our code]:
+  - **Today's Mac app (WKWebView):** named in the 2021 post. Our app also
+    meets the policy's definition word for word. It inserts scripts
+    (automation.js at document start, `src/wkwebview_shim.m:640-647`) and
+    reads session cookies (`src/automation_macos_cookie_port.zig`). LinkedIn's
+    "Sign in with Google" inside our app is therefore out of policy today.
+    Google enforces this by detection, not always: the owner got past the
+    password, so this run was not blocked outright.
+  - **Linux (WebKitGTK):** an embedded webview library with the same
+    script and cookie access. Out of policy too.
+  - **JCEF and Equo:** CEF, named in the 2019 post. Out of policy.
+  - **JxBrowser:** not named, but it is an embedded browser library that
+    lets us insert scripts and read cookies. Out of policy.
+  - **Windows WebView2:** an embedded webview with CDP. Same conclusion.
+- **What this means.**
+  - **No engine choice makes "Sign in with Google" inside our app
+    compliant.** Option E does not help, and CEF is the one engine Google
+    has named for sign-in blocking.
+  - The usual fix, handing sign-in to the system browser, does not work
+    for a third-party site's login inside our browser. The site session
+    would land in Safari or Chrome, not in our cookie store.
+  - Practical rule: users sign in to LinkedIn, Instagram and X with the
+    site's own email and password (or passkey), not "Sign in with Google".
+    That also keeps the `li_at` / `sessionid` cookies our login gates read
+    (`social_flow_routes.zig:9-13`).
 - **Net risk** [inferred]: medium. LinkedIn, Instagram and X are mostly
   used from Chrome, so a Chromium fingerprint is common. But an *embedded*
   Chromium that lags Chrome by a few versions (Equo 150), with possibly
@@ -913,10 +961,17 @@ Product-side total under option E: about 36-57 agent-days, against about
   `isTrusted`? Recommendation: ask both, and prove the answers with the
   Windows branch's trusted-input matrix and private-world test, ported to
   the library. Until then, plan on JCEF.
-- **QE3. What is "our Google sign-in popup bug"?** I found no bead or
-  document for it. Recommendation: file it with steps. Google blocks
-  embedded sign-in on any engine (E.5), so the likely fix is to open
-  Google sign-in in the system browser, not to change engines.
+- **QE3. How should the product treat "Sign in with Google" on sites?**
+  The owner's popup hang (E.1) is being investigated by CodexHeron.
+  Separately, Google's OAuth policy puts Google sign-in inside any embedded
+  browser library out of policy: WKWebView, WebKitGTK, WebView2, CEF/JCEF,
+  Equo and JxBrowser alike (E.5). Recommendation:
+  - Treat Google sign-in on sites as unsupported and best-effort, on every
+    engine.
+  - Tell users to sign in with the site's own email and password or
+    passkey.
+  - File the hang as a bead, but do not let it decide the engine. Option E
+    does not fix it.
 - **QE4. Accept a new site-detection profile on Mac?** Recommendation:
   accept it only after a live re-check of each LinkedIn, Instagram and X
   flow on the chosen library, run on a test account.
