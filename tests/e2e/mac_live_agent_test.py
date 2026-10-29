@@ -647,6 +647,7 @@ def run_fake_auth(
     )
     for directory in (
         private_home,
+        private_home / ".local",
         data,
         data / "zigbrowser",
         agent_home,
