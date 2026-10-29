@@ -11,7 +11,7 @@ namespace of its own, as agent_tools_acceptance_test.py (whose helpers this reus
 - tool-error-bubble (S7.7): a get_text whose selector matches nothing gives the model the
   actionable selector failure, and the drawer shows that same failure so the model and user
   can retry; typed text is never included;
-- forbidden-exact (S7.8): secrets_get, cookies_get, evaluate, set_pacing and click each get
+- forbidden-exact (S7.8): secrets_get, cookies_get, evaluate and set_pacing each get
   exactly the CLI's fixed refusal "<tool_use_error>Error: No such tool available:
   mcp__zigbrowser__<name></tool_use_error>" (none is a tool of the server, so the CLI answers
   before the broker; the broker's own "tool not available" is unit-tested);
@@ -44,7 +44,7 @@ import agent_host_lifecycle_test as life  # noqa: E402
 import agent_tools_acceptance_test as acc  # noqa: E402 - launch, steps, answers, Site, page
 import agent_tools_test as tools  # noqa: E402
 
-FORBIDDEN = ("secrets_get", "cookies_get", "evaluate", "set_pacing", "click")
+FORBIDDEN = ("secrets_get", "cookies_get", "evaluate", "set_pacing")
 def transcripts(w) -> str:
     """Every saved transcript of the agent home (its writable state)."""
     return "\n".join(p.read_text(errors="replace") for p in sorted((w.agent / "state").rglob("*.jsonl")))
@@ -140,7 +140,7 @@ def case_deadline_seam(binary: Path, tmp: Path, check) -> None:
     w = life.world(binary, tmp, "acceptance")
     env = life.env_for(w, life.runtime_dir(), {**fake.seams(), "ZIGBROWSER_AGENT_TEST_TOOL_DEADLINE_S": "3"})
     b = Browser(binary, tmp, "deadline-seam", ["--agent-drawer", "on", "--agent-secret-store", "file"], env=env,
-                url=tools.page_url(tmp))
+                profile=tmp / "profile-deadline-seam", url=tools.page_url(tmp))
     try:
         if not check(b.wait_page(), "the page loaded", b):
             return

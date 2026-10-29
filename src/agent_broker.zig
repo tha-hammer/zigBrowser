@@ -939,19 +939,28 @@ fn redacted(gpa: std.mem.Allocator, err: std.json.ObjectMap, params: ?[]const u8
     const name = if (err.get("message")) |m| (if (m == .string and isName(m.string)) m.string else "failed") else "failed";
     if (code == -32013) return Outcome.fail("the page has a dialog open");
     if (code == -32007) return Outcome.fail("the page did not become interactive before navigation timed out (navigation_timeout, -32007)");
-    if (params) |json| {
-        var parsed = parse(gpa, json) catch return Outcome.fail("out of memory");
-        defer if (parsed) |*p| p.deinit();
-        if (parsed) |p| if (field(p.value, "selector", .string)) |selector| if (safeSelector(selector.string)) {
-            const text = if (code == -32001)
-                std.fmt.allocPrint(gpa, "no element matched {s} ({s}, {d})", .{ selector.string, name, code }) catch return Outcome.fail("out of memory")
-            else
-                std.fmt.allocPrint(gpa, "selector {s} failed ({s}, {d})", .{ selector.string, name, code }) catch return Outcome.fail("out of memory");
-            return .{ .result = .{ .failure = text }, .owned = text };
-        };
+    if (selectorFailure(code)) {
+        if (params) |json| {
+            var parsed = parse(gpa, json) catch return Outcome.fail("out of memory");
+            defer if (parsed) |*p| p.deinit();
+            if (parsed) |p| if (field(p.value, "selector", .string)) |selector| if (safeSelector(selector.string)) {
+                const text = if (code == -32001)
+                    std.fmt.allocPrint(gpa, "no element matched {s} ({s}, {d})", .{ selector.string, name, code }) catch return Outcome.fail("out of memory")
+                else
+                    std.fmt.allocPrint(gpa, "selector {s} failed ({s}, {d})", .{ selector.string, name, code }) catch return Outcome.fail("out of memory");
+                return .{ .result = .{ .failure = text }, .owned = text };
+            };
+        }
     }
     const text = std.fmt.allocPrint(gpa, "the browser could not do that ({s}, {d})", .{ name, code }) catch return Outcome.fail("the browser could not do that");
     return .{ .result = .{ .failure = text }, .owned = text };
+}
+
+/// Only failures caused by locating or acting on an element get selector
+/// context. Script/protocol failures stay generic so their page data cannot
+/// hitchhike through an otherwise model-supplied selector.
+fn selectorFailure(code: i64) bool {
+    return (code <= -32001 and code >= -32006) or code == -32009;
 }
 
 fn contextualFailure(gpa: std.mem.Allocator, base: []const u8, params: []const u8) Outcome {

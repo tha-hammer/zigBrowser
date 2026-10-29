@@ -503,7 +503,8 @@ def main() -> int:
         env = dict(env)
         env["ZIGBROWSER_SOCKET"] = str(socket_path)
         proc = subprocess.Popen(
-            prefix + [str(browser), fixture.resolve().as_uri(), "--automation-api"],
+            prefix + [str(browser), fixture.resolve().as_uri(), "--automation-api",
+                      "--profile-dir", str(Path(tmp) / "profile")],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
