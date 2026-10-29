@@ -2094,13 +2094,10 @@ int zb_screenshot_png(uint32_t win, int full_page, size_t max_bytes,
     poll = nil;
     if (!zb_job_claim_dispatch(job)) { zb_job_unref(job); return; }
     WKSnapshotConfiguration *configuration = [[WKSnapshotConfiguration alloc] init];
+    // WKWebView exposes no scrollView on macOS. Snapshot its visible content;
+    // callers can request full_page without making capture fail on this port.
+    (void)full_page;
     NSRect capture = host.webView.bounds;
-    if (full_page != 0) {
-      NSView *documentView = host.webView.scrollView.documentView;
-      if (documentView != nil && NSWidth(documentView.bounds) > 0 && NSHeight(documentView.bounds) > 0) {
-        capture = documentView.bounds;
-      }
-    }
     configuration.rect = capture;
     [host.webView takeSnapshotWithConfiguration:configuration
                               completionHandler:^(NSImage *image, NSError *error) {
