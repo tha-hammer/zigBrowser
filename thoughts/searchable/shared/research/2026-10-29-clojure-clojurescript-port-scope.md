@@ -1,11 +1,11 @@
 ---
 date: 2026-10-29
 researchers: pane 1 / CopperLynx (native and platform side, merge owner); pane 2 / TealCastle (product and UI side, reviewer)
-git_commit: 14e0012f (base); parts at c3d0c7f2 + bf7cb43c (part 1) and 50e70a79 + 9d2e28ad (part 2)
+git_commit: 14e0012f (base); parts at c3d0c7f2 + bf7cb43c (part 1) and 50e70a79 + 9d2e28ad + b209f06a (part 2)
 branch: zb-clojure-scope-2026-10-29-10-21
 topic: "Scope of a zigBrowser port to Clojure and ClojureScript"
 tags: [research, scope, clojure, clojurescript, port, graalvm, native-host, contracts, chromium, jcef, jxbrowser, equo]
-status: merged; option E (embedded Chromium) added 2026-10-29, awaiting pane 2 review
+status: merged; option E (embedded Chromium) added 2026-10-29 and reviewed by pane 2 (findings applied)
 ---
 
 # Scope: porting zigBrowser to Clojure and ClojureScript
@@ -138,7 +138,7 @@ The recommendation is **two processes per OS**, plus the unchanged Python helper
    - Today Apple, Microsoft and the Linux distros patch the engine [I].
    - The repo has no app auto-updater (`agent/host/zb_agent_host/options.py:101` only disables the Claude CLI's own) [V].
 4. **The library cost is accepted.**
-   - JxBrowser costs from $8,199 per project plus about 25% a year for updates [W] (https://teamdev.com/jxbrowser/).
+   - JxBrowser costs from $8,199 per project. Each further year of updates costs the licence price less 25%, about $6,150 [W] (https://teamdev.com/jxbrowser/).
    - JCEF is free (BSD) but trails Chromium by about 4 majors in jcefmaven, so we would build it ourselves [W] (https://github.com/jcefmaven/jcefmaven/releases).
    - Equo's free edition is GPLv3. Closed-source apps need a custom-priced licence [W] (https://docs.equo.dev/chromium/150.x/getting-started/distribution.html).
 5. **A phase-0 spike passes on both Mac architectures.** The JVM with Chromium must start fast enough and use acceptable memory. It must also notarize under hardened runtime, which needs `allow-jit` (today deliberately held out, `packaging/macos/entitlements.plist:16-23`) [V]. And Swing must coexist with AppKit's main thread.
@@ -147,7 +147,7 @@ The recommendation is **two processes per OS**, plus the unchanged Python helper
 - It retires all three shims and the 79-function header: about 24,600 native lines.
 - It needs no host protocol.
 - One Chromium PagePort, built over CDP, replaces three shims plus three Zig adapters.
-- It gives trusted input and network events on Mac and Linux, which WebKit lacks today (`src/automation_platform.zig:77-98`) [V].
+- It gives CDP trusted input (including scroll and hover) and network events on every OS. Today the capability table lists WKWebView and WebKitGTK as `js_synthetic` with no network API (`src/automation_platform.zig:84-95`) [V]. But the Mac shim does have native click, key and text (`src/wkwebview_shim.m:2612,2941,2970`) [V], and the Mac drawer tools claim "real Mac input" (`agent/host/zb_agent_host/bridge.py:70,72`) [V]. So the real gap on Mac is narrower (native scroll and hover, network events). Confirm it in E0 [I].
 - The drawer can become one ClojureScript UI (part 2, E.4).
 
 **So:**
@@ -169,7 +169,7 @@ The recommendation is **two processes per OS**, plus the unchanged Python helper
    - Their cookies need a migration. Other site data is lost.
    - The Keychain may prompt again, because today's default build is ad-hoc signed (`packaging/macos/build-dmg.sh:28-29`) [V/I].
    - The LinkedIn, Instagram and X risk engines see a new embedded-Chromium profile on Mac (part 2, E.5).
-   - It does **not** fix Google sign-in. Google blocks sign-in from embedded frameworks and names CEF [W] (https://security.googleblog.com/2019/04/better-protection-against-man-in-middle.html).
+   - It does **not** fix Google sign-in, and no engine does. Google's OAuth policy forbids OAuth requests in "an embedded user-agent under the developer's control", which includes libraries that "insert arbitrary scripts … or access session cookies" [W] (https://developers.google.com/identity/protocols/oauth2/policies). Google has blocked embedded webviews, WKWebView named, since 30 Sep 2021 [W] (https://developers.googleblog.com/2021/06/upcoming-security-changes-to-googles-oauth-2.0-authorization-endpoint.html). It also named CEF in 2019 [W] (https://security.googleblog.com/2019/04/better-protection-against-man-in-middle.html). Our app injects scripts and reads cookies today (`src/wkwebview_shim.m:640-647`) [V]. So WKWebView, WebKitGTK, WebView2, JCEF, Equo and JxBrowser are all out of that policy [I] (part 2 b209f06a, E.5).
 3. **Mac platform cost.**
    - The JVM needs `allow-jit` and likely `allow-unsigned-executable-memory`. Chromium helpers need `allow-jit`, and the plugin helper needs more [W] (https://raw.githubusercontent.com/electron/osx-sign/main/entitlements/default.darwin.plugin.plist).
    - Size grows by roughly 150-300 MB per architecture [I, from JxBrowser's 78-92 MB per platform, https://teamdev.cn/jxbrowser/faq].
@@ -509,7 +509,7 @@ Option E re-opens option D with three concrete libraries. Details and every sour
 | macOS arm64 / x86_64 | Paid: both. Community: x86_64 only in public Maven [W] | Both [W] | Both, macOS 13-26 [W] (https://teamdev.com/jxbrowser/docs/guides/introduction/requirements/) |
 | Windows x64 / Linux x64 | yes / yes [W] | yes / yes [W] | yes / yes [W] |
 | Chromium today, cadence | 150. Majors about every 6 months; weekly patches only in paid tiers [W] (https://docs.equo.dev/chromium/150.x/reference/versions.html) | 152, released 30 Sep 2026. A release every 3-6 months, about 4 majors behind [W] (https://github.com/jcefmaven/jcefmaven/releases) | 156, released 28 Oct 2026. A release every 1-3 weeks [W] (https://teamdev.com/jxbrowser/releases/index.xml) |
-| Process model | CEF [W] | Chromium in-process: a crash can take down the JVM [W] (https://teamdev.com/jxbrowser/blog/jxbrowser-and-jcef/) | Chromium out of process [W] (same) |
+| Process model | CEF [W] | Chromium in-process: a crash can take down the JVM [W, vendor source: TeamDev, a competitor] (https://teamdev.com/jxbrowser/blog/jxbrowser-and-jcef/) | Chromium out of process [W] (same) |
 | In-process CDP (private world + trusted input) | No. Debug port only, "development purposes only" [W] | **Yes**, via `CefDevToolsClient` [W] | Unknown. Only a debug port is documented [W/U] |
 | JS eval with a return value | SWT `evaluate`: yes. Swing: no [W] | No (`executeJavaScript` returns void). Use CDP `Runtime.evaluate` [W] | Yes [W] (https://teamdev.com/jxbrowser/docs/guides/javascript/) |
 | Mac signing | Not documented [U] | jcefbuild has codesign and notarize scripts [W] (https://github.com/jcefmaven/jcefbuild) | Notarized stock binaries, plus a branding tool to re-sign [W] (https://teamdev.com/jxbrowser/blog/branding-chromium-binaries/) |
@@ -555,7 +555,7 @@ Option E re-opens option D with three concrete libraries. Details and every sour
 | Mac user impact | None | Cookie migration, other site data lost, new fingerprint |
 | Mac entitlements | No JIT (native-image core) | `allow-jit` and more |
 | Added size per architecture | Tens of MB (core binary) | About 150-300 MB (Chromium + JVM) |
-| Trusted input / network on Mac | No (`js_synthetic`, no network API) | Yes, via CDP |
+| Trusted input / network on Mac | Partial: native click, key and text exist (`wkwebview_shim.m:2612,2941,2970`); the capability table says `js_synthetic` (`automation_platform.zig:90-91`); no network API. Confirm in E0 | Yes, via CDP (all input kinds, network events) |
 | Licence | None | JCEF free; JxBrowser from $8,199 + renewals; Equo custom |
 | Effort (section 8) | 110-168 agent-days | 132-200 agent-days |
 
@@ -772,6 +772,10 @@ process boundary with a small, validated frame protocol. The Clojure core
 (the section 1 design: a Clojure core with small native hosts over a local socket)
 only needs a frame reader and writer, which is small [inferred]. Revisit B
 only if shipping Python on Mac becomes the main pain.
+
+**Under option E** the Python host is unchanged. Only the fd 3/4 spawn
+needs FFM `posix_spawn` or a small native launcher, because Java's
+`ProcessBuilder` passes only stdin, stdout and stderr (part 2 E.7).
 
 
 ---
@@ -1078,6 +1082,14 @@ path under `/tmp` because of the 108-byte AF_UNIX limit.
 - Malli schemas (0.20.3, web (helper): https://github.com/metosin/malli/releases)
   for the wire shapes, with generative tests from those schemas [inferred].
 
+### Option E additions (only if option E is chosen; part 2 E.9)
+
+- Playwright's existing `chromium` project (`playwright.config.ts`) becomes the main page-script check [V project exists; I role].
+- The Windows branch's private-world test (win branch `tests/e2e/win_private_world_test.py`) and its 37-row trusted-input matrix, ported to the chosen library [V on win branch; I port].
+- An OAuth-style popup fixture that checks `window.opener` and `postMessage` [I].
+- A check that nothing sends `Runtime.enable` to the page world [I].
+- A real DMG upgrade test that keeps cookies and the Keychain token (part 2 E.6) [I].
+
 ### Tier 3: drop or keep native
 
 - Drop: `tests/automation/js_contract_test.zig` (it greps the JS source
@@ -1156,7 +1168,7 @@ The library is JxBrowser or JCEF, decided in E0 (Q14). The estimates join part 1
 
 | # | Phase | What ships | Agent-days | Confidence |
 |---|---|---|---|---|
-| E0 | **Two-armed spike** (replaces phase 0 while E is open). Run C's phase 0 next to an E arm. The E arm is a Swing + Chromium + Clojure app on both Macs and Windows. It measures start time, RSS and size, notarizes with `allow-jit`, and passes the CDP private-world and trusted-input tests ported from the Windows branch. Use the JxBrowser 30-day trial. | A measured C-vs-E memo | 8-12 | Medium |
+| E0 | **Two-armed spike** (replaces phase 0 while E is open). Run C's phase 0 next to an E arm. The E arm is a Swing + Chromium + Clojure app on both Macs and Windows. It measures start time, RSS and size, notarizes with `allow-jit`, and passes the CDP private-world and trusted-input tests ported from the Windows branch. It runs an OAuth-style popup fixture that checks `window.opener` and `postMessage`, which is unknown for all three libraries. It checks that nothing sends `Runtime.enable` to the page world, a known anti-bot signal (https://scrappey.com/qa/anti-bot/what-is-cdp-detection). Use the JxBrowser 30-day trial. | A measured C-vs-E memo | 8-12 | Medium |
 | E1 | Contract harness (same as phase 1) | Suite green on today's build | 8-12 | Medium |
 | E2 | Clojure automation core on the JVM (same as phase 3, with no host protocol). Phase 2 is dropped. | Core passes the tier-1 suite against a stub port | 25-35 | Low-medium |
 | E3 | ChromiumPort: PagePort + CookiePort over CDP or the library API. Replace the `zbNavigation` / `zbFiles` channels in automation.js. | All page methods on Chromium | 13-22 | Low-medium |
@@ -1245,7 +1257,9 @@ Each question has a recommendation. Q1-Q8 come from pane 2 and Q9-Q13 from pane 
     - Recommendation: yes, as one ClojureScript UI in a separate, network-less browser instance.
     - Keep the Secrets window in Swing, so a typed token never passes through a renderer.
     - It reverses `docs/agent-drawer.md:92-94`, so it is your call.
-19. **Q19. What is "our Google sign-in popup bug"?**
-    - No bead or document was found.
-    - Recommendation: file it with steps.
-    - Google blocks sign-in from embedded frameworks and webviews (https://security.googleblog.com/2019/04/better-protection-against-man-in-middle.html). So the fix is likely to open Google sign-in in the system browser, under any engine, not to switch engines.
+19. **Q19. Should the Google sign-in popup bug decide the engine?**
+    - **The bug.** It was reported by the owner on Mac v8 on 2026-10-29, and CodexHeron is investigating (part 2 b209f06a). On linkedin.com, the Google popup opened by `createWebViewWithConfiguration` hung on "This may take a moment" after the password, and a second try worked (`src/wkwebview_shim.m:1022-1040`).
+    - **The opener is kept.** That path keeps the opener (`:1036-1039`) [V]. The symptom is not Google's `disallowed_useragent` page [I].
+    - **Policy.** Google's OAuth policy forbids embedded user-agents that inject scripts or read session cookies, which covers every engine we could use (https://developers.google.com/identity/protocols/oauth2/policies; https://developers.googleblog.com/2021/06/upcoming-security-changes-to-googles-oauth-2.0-authorization-endpoint.html).
+    - **Why the system browser does not help.** Opening Google in the system browser would put the site session in Safari, not in our cookie store.
+    - **Recommendation:** no. Treat "Sign in with Google" on third-party sites as best-effort on every engine. Users sign in to LinkedIn, Instagram and X with email and password or a passkey. File the hang as a bead.
