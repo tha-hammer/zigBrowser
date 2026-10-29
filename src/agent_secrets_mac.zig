@@ -13,6 +13,12 @@
 const std = @import("std");
 const builtin = @import("builtin");
 
+// The standalone Zig-port test does not link the browser executable, whose
+// strong export supplies this build policy in production.
+pub export fn zb_mac_unsandboxed_dev() c_int {
+    return 0;
+}
+
 /// Mirrors ZbKeychainResult in agent_secrets_mac.h.
 pub const Result = enum(c_int) { ok = 0, absent = 1, unavailable = 2, permission = 3 };
 
