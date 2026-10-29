@@ -181,6 +181,7 @@ static void zb_mac_append_diagnostic(NSString *kind, NSString *message) {
 @property(nonatomic, assign) void *minimizeContext;
 @property(nonatomic, strong) NSTextField *statusLabel;
 @property(nonatomic, strong) NSButton *setupButton;
+@property(nonatomic, strong) NSButton *sendButton;
 @property(nonatomic, assign) BOOL tokenPermissionNeeded;
 @property(nonatomic, strong) NSScrollView *messageScroll;
 @property(nonatomic, strong) NSStackView *messageStack;
@@ -553,7 +554,8 @@ static void zb_mac_configure_plain_text(NSTextView *view) {
                     forOrientation:NSLayoutConstraintOrientationHorizontal];
   [minus setContentCompressionResistancePriority:NSLayoutPriorityRequired
                                    forOrientation:NSLayoutConstraintOrientationHorizontal];
-  NSButton *send = [NSButton buttonWithTitle:@"Send" target:self action:@selector(send:)];
+  self.sendButton = [NSButton buttonWithTitle:@"Send" target:self action:@selector(send:)];
+  NSButton *send = self.sendButton;
   send.bezelStyle = NSBezelStyleRounded;
   [header addArrangedSubview:title];
   [header addArrangedSubview:self.statusLabel];
@@ -760,7 +762,8 @@ static void zb_mac_live_row(NSString *scenario, NSString *event, NSData *payload
   NSString *prompt = action[@"prompt"];
   NSString *approval = action[@"approve"];
   NSString *snapshot = action[@"snapshot_png"];
-  if (![version isKindOfClass:NSNumber.class] || version.integerValue != 1 ||
+  if (![version isKindOfClass:NSNumber.class] ||
+      (version.integerValue != 1 && version.integerValue != 2) ||
       ![scenario isKindOfClass:NSString.class] || scenario.length == 0 || scenario.length > 128 ||
       ![prompt isKindOfClass:NSString.class] || prompt.length == 0 || prompt.length > 65536 ||
       ![approval isKindOfClass:NSString.class] ||
@@ -771,9 +774,12 @@ static void zb_mac_live_row(NSString *scenario, NSString *event, NSData *payload
   self.liveAgentApproveAll = [approval isEqualToString:@"all"];
   self.liveAgentScenario = scenario;
   self.liveAgentSnapshotPath = snapshot;
-  zb_mac_live_row(scenario, @"sent", nil);
-  self.input.string = prompt;
-  [self sendInput];
+  [self.window makeFirstResponder:self.input];
+  [self.input setSelectedRange:NSMakeRange(0, self.input.string.length)];
+  [self.input insertText:prompt replacementRange:self.input.selectedRange];
+  [self updateInputHeight];
+  [self.sendButton performClick:nil];
+  if (self.input.string.length == 0) zb_mac_live_row(scenario, @"sent", nil);
 }
 
 - (void)recordLiveTool:(NSString *)tool ok:(BOOL)ok body:(NSData *)body {
@@ -1129,12 +1135,23 @@ static void zb_mac_live_row(NSString *scenario, NSString *event, NSData *payload
   self.cards[key] = cardView;
   [self addMessageView:cardView role:@"status"];
   if (self.liveAgentStarted && !self.liveAgentFinished && self.liveAgentApproveAll) {
-    [cardView.approveButton performClick:nil];
-    if (cardView.buttonRow.hidden) {
-      NSDictionary *record = @{@"verb": verb ?: @"", @"outcome": @"approved"};
-      NSData *json = [NSJSONSerialization dataWithJSONObject:record options:0 error:nil];
-      if (json != nil) zb_mac_live_row(self.liveAgentScenario, @"approval", json);
-    }
+    __weak ZBMacDrawerPanel *weakSelf = self;
+    __weak ZBMacApprovalCard *weakCard = cardView;
+    NSString *liveVerb = [verb copy] ?: @"";
+    dispatch_async(dispatch_get_main_queue(), ^{
+      ZBMacDrawerPanel *strongSelf = weakSelf;
+      ZBMacApprovalCard *strongCard = weakCard;
+      if (strongSelf == nil || strongCard == nil || strongCard.window == nil ||
+          strongCard.buttonRow.hidden || !strongCard.approveButton.enabled ||
+          strongSelf.cards[key] != strongCard || strongSelf.liveAgentFinished) return;
+      [strongSelf.window.contentView layoutSubtreeIfNeeded];
+      [strongCard.approveButton performClick:nil];
+      if (strongCard.buttonRow.hidden) {
+        NSDictionary *record = @{@"verb": liveVerb, @"outcome": @"approved"};
+        NSData *json = [NSJSONSerialization dataWithJSONObject:record options:0 error:nil];
+        if (json != nil) zb_mac_live_row(strongSelf.liveAgentScenario, @"approval", json);
+      }
+    });
   }
 }
 
