@@ -4975,16 +4975,36 @@ static const char zb_safari_user_agent[] =
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) "
     "Version/27.0 Safari/605.1.15";
 
-/* navigator.platform to match, in every frame from document start: Navigator.prototype keeps its
- * accessor, and the getter is a bound function, which prints as native code under the native
- * getter's name ("function platform() { [native code] }", name "get platform", length 0, no
- * prototype, not a constructor). Checked against WebKitGTK 2.54's own getter. */
+/* navigator.platform to match, in every frame from document start, so a page cannot tell it from
+ * WebKit's own getter (checked against WebKitGTK 2.54's native getters, IvoryBasin round 1):
+ * - Navigator.prototype keeps its accessor (navigator has no own property), and the getter has
+ *   the native name, length, keys, no prototype, and is not a constructor;
+ * - a receiver that is not a Navigator gets the native TypeError, from the native getter itself;
+ * - Function.prototype.toString prints the getter and itself as native code, in any frame's
+ *   realm (it matches by source text, so no table crosses frames), and is otherwise WebKit's;
+ * - strict mode, so the native calls in tail position replace the script's frames: a thrown
+ *   error's stack is the native one.
+ * The one difference left: `new` on either function throws the same TypeError without a
+ * "[native code]" first stack line. Workers keep WebKit's own platform: user scripts do not run there. */
 static const char zb_mac_platform_js[] =
-    "(() => { const desc = Object.getOwnPropertyDescriptor(Navigator.prototype, 'platform');"
-    " if (!desc || typeof desc.get !== 'function') return;"
-    " const get = { platform() { return 'MacIntel'; } }.platform.bind();"
-    " Object.defineProperty(get, 'name', { value: desc.get.name });"
-    " desc.get = get; Object.defineProperty(Navigator.prototype, 'platform', desc); })();";
+    "(() => { 'use strict';"
+    " const P = Navigator.prototype, F = Function.prototype;"
+    " const desc = Object.getOwnPropertyDescriptor(P, 'platform');"
+    " const tsDesc = Object.getOwnPropertyDescriptor(F, 'toString');"
+    " if (!desc || typeof desc.get !== 'function' || !tsDesc || typeof tsDesc.value !== 'function') return;"
+    " const nativeGet = desc.get, nativeToString = tsDesc.value, apply = Reflect.apply;"
+    " const nativeGetText = apply(nativeToString, nativeGet, []);"
+    " const nativeToStringText = apply(nativeToString, nativeToString, []);"
+    " const get = Object.getOwnPropertyDescriptor({ get platform() {"
+    " try { apply(nativeGet, this, []); } catch (e) { return apply(nativeGet, this, []); }"
+    " return 'MacIntel'; } }, 'platform').get;"
+    " const toString = { toString() {"
+    " if (typeof this !== 'function') return apply(nativeToString, this, []);"
+    " const text = apply(nativeToString, this, []);"
+    " return text === getText ? nativeGetText : text === toStringText ? nativeToStringText : text; } }.toString;"
+    " const getText = apply(nativeToString, get, []), toStringText = apply(nativeToString, toString, []);"
+    " desc.get = get; tsDesc.value = toString;"
+    " Object.defineProperty(P, 'platform', desc); Object.defineProperty(F, 'toString', tsDesc); })();";
 
 /* The Safari-on-a-Mac identity for `view`'s pages: every browsing window, its popups (they share
  * the opener's settings and content manager), the screenshot view and the agent's auth window.
