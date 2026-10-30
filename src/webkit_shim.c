@@ -206,6 +206,7 @@ static void zb_apply_hw_policy(WebKitSettings *settings);
 /* 1: Media Source Extensions on (WebKit's default); see zb_app_set_media_source. */
 static gint zb_app_media_source = 1;
 static void zb_apply_media_source(WebKitWebView *view);
+static void zb_apply_browser_identity(WebKitWebView *view);
 static int auto_pub_index_locked(guint32 requested);
 
 /* Automation bridge hooks (defined with the bridge, called on the GTK thread). */
@@ -1313,6 +1314,7 @@ ZbWindow *zb_window_new(ZbApp *app, void *native_view) {
   }
   /* Popups share their opener's settings and scripts; applied again, it is the same. */
   zb_apply_media_source(view);
+  zb_apply_browser_identity(view);
 
   win->sig_load_changed =
       g_signal_connect_data(view, "load-changed", G_CALLBACK(on_window_load_changed),
@@ -4963,6 +4965,46 @@ void zb_app_set_media_source(int enabled) { g_atomic_int_set(&zb_app_media_sourc
 int zb_app_get_media_source(void) { return g_atomic_int_get(&zb_app_media_source); }
 
 #define ZB_MEDIA_SOURCE_HIDDEN_KEY "zb-media-source-hidden"
+#define ZB_MAC_PLATFORM_KEY "zb-mac-platform"
+
+/* The owner's decision (2026-10-30): the Linux app identifies as Safari on a Mac, like the Mac
+ * build (src/wkwebview_shim.m). WebKitGTK's own identity, "X11; Linux x86_64 ... Version/60.5
+ * Safari", names a Safari that never existed, and sites such as LinkedIn refuse it. The setting
+ * sets the request header and navigator.userAgent alike; navigator.vendor is already Apple's. */
+static const char zb_safari_user_agent[] =
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) "
+    "Version/27.0 Safari/605.1.15";
+
+/* navigator.platform to match, in every frame from document start: Navigator.prototype keeps its
+ * accessor, and the getter is a bound function, which prints as native code under the native
+ * getter's name ("function platform() { [native code] }", name "get platform", length 0, no
+ * prototype, not a constructor). Checked against WebKitGTK 2.54's own getter. */
+static const char zb_mac_platform_js[] =
+    "(() => { const desc = Object.getOwnPropertyDescriptor(Navigator.prototype, 'platform');"
+    " if (!desc || typeof desc.get !== 'function') return;"
+    " const get = { platform() { return 'MacIntel'; } }.platform.bind();"
+    " Object.defineProperty(get, 'name', { value: desc.get.name });"
+    " desc.get = get; Object.defineProperty(Navigator.prototype, 'platform', desc); })();";
+
+/* The Safari-on-a-Mac identity for `view`'s pages: every browsing window, its popups (they share
+ * the opener's settings and content manager), the screenshot view and the agent's auth window.
+ * The script is added once per user-content manager. */
+static void zb_apply_browser_identity(WebKitWebView *view) {
+  WebKitSettings *settings = webkit_web_view_get_settings(view);
+  if (settings != NULL) {
+    webkit_settings_set_user_agent(settings, zb_safari_user_agent);
+  }
+  WebKitUserContentManager *ucm = webkit_web_view_get_user_content_manager(view);
+  if (ucm == NULL || g_object_get_data(G_OBJECT(ucm), ZB_MAC_PLATFORM_KEY) != NULL) {
+    return;
+  }
+  WebKitUserScript *script = webkit_user_script_new(
+      zb_mac_platform_js, WEBKIT_USER_CONTENT_INJECT_ALL_FRAMES,
+      WEBKIT_USER_SCRIPT_INJECT_AT_DOCUMENT_START, NULL, NULL);
+  webkit_user_content_manager_add_script(ucm, script);
+  webkit_user_script_unref(script);
+  g_object_set_data(G_OBJECT(ucm), ZB_MAC_PLATFORM_KEY, GINT_TO_POINTER(1));
+}
 
 /* Runs in the page's own world, in every frame, before any page script:
  * the MSE constructors are gone, so pages that feature-detect
@@ -5034,9 +5076,9 @@ static void zb_apply_hw_policy(WebKitSettings *settings) {
                                               : WEBKIT_HARDWARE_ACCELERATION_POLICY_NEVER);
 }
 
-/* S6b2 (chat-drawer plan S6.3): the policies every browsing window gets, hardware acceleration and
- * media source, for a view created outside this file: the agent's auth window
- * (src/agent_auth_window.c), which declares it itself, since webkit_shim.h is shared by every
+/* S6b2 (chat-drawer plan S6.3): the policies every browsing window gets, hardware acceleration,
+ * media source and the Safari identity, for a view created outside this file: the agent's auth
+ * window (src/agent_auth_window.c), which declares it itself, since webkit_shim.h is shared by every
  * backend. Popups stay off there (it refuses them), so unlike zb_window_new this does not set
  * javascript_can_open_windows_automatically. */
 void zb_apply_view_policies(WebKitWebView *view) {
@@ -5045,6 +5087,7 @@ void zb_apply_view_policies(WebKitWebView *view) {
     zb_apply_hw_policy(settings);
   }
   zb_apply_media_source(view);
+  zb_apply_browser_identity(view);
 }
 
 typedef struct {
@@ -5670,6 +5713,7 @@ static int run_screenshot_internal(const char *uri, const char *out_path,
     zb_apply_hw_policy(shot_settings);
   }
   zb_apply_media_source(shot.view);
+  zb_apply_browser_identity(shot.view);
 
   shot.window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
   gtk_window_set_default_size(GTK_WINDOW(shot.window), 1024, 768);

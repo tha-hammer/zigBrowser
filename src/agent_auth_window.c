@@ -3,7 +3,7 @@
  * - A native GtkWindow titled "Sign in to Claude" with a WebKitWebView on its own ephemeral
  *   WebKitWebContext (never a related view: no shared web process or data store), its own empty
  *   user content manager (no zbHost, no automation script, no drawer), and the hardware and media
- *   policies every browsing window gets (zb_apply_view_policies, webkit_shim.c).
+ *   policies and the Safari identity every browsing window gets (zb_apply_view_policies, webkit_shim.c).
  * - Under --e2e-protocol, an accepted ZIGBROWSER_AGENT_AUTH_TEST gives that context a custom proxy
  *   (no ignore hosts) and allows the seam's certificate for claude.com and platform.claude.com only.
  * - Every navigation goes through zb_auth_decide (agent_auth.decideNavigation): allow (loads;
