@@ -1206,6 +1206,7 @@ static void card_settle(ZbCard *c, const char *words) {
     gtk_widget_hide(c->buttons);
     GtkWidget *label = gtk_label_new(words);
     gtk_label_set_xalign(GTK_LABEL(label), 0);
+    gtk_style_context_add_class(gtk_widget_get_style_context(label), "zb-msg");
     gtk_container_add(GTK_CONTAINER(c->box), label);
     gtk_widget_show(label);
   }
@@ -1242,9 +1243,22 @@ static gboolean card_show_idle(gpointer data) {
   ZbDrawer *d = drawer_of(s->main);
   if (d != NULL) {
     char *digest = g_compute_checksum_for_data(G_CHECKSUM_SHA256, (const guchar *)s->params, s->params_len);
-    char *text = strcmp(s->verb, "navigate") == 0
-                     ? g_strdup_printf("Claude wants to open %s in window %u.", s->url != NULL ? s->url : "", s->bound)
-                     : g_strdup_printf("Claude wants to reload window %u.", s->bound);
+    char *text;
+    if (strcmp(s->verb, "navigate") == 0) {
+      text = g_strdup_printf("Claude wants to open %s in window %u.", s->url != NULL ? s->url : "", s->bound);
+    } else if (strcmp(s->verb, "reload") == 0) {
+      text = g_strdup_printf("Claude wants to reload window %u.", s->bound);
+    } else if (strcmp(s->verb, "click") == 0) {
+      text = g_strdup_printf("Claude wants to click on the page in window %u.", s->bound);
+    } else if (strcmp(s->verb, "type_text") == 0) {
+      text = g_strdup_printf("Claude wants to type text in window %u.", s->bound);
+    } else if (strcmp(s->verb, "press_key") == 0) {
+      text = g_strdup_printf("Claude wants to press a key in window %u.", s->bound);
+    } else if (strcmp(s->verb, "select_option") == 0) {
+      text = g_strdup_printf("Claude wants to choose an option in window %u.", s->bound);
+    } else {
+      text = g_strdup_printf("Claude wants to use the page in window %u.", s->bound);
+    }
     char win[16], card[24];
     g_snprintf(win, sizeof win, "%u", d->win_id);
     g_snprintf(card, sizeof card, "%" G_GUINT64_FORMAT, s->id);
