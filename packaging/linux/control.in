@@ -3,7 +3,7 @@ Version: @VERSION@
 Section: web
 Priority: optional
 Architecture: amd64
-Depends: libwebkit2gtk-4.1-0, libgtk-3-0
+Depends: libwebkit2gtk-4.1-0, libgtk-3-0, python3 (>= @PY_MINOR@), python3 (<< @PY_NEXT@), bubblewrap, procps, ca-certificates
 Maintainer: zigBrowser Maintainers <maintainers@example.invalid>
 Description: Zig browser shell
  zigBrowser is a WebKitGTK-based browser shell built with Zig.

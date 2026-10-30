@@ -15,6 +15,10 @@ ASSET_ICON=$REPO_ROOT/packaging/assets/zigBrowser.png
 command -v zig >/dev/null 2>&1 || { echo "missing zig" >&2; exit 1; }
 command -v dpkg-deb >/dev/null 2>&1 || { echo "missing dpkg-deb" >&2; exit 1; }
 command -v fakeroot >/dev/null 2>&1 || { echo "missing fakeroot" >&2; exit 1; }
+command -v uv >/dev/null 2>&1 || { echo "missing uv" >&2; exit 1; }
+# The agent runtime's venv runs on the target's /usr/bin/python3, so the package needs the same minor version.
+PY_MINOR=$(/usr/bin/python3 -c 'import sys; print("%d.%d" % sys.version_info[:2])')
+PY_NEXT=$(/usr/bin/python3 -c 'import sys; print("%d.%d" % (sys.version_info[0], sys.version_info[1] + 1))')
 
 cd "$REPO_ROOT"
 zig build -Doptimize=ReleaseSafe
@@ -26,10 +30,20 @@ mkdir -p \
   "$STAGE_DIR/usr/share/applications" \
   "$STAGE_DIR/usr/share/icons/hicolor/256x256/apps"
 
-sed "s/@VERSION@/$VERSION/g" "$SCRIPT_DIR/control.in" > "$STAGE_DIR/DEBIAN/control"
+sed -e "s/@VERSION@/$VERSION/g" -e "s/@PY_MINOR@/$PY_MINOR/g" -e "s/@PY_NEXT@/$PY_NEXT/g" "$SCRIPT_DIR/control.in" > "$STAGE_DIR/DEBIAN/control"
 chmod 0644 "$STAGE_DIR/DEBIAN/control"
 install -m 0755 "$REPO_ROOT/zig-out/bin/zigBrowser" "$STAGE_DIR/usr/bin/zigBrowser"
 install -m 0644 "$SCRIPT_DIR/zigBrowser.desktop" "$STAGE_DIR/usr/share/applications/zigBrowser.desktop"
+
+# The Claude Agent runtime at /usr/lib/zigbrowser/agent-host (src/agent_setup.zig runtimeFor): the locked venv with
+# the bundled Claude CLI (claude_agent_sdk/_bundled/claude), zb_agent_host and runtime.json. Copied, never hardlinked
+# from the uv cache; the venv's scripts name the stage path, rewritten to the installed one.
+UV_LINK_MODE=copy sh "$REPO_ROOT/tools/install_agent_runtime.sh" "$STAGE_DIR/usr" >/dev/null
+grep -rlIF "$STAGE_DIR/usr/" "$STAGE_DIR/usr/lib/zigbrowser/agent-host" | while IFS= read -r f; do
+  sed -i "s|$STAGE_DIR/usr/|/usr/|g" "$f"
+done
+if grep -rqIF "$STAGE_DIR" "$STAGE_DIR/usr"; then echo "stage path left in the package" >&2; exit 1; fi
+chmod -R go-w "$STAGE_DIR"
 
 if [ -f "$ASSET_ICON" ]; then
   install -m 0644 "$ASSET_ICON" "$STAGE_DIR/usr/share/icons/hicolor/256x256/apps/zigBrowser.png"
