@@ -13,8 +13,8 @@ records (read through the socket's page.evaluate, the oracle, never to act):
 - scroll-offset: `scroll {y: 900}` leaves the page's `scrollY` at 900 or more, and the result
   names `scrollY`;
 - scroll-into-view: `scroll {selector: css=#bottom}` brings `#bottom` into the viewport;
-- tools-listed: the first request lists exactly the ten tools (S7.5's six, hover, scroll,
-  navigate, reload);
+- tools-listed: the first request lists exactly the fourteen browser tools (S7.5's six, hover,
+  scroll, navigate, reload, click, type_text, press_key, select_option);
 - no card in any of them: no `DRAWER approval` row in window 1, no notification;
 - native-refused: `hover` with `options: {input: native}` (it would move the user's own pointer)
   is an error before the browser acts: the CLI's schema refuses it (the broker's own refusal is
@@ -49,7 +49,8 @@ from fake_notifications import FakeNotifications, PrivateBus  # noqa: E402
 HOVER = "mcp__zigbrowser__hover"
 SCROLL = "mcp__zigbrowser__scroll"
 TOOLS = {f"mcp__zigbrowser__{n}" for n in ("window_info", "query", "get_text", "get_attribute", "wait_for", "screenshot",
-                                            "hover", "scroll", "navigate", "reload")}
+                                            "hover", "scroll", "navigate", "reload", "click", "type_text",
+                                            "press_key", "select_option")}
 PAGE = """<!doctype html><meta charset="utf-8"><title>act</title>
 <style>body { margin: 0 } #menu { width: 200px; height: 60px; background: #ccd } #bottom { height: 40px }</style>
 <div id="menu">menu</div>
@@ -123,7 +124,7 @@ def case_hover(binary: Path, tmp: Path, check) -> None:
         check(w.hovers() == ["mouseover"], f"#menu got exactly one mouseover ({w.hovers()})")
         w.no_card(check, "hover")
         tools = {t.get("name") for t in w.fake.api.messages_requests()[0]["body"].get("tools") or []}
-        check(tools == TOOLS, f"tools-listed: exactly the ten tools ({sorted(tools)})")
+        check(tools == TOOLS, f"tools-listed: exactly the fourteen browser tools ({sorted(tools)})")
     finally:
         w.close()
 
