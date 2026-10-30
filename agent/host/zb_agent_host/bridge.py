@@ -42,8 +42,9 @@ def _schema(properties, required=()):
 
 
 _SELECTOR = {"type": "string", "description": (
-    "An element selector. Use plain CSS or css=..., text=..., role=button[name=...], "
-    "aria=accessible name, or testid=.... Same-origin frames and open shadow roots are searched."
+    "An element selector. Use plain CSS or css=.... text=foo and aria=foo are case-insensitive substrings; "
+    "text=\"foo\" or aria='foo' is exact, and /pattern/flags is regex. role=button[name=...], testid=..., xpath=... and "
+    "pierce=... also work. Same-origin frames and open shadow roots are searched."
 )}
 READ_TOOLS = (  # S7.5's list (rev 16.20.34): (name, description, input schema)
     ("window_info", "This drawer's window: its page's health, URL and title.", _schema({})),

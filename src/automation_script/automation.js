@@ -1342,6 +1342,9 @@
       const inner = parseSelector(body);
       if (!inner.ok || !PIERCING_KINDS.includes(inner.kind)) return { ok: false };
     }
+    if ((kind === 'text' || kind === 'aria') && !parseNameMatcher(body).ok) {
+      return { ok: false };
+    }
     return { ok: true, kind, body };
   }
 
@@ -1368,7 +1371,7 @@
       case 'testid':
         return queryAll(roots, '[data-testid="' + cssEscape(body) + '"]');
       case 'text':
-        return preferActionable(candidateElements(roots).filter((element) => elementText(element) === body));
+        return resolveNamed(body, roots, elementText);
       case 'css':
         return queryAll(roots, body);
       default:
@@ -1434,8 +1437,60 @@
   }
 
   function resolveAria(body, roots) {
-    if (/^[a-zA-Z0-9_-]+\[name=/.test(body)) return resolveRole(body, roots);
-    return preferActionable(candidateElements(roots).filter((element) => accessibleName(element) === body));
+    return resolveNamed(body, roots, accessibleName);
+  }
+
+  // Playwright-style text and accessible-name selectors. Unquoted selectors
+  // are forgiving substrings; quotes opt into case-sensitive equality; slash
+  // delimiters opt into a JavaScript RegExp. Invalid regexes fail parsing.
+  function parseNameMatcher(body) {
+    if (body[0] === '"' || body[0] === "'") {
+      if (body.length < 2 || body[body.length - 1] !== body[0]) return { ok: false };
+      const exact = normalizeText(body.slice(1, -1));
+      return { ok: true, test: value => ({ matched: value === exact, exact: true }) };
+    }
+    if (body[0] === '/') {
+      let delimiter = -1;
+      for (let i = body.length - 1; i > 0; i -= 1) {
+        let escapes = 0;
+        for (let j = i - 1; j >= 0 && body[j] === '\\'; j -= 1) escapes += 1;
+        if (body[i] === '/' && escapes % 2 === 0) {
+          delimiter = i;
+          break;
+        }
+      }
+      if (delimiter < 1) return { ok: false };
+      let pattern;
+      try {
+        pattern = new RegExp(body.slice(1, delimiter), body.slice(delimiter + 1));
+      } catch (_) {
+        return { ok: false };
+      }
+      return { ok: true, test: value => {
+        pattern.lastIndex = 0;
+        return { matched: pattern.test(value), exact: true };
+      } };
+    }
+    const needle = normalizeText(body).toLowerCase();
+    return { ok: true, test: value => {
+      const folded = value.toLowerCase();
+      return { matched: folded.includes(needle), exact: folded === needle };
+    } };
+  }
+
+  function resolveNamed(body, roots, readName) {
+    const matcher = parseNameMatcher(body);
+    if (!matcher.ok) throw new Error('malformed name selector');
+    const matches = [];
+    for (const element of candidateElements(roots)) {
+      const match = matcher.test(readName(element));
+      if (match.matched) matches.push({ element, exact: match.exact });
+    }
+    const innermost = matches.filter(({ element }) => !matches.some(({ element: other }) =>
+      other !== element && composedContains(element, other)));
+    const exact = new Set(innermost.filter(match => match.exact).map(match => match.element));
+    return preferActionable(innermost.map(match => match.element)).sort((left, right) =>
+      Number(exact.has(right)) - Number(exact.has(left)));
   }
 
   function resolveXPath(body, roots) {
@@ -1476,11 +1531,11 @@
   }
 
   function accessibleName(element) {
-    return normalizeText(element.getAttribute('aria-label') || element.textContent || '');
+    return normalizeText(element.getAttribute('aria-label') || elementText(element));
   }
 
   function elementText(element) {
-    return accessibleName(element);
+    return normalizeText(element.textContent || '');
   }
 
   function summarizeElement(element) {
@@ -1488,7 +1543,9 @@
     return {
       id: elementId(element),
       tag: element.tagName.toLowerCase(),
-      text: elementText(element),
+      // Keep the existing serializable summary contract for aria-labelled
+      // controls while text= itself matches rendered text only.
+      text: accessibleName(element),
       bbox: {
         x: round(rect.x),
         y: round(rect.y),

@@ -221,17 +221,21 @@ def main() -> int:
         ("aria=Shadow action", "aria-shadow"),
         ("#frame-action", "same-origin-frame"),
         ("css=#delayed-action", "delayed-offscreen"),
+        ("aria=Notifications", "notifications"),
+        ("text=All saved leads", "saved-leads"),
+        ("text=/accept all/i", "accept-all"),
+        ('text="Exact action"', "exact-action"),
     )
     for ordinal, (selector, _name) in enumerate(calls, 3):
         if tool_failed(call_tool(evidence, ordinal, "click", {"selector": selector})):
             return 1
-    if tool_failed(call_tool(evidence, 10, "click", {"selector": "css=#nav-action"})):
+    if tool_failed(call_tool(evidence, 14, "click", {"selector": "css=#nav-action"})):
         return 1
-    if tool_failed(call_tool(evidence, 11, "navigate", {"url": target + "/heavy"})):
+    if tool_failed(call_tool(evidence, 15, "navigate", {"url": target + "/heavy"})):
         return 1
-    if tool_failed(call_tool(evidence, 12, "scroll", {"y": 600})):
+    if tool_failed(call_tool(evidence, 16, "scroll", {"y": 600})):
         return 1
-    missing = call_tool(evidence, 13, "click", {
+    missing = call_tool(evidence, 17, "click", {
         "selector": "css=.missing-messages-control",
     })
     if not tool_failed(missing):
