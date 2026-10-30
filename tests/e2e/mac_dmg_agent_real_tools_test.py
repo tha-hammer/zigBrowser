@@ -135,7 +135,7 @@ class Site:
 <button id="role-action" aria-label="Role action"><span>nested label</span></button>
 <button id="notifications" aria-label="Notifications, 3 new"><span>Notifications</span></button>
 <a id="saved-leads" href="#saved-leads">All saved leads (12)</a>
-<button id="accept-all">Accept all</button>
+<button id="accept">Accept</button><button id="accept-all">Accept all</button>
 <button id="exact-action">Exact action</button><button id="exact-action-now">Exact action now</button>
 <div id="shadow-host"></div><iframe src="/frame" title="same-origin fixture"></iframe>
 <a id="nav-action" href="/after-click"><span><span>Open messages route</span></span></a>
@@ -148,6 +148,7 @@ document.querySelector('#text-action').onclick=()=>mark('text');
 document.querySelector('#role-action').onclick=()=>mark('role');
 document.querySelector('#notifications').onclick=()=>mark('notifications');
 document.querySelector('#saved-leads').onclick=e=>{e.preventDefault();mark('saved-leads')};
+document.querySelector('#accept').onclick=()=>mark('accept');
 document.querySelector('#accept-all').onclick=()=>mark('accept-all');
 document.querySelector('#exact-action').onclick=()=>mark('exact-action');
 document.querySelector('#exact-action-now').onclick=()=>mark('exact-action-now');
@@ -404,7 +405,7 @@ def main() -> int:
         while time.monotonic() < deadline:
             rows = evidence_rows(evidence)
             results = [row for row in rows if row.get("event") == "tool-result"]
-            if any(result_error(row) for row in results) or len(results) >= 17:
+            if any(result_error(row) for row in results) or len(results) >= 18:
                 break
             if app_pid not in app_pids(executable):
                 break
@@ -424,12 +425,12 @@ def main() -> int:
                 + f"; evidence={rows!r}"
                 + (f"; diagnostics={diagnostics.strip()}" if diagnostics.strip() else "")
             )
-        for row in results[:16]:
+        for row in results[:17]:
             if result_error(row):
                 return fail(f"{row['tool'].rsplit('__', 1)[-1]} tool_result: {result_text(row) or 'error'}")
         expected = ["mcp__zigbrowser__window_info", "mcp__zigbrowser__screenshot"] + [
             "mcp__zigbrowser__click"
-        ] * 12 + ["mcp__zigbrowser__navigate", "mcp__zigbrowser__scroll", "mcp__zigbrowser__click"]
+        ] * 13 + ["mcp__zigbrowser__navigate", "mcp__zigbrowser__scroll", "mcp__zigbrowser__click"]
         if [row.get("tool") for row in results] != expected:
             diagnostics = diagnostic_tail(home / "state/drawer.log", stderr, stdout)
             return fail(
@@ -437,14 +438,14 @@ def main() -> int:
                 + (f"; diagnostics={diagnostics}" if diagnostics else "")
             )
         expected_failure = "no element matched css=.missing-messages-control (element_not_found, -32001)"
-        if not result_error(results[16]) or result_text(results[16]) != expected_failure:
-            return fail(f"actionable selector failure was {result_text(results[16])!r}")
+        if not result_error(results[17]) or result_text(results[17]) != expected_failure:
+            return fail(f"actionable selector failure was {result_text(results[17])!r}")
         screenshot = result_image(results[1])
         if screenshot is None or len(screenshot) < 10_000 or not screenshot.startswith(PNG_SIGNATURE):
             return fail("screenshot did not return a real PNG image block")
         expected_clicks = {"plain-css", "css-prefix", "text", "role", "aria-shadow",
                            "same-origin-frame", "delayed-offscreen", "notifications",
-                           "saved-leads", "accept-all", "exact-action"}
+                           "saved-leads", "accept", "accept-all", "exact-action"}
         if site.clicked != expected_clicks:
             return fail(f"browser click evidence was {sorted(site.clicked)!r}")
         if not site.click_navigation_seen:
@@ -452,13 +453,13 @@ def main() -> int:
         if not site.heavy_seen:
             return fail("navigate did not reach the heavy SPA route")
         # The page itself cannot scroll; its messages panel must (owner, 2026-10-29: LinkedIn).
-        if site.panel_scroll != "600" or '"moved":"panel"' not in result_text(results[15]).replace(" ", ""):
-            return fail(f"scroll moved panel={site.panel_scroll!r}; result {result_text(results[15])!r}")
+        if site.panel_scroll != "600" or '"moved":"panel"' not in result_text(results[16]).replace(" ", ""):
+            return fail(f"scroll moved panel={site.panel_scroll!r}; result {result_text(results[16])!r}")
         approvals = live_approvals(stdout)
         # Interactive navigation uses the default conditional policy and needs
-        # no separate card. All thirteen clicks do, including the link click that
+        # no separate card. All fourteen clicks do, including the link click that
         # starts a navigation and the final missing-selector proof.
-        if len(approvals) != 13 or {row.get("verb") for row in approvals} != {"click"}:
+        if len(approvals) != 14 or {row.get("verb") for row in approvals} != {"click"}:
             return fail(f"visible Approve buttons clicked were {approvals!r}")
         drawer_log = home / "state/drawer.log"
         try:

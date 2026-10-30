@@ -1437,6 +1437,7 @@
   }
 
   function resolveAria(body, roots) {
+    if (/^[a-zA-Z0-9_-]+\[name=/.test(body)) return resolveRole(body, roots);
     return resolveNamed(body, roots, accessibleName);
   }
 
@@ -1488,9 +1489,9 @@
     }
     const innermost = matches.filter(({ element }) => !matches.some(({ element: other }) =>
       other !== element && composedContains(element, other)));
-    const exact = new Set(innermost.filter(match => match.exact).map(match => match.element));
-    return preferActionable(innermost.map(match => match.element)).sort((left, right) =>
-      Number(exact.has(right)) - Number(exact.has(left)));
+    const exact = innermost.filter(match => match.exact);
+    const preferred = exact.length > 0 ? exact : innermost;
+    return preferActionable(preferred.map(match => match.element));
   }
 
   function resolveXPath(body, roots) {
