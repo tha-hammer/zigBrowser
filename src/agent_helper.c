@@ -154,6 +154,98 @@ static struct {
 } zb_helper = {.state = H_IDLE};
 
 static void start(void);
+static void check_config(ZbWin *w);
+static void fail_waiting(const char *state, const char *reason, const char *text);
+/* One setup across all drawers, before the browser owns the home lock.
+ * Completion rebuilds launch inputs and resumes the queued window prompts. */
+static int (*zb_setup_refresh)(void);
+static GSubprocess *zb_setup_proc;
+static ZbChildSetup zb_setup_child;
+
+static int setup_needed(void) {
+  return zb_helper.unavailable != NULL &&
+         (strcmp(zb_helper.unavailable, "runtime-missing") == 0 ||
+          strcmp(zb_helper.unavailable, "config-changed") == 0);
+}
+
+static void setup_failed(void) {
+  const char *text = "Claude Agent setup failed. Reopen the drawer or send again to retry.";
+  if (zb_helper.wins != NULL) {
+    GHashTableIter it;
+    gpointer key, value;
+    g_hash_table_iter_init(&it, zb_helper.wins);
+    while (g_hash_table_iter_next(&it, &key, &value)) {
+      ZbWin *w = value;
+      g_ptr_array_set_size(w->pending, 0);
+    }
+  }
+  zb_drawer_agent_status(0, "unavailable", zb_helper.unavailable != NULL ? zb_helper.unavailable : "runtime-missing");
+  zb_drawer_agent_message(0, "system", text, strlen(text));
+}
+
+static void setup_finished(GObject *source, GAsyncResult *result, gpointer unused) {
+  (void)unused;
+  GSubprocess *proc = G_SUBPROCESS(source);
+  GError *error = NULL;
+  gboolean success = g_subprocess_wait_check_finish(proc, result, &error);
+  g_clear_error(&error);
+  if (proc != zb_setup_proc) return; /* shutdown already cancelled this setup */
+  g_clear_object(&zb_setup_proc);
+  if (!success || zb_setup_refresh == NULL || zb_setup_refresh() != 0 || setup_needed()) {
+    setup_failed();
+    return;
+  }
+  const char *text = "Claude Agent setup is complete. If asked to sign in, save a token and send your message again.";
+  zb_drawer_agent_status(0, "ready", "-");
+  zb_drawer_agent_message(0, "system", text, strlen(text));
+  if (zb_helper.wins != NULL) {
+    GHashTableIter it;
+    gpointer key, value;
+    g_hash_table_iter_init(&it, zb_helper.wins);
+    while (g_hash_table_iter_next(&it, &key, &value)) {
+      ZbWin *w = value;
+      if (w->pending->len > 0) {
+        if (zb_agent_home_lock(zb_helper.home) != 0) {
+          fail_waiting("unavailable", "home-locked", ZB_TEXT_LOCKED);
+          break;
+        }
+        check_config(w);
+      }
+    }
+  }
+}
+
+void zb_agent_helper_set_refresh(int (*refresh)(void)) { zb_setup_refresh = refresh; }
+
+void zb_agent_helper_prepare(unsigned int win) {
+  if (!zb_helper.configured || !setup_needed()) return;
+  if (zb_helper.state != H_IDLE || zb_helper.proc != NULL) return;
+  if (zb_setup_proc != NULL) {
+    zb_drawer_agent_status(win, "setting-up", "-");
+    return;
+  }
+  zb_drawer_agent_status(0, "setting-up", "-");
+  char *exe = g_file_read_link("/proc/self/exe", NULL);
+  if (exe == NULL) {
+    setup_failed();
+    return;
+  }
+  GSubprocessLauncher *launcher = g_subprocess_launcher_new(
+      G_SUBPROCESS_FLAGS_STDIN_PIPE | G_SUBPROCESS_FLAGS_STDOUT_SILENCE | G_SUBPROCESS_FLAGS_STDERR_SILENCE);
+  zb_setup_child.parent = getpid();
+  zb_setup_child.policy = zb_spawn_policy_linux(0);
+  g_subprocess_launcher_set_child_setup(launcher, zb_agent_die_with_browser, &zb_setup_child, NULL);
+  zb_setup_proc = g_subprocess_launcher_spawn(launcher, NULL, exe, "--agent-setup",
+                                             zb_helper.e2e ? "--e2e-protocol" : NULL, NULL);
+  g_object_unref(launcher);
+  g_free(exe);
+  if (zb_setup_proc == NULL) {
+    setup_failed();
+    return;
+  }
+  g_output_stream_close(g_subprocess_get_stdin_pipe(zb_setup_proc), NULL, NULL);
+  g_subprocess_wait_check_async(zb_setup_proc, NULL, setup_finished, NULL);
+}
 
 /* No sandbox, no network or a refused seam: no helper runs in this browser. */
 static void go_down(const char *reason, const char *text) {
@@ -905,12 +997,19 @@ void zb_agent_helper_configure(const char *const *argv, const char *const *envp,
                                const char *unavailable, const char *bubble, const char *refusal,
                                int e2e_protocol) {
   if (zb_helper.configured) {
-    return;
+    /* Only pre-launch setup may refresh these inputs. The home pointer stays
+     * stable for the broker, and queued window prompts survive the refresh. */
+    if (zb_helper.state != H_IDLE || zb_helper.proc != NULL) return;
+    g_strfreev(zb_helper.argv);
+    g_strfreev(zb_helper.envp);
+    g_clear_pointer(&zb_helper.unavailable, g_free);
+    g_clear_pointer(&zb_helper.bubble, g_free);
+    g_clear_pointer(&zb_helper.refusal, g_free);
   }
   zb_helper.configured = 1;
   zb_helper.argv = g_strdupv((char **)argv);
   zb_helper.envp = g_strdupv((char **)envp);
-  zb_helper.home = g_strdup(home);
+  if (zb_helper.home == NULL) zb_helper.home = g_strdup(home);
   zb_helper.unavailable = g_strdup(unavailable);
   zb_helper.bubble = g_strdup(bubble);
   zb_helper.refusal = g_strdup(refusal);
@@ -926,6 +1025,12 @@ void zb_agent_helper_send(unsigned int win, const char *text) {
     return;
   }
   if (zb_helper.unavailable != NULL) {
+    if (setup_needed()) {
+      ZbWin *w = win_get(win);
+      g_ptr_array_add(w->pending, g_strdup(text));
+      zb_agent_helper_prepare(win);
+      return;
+    }
     zb_drawer_agent_status(win, "unavailable", zb_helper.unavailable);
     zb_drawer_agent_message(win, "system", zb_helper.bubble, strlen(zb_helper.bubble));
     return;
@@ -1040,6 +1145,12 @@ static int reaped_within(pid_t pid, int ms) {
 }
 
 void zb_agent_helper_stop(void) {
+  if (zb_setup_proc != NULL) {
+    GSubprocess *setup = g_steal_pointer(&zb_setup_proc);
+    g_subprocess_force_exit(setup);
+    g_subprocess_wait(setup, NULL, NULL);
+    g_object_unref(setup);
+  }
   if (zb_helper.pid <= 0) {
     return;
   }

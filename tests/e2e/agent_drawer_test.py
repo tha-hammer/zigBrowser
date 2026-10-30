@@ -22,8 +22,8 @@ captures. The icon's start position is seeded in agent-drawer.json.
 - scroll and send (S2.3, S2.4): 200 seeded messages
   (ZIGBROWSER_AGENT_DRAWER_DEMO, honoured only with --e2e-protocol) open
   scrolled to the newest; the wheel scrolls up and the input row does not
-  move; Send shows the user bubble and "Agent runtime not set up: run
-  zigBrowser --agent-setup" (no agent home here; S5.5) without
+  move; Send shows the user bubble and a retryable setup failure (no
+  installed runtime here) without
   jumping the view, and "New messages" appears until the list is back at
   the bottom; Enter on an empty input sends nothing; Shift+Enter is a
   newline; a pasted 50 KB message wraps and does not widen the drawer
@@ -58,7 +58,7 @@ DEMO = "ZIGBROWSER_AGENT_DRAWER_DEMO"
 ANIM = "ZIGBROWSER_AGENT_ANIM_MS"
 GHOST_RGB = (0xF4, 0xF1, 0xEA)
 PAGE_RGB = (0x20, 0x60, 0xA0)
-NO_AGENT = "Agent runtime not set up: run zigBrowser --agent-setup"  # no agent home (S5.5)
+NO_AGENT = "Claude Agent setup failed. Reopen the drawer or send again to retry."  # no installed runtime
 
 
 def seeded_profile(tmp: Path, name: str) -> Path:

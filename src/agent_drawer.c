@@ -89,7 +89,7 @@ struct ZbDrawer {
   GtkWidget *ghost;
   GtkWidget *minus;
   /* The header's Account button (S4, D1/D11): opens the Secrets window in any
-   * agent state. Only with a provisioned agent home; NULL otherwise. */
+   * agent state except while setup is publishing the home. */
   GtkWidget *account;
   GtkWidget *status; /* the header's agent state (S3b) */
   GtkWidget *scroller;
@@ -863,6 +863,7 @@ static void end_stream_as_shown(ZbDrawer *d) {
 /* --- the agent's reports (agent_helper.h; S3b) ------------------------------- */
 
 static const char *status_text(const char *state, const char *reason) {
+  if (strcmp(state, "setting-up") == 0) return "Setting up…";
   if (strcmp(state, "starting") == 0) return "Starting…";
   if (strcmp(state, "ready") == 0) return "Ready";
   if (strcmp(state, "busy") == 0) return "Working…";
@@ -879,6 +880,7 @@ void zb_drawer_agent_status(unsigned int win_id, const char *state, const char *
     }
     drawer_row(d, "status", state, reason, NULL);
     gtk_label_set_text(GTK_LABEL(d->status), status_text(state, reason));
+    if (d->account != NULL) gtk_widget_set_sensitive(d->account, strcmp(state, "setting-up") != 0);
     gtk_widget_set_sensitive(d->stop, strcmp(state, "busy") == 0); /* S5.2 */
     if (strcmp(reason, "no-token") == 0) { /* S4.1: the Secrets window opens */
       GtkWidget *top = gtk_widget_get_toplevel(d->input);
@@ -1039,6 +1041,7 @@ static void drawer_open(ZbDrawer *d) {
   gtk_widget_hide(d->icon);
   gtk_widget_show(d->catcher);
   gtk_widget_grab_focus(d->input);
+  zb_agent_helper_prepare(d->win_id);
 }
 
 /* The panel has its place: report where it and its '-' are. */

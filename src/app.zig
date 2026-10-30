@@ -223,18 +223,14 @@ fn runAgentSetupMacos(arena: std.mem.Allocator, spec: AgentSetupSpec) errors.Bro
     return if (s & 0x7f == 0) @intCast((s >> 8) & 0xff) else 1;
 }
 
-/// Chat drawer S3n2 (plan rev 16.2 §3c.2): when the agent home has a published
-/// build (`current`), hands netd's argv, built environment and socket directory
-/// to agent_host.c, which starts netd on the drawer's first Send. No
+/// Prepare netd's argv, environment and socket directory even on first run;
+/// the drawer provisions the home before allowing netd to start. No
 /// XDG_RUNTIME_DIR, or a bad e2e seam (read only with --e2e-protocol),
-/// configures a refusal line instead. Without a provisioned home nothing is
-/// configured, and Send says the runtime is not set up (S5.5). Returns what
-/// the helper's launch needs (S3b), or null without a provisioned home.
+/// configures a refusal line instead. Returns the helper's launch inputs,
+/// or null when neither HOME nor XDG_DATA_HOME can locate an agent home.
 fn configureAgentNet(arena: std.mem.Allocator, io: std.Io, e2e: bool) !?AgentNet {
     if (comptime builtin.os.tag != .linux) return null;
     const home = (agent_setup.defaultHomeDir(arena, getenvOwned(arena, "XDG_DATA_HOME"), getenvOwned(arena, "HOME")) catch null) orelse return null;
-    const current = try std.fs.path.joinZ(arena, &.{ home, "current" });
-    if (std.c.access(current.ptr, 0) != 0) return null; // F_OK: not set up
     var exe_buf: [std.fs.max_path_bytes]u8 = undefined;
     const exe_len = std.c.readlink("/proc/self/exe", &exe_buf, exe_buf.len);
     if (exe_len <= 0) return error.NoExecutablePath;
@@ -286,10 +282,26 @@ const AgentNet = struct {
     test_ca: ?[]const u8,
 };
 
+// Kept for the GTK loop's lifetime. Setup publishes new runtime/path.json and
+// host.json; rebuild the launch inputs on the UI thread before starting chat.
+var agent_configuration: ?struct {
+    arena: std.mem.Allocator,
+    io: std.Io,
+    e2e: bool,
+    net: AgentNet,
+} = null;
+
+fn refreshAgentConfiguration() callconv(.c) c_int {
+    const context = agent_configuration orelse return -1;
+    configureAgentLogin(context.arena, context.io, context.e2e, context.net) catch return -1;
+    configureAgentHelper(context.arena, context.io, context.e2e, context.net) catch return -1;
+    return 0;
+}
+
 /// Chat drawer S3b (plan D7, S3.2, S3.6; rev 16 §3c): with a provisioned agent
 /// home, hands the helper's launch argv, built environment and hello to
 /// agent_helper.c, which starts it on the first Send once netd is ready. A
-/// missing runtime or a changed one makes the agent unavailable up front; the
+/// missing runtime or a changed one tells GTK to provision it first; the
 /// e2e seams are read only with --e2e-protocol (agent_helper.zig).
 fn configureAgentHelper(arena: std.mem.Allocator, io: std.Io, e2e: bool, net: AgentNet) !void {
     if (comptime builtin.os.tag != .linux) return;
@@ -397,14 +409,12 @@ comptime {
 }
 
 /// Chat drawer S4a (plan D11, S4.1): with a provisioned agent home, the
-/// Secrets window gets the home and the store flag (--agent-secret-store), and
-/// the drawer's Send asks the active store after starting netd. Without one
-/// nothing is configured. Linux only, like the drawer.
+/// Secrets window gets the home and the store flag (--agent-secret-store),
+/// including on first run. Send asks the active store once setup and netd
+/// are ready. Linux only, like the drawer.
 fn configureAgentSecrets(arena: std.mem.Allocator, store: ?agent_config.SecretStore, e2e: bool) !void {
     if (comptime builtin.os.tag != .linux) return;
     const home = (agent_setup.defaultHomeDir(arena, getenvOwned(arena, "XDG_DATA_HOME"), getenvOwned(arena, "HOME")) catch null) orelse return;
-    const current = try std.fs.path.joinZ(arena, &.{ home, "current" });
-    if (std.c.access(current.ptr, 0) != 0) return; // F_OK: not set up
     // -1: no flag; the window then uses the file when one exists (the explicit
     // file choice persisting), else the Secret Service (RoseCat 5648).
     const chosen: c_int = if (store) |s| @intFromEnum(s) else -1;
@@ -450,6 +460,7 @@ fn runOpen(arena: std.mem.Allocator, io: std.Io, spec: OpenSpec) errors.BrowserE
     // same post-main-loop stop even though AppKit's `stop:` does not emit
     // NSApplicationWillTerminateNotification.
     defer if (comptime builtin.os.tag == .linux or builtin.os.tag == .macos) c.zb_agent_helper_stop();
+    defer agent_configuration = null;
     // Before zb_app_run builds the first window; the icon's saved position
     // lives with the profile (agent-drawer.json), read only when it is on.
     const drawer_on = webkit.applyAgentDrawer(spec.agent_drawer);
@@ -461,8 +472,11 @@ fn runOpen(arena: std.mem.Allocator, io: std.Io, spec: OpenSpec) errors.BrowserE
         }, spec.e2e_protocol);
         const net = configureAgentNet(arena, io, spec.e2e_protocol) catch return error.WriteFailed;
         configureAgentSecrets(arena, spec.agent_secret_store, spec.e2e_protocol) catch return error.WriteFailed;
-        if (net) |n| configureAgentHelper(arena, io, spec.e2e_protocol, n) catch return error.WriteFailed;
-        if (net) |n| configureAgentLogin(arena, io, spec.e2e_protocol, n) catch return error.WriteFailed;
+        if (net) |n| {
+            agent_configuration = .{ .arena = arena, .io = io, .e2e = spec.e2e_protocol, .net = n };
+            if (refreshAgentConfiguration() != 0) return error.WriteFailed;
+            if (comptime builtin.os.tag == .linux) c.zb_agent_helper_set_refresh(refreshAgentConfiguration);
+        }
     }
 
     // S7b: the drawer's tools need the automation core on Linux and macOS. Kept

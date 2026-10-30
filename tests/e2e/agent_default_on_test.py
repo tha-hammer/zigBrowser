@@ -4,10 +4,9 @@
   gets the drawer icon (`DRAWER <win> icon <rect>`), the popup too;
 - off-still-off: `--agent-drawer off`, or the variable `off` with no flag, gives no
   drawer row at all, and the page still loads;
-- not-set-up: with no agent home (a fresh XDG_DATA_HOME), the drawer opens, and
-  Send shows the user bubble, `DRAWER status unavailable runtime-missing` and the system
-  bubble "Agent runtime not set up: run zigBrowser --agent-setup" (not the S1 text
-  "Agent not available yet"), and nothing starts;
+- not-set-up: without an installed runtime, the drawer tries setup, shows a
+  retryable failure with `DRAWER status unavailable runtime-missing`, and leaves
+  no helper running;
 - helper-check: the shared teardown `slice2_common.stop_browser` fails a test in which an
   agent helper ran (an e2e that never presses Send must start none), so every existing
   e2e checks it with the icon now present; agent tests opt out through
@@ -33,7 +32,7 @@ sys.path.insert(0, str(HERE))
 import agent_host_lifecycle_test as life  # noqa: E402 - its world, seams and process table
 import slice2_common  # noqa: E402 - the shared teardown under test
 
-RUNTIME_TEXT = "Agent runtime not set up: run zigBrowser --agent-setup"
+RUNTIME_TEXT = "Claude Agent setup failed. Reopen the drawer or send again to retry."
 OLD_TEXT = "Agent not available yet"
 
 
@@ -87,7 +86,7 @@ def case_not_set_up(binary: Path, tmp: Path, check) -> None:
         before = set(life.descendants(b.proc.pid))
         life.send(b, "hi")
         check(b.wait(lambda: ("system", RUNTIME_TEXT) in life.bubbles(b), 10),
-              f"Send says the runtime is not set up ({life.bubbles(b)})", b)
+              f"Send reports a retryable setup failure ({life.bubbles(b)})", b)
         check(("unavailable", "runtime-missing") in life.statuses(b), f"status unavailable runtime-missing ({life.statuses(b)})")
         check(("user", "hi") in life.bubbles(b) and ("system", OLD_TEXT) not in life.bubbles(b),
               f"the user bubble, and not the S1 text ({life.bubbles(b)})")

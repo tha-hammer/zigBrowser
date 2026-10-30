@@ -682,7 +682,7 @@ def case_home_locked(binary: Path, tmp: Path, check) -> None:
 
 
 def case_runtime_missing(binary: Path, tmp: Path, check) -> None:
-    """S3.2 edge: no runtime: unavailable runtime-missing and the bubble; nothing starts."""
+    """An absent installed Python fails setup visibly and can be retried."""
     rt = runtime_dir()
     b = launch(binary, tmp, "noruntime", env_for(world(binary, tmp), rt, {"ZB_AGENT_HOST_PYTHON": "/nonexistent/python"}))
     try:
@@ -691,13 +691,95 @@ def case_runtime_missing(binary: Path, tmp: Path, check) -> None:
         before = set(descendants(b.proc.pid))
         send(b, "hi")
         check(b.wait(lambda: ("unavailable", "runtime-missing") in statuses(b), 20), f"unavailable runtime-missing ({statuses(b)})", b)
-        check(("system", "Agent runtime not set up: run zigBrowser --agent-setup") in bubbles(b), "the bubble says so", b)
+        check(("setting-up", "-") in statuses(b), "the drawer tried setup", b)
+        check(("system", "Claude Agent setup failed. Reopen the drawer or send again to retry.") in bubbles(b),
+              "setup failure explains how to retry", b)
         check(new_children(b, before) == [], f"nothing starts ({new_children(b, before)})")
+        failures = sum("Claude Agent setup failed." in text for role, text in bubbles(b))
+        send(b, "retry")
+        check(b.wait(lambda: sum("Claude Agent setup failed." in text for role, text in bubbles(b)) > failures, 20),
+              "a later Send retries setup and leaves the setting-up state", b)
+    finally:
+        b.stop()
+
+
+def case_drawer_first_setup(binary: Path, tmp: Path, check) -> None:
+    """No command-line setup: opening the drawer provisions, then sign-in/chat work in place."""
+    import agent_setup_test
+    from agent_common import Browser
+    from agent_secrets_test import paste_and_save, secrets_status, send_prompt
+    w = agent_setup_test.World(tmp, "drawer-first")
+    fake = Fake(tmp)
+    check(not w.agent.exists(), "first run starts with no agent home")
+    b = Browser(binary, tmp, "drawer-first", ["--agent-drawer", "on", "--agent-secret-store", "file"],
+                env=env_for(w, runtime_dir(), fake.seams()), profile=tmp / "drawer-first-profile")
+    try:
+        send(b, "first message")
+        check(b.wait(lambda: ("setting-up", "-") in statuses(b), 20), "first run visibly sets up", b)
+        check(b.wait(lambda: (w.agent / "current").exists(), 90), "drawer published setup without a CLI setup call", b)
+        if not check(b.wait(lambda: secrets_status(b)[-1:] == ["empty"], 30), "setup continues to sign-in", b):
+            return
+        check(any("send your message again" in text for role, text in bubbles(b) if role == "system"),
+              "the user is told to resend after signing in", b)
+        paste_and_save(b, CANARY)
+        check(b.wait(lambda: secrets_status(b)[-1:] == ["connected-file"], 20), "token saved through the account window", b)
+        send_prompt(b, "hello after setup")
+        check(b.wait(lambda: ("assistant", REPLY) in bubbles(b), 90), "chat works without a browser restart", b)
+        check(sum(text.startswith("Claude Agent setup is complete.") for role, text in bubbles(b)) == 1,
+              "one setup completes for this drawer", b)
+    finally:
+        b.stop()
+        fake.close()
+
+
+def case_drawer_upgrade(binary: Path, tmp: Path, check) -> None:
+    """An older recorded runtime is refreshed automatically; its queued prompt and token survive."""
+    from agent_common import Browser
+    w = world(binary, tmp, "drawer-upgrade")
+    recorded = w.agent / "runtime" / "host.json"
+    old = json.loads(recorded.read_text())
+    old["runtime_lock"] = "older-installed-runtime"
+    recorded.write_text(json.dumps(old))
+    fake = Fake(tmp)
+    b = Browser(binary, tmp, "drawer-upgrade", ["--agent-drawer", "on", "--agent-secret-store", "file"],
+                env=env_for(w, runtime_dir(), fake.seams()), profile=tmp / "drawer-upgrade-profile")
+    try:
+        send(b, "upgrade message")
+        check(b.wait(lambda: ("setting-up", "-") in statuses(b), 20), "changed runtime visibly sets up", b)
+        check(b.wait(lambda: ("assistant", REPLY) in bubbles(b), 90), "queued upgrade prompt completes without restart", b)
+        check(json.loads(recorded.read_text())["runtime_lock"] != old["runtime_lock"], "recorded runtime identity refreshed")
+        check((w.agent / "secrets" / "claude-token").read_text() == CANARY, "upgrade keeps the saved token")
+        check(sum(text.startswith("Claude Agent setup is complete.") for role, text in bubbles(b)) == 1,
+              "upgrade setup completes once", b)
+    finally:
+        b.stop()
+        fake.close()
+
+
+def case_drawer_setup_close(binary: Path, tmp: Path, check) -> None:
+    """Closing during setup ends the browser-owned setup processes."""
+    import agent_setup_test
+    from agent_common import Browser
+    w = agent_setup_test.World(tmp, "drawer-close")
+    b = Browser(binary, tmp, "drawer-close", ["--agent-drawer", "on"],
+                env=env_for(w, runtime_dir(), {"ZIGBROWSER_AGENT_SPAWN_DELAY_MS": "5000"}),
+                profile=tmp / "drawer-close-profile")
+    try:
+        send(b, "waiting")
+        setup_pids = lambda: [p for p in descendants(b.proc.pid) if "--agent-setup" in argv_of(p)]
+        if not check(b.wait(lambda: setup_pids() != [], 20), "drawer owns an in-flight setup child", b):
+            return
+        owned = setup_pids()
+        b.stop()
+        check(not any(alive(p) for p in owned), "closing the browser ends its setup children")
     finally:
         b.stop()
 
 
 CASES = {
+    "drawer-first-setup": case_drawer_first_setup,
+    "drawer-upgrade": case_drawer_upgrade,
+    "drawer-setup-close": case_drawer_setup_close,
     "closure": case_closure,
     "frames": case_frames,
     "crash": case_crash,

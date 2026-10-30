@@ -14,7 +14,8 @@
 
 #include <stddef.h>
 
-/* Called once by app.zig before the first window. Everything is copied.
+/* Called by app.zig before the first window, and refreshed after drawer setup
+ * while the helper is still idle. Everything is copied.
  * `argv`/`envp`: the launch command (NULL-terminated). `unavailable`:
  * when non-NULL, the status reason that makes the agent unavailable before
  * anything starts (`runtime-missing`, `config-changed`), with `bubble` the
@@ -24,8 +25,14 @@ void zb_agent_helper_configure(const char *const *argv, const char *const *envp,
                                const char *unavailable, const char *bubble, const char *refusal,
                                int e2e_protocol);
 
-/* 1 once zb_agent_helper_configure was called (a provisioned agent home). */
+/* 1 once the agent's launch configuration is available, including first run. */
 int zb_agent_helper_configured(void);
+
+/* On drawer open, asynchronously provision a missing/changed runtime. Send
+ * queues behind the same setup. Repeated opens join the in-flight setup. */
+void zb_agent_helper_prepare(unsigned int win_id);
+/* app.zig supplies its GTK-thread launch-input refresh for setup completion. */
+void zb_agent_helper_set_refresh(int (*refresh)(void));
 
 /* The bubble for a missing runtime, and for no provisioned agent home at all (S5.5). */
 #define ZB_AGENT_TEXT_RUNTIME "Agent runtime not set up: run zigBrowser --agent-setup"

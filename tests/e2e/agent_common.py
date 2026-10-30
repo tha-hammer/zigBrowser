@@ -57,7 +57,7 @@ DRAWER_KINDS: dict[str, list[str]] = {
     "scroll": [r"bottom|\d+(\.\d+)?"],
     "msg": [r"user|assistant|system|approval|error", TEXT],
     "delta": [r"[^\t]+", TEXT],
-    "status": [r"stopped|starting|ready|busy|crashed|unavailable", REASON],
+    "status": [r"stopped|setting-up|starting|ready|busy|crashed|unavailable", REASON],
     "approval": [r"[^\t]+", r"[^\t]+", r"[^\t]+", r"[^\t]+", r"[0-9a-f]+"],
     # S8d's card rows (D7b, revs 16.20.39-16.20.43).
     "approvalrect": [r"[^\t]+", r"approve|deny", RECT],
