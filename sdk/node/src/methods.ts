@@ -71,6 +71,11 @@ export interface FilesResult {
 export interface ScrollResult {
   scrollX: number;
   scrollY: number;
+  /** Synthetic x/y scrolling reports which surface moved. */
+  moved?: 'page' | 'panel' | 'nothing';
+  /** Present when moved is "panel". */
+  panelScrollLeft?: number;
+  panelScrollTop?: number;
 }
 export interface ScreenshotResult {
   /** Base64 PNG. */

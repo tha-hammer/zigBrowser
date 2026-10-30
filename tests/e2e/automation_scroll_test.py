@@ -93,9 +93,27 @@ def synthetic(zb: ZigBrowser) -> list[str]:
     passed: list[str] = []
     reset(zb)
     answer = zb.dom.scroll(y=300)
-    expect_equal("synthetic scroll by y answer", answer, {"scrollX": 0, "scrollY": 300})
-    expect_equal("synthetic scroll by y page", offsets(zb), answer)
+    expect_equal("synthetic scroll by y answer", answer, {"scrollX": 0, "scrollY": 300, "moved": "page"})
+    expect_equal("synthetic scroll by y page", offsets(zb), {"scrollX": answer["scrollX"], "scrollY": answer["scrollY"]})
     passed.append("synthetic-scroll-by")
+
+    reset(zb)
+    expect_equal("synthetic scroll at page start", zb.dom.scroll(y=-300),
+                 {"scrollX": 0, "scrollY": 0, "moved": "nothing"})
+    expect_equal("synthetic scroll at page start offsets", offsets(zb), {"scrollX": 0, "scrollY": 0})
+    passed.append("synthetic-scroll-no-movement")
+
+    page(zb, "(() => { const panel = document.createElement('div'); panel.id = 'scroll-panel';"
+             " panel.style.cssText = 'position:fixed;inset:0;overflow:auto;background:white;z-index:10';"
+             " panel.innerHTML = '<div style=\"height:2000px\">panel content</div>';"
+             " document.body.appendChild(panel); window.scrollTo(0, document.documentElement.scrollHeight); return true; })()")
+    before = offsets(zb)
+    expect_equal("synthetic panel scroll answer", zb.dom.scroll(y=300),
+                 {**before, "moved": "panel", "panelScrollLeft": 0, "panelScrollTop": 300})
+    expect_equal("synthetic panel scroll page", offsets(zb), before)
+    expect_equal("synthetic panel scroll position", page(zb, "document.getElementById('scroll-panel').scrollTop"), 300)
+    page(zb, "(document.getElementById('scroll-panel').remove(), true)")
+    passed.append("synthetic-scroll-panel")
 
     reset(zb)
     answer = zb.dom.scroll("css=#far")

@@ -125,7 +125,10 @@ class DomNamespace:
     ) -> dict:
         """Scroll an element into view (selector) or the page by x/y CSS px,
         exactly one of the two. input "native" uses real wheel events and
-        returns once scrolling has finished. Returns {scrollX, scrollY}."""
+        returns once scrolling has finished. Returns scrollX and scrollY.
+        Synthetic x/y scrolling also returns moved ("page", "panel", or
+        "nothing"); panel scrolling includes panelScrollLeft and panelScrollTop.
+        Native and selector scrolling return only the page offsets."""
         if (selector is None) == (x is None and y is None):
             raise ValueError("scroll needs exactly one of selector or x/y")
         params = _drop_none(selector=selector, x=x, y=y)
